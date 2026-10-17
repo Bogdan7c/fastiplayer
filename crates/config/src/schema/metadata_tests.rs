@@ -138,6 +138,8 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "subtitles.max_ass_styles",
     "subtitles.max_ass_override_tags_per_event",
     "subtitles.max_ass_events_on_screen",
+    "subtitles.prerender_frames",
+    "subtitles.prepared_overlays",
 ];
 
 #[test]
@@ -449,6 +451,18 @@ fn metadata_ranges_match_validation_constants() {
         "subtitles.max_ass_events_on_screen",
         crate::MIN_MAX_ASS_EVENTS_ON_SCREEN,
         crate::MAX_MAX_ASS_EVENTS_ON_SCREEN,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.prerender_frames",
+        crate::MIN_PRERENDER_FRAMES,
+        crate::MAX_PRERENDER_FRAMES,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.prepared_overlays",
+        crate::MIN_PREPARED_OVERLAYS,
+        crate::MAX_PREPARED_OVERLAYS,
     );
     assert_text_len(
         &registry,

@@ -413,7 +413,13 @@ impl SubtitleRasterizer {
             ),
         };
         match painted {
-            Ok(rasterized) => {
+            Ok(mut rasterized) => {
+                // Кэш ключуется `CueKey`, поэтому владелец картинок реплики постоянен и
+                // проставляется один раз; попадания в кэш уже несут его.
+                rasterized.bitmaps = std::mem::take(&mut rasterized.bitmaps)
+                    .into_iter()
+                    .map(|bitmap| bitmap.with_owner(key))
+                    .collect();
                 self.counters.rasterized_cues += 1;
                 self.counters.skipped_glyphs += u64::from(rasterized.diagnostics.skipped_glyphs);
                 self.counters.skipped_borders += u64::from(rasterized.diagnostics.skipped_borders);

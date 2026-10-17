@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 use subtitle_core::SubtitleColor;
 
+use crate::renderer::CueKey;
+
 mod placement_group;
 
 pub use placement_group::OverlayPlacementGroup;
@@ -133,6 +135,10 @@ pub struct SubtitleBitmap {
     color: SubtitleColor,
     kind: SubtitleBitmapKind,
     placement_group: OverlayPlacementGroup,
+    /// Реплика, которой принадлежит картинка. `None` только у картинок, собранных не
+    /// растеризатором реплик (например, в юнит-тестах отдельных этапов): растеризатор
+    /// проставляет владельца каждой картинке кадра ([`Self::with_owner`]).
+    owner: Option<CueKey>,
 }
 
 impl SubtitleBitmap {
@@ -178,7 +184,17 @@ impl SubtitleBitmap {
             // Группа по умолчанию — основная; ASS-растеризатор переопределяет её через
             // `with_placement_group`.
             placement_group: OverlayPlacementGroup::Main,
+            // Владельца проставляет растеризатор, когда ключ реплики уже известен.
+            owner: None,
         })
+    }
+
+    /// Та же картинка (та же маска), отнесённая к реплике `owner`.
+    pub(crate) fn with_owner(self, owner: CueKey) -> Self {
+        Self {
+            owner: Some(owner),
+            ..self
+        }
     }
 
     /// Та же картинка, отнесённая к группе размещения `group`.
@@ -288,6 +304,13 @@ impl SubtitleBitmap {
         self.placement_group
     }
 
+    /// Реплика, которой принадлежит картинка: по ней вызывающий код отличает картинки
+    /// закончившейся реплики от оставшихся ([`SubtitleOverlay::retain_cues`]).
+    /// `None` бывает только у картинок, собранных не растеризатором реплик.
+    pub fn cue_key(&self) -> Option<CueKey> {
+        self.owner
+    }
+
     /// Строка маски `row` (ровно `width` байт) или `None` за пределами картинки.
     pub fn coverage_row(&self, row: u32) -> Option<&[u8]> {
         if row >= self.height {
@@ -393,6 +416,39 @@ impl SubtitleOverlay {
     /// Помечает результат как повторно выданный без изменений (ревизия остаётся прежней).
     pub(crate) fn mark_unchanged(&mut self) {
         self.change = OverlayChange::Unchanged;
+    }
+
+    /// Новый результат только с картинками реплик, которые `keep` оставляет.
+    ///
+    /// Нужен показу, когда точной картинки для кадра ещё нет: берём последнюю показанную,
+    /// но без реплик, которые уже закончились (их картинки знают свою реплику).
+    ///
+    /// Семантика:
+    /// - маски общие (`Arc::ptr_eq` с исходными), порядок отрисовки сохраняется;
+    /// - ничего не отброшено — результат равен исходному (та же ревизия, тот же `change`);
+    /// - что-то отброшено — ревизия остаётся исходной, а `change` = [`OverlayChange::Replaced`]:
+    ///   новые ревизии выдаёт только растеризатор (счётчик у него), а GPU-оболочка опознаёт
+    ///   загруженное по паре «ревизия + `Arc` каждой маски», и другой набор масок она
+    ///   отличит сама;
+    /// - картинки без владельца ([`SubtitleBitmap::cue_key`] = `None`) не отбрасываются:
+    ///   решить, нужны ли они, нельзя;
+    /// - состояние растеризатора не затрагивается (метод работает только с самим результатом).
+    pub fn retain_cues(&self, keep: impl Fn(CueKey) -> bool) -> SubtitleOverlay {
+        let kept: Vec<SubtitleBitmap> = self
+            .bitmaps
+            .iter()
+            .filter(|bitmap| bitmap.owner.is_none_or(&keep))
+            .cloned()
+            .collect();
+        if kept.len() == self.bitmaps.len() {
+            return self.clone();
+        }
+        Self {
+            canvas: self.canvas,
+            bitmaps: kept,
+            revision: self.revision,
+            change: OverlayChange::Replaced,
+        }
     }
 
     /// Размер холста.

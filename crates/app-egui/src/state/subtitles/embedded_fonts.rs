@@ -24,7 +24,7 @@ use std::thread::{self, JoinHandle};
 use bytes::Bytes;
 use media_core::{MediaAttachment, MediaAttachments, SkippedAttachmentReason};
 use player_core::MediaInstanceId;
-use subtitle_raster::{AttachedFontLimits, AttachedFontsClearOutcome, PreparedAttachedFonts};
+use subtitle_raster::{AttachedFontLimits, PreparedAttachedFonts};
 
 use super::SubtitleOwner;
 use crate::app_wake::{AppWakePort, OwnerMailboxReceiver, WakeDelivery, owner_mailbox};
@@ -316,22 +316,8 @@ impl SubtitleOwner {
             limits,
         } = ready;
         match self.presenter.install_attached_fonts(prepared, &limits) {
-            Ok(report) => {
-                if !report.rejected.is_empty() {
-                    // Причины типизированы (размер, лимит, формат): текст и имена не нужны.
-                    tracing::warn!(
-                        rejected = report.rejected.len(),
-                        registered = report.registered,
-                        "Some attached subtitle fonts were rejected"
-                    );
-                }
-                tracing::debug!(
-                    registered = report.registered,
-                    already_registered = report.already_registered,
-                    "Attached subtitle fonts installed"
-                );
-                true
-            }
+            // Отчёт об установке придёт от потока событием и будет записан в лог при приёме.
+            Ok(()) => true,
             Err(prepared) => {
                 // Растеризатора ещё нет: ждём его (владелец заказывает библиотеку шрифтов).
                 self.attached_fonts.waiting_for_rasterizer = Some(ReadyAttachedFonts {
@@ -350,15 +336,8 @@ impl SubtitleOwner {
             self.attached_fonts.retiring.push(job);
         }
         self.attached_fonts.waiting_for_rasterizer = None;
-        if let AttachedFontsClearOutcome::Cleared { faces, bytes } =
-            self.presenter.clear_attached_fonts()
-        {
-            tracing::debug!(
-                faces,
-                bytes,
-                "Attached subtitle fonts of the previous media removed"
-            );
-        }
+        // Итог снятия придёт от потока событием и будет записан в лог при приёме.
+        self.presenter.clear_attached_fonts();
     }
 }
 

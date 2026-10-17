@@ -142,6 +142,15 @@ pub(super) enum SubtitleLoadFailure {
     /// Поток завершился без результата (паника или потерянный ящик).
     #[error("subtitle loader stopped without a result")]
     WorkerLost,
+    /// Не удалось запустить поток-рисовальщик субтитров.
+    #[error("subtitle rendering is unavailable: its thread could not be started ({kind:?})")]
+    RenderWorkerStartFailed {
+        /// Вид ошибки ввода-вывода при создании потока.
+        kind: io::ErrorKind,
+    },
+    /// Поток-рисовальщик остановился сам (паника).
+    #[error("subtitle rendering stopped unexpectedly")]
+    RenderWorkerLost,
 }
 
 /// Дорожка, прочитанная сразу после поиска (или причина, почему не вышло).

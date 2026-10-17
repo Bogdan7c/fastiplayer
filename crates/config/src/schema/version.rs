@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 18;
+pub const CURRENT_SCHEMA_VERSION: u32 = 19;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -82,14 +82,21 @@ pub(crate) const LEGACY_SCHEMA_VERSION_16: u32 = 16;
 /// только поднимает версию (старый файл без ключей грузится с defaults).
 pub(crate) const LEGACY_SCHEMA_VERSION_17: u32 = 17;
 
+/// Последняя схема до настроек упреждающей отрисовки субтитров
+/// (`subtitles.prerender_frames`, `subtitles.prepared_overlays`).
+///
+/// Новые ключи добавляются со значениями по умолчанию; переписывать пользовательские
+/// значения нечего, поэтому миграция v18 -> v19 только поднимает версию.
+pub(crate) const LEGACY_SCHEMA_VERSION_18: u32 = 18;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v18 и полная цепочка поддерживаемых legacy-версий v2..v17.
+    /// Текущая схема v19 и полная цепочка поддерживаемых legacy-версий v2..v18.
     #[test]
-    fn schema_v18_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 18);
+    fn schema_v19_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 19);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -108,8 +115,9 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_15,
                 LEGACY_SCHEMA_VERSION_16,
                 LEGACY_SCHEMA_VERSION_17,
+                LEGACY_SCHEMA_VERSION_18,
             ],
-            [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
         );
     }
 }

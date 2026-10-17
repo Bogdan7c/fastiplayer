@@ -256,3 +256,21 @@ fn unknown_event_id_returns_none() {
     let timeline = SubtitleTimeline::new();
     assert!(timeline.event(SubtitleEventId(0)).is_none());
 }
+
+#[test]
+fn events_from_index_returns_only_later_insertions_in_id_order() {
+    let mut timeline = SubtitleTimeline::new();
+    timeline.extend([
+        event(500, 600, "late start"),
+        event(100, 200, "early start"),
+    ]);
+    timeline.extend([event(300, 400, "third")]);
+
+    let tail: Vec<(u32, SubtitleTime)> = timeline
+        .events_from_index(1)
+        .map(|(id, event)| (id.get(), event.start()))
+        .collect();
+
+    assert_eq!(tail, vec![(1, t(100)), (2, t(300))]);
+    assert_eq!(timeline.events_from_index(3).count(), 0);
+}

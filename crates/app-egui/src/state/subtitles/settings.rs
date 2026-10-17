@@ -11,6 +11,7 @@ use subtitle_raster::RasterLimits;
 use super::intents::SubtitleVisibility;
 use super::limits::{EmbeddedLimits, LoadLimits, raster_limits_from_config};
 use super::owner_placement::AssLayerPositioning;
+use super::presentation::PresenterSettings;
 use super::user_style::UserSubtitleStyle;
 
 /// Настройки субтитров, разобранные из конфига.
@@ -26,6 +27,10 @@ pub(super) struct SubtitleSettings {
     pub(super) load_limits: LoadLimits,
     /// Лимиты растеризатора (действуют с создания растеризатора).
     pub(super) raster_limits: RasterLimits,
+    /// На сколько кадров вперёд рисовать (действует с создания потока-рисовальщика).
+    pub(super) prerender_frames: u32,
+    /// Сколько готовых картинок держать (действует с создания потока-рисовальщика).
+    pub(super) prepared_overlays: u32,
     /// Лимиты встроенных дорожек (читаются владельцем в момент использования).
     pub(super) embedded_limits: EmbeddedLimits,
     /// Как размещать слой ASS/SSA (режим «ASS position»); читает размещение слоя.
@@ -33,6 +38,15 @@ pub(super) struct SubtitleSettings {
 }
 
 impl SubtitleSettings {
+    /// Настройки потока-рисовальщика: лимиты растеризатора и размеры подготовки наперёд.
+    pub(super) fn presenter_settings(&self) -> PresenterSettings {
+        PresenterSettings {
+            raster_limits: self.raster_limits,
+            prerender_frames: self.prerender_frames,
+            prepared_overlays: self.prepared_overlays,
+        }
+    }
+
     /// Разбирает секцию конфига.
     pub(super) fn from_config(config: &SubtitlesConfig) -> Self {
         Self {
@@ -45,6 +59,8 @@ impl SubtitleSettings {
             style: UserSubtitleStyle::from_config(config),
             load_limits: LoadLimits::from_config(config),
             raster_limits: raster_limits_from_config(config),
+            prerender_frames: config.prerender_frames,
+            prepared_overlays: config.prepared_overlays,
             embedded_limits: EmbeddedLimits::from_config(config),
             ass_positioning: AssLayerPositioning::from_config(config.ass_position_mode),
         }

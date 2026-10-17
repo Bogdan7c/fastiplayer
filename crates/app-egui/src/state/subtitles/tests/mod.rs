@@ -26,6 +26,8 @@ mod memory_restore;
 mod placement;
 mod presentation;
 mod real_sidecar;
+mod render_thread;
+mod render_thread_regressions;
 mod sidecar_job;
 mod track_selection;
 

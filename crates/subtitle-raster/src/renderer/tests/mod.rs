@@ -7,6 +7,7 @@ mod ass_robustness;
 mod ass_text_style;
 mod attached_fonts;
 mod caching;
+mod cue_owner;
 mod font_fallback;
 mod geometry;
 mod language;

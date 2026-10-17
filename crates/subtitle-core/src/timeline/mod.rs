@@ -212,6 +212,24 @@ impl SubtitleTimeline {
         self.events.is_empty()
     }
 
+    /// События с порядковым номером вставки `>= first_index`, в порядке id (то есть в порядке
+    /// вставки), вместе с их id. Стоит O(число возвращённых событий): id = индекс в векторе
+    /// событий, поэтому всю дорожку обходить не нужно (так UI берёт только дописанное).
+    pub fn events_from_index(
+        &self,
+        first_index: usize,
+    ) -> impl Iterator<Item = (SubtitleEventId, &SubtitleEvent)> {
+        self.events
+            .iter()
+            .enumerate()
+            .skip(first_index)
+            .filter_map(|(index, event)| {
+                u32::try_from(index)
+                    .ok()
+                    .map(|raw| (SubtitleEventId(raw), event))
+            })
+    }
+
     /// События в порядке возрастания `(start, id)` вместе с их id.
     pub fn iter(&self) -> impl Iterator<Item = (SubtitleEventId, &SubtitleEvent)> {
         self.order_by_start

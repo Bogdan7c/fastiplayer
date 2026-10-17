@@ -36,6 +36,10 @@ pub(super) fn submit_render_frame(
 
     // Субтитры строятся по pts кадра, который прямо сейчас уходит в renderer. Overlay
     // заимствует `app_state` до конца `render_frame`; после него `app_state` снова свободен.
+    // Режим плеера (игра, пауза, seek, scrub) и скорость доходят до субтитров на КАЖДОМ кадре
+    // UI, даже без нового видеокадра: во время seek/scrub старый кадр остаётся без субтитров,
+    // а цель уже известна, и поток-рисовальщик готовит её заранее.
+    app_state.observe_playback_for_subtitles();
     let subtitle_frame = video_frame.as_ref().and_then(|frame| {
         SubmittedFrameForSubtitles::from_submission(
             startup_frame_identity,

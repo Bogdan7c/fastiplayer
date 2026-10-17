@@ -1,4 +1,4 @@
-//! Validation ASS/SSA-лимитов секции `[subtitles]` (схема v18).
+//! Validation ASS/SSA-лимитов секции `[subtitles]` (схема v19).
 //!
 //! Вынесено из `validation/subtitles.rs`, чтобы тот файл не рос. Ошибки называют полный
 //! путь поля, сообщения английские.

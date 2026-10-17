@@ -198,12 +198,12 @@ fn attached_font_changes_the_rendered_cue_and_media_change_removes_it() {
 
     // Смена media снимает вложенные шрифты: шрифт больше не участвует.
     assert!(matches!(
-        with_font.presenter.clear_attached_fonts(),
+        with_font.presenter.clear_attached_fonts_and_wait(),
         subtitle_raster::AttachedFontsClearOutcome::Cleared { .. }
     ));
     with_font.begin_media(instance(3), SubtitleMediaSource::NotLocal);
     assert_eq!(
-        with_font.presenter.clear_attached_fonts(),
+        with_font.presenter.clear_attached_fonts_and_wait(),
         subtitle_raster::AttachedFontsClearOutcome::NothingAttached,
         "nothing is attached after the previous media was cleared"
     );
@@ -217,7 +217,7 @@ fn media_change_clears_the_attached_fonts_of_the_previous_media() {
     owner.begin_media(instance(3), SubtitleMediaSource::NotLocal);
 
     assert_eq!(
-        owner.presenter.clear_attached_fonts(),
+        owner.presenter.clear_attached_fonts_and_wait(),
         subtitle_raster::AttachedFontsClearOutcome::NothingAttached,
         "begin_media already removed them"
     );
@@ -236,7 +236,7 @@ fn the_real_fixture_attachment_is_prepared_and_installed() {
     });
 
     // Установленное вложение видно по тому, что его можно снять.
-    let outcome = owner.presenter.clear_attached_fonts();
+    let outcome = owner.presenter.clear_attached_fonts_and_wait();
     assert!(
         matches!(
             outcome,
@@ -278,7 +278,7 @@ fn attachment_over_the_limit_is_skipped_and_cues_still_render() {
     owner.deliver_feed_messages(fixture.feed_messages(media));
 
     assert_eq!(
-        owner.presenter.clear_attached_fonts(),
+        owner.presenter.clear_attached_fonts_and_wait(),
         subtitle_raster::AttachedFontsClearOutcome::NothingAttached,
         "the oversized font was not installed"
     );
@@ -316,7 +316,7 @@ fn attachments_of_a_previous_media_are_not_installed() {
         "no job for a stale media"
     );
     assert_eq!(
-        owner.presenter.clear_attached_fonts(),
+        owner.presenter.clear_attached_fonts_and_wait(),
         subtitle_raster::AttachedFontsClearOutcome::NothingAttached
     );
 }

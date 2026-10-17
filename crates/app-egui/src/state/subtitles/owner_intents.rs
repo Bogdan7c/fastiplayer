@@ -159,7 +159,8 @@ impl SubtitleOwner {
         media.sync_offset = offset;
         media.memory_dirty.sync_offset = true;
         media.tracks.apply_sync_offset(offset);
-        self.presenter.forget_shown_overlay();
+        // Картинки лежат во времени субтитров и сдвигом не инвалидируются: меняется только
+        // время поиска реплик для кадра, поэтому показанное не забываем (нет мигания).
     }
 
     /// Добавляет файл субтитров к ТЕКУЩЕМУ media (любой источник), выбирает его и включает.

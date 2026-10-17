@@ -10,6 +10,7 @@ use player_core::MediaInstanceId;
 
 use super::intents::{AttachOutcome, QueueOutcome, SubtitleVisibility};
 use super::menu_view::SubtitleMenuView;
+use super::render_worker::clock_tracker::PlaybackObservation;
 use super::{
     CurrentMediaForSubtitles, EmbeddedUpdate, PlacedSubtitleOverlay, SubmittedFrameForSubtitles,
     subtitle_source_of,
@@ -92,6 +93,19 @@ impl AppState {
         // Порядок важен: ответ диалога «Load file…» приходит по тому же wake-событию.
         let picker_changed = self.poll_subtitle_file_picker();
         self.subtitles.poll_jobs() || picker_changed
+    }
+
+    /// Передаёт субтитрам наблюдение за плеером из последнего snapshot: режим (игра, пауза,
+    /// seek, scrub), цель seek/scrub, скорость и оценку длительности кадра. Дёшево: вызывается
+    /// на каждом кадре UI; часы потоку-рисовальщику уходят, только если они изменились.
+    pub(crate) fn observe_playback_for_subtitles(&mut self) {
+        let snapshot = &self.last_player_snapshot;
+        let current = CurrentMediaForSubtitles {
+            media_instance_id: snapshot.media_instance_id,
+            render_generation: snapshot.render_generation,
+        };
+        let observation = PlaybackObservation::from_snapshot(snapshot);
+        self.subtitles.observe_playback(current, observation);
     }
 
     /// Overlay субтитров для кадра, который прямо сейчас уходит в renderer.

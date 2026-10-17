@@ -1,4 +1,4 @@
-//! Секция `[subtitles]`: показ, язык, стиль и лимиты ресурсов субтитров (схема v18).
+//! Секция `[subtitles]`: показ, язык, стиль и лимиты ресурсов субтитров (схема v19).
 //!
 //! Решение владельца (субтитры, сессия 04): лимиты и внешний вид живут в `config.toml`,
 //! значения по умолчанию равны прежним константам приложения, поэтому старый файл без
@@ -604,6 +604,46 @@ pub struct SubtitlesConfig {
         apply = "subtitles.apply"
     )]
     pub max_ass_events_on_screen: u32,
+
+    /// На сколько кадров вперёд поток отрисовки готовит картинки субтитров (0 = только текущий).
+    #[setting(
+        id = "subtitles.prerender_frames",
+        path = "subtitles.prerender_frames",
+        section = "subtitles",
+        group = "limits",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.prerender_frames.label",
+        label_ru = "Subtitle prerender lookahead",
+        description_id = "settings.subtitles.prerender_frames.description",
+        description_ru = "How many frames ahead the subtitle render thread prepares pictures; 0 prepares only the current frame. Takes effect with the next opened video.",
+        editor = "integer",
+        min = crate::MIN_PRERENDER_FRAMES,
+        max = crate::MAX_PRERENDER_FRAMES,
+        step = 1,
+        unit = "frames",
+        apply = "subtitles.apply"
+    )]
+    pub prerender_frames: u32,
+
+    /// Размер очереди готовых картинок субтитров, ожидающих показа.
+    #[setting(
+        id = "subtitles.prepared_overlays",
+        path = "subtitles.prepared_overlays",
+        section = "subtitles",
+        group = "limits",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.prepared_overlays.label",
+        label_ru = "Prepared subtitle pictures",
+        description_id = "settings.subtitles.prepared_overlays.description",
+        description_ru = "Size of the queue of ready subtitle pictures waiting to be shown. Takes effect with the next opened video.",
+        editor = "integer",
+        min = crate::MIN_PREPARED_OVERLAYS,
+        max = crate::MAX_PREPARED_OVERLAYS,
+        step = 1,
+        unit = "pictures",
+        apply = "subtitles.apply"
+    )]
+    pub prepared_overlays: u32,
 }
 
 impl Default for SubtitlesConfig {
@@ -637,6 +677,8 @@ impl Default for SubtitlesConfig {
             max_ass_styles: DEFAULT_MAX_ASS_STYLES,
             max_ass_override_tags_per_event: DEFAULT_MAX_ASS_OVERRIDE_TAGS_PER_EVENT,
             max_ass_events_on_screen: DEFAULT_MAX_ASS_EVENTS_ON_SCREEN,
+            prerender_frames: DEFAULT_PRERENDER_FRAMES,
+            prepared_overlays: DEFAULT_PREPARED_OVERLAYS,
         }
     }
 }

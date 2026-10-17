@@ -74,7 +74,9 @@ mod owner_intents;
 mod owner_loading;
 mod owner_memory;
 mod owner_placement;
+mod owner_render;
 mod presentation;
+mod render_worker;
 mod sample_cue;
 mod settings;
 mod sidecar_job;
@@ -262,12 +264,14 @@ impl SubtitleOwner {
         config: &fastiplayer_config::SubtitlesConfig,
     ) -> Self {
         let settings = SubtitleSettings::from_config(config);
+        let presenter_wake_port = wake_port.clone();
         Self {
             wake_port,
             presenter: SubtitlePresenter::new(
                 system_language.clone(),
                 &settings.style,
-                settings.raster_limits,
+                settings.presenter_settings(),
+                presenter_wake_port,
             ),
             default_visibility: settings.default_visibility,
             settings,
@@ -335,7 +339,7 @@ impl SubtitleOwner {
             // новой библиотекой шрифтов (строится в фоне первой задачей).
             self.presenter.discard_rasterizer();
             self.presenter
-                .replace_raster_limits(self.settings.raster_limits);
+                .replace_settings(self.settings.presenter_settings());
         }
 
         let mut media = MediaSubtitles::new(media_instance_id, self.default_visibility);
@@ -449,6 +453,8 @@ impl SubtitleOwner {
         // `MediaSubtitles` и уходят вместе с ним).
         self.forget_attached_fonts();
         self.presenter.forget_shown_overlay();
+        // Зеркала дорожек прежнего media в потоке-рисовальщике больше не нужны.
+        self.presenter.release_mirrored_tracks();
     }
 
     /// Неблокирующий опрос задач. `true` — видимое состояние изменилось (нужна перерисовка).
@@ -459,7 +465,10 @@ impl SubtitleOwner {
         let fonts_changed = self.poll_fonts_bootstrap();
         let attached_fonts_changed = self.poll_attached_fonts();
         let media_changed = self.poll_media_jobs();
-        fonts_changed || attached_fonts_changed || media_changed
+        // Поток-рисовальщик опрашивается ПОСЛЕДНИМ: остальные опросы сбрасывают «взведённость»
+        // wake-порта, а события потока не должны потеряться за этим сбросом.
+        let worker_changed = self.poll_render_worker();
+        fonts_changed || attached_fonts_changed || media_changed || worker_changed
     }
 
     /// Опрос задач текущего media и уходящих задач (см. [`Self::poll_jobs`]).
@@ -513,9 +522,13 @@ impl SubtitleOwner {
         if next == self.settings {
             return;
         }
-        if next.raster_limits != self.settings.raster_limits {
+        if next.presenter_settings() != self.settings.presenter_settings() {
+            // Лимиты растеризатора и размеры подготовки наперёд действуют с созданием нового
+            // потока-рисовальщика (при следующем media).
             self.rasterizer_reset_pending = true;
             self.settings.raster_limits = next.raster_limits;
+            self.settings.prerender_frames = next.prerender_frames;
+            self.settings.prepared_overlays = next.prepared_overlays;
         }
         self.default_visibility = next.default_visibility;
         self.settings = next;
@@ -573,7 +586,7 @@ impl SubtitleOwner {
 
     /// Счётчики растеризатора для тестов.
     #[cfg(test)]
-    fn rasterizer_statistics(&self) -> Option<subtitle_raster::RasterStatistics> {
+    fn rasterizer_statistics(&mut self) -> Option<subtitle_raster::RasterStatistics> {
         self.presenter.rasterizer_statistics()
     }
 

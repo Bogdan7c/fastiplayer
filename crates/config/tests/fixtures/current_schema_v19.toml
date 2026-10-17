@@ -1,4 +1,4 @@
-schema_version = 18
+schema_version = 19
 
 [player]
 start_paused = false
@@ -292,3 +292,7 @@ max_ass_styles = 1000
 max_ass_override_tags_per_event = 512
 # Сколько ASS/SSA-реплик рисуется на кадре одновременно; лишние с верхних слоёв пропускаются.
 max_ass_events_on_screen = 256
+# На сколько кадров вперёд поток отрисовки готовит картинки субтитров; 0 — только текущий кадр.
+prerender_frames = 4
+# Сколько готовых картинок субтитров ждёт показа в очереди.
+prepared_overlays = 8

@@ -110,12 +110,20 @@ const SUBTITLES_KEY_COMMENTS: &[(&str, &str)] = &[
         "max_ass_events_on_screen",
         "# Сколько ASS/SSA-реплик рисуется на кадре одновременно; лишние с верхних слоёв пропускаются.",
     ),
+    (
+        "prerender_frames",
+        "# На сколько кадров вперёд поток отрисовки готовит картинки субтитров; 0 — только текущий кадр.",
+    ),
+    (
+        "prepared_overlays",
+        "# Сколько готовых картинок субтитров ждёт показа в очереди.",
+    ),
 ];
 
 /// Добавляет комментарии перед ключами секции `[subtitles]`.
 ///
 /// Если секции нет (не должно случаться для документа из `AppConfig`), текст не меняется;
-/// золотой файл `current_schema_v18.toml` тогда провалит тест стабильности схемы.
+/// золотой файл `current_schema_v19.toml` тогда провалит тест стабильности схемы.
 pub(super) fn document_subtitles_defaults(toml_text: &mut String) {
     let Some(header_offset) = toml_text.find(&format!("\n{SUBTITLES_HEADER}\n")) else {
         return;

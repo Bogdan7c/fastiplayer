@@ -86,3 +86,17 @@ pub const DEFAULT_EMBEDDED_CUE_MAX_OPEN_DURATION_MS: u32 = 5_000;
 pub const MIN_EMBEDDED_CUE_MAX_OPEN_DURATION_MS: u32 = 500;
 /// Максимальное время показа такой реплики, мс.
 pub const MAX_EMBEDDED_CUE_MAX_OPEN_DURATION_MS: u32 = 60_000;
+
+/// На сколько кадров вперёд поток отрисовки субтитров готовит картинки, по умолчанию.
+pub const DEFAULT_PRERENDER_FRAMES: u32 = 4;
+/// Минимум упреждения: 0 = готовить только текущий кадр.
+pub const MIN_PRERENDER_FRAMES: u32 = 0;
+/// Максимум упреждения, кадров.
+pub const MAX_PRERENDER_FRAMES: u32 = 64;
+
+/// Размер очереди готовых картинок субтитров, по умолчанию.
+pub const DEFAULT_PREPARED_OVERLAYS: u32 = 8;
+/// Минимальный размер очереди готовых картинок.
+pub const MIN_PREPARED_OVERLAYS: u32 = 1;
+/// Максимальный размер очереди готовых картинок.
+pub const MAX_PREPARED_OVERLAYS: u32 = 64;

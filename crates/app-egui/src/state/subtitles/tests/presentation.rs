@@ -82,7 +82,8 @@ fn pause_on_the_same_frame_rasterizes_once_and_reuses_the_same_overlay() {
         assert_eq!(again, first, "paused frame must keep the very same overlay");
     }
     // Воспроизведение внутри той же реплики (pts растёт) тоже не растеризует заново.
-    for pts in [2_100, 2_200, 2_900] {
+    // Шаг кадров (100 мс) короткий: горизонт подготовки не доходит до второй реплики.
+    for pts in [2_100, 2_200, 2_300] {
         let moving = owner
             .overlay_for_frame(current(media, GENERATION), &frame(pts, GENERATION, rect))
             .map(fingerprint)
@@ -299,7 +300,8 @@ fn frames_without_active_cues_do_no_rasterizer_work() {
     let (mut owner, _dir) = ready_owner(media);
     let rect = full_rect(VIEW_WIDTH, VIEW_HEIGHT);
 
-    for pts in [0, 500, BETWEEN_CUES, 4_500, 9_000, 60_000] {
+    // Все кадры далеко от реплик (подготовка наперёд тоже ничего не находит).
+    for pts in [7_500, 8_000, 9_000, 60_000] {
         assert!(
             owner
                 .overlay_for_frame(current(media, GENERATION), &frame(pts, GENERATION, rect))
@@ -366,7 +368,8 @@ fn sync_offset_moves_the_lookup_time_of_a_frame() {
     let mut presenter = SubtitlePresenter::new(
         None,
         &UserSubtitleStyle::from_config(&config),
-        super::super::limits::raster_limits_from_config(&config),
+        super::super::settings::SubtitleSettings::from_config(&config).presenter_settings(),
+        AppWakePort::disconnected(AppWakeOwner::Subtitles),
     );
     presenter.install_font_library(discovery.fonts.expect("fonts requested"));
     let delayed = ActiveSubtitleTrack::new(
