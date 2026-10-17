@@ -560,7 +560,7 @@ fn audio_output_ready_and_resume_events_keep_exact_media_correlation_and_one_sho
 }
 
 #[test]
-fn active_audio_output_rejects_same_count_layout_change_without_mutation() {
+fn active_audio_output_rebuilds_for_same_count_layout_change() {
     let (factory, factory_handle) = ScriptedAudioOutputFactory::success(25.0, None);
     let mut session = PlayerSession::with_audio_output_factory(factory);
     let active_spec = stereo_output_spec();
@@ -570,16 +570,19 @@ fn active_audio_output_rejects_same_count_layout_change_without_mutation() {
     let changed_layout =
         AudioOutputSpec::new(48_000, audio_core::AudioChannelLayout::discrete(2).unwrap());
 
-    let error = session
+    // Тот же count, но другая семантика lanes: output пересобирается под новый layout
+    // (`session/audio_spec_change.rs`), а не играет discrete-каналы как stereo.
+    session
         .ensure_audio_output_for_decoded_spec(changed_layout)
-        .expect_err("same channel count with different semantics must be rejected");
+        .expect("mid-stream layout change rebuilds the output");
 
-    assert_eq!(error.kind, PlayerErrorKind::RuntimeError);
-    assert!(error.message.contains("format changed"));
-    assert_eq!(factory_handle.created_specs(), vec![active_spec]);
+    assert_eq!(
+        factory_handle.created_specs(),
+        vec![active_spec, changed_layout]
+    );
     assert_eq!(
         session.pipeline.audio_output_input_spec(),
-        Some(active_spec)
+        Some(changed_layout)
     );
     assert!(!session.pipeline.has_audio_tempo_processor());
 }

@@ -201,9 +201,9 @@ impl PlayerSession {
                             self.disable_selected_audio_path();
                             self.record_recoverable_error(error);
                         } else {
-                            // Format/layout mismatch означает, что уже активный
-                            // audio path нельзя продолжить корректно. Video-only
-                            // fallback здесь скрыл бы потерю звука.
+                            // Неполный spec или сбой DSP при смене формата: продолжить
+                            // audio path корректно нельзя, а video-only fallback скрыл
+                            // бы потерю звука.
                             self.mark_fatal_error(error);
                         }
                         return;
@@ -300,15 +300,12 @@ impl PlayerSession {
         let sample_rate = output_spec.sample_rate;
         let channels = output_spec.channels();
         if self.pipeline.has_audio_output() {
+            // Смена частоты/раскладки посреди потока: output пересобирается без потери
+            // A/V sync (`audio_spec_change`); тот же spec — ничего не делаем.
             if let Some(active_spec) = self.pipeline.audio_output_input_spec()
                 && active_spec != output_spec
             {
-                return Err(PlayerError::new(
-                    PlayerErrorKind::RuntimeError,
-                    format!(
-                        "Decoded audio format changed while output is active: active={active_spec:?}, decoded={output_spec:?}"
-                    ),
-                ));
+                return self.rebuild_audio_output_for_decoded_spec_change(active_spec, output_spec);
             }
             return Ok(());
         }
@@ -352,6 +349,7 @@ impl PlayerSession {
             self.snapshot.playback_rate,
         );
         self.push_player_event(PlayerEvent::AudioOutputReady);
+        self.remember_audio_output_placement(&output_route);
         self.publish_audio_output_route(output_route);
 
         if self.playback_state() == PlaybackState::Playing {
@@ -393,10 +391,11 @@ impl PlayerSession {
         };
 
         // Маршрут здесь однозначно следует из запроса (SelectedOnly → выбранное,
-        // SystemDefault → default), поэтому уведомление формирует вызывающий код.
+        // SystemDefault → default), поэтому уведомление формирует вызывающий код;
+        // session только запоминает устройство для пересборки при смене формата.
         let CreatedAudioOutput {
             output: mut replacement_output,
-            route: _,
+            route,
         } = self
             .audio_output_factory
             .create_output(output_spec, device_request)
@@ -446,6 +445,7 @@ impl PlayerSession {
             .reanchor_audio_clock_media_mapping(media_position, self.snapshot.playback_rate);
         self.pipeline
             .reset_audio_clock_sample(self.audio_clock_now(), Instant::now());
+        self.remember_audio_output_placement(&route);
         self.push_player_event(PlayerEvent::AudioOutputReady);
         if should_play {
             self.pipeline.mark_audio_output_play_request_accepted();

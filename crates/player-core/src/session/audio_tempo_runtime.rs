@@ -62,8 +62,10 @@ impl PlayerSession {
                 return Ok(());
             }
 
-            // Mid-stream format change требует отдельной output reconfiguration;
-            // старый tail нельзя ни отбросить, ни записать под новый layout.
+            // Смену формата посреди потока обрабатывает `audio_spec_change`: он дописывает
+            // DSP-хвост и закрывает processor до PCM нового формата. Сюда несовпадение
+            // доходит только при нарушенном инварианте — старый tail нельзя ни
+            // отбросить, ни записать под новый layout.
             return Err(player_error_from_audio_tempo_error(
                 AudioTempoProcessorError::PcmFormatMismatch {
                     expected: processor_format,

@@ -41,6 +41,7 @@ mod audio_output_recovery;
 mod audio_packet_window;
 mod audio_playback_bounds;
 mod audio_runtime;
+mod audio_spec_change;
 mod audio_starvation;
 mod audio_tempo_rate_change;
 mod audio_tempo_runtime;
@@ -222,6 +223,9 @@ pub struct PlayerSession {
 
     /// Счётчик попыток восстановить звук после поломки потока вывода.
     audio_output_recovery: audio_output_recovery::AudioOutputRecoveryBudget,
+
+    /// Устройство активного output-а: на нём же пересобирается output при смене формата.
+    audio_output_placement: audio_spec_change::ActiveAudioOutputPlacement,
 
     /// Rate limit для warn о полностью осушенном audio output buffer.
     ///
@@ -754,6 +758,7 @@ impl Default for PlayerSession {
             prepared_seek_landing: PreparedSeekLandingRuntime,
             pending_video_backend_reselection: None,
             audio_output_recovery: audio_output_recovery::AudioOutputRecoveryBudget::default(),
+            audio_output_placement: audio_spec_change::ActiveAudioOutputPlacement::default(),
             last_audio_starvation_warn_at: None,
             last_seen_audio_underrun_callbacks: 0,
             subtitle_feed: crate::subtitle_feed::SubtitleFeedSender::disabled(),

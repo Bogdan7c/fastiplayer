@@ -34,9 +34,11 @@ use video_core::VideoDecoderThreadHandle;
 mod audio;
 mod audio_clock_mapping;
 mod audio_output_health;
+mod audio_output_spec_change;
 mod audio_packet_window;
 mod audio_track_switch;
 mod media_slots;
+mod overlapped_audio_output;
 mod render_resources;
 mod retired_video_decoders;
 #[cfg(test)]
@@ -45,6 +47,9 @@ mod video_backlog_recovery;
 mod video_decoder;
 
 use audio_clock_mapping::{AudioClockMediaMapping, PlannedAudioOutputSpan};
+pub(crate) use audio_output_spec_change::{
+    ReplacementOutputPlayback, SpecChangeClockAnchor, SpecChangeTimeline,
+};
 pub(crate) use audio_packet_window::PendingAudioPacket;
 use video_backlog_recovery::VideoBacklogRecoveryState;
 pub(crate) use video_backlog_recovery::{

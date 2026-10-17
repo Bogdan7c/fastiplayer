@@ -103,6 +103,59 @@ impl AudioClockMediaMapping {
         });
     }
 
+    /// Переносит будущее mapping-а на ось clock-а другого output-а.
+    ///
+    /// Смена формата PCM (`audio_output_spec_change.rs`): новый output начинает с
+    /// тишины длиной хвоста старого, а хвост старого мог быть произведён на других
+    /// скоростях (смена rate незадолго до стыка: уже принятый PCM доигрывает старую
+    /// скорость, новая начинается после него). Поэтому новому clock-у нужен не
+    /// один якорь с текущей скоростью, а та же кусочная история, сдвинутая так,
+    /// что `previous_output_clock` старого clock-а совпадает с
+    /// `replacement_output_clock_start` нового. Всё до `previous_output_clock` уже
+    /// прозвучало и отбрасывается.
+    pub(super) fn carry_onto_replacement_clock(
+        &mut self,
+        previous_output_clock: Duration,
+        replacement_output_clock_start: Duration,
+    ) {
+        let mut carried_segments = Vec::with_capacity(self.segments.len());
+        append_segment_merging_adjacent(
+            &mut carried_segments,
+            AudioClockMappingSegment {
+                output_clock_start: replacement_output_clock_start,
+                media_position_start: self.media_position_at_output_clock(previous_output_clock),
+                playback_rate: self
+                    .segment_at_output_clock(previous_output_clock)
+                    .playback_rate,
+            },
+        );
+        for later_segment in self
+            .segments
+            .iter()
+            .copied()
+            .filter(|segment| segment.output_clock_start > previous_output_clock)
+        {
+            let carried_boundary = add_duration_saturating(
+                replacement_output_clock_start,
+                later_segment.output_clock_start - previous_output_clock,
+            );
+            // Media на границе выводится из уже перенесённого segment-а: так
+            // непрерывность сохраняется до наносекунды (как в rate re-anchor-е).
+            let boundary_media_position =
+                media_position_from_last_segment(&carried_segments, carried_boundary);
+            append_segment_merging_adjacent(
+                &mut carried_segments,
+                AudioClockMappingSegment {
+                    output_clock_start: carried_boundary,
+                    media_position_start: boundary_media_position,
+                    playback_rate: later_segment.playback_rate,
+                },
+            );
+        }
+        self.segments = carried_segments;
+        self.debug_assert_invariants();
+    }
+
     /// Возвращает rate последнего открытого segment-а для lifecycle reset/install.
     #[must_use]
     #[expect(

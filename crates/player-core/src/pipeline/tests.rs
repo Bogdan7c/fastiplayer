@@ -12,6 +12,7 @@ use codec_core::VideoCodec;
 use media_core::{MediaTime, TrackKind};
 
 mod audio_boundaries;
+mod audio_output_spec_change;
 mod audio_packet_window;
 mod backlog_recovery;
 mod clock_mapping;
