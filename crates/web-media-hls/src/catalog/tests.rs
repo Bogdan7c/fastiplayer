@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
+use std::time::Duration;
 
 use hls_playlist_core::{
     HlsParseRequest, HlsParserLimits, HlsPlaylist, MasterPlaylist, parse_hls_playlist,
@@ -111,7 +112,7 @@ fn muxed_proof() -> HlsCatalogChildProof {
             video: video(DynamicRange::Unknown),
             audio: audio(),
         },
-        alignment: HlsCatalogAlignmentProof::new(1),
+        alignment: timeline_proof(REFERENCE_TOTAL_MS),
     }
 }
 
@@ -119,19 +120,32 @@ fn video_proof() -> HlsCatalogChildProof {
     HlsCatalogChildProof {
         container: HlsRequiredContainer::TransportStream,
         tracks: HlsCatalogTrackProof::VideoOnly(video(DynamicRange::Unknown)),
-        alignment: HlsCatalogAlignmentProof::new(1),
+        alignment: timeline_proof(REFERENCE_TOTAL_MS),
     }
 }
 
-fn audio_proof() -> HlsCatalogChildProof {
-    audio_proof_with_alignment(1)
+/// Длительность эталонной шкалы (видео) в тестовых proofs.
+const REFERENCE_TOTAL_MS: u64 = 10_000;
+/// `EXT-X-TARGETDURATION` тестовых шкал: допуск совместимости = 2 с.
+const TEST_TARGET_DURATION: Duration = Duration::from_secs(2);
+
+fn timeline_proof(total_ms: u64) -> HlsCatalogAlignmentProof {
+    HlsCatalogAlignmentProof::from_timeline(HlsCatalogTimeline {
+        total_duration: Duration::from_millis(total_ms),
+        target_segment_duration: TEST_TARGET_DURATION,
+        discontinuity_starts: Vec::new(),
+    })
 }
 
-fn audio_proof_with_alignment(alignment: u64) -> HlsCatalogChildProof {
+fn audio_proof() -> HlsCatalogChildProof {
+    audio_proof_with_total_ms(REFERENCE_TOTAL_MS)
+}
+
+fn audio_proof_with_total_ms(total_ms: u64) -> HlsCatalogChildProof {
     HlsCatalogChildProof {
         container: HlsRequiredContainer::FragmentedMp4,
         tracks: HlsCatalogTrackProof::AudioOnly(audio()),
-        alignment: HlsCatalogAlignmentProof::new(alignment),
+        alignment: timeline_proof(total_ms),
     }
 }
 
@@ -327,7 +341,7 @@ fn uri_less_audio_is_only_a_coupled_main_presentation() {
 }
 
 #[test]
-fn audio_group_edge_still_requires_matching_alignment_proof() {
+fn audio_version_from_another_cut_is_dropped_with_timeline_reason() {
     let master = master(
         "#EXTM3U\n\
          #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"English\",LANGUAGE=\"en\",CHANNELS=\"2\",URI=\"en.m3u8\"\n\
@@ -338,8 +352,9 @@ fn audio_group_edge_still_requires_matching_alignment_proof() {
     let intent = separate_intent(1280, 720, "English");
     let mut proofs = ProofQueue::new([
         video_proof(),
-        audio_proof_with_alignment(1),
-        audio_proof_with_alignment(2),
+        audio_proof_with_total_ms(REFERENCE_TOTAL_MS),
+        // На 50 с длиннее видео: другой монтаж, не погрешность нарезки.
+        audio_proof_with_total_ms(60_000),
     ]);
     let snapshot = build_hls_catalog(
         HlsCatalogBuildRequest {
@@ -351,7 +366,7 @@ fn audio_group_edge_still_requires_matching_alignment_proof() {
         },
         &mut proofs,
     )
-    .expect("only aligned pair is selectable");
+    .expect("incompatible non-default version must not fail the open");
     assert_eq!(
         snapshot
             .catalog()
@@ -362,7 +377,15 @@ fn audio_group_edge_still_requires_matching_alignment_proof() {
     );
     assert_eq!(
         snapshot.catalog().required_audio_variants().unwrap().len(),
-        2
+        1,
+        "the mismatched commentary version is removed from the version list"
+    );
+    let [rejection] = snapshot.sibling_rejections() else {
+        panic!("exactly one dropped version is reported");
+    };
+    assert_eq!(
+        rejection.reason(),
+        HlsCatalogSiblingRejectionReason::AudioTimelineDurationMismatch
     );
 }
 
@@ -657,3 +680,5 @@ fn unique_child_is_proven_once_and_budget_fails_before_any_hook() {
     ));
     assert!(no_proofs.calls.is_empty());
 }
+
+mod timeline_isolation;

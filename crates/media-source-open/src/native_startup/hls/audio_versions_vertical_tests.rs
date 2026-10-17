@@ -35,13 +35,13 @@ use crate::web_media_stream_model::component_variants::{
 };
 
 /// H.264 64×64 без звука: main variant c отдельными audio renditions.
-const VIDEO_ONLY_SEGMENT: &[u8] =
+pub(super) const VIDEO_ONLY_SEGMENT: &[u8] =
     include_bytes!("../../../tests/fixtures/hls-audio-versions/video-only-h264.ts");
 /// Версия 1: AAC-LC 2.0 48 кГц.
-const AAC_STEREO_SEGMENT: &[u8] =
+pub(super) const AAC_STEREO_SEGMENT: &[u8] =
     include_bytes!("../../../tests/fixtures/hls-audio-versions/audio-aac-2ch.ts");
 /// Версия 2: E-AC-3 5.1 48 кГц.
-const EAC3_SURROUND_SEGMENT: &[u8] =
+pub(super) const EAC3_SURROUND_SEGMENT: &[u8] =
     include_bytes!("../../../tests/fixtures/hls-audio-versions/audio-eac3-5p1.ts");
 
 /// Позиция, которую switch обязан сохранить (внутри единственного 0.5 с сегмента).
@@ -49,7 +49,7 @@ const RESTORED_POSITION: Duration = Duration::from_millis(200);
 
 /// Master по Apple authoring spec: отдельная audio group на кодек и variant на каждую group.
 /// Группы одного типа обязаны содержать одинаковые NAME (RFC 8216 4.3.4.2.1).
-fn dolby_and_aac_master() -> Vec<u8> {
+pub(super) fn dolby_and_aac_master() -> Vec<u8> {
     b"#EXTM3U\n\
 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"English\",LANGUAGE=\"en\",DEFAULT=YES,AUTOSELECT=YES,CHANNELS=\"2\",URI=\"audio-aac.m3u8\"\n\
 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"ec3\",NAME=\"English\",LANGUAGE=\"en\",DEFAULT=YES,AUTOSELECT=YES,CHANNELS=\"6\",URI=\"audio-eac3.m3u8\"\n\
@@ -73,19 +73,19 @@ fn origin() -> LoopbackOrigin {
 }
 
 /// Один source на весь сценарий: reopen обязан сохранить source lineage (как `clone` в app).
-fn source_for(origin: &LoopbackOrigin) -> NativeHlsUrl {
+pub(super) fn source_for(origin: &LoopbackOrigin) -> NativeHlsUrl {
     NativeHlsUrl::new(
         origin.target("/master.m3u8"),
         SafeMediaLabel::from_service_safe_label("HLS audio versions"),
     )
 }
 
-/// Production admission: первичное открытие (`None`) или semantic reopen выбранной версии.
-fn prepare(
+/// Production admission без утверждений об исходе (для сценариев с ожидаемой ошибкой).
+pub(super) fn try_prepare(
     source: &NativeHlsUrl,
     expected_selection: Option<&WebMediaSemanticSelectionRequest>,
     start: HlsVodStartIntent,
-) -> PreparedNativeHlsMedia {
+) -> anyhow::Result<NativeHlsAttempt<PreparedNativeHlsMedia>> {
     let mut app_config = AppConfig::default();
     app_config.yt_dlp.enabled = false;
     app_config.player.preferred_video_codec_order = vec![fastiplayer_config::VideoCodec::H264];
@@ -103,7 +103,16 @@ fn prepare(
         start,
         cancellation: CancellationToken::new(),
     });
-    match NativeHlsAdmissionPort::prepare(&mut port) {
+    NativeHlsAdmissionPort::prepare(&mut port)
+}
+
+/// Production admission: первичное открытие (`None`) или semantic reopen выбранной версии.
+pub(super) fn prepare(
+    source: &NativeHlsUrl,
+    expected_selection: Option<&WebMediaSemanticSelectionRequest>,
+    start: HlsVodStartIntent,
+) -> PreparedNativeHlsMedia {
+    match try_prepare(source, expected_selection, start) {
         Ok(NativeHlsAttempt::Prepared(prepared)) => prepared,
         Ok(_) => panic!("native HLS master with audio renditions must stay native"),
         Err(error) => panic!("native HLS audio-version preparation failed: {error:#}"),
@@ -111,7 +120,7 @@ fn prepare(
 }
 
 /// Независимая audio axis установленного каталога вместе с generation-fence-ами.
-fn audio_axis(
+pub(super) fn audio_axis(
     prepared: &PreparedNativeHlsMedia,
 ) -> (
     ComponentVariantSelectionAction,
@@ -137,7 +146,7 @@ fn audio_axis(
     (template, audio)
 }
 
-fn only_audio_track(prepared: &PreparedNativeHlsMedia) -> TrackInfo {
+pub(super) fn only_audio_track(prepared: &PreparedNativeHlsMedia) -> TrackInfo {
     let audio: Vec<&TrackInfo> = prepared
         .tracks()
         .iter()
@@ -152,7 +161,7 @@ fn only_audio_track(prepared: &PreparedNativeHlsMedia) -> TrackInfo {
     (*track).clone()
 }
 
-fn index_of(axis: &WebMediaAudioComponentVariantAxis, codec: CodecFamily) -> usize {
+pub(super) fn index_of(axis: &WebMediaAudioComponentVariantAxis, codec: CodecFamily) -> usize {
     axis.variants
         .iter()
         .position(|variant| variant.codec == Some(codec))

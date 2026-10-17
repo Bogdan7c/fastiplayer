@@ -9,6 +9,7 @@ mod discovery;
 mod identity;
 mod reopen;
 mod rows;
+mod timeline;
 
 #[cfg(test)]
 mod tests;
@@ -28,6 +29,7 @@ pub use build::build_hls_catalog;
 pub use discovery::{detect_hls_catalog_presentation, discover_hls_catalog};
 pub(crate) use reopen::HlsCatalogMatchMode;
 pub use reopen::{HlsCatalogReopenError, HlsCatalogReopenSelection};
+pub use timeline::{HlsCatalogAlignmentProof, HlsCatalogTimeline, HlsTimelineCompatibility};
 
 /// Provider seed, явно отличающий media playlist от master inventory.
 #[derive(Clone, Copy, Debug)]
@@ -122,27 +124,12 @@ pub enum HlsCatalogTrackProof {
     },
 }
 
-/// Snapshot-local proof that independently opened children cover one presentation interval.
-///
-/// Proof intentionally does not require exact per-segment `EXTINF` equality: AAC access-unit
-/// boundaries may make alternate audio durations oscillate around video boundaries while the
-/// cumulative presentation interval and discontinuity layout remain identical.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct HlsCatalogAlignmentProof(u64);
-
-impl HlsCatalogAlignmentProof {
-    /// Создаёт opaque identity из provider-owned duration/timeline validation.
-    pub const fn new(value: u64) -> Self {
-        Self(value)
-    }
-}
-
 /// Evidence, возвращаемое только после всех provider-owned proof stages.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HlsCatalogChildProof {
     pub container: HlsRequiredContainer,
     pub tracks: HlsCatalogTrackProof,
-    /// Sparse A/V edge допустим только между одинаковыми alignment proofs.
+    /// Sparse A/V edge допустим только между совместимыми (с допуском) timeline proofs.
     pub alignment: HlsCatalogAlignmentProof,
 }
 
@@ -167,6 +154,12 @@ pub enum HlsCatalogSiblingRejectionReason {
     MissingEmbeddedAudio,
     #[error("semantic sibling identity is ambiguous")]
     AmbiguousSemanticIdentity,
+    /// Версия звука длиннее/короче видео больше чем на один сегмент (другой монтаж/файл).
+    #[error("audio version duration differs from the video by more than one segment")]
+    AudioTimelineDurationMismatch,
+    /// Разрывы (`EXT-X-DISCONTINUITY`) версии звука не совпадают с разрывами видео.
+    #[error("audio version discontinuities do not line up with the video")]
+    AudioTimelineDiscontinuityMismatch,
 }
 
 /// Proof-port outcome отличает sibling isolation от whole-job fences.

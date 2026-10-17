@@ -30,9 +30,10 @@ pub use catalog::{
     HlsCatalogChildProofPort, HlsCatalogChildRole, HlsCatalogDiscoveryError,
     HlsCatalogDiscoveryOutcome, HlsCatalogDiscoveryRequest, HlsCatalogPresentation,
     HlsCatalogReopenError, HlsCatalogReopenSelection, HlsCatalogSiblingRejection,
-    HlsCatalogSiblingRejectionReason, HlsCatalogSnapshot, HlsCatalogTopologySeed,
-    HlsCatalogTrackProof, HlsProviderDefaultAudioPolicy, build_hls_catalog,
-    detect_hls_catalog_presentation, discover_hls_catalog, seed_hls_catalog_topology,
+    HlsCatalogSiblingRejectionReason, HlsCatalogSnapshot, HlsCatalogTimeline,
+    HlsCatalogTopologySeed, HlsCatalogTrackProof, HlsProviderDefaultAudioPolicy,
+    HlsTimelineCompatibility, build_hls_catalog, detect_hls_catalog_presentation,
+    discover_hls_catalog, seed_hls_catalog_topology,
 };
 pub use crypto::{Aes128CbcDecryptError, DecryptedBytes, decrypt_aes128_cbc_pkcs7};
 pub use initial_position_proof::{

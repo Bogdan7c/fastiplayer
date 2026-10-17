@@ -32,6 +32,14 @@
 ## Проверки
 `cargo test --locked -p web-media-core -p web-media-playback-plan -p service-ytdlp -p dash-mpd-core -p web-media-dash -p hls-playlist-core -p web-media-hls -p media-source-open`; `cargo clippy --locked -p <те же> -p app-egui --all-targets -- -D warnings`; `cargo check --workspace --all-targets --locked`; `cargo fmt --all --check`; `python3 scripts/check-refactor-guardrails.py`; `python3 scripts/check_s42_guardrails.py`.
 
+## Временная шкала версий звука HLS (backlog #20, 2026-10-17)
+- Владелец: `web-media-hls::catalog::timeline` (`HlsCatalogTimeline` → `HlsCatalogAlignmentProof::from_timeline`, `compatibility_with` → `HlsTimelineCompatibility::{Compatible, TotalDurationMismatch, DiscontinuityLayoutMismatch}`). Proof больше не opaque id и не требует равного числа сегментов/точной суммы EXTINF: допуск = одна `EXT-X-TARGETDURATION` большей шкалы на сумму и на момент начала каждого discontinuity-участка (сравнение по времени, не по индексу сегмента). Отношение не транзитивно — каталог сверяет пары.
+- Измерение: `catalog/discovery.rs::alignment_for` (сумма EXTINF, target duration, моменты смены discontinuity sequence).
+- Изоляция: `catalog/build/audio_timeline.rs::isolate_timeline_mismatched_audio` (до `isolate_ambiguous_rows`): rendition, несовместимая ни с одним видео своей group, удаляется (`HlsCatalogSiblingRejectionReason::{AudioTimelineDurationMismatch, AudioTimelineDiscontinuityMismatch}` в `sibling_rejections()` + `log::warn!` target `fastiplayer::hls_catalog` в `build.rs::reject_child` — для любого отброшенного sibling-а, без URI). Default-пара (выбранное видео + выбранная rendition) несовместима → `ProviderDefaultRejected{AudioTimeline*}` при ЛЮБОЙ `HlsProviderDefaultAudioPolicy` (не молчаливый VideoOnly). Edges: `compatibility_edges` через `compatibility_with`.
+- Runtime и так сопоставляет по времени: `open.rs` duration = max(main, audio), seek preview по timestamp в обоих seek index.
+- Тесты: `catalog::timeline::tests::*`, `catalog::tests::timeline_isolation::*`, `catalog::tests::audio_version_from_another_cut_is_dropped_with_timeline_reason`; сквозные `media-source-open/src/native_startup/hls/audio_versions_timeline_vertical_tests.rs` (AAC 3 сегмента 0.533 с + E-AC-3 0.512 против видео 0.5 → обе версии играют, AAC→E-AC-3→AAC по времени; E-AC-3 «другого монтажа» 2 с удалена, AAC играет; AAC default 2 с → точная ошибка). Фикстуры `audio-aac-2ch-seg0..2.ts` (generate.sh).
+- Ограничение: целочисленные EXTINF (version < 3) с накоплением округления на длинных роликах могут превысить допуск.
+
 Выбор версии пользователем (меню «♪», эквивалентный video row для audio group по кодекам): `mem:app-egui/web-audio-versions-menu`.
 
 Связано: `mem:audio/ac3-eac3-decoder`, `mem:mpeg-ts-demux/core`, `mem:media-services/web-playback-planner-s21c-2026-07-21`, `mem:media-source-open/core`.

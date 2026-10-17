@@ -18,6 +18,13 @@ use super::*;
 use crate::HlsMainTrackLayoutIntent;
 use crate::open::{select_master, select_master_at_index};
 
+mod audio_timeline;
+
+use audio_timeline::{DefaultAudioPair, isolate_timeline_mismatched_audio};
+
+/// Log target отброшенных sibling-ов каталога (диагностика «почему нет версии»).
+const HLS_CATALOG_LOG_TARGET: &str = "fastiplayer::hls_catalog";
+
 #[derive(Clone, Copy)]
 enum ChildUse {
     Variant(usize),
@@ -138,7 +145,7 @@ pub fn build_hls_catalog(
                         child: child.id,
                         semantic_key,
                         variant: video,
-                        alignment: proof.alignment,
+                        alignment: proof.alignment.clone(),
                         container: proof.container,
                     }),
                     Err(reason) => {
@@ -158,7 +165,7 @@ pub fn build_hls_catalog(
                         child: child.id,
                         semantic_key,
                         variant: audio,
-                        alignment: proof.alignment,
+                        alignment: proof.alignment.clone(),
                         container: proof.container,
                     }),
                     Err(reason) => {
@@ -217,7 +224,7 @@ pub fn build_hls_catalog(
                 child: child.id,
                 semantic_key,
                 variant: audio,
-                alignment: proof.alignment,
+                alignment: proof.alignment.clone(),
                 container: proof.container,
             }),
             Err(reason) => {
@@ -226,6 +233,17 @@ pub fn build_hls_catalog(
         }
     }
 
+    isolate_timeline_mismatched_audio(
+        request.master,
+        &videos,
+        &mut audios,
+        DefaultAudioPair {
+            variant_index: selected_variant_index,
+            rendition_index: selected_audio_index,
+        },
+        &selected_children,
+        &mut rejections,
+    )?;
     isolate_ambiguous_rows(
         &mut videos,
         &mut audios,
@@ -451,6 +469,14 @@ fn reject_child(
         return Err(HlsCatalogBuildError::ProviderDefaultRejected { reason });
     }
     if !rejections.iter().any(|rejection| rejection.child == child) {
+        // Отброшенный sibling не ломает открытие, но должен быть виден в логе: иначе
+        // «пропавшая» версия (качество/звук) не объяснима. URI не логируется — только
+        // opaque id и типизированная причина.
+        log::warn!(
+            target: HLS_CATALOG_LOG_TARGET,
+            "HLS catalog dropped child #{}: {reason}",
+            child.0
+        );
         rejections.push(HlsCatalogSiblingRejection { child, reason });
     }
     Ok(())
@@ -550,7 +576,8 @@ fn compatibility_edges(
                 continue;
             };
             if master.renditions[rendition_index].group_id.as_ref() == group
-                && video.alignment == audio.alignment
+                && video.alignment.compatibility_with(&audio.alignment)
+                    == HlsTimelineCompatibility::Compatible
             {
                 edges.push(ComponentVariantCompatibilityEdge::new(
                     video.variant.exact_identity().clone(),

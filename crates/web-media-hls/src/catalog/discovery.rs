@@ -22,20 +22,11 @@ use crate::plan::{
 };
 use crate::{HlsRequiredContainer, HlsVodOpenRequest};
 
-#[derive(Clone, PartialEq, Eq)]
-struct TimelineSignature {
-    /// Суммарный presentation interval остаётся обязательным cross-rendition доказательством.
-    total_duration: Duration,
-    /// Разрывы должны находиться на одинаковых границах сегментов у всех rendition.
-    discontinuity_offsets: Box<[u64]>,
-}
-
 struct DiscoveryProofPort<'request, 'capability> {
     request: &'request HlsVodOpenRequest,
     base: HttpRequestTarget,
     presentation: HlsCatalogPresentation,
     capability: &'capability mut dyn HlsCatalogCapabilityProofPort,
-    alignments: Vec<TimelineSignature>,
 }
 
 /// Определяет VOD/live presentation по selected media child, когда top manifest является master-ом.
@@ -125,7 +116,6 @@ pub fn discover_hls_catalog(
         base,
         presentation: request.presentation,
         capability,
-        alignments: Vec::new(),
     };
     let snapshot = build_hls_catalog(
         HlsCatalogBuildRequest {
@@ -190,7 +180,7 @@ impl DiscoveryProofPort<'_, '_> {
         self.validate_profile(&media, Some(container))?;
         let demuxer = opened.into_demuxer();
         let tracks = prove_track_shape(demuxer.tracks(), self.capability)?;
-        let alignment = self.alignment_for(&media)?;
+        let alignment = alignment_for(&media)?;
         Ok(HlsCatalogChildProof {
             container,
             tracks,
@@ -228,46 +218,35 @@ impl DiscoveryProofPort<'_, '_> {
         }
         .map_err(|_| ChildProofFailure::InvalidManifest)
     }
+}
 
-    fn alignment_for(
-        &mut self,
-        media: &MediaPlaylist,
-    ) -> Result<HlsCatalogAlignmentProof, ChildProofFailure> {
-        let base_discontinuity = media
-            .segments
-            .first()
-            .map_or(media.discontinuity_sequence, |segment| {
-                segment.discontinuity_sequence
-            });
-        let mut total_duration = Duration::ZERO;
-        let mut discontinuity_offsets = Vec::with_capacity(media.segments.len());
-        for segment in &media.segments {
-            let segment_duration = parse_hls_duration(&segment.duration)
-                .map_err(|_| ChildProofFailure::InvalidManifest)?;
-            total_duration = total_duration
-                .checked_add(segment_duration)
-                .ok_or(ChildProofFailure::InvalidManifest)?;
-            discontinuity_offsets.push(
-                segment
-                    .discontinuity_sequence
-                    .checked_sub(base_discontinuity)
-                    .ok_or(ChildProofFailure::InvalidManifest)?,
-            );
-        }
-        let signature = TimelineSignature {
-            total_duration,
-            discontinuity_offsets: discontinuity_offsets.into_boxed_slice(),
-        };
-        if let Some(index) = self
-            .alignments
-            .iter()
-            .position(|candidate| candidate == &signature)
+/// Измеряет временную шкалу child-а по manifest-у: сумма `EXTINF`, target duration и
+/// моменты начала discontinuity-участков. Сравнение шкал (с допуском) делает каталог.
+fn alignment_for(media: &MediaPlaylist) -> Result<HlsCatalogAlignmentProof, ChildProofFailure> {
+    let mut total_duration = Duration::ZERO;
+    let mut discontinuity_starts = Vec::new();
+    let mut previous_discontinuity = None;
+    for segment in &media.segments {
+        // Новый discontinuity sequence = начало нового участка; фиксируем его момент
+        // по времени, а не по номеру сегмента (версии режутся независимо).
+        if previous_discontinuity.is_some_and(|previous| previous != segment.discontinuity_sequence)
         {
-            return Ok(HlsCatalogAlignmentProof::new(index as u64 + 1));
+            discontinuity_starts.push(total_duration);
         }
-        self.alignments.push(signature);
-        Ok(HlsCatalogAlignmentProof::new(self.alignments.len() as u64))
+        previous_discontinuity = Some(segment.discontinuity_sequence);
+        let segment_duration = parse_hls_duration(&segment.duration)
+            .map_err(|_| ChildProofFailure::InvalidManifest)?;
+        total_duration = total_duration
+            .checked_add(segment_duration)
+            .ok_or(ChildProofFailure::InvalidManifest)?;
     }
+    Ok(HlsCatalogAlignmentProof::from_timeline(
+        HlsCatalogTimeline {
+            total_duration,
+            target_segment_duration: Duration::from_secs(media.target_duration_seconds),
+            discontinuity_starts,
+        },
+    ))
 }
 
 fn prove_track_shape(
