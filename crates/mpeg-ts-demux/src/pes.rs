@@ -51,6 +51,14 @@ impl PesAssembler {
             let completed = self.finish()?;
             self.byte_offset = byte_offset;
             completed
+        } else if self.bytes.is_empty() {
+            // Продолжение PES, начало которого не было прочитано: старт потока
+            // посреди PES, seek на PCR/keyframe anchor внутри чужого PES или
+            // сброс PID-а после continuity gap. Без PES header-а эти байты
+            // нельзя ни разобрать, ни привязать к PTS; раньше они копились и
+            // следующий payload_unit_start ронял поток ошибкой «start code absent».
+            // Сборка начинается со следующего payload_unit_start.
+            return Ok(None);
         } else {
             None
         };
@@ -141,5 +149,50 @@ fn parse_timestamp(bytes: &[u8], expected_prefix: u8) -> Result<u64, MpegTsDemux
 fn malformed(pid: u16, reason: &str) -> MpegTsDemuxError {
     MpegTsDemuxError::Malformed {
         reason: format!("PID {pid}: {reason}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PID: u16 = 0x0101;
+
+    fn pes_start(pts_marker_payload: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0x00, 0x00, 0x01, 0xc0, 0x00, 0x00, 0x80, 0x80, 0x05];
+        bytes.extend_from_slice(&[0x21, 0x00, 0x01, 0x00, 0x01]);
+        bytes.extend_from_slice(pts_marker_payload);
+        bytes
+    }
+
+    #[test]
+    fn continuation_without_seen_start_is_skipped_until_next_payload_unit_start() {
+        let mut assembler = PesAssembler::new(PID, 1_024);
+        // Хвост чужого PES (как после seek посреди PES) не накапливается.
+        assert!(matches!(
+            assembler.push(false, &[0xaa, 0xbb, 0xcc], 0),
+            Ok(None)
+        ));
+        assert!(matches!(
+            assembler.push(true, &pes_start(&[1, 2]), 188),
+            Ok(None)
+        ));
+        assert!(matches!(assembler.push(false, &[3, 4], 376), Ok(None)));
+        let completed = assembler.finish().expect("valid PES").expect("one PES");
+        assert_eq!(completed.payload, vec![1, 2, 3, 4]);
+        assert_eq!(completed.byte_offset, 188);
+        assert_eq!(completed.pts, Some(0));
+    }
+
+    #[test]
+    fn reset_mid_pes_drops_following_continuation() {
+        let mut assembler = PesAssembler::new(PID, 1_024);
+        assert!(matches!(
+            assembler.push(true, &pes_start(&[1]), 0),
+            Ok(None)
+        ));
+        assembler.reset();
+        assert!(matches!(assembler.push(false, &[9, 9], 188), Ok(None)));
+        assert!(matches!(assembler.finish(), Ok(None)));
     }
 }

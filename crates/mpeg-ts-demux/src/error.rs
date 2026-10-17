@@ -52,6 +52,20 @@ pub enum MpegTsDemuxError {
         /// PID с transport_scrambling_control != 0.
         pid: u16,
     },
+    /// AC-3 / E-AC-3 PID не нашёл ни одного проверенного syncframe-а в пределах
+    /// `ac3_resync_bytes` подряд отброшенных байт: это уже не повреждение
+    /// отдельного кадра, а поток, который не является AC-3.
+    #[error(
+        "AC-3 sync lost on PID {pid}: {discarded_bytes} bytes discarded without a syncframe (limit {limit_bytes})"
+    )]
+    Ac3SyncLost {
+        /// Elementary PID.
+        pid: u16,
+        /// Сколько байт отброшено подряд.
+        discarded_bytes: usize,
+        /// Configured bound.
+        limit_bytes: usize,
+    },
     /// PES превысил явную memory boundary.
     #[error("PES on PID {pid} exceeds limit {limit_bytes} bytes")]
     PesTooLarge {

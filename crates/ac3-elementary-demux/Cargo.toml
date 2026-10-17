@@ -1,0 +1,22 @@
+[package]
+name = "ac3-elementary-demux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Владелец «сырых» `.ac3` / `.eac3` / `.ec3` файлов (elementary stream без
+# контейнера). Границы кадров и пакетов даёт `ac3-syncframe`; декодер, сеть,
+# player и UI сюда не входят (guardrail `AC3_ELEMENTARY_DEMUX_ALLOWED_DEPENDENCIES`).
+[dependencies]
+ac3-syncframe.workspace = true
+anyhow.workspace = true
+bytes.workspace = true
+demux-api.workspace = true
+media-core.workspace = true
+source-core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

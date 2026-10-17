@@ -29,6 +29,8 @@ pub(crate) mod co64;
 pub(crate) mod ctts;
 pub(crate) mod dac3;
 pub(crate) mod dec3;
+// fastiplayer patch: раскладка AC-3/E-AC-3 из dac3/dec3.
+pub(crate) mod dolby_channels;
 pub(crate) mod dovi;
 pub(crate) mod edts;
 pub(crate) mod elst;

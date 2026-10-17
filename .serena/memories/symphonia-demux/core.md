@@ -1,3 +1,8 @@
+## AC-3 / E-AC-3 в MKV и MP4 (пакет G, 2026-10-16)
+
+- isomp4 patch `src/atoms/dolby_channels.rs`: каналы `ac-3`/`ec-3` sample entry берутся из `dac3`/`dec3` (`acmod`+`lfeon` основной программы, позиции как FFmpeg: Ls/Rs → SIDE_*, одиночный S → REAR_CENTER). Раньше `channels = None` (ChannelCount для Dolby по ETSI игнорируется). E-AC-3 с `num_dep_sub > 0` (7.1) — `None` (порядок бит `chan_loc` неоднозначен; формат публикует декодер). Короткий box → `None`.
+- Сквозные тесты `tests/ac3_eac3_playback.rs` (фикстуры `tests/fixtures/ac3/`): MKV/MP4/M4A/fMP4 → `A_AC3`/`A_EAC3`, 48k, 6 каналов, метки (MKV язык+название, MP4 язык `mdhd`) → 32 пакета → production декодер → тон в каждой lane; seek Accurate в 0.6 с: MKV садится на cluster keyframe-а 0.5 с (звук ~0.45 с), MP4 — ≤ цели.
+
 ## Субтитровые дорожки и вложения (сессия 06, 2026-10-16)
 
 - Субтитры больше не `Unsupported`: `TrackKind::Subtitle`, codec_id из `media_core::subtitle_codec`, пакеты проходят (keyframe, dur 0 → None); `TrackInfo.labels` из `Track.language/flags` + MKV `Name` (тег патча `fastiplayer.track.name`, кэшируется при открытии). Субтитры не участвуют в seek/DecodePointBefore. `DemuxerOptions::with_attachment_read_limits`; `take_attachments()` для MKV через thread-local область патча вокруг `probe_format_reader` (покрывает file/stream/byte_source/reprobe). Модули: `attachments.rs`, `track_labels.rs`, `track_mapper/subtitle_codecs.rs`, `symphonia_demuxer/track_state.rs`. Подробно: `mem:subtitles/embedded-tracks-s06`.

@@ -37,6 +37,9 @@ impl Atom for Dec3Atom {
 impl Dec3Atom {
     pub fn fill_audio_sample_entry(self, entry: &mut AudioSampleEntry) {
         entry.codec_id = CODEC_ID_EAC3;
+        // fastiplayer patch: `ChannelCount` sample entry для Dolby игнорируется
+        // спецификацией, настоящая раскладка — в самом specific box.
+        entry.channels = super::dolby_channels::ec3_specific_box_channels(&self.extra_data);
         entry.extra_data = Some(self.extra_data);
     }
 }

@@ -11,7 +11,8 @@ use media_core::{
 };
 use source_core::CancellationToken;
 
-use crate::elementary::{ElementaryPacket, drain_adts_frames, drain_mpeg_audio_frames};
+use crate::ac3_elementary::Ac3SyncState;
+use crate::elementary::ElementaryPacket;
 use crate::framing::{TransportPacket, TransportPacketReader, TransportReadOutcome};
 use crate::pes::{PesAssembler, PesPacket};
 use crate::psi::{
@@ -22,6 +23,8 @@ use crate::timestamps::TimestampUnwrapper;
 use crate::video_assembler::{TimedVideoAccessUnit, VideoAccessUnitAssembler};
 use crate::{MpegTsDemuxError, MpegTsDemuxOptions};
 
+#[path = "demuxer_audio.rs"]
+mod audio;
 #[path = "index.rs"]
 mod index;
 use index::{IndexContinuationState, SeekAnchor};
@@ -39,12 +42,21 @@ struct StreamTimestamps {
 }
 
 /// Elementary audio bytes могут пересекать PES boundaries.
+///
+/// Методы буфера и привязки PTS к кадрам живут в `demuxer_audio.rs`.
 #[derive(Debug, Default, Clone)]
 struct AudioAccumulator {
     bytes: Vec<u8>,
+    /// PTS следующего кадра по цепочке длительностей (кадр начался до нового PES).
     next_pts: Option<i64>,
     dts: Option<i64>,
     byte_offset: u64,
+    /// PTS ещё не разобранных PES вместе с позицией начала их payload-а в `bytes`.
+    pes_anchors: VecDeque<audio::PesTimestampAnchor>,
+    /// Синхронизация AC-3/E-AC-3; ADTS/MPEG audio строгие и её не используют.
+    ac3_sync: Ac3SyncState,
+    /// Цепочка длительностей прервана пропуском байт: PTS даст только новый PES.
+    timing_chain: audio::TimingChain,
 }
 
 /// Decoder-critical audio evidence, доказанный elementary frame header-ом.
@@ -128,6 +140,10 @@ impl MpegTsDemuxer {
             duration: None,
             reached_end: false,
         };
+        // Начало playback-а для seekable входа: probe ниже читает PAT/PMT и первые PES,
+        // но эти байты обязаны прозвучать — после bounded index scan чтение
+        // возвращается сюда, а не на позицию, где закончился probe.
+        let playback_start_offset = demuxer.reader.position();
         let mut probed_packets = 0_usize;
         while probed_packets < options.initial_probe_packets.get() {
             match demuxer.reader.next_packet()? {
@@ -135,14 +151,14 @@ impl MpegTsDemuxer {
                     probed_packets = probed_packets.saturating_add(1);
                     demuxer.process_transport_packet(packet, false)?;
                     if demuxer.initial_topology_ready() {
-                        demuxer.build_bounded_initial_index()?;
+                        demuxer.build_bounded_initial_index(playback_start_offset)?;
                         return Ok(demuxer);
                     }
                 }
                 TransportReadOutcome::EndResource(_metadata) => {
                     demuxer.finish_streamed_resource(false)?;
                     if demuxer.initial_topology_ready() {
-                        demuxer.build_bounded_initial_index()?;
+                        demuxer.build_bounded_initial_index(playback_start_offset)?;
                         return Ok(demuxer);
                     }
                 }
@@ -157,7 +173,7 @@ impl MpegTsDemuxer {
             demuxer.finish_pending_elementary_streams(false)?;
         }
         if demuxer.initial_topology_ready() {
-            demuxer.build_bounded_initial_index()?;
+            demuxer.build_bounded_initial_index(playback_start_offset)?;
             return Ok(demuxer);
         }
         Err(MpegTsDemuxError::NoPlayableProgram)
@@ -168,8 +184,7 @@ impl MpegTsDemuxer {
             return false;
         };
         program.streams.iter().all(|stream| {
-            !matches!(stream.kind, StreamKind::AacAdts | StreamKind::MpegAudio)
-                || self.audio_evidence_by_pid.contains_key(&stream.pid)
+            !stream.kind.is_audio() || self.audio_evidence_by_pid.contains_key(&stream.pid)
         }) && !self.tracks.is_empty()
     }
 
@@ -409,7 +424,7 @@ impl MpegTsDemuxer {
                     reason: format!("PES on PID {} does not contain PTS", pes.pid),
                 })?);
         let raw_dts = pes.dts.map(|timestamp| timestamps.dts.unwrap(timestamp));
-        if matches!(kind, StreamKind::H264 | StreamKind::H265) {
+        if kind.is_video() {
             let access_units = self.video_assembler.push(
                 pes.pid,
                 &pes.payload,
@@ -424,60 +439,7 @@ impl MpegTsDemuxer {
             return Ok(());
         }
 
-        let accumulator = self.audio_by_pid.entry(pes.pid).or_default();
-        if accumulator.bytes.is_empty() {
-            accumulator.next_pts = Some(raw_pts);
-            accumulator.dts = raw_dts;
-            accumulator.byte_offset = pes.byte_offset;
-        }
-        accumulator.bytes.extend_from_slice(&pes.payload);
-        let frames = if kind == StreamKind::AacAdts {
-            drain_adts_frames(&mut accumulator.bytes)?
-        } else {
-            drain_mpeg_audio_frames(&mut accumulator.bytes)?
-        };
-        let mut frame_pts = accumulator.next_pts.unwrap_or(raw_pts);
-        let frame_dts = accumulator.dts;
-        let frame_byte_offset = accumulator.byte_offset;
-        for frame in frames {
-            let track_changed = self.update_audio_evidence(pes.pid, &frame);
-            if track_changed && publish_lifecycle {
-                self.publish_tracks_changed();
-            }
-            let packet = self.make_packet(
-                pes.pid,
-                kind,
-                frame_pts,
-                frame_dts,
-                frame_byte_offset,
-                frame,
-            );
-            if packet.keyframe.is_known_keyframe() {
-                self.add_seek_anchor(frame_pts, frame_byte_offset);
-            }
-            let packet_end = packet
-                .duration
-                .map_or(packet.pts, |duration| packet.pts.saturating_add(duration));
-            self.duration = Some(self.duration.unwrap_or_default().max(packet_end));
-            frame_pts = frame_pts.saturating_add(
-                packet
-                    .track_duration
-                    .map_or(0, |duration| duration.units.get() as i64),
-            );
-            self.pending_events
-                .push_back(DemuxReadEvent::Packet(packet));
-        }
-        if matches!(kind, StreamKind::AacAdts | StreamKind::MpegAudio)
-            && let Some(accumulator) = self.audio_by_pid.get_mut(&pes.pid)
-        {
-            if accumulator.bytes.is_empty() {
-                accumulator.next_pts = None;
-                accumulator.dts = None;
-            } else {
-                accumulator.next_pts = Some(frame_pts);
-            }
-        }
-        Ok(())
+        self.process_audio_pes(&pes, kind, raw_pts, raw_dts, publish_lifecycle)
     }
 
     fn emit_video_access_unit(
@@ -513,22 +475,6 @@ impl MpegTsDemuxer {
         Ok(())
     }
 
-    fn update_audio_evidence(&mut self, pid: u16, frame: &ElementaryPacket) -> bool {
-        let Some(codec_id) = frame.audio_codec_id else {
-            return false;
-        };
-        let evidence = AudioTrackEvidence {
-            codec_id,
-            sample_rate: frame.sample_rate,
-            channels: frame.channels,
-        };
-        let changed = self.audio_evidence_by_pid.insert(pid, evidence) != Some(evidence);
-        if changed {
-            self.rebuild_tracks();
-        }
-        changed
-    }
-
     fn make_packet(
         &self,
         pid: u16,
@@ -543,7 +489,7 @@ impl MpegTsDemuxer {
         let track_dts = dts.map(|value| TrackTimestamp::new(track_id, value, mpeg_clock()));
         let media_pts = track_pts.to_media_time().as_duration();
         let media_dts = track_dts.map(|timestamp| timestamp.to_media_time().as_duration());
-        let track_kind = if matches!(kind, StreamKind::H264 | StreamKind::H265) {
+        let track_kind = if kind.is_video() {
             TrackKind::Video
         } else {
             TrackKind::Audio
@@ -583,7 +529,7 @@ impl MpegTsDemuxer {
         let (kind, codec_id) = match stream.kind {
             StreamKind::H264 => (TrackKind::Video, "V_MPEG4/ISO/AVC"),
             StreamKind::H265 => (TrackKind::Video, "V_MPEGH/ISO/HEVC"),
-            StreamKind::AacAdts | StreamKind::MpegAudio => {
+            StreamKind::AacAdts | StreamKind::MpegAudio | StreamKind::Ac3Syncframes => {
                 (TrackKind::Audio, audio_evidence?.codec_id)
             }
         };
@@ -596,12 +542,12 @@ impl MpegTsDemuxer {
             duration: self.duration,
             sample_rate: audio_evidence.and_then(|evidence| evidence.sample_rate),
             channels: audio_evidence.and_then(|evidence| evidence.channels),
-            video: matches!(stream.kind, StreamKind::H264 | StreamKind::H265).then(|| {
+            video: stream.kind.is_video().then(|| {
                 let mut metadata = VideoTrackMetadata::empty();
                 metadata.packet_framing = VideoPacketFraming::AnnexB;
                 metadata
             }),
-            labels: media_core::TrackLabels::default(),
+            labels: stream.track_labels(),
         })
     }
 
@@ -640,16 +586,7 @@ impl MpegTsDemuxer {
             };
             self.emit_video_access_unit(pid, kind, access_unit, publish_lifecycle)?;
         }
-        if let Some((&pid, _)) = self
-            .audio_by_pid
-            .iter()
-            .find(|(_, accumulator)| !accumulator.bytes.is_empty())
-        {
-            return Err(MpegTsDemuxError::Malformed {
-                reason: format!("ragged elementary audio frame on PID {pid}"),
-            });
-        }
-        Ok(())
+        self.finish_pending_audio(publish_lifecycle)
     }
 }
 
@@ -776,7 +713,9 @@ fn video_config_evidence(
                 }
             }
         }
-        StreamKind::AacAdts | StreamKind::MpegAudio => return Ok(None),
+        StreamKind::AacAdts | StreamKind::MpegAudio | StreamKind::Ac3Syncframes => {
+            return Ok(None);
+        }
     }
     Ok((!evidence.is_empty()).then_some(evidence))
 }

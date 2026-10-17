@@ -94,11 +94,21 @@ impl MpegTsDemuxer {
         self.seek_index.dedup_by_key(|anchor| anchor.byte_offset);
     }
 
-    pub(super) fn build_bounded_initial_index(&mut self) -> Result<(), MpegTsDemuxError> {
+    /// Строит bounded initial index seekable входа и возвращает чтение к
+    /// `playback_start_offset` — началу данных до topology probe.
+    ///
+    /// Probe уже разобрал первые PES (и их пакеты лежали в `pending_events`), но
+    /// после scan-а elementary state и очередь сбрасываются. Раньше чтение
+    /// продолжалось с конца probe-а, и всё до него молча терялось: первый video RAP
+    /// и первые аудиокадры, а короткий файл (весь в окне probe/scan) не отдавал
+    /// ни одного пакета. PSI/track evidence переживает rewind: topology та же.
+    pub(super) fn build_bounded_initial_index(
+        &mut self,
+        playback_start_offset: u64,
+    ) -> Result<(), MpegTsDemuxError> {
         if !self.reader.is_seekable() {
             return Ok(());
         }
-        let resume_offset = self.reader.position();
         let mut reached_end = false;
         for _ in 0..self.options.seek_scan_packets.get() {
             match self.reader.next_packet()? {
@@ -121,7 +131,8 @@ impl MpegTsDemuxer {
         self.index_scan_offset = self.reader.position();
         self.index_reached_end = reached_end;
         self.index_continuation = (!reached_end).then(|| self.capture_index_continuation());
-        self.reader.restore_after_index_scan(resume_offset)?;
+        self.reader
+            .restore_after_index_scan(playback_start_offset)?;
         self.reset_elementary_state();
         self.pending_events.clear();
         self.reached_end = false;

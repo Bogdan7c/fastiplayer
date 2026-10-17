@@ -39,6 +39,10 @@ pub struct MpegTsDemuxOptions {
     pub index_entries: MpegTsLimit,
     /// Максимум TS packets одного on-demand seek scan.
     pub seek_scan_packets: MpegTsLimit,
+    /// Сколько байт AC-3 / E-AC-3 payload-а можно отбросить подряд при поиске
+    /// синхронизации (битый кадр, мусор, висящие dependent-ы), прежде чем PID
+    /// считается не-AC-3 (typed `Ac3SyncLost`).
+    pub ac3_resync_bytes: MpegTsLimit,
 }
 
 impl MpegTsDemuxOptions {
@@ -86,6 +90,12 @@ impl Default for MpegTsDemuxOptions {
             index_entries: MpegTsLimit(const { NonZeroUsize::new(8_192).expect("non-zero") }),
             // Один seek не сканирует больше 32768 transport packets.
             seek_scan_packets: MpegTsLimit(const { NonZeroUsize::new(32_768).expect("non-zero") }),
+            // 256 KiB ≈ 3 с самого плотного AC-3 (640 кбит/с) и десятки максимальных
+            // syncframe-ов (≤ 4 KiB): повреждение кадра восстанавливается за один
+            // кадр, а не-AC-3 payload не сканируется бесконечно.
+            ac3_resync_bytes: MpegTsLimit(
+                const { NonZeroUsize::new(256 * 1024).expect("non-zero") },
+            ),
         }
     }
 }

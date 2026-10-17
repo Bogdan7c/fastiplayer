@@ -26,10 +26,44 @@ pub(crate) struct ElementaryPacket {
     pub(crate) duration_90khz: Option<u64>,
 }
 
+/// Аудио кадр вместе с его позицией в накопительном буфере PID-а.
+///
+/// Позиция нужна, чтобы отдать кадру PTS того PES, в котором кадр *начался*
+/// (ISO/IEC 13818-1 §2.4.3.7), а не PES, в котором он закончился.
+#[derive(Debug)]
+pub(crate) struct BufferedAudioFrame {
+    /// Смещение первого байта кадра от начала буфера до drain-а.
+    pub(crate) buffer_offset: usize,
+    /// Пакет декодера.
+    pub(crate) packet: ElementaryPacket,
+    /// Идёт ли кадр сразу за предыдущим или за отброшенными байтами.
+    pub(crate) continuity: FrameContinuity,
+}
+
+/// Связь кадра с предыдущим опубликованным кадром того же PID-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FrameContinuity {
+    /// Кадр начинается ровно там, где кончился предыдущий: цепочка
+    /// длительностей даёт его PTS, даже если PES PTS к нему не относится.
+    FollowsPreviousFrame,
+    /// Перед кадром отброшены байты (поиск синхронизации AC-3): сколько звука
+    /// в них было, неизвестно, поэтому PTS кадру может дать только новый PES.
+    FollowsDiscardedBytes,
+}
+
+/// Результат нарезки буфера: готовые кадры и сколько байт с начала буфера
+/// они (вместе с пропущенными байтами) заняли. Сам буфер и привязанные к нему
+/// PTS сдвигает владелец буфера — demuxer.
+#[derive(Debug, Default)]
+pub(crate) struct AudioFrameDrain {
+    /// Готовые кадры в порядке потока.
+    pub(crate) frames: Vec<BufferedAudioFrame>,
+    /// Сколько байт с начала буфера больше не нужны.
+    pub(crate) consumed_bytes: usize,
+}
+
 /// Извлекает complete ADTS frames, оставляя split tail для следующего PES.
-pub(crate) fn drain_adts_frames(
-    payload: &mut Vec<u8>,
-) -> Result<Vec<ElementaryPacket>, MpegTsDemuxError> {
+pub(crate) fn drain_adts_frames(payload: &[u8]) -> Result<AudioFrameDrain, MpegTsDemuxError> {
     let mut frames = Vec::new();
     let mut cursor = 0_usize;
     while cursor < payload.len() {
@@ -68,26 +102,30 @@ pub(crate) fn drain_adts_frames(
         }
         let raw_frame =
             Bytes::copy_from_slice(&payload[cursor + header_length..cursor + frame_length]);
-        frames.push(ElementaryPacket {
-            bytes: raw_frame,
-            keyframe: PacketKeyframe::NotKeyframe,
-            decode_start_initialization:
-                PacketDecodeStartInitialization::RequiresTrackConfiguration,
-            sample_rate: Some(sample_rate),
-            channels: Some(channels),
-            audio_codec_id: Some("A_AAC"),
-            duration_90khz: Some(1024_u64.saturating_mul(90_000) / u64::from(sample_rate)),
+        frames.push(BufferedAudioFrame {
+            buffer_offset: cursor,
+            continuity: FrameContinuity::FollowsPreviousFrame,
+            packet: ElementaryPacket {
+                bytes: raw_frame,
+                keyframe: PacketKeyframe::NotKeyframe,
+                decode_start_initialization:
+                    PacketDecodeStartInitialization::RequiresTrackConfiguration,
+                sample_rate: Some(sample_rate),
+                channels: Some(channels),
+                audio_codec_id: Some("A_AAC"),
+                duration_90khz: Some(1024_u64.saturating_mul(90_000) / u64::from(sample_rate)),
+            },
         });
         cursor += frame_length;
     }
-    payload.drain(..cursor);
-    Ok(frames)
+    Ok(AudioFrameDrain {
+        frames,
+        consumed_bytes: cursor,
+    })
 }
 
 /// Извлекает complete MPEG audio frames и удерживает split tail.
-pub(crate) fn drain_mpeg_audio_frames(
-    payload: &mut Vec<u8>,
-) -> Result<Vec<ElementaryPacket>, MpegTsDemuxError> {
+pub(crate) fn drain_mpeg_audio_frames(payload: &[u8]) -> Result<AudioFrameDrain, MpegTsDemuxError> {
     let mut frames = Vec::new();
     let mut cursor = 0_usize;
     while cursor < payload.len() {
@@ -98,23 +136,29 @@ pub(crate) fn drain_mpeg_audio_frames(
         if cursor + header.frame_length > payload.len() {
             break;
         }
-        frames.push(ElementaryPacket {
-            bytes: Bytes::copy_from_slice(&payload[cursor..cursor + header.frame_length]),
-            keyframe: PacketKeyframe::NotKeyframe,
-            decode_start_initialization:
-                PacketDecodeStartInitialization::RequiresTrackConfiguration,
-            sample_rate: Some(header.sample_rate),
-            channels: None,
-            audio_codec_id: Some(header.codec_id),
-            duration_90khz: Some(
-                u64::from(header.samples_per_frame).saturating_mul(90_000)
-                    / u64::from(header.sample_rate),
-            ),
+        frames.push(BufferedAudioFrame {
+            buffer_offset: cursor,
+            continuity: FrameContinuity::FollowsPreviousFrame,
+            packet: ElementaryPacket {
+                bytes: Bytes::copy_from_slice(&payload[cursor..cursor + header.frame_length]),
+                keyframe: PacketKeyframe::NotKeyframe,
+                decode_start_initialization:
+                    PacketDecodeStartInitialization::RequiresTrackConfiguration,
+                sample_rate: Some(header.sample_rate),
+                channels: None,
+                audio_codec_id: Some(header.codec_id),
+                duration_90khz: Some(
+                    u64::from(header.samples_per_frame).saturating_mul(90_000)
+                        / u64::from(header.sample_rate),
+                ),
+            },
         });
         cursor += header.frame_length;
     }
-    payload.drain(..cursor);
-    Ok(frames)
+    Ok(AudioFrameDrain {
+        frames,
+        consumed_bytes: cursor,
+    })
 }
 
 /// Делит Annex-B PES на access units; codec-core владеет NAL/keyframe semantics.

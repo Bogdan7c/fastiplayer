@@ -1,6 +1,11 @@
 use std::collections::BTreeMap;
 
+use media_core::{TrackLabels, TrackLanguage};
+
 use crate::MpegTsDemuxError;
+use crate::psi_descriptors::{
+    Iso639LanguageCode, recognize_elementary_stream, stream_type_registry,
+};
 
 /// Один PAT program mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +27,21 @@ pub(crate) enum StreamKind {
     AacAdts,
     /// MPEG-1 audio stream type; layer уточняется frame header-ом.
     MpegAudio,
+    /// AC-3 / E-AC-3 syncframes (ATSC 0x81/0x87 или DVB private PES с
+    /// дескриптором); точный кодек доказывает `bsid` syncframe-а.
+    Ac3Syncframes,
+}
+
+impl StreamKind {
+    /// Видео access units (Annex-B), собираемые video assembler-ом.
+    pub(crate) const fn is_video(self) -> bool {
+        matches!(self, Self::H264 | Self::H265)
+    }
+
+    /// Аудио кадры, чей кодек/частоту/каналы доказывает elementary header.
+    pub(crate) const fn is_audio(self) -> bool {
+        matches!(self, Self::AacAdts | Self::MpegAudio | Self::Ac3Syncframes)
+    }
 }
 
 /// Один поддерживаемый PMT elementary stream.
@@ -29,8 +49,20 @@ pub(crate) enum StreamKind {
 pub(crate) struct ElementaryStream {
     /// Elementary PID.
     pub(crate) pid: u16,
-    /// Codec family, доказанная stream_type.
+    /// Codec family, доказанная stream_type (и дескрипторами для private PES).
     pub(crate) kind: StreamKind,
+    /// Язык из `ISO_639_language_descriptor`, если PMT его указала.
+    pub(crate) language: Option<Iso639LanguageCode>,
+}
+
+impl ElementaryStream {
+    /// Метки дорожки, которые сообщила PMT (сейчас — только язык).
+    pub(crate) fn track_labels(&self) -> TrackLabels {
+        TrackLabels {
+            language: self.language.map(|code| TrackLanguage::new(code.as_str())),
+            ..TrackLabels::default()
+        }
+    }
 }
 
 /// Нормализованный PMT snapshot.
@@ -169,6 +201,7 @@ pub(crate) fn parse_pmt(section: &[u8]) -> Result<ProgramMap, MpegTsDemuxError> 
     if cursor > payload_end {
         return Err(malformed("PMT program descriptors go beyond the section"));
     }
+    let registry = stream_type_registry(&section[12..cursor], program_number);
     let mut streams = Vec::new();
     while cursor < payload_end {
         if payload_end - cursor < 5 {
@@ -182,15 +215,15 @@ pub(crate) fn parse_pmt(section: &[u8]) -> Result<ProgramMap, MpegTsDemuxError> 
         if cursor + descriptor_length > payload_end {
             return Err(malformed("PMT ES descriptors go beyond section"));
         }
-        let kind = match stream_type {
-            0x1b => Some(StreamKind::H264),
-            0x24 => Some(StreamKind::H265),
-            0x0f => Some(StreamKind::AacAdts),
-            0x03 | 0x04 => Some(StreamKind::MpegAudio),
-            _ => None,
-        };
-        if let Some(kind) = kind {
-            streams.push(ElementaryStream { pid, kind });
+        let descriptor_loop = &section[cursor..cursor + descriptor_length];
+        if let Some(recognized) =
+            recognize_elementary_stream(registry, stream_type, pid, descriptor_loop)
+        {
+            streams.push(ElementaryStream {
+                pid,
+                kind: recognized.kind,
+                language: recognized.language,
+            });
         }
         cursor += descriptor_length;
     }
