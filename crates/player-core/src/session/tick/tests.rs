@@ -31,6 +31,7 @@ use crate::{
 
 mod audio_packet_window;
 mod audio_read_ahead;
+mod audio_refill_wakeup;
 mod video_decode_ahead;
 
 /// Scripted demuxer для focused admission tests без реального container backend-а.
@@ -2738,7 +2739,8 @@ fn video_queue_pressure_does_not_block_selected_audio_bootstrap() {
     assert!(immediate_pipeline_work_available(
         &session,
         &tick_config,
-        Instant::now()
+        Instant::now(),
+        PlannedAudioBufferLevel::observe(&session)
     ));
 }
 
@@ -2775,7 +2777,8 @@ fn video_only_demux_admission_still_waits_for_present_queue() {
     assert!(!immediate_pipeline_work_available(
         &session,
         &tick_config,
-        Instant::now()
+        Instant::now(),
+        PlannedAudioBufferLevel::observe(&session)
     ));
     assert_eq!(
         demux_backpressure_reason(&session, &tick_config, false),

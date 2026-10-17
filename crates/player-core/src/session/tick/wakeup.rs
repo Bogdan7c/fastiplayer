@@ -157,7 +157,14 @@ impl PlayerSession {
             );
         }
 
-        if immediate_pipeline_work_available(self, tick_config, now) {
+        // Уровень audio buffer-а падает в CPAL callback-е параллельно planning-у.
+        // Все audio-решения этого прохода обязаны видеть одно значение: иначе
+        // «работы сейчас нет» (уровень чуть выше high-water) и «refill deadline-а
+        // нет» (уровень уже чуть ниже) вместе роняли worker в coarse wakeup,
+        // который длиннее всего audio buffer-а (бэклог AC-3 #19).
+        let audio_buffer_level = PlannedAudioBufferLevel::observe(self);
+
+        if immediate_pipeline_work_available(self, tick_config, now, audio_buffer_level) {
             let reason = if matches!(
                 self.playback_state(),
                 PlaybackState::Buffering | PlaybackState::Seeking
@@ -170,7 +177,8 @@ impl PlayerSession {
             return PlayerWorkerWakeupPlan::after(Duration::ZERO, reason, frame_timing);
         }
 
-        let audio_refill_delay = audio_buffer_refill_wakeup_delay(self, tick_config);
+        let audio_refill_delay =
+            audio_buffer_refill_wakeup_delay(self, tick_config, audio_buffer_level);
         let front_frame_delay = front_frame_scheduler_delay(self, tick_config, now);
 
         if decoder_readiness_poll_needed(self, tick_config) {
@@ -330,16 +338,46 @@ fn decoder_readiness_wakeup_plan(
     )
 }
 
+/// Уровень audio buffer-а, снятый один раз на весь проход wakeup planning-а.
+///
+/// Callback только уменьшает уровень, а пополняет его этот же worker thread уже
+/// после planning-а. Поэтому ранний снимок не меньше любого более позднего
+/// чтения внутри прохода, а решения «работа есть сейчас» и «когда будить для
+/// refill», принятые по одному снимку, взаимно дополняют друг друга: пока есть
+/// pending audio, срабатывает хотя бы одно из них.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct PlannedAudioBufferLevel {
+    /// `None` — audio output ещё не создан (или звук выключен).
+    level_ms: Option<f64>,
+}
+
+impl PlannedAudioBufferLevel {
+    /// Снимает текущий уровень через session boundary.
+    #[must_use]
+    pub(super) fn observe(session: &PlayerSession) -> Self {
+        Self {
+            level_ms: session.audio_buffer_level_ms(),
+        }
+    }
+
+    /// Уровень в миллисекундах, если output существует.
+    #[must_use]
+    pub(super) const fn level_ms(self) -> Option<f64> {
+        self.level_ms
+    }
+}
+
 /// Возвращает delay до момента, когда audio buffer снова можно пополнять.
 pub(super) fn audio_buffer_refill_wakeup_delay(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
+    audio_buffer_level: PlannedAudioBufferLevel,
 ) -> Option<Duration> {
     if !audio_refill_work_can_be_scheduled(session) {
         return None;
     }
 
-    let audio_buffer_level_ms = session.audio_buffer_level_ms()?;
+    let audio_buffer_level_ms = audio_buffer_level.level_ms()?;
     if !audio_buffer_level_ms.is_finite() {
         return None;
     }
@@ -371,8 +409,9 @@ pub(super) fn immediate_pipeline_work_available(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
     now: Instant,
+    audio_buffer_level: PlannedAudioBufferLevel,
 ) -> bool {
-    if pending_audio_work_available(session, tick_config) {
+    if pending_audio_work_available(session, tick_config, audio_buffer_level) {
         return true;
     }
 
@@ -396,13 +435,14 @@ pub(super) fn immediate_pipeline_work_available(
 pub(super) fn pending_audio_work_available(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
+    audio_buffer_level: PlannedAudioBufferLevel,
 ) -> bool {
     if session.pipeline.pending_audio_packet_is_empty() {
         return false;
     }
 
-    session.audio_buffer_level_ms().unwrap_or(0.0)
-        <= audio_read_ahead_limit_ms(session, tick_config)
+    // Нет output-а — packet нужен для его lazy-создания, работа есть сразу.
+    audio_buffer_level.level_ms().unwrap_or(0.0) <= audio_read_ahead_limit_ms(session, tick_config)
 }
 
 /// Проверяет, может ли worker прямо сейчас отправить или списать video packet.
