@@ -89,6 +89,23 @@ pub(crate) fn resolve_levels(
     new_run_starts: &[bool],
     base: BaseDirection,
 ) -> BidiLevels {
+    if symbols.iter().all(char::is_ascii) {
+        // В ASCII нет ни сильных RTL-символов, ни явных управляющих BiDi: все уровни равны 0
+        // (проверено тестом против полного расчёта), и разбор `unicode-bidi` не нужен.
+        return BidiLevels {
+            embedding: vec![0; symbols.len()],
+            paragraph: vec![0; symbols.len()],
+        };
+    }
+    resolve_levels_in_full(symbols, new_run_starts, base)
+}
+
+/// Полный расчёт уровней через `unicode-bidi` без быстрых путей ([`resolve_levels`]).
+fn resolve_levels_in_full(
+    symbols: &[char],
+    new_run_starts: &[bool],
+    base: BaseDirection,
+) -> BidiLevels {
     let mut embedding = Vec::with_capacity(symbols.len());
     let mut paragraph = Vec::with_capacity(symbols.len());
     let split_by_style = base == BaseDirection::LeftToRight;
@@ -148,6 +165,15 @@ fn is_whitespace_like(class: BidiClass) -> bool {
 /// Результат: для каждой визуальной позиции — индекс символа в `symbols` (то есть
 /// `visual[v]` = логический индекс символа, который окажется на месте `v`).
 pub(crate) fn visual_order(symbols: &[char], levels: &[u8], base_level: u8) -> Vec<usize> {
+    if base_level == 0 && levels.iter().all(|level| *level == 0) {
+        // Все уровни нулевые: разворачивать нечего, порядок логический (L1 уровни не повышает).
+        return (0..symbols.len()).collect();
+    }
+    visual_order_in_full(symbols, levels, base_level)
+}
+
+/// Порядок отображения через `unicode-bidi` без быстрых путей ([`visual_order`]).
+fn visual_order_in_full(symbols: &[char], levels: &[u8], base_level: u8) -> Vec<usize> {
     let classes: Vec<BidiClass> = symbols.iter().map(|symbol| bidi_class(*symbol)).collect();
     let mut adjusted: Vec<u8> = levels.to_vec();
     // L1.1 + L1.2: разделители абзацев и сегментов получают базовый уровень вместе с

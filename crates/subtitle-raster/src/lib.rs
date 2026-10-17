@@ -32,6 +32,7 @@ mod event_style;
 mod face_cache;
 mod fixed_point;
 pub mod fonts;
+mod glyph_cache;
 mod glyph_info;
 mod glyph_render;
 mod glyph_transform;

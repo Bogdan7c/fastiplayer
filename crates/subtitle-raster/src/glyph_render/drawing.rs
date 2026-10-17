@@ -32,9 +32,12 @@
 
 use std::sync::Arc;
 
+#[cfg(test)]
 use super::GlyphOutline;
-use crate::drawing::{DrawingError, ParsedDrawing, parse_drawing};
+#[cfg(test)]
+use crate::drawing::parse_drawing;
 use crate::fixed_point::Vector26;
+use crate::glyph_cache::{DrawingEntry, DrawingOutline};
 use crate::glyph_info::{GlyphBox, TextCluster};
 use crate::outline::round_ties_even_to_i32;
 use crate::source_text::DrawingSource;
@@ -50,18 +53,35 @@ pub(super) enum DrawingOutcome {
     NoOutline,
 }
 
-/// Разбирает рисунок и заполняет корневой глиф кластера: контур, рамку, подъём, спуск,
-/// продвижение (libass: `get_outline_glyph` для `drawing_text.str`).
+/// Разбирает рисунок и заполняет корневой глиф кластера (только для тестов: в конвейере
+/// рисунок берётся из кэша контуров, см. [`place_cached_drawing`]).
+#[cfg(test)]
 pub(super) fn place_drawing(cluster: &mut TextCluster, source: &DrawingSource) -> DrawingOutcome {
-    let parsed = match parse_drawing(&source.commands) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            // Текст рисунка в журнал не пишем: реплика может быть приватной.
-            log_rejected(&error);
-            return DrawingOutcome::NoOutline;
+    let entry = match parse_drawing(&source.commands) {
+        Ok(parsed) => {
+            let (width, height) = (parsed.width(), parsed.height());
+            DrawingEntry::Parsed(Arc::new(DrawingOutline {
+                outline: Arc::new(GlyphOutline::from_outline(parsed.outline)),
+                width,
+                height,
+            }))
         }
+        Err(_) => DrawingEntry::Rejected,
     };
-    let has_outline = !parsed.outline.is_empty();
+    place_cached_drawing(cluster, source, &entry)
+}
+
+/// Заполняет корневой глиф кластера контуром, рамкой, подъёмом, спуском и продвижением
+/// разобранного рисунка (libass: `get_outline_glyph` для `drawing_text.str`).
+pub(super) fn place_cached_drawing(
+    cluster: &mut TextCluster,
+    source: &DrawingSource,
+    entry: &DrawingEntry,
+) -> DrawingOutcome {
+    let DrawingEntry::Parsed(parsed) = entry else {
+        return DrawingOutcome::NoOutline;
+    };
+    let has_outline = !parsed.outline.outline.is_empty();
     apply_metrics(cluster, source, parsed);
     if has_outline {
         DrawingOutcome::Placed
@@ -70,19 +90,15 @@ pub(super) fn place_drawing(cluster: &mut TextCluster, source: &DrawingSource) -
     }
 }
 
-fn log_rejected(error: &DrawingError) {
-    tracing::debug!(%error, "ASS drawing is rejected, the drawing is not drawn");
-}
-
 /// Метрики и контур из разобранного рисунка.
-fn apply_metrics(cluster: &mut TextCluster, source: &DrawingSource, parsed: ParsedDrawing) {
+fn apply_metrics(cluster: &mut TextCluster, source: &DrawingSource, parsed: &DrawingOutline) {
     let scale = cluster.glyph_scale;
     // libass: `desc = 64 * drawing_pbo; asc = val->asc - desc` в целых `int32`.
     let descent_units = source.baseline_offset.wrapping_mul(64);
-    let ascent_units = parsed.height().wrapping_sub(descent_units);
+    let ascent_units = parsed.height.wrapping_sub(descent_units);
     let offset_y = -f64::from(ascent_units) * scale.vertical;
-    let width_units = parsed.width();
-    let outline = Arc::new(GlyphOutline::from_outline(parsed.outline));
+    let width_units = parsed.width;
+    let outline = Arc::clone(&parsed.outline);
 
     let control = &outline.control_box;
     let glyph = &mut cluster.root;

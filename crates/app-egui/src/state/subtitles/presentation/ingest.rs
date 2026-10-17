@@ -101,7 +101,7 @@ impl SubtitlePresenter {
                 WorkerEvent::Idle { token } => self.test_pump.idle_token = Some(token),
                 #[cfg(test)]
                 WorkerEvent::Diagnostics(diagnostics) => {
-                    self.test_pump.last_diagnostics = Some(diagnostics);
+                    self.test_pump.last_diagnostics = Some(*diagnostics);
                 }
             }
         }

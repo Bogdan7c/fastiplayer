@@ -302,6 +302,81 @@ impl Segment {
     }
 }
 
+/// Что стало с одним сегментом после деления линией.
+enum Placement {
+    /// Сегмент целиком за пределами «до»-части и не нужен ни в одной из частей (`continue` в C).
+    Dropped,
+    /// Сегмент остаётся только в части «до» линии.
+    Before(Segment),
+    /// Сегмент уходит только в часть «после» линии (уже сдвинут в её координаты).
+    After(Segment),
+    /// Линия пересекает сегмент: он разрезан на обе части.
+    Both(Segment, Segment),
+}
+
+/// Делит ОДИН сегмент линией и обновляет намотку (тело цикла `polyline_split_horz/vert`).
+///
+/// Вынесено из циклов, чтобы внешний и внутренний (на месте) варианты деления не расходились.
+#[inline(always)]
+fn split_one(
+    mut segment: Segment,
+    group: usize,
+    line: SplitLine,
+    winding: &mut [i32; 2],
+) -> Placement {
+    match line {
+        SplitLine::Vertical(x) => {
+            // Вклад в намотку: сегмент касается верхнего края и точен сверху.
+            let delta = if segment.y_min == 0 && segment.flags & SEGFLAG_EXACT_TOP != 0 {
+                if segment.a < 0 { 1 } else { -1 }
+            } else {
+                0
+            };
+            if segment.lies_left_of(x) {
+                winding[group] += delta;
+                if segment.x_min >= x {
+                    return Placement::Dropped;
+                }
+                segment.x_max = segment.x_max.min(x);
+                Placement::Before(segment)
+            } else if segment.lies_right_of(x) {
+                segment.move_x(x);
+                Placement::After(segment)
+            } else {
+                if segment.flags & SEGFLAG_UL_DR != 0 {
+                    winding[group] += delta;
+                }
+                let next = segment.split_at_x(x);
+                Placement::Both(segment, next)
+            }
+        }
+        SplitLine::Horizontal(y) => {
+            let delta = if segment.x_min == 0 && segment.flags & SEGFLAG_EXACT_LEFT != 0 {
+                if segment.b < 0 { 1 } else { -1 }
+            } else {
+                0
+            };
+            if segment.lies_above(y) {
+                winding[group] += delta;
+                if segment.y_min >= y {
+                    return Placement::Dropped;
+                }
+                segment.y_max = segment.y_max.min(y);
+                Placement::Before(segment)
+            } else if segment.lies_below(y) {
+                segment.move_y(y);
+                Placement::After(segment)
+            } else {
+                if segment.flags & SEGFLAG_UL_DR != 0 {
+                    winding[group] += delta;
+                }
+                let next = segment.split_at_y(y);
+                Placement::Both(segment, next)
+            }
+        }
+    }
+}
+
 /// Делит список сегментов линией (libass: `polyline_split_horz` / `polyline_split_vert`).
 ///
 /// - `source` — сегменты: сначала `group_sizes[0]` штук группы 0, затем `group_sizes[1]` группы 1;
@@ -319,71 +394,71 @@ pub(super) fn split_segments(
     winding: &mut [i32; 2],
 ) -> SplitCounts {
     let mut counts = SplitCounts::default();
+    before.reserve(source.len());
+    after.reserve(source.len());
     for (index, original) in source.iter().enumerate() {
-        // Группа 0 или 1 (индексы массивов ниже всегда в границах).
         let group = usize::from(index >= group_sizes[0]);
-        let mut segment = *original;
-        match line {
-            SplitLine::Vertical(x) => {
-                // Вклад в намотку: сегмент касается верхнего края и точен сверху.
-                let delta = if segment.y_min == 0 && segment.flags & SEGFLAG_EXACT_TOP != 0 {
-                    if segment.a < 0 { 1 } else { -1 }
-                } else {
-                    0
-                };
-                if segment.lies_left_of(x) {
-                    winding[group] += delta;
-                    if segment.x_min >= x {
-                        continue;
-                    }
-                    segment.x_max = segment.x_max.min(x);
-                    before.push(segment);
-                    counts.before[group] += 1;
-                } else if segment.lies_right_of(x) {
-                    segment.move_x(x);
-                    after.push(segment);
-                    counts.after[group] += 1;
-                } else {
-                    if segment.flags & SEGFLAG_UL_DR != 0 {
-                        winding[group] += delta;
-                    }
-                    let next = segment.split_at_x(x);
-                    before.push(segment);
-                    after.push(next);
-                    counts.before[group] += 1;
-                    counts.after[group] += 1;
-                }
+        match split_one(*original, group, line, winding) {
+            Placement::Dropped => {}
+            Placement::Before(kept) => {
+                before.push(kept);
+                counts.before[group] += 1;
             }
-            SplitLine::Horizontal(y) => {
-                let delta = if segment.x_min == 0 && segment.flags & SEGFLAG_EXACT_LEFT != 0 {
-                    if segment.b < 0 { 1 } else { -1 }
-                } else {
-                    0
-                };
-                if segment.lies_above(y) {
-                    winding[group] += delta;
-                    if segment.y_min >= y {
-                        continue;
-                    }
-                    segment.y_max = segment.y_max.min(y);
-                    before.push(segment);
-                    counts.before[group] += 1;
-                } else if segment.lies_below(y) {
-                    segment.move_y(y);
-                    after.push(segment);
-                    counts.after[group] += 1;
-                } else {
-                    if segment.flags & SEGFLAG_UL_DR != 0 {
-                        winding[group] += delta;
-                    }
-                    let next = segment.split_at_y(y);
-                    before.push(segment);
-                    after.push(next);
-                    counts.before[group] += 1;
-                    counts.after[group] += 1;
-                }
+            Placement::After(kept) => {
+                after.push(kept);
+                counts.after[group] += 1;
+            }
+            Placement::Both(first, second) => {
+                before.push(first);
+                after.push(second);
+                counts.before[group] += 1;
+                counts.after[group] += 1;
             }
         }
     }
+    counts
+}
+
+/// То же, что [`split_segments`], но входом служит хвост `stack[offset..]`, а часть «до»
+/// записывается на его же место (libass: `src` совпадает с `dst0`), поэтому копия входа не нужна.
+///
+/// Запись «до» никогда не обгоняет чтение: на каждый прочитанный сегмент приходится не более
+/// одной записи в `stack`. После вызова стек обрезан до конца части «до».
+pub(super) fn split_stack_tail(
+    stack: &mut Vec<Segment>,
+    offset: usize,
+    group_sizes: [usize; 2],
+    line: SplitLine,
+    after: &mut Vec<Segment>,
+    winding: &mut [i32; 2],
+) -> SplitCounts {
+    let mut counts = SplitCounts::default();
+    let end = stack.len();
+    after.reserve(end.saturating_sub(offset));
+    let mut write = offset;
+    for read in offset..end {
+        let group = usize::from(read - offset >= group_sizes[0]);
+        let original = stack[read];
+        match split_one(original, group, line, winding) {
+            Placement::Dropped => {}
+            Placement::Before(kept) => {
+                stack[write] = kept;
+                write += 1;
+                counts.before[group] += 1;
+            }
+            Placement::After(kept) => {
+                after.push(kept);
+                counts.after[group] += 1;
+            }
+            Placement::Both(first, second) => {
+                stack[write] = first;
+                write += 1;
+                after.push(second);
+                counts.before[group] += 1;
+                counts.after[group] += 1;
+            }
+        }
+    }
+    stack.truncate(write);
     counts
 }

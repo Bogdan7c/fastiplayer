@@ -24,11 +24,12 @@
 
 use super::run::FilterFlags;
 use crate::blur::{
-    BlurStrength, BoxBlurPasses, GaussianVariance, blur_radius_scale, quantize_blur,
-    quantize_shadow_offset, restore_blur,
+    BitmapSideLimit, BlurStrength, BoxBlurPasses, GaussianVariance, blur_radius_scale,
+    quantize_blur, quantize_shadow_offset, restore_blur,
 };
 use crate::event_fade::EventFade;
 use crate::fixed_point::double_to_d6;
+use crate::glyph_cache::FilterKey;
 use crate::karaoke::KaraokeEffect;
 use crate::span_look::SpanLook;
 
@@ -44,6 +45,20 @@ pub(super) struct RunFilter {
 }
 
 impl RunFilter {
+    /// Часть ключа кэша склеек, описывающая фильтры (libass: `CompositeHashKey::filter`).
+    pub(super) fn cache_key(&self, blur_side_limit: BitmapSideLimit) -> FilterKey {
+        FilterKey {
+            flags: self.flags.bits(),
+            gaussian_bits: [
+                self.blur.gaussian.x.to_bits(),
+                self.blur.gaussian.y.to_bits(),
+            ],
+            box_passes: self.blur.box_passes.count(),
+            shadow_offset: self.shadow_offset,
+            blur_side_limit: blur_side_limit.0,
+        }
+    }
+
     /// Фильтры по виду первого символа участка (libass: начало участка в
     /// `render_and_combine_glyphs`).
     #[cfg(test)]

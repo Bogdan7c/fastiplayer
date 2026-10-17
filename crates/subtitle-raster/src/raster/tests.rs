@@ -593,3 +593,44 @@ fn fill_tiles_rejects_a_visible_rect_outside_the_window_and_matches_the_whole_fi
     }
     assert!(part.iter().any(|v| *v != 0));
 }
+
+/// Растеризатор, чьи буферы после прошлого хозяина взяты из пула потока, рисует то же, что
+/// растеризатор на свежем потоке: остатки отрезков из пула не просачиваются в новую заливку.
+#[test]
+fn pooled_buffers_do_not_leak_segments_between_rasterizers() {
+    let big = polygon(&[(1.0, 1.0), (40.0, 3.0), (30.0, 38.0), (4.0, 30.0)]);
+    let small = polygon(&[(5.0, 5.0), (20.0, 5.0), (12.0, 20.0)]);
+    let expected = std::thread::spawn({
+        let small = small.clone();
+        move || rasterize(&small, None, 48, 48)
+    })
+    .join()
+    .unwrap();
+    // Сначала большая фигура наполняет буферы пула этого потока, затем рисуется маленькая.
+    let drawn_big = rasterize(&big, None, 48, 48);
+    assert!(drawn_big.contains(&255));
+    assert_eq!(rasterize(&small, None, 48, 48), expected);
+    // Пустой растеризатор из пула не хранит ломаную прошлого: bbox пуст, рисовать нечего.
+    let empty = Rasterizer::new(16);
+    assert!(empty.bounding_box().is_empty());
+}
+
+/// Растеризатор после работы отдаёт выросшие буферы пулу, и следующий хозяин получает их же
+/// (с ёмкостью, но без чужих отрезков): буферы не выделяются заново на каждую реплику.
+#[test]
+fn dropped_rasterizer_leaves_its_grown_buffers_in_the_pool() {
+    // Пул потоковый, тест идёт в своём потоке: на старте он пуст.
+    assert_eq!(super::pool::take_stacks().retained_capacity(), 0);
+    let big = polygon(&[(1.0, 1.0), (40.0, 3.0), (30.0, 38.0), (4.0, 30.0)]);
+    assert!(rasterize(&big, None, 48, 48).contains(&255));
+    let pooled = super::pool::take_stacks();
+    assert!(
+        pooled.retained_capacity() > 0,
+        "the rasterizer returned its buffers on drop"
+    );
+    super::pool::give_back_stacks(pooled);
+    // Следующий растеризатор берёт их (пул опустел) и рисует тот же результат.
+    let reused = rasterize(&big, None, 48, 48);
+    assert!(reused.contains(&255));
+    assert!(super::pool::take_stacks().retained_capacity() > 0);
+}

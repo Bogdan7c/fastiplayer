@@ -110,6 +110,10 @@ fn face_cache_is_trimmed_to_the_limit_between_frames() {
         cue_bitmaps_bytes: 64 * 1024 * 1024,
         shaper_faces: 1,
         blur_scratch_retained_bytes: 32 * 1024 * 1024,
+        glyph_bitmaps_bytes: 40 * 1024 * 1024,
+        glyph_composites_bytes: 20 * 1024 * 1024,
+        glyph_outline_items: 10_000,
+        shaping_cache_bytes: 4 * 1024 * 1024,
     };
     let mut rasterizer = rasterizer(limits);
     // Три письменности — три разных лица.

@@ -16,6 +16,7 @@ use crate::compose::{ComposeError, ComposeInput, compose_text};
 use crate::event_style::EventStyle;
 use crate::face_cache::{FaceCache, FaceLoadError};
 use crate::fonts::{SubtitleFontLibrary, TextLanguagePreference};
+use crate::glyph_cache::GlyphCaches;
 use crate::glyph_render::retrieve_glyphs;
 use crate::karaoke::KaraokeStage;
 use crate::layout::{EventImageRect, LineBox, arrange_text, event_image_rect, line_boxes};
@@ -126,6 +127,10 @@ pub(crate) struct BitmapWorkspace<'scratch> {
 ///
 /// `style` задаёт общее для реплики (выравнивание, геометрию блока, перенос, направление,
 /// подложку события); всё, что может отличаться между символами, берётся из `source.looks`.
+///
+/// Кэши глифов здесь одноразовые (живут одну реплику): им владеет вызывающий растеризатор
+/// ASS через [`render_source_text_cached`], а пути без него (простые форматы, тесты) не
+/// копят ничего между репликами.
 pub(crate) fn render_source_text(
     fonts: &mut SubtitleFontLibrary,
     faces: &mut FaceCache,
@@ -135,6 +140,34 @@ pub(crate) fn render_source_text(
     language: TextLanguagePreference,
     workspace: BitmapWorkspace<'_>,
 ) -> Result<RenderedText, TextRenderError> {
+    render_source_text_cached(
+        fonts,
+        faces,
+        source,
+        style,
+        canvas,
+        language,
+        workspace,
+        &mut GlyphCaches::transient(),
+    )
+}
+
+/// То же, что [`render_source_text`], но с долгоживущими кэшами глифов растеризатора
+/// (контуры, маски, склейки): повторные кадры анимации не пересчитывают общую работу.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "ресурсы конвейера передаются явно: шрифты, лица, рабочая память и кэши"
+)]
+pub(crate) fn render_source_text_cached(
+    fonts: &mut SubtitleFontLibrary,
+    faces: &mut FaceCache,
+    source: &SourceText,
+    style: &EventStyle,
+    canvas: CanvasSize,
+    language: TextLanguagePreference,
+    workspace: BitmapWorkspace<'_>,
+    caches: &mut GlyphCaches,
+) -> Result<RenderedText, TextRenderError> {
     validate_style(style)?;
     validate_looks(source)?;
     if source.is_blank() {
@@ -142,7 +175,13 @@ pub(crate) fn render_source_text(
     }
 
     let mut clusters = shape_text(fonts, faces, source, style, language)?;
-    let retrieved = retrieve_glyphs(faces, &mut clusters, &source.looks, &source.drawings)?;
+    let retrieved = retrieve_glyphs(
+        faces,
+        &mut caches.outlines,
+        &mut clusters,
+        &source.looks,
+        &source.drawings,
+    )?;
     let layout = arrange_text(&mut clusters, style, canvas);
     let pixel_aspect_x = style.pixel_aspect_x();
     let event_rect = event_image_rect(&layout, pixel_aspect_x);
@@ -159,6 +198,7 @@ pub(crate) fn render_source_text(
             max_bitmap_side: workspace.max_bitmap_side,
         },
         workspace.blur_scratch,
+        caches,
     )?;
     Ok(RenderedText {
         images: composed.images,
@@ -183,7 +223,7 @@ pub(crate) fn render_text_event(
     style: &EventStyle,
     canvas: CanvasSize,
 ) -> Result<Vec<SubtitleBitmap>, TextRenderError> {
-    let mut faces = FaceCache::new();
+    let mut faces = FaceCache::new(crate::test_support::SHAPING_BUDGET_BYTES);
     render_cue_text(
         fonts,
         &mut faces,

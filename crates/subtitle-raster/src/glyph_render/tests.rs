@@ -82,7 +82,7 @@ fn hinted_advances_match_freetype_autohinter() {
             style: crate::fonts::FontStyle::Normal,
         })
         .face;
-    let mut faces = FaceCache::new();
+    let mut faces = FaceCache::new(crate::test_support::SHAPING_BUDGET_BYTES);
     faces.ensure_loaded(&fonts, face).expect("face");
     let entry = faces.get(face).expect("entry");
     let font = entry.font_ref().expect("font");
@@ -103,6 +103,31 @@ fn hinted_advances_match_freetype_autohinter() {
             "{ch:?}"
         );
     }
+}
+
+#[test]
+fn known_advance_is_absent_until_computed_and_then_matches_the_computed_value() {
+    let fonts = embedded_fonts();
+    let face = fonts
+        .resolve_family(&crate::fonts::FontRequest {
+            family: None,
+            weight: crate::fonts::FontWeightClass::Regular,
+            style: crate::fonts::FontStyle::Normal,
+        })
+        .face;
+    let mut faces = FaceCache::new(crate::test_support::SHAPING_BUDGET_BYTES);
+    faces.ensure_loaded(&fonts, face).expect("face");
+    let entry = faces.get(face).expect("entry");
+    let font = entry.font_ref().expect("font");
+    let glyph = font.charmap().map('H').expect("glyph");
+    assert_eq!(
+        entry.advances().known_advance(glyph),
+        None,
+        "not computed yet"
+    );
+    let computed = entry.advances().advance(&font.outline_glyphs(), glyph);
+    assert_eq!(computed, Some(8000));
+    assert_eq!(entry.advances().known_advance(glyph), Some(computed));
 }
 
 #[test]

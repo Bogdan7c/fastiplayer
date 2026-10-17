@@ -24,8 +24,8 @@ use std::sync::Arc;
 use subtitle_core::SubtitleColor;
 
 use super::ComposeError;
-use crate::bitmap::CoverageBitmap;
 use crate::event_style::EventStyle;
+use crate::glyph_cache::PlacedMask;
 use crate::layout::{EventImageRect, TextLayout, event_image_rect};
 use crate::overlay::{CanvasSize, PixelPoint, SubtitleBitmap, SubtitleBitmapKind};
 
@@ -35,7 +35,7 @@ use crate::overlay::{CanvasSize, PixelPoint, SubtitleBitmap, SubtitleBitmapKind}
 /// отбрасыванием картинки. `None` — после обрезки ничего не осталось или цвет прозрачен
 /// (libass выбрасывает полностью прозрачные картинки в `ass_render_frame`).
 pub(super) fn clipped_image(
-    bitmap: &CoverageBitmap,
+    bitmap: &PlacedMask,
     color: SubtitleColor,
     kind: SubtitleBitmapKind,
     canvas: CanvasSize,
@@ -52,15 +52,15 @@ pub(super) fn clipped_image(
 /// картинка с прозрачным цветом сейчас может стать видимой на следующем кадре. Прозрачные
 /// картинки убирает стадия кадра (как `ass_render_frame` в libass).
 pub(super) fn canvas_image(
-    bitmap: &CoverageBitmap,
+    bitmap: &PlacedMask,
     color: SubtitleColor,
     kind: SubtitleBitmapKind,
     canvas: CanvasSize,
 ) -> Result<Option<SubtitleBitmap>, ComposeError> {
     let canvas_width = i64::from(canvas.width());
     let canvas_height = i64::from(canvas.height());
-    let (width, height) = (i64::from(bitmap.width), i64::from(bitmap.height));
-    let (dst_x, dst_y) = (i64::from(bitmap.left), i64::from(bitmap.top));
+    let (width, height) = (i64::from(bitmap.width()), i64::from(bitmap.height()));
+    let (dst_x, dst_y) = (i64::from(bitmap.left()), i64::from(bitmap.top()));
 
     // Видимая часть битмапа в его собственных координатах.
     let visible_x0 = (-dst_x).max(0);
@@ -71,7 +71,7 @@ pub(super) fn canvas_image(
         return Ok(None);
     }
 
-    let stride = bitmap.stride;
+    let source_stride = bitmap.stride();
     let (Ok(x0), Ok(y0), Ok(x1), Ok(y1)) = (
         usize::try_from(visible_x0),
         usize::try_from(visible_y0),
@@ -82,31 +82,29 @@ pub(super) fn canvas_image(
     };
     let visible_width = x1 - x0;
     let visible_height = y1 - y0;
-    // Копируем ровно нужные строки с прежним шагом: последняя строка без хвоста шага.
-    // Границы считаем с проверкой: несогласованная геометрия битмапа — ошибка, а не паника.
-    let range = y0
-        .checked_mul(stride)
-        .and_then(|row_offset| row_offset.checked_add(x0))
-        .and_then(|start| {
-            let last_row = (visible_height - 1).checked_mul(stride)?;
-            let end = start.checked_add(last_row)?.checked_add(visible_width)?;
-            Some(start..end)
-        });
-    let Some(slice) = range.and_then(|range| bitmap.buffer.get(range)) else {
-        return Err(ComposeError::Bitmap(
-            crate::bitmap::BitmapError::InconsistentGeometry,
-        ));
-    };
     let origin = PixelPoint {
         x: i32::try_from(dst_x + visible_x0).unwrap_or(0),
         y: i32::try_from(dst_y + visible_y0).unwrap_or(0),
     };
-    let image = SubtitleBitmap::new(
+    // Картинка всегда делит пиксели с кэшем склеек, ничего не копируя (как libass, чей
+    // `ASS_Image.bitmap` указывает внутрь буфера кэша): у края холста это окно в той же
+    // маске - смещение первого видимого пикселя и прежний шаг строки. Благодаря этому
+    // `detect_overlay_change` видит ту же маску и сообщает `Moved`, а не `Replaced`, когда
+    // надпись лишь сдвинулась, а обрезка осталась прежней.
+    // Хвост шага последней строки в разделяемых пикселях уже обрезан (`SharedMask::freeze`).
+    let window_offset = y0
+        .checked_mul(source_stride)
+        .and_then(|row_offset| row_offset.checked_add(x0))
+        .ok_or(ComposeError::Bitmap(
+            crate::bitmap::BitmapError::InconsistentGeometry,
+        ))?;
+    let image = SubtitleBitmap::from_shared_view(
         origin,
         u32::try_from(visible_width).unwrap_or(0),
         u32::try_from(visible_height).unwrap_or(0),
-        stride,
-        Arc::from(slice),
+        source_stride,
+        Arc::clone(bitmap.pixels()),
+        window_offset,
         color,
         kind,
     )?;

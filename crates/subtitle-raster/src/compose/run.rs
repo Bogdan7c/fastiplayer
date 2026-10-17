@@ -19,6 +19,8 @@
 
 //! Участок единого стиля: объединение битмапов его глифов в три слоя (заливка, обводка, тень).
 
+use std::sync::Arc;
+
 use super::ComposeError;
 use super::filter::RunFilter;
 use super::glyph_bitmaps::GlyphBitmaps;
@@ -29,6 +31,9 @@ use crate::bitmap::{
 use crate::blur::{BitmapSideLimit, BlurError, BlurScratch, BlurStrength, synth_blur};
 use crate::event_fade::EventFade;
 use crate::event_style::BorderStyle;
+use crate::glyph_cache::{
+    ArcId, CompositeCache, CompositeEntry, CompositeKey, PartKey, PlacedMask, SharedMask,
+};
 use crate::karaoke::KaraokeEffect;
 use crate::span_look::SpanLook;
 
@@ -48,6 +53,15 @@ pub(super) struct FilterFlags {
 }
 
 impl FilterFlags {
+    /// Флаги одним числом (для ключа кэша склеек).
+    pub(super) fn bits(self) -> u8 {
+        u8::from(self.box_border)
+            | u8::from(self.nonzero_border) << 1
+            | u8::from(self.nonzero_shadow) << 2
+            | u8::from(self.fill_in_shadow) << 3
+            | u8::from(self.fill_in_border) << 4
+    }
+
     /// Флаги по виду символа (libass: начало цикла `render_and_combine_glyphs`).
     ///
     /// `fade` — затухание реплики: при нём заливка обводки отключена (libass: `fade == 0` в
@@ -87,15 +101,16 @@ impl FilterFlags {
     }
 }
 
-/// Итоговые слои участка в координатах кадра (libass: `CompositeHashValue`).
+/// Итоговые слои участка в координатах кадра (libass: `CompositeHashValue` плюс смещение
+/// участка). Маски разделяются с кэшем склеек.
 #[derive(Debug, Default)]
 pub(super) struct RunBitmaps {
     /// Заливка.
-    pub(super) fill: Option<CoverageBitmap>,
+    pub(super) fill: Option<PlacedMask>,
     /// Обводка (или плашка).
-    pub(super) outline: Option<CoverageBitmap>,
+    pub(super) outline: Option<PlacedMask>,
     /// Тень.
-    pub(super) shadow: Option<CoverageBitmap>,
+    pub(super) shadow: Option<PlacedMask>,
     /// Сколько слоёв осталось неразмытыми: результат размытия не поместился в предел.
     pub(super) unblurred_oversized_layers: u32,
     /// Сколько слоёв осталось неразмытыми из-за нарушенного внутреннего инварианта
@@ -127,32 +142,109 @@ pub(super) struct BlurEnv<'scratch> {
     pub(super) side_limit: BitmapSideLimit,
 }
 
-/// Объединяет битмапы глифов участка и применяет фильтры (libass: `ass_composite_construct`).
+/// Склейка слоёв участка через кэш (libass: `ass_cache_get(composite_cache, ...)`).
 ///
-/// Порядок как в libass: сложение битмапов с отступом под `\be`, размытие обводки (всегда) и
-/// заливки (только без обводки или при плашке), `fix_outline`, тень от уже размытого слоя.
+/// Ключ - фильтры и части участка с позициями относительно начала участка ([`run_origin`]),
+/// поэтому участок, сдвинутый на целое число пикселей, даёт попадание и получает те же маски с
+/// другим смещением. Счётчики пропущенного хранятся в записи и возвращаются и при попадании.
 pub(super) fn composite_run(
     parts: &[GlyphBitmaps],
     filter: &RunFilter,
     blur_env: &mut BlurEnv<'_>,
+    cache: &mut CompositeCache,
 ) -> Result<RunBitmaps, ComposeError> {
+    let origin = run_origin(parts);
+    let key = composite_key(parts, filter, origin, blur_env.side_limit);
+    let entry = match cache.get(&key) {
+        Some(hit) => hit,
+        None => {
+            let built = construct_composite(parts, filter, origin, blur_env)?;
+            cache.insert(key, built)
+        }
+    };
+    Ok(RunBitmaps {
+        fill: entry
+            .fill
+            .as_ref()
+            .map(|mask| PlacedMask::new(Arc::clone(mask), origin)),
+        outline: entry
+            .outline
+            .as_ref()
+            .map(|mask| PlacedMask::new(Arc::clone(mask), origin)),
+        shadow: entry
+            .shadow
+            .as_ref()
+            .map(|mask| PlacedMask::new(Arc::clone(mask), origin)),
+        unblurred_oversized_layers: entry.unblurred_oversized_layers,
+        failed_blur_layers: entry.failed_blur_layers,
+    })
+}
+
+/// Начало участка: наименьшая позиция заливки среди его частей (libass: `info->x/y`).
+fn run_origin(parts: &[GlyphBitmaps]) -> (i32, i32) {
+    let min_x = parts.iter().map(|part| part.fill_position.x).min();
+    let min_y = parts.iter().map(|part| part.fill_position.y).min();
+    (min_x.unwrap_or(0), min_y.unwrap_or(0))
+}
+
+/// Позиция относительно начала участка.
+fn relative_to(position: crate::outline::Point, origin: (i32, i32)) -> (i32, i32) {
+    // Насыщающее вычитание: позиции из враждебных тегов не должны вызвать переполнения.
+    (
+        position.x.saturating_sub(origin.0),
+        position.y.saturating_sub(origin.1),
+    )
+}
+
+/// Ключ кэша склеек для участка (libass: `CompositeHashKey`).
+fn composite_key(
+    parts: &[GlyphBitmaps],
+    filter: &RunFilter,
+    origin: (i32, i32),
+    side_limit: BitmapSideLimit,
+) -> CompositeKey {
+    CompositeKey {
+        filter: filter.cache_key(side_limit),
+        parts: parts
+            .iter()
+            .map(|part| PartKey {
+                fill: part.fill.as_ref().map(ArcId::new),
+                outline: part.outline.as_ref().map(ArcId::new),
+                fill_position: relative_to(part.fill_position, origin),
+                outline_position: relative_to(part.outline_position, origin),
+            })
+            .collect(),
+    }
+}
+
+/// Объединяет битмапы глифов участка и применяет фильтры (libass: `ass_composite_construct`).
+///
+/// Порядок как в libass: сложение битмапов с отступом под `\be`, размытие обводки (всегда) и
+/// заливки (только без обводки или при плашке), `fix_outline`, тень от уже размытого слоя.
+/// Позиции считаются относительно `origin`, результат тоже лежит в этих координатах.
+fn construct_composite(
+    parts: &[GlyphBitmaps],
+    filter: &RunFilter,
+    origin: (i32, i32),
+    blur_env: &mut BlurEnv<'_>,
+) -> Result<CompositeEntry, ComposeError> {
     let flags = filter.flags;
     let padding_px = filter.blur.box_passes.padding_px();
     let fill_parts: Vec<PlacedBitmap<'_>> = parts
         .iter()
         .filter_map(|part| {
-            part.fill.as_ref().map(|bitmap| PlacedBitmap {
+            part.fill.as_deref().map(|bitmap| PlacedBitmap {
                 bitmap,
-                anchor: (part.fill_position.x, part.fill_position.y),
+                anchor: relative_to(part.fill_position, origin),
             })
         })
         .collect();
     let outline_parts: Vec<PlacedBitmap<'_>> = parts
         .iter()
         .filter_map(|part| {
-            part.outline.as_ref().map(|bitmap| PlacedBitmap {
+            part.outline.as_deref().map(|bitmap| PlacedBitmap {
                 bitmap,
-                anchor: (part.outline_position.x, part.outline_position.y),
+                anchor: relative_to(part.outline_position, origin),
             })
         })
         .collect();
@@ -198,10 +290,12 @@ pub(super) fn composite_run(
     if flags.fill_in_shadow && !flags.fill_in_border {
         fix_outline_layers(fill.as_ref(), outline.as_mut())?;
     }
-    Ok(RunBitmaps {
-        fill,
-        outline,
-        shadow,
+    let freeze =
+        |layer: Option<CoverageBitmap>| layer.map(|bitmap| Arc::new(SharedMask::freeze(bitmap)));
+    Ok(CompositeEntry {
+        fill: freeze(fill),
+        outline: freeze(outline),
+        shadow: freeze(shadow),
         unblurred_oversized_layers,
         failed_blur_layers,
     })

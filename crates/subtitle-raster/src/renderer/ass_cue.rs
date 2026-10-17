@@ -15,11 +15,12 @@ use crate::blur::BlurScratch;
 use crate::clip::{CueClip, IgnoredVectorClip};
 use crate::face_cache::FaceCache;
 use crate::fonts::{SubtitleFontLibrary, TextLanguagePreference};
+use crate::glyph_cache::GlyphCaches;
 use crate::layout::LineBox;
 use crate::overlay::CanvasSize;
 use crate::plate::build_plate;
 use crate::render_diagnostics::RenderDiagnostics;
-use crate::text_renderer::{BitmapWorkspace, render_source_text};
+use crate::text_renderer::{BitmapWorkspace, render_source_text_cached};
 
 /// Входы рисования реплики ASS, общие для кадра.
 pub(crate) struct AssCueInputs<'a> {
@@ -45,6 +46,7 @@ pub(crate) fn rasterize_ass_cue(
     cue: &AssCue,
     inputs: &AssCueInputs<'_>,
     blur_scratch: &mut BlurScratch,
+    glyph_caches: &mut GlyphCaches,
 ) -> Result<RasterizedCue, CueRenderError> {
     let AssCueInputs {
         appearance,
@@ -55,7 +57,7 @@ pub(crate) fn rasterize_ass_cue(
         max_bitmap_side,
     } = *inputs;
     let plan = plan_ass_event(cue, canvas, options, appearance, animation);
-    let rendered = render_source_text(
+    let rendered = render_source_text_cached(
         fonts,
         faces,
         &plan.source,
@@ -66,6 +68,7 @@ pub(crate) fn rasterize_ass_cue(
             max_bitmap_side,
             blur_scratch,
         },
+        glyph_caches,
     )?;
 
     let mut bitmaps = Vec::with_capacity(rendered.images.len() + 1);

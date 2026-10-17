@@ -117,7 +117,12 @@ pub(crate) fn plan_ass_event(
         .with_event_fade(animation.fade)
         .with_event_clock(animation.clock);
 
-    let mut walker = TextWalker::new(&policy);
+    let expected_chars = cue.text.iter().fold(0_usize, |total, item| match item {
+        AssTextItem::Text(text) => total.saturating_add(text.len()),
+        AssTextItem::HardBreak | AssTextItem::SoftBreak => total.saturating_add(1),
+        AssTextItem::Overrides(_) => total,
+    });
+    let mut walker = TextWalker::new(&policy, expected_chars);
     for item in &cue.text {
         walker.walk_item(item, &mut state);
     }
@@ -332,6 +337,11 @@ fn wrap_style(wrap: AssWrapStyle) -> WrapStyle {
     }
 }
 
+/// Сколько символов вектор резервирует заранее: оценка идёт по байтам текста реплики, а
+/// враждебно длинный текст не должен сразу занимать память под все символы (их число ограничено
+/// отдельно при разборе).
+const MAX_PREALLOCATED_CHARS: usize = 512;
+
 /// Проход по тексту реплики: накапливает символы и их виды.
 struct TextWalker<'policy> {
     policy: &'policy LookPolicy,
@@ -346,10 +356,12 @@ struct TextWalker<'policy> {
 }
 
 impl<'policy> TextWalker<'policy> {
-    fn new(policy: &'policy LookPolicy) -> Self {
+    /// `expected_chars` - верхняя оценка числа символов (байтов текста), чтобы вектор символов
+    /// не наращивался по одному.
+    fn new(policy: &'policy LookPolicy, expected_chars: usize) -> Self {
         Self {
             policy,
-            chars: Vec::new(),
+            chars: Vec::with_capacity(expected_chars.min(MAX_PREALLOCATED_CHARS)),
             looks: Vec::new(),
             current_look: None,
             previous_look: None,

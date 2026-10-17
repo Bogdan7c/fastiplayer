@@ -29,6 +29,8 @@
 //! Раскладка (позиции глифов, переносы) — в модуле [`crate::layout`].
 
 pub(crate) mod bidi;
+pub(crate) mod plan_cache;
+pub(crate) mod run_cache;
 mod run_shaper;
 pub(crate) mod script;
 
@@ -382,5 +384,7 @@ pub(crate) fn shape_text(
     Ok(clusters)
 }
 
+#[cfg(test)]
+mod run_cache_tests;
 #[cfg(test)]
 mod tests;

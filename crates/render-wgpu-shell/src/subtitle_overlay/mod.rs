@@ -23,9 +23,9 @@
 //!
 //! # Загрузка только при изменении
 //!
-//! Загруженный overlay опознаётся по паре (ревизия, `Arc` каждой маски). Ревизия одна не
+//! Загруженный overlay опознаётся по паре (ревизия, буфер и окно каждой маски). Ревизия одна не
 //! годится: после пересоздания растеризатора она начинается заново и совпала бы с чужим
-//! содержимым; `Arc::ptr_eq` по маскам (мы держим клоны, адрес не переиспользуется) это
+//! содержимым; `SubtitleBitmap::shows_same_pixels_as` (мы держим клоны, адрес не переиспользуется) это
 //! исключает. Тот же overlay на следующем кадре — ноль `write_texture`/`write_buffer`
 //! инстансов и ни одной аллокации, только draw. Сдвиг картинки видео меняет лишь uniform
 //! (32 байта); то же верно для сдвигов групп слоя (`layer_offsets`).
@@ -36,10 +36,8 @@ mod pipeline;
 #[cfg(test)]
 mod tests;
 
-use std::sync::Arc;
-
 use render_core::{PictureRect, RenderViewport};
-use subtitle_raster::{OverlayRevision, SubtitleOverlay};
+use subtitle_raster::{OverlayRevision, SubtitleBitmap, SubtitleOverlay};
 
 use self::atlas::{AtlasLayout, AtlasPackError, MaskExtent, pack_masks};
 use self::instances::{BitmapInstance, INSTANCE_STRIDE_BYTES, placement_origins};
@@ -118,8 +116,10 @@ enum UploadedDraw {
 /// Опознавательные признаки загруженного overlay-а и итог его загрузки.
 struct UploadedOverlay {
     revision: OverlayRevision,
-    /// Клоны `Arc` масок: удерживают адреса, поэтому `ptr_eq` надёжно отличает содержимое.
-    masks: Vec<Arc<[u8]>>,
+    /// Клоны картинок (дёшево: маски общие через `Arc`). Они удерживают буферы масок, поэтому
+    /// адрес буфера не может быть переиспользован другой маской, и
+    /// `shows_same_pixels_as` (тот же буфер, окно, размер, шаг) надёжно отличает содержимое.
+    masks: Vec<SubtitleBitmap>,
     draw: UploadedDraw,
 }
 
@@ -132,7 +132,7 @@ impl UploadedOverlay {
                 .masks
                 .iter()
                 .zip(overlay.bitmaps())
-                .all(|(mask, bitmap)| Arc::ptr_eq(mask, bitmap.shared_coverage()))
+                .all(|(mask, bitmap)| mask.shows_same_pixels_as(bitmap))
     }
 }
 
@@ -269,11 +269,7 @@ impl SubtitleOverlayRenderer {
         {
             return;
         }
-        let masks: Vec<Arc<[u8]>> = overlay
-            .bitmaps()
-            .iter()
-            .map(|bitmap| Arc::clone(bitmap.shared_coverage()))
-            .collect();
+        let masks: Vec<SubtitleBitmap> = overlay.bitmaps().to_vec();
         let extents: Vec<MaskExtent> = overlay
             .bitmaps()
             .iter()

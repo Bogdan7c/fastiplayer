@@ -15,6 +15,7 @@ use crate::renderer::CueKey;
 
 mod animation_change;
 mod crop;
+mod mask_view;
 mod placement_group;
 
 pub use animation_change::AnimationChange;
@@ -135,7 +136,10 @@ pub struct SubtitleBitmap {
     width: u32,
     height: u32,
     stride: usize,
+    /// Общий буфер масок. Картинка показывает только его окно, см. `mask_view`.
     coverage: Arc<[u8]>,
+    /// Смещение первого видимого байта окна в `coverage`.
+    coverage_offset: usize,
     color: SubtitleColor,
     kind: SubtitleBitmapKind,
     placement_group: OverlayPlacementGroup,
@@ -159,38 +163,7 @@ impl SubtitleBitmap {
         color: SubtitleColor,
         kind: SubtitleBitmapKind,
     ) -> Result<Self, SubtitleBitmapError> {
-        if width == 0 || height == 0 {
-            return Err(SubtitleBitmapError::EmptyArea { width, height });
-        }
-        let width_bytes = width as usize;
-        if stride < width_bytes {
-            return Err(SubtitleBitmapError::StrideSmallerThanWidth { stride, width });
-        }
-        // Последняя строка может не иметь хвоста шага: требуем (h-1)*stride + width.
-        let required = (height as usize - 1)
-            .checked_mul(stride)
-            .and_then(|rows| rows.checked_add(width_bytes))
-            .unwrap_or(usize::MAX);
-        if coverage.len() < required {
-            return Err(SubtitleBitmapError::CoverageTooShort {
-                actual: coverage.len(),
-                required,
-            });
-        }
-        Ok(Self {
-            origin,
-            width,
-            height,
-            stride,
-            coverage,
-            color,
-            kind,
-            // Группа по умолчанию — основная; ASS-растеризатор переопределяет её через
-            // `with_placement_group`.
-            placement_group: OverlayPlacementGroup::Main,
-            // Владельца проставляет растеризатор, когда ключ реплики уже известен.
-            owner: None,
-        })
+        Self::from_shared_view(origin, width, height, stride, coverage, 0, color, kind)
     }
 
     /// Та же картинка (та же маска), отнесённая к реплике `owner`.
@@ -250,9 +223,10 @@ impl SubtitleBitmap {
         let kept_end = usize::try_from(clip_top + kept_rows)
             .ok()?
             .checked_mul(self.stride)?
-            .min(self.coverage.len());
-        let visible = self.coverage.get(skipped_bytes..kept_end)?;
+            .min(self.coverage_window().len());
+        let visible = self.coverage_window().get(skipped_bytes..kept_end)?;
         Some(Self {
+            coverage_offset: 0,
             origin: PixelPoint {
                 x: self.origin.x,
                 y: i32::try_from(top + clip_top).ok()?,
@@ -283,12 +257,16 @@ impl SubtitleBitmap {
         self.stride
     }
 
-    /// Маска покрытия 0..=255, строки идут подряд с шагом [`Self::stride`].
+    /// Маска покрытия 0..=255, строки идут подряд с шагом [`Self::stride`]. Первый байт -
+    /// левый верхний пиксель картинки; картинка у края кадра может быть окном в большей
+    /// общей маске, и тогда за последней строкой данных нет (хвоста шага тоже).
     pub fn coverage(&self) -> &[u8] {
-        &self.coverage
+        self.coverage_window()
     }
 
-    /// Общий владелец маски (для сравнения картинок по указателю и разделения между кадрами).
+    /// Весь общий буфер, в котором лежит маска (может быть больше окна картинки). Для
+    /// сравнения картинок на «те же пиксели» используйте [`Self::shows_same_pixels_as`]: один
+    /// буфер может показываться разными окнами.
     pub fn shared_coverage(&self) -> &Arc<[u8]> {
         &self.coverage
     }
@@ -322,7 +300,7 @@ impl SubtitleBitmap {
         }
         let start = (row as usize).checked_mul(self.stride)?;
         let end = start.checked_add(self.width as usize)?;
-        self.coverage.get(start..end)
+        self.coverage_window().get(start..end)
     }
 }
 
@@ -607,8 +585,8 @@ fn blend_pixel(pixel: &mut [u8], color: SubtitleColor, coverage: u8) {
 /// (libass 0.17.5: `ass_render.c:ass_detect_change` + `ass_image_compare`).
 ///
 /// - длины списков разные -> [`OverlayChange::Replaced`];
-/// - для пары картинок: размер, шаг строки, цвет, вид или другой экземпляр маски
-///   (`!Arc::ptr_eq`) -> `Replaced`; только позиция -> `Moved`;
+/// - для пары картинок: размер, шаг строки, цвет, вид или другое окно маски (другой `Arc`
+///   либо смещение, [`SubtitleBitmap::shows_same_pixels_as`]) -> `Replaced`; только позиция -> `Moved`;
 /// - иначе [`OverlayChange::Unchanged`].
 ///
 /// Как и в libass, сравнение маски идёт по указателю, не по содержимому: растеризатор
@@ -622,13 +600,10 @@ pub(crate) fn detect_overlay_change(
     }
     let mut change = OverlayChange::Unchanged;
     for (old, new) in previous.iter().zip(current) {
-        let same_content = old.width == new.width
-            && old.height == new.height
-            && old.stride == new.stride
+        let same_content = old.shows_same_pixels_as(new)
             && old.color == new.color
             && old.kind == new.kind
-            && old.placement_group == new.placement_group
-            && Arc::ptr_eq(&old.coverage, &new.coverage);
+            && old.placement_group == new.placement_group;
         if !same_content {
             return OverlayChange::Replaced;
         }

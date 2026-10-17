@@ -18,6 +18,7 @@ mod render_validation;
 mod startup_read_ahead_settings;
 mod subtitles_ass_settings;
 mod subtitles_blur_settings;
+mod subtitles_glyph_cache_settings;
 mod subtitles_prerender_settings;
 mod subtitles_settings;
 mod track_memory_settings;

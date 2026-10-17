@@ -17,7 +17,10 @@
 //!   столкновений (`RasterizedCue::final_bitmaps`; как в libass).
 //! - Анимированный прямоугольный клип (`\t(\clip(...))`) считается по часам кадра в той же стадии
 //!   и в ключ кэша не входит; `\t`, меняющий вид букв, кладёт в ключ свой вес (реплика рисуется
-//!   заново при каждом новом весе — до трёхуровневого кэша 10c).
+//!   заново при каждом новом весе; общая работа соседних кадров лежит в кэшах глифов
+//!   `crate::glyph_cache`: контуры, маски букв, склейки участков; их лимиты применяются в начале
+//!   каждого `render`). Реплика с мгновенным состоянием анимации кладётся в кэш реплик «на
+//!   испытание» (`ByteLruCache::insert_on_probation`): поток таких записей не вытесняет статичные.
 //! - Караоке (`\k`, `\kf`, `\ko`) тоже стадия после кэша: буквы строки рисуются один раз, а
 //!   `RasterizedCue::final_bitmaps` на каждом кадре раскрашивает их по часам события
 //!   (`crate::karaoke`); срок годности кадра сообщает `RasterizedCue::karaoke_change`.
@@ -62,6 +65,7 @@ use crate::fonts::{
     PreparedAttachedFonts, SubtitleFontLibrary, SystemFontScanReport, SystemFontScanStatus,
     TextLanguagePreference,
 };
+use crate::glyph_cache::{GlyphCacheLimits, GlyphCaches};
 use crate::overlay::{
     CanvasSize, OverlayChange, OverlayRevision, SubtitleBitmap, SubtitleOverlay,
     detect_overlay_change,
@@ -102,6 +106,20 @@ enum CueLook {
     },
 }
 
+impl CueLook {
+    /// Ключ содержит мгновенное состояние анимации (`AssAnimationKey::Sampled`): на соседнем
+    /// кадре он уже другой.
+    fn is_time_sampled(&self) -> bool {
+        matches!(
+            self,
+            Self::Ass {
+                animation: AssAnimationKey::Sampled { .. },
+                ..
+            }
+        )
+    }
+}
+
 /// Ключ кэша готовых реплик.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CueCacheKey {
@@ -117,6 +135,9 @@ pub struct SubtitleRasterizer {
     fonts: SubtitleFontLibrary,
     faces: FaceCache,
     cue_cache: ByteLruCache<CueCacheKey, RasterizedCue>,
+    /// Кэши контуров, масок глифов и склеек участков (libass-подобный нижний уровень под
+    /// кэшем реплик, см. `crate::glyph_cache`).
+    glyph_caches: GlyphCaches,
     limits: RasterLimits,
     /// Рисовальщик реплик (в продакшене всегда `rasterize_cue`, см. [`CuePainter`]).
     painter: CuePainter,
@@ -135,8 +156,13 @@ impl SubtitleRasterizer {
     pub fn new(fonts: SubtitleFontLibrary, limits: RasterLimits) -> Self {
         Self {
             fonts,
-            faces: FaceCache::new(),
+            faces: FaceCache::new(limits.cache.shaping_cache_bytes),
             cue_cache: ByteLruCache::new(limits.cache.cue_bitmaps_bytes),
+            glyph_caches: GlyphCaches::new(GlyphCacheLimits {
+                outline_items: limits.cache.glyph_outline_items,
+                bitmap_bytes: limits.cache.glyph_bitmaps_bytes,
+                composite_bytes: limits.cache.glyph_composites_bytes,
+            }),
             limits,
             painter: rasterize_cue,
             ass_collisions: AssCollisionMemory::default(),
@@ -184,8 +210,13 @@ impl SubtitleRasterizer {
     /// Счётчики кэшей и работы растеризатора.
     pub fn statistics(&self) -> RasterStatistics {
         let fonts = self.fonts.statistics();
+        let glyph_caches = self.glyph_caches.statistics();
         RasterStatistics {
             cue_cache: self.cue_cache.statistics(),
+            outline_cache: glyph_caches.outlines,
+            glyph_bitmap_cache: glyph_caches.bitmaps,
+            composite_cache: glyph_caches.composites,
+            shaping_cache: self.faces.shaped_runs().statistics(),
             face_cache: self.faces.statistics(),
             rasterized_cues: self.counters.rasterized_cues,
             failed_cues: self.counters.failed_cues,
@@ -282,6 +313,7 @@ impl SubtitleRasterizer {
     /// Сбрасывает всё, что зависит от набора шрифтов.
     fn invalidate_font_dependent_state(&mut self) {
         self.cue_cache.clear();
+        self.glyph_caches.clear();
         self.faces.clear();
         self.ass_collisions.clear();
         if let Some(frame) = self.frame.as_mut() {
@@ -291,6 +323,9 @@ impl SubtitleRasterizer {
 
     /// Собирает новый кадр по запросу.
     fn build_frame(&mut self, request: &RenderRequest<'_>) -> FrameState {
+        // Как `check_cache_limits` в начале кадра libass: лимиты кэшей глифов применяются здесь,
+        // а не при вставке, чтобы рабочий набор кадра не вытеснял сам себя.
+        self.glyph_caches.cut_to_limits();
         let signature = FrameSignature::of(request);
         // Холст сверх лимита: рисовать нечего, результат пустой (Replaced, если до этого
         // что-то было показано; ревизию и признак считает общая сборка).
@@ -490,6 +525,7 @@ impl SubtitleRasterizer {
                     max_bitmap_side: self.limits.input.max_canvas_side,
                 },
                 &mut self.blur_scratch,
+                &mut self.glyph_caches,
             ),
         };
         match painted {
@@ -511,7 +547,19 @@ impl SubtitleRasterizer {
                     u64::from(rasterized.diagnostics.invalid_ass_drawings);
                 let bytes = rasterized.cache_bytes();
                 let shared = Arc::new(rasterized);
-                self.cue_cache.insert(cache_key, Arc::clone(&shared), bytes);
+                // Реплика с мгновенным состоянием анимации (`\move`, `\fad`, `\t`, прокрутка) на
+                // соседнем кадре получает другой ключ, и запись стала бы «мёртвой», вытесняя
+                // полезные статичные реплики. Поэтому она ложится в кэш «на испытание»: её
+                // вытеснят раньше любой записи, которой уже пользовались. Состояние, к которому
+                // вернулись или которое застыло после конца движения, при первом попадании
+                // становится обычной записью. Общая работа между кадрами анимации живёт в кэшах
+                // глифов (`crate::glyph_cache`).
+                if cache_key.look.is_time_sampled() {
+                    self.cue_cache
+                        .insert_on_probation(cache_key, Arc::clone(&shared), bytes);
+                } else {
+                    self.cue_cache.insert(cache_key, Arc::clone(&shared), bytes);
+                }
                 Some(shared)
             }
             Err(error) => {

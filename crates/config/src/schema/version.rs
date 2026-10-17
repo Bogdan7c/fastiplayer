@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 20;
+pub const CURRENT_SCHEMA_VERSION: u32 = 21;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -97,14 +97,21 @@ pub(crate) const LEGACY_SCHEMA_VERSION_18: u32 = 18;
 /// версию.
 pub(crate) const LEGACY_SCHEMA_VERSION_19: u32 = 19;
 
+/// Последняя схема до настроек кэшей глифов растеризатора субтитров
+/// (`subtitles.glyph_cache_mb`, `subtitles.glyph_outline_cache_items`).
+///
+/// Новые ключи добавляются со значениями по умолчанию; переписывать пользовательские значения
+/// нечего, поэтому миграция v20 -> v21 только поднимает версию.
+pub(crate) const LEGACY_SCHEMA_VERSION_20: u32 = 20;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v20 и полная цепочка поддерживаемых legacy-версий v2..v19.
+    /// Текущая схема v21 и полная цепочка поддерживаемых legacy-версий v2..v20.
     #[test]
-    fn schema_v20_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 20);
+    fn schema_v21_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 21);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -125,9 +132,10 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_17,
                 LEGACY_SCHEMA_VERSION_18,
                 LEGACY_SCHEMA_VERSION_19,
+                LEGACY_SCHEMA_VERSION_20,
             ],
             [
-                2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+                2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
             ]
         );
     }

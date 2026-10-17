@@ -508,3 +508,118 @@ fn clipped_shift_outside_the_canvas_leaves_nothing() {
             .is_none()
     );
 }
+
+/// Общий буфер 5x4 с шагом 6 (хвост шага = 99): значение = 10 * строка + столбец.
+fn shared_buffer() -> Arc<[u8]> {
+    let mut pixels = Vec::new();
+    for row in 0..4_u8 {
+        for column in 0..6_u8 {
+            pixels.push(if column < 5 { 10 * row + column } else { 99 });
+        }
+    }
+    // Последняя строка без хвоста шага, как в разделяемых масках кэша.
+    pixels.truncate(3 * 6 + 5);
+    pixels.into()
+}
+
+/// Окно 3x2 в общем буфере: начинается в строке 1, столбце 2.
+fn window_bitmap(x: i32, mask: &Arc<[u8]>, offset: usize) -> SubtitleBitmap {
+    SubtitleBitmap::from_shared_view(
+        PixelPoint { x, y: 7 },
+        3,
+        2,
+        6,
+        Arc::clone(mask),
+        offset,
+        WHITE,
+        SubtitleBitmapKind::Glyph,
+    )
+    .unwrap()
+}
+
+#[test]
+fn shared_view_reads_only_its_window() {
+    let mask = shared_buffer();
+    let window = window_bitmap(0, &mask, 6 + 2);
+    assert_eq!(window.coverage(), &[12, 13, 14, 99, 20, 21, 22, 23, 24]);
+    assert_eq!(window.coverage_row(0).unwrap(), &[12, 13, 14]);
+    assert_eq!(window.coverage_row(1).unwrap(), &[22, 23, 24]);
+    assert!(window.coverage_row(2).is_none());
+    // Окно, упирающееся в последнюю строку буфера, не требует хвоста шага.
+    let last = SubtitleBitmap::from_shared_view(
+        PixelPoint { x: 0, y: 0 },
+        2,
+        1,
+        6,
+        Arc::clone(&mask),
+        3 * 6 + 3,
+        WHITE,
+        SubtitleBitmapKind::Glyph,
+    )
+    .unwrap();
+    assert_eq!(last.coverage(), &[33, 34]);
+}
+
+#[test]
+fn shared_view_rejects_windows_that_leave_the_buffer() {
+    let mask = shared_buffer();
+    let build = |offset| {
+        SubtitleBitmap::from_shared_view(
+            PixelPoint { x: 0, y: 0 },
+            3,
+            2,
+            6,
+            Arc::clone(&mask),
+            offset,
+            WHITE,
+            SubtitleBitmapKind::Glyph,
+        )
+    };
+    // Окно 3x2 с шагом 6 занимает 9 байт: последний допустимый сдвиг - длина буфера - 9.
+    let last_fit = mask.len() - 9;
+    assert!(build(last_fit).is_ok());
+    assert_eq!(
+        build(last_fit + 1).unwrap_err(),
+        SubtitleBitmapError::CoverageTooShort {
+            actual: mask.len(),
+            required: mask.len() + 1,
+        }
+    );
+    assert!(build(usize::MAX).is_err());
+}
+
+#[test]
+fn moved_window_of_the_same_buffer_is_moved_not_replaced() {
+    let mask = shared_buffer();
+    let before = [window_bitmap(10, &mask, 8)];
+    let after = [window_bitmap(30, &mask, 8)];
+    assert_eq!(detect_overlay_change(&before, &after), OverlayChange::Moved);
+    // Другое окно того же буфера - другая картинка.
+    let other_window = [window_bitmap(10, &mask, 7)];
+    assert_eq!(
+        detect_overlay_change(&before, &other_window),
+        OverlayChange::Replaced
+    );
+    assert!(before[0].shows_same_pixels_as(&after[0]));
+    assert!(!before[0].shows_same_pixels_as(&other_window[0]));
+}
+
+#[test]
+fn cropping_and_vertical_clipping_work_inside_a_window() {
+    let mask = shared_buffer();
+    let window = window_bitmap(0, &mask, 8);
+    let cropped = window
+        .cropped(LocalRect {
+            x0: 1,
+            y0: 1,
+            x1: 3,
+            y1: 2,
+        })
+        .unwrap();
+    assert_eq!(cropped.coverage_row(0).unwrap(), &[23, 24]);
+    assert_eq!(cropped.origin(), PixelPoint { x: 1, y: 8 });
+    let clipped = window.shifted_vertically_clipped(-8, 100).unwrap();
+    // Верхняя строка окна (y = -1) обрезана: осталась строка 2 исходного буфера.
+    assert_eq!(clipped.height(), 1);
+    assert_eq!(clipped.coverage_row(0).unwrap(), &[22, 23, 24]);
+}

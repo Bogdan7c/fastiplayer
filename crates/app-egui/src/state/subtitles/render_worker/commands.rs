@@ -140,5 +140,6 @@ pub(in crate::state::subtitles) enum WorkerEvent {
     Idle { token: u64 },
     /// Только тесты: счётчики растеризатора.
     #[cfg(test)]
-    Diagnostics(WorkerDiagnostics),
+    /// В `Box`: счётчики растеризатора велики и раздували бы каждое событие канала.
+    Diagnostics(Box<WorkerDiagnostics>),
 }

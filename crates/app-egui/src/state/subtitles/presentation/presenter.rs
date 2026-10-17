@@ -78,7 +78,7 @@ impl ShownOverlay {
             && mine
                 .iter()
                 .zip(theirs)
-                .all(|(a, b)| std::sync::Arc::ptr_eq(a.shared_coverage(), b.shared_coverage()))
+                .all(|(a, b)| a.shows_same_pixels_as(b))
     }
 }
 

@@ -108,6 +108,10 @@ fn cue_cache_never_exceeds_its_limit_and_evicts_the_old() {
         cue_bitmaps_bytes: 120_000,
         shaper_faces: 8,
         blur_scratch_retained_bytes: 32 * 1024 * 1024,
+        glyph_bitmaps_bytes: 40 * 1024 * 1024,
+        glyph_composites_bytes: 20 * 1024 * 1024,
+        glyph_outline_items: 10_000,
+        shaping_cache_bytes: 4 * 1024 * 1024,
     };
     let mut rasterizer = rasterizer(limits);
     let appearance = youtube();
@@ -143,6 +147,10 @@ fn cue_bigger_than_the_whole_cache_is_still_drawn_but_not_cached() {
         cue_bitmaps_bytes: 1_000,
         shaper_faces: 8,
         blur_scratch_retained_bytes: 32 * 1024 * 1024,
+        glyph_bitmaps_bytes: 40 * 1024 * 1024,
+        glyph_composites_bytes: 20 * 1024 * 1024,
+        glyph_outline_items: 10_000,
+        shaping_cache_bytes: 4 * 1024 * 1024,
     };
     let mut rasterizer = rasterizer(limits);
     let test_cues = cues(1, &["Привет, как дела?"]);
@@ -260,6 +268,10 @@ fn cue_larger_than_the_whole_cache_is_redrawn_each_time_but_its_masks_are_counte
         cue_bitmaps_bytes: 1,
         shaper_faces: 16,
         blur_scratch_retained_bytes: 32 * 1024 * 1024,
+        glyph_bitmaps_bytes: 40 * 1024 * 1024,
+        glyph_composites_bytes: 20 * 1024 * 1024,
+        glyph_outline_items: 10_000,
+        shaping_cache_bytes: 4 * 1024 * 1024,
     };
     let mut rasterizer = rasterizer(limits);
     let test_cues = cues(1, &["Привет, как дела?"]);

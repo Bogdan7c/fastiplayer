@@ -19,6 +19,11 @@ const TWO_GROUP_SCRIPT: &str = "[Script Info]\nScriptType: v4.00+\nPlayResX: 256
 
 /// Реплики файла `TWO_GROUP_SCRIPT`, прошедшие настоящий разбор.
 fn two_group_cues() -> Vec<(CueKey, SubtitleLayer, AssCue, AssEventTiming)> {
+    cues_of_script(TWO_GROUP_SCRIPT)
+}
+
+/// Реплики произвольного файла ASS, прошедшие настоящий разбор.
+pub(super) fn cues_of_script(script: &str) -> Vec<(CueKey, SubtitleLayer, AssCue, AssEventTiming)> {
     let limits = SubtitleParseLimits::new(1 << 20, 1000, 100).with_ass_limits(AssParseLimits {
         max_header_bytes: 1 << 16,
         max_styles: 16,
@@ -26,12 +31,12 @@ fn two_group_cues() -> Vec<(CueKey, SubtitleLayer, AssCue, AssEventTiming)> {
         max_tracked_unknown_tag_names: 8,
     });
     let loaded = load_text_subtitle(
-        TWO_GROUP_SCRIPT.as_bytes(),
+        script.as_bytes(),
         TextSubtitleFormat::Ass,
         LegacyEncodingHint::Generic,
         &limits,
     )
-    .expect("two-group ASS script must load");
+    .expect("ASS script must load");
     let mut timeline = SubtitleTimeline::new();
     let ids: Vec<(SubtitleEventId, SubtitleLayer)> = loaded
         .document()
@@ -78,7 +83,7 @@ fn two_group_overlay() -> SubtitleOverlay {
         .clone()
 }
 
-fn full_picture() -> render_core::PictureRect {
+pub(super) fn full_picture() -> render_core::PictureRect {
     render_core::PictureRect {
         x: 0.0,
         y: 0.0,

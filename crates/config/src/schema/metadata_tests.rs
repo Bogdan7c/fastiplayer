@@ -141,6 +141,9 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "subtitles.prerender_frames",
     "subtitles.prepared_overlays",
     "subtitles.blur_scratch_retained_mb",
+    "subtitles.glyph_cache_mb",
+    "subtitles.glyph_outline_cache_items",
+    "subtitles.shaping_cache_mb",
 ];
 
 #[test]
@@ -470,6 +473,24 @@ fn metadata_ranges_match_validation_constants() {
         "subtitles.blur_scratch_retained_mb",
         crate::MIN_BLUR_SCRATCH_RETAINED_MB,
         crate::MAX_BLUR_SCRATCH_RETAINED_MB,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.glyph_cache_mb",
+        crate::MIN_GLYPH_CACHE_MB,
+        crate::MAX_GLYPH_CACHE_MB,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.glyph_outline_cache_items",
+        crate::MIN_GLYPH_OUTLINE_CACHE_ITEMS,
+        crate::MAX_GLYPH_OUTLINE_CACHE_ITEMS,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.shaping_cache_mb",
+        crate::MIN_SHAPING_CACHE_MB,
+        crate::MAX_SHAPING_CACHE_MB,
     );
     assert_text_len(
         &registry,

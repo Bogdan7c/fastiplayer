@@ -7,6 +7,8 @@ mod ass_cache;
 mod ass_clip;
 mod ass_drawing;
 mod ass_effect;
+mod ass_glyph_caches;
+mod ass_glyph_caches_review;
 mod ass_karaoke;
 mod ass_karaoke_zero_size;
 mod ass_placement_group;
@@ -40,6 +42,10 @@ pub(super) const ROOMY_LIMITS: RasterCacheLimits = RasterCacheLimits {
     cue_bitmaps_bytes: 64 * 1024 * 1024,
     shaper_faces: 16,
     blur_scratch_retained_bytes: 32 * 1024 * 1024,
+    glyph_bitmaps_bytes: 40 * 1024 * 1024,
+    glyph_composites_bytes: 20 * 1024 * 1024,
+    glyph_outline_items: 10_000,
+    shaping_cache_bytes: 4 * 1024 * 1024,
 };
 
 /// Лимиты входа, с которыми они не мешают тестам.

@@ -11,10 +11,14 @@ use crate::face_cache::FaceCache;
 use crate::fonts::{
     FontLookupCacheLimits, FontStyle, FontWeightClass, SubtitleFontLibrary, TextLanguagePreference,
 };
+use crate::glyph_cache::GlyphCaches;
 use crate::glyph_info::TextCluster;
 use crate::glyph_render::retrieve_glyphs;
 use crate::shaping::shape_text;
 use crate::source_text::SourceText;
+
+/// Бюджет кэша шейпинга в тестах (как значение по умолчанию конфига: 4 МБ).
+pub(crate) const SHAPING_BUDGET_BYTES: usize = 4 * 1024 * 1024;
 
 pub(crate) const WHITE: SubtitleColor = SubtitleColor {
     red: 255,
@@ -83,7 +87,7 @@ pub(crate) fn shaped_clusters(
     style: &EventStyle,
 ) -> Vec<TextCluster> {
     let source = SourceText::from_styled(text, style);
-    let mut faces = FaceCache::new();
+    let mut faces = FaceCache::new(crate::test_support::SHAPING_BUDGET_BYTES);
     let mut clusters = shape_text(
         fonts,
         &mut faces,
@@ -92,6 +96,14 @@ pub(crate) fn shaped_clusters(
         TextLanguagePreference::unknown(),
     )
     .expect("shaping");
-    retrieve_glyphs(&faces, &mut clusters, &source.looks, &source.drawings).expect("outlines");
+    let mut caches = GlyphCaches::transient();
+    retrieve_glyphs(
+        &faces,
+        &mut caches.outlines,
+        &mut clusters,
+        &source.looks,
+        &source.drawings,
+    )
+    .expect("outlines");
     clusters
 }

@@ -197,6 +197,10 @@ fn rasterizer() -> SubtitleRasterizer {
                 cue_bitmaps_bytes: 16 * 1024 * 1024,
                 shaper_faces: 8,
                 blur_scratch_retained_bytes: 32 * 1024 * 1024,
+                glyph_bitmaps_bytes: 40 * 1024 * 1024,
+                glyph_composites_bytes: 20 * 1024 * 1024,
+                glyph_outline_items: 10_000,
+                shaping_cache_bytes: 4 * 1024 * 1024,
             },
             input: RasterInputLimits {
                 max_chars_per_cue: 1000,
@@ -620,4 +624,5 @@ fn layer_offset_is_still_clipped_by_the_visible_video_area() {
     }
 }
 
+mod edge_cut;
 mod group_offsets;

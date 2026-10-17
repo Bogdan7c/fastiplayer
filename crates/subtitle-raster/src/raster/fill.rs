@@ -22,6 +22,7 @@
 
 use super::segment::{
     SEGFLAG_DN, SEGFLAG_EXACT_LEFT, SEGFLAG_UL_DR, Segment, SplitLine, floor_log2, split_segments,
+    split_stack_tail,
 };
 use super::tile::{
     TILE_ORDER, TILE_SIZE, fill_generic_tile, fill_halfplane_tile, fill_solid_tile, merge_tile,
@@ -142,6 +143,8 @@ impl StackId {
 pub(super) struct LineStacks {
     first: Vec<Segment>,
     second: Vec<Segment>,
+    /// Запасной буфер для обрезки ломаной окном (чтобы не выделять память на каждую заливку).
+    spare: Vec<Segment>,
 }
 
 impl LineStacks {
@@ -167,10 +170,75 @@ impl LineStacks {
         }
     }
 
-    fn clear(&mut self) {
+    /// Набор с зарезервированной ёмкостью `segments` в первом стеке (для тестов пула).
+    #[cfg(test)]
+    pub(super) fn reserved(segments: usize) -> Self {
+        Self {
+            first: Vec::with_capacity(segments),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn clear(&mut self) {
         self.first.clear();
         self.second.clear();
+        self.spare.clear();
     }
+
+    /// Суммарная ёмкость всех буферов в отрезках (для решения пула, держать ли набор).
+    pub(super) fn retained_capacity(&self) -> usize {
+        self.first.capacity() + self.second.capacity() + self.spare.capacity()
+    }
+
+    /// Накопленная ломаная: она лежит в первом стеке (libass: `linebuf[0]`).
+    pub(super) fn polyline(&self) -> &Vec<Segment> {
+        &self.first
+    }
+
+    /// Изменяемая ломаная (см. [`Self::polyline`]).
+    pub(super) fn polyline_mut(&mut self) -> &mut Vec<Segment> {
+        &mut self.first
+    }
+
+    /// Обрезает первый стек одной линией окна: остаётся часть «до» (`KeepSide::Before`) либо
+    /// «после» (`KeepSide::After`), вторая часть отбрасывается, намотка отброшенной накапливается.
+    /// Возвращает числа оставшихся отрезков по группам.
+    fn cut_polyline(
+        &mut self,
+        group_sizes: [usize; 2],
+        line: SplitLine,
+        keep: KeepSide,
+        winding: &mut [i32; 2],
+    ) -> [usize; 2] {
+        let Self {
+            first,
+            second,
+            spare,
+        } = self;
+        // Оба буфера пусты: используются только как приёмники, `second` - для отброшенного.
+        second.clear();
+        spare.clear();
+        let counts = match keep {
+            KeepSide::Before => split_segments(first, group_sizes, line, spare, second, winding),
+            KeepSide::After => split_segments(first, group_sizes, line, second, spare, winding),
+        };
+        std::mem::swap(first, spare);
+        second.clear();
+        spare.clear();
+        match keep {
+            KeepSide::Before => counts.before,
+            KeepSide::After => counts.after,
+        }
+    }
+}
+
+/// Какую часть ломаной оставляет обрезка окном.
+#[derive(Clone, Copy)]
+enum KeepSide {
+    /// Часть до линии (слева/сверху).
+    Before,
+    /// Часть после линии (справа/снизу).
+    After,
 }
 
 /// Какие отрезки и какая намотка относятся к узлу дерева.
@@ -270,8 +338,7 @@ impl Rasterizer {
         // Переносим начало координат в левый верхний угол окна.
         let shift_x = window.x0.wrapping_mul(64);
         let shift_y = window.y0.wrapping_mul(64);
-        let mut lines = std::mem::take(&mut self.polyline);
-        for line in &mut lines {
+        for line in self.stacks.polyline_mut() {
             line.x_min = line.x_min.wrapping_sub(shift_x);
             line.x_max = line.x_max.wrapping_sub(shift_x);
             line.y_min = line.y_min.wrapping_sub(shift_y);
@@ -288,50 +355,49 @@ impl Rasterizer {
         bbox.y_min = bbox.y_min.wrapping_sub(shift_y);
         bbox.y_max = bbox.y_max.wrapping_sub(shift_y);
 
-        let mut group_sizes = [self.n_first, lines.len().saturating_sub(self.n_first)];
+        let polyline_len = self.stacks.polyline().len();
+        let mut group_sizes = [self.n_first, polyline_len.saturating_sub(self.n_first)];
         let mut winding = [0_i32; 2];
 
         // Обрезка окном: сначала справа и снизу (выбрасываем лишнее), потом слева и сверху
         // (учитываем намотку отброшенной части).
         if bbox.x_max >= size_x {
-            let (kept, counts) = split_keeping_before(
-                &lines,
+            group_sizes = self.stacks.cut_polyline(
                 group_sizes,
                 SplitLine::Vertical(size_x),
+                KeepSide::Before,
                 &mut winding,
             );
-            lines = kept;
-            group_sizes = counts;
             winding = [0, 0];
         }
         if bbox.y_max >= size_y {
-            let (kept, counts) = split_keeping_before(
-                &lines,
+            group_sizes = self.stacks.cut_polyline(
                 group_sizes,
                 SplitLine::Horizontal(size_y),
+                KeepSide::Before,
                 &mut winding,
             );
-            lines = kept;
-            group_sizes = counts;
             winding = [0, 0];
         }
         if bbox.x_min <= 0 {
-            let (kept, counts) =
-                split_keeping_after(&lines, group_sizes, SplitLine::Vertical(0), &mut winding);
-            lines = kept;
-            group_sizes = counts;
+            group_sizes = self.stacks.cut_polyline(
+                group_sizes,
+                SplitLine::Vertical(0),
+                KeepSide::After,
+                &mut winding,
+            );
         }
         if bbox.y_min <= 0 {
-            let (kept, counts) =
-                split_keeping_after(&lines, group_sizes, SplitLine::Horizontal(0), &mut winding);
-            lines = kept;
-            group_sizes = counts;
+            group_sizes = self.stacks.cut_polyline(
+                group_sizes,
+                SplitLine::Horizontal(0),
+                KeepSide::After,
+                &mut winding,
+            );
         }
 
         self.n_first = 0;
         self.bbox = crate::outline::ControlBox::EMPTY;
-        self.stacks.clear();
-        *self.stacks.stack_mut(StackId::First) = lines;
         let result = self.fill_level(
             buffer,
             Target {
@@ -451,18 +517,14 @@ impl Rasterizer {
 
         let mut winding1 = winding;
         let other = index.other();
-        self.scratch.clear();
-        if let Some(node_lines) = self.stacks.stack(index).get(offset..) {
-            self.scratch.extend_from_slice(node_lines);
-        }
-        self.stacks.stack_mut(index).truncate(offset);
         let counts = {
             let (before, after) = self.stacks.pair_mut(index);
-            split_segments(
-                &self.scratch,
+            // Часть «до» остаётся на месте узла, «после» кладётся на вершину второго стека.
+            split_stack_tail(
+                before,
+                offset,
                 group_sizes,
                 split_line,
-                before,
                 after,
                 &mut winding1,
             )
@@ -539,46 +601,6 @@ impl Rasterizer {
         }
         merge_tile(buffer, origin, stride, &self.tile)
     }
-}
-
-/// Делит `lines` линией и оставляет часть «до» (остальное отбрасывается, намотка накапливается).
-fn split_keeping_before(
-    lines: &[Segment],
-    group_sizes: [usize; 2],
-    line: SplitLine,
-    winding: &mut [i32; 2],
-) -> (Vec<Segment>, [usize; 2]) {
-    let mut before = Vec::with_capacity(lines.len());
-    let mut discarded = Vec::new();
-    let counts = split_segments(
-        lines,
-        group_sizes,
-        line,
-        &mut before,
-        &mut discarded,
-        winding,
-    );
-    (before, counts.before)
-}
-
-/// Делит `lines` линией и оставляет часть «после» (часть «до» отбрасывается).
-fn split_keeping_after(
-    lines: &[Segment],
-    group_sizes: [usize; 2],
-    line: SplitLine,
-    winding: &mut [i32; 2],
-) -> (Vec<Segment>, [usize; 2]) {
-    let mut discarded = Vec::new();
-    let mut after = Vec::with_capacity(lines.len());
-    let counts = split_segments(
-        lines,
-        group_sizes,
-        line,
-        &mut discarded,
-        &mut after,
-        winding,
-    );
-    (after, counts.after)
 }
 
 /// Заливает область сплошным значением по тайлам (libass: `rasterizer_fill_solid`).

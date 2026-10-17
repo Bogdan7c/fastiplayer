@@ -25,15 +25,22 @@
 //! раскладывается обратно по кластерам реплики.
 
 use harfrust::{
-    Direction, Feature, GlyphExtents, ShapeOptions, Tag, UnicodeBuffer,
+    Direction, Feature, GlyphExtents, ShapeOptions, ShapePlan, Tag, UnicodeBuffer,
     font::{BuiltinFontFuncs, FontFuncs},
 };
+use std::cell::OnceCell;
+
+use skrifa::FontRef;
 use skrifa::outline::OutlineGlyphCollection;
 use skrifa::{GlyphId, MetadataProvider};
 
+use super::plan_cache::PlanSelector;
+use super::run_cache::ShapedGlyph;
 use super::script::language_for_script;
-use crate::face_cache::{FaceCache, FaceLoadError};
+use crate::event_style::AxisPair;
+use crate::face_cache::{FaceCache, FaceEntry, FaceLoadError};
 use crate::fixed_point::Vector26;
+use crate::fonts::FaceId;
 use crate::glyph_info::{PlacedGlyph, TextCluster};
 use crate::glyph_render::{FaceScale, HintedAdvances};
 use crate::outline::round_ties_even_to_i32;
@@ -47,7 +54,10 @@ use crate::source_text::KerningMode;
 struct LibassFontFuncs<'a> {
     scale: FaceScale,
     advances: &'a HintedAdvances,
-    outlines: OutlineGlyphCollection<'a>,
+    font: &'a FontRef<'a>,
+    /// Контуры шрифта: разбор таблиц `glyf`/`CFF` нужен только для глифа, чьё хинтованное
+    /// продвижение ещё не посчитано, поэтому создаются при первой необходимости.
+    outlines: OnceCell<OutlineGlyphCollection<'a>>,
 }
 
 impl LibassFontFuncs<'_> {
@@ -58,9 +68,14 @@ impl LibassFontFuncs<'_> {
 
 impl FontFuncs for LibassFontFuncs<'_> {
     fn advance_width(&mut self, builtin: &BuiltinFontFuncs, glyph: GlyphId) -> i32 {
-        self.advances
-            .advance(&self.outlines, glyph)
-            .unwrap_or_else(|| self.scaled(builtin.advance_width(glyph)))
+        let hinted = match self.advances.known_advance(glyph) {
+            Some(known) => known,
+            None => {
+                let outlines = self.outlines.get_or_init(|| self.font.outline_glyphs());
+                self.advances.advance(outlines, glyph)
+            }
+        };
+        hinted.unwrap_or_else(|| self.scaled(builtin.advance_width(glyph)))
     }
 
     fn advance_height(&mut self, builtin: &BuiltinFontFuncs, glyph: GlyphId) -> i32 {
@@ -108,6 +123,10 @@ fn run_features(kerning: KerningMode, has_letter_spacing: bool) -> [Feature; 5] 
 /// пикселей кадра, берутся у первого кластера участка: участок единого вида
 /// (`split_style_runs`) имеет один размер и масштаб. `kerning` — настройка дорожки.
 ///
+/// Результат шейпинга (глифы при размере 256 px) берётся из кэша лица, если такой участок уже
+/// шейпился (`ShapedRunCache`, один на растеризатор); масштаб кластера применяется после кэша, поэтому один
+/// результат обслуживает любые размеры и `\fscx`/`\fscy`.
+///
 /// Перед вызовом у всех кластеров реплики должно быть `skip = true`: кластер, которому
 /// шейпер не вернул ни одного глифа (символ поглощён лигатурой), так и остаётся пропущенным.
 pub(super) fn shape_run(
@@ -120,55 +139,151 @@ pub(super) fn shape_run(
         return Ok(());
     };
     let glyph_scale = first.glyph_scale;
-    let has_letter_spacing = first.has_letter_spacing;
     let face = first.face;
-    let script = first.script;
-    let level = first.bidi_level;
+    let selector = PlanSelector {
+        direction: if first.bidi_level % 2 == 1 {
+            Direction::RightToLeft
+        } else {
+            Direction::LeftToRight
+        },
+        script: first.script,
+        kerning: kerning == KerningMode::Enabled,
+        ligatures: !first.has_letter_spacing,
+    };
     let entry = faces.get(face)?;
+    let symbols = clusters
+        .get(run.clone())
+        .unwrap_or(&[])
+        .iter()
+        .map(|cluster| cluster.symbol);
+    let shaped = faces
+        .shaped_runs()
+        .glyphs_for(face, selector, symbols, |symbols| {
+            shape_glyphs(entry, selector, symbols)
+        })?;
+    place_glyphs(clusters, run.start, &shaped, glyph_scale, face);
+    Ok(())
+}
+
+/// Откуда шейпинг берёт план возможностей OpenType.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PlanSource {
+    /// Из кэша планов лица (продакшен).
+    FaceCache,
+    /// План строит сам `harfrust` по свойствам буфера. Нужен тестам: кэшированный план обязан
+    /// давать тот же результат, что собственный план `harfrust`.
+    #[cfg(test)]
+    HarfrustOwn,
+}
+
+/// Шейпит текст участка `harfrust` без кэша результатов (план берётся из кэша планов лица).
+fn shape_glyphs(
+    entry: &FaceEntry,
+    selector: PlanSelector,
+    symbols: &str,
+) -> Result<Vec<ShapedGlyph>, FaceLoadError> {
+    shape_glyphs_with(entry, selector, symbols, PlanSource::FaceCache)
+}
+
+/// То же, что [`shape_glyphs`], с явным источником плана ([`PlanSource`]).
+pub(super) fn shape_glyphs_with(
+    entry: &FaceEntry,
+    selector: PlanSelector,
+    symbols: &str,
+    plan_source: PlanSource,
+) -> Result<Vec<ShapedGlyph>, FaceLoadError> {
     let font = entry.font_ref()?;
     let shaper = entry.shaper_data().shaper(&font).build();
 
     let mut buffer = UnicodeBuffer::new();
-    for (relative, cluster) in clusters.get(run.clone()).unwrap_or(&[]).iter().enumerate() {
-        buffer.add(cluster.symbol, u32::try_from(relative).unwrap_or(u32::MAX));
+    for (relative, symbol) in symbols.chars().enumerate() {
+        buffer.add(symbol, u32::try_from(relative).unwrap_or(u32::MAX));
     }
-    buffer.set_direction(if level % 2 == 1 {
-        Direction::RightToLeft
-    } else {
-        Direction::LeftToRight
-    });
-    buffer.set_script(script);
-    if let Some(language) = language_for_script(script) {
-        buffer.set_language(language);
+    buffer.set_direction(selector.direction);
+    buffer.set_script(selector.script);
+    let language = language_for_script(selector.script);
+    if let Some(language) = &language {
+        buffer.set_language(language.clone());
     }
 
-    let features = run_features(kerning, has_letter_spacing);
+    let kerning = if selector.kerning {
+        KerningMode::Enabled
+    } else {
+        KerningMode::Disabled
+    };
+    let features = run_features(kerning, !selector.ligatures);
+    // План совпадает с тем, который `harfrust` строил бы сам по свойствам буфера, но берётся из
+    // кэша лица (см. [`PlanSelector`]).
+    let plan = match plan_source {
+        PlanSource::FaceCache => Some(entry.shape_plans().plan_for(selector, || {
+            ShapePlan::new(
+                &shaper,
+                selector.direction,
+                Some(selector.script),
+                language.as_ref(),
+                &features,
+            )
+        })),
+        #[cfg(test)]
+        PlanSource::HarfrustOwn => None,
+    };
     let mut funcs = LibassFontFuncs {
         scale: *entry.scale(),
         advances: entry.advances(),
-        outlines: font.outline_glyphs(),
+        font: &font,
+        outlines: OnceCell::new(),
     };
     let options = ShapeOptions::new()
         .scale(Some(entry.scale().shaping_scale()))
         .features(&features)
+        .plan(plan.as_deref())
         .font_funcs(Some(&mut funcs));
     let shaped = shaper.shape(buffer, options);
 
-    for (info, position) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
-        let index = run.start + info.cluster as usize;
+    Ok(shaped
+        .glyph_infos()
+        .iter()
+        .zip(shaped.glyph_positions())
+        .map(|(info, position)| ShapedGlyph {
+            cluster: info.cluster,
+            glyph_id: info.glyph_id,
+            x_advance: position.x_advance,
+            y_advance: position.y_advance,
+            x_offset: position.x_offset,
+            y_offset: position.y_offset,
+        })
+        .collect())
+}
+
+/// Раскладывает глифы шейпера по кластерам участка, начинающегося с `run_start`.
+fn place_glyphs(
+    clusters: &mut [TextCluster],
+    run_start: usize,
+    shaped: &[ShapedGlyph],
+    glyph_scale: AxisPair,
+    face: FaceId,
+) {
+    for shaped_glyph in shaped {
+        let index = run_start + shaped_glyph.cluster as usize;
         let Some(cluster) = clusters.get_mut(index) else {
             continue;
         };
         let glyph = PlacedGlyph {
             advance: Vector26 {
-                x: round_ties_even_to_i32(f64::from(position.x_advance) * glyph_scale.horizontal),
-                y: round_ties_even_to_i32(-f64::from(position.y_advance) * glyph_scale.vertical),
+                x: round_ties_even_to_i32(
+                    f64::from(shaped_glyph.x_advance) * glyph_scale.horizontal,
+                ),
+                y: round_ties_even_to_i32(
+                    -f64::from(shaped_glyph.y_advance) * glyph_scale.vertical,
+                ),
             },
             offset: Vector26 {
-                x: round_ties_even_to_i32(f64::from(position.x_offset) * glyph_scale.horizontal),
-                y: round_ties_even_to_i32(-f64::from(position.y_offset) * glyph_scale.vertical),
+                x: round_ties_even_to_i32(
+                    f64::from(shaped_glyph.x_offset) * glyph_scale.horizontal,
+                ),
+                y: round_ties_even_to_i32(-f64::from(shaped_glyph.y_offset) * glyph_scale.vertical),
             },
-            ..PlacedGlyph::unshaped(GlyphId::new(info.glyph_id), face)
+            ..PlacedGlyph::unshaped(GlyphId::new(shaped_glyph.glyph_id), face)
         };
         let advance = glyph.advance;
         if cluster.skip {
@@ -180,5 +295,4 @@ pub(super) fn shape_run(
         }
         cluster.cluster_advance.add_saturating(advance);
     }
-    Ok(())
 }

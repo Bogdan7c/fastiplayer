@@ -19,6 +19,8 @@
 
 //! Письменность символов и язык участков шейпинга.
 
+use std::sync::OnceLock;
+
 use harfrust::{Language, Script, UnicodeBuffer, script};
 
 /// Письменность символа или `None`, если она определяется по контексту (общие и
@@ -28,13 +30,39 @@ use harfrust::{Language, Script, UnicodeBuffer, script};
 /// `UnicodeBuffer::guess_segment_properties`, который берёт письменность первого символа с
 /// собственной письменностью. Для одного символа это ровно `hb_unicode_script`, где
 /// «нет собственной письменности» совпадает с Common/Inherited/Unknown.
-fn own_script(ch: char) -> Option<Script> {
-    let mut buffer = UnicodeBuffer::new();
+fn own_script(buffer: &mut UnicodeBuffer, ch: char) -> Option<Script> {
+    // Буфер переиспользуется между символами (`clear` сбрасывает и письменность), чтобы не
+    // выделять память на каждый символ реплики.
+    buffer.clear();
     buffer.add(ch, 0);
     buffer.guess_segment_properties();
     let detected = buffer.script();
     (detected != script::UNKNOWN && detected != script::COMMON && detected != script::INHERITED)
         .then_some(detected)
+}
+
+/// Собственные письменности символов ASCII, посчитанные тем же [`own_script`] один раз.
+///
+/// Субтитры чаще всего латинские: таблица избавляет от обращения к Unicode-данным `harfrust`
+/// на каждую букву, а ответ остаётся тем же по построению.
+fn ascii_own_scripts() -> &'static [Option<Script>; 128] {
+    static TABLE: OnceLock<[Option<Script>; 128]> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut buffer = UnicodeBuffer::new();
+        let mut table = [None; 128];
+        for (code, slot) in (0_u8..128).zip(table.iter_mut()) {
+            *slot = own_script(&mut buffer, char::from(code));
+        }
+        table
+    })
+}
+
+/// Собственная письменность символа: ASCII - из таблицы, остальное - через `harfrust`.
+fn own_script_cached(buffer: &mut UnicodeBuffer, ch: char) -> Option<Script> {
+    match ascii_own_scripts().get(ch as usize) {
+        Some(known) => *known,
+        None => own_script(buffer, ch),
+    }
 }
 
 /// Письменность каждого символа (libass: `ass_shaper_determine_script`).
@@ -43,7 +71,11 @@ fn own_script(ch: char) -> Option<Script> {
 /// письменностью; если такого нет (текст начинается с цифры или пробела) — следующего.
 /// Если письменности нет нигде — `script::COMMON`.
 pub(crate) fn determine_scripts(symbols: &[char]) -> Vec<Script> {
-    let own: Vec<Option<Script>> = symbols.iter().map(|ch| own_script(*ch)).collect();
+    let mut buffer = UnicodeBuffer::new();
+    let own: Vec<Option<Script>> = symbols
+        .iter()
+        .map(|ch| own_script_cached(&mut buffer, *ch))
+        .collect();
     let mut resolved: Vec<Option<Script>> = Vec::with_capacity(own.len());
     let mut last_script: Option<Script> = None;
     for detected in &own {
@@ -177,6 +209,31 @@ mod tests {
             determine_scripts(&text)
                 .iter()
                 .all(|s| *s == script::COMMON)
+        );
+    }
+
+    #[test]
+    fn ascii_table_has_the_expected_scripts_and_non_ascii_goes_the_direct_way() {
+        let mut buffer = UnicodeBuffer::new();
+        // Независимые ожидания (Unicode Script): ASCII-буквы - латиница, всё остальное в ASCII
+        // (цифры, пробелы, знаки, управляющие) - общая письменность, то есть `None`.
+        for code in 0_u8..128 {
+            let ch = char::from(code);
+            let expected = ch.is_ascii_alphabetic().then_some(script::LATIN);
+            assert_eq!(own_script_cached(&mut buffer, ch), expected, "{ch:?}");
+        }
+        // Таблица не расходится с прямым определением на тех символах, которые она охватывает.
+        let table = ascii_own_scripts();
+        assert_eq!(table.iter().flatten().count(), 52, "only A-Z and a-z");
+        // Не-ASCII идёт обычным путём, и переиспользованный буфер не тащит чужую письменность.
+        assert_eq!(own_script_cached(&mut buffer, 'я'), Some(script::CYRILLIC));
+        assert_eq!(own_script_cached(&mut buffer, ' '), None);
+        assert_eq!(own_script_cached(&mut buffer, 'ا'), Some(script::ARABIC));
+        assert_eq!(own_script_cached(&mut buffer, 'a'), Some(script::LATIN));
+        assert_eq!(own_script_cached(&mut buffer, '5'), None);
+        assert_eq!(
+            own_script_cached(&mut buffer, '\u{3b1}'),
+            Some(script::GREEK)
         );
     }
 

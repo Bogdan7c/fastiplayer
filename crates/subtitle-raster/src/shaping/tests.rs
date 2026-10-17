@@ -112,7 +112,7 @@ fn shape_with_look(
     let style = plain_style();
     let mut source = crate::source_text::SourceText::from_styled(&plain_text(text), &style);
     adjust(&mut source);
-    let mut faces = crate::face_cache::FaceCache::new();
+    let mut faces = crate::face_cache::FaceCache::new(crate::test_support::SHAPING_BUDGET_BYTES);
     super::shape_text(
         &mut fonts,
         &mut faces,
@@ -176,4 +176,153 @@ fn kerning_mode_tightens_the_kerned_pair() {
     let off = advance_of_first(crate::source_text::KerningMode::Disabled);
     let on = advance_of_first(crate::source_text::KerningMode::Enabled);
     assert!(on < off, "A before V is kerned: {on} < {off}");
+}
+
+/// Шейпит `text` в общем кэше лиц и возвращает кластеры.
+fn shape_in_shared_faces(
+    fonts: &mut crate::fonts::SubtitleFontLibrary,
+    faces: &mut crate::face_cache::FaceCache,
+    text: &str,
+    adjust: impl FnOnce(&mut crate::source_text::SourceText),
+) -> Vec<crate::glyph_info::TextCluster> {
+    let style = plain_style();
+    let mut source = crate::source_text::SourceText::from_styled(&plain_text(text), &style);
+    adjust(&mut source);
+    super::shape_text(
+        fonts,
+        faces,
+        &source,
+        &style,
+        crate::fonts::TextLanguagePreference::unknown(),
+    )
+    .expect("shaping")
+}
+
+#[test]
+fn shape_plan_is_built_once_per_property_set_and_reused_with_identical_results() {
+    let mut fonts = embedded_fonts();
+    let mut faces = crate::face_cache::FaceCache::new(crate::test_support::SHAPING_BUDGET_BYTES);
+    let plans_of = |faces: &crate::face_cache::FaceCache, face| {
+        faces.get(face).expect("face").shape_plans().len()
+    };
+
+    let first = shape_in_shared_faces(&mut fonts, &mut faces, "Hello fi", |_| {});
+    let face = first[0].face;
+    assert_eq!(plans_of(&faces, face), 1);
+    let second = shape_in_shared_faces(&mut fonts, &mut faces, "Hello fi", |_| {});
+    assert_eq!(plans_of(&faces, face), 1, "same properties reuse the plan");
+    let advances = |clusters: &[crate::glyph_info::TextCluster]| -> Vec<_> {
+        clusters
+            .iter()
+            .map(|cluster| (cluster.skip, cluster.root.glyph, cluster.cluster_advance))
+            .collect()
+    };
+    assert_eq!(advances(&first), advances(&second));
+
+    // Кернинг и межбуквенный интервал меняют набор возможностей: нужны отдельные планы,
+    // и они действительно действуют (кернинг сужает пару, интервал разрывает лигатуру).
+    let kerned = shape_in_shared_faces(&mut fonts, &mut faces, "AV", |source| {
+        source.kerning = crate::source_text::KerningMode::Enabled;
+    });
+    let plain = shape_in_shared_faces(&mut fonts, &mut faces, "AV", |_| {});
+    assert!(kerned[0].cluster_advance.x < plain[0].cluster_advance.x);
+    let spaced = shape_in_shared_faces(&mut fonts, &mut faces, "fi", |source| {
+        for look in &mut source.looks {
+            look.letter_spacing = 1.0;
+        }
+    });
+    assert!(
+        spaced.iter().all(|cluster| !cluster.skip),
+        "no ligature with spacing"
+    );
+    assert_eq!(plans_of(&faces, face), 3, "default, kerning, no ligatures");
+}
+
+#[test]
+fn plan_cache_builds_only_missing_plans() {
+    use super::plan_cache::{PlanSelector, ShapePlanCache};
+    let mut fonts = embedded_fonts();
+    let mut faces = crate::face_cache::FaceCache::new(crate::test_support::SHAPING_BUDGET_BYTES);
+    let clusters = shape_in_shared_faces(&mut fonts, &mut faces, "a", |_| {});
+    let entry = faces.get(clusters[0].face).expect("face");
+    let font = entry.font_ref().expect("font");
+    let shaper = entry.shaper_data().shaper(&font).build();
+    let cache = ShapePlanCache::default();
+    let selector = PlanSelector {
+        direction: harfrust::Direction::LeftToRight,
+        script: harfrust::script::LATIN,
+        kerning: false,
+        ligatures: true,
+    };
+    let builds = std::cell::Cell::new(0);
+    let build = || {
+        builds.set(builds.get() + 1);
+        harfrust::ShapePlan::new(
+            &shaper,
+            selector.direction,
+            Some(selector.script),
+            None,
+            &[],
+        )
+    };
+    let first = cache.plan_for(selector, build);
+    let second = cache.plan_for(selector, build);
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+    assert_eq!(builds.get(), 1);
+    let other = PlanSelector {
+        direction: harfrust::Direction::RightToLeft,
+        ..selector
+    };
+    let third = cache.plan_for(other, build);
+    assert!(!std::sync::Arc::ptr_eq(&first, &third));
+    assert_eq!((builds.get(), cache.len()), (2, 2));
+}
+
+#[test]
+fn shaped_run_is_cached_per_text_and_cached_result_equals_a_fresh_shaping() {
+    let mut fonts = embedded_fonts();
+    let mut faces = crate::face_cache::FaceCache::new(crate::test_support::SHAPING_BUDGET_BYTES);
+    let runs_of =
+        |faces: &crate::face_cache::FaceCache, _face| faces.shaped_runs().statistics().entries;
+    let signature = |clusters: &[crate::glyph_info::TextCluster]| -> Vec<_> {
+        clusters
+            .iter()
+            .map(|cluster| {
+                (
+                    cluster.skip,
+                    cluster.root.glyph,
+                    cluster.root.advance,
+                    cluster.root.offset,
+                    cluster.extra.len(),
+                    cluster.cluster_advance,
+                )
+            })
+            .collect()
+    };
+
+    let first = shape_in_shared_faces(&mut fonts, &mut faces, "Hello fi", |_| {});
+    let face = first[0].face;
+    assert_eq!(runs_of(&faces, face), 1);
+    let cached = shape_in_shared_faces(&mut fonts, &mut faces, "Hello fi", |_| {});
+    assert_eq!(runs_of(&faces, face), 1, "the same run is not shaped again");
+    // Результат из кэша совпадает с шейпингом в пустом кэше лиц.
+    let fresh = shape_with_look("Hello fi", |_| {});
+    assert_eq!(signature(&first), signature(&fresh));
+    assert_eq!(signature(&cached), signature(&fresh));
+
+    // Другой текст и другие свойства - отдельные записи.
+    shape_in_shared_faces(&mut fonts, &mut faces, "Hello", |_| {});
+    shape_in_shared_faces(&mut fonts, &mut faces, "Hello fi", |source| {
+        source.kerning = crate::source_text::KerningMode::Enabled;
+    });
+    assert_eq!(runs_of(&faces, face), 3);
+
+    // Размер шрифта не часть ключа: масштаб применяется после кэша, продвижения пропорциональны.
+    let doubled = shape_in_shared_faces(&mut fonts, &mut faces, "Hello fi", |source| {
+        for look in &mut source.looks {
+            look.font_size *= 2.0;
+        }
+    });
+    assert_eq!(runs_of(&faces, face), 3, "size reuses the cached shaping");
+    assert!((doubled[0].root.advance.x - 2 * first[0].root.advance.x).abs() <= 1);
 }

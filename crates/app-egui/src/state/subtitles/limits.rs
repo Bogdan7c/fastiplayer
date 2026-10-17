@@ -145,6 +145,17 @@ fn megabytes_to_bytes(megabytes: u16) -> usize {
     usize::from(megabytes).saturating_mul(BYTES_PER_MEGABYTE)
 }
 
+/// Байты кэша масок отдельных глифов: две трети общего объёма (как деление 2:1 в libass).
+fn glyph_bitmaps_share(glyph_cache_mb: u16) -> usize {
+    megabytes_to_bytes(glyph_cache_mb) / 3 * 2
+}
+
+/// Байты кэша склеек участков: остаток общего объёма (треть, округление в его пользу, чтобы
+/// сумма долей равнялась объёму из конфига).
+fn glyph_composites_share(glyph_cache_mb: u16) -> usize {
+    megabytes_to_bytes(glyph_cache_mb) - glyph_bitmaps_share(glyph_cache_mb)
+}
+
 /// Лимиты растеризатора из конфига. Действуют с создания растеризатора (см.
 /// `SubtitleOwner::apply_config`: смена этих значений пересоздаёт его со следующим media).
 pub(super) fn raster_limits_from_config(config: &SubtitlesConfig) -> RasterLimits {
@@ -155,6 +166,10 @@ pub(super) fn raster_limits_from_config(config: &SubtitlesConfig) -> RasterLimit
             shaper_faces: RASTER_SHAPER_FACES,
             blur_scratch_retained_bytes: usize::from(config.blur_scratch_retained_mb)
                 .saturating_mul(BYTES_PER_MEGABYTE),
+            glyph_bitmaps_bytes: glyph_bitmaps_share(config.glyph_cache_mb),
+            glyph_composites_bytes: glyph_composites_share(config.glyph_cache_mb),
+            glyph_outline_items: widen(config.glyph_outline_cache_items),
+            shaping_cache_bytes: megabytes_to_bytes(config.shaping_cache_mb),
         },
         input: RasterInputLimits {
             max_chars_per_cue: widen(config.max_chars_per_cue),
@@ -192,6 +207,15 @@ mod tests {
         assert_eq!(raster.cache.cue_bitmaps_bytes, 32 * 1024 * 1024);
         // Дефолт конфига равен прежней константе растеризатора (32 МиБ).
         assert_eq!(raster.cache.blur_scratch_retained_bytes, 32 * 1024 * 1024);
+        // Кэши глифов: 64 МБ делятся 2:1, контуры считаются штуками (как в libass).
+        assert_eq!(
+            raster.cache.glyph_bitmaps_bytes + raster.cache.glyph_composites_bytes,
+            64 * 1024 * 1024
+        );
+        assert_eq!(raster.cache.glyph_bitmaps_bytes, 44_739_242);
+        assert_eq!(raster.cache.glyph_composites_bytes, 22_369_622);
+        assert_eq!(raster.cache.glyph_outline_items, 10_000);
+        assert_eq!(raster.cache.shaping_cache_bytes, 4 * 1024 * 1024);
         assert_eq!(raster.input.max_chars_per_cue, 2_000);
         assert_eq!(raster.input.max_cues_per_frame, 16);
         assert_eq!(raster.input.max_ass_events_per_frame, 256);
@@ -205,6 +229,9 @@ mod tests {
             sidecar_max_candidates: 3,
             render_cache_mb: 4,
             blur_scratch_retained_mb: 7,
+            glyph_cache_mb: 9,
+            glyph_outline_cache_items: 512,
+            shaping_cache_mb: 3,
             max_cues_on_screen: 2,
             max_ass_events_on_screen: 32,
             ..SubtitlesConfig::default()
@@ -216,6 +243,10 @@ mod tests {
         let raster = raster_limits_from_config(&config);
         assert_eq!(raster.cache.cue_bitmaps_bytes, 4 * 1024 * 1024);
         assert_eq!(raster.cache.blur_scratch_retained_bytes, 7 * 1024 * 1024);
+        assert_eq!(raster.cache.glyph_bitmaps_bytes, 6 * 1024 * 1024);
+        assert_eq!(raster.cache.glyph_composites_bytes, 3 * 1024 * 1024);
+        assert_eq!(raster.cache.glyph_outline_items, 512);
+        assert_eq!(raster.cache.shaping_cache_bytes, 3 * 1024 * 1024);
         assert_eq!(raster.input.max_cues_per_frame, 2);
         assert_eq!(raster.input.max_ass_events_per_frame, 32);
     }

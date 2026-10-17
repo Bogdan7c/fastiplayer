@@ -255,3 +255,53 @@ fn blur_layer_reports_blurred_oversized_and_failed_layers_separately() {
     );
     assert_eq!(inconsistent, broken_before);
 }
+
+/// Склейка в кэше зависит от предела стороны размытия: тот же слой при другом пределе не должен
+/// получить чужой (размытый или нет) результат из кэша.
+#[test]
+fn composite_cache_distinguishes_blur_side_limits() {
+    use super::filter::RunFilter;
+    use super::glyph_bitmaps::GlyphBitmaps;
+    use super::run::{BlurEnv, FilterFlags, composite_run};
+    use crate::blur::{BitmapSideLimit, BlurScratch};
+    use crate::glyph_cache::CompositeCache;
+    use crate::outline::Point;
+    use std::sync::Arc;
+
+    let parts = [GlyphBitmaps {
+        fill: Some(Arc::new(bright_dot_layer())),
+        ..GlyphBitmaps::default()
+    }];
+    let filter = RunFilter {
+        flags: FilterFlags {
+            box_border: false,
+            nonzero_border: false,
+            nonzero_shadow: false,
+            fill_in_shadow: false,
+            fill_in_border: false,
+        },
+        blur: gaussian_strength(),
+        shadow_offset: (0, 0),
+    };
+    assert_eq!(parts[0].fill_position, Point::default());
+    let mut scratch = BlurScratch::new();
+    let mut cache = CompositeCache::new(1 << 20);
+    let mut run_with_limit = |limit: BitmapSideLimit| {
+        let mut env = BlurEnv {
+            scratch: &mut scratch,
+            side_limit: limit,
+        };
+        composite_run(&parts, &filter, &mut env, &mut cache).expect("composite")
+    };
+    let roomy = run_with_limit(BitmapSideLimit::UNLIMITED);
+    assert_eq!(roomy.unblurred_oversized_layers, 0);
+    let roomy_width = roomy.fill.as_ref().expect("fill").width();
+    assert!(roomy_width > 16, "blur grows the layer: {roomy_width}");
+
+    let tight = run_with_limit(BitmapSideLimit(16));
+    assert_eq!(
+        tight.unblurred_oversized_layers, 1,
+        "the tight limit must not reuse the roomy cached result"
+    );
+    assert_eq!(tight.fill.as_ref().expect("fill").width(), 16);
+}

@@ -410,3 +410,43 @@ fn transformed_3d_rejects_overflow_and_nan_and_keeps_empty_outlines_empty() {
             .is_empty()
     );
 }
+
+#[test]
+fn fast_rounding_equals_round_ties_even_everywhere() {
+    use super::round_ties_even_to_i32;
+    let mut values = vec![
+        0.0,
+        -0.0,
+        0.5,
+        -0.5,
+        1.5,
+        -1.5,
+        2.5,
+        -2.5,
+        0.49999999999999994,
+        -0.49999999999999994,
+        2.0_f64.powi(31) - 0.5,
+        -(2.0_f64.powi(31)) + 0.5,
+        2.0_f64.powi(31),
+        -(2.0_f64.powi(31)) - 1.0,
+        2.0_f64.powi(50) + 0.5,
+        2.0_f64.powi(51) - 0.5,
+        2.0_f64.powi(51),
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        1e300,
+    ];
+    // Плотная сетка около ничьих и по всей области координат контура.
+    for step in -4000..4000 {
+        values.push(f64::from(step) * 0.125);
+        values.push(f64::from(step) * 1_000_003.0 / 7.0);
+    }
+    for value in values {
+        assert_eq!(
+            round_ties_even_to_i32(value),
+            value.round_ties_even() as i32,
+            "{value}"
+        );
+    }
+}

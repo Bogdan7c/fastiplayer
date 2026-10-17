@@ -190,10 +190,11 @@ impl WorkerState {
             }
             #[cfg(test)]
             WorkerCommand::QueryDiagnostics => {
-                self.sink.send(WorkerEvent::Diagnostics(WorkerDiagnostics {
-                    raster: self.rasterizer.statistics(),
-                    repeated_jobs_suppressed: self.repeated_jobs_suppressed,
-                }))
+                self.sink
+                    .send(WorkerEvent::Diagnostics(Box::new(WorkerDiagnostics {
+                        raster: self.rasterizer.statistics(),
+                        repeated_jobs_suppressed: self.repeated_jobs_suppressed,
+                    })))
             }
         }
     }

@@ -18,63 +18,18 @@
 
 //! Загрузка контуров для всех глифов реплики и расчёт их рамок в пикселях кадра.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use skrifa::GlyphId;
-
-use super::drawing::{DrawingOutcome, place_drawing};
-use super::{GlyphOutline, GlyphVariant, load_styled_glyph_outline};
+use super::drawing::{DrawingOutcome, place_cached_drawing};
+use super::{GlyphOutline, GlyphVariant};
 use crate::event_style::AxisPair;
 use crate::face_cache::{FaceCache, FaceLoadError};
-use crate::fonts::{FaceId, FontStyle};
+use crate::fonts::FontStyle;
+use crate::glyph_cache::OutlineCache;
 use crate::glyph_info::{GlyphBox, PlacedGlyph, TextCluster};
 use crate::outline::round_ties_even_to_i32;
 use crate::render_diagnostics::RenderDiagnostics;
 use crate::source_text::{DrawingSource, SpanLook};
-
-/// Ключ контура в пределах реплики: глиф лица и вариант (синтетика, линии).
-type OutlineKey = (FaceId, GlyphId, GlyphVariant);
-
-/// Контуры, уже загруженные для текущей реплики (один глиф встречается много раз).
-#[derive(Default)]
-struct OutlineMemo {
-    entries: HashMap<OutlineKey, Option<Arc<GlyphOutline>>>,
-}
-
-impl OutlineMemo {
-    /// Контур глифа нужного варианта или `None`, если он не загрузился (глиф тогда не
-    /// рисуется).
-    fn get(
-        &mut self,
-        faces: &FaceCache,
-        face: FaceId,
-        glyph: GlyphId,
-        variant: GlyphVariant,
-    ) -> Result<Option<Arc<GlyphOutline>>, FaceLoadError> {
-        let key = (face, glyph, variant);
-        if let Some(known) = self.entries.get(&key) {
-            return Ok(known.clone());
-        }
-        let entry = faces.get(face)?;
-        let font = entry.font_ref()?;
-        let loaded = match load_styled_glyph_outline(
-            &font,
-            entry.scale(),
-            entry.style(),
-            glyph,
-            variant,
-        ) {
-            Ok(outline) => Some(Arc::new(outline)),
-            Err(error) => {
-                tracing::debug!(%error, face = face.index(), "glyph outline is unavailable, the glyph is not drawn");
-                None
-            }
-        };
-        self.entries.insert(key, loaded.clone());
-        Ok(loaded)
-    }
-}
 
 /// Рамка и метрики глифа в пикселях кадра (libass: `get_outline_glyph`).
 ///
@@ -111,13 +66,16 @@ fn place_outline(
 ///
 /// Кластер-рисунок (`TextCluster::drawing`) берёт контур не из шрифта, а из команд рисования
 /// в `drawings`; рисунок без контура считается в `invalid_ass_drawings`.
+///
+/// Контуры берутся из долгоживущего кэша контуров `outlines` (libass: `outline_cache`), общего
+/// для всех реплик растеризатора.
 pub(crate) fn retrieve_glyphs(
     faces: &FaceCache,
+    outlines: &mut OutlineCache,
     clusters: &mut [TextCluster],
     looks: &[SpanLook],
     drawings: &[DrawingSource],
 ) -> Result<RenderDiagnostics, FaceLoadError> {
-    let mut memo = OutlineMemo::default();
     let mut diagnostics = RenderDiagnostics::default();
     for index in 0..clusters.len() {
         let Some(cluster) = clusters.get_mut(index) else {
@@ -125,12 +83,13 @@ pub(crate) fn retrieve_glyphs(
         };
         match cluster.drawing.and_then(|id| drawings.get(id.0)) {
             Some(source) => {
-                if place_drawing(cluster, source) == DrawingOutcome::NoOutline {
+                let entry = outlines.drawing(&source.commands);
+                if place_cached_drawing(cluster, source, &entry) == DrawingOutcome::NoOutline {
                     diagnostics.invalid_ass_drawings =
                         diagnostics.invalid_ass_drawings.saturating_add(1);
                 }
             }
-            None => load_font_glyphs(faces, &mut memo, cluster, looks, &mut diagnostics)?,
+            None => load_font_glyphs(faces, outlines, cluster, looks, &mut diagnostics)?,
         }
         // Порядок как в libass: сначала зазор после курсива (он читает продвижение предыдущих
         // кластеров, уже с их интервалом), затем интервал самого символа.
@@ -148,7 +107,7 @@ pub(crate) fn retrieve_glyphs(
 /// Загружает контуры всех глифов кластера из шрифта и считает рамки и метрики.
 fn load_font_glyphs(
     faces: &FaceCache,
-    memo: &mut OutlineMemo,
+    outlines: &mut OutlineCache,
     cluster: &mut TextCluster,
     looks: &[SpanLook],
     diagnostics: &mut RenderDiagnostics,
@@ -160,7 +119,7 @@ fn load_font_glyphs(
         let variant = look.map_or(GlyphVariant::PLAIN, |known| {
             face_entry.style().variant_for(known)
         });
-        let Some(outline) = memo.get(faces, glyph.face, glyph.glyph, variant)? else {
+        let Some(outline) = outlines.glyph(faces, glyph.face, glyph.glyph, variant)? else {
             diagnostics.skipped_glyphs = diagnostics.skipped_glyphs.saturating_add(1);
             continue;
         };

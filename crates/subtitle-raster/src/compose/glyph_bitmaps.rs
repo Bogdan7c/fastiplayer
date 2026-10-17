@@ -19,29 +19,33 @@
 
 //! Битмапы одного глифа: заливка и обводка (или плашка) в целых пикселях кадра.
 
+use std::sync::Arc;
+
 use super::ComposeError;
 use super::run::FilterFlags;
 use crate::bitmap::{BitmapError, CoverageBitmap};
 use crate::event_style::AxisPair;
 use crate::fixed_point::Vector26;
+use crate::glyph_cache::{BitmapCache, BitmapSource, OutlineCache};
 use crate::glyph_info::PlacedGlyph;
 use crate::glyph_render::GlyphOutline;
 use crate::glyph_transform::{
-    GlyphPlacement, Matrix3, STROKER_PRECISION, border_matrix, construct_bitmap, control_box,
-    glyph_transform_matrix, plan_border_stroke, quantize_transform, scale_and_offset_matrix,
+    GlyphPlacement, Matrix3, border_matrix, glyph_transform_matrix, plan_border_stroke,
+    quantize_transform, scale_and_offset_matrix,
 };
-use crate::outline::stroke::{StrokeParameters, stroke_outline};
-use crate::outline::{ControlBox, Outline, Point};
+use crate::outline::Point;
 use crate::raster::Rasterizer;
 use crate::span_look::SpanLook;
 
 /// Битмапы глифа и их позиции в пикселях кадра (libass: `info->bm`, `info->bm_o`, `pos`, `pos_o`).
+///
+/// Маски общие с кэшем масок глифов (`Arc`): ключ кэша склеек сравнивает их по адресу.
 #[derive(Debug, Default)]
 pub(super) struct GlyphBitmaps {
     /// Заливка.
-    pub(super) fill: Option<CoverageBitmap>,
+    pub(super) fill: Option<Arc<CoverageBitmap>>,
     /// Обводка или плашка.
-    pub(super) outline: Option<CoverageBitmap>,
+    pub(super) outline: Option<Arc<CoverageBitmap>>,
     /// Позиция заливки (точка привязки битмапа).
     pub(super) fill_position: Point,
     /// Позиция обводки.
@@ -58,8 +62,8 @@ pub(super) struct GlyphBitmapRequest<'a> {
     pub(super) glyph: &'a PlacedGlyph,
     /// Положение относительно центра поворота, 26.6 (libass: `info->shift`).
     pub(super) shift: Vector26,
-    /// Его контур.
-    pub(super) outline: &'a GlyphOutline,
+    /// Его контур (общий с кэшем контуров: по его адресу ищутся маски и обводки).
+    pub(super) outline: &'a Arc<GlyphOutline>,
     /// Масштаб контура по осям (libass: `info->scale_x`, `info->scale_y`): `font_size / 256`
     /// с учётом `\fscx`/`\fscy`.
     pub(super) glyph_scale: AxisPair,
@@ -82,6 +86,10 @@ pub(super) struct GlyphBitmapRequest<'a> {
 pub(super) struct RunPhase<'a> {
     /// Растеризатор (переиспользуется между глифами).
     pub(super) rasterizer: &'a mut Rasterizer,
+    /// Кэш контуров: обводки и плашка.
+    pub(super) outlines: &'a mut OutlineCache,
+    /// Кэш масок глифов: растеризация идёт только на промахе.
+    pub(super) bitmaps: &'a mut BitmapCache,
     /// Дробная ошибка позиции первого глифа участка.
     pub(super) offset: &'a mut [f64; 2],
     /// У участка ещё нет ни одного глифа с битмапом (пересчитывает `offset`).
@@ -125,7 +133,6 @@ fn build_glyph_bitmaps_unbounded(
     phase: &mut RunPhase<'_>,
 ) -> Result<GlyphBitmaps, ComposeError> {
     let GlyphBitmapRequest { outline, flags, .. } = request;
-    let empty = Outline::new();
     let GlyphMatrices {
         base: base_matrix,
         scaled: scaled_matrix,
@@ -138,11 +145,10 @@ fn build_glyph_bitmaps_unbounded(
     else {
         return Ok(result);
     };
-    result.fill = construct_bitmap(
+    result.fill = phase.bitmaps.mask(
         phase.rasterizer,
+        &BitmapSource::Outline(Arc::clone(outline)),
         &fill_key,
-        &outline.control_box,
-        [&outline.outline, &empty],
     )?;
     result.fill_position = fill_key.position;
     result.outline_position = fill_key.position;
@@ -226,7 +232,7 @@ enum StrokeOutcome {
     /// Толщина после квантования нулевая: обводка совпадает с заливкой.
     SameAsFill,
     /// Битмап обводки (может быть пустым: `None`) и его позиция.
-    Bitmap(Option<(CoverageBitmap, Point)>),
+    Bitmap(Option<(Arc<CoverageBitmap>, Point)>),
 }
 
 /// Битмап плашки для `BorderStyle = 3` (libass: ветка `FILTER_BORDER_STYLE_3`).
@@ -234,7 +240,7 @@ fn build_box_bitmap(
     request: &GlyphBitmapRequest<'_>,
     phase: &mut RunPhase<'_>,
     base_matrix: &Matrix3,
-) -> Result<Option<(CoverageBitmap, Point)>, ComposeError> {
+) -> Result<Option<(Arc<CoverageBitmap>, Point)>, ComposeError> {
     let glyph = request.glyph;
     // Поля плашки: толщина обводки в 1/64 пикселя.
     let mut border_x = 64.0 * request.look.border.horizontal / request.pixel_aspect_x;
@@ -268,19 +274,15 @@ fn build_box_bitmap(
         row[2] = source[0] * offset.0 + source[1] * offset.1 + source[2];
     }
 
-    let mut unit_box = Outline::new();
-    unit_box.add_rect(0, 0, 64, 64)?;
-    let empty = Outline::new();
-    let box_cbox = ControlBox {
-        x_min: 0,
-        y_min: 0,
-        x_max: 64,
-        y_max: 64,
-    };
-    let Some(key) = quantize_transform(&mut matrix, phase.offset, false, &box_cbox) else {
+    // Единичный квадрат один на кэш контуров (libass: `OUTLINE_BOX`); его рамка - сам квадрат.
+    let unit_box = phase.outlines.unit_box()?;
+    let Some(key) = quantize_transform(&mut matrix, phase.offset, false, &unit_box.control_box)
+    else {
         return Ok(None);
     };
-    let bitmap = construct_bitmap(phase.rasterizer, &key, &box_cbox, [&unit_box, &empty])?;
+    let bitmap = phase
+        .bitmaps
+        .mask(phase.rasterizer, &BitmapSource::Outline(unit_box), &key)?;
     Ok(bitmap.map(|bitmap| (bitmap, key.position)))
 }
 
@@ -312,38 +314,20 @@ fn build_stroked_bitmap(
         // libass: у пустого контура обводка пустая (`!outline[0].n_points`).
         return Ok(StrokeOutcome::Bitmap(None));
     }
-    let Ok(source) = outline
-        .outline
-        .scaled_pow2(plan.scale_order_x, plan.scale_order_y)
-    else {
-        tracing::debug!("glyph outline is too large to stroke, drawing without border");
+    // Обводка контура берётся из кэша контуров (в том числе неудача: слишком большой контур или
+    // сбой обводчика - глиф остаётся без обводки, libass: «Cannot stroke outline»).
+    let Some(stroked) = phase.outlines.stroked(outline, &plan) else {
         return Ok(StrokeOutcome::Failed);
     };
-    let stroked = match stroke_outline(
-        &source,
-        StrokeParameters {
-            border_x: plan.border_x * STROKER_PRECISION,
-            border_y: plan.border_y * STROKER_PRECISION,
-            precision: STROKER_PRECISION,
-        },
-    ) {
-        Ok(stroked) => stroked,
-        Err(error) => {
-            // libass: «Cannot stroke outline» — глиф остаётся без обводки.
-            tracing::debug!(%error, "cannot stroke a glyph outline, drawing without border");
-            return Ok(StrokeOutcome::Failed);
-        }
-    };
-    let stroked_box = control_box(&[&stroked.positive, &stroked.negative]);
     let mut matrix = border_matrix(scaled_matrix, &plan);
-    let Some(key) = quantize_transform(&mut matrix, phase.offset, false, &stroked_box) else {
+    let Some(key) = quantize_transform(&mut matrix, phase.offset, false, &stroked.control_box)
+    else {
         return Ok(StrokeOutcome::Nothing);
     };
-    let bitmap = construct_bitmap(
+    let bitmap = phase.bitmaps.mask(
         phase.rasterizer,
+        &BitmapSource::Stroked(Arc::clone(&stroked)),
         &key,
-        &stroked_box,
-        [&stroked.positive, &stroked.negative],
     )?;
     Ok(StrokeOutcome::Bitmap(
         bitmap.map(|bitmap| (bitmap, key.position)),

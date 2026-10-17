@@ -1,4 +1,4 @@
-//! Секция `[subtitles]`: показ, язык, стиль и лимиты ресурсов субтитров (схема v20).
+//! Секция `[subtitles]`: показ, язык, стиль и лимиты ресурсов субтитров (схема v21).
 //!
 //! Решение владельца (субтитры, сессия 04): лимиты и внешний вид живут в `config.toml`,
 //! значения по умолчанию равны прежним константам приложения, поэтому старый файл без
@@ -10,57 +10,12 @@ use super::subtitles_ass::{
     AssPositionMode, DEFAULT_MAX_ASS_EVENTS_ON_SCREEN, DEFAULT_MAX_ASS_HEADER_KB,
     DEFAULT_MAX_ASS_OVERRIDE_TAGS_PER_EVENT, DEFAULT_MAX_ASS_STYLES,
 };
+use super::subtitles_glyph_cache::*;
 use super::subtitles_limits::*;
+use super::subtitles_style::*;
 
 /// Показ субтитров по умолчанию выключен: включает пользователь (кнопка CC / клавиша C).
 pub const DEFAULT_SUBTITLES_ENABLED: bool = false;
-
-/// Минимальная длина списка языков (пустой список = язык системы).
-pub const MIN_PREFERRED_LANGUAGES_LEN: usize = 0;
-/// Максимальная длина строки со списком языков.
-pub const MAX_PREFERRED_LANGUAGES_LEN: usize = 120;
-/// Сколько языков можно перечислить.
-pub const MAX_PREFERRED_LANGUAGE_COUNT: usize = 8;
-
-/// Размер текста по умолчанию, % (100 = стандартный пресет).
-pub const DEFAULT_TEXT_SIZE_PERCENT: u16 = 100;
-/// Минимальный размер текста, %.
-pub const MIN_TEXT_SIZE_PERCENT: u16 = 50;
-/// Максимальный размер текста, %.
-pub const MAX_TEXT_SIZE_PERCENT: u16 = 250;
-
-/// Длина цвета `#RRGGBB` в символах.
-pub const HEX_COLOR_LEN: usize = 7;
-/// Цвет текста по умолчанию.
-pub const DEFAULT_TEXT_COLOR: &str = "#FFFFFF";
-/// Цвет плашки по умолчанию: совпадает с `SubtitleAppearance::youtube_like()` (8, 8, 8).
-pub const DEFAULT_BACKGROUND_COLOR: &str = "#080808";
-
-/// Непрозрачность плашки по умолчанию: альфа 191 из 255 = 75 %, как в `youtube_like()`.
-pub const DEFAULT_BACKGROUND_OPACITY_PERCENT: u8 = 75;
-/// Минимальная непрозрачность плашки (полностью прозрачная).
-pub const MIN_BACKGROUND_OPACITY_PERCENT: u8 = 0;
-/// Максимальная непрозрачность плашки.
-pub const MAX_BACKGROUND_OPACITY_PERCENT: u8 = 100;
-
-/// Положение по горизонтали по умолчанию: центр картинки, %.
-pub const DEFAULT_POSITION_HORIZONTAL_PERCENT: u8 = 50;
-/// Минимум положения по горизонтали (левый край картинки), %.
-pub const MIN_POSITION_HORIZONTAL_PERCENT: u8 = 0;
-/// Максимум положения по горизонтали (правый край картинки), %.
-pub const MAX_POSITION_HORIZONTAL_PERCENT: u8 = 100;
-
-/// Положение по вертикали по умолчанию: низ текста на 6 % высоты картинки выше её низа.
-///
-/// ВАЖНО: число обязано равняться нижнему отступу пресета растеризатора
-/// (`CanvasFraction` 0.06 в `subtitle-raster`): приложение считает смещение как
-/// `value/100 - отступ_пресета`, и при значении по умолчанию оно ровно нулевое.
-/// Это закреплено тестом в `app-egui`.
-pub const DEFAULT_POSITION_VERTICAL_PERCENT: i16 = 6;
-/// Минимум положения по вертикали: отрицательное значение уводит текст на чёрную полосу под картинкой, %.
-pub const MIN_POSITION_VERTICAL_PERCENT: i16 = -40;
-/// Максимум положения по вертикали (почти верх картинки), %.
-pub const MAX_POSITION_VERTICAL_PERCENT: i16 = 95;
 
 /// Чем подчёркивается текст субтитров над видео.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -664,6 +619,66 @@ pub struct SubtitlesConfig {
         apply = "subtitles.apply"
     )]
     pub blur_scratch_retained_mb: u16,
+
+    /// Общий объём кэшей масок глифов (маски букв и склейки участков), МБ.
+    #[setting(
+        id = "subtitles.glyph_cache_mb",
+        path = "subtitles.glyph_cache_mb",
+        section = "subtitles",
+        group = "limits",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.glyph_cache_mb.label",
+        label_ru = "Subtitle glyph cache",
+        description_id = "settings.subtitles.glyph_cache_mb.description",
+        description_ru = "Memory of the subtitle glyph mask caches (two thirds letter masks, one third merged run masks); moving, fading and karaoke subtitles reuse them between frames. Takes effect with the next opened video.",
+        editor = "integer",
+        min = crate::MIN_GLYPH_CACHE_MB,
+        max = crate::MAX_GLYPH_CACHE_MB,
+        step = 8,
+        unit = "MB",
+        apply = "subtitles.apply"
+    )]
+    pub glyph_cache_mb: u16,
+
+    /// Сколько контуров глифов, рисунков и обводок хранит кэш контуров.
+    #[setting(
+        id = "subtitles.glyph_outline_cache_items",
+        path = "subtitles.glyph_outline_cache_items",
+        section = "subtitles",
+        group = "limits",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.glyph_outline_cache_items.label",
+        label_ru = "Subtitle outline cache entries",
+        description_id = "settings.subtitles.glyph_outline_cache_items.description",
+        description_ru = "How many glyph outlines, drawings and borders the subtitle outline cache keeps. This counts entries, not memory: the limit is independent of the glyph cache size, and entries with very large drawings take more memory. Takes effect with the next opened video.",
+        editor = "integer",
+        min = crate::MIN_GLYPH_OUTLINE_CACHE_ITEMS,
+        max = crate::MAX_GLYPH_OUTLINE_CACHE_ITEMS,
+        step = 256,
+        unit = "entries",
+        apply = "subtitles.apply"
+    )]
+    pub glyph_outline_cache_items: u32,
+
+    /// Память кэша результатов шейпинга текста (участок -> глифы), МБ.
+    #[setting(
+        id = "subtitles.shaping_cache_mb",
+        path = "subtitles.shaping_cache_mb",
+        section = "subtitles",
+        group = "limits",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.shaping_cache_mb.label",
+        label_ru = "Subtitle text shaping cache",
+        description_id = "settings.subtitles.shaping_cache_mb.description",
+        description_ru = "Memory of the cache of shaped text runs; moving, fading and karaoke subtitles with unchanged text skip shaping. When full, the least recently used runs are dropped. Takes effect with the next opened video.",
+        editor = "integer",
+        min = crate::MIN_SHAPING_CACHE_MB,
+        max = crate::MAX_SHAPING_CACHE_MB,
+        step = 1,
+        unit = "MB",
+        apply = "subtitles.apply"
+    )]
+    pub shaping_cache_mb: u16,
 }
 
 impl Default for SubtitlesConfig {
@@ -700,6 +715,9 @@ impl Default for SubtitlesConfig {
             prerender_frames: DEFAULT_PRERENDER_FRAMES,
             prepared_overlays: DEFAULT_PREPARED_OVERLAYS,
             blur_scratch_retained_mb: DEFAULT_BLUR_SCRATCH_RETAINED_MB,
+            glyph_cache_mb: DEFAULT_GLYPH_CACHE_MB,
+            glyph_outline_cache_items: DEFAULT_GLYPH_OUTLINE_CACHE_ITEMS,
+            shaping_cache_mb: DEFAULT_SHAPING_CACHE_MB,
         }
     }
 }

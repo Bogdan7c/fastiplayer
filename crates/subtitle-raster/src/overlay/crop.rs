@@ -51,8 +51,9 @@ impl SubtitleBitmap {
         let end = start
             .checked_add((height as usize - 1).checked_mul(self.stride)?)?
             .checked_add(width as usize)?;
-        let visible = self.coverage.get(start..end)?;
+        let visible = self.coverage_window().get(start..end)?;
         Some(Self {
+            coverage_offset: 0,
             origin: PixelPoint {
                 x: self.origin.x.checked_add_unsigned(region.x0)?,
                 y: self.origin.y.checked_add_unsigned(region.y0)?,

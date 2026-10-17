@@ -5,6 +5,8 @@
 
 use std::collections::{HashMap, VecDeque};
 
+use crate::cache::fast_hash::FastBuildHasher;
+
 use skrifa::GlyphId;
 
 use super::face::FaceId;
@@ -33,7 +35,7 @@ type LookupKey = (FaceId, char, TextLanguagePreference);
 #[derive(Debug)]
 pub(super) struct LookupCache {
     limits: FontLookupCacheLimits,
-    entries: HashMap<LookupKey, CachedLookup>,
+    entries: HashMap<LookupKey, CachedLookup, FastBuildHasher>,
     insertion_order: VecDeque<LookupKey>,
 }
 
@@ -41,7 +43,7 @@ impl LookupCache {
     pub(super) fn new(limits: FontLookupCacheLimits) -> Self {
         Self {
             limits,
-            entries: HashMap::new(),
+            entries: HashMap::default(),
             insertion_order: VecDeque::new(),
         }
     }

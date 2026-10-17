@@ -36,6 +36,7 @@ use crate::bitmap::BitmapError;
 use crate::blur::{BitmapSideLimit, BlurScratch};
 use crate::event_style::{BorderStyle, EventStyle};
 use crate::fixed_point::{d6_to_double, double_to_d6};
+use crate::glyph_cache::{GlyphCaches, PlacedMask};
 use crate::glyph_info::TextCluster;
 use crate::glyph_transform::RASTERIZER_PRECISION;
 use crate::karaoke::{
@@ -95,7 +96,7 @@ struct RunColors {
 /// Слой вывода: какой вид картинки, откуда взять битмап участка и каким цветом его красить.
 struct Layer {
     kind: SubtitleBitmapKind,
-    bitmap_of: fn(&RunBitmaps) -> Option<&crate::bitmap::CoverageBitmap>,
+    bitmap_of: fn(&RunBitmaps) -> Option<&PlacedMask>,
     color_of: fn(&RunColors) -> SubtitleColor,
     /// Роль картинки слоя для караоке; аргумент — индекс правила участка (если оно есть).
     role_of: fn(Option<usize>) -> ImageRole,
@@ -147,12 +148,15 @@ pub(crate) struct ComposedText {
 ///
 /// `blur_scratch` — рабочая память размытия, принадлежащая растеризатору (одна на поток
 /// отрисовки); композиция только заимствует её и ничего в ней не хранит между вызовами.
+/// `caches` - кэши глифов растеризатора: маски глифов (`collect_runs`) и склейки участков
+/// (`composite_run`).
 pub(crate) fn compose_text(
     clusters: &mut [TextCluster],
     input: &ComposeInput<'_>,
     blur_scratch: &mut BlurScratch,
+    caches: &mut GlyphCaches,
 ) -> Result<ComposedText, ComposeError> {
-    let runs = collect_runs(clusters, input)?;
+    let runs = collect_runs(clusters, input, caches)?;
     let mut skipped_oversized_bitmaps = runs.iter().fold(0_u32, |total, run| {
         total.saturating_add(run.skipped_oversized_bitmaps)
     });
@@ -170,7 +174,12 @@ pub(crate) fn compose_text(
         if run.parts.is_empty() {
             continue;
         }
-        let bitmaps = composite_run(&run.parts, &run.filter, &mut blur_env)?;
+        let bitmaps = composite_run(
+            &run.parts,
+            &run.filter,
+            &mut blur_env,
+            &mut caches.composites,
+        )?;
         // Слой, который не удалось размыть из-за размера, учитывается как пропущенный битмап.
         skipped_oversized_bitmaps =
             skipped_oversized_bitmaps.saturating_add(bitmaps.unblurred_oversized_layers);
@@ -212,6 +221,7 @@ struct FinishedRun {
 fn collect_runs(
     clusters: &mut [TextCluster],
     input: &ComposeInput<'_>,
+    caches: &mut GlyphCaches,
 ) -> Result<Vec<CollectedRun>, ComposeError> {
     let mut rasterizer =
         Rasterizer::new(RASTERIZER_PRECISION).with_max_bitmap_side(input.max_bitmap_side);
@@ -318,6 +328,8 @@ fn collect_runs(
                 &request,
                 &mut RunPhase {
                     rasterizer: &mut rasterizer,
+                    outlines: &mut caches.outlines,
+                    bitmaps: &mut caches.bitmaps,
                     offset: &mut run.offset,
                     first,
                 },

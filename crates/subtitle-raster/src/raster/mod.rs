@@ -33,10 +33,13 @@
 mod fill;
 #[cfg(test)]
 mod internals_tests;
+mod pool;
 mod segment;
 #[cfg(test)]
 mod tests;
 mod tile;
+#[cfg(test)]
+mod tile_reference_tests;
 
 pub(crate) use fill::TileRect;
 pub(crate) use tile::TILE_SIZE;
@@ -90,19 +93,22 @@ pub(crate) struct FillWindow {
 }
 
 /// Состояние растеризатора (libass: `RasterizerData`).
+///
+/// Память стеков отрезков берётся из пула потока и возвращается в него при удалении
+/// растеризатора ([`pool`]): растеризатор создаётся на каждую реплику, а выделять и наращивать
+/// буферы ломаной заново на каждую реплику дорого.
 #[derive(Debug)]
 pub(crate) struct Rasterizer {
     /// Допустимая ошибка аппроксимации сплайнов в 1/64 пикселя (`RASTERIZER_PRECISION = 16`).
     outline_error: i32,
     /// Точная рамка ломаной (после `set_outline`).
     bbox: ControlBox,
-    /// Накопленная ломаная; первые `n_first` отрезков — основной контур.
-    polyline: Vec<Segment>,
+    /// Первые `n_first` отрезков ломаной (она лежит в первом стеке `stacks`, как `linebuf[0]`
+    /// в libass) — основной контур.
     n_first: usize,
-    /// Стеки отрезков уровней четвертного дерева (libass: `linebuf[2]`).
+    /// Стеки отрезков: первый хранит накопленную ломаную, затем уровни четвертного дерева
+    /// (libass: `linebuf[2]`). Память стеков живёт между заливками, чтобы не выделять её заново.
     stacks: LineStacks,
-    /// Рабочий буфер разбиения (чтобы не выделять память на каждый уровень).
-    scratch: Vec<Segment>,
     /// Временный тайл для объединения двух заливок (libass: `rst->tile`).
     tile: [u8; TILE_SIZE * TILE_SIZE],
     /// Наибольшая сторона битмапа в пикселях, которую разрешено выделять (`None` — без предела).
@@ -118,10 +124,8 @@ impl Rasterizer {
         Self {
             outline_error,
             bbox: ControlBox::EMPTY,
-            polyline: Vec::new(),
             n_first: 0,
-            stacks: LineStacks::default(),
-            scratch: Vec::new(),
+            stacks: pool::take_stacks(),
             tile: [0; TILE_SIZE * TILE_SIZE],
             max_bitmap_side: None,
         }
@@ -153,7 +157,7 @@ impl Rasterizer {
             self.bbox = ControlBox::EMPTY;
             self.n_first = 0;
         }
-        self.polyline.truncate(self.n_first);
+        self.stacks.polyline_mut().truncate(self.n_first);
 
         for view in path.segments_view() {
             let view = view?;
@@ -169,12 +173,12 @@ impl Rasterizer {
             }
         }
 
-        for line in self.polyline.iter().skip(self.n_first) {
+        for line in self.stacks.polyline().iter().skip(self.n_first) {
             self.bbox
                 .include(line.x_min, line.y_min, line.x_max, line.y_max);
         }
         if layer == OutlineLayer::Primary {
-            self.n_first = self.polyline.len();
+            self.n_first = self.stacks.polyline().len();
         }
         Ok(())
     }
@@ -182,7 +186,7 @@ impl Rasterizer {
     /// Добавляет отрезок ломаной; нулевой длины пропускаются (libass: `add_line`).
     fn add_line(&mut self, start: Point, end: Point) {
         if let Some(segment) = Segment::from_line(start, end) {
-            self.polyline.push(segment);
+            self.stacks.polyline_mut().push(segment);
         }
     }
 
@@ -262,5 +266,11 @@ impl SplitTest {
         along < -self.allowed_error
             || along > self.chord_length_squared + self.allowed_error
             || across.abs() > self.allowed_error
+    }
+}
+
+impl Drop for Rasterizer {
+    fn drop(&mut self) {
+        pool::give_back_stacks(std::mem::take(&mut self.stacks));
     }
 }

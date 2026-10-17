@@ -164,7 +164,7 @@ fn invalid_style_numbers_are_typed_errors() {
 
 #[test]
 fn unbuildable_border_is_counted_and_the_fill_is_still_drawn() {
-    let mut faces = FaceCache::new();
+    let mut faces = FaceCache::new(crate::test_support::SHAPING_BUDGET_BYTES);
     let mut absurd = plain_style();
     absurd.border = AxisPair::uniform(1.0e7);
     let broken = render_cue_text(
@@ -217,7 +217,7 @@ fn zero_size_letters_are_rejected_on_the_shared_source_text_path() {
     let style = plain_style();
     let mut source = SourceText::from_styled(&plain_text("a"), &style);
     source.looks[0].font_size = 0.0;
-    let mut faces = FaceCache::new();
+    let mut faces = FaceCache::new(crate::test_support::SHAPING_BUDGET_BYTES);
     let result = render_source_text(
         &mut embedded_fonts(),
         &mut faces,

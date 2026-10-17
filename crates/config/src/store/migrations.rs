@@ -5,7 +5,7 @@ use crate::{
     LEGACY_SCHEMA_VERSION_10, LEGACY_SCHEMA_VERSION_11, LEGACY_SCHEMA_VERSION_12,
     LEGACY_SCHEMA_VERSION_13, LEGACY_SCHEMA_VERSION_14, LEGACY_SCHEMA_VERSION_15,
     LEGACY_SCHEMA_VERSION_16, LEGACY_SCHEMA_VERSION_17, LEGACY_SCHEMA_VERSION_18,
-    LEGACY_SCHEMA_VERSION_19,
+    LEGACY_SCHEMA_VERSION_19, LEGACY_SCHEMA_VERSION_20,
 };
 
 pub(super) const REMOVED_HARDWARE_DECODE_ONLY_KEY: &str = "hardware_decode_only";
@@ -56,7 +56,7 @@ pub(super) fn normalize_document(toml_document: &mut toml::Value) {
     }
 }
 
-/// Поднимает поддерживаемые v2-v19 структуры до текущей in-memory версии.
+/// Поднимает поддерживаемые v2-v20 структуры до текущей in-memory версии.
 pub(super) fn upgrade_config(config: &mut AppConfig) {
     if matches!(
         config.schema_version,
@@ -78,6 +78,7 @@ pub(super) fn upgrade_config(config: &mut AppConfig) {
             | LEGACY_SCHEMA_VERSION_17
             | LEGACY_SCHEMA_VERSION_18
             | LEGACY_SCHEMA_VERSION_19
+            | LEGACY_SCHEMA_VERSION_20
     ) {
         config.schema_version = CURRENT_SCHEMA_VERSION;
     }

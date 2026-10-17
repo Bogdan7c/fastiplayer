@@ -12,11 +12,15 @@
 
 use std::collections::HashMap;
 
+use crate::cache::fast_hash::FastBuildHasher;
+
 use harfrust::ShaperData;
 use skrifa::FontRef;
 
 use crate::fonts::{FaceBytes, FaceId, SubtitleFontLibrary};
 use crate::glyph_render::{FaceScale, FaceStyleInfo, HintedAdvances};
+use crate::shaping::plan_cache::ShapePlanCache;
+use crate::shaping::run_cache::ShapedRunCache;
 
 /// Почему лицо не удалось подготовить.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -48,6 +52,7 @@ pub(crate) struct FaceEntry {
     collection_index: u32,
     scale: FaceScale,
     shaper_data: ShaperData,
+    shape_plans: ShapePlanCache,
     advances: HintedAdvances,
     style: FaceStyleInfo,
 }
@@ -72,6 +77,11 @@ impl FaceEntry {
     /// Начертание лица (флаги, вес, линии подчёркивания): по нему решается синтетика.
     pub(crate) fn style(&self) -> &FaceStyleInfo {
         &self.style
+    }
+
+    /// Планы шейпинга этого лица (строятся при первом участке с такими свойствами).
+    pub(crate) fn shape_plans(&self) -> &ShapePlanCache {
+        &self.shape_plans
     }
 
     /// Кэши таблиц `harfrust` для этого лица.
@@ -99,10 +109,13 @@ struct CachedFace {
     last_used: u64,
 }
 
-/// Подготовленные лица.
-#[derive(Default)]
+/// Подготовленные лица и общий кэш результатов шейпинга их участков.
 pub(crate) struct FaceCache {
-    entries: HashMap<FaceId, CachedFace>,
+    entries: HashMap<FaceId, CachedFace, FastBuildHasher>,
+    /// Результаты шейпинга участков всех лиц: один кэш с общим бюджетом (см. `run_cache`).
+    /// Принадлежит кэшу лиц, потому что шейпинг идёт от лица и умирает вместе со сменой набора
+    /// шрифтов ([`Self::clear`]).
+    shaped_runs: ShapedRunCache,
     /// Счётчик обращений: монотонно растёт, заменяет часы.
     use_clock: u64,
     hits: u64,
@@ -111,9 +124,21 @@ pub(crate) struct FaceCache {
 }
 
 impl FaceCache {
-    /// Пустой кэш.
-    pub(crate) fn new() -> Self {
-        Self::default()
+    /// Пустой кэш; результаты шейпинга занимают не больше `shaping_budget_bytes`.
+    pub(crate) fn new(shaping_budget_bytes: usize) -> Self {
+        Self {
+            entries: HashMap::default(),
+            shaped_runs: ShapedRunCache::new(shaping_budget_bytes),
+            use_clock: 0,
+            hits: 0,
+            misses: 0,
+            evictions: 0,
+        }
+    }
+
+    /// Результаты шейпинга участков всех лиц.
+    pub(crate) fn shaped_runs(&self) -> &ShapedRunCache {
+        &self.shaped_runs
     }
 
     /// Готовит лицо, если оно ещё не подготовлено.
@@ -155,6 +180,7 @@ impl FaceCache {
                     collection_index,
                     scale,
                     shaper_data,
+                    shape_plans: ShapePlanCache::default(),
                     advances,
                     style,
                 },
@@ -185,6 +211,7 @@ impl FaceCache {
     /// Забывает все лица (шрифты библиотеки изменились).
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
+        self.shaped_runs.clear();
     }
 
     /// Счётчики кэша.

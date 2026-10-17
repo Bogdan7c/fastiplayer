@@ -13,6 +13,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use crate::cache::fast_hash::FastBuildHasher;
+
 use skrifa::outline::{
     DrawSettings, HintingInstance, HintingOptions, OutlineGlyphCollection, OutlinePen,
 };
@@ -39,7 +41,7 @@ pub(crate) struct HintedAdvances {
     /// `None`, если хинтер не удалось создать: тогда используется линейное продвижение.
     instance: Option<HintingInstance>,
     /// Уже посчитанные продвижения (автохинтинг глифа не бесплатен).
-    known: RefCell<HashMap<GlyphId, Option<i32>>>,
+    known: RefCell<HashMap<GlyphId, Option<i32>, FastBuildHasher>>,
 }
 
 impl HintedAdvances {
@@ -60,8 +62,18 @@ impl HintedAdvances {
         };
         Self {
             instance,
-            known: RefCell::new(HashMap::new()),
+            known: RefCell::new(HashMap::default()),
         }
+    }
+
+    /// Продвижение, которое уже известно без обращения к контурам: `Some(None)` - хинтера нет
+    /// или глиф не обработался (берётся линейное продвижение), `Some(Some(v))` - посчитано,
+    /// `None` - ещё не считалось и нужны контуры ([`Self::advance`]).
+    pub(crate) fn known_advance(&self, glyph: GlyphId) -> Option<Option<i32>> {
+        if self.instance.is_none() {
+            return Some(None);
+        }
+        self.known.borrow().get(&glyph).copied()
     }
 
     /// Хинтованное продвижение глифа в 26.6 при размере 256 px; `None` — хинтер недоступен

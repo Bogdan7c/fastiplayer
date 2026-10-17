@@ -96,3 +96,74 @@ fn trailing_whitespace_is_reset_to_paragraph_level() {
 fn empty_line_has_empty_order() {
     assert!(visual_order(&[], &[], 0).is_empty());
 }
+
+#[test]
+fn ascii_fast_paths_match_the_full_bidi_computation() {
+    // Управляющие ASCII-символы с особыми классами BiDi: NUL (BN), табуляция и 0x1F (S),
+    // 0x1C-0x1E и перевод строки (B, разделители абзацев), 0x7F (BN).
+    let texts = [
+        "Hello, world 123",
+        "a\nb\n\nc",
+        "  leading and trailing  ",
+        "1 + 2 = 3 (ok) #1 50% $5 a@b.c",
+        "",
+        "x",
+        "a\tb\t",
+        "a\u{0}b\u{7f}c",
+        "a\u{1c}b\u{1d}c\u{1e}d\u{1f}e",
+        "\u{1c}\u{1d}\u{1e}\u{1f}",
+        "\u{1f}x\u{1f}",
+        "\t\n\r\u{b}\u{c}",
+        "end of paragraph\r\nnext",
+    ];
+    for text in texts {
+        let symbols = chars(text);
+        assert!(symbols.iter().all(char::is_ascii), "{text:?} is ASCII");
+        let length = symbols.len();
+        // Границы участков стиля: нет, в одном месте, на каждом символе, в чередовании.
+        let mut start_patterns = vec![
+            vec![false; length],
+            vec![true; length],
+            (0..length).map(|index| index % 2 == 1).collect(),
+            (0..length).map(|index| index == length / 2).collect(),
+        ];
+        if length > 3 {
+            start_patterns.push((0..length).map(|index| index == 2).collect());
+        }
+        for starts in &start_patterns {
+            for base in [BaseDirection::LeftToRight, BaseDirection::Auto] {
+                assert_eq!(
+                    resolve_levels(&symbols, starts, base),
+                    resolve_levels_in_full(&symbols, starts, base),
+                    "{text:?} {starts:?} {base:?}"
+                );
+            }
+        }
+        let levels = vec![0_u8; length];
+        assert_eq!(
+            visual_order(&symbols, &levels, 0),
+            visual_order_in_full(&symbols, &levels, 0),
+            "{text:?}"
+        );
+        // Независимо от полного расчёта: в ASCII все уровни равны нулю, порядок логический.
+        let fast = resolve_levels(&symbols, &start_patterns[0], BaseDirection::Auto);
+        assert_eq!(fast.embedding, levels, "{text:?}");
+        assert_eq!(fast.paragraph, levels, "{text:?}");
+        assert_eq!(
+            visual_order(&symbols, &levels, 0),
+            (0..length).collect::<Vec<_>>(),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn zero_levels_with_an_rtl_base_still_go_through_the_full_reordering() {
+    let symbols = chars("ab c");
+    let levels = vec![0_u8; symbols.len()];
+    // Базовый уровень 1 сбрасывает хвостовые пробелы на уровень 1: это уже не тождество.
+    assert_eq!(
+        visual_order(&symbols, &levels, 1),
+        visual_order_in_full(&symbols, &levels, 1)
+    );
+}
