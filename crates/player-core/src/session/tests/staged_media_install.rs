@@ -40,6 +40,7 @@ use crate::{
 };
 
 mod position_rebase;
+mod reopen_tail;
 mod software_policy;
 
 /// Shared observable state fake resource port-а после передачи его player owner-у.

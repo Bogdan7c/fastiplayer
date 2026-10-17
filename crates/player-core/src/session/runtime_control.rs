@@ -346,6 +346,14 @@ impl PlayerSession {
     /// Выбирает video track через capability owner текущей session.
     pub(super) fn select_video_track(&mut self, track_id: TrackId) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        // Как и у audio: уже активная дорожка не переконфигурирует decoder и не шлёт событие.
+        if self.is_video_track_already_active(track_id) {
+            debug!(
+                ?track_id,
+                "Video track is already active; selection is a no-op"
+            );
+            return Ok(());
+        }
         self.select_requested_video_track(track_id)?;
         self.push_player_event(PlayerEvent::VideoTrackSelected(track_id));
         Ok(())

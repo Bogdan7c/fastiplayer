@@ -97,6 +97,11 @@ impl SeekAudioGateStatus {
         matches!(self, Self::Ready)
     }
 
+    /// Output уже играет decoded звук, gate ждёт только добора preroll-запаса.
+    pub(super) const fn waits_only_for_preroll(self) -> bool {
+        matches!(self, Self::WaitingForPreroll)
+    }
+
     /// Мапит audio-gate status в diagnostics blocker без потери причины.
     pub(super) const fn blocker(self) -> Option<SeekProgressBlocker> {
         match self {
@@ -525,13 +530,22 @@ impl PlayerSession {
         seek_commit: SeekCommitState,
         resume_audio_min_buffer_ms: f64,
     ) -> SeekAudioGateStatus {
-        classify_seek_audio_gate(
+        let gate_status = classify_seek_audio_gate(
             seek_commit,
             self.pipeline.audio_seek_runtime_state(),
             self.pipeline.audio_buffer_clear_generation(),
             self.audio_buffer_level_ms(),
             resume_audio_min_buffer_ms,
-        )
+        );
+        // Seek к самому концу (например, reopen на конце ролика): после EOF новых audio
+        // packets не будет, и preroll-запас уже никогда не наберётся. Ждать его — вечный
+        // `WaitingForAudioPreroll`; весь оставшийся звук уже в output, commit доигрывает
+        // его, и EOF drain штатно доводит media до `Ended`. Decoder/output без единого
+        // post-seek сэмпла сюда не относятся: там gate по-прежнему ждёт.
+        if gate_status.waits_only_for_preroll() && self.seek_audio_tail_exhausted_at_eof() {
+            return SeekAudioGateStatus::Ready;
+        }
+        gate_status
     }
 
     /// Возвращает typed audio readiness для autoplay без раскрытия pipeline storage.

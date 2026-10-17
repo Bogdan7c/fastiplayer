@@ -134,9 +134,15 @@ impl PlayerSession {
     /// Для D52 intent `StartPlaying` сразу после install: и обычный preroll, и старт в
     /// EOF drain первого просмотра уже ведут к воспроизведению; повторный `Play` здесь
     /// лишний, а в drain он раньше превращался в replay-seek.
+    ///
+    /// То же для drain-а, который доигрывает уже начатое воспроизведение: хвост ролика
+    /// играет. D52 intent — это состояние «играть», а не нажатие Play; replay-seek здесь
+    /// (например, intent старому instance-у во время смены web-версии звука у самого конца)
+    /// перематывал старый playback в начало и ломал staged reopen («moved backward»).
     pub(super) fn start_playing_intent_already_in_progress(&self) -> bool {
         self.snapshot.playback_state == PlaybackState::Buffering
             || self.eof_drain_belongs_to_startup_playthrough()
+            || self.eof_drain.continues_started_playback()
     }
 
     /// Play во время EOF drain первого просмотра присоединяется к старту.

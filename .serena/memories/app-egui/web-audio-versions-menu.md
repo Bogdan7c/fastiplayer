@@ -32,6 +32,7 @@
 ## Живая приёмка D6 (2026-10-17)
 - Loopback `python3 -m http.server`, master как в вертикальном тесте (group `aac` 440 Гц / `ec3` 880 Гц), 10×2 с сегментов: меню «♪» (кнопка в правой части панели) показывает «English (AAC 2.0)» / «English (E-AC-3 5.1)», по умолчанию AAC; `B` (uinput KEY_B) AAC→E-AC-3→AAC→E-AC-3 — каждый раз верный тон, пауза 120–140 мс на reopen, позиция сохраняется.
 - Ловушка (1) ниже ЗАКРЫТА 2026-10-17 (допуск в один сегмент + удаление несовместимой версии, `mem:media-services/ac3-eac3-web-candidates` «Временная шкала»).
+- Ловушка (2) ЗАКРЫТА 2026-10-17 в player-core (5 корней staged reopen/EOF; redundant SelectVideoTrack ещё и замораживал видео до ~GOP при любой смене версии) — `mem:player-core/same-lineage-reopen-tail-21`.
 - Ловушки: (1) каталог HLS требовал точного выравнивания (`catalog/discovery.rs::alignment_for`: равная сумма EXTINF И равное число сегментов) — ffmpeg-овский `-f hls` даёт AAC 11 сегментов / E-AC-3 2.016+1.984 → нет compatibility edge → `IncompatibleComponentPair` → ВСЁ открытие падает с неточным «manifest metadata conflicts with probed media»; (2) переключение в последнем сегменте (18 с из 20): reopen отказывает `staged demux anchor lies after authoritative target` или ждёт `WaitingForVideoTargetFrame` до конца. Обе — общие для HLS, в бэклоге `user/ac3-eac3-support/README.md`.
 
 ## Проверки

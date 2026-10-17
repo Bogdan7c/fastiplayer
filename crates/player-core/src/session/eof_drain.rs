@@ -15,6 +15,10 @@ use super::seek_admission::SeekTimelineAdmission;
 pub(super) struct EofDrainRuntime {
     /// Активен ли режим дожатия уже накопленных audio/video хвостов после EOF.
     active: bool,
+
+    /// Drain начался из идущего воспроизведения (`Playing`/`Buffering`), а не из паузы:
+    /// хвост ролика сейчас играет, и намерение «играть» уже выполняется.
+    continues_started_playback: bool,
 }
 
 impl EofDrainRuntime {
@@ -23,9 +27,29 @@ impl EofDrainRuntime {
         self.active
     }
 
+    /// Возвращает, что активный drain доигрывает начатое воспроизведение.
+    pub(super) const fn continues_started_playback(&self) -> bool {
+        self.active && self.continues_started_playback
+    }
+
+    /// Запоминает, из какого состояния начался drain, до перехода в `Draining`.
+    pub(super) fn record_drain_origin(&mut self, previous_state: PlaybackState) {
+        // Повторный вход в drain из `Draining` сохраняет исходное происхождение.
+        if previous_state == PlaybackState::Draining {
+            return;
+        }
+        self.continues_started_playback = matches!(
+            previous_state,
+            PlaybackState::Playing | PlaybackState::Buffering
+        );
+    }
+
     /// Синхронизирует runtime с high-level playback state.
     pub(super) fn sync_from_playback_state(&mut self, playback_state: PlaybackState) {
         self.active = playback_state == PlaybackState::Draining;
+        if !self.active {
+            self.continues_started_playback = false;
+        }
     }
 }
 
@@ -79,6 +103,12 @@ impl PlayerSession {
         self.eof_drain.is_active()
     }
 
+    /// Demux дошёл до EOF, и все уже прочитанные audio packets переданы decoder-у:
+    /// больше звука для seek preroll-а не появится.
+    pub(super) fn seek_audio_tail_exhausted_at_eof(&self) -> bool {
+        self.is_eof_draining() && self.pipeline.pending_audio_packet_len() == 0
+    }
+
     /// Проверяет, должен ли `Play` запускать replay через seek-to-zero.
     ///
     /// Drain первого просмотра (EOF пришёл раньше первого autoplay-старта, короткий файл) —
@@ -116,6 +146,7 @@ impl PlayerSession {
             audio_eof_drain_state = ?self.pipeline.audio_eof_drain_state(),
             "Entering EOF drain"
         );
+        self.eof_drain.record_drain_origin(previous_state);
         self.set_playback_state(PlaybackState::Draining);
         self.start_video_decoder_eof_drain_if_ready();
 
@@ -415,7 +446,7 @@ impl PlayerSession {
         }
 
         let queued_video_frames = self.pipeline.video_present_queue_len();
-        if queued_video_frames > 0 {
+        if queued_video_frames > 0 && !self.queued_video_frames_unreachable_after_audio_end() {
             return Some(EofDrainBlocker::VideoPresentQueue {
                 queued_frames: queued_video_frames,
             });
@@ -462,6 +493,30 @@ impl PlayerSession {
             | AudioEofDrainState::NoOutput
             | AudioEofDrainState::DrainedOutput { .. } => None,
         }
+    }
+
+    /// Звук доигран до конца, а очередь держит только кадры за концом static media.
+    ///
+    /// Presentation ведёт audio clock; после `DrainedOutput` он больше не сдвинется, и
+    /// кадр с PTS за duration (H.264 с B-кадрами: последний кадр 20.04 с у 20 с ролика)
+    /// никогда не станет due. Без этого seek/reopen ровно на конец ролика навсегда
+    /// оставался в `Draining` и не доходил до `Ended`.
+    fn queued_video_frames_unreachable_after_audio_end(&self) -> bool {
+        let audio_finished = matches!(
+            self.pipeline.audio_eof_drain_state(),
+            AudioEofDrainState::DrainedOutput { .. }
+        );
+        let Some(public_duration) = self.snapshot.duration else {
+            return false;
+        };
+        if !audio_finished || self.snapshot.timeline.mode != media_core::TimelineMode::Static {
+            return false;
+        }
+        let media_end =
+            self.absolute_position_for_relative(MediaTime::from_duration(public_duration));
+        self.pipeline
+            .front_queued_video_frame()
+            .is_some_and(|frame| MediaTime::from_duration(frame.pts) >= media_end)
     }
 
     /// Проверяет зависший audio output после EOF без чтения concrete CPAL state-а.

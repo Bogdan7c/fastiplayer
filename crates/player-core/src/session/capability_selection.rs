@@ -407,6 +407,20 @@ impl PlayerSession {
         self.pending_video_backend_reselection.is_some()
     }
 
+    /// Проверяет, что `track_id` уже выбран и декодируется активным decoder-ом.
+    ///
+    /// Повторный выбор такой дорожки (app restore после same-lineage reopen-а) обязан быть
+    /// no-op: requirement, выведенный заново из container metadata, беднее уже принятого
+    /// preflight/refinement config-а, а переконфигурация decoder-а посреди GOP сбрасывает
+    /// его reference state — decoder ждёт следующий keyframe, которого в хвосте ролика нет.
+    /// Без активного decoder-а или при отложенной смене backend-а выбор идёт обычным путём.
+    pub(super) fn is_video_track_already_active(&self, track_id: TrackId) -> bool {
+        self.pipeline.selected_video_track_id() == Some(track_id)
+            && self.pipeline.has_active_video_decoder()
+            && self.pipeline.active_video_requirement().is_some()
+            && !self.has_pending_video_backend_reselection()
+    }
+
     /// Сбрасывает отложенный выбор backend-а при полном reset текущего media.
     pub(super) fn clear_pending_video_backend_reselection(&mut self) {
         self.pending_video_backend_reselection = None;

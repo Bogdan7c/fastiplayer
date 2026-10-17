@@ -176,7 +176,7 @@ impl PlayerSession {
             ));
         };
         self.validate_old_instance(expected_old_media_instance_id)?;
-        let initial_old_position = self.snapshot.current_position;
+        let initial_old_position = self.old_playback_target_position();
         let old_timeline = self.old_timeline_identity();
         let prepared = ready_prepared_media_mut(staged)?;
         ensure_matching_timeline_mode(old_timeline.mode, prepared)?;
@@ -366,6 +366,10 @@ impl PlayerSession {
                     return;
                 }
             };
+            // Authoritative receipt: demuxer уже стоит на новой позиции.
+            prepared
+                .prepared_media
+                .discard_prefetched_events_after_worker_seek();
             self.finish_position_result(
                 expected_old_media_instance_id,
                 prepared,
@@ -498,11 +502,24 @@ impl PlayerSession {
                 "old media timeline mutated during staged seek",
             ));
         }
-        let fresh_position = self.snapshot.current_position;
+        let fresh_position = self.old_playback_target_position();
         if fresh_position < initial_old_position {
             return Err(position_failure("old playback position moved backward"));
         }
         Ok(fresh_position)
+    }
+
+    /// Позиция старого playback-а как target reopen-а: не дальше конца static media.
+    ///
+    /// Часы хвоста (EOF drain) экстраполируют чуть за duration (20.01 с у 20 с ролика) до
+    /// перехода в `Ended`; такой target отказывал «candidate is shorter than target» при
+    /// смене web-версии у самого конца, хотя это просто конец того же ролика.
+    fn old_playback_target_position(&self) -> Duration {
+        let position = self.snapshot.current_position;
+        match (self.snapshot.timeline.mode, self.snapshot.duration) {
+            (TimelineMode::Static, Some(duration)) => position.min(duration),
+            _ => position,
+        }
     }
 
     fn old_timeline_identity(&self) -> OldTimelineIdentity {
@@ -693,14 +710,15 @@ fn validate_static_target(
     prepared: &PreparedStagedMedia,
     target: Duration,
 ) -> Result<(), MediaInstallFailure> {
-    if prepared
+    if let Some(duration) = prepared
         .prepared_media
         .public_duration()
-        .is_some_and(|duration| target > duration.as_duration())
+        .filter(|duration| target > duration.as_duration())
     {
-        return Err(position_failure(
-            "same-lineage candidate is shorter than target",
-        ));
+        return Err(position_failure(format!(
+            "same-lineage candidate is shorter than target: target={target:?}, candidate={:?}",
+            duration.as_duration()
+        )));
     }
     if !target.is_zero()
         && !matches!(
@@ -752,11 +770,14 @@ fn validate_target_and_result(
         validate_static_target(prepared, fresh_position)?;
     }
 
-    if result.actual_position > target_position {
-        return Err(position_failure(
-            "staged demux anchor lies after authoritative target",
-        ));
-    }
+    // `actual_position` позже target-а здесь НЕ ошибка. Decode-safe anchor выбирается по
+    // decode point (DTS) не позже target-а, а receipt несёт PTS этого RAP: у H.264/HEVC с
+    // B-кадрами он позже DTS на reorder delay (HLS: RAP сегмента 18.0 с имеет PTS 18.08 с).
+    // Target в первых кадрах сегмента поэтому законно меньше PTS anchor-а; обычный seek
+    // (`PendingPreparedDemuxSeek::landing_policy_for_result`) принимает такой receipt с тем же
+    // decode-forward floor = target. Отказ здесь ломал смену web-версии/качества в начале
+    // любого сегмента. Позиция не прыгает: floor остаётся target-ом, первый кадр не раньше
+    // target-а становится target frame-ом.
     Ok(StagedPositionCommit::Seek {
         target_position,
         result,

@@ -503,6 +503,15 @@ impl PreparedMedia {
         Ok(result)
     }
 
+    /// Отбрасывает pre-seek prefetched events после authoritative worker-owned seek receipt-а.
+    ///
+    /// Worker переставляет тот же demuxer вне `seek_detached`, поэтому replay staged
+    /// preflight-а (packets стартовой позиции) иначе ушёл бы в pipeline раньше post-seek
+    /// packets: decoder и audio получили бы кадры/сэмплы чужой позиции.
+    pub(crate) fn discard_prefetched_events_after_worker_seek(&mut self) {
+        self.prefetch_state = None;
+    }
+
     /// Читает latest neutral live snapshot, не устанавливая port в active session.
     pub(crate) fn staged_live_timeline_snapshot(
         &self,

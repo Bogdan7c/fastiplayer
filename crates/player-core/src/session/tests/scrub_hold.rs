@@ -9,9 +9,13 @@ fn continuous_scrub_harness() -> SeekRegressionHarness {
     harness
 }
 
+/// Число video packets непрерывного потока: drag и release не должны дочитать его до EOF,
+/// иначе EOF без pending audio packets честно открывает audio gate без полного preroll-а.
+const CONTINUOUS_VIDEO_PACKETS: u64 = 3_000;
+
 fn continuous_video_harness(tracks: Vec<TrackInfo>) -> SeekRegressionHarness {
     let video = &tracks[0];
-    let packets = (0..500)
+    let packets = (0..CONTINUOUS_VIDEO_PACKETS)
         .map(|index| {
             fake_video_packet_with_keyframe(
                 video.id,
@@ -31,7 +35,7 @@ fn continuous_video_harness(tracks: Vec<TrackInfo>) -> SeekRegressionHarness {
         packets,
     );
     let harness = SeekRegressionHarness::new(tracks, demuxer);
-    for index in 0..500 {
+    for index in 0..CONTINUOUS_VIDEO_PACKETS {
         harness
             .decoder
             .decode_next_packet_as_frame(Duration::from_millis(8_000 + index * 40), 1_000 + index);

@@ -23,6 +23,8 @@
 
 Same-lineage staged install now inserts a player-owned strict position phase before authorization, transfers any used receipted-seek runtime/allocator through commit, and adopts the prepared demux result into existing decoder landing without a second seek. Ordinary staged-open semantics remain unchanged. Current ownership, failure, live/DVR and receipt invariants: `mem:player-core/staged-position-gate-slice-c-2026-07-26`.
 
+Reopen у хвоста/конца (2026-10-17, #21): anchor PTS > target допустим (decode-forward floor = target), redundant `SelectVideoTrack` — no-op, prefetch чистится на worker receipt, intent «играть» в started-playback drain не делает replay, target клампится к duration, seek в самый конец доходит до `Ended` — `mem:player-core/same-lineage-reopen-tail-21`.
+
 ## S42 acceptance facts (2026-07-25)
 
 - S42 does not change player-core API or ownership. `scripts/final-acceptance.sh` completed automated `PASS`; manual playback matrix and real VA-API rerun remain `NOT RUN`.
