@@ -37,6 +37,9 @@ use crate::bitmap::{BitmapError, CoverageBitmap, outline_to_bitmap};
 use crate::outline::{ControlBox, OUTLINE_MAX, Outline, Point, round_ties_even_to_i32};
 use crate::raster::Rasterizer;
 
+mod rotation;
+pub(crate) use rotation::{GlyphPlacement, Rotation3d, ShearFactors, glyph_transform_matrix};
+
 /// Допустимая ошибка обводки в единицах контура (libass: `STROKER_PRECISION`).
 pub(crate) const STROKER_PRECISION: i32 = 16;
 /// Допустимая ошибка аппроксимации сплайнов (libass: `RASTERIZER_PRECISION`).
@@ -64,6 +67,17 @@ pub(crate) struct QuantizedTransform {
     pub(crate) matrix_x: [i32; 2],
     /// Вторая строка квантованной матрицы 2x2.
     pub(crate) matrix_y: [i32; 2],
+    /// Квантованная строка перспективы (`m_zx`, `m_zy`); `[0, 0]` — аффинное преобразование
+    /// без поворотов вокруг осей X и Y, контур переводится быстрым 2D-путём.
+    pub(crate) matrix_z: [i32; 2],
+}
+
+impl QuantizedTransform {
+    /// У преобразования есть перспектива: контур переводится через деление на `z`
+    /// (libass: `matrix_z.x || matrix_z.y`).
+    pub(crate) fn has_perspective(&self) -> bool {
+        self.matrix_z != [0, 0]
+    }
 }
 
 /// `|value| < limit` (в C: `fabs(v) < max`); NaN даёт `false`.
@@ -93,25 +107,12 @@ fn ldexp(value: f64, exponent: i32) -> f64 {
 
 /// Матрица глифа без поворотов и сдвигов (libass: `calc_transform_matrix` при нулевых
 /// `frx/fry/frz/fax/fay`, `par_scale_x = 1`): переносит начало координат в точку
-/// `(pos_x, pos_y)` в 1/64 пикселя. Нужна эталонным тестам рисунков, где `par_scale_x = 1`.
+/// `(pos_x, pos_y)` в 1/64 пикселя. Нужна эталонным тестам рисунков, где повороты не
+/// поддерживаются, а `par_scale_x = 1`; текст строит матрицу через [`glyph_transform_matrix`].
 #[cfg(test)]
 pub(crate) fn unrotated_glyph_matrix(pos_x: i32, pos_y: i32) -> Matrix3 {
-    unrotated_glyph_matrix_with_aspect(pos_x, pos_y, 1.0)
-}
-
-/// То же с растяжением по горизонтали на `par_scale_x` libass (`scale_x = dist * par_scale_x`):
-/// нужно, когда пропорции хранения видео отличаются от пропорций кадра.
-pub(crate) fn unrotated_glyph_matrix_with_aspect(
-    pos_x: i32,
-    pos_y: i32,
-    pixel_aspect_x: f64,
-) -> Matrix3 {
     [
-        [
-            CAMERA_DISTANCE * pixel_aspect_x,
-            0.0,
-            CAMERA_DISTANCE * f64::from(pos_x),
-        ],
+        [CAMERA_DISTANCE, 0.0, CAMERA_DISTANCE * f64::from(pos_x)],
         [0.0, CAMERA_DISTANCE, CAMERA_DISTANCE * f64::from(pos_y)],
         [0.0, 0.0, CAMERA_DISTANCE],
     ]
@@ -133,7 +134,7 @@ pub(crate) fn scale_and_offset_matrix(
     scaled
 }
 
-/// Порт `quantize_transform` (libass: `ass_render.c`), случай без перспективы.
+/// Порт `quantize_transform` (libass: `ass_render.c`), включая квантование перспективы.
 ///
 /// `matrix` меняется на месте (начало координат переносится в центр рамки), `offset` — вход
 /// (при `first = false`) и выход (при `first = true`): глифы одного участка делят дробную
@@ -191,6 +192,20 @@ pub(crate) fn quantize_transform(
         }
     }
 
+    // Строка перспективы квантуется с шагом, привязанным к уже квантованной матрице 2x2
+    // (комментарий к выводу шагов — в `quantize_transform` libass).
+    let qmx = quantized[0][0].abs() + quantized[0][1].abs();
+    let qmy = quantized[1][0].abs() + quantized[1][1].abs();
+    let scale_z = POSITION_PRECISION * f64::from(qmx.max(qmy));
+    let mut quantized_z = [0_i32; 2];
+    for j in 0..2 {
+        let value = matrix[2][j] * mul[j] * scale_z;
+        if !is_within(value, MAX_VALUE) {
+            return None;
+        }
+        quantized_z[j] = round_ties_even_to_i32(value);
+    }
+
     if first {
         offset[0] = center[0] - f64::from(quantized_center[0]);
         offset[1] = center[1] - f64::from(quantized_center[1]);
@@ -206,11 +221,16 @@ pub(crate) fn quantize_transform(
         ],
         matrix_x: quantized[0],
         matrix_y: quantized[1],
+        matrix_z: quantized_z,
     })
 }
 
-/// Порт `restore_transform`: матрица 2x3 для `transformed_2d` по квантованному ключу.
-pub(crate) fn restore_transform(key: &QuantizedTransform, cbox: &ControlBox) -> [[f64; 3]; 2] {
+/// Порт `restore_transform`: матрица 3x3 для `transformed_2d`/`transformed_3d` по
+/// квантованному ключу.
+///
+/// Без перспективы (`matrix_z == 0`) третья строка равна `[0, 0, 1]` и годятся первые две
+/// строки; с перспективой нужна вся матрица.
+pub(crate) fn restore_transform(key: &QuantizedTransform, cbox: &ControlBox) -> Matrix3 {
     let x0 = (f64::from(cbox.x_min) + f64::from(cbox.x_max)) / 2.0;
     let y0 = (f64::from(cbox.y_min) + f64::from(cbox.y_max)) / 2.0;
     let dx = (f64::from(cbox.x_max) - f64::from(cbox.x_min)) / 2.0 + 64.0;
@@ -223,8 +243,21 @@ pub(crate) fn restore_transform(key: &QuantizedTransform, cbox: &ControlBox) -> 
     m[0][1] = f64::from(key.matrix_x[1]) * q_y;
     m[1][0] = f64::from(key.matrix_y[0]) * q_x;
     m[1][1] = f64::from(key.matrix_y[1]) * q_y;
-    // Перспективы нет: matrix_z == 0.
-    m[2][2] = 1.0_f64.min(MAX_PERSP_SCALE);
+
+    let qmx = key.matrix_x[0].abs() + key.matrix_x[1].abs();
+    let qmy = key.matrix_y[0].abs() + key.matrix_y[1].abs();
+    // libass делит на `max(qmx, qmy)` без проверки: при вырожденной матрице получается
+    // бесконечность и NaN (битмапа нет). Здесь вырожденный случай даёт нулевую перспективу.
+    let denominator = f64::from(qmx.max(qmy));
+    let scale_z = if denominator > 0.0 {
+        1.0 / POSITION_PRECISION / denominator
+    } else {
+        0.0
+    };
+    m[2][0] = f64::from(key.matrix_z[0]) * q_x * scale_z;
+    m[2][1] = f64::from(key.matrix_z[1]) * q_y * scale_z;
+
+    m[2][2] = (1.0 + m[2][0].abs() * dx + m[2][1].abs() * dy).min(MAX_PERSP_SCALE);
 
     let center = [
         f64::from(key.offset[0] * (64 >> SUBPIXEL_ORDER)),
@@ -238,7 +271,7 @@ pub(crate) fn restore_transform(key: &QuantizedTransform, cbox: &ControlBox) -> 
     for row in &mut m {
         row[2] -= row[0] * x0 + row[1] * y0;
     }
-    [m[0], m[1]]
+    m
 }
 
 /// Рамка контрольных точек нескольких контуров; пустая -> нули (libass: `cbox`).
@@ -270,11 +303,21 @@ pub(crate) fn construct_bitmap(
     outlines: [&Outline; 2],
 ) -> Result<Option<CoverageBitmap>, BitmapError> {
     let matrix = restore_transform(key, cbox);
-    let (Ok(first), Ok(second)) = (
-        outlines[0].transformed_2d(&matrix),
-        outlines[1].transformed_2d(&matrix),
-    ) else {
-        // libass: `ass_outline_transform_2d` не удалась -> `memset(bm, 0)`, битмапа нет.
+    // Перспектива есть только при поворотах вокруг осей X/Y: тогда нужен путь с делением на z.
+    let transformed = if key.has_perspective() {
+        (
+            outlines[0].transformed_3d(&matrix),
+            outlines[1].transformed_3d(&matrix),
+        )
+    } else {
+        let affine = [matrix[0], matrix[1]];
+        (
+            outlines[0].transformed_2d(&affine),
+            outlines[1].transformed_2d(&affine),
+        )
+    };
+    let (Ok(first), Ok(second)) = transformed else {
+        // libass: `ass_outline_transform_*` не удалась -> `memset(bm, 0)`, битмапа нет.
         return Ok(None);
     };
     outline_to_bitmap(rasterizer, Some(&first), Some(&second))

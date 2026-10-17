@@ -22,6 +22,7 @@
 use super::ComposeError;
 use super::glyph_bitmaps::GlyphBitmaps;
 use crate::bitmap::{CoverageBitmap, PlacedBitmap, combine_bitmaps, fix_outline, shadow_bitmap};
+use crate::event_fade::EventFade;
 use crate::event_style::BorderStyle;
 use crate::fixed_point::double_to_d6;
 use crate::span_look::SpanLook;
@@ -43,7 +44,10 @@ pub(super) struct FilterFlags {
 
 impl FilterFlags {
     /// Флаги по виду символа (libass: начало цикла `render_and_combine_glyphs`).
-    pub(super) fn for_glyph(look: &SpanLook) -> Self {
+    ///
+    /// `fade` — затухание реплики: при нём заливка обводки отключена (libass: `fade == 0` в
+    /// условии `FILTER_FILL_IN_BORDER`), хотя цвета в `look` остаются «до затухания».
+    pub(super) fn for_glyph(look: &SpanLook, fade: EventFade) -> Self {
         let primary = look.colors.primary;
         let box_border = look.border_style == BorderStyle::OpaqueBox;
         let nonzero_border = look.border.is_nonzero();
@@ -55,7 +59,8 @@ impl FilterFlags {
         }
         let secondary = look.colors.secondary;
         let fill_in_border =
-            (nonzero_border && primary.alpha == 255 && secondary.alpha == 255) || box_border;
+            (nonzero_border && primary.alpha == 255 && secondary.alpha == 255 && fade.is_none())
+                || box_border;
         Self {
             box_border,
             nonzero_border,

@@ -25,6 +25,7 @@
 
 mod glyph_bitmaps;
 mod images;
+mod rotation;
 mod run;
 
 use subtitle_core::SubtitleColor;
@@ -67,6 +68,8 @@ pub(crate) struct ComposeInput<'a> {
     pub(crate) canvas: CanvasSize,
     /// Растяжение по горизонтали `par_scale_x` libass (1.0 — пропорции хранения и кадра равны).
     pub(crate) pixel_aspect_x: f64,
+    /// Наибольшая сторона битмапа глифа в пикселях (`RasterInputLimits::max_canvas_side`).
+    pub(crate) max_bitmap_side: u32,
 }
 
 /// Четыре цвета участка (libass: `c[0..4]`).
@@ -95,6 +98,8 @@ struct CollectedRun {
     parts: Vec<GlyphBitmaps>,
     /// Сколько глифов участка осталось без обводки из-за сбоя её построения.
     skipped_borders: u32,
+    /// Сколько глифов пропущено из-за предела стороны битмапа.
+    skipped_oversized_bitmaps: u32,
 }
 
 /// Картинки реплики и отчёт о том, что пропущено при их построении.
@@ -104,6 +109,8 @@ pub(crate) struct ComposedText {
     pub(crate) images: Vec<SubtitleBitmap>,
     /// Сколько глифов нарисовано без обводки из-за сбоя её построения.
     pub(crate) skipped_borders: u32,
+    /// Сколько глифов пропущено: битмап после преобразования шире предела стороны.
+    pub(crate) skipped_oversized_bitmaps: u32,
 }
 
 /// Строит картинки реплики. Позиции глифов в `clusters` переводятся из координат блока в
@@ -113,6 +120,9 @@ pub(crate) fn compose_text(
     input: &ComposeInput<'_>,
 ) -> Result<ComposedText, ComposeError> {
     let runs = collect_runs(clusters, input)?;
+    let skipped_oversized_bitmaps = runs.iter().fold(0_u32, |total, run| {
+        total.saturating_add(run.skipped_oversized_bitmaps)
+    });
     let skipped_borders = runs.iter().fold(0_u32, |total, run| {
         total.saturating_add(run.skipped_borders)
     });
@@ -129,6 +139,7 @@ pub(crate) fn compose_text(
     Ok(ComposedText {
         images: render_text(&finished, input)?,
         skipped_borders,
+        skipped_oversized_bitmaps,
     })
 }
 
@@ -137,7 +148,9 @@ fn collect_runs(
     clusters: &mut [TextCluster],
     input: &ComposeInput<'_>,
 ) -> Result<Vec<CollectedRun>, ComposeError> {
-    let mut rasterizer = Rasterizer::new(RASTERIZER_PRECISION);
+    let mut rasterizer =
+        Rasterizer::new(RASTERIZER_PRECISION).with_max_bitmap_side(input.max_bitmap_side);
+    let rotation_center = input.layout.rotation_center(input.style);
     let mut runs: Vec<CollectedRun> = Vec::new();
     let mut new_run = true;
     // libass: `device_x = (device_x - left_margin) * par_scale_x + left_margin`, поля кадра нет.
@@ -154,6 +167,7 @@ fn collect_runs(
             continue;
         };
         let glyph_scale = cluster.glyph_scale;
+        let fade = cluster.fade;
         let letter_spacing_d6 = cluster.letter_spacing_d6;
         // Нулевой масштаб по любой оси — у буквы нет площади (libass пропускает такие глифы
         // при расчёте сдвига и ничего не получает от растеризатора).
@@ -162,19 +176,25 @@ fn collect_runs(
         for glyph in cluster.glyphs_mut() {
             if new_run {
                 runs.push(CollectedRun {
+                    // Затухание участка — затухание его ПЕРВОГО символа (libass не режет
+                    // участки по затуханию и копирует цвета и `fade` первого `info`).
                     colors: RunColors {
-                        primary: look.colors.primary,
-                        outline: look.colors.outline,
-                        back: look.colors.back,
+                        primary: fade.apply_to(look.colors.primary),
+                        outline: fade.apply_to(look.colors.outline),
+                        back: fade.apply_to(look.colors.back),
                     },
-                    flags: FilterFlags::for_glyph(look),
+                    flags: FilterFlags::for_glyph(look, fade),
                     shadow_offset: quantized_shadow_offset(look),
                     offset: [0.0, 0.0],
                     parts: Vec::new(),
                     skipped_borders: 0,
+                    skipped_oversized_bitmaps: 0,
                 });
                 new_run = false;
             }
+            // Положение относительно центра поворота считается по позиции в блоке, поэтому
+            // раньше перевода в координаты кадра.
+            let shift = rotation::glyph_shift(glyph.pos, input, rotation_center, look);
             // Позиция в координатах кадра.
             glyph.pos.x = double_to_d6(device_x + d6_to_double(glyph.pos.x) * input.pixel_aspect_x);
             glyph.pos.y = glyph
@@ -193,6 +213,7 @@ fn collect_runs(
             let bitmaps = build_glyph_bitmaps(
                 &GlyphBitmapRequest {
                     glyph,
+                    shift,
                     outline: &outline,
                     glyph_scale,
                     letter_spacing_d6,
@@ -206,6 +227,9 @@ fn collect_runs(
                     first,
                 },
             )?;
+            if bitmaps.oversized {
+                run.skipped_oversized_bitmaps = run.skipped_oversized_bitmaps.saturating_add(1);
+            }
             if bitmaps.border_failed {
                 run.skipped_borders = run.skipped_borders.saturating_add(1);
             }

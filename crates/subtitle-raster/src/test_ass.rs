@@ -11,7 +11,7 @@ use subtitle_formats::{
     AssParseLimits, LegacyEncodingHint, SubtitleParseLimits, TextSubtitleFormat, load_text_subtitle,
 };
 
-use crate::renderer::{CueKey, CueSourceId, RenderableCue};
+use crate::renderer::{AssEventTiming, CueKey, CueSourceId, RenderableCue};
 
 /// Лимиты, с которыми разбор не мешает тестам.
 fn parse_limits() -> SubtitleParseLimits {
@@ -28,12 +28,14 @@ pub(crate) struct AssTestCue {
     pub(crate) key: CueKey,
     pub(crate) layer: SubtitleLayer,
     pub(crate) cue: AssCue,
+    /// Тайминг события из строки `Dialogue:`.
+    pub(crate) timing: AssEventTiming,
 }
 
 impl AssTestCue {
     /// Запись для запроса на кадр.
     pub(crate) fn renderable(&self) -> RenderableCue<'_> {
-        RenderableCue::ass(self.key, self.layer, &self.cue)
+        RenderableCue::ass(self.key, self.layer, &self.cue, self.timing)
     }
 }
 
@@ -100,6 +102,7 @@ pub(crate) fn load_ass_cues(file_text: &str, source: u64) -> Vec<AssTestCue> {
                 key: CueKey::new(CueSourceId::new(source), id),
                 layer,
                 cue: cue.clone(),
+                timing: AssEventTiming::new(event.start(), event.end()),
             }
         })
         .collect()

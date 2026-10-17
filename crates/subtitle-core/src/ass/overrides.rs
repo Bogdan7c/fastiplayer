@@ -1,14 +1,16 @@
 //! Теги переопределений `{\...}` с точной семантикой аргументов libass.
 //!
-//! Теги слоя 1 хранятся разобранными. Теги слоёв 2–3 (`\frx`, `\move`, `\t`, `\clip`,
-//! `\k`, `\p` ...) распознаются, но только как [`AssOverride::Unsupported`]: растеризатор
-//! их игнорирует, а счётчики попадают в отчёт разбора.
+//! Теги слоя 1 и геометрия слоя 2 (`\frx/y/z`, `\fax/y`, `\org`, `\fad`) хранятся разобранными.
+//! Остальные теги слоёв 2–3 (`\move`, `\t`, `\clip`, `\k`, `\p` ...) распознаются,
+//! но только как [`AssOverride::Unsupported`]: растеризатор их игнорирует, а счётчики
+//! попадают в отчёт разбора.
 //!
 //! Значение `None` в большинстве вариантов означает «тег без допустимого аргумента:
 //! вернуть значение из стиля реплики» — так libass обрабатывает `\b`, `\fn` и т.п.
 
 use super::alignment::AssAlignment;
 use super::color::AssRgb;
+use super::geometry_tags::{AssFade, AssRotationAxis, AssShearAxis};
 use super::script_info::AssWrapStyle;
 use super::style::AssBold;
 
@@ -99,17 +101,8 @@ pub struct AssMove {
 /// Теги слоёв 2–3: распознаются (чтобы не принять за другой тег), но не исполняются.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AssUnsupportedTag {
-    Fax,
-    Fay,
-    Frx,
-    Fry,
-    /// `\frz` и `\fr`.
-    Frz,
     Blur,
     Be,
-    Move,
-    Fade,
-    Org,
     Transform,
     Clip,
     InverseClip,
@@ -125,16 +118,8 @@ impl AssUnsupportedTag {
     /// Каноническое имя тега для матрицы поддержки и отчёта.
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Fax => "fax",
-            Self::Fay => "fay",
-            Self::Frx => "frx",
-            Self::Fry => "fry",
-            Self::Frz => "frz",
             Self::Blur => "blur",
             Self::Be => "be",
-            Self::Move => "move",
-            Self::Fade => "fade",
-            Self::Org => "org",
             Self::Transform => "t",
             Self::Clip => "clip",
             Self::InverseClip => "iclip",
@@ -195,6 +180,26 @@ pub enum AssOverride {
     /// `\pos`/`\move` игнорируется). Анимация между точками — слой 2: растеризатор слоя 1
     /// рисует реплику в начальной точке (положение libass при `t <= start`).
     Move(AssMove),
+    /// `\frx`, `\fry`, `\frz`, `\fr`: угол в градусах. `None` — тег без аргумента:
+    /// для X и Y это 0, для Z — угол стиля (`Angle`).
+    Rotation {
+        axis: AssRotationAxis,
+        degrees: Option<f64>,
+    },
+    /// `\fax`, `\fay`: коэффициент наклона. `None` — тег без аргумента (наклон 0).
+    Shear {
+        axis: AssShearAxis,
+        factor: Option<f64>,
+    },
+    /// `\org(x,y)`: центр поворота в координатах сценария; ровно два аргумента (иначе тег
+    /// игнорируется). Побеждает первый `\org` реплики, и он отключает поиск свободного места.
+    Origin {
+        x: f64,
+        y: f64,
+    },
+    /// `\fad(вход,выход)` / `\fade(...)`: затухание в сыром виде, см. [`AssFade`]. Побеждает
+    /// первый тег затухания реплики.
+    Fade(AssFade),
     /// `\r` / `\rИмя`: сброс к стилю реплики или к стилю по имени (строгий поиск
     /// `AssScript::lookup_style_strict`; промах — стиль реплики).
     Reset(Option<String>),
@@ -222,16 +227,8 @@ mod tests {
     #[test]
     fn unsupported_names_are_unique() {
         let all = [
-            AssUnsupportedTag::Fax,
-            AssUnsupportedTag::Fay,
-            AssUnsupportedTag::Frx,
-            AssUnsupportedTag::Fry,
-            AssUnsupportedTag::Frz,
             AssUnsupportedTag::Blur,
             AssUnsupportedTag::Be,
-            AssUnsupportedTag::Move,
-            AssUnsupportedTag::Fade,
-            AssUnsupportedTag::Org,
             AssUnsupportedTag::Transform,
             AssUnsupportedTag::Clip,
             AssUnsupportedTag::InverseClip,

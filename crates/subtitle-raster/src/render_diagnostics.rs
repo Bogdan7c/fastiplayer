@@ -11,6 +11,9 @@ pub(crate) struct RenderDiagnostics {
     pub(crate) skipped_glyphs: u32,
     /// Глифы, нарисованные без обводки: обводку построить не удалось.
     pub(crate) skipped_borders: u32,
+    /// Глифы, не нарисованные, потому что после преобразования (3D-перспектива у плоскости
+    /// камеры) их битмап превысил предел стороны `RasterInputLimits::max_canvas_side`.
+    pub(crate) skipped_oversized_bitmaps: u32,
     /// Куски текста ASS в режиме рисунка (`\p`), пропущенные: векторные рисунки слой 1 не рисует.
     pub(crate) skipped_ass_drawings: u32,
 }
@@ -21,6 +24,9 @@ impl RenderDiagnostics {
         Self {
             skipped_glyphs: self.skipped_glyphs.saturating_add(other.skipped_glyphs),
             skipped_borders: self.skipped_borders.saturating_add(other.skipped_borders),
+            skipped_oversized_bitmaps: self
+                .skipped_oversized_bitmaps
+                .saturating_add(other.skipped_oversized_bitmaps),
             skipped_ass_drawings: self
                 .skipped_ass_drawings
                 .saturating_add(other.skipped_ass_drawings),

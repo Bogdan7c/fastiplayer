@@ -13,8 +13,10 @@ use subtitle_core::SubtitleColor;
 
 use crate::renderer::CueKey;
 
+mod animation_change;
 mod placement_group;
 
+pub use animation_change::AnimationChange;
 pub use placement_group::OverlayPlacementGroup;
 use placement_group::union_bounds;
 
@@ -372,6 +374,8 @@ pub struct SubtitleOverlay {
     bitmaps: Vec<SubtitleBitmap>,
     revision: OverlayRevision,
     change: OverlayChange,
+    /// Когда анимация реплик изменит картинку (см. [`AnimationChange`]).
+    animation_change: AnimationChange,
 }
 
 impl SubtitleOverlay {
@@ -396,6 +400,7 @@ impl SubtitleOverlay {
             bitmaps,
             revision,
             change,
+            animation_change: AnimationChange::None,
         })
     }
 
@@ -410,7 +415,14 @@ impl SubtitleOverlay {
             bitmaps: Vec::new(),
             revision,
             change,
+            animation_change: AnimationChange::None,
         }
+    }
+
+    /// Записывает, когда анимация изменит картинку (растеризатор знает это при сборке кадра).
+    pub(crate) fn with_animation_change(mut self, animation_change: AnimationChange) -> Self {
+        self.animation_change = animation_change;
+        self
     }
 
     /// Помечает результат как повторно выданный без изменений (ревизия остаётся прежней).
@@ -448,6 +460,8 @@ impl SubtitleOverlay {
             bitmaps: kept,
             revision: self.revision,
             change: OverlayChange::Replaced,
+            // Консервативно: оставшиеся реплики меняются не позже, чем весь набор.
+            animation_change: self.animation_change,
         }
     }
 
@@ -469,6 +483,15 @@ impl SubtitleOverlay {
     /// Что изменилось относительно предыдущего результата.
     pub fn change(&self) -> OverlayChange {
         self.change
+    }
+
+    /// Когда картинка изменится сама по себе (анимации `\move`, `\fad`), если запрос
+    /// повторить в более поздний момент. [`AnimationChange::None`] — у статичной сцены.
+    ///
+    /// Значение верно для моментов не раньше момента запроса, по которому кадр собран. Оно же
+    /// удобно для границы срока годности картинки ([`AnimationChange::holds_at`]).
+    pub fn animation_change(&self) -> AnimationChange {
+        self.animation_change
     }
 
     /// Нет ни одной картинки.

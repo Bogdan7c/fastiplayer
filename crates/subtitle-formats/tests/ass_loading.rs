@@ -362,9 +362,10 @@ fn unknown_and_unsupported_tags_are_counted_and_text_is_kept() {
     let tags = &document.ass_report().unwrap().tags;
     assert_eq!(tags.unknown_total(), 1);
     assert_eq!(tags.unknown_names().get("zzz9"), Some(&1));
-    assert_eq!(tags.unsupported_count(AssUnsupportedTag::Frz), 1);
-    assert_eq!(tags.unsupported_count(AssUnsupportedTag::Move), 1);
+    assert_eq!(tags.unsupported_count(AssUnsupportedTag::Clip), 0);
     assert_eq!(tags.unsupported_count(AssUnsupportedTag::Blur), 1);
+    // `\move` поддержан и в «не поддержано» не считается.
+    assert_eq!(tags.unsupported().len(), 1);
 }
 
 #[test]

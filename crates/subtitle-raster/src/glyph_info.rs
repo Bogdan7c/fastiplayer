@@ -15,6 +15,7 @@ use std::sync::Arc;
 use harfrust::Script;
 use skrifa::GlyphId;
 
+use crate::event_fade::EventFade;
 use crate::event_style::AxisPair;
 use crate::fixed_point::Vector26;
 use crate::fonts::FaceId;
@@ -99,6 +100,8 @@ pub(crate) struct TextCluster {
     pub(crate) symbol: char,
     /// Индекс внешнего вида в [`crate::source_text::SourceText::looks`].
     pub(crate) look: usize,
+    /// Затухание символа (libass: `info->fade`); участок берёт его у первого символа.
+    pub(crate) fade: EventFade,
     /// Масштаб по осям (libass: `info->scale_x`/`scale_y` после `fix_glyph_scaling`):
     /// `font_size / 256`, умноженный на `\fscx`/`\fscy`. Переводит размеры шейпера и контура
     /// (запрос 256 px) в пиксели кадра.
@@ -109,6 +112,9 @@ pub(crate) struct TextCluster {
     /// У символа задан ненулевой `\fsp` (libass: `info->hspacing != 0`): такой символ
     /// шейпится и переупорядочивается отдельным участком, лигатуры в нём выключены.
     pub(crate) has_letter_spacing: bool,
+    /// Наклон `\fay` символа (libass: `info->fay`): сдвигает базовую линию следующих глифов
+    /// ([`crate::layout`], `apply_baseline_shear`); сам контур наклоняет матрица глифа.
+    pub(crate) baseline_shear: f64,
     /// Толщина обводки символа в пикселях кадра (libass: `info->border_x/y`); нужна измерению
     /// строк, которое не видит видов символов.
     pub(crate) border: AxisPair,

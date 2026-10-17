@@ -10,7 +10,7 @@ use subtitle_core::{
 use subtitle_formats::{
     AssParseLimits, LegacyEncodingHint, SubtitleParseLimits, TextSubtitleFormat, load_text_subtitle,
 };
-use subtitle_raster::{CanvasRect, OverlayPlacementGroup};
+use subtitle_raster::{AssEventTiming, CanvasRect, OverlayPlacementGroup};
 
 use super::*;
 
@@ -18,7 +18,7 @@ use super::*;
 const TWO_GROUP_SCRIPT: &str = "[Script Info]\nScriptType: v4.00+\nPlayResX: 256\nPlayResY: 144\nScaledBorderAndShadow: yes\nWrapStyle: 0\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Noto Sans,16,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,Bottom dialogue\nDialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\\an7\\pos(10,10)\\1c&H0000FF&}SIGN\n";
 
 /// Реплики файла `TWO_GROUP_SCRIPT`, прошедшие настоящий разбор.
-fn two_group_cues() -> Vec<(CueKey, SubtitleLayer, AssCue)> {
+fn two_group_cues() -> Vec<(CueKey, SubtitleLayer, AssCue, AssEventTiming)> {
     let limits = SubtitleParseLimits::new(1 << 20, 1000, 100).with_ass_limits(AssParseLimits {
         max_header_bytes: 1 << 16,
         max_styles: 16,
@@ -48,7 +48,12 @@ fn two_group_cues() -> Vec<(CueKey, SubtitleLayer, AssCue)> {
             let SubtitleContent::Ass(cue) = event.content() else {
                 panic!("ASS file must give ASS events");
             };
-            (CueKey::new(CueSourceId::new(7), id), layer, cue.clone())
+            (
+                CueKey::new(CueSourceId::new(7), id),
+                layer,
+                cue.clone(),
+                AssEventTiming::new(event.start(), event.end()),
+            )
         })
         .collect()
 }
@@ -58,11 +63,12 @@ fn two_group_overlay() -> SubtitleOverlay {
     let cues = two_group_cues();
     let renderables: Vec<RenderableCue<'_>> = cues
         .iter()
-        .map(|(key, layer, cue)| RenderableCue::ass(*key, *layer, cue))
+        .map(|(key, layer, cue, timing)| RenderableCue::ass(*key, *layer, cue, *timing))
         .collect();
     let mut rasterizer = rasterizer();
     rasterizer
         .render(&RenderRequest {
+            moment: subtitle_core::SubtitleTime::ZERO,
             cues: &renderables,
             canvas: CanvasSize::new(TARGET_WIDTH, TARGET_HEIGHT).expect("canvas"),
             appearance: &SubtitleAppearance::youtube_like(),

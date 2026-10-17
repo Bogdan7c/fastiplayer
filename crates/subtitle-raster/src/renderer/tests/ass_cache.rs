@@ -58,6 +58,7 @@ fn ass_option_change_does_not_invalidate_text_cues() {
     let render_with = |rasterizer: &mut SubtitleRasterizer, ass: AssRenderOptions| {
         rasterizer
             .render(&RenderRequest {
+                moment: subtitle_core::SubtitleTime::ZERO,
                 cues: &list,
                 canvas: canvas(),
                 appearance: &appearance,

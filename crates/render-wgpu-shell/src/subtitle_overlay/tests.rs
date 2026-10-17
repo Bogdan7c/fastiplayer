@@ -239,6 +239,7 @@ fn rasterize(
     let cues: &[RenderableCue<'_>] = if text.is_some() { &renderable } else { &[] };
     rasterizer
         .render(&RenderRequest {
+            moment: subtitle_core::SubtitleTime::ZERO,
             cues,
             canvas,
             appearance: &SubtitleAppearance::youtube_like(),

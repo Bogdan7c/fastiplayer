@@ -9,13 +9,20 @@
 //! 1 px, размеры — 2 px; число пикселей композита с разницей канала больше 2 не должно
 //! превышать 1 % площади, которую libass закрасил (альфа > 0). Измеренные значения каждого
 //! кейса записаны в [`ASS_CASES`]: допуск кейса — измерение с небольшим запасом, а не общий 1 %.
+//!
+//! ## Кейсы в нескольких моментах
+//! Заголовок `time_ms=0,1000,2500` задаёт несколько моментов одного файла. Каждый момент —
+//! отдельная «опорная точка» ([`ReferencePoint`]) со своими эталонами `<case>@t<мс:05>.png/.json`
+//! и своей строкой допуска; кейс с одним моментом называется просто `<case>`.
 
 use subtitle_core::{SubtitleContent, SubtitleTimeline, TimelineInsertOutcome};
 use subtitle_formats::{
     AssParseLimits, LegacyEncodingHint, SubtitleParseLimits, TextSubtitleFormat, load_text_subtitle,
 };
 
-use super::ass_tolerances::ASS_CASES;
+use super::ass_tolerances::{ASS_CASES, AssTolerance};
+use super::ass_tolerances_animation::LAYER2_ANIMATION_CASES;
+use super::ass_tolerances_layer2::LAYER2_STATIC_CASES;
 use super::tests::{fixtures_dir, load_expected_png};
 use super::text_tests::dump_comparison;
 use crate::appearance::SubtitleAppearance;
@@ -23,17 +30,47 @@ use crate::ass::{AssRenderOptions, AssStorageSize};
 use crate::fonts::{FontLookupCacheLimits, SubtitleFontLibrary, TextLanguagePreference};
 use crate::overlay::{CanvasSize, SubtitleBitmapKind, SubtitleOverlay};
 use crate::renderer::{
-    CueKey, CueSourceId, RasterCacheLimits, RasterInputLimits, RasterLimits, RenderRequest,
-    RenderableCue, SubtitleRasterizer,
+    AssEventTiming, CueKey, CueSourceId, RasterCacheLimits, RasterInputLimits, RasterLimits,
+    RenderRequest, RenderableCue, SubtitleRasterizer,
 };
 
 /// Входные данные кейса из файла.
 struct AssCaseInput {
     width: u32,
     height: u32,
-    time_ms: i64,
+    /// Моменты, в которых снят эталон (из заголовка `time_ms=a,b,c`), в порядке записи.
+    times_ms: Vec<i64>,
     storage: AssStorageSize,
     file_text: String,
+}
+
+/// Один эталон: кейс в одном из его моментов.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReferencePoint {
+    /// Имя файла кейса без расширения.
+    case: String,
+    /// Имя эталона и строки допуска: `<case>` для одного момента, `<case>@t<мс:05>` для нескольких.
+    stem: String,
+    /// Момент показа, мс.
+    time_ms: i64,
+}
+
+impl ReferencePoint {
+    /// Опорные точки кейса: по одной на момент заголовка.
+    fn of_case(case: &str, times_ms: &[i64]) -> Vec<Self> {
+        times_ms
+            .iter()
+            .map(|time_ms| Self {
+                case: case.to_owned(),
+                stem: if times_ms.len() == 1 {
+                    case.to_owned()
+                } else {
+                    format!("{case}@t{time_ms:05}")
+                },
+                time_ms: *time_ms,
+            })
+            .collect()
+    }
 }
 
 fn load_case(name: &str) -> AssCaseInput {
@@ -43,11 +80,13 @@ fn load_case(name: &str) -> AssCaseInput {
         .lines()
         .find(|line| line.starts_with("; reference:"))
         .expect("reference header");
-    let number = |key: &str| -> Option<u32> {
+    let value_of = |key: &str| -> Option<&str> {
         header
             .split_whitespace()
             .find_map(|part| part.strip_prefix(key))
-            .map(|value| value.parse().expect("header number"))
+    };
+    let number = |key: &str| -> Option<u32> {
+        value_of(key).map(|value| value.parse().expect("header number"))
     };
     let width = number("width=").expect("width");
     let height = number("height=").expect("height");
@@ -56,10 +95,15 @@ fn load_case(name: &str) -> AssCaseInput {
         number("storage_width=").unwrap_or(width),
         number("storage_height=").unwrap_or(height),
     );
+    let times_ms: Vec<i64> = value_of("time_ms=")
+        .expect("time_ms")
+        .split(',')
+        .map(|moment| moment.parse().expect("time_ms moment"))
+        .collect();
     AssCaseInput {
         width,
         height,
-        time_ms: i64::from(number("time_ms=").expect("time_ms")),
+        times_ms,
         storage,
         file_text,
     }
@@ -88,8 +132,8 @@ fn rasterizer() -> SubtitleRasterizer {
     )
 }
 
-/// Рисует кейс публичным API и возвращает overlay.
-fn render_case(input: &AssCaseInput) -> SubtitleOverlay {
+/// Рисует кейс публичным API в момент `time_ms` и возвращает overlay.
+fn render_case(input: &AssCaseInput, time_ms: i64) -> SubtitleOverlay {
     let limits = SubtitleParseLimits::new(1 << 22, 100_000, 100).with_ass_limits(AssParseLimits {
         max_header_bytes: 1 << 20,
         max_styles: 64,
@@ -110,7 +154,7 @@ fn render_case(input: &AssCaseInput) -> SubtitleOverlay {
             TimelineInsertOutcome::Inserted(_)
         ));
     }
-    let time = subtitle_core::SubtitleTime::from_millis(input.time_ms);
+    let time = subtitle_core::SubtitleTime::from_millis(time_ms);
     let mut active = Vec::new();
     timeline.collect_active_at(time, &mut active);
     let mut cues = Vec::new();
@@ -119,12 +163,17 @@ fn render_case(input: &AssCaseInput) -> SubtitleOverlay {
         let SubtitleContent::Ass(cue) = event.content() else {
             panic!("ASS case must produce ASS events");
         };
-        cues.push((id, event.layer(), cue.clone()));
+        cues.push((
+            id,
+            event.layer(),
+            cue.clone(),
+            AssEventTiming::new(event.start(), event.end()),
+        ));
     }
     let renderable: Vec<RenderableCue<'_>> = cues
         .iter()
-        .map(|(id, layer, cue)| {
-            RenderableCue::ass(CueKey::new(CueSourceId::new(1), *id), *layer, cue)
+        .map(|(id, layer, cue, timing)| {
+            RenderableCue::ass(CueKey::new(CueSourceId::new(1), *id), *layer, cue, *timing)
         })
         .collect();
     let canvas = CanvasSize::new(input.width, input.height).expect("canvas");
@@ -132,6 +181,7 @@ fn render_case(input: &AssCaseInput) -> SubtitleOverlay {
     let appearance = SubtitleAppearance::youtube_like();
     rasterizer
         .render(&RenderRequest {
+            moment: time,
             cues: &renderable,
             canvas,
             appearance: &appearance,
@@ -171,15 +221,21 @@ struct AssReport {
     max_size_delta: i64,
 }
 
-fn compare(name: &str) -> AssReport {
-    let input = load_case(name);
-    let overlay = render_case(&input);
+fn compare(point: &ReferencePoint) -> AssReport {
+    let name = point.stem.as_str();
+    let input = load_case(&point.case);
+    let overlay = render_case(&input, point.time_ms);
     let json: serde_json::Value = serde_json::from_slice(
         &std::fs::read(fixtures_dir().join("expected").join(format!("{name}.json")))
             .expect("expected json"),
     )
     .expect("json");
     assert_eq!(json["libass_version"], "0.17.5");
+    assert_eq!(
+        json["time_ms"].as_i64(),
+        Some(point.time_ms),
+        "{name}: the reference was rendered at another moment"
+    );
     let expected = json["images"].as_array().expect("images");
     let mut report = AssReport::default();
     if overlay.bitmaps().len() != expected.len() {
@@ -272,6 +328,22 @@ fn compare(name: &str) -> AssReport {
     report
 }
 
+/// Строки допусков всех таблиц (слой 1 и слой 2).
+fn all_tolerance_rows() -> impl Iterator<Item = &'static AssTolerance> {
+    ASS_CASES
+        .iter()
+        .chain(LAYER2_STATIC_CASES)
+        .chain(LAYER2_ANIMATION_CASES)
+}
+
+/// Все опорные точки кейсов `ass_*` (по одной на момент каждого кейса).
+fn reference_points() -> Vec<ReferencePoint> {
+    case_names()
+        .iter()
+        .flat_map(|case| ReferencePoint::of_case(case, &load_case(case).times_ms))
+        .collect()
+}
+
 /// Все кейсы `ass_*` из каталога фикстур.
 fn case_names() -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(fixtures_dir().join("cases"))
@@ -288,12 +360,15 @@ fn case_names() -> Vec<String> {
 
 #[test]
 fn every_ass_case_has_a_measured_tolerance() {
-    let names = case_names();
+    let names: Vec<String> = reference_points()
+        .into_iter()
+        .map(|point| point.stem)
+        .collect();
     assert!(
-        names.len() >= 15,
+        names.len() >= 40,
         "expected the ASS reference set: {names:?}"
     );
-    let known: Vec<&str> = ASS_CASES.iter().map(|case| case.name).collect();
+    let known: Vec<&str> = all_tolerance_rows().map(|case| case.name).collect();
     for name in &names {
         assert!(
             known.contains(&name.as_str()),
@@ -304,9 +379,30 @@ fn every_ass_case_has_a_measured_tolerance() {
 }
 
 #[test]
+fn multi_moment_headers_name_references_with_a_time_suffix() {
+    let single = ReferencePoint::of_case("ass_x", &[1000]);
+    assert_eq!(single.len(), 1);
+    assert_eq!(single[0].stem, "ass_x", "один момент — имя без суффикса");
+    let several = ReferencePoint::of_case("ass_x", &[0, 1000, 25_000]);
+    let stems: Vec<&str> = several.iter().map(|point| point.stem.as_str()).collect();
+    assert_eq!(
+        stems,
+        ["ass_x@t00000", "ass_x@t01000", "ass_x@t25000"],
+        "несколько моментов — суффикс @t<мс:05>"
+    );
+    assert_eq!(several[1].time_ms, 1000);
+    assert!(several.iter().all(|point| point.case == "ass_x"));
+}
+
+#[test]
 fn ass_events_match_libass_within_measured_tolerance() {
-    for case in ASS_CASES {
-        let report = compare(case.name);
+    let points = reference_points();
+    for case in all_tolerance_rows() {
+        let point = points
+            .iter()
+            .find(|point| point.stem == case.name)
+            .expect("tolerance row without a reference point");
+        let report = compare(point);
         let percent = if report.reference_area == 0 {
             0.0
         } else {
@@ -352,8 +448,9 @@ fn ass_events_match_libass_within_measured_tolerance() {
 #[test]
 #[ignore = "prints measurements for the tolerance table"]
 fn measure_all_cases() {
-    for name in case_names() {
-        let report = compare(&name);
+    for point in reference_points() {
+        let name = &point.stem;
+        let report = compare(&point);
         eprintln!(
             "{name}: differing={} area={} max_diff={} pos_delta={} size_delta={} geometry={:?}",
             report.differing_pixels,

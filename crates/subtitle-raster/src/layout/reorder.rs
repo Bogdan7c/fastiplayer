@@ -73,12 +73,15 @@ fn reorder_map(clusters: &[TextCluster], split_by_style: bool) -> Vec<usize> {
 ///
 /// После вызова позиции глифов отсчитываются от левого верхнего угла блока текста: `x` — от
 /// начала строки (до выравнивания), `y` — вниз от базовой линии первой строки.
+///
+/// Возвращает карту «визуальная позиция -> логический индекс» (libass: `cmap`): она нужна
+/// следующим шагам, которые идут по глифам в порядке отображения.
 pub(super) fn reorder_text(
     clusters: &mut [TextCluster],
     measure: &TextMeasure,
     style: &EventStyle,
     split_by_style: bool,
-) {
+) -> Vec<usize> {
     let map = reorder_map(clusters, split_by_style);
     let mut pen = Vector26::default();
     let mut line_number = 1_usize;
@@ -114,6 +117,7 @@ pub(super) fn reorder_text(
             cluster_pen.add_saturating(glyph.advance);
         }
     }
+    map
 }
 
 /// Горизонтальное выравнивание в пределах ширины блока: левое, центр, правое.

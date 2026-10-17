@@ -1,6 +1,6 @@
 //! Входные типы растеризатора: что рисовать на кадре.
 
-use subtitle_core::{AssCue, SubtitleEventId, SubtitleLayer, SubtitleTextCue};
+use subtitle_core::{AssCue, SubtitleEventId, SubtitleLayer, SubtitleTextCue, SubtitleTime};
 
 use crate::appearance::SubtitleAppearance;
 use crate::ass::AssRenderOptions;
@@ -56,13 +56,46 @@ impl CueKey {
     }
 }
 
+/// Тайминг события ASS в шкале событий дорожки: от него считаются `\move` и `\fad`.
+///
+/// Начало, конец и момент запроса ([`RenderRequest::moment`]) обязаны быть в ОДНОЙ шкале
+/// (например, все со сдвигом синхронизации или все без него): растеризатору важна только их
+/// разность.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AssEventTiming {
+    start: SubtitleTime,
+    end: SubtitleTime,
+}
+
+impl AssEventTiming {
+    /// Событие с началом `start` и концом `end` (длительность реплики = `end - start`).
+    pub const fn new(start: SubtitleTime, end: SubtitleTime) -> Self {
+        Self { start, end }
+    }
+
+    /// Начало события.
+    pub const fn start(&self) -> SubtitleTime {
+        self.start
+    }
+
+    /// Конец события.
+    pub const fn end(&self) -> SubtitleTime {
+        self.end
+    }
+}
+
 /// Содержимое реплики кадра.
 #[derive(Debug, Clone, Copy)]
 pub enum CueContent<'a> {
     /// Реплика простого формата (SRT, WebVTT, YouTube и т. п.).
     Text(&'a SubtitleTextCue),
     /// Реплика ASS/SSA: стиль и теги разобраны, раскладка и рисование — здесь.
-    Ass(&'a AssCue),
+    Ass {
+        /// Разобранная реплика.
+        cue: &'a AssCue,
+        /// Тайминг события (для анимаций).
+        timing: AssEventTiming,
+    },
 }
 
 /// Реплика кадра: ключ, слой и ссылка на содержимое.
@@ -88,12 +121,17 @@ impl<'a> RenderableCue<'a> {
         }
     }
 
-    /// Реплика ASS на слое `layer`.
-    pub const fn ass(key: CueKey, layer: SubtitleLayer, cue: &'a AssCue) -> Self {
+    /// Реплика ASS на слое `layer` с таймингом события `timing`.
+    pub const fn ass(
+        key: CueKey,
+        layer: SubtitleLayer,
+        cue: &'a AssCue,
+        timing: AssEventTiming,
+    ) -> Self {
         Self {
             key,
             layer,
-            content: CueContent::Ass(cue),
+            content: CueContent::Ass { cue, timing },
         }
     }
 }
@@ -106,6 +144,10 @@ pub struct RenderRequest<'a> {
     /// ASS сортируются по `(layer, ReadOrder)` и рисуются ПОСЛЕ реплик простых форматов; для
     /// равных слоя и `ReadOrder` остаётся порядок запроса.
     pub cues: &'a [RenderableCue<'a>],
+    /// Момент показа в шкале событий дорожки: по нему считаются анимации ASS (`\move`, `\fad`).
+    /// Реплики без анимации от него не зависят, поэтому кадр статичной сцены от смены момента
+    /// не перерисовывается.
+    pub moment: SubtitleTime,
     /// Холст — размер картинки видео на экране.
     pub canvas: CanvasSize,
     /// Стиль пользователя.

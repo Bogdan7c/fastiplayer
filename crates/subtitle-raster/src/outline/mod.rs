@@ -378,6 +378,40 @@ impl Outline {
             segments: self.segments.clone(),
         })
     }
+
+    /// Перспективное преобразование матрицей 3x3 (libass 0.17.5: `ass_outline_transform_3d`).
+    ///
+    /// Деление на `z` ограничено снизу `0.1`: точки за камерой или почти в её плоскости не
+    /// дают бесконечностей, а уходят далеко и отбраковываются проверкой диапазона. Выход за
+    /// диапазон, включая NaN, — [`OutlineError::TransformOverflow`].
+    pub(crate) fn transformed_3d(&self, matrix: &[[f64; 3]; 3]) -> Result<Self, OutlineError> {
+        if self.points.is_empty() {
+            return Ok(Self::new());
+        }
+        let limit = f64::from(OUTLINE_MAX);
+        let mut points = Vec::with_capacity(self.points.len());
+        for point in &self.points {
+            let (px, py) = (f64::from(point.x), f64::from(point.y));
+            let x = matrix[0][0] * px + matrix[0][1] * py + matrix[0][2];
+            let y = matrix[1][0] * px + matrix[1][1] * py + matrix[1][2];
+            let z = matrix[2][0] * px + matrix[2][1] * py + matrix[2][2];
+            // `FFMAX(z, 0.1)` из C: при NaN возвращает 0.1 (сравнение ложно); `f64::max`
+            // ведёт себя так же (NaN игнорируется).
+            let w = 1.0 / z.max(0.1);
+            let (x, y) = (x * w, y * w);
+            if !(x.abs() < limit && y.abs() < limit) {
+                return Err(OutlineError::TransformOverflow);
+            }
+            points.push(Point::new(
+                round_ties_even_to_i32(x),
+                round_ties_even_to_i32(y),
+            ));
+        }
+        Ok(Self {
+            points,
+            segments: self.segments.clone(),
+        })
+    }
 }
 
 /// `lrint` из libass (`ass_lrint`): округление к ближайшему целому, ничьи — к чётному.

@@ -274,3 +274,45 @@ fn events_from_index_returns_only_later_insertions_in_id_order() {
     assert_eq!(tail, vec![(1, t(100)), (2, t(300))]);
     assert_eq!(timeline.events_from_index(3).count(), 0);
 }
+
+#[test]
+fn latest_change_within_reports_the_last_start_or_end_in_the_window() {
+    let (timeline, _) = SubtitleTimeline::from_events([event(100, 300, "a"), event(200, 250, "b")]);
+    // Окно (after, up_to]: нижняя граница не включена, верхняя включена.
+    assert_eq!(timeline.latest_change_within(t(0), t(99)), None);
+    assert_eq!(timeline.latest_change_within(t(0), t(100)), Some(t(100)));
+    assert_eq!(timeline.latest_change_within(t(100), t(150)), None);
+    assert_eq!(timeline.latest_change_within(t(0), t(220)), Some(t(200)));
+    // Конец «b» (250) позже начала «b» (200).
+    assert_eq!(timeline.latest_change_within(t(0), t(260)), Some(t(250)));
+    assert_eq!(timeline.latest_change_within(t(250), t(299)), None);
+    assert_eq!(timeline.latest_change_within(t(250), t(300)), Some(t(300)));
+    assert_eq!(timeline.latest_change_within(t(0), t(1_000)), Some(t(300)));
+}
+
+#[test]
+fn latest_change_within_matches_brute_force_over_all_boundaries() {
+    let events = [
+        event(0, 40, "a"),
+        event(10, 500, "b"),
+        event(30, 60, "c"),
+        event(60, 90, "d"),
+        event(200, 210, "e"),
+    ];
+    let (timeline, _) = SubtitleTimeline::from_events(events);
+    for after in (-10..520).step_by(7) {
+        for up_to in (after..530).step_by(11) {
+            let brute_force = timeline
+                .events
+                .iter()
+                .flat_map(|e| [e.start(), e.end()])
+                .filter(|&boundary| boundary > t(after) && boundary <= t(up_to))
+                .max();
+            assert_eq!(
+                timeline.latest_change_within(t(after), t(up_to)),
+                brute_force,
+                "window ({after}, {up_to}]"
+            );
+        }
+    }
+}

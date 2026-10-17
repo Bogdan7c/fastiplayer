@@ -34,14 +34,16 @@ use subtitle_core::{
     AssUnsupportedTag, AssVerticalAlign, AssWrapStyle, CuePlacement, ScreenAnchor,
 };
 
+use super::animation::AssAnimationState;
 use super::explicit::is_explicit_event;
 use super::frame_scale::AssFrameScale;
 use super::look::{LookPolicy, UserLook};
 use super::options::{AssRenderOptions, AssStyleSource};
-use super::render_state::RenderState;
+use super::render_state::{RenderState, ScriptPoint};
 use crate::appearance::{CollisionDirection, PlateStyle, SubtitleAppearance, cue_style};
 use crate::event_style::{
-    BaseDirection, BlockAnchor, EventPlacement, EventStyle, ExactPlacement, TextMargins, WrapStyle,
+    BaseDirection, BlockAnchor, EventPlacement, EventStyle, ExactPlacement, RotationOrigin,
+    TextMargins, WrapStyle,
 };
 use crate::overlay::{CanvasSize, OverlayPlacementGroup};
 use crate::source_text::{KerningMode, SourceChar, SourceText};
@@ -72,8 +74,8 @@ pub(crate) struct AssEventPlan {
     pub(crate) plate: Option<PlateStyle>,
     /// Участие в разрешении столкновений.
     pub(crate) collision: CollisionPlan,
-    /// Группа размещения картинок реплики: основной диалог (без `\pos`/`\move`, снизу) или
-    /// фиксированная реплика.
+    /// Группа размещения картинок реплики: основной диалог (без `\pos`/`\move`/`\org`,
+    /// поворотов и наклона, снизу) или фиксированная реплика.
     pub(crate) placement_group: OverlayPlacementGroup,
     /// Сколько кусков текста пропущено, потому что режим рисунка (`\p`) включён: векторные
     /// рисунки слой 1 не рисует.
@@ -82,12 +84,15 @@ pub(crate) struct AssEventPlan {
 
 /// Строит план реплики для холста `canvas`.
 ///
-/// `appearance` читается только при [`AssStyleSource::User`].
+/// `appearance` читается только при [`AssStyleSource::User`]. `animation` — состояние
+/// `\move` и `\fad` на момент показа (см. [`super::evaluate_animation`]): движущаяся реплика
+/// ставится в текущую точку, затухание уходит в стиль реплики и плашку.
 pub(crate) fn plan_ass_event(
     cue: &AssCue,
     canvas: CanvasSize,
     options: &AssRenderOptions,
     appearance: &SubtitleAppearance,
+    animation: &AssAnimationState,
 ) -> AssEventPlan {
     let script = &*cue.script;
     let frame = AssFrameScale::new(script.info(), canvas, options.storage_size);
@@ -100,31 +105,47 @@ pub(crate) fn plan_ass_event(
     } else {
         script.info().wrap_style
     };
-    let mut state = RenderState::new(script, cue.style(), initial_wrap);
+    let mut state =
+        RenderState::new(script, cue.style(), initial_wrap).with_event_fade(animation.fade);
 
     let mut walker = TextWalker::new(&policy);
     for item in &cue.text {
         walker.walk_item(item, &mut state);
     }
     let final_look = policy.make_look(&state);
+    // Плашка пользовательского стиля и фон `BorderStyle = 4` гаснут затуханием, действующим
+    // в конце разбора (libass: `state->fade` при рисовании фона), а не затуханием символа.
+    let plate = plate.map(|plate| PlateStyle {
+        color: state.fade.apply_to(plate.color),
+        ..plate
+    });
 
     let direction = match state.alignment.vertical {
         AssVerticalAlign::Bottom => CollisionDirection::Up,
         AssVerticalAlign::Middle | AssVerticalAlign::Top => CollisionDirection::Down,
     };
     let collision = CollisionPlan {
-        detect: state.position.is_none() && !disables_collisions(cue),
+        // `\org` (как `\pos`) отключает поиск свободного места: автор сам выбрал геометрию.
+        detect: state.position.is_none() && state.origin.is_none() && !disables_collisions(cue),
         direction,
     };
-    let style = event_style(cue, &state, &frame, &final_look);
+    // `\move`: `RenderState` знает только начальную точку (первый позиционирующий тег), а
+    // текущую точку даёт анимация; для `\pos` и неподвижного `\move` она `None`.
+    let position = animation.position.or(state.position);
+    let style = event_style(cue, &state, position, &frame, &final_look);
     // Позиционная привязка (EVENT_POSITIONED libass) читается из состояния разбора, а не из
     // `hard_overrides`: тот шире (клипы и пр.) и не означает «автор задал место».
-    let placement_group =
-        if state.position.is_none() && state.alignment.vertical == AssVerticalAlign::Bottom {
-            OverlayPlacementGroup::Main
-        } else {
-            OverlayPlacementGroup::Fixed
-        };
+    // Повёрнутые и наклонённые реплики, как и реплики с центром `\org`, тоже «надписи»: они не
+    // диалог, поэтому не поднимаются над панелью управления вместе с основными репликами.
+    let is_dialogue_line = state.position.is_none()
+        && state.origin.is_none()
+        && !walker.has_transformed_text()
+        && state.alignment.vertical == AssVerticalAlign::Bottom;
+    let placement_group = if is_dialogue_line {
+        OverlayPlacementGroup::Main
+    } else {
+        OverlayPlacementGroup::Fixed
+    };
     AssEventPlan {
         placement_group,
         source: walker.finish(kerning_mode(script.info().kerning)),
@@ -176,12 +197,9 @@ fn disables_collisions(cue: &AssCue) -> bool {
         || cue.effect.starts_with("Scroll down;");
     effect_scrolls
         || cue.text.iter().any(|item| match item {
-            AssTextItem::Overrides(overrides) => overrides.iter().any(|tag| {
-                matches!(
-                    tag,
-                    AssOverride::Unsupported(AssUnsupportedTag::Org | AssUnsupportedTag::Transform)
-                )
-            }),
+            AssTextItem::Overrides(overrides) => overrides
+                .iter()
+                .any(|tag| matches!(tag, AssOverride::Unsupported(AssUnsupportedTag::Transform))),
             _ => false,
         })
 }
@@ -190,6 +208,7 @@ fn disables_collisions(cue: &AssCue) -> bool {
 fn event_style(
     cue: &AssCue,
     state: &RenderState<'_>,
+    position: Option<ScriptPoint>,
     frame: &AssFrameScale,
     final_look: &SpanLook,
 ) -> EventStyle {
@@ -198,12 +217,19 @@ fn event_style(
     let margins = cue.margins.resolve_with(state.style());
     let text_left = frame.x_to_screen(f64::from(margins.left));
     let text_width = frame.x_to_screen(frame.play_res_x() - f64::from(margins.right)) - text_left;
-    let anchor = match state.position {
+    let anchor = match position {
         Some(point) => BlockAnchor::AtPoint {
             x: frame.x_to_screen(point.x),
             y: frame.y_to_screen(point.y),
         },
         None => BlockAnchor::ByAlignment,
+    };
+    let rotation_origin = match state.origin {
+        Some(point) => RotationOrigin::AtPoint {
+            x: frame.x_to_screen(point.x),
+            y: frame.y_to_screen(point.y),
+        },
+        None => RotationOrigin::ByAlignment,
     };
     EventStyle {
         font_family: final_look.font_family.clone(),
@@ -225,6 +251,7 @@ fn event_style(
             text_width,
             vertical_margin: frame.y_to_screen(f64::from(margins.vertical)),
             anchor,
+            rotation_origin,
             pixel_aspect_x: frame.pixel_aspect_x(),
         }),
         wrap_style: wrap_style(state.wrap_style),
@@ -236,6 +263,7 @@ fn event_style(
         } else {
             BaseDirection::LeftToRight
         },
+        fade: state.fade,
     }
 }
 
@@ -321,7 +349,11 @@ impl<'policy> TextWalker<'policy> {
                     // Возврат каретки и NUL разбор не должен пропускать, но на всякий случай
                     // они не попадают в раскладку (как в SRT-пути).
                     if ch != '\r' && ch != '\0' {
-                        self.chars.push(SourceChar { ch, look });
+                        self.chars.push(SourceChar {
+                            ch,
+                            look,
+                            fade: state.fade,
+                        });
                     }
                 }
             }
@@ -345,7 +377,11 @@ impl<'policy> TextWalker<'policy> {
             return;
         }
         let look = self.look_index(state);
-        self.chars.push(SourceChar { ch, look });
+        self.chars.push(SourceChar {
+            ch,
+            look,
+            fade: state.fade,
+        });
     }
 
     /// Индекс вида для текущего состояния: прежний, если ничего не менялось или вид равен
@@ -377,6 +413,14 @@ impl<'policy> TextWalker<'policy> {
         index
     }
 
+    /// Хоть один видимый символ повёрнут или наклонён (`\frx \fry \frz \fax \fay` или
+    /// `Angle` стиля): такие реплики попадают в группу «надписей».
+    fn has_transformed_text(&self) -> bool {
+        self.looks
+            .iter()
+            .any(|look| look.rotation.is_rotated() || look.shear.is_sheared())
+    }
+
     /// Готовый плоский текст; `kerning` — настройка `Kerning:` заголовка сценария.
     fn finish(&mut self, kerning: KerningMode) -> SourceText {
         SourceText {
@@ -387,5 +431,7 @@ impl<'policy> TextWalker<'policy> {
     }
 }
 
+#[cfg(test)]
+mod geometry_tests;
 #[cfg(test)]
 mod tests;

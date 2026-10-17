@@ -13,6 +13,7 @@
 
 use subtitle_core::{ScreenAnchor, SubtitleColor};
 
+use crate::event_fade::EventFade;
 use crate::fonts::{FontStyle, FontWeightClass};
 
 /// Вид подложки и обводки (libass: `Style.BorderStyle`).
@@ -129,9 +130,26 @@ pub(crate) struct ExactPlacement {
     pub(crate) vertical_margin: f64,
     /// Привязка блока.
     pub(crate) anchor: BlockAnchor,
+    /// Центр поворота.
+    pub(crate) rotation_origin: RotationOrigin,
     /// `par_scale_x` libass: во сколько раз растянуть текст по горизонтали, когда пропорции
     /// хранения видео отличаются от пропорций кадра (1.0 — не отличаются).
     pub(crate) pixel_aspect_x: f64,
+}
+
+/// Центр поворота реплики ASS (`\frx \fry \frz \fax`-геометрия вращается вокруг него).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum RotationOrigin {
+    /// Опорная точка блока по выравниванию реплики (libass: `get_base_point`), когда `\org`
+    /// не задан.
+    ByAlignment,
+    /// Точка `\org` в пикселях холста (libass: `x2scr_pos(org_x)`, `y2scr_pos(org_y)`).
+    AtPoint {
+        /// Координата по горизонтали.
+        x: f64,
+        /// Координата по вертикали.
+        y: f64,
+    },
 }
 
 /// Откуда берётся положение блока текста.
@@ -174,6 +192,8 @@ pub(crate) struct EventStyle {
     pub(crate) line_spacing: f64,
     /// Базовое направление абзаца.
     pub(crate) base_direction: BaseDirection,
+    /// Затухание реплики в момент показа (`\fad`, `\fade`); у SRT/WebVTT его нет.
+    pub(crate) fade: EventFade,
 }
 
 impl EventStyle {
@@ -208,6 +228,14 @@ impl EventStyle {
         match self.placement {
             EventPlacement::ByMargins => 1.0,
             EventPlacement::Exact(exact) => exact.pixel_aspect_x,
+        }
+    }
+
+    /// Центр поворота реплики; у SRT/WebVTT поворотов нет, поэтому всегда по выравниванию.
+    pub(crate) fn rotation_origin(&self) -> RotationOrigin {
+        match self.placement {
+            EventPlacement::ByMargins => RotationOrigin::ByAlignment,
+            EventPlacement::Exact(exact) => exact.rotation_origin,
         }
     }
 

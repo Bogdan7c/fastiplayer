@@ -264,7 +264,9 @@ impl PreparedQueue {
         });
     }
 
-    /// Индекс точной записи; при нескольких берётся нарисованная позже всех.
+    /// Индекс точной записи. Сроки анимированных картинок центрированы вокруг времени
+    /// рисования и могут перекрываться с соседями, поэтому побеждает картинка, нарисованная
+    /// ближе всех ко времени кадра (при равенстве — нарисованная позже).
     fn find_exact(&self, identity: OverlayIdentity, lookup_time: SubtitleTime) -> Option<usize> {
         self.entries
             .iter()
@@ -273,7 +275,13 @@ impl PreparedQueue {
                 entry.prepared.identity() == identity
                     && entry.prepared.interval().contains(lookup_time)
             })
-            .max_by_key(|(_, entry)| entry.prepared.interval().rendered_at())
+            .min_by_key(|(_, entry)| {
+                let rendered_at = entry.prepared.interval().rendered_at();
+                (
+                    rendered_at.as_micros().abs_diff(lookup_time.as_micros()),
+                    std::cmp::Reverse(rendered_at),
+                )
+            })
             .map(|(index, _)| index)
     }
 

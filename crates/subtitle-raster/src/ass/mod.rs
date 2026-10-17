@@ -12,12 +12,15 @@
 //! - `look` — перевод состояния в вид символов в пикселях, автор или пользователь;
 //! - `event_plan` — обход текста реплики и сборка общего стиля реплики.
 //!
-//! ## Что в слое 1 НЕ рисуется (сессии 09-10)
-//! Повороты, сдвиги, `\move`, `\t`, затухание, `\clip`, караоке, размытие и векторные
-//! рисунки — слои 2-3; текст в режиме рисунка пропускается. Масштаб букв, межбуквенный
+//! - `animation` — время: `\move` и `\fad`/`\fade` на момент показа, ключ кэша и ближайшее
+//!   изменение картинки (владелец всей логики, зависящей от момента).
+//!
+//! ## Что НЕ рисуется (сессия 10)
+//! `\t`, `\clip`, караоке, размытие и векторные рисунки; текст в режиме рисунка пропускается. Масштаб букв, межбуквенный
 //! интервал, синтетическое утолщение/наклон и линии подчёркивания/зачёркивания рисуются
 //! общим конвейером по значениям вида символа (`SpanLook`).
 
+mod animation;
 mod event_plan;
 mod explicit;
 mod frame_scale;
@@ -27,6 +30,9 @@ mod render_state;
 #[cfg(test)]
 mod test_script;
 
+pub(crate) use animation::{
+    AssAnimation, AssAnimationKey, AssAnimationState, AssEventClock, evaluate_animation,
+};
 pub(crate) use event_plan::plan_ass_event;
 pub use options::{
     AssRenderOptions, AssStorageSize, AssStyleSource, AssTextScale, InvalidAssTextScale,

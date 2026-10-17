@@ -14,8 +14,8 @@ Session 01 delivers parsing only (crates `subtitle-core`, `subtitle-formats`). N
 | WebVTT (`.vtt`) | sidecar file | Partial (see below) | 01 |
 | SubRip / WebVTT inside MKV | embedded | Supported (see "Embedded tracks") | 06 |
 | mov_text (`tx3g`) inside MP4 | embedded | Supported (bold / italic / underline / colour) | 06 |
-| ASS / SSA inside MKV | embedded | Supported, layer 1 (see "ASS / SSA (session 08)") | 06; 08; layers 2–3: 09–10 |
-| ASS / SSA sidecar file | sidecar | Supported, layer 1 (see "ASS / SSA (session 08)") | 08; layers 2–3: 09–10 |
+| ASS / SSA inside MKV | embedded | Supported, layers 1–2 (see "ASS / SSA (sessions 08–09, layers 1–2)") | 06; 08; layer 2: 09; layer 3: 10 |
+| ASS / SSA sidecar file | sidecar | Supported, layers 1–2 (see "ASS / SSA (sessions 08–09, layers 1–2)") | 08; layer 2: 09; layer 3: 10 |
 | PGS inside MKV | embedded | Listed greyed out ("not supported yet"); picture rendering planned | 11 |
 | YouTube srv3 / WebVTT | web | Planned | 12 |
 | HLS WebVTT, DASH TTML/IMSC | streaming | Planned | 13 |
@@ -39,7 +39,8 @@ Pure-Rust rasterizer, a port of libass 0.17.5 behaviour (ISC). Output: a list of
 | Underline / strikethrough, synthetic bold / italic | Full (session 08) — also for SRT / WebVTT: a face without a real italic / bold is slanted / emboldened like libass |
 | Span background, `\N`-less CJK line breaking | not yet (later sessions / backlog) |
 | ASS layer-1 override tags | Supported (session 08, see below) |
-| ASS layer-2/3 tags: rotations, karaoke, blur, clip, `\move`, fades, `\t`, drawings | Planned — plans 09 / 10 |
+| ASS layer-2 tags: rotations, shear, 3D, `\org`, `\move`, `\fad` / `\fade` | Supported (session 09, see below) |
+| ASS layer-3 tags: karaoke, blur, clip, `\t`, drawings | Planned — plan 10 |
 
 ## On screen (session 03)
 
@@ -62,7 +63,7 @@ Video `Movie.mkv`. Searched in the video folder, in `Subs`/`Sub`/`Subtitles`/`Su
 | `Subs/Movie.en.srt`, `Subtitles/Movie.vtt` | yes | from the suffix |
 | `Subs/Movie/2_English.srt` (any name inside a folder named after the video) | yes | from the name |
 | `Other.srt`, `Movie2.srt`, `Extras/Movie.srt`, `Subs/Other/x.srt` | no | — |
-| `.ass` / `.ssa` | yes, shown (session 08; the file's PlayRes, styles and layer-1 tags are used) | from the suffix |
+| `.ass` / `.ssa` | yes, shown (session 08; the file's PlayRes, styles and layer-1 and layer-2 tags are used) | from the suffix |
 | Non-UTF-8 file names | yes, paths are kept byte-exact | — |
 
 ## Controls (session 04)
@@ -165,7 +166,7 @@ Limitations:
 | Known limits | a track is found again by language + title + codec (+ position among tracks); a track in another language is never picked instead. The same web video opened by a different kind of link (manifest URL vs page URL) has separate memory |
 
 
-## ASS / SSA (session 08, layer 1)
+## ASS / SSA (sessions 08–09, layers 1–2)
 
 Embedded (MKV `S_TEXT/ASS`, `S_TEXT/SSA`) and sidecar `.ass` / `.ssa` files are parsed into the model and drawn by the libass-parity rasterizer. Both V4+ (ASS) and V4 (SSA) style sections are read.
 
@@ -180,19 +181,26 @@ Script header: `PlayResX/Y`, `LayoutResX/Y`, `ScaledBorderAndShadow`, `WrapStyle
 | Border and shadow | `\bord \xbord \ybord \shad \xshad \yshad` | Supported |
 | Alignment and position | `\an \a \pos` | Supported |
 | Reset and wrap | `\r \q \N \n \h` | Supported |
-| Rotation and shear | `\frx \fry \frz \fr \org \fax \fay` | No (plan 09/10) |
-| Animation | `\move \fad \fade \t` | No (plan 09/10) |
-| Clipping and blur | `\clip \iclip \blur \be` | No (plan 09/10) |
-| Karaoke | `\k \K \kf \ko \kt` | No (plan 09/10) |
-| Drawings | `\p` | No (plan 09/10) |
-| Effects | `Banner`, `Scroll up/down` | No (plan 09/10) |
+| Rotation, shear, 3D | `\frx \fry \frz \fr \org \fax \fay` (libass perspective projection; a glyph behind the camera is dropped) | Supported (session 09) |
+| Animation | `\move` (4 and 6 arguments), `\fad`, `\fade` (2 and 7 arguments) | Supported (session 09) |
+| Transform animation | `\t` | No (plan 10) |
+| Clipping and blur | `\clip \iclip \blur \be` | No (plan 10) |
+| Karaoke | `\k \K \kf \ko \kt` | No (plan 10) |
+| Drawings | `\p` | No (plan 10) |
+| Effects | `Banner`, `Scroll up/down` | No (plan 10) |
 
 Unsupported tags are skipped without hiding the rest of the text; the track keeps per-tag counts for diagnostics.
+
+### Animation and the render thread (session 09)
+
+Pictures are rasterized on a separate `subtitle-render` thread; the UI only picks a ready picture and never waits for it. A picture is valid for a time interval, so video frames are never held back by subtitles. A static scene is rasterized once. A scene with an animated event (`\move`, `\fad`) is re-rendered at most once per video frame and only while such an event is on screen; the thread prepares the next `prerender_frames` frames ahead. While paused, an animated frame costs nothing once its picture is ready. If the frame step is not known yet (the first frame), the picture is valid only for its own moment. After a long stall the observed step grows, so a picture can be reused for one frame that is slightly older than ideal.
+
+Placement: events with `\pos`, `\move`, `\org`, rotation or shear are "signs": fixed in place and never lifted above the control panel. As in libass, only `\pos`, `\move` and `\org` exclude an event from collision handling; a rotated or sheared line without them still avoids other lines.
 
 ### Settings
 
 - `subtitles.ass_force_user_style` (default off): off — the author's colours, fonts, outline and shadow are drawn as written and `text_size_percent` scales the dialogue text, but not text placed with `\pos` (the author's explicit layout); on — the user's text colour, box colour / opacity and size replace the author's style, while `\pos` placement is kept.
-- `subtitles.ass_position_mode`: `main_lines_avoid_controls` (default) — "main lines" (events without `\pos`/`\move`, aligned to the bottom: `\an1`-`\an3`) are lifted smoothly above the control panel while it is visible and return to the author's place when it hides; signs (`\pos`/`\move`) and top/middle-aligned lines never move; the user position offset is not applied to ASS; everything stays inside the picture. `author` — nothing moves (no lift, no user offset). `whole_layer` — the whole ASS layer moves like SRT (lift above the controls plus the user offset) but stays inside the picture on both axes. Edit-mode dragging does not move a real ASS cue in the first two modes.
+- `subtitles.ass_position_mode`: `main_lines_avoid_controls` (default) — "main lines" (events without `\pos`/`\move`, aligned to the bottom: `\an1`-`\an3`) are lifted smoothly above the control panel while it is visible and return to the author's place when it hides; signs (`\pos`/`\move`, and since session 09 events with `\org`, rotation or shear) and top/middle-aligned lines never move; the user position offset is not applied to ASS; everything stays inside the picture. `author` — nothing moves (no lift, no user offset). `whole_layer` — the whole ASS layer moves like SRT (lift above the controls plus the user offset) but stays inside the picture on both axes. Edit-mode dragging does not move a real ASS cue in the first two modes.
 - Limits (config schema v18): `max_ass_header_kb` (64–16384, default 1024), `max_ass_styles` (10–10000, default 1000), `max_ass_override_tags_per_event` (32–8192, default 512), `max_ass_events_on_screen` (16–2048, default 256: how many ASS events are drawn at once on one frame). SRT / WebVTT placement is unchanged (it may use the black bars).
 - Pre-render (config schema v19): `prerender_frames` (0–64, default 4: how many frames ahead the subtitle render thread prepares pictures; 0 means the current frame only) and `prepared_overlays` (1–64, default 8: size of the queue of ready subtitle pictures). Migration v18 -> v19 only bumps the version; existing user values are kept.
 
@@ -202,4 +210,4 @@ Unsupported tags are skipped without hiding the rest of the text; the track keep
 - Vertical text `\fn@Font` is not supported.
 - Collision memory (stacking of simultaneous lines) is kept only for the cues active on the current frame.
 - Glyph storage size equals the display size (no separate `LayoutRes`-based storage scaling beyond the script header).
-- Layer 2/3 tags are listed above and are scheduled in plans 09 and 10.
+- Layer-3 tags (`\t`, `\clip`, `\iclip`, `\blur`, `\be`, karaoke, `\p`) and Banner / Scroll effects are scheduled in plan 10.

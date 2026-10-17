@@ -23,6 +23,7 @@ pub(super) fn render_ass_with(
     let list: Vec<RenderableCue<'_>> = cues.iter().map(AssTestCue::renderable).collect();
     rasterizer
         .render(&RenderRequest {
+            moment: subtitle_core::SubtitleTime::ZERO,
             cues: &list,
             canvas,
             appearance,

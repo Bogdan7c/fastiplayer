@@ -8,6 +8,7 @@ use subtitle_core::{CuePlacement, SubtitleColor};
 
 use super::placement::{PlateInset, place_block};
 use super::{SubtitleAppearance, TextDecoration};
+use crate::event_fade::EventFade;
 use crate::event_style::{
     AxisPair, BaseDirection, BorderStyle, EventPlacement, EventStyle, StyleColors, WrapStyle,
 };
@@ -123,6 +124,7 @@ pub(crate) fn cue_style(
             line_spacing: 0.0,
             // Арабский и иврит в простых субтитрах должны идти справа налево сами.
             base_direction: BaseDirection::Auto,
+            fade: EventFade::NONE,
         },
         plate,
         collision,

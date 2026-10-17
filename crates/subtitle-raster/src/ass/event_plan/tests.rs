@@ -18,6 +18,7 @@ fn plan_with(cue: &AssCue, canvas: CanvasSize, options: &AssRenderOptions) -> As
         canvas,
         options,
         &SubtitleAppearance::outline_and_shadow(),
+        &AssAnimationState::STILL,
     )
 }
 
@@ -170,11 +171,12 @@ fn coordinates_scale_from_play_res_to_the_canvas_and_pos_disables_collisions() {
 }
 
 #[test]
-fn org_and_transform_tags_switch_collision_detection_off() {
-    for tag in [AssUnsupportedTag::Org, AssUnsupportedTag::Transform] {
-        let result = plan(vec![tags(vec![AssOverride::Unsupported(tag)]), text("x")]);
-        assert!(!result.collision.detect, "{tag:?}");
-    }
+fn transform_tag_switches_collision_detection_off() {
+    let result = plan(vec![
+        tags(vec![AssOverride::Unsupported(AssUnsupportedTag::Transform)]),
+        text("x"),
+    ]);
+    assert!(!result.collision.detect);
     assert!(plan(vec![text("x")]).collision.detect);
 }
 
@@ -245,7 +247,13 @@ fn user_style_overrides_visual_tags_but_keeps_attributes_and_position() {
         text_scale: AssTextScale::new(3.0).expect("scale"),
         ..AssRenderOptions::default()
     };
-    let result = plan_ass_event(&cue, canvas(1280, 720), &options, &appearance);
+    let result = plan_ass_event(
+        &cue,
+        canvas(1280, 720),
+        &options,
+        &appearance,
+        &AssAnimationState::STILL,
+    );
     let look = &result.source.looks[0];
     assert_eq!(look.font_family, None);
     assert_eq!(look.colors.primary, appearance.text_color);
@@ -265,6 +273,7 @@ fn user_style_overrides_visual_tags_but_keeps_attributes_and_position() {
         canvas(1280, 720),
         &options,
         &SubtitleAppearance::youtube_like(),
+        &AssAnimationState::STILL,
     );
     assert!(boxed.plate.is_some());
     assert_eq!(boxed.source.looks[0].border.horizontal, 0.0);

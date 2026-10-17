@@ -25,11 +25,11 @@ mod track;
 
 pub use ass::{
     AssAlignment, AssAlphaTarget, AssAxes, AssBold, AssBorderStyle, AssColor, AssColorSlot, AssCue,
-    AssDrawingMode, AssEventField, AssEventFormat, AssEventMargins, AssFontSize, AssHardOverrides,
-    AssHorizontalAlign, AssKerning, AssLayoutRes, AssMove, AssOverride, AssPlayRes,
-    AssResolvedMargins, AssRgb, AssScaledBorderAndShadow, AssScript, AssScriptInfo, AssScriptKind,
-    AssStyle, AssStyleIndex, AssTextItem, AssUnsupportedTag, AssVerticalAlign, AssWrapStyle,
-    AssYCbCrMatrix,
+    AssDrawingMode, AssEventField, AssEventFormat, AssEventMargins, AssFade, AssFontSize,
+    AssHardOverrides, AssHorizontalAlign, AssKerning, AssLayoutRes, AssMove, AssOverride,
+    AssPlayRes, AssResolvedMargins, AssRgb, AssRotationAxis, AssScaledBorderAndShadow, AssScript,
+    AssScriptInfo, AssScriptKind, AssShearAxis, AssStyle, AssStyleIndex, AssTextItem,
+    AssUnsupportedTag, AssVerticalAlign, AssWrapStyle, AssYCbCrMatrix,
 };
 pub use color::{InvalidSubtitleColor, SubtitleColor};
 pub use event::{

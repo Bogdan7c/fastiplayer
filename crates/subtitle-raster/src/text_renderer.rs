@@ -89,7 +89,17 @@ pub(crate) fn render_cue_text(
         });
     }
     let source = SourceText::from_styled(text, style);
-    render_source_text(fonts, faces, &source, style, canvas, language)
+    // Путь SRT/WebVTT без поворотов: битмапы глифов не больше холста, отдельный предел не нужен.
+    let max_bitmap_side = u32::MAX;
+    render_source_text(
+        fonts,
+        faces,
+        &source,
+        style,
+        canvas,
+        language,
+        max_bitmap_side,
+    )
 }
 
 /// Рисует уже развёрнутый текст (символы и их виды): общий вход для SRT/WebVTT и ASS.
@@ -103,6 +113,7 @@ pub(crate) fn render_source_text(
     style: &EventStyle,
     canvas: CanvasSize,
     language: TextLanguagePreference,
+    max_bitmap_side: u32,
 ) -> Result<RenderedText, TextRenderError> {
     validate_style(style)?;
     validate_looks(&source.looks)?;
@@ -125,6 +136,7 @@ pub(crate) fn render_source_text(
             layout: &layout,
             canvas,
             pixel_aspect_x,
+            max_bitmap_side,
         },
     )?;
     Ok(RenderedText {
@@ -133,6 +145,7 @@ pub(crate) fn render_source_text(
         diagnostics: retrieved.combined(RenderDiagnostics {
             skipped_glyphs: 0,
             skipped_borders: composed.skipped_borders,
+            skipped_oversized_bitmaps: composed.skipped_oversized_bitmaps,
             skipped_ass_drawings: 0,
         }),
         event_rect: Some(event_rect),

@@ -90,6 +90,7 @@ fn ass_and_text_cues_share_a_frame_text_first() {
     let mut rasterizer = rasterizer(ROOMY_LIMITS);
     let overlay = rasterizer
         .render(&RenderRequest {
+            moment: subtitle_core::SubtitleTime::ZERO,
             cues: &list,
             canvas: canvas(),
             appearance: &SubtitleAppearance::youtube_like(),

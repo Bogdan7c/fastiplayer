@@ -32,6 +32,8 @@ mod tags;
 mod text;
 
 #[cfg(test)]
+mod geometry_tag_tests;
+#[cfg(test)]
 mod script_builder_tests;
 #[cfg(test)]
 mod tests;

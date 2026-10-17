@@ -8,6 +8,7 @@ use std::path::Path;
 use subtitle_core::{ScreenAnchor, SpanContent, SpanStyle, StyledText, SubtitleColor, TextSpan};
 
 use super::ass_case::parse_ass_color;
+use crate::event_fade::EventFade;
 use crate::event_style::{
     AxisPair, BaseDirection, BorderStyle, EventPlacement, EventStyle, StyleColors, TextMargins,
     WrapStyle,
@@ -112,6 +113,7 @@ pub(super) fn load_text_case(path: &Path) -> TextCase {
         } else {
             BaseDirection::LeftToRight
         },
+        fade: EventFade::NONE,
     };
 
     let dialogue = source

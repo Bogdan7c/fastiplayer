@@ -106,7 +106,7 @@ fn build_clusters(
     let mut clusters: Vec<TextCluster> = Vec::with_capacity(symbols.len());
     // Системные fallback-лица, уже выбранные в этой реплике, в порядке первого использования.
     let mut used_system_faces: Vec<(FaceId, FaceId)> = Vec::new();
-    for (index, (SourceChar { ch, look }, script_value)) in
+    for (index, (SourceChar { ch, look, fade }, script_value)) in
         source.chars.iter().zip(scripts).enumerate()
     {
         let primary_face = primary.get(*look).copied().unwrap_or(default_face);
@@ -138,9 +138,11 @@ fn build_clusters(
         clusters.push(TextCluster {
             symbol: *ch,
             look: *look,
+            fade: *fade,
             glyph_scale,
             letter_spacing_d6,
             has_letter_spacing,
+            baseline_shear: look_style.map_or(0.0, |known| known.shear.vertical),
             border: look_style.map_or(AxisPair::uniform(0.0), |known| known.border),
             face,
             script: script_value,

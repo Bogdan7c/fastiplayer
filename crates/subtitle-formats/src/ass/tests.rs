@@ -360,8 +360,6 @@ fn layer_two_and_three_tags_are_unsupported_not_unknown() {
         parse(r"{\frz30\move(1,2,3,4)\t(0,100,\fs50)\clip(0,0,5,5)\blur2\be1\k20\p1}x");
     assert_eq!(items.len(), 2);
     for tag in [
-        AssUnsupportedTag::Frz,
-        AssUnsupportedTag::Move,
         AssUnsupportedTag::Transform,
         AssUnsupportedTag::Clip,
         AssUnsupportedTag::Blur,
@@ -394,8 +392,6 @@ fn prefix_traps_of_unsupported_tags_do_not_leak_into_supported_ones() {
     );
     assert_eq!(stats.unsupported_count(AssUnsupportedTag::Drawing), 0);
     assert_eq!(stats.unsupported_count(AssUnsupportedTag::InverseClip), 1);
-    assert_eq!(stats.unsupported_count(AssUnsupportedTag::Org), 1);
-    assert_eq!(stats.unsupported_count(AssUnsupportedTag::Fade), 2);
     assert_eq!(stats.unknown_total(), 0);
 }
 
@@ -557,7 +553,8 @@ fn move_keeps_its_arguments_orders_times_and_is_still_reported_as_unsupported() 
         })]
     );
     let (_, stats) = parse(r"{\move(1,2,3,4)}x");
-    assert_eq!(stats.unsupported_count(AssUnsupportedTag::Move), 1);
+    // \move поддержан: в «не поддержано» не попадает.
+    assert!(stats.unsupported().is_empty());
     // Без времени и с неположительным временем: «на всю реплику».
     let whole_event = overrides_of(r"{\move(1,2,3,4,-5,0)}x");
     assert!(matches!(
@@ -570,6 +567,5 @@ fn move_keeps_its_arguments_orders_times_and_is_still_reported_as_unsupported() 
 fn move_with_a_wrong_argument_count_is_ignored_and_counted_as_malformed() {
     let (items, stats) = parse(r"{\move(1,2,3)}x");
     assert_eq!(items, vec![AssTextItem::Text("x".to_owned())]);
-    assert_eq!(stats.unsupported_count(AssUnsupportedTag::Move), 0);
     assert_eq!(stats.malformed(), 1);
 }

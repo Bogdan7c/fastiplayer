@@ -5,6 +5,9 @@
 
 mod appearance_edit;
 mod appearance_edit_ui;
+mod ass_animation_gpu;
+mod ass_animation_support;
+mod ass_animation_thread;
 mod ass_gpu_support;
 mod ass_layer1_gpu;
 mod ass_position_gpu;

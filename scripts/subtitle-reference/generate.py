@@ -11,6 +11,11 @@ expected/<case>.png (композит RGBA) и expected/<case>.json (списо�
 Необязательно можно задать размер хранения видео (ass_set_storage_size; по умолчанию он равен
 размеру кадра):
     ; reference: width=1280 height=720 time_ms=1000 storage_width=640 storage_height=360
+
+Один кейс может рендериться в нескольких моментах (анимации): `time_ms=0,1000,2500` (через запятую,
+без пробелов). Тогда на каждый момент пишется своя пара файлов
+`expected/<case>@t<время в мс, 5 цифр>.png/.json` (например, `ass_move@t01000.png`). Кейс с ОДНИМ
+моментом пишет `expected/<case>.png/.json` без суффикса — как раньше.
 """
 
 import json
@@ -32,7 +37,7 @@ CASES_DIR = FIXTURES_DIR / "cases"
 EXPECTED_DIR = FIXTURES_DIR / "expected"
 
 HEADER_PATTERN = re.compile(
-    r"^;\s*reference:\s*width=(\d+)\s+height=(\d+)\s+time_ms=(\d+)"
+    r"^;\s*reference:\s*width=(\d+)\s+height=(\d+)\s+time_ms=(\d+(?:,\d+)*)"
     r"(?:\s+storage_width=(\d+)\s+storage_height=(\d+))?\s*$",
     re.MULTILINE,
 )
@@ -59,17 +64,28 @@ def compile_tool(build_dir):
 def parse_case_header(case_path):
     """Читает width/height/time_ms и необязательный размер хранения из заголовка кейса.
 
-    Возвращает (width, height, time_ms, storage), где storage — (w, h) или None, если размер
-    хранения в заголовке не задан (тогда он равен размеру кадра).
+    Возвращает (width, height, times_ms, storage): times_ms — список моментов (один или
+    несколько, в порядке записи), storage — (w, h) или None, если размер хранения в заголовке не
+    задан (тогда он равен размеру кадра).
     """
     match = HEADER_PATTERN.search(case_path.read_text(encoding="utf-8"))
     if match is None:
         sys.exit(f"{case_path}: нет заголовка '; reference: width=.. height=.. time_ms=..'")
-    width, height, time_ms = (int(group) for group in match.groups()[:3])
+    width, height = int(match.group(1)), int(match.group(2))
+    times_ms = [int(value) for value in match.group(3).split(",")]
+    if len(set(times_ms)) != len(times_ms):
+        sys.exit(f"{case_path}: моменты time_ms повторяются: {times_ms}")
     storage = None
     if match.group(4) is not None:
         storage = (int(match.group(4)), int(match.group(5)))
-    return width, height, time_ms, storage
+    return width, height, times_ms, storage
+
+
+def reference_stem(case_stem, time_ms, times_count):
+    """Имя файлов эталона: без суффикса для одного момента, `<case>@t<мс:05>` для нескольких."""
+    if times_count == 1:
+        return case_stem
+    return f"{case_stem}@t{time_ms:05d}"
 
 
 def parse_images(blob):
@@ -167,32 +183,34 @@ def main():
     try:
         binary = compile_tool(build_dir)
         for case in cases:
-            width, height, time_ms, storage = parse_case_header(case)
-            command = [binary, str(case), str(FONTS_DIR), str(width), str(height), str(time_ms)]
-            if storage is not None:
-                command += [str(storage[0]), str(storage[1])]
-            blob = run_checked(command).stdout
-            version, images = parse_images(blob)
-            versions.add(format_version(version))
-            write_png(EXPECTED_DIR / f"{case.stem}.png", width, height, composite(width, height, images))
-            description = {
-                "libass_version": format_version(version),
-                "width": width,
-                "height": height,
-                "time_ms": time_ms,
-                **(
-                    {"storage_width": storage[0], "storage_height": storage[1]}
-                    if storage is not None
-                    else {}
-                ),
-                "images": [
-                    {key: image[key] for key in ("type", "dst_x", "dst_y", "w", "h", "stride", "color")}
-                    for image in images
-                ],
-            }
-            json_path = EXPECTED_DIR / f"{case.stem}.json"
-            json_path.write_text(json.dumps(description, indent=2) + "\n", encoding="utf-8")
-            print(f"{case.stem}: {len(images)} images")
+            width, height, times_ms, storage = parse_case_header(case)
+            for time_ms in times_ms:
+                stem = reference_stem(case.stem, time_ms, len(times_ms))
+                command = [binary, str(case), str(FONTS_DIR), str(width), str(height), str(time_ms)]
+                if storage is not None:
+                    command += [str(storage[0]), str(storage[1])]
+                blob = run_checked(command).stdout
+                version, images = parse_images(blob)
+                versions.add(format_version(version))
+                write_png(EXPECTED_DIR / f"{stem}.png", width, height, composite(width, height, images))
+                description = {
+                    "libass_version": format_version(version),
+                    "width": width,
+                    "height": height,
+                    "time_ms": time_ms,
+                    **(
+                        {"storage_width": storage[0], "storage_height": storage[1]}
+                        if storage is not None
+                        else {}
+                    ),
+                    "images": [
+                        {key: image[key] for key in ("type", "dst_x", "dst_y", "w", "h", "stride", "color")}
+                        for image in images
+                    ],
+                }
+                json_path = EXPECTED_DIR / f"{stem}.json"
+                json_path.write_text(json.dumps(description, indent=2) + "\n", encoding="utf-8")
+                print(f"{stem}: {len(images)} images")
     finally:
         shutil.rmtree(build_dir, ignore_errors=True)
     print("libass version:", ", ".join(sorted(versions)))

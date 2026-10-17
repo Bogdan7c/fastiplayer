@@ -354,3 +354,59 @@ fn pen_reports_out_of_range_coordinates_and_protocol_violations() {
     // Пустой глиф (пробел): пустой контур, не ошибка.
     assert!(GlyphOutlinePen::new().finish().unwrap().is_empty());
 }
+
+#[test]
+fn transformed_3d_divides_by_z_and_rounds_half_to_even() {
+    let mut outline = Outline::new();
+    outline.push_point(Point::new(100, 200)).expect("point");
+    outline.push_point(Point::new(0, 0)).expect("point");
+    // z = 2 для обеих точек: координаты делятся пополам; 100/2 = 50, 200 * 1 / 2 = 100.
+    let result = outline
+        .transformed_3d(&[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]])
+        .expect("transform");
+    assert_eq!(
+        (result.points()[0], result.points()[1]),
+        (Point::new(50, 100), Point::new(0, 0))
+    );
+    // 0.5 -> 0 (к чётному), 1.5 -> 2.
+    let mut halves = Outline::new();
+    halves.push_point(Point::new(1, 3)).expect("point");
+    let result = halves
+        .transformed_3d(&[[0.5, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 1.0]])
+        .expect("transform");
+    assert_eq!(result.points()[0], Point::new(0, 2));
+}
+
+#[test]
+fn transformed_3d_clamps_z_below_to_one_tenth_instead_of_dividing_by_zero() {
+    let mut outline = Outline::new();
+    outline.push_point(Point::new(10, 10)).expect("point");
+    // z = 0 и z < 0: делитель 0.1, то есть x * 10.
+    for z in [0.0, -5.0] {
+        let result = outline
+            .transformed_3d(&[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, z]])
+            .expect("transform");
+        assert_eq!(result.points()[0], Point::new(100, 100), "z = {z}");
+    }
+}
+
+#[test]
+fn transformed_3d_rejects_overflow_and_nan_and_keeps_empty_outlines_empty() {
+    let mut outline = Outline::new();
+    outline.push_point(Point::new(1000, 0)).expect("point");
+    assert_eq!(
+        outline.transformed_3d(&[[1e12, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+        Err(OutlineError::TransformOverflow)
+    );
+    assert_eq!(
+        outline.transformed_3d(&[[f64::NAN, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+        Err(OutlineError::TransformOverflow)
+    );
+    let empty = Outline::new();
+    assert!(
+        empty
+            .transformed_3d(&[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+            .expect("empty")
+            .is_empty()
+    );
+}

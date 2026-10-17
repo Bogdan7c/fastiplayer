@@ -10,6 +10,10 @@ mod ass_case;
 #[cfg(test)]
 mod ass_event_tests;
 mod ass_tolerances;
+#[cfg(test)]
+mod ass_tolerances_animation;
+#[cfg(test)]
+mod ass_tolerances_layer2;
 mod pipeline;
 #[cfg(test)]
 mod tests;

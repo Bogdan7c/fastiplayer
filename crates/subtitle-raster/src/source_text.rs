@@ -9,8 +9,10 @@ use subtitle_core::{
     FontSlant, FontWeight, SpanContent, SpanStyle, StyledText, TextStrikethrough, TextUnderline,
 };
 
+use crate::event_fade::EventFade;
 use crate::event_style::EventStyle;
 use crate::fonts::{FontStyle, FontWeightClass};
+use crate::glyph_transform::{Rotation3d, ShearFactors};
 pub(crate) use crate::span_look::{SpanLook, TextDecorations};
 
 /// Символ реплики и индекс его внешнего вида в [`SourceText::looks`].
@@ -20,6 +22,10 @@ pub(crate) struct SourceChar {
     pub(crate) ch: char,
     /// Индекс в [`SourceText::looks`].
     pub(crate) look: usize,
+    /// Затухание символа (libass: `info->fade = state->fade` в момент добавления символа).
+    /// Не входит в вид: libass не режет участки по затуханию, а берёт его у ПЕРВОГО символа
+    /// участка (см. `compose`). У SRT/WebVTT затухания нет.
+    pub(crate) fade: EventFade,
 }
 
 /// Включён ли кернинг пар в шейпинге (libass: `Kerning:` заголовка ASS, `ass_shaper_set_kerning`).
@@ -74,10 +80,12 @@ impl SourceText {
                             '\t' => chars.push(SourceChar {
                                 ch: ' ',
                                 look: look_index,
+                                fade: EventFade::NONE,
                             }),
                             other => chars.push(SourceChar {
                                 ch: other,
                                 look: look_index,
+                                fade: EventFade::NONE,
                             }),
                         }
                     }
@@ -85,6 +93,7 @@ impl SourceText {
                 SpanContent::LineBreak => chars.push(SourceChar {
                     ch: '\n',
                     look: look_index,
+                    fade: EventFade::NONE,
                 }),
             }
         }
@@ -134,6 +143,8 @@ impl SourceText {
                 underline: span_style.underline != TextUnderline::None,
                 strike_out: span_style.strikethrough != TextStrikethrough::None,
             },
+            rotation: Rotation3d::default(),
+            shear: ShearFactors::default(),
         }
     }
 
@@ -148,6 +159,7 @@ mod tests {
     use subtitle_core::{FontWeight, SpanStyle, SubtitleColor, TextSpan};
 
     use super::*;
+    use crate::event_fade::EventFade;
     use crate::event_style::{
         AxisPair, BaseDirection, BorderStyle, EventPlacement, StyleColors, TextMargins, WrapStyle,
     };
@@ -183,6 +195,7 @@ mod tests {
             wrap_style: WrapStyle::Smart,
             line_spacing: 0.0,
             base_direction: BaseDirection::LeftToRight,
+            fade: EventFade::NONE,
         }
     }
 

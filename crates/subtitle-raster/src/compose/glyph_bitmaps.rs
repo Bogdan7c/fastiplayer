@@ -1,4 +1,4 @@
-// Порт из libass 0.17.5: ass_render.c (get_bitmap_glyph для случая без поворотов, ass_outline_construct
+// Порт из libass 0.17.5: ass_render.c (get_bitmap_glyph, ass_outline_construct
 // для OUTLINE_BORDER и OUTLINE_BOX).
 //
 // Copyright (C) 2006 Evgeniy Stepanov <eugeni.stepanov@gmail.com>
@@ -21,13 +21,14 @@
 
 use super::ComposeError;
 use super::run::FilterFlags;
-use crate::bitmap::CoverageBitmap;
+use crate::bitmap::{BitmapError, CoverageBitmap};
 use crate::event_style::AxisPair;
+use crate::fixed_point::Vector26;
 use crate::glyph_info::PlacedGlyph;
 use crate::glyph_render::GlyphOutline;
 use crate::glyph_transform::{
-    Matrix3, STROKER_PRECISION, border_matrix, construct_bitmap, control_box, plan_border_stroke,
-    quantize_transform, scale_and_offset_matrix, unrotated_glyph_matrix_with_aspect,
+    GlyphPlacement, Matrix3, STROKER_PRECISION, border_matrix, construct_bitmap, control_box,
+    glyph_transform_matrix, plan_border_stroke, quantize_transform, scale_and_offset_matrix,
 };
 use crate::outline::stroke::{StrokeParameters, stroke_outline};
 use crate::outline::{ControlBox, Outline, Point};
@@ -47,12 +48,16 @@ pub(super) struct GlyphBitmaps {
     pub(super) outline_position: Point,
     /// Обводку построить не удалось (ошибка, а не «обводка не нужна»): глиф остаётся без неё.
     pub(super) border_failed: bool,
+    /// Глиф пропущен целиком: его битмап после преобразования шире предела стороны.
+    pub(super) oversized: bool,
 }
 
 /// Всё, что нужно знать о глифе для построения битмапов.
 pub(super) struct GlyphBitmapRequest<'a> {
     /// Глиф с абсолютной позицией в 26.6.
     pub(super) glyph: &'a PlacedGlyph,
+    /// Положение относительно центра поворота, 26.6 (libass: `info->shift`).
+    pub(super) shift: Vector26,
     /// Его контур.
     pub(super) outline: &'a GlyphOutline,
     /// Масштаб контура по осям (libass: `info->scale_x`, `info->scale_y`): `font_size / 256`
@@ -87,6 +92,34 @@ pub(super) fn build_glyph_bitmaps(
     request: &GlyphBitmapRequest<'_>,
     phase: &mut RunPhase<'_>,
 ) -> Result<GlyphBitmaps, ComposeError> {
+    match build_glyph_bitmaps_unbounded(request, phase) {
+        // Предел стороны: заливка и обводка глифа пропускаются вместе (без картинки глиф не
+        // нужен), реплика и остальные глифы рисуются. Текст реплики в журнал не пишем.
+        Err(ComposeError::Bitmap(BitmapError::ExceedsSideLimit {
+            width,
+            height,
+            limit,
+        })) => {
+            tracing::debug!(
+                width,
+                height,
+                limit,
+                "glyph bitmap exceeds the side limit after transform, glyph skipped"
+            );
+            Ok(GlyphBitmaps {
+                oversized: true,
+                ..GlyphBitmaps::default()
+            })
+        }
+        other => other,
+    }
+}
+
+/// Тело [`build_glyph_bitmaps`]: ошибка предела стороны приходит сюда как есть.
+fn build_glyph_bitmaps_unbounded(
+    request: &GlyphBitmapRequest<'_>,
+    phase: &mut RunPhase<'_>,
+) -> Result<GlyphBitmaps, ComposeError> {
     let GlyphBitmapRequest {
         glyph,
         outline,
@@ -96,7 +129,15 @@ pub(super) fn build_glyph_bitmaps(
         ..
     } = request;
     let empty = Outline::new();
-    let base_matrix = unrotated_glyph_matrix_with_aspect(glyph.pos.x, glyph.pos.y, *pixel_aspect_x);
+    let base_matrix = glyph_transform_matrix(&GlyphPlacement {
+        rotation: request.look.rotation,
+        shear: request.look.shear,
+        scale: (glyph_scale.horizontal, glyph_scale.vertical),
+        shift: request.shift,
+        ascent: glyph.ascent,
+        frame_position: glyph.pos,
+        pixel_aspect_x: *pixel_aspect_x,
+    });
     let scaled_matrix = scale_and_offset_matrix(
         &base_matrix,
         (glyph_scale.horizontal, glyph_scale.vertical),

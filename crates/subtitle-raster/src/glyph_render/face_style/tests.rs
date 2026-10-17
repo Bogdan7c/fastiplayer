@@ -34,6 +34,8 @@ fn look(weight_value: u16, slant: FontStyle, decorations: TextDecorations) -> Sp
         scale: AxisPair::uniform(1.0),
         letter_spacing: 0.0,
         decorations,
+        rotation: crate::glyph_transform::Rotation3d::default(),
+        shear: crate::glyph_transform::ShearFactors::default(),
     }
 }
 

@@ -33,5 +33,8 @@
 ## Сессия 08
 ASS слой 1, per-run `SpanLook`, синтетический bold/italic, подчёркивание/зачёркивание (и для SRT/VTT), группы картинок Main/Fixed, новые границы `RenderableCue/CueContent/AssRenderOptions` — `mem:subtitles/ass-layer1-s08`.
 
+## Сессия 09
+ASS слой 2 (повороты, наклон, 3D, `\org`, `\move`, `\fad`), `RenderRequest.moment`, `AssEventTiming`, `AnimationChange` — `mem:subtitles/ass-layer2-s09`.
+
 ## Не сделано
-Фон спана, вертикальный текст, регионы VTT, переносы CJK без пробелов, теги ASS слоёв 2–3 (09–10).
+Фон спана, вертикальный текст, регионы VTT, переносы CJK без пробелов, теги ASS слоя 3 (`\t \clip \blur \be` караоке `\p`, план 10).

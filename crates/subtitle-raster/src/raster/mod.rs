@@ -104,6 +104,11 @@ pub(crate) struct Rasterizer {
     scratch: Vec<Segment>,
     /// Временный тайл для объединения двух заливок (libass: `rst->tile`).
     tile: [u8; TILE_SIZE * TILE_SIZE],
+    /// Наибольшая сторона битмапа в пикселях, которую разрешено выделять (`None` — без предела).
+    /// Предел задаёт владелец конфигурации (`RasterInputLimits::max_canvas_side`): картинка
+    /// шире любого холста бесполезна, а 3D-перспектива у плоскости камеры раздувает контур
+    /// до сотен мегабайт.
+    max_bitmap_side: Option<u32>,
 }
 
 impl Rasterizer {
@@ -117,7 +122,19 @@ impl Rasterizer {
             stacks: LineStacks::default(),
             scratch: Vec::new(),
             tile: [0; TILE_SIZE * TILE_SIZE],
+            max_bitmap_side: None,
         }
+    }
+
+    /// Ограничивает сторону выделяемых битмапов (см. поле `max_bitmap_side`).
+    pub(crate) fn with_max_bitmap_side(mut self, side: u32) -> Self {
+        self.max_bitmap_side = Some(side);
+        self
+    }
+
+    /// Предел стороны битмапа, если задан.
+    pub(crate) fn max_bitmap_side(&self) -> Option<u32> {
+        self.max_bitmap_side
     }
 
     /// Точная рамка загруженной ломаной в 1/64 пикселя; пуста, если контуров нет.

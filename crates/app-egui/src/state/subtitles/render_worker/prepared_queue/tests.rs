@@ -120,6 +120,7 @@ impl Scene {
         let overlay = self
             .rasterizer
             .render(&RenderRequest {
+                moment: subtitle_core::SubtitleTime::ZERO,
                 cues: &renderables,
                 canvas: identity.canvas,
                 appearance: &appearance,

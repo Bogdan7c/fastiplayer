@@ -28,10 +28,11 @@
 //!
 //! ## Две группы состояния
 //! - Сбрасываемое `\r` (и начальное): шрифт, размер, цвета, обводка, тень, масштаб, интервал,
-//!   подчёркивание/зачёркивание, кодировка — `ass_reset_render_context`.
+//!   подчёркивание/зачёркивание, кодировка, повороты `\frx \fry \frz` (по умолчанию `Angle`
+//!   стиля) и наклон `\fax \fay` — `ass_reset_render_context`.
 //! - Живущее всю реплику и `\r` НЕ сбрасываемое: выравнивание (побеждает ПЕРВЫЙ тег, даже
 //!   недопустимый), режим переноса `\q` (побеждает ПОСЛЕДНИЙ), позиция `\pos` (побеждает
-//!   первый), режим рисунка `\p`.
+//!   первый), центр поворота `\org` (побеждает первый), режим рисунка `\p`.
 //!
 //! ## «Стиль сброса»
 //! Теги без аргумента (`\fs`, `\bord`, `\b`, `\1c` ...) возвращают значение из `style` —
@@ -40,8 +41,12 @@
 
 use subtitle_core::{
     AssAlignment, AssAlphaTarget, AssAxes, AssBold, AssColor, AssColorSlot, AssDrawingMode,
-    AssFontSize, AssOverride, AssScript, AssStyle, AssStyleIndex, AssWrapStyle,
+    AssFontSize, AssOverride, AssRotationAxis, AssScript, AssShearAxis, AssStyle, AssStyleIndex,
+    AssWrapStyle,
 };
+
+use crate::event_fade::EventFade;
+use crate::glyph_transform::{Rotation3d, ShearFactors};
 
 /// Позиция, заданная `\pos` (координаты сценария).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -86,13 +91,25 @@ pub(crate) struct RenderState<'script> {
     pub(crate) scale: AxisValues,
     pub(crate) spacing: f64,
     pub(crate) encoding: i32,
+    /// Повороты в градусах: `\frx`, `\fry` — 0 по умолчанию, `\frz` — `Angle` стиля.
+    pub(crate) rotation: Rotation3d,
+    /// Наклон `\fax`, `\fay`.
+    pub(crate) shear: ShearFactors,
 
     // --- Живёт всю реплику ---
     pub(crate) alignment: AssAlignment,
     alignment_locked: bool,
     pub(crate) wrap_style: AssWrapStyle,
     pub(crate) position: Option<ScriptPoint>,
+    /// Центр поворота `\org` (libass: `have_origin`, `org_x/org_y`).
+    pub(crate) origin: Option<ScriptPoint>,
     pub(crate) drawing: AssDrawingMode,
+    /// Затухание, действующее с места первого `\fad`/`\fade` (libass: `state->fade`, первый
+    /// тег побеждает через `PARSED_FADE`); до тега — 0. `\r` его не сбрасывает.
+    pub(crate) fade: EventFade,
+    /// Значение затухания на момент показа: его получит `fade`, когда встретится тег.
+    event_fade: EventFade,
+    fade_locked: bool,
 }
 
 impl<'script> RenderState<'script> {
@@ -123,12 +140,25 @@ impl<'script> RenderState<'script> {
             },
             spacing: event_style.spacing,
             encoding: event_style.encoding,
+            rotation: style_rotation(event_style),
+            shear: ShearFactors::default(),
             alignment: event_style.alignment,
             alignment_locked: false,
             wrap_style: initial_wrap_style,
             position: None,
+            origin: None,
             drawing: AssDrawingMode::Off,
+            fade: EventFade::NONE,
+            event_fade: EventFade::NONE,
+            fade_locked: false,
         }
+    }
+
+    /// Задаёт значение затухания реплики на момент показа (см. модуль анимации). Оно вступает
+    /// в силу в месте первого тега затухания, а не с начала текста.
+    pub(crate) fn with_event_fade(mut self, fade: EventFade) -> Self {
+        self.event_fade = fade;
+        self
     }
 
     /// Стиль последнего сброса: от него зависят отступы реплики.
@@ -155,6 +185,8 @@ impl<'script> RenderState<'script> {
         self.spacing = style.spacing;
         self.shadow = AxisValues::uniform(style.shadow);
         self.encoding = style.encoding;
+        self.rotation = style_rotation(style);
+        self.shear = ShearFactors::default();
     }
 
     /// Применяет один тег (libass: ветки `ass_parse_tags` при `pwr = 1`, без анимации).
@@ -208,6 +240,28 @@ impl<'script> RenderState<'script> {
                     });
                 }
             }
+            AssOverride::Origin { x, y } => {
+                // Побеждает первый `\org` (`have_origin`); коллизии отключает планировщик.
+                if self.origin.is_none() {
+                    self.origin = Some(ScriptPoint { x: *x, y: *y });
+                }
+            }
+            AssOverride::Rotation { axis, degrees } => self.apply_rotation(*axis, *degrees),
+            AssOverride::Shear { axis, factor } => {
+                // Тег без аргумента сбрасывает наклон в 0 (не в стиль).
+                let value = factor.unwrap_or(0.0);
+                match axis {
+                    AssShearAxis::X => self.shear.horizontal = value,
+                    AssShearAxis::Y => self.shear.vertical = value,
+                }
+            }
+            AssOverride::Fade(_) => {
+                // Побеждает первый тег (`PARSED_FADE`); символы до него остаются без затухания.
+                if !self.fade_locked {
+                    self.fade = self.event_fade;
+                    self.fade_locked = true;
+                }
+            }
             AssOverride::Reset(name) => self.apply_reset(name.as_deref()),
             AssOverride::WrapStyle(value) => {
                 self.wrap_style = value.unwrap_or(self.script.info().wrap_style);
@@ -224,6 +278,17 @@ impl<'script> RenderState<'script> {
             AssOverride::Drawing(mode) => self.drawing = *mode,
             // Теги слоёв 2-3 растеризатор слоя 1 не исполняет (их считает разбор).
             AssOverride::Unsupported(_) => {}
+        }
+    }
+
+    /// `\frx \fry \frz`: без аргумента X и Y возвращаются в 0, Z — в угол стиля.
+    fn apply_rotation(&mut self, axis: AssRotationAxis, degrees: Option<f64>) {
+        match axis {
+            AssRotationAxis::X => self.rotation.x_degrees = degrees.unwrap_or(0.0),
+            AssRotationAxis::Y => self.rotation.y_degrees = degrees.unwrap_or(0.0),
+            AssRotationAxis::Z => {
+                self.rotation.z_degrees = degrees.unwrap_or(self.style.angle);
+            }
         }
     }
 
@@ -283,6 +348,15 @@ impl<'script> RenderState<'script> {
             None => self.event_style,
         };
         self.reset_to(style);
+    }
+}
+
+/// Начальные повороты стиля: только `Angle` (вокруг оси Z).
+fn style_rotation(style: &AssStyle) -> Rotation3d {
+    Rotation3d {
+        x_degrees: 0.0,
+        y_degrees: 0.0,
+        z_degrees: style.angle,
     }
 }
 

@@ -7,11 +7,13 @@ use std::time::Instant;
 
 use subtitle_core::{SubtitleContent, SubtitleEventId, SubtitleLanguage, SubtitleTime};
 use subtitle_raster::{
-    CanvasSize, CueKey, RenderRequest, RenderableCue, SubtitleRasterizer, TextLanguagePreference,
+    AssEventTiming, CanvasSize, CueKey, RenderRequest, RenderableCue, SubtitleRasterizer,
+    TextLanguagePreference,
 };
 
 use super::commands::{LookInputs, RenderReport};
 use super::prepared_queue::{OverlayIdentity, PreparedOverlay};
+use super::schedule::FrameStep;
 use super::track_mirror::MirroredTrack;
 use super::validity::ValidityInterval;
 
@@ -34,6 +36,8 @@ pub(super) struct StepInput<'step> {
     pub(super) look: &'step LookInputs,
     pub(super) system_language: Option<&'step SubtitleLanguage>,
     pub(super) lookup_time: SubtitleTime,
+    /// Шаг кадров из часов показа: срок годности анимированной сцены (`None` — шаг неизвестен).
+    pub(super) frame_step: Option<FrameStep>,
 }
 
 /// Рисует реплики, активные на `lookup_time`. `valid_until` берётся у таймлайна:
@@ -71,6 +75,7 @@ pub(super) fn render_at(
                     CueKey::new(source, event_id),
                     event.layer(),
                     cue,
+                    AssEventTiming::new(event.start(), event.end()),
                 ));
             }
             // `SubtitleContent` расширяемый (bitmap и будущее): неподдерживаемое считаем.
@@ -84,8 +89,9 @@ pub(super) fn render_at(
         input.system_language,
     );
     let started_at = Instant::now();
-    let overlay = rasterizer
+    let rendered = rasterizer
         .render(&RenderRequest {
+            moment: input.lookup_time,
             cues: &cues,
             canvas: input.canvas,
             appearance: &input.look.appearance,
@@ -93,6 +99,12 @@ pub(super) fn render_at(
             ass: input.look.ass,
         })
         .clone();
+    // Срок годности сужается анимацией: `\move`/`\fad` делают кадр функцией времени.
+    let interval = interval.narrowed_by_animation(
+        rendered.animation_change(),
+        input.frame_step,
+        |after, up_to| timeline.latest_change_within(after, up_to),
+    );
     let report = RenderReport {
         elapsed: started_at.elapsed(),
         cue_count: cues.len(),
@@ -104,7 +116,7 @@ pub(super) fn render_at(
         interval,
         scratch_active.clone(),
         contains_ass,
-        overlay,
+        rendered,
     );
     StepOutcome::Rendered { picture, report }
 }

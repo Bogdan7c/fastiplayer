@@ -17,6 +17,7 @@ pub(super) struct Counters {
     pub(super) skipped_glyphs: u64,
     pub(super) skipped_borders: u64,
     pub(super) skipped_ass_drawings: u64,
+    pub(super) skipped_oversized_bitmaps: u64,
 }
 
 /// Снимок статистики растеризатора.
@@ -53,6 +54,9 @@ pub struct RasterStatistics {
     /// Кусков текста ASS в режиме рисунка (`\p`), пропущенных, потому что векторные рисунки
     /// пока не поддерживаются (считается при растеризации реплики).
     pub skipped_ass_drawing_runs: u64,
+    /// Глифов, пропущенных, потому что битмап после преобразования (3D-перспектива у плоскости
+    /// камеры) шире `RasterInputLimits::max_canvas_side` (считается при растеризации реплики).
+    pub skipped_oversized_bitmaps: u64,
     /// Лиц, признанных непригодными для рисования и исключённых из выбора шрифта.
     pub unusable_faces: u64,
     /// Лиц, которые не удалось разобрать как шрифт.

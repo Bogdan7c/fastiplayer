@@ -22,7 +22,9 @@ use super::commands::{LookInputs, RenderTarget, WorkerCommand, WorkerEvent};
 use super::prepared_queue::OverlayIdentity;
 use super::published_record::PublishedRecord;
 use super::render_step::{StepInput, StepOutcome, render_at};
-use super::schedule::{PrerenderFrames, PresentationClock, ScheduleDecision, plan_next_render};
+use super::schedule::{
+    FrameCadence, FrameStep, PrerenderFrames, PresentationClock, ScheduleDecision, plan_next_render,
+};
 use super::track_mirror::TrackMirrors;
 use crate::app_wake::AppWakePort;
 
@@ -62,6 +64,8 @@ struct RenderJob {
     identity: OverlayIdentity,
     target: RenderTarget,
     lookup_time: subtitle_core::SubtitleTime,
+    /// Шаг кадров из часов показа на момент планирования.
+    frame_step: Option<FrameStep>,
 }
 
 /// Состояние потока.
@@ -220,10 +224,15 @@ impl WorkerState {
                     );
                     return None;
                 }
+                let frame_step = match clock.cadence {
+                    FrameCadence::Known(step) => Some(step),
+                    FrameCadence::Unknown => None,
+                };
                 Some(RenderJob {
                     identity,
                     target,
                     lookup_time,
+                    frame_step,
                 })
             }
             ScheduleDecision::Idle => None,
@@ -249,6 +258,7 @@ impl WorkerState {
             look,
             system_language: self.system_language.as_ref(),
             lookup_time: job.lookup_time,
+            frame_step: job.frame_step,
         };
         match render_at(&mut self.rasterizer, &input, &mut self.scratch_active) {
             StepOutcome::NothingActive { interval } => {

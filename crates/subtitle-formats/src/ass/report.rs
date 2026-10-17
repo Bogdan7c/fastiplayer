@@ -146,9 +146,9 @@ mod tests {
         let mut stats = AssTagStats::new(&limits(1));
         stats.record_unsupported(AssUnsupportedTag::Blur);
         stats.record_unsupported(AssUnsupportedTag::Blur);
-        stats.record_unsupported(AssUnsupportedTag::Move);
+        stats.record_unsupported(AssUnsupportedTag::Be);
         assert_eq!(stats.unsupported_count(AssUnsupportedTag::Blur), 2);
-        assert_eq!(stats.unsupported_count(AssUnsupportedTag::Move), 1);
+        assert_eq!(stats.unsupported_count(AssUnsupportedTag::Be), 1);
         assert_eq!(stats.unsupported_count(AssUnsupportedTag::Clip), 0);
     }
 }

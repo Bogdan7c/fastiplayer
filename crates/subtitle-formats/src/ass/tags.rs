@@ -34,8 +34,9 @@
 //!   скобках, а у «сложных» тегов (`\pos`, `\move`, `\t`, `\clip` ...) такого хвоста нет.
 
 use subtitle_core::{
-    AssAlignment, AssAlphaTarget, AssAxes, AssBold, AssColorSlot, AssDrawingMode, AssFontSize,
-    AssMove, AssOverride, AssRgb, AssUnsupportedTag, AssWrapStyle,
+    AssAlignment, AssAlphaTarget, AssAxes, AssBold, AssColorSlot, AssDrawingMode, AssFade,
+    AssFontSize, AssMove, AssOverride, AssRgb, AssRotationAxis, AssShearAxis, AssUnsupportedTag,
+    AssWrapStyle,
 };
 
 use super::report::AssTagStats;
@@ -96,6 +97,14 @@ enum Tag {
     FontEncoding,
     /// `\p<n>`: режим рисунка (аргумент нужен рендеру, поэтому не `Unsupported`).
     Drawing,
+    /// `\frx`, `\fry`, `\frz`, `\fr`.
+    Rotation(AssRotationAxis),
+    /// `\fax`, `\fay`.
+    Shear(AssShearAxis),
+    /// `\org(x,y)`.
+    Origin,
+    /// `\fad(a,b)` и `\fade(...)`.
+    Fade,
     Unsupported(AssUnsupportedTag),
 }
 
@@ -138,8 +147,8 @@ const TAG_RULES: &[TagRule] = &[
     plain("ybord", Tag::Border(AssAxes::Y)),
     plain("xshad", Tag::Shadow(AssAxes::X)),
     plain("yshad", Tag::Shadow(AssAxes::Y)),
-    plain("fax", Tag::Unsupported(AssUnsupportedTag::Fax)),
-    plain("fay", Tag::Unsupported(AssUnsupportedTag::Fay)),
+    plain("fax", Tag::Shear(AssShearAxis::X)),
+    plain("fay", Tag::Shear(AssShearAxis::Y)),
     complex("iclip", Tag::Unsupported(AssUnsupportedTag::InverseClip)),
     plain("blur", Tag::Unsupported(AssUnsupportedTag::Blur)),
     plain("fscx", Tag::ScaleX),
@@ -149,18 +158,18 @@ const TAG_RULES: &[TagRule] = &[
     plain("fs", Tag::FontSize),
     plain("bord", Tag::Border(AssAxes::Both)),
     complex("move", Tag::Move),
-    plain("frx", Tag::Unsupported(AssUnsupportedTag::Frx)),
-    plain("fry", Tag::Unsupported(AssUnsupportedTag::Fry)),
-    plain("frz", Tag::Unsupported(AssUnsupportedTag::Frz)),
-    plain("fr", Tag::Unsupported(AssUnsupportedTag::Frz)),
+    plain("frx", Tag::Rotation(AssRotationAxis::X)),
+    plain("fry", Tag::Rotation(AssRotationAxis::Y)),
+    plain("frz", Tag::Rotation(AssRotationAxis::Z)),
+    plain("fr", Tag::Rotation(AssRotationAxis::Z)),
     plain("fn", Tag::FontName),
     plain("alpha", Tag::Alpha(AssAlphaTarget::All)),
     plain("an", Tag::AlignNumpad),
     plain("a", Tag::AlignLegacy),
     complex("pos", Tag::Position),
-    complex("fade", Tag::Unsupported(AssUnsupportedTag::Fade)),
-    complex("fad", Tag::Unsupported(AssUnsupportedTag::Fade)),
-    complex("org", Tag::Unsupported(AssUnsupportedTag::Org)),
+    complex("fade", Tag::Fade),
+    complex("fad", Tag::Fade),
+    complex("org", Tag::Origin),
     complex("t", Tag::Unsupported(AssUnsupportedTag::Transform)),
     complex("clip", Tag::Unsupported(AssUnsupportedTag::Clip)),
     plain("c", Tag::Color(AssColorSlot::Primary)),
@@ -274,10 +283,6 @@ pub(super) fn parse_override_block(
                     Some(parsed) => {
                         match &parsed {
                             AssOverride::Unsupported(tag) => stats.record_unsupported(*tag),
-                            // Позиция берётся, но движения нет: в матрице это «не поддержано».
-                            AssOverride::Move(_) => {
-                                stats.record_unsupported(AssUnsupportedTag::Move);
-                            }
                             // `\p0` не использует рисунки, поэтому в «не поддержано» не попадает.
                             AssOverride::Drawing(mode) if mode.is_on() => {
                                 stats.record_unsupported(AssUnsupportedTag::Drawing);
@@ -462,6 +467,25 @@ fn build_override(tag: Tag, args: &TagArgs<'_>) -> Option<AssOverride> {
             }
         }
         Tag::Move => return build_move(args).map(AssOverride::Move),
+        Tag::Rotation(axis) => AssOverride::Rotation {
+            axis,
+            degrees: has_arg.then(number),
+        },
+        Tag::Shear(axis) => AssOverride::Shear {
+            axis,
+            factor: has_arg.then(number),
+        },
+        Tag::Origin => {
+            if args.count != 2 {
+                return None;
+            }
+            let second = args.items.get(1).copied().unwrap_or_default();
+            AssOverride::Origin {
+                x: number(),
+                y: parse_f64(second),
+            }
+        }
+        Tag::Fade => return build_fade(args).map(AssOverride::Fade),
         Tag::Color(slot) => AssOverride::Color {
             slot,
             value: has_arg.then(|| parse_color(args.first())),
@@ -509,6 +533,23 @@ fn build_move(args: &TagArgs<'_>) -> Option<AssMove> {
         start_ms,
         end_ms,
     })
+}
+
+/// `\fad`/`\fade`: два аргумента (`\fad`) или семь (`\fade`); иначе тег игнорируется, как
+/// `continue` в libass. Пересчёт времён через длительность реплики делает растеризатор.
+fn build_fade(args: &TagArgs<'_>) -> Option<AssFade> {
+    let int_at = |index: usize| arg_i32(args.items.get(index).copied().unwrap_or_default());
+    match args.count {
+        2 => Some(AssFade::Simple {
+            fade_in_ms: int_at(0),
+            fade_out_ms: int_at(1),
+        }),
+        7 => Some(AssFade::Full {
+            alphas: [int_at(0), int_at(1), int_at(2)],
+            times_ms: [int_at(3), int_at(4), int_at(5), int_at(6)],
+        }),
+        _ => None,
+    }
 }
 
 /// `\fn`: без аргумента и при аргументе ровно `0` — шрифт стиля; иначе имя без ведущих

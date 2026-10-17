@@ -154,3 +154,67 @@ fn pen_positions_saturate_instead_of_overflowing_on_absurd_advances() {
     assert_eq!(positions[1], i32::MAX / 2 + 1);
     assert_eq!(positions[2], i32::MAX, "the sum stops at the maximum");
 }
+
+// --- Сдвиг базовой линии `\fay` и центр поворота ---
+
+/// Раскладка с заданным наклоном `\fay` у всех символов.
+fn arranged_with_fay(text: &str, fay: f64) -> (Vec<TextCluster>, TextLayout) {
+    let style = plain_style();
+    let mut fonts = embedded_fonts();
+    let mut clusters = shaped_clusters(&mut fonts, &plain_text(text), &style);
+    for cluster in &mut clusters {
+        cluster.baseline_shear = fay;
+    }
+    let layout = arrange_text(&mut clusters, &style, canvas());
+    (clusters, layout)
+}
+
+#[test]
+fn fay_accumulates_a_baseline_lift_along_the_line_and_restarts_on_the_next_line() {
+    let (flat, flat_layout) = arranged_with_fay("abcd\nefgh", 0.0);
+    let (sheared, layout) = arranged_with_fay("abcd\nefgh", 0.5);
+    let dy = |index: usize| sheared[index].root.pos.y - flat[index].root.pos.y;
+    // Первая буква строки не сдвигается, дальше сдвиг растёт на fay * продвижение.
+    assert_eq!(dy(0), 0);
+    assert!(
+        dy(1) > 0 && dy(2) > dy(1) && dy(3) > dy(2),
+        "{:?}",
+        (dy(1), dy(2), dy(3))
+    );
+    let expected = (0.5 * f64::from(flat[0].root.advance.x)) as i32;
+    assert_eq!(dy(1), expected);
+    // Вторая строка начинается заново (символ 4 — разделитель строк, 5 — первая буква второй).
+    assert_eq!(dy(5), 0);
+    assert!(dy(6) > 0);
+    // Габариты блока считаются до сдвига: рамка и измерения не меняются.
+    assert_eq!(layout.bounds, flat_layout.bounds);
+    assert_eq!(layout.measure, flat_layout.measure);
+}
+
+#[test]
+fn rotation_centre_is_the_alignment_base_point_unless_org_is_set() {
+    let mut style = plain_style();
+    let (_, layout) = arranged("Hello", &style);
+    // Нижнее выравнивание по центру: середина по x и нижний край рамки текста.
+    let centre = layout.rotation_center(&style);
+    let expected_x = layout.device_x + (layout.bounds.x_min + layout.bounds.x_max) / 2.0;
+    let expected_y = layout.device_y + layout.bounds.y_max;
+    assert!((centre.x - expected_x).abs() < 1e-9, "{centre:?}");
+    assert!((centre.y - expected_y).abs() < 1e-9, "{centre:?}");
+
+    // `\org` задаёт точку напрямую и не зависит от раскладки.
+    let crate::event_style::EventPlacement::ByMargins = style.placement else {
+        panic!("plain style uses margins");
+    };
+    style.placement =
+        crate::event_style::EventPlacement::Exact(crate::event_style::ExactPlacement {
+            text_left: 40.0,
+            text_width: 1200.0,
+            vertical_margin: 40.0,
+            anchor: crate::event_style::BlockAnchor::ByAlignment,
+            rotation_origin: RotationOrigin::AtPoint { x: 123.0, y: 45.5 },
+            pixel_aspect_x: 1.0,
+        });
+    let with_org = layout.rotation_center(&style);
+    assert_eq!((with_org.x, with_org.y), (123.0, 45.5));
+}

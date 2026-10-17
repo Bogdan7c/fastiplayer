@@ -14,6 +14,7 @@ use super::frame_scale::EventScale;
 use super::render_state::RenderState;
 use crate::event_style::{AxisPair, BorderStyle, StyleColors};
 use crate::fonts::{FontStyle, FontWeightClass};
+use crate::glyph_transform::{Rotation3d, ShearFactors};
 use crate::span_look::{SpanLook, TextDecorations};
 
 /// Во сколько раз размер шрифта может превышать большую сторону холста.
@@ -136,6 +137,8 @@ impl LookPolicy {
                         *max_font_size,
                     ),
                     decorations,
+                    rotation: finite_rotation(state.rotation),
+                    shear: finite_shear(state.shear),
                 }
             }
             Self::User(user) => SpanLook {
@@ -152,8 +155,29 @@ impl LookPolicy {
                 scale: AxisPair::uniform(1.0),
                 letter_spacing: 0.0,
                 decorations,
+                rotation: finite_rotation(state.rotation),
+                shear: finite_shear(state.shear),
             },
         }
+    }
+}
+
+/// Нечисловой угол (`\frz nan`) превращается в 0: поворот не должен ломать арифметику конвейера.
+fn finite_rotation(rotation: Rotation3d) -> Rotation3d {
+    let finite = |value: f64| if value.is_finite() { value } else { 0.0 };
+    Rotation3d {
+        x_degrees: finite(rotation.x_degrees),
+        y_degrees: finite(rotation.y_degrees),
+        z_degrees: finite(rotation.z_degrees),
+    }
+}
+
+/// Нечисловой наклон превращается в 0 (см. [`finite_rotation`]).
+fn finite_shear(shear: ShearFactors) -> ShearFactors {
+    let finite = |value: f64| if value.is_finite() { value } else { 0.0 };
+    ShearFactors {
+        horizontal: finite(shear.horizontal),
+        vertical: finite(shear.vertical),
     }
 }
 

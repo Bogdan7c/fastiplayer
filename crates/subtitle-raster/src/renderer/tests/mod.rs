@@ -1,9 +1,11 @@
 //! Функциональные тесты публичного растеризатора: реплики на входе — картинки на выходе.
 
 mod ass;
+mod ass_animation;
 mod ass_cache;
 mod ass_placement_group;
 mod ass_robustness;
+mod ass_rotation;
 mod ass_text_style;
 mod attached_fonts;
 mod caching;
@@ -153,6 +155,7 @@ pub(super) fn render_in_language(
     let list = renderables(test_cues);
     rasterizer
         .render(&RenderRequest {
+            moment: subtitle_core::SubtitleTime::ZERO,
             cues: &list,
             canvas,
             appearance,

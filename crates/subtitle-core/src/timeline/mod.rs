@@ -200,6 +200,48 @@ impl SubtitleTimeline {
         }
     }
 
+    /// Последний момент `b`, `after < b <= up_to`, в который набор активных событий менялся
+    /// (начало или конец какого-то события). `None` — в этом окне изменений не было.
+    ///
+    /// Нужен рисовальщику анимированных сцен: картинка, нарисованная на `up_to`, не годится
+    /// для времени ДО этого момента (там реплика ещё не началась или уже была другой).
+    /// Начала берутся бинарным поиском, концы — среди уже начавшихся событий через дерево
+    /// максимумов, цена O((k + 1) · log n).
+    pub fn latest_change_within(
+        &self,
+        after: SubtitleTime,
+        up_to: SubtitleTime,
+    ) -> Option<SubtitleTime> {
+        let started = self
+            .order_by_start
+            .partition_point(|&id| self.start_of(id) <= up_to);
+        // Начала отсортированы: последнее начавшееся событие даёт самое позднее начало.
+        let latest_start = started
+            .checked_sub(1)
+            .and_then(|position| self.order_by_start.get(position))
+            .map(|&id| self.start_of(id))
+            .filter(|&start| start > after);
+        let mut latest_end: Option<SubtitleTime> = None;
+        self.max_end_tree
+            .visit_positions_ending_after(after, started, &mut |position| {
+                let Some(end) = self
+                    .order_by_start
+                    .get(position)
+                    .and_then(|&id| self.event(id))
+                    .map(SubtitleEvent::end)
+                else {
+                    return;
+                };
+                if end <= up_to {
+                    latest_end = Some(latest_end.map_or(end, |current| current.max(end)));
+                }
+            });
+        match (latest_start, latest_end) {
+            (Some(start), Some(end)) => Some(start.max(end)),
+            (start, end) => start.or(end),
+        }
+    }
+
     pub fn event(&self, id: SubtitleEventId) -> Option<&SubtitleEvent> {
         self.events.get(id.index())
     }

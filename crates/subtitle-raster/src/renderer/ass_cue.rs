@@ -8,7 +8,7 @@ use subtitle_core::AssCue;
 
 use super::cue_render::{AssCollisionRect, CueRenderError, PixelRect, RasterizedCue, union_extent};
 use crate::appearance::SubtitleAppearance;
-use crate::ass::{AssRenderOptions, plan_ass_event};
+use crate::ass::{AssAnimationState, AssRenderOptions, plan_ass_event};
 use crate::face_cache::FaceCache;
 use crate::fonts::{SubtitleFontLibrary, TextLanguagePreference};
 use crate::layout::LineBox;
@@ -17,20 +17,39 @@ use crate::plate::build_plate;
 use crate::render_diagnostics::RenderDiagnostics;
 use crate::text_renderer::render_source_text;
 
+/// Входы рисования реплики ASS, общие для кадра.
+pub(crate) struct AssCueInputs<'a> {
+    /// Стиль пользователя: используется только при `AssStyleSource::User` (оформление
+    /// пользователя и плашка); при стиле автора он не влияет на результат.
+    pub(crate) appearance: &'a SubtitleAppearance,
+    /// Настройки рисования ASS.
+    pub(crate) options: &'a AssRenderOptions,
+    /// Состояние анимации на момент показа (положение `\move`, затухание).
+    pub(crate) animation: &'a AssAnimationState,
+    /// Холст.
+    pub(crate) canvas: CanvasSize,
+    /// Язык текста для выбора региональной формы CJK.
+    pub(crate) language: TextLanguagePreference,
+    /// Наибольшая сторона битмапа глифа (`RasterInputLimits::max_canvas_side`).
+    pub(crate) max_bitmap_side: u32,
+}
+
 /// Рисует реплику ASS на холсте.
-///
-/// `appearance` используется только при `AssStyleSource::User` (оформление пользователя и
-/// плашка); при стиле автора он не влияет на результат.
 pub(crate) fn rasterize_ass_cue(
     fonts: &mut SubtitleFontLibrary,
     faces: &mut FaceCache,
     cue: &AssCue,
-    appearance: &SubtitleAppearance,
-    options: &AssRenderOptions,
-    canvas: CanvasSize,
-    language: TextLanguagePreference,
+    inputs: &AssCueInputs<'_>,
 ) -> Result<RasterizedCue, CueRenderError> {
-    let plan = plan_ass_event(cue, canvas, options, appearance);
+    let AssCueInputs {
+        appearance,
+        options,
+        animation,
+        canvas,
+        language,
+        max_bitmap_side,
+    } = *inputs;
+    let plan = plan_ass_event(cue, canvas, options, appearance, animation);
     if plan.skipped_drawing_runs > 0 {
         // Векторные рисунки (`\p`) приходят в слоях 2-3; текст реплики в журнал не пишем.
         tracing::debug!(
@@ -38,7 +57,15 @@ pub(crate) fn rasterize_ass_cue(
             "ASS drawing mode is not supported, drawing commands are skipped"
         );
     }
-    let rendered = render_source_text(fonts, faces, &plan.source, &plan.style, canvas, language)?;
+    let rendered = render_source_text(
+        fonts,
+        faces,
+        &plan.source,
+        &plan.style,
+        canvas,
+        language,
+        max_bitmap_side,
+    )?;
 
     let mut bitmaps = Vec::with_capacity(rendered.images.len() + 1);
     // Плашка пользовательского стиля лежит под текстом (как у простых форматов).

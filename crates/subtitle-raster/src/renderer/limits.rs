@@ -62,7 +62,7 @@ pub(super) fn admit_cues<'request, 'content>(
     text.truncate(limits.max_cues_per_frame);
     ass.sort_by_key(|cue| {
         let read_order = match cue.content {
-            CueContent::Ass(ass_cue) => ass_cue.read_order,
+            CueContent::Ass { cue: ass_cue, .. } => ass_cue.read_order,
             CueContent::Text(_) => 0,
         };
         (cue.layer, read_order)

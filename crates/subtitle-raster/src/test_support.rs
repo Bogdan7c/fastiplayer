@@ -2,6 +2,7 @@
 
 use subtitle_core::{ScreenAnchor, SpanStyle, StyledText, SubtitleColor, TextSpan};
 
+use crate::event_fade::EventFade;
 use crate::event_style::{
     AxisPair, BaseDirection, BorderStyle, EventPlacement, EventStyle, StyleColors, TextMargins,
     WrapStyle,
@@ -66,6 +67,7 @@ pub(crate) fn plain_style() -> EventStyle {
         wrap_style: WrapStyle::Smart,
         line_spacing: 0.0,
         base_direction: BaseDirection::LeftToRight,
+        fade: EventFade::NONE,
     }
 }
 

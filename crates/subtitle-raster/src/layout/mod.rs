@@ -32,6 +32,7 @@
 //! задают точную дробную геометрию и, с `\pos`, опорную точку блока (`EventStyle::placement`):
 //! масштаб PlayRes -> кадр уже применён строителем стиля.
 
+mod baseline_shear;
 mod event_rect;
 mod line_boxes;
 mod measure;
@@ -46,7 +47,7 @@ pub(crate) use measure::{TextBounds, TextMeasure};
 use reorder::{HorizontalAlignment, align_lines, reorder_text};
 pub(crate) use wrap::preliminary_layout;
 
-use crate::event_style::{BaseDirection, BlockAnchor, EventStyle};
+use crate::event_style::{BaseDirection, BlockAnchor, EventStyle, RotationOrigin};
 use crate::glyph_info::TextCluster;
 use crate::overlay::CanvasSize;
 
@@ -61,6 +62,32 @@ pub(crate) struct TextLayout {
     pub(crate) device_x: f64,
     /// Положение базовой линии первой строки (`device_y`), пиксели кадра.
     pub(crate) device_y: f64,
+}
+
+/// Центр поворота реплики в пикселях холста (до растяжения на `par_scale_x`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RotationCenter {
+    /// Координата по горизонтали.
+    pub(crate) x: f64,
+    /// Координата по вертикали.
+    pub(crate) y: f64,
+}
+
+impl TextLayout {
+    /// Центр поворота реплики (libass: `calculate_rotation_params`): точка `\org`, а без неё
+    /// опорная точка блока по выравниванию — та же, за которую блок привязывается к `\pos`.
+    pub(crate) fn rotation_center(&self, style: &EventStyle) -> RotationCenter {
+        match style.rotation_origin() {
+            RotationOrigin::AtPoint { x, y } => RotationCenter { x, y },
+            RotationOrigin::ByAlignment => {
+                let (base_x, base_y) = base_point(&self.bounds, style.alignment);
+                RotationCenter {
+                    x: self.device_x + base_x,
+                    y: self.device_y + base_y,
+                }
+            }
+        }
+    }
 }
 
 /// Расставляет кластеры по строкам и вычисляет положение блока (все шаги, кроме растеризации).
@@ -83,13 +110,15 @@ pub(crate) fn arrange_text(
     let measure = measure::measure_text(clusters, line_count, style);
 
     let split_by_style = style.base_direction == BaseDirection::LeftToRight;
-    reorder_text(clusters, &measure, style, split_by_style);
+    let visual_order = reorder_text(clusters, &measure, style, split_by_style);
     align_lines(
         clusters,
         HorizontalAlignment::of(style.alignment),
         max_text_width,
     );
     let bounds = measure::string_bounds(clusters, &measure);
+    // Рамка уже посчитана: сдвиг базовой линии `\fay` габариты блока не меняет (как в libass).
+    baseline_shear::apply_baseline_shear(clusters, &visual_order);
 
     let (device_x, device_y) = match style.block_anchor() {
         BlockAnchor::ByAlignment => (

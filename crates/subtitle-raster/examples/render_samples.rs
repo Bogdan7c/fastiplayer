@@ -119,6 +119,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         for (style_name, appearance) in &styles {
             let cues = [RenderableCue::text(key, &cue)];
             let overlay = rasterizer.render(&RenderRequest {
+                moment: subtitle_core::SubtitleTime::ZERO,
                 cues: &cues,
                 canvas,
                 appearance,

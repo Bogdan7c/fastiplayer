@@ -139,6 +139,7 @@ fn timed_render(
     let cues = [RenderableCue::text(key, cue)];
     let started = Instant::now();
     let overlay = rasterizer.render(&RenderRequest {
+        moment: subtitle_core::SubtitleTime::ZERO,
         cues: &cues,
         canvas,
         appearance,

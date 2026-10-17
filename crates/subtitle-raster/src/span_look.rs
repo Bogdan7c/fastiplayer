@@ -14,6 +14,7 @@
 
 use crate::event_style::{AxisPair, BorderStyle, StyleColors};
 use crate::fonts::{FontStyle, FontWeightClass};
+use crate::glyph_transform::{Rotation3d, ShearFactors};
 
 /// Подчёркивание и зачёркивание участка (libass: `DECO_UNDERLINE`, `DECO_STRIKETHROUGH`).
 ///
@@ -59,6 +60,11 @@ pub(crate) struct SpanLook {
     pub(crate) letter_spacing: f64,
     /// Подчёркивание и зачёркивание.
     pub(crate) decorations: TextDecorations,
+    /// Повороты `\frx \fry \frz` (градусы). Участвуют в сравнении видов, поэтому смена угла
+    /// посреди реплики начинает новый участок, как в `split_style_runs` libass.
+    pub(crate) rotation: Rotation3d,
+    /// Наклон `\fax \fay`.
+    pub(crate) shear: ShearFactors,
 }
 
 impl SpanLook {
@@ -72,6 +78,11 @@ impl SpanLook {
             self.scale.horizontal,
             self.scale.vertical,
             self.letter_spacing,
+            self.rotation.x_degrees,
+            self.rotation.y_degrees,
+            self.rotation.z_degrees,
+            self.shear.horizontal,
+            self.shear.vertical,
         ]
         .iter()
         .all(|value| value.is_finite())
@@ -104,6 +115,8 @@ mod tests {
             scale: AxisPair::uniform(1.0),
             letter_spacing: 0.0,
             decorations: TextDecorations::default(),
+            rotation: Rotation3d::default(),
+            shear: ShearFactors::default(),
         }
     }
 

@@ -48,6 +48,17 @@ pub(crate) enum BitmapError {
         /// Высота в пикселях.
         height: i64,
     },
+    /// Битмап шире или выше заданного предела (`Rasterizer::max_bitmap_side`): выделять его не
+    /// нужно, глиф пропускается вызывающим.
+    #[error("bitmap {width}x{height} exceeds the side limit {limit}")]
+    ExceedsSideLimit {
+        /// Ширина в пикселях.
+        width: i64,
+        /// Высота в пикселях.
+        height: i64,
+        /// Предел стороны.
+        limit: u32,
+    },
     /// Дробный сдвиг вне диапазона `0..64` (1/64 пикселя).
     #[error("fractional shift must be in 0..64, got ({shift_x}, {shift_y})")]
     InvalidShift {
@@ -173,6 +184,15 @@ pub(crate) fn outline_to_bitmap(
     let width = i64::from(x_max) - i64::from(x_min);
     let height = i64::from(y_max) - i64::from(y_min);
 
+    if let Some(side_limit) = rasterizer.max_bitmap_side()
+        && (width > i64::from(side_limit) || height > i64::from(side_limit))
+    {
+        return Err(BitmapError::ExceedsSideLimit {
+            width,
+            height,
+            limit: side_limit,
+        });
+    }
     let tile_mask = TILE_SIZE as i64 - 1;
     let limit = i64::from(i32::MAX) - tile_mask;
     if width < 0 || height < 0 || width > limit || height > limit {

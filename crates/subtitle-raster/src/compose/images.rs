@@ -146,7 +146,7 @@ pub(super) fn event_background(
     if box_width < 1 || box_height < 1 {
         return Ok(None);
     }
-    let color = style.colors.back;
+    let color = style.fade.apply_to(style.colors.back);
     if color.alpha == 0 {
         return Ok(None);
     }

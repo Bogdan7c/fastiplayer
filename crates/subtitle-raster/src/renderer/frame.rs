@@ -3,11 +3,13 @@
 //! Подпись нужна для быстрого пути «ничего не изменилось»: сравнение с новым запросом идёт
 //! по месту, без аллокаций и без обхода содержимого реплик (доверие ключам `CueKey`).
 
+use subtitle_core::SubtitleTime;
+
 use super::request::{CueContent, CueKey, RenderRequest};
 use crate::appearance::SubtitleAppearance;
-use crate::ass::AssRenderOptions;
+use crate::ass::{AssAnimation, AssRenderOptions};
 use crate::fonts::TextLanguagePreference;
-use crate::overlay::{CanvasSize, SubtitleOverlay};
+use crate::overlay::{AnimationChange, CanvasSize, SubtitleOverlay};
 
 /// Подпись запроса: ключи реплик по порядку, холст, стиль и язык текста.
 #[derive(Debug, Clone)]
@@ -37,7 +39,7 @@ impl FrameSignature {
         request
             .cues
             .iter()
-            .any(|cue| matches!(cue.content, CueContent::Ass(_)))
+            .any(|cue| matches!(cue.content, CueContent::Ass { .. }))
             .then_some(request.ass)
     }
 
@@ -56,6 +58,29 @@ impl FrameSignature {
     }
 }
 
+/// Зависимость собираемого кадра от времени: сводка по его ASS-репликам.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FrameTimeDependence {
+    /// Ближайшее изменение анимации среди реплик кадра.
+    pub(crate) change: AnimationChange,
+    /// Ни одна реплика кадра от момента показа не зависит (даже при перемотке назад).
+    pub(crate) time_free: bool,
+}
+
+impl FrameTimeDependence {
+    /// Кадр без ASS-анимаций (отправная точка сводки).
+    pub(crate) const FREE: Self = Self {
+        change: AnimationChange::None,
+        time_free: true,
+    };
+
+    /// Учитывает анимацию очередной ASS-реплики кадра.
+    pub(crate) fn include(&mut self, animation: &AssAnimation) {
+        self.change = self.change.earliest(animation.change);
+        self.time_free &= animation.is_time_free();
+    }
+}
+
 /// Последний выданный кадр.
 #[derive(Debug)]
 pub(crate) struct FrameState {
@@ -65,6 +90,10 @@ pub(crate) struct FrameState {
     pub(crate) overlay: SubtitleOverlay,
     /// Кадр устарел (например, поменялись шрифты) и не может быть выдан повторно «как есть».
     pub(crate) stale: bool,
+    /// Момент показа, для которого кадр построен.
+    pub(crate) rendered_at: SubtitleTime,
+    /// Как кадр зависит от времени (для быстрого пути).
+    pub(crate) time: FrameTimeDependence,
 }
 
 impl FrameState {
@@ -79,7 +108,20 @@ impl FrameState {
     }
 
     /// Можно ли ответить на запрос прежним кадром.
+    ///
+    /// Кроме совпадения подписи нужно, чтобы время не успело изменить картинку: статичная
+    /// сцена годится на любой момент (нулевая работа), анимированная — пока
+    /// [`AnimationChange::holds_at`] подтверждает прежний кадр.
     pub(crate) fn can_serve(&self, request: &RenderRequest<'_>) -> bool {
-        !self.stale && self.signature.matches(request)
+        !self.stale && self.signature.matches(request) && self.holds_at(request.moment)
+    }
+
+    /// Прежний кадр верен для момента `moment`.
+    fn holds_at(&self, moment: SubtitleTime) -> bool {
+        self.time.time_free
+            || self
+                .overlay
+                .animation_change()
+                .holds_at(self.rendered_at, moment)
     }
 }

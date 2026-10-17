@@ -24,6 +24,7 @@ mod ass;
 mod bitmap;
 pub mod cache;
 mod compose;
+mod event_fade;
 mod event_style;
 mod face_cache;
 mod fixed_point;
@@ -68,12 +69,12 @@ pub use fonts::{
     SyntheticItalic, SystemFontScanReport, SystemFontScanStatus, TextLanguagePreference,
 };
 pub use overlay::{
-    BitmapOutsideCanvas, CanvasRect, CanvasSize, OverlayChange, OverlayPlacementGroup,
-    OverlayRevision, PixelPoint, SubtitleBitmap, SubtitleBitmapError, SubtitleBitmapKind,
-    SubtitleOverlay,
+    AnimationChange, BitmapOutsideCanvas, CanvasRect, CanvasSize, OverlayChange,
+    OverlayPlacementGroup, OverlayRevision, PixelPoint, SubtitleBitmap, SubtitleBitmapError,
+    SubtitleBitmapKind, SubtitleOverlay,
 };
 pub use renderer::{
-    CueContent, CueKey, CueSourceId, RasterCacheLimits, RasterInputLimits, RasterLimits,
-    RasterStatistics, RenderRequest, RenderableCue, SubtitleRasterizer,
+    AssEventTiming, CueContent, CueKey, CueSourceId, RasterCacheLimits, RasterInputLimits,
+    RasterLimits, RasterStatistics, RenderRequest, RenderableCue, SubtitleRasterizer,
 };
 pub use skrifa::GlyphId;
