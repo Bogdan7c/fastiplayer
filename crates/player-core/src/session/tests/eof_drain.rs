@@ -237,7 +237,10 @@ fn audio_only_eof_after_buffered_samples_keeps_bounded_wakeup_until_drain() {
         Duration::from_millis(250),
     );
     assert_eq!(plan.reason, crate::WorkerWakeupReason::CoarseProgress);
-    assert_eq!(plan.delay, Some(Duration::from_millis(250)));
+    // Хвост играет и тратит буфер: fallback ограничен половиной audio buffer-а
+    // (default high-water 200 мс → 100 мс), а не настроенными 250 мс.
+    assert!(session.pipeline.audio_output_is_playing());
+    assert_eq!(plan.delay, Some(Duration::from_millis(100)));
     assert_eq!(session.playback_state(), PlaybackState::Draining);
 
     audio_output.set_buffer_level_ms(0.0);

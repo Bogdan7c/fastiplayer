@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use super::{
     PlayerTickConfig,
+    audio_fallback_wakeup::coarse_progress_interval_for_audio_runway,
     audio_read_ahead::audio_read_ahead_limit_ms,
     demux_admission::{
         audio_demux_catchup_needed, can_read_next_demux_packet_with_audio_priority,
@@ -229,6 +230,10 @@ impl PlayerSession {
             );
             return prefer_earlier_demux_retry(self, tick_config, now, existing_plan);
         }
+
+        // Резервный wakeup при играющем звуке не длиннее половины audio buffer-а.
+        let coarse_progress_interval =
+            coarse_progress_interval_for_audio_runway(self, tick_config, coarse_progress_interval);
 
         if self.eof_drain_needs_progress() {
             let existing_plan = PlayerWorkerWakeupPlan::after(

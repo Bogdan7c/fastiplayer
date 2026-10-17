@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use super::PlayerSession;
 use crate::{PipelinePauseReason, PlaybackState};
 
+mod audio_fallback_wakeup;
 mod audio_read_ahead;
 mod demux_admission;
 mod demux_read_failure;

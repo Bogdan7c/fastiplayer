@@ -29,6 +29,7 @@ use crate::{
     StartedVideoBackend, WorkerWakeupReason,
 };
 
+mod audio_fallback_wakeup;
 mod audio_packet_window;
 mod audio_read_ahead;
 mod audio_refill_wakeup;
