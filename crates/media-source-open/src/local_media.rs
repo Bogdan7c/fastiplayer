@@ -12,6 +12,10 @@ use player_core::PreparedMedia;
 use source_core::{CancellationToken, LocalFileSource};
 pub use symphonia_demux::AttachmentReadLimits;
 
+mod discovery_probe;
+
+pub use discovery_probe::LocalRegistryDiscoveryProbe;
+
 /// Байтов в мегабайте конфига (МБ = МиБ, как в прежних константах демуксера 20/100 МиБ).
 const BYTES_PER_CONFIG_MEGABYTE: u64 = 1024 * 1024;
 

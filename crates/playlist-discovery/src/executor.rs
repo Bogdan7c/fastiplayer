@@ -61,7 +61,11 @@ pub trait DiscoveryProbe: Send + Sync + 'static {
     ) -> Result<ProbedLocalMedia, ProbeOneLocalMediaError>;
 }
 
-/// Production adapter существующего Session 08 owner-а.
+/// Symphonia-only adapter [`probe_one_local_media`](crate::probe_one_local_media).
+///
+/// Видит только форматы Symphonia (без сырых AC-3/E-AC-3 и MPEG-TS), поэтому
+/// приложение его не использует: production probe плейлиста — общий local demux
+/// registry из `media-source-open`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LocalMediaProbe;
 
@@ -401,12 +405,12 @@ pub struct DiscoveryExecutor {
 }
 
 impl DiscoveryExecutor {
-    /// Создаёт production executor с `available_parallelism.clamp(2, 4)`.
-    pub fn start(wake_port: Arc<dyn DiscoveryWakePort>) -> Result<Self, DiscoverySubmitError> {
-        Self::start_with_probe(Arc::new(LocalMediaProbe), wake_port)
-    }
-
-    /// Создаёт executor с injectable fake probe, сохраняя production budgets.
+    /// Создаёт executor с `available_parallelism.clamp(2, 4)` и явно выбранным probe.
+    ///
+    /// Probe по умолчанию намеренно нет: composition root обязан передать adapter,
+    /// который определяет формат тем же набором demux factory, что и воспроизведение
+    /// (в приложении — `media_source_open::local_media::LocalRegistryDiscoveryProbe`).
+    /// Неявный Symphonia-only default оставлял `.ac3`/`.eac3`/`.ts` без метаданных.
     pub fn start_with_probe(
         probe: Arc<dyn DiscoveryProbe>,
         wake_port: Arc<dyn DiscoveryWakePort>,

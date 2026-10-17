@@ -32,6 +32,9 @@ mpeg-ts-demux.workspace = true
 flv-demux.workspace = true
 # Сырые `.ac3` / `.eac3` / `.ec3` файлы в local registry.
 ac3-elementary-demux.workspace = true
+# Порт probe метаданных плейлиста: adapter `local_media::LocalRegistryDiscoveryProbe`
+# определяет формат соседних файлов тем же local registry, что и воспроизведение.
+playlist-discovery.workspace = true
 media-prefetch.workspace = true
 service-direct-media.workspace = true
 service-ytdlp.workspace = true
@@ -65,6 +68,8 @@ tempfile = "3"
 # Только тестовые зависимости: в рабочую сборку crate-а не попадают.
 audio.workspace = true
 video-frame-contract.workspace = true
+# Проверка, что probe плейлиста не пишет ERROR-записи `log` (их пишет Symphonia).
+log.workspace = true
 
 [lints]
 workspace = true

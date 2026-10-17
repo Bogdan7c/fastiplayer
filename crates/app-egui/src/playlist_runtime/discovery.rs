@@ -35,7 +35,7 @@ use playlist_core::{PlaylistItemDraft, PlaylistItemId, ReservedQueueMutation};
 use playlist_discovery::{
     AdmissionAckOutcome, AdmissionBatchId, BatchApplySemantics, DirectoryManifest,
     DirectoryManifestBuildError, DiscoveryCancellationCause, DiscoveryEvent, DiscoveryExecutor,
-    DiscoveryFinalOutcome, DiscoveryJobHandle, DiscoveryRecord, DiscoveryRecordKey,
+    DiscoveryFinalOutcome, DiscoveryJobHandle, DiscoveryProbe, DiscoveryRecord, DiscoveryRecordKey,
     DiscoveryRequest, DiscoveryRequestRevision, DiscoveryWakePort, LocalMediaKind,
     ManifestCandidateKey, RawManifestLimitReached, ReprioritizeHint,
     SiblingDiscoveryPolicySnapshot, SiblingDiscoveryRequest, SiblingPolicyRevision,
@@ -281,9 +281,13 @@ impl PlaylistDiscoveryCoordinator {
         let discovery_wake: Arc<dyn DiscoveryWakePort> = Arc::new(AppDiscoveryWake {
             wake_port: wake_port.clone(),
         });
+        // Метаданные соседей/строк плейлиста определяет тот же local demux registry,
+        // что и воспроизведение (сырые AC-3/E-AC-3, MPEG-TS, Symphonia-контейнеры).
+        let local_registry_probe: Arc<dyn DiscoveryProbe> =
+            Arc::new(media_source_open::local_media::LocalRegistryDiscoveryProbe::new());
         // Без executor-а discovery деградирует в TargetOnlyWarning::ExecutorUnavailable
         // (см. submit path), но причину отказа сохраняем в логе, а не теряем.
-        let executor = DiscoveryExecutor::start(discovery_wake)
+        let executor = DiscoveryExecutor::start_with_probe(local_registry_probe, discovery_wake)
             .inspect_err(|error| {
                 tracing::error!(
                     ?error,
