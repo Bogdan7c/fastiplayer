@@ -598,3 +598,46 @@ fn parser_limits_reject_zero_budget_in_every_position() {
         assert_eq!(error.to_string(), "The HLS parser budget is zero.");
     }
 }
+
+/// `CHANNELS="16/JOC"` (E-AC-3 Atmos) считает объекты: raw count сохраняется,
+/// но как число каналов дорожки не публикуется; `-` означает обычный канальный звук.
+#[test]
+fn object_based_channels_are_not_speaker_count_evidence() {
+    let playlist = parse(
+        "#EXTM3U\n\
+         #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"atmos\",NAME=\"Main\",URI=\"atmos.m3u8\",CHANNELS=\"16/JOC\"\n\
+         #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"surround\",NAME=\"Main\",URI=\"surround.m3u8\",CHANNELS=\"6\"\n\
+         #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"plain\",NAME=\"Main\",URI=\"plain.m3u8\",CHANNELS=\"2/-\"\n\
+         #EXT-X-STREAM-INF:BANDWIDTH=1000,AUDIO=\"atmos\"\n\
+         video-atmos.m3u8\n\
+         #EXT-X-STREAM-INF:BANDWIDTH=1000,AUDIO=\"surround\"\n\
+         video-surround.m3u8\n\
+         #EXT-X-STREAM-INF:BANDWIDTH=1000,AUDIO=\"plain\"\n\
+         video-plain.m3u8\n",
+    )
+    .expect("valid master with object-based CHANNELS");
+    let HlsPlaylist::Master(master) = playlist else {
+        panic!("expected master");
+    };
+    let observed = master
+        .renditions
+        .iter()
+        .map(|rendition| {
+            (
+                rendition.channel_count.map(std::num::NonZeroU64::get),
+                rendition.declares_object_based_audio(),
+                rendition
+                    .speaker_channel_count()
+                    .map(std::num::NonZeroU64::get),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        observed,
+        vec![
+            (Some(16), true, None),
+            (Some(6), false, Some(6)),
+            (Some(2), false, Some(2)),
+        ]
+    );
+}

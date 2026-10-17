@@ -27,6 +27,7 @@ use super::ControlAction;
 use super::queue_mode_controls::QueueModeControlLayout;
 use super::subtitle_control::SubtitleNeighbor;
 use crate::state::AudioTrackMenuView;
+use crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction;
 use layout::{AudioTrackControlLayout, AudioTrackControlMode, choose_mode};
 
 /// Полный переход «появилась/исчезла» занимает 250 мс (как CC и кнопка скорости).
@@ -37,8 +38,10 @@ const REVEAL_TRANSITION_ID_SUFFIX: &str = "audio_track_control_reveal";
 /// Действие выбора аудио, которое shell применит после egui pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioTrackControlAction {
-    /// Выбрать дорожку из меню.
+    /// Выбрать встроенную дорожку из меню.
     SelectTrack(TrackId),
+    /// Выбрать другую web-версию звука (HLS/DASH audio rendition) из того же меню.
+    SwitchWebAudioVersion(ComponentVariantSelectionAction),
     /// Следующая дорожка по кругу (клавиша `B`).
     SelectNextTrack,
 }

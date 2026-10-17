@@ -373,6 +373,14 @@ const fn native_codec_family(codec: VideoCodec) -> CodecFamily {
 }
 
 #[cfg(test)]
+#[path = "hls/ac3_vertical_tests.rs"]
+mod ac3_vertical_tests;
+
+#[cfg(test)]
+#[path = "hls/audio_versions_vertical_tests.rs"]
+mod audio_versions_vertical_tests;
+
+#[cfg(test)]
 mod tests {
     use std::convert::Infallible;
 

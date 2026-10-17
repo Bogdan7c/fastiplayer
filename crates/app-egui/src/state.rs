@@ -122,7 +122,7 @@ mod web_media_catalog;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use audio_tracks::AudioTrackMenuView;
+pub(crate) use audio_tracks::{AudioTrackMenuTarget, AudioTrackMenuView};
 pub(crate) use main_visual_override::MainVisualOverrideAcquisition;
 pub(crate) use media_jobs::ActiveMediaSource;
 #[allow(unused_imports)]
@@ -333,6 +333,9 @@ pub struct AppState {
     automatic_web_media_quality: automatic_web_media_quality::AutomaticWebMediaQualityController,
     pending_automatic_web_media_switch: Option<web_media_catalog::PendingAutomaticWebMediaSwitch>,
     web_media_fallback_notice: bool,
+    /// Web-версия звука, выбранная в меню «♪»/клавишей `B`; запускается после egui pass-а.
+    requested_web_audio_version:
+        Option<crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction>,
 
     /// Единственный владелец live geometry общей панели для всех sidebar sections.
     sidebar_host_state: SidebarHostState,
@@ -472,6 +475,7 @@ impl AppState {
                 automatic_web_media_quality::AutomaticWebMediaQualityController::default(),
             pending_automatic_web_media_switch: None,
             web_media_fallback_notice: false,
+            requested_web_audio_version: None,
             sidebar_host_state,
             sidebar_slide_last_tick: None,
         };

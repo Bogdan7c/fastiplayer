@@ -10,8 +10,8 @@ use hls_playlist_core::{
     validate_initial_profile,
 };
 use web_media_core::{
-    CodecFamily, CodecKind, CodecMediaKind, NormalizedCodec, PreferredHeightPolicy,
-    RawCodecIdentity, VideoHeight,
+    CodecFamily, CodecKind, CodecMediaKind, DefaultAudioSelectionTier, NormalizedCodec,
+    PreferredHeightPolicy, RawCodecIdentity, VideoHeight,
 };
 
 use crate::open::select_master;
@@ -346,6 +346,8 @@ fn select_master_low_load(
 struct NativeMasterCandidate {
     variant_index: usize,
     codec_rank: usize,
+    /// Default-уровень audio CODECS: AC-3/E-AC-3 variant уступает прежним при равном video.
+    audio_tier: DefaultAudioSelectionTier,
     /// У audio-only variant-а (радио) RESOLUTION нет.
     resolution: Option<(NonZeroU32, NonZeroU32)>,
     codecs: Box<str>,
@@ -477,6 +479,7 @@ fn native_candidate(
     Some(NativeMasterCandidate {
         variant_index,
         codec_rank,
+        audio_tier: declared_audio_tier(&parsed),
         resolution,
         codecs,
         audio,
@@ -513,6 +516,7 @@ fn audio_only_candidate(
     Some(NativeMasterCandidate {
         variant_index,
         codec_rank: usize::MAX,
+        audio_tier: declared_audio_tier(parsed),
         resolution: None,
         codecs,
         audio: HlsAudioLayoutIntent::Muxed,
@@ -542,6 +546,10 @@ fn compare_candidates(
     dynamic_range_rank(left.video_range, policy.dynamic_range)
         .cmp(&dynamic_range_rank(right.video_range, policy.dynamic_range))
         .then_with(|| left.codec_rank.cmp(&right.codec_rank))
+        // Больший tier лучше, поэтому right vs left. Стоит после video codec-а (выбор
+        // пользователя), но до высоты/bandwidth: иначе E-AC-3 variant, ставший
+        // воспроизводимым, молча вытеснил бы прежний AAC variant большим BANDWIDTH.
+        .then_with(|| right.audio_tier.cmp(&left.audio_tier))
         .then_with(|| {
             policy.preferred_height.compare(
                 left.resolution
@@ -552,6 +560,24 @@ fn compare_candidates(
             )
         })
         .then_with(|| right.bandwidth.cmp(&left.bandwidth))
+}
+
+/// Уровень variant-а по объявленным audio CODECS.
+///
+/// `FallbackOnly`, только если variant объявляет audio и все его audio codecs —
+/// fallback-only families; variant без audio остаётся `Primary` (прежнее поведение).
+fn declared_audio_tier(parsed: &[NormalizedCodec]) -> DefaultAudioSelectionTier {
+    parsed
+        .iter()
+        .filter(|codec| {
+            matches!(
+                codec.kind(),
+                CodecKind::Known(family) if family.media_kind() == CodecMediaKind::Audio
+            )
+        })
+        .map(|codec| DefaultAudioSelectionTier::for_codec(codec.kind()))
+        .max()
+        .unwrap_or(DefaultAudioSelectionTier::Primary)
 }
 
 fn dynamic_range_rank(
@@ -566,6 +592,9 @@ fn dynamic_range_rank(
         _ => 1,
     }
 }
+
+#[cfg(test)]
+mod ac3_tests;
 
 #[cfg(test)]
 mod tests;

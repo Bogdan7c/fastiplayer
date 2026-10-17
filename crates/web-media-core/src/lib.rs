@@ -4,6 +4,7 @@
 //! или UI. Он только проверяет и хранит значения, которыми будущие owners смогут
 //! обмениваться без протекания runtime-реализаций через архитектурные границы.
 
+mod audio_selection_tier;
 mod compatibility;
 mod descriptor;
 mod extractor;
@@ -16,6 +17,7 @@ mod selection;
 mod variant;
 mod web_selection;
 
+pub use audio_selection_tier::DefaultAudioSelectionTier;
 pub use compatibility::{
     ProfileExclusionReason, StaticCompatibilityRejection, StaticDescriptorField,
     StaticMetadataViolation,

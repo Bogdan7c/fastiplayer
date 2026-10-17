@@ -201,6 +201,32 @@ pub struct MediaRendition {
     pub forced: bool,
 }
 
+/// Второй `CHANNELS` parameter, означающий «audio не object-based» (RFC 8216bis).
+const NO_AUDIO_OBJECT_CODING: &str = "-";
+
+impl MediaRendition {
+    /// Объявляет ли `CHANNELS` object-based audio (второй parameter — список
+    /// Audio Object Coding Identifiers, например `JOC` у E-AC-3 Atmos).
+    pub fn declares_object_based_audio(&self) -> bool {
+        self.channels
+            .as_deref()
+            .and_then(|description| description.split('/').nth(1))
+            .is_some_and(|identifiers| identifiers != NO_AUDIO_OBJECT_CODING)
+    }
+
+    /// Число каналов, которое можно сверять с каналами декодированной дорожки.
+    ///
+    /// Для object-based audio первое число `CHANNELS` (`"16/JOC"`) считает
+    /// одновременные аудио-объекты, а decoder выдаёт канальную основу (например,
+    /// 5.1), поэтому такое число не является evidence раскладки → `None`.
+    pub fn speaker_channel_count(&self) -> Option<NonZeroU64> {
+        if self.declares_object_based_audio() {
+            return None;
+        }
+        self.channel_count
+    }
+}
+
 /// Владеющий descriptor variant stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VariantStream {

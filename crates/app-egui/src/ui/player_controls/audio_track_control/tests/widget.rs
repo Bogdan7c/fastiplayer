@@ -144,7 +144,12 @@ fn one_track_view() -> AudioTrackMenuView {
     let two = two_track_view();
     let mut snapshot = player_core::PlayerSnapshot::empty();
     snapshot.tracks = vec![player_core::TrackSummarySnapshot {
-        id: two.tracks()[0].id,
+        id: match two.tracks()[0].target {
+            crate::state::AudioTrackMenuTarget::EmbeddedTrack(track_id) => track_id,
+            crate::state::AudioTrackMenuTarget::WebAudioVersion(_) => {
+                panic!("two_track_view contains only embedded tracks")
+            }
+        },
         kind: media_core::TrackKind::Audio,
         codec_id: "A_FLAC".to_owned(),
         sample_rate: None,

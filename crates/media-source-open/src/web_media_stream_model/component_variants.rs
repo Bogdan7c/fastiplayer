@@ -17,6 +17,7 @@ use web_media_core::{
 use super::{WebMediaStreamConfiguration, WebMediaStreamGeneration, known_codec};
 
 mod coupled;
+mod equivalent_video;
 
 use coupled::coupled_axis;
 pub use coupled::{
@@ -498,9 +499,14 @@ impl InstalledWebMediaComponentVariants {
                     .catalog
                     .required_audio_variants()
                     .map_err(ComponentVariantActionError::ReplacementFailed)?;
-                self.selection
-                    .replace_audio(&self.catalog, variants[variant_index].exact_identity())
-                    .map_err(ComponentVariantActionError::ReplacementFailed)
+                // Видимое видео сохраняется даже там, где audio group привязана к своему
+                // video variant-у (Dolby-раздачи HLS), см. `equivalent_video`.
+                equivalent_video::replace_audio_keeping_visible_video(
+                    &self.catalog,
+                    &self.selection,
+                    variants[variant_index].exact_identity(),
+                )
+                .map_err(ComponentVariantActionError::ReplacementFailed)
             }
             WebMediaComponentVariantAxisKind::Coupled => {
                 let presentation = self

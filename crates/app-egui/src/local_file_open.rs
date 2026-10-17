@@ -106,6 +106,12 @@ pub(crate) struct LocalFileOpenJob {
     cancellation_requested: Arc<AtomicBool>,
 
     /// Тот же cooperative state передаётся source/demux scan-ам.
+    ///
+    /// Инвариант: токен отменяется только пока worker подготовки ещё не забран
+    /// (`join_handle` на месте). Demuxer хранит этот токен весь playback, а MPEG-TS
+    /// и сырой AC-3 проверяют его на каждом чтении: отмена после передачи
+    /// подготовленного media остановила бы уже играющий файл. См.
+    /// [`LocalFileOpenJob::cancel_in_flight_source_reads`].
     source_cancellation: source_core::CancellationToken,
 
     /// `true`, когда worker уже joined и повторный shutdown является no-op.
@@ -276,7 +282,20 @@ impl LocalFileOpenJob {
     /// Повторный вызов безопасен.
     fn request_cancellation(&self) {
         self.cancellation_requested.store(true, Ordering::Release);
-        self.source_cancellation.cancel();
+        self.cancel_in_flight_source_reads();
+    }
+
+    /// Прерывает чтение источника, только если подготовка ещё идёт.
+    ///
+    /// Completion отдаётся `drain()`-ом лишь после join worker-а, поэтому
+    /// `join_handle == None` значит: подготовка закончена, и demuxer (вместе с клоном
+    /// токена) уже ушёл владельцу воспроизведения или выброшен. Отменять его «как
+    /// подготовку» нельзя — это убивало локальные `.ts`/`.ac3` сразу после старта
+    /// (`MPEG-TS operation cancelled`), тогда как Symphonia токен при чтении не смотрит.
+    fn cancel_in_flight_source_reads(&self) {
+        if self.join_handle.is_some() {
+            self.source_cancellation.cancel();
+        }
     }
 
     /// Неблокирующе забирает оба независимых slot-а и никогда не ждёт join.
@@ -345,7 +364,7 @@ impl LocalFileOpenJob {
         }
 
         self.cancellation_requested.store(true, Ordering::Release);
-        self.source_cancellation.cancel();
+        self.cancel_in_flight_source_reads();
 
         match join_thread_until(&mut self.join_handle, deadline) {
             FinishedThreadJoin::AlreadyJoined | FinishedThreadJoin::Joined => {
@@ -369,7 +388,7 @@ impl LocalFileOpenJob {
 impl Drop for LocalFileOpenJob {
     fn drop(&mut self) {
         self.cancellation_requested.store(true, Ordering::Release);
-        self.source_cancellation.cancel();
+        self.cancel_in_flight_source_reads();
         let Some(join_handle) = self.join_handle.take() else {
             return;
         };
@@ -703,6 +722,8 @@ mod tests {
         dropper.join().expect("Dropper doesn't have to be panic");
     }
 
+    mod capturing_audio_output;
+    mod prepared_handoff;
     mod shutdown_observation;
     use shutdown_observation::ObservedRelease as ReleaseBit;
 }

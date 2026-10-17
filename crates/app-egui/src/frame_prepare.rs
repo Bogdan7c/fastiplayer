@@ -957,6 +957,9 @@ pub(crate) fn render_frame(
     );
     // «Повторить» на ошибке открытия: исполняется тем же путём, что исходное действие.
     app_state.apply_requested_media_retry(playlist_runtime, renderer);
+    // Web-версия звука из меню «♪»/`B` идёт тем же same-item switch-ем, что строка sidebar.
+    let audio_version_requested_repaint =
+        app_state.apply_requested_web_audio_version(playlist_runtime, renderer);
     let url_action_requested_repaint = match url_sidebar_action {
         Some(action) => {
             if let Err(error) =
@@ -1075,7 +1078,8 @@ pub(crate) fn render_frame(
                 || egui_requested_repaint
                 || settings_action_requested_repaint
                 || playlist_action_requested_repaint
-                || url_action_requested_repaint,
+                || url_action_requested_repaint
+                || audio_version_requested_repaint,
         ),
         close_requested: chrome_close_requested,
         next_ui_wake_deadline: earliest_ui_wake_deadline([

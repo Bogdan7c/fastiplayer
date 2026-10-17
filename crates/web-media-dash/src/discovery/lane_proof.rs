@@ -468,6 +468,10 @@ fn audio_codec_matches(kind: CodecKind, codec_id: &str) -> bool {
                 CodecKind::Known(CodecFamily::Aac),
                 "A_AAC" | "A_AAC/MPEG2/LC" | "A_AAC/MPEG4/LC" | "AAC"
             )
+            // ISO-BMFF demux (`dac3`/`dec3`) отдаёт Matroska-style codec id; manifest
+            // `ac-3` не доказывает `A_EAC3` и наоборот.
+            | (CodecKind::Known(CodecFamily::Ac3), "A_AC3")
+            | (CodecKind::Known(CodecFamily::Eac3), "A_EAC3")
     )
 }
 
@@ -594,5 +598,51 @@ mod tests {
             map_component_probe_error(&unsupported_container),
             DashRepresentationLaneProbeError::UnsupportedContainer
         );
+    }
+
+    /// Manifest `ec-3` + Dolby 5.1 доказывается только дорожкой `A_EAC3` с теми же
+    /// шестью каналами; AC-3 дорожка или иное число каналов — конфликт evidence.
+    #[test]
+    fn dolby_manifest_contract_requires_exact_family_and_mask_channels() {
+        let mut contract = audio_contract();
+        contract.audio_codec = Some("ec-3".to_owned());
+        contract.audio_channel_configuration = Some(
+            dash_mpd_core::DashAudioChannelConfiguration::DolbyChannelMask(
+                dash_mpd_core::DashDolbyChannelMask::parse_hex("F801").expect("5.1 mask"),
+            ),
+        );
+        let track_with_channels = |codec_id: &str, channels: u32| TrackInfo {
+            channels: Some(channels),
+            ..audio_track(codec_id)
+        };
+
+        let proven = prove_tracks(
+            &[track_with_channels("A_EAC3", 6)],
+            &contract,
+            &AcceptAllCapabilities,
+        );
+        let Ok(DashRepresentationLaneProof::AudioOnly(descriptor)) = proven else {
+            panic!("E-AC-3 5.1 track must prove the lane, got {proven:?}");
+        };
+        assert_eq!(
+            descriptor.codec().kind(),
+            CodecKind::Known(CodecFamily::Eac3)
+        );
+        assert_eq!(
+            descriptor.channels().map(web_media_core::ChannelCount::get),
+            Some(6)
+        );
+
+        for (codec_id, channels) in [("A_AC3", 6), ("A_EAC3", 2)] {
+            assert_eq!(
+                prove_tracks(
+                    &[track_with_channels(codec_id, channels)],
+                    &contract,
+                    &AcceptAllCapabilities,
+                ),
+                Err(DashRepresentationLaneProbeError::ManifestEvidenceConflict),
+                "{codec_id}/{channels}"
+            );
+        }
     }
 }

@@ -13,3 +13,7 @@ pub mod dash;
 pub mod hds;
 pub mod hls;
 pub mod smooth;
+
+/// DASH/HLS fMP4 с E-AC-3: сквозные вертикали до production-декодера (пакет G).
+#[cfg(test)]
+mod fmp4_dolby_vertical_tests;

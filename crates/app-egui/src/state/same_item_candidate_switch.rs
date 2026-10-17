@@ -30,6 +30,18 @@ pub(super) struct PendingSameItemSwitch {
     kind: SameItemSwitchKind,
 }
 
+/// Откуда пришёл component switch: одна транзакция, но разные адресаты сообщения об отказе.
+///
+/// Sidebar показывает отказ inline (`UrlSidebarSafeError`) в любом случае; меню «♪» ещё и
+/// получает toast, потому что пользователь мог вообще не открывать sidebar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ComponentSwitchOrigin {
+    /// Строка component-варианта в URL sidebar.
+    UrlSidebar,
+    /// Web-версия звука в меню аудиодорожек или клавиша `B`.
+    AudioTrackMenu,
+}
+
 /// Post-Installed semantics общего strong reopen без positional bool.
 enum SameItemSwitchKind {
     /// Candidate completion публикует runtime-only item height override.
@@ -40,7 +52,11 @@ enum SameItemSwitchKind {
         preferred_height: Option<u32>,
     },
     /// Component completion сохраняет существующий preference/override без изменений.
-    Component(crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction),
+    Component {
+        action: crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction,
+        /// Кто запустил switch: от этого зависит, куда сообщить о терминальном отказе.
+        origin: ComponentSwitchOrigin,
+    },
     Picker {
         parent_generation: WebMediaStreamGeneration,
         action: crate::web_media_catalog::WebMediaFacetAction,
@@ -69,7 +85,7 @@ impl SameItemSwitchKind {
                 parent_generation: *parent_generation,
                 candidate: candidate.clone(),
             },
-            Self::Component(action) => UrlSidebarPendingSelection::Component(*action),
+            Self::Component { action, .. } => UrlSidebarPendingSelection::Component(*action),
             Self::Picker {
                 parent_generation,
                 action,
@@ -96,7 +112,7 @@ impl SameItemSwitchKind {
             Self::Candidate {
                 parent_generation, ..
             } => *parent_generation,
-            Self::Component(action) => action.parent_generation(),
+            Self::Component { action, .. } => action.parent_generation(),
             Self::Picker {
                 parent_generation, ..
             }
@@ -106,6 +122,20 @@ impl SameItemSwitchKind {
             | Self::AdaptiveQuality {
                 parent_generation, ..
             } => *parent_generation,
+        }
+    }
+}
+
+impl PendingSameItemSwitch {
+    /// Источник component switch-а; `None` — это не component switch (candidate/picker/качество).
+    fn component_origin(&self) -> Option<ComponentSwitchOrigin> {
+        match self.kind {
+            SameItemSwitchKind::Component { origin, .. } => Some(origin),
+            #[cfg(test)]
+            SameItemSwitchKind::Candidate { .. } => None,
+            SameItemSwitchKind::Picker { .. }
+            | SameItemSwitchKind::AutomaticPicker { .. }
+            | SameItemSwitchKind::AdaptiveQuality { .. } => None,
         }
     }
 }
@@ -159,8 +189,41 @@ impl AppState {
         playlist_runtime: &mut PlaylistRuntime,
         renderer: &Renderer,
     ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
+        self.apply_same_item_action(
+            action,
+            ComponentSwitchOrigin::UrlSidebar,
+            playlist_runtime,
+            renderer,
+        )
+    }
+
+    /// Запускает выбор web-версии звука из меню «♪» тем же путём, что строка URL sidebar.
+    ///
+    /// Отличие одно: origin `AudioTrackMenu`, чтобы терминальный отказ дошёл и до toast-а.
+    pub(super) fn apply_audio_track_menu_component_action(
+        &mut self,
+        action: crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction,
+        playlist_runtime: &mut PlaylistRuntime,
+        renderer: &Renderer,
+    ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
+        self.apply_same_item_action(
+            UrlSidebarAction::ComponentVariant(action),
+            ComponentSwitchOrigin::AudioTrackMenu,
+            playlist_runtime,
+            renderer,
+        )
+    }
+
+    /// Общий запуск: start failure публикуется в sidebar как generation-scoped safe error.
+    fn apply_same_item_action(
+        &mut self,
+        action: UrlSidebarAction,
+        origin: ComponentSwitchOrigin,
+        playlist_runtime: &mut PlaylistRuntime,
+        renderer: &Renderer,
+    ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
         let generation = action.parent_generation();
-        let result = self.start_same_item_switch(action, playlist_runtime, renderer);
+        let result = self.start_same_item_switch(action, origin, playlist_runtime, renderer);
         if let Err(error) = &result {
             let _reported = self
                 .url_sidebar_controller
@@ -173,6 +236,7 @@ impl AppState {
     fn start_same_item_switch(
         &mut self,
         action: UrlSidebarAction,
+        origin: ComponentSwitchOrigin,
         playlist_runtime: &mut PlaylistRuntime,
         renderer: &Renderer,
     ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
@@ -225,7 +289,10 @@ impl AppState {
                     crate::media_open::WebMediaSelectionSwitchIntent::ComponentSemantic(
                         semantic_selection,
                     ),
-                    SameItemSwitchKind::Component(component_action),
+                    SameItemSwitchKind::Component {
+                        action: component_action,
+                        origin,
+                    },
                 )
             }
             UrlSidebarAction::StreamFacet {
@@ -409,12 +476,23 @@ impl AppState {
         if self.same_item_switch.is_none() {
             return;
         }
+        // Origin читается до poll-а: terminal poll забирает pending вместе с kind.
+        let component_origin = self
+            .same_item_switch
+            .as_ref()
+            .and_then(PendingSameItemSwitch::component_origin);
         let mut app_path = SameItemSwitchAppPath::take(&mut self.same_item_switch);
-        {
+        let outcome = {
             let mut context = ProductionSameItemSwitchPollContext::new(self, playlist_runtime);
-            let _outcome = app_path.poll(&mut context);
-        }
+            app_path.poll(&mut context)
+        };
         app_path.restore(&mut self.same_item_switch);
+        // Отказ switch-а, запущенного из меню «♪», дополнительно сообщается toast-ом.
+        if component_origin == Some(ComponentSwitchOrigin::AudioTrackMenu)
+            && let lifecycle_bridge::SameItemSwitchAppPoll::Failed(error) = outcome
+        {
+            self.report_web_audio_version_switch_failed(error);
+        }
         self.mark_pending_worker_redraw();
     }
 
@@ -467,7 +545,7 @@ impl AppState {
 
 impl ActiveMediaSource {
     /// Возвращает freshly Installed provider-neutral configuration.
-    fn web_media_stream_configuration(
+    pub(super) fn web_media_stream_configuration(
         &self,
     ) -> Option<&crate::web_media_stream_model::WebMediaStreamConfiguration> {
         self.web_intent()

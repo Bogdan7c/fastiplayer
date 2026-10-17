@@ -3,10 +3,13 @@
 Library crate `crates/media-source-open` (lib `media_source_open`): открытие источников без UI. Вынесен из `app-egui` как рефакторинг границы — поведение, тексты ошибок, redaction, generation/identity fences не менялись. План серии: `user/web-media-extraction/` (приватно).
 
 ## Модули (объявлены в корне `pub mod` под прежними именами → пути тестов `web_media_quality::tests::...` сохранены)
-- `local_media` — открытие локальных файлов (`prepare_local_file`, `open_local_demuxer_from_source`, `LocalDemuxOpenError`, `SUPPORTED_LOCAL_MEDIA_EXTENSIONS`); тестовая TS-фикстура — копия в `local_media/ts_fixture.rs`.
+- `local_media` — открытие локальных файлов (`prepare_local_file`, `open_local_demuxer_from_source`, `LocalDemuxOpenError`, `SUPPORTED_LOCAL_MEDIA_EXTENSIONS`); тестовая TS-фикстура — копия в `local_media/ts_fixture.rs`. Local registry = Symphonia + MPEG-TS + `ac3-elementary-demux` (сырые `.ac3/.eac3/.ec3`, выбор по содержимому; с 2026-10-16, `mem:ac3-elementary-demux/core`); E2E файл→demux→`audio::create_audio_decoder` — `local_media/ac3_elementary_tests.rs`. С пакета G (2026-10-16) web/direct composition (`WebDemuxComposition::new`) регистрирует raw AC-3 (`ContainerFamily::Ac3Elementary`); E2E прямой HTTP — `direct_progressive_open/ac3_elementary_tests.rs`, DASH/HLS fMP4 E-AC-3 — `native_startup/fmp4_dolby_vertical_tests.rs`, local MPEG-TS+AC-3 — `local_media/ac3_elementary_tests.rs`; общие helper-ы — `ac3_test_support.rs`.
 - `direct_progressive_open` — прямые HTTP/FTP (`classify_direct_media_url`, `open_direct_media`, `DirectProgressiveOpenResult`); зависит от `web_media_vod_recovery` и `web_media_demux_registry`.
 - `web_media_vod_recovery` (`VodEndpointRecoveryAttachment`), `web_media_demux_registry` (`WebDemuxComposition` — поля `registry`/`capabilities` публичные, как были pub(crate); кандидат на intent-методы отдельной задачей), `web_media_extractor_adapter` (`ExtractorCatalogProjection`/`ExtractorAdapterProjection`), `web_media_hls_subtitles`, `web_media_quality`, `web_media_adaptive_config`.
 - Видимость: `pub` только у того, что зовёт app-egui (или стоит в публичной сигнатуре — иначе `private_interfaces`); остальное `pub(crate)`.
+
+## Смена версии звука с эквивалентным видео (2026-10-16)
+- `web_media_stream_model/component_variants/equivalent_video.rs`: Audio-ветка `resolve_component_variant_action` при `IncompatibleComponentPair` берёт video row с той же видимой картинкой, совместимый с запрошенным звуком (Dolby HLS: audio group на кодек). Детали — `mem:app-egui/web-audio-versions-menu`.
 
 ## Общие доменные типы web-media (session-02, 2026-10-03)
 - `prepared_web_media` — `compose_prepared_web_media` + `PreparedWebMediaAttachments`/`SeekAttachment`/`CompositionError` (единая сборка `PreparedMedia` для всех web adapter-ов). Тесты остались в app (`media_open/preparation/tests.rs`).

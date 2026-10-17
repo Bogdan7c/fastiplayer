@@ -296,7 +296,7 @@ impl SameItemSwitchAppPath {
                 owner,
             );
         }
-        if matches!(pending.kind, SameItemSwitchKind::Component(_))
+        if matches!(pending.kind, SameItemSwitchKind::Component { .. })
             && !evidence.component_catalog_installed
         {
             return Self::reject_invalid_installed(
@@ -318,7 +318,7 @@ impl SameItemSwitchAppPath {
                     preferred_height,
                 );
             }
-            SameItemSwitchKind::Component(_) => {
+            SameItemSwitchKind::Component { .. } => {
                 owner.record_component_switch_installed();
             }
             SameItemSwitchKind::Picker { target, .. }

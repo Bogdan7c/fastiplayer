@@ -3,6 +3,9 @@
 //! Модуль агрегирует exact per-container registrations; concrete parsers не
 //! узнают друг о друге, а planner не получает factory-wide capability union.
 
+use ac3_elementary_demux::{
+    AC3_ELEMENTARY_CONTAINER_ID, Ac3ElementaryDemuxFactory, Ac3ElementaryDemuxOptions,
+};
 use anyhow::{Context, Result, anyhow};
 use demux_api::{DemuxFactory, DemuxFactoryDescriptor, DemuxRegistry};
 use flv_demux::{FlvDemuxFactory, FlvDemuxOptions};
@@ -20,7 +23,11 @@ pub struct WebDemuxComposition {
 }
 
 impl WebDemuxComposition {
-    /// Регистрирует existing Symphonia и S30 FLV/F4F owners в одном месте.
+    /// Регистрирует existing Symphonia, S30 FLV/F4F и сырой AC-3/E-AC-3 owners в одном месте.
+    ///
+    /// Сырой AC-3 нужен прямым HTTP/FTP ссылкам на `.ac3`/`.eac3`/`.ec3`: его factory
+    /// принимает и seekable (Range), и forward-only вход, а выбор по содержимому
+    /// (`Exact` только для кадра в начале) не перехватывает MP3/MP4/MKV.
     pub fn new(symphonia_options: DemuxerOptions) -> Result<Self> {
         let factories: Vec<Box<dyn DemuxFactory>> = vec![
             Box::new(
@@ -30,6 +37,10 @@ impl WebDemuxComposition {
             Box::new(
                 FlvDemuxFactory::new(FlvDemuxOptions::default())
                     .context("It was not possible to create FLV/F4F demux factory.")?,
+            ),
+            Box::new(
+                Ac3ElementaryDemuxFactory::new(Ac3ElementaryDemuxOptions::default())
+                    .context("The raw AC-3 demux factory was not built.")?,
             ),
         ];
         let capabilities =
@@ -111,6 +122,7 @@ fn container_families_for_demux_id(id: &str) -> Option<&'static [ContainerFamily
         "flv" => Some(&[ContainerFamily::Flv]),
         "f4f" => Some(&[ContainerFamily::F4f]),
         "mpeg-ts" => Some(&[ContainerFamily::MpegTs]),
+        AC3_ELEMENTARY_CONTAINER_ID => Some(&[ContainerFamily::Ac3Elementary]),
         _ => None,
     }
 }
@@ -152,6 +164,37 @@ mod tests {
             composition
                 .capabilities
                 .input_capabilities_for(ContainerFamily::MpegTs),
+            DemuxInputCapabilities::default()
+        );
+    }
+
+    /// Прямые HTTP/FTP `.ac3`/`.eac3`: progressive composition объявляет сырой AC-3
+    /// ровно для byte-входов, а HLS composition его не подтягивает.
+    #[test]
+    fn production_web_composition_registers_raw_ac3_for_byte_inputs_only() {
+        let composition =
+            WebDemuxComposition::new(DemuxerOptions::default()).expect("web demux composition");
+        assert_eq!(
+            composition
+                .capabilities
+                .input_capabilities_for(ContainerFamily::Ac3Elementary),
+            DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes)
+                .with(DemuxInputCapability::StreamingBytes)
+        );
+        for extension in ["ac3", "eac3", "ec3"] {
+            let extension = demux_api::DemuxSourceExtension::new(extension).expect("extension");
+            assert!(
+                composition
+                    .registry
+                    .supports_extension(&extension, DemuxInputCapability::StreamingBytes)
+            );
+        }
+        let hls =
+            WebDemuxComposition::new_hls(DemuxerOptions::default(), MpegTsDemuxOptions::default())
+                .expect("HLS composition");
+        assert_eq!(
+            hls.capabilities
+                .input_capabilities_for(ContainerFamily::Ac3Elementary),
             DemuxInputCapabilities::default()
         );
     }

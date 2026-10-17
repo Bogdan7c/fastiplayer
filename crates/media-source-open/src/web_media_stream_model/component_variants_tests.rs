@@ -25,7 +25,7 @@ enum FixtureLayout {
     Coupled,
 }
 
-fn parent(
+pub(super) fn parent(
     source_value: u64,
     extraction_generation: u64,
     exact_key: &str,
@@ -53,7 +53,7 @@ fn catalog_identity(
     )
 }
 
-fn video_variant(
+pub(super) fn video_variant(
     identity: &ComponentVariantCatalogIdentity,
     exact_key: &str,
     semantic_key: &str,
@@ -89,7 +89,7 @@ fn video_variant(
     )
 }
 
-fn audio_variant(
+pub(super) fn audio_variant(
     identity: &ComponentVariantCatalogIdentity,
     exact_key: &str,
     semantic_key: &str,
@@ -253,7 +253,7 @@ fn selection(
         .expect("fixture selection validated")
 }
 
-fn configuration_for(parent: ExactSelectionIdentity) -> WebMediaStreamConfiguration {
+pub(super) fn configuration_for(parent: ExactSelectionIdentity) -> WebMediaStreamConfiguration {
     let generation = WebMediaStreamGeneration {
         source: parent.exact().source().value(),
         extraction: parent.exact().generation().value(),

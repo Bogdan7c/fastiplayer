@@ -21,7 +21,7 @@ use player_core::{PlayerCommand, PlayerSnapshot, PlayerWorker, PlayerWorkerSendE
 use tracing::warn;
 
 use super::labels::audio_selected_toast;
-use super::menu_view::AudioTrackMenuView;
+use super::menu_view::{AudioTrackMenuTarget, AudioTrackMenuView};
 use crate::state::AppState;
 use crate::state::notifications::TransientReplaceKey;
 use crate::ui::player_controls::AudioTrackControlAction;
@@ -78,8 +78,11 @@ pub(super) enum NextTrackPlan {
     NoAudio,
     /// Дорожка одна: переключать некуда.
     SingleTrack,
-    /// Переключиться на дорожку `track_id`; `label` — её подпись для toast-а.
-    Switch { track_id: TrackId, label: String },
+    /// Переключиться на строку `target`; `label` — её подпись для toast-а.
+    Switch {
+        target: AudioTrackMenuTarget,
+        label: String,
+    },
 }
 
 impl NextTrackPlan {
@@ -97,7 +100,7 @@ impl NextTrackPlan {
 pub(super) fn plan_next_track(view: &AudioTrackMenuView) -> NextTrackPlan {
     match view.next_track() {
         Some(next) => NextTrackPlan::Switch {
-            track_id: next.id,
+            target: next.target,
             label: next.label.clone(),
         },
         None if view.track_count() == 0 => NextTrackPlan::NoAudio,
@@ -117,6 +120,11 @@ impl AppState {
                 // Клик по меню: успех виден по самой смене звука, молчим.
                 let _ = self.select_audio_track_by_user(player_snapshot, track_id);
             }
+            AudioTrackControlAction::SwitchWebAudioVersion(version) => {
+                // Переключение версии асинхронное: запрос исполнится после egui pass-а
+                // (`apply_requested_web_audio_version`), там же toast о старте/отказе.
+                self.request_web_audio_version_by_user(version);
+            }
             AudioTrackControlAction::SelectNextTrack => {
                 self.select_next_audio_track(player_snapshot)
             }
@@ -125,7 +133,7 @@ impl AppState {
 
     /// Клавиша `B`: следующая дорожка по кругу с одной заменяемой плашкой.
     fn select_next_audio_track(&mut self, player_snapshot: &PlayerSnapshot) {
-        let view = AudioTrackMenuView::from_snapshot(player_snapshot);
+        let view = self.audio_track_menu_view(player_snapshot);
         let plan = plan_next_track(&view);
         if let Some(notice) = plan.notice() {
             self.notify_transient(notice);
@@ -133,7 +141,17 @@ impl AppState {
         }
         match plan {
             NextTrackPlan::NoAudio | NextTrackPlan::SingleTrack => {}
-            NextTrackPlan::Switch { track_id, label } => {
+            NextTrackPlan::Switch {
+                target: AudioTrackMenuTarget::WebAudioVersion(version),
+                ..
+            } => {
+                // Toast с подписью покажет запуск переключения (или отказ) после egui pass-а.
+                self.request_web_audio_version_by_user(version);
+            }
+            NextTrackPlan::Switch {
+                target: AudioTrackMenuTarget::EmbeddedTrack(track_id),
+                label,
+            } => {
                 if self.select_audio_track_by_user(player_snapshot, track_id)
                     == AudioTrackSelectionFeedback::Requested
                 {

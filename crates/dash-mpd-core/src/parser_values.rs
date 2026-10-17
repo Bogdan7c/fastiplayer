@@ -212,7 +212,10 @@ fn classify_media(hints: &MediaHints) -> Result<(DashContainer, DashMediaKind, S
                     || codec.starts_with("hvc1")
                     || codec.starts_with("hev1")
                     || codec.starts_with("av01"),
-                codec.starts_with("mp4a"),
+                codec.starts_with("mp4a")
+                    // AC-3/E-AC-3 в ISO-BMFF: RFC 6381 codecs без параметров.
+                    || codec.eq_ignore_ascii_case("ac-3")
+                    || codec.eq_ignore_ascii_case("ec-3"),
             ),
             DashContainer::WebM => (
                 codec.eq_ignore_ascii_case("vp8")

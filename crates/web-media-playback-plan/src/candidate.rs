@@ -631,6 +631,9 @@ const fn audio_codec(codec: CodecKind) -> Option<AudioDecodeCodecFamily> {
         CodecKind::Known(CodecFamily::Opus) => Some(AudioDecodeCodecFamily::Opus),
         CodecKind::Known(CodecFamily::Pcm) => Some(AudioDecodeCodecFamily::Pcm),
         CodecKind::Known(CodecFamily::Vorbis) => Some(AudioDecodeCodecFamily::Vorbis),
+        // AC-3 и E-AC-3 — две точные family: capability snapshot публикует их раздельно.
+        CodecKind::Known(CodecFamily::Ac3) => Some(AudioDecodeCodecFamily::Ac3),
+        CodecKind::Known(CodecFamily::Eac3) => Some(AudioDecodeCodecFamily::Eac3),
         _ => None,
     }
 }

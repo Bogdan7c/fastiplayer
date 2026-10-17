@@ -68,7 +68,15 @@ pub(super) fn audio_selected_toast(label: &str) -> String {
 
 /// Язык для показа: английское название, а если языка нет в таблице — сам тег.
 fn language_text(labels: &TrackLabels) -> Option<String> {
-    let raw = labels.language.as_ref()?.as_str().trim();
+    language_display_name(labels.language.as_ref()?.as_str())
+}
+
+/// Английское название языка по тегу (`rus`, `en-US`); `None` — тега нет или он «und».
+///
+/// Общая часть для встроенных дорожек и web-версий звука (`web_versions.rs`): один и тот же
+/// язык должен называться в меню одинаково, откуда бы ни пришла строка.
+pub(super) fn language_display_name(raw_tag: &str) -> Option<String> {
+    let raw = raw_tag.trim();
     if raw.is_empty() || raw.eq_ignore_ascii_case(UNDETERMINED_LANGUAGE_CODE) {
         return None;
     }

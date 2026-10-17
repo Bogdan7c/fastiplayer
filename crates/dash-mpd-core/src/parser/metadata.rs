@@ -108,7 +108,7 @@ pub(super) fn set_optional_metadata<T: Copy + PartialEq>(
     Ok(())
 }
 
-/// Разбирает только две MPEG standardized channel-configuration schemes.
+/// Разбирает две MPEG standardized channel-configuration schemes и Dolby-маску.
 pub(super) fn parse_audio_channel_configuration(
     element: &XmlElement,
     limits: DashMpdLimits,
@@ -126,6 +126,18 @@ pub(super) fn parse_audio_channel_configuration(
                 required_bounded_attribute(element, "value", limits)?
                     .parse::<u16>()
                     .map_err(|_| DashMpdError::new(DashMpdErrorKind::InvalidAttribute))?,
+            )
+        }
+        crate::dolby_channel_mask::DOLBY_TAG_CHANNEL_CONFIGURATION_SCHEME
+        | crate::dolby_channel_mask::DOLBY_URN_CHANNEL_CONFIGURATION_SCHEME => {
+            // Невалидная маска сохраняет прежний исход (`Unsupported` → Representation
+            // отвергается локально), а не роняет весь MPD как MPEG-схемы.
+            crate::DashDolbyChannelMask::parse_hex(&required_bounded_attribute(
+                element, "value", limits,
+            )?)
+            .map_or(
+                DashAudioChannelConfiguration::Unsupported,
+                DashAudioChannelConfiguration::DolbyChannelMask,
             )
         }
         _ => DashAudioChannelConfiguration::Unsupported,

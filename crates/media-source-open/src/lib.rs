@@ -18,6 +18,9 @@
 //! Модули объявлены в корне под теми же именами, что были в `app-egui`, чтобы
 //! пути тестов (`web_media_quality::tests::...`) не изменились при переезде.
 
+/// Общие помощники сквозных AC-3 / E-AC-3 тестов (декод + тон по каналам).
+#[cfg(test)]
+mod ac3_test_support;
 pub mod direct_progressive_open;
 pub mod local_media;
 pub mod native_startup;

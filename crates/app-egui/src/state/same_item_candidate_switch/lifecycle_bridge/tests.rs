@@ -504,3 +504,5 @@ fn media_open_request_id(value: u64) -> MediaOpenRequestId {
         NonZeroU64::new(value).expect("request fixture ID is non-zero"),
     )
 }
+
+mod audio_menu;

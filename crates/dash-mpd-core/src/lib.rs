@@ -3,6 +3,8 @@
 //! Crate принимает только уже полученные XML bytes. Сеть, URL-разрешение,
 //! demux, выбор Representation и состояние плеера принадлежат следующим слоям.
 
+// Dolby-маска каналов AC-3/E-AC-3 отделена от MPEG-схем и XML parser-а.
+mod dolby_channel_mask;
 // Ошибки отделены от модели, чтобы runtime мог исчерпывающе различать причины.
 mod error;
 // Dynamic profile отделён от static parser-а, чтобы live policy не протекла в S34.
@@ -14,6 +16,7 @@ mod parser;
 // Шаблоны и timeline имеют отдельную checked арифметику.
 mod template;
 
+pub use dolby_channel_mask::DashDolbyChannelMask;
 // Публичные ошибки не раскрывают XML или адреса ресурсов.
 pub use error::{DashMpdError, DashMpdErrorKind};
 // Dynamic DTO и typed exclusions являются чистым checked-in S35 contract.

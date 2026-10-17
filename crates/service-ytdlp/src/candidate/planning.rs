@@ -479,6 +479,10 @@ fn audio_requirement(
         CodecFamily::Opus => Ok(AudioDecodeCodecFamily::Opus),
         CodecFamily::Pcm => Ok(AudioDecodeCodecFamily::Pcm),
         CodecFamily::Vorbis => Ok(AudioDecodeCodecFamily::Vorbis),
+        // yt-dlp пишет `ac-3`/`ac3` и `ec-3`/`eac3`; normalization уже свела их к двум
+        // точным families, capability snapshot проверяет каждую отдельно.
+        CodecFamily::Ac3 => Ok(AudioDecodeCodecFamily::Ac3),
+        CodecFamily::Eac3 => Ok(AudioDecodeCodecFamily::Eac3),
         _ => Err(YtDlpPlanningCandidateRejectionReason::RuntimeRequirement),
     }
 }

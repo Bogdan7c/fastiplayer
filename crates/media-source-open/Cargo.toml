@@ -30,6 +30,8 @@ demux-api.workspace = true
 symphonia-demux.workspace = true
 mpeg-ts-demux.workspace = true
 flv-demux.workspace = true
+# Сырые `.ac3` / `.eac3` / `.ec3` файлы в local registry.
+ac3-elementary-demux.workspace = true
 media-prefetch.workspace = true
 service-direct-media.workspace = true
 service-ytdlp.workspace = true

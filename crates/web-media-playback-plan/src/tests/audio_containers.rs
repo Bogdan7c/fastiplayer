@@ -206,3 +206,105 @@ fn unavailable_s28c_audio_family_is_rejected_before_io() {
         )));
     }
 }
+
+/// AC-3/E-AC-3 rows в ISO-BMFF: две разные exact family без взаимной подмены.
+fn dolby_rows() -> [AudioPlanningRow; 2] {
+    [
+        AudioPlanningRow {
+            container_raw: "mp4",
+            container_family: ContainerFamily::IsoBmff,
+            codec_raw: "ac-3",
+            codec_family: AudioDecodeCodecFamily::Ac3,
+        },
+        AudioPlanningRow {
+            container_raw: "mp4",
+            container_family: ContainerFamily::IsoBmff,
+            codec_raw: "ec-3",
+            codec_family: AudioDecodeCodecFamily::Eac3,
+        },
+    ]
+}
+
+/// Planner принимает AC-3/E-AC-3 только при доступной exact family; соседняя family
+/// (AC-3 вместо E-AC-3 и наоборот) не считается доказательством capability.
+#[test]
+fn dolby_audio_rows_intersect_exact_snapshot_family() {
+    for row in dolby_rows() {
+        let other_family = match row.codec_family {
+            AudioDecodeCodecFamily::Ac3 => AudioDecodeCodecFamily::Eac3,
+            _ => AudioDecodeCodecFamily::Ac3,
+        };
+        let (transport, demux) = resource_capabilities(row.container_family);
+        let video = empty_video_capabilities();
+
+        let accepted_candidate = candidate(&row);
+        let accepted_request = exact_request(&accepted_candidate);
+        let accepted_snapshot = candidate_snapshot(vec![accepted_candidate]);
+        let available = AudioDecodeCapabilitySnapshot::empty()
+            .with_available_family(row.codec_family)
+            .with_available_family(AudioDecodeCodecFamily::Aac);
+        let outcome = plan_playback(
+            &accepted_snapshot,
+            PlaybackCapabilitySnapshot::new(&transport, &demux, &video, available),
+            &accepted_request,
+            &policy(row.container_family),
+        )
+        .expect("available exact Dolby family must pass capability intersection");
+        assert_eq!(
+            outcome.selected().layout(),
+            web_media_core::StreamLayoutKind::AudioOnly
+        );
+
+        let rejected_candidate = candidate(&row);
+        let rejected_request = exact_request(&rejected_candidate);
+        let rejected_snapshot = candidate_snapshot(vec![rejected_candidate]);
+        let neighbour_only = AudioDecodeCapabilitySnapshot::empty()
+            .with_available_family(other_family)
+            .with_available_family(AudioDecodeCodecFamily::Aac);
+        let PlaybackPlanningError::ExactCandidateNotPlayable(rejection) = plan_playback(
+            &rejected_snapshot,
+            PlaybackCapabilitySnapshot::new(&transport, &demux, &video, neighbour_only),
+            &rejected_request,
+            &policy(row.container_family),
+        )
+        .expect_err("neighbour Dolby family must not prove capability") else {
+            panic!("It is expected to be exact typed audio rejection.");
+        };
+        assert!(rejection.reasons().iter().any(|reason| matches!(
+            reason,
+            CandidateRejectionReason::Capability(
+                CandidateCapabilityRejection::AudioUnavailable {
+                    component: PlaybackComponent::Audio,
+                    family,
+                }
+            ) if *family == row.codec_family
+        )));
+    }
+}
+
+/// Descriptor `ec-3` не может нести runtime requirement AC-3: admission ловит подмену.
+#[test]
+fn dolby_descriptor_and_runtime_family_must_agree() {
+    let [ac3_row, _] = dolby_rows();
+    let audio_track = AudioTrackDescriptor::new(
+        NormalizedCodec::parse(RawCodecIdentity::new("ec-3").expect("codec identity valid")),
+        None,
+        None,
+        None,
+        None,
+    );
+    let component =
+        AudioComponentDescriptor::new(transport("https"), container("mp4"), audio_track);
+    let error = PlanningCandidate::new(
+        candidate_descriptor("ec-3", "ec-3-semantic", StreamLayout::AudioOnly(component)),
+        CandidateRuntimeRequirements::AudioOnly {
+            audio: ac3_row.codec_family,
+        },
+        CandidateQualityScore::new(1),
+    )
+    .expect_err("E-AC-3 descriptor with AC-3 runtime family must be rejected");
+    assert!(matches!(
+        error,
+        crate::PlanningCandidateBuildError::AudioCodecMismatch { .. }
+    ));
+}

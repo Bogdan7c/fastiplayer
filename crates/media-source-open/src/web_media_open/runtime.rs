@@ -479,6 +479,9 @@ fn demux_hints(family: ContainerFamily) -> Result<DemuxHints> {
         ContainerFamily::MpegAudio => ("mpeg-audio", "mp3"),
         ContainerFamily::Flv => ("flv", "flv"),
         ContainerFamily::F4f => ("f4f", "f4f"),
+        ContainerFamily::Ac3Elementary => {
+            (ac3_elementary_demux::AC3_ELEMENTARY_CONTAINER_ID, "ac3")
+        }
         _ => bail!("Selected YtDlp container is not registered with the web demux registry"),
     };
     Ok(DemuxHints::none()

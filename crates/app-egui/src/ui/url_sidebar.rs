@@ -340,7 +340,9 @@ fn safe_error_label(error: UrlSidebarSafeError) -> &'static str {
     }
 }
 
-fn codec_label(codec: CodecFamily) -> &'static str {
+/// Короткое имя кодека для подписей web-вариантов; его же использует меню аудиодорожек
+/// (`state/audio_tracks/web_versions.rs`), чтобы «AAC»/«E-AC-3» писались одинаково.
+pub(crate) fn codec_label(codec: CodecFamily) -> &'static str {
     match codec {
         CodecFamily::Vp8 => "VP8",
         CodecFamily::Vp9 => "VP9",
@@ -358,6 +360,9 @@ fn codec_label(codec: CodecFamily) -> &'static str {
         CodecFamily::Mp2 => "MP2",
         CodecFamily::Mp3 => "MP3",
         CodecFamily::Pcm => "PCM",
+        // Те же написания, что у меню аудиодорожек (`state/audio_tracks/labels.rs`).
+        CodecFamily::Ac3 => "AC-3",
+        CodecFamily::Eac3 => "E-AC-3",
     }
 }
 

@@ -38,7 +38,7 @@ pub fn attachment_read_limits_from_config(config: &SubtitlesConfig) -> Attachmen
 /// отсекается на уровне приложения.
 pub const SUPPORTED_LOCAL_MEDIA_EXTENSIONS: &[&str] = &[
     "wav", "aiff", "aif", "caf", "flac", "mp3", "mp2", "mp1", "m4a", "mp4", "ogg", "oga", "opus",
-    "alac", "wv", "webm", "mkv", "mov", "ts",
+    "alac", "wv", "webm", "mkv", "mov", "ts", "ac3", "eac3", "ec3",
 ];
 
 /// Похож ли путь на media-файл по расширению из [`SUPPORTED_LOCAL_MEDIA_EXTENSIONS`].
@@ -138,6 +138,16 @@ pub fn open_local_demuxer_from_source(
                 .map_err(|error| LocalDemuxOpenError::RegistrySetup(error.into()))?,
         ))
         .map_err(|error| LocalDemuxOpenError::RegistrySetup(error.into()))?;
+    // Сырые `.ac3`/`.eac3`: свой first-party owner, выбирается по содержимому
+    // (синхрослово в начале — точное доказательство, сильнее ID3 → MP3 у Symphonia).
+    registry
+        .register(Box::new(
+            ac3_elementary_demux::Ac3ElementaryDemuxFactory::new(
+                ac3_elementary_demux::Ac3ElementaryDemuxOptions::default(),
+            )
+            .map_err(|error| LocalDemuxOpenError::RegistrySetup(error.into()))?,
+        ))
+        .map_err(|error| LocalDemuxOpenError::RegistrySetup(error.into()))?;
     let hints = extension_hint
         .map(str::to_ascii_lowercase)
         .and_then(|extension| DemuxSourceExtension::new(extension).ok())
@@ -185,6 +195,10 @@ pub(crate) fn demuxer_options_from_config(
 }
 
 #[cfg(test)]
+mod ac3_broadcast_switch_tests;
+#[cfg(test)]
+mod ac3_elementary_tests;
+#[cfg(test)]
 mod attachment_limits_tests;
 #[cfg(test)]
 mod ts_fixture;
@@ -208,6 +222,7 @@ mod tests {
             "/m/Film.MKV"
         )));
         assert!(has_supported_local_media_extension(Path::new("song.flac")));
+        assert!(has_supported_local_media_extension(Path::new("dolby.EC3")));
         assert!(!has_supported_local_media_extension(Path::new("cover.jpg")));
         assert!(!has_supported_local_media_extension(Path::new(
             "playlist.m3u"
@@ -222,7 +237,7 @@ mod tests {
     fn local_media_extension_hints_cover_symphonia_audio_containers() {
         let required_extensions = [
             "wav", "aiff", "aif", "caf", "flac", "mp3", "mp2", "mp1", "m4a", "mp4", "ogg", "oga",
-            "opus", "alac", "wv", "webm", "mkv", "mov", "ts",
+            "opus", "alac", "wv", "webm", "mkv", "mov", "ts", "ac3", "eac3", "ec3",
         ];
 
         for extension in required_extensions {

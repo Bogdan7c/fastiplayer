@@ -5,12 +5,17 @@ use std::cell::RefCell;
 use media_core::{TrackDisposition, TrackId, TrackKind, TrackLabels, TrackLanguage};
 use player_core::{PlayerCommand, PlayerSnapshot, PlayerWorkerSendError, TrackSummarySnapshot};
 
-use super::AudioTrackMenuView;
 use super::control_actions::{
     AudioTrackSelectionFeedback, NO_AUDIO_MESSAGE, NextTrackPlan, PlayerCommandPort,
     SINGLE_TRACK_MESSAGE, plan_next_track, send_audio_selection,
 };
 use super::labels::{AudioTrackNumber, audio_selected_toast, audio_track_label};
+use super::{AudioTrackMenuTarget, AudioTrackMenuView};
+
+/// Цель строки меню для встроенной дорожки с данным id.
+fn embedded(raw_id: u32) -> AudioTrackMenuTarget {
+    AudioTrackMenuTarget::EmbeddedTrack(TrackId::new(raw_id))
+}
 
 fn labels(language: Option<&str>, title: Option<&str>) -> TrackLabels {
     TrackLabels {
@@ -159,13 +164,13 @@ fn commentary_flag_is_shown_next_to_the_codec() {
 fn next_track_cycles_and_wraps_around() {
     let first_selected = AudioTrackMenuView::from_snapshot(&two_audio_snapshot(Some(2)));
     assert_eq!(
-        first_selected.next_track().map(|item| item.id),
-        Some(TrackId::new(3))
+        first_selected.next_track().map(|item| item.target),
+        Some(embedded(3))
     );
     let last_selected = AudioTrackMenuView::from_snapshot(&two_audio_snapshot(Some(3)));
     assert_eq!(
-        last_selected.next_track().map(|item| item.id),
-        Some(TrackId::new(2))
+        last_selected.next_track().map(|item| item.target),
+        Some(embedded(2))
     );
 
     let mut three = two_audio_snapshot(Some(3));
@@ -173,14 +178,14 @@ fn next_track_cycles_and_wraps_around() {
         .tracks
         .push(track(4, TrackKind::Audio, "A_AAC", TrackLabels::default()));
     let view = AudioTrackMenuView::from_snapshot(&three);
-    assert_eq!(view.next_track().map(|item| item.id), Some(TrackId::new(4)));
+    assert_eq!(view.next_track().map(|item| item.target), Some(embedded(4)));
 }
 
 #[test]
 fn without_a_selection_the_default_track_counts_as_current() {
     // Default — «Dub» (id 2): следующая после неё — «Original» (id 3).
     let view = AudioTrackMenuView::from_snapshot(&two_audio_snapshot(None));
-    assert_eq!(view.next_track().map(|item| item.id), Some(TrackId::new(3)));
+    assert_eq!(view.next_track().map(|item| item.target), Some(embedded(3)));
 
     // Ни выбора, ни default: текущей считается первая, следующая — вторая.
     let mut snapshot = PlayerSnapshot::empty();
@@ -189,7 +194,7 @@ fn without_a_selection_the_default_track_counts_as_current() {
         track(6, TrackKind::Audio, "A_AAC", TrackLabels::default()),
     ];
     let view = AudioTrackMenuView::from_snapshot(&snapshot);
-    assert_eq!(view.next_track().map(|item| item.id), Some(TrackId::new(6)));
+    assert_eq!(view.next_track().map(|item| item.target), Some(embedded(6)));
 }
 
 #[test]
@@ -214,7 +219,7 @@ fn b_plan_distinguishes_no_audio_single_track_and_switch() {
     assert_eq!(
         switch,
         NextTrackPlan::Switch {
-            track_id: TrackId::new(3),
+            target: embedded(3),
             label: "English — Original (Opus)".to_owned(),
         }
     );

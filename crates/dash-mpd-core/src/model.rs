@@ -86,6 +86,8 @@ pub enum DashAudioChannelConfiguration {
     MpegCicp(u16),
     /// ISO/IEC 23003-3 channelConfigurationIndex.
     Mpeg23003_3(u16),
+    /// Dolby speaker mask (AC-3/E-AC-3, обе Dolby-схемы URI).
+    DolbyChannelMask(crate::DashDolbyChannelMask),
     /// Descriptor использует неизвестную текущему profile схему.
     Unsupported,
 }

@@ -234,21 +234,26 @@ impl YtDlpNormalizedCandidate {
             | StreamLayout::HlsMuxedCodecDeferred(_)
             | StreamLayout::ContentProbed(_) => return None,
         };
-        Some(AudioFallbackRank::new(
-            self.selection_hints.preference,
-            self.selection_hints.language_preference,
-            self.selection_hints.quality,
-            audio.channels().map(web_media_core::ChannelCount::get),
-            audio_codec_rank(match audio.codec().kind() {
-                CodecKind::Known(family) => Some(family),
-                CodecKind::Absent | CodecKind::Unknown => None,
-            }),
-            audio
-                .bitrate()
-                .map(web_media_core::Bitrate::bits_per_second),
-            audio.sample_rate().map(web_media_core::SampleRate::hertz),
-            self.selection_hints.source_preference,
-        ))
+        let codec_tier = web_media_core::DefaultAudioSelectionTier::for_codec(audio.codec().kind());
+        Some(
+            AudioFallbackRank::new(
+                self.selection_hints.preference,
+                self.selection_hints.language_preference,
+                self.selection_hints.quality,
+                audio.channels().map(web_media_core::ChannelCount::get),
+                audio_codec_rank(match audio.codec().kind() {
+                    CodecKind::Known(family) => Some(family),
+                    CodecKind::Absent | CodecKind::Unknown => None,
+                }),
+                audio
+                    .bitrate()
+                    .map(web_media_core::Bitrate::bits_per_second),
+                audio.sample_rate().map(web_media_core::SampleRate::hertz),
+                self.selection_hints.source_preference,
+            )
+            // AC-3/E-AC-3 — fallback-only до решения владельца (см. DefaultAudioSelectionTier).
+            .with_codec_selection_tier(codec_tier),
+        )
     }
 
     /// Собирает accepted candidate после всех owner-side checks.
@@ -280,6 +285,9 @@ fn audio_codec_rank(codec: Option<CodecFamily>) -> i16 {
         Some(CodecFamily::Mp3) => 40,
         Some(CodecFamily::Mp2) => 35,
         Some(CodecFamily::Mp1 | CodecFamily::Adpcm) => 30,
+        // Порядок yt-dlp `acodec`: … > mp3 > ac4 > eac3 > ac3 > dts; ниже всех прежних.
+        Some(CodecFamily::Eac3) => 25,
+        Some(CodecFamily::Ac3) => 20,
         Some(
             CodecFamily::Vp8
             | CodecFamily::Vp9

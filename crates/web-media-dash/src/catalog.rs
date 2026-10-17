@@ -693,6 +693,8 @@ pub(crate) fn channel_count(configuration: Option<DashAudioChannelConfiguration>
     match configuration {
         Some(DashAudioChannelConfiguration::Mpeg23003_3(value @ 1..=6)) => Some(value),
         Some(DashAudioChannelConfiguration::Mpeg23003_3(7)) => Some(8),
+        // Dolby-маска (AC-3/E-AC-3) сама владеет подсчётом одиночных и парных позиций.
+        Some(DashAudioChannelConfiguration::DolbyChannelMask(mask)) => Some(mask.channel_count()),
         _ => None,
     }
 }

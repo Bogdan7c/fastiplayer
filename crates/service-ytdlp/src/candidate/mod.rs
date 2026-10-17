@@ -115,6 +115,9 @@ pub(crate) fn resolve_candidate_snapshot_with_adapter(
 }
 
 #[cfg(test)]
+mod planning_ac3_tests;
+
+#[cfg(test)]
 mod planning_tests;
 
 #[cfg(test)]

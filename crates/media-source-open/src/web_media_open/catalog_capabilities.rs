@@ -191,6 +191,13 @@ fn audio_family(kind: CodecKind) -> Option<AudioDecodeCodecFamily> {
         CodecKind::Known(CodecFamily::Opus) => Some(AudioDecodeCodecFamily::Opus),
         CodecKind::Known(CodecFamily::Pcm) => Some(AudioDecodeCodecFamily::Pcm),
         CodecKind::Known(CodecFamily::Vorbis) => Some(AudioDecodeCodecFamily::Vorbis),
+        // Две точные family: `A_AC3` не доказывает E-AC-3 и наоборот (decoder
+        // capability snapshot публикует их раздельно).
+        CodecKind::Known(CodecFamily::Ac3) => Some(AudioDecodeCodecFamily::Ac3),
+        CodecKind::Known(CodecFamily::Eac3) => Some(AudioDecodeCodecFamily::Eac3),
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests;

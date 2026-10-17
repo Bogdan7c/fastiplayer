@@ -2,13 +2,17 @@
 
 use std::cmp::Ordering;
 
-use web_media_core::SemanticIdentity;
+use web_media_core::{DefaultAudioSelectionTier, SemanticIdentity};
 
 /// Audio-relevant subset pinned from yt-dlp sorting semantics.
 ///
 /// Каждое known значение предпочтительнее missing; большее значение лучше.
+/// Порядок полей = порядок сравнения (derive `Ord`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AudioFallbackRank {
+    /// Сравнивается первым: `FallbackOnly` family (AC-3/E-AC-3) не вытесняет прежние
+    /// families, даже если у неё больше каналов. Политика — `mem:media-services/ac3-eac3-web-candidates`.
+    codec_tier: DefaultAudioSelectionTier,
     preference: Option<i64>,
     language_preference: Option<i64>,
     quality: Option<i64>,
@@ -34,6 +38,8 @@ impl AudioFallbackRank {
         source_preference: Option<i64>,
     ) -> Self {
         Self {
+            // По умолчанию прежнее поведение; caller с известным codec-ом уточняет уровень.
+            codec_tier: DefaultAudioSelectionTier::Primary,
             preference,
             language_preference,
             quality,
@@ -43,6 +49,13 @@ impl AudioFallbackRank {
             sample_rate,
             source_preference,
         }
+    }
+
+    /// Задаёт уровень codec family для default-выбора (см. [`DefaultAudioSelectionTier`]).
+    #[must_use]
+    pub const fn with_codec_selection_tier(mut self, tier: DefaultAudioSelectionTier) -> Self {
+        self.codec_tier = tier;
+        self
     }
 }
 
@@ -121,6 +134,47 @@ mod tests {
         assert_eq!(
             compare_audio_fallback(None, &known, rank(Some(1)), &missing, rank(None),),
             Ordering::Less
+        );
+    }
+
+    /// Fallback-only family проигрывает даже при большем числе каналов, но остаётся
+    /// лучшей, если других кандидатов нет; current identity по-прежнему сильнее уровня.
+    #[test]
+    fn fallback_only_codec_tier_yields_to_primary_before_channel_count() {
+        let stereo_aac = semantic("aac-2ch");
+        let surround_eac3 = semantic("eac3-6ch");
+        let aac_rank = rank(Some(128_000));
+        let eac3_rank = AudioFallbackRank::new(
+            None,
+            None,
+            None,
+            Some(6),
+            25,
+            Some(384_000),
+            Some(48_000),
+            None,
+        )
+        .with_codec_selection_tier(DefaultAudioSelectionTier::FallbackOnly);
+
+        assert_eq!(
+            compare_audio_fallback(None, &stereo_aac, aac_rank, &surround_eac3, eac3_rank),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_audio_fallback(
+                Some(&surround_eac3),
+                &stereo_aac,
+                aac_rank,
+                &surround_eac3,
+                eac3_rank
+            ),
+            Ordering::Greater
+        );
+        // Без tier-а 6 каналов выиграли бы: доказываем, что именно tier меняет исход.
+        let untiered_eac3 = eac3_rank.with_codec_selection_tier(DefaultAudioSelectionTier::Primary);
+        assert_eq!(
+            compare_audio_fallback(None, &stereo_aac, aac_rank, &surround_eac3, untiered_eac3),
+            Ordering::Greater
         );
     }
 }

@@ -1,6 +1,7 @@
 //! Provider-default выбирается только из доказанных catalog rows и compatibility edges.
 
 use super::*;
+use web_media_core::{AudioComponentVariant, AudioTrackDescriptor, DefaultAudioSelectionTier};
 
 pub(super) fn provider_default_selection(
     catalog: &ComponentVariantCatalog,
@@ -54,6 +55,10 @@ pub(super) fn provider_default_selection(
 /// Приоритет сохраняет полную presentation: proven separate A/V, затем coupled,
 /// затем честный video-only и audio-only fallback. Пары никогда не строятся как
 /// Cartesian rows: каждая separate selection проверяется catalog compatibility.
+///
+/// Внутри каждого шага audio с `DefaultAudioSelectionTier::FallbackOnly` (AC-3/E-AC-3)
+/// выбирается, только если подходящего `Primary` audio нет: так прежний default
+/// (например, AAC) не меняется оттого, что Dolby-rows стали воспроизводимыми.
 pub(super) fn native_provider_default_selection(
     catalog: &ComponentVariantCatalog,
     preferred_height: PreferredHeightPolicy,
@@ -69,10 +74,9 @@ pub(super) fn native_provider_default_selection(
         (catalog.compatibility(), catalog.required_audio_variants())
     {
         for video in &ranked_video {
-            if let Some(audio) = audio
-                .iter()
-                .find(|audio| compatibility.allows(video.exact_identity(), audio.exact_identity()))
-            {
+            if let Some(audio) = best_default_audio(audio.iter(), |audio| {
+                compatibility.allows(video.exact_identity(), audio.exact_identity())
+            }) {
                 return catalog
                     .select_exact(ComponentVariantSelectionRequest::VideoAndAudio {
                         video: video.exact_identity().clone(),
@@ -87,7 +91,12 @@ pub(super) fn native_provider_default_selection(
         .coupled_presentations()
         .iter()
         .min_by(|left, right| {
-            preferred_height.compare(left.video().height(), right.video().height())
+            // Больший tier лучше, поэтому сравнение tier-ов развёрнуто (right vs left).
+            audio_tier(right.audio())
+                .cmp(&audio_tier(left.audio()))
+                .then_with(|| {
+                    preferred_height.compare(left.video().height(), right.video().height())
+                })
         });
     if let Some(coupled) = coupled {
         return catalog
@@ -109,9 +118,9 @@ pub(super) fn native_provider_default_selection(
     }
 
     if let Ok(audio) = catalog.required_audio_variants()
-        && let Some(audio) = audio
-            .iter()
-            .find(|audio| catalog.is_audio_only_selectable(audio.exact_identity()))
+        && let Some(audio) = best_default_audio(audio.iter(), |audio| {
+            catalog.is_audio_only_selectable(audio.exact_identity())
+        })
     {
         return catalog
             .select_exact(ComponentVariantSelectionRequest::AudioOnly {
@@ -121,6 +130,31 @@ pub(super) fn native_provider_default_selection(
     }
 
     Err(DashRepresentationLaneCatalogBuildError::NoSelectableLane)
+}
+
+/// Default-уровень audio codec-а описанной дорожки.
+fn audio_tier(track: &AudioTrackDescriptor) -> DefaultAudioSelectionTier {
+    DefaultAudioSelectionTier::for_codec(track.codec().kind())
+}
+
+/// Первый (в порядке catalog-а) подходящий audio высшего доступного tier-а.
+///
+/// Сохраняет прежний порядок «первый подходящий» внутри tier-а; `FallbackOnly`
+/// рассматривается только при отсутствии подходящего `Primary`.
+fn best_default_audio<'catalog>(
+    candidates: impl Iterator<Item = &'catalog AudioComponentVariant>,
+    mut is_eligible: impl FnMut(&AudioComponentVariant) -> bool,
+) -> Option<&'catalog AudioComponentVariant> {
+    let mut fallback_only = None;
+    for audio in candidates.filter(|audio| is_eligible(audio)) {
+        match audio_tier(audio.track()) {
+            DefaultAudioSelectionTier::Primary => return Some(audio),
+            DefaultAudioSelectionTier::FallbackOnly => {
+                fallback_only = fallback_only.or(Some(audio));
+            }
+        }
+    }
+    fallback_only
 }
 
 fn unique_default_row<'rows>(
@@ -139,3 +173,7 @@ fn unique_default_row<'rows>(
     }
     Ok(first)
 }
+
+#[cfg(test)]
+#[path = "default_selection_tests.rs"]
+mod tests;

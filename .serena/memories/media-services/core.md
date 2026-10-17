@@ -1,3 +1,7 @@
+## AC-3/E-AC-3 web candidates (2026-10-16)
+
+- `CodecFamily::{Ac3,Eac3}`, DASH Dolby channel mask, HLS `16/JOC`, fallback-only default policy (`DefaultAudioSelectionTier`), сквозной HLS-TS тест: `mem:media-services/ac3-eac3-web-candidates`.
+
 ## UX08 — типизированные причины отказа web-open (2026-10-06)
 
 - `TransportFailure` получил `NotFound`/`Gone`/`RateLimited`/`ServerError` (404/410/429/5xx больше не `NetworkUnavailable`); `allows_alternate_candidate()` сохраняет прежний выбор alternate. `service-ytdlp`: `YtDlpServiceError::ExecutableNotFound`, `ExtractorRejection { stderr_bytes, reason: YtDlpRejectionReason }` — stderr классифицируется потоково по `ERROR:`-строкам, текст не хранится (redaction-инвариант сохранён). Детали: `mem:app-egui/web-open-error-reasons-ux08`.

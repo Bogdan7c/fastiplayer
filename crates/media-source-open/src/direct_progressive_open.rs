@@ -288,3 +288,7 @@ fn direct_sniff_budget(
 
 #[cfg(test)]
 mod network_drop_tests;
+
+/// Прямой HTTP сырой AC-3 / E-AC-3: open → decode → seek (пакет G, 2026-10-16).
+#[cfg(test)]
+mod ac3_elementary_tests;

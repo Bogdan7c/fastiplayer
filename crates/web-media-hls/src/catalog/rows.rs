@@ -214,7 +214,11 @@ fn merge_audio_evidence(
     rendition: &MediaRendition,
     proof: &AudioTrackDescriptor,
 ) -> Result<AudioTrackDescriptor, HlsCatalogSiblingRejectionReason> {
-    let channels = match rendition.channel_count {
+    // Сверка с декодируемой раскладкой: для object-based audio (`16/JOC`) первое число
+    // CHANNELS считает объекты, а demux/decoder видят канальную основу (например, 5.1),
+    // поэтому такое число не является evidence каналов. Identity-сопоставление
+    // renditions (`open::rendition_matches`) по-прежнему использует raw `channel_count`.
+    let channels = match rendition.speaker_channel_count() {
         Some(channels) => {
             let count = u16::try_from(channels.get())
                 .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
@@ -297,3 +301,7 @@ fn hash_rendition(
     key.field(&[u8::from(rendition.is_default)])?;
     key.field(&[u8::from(rendition.autoselect)])
 }
+
+#[cfg(test)]
+#[path = "rows_tests.rs"]
+mod tests;
