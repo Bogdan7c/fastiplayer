@@ -34,11 +34,18 @@ pub enum AudioDecodeCodecFamily {
     Pcm = 8,
     /// Vorbis.
     Vorbis = 9,
+    /// Dolby Digital (AC-3, A/52 base syntax) — точная family, не включает E-AC-3.
+    ///
+    /// Новые family добавляются в конец: биты snapshot-а существующих family
+    /// не сдвигаются.
+    Ac3 = 10,
+    /// Dolby Digital Plus (E-AC-3, A/52 Annex E) — отдельная точная family.
+    Eac3 = 11,
 }
 
 impl AudioDecodeCodecFamily {
     /// Полный стабильный порядок family, который используют snapshot iteration и tests.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 12] = [
         Self::Aac,
         Self::Adpcm,
         Self::Alac,
@@ -49,13 +56,21 @@ impl AudioDecodeCodecFamily {
         Self::Opus,
         Self::Pcm,
         Self::Vorbis,
+        Self::Ac3,
+        Self::Eac3,
     ];
 
     /// Возвращает отдельный bit для compact immutable snapshot-а.
+    ///
+    /// Инвариант: `ALL.len() <= u16::BITS` (проверяется на этапе компиляции ниже).
     const fn capability_bit(self) -> u16 {
         1_u16 << self as u8
     }
 }
+
+// Ещё одна family сверх 16 не поместится в u16 bitset: сборка упадёт здесь,
+// а не молчаливым переполнением сдвига.
+const _: () = assert!(AudioDecodeCodecFamily::ALL.len() <= u16::BITS as usize);
 
 /// Typed identity на входе capability query.
 ///
@@ -205,6 +220,54 @@ mod tests {
         assert_eq!(
             snapshot.available_families().collect::<Vec<_>>(),
             vec![AudioDecodeCodecFamily::Aac, AudioDecodeCodecFamily::Vorbis,]
+        );
+    }
+
+    /// Все family помещаются в u16 bitset и не делят биты друг с другом.
+    #[test]
+    fn every_family_owns_a_distinct_snapshot_bit() {
+        let full_snapshot = AudioDecodeCodecFamily::ALL.into_iter().fold(
+            AudioDecodeCapabilitySnapshot::empty(),
+            |snapshot, family| snapshot.with_available_family(family),
+        );
+
+        assert_eq!(
+            full_snapshot.available_families().collect::<Vec<_>>(),
+            AudioDecodeCodecFamily::ALL.to_vec()
+        );
+        for family in AudioDecodeCodecFamily::ALL {
+            let single = AudioDecodeCapabilitySnapshot::empty().with_available_family(family);
+            assert_eq!(
+                single.available_families().collect::<Vec<_>>(),
+                vec![family]
+            );
+        }
+    }
+
+    /// AC-3 и E-AC-3 — две точные family: одна не подразумевает другую.
+    #[test]
+    fn ac3_and_eac3_are_independent_exact_families() {
+        let ac3_only = AudioDecodeCapabilitySnapshot::empty()
+            .with_available_family(AudioDecodeCodecFamily::Ac3);
+
+        assert_eq!(
+            ac3_only.query(AudioDecodeCodecFamilyQuery::Known(
+                AudioDecodeCodecFamily::Ac3
+            )),
+            Ok(AudioDecodeCapability::Available)
+        );
+        assert_eq!(
+            ac3_only.query(AudioDecodeCodecFamilyQuery::Known(
+                AudioDecodeCodecFamily::Eac3
+            )),
+            Ok(AudioDecodeCapability::Unavailable)
+        );
+        // Старые family не сдвинулись: Vorbis по-прежнему отдельный бит.
+        assert_eq!(
+            ac3_only.query(AudioDecodeCodecFamilyQuery::Known(
+                AudioDecodeCodecFamily::Vorbis
+            )),
+            Ok(AudioDecodeCapability::Unavailable)
         );
     }
 }

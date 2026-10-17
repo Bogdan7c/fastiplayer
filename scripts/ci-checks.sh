@@ -71,6 +71,9 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/media-core
     crates/demux-api
     crates/flv-demux
+    crates/ac3-elementary-demux
+    crates/ac3-syncframe
+    crates/ac3-decoder
     crates/mpeg-ts-demux
     crates/symphonia-demux
     crates/audio

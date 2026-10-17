@@ -1,6 +1,6 @@
 # Dependency Patches Core
 
-- Root `Cargo.toml` uses top-level `[replace]` for seven critical local patch crates: `cros-libva:0.0.12`, `cros-codecs:0.0.6`, `symphonia-format-caf:0.6.0`, `symphonia-format-isomp4:0.6.0`, `symphonia-format-mkv:0.6.0`, `symphonia-codec-aac:0.6.0`, and `wayland-scanner:0.31.10`.
+- Root `Cargo.toml` uses top-level `[replace]` for eight critical local patch crates (на 2026-10-17): `cros-libva:0.0.12`, `cros-codecs:0.0.6`, `symphonia-format-caf:0.6.0`, `symphonia-format-isomp4:0.6.0`, `symphonia-format-mkv:0.6.0`, `symphonia-codec-aac:0.6.0`, `wayland-scanner:0.31.10`, `winit:0.30.13`. `check-dependency-patches.py` ждёт ровно 8 записей. Упоминания «seven» ниже — исторические.
 - These replacements are not feature toggles. Removing any `[replace]` or doing a large upstream bump changes the playback risk profile and requires an explicit architecture/maintenance decision plus a media regression matrix. Do not mix patch removal/upstream sync with feature work.
 - Cargo override semantics checked via Context7/Cargo Book on 2026-06-20: root-level overrides affect dependency resolution transitively. Several local patch crates are not normal workspace members; practical validation usually goes through dependent workspace crates such as `video-vaapi`, `symphonia-demux`, `audio`, and the whole workspace.
 
@@ -31,6 +31,9 @@
 - Removal gate: когда egui-winit поддерживает стабильный winit 0.31, заменить app-переходник `external_open::winit_source` на DragEntered/DragMoved/DragDropped/DragLeft + DataTransfer.
 - UX13 (2026-10-08): additive `winit::platform::external_activation::WindowExtExternalActivation::activate_with_token(ActivationToken)` — Wayland `xdg_activation.activate(token, surface)` для уже существующего окна (штатный winit 0.30 предъявляет билет только при создании, `focus_window` на Wayland пустой), X11 → `focus_window`. Потребитель — `app-egui::instance_forwarding::window_activation` (`mem:app-egui/instance-forwarding-ux13`).
 
+## oxideav-ac3 0.0.11 — удалён (2026-10-17)
+- Девятый `[replace]` (`oxideav-ac3` → `crates/oxideav-ac3-patch`, пины `oxideav-ac3`/`oxideav-core`) существовал 2026-10-16…17 и удалён целиком по решению владельца вместе с записью inventory, matrix CI, `DEPENDENCY_PATCH_MANIFESTS` и тестом release runner-а. Замена — собственный `crates/ac3-decoder` (first-party workspace member, не патч): `mem:ac3-decoder/core`, `mem:audio/ac3-eac3-decoder`.
+
 ## Subtitles session 06 (2026-10-16): MKV/isomp4 additive extensions
 
 - MKV: `TrackElement.name` → per-track metadata tag `fastiplayer.track.name`; attachment limits via `with_attachment_read_limits(limits, || probe)` thread-local scope (generic Probe cannot pass parameters) and `MkvReader::try_new_with_attachment_limits`; oversized FileData skipped without reading; `FlagDefault` absent = DEFAULT (spec fix, upstream lost it). `EditionUID` is optional (RFC 9559; ffmpeg omits it): `EditionEntryElement.uid: Option<NonZeroU64>`, edition-targeted tags apply only when present, 0 stays an error (fixed 2026-10-16 after session 06; before that ffmpeg-remuxed MKV with chapters did not open at all). Tests: patch `reader_tests.rs` `edition_*`, functional `symphonia-demux/tests/matroska_chapters.rs` + generated fixture `tests/fixtures/matroska/`.
@@ -50,7 +53,7 @@
 ## Verification Before Removal Or Major Bump
 
 - Run at least `cargo check --workspace` and `cargo clippy --workspace --all-targets`.
-- All seven patch directories are explicit `workspace.exclude` entries with their own `Cargo.toml` and `Cargo.lock`. Each must pass `cargo test --manifest-path <patch>/Cargo.toml --locked`; never add them to `workspace.members` or make them inherit first-party workspace metadata/lints.
+- All eight patch directories (2026-10-17) are explicit `workspace.exclude` entries with their own `Cargo.toml` and `Cargo.lock`. Each must pass `cargo test --manifest-path <patch>/Cargo.toml --locked`; never add them to `workspace.members` or make them inherit first-party workspace metadata/lints.
 - `docs/dependency-patches.toml` is the checked machine-readable inventory: crates.io archive SHA-256 upstream identity, reason, owned diff areas, dependents, focused tests, manual media matrix, and removal gate. `scripts/check-dependency-patches.py` validates it against root `[replace]`, manifests, locks, excludes, and the no-membership rule.
 - `scripts/ci-checks.sh dependency-patches` runs the checked inventory plus `cargo test -p video-vaapi -p symphonia-demux -p audio --locked`. CI also has seven independent matrix jobs running the exact direct locked test for each patch.
 - Run focused tests for dependent crates touched by the patch behavior (`video-vaapi`, `symphonia-demux`, `audio`, plus neighboring crates when contracts move). Direct `cargo test -p cros-codecs-patch`/similar is not currently reliable under the workspace layout; use dependents unless workspace membership is intentionally changed.
@@ -58,7 +61,7 @@
 
 
 ## Repository dependency policy (Session 05, 2026-07-10)
-- Seven local `[replace]` crates are explicitly listed in workspace `exclude` and remain upstream-licensed: cros patches BSD-3-Clause, Symphonia patches MPL-2.0, wayland-scanner Apache-2.0. They must never inherit workspace MIT metadata.
+- Eight local `[replace]` crates (2026-10-17) are explicitly listed in workspace `exclude` and remain upstream-licensed: cros patches BSD-3-Clause, Symphonia patches MPL-2.0, wayland-scanner Apache-2.0. They must never inherit workspace MIT metadata.
 - First-party workspace packages inherit `license = "MIT"`; root `LICENSE` is standard MIT copyright 2026 Bogdan7c.
 - `deny.toml` is the blocking cargo-deny policy. MPL-2.0 is allowed only by named Symphonia exceptions. Unknown registries/Git and unlisted licenses fail; Git sources require a separately reviewed pinned revision plus owner/reason/removal criterion.
 - `directories 6` was replaced by permissive `etcetera 0.11` because `option-ext` introduced non-inventoried MPL-2.0.

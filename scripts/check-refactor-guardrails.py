@@ -65,6 +65,9 @@ CONTRACT_CRATES = frozenset(
 
 REQUIRED_ROLE_CRATES = frozenset(
     {
+        "ac3-decoder",
+        "ac3-elementary-demux",
+        "ac3-syncframe",
         "animation-core",
         "app-egui",
         "atomic-file-store",
@@ -220,6 +223,22 @@ SUBTITLE_RASTER_ALLOWED_DEPENDENCIES = frozenset(
 
 # Neutral web-media values не должны напрямую знать process/service/network/app owners.
 WEB_MEDIA_CORE_ALLOWED_DEPENDENCIES = frozenset()
+
+# AC-3/E-AC-3 syncframe parser — std-only bitstream contract: его используют
+# demuxer-ы (MPEG-TS, raw .ac3/.eac3) до декодера, поэтому decoder/container
+# зависимости (сторонние декодеры, Symphonia, FFmpeg) в нём запрещены.
+AC3_SYNCFRAME_ALLOWED_DEPENDENCIES = frozenset()
+
+# Собственный clean-room декодер AC-3/E-AC-3 — std-only: весь разбор, таблицы
+# и DSP по спецификациям A/52 / ETSI TS 102 366 живут внутри crate-а; чужие
+# декодеры (Symphonia, FFmpeg и т. п.) и player/UI-зависимости запрещены.
+AC3_DECODER_ALLOWED_DEPENDENCIES = frozenset()
+
+# Декодер AC-3/E-AC-3 — деталь concrete `audio`: только его crate-private
+# adapter `decoder::ac3` переводит PCM/позиции в neutral `AudioDecoder` boundary.
+# Остальные crate-ы (demux, player-core, app) получают звук через `audio-core` и
+# не должны знать конкретный декодер (dev-зависимости для тестов не ограничены).
+AC3_DECODER_ALLOWED_DEPENDENTS = frozenset({"audio"})
 
 # Pure web-media planner пересекает только neutral snapshots и не знает
 # concrete provider/service/app/player implementations.
@@ -387,6 +406,7 @@ DEMUX_API_ALLOWED_DEPENDENCIES = frozenset(
 # HLS, HTTP, player, UI, Symphonia и FFmpeg не должны протекать в reusable container owner.
 MPEG_TS_DEMUX_ALLOWED_DEPENDENCIES = frozenset(
     {
+        "ac3-syncframe",
         "anyhow",
         "bytes",
         "codec-core",
@@ -394,6 +414,9 @@ MPEG_TS_DEMUX_ALLOWED_DEPENDENCIES = frozenset(
         "media-core",
         "source-core",
         "thiserror",
+        # Диагностика восстановимых повреждений (потеря синхронизации AC-3) —
+        # тот же логгер, что у raw `ac3-elementary-demux`; не network/player/UI.
+        "tracing",
     }
 )
 
@@ -408,6 +431,22 @@ FLV_DEMUX_ALLOWED_DEPENDENCIES = frozenset(
         "media-core",
         "source-core",
         "thiserror",
+    }
+)
+
+# Сырые `.ac3`/`.eac3`: framing только через std-only `ac3-syncframe`, без
+# декодера, Symphonia/FFmpeg, сети, player-а и UI — тот же уровень,
+# что у остальных first-party container owner-ов.
+AC3_ELEMENTARY_DEMUX_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "ac3-syncframe",
+        "anyhow",
+        "bytes",
+        "demux-api",
+        "media-core",
+        "source-core",
+        "thiserror",
+        "tracing",
     }
 )
 
@@ -1298,6 +1337,30 @@ def find_dependency_violations(
     violations.extend(
         find_disallowed_dependencies(
             dependency_map,
+            frozenset({"ac3-syncframe"}),
+            AC3_SYNCFRAME_ALLOWED_DEPENDENCIES,
+            "ac3-syncframe remains std-only AC-3/E-AC-3 header parser without decoder/container deps",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"ac3-decoder"}),
+            AC3_DECODER_ALLOWED_DEPENDENCIES,
+            "ac3-decoder remains std-only clean-room AC-3/E-AC-3 decoder without foreign decoder deps",
+        )
+    )
+    violations.extend(
+        find_forbidden_dependencies(
+            dependency_map,
+            frozenset(dependency_map).difference(AC3_DECODER_ALLOWED_DEPENDENTS),
+            frozenset({"ac3-decoder"}),
+            "only concrete audio adapter depends on ac3-decoder; others use audio-core boundary",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
             frozenset({"web-media-playback-plan"}),
             WEB_MEDIA_PLAYBACK_PLAN_ALLOWED_DEPENDENCIES,
             "web-media-playback-plan remains pure neutral capability planner",
@@ -1421,6 +1484,14 @@ def find_dependency_violations(
             frozenset({"mpeg-ts-demux"}),
             MPEG_TS_DEMUX_ALLOWED_DEPENDENCIES,
             "mpeg-ts-demux remains a reusable container owner without HLS/network/player/UI/FFmpeg deps.",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"ac3-elementary-demux"}),
+            AC3_ELEMENTARY_DEMUX_ALLOWED_DEPENDENCIES,
+            "ac3-elementary-demux remains raw AC-3 container owner without decoder/network/player/UI deps",
         )
     )
     violations.extend(

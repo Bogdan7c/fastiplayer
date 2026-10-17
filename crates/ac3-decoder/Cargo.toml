@@ -1,0 +1,14 @@
+[package]
+name = "ac3-decoder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Собственный clean-room декодер AC-3/E-AC-3 по ATSC A/52:2012 и ETSI TS 102 366.
+# Намеренно без зависимостей (std-only): весь bitstream-разбор, таблицы и DSP
+# живут здесь и проверяются тестами против спецификации и эталона ffmpeg.
+[dependencies]
+
+[lints]
+workspace = true

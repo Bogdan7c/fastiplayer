@@ -1,4 +1,4 @@
-//! Read-only снимок concrete Symphonia/Opus decode registry.
+//! Read-only снимок concrete Symphonia/Opus/SWF/AC-3 decode paths.
 //!
 //! Этот модуль владеет соответствием neutral family и production backend-ов.
 //! Selection получает только `audio-core` snapshot и не видит Symphonia types.
@@ -30,6 +30,16 @@ enum SwfAdpcmFallbackAvailability {
     Unavailable,
 }
 
+/// Project-owned AC-3 / E-AC-3 adapter (собственный `ac3-decoder`) не зависит от Symphonia registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ac3FamilyAvailability {
+    /// Exact `A_AC3` / `A_EAC3` adapter собран в production factory.
+    Available,
+    /// Тестовый variant без AC-3 adapter-а.
+    #[cfg(test)]
+    Unavailable,
+}
+
 /// Минимальная read-only граница над concrete registry.
 ///
 /// В trait намеренно отсутствует decoder factory method: capability scan физически
@@ -52,6 +62,7 @@ pub(super) fn production_audio_decode_capability_snapshot() -> AudioDecodeCapabi
         symphonia::default::get_codecs(),
         OpusFallbackAvailability::Available,
         SwfAdpcmFallbackAvailability::Available,
+        Ac3FamilyAvailability::Available,
     )
 }
 
@@ -60,11 +71,18 @@ fn audio_decode_capability_snapshot(
     registry: &impl RegisteredAudioDecoderLookup,
     opus_fallback: OpusFallbackAvailability,
     swf_adpcm_fallback: SwfAdpcmFallbackAvailability,
+    ac3_family: Ac3FamilyAvailability,
 ) -> AudioDecodeCapabilitySnapshot {
     let mut snapshot = AudioDecodeCapabilitySnapshot::empty();
 
     for family in AudioDecodeCodecFamily::ALL {
-        if family_is_available(registry, family, opus_fallback, swf_adpcm_fallback) {
+        if family_is_available(
+            registry,
+            family,
+            opus_fallback,
+            swf_adpcm_fallback,
+            ac3_family,
+        ) {
             snapshot = snapshot.with_available_family(family);
         }
     }
@@ -78,9 +96,17 @@ fn family_is_available(
     family: AudioDecodeCodecFamily,
     opus_fallback: OpusFallbackAvailability,
     swf_adpcm_fallback: SwfAdpcmFallbackAvailability,
+    ac3_family: Ac3FamilyAvailability,
 ) -> bool {
     if family == AudioDecodeCodecFamily::Opus {
         return opus_fallback == OpusFallbackAvailability::Available;
+    }
+    // AC-3 и E-AC-3 обслуживает один adapter, но family остаются раздельными.
+    if matches!(
+        family,
+        AudioDecodeCodecFamily::Ac3 | AudioDecodeCodecFamily::Eac3
+    ) {
+        return ac3_family == Ac3FamilyAvailability::Available;
     }
 
     let symphonia_set_available = required_symphonia_codecs(family)
@@ -132,6 +158,9 @@ fn required_symphonia_codecs(family: AudioDecodeCodecFamily) -> &'static [AudioC
             codec::CODEC_ID_PCM_MULAW,
         ],
         AudioDecodeCodecFamily::Vorbis => &[codec::CODEC_ID_VORBIS],
+        // Symphonia 0.6 знает id AC-3/E-AC-3, но декодера не регистрирует;
+        // доступность определяет только project-owned adapter.
+        AudioDecodeCodecFamily::Ac3 | AudioDecodeCodecFamily::Eac3 => &[],
     }
 }
 
@@ -144,9 +173,10 @@ mod tests {
     };
 
     use super::{
-        AudioDecodeCodecFamily, OpusFallbackAvailability, RegisteredAudioDecoderLookup,
-        SwfAdpcmFallbackAvailability, audio_decode_capability_snapshot,
-        production_audio_decode_capability_snapshot, required_symphonia_codecs,
+        Ac3FamilyAvailability, AudioDecodeCodecFamily, OpusFallbackAvailability,
+        RegisteredAudioDecoderLookup, SwfAdpcmFallbackAvailability,
+        audio_decode_capability_snapshot, production_audio_decode_capability_snapshot,
+        required_symphonia_codecs,
     };
 
     /// Read-only fake registry считает lookup-и и не имеет decoder-construction API.
@@ -190,6 +220,7 @@ mod tests {
             &registry,
             OpusFallbackAvailability::Unavailable,
             SwfAdpcmFallbackAvailability::Unavailable,
+            Ac3FamilyAvailability::Unavailable,
         );
 
         assert_eq!(snapshot.available_families().count(), 0);
@@ -213,6 +244,7 @@ mod tests {
             &registry,
             OpusFallbackAvailability::Available,
             SwfAdpcmFallbackAvailability::Available,
+            Ac3FamilyAvailability::Available,
         );
 
         let expected_registry_queries = AudioDecodeCodecFamily::ALL
@@ -238,6 +270,7 @@ mod tests {
             &registry,
             OpusFallbackAvailability::Available,
             SwfAdpcmFallbackAvailability::Unavailable,
+            Ac3FamilyAvailability::Available,
         );
 
         assert_eq!(
@@ -248,6 +281,47 @@ mod tests {
         );
         assert_eq!(
             snapshot.query(AudioDecodeCodecFamilyQuery::Known(
+                AudioDecodeCodecFamily::Aac,
+            )),
+            Ok(AudioDecodeCapability::Available)
+        );
+    }
+
+    /// AC-3 и E-AC-3 доступны в production без Symphonia registration и
+    /// пропадают вместе с adapter-ом, не затрагивая остальные family.
+    #[test]
+    fn ac3_families_follow_project_owned_adapter_not_symphonia_registry() {
+        let empty_registry = symphonia::core::codecs::registry::CodecRegistry::new();
+        let with_adapter = audio_decode_capability_snapshot(
+            &empty_registry,
+            OpusFallbackAvailability::Unavailable,
+            SwfAdpcmFallbackAvailability::Unavailable,
+            Ac3FamilyAvailability::Available,
+        );
+        let registry = CountingRegistryLookup {
+            query_count: Cell::new(0),
+            all_registered: true,
+        };
+        let without_adapter = audio_decode_capability_snapshot(
+            &registry,
+            OpusFallbackAvailability::Available,
+            SwfAdpcmFallbackAvailability::Available,
+            Ac3FamilyAvailability::Unavailable,
+        );
+
+        assert_eq!(
+            with_adapter.available_families().collect::<Vec<_>>(),
+            vec![AudioDecodeCodecFamily::Ac3, AudioDecodeCodecFamily::Eac3]
+        );
+        for family in [AudioDecodeCodecFamily::Ac3, AudioDecodeCodecFamily::Eac3] {
+            assert_eq!(
+                without_adapter.query(AudioDecodeCodecFamilyQuery::Known(family)),
+                Ok(AudioDecodeCapability::Unavailable)
+            );
+            assert!(required_symphonia_codecs(family).is_empty());
+        }
+        assert_eq!(
+            without_adapter.query(AudioDecodeCodecFamilyQuery::Known(
                 AudioDecodeCodecFamily::Aac,
             )),
             Ok(AudioDecodeCapability::Available)

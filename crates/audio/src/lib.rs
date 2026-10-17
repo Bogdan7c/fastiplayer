@@ -32,7 +32,8 @@ pub use audio_core::{
 };
 pub use clock::AudioClock;
 pub use decoder::{
-    ProductionAudioDecoderFactory, SwfAdpcmDecodeError, SymphoniaAudioDecoder, create_audio_decoder,
+    Ac3DecodeError, ProductionAudioDecoderFactory, SwfAdpcmDecodeError, SymphoniaAudioDecoder,
+    create_audio_decoder,
 };
 pub use devices::{
     AudioOutputDeviceController, AudioOutputDeviceError, AudioOutputDeviceInfo,

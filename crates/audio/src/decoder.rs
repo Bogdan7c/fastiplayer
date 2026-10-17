@@ -11,6 +11,8 @@
 //!   codec-specific Vorbis channel order через neutral audio boundary.
 //! - `SwfAdpcmDecoder` до Symphonia принимает только exact `A_ADPCM_SWF` и
 //!   декодирует каждый packet независимо по нормативным 4096-sample блокам.
+//! - `Ac3FamilyDecoder` до Symphonia принимает exact `A_AC3` / `A_EAC3`
+//!   (в Symphonia 0.6 декодера нет) поверх собственного декодера `ac3-decoder`.
 //! - Все decoder-ы возвращают interleaved `Vec<f32>`, как ожидает CPAL output path.
 
 use anyhow::Result;
@@ -25,11 +27,13 @@ pub use audio_core::{
     EncodedAudioPacket,
 };
 
+mod ac3;
 mod capability;
 mod conversion;
 mod opus;
 mod swf_adpcm;
 
+pub use ac3::Ac3DecodeError;
 pub use swf_adpcm::SwfAdpcmDecodeError;
 
 use conversion::{
@@ -41,6 +45,7 @@ use conversion::{
 #[cfg(test)]
 use symphonia::core::codecs::audio::well_known as symphonia_audio_codec;
 
+use ac3::{Ac3CodecIdentity, Ac3FamilyDecoder};
 use capability::production_audio_decode_capability_snapshot;
 use opus::OpusFallbackDecoder;
 use swf_adpcm::{SWF_ADPCM_CODEC_ID, SwfAdpcmDecoder};
@@ -79,6 +84,9 @@ impl AudioDecoderFactory for ProductionAudioDecoderFactory {
 pub fn create_audio_decoder(config: AudioDecoderConfig) -> Result<AudioDecoderHandle> {
     if config.codec_id() == SWF_ADPCM_CODEC_ID {
         return Ok(Box::new(SwfAdpcmDecoder::new(&config)?) as AudioDecoderHandle);
+    }
+    if let Some(identity) = Ac3CodecIdentity::from_codec_id(config.codec_id()) {
+        return Ok(Box::new(Ac3FamilyDecoder::new(&config, identity)?) as AudioDecoderHandle);
     }
 
     match SymphoniaAudioDecoder::new(&config) {

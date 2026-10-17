@@ -11,6 +11,9 @@ symphonia = { workspace = true }
 cpal = "0.15"
 ringbuf = "0.4"
 opus = "0.3"
+# Собственный clean-room декодер AC-3/E-AC-3 (std-only) за crate-private
+# adapter-ом `decoder::ac3`.
+ac3-decoder = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }

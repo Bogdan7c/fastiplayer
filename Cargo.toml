@@ -53,6 +53,9 @@ members = [
     "crates/symphonia-demux",
     "crates/audio",
     "crates/vp9-parser",
+    "crates/ac3-syncframe",
+    "crates/ac3-elementary-demux",
+    "crates/ac3-decoder",
     "crates/video-frame-contract",
     "crates/video-core",
     "crates/video-backend-api",
@@ -200,6 +203,9 @@ ringbuf = "0.4"
 rand = "0.10.2"
 libloading = "0.8"
 vp9-parser = { version = "0.1.0-alpha.1", path = "crates/vp9-parser" }
+ac3-syncframe = { version = "0.1.0-alpha.1", path = "crates/ac3-syncframe" }
+ac3-elementary-demux = { version = "0.1.0-alpha.1", path = "crates/ac3-elementary-demux" }
+ac3-decoder = { version = "0.1.0-alpha.1", path = "crates/ac3-decoder" }
 video-frame-contract = { version = "0.1.0-alpha.1", path = "crates/video-frame-contract" }
 video-core = { version = "0.1.0-alpha.1", path = "crates/video-core" }
 video-backend-api = { version = "0.1.0-alpha.1", path = "crates/video-backend-api" }

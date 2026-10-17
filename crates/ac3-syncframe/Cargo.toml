@@ -1,0 +1,13 @@
+[package]
+name = "ac3-syncframe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Намеренно без зависимостей: crate разбирает только заголовки syncframe-ов
+# AC-3/E-AC-3 и не знает ни декодера, ни контейнера.
+[dependencies]
+
+[lints]
+workspace = true

@@ -1269,6 +1269,29 @@ class SourceTextPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_only_concrete_audio_adapter_may_depend_on_ac3_decoder(self) -> None:
+        """Декодер AC-3 остаётся деталью `audio`: остальные видят только audio-core."""
+
+        packages = {
+            "audio": package_with_dependencies("audio", (("ac3-decoder", None),)),
+            "player-core": package_with_dependencies(
+                "player-core", (("ac3-decoder", None),)
+            ),
+            "ac3-decoder": package_with_dependencies("ac3-decoder", ()),
+        }
+        violations = GUARDRAIL.find_dependency_violations(
+            GUARDRAIL.direct_normal_dependencies(packages),
+            GUARDRAIL.direct_all_manifest_dependencies(packages),
+            frozenset({"ac3-decoder"}),
+        )
+        decoder_edges = {
+            violation.owner
+            for violation in violations
+            if violation.dependency == "ac3-decoder"
+        }
+        # Ровно один запрещённый edge: player-core; audio разрешён.
+        self.assertEqual(decoder_edges, {"player-core"})
+
     def test_failure_output_contains_file_and_rule(self) -> None:
         """CLI diagnostic остаётся actionable: path и policy rule печатаются вместе."""
 

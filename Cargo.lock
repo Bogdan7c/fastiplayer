@@ -19,6 +19,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
+name = "ac3-decoder"
+version = "0.1.0-alpha.1"
+
+[[package]]
+name = "ac3-elementary-demux"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "ac3-syncframe",
+ "anyhow",
+ "bytes",
+ "demux-api",
+ "media-core",
+ "source-core",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "ac3-syncframe"
+version = "0.1.0-alpha.1"
+
+[[package]]
 name = "accesskit"
 version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -458,6 +480,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 name = "audio"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "ac3-decoder",
  "anyhow",
  "audio-core",
  "cpal",
@@ -2804,6 +2827,7 @@ dependencies = [
 name = "media-source-open"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "ac3-elementary-demux",
  "anyhow",
  "audio",
  "audio-core",
@@ -2905,6 +2929,7 @@ dependencies = [
 name = "mpeg-ts-demux"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "ac3-syncframe",
  "anyhow",
  "bytes",
  "codec-core",
@@ -2913,6 +2938,7 @@ dependencies = [
  "source-core",
  "tempfile",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
