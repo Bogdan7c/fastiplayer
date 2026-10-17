@@ -7,6 +7,8 @@
 
 use std::sync::Arc;
 
+use subtitle_core::SubtitleColor;
+
 use super::{PixelPoint, SubtitleBitmap};
 
 /// Подпрямоугольник картинки в её собственных координатах (правый и нижний края не входят).
@@ -38,6 +40,10 @@ impl SubtitleBitmap {
         }
         let width = region.x1 - region.x0;
         let height = region.y1 - region.y0;
+        if width == self.width && height == self.height {
+            // Область — вся картинка: маска общая (детектору изменений нужен тот же `Arc`).
+            return Some(self.clone());
+        }
         let start = (region.y0 as usize)
             .checked_mul(self.stride)?
             .checked_add(region.x0 as usize)?;
@@ -56,6 +62,14 @@ impl SubtitleBitmap {
             coverage: Arc::from(visible),
             ..self.clone()
         })
+    }
+
+    /// Та же картинка (та же маска, тот же `Arc`) другого цвета.
+    pub(crate) fn with_color(&self, color: SubtitleColor) -> Self {
+        Self {
+            color,
+            ..self.clone()
+        }
     }
 
     /// Картинка с теми же цветом, видом, группой и владельцем, но другой маской и положением.

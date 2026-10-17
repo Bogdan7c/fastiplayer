@@ -29,6 +29,7 @@ use crate::blur::{
 };
 use crate::event_fade::EventFade;
 use crate::fixed_point::double_to_d6;
+use crate::karaoke::KaraokeEffect;
 use crate::span_look::SpanLook;
 
 /// Всё, что композиция участка берёт из его вида (libass: `FilterDesc`).
@@ -45,8 +46,18 @@ pub(super) struct RunFilter {
 impl RunFilter {
     /// Фильтры по виду первого символа участка (libass: начало участка в
     /// `render_and_combine_glyphs`).
+    #[cfg(test)]
     pub(super) fn for_look(look: &SpanLook, fade: EventFade) -> Self {
-        let flags = FilterFlags::for_glyph(look, fade);
+        Self::for_look_in_karaoke(look, fade, None)
+    }
+
+    /// То же, но с караоке-эффектом слова символа (он меняет флаги тени).
+    pub(super) fn for_look_in_karaoke(
+        look: &SpanLook,
+        fade: EventFade,
+        effect: Option<KaraokeEffect>,
+    ) -> Self {
+        let flags = FilterFlags::for_glyph(look, fade, effect);
         // Порядок умножений как в libass: `blur * (blur_scale * radius_scale)`.
         let radius_scale = blur_radius_scale();
         let blur_x = quantize_blur(look.blur.radius * (look.blur.scale.horizontal * radius_scale));

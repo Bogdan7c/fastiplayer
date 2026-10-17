@@ -1,18 +1,20 @@
 //! Клип реплики целиком: прямоугольный и/или векторный, и их применение к списку картинок.
 
+use super::paint::ImagePaint;
 use super::rect::ScreenRectClip;
 use super::vector::{VectorClipEffect, VectorClipMask};
 use super::vector_build::{
     IgnoredVectorClip, VectorClipOutcome, VectorClipPlan, build_vector_clip_mask,
 };
 use crate::bitmap::BitmapError;
-use crate::overlay::{CanvasSize, SubtitleBitmap, SubtitleBitmapKind};
+use crate::overlay::{CanvasSize, LocalRect, SubtitleBitmap, SubtitleBitmapKind};
 
 /// Геометрия клипа реплики, не зависящая от времени.
 ///
 /// Ключа кэша реплик она не касается: кэш хранит картинки БЕЗ клипа, клип накладывается при
-/// сборке кадра ([`Self::apply`]). Так же в 10b встанут анимированный `\t(\clip(...))` и
-/// караоке: стадия принимает геометрию на момент кадра, а не вшивает её в кэшированные маски.
+/// сборке кадра ([`Self::apply`]). Так же устроен анимированный `\t(\clip(...))`: стадия
+/// принимает прямоугольник на момент кадра ([`Self::apply_with_rect`]), а не вшивает его в
+/// кэшированные маски. Караоке встанет сюда же.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct CueClip {
     rect: Option<ScreenRectClip>,
@@ -59,6 +61,11 @@ impl CueClip {
         })
     }
 
+    /// Неизменный прямоугольник клипа (без покадровой анимации).
+    pub(crate) fn static_rect(&self) -> Option<&ScreenRectClip> {
+        self.rect.as_ref()
+    }
+
     /// Клипа нет: картинки идут в кадр без изменений и без копирования.
     pub(crate) fn is_none(&self) -> bool {
         self.rect.is_none() && self.vector.is_none()
@@ -77,17 +84,34 @@ impl CueClip {
     /// плашка пользовательского стиля) клипом не затрагивается — в libass `add_background`
     /// добавляет её уже после клипов. Владелец, цвет и группа размещения куски наследуют от картинки.
     pub(crate) fn apply(&self, bitmaps: &[SubtitleBitmap]) -> Vec<SubtitleBitmap> {
+        self.apply_with_rect(self.rect.as_ref(), bitmaps, None)
+    }
+
+    /// То же, что [`Self::apply`], но с другим прямоугольником (векторная маска остаётся) и
+    /// раскраской караоке: так накладывается покадровый клип `\t(\clip(...))` и заливка
+    /// `\kf`. `paints[i]` относится к `bitmaps[i]`; без `paints` (или для картинки за концом
+    /// списка) картинки остаются как в кэше.
+    pub(crate) fn apply_with_rect(
+        &self,
+        rect: Option<&ScreenRectClip>,
+        bitmaps: &[SubtitleBitmap],
+        paints: Option<&[ImagePaint]>,
+    ) -> Vec<SubtitleBitmap> {
         let mut result = Vec::with_capacity(bitmaps.len());
         let mut parts: Vec<SubtitleBitmap> = Vec::new();
-        for image in bitmaps {
+        for (index, image) in bitmaps.iter().enumerate() {
             if image.kind() == SubtitleBitmapKind::Background {
                 result.push(image.clone());
                 continue;
             }
+            let paint = paints
+                .and_then(|paints| paints.get(index))
+                .copied()
+                .unwrap_or(ImagePaint::AsStored);
             parts.clear();
-            match &self.rect {
-                Some(rect) => rect.push_visible_parts(image, &mut parts),
-                None => parts.push(image.clone()),
+            match rect {
+                Some(rect) => rect.push_visible_parts(image, paint, &mut parts),
+                None => push_whole(image, paint, &mut parts),
             }
             for part in parts.drain(..) {
                 match &self.vector {
@@ -102,4 +126,19 @@ impl CueClip {
         }
         result
     }
+}
+
+/// Картинка целиком (без прямоугольного клипа) с раскраской `paint`.
+fn push_whole(image: &SubtitleBitmap, paint: ImagePaint, out: &mut Vec<SubtitleBitmap>) {
+    if paint.is_as_stored() {
+        out.push(image.clone());
+        return;
+    }
+    let whole = LocalRect {
+        x0: 0,
+        y0: 0,
+        x1: image.width(),
+        y1: image.height(),
+    };
+    paint.push_region(image, whole, out);
 }

@@ -82,6 +82,7 @@ mod tests {
             },
             device_x: 50.0,
             device_y: 500.0,
+            karaoke: crate::karaoke::KaraokePlan::default(),
         }
     }
 

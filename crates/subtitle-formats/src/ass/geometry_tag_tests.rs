@@ -2,8 +2,8 @@
 //! число аргументов, умолчания «тег без аргумента», счётчики отчёта и жёсткие переопределения.
 
 use subtitle_core::{
-    AssFade, AssHardOverrides, AssOverride, AssRotationAxis, AssShearAxis, AssTextItem,
-    AssUnsupportedTag,
+    AssFade, AssHardOverrides, AssKaraokeKind, AssOverride, AssRotationAxis, AssShearAxis,
+    AssTextItem,
 };
 
 use super::hard_overrides::scan_hard_overrides;
@@ -170,10 +170,9 @@ fn repeated_fade_and_origin_are_all_kept_in_raw_order() {
 }
 
 #[test]
-fn geometry_tags_no_longer_count_as_unsupported() {
+fn geometry_tags_are_parsed_without_any_counters() {
     let (_, stats) =
         parse(r"{\frx1\fry2\frz3\fr4\fax5\fay6\org(1,2)\fad(1,2)\fade(1,2,3,4,5,6,7)}x");
-    assert!(stats.unsupported().is_empty(), "{:?}", stats.unsupported());
     assert_eq!(stats.unknown_total(), 0);
     assert_eq!(stats.malformed(), 0);
 }
@@ -181,9 +180,14 @@ fn geometry_tags_no_longer_count_as_unsupported() {
 #[test]
 fn prefix_neighbours_still_resolve_to_their_own_tags() {
     // `\fr` не должен «съедать» `\frx`, `\fs` — `\fscx`, `\fad` — `\fade`.
-    let (_, stats) = parse(r"{\frx1\fscx50\fs20\fade(1,2,3,4,5,6,7)\fad(1,2)\k1}x");
-    assert_eq!(stats.unsupported_count(AssUnsupportedTag::Karaoke), 1);
+    let (items, stats) = parse(r"{\frx1\fscx50\fs20\fade(1,2,3,4,5,6,7)\fad(1,2)\k1}x");
     assert_eq!(stats.unknown_total(), 0);
+    assert_eq!(stats.malformed(), 0);
+    let Some(AssTextItem::Overrides(tags)) = items.first() else {
+        panic!("expected an override block, got {items:?}");
+    };
+    assert_eq!(tags.len(), 6);
+    assert!(matches!(&tags[5], AssOverride::Karaoke(k) if k.kind == AssKaraokeKind::Plain));
 }
 
 #[test]

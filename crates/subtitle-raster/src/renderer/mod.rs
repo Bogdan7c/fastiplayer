@@ -15,8 +15,14 @@
 //! - Клипы ASS (`\clip`, `\iclip`) в ключ кэша НЕ входят: кэш хранит картинки реплики без клипа
 //!   (`RasterizedCue::bitmaps`), а клип накладывает стадия `crate::clip` при сборке кадра, до сдвига
 //!   столкновений (`RasterizedCue::final_bitmaps`; как в libass).
+//! - Анимированный прямоугольный клип (`\t(\clip(...))`) считается по часам кадра в той же стадии
+//!   и в ключ кэша не входит; `\t`, меняющий вид букв, кладёт в ключ свой вес (реплика рисуется
+//!   заново при каждом новом весе — до трёхуровневого кэша 10c).
+//! - Караоке (`\k`, `\kf`, `\ko`) тоже стадия после кэша: буквы строки рисуются один раз, а
+//!   `RasterizedCue::final_bitmaps` на каждом кадре раскрашивает их по часам события
+//!   (`crate::karaoke`); срок годности кадра сообщает `RasterizedCue::karaoke_change`.
 //! - Время: `RenderRequest::moment` + тайминг ASS-события (`AssEventTiming`) задают анимации
-//!   (`\move`, `\fad`). Реплика без анимации кэшируется по ключу без времени; анимированная —
+//!   (`\move`, `\fad`, `\t`). Реплика без анимации кэшируется по ключу без времени; анимированная —
 //!   по её мгновенному состоянию. `SubtitleOverlay::animation_change` сообщает, когда
 //!   картинка изменится сама.
 //! - Если запрос совпал с прошлым (те же ключи в том же порядке, холст, стиль, языковое предпочтение,
@@ -44,8 +50,8 @@ use std::sync::Arc;
 
 use crate::appearance::SubtitleAppearance;
 use crate::ass::{
-    AssAnimation, AssAnimationKey, AssAnimationState, AssEventClock, AssRenderOptions,
-    AssStyleSource, evaluate_animation,
+    AssAnimation, AssAnimationKey, AssAnimationState, AssEventClock, AssFrameScale,
+    AssRenderOptions, AssStyleSource, evaluate_animation,
 };
 use crate::blur::BlurScratch;
 use crate::cache::ByteLruCache;
@@ -343,12 +349,24 @@ impl SubtitleRasterizer {
             };
             match cue.content {
                 CueContent::Text(_) => text_cues.push(rasterized),
-                CueContent::Ass { cue: ass, .. } => ass_cues.push(AssFrameCue {
-                    key: cue.key,
-                    layer: cue.layer,
-                    read_order: ass.read_order,
-                    rasterized,
-                }),
+                CueContent::Ass { cue: ass, .. } => {
+                    let clock = animation.as_ref().and_then(|current| current.state.clock);
+                    // Караоке зависит от времени уже после кэша: срок годности картинки
+                    // узнаётся по готовой реплике.
+                    if let Some(change) = clock
+                        .as_ref()
+                        .and_then(|clock| rasterized.karaoke_change(clock))
+                    {
+                        time.include_stage_change(change);
+                    }
+                    ass_cues.push(AssFrameCue {
+                        key: cue.key,
+                        layer: cue.layer,
+                        read_order: ass.read_order,
+                        rasterized,
+                        clock,
+                    });
+                }
             }
         }
         let mut bitmaps = Self::text_bitmaps(&text_cues, request.canvas);
@@ -380,10 +398,15 @@ impl SubtitleRasterizer {
     fn animation_of(cue: &RenderableCue<'_>, request: &RenderRequest<'_>) -> Option<AssAnimation> {
         match cue.content {
             CueContent::Text(_) => None,
-            CueContent::Ass { cue: ass, timing } => Some(evaluate_animation(
-                ass,
-                &AssEventClock::new(request.moment, timing),
-            )),
+            CueContent::Ass { cue: ass, timing } => {
+                let frame =
+                    AssFrameScale::new(ass.script.info(), request.canvas, request.ass.storage_size);
+                Some(evaluate_animation(
+                    ass,
+                    &AssEventClock::new(request.moment, timing),
+                    &frame,
+                ))
+            }
         }
     }
 
@@ -399,7 +422,7 @@ impl SubtitleRasterizer {
         let shifts = resolve_vertical_shifts(&items, canvas.height());
         let mut bitmaps: Vec<SubtitleBitmap> = Vec::new();
         for (cue, shift) in cues.iter().zip(shifts) {
-            bitmaps.extend(cue.final_bitmaps().iter().map(|bitmap| {
+            bitmaps.extend(cue.final_bitmaps(None).iter().map(|bitmap| {
                 if shift == 0 {
                     bitmap.clone()
                 } else {

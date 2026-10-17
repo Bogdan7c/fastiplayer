@@ -3,7 +3,8 @@
 
 use subtitle_core::{
     AssAlignment, AssAlphaTarget, AssAxes, AssBold, AssColorSlot, AssFontSize, AssHorizontalAlign,
-    AssOverride, AssRgb, AssTextItem, AssUnsupportedTag, AssVerticalAlign, AssWrapStyle,
+    AssKaraokeKind, AssOverride, AssRgb, AssTextItem, AssTransform, AssTransformTiming,
+    AssVerticalAlign, AssWrapStyle,
 };
 
 use super::limits::AssParseLimits;
@@ -56,10 +57,10 @@ fn fscx_is_scale_not_font_size() {
         single_override(r"{\fscy50}x"),
         AssOverride::ScaleY(Some(0.5))
     );
-    // Отрицательный масштаб зажимается нулём.
+    // Отрицательный масштаб хранится как написано: зажимает растеризатор после `\t`.
     assert_eq!(
         single_override(r"{\fscx-10}x"),
-        AssOverride::ScaleX(Some(0.0))
+        AssOverride::ScaleX(Some(-0.1))
     );
     assert_eq!(single_override(r"{\fscx}x"), AssOverride::ScaleX(None));
 }
@@ -115,8 +116,8 @@ fn bord_is_border_not_bold() {
         single_override(r"{\ybord-1}x"),
         AssOverride::Border {
             axes: AssAxes::Y,
-            // Отрицательный контур зажимается нулём.
-            value: Some(0.0)
+            // Отрицательный контур хранится как написано: зажимает растеризатор после `\t`.
+            value: Some(-1.0)
         }
     );
     assert_eq!(
@@ -129,7 +130,7 @@ fn bord_is_border_not_bold() {
 }
 
 #[test]
-fn shad_is_shadow_not_strikeout_and_clamping_differs_by_axis() {
+fn shad_is_shadow_not_strikeout_and_values_are_kept_as_written() {
     assert_eq!(
         single_override(r"{\shad2}x"),
         AssOverride::Shadow {
@@ -141,10 +142,11 @@ fn shad_is_shadow_not_strikeout_and_clamping_differs_by_axis() {
         single_override(r"{\shad-2}x"),
         AssOverride::Shadow {
             axes: AssAxes::Both,
-            value: Some(0.0)
+            // Зажатие `\shad` (но не `\xshad`/`\yshad`) делает растеризатор после `\t`.
+            value: Some(-2.0)
         }
     );
-    // \xshad и \yshad не зажимаются (тень влево/вверх).
+    // \xshad и \yshad остаются отрицательными (тень влево/вверх).
     assert_eq!(
         single_override(r"{\xshad-2}x"),
         AssOverride::Shadow {
@@ -355,32 +357,42 @@ fn spaces_after_backslash_and_around_arguments_are_tolerated() {
 }
 
 #[test]
-fn layer_two_and_three_tags_are_unsupported_not_unknown() {
+fn layer_two_and_three_tags_are_parsed_not_unknown() {
     let (items, stats) =
         parse(r"{\frz30\move(1,2,3,4)\t(0,100,\fs50)\clip(0,0,5,5)\blur2\be1\k20\p1}x");
     assert_eq!(items.len(), 2);
-    // Слой 3 (клип, размытие, рисунок) теперь разобран, а не «не поддержан».
-    for tag in [AssUnsupportedTag::Transform, AssUnsupportedTag::Karaoke] {
-        assert_eq!(stats.unsupported_count(tag), 1, "{tag:?}");
-    }
-    assert_eq!(stats.unsupported().len(), 2);
     assert_eq!(stats.unknown_total(), 0);
-    // Вложенный \fs внутри \t(...) не стал самостоятельным тегом.
+    assert_eq!(stats.malformed(), 0);
+    // Вложенный \fs внутри \t(...) не стал самостоятельным тегом блока, а лёг внутрь \t.
     let flat = overrides_of(r"{\t(0,100,\fs50)}x");
     assert_eq!(
         flat,
-        vec![AssOverride::Unsupported(AssUnsupportedTag::Transform)]
+        vec![AssOverride::Transform(AssTransform {
+            timing: AssTransformTiming::Range {
+                t1_ms: 0,
+                t2_ms: 100
+            },
+            tags: vec![AssOverride::FontSize(AssFontSize::Absolute(50.0))],
+        })]
     );
 }
 
 #[test]
 fn prefix_traps_of_unsupported_tags_do_not_leak_into_supported_ones() {
     // \be не должен стать \b, \blur — \bord/\b, \kf/\ko — \k, \fax — не \fa..., \pbo — не \p.
-    let (_, stats) =
+    let (items, stats) =
         parse(r"{\be1\blur3\kf10\ko5\pbo2\iclip(1,2,3,4)\org(1,2)\fad(1,2)\fade(1,2,3,4,5,6,7)}x");
-    assert_eq!(stats.unsupported_count(AssUnsupportedTag::Karaoke), 2);
-    assert_eq!(stats.unsupported().len(), 1);
     assert_eq!(stats.unknown_total(), 0);
+    assert_eq!(stats.malformed(), 0);
+    let Some(AssTextItem::Overrides(tags)) = items.first() else {
+        panic!("expected an override block, got {items:?}");
+    };
+    assert_eq!(tags.len(), 9);
+    assert_eq!(tags[0], AssOverride::EdgeBlur(Some(1.0)));
+    assert_eq!(tags[1], AssOverride::Blur(Some(3.0)));
+    assert!(matches!(&tags[2], AssOverride::Karaoke(k) if k.kind == AssKaraokeKind::Fill));
+    assert!(matches!(&tags[3], AssOverride::Karaoke(k) if k.kind == AssKaraokeKind::Outline));
+    assert_eq!(tags[4], AssOverride::DrawingBaselineOffset(2.0));
 }
 
 #[test]
@@ -493,9 +505,10 @@ fn drawing_tag_keeps_its_argument_and_only_enabled_mode_is_counted() {
             "{off}"
         );
     }
-    // Рисунки теперь растеризуются: режим «включён» в «не поддержано» не попадает.
+    // Режим «включён» разобран как есть, а не отброшен.
     let (_, enabled) = parse(r"{\p1}m 0 0 l 5 5{\p0}");
-    assert!(enabled.unsupported().is_empty());
+    assert_eq!(enabled.unknown_total(), 0);
+    assert_eq!(enabled.malformed(), 0);
     // `\pbo` — отдельный тег, а не режим рисунка.
     assert_eq!(
         overrides_of(r"{\pbo5}x"),
@@ -538,8 +551,8 @@ fn move_keeps_its_arguments_orders_times_and_is_still_reported_as_unsupported() 
         })]
     );
     let (_, stats) = parse(r"{\move(1,2,3,4)}x");
-    // \move поддержан: в «не поддержано» не попадает.
-    assert!(stats.unsupported().is_empty());
+    assert_eq!(stats.unknown_total(), 0);
+    assert_eq!(stats.malformed(), 0);
     // Без времени и с неположительным временем: «на всю реплику».
     let whole_event = overrides_of(r"{\move(1,2,3,4,-5,0)}x");
     assert!(matches!(
@@ -553,4 +566,23 @@ fn move_with_a_wrong_argument_count_is_ignored_and_counted_as_malformed() {
     let (items, stats) = parse(r"{\move(1,2,3)}x");
     assert_eq!(items, vec![AssTextItem::Text("x".to_owned())]);
     assert_eq!(stats.malformed(), 1);
+}
+
+/// `parse_alpha_tag` возвращает `int32` без усечения: байт берёт растеризатор после смеси `\t`.
+#[test]
+fn alpha_keeps_the_raw_int32_value_for_late_masking() {
+    for (text, raw) in [
+        (r"{\alpha&H1FF&}x", 0x1FF_i32),
+        (r"{\1a&H100&}x", 0x100),
+        (r"{\alpha&H-1&}x", -1),
+        // mystrtoi32 зажимает в диапазон int32, а не заворачивает.
+        (r"{\alpha&HFFFFFFFF&}x", i32::MAX),
+    ] {
+        match single_override(text) {
+            AssOverride::Alpha {
+                value: Some(value), ..
+            } => assert_eq!(i64::from(value), i64::from(raw), "{text}"),
+            other => panic!("ожидался Alpha для {text}, получено {other:?}"),
+        }
+    }
 }

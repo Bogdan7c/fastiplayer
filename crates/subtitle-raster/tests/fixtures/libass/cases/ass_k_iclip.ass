@@ -1,0 +1,17 @@
+; reference: width=640 height=360 time_ms=300,800,1500
+; case: kf combined with an inverse rectangular clip (up to eight pieces)
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+ScaledBorderAndShadow: yes
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans,36,&H00FFFFFF,&H000000FF,&H00804000,&H80000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,60)\fs60\iclip(120,30,300,95)\kf20\kf80}Inverse hole karaoke
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,190)\fs60\bord2\iclip(150,150,350,230)\kf20\kf80}Hole with border

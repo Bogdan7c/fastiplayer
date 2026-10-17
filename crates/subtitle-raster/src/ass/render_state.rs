@@ -41,13 +41,20 @@
 
 use subtitle_core::{
     AssAlignment, AssAlphaTarget, AssAxes, AssBold, AssColor, AssColorSlot, AssDrawingMode,
-    AssFontSize, AssOverride, AssRotationAxis, AssScript, AssShearAxis, AssStyle, AssStyleIndex,
-    AssWrapStyle,
+    AssFontSize, AssKaraoke, AssKaraokeKind, AssOverride, AssRotationAxis, AssScript, AssShearAxis,
+    AssStyle, AssStyleIndex, AssWrapStyle,
 };
 
+use super::animation::AssEventClock;
 use super::filter_params::FilterParams;
+use super::tag_weight::{TagWeight, dtoi32};
+use super::transform_apply::{TagSink, apply_transform};
 use crate::event_fade::EventFade;
 use crate::glyph_transform::{Rotation3d, ShearFactors};
+use crate::karaoke::{KaraokeEffect, KaraokeMark};
+
+/// Длительность слога без аргумента (сотые доли секунды; libass: `double val = 100`).
+const DEFAULT_SYLLABLE_CENTISECONDS: f64 = 100.0;
 
 /// Позиция, заданная `\pos` (координаты сценария).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -114,6 +121,12 @@ pub(crate) struct RenderState<'script> {
     /// Значение затухания на момент показа: его получит `fade`, когда встретится тег.
     event_fade: EventFade,
     fade_locked: bool,
+    /// Теги караоке, ещё не прикреплённые к символу: следующий символ заберёт их
+    /// ([`Self::take_karaoke_mark`]). `\r` их не сбрасывает (`init_render_context` — единственное
+    /// место, где libass обнуляет `effect_*`).
+    karaoke: KaraokeMark,
+    /// Часы реплики для `\t`; `None` — анимации считаются завершёнными (вес 1).
+    clock: Option<AssEventClock>,
 }
 
 impl<'script> RenderState<'script> {
@@ -146,7 +159,7 @@ impl<'script> RenderState<'script> {
             encoding: event_style.encoding,
             rotation: style_rotation(event_style),
             shear: ShearFactors::default(),
-            filters: FilterParams::default(),
+            filters: FilterParams::for_play_res(script.info().play_res),
             alignment: event_style.alignment,
             alignment_locked: false,
             wrap_style: initial_wrap_style,
@@ -156,7 +169,15 @@ impl<'script> RenderState<'script> {
             fade: EventFade::NONE,
             event_fade: EventFade::NONE,
             fade_locked: false,
+            karaoke: KaraokeMark::NONE,
+            clock: None,
         }
+    }
+
+    /// Задаёт часы реплики: по ним `\t` считает вес вложенных тегов.
+    pub(crate) fn with_event_clock(mut self, clock: Option<AssEventClock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Задаёт значение затухания реплики на момент показа (см. модуль анимации). Оно вступает
@@ -164,6 +185,12 @@ impl<'script> RenderState<'script> {
     pub(crate) fn with_event_fade(mut self, fade: EventFade) -> Self {
         self.event_fade = fade;
         self
+    }
+
+    /// Забирает теги караоке для очередного символа и сбрасывает их (libass: `parse_events`
+    /// копирует `effect_*` в глиф и обнуляет).
+    pub(crate) fn take_karaoke_mark(&mut self) -> KaraokeMark {
+        self.karaoke.take()
     }
 
     /// Стиль последнего сброса: от него зависят отступы реплики.
@@ -195,8 +222,22 @@ impl<'script> RenderState<'script> {
         self.filters.reset_blur();
     }
 
-    /// Применяет один тег (libass: ветки `ass_parse_tags` при `pwr = 1`, без анимации).
+    /// Применяет один тег блока реплики (libass: ветка `ass_parse_tags` верхнего уровня,
+    /// `pwr = 1`). `\t` применяет вложенные теги с его весом.
     pub(crate) fn apply(&mut self, tag: &AssOverride) {
+        match tag {
+            AssOverride::Transform(transform) => {
+                // Часы заимствуются копией: `apply_transform` держит `&mut self` как получателя.
+                let clock = self.clock;
+                apply_transform(self, transform, clock.as_ref());
+            }
+            other => self.apply_weighted(other, TagWeight::FULL),
+        }
+    }
+
+    /// Применяет один тег (не `\t`) с весом `weight`. Анимируемые теги смешивают старое
+    /// значение с новым; остальные применяются сразу и целиком, даже при весе 0.
+    fn apply_weighted(&mut self, tag: &AssOverride, weight: TagWeight) {
         match tag {
             AssOverride::Bold(value) => self.bold = value.unwrap_or(self.style.bold),
             AssOverride::Italic(value) => self.italic = value.unwrap_or(self.style.italic),
@@ -209,20 +250,14 @@ impl<'script> RenderState<'script> {
             AssOverride::FontName(name) => {
                 self.font_name = name.clone().unwrap_or_else(|| self.style.font_name.clone());
             }
-            AssOverride::FontSize(size) => self.apply_font_size(*size),
+            AssOverride::FontSize(size) => self.apply_font_size(*size, weight),
             AssOverride::FontEncoding(value) => {
                 self.encoding = value.unwrap_or(self.style.encoding);
             }
-            AssOverride::Color { slot, value } => self.apply_color(*slot, *value),
-            AssOverride::Alpha { target, value } => self.apply_alpha(*target, *value),
-            AssOverride::Border { axes, value } => {
-                let fallback = self.style.outline;
-                apply_axes(&mut self.border, *axes, value.unwrap_or(fallback));
-            }
-            AssOverride::Shadow { axes, value } => {
-                let fallback = self.style.shadow;
-                apply_axes(&mut self.shadow, *axes, value.unwrap_or(fallback));
-            }
+            AssOverride::Color { slot, value } => self.apply_color(*slot, *value, weight),
+            AssOverride::Alpha { target, value } => self.apply_alpha(*target, *value, weight),
+            AssOverride::Border { axes, value } => self.apply_border(*axes, *value, weight),
+            AssOverride::Shadow { axes, value } => self.apply_shadow(*axes, *value, weight),
             AssOverride::Alignment(value) => {
                 // Побеждает первый тег выравнивания, даже недопустимый (тогда — стиль).
                 if !self.alignment_locked {
@@ -238,7 +273,8 @@ impl<'script> RenderState<'script> {
             }
             AssOverride::Move(movement) => {
                 // libass тоже ставит EVENT_POSITIONED по `\move`: последующий `\pos` игнорируется.
-                // Слой 1 не анимирует: реплика стоит в начальной точке (положение при `t <= t1`).
+                // Текущую точку движения даёт анимация (`AssAnimationState::position`); здесь
+                // реплика стоит в начальной точке.
                 if self.position.is_none() {
                     self.position = Some(ScriptPoint {
                         x: movement.from_x,
@@ -252,14 +288,14 @@ impl<'script> RenderState<'script> {
                     self.origin = Some(ScriptPoint { x: *x, y: *y });
                 }
             }
-            AssOverride::Rotation { axis, degrees } => self.apply_rotation(*axis, *degrees),
+            AssOverride::Rotation { axis, degrees } => self.apply_rotation(*axis, *degrees, weight),
             AssOverride::Shear { axis, factor } => {
-                // Тег без аргумента сбрасывает наклон в 0 (не в стиль).
-                let value = factor.unwrap_or(0.0);
-                match axis {
-                    AssShearAxis::X => self.shear.horizontal = value,
-                    AssShearAxis::Y => self.shear.vertical = value,
-                }
+                // Тег без аргумента сбрасывает наклон в 0 (не в стиль) сразу.
+                let slot = match axis {
+                    AssShearAxis::X => &mut self.shear.horizontal,
+                    AssShearAxis::Y => &mut self.shear.vertical,
+                };
+                *slot = factor.map_or(0.0, |new| weight.blend(*slot, new));
             }
             AssOverride::Fade(_) => {
                 // Побеждает первый тег (`PARSED_FADE`); символы до него остаются без затухания.
@@ -272,41 +308,91 @@ impl<'script> RenderState<'script> {
             AssOverride::WrapStyle(value) => {
                 self.wrap_style = value.unwrap_or(self.script.info().wrap_style);
             }
-            AssOverride::ScaleX(value) => self.scale.x = value.unwrap_or(self.style.scale_x),
-            AssOverride::ScaleY(value) => self.scale.y = value.unwrap_or(self.style.scale_y),
+            AssOverride::ScaleX(value) => {
+                self.scale.x = animated_scale(self.scale.x, *value, self.style.scale_x, weight);
+            }
+            AssOverride::ScaleY(value) => {
+                self.scale.y = animated_scale(self.scale.y, *value, self.style.scale_y, weight);
+            }
             AssOverride::ResetScale => {
                 self.scale = AxisValues {
                     x: self.style.scale_x,
                     y: self.style.scale_y,
                 };
             }
-            AssOverride::Spacing(value) => self.spacing = value.unwrap_or(self.style.spacing),
+            AssOverride::Spacing(value) => {
+                self.spacing =
+                    value.map_or(self.style.spacing, |new| weight.blend(self.spacing, new));
+            }
             AssOverride::Drawing(mode) => self.drawing = *mode,
             AssOverride::Blur(_)
             | AssOverride::EdgeBlur(_)
             | AssOverride::DrawingBaselineOffset(_)
-            | AssOverride::Clip(_) => self.filters.apply(tag),
-            // `\t` и караоке (сессия 10b) пока не исполняются (их считает разбор).
-            AssOverride::Unsupported(_) => {}
-        }
-    }
-
-    /// `\frx \fry \frz`: без аргумента X и Y возвращаются в 0, Z — в угол стиля.
-    fn apply_rotation(&mut self, axis: AssRotationAxis, degrees: Option<f64>) {
-        match axis {
-            AssRotationAxis::X => self.rotation.x_degrees = degrees.unwrap_or(0.0),
-            AssRotationAxis::Y => self.rotation.y_degrees = degrees.unwrap_or(0.0),
-            AssRotationAxis::Z => {
-                self.rotation.z_degrees = degrees.unwrap_or(self.style.angle);
+            | AssOverride::Clip(_) => self.filters.apply_weighted(tag, weight),
+            // `\t` разбирает `apply` (оно знает часы); сюда вложенный `\t` не доходит.
+            AssOverride::Transform(_) => {}
+            // Караоке не анимируется `\t`: применяется сразу и целиком, вес не нужен.
+            AssOverride::Karaoke(syllable) => self.apply_karaoke(syllable),
+            AssOverride::KaraokeSkip(centiseconds) => {
+                // `\kt` без аргумента — пропуск 0; иначе `dtoi32(argtod * 10)`.
+                self.karaoke
+                    .skip_timeline(dtoi32(centiseconds.map_or(0.0, |value| value * 10.0)));
             }
         }
     }
 
-    /// `\fs`: итог `<= 0` заменяется размером стиля (libass).
-    fn apply_font_size(&mut self, size: AssFontSize) {
+    /// `\k`, `\K`, `\kf`, `\ko`: слог длиной `dtoi32(сотые * 10)` мс; без аргумента — 100 сотых.
+    fn apply_karaoke(&mut self, syllable: &AssKaraoke) {
+        let effect = match syllable.kind {
+            AssKaraokeKind::Fill => KaraokeEffect::Fill,
+            AssKaraokeKind::Outline => KaraokeEffect::Outline,
+            AssKaraokeKind::Plain => KaraokeEffect::Plain,
+        };
+        let centiseconds = syllable
+            .centiseconds
+            .unwrap_or(DEFAULT_SYLLABLE_CENTISECONDS);
+        self.karaoke
+            .begin_syllable(effect, dtoi32(centiseconds * 10.0));
+    }
+
+    /// `\bord`, `\xbord`, `\ybord`: смесь по каждой оси от СВОЕГО старого значения, затем
+    /// зажатие снизу нулём. Без аргумента — обводка стиля сразу.
+    fn apply_border(&mut self, axes: AssAxes, value: Option<f64>, weight: TagWeight) {
+        let Some(new) = value else {
+            apply_axes(&mut self.border, axes, self.style.outline);
+            return;
+        };
+        blend_axes(&mut self.border, axes, new, weight, true);
+    }
+
+    /// `\shad` (зажимается снизу нулём), `\xshad`, `\yshad` (не зажимаются: совместимость с
+    /// VSFilter).
+    fn apply_shadow(&mut self, axes: AssAxes, value: Option<f64>, weight: TagWeight) {
+        let Some(new) = value else {
+            apply_axes(&mut self.shadow, axes, self.style.shadow);
+            return;
+        };
+        let clamp_below_zero = axes == AssAxes::Both;
+        blend_axes(&mut self.shadow, axes, new, weight, clamp_below_zero);
+    }
+
+    /// `\frx \fry \frz`: без аргумента X и Y возвращаются в 0, Z — в угол стиля (сразу);
+    /// с аргументом угол смешивается со старым.
+    fn apply_rotation(&mut self, axis: AssRotationAxis, degrees: Option<f64>, weight: TagWeight) {
+        let (slot, fallback) = match axis {
+            AssRotationAxis::X => (&mut self.rotation.x_degrees, 0.0),
+            AssRotationAxis::Y => (&mut self.rotation.y_degrees, 0.0),
+            AssRotationAxis::Z => (&mut self.rotation.z_degrees, self.style.angle),
+        };
+        *slot = degrees.map_or(fallback, |new| weight.blend(*slot, new));
+    }
+
+    /// `\fs`: абсолютный размер смешивается со старым, относительный (`+N`/`-N`) умножает
+    /// старый на `1 + pwr * N / 10`; итог `<= 0` заменяется размером стиля (libass).
+    fn apply_font_size(&mut self, size: AssFontSize, weight: TagWeight) {
         let new_size = match size {
-            AssFontSize::Absolute(value) => value,
-            AssFontSize::Relative(change) => self.font_size * (1.0 + change / 10.0),
+            AssFontSize::Absolute(value) => weight.blend(self.font_size, value),
+            AssFontSize::Relative(change) => weight.scale_relative(self.font_size, change),
             AssFontSize::Reset => 0.0,
         };
         self.font_size = if new_size > 0.0 {
@@ -316,17 +402,28 @@ impl<'script> RenderState<'script> {
         };
     }
 
-    /// `\c`, `\1c`..`\4c`: меняется RGB, прозрачность слота сохраняется (`change_color`).
-    fn apply_color(&mut self, slot: AssColorSlot, value: Option<subtitle_core::AssRgb>) {
+    /// `\c`, `\1c`..`\4c`: RGB смешивается по каналам (`change_color`), прозрачность слота
+    /// сохраняется. Без аргумента — цвет стиля сразу.
+    fn apply_color(
+        &mut self,
+        slot: AssColorSlot,
+        value: Option<subtitle_core::AssRgb>,
+        weight: TagWeight,
+    ) {
         let index = slot_index(slot);
-        let new_rgb = value.unwrap_or_else(|| style_colors(self.style)[index].rgb());
-        if let Some(color) = self.colors.get_mut(index) {
-            *color = AssColor::new(new_rgb.red, new_rgb.green, new_rgb.blue, color.transparency);
-        }
+        let Some(color) = self.colors.get_mut(index) else {
+            return;
+        };
+        let new_rgb = match value {
+            Some(new) => weight.blend_rgb(color.rgb(), new),
+            None => style_colors(self.style)[index].rgb(),
+        };
+        *color = AssColor::new(new_rgb.red, new_rgb.green, new_rgb.blue, color.transparency);
     }
 
-    /// `\alpha`, `\1a`..`\4a`: меняется только прозрачность; без аргумента — прозрачность стиля.
-    fn apply_alpha(&mut self, target: AssAlphaTarget, value: Option<u8>) {
+    /// `\alpha`, `\1a`..`\4a`: меняется только прозрачность (`change_alpha`); без аргумента —
+    /// прозрачность стиля сразу.
+    fn apply_alpha(&mut self, target: AssAlphaTarget, value: Option<i32>, weight: TagWeight) {
         let slots: &[AssColorSlot] = match target {
             AssAlphaTarget::All => &[
                 AssColorSlot::Primary,
@@ -341,11 +438,14 @@ impl<'script> RenderState<'script> {
         };
         for slot in slots {
             let index = slot_index(*slot);
-            let transparency =
-                value.unwrap_or_else(|| style_colors(self.style)[index].transparency);
-            if let Some(color) = self.colors.get_mut(index) {
-                *color = color.with_transparency(transparency);
-            }
+            let Some(color) = self.colors.get_mut(index) else {
+                continue;
+            };
+            let transparency = match value {
+                Some(new) => weight.blend_alpha(color.transparency, new),
+                None => style_colors(self.style)[index].transparency,
+            };
+            *color = color.with_transparency(transparency);
         }
     }
 
@@ -358,6 +458,12 @@ impl<'script> RenderState<'script> {
             None => self.event_style,
         };
         self.reset_to(style);
+    }
+}
+
+impl TagSink for RenderState<'_> {
+    fn apply_tag(&mut self, tag: &AssOverride, weight: TagWeight) {
+        self.apply_weighted(tag, weight);
     }
 }
 
@@ -394,6 +500,44 @@ fn apply_axes(target: &mut AxisValues, axes: AssAxes, value: f64) {
         AssAxes::Both => *target = AxisValues::uniform(value),
         AssAxes::X => target.x = value,
         AssAxes::Y => target.y = value,
+    }
+}
+
+/// Смешивает выбранные оси со значением `new` с весом `weight`; каждая ось — от своего
+/// старого значения. `clamp_below_zero` — зажатие результата снизу нулём (`(v < 0) ? 0 : v`,
+/// поэтому NaN остаётся NaN, как в C).
+fn blend_axes(
+    target: &mut AxisValues,
+    axes: AssAxes,
+    new: f64,
+    weight: TagWeight,
+    clamp_below_zero: bool,
+) {
+    let blend = |old: f64| {
+        let blended = weight.blend(old, new);
+        if clamp_below_zero && blended < 0.0 {
+            0.0
+        } else {
+            blended
+        }
+    };
+    if matches!(axes, AssAxes::Both | AssAxes::X) {
+        target.x = blend(target.x);
+    }
+    if matches!(axes, AssAxes::Both | AssAxes::Y) {
+        target.y = blend(target.y);
+    }
+}
+
+/// `\fscx` / `\fscy`: смесь со старым масштабом, зажатие снизу нулём; без аргумента — масштаб
+/// стиля сразу. Значение тега уже в долях единицы (`процент / 100`).
+fn animated_scale(old: f64, value: Option<f64>, style_scale: f64, weight: TagWeight) -> f64 {
+    match value {
+        Some(new) => {
+            let blended = weight.blend(old, new);
+            if blended < 0.0 { 0.0 } else { blended }
+        }
+        None => style_scale,
     }
 }
 

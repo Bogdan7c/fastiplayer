@@ -13,8 +13,8 @@ use std::sync::Arc;
 use subtitle_core::{
     AssAlignment, AssAlphaTarget, AssAxes, AssBold, AssBorderStyle, AssColor, AssCue,
     AssHardOverrides, AssHorizontalAlign, AssOverride, AssRgb, AssScaledBorderAndShadow, AssScript,
-    AssScriptKind, AssTextItem, AssUnsupportedTag, AssVerticalAlign, AssWrapStyle, SubtitleContent,
-    SubtitleEvent, SubtitleTime, SubtitleTimeline,
+    AssScriptKind, AssTextItem, AssVerticalAlign, AssWrapStyle, SubtitleContent, SubtitleEvent,
+    SubtitleTime, SubtitleTimeline,
 };
 use subtitle_formats::{
     AssParseError, AssParseLimits, AssTagStats, EmbeddedCueError, EmbeddedCueLimits,
@@ -362,10 +362,13 @@ fn unknown_and_unsupported_tags_are_counted_and_text_is_kept() {
     let tags = &document.ass_report().unwrap().tags;
     assert_eq!(tags.unknown_total(), 1);
     assert_eq!(tags.unknown_names().get("zzz9"), Some(&1));
-    assert_eq!(tags.unsupported_count(AssUnsupportedTag::Transform), 0);
-    assert_eq!(tags.unsupported_count(AssUnsupportedTag::Karaoke), 1);
-    // `\move` поддержан и в «не поддержано» не считается.
-    assert_eq!(tags.unsupported().len(), 1);
+    // `\move` и `\k1` разобраны как теги, а не посчитаны неизвестными или кривыми.
+    assert_eq!(tags.malformed(), 0);
+    let karaoke_kept = cue.text.iter().any(|item| {
+        matches!(item, AssTextItem::Overrides(tags)
+            if tags.iter().any(|tag| matches!(tag, AssOverride::Karaoke(_))))
+    });
+    assert!(karaoke_kept, "{:?}", cue.text);
 }
 
 #[test]
@@ -619,7 +622,7 @@ fn chunk_with_unknown_style_uses_the_default_style_and_counts_tags_in_accumulato
     let script = mkv_script();
     let mut stats = AssTagStats::new(&ASS_LIMITS);
     let event = parse_embedded_ass_event(
-        b"0,0,*DEFAULT,,0,0,0,,{\\k2}a",
+        b"0,0,*DEFAULT,,0,0,0,,{\\zzz2}a",
         &script,
         &embedded_limits(),
         &ASS_LIMITS,
@@ -628,7 +631,7 @@ fn chunk_with_unknown_style_uses_the_default_style_and_counts_tags_in_accumulato
     .unwrap();
     assert_eq!(event.cue.style().name, "Default");
     let missing_style = parse_embedded_ass_event(
-        b"1,0,NoSuchStyle,,0,0,0,,{\\k2}b",
+        b"1,0,NoSuchStyle,,0,0,0,,{\\zzz2}b",
         &script,
         &embedded_limits(),
         &ASS_LIMITS,
@@ -637,7 +640,8 @@ fn chunk_with_unknown_style_uses_the_default_style_and_counts_tags_in_accumulato
     .unwrap();
     assert_eq!(missing_style.cue.style, script.default_style_index());
     // Накопитель суммирует по пакетам.
-    assert_eq!(stats.unsupported_count(AssUnsupportedTag::Karaoke), 2);
+    assert_eq!(stats.unknown_total(), 2);
+    assert_eq!(stats.unknown_names().get("zzz2"), Some(&2));
 }
 
 #[test]

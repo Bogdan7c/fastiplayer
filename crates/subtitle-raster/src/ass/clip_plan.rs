@@ -22,9 +22,11 @@
 //! Это единственное место, где клип знает про `PlayRes` и масштаб кадра: дальше стадия
 //! [`crate::clip`] работает только с пикселями холста.
 
+use super::clip_animation::ClipAnimation;
 use super::drawing_scale::coordinate_weight;
 use super::filter_params::{FilterParams, RectClip, VectorClip};
 use super::frame_scale::{AssFrameScale, EventScale};
+use super::scroll::ScrollBand;
 use crate::clip::{ScreenRectClip, VectorClipPlan};
 use crate::overlay::CanvasSize;
 
@@ -35,6 +37,10 @@ pub(crate) struct EventClipPlan {
     pub(crate) rect: Option<ScreenRectClip>,
     /// Векторный клип, если автор его задал.
     pub(crate) vector: Option<VectorClipPlan>,
+    /// Описание прямоугольника, который меняется во времени (`\t(\clip(...))`); `None` —
+    /// `rect` постоянен. Если описание есть, `rect` — значение на момент рисования реплики,
+    /// а для кадра прямоугольник пересчитывается по часам кадра.
+    pub(crate) animation: Option<ClipAnimation>,
 }
 
 impl EventClipPlan {
@@ -55,13 +61,29 @@ impl EventClipPlan {
                 .rect_clip()
                 .map(|clip| screen_rect(clip, frame, canvas, explicit)),
             vector: filters.vector_clip().map(|clip| vector_plan(clip, scale)),
+            animation: None,
+        }
+    }
+
+    /// Ограничивает клип по высоте полосой прокрутки `Scroll up/down` (libass: пересечение
+    /// `clip_y0/clip_y1` с `lround(y2scr_pos(scroll_y0/1))`). Реплика без `\clip` получает
+    /// клип на весь холст, пересечённый с полосой. Полоса постоянна во времени, поэтому
+    /// попадает и в покадровый прямоугольник `\t(\clip)`.
+    pub(crate) fn limit_to_scroll_band(&mut self, band: ScrollBand, canvas: CanvasSize) {
+        let limited = self
+            .rect
+            .unwrap_or_else(|| ScreenRectClip::whole_canvas(canvas))
+            .limited_to_rows(band.top, band.bottom);
+        self.rect = Some(limited);
+        if let Some(animation) = self.animation.as_mut() {
+            animation.limit_to_scroll_band(band);
         }
     }
 }
 
 /// Углы прямоугольника в пикселях холста (libass: `lround(x2scr_pos_scaled(...))`,
 /// `lround(y2scr_pos(...))` и зажим в кадр у явных реплик).
-fn screen_rect(
+pub(super) fn screen_rect(
     clip: RectClip,
     frame: &AssFrameScale,
     canvas: CanvasSize,

@@ -7,7 +7,7 @@ use subtitle_core::SubtitleLayer;
 use super::ass_collisions::{AssCollisionItem, AssCollisionMemory};
 use super::cue_render::RasterizedCue;
 use super::request::CueKey;
-use crate::ass::AssRenderOptions;
+use crate::ass::{AssEventClock, AssRenderOptions};
 use crate::overlay::{CanvasSize, SubtitleBitmap};
 
 /// ASS-реплика кадра: готовая растеризация и данные порядка.
@@ -17,6 +17,8 @@ pub(super) struct AssFrameCue {
     /// `ReadOrder` события: внутри слоя реплики идут в порядке чтения (libass: `cmp_event_layer`).
     pub(super) read_order: i32,
     pub(super) rasterized: Arc<RasterizedCue>,
+    /// Часы реплики на момент кадра: по ним считается покадровый клип `\t(\clip(...))`.
+    pub(super) clock: Option<AssEventClock>,
 }
 
 /// Картинки ASS-реплик в порядке отрисовки (libass: сортировка по слою, `fix_collisions` по
@@ -47,7 +49,7 @@ pub(super) fn assemble_ass_bitmaps(
     let canvas_height = canvas.height();
     let mut bitmaps = Vec::new();
     for (cue, shift) in cues.iter().zip(shifts) {
-        for bitmap in cue.rasterized.final_bitmaps() {
+        for bitmap in cue.rasterized.final_bitmaps(cue.clock.as_ref()).iter() {
             if shift == 0 {
                 bitmaps.push(bitmap.clone());
             } else if let Some(moved) = bitmap.shifted_vertically_clipped(shift, canvas_height) {

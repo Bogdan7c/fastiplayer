@@ -12,25 +12,30 @@
 //!   рендера (например, «первый `\an` побеждает»), применяет растеризатор.
 
 mod alignment;
+mod animation_tags;
 mod color;
 mod cue;
+mod effect;
 mod event_format;
 mod filter_tags;
 mod geometry_tags;
+mod karaoke_tags;
 mod overrides;
 mod script;
 mod script_info;
 mod style;
 
 pub use alignment::{AssAlignment, AssHorizontalAlign, AssVerticalAlign};
+pub use animation_tags::{AssTransform, AssTransformTiming};
 pub use color::{AssColor, AssRgb};
 pub use cue::{AssCue, AssEventMargins, AssHardOverrides, AssResolvedMargins, AssTextItem};
+pub use effect::{AssBannerDirection, AssEffect, AssScrollDirection};
 pub use event_format::{AssEventField, AssEventFormat};
 pub use filter_tags::{ASS_BLUR_MAX_RADIUS, ASS_EDGE_BLUR_MAX, AssClip, AssClipMode, AssClipShape};
 pub use geometry_tags::{AssFade, AssRotationAxis, AssShearAxis};
+pub use karaoke_tags::{AssKaraoke, AssKaraokeKind};
 pub use overrides::{
     AssAlphaTarget, AssAxes, AssColorSlot, AssDrawingMode, AssFontSize, AssMove, AssOverride,
-    AssUnsupportedTag,
 };
 pub use script::{AssScript, AssScriptKind, AssStyleIndex};
 pub use script_info::{

@@ -124,32 +124,12 @@ fn build_glyph_bitmaps_unbounded(
     request: &GlyphBitmapRequest<'_>,
     phase: &mut RunPhase<'_>,
 ) -> Result<GlyphBitmaps, ComposeError> {
-    let GlyphBitmapRequest {
-        glyph,
-        outline,
-        glyph_scale,
-        shear_scale,
-        pixel_aspect_x,
-        flags,
-        ..
-    } = request;
+    let GlyphBitmapRequest { outline, flags, .. } = request;
     let empty = Outline::new();
-    let base_matrix = glyph_transform_matrix(&GlyphPlacement {
-        rotation: request.look.rotation,
-        shear: request.look.shear,
-        scale: (shear_scale.horizontal, shear_scale.vertical),
-        shift: request.shift,
-        ascent: glyph.ascent,
-        frame_position: glyph.pos,
-        pixel_aspect_x: *pixel_aspect_x,
-        camera_scale: request.look.camera_scale,
-    });
-    let scaled_matrix = scale_and_offset_matrix(
-        &base_matrix,
-        (glyph_scale.horizontal, glyph_scale.vertical),
-        // Сдвиг контура: у текста нулевой, у рисунка ставит базовую линию (`\pbo`).
-        (0.0, glyph.outline_offset_y),
-    );
+    let GlyphMatrices {
+        base: base_matrix,
+        scaled: scaled_matrix,
+    } = glyph_matrices(request);
     let mut matrix: Matrix3 = scaled_matrix;
 
     let mut result = GlyphBitmaps::default();
@@ -202,6 +182,37 @@ fn build_glyph_bitmaps_unbounded(
         None => result.outline_position = result.fill_position,
     }
     Ok(result)
+}
+
+/// Матрицы глифа: без масштаба контура и с ним.
+pub(super) struct GlyphMatrices {
+    /// Матрица положения и поворота (libass: `m1`), нужна и плашке `BorderStyle = 3`.
+    pub(super) base: Matrix3,
+    /// Она же с масштабом и сдвигом контура (libass: `m2`): ею рисуется контур глифа и
+    /// измеряется самая левая точка караоке.
+    pub(super) scaled: Matrix3,
+}
+
+/// Матрицы глифа (libass: `calc_transform_matrix` и вычисление `m2` в `get_bitmap_glyph`).
+pub(super) fn glyph_matrices(request: &GlyphBitmapRequest<'_>) -> GlyphMatrices {
+    let glyph = request.glyph;
+    let base = glyph_transform_matrix(&GlyphPlacement {
+        rotation: request.look.rotation,
+        shear: request.look.shear,
+        scale: (request.shear_scale.horizontal, request.shear_scale.vertical),
+        shift: request.shift,
+        ascent: glyph.ascent,
+        frame_position: glyph.pos,
+        pixel_aspect_x: request.pixel_aspect_x,
+        camera_scale: request.look.camera_scale,
+    });
+    let scaled = scale_and_offset_matrix(
+        &base,
+        (request.glyph_scale.horizontal, request.glyph_scale.vertical),
+        // Сдвиг контура: у текста нулевой, у рисунка ставит базовую линию (`\pbo`).
+        (0.0, glyph.outline_offset_y),
+    );
+    GlyphMatrices { base, scaled }
 }
 
 /// Результат построения обводки.

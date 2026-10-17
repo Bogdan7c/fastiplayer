@@ -17,6 +17,7 @@ use crate::event_style::EventStyle;
 use crate::face_cache::{FaceCache, FaceLoadError};
 use crate::fonts::{SubtitleFontLibrary, TextLanguagePreference};
 use crate::glyph_render::retrieve_glyphs;
+use crate::karaoke::KaraokeStage;
 use crate::layout::{EventImageRect, LineBox, arrange_text, event_image_rect, line_boxes};
 use crate::overlay::{CanvasSize, SubtitleBitmap};
 use crate::render_diagnostics::RenderDiagnostics;
@@ -48,6 +49,8 @@ pub(crate) enum TextRenderError {
 pub(crate) struct RenderedText {
     /// Картинки в порядке отрисовки, целиком внутри холста.
     pub(crate) images: Vec<SubtitleBitmap>,
+    /// Стадия караоке с ролью каждой картинки из `images`; `None` — караоке нет.
+    pub(crate) karaoke: Option<KaraokeStage>,
     /// Прямоугольники видимых строк (для плашки позади строк); пусто для пустой реплики.
     pub(crate) lines: Vec<LineBox>,
     /// Что пропущено при отрисовке (глифы без контура, глифы без обводки).
@@ -62,6 +65,7 @@ impl RenderedText {
     fn empty() -> Self {
         Self {
             images: Vec::new(),
+            karaoke: None,
             lines: Vec::new(),
             diagnostics: RenderDiagnostics::default(),
             event_rect: None,
@@ -158,6 +162,7 @@ pub(crate) fn render_source_text(
     )?;
     Ok(RenderedText {
         images: composed.images,
+        karaoke: composed.karaoke,
         lines,
         diagnostics: retrieved.combined(RenderDiagnostics {
             skipped_glyphs: 0,

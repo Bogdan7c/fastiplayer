@@ -28,24 +28,11 @@
 //! Теги ищет `ass_event_has_hard_overrides` по СЫРОМУ тексту; этот поиск выполнен при разборе
 //! (`subtitle-formats`) и лежит в [`AssCue::hard_overrides`], поэтому здесь он не повторяется.
 
-use subtitle_core::{AssCue, AssHardOverrides};
+use subtitle_core::{AssCue, AssEffect, AssHardOverrides};
 
 /// Явная ли реплика (libass: `explicit`).
 pub(crate) fn is_explicit_event(cue: &AssCue) -> bool {
-    effect_makes_event_explicit(&cue.effect) || cue.hard_overrides == AssHardOverrides::Present
-}
-
-/// Эффект `Banner;` или `Scroll up;`/`Scroll down;` с достаточным числом параметров
-/// (`ass_apply_transition_effects`: число найденных `;` — не меньше 1 для Banner и 3 для Scroll).
-fn effect_makes_event_explicit(effect: &str) -> bool {
-    let separators = effect.bytes().filter(|byte| *byte == b';').count();
-    if effect.starts_with("Banner;") {
-        return separators >= 1;
-    }
-    if effect.starts_with("Scroll up;") || effect.starts_with("Scroll down;") {
-        return separators >= 3;
-    }
-    false
+    cue.transition_effect() != AssEffect::None || cue.hard_overrides == AssHardOverrides::Present
 }
 
 #[cfg(test)]

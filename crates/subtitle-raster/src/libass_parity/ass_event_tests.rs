@@ -22,8 +22,11 @@ use subtitle_formats::{
 
 use super::ass_tolerances::{ASS_CASES, AssTolerance};
 use super::ass_tolerances_animation::LAYER2_ANIMATION_CASES;
+use super::ass_tolerances_effect::LAYER3_EFFECT_CASES;
+use super::ass_tolerances_karaoke::LAYER3_KARAOKE_CASES;
 use super::ass_tolerances_layer2::LAYER2_STATIC_CASES;
 use super::ass_tolerances_layer3::{LAYER3_BLUR_CASES, LAYER3_CLIP_CASES, LAYER3_DRAWING_CASES};
+use super::ass_tolerances_transform::LAYER3_TRANSFORM_CASES;
 use super::tests::{fixtures_dir, load_expected_png};
 use super::text_tests::dump_comparison;
 use crate::appearance::SubtitleAppearance;
@@ -351,6 +354,9 @@ fn all_tolerance_rows() -> impl Iterator<Item = &'static AssTolerance> {
         .chain(LAYER3_DRAWING_CASES)
         .chain(LAYER3_BLUR_CASES)
         .chain(LAYER3_CLIP_CASES)
+        .chain(LAYER3_TRANSFORM_CASES)
+        .chain(LAYER3_KARAOKE_CASES)
+        .chain(LAYER3_EFFECT_CASES)
 }
 
 /// Все опорные точки кейсов `ass_*` (по одной на момент каждого кейса).

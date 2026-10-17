@@ -1,6 +1,6 @@
 use subtitle_core::{
     AssAlignment, AssAlphaTarget, AssBold, AssColorSlot, AssCue, AssDrawingMode, AssEventMargins,
-    AssFontSize, AssOverride, AssRgb, AssTextItem, AssUnsupportedTag, AssWrapStyle,
+    AssFontSize, AssOverride, AssRgb, AssTextItem, AssTransform, AssTransformTiming, AssWrapStyle,
 };
 
 use super::*;
@@ -224,11 +224,31 @@ fn coordinates_scale_from_play_res_to_the_canvas_and_pos_disables_collisions() {
 #[test]
 fn transform_tag_switches_collision_detection_off() {
     let result = plan(vec![
-        tags(vec![AssOverride::Unsupported(AssUnsupportedTag::Transform)]),
+        tags(vec![AssOverride::Transform(AssTransform {
+            // Некорректный `\t` (без вложенных тегов) выключает коллизии так же, как рабочий.
+            timing: AssTransformTiming::Default,
+            tags: Vec::new(),
+        })]),
         text("x"),
     ]);
     assert!(!result.collision.detect);
     assert!(plan(vec![text("x")]).collision.detect);
+}
+
+#[test]
+fn only_applicable_transition_effects_switch_collision_detection_off() {
+    let plan_with_effect = |effect: &str| {
+        let script = script_with(vec![default_style()]);
+        let mut cue = cue_with(&script, vec![text("x")]);
+        cue.effect = effect.to_owned();
+        plan_with(&cue, canvas(1280, 720), &AssRenderOptions::default())
+    };
+    assert!(!plan_with_effect("Banner;50").collision.detect);
+    assert!(!plan_with_effect("Scroll up;10;200;5").collision.detect);
+    // Не хватает числа: libass возвращается из `ass_apply_transition_effects` до
+    // `detect_collisions = 0`, реплика остаётся обычной.
+    assert!(plan_with_effect("Scroll up;10;200").collision.detect);
+    assert!(plan_with_effect("Karaoke;1;2;3").collision.detect);
 }
 
 #[test]

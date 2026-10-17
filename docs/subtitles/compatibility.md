@@ -14,8 +14,8 @@ Session 01 delivers parsing only (crates `subtitle-core`, `subtitle-formats`). N
 | WebVTT (`.vtt`) | sidecar file | Partial (see below) | 01 |
 | SubRip / WebVTT inside MKV | embedded | Supported (see "Embedded tracks") | 06 |
 | mov_text (`tx3g`) inside MP4 | embedded | Supported (bold / italic / underline / colour) | 06 |
-| ASS / SSA inside MKV | embedded | Supported, layers 1–2 (see "ASS / SSA (sessions 08–09, layers 1–2)") | 06; 08; layer 2: 09; layer 3: 10 |
-| ASS / SSA sidecar file | sidecar | Supported, layers 1–2 (see "ASS / SSA (sessions 08–09, layers 1–2)") | 08; layer 2: 09; layer 3: 10 |
+| ASS / SSA inside MKV | embedded | Supported, all libass tags and effects (see "ASS / SSA (sessions 08–10)") | 06; 08; layer 2: 09; layer 3: 10 |
+| ASS / SSA sidecar file | sidecar | Supported, all libass tags and effects (see "ASS / SSA (sessions 08–10)") | 08; layer 2: 09; layer 3: 10 |
 | PGS inside MKV | embedded | Listed greyed out ("not supported yet"); picture rendering planned | 11 |
 | YouTube srv3 / WebVTT | web | Planned | 12 |
 | HLS WebVTT, DASH TTML/IMSC | streaming | Planned | 13 |
@@ -41,7 +41,7 @@ Pure-Rust rasterizer, a port of libass 0.17.5 behaviour (ISC). Output: a list of
 | ASS layer-1 override tags | Supported (session 08, see below) |
 | ASS layer-2 tags: rotations, shear, 3D, `\org`, `\move`, `\fad` / `\fade` | Supported (session 09, see below) |
 | ASS layer-3 tags: drawings `\p \pbo`, clip `\clip \iclip` (rectangle and vector), blur `\blur \be` | Supported (session 10a, see below) |
-| ASS `\t`, karaoke, Banner / Scroll effects | Not yet — plan 10b |
+| ASS `\t`, karaoke `\k \K \kf \ko \kt`, `Banner` / `Scroll up` / `Scroll down` effects | Supported (session 10b, see below) |
 
 ## On screen (session 03)
 
@@ -167,7 +167,7 @@ Limitations:
 | Known limits | a track is found again by language + title + codec (+ position among tracks); a track in another language is never picked instead. The same web video opened by a different kind of link (manifest URL vs page URL) has separate memory |
 
 
-## ASS / SSA (sessions 08–09, layers 1–2)
+## ASS / SSA (sessions 08–10)
 
 Embedded (MKV `S_TEXT/ASS`, `S_TEXT/SSA`) and sidecar `.ass` / `.ssa` files are parsed into the model and drawn by the libass-parity rasterizer. Both V4+ (ASS) and V4 (SSA) style sections are read.
 
@@ -175,29 +175,35 @@ Always bound to the video picture: ASS is scaled from the script's PlayRes to th
 
 Script header: `PlayResX/Y`, `LayoutResX/Y`, `ScaledBorderAndShadow`, `WrapStyle`, `Kerning`. Dialogue: layers (`Layer`), automatic collision handling between simultaneous lines, synthetic bold / italic, underline and strike-out.
 
+The tag list was checked against `ass_parse_tags` of libass 0.17.5 (session 10b): every tag below is parsed in the same order and with the same argument rules, and every one of them changes the picture, the timing or the layout exactly where libass does.
+
 | Group | Tags | Status |
 |---|---|---|
-| Font and style | `\b \i \u \s \fn \fs \fscx \fscy \fsc \fsp \fe` | Supported |
-| Colour and transparency | `\c \1c`–`\4c`, `\alpha \1a`–`\4a` | Supported |
-| Border and shadow | `\bord \xbord \ybord \shad \xshad \yshad` | Supported |
-| Alignment and position | `\an \a \pos` | Supported |
-| Reset and wrap | `\r \q \N \n \h` | Supported |
+| Font and style | `\b \i \u \s \fn \fs \fscx \fscy \fsc \fsp \fe` | Supported (session 08); `\fe` selects the paragraph direction only (`-1` = automatic, anything else = left to right), like libass |
+| Colour and transparency | `\c \1c`–`\4c`, `\alpha \1a`–`\4a` | Supported (session 08) |
+| Border and shadow | `\bord \xbord \ybord \shad \xshad \yshad` | Supported (session 08) |
+| Alignment and position | `\an \a \pos` | Supported (session 08) |
+| Reset and wrap | `\r \q \N \n \h` | Supported (session 08) |
 | Rotation, shear, 3D | `\frx \fry \frz \fr \org \fax \fay` (libass perspective projection; a glyph behind the camera is dropped) | Supported (session 09) |
 | Animation | `\move` (4 and 6 arguments), `\fad`, `\fade` (2 and 7 arguments) | Supported (session 09) |
-| Transform animation | `\t` | No (plan 10b) |
+| Transform animation | `\t` (all animatable tags, acceleration, nesting, rectangular `\clip` animation) | Supported (session 10b) |
 | Clipping | `\clip \iclip` (rectangle and vector drawing; both may act at once) | Supported (session 10a) |
 | Blur | `\blur \be` | Supported (session 10a) |
 | Drawings | `\p \pbo` (move, line, cubic and b-spline commands) | Supported (session 10a) |
-| Karaoke | `\k \K \kf \ko \kt` | No (plan 10b) |
-| Effects | `Banner`, `Scroll up/down` | No (plan 10b) |
+| Karaoke | `\k \K \kf \ko \kt` | Supported (session 10b) |
+| Effects | `Banner`, `Scroll up`, `Scroll down` (`Effect` field) | Supported (session 10b) |
 
-Unsupported tags are skipped without hiding the rest of the text; the track keeps per-tag counts for diagnostics.
+Unknown tags (not in the libass list) are skipped without hiding the rest of the text; the track keeps per-tag counts for diagnostics. The `Effect` field is parsed like libass: a prefix match with case (`Banner;`, `Scroll up;`, `Scroll down;`), numbers read like `atoi` after every `;` (at most four); too few numbers or an unknown name mean no effect and an ordinary event. The fade-away height (the last number) is ignored by libass and by us.
 
-### Animation and the render thread (session 09)
+### Animation and the render thread (sessions 09–10)
 
-Pictures are rasterized on a separate `subtitle-render` thread; the UI only picks a ready picture and never waits for it. A picture is valid for a time interval, so video frames are never held back by subtitles. A static scene is rasterized once. A scene with an animated event (`\move`, `\fad`) is re-rendered at most once per video frame and only while such an event is on screen; the thread prepares the next `prerender_frames` frames ahead. While paused, an animated frame costs nothing once its picture is ready. If the frame step is not known yet (the first frame), the picture is valid only for its own moment. After a long stall the observed step grows, so a picture can be reused for one frame that is slightly older than ideal.
+Pictures are rasterized on a separate `subtitle-render` thread; the UI only picks a ready picture and never waits for it. A picture is valid for a time interval, so video frames are never held back by subtitles. A static scene is rasterized once. A scene with an animated event (`\move`, `\fad`, `\t`, `Banner` / `Scroll`) is re-rendered at most once per video frame and only while such an event is on screen; the thread prepares the next `prerender_frames` frames ahead. While paused, an animated frame costs nothing once its picture is ready. If the frame step is not known yet (the first frame), the picture is valid only for its own moment. After a long stall the observed step grows, so a picture can be reused for one frame that is slightly older than ideal.
 
-Placement: events with `\pos`, `\move`, `\org`, rotation or shear are "signs": fixed in place and never lifted above the control panel. As in libass, only `\pos`, `\move` and `\org` exclude an event from collision handling; a rotated or sheared line without them still avoids other lines.
+What is redrawn when (session 10b): `\move`, `\fad`, a `\t` that changes the look of letters (size, colour, border, rotation, blur ...) and `Banner` / `Scroll` redraw the cue on every video frame while it is on screen (the scroll position is a fraction of a pixel, so the glyph raster changes with it). Karaoke and clips do not: the letters of a karaoke line are rasterized once and each frame only the fill border, the colour or the outline visibility changes; a `\t` that moves only a rectangular `\clip` and a `Scroll up/down` band re-cut the cached pictures. A `\kf` fill is cut again on every frame while it moves, while `\k` / `\ko` lines change only at syllable boundaries; a finished karaoke line, a not yet started one and a finished `\t` are static scenes and are not redrawn.
+
+Banner and Scroll (libass `ass_apply_transition_effects`, `ass_render_event`): `Banner;delay;lefttoright` moves the line right to left (or left to right with a non-zero second number) by `time / delay` PlayRes pixels, wrap style 2 is forced, the lines of the block are aligned inside the widest line (`justify = alignment`, block aligned left); `Scroll up/down;y1;y2;delay` moves the block inside the band `y1..y2` (the picture is clipped to the band, rounded like a rectangular clip). The delay is rescaled like libass does it for VSFilter: `delay / scale` is truncated to an integer pixel of the layout resolution and is at least 1 (so a delay of 0 or a negative one means 1 ms per layout pixel). A `\pos` of the same event decides the axis the effect does not move. Such events never take part in collision handling and are "signs" (never lifted above the control panel).
+
+Placement: events with `\pos`, `\move`, `\org`, rotation, shear or a Banner / Scroll effect are "signs": fixed in place and never lifted above the control panel. As in libass, only `\pos`, `\move`, `\org`, `\t` and the Banner / Scroll effects exclude an event from collision handling; a rotated or sheared line without them still avoids other lines.
 
 ### Settings
 
@@ -213,8 +219,9 @@ Placement: events with `\pos`, `\move`, `\org`, rotation or shear are "signs": f
 - Vertical text `\fn@Font` is not supported.
 - Collision memory (stacking of simultaneous lines) is kept only for the cues active on the current frame.
 - Glyph storage size equals the display size (no separate `LayoutRes`-based storage scaling beyond the script header).
-- `\t`, karaoke (`\k \K \kf \ko \kt`) and Banner / Scroll effects are scheduled in plan 10b.
 - A vector clip whose mask would be larger than the maximum canvas side is ignored (the cue is drawn unclipped) and counted in the render statistics.
 - "Force my style" (`ass_force_user_style` on) hides author drawings (`\p`) and ignores author blur (`\blur`, `\be`). This is an owner decision (17.10.2026): drawings and blur are part of the author's geometry and look, which the user style replaces. Letters and the rest of the cue are drawn as before.
 - Drawings are drawn in a style with `Fontsize: 0` (the font size is irrelevant for them, as in libass). Letters in such a style are not drawn, while libass draws them at a size chosen by FreeType for a zero request (about unitsPerEm / 64 pixels); this difference is known and not ported.
-- Whole-scene speed versus libass is pending the three-level cache (stage 10c); until then a changed blurred or clipped scene is rasterized from scratch.
+- A vector clip mask is re-rasterized for every new animation key of the cue (the mask is part of the cached cue). Whole-scene speed versus libass is pending the three-level cache (stage 10c); until then a changed blurred, clipped, scrolling or `\t`-animated scene is rasterized from scratch on every frame.
+- Tag numbers that turn into NaN or infinity (for example `\frz1e999`) are normalized to 0 where libass relies on platform-dependent C conversions (angles, shadow, blur); the picture for such inputs may differ from libass on another platform than the reference one.
+- Nesting of `\t` inside `\t` is limited to 16 levels (`MAX_TRANSFORM_NESTING`); libass has no limit, deeper tags are dropped and counted. Real files never go deeper than two levels.

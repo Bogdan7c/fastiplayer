@@ -20,6 +20,7 @@ use crate::event_style::AxisPair;
 use crate::fixed_point::Vector26;
 use crate::fonts::FaceId;
 use crate::glyph_render::GlyphOutline;
+use crate::karaoke::KaraokeMark;
 use crate::source_text::DrawingId;
 
 /// Рамка глифа в 26.6 (libass: `ASS_Rect`).
@@ -107,6 +108,11 @@ pub(crate) struct TextCluster {
     pub(crate) look: usize,
     /// Затухание символа (libass: `info->fade`); участок берёт его у первого символа.
     pub(crate) fade: EventFade,
+    /// Теги караоке, прикреплённые к символу (libass: `effect_type`, `effect_timing`, ...).
+    pub(crate) karaoke: KaraokeMark,
+    /// Поворот `\frz` символа в градусах (libass: `info->frz`); по нему караоке выбирает
+    /// направление заливки.
+    pub(crate) rotation_z_degrees: f64,
     /// Масштаб по осям (libass: `info->scale_x`/`scale_y` после `fix_glyph_scaling`):
     /// `font_size / 256`, умноженный на `\fscx`/`\fscy`. Переводит размеры шейпера и контура
     /// (запрос 256 px) в пиксели кадра.

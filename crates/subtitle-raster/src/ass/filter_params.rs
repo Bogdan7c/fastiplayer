@@ -27,6 +27,17 @@
 
 use subtitle_core::{
     ASS_BLUR_MAX_RADIUS, ASS_EDGE_BLUR_MAX, AssClip, AssClipMode, AssClipShape, AssOverride,
+    AssPlayRes,
+};
+
+use super::tag_weight::TagWeight;
+use super::transform_apply::TagSink;
+
+/// Разрешение сценария, которое libass подставляет, когда `PlayRes` не задан (`384x288`):
+/// умолчание для [`FilterParams::default`].
+const FALLBACK_PLAY_RES: AssPlayRes = AssPlayRes {
+    width: 384,
+    height: 288,
 };
 
 /// Прямоугольный клип `\clip(x0,y0,x1,y1)` / `\iclip(...)` в координатах `PlayRes`.
@@ -51,8 +62,11 @@ pub(crate) struct VectorClip {
 }
 
 /// Значения тегов `\blur`, `\be`, `\clip`/`\iclip`, `\pbo` в текущей точке реплики.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FilterParams {
+    /// Разрешение сценария: от него считается исходный прямоугольник клипа, из которого
+    /// `\t(\clip(...))` плавно переходит к новому (`clip_x1 = track->PlayResX`).
+    play_res: AssPlayRes,
     blur_radius: f64,
     edge_blur: i32,
     rect_clip: Option<RectClip>,
@@ -60,7 +74,25 @@ pub(crate) struct FilterParams {
     baseline_offset: f64,
 }
 
+impl Default for FilterParams {
+    fn default() -> Self {
+        Self::for_play_res(FALLBACK_PLAY_RES)
+    }
+}
+
 impl FilterParams {
+    /// Параметры без тегов для сценария с разрешением `play_res`.
+    pub(crate) fn for_play_res(play_res: AssPlayRes) -> Self {
+        Self {
+            play_res,
+            blur_radius: 0.0,
+            edge_blur: 0,
+            rect_clip: None,
+            vector_clip: None,
+            baseline_offset: 0.0,
+        }
+    }
+
     /// Радиус гауссова размытия в единицах сценария, уже в `[0, ASS_BLUR_MAX_RADIUS]`.
     pub(crate) fn blur_radius(&self) -> f64 {
         self.blur_radius
@@ -94,31 +126,59 @@ impl FilterParams {
         self.edge_blur = 0;
     }
 
-    /// Применяет тег слоя 3 (`\blur`, `\be`, `\pbo`, `\clip`, `\iclip`); остальные теги
-    /// не относятся к этому состоянию и игнорируются (их применяет `RenderState`).
+    /// Применяет тег слоя 3 с полным весом (тег вне `\t`).
     pub(crate) fn apply(&mut self, tag: &AssOverride) {
+        self.apply_weighted(tag, TagWeight::FULL);
+    }
+
+    /// Применяет тег слоя 3 (`\blur`, `\be`, `\pbo`, `\clip`, `\iclip`) с весом `\t`;
+    /// остальные теги не относятся к этому состоянию и игнорируются (их применяет `RenderState`).
+    ///
+    /// Анимируются `\blur`, `\be` и прямоугольный клип; `\pbo` и векторный клип применяются
+    /// сразу и целиком.
+    pub(crate) fn apply_weighted(&mut self, tag: &AssOverride, weight: TagWeight) {
         match tag {
-            AssOverride::Blur(value) => self.blur_radius = clamp_blur_radius(value.unwrap_or(0.0)),
+            AssOverride::Blur(value) => {
+                self.blur_radius = match value {
+                    // Зажатие — ПОСЛЕ смешивания (ass_parse.c, ветка `blur`).
+                    Some(new) => clamp_blur_radius(weight.blend(self.blur_radius, *new)),
+                    None => 0.0,
+                };
+            }
             AssOverride::EdgeBlur(value) => {
-                self.edge_blur = value.map_or(0, edge_blur_from_raw);
+                self.edge_blur = match value {
+                    Some(raw) => {
+                        clamp_edge_blur(weight.blend_edge_blur_rounded(self.edge_blur, *raw))
+                    }
+                    None => 0,
+                };
             }
             AssOverride::DrawingBaselineOffset(value) => self.baseline_offset = *value,
-            AssOverride::Clip(clip) => self.apply_clip(clip),
+            AssOverride::Clip(clip) => self.apply_clip(clip, weight),
             _ => {}
         }
     }
 
-    /// Прямоугольник: побеждает последний тег (перезаписывает прямоугольник и режим).
-    /// Векторный: побеждает первый (`!state->clip_drawing_text.str`).
-    fn apply_clip(&mut self, clip: &AssClip) {
+    /// Прямоугольник: побеждает последний тег (перезаписывает прямоугольник и режим), а углы
+    /// смешиваются со старыми (по умолчанию — весь `PlayRes`) с усечением к целому. Режим
+    /// (`\clip` / `\iclip`) переключается сразу. Векторный: побеждает первый
+    /// (`!state->clip_drawing_text.str`), не анимируется.
+    fn apply_clip(&mut self, clip: &AssClip, weight: TagWeight) {
         match &clip.shape {
             AssClipShape::Rect { x0, y0, x1, y1 } => {
+                let old = self.rect_clip.unwrap_or(RectClip {
+                    mode: clip.mode,
+                    x0: 0,
+                    y0: 0,
+                    x1: self.play_res.width,
+                    y1: self.play_res.height,
+                });
                 self.rect_clip = Some(RectClip {
                     mode: clip.mode,
-                    x0: *x0,
-                    y0: *y0,
-                    x1: *x1,
-                    y1: *y1,
+                    x0: weight.blend_truncated(old.x0, *x0),
+                    y0: weight.blend_truncated(old.y0, *y0),
+                    x1: weight.blend_truncated(old.x1, *x1),
+                    y1: weight.blend_truncated(old.y1, *y1),
                 });
             }
             AssClipShape::Vector { scale, drawing } => {
@@ -134,6 +194,12 @@ impl FilterParams {
     }
 }
 
+impl TagSink for FilterParams {
+    fn apply_tag(&mut self, tag: &AssOverride, weight: TagWeight) {
+        self.apply_weighted(tag, weight);
+    }
+}
+
 /// `\blur`: `clamp(v, 0, BLUR_MAX_RADIUS)` (ass_parse.c). NaN из разбора недостижим; на
 /// всякий случай приводится к 0, чтобы не пустить его в размытие.
 fn clamp_blur_radius(raw: f64) -> f64 {
@@ -143,18 +209,10 @@ fn clamp_blur_radius(raw: f64) -> f64 {
     raw.clamp(0.0, ASS_BLUR_MAX_RADIUS)
 }
 
-/// `\be`: `dtoi32(v + 0.5)` затем `clamp(0, MAX_BE)`. `dtoi32` libass возвращает `INT32_MIN`
-/// для NaN и значений вне `i32`, то есть такие значения дают 0, а не 127. Остальные
-/// усекаются к нулю (приведение C `double -> int32_t`).
-fn edge_blur_from_raw(raw: f64) -> i32 {
-    let shifted = raw + 0.5;
-    let truncated =
-        if shifted.is_nan() || shifted <= f64::from(i32::MIN) || shifted >= 2_147_483_648.0 {
-            i32::MIN
-        } else {
-            shifted as i32
-        };
-    truncated.clamp(0, ASS_EDGE_BLUR_MAX)
+/// `\be`: после `dtoi32(...)` зажатие `[0, MAX_BE]`. `dtoi32` libass возвращает `INT32_MIN`
+/// для NaN и значений вне `i32`, то есть такие значения дают 0, а не 127.
+fn clamp_edge_blur(rounded: i32) -> i32 {
+    rounded.clamp(0, ASS_EDGE_BLUR_MAX)
 }
 
 #[cfg(test)]

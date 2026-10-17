@@ -1,0 +1,20 @@
+; reference: width=640 height=360 time_ms=100,450,950,1500,3000
+; case: karaoke k, K, kf, ko: before, mid-syllable and after (3 syllables of 500 ms starting at 200 ms)
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+ScaledBorderAndShadow: yes
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans,36,&H00FFFFFF,&H000000FF,&H00804000,&H80000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,30)\fs34\k20\k50}Alpha{\k50}Beta{\k50}Gamma
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,100)\fs34\K20\K50}Alpha{\K50}Beta{\K50}Gamma
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,170)\fs34\kf20\kf50}Alpha{\kf50}Beta{\kf50}Gamma
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,240)\fs34\bord2\ko20\ko50}Alpha{\ko50}Beta{\ko50}Gamma
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,310)\fs34\bord2\kf20\kf50}Alpha{\kf50}Beta{\kf50}Gamma

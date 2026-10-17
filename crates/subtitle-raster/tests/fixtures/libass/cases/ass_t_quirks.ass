@@ -1,0 +1,20 @@
+; reference: width=640 height=360 time_ms=0,500,800,1500
+; case: first closing paren ends the \t argument; invalid \t forms
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+ScaledBorderAndShadow: yes
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans,32,&H00FFFFFF,&H000000FF,&H00804000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,24)\fs20\t(200,1000,\clip(0,0,640,360)\fs48)}Quirk paren
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,74)\fs20\t(1,2,3,4,5,\fs48)}Five args ignored
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,124)\fs20\t()\fs36}Empty parens
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,174)\fs20\t(200,1000,\fs48}Missing paren
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,224)\fs20\t(200,1000,fs48)}No backslash

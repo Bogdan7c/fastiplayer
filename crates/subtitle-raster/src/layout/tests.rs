@@ -212,9 +212,139 @@ fn rotation_centre_is_the_alignment_base_point_unless_org_is_set() {
             text_width: 1200.0,
             vertical_margin: 40.0,
             anchor: crate::event_style::BlockAnchor::ByAlignment,
+            scroll: crate::event_style::ScrollPlacement::None,
             rotation_origin: RotationOrigin::AtPoint { x: 123.0, y: 45.5 },
             pixel_aspect_x: 1.0,
         });
     let with_org = layout.rotation_center(&style);
     assert_eq!((with_org.x, with_org.y), (123.0, 45.5));
+}
+
+/// Стиль с точной геометрией ASS: область текста 40..1240, поле 40, заданные привязка и прокрутка.
+fn exact_style(
+    anchor: crate::event_style::BlockAnchor,
+    scroll: crate::event_style::ScrollPlacement,
+    alignment: ScreenAnchor,
+) -> EventStyle {
+    let mut style = plain_style();
+    style.alignment = alignment;
+    style.placement =
+        crate::event_style::EventPlacement::Exact(crate::event_style::ExactPlacement {
+            text_left: 40.0,
+            text_width: 1200.0,
+            vertical_margin: 40.0,
+            anchor,
+            scroll,
+            rotation_origin: RotationOrigin::ByAlignment,
+            pixel_aspect_x: 1.0,
+        });
+    style
+}
+
+#[test]
+fn right_to_left_scroll_sets_the_horizontal_origin_and_keeps_the_aligned_row() {
+    use crate::event_style::{BlockAnchor, ScrollPlacement};
+    let plain = exact_style(
+        BlockAnchor::ByAlignment,
+        ScrollPlacement::None,
+        ScreenAnchor::BottomCenter,
+    );
+    let scrolled = exact_style(
+        BlockAnchor::ByAlignment,
+        ScrollPlacement::RightToLeft { origin_x: 900.0 },
+        ScreenAnchor::BottomCenter,
+    );
+    let (_, before) = arranged("Hello", &plain);
+    let (_, after) = arranged("Hello", &scrolled);
+    assert_eq!(after.device_x, 900.0);
+    assert_eq!(after.device_y, before.device_y);
+}
+
+#[test]
+fn left_to_right_scroll_puts_the_right_edge_of_the_block_at_the_given_x() {
+    use crate::event_style::{BlockAnchor, ScrollPlacement};
+    let style = exact_style(
+        BlockAnchor::ByAlignment,
+        ScrollPlacement::LeftToRight {
+            right_edge_x: 500.0,
+        },
+        ScreenAnchor::BottomCenter,
+    );
+    let (_, layout) = arranged("Hello", &style);
+    let width = layout.bounds.x_max - layout.bounds.x_min;
+    assert!((layout.device_x + width - 500.0).abs() < 1e-9);
+}
+
+#[test]
+fn vertical_scroll_sets_the_block_edge_and_keeps_the_aligned_column() {
+    use crate::event_style::{BlockAnchor, ScrollPlacement};
+    let plain = exact_style(
+        BlockAnchor::ByAlignment,
+        ScrollPlacement::None,
+        ScreenAnchor::BottomCenter,
+    );
+    let (_, before) = arranged("Hello", &plain);
+
+    let down = exact_style(
+        BlockAnchor::ByAlignment,
+        ScrollPlacement::TopToBottom {
+            bottom_edge_y: 300.0,
+        },
+        ScreenAnchor::BottomCenter,
+    );
+    let (_, down_layout) = arranged("Hello", &down);
+    assert!((down_layout.device_y + down_layout.bounds.y_max - 300.0).abs() < 1e-9);
+    assert_eq!(down_layout.device_x, before.device_x);
+
+    let up = exact_style(
+        BlockAnchor::ByAlignment,
+        ScrollPlacement::BottomToTop { top_edge_y: 200.0 },
+        ScreenAnchor::BottomCenter,
+    );
+    let (_, up_layout) = arranged("Hello", &up);
+    assert!((up_layout.device_y + up_layout.bounds.y_min - 200.0).abs() < 1e-9);
+    assert_eq!(up_layout.device_x, before.device_x);
+}
+
+#[test]
+fn scroll_overrides_one_axis_of_a_positioned_event_only() {
+    use crate::event_style::{BlockAnchor, ScrollPlacement};
+    let anchor = BlockAnchor::AtPoint { x: 640.0, y: 300.0 };
+    let positioned = exact_style(anchor, ScrollPlacement::None, ScreenAnchor::BottomCenter);
+    let (_, base) = arranged("Hello", &positioned);
+    let scrolled = exact_style(
+        anchor,
+        ScrollPlacement::RightToLeft { origin_x: 123.0 },
+        ScreenAnchor::BottomCenter,
+    );
+    let (_, layout) = arranged("Hello", &scrolled);
+    assert_eq!(layout.device_x, 123.0);
+    // Вертикаль осталась от `\pos`.
+    assert_eq!(layout.device_y, base.device_y);
+}
+
+#[test]
+fn horizontal_scroll_aligns_lines_inside_the_widest_line_instead_of_the_text_area() {
+    use crate::event_style::{BlockAnchor, ScrollPlacement};
+    let text = "A very long first line here\nShort";
+    let plain = exact_style(
+        BlockAnchor::ByAlignment,
+        ScrollPlacement::None,
+        ScreenAnchor::BottomRight,
+    );
+    let scrolled = exact_style(
+        BlockAnchor::ByAlignment,
+        ScrollPlacement::RightToLeft { origin_x: 0.0 },
+        ScreenAnchor::BottomRight,
+    );
+    let (_, in_area) = arranged(text, &plain);
+    let (_, in_block) = arranged(text, &scrolled);
+    // Обычное правое выравнивание прижимает самую широкую строку к правому полю области,
+    // так что блок начинается далеко от нуля; при прокрутке самая широкая строка стоит в нуле.
+    assert!(in_area.bounds.x_min > 100.0, "{:?}", in_area.bounds);
+    assert!(in_block.bounds.x_min.abs() < 1e-9, "{:?}", in_block.bounds);
+    // Ширина блока та же: строки лишь сдвинуты относительно друг друга внутри него.
+    let area_width = in_area.bounds.x_max - in_area.bounds.x_min;
+    let block_width = in_block.bounds.x_max - in_block.bounds.x_min;
+    assert!((area_width - block_width).abs() < 1e-6);
 }

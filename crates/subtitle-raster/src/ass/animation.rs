@@ -20,12 +20,16 @@
 
 //! Анимация реплики ASS: что в ней зависит от времени показа и как это выглядит СЕЙЧАС.
 //!
-//! Зависят от времени ровно два тега: `\move` (положение) и `\fad`/`\fade` (затухание).
-//! Остальное (`\t` и пр.) пока не поддержано. Модуль владеет всем, что связано со временем:
+//! Зависят от времени три тега: `\move` (положение), `\fad`/`\fade` (затухание) и `\t`
+//! (вес анимации вложенных тегов, см. `tag_weight`), а также поле `Effect` с прокруткой
+//! (`Banner`, `Scroll up/down`, см. `scroll`). Модуль владеет всем, что связано со
+//! временем:
 //! - [`AssEventClock`] — «сколько мс прошло от начала реплики» (libass: `render_priv->time -
 //!   event->Start`) и длительность реплики;
 //! - [`evaluate_animation`] — по тексту реплики и часам даёт [`AssAnimation`]: текущее
-//!   положение (если оно движется), текущее затухание, ключ кэша и ближайшее изменение.
+//!   положение (если оно движется), текущее затухание, веса `\t` для ключа кэша и ближайшее
+//!   изменение. Часы реплики передаются дальше в план ([`AssAnimationState::clock`]): сами
+//!   веса `\t` считает применение тегов, а не этот модуль.
 //!
 //! ## Почему отдельно от `RenderState`
 //! Ключ кэша реплики должен быть известен ДО разбора текста в символы и шрифты. Поэтому
@@ -39,7 +43,10 @@
 
 use subtitle_core::{AssCue, AssFade, AssMove, AssOverride, AssTextItem, SubtitleTime};
 
+use super::frame_scale::AssFrameScale;
 use super::render_state::ScriptPoint;
+use super::scroll::ScrollClock;
+use super::transform_scan::digest_transforms;
 use crate::event_fade::EventFade;
 use crate::overlay::AnimationChange;
 use crate::renderer::AssEventTiming;
@@ -75,8 +82,18 @@ impl AssEventClock {
         }
     }
 
+    /// `render_priv->time - event->Start` в миллисекундах (до начала реплики отрицательно).
+    pub(crate) fn elapsed_ms(&self) -> i32 {
+        self.elapsed_ms
+    }
+
+    /// `event->Duration` в миллисекундах.
+    pub(crate) fn duration_ms(&self) -> i32 {
+        self.duration_ms
+    }
+
     /// Момент, отстоящий от начала реплики на `offset_ms` (мс могут быть и отрицательными).
-    fn moment_at(&self, offset_ms: i64) -> SubtitleTime {
+    pub(crate) fn moment_at(&self, offset_ms: i64) -> SubtitleTime {
         SubtitleTime::from_micros(
             self.start
                 .as_micros()
@@ -101,13 +118,21 @@ pub(crate) struct AssAnimationState {
     pub(crate) position: Option<ScriptPoint>,
     /// Затухание на этот момент.
     pub(crate) fade: EventFade,
+    /// Сдвиг прокрутки `Banner`/`Scroll` в пикселях PlayRes (libass: `scroll_shift`); `None` —
+    /// у реплики нет прокручивающего эффекта.
+    pub(crate) scroll_shift: Option<f64>,
+    /// Часы реплики: по ним применение тегов считает вес `\t`. `None` — часов нет, анимации
+    /// `\t` считаются завершёнными (вес 1); у настоящих запросов часы есть всегда.
+    pub(crate) clock: Option<AssEventClock>,
 }
 
 impl AssAnimationState {
-    /// Без анимации.
+    /// Без анимации и без часов.
     pub(crate) const STILL: Self = Self {
         position: None,
         fade: EventFade::NONE,
+        scroll_shift: None,
+        clock: None,
     };
 }
 
@@ -118,9 +143,13 @@ impl AssAnimationState {
 /// опорной точкой блока), поэтому честная и безопасная единица сравнения — само число.
 /// Грубее квантовать нельзя без отхода от libass; выигрыша бы и не было: на движущейся
 /// реплике соседние кадры всё равно различны, а один и тот же момент даёт то же число.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Веса `\t` входят в ключ, только если меняют растеризацию реплики; `\t`, который двигает
+/// лишь прямоугольный клип, в ключ не входит (клип — стадия после кэша).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum AssAnimationKey {
-    /// Реплика от времени не зависит: ключ без времени (статичная сцена не рисуется заново).
+    /// Реплика от времени (с точки зрения кэша) не зависит: ключ без времени, статичная
+    /// сцена не рисуется заново.
     TimeFree,
     /// Реплика анимирована: состояние на момент показа.
     Sampled {
@@ -128,28 +157,33 @@ pub(crate) enum AssAnimationKey {
         position_bits: Option<[u64; 2]>,
         /// Затухание (число libass).
         fade: i32,
+        /// Биты сдвига прокрутки: на каждом сдвиге картинка рисуется заново, потому что дробная
+        /// часть положения меняет растеризацию (как у `\move`).
+        scroll_shift_bits: Option<u64>,
+        /// Биты весов `\t`, меняющих растеризацию, в порядке записи тегов.
+        transform_weights: Vec<u64>,
     },
 }
 
 /// Состояние анимации реплики в момент показа и сведения о будущих изменениях.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AssAnimation {
     /// Состояние на момент показа.
     pub(crate) state: AssAnimationState,
     /// Ближайшее изменение картинки реплики.
     pub(crate) change: AnimationChange,
-    /// В реплике нет ни движущегося `\move`, ни затухания: результат не зависит от момента.
+    /// В реплике нет ни движущегося `\move`, ни затухания, ни `\t` с анимацией: результат не
+    /// зависит от момента.
     time_free: bool,
+    /// Веса `\t`, меняющие растеризацию (часть ключа кэша).
+    transform_weights: Vec<u64>,
+    /// Растеризация реплики зависит от момента (`\move`, `\fad` или вес `\t`): без этого
+    /// кэш хранит одну запись на реплику. Отличается от `!time_free` у реплики, в которой
+    /// меняется только клип: картинки те же, нужна лишь покадровая обрезка.
+    raster_sampled: bool,
 }
 
 impl AssAnimation {
-    /// Реплика без анимации.
-    const TIME_FREE: Self = Self {
-        state: AssAnimationState::STILL,
-        change: AnimationChange::None,
-        time_free: true,
-    };
-
     /// Результат не зависит от момента показа вообще (в том числе при перемотке назад).
     pub(crate) fn is_time_free(&self) -> bool {
         self.time_free
@@ -157,7 +191,7 @@ impl AssAnimation {
 
     /// Ключ кэша реплики по времязависимому состоянию.
     pub(crate) fn cache_key(&self) -> AssAnimationKey {
-        if self.time_free {
+        if !self.raster_sampled {
             return AssAnimationKey::TimeFree;
         }
         AssAnimationKey::Sampled {
@@ -166,6 +200,8 @@ impl AssAnimation {
                 .position
                 .map(|point| [point.x.to_bits(), point.y.to_bits()]),
             fade: self.state.fade.value(),
+            scroll_shift_bits: self.state.scroll_shift.map(f64::to_bits),
+            transform_weights: self.transform_weights.clone(),
         }
     }
 }
@@ -338,56 +374,101 @@ struct TimeTags<'cue> {
     fade: Option<&'cue AssFade>,
 }
 
-/// Быстрый просмотр тегов реплики (без разбора текста на символы).
-fn scan_time_tags(cue: &AssCue) -> TimeTags<'_> {
-    let mut movement = None;
-    let mut positioned = false;
-    let mut fade = None;
-    for item in &cue.text {
-        let AssTextItem::Overrides(overrides) = item else {
-            continue;
-        };
+impl<'cue> TimeTags<'cue> {
+    /// Учитывает теги списка в порядке записи. `\t` заходит внутрь: `\pos`, `\move`, `\fad`
+    /// во вложенных тегах не анимируются (применяются сразу) и подчиняются тем же правилам
+    /// «побеждает первый».
+    fn scan(&mut self, positioned: &mut bool, overrides: &'cue [AssOverride]) {
         for tag in overrides {
             match tag {
                 // `\pos` и `\move` оба ставят `EVENT_POSITIONED`: второй из них игнорируется.
-                AssOverride::Position { .. } => positioned = true,
-                AssOverride::Move(candidate) if !positioned => {
-                    movement = Some(candidate);
-                    positioned = true;
+                AssOverride::Position { .. } => *positioned = true,
+                AssOverride::Move(candidate) if !*positioned => {
+                    self.movement = Some(candidate);
+                    *positioned = true;
                 }
-                AssOverride::Fade(candidate) if fade.is_none() => fade = Some(candidate),
+                AssOverride::Fade(candidate) if self.fade.is_none() => self.fade = Some(candidate),
+                AssOverride::Transform(transform) => self.scan(positioned, &transform.tags),
                 _ => {}
             }
         }
     }
-    TimeTags { movement, fade }
 }
 
-/// Состояние анимации реплики `cue` на часах `clock`.
-pub(crate) fn evaluate_animation(cue: &AssCue, clock: &AssEventClock) -> AssAnimation {
+/// Быстрый просмотр тегов реплики (без разбора текста на символы).
+fn scan_time_tags(cue: &AssCue) -> TimeTags<'_> {
+    let mut tags = TimeTags {
+        movement: None,
+        fade: None,
+    };
+    let mut positioned = false;
+    for item in &cue.text {
+        if let AssTextItem::Overrides(overrides) = item {
+            tags.scan(&mut positioned, overrides);
+        }
+    }
+    tags
+}
+
+/// Состояние анимации реплики `cue` на часах `clock`; `frame` нужен для пересчёта задержки
+/// прокрутки (она зависит от разрешения раскладки).
+pub(crate) fn evaluate_animation(
+    cue: &AssCue,
+    clock: &AssEventClock,
+    frame: &AssFrameScale,
+) -> AssAnimation {
     let tags = scan_time_tags(cue);
     let movement = tags
         .movement
         .map(|raw| ResolvedMove::new(raw, clock.duration_ms))
         .filter(|resolved| !resolved.is_motionless());
     let fade = tags.fade.map(|raw| FadeCurve::new(raw, clock.duration_ms));
-    if movement.is_none() && fade.is_none() {
-        return AssAnimation::TIME_FREE;
+    let transforms = digest_transforms(cue, clock);
+    let state_clock = Some(*clock);
+    let scroll = ScrollClock::for_effect(cue.transition_effect(), frame);
+    if movement.is_none() && fade.is_none() && !transforms.time_dependent && scroll.is_none() {
+        return AssAnimation {
+            state: AssAnimationState {
+                clock: state_clock,
+                ..AssAnimationState::STILL
+            },
+            change: AnimationChange::None,
+            time_free: true,
+            transform_weights: Vec::new(),
+            raster_sampled: false,
+        };
     }
     let position = movement.map(|resolved| resolved.position_at(clock.elapsed_ms));
     let fade_value = fade.map_or(0, |curve| curve.alpha_at(clock.elapsed_ms));
+    let scroll_shift = scroll.map(|scroll| scroll.shift_after(clock.elapsed_ms));
+    // Сдвиг прокрутки — `double` от миллисекунд, а не ступенька раз в `delay`: положение
+    // меняется на каждом кадре, пока реплика на экране.
+    let scroll_change = if scroll.is_some() {
+        AnimationChange::EveryFrame
+    } else {
+        AnimationChange::None
+    };
     let change = movement
         .map_or(AnimationChange::None, |resolved| {
             resolved.change_after(clock)
         })
-        .earliest(fade.map_or(AnimationChange::None, |curve| curve.change_after(clock)));
+        .earliest(fade.map_or(AnimationChange::None, |curve| curve.change_after(clock)))
+        .earliest(scroll_change)
+        .earliest(transforms.change());
     AssAnimation {
         state: AssAnimationState {
             position,
             fade: EventFade::new(fade_value),
+            scroll_shift,
+            clock: state_clock,
         },
         change,
         time_free: false,
+        raster_sampled: movement.is_some()
+            || fade.is_some()
+            || scroll.is_some()
+            || !transforms.raster_weights.is_empty(),
+        transform_weights: transforms.raster_weights,
     }
 }
 

@@ -1,0 +1,18 @@
+; reference: width=640 height=360 time_ms=300,800,1600,3000
+; case: VSFilter compatibility: kf12345 then kf0 without a run break advances only the next word
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+ScaledBorderAndShadow: yes
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans,36,&H00FFFFFF,&H000000FF,&H00804000,&H80000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,50)\fs34\kf50}One{\kf12345\kf0}Two{\kf50}Three
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,130)\fs34\kf50}Hello{\kf1000}{\kf0}World{\kf50}Last
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,210)\fs34\k50}ab{\k20}{\k30}cd{\k40}ef

@@ -150,16 +150,29 @@ fn contributes_width(cluster: &TextCluster) -> bool {
     !cluster.skip && cluster.symbol != '\n' && cluster.symbol != '\0'
 }
 
-/// Сдвигает каждую строку по горизонтали согласно выравниванию (libass: `align_lines` при
-/// автоматическом выравнивании текста внутри блока, `justify = auto`).
+/// Относительно чего выравниваются строки блока.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LineAlignment {
+    /// Относительно области текста между полями (обычная реплика; libass: `justify = auto`).
+    InTextArea(HorizontalAlignment),
+    /// Относительно самой широкой строки блока: блок прижат влево, а выравнивание задаёт
+    /// положение строк внутри него (`EVENT_HSCROLL`: `justify = halign; halign = LEFT`).
+    InWidestLine(HorizontalAlignment),
+}
+
+/// Сдвигает каждую строку по горизонтали согласно выравниванию (libass: `align_lines`).
 ///
 /// Ширина строки — сумма продвижений её нескрытых кластеров; блок шириной `max_text_width`
 /// (между левым и правым полем).
 pub(super) fn align_lines(
     clusters: &mut [TextCluster],
-    alignment: HorizontalAlignment,
+    alignment: LineAlignment,
     max_text_width: f64,
 ) {
+    let widest_line = match alignment {
+        LineAlignment::InTextArea(_) => 0.0,
+        LineAlignment::InWidestLine(_) => widest_line_width(clusters),
+    };
     let length = clusters.len();
     let mut line_first = 0_usize;
     for index in 1..=length {
@@ -171,15 +184,18 @@ pub(super) fn align_lines(
             continue;
         }
         let line = clusters.get_mut(line_first..index).unwrap_or(&mut []);
-        let line_width: f64 = line
-            .iter()
-            .filter(|cluster| contributes_width(cluster))
-            .map(|cluster| d6_to_double(cluster.cluster_advance.x))
-            .sum();
+        let line_width = line_width(line);
         let shift = match alignment {
-            HorizontalAlignment::Left => 0.0,
-            HorizontalAlignment::Right => max_text_width - line_width,
-            HorizontalAlignment::Center => (max_text_width - line_width) / 2.0,
+            LineAlignment::InTextArea(HorizontalAlignment::Left) => 0.0,
+            LineAlignment::InTextArea(HorizontalAlignment::Right) => max_text_width - line_width,
+            LineAlignment::InTextArea(HorizontalAlignment::Center) => {
+                (max_text_width - line_width) / 2.0
+            }
+            LineAlignment::InWidestLine(HorizontalAlignment::Left) => 0.0,
+            LineAlignment::InWidestLine(HorizontalAlignment::Right) => widest_line - line_width,
+            LineAlignment::InWidestLine(HorizontalAlignment::Center) => {
+                (widest_line - line_width) / 2.0
+            }
         };
         for cluster in line {
             for glyph in cluster.glyphs_mut() {
@@ -188,4 +204,31 @@ pub(super) fn align_lines(
         }
         line_first = index;
     }
+}
+
+/// Ширина одной строки: сумма продвижений её видимых кластеров.
+fn line_width(line: &[TextCluster]) -> f64 {
+    line.iter()
+        .filter(|cluster| contributes_width(cluster))
+        .map(|cluster| d6_to_double(cluster.cluster_advance.x))
+        .sum()
+}
+
+/// Ширина самой широкой строки блока (libass: `max_width` в `align_lines`).
+fn widest_line_width(clusters: &[TextCluster]) -> f64 {
+    let mut widest = 0.0_f64;
+    let mut line_first = 0_usize;
+    for index in 1..=clusters.len() {
+        let starts_line = index == clusters.len()
+            || clusters
+                .get(index)
+                .is_some_and(|cluster| cluster.line_start.begins_line());
+        if !starts_line {
+            continue;
+        }
+        let line = clusters.get(line_first..index).unwrap_or(&[]);
+        widest = widest.max(line_width(line));
+        line_first = index;
+    }
+    widest
 }

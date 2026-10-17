@@ -467,10 +467,8 @@ fn unknown_and_later_layer_tags_are_counted_per_track_and_the_text_still_renders
         .as_ref()
         .and_then(|media| media.embedded_ass.tag_stats(ass_track))
         .expect("the track has a parsed script");
-    assert_eq!(
-        stats.unsupported_count(subtitle_core::AssUnsupportedTag::Karaoke),
-        1
-    );
+    // `\k3` и `\b1` разобраны; считается только действительно неизвестный `\zzz7`.
+    assert_eq!(stats.malformed(), 0);
     assert_eq!(stats.unknown_total(), 1);
     assert!(
         visible_texts(&mut owner, media, 1_500) > 0,

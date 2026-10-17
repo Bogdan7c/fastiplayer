@@ -1,0 +1,21 @@
+; reference: width=640 height=360 time_ms=0,500,800,1500
+; case: \t on \c, \1c, \2c omitted, \3c, \4c with shadow
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+ScaledBorderAndShadow: yes
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans,32,&H00FFFFFF,&H000000FF,&H00804000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,24)\1c&H0000FF&\t(200,1000,\c&HFFFF00&)}Primary c
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,74)\1c&H0000FF&\t(200,1000,\1c&H10F0A0&)}Primary 1c odd
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,124)\bord4\3c&H000000&\t(200,1000,\3c&H00FF80&)}Outline
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,174)\shad5\4c&H000000&\t(200,1000,\4c&H0000FF&)}Back
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,224)\1c&H123456&\t(200,1000,\c&HFEDCBA&)}Channels
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\pos(20,274)\1c&H808080&\t(200,1000,\c)}No arg style

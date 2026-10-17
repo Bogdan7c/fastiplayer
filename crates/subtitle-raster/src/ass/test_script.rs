@@ -83,3 +83,22 @@ pub(super) fn tags(overrides: Vec<AssOverride>) -> AssTextItem {
 pub(super) fn text(content: &str) -> AssTextItem {
     AssTextItem::Text(content.to_owned())
 }
+
+/// Тег `\t` с заданными временами и вложенными тегами.
+pub(super) fn transform(
+    timing: subtitle_core::AssTransformTiming,
+    nested: Vec<AssOverride>,
+) -> AssOverride {
+    AssOverride::Transform(subtitle_core::AssTransform {
+        timing,
+        tags: nested,
+    })
+}
+
+/// `\t(t1,t2,...)` без ускорения.
+pub(super) fn transform_range(t1_ms: i32, t2_ms: i32, nested: Vec<AssOverride>) -> AssOverride {
+    transform(
+        subtitle_core::AssTransformTiming::Range { t1_ms, t2_ms },
+        nested,
+    )
+}

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use super::effect::AssEffect;
 use super::overrides::AssOverride;
 use super::script::{AssScript, AssStyleIndex};
 use super::style::AssStyle;
@@ -81,7 +82,7 @@ pub struct AssCue {
     pub margins: AssEventMargins,
     /// Поле `Name`/`Actor`.
     pub name: String,
-    /// Поле `Effect` (переходные эффекты Banner/Scroll пока не поддерживаются).
+    /// Поле `Effect` в сыром виде; разобранный вид — [`AssCue::transition_effect`].
     pub effect: String,
     /// Жёсткие переопределения в сыром тексте (см. [`AssHardOverrides`]).
     pub hard_overrides: AssHardOverrides,
@@ -89,6 +90,11 @@ pub struct AssCue {
 }
 
 impl AssCue {
+    /// Разобранное поле `Effect` (Banner / Scroll up / Scroll down), см. [`AssEffect`].
+    pub fn transition_effect(&self) -> AssEffect {
+        AssEffect::parse(&self.effect)
+    }
+
     /// Стиль реплики.
     pub fn style(&self) -> &AssStyle {
         self.script.style(self.style)

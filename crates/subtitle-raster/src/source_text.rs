@@ -13,6 +13,7 @@ use crate::event_fade::EventFade;
 use crate::event_style::{AxisPair, EventStyle};
 use crate::fonts::{FontStyle, FontWeightClass};
 use crate::glyph_transform::{Rotation3d, ShearFactors};
+use crate::karaoke::KaraokeMark;
 pub(crate) use crate::span_look::{SpanBlur, SpanLook, TextDecorations};
 
 /// Символ-заместитель рисунка (U+FFFC OBJECT REPLACEMENT CHARACTER, libass: `code = 0xfffc`).
@@ -54,6 +55,9 @@ pub(crate) struct SourceChar {
     /// Символ — заместитель рисунка (`ch == DRAWING_SYMBOL`): его глиф строится из команд
     /// рисования, а не из шрифта. У обычных символов `None`.
     pub(crate) drawing: Option<DrawingId>,
+    /// Теги караоке, накопленные к этому символу (libass: копия `effect_*` в `GlyphInfo`).
+    /// У SRT/WebVTT — [`KaraokeMark::NONE`].
+    pub(crate) karaoke: KaraokeMark,
 }
 
 /// Включён ли кернинг пар в шейпинге (libass: `Kerning:` заголовка ASS, `ass_shaper_set_kerning`).
@@ -112,12 +116,14 @@ impl SourceText {
                                 look: look_index,
                                 fade: EventFade::NONE,
                                 drawing: None,
+                                karaoke: KaraokeMark::NONE,
                             }),
                             other => chars.push(SourceChar {
                                 ch: other,
                                 look: look_index,
                                 fade: EventFade::NONE,
                                 drawing: None,
+                                karaoke: KaraokeMark::NONE,
                             }),
                         }
                     }
@@ -127,6 +133,7 @@ impl SourceText {
                     look: look_index,
                     fade: EventFade::NONE,
                     drawing: None,
+                    karaoke: KaraokeMark::NONE,
                 }),
             }
         }

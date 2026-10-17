@@ -1,0 +1,17 @@
+; reference: width=640 height=360 time_ms=300,900,1500,2500,3500
+; case: kf over two lines (automatic wrap) and a hard line break
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+ScaledBorderAndShadow: yes
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans,36,&H00FFFFFF,&H000000FF,&H00804000,&H80000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,150,150,130,,{\an2\fs36\kf20\kf40}The {\kf40}quick {\kf40}brown {\kf40}fox {\kf40}jumps {\kf40}over {\kf40}the {\kf40}lazy {\kf40}dog
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,20,20,20,,{\an8\fs36\kf20\kf60}First line\N{\kf60}Second line

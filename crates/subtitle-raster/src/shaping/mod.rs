@@ -114,6 +114,7 @@ fn build_clusters(
                 look,
                 fade,
                 drawing,
+                karaoke,
             },
             script_value,
         ),
@@ -161,6 +162,8 @@ fn build_clusters(
             symbol: *ch,
             look: *look,
             fade: *fade,
+            karaoke: *karaoke,
+            rotation_z_degrees: look_style.map_or(0.0, |known| known.rotation.z_degrees),
             glyph_scale,
             letter_spacing_d6,
             has_letter_spacing,
@@ -251,16 +254,28 @@ fn load_or_fall_back_to_notdef(
 ///
 /// Рисунок всегда стоит в своём участке: участок рвётся по обе стороны от него
 /// (`info->drawing_text.str || last->drawing_text.str`), даже если вид у соседей тот же.
+///
+/// Караоке режет участки так же, как в libass: символ с ненулевой длительностью слога или с
+/// видом эффекта, отличным от последнего заданного, начинает новый участок
+/// (`KaraokeMark::splits_run`). Первый символ начальный вид эффекта «помнит», но сам участок
+/// не начинает больше обычного.
 fn mark_style_runs(clusters: &mut [TextCluster]) {
     let mut previous: Option<(usize, bool)> = None;
+    let mut last_effect = clusters.first().and_then(|first| first.karaoke.effect);
     for cluster in clusters.iter_mut() {
         let is_drawing = cluster.drawing.is_some();
         cluster.starts_new_run = match previous {
             None => true,
             Some((previous_look, previous_is_drawing)) => {
-                previous_look != cluster.look || is_drawing || previous_is_drawing
+                previous_look != cluster.look
+                    || is_drawing
+                    || previous_is_drawing
+                    || cluster.karaoke.splits_run(last_effect)
             }
         };
+        if cluster.karaoke.effect.is_some() {
+            last_effect = cluster.karaoke.effect;
+        }
         previous = Some((cluster.look, is_drawing));
     }
 }

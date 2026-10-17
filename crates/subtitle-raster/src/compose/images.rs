@@ -43,6 +43,20 @@ pub(super) fn clipped_image(
     if color.alpha == 0 {
         return Ok(None);
     }
+    canvas_image(bitmap, color, kind, canvas)
+}
+
+/// То же, что [`clipped_image`], но без отбрасывания прозрачного цвета.
+///
+/// Нужна заливке караоке: её цвет выбирается на каждом кадре (основной или вторичный), и
+/// картинка с прозрачным цветом сейчас может стать видимой на следующем кадре. Прозрачные
+/// картинки убирает стадия кадра (как `ass_render_frame` в libass).
+pub(super) fn canvas_image(
+    bitmap: &CoverageBitmap,
+    color: SubtitleColor,
+    kind: SubtitleBitmapKind,
+    canvas: CanvasSize,
+) -> Result<Option<SubtitleBitmap>, ComposeError> {
     let canvas_width = i64::from(canvas.width());
     let canvas_height = i64::from(canvas.height());
     let (width, height) = (i64::from(bitmap.width), i64::from(bitmap.height));

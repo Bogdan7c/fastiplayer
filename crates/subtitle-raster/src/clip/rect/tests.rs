@@ -30,7 +30,7 @@ fn gradient_image() -> SubtitleBitmap {
 
 fn parts_of(clip: &ScreenRectClip) -> Vec<SubtitleBitmap> {
     let mut parts = Vec::new();
-    clip.push_visible_parts(&gradient_image(), &mut parts);
+    clip.push_visible_parts(&gradient_image(), ImagePaint::AsStored, &mut parts);
     parts
 }
 

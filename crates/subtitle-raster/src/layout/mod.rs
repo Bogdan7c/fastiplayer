@@ -44,11 +44,12 @@ use subtitle_core::ScreenAnchor;
 pub(crate) use event_rect::{EventImageRect, event_image_rect};
 pub(crate) use line_boxes::{LineBox, line_boxes};
 pub(crate) use measure::{TextBounds, TextMeasure};
-use reorder::{HorizontalAlignment, align_lines, reorder_text};
+use reorder::{HorizontalAlignment, LineAlignment, align_lines, reorder_text};
 pub(crate) use wrap::preliminary_layout;
 
-use crate::event_style::{BaseDirection, BlockAnchor, EventStyle, RotationOrigin};
+use crate::event_style::{BaseDirection, BlockAnchor, EventStyle, RotationOrigin, ScrollPlacement};
 use crate::glyph_info::TextCluster;
+use crate::karaoke::KaraokePlan;
 use crate::overlay::CanvasSize;
 
 /// Итог раскладки реплики.
@@ -62,6 +63,8 @@ pub(crate) struct TextLayout {
     pub(crate) device_x: f64,
     /// Положение базовой линии первой строки (`device_y`), пиксели кадра.
     pub(crate) device_y: f64,
+    /// Слова караоке: время и геометрия предварительной раскладки (пусто без караоке).
+    pub(crate) karaoke: KaraokePlan,
 }
 
 /// Центр поворота реплики в пикселях холста (до растяжения на `par_scale_x`).
@@ -108,19 +111,30 @@ pub(crate) fn arrange_text(
     wrap::wrap_lines_rebalance(clusters, style.wrap_style);
     measure::trim_whitespace(clusters);
     let measure = measure::measure_text(clusters, line_count, style);
+    // libass: `ass_process_karaoke_effects` стоит после переноса строк и до порядка BiDi, потому
+    // что читает предварительные позиции глифов (`pos.x` ещё без разрывов строк и выравнивания).
+    let karaoke = KaraokePlan::build(clusters);
 
     let split_by_style = style.base_direction == BaseDirection::LeftToRight;
     let visual_order = reorder_text(clusters, &measure, style, split_by_style);
+    let horizontal_alignment = HorizontalAlignment::of(style.alignment);
     align_lines(
         clusters,
-        HorizontalAlignment::of(style.alignment),
+        if style.scroll_placement().is_horizontal() {
+            // `EVENT_HSCROLL`: justify = halign; halign = LEFT.
+            LineAlignment::InWidestLine(horizontal_alignment)
+        } else {
+            LineAlignment::InTextArea(horizontal_alignment)
+        },
         max_text_width,
     );
     let bounds = measure::string_bounds(clusters, &measure);
     // Рамка уже посчитана: сдвиг базовой линии `\fay` габариты блока не меняет (как в libass).
     baseline_shear::apply_baseline_shear(clusters, &visual_order);
 
-    let (device_x, device_y) = match style.block_anchor() {
+    // Сначала позиция по `\pos`/выравниванию, затем прокрутка перекрывает одну ось
+    // (libass: «an event can be both positioned and scrolling»).
+    let (anchored_x, anchored_y) = match style.block_anchor() {
         BlockAnchor::ByAlignment => (
             style.text_left(),
             block_baseline(style, canvas, &measure, &bounds),
@@ -131,11 +145,22 @@ pub(crate) fn arrange_text(
             (x - base_x, y - base_y)
         }
     };
+    let block_width = bounds.x_max - bounds.x_min;
+    let (device_x, device_y) = match style.scroll_placement() {
+        ScrollPlacement::None => (anchored_x, anchored_y),
+        ScrollPlacement::RightToLeft { origin_x } => (origin_x, anchored_y),
+        ScrollPlacement::LeftToRight { right_edge_x } => (right_edge_x - block_width, anchored_y),
+        ScrollPlacement::TopToBottom { bottom_edge_y } => {
+            (anchored_x, bottom_edge_y - bounds.y_max)
+        }
+        ScrollPlacement::BottomToTop { top_edge_y } => (anchored_x, top_edge_y - bounds.y_min),
+    };
     TextLayout {
         measure,
         bounds,
         device_x,
         device_y,
+        karaoke,
     }
 }
 

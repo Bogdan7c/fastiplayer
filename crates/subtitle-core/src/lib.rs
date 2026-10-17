@@ -24,13 +24,14 @@ mod timeline;
 mod track;
 
 pub use ass::{
-    ASS_BLUR_MAX_RADIUS, ASS_EDGE_BLUR_MAX, AssAlignment, AssAlphaTarget, AssAxes, AssBold,
-    AssBorderStyle, AssClip, AssClipMode, AssClipShape, AssColor, AssColorSlot, AssCue,
-    AssDrawingMode, AssEventField, AssEventFormat, AssEventMargins, AssFade, AssFontSize,
-    AssHardOverrides, AssHorizontalAlign, AssKerning, AssLayoutRes, AssMove, AssOverride,
-    AssPlayRes, AssResolvedMargins, AssRgb, AssRotationAxis, AssScaledBorderAndShadow, AssScript,
-    AssScriptInfo, AssScriptKind, AssShearAxis, AssStyle, AssStyleIndex, AssTextItem,
-    AssUnsupportedTag, AssVerticalAlign, AssWrapStyle, AssYCbCrMatrix,
+    ASS_BLUR_MAX_RADIUS, ASS_EDGE_BLUR_MAX, AssAlignment, AssAlphaTarget, AssAxes,
+    AssBannerDirection, AssBold, AssBorderStyle, AssClip, AssClipMode, AssClipShape, AssColor,
+    AssColorSlot, AssCue, AssDrawingMode, AssEffect, AssEventField, AssEventFormat,
+    AssEventMargins, AssFade, AssFontSize, AssHardOverrides, AssHorizontalAlign, AssKaraoke,
+    AssKaraokeKind, AssKerning, AssLayoutRes, AssMove, AssOverride, AssPlayRes, AssResolvedMargins,
+    AssRgb, AssRotationAxis, AssScaledBorderAndShadow, AssScript, AssScriptInfo, AssScriptKind,
+    AssScrollDirection, AssShearAxis, AssStyle, AssStyleIndex, AssTextItem, AssTransform,
+    AssTransformTiming, AssVerticalAlign, AssWrapStyle, AssYCbCrMatrix,
 };
 pub use color::{InvalidSubtitleColor, SubtitleColor};
 pub use event::{

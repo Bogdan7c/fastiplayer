@@ -149,7 +149,6 @@ fn every_occurrence_is_kept_in_order_because_winner_rules_belong_to_the_renderer
             AssOverride::DrawingBaselineOffset(2.0),
         ]
     );
-    assert!(stats.unsupported().is_empty());
     assert_eq!(stats.malformed(), 0);
 }
 
@@ -170,12 +169,12 @@ fn prefix_traps_resolve_to_the_right_tag() {
     assert!(matches!(overrides[6], AssOverride::Bold(_)));
     assert!(matches!(overrides[7], AssOverride::Drawing(_)));
     assert_eq!(stats.unknown_total(), 0);
-    assert!(stats.unsupported().is_empty());
+    assert_eq!(stats.malformed(), 0);
 }
 
 #[test]
 fn full_text_with_layer_three_tags_keeps_the_visible_text() {
     let (items, stats) = parse_text(r"{\blur2\clip(1,2,3,4)}Hi{\p1}m 0 0 l 5 5{\p0}");
     assert!(items.contains(&AssTextItem::Text("Hi".to_owned())));
-    assert!(stats.unsupported().is_empty());
+    assert_eq!(stats.malformed(), 0);
 }

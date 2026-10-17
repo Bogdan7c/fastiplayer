@@ -117,6 +117,44 @@ pub(crate) enum BlockAnchor {
     },
 }
 
+/// Положение блока, которое задаёт прокрутка (`Banner`, `Scroll up`, `Scroll down`; libass:
+/// `EVENT_HSCROLL` / `EVENT_VSCROLL`). Прокрутка перекрывает ОДНУ ось привязки
+/// [`BlockAnchor`], вторая ось остаётся такой, какой её дал `\pos` или выравнивание.
+/// Координаты — пиксели холста.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ScrollPlacement {
+    /// Прокрутки нет.
+    None,
+    /// `Banner` справа налево (`SCROLL_RL`): начало блока (`device_x`) стоит в `origin_x`.
+    RightToLeft {
+        /// Горизонтальная координата начала блока.
+        origin_x: f64,
+    },
+    /// `Banner` слева направо (`SCROLL_LR`): правый край блока стоит в `right_edge_x`.
+    LeftToRight {
+        /// Горизонтальная координата правого края блока.
+        right_edge_x: f64,
+    },
+    /// `Scroll down` (`SCROLL_TB`): нижний край блока стоит в `bottom_edge_y`.
+    TopToBottom {
+        /// Вертикальная координата нижнего края блока.
+        bottom_edge_y: f64,
+    },
+    /// `Scroll up` (`SCROLL_BT`): верхний край блока стоит в `top_edge_y`.
+    BottomToTop {
+        /// Вертикальная координата верхнего края блока.
+        top_edge_y: f64,
+    },
+}
+
+impl ScrollPlacement {
+    /// Горизонтальная прокрутка (`EVENT_HSCROLL`): строки выравниваются по самой широкой
+    /// строке блока, а не по области текста (`align_lines`).
+    pub(crate) fn is_horizontal(self) -> bool {
+        matches!(self, Self::RightToLeft { .. } | Self::LeftToRight { .. })
+    }
+}
+
 /// Точная геометрия блока текста реплики ASS в пикселях холста (дробные числа libass:
 /// `x2scr_left`, `max_text_width`, `y2scr_*`). Поля SRT/WebVTT целые и живут в
 /// [`EventStyle::margins`]; ASS-масштаб `PlayRes -> кадр` целым не бывает.
@@ -130,6 +168,8 @@ pub(crate) struct ExactPlacement {
     pub(crate) vertical_margin: f64,
     /// Привязка блока.
     pub(crate) anchor: BlockAnchor,
+    /// Прокрутка (`Effect`); перекрывает одну ось привязки.
+    pub(crate) scroll: ScrollPlacement,
     /// Центр поворота.
     pub(crate) rotation_origin: RotationOrigin,
     /// `par_scale_x` libass: во сколько раз растянуть текст по горизонтали, когда пропорции
@@ -236,6 +276,14 @@ impl EventStyle {
         match self.placement {
             EventPlacement::ByMargins => RotationOrigin::ByAlignment,
             EventPlacement::Exact(exact) => exact.rotation_origin,
+        }
+    }
+
+    /// Прокрутка блока (`Effect`); у SRT/WebVTT её нет.
+    pub(crate) fn scroll_placement(&self) -> ScrollPlacement {
+        match self.placement {
+            EventPlacement::ByMargins => ScrollPlacement::None,
+            EventPlacement::Exact(exact) => exact.scroll,
         }
     }
 

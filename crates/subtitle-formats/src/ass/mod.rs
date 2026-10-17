@@ -31,6 +31,7 @@ mod script_parse;
 mod style_line;
 mod tags;
 mod text;
+mod transform_tags;
 
 #[cfg(test)]
 mod drawing_text_tests;
@@ -39,9 +40,15 @@ mod filter_tag_tests;
 #[cfg(test)]
 mod geometry_tag_tests;
 #[cfg(test)]
+mod karaoke_tag_tests;
+#[cfg(test)]
+mod libass_tag_list_tests;
+#[cfg(test)]
 mod script_builder_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod transform_tag_tests;
 
 pub use limits::{AssParseError, AssParseLimits};
 pub use report::{AssHeaderReport, AssParseReport, AssTagStats};

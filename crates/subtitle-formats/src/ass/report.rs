@@ -1,8 +1,6 @@
-//! Счётчики разбора ASS: что пропущено, что распознано, но не поддерживается.
+//! Счётчики разбора ASS: неизвестные теги, теги с неверными аргументами, отброшенные лимитом.
 
 use std::collections::BTreeMap;
-
-use subtitle_core::AssUnsupportedTag;
 
 use super::limits::AssParseLimits;
 
@@ -14,7 +12,6 @@ const MAX_UNKNOWN_TAG_NAME_CHARS: usize = 16;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssTagStats {
     max_tracked_unknown_names: usize,
-    unsupported: BTreeMap<AssUnsupportedTag, usize>,
     unknown_total: usize,
     unknown_names: BTreeMap<String, usize>,
     malformed: usize,
@@ -25,19 +22,11 @@ impl AssTagStats {
     pub fn new(limits: &AssParseLimits) -> Self {
         Self {
             max_tracked_unknown_names: limits.max_tracked_unknown_tag_names,
-            unsupported: BTreeMap::new(),
             unknown_total: 0,
             unknown_names: BTreeMap::new(),
             malformed: 0,
             over_limit: 0,
         }
-    }
-
-    /// Тег слоя 2–3: распознан, но не исполняется. Ключ — тип тега, поэтому карта ограничена
-    /// размером перечисления.
-    pub(super) fn record_unsupported(&mut self, tag: AssUnsupportedTag) {
-        let counter = self.unsupported.entry(tag).or_insert(0);
-        *counter = counter.saturating_add(1);
     }
 
     /// Совсем неизвестный тег: считается всегда, имя запоминается в пределах лимита.
@@ -59,16 +48,6 @@ impl AssTagStats {
     /// Тег отброшен из-за `max_override_tags_per_event`.
     pub(super) fn record_over_limit(&mut self) {
         self.over_limit = self.over_limit.saturating_add(1);
-    }
-
-    /// Сколько раз встретился каждый поддерживаемый в будущем, но пока не исполняемый тег.
-    pub fn unsupported(&self) -> &BTreeMap<AssUnsupportedTag, usize> {
-        &self.unsupported
-    }
-
-    /// Сколько раз встретился указанный тег слоя 2–3.
-    pub fn unsupported_count(&self, tag: AssUnsupportedTag) -> usize {
-        self.unsupported.get(&tag).copied().unwrap_or(0)
     }
 
     /// Общее число неизвестных тегов.
@@ -139,15 +118,5 @@ mod tests {
         stats.record_unknown(&"x".repeat(100));
         let stored = stats.unknown_names().keys().next().map(String::len);
         assert_eq!(stored, Some(MAX_UNKNOWN_TAG_NAME_CHARS));
-    }
-
-    #[test]
-    fn unsupported_tags_count_per_kind() {
-        let mut stats = AssTagStats::new(&limits(1));
-        stats.record_unsupported(AssUnsupportedTag::Karaoke);
-        stats.record_unsupported(AssUnsupportedTag::Karaoke);
-        stats.record_unsupported(AssUnsupportedTag::Transform);
-        assert_eq!(stats.unsupported_count(AssUnsupportedTag::Karaoke), 2);
-        assert_eq!(stats.unsupported_count(AssUnsupportedTag::Transform), 1);
     }
 }

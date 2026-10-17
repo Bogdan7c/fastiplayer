@@ -15,15 +15,21 @@
 //! - `look` — перевод состояния в вид символов в пикселях, автор или пользователь;
 //! - `event_plan` — обход текста реплики и сборка общего стиля реплики.
 //!
-//! - `animation` — время: `\move` и `\fad`/`\fade` на момент показа, ключ кэша и ближайшее
+//! - `animation` — время: `\move`, `\fad`/`\fade` и веса `\t` на момент показа, ключ кэша и ближайшее
 //!   изменение картинки (владелец всей логики, зависящей от момента).
 //!
-//! ## Что НЕ рисуется (сессия 10)
-//! `\t` и караоке. Клипы `\clip`/`\iclip` рисуются стадией `crate::clip` (после кэша реплик). Размытие `\blur`/`\be` рисуется: значения попадают в `SpanLook::blur`, само размытие — в `compose` (`run::composite_run`). Рисунки `\p` рисуются: текст в режиме рисунка — один псевдоглиф (см. `event_plan`). Масштаб букв, межбуквенный
+//! ## Что рисуется в сессии 10
+//! Караоке `\k \K \kf \ko \kt`: теги захватываются состоянием рендера (`render_state`) на следующий
+//! символ, а расчёт слов, граница заливки и раскраска живут в `crate::karaoke` и стадии после
+//! кэша `crate::clip` (буквы рисуются один раз). Анимация `\t` рисуется: вес `k` считает `tag_weight` по часам реплики, обход
+//! вложенных тегов с подменой веса — `transform_apply` (общий для `RenderState` и покадрового
+//! клипа `clip_animation`), вопросы «что анимируется и когда изменится» — `transform_scan`.
+//! Клипы `\clip`/`\iclip` рисуются стадией `crate::clip` (после кэша реплик). Размытие `\blur`/`\be` рисуется: значения попадают в `SpanLook::blur`, само размытие — в `compose` (`run::composite_run`). Рисунки `\p` рисуются: текст в режиме рисунка — один псевдоглиф (см. `event_plan`). Масштаб букв, межбуквенный
 //! интервал, синтетическое утолщение/наклон и линии подчёркивания/зачёркивания рисуются
 //! общим конвейером по значениям вида символа (`SpanLook`).
 
 mod animation;
+mod clip_animation;
 mod clip_plan;
 mod drawing_scale;
 mod event_plan;
@@ -33,14 +39,20 @@ mod frame_scale;
 mod look;
 mod options;
 mod render_state;
+mod scroll;
+mod tag_weight;
 #[cfg(test)]
 mod test_script;
+mod transform_apply;
+mod transform_scan;
 
 pub(crate) use animation::{
     AssAnimation, AssAnimationKey, AssAnimationState, AssEventClock, evaluate_animation,
 };
+pub(crate) use clip_animation::ClipAnimation;
 pub(crate) use clip_plan::EventClipPlan;
 pub(crate) use event_plan::plan_ass_event;
+pub(crate) use frame_scale::AssFrameScale;
 pub use options::{
     AssRenderOptions, AssStorageSize, AssStyleSource, AssTextScale, InvalidAssTextScale,
 };

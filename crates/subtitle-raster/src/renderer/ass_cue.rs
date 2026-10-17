@@ -86,7 +86,12 @@ pub(crate) fn rasterize_ass_cue(
             bitmaps.push(plate);
         }
     }
+    // Плашка (если есть) стоит перед текстом: роли караоке сдвигаются на её картинки.
+    let plate_images = bitmaps.len();
     bitmaps.extend(rendered.images);
+    let karaoke = rendered
+        .karaoke
+        .map(|stage| stage.with_leading_static_images(plate_images));
 
     // Рамка столкновений — по метрикам текста; пустая рамка (ширина или высота 0) в
     // столкновениях не участвует, как в libass.
@@ -106,6 +111,7 @@ pub(crate) fn rasterize_ass_cue(
         .collect::<Vec<_>>();
     let mut diagnostics = rendered.diagnostics;
     let clip = build_clip(&plan.clip, canvas, &mut diagnostics)?;
+    let clip_animation = plan.clip.animation;
     Ok(RasterizedCue {
         extent: union_extent(&bitmaps),
         bitmaps,
@@ -113,6 +119,8 @@ pub(crate) fn rasterize_ass_cue(
         ass_collision,
         diagnostics,
         clip,
+        clip_animation,
+        karaoke,
         clipped_bitmaps: OnceLock::new(),
     })
 }

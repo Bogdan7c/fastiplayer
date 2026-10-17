@@ -29,6 +29,7 @@ use crate::bitmap::{
 use crate::blur::{BitmapSideLimit, BlurError, BlurScratch, BlurStrength, synth_blur};
 use crate::event_fade::EventFade;
 use crate::event_style::BorderStyle;
+use crate::karaoke::KaraokeEffect;
 use crate::span_look::SpanLook;
 
 /// Флаги фильтров участка (libass: `FILTER_*`).
@@ -51,13 +52,24 @@ impl FilterFlags {
     ///
     /// `fade` — затухание реплики: при нём заливка обводки отключена (libass: `fade == 0` в
     /// условии `FILTER_FILL_IN_BORDER`), хотя цвета в `look` остаются «до затухания».
-    pub(super) fn for_glyph(look: &SpanLook, fade: EventFade) -> Self {
+    ///
+    /// `effect` — караоке-эффект слова символа: `\kf` и `\ko` принудительно включают
+    /// `FILL_IN_SHADOW` (libass: `info->effect_type == EF_KARAOKE_KF / EF_KARAOKE_KO`), потому
+    /// что заливка в таком слове бывает прозрачной (вторичный цвет) и тень нужна и под ней.
+    pub(super) fn for_glyph(
+        look: &SpanLook,
+        fade: EventFade,
+        effect: Option<KaraokeEffect>,
+    ) -> Self {
         let primary = look.colors.primary;
         let box_border = look.border_style == BorderStyle::OpaqueBox;
         let nonzero_border = look.border.is_nonzero();
         let mut nonzero_shadow = look.shadow.is_nonzero();
         // Прозрачность libass = 255 - альфа: `_a(c) != 0xFF` значит «альфа не нулевая».
-        let fill_in_shadow = nonzero_shadow && (primary.alpha != 0 || box_border);
+        let karaoke_fills_shadow =
+            matches!(effect, Some(KaraokeEffect::Fill | KaraokeEffect::Outline));
+        let fill_in_shadow =
+            nonzero_shadow && (karaoke_fills_shadow || primary.alpha != 0 || box_border);
         if !nonzero_border && !fill_in_shadow {
             nonzero_shadow = false;
         }

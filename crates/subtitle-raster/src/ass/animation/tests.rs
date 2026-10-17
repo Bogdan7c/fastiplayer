@@ -3,7 +3,20 @@
 use subtitle_core::{AssCue, AssFade, AssMove, AssOverride, AssTextItem, SubtitleTime};
 
 use super::*;
+use crate::ass::options::AssStorageSize;
 use crate::ass::test_script::{cue_with, default_style, script_with, tags, text};
+use crate::overlay::CanvasSize;
+
+/// Масштаб кадра сценария 1280x720 на холсте 1280x720: единичный.
+fn unit_frame(cue: &AssCue) -> AssFrameScale {
+    let canvas = CanvasSize::new(1280, 720).expect("canvas");
+    AssFrameScale::new(cue.script.info(), canvas, AssStorageSize::Unknown)
+}
+
+/// `evaluate_animation` на единичном масштабе кадра (задержка прокрутки не пересчитывается).
+fn evaluate_animation(cue: &AssCue, clock: &AssEventClock) -> AssAnimation {
+    super::evaluate_animation(cue, clock, &unit_frame(cue))
+}
 
 /// Реплика с заданными тегами в одном блоке.
 fn cue_of(overrides: Vec<AssOverride>) -> AssCue {
@@ -54,7 +67,10 @@ fn text_without_time_tags_is_time_free_and_static() {
     let animation = evaluate_animation(&cue, &clock(500, 2000));
     assert!(animation.is_time_free());
     assert_eq!(animation.change, AnimationChange::None);
-    assert_eq!(animation.state, AssAnimationState::STILL);
+    // Ни положения, ни затухания; часы реплики передаются дальше для `\t`.
+    assert_eq!(animation.state.position, None);
+    assert_eq!(animation.state.fade, AssAnimationState::STILL.fade);
+    assert_eq!(animation.state.clock, Some(clock(500, 2000)));
     assert_eq!(animation.cache_key(), AssAnimationKey::TimeFree);
 }
 
@@ -269,4 +285,148 @@ fn text_items_without_overrides_are_ignored_by_the_scan() {
         vec![AssTextItem::Text("a".to_owned()), AssTextItem::HardBreak],
     );
     assert!(evaluate_animation(&cue, &clock(0, 100)).is_time_free());
+}
+
+fn size_transform(t1_ms: i32, t2_ms: i32) -> AssOverride {
+    use crate::ass::test_script::transform_range;
+    transform_range(
+        t1_ms,
+        t2_ms,
+        vec![AssOverride::FontSize(subtitle_core::AssFontSize::Absolute(
+            80.0,
+        ))],
+    )
+}
+
+fn clip_transform(t1_ms: i32, t2_ms: i32) -> AssOverride {
+    use crate::ass::test_script::transform_range;
+    transform_range(
+        t1_ms,
+        t2_ms,
+        vec![AssOverride::Clip(subtitle_core::AssClip {
+            mode: subtitle_core::AssClipMode::Inside,
+            shape: subtitle_core::AssClipShape::Rect {
+                x0: 0,
+                y0: 0,
+                x1: 10,
+                y1: 10,
+            },
+        })],
+    )
+}
+
+#[test]
+fn raster_transform_is_sampled_by_weight_and_reports_its_phases() {
+    let cue = cue_of(vec![size_transform(500, 1500)]);
+    let animation = |ms: i64| evaluate_animation(&cue, &clock(ms, 4000));
+    assert!(!animation(100).is_time_free());
+    assert_eq!(animation(100).change, at(501));
+    assert_eq!(animation(1000).change, AnimationChange::EveryFrame);
+    assert_eq!(animation(1500).change, AnimationChange::None);
+    // До `t1` вес один и тот же (0): тот же ключ кэша, картинка не рисуется заново.
+    assert_eq!(animation(100).cache_key(), animation(300).cache_key());
+    // Внутри — каждый вес свой ключ; после `t2` вес 1 навсегда.
+    assert_ne!(animation(800).cache_key(), animation(900).cache_key());
+    assert_eq!(animation(1500).cache_key(), animation(3000).cache_key());
+    assert_ne!(animation(100).cache_key(), animation(1500).cache_key());
+}
+
+#[test]
+fn clip_only_transform_is_time_dependent_but_keeps_the_cache_key_time_free() {
+    let cue = cue_of(vec![clip_transform(0, 1000)]);
+    let during = evaluate_animation(&cue, &clock(500, 4000));
+    assert!(!during.is_time_free());
+    assert_eq!(during.change, AnimationChange::EveryFrame);
+    assert_eq!(during.cache_key(), AssAnimationKey::TimeFree);
+    let after = evaluate_animation(&cue, &clock(1000, 4000));
+    assert_eq!(after.change, AnimationChange::None);
+    assert!(!after.is_time_free());
+}
+
+#[test]
+fn transform_and_move_combine_to_the_earliest_change() {
+    let cue = cue_of(vec![movement(1000, 1500), size_transform(200, 600)]);
+    let change = |ms: i64| evaluate_animation(&cue, &clock(ms, 4000)).change;
+    assert_eq!(change(0), at(201));
+    assert_eq!(change(300), AnimationChange::EveryFrame);
+    assert_eq!(change(700), at(1001));
+}
+
+#[test]
+fn move_and_fade_inside_a_transform_follow_first_wins_in_tag_order() {
+    use crate::ass::test_script::transform_range;
+    // `\move` внутри `\t` применяется сразу, как и вне его (положение анимирует сам `\move`).
+    let cue = cue_of(vec![transform_range(0, 100, vec![movement(0, 0)])]);
+    assert_eq!(position_of(&cue, 1000, 2000), Some((200.0, 300.0)));
+    // `\pos` раньше (внутри `\t`) отключает последующий `\move` вне его.
+    let pos_first = cue_of(vec![
+        transform_range(0, 100, vec![AssOverride::Position { x: 5.0, y: 6.0 }]),
+        movement(0, 0),
+    ]);
+    assert_eq!(position_of(&pos_first, 1000, 2000), None);
+}
+
+/// Реплика с полем `Effect`.
+fn effect_cue(effect: &str) -> AssCue {
+    let mut cue = cue_of(Vec::new());
+    cue.effect = effect.to_owned();
+    cue
+}
+
+#[test]
+fn scroll_effect_makes_the_cue_sampled_and_changes_every_frame() {
+    let cue = effect_cue("Banner;20");
+    let animation = evaluate_animation(&cue, &clock(500, 4000));
+    assert!(!animation.is_time_free());
+    assert_eq!(animation.change, AnimationChange::EveryFrame);
+    // 500 мс при 20 мс на пиксель -> 25 px.
+    assert_eq!(animation.state.scroll_shift, Some(25.0));
+}
+
+#[test]
+fn scroll_shift_is_a_fraction_not_a_step_per_delay() {
+    let cue = effect_cue("Scroll up;0;720;40");
+    let shift = |ms: i64| {
+        evaluate_animation(&cue, &clock(ms, 4000))
+            .state
+            .scroll_shift
+    };
+    assert_eq!(shift(0), Some(0.0));
+    assert_eq!(shift(10), Some(0.25));
+    assert_eq!(shift(41), Some(1.025));
+}
+
+#[test]
+fn scroll_cache_key_differs_between_moments_and_matches_for_equal_ones() {
+    let cue = effect_cue("Banner;20");
+    let key = |ms: i64| evaluate_animation(&cue, &clock(ms, 4000)).cache_key();
+    assert_ne!(key(100), key(101));
+    assert_eq!(key(100), key(100));
+}
+
+#[test]
+fn cue_without_a_scroll_effect_has_no_shift() {
+    for effect in ["", "Karaoke", "Scroll up;1;2", "Scroll sideways;1;2;3"] {
+        let cue = effect_cue(effect);
+        let animation = evaluate_animation(&cue, &clock(500, 4000));
+        assert_eq!(animation.state.scroll_shift, None, "{effect:?}");
+        assert!(animation.is_time_free(), "{effect:?}");
+    }
+}
+
+#[test]
+fn scroll_delay_is_rescaled_by_layout_resolution() {
+    // PlayRes 1280x720, холст 1280x720, хранение 640x360: scale = 0.5.
+    let cue = effect_cue("Banner;0");
+    let canvas = CanvasSize::new(1280, 720).expect("canvas");
+    let frame = AssFrameScale::new(
+        cue.script.info(),
+        canvas,
+        AssStorageSize::from_pixels(640, 360),
+    );
+    let shift = super::evaluate_animation(&cue, &clock(100, 4000), &frame)
+        .state
+        .scroll_shift;
+    // delay 0 -> max(0/0.5, 1) = 1 -> 1 * 0.5 = 0.5 мс на пиксель PlayRes: 100 / 0.5.
+    assert_eq!(shift, Some(200.0));
 }

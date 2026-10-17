@@ -1,17 +1,18 @@
 //! Теги переопределений `{\...}` с точной семантикой аргументов libass.
 //!
 //! Теги слоя 1, геометрия слоя 2 (`\frx/y/z`, `\fax/y`, `\org`, `\fad`) и теги слоя 3
-//! (`\p`, `\pbo`, `\clip`, `\iclip`, `\blur`, `\be`) хранятся разобранными. Анимация
-//! `\t` и караоке `\k` распознаются, но только как [`AssOverride::Unsupported`]:
-//! растеризатор их игнорирует, а счётчики попадают в отчёт разбора.
+//! (`\p`, `\pbo`, `\clip`, `\iclip`, `\blur`, `\be`, `\t`, `\k*`) хранятся разобранными
+//! в «сыром» виде: вычисления, зависящие от времени кадра, делает растеризатор.
 //!
 //! Значение `None` в большинстве вариантов означает «тег без допустимого аргумента:
 //! вернуть значение из стиля реплики» — так libass обрабатывает `\b`, `\fn` и т.п.
 
 use super::alignment::AssAlignment;
+use super::animation_tags::AssTransform;
 use super::color::AssRgb;
 use super::filter_tags::AssClip;
 use super::geometry_tags::{AssFade, AssRotationAxis, AssShearAxis};
+use super::karaoke_tags::AssKaraoke;
 use super::script_info::AssWrapStyle;
 use super::style::AssBold;
 
@@ -99,25 +100,6 @@ pub struct AssMove {
     pub end_ms: i32,
 }
 
-/// Теги, которые распознаются (чтобы не принять за другой тег), но пока не исполняются
-/// (сессия 10b): анимация и караоке.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum AssUnsupportedTag {
-    Transform,
-    /// `\k`, `\K`, `\kf`, `\ko`, `\kt`.
-    Karaoke,
-}
-
-impl AssUnsupportedTag {
-    /// Каноническое имя тега для матрицы поддержки и отчёта.
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Transform => "t",
-            Self::Karaoke => "k",
-        }
-    }
-}
-
 /// Один тег блока `{...}`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AssOverride {
@@ -139,18 +121,25 @@ pub enum AssOverride {
         slot: AssColorSlot,
         value: Option<AssRgb>,
     },
-    /// `\alpha`, `\1a`..`\4a`: прозрачность (0 — непрозрачно), младший байт числа.
+    /// `\alpha`, `\1a`..`\4a`: прозрачность (0 — непрозрачно).
+    ///
+    /// Значение хранится сырым `int32` (результат `parse_alpha_tag`): libass усекает его до
+    /// младшего байта только при применении, ПОСЛЕ смеси `\t` (`change_alpha`), и в смесь число
+    /// входит как `uint32`. Поэтому `\t(\alpha&H1FF&)` и отрицательные значения ведут себя иначе,
+    /// чем если бы байт отрезали при разборе.
     Alpha {
         target: AssAlphaTarget,
-        value: Option<u8>,
+        value: Option<i32>,
     },
-    /// `\bord`, `\xbord`, `\ybord`: значение уже не меньше 0.
+    /// `\bord`, `\xbord`, `\ybord`: значение как написано; зажатие снизу нулём делает
+    /// растеризатор после смешивания `\t`.
     Border {
         axes: AssAxes,
         value: Option<f64>,
     },
-    /// `\shad`: значение не меньше 0 (как в libass), а `\xshad`/`\yshad` могут быть
-    /// отрицательными (тень влево/вверх).
+    /// `\shad`, `\xshad`, `\yshad`: значение как написано. Растеризатор зажимает снизу нулём
+    /// только `\shad` (как libass), а `\xshad`/`\yshad` могут быть отрицательными (тень
+    /// влево/вверх).
     Shadow {
         axes: AssAxes,
         value: Option<f64>,
@@ -193,7 +182,8 @@ pub enum AssOverride {
     Reset(Option<String>),
     /// `\q0..\q3`; прочее -> `None` (режим из `[Script Info]`).
     WrapStyle(Option<AssWrapStyle>),
-    /// `\fscx`: доля (аргумент / 100, не меньше 0); `None` — масштаб из стиля.
+    /// `\fscx`: доля (аргумент / 100, без зажатия: ноль ставит растеризатор после `\t`);
+    /// `None` — масштаб из стиля.
     ScaleX(Option<f64>),
     /// `\fscy`.
     ScaleY(Option<f64>),
@@ -219,18 +209,13 @@ pub enum AssOverride {
     /// `\clip(...)` / `\iclip(...)`: см. [`AssClip`]. Побеждающий вариант выбирает
     /// растеризатор: последний прямоугольный, первый векторный.
     Clip(AssClip),
-    /// Тег слоя 2–3: нужен только для счётчиков.
-    Unsupported(AssUnsupportedTag),
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unsupported_names_are_unique() {
-        let all = [AssUnsupportedTag::Transform, AssUnsupportedTag::Karaoke];
-        let names: std::collections::HashSet<_> = all.iter().map(|tag| tag.name()).collect();
-        assert_eq!(names.len(), all.len());
-    }
+    /// `\t(...)`: анимация вложенных тегов, см. [`AssTransform`]. Даже некорректный `\t`
+    /// сохраняется (с пустым списком тегов): он влияет на поиск места реплики и на коэффициент
+    /// внешнего `\t`.
+    Transform(AssTransform),
+    /// `\k`, `\K`, `\kf`, `\ko`: караоке-слог, см. [`AssKaraoke`].
+    Karaoke(AssKaraoke),
+    /// `\kt`: абсолютный сдвиг времени караоке в сотых долях секунды «как написано»
+    /// (`argtod`). `None` — тег без аргумента (сдвиг 0).
+    KaraokeSkip(Option<f64>),
 }

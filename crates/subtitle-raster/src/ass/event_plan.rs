@@ -30,11 +30,12 @@
 //! между репликами.
 
 use subtitle_core::{
-    AssAlignment, AssCue, AssDrawingMode, AssHorizontalAlign, AssKerning, AssOverride, AssTextItem,
-    AssUnsupportedTag, AssVerticalAlign, AssWrapStyle, CuePlacement, ScreenAnchor,
+    AssAlignment, AssCue, AssDrawingMode, AssEffect, AssHorizontalAlign, AssKerning, AssOverride,
+    AssTextItem, AssVerticalAlign, AssWrapStyle, CuePlacement, ScreenAnchor,
 };
 
 use super::animation::AssAnimationState;
+use super::clip_animation::ClipAnimation;
 use super::clip_plan::EventClipPlan;
 use super::drawing_scale::outline_scale;
 use super::explicit::is_explicit_event;
@@ -42,10 +43,12 @@ use super::frame_scale::AssFrameScale;
 use super::look::{LookPolicy, UserLook};
 use super::options::{AssRenderOptions, AssStyleSource};
 use super::render_state::{RenderState, ScriptPoint};
+use super::scroll::{scroll_band, scroll_placement};
+use super::transform_scan::animates_orientation;
 use crate::appearance::{CollisionDirection, PlateStyle, SubtitleAppearance, cue_style};
 use crate::event_style::{
     BaseDirection, BlockAnchor, EventPlacement, EventStyle, ExactPlacement, RotationOrigin,
-    TextMargins, WrapStyle,
+    ScrollPlacement, TextMargins, WrapStyle,
 };
 use crate::overlay::{CanvasSize, OverlayPlacementGroup};
 use crate::source_text::{
@@ -104,13 +107,15 @@ pub(crate) fn plan_ass_event(
     let (policy, plate) = look_policy(&frame, options, appearance, canvas, explicit);
 
     // Banner: libass принудительно выключает перенос строк (`wrap_style = 2`).
-    let initial_wrap = if cue.effect.starts_with("Banner;") {
+    let effect = cue.transition_effect();
+    let initial_wrap = if matches!(effect, AssEffect::Banner { .. }) {
         AssWrapStyle::NoWrap
     } else {
         script.info().wrap_style
     };
-    let mut state =
-        RenderState::new(script, cue.style(), initial_wrap).with_event_fade(animation.fade);
+    let mut state = RenderState::new(script, cue.style(), initial_wrap)
+        .with_event_fade(animation.fade)
+        .with_event_clock(animation.clock);
 
     let mut walker = TextWalker::new(&policy);
     for item in &cue.text {
@@ -136,14 +141,20 @@ pub(crate) fn plan_ass_event(
     // `\move`: `RenderState` знает только начальную точку (первый позиционирующий тег), а
     // текущую точку даёт анимация; для `\pos` и неподвижного `\move` она `None`.
     let position = animation.position.or(state.position);
-    let style = event_style(cue, &state, position, &frame, &final_look);
+    let scroll = scroll_placement(effect, animation.scroll_shift.unwrap_or(0.0), &frame);
+    let style = event_style(cue, &state, position, scroll, &frame, &final_look);
     // Позиционная привязка (EVENT_POSITIONED libass) читается из состояния разбора, а не из
     // `hard_overrides`: тот шире (клипы и пр.) и не означает «автор задал место».
     // Повёрнутые и наклонённые реплики, как и реплики с центром `\org`, тоже «надписи»: они не
     // диалог, поэтому не поднимаются над панелью управления вместе с основными репликами.
+    // `\t`, анимирующий поворот или наклон, делает реплику «надписью» навсегда: иначе группа
+    // менялась бы со временем (в нулевой момент поворота ещё нет).
     let is_dialogue_line = state.position.is_none()
         && state.origin.is_none()
         && !walker.has_transformed_text()
+        && !animates_orientation(cue)
+        // Прокрутка сама выбирает место на кадре: такая реплика не диалог.
+        && effect == AssEffect::None
         && state.alignment.vertical == AssVerticalAlign::Bottom;
     let placement_group = if is_dialogue_line {
         OverlayPlacementGroup::Main
@@ -153,7 +164,13 @@ pub(crate) fn plan_ass_event(
     // Масштаб кадра для клипа: как у libass, с пользовательским масштабом текста только у
     // не явных реплик (у реплики с клипом он не применяется).
     let clip_scale = frame.event_scale((!explicit).then(|| f64::from(options.text_scale.get())));
-    let clip = EventClipPlan::from_filters(&state.filters, &frame, &clip_scale, canvas, explicit);
+    let mut clip =
+        EventClipPlan::from_filters(&state.filters, &frame, &clip_scale, canvas, explicit);
+    clip.animation = ClipAnimation::for_cue(cue, &frame, canvas, explicit);
+    // `Scroll up/down`: текст виден только в полосе прокрутки (постоянна во времени).
+    if let Some(band) = scroll_band(effect, &frame) {
+        clip.limit_to_scroll_band(band, canvas);
+    }
     AssEventPlan {
         placement_group,
         clip,
@@ -203,14 +220,15 @@ fn look_policy(
 
 /// Теги, после которых libass не ищет место для реплики (`detect_collisions = 0`).
 fn disables_collisions(cue: &AssCue) -> bool {
-    let effect_scrolls = cue.effect.starts_with("Banner;")
-        || cue.effect.starts_with("Scroll up;")
-        || cue.effect.starts_with("Scroll down;");
+    // Эффект без достаточного числа параметров libass не применяет (`AssEffect::None`) и
+    // коллизии не отключает.
+    let effect_scrolls = cue.transition_effect() != AssEffect::None;
     effect_scrolls
         || cue.text.iter().any(|item| match item {
+            // Любой `\t`, даже некорректный: `detect_collisions = 0` стоит до проверки формы.
             AssTextItem::Overrides(overrides) => overrides
                 .iter()
-                .any(|tag| matches!(tag, AssOverride::Unsupported(AssUnsupportedTag::Transform))),
+                .any(|tag| matches!(tag, AssOverride::Transform(_))),
             _ => false,
         })
 }
@@ -220,6 +238,7 @@ fn event_style(
     cue: &AssCue,
     state: &RenderState<'_>,
     position: Option<ScriptPoint>,
+    scroll: ScrollPlacement,
     frame: &AssFrameScale,
     final_look: &SpanLook,
 ) -> EventStyle {
@@ -262,6 +281,7 @@ fn event_style(
             text_width,
             vertical_margin: frame.y_to_screen(f64::from(margins.vertical)),
             anchor,
+            scroll,
             rotation_origin,
             pixel_aspect_x: frame.pixel_aspect_x(),
         }),
@@ -353,11 +373,9 @@ impl<'policy> TextWalker<'policy> {
                     self.push_drawing(content, scale, state);
                     return;
                 }
-                // Нулевой размер шрифта: глифов нет (как в libass), остальной текст рисуется.
-                if !self.policy.draws_glyphs(state) {
-                    return;
-                }
-                let look = self.look_index(state);
+                // Нулевой размер шрифта: буквы не рисуются (остальной текст рисуется), но
+                // каждая остаётся символом без ширины и забирает теги караоке, как глиф libass.
+                let look = self.letter_look_index(state);
                 for ch in content.chars() {
                     // Возврат каретки и NUL разбор не должен пропускать, но на всякий случай
                     // они не попадают в раскладку (как в SRT-пути).
@@ -367,6 +385,7 @@ impl<'policy> TextWalker<'policy> {
                             look,
                             fade: state.fade,
                             drawing: None,
+                            karaoke: state.take_karaoke_mark(),
                         });
                     }
                 }
@@ -391,7 +410,7 @@ impl<'policy> TextWalker<'policy> {
     /// Рисунок пропускается только если оформление «мой стиль» (см.
     /// [`LookPolicy::drawing_event_scale`]). Размер шрифта на рисунок не влияет (решение
     /// владельца, как в libass): в стиле с `Fontsize: 0` рисунок рисуется, а буквы нет.
-    fn push_drawing(&mut self, commands: &str, scale: u32, state: &RenderState<'_>) {
+    fn push_drawing(&mut self, commands: &str, scale: u32, state: &mut RenderState<'_>) {
         let Some(frame) = self.policy.drawing_event_scale() else {
             return;
         };
@@ -412,21 +431,41 @@ impl<'policy> TextWalker<'policy> {
             look: look_index,
             fade: state.fade,
             drawing: Some(id),
+            karaoke: state.take_karaoke_mark(),
         });
     }
 
-    fn push_break(&mut self, state: &RenderState<'_>, ch: char) {
-        // Перенос при нулевом размере шрифта пропускается вместе с буквами (упрощение слоя 1).
-        if state.drawing.is_on() || !self.policy.draws_glyphs(state) {
+    fn push_break(&mut self, state: &mut RenderState<'_>, ch: char) {
+        if state.drawing.is_on() {
             return;
         }
-        let look = self.look_index(state);
+        // Перенос при нулевом размере шрифта остаётся переносом (как глиф libass) и забирает
+        // теги караоке; рисуется он тем же невидимым видом, что и буквы нулевого размера.
+        let look = self.letter_look_index(state);
         self.chars.push(SourceChar {
             ch,
             look,
             fade: state.fade,
             drawing: None,
+            karaoke: state.take_karaoke_mark(),
         });
+    }
+
+    /// Индекс вида буквы (или переноса) в текущем состоянии: обычный, а при нулевом размере
+    /// шрифта — невидимый вид без ширины ([`LookPolicy::make_phantom_look`]).
+    fn letter_look_index(&mut self, state: &RenderState<'_>) -> usize {
+        if self.policy.draws_glyphs(state) {
+            return self.look_index(state);
+        }
+        let phantom = self.policy.make_phantom_look(state);
+        let known = self.looks.iter().position(|look| *look == phantom);
+        let index = known.unwrap_or_else(|| {
+            self.looks.push(phantom);
+            self.looks.len() - 1
+        });
+        // Кэш `current_look` описывает видимый вид; невидимый его не заменяет.
+        self.current_look = None;
+        index
     }
 
     /// Индекс вида для текущего состояния: прежний, если ничего не менялось или вид равен
@@ -481,3 +520,5 @@ impl<'policy> TextWalker<'policy> {
 mod geometry_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod transform_tests;

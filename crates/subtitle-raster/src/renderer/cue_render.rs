@@ -1,15 +1,18 @@
 //! Отрисовка одной реплики целиком: стиль -> текст -> плашка -> готовый список картинок.
 
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
 use subtitle_core::SubtitleTextCue;
 
 use crate::appearance::{CollisionDirection, SubtitleAppearance, cue_style};
+use crate::ass::{AssEventClock, ClipAnimation};
 use crate::bitmap::BitmapError;
 use crate::clip::CueClip;
 use crate::face_cache::FaceCache;
 use crate::fonts::{SubtitleFontLibrary, TextLanguagePreference};
-use crate::overlay::{CanvasSize, SubtitleBitmap};
+use crate::karaoke::{KaraokeStage, NextChange};
+use crate::overlay::{AnimationChange, CanvasSize, SubtitleBitmap};
 use crate::plate::{PlateError, build_plate};
 use crate::render_diagnostics::RenderDiagnostics;
 use crate::text_renderer::{TextRenderError, render_cue_text};
@@ -57,6 +60,13 @@ pub(crate) struct RasterizedCue {
     /// Клип реплики (`\clip`/`\iclip`), не зависящий от времени. `bitmaps` хранит картинки БЕЗ
     /// клипа; клип накладывает стадия [`crate::clip`] при сборке кадра (см. [`Self::final_bitmaps`]).
     pub(crate) clip: CueClip,
+    /// Покадровый прямоугольник клипа (`\t(\clip(...))`): если есть, он заменяет
+    /// прямоугольник `clip` и пересчитывается на момент каждого кадра; текст при этом остаётся
+    /// в кэше, а результат стадии не запоминается.
+    pub(crate) clip_animation: Option<ClipAnimation>,
+    /// Караоке реплики: правила участков и роли картинок. Время в кэш не входит: буквы
+    /// рисуются один раз, а раскраску на момент кадра даёт [`Self::final_bitmaps`].
+    pub(crate) karaoke: Option<KaraokeStage>,
     /// Результат наложения клипа на `bitmaps`: считается один раз при первой сборке кадра и
     /// живёт в записи кэша, чтобы маски клипнутых картинок были общими между кадрами.
     pub(crate) clipped_bitmaps: OnceLock<Vec<SubtitleBitmap>>,
@@ -82,24 +92,65 @@ impl RasterizedCue {
             .iter()
             .map(|bitmap| bitmap.coverage().len())
             .sum();
-        let clipped_copy = if self.clip.is_none() { 0 } else { masks };
+        // Запоминается результат только неизменного клипа; покадровый и караоке считаются заново.
+        let clipped_copy =
+            if self.clip.is_none() || self.clip_animation.is_some() || self.karaoke.is_some() {
+                0
+            } else {
+                masks
+            };
         masks
             .saturating_add(clipped_copy)
             .saturating_add(self.clip.mask_bytes())
             .saturating_add(CUE_ENTRY_OVERHEAD_BYTES)
     }
 
-    /// Картинки реплики, как они идут в кадр: с наложенным клипом.
+    /// Картинки реплики, как они идут в кадр: с наложенным клипом и раскраской караоке.
     ///
-    /// Без клипа это сами `bitmaps` (никаких копий). С клипом стадия [`crate::clip`] считается
-    /// один раз и запоминается: клип не зависит от времени, а общие маски между кадрами нужны
-    /// детектору изменений (`Unchanged`/`Moved` вместо `Replaced`).
-    pub(crate) fn final_bitmaps(&self) -> &[SubtitleBitmap] {
-        if self.clip.is_none() {
-            return &self.bitmaps;
+    /// Без клипа и караоке это сами `bitmaps` (никаких копий). С неизменным клипом стадия
+    /// [`crate::clip`] считается один раз и запоминается: общие маски между кадрами нужны
+    /// детектору изменений (`Unchanged`/`Moved` вместо `Replaced`). С покадровым клипом
+    /// (`clip_animation`) и с караоке стадия считается заново на каждом кадре по `clock`:
+    /// прямоугольник и граница заливки меняются, а маски букв остаются общими. Без часов
+    /// (простые реплики) покадровых эффектов не бывает; караоке без часов считается спетым.
+    pub(crate) fn final_bitmaps(&self, clock: Option<&AssEventClock>) -> Cow<'_, [SubtitleBitmap]> {
+        let animated_rect = match (&self.clip_animation, clock) {
+            (Some(animation), Some(clock)) => Some(animation.rect_at(clock)),
+            _ => None,
+        };
+        let paints = self
+            .karaoke
+            .as_ref()
+            .map(|stage| stage.paints_at(clock.map(|clock| i64::from(clock.elapsed_ms()))));
+        if animated_rect.is_none() && paints.is_none() {
+            if self.clip.is_none() {
+                return Cow::Borrowed(&self.bitmaps);
+            }
+            return Cow::Borrowed(
+                self.clipped_bitmaps
+                    .get_or_init(|| self.clip.apply(&self.bitmaps)),
+            );
         }
-        self.clipped_bitmaps
-            .get_or_init(|| self.clip.apply(&self.bitmaps))
+        let rect = match &animated_rect {
+            Some(rect) => rect.as_ref(),
+            None => self.clip.static_rect(),
+        };
+        Cow::Owned(
+            self.clip
+                .apply_with_rect(rect, &self.bitmaps, paints.as_deref()),
+        )
+    }
+
+    /// Ближайшее изменение картинок реплики из-за караоке на часах `clock`; `None` — у реплики
+    /// нет караоке (её срок годности определяет `AssAnimation`).
+    pub(crate) fn karaoke_change(&self, clock: &AssEventClock) -> Option<AnimationChange> {
+        let stage = self.karaoke.as_ref()?;
+        let elapsed_ms = i64::from(clock.elapsed_ms());
+        Some(match stage.next_change(elapsed_ms) {
+            NextChange::Never => AnimationChange::None,
+            NextChange::EveryFrame => AnimationChange::EveryFrame,
+            NextChange::AtMs(offset_ms) => AnimationChange::At(clock.moment_at(offset_ms)),
+        })
     }
 }
 
@@ -147,6 +198,8 @@ pub(crate) fn rasterize_cue(
         ass_collision: None,
         diagnostics: rendered.diagnostics,
         clip: CueClip::NONE,
+        clip_animation: None,
+        karaoke: None,
         clipped_bitmaps: OnceLock::new(),
     })
 }

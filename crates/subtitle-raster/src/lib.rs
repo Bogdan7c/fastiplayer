@@ -35,6 +35,7 @@ pub mod fonts;
 mod glyph_info;
 mod glyph_render;
 mod glyph_transform;
+mod karaoke;
 mod layout;
 #[cfg(test)]
 mod libass_parity;

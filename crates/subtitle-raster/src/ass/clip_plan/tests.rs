@@ -173,3 +173,72 @@ fn vector_clip_with_scale_32_collapses_the_matrix_like_libass() {
     let vector = plan.vector.expect("vector clip");
     assert_eq!((vector.scale_x, vector.scale_y), (0.0, 0.0));
 }
+
+fn canvas_100() -> CanvasSize {
+    CanvasSize::new(100, 100).expect("canvas")
+}
+
+#[test]
+fn scroll_band_without_a_clip_becomes_a_whole_width_rect_limited_to_the_rows() {
+    let mut plan = plan_for((100, 100), (100, 100), AssStorageSize::Unknown, &[], true);
+    assert_eq!(plan.rect, None);
+    plan.limit_to_scroll_band(
+        ScrollBand {
+            top: 20,
+            bottom: 70,
+        },
+        canvas_100(),
+    );
+    assert_eq!(
+        plan.rect,
+        Some(ScreenRectClip::new(
+            AssClipMode::Inside,
+            [0, 20, 100, 70],
+            canvas_100()
+        ))
+    );
+}
+
+#[test]
+fn scroll_band_intersects_only_the_rows_of_an_existing_rect_clip() {
+    let tags = [rect_tag(AssClipMode::Inside, [10, 0, 60, 50])];
+    let mut plan = plan_for((100, 100), (100, 100), AssStorageSize::Unknown, &tags, true);
+    plan.limit_to_scroll_band(
+        ScrollBand {
+            top: 20,
+            bottom: 70,
+        },
+        canvas_100(),
+    );
+    // x остаётся клипа, y: max(0, 20) и min(50, 70).
+    assert_eq!(
+        plan.rect,
+        Some(ScreenRectClip::new(
+            AssClipMode::Inside,
+            [10, 20, 60, 50],
+            canvas_100()
+        ))
+    );
+}
+
+#[test]
+fn scroll_band_moves_the_hole_rows_of_an_inverse_clip_like_libass() {
+    // libass пересекает `clip_y0/clip_y1` не глядя на режим: у `\iclip` меняется и дыра.
+    let tags = [rect_tag(AssClipMode::Outside, [10, 0, 60, 90])];
+    let mut plan = plan_for((100, 100), (100, 100), AssStorageSize::Unknown, &tags, true);
+    plan.limit_to_scroll_band(
+        ScrollBand {
+            top: 20,
+            bottom: 70,
+        },
+        canvas_100(),
+    );
+    assert_eq!(
+        plan.rect,
+        Some(ScreenRectClip::new(
+            AssClipMode::Outside,
+            [10, 20, 60, 70],
+            canvas_100()
+        ))
+    );
+}

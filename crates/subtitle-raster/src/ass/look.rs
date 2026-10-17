@@ -28,6 +28,10 @@ const MAX_FONT_SIZE_IN_CANVASES: f64 = 4.0;
 /// целый холст уже закрашивает кадр, а стоимость обводки растёт с её толщиной.
 const MAX_DECORATION_IN_CANVASES: f64 = 1.0;
 
+/// Размер шрифта «невидимой» буквы в пикселях: нужен только чтобы буква прошла шейпинг и
+/// раскладку (размер 0 конвейер отвергает), на экране она ничего не занимает: ширина нулевая.
+const PHANTOM_FONT_SIZE: f64 = 1.0;
+
 /// Оформление, которое пользователь навязывает ASS-репликам («мой стиль»), уже в пикселях.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UserLook {
@@ -84,6 +88,30 @@ impl LookPolicy {
             Self::Author { scale, .. } => (state.font_size * scale.screen_y).abs() > 0.0,
             Self::User(_) => true,
         }
+    }
+
+    /// Вид «невидимой» буквы: символа в состоянии, где [`Self::draws_glyphs`] ложно.
+    ///
+    /// В libass каждый символ создаёт глиф, который забирает накопленные теги караоке
+    /// (`parse_events`), и этот глиф стоит в слове и в порядке участков, даже если рисовать
+    /// нечего. Мы букву нулевого размера не рисуем (решение 10a), но символ из раскладки не
+    /// выбрасываем: он остаётся глифом без ширины, без обводки, тени и линий, как буква с
+    /// `\fscx0`, у которой поведение караоке закреплено эталонами. Так теги `\k*`/`\kt`,
+    /// стоящие перед невидимой буквой, ведут себя как в libass и не переезжают на следующую
+    /// видимую букву. Единственное отличие от libass — вертикаль: у нас такая буква высотой
+    /// [`PHANTOM_FONT_SIZE`], у libass высотой в размер FreeType по умолчанию.
+    pub(crate) fn make_phantom_look(&self, state: &RenderState<'_>) -> SpanLook {
+        let mut look = self.make_look(state);
+        look.font_size = PHANTOM_FONT_SIZE;
+        look.scale = AxisPair {
+            horizontal: 0.0,
+            vertical: look.scale.vertical,
+        };
+        look.letter_spacing = 0.0;
+        look.border = AxisPair::uniform(0.0);
+        look.shadow = AxisPair::uniform(0.0);
+        look.decorations = TextDecorations::default();
+        look
     }
 
     /// Множители кадра для рисунков `\p`. Рисуются только рисунки автора.

@@ -31,6 +31,7 @@
 
 use subtitle_core::AssClipMode;
 
+use super::paint::ImagePaint;
 use crate::overlay::{CanvasSize, LocalRect, SubtitleBitmap};
 
 /// Прямоугольный клип в пикселях холста.
@@ -60,11 +61,41 @@ impl ScreenRectClip {
         }
     }
 
+    /// Клип на весь холст (клип по умолчанию явной реплики без `\clip`).
+    pub(crate) fn whole_canvas(canvas: CanvasSize) -> Self {
+        let corners = [
+            0,
+            0,
+            i32::try_from(canvas.width()).unwrap_or(i32::MAX),
+            i32::try_from(canvas.height()).unwrap_or(i32::MAX),
+        ];
+        Self::new(AssClipMode::Inside, corners, canvas)
+    }
+
+    /// Зажимает вертикальные границы в полосу `[top, bottom]` (libass: `clip_y0 = FFMAX(clip_y0,
+    /// y0)`, `clip_y1 = FFMIN(clip_y1, y1)` у `Scroll up/down`). Режим клипа не меняется: у
+    /// `\iclip` libass тоже просто сдвигает границы дыры.
+    pub(crate) fn limited_to_rows(self, top: i32, bottom: i32) -> Self {
+        Self {
+            y0: self.y0.max(top),
+            y1: self.y1.min(bottom),
+            ..self
+        }
+    }
+
     /// Куски картинки, которые остаются видимыми, в порядке libass; кладёт их в `out`.
     ///
     /// Картинка уже лежит внутри холста (её обрезала сборка реплики), поэтому «зажим кусков в
-    /// экран» из `render_glyph_i` здесь не нужен: он ничего бы не изменил.
-    pub(crate) fn push_visible_parts(&self, image: &SubtitleBitmap, out: &mut Vec<SubtitleBitmap>) {
+    /// экран» из `render_glyph_i` здесь не нужен: он ничего бы не изменил. `paint` — раскраска
+    /// караоке: каждый видимый кусок режется по `brk` на левую и правую части внутри того же
+    /// шага, как в libass (для инверсного клипа порядок «кусок 1 слева, кусок 1 справа,
+    /// кусок 2 слева ...»).
+    pub(crate) fn push_visible_parts(
+        &self,
+        image: &SubtitleBitmap,
+        paint: ImagePaint,
+        out: &mut Vec<SubtitleBitmap>,
+    ) {
         let origin = image.origin();
         let bounds = ImageBounds {
             dst_x: i64::from(origin.x),
@@ -75,12 +106,12 @@ impl ScreenRectClip {
         match self.mode {
             AssClipMode::Inside => {
                 if let Some(region) = self.inside_region(bounds) {
-                    out.extend(image.cropped(region));
+                    paint.push_region(image, region, out);
                 }
             }
             AssClipMode::Outside => {
                 for region in self.outside_regions(bounds) {
-                    out.extend(image.cropped(region));
+                    paint.push_region(image, region, out);
                 }
             }
         }

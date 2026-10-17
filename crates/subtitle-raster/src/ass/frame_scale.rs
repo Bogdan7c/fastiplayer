@@ -109,6 +109,17 @@ impl AssFrameScale {
         self.play_res_x
     }
 
+    /// `layout_res.x / PlayResX`: во сколько раз разрешение раскладки крупнее сценария по
+    /// горизонтали (libass: `scale_x` в `ass_apply_transition_effects`).
+    pub(crate) fn layout_per_play_res_x(&self) -> f64 {
+        self.layout_res_x / self.play_res_x
+    }
+
+    /// `layout_res.y / PlayResY` (libass: `scale_y` в `ass_apply_transition_effects`).
+    pub(crate) fn layout_per_play_res_y(&self) -> f64 {
+        self.layout_res_y / self.play_res_y
+    }
+
     /// Горизонтальная координата сценария -> пиксели (libass: `x2scr_pos`; при выключенных
     /// полях совпадает с `x2scr_left` и `x2scr_right`).
     pub(crate) fn x_to_screen(&self, x: f64) -> f64 {

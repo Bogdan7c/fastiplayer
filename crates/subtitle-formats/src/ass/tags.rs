@@ -35,13 +35,14 @@
 
 use subtitle_core::{
     AssAlignment, AssAlphaTarget, AssAxes, AssBold, AssClipMode, AssColorSlot, AssDrawingMode,
-    AssFade, AssFontSize, AssMove, AssOverride, AssRgb, AssRotationAxis, AssShearAxis,
-    AssUnsupportedTag, AssWrapStyle,
+    AssFade, AssFontSize, AssKaraoke, AssKaraokeKind, AssMove, AssOverride, AssRgb,
+    AssRotationAxis, AssShearAxis, AssWrapStyle,
 };
 
 use super::filter_tags::{build_blur, build_clip, build_drawing_baseline_offset, build_edge_blur};
 use super::report::AssTagStats;
 use super::scan::{is_ass_space, parse_f64, parse_i32_clamped, rskip_spaces};
+use super::transform_tags::build_transform;
 
 /// Максимум аргументов, которые libass сохраняет (`MAX_VALID_NARGS + 1`).
 const MAX_STORED_ARGS: usize = 8;
@@ -71,7 +72,7 @@ impl TagBudget {
     }
 }
 
-/// Какой тег распознан (поддерживаемый на слое 1 или известный, но не исполняемый).
+/// Какой тег распознан.
 #[derive(Debug, Clone, Copy)]
 enum Tag {
     Border(AssAxes),
@@ -114,7 +115,12 @@ enum Tag {
     Clip(AssClipMode),
     /// `\pbo`: смещение базовой линии рисунка.
     DrawingBaselineOffset,
-    Unsupported(AssUnsupportedTag),
+    /// `\t(...)`: собирается отдельно (`transform_tags.rs`), потому что разбирает вложенные теги.
+    Transform,
+    /// `\k`, `\K`, `\kf`, `\ko`.
+    Karaoke(AssKaraokeKind),
+    /// `\kt`.
+    KaraokeSkip,
 }
 
 /// Берёт ли тег «хвост» имени как дополнительный аргумент.
@@ -179,7 +185,7 @@ const TAG_RULES: &[TagRule] = &[
     complex("fade", Tag::Fade),
     complex("fad", Tag::Fade),
     complex("org", Tag::Origin),
-    complex("t", Tag::Unsupported(AssUnsupportedTag::Transform)),
+    complex("t", Tag::Transform),
     complex("clip", Tag::Clip(AssClipMode::Inside)),
     plain("c", Tag::Color(AssColorSlot::Primary)),
     plain("1c", Tag::Color(AssColorSlot::Primary)),
@@ -203,11 +209,11 @@ const TAG_RULES: &[TagRule] = &[
     plain("be", Tag::EdgeBlur),
     plain("b", Tag::Bold),
     plain("i", Tag::Italic),
-    plain("kt", Tag::Unsupported(AssUnsupportedTag::Karaoke)),
-    plain("kf", Tag::Unsupported(AssUnsupportedTag::Karaoke)),
-    plain("K", Tag::Unsupported(AssUnsupportedTag::Karaoke)),
-    plain("ko", Tag::Unsupported(AssUnsupportedTag::Karaoke)),
-    plain("k", Tag::Unsupported(AssUnsupportedTag::Karaoke)),
+    plain("kt", Tag::KaraokeSkip),
+    plain("kf", Tag::Karaoke(AssKaraokeKind::Fill)),
+    plain("K", Tag::Karaoke(AssKaraokeKind::Fill)),
+    plain("ko", Tag::Karaoke(AssKaraokeKind::Outline)),
+    plain("k", Tag::Karaoke(AssKaraokeKind::Plain)),
     plain("shad", Tag::Shadow(AssAxes::Both)),
     plain("s", Tag::StrikeOut),
     plain("u", Tag::Underline),
@@ -219,9 +225,12 @@ const TAG_RULES: &[TagRule] = &[
 
 /// Аргументы тега: до [`MAX_STORED_ARGS`] срезов; недостающие — пустые (как в libass).
 #[derive(Debug, Default)]
-struct TagArgs<'a> {
+pub(super) struct TagArgs<'a> {
     items: [&'a str; MAX_STORED_ARGS],
     count: usize,
+    /// Один из аргументов содержал `\` (libass: `has_backslash_arg`); такой аргумент всегда
+    /// последний, потому что он «проглатывает» остаток скобок.
+    has_backslash_arg: bool,
 }
 
 impl<'a> TagArgs<'a> {
@@ -241,8 +250,13 @@ impl<'a> TagArgs<'a> {
     }
 
     /// Сохранённые аргументы (без пустых «слотов»).
-    fn provided(&self) -> &[&'a str] {
+    pub(super) fn provided(&self) -> &[&'a str] {
         self.items.get(..self.count).unwrap_or_default()
+    }
+
+    /// Был ли аргумент с обратной косой чертой (вложенные теги `\t`).
+    pub(super) fn has_backslash_arg(&self) -> bool {
+        self.has_backslash_arg
     }
 
     /// Первый аргумент (пустая строка, если аргументов нет — как `args[0]` в libass).
@@ -254,11 +268,22 @@ impl<'a> TagArgs<'a> {
 /// Разбирает содержимое одного блока `{...}` (без самих фигурных скобок).
 ///
 /// Каждый тег расходует бюджет реплики; когда он исчерпан, остальные теги блока
-/// отбрасываются и считаются. Неизвестные теги и теги слоёв 2–3 считаются в `stats`.
+/// отбрасываются и считаются. Неизвестные теги считаются в `stats`.
 pub(super) fn parse_override_block(
     block: &str,
     budget: &mut TagBudget,
     stats: &mut AssTagStats,
+) -> Vec<AssOverride> {
+    parse_tags(block, budget, stats, 0)
+}
+
+/// Разбор тегов на заданной глубине вложенности `\t` (`0` — сам блок реплики). Вложенные
+/// теги `\t(...)` разбираются этим же кодом (`ass_parse_tags(..., nested = true)`).
+pub(super) fn parse_tags(
+    block: &str,
+    budget: &mut TagBudget,
+    stats: &mut AssTagStats,
+    nesting_depth: usize,
 ) -> Vec<AssOverride> {
     let cursor = BlockCursor::new(block);
     let mut overrides = Vec::new();
@@ -290,13 +315,17 @@ pub(super) fn parse_override_block(
                 args.push(cursor.slice(name_start + rule.name.len(), name_end));
             }
             if budget.try_take() {
-                match build_override(rule.tag, &args) {
-                    Some(parsed) => {
-                        if let AssOverride::Unsupported(tag) = &parsed {
-                            stats.record_unsupported(*tag);
-                        }
-                        overrides.push(parsed);
-                    }
+                let built = match rule.tag {
+                    Tag::Transform => Some(AssOverride::Transform(build_transform(
+                        &args,
+                        budget,
+                        stats,
+                        nesting_depth,
+                    ))),
+                    tag => build_override(tag, &args),
+                };
+                match built {
+                    Some(parsed) => overrides.push(parsed),
                     None => stats.record_malformed(),
                 }
             } else {
@@ -382,6 +411,7 @@ impl<'a> BlockCursor<'a> {
                 continue;
             }
             if self.at(arg_end) == b'\\' {
+                args.has_backslash_arg = true;
                 arg_end = self.find_closing_paren(arg_end);
             }
             args.push(self.slice(pos, arg_end));
@@ -426,19 +456,19 @@ fn build_override(tag: Tag, args: &TagArgs<'_>) -> Option<AssOverride> {
     Some(match tag {
         Tag::Border(axes) => AssOverride::Border {
             axes,
-            // \bord, \xbord, \ybord зажимаются снизу нулём.
-            value: has_arg.then(|| number().max(0.0)),
+            // Значение хранится как написано: `\t` смешивает его со старым ДО зажатия снизу
+            // нулём (`val < 0 ? 0 : val` в ass_parse.c), поэтому зажимает растеризатор.
+            value: has_arg.then(number),
         },
         Tag::Shadow(axes) => AssOverride::Shadow {
             axes,
-            // VSFilter: зажимается только \shad, но не \xshad и \yshad.
-            value: has_arg.then(|| match axes {
-                AssAxes::Both => number().max(0.0),
-                AssAxes::X | AssAxes::Y => number(),
-            }),
+            // Как написано: зажатие `\shad` (но не `\xshad`/`\yshad`, совместимость с VSFilter)
+            // делает растеризатор после смешивания `\t`.
+            value: has_arg.then(number),
         },
-        Tag::ScaleX => AssOverride::ScaleX(has_arg.then(|| (number() / 100.0).max(0.0))),
-        Tag::ScaleY => AssOverride::ScaleY(has_arg.then(|| (number() / 100.0).max(0.0))),
+        // Доля без зажатия снизу: ноль ставит растеризатор после смешивания `\t`.
+        Tag::ScaleX => AssOverride::ScaleX(has_arg.then(|| number() / 100.0)),
+        Tag::ScaleY => AssOverride::ScaleY(has_arg.then(|| number() / 100.0)),
         Tag::ResetScale => AssOverride::ResetScale,
         Tag::Spacing => AssOverride::Spacing(has_arg.then(number)),
         Tag::FontSize => AssOverride::FontSize(if has_arg {
@@ -513,7 +543,13 @@ fn build_override(tag: Tag, args: &TagArgs<'_>) -> Option<AssOverride> {
         Tag::EdgeBlur => build_edge_blur(args.provided()),
         Tag::Clip(mode) => return build_clip(mode, args.provided()),
         Tag::DrawingBaselineOffset => build_drawing_baseline_offset(args.provided()),
-        Tag::Unsupported(kind) => AssOverride::Unsupported(kind),
+        Tag::Karaoke(kind) => AssOverride::Karaoke(AssKaraoke {
+            kind,
+            centiseconds: has_arg.then(number),
+        }),
+        Tag::KaraokeSkip => AssOverride::KaraokeSkip(has_arg.then(number)),
+        // `\t` разбирается в `parse_tags` (нужны бюджет и статистика для вложенных тегов).
+        Tag::Transform => return None,
     })
 }
 
@@ -583,11 +619,10 @@ fn bold_value(args: &TagArgs<'_>) -> Option<AssBold> {
     }
 }
 
-/// `parse_alpha_tag`: пропустить `&` и `H`, прочитать hex, взять младший байт
-/// (`change_alpha` приводит результат к `uint8_t`).
-fn parse_alpha(text: &str) -> u8 {
-    let value = parse_i32_clamped(text.trim_start_matches(['&', 'H']), 16);
-    (value & 0xff) as u8
+/// `parse_alpha_tag`: пропустить `&` и `H`, прочитать hex как `int32`. Младший байт берёт
+/// растеризатор при применении (`change_alpha`), после смеси `\t`: здесь число не усекается.
+fn parse_alpha(text: &str) -> i32 {
+    parse_i32_clamped(text.trim_start_matches(['&', 'H']), 16)
 }
 
 /// `parse_color_tag`: пропустить `&` и `H`, прочитать hex; число — `&HBBGGRR`.

@@ -38,12 +38,18 @@ use crate::event_style::{BorderStyle, EventStyle};
 use crate::fixed_point::{d6_to_double, double_to_d6};
 use crate::glyph_info::TextCluster;
 use crate::glyph_transform::RASTERIZER_PRECISION;
+use crate::karaoke::{
+    ImageRole, KaraokeEffect, KaraokeRunRule, KaraokeStage, KaraokeStageBuilder, KaraokeWord,
+    LeftmostTracker, RuleInputs,
+};
 use crate::layout::TextLayout;
 use crate::overlay::{CanvasSize, SubtitleBitmap, SubtitleBitmapError, SubtitleBitmapKind};
 use crate::raster::Rasterizer;
 use crate::source_text::SpanLook;
 use filter::RunFilter;
-use glyph_bitmaps::{GlyphBitmapRequest, GlyphBitmaps, RunPhase, build_glyph_bitmaps};
+use glyph_bitmaps::{
+    GlyphBitmapRequest, GlyphBitmaps, RunPhase, build_glyph_bitmaps, glyph_matrices,
+};
 use run::{BlurEnv, RunBitmaps, composite_run};
 
 /// Почему композиция не удалась.
@@ -80,6 +86,8 @@ pub(crate) struct ComposeInput<'a> {
 #[derive(Debug, Clone, Copy)]
 struct RunColors {
     primary: SubtitleColor,
+    /// Вторичный цвет: второй цвет заливки караоке.
+    secondary: SubtitleColor,
     outline: SubtitleColor,
     back: SubtitleColor,
 }
@@ -89,10 +97,24 @@ struct Layer {
     kind: SubtitleBitmapKind,
     bitmap_of: fn(&RunBitmaps) -> Option<&crate::bitmap::CoverageBitmap>,
     color_of: fn(&RunColors) -> SubtitleColor,
+    /// Роль картинки слоя для караоке; аргумент — индекс правила участка (если оно есть).
+    role_of: fn(Option<usize>) -> ImageRole,
+}
+
+/// Караоке участка, пока собираются его глифы.
+struct RunKaraoke {
+    /// Слово караоке, которому принадлежит участок.
+    word: KaraokeWord,
+    /// Позиция первого глифа участка в предварительной раскладке, 26.6.
+    first_origin_x: i32,
+    /// Самая левая точка контуров участка на экране (нужна только `\kf`).
+    leftmost: LeftmostTracker,
 }
 
 /// Участок единого стиля с битмапами его глифов.
 struct CollectedRun {
+    /// Караоке участка; `None` — у слова нет эффекта.
+    karaoke: Option<RunKaraoke>,
     colors: RunColors,
     /// Фильтры участка: флаги слоёв, размытие, смещение тени.
     filter: RunFilter,
@@ -110,6 +132,8 @@ struct CollectedRun {
 pub(crate) struct ComposedText {
     /// Картинки в порядке отрисовки.
     pub(crate) images: Vec<SubtitleBitmap>,
+    /// Стадия караоке: правила участков и роли картинок; `None` — караоке нет.
+    pub(crate) karaoke: Option<KaraokeStage>,
     /// Сколько глифов нарисовано без обводки из-за сбоя её построения.
     pub(crate) skipped_borders: u32,
     /// Сколько глифов пропущено: битмап после преобразования шире предела стороны.
@@ -136,7 +160,8 @@ pub(crate) fn compose_text(
         total.saturating_add(run.skipped_borders)
     });
     let mut failed_blur_layers = 0_u32;
-    let mut finished: Vec<(RunColors, RunBitmaps)> = Vec::with_capacity(runs.len());
+    let mut finished: Vec<FinishedRun> = Vec::with_capacity(runs.len());
+    let mut karaoke_stage = KaraokeStageBuilder::default();
     let mut blur_env = BlurEnv {
         scratch: blur_scratch,
         side_limit: BitmapSideLimit(input.max_bitmap_side),
@@ -150,14 +175,37 @@ pub(crate) fn compose_text(
         skipped_oversized_bitmaps =
             skipped_oversized_bitmaps.saturating_add(bitmaps.unblurred_oversized_layers);
         failed_blur_layers = failed_blur_layers.saturating_add(bitmaps.failed_blur_layers);
-        finished.push((run.colors, bitmaps));
+        let rule = run.karaoke.as_ref().map(|karaoke| {
+            karaoke_stage.add_rule(KaraokeRunRule::new(RuleInputs {
+                word: karaoke.word,
+                first_origin_x: karaoke.first_origin_x,
+                leftmost_x: karaoke.leftmost.min_x(),
+                pixel_aspect_x: input.pixel_aspect_x,
+                primary: run.colors.primary,
+                secondary: run.colors.secondary,
+            }))
+        });
+        finished.push(FinishedRun {
+            colors: run.colors,
+            bitmaps,
+            rule,
+        });
     }
+    let images = render_text(&finished, input, &mut karaoke_stage)?;
     Ok(ComposedText {
-        images: render_text(&finished, input)?,
+        images,
+        karaoke: karaoke_stage.finish(),
         skipped_borders,
         skipped_oversized_bitmaps,
         failed_blur_layers,
     })
+}
+
+/// Готовый участок: цвета, слои и правило караоке (индекс в стадии), если оно есть.
+struct FinishedRun {
+    colors: RunColors,
+    bitmaps: RunBitmaps,
+    rule: Option<usize>,
 }
 
 /// Раскладывает глифы по участкам и растеризует их (libass: `render_and_combine_glyphs`).
@@ -172,7 +220,7 @@ fn collect_runs(
     let mut new_run = true;
     // libass: `device_x = (device_x - left_margin) * par_scale_x + left_margin`, поля кадра нет.
     let device_x = input.layout.device_x * input.pixel_aspect_x;
-    for cluster in clusters.iter_mut() {
+    for (cluster_index, cluster) in clusters.iter_mut().enumerate() {
         if cluster.starts_new_run {
             new_run = true;
         }
@@ -199,15 +247,28 @@ fn collect_runs(
         let draws_nothing = cluster.symbol == '\n' || cluster.symbol == '\0';
         for glyph in cluster.glyphs_mut() {
             if new_run {
+                // Слово караоке читается по первому видимому символу участка (libass копирует
+                // `effect_*` первого глифа участка в объединённую картинку).
+                let word = input.layout.karaoke.word_at(cluster_index);
                 runs.push(CollectedRun {
+                    karaoke: word.map(|(word, first_origin_x)| RunKaraoke {
+                        word,
+                        first_origin_x,
+                        leftmost: LeftmostTracker::default(),
+                    }),
                     // Затухание участка — затухание его ПЕРВОГО символа (libass не режет
                     // участки по затуханию и копирует цвета и `fade` первого `info`).
                     colors: RunColors {
                         primary: fade.apply_to(look.colors.primary),
+                        secondary: fade.apply_to(look.colors.secondary),
                         outline: fade.apply_to(look.colors.outline),
                         back: fade.apply_to(look.colors.back),
                     },
-                    filter: RunFilter::for_look(look, fade),
+                    filter: RunFilter::for_look_in_karaoke(
+                        look,
+                        fade,
+                        word.map(|(word, _)| word.effect),
+                    ),
                     offset: [0.0, 0.0],
                     parts: Vec::new(),
                     skipped_borders: 0,
@@ -233,18 +294,28 @@ fn collect_runs(
                 continue;
             }
             let first = run.parts.is_empty();
+            let request = GlyphBitmapRequest {
+                glyph,
+                shift,
+                outline: &outline,
+                glyph_scale,
+                shear_scale,
+                letter_spacing_d6,
+                pixel_aspect_x: input.pixel_aspect_x,
+                look,
+                flags: run.filter.flags,
+            };
+            // `\kf`: самая левая точка участка считается по полностью преобразованному контуру,
+            // даже если битмап глифа потом не получится (libass: до `quantize_transform`).
+            if let Some(karaoke) = run.karaoke.as_mut()
+                && karaoke.word.effect == KaraokeEffect::Fill
+            {
+                karaoke
+                    .leftmost
+                    .include_outline(&outline.outline, &glyph_matrices(&request).scaled);
+            }
             let bitmaps = build_glyph_bitmaps(
-                &GlyphBitmapRequest {
-                    glyph,
-                    shift,
-                    outline: &outline,
-                    glyph_scale,
-                    shear_scale,
-                    letter_spacing_d6,
-                    pixel_aspect_x: input.pixel_aspect_x,
-                    look,
-                    flags: run.filter.flags,
-                },
+                &request,
                 &mut RunPhase {
                     rasterizer: &mut rasterizer,
                     offset: &mut run.offset,
@@ -266,9 +337,12 @@ fn collect_runs(
 }
 
 /// Выдаёт слои в порядке libass: подложка, тени, обводки, заливки (libass: `render_text`).
+///
+/// `karaoke` получает роль каждой выданной картинки (по одной на картинку, в порядке выдачи).
 fn render_text(
-    finished: &[(RunColors, RunBitmaps)],
+    finished: &[FinishedRun],
     input: &ComposeInput<'_>,
+    karaoke: &mut KaraokeStageBuilder,
 ) -> Result<Vec<SubtitleBitmap>, ComposeError> {
     let mut images = Vec::new();
     if input.style.border_style == BorderStyle::EventBackground
@@ -280,28 +354,33 @@ fn render_text(
         )?
     {
         images.push(background);
+        karaoke.push_image(ImageRole::Static);
     }
     let layers = [
         Layer {
             kind: SubtitleBitmapKind::Shadow,
             bitmap_of: |bitmaps| bitmaps.shadow.as_ref(),
             color_of: |colors| colors.back,
+            role_of: |_| ImageRole::Static,
         },
         Layer {
             kind: SubtitleBitmapKind::Outline,
             bitmap_of: |bitmaps| bitmaps.outline.as_ref(),
             color_of: |colors| colors.outline,
+            role_of: |rule| rule.map_or(ImageRole::Static, |rule| ImageRole::Outline { rule }),
         },
         Layer {
             kind: SubtitleBitmapKind::Glyph,
             bitmap_of: |bitmaps| bitmaps.fill.as_ref(),
             color_of: |colors| colors.primary,
+            role_of: |rule| rule.map_or(ImageRole::Static, |rule| ImageRole::Fill { rule }),
         },
     ];
     for Layer {
         kind,
         bitmap_of,
         color_of,
+        role_of,
     } in layers
     {
         if kind == SubtitleBitmapKind::Shadow
@@ -310,14 +389,25 @@ fn render_text(
             // libass: при `BorderStyle = 4` тени не рисуются (их роль у подложки).
             continue;
         }
-        for (colors, bitmaps) in finished {
-            let Some(bitmap) = bitmap_of(bitmaps) else {
+        for run in finished {
+            let Some(bitmap) = bitmap_of(&run.bitmaps) else {
                 continue;
             };
-            if let Some(image) =
-                images::clipped_image(bitmap, color_of(colors), kind, input.canvas)?
-            {
+            let image = if kind == SubtitleBitmapKind::Glyph && run.rule.is_some() {
+                // Цвет заливки караоке выбирается покадрово: прозрачный сейчас цвет не повод
+                // выбросить картинку, пока прозрачны не оба цвета сразу.
+                let invisible = run.colors.primary.alpha == 0 && run.colors.secondary.alpha == 0;
+                if invisible {
+                    None
+                } else {
+                    images::canvas_image(bitmap, color_of(&run.colors), kind, input.canvas)?
+                }
+            } else {
+                images::clipped_image(bitmap, color_of(&run.colors), kind, input.canvas)?
+            };
+            if let Some(image) = image {
                 images.push(image);
+                karaoke.push_image(role_of(run.rule));
             }
         }
     }

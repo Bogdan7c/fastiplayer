@@ -81,6 +81,15 @@ impl FrameTimeDependence {
     }
 }
 
+impl FrameTimeDependence {
+    /// Учитывает изменение, которое реплике добавила стадия после кэша (караоке): оно известно
+    /// только по готовой реплике, поэтому не входит в `AssAnimation`.
+    pub(crate) fn include_stage_change(&mut self, change: AnimationChange) {
+        self.change = self.change.earliest(change);
+        self.time_free = false;
+    }
+}
+
 /// Последний выданный кадр.
 #[derive(Debug)]
 pub(crate) struct FrameState {

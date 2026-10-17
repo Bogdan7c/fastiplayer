@@ -1,0 +1,20 @@
+; reference: width=640 height=360 time_ms=300,700,1200,2500
+; case: kf fill direction: frz 170 and 200 swap colours, -150 and 450 do not
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+ScaledBorderAndShadow: yes
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans,36,&H00FFFFFF,&H000000FF,&H00804000,&H80000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an5\pos(160,60)\fs30\frz170\kf20\kf80}Swap170
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an5\pos(480,60)\fs30\frz200\kf20\kf80}Swap200
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an5\pos(160,180)\fs30\frz-150\kf20\kf80}Keep-150
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an5\pos(480,180)\fs30\frz450\kf20\kf80}Keep450
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an5\pos(320,300)\fs30\frz-200\kf20\kf80}Keep-200
