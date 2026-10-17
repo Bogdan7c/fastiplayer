@@ -5,8 +5,6 @@
 //! округление здесь повторяет `FT_MulFix`/`FT_DivFix` (FreeType) и `ass_lrint` (libass).
 //! Код написан заново по описанию поведения; код FreeType не копировался.
 
-use crate::outline::round_ties_even_to_i32;
-
 /// Вектор в формате 26.6 (libass: `ASS_Vector`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Vector26 {
@@ -59,9 +57,28 @@ pub(crate) fn div_fix(a: i64, b: i64) -> i64 {
     if negative { -magnitude } else { magnitude }
 }
 
-/// Дробное число пикселей -> 26.6 (libass: `double_to_d6` = `lrint(x * 64)`).
+/// Дробное число пикселей -> 26.6 (libass: `double_to_d6`, `ass_utils.h`).
+///
+/// В libass это `int double_to_d6(double x) { return ass_lrint(x * 64); }`, а `ass_lrint` -
+/// `long lrint(double)`. Значит результат: округление к ближайшему (ничьи к чётному) в
+/// 64-битное целое, затем усечение до 32 бит младшими разрядами (тип возврата `int`; на
+/// практике gcc/clang на x86-64 именно так и делают). Поэтому большие значения ЗАВОРАЧИВАЮТСЯ
+/// по модулю 2^32, а не насыщаются, а NaN, бесконечность и всё, что не помещается в 64 бита,
+/// дают 0: `lrint` по инструкции `cvtsd2si` возвращает в этих случаях `i64::MIN`
+/// (0x8000000000000000), младшие 32 бита которого нулевые. Рисунок с `1e999` вместо числа
+/// поэтому получает координату 0, а не огромную. Повторено ради совпадения с libass
+/// на x86-64 (где снят эталон); значения на других архитектурах у самой libass не определены.
 pub(crate) fn double_to_d6(value: f64) -> i32 {
-    round_ties_even_to_i32(value * 64.0)
+    // Нижняя граница включительно, верхняя (2^63) исключена: ровно диапазон `i64`.
+    const I64_RANGE: std::ops::Range<f64> =
+        -9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0;
+    let rounded = (value * 64.0).round_ties_even();
+    if !I64_RANGE.contains(&rounded) {
+        // NaN тоже сюда: `contains` для NaN ложно.
+        return 0;
+    }
+    // `as i64` точно (значение в диапазоне и целое), `as i32` отбрасывает старшие 32 бита.
+    (rounded as i64) as i32
 }
 
 /// 26.6 -> число пикселей (libass: `d6_to_double`).
@@ -116,5 +133,20 @@ mod tests {
         assert_eq!(double_to_d6(0.5 / 64.0), 0);
         assert_eq!(double_to_d6(1.5 / 64.0), 2);
         assert!((d6_to_double(96) - 1.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn double_to_d6_wraps_like_libass_lrint_truncated_to_int() {
+        // Значения сняты с живого C (`int f(double x) { return lrint(x * 64); }`, gcc, x86-64).
+        // Влезает в i64, не влезает в i32: младшие 32 бита (заворот, не насыщение).
+        assert_eq!(double_to_d6(99_999_999_999.0), 498_728_896);
+        assert_eq!(double_to_d6(1.0e10), 49_872_896);
+        assert_eq!(double_to_d6(-1.0e10), -49_872_896);
+        assert_eq!(double_to_d6(46_875_000.0), -1_294_967_296);
+        // Не влезает в i64, бесконечность и NaN: `cvtsd2si` даёт i64::MIN, младшие биты - 0.
+        assert_eq!(double_to_d6(1.0e18), 0);
+        assert_eq!(double_to_d6(f64::INFINITY), 0);
+        assert_eq!(double_to_d6(f64::NEG_INFINITY), 0);
+        assert_eq!(double_to_d6(f64::NAN), 0);
     }
 }

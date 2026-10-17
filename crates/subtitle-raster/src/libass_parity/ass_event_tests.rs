@@ -23,6 +23,7 @@ use subtitle_formats::{
 use super::ass_tolerances::{ASS_CASES, AssTolerance};
 use super::ass_tolerances_animation::LAYER2_ANIMATION_CASES;
 use super::ass_tolerances_layer2::LAYER2_STATIC_CASES;
+use super::ass_tolerances_layer3::{LAYER3_BLUR_CASES, LAYER3_CLIP_CASES, LAYER3_DRAWING_CASES};
 use super::tests::{fixtures_dir, load_expected_png};
 use super::text_tests::dump_comparison;
 use crate::appearance::SubtitleAppearance;
@@ -121,6 +122,7 @@ fn rasterizer() -> SubtitleRasterizer {
             cache: RasterCacheLimits {
                 cue_bitmaps_bytes: 64 * 1024 * 1024,
                 shaper_faces: 16,
+                blur_scratch_retained_bytes: 32 * 1024 * 1024,
             },
             input: RasterInputLimits {
                 max_chars_per_cue: 10_000,
@@ -236,7 +238,19 @@ fn compare(point: &ReferencePoint) -> AssReport {
         Some(point.time_ms),
         "{name}: the reference was rendered at another moment"
     );
-    let expected = json["images"].as_array().expect("images");
+    // libass оставляет в списке картинки нулевого размера (w = h = 0): так векторный клип
+    // «удаляет» картинку, не разрывая список. У нашего выхода пустых картинок нет по
+    // инварианту `SubtitleBitmap`, поэтому в сравнении такие записи пропускаются.
+    let is_visible = |reference: &serde_json::Value| {
+        reference["w"].as_i64().is_some_and(|width| width > 0)
+            && reference["h"].as_i64().is_some_and(|height| height > 0)
+    };
+    let expected: Vec<&serde_json::Value> = json["images"]
+        .as_array()
+        .expect("images")
+        .iter()
+        .filter(|reference| is_visible(reference))
+        .collect();
     let mut report = AssReport::default();
     if overlay.bitmaps().len() != expected.len() {
         report.geometry_mismatches.push(format!(
@@ -328,12 +342,15 @@ fn compare(point: &ReferencePoint) -> AssReport {
     report
 }
 
-/// Строки допусков всех таблиц (слой 1 и слой 2).
+/// Строки допусков всех таблиц (слои 1-3).
 fn all_tolerance_rows() -> impl Iterator<Item = &'static AssTolerance> {
     ASS_CASES
         .iter()
         .chain(LAYER2_STATIC_CASES)
         .chain(LAYER2_ANIMATION_CASES)
+        .chain(LAYER3_DRAWING_CASES)
+        .chain(LAYER3_BLUR_CASES)
+        .chain(LAYER3_CLIP_CASES)
 }
 
 /// Все опорные точки кейсов `ass_*` (по одной на момент каждого кейса).

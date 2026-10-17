@@ -20,6 +20,7 @@
 pub(crate) mod chunk;
 mod event_fields;
 pub(crate) mod file;
+mod filter_tags;
 mod hard_overrides;
 mod limits;
 mod lines;
@@ -31,6 +32,10 @@ mod style_line;
 mod tags;
 mod text;
 
+#[cfg(test)]
+mod drawing_text_tests;
+#[cfg(test)]
+mod filter_tag_tests;
 #[cfg(test)]
 mod geometry_tag_tests;
 #[cfg(test)]

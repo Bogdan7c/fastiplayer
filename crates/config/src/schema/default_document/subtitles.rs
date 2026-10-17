@@ -118,12 +118,16 @@ const SUBTITLES_KEY_COMMENTS: &[(&str, &str)] = &[
         "prepared_overlays",
         "# Сколько готовых картинок субтитров ждёт показа в очереди.",
     ),
+    (
+        "blur_scratch_retained_mb",
+        "# Сколько МБ рабочей памяти размытия (\\blur, \\be) хранится между кадрами; больше освобождается после кадра.",
+    ),
 ];
 
 /// Добавляет комментарии перед ключами секции `[subtitles]`.
 ///
 /// Если секции нет (не должно случаться для документа из `AppConfig`), текст не меняется;
-/// золотой файл `current_schema_v19.toml` тогда провалит тест стабильности схемы.
+/// золотой файл `current_schema_v20.toml` тогда провалит тест стабильности схемы.
 pub(super) fn document_subtitles_defaults(toml_text: &mut String) {
     let Some(header_offset) = toml_text.find(&format!("\n{SUBTITLES_HEADER}\n")) else {
         return;

@@ -87,6 +87,10 @@ pub(crate) struct GlyphPlacement {
     pub(crate) frame_position: Vector26,
     /// `par_scale_x` libass (1.0, если пропорции хранения и кадра равны).
     pub(crate) pixel_aspect_x: f64,
+    /// `blur_scale_y` libass (`font_scr_h / layout_res.y`, с `font_size_coeff`): множитель
+    /// расстояния камеры. Без него перспектива не зависит от размера кадра, а в libass камера
+    /// «уезжает» вместе с масштабом кадра.
+    pub(crate) camera_scale: f64,
 }
 
 /// Порт `calc_transform_matrix`: матрица «контур глифа -> экран» без масштаба контура.
@@ -133,8 +137,8 @@ pub(crate) fn glyph_transform_matrix(placement: &GlyphPlacement) -> Matrix3 {
         z4[i] = x2[i] * sy + z3[i] * cy;
     }
 
-    // Камера: у libass `20000 * blur_scale_y`; у нас `blur_scale_y = 1`.
-    let dist = CAMERA_DISTANCE;
+    // Камера: `20000 * blur_scale_y` (ass_render.c, calc_transform_matrix).
+    let dist = CAMERA_DISTANCE * placement.camera_scale;
     z4[2] += dist;
 
     let scale_x_screen = dist * placement.pixel_aspect_x;

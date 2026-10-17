@@ -63,6 +63,10 @@ pub(super) struct GlyphBitmapRequest<'a> {
     /// Масштаб контура по осям (libass: `info->scale_x`, `info->scale_y`): `font_size / 256`
     /// с учётом `\fscx`/`\fscy`.
     pub(super) glyph_scale: AxisPair,
+    /// Масштаб, по отношению осей которого пересчитывается наклон `\fax`/`\fay` (libass:
+    /// `info->scale_x/scale_y` в `calc_transform_matrix`). У текста совпадает с `glyph_scale`;
+    /// у рисунка это `\fscx`/`\fscy` без масштаба кадра и без `2^-(n-1)`.
+    pub(super) shear_scale: AxisPair,
     /// Межбуквенный интервал глифа после масштаба в 26.6 (libass: `hspacing_scaled`); входит в
     /// ширину плашки `BorderStyle = 3`.
     pub(super) letter_spacing_d6: i32,
@@ -124,6 +128,7 @@ fn build_glyph_bitmaps_unbounded(
         glyph,
         outline,
         glyph_scale,
+        shear_scale,
         pixel_aspect_x,
         flags,
         ..
@@ -132,16 +137,18 @@ fn build_glyph_bitmaps_unbounded(
     let base_matrix = glyph_transform_matrix(&GlyphPlacement {
         rotation: request.look.rotation,
         shear: request.look.shear,
-        scale: (glyph_scale.horizontal, glyph_scale.vertical),
+        scale: (shear_scale.horizontal, shear_scale.vertical),
         shift: request.shift,
         ascent: glyph.ascent,
         frame_position: glyph.pos,
         pixel_aspect_x: *pixel_aspect_x,
+        camera_scale: request.look.camera_scale,
     });
     let scaled_matrix = scale_and_offset_matrix(
         &base_matrix,
         (glyph_scale.horizontal, glyph_scale.vertical),
-        (0.0, 0.0),
+        // Сдвиг контура: у текста нулевой, у рисунка ставит базовую линию (`\pbo`).
+        (0.0, glyph.outline_offset_y),
     );
     let mut matrix: Matrix3 = scaled_matrix;
 

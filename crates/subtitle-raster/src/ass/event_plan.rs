@@ -30,11 +30,13 @@
 //! между репликами.
 
 use subtitle_core::{
-    AssAlignment, AssCue, AssHorizontalAlign, AssKerning, AssOverride, AssTextItem,
+    AssAlignment, AssCue, AssDrawingMode, AssHorizontalAlign, AssKerning, AssOverride, AssTextItem,
     AssUnsupportedTag, AssVerticalAlign, AssWrapStyle, CuePlacement, ScreenAnchor,
 };
 
 use super::animation::AssAnimationState;
+use super::clip_plan::EventClipPlan;
+use super::drawing_scale::outline_scale;
 use super::explicit::is_explicit_event;
 use super::frame_scale::AssFrameScale;
 use super::look::{LookPolicy, UserLook};
@@ -46,7 +48,9 @@ use crate::event_style::{
     TextMargins, WrapStyle,
 };
 use crate::overlay::{CanvasSize, OverlayPlacementGroup};
-use crate::source_text::{KerningMode, SourceChar, SourceText};
+use crate::source_text::{
+    DRAWING_SYMBOL, DrawingId, DrawingSource, KerningMode, SourceChar, SourceText,
+};
 use crate::span_look::SpanLook;
 
 /// Сколько последних видов проверяется при поиске совпадающего (предел стоимости разбора
@@ -77,9 +81,9 @@ pub(crate) struct AssEventPlan {
     /// Группа размещения картинок реплики: основной диалог (без `\pos`/`\move`/`\org`,
     /// поворотов и наклона, снизу) или фиксированная реплика.
     pub(crate) placement_group: OverlayPlacementGroup,
-    /// Сколько кусков текста пропущено, потому что режим рисунка (`\p`) включён: векторные
-    /// рисунки слой 1 не рисует.
-    pub(crate) skipped_drawing_runs: u32,
+    /// Клипы `\clip` / `\iclip` в экранных величинах. Не зависят от времени и не входят в
+    /// ключ кэша: накладываются стадией [`crate::clip`] после кэша реплик.
+    pub(crate) clip: EventClipPlan,
 }
 
 /// Строит план реплики для холста `canvas`.
@@ -146,13 +150,17 @@ pub(crate) fn plan_ass_event(
     } else {
         OverlayPlacementGroup::Fixed
     };
+    // Масштаб кадра для клипа: как у libass, с пользовательским масштабом текста только у
+    // не явных реплик (у реплики с клипом он не применяется).
+    let clip_scale = frame.event_scale((!explicit).then(|| f64::from(options.text_scale.get())));
+    let clip = EventClipPlan::from_filters(&state.filters, &frame, &clip_scale, canvas, explicit);
     AssEventPlan {
         placement_group,
+        clip,
         source: walker.finish(kerning_mode(script.info().kerning)),
         style,
         plate,
         collision,
-        skipped_drawing_runs: walker.skipped_drawing_runs,
     }
 }
 
@@ -184,6 +192,9 @@ fn look_policy(
                 colors: user.event.colors,
                 border: user.event.border,
                 shadow: user.event.shadow,
+                // Камеру задаёт масштаб кадра без пользовательского коэффициента текста
+                // (`init_font_scale` в режиме без `font_size_coeff`).
+                camera_scale: frame.event_scale(None).blur_y,
             };
             (LookPolicy::user(look), user.plate)
         }
@@ -310,7 +321,8 @@ struct TextWalker<'policy> {
     current_look: Option<usize>,
     /// Вид предыдущего символа (для склейки равных видов в один участок).
     previous_look: Option<usize>,
-    skipped_drawing_runs: u32,
+    /// Рисунки `\p` реплики; индексируются из `SourceChar::drawing`.
+    drawings: Vec<DrawingSource>,
 }
 
 impl<'policy> TextWalker<'policy> {
@@ -321,7 +333,7 @@ impl<'policy> TextWalker<'policy> {
             looks: Vec::new(),
             current_look: None,
             previous_look: None,
-            skipped_drawing_runs: 0,
+            drawings: Vec::new(),
         }
     }
 
@@ -335,9 +347,10 @@ impl<'policy> TextWalker<'policy> {
                 self.current_look = None;
             }
             AssTextItem::Text(content) => {
-                // Текст в режиме рисунка — это команды рисования, а не буквы.
-                if state.drawing.is_on() {
-                    self.skipped_drawing_runs = self.skipped_drawing_runs.saturating_add(1);
+                // Текст в режиме рисунка — это команды рисования, а не буквы: весь кусок до
+                // следующего блока тегов становится одним псевдоглифом.
+                if let AssDrawingMode::On { scale } = state.drawing {
+                    self.push_drawing(content, scale, state);
                     return;
                 }
                 // Нулевой размер шрифта: глифов нет (как в libass), остальной текст рисуется.
@@ -353,6 +366,7 @@ impl<'policy> TextWalker<'policy> {
                             ch,
                             look,
                             fade: state.fade,
+                            drawing: None,
                         });
                     }
                 }
@@ -371,6 +385,36 @@ impl<'policy> TextWalker<'policy> {
         }
     }
 
+    /// Добавляет рисунок `\p<scale>` одним псевдоглифом (libass: `parse_events`, ветка
+    /// `drawing_scale`: `code = 0xfffc`, `drawing_text` — сырой кусок текста).
+    ///
+    /// Рисунок пропускается только если оформление «мой стиль» (см.
+    /// [`LookPolicy::drawing_event_scale`]). Размер шрифта на рисунок не влияет (решение
+    /// владельца, как в libass): в стиле с `Fontsize: 0` рисунок рисуется, а буквы нет.
+    fn push_drawing(&mut self, commands: &str, scale: u32, state: &RenderState<'_>) {
+        let Some(frame) = self.policy.drawing_event_scale() else {
+            return;
+        };
+        let look_index = self.look_index(state);
+        let Some(look) = self.looks.get(look_index) else {
+            return;
+        };
+        let source = DrawingSource {
+            commands: commands.to_owned(),
+            outline_scale: outline_scale(look.scale, scale, &frame),
+            // libass: `drawing_pbo = (int) state->pbo`.
+            baseline_offset: state.filters.baseline_offset() as i32,
+        };
+        let id = DrawingId(self.drawings.len());
+        self.drawings.push(source);
+        self.chars.push(SourceChar {
+            ch: DRAWING_SYMBOL,
+            look: look_index,
+            fade: state.fade,
+            drawing: Some(id),
+        });
+    }
+
     fn push_break(&mut self, state: &RenderState<'_>, ch: char) {
         // Перенос при нулевом размере шрифта пропускается вместе с буквами (упрощение слоя 1).
         if state.drawing.is_on() || !self.policy.draws_glyphs(state) {
@@ -381,6 +425,7 @@ impl<'policy> TextWalker<'policy> {
             ch,
             look,
             fade: state.fade,
+            drawing: None,
         });
     }
 
@@ -427,6 +472,7 @@ impl<'policy> TextWalker<'policy> {
             chars: std::mem::take(&mut self.chars),
             looks: std::mem::take(&mut self.looks),
             kerning,
+            drawings: std::mem::take(&mut self.drawings),
         }
     }
 }

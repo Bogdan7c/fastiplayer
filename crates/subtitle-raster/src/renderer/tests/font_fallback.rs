@@ -206,6 +206,7 @@ fn system_font_bytes_live_only_while_the_face_cache_holds_the_face() {
             cache: RasterCacheLimits {
                 cue_bitmaps_bytes: 64 * 1024 * 1024,
                 shaper_faces: 0,
+                blur_scratch_retained_bytes: 32 * 1024 * 1024,
             },
             input: ROOMY_INPUT,
         },

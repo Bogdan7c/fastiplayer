@@ -92,6 +92,6 @@ pub(crate) fn shaped_clusters(
         TextLanguagePreference::unknown(),
     )
     .expect("shaping");
-    retrieve_glyphs(&faces, &mut clusters, &source.looks).expect("outlines");
+    retrieve_glyphs(&faces, &mut clusters, &source.looks, &source.drawings).expect("outlines");
     clusters
 }

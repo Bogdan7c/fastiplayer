@@ -27,7 +27,7 @@ fn schema_v18_without_prerender_keys_loads_defaults_and_keeps_user_values() {
     fs::write(&config_path, SCHEMA_V18_WITHOUT_PRERENDER_KEYS).expect("v18 fixture written");
 
     let migrated = load_from_path(&config_path).expect("v18 config loads");
-    assert_eq!(migrated.config.schema_version, 19);
+    assert_eq!(migrated.config.schema_version, 20);
     let subtitles = &migrated.config.subtitles;
     assert_eq!(subtitles.prerender_frames, 4);
     assert_eq!(subtitles.prepared_overlays, 8);
@@ -41,7 +41,7 @@ fn schema_v18_without_prerender_keys_loads_defaults_and_keeps_user_values() {
 
     save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
     let saved_text = fs::read_to_string(&config_path).expect("saved TOML readable");
-    assert!(saved_text.contains("schema_version = 19"));
+    assert!(saved_text.contains("schema_version = 20"));
     assert!(saved_text.contains("prerender_frames = 4"));
     assert!(saved_text.contains("prepared_overlays = 8"));
     let reloaded = load_from_path(&config_path).expect("saved config reloads");

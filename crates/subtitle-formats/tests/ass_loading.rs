@@ -348,7 +348,7 @@ fn zero_duration_and_tag_only_events_are_skipped_with_distinct_counters() {
 fn unknown_and_unsupported_tags_are_counted_and_text_is_kept() {
     let text = format!(
         "[Events]\n{EVENT_FORMAT}\n\
-         Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{{\\zzz9\\fs20\\frz30\\move(1,2,3,4)\\blur1}}Kept text\n"
+         Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{{\\zzz9\\fs20\\frz30\\move(1,2,3,4)\\k1}}Kept text\n"
     );
     let loaded = load(&text);
     let document = loaded.document();
@@ -362,8 +362,8 @@ fn unknown_and_unsupported_tags_are_counted_and_text_is_kept() {
     let tags = &document.ass_report().unwrap().tags;
     assert_eq!(tags.unknown_total(), 1);
     assert_eq!(tags.unknown_names().get("zzz9"), Some(&1));
-    assert_eq!(tags.unsupported_count(AssUnsupportedTag::Clip), 0);
-    assert_eq!(tags.unsupported_count(AssUnsupportedTag::Blur), 1);
+    assert_eq!(tags.unsupported_count(AssUnsupportedTag::Transform), 0);
+    assert_eq!(tags.unsupported_count(AssUnsupportedTag::Karaoke), 1);
     // `\move` поддержан и в «не поддержано» не считается.
     assert_eq!(tags.unsupported().len(), 1);
 }
@@ -619,7 +619,7 @@ fn chunk_with_unknown_style_uses_the_default_style_and_counts_tags_in_accumulato
     let script = mkv_script();
     let mut stats = AssTagStats::new(&ASS_LIMITS);
     let event = parse_embedded_ass_event(
-        b"0,0,*DEFAULT,,0,0,0,,{\\blur2}a",
+        b"0,0,*DEFAULT,,0,0,0,,{\\k2}a",
         &script,
         &embedded_limits(),
         &ASS_LIMITS,
@@ -628,7 +628,7 @@ fn chunk_with_unknown_style_uses_the_default_style_and_counts_tags_in_accumulato
     .unwrap();
     assert_eq!(event.cue.style().name, "Default");
     let missing_style = parse_embedded_ass_event(
-        b"1,0,NoSuchStyle,,0,0,0,,{\\blur2}b",
+        b"1,0,NoSuchStyle,,0,0,0,,{\\k2}b",
         &script,
         &embedded_limits(),
         &ASS_LIMITS,
@@ -637,7 +637,7 @@ fn chunk_with_unknown_style_uses_the_default_style_and_counts_tags_in_accumulato
     .unwrap();
     assert_eq!(missing_style.cue.style, script.default_style_index());
     // Накопитель суммирует по пакетам.
-    assert_eq!(stats.unsupported_count(AssUnsupportedTag::Blur), 2);
+    assert_eq!(stats.unsupported_count(AssUnsupportedTag::Karaoke), 2);
 }
 
 #[test]

@@ -1,0 +1,17 @@
+; reference: width=640 height=360 time_ms=1000
+; case: drawing commands s and c: a closed uniform cubic b-spline
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+ScaledBorderAndShadow: yes
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans,40,&H00FFFFFF,&H000000FF,&H00804000,&H80000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an7\pos(60,40)\c&HFF80C0&\p1}m 0 0 s 100 0 100 100 0 100 c
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an7\pos(260,40)\c&H80FFFF&\p1}m 20 0 s 80 0 100 20 100 80 80 100 20 100 0 80 0 20 c

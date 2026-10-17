@@ -11,6 +11,7 @@
 
 use subtitle_core::StyledText;
 
+use crate::blur::BlurScratch;
 use crate::compose::{ComposeError, ComposeInput, compose_text};
 use crate::event_style::EventStyle;
 use crate::face_cache::{FaceCache, FaceLoadError};
@@ -20,7 +21,7 @@ use crate::layout::{EventImageRect, LineBox, arrange_text, event_image_rect, lin
 use crate::overlay::{CanvasSize, SubtitleBitmap};
 use crate::render_diagnostics::RenderDiagnostics;
 use crate::shaping::shape_text;
-use crate::source_text::{SourceText, SpanLook};
+use crate::source_text::SourceText;
 
 /// Почему реплика не отрисована.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -98,8 +99,23 @@ pub(crate) fn render_cue_text(
         style,
         canvas,
         language,
-        max_bitmap_side,
+        // SRT/WebVTT не размывается (у видов `SpanBlur::NONE`): своя пустая память.
+        BitmapWorkspace {
+            max_bitmap_side,
+            blur_scratch: &mut BlurScratch::new(),
+        },
     )
+}
+
+/// Ресурсы построения битмапов реплики: предел размера и рабочая память размытия.
+///
+/// Рабочую память создаёт и хранит владелец растеризации (`SubtitleRasterizer`, по одной на
+/// поток отрисовки); конвейер реплики только заимствует её.
+pub(crate) struct BitmapWorkspace<'scratch> {
+    /// Наибольшая сторона битмапа в пикселях (`RasterInputLimits::max_canvas_side`).
+    pub(crate) max_bitmap_side: u32,
+    /// Рабочая память размытия `\blur` / `\be`.
+    pub(crate) blur_scratch: &'scratch mut BlurScratch,
 }
 
 /// Рисует уже развёрнутый текст (символы и их виды): общий вход для SRT/WebVTT и ASS.
@@ -113,16 +129,16 @@ pub(crate) fn render_source_text(
     style: &EventStyle,
     canvas: CanvasSize,
     language: TextLanguagePreference,
-    max_bitmap_side: u32,
+    workspace: BitmapWorkspace<'_>,
 ) -> Result<RenderedText, TextRenderError> {
     validate_style(style)?;
-    validate_looks(&source.looks)?;
+    validate_looks(source)?;
     if source.is_blank() {
         return Ok(RenderedText::empty());
     }
 
     let mut clusters = shape_text(fonts, faces, source, style, language)?;
-    let retrieved = retrieve_glyphs(faces, &mut clusters, &source.looks)?;
+    let retrieved = retrieve_glyphs(faces, &mut clusters, &source.looks, &source.drawings)?;
     let layout = arrange_text(&mut clusters, style, canvas);
     let pixel_aspect_x = style.pixel_aspect_x();
     let event_rect = event_image_rect(&layout, pixel_aspect_x);
@@ -136,8 +152,9 @@ pub(crate) fn render_source_text(
             layout: &layout,
             canvas,
             pixel_aspect_x,
-            max_bitmap_side,
+            max_bitmap_side: workspace.max_bitmap_side,
         },
+        workspace.blur_scratch,
     )?;
     Ok(RenderedText {
         images: composed.images,
@@ -146,7 +163,8 @@ pub(crate) fn render_source_text(
             skipped_glyphs: 0,
             skipped_borders: composed.skipped_borders,
             skipped_oversized_bitmaps: composed.skipped_oversized_bitmaps,
-            skipped_ass_drawings: 0,
+            invalid_ass_drawings: 0,
+            failed_blur_layers: composed.failed_blur_layers,
         }),
         event_rect: Some(event_rect),
     })
@@ -173,9 +191,25 @@ pub(crate) fn render_text_event(
 }
 
 /// Проверяет числа видов символов: размер шрифта, обводка, тень, масштаб, интервал.
-fn validate_looks(looks: &[SpanLook]) -> Result<(), TextRenderError> {
-    for look in looks {
-        if !look.font_size.is_finite() || look.font_size <= 0.0 {
+///
+/// Размер шрифта буквы обязан быть положительным и конечным. Исключение (решение владельца,
+/// сессия 10a): вид, которым пользуются ТОЛЬКО рисунки `\p`, может иметь нулевой размер —
+/// это стиль с `Fontsize: 0`, а размер шрифта на рисунок не влияет (libass). Буква с нулевым
+/// размером в раскладку попасть не должна (`LookPolicy::draws_glyphs`), поэтому её появление
+/// здесь - ошибка вызывающего кода, как и отрицательный или нечисловой размер.
+fn validate_looks(source: &SourceText) -> Result<(), TextRenderError> {
+    for (look_index, look) in source.looks.iter().enumerate() {
+        let used_by_letters = source
+            .chars
+            .iter()
+            .any(|symbol| symbol.look == look_index && symbol.drawing.is_none());
+        let size_is_valid = look.font_size.is_finite()
+            && if used_by_letters {
+                look.font_size > 0.0
+            } else {
+                look.font_size >= 0.0
+            };
+        if !size_is_valid {
             return Err(TextRenderError::InvalidFontSize {
                 size: look.font_size,
             });

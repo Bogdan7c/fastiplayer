@@ -28,7 +28,7 @@ fn schema_v11_without_drop_fields_loads_defaults_and_roundtrips() {
     fs::write(&config_path, SCHEMA_V11_WITHOUT_DROP_FIELDS).expect("v11 fixture written");
 
     let migrated = load_from_path(&config_path).expect("v11 config loads");
-    assert_eq!(migrated.config.schema_version, 19);
+    assert_eq!(migrated.config.schema_version, 20);
     assert_eq!(
         migrated.config.playlist.dropped_folder_max_files,
         DEFAULT_DROPPED_FOLDER_MAX_FILES
@@ -46,7 +46,7 @@ fn schema_v11_without_drop_fields_loads_defaults_and_roundtrips() {
 
     save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
     let saved_text = fs::read_to_string(&config_path).expect("saved TOML readable");
-    assert!(saved_text.contains("schema_version = 19"));
+    assert!(saved_text.contains("schema_version = 20"));
     assert!(saved_text.contains("dropped_folder_max_files = 2000"));
     assert!(saved_text.contains("dropped_folder_max_depth = 8"));
     assert!(saved_text.contains("dropped_playlist_file_action = \"by_drop_target\""));
@@ -108,7 +108,7 @@ fn unknown_dropped_playlist_action_is_a_parse_error() {
     let config_path = temp_dir.path().join("config.toml");
     fs::write(
         &config_path,
-        "schema_version = 19\n\n[playlist]\ndropped_playlist_file_action = \"explode\"\n",
+        "schema_version = 20\n\n[playlist]\ndropped_playlist_file_action = \"explode\"\n",
     )
     .expect("fixture written");
 

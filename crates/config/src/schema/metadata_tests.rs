@@ -140,6 +140,7 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "subtitles.max_ass_events_on_screen",
     "subtitles.prerender_frames",
     "subtitles.prepared_overlays",
+    "subtitles.blur_scratch_retained_mb",
 ];
 
 #[test]
@@ -463,6 +464,12 @@ fn metadata_ranges_match_validation_constants() {
         "subtitles.prepared_overlays",
         crate::MIN_PREPARED_OVERLAYS,
         crate::MAX_PREPARED_OVERLAYS,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.blur_scratch_retained_mb",
+        crate::MIN_BLUR_SCRATCH_RETAINED_MB,
+        crate::MAX_BLUR_SCRATCH_RETAINED_MB,
     );
     assert_text_len(
         &registry,

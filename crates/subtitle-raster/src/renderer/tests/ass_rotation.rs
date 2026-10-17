@@ -300,3 +300,40 @@ fn bitmap_side_limit_follows_the_configured_canvas_limit() {
     assert!(tight_skipped > 0);
     assert!(tight.is_empty());
 }
+
+/// Чернила одного слова с `\fry` в режиме «мой стиль» при заданном PlayRes (холст всегда
+/// 1280x720: PlayRes 640x360 даёт `blur_scale_y = 2`, то есть камеру вдвое дальше).
+fn user_style_rotated_ink(play_res: (u32, u32), pos: (u32, u32)) -> (i32, i32, i32, i32) {
+    let text = format!(r"{{\an5\pos({},{})\bord0\fry75}}HHHHHH", pos.0, pos.1);
+    let file = crate::test_ass::ass_file(
+        play_res,
+        true,
+        &[crate::test_ass::DEFAULT_STYLE_LINE],
+        &[&crate::test_ass::dialogue(0, &text)],
+    );
+    let cues = crate::test_ass::load_ass_cues(&file, fresh_source());
+    let options = crate::ass::AssRenderOptions {
+        style_source: crate::ass::AssStyleSource::User,
+        ..crate::ass::AssRenderOptions::default()
+    };
+    let overlay = super::ass::render_ass_with(
+        &mut rasterizer(ROOMY_LIMITS),
+        &cues,
+        options,
+        &SubtitleAppearance::youtube_like(),
+        canvas(),
+    );
+    glyph_ink(&overlay)
+}
+
+#[test]
+fn camera_distance_follows_the_frame_scale_in_user_style_mode_too() {
+    // libass: `dist = 20000 * blur_scale_y` и при подмене стиля пользователем. Слово одного
+    // и того же размера в пикселях (стиль пользователя) и в той же точке холста, но кадр
+    // сценария вдвое мельче: камера вдвое дальше, перспектива слабее, чернила другие. Если
+    // камера привязана к авторскому размытию (в этом режиме обнулённому), обе картинки
+    // совпадут.
+    let near_camera = user_style_rotated_ink((1280, 720), (640, 360));
+    let far_camera = user_style_rotated_ink((640, 360), (320, 180));
+    assert_ne!(near_camera, far_camera);
+}

@@ -209,3 +209,29 @@ fn unbuildable_border_is_counted_and_the_fill_is_still_drawn() {
             .any(|i| i.kind() == SubtitleBitmapKind::Outline)
     );
 }
+
+#[test]
+fn zero_size_letters_are_rejected_on_the_shared_source_text_path() {
+    // Нулевой размер допустим только виду, которым пользуются одни рисунки; буква с таким
+    // видом (путь ASS через `render_source_text`) - ошибка, а не молчаливая пустая реплика.
+    let style = plain_style();
+    let mut source = SourceText::from_styled(&plain_text("a"), &style);
+    source.looks[0].font_size = 0.0;
+    let mut faces = FaceCache::new();
+    let result = render_source_text(
+        &mut embedded_fonts(),
+        &mut faces,
+        &source,
+        &style,
+        canvas(),
+        TextLanguagePreference::unknown(),
+        BitmapWorkspace {
+            max_bitmap_side: u32::MAX,
+            blur_scratch: &mut BlurScratch::new(),
+        },
+    );
+    assert_eq!(
+        result.err(),
+        Some(TextRenderError::InvalidFontSize { size: 0.0 })
+    );
+}

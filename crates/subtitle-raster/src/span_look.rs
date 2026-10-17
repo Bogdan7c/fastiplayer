@@ -28,6 +28,36 @@ pub(crate) struct TextDecorations {
     pub(crate) strike_out: bool,
 }
 
+/// Размытие участка: `\blur` (гауссиан) и `\be` (box-размытие).
+///
+/// Радиус хранится в виде, в каком libass кладёт его в `GlyphInfo` (значение тега) вместе с
+/// множителем кадра: так сравнение видов даёт те же границы участков, что `last->blur !=
+/// info->blur` в `split_style_runs`, а умножение `blur * blur_scale * radius_scale` в
+/// композиции повторяет порядок операций libass (от него зависит квантование радиуса).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SpanBlur {
+    /// Значение `\blur` в единицах сценария, в `[0, 100]`.
+    pub(crate) radius: f64,
+    /// Множитель радиуса по осям (libass: `blur_scale_x/y`); у видов без ASS — 1 (радиус
+    /// там 0, размытия нет). Расстояние камеры 3D-поворотов от размытия НЕ зависит: см.
+    /// [`SpanLook::camera_scale`].
+    pub(crate) scale: AxisPair,
+    /// Число проходов `\be`, в `[0, 127]`.
+    pub(crate) edge_passes: i32,
+}
+
+impl SpanBlur {
+    /// Без размытия (SRT/WebVTT и режим «мой стиль»).
+    pub(crate) const NONE: Self = Self {
+        radius: 0.0,
+        scale: AxisPair {
+            horizontal: 1.0,
+            vertical: 1.0,
+        },
+        edge_passes: 0,
+    };
+}
+
 /// Внешний вид символов участка.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SpanLook {
@@ -65,6 +95,14 @@ pub(crate) struct SpanLook {
     pub(crate) rotation: Rotation3d,
     /// Наклон `\fax \fay`.
     pub(crate) shear: ShearFactors,
+    /// Размытие `\blur` и `\be`; разное размытие — разные участки, как в libass.
+    pub(crate) blur: SpanBlur,
+    /// Масштаб расстояния камеры 3D-поворотов: libass считает `dist = 20000 * blur_scale_y`
+    /// (`calc_transform_matrix`) независимо от того, что именно размывается и применяется ли
+    /// авторское размытие. Это свойство масштаба кадра, а не размытия, поэтому оно хранится
+    /// отдельно от [`SpanBlur`] (режим «мой стиль» обнуляет размытие, но не камеру). Всегда
+    /// положителен; у видов без ASS — 1.
+    pub(crate) camera_scale: f64,
 }
 
 impl SpanLook {
@@ -83,6 +121,10 @@ impl SpanLook {
             self.rotation.z_degrees,
             self.shear.horizontal,
             self.shear.vertical,
+            self.blur.radius,
+            self.blur.scale.horizontal,
+            self.blur.scale.vertical,
+            self.camera_scale,
         ]
         .iter()
         .all(|value| value.is_finite())
@@ -117,6 +159,8 @@ mod tests {
             decorations: TextDecorations::default(),
             rotation: Rotation3d::default(),
             shear: ShearFactors::default(),
+            blur: SpanBlur::NONE,
+            camera_scale: 1.0,
         }
     }
 

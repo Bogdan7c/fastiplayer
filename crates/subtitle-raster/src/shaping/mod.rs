@@ -106,35 +106,57 @@ fn build_clusters(
     let mut clusters: Vec<TextCluster> = Vec::with_capacity(symbols.len());
     // Системные fallback-лица, уже выбранные в этой реплике, в порядке первого использования.
     let mut used_system_faces: Vec<(FaceId, FaceId)> = Vec::new();
-    for (index, (SourceChar { ch, look, fade }, script_value)) in
-        source.chars.iter().zip(scripts).enumerate()
+    for (
+        index,
+        (
+            SourceChar {
+                ch,
+                look,
+                fade,
+                drawing,
+            },
+            script_value,
+        ),
+    ) in source.chars.iter().zip(scripts).enumerate()
     {
         let primary_face = primary.get(*look).copied().unwrap_or(default_face);
-        let (face, glyph) = if is_harfbuzz_ignorable(*ch) {
-            let inherited = clusters
-                .last()
-                .filter(|previous| previous.look == *look)
-                .map_or(primary_face, |previous| previous.face);
-            (inherited, GlyphId::NOTDEF)
+        // Рисунок `\p`: ни поиска шрифта, ни шейпинга (libass: `shape_harfbuzz`,
+        // `ass_shaper_find_runs`); лицо — основное лицо вида, глиф не используется.
+        let drawing_source = drawing.and_then(|id| source.drawings.get(id.0));
+        let (face, glyph) = if drawing_source.is_some() {
+            (primary_face, GlyphId::NOTDEF)
         } else {
-            match fonts.glyph_for_char(primary_face, *ch, language) {
-                GlyphLookup::Found { face, glyph } => apply_system_run_continuity(
-                    fonts,
-                    &mut used_system_faces,
-                    primary_face,
-                    *ch,
-                    (face, glyph),
-                ),
-                GlyphLookup::ControlCharacter { face } => (face, GlyphId::NOTDEF),
-                GlyphLookup::Missing { face, notdef } => (face, notdef),
-            }
+            let found = if is_harfbuzz_ignorable(*ch) {
+                let inherited = clusters
+                    .last()
+                    .filter(|previous| previous.look == *look)
+                    .map_or(primary_face, |previous| previous.face);
+                (inherited, GlyphId::NOTDEF)
+            } else {
+                match fonts.glyph_for_char(primary_face, *ch, language) {
+                    GlyphLookup::Found { face, glyph } => apply_system_run_continuity(
+                        fonts,
+                        &mut used_system_faces,
+                        primary_face,
+                        *ch,
+                        (face, glyph),
+                    ),
+                    GlyphLookup::ControlCharacter { face } => (face, GlyphId::NOTDEF),
+                    GlyphLookup::Missing { face, notdef } => (face, notdef),
+                }
+            };
+            load_or_fall_back_to_notdef(fonts, faces, primary_face, found.0, found.1)?
         };
-        let (face, glyph) = load_or_fall_back_to_notdef(fonts, faces, primary_face, face, glyph)?;
         let look_style = source.looks.get(*look);
-        let (glyph_scale, letter_spacing_d6, has_letter_spacing) = look_style.map_or(
+        let (mut glyph_scale, mut letter_spacing_d6, has_letter_spacing) = look_style.map_or(
             (AxisPair::uniform(0.0), 0, false),
             cluster_scale_and_spacing,
         );
+        if let Some(drawing_source) = drawing_source {
+            // libass: у рисунка `hspacing_scaled = 0`, масштаб контура считает планировщик.
+            glyph_scale = drawing_source.outline_scale;
+            letter_spacing_d6 = 0;
+        }
         clusters.push(TextCluster {
             symbol: *ch,
             look: *look,
@@ -144,6 +166,7 @@ fn build_clusters(
             has_letter_spacing,
             baseline_shear: look_style.map_or(0.0, |known| known.shear.vertical),
             border: look_style.map_or(AxisPair::uniform(0.0), |known| known.border),
+            drawing: drawing_source.and(*drawing),
             face,
             script: script_value,
             bidi_level: 0,
@@ -225,11 +248,20 @@ fn load_or_fall_back_to_notdef(
 }
 
 /// Границы участков единого стиля (libass: `split_style_runs`).
+///
+/// Рисунок всегда стоит в своём участке: участок рвётся по обе стороны от него
+/// (`info->drawing_text.str || last->drawing_text.str`), даже если вид у соседей тот же.
 fn mark_style_runs(clusters: &mut [TextCluster]) {
-    let mut previous_look: Option<usize> = None;
+    let mut previous: Option<(usize, bool)> = None;
     for cluster in clusters.iter_mut() {
-        cluster.starts_new_run = previous_look != Some(cluster.look);
-        previous_look = Some(cluster.look);
+        let is_drawing = cluster.drawing.is_some();
+        cluster.starts_new_run = match previous {
+            None => true,
+            Some((previous_look, previous_is_drawing)) => {
+                previous_look != cluster.look || is_drawing || previous_is_drawing
+            }
+        };
+        previous = Some((cluster.look, is_drawing));
     }
 }
 
@@ -318,7 +350,18 @@ pub(crate) fn shape_text(
         {
             run_end += 1;
         }
-        run_shaper::shape_run(faces, &mut clusters, run_start..run_end, source.kerning)?;
+        if clusters
+            .get(run_start)
+            .is_some_and(|first| first.drawing.is_some())
+        {
+            // Рисунок не шейпится: «оживляем» кластер, глиф и метрики придут из
+            // `retrieve_glyphs` (libass: `glyphs[i].skip = false; continue`).
+            if let Some(cluster) = clusters.get_mut(run_start) {
+                cluster.skip = false;
+            }
+        } else {
+            run_shaper::shape_run(faces, &mut clusters, run_start..run_end, source.kerning)?;
+        }
         run_start = run_end;
     }
     Ok(clusters)

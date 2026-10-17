@@ -15,7 +15,7 @@ use super::render_state::RenderState;
 use crate::event_style::{AxisPair, BorderStyle, StyleColors};
 use crate::fonts::{FontStyle, FontWeightClass};
 use crate::glyph_transform::{Rotation3d, ShearFactors};
-use crate::span_look::{SpanLook, TextDecorations};
+use crate::span_look::{SpanBlur, SpanLook, TextDecorations};
 
 /// Во сколько раз размер шрифта может превышать большую сторону холста.
 ///
@@ -39,6 +39,8 @@ pub(crate) struct UserLook {
     pub(crate) border: AxisPair,
     /// Тень.
     pub(crate) shadow: AxisPair,
+    /// Масштаб расстояния камеры 3D-поворотов (`blur_scale_y` кадра), см. `SpanLook::camera_scale`.
+    pub(crate) camera_scale: f64,
 }
 
 /// Чьё оформление применять к символам.
@@ -81,6 +83,23 @@ impl LookPolicy {
         match self {
             Self::Author { scale, .. } => (state.font_size * scale.screen_y).abs() > 0.0,
             Self::User(_) => true,
+        }
+    }
+
+    /// Множители кадра для рисунков `\p`. Рисуются только рисунки автора.
+    ///
+    /// РЕШЕНИЕ ВЛАДЕЛЬЦА (17.10.2026, сессия 10a): в режиме «мой стиль» (`AssStyleSource::User`)
+    /// рисунки автора скрыты, а авторское размытие (`\blur`, `\be`) не применяется (см.
+    /// `SpanLook::blur` = `SpanBlur::NONE` у [`Self::User`] в [`Self::make_look`]; камера 3D-поворотов
+    /// при этом сохраняется): рисунок и
+    /// размытие — часть заданной автором геометрии и вида, а пользовательский стиль её заменяет.
+    /// Поведение сохранено сознательно; оно описано в `docs/subtitles/compatibility.md` и
+    /// закреплено тестами `user_style_skips_author_drawings_but_keeps_letters` и
+    /// `user_style_mode_ignores_author_blur`.
+    pub(crate) fn drawing_event_scale(&self) -> Option<EventScale> {
+        match self {
+            Self::Author { scale, .. } => Some(*scale),
+            Self::User(_) => None,
         }
     }
 
@@ -139,6 +158,15 @@ impl LookPolicy {
                     decorations,
                     rotation: finite_rotation(state.rotation),
                     shear: finite_shear(state.shear),
+                    blur: SpanBlur {
+                        radius: state.filters.blur_radius(),
+                        scale: AxisPair {
+                            horizontal: scale.blur_x,
+                            vertical: scale.blur_y,
+                        },
+                        edge_passes: state.filters.edge_blur(),
+                    },
+                    camera_scale: scale.blur_y,
                 }
             }
             Self::User(user) => SpanLook {
@@ -157,6 +185,11 @@ impl LookPolicy {
                 decorations,
                 rotation: finite_rotation(state.rotation),
                 shear: finite_shear(state.shear),
+                // Пользовательский стиль заменяет оформление автора целиком, размытие тоже.
+                blur: SpanBlur::NONE,
+                // Камера - свойство масштаба кадра, а не авторского оформления: libass берёт
+                // `20000 * blur_scale_y` и при любых подменах стиля.
+                camera_scale: user.camera_scale,
             },
         }
     }

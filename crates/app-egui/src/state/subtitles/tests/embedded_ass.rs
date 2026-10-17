@@ -458,7 +458,7 @@ fn unknown_and_later_layer_tags_are_counted_per_track_and_the_text_still_renders
         ass_track,
         1_000,
         Some(1_000),
-        b"9,0,Default,,0,0,0,,{\\blur3\\zzz7\\b1}Still shown",
+        b"9,0,Default,,0,0,0,,{\\k3\\zzz7\\b1}Still shown",
     )]);
 
     assert_eq!(cached_cues(&owner, ass_track), 1);
@@ -468,7 +468,7 @@ fn unknown_and_later_layer_tags_are_counted_per_track_and_the_text_still_renders
         .and_then(|media| media.embedded_ass.tag_stats(ass_track))
         .expect("the track has a parsed script");
     assert_eq!(
-        stats.unsupported_count(subtitle_core::AssUnsupportedTag::Blur),
+        stats.unsupported_count(subtitle_core::AssUnsupportedTag::Karaoke),
         1
     );
     assert_eq!(stats.unknown_total(), 1);

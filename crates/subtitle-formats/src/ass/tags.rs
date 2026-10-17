@@ -34,11 +34,12 @@
 //!   скобках, а у «сложных» тегов (`\pos`, `\move`, `\t`, `\clip` ...) такого хвоста нет.
 
 use subtitle_core::{
-    AssAlignment, AssAlphaTarget, AssAxes, AssBold, AssColorSlot, AssDrawingMode, AssFade,
-    AssFontSize, AssMove, AssOverride, AssRgb, AssRotationAxis, AssShearAxis, AssUnsupportedTag,
-    AssWrapStyle,
+    AssAlignment, AssAlphaTarget, AssAxes, AssBold, AssClipMode, AssColorSlot, AssDrawingMode,
+    AssFade, AssFontSize, AssMove, AssOverride, AssRgb, AssRotationAxis, AssShearAxis,
+    AssUnsupportedTag, AssWrapStyle,
 };
 
+use super::filter_tags::{build_blur, build_clip, build_drawing_baseline_offset, build_edge_blur};
 use super::report::AssTagStats;
 use super::scan::{is_ass_space, parse_f64, parse_i32_clamped, rskip_spaces};
 
@@ -105,6 +106,14 @@ enum Tag {
     Origin,
     /// `\fad(a,b)` и `\fade(...)`.
     Fade,
+    /// `\blur`: гауссово размытие (разбор в `filter_tags.rs`).
+    Blur,
+    /// `\be`: box-размытие края.
+    EdgeBlur,
+    /// `\clip` / `\iclip`.
+    Clip(AssClipMode),
+    /// `\pbo`: смещение базовой линии рисунка.
+    DrawingBaselineOffset,
     Unsupported(AssUnsupportedTag),
 }
 
@@ -149,8 +158,8 @@ const TAG_RULES: &[TagRule] = &[
     plain("yshad", Tag::Shadow(AssAxes::Y)),
     plain("fax", Tag::Shear(AssShearAxis::X)),
     plain("fay", Tag::Shear(AssShearAxis::Y)),
-    complex("iclip", Tag::Unsupported(AssUnsupportedTag::InverseClip)),
-    plain("blur", Tag::Unsupported(AssUnsupportedTag::Blur)),
+    complex("iclip", Tag::Clip(AssClipMode::Outside)),
+    plain("blur", Tag::Blur),
     plain("fscx", Tag::ScaleX),
     plain("fscy", Tag::ScaleY),
     plain("fsc", Tag::ResetScale),
@@ -171,7 +180,7 @@ const TAG_RULES: &[TagRule] = &[
     complex("fad", Tag::Fade),
     complex("org", Tag::Origin),
     complex("t", Tag::Unsupported(AssUnsupportedTag::Transform)),
-    complex("clip", Tag::Unsupported(AssUnsupportedTag::Clip)),
+    complex("clip", Tag::Clip(AssClipMode::Inside)),
     plain("c", Tag::Color(AssColorSlot::Primary)),
     plain("1c", Tag::Color(AssColorSlot::Primary)),
     plain("2c", Tag::Color(AssColorSlot::Secondary)),
@@ -191,7 +200,7 @@ const TAG_RULES: &[TagRule] = &[
     ),
     plain("4a", Tag::Alpha(AssAlphaTarget::Slot(AssColorSlot::Back))),
     plain("r", Tag::Reset),
-    plain("be", Tag::Unsupported(AssUnsupportedTag::Be)),
+    plain("be", Tag::EdgeBlur),
     plain("b", Tag::Bold),
     plain("i", Tag::Italic),
     plain("kt", Tag::Unsupported(AssUnsupportedTag::Karaoke)),
@@ -202,10 +211,7 @@ const TAG_RULES: &[TagRule] = &[
     plain("shad", Tag::Shadow(AssAxes::Both)),
     plain("s", Tag::StrikeOut),
     plain("u", Tag::Underline),
-    plain(
-        "pbo",
-        Tag::Unsupported(AssUnsupportedTag::DrawingBaselineOffset),
-    ),
+    plain("pbo", Tag::DrawingBaselineOffset),
     plain("p", Tag::Drawing),
     plain("q", Tag::WrapStyle),
     plain("fe", Tag::FontEncoding),
@@ -232,6 +238,11 @@ impl<'a> TagArgs<'a> {
             *slot = trimmed;
             self.count += 1;
         }
+    }
+
+    /// Сохранённые аргументы (без пустых «слотов»).
+    fn provided(&self) -> &[&'a str] {
+        self.items.get(..self.count).unwrap_or_default()
     }
 
     /// Первый аргумент (пустая строка, если аргументов нет — как `args[0]` в libass).
@@ -281,13 +292,8 @@ pub(super) fn parse_override_block(
             if budget.try_take() {
                 match build_override(rule.tag, &args) {
                     Some(parsed) => {
-                        match &parsed {
-                            AssOverride::Unsupported(tag) => stats.record_unsupported(*tag),
-                            // `\p0` не использует рисунки, поэтому в «не поддержано» не попадает.
-                            AssOverride::Drawing(mode) if mode.is_on() => {
-                                stats.record_unsupported(AssUnsupportedTag::Drawing);
-                            }
-                            _ => {}
+                        if let AssOverride::Unsupported(tag) = &parsed {
+                            stats.record_unsupported(*tag);
                         }
                         overrides.push(parsed);
                     }
@@ -503,6 +509,10 @@ fn build_override(tag: Tag, args: &TagArgs<'_>) -> Option<AssOverride> {
         Tag::FontEncoding => AssOverride::FontEncoding(has_arg.then(|| arg_i32(args.first()))),
         // libass: `val = max(0, argtoi32(args[0]))`; без аргумента args[0] пуст, то есть 0.
         Tag::Drawing => AssOverride::Drawing(AssDrawingMode::from_tag_value(arg_i32(args.first()))),
+        Tag::Blur => build_blur(args.provided()),
+        Tag::EdgeBlur => build_edge_blur(args.provided()),
+        Tag::Clip(mode) => return build_clip(mode, args.provided()),
+        Tag::DrawingBaselineOffset => build_drawing_baseline_offset(args.provided()),
         Tag::Unsupported(kind) => AssOverride::Unsupported(kind),
     })
 }

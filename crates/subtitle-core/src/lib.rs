@@ -24,7 +24,8 @@ mod timeline;
 mod track;
 
 pub use ass::{
-    AssAlignment, AssAlphaTarget, AssAxes, AssBold, AssBorderStyle, AssColor, AssColorSlot, AssCue,
+    ASS_BLUR_MAX_RADIUS, ASS_EDGE_BLUR_MAX, AssAlignment, AssAlphaTarget, AssAxes, AssBold,
+    AssBorderStyle, AssClip, AssClipMode, AssClipShape, AssColor, AssColorSlot, AssCue,
     AssDrawingMode, AssEventField, AssEventFormat, AssEventMargins, AssFade, AssFontSize,
     AssHardOverrides, AssHorizontalAlign, AssKerning, AssLayoutRes, AssMove, AssOverride,
     AssPlayRes, AssResolvedMargins, AssRgb, AssRotationAxis, AssScaledBorderAndShadow, AssScript,

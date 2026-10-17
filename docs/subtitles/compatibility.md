@@ -40,7 +40,8 @@ Pure-Rust rasterizer, a port of libass 0.17.5 behaviour (ISC). Output: a list of
 | Span background, `\N`-less CJK line breaking | not yet (later sessions / backlog) |
 | ASS layer-1 override tags | Supported (session 08, see below) |
 | ASS layer-2 tags: rotations, shear, 3D, `\org`, `\move`, `\fad` / `\fade` | Supported (session 09, see below) |
-| ASS layer-3 tags: karaoke, blur, clip, `\t`, drawings | Planned — plan 10 |
+| ASS layer-3 tags: drawings `\p \pbo`, clip `\clip \iclip` (rectangle and vector), blur `\blur \be` | Supported (session 10a, see below) |
+| ASS `\t`, karaoke, Banner / Scroll effects | Not yet — plan 10b |
 
 ## On screen (session 03)
 
@@ -183,11 +184,12 @@ Script header: `PlayResX/Y`, `LayoutResX/Y`, `ScaledBorderAndShadow`, `WrapStyle
 | Reset and wrap | `\r \q \N \n \h` | Supported |
 | Rotation, shear, 3D | `\frx \fry \frz \fr \org \fax \fay` (libass perspective projection; a glyph behind the camera is dropped) | Supported (session 09) |
 | Animation | `\move` (4 and 6 arguments), `\fad`, `\fade` (2 and 7 arguments) | Supported (session 09) |
-| Transform animation | `\t` | No (plan 10) |
-| Clipping and blur | `\clip \iclip \blur \be` | No (plan 10) |
-| Karaoke | `\k \K \kf \ko \kt` | No (plan 10) |
-| Drawings | `\p` | No (plan 10) |
-| Effects | `Banner`, `Scroll up/down` | No (plan 10) |
+| Transform animation | `\t` | No (plan 10b) |
+| Clipping | `\clip \iclip` (rectangle and vector drawing; both may act at once) | Supported (session 10a) |
+| Blur | `\blur \be` | Supported (session 10a) |
+| Drawings | `\p \pbo` (move, line, cubic and b-spline commands) | Supported (session 10a) |
+| Karaoke | `\k \K \kf \ko \kt` | No (plan 10b) |
+| Effects | `Banner`, `Scroll up/down` | No (plan 10b) |
 
 Unsupported tags are skipped without hiding the rest of the text; the track keeps per-tag counts for diagnostics.
 
@@ -201,8 +203,9 @@ Placement: events with `\pos`, `\move`, `\org`, rotation or shear are "signs": f
 
 - `subtitles.ass_force_user_style` (default off): off — the author's colours, fonts, outline and shadow are drawn as written and `text_size_percent` scales the dialogue text, but not text placed with `\pos` (the author's explicit layout); on — the user's text colour, box colour / opacity and size replace the author's style, while `\pos` placement is kept.
 - `subtitles.ass_position_mode`: `main_lines_avoid_controls` (default) — "main lines" (events without `\pos`/`\move`, aligned to the bottom: `\an1`-`\an3`) are lifted smoothly above the control panel while it is visible and return to the author's place when it hides; signs (`\pos`/`\move`, and since session 09 events with `\org`, rotation or shear) and top/middle-aligned lines never move; the user position offset is not applied to ASS; everything stays inside the picture. `author` — nothing moves (no lift, no user offset). `whole_layer` — the whole ASS layer moves like SRT (lift above the controls plus the user offset) but stays inside the picture on both axes. Edit-mode dragging does not move a real ASS cue in the first two modes.
-- Limits (config schema v18): `max_ass_header_kb` (64–16384, default 1024), `max_ass_styles` (10–10000, default 1000), `max_ass_override_tags_per_event` (32–8192, default 512), `max_ass_events_on_screen` (16–2048, default 256: how many ASS events are drawn at once on one frame). SRT / WebVTT placement is unchanged (it may use the black bars).
+- Limits (config schema v20): `max_ass_header_kb` (64–16384, default 1024), `max_ass_styles` (10–10000, default 1000), `max_ass_override_tags_per_event` (32–8192, default 512), `max_ass_events_on_screen` (16–2048, default 256: how many ASS events are drawn at once on one frame). SRT / WebVTT placement is unchanged (it may use the black bars).
 - Pre-render (config schema v19): `prerender_frames` (0–64, default 4: how many frames ahead the subtitle render thread prepares pictures; 0 means the current frame only) and `prepared_overlays` (1–64, default 8: size of the queue of ready subtitle pictures). Migration v18 -> v19 only bumps the version; existing user values are kept.
+- Blur memory (config schema v20): `blur_scratch_retained_mb` (1–1024, default 32: how much working memory of the blur `\blur` / `\be` the rasterizer keeps between frames; a blur that needs more still works, the extra memory is freed after the frame). The default equals the former built-in constant (two 1080p planes take about 8 MB, so 32 MB covers up to 4K without reallocating); the 1 MB floor avoids freeing after every frame, the 1024 MB ceiling protects against a typo. Takes effect with the next opened video. Migration v19 -> v20 only bumps the version; existing user values are kept.
 
 ### Known limitations
 
@@ -210,4 +213,8 @@ Placement: events with `\pos`, `\move`, `\org`, rotation or shear are "signs": f
 - Vertical text `\fn@Font` is not supported.
 - Collision memory (stacking of simultaneous lines) is kept only for the cues active on the current frame.
 - Glyph storage size equals the display size (no separate `LayoutRes`-based storage scaling beyond the script header).
-- Layer-3 tags (`\t`, `\clip`, `\iclip`, `\blur`, `\be`, karaoke, `\p`) and Banner / Scroll effects are scheduled in plan 10.
+- `\t`, karaoke (`\k \K \kf \ko \kt`) and Banner / Scroll effects are scheduled in plan 10b.
+- A vector clip whose mask would be larger than the maximum canvas side is ignored (the cue is drawn unclipped) and counted in the render statistics.
+- "Force my style" (`ass_force_user_style` on) hides author drawings (`\p`) and ignores author blur (`\blur`, `\be`). This is an owner decision (17.10.2026): drawings and blur are part of the author's geometry and look, which the user style replaces. Letters and the rest of the cue are drawn as before.
+- Drawings are drawn in a style with `Fontsize: 0` (the font size is irrelevant for them, as in libass). Letters in such a style are not drawn, while libass draws them at a size chosen by FreeType for a zero request (about unitsPerEm / 64 pixels); this difference is known and not ported.
+- Whole-scene speed versus libass is pending the three-level cache (stage 10c); until then a changed blurred or clipped scene is rasterized from scratch.

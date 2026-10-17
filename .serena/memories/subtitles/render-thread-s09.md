@@ -31,4 +31,4 @@ UI-поток НИКОГДА не вызывает `SubtitleRasterizer` и не 
 
 Приёмка вживую (агент, Wayland+X11): uinput-драйвер (клавиши + абсолютный указатель), отдельный `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME`; у `12_quick_check` автовыбор берёт встроенную дорожку языка системы — для сдвинутой SRT выбрать файл в меню CC. Поток `subtitle-render` ~0 % CPU в игре.
 
-Конфиг v19 `[subtitles]`: `prerender_frames` (4, 0..=64), `prepared_overlays` (8, 1..=64); действуют с созданием нового потока (следующее media).
+Конфиг v19 `[subtitles]`: `prerender_frames` (4, 0..=64), `prepared_overlays` (8, 1..=64); действуют с созданием нового потока (следующее media). Конфиг v20 (сессия 10a): `blur_scratch_retained_mb` (32, 1..=1024) — память буферов размытия растеризатора между кадрами. При смене версии схемы обновлять `scripts/tests/playback-smoke-self-test.sh` (`schema_version = N`).

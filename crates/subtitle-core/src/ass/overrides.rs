@@ -1,15 +1,16 @@
 //! Теги переопределений `{\...}` с точной семантикой аргументов libass.
 //!
-//! Теги слоя 1 и геометрия слоя 2 (`\frx/y/z`, `\fax/y`, `\org`, `\fad`) хранятся разобранными.
-//! Остальные теги слоёв 2–3 (`\move`, `\t`, `\clip`, `\k`, `\p` ...) распознаются,
-//! но только как [`AssOverride::Unsupported`]: растеризатор их игнорирует, а счётчики
-//! попадают в отчёт разбора.
+//! Теги слоя 1, геометрия слоя 2 (`\frx/y/z`, `\fax/y`, `\org`, `\fad`) и теги слоя 3
+//! (`\p`, `\pbo`, `\clip`, `\iclip`, `\blur`, `\be`) хранятся разобранными. Анимация
+//! `\t` и караоке `\k` распознаются, но только как [`AssOverride::Unsupported`]:
+//! растеризатор их игнорирует, а счётчики попадают в отчёт разбора.
 //!
 //! Значение `None` в большинстве вариантов означает «тег без допустимого аргумента:
 //! вернуть значение из стиля реплики» — так libass обрабатывает `\b`, `\fn` и т.п.
 
 use super::alignment::AssAlignment;
 use super::color::AssRgb;
+use super::filter_tags::AssClip;
 use super::geometry_tags::{AssFade, AssRotationAxis, AssShearAxis};
 use super::script_info::AssWrapStyle;
 use super::style::AssBold;
@@ -98,34 +99,21 @@ pub struct AssMove {
     pub end_ms: i32,
 }
 
-/// Теги слоёв 2–3: распознаются (чтобы не принять за другой тег), но не исполняются.
+/// Теги, которые распознаются (чтобы не принять за другой тег), но пока не исполняются
+/// (сессия 10b): анимация и караоке.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AssUnsupportedTag {
-    Blur,
-    Be,
     Transform,
-    Clip,
-    InverseClip,
     /// `\k`, `\K`, `\kf`, `\ko`, `\kt`.
     Karaoke,
-    /// `\p<n>` с `n > 0` (учёт в отчёте; сам режим хранит [`AssOverride::Drawing`]).
-    Drawing,
-    /// `\pbo`.
-    DrawingBaselineOffset,
 }
 
 impl AssUnsupportedTag {
     /// Каноническое имя тега для матрицы поддержки и отчёта.
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Blur => "blur",
-            Self::Be => "be",
             Self::Transform => "t",
-            Self::Clip => "clip",
-            Self::InverseClip => "iclip",
             Self::Karaoke => "k",
-            Self::Drawing => "p",
-            Self::DrawingBaselineOffset => "pbo",
         }
     }
 }
@@ -213,9 +201,24 @@ pub enum AssOverride {
     ResetScale,
     /// `\fsp`: межбуквенный интервал; `None` — из стиля.
     Spacing(Option<f64>),
-    /// `\p<n>`: переключает режим рисунка. Растеризатор слоя 1 не рисует векторные
-    /// рисунки: текст, встреченный при включённом режиме, пропускается и считается.
+    /// `\p<n>`: переключает режим рисунка. Текст при включённом режиме растеризуется как
+    /// векторная фигура (команды `m l b s ...`), а не как буквы.
     Drawing(AssDrawingMode),
+    /// `\pbo<v>`: смещение базовой линии рисунка (`double`, libass усекает до целого при
+    /// сохранении в глиф). Тег без аргумента даёт `0.0` (`argtod` пустой строки).
+    DrawingBaselineOffset(f64),
+    /// `\blur<v>`: радиус гауссова размытия «как написано». `None` — тег без аргумента,
+    /// libass жёстко сбрасывает радиус в `0` (не к стилю). Зажатие в
+    /// `[0, ASS_BLUR_MAX_RADIUS]` делает растеризатор ПОСЛЕ интерполяции `\t`
+    /// (`ass_parse.c`: `blur*(1-pwr)+val*pwr`, затем clamp).
+    Blur(Option<f64>),
+    /// `\be<v>`: «мягкий край» (box-размытие), значение `double` «как написано». `None` —
+    /// тег без аргумента, libass сбрасывает в `0`. Округление `dtoi32(v + 0.5)` и зажатие в
+    /// `[0, ASS_EDGE_BLUR_MAX]` делает растеризатор (после интерполяции `\t`).
+    EdgeBlur(Option<f64>),
+    /// `\clip(...)` / `\iclip(...)`: см. [`AssClip`]. Побеждающий вариант выбирает
+    /// растеризатор: последний прямоугольный, первый векторный.
+    Clip(AssClip),
     /// Тег слоя 2–3: нужен только для счётчиков.
     Unsupported(AssUnsupportedTag),
 }
@@ -226,16 +229,7 @@ mod tests {
 
     #[test]
     fn unsupported_names_are_unique() {
-        let all = [
-            AssUnsupportedTag::Blur,
-            AssUnsupportedTag::Be,
-            AssUnsupportedTag::Transform,
-            AssUnsupportedTag::Clip,
-            AssUnsupportedTag::InverseClip,
-            AssUnsupportedTag::Karaoke,
-            AssUnsupportedTag::Drawing,
-            AssUnsupportedTag::DrawingBaselineOffset,
-        ];
+        let all = [AssUnsupportedTag::Transform, AssUnsupportedTag::Karaoke];
         let names: std::collections::HashSet<_> = all.iter().map(|tag| tag.name()).collect();
         assert_eq!(names.len(), all.len());
     }

@@ -38,6 +38,7 @@ mod segment;
 mod tests;
 mod tile;
 
+pub(crate) use fill::TileRect;
 pub(crate) use tile::TILE_SIZE;
 
 use crate::outline::{ControlBox, Outline, OutlineError, Point, SegmentKind};

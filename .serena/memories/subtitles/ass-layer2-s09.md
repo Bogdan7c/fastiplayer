@@ -1,6 +1,6 @@
 # ASS слой 2 (сессия 09, этап 2): повороты, наклон, 3D, `\org`, `\move`, `\fad`/`\fade`
 
-Поведение — порт libass 0.17.5 (ISC-шапки в перенесённых файлах). Поддержано: `\frx \fry \frz \fr \org \fax \fay` (+ вместе с `\fscx \fscy \fsp`), `\move` (4 и 6 аргументов), `\fad \fade` (2 и 7 аргументов), 3D-проекция libass. НЕ поддержано (план 10): `\t \clip \iclip \blur \be \k* \p`, эффекты Banner/Scroll — остаются `AssUnsupportedTag`.
+Поведение — порт libass 0.17.5 (ISC-шапки в перенесённых файлах). Поддержано: `\frx \fry \frz \fr \org \fax \fay` (+ вместе с `\fscx \fscy \fsp`), `\move` (4 и 6 аргументов), `\fad \fade` (2 и 7 аргументов), 3D-проекция libass. Слой 3 (`\p \clip \iclip \blur \be` — 10a; `\t \k*` Banner/Scroll — 10b) — `mem:subtitles/ass-layer3-s10`. Исправлено в 10a: камера 3D теперь `20000 * blur_scale_y` (`SpanLook::camera_scale`), в 09 была всегда 20000.
 
 ## Новые модули
 - subtitle-core: `ass/geometry_tags.rs` (варианты `AssOverride` для поворота по оси, наклона, `\org`, затухания в сыром виде; переписывание `\fad` в t1..t4 делается при рендере, нужен Duration).

@@ -20,9 +20,11 @@
 //!
 //! Порядок как в libass: сначала глифы переводятся в координаты кадра и растеризуются
 //! (по участкам единого стиля), битмапы участка объединяются в три слоя, затем слои
-//! выдаются списком «все тени, все обводки, все заливки». Для `BorderStyle = 4` в начало
+//! выдаются списком «все тени, все обводки, все заливки». Размытие (`\blur`, `\be`) — часть
+//! объединения слоёв участка (`run::composite_run`), параметры фильтров — в `filter`. Для `BorderStyle = 4` в начало
 //! списка добавляется подложка, а тени не выдаются.
 
+mod filter;
 mod glyph_bitmaps;
 mod images;
 mod rotation;
@@ -31,6 +33,7 @@ mod run;
 use subtitle_core::SubtitleColor;
 
 use crate::bitmap::BitmapError;
+use crate::blur::{BitmapSideLimit, BlurScratch};
 use crate::event_style::{BorderStyle, EventStyle};
 use crate::fixed_point::{d6_to_double, double_to_d6};
 use crate::glyph_info::TextCluster;
@@ -39,8 +42,9 @@ use crate::layout::TextLayout;
 use crate::overlay::{CanvasSize, SubtitleBitmap, SubtitleBitmapError, SubtitleBitmapKind};
 use crate::raster::Rasterizer;
 use crate::source_text::SpanLook;
+use filter::RunFilter;
 use glyph_bitmaps::{GlyphBitmapRequest, GlyphBitmaps, RunPhase, build_glyph_bitmaps};
-use run::{FilterFlags, RunBitmaps, composite_run, quantized_shadow_offset};
+use run::{BlurEnv, RunBitmaps, composite_run};
 
 /// Почему композиция не удалась.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -90,9 +94,8 @@ struct Layer {
 /// Участок единого стиля с битмапами его глифов.
 struct CollectedRun {
     colors: RunColors,
-    flags: FilterFlags,
-    /// Смещение тени участка, квантованное как в libass (1/64 пикселя).
-    shadow_offset: (i32, i32),
+    /// Фильтры участка: флаги слоёв, размытие, смещение тени.
+    filter: RunFilter,
     /// Дробная ошибка позиции первого глифа (общая для всех глифов участка).
     offset: [f64; 2],
     parts: Vec<GlyphBitmaps>,
@@ -111,35 +114,49 @@ pub(crate) struct ComposedText {
     pub(crate) skipped_borders: u32,
     /// Сколько глифов пропущено: битмап после преобразования шире предела стороны.
     pub(crate) skipped_oversized_bitmaps: u32,
+    /// Сколько слоёв осталось неразмытыми из-за нарушенного внутреннего инварианта размытия.
+    pub(crate) failed_blur_layers: u32,
 }
 
 /// Строит картинки реплики. Позиции глифов в `clusters` переводятся из координат блока в
 /// координаты кадра.
+///
+/// `blur_scratch` — рабочая память размытия, принадлежащая растеризатору (одна на поток
+/// отрисовки); композиция только заимствует её и ничего в ней не хранит между вызовами.
 pub(crate) fn compose_text(
     clusters: &mut [TextCluster],
     input: &ComposeInput<'_>,
+    blur_scratch: &mut BlurScratch,
 ) -> Result<ComposedText, ComposeError> {
     let runs = collect_runs(clusters, input)?;
-    let skipped_oversized_bitmaps = runs.iter().fold(0_u32, |total, run| {
+    let mut skipped_oversized_bitmaps = runs.iter().fold(0_u32, |total, run| {
         total.saturating_add(run.skipped_oversized_bitmaps)
     });
     let skipped_borders = runs.iter().fold(0_u32, |total, run| {
         total.saturating_add(run.skipped_borders)
     });
+    let mut failed_blur_layers = 0_u32;
     let mut finished: Vec<(RunColors, RunBitmaps)> = Vec::with_capacity(runs.len());
+    let mut blur_env = BlurEnv {
+        scratch: blur_scratch,
+        side_limit: BitmapSideLimit(input.max_bitmap_side),
+    };
     for run in &runs {
         if run.parts.is_empty() {
             continue;
         }
-        finished.push((
-            run.colors,
-            composite_run(&run.parts, run.flags, run.shadow_offset)?,
-        ));
+        let bitmaps = composite_run(&run.parts, &run.filter, &mut blur_env)?;
+        // Слой, который не удалось размыть из-за размера, учитывается как пропущенный битмап.
+        skipped_oversized_bitmaps =
+            skipped_oversized_bitmaps.saturating_add(bitmaps.unblurred_oversized_layers);
+        failed_blur_layers = failed_blur_layers.saturating_add(bitmaps.failed_blur_layers);
+        finished.push((run.colors, bitmaps));
     }
     Ok(ComposedText {
         images: render_text(&finished, input)?,
         skipped_borders,
         skipped_oversized_bitmaps,
+        failed_blur_layers,
     })
 }
 
@@ -167,6 +184,13 @@ fn collect_runs(
             continue;
         };
         let glyph_scale = cluster.glyph_scale;
+        // Наклон считается по `\fscx`/`\fscy` рисунка, а не по масштабу его контура (libass:
+        // у рисунка `info->scale_x` и `transform.scale` — разные величины).
+        let shear_scale = if cluster.drawing.is_some() {
+            look.scale
+        } else {
+            glyph_scale
+        };
         let fade = cluster.fade;
         let letter_spacing_d6 = cluster.letter_spacing_d6;
         // Нулевой масштаб по любой оси — у буквы нет площади (libass пропускает такие глифы
@@ -183,8 +207,7 @@ fn collect_runs(
                         outline: fade.apply_to(look.colors.outline),
                         back: fade.apply_to(look.colors.back),
                     },
-                    flags: FilterFlags::for_glyph(look, fade),
-                    shadow_offset: quantized_shadow_offset(look),
+                    filter: RunFilter::for_look(look, fade),
                     offset: [0.0, 0.0],
                     parts: Vec::new(),
                     skipped_borders: 0,
@@ -216,10 +239,11 @@ fn collect_runs(
                     shift,
                     outline: &outline,
                     glyph_scale,
+                    shear_scale,
                     letter_spacing_d6,
                     pixel_aspect_x: input.pixel_aspect_x,
                     look,
-                    flags: run.flags,
+                    flags: run.filter.flags,
                 },
                 &mut RunPhase {
                     rasterizer: &mut rasterizer,

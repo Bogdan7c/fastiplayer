@@ -1,4 +1,4 @@
-//! Секция `[subtitles]`: показ, язык, стиль и лимиты ресурсов субтитров (схема v19).
+//! Секция `[subtitles]`: показ, язык, стиль и лимиты ресурсов субтитров (схема v20).
 //!
 //! Решение владельца (субтитры, сессия 04): лимиты и внешний вид живут в `config.toml`,
 //! значения по умолчанию равны прежним константам приложения, поэтому старый файл без
@@ -644,6 +644,26 @@ pub struct SubtitlesConfig {
         apply = "subtitles.apply"
     )]
     pub prepared_overlays: u32,
+
+    /// Сколько МБ рабочей памяти размытия растеризатор оставляет себе между кадрами.
+    #[setting(
+        id = "subtitles.blur_scratch_retained_mb",
+        path = "subtitles.blur_scratch_retained_mb",
+        section = "subtitles",
+        group = "limits",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.blur_scratch_retained_mb.label",
+        label_ru = "Subtitle blur scratch memory",
+        description_id = "settings.subtitles.blur_scratch_retained_mb.description",
+        description_ru = "Working memory of the subtitle blur (\\blur, \\be) kept between frames; larger blurs free it after the frame. Takes effect with the next opened video.",
+        editor = "integer",
+        min = crate::MIN_BLUR_SCRATCH_RETAINED_MB,
+        max = crate::MAX_BLUR_SCRATCH_RETAINED_MB,
+        step = 8,
+        unit = "MB",
+        apply = "subtitles.apply"
+    )]
+    pub blur_scratch_retained_mb: u16,
 }
 
 impl Default for SubtitlesConfig {
@@ -679,6 +699,7 @@ impl Default for SubtitlesConfig {
             max_ass_events_on_screen: DEFAULT_MAX_ASS_EVENTS_ON_SCREEN,
             prerender_frames: DEFAULT_PRERENDER_FRAMES,
             prepared_overlays: DEFAULT_PREPARED_OVERLAYS,
+            blur_scratch_retained_mb: DEFAULT_BLUR_SCRATCH_RETAINED_MB,
         }
     }
 }

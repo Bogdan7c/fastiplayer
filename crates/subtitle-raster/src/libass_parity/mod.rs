@@ -14,6 +14,8 @@ mod ass_tolerances;
 mod ass_tolerances_animation;
 #[cfg(test)]
 mod ass_tolerances_layer2;
+#[cfg(test)]
+mod ass_tolerances_layer3;
 mod pipeline;
 #[cfg(test)]
 mod tests;

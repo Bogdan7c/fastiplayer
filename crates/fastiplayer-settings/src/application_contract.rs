@@ -560,7 +560,8 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
         | "subtitles.max_ass_override_tags_per_event"
         | "subtitles.max_ass_events_on_screen"
         | "subtitles.prerender_frames"
-        | "subtitles.prepared_overlays" => SettingApplicationContract::new(
+        | "subtitles.prepared_overlays"
+        | "subtitles.blur_scratch_retained_mb" => SettingApplicationContract::new(
             setting_name,
             AppRuntimeRoute::Subtitles,
             SettingStateOwner::SubtitlePolicy,
@@ -689,7 +690,7 @@ mod tests {
             .filter(|descriptor| descriptor.id.as_str().starts_with("subtitles."))
             .map(|descriptor| descriptor.id.clone())
             .collect();
-        assert_eq!(subtitle_ids.len(), 29);
+        assert_eq!(subtitle_ids.len(), 30);
 
         for setting_id in subtitle_ids {
             let contract = setting_application_contract(&setting_id)

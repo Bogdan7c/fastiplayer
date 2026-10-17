@@ -1,5 +1,5 @@
 // Порт из libass 0.17.5: ass_render.c (флаги фильтров из render_and_combine_glyphs,
-// ass_composite_construct без размытия).
+// ass_composite_construct).
 //
 // Copyright (C) 2006 Evgeniy Stepanov <eugeni.stepanov@gmail.com>
 //
@@ -20,11 +20,15 @@
 //! Участок единого стиля: объединение битмапов его глифов в три слоя (заливка, обводка, тень).
 
 use super::ComposeError;
+use super::filter::RunFilter;
 use super::glyph_bitmaps::GlyphBitmaps;
-use crate::bitmap::{CoverageBitmap, PlacedBitmap, combine_bitmaps, fix_outline, shadow_bitmap};
+use crate::bitmap::{
+    BitmapError, CoverageBitmap, PlacedBitmap, combine_bitmaps_with_padding, fix_outline,
+    shadow_bitmap,
+};
+use crate::blur::{BitmapSideLimit, BlurError, BlurScratch, BlurStrength, synth_blur};
 use crate::event_fade::EventFade;
 use crate::event_style::BorderStyle;
-use crate::fixed_point::double_to_d6;
 use crate::span_look::SpanLook;
 
 /// Флаги фильтров участка (libass: `FILTER_*`).
@@ -80,28 +84,48 @@ pub(super) struct RunBitmaps {
     pub(super) outline: Option<CoverageBitmap>,
     /// Тень.
     pub(super) shadow: Option<CoverageBitmap>,
+    /// Сколько слоёв осталось неразмытыми: результат размытия не поместился в предел.
+    pub(super) unblurred_oversized_layers: u32,
+    /// Сколько слоёв осталось неразмытыми из-за нарушенного внутреннего инварианта
+    /// (см. [`LayerBlur::Failed`]).
+    pub(super) failed_blur_layers: u32,
 }
 
-/// Смещение тени, квантованное как в libass при нулевом размытии (маска `7`: шаг 1/8 пикселя).
-pub(super) fn quantized_shadow_offset(look: &SpanLook) -> (i32, i32) {
-    const SHADOW_MASK: i32 = 7;
-    // Насыщение: смещение тени приходит из тегов реплики и может быть любым.
-    let quantize =
-        |pixels: f64| (double_to_d6(pixels).saturating_add(SHADOW_MASK >> 1)) & !SHADOW_MASK;
-    (
-        quantize(look.shadow.horizontal),
-        quantize(look.shadow.vertical),
-    )
+/// Чем кончилось размытие одного слоя ([`blur_layer`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LayerBlur {
+    /// Слой размыт (или размывать было нечего: слоя нет, размытие нулевое).
+    Done,
+    /// Слой остался как был: результат не поместился в предел размера (штатная защита).
+    SkippedOversized,
+    /// Слой остался как был: нарушен внутренний инвариант (недопустимая дисперсия или
+    /// несогласованная геометрия битмапа). Это ошибка, а не защита, поэтому считается отдельно.
+    Failed,
+}
+
+/// Среда размытия композита: рабочая память и предел размера результата.
+///
+/// Рабочую память ([`BlurScratch`]) создаёт и хранит растеризатор (одна на поток отрисовки), а
+/// композиция лишь заимствует её на время вызова: так размытие не выделяет память на каждый
+/// участок.
+pub(super) struct BlurEnv<'scratch> {
+    /// Рабочая память размытия.
+    pub(super) scratch: &'scratch mut BlurScratch,
+    /// Предел стороны размытого битмапа (`RasterInputLimits::max_canvas_side`).
+    pub(super) side_limit: BitmapSideLimit,
 }
 
 /// Объединяет битмапы глифов участка и применяет фильтры (libass: `ass_composite_construct`).
 ///
-/// Размытие (`\be`, `\blur`) не поддерживается, поэтому поля битмапов не расширяются.
+/// Порядок как в libass: сложение битмапов с отступом под `\be`, размытие обводки (всегда) и
+/// заливки (только без обводки или при плашке), `fix_outline`, тень от уже размытого слоя.
 pub(super) fn composite_run(
     parts: &[GlyphBitmaps],
-    flags: FilterFlags,
-    shadow_offset: (i32, i32),
+    filter: &RunFilter,
+    blur_env: &mut BlurEnv<'_>,
 ) -> Result<RunBitmaps, ComposeError> {
+    let flags = filter.flags;
+    let padding_px = filter.blur.box_passes.padding_px();
     let fill_parts: Vec<PlacedBitmap<'_>> = parts
         .iter()
         .filter_map(|part| {
@@ -120,9 +144,22 @@ pub(super) fn composite_run(
             })
         })
         .collect();
-    let fill = combine_bitmaps(&fill_parts)?;
-    let mut outline = combine_bitmaps(&outline_parts)?;
+    let mut fill = combine_bitmaps_with_padding(&fill_parts, padding_px)?;
+    let mut outline = combine_bitmaps_with_padding(&outline_parts, padding_px)?;
     let mut shadow: Option<CoverageBitmap> = None;
+    let mut unblurred_oversized_layers = 0_u32;
+    let mut failed_blur_layers = 0_u32;
+    let mut tally = |outcome: LayerBlur| match outcome {
+        LayerBlur::Done => {}
+        LayerBlur::SkippedOversized => unblurred_oversized_layers += 1,
+        LayerBlur::Failed => failed_blur_layers += 1,
+    };
+
+    // libass: заливка размывается, только если под ней нет отдельной обводки (или это плашка).
+    if !flags.nonzero_border || flags.box_border {
+        tally(blur_layer(fill.as_mut(), filter.blur, blur_env));
+    }
+    tally(blur_layer(outline.as_mut(), filter.blur, blur_env));
 
     if !flags.fill_in_border && !flags.fill_in_shadow {
         fix_outline_layers(fill.as_ref(), outline.as_mut())?;
@@ -142,7 +179,7 @@ pub(super) fn composite_run(
             fill.clone()
         };
         shadow = source
-            .map(|source| shadow_bitmap(&source, shadow_offset.0, shadow_offset.1))
+            .map(|source| shadow_bitmap(&source, filter.shadow_offset.0, filter.shadow_offset.1))
             .transpose()?;
     }
 
@@ -153,14 +190,45 @@ pub(super) fn composite_run(
         fill,
         outline,
         shadow,
+        unblurred_oversized_layers,
+        failed_blur_layers,
     })
+}
+
+/// Размывает один слой на месте; возвращает, чем это кончилось ([`LayerBlur`]).
+///
+/// libass при нехватке памяти оставляет битмап как был (`ass_gaussian_blur` возвращает
+/// `false` до изменений, а `ass_synth_blur` результат не проверяет), поэтому и здесь слой
+/// остаётся неразмытым и картинка реплики не пропадает. Разница с libass одна: предел
+/// `side_limit` (защита от враждебного `\blur` на огромной картинке) мягче «нет памяти», но
+/// действует так же. Такой случай считается, чтобы он был виден в статистике. Остальные
+/// ошибки означают нарушенный внутренний инвариант: пишем предупреждение (без текста реплики),
+/// оставляем слой как есть и возвращаем [`LayerBlur::Failed`] для отдельного счётчика.
+pub(super) fn blur_layer(
+    layer: Option<&mut CoverageBitmap>,
+    strength: BlurStrength,
+    blur_env: &mut BlurEnv<'_>,
+) -> LayerBlur {
+    let Some(layer) = layer else {
+        return LayerBlur::Done;
+    };
+    match synth_blur(blur_env.scratch, layer, strength, blur_env.side_limit) {
+        Ok(()) => LayerBlur::Done,
+        Err(BlurError::TooLarge { .. } | BlurError::ExceedsSideLimit { .. }) => {
+            LayerBlur::SkippedOversized
+        }
+        Err(error @ (BlurError::InvalidVariance { .. } | BlurError::InconsistentGeometry)) => {
+            tracing::warn!(%error, "subtitle blur skipped: internal invariant violated");
+            LayerBlur::Failed
+        }
+    }
 }
 
 /// `fix_outline` для необязательных слоёв (libass допускает пустые битмапы без буфера).
 fn fix_outline_layers(
     fill: Option<&CoverageBitmap>,
     outline: Option<&mut CoverageBitmap>,
-) -> Result<(), ComposeError> {
+) -> Result<(), BitmapError> {
     if let (Some(fill), Some(outline)) = (fill, outline) {
         fix_outline(fill, outline)?;
     }

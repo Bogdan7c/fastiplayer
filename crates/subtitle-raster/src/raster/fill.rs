@@ -37,15 +37,84 @@ const FLAG_REVERSE: i32 = 4;
 /// Нужна общая заливка по нескольким отрезкам (libass: `FLAG_GENERIC`).
 const FLAG_GENERIC: i32 = 8;
 
-/// Положение части окна в целевом буфере и её размер.
+/// Часть окна заливки: положение первого тайла в окне и размер.
 #[derive(Debug, Clone, Copy)]
 struct Region {
-    /// Индекс первого байта левого верхнего пикселя в буфере.
-    origin: usize,
+    /// Столбец тайлов окна, с которого начинается часть.
+    tile_x: usize,
+    /// Строка тайлов окна, с которой начинается часть.
+    tile_y: usize,
     /// Ширина в пикселях (кратна тайлу).
     width: usize,
     /// Высота в пикселях (кратна тайлу).
     height: usize,
+}
+
+/// Прямоугольник тайлов окна, которые попадают в целевой буфер.
+///
+/// Заливка всегда обходит дерево тайлов от целого окна (так же, как libass: деление окна пополам
+/// и обрезка отрезков задают округления, от которых зависят значения пикселей), но результат
+/// нужен не везде. Узлы и тайлы вне этого прямоугольника пропускаются, а запись идёт в буфер,
+/// который хранит только его: память не растёт вместе с окном.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TileRect {
+    /// Первый столбец тайлов.
+    pub(crate) tile_x: usize,
+    /// Первая строка тайлов.
+    pub(crate) tile_y: usize,
+    /// Число столбцов тайлов.
+    pub(crate) tiles_wide: usize,
+    /// Число строк тайлов.
+    pub(crate) tiles_high: usize,
+}
+
+impl TileRect {
+    /// Все тайлы окна `window`.
+    #[cfg(test)]
+    fn whole(window: &FillWindow) -> Self {
+        Self {
+            tile_x: 0,
+            tile_y: 0,
+            tiles_wide: window.width / TILE_SIZE,
+            tiles_high: window.height / TILE_SIZE,
+        }
+    }
+
+    /// Ширина в пикселях.
+    fn width(&self) -> usize {
+        self.tiles_wide * TILE_SIZE
+    }
+
+    /// Высота в пикселях.
+    fn height(&self) -> usize {
+        self.tiles_high * TILE_SIZE
+    }
+
+    /// Пересекается ли часть окна с прямоугольником.
+    fn intersects(&self, region: Region) -> bool {
+        region.tile_x < self.tile_x + self.tiles_wide
+            && region.tile_x + region.width / TILE_SIZE > self.tile_x
+            && region.tile_y < self.tile_y + self.tiles_high
+            && region.tile_y + region.height / TILE_SIZE > self.tile_y
+    }
+
+    /// Индекс первого байта тайла окна в целевом буфере; `None`, если тайл вне прямоугольника.
+    fn origin_of(&self, tile_x: usize, tile_y: usize, stride: usize) -> Option<usize> {
+        let column = tile_x
+            .checked_sub(self.tile_x)
+            .filter(|c| *c < self.tiles_wide)?;
+        let row = tile_y
+            .checked_sub(self.tile_y)
+            .filter(|r| *r < self.tiles_high)?;
+        Some(row * TILE_SIZE * stride + column * TILE_SIZE)
+    }
+}
+
+/// Целевой буфер заливки: какие тайлы окна он хранит и какой у него шаг строки.
+#[derive(Debug, Clone, Copy)]
+struct Target {
+    visible: TileRect,
+    stride: usize,
 }
 
 /// Один из двух стеков отрезков (libass: индекс 0 или 1 в `linebuf`).
@@ -147,18 +216,42 @@ impl Rasterizer {
     /// `window` задаёт область контура (пиксели) и целевой буфер; ширина и высота кратны
     /// размеру тайла, `buffer.len() >= stride * height`. Ломаная после заливки удаляется
     /// (как в libass): для повторной заливки нужен новый [`Rasterizer::set_outline`].
+    #[cfg(test)]
     pub(crate) fn fill(
         &mut self,
         buffer: &mut [u8],
         window: FillWindow,
     ) -> Result<(), RasterError> {
+        self.fill_tiles(buffer, window, TileRect::whole(&window))
+    }
+
+    /// То же, что [`Self::fill`], но `buffer` хранит только тайлы `visible` (их шаг строки -
+    /// `window.stride`, не меньше ширины `visible`), остальные тайлы окна не заливаются.
+    ///
+    /// Значения тайлов `visible` бит в бит равны значениям при заливке всего окна: дерево
+    /// обходится от целого окна, пропускаются лишь узлы без видимых тайлов.
+    pub(crate) fn fill_tiles(
+        &mut self,
+        buffer: &mut [u8],
+        window: FillWindow,
+        visible: TileRect,
+    ) -> Result<(), RasterError> {
         let aligned = |value: usize| value > 0 && value.is_multiple_of(TILE_SIZE);
-        if !aligned(window.width) || !aligned(window.height) || window.stride < window.width {
+        let inside_window = visible.tile_x.saturating_add(visible.tiles_wide)
+            <= window.width / TILE_SIZE
+            && visible.tile_y.saturating_add(visible.tiles_high) <= window.height / TILE_SIZE;
+        if !aligned(window.width)
+            || !aligned(window.height)
+            || visible.tiles_wide == 0
+            || visible.tiles_high == 0
+            || !inside_window
+            || window.stride < visible.width()
+        {
             return Err(RasterError::InvalidWindow);
         }
         let required = window
             .stride
-            .checked_mul(window.height)
+            .checked_mul(visible.height())
             .ok_or(RasterError::BufferTooSmall)?;
         if buffer.len() < required {
             return Err(RasterError::BufferTooSmall);
@@ -241,9 +334,13 @@ impl Rasterizer {
         *self.stacks.stack_mut(StackId::First) = lines;
         let result = self.fill_level(
             buffer,
-            window.stride,
+            Target {
+                visible,
+                stride: window.stride,
+            },
             Region {
-                origin: 0,
+                tile_x: 0,
+                tile_y: 0,
                 width: window.width,
                 height: window.height,
             },
@@ -264,7 +361,7 @@ impl Rasterizer {
     fn fill_level(
         &mut self,
         buffer: &mut [u8],
-        stride: usize,
+        target: Target,
         region: Region,
         input: LevelInput,
     ) -> Result<(), RasterError> {
@@ -280,6 +377,13 @@ impl Rasterizer {
             .len()
             .checked_sub(total)
             .ok_or(RasterError::SegmentOutsideTile)?;
+
+        // Узел без видимых тайлов не нужен: его отрезки просто снимаются со стека (они уже
+        // посчитаны родителем, так что значения в видимых соседях не меняются).
+        if !target.visible.intersects(region) {
+            self.stacks.stack_mut(index).truncate(offset);
+            return Ok(());
+        }
 
         // Решение о способе заливки.
         let (flags0, flags1, flags, first_line, second_line) = {
@@ -301,7 +405,7 @@ impl Rasterizer {
         };
 
         if flags & (FLAG_SOLID | FLAG_COMPLEX) != 0 {
-            fill_solid_region(buffer, stride, region, flags & FLAG_SOLID != 0)?;
+            fill_solid_region(buffer, target, region, flags & FLAG_SOLID != 0)?;
             self.stacks.stack_mut(index).truncate(offset);
             return Ok(());
         }
@@ -317,19 +421,12 @@ impl Rasterizer {
             } else {
                 line.scale
             };
-            fill_halfplane_region(buffer, stride, region, (line.a, line.b, line.c), scale)?;
+            fill_halfplane_region(buffer, target, region, (line.a, line.b, line.c), scale)?;
             self.stacks.stack_mut(index).truncate(offset);
             return Ok(());
         }
         if region.width == TILE_SIZE && region.height == TILE_SIZE {
-            self.fill_single_tile(
-                buffer,
-                stride,
-                region.origin,
-                input,
-                offset,
-                [flags0, flags1],
-            )?;
+            self.fill_single_tile(buffer, target, region, input, offset, [flags0, flags1])?;
             self.stacks.stack_mut(index).truncate(offset);
             return Ok(());
         }
@@ -342,13 +439,13 @@ impl Rasterizer {
             let first_width = 1_usize << floor_log2((region.width - 1) as u32);
             region0.width = first_width;
             region1.width = region.width - first_width;
-            region1.origin += first_width;
+            region1.tile_x += first_width / TILE_SIZE;
             SplitLine::Vertical((first_width as i32) << 6)
         } else {
             let first_height = 1_usize << floor_log2((region.height - 1) as u32);
             region0.height = first_height;
             region1.height = region.height - first_height;
-            region1.origin += first_height * stride;
+            region1.tile_y += first_height / TILE_SIZE;
             SplitLine::Horizontal((first_height as i32) << 6)
         };
 
@@ -372,10 +469,10 @@ impl Rasterizer {
         };
 
         next_input.group_sizes = counts.before;
-        self.fill_level(buffer, stride, region0, next_input)?;
+        self.fill_level(buffer, target, region0, next_input)?;
         self.fill_level(
             buffer,
-            stride,
+            target,
             region1,
             LevelInput {
                 stack: other,
@@ -389,12 +486,19 @@ impl Rasterizer {
     fn fill_single_tile(
         &mut self,
         buffer: &mut [u8],
-        stride: usize,
-        origin: usize,
+        target: Target,
+        region: Region,
         input: LevelInput,
         offset: usize,
         flags: [i32; 2],
     ) -> Result<(), RasterError> {
+        let stride = target.stride;
+        let Some(origin) = target
+            .visible
+            .origin_of(region.tile_x, region.tile_y, stride)
+        else {
+            return Ok(());
+        };
         let node_lines = self
             .stacks
             .stack(input.stack)
@@ -480,14 +584,20 @@ fn split_keeping_after(
 /// Заливает область сплошным значением по тайлам (libass: `rasterizer_fill_solid`).
 fn fill_solid_region(
     buffer: &mut [u8],
-    stride: usize,
+    target: Target,
     region: Region,
     covered: bool,
 ) -> Result<(), RasterError> {
     for tile_y in 0..region.height / TILE_SIZE {
         for tile_x in 0..region.width / TILE_SIZE {
-            let origin = region.origin + tile_y * TILE_SIZE * stride + tile_x * TILE_SIZE;
-            fill_solid_tile(buffer, origin, stride, covered)?;
+            let Some(origin) = target.visible.origin_of(
+                region.tile_x + tile_x,
+                region.tile_y + tile_y,
+                target.stride,
+            ) else {
+                continue;
+            };
+            fill_solid_tile(buffer, origin, target.stride, covered)?;
         }
     }
     Ok(())
@@ -497,14 +607,21 @@ fn fill_solid_region(
 /// (libass: `rasterizer_fill_halfplane`).
 fn fill_halfplane_region(
     buffer: &mut [u8],
-    stride: usize,
+    target: Target,
     region: Region,
     plane: (i32, i32, i64),
     scale: i32,
 ) -> Result<(), RasterError> {
     let (a, b, c) = plane;
+    let stride = target.stride;
     if region.width == TILE_SIZE && region.height == TILE_SIZE {
-        return fill_halfplane_tile(buffer, region.origin, stride, a, b, c, scale);
+        let Some(origin) = target
+            .visible
+            .origin_of(region.tile_x, region.tile_y, stride)
+        else {
+            return Ok(());
+        };
+        return fill_halfplane_tile(buffer, origin, stride, a, b, c, scale);
     }
 
     let abs_a = a.unsigned_abs();
@@ -514,7 +631,13 @@ fn fill_halfplane_region(
 
     for tile_y in 0..region.height / TILE_SIZE {
         for tile_x in 0..region.width / TILE_SIZE {
-            let origin = region.origin + tile_y * TILE_SIZE * stride + tile_x * TILE_SIZE;
+            let Some(origin) =
+                target
+                    .visible
+                    .origin_of(region.tile_x + tile_x, region.tile_y + tile_y, stride)
+            else {
+                continue;
+            };
             let shift = (i64::from(a) * tile_x as i64 + i64::from(b) * tile_y as i64)
                 * (1_i64 << (TILE_ORDER + 6));
             let cc = c - shift;

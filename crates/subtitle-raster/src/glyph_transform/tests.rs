@@ -93,6 +93,7 @@ fn placement(rotation: Rotation3d, shear: ShearFactors) -> GlyphPlacement {
             y: 300 * 64,
         },
         pixel_aspect_x: 1.0,
+        camera_scale: 1.0,
     }
 }
 
@@ -145,6 +146,33 @@ fn frx_and_fry_make_the_z_row_depend_on_the_point() {
     // frx наклоняет по оси y контура, fry — по оси x.
     assert!(glyph_transform_matrix(&placement(frx, ShearFactors::default()))[2][1] != 0.0);
     assert!(glyph_transform_matrix(&placement(fry, ShearFactors::default()))[2][0] != 0.0);
+}
+
+#[test]
+fn camera_distance_scales_with_the_frame_and_changes_the_perspective() {
+    // libass: `dist = 20000 * blur_scale_y`. Камера вдвое дальше -> перспектива вдвое слабее.
+    let rotation = Rotation3d {
+        x_degrees: 50.0,
+        ..Rotation3d::default()
+    };
+    let near = placement(rotation, ShearFactors::default());
+    let far = GlyphPlacement {
+        camera_scale: 2.0,
+        ..near
+    };
+    let (near_matrix, far_matrix) = (glyph_transform_matrix(&near), glyph_transform_matrix(&far));
+    // Точка без поворота стоит там же (центр поворота — frame_position) при любой камере ...
+    let origin = project(&far_matrix, 0.0, 0.0);
+    assert!((origin.0 - 500.0 * 64.0).abs() < 1e-6 && (origin.1 - 300.0 * 64.0).abs() < 1e-6);
+    // ... а точка вдали от центра при повороте вокруг X искажается сильнее у ближней камеры.
+    let drift = |matrix: &Matrix3| (project(matrix, 0.0, 6400.0).1 - 300.0 * 64.0).abs();
+    let (near_drift, far_drift) = (drift(&near_matrix), drift(&far_matrix));
+    assert!(
+        (near_drift - far_drift).abs() > 1.0,
+        "дальность камеры должна менять итоговую точку: {near_drift} против {far_drift}"
+    );
+    // Строка z сдвигается ровно на расстояние камеры.
+    assert_eq!(far_matrix[2][2] - near_matrix[2][2], CAMERA_DISTANCE);
 }
 
 #[test]

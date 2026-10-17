@@ -20,6 +20,7 @@ use crate::event_style::AxisPair;
 use crate::fixed_point::Vector26;
 use crate::fonts::FaceId;
 use crate::glyph_render::GlyphOutline;
+use crate::source_text::DrawingId;
 
 /// Рамка глифа в 26.6 (libass: `ASS_Rect`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -49,6 +50,9 @@ pub(crate) struct PlacedGlyph {
     pub(crate) pos: Vector26,
     /// Контур при размере 256 px; `None` — контур не загрузился (глиф не рисуется).
     pub(crate) outline: Option<Arc<GlyphOutline>>,
+    /// Сдвиг контура по вертикали в единицах контура ДО масштаба (libass:
+    /// `transform.offset.y`). Ненулевой только у рисунка: ставит его базовую линию (`\pbo`).
+    pub(crate) outline_offset_y: f64,
     /// Рамка контура в пикселях кадра, 26.6.
     pub(crate) bbox: GlyphBox,
     /// Максимальный подъём лица в пикселях кадра, 26.6.
@@ -67,6 +71,7 @@ impl PlacedGlyph {
             offset: Vector26::default(),
             pos: Vector26::default(),
             outline: None,
+            outline_offset_y: 0.0,
             bbox: GlyphBox::default(),
             ascent: 0,
             descent: 0,
@@ -118,6 +123,9 @@ pub(crate) struct TextCluster {
     /// Толщина обводки символа в пикселях кадра (libass: `info->border_x/y`); нужна измерению
     /// строк, которое не видит видов символов.
     pub(crate) border: AxisPair,
+    /// Кластер — рисунок `\p`: один псевдоглиф без шейпинга и поиска шрифта (libass:
+    /// `drawing_text.str`). У текста `None`.
+    pub(crate) drawing: Option<DrawingId>,
     /// Лицо, выбранное для символа (libass: `face_index`).
     pub(crate) face: FaceId,
     /// Письменность символа (для разбиения на участки шейпинга).

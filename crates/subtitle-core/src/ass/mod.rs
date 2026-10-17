@@ -15,6 +15,7 @@ mod alignment;
 mod color;
 mod cue;
 mod event_format;
+mod filter_tags;
 mod geometry_tags;
 mod overrides;
 mod script;
@@ -25,6 +26,7 @@ pub use alignment::{AssAlignment, AssHorizontalAlign, AssVerticalAlign};
 pub use color::{AssColor, AssRgb};
 pub use cue::{AssCue, AssEventMargins, AssHardOverrides, AssResolvedMargins, AssTextItem};
 pub use event_format::{AssEventField, AssEventFormat};
+pub use filter_tags::{ASS_BLUR_MAX_RADIUS, ASS_EDGE_BLUR_MAX, AssClip, AssClipMode, AssClipShape};
 pub use geometry_tags::{AssFade, AssRotationAxis, AssShearAxis};
 pub use overrides::{
     AssAlphaTarget, AssAxes, AssColorSlot, AssDrawingMode, AssFontSize, AssMove, AssOverride,

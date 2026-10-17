@@ -532,3 +532,64 @@ fn degenerate_outlines_produce_an_empty_bounding_box_and_empty_mask() {
     let buffer = rasterize(&point, None, 16, 16);
     assert!(buffer.iter().all(|&value| value == 0));
 }
+
+#[test]
+fn fill_tiles_rejects_a_visible_rect_outside_the_window_and_matches_the_whole_fill() {
+    use super::TileRect;
+    let shape = polygon(&[(2.5, 3.5), (60.25, 9.0), (50.0, 58.75), (5.0, 40.0)]);
+    let load = || {
+        let mut rasterizer = Rasterizer::new(16);
+        rasterizer
+            .set_outline(&shape, OutlineLayer::Primary)
+            .unwrap();
+        rasterizer
+    };
+    let window = |stride| FillWindow {
+        x0: 0,
+        y0: 0,
+        width: 64,
+        height: 64,
+        stride,
+    };
+    // Прямоугольник тайлов за пределами окна и нулевого размера - ошибка окна, буфер цел.
+    for bad in [
+        TileRect {
+            tile_x: 3,
+            tile_y: 0,
+            tiles_wide: 2,
+            tiles_high: 1,
+        },
+        TileRect {
+            tile_x: 0,
+            tile_y: 0,
+            tiles_wide: 0,
+            tiles_high: 1,
+        },
+    ] {
+        let mut buffer = vec![0xAB_u8; 64 * 64];
+        assert_eq!(
+            load().fill_tiles(&mut buffer, window(64), bad),
+            Err(RasterError::InvalidWindow)
+        );
+        assert!(buffer.iter().all(|v| *v == 0xAB));
+    }
+    // Тайлы (1..3, 1..2) в узком буфере равны тем же пикселям при заливке всего окна.
+    let mut whole = vec![0_u8; 64 * 64];
+    load().fill(&mut whole, window(64)).unwrap();
+    let visible = TileRect {
+        tile_x: 1,
+        tile_y: 1,
+        tiles_wide: 2,
+        tiles_high: 1,
+    };
+    let mut part = vec![0_u8; 32 * 16];
+    load().fill_tiles(&mut part, window(32), visible).unwrap();
+    for row in 0..16 {
+        assert_eq!(
+            part[row * 32..(row + 1) * 32],
+            whole[(16 + row) * 64 + 16..(16 + row) * 64 + 48],
+            "строка {row}"
+        );
+    }
+    assert!(part.iter().any(|v| *v != 0));
+}

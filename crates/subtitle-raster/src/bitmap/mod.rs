@@ -22,14 +22,15 @@
 //! пикселях, ширина строки (`stride`) кратна 16 (`align_order = 4` C-движка). Размерность
 //! растеризации — тайлами 16x16, поэтому ширина и высота растеризованного битмапа кратны 16.
 //!
-//! Не портировано (волны 3+): размытие (`ass_synth_blur`, гауссиан и box blur) и умножение
-//! битмапов (`imul`, `mul`) — они нужны только тегам `\blur`, `\be` и клипам.
+//! Размытие (`ass_synth_blur`, гауссиан и box blur) живёт в модуле `blur`, склейка битмапов с
+//! отступом под `\be` — здесь ([`combine_bitmaps_with_padding`]). Не портировано: умножение
+//! битмапов (`imul`, `mul`) — оно нужно только клипам.
 
 #[cfg(test)]
 mod tests;
 
 use crate::outline::{Outline, OutlineError};
-use crate::raster::{FillWindow, OutlineLayer, RasterError, Rasterizer, TILE_SIZE};
+use crate::raster::{FillWindow, OutlineLayer, RasterError, Rasterizer, TILE_SIZE, TileRect};
 
 /// Выравнивание строки битмапа (libass: `1 << align_order`, C-движок: 16).
 const STRIDE_ALIGNMENT: usize = 16;
@@ -148,17 +149,54 @@ impl CoverageBitmap {
     }
 }
 
+/// Прямоугольник в пикселях: `left`/`top` включительно, `right`/`bottom` исключительно.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PixelBounds {
+    pub(crate) left: i32,
+    pub(crate) top: i32,
+    pub(crate) right: i32,
+    pub(crate) bottom: i32,
+}
+
+/// Какую часть контура превращать в битмап.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RasterRegion {
+    /// Весь контур, как в libass.
+    Everything,
+    /// Только пиксели внутри прямоугольника (в тех же координатах, что и сам битмап).
+    ///
+    /// Для потребителя, которому важна лишь видимая часть (маска векторного клипа: картинки
+    /// всегда лежат внутри холста): значения пикселей внутри прямоугольника те же, что при
+    /// растеризации целиком (покрытие считается для каждого пикселя независимо), а память и
+    /// время не растут вместе с размером фигуры за кадром. Битмап может выступать за
+    /// прямоугольник не более чем до границы тайла 16x16.
+    Within(PixelBounds),
+}
+
+/// Растеризует один или два контура в битмап целиком (libass: `ass_outline_to_bitmap`).
+///
+/// См. [`outline_to_bitmap_within`]; здесь регион - [`RasterRegion::Everything`].
+pub(crate) fn outline_to_bitmap(
+    rasterizer: &mut Rasterizer,
+    primary: Option<&Outline>,
+    additional: Option<&Outline>,
+) -> Result<Option<CoverageBitmap>, BitmapError> {
+    outline_to_bitmap_within(rasterizer, primary, additional, RasterRegion::Everything)
+}
+
 /// Растеризует один или два контура в битмап (libass: `ass_outline_to_bitmap`).
 ///
 /// `primary` и `additional` — контуры, рисуемые вместе (например, две границы обводки);
 /// любой может отсутствовать. `Ok(None)` — контуры пусты (в libass функция возвращает `false`
 /// без ошибки в журнале): рисовать нечего. Рамка расширяется на 1/64 пикселя, чтобы обойти
 /// медленный путь растеризатора, и ещё на пиксель под [`shift_bitmap`], затем выравнивается
-/// до границ тайла 16x16.
-pub(crate) fn outline_to_bitmap(
+/// до границ тайла 16x16. `region` сужает рамку до видимой части ([`RasterRegion`]); если
+/// видимой части нет, результат `Ok(None)`.
+pub(crate) fn outline_to_bitmap_within(
     rasterizer: &mut Rasterizer,
     primary: Option<&Outline>,
     additional: Option<&Outline>,
+    region: RasterRegion,
 ) -> Result<Option<CoverageBitmap>, BitmapError> {
     if let Some(outline) = primary {
         rasterizer.set_outline(outline, OutlineLayer::Primary)?;
@@ -184,36 +222,143 @@ pub(crate) fn outline_to_bitmap(
     let width = i64::from(x_max) - i64::from(x_min);
     let height = i64::from(y_max) - i64::from(y_min);
 
-    if let Some(side_limit) = rasterizer.max_bitmap_side()
-        && (width > i64::from(side_limit) || height > i64::from(side_limit))
-    {
-        return Err(BitmapError::ExceedsSideLimit {
-            width,
-            height,
-            limit: side_limit,
-        });
-    }
     let tile_mask = TILE_SIZE as i64 - 1;
     let limit = i64::from(i32::MAX) - tile_mask;
     if width < 0 || height < 0 || width > limit || height > limit {
         return Err(BitmapError::TooLarge { width, height });
     }
-    // Ширина и высота, выровненные вверх до целого числа тайлов (проверено выше: помещаются в i32).
-    let tile_width = ((width + tile_mask) & !tile_mask) as i32;
-    let tile_height = ((height + tile_mask) & !tile_mask) as i32;
+    // Прямоугольник, который занял бы битмап libass: ширина и высота выровнены вверх до тайла.
+    let full = PixelBounds {
+        left: x_min,
+        top: y_min,
+        right: x_min.saturating_add(align_up_to_tile(width)),
+        bottom: y_min.saturating_add(align_up_to_tile(height)),
+    };
+    // Для `Within` нужна только видимая часть, но заливка идёт по сетке тайлов ВСЕГО
+    // прямоугольника libass (`full`): от неё зависят округления растеризатора, и сдвинутая сетка
+    // давала бы краям фигуры отличие в 1/64 пикселя. Поэтому тайлы считаются от `full`, а в
+    // память попадают только те, что пересекают регион.
+    let tile = TILE_SIZE as i32;
+    let (target, shown) = match region {
+        RasterRegion::Everything => (
+            TileTarget::whole(full, tile),
+            PixelBounds {
+                left: full.left,
+                top: full.top,
+                right: full.right,
+                bottom: full.bottom,
+            },
+        ),
+        RasterRegion::Within(bounds) => {
+            let shown = PixelBounds {
+                left: full.left.max(bounds.left),
+                top: full.top.max(bounds.top),
+                right: full.right.min(bounds.right),
+                bottom: full.bottom.min(bounds.bottom),
+            };
+            if shown.right <= shown.left || shown.bottom <= shown.top {
+                // Фигура целиком вне региона: показывать нечего.
+                return Ok(None);
+            }
+            (TileTarget::covering(full, shown, tile), shown)
+        }
+    };
 
-    let mut bitmap = CoverageBitmap::zeroed(tile_width, tile_height)?;
-    bitmap.left = x_min;
-    bitmap.top = y_min;
+    // Предел стороны проверяется по размеру того, что реально выделяется.
+    let (check_width, check_height) = match region {
+        RasterRegion::Everything => (width, height),
+        RasterRegion::Within(_) => (
+            i64::from(target.pixel_width()),
+            i64::from(target.pixel_height()),
+        ),
+    };
+    if let Some(side_limit) = rasterizer.max_bitmap_side()
+        && (check_width > i64::from(side_limit) || check_height > i64::from(side_limit))
+    {
+        return Err(BitmapError::ExceedsSideLimit {
+            width: check_width,
+            height: check_height,
+            limit: side_limit,
+        });
+    }
+
+    let mut bitmap = CoverageBitmap::zeroed(target.pixel_width(), target.pixel_height())?;
+    bitmap.left = target.left(full);
+    bitmap.top = target.top(full);
     let window = FillWindow {
-        x0: x_min,
-        y0: y_min,
-        width: bitmap.stride,
-        height: tile_height as usize,
+        x0: full.left,
+        y0: full.top,
+        width: (full.right - full.left) as usize,
+        height: (full.bottom - full.top) as usize,
         stride: bitmap.stride,
     };
-    rasterizer.fill(&mut bitmap.buffer, window)?;
+    rasterizer.fill_tiles(&mut bitmap.buffer, window, target.rect)?;
+    // Видимая часть кончается там, где кончается регион или рамка libass, а не на границе
+    // тайла: потребитель пересекает битмап с картинками, и размер результата должен совпасть
+    // с libass. Лишние пиксели последнего тайла остаются в буфере и не читаются.
+    bitmap.width = shown.right - bitmap.left;
+    bitmap.height = shown.bottom - bitmap.top;
     Ok(Some(bitmap))
+}
+
+/// Какие тайлы рамки `full` попадают в битмап (в тайлах, считая от левого верхнего угла `full`).
+struct TileTarget {
+    rect: TileRect,
+}
+
+impl TileTarget {
+    /// Все тайлы рамки.
+    fn whole(full: PixelBounds, tile: i32) -> Self {
+        Self {
+            rect: TileRect {
+                tile_x: 0,
+                tile_y: 0,
+                tiles_wide: ((full.right - full.left) / tile) as usize,
+                tiles_high: ((full.bottom - full.top) / tile) as usize,
+            },
+        }
+    }
+
+    /// Минимальный набор тайлов рамки `full`, покрывающий `shown` (лежит внутри `full`).
+    fn covering(full: PixelBounds, shown: PixelBounds, tile: i32) -> Self {
+        let first_x = (shown.left - full.left) / tile;
+        let first_y = (shown.top - full.top) / tile;
+        let end_x = (shown.right - full.left + tile - 1) / tile;
+        let end_y = (shown.bottom - full.top + tile - 1) / tile;
+        Self {
+            rect: TileRect {
+                tile_x: first_x as usize,
+                tile_y: first_y as usize,
+                tiles_wide: (end_x - first_x) as usize,
+                tiles_high: (end_y - first_y) as usize,
+            },
+        }
+    }
+
+    fn pixel_width(&self) -> i32 {
+        (self.rect.tiles_wide * TILE_SIZE) as i32
+    }
+
+    fn pixel_height(&self) -> i32 {
+        (self.rect.tiles_high * TILE_SIZE) as i32
+    }
+
+    /// Левый край первого тайла набора в координатах контура.
+    fn left(&self, full: PixelBounds) -> i32 {
+        full.left + (self.rect.tile_x * TILE_SIZE) as i32
+    }
+
+    /// Верхний край первого тайла набора.
+    fn top(&self, full: PixelBounds) -> i32 {
+        full.top + (self.rect.tile_y * TILE_SIZE) as i32
+    }
+}
+
+/// Округляет размер вверх до целого числа тайлов; вызывающий проверил, что значение
+/// не превышает `i32::MAX - (TILE_SIZE - 1)`.
+fn align_up_to_tile(size: i64) -> i32 {
+    let mask = TILE_SIZE as i64 - 1;
+    ((size + mask) & !mask) as i32
 }
 
 /// Вычитает половину маски глифа из маски обводки (libass: `ass_fix_outline`).
@@ -333,16 +478,26 @@ pub(crate) struct PlacedBitmap<'bitmap> {
     pub(crate) anchor: (i32, i32),
 }
 
-/// Складывает несколько битмапов в один (часть `ass_composite_construct` без размытия).
-///
-/// Результат — объединяющий прямоугольник; левый верхний угол записан в `left/top`
-/// (абсолютные координаты). Значения складываются с насыщением до 255
-/// (`ass_add_bitmaps_c`). Один битмап копируется без перевыделения (как в libass при `be = 0`).
-/// Пустой список даёт `None`.
+/// Складывает несколько битмапов в один без отступа (см. [`combine_bitmaps_with_padding`]).
+#[cfg(test)]
 pub(crate) fn combine_bitmaps(
     parts: &[PlacedBitmap<'_>],
 ) -> Result<Option<CoverageBitmap>, BitmapError> {
-    if let [only] = parts {
+    combine_bitmaps_with_padding(parts, 0)
+}
+
+/// Складывает несколько битмапов в один (часть `ass_composite_construct`).
+///
+/// Результат — объединяющий прямоугольник, увеличенный на `padding_px` с каждой стороны
+/// (запас под `\be`, см. `BoxBlurPasses::padding_px`); левый верхний угол записан в
+/// `left/top` (абсолютные координаты). Значения складываются с насыщением до 255
+/// (`ass_add_bitmaps_c`). Один битмап копируется без перевыделения, но только при нулевом
+/// отступе (libass: `!bord && n_bm == 1`). Пустой список даёт `None`.
+pub(crate) fn combine_bitmaps_with_padding(
+    parts: &[PlacedBitmap<'_>],
+    padding_px: i32,
+) -> Result<Option<CoverageBitmap>, BitmapError> {
+    if let ([only], 0) = (parts, padding_px) {
         let mut copy = only.bitmap.clone();
         copy.left += only.anchor.0;
         copy.top += only.anchor.1;
@@ -363,9 +518,10 @@ pub(crate) fn combine_bitmaps(
     let Some((left, top, right, bottom)) = bounds else {
         return Ok(None);
     };
-    let mut combined = CoverageBitmap::zeroed(right - left, bottom - top)?;
-    combined.left = left;
-    combined.top = top;
+    let mut combined =
+        CoverageBitmap::zeroed(right - left + 2 * padding_px, bottom - top + 2 * padding_px)?;
+    combined.left = left - padding_px;
+    combined.top = top - padding_px;
     for part in parts {
         add_bitmap(&mut combined, part)?;
     }

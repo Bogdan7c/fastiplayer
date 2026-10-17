@@ -4,18 +4,22 @@
 //! букв — в общем текстовом конвейере (`render_source_text`). Здесь только то, что нужно
 //! рендереру: картинки, рамки для столкновений и счётчики пропущенного.
 
+use std::sync::OnceLock;
+
 use subtitle_core::AssCue;
 
 use super::cue_render::{AssCollisionRect, CueRenderError, PixelRect, RasterizedCue, union_extent};
 use crate::appearance::SubtitleAppearance;
-use crate::ass::{AssAnimationState, AssRenderOptions, plan_ass_event};
+use crate::ass::{AssAnimationState, AssRenderOptions, EventClipPlan, plan_ass_event};
+use crate::blur::BlurScratch;
+use crate::clip::{CueClip, IgnoredVectorClip};
 use crate::face_cache::FaceCache;
 use crate::fonts::{SubtitleFontLibrary, TextLanguagePreference};
 use crate::layout::LineBox;
 use crate::overlay::CanvasSize;
 use crate::plate::build_plate;
 use crate::render_diagnostics::RenderDiagnostics;
-use crate::text_renderer::render_source_text;
+use crate::text_renderer::{BitmapWorkspace, render_source_text};
 
 /// Входы рисования реплики ASS, общие для кадра.
 pub(crate) struct AssCueInputs<'a> {
@@ -40,6 +44,7 @@ pub(crate) fn rasterize_ass_cue(
     faces: &mut FaceCache,
     cue: &AssCue,
     inputs: &AssCueInputs<'_>,
+    blur_scratch: &mut BlurScratch,
 ) -> Result<RasterizedCue, CueRenderError> {
     let AssCueInputs {
         appearance,
@@ -50,13 +55,6 @@ pub(crate) fn rasterize_ass_cue(
         max_bitmap_side,
     } = *inputs;
     let plan = plan_ass_event(cue, canvas, options, appearance, animation);
-    if plan.skipped_drawing_runs > 0 {
-        // Векторные рисунки (`\p`) приходят в слоях 2-3; текст реплики в журнал не пишем.
-        tracing::debug!(
-            runs = plan.skipped_drawing_runs,
-            "ASS drawing mode is not supported, drawing commands are skipped"
-        );
-    }
     let rendered = render_source_text(
         fonts,
         faces,
@@ -64,7 +62,10 @@ pub(crate) fn rasterize_ass_cue(
         &plan.style,
         canvas,
         language,
-        max_bitmap_side,
+        BitmapWorkspace {
+            max_bitmap_side,
+            blur_scratch,
+        },
     )?;
 
     let mut bitmaps = Vec::with_capacity(rendered.images.len() + 1);
@@ -103,14 +104,34 @@ pub(crate) fn rasterize_ass_cue(
         .into_iter()
         .map(|bitmap| bitmap.with_placement_group(plan.placement_group))
         .collect::<Vec<_>>();
+    let mut diagnostics = rendered.diagnostics;
+    let clip = build_clip(&plan.clip, canvas, &mut diagnostics)?;
     Ok(RasterizedCue {
         extent: union_extent(&bitmaps),
         bitmaps,
         collision: plan.collision.direction,
         ass_collision,
-        diagnostics: rendered.diagnostics.combined(RenderDiagnostics {
-            skipped_ass_drawings: plan.skipped_drawing_runs,
-            ..RenderDiagnostics::default()
-        }),
+        diagnostics,
+        clip,
+        clipped_bitmaps: OnceLock::new(),
     })
+}
+
+/// Собирает клип реплики и записывает в отчёт, что из векторного клипа не применяется.
+///
+/// libass при отвергнутом рисунке клипа просто не клипует (`!outline->valid`); у нас это же,
+/// но с записью в счётчики, чтобы пропуск был виден.
+fn build_clip(
+    plan: &EventClipPlan,
+    canvas: CanvasSize,
+    diagnostics: &mut RenderDiagnostics,
+) -> Result<CueClip, CueRenderError> {
+    let built = CueClip::build(plan.rect, plan.vector.as_ref(), canvas)?;
+    match built.ignored_vector {
+        None => {}
+        Some(IgnoredVectorClip::InvalidDrawing | IgnoredVectorClip::Untransformable) => {
+            diagnostics.invalid_ass_drawings = diagnostics.invalid_ass_drawings.saturating_add(1);
+        }
+    }
+    Ok(built.clip)
 }

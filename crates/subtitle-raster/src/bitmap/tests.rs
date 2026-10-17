@@ -1,7 +1,8 @@
 //! Тесты битмапов покрытия: рамка и выравнивание, сдвиг, fix_outline, сложение, тень.
 
 use super::{
-    BitmapError, CoverageBitmap, PlacedBitmap, combine_bitmaps, fix_outline, outline_to_bitmap,
+    BitmapError, CoverageBitmap, PixelBounds, PlacedBitmap, RasterRegion, combine_bitmaps,
+    combine_bitmaps_with_padding, fix_outline, outline_to_bitmap, outline_to_bitmap_within,
     shadow_bitmap, shift_bitmap,
 };
 use crate::outline::{OUTLINE_MAX, Outline, Point, SegmentKind};
@@ -358,4 +359,138 @@ fn shadow_rounds_negative_offsets_toward_minus_infinity() {
     assert_eq!((shadow.left, shadow.top), (-2, -2));
     // 200 * 58 >> 6 = 181 уходит вправо (в колонке 1 той же строки) и вниз.
     assert_eq!(row_prefix(&shadow, 1, 2), [19, 181]);
+}
+
+#[test]
+fn padded_combine_grows_every_side_and_never_takes_the_single_bitmap_shortcut() {
+    let only = bitmap_with(2, 1, 0, 0, &[&[7, 9]]);
+    let padded = combine_bitmaps_with_padding(
+        &[PlacedBitmap {
+            bitmap: &only,
+            anchor: (10, 20),
+        }],
+        3,
+    )
+    .unwrap()
+    .unwrap();
+    // Запас 3 пикселя с каждой стороны: углы сдвинуты, размер вырос на 6 по каждой оси.
+    assert_eq!(
+        (padded.left, padded.top, padded.width, padded.height),
+        (7, 17, 8, 7)
+    );
+    // Сами значения лежат на прежнем месте внутри запаса, всё остальное нули.
+    assert_eq!(row_prefix(&padded, 3, 8), [0, 0, 0, 7, 9, 0, 0, 0]);
+    assert!(
+        (0..7)
+            .filter(|row| *row != 3)
+            .all(|row| row_prefix(&padded, row, 8).iter().all(|value| *value == 0))
+    );
+    // Пустой список и с запасом даёт `None`.
+    assert!(combine_bitmaps_with_padding(&[], 3).unwrap().is_none());
+}
+
+/// Косой пятиугольник 300 x 220 пикселей с нецелыми вершинами: в нём есть и сплошные тайлы, и
+/// граничные с разными наклонами.
+fn skewed_pentagon() -> Outline {
+    let mut outline = Outline::new();
+    let vertices = [
+        (3.3, 7.9),
+        (301.6, 20.25),
+        (290.1, 221.7),
+        (140.45, 160.2),
+        (10.75, 229.9),
+    ];
+    for (x, y) in vertices {
+        outline.push_point(Point::new(d6(x), d6(y))).unwrap();
+        outline.push_segment(SegmentKind::Line);
+    }
+    assert!(outline.close_contour());
+    outline
+}
+
+fn rasterized(region: RasterRegion) -> Option<CoverageBitmap> {
+    let mut rasterizer = Rasterizer::new(16);
+    outline_to_bitmap_within(&mut rasterizer, Some(&skewed_pentagon()), None, region).unwrap()
+}
+
+/// Значение пикселя битмапа в координатах контура (0 вне битмапа).
+fn value_at(bitmap: &CoverageBitmap, x: i32, y: i32) -> u8 {
+    let (column, row) = (x - bitmap.left, y - bitmap.top);
+    if column < 0 || row < 0 || column >= bitmap.width || row >= bitmap.height {
+        return 0;
+    }
+    bitmap.buffer[row as usize * bitmap.stride + column as usize]
+}
+
+#[test]
+fn region_bitmap_has_exactly_the_pixels_of_the_whole_bitmap_inside_the_region() {
+    let whole = rasterized(RasterRegion::Everything).expect("whole");
+    // Регион не по сетке тайлов, режет фигуру со всех сторон.
+    let region = PixelBounds {
+        left: 37,
+        top: 5,
+        right: 219,
+        bottom: 190,
+    };
+    let part = rasterized(RasterRegion::Within(region)).expect("part");
+    // Память не растёт вместе с фигурой: битмап чуть больше региона (не более тайла с каждой
+    // стороны), а не 304 x 240 целиком.
+    assert!(
+        part.buffer.len() < whole.buffer.len() * 3 / 4,
+        "{}",
+        part.buffer.len()
+    );
+    for y in region.top..region.bottom {
+        for x in region.left..region.right {
+            assert_eq!(value_at(&part, x, y), value_at(&whole, x, y), "({x}, {y})");
+        }
+    }
+    // Были и заполненные, и частичные пиксели: сравнение не вырождено.
+    let values: Vec<u8> = (region.top..region.bottom)
+        .flat_map(|y| (region.left..region.right).map(move |x| (x, y)))
+        .map(|(x, y)| value_at(&whole, x, y))
+        .collect();
+    assert!(values.contains(&255));
+    assert!(values.iter().filter(|v| **v > 0 && **v < 255).count() > 100);
+}
+
+#[test]
+fn region_bitmap_ends_where_libass_bitmap_ends_not_at_the_tile_after_it() {
+    let whole = rasterized(RasterRegion::Everything).expect("whole");
+    // Регион шире фигуры: правый и нижний край битмапа те же, что у целого.
+    let part = rasterized(RasterRegion::Within(PixelBounds {
+        left: -1000,
+        top: -1000,
+        right: 1000,
+        bottom: 1000,
+    }))
+    .expect("part");
+    assert_eq!(
+        (part.left, part.top, part.width, part.height),
+        (whole.left, whole.top, whole.width, whole.height)
+    );
+    assert_eq!(part.buffer, whole.buffer);
+}
+
+#[test]
+fn region_without_overlap_gives_no_bitmap_and_does_not_touch_state() {
+    let mut rasterizer = Rasterizer::new(16);
+    let nowhere = RasterRegion::Within(PixelBounds {
+        left: 5000,
+        top: 5000,
+        right: 6000,
+        bottom: 6000,
+    });
+    let result = outline_to_bitmap_within(&mut rasterizer, Some(&skewed_pentagon()), None, nowhere);
+    assert_eq!(result, Ok(None));
+    // Растеризатор остался пригоден: следующий вызов на всё работает.
+    let again = outline_to_bitmap_within(
+        &mut rasterizer,
+        Some(&skewed_pentagon()),
+        None,
+        RasterRegion::Everything,
+    )
+    .unwrap()
+    .expect("bitmap");
+    assert!(again.buffer.contains(&255));
 }

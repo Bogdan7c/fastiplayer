@@ -109,6 +109,7 @@ fn face_cache_is_trimmed_to_the_limit_between_frames() {
     let limits = RasterCacheLimits {
         cue_bitmaps_bytes: 64 * 1024 * 1024,
         shaper_faces: 1,
+        blur_scratch_retained_bytes: 32 * 1024 * 1024,
     };
     let mut rasterizer = rasterizer(limits);
     // Три письменности — три разных лица.

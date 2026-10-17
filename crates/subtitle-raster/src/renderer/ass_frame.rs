@@ -47,7 +47,7 @@ pub(super) fn assemble_ass_bitmaps(
     let canvas_height = canvas.height();
     let mut bitmaps = Vec::new();
     for (cue, shift) in cues.iter().zip(shifts) {
-        for bitmap in &cue.rasterized.bitmaps {
+        for bitmap in cue.rasterized.final_bitmaps() {
             if shift == 0 {
                 bitmaps.push(bitmap.clone());
             } else if let Some(moved) = bitmap.shifted_vertically_clipped(shift, canvas_height) {

@@ -144,11 +144,10 @@ mod tests {
     #[test]
     fn unsupported_tags_count_per_kind() {
         let mut stats = AssTagStats::new(&limits(1));
-        stats.record_unsupported(AssUnsupportedTag::Blur);
-        stats.record_unsupported(AssUnsupportedTag::Blur);
-        stats.record_unsupported(AssUnsupportedTag::Be);
-        assert_eq!(stats.unsupported_count(AssUnsupportedTag::Blur), 2);
-        assert_eq!(stats.unsupported_count(AssUnsupportedTag::Be), 1);
-        assert_eq!(stats.unsupported_count(AssUnsupportedTag::Clip), 0);
+        stats.record_unsupported(AssUnsupportedTag::Karaoke);
+        stats.record_unsupported(AssUnsupportedTag::Karaoke);
+        stats.record_unsupported(AssUnsupportedTag::Transform);
+        assert_eq!(stats.unsupported_count(AssUnsupportedTag::Karaoke), 2);
+        assert_eq!(stats.unsupported_count(AssUnsupportedTag::Transform), 1);
     }
 }

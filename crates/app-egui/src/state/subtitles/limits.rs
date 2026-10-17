@@ -153,6 +153,8 @@ pub(super) fn raster_limits_from_config(config: &SubtitlesConfig) -> RasterLimit
             cue_bitmaps_bytes: usize::from(config.render_cache_mb)
                 .saturating_mul(BYTES_PER_MEGABYTE),
             shaper_faces: RASTER_SHAPER_FACES,
+            blur_scratch_retained_bytes: usize::from(config.blur_scratch_retained_mb)
+                .saturating_mul(BYTES_PER_MEGABYTE),
         },
         input: RasterInputLimits {
             max_chars_per_cue: widen(config.max_chars_per_cue),
@@ -188,6 +190,8 @@ mod tests {
 
         let raster = raster_limits_from_config(&config);
         assert_eq!(raster.cache.cue_bitmaps_bytes, 32 * 1024 * 1024);
+        // Дефолт конфига равен прежней константе растеризатора (32 МиБ).
+        assert_eq!(raster.cache.blur_scratch_retained_bytes, 32 * 1024 * 1024);
         assert_eq!(raster.input.max_chars_per_cue, 2_000);
         assert_eq!(raster.input.max_cues_per_frame, 16);
         assert_eq!(raster.input.max_ass_events_per_frame, 256);
@@ -200,6 +204,7 @@ mod tests {
             max_cues_per_file: 1_500,
             sidecar_max_candidates: 3,
             render_cache_mb: 4,
+            blur_scratch_retained_mb: 7,
             max_cues_on_screen: 2,
             max_ass_events_on_screen: 32,
             ..SubtitlesConfig::default()
@@ -210,6 +215,7 @@ mod tests {
         assert_eq!(load.search.max_candidates, 3);
         let raster = raster_limits_from_config(&config);
         assert_eq!(raster.cache.cue_bitmaps_bytes, 4 * 1024 * 1024);
+        assert_eq!(raster.cache.blur_scratch_retained_bytes, 7 * 1024 * 1024);
         assert_eq!(raster.input.max_cues_per_frame, 2);
         assert_eq!(raster.input.max_ass_events_per_frame, 32);
     }

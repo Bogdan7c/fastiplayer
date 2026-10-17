@@ -79,6 +79,7 @@ impl Scene {
                 cache: RasterCacheLimits {
                     cue_bitmaps_bytes: 32 * 1024 * 1024,
                     shaper_faces: 8,
+                    blur_scratch_retained_bytes: 32 * 1024 * 1024,
                 },
                 input: RasterInputLimits {
                     max_chars_per_cue: 1_000,

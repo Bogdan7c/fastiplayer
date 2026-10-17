@@ -36,5 +36,8 @@ ASS слой 1, per-run `SpanLook`, синтетический bold/italic, по
 ## Сессия 09
 ASS слой 2 (повороты, наклон, 3D, `\org`, `\move`, `\fad`), `RenderRequest.moment`, `AssEventTiming`, `AnimationChange` — `mem:subtitles/ass-layer2-s09`.
 
+## Сессия 10
+ASS слой 3: 10a — `drawing/`, `blur/` (побитовый порт C), `clip/` (стадия после кэша, `RasterizedCue::final_bitmaps`), `SpanLook::{blur, camera_scale}`, `RasterCacheLimits.blur_scratch_retained_bytes`, счётчики `invalid_ass_drawings`, `failed_blur_layers` — `mem:subtitles/ass-layer3-s10`.
+
 ## Не сделано
-Фон спана, вертикальный текст, регионы VTT, переносы CJK без пробелов, теги ASS слоя 3 (`\t \clip \blur \be` караоке `\p`, план 10).
+Фон спана, вертикальный текст, регионы VTT, переносы CJK без пробелов, `\t`, караоке, Banner/Scroll (10b), трёхуровневый кэш (10c).

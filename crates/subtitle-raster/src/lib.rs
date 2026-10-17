@@ -22,8 +22,11 @@
 pub mod appearance;
 mod ass;
 mod bitmap;
+mod blur;
 pub mod cache;
+mod clip;
 mod compose;
+mod drawing;
 mod event_fade;
 mod event_style;
 mod face_cache;

@@ -115,6 +115,12 @@ impl AssFrameScale {
         x * self.canvas_width / self.pixel_aspect_x / self.play_res_x
     }
 
+    /// Горизонтальная координата сценария -> пиксели БЕЗ деления на `par_scale_x` (libass:
+    /// `x2scr_pos_scaled`; так переводятся углы прямоугольного клипа).
+    pub(crate) fn x_to_screen_ignoring_pixel_aspect(&self, x: f64) -> f64 {
+        x * self.canvas_width / self.play_res_x
+    }
+
     /// Вертикальная координата сценария -> пиксели (libass: `y2scr_pos`; совпадает с
     /// `y2scr`, `y2scr_top` и `y2scr_sub` при выключенных полях).
     pub(crate) fn y_to_screen(&self, y: f64) -> f64 {
@@ -128,8 +134,8 @@ impl AssFrameScale {
     pub(crate) fn event_scale(&self, text_scale: Option<f64>) -> EventScale {
         let mut screen_x = self.canvas_width / self.play_res_x;
         let mut screen_y = self.canvas_height / self.play_res_y;
-        let blur_x = self.canvas_width / self.layout_res_x;
-        let blur_y = self.canvas_height / self.layout_res_y;
+        let mut blur_x = self.canvas_width / self.layout_res_x;
+        let mut blur_y = self.canvas_height / self.layout_res_y;
         let (mut border_x, mut border_y) = match self.scaled_border_and_shadow {
             AssScaledBorderAndShadow::Enabled => (screen_x, screen_y),
             AssScaledBorderAndShadow::Disabled => (blur_x, blur_y),
@@ -139,12 +145,16 @@ impl AssFrameScale {
             screen_y *= coefficient;
             border_x *= coefficient;
             border_y *= coefficient;
+            blur_x *= coefficient;
+            blur_y *= coefficient;
         }
         EventScale {
             screen_x,
             screen_y,
             border_x,
             border_y,
+            blur_x,
+            blur_y,
             pixel_aspect_x: self.pixel_aspect_x,
         }
     }
@@ -169,6 +179,10 @@ pub(crate) struct EventScale {
     pub(crate) border_x: f64,
     /// Вертикальный масштаб обводки и тени.
     pub(crate) border_y: f64,
+    /// Горизонтальный масштаб радиуса `\blur` (libass: `blur_scale_x`, `font_scr_w / layout_res.x`).
+    pub(crate) blur_x: f64,
+    /// Вертикальный масштаб радиуса `\blur` (libass: `blur_scale_y`).
+    pub(crate) blur_y: f64,
     /// `par_scale_x`: на него делится горизонтальный размер (межбуквенный интервал, обводка).
     pub(crate) pixel_aspect_x: f64,
 }

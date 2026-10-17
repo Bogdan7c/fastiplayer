@@ -27,9 +27,14 @@
 //!   решает растеризатор), `\h` — неразрывный пробел, `\{` и `\}` — литеральные скобки;
 //!   любой другой `\x` остаётся обычным текстом вместе с обратной косой чертой;
 //! - табуляция превращается в пробел;
-//! - текст обрывается на первом NUL (C-строка).
+//! - текст обрывается на первом NUL (C-строка);
+//! - пока включён режим рисунка (`\p<n>`, n > 0), текст между блоками — команды рисования:
+//!   libass берёт его сырой подстрокой до следующего `{` и НЕ обрабатывает escape-последовательности
+//!   (`\N`, `\h`, табуляция). Такой кусок остаётся одним элементом [`AssTextItem::Text`] без
+//!   изменений; режим рисунка отслеживается здесь по уже разобранным тегам (`\r` его не
+//!   сбрасывает).
 
-use subtitle_core::AssTextItem;
+use subtitle_core::{AssDrawingMode, AssOverride, AssTextItem};
 
 use super::report::AssTagStats;
 use super::scan::c_string_prefix;
@@ -54,12 +59,22 @@ pub(super) fn parse_event_text(
     // блок, и повторный поиск `}` (O(n) на каждый `{`) не нужен — иначе текст из многих `{`
     // без `}` разбирался бы за O(n²). Семантика libass (`strchr` на каждый блок) сохранена.
     let last_close = text.rfind('}');
+    // Режим рисунка: переживает `\r` и держится до тега `\p0` (libass: `state->drawing_scale`).
+    let mut drawing_mode = AssDrawingMode::Off;
     while let Some(rest) = text.get(pos..).filter(|rest| !rest.is_empty()) {
         if let Some(block_len) = block_length(rest, pos, last_close) {
             // `{` + содержимое + `}`: содержимое — всё между скобками.
             let content = rest.get(1..block_len - 1).unwrap_or_default();
-            builder.push_overrides(parse_override_block(content, &mut budget, stats));
+            let overrides = parse_override_block(content, &mut budget, stats);
+            drawing_mode = drawing_mode_after(&overrides, drawing_mode);
+            builder.push_overrides(overrides);
             pos += block_len;
+            continue;
+        }
+        if drawing_mode.is_on() {
+            let len = drawing_text_length(rest);
+            builder.push_raw_text(rest.get(..len).unwrap_or(rest));
+            pos += len;
             continue;
         }
         let consumed = match next_text_unit(rest) {
@@ -93,6 +108,28 @@ fn block_length(rest: &str, pos: usize, last_close: Option<usize>) -> Option<usi
         return None;
     }
     rest.find('}').map(|close| close + 1)
+}
+
+/// Режим рисунка после блока тегов: побеждает последний `\p` блока, без него режим прежний.
+fn drawing_mode_after(overrides: &[AssOverride], current: AssDrawingMode) -> AssDrawingMode {
+    overrides
+        .iter()
+        .rev()
+        .find_map(|tag| match tag {
+            AssOverride::Drawing(mode) => Some(*mode),
+            _ => None,
+        })
+        .unwrap_or(current)
+}
+
+/// Длина (в байтах) куска текста рисунка в начале `rest` (libass: `parse_events`, ветка
+/// `drawing_scale`): до следующего `{`; `{` в самом начале (непарная, иначе это был бы блок)
+/// входит в кусок.
+fn drawing_text_length(rest: &str) -> usize {
+    let skip_leading_brace = usize::from(rest.starts_with('{'));
+    rest.get(skip_leading_brace..)
+        .and_then(|tail| tail.find('{'))
+        .map_or(rest.len(), |offset| skip_leading_brace + offset)
 }
 
 /// Следующая единица обычного текста.
@@ -142,6 +179,11 @@ impl ItemBuilder {
             let text = std::mem::take(&mut self.pending_text);
             self.items.push(AssTextItem::Text(text));
         }
+    }
+
+    /// Кусок текста рисунка: всегда отдельный элемент (каждый кусок — свой псевдоглиф).
+    fn push_raw_text(&mut self, raw: &str) {
+        self.push_item(AssTextItem::Text(raw.to_owned()));
     }
 
     fn push_item(&mut self, item: AssTextItem) {

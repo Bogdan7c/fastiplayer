@@ -36,6 +36,8 @@ fn look(weight_value: u16, slant: FontStyle, decorations: TextDecorations) -> Sp
         decorations,
         rotation: crate::glyph_transform::Rotation3d::default(),
         shear: crate::glyph_transform::ShearFactors::default(),
+        blur: crate::span_look::SpanBlur::NONE,
+        camera_scale: 1.0,
     }
 }
 

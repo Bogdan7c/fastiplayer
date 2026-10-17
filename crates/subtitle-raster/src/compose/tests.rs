@@ -188,3 +188,70 @@ fn text_partly_outside_the_canvas_is_cropped_not_dropped() {
     assert!(outline.width() > 100);
     assert!(ink(outline) > 0);
 }
+
+/// Слой 8x8 с одним ярким пикселем в центре: после гауссиана покрытие расплывается.
+fn bright_dot_layer() -> crate::bitmap::CoverageBitmap {
+    let mut layer = crate::bitmap::CoverageBitmap::zeroed(16, 16).expect("layer");
+    layer.buffer[8 * layer.stride + 8] = 255;
+    layer
+}
+
+fn gaussian_strength() -> crate::blur::BlurStrength {
+    crate::blur::BlurStrength {
+        gaussian: crate::blur::GaussianVariance { x: 4.0, y: 4.0 },
+        box_passes: crate::blur::BoxBlurPasses::clamped(0),
+    }
+}
+
+#[test]
+fn blur_layer_reports_blurred_oversized_and_failed_layers_separately() {
+    use super::run::{BlurEnv, LayerBlur, blur_layer};
+    use crate::blur::{BitmapSideLimit, BlurScratch};
+
+    let mut scratch = BlurScratch::new();
+
+    // Штатный слой размывается: пиксель расплылся.
+    let mut blurred = bright_dot_layer();
+    let original = blurred.clone();
+    let mut env = BlurEnv {
+        scratch: &mut scratch,
+        side_limit: BitmapSideLimit::UNLIMITED,
+    };
+    assert_eq!(
+        blur_layer(Some(&mut blurred), gaussian_strength(), &mut env),
+        LayerBlur::Done
+    );
+    assert_ne!(blurred, original);
+
+    // Слоя нет: размывать нечего, это не ошибка.
+    assert_eq!(
+        blur_layer(None, gaussian_strength(), &mut env),
+        LayerBlur::Done
+    );
+
+    // Результат не влезает в предел стороны: штатный пропуск, слой цел.
+    let mut too_wide = bright_dot_layer();
+    let mut tight = BlurEnv {
+        scratch: env.scratch,
+        side_limit: BitmapSideLimit(16),
+    };
+    assert_eq!(
+        blur_layer(Some(&mut too_wide), gaussian_strength(), &mut tight),
+        LayerBlur::SkippedOversized
+    );
+    assert_eq!(too_wide, original);
+
+    // Буфер короче, чем заявляет геометрия: нарушен инвариант, считается отдельно.
+    let mut inconsistent = bright_dot_layer();
+    inconsistent.buffer.truncate(8);
+    let broken_before = inconsistent.clone();
+    let mut env = BlurEnv {
+        scratch: tight.scratch,
+        side_limit: BitmapSideLimit::UNLIMITED,
+    };
+    assert_eq!(
+        blur_layer(Some(&mut inconsistent), gaussian_strength(), &mut env),
+        LayerBlur::Failed
+    );
+    assert_eq!(inconsistent, broken_before);
+}

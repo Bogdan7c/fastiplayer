@@ -181,8 +181,8 @@ fn geometry_tags_no_longer_count_as_unsupported() {
 #[test]
 fn prefix_neighbours_still_resolve_to_their_own_tags() {
     // `\fr` не должен «съедать» `\frx`, `\fs` — `\fscx`, `\fad` — `\fade`.
-    let (_, stats) = parse(r"{\frx1\fscx50\fs20\fade(1,2,3,4,5,6,7)\fad(1,2)\blur1}x");
-    assert_eq!(stats.unsupported_count(AssUnsupportedTag::Blur), 1);
+    let (_, stats) = parse(r"{\frx1\fscx50\fs20\fade(1,2,3,4,5,6,7)\fad(1,2)\k1}x");
+    assert_eq!(stats.unsupported_count(AssUnsupportedTag::Karaoke), 1);
     assert_eq!(stats.unknown_total(), 0);
 }
 

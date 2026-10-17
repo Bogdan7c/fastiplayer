@@ -2,7 +2,10 @@
 
 mod ass;
 mod ass_animation;
+mod ass_blur;
 mod ass_cache;
+mod ass_clip;
+mod ass_drawing;
 mod ass_placement_group;
 mod ass_robustness;
 mod ass_rotation;
@@ -32,6 +35,7 @@ pub(super) const HEIGHT: u32 = 720;
 pub(super) const ROOMY_LIMITS: RasterCacheLimits = RasterCacheLimits {
     cue_bitmaps_bytes: 64 * 1024 * 1024,
     shaper_faces: 16,
+    blur_scratch_retained_bytes: 32 * 1024 * 1024,
 };
 
 /// Лимиты входа, с которыми они не мешают тестам.

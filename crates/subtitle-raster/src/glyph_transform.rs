@@ -33,7 +33,7 @@
     reason = "матричные циклы повторяют индексы из ass_render.c один в один"
 )]
 
-use crate::bitmap::{BitmapError, CoverageBitmap, outline_to_bitmap};
+use crate::bitmap::{BitmapError, CoverageBitmap, RasterRegion, outline_to_bitmap_within};
 use crate::outline::{ControlBox, OUTLINE_MAX, Outline, Point, round_ties_even_to_i32};
 use crate::raster::Rasterizer;
 
@@ -50,7 +50,8 @@ pub(crate) const POSITION_PRECISION: f64 = 8.0;
 pub(crate) const SUBPIXEL_ORDER: i32 = 3;
 /// Предел масштаба перспективы (libass: `MAX_PERSP_SCALE`).
 pub(crate) const MAX_PERSP_SCALE: f64 = 16.0;
-/// Расстояние «камеры» в матрице глифа (libass: `20000 * blur_scale_y`; у нас `blur_scale_y = 1`).
+/// Базовое расстояние «камеры» в матрице глифа; libass умножает его на `blur_scale_y` кадра
+/// (`calc_transform_matrix`: `dist = 20000 * blur_scale_y`), см. `GlyphPlacement::camera_scale`.
 pub(crate) const CAMERA_DISTANCE: f64 = 20000.0;
 
 /// Матрица 3x3 преобразования контура (однородные координаты, как в libass).
@@ -302,6 +303,18 @@ pub(crate) fn construct_bitmap(
     cbox: &ControlBox,
     outlines: [&Outline; 2],
 ) -> Result<Option<CoverageBitmap>, BitmapError> {
+    construct_bitmap_within(rasterizer, key, cbox, outlines, RasterRegion::Everything)
+}
+
+/// [`construct_bitmap`], но растеризуется только часть внутри `region` (координаты - как у
+/// битмапа, то есть относительно позиции `key.position`).
+pub(crate) fn construct_bitmap_within(
+    rasterizer: &mut Rasterizer,
+    key: &QuantizedTransform,
+    cbox: &ControlBox,
+    outlines: [&Outline; 2],
+    region: RasterRegion,
+) -> Result<Option<CoverageBitmap>, BitmapError> {
     let matrix = restore_transform(key, cbox);
     // Перспектива есть только при поворотах вокруг осей X/Y: тогда нужен путь с делением на z.
     let transformed = if key.has_perspective() {
@@ -320,7 +333,7 @@ pub(crate) fn construct_bitmap(
         // libass: `ass_outline_transform_*` не удалась -> `memset(bm, 0)`, битмапа нет.
         return Ok(None);
     };
-    outline_to_bitmap(rasterizer, Some(&first), Some(&second))
+    outline_to_bitmap_within(rasterizer, Some(&first), Some(&second), region)
 }
 
 /// Параметры обводки, посчитанные по матрице (libass: середина `get_bitmap_glyph`).

@@ -359,16 +359,11 @@ fn layer_two_and_three_tags_are_unsupported_not_unknown() {
     let (items, stats) =
         parse(r"{\frz30\move(1,2,3,4)\t(0,100,\fs50)\clip(0,0,5,5)\blur2\be1\k20\p1}x");
     assert_eq!(items.len(), 2);
-    for tag in [
-        AssUnsupportedTag::Transform,
-        AssUnsupportedTag::Clip,
-        AssUnsupportedTag::Blur,
-        AssUnsupportedTag::Be,
-        AssUnsupportedTag::Karaoke,
-        AssUnsupportedTag::Drawing,
-    ] {
+    // Слой 3 (клип, размытие, рисунок) теперь разобран, а не «не поддержан».
+    for tag in [AssUnsupportedTag::Transform, AssUnsupportedTag::Karaoke] {
         assert_eq!(stats.unsupported_count(tag), 1, "{tag:?}");
     }
+    assert_eq!(stats.unsupported().len(), 2);
     assert_eq!(stats.unknown_total(), 0);
     // Вложенный \fs внутри \t(...) не стал самостоятельным тегом.
     let flat = overrides_of(r"{\t(0,100,\fs50)}x");
@@ -383,15 +378,8 @@ fn prefix_traps_of_unsupported_tags_do_not_leak_into_supported_ones() {
     // \be не должен стать \b, \blur — \bord/\b, \kf/\ko — \k, \fax — не \fa..., \pbo — не \p.
     let (_, stats) =
         parse(r"{\be1\blur3\kf10\ko5\pbo2\iclip(1,2,3,4)\org(1,2)\fad(1,2)\fade(1,2,3,4,5,6,7)}x");
-    assert_eq!(stats.unsupported_count(AssUnsupportedTag::Be), 1);
-    assert_eq!(stats.unsupported_count(AssUnsupportedTag::Blur), 1);
     assert_eq!(stats.unsupported_count(AssUnsupportedTag::Karaoke), 2);
-    assert_eq!(
-        stats.unsupported_count(AssUnsupportedTag::DrawingBaselineOffset),
-        1
-    );
-    assert_eq!(stats.unsupported_count(AssUnsupportedTag::Drawing), 0);
-    assert_eq!(stats.unsupported_count(AssUnsupportedTag::InverseClip), 1);
+    assert_eq!(stats.unsupported().len(), 1);
     assert_eq!(stats.unknown_total(), 0);
 }
 
@@ -505,16 +493,13 @@ fn drawing_tag_keeps_its_argument_and_only_enabled_mode_is_counted() {
             "{off}"
         );
     }
+    // Рисунки теперь растеризуются: режим «включён» в «не поддержано» не попадает.
     let (_, enabled) = parse(r"{\p1}m 0 0 l 5 5{\p0}");
-    assert_eq!(enabled.unsupported_count(AssUnsupportedTag::Drawing), 1);
-    let (_, disabled) = parse(r"{\p0}x");
-    assert_eq!(disabled.unsupported_count(AssUnsupportedTag::Drawing), 0);
-    // `\pbo` по-прежнему отдельный (нерисуемый) тег, а не режим рисунка.
+    assert!(enabled.unsupported().is_empty());
+    // `\pbo` — отдельный тег, а не режим рисунка.
     assert_eq!(
         overrides_of(r"{\pbo5}x"),
-        vec![AssOverride::Unsupported(
-            AssUnsupportedTag::DrawingBaselineOffset
-        )]
+        vec![AssOverride::DrawingBaselineOffset(5.0)]
     );
 }
 

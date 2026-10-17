@@ -14,9 +14,11 @@ use subtitle_core::SubtitleColor;
 use crate::renderer::CueKey;
 
 mod animation_change;
+mod crop;
 mod placement_group;
 
 pub use animation_change::AnimationChange;
+pub(crate) use crop::LocalRect;
 pub use placement_group::OverlayPlacementGroup;
 use placement_group::union_bounds;
 

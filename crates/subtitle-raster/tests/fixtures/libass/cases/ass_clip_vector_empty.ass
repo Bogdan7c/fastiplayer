@@ -1,0 +1,19 @@
+; reference: width=640 height=360 time_ms=1000
+; case: empty and invalid vector clips
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+ScaledBorderAndShadow: yes
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans,40,&H00FFFFFF,&H000000FF,&H00804000,&H80000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an7\pos(40,20)\fs50\clip(m 0 0)}Empty clip hides
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an7\pos(40,100)\fs50\iclip(m 0 0)}Empty inverse keeps
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an7\pos(40,180)\fs50\clip(abc)}No move command
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an7\pos(40,260)\fs50\clip(1,2,3)}Three arguments

@@ -343,28 +343,6 @@ fn unknown_tag_is_ignored_and_the_text_is_still_drawn() {
 }
 
 #[test]
-fn drawing_mode_text_is_not_drawn_and_normal_text_after_it_is() {
-    let mut rasterizer = rasterizer_for_ass();
-    let only_drawing = render_ass(
-        &mut rasterizer,
-        &single(r"{\p1}m 0 0 l 100 0 100 100 0 100"),
-    );
-    assert!(
-        only_drawing.is_empty(),
-        "drawing commands must not become letters"
-    );
-    assert_eq!(rasterizer.statistics().skipped_ass_drawing_runs, 1);
-    let mixed = render_ass(
-        &mut rasterizer,
-        &single(r"{\p1}m 0 0 l 100 0 100 100{\p0}Hi"),
-    );
-    let plain = render_ass(&mut rasterizer, &single("Hi"));
-    assert!(!mixed.is_empty());
-    // `\p` делает реплику «явной», но положение и вид остаются теми же.
-    assert_eq!(ink_bounds(mixed.bitmaps()), ink_bounds(plain.bitmaps()));
-}
-
-#[test]
 fn user_style_replaces_author_look_but_keeps_author_position() {
     let author_look = r"{\bord0\an7\pos(200,150)\c&H0000FF&\fs80}HHHH";
     let cues = single(author_look);
@@ -515,7 +493,10 @@ fn user_plate_follows_the_stretched_text_when_the_pixel_aspect_differs() {
     );
 }
 
-/// Стиль `Zero`: размер шрифта 0 (libass оставляет такой размер, а глифы не рисует).
+/// Стиль `Zero`: размер шрифта 0. Известное отличие от libass: libass рисует такие буквы
+/// размером, который выбирает FreeType при нулевом запросе (em около unitsPerEm/64 px), а
+/// растеризатор их не рисует. Рисунки `\p` в этом стиле рисуются как в libass (решение
+/// владельца 17.10.2026).
 const ZERO_SIZE_STYLE_LINE: &str = "Style: Zero,Noto Sans,0,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,40,40,40,1";
 
 fn zero_style_overlay(text: &str) -> SubtitleOverlay {
@@ -548,4 +529,16 @@ fn zero_font_size_runs_draw_nothing_but_the_rest_of_the_cue_still_renders() {
 fn a_cue_made_only_of_zero_size_text_renders_nothing_without_failing() {
     let overlay = zero_style_overlay("AAA");
     assert!(of_kind(&overlay, SubtitleBitmapKind::Glyph).is_empty());
+}
+
+#[test]
+fn drawing_in_a_zero_font_size_style_is_drawn_while_letters_next_to_it_are_not() {
+    // Квадрат 100x100 PlayRes (экран 1280x720 = PlayRes 1280x720, масштаб 1) в нулевом
+    // размере шрифта: рисунок рисуется, «AAA» после него — нет.
+    let overlay = zero_style_overlay(r"{\an7\pos(100,100)\p1}m 0 0 l 100 0 100 100 0 100{\p0}AAA");
+    let drawn = of_kind(&overlay, SubtitleBitmapKind::Glyph);
+    assert_eq!(drawn.len(), 1, "только рисунок, без букв");
+    let ink = glyph_ink(&overlay);
+    // Край на пиксель мягче из-за квантования матрицы растеризатора libass (см. ass_drawing).
+    assert_eq!(ink, (99, 99, 201, 201));
 }

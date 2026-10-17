@@ -10,6 +10,7 @@ mod ass_animation_support;
 mod ass_animation_thread;
 mod ass_gpu_support;
 mod ass_layer1_gpu;
+mod ass_layer3_gpu;
 mod ass_position_gpu;
 mod ass_position_lift_gpu;
 mod ass_sidecar;

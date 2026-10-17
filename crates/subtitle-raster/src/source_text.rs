@@ -10,10 +10,35 @@ use subtitle_core::{
 };
 
 use crate::event_fade::EventFade;
-use crate::event_style::EventStyle;
+use crate::event_style::{AxisPair, EventStyle};
 use crate::fonts::{FontStyle, FontWeightClass};
 use crate::glyph_transform::{Rotation3d, ShearFactors};
-pub(crate) use crate::span_look::{SpanLook, TextDecorations};
+pub(crate) use crate::span_look::{SpanBlur, SpanLook, TextDecorations};
+
+/// Символ-заместитель рисунка (U+FFFC OBJECT REPLACEMENT CHARACTER, libass: `code = 0xfffc`).
+pub(crate) const DRAWING_SYMBOL: char = '\u{fffc}';
+
+/// Номер рисунка в [`SourceText::drawings`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DrawingId(pub(crate) usize);
+
+/// Рисунок `\p<n>` в тексте реплики: сырой текст команд и параметры размещения, которые
+/// планировщик реплики знает, а конвейер текста — нет (масштаб кадра, `\pbo`).
+///
+/// В libass рисунок — один псевдоглиф (`GlyphInfo::drawing_text`): без шейпинга и поиска
+/// шрифта, со своими метриками (`get_outline_glyph`).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DrawingSource {
+    /// Команды рисования как написано в реплике (`m 0 0 l 10 0 ...`).
+    pub(crate) commands: String,
+    /// Масштаб контура рисунка в пиксели кадра по осям (libass: `transform.scale` в
+    /// `get_outline_glyph`): `\fscx`/`\fscy` * `2^-(n-1)` * масштаб кадра (по X ещё делится
+    /// на `par_scale_x`).
+    pub(crate) outline_scale: AxisPair,
+    /// Смещение базовой линии `\pbo` в единицах рисунка, усечённое до целого (libass:
+    /// `drawing_pbo`).
+    pub(crate) baseline_offset: i32,
+}
 
 /// Символ реплики и индекс его внешнего вида в [`SourceText::looks`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +51,9 @@ pub(crate) struct SourceChar {
     /// Не входит в вид: libass не режет участки по затуханию, а берёт его у ПЕРВОГО символа
     /// участка (см. `compose`). У SRT/WebVTT затухания нет.
     pub(crate) fade: EventFade,
+    /// Символ — заместитель рисунка (`ch == DRAWING_SYMBOL`): его глиф строится из команд
+    /// рисования, а не из шрифта. У обычных символов `None`.
+    pub(crate) drawing: Option<DrawingId>,
 }
 
 /// Включён ли кернинг пар в шейпинге (libass: `Kerning:` заголовка ASS, `ass_shaper_set_kerning`).
@@ -49,6 +77,8 @@ pub(crate) struct SourceText {
     pub(crate) looks: Vec<SpanLook>,
     /// Кернинг пар при шейпинге.
     pub(crate) kerning: KerningMode,
+    /// Рисунки реплики; индексируются из [`SourceChar::drawing`]. У SRT/WebVTT пусто.
+    pub(crate) drawings: Vec<DrawingSource>,
 }
 
 impl SourceText {
@@ -81,11 +111,13 @@ impl SourceText {
                                 ch: ' ',
                                 look: look_index,
                                 fade: EventFade::NONE,
+                                drawing: None,
                             }),
                             other => chars.push(SourceChar {
                                 ch: other,
                                 look: look_index,
                                 fade: EventFade::NONE,
+                                drawing: None,
                             }),
                         }
                     }
@@ -94,6 +126,7 @@ impl SourceText {
                     ch: '\n',
                     look: look_index,
                     fade: EventFade::NONE,
+                    drawing: None,
                 }),
             }
         }
@@ -101,6 +134,7 @@ impl SourceText {
             chars,
             looks,
             kerning: KerningMode::Disabled,
+            drawings: Vec::new(),
         }
     }
 
@@ -145,6 +179,8 @@ impl SourceText {
             },
             rotation: Rotation3d::default(),
             shear: ShearFactors::default(),
+            blur: SpanBlur::NONE,
+            camera_scale: 1.0,
         }
     }
 

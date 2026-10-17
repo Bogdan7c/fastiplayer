@@ -98,6 +98,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             cache: RasterCacheLimits {
                 cue_bitmaps_bytes: CUE_CACHE_BYTES,
                 shaper_faces: SHAPER_FACES,
+                blur_scratch_retained_bytes: 32 * 1024 * 1024,
             },
             input: RasterInputLimits {
                 max_chars_per_cue: MAX_CHARS_PER_CUE,

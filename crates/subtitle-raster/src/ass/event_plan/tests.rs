@@ -78,16 +78,67 @@ fn soft_break_depends_on_the_wrap_style_at_that_point_of_the_text() {
 }
 
 #[test]
-fn drawing_mode_skips_text_and_counts_it() {
+fn drawing_mode_turns_the_text_into_one_pseudo_glyph_with_the_raw_commands() {
     let result = plan(vec![
-        tags(vec![AssOverride::Drawing(AssDrawingMode::On { scale: 1 })]),
+        text("a"),
+        tags(vec![
+            AssOverride::Drawing(AssDrawingMode::On { scale: 2 }),
+            AssOverride::DrawingBaselineOffset(3.9),
+        ]),
         text("m 0 0 l 10 10"),
+        // Перенос строки внутри рисунка (его парсер не выдаёт) не становится буквой.
         AssTextItem::HardBreak,
         tags(vec![AssOverride::Drawing(AssDrawingMode::Off)]),
-        text("Hi"),
+        text("b"),
     ]);
-    assert_eq!(flat(&result), "Hi");
-    assert_eq!(result.skipped_drawing_runs, 1);
+    assert_eq!(flat(&result), "a\u{fffc}b");
+    let drawing_char = result.source.chars[1];
+    let id = drawing_char
+        .drawing
+        .expect("pseudo-glyph carries the drawing");
+    assert!(result.source.chars[0].drawing.is_none() && result.source.chars[2].drawing.is_none());
+    let source = &result.source.drawings[id.0];
+    assert_eq!(source.commands, "m 0 0 l 10 10");
+    // `\pbo` усекается до целого, как `(int) pbo` в libass.
+    assert_eq!(source.baseline_offset, 3);
+    // PlayRes = холст (масштаб кадра 1), \p2: координаты делятся на 2.
+    assert_eq!(source.outline_scale.horizontal, 0.5);
+    assert_eq!(source.outline_scale.vertical, 0.5);
+}
+
+#[test]
+fn drawing_scale_includes_fscx_fscy_and_the_frame_scale() {
+    let script = script_with(vec![default_style()]);
+    let cue = cue_with(
+        &script,
+        vec![
+            tags(vec![
+                AssOverride::ScaleX(Some(2.0)),
+                AssOverride::ScaleY(Some(0.5)),
+                AssOverride::Drawing(AssDrawingMode::On { scale: 1 }),
+            ]),
+            text("m 0 0 l 1 1"),
+        ],
+    );
+    // Холст вдвое больше PlayRes (1280x720): масштаб кадра 2.
+    let result = plan_with(&cue, canvas(2560, 1440), &AssRenderOptions::default());
+    let source = &result.source.drawings[0];
+    assert_eq!(source.outline_scale.horizontal, 2.0 * 2.0);
+    assert_eq!(source.outline_scale.vertical, 0.5 * 2.0);
+}
+
+#[test]
+fn drawing_gets_its_own_pseudo_glyph_even_with_the_look_of_its_neighbours() {
+    let result = plan(vec![
+        text("a"),
+        tags(vec![AssOverride::Drawing(AssDrawingMode::On { scale: 1 })]),
+        text("m 0 0"),
+        tags(vec![AssOverride::Drawing(AssDrawingMode::Off)]),
+        text("b"),
+    ]);
+    let looks: Vec<usize> = result.source.chars.iter().map(|c| c.look).collect();
+    // Вид тот же (разрыв участка по рисунку решает конвейер, а не вид).
+    assert_eq!(looks, [0, 0, 0]);
 }
 
 #[test]

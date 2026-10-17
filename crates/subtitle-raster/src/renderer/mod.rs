@@ -12,6 +12,9 @@
 //!   столкновения по картинкам) и ASS (порядок `(слой, ReadOrder)`, столкновения по слоям с памятью
 //!   положений между кадрами — `ass_collisions`, рисование — `ass_cue` поверх `crate::ass`). Сначала
 //!   идут картинки простых реплик, затем ASS.
+//! - Клипы ASS (`\clip`, `\iclip`) в ключ кэша НЕ входят: кэш хранит картинки реплики без клипа
+//!   (`RasterizedCue::bitmaps`), а клип накладывает стадия `crate::clip` при сборке кадра, до сдвига
+//!   столкновений (`RasterizedCue::final_bitmaps`; как в libass).
 //! - Время: `RenderRequest::moment` + тайминг ASS-события (`AssEventTiming`) задают анимации
 //!   (`\move`, `\fad`). Реплика без анимации кэшируется по ключу без времени; анимированная —
 //!   по её мгновенному состоянию. `SubtitleOverlay::animation_change` сообщает, когда
@@ -44,6 +47,7 @@ use crate::ass::{
     AssAnimation, AssAnimationKey, AssAnimationState, AssEventClock, AssRenderOptions,
     AssStyleSource, evaluate_animation,
 };
+use crate::blur::BlurScratch;
 use crate::cache::ByteLruCache;
 use crate::face_cache::FaceCache;
 use crate::fonts::{
@@ -114,6 +118,9 @@ pub struct SubtitleRasterizer {
     ass_collisions: AssCollisionMemory,
     frame: Option<FrameState>,
     counters: Counters,
+    /// Рабочая память размытия `\blur` / `\be`: одна на растеризатор (то есть на поток
+    /// отрисовки), переиспользуется всеми репликами.
+    blur_scratch: BlurScratch,
 }
 
 impl SubtitleRasterizer {
@@ -129,6 +136,7 @@ impl SubtitleRasterizer {
             ass_collisions: AssCollisionMemory::default(),
             frame: None,
             counters: Counters::default(),
+            blur_scratch: BlurScratch::new(),
         }
     }
 
@@ -184,8 +192,9 @@ impl SubtitleRasterizer {
             rejected_canvas: self.counters.rejected_canvas,
             skipped_glyphs: self.counters.skipped_glyphs,
             skipped_borders: self.counters.skipped_borders,
-            skipped_ass_drawing_runs: self.counters.skipped_ass_drawings,
+            invalid_ass_drawings: self.counters.invalid_ass_drawings,
             skipped_oversized_bitmaps: self.counters.skipped_oversized_bitmaps,
+            failed_blur_layers: self.counters.failed_blur_layers,
             unusable_faces: fonts.unusable_faces,
             unreadable_faces: fonts.unreadable_faces,
             current_frame_bytes: self.frame.as_ref().map_or(0, FrameState::mask_bytes),
@@ -351,6 +360,10 @@ impl SubtitleRasterizer {
             &request.ass,
         ));
 
+        // Рабочая память переиспользуется между репликами, но не растёт навсегда после
+        // одного очень большого размытия.
+        self.blur_scratch
+            .release_if_larger_than(self.limits.cache.blur_scratch_retained_bytes);
         let overlay = self
             .assemble_overlay(request.canvas, bitmaps)
             .with_animation_change(time.change);
@@ -386,7 +399,7 @@ impl SubtitleRasterizer {
         let shifts = resolve_vertical_shifts(&items, canvas.height());
         let mut bitmaps: Vec<SubtitleBitmap> = Vec::new();
         for (cue, shift) in cues.iter().zip(shifts) {
-            bitmaps.extend(cue.bitmaps.iter().map(|bitmap| {
+            bitmaps.extend(cue.final_bitmaps().iter().map(|bitmap| {
                 if shift == 0 {
                     bitmap.clone()
                 } else {
@@ -453,6 +466,7 @@ impl SubtitleRasterizer {
                     language: request.text_language,
                     max_bitmap_side: self.limits.input.max_canvas_side,
                 },
+                &mut self.blur_scratch,
             ),
         };
         match painted {
@@ -468,8 +482,10 @@ impl SubtitleRasterizer {
                 self.counters.skipped_borders += u64::from(rasterized.diagnostics.skipped_borders);
                 self.counters.skipped_oversized_bitmaps +=
                     u64::from(rasterized.diagnostics.skipped_oversized_bitmaps);
-                self.counters.skipped_ass_drawings +=
-                    u64::from(rasterized.diagnostics.skipped_ass_drawings);
+                self.counters.failed_blur_layers +=
+                    u64::from(rasterized.diagnostics.failed_blur_layers);
+                self.counters.invalid_ass_drawings +=
+                    u64::from(rasterized.diagnostics.invalid_ass_drawings);
                 let bytes = rasterized.cache_bytes();
                 let shared = Arc::new(rasterized);
                 self.cue_cache.insert(cache_key, Arc::clone(&shared), bytes);

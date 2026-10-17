@@ -14,8 +14,12 @@ pub(crate) struct RenderDiagnostics {
     /// Глифы, не нарисованные, потому что после преобразования (3D-перспектива у плоскости
     /// камеры) их битмап превысил предел стороны `RasterInputLimits::max_canvas_side`.
     pub(crate) skipped_oversized_bitmaps: u32,
-    /// Куски текста ASS в режиме рисунка (`\p`), пропущенные: векторные рисунки слой 1 не рисует.
-    pub(crate) skipped_ass_drawings: u32,
+    /// Рисунки ASS (`\p`), не давшие ни одного контура: команды не распознаны или точка вышла
+    /// за допустимый диапазон. Рисунок остаётся в строке пустым псевдоглифом (как в libass).
+    pub(crate) invalid_ass_drawings: u32,
+    /// Слои, оставшиеся неразмытыми из-за нарушенного внутреннего инварианта размытия (не из-за
+    /// предела размера: тот считается в `skipped_oversized_bitmaps`).
+    pub(crate) failed_blur_layers: u32,
 }
 
 impl RenderDiagnostics {
@@ -27,9 +31,34 @@ impl RenderDiagnostics {
             skipped_oversized_bitmaps: self
                 .skipped_oversized_bitmaps
                 .saturating_add(other.skipped_oversized_bitmaps),
-            skipped_ass_drawings: self
-                .skipped_ass_drawings
-                .saturating_add(other.skipped_ass_drawings),
+            invalid_ass_drawings: self
+                .invalid_ass_drawings
+                .saturating_add(other.invalid_ass_drawings),
+            failed_blur_layers: self
+                .failed_blur_layers
+                .saturating_add(other.failed_blur_layers),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_blur_layers_are_summed_and_do_not_leak_into_other_counters() {
+        let first = RenderDiagnostics {
+            failed_blur_layers: 2,
+            ..RenderDiagnostics::default()
+        };
+        let second = RenderDiagnostics {
+            failed_blur_layers: u32::MAX,
+            skipped_oversized_bitmaps: 1,
+            ..RenderDiagnostics::default()
+        };
+        let total = first.combined(second);
+        assert_eq!(total.failed_blur_layers, u32::MAX);
+        assert_eq!(total.skipped_oversized_bitmaps, 1);
+        assert_eq!(total.skipped_glyphs, 0);
     }
 }

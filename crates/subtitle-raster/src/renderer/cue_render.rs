@@ -1,8 +1,12 @@
 //! Отрисовка одной реплики целиком: стиль -> текст -> плашка -> готовый список картинок.
 
+use std::sync::OnceLock;
+
 use subtitle_core::SubtitleTextCue;
 
 use crate::appearance::{CollisionDirection, SubtitleAppearance, cue_style};
+use crate::bitmap::BitmapError;
+use crate::clip::CueClip;
 use crate::face_cache::FaceCache;
 use crate::fonts::{SubtitleFontLibrary, TextLanguagePreference};
 use crate::overlay::{CanvasSize, SubtitleBitmap};
@@ -23,6 +27,9 @@ pub(crate) enum CueRenderError {
     /// Сбой построения плашки.
     #[error("plate rendering failed: {0}")]
     Plate(#[from] PlateError),
+    /// Сбой растеризации маски векторного клипа.
+    #[error("clip rendering failed: {0}")]
+    Clip(#[from] BitmapError),
 }
 
 /// Прямоугольник в пикселях холста (правый и нижний края не включены).
@@ -47,6 +54,12 @@ pub(crate) struct RasterizedCue {
     pub(crate) ass_collision: Option<AssCollisionRect>,
     /// Что пропущено при отрисовке (учитывается один раз, при растеризации).
     pub(crate) diagnostics: RenderDiagnostics,
+    /// Клип реплики (`\clip`/`\iclip`), не зависящий от времени. `bitmaps` хранит картинки БЕЗ
+    /// клипа; клип накладывает стадия [`crate::clip`] при сборке кадра (см. [`Self::final_bitmaps`]).
+    pub(crate) clip: CueClip,
+    /// Результат наложения клипа на `bitmaps`: считается один раз при первой сборке кадра и
+    /// живёт в записи кэша, чтобы маски клипнутых картинок были общими между кадрами.
+    pub(crate) clipped_bitmaps: OnceLock<Vec<SubtitleBitmap>>,
 }
 
 /// Рамка реплики ASS для разрешения столкновений (libass: `EventImages`).
@@ -60,13 +73,33 @@ pub(crate) struct AssCollisionRect {
 
 impl RasterizedCue {
     /// Размер в кэше: байты масок плюс условная стоимость записи.
+    ///
+    /// У реплики с клипом добавляется маска клипа и ещё раз размер масок: столько же (не
+    /// больше) займёт запомненный результат клипа ([`Self::final_bitmaps`]).
     pub(crate) fn cache_bytes(&self) -> usize {
         let masks: usize = self
             .bitmaps
             .iter()
             .map(|bitmap| bitmap.coverage().len())
             .sum();
-        masks.saturating_add(CUE_ENTRY_OVERHEAD_BYTES)
+        let clipped_copy = if self.clip.is_none() { 0 } else { masks };
+        masks
+            .saturating_add(clipped_copy)
+            .saturating_add(self.clip.mask_bytes())
+            .saturating_add(CUE_ENTRY_OVERHEAD_BYTES)
+    }
+
+    /// Картинки реплики, как они идут в кадр: с наложенным клипом.
+    ///
+    /// Без клипа это сами `bitmaps` (никаких копий). С клипом стадия [`crate::clip`] считается
+    /// один раз и запоминается: клип не зависит от времени, а общие маски между кадрами нужны
+    /// детектору изменений (`Unchanged`/`Moved` вместо `Replaced`).
+    pub(crate) fn final_bitmaps(&self) -> &[SubtitleBitmap] {
+        if self.clip.is_none() {
+            return &self.bitmaps;
+        }
+        self.clipped_bitmaps
+            .get_or_init(|| self.clip.apply(&self.bitmaps))
     }
 }
 
@@ -113,6 +146,8 @@ pub(crate) fn rasterize_cue(
         collision: style.collision,
         ass_collision: None,
         diagnostics: rendered.diagnostics,
+        clip: CueClip::NONE,
+        clipped_bitmaps: OnceLock::new(),
     })
 }
 

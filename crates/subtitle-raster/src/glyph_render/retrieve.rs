@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use skrifa::GlyphId;
 
+use super::drawing::{DrawingOutcome, place_drawing};
 use super::{GlyphOutline, GlyphVariant, load_styled_glyph_outline};
 use crate::event_style::AxisPair;
 use crate::face_cache::{FaceCache, FaceLoadError};
@@ -30,7 +31,7 @@ use crate::fonts::{FaceId, FontStyle};
 use crate::glyph_info::{GlyphBox, PlacedGlyph, TextCluster};
 use crate::outline::round_ties_even_to_i32;
 use crate::render_diagnostics::RenderDiagnostics;
-use crate::source_text::SpanLook;
+use crate::source_text::{DrawingSource, SpanLook};
 
 /// Ключ контура в пределах реплики: глиф лица и вариант (синтетика, линии).
 type OutlineKey = (FaceId, GlyphId, GlyphVariant);
@@ -107,10 +108,14 @@ fn place_outline(
 /// заранее подготовлены в `faces`; контур, который не загрузился, оставляет глиф без рамки и
 /// метрик (libass тоже пропускает такой глиф). Такие глифы считаются в `skipped_glyphs`
 /// возвращаемого отчёта.
+///
+/// Кластер-рисунок (`TextCluster::drawing`) берёт контур не из шрифта, а из команд рисования
+/// в `drawings`; рисунок без контура считается в `invalid_ass_drawings`.
 pub(crate) fn retrieve_glyphs(
     faces: &FaceCache,
     clusters: &mut [TextCluster],
     looks: &[SpanLook],
+    drawings: &[DrawingSource],
 ) -> Result<RenderDiagnostics, FaceLoadError> {
     let mut memo = OutlineMemo::default();
     let mut diagnostics = RenderDiagnostics::default();
@@ -118,20 +123,14 @@ pub(crate) fn retrieve_glyphs(
         let Some(cluster) = clusters.get_mut(index) else {
             continue;
         };
-        let glyph_scale = cluster.glyph_scale;
-        let look = looks.get(cluster.look);
-        for glyph in cluster.glyphs_mut() {
-            let face_entry = faces.get(glyph.face)?;
-            let variant = look.map_or(GlyphVariant::PLAIN, |known| {
-                face_entry.style().variant_for(known)
-            });
-            let Some(outline) = memo.get(faces, glyph.face, glyph.glyph, variant)? else {
-                diagnostics.skipped_glyphs = diagnostics.skipped_glyphs.saturating_add(1);
-                continue;
-            };
-            let scale = face_entry.scale();
-            let (ascent, descent) = (scale.ascent(), scale.descent());
-            place_outline(glyph, outline, ascent, descent, glyph_scale);
+        match cluster.drawing.and_then(|id| drawings.get(id.0)) {
+            Some(source) => {
+                if place_drawing(cluster, source) == DrawingOutcome::NoOutline {
+                    diagnostics.invalid_ass_drawings =
+                        diagnostics.invalid_ass_drawings.saturating_add(1);
+                }
+            }
+            None => load_font_glyphs(faces, &mut memo, cluster, looks, &mut diagnostics)?,
         }
         // Порядок как в libass: сначала зазор после курсива (он читает продвижение предыдущих
         // кластеров, уже с их интервалом), затем интервал самого символа.
@@ -144,6 +143,32 @@ pub(crate) fn retrieve_glyphs(
         }
     }
     Ok(diagnostics)
+}
+
+/// Загружает контуры всех глифов кластера из шрифта и считает рамки и метрики.
+fn load_font_glyphs(
+    faces: &FaceCache,
+    memo: &mut OutlineMemo,
+    cluster: &mut TextCluster,
+    looks: &[SpanLook],
+    diagnostics: &mut RenderDiagnostics,
+) -> Result<(), FaceLoadError> {
+    let glyph_scale = cluster.glyph_scale;
+    let look = looks.get(cluster.look);
+    for glyph in cluster.glyphs_mut() {
+        let face_entry = faces.get(glyph.face)?;
+        let variant = look.map_or(GlyphVariant::PLAIN, |known| {
+            face_entry.style().variant_for(known)
+        });
+        let Some(outline) = memo.get(faces, glyph.face, glyph.glyph, variant)? else {
+            diagnostics.skipped_glyphs = diagnostics.skipped_glyphs.saturating_add(1);
+            continue;
+        };
+        let scale = face_entry.scale();
+        let (ascent, descent) = (scale.ascent(), scale.descent());
+        place_outline(glyph, outline, ascent, descent, glyph_scale);
+    }
+    Ok(())
 }
 
 /// Курсивный символ перед прямым: расширяет продвижение на вылет глифа вправо

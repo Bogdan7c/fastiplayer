@@ -45,6 +45,7 @@ use subtitle_core::{
     AssWrapStyle,
 };
 
+use super::filter_params::FilterParams;
 use crate::event_fade::EventFade;
 use crate::glyph_transform::{Rotation3d, ShearFactors};
 
@@ -95,6 +96,9 @@ pub(crate) struct RenderState<'script> {
     pub(crate) rotation: Rotation3d,
     /// Наклон `\fax`, `\fay`.
     pub(crate) shear: ShearFactors,
+    /// Теги слоя 3: `\blur` и `\be` сбрасывает `\r`; `\clip`/`\iclip` и `\pbo` живут всю
+    /// реплику (`init_render_context`, `ass_reset_render_context`).
+    pub(crate) filters: FilterParams,
 
     // --- Живёт всю реплику ---
     pub(crate) alignment: AssAlignment,
@@ -142,6 +146,7 @@ impl<'script> RenderState<'script> {
             encoding: event_style.encoding,
             rotation: style_rotation(event_style),
             shear: ShearFactors::default(),
+            filters: FilterParams::default(),
             alignment: event_style.alignment,
             alignment_locked: false,
             wrap_style: initial_wrap_style,
@@ -187,6 +192,7 @@ impl<'script> RenderState<'script> {
         self.encoding = style.encoding;
         self.rotation = style_rotation(style);
         self.shear = ShearFactors::default();
+        self.filters.reset_blur();
     }
 
     /// Применяет один тег (libass: ветки `ass_parse_tags` при `pwr = 1`, без анимации).
@@ -276,7 +282,11 @@ impl<'script> RenderState<'script> {
             }
             AssOverride::Spacing(value) => self.spacing = value.unwrap_or(self.style.spacing),
             AssOverride::Drawing(mode) => self.drawing = *mode,
-            // Теги слоёв 2-3 растеризатор слоя 1 не исполняет (их считает разбор).
+            AssOverride::Blur(_)
+            | AssOverride::EdgeBlur(_)
+            | AssOverride::DrawingBaselineOffset(_)
+            | AssOverride::Clip(_) => self.filters.apply(tag),
+            // `\t` и караоке (сессия 10b) пока не исполняются (их считает разбор).
             AssOverride::Unsupported(_) => {}
         }
     }

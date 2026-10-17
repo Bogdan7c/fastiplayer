@@ -33,6 +33,7 @@
 
 mod advance;
 mod decoration;
+mod drawing;
 mod face_style;
 mod retrieve;
 mod scale_pen;
