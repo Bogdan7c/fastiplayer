@@ -19,6 +19,7 @@ crates/symphonia-demux/tests/fixtures/subtitles/generate.sh
 | `two-audio-two-srt.mkv` | «Фильм с двумя озвучками и субтитрами» для памяти выбора: VP8, те же две аудиодорожки, что в `two-audio-tracks.mkv` (FLAC `rus` «Dub» default, Opus `eng` «Original»), и те же две SRT, что в `two-srt-tracks.mkv` (`eng` «English» default, `rus` «Russian SDH»); ~43 КБ |
 | `aac-pce-5p1.mkv` | Только AAC-LC 48 кГц 5.1(side) с Program Config Element (`channel_configuration = 0`): синус 880 Гц в канале FC, 1 с, ~8 КБ. Для `aac_pce_playback.rs` |
 | `low-fps-vp8-opus.mkv` | Низкий fps со звуком, достаточно длинный для обычного (не короткого) старта: VP8 64x64 10 fps + Opus mono 48 кГц (синус 440 Гц), 8 с, ~34 КБ. Для `startup_decode_ahead.rs` в `player-core` |
+| `ass-layer1.mkv` | Для тестов ASS слоя 1 (сессия 08): VP8 64x64 и одна ASS-дорожка `eng` «Layer 1», PlayRes 640x360, без вложенных шрифтов, ~10 КБ. С 1.0 до 3.0 с одновременно: знак `{\pos(160,60)\an5}SIGN` красным (стиль `Sign`) и две нижние реплики в одном месте — «First bottom line» белым и «Second bottom line» жёлтым |
 | `mov-text-rus.mp4` | H.264 и дорожка `mov_text` с языком `rus` (из `mdhd`) |
 
 Реплики SRT: «Hello» / «Привет» на 0.5–1.5 с и «Second line» / «Второй» на 2.0–2.8 с.

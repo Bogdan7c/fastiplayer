@@ -15,12 +15,12 @@ use crate::compose::{ComposeError, ComposeInput, compose_text};
 use crate::event_style::EventStyle;
 use crate::face_cache::{FaceCache, FaceLoadError};
 use crate::fonts::{SubtitleFontLibrary, TextLanguagePreference};
-use crate::glyph_render::{FREETYPE_REQUEST_SIZE, retrieve_glyphs};
-use crate::layout::{LineBox, arrange_text, line_boxes};
+use crate::glyph_render::retrieve_glyphs;
+use crate::layout::{EventImageRect, LineBox, arrange_text, event_image_rect, line_boxes};
 use crate::overlay::{CanvasSize, SubtitleBitmap};
 use crate::render_diagnostics::RenderDiagnostics;
 use crate::shaping::shape_text;
-use crate::source_text::SourceText;
+use crate::source_text::{SourceText, SpanLook};
 
 /// Почему реплика не отрисована.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -51,6 +51,21 @@ pub(crate) struct RenderedText {
     pub(crate) lines: Vec<LineBox>,
     /// Что пропущено при отрисовке (глифы без контура, глифы без обводки).
     pub(crate) diagnostics: RenderDiagnostics,
+    /// Рамка реплики по метрикам текста (libass: `EventImages`), нужна разрешению столкновений
+    /// ASS; `None` — реплика пуста.
+    pub(crate) event_rect: Option<EventImageRect>,
+}
+
+impl RenderedText {
+    /// Результат для реплики без видимых символов.
+    fn empty() -> Self {
+        Self {
+            images: Vec::new(),
+            lines: Vec::new(),
+            diagnostics: RenderDiagnostics::default(),
+            event_rect: None,
+        }
+    }
 }
 
 /// Рисует одну текстовую реплику стилем `style` на холсте `canvas`.
@@ -67,19 +82,39 @@ pub(crate) fn render_cue_text(
     language: TextLanguagePreference,
 ) -> Result<RenderedText, TextRenderError> {
     validate_style(style)?;
-    let source = SourceText::from_styled(text, style);
-    if source.is_blank() {
-        return Ok(RenderedText {
-            images: Vec::new(),
-            lines: Vec::new(),
-            diagnostics: RenderDiagnostics::default(),
+    // Путь SRT/WebVTT: размер символов берётся из стиля и обязан быть положительным.
+    if style.font_size <= 0.0 {
+        return Err(TextRenderError::InvalidFontSize {
+            size: style.font_size,
         });
     }
+    let source = SourceText::from_styled(text, style);
+    render_source_text(fonts, faces, &source, style, canvas, language)
+}
 
-    let mut clusters = shape_text(fonts, faces, &source, style, language)?;
-    let font_scale = style.font_size / FREETYPE_REQUEST_SIZE;
-    let retrieved = retrieve_glyphs(faces, &mut clusters, &source.looks, font_scale)?;
+/// Рисует уже развёрнутый текст (символы и их виды): общий вход для SRT/WebVTT и ASS.
+///
+/// `style` задаёт общее для реплики (выравнивание, геометрию блока, перенос, направление,
+/// подложку события); всё, что может отличаться между символами, берётся из `source.looks`.
+pub(crate) fn render_source_text(
+    fonts: &mut SubtitleFontLibrary,
+    faces: &mut FaceCache,
+    source: &SourceText,
+    style: &EventStyle,
+    canvas: CanvasSize,
+    language: TextLanguagePreference,
+) -> Result<RenderedText, TextRenderError> {
+    validate_style(style)?;
+    validate_looks(&source.looks)?;
+    if source.is_blank() {
+        return Ok(RenderedText::empty());
+    }
+
+    let mut clusters = shape_text(fonts, faces, source, style, language)?;
+    let retrieved = retrieve_glyphs(faces, &mut clusters, &source.looks)?;
     let layout = arrange_text(&mut clusters, style, canvas);
+    let pixel_aspect_x = style.pixel_aspect_x();
+    let event_rect = event_image_rect(&layout, pixel_aspect_x);
     // Строки читаем до композиции: она переводит позиции глифов в координаты холста.
     let lines = line_boxes(&clusters, &layout, style);
     let composed = compose_text(
@@ -89,7 +124,7 @@ pub(crate) fn render_cue_text(
             style,
             layout: &layout,
             canvas,
-            font_scale,
+            pixel_aspect_x,
         },
     )?;
     Ok(RenderedText {
@@ -98,7 +133,9 @@ pub(crate) fn render_cue_text(
         diagnostics: retrieved.combined(RenderDiagnostics {
             skipped_glyphs: 0,
             skipped_borders: composed.skipped_borders,
+            skipped_ass_drawings: 0,
         }),
+        event_rect: Some(event_rect),
     })
 }
 
@@ -122,9 +159,27 @@ pub(crate) fn render_text_event(
     .map(|rendered| rendered.images)
 }
 
+/// Проверяет числа видов символов: размер шрифта, обводка, тень, масштаб, интервал.
+fn validate_looks(looks: &[SpanLook]) -> Result<(), TextRenderError> {
+    for look in looks {
+        if !look.font_size.is_finite() || look.font_size <= 0.0 {
+            return Err(TextRenderError::InvalidFontSize {
+                size: look.font_size,
+            });
+        }
+        if !look.numbers_are_finite() {
+            return Err(TextRenderError::InvalidDecorationSize);
+        }
+    }
+    Ok(())
+}
+
 /// Проверяет числа стиля, от которых зависит арифметика конвейера.
+///
+/// Нулевой размер допустим: у ASS-реплики он означает «стиль с `Fontsize: 0`», такие буквы
+/// не попадают в раскладку, а размер самих символов проверяет [`validate_looks`].
 fn validate_style(style: &EventStyle) -> Result<(), TextRenderError> {
-    if !style.font_size.is_finite() || style.font_size <= 0.0 {
+    if !style.font_size.is_finite() || style.font_size < 0.0 {
         return Err(TextRenderError::InvalidFontSize {
             size: style.font_size,
         });

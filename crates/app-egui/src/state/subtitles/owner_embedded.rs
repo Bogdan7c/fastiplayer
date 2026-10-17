@@ -33,10 +33,15 @@ use subtitle_core::{SubtitleEvent, SubtitleTimeline, SubtitleTrackId};
 use super::SubtitleOwner;
 use super::active_track::ActiveSubtitleTrack;
 use super::auto_select::auto_select;
-use super::embedded_events::{PacketEventOutcome, PacketRejection, event_from_packet};
+use super::embedded_events::{PacketEventOutcome, PacketRejection};
 use super::embedded_track::EmbeddedTrackDescription;
 use super::sidecar_job::SubtitleLoadFailure;
 use super::track_list::TrackLoadState;
+
+mod ass_owner;
+mod ass_tracks;
+
+pub(super) use self::ass_tracks::EmbeddedAssTracks;
 
 /// Сколько сообщений трубы читается за один вызов (внутренний инвариант: ограничивает работу
 /// UI-потока на кадре; труба сама имеет ёмкость из конфига, остаток читается в следующий вызов).
@@ -86,6 +91,12 @@ pub(super) struct EmbeddedFeedCounters {
     pub(super) unsupported_track_packets: u64,
     /// Сообщения, выброшенные из-за переполнения буфера ожидания.
     pub(super) deferred_overflow: u64,
+    /// ASS-заголовки дорожек, отвергнутые при разборе (дорожка показана простым текстом).
+    pub(super) ass_headers_rejected: u64,
+    /// ASS-события с уже виданным `ReadOrder` (повторы блоков и перечитанные после seek).
+    pub(super) duplicate_read_orders: u64,
+    /// ASS-события без длительности или с нулевой: libass делает их невидимыми, пропускаются.
+    pub(super) ass_zero_duration_events: u64,
 }
 
 /// Состояние чтения трубы владельцем.
@@ -181,6 +192,10 @@ impl SubtitleOwner {
                 // Кодек дорожки сменился: кэш реплик другого формата не годится.
                 removed.extend(media.tracks.retain_embedded(|id| id != row.id));
             }
+            // Таймлайн дорожки создаётся заново (новая дорожка, возврат убранной или смена
+            // кодека): виденные `ReadOrder` прежнего кэша больше не описывают его содержимое,
+            // иначе перечитанные события отбросились бы как повторы и дорожка осталась бы пустой.
+            media.embedded_ass.forget_seen_read_orders(row.id);
             let load = if description.is_renderable_now() {
                 TrackLoadState::Ready(ActiveSubtitleTrack::new(
                     self.source_ids.allocate(),
@@ -330,6 +345,8 @@ impl SubtitleOwner {
             MessageRoute::Current => match message {
                 SubtitleFeedMessage::MediaStarted(start) => {
                     self.start_attached_fonts(start.media_instance_id, &start.attachments);
+                    // Заголовки ASS ждут первого пакета своей дорожки (см. `ass_tracks`).
+                    self.stash_ass_track_headers(&start.track_headers);
                 }
                 SubtitleFeedMessage::Packet(packet) => self.accept_packet(packet, batches),
             },
@@ -368,7 +385,6 @@ impl SubtitleOwner {
 
     /// Пакет текущего media: разбирает и ставит реплику в батч своей дорожки.
     fn accept_packet(&mut self, packet: SubtitleFeedPacket, batches: &mut TrackBatches) {
-        let embedded_limits = self.settings.embedded_limits;
         let Some(media) = self.media.as_ref() else {
             return;
         };
@@ -386,15 +402,16 @@ impl SubtitleOwner {
             self.embedded_feed.counters.unsupported_track_packets += 1;
             return;
         };
-        let outcome = event_from_packet(
-            &packet,
-            cue_format,
-            &embedded_limits.cue_parse,
-            embedded_limits.cue_max_open_duration,
-        );
+        let outcome = self.packet_event_outcome(&packet, cue_format);
         match outcome {
             PacketEventOutcome::Event(event) => batches.entry(track_id).or_default().push(event),
             PacketEventOutcome::Empty => self.embedded_feed.counters.empty_packets += 1,
+            PacketEventOutcome::DuplicateReadOrder => {
+                self.embedded_feed.counters.duplicate_read_orders += 1;
+            }
+            PacketEventOutcome::ZeroDuration => {
+                self.embedded_feed.counters.ass_zero_duration_events += 1;
+            }
             PacketEventOutcome::Rejected(rejection) => self.note_rejected_packet(rejection),
         }
     }

@@ -33,3 +33,6 @@ workspace = true
 png.workspace = true
 # Описание изображений-эталонов (geometry JSON) в тестах паритета; dev-only.
 serde_json.workspace = true
+# Разбор ASS для функциональных тестов и паритета с libass: файл -> реплики -> растеризатор
+# (dev-only: в продакшене реплики приходят от вызывающего, растеризатор разбора не знает).
+subtitle-formats.workspace = true

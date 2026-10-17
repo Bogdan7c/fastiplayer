@@ -179,8 +179,9 @@ pub(super) fn measure_text(
         }
         line.max_ascent = line.max_ascent.max(cluster.root.ascent);
         line.max_descent = line.max_descent.max(cluster.root.descent);
-        line.max_border_y = line.max_border_y.max(style.border.vertical);
-        line.max_border_x = line.max_border_x.max(style.border.horizontal);
+        // Толщина обводки у каждого символа своя (`\bord` в середине строки).
+        line.max_border_y = line.max_border_y.max(cluster.border.vertical);
+        line.max_border_x = line.max_border_x.max(cluster.border.horizontal);
         if cluster.symbol != '\n' {
             line.scale = 1.0 / 64.0;
         }

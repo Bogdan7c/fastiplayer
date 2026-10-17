@@ -43,6 +43,10 @@ const SUBTITLES_KEY_COMMENTS: &[(&str, &str)] = &[
         "# Применять свои цвета и обводку также к ASS/SSA-субтитрам (работает, когда доступен ASS-рендер).",
     ),
     (
+        "ass_position_mode",
+        "# Положение ASS/SSA: main_lines_avoid_controls — поднимать основной диалог над панелью (надписи на месте), author — как задумал автор, whole_layer — двигать слой целиком, как обычные субтитры.",
+    ),
+    (
         "max_file_size_mb",
         "# Файлы субтитров больше этого размера (МБ) не загружаются.",
     ),
@@ -90,12 +94,28 @@ const SUBTITLES_KEY_COMMENTS: &[(&str, &str)] = &[
         "embedded_cue_max_open_duration_ms",
         "# Сколько мс показывается встроенная реплика без длительности.",
     ),
+    (
+        "max_ass_header_kb",
+        "# Заголовки ASS/SSA больше этого размера (КБ) не разбираются; дорожка показывается простым текстом.",
+    ),
+    (
+        "max_ass_styles",
+        "# Сколько стилей читается из одного ASS/SSA-заголовка.",
+    ),
+    (
+        "max_ass_override_tags_per_event",
+        "# Сколько тегов оформления читается из одной ASS/SSA-реплики; лишние игнорируются.",
+    ),
+    (
+        "max_ass_events_on_screen",
+        "# Сколько ASS/SSA-реплик рисуется на кадре одновременно; лишние с верхних слоёв пропускаются.",
+    ),
 ];
 
 /// Добавляет комментарии перед ключами секции `[subtitles]`.
 ///
 /// Если секции нет (не должно случаться для документа из `AppConfig`), текст не меняется;
-/// золотой файл `current_schema_v17.toml` тогда провалит тест стабильности схемы.
+/// золотой файл `current_schema_v18.toml` тогда провалит тест стабильности схемы.
 pub(super) fn document_subtitles_defaults(toml_text: &mut String) {
     let Some(header_offset) = toml_text.find(&format!("\n{SUBTITLES_HEADER}\n")) else {
         return;

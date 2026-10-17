@@ -162,6 +162,7 @@ fn owner_with_private_glyph_cue(
         SubtitleFeedMessage::MediaStarted(SubtitleFeedMediaStart {
             media_instance_id: media,
             attachments,
+            track_headers: Vec::new(),
         }),
         raw_packet(
             media,
@@ -268,6 +269,7 @@ fn attachment_over_the_limit_is_skipped_and_cues_still_render() {
         SubtitleFeedMediaStart {
             media_instance_id: media,
             attachments: oversized,
+            track_headers: Vec::new(),
         },
     )]);
     wait_until(&mut owner, "attached fonts job", |owner| {
@@ -305,6 +307,7 @@ fn attachments_of_a_previous_media_are_not_installed() {
         SubtitleFeedMediaStart {
             media_instance_id: instance(4),
             attachments: stale,
+            track_headers: Vec::new(),
         },
     )]);
 

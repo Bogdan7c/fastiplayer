@@ -9,7 +9,8 @@ use subtitle_core::{ScreenAnchor, SpanContent, SpanStyle, StyledText, SubtitleCo
 
 use super::ass_case::parse_ass_color;
 use crate::event_style::{
-    AxisPair, BaseDirection, BorderStyle, EventStyle, StyleColors, TextMargins, WrapStyle,
+    AxisPair, BaseDirection, BorderStyle, EventPlacement, EventStyle, StyleColors, TextMargins,
+    WrapStyle,
 };
 use crate::fonts::{FontStyle, FontWeightClass};
 
@@ -102,6 +103,7 @@ pub(super) fn load_text_case(path: &Path) -> TextCase {
             right: integer(20),
             vertical: integer(21),
         },
+        placement: EventPlacement::ByMargins,
         wrap_style,
         line_spacing: 0.0,
         // libass: Encoding = -1 — автоопределение, иначе слева направо.

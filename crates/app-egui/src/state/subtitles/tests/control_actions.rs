@@ -232,15 +232,23 @@ fn without_tracks_keys_only_explain_and_change_nothing() {
 #[test]
 fn unknown_and_unavailable_tracks_are_explained_or_ignored_without_state_change() {
     let media = instance(1);
-    let (_dir, video) = movie_with(&[("Movie.srt", ENGLISH_SRT), ("Movie.ass", "[Script Info]\n")]);
+    let (_dir, video) = movie_with(&[("Movie.srt", ENGLISH_SRT)]);
     let mut owner = owner_with_config(&config(true, "en"));
     begin_and_wait(&mut owner, media, &video);
+    // Недоступная дорожка — встроенная картинка (PGS): текстовые форматы файлов теперь все
+    // показываемые, а картинки остаются серыми «not supported yet».
+    let mut fixture = super::embedded_support::demux_fixture("two-srt-tracks.mkv");
+    let mut pgs_row = fixture.subtitle_row(0).clone();
+    pgs_row.id = media_core::TrackId::new(90);
+    pgs_row.codec_id = media_core::subtitle_codec::HDMV_PGS.to_owned();
+    fixture.tracks = vec![pgs_row];
+    owner.sync_embedded_tracks(Some(media), &fixture.tracks);
     let before = owner.menu_view();
     let ass = before
         .tracks
         .iter()
-        .find(|track| track.label.file_name.as_deref() == Some("Movie.ass"))
-        .expect("ass track is listed")
+        .find(|track| track.label.format == Some(subtitle_core::SubtitleFormat::Pgs))
+        .expect("pgs track is listed")
         .id;
 
     assert_eq!(

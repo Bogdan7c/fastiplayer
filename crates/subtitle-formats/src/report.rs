@@ -32,6 +32,9 @@ pub enum ParseIssueKind {
     InvalidRegionSetting,
     /// Блок `REGION` без непустого `id`: регион невозможно сослать, он отброшен.
     RegionWithoutId,
+    /// Строка `Dialogue:` ASS не соответствует раскладке `Format:` (не хватает полей
+    /// или нет `Text`); строка пропущена.
+    MalformedAssDialogue,
 }
 
 /// Какая настройка реплики WebVTT оказалась некорректной.

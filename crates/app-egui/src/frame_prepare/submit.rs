@@ -50,7 +50,7 @@ pub(super) fn submit_render_frame(
             .map(|placed| SubtitleOverlayFrame {
                 overlay: placed.overlay,
                 picture_rect: frame.picture_rect(),
-                layer_offset: placed.layer_offset,
+                layer_offsets: placed.layer_offsets,
             })
     });
 

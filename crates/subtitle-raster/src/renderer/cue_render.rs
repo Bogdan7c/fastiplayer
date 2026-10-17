@@ -43,8 +43,19 @@ pub(crate) struct RasterizedCue {
     pub(crate) extent: Option<PixelRect>,
     /// Куда сдвигать при столкновении.
     pub(crate) collision: CollisionDirection,
+    /// Данные столкновений по правилам libass (рамка по метрикам текста); только у ASS.
+    pub(crate) ass_collision: Option<AssCollisionRect>,
     /// Что пропущено при отрисовке (учитывается один раз, при растеризации).
     pub(crate) diagnostics: RenderDiagnostics,
+}
+
+/// Рамка реплики ASS для разрешения столкновений (libass: `EventImages`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AssCollisionRect {
+    /// Рамка по метрикам текста вместе с отступами обводки.
+    pub(crate) rect: PixelRect,
+    /// Ищет ли реплика свободное место (у реплик с `\pos` и т. п. нет).
+    pub(crate) detect_collisions: bool,
 }
 
 impl RasterizedCue {
@@ -100,6 +111,7 @@ pub(crate) fn rasterize_cue(
         bitmaps,
         extent,
         collision: style.collision,
+        ass_collision: None,
         diagnostics: rendered.diagnostics,
     })
 }
@@ -118,7 +130,7 @@ fn note_unsupported_span_backgrounds(cue: &SubtitleTextCue) {
 }
 
 /// Рамка, охватывающая все картинки.
-fn union_extent(bitmaps: &[SubtitleBitmap]) -> Option<PixelRect> {
+pub(super) fn union_extent(bitmaps: &[SubtitleBitmap]) -> Option<PixelRect> {
     bitmaps
         .iter()
         .map(|bitmap| {

@@ -26,3 +26,7 @@
 ## Тесты
 - `render-core/src/tests/picture_rect.rs`; `subtitle-sidecar/tests/sidecar_search.rs`; `render-wgpu-shell/src/subtitle_overlay/tests.rs` (GPU readback, пропуск без адаптера); `app-egui/src/state/subtitles/tests/{gpu_chain,presentation,sidecar_job}.rs`.
 - Real-media `#[ignore]`: `FASTIPLAYER_SUBTITLE_ASSETS_DIR=<abs>/test-assets/subs cargo test -p app-egui --locked -- --ignored real_sidecar` (сценарии 01–11, описание — `test-assets/subs/README.md`, owner-local, git-ignored; Sintel CC-BY). Замер: `cargo run -p subtitle-raster --release --locked --example measure_render_time`.
+
+
+## Сессия 08
+Сдвиг слоя стал двухгрупповым: `SubtitleLayerOffsets{main, fixed}` (SRT — `uniform`), картинки помечены `OverlayPlacementGroup`. Размещение: `LayerPlacementPolicy::{UserPlaced{bounds: PictureAndBars|PictureOnly}, AuthorPlaced, LiftMainGroupOnly}`; ASS никогда не на полосах — `mem:subtitles/ass-layer1-s08`.

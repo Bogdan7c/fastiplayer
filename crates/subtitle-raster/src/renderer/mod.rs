@@ -8,8 +8,13 @@
 //!   стиль) или рисуется (`cue_render`); затем `collisions` раздвигает налезающие
 //!   реплики (меняются только позиции, маски те же — это даёт `OverlayChange::Moved`);
 //!   затем результат сравнивается с прошлым кадром (`detect_overlay_change`).
-//! - Если запрос совпал с прошлым (те же ключи в том же порядке, холст, стиль, языковое предпочтение), работа не
-//!   делается вообще: возвращается прошлый результат с `Unchanged` (быстрый путь).
+//! - Реплики бывают двух видов ([`CueContent`]): простых форматов (SRT, WebVTT: порядок по запросу,
+//!   столкновения по картинкам) и ASS (порядок `(слой, ReadOrder)`, столкновения по слоям с памятью
+//!   положений между кадрами — `ass_collisions`, рисование — `ass_cue` поверх `crate::ass`). Сначала
+//!   идут картинки простых реплик, затем ASS.
+//! - Если запрос совпал с прошлым (те же ключи в том же порядке, холст, стиль, языковое предпочтение,
+//!   настройки ASS — если в кадре есть ASS), работа не делается вообще: возвращается прошлый
+//!   результат с `Unchanged` (быстрый путь).
 //!
 //! ## Политика ошибок
 //! Ошибка субтитров не должна ронять воспроизведение: реплика, которую не удалось нарисовать,
@@ -17,6 +22,9 @@
 //! рисуются. Фатальных ошибок у `render` нет, поэтому он возвращает `&SubtitleOverlay`, а не
 //! `Result`: вызывающему нечего обрабатывать иначе, чем «показать что есть».
 
+mod ass_collisions;
+mod ass_cue;
+mod ass_frame;
 mod collisions;
 mod cue_render;
 mod frame;
@@ -26,9 +34,8 @@ mod statistics;
 
 use std::sync::Arc;
 
-use subtitle_core::SubtitleTextCue;
-
 use crate::appearance::SubtitleAppearance;
+use crate::ass::{AssRenderOptions, AssStyleSource};
 use crate::cache::ByteLruCache;
 use crate::face_cache::FaceCache;
 use crate::fonts::{
@@ -41,22 +48,44 @@ use crate::overlay::{
     CanvasSize, OverlayChange, OverlayRevision, SubtitleBitmap, SubtitleOverlay,
     detect_overlay_change,
 };
+use ass_collisions::AssCollisionMemory;
+use ass_cue::rasterize_ass_cue;
+use ass_frame::{AssFrameCue, assemble_ass_bitmaps};
 use collisions::{CollisionItem, resolve_vertical_shifts};
 use cue_render::{CuePainter, RasterizedCue, rasterize_cue};
 use frame::{FrameSignature, FrameState};
-use limits::cue_char_count;
+use limits::{admit_cues, ass_cue_char_count, cue_char_count};
 
 pub use limits::{RasterInputLimits, RasterLimits};
-pub use request::{CueKey, CueSourceId, RasterCacheLimits, RenderRequest, RenderableCue};
+pub use request::{
+    CueContent, CueKey, CueSourceId, RasterCacheLimits, RenderRequest, RenderableCue,
+};
 use statistics::Counters;
 pub use statistics::RasterStatistics;
+
+/// От чего зависит вид готовой реплики, кроме холста и языка.
+///
+/// Реплики простых форматов зависят от пользовательского стиля; реплики ASS — от настроек ASS,
+/// а от пользовательского стиля только в режиме «мой стиль». Поэтому смена настроек ASS не
+/// сбрасывает кэш простых реплик, а смена стиля — кэш ASS-реплик с авторским оформлением.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum CueLook {
+    /// Реплика простого формата.
+    Text { appearance: SubtitleAppearance },
+    /// Реплика ASS.
+    Ass {
+        options: AssRenderOptions,
+        /// Пользовательский стиль, только если он применяется (`AssStyleSource::User`).
+        user_appearance: Option<SubtitleAppearance>,
+    },
+}
 
 /// Ключ кэша готовых реплик.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CueCacheKey {
     cue: CueKey,
     canvas: CanvasSize,
-    appearance: SubtitleAppearance,
+    look: CueLook,
     /// Язык меняет выбор CJK-лица, а значит и маски: другой язык — другая запись.
     text_language: TextLanguagePreference,
 }
@@ -69,6 +98,8 @@ pub struct SubtitleRasterizer {
     limits: RasterLimits,
     /// Рисовальщик реплик (в продакшене всегда `rasterize_cue`, см. [`CuePainter`]).
     painter: CuePainter,
+    /// Запомненные положения ASS-реплик между кадрами (порт `priv->top/height` libass).
+    ass_collisions: AssCollisionMemory,
     frame: Option<FrameState>,
     counters: Counters,
 }
@@ -83,6 +114,7 @@ impl SubtitleRasterizer {
             cue_cache: ByteLruCache::new(limits.cache.cue_bitmaps_bytes),
             limits,
             painter: rasterize_cue,
+            ass_collisions: AssCollisionMemory::default(),
             frame: None,
             counters: Counters::default(),
         }
@@ -134,9 +166,11 @@ impl SubtitleRasterizer {
             missing_glyph_lookups: fonts.missing_glyph_lookups,
             rejected_cues_too_long: self.counters.rejected_cues_too_long,
             dropped_cues_over_frame_limit: self.counters.dropped_cues_over_frame_limit,
+            dropped_ass_events_over_frame_limit: self.counters.dropped_ass_events_over_frame_limit,
             rejected_canvas: self.counters.rejected_canvas,
             skipped_glyphs: self.counters.skipped_glyphs,
             skipped_borders: self.counters.skipped_borders,
+            skipped_ass_drawing_runs: self.counters.skipped_ass_drawings,
             unusable_faces: fonts.unusable_faces,
             unreadable_faces: fonts.unreadable_faces,
             current_frame_bytes: self.frame.as_ref().map_or(0, FrameState::mask_bytes),
@@ -219,6 +253,7 @@ impl SubtitleRasterizer {
     fn invalidate_font_dependent_state(&mut self) {
         self.cue_cache.clear();
         self.faces.clear();
+        self.ass_collisions.clear();
         if let Some(frame) = self.frame.as_mut() {
             frame.stale = true;
         }
@@ -249,23 +284,60 @@ impl SubtitleRasterizer {
         // Лица вытесняем между кадрами: внутри реплики на них держатся ссылки.
         self.faces.trim_to(self.limits.cache.shaper_faces);
 
-        // Лишние реплики отбрасываем с конца: первые по порядку запроса важнее.
-        let admitted = request.cues.len().min(self.limits.input.max_cues_per_frame);
-        let dropped = request.cues.len() - admitted;
-        if dropped > 0 {
-            self.counters.dropped_cues_over_frame_limit += dropped as u64;
+        // Лимиты числа реплик: простые форматы — первые по запросу; ASS — по (слой, ReadOrder).
+        let admitted = admit_cues(request.cues, &self.limits.input);
+        if admitted.dropped_text > 0 {
+            self.counters.dropped_cues_over_frame_limit += admitted.dropped_text as u64;
             tracing::warn!(
-                dropped,
+                dropped = admitted.dropped_text,
                 max_cues = self.limits.input.max_cues_per_frame,
                 "too many subtitle cues in one frame, the extra ones are dropped"
             );
         }
-        let cues: Vec<Arc<RasterizedCue>> = request
-            .cues
-            .iter()
-            .take(admitted)
-            .filter_map(|cue| self.cue_for(cue.key, cue.cue, request))
-            .collect();
+        if admitted.dropped_ass > 0 {
+            self.counters.dropped_ass_events_over_frame_limit += admitted.dropped_ass as u64;
+            tracing::warn!(
+                dropped = admitted.dropped_ass,
+                max_events = self.limits.input.max_ass_events_per_frame,
+                "too many ASS events in one frame, the ones on the highest layers are dropped"
+            );
+        }
+        // Реплики простых форматов и ASS живут по разным правилам порядка и столкновений.
+        let mut text_cues: Vec<Arc<RasterizedCue>> = Vec::new();
+        let mut ass_cues: Vec<AssFrameCue> = Vec::new();
+        for cue in admitted.text.into_iter().chain(admitted.ass) {
+            let Some(rasterized) = self.cue_for(cue, request) else {
+                continue;
+            };
+            match cue.content {
+                CueContent::Text(_) => text_cues.push(rasterized),
+                CueContent::Ass(ass) => ass_cues.push(AssFrameCue {
+                    key: cue.key,
+                    layer: cue.layer,
+                    read_order: ass.read_order,
+                    rasterized,
+                }),
+            }
+        }
+        let mut bitmaps = Self::text_bitmaps(&text_cues, request.canvas);
+        // Для кадра без ASS память положений пуста: `resolve` на пустом списке её очищает.
+        bitmaps.extend(assemble_ass_bitmaps(
+            ass_cues,
+            &mut self.ass_collisions,
+            request.canvas,
+            &request.ass,
+        ));
+
+        let overlay = self.assemble_overlay(request.canvas, bitmaps);
+        FrameState {
+            signature,
+            overlay,
+            stale: false,
+        }
+    }
+
+    /// Картинки реплик простых форматов: порядок запроса, столкновения по картинкам.
+    fn text_bitmaps(cues: &[Arc<RasterizedCue>], canvas: CanvasSize) -> Vec<SubtitleBitmap> {
         let items: Vec<CollisionItem> = cues
             .iter()
             .map(|cue| CollisionItem {
@@ -273,7 +345,7 @@ impl SubtitleRasterizer {
                 direction: cue.collision,
             })
             .collect();
-        let shifts = resolve_vertical_shifts(&items, request.canvas.height());
+        let shifts = resolve_vertical_shifts(&items, canvas.height());
         let mut bitmaps: Vec<SubtitleBitmap> = Vec::new();
         for (cue, shift) in cues.iter().zip(shifts) {
             bitmaps.extend(cue.bitmaps.iter().map(|bitmap| {
@@ -284,34 +356,31 @@ impl SubtitleRasterizer {
                 }
             }));
         }
-
-        let overlay = self.assemble_overlay(request.canvas, bitmaps);
-        FrameState {
-            signature,
-            overlay,
-            stale: false,
-        }
+        bitmaps
     }
 
     /// Готовая реплика из кэша или свежая; `None` — реплику не удалось нарисовать или она
     /// отклонена лимитом длины.
     fn cue_for(
         &mut self,
-        key: CueKey,
-        cue: &SubtitleTextCue,
+        cue: &RenderableCue<'_>,
         request: &RenderRequest<'_>,
     ) -> Option<Arc<RasterizedCue>> {
+        let key = cue.key;
         let cache_key = CueCacheKey {
             cue: key,
             canvas: request.canvas,
-            appearance: *request.appearance,
+            look: Self::cue_look(cue.content, request),
             text_language: request.text_language,
         };
         // Попадание в кэш означает, что реплика уже прошла проверку длины: повторно не считаем.
         if let Some(hit) = self.cue_cache.get(&cache_key) {
             return Some(hit);
         }
-        let chars = cue_char_count(&cue.text);
+        let chars = match cue.content {
+            CueContent::Text(text) => cue_char_count(&text.text),
+            CueContent::Ass(ass) => ass_cue_char_count(&ass.text),
+        };
         if chars > self.limits.input.max_chars_per_cue {
             self.counters.rejected_cues_too_long += 1;
             // Текст реплики в журнал не пишем: он может быть приватным.
@@ -324,18 +393,32 @@ impl SubtitleRasterizer {
             );
             return None;
         }
-        match (self.painter)(
-            &mut self.fonts,
-            &mut self.faces,
-            cue,
-            request.appearance,
-            request.canvas,
-            request.text_language,
-        ) {
+        let painted = match cue.content {
+            CueContent::Text(text) => (self.painter)(
+                &mut self.fonts,
+                &mut self.faces,
+                text,
+                request.appearance,
+                request.canvas,
+                request.text_language,
+            ),
+            CueContent::Ass(ass) => rasterize_ass_cue(
+                &mut self.fonts,
+                &mut self.faces,
+                ass,
+                request.appearance,
+                &request.ass,
+                request.canvas,
+                request.text_language,
+            ),
+        };
+        match painted {
             Ok(rasterized) => {
                 self.counters.rasterized_cues += 1;
                 self.counters.skipped_glyphs += u64::from(rasterized.diagnostics.skipped_glyphs);
                 self.counters.skipped_borders += u64::from(rasterized.diagnostics.skipped_borders);
+                self.counters.skipped_ass_drawings +=
+                    u64::from(rasterized.diagnostics.skipped_ass_drawings);
                 let bytes = rasterized.cache_bytes();
                 let shared = Arc::new(rasterized);
                 self.cue_cache.insert(cache_key, Arc::clone(&shared), bytes);
@@ -352,6 +435,20 @@ impl SubtitleRasterizer {
                 );
                 None
             }
+        }
+    }
+
+    /// Часть ключа кэша, зависящая от вида реплики (см. [`CueLook`]).
+    fn cue_look(content: CueContent<'_>, request: &RenderRequest<'_>) -> CueLook {
+        match content {
+            CueContent::Text(_) => CueLook::Text {
+                appearance: *request.appearance,
+            },
+            CueContent::Ass(_) => CueLook::Ass {
+                options: request.ass,
+                user_appearance: (request.ass.style_source == AssStyleSource::User)
+                    .then_some(*request.appearance),
+            },
         }
     }
 

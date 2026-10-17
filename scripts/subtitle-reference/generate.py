@@ -8,6 +8,9 @@ expected/<case>.png (композит RGBA) и expected/<case>.json (списо�
 
 Параметры кадра берутся из комментария-заголовка кейса:
     ; reference: width=640 height=360 time_ms=1000
+Необязательно можно задать размер хранения видео (ass_set_storage_size; по умолчанию он равен
+размеру кадра):
+    ; reference: width=1280 height=720 time_ms=1000 storage_width=640 storage_height=360
 """
 
 import json
@@ -29,7 +32,9 @@ CASES_DIR = FIXTURES_DIR / "cases"
 EXPECTED_DIR = FIXTURES_DIR / "expected"
 
 HEADER_PATTERN = re.compile(
-    r"^;\s*reference:\s*width=(\d+)\s+height=(\d+)\s+time_ms=(\d+)\s*$", re.MULTILINE
+    r"^;\s*reference:\s*width=(\d+)\s+height=(\d+)\s+time_ms=(\d+)"
+    r"(?:\s+storage_width=(\d+)\s+storage_height=(\d+))?\s*$",
+    re.MULTILINE,
 )
 IMAGE_HEADER = struct.Struct("<iiiiiiI")
 
@@ -52,12 +57,19 @@ def compile_tool(build_dir):
 
 
 def parse_case_header(case_path):
-    """Читает width/height/time_ms из заголовка кейса."""
+    """Читает width/height/time_ms и необязательный размер хранения из заголовка кейса.
+
+    Возвращает (width, height, time_ms, storage), где storage — (w, h) или None, если размер
+    хранения в заголовке не задан (тогда он равен размеру кадра).
+    """
     match = HEADER_PATTERN.search(case_path.read_text(encoding="utf-8"))
     if match is None:
         sys.exit(f"{case_path}: нет заголовка '; reference: width=.. height=.. time_ms=..'")
-    width, height, time_ms = (int(group) for group in match.groups())
-    return width, height, time_ms
+    width, height, time_ms = (int(group) for group in match.groups()[:3])
+    storage = None
+    if match.group(4) is not None:
+        storage = (int(match.group(4)), int(match.group(5)))
+    return width, height, time_ms, storage
 
 
 def parse_images(blob):
@@ -155,10 +167,11 @@ def main():
     try:
         binary = compile_tool(build_dir)
         for case in cases:
-            width, height, time_ms = parse_case_header(case)
-            blob = run_checked(
-                [binary, str(case), str(FONTS_DIR), str(width), str(height), str(time_ms)]
-            ).stdout
+            width, height, time_ms, storage = parse_case_header(case)
+            command = [binary, str(case), str(FONTS_DIR), str(width), str(height), str(time_ms)]
+            if storage is not None:
+                command += [str(storage[0]), str(storage[1])]
+            blob = run_checked(command).stdout
             version, images = parse_images(blob)
             versions.add(format_version(version))
             write_png(EXPECTED_DIR / f"{case.stem}.png", width, height, composite(width, height, images))
@@ -167,6 +180,11 @@ def main():
                 "width": width,
                 "height": height,
                 "time_ms": time_ms,
+                **(
+                    {"storage_width": storage[0], "storage_height": storage[1]}
+                    if storage is not None
+                    else {}
+                ),
                 "images": [
                     {key: image[key] for key in ("type", "dst_x", "dst_y", "w", "h", "stride", "color")}
                     for image in images

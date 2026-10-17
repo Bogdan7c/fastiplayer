@@ -5,9 +5,11 @@
 //! Вход — `SubtitleOverlay` (список масок покрытия с цветом и позицией на холсте) +
 //! прямоугольник картинки видео на экране (`PictureRect`) + размер экрана. Правила:
 //! - левый верхний угол холста лежит в левом верхнем углу картинки видео плюс сдвиг слоя
-//!   (`SubtitleLayerOffset`, пиксели surface, x вправо, y вниз), сумма округляется до
+//!   (`SubtitleLayerOffsets`, пиксели surface, x вправо, y вниз), сумма округляется до
 //!   целого пикселя surface; слой может выходить за картинку (на чёрные полосы) — рисуется
 //!   всё, что попало в видимую область видео;
+//! - у каждой группы размещения (`OverlayPlacementGroup`) свой сдвиг: основной диалог можно
+//!   поднять, а надписи оставить на месте; без разделения обе группы едут одним сдвигом;
 //! - 1 пиксель холста = 1 пиксель surface (вызывающий растеризует холст размером
 //!   округлённой картинки), поэтому масштабирования и фильтрации нет;
 //! - картинки рисуются строго в порядке списка (первая — самая нижняя), смешивание «over»;
@@ -26,7 +28,7 @@
 //! содержимым; `Arc::ptr_eq` по маскам (мы держим клоны, адрес не переиспользуется) это
 //! исключает. Тот же overlay на следующем кадре — ноль `write_texture`/`write_buffer`
 //! инстансов и ни одной аллокации, только draw. Сдвиг картинки видео меняет лишь uniform
-//! (16 байт); то же верно для сдвига слоя (`layer_offset`).
+//! (32 байта); то же верно для сдвигов групп слоя (`layer_offsets`).
 
 mod atlas;
 mod instances;
@@ -40,8 +42,8 @@ use render_core::{PictureRect, RenderViewport};
 use subtitle_raster::{OverlayRevision, SubtitleOverlay};
 
 use self::atlas::{AtlasLayout, AtlasPackError, MaskExtent, pack_masks};
-pub use self::instances::SubtitleLayerOffset;
-use self::instances::{BitmapInstance, INSTANCE_STRIDE_BYTES, placement_origin};
+use self::instances::{BitmapInstance, INSTANCE_STRIDE_BYTES, placement_origins};
+pub use self::instances::{SubtitleLayerOffset, SubtitleLayerOffsets};
 use self::pipeline::{
     AtlasGpu, OverlayPipeline, UNIFORM_SIZE_BYTES, create_instance_buffer, create_uniform_buffer,
 };
@@ -57,9 +59,10 @@ pub struct SubtitleOverlayFrame<'frame> {
     /// Картинка видео без чёрных полос в пикселях surface; её округлённый левый верхний
     /// угол — точка, куда ложится (0, 0) холста.
     pub picture_rect: PictureRect,
-    /// Сдвиг всего слоя относительно `picture_rect` в пикселях surface (позиция по выбору
+    /// Сдвиги групп слоя относительно `picture_rect` в пикселях surface (позиция по выбору
     /// пользователя, подъём над панелью управления). Меняется только uniform.
-    pub layer_offset: SubtitleLayerOffset,
+    /// `SubtitleLayerOffsets::uniform` двигает слой целиком.
+    pub layer_offsets: SubtitleLayerOffsets,
 }
 
 /// Счётчики загрузок для тестов и диагностики.
@@ -145,8 +148,8 @@ pub struct SubtitleOverlayRenderer {
     /// Instance buffer и его ёмкость в инстансах.
     instance_buffer: Option<(wgpu::Buffer, u64)>,
     uploaded: Option<UploadedOverlay>,
-    /// Последние записанные `[screen_w, screen_h, origin_x, origin_y]`.
-    last_uniform_values: Option<[f32; 4]>,
+    /// Последние записанные `[screen_w, screen_h, main_x, main_y, fixed_x, fixed_y, 0, 0]`.
+    last_uniform_values: Option<[f32; 8]>,
     /// Переиспользуемый буфер байтов инстансов (растёт, не освобождается).
     instance_bytes: Vec<u8>,
     stats: SubtitleOverlayUploadStats,
@@ -184,8 +187,8 @@ impl SubtitleOverlayRenderer {
         let bitmap_count = frame.overlay.bitmaps().len();
         let screen_area =
             RenderViewport::full_surface(target.screen_size[0], target.screen_size[1]);
-        let (Some(origin), Some(scissor)) = (
-            placement_origin(frame.picture_rect, frame.layer_offset),
+        let (Some(origins), Some(scissor)) = (
+            placement_origins(frame.picture_rect, frame.layer_offsets),
             target.visible_area.intersection(screen_area),
         ) else {
             return SubtitleOverlayOutcome::NothingToDraw;
@@ -208,8 +211,12 @@ impl SubtitleOverlayRenderer {
             [
                 target.screen_size[0] as f32,
                 target.screen_size[1] as f32,
-                origin[0],
-                origin[1],
+                origins[0][0],
+                origins[0][1],
+                origins[1][0],
+                origins[1][1],
+                0.0,
+                0.0,
             ],
         );
 
@@ -391,7 +398,7 @@ impl SubtitleOverlayRenderer {
     }
 
     /// Пишет uniform только если размер экрана или позиция картинки изменились.
-    fn write_uniform_if_changed(&mut self, queue: &wgpu::Queue, values: [f32; 4]) {
+    fn write_uniform_if_changed(&mut self, queue: &wgpu::Queue, values: [f32; 8]) {
         if self.last_uniform_values == Some(values) {
             return;
         }

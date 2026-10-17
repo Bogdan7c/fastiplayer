@@ -25,12 +25,15 @@ mod sender;
 mod stats;
 #[cfg(test)]
 mod tests;
+mod track_headers;
 
 pub use message::{SubtitleFeedMediaStart, SubtitleFeedMessage, SubtitleFeedPacket};
 pub use receiver::SubtitleFeedReceiver;
 #[cfg(test)]
 pub(crate) use sender::SubtitleFeedSendOutcome;
 pub(crate) use sender::SubtitleFeedSender;
+pub use track_headers::SubtitleTrackHeader;
+pub(crate) use track_headers::collect_subtitle_track_headers;
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;

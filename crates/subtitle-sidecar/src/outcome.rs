@@ -32,10 +32,11 @@ impl SidecarSubtitleFormat {
         Self::from_extension(path.extension()?.to_str()?)
     }
 
-    /// Можно ли показать этот формат уже сейчас (текстовые SRT/WebVTT). ASS/SSA найдены,
-    /// но рендер появится в сессии 08 — до тех пор вызывающий код их пропускает.
+    /// Можно ли показать этот формат уже сейчас. С сессии 08 это все четыре формата:
+    /// SRT, WebVTT и ASS/SSA (слой 1). Метод остаётся единственной точкой решения, чтобы
+    /// будущий формат без рендера можно было вернуть в «серые» одной правкой.
     pub fn is_renderable_now(self) -> bool {
-        matches!(self, Self::Srt | Self::WebVtt)
+        matches!(self, Self::Srt | Self::WebVtt | Self::Ass | Self::Ssa)
     }
 
     /// Соответствующий формат нейтральной модели.

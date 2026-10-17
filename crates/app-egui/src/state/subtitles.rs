@@ -266,7 +266,7 @@ impl SubtitleOwner {
             wake_port,
             presenter: SubtitlePresenter::new(
                 system_language.clone(),
-                settings.style.to_appearance(),
+                &settings.style,
                 settings.raster_limits,
             ),
             default_visibility: settings.default_visibility,

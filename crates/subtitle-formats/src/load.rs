@@ -1,5 +1,6 @@
 //! Точка входа: байты файла -> декодирование -> разбор формата.
 
+use crate::ass::file::parse_ass_document;
 use crate::document::ParsedSubtitleDocument;
 use crate::encoding::{DetectedSubtitleEncoding, LegacyEncodingHint, decode_subtitle_bytes};
 use crate::error::SubtitleLoadError;
@@ -38,6 +39,10 @@ impl LoadedTextSubtitle {
 
 /// Загружает текстовые субтитры заданного формата.
 ///
+/// Для `TextSubtitleFormat::Ass` в `limits` обязаны быть лимиты ASS
+/// ([`SubtitleParseLimits::with_ass_limits`]); события результата — `SubtitleContent::Ass`,
+/// а сценарий доступен через `ParsedSubtitleDocument::ass_script`.
+///
 /// Размер входа проверяется ДО декодирования: враждебный файл не должен успеть
 /// выделить память под текст. Проблемы отдельных реплик идут в отчёт документа.
 pub fn load_text_subtitle(
@@ -56,6 +61,12 @@ pub fn load_text_subtitle(
     let document = match format {
         TextSubtitleFormat::Srt => parse_srt(&decoded.text, limits)?,
         TextSubtitleFormat::WebVtt => parse_webvtt(&decoded.text, limits)?,
+        TextSubtitleFormat::Ass => {
+            let ass_limits = limits
+                .ass_limits()
+                .ok_or(SubtitleLoadError::AssLimitsMissing)?;
+            parse_ass_document(&decoded.text, limits, ass_limits)?
+        }
     };
     Ok(LoadedTextSubtitle {
         document,

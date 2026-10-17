@@ -3,14 +3,15 @@
 use subtitle_core::{ScreenAnchor, SpanStyle, StyledText, SubtitleColor, TextSpan};
 
 use crate::event_style::{
-    AxisPair, BaseDirection, BorderStyle, EventStyle, StyleColors, TextMargins, WrapStyle,
+    AxisPair, BaseDirection, BorderStyle, EventPlacement, EventStyle, StyleColors, TextMargins,
+    WrapStyle,
 };
 use crate::face_cache::FaceCache;
 use crate::fonts::{
     FontLookupCacheLimits, FontStyle, FontWeightClass, SubtitleFontLibrary, TextLanguagePreference,
 };
 use crate::glyph_info::TextCluster;
-use crate::glyph_render::{FREETYPE_REQUEST_SIZE, retrieve_glyphs};
+use crate::glyph_render::retrieve_glyphs;
 use crate::shaping::shape_text;
 use crate::source_text::SourceText;
 
@@ -61,6 +62,7 @@ pub(crate) fn plain_style() -> EventStyle {
             right: 40,
             vertical: 40,
         },
+        placement: EventPlacement::ByMargins,
         wrap_style: WrapStyle::Smart,
         line_spacing: 0.0,
         base_direction: BaseDirection::LeftToRight,
@@ -88,12 +90,6 @@ pub(crate) fn shaped_clusters(
         TextLanguagePreference::unknown(),
     )
     .expect("shaping");
-    retrieve_glyphs(
-        &faces,
-        &mut clusters,
-        &source.looks,
-        style.font_size / FREETYPE_REQUEST_SIZE,
-    )
-    .expect("outlines");
+    retrieve_glyphs(&faces, &mut clusters, &source.looks).expect("outlines");
     clusters
 }

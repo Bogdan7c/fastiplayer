@@ -14,8 +14,8 @@ Session 01 delivers parsing only (crates `subtitle-core`, `subtitle-formats`). N
 | WebVTT (`.vtt`) | sidecar file | Partial (see below) | 01 |
 | SubRip / WebVTT inside MKV | embedded | Supported (see "Embedded tracks") | 06 |
 | mov_text (`tx3g`) inside MP4 | embedded | Supported (bold / italic / underline / colour) | 06 |
-| ASS / SSA text inside MKV | embedded | Text only, default style (no ASS styles or tags until the libass port) | 06; styles 08–10 |
-| ASS / SSA sidecar file | sidecar | Planned (libass port) | 08–10 |
+| ASS / SSA inside MKV | embedded | Supported, layer 1 (see "ASS / SSA (session 08)") | 06; 08; layers 2–3: 09–10 |
+| ASS / SSA sidecar file | sidecar | Supported, layer 1 (see "ASS / SSA (session 08)") | 08; layers 2–3: 09–10 |
 | PGS inside MKV | embedded | Listed greyed out ("not supported yet"); picture rendering planned | 11 |
 | YouTube srv3 / WebVTT | web | Planned | 12 |
 | HLS WebVTT, DASH TTML/IMSC | streaming | Planned | 13 |
@@ -36,8 +36,10 @@ Pure-Rust rasterizer, a port of libass 0.17.5 behaviour (ISC). Output: a list of
 | Fonts attached to MKV | Supported (session 06): prepared off the UI thread, installed per video, removed when the video changes |
 | User styles | "YouTube-like" (white text on a rounded 75% dark box per line) and "outline + shadow" |
 | WebVTT placement | `line`, `position`, `size`, `align`, `\anN` anchors; regions and vertical text are drawn horizontally |
-| Underline/strikethrough, span background, synthetic bold/italic, `\N`-less CJK line breaking | not yet (later sessions / backlog) |
-| ASS override tags, karaoke, blur, clip, rotations | Planned — sessions 08–10 |
+| Underline / strikethrough, synthetic bold / italic | Full (session 08) — also for SRT / WebVTT: a face without a real italic / bold is slanted / emboldened like libass |
+| Span background, `\N`-less CJK line breaking | not yet (later sessions / backlog) |
+| ASS layer-1 override tags | Supported (session 08, see below) |
+| ASS layer-2/3 tags: rotations, karaoke, blur, clip, `\move`, fades, `\t`, drawings | Planned — plans 09 / 10 |
 
 ## On screen (session 03)
 
@@ -60,7 +62,7 @@ Video `Movie.mkv`. Searched in the video folder, in `Subs`/`Sub`/`Subtitles`/`Su
 | `Subs/Movie.en.srt`, `Subtitles/Movie.vtt` | yes | from the suffix |
 | `Subs/Movie/2_English.srt` (any name inside a folder named after the video) | yes | from the name |
 | `Other.srt`, `Movie2.srt`, `Extras/Movie.srt`, `Subs/Other/x.srt` | no | — |
-| `.ass` / `.ssa` | found, not shown yet (session 08) | — |
+| `.ass` / `.ssa` | yes, shown (session 08; the file's PlayRes, styles and layer-1 tags are used) | from the suffix |
 | Non-UTF-8 file names | yes, paths are kept byte-exact | — |
 
 ## Controls (session 04)
@@ -86,7 +88,7 @@ Video `Movie.mkv`. Searched in the video folder, in `Subs`/`Sub`/`Subtitles`/`Su
 | Saving | Done, reopening Settings or quitting saves in one config transaction; Cancel / Esc restores the previous style exactly |
 | Position | stored as fractions of the picture (`position_horizontal_percent`, `position_vertical_percent`), so it survives window resize and fullscreen; never leaves the picture sideways; simple formats may sit on the black bar under the picture |
 | Above the controls | subtitles move up only when the control panel would cover them, following the panel's slide animation |
-| ASS / SSA | `ass_force_user_style` flag exists in settings; it takes effect with ASS rendering (session 08) |
+| ASS / SSA | `ass_force_user_style` and `ass_position_mode` apply (session 08, see "ASS / SSA (session 08)"). In `main_lines_avoid_controls` (default) and `author` modes, edit mode drags only the sample (shown where no cue is active) and plain-text cues; a real ASS cue is not moved by the drag |
 | Known limit | the whole subtitle layer moves together, so a WebVTT cue placed by its author (e.g. at the top) moves with the user offset and with the lift above the controls |
 
 ## Text encodings (SRT, WebVTT files)
@@ -136,7 +138,7 @@ Gaps:
 Subtitle tracks inside the container (MKV, MP4) appear in the CC menu next to files found beside the video, with the word "embedded" in the label (language, title, forced / SDH flags and the format come from the container).
 
 Supported:
-- text codecs: SubRip (`S_TEXT/UTF8`), WebVTT, ASS / SSA text lines, `mov_text`;
+- text codecs: SubRip (`S_TEXT/UTF8`), WebVTT, ASS / SSA, `mov_text`;
 - every subtitle track of the video is read in the background, not only the selected one, so switching tracks during playback is instant and shows cues that were already read;
 - seeking back shows previously read cues from the cache (duplicate packets are ignored);
 - auto-select: preferred language, then non-SDH, then a file beside the video before an embedded track, then the container "default" flag, then list order; without a language match: a file beside the video, then the embedded default, then the first track. Forced tracks follow the same rules as before;
@@ -146,7 +148,7 @@ Limitations:
 - picture tracks (PGS, VobSub, DVB) and unknown codecs are listed greyed out ("not supported yet");
 - a cue without a duration in the container is shown for `embedded_cue_max_open_duration_ms` (default 5 s) instead of "until the next cue", because the next cue has not been read yet;
 - WebVTT inside MKV carries no positioning in the packet (only the text and markup), so cues are placed by the user style;
-- ASS / SSA tracks are drawn as plain text with the default style (override tags are stripped) until session 08; the track's own style header is not used yet;
+- ASS / SSA tracks are drawn with their own style header and layer-1 tags (session 08); a track that appears later through `TracksChanged` has no header and is drawn as plain text (tags stripped);
 - like mpv, cues are known only after the demuxer has read them: after a forward seek, a cue that started before the target and is still active appears once the demuxer reaches its packet (the container is read from the nearest keyframe before the target, so this is usually immediate); a cue that was never read is not shown;
 - if the packet queue between the player and the UI overflows, packets are dropped (counted, one warning in the log) while video and audio keep playing.
 
@@ -162,3 +164,41 @@ Limitations:
 | Not remembered | automatic choices; quality / candidate switches keep the current tracks; YouTube audio language is session 12 |
 | Known limits | a track is found again by language + title + codec (+ position among tracks); a track in another language is never picked instead. The same web video opened by a different kind of link (manifest URL vs page URL) has separate memory |
 
+
+## ASS / SSA (session 08, layer 1)
+
+Embedded (MKV `S_TEXT/ASS`, `S_TEXT/SSA`) and sidecar `.ass` / `.ssa` files are parsed into the model and drawn by the libass-parity rasterizer. Both V4+ (ASS) and V4 (SSA) style sections are read.
+
+Always bound to the video picture: ASS is scaled from the script's PlayRes to the picture and is never drawn on the black bars.
+
+Script header: `PlayResX/Y`, `LayoutResX/Y`, `ScaledBorderAndShadow`, `WrapStyle`, `Kerning`. Dialogue: layers (`Layer`), automatic collision handling between simultaneous lines, synthetic bold / italic, underline and strike-out.
+
+| Group | Tags | Status |
+|---|---|---|
+| Font and style | `\b \i \u \s \fn \fs \fscx \fscy \fsc \fsp \fe` | Supported |
+| Colour and transparency | `\c \1c`–`\4c`, `\alpha \1a`–`\4a` | Supported |
+| Border and shadow | `\bord \xbord \ybord \shad \xshad \yshad` | Supported |
+| Alignment and position | `\an \a \pos` | Supported |
+| Reset and wrap | `\r \q \N \n \h` | Supported |
+| Rotation and shear | `\frx \fry \frz \fr \org \fax \fay` | No (plan 09/10) |
+| Animation | `\move \fad \fade \t` | No (plan 09/10) |
+| Clipping and blur | `\clip \iclip \blur \be` | No (plan 09/10) |
+| Karaoke | `\k \K \kf \ko \kt` | No (plan 09/10) |
+| Drawings | `\p` | No (plan 09/10) |
+| Effects | `Banner`, `Scroll up/down` | No (plan 09/10) |
+
+Unsupported tags are skipped without hiding the rest of the text; the track keeps per-tag counts for diagnostics.
+
+### Settings
+
+- `subtitles.ass_force_user_style` (default off): off — the author's colours, fonts, outline and shadow are drawn as written and `text_size_percent` scales the dialogue text, but not text placed with `\pos` (the author's explicit layout); on — the user's text colour, box colour / opacity and size replace the author's style, while `\pos` placement is kept.
+- `subtitles.ass_position_mode`: `main_lines_avoid_controls` (default) — "main lines" (events without `\pos`/`\move`, aligned to the bottom: `\an1`-`\an3`) are lifted smoothly above the control panel while it is visible and return to the author's place when it hides; signs (`\pos`/`\move`) and top/middle-aligned lines never move; the user position offset is not applied to ASS; everything stays inside the picture. `author` — nothing moves (no lift, no user offset). `whole_layer` — the whole ASS layer moves like SRT (lift above the controls plus the user offset) but stays inside the picture on both axes. Edit-mode dragging does not move a real ASS cue in the first two modes.
+- Limits (config schema v18): `max_ass_header_kb` (64–16384, default 1024), `max_ass_styles` (10–10000, default 1000), `max_ass_override_tags_per_event` (32–8192, default 512), `max_ass_events_on_screen` (16–2048, default 256: how many ASS events are drawn at once on one frame). SRT / WebVTT placement is unchanged (it may use the black bars).
+
+### Known limitations
+
+- A track added later through `TracksChanged` has no header (`codec_private`): it is drawn as plain text.
+- Vertical text `\fn@Font` is not supported.
+- Collision memory (stacking of simultaneous lines) is kept only for the cues active on the current frame.
+- Glyph storage size equals the display size (no separate `LayoutRes`-based storage scaling beyond the script header).
+- Layer 2/3 tags are listed above and are scheduled in plans 09 and 10.

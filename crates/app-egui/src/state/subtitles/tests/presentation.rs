@@ -6,6 +6,8 @@ use std::sync::Arc;
 use subtitle_core::SubtitleSyncOffset;
 use subtitle_raster::{CueSourceId, SubtitleAppearance, SubtitleOverlay};
 
+use super::super::user_style::UserSubtitleStyle;
+
 use super::super::active_track::ActiveSubtitleTrack;
 use super::super::presentation::SubtitlePresenter;
 use super::super::sidecar_job::{FontLibraryPlan, SidecarJobOutcome};
@@ -363,7 +365,7 @@ fn sync_offset_moves_the_lookup_time_of_a_frame() {
     let config = SubtitlesConfig::default();
     let mut presenter = SubtitlePresenter::new(
         None,
-        SubtitleAppearance::youtube_like(),
+        &UserSubtitleStyle::from_config(&config),
         super::super::limits::raster_limits_from_config(&config),
     );
     presenter.install_font_library(discovery.fonts.expect("fonts requested"));

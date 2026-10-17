@@ -29,6 +29,12 @@ pub(super) enum PacketEventOutcome {
     Event(SubtitleEvent),
     /// Пакет корректен, но текста нет (пустой промежуток mov_text): пропускаем без ошибки.
     Empty,
+    /// ASS-событие с уже виданным `ReadOrder` (повтор блока или перечитанный после seek
+    /// пакет): по правилу libass игнорируется.
+    DuplicateReadOrder,
+    /// ASS-событие без длительности или с нулевой: libass делает его невидимым
+    /// (`end == start`), поэтому запасного показа на `cue_max_open_duration` нет.
+    ZeroDuration,
     /// Пакет пропущен по типизированной причине.
     Rejected(PacketRejection),
 }
@@ -69,7 +75,7 @@ pub(super) fn event_from_packet(
 }
 
 /// Интервал показа `[start, end)` или `None`, если время не помещается в модель.
-fn cue_interval(
+pub(super) fn cue_interval(
     packet: &SubtitleFeedPacket,
     max_open_duration: Duration,
 ) -> Option<(SubtitleTime, SubtitleTime)> {
@@ -82,6 +88,12 @@ fn cue_interval(
     let end_pts = packet.presentation_time.checked_add(shown_for)?;
     let end_micros = i64::try_from(end_pts.as_micros()).ok()?;
     Some((start, SubtitleTime::from_micros(end_micros)))
+}
+
+/// Длительность ASS-события, если она есть и ненулевая (правило libass, см. модуль).
+/// `None`: событие невидимо (`end == start`).
+pub(super) fn ass_event_duration(packet: &SubtitleFeedPacket) -> Option<Duration> {
+    packet.duration.filter(|duration| !duration.is_zero())
 }
 
 #[cfg(test)]

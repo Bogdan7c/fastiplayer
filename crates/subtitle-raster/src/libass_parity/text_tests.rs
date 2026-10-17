@@ -130,7 +130,7 @@ fn libass_image_type(kind: SubtitleBitmapKind) -> Option<i64> {
 
 /// Сохраняет тройку «наш / libass / разница» для ручной проверки, если задан каталог в
 /// `SUBTITLE_PARITY_DUMP_DIR`.
-fn dump_comparison(name: &str, width: u32, height: u32, ours: &[u8], theirs: &[u8]) {
+pub(super) fn dump_comparison(name: &str, width: u32, height: u32, ours: &[u8], theirs: &[u8]) {
     let Some(dir) = std::env::var_os("SUBTITLE_PARITY_DUMP_DIR") else {
         return;
     };

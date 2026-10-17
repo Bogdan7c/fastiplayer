@@ -91,7 +91,7 @@ fn render_placed(
     let placed = owner
         .placed_overlay_for_frame(current(media, GENERATION), &frame)
         .expect("overlay inside the cue");
-    let (overlay, offset) = (placed.overlay.clone(), placed.layer_offset);
+    let (overlay, offset) = (placed.overlay.clone(), placed.layer_offsets.main);
     harness.frame_with_offset(rect, Some(&overlay), offset).1
 }
 

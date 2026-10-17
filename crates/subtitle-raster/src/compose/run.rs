@@ -19,13 +19,12 @@
 
 //! Участок единого стиля: объединение битмапов его глифов в три слоя (заливка, обводка, тень).
 
-use subtitle_core::SubtitleColor;
-
 use super::ComposeError;
 use super::glyph_bitmaps::GlyphBitmaps;
 use crate::bitmap::{CoverageBitmap, PlacedBitmap, combine_bitmaps, fix_outline, shadow_bitmap};
-use crate::event_style::{BorderStyle, EventStyle};
+use crate::event_style::BorderStyle;
 use crate::fixed_point::double_to_d6;
+use crate::span_look::SpanLook;
 
 /// Флаги фильтров участка (libass: `FILTER_*`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,17 +42,18 @@ pub(super) struct FilterFlags {
 }
 
 impl FilterFlags {
-    /// Флаги по стилю и цвету заливки глифа (libass: начало цикла `render_and_combine_glyphs`).
-    pub(super) fn for_glyph(style: &EventStyle, primary: SubtitleColor) -> Self {
-        let box_border = style.border_style == BorderStyle::OpaqueBox;
-        let nonzero_border = style.border.is_nonzero();
-        let mut nonzero_shadow = style.shadow.is_nonzero();
+    /// Флаги по виду символа (libass: начало цикла `render_and_combine_glyphs`).
+    pub(super) fn for_glyph(look: &SpanLook) -> Self {
+        let primary = look.colors.primary;
+        let box_border = look.border_style == BorderStyle::OpaqueBox;
+        let nonzero_border = look.border.is_nonzero();
+        let mut nonzero_shadow = look.shadow.is_nonzero();
         // Прозрачность libass = 255 - альфа: `_a(c) != 0xFF` значит «альфа не нулевая».
         let fill_in_shadow = nonzero_shadow && (primary.alpha != 0 || box_border);
         if !nonzero_border && !fill_in_shadow {
             nonzero_shadow = false;
         }
-        let secondary = style.colors.secondary;
+        let secondary = look.colors.secondary;
         let fill_in_border =
             (nonzero_border && primary.alpha == 255 && secondary.alpha == 255) || box_border;
         Self {
@@ -78,12 +78,14 @@ pub(super) struct RunBitmaps {
 }
 
 /// Смещение тени, квантованное как в libass при нулевом размытии (маска `7`: шаг 1/8 пикселя).
-pub(super) fn quantized_shadow_offset(style: &EventStyle) -> (i32, i32) {
+pub(super) fn quantized_shadow_offset(look: &SpanLook) -> (i32, i32) {
     const SHADOW_MASK: i32 = 7;
-    let quantize = |pixels: f64| (double_to_d6(pixels) + (SHADOW_MASK >> 1)) & !SHADOW_MASK;
+    // Насыщение: смещение тени приходит из тегов реплики и может быть любым.
+    let quantize =
+        |pixels: f64| (double_to_d6(pixels).saturating_add(SHADOW_MASK >> 1)) & !SHADOW_MASK;
     (
-        quantize(style.shadow.horizontal),
-        quantize(style.shadow.vertical),
+        quantize(look.shadow.horizontal),
+        quantize(look.shadow.vertical),
     )
 }
 

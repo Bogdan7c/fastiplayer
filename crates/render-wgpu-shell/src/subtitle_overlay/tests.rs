@@ -11,9 +11,9 @@ use subtitle_core::{
     SubtitleTextCue, SubtitleTime, SubtitleTimeline, TextSpan, TimelineInsertOutcome,
 };
 use subtitle_raster::{
-    CanvasSize, CueKey, CueSourceId, FontLookupCacheLimits, RasterCacheLimits, RasterInputLimits,
-    RasterLimits, RenderRequest, RenderableCue, SubtitleAppearance, SubtitleFontLibrary,
-    SubtitleOverlay, SubtitleRasterizer, TextLanguagePreference,
+    AssRenderOptions, CanvasSize, CueKey, CueSourceId, FontLookupCacheLimits, RasterCacheLimits,
+    RasterInputLimits, RasterLimits, RenderRequest, RenderableCue, SubtitleAppearance,
+    SubtitleFontLibrary, SubtitleOverlay, SubtitleRasterizer, TextLanguagePreference,
 };
 
 use super::*;
@@ -200,6 +200,7 @@ fn rasterizer() -> SubtitleRasterizer {
             input: RasterInputLimits {
                 max_chars_per_cue: 1000,
                 max_cues_per_frame: 8,
+                max_ass_events_per_frame: 8,
                 max_canvas_side: 8192,
             },
         },
@@ -231,10 +232,10 @@ fn rasterize(
     let TimelineInsertOutcome::Inserted(id) = timeline.insert(event) else {
         panic!("event must be inserted");
     };
-    let renderable = [RenderableCue {
-        key: CueKey::new(CueSourceId::new(source), id),
-        cue: &cue,
-    }];
+    let renderable = [RenderableCue::text(
+        CueKey::new(CueSourceId::new(source), id),
+        &cue,
+    )];
     let cues: &[RenderableCue<'_>] = if text.is_some() { &renderable } else { &[] };
     rasterizer
         .render(&RenderRequest {
@@ -242,6 +243,7 @@ fn rasterize(
             canvas,
             appearance: &SubtitleAppearance::youtube_like(),
             text_language: TextLanguagePreference::unknown(),
+            ass: AssRenderOptions::default(),
         })
         .clone()
 }
@@ -292,7 +294,7 @@ fn hello_cue_is_blended_exactly_on_the_bottom_of_the_letterboxed_picture() {
         Some(&SubtitleOverlayFrame {
             overlay: &overlay,
             picture_rect: rect,
-            layer_offset: SubtitleLayerOffset::NONE,
+            layer_offsets: SubtitleLayerOffsets::NONE,
         }),
         full_view(),
     );
@@ -368,7 +370,7 @@ fn same_revision_uploads_nothing_and_new_revision_uploads_once_more() {
     let frame_of = |overlay| SubtitleOverlayFrame {
         overlay,
         picture_rect: rect,
-        layer_offset: SubtitleLayerOffset::NONE,
+        layer_offsets: SubtitleLayerOffsets::NONE,
     };
 
     let (_, first) = harness.frame(Some(&frame_of(&hello)), full_view());
@@ -413,7 +415,7 @@ fn recreated_rasterizer_with_equal_revision_is_still_uploaded() {
         Some(&SubtitleOverlayFrame {
             overlay: &first,
             picture_rect: rect,
-            layer_offset: SubtitleLayerOffset::NONE,
+            layer_offsets: SubtitleLayerOffsets::NONE,
         }),
         full_view(),
     );
@@ -421,7 +423,7 @@ fn recreated_rasterizer_with_equal_revision_is_still_uploaded() {
         Some(&SubtitleOverlayFrame {
             overlay: &second,
             picture_rect: rect,
-            layer_offset: SubtitleLayerOffset::NONE,
+            layer_offsets: SubtitleLayerOffsets::NONE,
         }),
         full_view(),
     );
@@ -445,7 +447,7 @@ fn missing_or_empty_overlay_draws_nothing_and_touches_no_counters() {
         Some(&SubtitleOverlayFrame {
             overlay: &empty,
             picture_rect: rect,
-            layer_offset: SubtitleLayerOffset::NONE,
+            layer_offsets: SubtitleLayerOffsets::NONE,
         }),
         full_view(),
     );
@@ -465,7 +467,7 @@ fn moving_the_picture_rewrites_only_the_uniform_and_shifts_the_pixels() {
     let at = |picture_rect| SubtitleOverlayFrame {
         overlay: &overlay,
         picture_rect,
-        layer_offset: SubtitleLayerOffset::NONE,
+        layer_offsets: SubtitleLayerOffsets::NONE,
     };
 
     let (_, original) = harness.frame(Some(&at(rect)), full_view());
@@ -499,7 +501,7 @@ fn subtitles_never_paint_outside_the_visible_video_area() {
     let frame = SubtitleOverlayFrame {
         overlay: &overlay,
         picture_rect: rect,
-        layer_offset: SubtitleLayerOffset::NONE,
+        layer_offsets: SubtitleLayerOffsets::NONE,
     };
     let (_, video_only) = harness.frame(None, full_view());
     let (_, unclipped) = harness.frame(Some(&frame), full_view());
@@ -541,7 +543,7 @@ fn layer_offset_shifts_pixels_onto_the_bar_by_rewriting_only_the_uniform() {
     let with_offset = |layer_offset| SubtitleOverlayFrame {
         overlay: &overlay,
         picture_rect: rect,
-        layer_offset,
+        layer_offsets: SubtitleLayerOffsets::uniform(layer_offset),
     };
     let (_, video_only) = harness.frame(None, full_view());
     let (_, original) = harness.frame(Some(&with_offset(SubtitleLayerOffset::NONE)), full_view());
@@ -602,7 +604,7 @@ fn layer_offset_is_still_clipped_by_the_visible_video_area() {
     let frame = SubtitleOverlayFrame {
         overlay: &overlay,
         picture_rect: rect,
-        layer_offset: SubtitleLayerOffset { x: 0.0, y: 24.0 },
+        layer_offsets: SubtitleLayerOffsets::uniform(SubtitleLayerOffset { x: 0.0, y: 24.0 }),
     };
     let (_, video_only) = harness.frame(None, full_view());
     // Видимая область заканчивается на нижнем крае картинки: бар под ней недоступен.
@@ -615,3 +617,5 @@ fn layer_offset_is_still_clipped_by_the_visible_video_area() {
         }
     }
 }
+
+mod group_offsets;

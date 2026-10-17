@@ -542,6 +542,7 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
         | "subtitles.position_horizontal_percent"
         | "subtitles.position_vertical_percent"
         | "subtitles.ass_force_user_style"
+        | "subtitles.ass_position_mode"
         | "subtitles.max_file_size_mb"
         | "subtitles.max_cues_per_file"
         | "subtitles.sidecar_max_entries_per_folder"
@@ -553,7 +554,11 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
         | "subtitles.max_attached_font_mb"
         | "subtitles.max_attached_fonts_total_mb"
         | "subtitles.embedded_feed_capacity"
-        | "subtitles.embedded_cue_max_open_duration_ms" => SettingApplicationContract::new(
+        | "subtitles.embedded_cue_max_open_duration_ms"
+        | "subtitles.max_ass_header_kb"
+        | "subtitles.max_ass_styles"
+        | "subtitles.max_ass_override_tags_per_event"
+        | "subtitles.max_ass_events_on_screen" => SettingApplicationContract::new(
             setting_name,
             AppRuntimeRoute::Subtitles,
             SettingStateOwner::SubtitlePolicy,
@@ -673,7 +678,7 @@ mod tests {
         );
     }
 
-    /// Все 22 настройки субтитров идут своим route и владельцем, не задевая playlist/player.
+    /// Все 27 настроек субтитров идут своим route и владельцем, не задевая playlist/player.
     #[test]
     fn subtitle_descriptors_use_dedicated_route_and_owner() {
         let registry = crate::app_config_registry().expect("registry builds");
@@ -682,7 +687,7 @@ mod tests {
             .filter(|descriptor| descriptor.id.as_str().starts_with("subtitles."))
             .map(|descriptor| descriptor.id.clone())
             .collect();
-        assert_eq!(subtitle_ids.len(), 22);
+        assert_eq!(subtitle_ids.len(), 27);
 
         for setting_id in subtitle_ids {
             let contract = setting_application_contract(&setting_id)

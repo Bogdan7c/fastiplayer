@@ -130,3 +130,37 @@ ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=8" \
   -map 0:v -map 1:a -c:v libvpx -b:v 40k -g 20 -c:a libopus -b:a 8k -ac 1 \
   "$here/low-fps-vp8-opus.mkv"
+
+# (h) MKV: VP8 + ASS-дорожка «слой 1» (сессия 08 плана субтитров). PlayRes 640x360, события
+# одновременно с 1.0 до 3.0 с:
+#   - знак `{\pos(160,60)\an5}SIGN` красным (стиль Sign, &H000000FF = RGB 255,0,0);
+#   - две нижние реплики в одном месте (an2): «First bottom line» белым (Default) и
+#     «Second bottom line» жёлтым (Second, RGB 255,255,0) - сами сталкиваются и встают друг над другом.
+# Шрифты не вложены: тесты берут встроенный шрифт приложения (Arial -> запасной).
+cat > "$work/layer1.ass" <<'ASS'
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,36,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,20,1
+Style: Second,Arial,36,&H0000FFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,20,1
+Style: Sign,Arial,40,&H000000FF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,2,0,5,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:03.00,Sign,,0,0,0,,{\pos(160,60)\an5}SIGN
+Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,First bottom line
+Dialogue: 0,0:00:01.00,0:00:03.00,Second,,0,0,0,,Second bottom line
+ASS
+
+ffmpeg -hide_banner -loglevel error -y \
+  "${video[@]}" -i "$work/layer1.ass" \
+  -map 0:v -map 1 \
+  -c:v libvpx -b:v 40k -c:s ass \
+  -metadata:s:s:0 language=eng -metadata:s:s:0 title="Layer 1" \
+  "$here/ass-layer1.mkv"

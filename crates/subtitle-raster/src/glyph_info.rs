@@ -15,6 +15,7 @@ use std::sync::Arc;
 use harfrust::Script;
 use skrifa::GlyphId;
 
+use crate::event_style::AxisPair;
 use crate::fixed_point::Vector26;
 use crate::fonts::FaceId;
 use crate::glyph_render::GlyphOutline;
@@ -98,6 +99,19 @@ pub(crate) struct TextCluster {
     pub(crate) symbol: char,
     /// Индекс внешнего вида в [`crate::source_text::SourceText::looks`].
     pub(crate) look: usize,
+    /// Масштаб по осям (libass: `info->scale_x`/`scale_y` после `fix_glyph_scaling`):
+    /// `font_size / 256`, умноженный на `\fscx`/`\fscy`. Переводит размеры шейпера и контура
+    /// (запрос 256 px) в пиксели кадра.
+    pub(crate) glyph_scale: AxisPair,
+    /// Межбуквенный интервал после масштаба букв в 26.6 (libass: `hspacing_scaled`);
+    /// прибавляется к продвижению кластера в `retrieve_glyphs`.
+    pub(crate) letter_spacing_d6: i32,
+    /// У символа задан ненулевой `\fsp` (libass: `info->hspacing != 0`): такой символ
+    /// шейпится и переупорядочивается отдельным участком, лигатуры в нём выключены.
+    pub(crate) has_letter_spacing: bool,
+    /// Толщина обводки символа в пикселях кадра (libass: `info->border_x/y`); нужна измерению
+    /// строк, которое не видит видов символов.
+    pub(crate) border: AxisPair,
     /// Лицо, выбранное для символа (libass: `face_index`).
     pub(crate) face: FaceId,
     /// Письменность символа (для разбиения на участки шейпинга).

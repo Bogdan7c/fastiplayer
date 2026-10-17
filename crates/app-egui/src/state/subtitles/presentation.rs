@@ -12,20 +12,24 @@
 //! - Ошибки отдельных реплик растеризатор гасит сам (пропуск + счётчик); здесь нет
 //!   фатальных путей, способных остановить воспроизведение.
 
+mod ass_options;
+
 use std::time::{Duration, Instant};
 
 use render_core::{PictureLayout, PictureRect, PictureSize, RenderViewport, RenderableFrame};
 use subtitle_core::{SubtitleContent, SubtitleEventId, SubtitleLanguage};
 use subtitle_raster::{
-    AttachedFontLimits, AttachedFontsClearOutcome, AttachedFontsInstallReport, CanvasSize, CueKey,
-    CueSourceId, PreparedAttachedFonts, RasterLimits, RenderRequest, RenderableCue,
-    SubtitleAppearance, SubtitleFontLibrary, SubtitleOverlay, SubtitleRasterizer,
-    TextLanguagePreference,
+    AssRenderOptions, AssStorageSize, AttachedFontLimits, AttachedFontsClearOutcome,
+    AttachedFontsInstallReport, CanvasSize, CueKey, CueSourceId, PreparedAttachedFonts,
+    RasterLimits, RenderRequest, RenderableCue, SubtitleAppearance, SubtitleFontLibrary,
+    SubtitleOverlay, SubtitleRasterizer, TextLanguagePreference,
 };
 use video_present_core::VideoPresentFrameIdentity;
 
+use self::ass_options::AssPresentation;
 use super::active_track::ActiveSubtitleTrack;
 use super::limits::RASTERIZATION_TIME_BUDGET;
+use super::user_style::UserSubtitleStyle;
 
 /// Кадр, который реально уходит в renderer, в терминах нужных субтитрам.
 ///
@@ -38,6 +42,9 @@ pub(crate) struct SubmittedFrameForSubtitles {
     frame_pts: Duration,
     render_generation: u64,
     picture_rect: PictureRect,
+    /// Пиксельный размер картинки видео (ориентированный размер кадра): ASS по нему
+    /// масштабирует обводку и тень (`storage size` libass).
+    picture_size: PictureSize,
     /// Зажатая область видео в пикселях окна: в ней рисуются субтитры (чёрные полосы
     /// вокруг картинки - её часть).
     video_viewport: RenderViewport,
@@ -61,11 +68,13 @@ impl SubmittedFrameForSubtitles {
         let frame_identity = frame_identity?;
         let clamped_viewport =
             video_viewport.clamp_to_surface(screen_size_in_pixels[0], screen_size_in_pixels[1]);
-        let layout = PictureLayout::fit(PictureSize::from_frame(frame), clamped_viewport)?;
+        let picture_size = PictureSize::from_frame(frame);
+        let layout = PictureLayout::fit(picture_size, clamped_viewport)?;
         Some(Self {
             frame_pts: frame.pts,
             render_generation: frame_identity.render_generation(),
             picture_rect: layout.rect(),
+            picture_size,
             video_viewport: clamped_viewport,
         })
     }
@@ -73,6 +82,11 @@ impl SubmittedFrameForSubtitles {
     /// Прямоугольник картинки видео на экране (без чёрных полос).
     pub(crate) fn picture_rect(&self) -> PictureRect {
         self.picture_rect
+    }
+
+    /// Размер картинки видео в пикселях как настройка ASS (`Unknown` для нулевой стороны).
+    fn ass_storage_size(&self) -> AssStorageSize {
+        AssStorageSize::from_pixels(self.picture_size.width, self.picture_size.height)
     }
 
     /// Зажатая область видео на экране: слой субтитров может стоять где угодно внутри неё.
@@ -110,10 +124,16 @@ impl SubmittedFrameForSubtitles {
         picture_rect: PictureRect,
         video_viewport: RenderViewport,
     ) -> Self {
+        // В тестах размер картинки видео равен размеру её прямоугольника на экране.
+        let picture_size = PictureSize::new(
+            picture_rect.width.round() as u32,
+            picture_rect.height.round() as u32,
+        );
         Self {
             frame_pts,
             render_generation,
             picture_rect,
+            picture_size,
             video_viewport,
         }
     }
@@ -143,6 +163,11 @@ struct ShownOverlay {
     source_id: CueSourceId,
     active_events: Vec<SubtitleEventId>,
     canvas: CanvasSize,
+    /// Настройки ASS, с которыми нарисован overlay: смена масштаба текста, флажка стиля или
+    /// размера картинки видео обязана перерисовать его, даже на паузе с теми же репликами.
+    ass_options: AssRenderOptions,
+    /// В overlay есть реплики ASS (для решений о размещении слоя).
+    contains_ass: bool,
     overlay: SubtitleOverlay,
 }
 
@@ -153,9 +178,11 @@ impl ShownOverlay {
         source_id: CueSourceId,
         active_events: &[SubtitleEventId],
         canvas: CanvasSize,
+        ass_options: AssRenderOptions,
     ) -> bool {
         self.source_id == source_id
             && self.canvas == canvas
+            && self.ass_options == ass_options
             && self.active_events.as_slice() == active_events
     }
 }
@@ -174,6 +201,8 @@ pub(super) struct SubtitlePresenter {
     /// Появляется, когда фоновая задача принесла библиотеку шрифтов.
     rasterizer: Option<SubtitleRasterizer>,
     appearance: SubtitleAppearance,
+    /// Часть настроек ASS, зависящая от стиля пользователя (см. `ass_options`).
+    ass: AssPresentation,
     /// Лимиты, с которыми создаётся растеризатор (меняются только до его создания).
     raster_limits: RasterLimits,
     /// Язык системы: запасной язык текста, когда дорожка своего не объявляет. Читается один
@@ -189,12 +218,13 @@ impl SubtitlePresenter {
     /// Создаёт презентатор со стилем и лимитами из настроек пользователя.
     pub(super) fn new(
         system_language: Option<SubtitleLanguage>,
-        appearance: SubtitleAppearance,
+        style: &UserSubtitleStyle,
         raster_limits: RasterLimits,
     ) -> Self {
         Self {
             rasterizer: None,
-            appearance,
+            appearance: style.to_appearance(),
+            ass: AssPresentation::from_style(style),
             raster_limits,
             system_language,
             scratch_active_events: Vec::new(),
@@ -258,6 +288,24 @@ impl SubtitlePresenter {
         }
         self.appearance = appearance;
         self.shown = None;
+    }
+
+    /// Применяет стиль пользователя целиком: внешний вид текста и настройки ASS (масштаб
+    /// текста, «мой стиль для ASS»). Неизменный стиль — no-op без перерастеризации.
+    pub(super) fn replace_style(&mut self, style: &UserSubtitleStyle) {
+        self.replace_appearance(style.to_appearance());
+        let ass = AssPresentation::from_style(style);
+        if self.ass != ass {
+            self.ass = ass;
+            self.shown = None;
+        }
+    }
+
+    /// Показывает ли готовый overlay реплики ASS (тогда слой размещается по правилам ASS).
+    pub(super) fn shown_overlay_contains_ass(&self) -> bool {
+        self.shown
+            .as_ref()
+            .is_some_and(|shown| shown.contains_ass && !shown.overlay.is_empty())
     }
 
     /// Запоминает лимиты для СЛЕДУЮЩЕГО растеризатора. Действующий не трогает: его лимиты
@@ -338,12 +386,21 @@ impl SubtitlePresenter {
             return ActiveCues::None;
         }
 
+        let ass_options = self.ass.render_options(frame.ass_storage_size());
         let reuse_shown = self.shown.as_ref().is_some_and(|shown| {
-            shown.is_same_as(track.source_id(), &self.scratch_active_events, canvas)
+            shown.is_same_as(
+                track.source_id(),
+                &self.scratch_active_events,
+                canvas,
+                ass_options,
+            )
         });
         if reuse_shown {
             self.stats.reused_frames += 1;
-        } else if self.rasterize_active_events(track, canvas).is_none() {
+        } else if self
+            .rasterize_active_events(track, canvas, ass_options)
+            .is_none()
+        {
             // Растеризатора ещё нет: реплики есть, показать пока нечего.
             self.shown = None;
         }
@@ -351,7 +408,7 @@ impl SubtitlePresenter {
     }
 
     /// Показанный overlay, если он не пуст.
-    fn shown_overlay(&self) -> Option<&SubtitleOverlay> {
+    pub(super) fn shown_overlay(&self) -> Option<&SubtitleOverlay> {
         self.shown
             .as_ref()
             .map(|shown| &shown.overlay)
@@ -365,21 +422,31 @@ impl SubtitlePresenter {
         &mut self,
         track: &ActiveSubtitleTrack,
         canvas: CanvasSize,
+        ass_options: AssRenderOptions,
     ) -> Option<()> {
         let rasterizer = self.rasterizer.as_mut()?;
 
         // Аллокация здесь допустима: мы на пути «набор реплик изменился», а не на обычном кадре.
         let mut cues: Vec<RenderableCue<'_>> = Vec::with_capacity(self.scratch_active_events.len());
+        let mut contains_ass = false;
         for &event_id in &self.scratch_active_events {
             let Some(event) = track.timeline().event(event_id) else {
                 continue;
             };
             match event.content() {
-                SubtitleContent::Text(cue) => cues.push(RenderableCue {
-                    key: CueKey::new(track.source_id(), event_id),
+                SubtitleContent::Text(cue) => cues.push(RenderableCue::text(
+                    CueKey::new(track.source_id(), event_id),
                     cue,
-                }),
-                // `SubtitleContent` расширяемый (ASS, bitmap): неподдерживаемое считаем.
+                )),
+                SubtitleContent::Ass(cue) => {
+                    contains_ass = true;
+                    cues.push(RenderableCue::ass(
+                        CueKey::new(track.source_id(), event_id),
+                        event.layer(),
+                        cue,
+                    ));
+                }
+                // `SubtitleContent` расширяемый (bitmap и будущее): неподдерживаемое считаем.
                 _ => self.stats.skipped_unsupported_cues += 1,
             }
         }
@@ -399,6 +466,7 @@ impl SubtitlePresenter {
                 canvas,
                 appearance: &self.appearance,
                 text_language,
+                ass: ass_options,
             })
             .clone();
         let elapsed = started_at.elapsed();
@@ -408,6 +476,8 @@ impl SubtitlePresenter {
             source_id: track.source_id(),
             active_events: self.scratch_active_events.clone(),
             canvas,
+            ass_options,
+            contains_ass,
             overlay,
         };
         self.shown = Some(shown);

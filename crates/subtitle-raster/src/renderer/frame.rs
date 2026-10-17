@@ -3,8 +3,9 @@
 //! Подпись нужна для быстрого пути «ничего не изменилось»: сравнение с новым запросом идёт
 //! по месту, без аллокаций и без обхода содержимого реплик (доверие ключам `CueKey`).
 
-use super::request::{CueKey, RenderRequest};
+use super::request::{CueContent, CueKey, RenderRequest};
 use crate::appearance::SubtitleAppearance;
+use crate::ass::AssRenderOptions;
 use crate::fonts::TextLanguagePreference;
 use crate::overlay::{CanvasSize, SubtitleOverlay};
 
@@ -15,6 +16,8 @@ pub(crate) struct FrameSignature {
     canvas: CanvasSize,
     appearance: SubtitleAppearance,
     text_language: TextLanguagePreference,
+    /// Настройки ASS; `None`, если в кадре нет ASS-реплик (тогда их смена кадр не меняет).
+    ass: Option<AssRenderOptions>,
 }
 
 impl FrameSignature {
@@ -25,7 +28,17 @@ impl FrameSignature {
             canvas: request.canvas,
             appearance: *request.appearance,
             text_language: request.text_language,
+            ass: Self::ass_options_of(request),
         }
+    }
+
+    /// Настройки ASS, если они влияют на кадр.
+    fn ass_options_of(request: &RenderRequest<'_>) -> Option<AssRenderOptions> {
+        request
+            .cues
+            .iter()
+            .any(|cue| matches!(cue.content, CueContent::Ass(_)))
+            .then_some(request.ass)
     }
 
     /// Совпадает ли запрос с подписью (без аллокаций).
@@ -33,6 +46,7 @@ impl FrameSignature {
         self.canvas == request.canvas
             && self.appearance == *request.appearance
             && self.text_language == request.text_language
+            && self.ass == Self::ass_options_of(request)
             && self.keys.len() == request.cues.len()
             && self
                 .keys

@@ -7,6 +7,7 @@
 //! слишком много событий). Проблемы отдельных реплик пропускаются и попадают
 //! в [`SubtitleParseReport`] — плохая реплика не должна ломать весь фильм.
 
+mod ass;
 mod document;
 mod embedded;
 mod encoding;
@@ -18,10 +19,13 @@ mod sniff;
 mod srt;
 mod webvtt;
 
+pub use ass::{
+    AssHeaderReport, AssParseError, AssParseLimits, AssParseReport, AssTagStats, parse_ass_script,
+};
 pub use document::ParsedSubtitleDocument;
 pub use embedded::{
-    EmbeddedCue, EmbeddedCueError, EmbeddedCueFormat, EmbeddedCueLimits, EmbeddedCueMalformation,
-    EmbeddedCueOutcome, parse_embedded_cue,
+    EmbeddedAssEvent, EmbeddedCue, EmbeddedCueError, EmbeddedCueFormat, EmbeddedCueLimits,
+    EmbeddedCueMalformation, EmbeddedCueOutcome, parse_embedded_ass_event, parse_embedded_cue,
 };
 pub use encoding::{
     DecodedSubtitleText, DetectedSubtitleEncoding, LegacyEncodingHint, decode_subtitle_bytes,

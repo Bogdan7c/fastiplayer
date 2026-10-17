@@ -22,6 +22,9 @@ fn letterboxed() -> LayerPlacementRequest {
         horizontal_offset_fraction: 0.0,
         vertical_offset_fraction: 0.0,
         obstruction: BottomControlsObstruction::Absent,
+        policy: LayerPlacementPolicy::UserPlaced {
+            bounds: LayerBounds::PictureAndBars,
+        },
     }
 }
 
@@ -295,4 +298,72 @@ fn broken_geometry_or_fractions_never_produce_a_garbage_offset() {
         ..letterboxed()
     };
     assert_eq!(placed(&nan_fractions).offset, SubtitleLayerOffset::NONE);
+}
+
+fn picture_only(request: LayerPlacementRequest) -> LayerPlacementRequest {
+    LayerPlacementRequest {
+        policy: LayerPlacementPolicy::UserPlaced {
+            bounds: LayerBounds::PictureOnly,
+        },
+        ..request
+    }
+}
+
+#[test]
+fn picture_only_layer_never_goes_below_the_picture_even_with_extreme_offset() {
+    // Картинка занимает y 90..510; слой высотой 65 при крайнем сдвиге вниз упирается в низ картинки.
+    let request = picture_only(LayerPlacementRequest {
+        vertical_offset_fraction: -5.0,
+        ..letterboxed()
+    });
+    assert_eq!(placed(&request).rect, rect(300, 510 - 65, 400, 65));
+}
+
+#[test]
+fn picture_only_layer_never_goes_above_the_picture_even_with_extreme_offset() {
+    let request = picture_only(LayerPlacementRequest {
+        vertical_offset_fraction: 5.0,
+        ..letterboxed()
+    });
+    assert_eq!(placed(&request).rect, rect(300, 90, 400, 65));
+}
+
+#[test]
+fn picture_only_layer_lifts_above_controls_but_stays_in_picture() {
+    // Панель закрывает всё от y=300 и ниже: слой поднимается до 300 - 8 = 292 (низ), верх 227.
+    let lifted = picture_only(LayerPlacementRequest {
+        obstruction: obstruction_at(300),
+        ..letterboxed()
+    });
+    assert_eq!(placed(&lifted).rect.y, 292 - 65);
+    // Панель почти во всю картинку: слой упирается в верх картинки, а не уходит в верхнюю полосу.
+    let tall_panel = picture_only(LayerPlacementRequest {
+        obstruction: obstruction_at(100),
+        ..letterboxed()
+    });
+    assert_eq!(placed(&tall_panel).rect.y, 90);
+}
+
+#[test]
+fn picture_only_matches_picture_and_bars_when_nothing_leaves_the_picture() {
+    let request = LayerPlacementRequest {
+        vertical_offset_fraction: 0.1,
+        horizontal_offset_fraction: 0.05,
+        ..letterboxed()
+    };
+    assert_eq!(placed(&picture_only(request)), placed(&request));
+}
+
+#[test]
+fn author_placed_layer_ignores_offsets_and_controls() {
+    let request = LayerPlacementRequest {
+        policy: LayerPlacementPolicy::AuthorPlaced,
+        horizontal_offset_fraction: 0.4,
+        vertical_offset_fraction: 0.5,
+        obstruction: obstruction_at(300),
+        ..letterboxed()
+    };
+    let result = placed(&request);
+    assert_eq!(result.offset, SubtitleLayerOffset::NONE);
+    assert_eq!(result.rect, rect(300, 420, 400, 65));
 }

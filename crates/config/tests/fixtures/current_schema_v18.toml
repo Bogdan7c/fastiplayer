@@ -1,4 +1,4 @@
-schema_version = 17
+schema_version = 18
 
 [player]
 start_paused = false
@@ -258,6 +258,8 @@ position_horizontal_percent = 50
 position_vertical_percent = 6
 # Применять свои цвета и обводку также к ASS/SSA-субтитрам (работает, когда доступен ASS-рендер).
 ass_force_user_style = false
+# Положение ASS/SSA: main_lines_avoid_controls — поднимать основной диалог над панелью (надписи на месте), author — как задумал автор, whole_layer — двигать слой целиком, как обычные субтитры.
+ass_position_mode = "main_lines_avoid_controls"
 # Файлы субтитров больше этого размера (МБ) не загружаются.
 max_file_size_mb = 8
 # Файлы субтитров с большим числом реплик не загружаются.
@@ -282,3 +284,11 @@ max_attached_fonts_total_mb = 100
 embedded_feed_capacity = 4096
 # Сколько мс показывается встроенная реплика без длительности.
 embedded_cue_max_open_duration_ms = 5000
+# Заголовки ASS/SSA больше этого размера (КБ) не разбираются; дорожка показывается простым текстом.
+max_ass_header_kb = 1024
+# Сколько стилей читается из одного ASS/SSA-заголовка.
+max_ass_styles = 1000
+# Сколько тегов оформления читается из одной ASS/SSA-реплики; лишние игнорируются.
+max_ass_override_tags_per_event = 512
+# Сколько ASS/SSA-реплик рисуется на кадре одновременно; лишние с верхних слоёв пропускаются.
+max_ass_events_on_screen = 256

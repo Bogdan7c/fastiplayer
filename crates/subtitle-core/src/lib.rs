@@ -12,6 +12,7 @@
 //! Пользовательский стиль накладывается позже, на этапе растеризации; здесь хранится только
 //! то, что задал автор субтитров (`None` у цвета означает «взять из пользовательского стиля»).
 
+mod ass;
 mod color;
 mod event;
 mod language;
@@ -22,6 +23,14 @@ mod time;
 mod timeline;
 mod track;
 
+pub use ass::{
+    AssAlignment, AssAlphaTarget, AssAxes, AssBold, AssBorderStyle, AssColor, AssColorSlot, AssCue,
+    AssDrawingMode, AssEventField, AssEventFormat, AssEventMargins, AssFontSize, AssHardOverrides,
+    AssHorizontalAlign, AssKerning, AssLayoutRes, AssMove, AssOverride, AssPlayRes,
+    AssResolvedMargins, AssRgb, AssScaledBorderAndShadow, AssScript, AssScriptInfo, AssScriptKind,
+    AssStyle, AssStyleIndex, AssTextItem, AssUnsupportedTag, AssVerticalAlign, AssWrapStyle,
+    AssYCbCrMatrix,
+};
 pub use color::{InvalidSubtitleColor, SubtitleColor};
 pub use event::{
     InvalidSubtitleInterval, SubtitleContent, SubtitleEvent, SubtitleLayer, SubtitleTextCue,

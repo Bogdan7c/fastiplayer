@@ -5,8 +5,14 @@
 
 mod appearance_edit;
 mod appearance_edit_ui;
+mod ass_gpu_support;
+mod ass_layer1_gpu;
+mod ass_position_gpu;
+mod ass_position_lift_gpu;
+mod ass_sidecar;
 mod control_actions;
 mod drop_flow;
+mod embedded_ass;
 mod embedded_auto_select;
 mod embedded_feed;
 mod embedded_gpu;

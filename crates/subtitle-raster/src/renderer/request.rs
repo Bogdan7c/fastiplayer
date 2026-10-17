@@ -1,8 +1,9 @@
 //! Входные типы растеризатора: что рисовать на кадре.
 
-use subtitle_core::{SubtitleEventId, SubtitleTextCue};
+use subtitle_core::{AssCue, SubtitleEventId, SubtitleLayer, SubtitleTextCue};
 
 use crate::appearance::SubtitleAppearance;
+use crate::ass::AssRenderOptions;
 use crate::fonts::TextLanguagePreference;
 use crate::overlay::CanvasSize;
 
@@ -55,20 +56,55 @@ impl CueKey {
     }
 }
 
-/// Реплика кадра: ключ и ссылка на содержимое.
+/// Содержимое реплики кадра.
+#[derive(Debug, Clone, Copy)]
+pub enum CueContent<'a> {
+    /// Реплика простого формата (SRT, WebVTT, YouTube и т. п.).
+    Text(&'a SubtitleTextCue),
+    /// Реплика ASS/SSA: стиль и теги разобраны, раскладка и рисование — здесь.
+    Ass(&'a AssCue),
+}
+
+/// Реплика кадра: ключ, слой и ссылка на содержимое.
 #[derive(Debug, Clone, Copy)]
 pub struct RenderableCue<'a> {
     /// Идентичность реплики.
     pub key: CueKey,
+    /// Слой события (`Layer` ASS): для ASS-реплик больший слой рисуется поверх меньшего, а
+    /// столкновения разрешаются отдельно в каждом слое. Реплики простых форматов слой не
+    /// используют (их порядок задаёт запрос).
+    pub layer: SubtitleLayer,
     /// Содержимое (читается только при промахе кэша).
-    pub cue: &'a SubtitleTextCue,
+    pub content: CueContent<'a>,
+}
+
+impl<'a> RenderableCue<'a> {
+    /// Реплика простого формата.
+    pub const fn text(key: CueKey, cue: &'a SubtitleTextCue) -> Self {
+        Self {
+            key,
+            layer: SubtitleLayer::DEFAULT,
+            content: CueContent::Text(cue),
+        }
+    }
+
+    /// Реплика ASS на слое `layer`.
+    pub const fn ass(key: CueKey, layer: SubtitleLayer, cue: &'a AssCue) -> Self {
+        Self {
+            key,
+            layer,
+            content: CueContent::Ass(cue),
+        }
+    }
 }
 
 /// Запрос на один кадр.
 #[derive(Debug, Clone, Copy)]
 pub struct RenderRequest<'a> {
-    /// Активные реплики в порядке отрисовки (первая — самая нижняя; при столкновениях
-    /// первая остаётся на месте, следующие сдвигаются).
+    /// Активные реплики. Реплики простых форматов рисуются в порядке запроса (первая — самая
+    /// нижняя; при столкновениях первая остаётся на месте, следующие сдвигаются). Реплики
+    /// ASS сортируются по `(layer, ReadOrder)` и рисуются ПОСЛЕ реплик простых форматов; для
+    /// равных слоя и `ReadOrder` остаётся порядок запроса.
     pub cues: &'a [RenderableCue<'a>],
     /// Холст — размер картинки видео на экране.
     pub canvas: CanvasSize,
@@ -78,6 +114,9 @@ pub struct RenderRequest<'a> {
     /// иначе системы ([`TextLanguagePreference::track_then_system`]). Смена языка перерисует
     /// реплики, а прошлый кадр не будет переиспользован.
     pub text_language: TextLanguagePreference,
+    /// Настройки рисования ASS (масштаб текста, чей стиль, размер хранения видео). Смена
+    /// перерисует ASS-реплики; реплики простых форматов эти настройки не затрагивают.
+    pub ass: AssRenderOptions,
 }
 
 /// Лимиты кэшей растеризатора. Значений по умолчанию нет: их задаёт конфиг (сессия 04).

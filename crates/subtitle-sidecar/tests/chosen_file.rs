@@ -72,7 +72,10 @@ fn extension_helpers_are_case_insensitive_and_know_all_formats() {
         Some(SidecarSubtitleFormat::Ass)
     );
     let ass = describe_subtitle_file(Path::new("a.ass")).expect("ass is described");
-    assert!(!ass.format.is_renderable_now(), "ass is not renderable yet");
+    assert!(
+        ass.format.is_renderable_now(),
+        "ass is renderable since session 08"
+    );
 }
 
 #[test]

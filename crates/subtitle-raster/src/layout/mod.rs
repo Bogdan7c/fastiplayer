@@ -28,8 +28,11 @@
 //! 4. выравнивание строк внутри блока;
 //! 5. положение блока: для нижнего якоря низ последней строки стоит на `высота − поле`.
 //!
-//! Все размеры — пиксели кадра; PlayRes равен кадру (масштаб 1), `\pos` не поддерживается.
+//! Все размеры — пиксели кадра. Реплики SRT/WebVTT стоят между целыми полями; реплики ASS
+//! задают точную дробную геометрию и, с `\pos`, опорную точку блока (`EventStyle::placement`):
+//! масштаб PlayRes -> кадр уже применён строителем стиля.
 
+mod event_rect;
 mod line_boxes;
 mod measure;
 mod reorder;
@@ -37,12 +40,13 @@ mod wrap;
 
 use subtitle_core::ScreenAnchor;
 
+pub(crate) use event_rect::{EventImageRect, event_image_rect};
 pub(crate) use line_boxes::{LineBox, line_boxes};
 pub(crate) use measure::{TextBounds, TextMeasure};
 use reorder::{HorizontalAlignment, align_lines, reorder_text};
 pub(crate) use wrap::preliminary_layout;
 
-use crate::event_style::{BaseDirection, EventStyle};
+use crate::event_style::{BaseDirection, BlockAnchor, EventStyle};
 use crate::glyph_info::TextCluster;
 use crate::overlay::CanvasSize;
 
@@ -71,8 +75,7 @@ pub(crate) fn arrange_text(
 ) -> TextLayout {
     preliminary_layout(clusters);
 
-    let max_text_width =
-        f64::from(canvas.width()) - f64::from(style.margins.right) - f64::from(style.margins.left);
+    let max_text_width = style.text_width(f64::from(canvas.width()));
     // wrap_lines_smart: проход, выравнивание, обрезка пробелов, измерение.
     let line_count = wrap::wrap_lines_naive(clusters, max_text_width, style.wrap_style);
     wrap::wrap_lines_rebalance(clusters, style.wrap_style);
@@ -88,8 +91,17 @@ pub(crate) fn arrange_text(
     );
     let bounds = measure::string_bounds(clusters, &measure);
 
-    let device_x = f64::from(style.margins.left);
-    let device_y = block_baseline(style, canvas, &measure, &bounds);
+    let (device_x, device_y) = match style.block_anchor() {
+        BlockAnchor::ByAlignment => (
+            style.text_left(),
+            block_baseline(style, canvas, &measure, &bounds),
+        ),
+        BlockAnchor::AtPoint { x, y } => {
+            // libass: `device = x2scr_pos(pos) - base_point(bbox, alignment)`.
+            let (base_x, base_y) = base_point(&bounds, style.alignment);
+            (x - base_x, y - base_y)
+        }
+    };
     TextLayout {
         measure,
         bounds,
@@ -106,7 +118,7 @@ fn block_baseline(
     bounds: &TextBounds,
 ) -> f64 {
     let first_ascent = measure.lines.first().map_or(0.0, |line| line.ascent);
-    let margin = f64::from(style.margins.vertical);
+    let margin = style.vertical_margin();
     match style.alignment {
         ScreenAnchor::TopLeft | ScreenAnchor::TopCenter | ScreenAnchor::TopRight => {
             margin + first_ascent
@@ -121,6 +133,30 @@ fn block_baseline(
             bottom - measure.height + first_ascent
         }
     }
+}
+
+/// Опорная точка блока для `\pos` (libass: `get_base_point`): угол или середина габаритов
+/// текста по выравниванию реплики.
+fn base_point(bounds: &TextBounds, alignment: ScreenAnchor) -> (f64, f64) {
+    let x = match alignment {
+        ScreenAnchor::TopLeft | ScreenAnchor::MiddleLeft | ScreenAnchor::BottomLeft => bounds.x_min,
+        ScreenAnchor::TopCenter | ScreenAnchor::MiddleCenter | ScreenAnchor::BottomCenter => {
+            (bounds.x_max + bounds.x_min) / 2.0
+        }
+        ScreenAnchor::TopRight | ScreenAnchor::MiddleRight | ScreenAnchor::BottomRight => {
+            bounds.x_max
+        }
+    };
+    let y = match alignment {
+        ScreenAnchor::TopLeft | ScreenAnchor::TopCenter | ScreenAnchor::TopRight => bounds.y_min,
+        ScreenAnchor::MiddleLeft | ScreenAnchor::MiddleCenter | ScreenAnchor::MiddleRight => {
+            (bounds.y_max + bounds.y_min) / 2.0
+        }
+        ScreenAnchor::BottomLeft | ScreenAnchor::BottomCenter | ScreenAnchor::BottomRight => {
+            bounds.y_max
+        }
+    };
+    (x, y)
 }
 
 #[cfg(test)]

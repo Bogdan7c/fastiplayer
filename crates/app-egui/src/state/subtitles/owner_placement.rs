@@ -6,26 +6,49 @@
 //! смена позиции или подъём панели меняют только сдвиг, который рендер применяет через
 //! uniform (без перерастеризации и без повторной загрузки масок).
 
-use render_wgpu_shell::SubtitleLayerOffset;
-use subtitle_raster::SubtitleOverlay;
+mod ass_positioning;
+
+use render_wgpu_shell::SubtitleLayerOffsets;
+use subtitle_raster::{OverlayPlacementGroup, SubtitleOverlay};
 
 use super::active_track::ActiveSubtitleTrack;
 use super::controls_obstruction::BottomControlsObstruction;
-#[cfg(test)]
-use super::layer_placement::PlacedLayerRect;
-use super::layer_placement::{LayerPlacementRequest, place_layer};
+use super::layer_placement::group_lift::{MainGroupLiftRequest, lift_main_group_above_controls};
+use super::layer_placement::{
+    LayerBounds, LayerPlacement, LayerPlacementPolicy, LayerPlacementRequest, PlacedLayerRect,
+    place_layer,
+};
 use super::media_state::MediaSubtitles;
 use super::presentation::{SubmittedFrameForSubtitles, SubtitlePresenter};
 use super::track_list::TrackLoadState;
 use super::{CurrentMediaForSubtitles, SubtitleOwner};
+
+pub(crate) use self::ass_positioning::AssLayerPositioning;
 
 /// Overlay кадра вместе со сдвигом слоя, который должен применить рендер.
 #[derive(Debug)]
 pub(crate) struct PlacedSubtitleOverlay<'overlay> {
     /// Результат растеризатора (маски делятся между кадрами через `Arc`).
     pub(crate) overlay: &'overlay SubtitleOverlay,
-    /// Сдвиг слоя относительно места, где растеризатор его нарисовал.
-    pub(crate) layer_offset: SubtitleLayerOffset,
+    /// Сдвиги групп слоя относительно места, где растеризатор их нарисовал (обе группы
+    /// получают один сдвиг, кроме режима «поднять основной диалог»).
+    pub(crate) layer_offsets: SubtitleLayerOffsets,
+}
+
+/// Итог размещения кадра: сдвиги групп для рендера и прямоугольник слоя на экране.
+struct ResolvedPlacement {
+    offsets: SubtitleLayerOffsets,
+    rect: PlacedLayerRect,
+}
+
+impl ResolvedPlacement {
+    /// Весь слой едет одним сдвигом (обычные субтитры, `author`, `whole_layer`).
+    fn whole_layer(placement: LayerPlacement) -> Self {
+        Self {
+            offsets: SubtitleLayerOffsets::uniform(placement.offset),
+            rect: placement.rect,
+        }
+    }
 }
 
 /// Overlay текущего кадра по правилам принадлежности (media и поколение ресурсов рендера).
@@ -80,6 +103,24 @@ fn gated_edit_overlay<'presenter>(
     }
 }
 
+/// Подъём основной группы над панелью: границы групп берутся у самого overlay.
+fn resolve_main_group_lift(
+    overlay: &SubtitleOverlay,
+    frame: &SubmittedFrameForSubtitles,
+    obstruction: BottomControlsObstruction,
+) -> Option<ResolvedPlacement> {
+    let lift = lift_main_group_above_controls(&MainGroupLiftRequest {
+        picture_rect: frame.picture_rect(),
+        main_group_bounds: overlay.group_bounds(OverlayPlacementGroup::Main),
+        fixed_group_bounds: overlay.group_bounds(OverlayPlacementGroup::Fixed),
+        obstruction,
+    })?;
+    Some(ResolvedPlacement {
+        offsets: lift.offsets,
+        rect: lift.rect,
+    })
+}
+
 impl SubtitleOwner {
     /// Принимает наблюдение за нижней панелью управления (UI вызывает каждый кадр).
     ///
@@ -112,7 +153,7 @@ impl SubtitleOwner {
     ) -> Option<PlacedSubtitleOverlay<'_>> {
         let (horizontal_offset_fraction, vertical_offset_fraction) = self.displayed_style_offsets();
         let obstruction = self.controls_obstruction;
-        let overlay = if self.appearance_edit.is_some() {
+        let has_overlay = if self.appearance_edit.is_some() {
             gated_edit_overlay(
                 self.media.as_ref(),
                 self.sample_track.as_ref(),
@@ -120,49 +161,89 @@ impl SubtitleOwner {
                 current,
                 frame,
             )
+            .is_some()
         } else {
-            gated_overlay(self.media.as_ref(), &mut self.presenter, current, frame)
+            gated_overlay(self.media.as_ref(), &mut self.presenter, current, frame).is_some()
         };
-        let Some(overlay) = overlay else {
+        // Правило размещения зависит от того, что именно показано (ASS или обычные субтитры),
+        // поэтому читаем его после подготовки overlay, но до выдачи ссылки на него.
+        let policy = self.placement_policy_for_shown_layer();
+        let shown = self
+            .presenter
+            .shown_overlay()
+            .filter(|_| has_overlay)
+            .and_then(|overlay| Some((overlay, overlay.content_bounds()?)));
+        let Some((overlay, content_bounds)) = shown else {
             // Слоя нет: рамке правки не на чем стоять.
             self.last_placed_layer_rect = None;
             self.last_placed_picture_rect = None;
             self.last_placed_layer_offset = None;
             return None;
         };
-        let Some(content_bounds) = overlay.content_bounds() else {
-            // Слоя нет: рамке правки не на чем стоять.
-            self.last_placed_layer_rect = None;
-            self.last_placed_picture_rect = None;
-            self.last_placed_layer_offset = None;
-            return None;
+        let placement = match policy {
+            LayerPlacementPolicy::LiftMainGroupOnly => {
+                resolve_main_group_lift(overlay, frame, obstruction)
+            }
+            LayerPlacementPolicy::UserPlaced { .. } | LayerPlacementPolicy::AuthorPlaced => {
+                place_layer(&LayerPlacementRequest {
+                    picture_rect: frame.picture_rect(),
+                    viewport: frame.video_viewport(),
+                    content_bounds,
+                    horizontal_offset_fraction,
+                    vertical_offset_fraction,
+                    obstruction,
+                    policy,
+                })
+                .map(ResolvedPlacement::whole_layer)
+            }
         };
-        let placement = place_layer(&LayerPlacementRequest {
-            picture_rect: frame.picture_rect(),
-            viewport: frame.video_viewport(),
-            content_bounds,
-            horizontal_offset_fraction,
-            vertical_offset_fraction,
-            obstruction,
-        });
         let Some(placement) = placement else {
             // Геометрия кадра нечисловая: показываем слой на стандартном месте, без сдвига.
-            // Слоя нет: рамке правки не на чем стоять.
             self.last_placed_layer_rect = None;
             self.last_placed_picture_rect = None;
             self.last_placed_layer_offset = None;
             return Some(PlacedSubtitleOverlay {
                 overlay,
-                layer_offset: SubtitleLayerOffset::NONE,
+                layer_offsets: SubtitleLayerOffsets::NONE,
             });
         };
         self.last_placed_layer_rect = Some(placement.rect);
         self.last_placed_picture_rect = Some(frame.picture_rect());
-        self.last_placed_layer_offset = Some(placement.offset);
+        // Для правки на видео «видимое место» слоя - сдвиг основной группы (у остальных
+        // режимов обе группы совпадают).
+        self.last_placed_layer_offset = Some(placement.offsets.main);
         Some(PlacedSubtitleOverlay {
             overlay,
-            layer_offset: placement.offset,
+            layer_offsets: placement.offsets,
         })
+    }
+
+    /// Правило размещения для слоя, который показан сейчас.
+    ///
+    /// ASS привязан к картинке видео и на полосы не выходит (решение владельца, сессия 08):
+    /// в режиме `main_lines_avoid_controls` над панелью поднимается только основной диалог, в
+    /// режиме `author` он стоит там, где его нарисовал автор, в режиме `whole_layer` двигается
+    /// целиком, но внутри картинки. Обычные субтитры размещаются по прежним правилам
+    /// (в том числе образец режима правки, который никогда не является ASS).
+    ///
+    /// В режиме правки при `author` и `main_lines_avoid_controls` и настоящей реплике ASS на кадре перетаскивание рамки
+    /// ничего не двигает: правка двигает образец и обычные субтитры (образец появляется, когда
+    /// реплики на кадре нет), а ASS остаётся на авторском месте.
+    fn placement_policy_for_shown_layer(&self) -> LayerPlacementPolicy {
+        match self.shown_ass_layer_positioning() {
+            None => LayerPlacementPolicy::UserPlaced {
+                bounds: LayerBounds::PictureAndBars,
+            },
+            Some(AssLayerPositioning::LiftMainLinesAboveControls) => {
+                LayerPlacementPolicy::LiftMainGroupOnly
+            }
+            Some(AssLayerPositioning::KeepAuthorPlacement) => LayerPlacementPolicy::AuthorPlaced,
+            Some(AssLayerPositioning::MoveWholeLayerInsidePicture) => {
+                LayerPlacementPolicy::UserPlaced {
+                    bounds: LayerBounds::PictureOnly,
+                }
+            }
+        }
     }
 
     /// Только overlay (без сдвига): удобный вход для тестов растеризации и выбора реплик.

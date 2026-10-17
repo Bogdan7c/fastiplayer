@@ -112,8 +112,7 @@ impl SubtitleOwner {
         match finish {
             AppearanceEditFinish::Cancel => {
                 // `before` следует за закоммиченным конфигом, так что это ТЕКУЩИЙ закоммиченный стиль.
-                self.presenter
-                    .replace_appearance(session.before().to_appearance());
+                self.presenter.replace_style(session.before());
                 AppearanceEditOutcome::Cancelled
             }
             AppearanceEditFinish::Save => {
@@ -192,8 +191,8 @@ impl SubtitleOwner {
 
     /// Отдаёт презентатору внешний вид показываемого стиля (no-op, если он не менялся).
     pub(super) fn sync_presenter_appearance(&mut self) {
-        let appearance = self.displayed_style().to_appearance();
-        self.presenter.replace_appearance(appearance);
+        let style = self.displayed_style().clone();
+        self.presenter.replace_style(&style);
     }
 
     /// Подтверждённый конфиг изменил стиль: обновляет `before` открытой сессии, не трогая

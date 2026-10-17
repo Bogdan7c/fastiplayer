@@ -32,8 +32,11 @@
 //!    skrifa, который моделирует другой запрос размера (`FT_Set_Pixel_Size`).
 
 mod advance;
+mod decoration;
+mod face_style;
 mod retrieve;
 mod scale_pen;
+mod styled;
 
 use skrifa::outline::DrawSettings;
 use skrifa::{FontRef, GlyphId, MetadataProvider, instance::Size};
@@ -43,8 +46,10 @@ use crate::fonts::FaceMetrics;
 use crate::outline::pen::GlyphOutlinePen;
 use crate::outline::{ControlBox, Outline, OutlineError};
 pub(crate) use advance::HintedAdvances;
+pub(crate) use face_style::{FaceStyleInfo, GlyphVariant};
 pub(crate) use retrieve::retrieve_glyphs;
 use scale_pen::FreeTypeScalePen;
+pub(crate) use styled::load_styled_glyph_outline;
 
 /// Размер лица в пикселях, который libass запрашивает у FreeType при отключённом хинтинге
 /// (`fix_glyph_scaling`: «arbitrary, not too small to prevent grid fitting rounding effects»).
@@ -83,6 +88,19 @@ impl FaceScale {
             ascent: i32::try_from(mul_fix(i64::from(metrics.ascender), unit_scale)).ok()?,
             descent: i32::try_from(mul_fix(-i64::from(metrics.descender), unit_scale)).ok()?,
         })
+    }
+
+    /// Толщина синтетического утолщения в 26.6 при размере 256 px: размер em в пикселях,
+    /// выраженный числом 1/64 (libass: `FT_MulFix(units_per_EM, y_scale) / 64`).
+    pub(crate) fn synthetic_bold_strength(&self) -> i32 {
+        self.units_to_d6(i32::from(self.units_per_em)) / 64
+    }
+
+    /// Расстояние линии подчёркивания или зачёркивания из единиц шрифта в 26.6: умножение
+    /// на масштаб с округлением «к ближайшему» арифметическим сдвигом, как в
+    /// `ass_get_glyph_outline` (отличается от `FT_MulFix` на отрицательных половинках).
+    pub(crate) fn decoration_units_to_d6(&self, units: i32) -> i64 {
+        (i64::from(units) * self.unit_scale + 0x8000) >> 16
     }
 
     /// Масштаб шейпера: значения при нём измеряются в 1/64 пикселя при размере 256 px.
@@ -130,6 +148,27 @@ pub(crate) struct GlyphOutline {
     pub(crate) control_box: ControlBox,
 }
 
+impl GlyphOutline {
+    /// Контур с его рамкой; рамка пустого контура — нули (libass: `val->cbox`).
+    pub(crate) fn from_outline(outline: Outline) -> Self {
+        let mut control_box = ControlBox::EMPTY;
+        outline.update_control_box(&mut control_box);
+        if control_box.is_empty() {
+            // libass: пустая рамка превращается в нули.
+            control_box = ControlBox {
+                x_min: 0,
+                y_min: 0,
+                x_max: 0,
+                y_max: 0,
+            };
+        }
+        Self {
+            outline,
+            control_box,
+        }
+    }
+}
+
 /// Почему контур глифа не загружен.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub(crate) enum GlyphOutlineError {
@@ -152,15 +191,26 @@ pub(crate) enum GlyphOutlineError {
     Conversion(#[from] OutlineError),
 }
 
-/// Загружает контур глифа (libass: `ass_font_get_glyph` + `ass_get_glyph_outline`).
+/// Загружает исходный контур глифа без синтетики и линий (libass: `ass_font_get_glyph` без
+/// `ass_glyph_italicize`/`ass_glyph_embolden` + `ass_get_glyph_outline` без `DECO_*`).
 ///
-/// Синтетическая жирность и наклон здесь не применяются: решение «нужны ли они» принимает
-/// вызывающий по [`crate::fonts::FaceMatch`].
+/// Синтетические наклон/жирность и линии добавляет [`load_styled_glyph_outline`]; в
+/// производственном конвейере используется только он, а этот вариант нужен тестам метрик.
+#[cfg(test)]
 pub(crate) fn load_glyph_outline(
     font: &FontRef<'_>,
     scale: &FaceScale,
     glyph: GlyphId,
 ) -> Result<GlyphOutline, GlyphOutlineError> {
+    load_base_outline(font, scale, glyph).map(GlyphOutline::from_outline)
+}
+
+/// Контур глифа в 26.6 при размере 256 px (ось Y вниз) без рамки.
+fn load_base_outline(
+    font: &FontRef<'_>,
+    scale: &FaceScale,
+    glyph: GlyphId,
+) -> Result<Outline, GlyphOutlineError> {
     let Some(outline_glyph) = font.outline_glyphs().get(glyph) else {
         return Err(GlyphOutlineError::NoOutline { glyph });
     };
@@ -171,23 +221,7 @@ pub(crate) fn load_glyph_outline(
             glyph,
             reason: error.to_string(),
         })?;
-    let outline = pen.into_inner().finish()?;
-
-    let mut control_box = ControlBox::EMPTY;
-    outline.update_control_box(&mut control_box);
-    if control_box.is_empty() {
-        // libass: пустая рамка превращается в нули.
-        control_box = ControlBox {
-            x_min: 0,
-            y_min: 0,
-            x_max: 0,
-            y_max: 0,
-        };
-    }
-    Ok(GlyphOutline {
-        outline,
-        control_box,
-    })
+    Ok(pen.into_inner().finish()?)
 }
 
 #[cfg(test)]

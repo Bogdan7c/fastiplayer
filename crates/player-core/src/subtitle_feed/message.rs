@@ -5,6 +5,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use media_core::{MediaAttachments, TrackId};
 
+use super::SubtitleTrackHeader;
 use crate::MediaInstanceId;
 
 /// Начало нового media: вложения (шрифты), забранные у demuxer при установке media.
@@ -19,6 +20,11 @@ pub struct SubtitleFeedMediaStart {
 
     /// Вложения контейнера (принятые и пропущенные по лимиту).
     pub attachments: MediaAttachments,
+
+    /// Заголовки субтитровых дорожек (`codec_private`), например ASS `[Script Info]`.
+    ///
+    /// Только дорожки с непустым заголовком. Не входят в снимок плеера (см. `track_headers`).
+    pub track_headers: Vec<SubtitleTrackHeader>,
 }
 
 /// Один пакет встроенной субтитровой дорожки.

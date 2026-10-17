@@ -165,25 +165,25 @@ fn subtitle_dropped_without_media_shows_the_hint_and_remembers_nothing() {
 }
 
 #[test]
-fn ass_dropped_on_playing_video_is_listed_as_unavailable_with_a_toast() {
+fn ass_dropped_on_playing_video_is_selected_and_shown_without_a_toast() {
     let (_dir, video) = movie_with(&[]);
     let drop_dir = tempfile::tempdir().expect("tempdir");
-    let ass = file_in(&drop_dir, "Styled.ass", "[Script Info]\nTitle: x\n");
+    let ass = file_in(&drop_dir, "Styled.ass", super::ass_sidecar::SAMPLE_ASS);
     let mut host = DropHost::new();
     begin_and_wait(&mut host.owner, instance(1), &video);
 
     drop_onto(DropTarget::Video, &mut host, &[&ass]);
+    settle(&mut host.owner);
 
-    assert_eq!(
-        host.toasts,
-        vec!["This subtitle format is not supported yet."]
-    );
     let view = host.owner.menu_view();
     assert_eq!(view.tracks.len(), 1);
+    assert!(view.tracks[0].is_selected, "the ASS track is selected");
+    assert_eq!(view.visibility, SubtitleVisibility::Shown);
     assert!(
-        !view.tracks[0].is_selected,
-        "an unavailable track is not selected"
+        overlay_present(&mut host.owner, instance(1), 1_500),
+        "the ASS cue reaches the frame"
     );
+    assert!(host.toasts.is_empty(), "toasts: {:?}", host.toasts);
     assert!(host.queue_calls.is_empty());
 }
 

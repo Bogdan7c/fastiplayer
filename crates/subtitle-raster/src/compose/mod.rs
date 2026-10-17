@@ -57,16 +57,16 @@ pub(crate) enum ComposeError {
 
 /// Входные данные композиции.
 pub(crate) struct ComposeInput<'a> {
-    /// Внешние виды символов (цвет заливки).
+    /// Внешние виды символов: цвета, обводка, тень, подложка каждого участка.
     pub(crate) looks: &'a [SpanLook],
-    /// Стиль реплики.
+    /// Стиль реплики (то, что общее для всей реплики: подложка `BorderStyle = 4`).
     pub(crate) style: &'a EventStyle,
     /// Результат раскладки.
     pub(crate) layout: &'a TextLayout,
     /// Холст.
     pub(crate) canvas: CanvasSize,
-    /// Множитель `font_size / 256` (libass: `info->scale_x`).
-    pub(crate) font_scale: f64,
+    /// Растяжение по горизонтали `par_scale_x` libass (1.0 — пропорции хранения и кадра равны).
+    pub(crate) pixel_aspect_x: f64,
 }
 
 /// Четыре цвета участка (libass: `c[0..4]`).
@@ -88,6 +88,8 @@ struct Layer {
 struct CollectedRun {
     colors: RunColors,
     flags: FilterFlags,
+    /// Смещение тени участка, квантованное как в libass (1/64 пикселя).
+    shadow_offset: (i32, i32),
     /// Дробная ошибка позиции первого глифа (общая для всех глифов участка).
     offset: [f64; 2],
     parts: Vec<GlyphBitmaps>,
@@ -115,14 +117,13 @@ pub(crate) fn compose_text(
         total.saturating_add(run.skipped_borders)
     });
     let mut finished: Vec<(RunColors, RunBitmaps)> = Vec::with_capacity(runs.len());
-    let shadow_offset = quantized_shadow_offset(input.style);
     for run in &runs {
         if run.parts.is_empty() {
             continue;
         }
         finished.push((
             run.colors,
-            composite_run(&run.parts, run.flags, shadow_offset)?,
+            composite_run(&run.parts, run.flags, run.shadow_offset)?,
         ));
     }
     Ok(ComposedText {
@@ -136,10 +137,11 @@ fn collect_runs(
     clusters: &mut [TextCluster],
     input: &ComposeInput<'_>,
 ) -> Result<Vec<CollectedRun>, ComposeError> {
-    let style = input.style;
     let mut rasterizer = Rasterizer::new(RASTERIZER_PRECISION);
     let mut runs: Vec<CollectedRun> = Vec::new();
     let mut new_run = true;
+    // libass: `device_x = (device_x - left_margin) * par_scale_x + left_margin`, поля кадра нет.
+    let device_x = input.layout.device_x * input.pixel_aspect_x;
     for cluster in clusters.iter_mut() {
         if cluster.starts_new_run {
             new_run = true;
@@ -147,29 +149,34 @@ fn collect_runs(
         if cluster.skip {
             continue;
         }
-        let primary = input
-            .looks
-            .get(cluster.look)
-            .and_then(|look| look.fill_override)
-            .unwrap_or(style.colors.primary);
+        // Вид символа обязан быть в списке видов; иначе символ пропускается, а не паникует.
+        let Some(look) = input.looks.get(cluster.look) else {
+            continue;
+        };
+        let glyph_scale = cluster.glyph_scale;
+        let letter_spacing_d6 = cluster.letter_spacing_d6;
+        // Нулевой масштаб по любой оси — у буквы нет площади (libass пропускает такие глифы
+        // при расчёте сдвига и ничего не получает от растеризатора).
+        let has_area = glyph_scale.horizontal > 0.0 && glyph_scale.vertical > 0.0;
         let draws_nothing = cluster.symbol == '\n' || cluster.symbol == '\0';
         for glyph in cluster.glyphs_mut() {
             if new_run {
                 runs.push(CollectedRun {
                     colors: RunColors {
-                        primary,
-                        outline: style.colors.outline,
-                        back: style.colors.back,
+                        primary: look.colors.primary,
+                        outline: look.colors.outline,
+                        back: look.colors.back,
                     },
-                    flags: FilterFlags::for_glyph(style, primary),
+                    flags: FilterFlags::for_glyph(look),
+                    shadow_offset: quantized_shadow_offset(look),
                     offset: [0.0, 0.0],
                     parts: Vec::new(),
                     skipped_borders: 0,
                 });
                 new_run = false;
             }
-            // Позиция в координатах кадра (par_scale_x = 1).
-            glyph.pos.x = double_to_d6(input.layout.device_x + d6_to_double(glyph.pos.x) * 1.0);
+            // Позиция в координатах кадра.
+            glyph.pos.x = double_to_d6(device_x + d6_to_double(glyph.pos.x) * input.pixel_aspect_x);
             glyph.pos.y = glyph
                 .pos
                 .y
@@ -179,7 +186,7 @@ fn collect_runs(
             let Some(outline) = glyph.outline.clone() else {
                 continue;
             };
-            if draws_nothing {
+            if draws_nothing || !has_area {
                 continue;
             }
             let first = run.parts.is_empty();
@@ -187,8 +194,10 @@ fn collect_runs(
                 &GlyphBitmapRequest {
                     glyph,
                     outline: &outline,
-                    font_scale: input.font_scale,
-                    style,
+                    glyph_scale,
+                    letter_spacing_d6,
+                    pixel_aspect_x: input.pixel_aspect_x,
+                    look,
                     flags: run.flags,
                 },
                 &mut RunPhase {
@@ -215,7 +224,12 @@ fn render_text(
 ) -> Result<Vec<SubtitleBitmap>, ComposeError> {
     let mut images = Vec::new();
     if input.style.border_style == BorderStyle::EventBackground
-        && let Some(background) = images::event_background(input.style, input.layout, input.canvas)?
+        && let Some(background) = images::event_background(
+            input.style,
+            input.layout,
+            input.canvas,
+            input.pixel_aspect_x,
+        )?
     {
         images.push(background);
     }

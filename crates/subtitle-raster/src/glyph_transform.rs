@@ -93,10 +93,25 @@ fn ldexp(value: f64, exponent: i32) -> f64 {
 
 /// Матрица глифа без поворотов и сдвигов (libass: `calc_transform_matrix` при нулевых
 /// `frx/fry/frz/fax/fay`, `par_scale_x = 1`): переносит начало координат в точку
-/// `(pos_x, pos_y)` в 1/64 пикселя.
+/// `(pos_x, pos_y)` в 1/64 пикселя. Нужна эталонным тестам рисунков, где `par_scale_x = 1`.
+#[cfg(test)]
 pub(crate) fn unrotated_glyph_matrix(pos_x: i32, pos_y: i32) -> Matrix3 {
+    unrotated_glyph_matrix_with_aspect(pos_x, pos_y, 1.0)
+}
+
+/// То же с растяжением по горизонтали на `par_scale_x` libass (`scale_x = dist * par_scale_x`):
+/// нужно, когда пропорции хранения видео отличаются от пропорций кадра.
+pub(crate) fn unrotated_glyph_matrix_with_aspect(
+    pos_x: i32,
+    pos_y: i32,
+    pixel_aspect_x: f64,
+) -> Matrix3 {
     [
-        [CAMERA_DISTANCE, 0.0, CAMERA_DISTANCE * f64::from(pos_x)],
+        [
+            CAMERA_DISTANCE * pixel_aspect_x,
+            0.0,
+            CAMERA_DISTANCE * f64::from(pos_x),
+        ],
         [0.0, CAMERA_DISTANCE, CAMERA_DISTANCE * f64::from(pos_y)],
         [0.0, 0.0, CAMERA_DISTANCE],
     ]

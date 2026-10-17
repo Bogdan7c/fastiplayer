@@ -9,6 +9,8 @@
 //! 3. Порт растеризатора libass 0.17.5 (внутренние модули `outline`, `raster`, `bitmap`):
 //!    контуры 26.6, эллиптическая обводка, тайловая растеризация в маску покрытия.
 //! 4. Текстовый конвейер: шейпинг (`harfrust`), BiDi, раскладка, композиция картинок.
+//!    Реплики ASS (слой 1: стиль, `PlayRes`, `\pos`, слои, столкновения, обводка и тень) проходят
+//!    через тот же конвейер: модуль `ass` готовит для него план (символы с видами и стиль реплики).
 //! 5. [`appearance`] — пользовательский стиль и пресеты; [`renderer`] — публичный
 //!    [`SubtitleRasterizer`]: реплики + стиль + холст -> [`SubtitleOverlay`], кэши и
 //!    «растеризуем только при изменении».
@@ -18,6 +20,7 @@
 //! не должна останавливать воспроизведение видео.
 
 pub mod appearance;
+mod ass;
 mod bitmap;
 pub mod cache;
 mod compose;
@@ -39,6 +42,9 @@ mod render_diagnostics;
 pub mod renderer;
 mod shaping;
 mod source_text;
+mod span_look;
+#[cfg(test)]
+mod test_ass;
 #[cfg(test)]
 mod test_support;
 mod text_renderer;
@@ -46,6 +52,9 @@ mod text_renderer;
 pub use appearance::{
     BoxDecoration, CanvasFraction, EmSize, FontSizeFraction, InvalidFraction, LineWidthFraction,
     OutlineShadowDecoration, SubtitleAppearance, TextDecoration,
+};
+pub use ass::{
+    AssRenderOptions, AssStorageSize, AssStyleSource, AssTextScale, InvalidAssTextScale,
 };
 pub use cache::CacheStatistics;
 pub use face_cache::FaceCacheStatistics;
@@ -59,11 +68,12 @@ pub use fonts::{
     SyntheticItalic, SystemFontScanReport, SystemFontScanStatus, TextLanguagePreference,
 };
 pub use overlay::{
-    BitmapOutsideCanvas, CanvasRect, CanvasSize, OverlayChange, OverlayRevision, PixelPoint,
-    SubtitleBitmap, SubtitleBitmapError, SubtitleBitmapKind, SubtitleOverlay,
+    BitmapOutsideCanvas, CanvasRect, CanvasSize, OverlayChange, OverlayPlacementGroup,
+    OverlayRevision, PixelPoint, SubtitleBitmap, SubtitleBitmapError, SubtitleBitmapKind,
+    SubtitleOverlay,
 };
 pub use renderer::{
-    CueKey, CueSourceId, RasterCacheLimits, RasterInputLimits, RasterLimits, RasterStatistics,
-    RenderRequest, RenderableCue, SubtitleRasterizer,
+    CueContent, CueKey, CueSourceId, RasterCacheLimits, RasterInputLimits, RasterLimits,
+    RasterStatistics, RenderRequest, RenderableCue, SubtitleRasterizer,
 };
 pub use skrifa::GlyphId;

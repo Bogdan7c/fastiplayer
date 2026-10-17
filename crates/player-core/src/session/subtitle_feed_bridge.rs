@@ -7,7 +7,9 @@ use media_core::Packet;
 
 use super::PlayerSession;
 use crate::MediaInstanceId;
-use crate::subtitle_feed::{SubtitleFeedMediaStart, SubtitleFeedPacket, SubtitleFeedSender};
+use crate::subtitle_feed::{
+    SubtitleFeedMediaStart, SubtitleFeedPacket, SubtitleFeedSender, collect_subtitle_track_headers,
+};
 
 impl PlayerSession {
     /// Подключает трубу субтитров, созданную worker-ом (по умолчанию она отключена).
@@ -26,12 +28,15 @@ impl PlayerSession {
         media_instance_id: MediaInstanceId,
     ) {
         let attachments = self.pipeline.take_media_attachments();
+        // Заголовки (ASS) едут один раз здесь, а не в часто клонируемом снимке.
+        let track_headers = collect_subtitle_track_headers(self.pipeline.tracks());
         // Исход отправки уже учтён внутри трубы (счётчик и лог); установке он не мешает.
         let _outcome = self
             .subtitle_feed
             .try_send_media_start(SubtitleFeedMediaStart {
                 media_instance_id,
                 attachments,
+                track_headers,
             });
     }
 

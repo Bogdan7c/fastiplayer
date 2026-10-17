@@ -30,5 +30,8 @@
 - Генератор: `scripts/subtitle-reference/` (системный libass, C компилируется во временный каталог; в сборке/CI нет C). Кейсы/эталоны: `crates/subtitle-raster/tests/fixtures/libass/{cases,expected}`. Дамп «наш/libass/diff»: `SUBTITLE_PARITY_DUMP_DIR=<dir> cargo test -p subtitle-raster --lib text_events`.
 - Функциональные тесты публичного API: `src/renderer/tests/{geometry,caching,robustness,limits,font_fallback}.rs`. Ручная приёмка: `cargo run --release -p subtitle-raster --example render_samples -- <dir>`.
 
+## Сессия 08
+ASS слой 1, per-run `SpanLook`, синтетический bold/italic, подчёркивание/зачёркивание (и для SRT/VTT), группы картинок Main/Fixed, новые границы `RenderableCue/CueContent/AssRenderOptions` — `mem:subtitles/ass-layer1-s08`.
+
 ## Не сделано
-Подчёркивание/зачёркивание, фон спана, синтетический bold/italic, вертикальный текст, регионы VTT, переносы CJK без пробелов, blur/теги ASS (08–10).
+Фон спана, вертикальный текст, регионы VTT, переносы CJK без пробелов, теги ASS слоёв 2–3 (09–10).

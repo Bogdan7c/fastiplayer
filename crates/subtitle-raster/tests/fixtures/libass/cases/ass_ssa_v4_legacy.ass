@@ -1,0 +1,20 @@
+; reference: width=1280 height=720 time_ms=1000
+; case: SSA v4 script: [V4 Styles], decimal colours, TertiaryColour as outline, AlphaLevel, legacy \a alignment codes
+[Script Info]
+ScriptType: v4.00
+PlayResX: 1280
+PlayResY: 720
+WrapStyle: 0
+
+[V4 Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, TertiaryColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, AlphaLevel, Encoding
+Style: Default,Noto Sans,52,16777215,255,0,4194304,0,0,1,2,2,2,40,40,40,0,0
+Style: Yellow,Noto Sans,44,65535,255,0,4194304,-1,0,1,2,2,6,60,60,30,128,0
+
+[Events]
+Format: Marked, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: Marked=0,0:00:00.00,0:00:05.00,Default,,0,0,0,,Bottom centre by style (SSA code 2)
+Dialogue: Marked=0,0:00:00.00,0:00:05.00,Yellow,,0,0,0,,Top centre by style code 6
+Dialogue: Marked=0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\a9}Middle left legacy \a9
+Dialogue: Marked=0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\a11}Middle right legacy \a11
+Dialogue: Marked=0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\a1}Bottom left legacy \a1

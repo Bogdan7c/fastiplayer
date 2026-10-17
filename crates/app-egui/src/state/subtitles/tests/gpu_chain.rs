@@ -10,8 +10,8 @@ use std::sync::mpsc;
 
 use render_core::PictureRect;
 use render_wgpu_shell::{
-    SubtitleLayerOffset, SubtitleOverlayFrame, SubtitleOverlayOutcome, SubtitleOverlayRenderer,
-    SubtitleOverlayTarget,
+    SubtitleLayerOffset, SubtitleLayerOffsets, SubtitleOverlayFrame, SubtitleOverlayOutcome,
+    SubtitleOverlayRenderer, SubtitleOverlayTarget,
 };
 
 use super::*;
@@ -100,12 +100,26 @@ impl Harness {
         self.frame_with_offset(picture, overlay, SubtitleLayerOffset::NONE)
     }
 
-    /// То же, но слой субтитров сдвинут на `layer_offset` (как это делает размещение).
+    /// То же, но слой субтитров целиком сдвинут на `layer_offset` (как это делает размещение).
     pub(super) fn frame_with_offset(
         &mut self,
         picture: PictureRect,
         overlay: Option<&subtitle_raster::SubtitleOverlay>,
         layer_offset: SubtitleLayerOffset,
+    ) -> (SubtitleOverlayOutcome, Vec<u8>) {
+        self.frame_with_offsets(
+            picture,
+            overlay,
+            SubtitleLayerOffsets::uniform(layer_offset),
+        )
+    }
+
+    /// То же, но у групп слоя свои сдвиги (режим «поднять основной диалог»).
+    pub(super) fn frame_with_offsets(
+        &mut self,
+        picture: PictureRect,
+        overlay: Option<&subtitle_raster::SubtitleOverlay>,
+        layer_offsets: SubtitleLayerOffsets,
     ) -> (SubtitleOverlayOutcome, Vec<u8>) {
         self.write_video(picture);
         let mut encoder = self
@@ -116,7 +130,7 @@ impl Harness {
         let overlay_frame = overlay.map(|overlay| SubtitleOverlayFrame {
             overlay,
             picture_rect: picture,
-            layer_offset,
+            layer_offsets,
         });
         let outcome = self.renderer.render(
             SubtitleOverlayTarget {

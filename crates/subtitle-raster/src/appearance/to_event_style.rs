@@ -9,7 +9,7 @@ use subtitle_core::{CuePlacement, SubtitleColor};
 use super::placement::{PlateInset, place_block};
 use super::{SubtitleAppearance, TextDecoration};
 use crate::event_style::{
-    AxisPair, BaseDirection, BorderStyle, EventStyle, StyleColors, WrapStyle,
+    AxisPair, BaseDirection, BorderStyle, EventPlacement, EventStyle, StyleColors, WrapStyle,
 };
 use crate::fonts::{FontStyle, FontWeightClass};
 use crate::overlay::CanvasSize;
@@ -118,6 +118,7 @@ pub(crate) fn cue_style(
             colors,
             alignment: block.alignment,
             margins: block.margins,
+            placement: EventPlacement::ByMargins,
             wrap_style: WrapStyle::Smart,
             line_spacing: 0.0,
             // Арабский и иврит в простых субтитрах должны идти справа налево сами.

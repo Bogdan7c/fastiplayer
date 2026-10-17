@@ -121,6 +121,7 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "subtitles.position_horizontal_percent",
     "subtitles.position_vertical_percent",
     "subtitles.ass_force_user_style",
+    "subtitles.ass_position_mode",
     "subtitles.max_file_size_mb",
     "subtitles.max_cues_per_file",
     "subtitles.sidecar_max_entries_per_folder",
@@ -133,6 +134,10 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "subtitles.max_attached_fonts_total_mb",
     "subtitles.embedded_feed_capacity",
     "subtitles.embedded_cue_max_open_duration_ms",
+    "subtitles.max_ass_header_kb",
+    "subtitles.max_ass_styles",
+    "subtitles.max_ass_override_tags_per_event",
+    "subtitles.max_ass_events_on_screen",
 ];
 
 #[test]
@@ -420,6 +425,30 @@ fn metadata_ranges_match_validation_constants() {
         "subtitles.embedded_cue_max_open_duration_ms",
         crate::MIN_EMBEDDED_CUE_MAX_OPEN_DURATION_MS,
         crate::MAX_EMBEDDED_CUE_MAX_OPEN_DURATION_MS,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.max_ass_header_kb",
+        crate::MIN_MAX_ASS_HEADER_KB,
+        crate::MAX_MAX_ASS_HEADER_KB,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.max_ass_styles",
+        crate::MIN_MAX_ASS_STYLES,
+        crate::MAX_MAX_ASS_STYLES,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.max_ass_override_tags_per_event",
+        crate::MIN_MAX_ASS_OVERRIDE_TAGS_PER_EVENT,
+        crate::MAX_MAX_ASS_OVERRIDE_TAGS_PER_EVENT,
+    );
+    assert_integer_range(
+        &registry,
+        "subtitles.max_ass_events_on_screen",
+        crate::MIN_MAX_ASS_EVENTS_ON_SCREEN,
+        crate::MAX_MAX_ASS_EVENTS_ON_SCREEN,
     );
     assert_text_len(
         &registry,
@@ -841,6 +870,11 @@ fn static_enum_and_string_options_use_stable_ids() {
         &["by_drop_target", "new_playlist", "append_to_queue"],
     );
     assert_select_options(&registry, "subtitles.decoration", &["box", "outline"]);
+    assert_select_options(
+        &registry,
+        "subtitles.ass_position_mode",
+        &["main_lines_avoid_controls", "author", "whole_layer"],
+    );
     assert_select_options(&registry, "render.profile", &["auto", "vulkan", "opengles"]);
     assert_select_options(&registry, "render.hdr_to_sdr.operator", &["bt2446_c"]);
     assert_select_options(&registry, "render.tone_mapping", &["auto", "disabled"]);

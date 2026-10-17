@@ -132,9 +132,9 @@ fn extension_and_stem_case_are_ignored_and_formats_are_mapped() {
         found,
         [
             (SidecarSubtitleFormat::Srt, true),
-            (SidecarSubtitleFormat::Ass, false),
+            (SidecarSubtitleFormat::Ass, true),
             (SidecarSubtitleFormat::WebVtt, true),
-            (SidecarSubtitleFormat::Ssa, false),
+            (SidecarSubtitleFormat::Ssa, true),
         ]
     );
     assert_eq!(

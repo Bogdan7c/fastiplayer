@@ -7,6 +7,9 @@
 //! настоящий код порта: [`crate::outline`], [`crate::raster`], [`crate::bitmap`].
 
 mod ass_case;
+#[cfg(test)]
+mod ass_event_tests;
+mod ass_tolerances;
 mod pipeline;
 #[cfg(test)]
 mod tests;

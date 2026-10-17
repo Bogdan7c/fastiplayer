@@ -6,7 +6,10 @@
  * а результат коммитится как фикстура.
  *
  * Использование:
- *   render_reference <track.ass> <fonts_dir> <width> <height> <time_ms>
+ *   render_reference <track.ass> <fonts_dir> <width> <height> <time_ms> [storage_width storage_height]
+ *
+ * Размер хранения (ass_set_storage_size) по умолчанию равен размеру кадра; кейсы, проверяющие
+ * масштабирование обводки/тени относительно видео, задают его отдельно.
  *
  * Формат stdout (все числа little-endian, как на хосте x86-64/aarch64):
  *   u32 версия libass (ass_library_version)
@@ -33,8 +36,10 @@ static void write_i32(int32_t value)
 
 int main(int argc, char **argv)
 {
-    if (argc != 6) {
-        fprintf(stderr, "usage: %s track.ass fonts_dir width height time_ms\n", argv[0]);
+    if (argc != 6 && argc != 8) {
+        fprintf(stderr,
+                "usage: %s track.ass fonts_dir width height time_ms [storage_width storage_height]\n",
+                argv[0]);
         return 2;
     }
     const char *track_path = argv[1];
@@ -42,6 +47,8 @@ int main(int argc, char **argv)
     int width = atoi(argv[3]);
     int height = atoi(argv[4]);
     long long time_ms = atoll(argv[5]);
+    int storage_width = argc == 8 ? atoi(argv[6]) : width;
+    int storage_height = argc == 8 ? atoi(argv[7]) : height;
 
     ASS_Library *library = ass_library_init();
     if (!library) {
@@ -59,7 +66,7 @@ int main(int argc, char **argv)
         return 1;
     }
     ass_set_frame_size(renderer, width, height);
-    ass_set_storage_size(renderer, width, height);
+    ass_set_storage_size(renderer, storage_width, storage_height);
     ass_set_hinting(renderer, ASS_HINTING_NONE);
     ass_set_shaper(renderer, ASS_SHAPING_COMPLEX);
     /* Никаких системных шрифтов: детерминизм между машинами. */

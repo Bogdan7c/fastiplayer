@@ -15,6 +15,16 @@ pub enum SubtitleLoadError {
     /// В файле больше событий, чем разрешает `max_events`.
     #[error("subtitle file has more than {limit} cues")]
     TooManyEvents { limit: usize },
+    /// Загружается ASS/SSA, а лимиты ASS не заданы (`SubtitleParseLimits::with_ass_limits`).
+    #[error("ASS parse limits are required to load ASS/SSA subtitles")]
+    AssLimitsMissing,
+    /// ASS/SSA: часть файла до секции `[Events]` (заголовок и стили) больше лимита
+    /// `max_header_bytes` (тот же `subtitles.max_ass_header_kb`, что и у встроенных дорожек).
+    #[error("ASS header is too large ({actual_bytes} bytes, limit {limit_bytes} bytes)")]
+    AssHeaderTooLarge {
+        actual_bytes: usize,
+        limit_bytes: usize,
+    },
     /// Файл заявлен как WebVTT, но не начинается с сигнатуры `WEBVTT`.
     #[error("file does not start with the WEBVTT signature")]
     NotWebVtt,

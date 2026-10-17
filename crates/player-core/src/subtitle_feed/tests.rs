@@ -98,6 +98,7 @@ fn dropped_media_start_is_counted_separately_from_packets() {
     let outcome = sender.try_send_media_start(SubtitleFeedMediaStart {
         media_instance_id: instance,
         attachments: MediaAttachments::default(),
+        track_headers: Vec::new(),
     });
 
     assert_eq!(outcome, SubtitleFeedSendOutcome::DroppedFull);
@@ -118,9 +119,15 @@ fn media_start_carries_attachments_intact() {
         skipped: Vec::new(),
     };
 
+    let track_headers = vec![SubtitleTrackHeader {
+        track_id: TrackId::new(3),
+        codec_private: Bytes::from_static(b"[Script Info]"),
+    }];
+
     sender.try_send_media_start(SubtitleFeedMediaStart {
         media_instance_id: instance,
         attachments: attachments.clone(),
+        track_headers: track_headers.clone(),
     });
 
     let mut drained = Vec::new();
@@ -129,7 +136,8 @@ fn media_start_carries_attachments_intact() {
         drained,
         [SubtitleFeedMessage::MediaStarted(SubtitleFeedMediaStart {
             media_instance_id: instance,
-            attachments
+            attachments,
+            track_headers
         })]
     );
 }
@@ -148,6 +156,7 @@ fn dropped_receiver_makes_sends_a_silent_noop() {
         sender.try_send_media_start(SubtitleFeedMediaStart {
             media_instance_id: instance,
             attachments: MediaAttachments::default(),
+            track_headers: Vec::new(),
         }),
         SubtitleFeedSendOutcome::ReceiverGone
     );

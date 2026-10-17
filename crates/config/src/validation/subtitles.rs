@@ -18,6 +18,7 @@ use crate::{
     SubtitlesConfig,
 };
 
+use super::subtitles_ass::validate_ass_limits;
 use super::{invalid_value, validate_u16_range, validate_u32_range};
 
 /// Длина одного языкового тега: от двух букв (`uk`) до 35 символов (BCP 47 в разумных пределах).
@@ -153,7 +154,8 @@ fn validate_embedded_track_limits(subtitles: &SubtitlesConfig) -> ConfigResult<(
         subtitles.embedded_cue_max_open_duration_ms,
         MIN_EMBEDDED_CUE_MAX_OPEN_DURATION_MS,
         MAX_EMBEDDED_CUE_MAX_OPEN_DURATION_MS,
-    )
+    )?;
+    validate_ass_limits(subtitles)
 }
 
 /// Цвет обязан быть `#RRGGBB` (регистр не важен): так его разберёт растеризатор без догадок.

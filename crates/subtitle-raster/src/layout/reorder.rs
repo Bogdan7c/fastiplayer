@@ -42,9 +42,13 @@ fn reorder_map(clusters: &[TextCluster], split_by_style: bool) -> Vec<usize> {
                 .get(index)
                 .is_some_and(|current| is_paragraph_separator(current.symbol))
             || (split_by_style
-                && clusters
+                && (clusters
                     .get(index + 1)
-                    .is_some_and(|next| next.starts_new_run));
+                    .is_some_and(|next| next.starts_new_run)
+                    // libass: `glyphs[i].hspacing` — символ с `\fsp` замыкает отрезок.
+                    || clusters
+                        .get(index)
+                        .is_some_and(|current| current.has_letter_spacing)));
         if !ends_segment {
             continue;
         }

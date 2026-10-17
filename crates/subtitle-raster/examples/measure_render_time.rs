@@ -21,9 +21,9 @@ use subtitle_core::{
     SubtitleTextCue, SubtitleTime, SubtitleTimeline, TextSpan, TimelineInsertOutcome,
 };
 use subtitle_raster::{
-    CanvasSize, CueKey, CueSourceId, FontLookupCacheLimits, RasterCacheLimits, RasterInputLimits,
-    RasterLimits, RenderRequest, RenderableCue, SubtitleAppearance, SubtitleFontLibrary,
-    SubtitleRasterizer, TextLanguagePreference,
+    AssRenderOptions, CanvasSize, CueKey, CueSourceId, FontLookupCacheLimits, RasterCacheLimits,
+    RasterInputLimits, RasterLimits, RenderRequest, RenderableCue, SubtitleAppearance,
+    SubtitleFontLibrary, SubtitleRasterizer, TextLanguagePreference,
 };
 
 /// Сколько прогонов в режимах `new cue` и `same cue`.
@@ -84,6 +84,7 @@ fn limits() -> RasterLimits {
         input: RasterInputLimits {
             max_chars_per_cue: 2_000,
             max_cues_per_frame: 16,
+            max_ass_events_per_frame: 16,
             max_canvas_side: 8_192,
         },
     }
@@ -135,13 +136,14 @@ fn timed_render(
     canvas: CanvasSize,
     appearance: &SubtitleAppearance,
 ) -> Result<(Duration, usize), Box<dyn Error>> {
-    let cues = [RenderableCue { key, cue }];
+    let cues = [RenderableCue::text(key, cue)];
     let started = Instant::now();
     let overlay = rasterizer.render(&RenderRequest {
         cues: &cues,
         canvas,
         appearance,
         text_language: TextLanguagePreference::unknown(),
+        ass: AssRenderOptions::default(),
     });
     let elapsed = started.elapsed();
     // Без битмапов замер ничего не значит (например, не нашлись глифы): падаем громко.

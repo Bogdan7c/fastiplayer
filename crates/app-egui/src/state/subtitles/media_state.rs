@@ -9,6 +9,7 @@ use player_core::MediaInstanceId;
 
 use super::intents::SubtitleVisibility;
 use super::job_runner::SidecarJob;
+use super::owner_embedded::EmbeddedAssTracks;
 use super::owner_memory::{MemoryDirty, PendingRememberedChoice};
 use super::sidecar_job::SubtitleLoadFailure;
 use super::track_list::SubtitleTrackList;
@@ -66,6 +67,8 @@ pub(super) struct MediaSubtitles {
     pub(super) pending_memory: Option<PendingRememberedChoice>,
     /// Что пользователь изменил с последней выдачи в память выбора.
     pub(super) memory_dirty: MemoryDirty,
+    /// ASS-заголовки и сценарии встроенных дорожек этого media (отбрасываются вместе с ним).
+    pub(super) embedded_ass: EmbeddedAssTracks,
 }
 
 impl MediaSubtitles {
@@ -83,6 +86,7 @@ impl MediaSubtitles {
             load_job: None,
             pending_memory: None,
             memory_dirty: MemoryDirty::default(),
+            embedded_ass: EmbeddedAssTracks::default(),
         }
     }
 

@@ -33,6 +33,7 @@ fn active_texts(timeline: &SubtitleTimeline, time: i64) -> Vec<String> {
         .map(
             |&id| match timeline.event(id).expect("known id").content() {
                 SubtitleContent::Text(cue) => cue.text.plain_text(),
+                other => panic!("unexpected content in timeline test: {other:?}"),
             },
         )
         .collect()

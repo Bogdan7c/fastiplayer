@@ -81,7 +81,7 @@ pub(super) fn load_candidate_timeline(
     })
 }
 
-/// Текстовый формат парсера для формата файла; `None` — показать нельзя (ASS/SSA и будущие).
+/// Текстовый формат парсера для формата файла; `None` — показать нельзя (будущие форматы без разбора).
 ///
 /// Совмещаем два условия: формат должен быть «показываемым сейчас» по оценке поиска и иметь
 /// парсер здесь, иначе новый формат без парсера молча привёл бы к ошибке на загрузке.
@@ -92,6 +92,8 @@ pub(super) fn text_format_of(format: SidecarSubtitleFormat) -> Option<TextSubtit
     match format {
         SidecarSubtitleFormat::Srt => Some(TextSubtitleFormat::Srt),
         SidecarSubtitleFormat::WebVtt => Some(TextSubtitleFormat::WebVtt),
+        // ASS и SSA разбирает один разборщик: версию он определяет по содержимому.
+        SidecarSubtitleFormat::Ass | SidecarSubtitleFormat::Ssa => Some(TextSubtitleFormat::Ass),
         _ => None,
     }
 }

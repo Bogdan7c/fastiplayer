@@ -7,7 +7,6 @@ use subtitle_formats::{LegacyEncodingHint, SubtitleLoadError};
 
 use super::super::file_loader::{encoding_hint_for, read_file_with_limit};
 use super::super::job_runner::{SidecarJob, SidecarJobPoll};
-use super::super::menu_view::{SubtitleTrackAvailability, SubtitleUnavailableReason};
 use super::super::sidecar_job::{SidecarJobOutcome, SubtitleLoadFailure, run_sidecar_job};
 use super::super::{JobOrigin, JobResultDisposition, SubtitleLifecycleView};
 use super::*;
@@ -93,10 +92,14 @@ fn no_candidates_means_no_subtitles_without_any_error() {
 }
 
 #[test]
-fn only_ass_is_listed_as_unavailable_but_never_selected() {
+fn only_ass_next_to_the_video_is_auto_selected_and_preloaded_as_ass_events() {
     let directory = tempfile::tempdir().expect("tempdir");
     let video = write_movie(directory.path(), None);
-    std::fs::write(directory.path().join("Movie.ass"), "[Script Info]\n").expect("write ass");
+    std::fs::write(
+        directory.path().join("Movie.ass"),
+        super::ass_sidecar::SAMPLE_ASS,
+    )
+    .expect("write ass");
 
     let outcome = run_sidecar_job(
         &request_for(&video, FontLibraryPlan::BuildEmbeddedOnly),
@@ -105,23 +108,23 @@ fn only_ass_is_listed_as_unavailable_but_never_selected() {
 
     let discovery = expect_discovery(outcome);
     assert_eq!(discovery.candidates.len(), 1, "the ass file is found");
-    assert_eq!(discovery.selection.for_enabled, None, "but never selected");
-    assert!(discovery.preloaded.is_none(), "and never read");
-
-    // Через владельца: дорожка в списке, недоступна по причине, показывать нечего.
-    let mut owner = owner();
-    begin_and_wait(&mut owner, instance(1), &video);
     assert_eq!(
-        owner.lifecycle_view(),
-        SubtitleLifecycleView::NoSubtitleFile
+        discovery.selection.for_enabled,
+        Some(0),
+        "and auto-selected"
     );
-    let view = owner.menu_view();
-    assert!(view.has_tracks);
-    assert_eq!(
-        view.tracks[0].availability,
-        SubtitleTrackAvailability::Unavailable(SubtitleUnavailableReason::FormatNotSupportedYet)
+    let loaded = discovery
+        .preloaded
+        .expect("and read")
+        .result
+        .expect("the ass file loads");
+    assert_eq!(loaded.timeline.len(), 1);
+    assert!(
+        loaded
+            .timeline
+            .iter()
+            .all(|(_, event)| matches!(event.content(), subtitle_core::SubtitleContent::Ass(_)))
     );
-    assert!(!view.tracks[0].is_selected);
 }
 
 #[test]
@@ -336,4 +339,37 @@ fn late_failed_result_for_an_old_media_is_dropped_too() {
 
     assert_eq!(disposition, JobResultDisposition::DroppedStale);
     assert!(owner.unavailable_failure().is_none());
+}
+
+#[test]
+fn sidecar_ass_with_a_header_over_the_configured_limit_is_a_typed_parse_failure() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let video = write_movie(directory.path(), None);
+    // Заголовок больше минимального лимита (64 КБ); событий нет, чтобы лимит был единственной причиной.
+    let mut huge_header = super::ass_sidecar::SAMPLE_ASS
+        .split("[Events]")
+        .next()
+        .expect("header part")
+        .to_owned();
+    huge_header.push_str(&"; padding\n".repeat(10_000));
+    huge_header.push_str("[Events]\n");
+    std::fs::write(directory.path().join("Movie.ass"), &huge_header).expect("write ass");
+    let mut request = request_for(&video, FontLibraryPlan::BuildEmbeddedOnly);
+    request.limits = LoadLimits::from_config(&SubtitlesConfig {
+        max_ass_header_kb: fastiplayer_config::MIN_MAX_ASS_HEADER_KB,
+        ..SubtitlesConfig::default()
+    });
+
+    let failure = expect_discovery(run_sidecar_job(&request, &|| false))
+        .preloaded
+        .expect("the only track was tried")
+        .result
+        .err()
+        .expect("an oversized ASS header must fail");
+
+    assert!(matches!(
+        failure,
+        SubtitleLoadFailure::ParseFailed(SubtitleLoadError::AssHeaderTooLarge { .. })
+    ));
+    assert!(failure.to_string().contains("ASS header is too large"));
 }

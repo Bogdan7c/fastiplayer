@@ -23,9 +23,11 @@ pub struct FaceMatch {
     pub origin: FaceOrigin,
     /// Найдено ли запрошенное семейство.
     pub family_match: FamilyMatch,
-    /// Нужна ли синтетическая жирность.
+    /// Подсказка выбора лица: нужна ли синтетическая жирность. Рисование решает это само по
+    /// таблицам лица (условия libass, `glyph_render::FaceStyleInfo`), в том числе для запасных
+    /// лиц, поэтому конвейер это поле не читает.
     pub synthetic_bold: SyntheticBold,
-    /// Нужен ли синтетический наклон.
+    /// Подсказка выбора лица: нужен ли синтетический наклон (см. поле выше).
     pub synthetic_italic: SyntheticItalic,
 }
 

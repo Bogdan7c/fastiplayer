@@ -1,5 +1,10 @@
 //! Функциональные тесты публичного растеризатора: реплики на входе — картинки на выходе.
 
+mod ass;
+mod ass_cache;
+mod ass_placement_group;
+mod ass_robustness;
+mod ass_text_style;
 mod attached_fonts;
 mod caching;
 mod font_fallback;
@@ -30,6 +35,7 @@ pub(super) const ROOMY_LIMITS: RasterCacheLimits = RasterCacheLimits {
 pub(super) const ROOMY_INPUT: RasterInputLimits = RasterInputLimits {
     max_chars_per_cue: 10_000,
     max_cues_per_frame: 64,
+    max_ass_events_per_frame: 256,
     max_canvas_side: 16_384,
 };
 
@@ -107,10 +113,7 @@ pub(super) fn styled(text: &str) -> StyledText {
 pub(super) fn renderables(test_cues: &[TestCue]) -> Vec<RenderableCue<'_>> {
     test_cues
         .iter()
-        .map(|test_cue| RenderableCue {
-            key: test_cue.key,
-            cue: &test_cue.cue,
-        })
+        .map(|test_cue| RenderableCue::text(test_cue.key, &test_cue.cue))
         .collect()
 }
 
@@ -153,6 +156,7 @@ pub(super) fn render_in_language(
             canvas,
             appearance,
             text_language,
+            ass: crate::ass::AssRenderOptions::default(),
         })
         .clone()
 }

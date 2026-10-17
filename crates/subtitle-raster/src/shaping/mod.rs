@@ -34,11 +34,11 @@ pub(crate) mod script;
 
 use skrifa::GlyphId;
 
-use crate::event_style::EventStyle;
+use crate::event_style::{AxisPair, BaseDirection, EventStyle};
 use crate::face_cache::{FaceCache, FaceLoadError};
+use crate::fixed_point::double_to_d6;
 use crate::fonts::{
-    FaceId, FaceMatch, FontRequest, GlyphLookup, SubtitleFontLibrary, SyntheticBold,
-    SyntheticItalic, TextLanguagePreference,
+    FaceId, FaceMatch, FontRequest, GlyphLookup, SubtitleFontLibrary, TextLanguagePreference,
 };
 use crate::glyph_info::{LineStart, PlacedGlyph, TextCluster};
 use crate::glyph_render::FREETYPE_REQUEST_SIZE;
@@ -47,28 +47,17 @@ use script::{determine_scripts, is_harfbuzz_ignorable};
 
 /// Лицо по умолчанию для каждого внешнего вида (по индексу в `SourceText::looks`).
 ///
-/// Здесь же принимается решение о синтетике: libass утолщает/наклоняет контур, если у лица
-/// нужного начертания нет. Этот шаг пока не портирован, поэтому о нём пишется в журнал.
+/// Синтетические жирность и наклон здесь не решаются: они зависят и от лица, из которого
+/// взят конкретный глиф (запасное лицо может быть другим), поэтому вариант контура выбирает
+/// `glyph_render::retrieve_glyphs` по самому лицу глифа.
 fn primary_faces(
     fonts: &mut SubtitleFontLibrary,
     faces: &mut FaceCache,
     source: &SourceText,
-    style: &EventStyle,
 ) -> Result<Vec<FaceId>, FaceLoadError> {
     let mut primary = Vec::with_capacity(source.looks.len());
     for look in &source.looks {
-        let matched = resolve_loadable_face(fonts, faces, style, look)?;
-        if matched.synthetic_bold == SyntheticBold::Needed
-            || matched.synthetic_italic == SyntheticItalic::Needed
-        {
-            tracing::debug!(
-                face = matched.face.index(),
-                synthetic_bold = ?matched.synthetic_bold,
-                synthetic_italic = ?matched.synthetic_italic,
-                "the face lacks the requested style; synthetic emboldening/slanting is not ported, drawing as is"
-            );
-        }
-        primary.push(matched.face);
+        primary.push(resolve_loadable_face(fonts, faces, look)?.face);
     }
     Ok(primary)
 }
@@ -78,12 +67,11 @@ fn primary_faces(
 fn resolve_loadable_face(
     fonts: &mut SubtitleFontLibrary,
     faces: &mut FaceCache,
-    style: &EventStyle,
     look: &SpanLook,
 ) -> Result<FaceMatch, FaceLoadError> {
     loop {
         let matched = fonts.resolve_family(&FontRequest {
-            family: style.font_family.as_deref(),
+            family: look.font_family.as_deref(),
             weight: look.weight,
             style: look.slant,
         });
@@ -142,9 +130,18 @@ fn build_clusters(
             }
         };
         let (face, glyph) = load_or_fall_back_to_notdef(fonts, faces, primary_face, face, glyph)?;
+        let look_style = source.looks.get(*look);
+        let (glyph_scale, letter_spacing_d6, has_letter_spacing) = look_style.map_or(
+            (AxisPair::uniform(0.0), 0, false),
+            cluster_scale_and_spacing,
+        );
         clusters.push(TextCluster {
             symbol: *ch,
             look: *look,
+            glyph_scale,
+            letter_spacing_d6,
+            has_letter_spacing,
+            border: look_style.map_or(AxisPair::uniform(0.0), |known| known.border),
             face,
             script: script_value,
             bidi_level: 0,
@@ -160,6 +157,21 @@ fn build_clusters(
         });
     }
     Ok(clusters)
+}
+
+/// Масштаб глифа по осям, межбуквенный интервал в 26.6 и признак «интервал задан»
+/// (libass: `parse_events` — `hspacing_scaled` и `fix_glyph_scaling`).
+///
+/// Размер шрифта переводится во множитель к контуру 256 px, а `\fscx`/`\fscy` умножают
+/// его по осям. Интервал домножается на масштаб по X ДО нормализации размера, как в libass.
+fn cluster_scale_and_spacing(look: &SpanLook) -> (AxisPair, i32, bool) {
+    let size_multiplier = look.font_size / FREETYPE_REQUEST_SIZE;
+    let glyph_scale = AxisPair {
+        horizontal: look.scale.horizontal * size_multiplier,
+        vertical: look.scale.vertical * size_multiplier,
+    };
+    let letter_spacing_d6 = double_to_d6(look.letter_spacing * look.scale.horizontal);
+    (glyph_scale, letter_spacing_d6, look.letter_spacing != 0.0)
 }
 
 /// Непрерывность системного fallback (libass `ass_font_get_index` перебирает лица, уже
@@ -220,7 +232,10 @@ fn mark_style_runs(clusters: &mut [TextCluster]) {
 }
 
 /// Номера участков шейпинга (libass: цикл в `ass_shaper_find_runs`).
-fn assign_shape_runs(clusters: &mut [TextCluster]) {
+///
+/// `split_by_style` — базовое направление «слева направо» (в libass это `!whole_text_layout`):
+/// тогда символ с межбуквенным интервалом (`\fsp`) всегда начинает свой участок.
+fn assign_shape_runs(clusters: &mut [TextCluster], split_by_style: bool) {
     let mut run_id = 0_u32;
     let mut previous: Option<(usize, FaceId, harfrust::Script)> = None;
     for cluster in clusters.iter_mut() {
@@ -229,7 +244,8 @@ fn assign_shape_runs(clusters: &mut [TextCluster]) {
             let breaks_run = previous_look != cluster.look
                 || (!ignorable && previous_face != cluster.face)
                 || previous_script != cluster.script
-                || cluster.starts_new_run;
+                || cluster.starts_new_run
+                || (split_by_style && cluster.has_letter_spacing);
             if breaks_run {
                 run_id += 1;
             } else if ignorable {
@@ -253,15 +269,25 @@ pub(crate) fn shape_text(
     style: &EventStyle,
     language: TextLanguagePreference,
 ) -> Result<Vec<TextCluster>, FaceLoadError> {
-    let primary = primary_faces(fonts, faces, source, style)?;
+    let primary = primary_faces(fonts, faces, source)?;
     let mut clusters = build_clusters(fonts, faces, source, &primary, language)?;
     mark_style_runs(&mut clusters);
-    assign_shape_runs(&mut clusters);
+    let split_by_style = style.base_direction == BaseDirection::LeftToRight;
+    assign_shape_runs(&mut clusters, split_by_style);
 
     let symbols: Vec<char> = clusters.iter().map(|cluster| cluster.symbol).collect();
+    // Граница абзаца BiDi перед символом: новый участок стиля или интервал у предыдущего
+    // символа (libass: `glyphs[i + 1].starts_new_run || glyphs[i].hspacing`).
     let run_starts: Vec<bool> = clusters
         .iter()
-        .map(|cluster| cluster.starts_new_run)
+        .enumerate()
+        .map(|(index, cluster)| {
+            let previous_has_spacing = index
+                .checked_sub(1)
+                .and_then(|previous| clusters.get(previous))
+                .is_some_and(|previous| previous.has_letter_spacing);
+            cluster.starts_new_run || previous_has_spacing
+        })
         .collect();
     let levels = bidi::resolve_levels(&symbols, &run_starts, style.base_direction);
     for ((cluster, level), paragraph) in clusters
@@ -277,7 +303,6 @@ pub(crate) fn shape_text(
     for cluster in &mut clusters {
         cluster.skip = true;
     }
-    let font_scale = style.font_size / FREETYPE_REQUEST_SIZE;
     let mut run_start = 0;
     while run_start < clusters.len() {
         let (run_id, level) = match clusters.get(run_start) {
@@ -291,7 +316,7 @@ pub(crate) fn shape_text(
         {
             run_end += 1;
         }
-        run_shaper::shape_run(faces, &mut clusters, run_start..run_end, font_scale)?;
+        run_shaper::shape_run(faces, &mut clusters, run_start..run_end, source.kerning)?;
         run_start = run_end;
     }
     Ok(clusters)

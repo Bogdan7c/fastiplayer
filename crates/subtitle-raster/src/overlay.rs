@@ -11,6 +11,11 @@ use std::sync::Arc;
 
 use subtitle_core::SubtitleColor;
 
+mod placement_group;
+
+pub use placement_group::OverlayPlacementGroup;
+use placement_group::union_bounds;
+
 /// Размер холста в пикселях.
 ///
 /// Холст равен отображаемой картинке видео: координаты всех картинок отсчитываются от её
@@ -127,6 +132,7 @@ pub struct SubtitleBitmap {
     coverage: Arc<[u8]>,
     color: SubtitleColor,
     kind: SubtitleBitmapKind,
+    placement_group: OverlayPlacementGroup,
 }
 
 impl SubtitleBitmap {
@@ -169,7 +175,18 @@ impl SubtitleBitmap {
             coverage,
             color,
             kind,
+            // Группа по умолчанию — основная; ASS-растеризатор переопределяет её через
+            // `with_placement_group`.
+            placement_group: OverlayPlacementGroup::Main,
         })
+    }
+
+    /// Та же картинка, отнесённая к группе размещения `group`.
+    pub(crate) fn with_placement_group(self, group: OverlayPlacementGroup) -> Self {
+        Self {
+            placement_group: group,
+            ..self
+        }
     }
 
     /// Та же картинка (та же маска, тот же `Arc`), сдвинутая по вертикали на `delta` пикселей.
@@ -185,6 +202,45 @@ impl SubtitleBitmap {
             },
             ..self.clone()
         }
+    }
+
+    /// Картинка, сдвинутая по вертикали на `delta` пикселей с обрезкой по холсту высотой
+    /// `canvas_height` (libass: `shift_event`). `None` — после обрезки ничего не осталось.
+    ///
+    /// Без обрезки маска общая (как у [`Self::shifted_vertically`]); с обрезкой строки
+    /// копируются заново.
+    pub(crate) fn shifted_vertically_clipped(
+        &self,
+        delta: i32,
+        canvas_height: u32,
+    ) -> Option<Self> {
+        let top = i64::from(self.origin.y) + i64::from(delta);
+        let bottom = top + i64::from(self.height);
+        let clip_top = (-top).max(0);
+        let clip_bottom = (bottom - i64::from(canvas_height)).max(0);
+        let kept_rows = i64::from(self.height) - clip_top - clip_bottom;
+        if kept_rows <= 0 {
+            return None;
+        }
+        if clip_top == 0 && clip_bottom == 0 {
+            return Some(self.shifted_vertically(delta));
+        }
+        let skipped_bytes = usize::try_from(clip_top).ok()?.checked_mul(self.stride)?;
+        // Оставляем только видимые строки: обрезанный низ не должен жить в `Arc` кадра.
+        let kept_end = usize::try_from(clip_top + kept_rows)
+            .ok()?
+            .checked_mul(self.stride)?
+            .min(self.coverage.len());
+        let visible = self.coverage.get(skipped_bytes..kept_end)?;
+        Some(Self {
+            origin: PixelPoint {
+                x: self.origin.x,
+                y: i32::try_from(top + clip_top).ok()?,
+            },
+            height: u32::try_from(kept_rows).ok()?,
+            coverage: Arc::from(visible),
+            ..self.clone()
+        })
     }
 
     /// Левый верхний угол в пикселях холста.
@@ -225,6 +281,11 @@ impl SubtitleBitmap {
     /// Вид слоя.
     pub fn kind(&self) -> SubtitleBitmapKind {
         self.kind
+    }
+
+    /// Группа размещения: какой частью слоя двигает показ (основные реплики или фиксированные).
+    pub fn placement_group(&self) -> OverlayPlacementGroup {
+        self.placement_group
     }
 
     /// Строка маски `row` (ровно `width` байт) или `None` за пределами картинки.
@@ -365,25 +426,7 @@ impl SubtitleOverlay {
     /// это стабильная геометрия слоя, которая не «дышит» от содержимого масок. Инвариант
     /// «внутри холста» гарантирует, что результат тоже внутри холста.
     pub fn content_bounds(&self) -> Option<CanvasRect> {
-        let mut bounds: Option<(i64, i64, i64, i64)> = None;
-        for bitmap in &self.bitmaps {
-            let origin = bitmap.origin();
-            let left = i64::from(origin.x);
-            let top = i64::from(origin.y);
-            let right = left + i64::from(bitmap.width());
-            let bottom = top + i64::from(bitmap.height());
-            bounds = Some(match bounds {
-                None => (left, top, right, bottom),
-                Some((l, t, r, b)) => (l.min(left), t.min(top), r.max(right), b.max(bottom)),
-            });
-        }
-        let (left, top, right, bottom) = bounds?;
-        Some(CanvasRect {
-            x: i32::try_from(left).ok()?,
-            y: i32::try_from(top).ok()?,
-            width: u32::try_from(right - left).ok()?,
-            height: u32::try_from(bottom - top).ok()?,
-        })
+        union_bounds(self.bitmaps.iter())
     }
 
     /// Композиция на прозрачный холст: RGBA с прямой (не премультиплицированной) альфой,
@@ -503,6 +546,7 @@ pub(crate) fn detect_overlay_change(
             && old.stride == new.stride
             && old.color == new.color
             && old.kind == new.kind
+            && old.placement_group == new.placement_group
             && Arc::ptr_eq(&old.coverage, &new.coverage);
         if !same_content {
             return OverlayChange::Replaced;

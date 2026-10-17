@@ -9,6 +9,7 @@ use crate::{
 mod media_services;
 mod playlist_drop;
 mod subtitles;
+mod subtitles_ass;
 mod ui;
 
 pub(crate) use media_services::{

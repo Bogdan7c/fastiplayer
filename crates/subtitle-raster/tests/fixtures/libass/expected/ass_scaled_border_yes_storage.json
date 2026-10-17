@@ -1,0 +1,52 @@
+{
+  "libass_version": "0.17.5",
+  "width": 1280,
+  "height": 720,
+  "time_ms": 1000,
+  "storage_width": 640,
+  "storage_height": 360,
+  "images": [
+    {
+      "type": 2,
+      "dst_x": 432,
+      "dst_y": 584,
+      "w": 440,
+      "h": 55,
+      "stride": 448,
+      "color": [
+        0,
+        0,
+        0,
+        127
+      ]
+    },
+    {
+      "type": 1,
+      "dst_x": 422,
+      "dst_y": 577,
+      "w": 440,
+      "h": 55,
+      "stride": 448,
+      "color": [
+        0,
+        0,
+        0,
+        255
+      ]
+    },
+    {
+      "type": 0,
+      "dst_x": 429,
+      "dst_y": 581,
+      "w": 440,
+      "h": 40,
+      "stride": 448,
+      "color": [
+        255,
+        255,
+        255,
+        255
+      ]
+    }
+  ]
+}

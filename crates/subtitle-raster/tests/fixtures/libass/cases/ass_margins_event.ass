@@ -1,0 +1,17 @@
+; reference: width=1280 height=720 time_ms=1000
+; case: event margins override style margins (non-zero only); right-aligned and top-aligned blocks
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1280
+PlayResY: 720
+ScaledBorderAndShadow: yes
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans,40,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,0,2,200,200,100,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,60,60,30,,{\an3}Right aligned with event margins
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,300,300,50,,{\an8}Top aligned long text that must wrap inside the narrow column of margins to be sure

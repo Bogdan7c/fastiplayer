@@ -10,6 +10,7 @@ use subtitle_raster::RasterLimits;
 
 use super::intents::SubtitleVisibility;
 use super::limits::{EmbeddedLimits, LoadLimits, raster_limits_from_config};
+use super::owner_placement::AssLayerPositioning;
 use super::user_style::UserSubtitleStyle;
 
 /// Настройки субтитров, разобранные из конфига.
@@ -27,6 +28,8 @@ pub(super) struct SubtitleSettings {
     pub(super) raster_limits: RasterLimits,
     /// Лимиты встроенных дорожек (читаются владельцем в момент использования).
     pub(super) embedded_limits: EmbeddedLimits,
+    /// Как размещать слой ASS/SSA (режим «ASS position»); читает размещение слоя.
+    pub(super) ass_positioning: AssLayerPositioning,
 }
 
 impl SubtitleSettings {
@@ -43,6 +46,7 @@ impl SubtitleSettings {
             load_limits: LoadLimits::from_config(config),
             raster_limits: raster_limits_from_config(config),
             embedded_limits: EmbeddedLimits::from_config(config),
+            ass_positioning: AssLayerPositioning::from_config(config.ass_position_mode),
         }
     }
 }

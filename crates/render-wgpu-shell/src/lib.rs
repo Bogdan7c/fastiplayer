@@ -24,8 +24,8 @@ pub use frame::{
 };
 pub use shell::{GpuContext, GpuDeviceLost, Renderer, RendererGpuDrainError};
 pub use subtitle_overlay::{
-    SubtitleLayerOffset, SubtitleOverlayFrame, SubtitleOverlayOutcome, SubtitleOverlayRenderer,
-    SubtitleOverlayTarget, SubtitleOverlayUploadStats,
+    SubtitleLayerOffset, SubtitleLayerOffsets, SubtitleOverlayFrame, SubtitleOverlayOutcome,
+    SubtitleOverlayRenderer, SubtitleOverlayTarget, SubtitleOverlayUploadStats,
 };
 pub use surface_alpha::SurfaceAlphaPreference;
 pub use surface_settings::{ShellPresentMode, SurfacePresentSettings};

@@ -5,21 +5,13 @@
 //! массив, а одинаковые внешние виды получают один индекс — тогда проверка «стиль изменился,
 //! начать новый участок» (libass: `split_style_runs`) сводится к сравнению индексов.
 
-use subtitle_core::{FontSlant, FontWeight, SpanContent, StyledText, SubtitleColor};
+use subtitle_core::{
+    FontSlant, FontWeight, SpanContent, SpanStyle, StyledText, TextStrikethrough, TextUnderline,
+};
 
 use crate::event_style::EventStyle;
 use crate::fonts::{FontStyle, FontWeightClass};
-
-/// Внешний вид символа, который может отличаться между спанами одной реплики.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SpanLook {
-    /// Цвет заливки автора; `None` — основной цвет стиля.
-    pub(crate) fill_override: Option<SubtitleColor>,
-    /// Итоговая насыщенность (стиль события или полужирный спан).
-    pub(crate) weight: FontWeightClass,
-    /// Итоговый наклон (стиль события или курсивный спан).
-    pub(crate) slant: FontStyle,
-}
+pub(crate) use crate::span_look::{SpanLook, TextDecorations};
 
 /// Символ реплики и индекс его внешнего вида в [`SourceText::looks`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,13 +22,27 @@ pub(crate) struct SourceChar {
     pub(crate) look: usize,
 }
 
+/// Включён ли кернинг пар в шейпинге (libass: `Kerning:` заголовка ASS, `ass_shaper_set_kerning`).
+///
+/// У SRT/WebVTT кернинг выключен, как у libass по умолчанию.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum KerningMode {
+    /// Кернинг выключен.
+    #[default]
+    Disabled,
+    /// Кернинг включён.
+    Enabled,
+}
+
 /// Развёрнутый текст реплики.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SourceText {
     /// Символы в порядке чтения (логический порядок).
     pub(crate) chars: Vec<SourceChar>,
     /// Различные внешние виды; индексируются из [`SourceChar::look`].
     pub(crate) looks: Vec<SpanLook>,
+    /// Кернинг пар при шейпинге.
+    pub(crate) kerning: KerningMode,
 }
 
 impl SourceText {
@@ -48,19 +54,7 @@ impl SourceText {
         let mut looks: Vec<SpanLook> = Vec::new();
         let mut chars = Vec::new();
         for span in text.spans() {
-            let look = SpanLook {
-                fill_override: span.style.color,
-                weight: if span.style.weight == FontWeight::Bold {
-                    FontWeightClass::Bold
-                } else {
-                    style.font_weight
-                },
-                slant: if span.style.slant == FontSlant::Italic {
-                    FontStyle::Italic
-                } else {
-                    style.font_slant
-                },
-            };
+            let look = Self::span_look(&span.style, style);
             // Линейный поиск внешнего вида: различных видов не больше числа спанов, а число
             // символов реплики ограничено `RasterInputLimits::max_chars_per_cue`, поэтому
             // стоимость ограничена сверху (квадрат от лимита в худшем случае, на практике
@@ -94,7 +88,53 @@ impl SourceText {
                 }),
             }
         }
-        Self { chars, looks }
+        Self {
+            chars,
+            looks,
+            kerning: KerningMode::Disabled,
+        }
+    }
+
+    /// Вид символов спана: стиль реплики плюс авторские цвет, жирность и наклон спана.
+    ///
+    /// Подчёркивание и зачёркивание берутся из спана (SRT `<u>`/`<s>`, WebVTT `text-decoration`).
+    fn span_look(span_style: &SpanStyle, style: &EventStyle) -> SpanLook {
+        let (author_color, author_weight, author_slant) =
+            (span_style.color, span_style.weight, span_style.slant);
+        let weight = if author_weight == FontWeight::Bold {
+            FontWeightClass::Bold
+        } else {
+            style.font_weight
+        };
+        let mut colors = style.colors;
+        if let Some(color) = author_color {
+            colors.primary = color;
+        }
+        SpanLook {
+            font_family: style.font_family.clone(),
+            font_size: style.font_size,
+            weight,
+            weight_value: if weight == FontWeightClass::Bold {
+                700
+            } else {
+                400
+            },
+            slant: if author_slant == FontSlant::Italic {
+                FontStyle::Italic
+            } else {
+                style.font_slant
+            },
+            colors,
+            border: style.border,
+            shadow: style.shadow,
+            border_style: style.border_style,
+            scale: crate::event_style::AxisPair::uniform(1.0),
+            letter_spacing: 0.0,
+            decorations: TextDecorations {
+                underline: span_style.underline != TextUnderline::None,
+                strike_out: span_style.strikethrough != TextStrikethrough::None,
+            },
+        }
     }
 
     /// В тексте нет ни одного видимого символа (пусто или одни пробелы и переводы строк).
@@ -105,11 +145,11 @@ impl SourceText {
 
 #[cfg(test)]
 mod tests {
-    use subtitle_core::{FontWeight, SpanStyle, TextSpan};
+    use subtitle_core::{FontWeight, SpanStyle, SubtitleColor, TextSpan};
 
     use super::*;
     use crate::event_style::{
-        AxisPair, BaseDirection, BorderStyle, StyleColors, TextMargins, WrapStyle,
+        AxisPair, BaseDirection, BorderStyle, EventPlacement, StyleColors, TextMargins, WrapStyle,
     };
 
     fn plain_style() -> EventStyle {
@@ -139,6 +179,7 @@ mod tests {
                 right: 0,
                 vertical: 0,
             },
+            placement: EventPlacement::ByMargins,
             wrap_style: WrapStyle::Smart,
             line_spacing: 0.0,
             base_direction: BaseDirection::LeftToRight,

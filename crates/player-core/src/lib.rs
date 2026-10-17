@@ -148,7 +148,7 @@ pub use snapshot::{
 pub use state::PlaybackState;
 pub use subtitle_feed::{
     SubtitleFeedCapacity, SubtitleFeedMediaStart, SubtitleFeedMessage, SubtitleFeedPacket,
-    SubtitleFeedReceiver,
+    SubtitleFeedReceiver, SubtitleTrackHeader,
 };
 pub use worker::{
     MediaInstallControlReceipt, MediaInstallControlReceiptError, PlayerCommandSender,

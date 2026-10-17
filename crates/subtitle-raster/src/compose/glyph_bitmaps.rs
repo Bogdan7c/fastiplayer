@@ -22,16 +22,17 @@
 use super::ComposeError;
 use super::run::FilterFlags;
 use crate::bitmap::CoverageBitmap;
-use crate::event_style::EventStyle;
+use crate::event_style::AxisPair;
 use crate::glyph_info::PlacedGlyph;
 use crate::glyph_render::GlyphOutline;
 use crate::glyph_transform::{
     Matrix3, STROKER_PRECISION, border_matrix, construct_bitmap, control_box, plan_border_stroke,
-    quantize_transform, scale_and_offset_matrix, unrotated_glyph_matrix,
+    quantize_transform, scale_and_offset_matrix, unrotated_glyph_matrix_with_aspect,
 };
 use crate::outline::stroke::{StrokeParameters, stroke_outline};
 use crate::outline::{ControlBox, Outline, Point};
 use crate::raster::Rasterizer;
+use crate::span_look::SpanLook;
 
 /// Битмапы глифа и их позиции в пикселях кадра (libass: `info->bm`, `info->bm_o`, `pos`, `pos_o`).
 #[derive(Debug, Default)]
@@ -54,10 +55,16 @@ pub(super) struct GlyphBitmapRequest<'a> {
     pub(super) glyph: &'a PlacedGlyph,
     /// Его контур.
     pub(super) outline: &'a GlyphOutline,
-    /// Множитель `font_size / 256` (libass: `info->scale_x == scale_y`).
-    pub(super) font_scale: f64,
-    /// Стиль реплики (толщина обводки).
-    pub(super) style: &'a EventStyle,
+    /// Масштаб контура по осям (libass: `info->scale_x`, `info->scale_y`): `font_size / 256`
+    /// с учётом `\fscx`/`\fscy`.
+    pub(super) glyph_scale: AxisPair,
+    /// Межбуквенный интервал глифа после масштаба в 26.6 (libass: `hspacing_scaled`); входит в
+    /// ширину плашки `BorderStyle = 3`.
+    pub(super) letter_spacing_d6: i32,
+    /// Растяжение по горизонтали `par_scale_x` (1.0, если пропорции хранения и кадра совпадают).
+    pub(super) pixel_aspect_x: f64,
+    /// Вид символа (толщина обводки).
+    pub(super) look: &'a SpanLook,
     /// Флаги фильтров участка.
     pub(super) flags: FilterFlags,
 }
@@ -83,14 +90,18 @@ pub(super) fn build_glyph_bitmaps(
     let GlyphBitmapRequest {
         glyph,
         outline,
-        font_scale,
+        glyph_scale,
+        pixel_aspect_x,
         flags,
         ..
     } = request;
     let empty = Outline::new();
-    let base_matrix = unrotated_glyph_matrix(glyph.pos.x, glyph.pos.y);
-    let scaled_matrix =
-        scale_and_offset_matrix(&base_matrix, (*font_scale, *font_scale), (0.0, 0.0));
+    let base_matrix = unrotated_glyph_matrix_with_aspect(glyph.pos.x, glyph.pos.y, *pixel_aspect_x);
+    let scaled_matrix = scale_and_offset_matrix(
+        &base_matrix,
+        (glyph_scale.horizontal, glyph_scale.vertical),
+        (0.0, 0.0),
+    );
     let mut matrix: Matrix3 = scaled_matrix;
 
     let mut result = GlyphBitmaps::default();
@@ -167,19 +178,20 @@ fn build_box_bitmap(
 ) -> Result<Option<(CoverageBitmap, Point)>, ComposeError> {
     let glyph = request.glyph;
     // Поля плашки: толщина обводки в 1/64 пикселя.
-    let mut border_x = 64.0 * request.style.border.horizontal;
-    let mut border_y = 64.0 * request.style.border.vertical;
-    let mut width = f64::from(glyph.advance.x);
+    let mut border_x = 64.0 * request.look.border.horizontal / request.pixel_aspect_x;
+    let mut border_y = 64.0 * request.look.border.vertical;
+    // Ширина плашки включает межбуквенный интервал (libass: `hspacing_scaled + advance.x`).
+    let mut width = f64::from(request.letter_spacing_d6) + f64::from(glyph.advance.x);
     let mut height = f64::from(glyph.ascent + glyph.descent);
 
-    // VSFilter считает размеры плашки с двойным масштабом; `scale_fix` = 1 / масштаб,
-    // поэтому исходный масштаб равен 1 с точностью до `double`.
-    let scale_fix = 1.0 / request.font_scale;
-    let original_scale = request.font_scale * scale_fix;
-    border_x *= original_scale;
-    border_y *= original_scale;
-    width *= original_scale;
-    height *= original_scale;
+    // VSFilter считает размеры плашки с двойным масштабом: размеры, уже умноженные на масштаб
+    // глифа, умножаются ещё раз на `scale_x * scale_fix` — то есть на `\fscx`/`\fscy` вида
+    // символа (`scale_fix` = 256 / размер шрифта сокращает множитель размера).
+    let original_scale = request.look.scale;
+    border_x *= original_scale.horizontal;
+    border_y *= original_scale.vertical;
+    width *= original_scale.horizontal;
+    height *= original_scale.vertical;
 
     // «Чтобы не было зазоров»: минимум одна единица 26.6 на пиксель.
     border_x = border_x.max(64.0);
@@ -223,8 +235,10 @@ fn build_stroked_bitmap(
     let outline = request.outline;
     // Толщина в единицах контура (контур лежит в масштабе 256 px, глиф уменьшен на scale).
     let border = (
-        64.0 * request.style.border.horizontal / request.font_scale,
-        64.0 * request.style.border.vertical / request.font_scale,
+        64.0 * request.look.border.horizontal
+            / request.glyph_scale.horizontal
+            / request.pixel_aspect_x,
+        64.0 * request.look.border.vertical / request.glyph_scale.vertical,
     );
     // Обводка не помещается в допустимый диапазон libass: она отбрасывается (как в libass),
     // но это сбой запрошенной обводки, поэтому он попадает в счётчик.

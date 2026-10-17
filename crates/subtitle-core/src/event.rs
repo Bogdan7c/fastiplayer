@@ -1,5 +1,6 @@
 //! Событие субтитров: интервал времени + содержимое.
 
+use crate::ass::AssCue;
 use crate::placement::CuePlacement;
 use crate::styled_text::StyledText;
 use crate::time::SubtitleTime;
@@ -30,12 +31,15 @@ pub struct SubtitleTextCue {
 
 /// Содержимое события.
 ///
-/// Вариант события ASS (сессия 08) и bitmap-вариант (PGS, сессия 11) будут добавлены
-/// вместе с их потребителями; заглушек заранее нет, поэтому enum `non_exhaustive`.
+/// Текстовая реплика со стилями автора ([`SubtitleContent::Text`]) или реплика ASS/SSA
+/// ([`SubtitleContent::Ass`], сессия 08: стиль и теги хранятся разобранными, а раскладку
+/// делает растеризатор). Bitmap-вариант (PGS, сессия 11) будет добавлен вместе с потребителем;
+/// заглушек заранее нет, поэтому enum `non_exhaustive`.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum SubtitleContent {
     Text(SubtitleTextCue),
+    Ass(AssCue),
 }
 
 /// Конец события не позже его начала.

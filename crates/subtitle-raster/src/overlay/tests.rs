@@ -442,3 +442,69 @@ fn content_bounds_of_single_bitmap_equals_its_rect() {
         })
     );
 }
+
+/// Картинка 3x4 с различимыми строками: значение пикселя = номер строки + 1.
+fn striped_bitmap(y: i32) -> SubtitleBitmap {
+    let rows: Vec<u8> = (0..4_u8).flat_map(|row| [row + 1; 3]).collect();
+    SubtitleBitmap::new(
+        PixelPoint { x: 5, y },
+        3,
+        4,
+        3,
+        rows.into(),
+        WHITE,
+        SubtitleBitmapKind::Glyph,
+    )
+    .unwrap()
+}
+
+#[test]
+fn clipped_shift_inside_the_canvas_shares_the_mask() {
+    let bitmap = striped_bitmap(10);
+    let moved = bitmap.shifted_vertically_clipped(-4, 100).unwrap();
+    assert_eq!(moved.origin(), PixelPoint { x: 5, y: 6 });
+    assert_eq!(moved.height(), 4);
+    assert!(Arc::ptr_eq(
+        moved.shared_coverage(),
+        bitmap.shared_coverage()
+    ));
+}
+
+#[test]
+fn clipped_shift_crops_rows_above_the_canvas() {
+    let moved = striped_bitmap(1)
+        .shifted_vertically_clipped(-3, 100)
+        .unwrap();
+    // Строки 0 и 1 (y = -2 и -1) обрезаны: остались строки со значениями 3 и 4 у верхнего края.
+    assert_eq!(moved.origin(), PixelPoint { x: 5, y: 0 });
+    assert_eq!(moved.height(), 2);
+    assert_eq!(moved.coverage_row(0).unwrap(), &[3, 3, 3]);
+    assert_eq!(moved.coverage_row(1).unwrap(), &[4, 4, 4]);
+}
+
+#[test]
+fn clipped_shift_crops_rows_below_the_canvas() {
+    let moved = striped_bitmap(90)
+        .shifted_vertically_clipped(8, 100)
+        .unwrap();
+    // Низ картинки на 102: две последние строки вышли за холст высотой 100.
+    assert_eq!(moved.origin(), PixelPoint { x: 5, y: 98 });
+    assert_eq!(moved.height(), 2);
+    assert_eq!(moved.coverage_row(0).unwrap(), &[1, 1, 1]);
+    // Обрезанные внизу строки не хранятся в маске (две видимые строки по 3 байта).
+    assert_eq!(moved.coverage(), &[1, 1, 1, 2, 2, 2]);
+}
+
+#[test]
+fn clipped_shift_outside_the_canvas_leaves_nothing() {
+    assert!(
+        striped_bitmap(10)
+            .shifted_vertically_clipped(-20, 100)
+            .is_none()
+    );
+    assert!(
+        striped_bitmap(10)
+            .shifted_vertically_clipped(200, 100)
+            .is_none()
+    );
+}

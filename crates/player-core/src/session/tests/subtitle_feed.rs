@@ -13,6 +13,8 @@ use media_core::{
     TrackDisposition, TrackLabels, TrackLanguage,
 };
 
+mod headers;
+
 use super::test_support::{
     SharedFakeVideoDecoderThread, fake_track, fake_video_packet_with_keyframe,
 };
@@ -371,6 +373,7 @@ fn media_start_with_attachments_is_delivered_first_and_exactly_once() {
         SubtitleFeedMessage::MediaStarted(SubtitleFeedMediaStart {
             media_instance_id: harness.media_instance_id,
             attachments,
+            track_headers: Vec::new(),
         }),
         "первым идёт media start с вложениями"
     );

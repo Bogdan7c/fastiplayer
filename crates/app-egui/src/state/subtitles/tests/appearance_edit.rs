@@ -43,7 +43,11 @@ pub(super) fn placed_at(
     let placed =
         owner.placed_overlay_for_frame(current(media, GENERATION), &frame_at(pts, GENERATION))?;
     let width = placed.overlay.content_bounds()?.width;
-    Some((placed.layer_offset.x, placed.layer_offset.y, width))
+    Some((
+        placed.layer_offsets.main.x,
+        placed.layer_offsets.main.y,
+        width,
+    ))
 }
 
 /// Пиксели overlay на кадре (RGBA на прозрачном фоне) вместе с размещением.
@@ -56,8 +60,8 @@ fn pixels_at(
         owner.placed_overlay_for_frame(current(media, GENERATION), &frame_at(pts, GENERATION))?;
     Some((
         placed.overlay.composite_rgba_over_transparent(),
-        placed.layer_offset.x,
-        placed.layer_offset.y,
+        placed.layer_offsets.main.x,
+        placed.layer_offsets.main.y,
     ))
 }
 
@@ -665,7 +669,7 @@ fn saved_move_lifts_the_real_cue_by_the_moved_fraction_on_the_gpu() {
                 &frame_at(INSIDE_CUE_MILLIS, GENERATION),
             )
             .expect("real cue");
-        let (overlay, offset) = (placed.overlay.clone(), placed.layer_offset);
+        let (overlay, offset) = (placed.overlay.clone(), placed.layer_offsets.main);
         harness.frame_with_offset(rect, Some(&overlay), offset).1
     };
     let top_row = |pixels: &[u8]| -> u32 {

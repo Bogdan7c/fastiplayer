@@ -9,11 +9,15 @@
 use std::time::Duration;
 
 use fastiplayer_config::SubtitlesConfig;
-use subtitle_formats::{EmbeddedCueLimits, SubtitleParseLimits};
+use subtitle_formats::{AssParseLimits, EmbeddedCueLimits, SubtitleParseLimits};
 use subtitle_raster::{
     AttachedFontLimits, FontLookupCacheLimits, RasterCacheLimits, RasterInputLimits, RasterLimits,
 };
 use subtitle_sidecar::SidecarSearchLimits;
+
+mod ass;
+
+use self::ass::ass_parse_limits_from_config;
 
 /// Байтов в мегабайте конфига (МБ = МиБ, как в прежней константе «8 МиБ»).
 const BYTES_PER_MEGABYTE: usize = 1024 * 1024;
@@ -80,11 +84,13 @@ impl LoadLimits {
                 max_candidates: usize::from(config.sidecar_max_candidates),
                 max_subdirectory_depth: SIDECAR_SEARCH_MAX_SUBDIRECTORY_DEPTH,
             },
+            // Без лимитов ASS загрузчик отказал бы `.ass/.ssa` (`AssLimitsMissing`).
             parse: SubtitleParseLimits::new(
                 file_max_bytes,
                 widen(config.max_cues_per_file),
                 SUBTITLE_FILE_MAX_REPORTED_ISSUES,
-            ),
+            )
+            .with_ass_limits(ass_parse_limits_from_config(config)),
             file_max_bytes,
             font_lookup_cache: FontLookupCacheLimits {
                 max_cached_chars: widen(config.font_lookup_cache_chars),
@@ -107,6 +113,8 @@ pub(super) struct EmbeddedLimits {
     pub(super) cue_parse: EmbeddedCueLimits,
     /// Сколько реплик хранит кэш одной встроенной дорожки (`max_cues_per_file`).
     pub(super) max_cues_per_track: usize,
+    /// Пределы разбора ASS: заголовка дорожки и тегов реплики.
+    pub(super) ass_parse: AssParseLimits,
 }
 
 impl EmbeddedLimits {
@@ -123,6 +131,7 @@ impl EmbeddedLimits {
             )),
             cue_parse: embedded_cue_limits(widen(config.max_chars_per_cue)),
             max_cues_per_track: widen(config.max_cues_per_file),
+            ass_parse: ass_parse_limits_from_config(config),
         }
     }
 }
@@ -153,6 +162,7 @@ pub(super) fn raster_limits_from_config(config: &SubtitlesConfig) -> RasterLimit
         input: RasterInputLimits {
             max_chars_per_cue: widen(config.max_chars_per_cue),
             max_cues_per_frame: usize::from(config.max_cues_on_screen),
+            max_ass_events_per_frame: widen(config.max_ass_events_on_screen),
             max_canvas_side: RASTER_MAX_CANVAS_SIDE,
         },
     }
@@ -185,6 +195,7 @@ mod tests {
         assert_eq!(raster.cache.cue_bitmaps_bytes, 32 * 1024 * 1024);
         assert_eq!(raster.input.max_chars_per_cue, 2_000);
         assert_eq!(raster.input.max_cues_per_frame, 16);
+        assert_eq!(raster.input.max_ass_events_per_frame, 256);
     }
 
     #[test]
@@ -195,6 +206,7 @@ mod tests {
             sidecar_max_candidates: 3,
             render_cache_mb: 4,
             max_cues_on_screen: 2,
+            max_ass_events_on_screen: 32,
             ..SubtitlesConfig::default()
         };
         let load = LoadLimits::from_config(&config);
@@ -204,6 +216,7 @@ mod tests {
         let raster = raster_limits_from_config(&config);
         assert_eq!(raster.cache.cue_bitmaps_bytes, 4 * 1024 * 1024);
         assert_eq!(raster.input.max_cues_per_frame, 2);
+        assert_eq!(raster.input.max_ass_events_per_frame, 32);
     }
 
     #[test]

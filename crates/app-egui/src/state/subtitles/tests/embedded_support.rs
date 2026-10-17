@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use media_core::{DemuxReadEvent, Demuxer, MediaAttachments, Packet, TrackInfo, TrackKind};
 use player_core::{
-    SubtitleFeedMediaStart, SubtitleFeedMessage, SubtitleFeedPacket, TrackSummarySnapshot,
+    SubtitleFeedMediaStart, SubtitleFeedMessage, SubtitleFeedPacket, SubtitleTrackHeader,
+    TrackSummarySnapshot,
 };
 use symphonia_demux::SymphoniaDemuxer;
 
@@ -27,6 +28,8 @@ pub(super) struct DemuxedFixture {
     pub(super) subtitle_packets: Vec<Packet>,
     /// Вложения контейнера.
     pub(super) attachments: MediaAttachments,
+    /// Заголовки субтитровых дорожек (`codec_private`), как их собирает `player-core`.
+    pub(super) track_headers: Vec<SubtitleTrackHeader>,
 }
 
 fn fixture_path(name: &str) -> PathBuf {
@@ -55,6 +58,21 @@ pub(super) fn demux_fixture(name: &str) -> DemuxedFixture {
     let mut demuxer = SymphoniaDemuxer::from_file(&fixture_path(name)).expect("fixture opens");
     let tracks = demuxer.tracks().iter().map(snapshot_row).collect();
     let attachments = demuxer.take_attachments();
+    let track_headers = demuxer
+        .tracks()
+        .iter()
+        .filter(|track| track.kind == TrackKind::Subtitle)
+        .filter_map(|track| {
+            track
+                .codec_private
+                .clone()
+                .filter(|header| !header.is_empty())
+                .map(|codec_private| SubtitleTrackHeader {
+                    track_id: track.id,
+                    codec_private,
+                })
+        })
+        .collect();
     let mut subtitle_packets = Vec::new();
     loop {
         match demuxer.next_event().expect("read demux event") {
@@ -69,6 +87,7 @@ pub(super) fn demux_fixture(name: &str) -> DemuxedFixture {
         tracks,
         subtitle_packets,
         attachments,
+        track_headers,
     }
 }
 
@@ -95,6 +114,7 @@ impl DemuxedFixture {
         SubtitleFeedMessage::MediaStarted(SubtitleFeedMediaStart {
             media_instance_id: media,
             attachments: self.attachments.clone(),
+            track_headers: self.track_headers.clone(),
         })
     }
 }

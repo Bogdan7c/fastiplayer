@@ -102,3 +102,78 @@ fn ligature_absorbed_symbols_stay_skipped() {
     assert_eq!(drawn, total_glyphs);
     assert!(drawn >= 1);
 }
+
+/// Шейпит текст, у которого после разворота спанов поправлен единственный вид символов.
+fn shape_with_look(
+    text: &str,
+    adjust: impl FnOnce(&mut crate::source_text::SourceText),
+) -> Vec<crate::glyph_info::TextCluster> {
+    let mut fonts = embedded_fonts();
+    let style = plain_style();
+    let mut source = crate::source_text::SourceText::from_styled(&plain_text(text), &style);
+    adjust(&mut source);
+    let mut faces = crate::face_cache::FaceCache::new();
+    super::shape_text(
+        &mut fonts,
+        &mut faces,
+        &source,
+        &style,
+        crate::fonts::TextLanguagePreference::unknown(),
+    )
+    .expect("shaping")
+}
+
+#[test]
+fn letter_spacing_disables_ligatures_and_isolates_each_letter() {
+    let with_ligature = shape_with_look("fi", |_| {});
+    assert!(
+        with_ligature.iter().any(|cluster| cluster.skip),
+        "Noto Sans merges f and i into one glyph"
+    );
+    let spaced = shape_with_look("fi", |source| {
+        for look in &mut source.looks {
+            look.letter_spacing = 0.5;
+        }
+    });
+    assert!(
+        spaced.iter().all(|cluster| !cluster.skip),
+        "no ligature with \\fsp"
+    );
+    assert!(spaced.iter().all(|cluster| cluster.has_letter_spacing));
+    assert_ne!(
+        spaced[0].shape_run_id, spaced[1].shape_run_id,
+        "each spaced letter is shaped on its own (libass: !whole_text_layout && hspacing)"
+    );
+}
+
+#[test]
+fn glyph_scale_follows_font_size_and_axis_scale_and_spacing_is_scaled_with_x() {
+    let clusters = shape_with_look("H", |source| {
+        for look in &mut source.looks {
+            look.scale = crate::event_style::AxisPair {
+                horizontal: 2.0,
+                vertical: 0.5,
+            };
+            look.letter_spacing = 3.0;
+        }
+    });
+    let base = shape_with_look("H", |_| {});
+    let (scaled, plain) = (&clusters[0], &base[0]);
+    assert!((scaled.glyph_scale.horizontal - 2.0 * plain.glyph_scale.horizontal).abs() < 1e-12);
+    assert!((scaled.glyph_scale.vertical - 0.5 * plain.glyph_scale.vertical).abs() < 1e-12);
+    // 3 px * масштаб по X (2.0) = 6 px = 384 в 26.6; продвижение буквы выросло ровно вдвое.
+    assert_eq!(scaled.letter_spacing_d6, 384);
+    assert_eq!(plain.letter_spacing_d6, 0);
+    assert!((scaled.root.advance.x - 2 * plain.root.advance.x).abs() <= 1);
+}
+
+#[test]
+fn kerning_mode_tightens_the_kerned_pair() {
+    let advance_of_first = |mode| {
+        let clusters = shape_with_look("AV", |source| source.kerning = mode);
+        clusters[0].cluster_advance.x
+    };
+    let off = advance_of_first(crate::source_text::KerningMode::Disabled);
+    let on = advance_of_first(crate::source_text::KerningMode::Enabled);
+    assert!(on < off, "A before V is kerned: {on} < {off}");
+}

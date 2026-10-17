@@ -31,6 +31,7 @@
 
 pub(crate) mod pen;
 pub(crate) mod stroke;
+pub(crate) mod synthetic;
 #[cfg(test)]
 mod tests;
 

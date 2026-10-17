@@ -1,10 +1,16 @@
-//! Секция `[subtitles]`: показ, язык, стиль и лимиты ресурсов субтитров (схема v16).
+//! Секция `[subtitles]`: показ, язык, стиль и лимиты ресурсов субтитров (схема v18).
 //!
 //! Решение владельца (субтитры, сессия 04): лимиты и внешний вид живут в `config.toml`,
 //! значения по умолчанию равны прежним константам приложения, поэтому старый файл без
 //! секции ведёт себя как раньше. Текст `*_ru` в metadata английский: UI только английский.
 
 use serde::{Deserialize, Serialize};
+
+use super::subtitles_ass::{
+    AssPositionMode, DEFAULT_MAX_ASS_EVENTS_ON_SCREEN, DEFAULT_MAX_ASS_HEADER_KB,
+    DEFAULT_MAX_ASS_OVERRIDE_TAGS_PER_EVENT, DEFAULT_MAX_ASS_STYLES,
+};
+use super::subtitles_limits::*;
 
 /// Показ субтитров по умолчанию выключен: включает пользователь (кнопка CC / клавиша C).
 pub const DEFAULT_SUBTITLES_ENABLED: bool = false;
@@ -55,90 +61,6 @@ pub const DEFAULT_POSITION_VERTICAL_PERCENT: i16 = 6;
 pub const MIN_POSITION_VERTICAL_PERCENT: i16 = -40;
 /// Максимум положения по вертикали (почти верх картинки), %.
 pub const MAX_POSITION_VERTICAL_PERCENT: i16 = 95;
-
-/// Размер файла субтитров по умолчанию, МБ (прежняя константа 8 МиБ).
-pub const DEFAULT_MAX_FILE_SIZE_MB: u16 = 8;
-/// Минимальный лимит размера файла, МБ.
-pub const MIN_MAX_FILE_SIZE_MB: u16 = 1;
-/// Максимальный лимит размера файла, МБ.
-pub const MAX_MAX_FILE_SIZE_MB: u16 = 64;
-
-/// Реплик в файле по умолчанию.
-pub const DEFAULT_MAX_CUES_PER_FILE: u32 = 100_000;
-/// Минимум реплик в файле.
-pub const MIN_MAX_CUES_PER_FILE: u32 = 1_000;
-/// Максимум реплик в файле.
-pub const MAX_MAX_CUES_PER_FILE: u32 = 1_000_000;
-
-/// Записей папки при поиске файлов рядом, по умолчанию.
-pub const DEFAULT_SIDECAR_MAX_ENTRIES_PER_FOLDER: u32 = 5_000;
-/// Минимум записей папки при поиске.
-pub const MIN_SIDECAR_MAX_ENTRIES_PER_FOLDER: u32 = 100;
-/// Максимум записей папки при поиске.
-pub const MAX_SIDECAR_MAX_ENTRIES_PER_FOLDER: u32 = 100_000;
-
-/// Кандидатов-файлов рядом с видео, по умолчанию.
-pub const DEFAULT_SIDECAR_MAX_CANDIDATES: u16 = 32;
-/// Минимум кандидатов.
-pub const MIN_SIDECAR_MAX_CANDIDATES: u16 = 1;
-/// Максимум кандидатов.
-pub const MAX_SIDECAR_MAX_CANDIDATES: u16 = 256;
-
-/// Кэш картинок реплик по умолчанию, МБ.
-pub const DEFAULT_RENDER_CACHE_MB: u16 = 32;
-/// Минимальный кэш картинок, МБ.
-pub const MIN_RENDER_CACHE_MB: u16 = 4;
-/// Максимальный кэш картинок, МБ.
-pub const MAX_RENDER_CACHE_MB: u16 = 512;
-
-/// Кэш поиска шрифта по символу, по умолчанию.
-pub const DEFAULT_FONT_LOOKUP_CACHE_CHARS: u32 = 65_536;
-/// Минимум кэша поиска шрифта.
-pub const MIN_FONT_LOOKUP_CACHE_CHARS: u32 = 1_024;
-/// Максимум кэша поиска шрифта.
-pub const MAX_FONT_LOOKUP_CACHE_CHARS: u32 = 1_048_576;
-
-/// Символов в одной реплике, по умолчанию.
-pub const DEFAULT_MAX_CHARS_PER_CUE: u32 = 2_000;
-/// Минимум символов в реплике.
-pub const MIN_MAX_CHARS_PER_CUE: u32 = 100;
-/// Максимум символов в реплике.
-pub const MAX_MAX_CHARS_PER_CUE: u32 = 20_000;
-
-/// Одновременно показанных реплик, по умолчанию.
-pub const DEFAULT_MAX_CUES_ON_SCREEN: u16 = 16;
-/// Минимум одновременных реплик.
-pub const MIN_MAX_CUES_ON_SCREEN: u16 = 1;
-/// Максимум одновременных реплик.
-pub const MAX_MAX_CUES_ON_SCREEN: u16 = 64;
-
-/// Лимит одного вложенного шрифта по умолчанию, МБ (прежняя константа 20 МиБ в демуксере).
-pub const DEFAULT_MAX_ATTACHED_FONT_MB: u16 = 20;
-/// Минимальный лимит одного вложения, МБ.
-pub const MIN_MAX_ATTACHED_FONT_MB: u16 = 1;
-/// Максимальный лимит одного вложения, МБ.
-pub const MAX_MAX_ATTACHED_FONT_MB: u16 = 256;
-
-/// Суммарный лимит вложенных шрифтов одного видео по умолчанию, МБ (прежняя константа 100 МиБ).
-pub const DEFAULT_MAX_ATTACHED_FONTS_TOTAL_MB: u16 = 100;
-/// Минимальный суммарный лимит вложений, МБ.
-pub const MIN_MAX_ATTACHED_FONTS_TOTAL_MB: u16 = 1;
-/// Максимальный суммарный лимит вложений, МБ.
-pub const MAX_MAX_ATTACHED_FONTS_TOTAL_MB: u16 = 1_024;
-
-/// Ёмкость трубы встроенных субтитров (плеер -> интерфейс), пакетов, по умолчанию.
-pub const DEFAULT_EMBEDDED_FEED_CAPACITY: u32 = 4_096;
-/// Минимальная ёмкость трубы, пакетов.
-pub const MIN_EMBEDDED_FEED_CAPACITY: u32 = 256;
-/// Максимальная ёмкость трубы, пакетов.
-pub const MAX_EMBEDDED_FEED_CAPACITY: u32 = 65_536;
-
-/// Сколько показывать встроенную реплику без длительности, мс, по умолчанию.
-pub const DEFAULT_EMBEDDED_CUE_MAX_OPEN_DURATION_MS: u32 = 5_000;
-/// Минимальное время показа такой реплики, мс.
-pub const MIN_EMBEDDED_CUE_MAX_OPEN_DURATION_MS: u32 = 500;
-/// Максимальное время показа такой реплики, мс.
-pub const MAX_EMBEDDED_CUE_MAX_OPEN_DURATION_MS: u32 = 60_000;
 
 /// Чем подчёркивается текст субтитров над видео.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -340,6 +262,28 @@ pub struct SubtitlesConfig {
         apply = "subtitles.apply"
     )]
     pub ass_force_user_style: bool,
+
+    /// Как размещать ASS/SSA: поднимать диалог над панелью (надписи на месте), оставить как у
+    /// автора или двигать слой целиком, как обычные субтитры.
+    #[setting(
+        id = "subtitles.ass_position_mode",
+        path = "subtitles.ass_position_mode",
+        section = "subtitles",
+        group = "style",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.ass_position_mode.label",
+        label_ru = "ASS/SSA position",
+        description_id = "settings.subtitles.ass_position_mode.description",
+        description_ru = "Lift dialogue moves only the main spoken lines above the controls while they are visible; signs and other positioned text stay where the author put them, and your position offset is not applied. Keep author placement moves nothing. Move the whole layer lifts everything like plain subtitles and applies your position offset. Subtitles never leave the picture.",
+        editor = "select",
+        apply = "subtitles.apply",
+        options(
+            option(id = "main_lines_avoid_controls", label_id = "settings.subtitles.ass_position_mode.main_lines_avoid_controls", label_ru = "Lift dialogue above controls (signs stay)", value = AssPositionMode::MainLinesAvoidControls),
+            option(id = "author", label_id = "settings.subtitles.ass_position_mode.author", label_ru = "Keep author placement", value = AssPositionMode::Author),
+            option(id = "whole_layer", label_id = "settings.subtitles.ass_position_mode.whole_layer", label_ru = "Move the whole layer", value = AssPositionMode::WholeLayer)
+        )
+    )]
+    pub ass_position_mode: AssPositionMode,
 
     /// Максимальный размер файла субтитров, МБ.
     #[setting(
@@ -580,6 +524,86 @@ pub struct SubtitlesConfig {
         apply = "subtitles.apply"
     )]
     pub embedded_cue_max_open_duration_ms: u32,
+
+    /// Размер заголовка ASS (стили и параметры), больше которого дорожка читается как простой текст, КБ.
+    #[setting(
+        id = "subtitles.max_ass_header_kb",
+        path = "subtitles.max_ass_header_kb",
+        section = "subtitles",
+        group = "limits",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.max_ass_header_kb.label",
+        label_ru = "ASS header size limit",
+        description_id = "settings.subtitles.max_ass_header_kb.description",
+        description_ru = "Larger ASS/SSA headers are not parsed; the subtitles are shown as plain text instead. Applies to the next loaded file or video.",
+        editor = "integer",
+        min = crate::MIN_MAX_ASS_HEADER_KB,
+        max = crate::MAX_MAX_ASS_HEADER_KB,
+        step = 64,
+        unit = "KB",
+        apply = "subtitles.apply"
+    )]
+    pub max_ass_header_kb: u32,
+
+    /// Сколько стилей читается из одного ASS-заголовка.
+    #[setting(
+        id = "subtitles.max_ass_styles",
+        path = "subtitles.max_ass_styles",
+        section = "subtitles",
+        group = "limits",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.max_ass_styles.label",
+        label_ru = "ASS style limit",
+        description_id = "settings.subtitles.max_ass_styles.description",
+        description_ru = "How many styles are read from one ASS/SSA header. Applies to the next loaded file or video.",
+        editor = "integer",
+        min = crate::MIN_MAX_ASS_STYLES,
+        max = crate::MAX_MAX_ASS_STYLES,
+        step = 10,
+        unit = "styles",
+        apply = "subtitles.apply"
+    )]
+    pub max_ass_styles: u32,
+
+    /// Сколько тегов оформления читается из одной ASS-реплики.
+    #[setting(
+        id = "subtitles.max_ass_override_tags_per_event",
+        path = "subtitles.max_ass_override_tags_per_event",
+        section = "subtitles",
+        group = "limits",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.max_ass_override_tags_per_event.label",
+        label_ru = "ASS tags per line limit",
+        description_id = "settings.subtitles.max_ass_override_tags_per_event.description",
+        description_ru = "How many override tags are read from one ASS/SSA line; extra tags are ignored. Applies to the next loaded file or video.",
+        editor = "integer",
+        min = crate::MIN_MAX_ASS_OVERRIDE_TAGS_PER_EVENT,
+        max = crate::MAX_MAX_ASS_OVERRIDE_TAGS_PER_EVENT,
+        step = 32,
+        unit = "tags",
+        apply = "subtitles.apply"
+    )]
+    pub max_ass_override_tags_per_event: u32,
+
+    /// Сколько ASS-событий одновременно рисуется на кадре (лишние отбрасываются с верхних слоёв).
+    #[setting(
+        id = "subtitles.max_ass_events_on_screen",
+        path = "subtitles.max_ass_events_on_screen",
+        section = "subtitles",
+        group = "limits",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.max_ass_events_on_screen.label",
+        label_ru = "ASS lines on screen limit",
+        description_id = "settings.subtitles.max_ass_events_on_screen.description",
+        description_ru = "How many ASS/SSA lines are drawn at the same time; when there are more, the ones on the highest layers are skipped. Applies to the next frame.",
+        editor = "integer",
+        min = crate::MIN_MAX_ASS_EVENTS_ON_SCREEN,
+        max = crate::MAX_MAX_ASS_EVENTS_ON_SCREEN,
+        step = 16,
+        unit = "lines",
+        apply = "subtitles.apply"
+    )]
+    pub max_ass_events_on_screen: u32,
 }
 
 impl Default for SubtitlesConfig {
@@ -596,6 +620,7 @@ impl Default for SubtitlesConfig {
             position_horizontal_percent: DEFAULT_POSITION_HORIZONTAL_PERCENT,
             position_vertical_percent: DEFAULT_POSITION_VERTICAL_PERCENT,
             ass_force_user_style: false,
+            ass_position_mode: AssPositionMode::MainLinesAvoidControls,
             max_file_size_mb: DEFAULT_MAX_FILE_SIZE_MB,
             max_cues_per_file: DEFAULT_MAX_CUES_PER_FILE,
             sidecar_max_entries_per_folder: DEFAULT_SIDECAR_MAX_ENTRIES_PER_FOLDER,
@@ -608,6 +633,10 @@ impl Default for SubtitlesConfig {
             max_attached_fonts_total_mb: DEFAULT_MAX_ATTACHED_FONTS_TOTAL_MB,
             embedded_feed_capacity: DEFAULT_EMBEDDED_FEED_CAPACITY,
             embedded_cue_max_open_duration_ms: DEFAULT_EMBEDDED_CUE_MAX_OPEN_DURATION_MS,
+            max_ass_header_kb: DEFAULT_MAX_ASS_HEADER_KB,
+            max_ass_styles: DEFAULT_MAX_ASS_STYLES,
+            max_ass_override_tags_per_event: DEFAULT_MAX_ASS_OVERRIDE_TAGS_PER_EVENT,
+            max_ass_events_on_screen: DEFAULT_MAX_ASS_EVENTS_ON_SCREEN,
         }
     }
 }

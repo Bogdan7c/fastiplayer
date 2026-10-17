@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 17;
+pub const CURRENT_SCHEMA_VERSION: u32 = 18;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -75,14 +75,21 @@ pub(crate) const LEGACY_SCHEMA_VERSION_15: u32 = 15;
 /// миграция v16 -> v17 только поднимает версию (старый файл без ключа грузится с defaults).
 pub(crate) const LEGACY_SCHEMA_VERSION_16: u32 = 16;
 
+/// Последняя схема до ASS-настроек (`subtitles.ass_position_mode`, лимиты разбора ASS).
+///
+/// Решение владельца (субтитры, сессия 08): четыре ключа добавляются со значениями по
+/// умолчанию; переписывать пользовательские значения нечего, поэтому миграция v17 -> v18
+/// только поднимает версию (старый файл без ключей грузится с defaults).
+pub(crate) const LEGACY_SCHEMA_VERSION_17: u32 = 17;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v17 и полная цепочка поддерживаемых legacy-версий v2..v16.
+    /// Текущая схема v18 и полная цепочка поддерживаемых legacy-версий v2..v17.
     #[test]
-    fn schema_v17_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 17);
+    fn schema_v18_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 18);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -100,8 +107,9 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_14,
                 LEGACY_SCHEMA_VERSION_15,
                 LEGACY_SCHEMA_VERSION_16,
+                LEGACY_SCHEMA_VERSION_17,
             ],
-            [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+            [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
         );
     }
 }

@@ -1,0 +1,21 @@
+; reference: width=1280 height=720 time_ms=1000
+; case: fansub-like scene, PlayRes 1920x1080: spaced bold title, italic whisper, underlined emphasis, \fn switch to Hebrew, scaled word, \q2 no-wrap line
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+ScaledBorderAndShadow: yes
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans,60,&H00FFFFFF,&H000000FF,&H00000000,&H96000000,0,0,0,0,100,100,0,0,1,2.5,0,2,80,80,45,204
+Style: Whisper,Noto Sans,44,&H00D0D0D0,&H000000FF,&H00404040,&H00000000,0,-1,0,0,100,100,1,0,1,2,2,2,80,80,120,204
+Style: Title,Noto Sans,96,&H0040C0FF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,6,0,1,4,3,8,60,60,70,204
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:05.00,Title,,0,0,0,,Серия 07: «Тишина»
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,Он сказал {\u1}очень важное{\u0} слово — {\fscx140\fscy140}НЕТ{\fscx100\fscy100}, и ушёл.
+Dialogue: 0,0:00:00.00,0:00:05.00,Whisper,,0,0,0,,{\i0}(шёпотом){\i1} Shalom {\fnNoto Sans Hebrew}שלום{\fnNoto Sans} my friend
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an4\q2\pos(80,540)\s1}Зачёркнутая строка без переноса, очень-очень длинная

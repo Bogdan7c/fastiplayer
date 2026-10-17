@@ -47,6 +47,13 @@ impl ActiveSubtitleTrack {
         self.sync_offset = offset;
     }
 
+    /// Начинает кэш реплик заново под новым источником: меняется сценарий дорожки, а старые
+    /// `CueKey` не вправе жить при новом содержимом (контракт «тот же ключ = то же содержимое»).
+    pub(super) fn restart_with_source(&mut self, source_id: CueSourceId) {
+        self.source_id = source_id;
+        self.timeline = SubtitleTimeline::new();
+    }
+
     /// Язык дорожки; `None` — дорожка его не объявляет (тогда решает язык системы).
     pub(super) fn language(&self) -> Option<&SubtitleLanguage> {
         self.language.as_ref()

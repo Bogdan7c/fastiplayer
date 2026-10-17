@@ -16,7 +16,7 @@ use harfrust::ShaperData;
 use skrifa::FontRef;
 
 use crate::fonts::{FaceBytes, FaceId, SubtitleFontLibrary};
-use crate::glyph_render::{FaceScale, HintedAdvances};
+use crate::glyph_render::{FaceScale, FaceStyleInfo, HintedAdvances};
 
 /// Почему лицо не удалось подготовить.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -49,6 +49,7 @@ pub(crate) struct FaceEntry {
     scale: FaceScale,
     shaper_data: ShaperData,
     advances: HintedAdvances,
+    style: FaceStyleInfo,
 }
 
 impl FaceEntry {
@@ -66,6 +67,11 @@ impl FaceEntry {
     /// Хинтованные продвижения глифов (метрики, которыми libass кормит шейпер).
     pub(crate) fn advances(&self) -> &HintedAdvances {
         &self.advances
+    }
+
+    /// Начертание лица (флаги, вес, линии подчёркивания): по нему решается синтетика.
+    pub(crate) fn style(&self) -> &FaceStyleInfo {
+        &self.style
     }
 
     /// Кэши таблиц `harfrust` для этого лица.
@@ -139,6 +145,7 @@ impl FaceCache {
             .map_err(|_| FaceLoadError::Unparsable { face })?;
         let shaper_data = ShaperData::new(&font);
         let advances = HintedAdvances::new(&font, &scale);
+        let style = FaceStyleInfo::from_font(&font);
         self.entries.insert(
             face,
             CachedFace {
@@ -149,6 +156,7 @@ impl FaceCache {
                     scale,
                     shaper_data,
                     advances,
+                    style,
                 },
                 last_used: self.use_clock,
             },

@@ -4,14 +4,15 @@
 
 use super::instances::INSTANCE_STRIDE_BYTES;
 
-/// Размер uniform-а: `screen_size` (2 x f32) + `canvas_origin` (2 x f32).
-pub(super) const UNIFORM_SIZE_BYTES: u64 = 16;
+/// Размер uniform-а: `screen_size` + `main_canvas_origin` + `fixed_canvas_origin`
+/// (по 2 x f32) + 8 байт выравнивания до 32.
+pub(super) const UNIFORM_SIZE_BYTES: u64 = 32;
 
 /// Формат атласа: один 8-битный канал покрытия, как в `SubtitleBitmap::coverage`.
 const ATLAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
 /// Атрибуты инстанса; смещения должны совпадать с `BitmapInstance::append_bytes`.
-const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
+const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
     // canvas_rect
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x4,
@@ -29,6 +30,12 @@ const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
         format: wgpu::VertexFormat::Unorm8x4,
         offset: 24,
         shader_location: 2,
+    },
+    // group_index (0 — основная группа, 1 — фиксированная)
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Uint32,
+        offset: 28,
+        shader_location: 3,
     },
 ];
 

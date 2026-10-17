@@ -13,6 +13,7 @@
 //! `had_replacement_characters` — реплика важнее идеальной кодировки. UTF-16 (mov_text) с
 //! нарушениями — [`EmbeddedCueError::InvalidEncoding`]: у него нет безопасного «лучшего приближения».
 
+mod ass_event;
 mod ass_line;
 mod mov_text;
 mod text_lines;
@@ -21,6 +22,8 @@ mod text_lines;
 mod tests;
 
 use subtitle_core::{CuePlacement, SubtitleLayer, SubtitleTextCue};
+
+pub use ass_event::{EmbeddedAssEvent, parse_embedded_ass_event};
 
 use crate::srt::parse_srt_markup_text;
 use crate::webvtt::parse_embedded_webvtt_cue_text;
@@ -68,6 +71,10 @@ pub enum EmbeddedCueMalformation {
     /// ASS-строка содержит меньше девяти полей.
     #[error("ASS event line has {found} fields, expected {expected}")]
     AssTooFewFields { expected: usize, found: usize },
+    /// ASS-пакет не содержит всех полей, которые требует раскладка `Format:` сценария
+    /// (или в раскладке нет `Text`).
+    #[error("ASS event packet does not match the script's event format")]
+    AssMissingEventField,
     /// mov_text: нет двухбайтной длины текста.
     #[error("mov_text sample is shorter than its 2-byte length prefix")]
     MovTextMissingLength,

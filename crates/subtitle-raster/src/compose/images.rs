@@ -26,7 +26,7 @@ use subtitle_core::SubtitleColor;
 use super::ComposeError;
 use crate::bitmap::CoverageBitmap;
 use crate::event_style::EventStyle;
-use crate::layout::TextLayout;
+use crate::layout::{EventImageRect, TextLayout, event_image_rect};
 use crate::overlay::{CanvasSize, PixelPoint, SubtitleBitmap, SubtitleBitmapKind};
 
 /// Обрезает битмап по холсту и строит картинку (libass: `render_glyph`).
@@ -107,17 +107,15 @@ pub(super) fn event_background(
     style: &EventStyle,
     layout: &TextLayout,
     canvas: CanvasSize,
+    pixel_aspect_x: f64,
 ) -> Result<Option<SubtitleBitmap>, ComposeError> {
-    let measure = &layout.measure;
-    let first_ascent = measure.lines.first().map_or(0.0, |line| line.ascent);
-    // Границы события (libass: `event_images`); приведение double -> int отбрасывает дробную часть.
-    let top = (layout.device_y - first_ascent - f64::from(measure.border_top)) as i32;
-    let height =
-        (measure.height + f64::from(measure.border_bottom) + f64::from(measure.border_top)) as i32;
-    let left = ((layout.device_x + layout.bounds.x_min) - f64::from(measure.border_x) + 0.5) as i32;
-    let width = ((layout.bounds.x_max - layout.bounds.x_min)
-        + 2.0 * f64::from(measure.border_x)
-        + 0.5) as i32;
+    // Границы события по метрикам текста (libass: `event_images`).
+    let EventImageRect {
+        left,
+        top,
+        width,
+        height,
+    } = event_image_rect(layout, pixel_aspect_x);
 
     // Тень расширяет подложку только в положительную сторону (lround = округление от нуля).
     let size_x = if style.shadow.horizontal > 0.0 {

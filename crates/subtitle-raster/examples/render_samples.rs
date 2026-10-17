@@ -17,9 +17,9 @@ use subtitle_core::{
     SubtitleTextCue, SubtitleTime, SubtitleTimeline, TextSpan, TimelineInsertOutcome,
 };
 use subtitle_raster::{
-    CanvasSize, CueKey, CueSourceId, FontLookupCacheLimits, RasterCacheLimits, RasterInputLimits,
-    RasterLimits, RenderRequest, RenderableCue, SubtitleAppearance, SubtitleFontLibrary,
-    SubtitleOverlay, SubtitleRasterizer, TextLanguagePreference,
+    AssRenderOptions, CanvasSize, CueKey, CueSourceId, FontLookupCacheLimits, RasterCacheLimits,
+    RasterInputLimits, RasterLimits, RenderRequest, RenderableCue, SubtitleAppearance,
+    SubtitleFontLibrary, SubtitleOverlay, SubtitleRasterizer, TextLanguagePreference,
 };
 
 /// Ширина кадра приёмки.
@@ -102,6 +102,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             input: RasterInputLimits {
                 max_chars_per_cue: MAX_CHARS_PER_CUE,
                 max_cues_per_frame: MAX_CUES_PER_FRAME,
+                max_ass_events_per_frame: MAX_CUES_PER_FRAME,
                 max_canvas_side: MAX_CANVAS_SIDE,
             },
         },
@@ -116,12 +117,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (index, sample) in SAMPLES.iter().enumerate() {
         let (key, cue) = build_cue(&mut timeline, index, sample)?;
         for (style_name, appearance) in &styles {
-            let cues = [RenderableCue { key, cue: &cue }];
+            let cues = [RenderableCue::text(key, &cue)];
             let overlay = rasterizer.render(&RenderRequest {
                 cues: &cues,
                 canvas,
                 appearance,
                 text_language: TextLanguagePreference::unknown(),
+                ass: AssRenderOptions::default(),
             });
             let path = output_dir.join(format!("{}_{style_name}.png", sample.file_stem));
             write_over_gradient(&path, overlay)?;

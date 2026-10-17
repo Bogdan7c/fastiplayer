@@ -3,8 +3,12 @@
 struct OverlayUniforms {
     // Размер surface в пикселях.
     screen_size: vec2<f32>,
-    // Левый верхний угол холста субтитров на экране (целые пиксели).
-    canvas_origin: vec2<f32>,
+    // Левый верхний угол холста для основной группы (целые пиксели).
+    main_canvas_origin: vec2<f32>,
+    // То же для фиксированной группы (надписи с \pos/\move и верх/середина).
+    fixed_canvas_origin: vec2<f32>,
+    // Выравнивание uniform-а до 32 байт.
+    padding: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: OverlayUniforms;
@@ -17,6 +21,8 @@ struct InstanceInput {
     @location(1) atlas_origin: vec2<u32>,
     // Прямой RGBA цвет (Unorm8x4 -> 0..1).
     @location(2) color: vec4<f32>,
+    // Группа размещения: 0 — основная, 1 — фиксированная.
+    @location(3) group_index: u32,
 };
 
 struct VertexOutput {
@@ -33,7 +39,12 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, instance: InstanceInput) ->
     // Triangle strip из 4 вершин: (0,0) (1,0) (0,1) (1,1).
     let corner = vec2<f32>(f32(vertex_index & 1u), f32(vertex_index >> 1u));
     let size = instance.canvas_rect.zw;
-    let screen_pixel = uniforms.canvas_origin + instance.canvas_rect.xy + corner * size;
+    // Группа выбирает, каким сдвигом слоя едет эта картинка.
+    var canvas_origin = uniforms.main_canvas_origin;
+    if (instance.group_index == 1u) {
+        canvas_origin = uniforms.fixed_canvas_origin;
+    }
+    let screen_pixel = canvas_origin + instance.canvas_rect.xy + corner * size;
     // Пиксели (0,0 слева сверху) -> NDC (-1..1, y вверх).
     let ndc = vec2<f32>(
         screen_pixel.x / uniforms.screen_size.x * 2.0 - 1.0,

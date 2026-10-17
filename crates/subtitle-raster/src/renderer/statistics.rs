@@ -12,9 +12,11 @@ pub(super) struct Counters {
     pub(super) unchanged_frames: u64,
     pub(super) rejected_cues_too_long: u64,
     pub(super) dropped_cues_over_frame_limit: u64,
+    pub(super) dropped_ass_events_over_frame_limit: u64,
     pub(super) rejected_canvas: u64,
     pub(super) skipped_glyphs: u64,
     pub(super) skipped_borders: u64,
+    pub(super) skipped_ass_drawings: u64,
 }
 
 /// Снимок статистики растеризатора.
@@ -37,8 +39,10 @@ pub struct RasterStatistics {
     pub missing_glyph_lookups: u64,
     /// Реплик пропущено целиком: текст длиннее `max_chars_per_cue`.
     pub rejected_cues_too_long: u64,
-    /// Реплик отброшено сверх `max_cues_per_frame` (суммарно по собранным кадрам).
+    /// Реплик простых форматов отброшено сверх `max_cues_per_frame` (суммарно по собранным кадрам).
     pub dropped_cues_over_frame_limit: u64,
+    /// ASS-событий отброшено сверх `max_ass_events_per_frame` (суммарно по собранным кадрам).
+    pub dropped_ass_events_over_frame_limit: u64,
     /// Кадров с холстом больше `max_canvas_side` (результат пустой).
     pub rejected_canvas: u64,
     /// Глифов, не нарисованных из-за ошибки чтения контура (считается при растеризации реплики,
@@ -46,6 +50,9 @@ pub struct RasterStatistics {
     pub skipped_glyphs: u64,
     /// Глифов, нарисованных без обводки из-за сбоя её построения.
     pub skipped_borders: u64,
+    /// Кусков текста ASS в режиме рисунка (`\p`), пропущенных, потому что векторные рисунки
+    /// пока не поддерживаются (считается при растеризации реплики).
+    pub skipped_ass_drawing_runs: u64,
     /// Лиц, признанных непригодными для рисования и исключённых из выбора шрифта.
     pub unusable_faces: u64,
     /// Лиц, которые не удалось разобрать как шрифт.

@@ -17,7 +17,7 @@ pub(super) fn fixtures_dir() -> PathBuf {
 }
 
 /// Имена кейсов-рисунков (без расширения) в алфавитном порядке; текстовые кейсы (`text_*`)
-/// проверяет `text_tests`.
+/// проверяет `text_tests`, кейсы ASS-событий (`ass_*`) — `ass_event_tests`.
 fn case_names() -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(fixtures_dir().join("cases"))
         .expect("cases directory must exist")
@@ -25,7 +25,7 @@ fn case_names() -> Vec<String> {
             let path = entry.ok()?.path();
             (path.extension()? == "ass").then(|| path.file_stem()?.to_str().map(str::to_owned))?
         })
-        .filter(|name| !name.starts_with("text_"))
+        .filter(|name| !name.starts_with("text_") && !name.starts_with("ass_"))
         .collect();
     names.sort();
     names

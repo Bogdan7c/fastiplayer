@@ -29,7 +29,10 @@ python3 -I scripts/subtitle-reference/generate.py
 
 1. Собирает `render_reference.c` (`cc $(pkg-config --cflags --libs libass)`) во временный каталог.
 2. Для каждого кейса `cases/<имя>.ass` читает параметры кадра из комментария-заголовка:
-   `; reference: width=320 height=180 time_ms=1000`.
+   `; reference: width=320 height=180 time_ms=1000`. Необязательно можно задать размер хранения
+   видео (`ass_set_storage_size`): `... time_ms=1000 storage_width=640 storage_height=360`;
+   без него размер хранения равен размеру кадра (так снимались все кейсы сессии 02), а в `.json`
+   поля `storage_*` не пишутся.
 3. Рендерит кадр и получает список `ASS_Image`.
 4. Пишет `expected/<имя>.png` — композит RGBA с прямой (straight) альфой, оператор *over* в порядке
    списка, по той же формуле, что `SubtitleOverlay::composite_rgba_over_transparent`. В libass альфа
@@ -50,7 +53,11 @@ python3 -I scripts/subtitle-reference/generate.py
   по глифам у libass с провайдером NONE нет (в журнале: «failed to find any fallback»), поэтому
   арабский кейс задаёт шрифт `Noto Sans Arabic` явно. У подложки `BorderStyle 4` libass оставляет
   поле `type` неинициализированным — тест его не сравнивает.
-- Кейсы без `text_` — ASS-рисунки (`{\p1}`), они идут через тот же растеризатор и обводчик, что и глифы,
+- Кейсы `ass_*.ass` (сессия 08) — полноценные ASS-файлы: PlayRes, `\pos`, слои, столкновения,
+  `\r`, цвета, обводка и тень, `\fn`, `\fs`, отступы, `\q`, `BorderStyle` 3/4,
+  `ScaledBorderAndShadow` с размером хранения. Их проверяет `libass_parity/ass_event_tests.rs`
+  через публичный `SubtitleRasterizer::render`; допуск каждого кейса записан в таблице теста.
+- Кейсы без `text_` и `ass_` — ASS-рисунки (`{\p1}`), они идут через тот же растеризатор и обводчик, что и глифы,
   но шрифтов не используют.
 
 ## Примечание про шаг строки

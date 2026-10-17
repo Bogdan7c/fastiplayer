@@ -4,12 +4,22 @@
 //! vertex buffer-а и переводит прямоугольник картинки видео в целый пиксельный origin.
 
 use render_core::PictureRect;
-use subtitle_raster::{PixelPoint, SubtitleBitmap};
+use subtitle_raster::{OverlayPlacementGroup, PixelPoint, SubtitleBitmap};
 
 use super::atlas::AtlasSlot;
 
-/// Размер одного инстанса в байтах: rect (4 x f32) + атлас (2 x u32) + цвет (4 x u8).
-pub(super) const INSTANCE_STRIDE_BYTES: usize = 28;
+/// Размер одного инстанса в байтах: rect (4 x f32) + атлас (2 x u32) + цвет (4 x u8) +
+/// индекс группы размещения (u32).
+pub(super) const INSTANCE_STRIDE_BYTES: usize = 32;
+
+/// Индекс группы в uniform-е шейдера: 0 — основная, 1 — фиксированная.
+/// Должен совпадать с выбором origin-а в `subtitle_overlay.wgsl`.
+fn group_shader_index(group: OverlayPlacementGroup) -> u32 {
+    match group {
+        OverlayPlacementGroup::Main => 0,
+        OverlayPlacementGroup::Fixed => 1,
+    }
+}
 
 /// Один инстанс: где картинка на холсте, где её маска в атласе и каким цветом заливать.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -20,6 +30,8 @@ pub(super) struct BitmapInstance {
     pub(super) atlas_origin: [u32; 2],
     /// Прямой RGBA цвет слоя, как отдал растеризатор (sRGB-значения, без линеаризации).
     pub(super) color_rgba: [u8; 4],
+    /// Индекс группы размещения (см. [`group_shader_index`]): выбирает сдвиг в шейдере.
+    pub(super) group_index: u32,
 }
 
 impl BitmapInstance {
@@ -30,6 +42,7 @@ impl BitmapInstance {
         height: u32,
         slot: AtlasSlot,
         color_rgba: [u8; 4],
+        group: OverlayPlacementGroup,
     ) -> Self {
         Self {
             // Размеры холста ограничены `max_canvas_side` растеризатора, поэтому f32
@@ -42,6 +55,7 @@ impl BitmapInstance {
             ],
             atlas_origin: [slot.x, slot.y],
             color_rgba,
+            group_index: group_shader_index(group),
         }
     }
 
@@ -54,6 +68,7 @@ impl BitmapInstance {
             bitmap.height(),
             slot,
             [color.red, color.green, color.blue, color.alpha],
+            bitmap.placement_group(),
         )
     }
 
@@ -66,6 +81,7 @@ impl BitmapInstance {
             bytes.extend_from_slice(&value.to_ne_bytes());
         }
         bytes.extend_from_slice(&self.color_rgba);
+        bytes.extend_from_slice(&self.group_index.to_ne_bytes());
     }
 }
 
@@ -88,6 +104,32 @@ impl SubtitleLayerOffset {
     pub const NONE: Self = Self { x: 0.0, y: 0.0 };
 }
 
+/// Сдвиги групп размещения слоя: основная и фиксированная двигаются независимо.
+///
+/// Нужны режиму «поднять основной диалог над панелью, надписи оставить на месте»; для всех
+/// остальных случаев обе группы получают один сдвиг ([`Self::uniform`]). Оба сдвига живут в
+/// uniform-е: смена любого из них не перезагружает маски и инстансы.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SubtitleLayerOffsets {
+    /// Сдвиг основной группы (SRT/WebVTT, ASS-диалог без `\pos`, снизу).
+    pub main: SubtitleLayerOffset,
+    /// Сдвиг фиксированной группы (ASS с `\pos`/`\move`, верх и середина).
+    pub fixed: SubtitleLayerOffset,
+}
+
+impl SubtitleLayerOffsets {
+    /// Обе группы на месте.
+    pub const NONE: Self = Self::uniform(SubtitleLayerOffset::NONE);
+
+    /// Один сдвиг для обеих групп: слой едет целиком.
+    pub const fn uniform(offset: SubtitleLayerOffset) -> Self {
+        Self {
+            main: offset,
+            fixed: offset,
+        }
+    }
+}
+
 /// Левый верхний угол холста субтитров на экране: origin картинки видео плюс сдвиг слоя,
 /// округлённый до целого пикселя surface.
 ///
@@ -105,6 +147,18 @@ pub(super) fn placement_origin(
         return None;
     }
     Some([x.round(), y.round()])
+}
+
+/// Углы холста для обеих групп: `[основная, фиксированная]`; `None`, если любой сдвиг
+/// нечисловой (см. [`placement_origin`]).
+pub(super) fn placement_origins(
+    picture_rect: PictureRect,
+    offsets: SubtitleLayerOffsets,
+) -> Option<[[f32; 2]; 2]> {
+    Some([
+        placement_origin(picture_rect, offsets.main)?,
+        placement_origin(picture_rect, offsets.fixed)?,
+    ])
 }
 
 #[cfg(test)]
@@ -145,6 +199,30 @@ mod tests {
     }
 
     #[test]
+    fn group_origins_follow_their_own_offsets() {
+        let offsets = SubtitleLayerOffsets {
+            main: SubtitleLayerOffset { x: 0.0, y: -30.0 },
+            fixed: SubtitleLayerOffset::NONE,
+        };
+        assert_eq!(
+            placement_origins(rect(10.0, 20.0), offsets),
+            Some([[10.0, -10.0], [10.0, 20.0]])
+        );
+        let broken = SubtitleLayerOffsets {
+            main: SubtitleLayerOffset::NONE,
+            fixed: SubtitleLayerOffset {
+                x: f32::NAN,
+                y: 0.0,
+            },
+        };
+        assert_eq!(placement_origins(rect(0.0, 0.0), broken), None);
+        assert_eq!(
+            SubtitleLayerOffsets::uniform(SubtitleLayerOffset { x: 1.0, y: 2.0 }).fixed,
+            SubtitleLayerOffset { x: 1.0, y: 2.0 }
+        );
+    }
+
+    #[test]
     fn placement_origin_adds_the_layer_offset_before_rounding() {
         let offset = SubtitleLayerOffset { x: 0.4, y: -30.4 };
         // 10.4 + 0.4 = 10.8 -> 11; 18.5 - 30.4 = -11.9 -> -12 (слой может уйти выше картинки).
@@ -162,10 +240,12 @@ mod tests {
             16,
             AtlasSlot { x: 64, y: 32 },
             [1, 2, 3, 200],
+            OverlayPlacementGroup::Fixed,
         );
         assert_eq!(instance.canvas_rect, [12.0, 80.0, 40.0, 16.0]);
         assert_eq!(instance.atlas_origin, [64, 32]);
         assert_eq!(instance.color_rgba, [1, 2, 3, 200]);
+        assert_eq!(instance.group_index, 1);
     }
 
     #[test]
@@ -176,6 +256,7 @@ mod tests {
             6,
             AtlasSlot { x: 7, y: 8 },
             [9, 10, 11, 12],
+            OverlayPlacementGroup::Main,
         );
         let mut bytes = vec![0xAA];
         instance.append_bytes(&mut bytes);
@@ -195,5 +276,6 @@ mod tests {
         );
         assert_eq!([uint_at(16), uint_at(20)], [7, 8]);
         assert_eq!(&body[24..28], &[9, 10, 11, 12]);
+        assert_eq!(uint_at(28), 0, "индекс группы Main");
     }
 }

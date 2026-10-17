@@ -101,6 +101,48 @@ pub(crate) struct TextMargins {
     pub(crate) vertical: i32,
 }
 
+/// Привязка блока текста к холсту для реплик ASS с `\pos` (libass: `EVENT_POSITIONED`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum BlockAnchor {
+    /// Блок прижат к краю по выравниванию реплики (`valign`) и полю `vertical_margin`.
+    ByAlignment,
+    /// Опорная точка блока (угол или середина по выравниванию, `get_base_point`) стоит в
+    /// этой точке холста, пиксели.
+    AtPoint {
+        /// Координата по горизонтали.
+        x: f64,
+        /// Координата по вертикали.
+        y: f64,
+    },
+}
+
+/// Точная геометрия блока текста реплики ASS в пикселях холста (дробные числа libass:
+/// `x2scr_left`, `max_text_width`, `y2scr_*`). Поля SRT/WebVTT целые и живут в
+/// [`EventStyle::margins`]; ASS-масштаб `PlayRes -> кадр` целым не бывает.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ExactPlacement {
+    /// Левый край области текста.
+    pub(crate) text_left: f64,
+    /// Ширина области текста (libass: `max_text_width`): по ней переносятся и выравниваются строки.
+    pub(crate) text_width: f64,
+    /// Вертикальное поле для верхнего и нижнего якоря, пиксели.
+    pub(crate) vertical_margin: f64,
+    /// Привязка блока.
+    pub(crate) anchor: BlockAnchor,
+    /// `par_scale_x` libass: во сколько раз растянуть текст по горизонтали, когда пропорции
+    /// хранения видео отличаются от пропорций кадра (1.0 — не отличаются).
+    pub(crate) pixel_aspect_x: f64,
+}
+
+/// Откуда берётся положение блока текста.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum EventPlacement {
+    /// Целые поля [`EventStyle::margins`]: блок занимает полосу между ними (SRT, WebVTT).
+    ByMargins,
+    /// Точная геометрия ASS.
+    Exact(ExactPlacement),
+}
+
 /// Стиль одной реплики.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EventStyle {
@@ -122,14 +164,60 @@ pub(crate) struct EventStyle {
     pub(crate) colors: StyleColors,
     /// Выравнивание на экране.
     pub(crate) alignment: ScreenAnchor,
-    /// Поля.
+    /// Поля (используются при [`EventPlacement::ByMargins`]).
     pub(crate) margins: TextMargins,
+    /// Откуда брать положение блока: целые поля или точная геометрия ASS.
+    pub(crate) placement: EventPlacement,
     /// Режим переноса.
     pub(crate) wrap_style: WrapStyle,
     /// Дополнительный интервал между строками, пиксели.
     pub(crate) line_spacing: f64,
     /// Базовое направление абзаца.
     pub(crate) base_direction: BaseDirection,
+}
+
+impl EventStyle {
+    /// Левый край области текста в пикселях холста.
+    pub(crate) fn text_left(&self) -> f64 {
+        match self.placement {
+            EventPlacement::ByMargins => f64::from(self.margins.left),
+            EventPlacement::Exact(exact) => exact.text_left,
+        }
+    }
+
+    /// Ширина области текста (libass: `max_text_width`).
+    pub(crate) fn text_width(&self, canvas_width: f64) -> f64 {
+        match self.placement {
+            EventPlacement::ByMargins => {
+                canvas_width - f64::from(self.margins.right) - f64::from(self.margins.left)
+            }
+            EventPlacement::Exact(exact) => exact.text_width,
+        }
+    }
+
+    /// Вертикальное поле для верхнего и нижнего якоря.
+    pub(crate) fn vertical_margin(&self) -> f64 {
+        match self.placement {
+            EventPlacement::ByMargins => f64::from(self.margins.vertical),
+            EventPlacement::Exact(exact) => exact.vertical_margin,
+        }
+    }
+
+    /// Растяжение по горизонтали `par_scale_x` (1.0 для SRT/WebVTT).
+    pub(crate) fn pixel_aspect_x(&self) -> f64 {
+        match self.placement {
+            EventPlacement::ByMargins => 1.0,
+            EventPlacement::Exact(exact) => exact.pixel_aspect_x,
+        }
+    }
+
+    /// Привязка блока к точке (`\pos`), если она задана.
+    pub(crate) fn block_anchor(&self) -> BlockAnchor {
+        match self.placement {
+            EventPlacement::ByMargins => BlockAnchor::ByAlignment,
+            EventPlacement::Exact(exact) => exact.anchor,
+        }
+    }
 }
 
 #[cfg(test)]

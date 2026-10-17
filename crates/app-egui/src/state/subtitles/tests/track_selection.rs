@@ -483,27 +483,24 @@ fn attach_without_media_or_with_a_non_subtitle_file_changes_no_state() {
 }
 
 #[test]
-fn attached_ass_is_listed_with_a_reason_but_neither_selected_nor_shown() {
+fn attached_ass_is_selected_and_shown_like_any_other_subtitle_file() {
     let drop_dir = tempfile::tempdir().expect("tempdir");
     let ass = drop_dir.path().join("styled.ass");
-    std::fs::write(&ass, "[Script Info]\n").expect("write");
+    std::fs::write(&ass, super::ass_sidecar::SAMPLE_ASS).expect("write");
     let mut owner = owner_with_config(&SubtitlesConfig::default());
     owner.begin_media(instance(1), SubtitleMediaSource::NotLocal);
 
     let outcome = owner.attach_file(&ass);
-    assert!(matches!(outcome, AttachOutcome::AddedButUnavailable(_)));
+    assert!(matches!(outcome, AttachOutcome::Attached(_)), "{outcome:?}");
+    settle(&mut owner);
     let view = owner.menu_view();
-    assert_eq!(
-        view.visibility,
-        SubtitleVisibility::Hidden,
-        "visibility untouched"
-    );
-    assert!(view.tracks.iter().all(|track| !track.is_selected));
+    assert_eq!(view.visibility, SubtitleVisibility::Shown);
+    assert!(view.tracks[0].is_selected);
     assert_eq!(
         view.tracks[0].availability,
-        SubtitleTrackAvailability::Unavailable(SubtitleUnavailableReason::FormatNotSupportedYet)
+        SubtitleTrackAvailability::Available
     );
-    assert_eq!(owner.take_enabled_preference_change(), None);
+    assert!(overlay_present(&mut owner, instance(1), 1_500));
 }
 
 #[test]

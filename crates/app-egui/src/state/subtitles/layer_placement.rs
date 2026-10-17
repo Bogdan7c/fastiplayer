@@ -16,12 +16,47 @@
 //! 5. Верх не выше области видео (верх важнее подъёма: слой не должен уйти за экран).
 //!
 //! Стиль по умолчанию без панели даёт сдвиг ровно `(0, 0)`: показ побитно прежний.
+//!
+//! # Слой ASS (решения владельца, субтитры, сессия 08)
+//! Расчёт выбирается явным [`LayerPlacementPolicy`]:
+//! - обычные субтитры (SRT/WebVTT) - пользовательское размещение с границей
+//!   [`LayerBounds::PictureAndBars`] (правила 1-5 выше, поведение не менялось);
+//! - ASS в режиме `whole_layer` - то же пользовательское размещение, но
+//!   [`LayerBounds::PictureOnly`]: слой не выходит за картинку по ОБЕИМ осям;
+//! - ASS в режиме `author` - [`LayerPlacementPolicy::AuthorPlaced`]: слой остаётся ровно там,
+//!   где его нарисовал автор (нулевой сдвиг, без подъёма над панелью и сдвига пользователя);
+//! - ASS в режиме `main_lines_avoid_controls` - [`LayerPlacementPolicy::LiftMainGroupOnly`]:
+//!   над панелью поднимается только основная группа (диалог), считает [`group_lift`];
+//!   `place_layer` для такого слоя возвращает нулевой сдвиг целого слоя.
 
 use render_core::{PictureRect, RenderViewport};
 use render_wgpu_shell::SubtitleLayerOffset;
 use subtitle_raster::CanvasRect;
 
 use super::controls_obstruction::BottomControlsObstruction;
+
+pub(super) mod group_lift;
+
+/// Где разрешено стоять слою, который двигает пользователь.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LayerBounds {
+    /// Слой остаётся в зажатой области видео: может стоять и на чёрной полосе (SRT/WebVTT).
+    PictureAndBars,
+    /// Слой остаётся строго внутри картинки видео по обеим осям (ASS, режим `whole_layer`).
+    PictureOnly,
+}
+
+/// Кто решает, где стоит слой.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LayerPlacementPolicy {
+    /// Слой двигает пользователь (позиция из стиля + подъём над панелью) в пределах `bounds`.
+    UserPlaced { bounds: LayerBounds },
+    /// Слой не двигается: стоит там, где его нарисовал автор (нулевой сдвиг).
+    AuthorPlaced,
+    /// Над панелью поднимается только основная группа (ASS-диалог), остальное стоит на месте;
+    /// сдвиг пользователя не применяется. Группы считает [`group_lift`], а не `place_layer`.
+    LiftMainGroupOnly,
+}
 
 /// Всё, что нужно для расчёта размещения одного кадра.
 #[derive(Debug, Clone, Copy)]
@@ -38,6 +73,8 @@ pub(super) struct LayerPlacementRequest {
     pub(super) vertical_offset_fraction: f32,
     /// Что закрывает низ видео в этот момент.
     pub(super) obstruction: BottomControlsObstruction,
+    /// Кто и в каких границах двигает слой.
+    pub(super) policy: LayerPlacementPolicy,
 }
 
 /// Прямоугольник слоя на экране после размещения, пиксели окна.
@@ -68,21 +105,18 @@ pub(super) fn place_layer(request: &LayerPlacementRequest) -> Option<LayerPlacem
     let picture = IntegerPicture::from_rect(request.picture_rect)?;
     // Стандартное положение слоя: холст лежит от округлённого угла картинки.
     let bounds = request.content_bounds;
-    let width = i64::from(bounds.width);
-    let height = i64::from(bounds.height);
     let default_left = picture.left + i64::from(bounds.x);
     let default_top = picture.top + i64::from(bounds.y);
 
-    let desired_dx = fraction_to_pixels(request.horizontal_offset_fraction, picture.width);
-    // Вверх по доле - это минус по экранной оси.
-    let desired_dy = -fraction_to_pixels(request.vertical_offset_fraction, picture.height);
-
-    let left = clamp_horizontally(default_left + desired_dx, width, &picture);
-    let mut top = clamp_vertically(default_top + desired_dy, height, request.viewport);
-
-    top = lift_above_controls(top, height, request.obstruction);
-    // Верх области видео важнее подъёма: слой не уходит за верхний край.
-    top = top.max(i64::from(request.viewport.y));
+    let (left, top) = match request.policy {
+        // Автор решил, где слой: ни пользователь, ни панель его не двигают.
+        LayerPlacementPolicy::AuthorPlaced => (default_left, default_top),
+        // Целый слой не двигается; подъём группы считает `group_lift` (см. владельца).
+        LayerPlacementPolicy::LiftMainGroupOnly => (default_left, default_top),
+        LayerPlacementPolicy::UserPlaced {
+            bounds: layer_bounds,
+        } => user_placed_corner(request, &picture, layer_bounds, default_left, default_top),
+    };
 
     let offset = SubtitleLayerOffset {
         x: (left - default_left) as f32,
@@ -95,6 +129,40 @@ pub(super) fn place_layer(request: &LayerPlacementRequest) -> Option<LayerPlacem
         height: bounds.height,
     };
     Some(LayerPlacement { offset, rect })
+}
+
+/// Левый верхний угол слоя, который двигает пользователь (сдвиг из стиля, затем подъём над
+/// панелью управления) в границах `bounds`.
+fn user_placed_corner(
+    request: &LayerPlacementRequest,
+    picture: &IntegerPicture,
+    bounds: LayerBounds,
+    default_left: i64,
+    default_top: i64,
+) -> (i64, i64) {
+    let width = i64::from(request.content_bounds.width);
+    let height = i64::from(request.content_bounds.height);
+    let desired_dx = fraction_to_pixels(request.horizontal_offset_fraction, picture.width);
+    // Вверх по доле - это минус по экранной оси.
+    let desired_dy = -fraction_to_pixels(request.vertical_offset_fraction, picture.height);
+
+    let left = clamp_horizontally(default_left + desired_dx, width, picture);
+    let desired_top = default_top + desired_dy;
+    // Верхняя граница, ниже которой слой не поднимается, и способ зажать вертикаль.
+    let (mut top, highest_top) = match bounds {
+        LayerBounds::PictureAndBars => (
+            clamp_vertically(desired_top, height, request.viewport),
+            i64::from(request.viewport.y),
+        ),
+        LayerBounds::PictureOnly => (
+            clamp_vertically_inside_picture(desired_top, height, picture),
+            picture.top,
+        ),
+    };
+
+    top = lift_above_controls(top, height, request.obstruction);
+    // Верх допустимой области важнее подъёма: слой не уходит за верхний край.
+    (left, top.max(highest_top))
 }
 
 /// Картинка видео в целых пикселях: угол и размер совпадают с тем, что получает рендер
@@ -147,6 +215,18 @@ fn clamp_vertically(desired_top: i64, layer_height: i64, viewport: RenderViewpor
     let lowest_top = viewport_top + i64::from(viewport.height) - layer_height;
     // Слой выше области: верх прижимается к верху области (нижняя граница `max` не опасна).
     desired_top.min(lowest_top).max(viewport_top)
+}
+
+/// Верхний край слоя строго внутри картинки; слой выше картинки центрируется (как по горизонтали).
+fn clamp_vertically_inside_picture(
+    desired_top: i64,
+    layer_height: i64,
+    picture: &IntegerPicture,
+) -> i64 {
+    if layer_height >= picture.height {
+        return picture.top + (picture.height - layer_height).div_euclid(2);
+    }
+    desired_top.clamp(picture.top, picture.top + picture.height - layer_height)
 }
 
 /// Поднимает слой над панелью управления, только если он ей мешает.

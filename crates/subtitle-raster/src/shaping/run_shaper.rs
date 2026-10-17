@@ -37,6 +37,7 @@ use crate::fixed_point::Vector26;
 use crate::glyph_info::{PlacedGlyph, TextCluster};
 use crate::glyph_render::{FaceScale, HintedAdvances};
 use crate::outline::round_ties_even_to_i32;
+use crate::source_text::KerningMode;
 
 /// Функции шрифта для `harfrust`, повторяющие подмену метрик в libass.
 ///
@@ -84,22 +85,28 @@ impl FontFuncs for LibassFontFuncs<'_> {
 
 /// Набор возможностей OpenType участка (libass: `init_features` + `set_run_features`).
 ///
-/// Кернинг по умолчанию выключен (`Kerning: no` у дорожки), лигатуры включены, вертикальные
-/// замены (`vert`, `vkna`) выключены — режим `@шрифт` не поддерживается.
-fn run_features() -> [Feature; 5] {
+/// Кернинг по умолчанию выключен (`Kerning: no` у дорожки, `ass_shaper_set_kerning`),
+/// лигатуры включены, но выключаются у участка с межбуквенным интервалом (`\fsp` != 0:
+/// «disable ligatures if horizontal spacing is non-standard»), вертикальные замены (`vert`,
+/// `vkna`) выключены — режим `@шрифт` не поддерживается.
+fn run_features(kerning: KerningMode, has_letter_spacing: bool) -> [Feature; 5] {
+    let kern_value = u32::from(kerning == KerningMode::Enabled);
+    let ligature_value = u32::from(!has_letter_spacing);
     [
         Feature::new(Tag::new(b"vert"), 0, ..),
         Feature::new(Tag::new(b"vkna"), 0, ..),
-        Feature::new(Tag::new(b"kern"), 0, ..),
-        Feature::new(Tag::new(b"liga"), 1, ..),
-        Feature::new(Tag::new(b"clig"), 1, ..),
+        Feature::new(Tag::new(b"kern"), kern_value, ..),
+        Feature::new(Tag::new(b"liga"), ligature_value, ..),
+        Feature::new(Tag::new(b"clig"), ligature_value, ..),
     ]
 }
 
 /// Шейпит участок `run` и раскладывает глифы по кластерам.
 ///
-/// `font_scale` — множитель `font_size / 256` (libass: `info->scale_x`), переводящий значения
-/// шейпера (1/64 пикселя при размере 256) в 26.6 пикселей кадра.
+/// Множители `scale_x`, `scale_y` (libass: `info->scale_x/scale_y`: `font_size / 256` с учётом
+/// `\fscx`/`\fscy`), переводящие значения шейпера (1/64 пикселя при размере 256) в 26.6
+/// пикселей кадра, берутся у первого кластера участка: участок единого вида
+/// (`split_style_runs`) имеет один размер и масштаб. `kerning` — настройка дорожки.
 ///
 /// Перед вызовом у всех кластеров реплики должно быть `skip = true`: кластер, которому
 /// шейпер не вернул ни одного глифа (символ поглощён лигатурой), так и остаётся пропущенным.
@@ -107,11 +114,13 @@ pub(super) fn shape_run(
     faces: &FaceCache,
     clusters: &mut [TextCluster],
     run: std::ops::Range<usize>,
-    font_scale: f64,
+    kerning: KerningMode,
 ) -> Result<(), FaceLoadError> {
     let Some(first) = clusters.get(run.start) else {
         return Ok(());
     };
+    let glyph_scale = first.glyph_scale;
+    let has_letter_spacing = first.has_letter_spacing;
     let face = first.face;
     let script = first.script;
     let level = first.bidi_level;
@@ -133,7 +142,7 @@ pub(super) fn shape_run(
         buffer.set_language(language);
     }
 
-    let features = run_features();
+    let features = run_features(kerning, has_letter_spacing);
     let mut funcs = LibassFontFuncs {
         scale: *entry.scale(),
         advances: entry.advances(),
@@ -152,12 +161,12 @@ pub(super) fn shape_run(
         };
         let glyph = PlacedGlyph {
             advance: Vector26 {
-                x: round_ties_even_to_i32(f64::from(position.x_advance) * font_scale),
-                y: round_ties_even_to_i32(-f64::from(position.y_advance) * font_scale),
+                x: round_ties_even_to_i32(f64::from(position.x_advance) * glyph_scale.horizontal),
+                y: round_ties_even_to_i32(-f64::from(position.y_advance) * glyph_scale.vertical),
             },
             offset: Vector26 {
-                x: round_ties_even_to_i32(f64::from(position.x_offset) * font_scale),
-                y: round_ties_even_to_i32(-f64::from(position.y_offset) * font_scale),
+                x: round_ties_even_to_i32(f64::from(position.x_offset) * glyph_scale.horizontal),
+                y: round_ties_even_to_i32(-f64::from(position.y_offset) * glyph_scale.vertical),
             },
             ..PlacedGlyph::unshaped(GlyphId::new(info.glyph_id), face)
         };
