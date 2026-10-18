@@ -20,6 +20,11 @@ pub(super) struct ComponentLeadProgress {
     pub(super) bootstrap_packets: usize,
     /// Суммарные bootstrap payload bytes до первого comparable peer timestamp.
     pub(super) bootstrap_bytes: usize,
+    /// Component уже положил хотя бы один packet в pending slot с последнего reset-а.
+    ///
+    /// Отличает стартовый replay `[TracksChanged, Packet(anchor)]` (ещё ничего не
+    /// получено) от настоящей смены списка посреди потока.
+    pub(super) has_received_packet: bool,
 }
 
 impl CompositeAvDemuxer {
@@ -40,10 +45,28 @@ impl CompositeAvDemuxer {
             .into());
         }
         match component {
-            CompositeComponent::Video => self.pending_video_packet = Some(packet),
-            CompositeComponent::Audio => self.pending_audio_packet = Some(packet),
+            CompositeComponent::Video => {
+                self.pending_video_packet = Some(packet);
+                self.video_lead_progress.has_received_packet = true;
+            }
+            CompositeComponent::Audio => {
+                self.pending_audio_packet = Some(packet);
+                self.audio_lead_progress.has_received_packet = true;
+            }
         }
         Ok(())
+    }
+
+    /// `true`, если component ещё не отдал packet с начала потока/последнего seek-а.
+    ///
+    /// Только у такого component-а идентичный `TracksChanged` — безвредный replay
+    /// стартового состояния, который не должен сбрасывать peer-а и декодеры.
+    pub(super) fn is_fresh_replay(&self, component: CompositeComponent) -> bool {
+        let progress = match component {
+            CompositeComponent::Video => &self.video_lead_progress,
+            CompositeComponent::Audio => &self.audio_lead_progress,
+        };
+        !progress.has_received_packet
     }
 
     /// Проверяет, может ли ready side продвинуться без required lagging peer-а.

@@ -217,3 +217,149 @@ fn decode_point_seek_bootstraps_audio_once_then_restores_normal_interleave() {
         DemuxReadEvent::EndOfStream
     );
 }
+
+/// Inner replay `[TracksChanged, Packet]` — это то, что выдаёт native DASH после anchor-scan.
+fn component_replay(tracks: Vec<TrackInfo>, packets: Vec<Packet>) -> VecDeque<DemuxReadEvent> {
+    let mut events = VecDeque::from([DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(
+        tracks,
+        Some(Duration::from_secs(10)),
+    ))]);
+    events.extend(packets.into_iter().map(DemuxReadEvent::Packet));
+    events
+}
+
+/// Читает composite до EOS и возвращает компактную трассу `(kind, pts_ms, marker)`/`tracks`.
+fn drain_trace(composite: &mut CompositeAvDemuxer) -> Vec<String> {
+    let mut trace = Vec::new();
+    loop {
+        match composite.next_event().expect("composite event") {
+            DemuxReadEvent::Packet(packet) => trace.push(format!(
+                "{:?}@{}:{}",
+                packet.kind,
+                packet.pts.as_millis(),
+                String::from_utf8_lossy(&packet.data)
+            )),
+            DemuxReadEvent::TracksChanged(update) => {
+                trace.push(format!("tracks:{}", update.tracks[0].codec_id));
+            }
+            DemuxReadEvent::EndOfStream => return trace,
+            other => panic!("unexpected event {other:?}"),
+        }
+    }
+}
+
+/// Регрессия: идентичные стартовые replay-и обоих component-ов не стирают первый keyframe.
+/// События `TracksChanged` публикуются как раньше (контракт replacement), но до packet-ов.
+#[test]
+fn identical_start_replays_keep_first_video_keyframe() {
+    let video_tracks = vec![track(11, TrackKind::Video, "V_H264", 10_000)];
+    let audio_tracks = vec![track(22, TrackKind::Audio, "A_AAC", 10_000)];
+    let (mut composite, _, _) = composite(
+        video_tracks.clone(),
+        audio_tracks.clone(),
+        component_replay(
+            video_tracks,
+            vec![
+                packet(11, TrackKind::Video, 0, b"key"),
+                packet(11, TrackKind::Video, 40, b"delta"),
+            ],
+        ),
+        component_replay(audio_tracks, vec![packet(22, TrackKind::Audio, 20, b"aac")]),
+        SeekBehavior::Success(MediaTime::ZERO),
+        SeekBehavior::Success(MediaTime::ZERO),
+    );
+
+    // Оба replay публикуются до packet-ов, затем первым идёт именно video keyframe pts 0
+    // и дальше всё по порядку: ни один packet не потерян.
+    assert_eq!(
+        drain_trace(&mut composite),
+        [
+            "tracks:V_H264",
+            "tracks:V_H264",
+            "Video@0:key",
+            "Audio@20:aac",
+            "Video@40:delta"
+        ]
+    );
+}
+
+/// Контроль: реальная смена списка у audio-replay по-прежнему сбрасывает pending и публикуется.
+#[test]
+fn real_audio_track_change_still_resets_pending_video_and_publishes_event() {
+    let video_tracks = vec![track(11, TrackKind::Video, "V_H264", 10_000)];
+    let audio_tracks = vec![track(22, TrackKind::Audio, "A_AAC", 10_000)];
+    let changed_audio = vec![track(22, TrackKind::Audio, "A_OPUS", 10_000)];
+    let (mut composite, _, _) = composite(
+        video_tracks.clone(),
+        audio_tracks,
+        component_replay(
+            video_tracks,
+            vec![
+                packet(11, TrackKind::Video, 0, b"key"),
+                packet(11, TrackKind::Video, 40, b"delta"),
+            ],
+        ),
+        component_replay(
+            changed_audio,
+            vec![packet(22, TrackKind::Audio, 20, b"opus")],
+        ),
+        SeekBehavior::Success(MediaTime::ZERO),
+        SeekBehavior::Success(MediaTime::ZERO),
+    );
+
+    // Первым публикуется идентичный video replay, затем реальная смена audio: она стирает
+    // pending video keyframe как раньше (в отличие от идентичного replay).
+    let identical = composite
+        .next_event()
+        .expect("identical video replay event");
+    assert!(matches!(&identical, DemuxReadEvent::TracksChanged(update)
+        if update.tracks[1].codec_id == "A_AAC"));
+    let changed = composite.next_event().expect("real change event");
+    let DemuxReadEvent::TracksChanged(update) = changed else {
+        panic!("expected TracksChanged, got {changed:?}");
+    };
+    assert_eq!(update.tracks[1].codec_id, "A_OPUS");
+    assert_eq!(
+        drain_trace(&mut composite),
+        ["Audio@20:opus", "Video@40:delta"]
+    );
+}
+
+/// Контроль: идентичный TracksChanged ПОСЛЕ packet-ов (discontinuity) всё ещё сбрасывает декодер.
+#[test]
+fn identical_mid_stream_tracks_changed_is_still_published_and_resets_pending() {
+    let video_tracks = vec![track(11, TrackKind::Video, "V_H264", 10_000)];
+    let audio_tracks = vec![track(22, TrackKind::Audio, "A_AAC", 10_000)];
+    let video_events = VecDeque::from([
+        DemuxReadEvent::Packet(packet(11, TrackKind::Video, 0, b"key")),
+        DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(
+            video_tracks.clone(),
+            Some(Duration::from_secs(10)),
+        )),
+        DemuxReadEvent::Packet(packet(11, TrackKind::Video, 40, b"after-discontinuity")),
+    ]);
+    let audio_events = VecDeque::from([DemuxReadEvent::Packet(packet(
+        22,
+        TrackKind::Audio,
+        20,
+        b"aac",
+    ))]);
+    let (mut composite, _, _) = composite(
+        video_tracks,
+        audio_tracks,
+        video_events,
+        audio_events,
+        SeekBehavior::Success(MediaTime::ZERO),
+        SeekBehavior::Success(MediaTime::ZERO),
+    );
+
+    // Прежняя семантика сохранена: сброс стирает и pending audio (Audio@20 пропадает).
+    assert_eq!(
+        drain_trace(&mut composite),
+        [
+            "Video@0:key",
+            "tracks:V_H264",
+            "Video@40:after-discontinuity"
+        ]
+    );
+}

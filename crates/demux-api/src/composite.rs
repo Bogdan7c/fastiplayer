@@ -372,7 +372,9 @@ impl CompositeAvDemuxer {
                 DemuxReadEvent::TemporarilyUnavailable(hint) => {
                     return Ok(PendingFillOutcome::TemporarilyUnavailable(hint));
                 }
-                DemuxReadEvent::TracksChanged(_) => return self.refresh_tracks_after_inner_reset(),
+                DemuxReadEvent::TracksChanged(_) => {
+                    return self.refresh_tracks_after_inner_reset(CompositeComponent::Video);
+                }
                 DemuxReadEvent::MediaMetadataChanged(_) => {
                     return Ok(self.refresh_media_metadata());
                 }
@@ -411,7 +413,9 @@ impl CompositeAvDemuxer {
                 DemuxReadEvent::TemporarilyUnavailable(hint) => {
                     return Ok(PendingFillOutcome::TemporarilyUnavailable(hint));
                 }
-                DemuxReadEvent::TracksChanged(_) => return self.refresh_tracks_after_inner_reset(),
+                DemuxReadEvent::TracksChanged(_) => {
+                    return self.refresh_tracks_after_inner_reset(CompositeComponent::Audio);
+                }
                 DemuxReadEvent::MediaMetadataChanged(_) => {
                     return Ok(self.refresh_media_metadata());
                 }
@@ -420,7 +424,25 @@ impl CompositeAvDemuxer {
     }
 
     /// Revalidates explicit inner IDs и сохраняет stable public remap.
-    fn refresh_tracks_after_inner_reset(&mut self) -> Result<PendingFillOutcome> {
+    ///
+    /// Наружный `TracksChanged` публикуется ВСЕГДА, как и раньше: его считают
+    /// владельцы replacement/seek-контрактов (например, HLS публикует ровно одно
+    /// событие после committed A/V replacement).
+    ///
+    /// Отличается только судьба уже сохранённых packet-ов. Если список идентичен
+    /// опубликованному (`publication_unchanged`) и источник события — «свежий»
+    /// component, который ещё не отдал ни одного packet-а (`is_fresh_replay`),
+    /// то это стартовый replay `[TracksChanged, Packet(anchor)]`, который native
+    /// DASH component выдаёт после `prime_decode_anchor`. Такой replay от второго
+    /// component-а НЕ должен стирать pending packet первого: раньше audio-replay
+    /// выбрасывал первый keyframe видео, декодер до следующего keyframe отбрасывал
+    /// delta-кадры, и при длинном GOP поток навсегда застревал в Buffering.
+    /// Любое реальное изменение, а также `TracksChanged` после начала выдачи
+    /// packet-ов (например, discontinuity MPEG-TS) сбрасывают состояние как раньше.
+    fn refresh_tracks_after_inner_reset(
+        &mut self,
+        source_component: CompositeComponent,
+    ) -> Result<PendingFillOutcome> {
         let video_track = selected_track(
             self.video_demuxer.as_ref(),
             CompositeComponent::Video,
@@ -433,23 +455,34 @@ impl CompositeAvDemuxer {
             self.selection.audio_track_id,
             TrackKind::Audio,
         )?;
-        self.duration = composite_duration(
+        let refreshed_duration = composite_duration(
             &video_track,
             &audio_track,
             self.video_demuxer.duration(),
             self.audio_demuxer.duration(),
         );
-        self.tracks = remapped_tracks(
+        let refreshed_tracks = remapped_tracks(
             video_track,
             audio_track,
             self.public_video_track_id,
             self.public_audio_track_id,
         );
-        self.pending_video_packet = None;
-        self.pending_audio_packet = None;
-        self.post_seek_audio_bootstrap = PostSeekAudioBootstrap::Inactive;
-        self.video_lead_progress = ComponentLeadProgress::default();
-        self.audio_lead_progress = ComponentLeadProgress::default();
+        // «Идентично» = ровно то, что несёт наружный `DemuxTrackListUpdate`:
+        // весь список `TrackInfo` (id, kind, codec, codec_private, time_base,
+        // длительность, параметры аудио/видео, метки) и длительность.
+        let publication_unchanged =
+            refreshed_tracks == self.tracks && refreshed_duration == self.duration;
+        let keeps_peer_pending_packets =
+            publication_unchanged && self.is_fresh_replay(source_component);
+        self.duration = refreshed_duration;
+        self.tracks = refreshed_tracks;
+        if !keeps_peer_pending_packets {
+            self.pending_video_packet = None;
+            self.pending_audio_packet = None;
+            self.post_seek_audio_bootstrap = PostSeekAudioBootstrap::Inactive;
+            self.video_lead_progress = ComponentLeadProgress::default();
+            self.audio_lead_progress = ComponentLeadProgress::default();
+        }
         Ok(PendingFillOutcome::TracksChanged(
             DemuxTrackListUpdate::new(self.tracks.clone(), self.duration),
         ))

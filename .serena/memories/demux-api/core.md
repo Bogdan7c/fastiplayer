@@ -1,3 +1,9 @@
+## Composite: стартовый replay не стирает pending keyframe (2026-10-18)
+
+- Баг: native DASH component после `prime_decode_anchor` всегда начинает поток `[TracksChanged, Packet(anchor)]`. `CompositeAvDemuxer::refresh_tracks_after_inner_reset` на replay аудио обнулял `pending_video_packet`, и первый keyframe видео терялся; декодер отбрасывает delta до следующего keyframe, при GOP 6 с поток вечно в Buffering.
+- Фикс: наружный `TracksChanged` публикуется всегда (на количество событий опираются HLS replacement-тесты: `receipted_manifest_seek::separate_av_cancellation` ждёт ровно одно), но pending packets и lead accounting сохраняются, если список идентичен опубликованному (весь `Vec<TrackInfo>` + duration) И component-источник «свежий» (`ComponentLeadProgress::has_received_packet == false`, `is_fresh_replay` в `readiness.rs`). Реальная смена или `TracksChanged` после начала выдачи packet-ов (discontinuity MPEG-TS) сбрасывает как раньше.
+- Тесты: `composite/tests/lifecycle.rs` (3 сценария), e2e `media-source-open/tests/dash_separate_av_long_gop.rs` (+ фикстуры `tests/fixtures/dash-long-gop/`, `generate.sh`): первый packet — keyframe pts 0.
+
 ## Worker-authoritative receipted Demuxer seek (2026-08-24)
 
 - `media_core::Demuxer::seek_with_receipted_request` is an additive default method that delegates ordinary request seek for legacy implementations.
