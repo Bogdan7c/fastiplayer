@@ -28,4 +28,14 @@ pub enum SubtitleLoadError {
     /// Файл заявлен как WebVTT, но не начинается с сигнатуры `WEBVTT`.
     #[error("file does not start with the WEBVTT signature")]
     NotWebVtt,
+    /// srv3: файл не является корректным XML (или использует запрещённые конструкции:
+    /// DOCTYPE, пользовательские сущности). Содержимое файла в сообщение не попадает.
+    #[error("srv3 file is not well-formed XML")]
+    MalformedSrv3,
+    /// srv3: XML корректен, но корень не `timedtext` формата 3 (например, srv1/srv2).
+    #[error("file is not a srv3 (timedtext format 3) document")]
+    NotSrv3,
+    /// srv3: структура XML превысила лимиты (глубина, число токенов, атрибутов или текста).
+    #[error("srv3 file exceeds the XML structure limits")]
+    Srv3TooComplex,
 }

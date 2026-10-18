@@ -17,6 +17,7 @@ mod load;
 mod report;
 mod sniff;
 mod srt;
+mod srv3;
 mod webvtt;
 
 pub use ass::{

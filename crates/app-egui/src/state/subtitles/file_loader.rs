@@ -11,7 +11,9 @@ use std::io::Read;
 use std::path::Path;
 
 use subtitle_core::{SubtitleLanguage, SubtitleTimeline};
-use subtitle_formats::{LegacyEncodingHint, TextSubtitleFormat, load_text_subtitle};
+use subtitle_formats::{
+    LegacyEncodingHint, SubtitleParseLimits, TextSubtitleFormat, load_text_subtitle,
+};
 use subtitle_sidecar::{SidecarSubtitleCandidate, SidecarSubtitleFormat};
 
 use super::limits::LoadLimits;
@@ -60,18 +62,15 @@ pub(super) fn load_candidate_timeline(
     if is_cancelled() {
         return Err(FileLoadError::Cancelled);
     }
-    let document = load_text_subtitle(
+    let timeline = parse_text_timeline(
         &bytes,
         text_format,
         encoding_hint_for(candidate.language.as_ref()),
         &limits.parse,
     )
-    .map_err(|error| FileLoadError::Failed(SubtitleLoadFailure::ParseFailed(error)))?
-    .into_document();
+    .map_err(FileLoadError::Failed)?;
     // Освобождаем сырые байты до остальной работы.
     drop(bytes);
-    let (events, _regions, _report) = document.into_parts();
-    let (timeline, _build_report) = SubtitleTimeline::from_events(events);
 
     Ok(LoadedSidecarTrack {
         timeline,
@@ -79,6 +78,22 @@ pub(super) fn load_candidate_timeline(
         format: candidate.format,
         file_name: candidate.path.file_name().map(OsString::from),
     })
+}
+
+/// Разбирает байты текстового формата в таймлайн. Общий шаг файла и скачанной web-дорожки:
+/// ошибки разбора превращаются в типизированную причину, а не глотаются.
+pub(super) fn parse_text_timeline(
+    bytes: &[u8],
+    text_format: TextSubtitleFormat,
+    encoding_hint: LegacyEncodingHint,
+    parse_limits: &SubtitleParseLimits,
+) -> Result<SubtitleTimeline, SubtitleLoadFailure> {
+    let document = load_text_subtitle(bytes, text_format, encoding_hint, parse_limits)
+        .map_err(SubtitleLoadFailure::ParseFailed)?
+        .into_document();
+    let (events, _regions, _report) = document.into_parts();
+    let (timeline, _build_report) = SubtitleTimeline::from_events(events);
+    Ok(timeline)
 }
 
 /// Текстовый формат парсера для формата файла; `None` — показать нельзя (будущие форматы без разбора).

@@ -252,14 +252,14 @@ fn oversized_v1_file_is_corrupt_not_protected() {
 fn newer_schema_blocks_saving_and_the_file_stays_untouched() {
     let directory = tempfile::tempdir().expect("dir");
     let store = store_in(&directory);
-    let future = r#"{"schema_version":2,"entries":[],"future_secret":"untouched"}"#;
+    let future = r#"{"schema_version":3,"entries":[],"future_secret":"untouched"}"#;
     write_raw(&store, future);
 
     let inspection = store.inspect(capacity(10));
 
     assert!(matches!(
         inspection,
-        TrackMemoryInspection::NewerSchemaSaveBlocked { schema_version: 2 }
+        TrackMemoryInspection::NewerSchemaSaveBlocked { schema_version: 3 }
     ));
     assert!(!inspection.allows_saving_immediately());
     assert_eq!(

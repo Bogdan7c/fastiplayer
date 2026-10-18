@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use player_core::MediaInstanceId;
 use playlist_state::{
-    RememberOutcome, RememberedSubtitleChoice, RememberedTrackHint, SubtitleSyncOffset,
-    TouchOutcome, TrackMemory, TrackMemoryCapacity, TrackMemorySaveRevision,
+    RememberOutcome, RememberedSubtitleChoice, RememberedTrackHint, RememberedWebAudioLanguage,
+    SubtitleSyncOffset, TouchOutcome, TrackMemory, TrackMemoryCapacity, TrackMemorySaveRevision,
     TrackMemoryWriteReport, TrackMemoryWriteSnapshot, TrackMemoryWriter,
     TrackMemoryWriterShutdownOutcome, VideoKey,
 };
@@ -35,6 +35,8 @@ pub(crate) struct RememberedForVideo {
     pub(crate) subtitles: Option<RememberedSubtitleChoice>,
     /// Запомненный сдвиг субтитров.
     pub(crate) sync_offset: SubtitleSyncOffset,
+    /// Запомненный язык звука web-видео (дубляж либо оригинал).
+    pub(crate) web_audio_language: Option<RememberedWebAudioLanguage>,
 }
 
 impl RememberedForVideo {
@@ -44,6 +46,7 @@ impl RememberedForVideo {
             audio: None,
             subtitles: None,
             sync_offset: SubtitleSyncOffset::ZERO,
+            web_audio_language: None,
         }
     }
 }
@@ -162,6 +165,7 @@ impl TrackMemoryOwner {
             audio: entry.audio().cloned(),
             subtitles: entry.subtitles().cloned(),
             sync_offset: entry.subtitle_sync_offset(),
+            web_audio_language: entry.web_audio_language().cloned(),
         }
     }
 
@@ -176,6 +180,21 @@ impl TrackMemoryOwner {
             return RecordOutcome::NotApplicable;
         };
         let outcome = self.memory.remember_audio(current.key, audio);
+        self.after_remember(outcome, now)
+    }
+
+    /// Запоминает язык звука web-видео `key`, выбранный пользователем.
+    ///
+    /// Ключ передаётся явно, а не берётся из «текущего media»: запись делается в момент, когда
+    /// смена языка только что установилась и принадлежит тому же видео, а привязка к
+    /// экземпляру media (`MediaInstanceId`) уже сменилась вместе с переоткрытием.
+    pub(crate) fn remember_web_audio_language(
+        &mut self,
+        key: VideoKey,
+        language: RememberedWebAudioLanguage,
+        now: Instant,
+    ) -> RecordOutcome {
+        let outcome = self.memory.remember_web_audio_language(key, language);
         self.after_remember(outcome, now)
     }
 

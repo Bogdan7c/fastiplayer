@@ -13,6 +13,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
+use source_core::CancellationToken;
+
 use crate::app_wake::{AppWakePort, OwnerMailboxReceiver, WakeDelivery, owner_mailbox};
 
 use super::sidecar_job::{
@@ -39,6 +41,9 @@ pub(super) struct SidecarJob {
     mailbox_receiver: OwnerMailboxReceiver<(), SidecarJobOutcome>,
     join_handle: Option<JoinHandle<()>>,
     cancellation_requested: Arc<AtomicBool>,
+    /// Токен блокирующей сетевой части задачи (у web-загрузки): без него `cancel`/`Drop`
+    /// ждали бы конца HTTP-запроса. `None` у задач без сети.
+    network_cancellation: Option<CancellationToken>,
 }
 
 impl SidecarJob {
@@ -49,6 +54,7 @@ impl SidecarJob {
     ) -> Result<Self, SubtitleLoadFailure> {
         let (mailbox_publisher, mailbox_receiver) = owner_mailbox(wake_port);
         let cancellation_requested = Arc::new(AtomicBool::new(false));
+        let network_cancellation = request.task.cancellation_token().cloned();
         let worker_cancellation = Arc::clone(&cancellation_requested);
         let join_handle = thread::Builder::new()
             .name(SIDECAR_JOB_THREAD_NAME.to_owned())
@@ -70,12 +76,16 @@ impl SidecarJob {
             mailbox_receiver,
             join_handle: Some(join_handle),
             cancellation_requested,
+            network_cancellation,
         })
     }
 
     /// Просит задачу остановиться (результат будет выброшен владельцем).
     pub(super) fn cancel(&self) {
         self.cancellation_requested.store(true, Ordering::Release);
+        if let Some(network_cancellation) = &self.network_cancellation {
+            network_cancellation.cancel();
+        }
     }
 
     /// Неблокирующе забирает результат. Поток, умерший без результата (паника), — `WorkerLost`.

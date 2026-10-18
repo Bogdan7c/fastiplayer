@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 use super::hint::RememberedTrackHint;
 use super::key::VideoKey;
+use super::web_audio_language::RememberedWebAudioLanguage;
+use super::web_choice::RememberedWebSubtitle;
 
 /// Жёсткий потолок числа запомненных видео. Выше конфиг не пускает; файл с большим числом
 /// записей считается повреждённым.
@@ -190,6 +192,8 @@ pub enum RememberedSubtitleChoice {
     Embedded(RememberedTrackHint),
     /// Внешний файл.
     File(RememberedFilePath),
+    /// Web-дорожка (язык + вид); схема файла 2 и новее.
+    Web(RememberedWebSubtitle),
 }
 
 /// Метка свежести записи: чем больше, тем позже запись использовалась.
@@ -219,6 +223,7 @@ pub struct TrackMemoryEntry {
     audio: Option<RememberedTrackHint>,
     subtitles: Option<RememberedSubtitleChoice>,
     subtitle_sync_offset: SubtitleSyncOffset,
+    web_audio_language: Option<RememberedWebAudioLanguage>,
 }
 
 impl TrackMemoryEntry {
@@ -246,18 +251,26 @@ impl TrackMemoryEntry {
         self.subtitle_sync_offset
     }
 
+    /// Язык звука web-видео, выбранный пользователем; `None` — не выбирал.
+    #[must_use]
+    pub fn web_audio_language(&self) -> Option<&RememberedWebAudioLanguage> {
+        self.web_audio_language.as_ref()
+    }
+
     /// Запись из файла (метка приходит оттуда же).
     pub(super) fn restored(
         last_used: RecencyStamp,
         audio: Option<RememberedTrackHint>,
         subtitles: Option<RememberedSubtitleChoice>,
         subtitle_sync_offset: SubtitleSyncOffset,
+        web_audio_language: Option<RememberedWebAudioLanguage>,
     ) -> Self {
         Self {
             last_used,
             audio,
             subtitles,
             subtitle_sync_offset,
+            web_audio_language,
         }
     }
 }
@@ -351,6 +364,22 @@ impl TrackMemory {
                 return false;
             }
             entry.audio = Some(audio);
+            true
+        })
+    }
+
+    /// Запоминает язык звука web-видео, выбранный пользователем (оригинал тоже: так возврат
+    /// на оригинал перекрывает ранее запомненный дубляж).
+    pub fn remember_web_audio_language(
+        &mut self,
+        key: VideoKey,
+        language: RememberedWebAudioLanguage,
+    ) -> RememberOutcome {
+        self.update_entry(key, |entry| {
+            if entry.web_audio_language.as_ref() == Some(&language) {
+                return false;
+            }
+            entry.web_audio_language = Some(language);
             true
         })
     }
@@ -465,6 +494,7 @@ impl TrackMemory {
             audio: None,
             subtitles: None,
             subtitle_sync_offset: SubtitleSyncOffset::ZERO,
+            web_audio_language: None,
         });
         if !apply_change(entry) {
             // Сюда попадает только существующая запись: для новой пустой записи любое

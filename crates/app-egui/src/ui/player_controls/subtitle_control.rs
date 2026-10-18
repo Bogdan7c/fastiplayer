@@ -17,6 +17,7 @@ mod layout;
 mod menu;
 #[cfg(test)]
 mod tests;
+mod translation_menu;
 
 use egui::{Id, Ui};
 use subtitle_core::SubtitleTrackId;

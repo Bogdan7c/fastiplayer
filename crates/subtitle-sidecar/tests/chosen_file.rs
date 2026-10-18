@@ -105,3 +105,15 @@ fn unknown_three_letter_words_are_not_languages_without_a_video_to_compare_with(
     assert_eq!(language_of("Movie.tlh.srt"), None);
     assert_eq!(language_of("Movie.eng.srt"), Some("eng".to_owned()));
 }
+
+#[test]
+fn full_language_table_does_not_turn_filename_words_into_languages() {
+    // `ton` (Tongan), `man` и `te` (Telugu) есть в полной таблице имён, но в имени файла это
+    // слова/обрывки названий: язык из имени берётся только из набора частых языков.
+    assert_eq!(language_of("Movie.ton.srt"), None);
+    assert_eq!(language_of("Iron_Man_Ton.srt"), None);
+    assert_eq!(language_of("Movie.te.srt"), None);
+    // Частые языки и их устаревший синоним по-прежнему распознаются.
+    assert_eq!(language_of("Movie.rus.srt"), Some("rus".to_owned()));
+    assert_eq!(language_of("Movie.iw.srt"), Some("iw".to_owned()));
+}

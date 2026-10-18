@@ -146,7 +146,8 @@ fn one_track_view() -> AudioTrackMenuView {
     snapshot.tracks = vec![player_core::TrackSummarySnapshot {
         id: match two.tracks()[0].target {
             crate::state::AudioTrackMenuTarget::EmbeddedTrack(track_id) => track_id,
-            crate::state::AudioTrackMenuTarget::WebAudioVersion(_) => {
+            crate::state::AudioTrackMenuTarget::WebAudioVersion(_)
+            | crate::state::AudioTrackMenuTarget::WebAudioLanguage(_) => {
                 panic!("two_track_view contains only embedded tracks")
             }
         },
@@ -304,4 +305,30 @@ fn bottom_panel_shows_the_audio_button_only_for_two_or_more_tracks() {
     assert!(note.x1 < fullscreen.x0, "audio is left of Fullscreen");
 
     assert!(!panel_labels(&one_track_view()).contains_key("Audio tracks"));
+}
+
+#[test]
+fn clicking_a_language_row_publishes_the_language_switch_with_its_action() {
+    use media_source_open::web_media_open::audio_languages::WebAudioLanguageAction;
+    let generation = crate::web_media_stream_model::WebMediaStreamGeneration::for_test(3, 1);
+    let original = WebAudioLanguageAction::for_test(generation, 0);
+    let russian = WebAudioLanguageAction::for_test(generation, 1);
+    let view = AudioTrackMenuView::for_web_languages_test(&[
+        (original, "English (original)", true),
+        (russian, "Russian", false),
+    ]);
+    let (note, _) = centers(FULL_WINDOW);
+    let mut scene = Scene::new(FULL_WINDOW);
+    scene.settle(&view);
+    scene.left_click(note, &view);
+    scene.settle(&view);
+
+    let actions = scene.left_click(scene.center_of("Russian"), &view);
+
+    assert_eq!(
+        actions,
+        vec![ControlAction::AudioTracks(
+            AudioTrackControlAction::SwitchWebAudioLanguage(russian)
+        )]
+    );
 }

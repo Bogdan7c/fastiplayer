@@ -25,6 +25,7 @@ use super::menu_view::{
     SubtitleFileOrigin, SubtitleTrackAvailability, SubtitleTrackLabel, SubtitleUnavailableReason,
 };
 use super::sidecar_job::SubtitleLoadFailure;
+use super::web_track::WebTrackDescription;
 
 /// Описание дорожки: то, что известно без чтения содержимого.
 ///
@@ -36,6 +37,8 @@ pub(super) enum TrackDescription {
     Sidecar(SidecarSubtitleCandidate),
     /// Дорожка внутри контейнера видео.
     Embedded(EmbeddedTrackDescription),
+    /// Дорожка web-видео: скачивается по требованию, файла на диске нет.
+    Web(WebTrackDescription),
 }
 
 impl TrackDescription {
@@ -43,7 +46,15 @@ impl TrackDescription {
     pub(super) fn sidecar_candidate(&self) -> Option<&SidecarSubtitleCandidate> {
         match self {
             Self::Sidecar(candidate) => Some(candidate),
-            Self::Embedded(_) => None,
+            Self::Embedded(_) | Self::Web(_) => None,
+        }
+    }
+
+    /// Описание web-дорожки; у остальных его нет.
+    pub(super) fn web(&self) -> Option<&WebTrackDescription> {
+        match self {
+            Self::Web(description) => Some(description),
+            Self::Sidecar(_) | Self::Embedded(_) => None,
         }
     }
 
@@ -51,7 +62,7 @@ impl TrackDescription {
     pub(super) fn embedded(&self) -> Option<&EmbeddedTrackDescription> {
         match self {
             Self::Embedded(description) => Some(description),
-            Self::Sidecar(_) => None,
+            Self::Sidecar(_) | Self::Web(_) => None,
         }
     }
 
@@ -65,6 +76,7 @@ impl TrackDescription {
                 | SidecarLocation::MovieNamedDirectory => SubtitleFileOrigin::NextToVideo,
             },
             Self::Embedded(_) => SubtitleFileOrigin::Embedded,
+            Self::Web(description) => SubtitleFileOrigin::Web(description.kind()),
         }
     }
 
@@ -72,6 +84,7 @@ impl TrackDescription {
     fn label(&self) -> SubtitleTrackLabel {
         match self {
             Self::Embedded(description) => description.label(),
+            Self::Web(description) => description.label(),
             Self::Sidecar(candidate) => SubtitleTrackLabel {
                 language: candidate.language.clone(),
                 format: Some(candidate.format.to_subtitle_format()),
@@ -83,6 +96,8 @@ impl TrackDescription {
                     .path
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned()),
+                fallback_name: None,
+                distinguishing_name: None,
             },
         }
     }
@@ -92,6 +107,9 @@ impl TrackDescription {
         match self {
             Self::Sidecar(candidate) => candidate.format.is_renderable_now(),
             Self::Embedded(description) => description.is_renderable_now(),
+            // Srv3 и WebVTT показываем всегда. Автоперевод показать МОЖНО (выбор вручную), но
+            // автовыбор его не рассматривает: см. `TrackEntry::traits`.
+            Self::Web(_) => true,
         }
     }
 }
@@ -129,7 +147,10 @@ pub(super) struct TrackEntry {
 impl TrackEntry {
     /// Можно ли выбрать дорожку (выбор разрешён и пока идёт загрузка).
     pub(super) fn is_selectable(&self) -> bool {
-        !matches!(self.load, TrackLoadState::Unavailable(_))
+        match &self.load {
+            TrackLoadState::Unavailable(failure) => failure.is_retryable_download(),
+            TrackLoadState::NotLoaded | TrackLoadState::Loading | TrackLoadState::Ready(_) => true,
+        }
     }
 
     /// Формат можно показать уже сейчас.
@@ -137,12 +158,36 @@ impl TrackEntry {
         self.description.is_renderable_now()
     }
 
+    /// Дорожку проходит клавиша V: выбираемая и не автоперевод (переводы выбираются только из
+    /// подменю «Auto-translate», решение владельца).
+    pub(super) fn takes_part_in_track_cycling(&self) -> bool {
+        self.is_selectable()
+            && !self
+                .description
+                .web()
+                .is_some_and(WebTrackDescription::is_auto_translation)
+    }
+
+    /// Пользователь снова выбрал дорожку, загрузка которой провалилась: возвращает её в
+    /// «не загружена», чтобы выбор запустил ровно одну новую попытку. Автоматических повторов
+    /// нет — эту точку вызывает только `select_track`.
+    pub(super) fn prepare_retry_after_failed_download(&mut self) {
+        if matches!(
+            &self.load,
+            TrackLoadState::Unavailable(failure) if failure.is_retryable_download()
+        ) {
+            self.load = TrackLoadState::NotLoaded;
+        }
+    }
+
     /// Доступность для меню.
     pub(super) fn availability(&self) -> SubtitleTrackAvailability {
         match &self.load {
-            TrackLoadState::Unavailable(reason) => {
+            // Провал скачивания не блокирует выбор: повторный клик пробует снова.
+            TrackLoadState::Unavailable(reason) if !reason.is_retryable_download() => {
                 SubtitleTrackAvailability::Unavailable(unavailable_reason_view(reason))
             }
+            TrackLoadState::Unavailable(_) => SubtitleTrackAvailability::Available,
             TrackLoadState::NotLoaded | TrackLoadState::Loading | TrackLoadState::Ready(_) => {
                 SubtitleTrackAvailability::Available
             }
@@ -175,6 +220,19 @@ impl TrackEntry {
                 is_hearing_impaired: description.is_hearing_impaired(),
                 is_renderable,
                 has_per_object_forced_flags: description.has_per_object_forced_flags(),
+            },
+            TrackDescription::Web(description) => TrackTraits {
+                // Автоперевод не рассматривается автовыбором вообще (только ручной выбор или
+                // память): иначе каждое открытие слало бы 429-опасный запрос.
+                origin: description
+                    .auto_select_origin()
+                    .unwrap_or(TrackOrigin::WebAutoGenerated),
+                is_default: false,
+                language: description.language(),
+                is_forced: false,
+                is_hearing_impaired: false,
+                is_renderable: is_renderable && !description.is_auto_translation(),
+                has_per_object_forced_flags: false,
             },
         }
     }
@@ -267,6 +325,8 @@ impl SubtitleTrackList {
             TrackDescription::Embedded(_) => {
                 TrackLoadState::Unavailable(SubtitleLoadFailure::EmbeddedCodecNotSupportedYet)
             }
+            // Web-дорожка скачивается при первом показе.
+            TrackDescription::Web(_) => TrackLoadState::NotLoaded,
         }
     }
 
@@ -293,6 +353,26 @@ impl SubtitleTrackList {
         let ids = discovered.iter().map(|entry| entry.id).collect();
         self.entries.splice(0..0, discovered);
         ids
+    }
+
+    /// Добавляет web-дорожки в КОНЕЦ списка в заданном порядке (порядок меню). Возвращает id.
+    pub(super) fn push_web_tracks(
+        &mut self,
+        descriptions: Vec<WebTrackDescription>,
+    ) -> Vec<SubtitleTrackId> {
+        descriptions
+            .into_iter()
+            .map(|description| {
+                let description = TrackDescription::Web(description);
+                let id = self.allocate_id();
+                self.entries.push(TrackEntry {
+                    id,
+                    load: Self::initial_state_of(&description),
+                    description,
+                });
+                id
+            })
+            .collect()
     }
 
     /// Добавляет файл пользователя в конец списка.

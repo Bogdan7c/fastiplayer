@@ -1,6 +1,6 @@
 //! Определение текстового формата по содержимому (расширению файла доверять нельзя).
 
-use crate::{ass, srt, webvtt};
+use crate::{ass, srt, srv3, webvtt};
 
 /// Текстовые форматы, которые умеет разбирать этот crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -10,6 +10,8 @@ pub enum TextSubtitleFormat {
     WebVtt,
     /// ASS и SSA (версия определяется содержимым сценария).
     Ass,
+    /// srv3 — XML-субтитры YouTube (`<timedtext format="3">`).
+    Srv3,
 }
 
 /// Сколько первых строк первого блока проверяем на строку времени:
@@ -21,6 +23,7 @@ const SRT_TIMING_LINE_SEARCH_DEPTH: usize = 2;
 /// WebVTT: текст начинается с `WEBVTT`, за которым конец текста, пробел, табуляция или перевод строки.
 /// ASS/SSA: первая непустая строка (после необязательного BOM и пробелов) — `[Script Info]`
 /// без учёта регистра.
+/// srv3: корневой элемент `<timedtext` (после BOM, объявления XML и комментариев).
 /// SRT: первый непустой блок содержит строку времени `start --> end` с валидными
 /// SRT-таймстемпами в одной из его первых двух строк.
 pub fn sniff_text_subtitle_format(text: &str) -> Option<TextSubtitleFormat> {
@@ -31,6 +34,10 @@ pub fn sniff_text_subtitle_format(text: &str) -> Option<TextSubtitleFormat> {
     }
     if ass::has_ass_signature(text) {
         return Some(TextSubtitleFormat::Ass);
+    }
+    // Корень `<timedtext` однозначен и тоже проверяется до SRT.
+    if srv3::has_srv3_signature(text) {
+        return Some(TextSubtitleFormat::Srv3);
     }
     let first_block_lines = text
         .lines()

@@ -6,6 +6,7 @@
 //! 2. `LoadFile` — прочитать одну явно указанную дорожку (выбор в меню, брошенный файл).
 //!
 //! 3. `BuildFontsOnly` — только построить библиотеку шрифтов (образец в режиме правки).
+//! 4. `LoadWebTrack` — скачать и разобрать web-дорожку (`web_load_job`).
 //!
 //! Это чистая функция без потоков и без знания об `AppState`: поток и доставку результата
 //! обеспечивает `job_runner`, а здесь только последовательность шагов с проверками отмены
@@ -18,6 +19,10 @@
 
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use media_source_open::web_subtitle_fetch::{WebSubtitleFetchError, WebSubtitleTrackId};
+use source_core::CancellationToken;
 
 use subtitle_formats::SubtitleLoadError;
 use subtitle_raster::{FontLibraryError, SubtitleFontLibrary};
@@ -31,6 +36,8 @@ use super::auto_select::{
 };
 use super::file_loader::{FileLoadError, LoadedSidecarTrack, load_candidate_timeline};
 use super::limits::LoadLimits;
+use super::web_download::WebSubtitleDownloader;
+use super::web_load_job::{LoadedWebTrack, run_web_track_load};
 
 /// Нужна ли задаче новая библиотека шрифтов.
 ///
@@ -85,6 +92,26 @@ pub(super) enum SidecarJobTask {
     /// Только построить библиотеку шрифтов (для образца в режиме правки, когда ни одна дорожка
     /// ещё не читалась и растеризатора нет).
     BuildFontsOnly,
+    /// Скачать и разобрать web-дорожку (по клику пользователя либо по автовыбору ручной/ASR).
+    LoadWebTrack {
+        /// Какую дорожку скачать.
+        track: WebSubtitleTrackId,
+        /// Кто скачивает (контракт владельца, не знает про HTTP и yt-dlp).
+        downloader: Arc<dyn WebSubtitleDownloader>,
+        /// Отмена блокирующей загрузки: её переворачивает `SidecarJob::cancel`/`Drop`.
+        cancellation: CancellationToken,
+    },
+}
+
+impl SidecarJobTask {
+    /// Токен отмены, который должен переворачиваться вместе с отменой задачи (если у задачи
+    /// есть блокирующая сетевая часть).
+    pub(super) fn cancellation_token(&self) -> Option<&CancellationToken> {
+        match self {
+            Self::LoadWebTrack { cancellation, .. } => Some(cancellation),
+            Self::DiscoverNextToVideo { .. } | Self::LoadFile { .. } | Self::BuildFontsOnly => None,
+        }
+    }
 }
 
 /// Что нужно сделать задаче.
@@ -133,6 +160,11 @@ pub(super) enum SubtitleLoadFailure {
     /// Не удалось подготовить библиотеку шрифтов.
     #[error("subtitle fonts could not be prepared: {0}")]
     FontLibraryFailed(FontLibraryError),
+    /// Web-субтитры не скачались (лимит запросов, нет сети, ссылка протухла…). В отличие от
+    /// остальных причин — ВРЕМЕННАЯ: дорожка остаётся выбираемой, повторный клик пробует
+    /// снова. `Display` без ссылок.
+    #[error("subtitle download failed: {0}")]
+    DownloadFailed(WebSubtitleFetchError),
     /// Не удалось запустить фоновый поток.
     #[error("subtitle loader thread could not be started ({kind:?})")]
     WorkerStartFailed {
@@ -151,6 +183,14 @@ pub(super) enum SubtitleLoadFailure {
     /// Поток-рисовальщик остановился сам (паника).
     #[error("subtitle rendering stopped unexpectedly")]
     RenderWorkerLost,
+}
+
+impl SubtitleLoadFailure {
+    /// Сбой временный: тот же выбор пользователя можно повторить (только скачивание).
+    /// Остальные причины (разбор, лимит файла, формат) от повтора не изменятся.
+    pub(super) const fn is_retryable_download(&self) -> bool {
+        matches!(self, Self::DownloadFailed(_))
+    }
 }
 
 /// Дорожка, прочитанная сразу после поиска (или причина, почему не вышло).
@@ -196,6 +236,13 @@ pub(super) enum SidecarJobOutcome {
         /// Новая библиотека шрифтов, если она требовалась.
         fonts: Option<SubtitleFontLibrary>,
     },
+    /// Web-дорожка скачана и разобрана.
+    WebTrackLoaded {
+        /// Дорожка.
+        track: Box<LoadedWebTrack>,
+        /// Новая библиотека шрифтов, если она требовалась.
+        fonts: Option<SubtitleFontLibrary>,
+    },
     /// Библиотека шрифтов построена (`None` - растеризатор уже есть, строить не пришлось).
     FontsBuilt(Option<SubtitleFontLibrary>),
     /// Задача не дала результата по типизированной причине (для `LoadFile` — дорожка
@@ -227,6 +274,17 @@ pub(super) fn run_sidecar_job(
             is_cancelled,
         ),
         SidecarJobTask::LoadFile { candidate } => run_file_load(request, candidate, is_cancelled),
+        SidecarJobTask::LoadWebTrack {
+            track,
+            downloader,
+            cancellation,
+        } => run_web_track_load(
+            request,
+            track,
+            downloader.as_ref(),
+            cancellation,
+            is_cancelled,
+        ),
         SidecarJobTask::BuildFontsOnly => match build_fonts_unless_cancelled(request, is_cancelled)
         {
             FontStep::Built(fonts) => SidecarJobOutcome::FontsBuilt(fonts),
@@ -386,13 +444,13 @@ fn run_file_load(
     clippy::large_enum_variant,
     reason = "значение живёт мгновение и один раз переезжает через mailbox; Box только усложнил бы доступ"
 )]
-enum FontStep {
+pub(super) enum FontStep {
     Built(Option<SubtitleFontLibrary>),
     Cancelled,
     Failed(SubtitleLoadFailure),
 }
 
-fn build_fonts_unless_cancelled(
+pub(super) fn build_fonts_unless_cancelled(
     request: &SidecarJobRequest,
     is_cancelled: &dyn Fn() -> bool,
 ) -> FontStep {

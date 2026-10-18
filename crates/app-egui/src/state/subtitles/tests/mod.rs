@@ -44,6 +44,12 @@ mod render_thread_regressions;
 mod shortening_thread;
 mod sidecar_job;
 mod track_selection;
+mod web_gpu;
+mod web_labels;
+mod web_notices;
+mod web_support;
+mod web_tracks;
+mod word_reveal_gpu;
 
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
@@ -113,6 +119,9 @@ pub(super) fn expect_discovery(outcome: SidecarJobOutcome) -> DiscoveryOutcome {
     match outcome {
         SidecarJobOutcome::Discovered(discovery) => *discovery,
         SidecarJobOutcome::FileLoaded { .. } => panic!("expected a search result, got a file"),
+        SidecarJobOutcome::WebTrackLoaded { .. } => {
+            panic!("expected a search result, got a web track")
+        }
         SidecarJobOutcome::FontsBuilt(_) => panic!("expected a search result, got fonts"),
         SidecarJobOutcome::Failed(failure) => panic!("expected a search result, got {failure}"),
         SidecarJobOutcome::Cancelled => panic!("expected a search result, got cancellation"),

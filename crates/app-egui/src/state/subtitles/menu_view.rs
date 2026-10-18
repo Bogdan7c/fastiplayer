@@ -6,6 +6,7 @@
 //! английские и принадлежат UI).
 
 use subtitle_core::{SubtitleFormat, SubtitleLanguage, SubtitleSyncOffset, SubtitleTrackId};
+use web_media_core::SubtitleKind;
 
 use super::intents::SubtitleVisibility;
 
@@ -18,6 +19,9 @@ pub(crate) enum SubtitleFileOrigin {
     ChosenByUser,
     /// Дорожка внутри контейнера видео (MKV, MP4…): отдельного файла нет.
     Embedded,
+    /// Дорожка скачивается по требованию с сайта (YouTube): ручная, распознанная речь или
+    /// автоперевод.
+    Web(SubtitleKind),
 }
 
 /// Части подписи дорожки; пустые поля пропускаются при сборке текста.
@@ -38,6 +42,19 @@ pub(crate) struct SubtitleTrackLabel {
     pub(crate) title: Option<String>,
     /// Имя файла без каталога (для показа).
     pub(crate) file_name: Option<String>,
+    /// Запасное имя web-дорожки (название от источника либо код языка), если языка нет в
+    /// таблице известных. У дорожек не из web — `None`.
+    pub(crate) fallback_name: Option<String>,
+    /// Различимое название web-дорожки, если у нескольких дорожек одного вида одно название
+    /// языка (`Chinese (Taiwan)`); заменяет название из таблицы. Выставляет владелец списка.
+    pub(crate) distinguishing_name: Option<String>,
+}
+
+impl SubtitleTrackLabel {
+    /// Автоматический перевод: такие дорожки лежат в подменю «Auto-translate».
+    pub(crate) fn is_auto_translation(&self) -> bool {
+        self.origin == SubtitleFileOrigin::Web(SubtitleKind::AutoTranslated)
+    }
 }
 
 /// Почему дорожку нельзя выбрать. `Display` английский, без путей.

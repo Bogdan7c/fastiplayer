@@ -9,6 +9,8 @@
 //!   `media-source-open`: подпись «English (E-AC-3 5.1)» и безопасное component-действие.
 //! - `web_version_switch` — запуск переключения web-версии через существующий same-item
 //!   component switch и уведомления о старте/отказе.
+//! - `web_audio_languages` — языки звука (дубляж) yt-dlp-видео: подписи и запуск смены языка
+//!   через тот же same-item switch.
 //! - `menu_view` — чистое построение снимка меню и выбор «следующей» дорожки.
 //! - `control_actions` — применение намерений UI. Все выборы, которые сделал пользователь
 //!   (клик по меню и клавиша `B`), проходят через `AppState::select_audio_track_by_user`.
@@ -24,9 +26,16 @@ mod labels;
 mod menu_view;
 #[cfg(test)]
 mod tests;
+mod web_audio_language_memory;
+#[cfg(test)]
+mod web_audio_language_memory_tests;
+mod web_audio_languages;
+#[cfg(test)]
+mod web_audio_languages_tests;
 mod web_version_switch;
 mod web_versions;
 #[cfg(test)]
 mod web_versions_tests;
 
 pub(crate) use menu_view::{AudioTrackMenuTarget, AudioTrackMenuView};
+pub(in crate::state) use web_version_switch::WebAudioSwitchRequest;

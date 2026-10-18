@@ -19,8 +19,10 @@
 use player_core::PlayerSnapshot;
 use render_wgpu_shell::Renderer;
 
+use media_source_open::web_media_open::audio_languages::WebAudioLanguageAction;
+
 use super::labels::audio_selected_toast;
-use super::menu_view::AudioTrackMenuView;
+use super::menu_view::{AudioTrackMenuView, WebAudioMenuSource};
 use super::web_versions::{WebAudioVersionEntry, web_audio_versions};
 use crate::playlist_runtime::PlaylistRuntime;
 use crate::state::AppState;
@@ -43,14 +45,41 @@ pub(super) const VERSION_SWITCH_STALE_MESSAGE: &str =
 /// Toast: переключение отменено (например, Stop или сворачивание).
 pub(super) const VERSION_SWITCH_CANCELED_MESSAGE: &str = "Audio version switch canceled";
 
+/// Отложенный выбор звука web-источника: версия (HLS/DASH) либо язык (yt-dlp).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::state) enum WebAudioSwitchRequest {
+    /// Другая версия звука того же видео (component switch).
+    Version(ComponentVariantSelectionAction),
+    /// Другой язык звука (дубляж) того же ролика.
+    Language(WebAudioLanguageAction),
+    /// Автоматическое восстановление запомненного языка после открытия видео; без toast-ов.
+    /// `attempts_left` ограничивает ожидание завершения открытия (`web_audio_language_memory`).
+    RestoreRemembered {
+        action: WebAudioLanguageAction,
+        attempts_left: u16,
+    },
+}
+
 impl AppState {
-    /// Единый снимок меню «♪» на кадр: встроенные дорожки + web-версии активного источника.
+    /// Единый снимок меню «♪» на кадр: встроенные дорожки + web-звук активного источника.
     #[must_use]
     pub(in crate::state) fn audio_track_menu_view(
         &self,
         player_snapshot: &PlayerSnapshot,
     ) -> AudioTrackMenuView {
-        AudioTrackMenuView::compose(player_snapshot, self.web_audio_version_entries())
+        AudioTrackMenuView::compose(player_snapshot, self.web_audio_menu_source())
+    }
+
+    /// Какой выбор звука публикует активный источник: версии HLS/DASH, иначе языки yt-dlp.
+    ///
+    /// Одновременно источник показывает только один вид выбора, чтобы в меню не было двух
+    /// отметок «играет» и круг клавиши `B` оставался однозначным.
+    fn web_audio_menu_source(&self) -> Option<WebAudioMenuSource> {
+        if let Some(versions) = self.web_audio_version_entries() {
+            return Some(WebAudioMenuSource::Versions(versions));
+        }
+        self.web_audio_language_entries()
+            .map(WebAudioMenuSource::Languages)
     }
 
     /// Web-версии звука активного источника; `None` — источник не web или выбора нет.
@@ -70,18 +99,41 @@ impl AppState {
         &mut self,
         version: ComponentVariantSelectionAction,
     ) {
-        self.requested_web_audio_version = Some(version);
+        self.requested_web_audio_switch = Some(WebAudioSwitchRequest::Version(version));
         self.mark_pending_worker_redraw();
     }
 
-    /// Запускает отложенный выбор web-версии; `true` — запрос был (нужна перерисовка).
+    /// Запоминает выбор языка звука до конца кадра; последний выбор побеждает.
+    pub(super) fn request_web_audio_language_by_user(&mut self, language: WebAudioLanguageAction) {
+        self.requested_web_audio_switch = Some(WebAudioSwitchRequest::Language(language));
+        self.mark_pending_worker_redraw();
+    }
+
+    /// Запускает отложенный выбор web-звука; `true` — запрос был (нужна перерисовка).
     pub(crate) fn apply_requested_web_audio_version(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
         renderer: &Renderer,
     ) -> bool {
-        let Some(version) = self.requested_web_audio_version.take() else {
-            return false;
+        let version = match self.requested_web_audio_switch.take() {
+            Some(WebAudioSwitchRequest::Version(version)) => version,
+            Some(WebAudioSwitchRequest::Language(language)) => {
+                self.apply_requested_web_audio_language(language, playlist_runtime, renderer);
+                return true;
+            }
+            Some(WebAudioSwitchRequest::RestoreRemembered {
+                action,
+                attempts_left,
+            }) => {
+                self.apply_requested_language_restore(
+                    action,
+                    attempts_left,
+                    playlist_runtime,
+                    renderer,
+                );
+                return true;
+            }
+            None => return false,
         };
         // Подпись берётся до запуска: после Installed каталог получит новое поколение.
         let label = self.web_audio_version_entries().and_then(|entries| {
@@ -110,7 +162,7 @@ impl AppState {
     }
 
     /// Одна заменяемая плашка «Audio: …» для всех сообщений о выборе звука.
-    fn notify_audio_version(&mut self, message: String) {
+    pub(super) fn notify_audio_version(&mut self, message: String) {
         self.notifications.notify_transient_replacing(
             TransientReplaceKey::AudioTrack,
             message,

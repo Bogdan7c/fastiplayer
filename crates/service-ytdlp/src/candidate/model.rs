@@ -214,6 +214,15 @@ impl YtDlpNormalizedCandidate {
             .map(|component| component.material.clone())
     }
 
+    /// Предпочтение языка, которое извлекатель приписал формату (`language_preference`).
+    ///
+    /// У YouTube оригинальная дорожка получает большее значение, чем дубляжи; потребитель
+    /// сравнивает значения между собой, абсолютного смысла число не имеет. `None` —
+    /// извлекатель предпочтение не объявил.
+    pub const fn declared_language_preference(&self) -> Option<i64> {
+        self.selection_hints.language_preference
+    }
+
     pub(super) const fn selection_hints(&self) -> YtDlpSelectionHints {
         self.selection_hints
     }
@@ -373,9 +382,25 @@ pub struct YtDlpCandidateSnapshot {
     inventory: Box<[YtDlpCandidateEntry]>,
     /// Корневой selected result, не смешанный с inventory.
     selected: Option<YtDlpCandidateEntry>,
+    /// Субтитры видео из того же snapshot-а (не привязаны к конкретному формату).
+    subtitles: super::subtitles::YtDlpSubtitleInventory,
 }
 
 impl YtDlpCandidateSnapshot {
+    /// Возвращает субтитры видео: нейтральные дескрипторы и секретные ссылки.
+    pub const fn subtitle_inventory(&self) -> &super::subtitles::YtDlpSubtitleInventory {
+        &self.subtitles
+    }
+
+    /// Прикрепляет субтитры сразу после нормализации.
+    pub(super) fn with_subtitle_inventory(
+        mut self,
+        subtitles: super::subtitles::YtDlpSubtitleInventory,
+    ) -> Self {
+        self.subtitles = subtitles;
+        self
+    }
+
     /// Возвращает source lineage snapshot-а.
     pub const fn source(&self) -> SourceIdentity {
         self.source
@@ -507,6 +532,7 @@ impl YtDlpCandidateSnapshot {
             live_intent,
             inventory: inventory.into_boxed_slice(),
             selected,
+            subtitles: super::subtitles::YtDlpSubtitleInventory::default(),
         }
     }
 

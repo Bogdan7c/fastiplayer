@@ -21,6 +21,7 @@ use super::sidecar_job::{
     SubtitleLoadFailure,
 };
 use super::track_list::TrackLoadState;
+use super::web_load_job::LoadedWebTrack;
 use super::{JobOrigin, JobResultDisposition, SubtitleOwner};
 
 impl SubtitleOwner {
@@ -82,7 +83,9 @@ impl SubtitleOwner {
                 self.apply_discovery(*discovery);
                 JobResultDisposition::Applied
             }
-            SidecarJobOutcome::FileLoaded { .. } | SidecarJobOutcome::FontsBuilt(_) => {
+            SidecarJobOutcome::FileLoaded { .. }
+            | SidecarJobOutcome::WebTrackLoaded { .. }
+            | SidecarJobOutcome::FontsBuilt(_) => {
                 tracing::error!("A search task returned a foreign result; ignoring it");
                 media.discovery = DiscoveryState::Failed(SubtitleLoadFailure::WorkerLost);
                 JobResultDisposition::Applied
@@ -155,7 +158,16 @@ impl SubtitleOwner {
         let (result, fonts) = match outcome {
             SidecarJobOutcome::Cancelled => return JobResultDisposition::DroppedStale,
             SidecarJobOutcome::FileLoaded { track, fonts } => (Ok(*track), fonts),
-            SidecarJobOutcome::Failed(failure) => (Err(failure), None),
+            SidecarJobOutcome::WebTrackLoaded { track, fonts } => {
+                return self.accept_web_track_loaded(track_id, *track, fonts);
+            }
+            SidecarJobOutcome::Failed(failure) => {
+                // Сбой скачивания — по одному уведомлению на неудавшуюся попытку.
+                if let SubtitleLoadFailure::DownloadFailed(error) = &failure {
+                    self.download_failures.push(error.clone());
+                }
+                (Err(failure), None)
+            }
             SidecarJobOutcome::Discovered(_) | SidecarJobOutcome::FontsBuilt(_) => {
                 tracing::error!("A file task returned a foreign result; ignoring it");
                 (Err(SubtitleLoadFailure::WorkerLost), None)
@@ -171,6 +183,40 @@ impl SubtitleOwner {
         let source_id = self.source_ids.allocate();
         if let Some(entry) = media.tracks.get_mut(track_id) {
             entry.load = loaded_state(result, source_id, sync_offset);
+        }
+        JobResultDisposition::Applied
+    }
+
+    /// Скачанная и разобранная web-дорожка становится готовой.
+    fn accept_web_track_loaded(
+        &mut self,
+        track_id: SubtitleTrackId,
+        track: LoadedWebTrack,
+        fonts: Option<SubtitleFontLibrary>,
+    ) -> JobResultDisposition {
+        self.install_fonts_if_needed(fonts);
+        let Some(media) = self.media.as_mut() else {
+            return JobResultDisposition::DroppedStale;
+        };
+        media.load_job = None;
+        let sync_offset = media.sync_offset;
+        let source_id = self.source_ids.allocate();
+        if let Some(entry) = media.tracks.get_mut(track_id) {
+            let language = entry
+                .description
+                .web()
+                .and_then(|web| web.language().cloned());
+            tracing::debug!(
+                format = ?track.format,
+                events = track.timeline.len(),
+                "Web subtitle track loaded"
+            );
+            entry.load = TrackLoadState::Ready(ActiveSubtitleTrack::new(
+                source_id,
+                track.timeline,
+                sync_offset,
+                language,
+            ));
         }
         JobResultDisposition::Applied
     }
@@ -212,11 +258,21 @@ impl SubtitleOwner {
             return;
         }
         // Встроенные дорожки не читаются из файла: они готовы с самого начала.
-        let Some(candidate) = entry.description.sidecar_candidate().cloned() else {
+        let task = if let Some(candidate) = entry.description.sidecar_candidate() {
+            SidecarJobTask::LoadFile {
+                candidate: candidate.clone(),
+            }
+        } else if let Some(web) = entry.description.web() {
+            let Some(task) = media.web_load_task(web) else {
+                tracing::error!("A web subtitle track has no downloader; it is not loaded");
+                return;
+            };
+            task
+        } else {
             return;
         };
         let request = SidecarJobRequest {
-            task: SidecarJobTask::LoadFile { candidate },
+            task,
             fonts,
             limits,
         };

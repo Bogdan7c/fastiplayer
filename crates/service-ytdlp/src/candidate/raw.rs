@@ -20,6 +20,11 @@ pub(crate) struct YtDlpCandidateDocument {
     pub(crate) formats: Option<Vec<YtDlpSerializedFormat>>,
     /// Pinned selected compound components.
     pub(crate) requested_formats: Option<Vec<YtDlpSerializedFormat>>,
+    /// Ручные субтитры `{язык: [{ext, url, name, ..}]}`; форма не проверяется
+    /// здесь, чтобы кривые субтитры не ломали весь кандидат.
+    pub(crate) subtitles: Option<Value>,
+    /// Автоматические субтитры (распознанная речь и автоперевод) в той же форме.
+    pub(crate) automatic_captions: Option<Value>,
     /// Selected ordinary result, представленный format fields корневого JSON.
     #[serde(flatten)]
     pub(crate) selected_format: YtDlpSerializedFormat,

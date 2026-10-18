@@ -3,6 +3,8 @@
 mod matcher;
 mod persistence;
 mod segment_key;
+mod web_audio_language;
+mod web_choice;
 mod writer;
 
 use playlist_core::{LocalLocator, PlaylistLocator, SecretUrlLocator};
@@ -252,6 +254,7 @@ fn restore_rejects_duplicate_keys_stamps_and_oversized_files() {
             None,
             None,
             SubtitleSyncOffset::ZERO,
+            None,
         )
     };
     assert!(

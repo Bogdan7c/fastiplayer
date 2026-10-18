@@ -36,6 +36,7 @@ pub use candidate::{
     YtDlpRequestMaterialSummary, YtDlpRequestMaterialV1, YtDlpRequestMaterialViolation,
     YtDlpSelectedCandidateShape, YtDlpSmoothManifestRequestMaterial,
     YtDlpSmoothManifestRequestMaterialViolation, YtDlpSmoothUnsupportedRequestMaterial,
+    YtDlpSubtitleFormat, YtDlpSubtitleInventory, YtDlpSubtitleSource, YtDlpSubtitleTrack,
     YtDlpTransportComponent, YtDlpTransportRequestContext, YtDlpTransportRequestError,
     resolve_yt_dlp_candidate_snapshot_with_config,
     resolve_yt_dlp_candidate_snapshot_with_config_and_cancellation,

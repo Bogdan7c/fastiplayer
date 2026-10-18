@@ -75,6 +75,7 @@ mod owner_loading;
 mod owner_memory;
 mod owner_placement;
 mod owner_render;
+mod owner_web;
 mod presentation;
 mod render_worker;
 mod sample_cue;
@@ -86,9 +87,13 @@ mod system_language;
 mod tests;
 mod track_list;
 mod user_style;
+mod web_download;
+mod web_load_job;
+mod web_track;
 
 use std::path::PathBuf;
 
+use media_source_open::web_subtitle_fetch::WebSubtitleFetchError;
 use player_core::MediaInstanceId;
 use subtitle_core::SubtitleLanguage;
 use subtitle_raster::CueSourceId;
@@ -108,11 +113,9 @@ pub(crate) use self::intents::{AttachOutcome, SubtitleVisibility};
 use self::job_runner::{SidecarJob, SidecarJobPoll};
 pub(crate) use self::layer_placement::PlacedLayerRect;
 use self::media_state::{DiscoveryState, MediaSubtitles};
-#[cfg(test)]
-pub(crate) use self::menu_view::SubtitleMenuTrack;
 pub(crate) use self::menu_view::{
-    SubtitleFileOrigin, SubtitleMenuView, SubtitleTrackAvailability, SubtitleTrackLabel,
-    SubtitleUnavailableReason,
+    SubtitleFileOrigin, SubtitleMenuTrack, SubtitleMenuView, SubtitleTrackAvailability,
+    SubtitleTrackLabel, SubtitleUnavailableReason,
 };
 use self::owner_embedded::EmbeddedFeedState;
 pub(crate) use self::owner_embedded::EmbeddedUpdate;
@@ -134,6 +137,7 @@ pub(super) use self::system_language::read_system_language;
 #[cfg(test)]
 use self::track_list::TrackLoadState;
 pub(crate) use self::user_style::{SubtitleRgb, UserSubtitleStyle};
+pub(crate) use self::web_track::WebSubtitleSource;
 use super::{ActiveMediaSource, InstalledSingleMediaOpen};
 use crate::app_wake::AppWakePort;
 use player_core::MediaInstallCompletion;
@@ -146,6 +150,8 @@ pub(super) enum SubtitleMediaSource {
     /// Не локальный источник (web и прочее): файлов рядом нет; доступны только файлы,
     /// которые пользователь добавит сам.
     NotLocal,
+    /// Web-видео с дорожками субтитров, которые скачиваются по требованию (YouTube).
+    Web(WebSubtitleSource),
 }
 
 /// Какое media сейчас видит плеер: сверяется с владельцем перед показом.
@@ -223,6 +229,8 @@ pub(super) struct SubtitleOwner {
     queued_files: Vec<SidecarSubtitleCandidate>,
     /// Непрочитанное изменение «включено» по воле пользователя (для сохранения в конфиг).
     enabled_preference_change: Option<SubtitleVisibility>,
+    /// Сбои скачивания web-субтитров, ещё не показанные пользователю (по одному на попытку).
+    download_failures: Vec<WebSubtitleFetchError>,
     /// Что сейчас закрывает низ видео (наблюдение UI на этом кадре).
     controls_obstruction: BottomControlsObstruction,
     /// Где слой оказался на экране при последнем размещении (для рамки правки на видео).
@@ -278,6 +286,7 @@ impl SubtitleOwner {
             system_language,
             media: None,
             queued_files: Vec::new(),
+            download_failures: Vec::new(),
             enabled_preference_change: None,
             controls_obstruction: BottomControlsObstruction::Absent,
             last_placed_layer_rect: None,
@@ -345,9 +354,26 @@ impl SubtitleOwner {
         let mut media = MediaSubtitles::new(media_instance_id, self.default_visibility);
         self.adopt_queued_files(&mut media);
         owner_memory::apply_restore_request(&mut media, restore);
+        let has_web_tracks = matches!(source, SubtitleMediaSource::Web(_));
         media.discovery = match source {
             SubtitleMediaSource::LocalFile(video_path) => {
                 self.start_discovery(Some(video_path), &media)
+            }
+            // Web-дорожки известны сразу: ставим их в список, поиск файлов нужен только если
+            // из памяти ждём файл, который пользователь когда-то добавил сам.
+            SubtitleMediaSource::Web(web_source) => {
+                let descriptions = web_source.descriptions_for_menu(&self.preferred_languages());
+                media.install_web_source(&web_source, descriptions);
+                if media
+                    .pending_memory
+                    .as_ref()
+                    .and_then(PendingRememberedChoice::file_to_check)
+                    .is_some()
+                {
+                    self.start_discovery(None, &media)
+                } else {
+                    DiscoveryState::Finished
+                }
             }
             // Не локальный источник: искать рядом нечего, но запомненный файл надо проверить.
             SubtitleMediaSource::NotLocal if media.pending_memory.is_some() => {
@@ -358,6 +384,11 @@ impl SubtitleOwner {
         self.media = Some(media);
         // Труба могла принести сообщения этого media раньше, чем пришла установка.
         self.adopt_media_for_embedded_feed(media_instance_id);
+        if has_web_tracks {
+            // Список web-дорожек полный с самого начала: память выбора и автовыбор (ручная
+            // важнее распознанной речи, автоперевод — никогда) решаются сразу.
+            self.reselect_automatically();
+        }
         // Дорожки из очереди (если есть) читаются сразу, остальные — по требованию.
         self.ensure_display_track_loading();
     }
@@ -613,9 +644,9 @@ impl SubtitleOwner {
 fn subtitle_source_of(source: &ActiveMediaSource) -> SubtitleMediaSource {
     match source.physical_source() {
         ActiveMediaSource::LocalFile(path) => SubtitleMediaSource::LocalFile(path.clone()),
-        ActiveMediaSource::Web(_) | ActiveMediaSource::PlaybackWindow { .. } => {
-            SubtitleMediaSource::NotLocal
-        }
+        ActiveMediaSource::Web(intent) => WebSubtitleSource::from_intent(intent)
+            .map_or(SubtitleMediaSource::NotLocal, SubtitleMediaSource::Web),
+        ActiveMediaSource::PlaybackWindow { .. } => SubtitleMediaSource::NotLocal,
     }
 }
 

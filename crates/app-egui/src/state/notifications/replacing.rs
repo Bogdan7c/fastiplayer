@@ -19,6 +19,8 @@ pub(crate) enum TransientReplaceKey {
     SubtitleTrack,
     /// Выбранная аудиодорожка («Audio: Russian — Dub (FLAC)»), клавиша `B`.
     AudioTrack,
+    /// Сбой скачивания web-субтитров («YouTube is limiting subtitle requests…»).
+    SubtitleDownload,
 }
 
 impl NotificationCenter {

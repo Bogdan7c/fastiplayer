@@ -25,6 +25,7 @@ mod language;
 mod limits;
 mod picture;
 mod robustness;
+mod word_reveal;
 
 use subtitle_core::{
     CuePlacement, SpanStyle, StyledText, SubtitleContent, SubtitleEvent, SubtitleLayer,

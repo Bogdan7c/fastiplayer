@@ -64,6 +64,18 @@ pub enum CandidateRejectionReason {
 pub enum CandidateCapabilityRejection {
     /// Transport family не зарегистрирована.
     Transport(TransportCapabilityRejection),
+    /// Separate video/audio components не имеют общего runtime composition route-а.
+    ///
+    /// Каждый transport по отдельности может быть зарегистрирован, но пара
+    /// (например HLS video + progressive HTTPS audio) не открывается ни одним
+    /// runtime path-ом. Без этой причины planner ранжировал бы такую пару первой,
+    /// а open падал бы terminal-ошибкой вместо выбора playable alternative.
+    ComponentRouteMismatch {
+        /// Transport family video component-а.
+        video: TransportFamily,
+        /// Transport family audio component-а.
+        audio: TransportFamily,
+    },
     /// Container/input demux path отсутствует.
     Demux(DemuxCapabilityRejection),
     /// Existing video system capability intersection отклонил requirement.
@@ -199,7 +211,11 @@ impl PlaybackPlanningFailureSummary {
     /// Учитывает одну typed причину без копирования candidate identity.
     fn record_reason(&mut self, reason: &CandidateRejectionReason) {
         match reason {
-            CandidateRejectionReason::Capability(CandidateCapabilityRejection::Transport(_)) => {
+            // Несовместимая пара transport-ов — тоже transport-layer отказ.
+            CandidateRejectionReason::Capability(
+                CandidateCapabilityRejection::Transport(_)
+                | CandidateCapabilityRejection::ComponentRouteMismatch { .. },
+            ) => {
                 self.transport_rejections += 1;
             }
             CandidateRejectionReason::Capability(CandidateCapabilityRejection::Demux(_)) => {

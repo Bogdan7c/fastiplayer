@@ -241,3 +241,26 @@ fn raw_dolby_extensions_route_to_ac3_elementary_family() {
         })
     );
 }
+
+/// Separate-пара открывается только одним runtime-маршрутом: смешанная HLS+HTTPS
+/// (реальный YouTube `616+251`) маршрута не имеет, а progressive HTTP+FTP — имеет.
+#[test]
+fn component_composition_route_rejects_mixed_adaptive_and_progressive_pairs() {
+    let https = TransportFamily::ProgressiveHttp(HttpScheme::Https);
+    let ftp = TransportFamily::ProgressiveFtp(FtpScheme::Ftp);
+
+    assert!(https.shares_component_composition_route(https));
+    assert!(https.shares_component_composition_route(ftp));
+    assert!(TransportFamily::Hls.shares_component_composition_route(TransportFamily::Hls));
+    assert!(TransportFamily::Dash.shares_component_composition_route(TransportFamily::Dash));
+
+    assert!(!TransportFamily::Hls.shares_component_composition_route(https));
+    assert!(!https.shares_component_composition_route(TransportFamily::Hls));
+    assert!(!TransportFamily::Dash.shares_component_composition_route(ftp));
+    assert!(!TransportFamily::Hls.shares_component_composition_route(TransportFamily::Dash));
+    assert!(
+        !TransportFamily::Rtmp(RtmpVariant::Rtmp)
+            .shares_component_composition_route(TransportFamily::Rtmp(RtmpVariant::Rtmpe))
+    );
+    assert!(!TransportFamily::Unknown.shares_component_composition_route(TransportFamily::Unknown));
+}

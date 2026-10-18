@@ -21,5 +21,12 @@
 ## Сессия 11 (PGS)
 `SubtitleContent::Picture` (`picture.rs`); шкала умеет `shorten_event_end` + `revision()` + журнал укорочений — `mem:subtitles/pgs-s11`.
 
+## Сессия 12 (srv3, этап 12b)
+- `crates/subtitle-formats/src/srv3/` (reader через `bounded-xml-reader` — теперь в allowlist; model/pen/window/lines/timing/rolling): `TextSubtitleFormat::Srv3`, sniff `<timedtext`, ошибки `MalformedSrv3/NotSrv3/Srv3TooComplex`. Окна `<p w>` режутся по началам/концам абзацев в события со сборными строками (последние `rc`, без `rc` — 16); слова с `reveal_at` (абс. время, `None` если уже видно на начале отрезка). Номер «строки» в отчёте = номер абзаца.
+- `reveal_at` теперь РИСУЕТСЯ: `SubtitleTimeline::next_change_after/latest_change_within` учитывают появление слов активных событий (`timeline/reveal.rs`); `subtitle-raster/renderer/reveal.rs` — скрытые спаны не рисуются и не занимают места, входят в `CueLook::Text.hidden_spans` (ключ кэша), кадр сообщает `AnimationChange::At(следующее появление)`, `time_free=false`. Срок годности картинок в app-egui сужается этим автоматически (render_step не менялся). Тесты: `tests/srv3_loading.rs`, `renderer/tests/word_reveal.rs`, `app-egui .../tests/word_reveal_gpu.rs`.
+
+## Сессия 12 (YouTube)
+Web-дорожки, скачивание, меню, память: `mem:subtitles/web-tracks-s12`; языки дубляжа: `mem:app-egui/web-audio-languages-s12d`. `language_table` расширена до полного ISO 639-1 + алиасы (`iw→he` …); язык из имени файла sidecar — только старый набор 42 (`is_common_sidecar_language`).
+
 ## Тесты
 - `crates/subtitle-core/src/timeline/tests.rs` (в т.ч. сверка с перебором на псевдослучайных данных), `crates/subtitle-formats/tests/{srt_loading,encoding_and_limits,webvtt_loading}.rs` — сквозь `load_text_subtitle` → `SubtitleTimeline::collect_active_at`.

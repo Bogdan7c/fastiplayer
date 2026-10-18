@@ -3,6 +3,8 @@
 //! Создаётся в `begin_media` и целиком отбрасывается при смене media: именно поэтому
 //! выбор, список дорожек и сдвиг прежнего media не могут «просочиться» в новое.
 
+use std::sync::Arc;
+
 use subtitle_core::{SubtitleSyncOffset, SubtitleTrackId};
 
 use player_core::MediaInstanceId;
@@ -14,6 +16,7 @@ use super::owner_embedded::{EmbeddedAssTracks, EmbeddedPgsTracks};
 use super::owner_memory::{MemoryDirty, PendingRememberedChoice};
 use super::sidecar_job::SubtitleLoadFailure;
 use super::track_list::{SubtitleTrackList, TrackLoadState};
+use super::web_download::WebSubtitleDownloader;
 
 /// Поиск файлов рядом с видео.
 pub(super) enum DiscoveryState {
@@ -94,6 +97,8 @@ pub(super) struct MediaSubtitles {
     pub(super) embedded_ass: EmbeddedAssTracks,
     /// Декодеры, хранилища композиций и роли PGS-дорожек этого media.
     pub(super) embedded_pgs: EmbeddedPgsTracks,
+    /// Кто скачивает web-дорожки этого media (`None` — у media web-дорожек нет).
+    pub(super) web_downloader: Option<Arc<dyn WebSubtitleDownloader>>,
 }
 
 impl MediaSubtitles {
@@ -114,6 +119,7 @@ impl MediaSubtitles {
             memory_dirty: MemoryDirty::default(),
             embedded_ass: EmbeddedAssTracks::default(),
             embedded_pgs: EmbeddedPgsTracks::default(),
+            web_downloader: None,
         }
     }
 

@@ -269,6 +269,7 @@ pub(super) fn configuration_for(parent: ExactSelectionIdentity) -> WebMediaStrea
         preference: WebMediaSelectionPreference::GlobalPreferredHeight(1080),
         component_variants: WebMediaComponentVariantConfiguration::Unavailable,
         hls_subtitle_renditions: Arc::from([]),
+        web_subtitle_tracks: Arc::from([]),
     }
 }
 

@@ -43,3 +43,4 @@ pub mod web_media_quality;
 pub mod web_media_stream_model;
 pub mod web_media_vod_recovery;
 pub mod web_open_failure;
+pub mod web_subtitle_fetch;

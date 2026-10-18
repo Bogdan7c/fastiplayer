@@ -1,5 +1,6 @@
 //! S25/S36 controlled same-item candidate/component switch orchestration.
 
+mod audio_language;
 mod lifecycle_bridge;
 
 use player_core::MediaInstallCancellationCause;
@@ -15,6 +16,8 @@ use crate::web_media_stream_model::{
 };
 
 use super::{ActiveMediaSource, AppState, StrongMediaOpenError, StrongMediaOpenPoll};
+pub(super) use audio_language::AudioLanguagePurpose;
+use audio_language::SameItemSelectionRequest;
 use lifecycle_bridge::{
     ProductionSameItemSwitchPollContext, ProductionSameItemSwitchStartContext,
     SameItemSwitchAppPath, SameItemSwitchAppStart,
@@ -57,6 +60,12 @@ enum SameItemSwitchKind {
         /// Кто запустил switch: от этого зависит, куда сообщить о терминальном отказе.
         origin: ComponentSwitchOrigin,
     },
+    /// Другой язык звука (дубляж) того же ролика; видео и позиция не меняются.
+    AudioLanguage {
+        parent_generation: WebMediaStreamGeneration,
+        /// Выбор пользователя или восстановление из памяти.
+        purpose: AudioLanguagePurpose,
+    },
     Picker {
         parent_generation: WebMediaStreamGeneration,
         action: crate::web_media_catalog::WebMediaFacetAction,
@@ -94,7 +103,11 @@ impl SameItemSwitchKind {
                 parent_generation: *parent_generation,
                 action: *action,
             },
-            Self::AutomaticPicker {
+            // Языка нет среди sidebar-строк: пока идёт switch, sidebar просто блокируется.
+            Self::AudioLanguage {
+                parent_generation, ..
+            }
+            | Self::AutomaticPicker {
                 parent_generation, ..
             }
             | Self::AdaptiveQuality {
@@ -113,7 +126,10 @@ impl SameItemSwitchKind {
                 parent_generation, ..
             } => *parent_generation,
             Self::Component { action, .. } => action.parent_generation(),
-            Self::Picker {
+            Self::AudioLanguage {
+                parent_generation, ..
+            }
+            | Self::Picker {
                 parent_generation, ..
             }
             | Self::AutomaticPicker {
@@ -131,6 +147,16 @@ impl PendingSameItemSwitch {
     fn component_origin(&self) -> Option<ComponentSwitchOrigin> {
         match self.kind {
             SameItemSwitchKind::Component { origin, .. } => Some(origin),
+            // Выбор пользователя: отказ должен дойти до toast-а меню «♪». Автоматическое
+            // восстановление из памяти молчит.
+            SameItemSwitchKind::AudioLanguage {
+                purpose: AudioLanguagePurpose::UserChoice { .. },
+                ..
+            } => Some(ComponentSwitchOrigin::AudioTrackMenu),
+            SameItemSwitchKind::AudioLanguage {
+                purpose: AudioLanguagePurpose::MemoryRestore,
+                ..
+            } => None,
             #[cfg(test)]
             SameItemSwitchKind::Candidate { .. } => None,
             SameItemSwitchKind::Picker { .. }
@@ -400,11 +426,12 @@ impl AppState {
     fn start_resolved_same_item_switch(
         &mut self,
         active_source: ActiveMediaSource,
-        selection_intent: crate::media_open::WebMediaSelectionSwitchIntent,
+        selection_intent: impl Into<SameItemSelectionRequest>,
         kind: SameItemSwitchKind,
         playlist_runtime: &mut PlaylistRuntime,
         renderer: &Renderer,
     ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
+        let selection_intent = selection_intent.into();
         let expected_active = playlist_runtime
             .playlist_view_snapshot()
             .active_media()
@@ -433,11 +460,12 @@ impl AppState {
             clippy::expect_used,
             reason = "инвариант: same-item web source был проверен до lifecycle start"
         )]
-        let physical_request = match active_source
-            .web_intent()
-            .expect("The same-item web source was checked before lifecycle start.")
-            .selection_switch_request(selection_intent, settings)
-        {
+        let physical_request = match selection_intent.resolve(
+            active_source
+                .web_intent()
+                .expect("The same-item web source was checked before lifecycle start."),
+            settings,
+        ) {
             crate::media_open::WebMediaSelectionSwitchResolution::NoChange => {
                 return Ok(UrlSidebarActionApplyOutcome::NoChange);
             }

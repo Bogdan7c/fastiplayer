@@ -5,6 +5,7 @@
 //! Внешний код видит только намерения (`insert`, `collect_active_at`, `next_change_after`).
 
 mod max_end_tree;
+mod reveal;
 mod shorten;
 #[cfg(test)]
 mod tests;
@@ -177,8 +178,9 @@ impl SubtitleTimeline {
         output.sort_unstable_by_key(|&id| self.paint_order_key(id));
     }
 
-    /// Ближайший момент строго после `time`, в который набор активных событий меняется
-    /// (начало или конец какого-то события). Нужен, чтобы перерисовывать только при изменении.
+    /// Ближайший момент строго после `time`, в который набор активных событий или видимые слова
+    /// активного события меняются (начало или конец какого-то события, `TextSpan::reveal_at`
+    /// слова активного события). Нужен, чтобы перерисовывать только при изменении.
     ///
     /// Ближайшее начало — бинарный поиск. Ближайшее окончание достаточно искать среди
     /// событий, уже начавшихся к `time` (активных): любое ещё не начавшееся событие
@@ -194,15 +196,22 @@ impl SubtitleTimeline {
         let mut next_end: Option<SubtitleTime> = None;
         self.max_end_tree
             .visit_positions_ending_after(time, started, &mut |position| {
-                let Some(end) = self
+                let Some(event) = self
                     .order_by_start
                     .get(position)
                     .and_then(|&id| self.event(id))
-                    .map(SubtitleEvent::end)
                 else {
                     return;
                 };
-                next_end = Some(next_end.map_or(end, |current| current.min(end)));
+                // Конец события и появление его слов — одинаково «следующее изменение».
+                let next_reveal = reveal::reveal_times_within(event)
+                    .filter(|&reveal_at| reveal_at > time)
+                    .min();
+                let next_event_change =
+                    next_reveal.map_or(event.end(), |reveal_at| reveal_at.min(event.end()));
+                next_end = Some(
+                    next_end.map_or(next_event_change, |current| current.min(next_event_change)),
+                );
             });
         match (next_start, next_end) {
             (Some(start), Some(end)) => Some(start.min(end)),
@@ -210,8 +219,8 @@ impl SubtitleTimeline {
         }
     }
 
-    /// Последний момент `b`, `after < b <= up_to`, в который набор активных событий менялся
-    /// (начало или конец какого-то события). `None` — в этом окне изменений не было.
+    /// Последний момент `b`, `after < b <= up_to`, в который набор активных событий или видимые
+    /// слова менялись (начало, конец события или `TextSpan::reveal_at` слова). `None` — в этом окне изменений не было.
     ///
     /// Нужен рисовальщику анимированных сцен: картинка, нарисованная на `up_to`, не годится
     /// для времени ДО этого момента (там реплика ещё не началась или уже была другой).
@@ -234,16 +243,19 @@ impl SubtitleTimeline {
         let mut latest_end: Option<SubtitleTime> = None;
         self.max_end_tree
             .visit_positions_ending_after(after, started, &mut |position| {
-                let Some(end) = self
+                let Some(event) = self
                     .order_by_start
                     .get(position)
                     .and_then(|&id| self.event(id))
-                    .map(SubtitleEvent::end)
                 else {
                     return;
                 };
-                if end <= up_to {
-                    latest_end = Some(latest_end.map_or(end, |current| current.max(end)));
+                // Конец события и появление его слов — изменения; берём самое позднее в окне.
+                let changes = std::iter::once(event.end())
+                    .chain(reveal::reveal_times_within(event).filter(|&at| at > after))
+                    .filter(|&at| at <= up_to);
+                for change in changes {
+                    latest_end = Some(latest_end.map_or(change, |current| current.max(change)));
                 }
             });
         match (latest_start, latest_end) {

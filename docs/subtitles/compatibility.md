@@ -17,7 +17,8 @@ Session 01 delivers parsing only (crates `subtitle-core`, `subtitle-formats`). N
 | ASS / SSA inside MKV | embedded | Supported, all libass tags and effects (see "ASS / SSA (sessions 08–10)") | 06; 08; layer 2: 09; layer 3: 10 |
 | ASS / SSA sidecar file | sidecar | Supported, all libass tags and effects (see "ASS / SSA (sessions 08–10)") | 08; layer 2: 09; layer 3: 10 |
 | PGS inside MKV | embedded | Supported (see "PGS (session 11)") | 11 |
-| YouTube srv3 / WebVTT | web | Planned | 12 |
+| YouTube srv3 (`<timedtext format="3">`) | web (yt-dlp) | Supported: manual, auto (speech recognition) and auto-translated tracks, downloaded on selection (see "YouTube srv3 (session 12)" and "YouTube tracks (session 12)") | 12 |
+| YouTube WebVTT | web (yt-dlp) | Supported as fallback when srv3 is unavailable for a track | 12 |
 | HLS WebVTT, DASH TTML/IMSC | streaming | Planned | 13 |
 | VobSub, DVB, FLV subtitles | — | Backlog (embedded VobSub / DVB tracks are listed greyed out) | — |
 
@@ -179,8 +180,8 @@ Limitations:
 | Hotkey | `B` next audio track (cycles), one updating notification `Audio: …` |
 | Switching | the audio path is rebuilt for the new track (its own codec, rate and channels) and the player does a short seek to the current position, so audio and video stay in sync; Paused stays paused. Non-seekable sources continue from the next packets without a seek |
 | Per-video memory | the chosen audio track, subtitle track (embedded, file beside the video, loaded / dropped file), Off and the subtitle delay are remembered per video (local files and links) and restored on reopen, after restart and when the queue reaches the video again. Priority: this video's memory, then auto-selection, then container flags |
-| Storage | `track-memory.json` next to the config (schema v1); videos are keyed by a fingerprint of the path / link, a chosen subtitle file is stored by its path. Limit `playlist.track_memory_max_entries` (default 1000, 10–10000); the least recently used videos are forgotten first. A broken file is set aside as `track-memory.corrupt-*.json`, playback starts with an empty memory (warning in the log) |
-| Not remembered | automatic choices; quality / candidate switches keep the current tracks; YouTube audio language is session 12 |
+| Storage | `track-memory.json` next to the config (schema v2 since session 12: web subtitle choice and YouTube audio language; v1 files still load); videos are keyed by a fingerprint of the path / link, a chosen subtitle file is stored by its path. Limit `playlist.track_memory_max_entries` (default 1000, 10–10000); the least recently used videos are forgotten first. A broken file is set aside as `track-memory.corrupt-*.json`, playback starts with an empty memory (warning in the log) |
+| Not remembered | automatic choices; quality / candidate switches keep the current tracks; HLS/DASH audio version choice |
 | Known limits | a track is found again by language + title + codec (+ position among tracks); a track in another language is never picked instead. The same web video opened by a different kind of link (manifest URL vs page URL) has separate memory |
 
 
@@ -243,3 +244,39 @@ Placement: events with `\pos`, `\move`, `\org`, rotation, shear or a Banner / Sc
 - A vector clip mask is re-rasterized for every new animation key of the cue (the mask is part of the cached cue) and does not use the glyph caches. Letter outlines, borders, letter masks and merged run masks of animated scenes are cached across frames (see "Glyph caches" above), as in libass.
 - Tag numbers that turn into NaN or infinity (for example `\frz1e999`) are normalized to 0 where libass relies on platform-dependent C conversions (angles, shadow, blur); the picture for such inputs may differ from libass on another platform than the reference one.
 - Nesting of `\t` inside `\t` is limited to 16 levels (`MAX_TRANSFORM_NESTING`); libass has no limit, deeper tags are dropped and counted. Real files never go deeper than two levels.
+
+## YouTube srv3 (session 12)
+
+Parser: `crates/subtitle-formats/src/srv3/` (XML is read through `bounded-xml-reader` with budgets derived from `SubtitleParseLimits`). `sniff_text_subtitle_format` recognises `<timedtext` (with or without BOM / XML declaration). Sidecar `.srv3` files are not searched for yet (YouTube tracks arrive from the web).
+
+| Feature | Status |
+|---|---|
+| Paragraphs `<p t d>` with entities, `<br/>`, literal newlines, U+200B padding trimmed | Full |
+| Pens `<pen>`: `fc`/`fo` colour and opacity, `bc`/`bo` background (when `bo > 0`), `b`, `i`, `u` | Full (author colours override the user style, like other formats; span backgrounds are parsed but not drawn yet — see "Not done" in the rasterizer) |
+| Pen outline / shadow (`et`, `ec`), size `sz` other than 100, font style `fs`, ruby | Ignored; each such pen is counted once in `ignored_style_rules` |
+| Window position `<wp>` `ap` / `ah` / `av` | Mapped to `line` / `position` percentages and alignments; the standard bottom-centre (`ap=7 ah=50 av=100`, or no `<wp>`) is left to the user style |
+| Window style `<ws>` `ju` (left / right / centre / justify -> centre) | Full; other `ws` attributes (`mh`, `pd`, `sd`) ignored and counted |
+| Word timing `<s t>` | Each word has an absolute `reveal_at`; a word that has not appeared yet is not drawn and takes no space (the line grows as words appear); the picture is re-rasterized exactly at reveal moments |
+| Rolling windows (auto captions, `<p w>`, `rc` rows) | The time axis of a window is cut at every paragraph start / end; each segment is one event with the lines of all active paragraphs, newest last, last `rc` kept (no `rc`: at most 16). `a="1"` line-separator paragraphs produce nothing |
+| Missing `d` | Until the next paragraph start in the same window; for the last one 5 s |
+| Duplicate paragraphs (same start, duration, window, text; YTSubConverter outline trick) | First kept, the rest counted as ignored style rules |
+| `format` attribute | Absent is accepted; anything other than `3` (srv1 / srv2) is rejected as not srv3 |
+| Broken XML, DOCTYPE, custom entities, XML budget exceeded | Fatal typed errors (`MalformedSrv3`, `NotSrv3`, `Srv3TooComplex`); the message never echoes file content |
+| Per-paragraph problems (bad `t`, `d <= 0`, no text) | Skipped and counted in the parse report; the report "line number" is the paragraph ordinal |
+
+Word reveal (`TextSpan::reveal_at`) also works for WebVTT karaoke timestamps (`<00:00:01.500>`). ASS karaoke is a separate path and is unchanged.
+
+## YouTube tracks (session 12)
+
+| Feature | Status |
+|---|---|
+| Source | yt-dlp `--dump-single-json` fields `subtitles` (manual) and `automatic_captions`; nothing is written to disk by yt-dlp |
+| Kinds | Manual → `English`; speech recognition (`kind=asr`, no `tlang`) → `English (auto)`; auto-translation (`tlang`) → `Russian (auto, translated)`. Auto-dub videos have recognition per dubbed language (`ru-orig` …) |
+| Filtered out | `live_chat`, HLS playlist entries inside `automatic_captions` (`protocol=m3u8_native`), formats other than srv3 / vtt |
+| Menu | Manual and recognised tracks in the CC list (preferred languages first); translations in the "Auto-translate" submenu (preferred first, then alphabetical, scrollable). Same-named languages are told apart (`Chinese (Taiwan)`, `Portuguese (pt-BR)`) |
+| Download | Only the selected track, on a background thread, size limit `subtitles.max_file_size_mb`; srv3 first, WebVTT when srv3 is missing / empty / not XML. Signed links live ~7 h; an expired link triggers one silent yt-dlp re-extraction |
+| Errors | Video keeps playing; notification ("YouTube is limiting subtitle requests. Try again in a minute." for HTTP 429, connection / unavailable texts otherwise); the track stays in the menu and a click retries. No automatic background retries. Auto-translation usually gets 429 from YouTube (also for yt-dlp itself) — a YouTube limit, not a player bug |
+| Auto-selection | Manual tracks win over recognition for the same preferred language; translations are never chosen automatically; `V` cycles only the main list |
+| Memory | The chosen web track (language + kind) is remembered per video |
+| Privacy | Signed subtitle links never appear in the UI or logs |
+| Audio language (dubs) | Videos with several audio languages show them in the ♪ menu (`English (original)` first, then alphabetical); `B` cycles; choosing reopens the same item at the same position; default is the original; the choice is remembered per video |

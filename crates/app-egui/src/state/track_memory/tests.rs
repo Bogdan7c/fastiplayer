@@ -6,6 +6,7 @@ mod audio_plan;
 mod identity;
 mod owner_flow;
 mod startup_files;
+mod web_audio_language;
 mod wiring_guards;
 
 use std::io::Write;

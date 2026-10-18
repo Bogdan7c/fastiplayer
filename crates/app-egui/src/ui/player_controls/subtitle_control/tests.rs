@@ -61,6 +61,8 @@ pub(super) fn menu_track(
             is_hearing_impaired: false,
             title: None,
             file_name: None,
+            fallback_name: None,
+            distinguishing_name: None,
         },
         is_selected,
         availability,

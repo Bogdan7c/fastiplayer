@@ -56,6 +56,12 @@ impl SubtitleLanguage {
     pub fn english_display_name(&self) -> Option<&'static str> {
         language_table::english_name(self.primary_language())
     }
+
+    /// Можно ли принять язык из ИМЕНИ ФАЙЛА: только частые языки, чтобы случайное слово из
+    /// двух-трёх букв в названии не стало «языком» (см. `language_table`).
+    pub fn is_common_sidecar_language(&self) -> bool {
+        language_table::is_common_sidecar_language(self.primary_language())
+    }
 }
 
 #[cfg(test)]

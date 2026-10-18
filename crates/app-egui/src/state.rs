@@ -62,6 +62,7 @@ mod automatic_web_media_quality;
 mod dropped_subtitles;
 mod external_open;
 mod fullscreen_chrome_routing;
+mod language_label_disambiguation;
 mod local_open_install;
 mod main_visual_override;
 mod media_jobs;
@@ -131,7 +132,6 @@ pub use present_frame_cache::RenderablePresentFrame;
 pub(crate) use startup_context::AppStateStartupContext;
 use startup_context::player_timeline_wake_bridge;
 pub(crate) use subtitles::SubmittedFrameForSubtitles;
-#[cfg(test)]
 pub(crate) use subtitles::SubtitleMenuTrack;
 pub(crate) use subtitles::{
     AppearanceEdit, AppearanceEditFinish, AppearanceEditView, PlacedLayerRect, SubtitleRgb,
@@ -333,9 +333,8 @@ pub struct AppState {
     automatic_web_media_quality: automatic_web_media_quality::AutomaticWebMediaQualityController,
     pending_automatic_web_media_switch: Option<web_media_catalog::PendingAutomaticWebMediaSwitch>,
     web_media_fallback_notice: bool,
-    /// Web-версия звука, выбранная в меню «♪»/клавишей `B`; запускается после egui pass-а.
-    requested_web_audio_version:
-        Option<crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction>,
+    /// Web-версия или язык звука из меню «♪»/клавиши `B`; запускается после egui pass-а.
+    requested_web_audio_switch: Option<audio_tracks::WebAudioSwitchRequest>,
 
     /// Единственный владелец live geometry общей панели для всех sidebar sections.
     sidebar_host_state: SidebarHostState,
@@ -475,7 +474,7 @@ impl AppState {
                 automatic_web_media_quality::AutomaticWebMediaQualityController::default(),
             pending_automatic_web_media_switch: None,
             web_media_fallback_notice: false,
-            requested_web_audio_version: None,
+            requested_web_audio_switch: None,
             sidebar_host_state,
             sidebar_slide_last_tick: None,
         };

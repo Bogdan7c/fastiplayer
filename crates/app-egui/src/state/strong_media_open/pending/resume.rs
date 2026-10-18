@@ -293,6 +293,8 @@ impl AppState {
                 ),
             };
         }
+        // Новое открытие (не переоткрытие внутри линии): запомненный язык дубляжа.
+        self.schedule_remembered_web_audio_language(&installed.source);
         let position_plan = plan_post_installed_startup_position(
             pending.startup_position,
             pending.position_restore_strategy,

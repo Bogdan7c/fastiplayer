@@ -259,6 +259,8 @@ pub struct WebMediaStreamConfiguration {
     preference: WebMediaSelectionPreference,
     component_variants: WebMediaComponentVariantConfiguration,
     hls_subtitle_renditions: Arc<[crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition]>,
+    /// Дорожки субтитров extractor-а (YouTube): только безопасное описание, без ссылок.
+    web_subtitle_tracks: Arc<[crate::web_subtitle_fetch::WebSubtitleTrack]>,
 }
 
 impl fmt::Debug for WebMediaStreamConfiguration {
@@ -274,6 +276,7 @@ impl fmt::Debug for WebMediaStreamConfiguration {
                 "hls_subtitle_rendition_count",
                 &self.hls_subtitle_renditions().len(),
             )
+            .field("web_subtitle_track_count", &self.web_subtitle_tracks.len())
             .finish()
     }
 }
@@ -342,6 +345,7 @@ impl WebMediaStreamConfiguration {
             preference,
             component_variants: WebMediaComponentVariantConfiguration::Unavailable,
             hls_subtitle_renditions: Arc::from([]),
+            web_subtitle_tracks: Arc::from([]),
         })
     }
 
@@ -376,6 +380,7 @@ impl WebMediaStreamConfiguration {
             preference,
             component_variants: WebMediaComponentVariantConfiguration::Unavailable,
             hls_subtitle_renditions: Arc::from([]),
+            web_subtitle_tracks: Arc::from([]),
         }
     }
 
@@ -406,6 +411,22 @@ impl WebMediaStreamConfiguration {
     ) -> Self {
         self.hls_subtitle_renditions = renditions;
         self
+    }
+
+    /// Привязывает безопасное описание субтитров extractor-а к конфигурации.
+    #[must_use]
+    pub fn with_web_subtitle_tracks(
+        mut self,
+        tracks: Arc<[crate::web_subtitle_fetch::WebSubtitleTrack]>,
+    ) -> Self {
+        self.web_subtitle_tracks = tracks;
+        self
+    }
+
+    /// Дорожки субтитров видео без секретов; скачивает их `WebSubtitleFetchHandle`.
+    #[must_use]
+    pub fn web_subtitle_tracks(&self) -> &[crate::web_subtitle_fetch::WebSubtitleTrack] {
+        &self.web_subtitle_tracks
     }
 
     /// Возвращает installed descriptors без URI и без возможности скрытого fetch-а.
@@ -452,6 +473,7 @@ impl WebMediaStreamConfiguration {
             preference,
             component_variants: WebMediaComponentVariantConfiguration::Unavailable,
             hls_subtitle_renditions: Arc::from([]),
+            web_subtitle_tracks: Arc::from([]),
         }
     }
 }

@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+use media_source_open::web_subtitle_fetch::WebSubtitleFetchError;
 use player_core::MediaInstanceId;
 
 use super::intents::{AttachOutcome, QueueOutcome, SubtitleVisibility};
@@ -15,8 +16,9 @@ use super::{
     CurrentMediaForSubtitles, EmbeddedUpdate, PlacedSubtitleOverlay, SubmittedFrameForSubtitles,
     subtitle_source_of,
 };
+use crate::state::notifications::{NotificationCenter, TransientReplaceKey};
 use crate::state::{ActiveMediaSource, AppState};
-use crate::subtitle_message::attach_batch_message;
+use crate::subtitle_message::{attach_batch_message, subtitle_download_failure_message};
 
 impl AppState {
     /// Media установлено в плеер: запускает (или сбрасывает) загрузку субтитров.
@@ -92,7 +94,21 @@ impl AppState {
     pub(crate) fn poll_subtitle_jobs(&mut self) -> bool {
         // Порядок важен: ответ диалога «Load file…» приходит по тому же wake-событию.
         let picker_changed = self.poll_subtitle_file_picker();
-        self.subtitles.poll_jobs() || picker_changed
+        let jobs_changed = self.subtitles.poll_jobs();
+        let failures_shown = self.show_subtitle_download_failures();
+        jobs_changed || picker_changed || failures_shown
+    }
+
+    /// Показывает по уведомлению на каждую неудавшуюся попытку скачать web-субтитры.
+    /// Видео играет дальше; новое уведомление заменяет прежнее такого же рода.
+    fn show_subtitle_download_failures(&mut self) -> bool {
+        let failures = self.subtitles.take_download_failures();
+        deliver_download_failures(
+            &mut self.notifications,
+            &failures,
+            std::time::Instant::now(),
+        );
+        !failures.is_empty()
     }
 
     /// Передаёт субтитрам наблюдение за плеером из последнего snapshot: режим (игра, пауза,
@@ -174,5 +190,22 @@ impl AppState {
     /// (автовыбор его не создаёт). Возвращается один раз.
     pub(crate) fn take_subtitle_enabled_preference_change(&mut self) -> Option<SubtitleVisibility> {
         self.subtitles.take_enabled_preference_change()
+    }
+}
+
+/// Показывает по уведомлению на каждую неудавшуюся попытку (отдельная функция: проверяется
+/// настоящим центром уведомлений без `AppState`). В лог идёт только причина без ссылок.
+pub(super) fn deliver_download_failures(
+    notifications: &mut NotificationCenter,
+    failures: &[WebSubtitleFetchError],
+    now: std::time::Instant,
+) {
+    for failure in failures {
+        tracing::warn!(%failure, "Web subtitles could not be downloaded; playback continues");
+        notifications.notify_transient_replacing(
+            TransientReplaceKey::SubtitleDownload,
+            subtitle_download_failure_message(failure),
+            now,
+        );
     }
 }

@@ -4,6 +4,10 @@ use std::sync::Arc;
 
 use service_ytdlp::YtDlpCandidateSelection;
 
+use super::audio_languages::{
+    ExtractorAudioLanguageCatalog, WebAudioLanguageAction, WebAudioLanguageChoice,
+    WebAudioLanguageResolution,
+};
 use super::{YtDlpCandidateOpenIntent, catalog};
 
 /// Provider DTO и reverse routes никогда не пересекают этот adapter owner.
@@ -15,6 +19,10 @@ pub struct ExtractorMediaSourceState {
     pub(super) stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
     pub(super) catalog_attachment: crate::web_media_catalog::WebMediaCatalogAttachment,
     pub(super) catalog_selection_routes: Arc<[catalog::ExtractorCatalogSelectionRoute]>,
+    /// Языки звука (дубляжи) раздельной пары «видео + аудио»; пусто, если выбора нет.
+    pub(super) audio_languages: ExtractorAudioLanguageCatalog,
+    /// Загрузка субтитров видео; секретные ссылки живут только внутри дескриптора.
+    pub(super) subtitle_fetch: crate::web_subtitle_fetch::WebSubtitleFetchHandle,
 }
 
 impl ExtractorMediaSourceState {
@@ -28,6 +36,36 @@ impl ExtractorMediaSourceState {
         &self,
     ) -> &crate::web_media_stream_model::WebMediaStreamConfiguration {
         &self.stream_configuration
+    }
+
+    /// Дескриптор загрузки субтитров этого видео (клонируется дёшево, `Send`).
+    ///
+    /// Список дорожек без секретов: `stream_configuration().web_subtitle_tracks()`.
+    pub fn web_subtitle_fetch_handle(&self) -> crate::web_subtitle_fetch::WebSubtitleFetchHandle {
+        self.subtitle_fetch.clone()
+    }
+
+    /// Языки звука, между которыми можно переключиться без смены видео.
+    ///
+    /// Пусто: у ролика один язык, активный кандидат склеен (muxed) либо источник не
+    /// публикует языки. Секретов в ответе нет.
+    #[must_use]
+    pub fn audio_language_choices(&self) -> Vec<WebAudioLanguageChoice> {
+        self.audio_languages
+            .choices(self.stream_configuration.generation())
+    }
+
+    /// Разбирает выбор языка и строит переоткрытие того же ролика с другой дорожкой.
+    #[must_use]
+    pub fn audio_language_switch_intent(
+        &self,
+        action: WebAudioLanguageAction,
+    ) -> WebAudioLanguageResolution {
+        self.audio_languages.resolve(
+            action,
+            self.stream_configuration.generation(),
+            self.stream_configuration.preference(),
+        )
     }
 
     /// Возвращает neutral catalog attachment без extractor route payload-а.

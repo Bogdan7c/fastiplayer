@@ -8,7 +8,7 @@ use player_core::{PlayerSnapshot, TrackSummarySnapshot};
 use web_media_core::{CodecFamily, ComponentVariantCatalogGeneration, DynamicRange};
 
 use super::control_actions::{NextTrackPlan, plan_next_track};
-use super::menu_view::{AudioTrackMenuTarget, AudioTrackMenuView};
+use super::menu_view::{AudioTrackMenuTarget, AudioTrackMenuView, WebAudioMenuSource};
 use super::web_version_switch::{
     VERSION_SWITCH_BUSY_MESSAGE, VERSION_SWITCH_CANCELED_MESSAGE, VERSION_SWITCH_FAILED_MESSAGE,
     VERSION_SWITCH_STALE_MESSAGE, start_notice, terminal_failure_notice,
@@ -118,7 +118,7 @@ fn menu_for(
 ) -> AudioTrackMenuView {
     AudioTrackMenuView::compose(
         snapshot,
-        web_audio_versions(parent_generation(), projection),
+        web_audio_versions(parent_generation(), projection).map(WebAudioMenuSource::Versions),
     )
 }
 

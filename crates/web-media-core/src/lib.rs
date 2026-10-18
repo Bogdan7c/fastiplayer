@@ -26,7 +26,8 @@ pub use descriptor::{
     AudioTrackDescriptor, Bitrate, BitrateError, CandidateDescriptor, CandidateDescriptorError,
     ChannelCount, ChannelCountError, DescriptorTextField, DynamicRange, FrameRate, FrameRateError,
     LanguageTag, MAX_SUBTITLE_DESCRIPTORS, MAX_VIDEO_WIDTH, SampleRate, SampleRateError,
-    SubtitleDescriptor, SubtitleFormatIdentity, VideoTrackDescriptor, VideoWidth, VideoWidthError,
+    SubtitleDescriptor, SubtitleDisplayName, SubtitleFormatIdentity, SubtitleKind,
+    VideoTrackDescriptor, VideoWidth, VideoWidthError,
 };
 pub use extractor::{
     ExtractorInvocationReason, WebMediaFallbackGate, WebMediaFallbackOutcome,

@@ -13,9 +13,11 @@
 //!   ограничение (memory `app-egui/web-audio-versions-menu`).
 
 use media_core::{TrackId, TrackKind};
+use media_source_open::web_media_open::audio_languages::WebAudioLanguageAction;
 use player_core::PlayerSnapshot;
 
 use super::labels::{AudioTrackNumber, audio_track_label};
+use super::web_audio_languages::WebAudioLanguageEntry;
 use super::web_versions::WebAudioVersionEntry;
 use crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction;
 
@@ -29,6 +31,17 @@ pub(crate) enum AudioTrackMenuTarget {
     EmbeddedTrack(TrackId),
     /// Другая web-версия звука того же видео: same-item component switch.
     WebAudioVersion(ComponentVariantSelectionAction),
+    /// Другой язык звука (дубляж) того же ролика: same-item switch на ту же позицию.
+    WebAudioLanguage(WebAudioLanguageAction),
+}
+
+/// Что web-источник предлагает вместо встроенных дорожек.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum WebAudioMenuSource {
+    /// Версии звука HLS/DASH (разные кодеки/раскладки).
+    Versions(Vec<WebAudioVersionEntry>),
+    /// Языки звука yt-dlp-видео (оригинал и дубляжи).
+    Languages(Vec<WebAudioLanguageEntry>),
 }
 
 /// Одна строка меню.
@@ -59,26 +72,53 @@ impl AudioTrackMenuView {
         Self::compose(snapshot, None)
     }
 
-    /// Строит единый список: web-версии, если они переданы, иначе встроенные дорожки.
+    /// Меню из готовых строк-языков (подпись, играет ли) для тестов виджета «♪».
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn for_web_languages_test(rows: &[(WebAudioLanguageAction, &str, bool)]) -> Self {
+        Self {
+            tracks: rows
+                .iter()
+                .map(|&(action, label, is_active)| {
+                    web_item(
+                        AudioTrackMenuTarget::WebAudioLanguage(action),
+                        label.to_owned(),
+                        is_active,
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// Строит единый список: строки web-источника, если они переданы, иначе встроенные дорожки.
     #[must_use]
     pub(super) fn compose(
         snapshot: &PlayerSnapshot,
-        web_versions: Option<Vec<WebAudioVersionEntry>>,
+        web_source: Option<WebAudioMenuSource>,
     ) -> Self {
-        let Some(web_versions) = web_versions else {
-            return Self {
-                tracks: embedded_tracks(snapshot),
-            };
+        let tracks = match web_source {
+            None => embedded_tracks(snapshot),
+            Some(WebAudioMenuSource::Versions(versions)) => versions
+                .into_iter()
+                .map(|version| {
+                    web_item(
+                        AudioTrackMenuTarget::WebAudioVersion(version.action),
+                        version.label,
+                        version.is_active,
+                    )
+                })
+                .collect(),
+            Some(WebAudioMenuSource::Languages(languages)) => languages
+                .into_iter()
+                .map(|language| {
+                    web_item(
+                        AudioTrackMenuTarget::WebAudioLanguage(language.action),
+                        language.label,
+                        language.is_active,
+                    )
+                })
+                .collect(),
         };
-        let tracks = web_versions
-            .into_iter()
-            .map(|version| AudioTrackMenuItem {
-                target: AudioTrackMenuTarget::WebAudioVersion(version.action),
-                label: version.label,
-                is_selected: version.is_active,
-                is_default: false,
-            })
-            .collect();
         Self { tracks }
     }
 
@@ -117,6 +157,16 @@ impl AudioTrackMenuView {
             .or_else(|| self.tracks.iter().position(|track| track.is_default))
             .unwrap_or(0);
         self.tracks.get((current_index + 1) % self.tracks.len())
+    }
+}
+
+/// Строка web-источника: «по умолчанию» у неё не бывает, играющая отмечена `is_active`.
+fn web_item(target: AudioTrackMenuTarget, label: String, is_active: bool) -> AudioTrackMenuItem {
+    AudioTrackMenuItem {
+        target,
+        label,
+        is_selected: is_active,
+        is_default: false,
     }
 }
 

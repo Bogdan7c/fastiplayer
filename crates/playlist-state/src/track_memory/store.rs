@@ -19,8 +19,8 @@ use crate::{
 };
 
 use super::dto::{
-    CURRENT_TRACK_MEMORY_SCHEMA_VERSION, InvalidTrackMemoryPayload, restore_track_memory,
-    serialize_track_memory,
+    CURRENT_TRACK_MEMORY_SCHEMA_VERSION, InvalidTrackMemoryPayload,
+    OLDEST_SUPPORTED_TRACK_MEMORY_SCHEMA_VERSION, restore_track_memory, serialize_track_memory,
 };
 use super::memory::{TrackMemory, TrackMemoryCapacity};
 
@@ -249,7 +249,7 @@ fn inspect_track_memory(path: &Path, capacity: TrackMemoryCapacity) -> TrackMemo
             schema_version: proof.schema_version,
         };
     }
-    if proof.schema_version != CURRENT_TRACK_MEMORY_SCHEMA_VERSION {
+    if proof.schema_version < OLDEST_SUPPORTED_TRACK_MEMORY_SCHEMA_VERSION {
         return protected(ProtectedStateCause::UnsupportedSchemaVersion);
     }
 

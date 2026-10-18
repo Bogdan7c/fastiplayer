@@ -320,8 +320,9 @@ mod tests {
             "Use ui::egui_behavior::vertical_scroll_area(): {offenders:?}"
         );
         // Сканер действительно видит панели приложения (настройки x2, URL,
-        // сайдбар, плейлист, телеметрия), а не прошёл по пустому каталогу.
-        assert_eq!(shared_constructor_uses, 6);
+        // сайдбар, плейлист, телеметрия, список дорожек субтитров и его подменю
+        // автоперевода), а не прошёл по пустому каталогу.
+        assert_eq!(shared_constructor_uses, 8);
     }
 
     fn rust_sources(directory: &Path) -> Vec<PathBuf> {

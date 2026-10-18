@@ -2847,6 +2847,7 @@ dependencies = [
  "mpeg-ts-demux",
  "player-core",
  "playlist-discovery",
+ "serde_json",
  "service-direct-media",
  "service-ytdlp",
  "source-core",
@@ -4855,6 +4856,7 @@ dependencies = [
 name = "subtitle-formats"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "bounded-xml-reader",
  "chardetng",
  "encoding_rs",
  "subtitle-core",

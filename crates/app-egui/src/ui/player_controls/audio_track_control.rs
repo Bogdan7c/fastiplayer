@@ -29,6 +29,7 @@ use super::subtitle_control::SubtitleNeighbor;
 use crate::state::AudioTrackMenuView;
 use crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction;
 use layout::{AudioTrackControlLayout, AudioTrackControlMode, choose_mode};
+use media_source_open::web_media_open::audio_languages::WebAudioLanguageAction;
 
 /// Полный переход «появилась/исчезла» занимает 250 мс (как CC и кнопка скорости).
 const REVEAL_TRANSITION_SECONDS: f32 = 0.250;
@@ -42,6 +43,8 @@ pub enum AudioTrackControlAction {
     SelectTrack(TrackId),
     /// Выбрать другую web-версию звука (HLS/DASH audio rendition) из того же меню.
     SwitchWebAudioVersion(ComponentVariantSelectionAction),
+    /// Выбрать другой язык звука (дубляж) yt-dlp-видео из того же меню.
+    SwitchWebAudioLanguage(WebAudioLanguageAction),
     /// Следующая дорожка по кругу (клавиша `B`).
     SelectNextTrack,
 }

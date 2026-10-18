@@ -7,6 +7,7 @@ use crate::error::SubtitleLoadError;
 use crate::limits::SubtitleParseLimits;
 use crate::sniff::TextSubtitleFormat;
 use crate::srt::parse_srt;
+use crate::srv3::parse_srv3;
 use crate::webvtt::parse_webvtt;
 
 /// Загруженный файл субтитров вместе со сведениями о декодировании.
@@ -61,6 +62,7 @@ pub fn load_text_subtitle(
     let document = match format {
         TextSubtitleFormat::Srt => parse_srt(&decoded.text, limits)?,
         TextSubtitleFormat::WebVtt => parse_webvtt(&decoded.text, limits)?,
+        TextSubtitleFormat::Srv3 => parse_srv3(&decoded.text, limits)?,
         TextSubtitleFormat::Ass => {
             let ass_limits = limits
                 .ass_limits()

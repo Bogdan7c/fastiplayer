@@ -12,6 +12,7 @@ mod planning;
 mod raw;
 mod rematch;
 mod request_material;
+mod subtitles;
 mod transport;
 
 pub use composition::{YtDlpComposedSelection, YtDlpCompositionError, YtDlpCompositionMatchKind};
@@ -35,6 +36,9 @@ pub use request_material::{
     YtDlpRequestMaterial, YtDlpRequestMaterialSummary, YtDlpRequestMaterialV1,
     YtDlpRequestMaterialViolation, YtDlpSmoothManifestRequestMaterial,
     YtDlpSmoothManifestRequestMaterialViolation, YtDlpSmoothUnsupportedRequestMaterial,
+};
+pub use subtitles::{
+    YtDlpSubtitleFormat, YtDlpSubtitleInventory, YtDlpSubtitleSource, YtDlpSubtitleTrack,
 };
 pub use transport::{
     YtDlpDashTransportComponent, YtDlpProgressiveTransportRequestContext, YtDlpTransportComponent,
@@ -125,3 +129,9 @@ mod rematch_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod composition_tests;
+
+#[cfg(test)]
+mod compound_audio_tests;

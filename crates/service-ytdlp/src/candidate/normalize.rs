@@ -29,6 +29,11 @@ pub(crate) fn normalize_candidate_document(
     let live_intent = normalize_live_intent(document.is_live, document.live_status.as_deref());
     let playlist_metadata =
         YtDlpPlaylistMetadata::from_extractor_seconds(document.title, document.duration);
+    let subtitle_inventory = super::subtitles::normalize_subtitle_inventory(
+        document.subtitles.as_ref(),
+        document.automatic_captions.as_ref(),
+        source,
+    );
     let mut seen_format_identities = HashSet::new();
     let inventory = document
         .formats
@@ -60,6 +65,7 @@ pub(crate) fn normalize_candidate_document(
         inventory,
         selected,
     )
+    .with_subtitle_inventory(subtitle_inventory)
 }
 
 /// Сводит official `is_live/live_status` fields в один fail-closed intent.

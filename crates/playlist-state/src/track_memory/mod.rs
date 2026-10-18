@@ -15,6 +15,8 @@ mod hint;
 mod key;
 mod memory;
 mod store;
+mod web_audio_language;
+mod web_choice;
 mod writer;
 
 #[cfg(test)]
@@ -35,6 +37,10 @@ pub use memory::{
 pub use store::{
     MAX_TRACK_MEMORY_BYTES, TRACK_MEMORY_FILENAME, TrackMemoryCorruptCause, TrackMemoryInspection,
     TrackMemoryStore,
+};
+pub use web_audio_language::{RememberedWebAudioLanguage, RememberedWebAudioLanguageError};
+pub use web_choice::{
+    RememberedWebSubtitle, RememberedWebSubtitleError, RememberedWebSubtitleKind,
 };
 pub use writer::{
     TrackMemorySaveRevision, TrackMemorySubmitOutcome, TrackMemoryWriteReport,

@@ -10,8 +10,8 @@ use crate::web_media_stream_model::{
 };
 
 use super::{
-    ActiveMediaSource, AppState, PendingSameItemSwitch, SameItemSwitchError, SameItemSwitchKind,
-    StrongMediaOpenError, StrongMediaOpenPoll, UrlSidebarActionApplyOutcome,
+    ActiveMediaSource, AppState, AudioLanguagePurpose, PendingSameItemSwitch, SameItemSwitchError,
+    SameItemSwitchKind, StrongMediaOpenError, StrongMediaOpenPoll, UrlSidebarActionApplyOutcome,
     safe_error_for_start_failure, safe_error_for_terminal_failure,
 };
 
@@ -82,6 +82,9 @@ pub(super) trait SameItemSwitchCompletionOwner {
 
     /// Убирает fallback notice только после успешной установки выбранного target-а.
     fn clear_web_media_fallback_notice(&mut self);
+
+    /// Запоминает язык звука «для этого видео» только после strong `Installed`.
+    fn remember_web_audio_language(&mut self, language: playlist_state::RememberedWebAudioLanguage);
 }
 
 /// Selector owner выражает UI intent и не раскрывает controller storage lifecycle port-у.
@@ -321,6 +324,16 @@ impl SameItemSwitchAppPath {
             SameItemSwitchKind::Component { .. } => {
                 owner.record_component_switch_installed();
             }
+            SameItemSwitchKind::AudioLanguage { purpose, .. } => {
+                owner.record_component_switch_installed();
+                // Запоминаем только то, что реально установилось и выбрано пользователем.
+                if let AudioLanguagePurpose::UserChoice {
+                    remember_as: Some(language),
+                } = purpose
+                {
+                    owner.remember_web_audio_language(language);
+                }
+            }
             SameItemSwitchKind::Picker { target, .. }
             | SameItemSwitchKind::AutomaticPicker { target, .. } => {
                 owner.record_component_switch_installed();
@@ -557,6 +570,13 @@ impl SameItemSwitchCompletionOwner for ProductionSameItemSwitchPollContext<'_, '
 
     fn clear_web_media_fallback_notice(&mut self) {
         self.app_state.web_media_fallback_notice = false;
+    }
+
+    fn remember_web_audio_language(
+        &mut self,
+        language: playlist_state::RememberedWebAudioLanguage,
+    ) {
+        self.app_state.remember_user_web_audio_language(language);
     }
 }
 

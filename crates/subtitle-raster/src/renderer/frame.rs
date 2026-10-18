@@ -82,6 +82,16 @@ impl FrameTimeDependence {
 }
 
 impl FrameTimeDependence {
+    /// Учитывает реплику со словами, появляющимися по времени (`TextSpan::reveal_at`):
+    /// `next_reveal` — ближайшее появление после момента кадра (`None` — всё уже видно).
+    /// Кадр перестаёт быть «вне времени» в любом случае: при перемотке назад слова скрываются.
+    pub(crate) fn include_reveal(&mut self, next_reveal: Option<SubtitleTime>) {
+        if let Some(reveal_at) = next_reveal {
+            self.change = self.change.earliest(AnimationChange::At(reveal_at));
+        }
+        self.time_free = false;
+    }
+
     /// Учитывает изменение, которое реплике добавила стадия после кэша (караоке): оно известно
     /// только по готовой реплике, поэтому не входит в `AssAnimation`.
     pub(crate) fn include_stage_change(&mut self, change: AnimationChange) {

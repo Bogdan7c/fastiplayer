@@ -66,6 +66,42 @@ impl AppState {
         }
     }
 
+    /// Язык звука web-видео, выбранный пользователем, ТОЛЬКО что установился: запоминаем.
+    ///
+    /// Вызывается завершением same-item switch-а (не стартом): отказ и устаревший выбор
+    /// сюда не доходят. Ключ — исходная ссылка активного источника, то есть то же видео.
+    pub(in crate::state) fn remember_user_web_audio_language(
+        &mut self,
+        language: playlist_state::RememberedWebAudioLanguage,
+    ) {
+        let Some(source) = self.active_media_source.as_ref() else {
+            return;
+        };
+        let Ok(key) = video_key_for_source(source) else {
+            tracing::debug!("The audio language cannot be remembered for this media source");
+            return;
+        };
+        let outcome =
+            self.track_memory
+                .lock()
+                .remember_web_audio_language(key, language, Instant::now());
+        if outcome == RecordOutcome::NotApplicable {
+            tracing::debug!("The audio language was not remembered");
+        }
+    }
+
+    /// Запомненный язык звука для источника (восстановление при открытии).
+    pub(in crate::state) fn remembered_web_audio_language(
+        &self,
+        source: &ActiveMediaSource,
+    ) -> Option<playlist_state::RememberedWebAudioLanguage> {
+        let key = video_key_for_source(source).ok()?;
+        self.track_memory
+            .lock()
+            .remembered_for_key(&key)
+            .web_audio_language
+    }
+
     /// Забирает действия пользователя с субтитрами и записывает их в память.
     ///
     /// Вызывается сразу после каждого пользовательского входа в субтитры, поэтому изменение

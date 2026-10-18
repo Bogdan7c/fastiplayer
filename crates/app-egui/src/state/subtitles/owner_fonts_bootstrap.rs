@@ -56,7 +56,9 @@ impl SubtitleOwner {
                 tracing::warn!(%failure, "Subtitle fonts could not be prepared for the sample");
                 false
             }
-            SidecarJobOutcome::Discovered(_) | SidecarJobOutcome::FileLoaded { .. } => {
+            SidecarJobOutcome::Discovered(_)
+            | SidecarJobOutcome::FileLoaded { .. }
+            | SidecarJobOutcome::WebTrackLoaded { .. } => {
                 tracing::error!("A fonts task returned a foreign result; ignoring it");
                 false
             }

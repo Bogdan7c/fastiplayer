@@ -155,9 +155,11 @@ fn candidate_rejects_cross_source_subtitle_identity() {
     let subtitle = SubtitleDescriptor::new(
         SemanticIdentity::new(SourceIdentity::new(2), "subtitle-en")
             .expect("subtitle identity valid"),
-        SubtitleFormatIdentity::new("vtt").expect("subtitle format valid"),
-        Some(LanguageTag::new("en").expect("languagevalid")),
-    );
+        SubtitleKind::Manual,
+        vec![SubtitleFormatIdentity::new("vtt").expect("subtitle format valid")],
+    )
+    .expect("descriptor valid")
+    .with_language(LanguageTag::new("en").expect("languagevalid"));
 
     let error = CandidateDescriptor::new(
         identity,

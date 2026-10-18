@@ -77,12 +77,14 @@ impl SubtitleOwner {
         let Some(media) = self.media.as_mut() else {
             return SelectTrackOutcome::UnknownTrack;
         };
-        let Some(entry) = media.tracks.get(track_id) else {
+        let Some(entry) = media.tracks.get_mut(track_id) else {
             return SelectTrackOutcome::UnknownTrack;
         };
         if !entry.is_selectable() {
             return SelectTrackOutcome::TrackUnavailable;
         }
+        // Повторный выбор дорожки, которая не скачалась, — единственный повод для новой попытки.
+        entry.prepare_retry_after_failed_download();
         media.selected = Some(track_id);
         media.user_chose_track = true;
         media.note_user_choice();
@@ -98,7 +100,7 @@ impl SubtitleOwner {
     }
 
     /// Следующая дорожка по кругу: дорожки в порядке меню, затем «выкл», затем первая.
-    /// Недоступные дорожки пропускаются.
+    /// Недоступные дорожки и автопереводы web-видео пропускаются.
     pub(super) fn select_next_track(&mut self) -> CycleOutcome {
         let Some(media) = &self.media else {
             return CycleOutcome::NoTracks;
@@ -107,7 +109,7 @@ impl SubtitleOwner {
             .tracks
             .entries()
             .iter()
-            .filter(|entry| entry.is_selectable())
+            .filter(|entry| entry.takes_part_in_track_cycling())
             .map(|entry| entry.id)
             .collect();
         if selectable.is_empty() {

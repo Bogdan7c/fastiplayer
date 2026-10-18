@@ -93,15 +93,21 @@ pub(super) fn catalog_attachment(
         Some(selection) => separate_components_target(selection, request.active_selection)?,
         None => candidate_target(request.active_selection)?,
     };
-    let projected_choices = complete_projected_choices(
-        parent_choices(
-            request.candidate_snapshot,
-            request.planning_snapshot,
-            request.capabilities,
-            request.policy,
-        )?,
-        &active,
+    let mut parent_choices = parent_choices(
+        request.candidate_snapshot,
+        request.planning_snapshot,
+        request.capabilities,
+        request.policy,
     )?;
+    if let Some(active_composed) = request.active_composed {
+        adopt_active_separate_pair(
+            &mut parent_choices,
+            request.active_selection,
+            active_composed,
+            &active,
+        );
+    }
+    let projected_choices = complete_projected_choices(parent_choices, &active)?;
     let mut choices = Vec::with_capacity(projected_choices.len());
     let mut routes = Vec::with_capacity(projected_choices.len());
     for projected in projected_choices {
@@ -163,6 +169,41 @@ pub(super) fn projected_parent_choice_count(
     .map(|choices| choices.len())
 }
 
+/// Строка видео в каталоге показывает установленную пару, а не пару по умолчанию.
+///
+/// Каталог строит для каждого video-only ровно одну пару «видео + лучший звук». Когда
+/// пользователь выбрал другой язык звука для того же видео, установленная пара в этот
+/// список не попадает; без подмены открытие упало бы на «active choice absent». Поэтому
+/// строка с тем же видео меняет свою цель на установленную пару (ранг и режим остаются).
+fn adopt_active_separate_pair(
+    choices: &mut [ProjectedCatalogChoice],
+    active_video: &YtDlpCandidateSelection,
+    active_composed: &YtDlpComposedSelection,
+    active_target: &WebMediaSelectionTarget,
+) {
+    if choices
+        .iter()
+        .any(|projected| &projected.choice.target == active_target)
+    {
+        return;
+    }
+    let row_for_same_video = choices.iter_mut().find(|projected| {
+        matches!(
+            &projected.route,
+            ExtractorCatalogSelectionRoute::SeparateComponents { parent_preference, .. }
+                if parent_preference.as_ref() == active_video
+        )
+    });
+    if let Some(projected) = row_for_same_video {
+        projected.choice.target = active_target.clone();
+        projected.route = ExtractorCatalogSelectionRoute::SeparateComponents {
+            target: active_target.clone(),
+            selection: Box::new(active_composed.clone()),
+            parent_preference: Box::new(active_video.clone()),
+        };
+    }
+}
+
 fn complete_projected_choices(
     mut choices: Vec<ProjectedCatalogChoice>,
     active: &WebMediaSelectionTarget,
@@ -204,10 +245,41 @@ fn complete_parent_choices(
     Ok(choices)
 }
 
+/// Playable audio-only candidates в порядке fallback-ранга планировщика (лучший первым).
+///
+/// Общий порядок для композиции «видео + лучший звук» каталога и для выбора лучшего
+/// звука на каждый язык (`audio_languages`): оба обязаны видеть одну и ту же очередь.
 #[expect(
     clippy::expect_used,
     reason = "инвариант: audio-only candidate has audio rank"
 )]
+pub(super) fn ranked_playable_audio<'snapshot>(
+    snapshot: &'snapshot YtDlpCandidateSnapshot,
+    rejected: &std::collections::HashSet<&web_media_core::CandidateIdentity>,
+) -> Vec<&'snapshot service_ytdlp::YtDlpNormalizedCandidate> {
+    let current_audio = None;
+    let mut playable_audio = snapshot
+        .accepted_candidates()
+        .filter(|candidate| {
+            matches!(candidate.descriptor().layout(), StreamLayout::AudioOnly(_))
+                && !rejected.contains(candidate.descriptor().identity())
+        })
+        .collect::<Vec<_>>();
+    playable_audio.sort_by(|left, right| {
+        web_media_playback_plan::compare_audio_fallback(
+            current_audio,
+            left.descriptor().semantic_identity(),
+            left.audio_fallback_rank()
+                .expect("audio-only candidate has audio rank"),
+            right.descriptor().semantic_identity(),
+            right
+                .audio_fallback_rank()
+                .expect("audio-only candidate has audio rank"),
+        )
+    });
+    playable_audio
+}
+
 fn parent_choices(
     snapshot: &YtDlpCandidateSnapshot,
     planning: &PlanningCandidateSnapshot,
@@ -248,26 +320,7 @@ fn parent_choices(
             },
         });
     }
-    let current_audio = None;
-    let mut playable_audio = snapshot
-        .accepted_candidates()
-        .filter(|candidate| {
-            matches!(candidate.descriptor().layout(), StreamLayout::AudioOnly(_))
-                && !rejected.contains(candidate.descriptor().identity())
-        })
-        .collect::<Vec<_>>();
-    playable_audio.sort_by(|left, right| {
-        web_media_playback_plan::compare_audio_fallback(
-            current_audio,
-            left.descriptor().semantic_identity(),
-            left.audio_fallback_rank()
-                .expect("audio-only candidate has audio rank"),
-            right.descriptor().semantic_identity(),
-            right
-                .audio_fallback_rank()
-                .expect("audio-only candidate has audio rank"),
-        )
-    });
+    let playable_audio = ranked_playable_audio(snapshot, &rejected);
     for video in snapshot.accepted_candidates().filter(|candidate| {
         matches!(candidate.descriptor().layout(), StreamLayout::VideoOnly(_))
             && !rejected.contains(candidate.descriptor().identity())
@@ -328,7 +381,7 @@ fn first_compatible_composition<T, U>(
 }
 
 /// Отделяет optional non-inventory alternative от настоящего composition error-а.
-fn compose_catalog_inventory_av(
+pub(super) fn compose_catalog_inventory_av(
     snapshot: &YtDlpCandidateSnapshot,
     video: &YtDlpCandidateSelection,
     audio: &YtDlpCandidateSelection,

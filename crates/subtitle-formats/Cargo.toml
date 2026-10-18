@@ -16,6 +16,8 @@ subtitle-core.workspace = true
 encoding_rs.workspace = true
 # Эвристическое определение легаси-кодировки (cp1251, KOI8-R и т.д.) у файлов без BOM.
 chardetng.workspace = true
+# Бюджетное чтение недоверенного XML (srv3): лимиты глубины, токенов и текста.
+bounded-xml-reader.workspace = true
 # Typed errors для фатальных ошибок загрузки файла субтитров.
 thiserror.workspace = true
 

@@ -24,8 +24,8 @@ use std::path::{Path, PathBuf};
 
 use player_core::MediaInstanceId;
 use playlist_state::{
-    RememberedFilePath, RememberedSubtitleChoice, RememberedTrackHint, TrackHintCandidate,
-    TrackHintMatch, find_matching_track,
+    RememberedFilePath, RememberedSubtitleChoice, RememberedTrackHint, RememberedWebSubtitle,
+    TrackHintCandidate, TrackHintMatch, find_matching_track,
 };
 use subtitle_core::SubtitleSyncOffset;
 
@@ -61,6 +61,8 @@ pub(super) enum PendingRememberedChoice {
     Embedded(RememberedTrackHint),
     /// Файл субтитров: ищется среди найденных рядом, иначе подключается, если ещё существует.
     File(PathBuf),
+    /// Web-дорожка: ищется в списке видео по виду и языку (список полный с самого начала).
+    Web(RememberedWebSubtitle),
 }
 
 impl PendingRememberedChoice {
@@ -73,7 +75,7 @@ impl PendingRememberedChoice {
     pub(super) fn file_to_check(&self) -> Option<PathBuf> {
         match self {
             Self::File(path) => Some(path.clone()),
-            Self::Embedded(_) => None,
+            Self::Embedded(_) | Self::Web(_) => None,
         }
     }
 }
@@ -133,6 +135,9 @@ pub(super) fn apply_restore_request(media: &mut MediaSubtitles, request: Subtitl
             media.pending_memory =
                 Some(PendingRememberedChoice::File(path.as_path().to_path_buf()));
         }
+        Some(RememberedSubtitleChoice::Web(web)) => {
+            media.pending_memory = Some(PendingRememberedChoice::Web(web));
+        }
     }
 }
 
@@ -157,6 +162,7 @@ pub(super) fn resolve_pending_remembered_choice(media: &mut MediaSubtitles) -> P
     let found = match &pending {
         PendingRememberedChoice::Embedded(hint) => find_embedded_track(media, hint),
         PendingRememberedChoice::File(path) => find_file_track(media, path),
+        PendingRememberedChoice::Web(web) => find_web_track(media, web),
     };
     match found {
         TrackLookup::Wait => PendingResolution::Waiting,
@@ -233,6 +239,22 @@ fn find_embedded_track(media: &MediaSubtitles, hint: &RememberedTrackHint) -> Tr
     }
 }
 
+/// Web-дорожки ставятся в список вместе с media, поэтому «пока нет» не бывает: нет в списке —
+/// значит у этого видео такой дорожки больше нет (автор убрал субтитры, другой набор).
+fn find_web_track(media: &MediaSubtitles, remembered: &RememberedWebSubtitle) -> TrackLookup {
+    media
+        .tracks
+        .entries()
+        .iter()
+        .find(|entry| {
+            entry
+                .description
+                .web()
+                .is_some_and(|web| web.matches_remembered(remembered))
+        })
+        .map_or(TrackLookup::Missing, |entry| TrackLookup::Found(entry.id))
+}
+
 fn find_file_track(media: &MediaSubtitles, path: &Path) -> TrackLookup {
     if let Some(track_id) = media.tracks.find_by_path(path) {
         return TrackLookup::Found(track_id);
@@ -271,6 +293,13 @@ fn choice_for_memory(media: &MediaSubtitles) -> Option<RememberedSubtitleChoice>
                 }
             }
         }
+        TrackDescription::Web(description) => match description.to_remembered() {
+            Ok(web) => Some(RememberedSubtitleChoice::Web(web)),
+            Err(error) => {
+                tracing::debug!(%error, "The web subtitle track cannot be remembered");
+                None
+            }
+        },
         TrackDescription::Sidecar(candidate) => {
             match RememberedFilePath::new(candidate.path.clone()) {
                 Ok(path) => Some(RememberedSubtitleChoice::File(path)),

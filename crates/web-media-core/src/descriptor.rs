@@ -3,6 +3,9 @@ use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 
 use crate::{CandidateIdentity, NormalizedCodec, SemanticIdentity, StreamLayout, VideoHeight};
 
+mod subtitle;
+pub use subtitle::{SubtitleDescriptor, SubtitleDisplayName, SubtitleKind};
+
 /// Максимальное число subtitle descriptors у одного candidate-а.
 pub const MAX_SUBTITLE_DESCRIPTORS: usize = 256;
 
@@ -430,47 +433,6 @@ impl AudioTrackDescriptor {
     }
 }
 
-/// Subtitle groundwork descriptor без playback/provider semantics.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SubtitleDescriptor {
-    /// Semantic identity дорожки.
-    semantic_identity: SemanticIdentity,
-    /// Bounded format identity.
-    format: SubtitleFormatIdentity,
-    /// Optional language.
-    language: Option<LanguageTag>,
-}
-
-impl SubtitleDescriptor {
-    /// Создаёт static subtitle descriptor.
-    pub const fn new(
-        semantic_identity: SemanticIdentity,
-        format: SubtitleFormatIdentity,
-        language: Option<LanguageTag>,
-    ) -> Self {
-        Self {
-            semantic_identity,
-            format,
-            language,
-        }
-    }
-
-    /// Возвращает semantic identity.
-    pub const fn semantic_identity(&self) -> &SemanticIdentity {
-        &self.semantic_identity
-    }
-
-    /// Возвращает format identity.
-    pub const fn format(&self) -> &SubtitleFormatIdentity {
-        &self.format
-    }
-
-    /// Возвращает language.
-    pub const fn language(&self) -> Option<&LanguageTag> {
-        self.language.as_ref()
-    }
-}
-
 /// Полный immutable candidate descriptor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateDescriptor {
@@ -554,6 +516,8 @@ pub enum DescriptorTextField {
     Language,
     /// Subtitle format identity.
     SubtitleFormat,
+    /// Человекочитаемое название subtitle дорожки.
+    SubtitleName,
 }
 
 /// Ошибка построения static candidate descriptor.
@@ -588,6 +552,13 @@ pub enum CandidateDescriptorError {
         provided_bytes: usize,
         /// Разрешённая длина.
         maximum_bytes: usize,
+    },
+    /// У subtitle дорожки нет ни одного формата либо их больше допустимого.
+    InvalidSubtitleFormatCount {
+        /// Фактическое число форматов.
+        provided: usize,
+        /// Разрешённое число форматов.
+        maximum: usize,
     },
     /// Subtitle list превысил candidate-level bound.
     TooManySubtitles {
@@ -624,6 +595,10 @@ impl fmt::Display for CandidateDescriptorError {
             } => write!(
                 formatter,
                 "{field:?} occupies {provided_bytes} bytes at limit {maximum_bytes}"
+            ),
+            Self::InvalidSubtitleFormatCount { provided, maximum } => write!(
+                formatter,
+                "subtitle has {provided} formats; expected from 1 to {maximum}"
             ),
             Self::TooManySubtitles { provided, maximum } => write!(
                 formatter,

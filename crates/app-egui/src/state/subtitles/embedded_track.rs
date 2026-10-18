@@ -153,6 +153,8 @@ impl EmbeddedTrackDescription {
             language: self.language.clone(),
             format: self.display_format(),
             origin: SubtitleFileOrigin::Embedded,
+            fallback_name: None,
+            distinguishing_name: None,
             is_forced: self.is_forced(),
             is_hearing_impaired: self.is_hearing_impaired(),
             title: self.labels.title.clone(),

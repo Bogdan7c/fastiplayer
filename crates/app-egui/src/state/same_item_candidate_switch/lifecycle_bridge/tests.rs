@@ -48,6 +48,8 @@ struct FakeSameItemSwitchContext {
     )>,
     terminal_selector_errors: Vec<(WebMediaStreamGeneration, UrlSidebarSafeError)>,
     fallback_notice_visible: bool,
+    /// Языки звука, которые завершение switch-а записало в память выбора.
+    remembered_audio_languages: Vec<playlist_state::RememberedWebAudioLanguage>,
 }
 
 impl SameItemSwitchLifecycleStartPort for FakeSameItemSwitchContext {
@@ -121,6 +123,13 @@ impl SameItemSwitchCompletionOwner for FakeSameItemSwitchContext {
 
     fn clear_web_media_fallback_notice(&mut self) {
         self.fallback_notice_visible = false;
+    }
+
+    fn remember_web_audio_language(
+        &mut self,
+        language: playlist_state::RememberedWebAudioLanguage,
+    ) {
+        self.remembered_audio_languages.push(language);
     }
 }
 
@@ -209,6 +218,7 @@ fn adaptive_quality_switch_keeps_position_without_persisting_manual_preference()
         visible_generation: old_generation,
         playback: old_playback,
         remembered_targets: Vec::new(),
+        remembered_audio_languages: Vec::new(),
         terminal_selector_errors: Vec::new(),
         fallback_notice_visible: true,
     };
@@ -272,6 +282,7 @@ fn assert_successful_url_action(state: PlaybackState, expected_intent: PlaybackI
         visible_generation: old_generation,
         playback: old_playback,
         remembered_targets: Vec::new(),
+        remembered_audio_languages: Vec::new(),
         terminal_selector_errors: Vec::new(),
         fallback_notice_visible: true,
     };
@@ -346,6 +357,7 @@ fn resolved_url_action_pre_barrier_failure_preserves_playback_and_restores_selec
         visible_generation: old_generation,
         playback: old_playback,
         remembered_targets: vec![previous_preference.clone()],
+        remembered_audio_languages: Vec::new(),
         terminal_selector_errors: Vec::new(),
         fallback_notice_visible: true,
     };
@@ -417,6 +429,7 @@ fn pending_switch_blocks_conflicting_action_without_touching_playback() {
         visible_generation: generation,
         playback,
         remembered_targets: Vec::new(),
+        remembered_audio_languages: Vec::new(),
         terminal_selector_errors: Vec::new(),
         fallback_notice_visible: true,
     };

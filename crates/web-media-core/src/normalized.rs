@@ -173,6 +173,40 @@ pub enum TransportFamily {
     Unknown,
 }
 
+impl TransportFamily {
+    /// Могут ли video- и audio-component с этими family открыться одним runtime-маршрутом.
+    ///
+    /// Separate-кандидат (отдельные video-only + audio-only ресурсы) runtime собирает
+    /// только внутри одного маршрута:
+    /// - progressive HTTP(S)/FTP(S) — каждый component открывается своим byte-transport-ом
+    ///   и склеивается packet-level composite demuxer-ом, поэтому HTTP и FTP совместимы;
+    /// - adaptive/streaming family (HLS, DASH, Smooth, HDS, RTMP) — оба component обязаны
+    ///   принадлежать одной presentation той же family.
+    ///
+    /// Смешанная пара (например HLS video + progressive HTTPS audio, реальный YouTube
+    /// `616+251`) не имеет маршрута: progressive composer не умеет HLS, а HLS-opener не
+    /// умеет внешний progressive audio. Planner обязан отклонять такую пару заранее,
+    /// а не отдавать её runtime-у как playable.
+    #[must_use]
+    pub fn shares_component_composition_route(self, other: Self) -> bool {
+        match (self, other) {
+            // Progressive HTTP/FTP открываются по отдельности и композируются одинаково.
+            (
+                Self::ProgressiveHttp(_) | Self::ProgressiveFtp(_),
+                Self::ProgressiveHttp(_) | Self::ProgressiveFtp(_),
+            ) => true,
+            (Self::Hls, Self::Hls)
+            | (Self::Dash, Self::Dash)
+            | (Self::SmoothStreaming, Self::SmoothStreaming)
+            | (Self::Hds, Self::Hds) => true,
+            // RTMP-варианты различаются handshake-ом, поэтому совпадать должен и variant.
+            (Self::Rtmp(left), Self::Rtmp(right)) => left == right,
+            // Excluded/Unknown и любые смешанные пары маршрута не имеют.
+            _ => false,
+        }
+    }
+}
+
 /// Raw+parsed transport value.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NormalizedTransport {

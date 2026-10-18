@@ -68,6 +68,8 @@ tempfile = "3"
 # Только тестовые зависимости: в рабочую сборку crate-а не попадают.
 audio.workspace = true
 video-frame-contract.workspace = true
+# JSON-ответы подставного yt-dlp в тестах загрузки субтитров.
+serde_json = "1.0"
 # Проверка, что probe плейлиста не пишет ERROR-записи `log` (их пишет Symphonia).
 log.workspace = true
 

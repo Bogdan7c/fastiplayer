@@ -48,8 +48,10 @@ mod frame;
 mod limits;
 mod picture_cue;
 mod request;
+mod reveal;
 mod statistics;
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::appearance::SubtitleAppearance;
@@ -94,8 +96,13 @@ pub use statistics::RasterStatistics;
 /// сбрасывает кэш простых реплик, а смена стиля — кэш ASS-реплик с авторским оформлением.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum CueLook {
-    /// Реплика простого формата.
-    Text { appearance: SubtitleAppearance },
+    /// Реплика простого формата. `hidden_spans` — индексы спанов, ещё не появившихся на момент
+    /// кадра (`TextSpan::reveal_at`, см. `reveal`): разный набор скрытых спанов — разная
+    /// картинка. Пустой набор (всё видно) не выделяет память и общий с репликой без `reveal_at`.
+    Text {
+        appearance: SubtitleAppearance,
+        hidden_spans: Box<[u32]>,
+    },
     /// Растровая реплика (PGS): от стиля, языка и настроек ASS не зависит.
     Picture,
     /// Реплика ASS.
@@ -394,6 +401,13 @@ impl SubtitleRasterizer {
             if let Some(animation) = &animation {
                 time.include(animation);
             }
+            // Слова с `reveal_at` делают кадр функцией времени: картинка верна до появления
+            // следующего слова, а при перемотке назад её надо пересчитать.
+            if let CueContent::Text(text) = cue.content
+                && reveal::has_reveal_times(text)
+            {
+                time.include_reveal(reveal::next_reveal_after(text, request.moment));
+            }
             let Some(rasterized) = self.cue_for(cue, request, animation.as_ref()) else {
                 continue;
             };
@@ -526,14 +540,23 @@ impl SubtitleRasterizer {
             return None;
         }
         let painted = match cue.content {
-            CueContent::Text(text) => (self.painter)(
-                &mut self.fonts,
-                &mut self.faces,
-                text,
-                request.appearance,
-                request.canvas,
-                request.text_language,
-            ),
+            CueContent::Text(text) => {
+                // Не появившиеся слова не рисуем и места под них не оставляем.
+                let visible = match &cache_key.look {
+                    CueLook::Text { hidden_spans, .. } => {
+                        reveal::cue_without_spans(text, hidden_spans)
+                    }
+                    _ => Cow::Borrowed(text),
+                };
+                (self.painter)(
+                    &mut self.fonts,
+                    &mut self.faces,
+                    &visible,
+                    request.appearance,
+                    request.canvas,
+                    request.text_language,
+                )
+            }
             CueContent::Picture(_) => return None,
             CueContent::Ass { cue: ass, .. } => rasterize_ass_cue(
                 &mut self.fonts,
@@ -606,8 +629,9 @@ impl SubtitleRasterizer {
         animation: Option<&AssAnimation>,
     ) -> CueLook {
         match content {
-            CueContent::Text(_) => CueLook::Text {
+            CueContent::Text(text) => CueLook::Text {
                 appearance: *request.appearance,
+                hidden_spans: reveal::hidden_spans(text, request.moment),
             },
             CueContent::Picture(_) => CueLook::Picture,
             CueContent::Ass { .. } => CueLook::Ass {

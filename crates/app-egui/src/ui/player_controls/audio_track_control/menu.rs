@@ -10,7 +10,9 @@
 //! ```
 //!
 //! У web-источника с несколькими версиями звука строки — это версии («English (E-AC-3 5.1)»);
-//! клик по ним публикует [`AudioTrackControlAction::SwitchWebAudioVersion`].
+//! клик по ним публикует [`AudioTrackControlAction::SwitchWebAudioVersion`]. У yt-dlp-видео с
+//! дубляжами строки — языки («Russian», «English (original)»), клик публикует
+//! [`AudioTrackControlAction::SwitchWebAudioLanguage`].
 
 use egui::{RadioButton, Ui};
 
@@ -32,7 +34,7 @@ pub(super) fn show(ui: &mut Ui, view: &AudioTrackMenuView, actions: &mut Vec<Con
     }
 }
 
-/// Действие для строки меню: встроенная дорожка или web-версия звука.
+/// Действие для строки меню: встроенная дорожка, web-версия или язык звука.
 fn control_action_for(target: AudioTrackMenuTarget) -> AudioTrackControlAction {
     match target {
         AudioTrackMenuTarget::EmbeddedTrack(track_id) => {
@@ -40,6 +42,9 @@ fn control_action_for(target: AudioTrackMenuTarget) -> AudioTrackControlAction {
         }
         AudioTrackMenuTarget::WebAudioVersion(version) => {
             AudioTrackControlAction::SwitchWebAudioVersion(version)
+        }
+        AudioTrackMenuTarget::WebAudioLanguage(language) => {
+            AudioTrackControlAction::SwitchWebAudioLanguage(language)
         }
     }
 }

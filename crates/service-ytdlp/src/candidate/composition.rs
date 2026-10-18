@@ -113,6 +113,62 @@ impl YtDlpCandidateSnapshot {
         build_selection(video, audio)
     }
 
+    /// Находит video-only строку inventory, из которой сделан выбранный compound-кандидат.
+    ///
+    /// Выбор yt-dlp по умолчанию (`requested_formats`) — это пара «видео + звук» в одном
+    /// кандидате. Чтобы подменить в ней только звук, нужен video-only выбор из inventory с
+    /// тем же request material (тот же поток). `None` — selection не compound этой
+    /// генерации либо подходящей строки в inventory нет.
+    pub fn inventory_video_of_compound(
+        &self,
+        compound: &YtDlpCandidateSelection,
+    ) -> Option<YtDlpCandidateSelection> {
+        self.inventory_component_of_compound(compound, ComponentRole::Video)
+    }
+
+    /// Находит audio-only строку inventory, из которой сделан выбранный compound-кандидат.
+    ///
+    /// Нужна BestPlayable-замене compound-а, чьи components нельзя открыть одним
+    /// runtime-маршрутом (например HLS video + HTTPS audio): звук и язык, выбранные
+    /// yt-dlp, сохраняются, меняется только video component. `None` — selection не
+    /// compound этой генерации либо подходящей строки в inventory нет.
+    pub fn inventory_audio_of_compound(
+        &self,
+        compound: &YtDlpCandidateSelection,
+    ) -> Option<YtDlpCandidateSelection> {
+        self.inventory_component_of_compound(compound, ComponentRole::Audio)
+    }
+
+    /// Общий поиск atomic inventory-строки с тем же request material, что component compound-а.
+    fn inventory_component_of_compound(
+        &self,
+        compound: &YtDlpCandidateSelection,
+        role: ComponentRole,
+    ) -> Option<YtDlpCandidateSelection> {
+        if compound.exact_identity().generation() != self.generation() {
+            return None;
+        }
+        let compound_candidate = self.accepted_candidates().find(|candidate| {
+            candidate.descriptor() == compound.descriptor()
+                && candidate.video_color_evidence() == compound.video_color_evidence()
+        })?;
+        if !matches!(
+            compound_candidate.descriptor().layout(),
+            StreamLayout::Separate { .. }
+        ) {
+            return None;
+        }
+        let request_role = role.request_role();
+        let component_request = compound_candidate.component_request_material(request_role)?;
+        let expected_layout = role.layout_matches();
+        let atomic_row = self.accepted_inventory_candidates().find(|candidate| {
+            expected_layout(candidate.descriptor().layout())
+                && candidate.component_request_material(request_role)
+                    == Some(component_request.clone())
+        })?;
+        self.selection_for(atomic_row).ok()
+    }
+
     /// Независимо rematch-ит обе components и восстанавливает fresh private request material.
     pub fn rematch_composed(
         &self,
@@ -191,6 +247,14 @@ enum ComponentRole {
 }
 
 impl ComponentRole {
+    /// Роль request material-а, которой component представлен внутри compound-а.
+    const fn request_role(self) -> YtDlpCandidateComponentRole {
+        match self {
+            Self::Video => YtDlpCandidateComponentRole::Video,
+            Self::Audio => YtDlpCandidateComponentRole::Audio,
+        }
+    }
+
     fn layout_matches(self) -> fn(&StreamLayout) -> bool {
         match self {
             Self::Video => |layout| matches!(layout, StreamLayout::VideoOnly(_)),

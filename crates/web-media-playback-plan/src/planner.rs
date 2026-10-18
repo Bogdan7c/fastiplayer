@@ -166,6 +166,7 @@ fn check_resources(
         PlanningResourceLayout::Separate { video, audio } => {
             check_resource(PlaybackComponent::Video, video, capabilities, rejections);
             check_resource(PlaybackComponent::Audio, audio, capabilities, rejections);
+            check_separate_composition_route(video, audio, rejections);
         }
         PlanningResourceLayout::VideoOnly(resource) => {
             check_resource(PlaybackComponent::Video, resource, capabilities, rejections);
@@ -184,6 +185,28 @@ fn check_resources(
                 rejections,
             );
         }
+    }
+}
+
+/// Separate пара playable только если runtime умеет открыть оба component одним маршрутом.
+///
+/// Per-component проверки выше не видят пару целиком: HLS video и HTTPS audio
+/// по отдельности поддержаны, но вместе их не открывает ни один runtime path.
+fn check_separate_composition_route(
+    video: PlanningResource,
+    audio: PlanningResource,
+    rejections: &mut Vec<CandidateRejectionReason>,
+) {
+    if !video
+        .transport
+        .shares_component_composition_route(audio.transport)
+    {
+        rejections.push(CandidateRejectionReason::Capability(
+            CandidateCapabilityRejection::ComponentRouteMismatch {
+                video: video.transport,
+                audio: audio.transport,
+            },
+        ));
     }
 }
 

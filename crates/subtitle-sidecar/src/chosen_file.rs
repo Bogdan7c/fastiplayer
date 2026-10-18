@@ -73,7 +73,7 @@ fn hints_from_trailing_parts(stem: &str) -> NameHints {
         let is_known_language = part_hints
             .language
             .as_ref()
-            .is_some_and(|language| language.english_display_name().is_some());
+            .is_some_and(|language| language.is_common_sidecar_language());
         let is_hint = !is_release_tag
             && part_hints.title.is_none()
             && (is_known_language

@@ -125,6 +125,10 @@ impl AppState {
                 // (`apply_requested_web_audio_version`), там же toast о старте/отказе.
                 self.request_web_audio_version_by_user(version);
             }
+            AudioTrackControlAction::SwitchWebAudioLanguage(language) => {
+                // Как и версия: исполнится после egui pass-а вместе с toast-ом.
+                self.request_web_audio_language_by_user(language);
+            }
             AudioTrackControlAction::SelectNextTrack => {
                 self.select_next_audio_track(player_snapshot)
             }
@@ -147,6 +151,12 @@ impl AppState {
             } => {
                 // Toast с подписью покажет запуск переключения (или отказ) после egui pass-а.
                 self.request_web_audio_version_by_user(version);
+            }
+            NextTrackPlan::Switch {
+                target: AudioTrackMenuTarget::WebAudioLanguage(language),
+                ..
+            } => {
+                self.request_web_audio_language_by_user(language);
             }
             NextTrackPlan::Switch {
                 target: AudioTrackMenuTarget::EmbeddedTrack(track_id),

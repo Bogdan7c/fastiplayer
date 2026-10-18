@@ -84,3 +84,31 @@ fn user_subtitle_inputs_are_captured_right_after_they_are_applied() {
         );
     }
 }
+
+#[test]
+fn language_restore_is_scheduled_on_fresh_opens_only_and_the_choice_is_recorded_at_install() {
+    let strong = include_str!("../../strong_media_open/pending/resume.rs");
+    let same_lineage_end = strong
+        .find("if let Some(restore) = same_lineage_restore")
+        .expect("same-lineage branch");
+    let schedule = strong
+        .find("schedule_remembered_web_audio_language(&installed.source)")
+        .expect("the language restore hook");
+    let position_plan = strong
+        .find("let position_plan = plan_post_installed_startup_position")
+        .expect("fresh-open position plan");
+    assert!(
+        same_lineage_end < schedule && schedule < position_plan,
+        "restore runs after the same-lineage return, so a switch install never re-triggers it"
+    );
+
+    let bridge = include_str!("../../same_item_candidate_switch/lifecycle_bridge.rs");
+    let installed_arm = bridge
+        .split("SameItemSwitchKind::AudioLanguage { purpose, .. } =>")
+        .nth(1)
+        .expect("installed arm");
+    assert!(
+        installed_arm.contains("owner.remember_web_audio_language(language)"),
+        "the language is recorded by the completion of an installed switch"
+    );
+}

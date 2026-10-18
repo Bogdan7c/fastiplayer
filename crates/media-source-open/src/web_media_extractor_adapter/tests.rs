@@ -228,8 +228,11 @@ fn provider_dtos_stay_inside_exact_extractor_adapter_allowlist() {
         "web_media_hls_open.rs",
         "web_media_hls_refresh.rs",
         "web_media_open.rs",
+        "web_media_open/audio_languages.rs",
         "web_media_open/catalog.rs",
         "web_media_open/component_variants.rs",
+        // BestPlayable-замена compound-а без общего transport route-а (часть orchestration).
+        "web_media_open/compound_route_substitute.rs",
         "web_media_open/content_probe_fallback.rs",
         "web_media_open/hds.rs",
         "web_media_open/preparation.rs",

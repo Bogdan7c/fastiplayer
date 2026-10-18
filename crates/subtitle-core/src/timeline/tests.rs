@@ -550,3 +550,77 @@ fn shortening_history_is_bounded_and_reports_when_it_is_lost() {
         3
     );
 }
+
+/// Событие `[start, end)` из слов, каждое со своим моментом появления (`None` — виден сразу).
+fn event_with_reveals(start: i64, end: i64, words: &[(&str, Option<i64>)]) -> SubtitleEvent {
+    let spans = words
+        .iter()
+        .map(|(word, reveal_at)| {
+            let mut span = TextSpan::text(*word, SpanStyle::default());
+            span.reveal_at = reveal_at.map(t);
+            span
+        })
+        .collect();
+    SubtitleEvent::new(
+        t(start),
+        t(end),
+        SubtitleLayer::DEFAULT,
+        SubtitleContent::Text(SubtitleTextCue {
+            text: StyledText::new(spans),
+            placement: CuePlacement::default(),
+        }),
+    )
+    .expect("valid interval")
+}
+
+#[test]
+fn next_change_includes_word_reveal_of_active_event() {
+    let (timeline, _) = SubtitleTimeline::from_events([event_with_reveals(
+        100,
+        1000,
+        &[("a", None), (" b", Some(400)), (" c", Some(700))],
+    )]);
+    assert_eq!(timeline.next_change_after(t(100)), Some(t(400)));
+    assert_eq!(timeline.next_change_after(t(400)), Some(t(700)));
+    assert_eq!(
+        timeline.next_change_after(t(700)),
+        Some(t(1000)),
+        "after the last reveal only the end remains"
+    );
+}
+
+#[test]
+fn reveals_outside_the_event_interval_are_not_changes() {
+    // Слово «до начала» видно сразу, слово «после конца» не появится никогда.
+    let (timeline, _) = SubtitleTimeline::from_events([event_with_reveals(
+        100,
+        1000,
+        &[("a", Some(50)), (" b", Some(1000)), (" c", Some(5000))],
+    )]);
+    assert_eq!(timeline.next_change_after(t(100)), Some(t(1000)));
+}
+
+#[test]
+fn reveals_of_not_yet_started_event_are_not_reported_before_its_start() {
+    let (timeline, _) = SubtitleTimeline::from_events([event_with_reveals(
+        500,
+        1000,
+        &[("a", None), (" b", Some(800))],
+    )]);
+    assert_eq!(
+        timeline.next_change_after(t(0)),
+        Some(t(500)),
+        "the start comes first; the reveal at 800 is reported once the event is active"
+    );
+}
+
+#[test]
+fn latest_change_within_sees_word_reveal() {
+    let (timeline, _) = SubtitleTimeline::from_events([event_with_reveals(
+        100,
+        1000,
+        &[("a", None), (" b", Some(400))],
+    )]);
+    assert_eq!(timeline.latest_change_within(t(100), t(600)), Some(t(400)));
+    assert_eq!(timeline.latest_change_within(t(400), t(600)), None);
+}

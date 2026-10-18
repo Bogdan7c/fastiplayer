@@ -338,3 +338,35 @@ impl WebMediaSourceIntent {
         })
     }
 }
+
+impl WebMediaSourceIntent {
+    /// Дескриптор загрузки субтитров, если источник — extractor (YouTube и другие yt-dlp).
+    ///
+    /// Нативные HLS/DASH/progressive источники субтитров этого вида не дают: `None`.
+    /// `fetch` у дескриптора блокирующий, вызывать его нужно с фонового потока.
+    #[must_use]
+    pub(crate) fn web_subtitle_fetch_handle(
+        &self,
+    ) -> Option<media_source_open::web_subtitle_fetch::WebSubtitleFetchHandle> {
+        match &*self.adapter {
+            WebMediaSourceAdapter::Extractor { source_state, .. } => {
+                Some(source_state.web_subtitle_fetch_handle())
+            }
+            _ => None,
+        }
+    }
+
+    /// Безопасный (без ссылок) список дорожек субтитров extractor-а.
+    #[must_use]
+    pub(crate) fn web_subtitle_tracks(
+        &self,
+    ) -> Vec<media_source_open::web_subtitle_fetch::WebSubtitleTrack> {
+        match &*self.adapter {
+            WebMediaSourceAdapter::Extractor { source_state, .. } => source_state
+                .stream_configuration()
+                .web_subtitle_tracks()
+                .to_vec(),
+            _ => Vec::new(),
+        }
+    }
+}

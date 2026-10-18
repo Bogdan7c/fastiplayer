@@ -9,11 +9,14 @@
 //! Сквозные playback-тесты (`content_probe_tests`) остались в `app-egui`: им нужен
 //! GPU/render-стек, который этому crate-у запрещён guardrail-ом.
 
+pub mod audio_languages;
 mod catalog;
 pub mod catalog_capabilities;
 pub mod component_variants;
 #[cfg(test)]
 mod component_variants_tests;
+/// BestPlayable-замена compound-а, чьи components не открываются одним маршрутом.
+mod compound_route_substitute;
 mod content_probe;
 // Причину content probe читает классификатор отказов web-open (`crate::web_open_failure`).
 pub(crate) use content_probe::ContentProbeRejection;
@@ -310,16 +313,30 @@ pub fn prepare_yt_dlp_web_media(
                     "YtDlp planner found out playable candidate (planning_candidates={planning_candidate_count}, normalization_rejections={normalization_rejection_count}, planning_rejections={planning_rejection_count})"
                 )
             })?;
-            let (_, opened_attempt) =
-                content_probe_fallback::open_ranked_best(ranked, &is_cancelled, |candidate| {
-                    let selection = candidate_snapshot
-                        .selection_for(candidate)
-                        .context("Planner-ranked YtDlp candidate does not have exact selection")?;
-                    attempt_context.open(candidate, selection)
+            // Compound yt-dlp без общего transport route-а planner отклонил; его место
+            // занимает route-compatible замена с тем же звуком (см. модуль).
+            let route_substitute = compound_route_substitute::find_compound_route_substitute(
+                &candidate_snapshot,
+                &ranked,
+            );
+            let attempts = compound_route_substitute::ordered_best_playable_attempts(
+                &ranked,
+                route_substitute.as_ref(),
+            );
+            let (_, opened) =
+                content_probe_fallback::open_ranked_best(&attempts, &is_cancelled, |attempt| {
+                    compound_route_substitute::open_best_playable_attempt(
+                        &mut attempt_context,
+                        &candidate_snapshot,
+                        attempt,
+                    )
                 })
                 .context("Failed to open planner-ranked BestPlayable YtDlp candidate")?;
-            let (selection, opened) = opened_attempt.into_parts();
-            (selection, None, opened)
+            (
+                opened.candidate_selection,
+                opened.composed_selection,
+                opened.opened_candidate,
+            )
         }
         preparation::ResolvedCandidateIntent::Planner(
             selection_request @ SelectionRequest::Exact(_),
@@ -380,6 +397,15 @@ pub fn prepare_yt_dlp_web_media(
         .context("Failed to be built secret-safe URL sidebar stream model")?;
     let stream_configuration =
         stream_configuration.with_hls_subtitle_renditions(opened_candidate.subtitles);
+    // Субтитры extractor-а: ссылки забираем до того, как снимок будет отброшен.
+    let (subtitle_fetch, stream_configuration) = web_subtitle_projection(
+        stream_configuration,
+        &candidate_snapshot,
+        locator,
+        extractor_adapter,
+        yt_dlp_config,
+        network_config,
+    )?;
     ensure_not_cancelled(&is_cancelled)?;
     let stream_configuration = finalize_component_variant_configuration(
         stream_configuration,
@@ -397,6 +423,14 @@ pub fn prepare_yt_dlp_web_media(
         active_composed: composed_selection.as_deref(),
     })?;
     let catalog_attachment = catalog_projection.attachment;
+    let audio_languages = audio_languages::ExtractorAudioLanguageCatalog::for_prepared_source(
+        &candidate_snapshot,
+        planning_snapshot,
+        capabilities,
+        &policy,
+        &candidate_selection,
+        composed_selection.as_deref(),
+    )?;
     let catalog_selection_routes = catalog_projection.routes.into();
     let extractor_projection = extractor_projection.with_neutral_selection(
         stream_configuration
@@ -435,6 +469,8 @@ pub fn prepare_yt_dlp_web_media(
             stream_configuration,
             catalog_attachment,
             catalog_selection_routes,
+            audio_languages,
+            subtitle_fetch,
         },
         presentation,
         extractor_reason,
@@ -443,6 +479,46 @@ pub fn prepare_yt_dlp_web_media(
         playback_window: opened_candidate.playback_window,
         vod_endpoint_recovery,
     })
+}
+
+/// Строит дескриптор загрузки субтитров и кладёт безопасный список дорожек в модель потока.
+///
+/// Отдельная функция: `prepare_yt_dlp_web_media` и так огромен, а здесь одна
+/// ответственность — не потерять секретные ссылки снимка.
+fn web_subtitle_projection(
+    stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
+    candidate_snapshot: &YtDlpCandidateSnapshot,
+    locator: &YtDlpMediaLocator,
+    extractor_adapter: &service_ytdlp::YtDlpExtractorAdapter,
+    yt_dlp_config: &YtDlpConfig,
+    network_config: &NetworkConfig,
+) -> Result<(
+    crate::web_subtitle_fetch::WebSubtitleFetchHandle,
+    crate::web_media_stream_model::WebMediaStreamConfiguration,
+)> {
+    let inventory = candidate_snapshot.subtitle_inventory().clone();
+    if inventory.omitted_track_count() > 0 {
+        tracing::info!(
+            omitted_tracks = inventory.omitted_track_count(),
+            "subtitle track limit reached; extra auto-translated tracks are hidden"
+        );
+    }
+    let source_config = source_core::SourceRuntimeConfig::from_network_config(network_config)
+        .context("Failed to prepare HTTP settings for subtitle downloads")?;
+    let handle = crate::web_subtitle_fetch::WebSubtitleFetchHandle::for_yt_dlp_extraction(
+        inventory,
+        crate::web_subtitle_fetch::YtDlpSubtitleRefresher::new(
+            locator.clone(),
+            extractor_adapter.clone(),
+            yt_dlp_config.clone(),
+        ),
+        source_config,
+    );
+    let tracks: Arc<[crate::web_subtitle_fetch::WebSubtitleTrack]> = handle.tracks().into();
+    Ok((
+        handle,
+        stream_configuration.with_web_subtitle_tracks(tracks),
+    ))
 }
 
 /// Открытый physical component до layout composition.
@@ -454,7 +530,7 @@ struct OpenedCandidateComponent {
 }
 
 /// Выдаёт новую non-zero process-local source lineage без URL/queue representation coupling.
-fn next_source_identity() -> Result<SourceIdentity> {
+pub(crate) fn next_source_identity() -> Result<SourceIdentity> {
     let source_value = NEXT_YT_DLP_SOURCE_IDENTITY
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)

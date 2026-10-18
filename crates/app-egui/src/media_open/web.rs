@@ -20,6 +20,7 @@ use super::{
 };
 
 mod adapter_view;
+mod audio_language_actions;
 mod durable_identity;
 mod source_actions;
 pub(super) use adapter_view::WebMediaOpenAdapterView;
