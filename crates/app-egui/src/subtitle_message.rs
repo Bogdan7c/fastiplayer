@@ -11,7 +11,8 @@ use subtitle_core::{SubtitleFormat, SubtitleSyncOffset};
 use web_media_core::SubtitleKind;
 
 use crate::state::{
-    AttachOutcome, SubtitleFileOrigin, SubtitleTrackLabel, SubtitleUnavailableReason,
+    AttachOutcome, SubtitleFileOrigin, SubtitleFileProblem, SubtitleTrackLabel,
+    SubtitleUnavailableReason,
 };
 
 /// Уведомление, когда у видео нет ни одной дорожки субтитров (клавиши C/V/Z/X).
@@ -205,7 +206,31 @@ pub(crate) const fn unavailable_reason_text(reason: &SubtitleUnavailableReason) 
         SubtitleUnavailableReason::FormatNotSupportedYet => {
             "This subtitle format is not supported yet."
         }
-        SubtitleUnavailableReason::LoadFailed(_) => "This subtitle file could not be read.",
+        SubtitleUnavailableReason::LoadFailed(problem) => match problem {
+            SubtitleFileProblem::CannotOpen => "This subtitle file could not be opened.",
+            SubtitleFileProblem::TooLarge => "This subtitle file is too large.",
+            SubtitleFileProblem::CannotParse => "No subtitles could be read from this file.",
+            SubtitleFileProblem::Other => "This subtitle file could not be read.",
+        },
+    }
+}
+
+/// Уведомление, когда файл, добавленный пользователем (бросок, «Load file…»), не загрузился.
+/// Имя файла показываем (без каталога), причину — человеческим языком по группе.
+pub(crate) fn file_failure_toast(file_name: &str, problem: SubtitleFileProblem) -> String {
+    match problem {
+        SubtitleFileProblem::CannotOpen => {
+            format!(
+                "Could not open \"{file_name}\". Check that the file exists and you can read it."
+            )
+        }
+        SubtitleFileProblem::TooLarge => {
+            format!("\"{file_name}\" is too large to use as subtitles.")
+        }
+        SubtitleFileProblem::CannotParse => format!(
+            "No subtitles could be read from \"{file_name}\". The file may be damaged or in an unsupported format."
+        ),
+        SubtitleFileProblem::Other => format!("Could not load subtitles from \"{file_name}\"."),
     }
 }
 
@@ -363,7 +388,7 @@ mod tests {
         );
         assert_eq!(
             unavailable_reason_text(&SubtitleUnavailableReason::LoadFailed(
-                "io error: /secret/path".to_owned()
+                SubtitleFileProblem::Other
             )),
             "This subtitle file could not be read."
         );

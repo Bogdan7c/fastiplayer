@@ -185,6 +185,8 @@ impl SubtitleOwner {
             }
             None => media.tracks.push_chosen(&candidate),
         };
+        // Файл выбран пользователем сейчас: если он не загрузится, покажем toast.
+        media.user_files.watch(track_id);
         match self.select_track(track_id) {
             SelectTrackOutcome::Selected => AttachOutcome::Attached(track_id),
             SelectTrackOutcome::TrackUnavailable => {

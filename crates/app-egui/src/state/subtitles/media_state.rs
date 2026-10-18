@@ -17,6 +17,7 @@ use super::owner_memory::{MemoryDirty, PendingRememberedChoice};
 use super::owner_stream::StreamTracks;
 use super::sidecar_job::SubtitleLoadFailure;
 use super::track_list::{SubtitleTrackList, TrackLoadState};
+use super::user_file_failures::UserRequestedFiles;
 use super::web_download::WebSubtitleDownloader;
 
 /// Поиск файлов рядом с видео.
@@ -102,6 +103,8 @@ pub(super) struct MediaSubtitles {
     pub(super) web_downloader: Option<Arc<dyn WebSubtitleDownloader>>,
     /// Источник и лента потоковых дорожек (HLS-рендиции) этого media.
     pub(super) streams: StreamTracks,
+    /// Файлы, которые пользователь добавил сам, и их ещё не показанные отказы (для toast).
+    pub(super) user_files: UserRequestedFiles,
 }
 
 impl MediaSubtitles {
@@ -124,6 +127,7 @@ impl MediaSubtitles {
             embedded_pgs: EmbeddedPgsTracks::default(),
             web_downloader: None,
             streams: StreamTracks::default(),
+            user_files: UserRequestedFiles::default(),
         }
     }
 

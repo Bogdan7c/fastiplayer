@@ -138,8 +138,9 @@ pub(crate) use subtitles::{
     UserSubtitleStyle,
 };
 pub(crate) use subtitles::{
-    AttachOutcome, SubtitleFileOrigin, SubtitleMenuView, SubtitleTrackAvailability,
-    SubtitleTrackLabel, SubtitleUnavailableReason, SubtitleVisibility, SyncNudge,
+    AttachOutcome, SubtitleFileOrigin, SubtitleFileProblem, SubtitleMenuView,
+    SubtitleTrackAvailability, SubtitleTrackLabel, SubtitleUnavailableReason, SubtitleVisibility,
+    SyncNudge,
 };
 pub(crate) use track_memory::{
     TrackMemoryHandle, TrackMemoryShutdownOutcome, TrackMemoryStartOutcome, start_track_memory,

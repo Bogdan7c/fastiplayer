@@ -157,6 +157,10 @@ pub(super) enum SubtitleLoadFailure {
     /// Файл прочитан, но не разобран (слишком много реплик, не WebVTT и т.п.).
     #[error("subtitle file could not be parsed: {0}")]
     ParseFailed(SubtitleLoadError),
+    /// Файл разобран без ошибок, но реплик в нём нет (пуст, чужое содержимое под именем
+    /// субтитров). Показать нечего, поэтому это отказ, а не «готовая» пустая дорожка.
+    #[error("subtitle file contains no cues")]
+    NoCuesFound,
     /// Не удалось подготовить библиотеку шрифтов.
     #[error("subtitle fonts could not be prepared: {0}")]
     FontLibraryFailed(FontLibraryError),

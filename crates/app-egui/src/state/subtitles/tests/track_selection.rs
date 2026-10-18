@@ -9,7 +9,7 @@ use super::super::intents::{
     AttachOutcome, CycleOutcome, QueueOutcome, SelectTrackOutcome, SubtitleVisibility,
 };
 use super::super::menu_view::{
-    SubtitleMenuView, SubtitleTrackAvailability, SubtitleUnavailableReason,
+    SubtitleFileProblem, SubtitleMenuView, SubtitleTrackAvailability, SubtitleUnavailableReason,
 };
 use super::super::sync_offset::SyncNudge;
 use super::super::track_list::TrackLoadState;
@@ -589,12 +589,13 @@ fn broken_file_becomes_an_unavailable_track_and_other_tracks_stay_selectable() {
         .iter()
         .find(|track| track.label.file_name.as_deref() == Some("Movie.ru.vtt"))
         .expect("broken track is listed");
-    let SubtitleTrackAvailability::Unavailable(SubtitleUnavailableReason::LoadFailed(reason)) =
-        &broken.availability
-    else {
-        panic!("broken file must be unavailable with a reason");
-    };
-    assert!(reason.contains("could not be parsed"), "reason: {reason}");
+    assert_eq!(
+        broken.availability,
+        SubtitleTrackAvailability::Unavailable(SubtitleUnavailableReason::LoadFailed(
+            SubtitleFileProblem::CannotParse
+        )),
+        "a file that is not WebVTT is reported as unparsable"
+    );
     assert!(
         !overlay_present(&mut owner, media, 2_000),
         "video is untouched, no subtitle"
@@ -710,10 +711,12 @@ fn changed_load_limits_apply_to_the_next_read() {
         .iter()
         .find(|track| track.id == big)
         .expect("listed");
-    assert!(matches!(
-        &big_track.availability,
-        SubtitleTrackAvailability::Unavailable(SubtitleUnavailableReason::LoadFailed(reason)) if reason.contains("byte limit")
-    ));
+    assert_eq!(
+        big_track.availability,
+        SubtitleTrackAvailability::Unavailable(SubtitleUnavailableReason::LoadFailed(
+            SubtitleFileProblem::TooLarge
+        ))
+    );
 }
 
 #[test]

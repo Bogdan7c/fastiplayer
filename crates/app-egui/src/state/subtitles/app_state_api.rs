@@ -115,8 +115,13 @@ impl AppState {
         let picker_changed = self.poll_subtitle_file_picker();
         let jobs_changed = self.subtitles.poll_jobs();
         let failures_shown = self.show_subtitle_download_failures();
+        let user_file_failures_shown = self.show_user_file_failures();
         let stream_notice_shown = self.show_stream_subtitle_notices();
-        jobs_changed || picker_changed || failures_shown || stream_notice_shown
+        jobs_changed
+            || picker_changed
+            || failures_shown
+            || user_file_failures_shown
+            || stream_notice_shown
     }
 
     /// Показывает по уведомлению на каждую неудавшуюся попытку скачать web-субтитры.

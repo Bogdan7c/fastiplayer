@@ -136,7 +136,7 @@ fn unavailable_reason_view(failure: &SubtitleLoadFailure) -> SubtitleUnavailable
         | SubtitleLoadFailure::EmbeddedCodecNotSupportedYet => {
             SubtitleUnavailableReason::FormatNotSupportedYet
         }
-        other => SubtitleUnavailableReason::LoadFailed(other.to_string()),
+        other => SubtitleUnavailableReason::LoadFailed(other.file_problem()),
     }
 }
 

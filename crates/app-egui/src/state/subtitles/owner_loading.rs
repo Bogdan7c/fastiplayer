@@ -179,6 +179,10 @@ impl SubtitleOwner {
         };
         // Завершённая задача больше не нужна: освобождаем поток.
         media.load_job = None;
+        // Отказ файла, который пользователь добавил сам, станет toast-ом (автофайлы — нет).
+        media
+            .user_files
+            .record_load_result(&media.tracks, track_id, &result);
         let sync_offset = media.sync_offset;
         let source_id = self.source_ids.allocate();
         if let Some(entry) = media.tracks.get_mut(track_id) {

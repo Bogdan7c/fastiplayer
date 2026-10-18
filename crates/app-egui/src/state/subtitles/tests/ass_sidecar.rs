@@ -3,7 +3,9 @@
 
 use subtitle_core::{SubtitleContent, SubtitleEvent};
 
-use super::super::menu_view::SubtitleTrackAvailability;
+use super::super::menu_view::{
+    SubtitleFileProblem, SubtitleTrackAvailability, SubtitleUnavailableReason,
+};
 use super::super::track_list::TrackLoadState;
 
 use super::track_selection::{movie_with, overlay_present, settle};
@@ -90,14 +92,20 @@ fn movie_ass_next_to_the_video_is_selected_loaded_as_ass_and_rendered() {
 }
 
 /// Мусор вместо сценария в `.ass` не роняет приложение: разбор ASS снисходителен (как у
-/// libass), дорожка читается пустой и ничего не рисует.
+/// libass), но файл без единой реплики — недоступная дорожка с понятной причиной в меню.
 #[test]
-fn garbage_ass_file_is_an_empty_track_without_a_crash() {
+fn garbage_ass_file_is_an_unavailable_track_without_a_crash() {
     let (_dir, video) = movie_with(&[("Movie.ass", "this is not a subtitle script at all")]);
     let mut owner = owner_with_config(&enabled_config());
     begin_and_wait(&mut owner, instance(1), &video);
     settle(&mut owner);
 
-    assert!(displayed_events(&owner).is_empty());
+    let view = owner.menu_view();
+    assert_eq!(
+        view.tracks[0].availability,
+        SubtitleTrackAvailability::Unavailable(SubtitleUnavailableReason::LoadFailed(
+            SubtitleFileProblem::CannotParse
+        ))
+    );
     assert!(!overlay_present(&mut owner, instance(1), 1_500));
 }

@@ -73,6 +73,10 @@ pub(super) fn load_candidate_timeline(
         .map_err(FileLoadError::Failed)?;
     // Освобождаем сырые байты до остальной работы.
     drop(bytes);
+    // Файл без единой реплики — отказ с понятной причиной, а не молчаливая пустая дорожка.
+    if timeline.is_empty() {
+        return Err(FileLoadError::Failed(SubtitleLoadFailure::NoCuesFound));
+    }
 
     Ok(LoadedSidecarTrack {
         timeline,

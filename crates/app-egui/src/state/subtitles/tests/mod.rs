@@ -34,6 +34,7 @@ mod embedded_pgs_placement_gpu;
 mod embedded_pgs_read_run;
 mod embedded_support;
 mod embedded_test_font;
+mod file_failure_toasts;
 mod gpu_chain;
 mod language;
 mod media_reset_order;

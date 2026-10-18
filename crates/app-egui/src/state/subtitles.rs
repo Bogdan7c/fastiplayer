@@ -89,6 +89,7 @@ mod system_language;
 #[cfg(test)]
 mod tests;
 mod track_list;
+mod user_file_failures;
 mod user_style;
 mod web_download;
 mod web_load_job;
@@ -119,8 +120,8 @@ use self::job_runner::{SidecarJob, SidecarJobPoll};
 pub(crate) use self::layer_placement::PlacedLayerRect;
 use self::media_state::{DiscoveryState, MediaSubtitles};
 pub(crate) use self::menu_view::{
-    SubtitleFileOrigin, SubtitleMenuTrack, SubtitleMenuView, SubtitleTrackAvailability,
-    SubtitleTrackLabel, SubtitleUnavailableReason,
+    SubtitleFileOrigin, SubtitleFileProblem, SubtitleMenuTrack, SubtitleMenuView,
+    SubtitleTrackAvailability, SubtitleTrackLabel, SubtitleUnavailableReason,
 };
 use self::owner_embedded::EmbeddedFeedState;
 pub(crate) use self::owner_embedded::EmbeddedUpdate;
