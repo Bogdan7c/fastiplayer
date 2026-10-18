@@ -137,6 +137,14 @@ impl ClockTracker {
         }
     }
 
+    /// Разрыв потока кадров (seek, scrub, новый проход чтения): следующий кадр не сравнивается
+    /// с предыдущим. Иначе разница pts «до» и «после» разрыва (до секунды, это ещё «правдоподобно»)
+    /// стала бы шагом кадров и раздула сроки годности анимированных картинок. Уже наблюдённый
+    /// шаг остаётся: частота кадров media при разрыве не меняется.
+    pub(in crate::state::subtitles) fn note_discontinuity(&mut self) {
+        self.last_pts = None;
+    }
+
     /// Только тесты: известен ли наблюдаемый шаг.
     #[cfg(test)]
     pub(in crate::state::subtitles) fn has_observed_step(&self) -> bool {
@@ -211,6 +219,19 @@ mod tests {
         tracker.note_frame(millis(1_040));
         tracker.note_frame(millis(90_000));
         tracker.note_frame(millis(500));
+        assert_eq!(tracker.observed_step, FrameStep::from_micros(40_000));
+    }
+
+    #[test]
+    fn a_discontinuity_keeps_the_known_step_and_does_not_learn_a_new_one() {
+        let mut tracker = ClockTracker::default();
+        tracker.note_frame(millis(1_000));
+        tracker.note_frame(millis(1_040));
+        tracker.note_discontinuity();
+        // Скачок в пределах «правдоподобного» шага после разрыва шагом не становится.
+        tracker.note_frame(millis(1_700));
+        assert_eq!(tracker.observed_step, FrameStep::from_micros(40_000));
+        tracker.note_frame(millis(1_740));
         assert_eq!(tracker.observed_step, FrameStep::from_micros(40_000));
     }
 

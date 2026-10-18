@@ -15,6 +15,7 @@
 
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
+use std::time::Duration;
 
 use render_core::PictureRect;
 use subtitle_core::{SubtitleEventId, SubtitleLanguage, SubtitleTime};
@@ -321,7 +322,22 @@ impl SubtitlePresenter {
         &mut self,
         observation: PlaybackObservation,
     ) {
+        // Новый проход чтения демуксера - разрыв потока кадров (seek, scrub, потеря пакета).
+        if observation.read_run != self.observation.read_run {
+            self.clock.note_discontinuity();
+        }
         self.observation = observation;
+    }
+
+    /// Учитывает кадр при выводе шага кадров. Во время seek/scrub соседние кадры - это
+    /// перескоки по таймлайну, а не ход видео: шаг из них не выводится, и следующий кадр
+    /// после scrub не сравнивается с последним кадром превью.
+    fn note_frame_for_step(&mut self, frame_pts: Duration) {
+        if self.observation.mode.has_target() {
+            self.clock.note_discontinuity();
+        } else {
+            self.clock.note_frame(frame_pts);
+        }
     }
 
     /// Режим воспроизведения опирается на цель (seek/scrub), а не на показанный кадр.
@@ -434,7 +450,7 @@ impl SubtitlePresenter {
         };
         let lookup_time = track.lookup_time_for(frame.frame_pts);
         let has_cues = self.collect_active_events(track, lookup_time);
-        self.clock.note_frame(frame.frame_pts);
+        self.note_frame_for_step(frame.frame_pts);
         self.last_frame = Some(LastFrame {
             canvas,
             lookup_time,

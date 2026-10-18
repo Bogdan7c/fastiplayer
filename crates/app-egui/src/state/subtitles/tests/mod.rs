@@ -42,6 +42,7 @@ mod presentation;
 mod real_sidecar;
 mod render_thread;
 mod render_thread_regressions;
+mod scrub_frame_step;
 mod shortening_thread;
 mod sidecar_job;
 mod stream_dash_gpu;
