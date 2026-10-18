@@ -18,20 +18,31 @@ use egui::{RadioButton, Ui};
 
 use super::{AudioTrackControlAction, ControlAction};
 use crate::state::{AudioTrackMenuTarget, AudioTrackMenuView};
+use crate::ui::egui_behavior::vertical_scroll_area;
 
 /// Минимальная ширина меню: длинные подписи не должны прыгать от открытия к открытию.
 const MENU_MIN_WIDTH: f32 = 240.0;
 
+/// Предельная высота списка дорожек: у MKV с десятками дорожек и yt-dlp-видео с множеством
+/// дубляжей список прокручивается, а не уходит за окно. Значение то же, что у меню CC
+/// (`subtitle_control::menu::TRACK_LIST_MAX_HEIGHT`), чтобы оба меню вели себя одинаково.
+pub(super) const TRACK_LIST_MAX_HEIGHT: f32 = 320.0;
+
 /// Рисует пункты меню и добавляет действие выбранной дорожки.
 pub(super) fn show(ui: &mut Ui, view: &AudioTrackMenuView, actions: &mut Vec<ControlAction>) {
     ui.set_min_width(MENU_MIN_WIDTH);
-    for track in view.tracks() {
-        let item = ui.add(RadioButton::new(track.is_selected, track.label.as_str()));
-        if item.clicked() {
-            actions.push(ControlAction::AudioTracks(control_action_for(track.target)));
-            ui.close();
-        }
-    }
+    vertical_scroll_area()
+        .id_salt("audio_track_list")
+        .max_height(TRACK_LIST_MAX_HEIGHT)
+        .show(ui, |ui| {
+            for track in view.tracks() {
+                let item = ui.add(RadioButton::new(track.is_selected, track.label.as_str()));
+                if item.clicked() {
+                    actions.push(ControlAction::AudioTracks(control_action_for(track.target)));
+                    ui.close();
+                }
+            }
+        });
 }
 
 /// Действие для строки меню: встроенная дорожка, web-версия или язык звука.

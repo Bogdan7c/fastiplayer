@@ -332,3 +332,77 @@ fn clicking_a_language_row_publishes_the_language_switch_with_its_action() {
         )]
     );
 }
+
+/// Сколько языков в «длинном» меню: десятки дубляжей yt-dlp или MKV с 40 дорожками.
+const MANY_LANGUAGES: u32 = 40;
+/// Запас на рамку попапа и внутренние отступы сверх высоты списка.
+const POPUP_CHROME_ALLOWANCE: f32 = 40.0;
+
+/// Меню с `MANY_LANGUAGES` языками; первый — выбранный.
+fn many_languages_view() -> AudioTrackMenuView {
+    use media_source_open::web_media_open::audio_languages::WebAudioLanguageAction;
+    let generation = crate::web_media_stream_model::WebMediaStreamGeneration::for_test(3, 1);
+    let labels: Vec<String> = (0..MANY_LANGUAGES)
+        .map(|index| format!("Language {index}"))
+        .collect();
+    let rows: Vec<_> = labels
+        .iter()
+        .zip(0..)
+        .map(|(label, index)| {
+            (
+                WebAudioLanguageAction::for_test(generation, index),
+                label.as_str(),
+                index == 0,
+            )
+        })
+        .collect();
+    AudioTrackMenuView::for_web_languages_test(&rows)
+}
+
+/// Высота самого высокого попапа (слой не ниже `Foreground`) в контексте.
+fn tallest_popup_height(context: &egui::Context) -> f32 {
+    context.memory(|memory| {
+        memory
+            .areas()
+            .visible_layer_ids()
+            .into_iter()
+            .filter(|layer| layer.order == egui::Order::Foreground)
+            .filter_map(|layer| memory.area_rect(layer.id))
+            .map(|rect| rect.height())
+            .fold(0.0, f32::max)
+    })
+}
+
+#[test]
+fn menu_with_many_tracks_is_height_bounded_and_scrolls_to_the_last_one() {
+    let view = many_languages_view();
+    let (note, _) = centers(FULL_WINDOW);
+    let mut scene = Scene::new(FULL_WINDOW);
+    scene.settle(&view);
+    scene.left_click(note, &view);
+    scene.settle(&view);
+    assert!(scene.popup_open());
+
+    let height = tallest_popup_height(&scene.context);
+    assert!(
+        height > 0.0
+            && height <= super::super::menu::TRACK_LIST_MAX_HEIGHT + POPUP_CHROME_ALLOWANCE,
+        "popup height {height} must stay within the list limit"
+    );
+
+    // Крутим колесо над списком: последняя строка должна стать видимой в попапе.
+    let first_row = scene.center_of("Language 0");
+    let wheel = Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -5000.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    };
+    scene.frame(vec![Event::PointerMoved(first_row), wheel], &view);
+    scene.settle(&view);
+    let last_row = scene.center_of(&format!("Language {}", MANY_LANGUAGES - 1));
+    assert!(
+        last_row.y < first_row.y + super::super::menu::TRACK_LIST_MAX_HEIGHT,
+        "last row {last_row:?} must be scrolled into the visible list"
+    );
+}
