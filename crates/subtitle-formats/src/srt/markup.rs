@@ -84,6 +84,8 @@ struct MarkupBuilder {
     pending_text: String,
     open_tags: Vec<StyleTag>,
     anchor: Option<ScreenAnchor>,
+    /// В оставшемся тексте больше нет `}`: любой следующий `{` — обычный символ.
+    no_closing_brace_ahead: bool,
 }
 
 impl MarkupBuilder {
@@ -128,12 +130,16 @@ impl MarkupBuilder {
     /// Пытается разобрать тег в начале `rest`; возвращает длину съеденного или `None`,
     /// если `<` — просто символ.
     fn try_consume_angle_tag(&mut self, rest: &str) -> Option<usize> {
-        let close_index = rest.find('>')?;
-        let inner = rest.get(1..close_index)?;
-        // Внутри тега не бывает другого `<`: значит исходный `<` был обычным символом.
-        if inner.contains('<') {
+        // Ищем ближайший из `<`/`>` после открывающего `<` одним проходом. Если первым встретился
+        // другой `<` (или ничего нет), исходный `<` был обычным символом. Так цена разбора
+        // линейна: «лишний» `<` не заставляет каждый раз сканировать весь остаток реплики.
+        let after_open = rest.get(1..)?;
+        let relative_close = after_open.find(['<', '>'])?;
+        if after_open.as_bytes().get(relative_close) != Some(&b'>') {
             return None;
         }
+        let close_index = relative_close + 1;
+        let inner = rest.get(1..close_index)?;
         let (is_closing, body) = match inner.strip_prefix('/') {
             Some(body) => (true, body),
             None => (false, inner),
@@ -171,7 +177,15 @@ impl MarkupBuilder {
 
     /// Блок `{...}`: ищем `\anN`, весь блок вырезается из текста.
     fn try_consume_override_block(&mut self, rest: &str) -> Option<usize> {
-        let close_index = rest.find('}')?;
+        if self.no_closing_brace_ahead {
+            return None;
+        }
+        let Some(close_index) = rest.find('}') else {
+            // Раз `}` нет в этом остатке, его нет и в более коротких: повторно не ищем (иначе
+            // строка из `{{{{…` стоила бы O(n^2)).
+            self.no_closing_brace_ahead = true;
+            return None;
+        };
         let inner = rest.get(1..close_index)?;
         if self.anchor.is_none() {
             self.anchor = find_numpad_anchor(inner);

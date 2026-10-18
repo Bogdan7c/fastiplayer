@@ -67,12 +67,16 @@ pub(super) struct ScannedTag {
 
 /// Пытается прочитать тег в начале `rest` (там стоит `<`). `None` — `<` обычный символ.
 pub(super) fn scan_angle_tag(rest: &str) -> Option<ScannedTag> {
-    let close_index = rest.find('>')?;
-    let inner = rest.get(1..close_index)?;
-    // Внутри тега не бывает ни новой строки, ни ещё одного `<`: значит, это был просто символ.
-    if inner.contains(['<', '\n']) {
+    // Ближайший из `<`/`>`/`\n` после открывающего `<` одним проходом. Внутри тега не бывает ни
+    // новой строки, ни ещё одного `<`: если первым встретился не `>`, это был просто символ.
+    // Один проход (а не поиск `>` по всему остатку) держит разбор линейным на строке из `<`.
+    let after_open = rest.get(1..)?;
+    let relative_close = after_open.find(['<', '>', '\n'])?;
+    if after_open.as_bytes().get(relative_close) != Some(&b'>') {
         return None;
     }
+    let close_index = relative_close + 1;
+    let inner = rest.get(1..close_index)?;
     let consumed_bytes = close_index + 1;
     let content = if let Some(closing) = inner.strip_prefix('/') {
         starts_with_ascii_letter(closing)

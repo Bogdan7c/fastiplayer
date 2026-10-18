@@ -76,6 +76,14 @@ struct OpenElement {
     voice: Option<String>,
     /// Языковой тег (только `<lang>`).
     language: Option<String>,
+    /// Итоговый стиль под этим элементом: стиль родителя (или `::cue`) + правила и собственный
+    /// эффект самого элемента. Считается один раз при открытии, чтобы стоимость сброса текста
+    /// не росла с глубиной стека (иначе тысячи незакрытых `<c>` дают O(n^2)).
+    style_in_scope: SpanStyle,
+    /// Индекс в стеке ближайшего снаружи (включая себя) элемента с голосом.
+    voice_owner: Option<usize>,
+    /// То же для языка (`<lang>`).
+    language_owner: Option<usize>,
 }
 
 impl OpenElement {
@@ -188,12 +196,39 @@ impl<'sheet> CueTextBuilder<'sheet> {
             _ => {}
         }
         let annotation = (!tag.annotation.is_empty()).then_some(tag.annotation);
-        self.open_elements.push(OpenElement {
+        let mut element = OpenElement {
             kind,
             classes: tag.classes,
             voice: annotation.clone().filter(|_| kind == ElementKind::Voice),
             language: annotation.filter(|_| kind == ElementKind::Language),
-        });
+            style_in_scope: self.current_style(),
+            voice_owner: None,
+            language_owner: None,
+        };
+        // Селекторы смотрят только на сам элемент (без потомков/предков), поэтому каскад — это
+        // свёртка по стеку, и достаточно дополнить стиль родителя правилами нового элемента.
+        let view = ElementSelectorView {
+            classes: &element.classes,
+            voice: element.voice.as_deref(),
+        };
+        let mut style_in_scope = element.style_in_scope;
+        self.style_sheet
+            .apply_for_element(view, &mut style_in_scope);
+        element.apply_intrinsic_style(&mut style_in_scope);
+        element.style_in_scope = style_in_scope;
+        let own_index = self.open_elements.len();
+        let parent = self.open_elements.last();
+        element.voice_owner = if element.voice.is_some() {
+            Some(own_index)
+        } else {
+            parent.and_then(|parent| parent.voice_owner)
+        };
+        element.language_owner = if element.language.is_some() {
+            Some(own_index)
+        } else {
+            parent.and_then(|parent| parent.language_owner)
+        };
+        self.open_elements.push(element);
     }
 
     /// Закрывает элемент, только если он на вершине стека (иначе тег лишний и игнорируется).
@@ -252,33 +287,22 @@ impl<'sheet> CueTextBuilder<'sheet> {
         }
     }
 
-    /// Стиль под текущим стеком (см. модульную документацию).
+    /// Стиль под текущим стеком (см. модульную документацию): O(1), берётся с вершины.
     fn current_style(&self) -> SpanStyle {
-        let mut style = self.base_style;
-        for element in &self.open_elements {
-            let view = ElementSelectorView {
-                classes: &element.classes,
-                voice: element.voice.as_deref(),
-            };
-            self.style_sheet.apply_for_element(view, &mut style);
-            element.apply_intrinsic_style(&mut style);
-        }
-        style
+        self.open_elements
+            .last()
+            .map_or(self.base_style, |top| top.style_in_scope)
     }
 
     /// Ближайший снаружи голос/язык: внутренний элемент перекрывает внешний.
     fn current_voice(&self) -> Option<String> {
-        self.open_elements
-            .iter()
-            .rev()
-            .find_map(|element| element.voice.clone())
+        let owner = self.open_elements.last()?.voice_owner?;
+        self.open_elements.get(owner)?.voice.clone()
     }
 
     fn current_language(&self) -> Option<String> {
-        self.open_elements
-            .iter()
-            .rev()
-            .find_map(|element| element.language.clone())
+        let owner = self.open_elements.last()?.language_owner?;
+        self.open_elements.get(owner)?.language.clone()
     }
 
     /// Превращает накопленный текст в спан со стилем, действовавшим до смены тегов.
