@@ -22,14 +22,22 @@
 //! Работает над позициями «до перестановки BiDi» (логический порядок), как в libass.
 //! Разрывы строк возможны только после пробела (`' '`) — у libass без `libunibreak`
 //! (`ASS_FEATURE_WRAP_UNICODE` выключен по умолчанию) других разрешённых разрывов нет.
+//! Для простых форматов политика [`BreakOpportunities::SpacesAndCjk`] добавляет разрывы между
+//! CJK-символами (правила — в [`super::break_rules`]); с [`BreakOpportunities::SpacesOnly`]
+//! поведение побитово прежнее.
+//!
+//! Место разрыва везде задаётся как «после кластера `i`»: новая строка начинается с `i + 1`.
 
-use crate::event_style::WrapStyle;
+use super::break_rules::allows_break_between;
+use crate::event_style::{BreakOpportunities, WrapStyle};
 use crate::fixed_point::{Vector26, d6_to_double};
 use crate::glyph_info::{LineStart, TextCluster};
 
-/// Пробел — единственное место, где автоматический перенос разрешён.
-fn allows_break(cluster: &TextCluster) -> bool {
-    cluster.symbol == ' '
+/// Разрешён ли автоматический перенос сразу после кластера `index` при данной политике.
+fn allows_break_after(clusters: &[TextCluster], index: usize, policy: BreakOpportunities) -> bool {
+    clusters
+        .get(index)
+        .is_some_and(|current| allows_break_between(current, clusters.get(index + 1), policy))
 }
 
 /// Явный перевод строки.
@@ -57,6 +65,7 @@ pub(super) fn wrap_lines_naive(
     clusters: &mut [TextCluster],
     max_text_width: f64,
     wrap_style: WrapStyle,
+    break_opportunities: BreakOpportunities,
 ) -> usize {
     let mut line_count = 1;
     let mut line_first = 0_usize;
@@ -80,7 +89,7 @@ pub(super) fn wrap_lines_naive(
             break_kind = LineStart::AfterSoftBreak;
             break_at = last_breakable;
         }
-        if allows_break(current) {
+        if allows_break_after(clusters, index, break_opportunities) {
             last_breakable = Some(index);
         }
 
@@ -123,7 +132,11 @@ fn span_length(clusters: &[TextCluster], from: usize, to: usize) -> f64 {
 
 /// Сдвигает мягкие разрывы так, чтобы длины соседних строк сблизились
 /// (libass: `wrap_lines_rebalance`). Число строк не меняется.
-pub(super) fn wrap_lines_rebalance(clusters: &mut [TextCluster], wrap_style: WrapStyle) {
+pub(super) fn wrap_lines_rebalance(
+    clusters: &mut [TextCluster],
+    wrap_style: WrapStyle,
+    break_opportunities: BreakOpportunities,
+) {
     if wrap_style == WrapStyle::EndOfLine {
         return;
     }
@@ -148,7 +161,7 @@ pub(super) fn wrap_lines_rebalance(clusters: &mut [TextCluster], wrap_style: Wra
                         .get(line2)
                         .is_some_and(|cluster| cluster.line_start == LineStart::AfterSoftBreak)
                 {
-                    match try_move_break(clusters, line1, line2, third) {
+                    match try_move_break(clusters, [line1, line2, third], break_opportunities) {
                         BreakMove::NotBeneficial => {}
                         BreakMove::Skip => continue,
                         BreakMove::Moved(new_start) => {
@@ -174,16 +187,29 @@ enum BreakMove {
 }
 
 /// Пробует перенести последнее слово первой строки на вторую.
+///
+/// `line_starts` — начала трёх последовательных строк; третье может указывать за конец текста.
+/// Для CJK-разрывов «слово» — это хвост строки после предыдущего разрешённого разрыва, то есть
+/// обычно один символ: выравнивание сдвигает границу по символу за проход.
 fn try_move_break(
     clusters: &mut [TextCluster],
-    line1: usize,
-    line2: usize,
-    line3: usize,
+    line_starts: [usize; 3],
+    break_opportunities: BreakOpportunities,
 ) -> BreakMove {
+    let [line1, line2, line3] = line_starts;
     // Последнее слово первой строки: без хвостовых пробелов, затем назад до разрешённого разрыва.
     let old_end = rewind_trailing_spaces(clusters, line1, line2);
     let mut word_start = old_end;
-    while word_start > line1 && !clusters.get(word_start).is_some_and(allows_break) {
+    // Разрыв сразу после `old_end` — это и есть текущая граница строк (если он не на пробеле,
+    // как у CJK), поэтому границей слова он быть не может.
+    let is_word_boundary = |clusters: &[TextCluster], index: usize| {
+        let is_current_cjk_break = index == old_end
+            && clusters
+                .get(index)
+                .is_some_and(|cluster| cluster.symbol != ' ');
+        !is_current_cjk_break && allows_break_after(clusters, index, break_opportunities)
+    };
+    while word_start > line1 && !is_word_boundary(clusters, word_start) {
         word_start -= 1;
     }
     let mut new_end = word_start;
@@ -194,10 +220,9 @@ fn try_move_break(
     {
         new_end -= 1;
     }
-    if clusters
-        .get(word_start)
-        .is_some_and(|cluster| cluster.symbol == ' ')
-    {
+    // Нашли разрыв: новая строка начнётся сразу после него. Без разрыва слово занимает всю
+    // первую строку (`word_start == line1`) — вернёмся с `Skip` ниже.
+    if is_word_boundary(clusters, word_start) {
         word_start += 1;
     }
     if word_start == line1 {

@@ -18,6 +18,7 @@ mod ass_text_style;
 mod ass_transform;
 mod attached_fonts;
 mod caching;
+mod cjk_wrap;
 mod cue_owner;
 mod font_fallback;
 mod geometry;

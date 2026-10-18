@@ -10,7 +10,8 @@ use super::placement::{PlateInset, place_block};
 use super::{SubtitleAppearance, TextDecoration};
 use crate::event_fade::EventFade;
 use crate::event_style::{
-    AxisPair, BaseDirection, BorderStyle, EventPlacement, EventStyle, StyleColors, WrapStyle,
+    AxisPair, BaseDirection, BorderStyle, BreakOpportunities, EventPlacement, EventStyle,
+    StyleColors, WrapStyle,
 };
 use crate::fonts::{FontStyle, FontWeightClass};
 use crate::overlay::CanvasSize;
@@ -121,6 +122,8 @@ pub(crate) fn cue_style(
             margins: block.margins,
             placement: EventPlacement::ByMargins,
             wrap_style: WrapStyle::Smart,
+            // Простые форматы: китайский/японский текст без пробелов должен переноситься.
+            break_opportunities: BreakOpportunities::SpacesAndCjk,
             line_spacing: 0.0,
             // Арабский и иврит в простых субтитрах должны идти справа налево сами.
             base_direction: BaseDirection::Auto,

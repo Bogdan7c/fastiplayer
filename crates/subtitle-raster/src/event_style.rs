@@ -39,6 +39,20 @@ pub(crate) enum WrapStyle {
     NoWrap,
 }
 
+/// Где автоматический перенос строк разрешён кроме явных `\n`.
+///
+/// libass без `libunibreak` переносит только после пробела, поэтому текст на китайском или
+/// японском без пробелов у ASS остаётся одной строкой. Для простых форматов (SRT, WebVTT,
+/// srv3, TTML, mov_text, web) владелец решил переносить такой текст между иероглифами;
+/// правила — в `layout::break_rules`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BreakOpportunities {
+    /// Только после пробела: побитовое поведение libass (все события ASS).
+    SpacesOnly,
+    /// Пробелы плюс границы с CJK-символами (упрощённый UAX #14: класс ID) с правилами кинсоку.
+    SpacesAndCjk,
+}
+
 /// Базовое направление абзаца для двунаправленного текста.
 ///
 /// libass выбирает его по кодировке стиля: `Encoding = -1` — автоопределение, любое другое
@@ -228,6 +242,8 @@ pub(crate) struct EventStyle {
     pub(crate) placement: EventPlacement,
     /// Режим переноса.
     pub(crate) wrap_style: WrapStyle,
+    /// Где разрешены автоматические переносы (пробелы или ещё и границы CJK-символов).
+    pub(crate) break_opportunities: BreakOpportunities,
     /// Дополнительный интервал между строками, пиксели.
     pub(crate) line_spacing: f64,
     /// Базовое направление абзаца.

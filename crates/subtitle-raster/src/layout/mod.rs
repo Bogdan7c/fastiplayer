@@ -33,6 +33,9 @@
 //! масштаб PlayRes -> кадр уже применён строителем стиля.
 
 mod baseline_shear;
+mod break_rules;
+#[cfg(test)]
+mod cjk_wrap_tests;
 mod event_rect;
 mod line_boxes;
 mod measure;
@@ -107,8 +110,13 @@ pub(crate) fn arrange_text(
 
     let max_text_width = style.text_width(f64::from(canvas.width()));
     // wrap_lines_smart: проход, выравнивание, обрезка пробелов, измерение.
-    let line_count = wrap::wrap_lines_naive(clusters, max_text_width, style.wrap_style);
-    wrap::wrap_lines_rebalance(clusters, style.wrap_style);
+    let line_count = wrap::wrap_lines_naive(
+        clusters,
+        max_text_width,
+        style.wrap_style,
+        style.break_opportunities,
+    );
+    wrap::wrap_lines_rebalance(clusters, style.wrap_style, style.break_opportunities);
     measure::trim_whitespace(clusters);
     let measure = measure::measure_text(clusters, line_count, style);
     // libass: `ass_process_karaoke_effects` стоит после переноса строк и до порядка BiDi, потому

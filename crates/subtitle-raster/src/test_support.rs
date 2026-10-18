@@ -4,8 +4,8 @@ use subtitle_core::{ScreenAnchor, SpanStyle, StyledText, SubtitleColor, TextSpan
 
 use crate::event_fade::EventFade;
 use crate::event_style::{
-    AxisPair, BaseDirection, BorderStyle, EventPlacement, EventStyle, StyleColors, TextMargins,
-    WrapStyle,
+    AxisPair, BaseDirection, BorderStyle, BreakOpportunities, EventPlacement, EventStyle,
+    StyleColors, TextMargins, WrapStyle,
 };
 use crate::face_cache::FaceCache;
 use crate::fonts::{
@@ -69,6 +69,7 @@ pub(crate) fn plain_style() -> EventStyle {
         },
         placement: EventPlacement::ByMargins,
         wrap_style: WrapStyle::Smart,
+        break_opportunities: BreakOpportunities::SpacesOnly,
         line_spacing: 0.0,
         base_direction: BaseDirection::LeftToRight,
         fade: EventFade::NONE,

@@ -47,8 +47,8 @@ use super::scroll::{scroll_band, scroll_placement};
 use super::transform_scan::animates_orientation;
 use crate::appearance::{CollisionDirection, PlateStyle, SubtitleAppearance, cue_style};
 use crate::event_style::{
-    BaseDirection, BlockAnchor, EventPlacement, EventStyle, ExactPlacement, RotationOrigin,
-    ScrollPlacement, TextMargins, WrapStyle,
+    BaseDirection, BlockAnchor, BreakOpportunities, EventPlacement, EventStyle, ExactPlacement,
+    RotationOrigin, ScrollPlacement, TextMargins, WrapStyle,
 };
 use crate::overlay::{CanvasSize, OverlayPlacementGroup};
 use crate::source_text::{
@@ -291,6 +291,8 @@ fn event_style(
             pixel_aspect_x: frame.pixel_aspect_x(),
         }),
         wrap_style: wrap_style(state.wrap_style),
+        // ASS ведёт себя как libass: перенос только после пробела.
+        break_opportunities: BreakOpportunities::SpacesOnly,
         // `ass_set_line_spacing` не вызывается: межстрочного интервала сверх шрифта нет.
         line_spacing: 0.0,
         // libass: `Encoding = -1` — автоопределение направления, иначе слева направо.

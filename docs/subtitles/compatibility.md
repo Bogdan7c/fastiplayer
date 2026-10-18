@@ -40,7 +40,8 @@ Pure-Rust rasterizer, a port of libass 0.17.5 behaviour (ISC). Output: a list of
 | User styles | "YouTube-like" (white text on a rounded 75% dark box per line) and "outline + shadow" |
 | WebVTT placement | `line`, `position`, `size`, `align`, `\anN` anchors; regions and vertical text are drawn horizontally |
 | Underline / strikethrough, synthetic bold / italic | Full (session 08) — also for SRT / WebVTT: a face without a real italic / bold is slanted / emboldened like libass |
-| Span background, `\N`-less CJK line breaking | not yet (later sessions / backlog) |
+| Span background | not yet (later sessions / backlog) |
+| Line breaks in CJK text without spaces | Simple formats (SRT, WebVTT, srv3, TTML, mov_text, web) wrap between CJK characters with kinsoku rules (no line starts with closing punctuation, small kana or the long-vowel mark; no line ends with an opening bracket; combining marks stay attached). ASS keeps libass behaviour: breaks only after spaces, so a long CJK line without spaces stays one line |
 | ASS layer-1 override tags | Supported (session 08, see below) |
 | ASS layer-2 tags: rotations, shear, 3D, `\org`, `\move`, `\fad` / `\fade` | Supported (session 09, see below) |
 | ASS layer-3 tags: drawings `\p \pbo`, clip `\clip \iclip` (rectangle and vector), blur `\blur \be` | Supported (session 10a, see below) |

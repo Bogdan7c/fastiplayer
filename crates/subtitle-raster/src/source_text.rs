@@ -204,7 +204,8 @@ mod tests {
     use super::*;
     use crate::event_fade::EventFade;
     use crate::event_style::{
-        AxisPair, BaseDirection, BorderStyle, EventPlacement, StyleColors, TextMargins, WrapStyle,
+        AxisPair, BaseDirection, BorderStyle, BreakOpportunities, EventPlacement, StyleColors,
+        TextMargins, WrapStyle,
     };
 
     fn plain_style() -> EventStyle {
@@ -236,6 +237,7 @@ mod tests {
             },
             placement: EventPlacement::ByMargins,
             wrap_style: WrapStyle::Smart,
+            break_opportunities: BreakOpportunities::SpacesOnly,
             line_spacing: 0.0,
             base_direction: BaseDirection::LeftToRight,
             fade: EventFade::NONE,
