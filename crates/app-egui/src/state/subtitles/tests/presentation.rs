@@ -368,7 +368,11 @@ fn sync_offset_moves_the_lookup_time_of_a_frame() {
     let mut presenter = SubtitlePresenter::new(
         None,
         &UserSubtitleStyle::from_config(&config),
-        super::super::settings::SubtitleSettings::from_config(&config).presenter_settings(),
+        super::super::settings::SubtitleSettings::from_config(
+            &config,
+            std::time::Duration::from_secs(60),
+        )
+        .presenter_settings(),
         AppWakePort::disconnected(AppWakeOwner::Subtitles),
     );
     presenter.install_font_library(discovery.fonts.expect("fonts requested"));

@@ -95,6 +95,7 @@ mod web_load_job;
 mod web_track;
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use media_source_open::stream_subtitles::StreamSubtitleSource;
 use media_source_open::web_subtitle_fetch::WebSubtitleFetchError;
@@ -242,6 +243,9 @@ pub(super) struct SubtitleOwner {
     presenter: SubtitlePresenter,
     /// Настройки из конфига; лимиты захватываются задачами при их запуске.
     settings: SubtitleSettings,
+    /// `network.reconnect_wait_ms`: бюджет ожидания сети для ленты потоковых субтитров.
+    /// Живёт отдельно от секции `[subtitles]`, поэтому `apply_config` берёт его отсюда.
+    network_reconnect_wait: Duration,
     /// Язык системы: запасной язык предпочтений и текста.
     system_language: Option<SubtitleLanguage>,
     /// Состояние текущего media; `None` — media нет.
@@ -293,8 +297,9 @@ impl SubtitleOwner {
         wake_port: AppWakePort,
         system_language: Option<SubtitleLanguage>,
         config: &fastiplayer_config::SubtitlesConfig,
+        network_reconnect_wait: Duration,
     ) -> Self {
-        let settings = SubtitleSettings::from_config(config);
+        let settings = SubtitleSettings::from_config(config, network_reconnect_wait);
         let presenter_wake_port = wake_port.clone();
         Self {
             wake_port,
@@ -306,6 +311,7 @@ impl SubtitleOwner {
             ),
             default_visibility: settings.default_visibility,
             settings,
+            network_reconnect_wait,
             system_language,
             media: None,
             queued_files: Vec::new(),
@@ -560,6 +566,12 @@ impl SubtitleOwner {
         visible_state_changed
     }
 
+    /// Применяет новый `network.reconnect_wait_ms`: действует на ленты, запущенные после этого.
+    pub(super) fn apply_network_reconnect_wait(&mut self, network_reconnect_wait: Duration) {
+        self.network_reconnect_wait = network_reconnect_wait;
+        self.settings.stream_limits.feed.outage_budget = network_reconnect_wait;
+    }
+
     /// Применяет новую секцию `[subtitles]` после committed изменения настроек.
     ///
     /// - стиль действует сразу: следующий кадр растеризуется заново;
@@ -568,7 +580,7 @@ impl SubtitleOwner {
     /// - «включено» и список языков действуют со следующего media: текущий выбор
     ///   пользователя настройки не перебивают.
     pub(super) fn apply_config(&mut self, config: &fastiplayer_config::SubtitlesConfig) {
-        let next = SubtitleSettings::from_config(config);
+        let next = SubtitleSettings::from_config(config, self.network_reconnect_wait);
         if next == self.settings {
             return;
         }

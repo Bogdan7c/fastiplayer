@@ -470,7 +470,9 @@ pub(super) fn presenter_with_track(
         .expect("track must load")
         .timeline;
     let config = fastiplayer_config::SubtitlesConfig::default();
-    let settings: PresenterSettings = SubtitleSettings::from_config(&config).presenter_settings();
+    let settings: PresenterSettings =
+        SubtitleSettings::from_config(&config, std::time::Duration::from_secs(60))
+            .presenter_settings();
     let mut presenter = SubtitlePresenter::new(
         None,
         &UserSubtitleStyle::from_config(&config),

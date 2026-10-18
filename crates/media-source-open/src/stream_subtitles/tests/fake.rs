@@ -10,6 +10,7 @@ use subtitle_formats::{
     LegacyEncodingHint, SubtitleParseLimits, TextSubtitleFormat, load_text_subtitle,
 };
 
+use crate::stream_subtitles::feed::OutagePolicy;
 use crate::stream_subtitles::{
     DecodedSegment, PendingSegmentDecode, PlayerTimeSpan, SegmentDecode, StreamIndexRefresh,
     StreamPlaybackPosition, StreamSegment, StreamSegmentIndex, StreamSegmentKey,
@@ -207,6 +208,15 @@ impl PendingSegmentDecode for AnchoredPending {
     }
 }
 
+/// Короткие сроки повторов: пауза 20-60 мс, бюджет перебоя `budget`.
+pub(super) fn quick_outage_policy(budget: Duration) -> OutagePolicy {
+    OutagePolicy {
+        initial_backoff: Duration::from_millis(20),
+        maximum_backoff: Duration::from_millis(60),
+        budget,
+    }
+}
+
 /// Конфигурация с явными тестовыми значениями (в production значений по умолчанию нет).
 pub(super) fn config() -> StreamSubtitleFeedConfig {
     StreamSubtitleFeedConfig {
@@ -215,6 +225,7 @@ pub(super) fn config() -> StreamSubtitleFeedConfig {
         max_segment_bytes: std::num::NonZeroUsize::new(1_024).expect("non-zero"),
         max_pending_segments: std::num::NonZeroUsize::new(4).expect("non-zero"),
         failure_threshold: std::num::NonZeroU32::new(3).expect("non-zero"),
+        outage_budget: Duration::from_secs(60),
         message_capacity: std::num::NonZeroUsize::new(64).expect("non-zero"),
     }
 }
@@ -231,11 +242,26 @@ pub(super) fn start(
     config: StreamSubtitleFeedConfig,
     position_secs: u64,
 ) -> Harness {
+    start_with_outage_policy(
+        transport,
+        config,
+        position_secs,
+        OutagePolicy::with_budget(config.outage_budget),
+    )
+}
+
+/// Как [`start`], но со своими сроками повторов при сетевом перебое (короткими для тестов).
+pub(super) fn start_with_outage_policy(
+    transport: Arc<FakeTransport>,
+    config: StreamSubtitleFeedConfig,
+    position_secs: u64,
+    outage_policy: OutagePolicy,
+) -> Harness {
     let source = StreamSubtitleSource::new(transport).expect("fake source has a track");
     let position = StreamPlaybackPosition::new(Duration::from_secs(position_secs));
     let wakes = Arc::new(AtomicUsize::new(0));
     let wake_counter = Arc::clone(&wakes);
-    let feed = StreamSubtitleFeed::start(
+    let feed = StreamSubtitleFeed::start_with_outage_policy(
         &source,
         StreamSubtitleTrackId::new(0),
         config,
@@ -243,6 +269,7 @@ pub(super) fn start(
         Arc::new(move || {
             wake_counter.fetch_add(1, Ordering::SeqCst);
         }),
+        outage_policy,
     )
     .expect("feed starts");
     Harness {

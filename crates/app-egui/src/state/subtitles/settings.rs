@@ -5,6 +5,8 @@
 //! один раз переводится в готовые типы подсистем, а сравнение двух результатов подсказывает
 //! владельцу, что именно изменилось (стиль — сразу, лимиты — со следующей загрузки).
 
+use std::time::Duration;
+
 use fastiplayer_config::SubtitlesConfig;
 use subtitle_raster::RasterLimits;
 
@@ -49,8 +51,9 @@ impl SubtitleSettings {
         }
     }
 
-    /// Разбирает секцию конфига.
-    pub(super) fn from_config(config: &SubtitlesConfig) -> Self {
+    /// Разбирает секцию конфига. `network_reconnect_wait` - `network.reconnect_wait_ms`
+    /// (бюджет ожидания сети для ленты потоковых субтитров, см. `StreamLimits`).
+    pub(super) fn from_config(config: &SubtitlesConfig, network_reconnect_wait: Duration) -> Self {
         Self {
             default_visibility: SubtitleVisibility::from_enabled(config.enabled),
             preferred_language_codes: config
@@ -64,7 +67,7 @@ impl SubtitleSettings {
             prerender_frames: config.prerender_frames,
             prepared_overlays: config.prepared_overlays,
             embedded_limits: EmbeddedLimits::from_config(config),
-            stream_limits: StreamLimits::from_config(config),
+            stream_limits: StreamLimits::from_config(config, network_reconnect_wait),
             ass_positioning: AssLayerPositioning::from_config(config.ass_position_mode),
         }
     }
@@ -81,11 +84,12 @@ mod tests {
             preferred_languages: "uk, ru ,".to_owned(),
             ..SubtitlesConfig::default()
         };
-        let settings = SubtitleSettings::from_config(&config);
+        let settings = SubtitleSettings::from_config(&config, Duration::from_secs(60));
         assert_eq!(settings.default_visibility, SubtitleVisibility::Shown);
         assert_eq!(settings.preferred_language_codes, vec!["uk", "ru"]);
         assert_eq!(
-            SubtitleSettings::from_config(&SubtitlesConfig::default()).default_visibility,
+            SubtitleSettings::from_config(&SubtitlesConfig::default(), Duration::from_secs(60))
+                .default_visibility,
             SubtitleVisibility::Hidden,
             "subtitles are off by default"
         );

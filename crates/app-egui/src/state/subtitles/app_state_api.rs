@@ -70,6 +70,16 @@ impl AppState {
         self.subtitles.apply_config(config);
     }
 
+    /// Применяет `network.reconnect_wait_ms` committed конфига (бюджет ожидания сети ленты
+    /// потоковых субтитров).
+    pub(in crate::state) fn apply_subtitles_network_reconnect_wait(
+        &mut self,
+        network_reconnect_wait: std::time::Duration,
+    ) {
+        self.subtitles
+            .apply_network_reconnect_wait(network_reconnect_wait);
+    }
+
     /// Передаёт владельцу субтитров приёмник трубы встроенных дорожек (один раз при сборке).
     pub(in crate::state) fn attach_subtitle_feed(
         &mut self,

@@ -343,6 +343,7 @@ fn assert_owner_and_pixels(
         AppWakePort::disconnected(AppWakeOwner::Subtitles),
         None,
         &enabled_config(),
+        std::time::Duration::from_secs(60),
     );
     begin_and_wait(&mut owner, media, &scenario.movie);
     assert_eq!(

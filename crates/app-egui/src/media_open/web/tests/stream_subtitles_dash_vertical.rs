@@ -158,6 +158,7 @@ fn native_dash_intent_hands_out_the_subtitle_source_of_its_own_open() {
                 max_segment_bytes: std::num::NonZeroUsize::new(64 * 1_024).unwrap(),
                 max_pending_segments: std::num::NonZeroUsize::new(8).unwrap(),
                 failure_threshold: std::num::NonZeroU32::new(3).unwrap(),
+                outage_budget: Duration::from_secs(60),
                 message_capacity: std::num::NonZeroUsize::new(64).unwrap(),
             },
             StreamPlaybackPosition::new(Duration::ZERO),

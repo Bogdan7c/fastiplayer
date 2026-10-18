@@ -153,6 +153,7 @@ pub(super) fn owner_with_config(config: &SubtitlesConfig) -> SubtitleOwner {
         AppWakePort::disconnected(AppWakeOwner::Subtitles),
         None,
         config,
+        std::time::Duration::from_secs(60),
     );
     owner.use_embedded_fonts_only();
     owner

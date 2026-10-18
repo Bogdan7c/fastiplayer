@@ -173,6 +173,7 @@ fn live_segments_without_timestamp_map_use_container_time_not_the_epoch_start() 
             max_segment_bytes: NonZeroUsize::new(64 * 1_024).expect("non-zero"),
             max_pending_segments: NonZeroUsize::new(16).expect("non-zero"),
             failure_threshold: std::num::NonZeroU32::new(5).expect("non-zero"),
+            outage_budget: Duration::from_secs(60),
             message_capacity: NonZeroUsize::new(64).expect("non-zero"),
         },
         position,

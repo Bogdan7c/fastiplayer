@@ -147,8 +147,9 @@ impl StreamSubtitleTransport for FakeStreamTransport {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
+        // Постоянный сбой (404): сетевой сбой лента теперь повторяла бы до бюджета перебоя.
         if self.failing.load(Ordering::Acquire) {
-            return Err(StreamSubtitleError::Network);
+            return Err(StreamSubtitleError::NotFound);
         }
         let address = segment
             .reference

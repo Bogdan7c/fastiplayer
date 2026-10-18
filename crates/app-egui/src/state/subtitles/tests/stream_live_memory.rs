@@ -484,3 +484,31 @@ fn vod_track_at_the_cue_limit_still_skips_new_cues() {
     assert_eq!(displayed_cue_count(&owner), 10, "VOD history is kept");
     assert_eq!(owner.stream_feed_counters().cues_evicted, 0);
 }
+
+#[test]
+fn network_reconnect_wait_reaches_the_feed_limits_and_survives_a_subtitle_config_change() {
+    let mut owner = owner_with_config(&enabled_config());
+    assert_eq!(
+        owner.settings.stream_limits.feed.outage_budget,
+        Duration::from_secs(60)
+    );
+
+    owner.apply_network_reconnect_wait(Duration::from_secs(5));
+    assert_eq!(
+        owner.settings.stream_limits.feed.outage_budget,
+        Duration::from_secs(5)
+    );
+
+    // Правка секции [subtitles] не должна откатить бюджет сети к значению при старте.
+    let mut changed = enabled_config();
+    changed.stream.ahead_s += 1;
+    owner.apply_config(&changed);
+    assert_eq!(
+        owner.settings.stream_limits.feed.outage_budget,
+        Duration::from_secs(5)
+    );
+    assert_eq!(
+        owner.settings.stream_limits.feed.ahead,
+        Duration::from_secs(u64::from(changed.stream.ahead_s))
+    );
+}

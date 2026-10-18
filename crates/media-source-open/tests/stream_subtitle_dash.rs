@@ -299,6 +299,7 @@ fn feed_config() -> StreamSubtitleFeedConfig {
         max_segment_bytes: NonZeroUsize::new(64 * 1_024).unwrap(),
         max_pending_segments: NonZeroUsize::new(8).unwrap(),
         failure_threshold: NonZeroU32::new(3).unwrap(),
+        outage_budget: Duration::from_secs(60),
         message_capacity: NonZeroUsize::new(256).unwrap(),
     }
 }

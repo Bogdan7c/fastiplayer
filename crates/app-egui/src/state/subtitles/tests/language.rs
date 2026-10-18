@@ -30,6 +30,7 @@ fn owner_with_system_language(system_language: Option<SubtitleLanguage>) -> Subt
         AppWakePort::disconnected(AppWakeOwner::Subtitles),
         system_language,
         &enabled_config(),
+        std::time::Duration::from_secs(60),
     );
     owner.use_embedded_fonts_only();
     owner

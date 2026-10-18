@@ -407,6 +407,13 @@ impl AppState {
             SidebarHostState::from_committed(committed_config_snapshot.sidebar_width_points());
         // Стартовые настройки субтитров берутся из committed config до его перемещения в состояние.
         let subtitles_config = committed_config_snapshot.as_config().subtitles.clone();
+        // Бюджет ожидания сети у ленты потоковых субтитров тот же, что у основного источника.
+        let subtitles_network_wait = Duration::from_millis(
+            committed_config_snapshot
+                .as_config()
+                .network
+                .reconnect_wait_ms,
+        );
 
         let mut app_state = Self {
             egui_ctx,
@@ -462,6 +469,7 @@ impl AppState {
                 startup_context.subtitle_wake_port.clone(),
                 subtitles::read_system_language(),
                 &subtitles_config,
+                subtitles_network_wait,
             ),
             track_memory: startup_context.track_memory.clone(),
             timeline_ui_state: TimelineUiState::default(),
@@ -548,7 +556,17 @@ impl AppState {
         let next_sidebar_width = snapshot.sidebar_width_points();
         let subtitles_changed =
             self.committed_config_snapshot.as_config().subtitles != snapshot.as_config().subtitles;
+        let reconnect_wait_changed =
+            self.committed_config_snapshot.as_config().network != snapshot.as_config().network;
         self.committed_config_snapshot = snapshot;
+        if reconnect_wait_changed {
+            self.apply_subtitles_network_reconnect_wait(Duration::from_millis(
+                self.committed_config_snapshot
+                    .as_config()
+                    .network
+                    .reconnect_wait_ms,
+            ));
+        }
         if subtitles_changed {
             // Настройки субтитров применяются здесь, а не в route: снимок обновляется только
             // после успешной транзакции, поэтому откат настроек не оставит новый стиль в плеере.

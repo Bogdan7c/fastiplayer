@@ -34,7 +34,14 @@ pub(in crate::state::subtitles) struct StreamLimits {
 
 impl StreamLimits {
     /// Строит лимиты из конфига; поля уже проверены `validate()`.
-    pub(in crate::state::subtitles) fn from_config(config: &SubtitlesConfig) -> Self {
+    ///
+    /// `network_reconnect_wait` - бюджет переподключения основного источника
+    /// (`network.reconnect_wait_ms`): столько лента ждёт возвращения сети, прежде чем
+    /// признать дорожку недоступной.
+    pub(in crate::state::subtitles) fn from_config(
+        config: &SubtitlesConfig,
+        network_reconnect_wait: Duration,
+    ) -> Self {
         let stream = &config.stream;
         Self {
             feed: StreamSubtitleFeedConfig {
@@ -46,6 +53,7 @@ impl StreamLimits {
                 max_pending_segments: non_zero_usize(usize::from(stream.max_pending_segments)),
                 failure_threshold: NonZeroU32::new(u32::from(stream.failure_threshold))
                     .unwrap_or(NonZeroU32::MIN),
+                outage_budget: network_reconnect_wait,
                 message_capacity: FEED_MESSAGE_CAPACITY,
             },
             live_retention: SubtitleTime::from_micros(
@@ -74,7 +82,7 @@ mod tests {
         config.stream.failure_threshold = 5;
         config.stream.live_retention_s = 300;
 
-        let limits = StreamLimits::from_config(&config);
+        let limits = StreamLimits::from_config(&config, Duration::from_millis(45_000));
 
         assert_eq!(limits.feed.ahead, Duration::from_secs(90));
         assert_eq!(limits.feed.behind, Duration::ZERO);
@@ -83,11 +91,12 @@ mod tests {
         assert_eq!(limits.feed.failure_threshold.get(), 5);
         assert_eq!(limits.live_retention, SubtitleTime::from_millis(300_000));
         assert_eq!(limits.feed.message_capacity.get(), 64);
+        assert_eq!(limits.feed.outage_budget, Duration::from_secs(45));
     }
 
     #[test]
     fn defaults_follow_the_config_defaults() {
-        let limits = StreamLimits::from_config(&SubtitlesConfig::default());
+        let limits = StreamLimits::from_config(&SubtitlesConfig::default(), Duration::ZERO);
         assert_eq!(limits.feed.ahead, Duration::from_secs(60));
         assert_eq!(limits.live_retention, SubtitleTime::from_millis(600_000));
     }

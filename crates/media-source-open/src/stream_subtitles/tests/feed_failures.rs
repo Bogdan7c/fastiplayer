@@ -71,7 +71,7 @@ fn one_missing_segment_is_skipped_and_the_rest_still_arrive() {
 fn consecutive_failures_report_unavailable_exactly_once_and_stop_the_feed() {
     let transport = FakeTransport::new(
         |_| Ok(index(0, 6, StreamIndexRefresh::Never)),
-        |_| Err(StreamSubtitleError::Network),
+        |_| Err(StreamSubtitleError::NotFound),
     );
     let harness = start(Arc::clone(&transport), config(), 25);
 
@@ -91,7 +91,7 @@ fn consecutive_failures_report_unavailable_exactly_once_and_stop_the_feed() {
 #[test]
 fn failing_first_index_load_makes_the_track_unavailable_once() {
     let transport = FakeTransport::new(
-        |_| Err(StreamSubtitleError::Network),
+        |_| Err(StreamSubtitleError::Malformed),
         |_| unreachable_segment(),
     );
     let harness = start(Arc::clone(&transport), config(), 0);
@@ -100,7 +100,7 @@ fn failing_first_index_load_makes_the_track_unavailable_once() {
     assert_eq!(
         messages,
         vec![StreamSubtitleMessage::TrackUnavailable(
-            StreamTrackUnavailableReason::IndexLoadFailed(StreamSubtitleFailureKind::Network)
+            StreamTrackUnavailableReason::IndexLoadFailed(StreamSubtitleFailureKind::Malformed)
         )]
     );
     assert!(

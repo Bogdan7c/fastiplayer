@@ -6,6 +6,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
@@ -16,9 +17,10 @@ use super::message::{
     StreamSegmentSkipReason, StreamSubtitleEvents, StreamSubtitleMessage,
     StreamTrackUnavailableReason,
 };
+use super::outage::{OutagePolicy, OutageTracker, OutageVerdict};
 use super::position::StreamPlaybackPosition;
 use super::schedule::{PlaylistOffset, WindowQuery, is_in_window, next_segment};
-use crate::stream_subtitles::error::StreamSubtitleError;
+use crate::stream_subtitles::error::{StreamSubtitleError, StreamSubtitleFailureKind};
 use crate::stream_subtitles::model::StreamSubtitleTrackId;
 use crate::stream_subtitles::transport::{
     DecodedSegment, PendingSegmentDecode, SegmentDecode, StreamIndexRefresh, StreamSegment,
@@ -40,8 +42,34 @@ const FALLBACK_SEGMENT_DURATION: Duration = Duration::from_secs(1);
 #[derive(Debug)]
 pub(super) struct Stop;
 
+/// Отметка «поток ленты закончил работу штатно» (не паникой). Клонируется: одну копию
+/// держит поток, другую - владелец ленты.
+#[derive(Clone, Debug, Default)]
+pub(super) struct WorkerExit {
+    clean: Arc<AtomicBool>,
+}
+
+impl WorkerExit {
+    fn mark_clean(&self) {
+        self.clean.store(true, Ordering::SeqCst);
+    }
+
+    /// Закончил ли поток штатно.
+    pub(super) fn finished_cleanly(&self) -> bool {
+        self.clean.load(Ordering::SeqCst)
+    }
+}
+
 /// Результат шага: продолжать или остановиться.
 type Step = Result<(), Stop>;
+
+/// Что делать после сбоя загрузки индекса, если лента не остановилась.
+enum IndexFailureOutcome {
+    /// Первая загрузка ждала паузу повтора и должна повториться сразу.
+    RetryNow,
+    /// Повтор запланирован через `next_refresh_at` (или сбой уже учтён): идём дальше по циклу.
+    Continue,
+}
 
 /// Какой раз загружается индекс: первая загрузка при сбое сразу делает дорожку недоступной.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -85,6 +113,10 @@ pub(super) struct FeedWorker {
     segment_failure_streak: u32,
     skipped_since_success: bool,
     index_failure_streak: u32,
+    /// Текущий сетевой перебой (общий для индекса и сегментов: сеть одна).
+    outage: OutageTracker,
+    /// До этого момента сегменты не качаем: пауза повтора после сетевого сбоя.
+    retry_not_before: Option<Instant>,
     /// Эпоха пробуждения, виденная при последнем плане: прыжок после неё прерывает ожидание.
     seen_wake_epoch: u64,
 }
@@ -117,14 +149,28 @@ impl FeedWorker {
             segment_failure_streak: 0,
             skipped_since_success: false,
             index_failure_streak: 0,
+            outage: OutageTracker::new(OutagePolicy::with_budget(config.outage_budget)),
+            retry_not_before: None,
             seen_wake_epoch: 0,
         }
     }
 
+    /// Подменяет политику повторов при сетевом перебое (тесты ставят короткие сроки).
+    #[cfg(test)]
+    pub(super) const fn with_outage_policy(mut self, policy: OutagePolicy) -> Self {
+        self.outage = OutageTracker::new(policy);
+        self
+    }
+
     /// Главный цикл потока; возвращается при отмене, закрытом приёмнике или недоступности дорожки.
-    pub(super) fn run(mut self) {
+    ///
+    /// Штатное завершение отмечается в `exit` ДО того, как `self` (а с ним и отправитель
+    /// сообщений) будет уничтожен: приложение, увидев закрытый канал без отметки, поймёт,
+    /// что поток погиб аварийно (паника), а не закончил работу сам.
+    pub(super) fn run(mut self, exit: &WorkerExit) {
         // Результат `Err(Stop)` - штатное завершение; причину уже отправили сообщением (или это отмена).
         let _ = self.run_until_stopped();
+        exit.mark_clean();
     }
 
     fn run_until_stopped(&mut self) -> Step {
@@ -138,7 +184,14 @@ impl FeedWorker {
             let snapshot = self.position.snapshot();
             self.seen_wake_epoch = snapshot.wake_epoch;
             self.forget_handled_outside_window(snapshot.position);
-            match self.next_segment_to_fetch(snapshot.position) {
+            // Пока идёт пауза повтора после сетевого сбоя, сегменты не качаем (индекс и
+            // ожидающие сегменты обслуживаются как обычно), а спим не дольше конца паузы.
+            let next_segment = if self.is_backing_off() {
+                None
+            } else {
+                self.next_segment_to_fetch(snapshot.position)
+            };
+            match next_segment {
                 Some(segment) => self.fetch_segment(&segment)?,
                 None => self.wait_for_work(),
             }
@@ -161,21 +214,37 @@ impl FeedWorker {
     // ----- индекс ---------------------------------------------------------------------------
 
     /// Загружает индекс; при сбое решает, продолжать ли.
+    ///
+    /// Первая загрузка при сетевом сбое повторяется с паузами в пределах бюджета перебоя
+    /// (дорожка не должна умирать из-за секундной потери сети при открытии).
     fn reload_index(&mut self, load: IndexLoad) -> Step {
-        match self.transport.load_index(self.track, &self.cancellation) {
-            Ok(index) => {
-                self.index_failure_streak = 0;
-                self.forget_offset_if_timeline_was_reanchored();
-                self.install_index(index)
+        loop {
+            match self.transport.load_index(self.track, &self.cancellation) {
+                Ok(index) => {
+                    self.index_failure_streak = 0;
+                    self.outage.record_success();
+                    self.forget_offset_if_timeline_was_reanchored();
+                    return self.install_index(index);
+                }
+                Err(error) => match self.handle_index_failure(load, &error)? {
+                    IndexFailureOutcome::RetryNow => {}
+                    IndexFailureOutcome::Continue => return Ok(()),
+                },
             }
-            Err(error) => self.handle_index_failure(load, &error),
         }
     }
 
-    fn handle_index_failure(&mut self, load: IndexLoad, error: &StreamSubtitleError) -> Step {
+    fn handle_index_failure(
+        &mut self,
+        load: IndexLoad,
+        error: &StreamSubtitleError,
+    ) -> Result<IndexFailureOutcome, Stop> {
         let Some(kind) = error.failure_kind() else {
             return Err(Stop);
         };
+        if error.is_transient() {
+            return self.handle_transient_index_failure(load, kind);
+        }
         self.index_failure_streak = self.index_failure_streak.saturating_add(1);
         tracing::warn!(
             ?kind,
@@ -184,11 +253,63 @@ impl FeedWorker {
         );
         let threshold_reached = self.index_failure_streak >= self.config.failure_threshold.get();
         if load == IndexLoad::Initial || threshold_reached {
-            return self.stop_as_unavailable(StreamTrackUnavailableReason::IndexLoadFailed(kind));
+            self.stop_as_unavailable(StreamTrackUnavailableReason::IndexLoadFailed(kind))?;
         }
         // Живой плейлист мог моргнуть: повторим через обычный период.
         self.next_refresh_at = Some(Instant::now() + self.refresh_interval);
-        Ok(())
+        Ok(IndexFailureOutcome::Continue)
+    }
+
+    /// Сетевой сбой индекса: повтор с паузой, пока не исчерпан бюджет перебоя.
+    fn handle_transient_index_failure(
+        &mut self,
+        load: IndexLoad,
+        kind: StreamSubtitleFailureKind,
+    ) -> Result<IndexFailureOutcome, Stop> {
+        match self.outage.record_failure(Instant::now()) {
+            OutageVerdict::BudgetExhausted { failures } => {
+                tracing::warn!(
+                    failures,
+                    "stream subtitle index outage outlasted its budget"
+                );
+                self.stop_as_unavailable(StreamTrackUnavailableReason::IndexLoadFailed(kind))?;
+                Ok(IndexFailureOutcome::Continue)
+            }
+            OutageVerdict::RetryAfter(pause) => {
+                tracing::warn!(
+                    ?kind,
+                    ?pause,
+                    "stream subtitle index load failed, will retry"
+                );
+                match load {
+                    // Индекса ещё нет, ждать нечего, кроме самой паузы (с проверкой отмены).
+                    IndexLoad::Initial => {
+                        self.sleep_cancellable(pause)?;
+                        Ok(IndexFailureOutcome::RetryNow)
+                    }
+                    // Живой цикл сам вернётся к перечитыванию после паузы.
+                    IndexLoad::Reload => {
+                        self.next_refresh_at = Some(Instant::now() + pause);
+                        Ok(IndexFailureOutcome::Continue)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Спит `pause`, но просыпается на отмену; прыжки позиции паузу не сокращают
+    /// (иначе seek-ы превращали бы повторы в частые запросы по лежащей сети).
+    fn sleep_cancellable(&self, pause: Duration) -> Step {
+        let deadline = Instant::now() + pause;
+        loop {
+            self.ensure_not_cancelled()?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(());
+            }
+            let epoch = self.position.snapshot().wake_epoch;
+            self.position.wait_for_wake(epoch, remaining);
+        }
     }
 
     /// Транспорт закрепил шкалу `start` заново (разрыв live-плейлиста): выученное смещение
@@ -265,6 +386,14 @@ impl FeedWorker {
             .transport
             .fetch_and_decode(segment, limits, &self.cancellation);
         self.ensure_not_cancelled()?;
+        // Сетевой сбой - не итог для сегмента: его НЕ помечаем обработанным, чтобы после
+        // паузы скачать снова (иначе короткий перебой навсегда оставил бы дыру в репликах).
+        if let Err(error) = &outcome
+            && error.is_transient()
+        {
+            return self.handle_transient_segment_failure(segment.key);
+        }
+        self.outage.record_success();
         self.handled.insert(segment.key);
         match outcome {
             Ok(SegmentDecode::Ready(decoded)) => {
@@ -280,6 +409,38 @@ impl FeedWorker {
             }),
             Err(error) => self.record_failure(segment.key, &error),
         }
+    }
+
+    /// Сетевой сбой сегмента: пауза и повтор; по исчерпании бюджета перебоя - недоступность.
+    /// Сообщение `SegmentSkipped` не шлём (сегмент не пропущен, а отложен), серию постоянных
+    /// сбоев не трогаем.
+    fn handle_transient_segment_failure(&mut self, segment: StreamSegmentKey) -> Step {
+        match self.outage.record_failure(Instant::now()) {
+            OutageVerdict::RetryAfter(pause) => {
+                tracing::warn!(
+                    segment = segment.value(),
+                    ?pause,
+                    "stream subtitle segment fetch hit a network error, will retry"
+                );
+                self.retry_not_before = Some(Instant::now() + pause);
+                Ok(())
+            }
+            OutageVerdict::BudgetExhausted { failures } => {
+                tracing::warn!(
+                    failures,
+                    "stream subtitle network outage outlasted its budget"
+                );
+                self.stop_as_unavailable(StreamTrackUnavailableReason::ConsecutiveSegmentFailures {
+                    count: failures,
+                })
+            }
+        }
+    }
+
+    /// Идёт ли пауза повтора после сетевого сбоя.
+    fn is_backing_off(&self) -> bool {
+        self.retry_not_before
+            .is_some_and(|until| Instant::now() < until)
     }
 
     /// Пробует привязать ожидающие сегменты (дёшево: без сети).
@@ -515,6 +676,9 @@ impl FeedWorker {
         };
         if let Some(due) = self.next_refresh_at {
             timeout = timeout.min(due.saturating_duration_since(Instant::now()));
+        }
+        if let Some(until) = self.retry_not_before {
+            timeout = timeout.min(until.saturating_duration_since(Instant::now()));
         }
         self.position.wait_for_wake(self.seen_wake_epoch, timeout);
     }
