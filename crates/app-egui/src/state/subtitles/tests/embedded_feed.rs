@@ -233,7 +233,8 @@ fn bitmap_track_packets_are_not_cached() {
     let pgs_id = media_core::TrackId::new(90);
     let mut pgs_row = fixture.subtitle_row(0).clone();
     pgs_row.id = pgs_id;
-    pgs_row.codec_id = subtitle_codec::HDMV_PGS.to_owned();
+    // VobSub: картинки, которые пока не показываем (PGS показывается, см. `embedded_pgs`).
+    pgs_row.codec_id = subtitle_codec::VOBSUB.to_owned();
     fixture.tracks.push(pgs_row);
     let mut owner = embedded_owner(&enabled_config(), media, &fixture);
 

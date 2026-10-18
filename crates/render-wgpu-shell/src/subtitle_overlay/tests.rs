@@ -37,6 +37,12 @@ struct Harness {
 impl Harness {
     /// `None`, если нет GPU adapter-а.
     fn new() -> Option<Self> {
+        Self::with_texture_limit(None)
+    }
+
+    /// То же, но с искусственно сниженным лимитом стороны текстуры (чтобы проверять поведение
+    /// на границе лимита GPU без огромных картинок); лимит не меньше размера цели.
+    fn with_texture_limit(max_texture_side: Option<u32>) -> Option<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
@@ -45,10 +51,14 @@ impl Harness {
             apply_limit_buckets: false,
         }))
         .ok()?;
+        let mut required_limits = wgpu::Limits::default().using_resolution(adapter.limits());
+        if let Some(side) = max_texture_side {
+            required_limits.max_texture_dimension_2d = side;
+        }
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("subtitle overlay test device"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
+            required_limits,
             memory_hints: wgpu::MemoryHints::MemoryUsage,
             trace: wgpu::Trace::Off,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
@@ -626,3 +636,4 @@ fn layer_offset_is_still_clipped_by_the_visible_video_area() {
 
 mod edge_cut;
 mod group_offsets;
+mod picture;

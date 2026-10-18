@@ -16,8 +16,10 @@ use subtitle_raster::{
 use subtitle_sidecar::SidecarSearchLimits;
 
 mod ass;
+mod pgs;
 
 use self::ass::ass_parse_limits_from_config;
+pub(super) use self::pgs::PgsLimits;
 
 /// Байтов в мегабайте конфига (МБ = МиБ, как в прежней константе «8 МиБ»).
 const BYTES_PER_MEGABYTE: usize = 1024 * 1024;
@@ -110,6 +112,8 @@ pub(super) struct EmbeddedLimits {
     pub(super) max_cues_per_track: usize,
     /// Пределы разбора ASS: заголовка дорожки и тегов реплики.
     pub(super) ass_parse: AssParseLimits,
+    /// Память и пределы декодера картинных дорожек PGS.
+    pub(super) pgs: PgsLimits,
 }
 
 impl EmbeddedLimits {
@@ -127,6 +131,7 @@ impl EmbeddedLimits {
             cue_parse: embedded_cue_limits(widen(config.max_chars_per_cue)),
             max_cues_per_track: widen(config.max_cues_per_file),
             ass_parse: ass_parse_limits_from_config(config),
+            pgs: PgsLimits::from_config(config),
         }
     }
 }

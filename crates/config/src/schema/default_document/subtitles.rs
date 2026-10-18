@@ -134,12 +134,20 @@ const SUBTITLES_KEY_COMMENTS: &[(&str, &str)] = &[
         "shaping_cache_mb",
         "# Сколько МБ занимает кэш результатов шейпинга текста (участок -> глифы).",
     ),
+    (
+        "pgs_displayed_track_cache_mb",
+        "# Сколько МБ занимает кэш картинок показываемой дорожки PGS; дальние от позиции картинки вытесняются.",
+    ),
+    (
+        "pgs_background_track_window_s",
+        "# Сколько секунд перед позицией хранят картинки PGS-дорожек, которые сейчас не показываются.",
+    ),
 ];
 
 /// Добавляет комментарии перед ключами секции `[subtitles]`.
 ///
 /// Если секции нет (не должно случаться для документа из `AppConfig`), текст не меняется;
-/// золотой файл `current_schema_v21.toml` тогда провалит тест стабильности схемы.
+/// золотой файл `current_schema_v22.toml` тогда провалит тест стабильности схемы.
 pub(super) fn document_subtitles_defaults(toml_text: &mut String) {
     let Some(header_offset) = toml_text.find(&format!("\n{SUBTITLES_HEADER}\n")) else {
         return;

@@ -14,12 +14,17 @@
 //!   `PlayerDecodePacket`, а декодер возвращает его как `DecodedFrame::pts`, которым
 //!   приложение ищет реплику (`SubmittedFrameForSubtitles::frame_pts`). Значит, время
 //!   реплики и время кадра находятся в одной (абсолютной, source) временной шкале.
-//! - **Seek не имеет «поколения».** После seek назад те же пакеты приходят снова;
-//!   дедупликация — на стороне приложения (время реплики абсолютное).
+//! - **Seek не имеет «поколения», но у пакета есть номер прохода чтения.** После seek назад
+//!   те же пакеты приходят снова; дедупликация — на стороне приложения (время реплики
+//!   абсолютное). Чтобы потребитель отличал «поток продолжается» от «позиция чтения
+//!   прыгнула», каждый пакет несёт [`SubtitleReadRun`]: он растёт при каждом перемещении
+//!   демуксера активного media (seek, scrub, worker-seek) и не меняется без него. Пакеты
+//!   одного прохода идут подряд без пропусков по времени.
 //! - **Все дорожки.** Пакеты всех субтитровых дорожек пересылаются независимо от
 //!   выбранной (решение владельца: мгновенное переключение дорожек).
 
 mod message;
+mod read_run;
 mod receiver;
 mod sender;
 mod stats;
@@ -28,6 +33,7 @@ mod tests;
 mod track_headers;
 
 pub use message::{SubtitleFeedMediaStart, SubtitleFeedMessage, SubtitleFeedPacket};
+pub use read_run::SubtitleReadRun;
 pub use receiver::SubtitleFeedReceiver;
 #[cfg(test)]
 pub(crate) use sender::SubtitleFeedSendOutcome;

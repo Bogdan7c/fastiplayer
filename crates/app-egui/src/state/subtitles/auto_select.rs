@@ -19,6 +19,11 @@
 //! Выключено (`forced_fallback`): показывается только forced-дорожка, язык которой совпал с
 //! предпочтениями (первый совпавший язык из списка); нет совпадения — ничего.
 //!
+//! Выключено, forced-дорожки нет (`forced_objects_fallback`, решение владельца, сессия 11, как
+//! в проигрывателях Blu-ray): среди дорожек с флагом forced у отдельных объектов (PGS)
+//! выбирается лучшая по языку предпочтений; показываются только её forced-объекты. Применяется
+//! ТОЛЬКО когда `forced_fallback` пуст: настоящая forced-дорожка важнее.
+//!
 //! Пустой список предпочтений заменяется языком системы (если он известен).
 
 use subtitle_core::SubtitleLanguage;
@@ -47,6 +52,9 @@ pub(super) struct TrackTraits<'a> {
     pub(super) is_hearing_impaired: bool,
     /// Формат можно показать уже сейчас.
     pub(super) is_renderable: bool,
+    /// Формат помечает forced каждый объект отдельно (PGS): в полной дорожке можно показать
+    /// только такие объекты.
+    pub(super) has_per_object_forced_flags: bool,
 }
 
 /// Предпочитаемые языки в порядке приоритета: основные подтеги в нижнем регистре.
@@ -103,6 +111,9 @@ pub(super) struct AutoSelection {
     pub(super) for_enabled: Option<usize>,
     /// Принудительная дорожка, которую показываем даже при выключенных субтитрах.
     pub(super) forced_fallback: Option<usize>,
+    /// Дорожка, чьи forced-ОБЪЕКТЫ показываем при выключенных субтитрах, если нет
+    /// forced-дорожки (`forced_fallback` пуст).
+    pub(super) forced_objects_fallback: Option<usize>,
 }
 
 /// Выбирает дорожки по правилам из документации модуля.
@@ -110,9 +121,15 @@ pub(super) fn auto_select(
     tracks: &[TrackTraits<'_>],
     preferred: &PreferredLanguages,
 ) -> AutoSelection {
+    let forced_fallback = select_forced_fallback(tracks, preferred);
     AutoSelection {
         for_enabled: select_for_enabled(tracks, preferred),
-        forced_fallback: select_forced_fallback(tracks, preferred),
+        forced_fallback,
+        // Объекты нужны, только если настоящей forced-дорожки нет вовсе.
+        forced_objects_fallback: match forced_fallback {
+            Some(_) => None,
+            None => select_forced_objects_fallback(tracks, preferred),
+        },
     }
 }
 
@@ -171,6 +188,33 @@ fn select_forced_fallback(
         .map(|(_, index)| index)
 }
 
+/// Дорожка нужного языка, у которой можно показать только forced-объекты (PGS).
+///
+/// Язык ранжируется так же, как у forced-дорожки; при равенстве — не для слабослышащих, затем
+/// дорожка с флагом default, затем порядок списка. Сама forced-дорожка сюда не попадает: её
+/// показывает `select_forced_fallback` целиком.
+fn select_forced_objects_fallback(
+    tracks: &[TrackTraits<'_>],
+    preferred: &PreferredLanguages,
+) -> Option<usize> {
+    tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, track)| {
+            track.is_renderable && track.has_per_object_forced_flags && !track.is_forced
+        })
+        .filter_map(|(index, track)| {
+            preferred.rank_of(track.language).map(|language_rank| {
+                (
+                    (language_rank, track.is_hearing_impaired, !track.is_default),
+                    index,
+                )
+            })
+        })
+        .min_by_key(|(sort_key, _)| *sort_key)
+        .map(|(_, index)| index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +232,16 @@ mod tests {
             is_forced: false,
             is_hearing_impaired: false,
             is_renderable: true,
+            has_per_object_forced_flags: false,
+        }
+    }
+
+    /// Дорожка с forced-флагами объектов (как PGS).
+    fn picture_track(language: Option<&SubtitleLanguage>) -> TrackTraits<'_> {
+        TrackTraits {
+            origin: TrackOrigin::Embedded,
+            has_per_object_forced_flags: true,
+            ..track(language)
         }
     }
 
@@ -416,6 +470,92 @@ mod tests {
         assert_eq!(
             auto_select(&[sdh_sidecar, plain_embedded], &preferred(&["en"])).for_enabled,
             Some(1)
+        );
+    }
+
+    #[test]
+    fn forced_objects_fallback_picks_the_preferred_language_picture_track() {
+        let (en, ru) = (language("en"), language("ru"));
+        // Текстовая ru-дорожка объектов с forced не имеет и не подходит; en не предпочитаем.
+        let tracks = [
+            track(Some(&ru)),
+            picture_track(Some(&en)),
+            picture_track(Some(&ru)),
+        ];
+        let selection = auto_select(&tracks, &preferred(&["ru"]));
+        assert_eq!(selection.forced_objects_fallback, Some(2));
+        assert_eq!(selection.forced_fallback, None);
+    }
+
+    #[test]
+    fn forced_objects_fallback_follows_language_order_then_hearing_then_default() {
+        let (en, ru) = (language("en"), language("ru"));
+        let hearing_impaired_ru = TrackTraits {
+            is_hearing_impaired: true,
+            ..picture_track(Some(&ru))
+        };
+        let default_ru = TrackTraits {
+            is_default: true,
+            ..picture_track(Some(&ru))
+        };
+        let tracks = [picture_track(Some(&en)), hearing_impaired_ru, default_ru];
+        assert_eq!(
+            auto_select(&tracks, &preferred(&["en", "ru"])).forced_objects_fallback,
+            Some(0),
+            "the earlier preferred language wins"
+        );
+        assert_eq!(
+            auto_select(&tracks, &preferred(&["ru"])).forced_objects_fallback,
+            Some(2),
+            "plain default ru beats hearing-impaired ru"
+        );
+    }
+
+    #[test]
+    fn forced_objects_fallback_is_absent_on_language_mismatch_or_unrenderable_track() {
+        let (en, ru) = (language("en"), language("ru"));
+        assert_eq!(
+            auto_select(&[picture_track(Some(&en))], &preferred(&["ru"])).forced_objects_fallback,
+            None,
+            "language mismatch"
+        );
+        assert_eq!(
+            auto_select(&[picture_track(None)], &preferred(&["ru"])).forced_objects_fallback,
+            None,
+            "undeclared language never matches"
+        );
+        let unrenderable = TrackTraits {
+            is_renderable: false,
+            ..picture_track(Some(&ru))
+        };
+        assert_eq!(
+            auto_select(&[unrenderable], &preferred(&["ru"])).forced_objects_fallback,
+            None
+        );
+    }
+
+    #[test]
+    fn a_real_forced_track_wins_over_forced_objects_of_a_picture_track() {
+        let ru = language("ru");
+        let forced_text = TrackTraits {
+            is_forced: true,
+            ..track(Some(&ru))
+        };
+        let tracks = [picture_track(Some(&ru)), forced_text];
+        let selection = auto_select(&tracks, &preferred(&["ru"]));
+        assert_eq!(selection.forced_fallback, Some(1));
+        assert_eq!(
+            selection.forced_objects_fallback, None,
+            "objects fallback is used only when no forced track exists"
+        );
+    }
+
+    #[test]
+    fn forced_objects_fallback_ignores_tracks_without_per_object_flags() {
+        let ru = language("ru");
+        assert_eq!(
+            auto_select(&[track(Some(&ru))], &preferred(&["ru"])).forced_objects_fallback,
+            None
         );
     }
 }

@@ -17,6 +17,8 @@ use subtitle_core::{SubtitleEventId, SubtitleLanguage};
 use subtitle_raster::{RasterLimits, SubtitleFontLibrary, SubtitleRasterizer};
 
 #[cfg(test)]
+use super::commands::TrackCommand;
+#[cfg(test)]
 use super::commands::WorkerDiagnostics;
 use super::commands::{LookInputs, RenderTarget, WorkerCommand, WorkerEvent};
 use super::prepared_queue::OverlayIdentity;
@@ -90,6 +92,12 @@ struct WorkerState {
     render_delay: std::time::Duration,
     #[cfg(test)]
     pending_flush_tokens: Vec<u64>,
+    /// Только тесты: сколько полных копий дорожки принято.
+    #[cfg(test)]
+    track_replaces: u64,
+    /// Только тесты: сколько узких дельт принято.
+    #[cfg(test)]
+    track_updates: u64,
 }
 
 impl WorkerState {
@@ -123,6 +131,10 @@ impl WorkerState {
             render_delay: std::time::Duration::ZERO,
             #[cfg(test)]
             pending_flush_tokens: Vec::new(),
+            #[cfg(test)]
+            track_replaces: 0,
+            #[cfg(test)]
+            track_updates: 0,
         }
     }
 
@@ -135,8 +147,20 @@ impl WorkerState {
                 // Запись о выданном для задетых интервалов больше не верна: после выброса
                 // планировщик нарисует их заново. UI выбрасывает своё сам (по номеру
                 // изменения на картинках), поэтому событий об этом нет.
-                if let Some(span) = self.mirrors.apply(track_command) {
+                #[cfg(test)]
+                match &track_command {
+                    TrackCommand::Replace { .. } => self.track_replaces += 1,
+                    TrackCommand::Update { .. } => self.track_updates += 1,
+                    TrackCommand::Forget { .. } => {}
+                }
+                let effect = self.mirrors.apply(track_command);
+                if let Some(span) = effect.invalidated {
                     self.record.invalidate_overlapping(span);
+                }
+                // Укороченное событие: выданное до нового конца остаётся (срок обрезан), выданное
+                // за ним нарисуется заново. UI делает то же со своей очередью.
+                if let Some(lost) = effect.shortened {
+                    self.record.apply_shortening(lost);
                 }
                 true
             }
@@ -194,6 +218,8 @@ impl WorkerState {
                     .send(WorkerEvent::Diagnostics(Box::new(WorkerDiagnostics {
                         raster: self.rasterizer.statistics(),
                         repeated_jobs_suppressed: self.repeated_jobs_suppressed,
+                        track_replaces: self.track_replaces,
+                        track_updates: self.track_updates,
                     })))
             }
         }

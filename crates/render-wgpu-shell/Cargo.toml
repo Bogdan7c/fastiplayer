@@ -20,6 +20,8 @@ subtitle-raster.workspace = true
 [dev-dependencies]
 subtitle-core.workspace = true
 subtitle-formats.workspace = true
+# Кодировщик RLE для сборки растровых реплик (PGS) в GPU-тестах; dev-only, как в subtitle-raster.
+subtitle-pgs = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

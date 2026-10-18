@@ -20,6 +20,9 @@ symphonia-format-mkv.workspace = true
 
 [dev-dependencies]
 audio = { workspace = true }
+# Функциональные тесты PGS: пакеты реального демуксера -> декодер -> композиции.
+subtitle-core = { workspace = true }
+subtitle-pgs = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

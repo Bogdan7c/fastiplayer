@@ -27,7 +27,7 @@ use std::num::NonZeroUsize;
 use subtitle_core::{SubtitleEventId, SubtitleTime};
 use subtitle_raster::{CanvasSize, CueSourceId, SubtitleOverlay};
 
-use super::validity::{TimeSpan, ValidityInterval};
+use super::validity::{ShorteningEffect, TimeSpan, ValidityInterval};
 
 /// Ревизия входов рисования: растёт при смене стиля, настроек ASS, шрифтов, замене дорожки.
 /// Картинки разных ревизий не взаимозаменяемы для точного выбора.
@@ -91,6 +91,11 @@ impl PreparedOverlay {
     /// Срок годности.
     pub(in crate::state::subtitles) fn interval(&self) -> ValidityInterval {
         self.interval
+    }
+
+    /// Заменяет срок годности (обрезка после укорочения события; идентичность и пиксели те же).
+    pub(in crate::state::subtitles) fn set_interval(&mut self, interval: ValidityInterval) {
+        self.interval = interval;
     }
 
     /// Реплики, с которыми рисовали картинку.
@@ -247,6 +252,37 @@ impl PreparedQueue {
             entry.prepared.identity().source != source || !entry.prepared.interval().overlaps(span)
         });
         before - self.entries.len()
+    }
+
+    /// Событие источника `source` укорочено, `lost` - отрезок, который оно потеряло. Картинки,
+    /// нарисованные до `lost`, остаются в очереди с обрезанным сроком (та же картинка верна до
+    /// нового конца: перерисовка и мигание не нужны), нарисованные внутри `lost` выбрасываются.
+    /// Возвращает (обрезано, выброшено).
+    pub(in crate::state::subtitles) fn apply_shortening(
+        &mut self,
+        source: CueSourceId,
+        lost: TimeSpan,
+    ) -> (usize, usize) {
+        let mut narrowed = 0;
+        let mut dropped = 0;
+        self.entries.retain_mut(|entry| {
+            if entry.prepared.identity().source != source {
+                return true;
+            }
+            match entry.prepared.interval().after_shortening(lost) {
+                ShorteningEffect::Unaffected => true,
+                ShorteningEffect::Narrowed(shorter) => {
+                    entry.prepared.set_interval(shorter);
+                    narrowed += 1;
+                    true
+                }
+                ShorteningEffect::Invalid => {
+                    dropped += 1;
+                    false
+                }
+            }
+        });
+        (narrowed, dropped)
     }
 
     /// Забывает всё: очередь и показанное (смена дорожки или media).

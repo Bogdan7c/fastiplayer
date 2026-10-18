@@ -49,6 +49,30 @@ impl MaxEndTree {
         }
     }
 
+    /// Заменяет окончание в позиции `position` и пересчитывает предков за O(log n).
+    ///
+    /// Возвращает `false`, если позиции нет (ничего не изменено).
+    pub(super) fn set_end(&mut self, position: usize, end: SubtitleTime) -> bool {
+        if position >= self.element_count {
+            return false;
+        }
+        let mut node = self.leaf_count.saturating_add(position);
+        match self.nodes.get_mut(node) {
+            Some(leaf) => *leaf = end,
+            None => return false,
+        }
+        // Поднимаемся к корню: каждый предок — максимум из двух потомков.
+        while node > 1 {
+            node /= 2;
+            let left = node_value(&self.nodes, node.saturating_mul(2));
+            let right = node_value(&self.nodes, node.saturating_mul(2).saturating_add(1));
+            if let Some(slot) = self.nodes.get_mut(node) {
+                *slot = left.max(right);
+            }
+        }
+        true
+    }
+
     /// Вызывает `visit(position)` для каждой позиции из префикса `[0, prefix_len)`,
     /// у которой `end > time`, в порядке возрастания позиции.
     ///
@@ -135,6 +159,16 @@ mod tests {
         assert_eq!(query(&tree, 20, 5), vec![1, 3]);
         assert_eq!(query(&tree, 4, 5), vec![0, 1, 2, 3, 4]);
         assert_eq!(query(&tree, 50, 5), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn set_end_updates_ancestors_and_rejects_unknown_position() {
+        let mut tree = MaxEndTree::build(micros(&[100, 50, 70]).into_iter());
+        assert!(tree.set_end(0, SubtitleTime::from_micros(10)));
+        assert_eq!(query(&tree, 60, 3), vec![2]);
+        assert_eq!(query(&tree, 5, 3), vec![0, 1, 2]);
+        assert!(!tree.set_end(3, SubtitleTime::from_micros(999)));
+        assert_eq!(query(&tree, 60, 3), vec![2]);
     }
 
     #[test]

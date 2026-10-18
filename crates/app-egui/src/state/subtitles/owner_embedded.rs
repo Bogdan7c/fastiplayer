@@ -6,7 +6,8 @@
 //!   встроенных дорожек media к строкам снимка плеера (`kind == Subtitle`). Неизменный снимок
 //!   проверяется без аллокаций и ничего не перестраивает, поэтому метод можно звать на каждом
 //!   снимке. Дорожка с текстовым кодеком сразу `Ready` с пустым таймлайном (выбор мгновенный),
-//!   с картинным/неизвестным — серая «not supported yet».
+//!   с неподдержанным/неизвестным кодеком — серая «not supported yet». PGS (картинки) — обычная
+//!   выбираемая дорожка со своим путём пакетов: [`pgs_owner`] / [`pgs_tracks`].
 //! - **Кэш реплик.** Пакеты приходят для ВСЕХ дорожек (решение владельца): каждая дорожка
 //!   копит собственный растущий `SubtitleTimeline`, переключение показывает уже прочитанное.
 //!   Дубликаты после seek назад таймлайн отбрасывает сам.
@@ -34,14 +35,20 @@ use super::SubtitleOwner;
 use super::active_track::ActiveSubtitleTrack;
 use super::auto_select::auto_select;
 use super::embedded_events::{PacketEventOutcome, PacketRejection};
-use super::embedded_track::EmbeddedTrackDescription;
+use super::embedded_track::{EmbeddedPacketPath, EmbeddedTrackDescription};
 use super::sidecar_job::SubtitleLoadFailure;
 use super::track_list::TrackLoadState;
 
 mod ass_owner;
 mod ass_tracks;
+mod pgs_owner;
+mod pgs_tracks;
 
 pub(super) use self::ass_tracks::EmbeddedAssTracks;
+pub(super) use self::pgs_tracks::EmbeddedPgsTracks;
+use self::pgs_tracks::PgsBatches;
+#[cfg(test)]
+pub(super) use self::pgs_tracks::PgsFeedCounters;
 
 /// Сколько сообщений трубы читается за один вызов (внутренний инвариант: ограничивает работу
 /// UI-потока на кадре; труба сама имеет ёмкость из конфига, остаток читается в следующий вызов).
@@ -132,6 +139,15 @@ enum MessageRoute {
 /// Реплики одной дорожки, накопленные за вызов (добавляются в таймлайн одним батчем).
 type TrackBatches = HashMap<SubtitleTrackId, Vec<SubtitleEvent>>;
 
+/// Всё, что пачка сообщений трубы изменила в дорожках; применяется после разбора всей пачки.
+#[derive(Default)]
+struct FeedBatches {
+    /// Текстовые реплики по дорожкам.
+    text_events: TrackBatches,
+    /// Изменения PGS-дорожек (композиции и пересборки шкалы).
+    pgs: PgsBatches,
+}
+
 impl SubtitleOwner {
     /// Принимает приёмник трубы встроенных субтитров (приложение берёт его у `PlayerWorker`).
     pub(super) fn attach_feed_receiver(&mut self, receiver: SubtitleFeedReceiver) {
@@ -174,6 +190,9 @@ impl SubtitleOwner {
         };
         let wanted: Vec<TrackId> = rows.iter().map(|row| row.id).collect();
         let mut removed = media.tracks.retain_embedded(|id| wanted.contains(&id));
+        for &removed_id in &removed {
+            media.embedded_pgs.forget_track(removed_id);
+        }
 
         for row in rows {
             let description = EmbeddedTrackDescription::from_snapshot(row);
@@ -190,7 +209,11 @@ impl SubtitleOwner {
                     continue;
                 }
                 // Кодек дорожки сменился: кэш реплик другого формата не годится.
-                removed.extend(media.tracks.retain_embedded(|id| id != row.id));
+                let replaced = media.tracks.retain_embedded(|id| id != row.id);
+                for &replaced_id in &replaced {
+                    media.embedded_pgs.forget_track(replaced_id);
+                }
+                removed.extend(replaced);
             }
             // Таймлайн дорожки создаётся заново (новая дорожка, возврат убранной или смена
             // кодека): виденные `ReadOrder` прежнего кэша больше не описывают его содержимое,
@@ -216,6 +239,12 @@ impl SubtitleOwner {
             .is_some_and(|id| removed.contains(&id))
         {
             media.forced_fallback = None;
+        }
+        if media
+            .forced_pictures_fallback
+            .is_some_and(|id| removed.contains(&id))
+        {
+            media.forced_pictures_fallback = None;
         }
         let needs_rasterizer = media.tracks.entries().iter().any(|entry| {
             entry
@@ -256,6 +285,9 @@ impl SubtitleOwner {
         media.forced_fallback = selection
             .forced_fallback
             .and_then(|index| media.tracks.id_at(index));
+        media.forced_pictures_fallback = selection
+            .forced_objects_fallback
+            .and_then(|index| media.tracks.id_at(index));
         if !media.user_chose_track {
             media.selected = selection
                 .for_enabled
@@ -266,8 +298,10 @@ impl SubtitleOwner {
     /// Читает не более [`FEED_DRAIN_MAX_MESSAGES_PER_CALL`] сообщений трубы и раскладывает их
     /// по дорожкам текущего media.
     pub(super) fn drain_embedded_feed(&mut self) -> EmbeddedUpdate {
+        // Показываемая дорожка могла смениться без единого пакета: роли PGS применяются сначала.
+        let roles_update = self.apply_pgs_roles();
         let Some(receiver) = self.embedded_feed.receiver.as_ref() else {
-            return EmbeddedUpdate::Unchanged;
+            return roles_update;
         };
         let mut messages = std::mem::take(&mut self.embedded_feed.scratch);
         messages.clear();
@@ -277,7 +311,7 @@ impl SubtitleOwner {
         let update = self.route_messages(messages.drain(..));
         // Буфер возвращается владельцу: следующий вызов не аллоцирует.
         self.embedded_feed.scratch = messages;
-        update
+        roles_update.merge(update)
     }
 
     /// Сообщает о потерях трубы: первая потеря — предупреждение, дальше — отладка.
@@ -325,14 +359,15 @@ impl SubtitleOwner {
         &mut self,
         messages: impl IntoIterator<Item = SubtitleFeedMessage>,
     ) -> EmbeddedUpdate {
-        let mut batches = TrackBatches::new();
+        let mut batches = FeedBatches::default();
         for message in messages {
             self.route_message(message, &mut batches);
         }
-        self.apply_batches(batches)
+        let text_update = self.apply_batches(batches.text_events);
+        text_update.merge(self.apply_pgs_batches(batches.pgs))
     }
 
-    fn route_message(&mut self, message: SubtitleFeedMessage, batches: &mut TrackBatches) {
+    fn route_message(&mut self, message: SubtitleFeedMessage, batches: &mut FeedBatches) {
         let media_instance_id = match &message {
             SubtitleFeedMessage::MediaStarted(start) => start.media_instance_id,
             SubtitleFeedMessage::Packet(packet) => packet.media_instance_id,
@@ -384,7 +419,7 @@ impl SubtitleOwner {
     }
 
     /// Пакет текущего media: разбирает и ставит реплику в батч своей дорожки.
-    fn accept_packet(&mut self, packet: SubtitleFeedPacket, batches: &mut TrackBatches) {
+    fn accept_packet(&mut self, packet: SubtitleFeedPacket, batches: &mut FeedBatches) {
         let Some(media) = self.media.as_ref() else {
             return;
         };
@@ -393,18 +428,27 @@ impl SubtitleOwner {
             self.defer_message(SubtitleFeedMessage::Packet(packet));
             return;
         };
-        let cue_format = media
+        let packet_path = media
             .tracks
             .get(track_id)
             .and_then(|entry| entry.description.embedded())
-            .and_then(EmbeddedTrackDescription::cue_format);
-        let Some(cue_format) = cue_format else {
-            self.embedded_feed.counters.unsupported_track_packets += 1;
-            return;
+            .and_then(EmbeddedTrackDescription::packet_path);
+        let cue_format = match packet_path {
+            Some(EmbeddedPacketPath::Text(cue_format)) => cue_format,
+            Some(EmbeddedPacketPath::Pgs) => {
+                self.accept_pgs_packet(track_id, &packet, &mut batches.pgs);
+                return;
+            }
+            None => {
+                self.embedded_feed.counters.unsupported_track_packets += 1;
+                return;
+            }
         };
         let outcome = self.packet_event_outcome(&packet, cue_format);
         match outcome {
-            PacketEventOutcome::Event(event) => batches.entry(track_id).or_default().push(event),
+            PacketEventOutcome::Event(event) => {
+                batches.text_events.entry(track_id).or_default().push(event);
+            }
             PacketEventOutcome::Empty => self.embedded_feed.counters.empty_packets += 1,
             PacketEventOutcome::DuplicateReadOrder => {
                 self.embedded_feed.counters.duplicate_read_orders += 1;

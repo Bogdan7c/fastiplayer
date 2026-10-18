@@ -57,6 +57,7 @@ impl<'session> PlayerSnapshotBuilder<'session> {
         snapshot.tracks = self.track_summary_snapshot();
         snapshot.active_backend = self.backend_snapshot();
         snapshot.current_video_frame = self.current_video_frame_snapshot();
+        snapshot.subtitle_read_run = self.session.subtitle_feed.current_read_run();
         snapshot.render_generation = self.session.pipeline.render_generation();
         snapshot.video_frame_duration_estimate =
             self.session.pipeline.video_frame_duration_estimate();

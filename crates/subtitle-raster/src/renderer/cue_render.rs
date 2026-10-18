@@ -87,11 +87,7 @@ impl RasterizedCue {
     /// У реплики с клипом добавляется маска клипа и ещё раз размер масок: столько же (не
     /// больше) займёт запомненный результат клипа ([`Self::final_bitmaps`]).
     pub(crate) fn cache_bytes(&self) -> usize {
-        let masks: usize = self
-            .bitmaps
-            .iter()
-            .map(|bitmap| bitmap.coverage().len())
-            .sum();
+        let masks: usize = self.bitmaps.iter().map(|bitmap| bitmap.pixel_bytes()).sum();
         // Запоминается результат только неизменного клипа; покадровый и караоке считаются заново.
         let clipped_copy =
             if self.clip.is_none() || self.clip_animation.is_some() || self.karaoke.is_some() {

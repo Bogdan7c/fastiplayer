@@ -14,6 +14,7 @@ use media_core::{
 };
 
 mod headers;
+mod read_run;
 
 use super::test_support::{
     SharedFakeVideoDecoderThread, fake_track, fake_video_packet_with_keyframe,

@@ -15,6 +15,7 @@ mod ass_options;
 
 mod ingest;
 mod presenter;
+mod retention_anchor;
 #[cfg(test)]
 pub(super) mod test_support;
 mod worker_link;

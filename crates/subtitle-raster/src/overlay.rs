@@ -1,25 +1,34 @@
 //! Выходной контракт растеризатора: список картинок поверх кадра.
 //!
-//! Модель повторяет `ASS_Image` из libass 0.17.5 (`ass.h`): каждая картинка — это 8-битная
+//! Модель повторяет `ASS_Image` из libass 0.17.5 (`ass.h`): картинка текста — это 8-битная
 //! маска покрытия, один цвет RGBA и позиция. Рендер (GPU сейчас, GLES2 потом) не знает ничего
-//! про шрифты и ASS: он только заливает цвет через маску в порядке списка. Альтернатива
-//! «готовая RGBA-картинка» отвергнута: маска в 4 раза компактнее, цвет можно менять без
-//! повторной растеризации, а одинаковые маски делятся между кадрами через `Arc`.
+//! про шрифты и ASS: он только заливает цвет через маску в порядке списка. Для ТЕКСТА
+//! альтернатива «готовая RGBA-картинка» отвергнута: маска в 4 раза компактнее, цвет можно
+//! менять без повторной растеризации, а одинаковые маски делятся между кадрами через `Arc`.
+//!
+//! Контракт расширен осознанно для авторских растровых субтитров (PGS): их цвета заданы
+//! палитрой автора и не сводятся к одному цвету на маску, поэтому такая картинка несёт
+//! полноцветные RGBA-пиксели с ПРЕМУЛЬТИПЛИЦИРОВАННОЙ альфой ([`BitmapPixelFormat`],
+//! [`SubtitleBitmapKind::Picture`], см. `overlay/picture.rs`). Формат пикселей картинки
+//! задаёт [`SubtitleBitmap::pixel_format`]; потребитель обязан его проверять, а не читать байты
+//! вслепую.
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use subtitle_core::SubtitleColor;
+use subtitle_core::{PictureForcedFlag, SubtitleColor};
 
 use crate::renderer::CueKey;
 
 mod animation_change;
 mod crop;
 mod mask_view;
+mod picture;
 mod placement_group;
 
 pub use animation_change::AnimationChange;
 pub(crate) use crop::LocalRect;
+pub use picture::BitmapPixelFormat;
 pub use placement_group::OverlayPlacementGroup;
 use placement_group::union_bounds;
 
@@ -95,6 +104,9 @@ pub enum SubtitleBitmapKind {
     Outline,
     /// Сами глифы.
     Glyph,
+    /// Авторская растровая картинка (PGS): полноцветная, формат пикселей
+    /// [`BitmapPixelFormat::PremultipliedRgba`].
+    Picture,
 }
 
 /// Почему картинку нельзя построить (нарушен инвариант раскладки маски).
@@ -126,22 +138,31 @@ pub enum SubtitleBitmapError {
     },
 }
 
-/// Одна картинка: маска покрытия + цвет + позиция.
+/// Одна картинка: пиксели + цвет + позиция.
 ///
-/// Итоговая прозрачность пикселя = `coverage * color.alpha / 255`. Цвет прямой (не
-/// инвертированный, в отличие от `ASS_Image.color` в libass, где альфа хранится как 255 - a).
+/// Для маски покрытия ([`BitmapPixelFormat::Coverage`]) итоговая прозрачность пикселя =
+/// `coverage * color.alpha / 255`. Цвет прямой (не инвертированный, в отличие от
+/// `ASS_Image.color` в libass, где альфа хранится как 255 - a).
+///
+/// Для RGBA-картинки ([`BitmapPixelFormat::PremultipliedRgba`]) цвет работает как множитель
+/// непрозрачности: берётся только `color.alpha`, контракт описан в модуле `overlay/picture.rs`.
 #[derive(Debug, Clone)]
 pub struct SubtitleBitmap {
     origin: PixelPoint,
     width: u32,
     height: u32,
     stride: usize,
-    /// Общий буфер масок. Картинка показывает только его окно, см. `mask_view`.
+    /// Общий буфер пикселей (маска покрытия или RGBA, см. `format`). Картинка показывает
+    /// только его окно, см. `mask_view`.
     coverage: Arc<[u8]>,
     /// Смещение первого видимого байта окна в `coverage`.
     coverage_offset: usize,
     color: SubtitleColor,
     kind: SubtitleBitmapKind,
+    /// Формат байтов буфера; `stride` и окно всегда считаются в байтах этого формата.
+    format: BitmapPixelFormat,
+    /// Пометка forced объекта-картинки; у масок текста всегда `Regular`.
+    forced: PictureForcedFlag,
     placement_group: OverlayPlacementGroup,
     /// Реплика, которой принадлежит картинка. `None` только у картинок, собранных не
     /// растеризатором реплик (например, в юнит-тестах отдельных этапов): растеризатор
@@ -252,7 +273,8 @@ impl SubtitleBitmap {
         self.height
     }
 
-    /// Шаг строки маски в байтах (не меньше ширины).
+    /// Шаг строки буфера в БАЙТАХ (не меньше `width * bytes_per_pixel`): для маски покрытия
+    /// не меньше ширины, для RGBA не меньше `4 * width`.
     pub fn stride(&self) -> usize {
         self.stride
     }
@@ -260,8 +282,21 @@ impl SubtitleBitmap {
     /// Маска покрытия 0..=255, строки идут подряд с шагом [`Self::stride`]. Первый байт -
     /// левый верхний пиксель картинки; картинка у края кадра может быть окном в большей
     /// общей маске, и тогда за последней строкой данных нет (хвоста шага тоже).
+    ///
+    /// Только для [`BitmapPixelFormat::Coverage`]: у RGBA-картинки маски нет, и метод
+    /// возвращает ПУСТОЙ срез, чтобы цветные байты нельзя было принять за покрытие.
+    /// Пиксели RGBA-картинки отдаёт [`Self::rgba_pixels`].
     pub fn coverage(&self) -> &[u8] {
-        self.coverage_window()
+        match self.format {
+            BitmapPixelFormat::Coverage => self.coverage_window(),
+            BitmapPixelFormat::PremultipliedRgba => &[],
+        }
+    }
+
+    /// Окно пикселей картинки в БАЙТАХ её формата (для любого формата): сколько памяти
+    /// занимает видимая часть. Нужен учёту кэшей и статистике.
+    pub fn pixel_bytes(&self) -> usize {
+        self.coverage_window().len()
     }
 
     /// Весь общий буфер, в котором лежит маска (может быть больше окна картинки). Для
@@ -293,9 +328,10 @@ impl SubtitleBitmap {
         self.owner
     }
 
-    /// Строка маски `row` (ровно `width` байт) или `None` за пределами картинки.
+    /// Строка маски `row` (ровно `width` байт) или `None` за пределами картинки либо у
+    /// RGBA-картинки (маски нет).
     pub fn coverage_row(&self, row: u32) -> Option<&[u8]> {
-        if row >= self.height {
+        if row >= self.height || self.format != BitmapPixelFormat::Coverage {
             return None;
         }
         let start = (row as usize).checked_mul(self.stride)?;
@@ -527,20 +563,31 @@ fn div255(value: u32) -> u32 {
 
 /// Накладывает одну картинку на холст `pixels` (RGBA, ширина `canvas_width`).
 fn composite_bitmap(pixels: &mut [u8], canvas_width: usize, bitmap: &SubtitleBitmap) {
-    let origin = bitmap.origin();
-    // Инвариант «внутри холста» проверен в `SubtitleOverlay::new`, но отрицательные
-    // координаты всё равно отбрасываем без паники.
-    let (Ok(origin_x), Ok(origin_y)) = (usize::try_from(origin.x), usize::try_from(origin.y))
-    else {
+    if bitmap.pixel_format() == BitmapPixelFormat::PremultipliedRgba {
+        picture::composite_picture(pixels, canvas_width, bitmap);
+        return;
+    }
+    let canvas_height = pixels.len() / 4 / canvas_width.max(1);
+    // Инвариант «внутри холста» проверен в `SubtitleOverlay::new`, но на случай прямого
+    // вызова картинка обрезается по холсту по обеим осям (как RGBA-путь), без паники и
+    // без «заворота» правой части на следующую строку.
+    let (Some(columns), Some(rows)) = (
+        picture::clip_axis(bitmap.origin().x, bitmap.width(), canvas_width),
+        picture::clip_axis(bitmap.origin().y, bitmap.height(), canvas_height),
+    ) else {
         return;
     };
     let color = bitmap.color();
-    for row in 0..bitmap.height() {
-        let Some(coverage_row) = bitmap.coverage_row(row) else {
+    for row_offset in 0..rows.visible {
+        let Some(coverage_row) = bitmap.coverage_row((rows.skipped + row_offset) as u32) else {
             return;
         };
-        let row_start = (origin_y + row as usize) * canvas_width + origin_x;
-        for (column, &coverage) in coverage_row.iter().enumerate() {
+        let row_start = (rows.destination + row_offset) * canvas_width + columns.destination;
+        let visible = coverage_row
+            .iter()
+            .skip(columns.skipped)
+            .take(columns.visible);
+        for (column, &coverage) in visible.enumerate() {
             let offset = (row_start + column) * 4;
             let Some(pixel) = pixels.get_mut(offset..offset + 4) else {
                 return;

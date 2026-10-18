@@ -37,12 +37,17 @@ pub struct RasterLimits {
 
 /// Реплики кадра, прошедшие лимиты числа реплик.
 pub(super) struct AdmittedCues<'request, 'content> {
+    /// Растровые реплики (PGS) в порядке запроса.
+    pub(super) pictures: Vec<&'request RenderableCue<'content>>,
     /// Реплики простых форматов в порядке запроса.
     pub(super) text: Vec<&'request RenderableCue<'content>>,
     /// ASS-события в порядке отрисовки: `(слой, ReadOrder)` (стабильно по порядку запроса).
     pub(super) ass: Vec<&'request RenderableCue<'content>>,
     /// Сколько реплик простых форматов отброшено сверх `max_cues_per_frame`.
     pub(super) dropped_text: usize,
+    /// Сколько растровых реплик отброшено сверх `max_cues_per_frame` (лимит общий по смыслу,
+    /// но считается отдельно от текстовых: растровые рисуются независимо).
+    pub(super) dropped_pictures: usize,
     /// Сколько ASS-событий отброшено сверх `max_ass_events_per_frame`.
     pub(super) dropped_ass: usize,
 }
@@ -55,24 +60,32 @@ pub(super) fn admit_cues<'request, 'content>(
     cues: &'request [RenderableCue<'content>],
     limits: &RasterInputLimits,
 ) -> AdmittedCues<'request, 'content> {
-    let (mut text, mut ass): (Vec<&RenderableCue<'content>>, Vec<&RenderableCue<'content>>) = cues
+    let (pictures, rest): (Vec<&RenderableCue<'content>>, Vec<&RenderableCue<'content>>) = cues
         .iter()
+        .partition(|cue| matches!(cue.content, CueContent::Picture(_)));
+    let (mut text, mut ass): (Vec<&RenderableCue<'content>>, Vec<&RenderableCue<'content>>) = rest
+        .into_iter()
         .partition(|cue| matches!(cue.content, CueContent::Text(_)));
+    let mut pictures = pictures;
+    let dropped_pictures = pictures.len().saturating_sub(limits.max_cues_per_frame);
+    pictures.truncate(limits.max_cues_per_frame);
     let dropped_text = text.len().saturating_sub(limits.max_cues_per_frame);
     text.truncate(limits.max_cues_per_frame);
     ass.sort_by_key(|cue| {
         let read_order = match cue.content {
             CueContent::Ass { cue: ass_cue, .. } => ass_cue.read_order,
-            CueContent::Text(_) => 0,
+            CueContent::Text(_) | CueContent::Picture(_) => 0,
         };
         (cue.layer, read_order)
     });
     let dropped_ass = ass.len().saturating_sub(limits.max_ass_events_per_frame);
     ass.truncate(limits.max_ass_events_per_frame);
     AdmittedCues {
+        pictures,
         text,
         ass,
         dropped_text,
+        dropped_pictures,
         dropped_ass,
     }
 }

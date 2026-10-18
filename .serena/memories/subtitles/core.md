@@ -18,5 +18,8 @@
 - `sniff_text_subtitle_format` — WEBVTT раньше SRT.
 - Известные отличия: SRT `,5` = 0,5 с (ffmpeg/VLC — 5 мс); WebVTT строгий W3C (пустая строка-разделитель, STYLE/REGION до первой реплики); подмножество CSS — см. матрицу.
 
+## Сессия 11 (PGS)
+`SubtitleContent::Picture` (`picture.rs`); шкала умеет `shorten_event_end` + `revision()` + журнал укорочений — `mem:subtitles/pgs-s11`.
+
 ## Тесты
 - `crates/subtitle-core/src/timeline/tests.rs` (в т.ч. сверка с перебором на псевдослучайных данных), `crates/subtitle-formats/tests/{srt_loading,encoding_and_limits,webvtt_loading}.rs` — сквозь `load_text_subtitle` → `SubtitleTimeline::collect_active_at`.

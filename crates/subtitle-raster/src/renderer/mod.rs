@@ -46,6 +46,7 @@ mod collisions;
 mod cue_render;
 mod frame;
 mod limits;
+mod picture_cue;
 mod request;
 mod statistics;
 
@@ -95,6 +96,8 @@ pub use statistics::RasterStatistics;
 enum CueLook {
     /// Реплика простого формата.
     Text { appearance: SubtitleAppearance },
+    /// Растровая реплика (PGS): от стиля, языка и настроек ASS не зависит.
+    Picture,
     /// Реплика ASS.
     Ass {
         options: AssRenderOptions,
@@ -232,6 +235,10 @@ impl SubtitleRasterizer {
             invalid_ass_drawings: self.counters.invalid_ass_drawings,
             skipped_oversized_bitmaps: self.counters.skipped_oversized_bitmaps,
             failed_blur_layers: self.counters.failed_blur_layers,
+            rejected_pictures_too_large: self.counters.rejected_pictures_too_large,
+            failed_pictures: self.counters.failed_pictures,
+            damaged_pictures: self.counters.damaged_pictures,
+            dropped_pictures_over_frame_limit: self.counters.dropped_pictures_over_frame_limit,
             unusable_faces: fonts.unusable_faces,
             unreadable_faces: fonts.unreadable_faces,
             current_frame_bytes: self.frame.as_ref().map_or(0, FrameState::mask_bytes),
@@ -369,6 +376,14 @@ impl SubtitleRasterizer {
                 "too many ASS events in one frame, the ones on the highest layers are dropped"
             );
         }
+        if admitted.dropped_pictures > 0 {
+            self.counters.dropped_pictures_over_frame_limit += admitted.dropped_pictures as u64;
+            tracing::warn!(
+                dropped = admitted.dropped_pictures,
+                max_cues = self.limits.input.max_cues_per_frame,
+                "too many picture subtitle cues in one frame, the extra ones are dropped"
+            );
+        }
         // Реплики простых форматов и ASS живут по разным правилам порядка и столкновений.
         let mut text_cues: Vec<Arc<RasterizedCue>> = Vec::new();
         let mut ass_cues: Vec<AssFrameCue> = Vec::new();
@@ -384,6 +399,9 @@ impl SubtitleRasterizer {
             };
             match cue.content {
                 CueContent::Text(_) => text_cues.push(rasterized),
+                // Растровые реплики сюда не попадают (`admit_cues` их отделяет и они
+                // рисуются ниже), поэтому ветка пуста.
+                CueContent::Picture(_) => {}
                 CueContent::Ass { cue: ass, .. } => {
                     let clock = animation.as_ref().and_then(|current| current.state.clock);
                     // Караоке зависит от времени уже после кэша: срок годности картинки
@@ -412,6 +430,8 @@ impl SubtitleRasterizer {
             request.canvas,
             &request.ass,
         ));
+        // Растровые реплики идут поверх текста и ASS, в порядке запроса.
+        bitmaps.extend(self.picture_bitmaps(&admitted.pictures, request.canvas));
 
         // Рабочая память переиспользуется между репликами, но не растёт навсегда после
         // одного очень большого размытия.
@@ -432,7 +452,7 @@ impl SubtitleRasterizer {
     /// Анимация ASS-реплики на момент запроса; `None` для реплик простых форматов.
     fn animation_of(cue: &RenderableCue<'_>, request: &RenderRequest<'_>) -> Option<AssAnimation> {
         match cue.content {
-            CueContent::Text(_) => None,
+            CueContent::Text(_) | CueContent::Picture(_) => None,
             CueContent::Ass { cue: ass, timing } => {
                 let frame =
                     AssFrameScale::new(ass.script.info(), request.canvas, request.ass.storage_size);
@@ -490,6 +510,8 @@ impl SubtitleRasterizer {
         let chars = match cue.content {
             CueContent::Text(text) => cue_char_count(&text.text),
             CueContent::Ass { cue: ass, .. } => ass_cue_char_count(&ass.text),
+            // Растровые реплики идут через `picture_for`, а не через `cue_for`.
+            CueContent::Picture(_) => return None,
         };
         if chars > self.limits.input.max_chars_per_cue {
             self.counters.rejected_cues_too_long += 1;
@@ -512,6 +534,7 @@ impl SubtitleRasterizer {
                 request.canvas,
                 request.text_language,
             ),
+            CueContent::Picture(_) => return None,
             CueContent::Ass { cue: ass, .. } => rasterize_ass_cue(
                 &mut self.fonts,
                 &mut self.faces,
@@ -586,6 +609,7 @@ impl SubtitleRasterizer {
             CueContent::Text(_) => CueLook::Text {
                 appearance: *request.appearance,
             },
+            CueContent::Picture(_) => CueLook::Picture,
             CueContent::Ass { .. } => CueLook::Ass {
                 options: request.ass,
                 user_appearance: (request.ass.style_source == AssStyleSource::User)

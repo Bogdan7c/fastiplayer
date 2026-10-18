@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 21;
+pub const CURRENT_SCHEMA_VERSION: u32 = 22;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -104,14 +104,21 @@ pub(crate) const LEGACY_SCHEMA_VERSION_19: u32 = 19;
 /// нечего, поэтому миграция v20 -> v21 только поднимает версию.
 pub(crate) const LEGACY_SCHEMA_VERSION_20: u32 = 20;
 
+/// Последняя схема до настроек памяти встроенных дорожек PGS
+/// (`subtitles.pgs_displayed_track_cache_mb`, `subtitles.pgs_background_track_window_s`).
+///
+/// Новые ключи добавляются со значениями по умолчанию; переписывать пользовательские значения
+/// нечего, поэтому миграция v21 -> v22 только поднимает версию.
+pub(crate) const LEGACY_SCHEMA_VERSION_21: u32 = 21;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v21 и полная цепочка поддерживаемых legacy-версий v2..v20.
+    /// Текущая схема v22 и полная цепочка поддерживаемых legacy-версий v2..v21.
     #[test]
-    fn schema_v21_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 21);
+    fn schema_v22_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 22);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -133,9 +140,10 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_18,
                 LEGACY_SCHEMA_VERSION_19,
                 LEGACY_SCHEMA_VERSION_20,
+                LEGACY_SCHEMA_VERSION_21,
             ],
             [
-                2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+                2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21
             ]
         );
     }

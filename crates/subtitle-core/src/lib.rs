@@ -17,6 +17,7 @@ mod color;
 mod event;
 mod language;
 mod language_table;
+mod picture;
 mod placement;
 mod styled_text;
 mod time;
@@ -38,6 +39,10 @@ pub use event::{
     InvalidSubtitleInterval, SubtitleContent, SubtitleEvent, SubtitleLayer, SubtitleTextCue,
 };
 pub use language::{InvalidSubtitleLanguage, SubtitleLanguage};
+pub use picture::{
+    IndexedPicture, InvalidPictureCue, PaletteColor, PictureEncoding, PictureForcedFlag,
+    PicturePalette, PicturePosition, PictureRect, PictureReferenceSize, SubtitlePictureCue,
+};
 pub use placement::{
     CueLine, CueLineAlign, CuePlacement, CuePosition, CuePositionAlign, CueTextAlign,
     CueWritingDirection, InvalidPercentOfVideo, PercentOfVideo, RegionPoint, RegionScroll,
@@ -48,7 +53,10 @@ pub use styled_text::{
     TextUnderline,
 };
 pub use time::{SubtitleSyncOffset, SubtitleTime};
-pub use timeline::{SubtitleEventId, SubtitleTimeline, TimelineBuildReport, TimelineInsertOutcome};
+pub use timeline::{
+    EndShortening, ShortenError, ShortenOutcome, ShorteningHistoryLost, SubtitleEventId,
+    SubtitleTimeline, TimelineBuildReport, TimelineInsertOutcome,
+};
 pub use track::{
     SubtitleFormat, SubtitleTrackDescriptor, SubtitleTrackDisposition, SubtitleTrackId,
     SubtitleTrackOrigin,

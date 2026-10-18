@@ -86,9 +86,10 @@ render-wgpu-shell.workspace = true
 render-wgpu-video.workspace = true
 
 # Субтитры: модель/тайминг, разбор файлов, поиск рядом с видео и растеризатор.
-# Все четыре crate-а нейтральны (без GPU/UI): композиция с wgpu-проходом живёт здесь.
+# Все пять crate-ов нейтральны (без GPU/UI): композиция с wgpu-проходом живёт здесь.
 subtitle-core.workspace = true
 subtitle-formats.workspace = true
+subtitle-pgs.workspace = true
 subtitle-raster.workspace = true
 subtitle-sidecar.workspace = true
 

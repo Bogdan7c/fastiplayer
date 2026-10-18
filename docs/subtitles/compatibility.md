@@ -16,7 +16,7 @@ Session 01 delivers parsing only (crates `subtitle-core`, `subtitle-formats`). N
 | mov_text (`tx3g`) inside MP4 | embedded | Supported (bold / italic / underline / colour) | 06 |
 | ASS / SSA inside MKV | embedded | Supported, all libass tags and effects (see "ASS / SSA (sessions 08–10)") | 06; 08; layer 2: 09; layer 3: 10 |
 | ASS / SSA sidecar file | sidecar | Supported, all libass tags and effects (see "ASS / SSA (sessions 08–10)") | 08; layer 2: 09; layer 3: 10 |
-| PGS inside MKV | embedded | Listed greyed out ("not supported yet"); picture rendering planned | 11 |
+| PGS inside MKV | embedded | Supported (see "PGS (session 11)") | 11 |
 | YouTube srv3 / WebVTT | web | Planned | 12 |
 | HLS WebVTT, DASH TTML/IMSC | streaming | Planned | 13 |
 | VobSub, DVB, FLV subtitles | — | Backlog (embedded VobSub / DVB tracks are listed greyed out) | — |
@@ -147,12 +147,29 @@ Supported:
 - fonts attached to MKV (`font/*`, `application/x-truetype-font`, `application/vnd.ms-opentype`, `application/font-sfnt`, `.ttf/.otf/.ttc/.otc`) are used for the video's subtitles; attachments over the limits (`max_attached_font_mb`, `max_attached_fonts_total_mb`) are not loaded and are reported in the log as counts only.
 
 Limitations:
-- picture tracks (PGS, VobSub, DVB) and unknown codecs are listed greyed out ("not supported yet");
+- picture tracks other than PGS (VobSub, DVB, BMP) and unknown codecs are listed greyed out ("not supported yet");
 - a cue without a duration in the container is shown for `embedded_cue_max_open_duration_ms` (default 5 s) instead of "until the next cue", because the next cue has not been read yet;
 - WebVTT inside MKV carries no positioning in the packet (only the text and markup), so cues are placed by the user style;
 - ASS / SSA tracks are drawn with their own style header and layer-1 tags (session 08); a track that appears later through `TracksChanged` has no header and is drawn as plain text (tags stripped);
 - like mpv, cues are known only after the demuxer has read them: after a forward seek, a cue that started before the target and is still active appears once the demuxer reaches its packet (the container is read from the nearest keyframe before the target, so this is usually immediate); a cue that was never read is not shown;
 - if the packet queue between the player and the UI overflows, packets are dropped (counted, one warning in the log) while video and audio keep playing.
+
+## PGS (session 11)
+
+Blu-ray picture subtitles (`S_HDMV/PGS`) inside MKV are a normal, selectable embedded track, labelled "PGS, embedded", and take part in auto-select like any other track.
+
+Supported:
+- the pictures are drawn at the position and size the author set; the author's frame (usually 1920x1080) is fitted into the video picture keeping its proportions (one scale for both axes, centred), so letters are never squashed when the bars were cropped from the video; colours follow the stream palette (BT.601 for author frames up to 576 lines, BT.709 above) with its transparency;
+- pictures in the lower half of the author frame (dialogue) rise above the control panel when it appears and follow the user's vertical offset, but never leave the video picture (never on the black bars); pictures higher up (signs) stay exactly where the author put them; the user text size, colours and horizontal offset are not applied to pictures;
+- a picture without a duration in the container stays until the next display set (a "clear" set ends it); the end is applied in place, so a picture on screen never blinks when its end becomes known;
+- forced pictures, "like a Blu-ray player": when subtitles are off and the video has no forced track, the PGS track of the preferred language shows only the pictures marked forced by the author (translations of foreign speech and signs); the CC button stays off. A container-forced track still takes precedence;
+- seeking back shows pictures from the cache; every track of the video is read in the background, so switching tracks is instant;
+- memory: the track being shown keeps its pictures within `pgs_displayed_track_cache_mb` (default 32 MB; the farthest from the playback position are dropped first, the picture on screen never); every other PGS track keeps only the last `pgs_background_track_window_s` seconds (default 60) before the playback position. Both settings take effect with the next opened video. Pictures are stored compressed (as in the stream) and decoded only when shown.
+
+Limitations:
+- after a seek the picture that was open (shown "until the next set") is dropped, because it is unknown whether it ended in the skipped part; a seek forward into the middle of a picture shows it from the next display set (pictures that were already closed stay in the cache);
+- a broken segment is skipped and counted (the track keeps working); a display set that refers to a missing object or palette clears the screen instead of leaving an old picture; a picture larger than the memory budget is not shown;
+- PGS inside MPEG-TS/M2TS, `.sup` files beside the video, VobSub and DVB subtitles are not supported (backlog).
 
 ## Audio tracks and per-video memory (session 07)
 

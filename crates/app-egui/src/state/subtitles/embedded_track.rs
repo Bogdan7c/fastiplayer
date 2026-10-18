@@ -6,9 +6,11 @@
 //! меню, язык для выбора шрифта и признаки автовыбора.
 //!
 //! # Поддержка кодеков
-//! Показываются только текстовые кодеки (`SubtitleCodecFamily::TextRenderable`): SRT, WebVTT,
-//! ASS/SSA (пока стилем по умолчанию, настоящие стили — сессия 08) и mov_text. Картинки (PGS,
-//! VobSub, DVB) и нераспознанные кодеки остаются в меню серыми: «not supported yet».
+//! Показываются текстовые кодеки (`SubtitleCodecFamily::TextRenderable`): SRT, WebVTT, ASS/SSA
+//! и mov_text — они идут через разбор пакета в реплику, — а также картинные Blu-ray PGS
+//! (`S_HDMV/PGS`), у которых свой путь: автомат декодера и хранилище композиций (см.
+//! [`EmbeddedPacketPath`]). Остальные картинки (VobSub, DVB, BMP) и нераспознанные кодеки
+//! остаются в меню серыми: «not supported yet».
 
 use media_core::subtitle_codec::{self, SubtitleCodecFamily};
 use media_core::{TrackId, TrackLabels};
@@ -21,6 +23,18 @@ use super::menu_view::{SubtitleFileOrigin, SubtitleTrackLabel};
 
 /// Код «язык не определён» в контейнерах (MKV по умолчанию пишет `eng`, MP4 — `und`).
 const UNDETERMINED_LANGUAGE_CODE: &str = "und";
+
+/// Каким путём пакеты дорожки превращаются в реплики на экране.
+///
+/// Единственное место, где решается «можно ли показать встроенный кодек»: меню, автовыбор и
+/// приём пакетов спрашивают его же, поэтому расходиться не могут.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EmbeddedPacketPath {
+    /// Один пакет = одна текстовая реплика; формат разбора известен.
+    Text(EmbeddedCueFormat),
+    /// Blu-ray PGS: пакеты — части наборов отображения, реплики дает автомат декодера.
+    Pgs,
+}
 
 /// Встроенная дорожка: идентификатор плеера и метки контейнера.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,14 +78,27 @@ impl EmbeddedTrackDescription {
         self.player_track_id
     }
 
-    /// Как разбирать пакеты дорожки; `None` — кодек показать нельзя.
+    /// Как разбирать текстовые пакеты дорожки; `None` — кодек не текстовый (картинка PGS или
+    /// неподдержанный). Путь пакетов вообще — [`Self::packet_path`]; в production пакеты
+    /// маршрутизирует он, поэтому этот метод нужен только проверкам.
+    #[cfg(test)]
     pub(super) fn cue_format(&self) -> Option<EmbeddedCueFormat> {
         cue_format_for_codec(&self.codec_id)
     }
 
+    /// Каким путём идут пакеты дорожки; `None` — кодек показать нельзя.
+    pub(super) fn packet_path(&self) -> Option<EmbeddedPacketPath> {
+        packet_path_for_codec(&self.codec_id)
+    }
+
+    /// Кодек помечает forced каждый объект отдельно (PGS).
+    pub(super) fn has_per_object_forced_flags(&self) -> bool {
+        self.packet_path() == Some(EmbeddedPacketPath::Pgs)
+    }
+
     /// Этот кодек умеем показывать сейчас.
     pub(super) fn is_renderable_now(&self) -> bool {
-        self.cue_format().is_some()
+        self.packet_path().is_some()
     }
 
     /// Дорожка помечена контейнером как «по умолчанию».
@@ -169,6 +196,14 @@ pub(super) fn cue_format_for_codec(codec_id: &str) -> Option<EmbeddedCueFormat> 
     }
 }
 
+/// Путь пакетов по идентификатору кодека; `None` — кодек показать нельзя.
+pub(super) fn packet_path_for_codec(codec_id: &str) -> Option<EmbeddedPacketPath> {
+    if codec_id == subtitle_codec::HDMV_PGS {
+        return Some(EmbeddedPacketPath::Pgs);
+    }
+    cue_format_for_codec(codec_id).map(EmbeddedPacketPath::Text)
+}
+
 #[cfg(test)]
 mod tests {
     use media_core::{TrackDisposition, TrackKind, TrackLanguage};
@@ -201,6 +236,7 @@ mod tests {
         for (codec, expected) in supported {
             assert_eq!(cue_format_for_codec(codec), Some(expected), "{codec}");
         }
+        // PGS не текстовый: формата разбора реплики у него нет, у него свой путь пакетов.
         for codec in [
             subtitle_codec::HDMV_PGS,
             subtitle_codec::VOBSUB,
@@ -210,6 +246,37 @@ mod tests {
         ] {
             assert_eq!(cue_format_for_codec(codec), None, "{codec}");
         }
+    }
+
+    #[test]
+    fn pgs_has_its_own_packet_path_and_other_picture_codecs_stay_grey() {
+        assert_eq!(
+            packet_path_for_codec(subtitle_codec::HDMV_PGS),
+            Some(EmbeddedPacketPath::Pgs)
+        );
+        assert_eq!(
+            packet_path_for_codec(subtitle_codec::TEXT_UTF8),
+            Some(EmbeddedPacketPath::Text(EmbeddedCueFormat::SrtText))
+        );
+        for codec in [
+            subtitle_codec::VOBSUB,
+            subtitle_codec::DVBSUB,
+            subtitle_codec::KATE,
+            subtitle_codec::UNKNOWN,
+        ] {
+            assert_eq!(packet_path_for_codec(codec), None, "{codec}");
+        }
+        let pgs = EmbeddedTrackDescription::from_snapshot(&snapshot_row(
+            subtitle_codec::HDMV_PGS,
+            TrackLabels::default(),
+        ));
+        assert!(pgs.is_renderable_now());
+        assert_eq!(pgs.cue_format(), None);
+        let vobsub = EmbeddedTrackDescription::from_snapshot(&snapshot_row(
+            subtitle_codec::VOBSUB,
+            TrackLabels::default(),
+        ));
+        assert!(!vobsub.is_renderable_now());
     }
 
     #[test]

@@ -85,7 +85,11 @@ fn main_group_lift_pixels(
 }
 
 /// Прямоугольник группы на экране: холст лежит от угла картинки, плюс сдвиг по вертикали.
-fn screen_rect(bounds: CanvasRect, picture: &IntegerPicture, shift_y: i64) -> (i64, i64, i64, i64) {
+pub(super) fn screen_rect(
+    bounds: CanvasRect,
+    picture: &IntegerPicture,
+    shift_y: i64,
+) -> (i64, i64, i64, i64) {
     let left = picture.left + i64::from(bounds.x);
     let top = picture.top + i64::from(bounds.y) + shift_y;
     (
@@ -97,7 +101,7 @@ fn screen_rect(bounds: CanvasRect, picture: &IntegerPicture, shift_y: i64) -> (i
 }
 
 /// Объединение двух необязательных прямоугольников `(left, top, right, bottom)`.
-fn union_rects(
+pub(super) fn union_rects(
     first: Option<(i64, i64, i64, i64)>,
     second: Option<(i64, i64, i64, i64)>,
 ) -> Option<PlacedLayerRect> {

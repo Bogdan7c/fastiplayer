@@ -112,7 +112,7 @@ impl FrameState {
             .bitmaps()
             .iter()
             .fold(0_usize, |total, bitmap| {
-                total.saturating_add(bitmap.coverage().len())
+                total.saturating_add(bitmap.pixel_bytes())
             })
     }
 

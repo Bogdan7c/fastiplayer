@@ -702,7 +702,7 @@ impl PlayerSession {
                 selected_audio_track_id = ?self.pipeline.selected_audio_track_id(),
                 "Starting demux seek transaction"
             );
-            let Some(seek_result) = self.pipeline.seek_demuxer(demux_seek_request) else {
+            let Some(seek_result) = self.seek_demuxer_noting_read_jump(demux_seek_request) else {
                 self.seek_runtime.clear_trace();
                 return Ok(());
             };

@@ -165,6 +165,7 @@ impl TrackEntry {
                 is_forced: candidate.disposition.is_forced,
                 is_hearing_impaired: candidate.is_hearing_impaired,
                 is_renderable,
+                has_per_object_forced_flags: false,
             },
             TrackDescription::Embedded(description) => TrackTraits {
                 origin: TrackOrigin::Embedded,
@@ -173,6 +174,7 @@ impl TrackEntry {
                 is_forced: description.is_forced(),
                 is_hearing_impaired: description.is_hearing_impaired(),
                 is_renderable,
+                has_per_object_forced_flags: description.has_per_object_forced_flags(),
             },
         }
     }

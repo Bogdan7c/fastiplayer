@@ -37,7 +37,7 @@ use super::super::render_worker::validity::TimeSpan;
 use super::super::render_worker::worker::WorkerSettings;
 use super::super::user_style::UserSubtitleStyle;
 use super::ass_options::AssPresentation;
-use super::ingest::TrackInvalidation;
+use super::ingest::{InvalidationKind, TrackInvalidation};
 use super::worker_link::WorkerLink;
 use super::{PresentationStats, SubmittedFrameForSubtitles};
 use crate::app_wake::AppWakePort;
@@ -552,12 +552,27 @@ impl SubtitlePresenter {
             .sync(role, track, &mut |command| link.send(command));
         let source = track.source_id();
         match outcome {
-            Ok(SyncOutcome::Appended { serial, span }) => {
-                self.note_track_invalidation(TrackInvalidation {
-                    serial,
-                    source,
-                    span,
-                });
+            Ok(SyncOutcome::Updated {
+                serial,
+                appended,
+                shortened,
+            }) => {
+                if let Some(span) = appended {
+                    self.note_track_invalidation(TrackInvalidation {
+                        serial,
+                        source,
+                        span,
+                        kind: InvalidationKind::Overwritten,
+                    });
+                }
+                if let Some(span) = shortened {
+                    self.note_track_invalidation(TrackInvalidation {
+                        serial,
+                        source,
+                        span,
+                        kind: InvalidationKind::EventsShortened,
+                    });
+                }
             }
             // Дорожка отправлена целиком: всё нарисованное для неё раньше недействительно.
             Ok(SyncOutcome::Replaced { serial }) => {
@@ -565,6 +580,7 @@ impl SubtitlePresenter {
                     serial,
                     source,
                     span: TimeSpan::everything(),
+                    kind: InvalidationKind::Overwritten,
                 });
             }
             Ok(SyncOutcome::Unchanged) | Err(_) => {}

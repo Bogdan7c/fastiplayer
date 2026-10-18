@@ -63,6 +63,7 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/playlist-io
     crates/subtitle-core
     crates/subtitle-formats
+    crates/subtitle-pgs
     crates/subtitle-raster
     crates/subtitle-sidecar
     crates/hls-playlist-core

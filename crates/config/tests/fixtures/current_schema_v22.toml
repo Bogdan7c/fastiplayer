@@ -1,4 +1,4 @@
-schema_version = 21
+schema_version = 22
 
 [player]
 start_paused = false
@@ -304,3 +304,7 @@ glyph_cache_mb = 64
 glyph_outline_cache_items = 10000
 # Сколько МБ занимает кэш результатов шейпинга текста (участок -> глифы).
 shaping_cache_mb = 4
+# Сколько МБ занимает кэш картинок показываемой дорожки PGS; дальние от позиции картинки вытесняются.
+pgs_displayed_track_cache_mb = 32
+# Сколько секунд перед позицией хранят картинки PGS-дорожек, которые сейчас не показываются.
+pgs_background_track_window_s = 60

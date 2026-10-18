@@ -400,6 +400,13 @@ impl PlayerSession {
             {
                 continue;
             }
+            // Worker уже переставил демуксер (успешно или нет): проход чтения новый.
+            if matches!(
+                receipt.outcome,
+                PreparedDemuxSeekOutcome::Succeeded(_) | PreparedDemuxSeekOutcome::Failed
+            ) {
+                self.note_subtitle_read_position_jump();
+            }
             match receipt.outcome {
                 PreparedDemuxSeekOutcome::Succeeded(result) => {
                     if result.requested_position == pending.requested_demux_position {

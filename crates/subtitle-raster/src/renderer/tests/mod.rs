@@ -23,6 +23,7 @@ mod font_fallback;
 mod geometry;
 mod language;
 mod limits;
+mod picture;
 mod robustness;
 
 use subtitle_core::{

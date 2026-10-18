@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use media_core::{DemuxReadEvent, Demuxer, MediaAttachments, Packet, TrackInfo, TrackKind};
 use player_core::{
-    SubtitleFeedMediaStart, SubtitleFeedMessage, SubtitleFeedPacket, SubtitleTrackHeader,
-    TrackSummarySnapshot,
+    SubtitleFeedMediaStart, SubtitleFeedMessage, SubtitleFeedPacket, SubtitleReadRun,
+    SubtitleTrackHeader, TrackSummarySnapshot,
 };
 use symphonia_demux::SymphoniaDemuxer;
 
@@ -126,6 +126,7 @@ pub(super) fn packet_message(media: MediaInstanceId, packet: &Packet) -> Subtitl
         track_id: packet.track_id,
         presentation_time: packet.pts,
         duration: packet.duration,
+        read_run: SubtitleReadRun::INITIAL,
         payload: packet.data.clone(),
     })
 }
@@ -143,6 +144,7 @@ pub(super) fn raw_packet(
         track_id,
         presentation_time: Duration::from_millis(at_ms),
         duration: duration_ms.map(Duration::from_millis),
+        read_run: SubtitleReadRun::INITIAL,
         payload: bytes::Bytes::copy_from_slice(payload),
     })
 }

@@ -78,7 +78,12 @@ pub(super) fn render_at(
                     AssEventTiming::new(event.start(), event.end()),
                 ));
             }
-            // `SubtitleContent` расширяемый (bitmap и будущее): неподдерживаемое считаем.
+            // Растровая реплика (PGS): позицию и размер задаёт автор, растеризатор переводит
+            // их в пиксели холста. Фильтрация по forced — забота владельца, не этого шага.
+            SubtitleContent::Picture(cue) => {
+                cues.push(RenderableCue::picture(CueKey::new(source, event_id), cue));
+            }
+            // `SubtitleContent` расширяемый (будущее): неподдерживаемое считаем.
             _ => skipped_unsupported_cues += 1,
         }
     }

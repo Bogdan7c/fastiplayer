@@ -7,7 +7,7 @@ use video_core::{DecodedPixelFormat, FrameMemoryPath};
 
 use crate::{
     MediaInstanceId, MediaSourceInfo, PlaybackDiagnosticsSnapshot, PlaybackRate, PlaybackState,
-    PlayerError, QualityId, TrackId,
+    PlayerError, QualityId, SubtitleReadRun, TrackId,
 };
 
 /// Read-only snapshot player state для UI, renderer и desktop integration.
@@ -36,6 +36,13 @@ pub struct PlayerSnapshot {
 
     /// Typed timeline/seek состояние для UI, renderer и desktop integration.
     pub timeline: TimelineSnapshot,
+
+    /// Текущий проход чтения демуксера для пакетов субтитров (см. [`SubtitleReadRun`]).
+    /// Растёт при seek/scrub/перестановке чтения и при потере пакета в трубе субтитров.
+    /// Приложение сравнивает его со своим последним увиденным значением и по смене
+    /// понимает, что растровые субтитры (PGS) надо сбросить, даже если новых пакетов
+    /// ещё нет. Нумерация сквозная; осмысленно только сравнение внутри одного media.
+    pub subtitle_read_run: SubtitleReadRun,
 
     /// Текущая громкость в диапазоне `0.0..=1.0`.
     pub volume: f32,
@@ -137,6 +144,7 @@ impl Default for PlayerSnapshot {
             duration: None,
             current_position: Duration::ZERO,
             timeline: TimelineSnapshot::default(),
+            subtitle_read_run: SubtitleReadRun::INITIAL,
             volume: 1.0,
             muted: false,
             playback_rate: PlaybackRate::NORMAL,

@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use subtitle_core::{SubtitleEvent, SubtitleLanguage, SubtitleTimeline};
+use subtitle_core::{EndShortening, SubtitleEvent, SubtitleLanguage, SubtitleTimeline};
 use subtitle_raster::{
     AssRenderOptions, AttachedFontLimits, AttachedFontsClearOutcome, AttachedFontsInstallReport,
     CanvasSize, CueSourceId, PreparedAttachedFonts, SubtitleAppearance, TextLanguagePreference,
@@ -47,12 +47,19 @@ pub(in crate::state::subtitles) enum TrackCommand {
         language: Option<SubtitleLanguage>,
         timeline: SubtitleTimeline,
     },
-    /// Дописанные реплики встроенной дорожки, в порядке их id (так id в зеркале совпадут).
-    Append {
+    /// Узкая дельта зеркала: укорочения концов существующих событий и дописанные реплики
+    /// (встроенная дорожка растёт; открытые реплики закрываются, когда приходит преемник).
+    ///
+    /// Порядок применения: сначала укорочения (они касаются событий, что уже есть в зеркале),
+    /// затем дописывание в порядке id (так id в зеркале совпадут с id у UI).
+    Update {
         /// Порядковый номер изменения (см. `Replace`).
         serial: u64,
         source: CueSourceId,
-        events: Vec<SubtitleEvent>,
+        /// Укорочения событий, уже лежащих в зеркале (id < числа событий зеркала).
+        shortenings: Vec<EndShortening>,
+        /// Дописанные реплики в порядке их id.
+        appended: Vec<SubtitleEvent>,
     },
     /// Дорожка больше не нужна, зеркало можно выбросить.
     Forget { source: CueSourceId },
@@ -119,6 +126,10 @@ pub(in crate::state::subtitles) struct WorkerDiagnostics {
     pub(in crate::state::subtitles) raster: subtitle_raster::RasterStatistics,
     /// Сколько раз защита от зацикливания отказалась рисовать то же самое второй раз подряд.
     pub(in crate::state::subtitles) repeated_jobs_suppressed: u64,
+    /// Сколько полных копий дорожки (`Replace`) принял поток.
+    pub(in crate::state::subtitles) track_replaces: u64,
+    /// Сколько узких дельт (`Update`) принял поток.
+    pub(in crate::state::subtitles) track_updates: u64,
 }
 
 /// Событие потока-рисовальщика.

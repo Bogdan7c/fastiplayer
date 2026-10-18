@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use subtitle_core::{
-    SubtitleEvent, SubtitleLanguage, SubtitleSyncOffset, SubtitleTime, SubtitleTimeline,
-    TimelineBuildReport,
+    ShortenError, ShortenOutcome, SubtitleEvent, SubtitleEventId, SubtitleLanguage,
+    SubtitleSyncOffset, SubtitleTime, SubtitleTimeline, TimelineBuildReport,
 };
 use subtitle_raster::CueSourceId;
 
@@ -79,6 +79,39 @@ impl ActiveSubtitleTrack {
         events: impl IntoIterator<Item = SubtitleEvent>,
     ) -> TimelineBuildReport {
         self.timeline.extend(events)
+    }
+
+    /// Дописывает реплики и возвращает идентификаторы РЕАЛЬНО вставленных событий (в порядке
+    /// вставки). Дубликаты таймлайн отбрасывает, их идентификаторов нет в ответе.
+    ///
+    /// Нужно владельцу PGS: он помнит «композиция -> события шкалы», чтобы потом укоротить
+    /// именно их. Идентификатор события — порядковый номер вставки, поэтому вставленные
+    /// события — ровно хвост шкалы после прежней длины.
+    pub(super) fn append_events_with_ids(
+        &mut self,
+        events: impl IntoIterator<Item = SubtitleEvent>,
+    ) -> (TimelineBuildReport, Vec<SubtitleEventId>) {
+        let length_before = self.timeline.len();
+        let report = self.timeline.extend(events);
+        let inserted_ids = self
+            .timeline
+            .events_from_index(length_before)
+            .map(|(id, _)| id)
+            .collect();
+        (report, inserted_ids)
+    }
+
+    /// Укорачивает конец события (открытая реплика закрывается, когда пришёл преемник).
+    ///
+    /// Id событий не меняются, `CueKey` уже растеризованных реплик остаются верными. Зеркало
+    /// потока-рисовальщика узнаёт об этом по ревизии таймлайна (`MirrorSync`) и получает узкую
+    /// дельту, а не полную копию дорожки.
+    pub(super) fn shorten_event_end(
+        &mut self,
+        id: SubtitleEventId,
+        new_end: SubtitleTime,
+    ) -> Result<ShortenOutcome, ShortenError> {
+        self.timeline.shorten_event_end(id, new_end)
     }
 
     /// Время, по которому нужно искать реплики для кадра с данным `pts`.

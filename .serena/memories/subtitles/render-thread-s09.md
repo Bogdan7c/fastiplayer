@@ -21,6 +21,9 @@ UI-поток НИКОГДА не вызывает `SubtitleRasterizer` и не 
 ## Анимация (этап 2)
 Срок годности сужается анимацией нарисованной сцены (`ValidityInterval::narrowed_by_animation`, `render_step.rs`): `At(x)` -> до x, `EveryFrame` -> один шаг кадра `[t, t+шаг)` (шаг из часов в `RenderJob.frame_step`; неизвестен -> 1 мкс), `None` — без изменений. Перерисовка не чаще кадра видео и только пока анимированное событие на экране; пауза — без работы. Детали и тесты — `mem:subtitles/ass-layer2-s09`.
 
+## Сессия 11
+`TrackCommand::Append` стал `Update{serial, source, shortenings, appended}` (MirrorSync помнит source+count+revision; журнал укорочений потерян => Replace); укорочение сужает срок годности картинок (`ValidityInterval::after_shortening`: Unaffected/Narrowed/Invalid) в PreparedQueue, PublishedRecord и ingest — без мигания. Тесты `tests/shortening_thread.rs`. Подробно — `mem:subtitles/pgs-s11`.
+
 ## Инварианты
 - Идентичность картинки = source + canvas + inputs revision (растёт: стиль, ASS-опции/размер картинки, шрифты, `forget_shown_overlay`). `forget_shown` чистит очередь; смена sync offset НЕ инвалидирует (картинки во времени субтитров).
 - Фоллбэк не берёт чужой source; закончившиеся реплики режутся (`retain_cues`).

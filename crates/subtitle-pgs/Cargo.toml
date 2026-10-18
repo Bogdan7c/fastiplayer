@@ -1,0 +1,29 @@
+[package]
+name = "subtitle-pgs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "subtitle_pgs"
+path = "src/lib.rs"
+
+[features]
+# Кодировщик тестовых PGS-потоков (`stream_builder`) для тестов зависимых crate-ов и
+# генератора фикстур. Включается только из `[dev-dependencies]` и примера, поэтому в
+# рабочую сборку приложения не попадает.
+test-support = []
+
+[[example]]
+name = "write_test_sup"
+required-features = ["test-support"]
+
+[dependencies]
+# Нейтральная модель: растровая реплика, время, события.
+subtitle-core.workspace = true
+# Typed errors для разбора сегментов и распаковки картинок.
+thiserror.workspace = true
+
+[lints]
+workspace = true

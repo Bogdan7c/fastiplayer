@@ -6,6 +6,7 @@ use subtitle_core::SubtitleSyncOffset;
 
 use super::super::control_actions::ControlActionFeedback;
 use super::super::intents::SubtitleVisibility;
+use super::super::menu_view::SubtitleTrackAvailability;
 use super::super::sync_offset::SyncNudge;
 use super::*;
 use crate::state::notifications::TransientReplaceKey;
@@ -235,20 +236,25 @@ fn unknown_and_unavailable_tracks_are_explained_or_ignored_without_state_change(
     let (_dir, video) = movie_with(&[("Movie.srt", ENGLISH_SRT)]);
     let mut owner = owner_with_config(&config(true, "en"));
     begin_and_wait(&mut owner, media, &video);
-    // Недоступная дорожка — встроенная картинка (PGS): текстовые форматы файлов теперь все
-    // показываемые, а картинки остаются серыми «not supported yet».
+    // Недоступная дорожка — встроенная картинка VobSub: текстовые форматы файлов и PGS теперь
+    // показываемые, а остальные картинки остаются серыми «not supported yet».
     let mut fixture = super::embedded_support::demux_fixture("two-srt-tracks.mkv");
-    let mut pgs_row = fixture.subtitle_row(0).clone();
-    pgs_row.id = media_core::TrackId::new(90);
-    pgs_row.codec_id = media_core::subtitle_codec::HDMV_PGS.to_owned();
-    fixture.tracks = vec![pgs_row];
+    let mut vobsub_row = fixture.subtitle_row(0).clone();
+    vobsub_row.id = media_core::TrackId::new(90);
+    vobsub_row.codec_id = media_core::subtitle_codec::VOBSUB.to_owned();
+    fixture.tracks = vec![vobsub_row];
     owner.sync_embedded_tracks(Some(media), &fixture.tracks);
     let before = owner.menu_view();
     let ass = before
         .tracks
         .iter()
-        .find(|track| track.label.format == Some(subtitle_core::SubtitleFormat::Pgs))
-        .expect("pgs track is listed")
+        .find(|track| {
+            matches!(
+                track.availability,
+                SubtitleTrackAvailability::Unavailable(_)
+            )
+        })
+        .expect("the greyed VobSub track is listed")
         .id;
 
     assert_eq!(

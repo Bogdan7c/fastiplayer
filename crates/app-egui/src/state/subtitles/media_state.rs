@@ -7,12 +7,13 @@ use subtitle_core::{SubtitleSyncOffset, SubtitleTrackId};
 
 use player_core::MediaInstanceId;
 
+use super::active_track::ActiveSubtitleTrack;
 use super::intents::SubtitleVisibility;
 use super::job_runner::SidecarJob;
-use super::owner_embedded::EmbeddedAssTracks;
+use super::owner_embedded::{EmbeddedAssTracks, EmbeddedPgsTracks};
 use super::owner_memory::{MemoryDirty, PendingRememberedChoice};
 use super::sidecar_job::SubtitleLoadFailure;
-use super::track_list::SubtitleTrackList;
+use super::track_list::{SubtitleTrackList, TrackLoadState};
 
 /// Поиск файлов рядом с видео.
 pub(super) enum DiscoveryState {
@@ -40,6 +41,25 @@ pub(super) struct TrackLoadJob {
     pub(super) job: SidecarJob,
 }
 
+/// Какие реплики показываемой дорожки идут на экран.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DisplayMode {
+    /// Все реплики дорожки.
+    AllCues,
+    /// Только картинки с флагом forced (PGS при выключенных субтитрах, как в проигрывателях
+    /// Blu-ray, решение владельца сессии 11).
+    ForcedPicturesOnly,
+}
+
+/// Что показывать: дорожка и режим.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct DisplayChoice {
+    /// Показываемая дорожка списка.
+    pub(super) track_id: SubtitleTrackId,
+    /// Все реплики или только forced-картинки.
+    pub(super) mode: DisplayMode,
+}
+
 /// Субтитры текущего media.
 pub(super) struct MediaSubtitles {
     /// Media, которому принадлежит всё состояние.
@@ -52,6 +72,9 @@ pub(super) struct MediaSubtitles {
     pub(super) selected: Option<SubtitleTrackId>,
     /// Принудительная дорожка нужного языка: показывается при `Hidden`.
     pub(super) forced_fallback: Option<SubtitleTrackId>,
+    /// PGS-дорожка нужного языка, чьи forced-ОБЪЕКТЫ показываются при `Hidden`, когда
+    /// принудительной дорожки (`forced_fallback`) нет.
+    pub(super) forced_pictures_fallback: Option<SubtitleTrackId>,
     /// Включены ли субтитры.
     pub(super) visibility: SubtitleVisibility,
     /// Общий сдвиг синхронизации всех дорожек media.
@@ -69,6 +92,8 @@ pub(super) struct MediaSubtitles {
     pub(super) memory_dirty: MemoryDirty,
     /// ASS-заголовки и сценарии встроенных дорожек этого media (отбрасываются вместе с ним).
     pub(super) embedded_ass: EmbeddedAssTracks,
+    /// Декодеры, хранилища композиций и роли PGS-дорожек этого media.
+    pub(super) embedded_pgs: EmbeddedPgsTracks,
 }
 
 impl MediaSubtitles {
@@ -80,6 +105,7 @@ impl MediaSubtitles {
             tracks: SubtitleTrackList::new(),
             selected: None,
             forced_fallback: None,
+            forced_pictures_fallback: None,
             visibility,
             sync_offset: SubtitleSyncOffset::ZERO,
             user_chose_track: false,
@@ -87,14 +113,43 @@ impl MediaSubtitles {
             pending_memory: None,
             memory_dirty: MemoryDirty::default(),
             embedded_ass: EmbeddedAssTracks::default(),
+            embedded_pgs: EmbeddedPgsTracks::default(),
         }
     }
 
-    /// Какую дорожку нужно показывать: выбранную при `Shown`, принудительную при `Hidden`.
+    /// Что нужно показывать: выбранную дорожку целиком при `Shown`; при `Hidden` - принудительную
+    /// дорожку, а если её нет - forced-объекты PGS-дорожки нужного языка.
+    pub(super) fn display_choice(&self) -> Option<DisplayChoice> {
+        let (track_id, mode) = match self.visibility {
+            SubtitleVisibility::Shown => (self.selected?, DisplayMode::AllCues),
+            SubtitleVisibility::Hidden => match self.forced_fallback {
+                Some(track_id) => (track_id, DisplayMode::AllCues),
+                None => (
+                    self.forced_pictures_fallback?,
+                    DisplayMode::ForcedPicturesOnly,
+                ),
+            },
+        };
+        Some(DisplayChoice { track_id, mode })
+    }
+
+    /// Какую дорожку нужно показывать (режим не важен: загрузка, роли памяти, меню).
     pub(super) fn display_track_id(&self) -> Option<SubtitleTrackId> {
-        match self.visibility {
-            SubtitleVisibility::Shown => self.selected,
-            SubtitleVisibility::Hidden => self.forced_fallback,
+        self.display_choice().map(|choice| choice.track_id)
+    }
+
+    /// Готовая дорожка для показа: сама дорожка списка либо её вид «только forced-картинки».
+    /// `None` - показывать нечего или дорожка ещё не готова.
+    pub(super) fn displayed_track(&self) -> Option<&ActiveSubtitleTrack> {
+        let choice = self.display_choice()?;
+        let TrackLoadState::Ready(track) = &self.tracks.get(choice.track_id)?.load else {
+            return None;
+        };
+        match choice.mode {
+            DisplayMode::AllCues => Some(track),
+            DisplayMode::ForcedPicturesOnly => {
+                self.embedded_pgs.forced_pictures_view(choice.track_id)
+            }
         }
     }
 

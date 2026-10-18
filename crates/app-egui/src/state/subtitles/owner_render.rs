@@ -2,6 +2,7 @@
 //!
 //! Сам показ кадра — в `owner_placement`; здесь то, что происходит между кадрами.
 
+use super::EmbeddedUpdate;
 use super::render_worker::RenderWorkerFailure;
 use super::render_worker::clock_tracker::PlaybackObservation;
 use super::sidecar_job::SubtitleLoadFailure;
@@ -46,29 +47,30 @@ impl SubtitleOwner {
     /// кадра нет). Во время seek/scrub старый кадр остаётся на экране без субтитров, а цель
     /// уже известна: сообщаем её потоку сразу, чтобы картинка цели была готова к первому
     /// кадру после seek.
+    ///
+    /// Заодно сообщает PGS-дорожкам проход чтения демуксера из снимка: смена прохода сбрасывает
+    /// их без ожидания пакетов. Результат говорит, изменилось ли то, что видит пользователь.
     pub(super) fn observe_playback(
         &mut self,
         current: CurrentMediaForSubtitles,
         observation: PlaybackObservation,
-    ) {
+    ) -> EmbeddedUpdate {
         self.presenter.observe_playback(observation);
+        // Позиция для политики памяти уже обновлена строкой выше, поэтому сброс по новому
+        // проходу видит актуальное «сейчас».
+        let update = self.observe_pgs_read_run(current, observation.read_run);
         if !self.presenter.playback_follows_target() || self.appearance_edit.is_some() {
-            return;
+            return update;
         }
         let Some(media) = self.media.as_ref() else {
-            return;
+            return update;
         };
         if current.media_instance_id != Some(media.media_instance_id) {
-            return;
+            return update;
         }
-        let Some(entry) = media
-            .display_track_id()
-            .and_then(|track_id| media.tracks.get(track_id))
-        else {
-            return;
-        };
-        if let TrackLoadState::Ready(track) = &entry.load {
+        if let Some(track) = media.displayed_track() {
             self.presenter.refresh_target_clock(track);
         }
+        update
     }
 }

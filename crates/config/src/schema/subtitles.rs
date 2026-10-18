@@ -12,6 +12,7 @@ use super::subtitles_ass::{
 };
 use super::subtitles_glyph_cache::*;
 use super::subtitles_limits::*;
+use super::subtitles_pgs::*;
 use super::subtitles_style::*;
 
 /// Показ субтитров по умолчанию выключен: включает пользователь (кнопка CC / клавиша C).
@@ -679,6 +680,46 @@ pub struct SubtitlesConfig {
         apply = "subtitles.apply"
     )]
     pub shaping_cache_mb: u16,
+
+    /// Бюджет кэша показываемой дорожки PGS (картинки), МБ.
+    #[setting(
+        id = "subtitles.pgs_displayed_track_cache_mb",
+        path = "subtitles.pgs_displayed_track_cache_mb",
+        section = "subtitles",
+        group = "limits",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.pgs_displayed_track_cache_mb.label",
+        label_ru = "PGS shown track cache",
+        description_id = "settings.subtitles.pgs_displayed_track_cache_mb.description",
+        description_ru = "Memory for the picture subtitles (PGS) of the track being shown; rewinding shows them from the cache. When full, pictures farthest from the playback position are dropped. Takes effect with the next opened video.",
+        editor = "integer",
+        min = crate::MIN_PGS_DISPLAYED_TRACK_CACHE_MB,
+        max = crate::MAX_PGS_DISPLAYED_TRACK_CACHE_MB,
+        step = 8,
+        unit = "MB",
+        apply = "subtitles.apply"
+    )]
+    pub pgs_displayed_track_cache_mb: u16,
+
+    /// Сколько секунд перед позицией хранят фоновые дорожки PGS.
+    #[setting(
+        id = "subtitles.pgs_background_track_window_s",
+        path = "subtitles.pgs_background_track_window_s",
+        section = "subtitles",
+        group = "limits",
+        surface = "main-settings-window",
+        label_id = "settings.subtitles.pgs_background_track_window_s.label",
+        label_ru = "PGS other tracks window",
+        description_id = "settings.subtitles.pgs_background_track_window_s.description",
+        description_ru = "How many seconds before the playback position picture subtitle (PGS) tracks that are not shown keep, so switching to them shows the picture at once. Takes effect with the next opened video.",
+        editor = "integer",
+        min = crate::MIN_PGS_BACKGROUND_TRACK_WINDOW_S,
+        max = crate::MAX_PGS_BACKGROUND_TRACK_WINDOW_S,
+        step = 10,
+        unit = "s",
+        apply = "subtitles.apply"
+    )]
+    pub pgs_background_track_window_s: u16,
 }
 
 impl Default for SubtitlesConfig {
@@ -718,6 +759,8 @@ impl Default for SubtitlesConfig {
             glyph_cache_mb: DEFAULT_GLYPH_CACHE_MB,
             glyph_outline_cache_items: DEFAULT_GLYPH_OUTLINE_CACHE_ITEMS,
             shaping_cache_mb: DEFAULT_SHAPING_CACHE_MB,
+            pgs_displayed_track_cache_mb: DEFAULT_PGS_DISPLAYED_TRACK_CACHE_MB,
+            pgs_background_track_window_s: DEFAULT_PGS_BACKGROUND_TRACK_WINDOW_S,
         }
     }
 }

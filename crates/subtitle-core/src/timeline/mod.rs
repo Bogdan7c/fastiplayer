@@ -5,10 +5,12 @@
 //! Внешний код видит только намерения (`insert`, `collect_active_at`, `next_change_after`).
 
 mod max_end_tree;
+mod shorten;
 #[cfg(test)]
 mod tests;
 
 use max_end_tree::MaxEndTree;
+pub use shorten::{EndShortening, ShortenError, ShortenOutcome, ShorteningHistoryLost};
 
 use crate::event::SubtitleEvent;
 use crate::time::SubtitleTime;
@@ -61,6 +63,10 @@ pub struct SubtitleTimeline {
     order_by_start: Vec<SubtitleEventId>,
     /// Максимумы `end` над `order_by_start`.
     max_end_tree: MaxEndTree,
+    /// Счётчик изменений набора/интервалов событий, см. [`SubtitleTimeline::revision`].
+    revision: u64,
+    /// Журнал недавних укорочений для зеркал, см. [`SubtitleTimeline::shortenings_since`].
+    shorten_log: shorten::ShortenLog,
 }
 
 impl SubtitleTimeline {
@@ -96,6 +102,7 @@ impl SubtitleTimeline {
             .partition_point(|&other| self.start_of(other) <= start);
         self.order_by_start.insert(insert_at, id);
         self.rebuild_tree();
+        self.bump_revision();
         TimelineInsertOutcome::Inserted(id)
     }
 
@@ -143,6 +150,9 @@ impl SubtitleTimeline {
             }
         }
         self.rebuild_order_and_tree();
+        if report.inserted > 0 {
+            self.bump_revision();
+        }
         report
     }
 
@@ -242,6 +252,15 @@ impl SubtitleTimeline {
         }
     }
 
+    /// Счётчик изменений: растёт при каждой вставке/пакете, реально добавившем события,
+    /// и при каждом эффективном укорочении ([`Self::shorten_event_end`]). Дубликаты, отказы
+    /// по ёмкости и no-op укорочения его НЕ меняют. Потребитель, который зеркалирует
+    /// таймлайн, по этому числу узнаёт, что менялось не только «хвост» событий:
+    /// если `revision` вырос, а `len` нет — было укорочение.
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub fn event(&self, id: SubtitleEventId) -> Option<&SubtitleEvent> {
         self.events.get(id.index())
     }
@@ -310,6 +329,10 @@ impl SubtitleTimeline {
     fn paint_order_key(&self, id: SubtitleEventId) -> (i32, SubtitleTime, SubtitleEventId) {
         let layer = self.event(id).map_or(i32::MIN, |event| event.layer().get());
         (layer, self.start_of(id), id)
+    }
+
+    fn bump_revision(&mut self) {
+        self.revision = self.revision.saturating_add(1);
     }
 
     fn rebuild_order_and_tree(&mut self) {

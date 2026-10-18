@@ -383,7 +383,7 @@ impl ScrubTransactionLifecycle for PlayerSession {
         context: ScrubTargetContext,
         decode_point: ScrubDecodePointBefore,
     ) -> ScrubLifecycleResult<ScrubDemuxSeekAccepted> {
-        let Some(seek_result) = self.pipeline.seek_demuxer(decode_point.request) else {
+        let Some(seek_result) = self.seek_demuxer_noting_read_jump(decode_point.request) else {
             return Err(ScrubLifecycleError::DemuxUnavailable(
                 DemuxUnavailableReason::DemuxerClosed,
             ));

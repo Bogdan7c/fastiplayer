@@ -44,6 +44,7 @@ CONTRACT_CRATES = frozenset(
         "playlist-state",
         "subtitle-core",
         "subtitle-formats",
+        "subtitle-pgs",
         "subtitle-raster",
         "subtitle-sidecar",
         "codec-core",
@@ -205,6 +206,9 @@ SUBTITLE_FORMATS_ALLOWED_DEPENDENCIES = frozenset(
     {"subtitle-core", "encoding_rs", "chardetng", "thiserror"}
 )
 
+# Декодер PGS (Blu-ray): только модель субтитров и typed errors; ни GPU, ни UI, ни контейнера.
+SUBTITLE_PGS_ALLOWED_DEPENDENCIES = frozenset({"subtitle-core", "thiserror"})
+
 # Поиск файлов субтитров рядом с видео: только модель и typed errors (std::fs — часть std).
 SUBTITLE_SIDECAR_ALLOWED_DEPENDENCIES = frozenset({"subtitle-core", "thiserror"})
 
@@ -212,6 +216,7 @@ SUBTITLE_SIDECAR_ALLOWED_DEPENDENCIES = frozenset({"subtitle-core", "thiserror"}
 SUBTITLE_RASTER_ALLOWED_DEPENDENCIES = frozenset(
     {
         "subtitle-core",
+        "subtitle-pgs",
         "skrifa",
         "harfrust",
         "fontdb",
@@ -1300,6 +1305,14 @@ def find_dependency_violations(
             frozenset({"subtitle-formats"}),
             SUBTITLE_FORMATS_ALLOWED_DEPENDENCIES,
             "subtitle-formats depends only on subtitle-core and text decoding",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"subtitle-pgs"}),
+            SUBTITLE_PGS_ALLOWED_DEPENDENCIES,
+            "subtitle-pgs depends only on subtitle-core and typed errors",
         )
     )
     violations.extend(

@@ -19,6 +19,10 @@ pub(super) struct Counters {
     pub(super) invalid_ass_drawings: u64,
     pub(super) skipped_oversized_bitmaps: u64,
     pub(super) failed_blur_layers: u64,
+    pub(super) rejected_pictures_too_large: u64,
+    pub(super) failed_pictures: u64,
+    pub(super) damaged_pictures: u64,
+    pub(super) dropped_pictures_over_frame_limit: u64,
 }
 
 /// Снимок статистики растеризатора.
@@ -83,6 +87,18 @@ pub struct RasterStatistics {
     /// `skipped_oversized_bitmaps`: там штатная защита по размеру, здесь ошибка, которой в
     /// исправной сборке не бывает (считается при растеризации реплики).
     pub failed_blur_layers: u64,
+    /// Растровых реплик (PGS) пропущено целиком: размер автора или картинки больше
+    /// `max_canvas_side`. Остальные реплики кадра рисуются.
+    pub rejected_pictures_too_large: u64,
+    /// Растровых реплик пропущено из-за сбоя распаковки (неизвестная кодировка, нарушенная
+    /// согласованность размеров). Остальные реплики кадра рисуются.
+    pub failed_pictures: u64,
+    /// Растровых реплик с повреждённым потоком RLE (обрезан или с лишними пикселями): картинка
+    /// нарисована, недостающее дополнено прозрачным (считается при растеризации, не при выдаче
+    /// из кэша).
+    pub damaged_pictures: u64,
+    /// Растровых реплик отброшено сверх `max_cues_per_frame` (суммарно по собранным кадрам).
+    pub dropped_pictures_over_frame_limit: u64,
     /// Лиц, признанных непригодными для рисования и исключённых из выбора шрифта.
     pub unusable_faces: u64,
     /// Лиц, которые не удалось разобрать как шрифт.

@@ -1,6 +1,8 @@
 //! Входные типы растеризатора: что рисовать на кадре.
 
-use subtitle_core::{AssCue, SubtitleEventId, SubtitleLayer, SubtitleTextCue, SubtitleTime};
+use subtitle_core::{
+    AssCue, SubtitleEventId, SubtitleLayer, SubtitlePictureCue, SubtitleTextCue, SubtitleTime,
+};
 
 use crate::appearance::SubtitleAppearance;
 use crate::ass::AssRenderOptions;
@@ -96,6 +98,11 @@ pub enum CueContent<'a> {
         /// Тайминг события (для анимаций).
         timing: AssEventTiming,
     },
+    /// Авторская растровая реплика (PGS): позиция и размер заданы автором в его системе
+    /// координат и переводятся в пиксели холста; пользовательский стиль, масштаб и сдвиг к ней
+    /// не применяются. Фильтрацию по forced делает вызывающий код (в запрос попадает то, что
+    /// нужно показать).
+    Picture(&'a SubtitlePictureCue),
 }
 
 /// Реплика кадра: ключ, слой и ссылка на содержимое.
@@ -121,6 +128,15 @@ impl<'a> RenderableCue<'a> {
         }
     }
 
+    /// Растровая реплика (PGS). Слой не используется: картинки рисуются в порядке запроса.
+    pub const fn picture(key: CueKey, cue: &'a SubtitlePictureCue) -> Self {
+        Self {
+            key,
+            layer: SubtitleLayer::DEFAULT,
+            content: CueContent::Picture(cue),
+        }
+    }
+
     /// Реплика ASS на слое `layer` с таймингом события `timing`.
     pub const fn ass(
         key: CueKey,
@@ -142,7 +158,8 @@ pub struct RenderRequest<'a> {
     /// Активные реплики. Реплики простых форматов рисуются в порядке запроса (первая — самая
     /// нижняя; при столкновениях первая остаётся на месте, следующие сдвигаются). Реплики
     /// ASS сортируются по `(layer, ReadOrder)` и рисуются ПОСЛЕ реплик простых форматов; для
-    /// равных слоя и `ReadOrder` остаётся порядок запроса.
+    /// равных слоя и `ReadOrder` остаётся порядок запроса. Растровые реплики (PGS) рисуются
+    /// ПОСЛЕ текстовых и ASS, в порядке запроса; столкновений для них нет.
     pub cues: &'a [RenderableCue<'a>],
     /// Момент показа в шкале событий дорожки: по нему считаются анимации ASS (`\move`, `\fad`).
     /// Реплики без анимации от него не зависят, поэтому кадр статичной сцены от смены момента

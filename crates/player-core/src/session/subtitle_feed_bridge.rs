@@ -40,6 +40,33 @@ impl PlayerSession {
             });
     }
 
+    /// Сообщает трубе, что позиция чтения демуксера активного media прыгнула.
+    ///
+    /// Вызывается ровно там, где session переставляет демуксер: синхронный seek, scrub,
+    /// получение результата worker-seek. Пакеты до вызова остаются в прежнем проходе, после
+    /// — в новом (`SubtitleReadRun`). Читать демуксер между перестановкой и этим вызовом
+    /// нельзя: session не читает его, пока seek не принят.
+    pub(super) fn note_subtitle_read_position_jump(&mut self) {
+        let run = self.subtitle_feed.begin_new_read_run();
+        tracing::debug!(
+            subtitle_read_run = run.get(),
+            "Subtitle read run advanced: demuxer repositioned"
+        );
+    }
+
+    /// Переставляет демуксер активного media (seek/scrub) и фиксирует разрыв прохода чтения.
+    ///
+    /// Номер прохода растёт при любом исходе, включая ошибку: после неудачного seek позиция
+    /// чтения не гарантирована, а лишний проход безопаснее пропущенного.
+    pub(super) fn seek_demuxer_noting_read_jump(
+        &mut self,
+        request: media_core::DemuxSeekRequest,
+    ) -> Option<anyhow::Result<media_core::DemuxSeekResult>> {
+        let result = self.pipeline.seek_demuxer(request)?;
+        self.note_subtitle_read_position_jump();
+        Some(result)
+    }
+
     /// Пересылает пакет субтитровой дорожки в трубу без блокировки и без влияния на tick.
     ///
     /// `pts` передаётся как есть: это та же временная шкала, что у video `PendingVideoPacket`.
@@ -51,11 +78,13 @@ impl PlayerSession {
             return;
         };
         // Исход отправки уже учтён внутри трубы; нехватка места не должна влиять на tick.
+        let read_run = self.subtitle_feed.current_read_run();
         let _outcome = self.subtitle_feed.try_send_packet(SubtitleFeedPacket {
             media_instance_id,
             track_id: packet.track_id,
             presentation_time: packet.pts,
             duration: packet.duration,
+            read_run,
             payload: packet.data.clone(),
         });
     }

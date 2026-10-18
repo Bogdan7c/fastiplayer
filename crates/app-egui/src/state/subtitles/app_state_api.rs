@@ -105,7 +105,10 @@ impl AppState {
             render_generation: snapshot.render_generation,
         };
         let observation = PlaybackObservation::from_snapshot(snapshot);
-        self.subtitles.observe_playback(current, observation);
+        if self.subtitles.observe_playback(current, observation) == EmbeddedUpdate::Changed {
+            // Сброс по новому проходу чтения убрал картинку: нужен ещё один кадр.
+            self.mark_pending_worker_redraw();
+        }
     }
 
     /// Overlay субтитров для кадра, который прямо сейчас уходит в renderer.

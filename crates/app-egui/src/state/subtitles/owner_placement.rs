@@ -7,6 +7,7 @@
 //! uniform (без перерастеризации и без повторной загрузки масок).
 
 mod ass_positioning;
+mod picture_positioning;
 
 use render_wgpu_shell::SubtitleLayerOffsets;
 use subtitle_raster::{OverlayPlacementGroup, SubtitleOverlay};
@@ -20,7 +21,6 @@ use super::layer_placement::{
 };
 use super::media_state::MediaSubtitles;
 use super::presentation::{SubmittedFrameForSubtitles, SubtitlePresenter};
-use super::track_list::TrackLoadState;
 use super::{CurrentMediaForSubtitles, SubtitleOwner};
 
 pub(crate) use self::ass_positioning::AssLayerPositioning;
@@ -67,11 +67,7 @@ pub(super) fn gated_overlay<'presenter>(
     {
         return None;
     }
-    let entry = media.tracks.get(media.display_track_id()?)?;
-    let TrackLoadState::Ready(track) = &entry.load else {
-        return None;
-    };
-    presenter.overlay_for_frame(track, frame)
+    presenter.overlay_for_frame(media.displayed_track()?, frame)
 }
 
 /// Overlay кадра в режиме правки: те же правила принадлежности кадра media, но без требования
@@ -89,13 +85,7 @@ fn gated_edit_overlay<'presenter>(
     {
         return None;
     }
-    let real_track = media
-        .display_track_id()
-        .and_then(|track_id| media.tracks.get(track_id))
-        .and_then(|entry| match &entry.load {
-            TrackLoadState::Ready(track) => Some(track),
-            _ => None,
-        });
+    let real_track = media.displayed_track();
     match sample_track {
         Some(sample) => presenter.overlay_for_frame_or_sample(real_track, sample, frame),
         // Образец не собрался: правка продолжается с настоящими репликами, если они есть.
@@ -165,9 +155,6 @@ impl SubtitleOwner {
         } else {
             gated_overlay(self.media.as_ref(), &mut self.presenter, current, frame).is_some()
         };
-        // Правило размещения зависит от того, что именно показано (ASS или обычные субтитры),
-        // поэтому читаем его после подготовки overlay, но до выдачи ссылки на него.
-        let policy = self.placement_policy_for_shown_layer();
         let shown = self
             .presenter
             .shown_overlay()
@@ -180,9 +167,20 @@ impl SubtitleOwner {
             self.last_placed_layer_offset = None;
             return None;
         };
+        // Правило размещения зависит от того, что именно показано (ASS, картинки PGS или
+        // обычные субтитры).
+        let policy = self.placement_policy_for_shown_layer(overlay);
         let placement = match policy {
             LayerPlacementPolicy::LiftMainGroupOnly => {
                 resolve_main_group_lift(overlay, frame, obstruction)
+            }
+            LayerPlacementPolicy::MainGroupUserOffsetInsidePicture => {
+                picture_positioning::resolve_picture_groups(
+                    overlay,
+                    frame,
+                    vertical_offset_fraction,
+                    obstruction,
+                )
             }
             LayerPlacementPolicy::UserPlaced { .. } | LayerPlacementPolicy::AuthorPlaced => {
                 place_layer(&LayerPlacementRequest {
@@ -224,13 +222,20 @@ impl SubtitleOwner {
     /// в режиме `main_lines_avoid_controls` над панелью поднимается только основной диалог, в
     /// режиме `author` он стоит там, где его нарисовал автор, в режиме `whole_layer` двигается
     /// целиком, но внутри картинки. Обычные субтитры размещаются по прежним правилам
-    /// (в том числе образец режима правки, который никогда не является ASS).
+    /// (в том числе образец режима правки, который никогда не является ASS). Растровый PGS
+    /// размещает [`LayerPlacementPolicy::MainGroupUserOffsetInsidePicture`]; ASS-правило
+    /// проверяется раньше него.
     ///
     /// В режиме правки при `author` и `main_lines_avoid_controls` и настоящей реплике ASS на кадре перетаскивание рамки
     /// ничего не двигает: правка двигает образец и обычные субтитры (образец появляется, когда
     /// реплики на кадре нет), а ASS остаётся на авторском месте.
-    fn placement_policy_for_shown_layer(&self) -> LayerPlacementPolicy {
+    fn placement_policy_for_shown_layer(&self, overlay: &SubtitleOverlay) -> LayerPlacementPolicy {
         match self.shown_ass_layer_positioning() {
+            // Растровые картинки (PGS), решение владельца сессии 11: нижние следуют вертикальному
+            // сдвигу и подъёму над панелью, верхние стоят, всё внутри картинки видео.
+            None if picture_positioning::overlay_shows_pictures(overlay) => {
+                LayerPlacementPolicy::MainGroupUserOffsetInsidePicture
+            }
             None => LayerPlacementPolicy::UserPlaced {
                 bounds: LayerBounds::PictureAndBars,
             },

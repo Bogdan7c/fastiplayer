@@ -1,6 +1,7 @@
 //! Событие субтитров: интервал времени + содержимое.
 
 use crate::ass::AssCue;
+use crate::picture::SubtitlePictureCue;
 use crate::placement::CuePlacement;
 use crate::styled_text::StyledText;
 use crate::time::SubtitleTime;
@@ -33,13 +34,15 @@ pub struct SubtitleTextCue {
 ///
 /// Текстовая реплика со стилями автора ([`SubtitleContent::Text`]) или реплика ASS/SSA
 /// ([`SubtitleContent::Ass`], сессия 08: стиль и теги хранятся разобранными, а раскладку
-/// делает растеризатор). Bitmap-вариант (PGS, сессия 11) будет добавлен вместе с потребителем;
-/// заглушек заранее нет, поэтому enum `non_exhaustive`.
+/// делает растеризатор) или растровая реплика ([`SubtitleContent::Picture`], сессия 11: PGS,
+/// картинка хранится сжатой, распаковывает её crate формата). Будущие виды содержимого
+/// добавляются без заглушек заранее, поэтому enum `non_exhaustive`.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum SubtitleContent {
     Text(SubtitleTextCue),
     Ass(AssCue),
+    Picture(SubtitlePictureCue),
 }
 
 /// Конец события не позже его начала.
@@ -108,6 +111,12 @@ impl SubtitleEvent {
 
     pub fn content(&self) -> &SubtitleContent {
         &self.content
+    }
+
+    /// Переносит конец раньше. Вызывается только `SubtitleTimeline::shorten_event_end`,
+    /// который проверил `start < new_end < end` и обновил индексы; поэтому метод не публичный.
+    pub(crate) fn set_shortened_end(&mut self, new_end: SubtitleTime) {
+        self.end = new_end;
     }
 
     /// Полуоткрытый интервал: момент `start` входит, момент `end` уже нет.

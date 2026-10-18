@@ -164,3 +164,17 @@ ffmpeg -hide_banner -loglevel error -y \
   -c:v libvpx -b:v 40k -c:s ass \
   -metadata:s:s:0 language=eng -metadata:s:s:0 title="Layer 1" \
   "$here/ass-layer1.mkv"
+
+# (i) MKV: VP8 + PGS-дорожка (сессия 11 плана субтитров). Поток .sup пишет детерминированный
+# пример `subtitle-pgs` (`write_test_sup`), ffmpeg только упаковывает его без перекодирования.
+# `-copyts` обязателен: иначе ffmpeg сдвигает дорожку так, что первый набор оказывается на 0 с.
+# Расположение и цвета объектов — в README.md. В MKV каждый набор отображения (PCS..END)
+# лежит ОДНИМ блоком голых сегментов, длительности у блоков нет.
+repo_root="$(cd "$here/../../../../.." && pwd)"
+(cd "$repo_root" && cargo run -q -p subtitle-pgs --features test-support --example write_test_sup -- "$work/pgs.sup")
+ffmpeg -hide_banner -loglevel error -y -copyts \
+  "${video[@]}" -i "$work/pgs.sup" \
+  -map 0:v -map 1 \
+  -c:v libvpx -b:v 40k -c:s copy \
+  -metadata:s:s:0 language=eng -metadata:s:s:0 title="PGS" \
+  "$here/pgs-basic.mkv"

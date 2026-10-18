@@ -46,6 +46,18 @@ impl TimeSpan {
     }
 }
 
+/// Судьба срока годности картинки после укорочения события (см.
+/// [`ValidityInterval::after_shortening`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::state::subtitles) enum ShorteningEffect {
+    /// Картинки укорочение не касается.
+    Unaffected,
+    /// Картинка нарисована до нового конца события: до него она верна, срок обрезан.
+    Narrowed(ValidityInterval),
+    /// Картинка нарисована в отрезке, где события уже нет: содержимое неверно.
+    Invalid,
+}
+
 /// Полуоткрытый интервал `[valid_from, valid_until)`, на котором готовая картинка верна.
 ///
 /// `rendered_at` — время, для которого картинку рисовали. `valid_until` — ближайшая смена
@@ -164,6 +176,30 @@ impl ValidityInterval {
         self.valid_from < span.end && self.valid_until.is_none_or(|until| span.start < until)
     }
 
+    /// Что происходит с картинкой, когда событие укорочено и его показ потерял отрезок `lost`
+    /// (`[new_end, previous_end)`).
+    ///
+    /// - не пересекает `lost` — не затронута;
+    /// - нарисована ДО `lost` (`rendered_at < lost.start`): набор реплик до нового конца тот же,
+    ///   поэтому картинка остаётся верной, но только до `lost.start` — срок обрезается (это и
+    ///   даёт показу «без мигания»: ту же картинку не нужно рисовать заново);
+    /// - нарисована внутри `lost` — содержит исчезнувшую реплику, выбрасывается.
+    pub(in crate::state::subtitles) fn after_shortening(self, lost: TimeSpan) -> ShorteningEffect {
+        if !self.overlaps(lost) {
+            return ShorteningEffect::Unaffected;
+        }
+        if self.rendered_at >= lost.start {
+            return ShorteningEffect::Invalid;
+        }
+        let valid_until = self
+            .valid_until
+            .map_or(lost.start, |until| until.min(lost.start));
+        ShorteningEffect::Narrowed(Self {
+            valid_until: Some(valid_until),
+            ..self
+        })
+    }
+
     /// Закончилась ли годность к `time`: картинка не годна ни на `time`, ни позже.
     pub(in crate::state::subtitles) fn is_over_at(&self, time: SubtitleTime) -> bool {
         self.valid_until.is_some_and(|until| until <= time)
@@ -192,6 +228,37 @@ mod tests {
         let interval = ValidityInterval::new(ms(100), None);
         assert!(interval.contains(ms(i64::MAX / 2_000)));
         assert!(!interval.is_over_at(ms(1_000_000)));
+    }
+
+    #[test]
+    fn shortening_narrows_pictures_drawn_before_the_lost_span_and_invalidates_those_inside() {
+        let lost = TimeSpan::new(ms(500), ms(10_000));
+        let open = ValidityInterval::new(ms(100), None);
+        let narrowed = match open.after_shortening(lost) {
+            ShorteningEffect::Narrowed(interval) => interval,
+            other => panic!("expected Narrowed, got {other:?}"),
+        };
+        assert!(narrowed.contains(ms(499)));
+        assert!(!narrowed.contains(ms(500)));
+        assert_eq!(narrowed.rendered_at(), ms(100));
+        // Нарисована в потерянном отрезке (в том числе ровно на его начале) - неверна.
+        assert_eq!(
+            ValidityInterval::new(ms(500), None).after_shortening(lost),
+            ShorteningEffect::Invalid
+        );
+        assert_eq!(
+            ValidityInterval::new(ms(700), Some(ms(900))).after_shortening(lost),
+            ShorteningEffect::Invalid
+        );
+        // Закончилась раньше потерянного отрезка - не затронута; уже короче нового конца - тоже.
+        assert_eq!(
+            ValidityInterval::new(ms(100), Some(ms(500))).after_shortening(lost),
+            ShorteningEffect::Unaffected
+        );
+        assert_eq!(
+            ValidityInterval::new(ms(20_000), None).after_shortening(lost),
+            ShorteningEffect::Unaffected
+        );
     }
 
     #[test]

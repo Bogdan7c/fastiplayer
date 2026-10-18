@@ -42,6 +42,7 @@ members = [
     "crates/playlist-io",
     "crates/subtitle-core",
     "crates/subtitle-formats",
+    "crates/subtitle-pgs",
     "crates/subtitle-raster",
     "crates/subtitle-sidecar",
     "crates/playlist-discovery",
@@ -223,6 +224,7 @@ playlist-core = { version = "0.1.0-alpha.1", path = "crates/playlist-core" }
 playlist-io = { version = "0.1.0-alpha.1", path = "crates/playlist-io" }
 subtitle-core = { version = "0.1.0-alpha.1", path = "crates/subtitle-core" }
 subtitle-formats = { version = "0.1.0-alpha.1", path = "crates/subtitle-formats" }
+subtitle-pgs = { version = "0.1.0-alpha.1", path = "crates/subtitle-pgs" }
 subtitle-raster = { version = "0.1.0-alpha.1", path = "crates/subtitle-raster" }
 subtitle-sidecar = { version = "0.1.0-alpha.1", path = "crates/subtitle-sidecar" }
 hls-playlist-core = { version = "0.1.0-alpha.1", path = "crates/hls-playlist-core" }

@@ -124,7 +124,8 @@ fn libass_image_type(kind: SubtitleBitmapKind) -> Option<i64> {
         SubtitleBitmapKind::Glyph => Some(0),
         SubtitleBitmapKind::Outline => Some(1),
         SubtitleBitmapKind::Shadow => Some(2),
-        SubtitleBitmapKind::Background => None,
+        // В эталоне libass картинок-RGBA нет: тип не сравнивается.
+        SubtitleBitmapKind::Background | SubtitleBitmapKind::Picture => None,
     }
 }
 

@@ -48,9 +48,9 @@ fn bitmap_and_unknown_codecs_are_listed_greyed_and_cannot_be_selected() {
     let media = instance(2);
     let mut fixture = demux_fixture("two-srt-tracks.mkv");
     for (raw_id, codec) in [
-        (80, subtitle_codec::HDMV_PGS),
-        (81, subtitle_codec::VOBSUB),
-        (82, subtitle_codec::DVBSUB),
+        (80, subtitle_codec::VOBSUB),
+        (81, subtitle_codec::DVBSUB),
+        (82, subtitle_codec::BMP),
     ] {
         let mut row = fixture.subtitle_row(0).clone();
         row.id = TrackId::new(raw_id);
@@ -70,11 +70,10 @@ fn bitmap_and_unknown_codecs_are_listed_greyed_and_cannot_be_selected() {
             )
         );
     }
-    assert_eq!(view.tracks[2].label.format, Some(SubtitleFormat::Pgs));
-    assert_eq!(view.tracks[3].label.format, None);
-    let pgs_menu_id = view.tracks[2].id;
+    assert_eq!(view.tracks[2].label.format, None);
+    let greyed_menu_id = view.tracks[2].id;
     assert_eq!(
-        owner.select_track(pgs_menu_id),
+        owner.select_track(greyed_menu_id),
         SelectTrackOutcome::TrackUnavailable
     );
     assert!(
@@ -88,6 +87,38 @@ fn bitmap_and_unknown_codecs_are_listed_greyed_and_cannot_be_selected() {
         ),
         "cycling skips unavailable tracks without panicking"
     );
+}
+
+#[test]
+fn pgs_is_listed_selectable_and_labelled_pgs_embedded() {
+    let media = instance(2);
+    let mut fixture = demux_fixture("two-srt-tracks.mkv");
+    let mut row = fixture.subtitle_row(0).clone();
+    row.id = TrackId::new(80);
+    row.codec_id = subtitle_codec::HDMV_PGS.to_owned();
+    fixture.tracks.push(row);
+    let mut owner = embedded_owner(&enabled_config(), media, &fixture);
+
+    let view = owner.menu_view();
+
+    assert_eq!(view.tracks.len(), 3);
+    let pgs = &view.tracks[2];
+    assert_eq!(pgs.availability, SubtitleTrackAvailability::Available);
+    assert_eq!(pgs.label.format, Some(SubtitleFormat::Pgs));
+    let text = crate::subtitle_message::track_text(
+        &pgs.label,
+        crate::subtitle_message::TrackNumber::from_menu_index(2),
+    );
+    assert!(
+        text.ends_with("(PGS, embedded)"),
+        "the label names the format and origin: {text}"
+    );
+    assert_eq!(
+        owner.select_track(pgs.id),
+        SelectTrackOutcome::Selected,
+        "a PGS track can be selected like any other"
+    );
+    assert!(owner.menu_view().tracks[2].is_selected);
 }
 
 #[test]

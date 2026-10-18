@@ -18,6 +18,9 @@ MKV/MP4 → `symphonia-demux` (`TrackKind::Subtitle`, codec_id из `media_core:
 - app-egui `state/subtitles/`: `embedded_track.rs` (описание из снимка, `cue_format_for_codec`), `embedded_events.rs` (пакет → событие; без длительности → `embedded_cue_max_open_duration_ms`, отклонение от «до следующей реплики»), `owner_embedded.rs` (идемпотентный `sync_embedded_tracks` по снимку, `drain_embedded_feed` ≤2048 сообщений/вызов, сообщения будущего media и неизвестных дорожек ждут в буфере ≤4096 — труба может обогнать снимок), `embedded_fonts.rs` (фильтр font-MIME/расширений, фоновая подготовка, установка/очистка). `TrackDescription::{Sidecar, Embedded}`, `SubtitleFileOrigin::Embedded` ("embedded"), `TrackTraits{origin,is_default}`; ранжирование: язык → не-SDH → sidecar → default → порядок.
 - Конфиг v15 `[subtitles]`: `max_attached_font_mb` (20), `max_attached_fonts_total_mb` (100, ≥ per-file), `embedded_feed_capacity` (4096), `embedded_cue_max_open_duration_ms` (5000).
 
+## Сессия 11
+PGS больше не серый: путь пакета `EmbeddedPacketPath::{Text, Pgs}`; на каждом `SubtitleFeedPacket` есть `read_run: SubtitleReadRun` (растёт при каждом прыжке демуксера) — `mem:subtitles/pgs-s11`. Серыми остаются VobSub/DVB/BMP.
+
 ## Известные ограничения
 Seek вперёд: реплика, начавшаяся до точки прыжка, не видна (как mpv). WebVTT-в-MKV без позиционирования. С сессии 08 ASS рисуется со стилями: заголовок едет в `SubtitleFeedMediaStart.track_headers`, шрифт выбирается по имени — `mem:subtitles/ass-layer1-s08`. Дорожки, появившиеся через TracksChanged, без шрифтов. Медиа со встроенными текстовыми дорожками запускает фоновую сборку растеризатора (~90 мс). Найденный на приёмке баг MKV-патча (обязательный `EditionUID` → MKV с главами после ffmpeg-ремукса не открывался) исправлен отдельным коммитом после сессии — `mem:dependency-patches/core`.
 

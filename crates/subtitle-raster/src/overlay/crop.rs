@@ -46,11 +46,11 @@ impl SubtitleBitmap {
         }
         let start = (region.y0 as usize)
             .checked_mul(self.stride)?
-            .checked_add(region.x0 as usize)?;
-        // Последняя строка без хвоста шага: нужна ровно ширина куска.
+            .checked_add((region.x0 as usize).checked_mul(self.format.bytes_per_pixel())?)?;
+        // Последняя строка без хвоста шага: нужна ровно ширина куска (в байтах формата).
         let end = start
             .checked_add((height as usize - 1).checked_mul(self.stride)?)?
-            .checked_add(width as usize)?;
+            .checked_add((width as usize).checked_mul(self.format.bytes_per_pixel())?)?;
         let visible = self.coverage_window().get(start..end)?;
         Some(Self {
             coverage_offset: 0,

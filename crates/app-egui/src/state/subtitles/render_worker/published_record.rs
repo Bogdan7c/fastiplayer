@@ -18,7 +18,7 @@ use std::collections::VecDeque;
 use subtitle_core::SubtitleTime;
 
 use super::prepared_queue::OverlayIdentity;
-use super::validity::{TimeSpan, ValidityInterval};
+use super::validity::{ShorteningEffect, TimeSpan, ValidityInterval};
 
 /// Интервалы выданных картинок для одной идентичности.
 #[derive(Debug)]
@@ -68,6 +68,28 @@ impl PublishedRecord {
         let before = self.intervals.len();
         self.intervals.retain(|interval| !interval.overlaps(span));
         before - self.intervals.len()
+    }
+
+    /// Событие укорочено, `lost` - отрезок, который оно потеряло. Интервалы, нарисованные до
+    /// `lost`, обрезаются по его началу (та же картинка остаётся верной, перерисовывать её не
+    /// надо), нарисованные внутри `lost` выбрасываются. Возвращает (обрезано, выброшено).
+    pub(super) fn apply_shortening(&mut self, lost: TimeSpan) -> (usize, usize) {
+        let mut narrowed = 0;
+        let mut dropped = 0;
+        self.intervals
+            .retain_mut(|interval| match interval.after_shortening(lost) {
+                ShorteningEffect::Unaffected => true,
+                ShorteningEffect::Narrowed(shorter) => {
+                    *interval = shorter;
+                    narrowed += 1;
+                    true
+                }
+                ShorteningEffect::Invalid => {
+                    dropped += 1;
+                    false
+                }
+            });
+        (narrowed, dropped)
     }
 
     /// Обнуляет интервалы, сохраняя идентичность.
@@ -129,6 +151,20 @@ mod tests {
             .map(ValidityInterval::rendered_at)
             .collect();
         assert_eq!(starts, vec![ms(1), ms(2)]);
+    }
+
+    #[test]
+    fn shortening_narrows_earlier_intervals_and_drops_those_inside_the_lost_span() {
+        let mut record = PublishedRecord::new(8);
+        record.push(ValidityInterval::new(ms(0), None));
+        record.push(ValidityInterval::new(ms(700), Some(ms(900))));
+        record.push(ValidityInterval::new(ms(5_000), Some(ms(6_000))));
+        let (narrowed, dropped) = record.apply_shortening(TimeSpan::new(ms(500), ms(10_000)));
+        assert_eq!((narrowed, dropped), (1, 2));
+        let intervals = record.intervals();
+        assert_eq!(intervals.len(), 1);
+        assert!(intervals[0].contains(ms(499)));
+        assert!(!intervals[0].contains(ms(500)));
     }
 
     #[test]

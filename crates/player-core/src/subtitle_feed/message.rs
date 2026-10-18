@@ -5,7 +5,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use media_core::{MediaAttachments, TrackId};
 
-use super::SubtitleTrackHeader;
+use super::{SubtitleReadRun, SubtitleTrackHeader};
 use crate::MediaInstanceId;
 
 /// Начало нового media: вложения (шрифты), забранные у demuxer при установке media.
@@ -41,6 +41,9 @@ pub struct SubtitleFeedPacket {
 
     /// Длительность реплики, если контейнер её сообщил.
     pub duration: Option<Duration>,
+
+    /// Проход чтения демуксера, в котором пакет получен (растёт при каждом seek/scrub).
+    pub read_run: SubtitleReadRun,
 
     /// Сырой payload пакета (формат зависит от кодека дорожки).
     pub payload: Bytes,

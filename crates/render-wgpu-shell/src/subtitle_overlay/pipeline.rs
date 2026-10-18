@@ -2,14 +2,69 @@
 //!
 //! Здесь только «как устроены ресурсы»; решения «когда загружать» живут в `mod.rs`.
 
+use subtitle_raster::{BitmapPixelFormat, SubtitleBitmap};
+
 use super::instances::INSTANCE_STRIDE_BYTES;
 
 /// Размер uniform-а: `screen_size` + `main_canvas_origin` + `fixed_canvas_origin`
 /// (по 2 x f32) + 8 байт выравнивания до 32.
 pub(super) const UNIFORM_SIZE_BYTES: u64 = 32;
 
-/// Формат атласа: один 8-битный канал покрытия, как в `SubtitleBitmap::coverage`.
-const ATLAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+/// Вид пикселей, которые хранит слой overlay-а (у каждого вида свой атлас и свой fragment shader).
+///
+/// Контракт для будущего GLES2-рендерера (оба формата есть в ядре GLES2):
+/// - `Coverage`: атлас `R8`/`LUMINANCE`, вклад `color.rgb * (coverage * color.a)` и альфа
+///   `coverage * color.a`;
+/// - `Picture`: атлас `RGBA8` (НЕ sRGB: смешивание в гамма-пространстве, как у текста), пиксель
+///   уже премультиплицирован, вклад `texel * color.a` по всем четырём каналам; `color.rgb`
+///   игнорируется.
+///
+/// Оба вида смешиваются одним режимом `ONE, ONE_MINUS_SRC_ALPHA`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LayerKind {
+    /// Маски покрытия текста: один байт на пиксель, цвет на инстанс.
+    Coverage,
+    /// Авторские полноцветные картинки (PGS): `[r, g, b, a]` с премультиплицированной альфой.
+    Picture,
+}
+
+impl LayerKind {
+    /// Формат текстуры атласа.
+    fn atlas_format(self) -> wgpu::TextureFormat {
+        match self {
+            Self::Coverage => wgpu::TextureFormat::R8Unorm,
+            // Именно Unorm, не Srgb: sRGB-формат линеаризовал бы texel при чтении, и картинка
+            // смешивалась бы иначе, чем текст.
+            Self::Picture => wgpu::TextureFormat::Rgba8Unorm,
+        }
+    }
+
+    /// Точка входа fragment shader-а в `subtitle_overlay.wgsl`.
+    fn fragment_entry_point(self) -> &'static str {
+        match self {
+            Self::Coverage => "fs_main",
+            Self::Picture => "fs_picture",
+        }
+    }
+
+    /// Байты пикселей картинки в формате этого слоя; `None`, если у картинки другой формат.
+    pub(super) fn pixels_of(self, bitmap: &SubtitleBitmap) -> Option<&[u8]> {
+        match self {
+            Self::Coverage => {
+                (bitmap.pixel_format() == BitmapPixelFormat::Coverage).then(|| bitmap.coverage())
+            }
+            Self::Picture => bitmap.rgba_pixels(),
+        }
+    }
+
+    /// Метка для отладчиков GPU.
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Coverage => "subtitle overlay coverage",
+            Self::Picture => "subtitle overlay picture",
+        }
+    }
+}
 
 /// Атрибуты инстанса; смещения должны совпадать с `BitmapInstance::append_bytes`.
 const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
@@ -46,7 +101,7 @@ pub(super) struct OverlayPipeline {
 }
 
 impl OverlayPipeline {
-    /// Строит pipeline с premultiplied-смешиванием под `target_format`.
+    /// Строит pipeline вида `kind` с premultiplied-смешиванием под `target_format`.
     ///
     /// Шейдер отдаёт `vec4(rgb * a, a)`; blend `One / OneMinusSrcAlpha` для цвета и альфы —
     /// классический «over» для premultiplied. Video pass пишет в surface альфу 1.0, поэтому
@@ -55,13 +110,17 @@ impl OverlayPipeline {
     /// они совпадают). Угловая маска окна идёт строго после и сама умножает на свой coverage.
     /// Смешивание делается в гамма-пространстве (surface не sRGB) — так же, как у
     /// плееров на libass; линейное смешивание сделало бы края текста заметно тоньше.
-    pub(super) fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        kind: LayerKind,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("subtitle overlay shader"),
+            label: Some(kind.label()),
             source: wgpu::ShaderSource::Wgsl(include_str!("subtitle_overlay.wgsl").into()),
         });
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("subtitle overlay bind group layout"),
+            label: Some(kind.label()),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -87,12 +146,12 @@ impl OverlayPipeline {
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("subtitle overlay pipeline layout"),
+            label: Some(kind.label()),
             bind_group_layouts: &[Some(&bind_group_layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("subtitle overlay pipeline"),
+            label: Some(kind.label()),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -106,7 +165,7 @@ impl OverlayPipeline {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some(kind.fragment_entry_point()),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
@@ -145,9 +204,10 @@ impl AtlasGpu {
         bind_group_layout: &wgpu::BindGroupLayout,
         uniform_buffer: &wgpu::Buffer,
         side: u32,
+        kind: LayerKind,
     ) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("subtitle overlay coverage atlas"),
+            label: Some(kind.label()),
             size: wgpu::Extent3d {
                 width: side,
                 height: side,
@@ -156,13 +216,13 @@ impl AtlasGpu {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: ATLAS_FORMAT,
+            format: kind.atlas_format(),
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("subtitle overlay bind group"),
+            label: Some(kind.label()),
             layout: bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {

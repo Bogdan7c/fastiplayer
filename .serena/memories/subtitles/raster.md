@@ -42,5 +42,8 @@ ASS слой 3 (10c/C1: кэши глифов `glyph_cache/`, `RasterCacheLimits
 ## Сессия 10c (кэши и скорость)
 Три кэша как libass в `glyph_cache/` (контуры штуками, маски/склейки в байтах, cut в начале кадра), кэш планов шейпинга на лицо и общий `ShapedRunCache` (байтовый LRU) в `FaceCache`, быстрый `ByteLruCache` (слоты + ленивые очереди, Fx-хэш `cache/fast_hash.rs`), пул буферов растеризатора `raster/pool.rs`; `SubtitleBitmap` = окно в общем буфере (`overlay/mask_view.rs`, тождество `shows_same_pixels_as`). Config v21: `glyph_cache_mb` 64, `glyph_outline_cache_items` 10000, `shaping_cache_mb` 4. Вывод побитово как до 10c. Детали — `mem:subtitles/ass-layer3-s10`.
 
+## Сессия 11 (PGS)
+RGBA-картинки автора: `CueContent::Picture`, `picture/` (вписывание с сохранением пропорций, box-scale), контракт `overlay/picture.rs` (`BitmapPixelFormat`, `SubtitleBitmapKind::Picture`) — `mem:subtitles/pgs-s11`. Зависимость `subtitle-pgs` (декодирование RLE).
+
 ## Не сделано
 Фон спана, вертикальный текст, регионы VTT, переносы CJK без пробелов, `\t`, караоке, Banner/Scroll (10b), трёхуровневый кэш (10c: кэши глифов сделаны в C1, ускорение шейпинга/растеризации — остальные пакеты).

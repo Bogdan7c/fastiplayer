@@ -42,6 +42,7 @@ mod layout;
 mod libass_parity;
 mod outline;
 pub mod overlay;
+mod picture;
 mod plate;
 mod raster;
 mod render_diagnostics;
@@ -74,7 +75,7 @@ pub use fonts::{
     SyntheticItalic, SystemFontScanReport, SystemFontScanStatus, TextLanguagePreference,
 };
 pub use overlay::{
-    AnimationChange, BitmapOutsideCanvas, CanvasRect, CanvasSize, OverlayChange,
+    AnimationChange, BitmapOutsideCanvas, BitmapPixelFormat, CanvasRect, CanvasSize, OverlayChange,
     OverlayPlacementGroup, OverlayRevision, PixelPoint, SubtitleBitmap, SubtitleBitmapError,
     SubtitleBitmapKind, SubtitleOverlay,
 };

@@ -18,6 +18,7 @@ fn packet(instance: MediaInstanceId, pts_ms: u64) -> SubtitleFeedPacket {
         track_id: TrackId::new(3),
         presentation_time: Duration::from_millis(pts_ms),
         duration: Some(Duration::from_millis(500)),
+        read_run: SubtitleReadRun::INITIAL,
         payload: Bytes::from_static(b"cue"),
     }
 }
@@ -31,7 +32,7 @@ fn zero_capacity_is_rejected_and_nonzero_roundtrips() {
 
 #[test]
 fn messages_arrive_in_order_and_drain_respects_the_limit() {
-    let (sender, receiver) = subtitle_feed(capacity(8));
+    let (mut sender, receiver) = subtitle_feed(capacity(8));
     let instance = MediaInstanceId::new_unique();
     for pts_ms in [10, 20, 30] {
         assert_eq!(
@@ -61,7 +62,7 @@ fn messages_arrive_in_order_and_drain_respects_the_limit() {
 
 #[test]
 fn full_queue_drops_packets_counts_them_and_never_blocks() {
-    let (sender, receiver) = subtitle_feed(capacity(2));
+    let (mut sender, receiver) = subtitle_feed(capacity(2));
     let instance = MediaInstanceId::new_unique();
 
     let outcomes: Vec<_> = (0..5)
@@ -87,8 +88,24 @@ fn full_queue_drops_packets_counts_them_and_never_blocks() {
 }
 
 #[test]
+fn a_dropped_packet_advances_the_read_run_and_delivered_ones_do_not() {
+    let (mut sender, _receiver) = subtitle_feed(capacity(2));
+    let instance = MediaInstanceId::new_unique();
+    for index in 0..2 {
+        sender.try_send_packet(packet(instance, index));
+        assert_eq!(sender.current_read_run(), SubtitleReadRun::INITIAL);
+    }
+    // Очередь полна: пакет потерян, дыра в потоке начинает новый проход.
+    assert_eq!(
+        sender.try_send_packet(packet(instance, 2)),
+        SubtitleFeedSendOutcome::DroppedFull
+    );
+    assert_eq!(sender.current_read_run(), SubtitleReadRun::INITIAL.next());
+}
+
+#[test]
 fn dropped_media_start_is_counted_separately_from_packets() {
-    let (sender, receiver) = subtitle_feed(capacity(1));
+    let (mut sender, receiver) = subtitle_feed(capacity(1));
     let instance = MediaInstanceId::new_unique();
     assert_eq!(
         sender.try_send_packet(packet(instance, 0)),
@@ -144,7 +161,7 @@ fn media_start_carries_attachments_intact() {
 
 #[test]
 fn dropped_receiver_makes_sends_a_silent_noop() {
-    let (sender, receiver) = subtitle_feed(capacity(2));
+    let (mut sender, receiver) = subtitle_feed(capacity(2));
     drop(receiver);
     let instance = MediaInstanceId::new_unique();
 
@@ -164,7 +181,7 @@ fn dropped_receiver_makes_sends_a_silent_noop() {
 
 #[test]
 fn disabled_sender_reports_receiver_gone() {
-    let sender = SubtitleFeedSender::disabled();
+    let mut sender = SubtitleFeedSender::disabled();
     assert_eq!(
         sender.try_send_packet(packet(MediaInstanceId::new_unique(), 0)),
         SubtitleFeedSendOutcome::ReceiverGone

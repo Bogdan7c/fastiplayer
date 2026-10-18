@@ -12,6 +12,8 @@ path = "src/lib.rs"
 [dependencies]
 # Нейтральная модель субтитров: цвет и стили, из которых строятся картинки.
 subtitle-core.workspace = true
+# Распаковка авторских растровых субтитров (PGS): RLE и палитра в премультиплицированный RGBA.
+subtitle-pgs.workspace = true
 # Таблицы шрифтов (cmap, OS/2, hhea) и позже контуры глифов.
 skrifa.workspace = true
 # Системные шрифты (сканирование каталогов, имена семейств, начертания).
@@ -36,3 +38,5 @@ serde_json.workspace = true
 # Разбор ASS для функциональных тестов и паритета с libass: файл -> реплики -> растеризатор
 # (dev-only: в продакшене реплики приходят от вызывающего, растеризатор разбора не знает).
 subtitle-formats.workspace = true
+# Кодировщик тестовых PGS-потоков (RLE) для функциональных тестов растровых реплик.
+subtitle-pgs = { workspace = true, features = ["test-support"] }

@@ -623,3 +623,43 @@ fn cropping_and_vertical_clipping_work_inside_a_window() {
     assert_eq!(clipped.height(), 1);
     assert_eq!(clipped.coverage_row(0).unwrap(), &[22, 23, 24]);
 }
+
+/// Пиксели 2x1 из двух разных красных непрозрачных точек (премультиплицированный RGBA).
+fn two_texel_picture(origin_x: i32, origin_y: i32) -> SubtitleBitmap {
+    let rgba: Arc<[u8]> = vec![255_u8, 0, 0, 255, 0, 255, 0, 255].into();
+    SubtitleBitmap::picture(
+        PixelPoint {
+            x: origin_x,
+            y: origin_y,
+        },
+        2,
+        1,
+        rgba,
+        PictureForcedFlag::Regular,
+    )
+    .unwrap()
+}
+
+#[test]
+fn picture_crossing_the_right_edge_is_clipped_not_wrapped_to_the_next_row() {
+    // Холст 4x2; картинка 2x1 в (3, 0): красный влезает, зелёный за краем.
+    let mut canvas = vec![0_u8; 4 * 2 * 4];
+    super::picture::composite_picture(&mut canvas, 4, &two_texel_picture(3, 0));
+    assert_eq!(pixel_at(&canvas, 4, 3, 0), [255, 0, 0, 255]);
+    // Раньше зелёный пиксель попадал в начало следующей строки.
+    assert_eq!(pixel_at(&canvas, 4, 0, 1), [0, 0, 0, 0]);
+}
+
+#[test]
+fn picture_with_negative_origin_shows_its_visible_part() {
+    // Картинка в (-1, 0): красный за левым краем, зелёный в колонке 0.
+    let mut canvas = vec![0_u8; 4 * 2 * 4];
+    super::picture::composite_picture(&mut canvas, 4, &two_texel_picture(-1, 0));
+    assert_eq!(pixel_at(&canvas, 4, 0, 0), [0, 255, 0, 255]);
+    assert_eq!(pixel_at(&canvas, 4, 1, 0), [0, 0, 0, 0]);
+    // Целиком вне холста — пусто, без паники.
+    let mut outside = vec![0_u8; 4 * 2 * 4];
+    super::picture::composite_picture(&mut outside, 4, &two_texel_picture(-5, 0));
+    super::picture::composite_picture(&mut outside, 4, &two_texel_picture(0, 7));
+    assert!(outside.iter().all(|&byte| byte == 0));
+}

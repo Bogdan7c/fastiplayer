@@ -102,7 +102,7 @@ mod tests {
 
     use bytes::Bytes;
     use media_core::TrackId;
-    use player_core::MediaInstanceId;
+    use player_core::{MediaInstanceId, SubtitleReadRun};
 
     use super::*;
 
@@ -117,6 +117,7 @@ mod tests {
             track_id: TrackId::new(1),
             presentation_time: Duration::from_millis(at_ms),
             duration: duration_ms.map(Duration::from_millis),
+            read_run: SubtitleReadRun::INITIAL,
             payload: Bytes::copy_from_slice(payload),
         }
     }

@@ -11,6 +11,7 @@ mod subtitles;
 mod subtitles_ass;
 mod subtitles_glyph_cache;
 mod subtitles_limits;
+mod subtitles_pgs;
 mod subtitles_style;
 mod ui;
 mod version;
@@ -29,6 +30,7 @@ pub use subtitles::*;
 pub use subtitles_ass::*;
 pub use subtitles_glyph_cache::*;
 pub use subtitles_limits::*;
+pub use subtitles_pgs::*;
 pub use subtitles_style::*;
 pub use ui::*;
 pub use version::CURRENT_SCHEMA_VERSION;
@@ -39,7 +41,7 @@ pub(crate) use version::{
     LEGACY_SCHEMA_VERSION_11, LEGACY_SCHEMA_VERSION_12, LEGACY_SCHEMA_VERSION_13,
     LEGACY_SCHEMA_VERSION_14, LEGACY_SCHEMA_VERSION_15, LEGACY_SCHEMA_VERSION_16,
     LEGACY_SCHEMA_VERSION_17, LEGACY_SCHEMA_VERSION_18, LEGACY_SCHEMA_VERSION_19,
-    LEGACY_SCHEMA_VERSION_20,
+    LEGACY_SCHEMA_VERSION_20, LEGACY_SCHEMA_VERSION_21,
 };
 pub use video::*;
 

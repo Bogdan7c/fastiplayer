@@ -122,7 +122,9 @@ fn libass_image_type(kind: SubtitleBitmapKind) -> i64 {
         SubtitleBitmapKind::Glyph => 0,
         SubtitleBitmapKind::Outline => 1,
         SubtitleBitmapKind::Shadow => 2,
-        SubtitleBitmapKind::Background => panic!("libass reference has no background images"),
+        SubtitleBitmapKind::Background | SubtitleBitmapKind::Picture => {
+            panic!("libass reference has no background or picture images")
+        }
     }
 }
 

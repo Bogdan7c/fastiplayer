@@ -286,6 +286,7 @@ fn run_discovery(
             is_forced: candidate.disposition.is_forced,
             is_hearing_impaired: candidate.is_hearing_impaired,
             is_renderable: candidate.format.is_renderable_now(),
+            has_per_object_forced_flags: false,
         })
         .collect();
     let selection = auto_select(&traits, preferred_languages);

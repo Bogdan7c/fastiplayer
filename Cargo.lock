@@ -206,6 +206,7 @@ dependencies = [
  "source-core",
  "subtitle-core",
  "subtitle-formats",
+ "subtitle-pgs",
  "subtitle-raster",
  "subtitle-sidecar",
  "symphonia-demux",
@@ -4160,6 +4161,7 @@ dependencies = [
  "render-wgpu-video",
  "subtitle-core",
  "subtitle-formats",
+ "subtitle-pgs",
  "subtitle-raster",
  "tracing",
  "wgpu",
@@ -4860,6 +4862,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "subtitle-pgs"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "subtitle-core",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "subtitle-raster"
 version = "0.1.0-alpha.1"
 dependencies = [
@@ -4870,6 +4880,7 @@ dependencies = [
  "skrifa",
  "subtitle-core",
  "subtitle-formats",
+ "subtitle-pgs",
  "thiserror 2.0.18",
  "tracing",
  "unicode-bidi",
@@ -5045,6 +5056,8 @@ dependencies = [
  "demux-api",
  "media-core",
  "source-core",
+ "subtitle-core",
+ "subtitle-pgs",
  "symphonia",
  "symphonia-format-isomp4 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "symphonia-format-mkv 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",

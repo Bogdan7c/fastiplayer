@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use player_core::{PlaybackState, PlayerSnapshot};
+use player_core::{PlaybackState, PlayerSnapshot, SubtitleReadRun};
 use subtitle_core::SubtitleTime;
 
 use super::schedule::{FrameCadence, FrameStep, PlaybackRate, PresentationClock, PresentationMode};
@@ -55,6 +55,15 @@ pub(in crate::state::subtitles) struct PlaybackObservation {
     pub(in crate::state::subtitles) rate: PlaybackRate,
     /// Оценка длительности кадра из снимка плеера (запасной шаг).
     pub(in crate::state::subtitles) estimated_step: Option<FrameStep>,
+    /// Позиция media (шкала pts демуксера): цель в seek/scrub, иначе текущая позиция плеера;
+    /// `None` — позиция неизвестна. Часов показа она не касается: по ней картинные дорожки
+    /// (PGS) решают, что вытеснить из памяти, и она есть даже когда ни одна дорожка не
+    /// показывается.
+    pub(in crate::state::subtitles) position: Option<Duration>,
+    /// Проход чтения демуксера для пакетов субтитров из снимка плеера. Его смена — разрыв
+    /// потока (seek/scrub/потеря пакета): картинные дорожки (PGS) сбрасываются, не дожидаясь
+    /// пакетов. Часов показа не касается.
+    pub(in crate::state::subtitles) read_run: SubtitleReadRun,
 }
 
 impl Default for PlaybackObservation {
@@ -64,6 +73,8 @@ impl Default for PlaybackObservation {
             mode: ObservedMode::Playing,
             rate: PlaybackRate::NORMAL,
             estimated_step: None,
+            position: None,
+            read_run: SubtitleReadRun::INITIAL,
         }
     }
 }
@@ -94,6 +105,8 @@ impl PlaybackObservation {
             mode,
             rate,
             estimated_step: FrameStep::from_micros(estimated_micros),
+            position: Some(target.unwrap_or(snapshot.current_position)),
+            read_run: snapshot.subtitle_read_run,
         }
     }
 }
@@ -241,6 +254,20 @@ mod tests {
             ObservedMode::Seeking {
                 target: millis(7_000)
             }
+        );
+    }
+
+    #[test]
+    fn observation_carries_the_subtitle_read_run_of_the_snapshot() {
+        let mut snapshot = PlayerSnapshot::empty();
+        assert_eq!(
+            PlaybackObservation::from_snapshot(&snapshot).read_run,
+            SubtitleReadRun::INITIAL
+        );
+        snapshot.subtitle_read_run = SubtitleReadRun::INITIAL.next().next();
+        assert_eq!(
+            PlaybackObservation::from_snapshot(&snapshot).read_run.get(),
+            2
         );
     }
 }

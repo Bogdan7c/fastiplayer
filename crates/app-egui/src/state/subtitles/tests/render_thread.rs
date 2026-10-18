@@ -90,6 +90,8 @@ pub(super) fn observe(owner: &mut SubtitleOwner, media: MediaInstanceId, mode: O
             mode,
             rate: PlaybackRate::NORMAL,
             estimated_step: None,
+            position: None,
+            read_run: player_core::SubtitleReadRun::INITIAL,
         },
     );
 }

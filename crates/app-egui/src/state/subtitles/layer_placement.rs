@@ -27,7 +27,11 @@
 //!   где его нарисовал автор (нулевой сдвиг, без подъёма над панелью и сдвига пользователя);
 //! - ASS в режиме `main_lines_avoid_controls` - [`LayerPlacementPolicy::LiftMainGroupOnly`]:
 //!   над панелью поднимается только основная группа (диалог), считает [`group_lift`];
-//!   `place_layer` для такого слоя возвращает нулевой сдвиг целого слоя.
+//!   `place_layer` для такого слоя возвращает нулевой сдвиг целого слоя;
+//! - PGS - [`LayerPlacementPolicy::MainGroupUserOffsetInsidePicture`] (решение владельца,
+//!   сессия 11): нижние картинки следуют вертикальному сдвигу пользователя и поднимаются над
+//!   панелью, но не выходят за картинку видео; верхние/средние стоят на месте (см.
+//!   [`picture_group`]).
 
 use render_core::{PictureRect, RenderViewport};
 use render_wgpu_shell::SubtitleLayerOffset;
@@ -36,6 +40,7 @@ use subtitle_raster::CanvasRect;
 use super::controls_obstruction::BottomControlsObstruction;
 
 pub(super) mod group_lift;
+pub(super) mod picture_group;
 
 /// Где разрешено стоять слою, который двигает пользователь.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +61,11 @@ pub(super) enum LayerPlacementPolicy {
     /// Над панелью поднимается только основная группа (ASS-диалог), остальное стоит на месте;
     /// сдвиг пользователя не применяется. Группы считает [`group_lift`], а не `place_layer`.
     LiftMainGroupOnly,
+    /// Растровые субтитры (PGS): основная группа (нижние картинки) следует вертикальному сдвигу
+    /// пользователя внутри картинки видео и поднимается над панелью, фиксированная группа
+    /// (верхние/средние надписи) стоит на авторском месте, горизонтальный сдвиг и масштаб не
+    /// применяются. Группы считает [`picture_group`], а не `place_layer`.
+    MainGroupUserOffsetInsidePicture,
 }
 
 /// Всё, что нужно для расчёта размещения одного кадра.
@@ -112,7 +122,8 @@ pub(super) fn place_layer(request: &LayerPlacementRequest) -> Option<LayerPlacem
         // Автор решил, где слой: ни пользователь, ни панель его не двигают.
         LayerPlacementPolicy::AuthorPlaced => (default_left, default_top),
         // Целый слой не двигается; подъём группы считает `group_lift` (см. владельца).
-        LayerPlacementPolicy::LiftMainGroupOnly => (default_left, default_top),
+        LayerPlacementPolicy::LiftMainGroupOnly
+        | LayerPlacementPolicy::MainGroupUserOffsetInsidePicture => (default_left, default_top),
         LayerPlacementPolicy::UserPlaced {
             bounds: layer_bounds,
         } => user_placed_corner(request, &picture, layer_bounds, default_left, default_top),

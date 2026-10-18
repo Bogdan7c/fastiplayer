@@ -7,13 +7,23 @@
 use subtitle_raster::CueSourceId;
 
 use super::super::render_worker::commands::WorkerEvent;
-use super::super::render_worker::prepared_queue::{OverlayIdentity, PreparedOverlay};
-use super::super::render_worker::validity::{TimeSpan, ValidityInterval};
+use super::super::render_worker::prepared_queue::PreparedOverlay;
+use super::super::render_worker::validity::{ShorteningEffect, TimeSpan};
 use super::presenter::SubtitlePresenter;
 
 /// Сколько недавних изменений дорожек помнит UI. Картинка «в пути» отстаёт от текущего
 /// состояния на считаные изменения; при переполнении самые старые забываются.
 pub(super) const MAX_REMEMBERED_INVALIDATIONS: usize = 64;
+
+/// Как изменение дорожки задевает ранее нарисованные картинки в своём отрезке.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum InvalidationKind {
+    /// Дописаны реплики (или дорожка заменена): картинки в отрезке недействительны.
+    Overwritten,
+    /// Какие-то события укорочены, отрезок - потерянный ими: картинки, нарисованные до его
+    /// начала, остаются с обрезанным сроком, нарисованные внутри - недействительны.
+    EventsShortened,
+}
 
 /// Изменение зеркала дорожки, которое делает недействительными ранее нарисованные картинки.
 #[derive(Debug, Clone, Copy)]
@@ -21,32 +31,59 @@ pub(super) struct TrackInvalidation {
     pub(super) serial: u64,
     pub(super) source: CueSourceId,
     pub(super) span: TimeSpan,
+    pub(super) kind: InvalidationKind,
 }
 
 impl SubtitlePresenter {
     /// Выбрасывает из очереди картинки, задетые изменением дорожки, и запоминает изменение:
     /// картинки, нарисованные потоком ДО него, но ещё не принятые, будут отброшены при приёме.
     pub(super) fn note_track_invalidation(&mut self, invalidation: TrackInvalidation) {
-        self.queue
-            .invalidate_overlapping(invalidation.source, invalidation.span);
+        match invalidation.kind {
+            InvalidationKind::Overwritten => {
+                self.queue
+                    .invalidate_overlapping(invalidation.source, invalidation.span);
+            }
+            InvalidationKind::EventsShortened => {
+                self.queue
+                    .apply_shortening(invalidation.source, invalidation.span);
+            }
+        }
         if self.invalidations.len() >= MAX_REMEMBERED_INVALIDATIONS {
             self.invalidations.pop_front();
         }
         self.invalidations.push_back(invalidation);
     }
 
-    /// Нарисована ли картинка до изменения дорожки, которое задевает её срок годности.
-    fn picture_predates_invalidation(
+    /// Сверяет картинку «в пути» с изменениями дорожки, случившимися ПОСЛЕ её рисования.
+    /// `false` - картинка недействительна и выбрасывается; при укорочении события картинка,
+    /// нарисованная до нового конца, остаётся, но её срок обрезается.
+    fn reconcile_with_later_invalidations(
         &self,
-        identity: OverlayIdentity,
-        interval: ValidityInterval,
+        picture: &mut PreparedOverlay,
         mirror_serial: u64,
     ) -> bool {
-        self.invalidations.iter().any(|invalidation| {
-            invalidation.source == identity.source
-                && invalidation.serial > mirror_serial
-                && interval.overlaps(invalidation.span)
-        })
+        let source = picture.identity().source;
+        for invalidation in &self.invalidations {
+            if invalidation.source != source || invalidation.serial <= mirror_serial {
+                continue;
+            }
+            let interval = picture.interval();
+            match invalidation.kind {
+                InvalidationKind::Overwritten => {
+                    if interval.overlaps(invalidation.span) {
+                        return false;
+                    }
+                }
+                InvalidationKind::EventsShortened => {
+                    match interval.after_shortening(invalidation.span) {
+                        ShorteningEffect::Unaffected => {}
+                        ShorteningEffect::Narrowed(shorter) => picture.set_interval(shorter),
+                        ShorteningEffect::Invalid => return false,
+                    }
+                }
+            }
+        }
+        true
     }
 
     /// Принимает события потока. `true` — пришла картинка, покрывающая время текущего кадра.
@@ -73,7 +110,8 @@ impl SubtitlePresenter {
                         active_events = picture.rendered_events().len(),
                         "Subtitle cues rasterized"
                     );
-                    if !self.picture_is_expected(&picture, mirror_serial) {
+                    let mut picture = picture;
+                    if !self.picture_is_expected(&mut picture, mirror_serial) {
                         // Нарисовано для входов или дорожки, которые уже сменились.
                         self.stats.dropped_outdated_pictures += 1;
                         continue;
@@ -111,7 +149,7 @@ impl SubtitlePresenter {
 
     /// Нужна ли UI картинка, пришедшая от потока: та же дорожка и холст, актуальная ревизия
     /// входов и не нарисована до изменения дорожки, задевающего её срок.
-    fn picture_is_expected(&self, picture: &PreparedOverlay, mirror_serial: u64) -> bool {
+    fn picture_is_expected(&self, picture: &mut PreparedOverlay, mirror_serial: u64) -> bool {
         let identity = picture.identity();
         let Some(target) = self.expected_target else {
             return false;
@@ -119,7 +157,7 @@ impl SubtitlePresenter {
         identity.source == target.source
             && identity.canvas == target.canvas
             && identity.inputs == self.inputs_revision
-            && !self.picture_predates_invalidation(identity, picture.interval(), mirror_serial)
+            && self.reconcile_with_later_invalidations(picture, mirror_serial)
     }
 
     /// Пишет в лог итог установки вложенных шрифтов (причины типизированы, имён нет).

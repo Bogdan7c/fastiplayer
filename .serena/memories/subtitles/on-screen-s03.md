@@ -31,5 +31,8 @@
 ## Сессия 09 (этап 1)
 Растеризация ушла в отдельный поток: см. `mem:subtitles/render-thread-s09`. Бюджет 8 мс на UI-потоке удалён (счётчик опозданий вместо него).
 
+## Сессия 11
+В проходе два слоя: маски R8 и картинки Rgba8Unorm (ленивое создание, `layer.rs`, серии по порядку списка `runs.rs`, `fs_picture`); контракт для GLES2 дополнен RGBA — `mem:subtitles/pgs-s11`.
+
 ## Сессия 08
 Сдвиг слоя стал двухгрупповым: `SubtitleLayerOffsets{main, fixed}` (SRT — `uniform`), картинки помечены `OverlayPlacementGroup`. Размещение: `LayerPlacementPolicy::{UserPlaced{bounds: PictureAndBars|PictureOnly}, AuthorPlaced, LiftMainGroupOnly}`; ASS никогда не на полосах — `mem:subtitles/ass-layer1-s08`.

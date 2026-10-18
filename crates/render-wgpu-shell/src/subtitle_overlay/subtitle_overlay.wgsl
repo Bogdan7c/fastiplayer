@@ -1,4 +1,6 @@
-// Рисует картинки субтитров: одна маска покрытия (R8) + один цвет на инстанс.
+// Рисует картинки субтитров двух видов с общей вершинной стадией:
+// - fs_main: маска покрытия (R8) + один цвет на инстанс (текст);
+// - fs_picture: готовая RGBA-картинка (премультиплицированная) * непрозрачность из color.a.
 
 struct OverlayUniforms {
     // Размер surface в пикселях.
@@ -12,7 +14,7 @@ struct OverlayUniforms {
 };
 
 @group(0) @binding(0) var<uniform> uniforms: OverlayUniforms;
-@group(0) @binding(1) var coverage_atlas: texture_2d<f32>;
+@group(0) @binding(1) var atlas_texture: texture_2d<f32>;
 
 struct InstanceInput {
     // [x, y, width, height] картинки в пикселях холста.
@@ -64,8 +66,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Центры пикселей экрана дают local_pixel = n + 0.5, поэтому floor — точный индекс texel-а.
     // clamp страхует от выхода на соседнюю маску в атласе на краю квадрата.
     let texel = clamp(vec2<i32>(floor(input.local_pixel)), vec2<i32>(0), vec2<i32>(input.size) - vec2<i32>(1));
-    let coverage = textureLoad(coverage_atlas, vec2<i32>(input.atlas_origin) + texel, 0).r;
+    let coverage = textureLoad(atlas_texture, vec2<i32>(input.atlas_origin) + texel, 0).r;
     let alpha = coverage * input.color.a;
     // Выход PREMULTIPLIED: pipeline смешивает One / OneMinusSrcAlpha.
     return vec4<f32>(input.color.rgb * alpha, alpha);
+}
+
+@fragment
+fn fs_picture(input: VertexOutput) -> @location(0) vec4<f32> {
+    let texel_index = clamp(vec2<i32>(floor(input.local_pixel)), vec2<i32>(0), vec2<i32>(input.size) - vec2<i32>(1));
+    // Texel атласа уже премультиплицирован на альфу; color.rgb для картинок не используется,
+    // color.a - множитель непрозрачности (по умолчанию 1). Выход PREMULTIPLIED: One / OneMinusSrcAlpha.
+    return textureLoad(atlas_texture, vec2<i32>(input.atlas_origin) + texel_index, 0) * input.color.a;
 }

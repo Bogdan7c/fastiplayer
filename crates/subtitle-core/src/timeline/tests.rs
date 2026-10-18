@@ -1,5 +1,6 @@
 //! Тесты таймлайна: границы интервалов, порядок, дубликаты и сверка с перебором.
 
+use super::shorten::MAX_REMEMBERED_SHORTENINGS;
 use super::*;
 use crate::event::{SubtitleContent, SubtitleLayer, SubtitleTextCue};
 use crate::placement::CuePlacement;
@@ -315,4 +316,237 @@ fn latest_change_within_matches_brute_force_over_all_boundaries() {
             );
         }
     }
+}
+
+#[test]
+fn shortening_moves_the_end_and_keeps_ids() {
+    let mut timeline = SubtitleTimeline::new();
+    timeline.insert(event(0, 1_000, "open"));
+    timeline.insert(event(100, 200, "other"));
+    let revision_before = timeline.revision();
+
+    let outcome = timeline.shorten_event_end(SubtitleEventId(0), t(300));
+
+    assert_eq!(
+        outcome,
+        Ok(ShortenOutcome::Shortened {
+            previous_end: t(1_000),
+            new_end: t(300)
+        })
+    );
+    assert_eq!(timeline.revision(), revision_before + 1);
+    assert_eq!(
+        timeline.event(SubtitleEventId(0)).map(|e| e.end()),
+        Some(t(300))
+    );
+    assert_eq!(active_texts(&timeline, 299), ["open"]);
+    assert_eq!(active_texts(&timeline, 300), Vec::<String>::new());
+    assert_eq!(timeline.next_change_after(t(200)), Some(t(300)));
+    assert_eq!(timeline.latest_change_within(t(0), t(1_000)), Some(t(300)));
+}
+
+#[test]
+fn shortening_to_the_same_end_is_a_noop_without_revision_change() {
+    let mut timeline = SubtitleTimeline::new();
+    timeline.insert(event(0, 50, "a"));
+    let revision_before = timeline.revision();
+    assert_eq!(
+        timeline.shorten_event_end(SubtitleEventId(0), t(50)),
+        Ok(ShortenOutcome::AlreadyEndsThere)
+    );
+    assert_eq!(timeline.revision(), revision_before);
+}
+
+#[test]
+fn shortening_errors_leave_the_timeline_untouched() {
+    let mut timeline = SubtitleTimeline::new();
+    timeline.insert(event(100, 200, "a"));
+    let revision_before = timeline.revision();
+    assert_eq!(
+        timeline.shorten_event_end(SubtitleEventId(7), t(150)),
+        Err(ShortenError::UnknownEvent(SubtitleEventId(7)))
+    );
+    assert_eq!(
+        timeline.shorten_event_end(SubtitleEventId(0), t(201)),
+        Err(ShortenError::WouldExtend {
+            current_end: t(200),
+            new_end: t(201)
+        })
+    );
+    assert_eq!(
+        timeline.shorten_event_end(SubtitleEventId(0), t(100)),
+        Err(ShortenError::NotAfterStart {
+            start: t(100),
+            new_end: t(100)
+        })
+    );
+    assert_eq!(timeline.revision(), revision_before);
+    assert_eq!(active_texts(&timeline, 199), ["a"]);
+}
+
+#[test]
+fn revision_grows_only_when_events_are_really_added() {
+    let mut timeline = SubtitleTimeline::new();
+    assert_eq!(timeline.revision(), 0);
+    timeline.insert(event(0, 10, "a"));
+    assert_eq!(timeline.revision(), 1);
+    // Дубликат ревизию не двигает.
+    timeline.insert(event(0, 10, "a"));
+    assert_eq!(timeline.revision(), 1);
+    timeline.extend([event(0, 10, "a")]);
+    assert_eq!(timeline.revision(), 1);
+    timeline.extend([event(5, 15, "b"), event(6, 16, "c")]);
+    assert_eq!(timeline.revision(), 2);
+}
+
+#[test]
+fn reinserting_the_original_long_event_after_shortening_is_not_a_duplicate() {
+    // Задокументированное взаимодействие с дедупликацией: сравнение идёт по полному событию.
+    let mut timeline = SubtitleTimeline::new();
+    timeline.insert(event(0, 1_000, "open"));
+    timeline
+        .shorten_event_end(SubtitleEventId(0), t(100))
+        .expect("shorten");
+    let again = timeline.insert(event(0, 1_000, "open"));
+    assert_eq!(again, TimelineInsertOutcome::Inserted(SubtitleEventId(1)));
+}
+
+#[test]
+fn shortening_matches_brute_force_on_pseudo_random_data() {
+    let mut rng = Lcg(0xc0ffee);
+    let mut events = Vec::new();
+    for index in 0..200 {
+        let start = i64::try_from(rng.next_below(50)).expect("fits") * 10;
+        let length = i64::try_from(rng.next_below(500)).expect("fits") + 2;
+        let layer = i32::try_from(rng.next_below(3)).expect("fits");
+        events.push(event_with_layer(
+            start,
+            start + length,
+            layer,
+            &format!("e{index}"),
+        ));
+    }
+    let (mut timeline, _) = SubtitleTimeline::from_events(events);
+    // Случайные укорочения вперемешку с заведомо недопустимыми (удлинение/до начала).
+    for _ in 0..150 {
+        let id = SubtitleEventId(u32::try_from(rng.next_below(200)).expect("fits"));
+        let Some(current) = timeline.event(id) else {
+            continue;
+        };
+        let (start, end) = (current.start().as_micros(), current.end().as_micros());
+        let candidate = start + i64::try_from(rng.next_below(600)).expect("fits") - 20;
+        let result = timeline.shorten_event_end(id, t(candidate));
+        match candidate {
+            c if c == end => assert_eq!(result, Ok(ShortenOutcome::AlreadyEndsThere)),
+            c if c > end => assert!(matches!(result, Err(ShortenError::WouldExtend { .. }))),
+            c if c <= start => assert!(matches!(result, Err(ShortenError::NotAfterStart { .. }))),
+            _ => assert!(matches!(result, Ok(ShortenOutcome::Shortened { .. }))),
+        }
+    }
+    let mut ids = Vec::new();
+    for time in -5..600 {
+        timeline.collect_active_at(t(time), &mut ids);
+        let mut expected: Vec<SubtitleEventId> = timeline
+            .events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.is_active_at(t(time)))
+            .map(|(index, _)| SubtitleEventId(u32::try_from(index).expect("fits")))
+            .collect();
+        expected.sort_by_key(|&id| {
+            let e = timeline.event(id).expect("known id");
+            (e.layer(), e.start(), id)
+        });
+        assert_eq!(ids, expected, "active set differs at t={time}");
+        let brute_force_change = timeline
+            .events
+            .iter()
+            .flat_map(|e| [e.start(), e.end()])
+            .filter(|&boundary| boundary > t(time))
+            .min();
+        assert_eq!(timeline.next_change_after(t(time)), brute_force_change);
+        let brute_latest = timeline
+            .events
+            .iter()
+            .flat_map(|e| [e.start(), e.end()])
+            .filter(|&b| b > t(time - 3) && b <= t(time + 40))
+            .max();
+        assert_eq!(
+            timeline.latest_change_within(t(time - 3), t(time + 40)),
+            brute_latest
+        );
+    }
+}
+
+#[test]
+fn shortenings_since_returns_only_changes_after_the_given_revision() {
+    let mut timeline = SubtitleTimeline::new();
+    timeline.insert(event(0, 1_000, "a"));
+    timeline.insert(event(10, 1_000, "b"));
+    let after_inserts = timeline.revision();
+    timeline
+        .shorten_event_end(SubtitleEventId(0), t(500))
+        .expect("shorten a");
+    let after_first = timeline.revision();
+    timeline
+        .shorten_event_end(SubtitleEventId(1), t(600))
+        .expect("shorten b");
+
+    let since_inserts: Vec<_> = timeline
+        .shortenings_since(after_inserts)
+        .expect("history is complete")
+        .collect();
+    assert_eq!(
+        since_inserts,
+        vec![
+            EndShortening {
+                id: SubtitleEventId(0),
+                previous_end: t(1_000),
+                new_end: t(500)
+            },
+            EndShortening {
+                id: SubtitleEventId(1),
+                previous_end: t(1_000),
+                new_end: t(600)
+            },
+        ]
+    );
+    let since_first: Vec<_> = timeline
+        .shortenings_since(after_first)
+        .expect("history is complete")
+        .map(|shortening| shortening.id)
+        .collect();
+    assert_eq!(since_first, vec![SubtitleEventId(1)]);
+    assert_eq!(
+        timeline
+            .shortenings_since(timeline.revision())
+            .expect("history is complete")
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn shortening_history_is_bounded_and_reports_when_it_is_lost() {
+    let mut timeline = SubtitleTimeline::new();
+    timeline.insert(event(0, 1_000_000, "long"));
+    let start_revision = timeline.revision();
+    // Больше, чем помнит журнал: каждое укорочение на 1 мкс.
+    for step in 1..=(MAX_REMEMBERED_SHORTENINGS as i64 + 5) {
+        timeline
+            .shorten_event_end(SubtitleEventId(0), t(1_000_000 - step))
+            .expect("shorten");
+    }
+    assert_eq!(
+        timeline.shortenings_since(start_revision).err(),
+        Some(ShorteningHistoryLost {
+            requested_revision: start_revision
+        })
+    );
+    // Недавний потребитель по-прежнему получает свои записи.
+    let recent = timeline.revision() - 3;
+    assert_eq!(
+        timeline.shortenings_since(recent).expect("recent").count(),
+        3
+    );
 }
