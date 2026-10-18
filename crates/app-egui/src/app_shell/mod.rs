@@ -17,6 +17,7 @@ mod hotkeys;
 mod instance_forwarding;
 mod resolved_url_collection;
 mod runtime_settings_flush;
+mod scale_factor;
 mod shutdown;
 mod track_memory_flush;
 mod window_limits;

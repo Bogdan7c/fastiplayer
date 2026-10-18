@@ -287,8 +287,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
             }
 
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                debug!(scale_factor, "Scale factor changed");
-                app_state.egui_ctx.set_pixels_per_point(scale_factor as f32);
+                super::scale_factor::on_scale_factor_changed(&app_state.egui_ctx, scale_factor);
             }
 
             WindowEvent::RedrawRequested => {
