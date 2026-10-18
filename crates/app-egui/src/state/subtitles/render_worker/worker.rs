@@ -14,13 +14,16 @@
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 
 use subtitle_core::{SubtitleEventId, SubtitleLanguage};
-use subtitle_raster::{RasterLimits, SubtitleFontLibrary, SubtitleRasterizer};
+use subtitle_raster::{
+    RasterLimits, SubtitleFontLibrary, SubtitleRasterizer, TextLanguagePreference,
+};
 
 #[cfg(test)]
 use super::commands::TrackCommand;
 #[cfg(test)]
 use super::commands::WorkerDiagnostics;
 use super::commands::{LookInputs, RenderTarget, WorkerCommand, WorkerEvent};
+use super::font_warm_up::{FontWarmUpRequest, PendingFontWarmUp};
 use super::prepared_queue::OverlayIdentity;
 use super::published_record::PublishedRecord;
 use super::render_step::{StepInput, StepOutcome, render_at};
@@ -71,6 +74,19 @@ struct RenderJob {
     frame_step: Option<FrameStep>,
 }
 
+/// Итог одной порции работы потока.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkStep {
+    /// Поток должен завершиться (UI ушёл).
+    Stopped,
+    /// Нарисована одна картинка (или подтверждена пустота).
+    Rendered,
+    /// Выполнен прогрев шрифтов.
+    WarmedFonts,
+    /// Делать нечего.
+    Idle,
+}
+
 /// Состояние потока.
 struct WorkerState {
     rasterizer: SubtitleRasterizer,
@@ -92,6 +108,8 @@ struct WorkerState {
     last_job: Option<(OverlayIdentity, subtitle_core::SubtitleTime)>,
     /// Сколько раз защита сработала (должно быть 0; ненулевое значение - ошибка планирования).
     repeated_jobs_suppressed: u64,
+    /// Ожидающий прогрев шрифтов: выполняется только когда рисовать нечего.
+    pending_font_warm_up: PendingFontWarmUp,
     sink: EventSink,
     #[cfg(test)]
     render_delay: std::time::Duration,
@@ -103,6 +121,9 @@ struct WorkerState {
     /// Только тесты: сколько узких дельт принято.
     #[cfg(test)]
     track_updates: u64,
+    /// Только тесты: итог последнего прогрева шрифтов.
+    #[cfg(test)]
+    last_font_warm_up: Option<subtitle_raster::FontWarmUp>,
 }
 
 impl WorkerState {
@@ -132,6 +153,7 @@ impl WorkerState {
             scratch_active: Vec::new(),
             last_job: None,
             repeated_jobs_suppressed: 0,
+            pending_font_warm_up: PendingFontWarmUp::default(),
             sink,
             #[cfg(test)]
             render_delay: std::time::Duration::ZERO,
@@ -141,6 +163,8 @@ impl WorkerState {
             track_replaces: 0,
             #[cfg(test)]
             track_updates: 0,
+            #[cfg(test)]
+            last_font_warm_up: None,
         }
     }
 
@@ -159,6 +183,7 @@ impl WorkerState {
                     TrackCommand::Update { .. } => self.track_updates += 1,
                     TrackCommand::Forget { .. } => {}
                 }
+                self.pending_font_warm_up.note_track_command(&track_command);
                 let effect = self.mirrors.apply(track_command);
                 if let Some(span) = effect.invalidated {
                     self.record.invalidate_overlapping(span);
@@ -190,6 +215,8 @@ impl WorkerState {
                 if look.is_some() {
                     self.look = look;
                 }
+                // Набор шрифтов меняется: прогретые лица и результаты поиска глифов устареют.
+                self.pending_font_warm_up.discard();
                 let report = self
                     .rasterizer
                     .install_prepared_attached_fonts(prepared, &limits);
@@ -202,9 +229,22 @@ impl WorkerState {
                 if look.is_some() {
                     self.look = look;
                 }
+                self.pending_font_warm_up.discard();
                 let outcome = self.rasterizer.clear_attached_fonts();
                 self.record.clear();
                 self.sink.send(WorkerEvent::AttachedFontsCleared(outcome))
+            }
+            WorkerCommand::WarmUpFonts {
+                source,
+                sample,
+                language,
+            } => {
+                self.pending_font_warm_up.schedule(FontWarmUpRequest {
+                    source,
+                    sample,
+                    language,
+                });
+                true
             }
             WorkerCommand::Shutdown => false,
             #[cfg(test)]
@@ -227,6 +267,7 @@ impl WorkerState {
                         repeated_jobs_suppressed: self.repeated_jobs_suppressed,
                         track_replaces: self.track_replaces,
                         track_updates: self.track_updates,
+                        last_font_warm_up: self.last_font_warm_up,
                     })))
             }
         }
@@ -323,6 +364,43 @@ impl WorkerState {
         }
     }
 
+    /// Одна порция работы по приоритету: сначала картинка, и только когда рисовать нечего, —
+    /// ожидающий прогрев шрифтов (чтение шрифта с диска не должно задерживать ни одну картинку).
+    fn do_next_work(&mut self) -> WorkStep {
+        if let Some(job) = self.next_job() {
+            return if self.run_job(job) {
+                WorkStep::Rendered
+            } else {
+                WorkStep::Stopped
+            };
+        }
+        if self.run_pending_font_warm_up() {
+            return WorkStep::WarmedFonts;
+        }
+        WorkStep::Idle
+    }
+
+    /// Выполняет ожидающий прогрев шрифтов (звать через `do_next_work`: только когда рисовать
+    /// нечего). `true` — прогрев был
+    /// выполнен (цикл заново забирает команды, пока мы работали, могли прийти новые).
+    fn run_pending_font_warm_up(&mut self) -> bool {
+        let Some(request) = self.pending_font_warm_up.take() else {
+            return false;
+        };
+        // Язык выбирается так же, как при рисовании: дорожка, иначе система.
+        let language = TextLanguagePreference::track_then_system(
+            request.language.as_ref(),
+            self.system_language.as_ref(),
+        );
+        let outcome = self.rasterizer.warm_up_fonts(&request.sample, language);
+        tracing::debug!(?outcome, "Subtitle fonts warmed up");
+        #[cfg(test)]
+        {
+            self.last_font_warm_up = Some(outcome);
+        }
+        true
+    }
+
     /// Работы нет: отвечаем на ожидающие `Flush` (только тесты). `false` — завершиться.
     fn acknowledge_idle(&mut self) -> bool {
         #[cfg(test)]
@@ -358,12 +436,11 @@ pub(super) fn run_worker(
                 Err(TryRecvError::Disconnected) => return,
             }
         }
-        // 2-3. Рисуем одно время, если есть что.
-        if let Some(job) = state.next_job() {
-            if !state.run_job(job) {
-                return;
-            }
-            continue;
+        // 2-3b. Одна порция работы: картинка, а если рисовать нечего, — прогрев шрифтов.
+        match state.do_next_work() {
+            WorkStep::Stopped => return,
+            WorkStep::Rendered | WorkStep::WarmedFonts => continue,
+            WorkStep::Idle => {}
         }
         // 4. Делать нечего: отвечаем на сверку и спим до следующей команды.
         if !state.acknowledge_idle() {
@@ -379,3 +456,6 @@ pub(super) fn run_worker(
         }
     }
 }
+
+#[cfg(test)]
+mod warm_up_tests;

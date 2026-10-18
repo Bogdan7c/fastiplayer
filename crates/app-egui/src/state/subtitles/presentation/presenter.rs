@@ -38,6 +38,7 @@ use super::super::render_worker::validity::TimeSpan;
 use super::super::render_worker::worker::WorkerSettings;
 use super::super::user_style::UserSubtitleStyle;
 use super::ass_options::AssPresentation;
+use super::font_warm_up::FontWarmUpGate;
 use super::ingest::{InvalidationKind, TrackInvalidation};
 use super::worker_link::WorkerLink;
 use super::{PresentationStats, SubmittedFrameForSubtitles};
@@ -112,6 +113,8 @@ pub(in crate::state::subtitles) struct SubtitlePresenter {
     /// Какие входы рисования уже отправлены потоку.
     pub(super) sent_look: Option<(RenderInputsRevision, AssRenderOptions)>,
     pub(super) mirror: MirrorSync,
+    /// Решает, когда просить поток заранее подготовить шрифты показываемой дорожки.
+    pub(super) font_warm_up: FontWarmUpGate,
     pub(super) clock: ClockTracker,
     pub(super) observation: PlaybackObservation,
     pub(super) sent_presentation: Option<SentPresentation>,
@@ -151,6 +154,7 @@ impl SubtitlePresenter {
             last_ass_options: None,
             sent_look: None,
             mirror: MirrorSync::default(),
+            font_warm_up: FontWarmUpGate::default(),
             clock: ClockTracker::default(),
             observation: PlaybackObservation::default(),
             sent_presentation: None,
@@ -176,6 +180,7 @@ impl SubtitlePresenter {
     pub(in crate::state::subtitles) fn install_font_library(&mut self, fonts: SubtitleFontLibrary) {
         self.queue = PreparedQueue::new(queue_capacity(self.settings));
         self.mirror.reset();
+        self.font_warm_up.reset();
         self.sent_look = None;
         self.sent_presentation = None;
         self.expected_target = None;
@@ -269,6 +274,7 @@ impl SubtitlePresenter {
         // Потеря потока при отправке уже стала отказом; зеркала всё равно забыты.
         let _released = self.mirror.release_all(&mut |command| link.send(command));
         self.mirror.reset();
+        self.font_warm_up.reset();
         self.forget_playback_context();
     }
 
@@ -312,6 +318,7 @@ impl SubtitlePresenter {
     pub(in crate::state::subtitles) fn discard_rasterizer(&mut self) {
         self.link.stop();
         self.mirror.reset();
+        self.font_warm_up.reset();
         self.sent_look = None;
         self.forget_playback_context();
         self.forget_shown_overlay();
@@ -567,6 +574,17 @@ impl SubtitlePresenter {
             .mirror
             .sync(role, track, &mut |command| link.send(command));
         let source = track.source_id();
+        // Дорожка только что оказалась у потока (или выросла): пора подготовить её шрифты.
+        if matches!(
+            outcome,
+            Ok(SyncOutcome::Replaced { .. }
+                | SyncOutcome::Updated {
+                    appended: Some(_),
+                    ..
+                })
+        ) {
+            self.request_font_warm_up(track);
+        }
         match outcome {
             Ok(SyncOutcome::Updated {
                 serial,
@@ -600,6 +618,14 @@ impl SubtitlePresenter {
                 });
             }
             Ok(SyncOutcome::Unchanged) | Err(_) => {}
+        }
+    }
+
+    /// Просит поток прогреть шрифты дорожки (один раз на дорожку; пустой образец — не просим).
+    /// Отказ отправки уже стал отказом потока, поэтому результат здесь не нужен.
+    fn request_font_warm_up(&mut self, track: &ActiveSubtitleTrack) {
+        if let Some(command) = self.font_warm_up.command_for(track) {
+            let _lost_worker_is_a_reported_failure = self.link.send(command);
         }
     }
 

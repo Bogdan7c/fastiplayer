@@ -28,6 +28,7 @@ mod limits;
 mod picture;
 mod robustness;
 mod ttml_regions;
+mod warm_up;
 mod word_reveal;
 
 use subtitle_core::{

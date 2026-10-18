@@ -20,6 +20,7 @@
 
 pub(super) mod clock_tracker;
 pub(super) mod commands;
+mod font_warm_up;
 pub(super) mod handle;
 pub(super) mod lateness;
 pub(super) mod mirror_sync;

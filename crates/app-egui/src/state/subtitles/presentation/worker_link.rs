@@ -160,6 +160,8 @@ pub(in crate::state::subtitles) enum SentCommandKind {
     InstallFonts,
     /// Вложенные шрифты сняты.
     ClearFonts,
+    /// Просьба заранее подготовить шрифты дорожки.
+    WarmUpFonts,
     /// Служебные команды тестов и остановки.
     Other,
 }
@@ -174,6 +176,7 @@ impl SentCommandKind {
             WorkerCommand::Present { .. } => Self::Present,
             WorkerCommand::InstallAttachedFonts { .. } => Self::InstallFonts,
             WorkerCommand::ClearAttachedFonts { .. } => Self::ClearFonts,
+            WorkerCommand::WarmUpFonts { .. } => Self::WarmUpFonts,
             _ => Self::Other,
         }
     }

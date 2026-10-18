@@ -50,6 +50,7 @@ mod picture_cue;
 mod request;
 mod reveal;
 mod statistics;
+mod warm_up;
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -88,6 +89,7 @@ pub use request::{
 };
 use statistics::Counters;
 pub use statistics::RasterStatistics;
+pub use warm_up::FontWarmUp;
 
 /// От чего зависит вид готовой реплики, кроме холста и языка.
 ///

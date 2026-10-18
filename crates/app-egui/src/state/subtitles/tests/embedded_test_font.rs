@@ -29,7 +29,7 @@ fn table_offset(bytes: &[u8], tag: &[u8; 4]) -> usize {
 }
 
 /// Байты шрифта с перенесённой буквой `A` и символ, который теперь рисуется её глифом.
-pub(super) fn font_with_private_glyph() -> (Vec<u8>, char) {
+pub(in crate::state::subtitles) fn font_with_private_glyph() -> (Vec<u8>, char) {
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../subtitle-raster/fonts/NotoSans-Regular.ttf");
     let mut bytes = std::fs::read(path).expect("repository font file");

@@ -80,7 +80,8 @@ pub use overlay::{
     SubtitleBitmapKind, SubtitleOverlay,
 };
 pub use renderer::{
-    AssEventTiming, CueContent, CueKey, CueSourceId, RasterCacheLimits, RasterInputLimits,
-    RasterLimits, RasterStatistics, RenderRequest, RenderableCue, SubtitleRasterizer,
+    AssEventTiming, CueContent, CueKey, CueSourceId, FontWarmUp, RasterCacheLimits,
+    RasterInputLimits, RasterLimits, RasterStatistics, RenderRequest, RenderableCue,
+    SubtitleRasterizer,
 };
 pub use skrifa::GlyphId;

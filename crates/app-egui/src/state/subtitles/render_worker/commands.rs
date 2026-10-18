@@ -89,6 +89,19 @@ pub(in crate::state::subtitles) enum WorkerCommand {
     },
     /// Снять вложенные шрифты прежнего media (`look` — как у установки).
     ClearAttachedFonts { look: Option<LookInputs> },
+    /// Заранее подготовить шрифты для текста дорожки, когда поток освободится.
+    ///
+    /// Не рисует и не меняет то, что видит UI: только греет лица растеризатора, чтобы первая
+    /// реплика с CJK не платила за чтение файла шрифта. Выполняется лишь в простое потока;
+    /// новый запрос заменяет прежний (см. `font_warm_up`).
+    WarmUpFonts {
+        /// Дорожка, ради которой греем (запрос теряется, если её снимают с показа).
+        source: CueSourceId,
+        /// Образец текста: символы дорожки, которым могут понадобиться не встроенные лица.
+        sample: String,
+        /// Язык дорожки; запасной язык системы подставляет поток.
+        language: Option<SubtitleLanguage>,
+    },
     /// Остановиться.
     Shutdown,
     /// Только тесты: ответить `Idle`, когда вся накопленная работа сделана.
@@ -130,6 +143,8 @@ pub(in crate::state::subtitles) struct WorkerDiagnostics {
     pub(in crate::state::subtitles) track_replaces: u64,
     /// Сколько узких дельт (`Update`) принял поток.
     pub(in crate::state::subtitles) track_updates: u64,
+    /// Итог последнего выполненного прогрева шрифтов.
+    pub(in crate::state::subtitles) last_font_warm_up: Option<subtitle_raster::FontWarmUp>,
 }
 
 /// Событие потока-рисовальщика.
