@@ -6,7 +6,6 @@
 //! реплик, ни пути каталогов.
 
 use std::ffi::OsString;
-use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
@@ -17,10 +16,12 @@ use subtitle_formats::{
 use subtitle_sidecar::{SidecarSubtitleCandidate, SidecarSubtitleFormat};
 
 use self::format_detection::resolve_text_format;
+use self::regular_file::open_regular_file;
 use super::limits::LoadLimits;
 use super::sidecar_job::SubtitleLoadFailure;
 
 mod format_detection;
+mod regular_file;
 
 /// Загруженный таймлайн и сведения о файле.
 pub(super) struct LoadedSidecarTrack {
@@ -132,14 +133,16 @@ pub(super) fn encoding_hint_for(language: Option<&SubtitleLanguage>) -> LegacyEn
 
 /// Читает файл целиком, но не больше `limit_bytes`: больший файл — типизированный отказ.
 ///
+/// Не обычный файл (FIFO, сокет, устройство) не читается вовсе: см. [`open_regular_file`].
+///
 /// Читаем через `take(limit + 1)`, а не доверяем `metadata().len()`: файл мог вырасти
 /// между проверкой и чтением, а у особых файлов длина вообще не отражает содержимое.
 pub(super) fn read_file_with_limit(
     path: &Path,
     limit_bytes: usize,
 ) -> Result<Vec<u8>, SubtitleLoadFailure> {
-    let file =
-        File::open(path).map_err(|error| SubtitleLoadFailure::ReadFailed { kind: error.kind() })?;
+    // Только обычный файл: FIFO/устройство подвесили бы поток блокирующим чтением.
+    let file = open_regular_file(path)?;
     let read_limit = u64::try_from(limit_bytes)
         .unwrap_or(u64::MAX)
         .saturating_add(1);

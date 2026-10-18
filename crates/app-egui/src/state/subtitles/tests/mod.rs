@@ -47,6 +47,7 @@ mod render_thread_regressions;
 mod scrub_frame_step;
 mod shortening_thread;
 mod sidecar_job;
+mod special_files;
 mod stream_dash_gpu;
 mod stream_gpu;
 mod stream_hls_vertical;
