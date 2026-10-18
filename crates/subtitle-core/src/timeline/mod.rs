@@ -4,6 +4,9 @@
 //! [`SubtitleEventId`]), рядом поддерживается порядок по началу и дерево максимумов окончаний.
 //! Внешний код видит только намерения (`insert`, `collect_active_at`, `next_change_after`).
 
+#[cfg(test)]
+mod bulk_duplicate_tests;
+mod duplicates;
 mod max_end_tree;
 mod reveal;
 mod shorten;
@@ -116,29 +119,7 @@ impl SubtitleTimeline {
         let candidates: Vec<SubtitleEvent> = events.into_iter().collect();
         let mut report = TimelineBuildReport::default();
 
-        // Кандидаты группируются по началу (стабильная сортировка сохраняет порядок поступления),
-        // чтобы сравнивать на дубликат только события с одинаковым start.
-        let mut by_start: Vec<usize> = (0..candidates.len()).collect();
-        by_start.sort_by_key(|&candidate| candidate_start(&candidates, candidate));
-        let mut keep = vec![true; candidates.len()];
-        for group in by_start
-            .chunk_by(|a, b| candidate_start(&candidates, *a) == candidate_start(&candidates, *b))
-        {
-            for (position, &candidate) in group.iter().enumerate() {
-                let duplicate_of_earlier_candidate = group.iter().take(position).any(|&earlier| {
-                    keep.get(earlier).copied().unwrap_or(false)
-                        && candidates.get(earlier) == candidates.get(candidate)
-                });
-                let duplicate_of_existing = candidates
-                    .get(candidate)
-                    .is_some_and(|event| self.find_duplicate(event).is_some());
-                if (duplicate_of_earlier_candidate || duplicate_of_existing)
-                    && let Some(flag) = keep.get_mut(candidate)
-                {
-                    *flag = false;
-                }
-            }
-        }
+        let keep = self.mark_non_duplicate_candidates(&candidates);
 
         for (event, keep_event) in candidates.into_iter().zip(keep) {
             if !keep_event {
@@ -308,6 +289,51 @@ impl SubtitleTimeline {
         self.order_by_start
             .iter()
             .filter_map(|&id| self.event(id).map(|event| (id, event)))
+    }
+
+    /// Для каждого кандидата: `true`, если он не дубликат ни уже лежащего события, ни более
+    /// раннего кандидата (первое вхождение побеждает). O(n log n): сортировка по началу, затем
+    /// внутри группы одного `start` — корзины [`duplicates::DuplicateIndex`] вместо перебора.
+    fn mark_non_duplicate_candidates(&self, candidates: &[SubtitleEvent]) -> Vec<bool> {
+        // Стабильная сортировка сохраняет порядок поступления внутри группы.
+        let mut by_start: Vec<usize> = (0..candidates.len()).collect();
+        by_start.sort_by_key(|&candidate| candidate_start(candidates, candidate));
+        let mut keep = vec![true; candidates.len()];
+        for group in by_start
+            .chunk_by(|a, b| candidate_start(candidates, *a) == candidate_start(candidates, *b))
+        {
+            let Some(&first) = group.first() else {
+                continue;
+            };
+            let group_start = candidate_start(candidates, first);
+            let mut accepted = duplicates::DuplicateIndex::default();
+            // Уже лежащие события этого начала: их id идут подряд в порядке по началу.
+            let first_existing = self
+                .order_by_start
+                .partition_point(|&id| self.start_of(id) < group_start);
+            for existing in self
+                .order_by_start
+                .iter()
+                .skip(first_existing)
+                .take_while(|&&id| self.start_of(id) == group_start)
+                .filter_map(|&id| self.event(id))
+            {
+                accepted.remember(existing);
+            }
+            for &candidate in group {
+                let Some(event) = candidates.get(candidate) else {
+                    continue;
+                };
+                if accepted.contains(event) {
+                    if let Some(flag) = keep.get_mut(candidate) {
+                        *flag = false;
+                    }
+                } else {
+                    accepted.remember(event);
+                }
+            }
+        }
+        keep
     }
 
     /// Идентичное событие, уже лежащее в таймлайне: кандидаты ищутся бинарным поиском по start.
