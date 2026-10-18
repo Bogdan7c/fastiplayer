@@ -2,7 +2,9 @@
 
 use crate::ass::file::parse_ass_document;
 use crate::document::ParsedSubtitleDocument;
-use crate::encoding::{DetectedSubtitleEncoding, LegacyEncodingHint, decode_subtitle_bytes};
+use crate::encoding::{
+    DetectedSubtitleEncoding, LegacyEncodingHint, decode_subtitle_bytes, strip_nul_characters,
+};
 use crate::error::SubtitleLoadError;
 use crate::limits::SubtitleParseLimits;
 use crate::sniff::TextSubtitleFormat;
@@ -89,8 +91,8 @@ fn load_with_sample_window(
     }
     let decoded = decode_subtitle_bytes(bytes, hint);
     let document = match format {
-        TextSubtitleFormat::Srt => parse_srt(&decoded.text, limits)?,
-        TextSubtitleFormat::WebVtt => parse_webvtt(&decoded.text, limits)?,
+        TextSubtitleFormat::Srt => parse_srt(&strip_nul_characters(&decoded.text), limits)?,
+        TextSubtitleFormat::WebVtt => parse_webvtt(&strip_nul_characters(&decoded.text), limits)?,
         TextSubtitleFormat::Srv3 => parse_srv3(&decoded.text, limits)?,
         TextSubtitleFormat::Ttml => match sample_window {
             Some(window) => parse_ttml_in_window(&decoded.text, limits, Some(window))?,

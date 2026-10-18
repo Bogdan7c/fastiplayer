@@ -11,7 +11,7 @@ use super::hard_overrides::scan_hard_overrides;
 use super::limits::AssParseLimits;
 use super::lines::AssLines;
 use super::report::{AssParseReport, AssTagStats};
-use super::scan::c_string_prefix;
+use super::scan::{c_string_prefix, first_nul_line_index};
 use super::script_builder::{LineOutcome, LineScope, ScriptBuilder};
 use super::text::parse_event_text;
 use crate::document::ParsedSubtitleDocument;
@@ -49,6 +49,14 @@ pub(crate) fn parse_ass_document(
         });
     }
     let mut report = SubtitleParseReport::new(limits.max_reported_issues);
+    // libass обрывает файл на первом NUL; пользователю это должно быть видно в отчёте, иначе
+    // «пропавшие» реплики после мусорного байта выглядят необъяснимо.
+    if let Some(nul_line_index) = first_nul_line_index(text) {
+        report.record_issue(ParseIssue {
+            line_number: LineNumber::from_zero_based_index(nul_line_index),
+            kind: ParseIssueKind::TruncatedAtNul,
+        });
+    }
     let mut builder = ScriptBuilder::new(ass_limits, LineScope::FullFile);
     let mut located_events: Vec<LocatedEvent> = Vec::new();
     for (line_index, line) in AssLines::new(c_string_prefix(text)) {

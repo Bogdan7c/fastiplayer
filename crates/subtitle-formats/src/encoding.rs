@@ -121,6 +121,21 @@ pub fn decode_subtitle_bytes(bytes: &[u8], hint: LegacyEncodingHint) -> DecodedS
     decode_with(legacy, bytes, DetectedSubtitleEncoding::Legacy(legacy))
 }
 
+/// Убирает символы NUL из текста SRT/WebVTT.
+///
+/// NUL в тексте реплики — мусор (некоторые редакторы добивают файл нулями до размера кластера),
+/// а не содержимое: оставленный, он склеивается с последней репликой и раздувает её сверх
+/// лимита растеризатора. Удаляются только сами `\0`, переводы строк не трогаются, поэтому
+/// номера строк в отчёте остаются верными. Без NUL текст не копируется.
+/// Для ASS не применяется: там обрезка по NUL — намеренное поведение libass.
+pub(crate) fn strip_nul_characters(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('\0') {
+        std::borrow::Cow::Owned(text.replace('\0', ""))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
 /// Декодирует без повторной обработки BOM (он уже снят вызывающим).
 fn decode_with(
     encoding: &'static Encoding,

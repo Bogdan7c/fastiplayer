@@ -39,6 +39,32 @@ pub(super) fn c_string_prefix(text: &str) -> &str {
     text.split('\0').next().unwrap_or_default()
 }
 
+/// Номер строки (с нуля, разделители `\r`, `\n`, `\r\n`, как в `AssLines`), на которой стоит
+/// первый NUL, либо `None`, если NUL в тексте нет. Нужен, чтобы обрезку файла по NUL
+/// можно было показать в отчёте.
+pub(super) fn first_nul_line_index(text: &str) -> Option<usize> {
+    let prefix = text.split_once('\0')?.0;
+    let mut line_index = 0usize;
+    let mut previous_was_carriage_return = false;
+    for ch in prefix.chars() {
+        match ch {
+            '\r' => {
+                line_index += 1;
+                previous_was_carriage_return = true;
+            }
+            // `\r\n` — один разделитель: `\r` уже посчитан.
+            '\n' => {
+                if !previous_was_carriage_return {
+                    line_index += 1;
+                }
+                previous_was_carriage_return = false;
+            }
+            _ => previous_was_carriage_return = false,
+        }
+    }
+    Some(line_index)
+}
+
 /// Убирает пробелы и табуляции слева (`skip_spaces`).
 pub(super) fn skip_spaces(text: &str) -> &str {
     text.trim_start_matches([' ', '\t'])
