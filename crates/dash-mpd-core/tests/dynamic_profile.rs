@@ -675,3 +675,30 @@ fn dynamic_period_limit_rejects_second_period_before_retention() {
             if error.kind() == dash_mpd_core::DashMpdErrorKind::LimitExceeded
     ));
 }
+
+#[test]
+fn dynamic_service_description_is_skipped_and_drm_inside_it_is_rejected() {
+    let plain = parse(&fixture("", "")).expect("plain dynamic MPD");
+    let with_description = fixture("", "").replace(
+        "          <UTCTiming",
+        r#"          <ServiceDescription id="0">
+            <Latency target="3000" min="2000" max="6000"/>
+            <PlaybackRate min="0.96" max="1.04"></PlaybackRate>
+          </ServiceDescription>
+          <UTCTiming"#,
+    );
+    let parsed = parse(&with_description).expect("ServiceDescription is ignorable");
+    assert_eq!(parsed, plain);
+
+    let hidden_drm = fixture("", "").replace(
+        "          <UTCTiming",
+        r#"          <ServiceDescription><ContentProtection schemeIdUri="urn:example:drm"/></ServiceDescription>
+          <UTCTiming"#,
+    );
+    let error = parse(&hidden_drm).expect_err("DRM must not hide in a skipped subtree");
+    assert!(matches!(
+        error,
+        DashDynamicMpdError::Schema(schema)
+            if schema.kind() == dash_mpd_core::DashMpdErrorKind::ContentProtection
+    ));
+}

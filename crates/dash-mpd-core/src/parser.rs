@@ -12,6 +12,7 @@ use crate::model::{
 use crate::template::DashTemplateString;
 
 mod attributes;
+mod informational;
 mod metadata;
 mod period;
 mod text_adaptation;
@@ -23,6 +24,7 @@ use attributes::{
     optional_positive_ratio_attribute, optional_positive_u32_attribute, optional_u64_attribute,
     read_text_leaf, required_bounded_attribute, validate_attributes_with_namespaced_allowlist,
 };
+pub(crate) use informational::{is_informational_root_element, skip_informational_element_body};
 use metadata::*;
 use period::finalize_periods;
 pub(crate) use period::{ParsedPeriod, parse_period};
@@ -180,6 +182,10 @@ pub fn parse_dash_mpd(request: DashMpdParseRequest<'_>) -> Result<DashMpd, DashM
             {
                 return Err(DashMpdError::new(DashMpdErrorKind::ContentProtection));
             }
+            Some(XmlEvent::StartElement(element)) if is_informational_root_element(&element) => {
+                skip_informational_element_body(&mut cursor)?;
+            }
+            Some(XmlEvent::EmptyElement(element)) if is_informational_root_element(&element) => {}
             Some(XmlEvent::EndElement(name)) if is_name(&name, "MPD") => break,
             Some(XmlEvent::Text(text)) if text.content().trim().is_empty() => {}
             Some(_) | None => {
@@ -238,6 +244,7 @@ fn parse_adaptation_set(
             "minHeight",
             "maxHeight",
             "maxFrameRate",
+            "bitstreamSwitching",
         ],
     )?;
     let declared_picture_aspect_ratio = validate_adaptation_constraints(&element, limits)?;
@@ -412,6 +419,7 @@ fn parse_representation(
             "audioSamplingRate",
             "startWithSAP",
             "sar",
+            "bitstreamSwitching",
         ],
     )?;
     let id = required_bounded_attribute(&element, "id", limits)?;
@@ -586,6 +594,8 @@ fn validate_adaptation_constraints(
 ) -> Result<Option<(u32, u32)>, DashMpdError> {
     optional_boolean_attribute(element, "segmentAlignment")?;
     optional_boolean_attribute(element, "subsegmentAlignment")?;
+    // Булев ABR-hint (§5.3.3.2): значение валидируется, но на воспроизведение не влияет.
+    optional_boolean_attribute(element, "bitstreamSwitching")?;
     let minimum_width = optional_positive_u32_attribute(element, "minWidth")?;
     let maximum_width = optional_positive_u32_attribute(element, "maxWidth")?;
     let minimum_height = optional_positive_u32_attribute(element, "minHeight")?;

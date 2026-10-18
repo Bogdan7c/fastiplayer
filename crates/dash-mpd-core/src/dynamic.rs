@@ -24,9 +24,10 @@ use bounded_xml_reader::{BoundedXmlReader, XmlElement, XmlEvent};
 use crate::error::{DashMpdError, DashMpdErrorKind};
 use crate::model::{DashAddressing, DashMpd, DashPeriod, DashPresentationDuration};
 use crate::parser::{
-    DashMpdParseRequest, EventCursor, ParsedPeriod, bounded_optional_attribute, is_name,
-    optional_attribute, optional_duration_attribute, parse_base_url, parse_period, require_name,
-    set_single_base_url, validate_attributes, validate_profiles,
+    DashMpdParseRequest, EventCursor, ParsedPeriod, bounded_optional_attribute,
+    is_informational_root_element, is_name, optional_attribute, optional_duration_attribute,
+    parse_base_url, parse_period, require_name, set_single_base_url,
+    skip_informational_element_body, validate_attributes, validate_profiles,
 };
 
 mod clock;
@@ -180,13 +181,10 @@ pub fn parse_dynamic_dash_mpd(
                     .map_err(map_dynamic_schema_error)?;
                 set_single_base_url(&mut base_url, parsed).map_err(map_dynamic_schema_error)?;
             }
-            Some(XmlEvent::StartElement(element))
-                if is_name(element.name(), "ProgramInformation") =>
-            {
-                consume_informational_element(&mut cursor)?;
+            Some(XmlEvent::StartElement(element)) if is_informational_root_element(&element) => {
+                skip_informational_element_body(&mut cursor)?;
             }
-            Some(XmlEvent::EmptyElement(element))
-                if is_name(element.name(), "ProgramInformation") => {}
+            Some(XmlEvent::EmptyElement(element)) if is_informational_root_element(&element) => {}
             Some(XmlEvent::EmptyElement(element)) if is_name(element.name(), "UTCTiming") => {
                 if utc_timing.is_some() {
                     return Err(excluded(DashDynamicProfileExclusion::UnsupportedClockModel));
@@ -413,34 +411,6 @@ fn parse_utc_timing(
             .map(DashUtcTiming::HttpXsDate)
             .map_err(|_| excluded(DashDynamicProfileExclusion::MissingOrInvalidUtcTimestamp)),
         _ => Err(excluded(DashDynamicProfileExclusion::UnsupportedClockModel)),
-    }
-}
-
-/// Пропускает только exact informational subtree под общими XML budgets.
-fn consume_informational_element(cursor: &mut EventCursor<'_>) -> Result<(), DashDynamicMpdError> {
-    let mut open_element_count = 1_usize;
-    loop {
-        match cursor.next_event()? {
-            Some(XmlEvent::StartElement(_)) => {
-                open_element_count = open_element_count
-                    .checked_add(1)
-                    .ok_or_else(|| DashMpdError::new(DashMpdErrorKind::LimitExceeded))?;
-            }
-            Some(XmlEvent::EndElement(_)) => {
-                open_element_count = open_element_count
-                    .checked_sub(1)
-                    .ok_or_else(|| DashMpdError::new(DashMpdErrorKind::MalformedSchema))?;
-                if open_element_count == 0 {
-                    return Ok(());
-                }
-            }
-            Some(XmlEvent::EmptyElement(_) | XmlEvent::Text(_)) => {}
-            None => {
-                return Err(excluded(
-                    DashDynamicProfileExclusion::UnsupportedTimingConstruct,
-                ));
-            }
-        }
     }
 }
 

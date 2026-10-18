@@ -438,3 +438,116 @@ fn default_selection_audio() -> DashRepresentationEvidence {
         dimensions: None,
     }
 }
+
+/// MPD в точности как его пишет `ffmpeg -f dash`: `ProgramInformation`, `ServiceDescription`
+/// и `bitstreamSwitching` раньше отвергались парсером и уводили источник в yt-dlp.
+const FFMPEG_DASH_MPD: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<MPD xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns="urn:mpeg:dash:schema:mpd:2011"
+	xmlns:xlink="http://www.w3.org/1999/xlink"
+	xsi:schemaLocation="urn:mpeg:DASH:schema:MPD:2011 http://standards.iso.org/ittf/PubliclyAvailableStandards/MPEG-DASH_schema_files/DASH-MPD.xsd"
+	profiles="urn:mpeg:dash:profile:isoff-live:2011"
+	type="static"
+	mediaPresentationDuration="PT1M30.0S"
+	maxSegmentDuration="PT6.0S"
+	minBufferTime="PT12.0S">
+	<ProgramInformation>
+	</ProgramInformation>
+	<ServiceDescription id="0">
+	</ServiceDescription>
+	<Period id="0" start="PT0.0S">
+		<AdaptationSet id="0" contentType="video" startWithSAP="1" segmentAlignment="true" bitstreamSwitching="true" frameRate="24/1" maxWidth="1280" maxHeight="544" par="40:17" lang="eng">
+			<Representation id="0" mimeType="video/mp4" codecs="avc1.64001f" bandwidth="1450630" width="1280" height="544" sar="1:1">
+				<SegmentTemplate timescale="1000000" duration="6000000" initialization="init-$RepresentationID$.m4s" media="chunk-$RepresentationID$-$Number%05d$.m4s" startNumber="1">
+				</SegmentTemplate>
+			</Representation>
+		</AdaptationSet>
+		<AdaptationSet id="1" contentType="audio" startWithSAP="1" segmentAlignment="true" bitstreamSwitching="true" lang="eng">
+			<Representation id="1" mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="132651" audioSamplingRate="48000">
+				<AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="2" />
+				<SegmentTemplate timescale="1000000" duration="6000000" initialization="init-$RepresentationID$.m4s" media="chunk-$RepresentationID$-$Number%05d$.m4s" startNumber="1">
+				</SegmentTemplate>
+			</Representation>
+		</AdaptationSet>
+	</Period>
+</MPD>
+"#;
+
+/// Proof port, который подтверждает ровно те дорожки, что заявлены в ffmpeg MPD.
+struct FfmpegProofPort;
+
+impl DashRepresentationLaneProofPort for FfmpegProofPort {
+    fn prove_lane(
+        &mut self,
+        request: DashRepresentationLaneProbe,
+    ) -> Result<DashRepresentationLaneProof, DashRepresentationLaneProbeError> {
+        Ok(match request.kind() {
+            DashMediaKind::Video => DashRepresentationLaneProof::VideoOnly(video_track(
+                "avc1.64001f",
+                1_280,
+                544,
+                Some((24, 1)),
+                Some(1_450_630),
+                DynamicRange::Sdr,
+            )),
+            DashMediaKind::Audio => DashRepresentationLaneProof::AudioOnly(audio_track(
+                Some(132_651),
+                Some("eng"),
+                Some(2),
+            )),
+            DashMediaKind::Muxed => {
+                return Err(DashRepresentationLaneProbeError::CapabilityRejected);
+            }
+        })
+    }
+}
+
+#[test]
+fn ffmpeg_dash_mpd_builds_a_native_separate_video_audio_catalog() {
+    // `parse` паникует на любом отказе парсера, то есть именно на прежнем fallback-сценарии.
+    let presentation = parse(FFMPEG_DASH_MPD);
+    // Provider default описывает ровно те две строки, что объявлены в ffmpeg MPD.
+    let provider_default = DashPresentationSelection::Separate {
+        video: DashRepresentationEvidence {
+            media_kind: DashMediaKind::Video,
+            container: DashContainer::IsoBmff,
+            representation_id: Some("0".to_owned()),
+            codecs: Some("avc1.64001f".to_owned()),
+            bandwidth: Some(1_450_630),
+            dimensions: Some(DashVideoDimensions {
+                width: 1_280,
+                height: 544,
+            }),
+        },
+        audio: DashRepresentationEvidence {
+            media_kind: DashMediaKind::Audio,
+            container: DashContainer::IsoBmff,
+            representation_id: Some("1".to_owned()),
+            codecs: Some("mp4a.40.2".to_owned()),
+            bandwidth: Some(132_651),
+            dimensions: None,
+        },
+    };
+    let mut proof_port = FfmpegProofPort;
+    let built = build_with_proof(&presentation, 1, 1, &provider_default, &mut proof_port)
+        .expect("lane catalog");
+
+    let ComponentVariantCatalog::Topology {
+        video,
+        audio,
+        compatibility,
+        ..
+    } = built.catalog()
+    else {
+        panic!("DASH catalog must preserve constrained/coupled topology");
+    };
+    assert_eq!(video.len(), 1);
+    assert_eq!(audio.len(), 1);
+    assert_eq!(compatibility.logical_edge_count(), 1);
+    assert!(matches!(
+        built
+            .resolve_selection(built.provider_default())
+            .expect("provider default mapping"),
+        DashLogicalRepresentationSelection::Separate { .. }
+    ));
+}

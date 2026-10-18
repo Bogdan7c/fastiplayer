@@ -44,8 +44,11 @@ fn parse_empty_segment_template(
             "initialization",
             "availabilityTimeOffset",
             "availabilityTimeComplete",
+            "bitstreamSwitching",
         ],
     )?;
+    // Булев ABR-hint: только валидация формы, значение не используется.
+    optional_boolean_attribute(&element, "bitstreamSwitching")?;
     let media = required_bounded_attribute(&element, "media", limits)?;
     let initialization = bounded_optional_attribute(&element, "initialization", limits)?
         .map(DashTemplateString::parse)
