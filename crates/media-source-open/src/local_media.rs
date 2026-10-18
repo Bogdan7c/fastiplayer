@@ -208,6 +208,8 @@ mod attachment_limits_tests;
 mod ts_concatenation_tests;
 #[cfg(test)]
 mod ts_fixture;
+#[cfg(test)]
+mod ts_presentation_start_tests;
 
 #[cfg(test)]
 mod tests {

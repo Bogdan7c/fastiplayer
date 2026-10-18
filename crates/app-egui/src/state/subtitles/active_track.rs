@@ -8,6 +8,8 @@ use subtitle_core::{
 };
 use subtitle_raster::CueSourceId;
 
+use super::container_start::TimelineOrigin;
+
 /// Дорожка, готовая к показу.
 ///
 /// Владеет таймлайном и всем, что нужно для ответа «какие реплики видны на кадре с `pts`»:
@@ -15,6 +17,9 @@ use subtitle_raster::CueSourceId;
 ///   реплики разных дорожек с одинаковыми `SubtitleEventId` (контракт `CueKey`);
 /// - `sync_offset` — единственная точка, через которую пользовательский сдвиг синхронизации
 ///   влияет на время показа (сессия 04 лишь меняет его значение);
+/// - `timeline_origin` - где на шкале кадров лежит нуль самого файла: у SRT/ASS рядом с записью
+///   MPEG-TS со стартом 1,4 с он равен 1,4 с (см. `container_start`); у встроенных, web и
+///   потоковых дорожек всегда `ZERO`. Это НЕ пользовательский сдвиг и в память не пишется;
 /// - `language` — язык дорожки (из имени файла), если он известен: по нему растеризатор
 ///   выбирает региональную форму CJK. Он неизменен, а `source_id` уникален для дорожки, так
 ///   что презентатору достаточно сравнивать `source_id`, чтобы заметить смену языка.
@@ -22,6 +27,7 @@ pub(super) struct ActiveSubtitleTrack {
     source_id: CueSourceId,
     timeline: SubtitleTimeline,
     sync_offset: SubtitleSyncOffset,
+    timeline_origin: TimelineOrigin,
     language: Option<SubtitleLanguage>,
 }
 
@@ -37,8 +43,21 @@ impl ActiveSubtitleTrack {
             source_id,
             timeline,
             sync_offset,
+            timeline_origin: TimelineOrigin::ZERO,
             language,
         }
+    }
+
+    /// Дорожка-файл, чей нуль лежит в `timeline_origin` на шкале кадров (локальный TS со
+    /// стартом контейнера). Остальные виды дорожек создаются через [`Self::new`] с `ZERO`.
+    pub(super) fn with_timeline_origin(mut self, timeline_origin: TimelineOrigin) -> Self {
+        self.timeline_origin = timeline_origin;
+        self
+    }
+
+    /// Обновляет нуль файла, когда старт контейнера стал известен после загрузки дорожки.
+    pub(super) fn set_timeline_origin(&mut self, timeline_origin: TimelineOrigin) {
+        self.timeline_origin = timeline_origin;
     }
 
     /// Меняет сдвиг синхронизации (вызывает только список дорожек, чтобы сдвиг оставался
@@ -151,10 +170,13 @@ impl ActiveSubtitleTrack {
     /// Время, по которому нужно искать реплики для кадра с данным `pts`.
     ///
     /// `frame_pts` — позиция кадра на шкале исходного файла (та же шкала, что у демуксера,
-    /// см. отчёт сессии 03 про происхождение pts). Сдвиг применяется ровно здесь.
+    /// см. отчёт сессии 03 про происхождение pts). Сначала кадр переводится на шкалу самого
+    /// файла субтитров (`timeline_origin`), затем применяется пользовательский сдвиг: обе
+    /// поправки живут ровно здесь, а все потребители (презентатор, часы, поток-рисовальщик)
+    /// работают уже с готовым временем поиска.
     pub(super) fn lookup_time_for(&self, frame_pts: Duration) -> SubtitleTime {
         self.sync_offset
-            .lookup_time_for(subtitle_time_from_pts(frame_pts))
+            .lookup_time_for(self.timeline_origin.file_time_for(frame_pts))
     }
 }
 

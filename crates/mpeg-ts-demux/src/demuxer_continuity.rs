@@ -165,6 +165,8 @@ impl MpegTsDemuxer {
         if placement.revision == EpochRevision::OffsetRefined {
             self.move_seek_anchors_to_refined_epoch(placement.epoch);
         }
+        self.presentation_start
+            .observe(placement.epoch.id, placement.epoch.present(raw_pts));
         PresentationTimestamps {
             pts: placement.epoch.present(raw_pts),
             dts: raw_dts.map(|dts| placement.epoch.present(dts)),

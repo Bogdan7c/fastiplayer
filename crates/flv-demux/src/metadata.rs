@@ -67,6 +67,7 @@ pub(crate) fn parse_on_metadata(
         media_metadata: MediaMetadata {
             container: Some(MediaContainerMetadata {
                 format_name: Some("Flash Video".to_owned()),
+                ..Default::default()
             }),
             tags: MediaTagMetadata {
                 title,

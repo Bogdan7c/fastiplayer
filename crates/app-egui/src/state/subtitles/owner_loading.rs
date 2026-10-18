@@ -13,6 +13,7 @@ use subtitle_core::SubtitleTrackId;
 use subtitle_raster::SubtitleFontLibrary;
 
 use super::active_track::ActiveSubtitleTrack;
+use super::container_start::TimelineOrigin;
 use super::file_loader::LoadedSidecarTrack;
 use super::job_runner::SidecarJob;
 use super::media_state::{DiscoveryState, MediaSubtitles, TrackLoadJob};
@@ -143,9 +144,10 @@ impl SubtitleOwner {
             && let Some(track_id) = id_of(candidate_index)
         {
             let sync_offset = media.sync_offset;
+            let file_origin = media.container_start.origin();
             let source_id = self.source_ids.allocate();
             if let Some(entry) = media.tracks.get_mut(track_id) {
-                entry.load = loaded_state(result, source_id, sync_offset);
+                entry.load = loaded_state(result, source_id, sync_offset, file_origin);
             }
         }
     }
@@ -184,9 +186,10 @@ impl SubtitleOwner {
             .user_files
             .record_load_result(&media.tracks, track_id, &result);
         let sync_offset = media.sync_offset;
+        let file_origin = media.container_start.origin();
         let source_id = self.source_ids.allocate();
         if let Some(entry) = media.tracks.get_mut(track_id) {
-            entry.load = loaded_state(result, source_id, sync_offset);
+            entry.load = loaded_state(result, source_id, sync_offset, file_origin);
         }
         JobResultDisposition::Applied
     }
@@ -323,6 +326,7 @@ fn loaded_state(
     result: Result<LoadedSidecarTrack, SubtitleLoadFailure>,
     source_id: subtitle_raster::CueSourceId,
     sync_offset: subtitle_core::SubtitleSyncOffset,
+    file_origin: TimelineOrigin,
 ) -> TrackLoadState {
     match result {
         Ok(loaded) => {
@@ -332,12 +336,11 @@ fn loaded_state(
                 events = loaded.timeline.len(),
                 "Subtitle track loaded"
             );
-            TrackLoadState::Ready(ActiveSubtitleTrack::new(
-                source_id,
-                loaded.timeline,
-                sync_offset,
-                loaded.language,
-            ))
+            // Файл рядом с видео считает время от нуля, а кадры - от старта контейнера.
+            TrackLoadState::Ready(
+                ActiveSubtitleTrack::new(source_id, loaded.timeline, sync_offset, loaded.language)
+                    .with_timeline_origin(file_origin),
+            )
         }
         Err(failure) => {
             tracing::warn!(%failure, "Subtitle file is unavailable; playback continues");

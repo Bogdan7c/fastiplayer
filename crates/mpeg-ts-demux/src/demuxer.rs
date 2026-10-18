@@ -16,6 +16,7 @@ use crate::continuity::{ContinuityTracker, ContinuityVerdict};
 use crate::elementary::ElementaryPacket;
 use crate::framing::{TransportPacket, TransportPacketReader, TransportReadOutcome};
 use crate::pes::{PesAssembler, PesPacket};
+use crate::presentation_start::PresentationStartTracker;
 use crate::psi::{
     ElementaryStream, ProgramMap, ProgramMapEntry, PsiSectionAssembler, StreamKind, parse_pat,
     parse_pmt, select_program,
@@ -96,6 +97,8 @@ pub struct MpegTsDemuxer {
     pending_events: VecDeque<DemuxReadEvent>,
     /// Одна монотонная шкала презентации поверх разрывов timestamps (склейка записей).
     timeline: PresentationTimeline,
+    /// Самый ранний PTS первой эпохи: публикуется как `presentation_start` метаданных.
+    presentation_start: PresentationStartTracker,
     seek_index: Vec<SeekAnchor>,
     index_scan_offset: u64,
     index_reached_end: bool,
@@ -152,6 +155,7 @@ impl MpegTsDemuxer {
                 timeline_ownership,
                 options.timestamp_discontinuity,
             ),
+            presentation_start: PresentationStartTracker::new(timeline_ownership),
             seek_index: Vec::new(),
             index_scan_offset: 0,
             index_reached_end: false,
@@ -622,6 +626,18 @@ impl Demuxer for MpegTsDemuxer {
 
     fn duration(&self) -> Option<Duration> {
         self.duration
+    }
+
+    /// Публикует только старт шкалы контейнера; остальных метаданных TS не даёт.
+    fn media_metadata(&self) -> Option<media_core::MediaMetadata> {
+        let presentation_start = self.presentation_start.presentation_start()?;
+        Some(media_core::MediaMetadata {
+            container: Some(media_core::MediaContainerMetadata {
+                presentation_start: Some(presentation_start),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
     }
 
     fn seekability(&self) -> DemuxSeekability {

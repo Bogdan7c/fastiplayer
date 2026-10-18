@@ -55,7 +55,7 @@ Pure-Rust rasterizer, a port of libass 0.17.5 behaviour (ISC). Output: a list of
 | Timing | by the pts of the frame actually drawn; pause keeps the cue, seek drops it on the first new frame, cues of the previous file never appear |
 | Placement | bottom of the picture area (never on the letterbox bars yet — bars and lifting above the controls: session 05) |
 | Track choice | automatic by preferred languages, or from the CC menu (session 04, see below) |
-| Files with a non-zero container start time (some MPEG-TS/M2TS) | not yet: sidecar times are compared with raw frame pts; tracked for session 14 |
+| Files with a non-zero container start time (MPEG-TS) | supported for subtitle files beside the video and dropped files of a local MPEG-TS: they count from 0 (like ffmpeg and mpv), so the demuxer publishes the container start (earliest PTS of the first recording) and the file times are shifted by it. Embedded tracks (same timeline as the video), HLS/DASH stream tracks and web tracks are not shifted. The player position shown in the UI is still the raw container time; M2TS (192-byte) is not supported by the demuxer at all |
 
 ### Sidecar files next to a local video
 

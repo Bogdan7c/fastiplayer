@@ -55,6 +55,7 @@ mod active_track;
 mod app_state_api;
 mod appearance_edit;
 mod auto_select;
+mod container_start;
 mod control_actions;
 mod controls_obstruction;
 mod embedded_events;
@@ -68,6 +69,7 @@ mod limits;
 mod media_state;
 mod menu_view;
 mod owner_appearance_edit;
+mod owner_container_start;
 mod owner_embedded;
 mod owner_fonts_bootstrap;
 mod owner_intents;
@@ -112,6 +114,7 @@ pub(crate) use self::appearance_edit::{
     AppearanceEditOutcome, AppearanceEditView,
 };
 use self::auto_select::PreferredLanguages;
+use self::container_start::ContainerStart;
 pub(crate) use self::control_actions::ControlActionFeedback;
 pub(crate) use self::controls_obstruction::BottomControlsObstruction;
 use self::embedded_fonts::AttachedFontsState;
@@ -382,6 +385,10 @@ impl SubtitleOwner {
         }
 
         let mut media = MediaSubtitles::new(media_instance_id, self.default_visibility);
+        if matches!(source, SubtitleMediaSource::LocalFile(_)) {
+            // Шкалу локального файла публикует демуксер контейнера: файлы рядом считают от нуля.
+            media.container_start = ContainerStart::for_local_file();
+        }
         self.adopt_queued_files(&mut media);
         owner_memory::apply_restore_request(&mut media, restore);
         let has_remote_tracks = source.has_remote_tracks();

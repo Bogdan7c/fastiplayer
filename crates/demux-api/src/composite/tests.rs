@@ -466,6 +466,7 @@ fn metadata_merge_preserves_video_precedence_and_audio_fallbacks() {
     let video_metadata = MediaMetadata {
         container: Some(MediaContainerMetadata {
             format_name: Some("video/webm".into()),
+            ..Default::default()
         }),
         tags: MediaTagMetadata {
             title: Some("Video title".into()),
@@ -477,6 +478,7 @@ fn metadata_merge_preserves_video_precedence_and_audio_fallbacks() {
     let audio_metadata = MediaMetadata {
         container: Some(MediaContainerMetadata {
             format_name: Some("audio/webm".into()),
+            ..Default::default()
         }),
         tags: MediaTagMetadata {
             title: Some("Audio title".into()),

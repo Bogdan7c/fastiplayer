@@ -20,6 +20,7 @@ use subtitle_sidecar::{SidecarLocation, SidecarSubtitleCandidate};
 
 use super::active_track::ActiveSubtitleTrack;
 use super::auto_select::{TrackOrigin, TrackTraits};
+use super::container_start::TimelineOrigin;
 use super::embedded_track::EmbeddedTrackDescription;
 use super::menu_view::{
     SubtitleFileOrigin, SubtitleTrackAvailability, SubtitleTrackLabel, SubtitleUnavailableReason,
@@ -141,6 +142,11 @@ fn unavailable_reason_view(failure: &SubtitleLoadFailure) -> SubtitleUnavailable
 }
 
 /// Состояние загрузки таймлайна одной дорожки.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "дорожек единицы на media и они не перемещаются по горячему пути; Box менял бы все \
+              места, где дорожку создают и читают"
+)]
 pub(super) enum TrackLoadState {
     /// Файл ещё не читали (дорожка не нужна для показа).
     NotLoaded,
@@ -509,6 +515,20 @@ impl SubtitleTrackList {
             keep_entry
         });
         removed
+    }
+
+    /// Переносит нуль уже загруженных дорожек-файлов (не встроенных, не web и не потоковых).
+    ///
+    /// Нужен, когда старт контейнера стал известен позже, чем прочитался файл рядом с видео.
+    pub(super) fn apply_file_timeline_origin(&mut self, origin: TimelineOrigin) {
+        for entry in &mut self.entries {
+            if entry.description.sidecar_candidate().is_none() {
+                continue;
+            }
+            if let TrackLoadState::Ready(track) = &mut entry.load {
+                track.set_timeline_origin(origin);
+            }
+        }
     }
 
     /// Применяет общий сдвиг ко всем уже загруженным дорожкам.

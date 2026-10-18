@@ -10,6 +10,7 @@ use subtitle_core::{SubtitleSyncOffset, SubtitleTrackId};
 use player_core::MediaInstanceId;
 
 use super::active_track::ActiveSubtitleTrack;
+use super::container_start::ContainerStart;
 use super::intents::SubtitleVisibility;
 use super::job_runner::SidecarJob;
 use super::owner_embedded::{EmbeddedAssTracks, EmbeddedPgsTracks};
@@ -84,6 +85,9 @@ pub(super) struct MediaSubtitles {
     pub(super) visibility: SubtitleVisibility,
     /// Общий сдвиг синхронизации всех дорожек media.
     pub(super) sync_offset: SubtitleSyncOffset,
+    /// Старт шкалы контейнера для файловых дорожек (отдельно от `sync_offset`: в память
+    /// дорожек и в уведомления Z/X он не попадает).
+    pub(super) container_start: ContainerStart,
     /// Пользователь сам выбрал дорожку (или добавил файл): поздний результат поиска не
     /// имеет права переопределить выбор автовыбором.
     pub(super) user_chose_track: bool,
@@ -119,6 +123,7 @@ impl MediaSubtitles {
             forced_pictures_fallback: None,
             visibility,
             sync_offset: SubtitleSyncOffset::ZERO,
+            container_start: ContainerStart::not_applicable(),
             user_chose_track: false,
             load_job: None,
             pending_memory: None,

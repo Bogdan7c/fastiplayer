@@ -253,6 +253,7 @@ fn snapshot_from_format_reader(
     let mut metadata = MediaMetadata {
         container: Some(MediaContainerMetadata {
             format_name: Some(format_name),
+            ..Default::default()
         }),
         ..MediaMetadata::default()
     };

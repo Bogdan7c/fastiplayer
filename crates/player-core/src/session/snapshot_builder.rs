@@ -298,6 +298,28 @@ mod tests {
     }
 
     #[test]
+    fn builder_publishes_container_presentation_start_in_media_info() {
+        let mut session = PlayerSession::default();
+        session.pipeline.install_opened_media(
+            Box::new(SnapshotFakeDemuxer::with_presentation_start(
+                Duration::from_millis(1_400),
+            )),
+            Some(PathBuf::from("/tmp/recording.ts")),
+            None,
+            Vec::new(),
+        );
+
+        let snapshot = build_snapshot(&session, FrameCounters::default());
+
+        let start = snapshot
+            .media_info
+            .and_then(|info| info.metadata)
+            .and_then(|metadata| metadata.container)
+            .and_then(|container| container.presentation_start);
+        assert_eq!(start, Some(Duration::from_millis(1_400)));
+    }
+
+    #[test]
     fn builder_preserves_render_generation_from_pipeline_getter() {
         let mut session = PlayerSession::default();
         session.pipeline.advance_render_generation();
@@ -375,6 +397,8 @@ mod tests {
     struct SnapshotFakeDemuxer {
         /// Metadata tracks, которые возвращает neutral demux contract.
         track_infos: Vec<TrackInfo>,
+        /// Metadata контейнера, которую demuxer публикует после открытия.
+        metadata: Option<media_core::MediaMetadata>,
     }
 
     impl SnapshotFakeDemuxer {
@@ -385,7 +409,24 @@ mod tests {
 
         /// Создаёт fake demuxer с явным immutable tracks snapshot.
         fn new(track_infos: Vec<TrackInfo>) -> Self {
-            Self { track_infos }
+            Self {
+                track_infos,
+                metadata: None,
+            }
+        }
+
+        /// Demuxer, чей контейнер начинается не с нуля (запись MPEG-TS).
+        fn with_presentation_start(start: Duration) -> Self {
+            Self {
+                track_infos: Vec::new(),
+                metadata: Some(media_core::MediaMetadata {
+                    container: Some(media_core::MediaContainerMetadata {
+                        presentation_start: Some(start),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            }
         }
     }
 
@@ -396,6 +437,10 @@ mod tests {
 
         fn duration(&self) -> Option<Duration> {
             None
+        }
+
+        fn media_metadata(&self) -> Option<media_core::MediaMetadata> {
+            self.metadata.clone()
         }
 
         fn next_event(&mut self) -> anyhow::Result<media_core::DemuxReadEvent> {

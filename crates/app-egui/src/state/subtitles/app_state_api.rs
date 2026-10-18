@@ -97,12 +97,26 @@ impl AppState {
         let tracks_update = self
             .subtitles
             .sync_embedded_tracks(snapshot.media_instance_id, &snapshot.tracks);
+        // Старт шкалы контейнера нужен файловым дорожкам (SRT/ASS считают от нуля).
+        let container_start = snapshot
+            .media_info
+            .as_ref()
+            .and_then(|info| info.metadata.as_ref())
+            .and_then(|metadata| metadata.container.as_ref())
+            .and_then(|container| container.presentation_start);
+        let start_changed = match (snapshot.media_instance_id, container_start) {
+            (Some(media_instance_id), Some(start)) => self
+                .subtitles
+                .note_container_start(media_instance_id, start),
+            _ => false,
+        };
         let feed_update = self.subtitles.drain_embedded_feed();
         // Реплики потока (HLS) приходят от своей ленты, а не из трубы контейнера.
         let stream_update = self.subtitles.drain_stream_feed();
         let notice_shown = self.show_stream_subtitle_notices();
         if tracks_update.merge(feed_update).merge(stream_update) == EmbeddedUpdate::Changed
             || notice_shown
+            || start_changed
         {
             // Меню CC или реплика на экране изменились: нужен ещё один кадр.
             self.mark_pending_worker_redraw();
