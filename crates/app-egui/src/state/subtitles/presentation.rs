@@ -96,6 +96,18 @@ impl SubmittedFrameForSubtitles {
         self.render_generation
     }
 
+    /// Размер картинки видео, который уйдёт в ASS как `storage size` (для тестов геометрии).
+    #[cfg(test)]
+    pub(super) fn picture_size_for_test(&self) -> PictureSize {
+        self.picture_size
+    }
+
+    /// Pts отправленного кадра (для тестов геометрии).
+    #[cfg(test)]
+    pub(super) fn frame_pts_for_test(&self) -> Duration {
+        self.frame_pts
+    }
+
     /// Собирает описание напрямую (тесты задают pts и геометрию без видео-кадра).
     #[cfg(test)]
     pub(super) fn for_test(

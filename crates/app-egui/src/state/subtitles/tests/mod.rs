@@ -55,6 +55,7 @@ mod stream_hls_vertical;
 mod stream_live_memory;
 mod stream_support;
 mod stream_tracks;
+mod submitted_frame_geometry;
 mod track_selection;
 mod web_gpu;
 mod web_labels;
