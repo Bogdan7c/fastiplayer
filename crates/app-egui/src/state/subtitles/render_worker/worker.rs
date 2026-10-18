@@ -25,7 +25,8 @@ use super::prepared_queue::OverlayIdentity;
 use super::published_record::PublishedRecord;
 use super::render_step::{StepInput, StepOutcome, render_at};
 use super::schedule::{
-    FrameCadence, FrameStep, PrerenderFrames, PresentationClock, ScheduleDecision, plan_next_render,
+    FrameCadence, FrameStep, PrerenderFrames, PresentationClock, PresentationMode,
+    ScheduleDecision, plan_next_render,
 };
 use super::track_mirror::TrackMirrors;
 use crate::app_wake::AppWakePort;
@@ -76,6 +77,10 @@ struct WorkerState {
     mirrors: TrackMirrors,
     look: Option<LookInputs>,
     presentation: Option<(RenderTarget, PresentationClock)>,
+    /// Цель прыжка (seek/scrub), перед которой история раскладки растеризатора уже забыта.
+    /// UI шлёт часы на каждом кадре: без этой пометки память сбрасывалась бы на каждой
+    /// повторной команде с той же целью и стирала бы то, что поток нарисовал после цели.
+    forgotten_for_jump_target: Option<subtitle_core::SubtitleTime>,
     /// Что уже выдано UI для текущей идентичности (по ней планируется работа).
     record: PublishedRecord,
     system_language: Option<SubtitleLanguage>,
@@ -120,6 +125,7 @@ impl WorkerState {
             mirrors: TrackMirrors::default(),
             look: None,
             presentation: None,
+            forgotten_for_jump_target: None,
             record,
             system_language: settings.system_language,
             horizon,
@@ -172,6 +178,7 @@ impl WorkerState {
                 if look.is_some() {
                     self.look = look;
                 }
+                self.forget_layout_history_on_new_jump(clock.mode);
                 self.presentation = Some((target, clock));
                 true
             }
@@ -223,6 +230,19 @@ impl WorkerState {
                     })))
             }
         }
+    }
+
+    /// Новая цель прыжка (seek/scrub): растеризатор забывает историю раскладки, чтобы положение
+    /// реплик в цели не зависело от того, откуда прыгнули. Выход из режима прыжка снимает
+    /// пометку: следующий прыжок, даже в то же время, снова начнёт с чистой раскладки.
+    /// Отличие от libass (там память живёт между любыми кадрами) задокументировано в
+    /// `mem:subtitles/ass-layer2-s09`.
+    fn forget_layout_history_on_new_jump(&mut self, mode: PresentationMode) {
+        let jump_target = mode.jump_target();
+        if jump_target.is_some() && jump_target != self.forgotten_for_jump_target {
+            self.rasterizer.forget_layout_history();
+        }
+        self.forgotten_for_jump_target = jump_target;
     }
 
     /// Следующее время для рисования или `None`, если делать нечего.

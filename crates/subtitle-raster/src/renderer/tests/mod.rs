@@ -5,6 +5,7 @@ mod ass_animation;
 mod ass_blur;
 mod ass_cache;
 mod ass_clip;
+mod ass_collision_discontinuity;
 mod ass_drawing;
 mod ass_effect;
 mod ass_glyph_caches;

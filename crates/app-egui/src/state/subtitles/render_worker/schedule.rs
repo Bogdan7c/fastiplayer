@@ -106,6 +106,19 @@ pub(in crate::state::subtitles) enum PresentationMode {
     Scrubbing { target: SubtitleTime },
 }
 
+impl PresentationMode {
+    /// Цель прыжка по времени (seek или scrub); в обычном ходе и на паузе - `None`.
+    ///
+    /// Прыжок рвёт непрерывность кадров: то, что поток запомнил о раскладке реплик, относится
+    /// к пройденному пути, а не к цели.
+    pub(in crate::state::subtitles) fn jump_target(self) -> Option<SubtitleTime> {
+        match self {
+            Self::Seeking { target } | Self::Scrubbing { target } => Some(target),
+            Self::Playing | Self::Paused => None,
+        }
+    }
+}
+
 /// «Часы показа»: снимок того, что UI показывает прямо сейчас.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::state::subtitles) struct PresentationClock {
