@@ -551,13 +551,28 @@ fn remove_ambiguous<T>(
     Ok(())
 }
 
+/// Ранг сортировки audio-строки: renditions по индексу объявления, затем variant-audio.
+fn audio_order_rank(origin: AudioOrigin) -> (u8, usize) {
+    match origin {
+        AudioOrigin::Rendition(declaration_index) => (0, declaration_index),
+        AudioOrigin::Variant(_) => (1, 0),
+    }
+}
+
 fn sort_rows(
     videos: &mut [PendingVideo],
     audios: &mut [PendingAudio],
     coupled: &mut [PendingCoupled],
 ) {
     videos.sort_by(|left, right| left.semantic_key.cmp(&right.semantic_key));
-    audios.sort_by(|left, right| left.semantic_key.cmp(&right.semantic_key));
+    // Renditions сохраняют порядок объявления `EXT-X-MEDIA` в master (видимый порядок меню
+    // звука), а не порядок хэша ключа; ключи при этом остаются независимыми от порядка master.
+    // Audio, объявленное в самом variant, идёт после renditions и упорядочено ключом.
+    audios.sort_by(|left, right| {
+        audio_order_rank(left.origin)
+            .cmp(&audio_order_rank(right.origin))
+            .then_with(|| left.semantic_key.cmp(&right.semantic_key))
+    });
     coupled.sort_by(|left, right| left.semantic_key.cmp(&right.semantic_key));
 }
 

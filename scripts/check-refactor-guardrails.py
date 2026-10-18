@@ -311,6 +311,9 @@ WEB_MEDIA_HLS_ALLOWED_DEPENDENCIES = frozenset(
         # concrete logger/backend по-прежнему принадлежит composition root.
         "log",
         "media-core",
+        # Чистый хэш для компактных opaque-ключей строк каталога (catalog/identity.rs);
+        # не backend demux/transport.
+        "sha2",
         "source-core",
         "thiserror",
         "web-media-adaptive",

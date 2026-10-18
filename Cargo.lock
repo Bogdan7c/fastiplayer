@@ -6265,6 +6265,7 @@ dependencies = [
  "log",
  "media-core",
  "mpeg-ts-demux",
+ "sha2",
  "source-core",
  "symphonia-demux",
  "symphonia-format-isomp4 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",

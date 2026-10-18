@@ -15,6 +15,7 @@ demux-api.workspace = true
 hls-playlist-core.workspace = true
 log.workspace = true
 media-core.workspace = true
+sha2.workspace = true
 source-core.workspace = true
 thiserror.workspace = true
 web-media-adaptive.workspace = true

@@ -7,7 +7,7 @@ use web_media_core::{
     LanguageTag, VideoComponentVariant, VideoHeight, VideoTrackDescriptor, VideoWidth,
 };
 
-use super::identity::SemanticKeyBuilder;
+use super::identity::{KeyOrdering, SemanticKeyBuilder};
 use super::{HlsCatalogBuildError, HlsCatalogSiblingRejectionReason};
 use crate::HlsRequiredContainer;
 
@@ -18,8 +18,7 @@ pub(super) fn build_video_row(
     proof: &VideoTrackDescriptor,
 ) -> Result<(String, VideoComponentVariant), HlsCatalogSiblingRejectionReason> {
     let descriptor = merge_video_evidence(variant, proof)?;
-    let key = variant_video_key("hls-v1-video", variant, container, &descriptor)
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
+    let key = variant_video_key("hls-v1-video", variant, container, &descriptor);
     let (exact, semantic) = component_identities(catalog, ComponentKind::Video, &key)
         .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
     Ok((key, VideoComponentVariant::new(exact, semantic, descriptor)))
@@ -31,17 +30,14 @@ pub(super) fn build_variant_audio_row(
     container: HlsRequiredContainer,
     proof: &AudioTrackDescriptor,
 ) -> Result<(String, AudioComponentVariant), HlsCatalogSiblingRejectionReason> {
-    let mut key = SemanticKeyBuilder::new("hls-v1-audio-variant")
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
-    hash_variant(&mut key, variant)
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
-    hash_container(&mut key, container)
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
-    key.audio(proof)
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
-    let key = key
-        .finish()
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
+    let mut key = SemanticKeyBuilder::new(
+        "hls-v1-audio-variant",
+        KeyOrdering::by_bandwidth(variant.bandwidth),
+    );
+    hash_variant(&mut key, variant);
+    hash_container(&mut key, container);
+    key.audio(proof);
+    let key = key.finish();
     let (exact, semantic) = component_identities(catalog, ComponentKind::Audio, &key)
         .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
     Ok((
@@ -57,17 +53,11 @@ pub(super) fn build_rendition_audio_row(
     proof: &AudioTrackDescriptor,
 ) -> Result<(String, AudioComponentVariant), HlsCatalogSiblingRejectionReason> {
     let descriptor = merge_audio_evidence(rendition, proof)?;
-    let mut key = SemanticKeyBuilder::new("hls-v1-audio-rendition")
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
-    hash_rendition(&mut key, rendition)
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
-    hash_container(&mut key, container)
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
-    key.audio(&descriptor)
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
-    let key = key
-        .finish()
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
+    let mut key = SemanticKeyBuilder::new("hls-v1-audio-rendition", KeyOrdering::unordered());
+    hash_rendition(&mut key, rendition);
+    hash_container(&mut key, container);
+    key.audio(&descriptor);
+    let key = key.finish();
     let (exact, semantic) = component_identities(catalog, ComponentKind::Audio, &key)
         .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
     Ok((key, AudioComponentVariant::new(exact, semantic, descriptor)))
@@ -81,19 +71,15 @@ pub(super) fn build_coupled_row(
     audio: &AudioTrackDescriptor,
 ) -> Result<(String, CoupledComponentVariant), HlsCatalogSiblingRejectionReason> {
     let video = merge_video_evidence(variant, video)?;
-    let mut key = SemanticKeyBuilder::new("hls-v1-coupled")
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
-    hash_variant(&mut key, variant)
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
-    hash_container(&mut key, container)
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
-    key.video(&video)
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
-    key.audio(audio)
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
-    let key = key
-        .finish()
-        .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
+    let mut key = SemanticKeyBuilder::new(
+        "hls-v1-coupled",
+        KeyOrdering::by_bandwidth(variant.bandwidth),
+    );
+    hash_variant(&mut key, variant);
+    hash_container(&mut key, container);
+    key.video(&video);
+    key.audio(audio);
+    let key = key.finish();
     let exact_key = ComponentVariantExactKey::new(key.clone())
         .map_err(|_| HlsCatalogSiblingRejectionReason::DescriptorBounds)?;
     let semantic_key = ComponentVariantSemanticKey::new(key.clone())
@@ -260,46 +246,37 @@ fn variant_video_key(
     variant: &VariantStream,
     container: HlsRequiredContainer,
     video: &VideoTrackDescriptor,
-) -> Result<String, HlsCatalogBuildError> {
-    let mut key = SemanticKeyBuilder::new(prefix)?;
-    hash_variant(&mut key, variant)?;
-    hash_container(&mut key, container)?;
-    key.video(video)?;
+) -> String {
+    let mut key = SemanticKeyBuilder::new(prefix, KeyOrdering::by_bandwidth(variant.bandwidth));
+    hash_variant(&mut key, variant);
+    hash_container(&mut key, container);
+    key.video(video);
     key.finish()
 }
 
-fn hash_variant(
-    key: &mut SemanticKeyBuilder,
-    variant: &VariantStream,
-) -> Result<(), HlsCatalogBuildError> {
-    key.field(&variant.bandwidth.to_be_bytes())?;
+fn hash_variant(key: &mut SemanticKeyBuilder, variant: &VariantStream) {
+    key.field(&variant.bandwidth.to_be_bytes());
     let average_bandwidth = variant.average_bandwidth.map(u64::to_be_bytes);
-    key.optional_field(average_bandwidth.as_ref().map(|value| value.as_slice()))?;
-    key.optional_field(variant.audio_group.as_deref().map(str::as_bytes))
+    key.optional_field(average_bandwidth.as_ref().map(|value| value.as_slice()));
+    key.optional_field(variant.audio_group.as_deref().map(str::as_bytes));
 }
 
-fn hash_container(
-    key: &mut SemanticKeyBuilder,
-    container: HlsRequiredContainer,
-) -> Result<(), HlsCatalogBuildError> {
+fn hash_container(key: &mut SemanticKeyBuilder, container: HlsRequiredContainer) {
     key.field(match container {
         HlsRequiredContainer::TransportStream => b"mpeg-ts",
         HlsRequiredContainer::FragmentedMp4 => b"fmp4",
-    })
+    });
 }
 
-fn hash_rendition(
-    key: &mut SemanticKeyBuilder,
-    rendition: &MediaRendition,
-) -> Result<(), HlsCatalogBuildError> {
-    key.field(rendition.group_id.as_bytes())?;
-    key.field(rendition.name.as_bytes())?;
-    key.optional_field(rendition.language.as_deref().map(str::as_bytes))?;
-    key.optional_field(rendition.associated_language.as_deref().map(str::as_bytes))?;
-    key.optional_field(rendition.characteristics.as_deref().map(str::as_bytes))?;
-    key.optional_field(rendition.channels.as_deref().map(str::as_bytes))?;
-    key.field(&[u8::from(rendition.is_default)])?;
-    key.field(&[u8::from(rendition.autoselect)])
+fn hash_rendition(key: &mut SemanticKeyBuilder, rendition: &MediaRendition) {
+    key.field(rendition.group_id.as_bytes());
+    key.field(rendition.name.as_bytes());
+    key.optional_field(rendition.language.as_deref().map(str::as_bytes));
+    key.optional_field(rendition.associated_language.as_deref().map(str::as_bytes));
+    key.optional_field(rendition.characteristics.as_deref().map(str::as_bytes));
+    key.optional_field(rendition.channels.as_deref().map(str::as_bytes));
+    key.field(&[u8::from(rendition.is_default)]);
+    key.field(&[u8::from(rendition.autoselect)]);
 }
 
 #[cfg(test)]

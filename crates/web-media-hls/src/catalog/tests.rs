@@ -681,4 +681,5 @@ fn unique_child_is_proven_once_and_budget_fails_before_any_hook() {
     assert!(no_proofs.calls.is_empty());
 }
 
+mod coupled_key;
 mod timeline_isolation;
