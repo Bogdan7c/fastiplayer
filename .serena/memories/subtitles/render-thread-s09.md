@@ -27,7 +27,7 @@ UI-поток НИКОГДА не вызывает `SubtitleRasterizer` и не 
 ## Инварианты
 - Идентичность картинки = source + canvas + inputs revision (растёт: стиль, ASS-опции/размер картинки, шрифты, `forget_shown_overlay`). `forget_shown` чистит очередь; смена sync offset НЕ инвалидирует (картинки во времени субтитров).
 - Фоллбэк не берёт чужой source; закончившиеся реплики режутся (`retain_cues`).
-- Известное ограничение: в режиме правки часы идут только для выбранной дорожки (primary или sample) — первый кадр primary-реплики может быть опоздавшим. Память коллизий ASS растеризатора зависит от порядка рисования (prerender вперёд).
+- Известное ограничение: в режиме правки часы идут только для выбранной дорожки (primary или sample) — первый кадр primary-реплики может быть опоздавшим. Память коллизий ASS сбрасывается на каждой новой цели seek/scrub (сессия 14, `forget_layout_history`); картинки, подготовленные наперёд до прыжка, остаются. Дополнения сессии 14 (порядок `reset_media`, `rasterizer_calls`, шаг кадров при scrub, `WarmUpFonts`) — `mem:subtitles/edge-cases-s14`.
 
 ## Тесты
 `state/subtitles/tests/render_thread.rs` (реальный поток), по умолчанию остальные тесты работают в `PumpMode::SettleBeforeSelect` (презентатор ждёт idle потока); `FreeRunning` — асинхронное поведение. Тестовые хуки: `Flush`, `SetRenderDelay`, `QueryStatistics`, `SimulateCrash`.

@@ -240,7 +240,7 @@ Placement: events with `\pos`, `\move`, `\org`, rotation, shear or a Banner / Sc
 
 - A track added later through `TracksChanged` has no header (`codec_private`): it is drawn as plain text.
 - Vertical text `\fn@Font` is not supported.
-- Collision memory (stacking of simultaneous lines) is kept only for the cues active on the current frame.
+- Collision memory (stacking of simultaneous lines) is kept only for the cues active on the current frame, and it is reset at every new seek / scrub target (session 14), so the stacking at a target does not depend on where you jumped from. libass keeps that memory across any frames; during continuous playback both behave the same.
 - Glyph storage size equals the display size (no separate `LayoutRes`-based storage scaling beyond the script header).
 - A vector clip whose mask would be larger than the maximum canvas side is ignored (the cue is drawn unclipped) and counted in the render statistics.
 - "Force my style" (`ass_force_user_style` on) hides author drawings (`\p`) and ignores author blur (`\blur`, `\be`). This is an owner decision (17.10.2026): drawings and blur are part of the author's geometry and look, which the user style replaces. Letters and the rest of the cue are drawn as before.
@@ -338,3 +338,32 @@ Text `AdaptationSet`s of a native DASH MPD (`.mpd` opened without yt-dlp) appear
 | Live | The text plan is rebuilt with every accepted MPD refresh; the track index is re-read at `minimumUpdatePeriod` (at least 1 s) |
 | Failures | Same policy as HLS: a segment that fails after the built-in HTTP retries is skipped (logged without the URL), repeated failures give one "Subtitles for this stream are unavailable right now." notification |
 | Not supported | `wvtt` `ctim` (continuation of a split cue), non-fragmented MP4 text, text sets with `ContentProtection`, plain-text segments with PTO (segmented sidecar TTML / WebVTT is read Period-relative, a known limitation), yt-dlp DASH manifests (they carry no text sets), re-addressing of a failed live text segment after a CDN token rotation (the segment is skipped, the next index refresh uses the new address) |
+
+## Edge cases (session 14)
+
+| Case | Behaviour |
+|---|---|
+| NUL bytes in SRT / WebVTT | Removed after decoding (editors that pad files with zeros no longer swallow the last cue). ASS stops at the first NUL like libass; the cut is reported in the parse report |
+| Huge single cue (megabytes of `<`, `{`, unclosed `<c>`) | Parsed in linear time |
+| Thousands of cues with the same start | Loaded in O(n log n) (duplicates still ignored) |
+| File content vs extension | SRT / WebVTT / ASS are recognised by content; the extension is the fallback (an ASS file named `.srt` works) |
+| A file without any cue | The track is unavailable with "No subtitles could be read from this file." |
+| A dropped / "Load file…" file that fails | One notification with the file name (no folder) and the reason: cannot be opened, too large, or nothing could be read. Files found automatically next to the video only show the grey hint in the CC menu |
+| FIFO, device or directory dropped as subtitles | Rejected before reading ("could not be opened"); loading and app exit never hang |
+| CJK text without spaces | Simple formats (SRT, WebVTT, srv3, TTML, mov_text, web) break lines between CJK characters with kinsoku rules; ASS keeps the libass behaviour (breaks only after spaces) |
+| First CJK cue with a system font | The needed system font faces are prepared in the background while the render thread is idle, once per shown track |
+| Network outage on HLS / DASH subtitles | Failed segments are retried with a growing pause within `network.reconnect_wait_ms`; only an outage longer than that makes the track unavailable (one notification) |
+| MPEG-TS with a non-zero start (typical 1.4 s) | Subtitle files next to a local TS (and dropped files) are shifted by the container start, so they count from 0 as in ffmpeg / mpv. Embedded, stream and web tracks are not shifted; the user sync offset is applied on top and is not affected |
+| Display scale change / moving between monitors | The interface keeps the monitor scale (previously 150 % became 225 %) |
+
+### Known limitations (session 14)
+
+- Color emoji are drawn as a monochrome outline (COLR / CBDT / sbix are not read).
+- WebVTT `vertical` cues are drawn horizontally.
+- Very short cp1251 files may be detected as cp1252; there is no manual encoding choice yet.
+- Negative timestamps in SRT / WebVTT drop the cue instead of clamping it to 0.
+- The player position and duration of MPEG-TS files are still the raw container time (1.4 s at the start); 192-byte M2TS is not opened.
+- CJK line breaking has no dictionary segmentation; Thai and Khmer without spaces do not wrap.
+- When a video and a subtitle file are dropped together in one gesture, a failing subtitle file only shows the grey hint in the menu (no notification).
+- Simple subtitles of a vertical video stay within the picture width (they may use the top / bottom bars, not the side bars) — owner decision.
+
