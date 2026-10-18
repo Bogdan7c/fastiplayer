@@ -16,8 +16,11 @@ use subtitle_formats::{
 };
 use subtitle_sidecar::{SidecarSubtitleCandidate, SidecarSubtitleFormat};
 
+use self::format_detection::resolve_text_format;
 use super::limits::LoadLimits;
 use super::sidecar_job::SubtitleLoadFailure;
+
+mod format_detection;
 
 /// Загруженный таймлайн и сведения о файле.
 pub(super) struct LoadedSidecarTrack {
@@ -45,7 +48,7 @@ pub(super) fn load_candidate_timeline(
     limits: &LoadLimits,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<LoadedSidecarTrack, FileLoadError> {
-    let Some(text_format) = text_format_of(candidate.format) else {
+    let Some(format_from_extension) = text_format_of(candidate.format) else {
         return Err(FileLoadError::Failed(
             SubtitleLoadFailure::FormatNotSupportedYet {
                 format: candidate.format,
@@ -62,13 +65,11 @@ pub(super) fn load_candidate_timeline(
     if is_cancelled() {
         return Err(FileLoadError::Cancelled);
     }
-    let timeline = parse_text_timeline(
-        &bytes,
-        text_format,
-        encoding_hint_for(candidate.language.as_ref()),
-        &limits.parse,
-    )
-    .map_err(FileLoadError::Failed)?;
+    let encoding_hint = encoding_hint_for(candidate.language.as_ref());
+    // Формат решает содержимое; расширение — запасной вариант (переименованные файлы).
+    let text_format = resolve_text_format(format_from_extension, &bytes, encoding_hint);
+    let timeline = parse_text_timeline(&bytes, text_format, encoding_hint, &limits.parse)
+        .map_err(FileLoadError::Failed)?;
     // Освобождаем сырые байты до остальной работы.
     drop(bytes);
 

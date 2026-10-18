@@ -19,6 +19,7 @@ mod ass_position_gpu;
 mod ass_position_lift_gpu;
 mod ass_sidecar;
 mod ass_transform_thread;
+mod content_format;
 mod control_actions;
 mod drop_flow;
 mod embedded_ass;
