@@ -164,6 +164,13 @@ impl SubtitlePresenter {
         self.queue.counters()
     }
 
+    /// Забирает журнал отправленных потоку команд (порядок отправки).
+    pub(in crate::state::subtitles) fn take_sent_command_log(
+        &mut self,
+    ) -> Vec<super::worker_link::SentCommandKind> {
+        self.link.take_sent_log()
+    }
+
     /// Сколько остановленных потоков ещё не освобождено.
     pub(in crate::state::subtitles) fn retiring_workers(&self) -> usize {
         self.link.retiring_count()

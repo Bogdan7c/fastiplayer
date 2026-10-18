@@ -98,7 +98,6 @@ impl SubtitlePresenter {
                     report,
                     mirror_serial,
                 } => {
-                    self.stats.rasterizer_calls += 1;
                     self.stats.last_rasterization = report.elapsed;
                     self.stats.slowest_rasterization =
                         self.stats.slowest_rasterization.max(report.elapsed);
@@ -116,6 +115,9 @@ impl SubtitlePresenter {
                         self.stats.dropped_outdated_pictures += 1;
                         continue;
                     }
+                    // Считаем только картинки, принятые UI (так заявлено в `PresentationStats`);
+                    // все нарисованные потоком (с отброшенными) видны в его диагностике.
+                    self.stats.rasterizer_calls += 1;
                     if current_time.is_some_and(|time| picture.interval().contains(time)) {
                         changes_current_frame = true;
                     }

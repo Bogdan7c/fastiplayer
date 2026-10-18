@@ -21,6 +21,9 @@ pub(super) struct WorkerLink {
     pending_failure: Option<RenderWorkerFailure>,
     /// Переиспользуемый буфер событий.
     events: Vec<WorkerEvent>,
+    /// Только тесты: журнал успешно отправленных команд в порядке отправки.
+    #[cfg(test)]
+    sent_log: Vec<SentCommandKind>,
 }
 
 impl WorkerLink {
@@ -31,6 +34,8 @@ impl WorkerLink {
             retiring: Vec::new(),
             pending_failure: None,
             events: Vec::new(),
+            #[cfg(test)]
+            sent_log: Vec::new(),
         }
     }
 
@@ -71,7 +76,13 @@ impl WorkerLink {
         let Some(handle) = self.running.as_ref() else {
             return Err(WorkerLost);
         };
+        #[cfg(test)]
+        let kind = SentCommandKind::of(&command);
         let result = handle.send(command);
+        #[cfg(test)]
+        if result.is_ok() {
+            self.sent_log.push(kind);
+        }
         if result.is_err() {
             self.fail(RenderWorkerFailure::Lost);
         }
@@ -110,6 +121,12 @@ impl WorkerLink {
         self.events = events;
     }
 
+    /// Только тесты: забирает журнал отправленных команд (журнал после этого пуст).
+    #[cfg(test)]
+    pub(super) fn take_sent_log(&mut self) -> Vec<SentCommandKind> {
+        std::mem::take(&mut self.sent_log)
+    }
+
     /// Только тесты: сколько остановленных потоков ещё не освобождено.
     #[cfg(test)]
     pub(super) fn retiring_count(&self) -> usize {
@@ -126,5 +143,38 @@ impl WorkerLink {
     #[cfg(test)]
     pub(super) fn wait_event(&mut self, timeout: std::time::Duration) -> Option<WorkerEvent> {
         self.running.as_ref()?.wait_event(timeout)
+    }
+}
+
+/// Только тесты: вид отправленной команды (для проверки порядка отправки).
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::state::subtitles) enum SentCommandKind {
+    /// Зеркало дорожки забыто.
+    ForgetTrack,
+    /// Зеркало дорожки заменено или дополнено.
+    ChangeTrack,
+    /// Часы показа.
+    Present,
+    /// Вложенные шрифты установлены.
+    InstallFonts,
+    /// Вложенные шрифты сняты.
+    ClearFonts,
+    /// Служебные команды тестов и остановки.
+    Other,
+}
+
+#[cfg(test)]
+impl SentCommandKind {
+    fn of(command: &WorkerCommand) -> Self {
+        use super::super::render_worker::commands::TrackCommand;
+        match command {
+            WorkerCommand::Track(TrackCommand::Forget { .. }) => Self::ForgetTrack,
+            WorkerCommand::Track(_) => Self::ChangeTrack,
+            WorkerCommand::Present { .. } => Self::Present,
+            WorkerCommand::InstallAttachedFonts { .. } => Self::InstallFonts,
+            WorkerCommand::ClearAttachedFonts { .. } => Self::ClearFonts,
+            _ => Self::Other,
+        }
     }
 }
