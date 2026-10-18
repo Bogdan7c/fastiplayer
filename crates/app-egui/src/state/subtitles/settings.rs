@@ -16,6 +16,15 @@ use super::owner_placement::AssLayerPositioning;
 use super::presentation::PresenterSettings;
 use super::user_style::UserSubtitleStyle;
 
+/// Бюджет ожидания сети для ленты потоковых субтитров: тот же `network.reconnect_wait_ms`,
+/// что у основного источника, — дорожка не должна сдаваться раньше, чем видео перестало бы
+/// ждать сеть. Живёт вне секции `[subtitles]`, поэтому читается из всего конфига.
+pub(in crate::state) fn network_reconnect_wait_of(
+    config: &fastiplayer_config::AppConfig,
+) -> Duration {
+    Duration::from_millis(config.network.reconnect_wait_ms)
+}
+
 /// Настройки субтитров, разобранные из конфига.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SubtitleSettings {

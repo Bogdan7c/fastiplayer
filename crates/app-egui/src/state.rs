@@ -408,13 +408,8 @@ impl AppState {
             SidebarHostState::from_committed(committed_config_snapshot.sidebar_width_points());
         // Стартовые настройки субтитров берутся из committed config до его перемещения в состояние.
         let subtitles_config = committed_config_snapshot.as_config().subtitles.clone();
-        // Бюджет ожидания сети у ленты потоковых субтитров тот же, что у основного источника.
-        let subtitles_network_wait = Duration::from_millis(
-            committed_config_snapshot
-                .as_config()
-                .network
-                .reconnect_wait_ms,
-        );
+        let subtitles_network_wait =
+            subtitles::network_reconnect_wait_of(committed_config_snapshot.as_config());
 
         let mut app_state = Self {
             egui_ctx,
@@ -561,12 +556,7 @@ impl AppState {
             self.committed_config_snapshot.as_config().network != snapshot.as_config().network;
         self.committed_config_snapshot = snapshot;
         if reconnect_wait_changed {
-            self.apply_subtitles_network_reconnect_wait(Duration::from_millis(
-                self.committed_config_snapshot
-                    .as_config()
-                    .network
-                    .reconnect_wait_ms,
-            ));
+            self.apply_committed_network_wait_to_subtitles();
         }
         if subtitles_changed {
             // Настройки субтитров применяются здесь, а не в route: снимок обновляется только

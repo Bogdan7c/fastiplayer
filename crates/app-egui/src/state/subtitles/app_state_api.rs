@@ -71,11 +71,10 @@ impl AppState {
     }
 
     /// Применяет `network.reconnect_wait_ms` committed конфига (бюджет ожидания сети ленты
-    /// потоковых субтитров).
-    pub(in crate::state) fn apply_subtitles_network_reconnect_wait(
-        &mut self,
-        network_reconnect_wait: std::time::Duration,
-    ) {
+    /// потоковых субтитров); вызывается после обновления committed snapshot.
+    pub(in crate::state) fn apply_committed_network_wait_to_subtitles(&mut self) {
+        let network_reconnect_wait =
+            super::network_reconnect_wait_of(self.committed_config_snapshot.as_config());
         self.subtitles
             .apply_network_reconnect_wait(network_reconnect_wait);
     }

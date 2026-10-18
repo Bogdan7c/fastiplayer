@@ -136,6 +136,7 @@ use self::presentation::PresentationStats;
 pub(crate) use self::presentation::SubmittedFrameForSubtitles;
 use self::presentation::SubtitlePresenter;
 use self::settings::SubtitleSettings;
+pub(super) use self::settings::network_reconnect_wait_of;
 #[cfg(test)]
 use self::sidecar_job::SubtitleLoadFailure;
 use self::sidecar_job::{
