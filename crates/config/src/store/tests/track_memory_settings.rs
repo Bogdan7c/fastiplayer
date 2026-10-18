@@ -25,7 +25,7 @@ fn schema_v15_without_track_memory_loads_default_and_keeps_user_values() {
 
     let migrated = load_from_path(&config_path).expect("v15 config loads");
 
-    assert_eq!(migrated.config.schema_version, 22);
+    assert_eq!(migrated.config.schema_version, 23);
     assert_eq!(
         migrated.config.playlist.track_memory_max_entries,
         DEFAULT_TRACK_MEMORY_MAX_ENTRIES
@@ -36,7 +36,7 @@ fn schema_v15_without_track_memory_loads_default_and_keeps_user_values() {
 
     save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
     let saved_text = fs::read_to_string(&config_path).expect("saved config readable");
-    assert!(saved_text.contains("schema_version = 22"));
+    assert!(saved_text.contains("schema_version = 23"));
     assert!(saved_text.contains("track_memory_max_entries = 1000"));
     let reloaded = load_from_path(&config_path).expect("saved config reloads");
     assert_eq!(reloaded.config, migrated.config);

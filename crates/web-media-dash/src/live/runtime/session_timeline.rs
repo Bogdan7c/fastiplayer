@@ -54,6 +54,12 @@ impl DashLiveSessionTimeline {
         Ok(timeline)
     }
 
+    /// Начало шкалы плеера на source-native шкале (read-only; нужно субтитрам, чтобы попасть
+    /// на ту же шкалу, что и видео).
+    pub(super) fn source_origin(self) -> Duration {
+        self.source_origin
+    }
+
     /// Переводит manifest cap/live edge в public session coordinate space.
     pub(super) fn availability_to_session(
         self,

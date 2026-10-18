@@ -34,9 +34,9 @@ use web_media_core::{
 };
 use web_media_hls::HlsVodOpenPolicy;
 use web_media_transport_api::{
-    MediaComponentIdentity, MediaComponentRole, MediaPresentation, RedirectHopLimit,
-    RedirectPolicy, SecretQueryOverride, SecretRequestContext, SecretRequestScope,
-    SourceGeneration, TransportOpenRequest, TransportProviderId,
+    EndpointExpiryObserver, MediaComponentIdentity, MediaComponentRole, MediaPresentation,
+    RedirectHopLimit, RedirectPolicy, SecretQueryOverride, SecretRequestContext,
+    SecretRequestScope, SourceGeneration, TransportOpenRequest, TransportProviderId,
 };
 
 const PMT_PID: u16 = 0x0100;
@@ -213,6 +213,26 @@ pub fn adaptive_context(
         generation,
         queries,
         NetworkConfig::default(),
+        None,
+    )
+}
+
+/// Видео-контекст с наблюдателем endpoint expiry (как у открытия с attached VOD recovery).
+#[allow(dead_code)]
+pub fn adaptive_context_with_expiry_observer(
+    target: &HttpRequestTarget,
+    cancellation: CancellationToken,
+    generation: SourceGeneration,
+    queries: TestQueries<'_>,
+    observer: Arc<dyn EndpointExpiryObserver>,
+) -> AdaptiveHttpContext {
+    adaptive_context_with_network_config(
+        target,
+        cancellation,
+        generation,
+        queries,
+        NetworkConfig::default(),
+        Some(observer),
     )
 }
 
@@ -228,7 +248,14 @@ pub fn adaptive_context_without_completed_cache(
         memory_cache_mb: 0,
         ..NetworkConfig::default()
     };
-    adaptive_context_with_network_config(target, cancellation, generation, queries, network_config)
+    adaptive_context_with_network_config(
+        target,
+        cancellation,
+        generation,
+        queries,
+        network_config,
+        None,
+    )
 }
 
 /// Собирает общий transport context из явно выбранной validated network policy.
@@ -238,6 +265,7 @@ fn adaptive_context_with_network_config(
     generation: SourceGeneration,
     queries: TestQueries<'_>,
     network_config: NetworkConfig,
+    expiry_observer: Option<Arc<dyn EndpointExpiryObserver>>,
 ) -> AdaptiveHttpContext {
     let source = SourceIdentity::new(73);
     let exact = CandidateIdentity::new(
@@ -260,7 +288,7 @@ fn adaptive_context_with_network_config(
         secrets =
             secrets.with_key_query_override(SecretQueryOverride::new(query).expect("key query"));
     }
-    let request = TransportOpenRequest::new(
+    let mut request = TransportOpenRequest::new(
         TransportProviderId::new("hls-runtime-test").expect("provider id"),
         component,
         target.clone(),
@@ -271,6 +299,9 @@ fn adaptive_context_with_network_config(
         cancellation,
     )
     .expect("transport request");
+    if let Some(observer) = expiry_observer {
+        request = request.with_endpoint_expiry_observer(observer);
+    }
     let source_config =
         SourceRuntimeConfig::from_network_config(&network_config).expect("source config");
     AdaptiveHttpContext::new(

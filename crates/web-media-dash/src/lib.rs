@@ -19,6 +19,8 @@ mod selection;
 mod source;
 #[cfg(test)]
 mod tests;
+mod text;
+mod text_fmp4;
 mod transactional_av;
 
 pub use catalog::{
@@ -63,4 +65,9 @@ pub use request::{
 pub use selection::{
     DashPresentationSelection, DashRepresentationEvidence, DashRepresentationSelectionError,
     DashVideoDimensions,
+};
+pub use text::{
+    DashTextDocument, DashTextDocumentFormat, DashTextError, DashTextFetchedSegment,
+    DashTextRefresh, DashTextSampleInterval, DashTextSegment, DashTextSegmentHandle,
+    DashTextSubtitles, DashTextTrackId, DashTextTrackIndex, DashTextTrackInfo,
 };

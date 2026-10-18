@@ -1,4 +1,4 @@
-//! Дисковый формат `track-memory.json` (schema v2, читается и v1) и его строгое преобразование.
+//! Дисковый формат `track-memory.json` (schema v3, читается и v1, v2) и его строгое преобразование.
 //!
 //! Формат приватный для модуля. Пример:
 //! ```json
@@ -23,18 +23,20 @@
 //! # Версии схемы
 //! * v1 — `off | embedded | file`.
 //! * v2 — добавлен `{"kind":"web","language":"en","track_kind":"manual|auto_generated|auto_translated"}`.
+//! * v3 — добавлен `{"kind":"stream","language":"en"|null,"name":"English","forced":false}`
+//!   (субтитры потока, сессия 13).
 //!
 //! Поле записи `web_audio_language` (язык дубляжа, сессия 12d) добавлено в v2 без повышения
 //! версии: v2 появилась в той же ещё не выпущенной серии, ни один выпущенный бинарник её не
 //! читает. Поле необязательное и пишется только когда выбрано: v1 и v2 без него читаются как
 //! раньше.
 //!
-//! Запись всегда идёт в v2, чтение принимает v1 и v2 (v1-файл с `web` отвергается: такого
-//! файла v1 не порождал). Версию подняли осознанно: бинарник со схемой v1 читает вариант
-//! `web` как неизвестный (`deny_unknown_fields`/тег), счёл бы ВЕСЬ файл повреждённым и унёс
-//! бы его в карантин, потеряв память остальных видео. Со схемой v2 старый бинарник видит
-//! «файл новее» (`NewerSchemaSaveBlocked`): файл не трогает и не перезаписывает, сессия идёт с
-//! пустой памятью.
+//! Запись всегда идёт в v3, чтение принимает v1, v2 и v3 (файл v1 с `web` и файл v1/v2 со
+//! `stream` отвергаются: такого файла эти схемы не порождали). Версию поднимаем осознанно:
+//! бинарник старой схемы читает новый вариант как неизвестный (`deny_unknown_fields`/тег),
+//! счёл бы ВЕСЬ файл повреждённым и унёс бы его в карантин, потеряв память остальных видео. С
+//! новой схемой старый бинарник видит «файл новее» (`NewerSchemaSaveBlocked`): файл не трогает
+//! и не перезаписывает, сессия идёт с пустой памятью.
 
 use std::path::PathBuf;
 
@@ -48,17 +50,21 @@ use super::memory::{
     RecencyStamp, RememberedFilePath, RememberedSubtitleChoice, SubtitleSyncOffset, TrackMemory,
     TrackMemoryCapacity, TrackMemoryEntry,
 };
+use super::stream_choice::RememberedStreamSubtitle;
 use super::web_audio_language::RememberedWebAudioLanguage;
 use super::web_choice::{RememberedWebSubtitle, RememberedWebSubtitleKind};
 
 /// Текущая версия схемы файла.
-pub const CURRENT_TRACK_MEMORY_SCHEMA_VERSION: u64 = 2;
+pub const CURRENT_TRACK_MEMORY_SCHEMA_VERSION: u64 = 3;
 
 /// Самая старая схема, которую ещё читаем.
 pub(super) const OLDEST_SUPPORTED_TRACK_MEMORY_SCHEMA_VERSION: u64 = 1;
 
 /// Первая схема, в которой есть выбор web-субтитров.
 const FIRST_SCHEMA_WITH_WEB_SUBTITLES: u64 = 2;
+
+/// Первая схема, в которой есть выбор субтитров потока.
+const FIRST_SCHEMA_WITH_STREAM_SUBTITLES: u64 = 3;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -107,6 +113,14 @@ enum SubtitleChoiceV1 {
     Web {
         language: String,
         track_kind: WebTrackKindV2,
+    },
+    /// Схема 3: дорожка потока по языку (может отсутствовать), названию и признаку forced.
+    Stream {
+        #[serde(default)]
+        language: Option<String>,
+        name: String,
+        #[serde(default)]
+        forced: bool,
     },
 }
 
@@ -210,6 +224,11 @@ fn choice_to_dto(
                 RememberedWebSubtitleKind::AutoTranslated => WebTrackKindV2::AutoTranslated,
             },
         },
+        RememberedSubtitleChoice::Stream(stream) => SubtitleChoiceV1::Stream {
+            language: stream.language().map(str::to_owned),
+            name: stream.name().to_owned(),
+            forced: stream.forced(),
+        },
     })
 }
 
@@ -272,6 +291,15 @@ pub(super) fn restore_track_memory(
             .entries
             .iter()
             .any(|entry| matches!(entry.subtitles, Some(SubtitleChoiceV1::Web { .. })))
+    {
+        return Err(InvalidTrackMemoryPayload::Schema);
+    }
+    // Схемы 1 и 2 не знали выбора дорожки потока.
+    if file.schema_version < FIRST_SCHEMA_WITH_STREAM_SUBTITLES
+        && file
+            .entries
+            .iter()
+            .any(|entry| matches!(entry.subtitles, Some(SubtitleChoiceV1::Stream { .. })))
     {
         return Err(InvalidTrackMemoryPayload::Schema);
     }
@@ -347,6 +375,15 @@ fn choice_from_dto(
             let web = RememberedWebSubtitle::new(language, kind)
                 .map_err(|_| InvalidTrackMemoryPayload::DomainValue)?;
             Some(RememberedSubtitleChoice::Web(web))
+        }
+        SubtitleChoiceV1::Stream {
+            language,
+            name,
+            forced,
+        } => {
+            let stream = RememberedStreamSubtitle::new(language, name, forced)
+                .map_err(|_| InvalidTrackMemoryPayload::DomainValue)?;
+            Some(RememberedSubtitleChoice::Stream(stream))
         }
         SubtitleChoiceV1::File { path } => match path_from_dto(path)? {
             Some(path) => Some(RememberedSubtitleChoice::File(

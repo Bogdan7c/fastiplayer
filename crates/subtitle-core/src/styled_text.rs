@@ -1,7 +1,7 @@
 //! Текст реплики со стилями автора: последовательность спанов.
 
 use crate::color::SubtitleColor;
-use crate::time::SubtitleTime;
+use crate::time::{SubtitleTime, SubtitleTimeShift, SubtitleTimeShiftOverflow};
 
 /// Насыщенность шрифта.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -121,6 +121,21 @@ impl StyledText {
             }
         }
         text
+    }
+
+    /// Копия с перенесёнными на `shift` моментами появления спанов (`reveal_at`); остальное
+    /// содержимое не меняется. Любое переполнение — ошибка, частично сдвинутый текст не отдаётся.
+    pub fn shifted_by(&self, shift: SubtitleTimeShift) -> Result<Self, SubtitleTimeShiftOverflow> {
+        let mut spans = Vec::with_capacity(self.spans.len());
+        for span in &self.spans {
+            let mut shifted_span = span.clone();
+            shifted_span.reveal_at = span
+                .reveal_at
+                .map(|reveal_at| reveal_at.shifted_by(shift))
+                .transpose()?;
+            spans.push(shifted_span);
+        }
+        Ok(Self { spans })
     }
 
     /// Нет ни одного спана.

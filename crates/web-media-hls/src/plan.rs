@@ -476,12 +476,12 @@ fn resource_target(
 }
 
 #[derive(Default)]
-struct RangeCursor {
+pub(crate) struct RangeCursor {
     previous: Option<(HttpRequestTarget, u64)>,
 }
 
 impl RangeCursor {
-    fn resolve(
+    pub(crate) fn resolve(
         &mut self,
         target: &HttpRequestTarget,
         byte_range: Option<&ByteRange>,

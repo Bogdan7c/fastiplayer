@@ -52,7 +52,7 @@ pub use styled_text::{
     FontSlant, FontWeight, SpanContent, SpanStyle, StyledText, TextSpan, TextStrikethrough,
     TextUnderline,
 };
-pub use time::{SubtitleSyncOffset, SubtitleTime};
+pub use time::{SubtitleSyncOffset, SubtitleTime, SubtitleTimeShift, SubtitleTimeShiftOverflow};
 pub use timeline::{
     EndShortening, ShortenError, ShortenOutcome, ShorteningHistoryLost, SubtitleEventId,
     SubtitleTimeline, TimelineBuildReport, TimelineInsertOutcome,

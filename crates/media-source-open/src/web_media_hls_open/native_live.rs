@@ -7,6 +7,8 @@ pub struct PreparedNativeHlsLive {
     pub demuxer: Box<dyn Demuxer + Send>,
     pub seek_port: Arc<dyn PreparedDemuxSeekPort>,
     pub timeline_port: DynamicMediaTimelinePort,
+    /// Субтитры потока (HLS `TYPE=SUBTITLES`); `None`, если master их не объявляет.
+    pub stream_subtitles: Option<crate::stream_subtitles::StreamSubtitleSource>,
 }
 
 /// Открывает admitted top media/master live через общий receipted runtime.
@@ -34,6 +36,12 @@ fn finalize_native_hls_live(
         .async_seek_handle()
         .ok_or_else(|| anyhow!("Native HLS live runtime lost its receipted seek handle"))?;
     let initial_readiness = opened.initial_readiness();
+    // Транспорт и точки отсчёта времени берутся ДО `into_parts`: они живут вместе с источником.
+    let stream_subtitles = crate::stream_subtitles::HlsStreamSubtitleTransport::new(
+        opened.subtitle_transport(),
+        opened.timestamp_origins(),
+    )
+    .into_source();
     let (mut demuxer, timeline_port, _) = opened.into_parts();
     wait_for_initial_hls_tracks(demuxer.as_mut(), &initial_readiness)
         .context("Native HLS live did not reach an install-ready track state")?;
@@ -43,5 +51,6 @@ fn finalize_native_hls_live(
             handle: seek_handle,
         }),
         timeline_port,
+        stream_subtitles,
     })
 }

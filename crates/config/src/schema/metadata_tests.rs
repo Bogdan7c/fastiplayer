@@ -146,6 +146,12 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "subtitles.shaping_cache_mb",
     "subtitles.pgs_displayed_track_cache_mb",
     "subtitles.pgs_background_track_window_s",
+    "subtitles.stream.ahead_s",
+    "subtitles.stream.behind_s",
+    "subtitles.stream.max_segment_kb",
+    "subtitles.stream.max_pending_segments",
+    "subtitles.stream.failure_threshold",
+    "subtitles.stream.live_retention_s",
 ];
 
 #[test]
@@ -506,6 +512,40 @@ fn metadata_ranges_match_validation_constants() {
         crate::MIN_PGS_BACKGROUND_TRACK_WINDOW_S,
         crate::MAX_PGS_BACKGROUND_TRACK_WINDOW_S,
     );
+    for (field, min, max) in [
+        (
+            "subtitles.stream.ahead_s",
+            crate::MIN_STREAM_AHEAD_S,
+            crate::MAX_STREAM_AHEAD_S,
+        ),
+        (
+            "subtitles.stream.behind_s",
+            crate::MIN_STREAM_BEHIND_S,
+            crate::MAX_STREAM_BEHIND_S,
+        ),
+        (
+            "subtitles.stream.max_segment_kb",
+            crate::MIN_STREAM_MAX_SEGMENT_KB,
+            crate::MAX_STREAM_MAX_SEGMENT_KB,
+        ),
+        (
+            "subtitles.stream.max_pending_segments",
+            crate::MIN_STREAM_MAX_PENDING_SEGMENTS,
+            crate::MAX_STREAM_MAX_PENDING_SEGMENTS,
+        ),
+        (
+            "subtitles.stream.failure_threshold",
+            crate::MIN_STREAM_FAILURE_THRESHOLD,
+            crate::MAX_STREAM_FAILURE_THRESHOLD,
+        ),
+        (
+            "subtitles.stream.live_retention_s",
+            crate::MIN_STREAM_LIVE_RETENTION_S,
+            crate::MAX_STREAM_LIVE_RETENTION_S,
+        ),
+    ] {
+        assert_integer_range(&registry, field, min, max);
+    }
     assert_text_len(
         &registry,
         "subtitles.preferred_languages",

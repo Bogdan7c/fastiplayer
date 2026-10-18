@@ -9,7 +9,7 @@ use crate::{
     MAX_EMBEDDED_CUE_MAX_OPEN_DURATION_MS, MAX_EMBEDDED_FEED_CAPACITY, MAX_MAX_ATTACHED_FONT_MB,
     MAX_MAX_ATTACHED_FONTS_TOTAL_MB, MAX_MAX_FILE_SIZE_MB, MAX_PREFERRED_LANGUAGE_COUNT,
     MIN_EMBEDDED_CUE_MAX_OPEN_DURATION_MS, MIN_EMBEDDED_FEED_CAPACITY, MIN_MAX_CUES_ON_SCREEN,
-    SubtitleDecorationPreference, SubtitlesConfig,
+    SubtitleDecorationPreference, SubtitleStreamConfig, SubtitlesConfig,
 };
 
 /// Документ v12: пользовательские значения других секций есть, `[subtitles]` ещё нет.
@@ -62,14 +62,14 @@ fn schema_v12_without_subtitles_loads_defaults_and_roundtrips() {
     fs::write(&config_path, SCHEMA_V12_WITHOUT_SUBTITLES).expect("v12 fixture written");
 
     let migrated = load_from_path(&config_path).expect("v12 config loads");
-    assert_eq!(migrated.config.schema_version, 22);
+    assert_eq!(migrated.config.schema_version, 23);
     assert_eq!(migrated.config.subtitles, SubtitlesConfig::default());
     assert!(!migrated.config.playlist.load_siblings);
     assert!((migrated.config.audio.volume - 0.4).abs() < f64::EPSILON);
 
     save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
     let saved_text = fs::read_to_string(&config_path).expect("saved TOML readable");
-    assert!(saved_text.contains("schema_version = 22"));
+    assert!(saved_text.contains("schema_version = 23"));
     assert!(saved_text.contains("[subtitles]"));
     assert!(saved_text.contains("max_file_size_mb = 8"));
     assert!(saved_text.contains("decoration = \"box\""));
@@ -86,7 +86,7 @@ fn schema_v13_without_position_keys_loads_defaults_and_roundtrips() {
     fs::write(&config_path, SCHEMA_V13_WITHOUT_POSITION).expect("v13 fixture written");
 
     let migrated = load_from_path(&config_path).expect("v13 config loads");
-    assert_eq!(migrated.config.schema_version, 22);
+    assert_eq!(migrated.config.schema_version, 23);
     assert_eq!(migrated.config.subtitles.position_horizontal_percent, 50);
     assert_eq!(migrated.config.subtitles.position_vertical_percent, 6);
     assert!(!migrated.config.subtitles.ass_force_user_style);
@@ -95,7 +95,7 @@ fn schema_v13_without_position_keys_loads_defaults_and_roundtrips() {
 
     save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
     let saved_text = fs::read_to_string(&config_path).expect("saved TOML readable");
-    assert!(saved_text.contains("schema_version = 22"));
+    assert!(saved_text.contains("schema_version = 23"));
     assert!(saved_text.contains("position_horizontal_percent = 50"));
     assert!(saved_text.contains("position_vertical_percent = 6"));
     assert!(saved_text.contains("ass_force_user_style = false"));
@@ -112,7 +112,7 @@ fn schema_v14_without_embedded_limits_loads_defaults_and_roundtrips() {
     fs::write(&config_path, SCHEMA_V14_WITHOUT_EMBEDDED_LIMITS).expect("v14 fixture written");
 
     let migrated = load_from_path(&config_path).expect("v14 config loads");
-    assert_eq!(migrated.config.schema_version, 22);
+    assert_eq!(migrated.config.schema_version, 23);
     let subtitles = &migrated.config.subtitles;
     assert_eq!(subtitles.max_attached_font_mb, 20);
     assert_eq!(subtitles.max_attached_fonts_total_mb, 100);
@@ -124,7 +124,7 @@ fn schema_v14_without_embedded_limits_loads_defaults_and_roundtrips() {
 
     save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
     let saved_text = fs::read_to_string(&config_path).expect("saved TOML readable");
-    assert!(saved_text.contains("schema_version = 22"));
+    assert!(saved_text.contains("schema_version = 23"));
     assert!(saved_text.contains("max_attached_font_mb = 20"));
     assert!(saved_text.contains("max_attached_fonts_total_mb = 100"));
     assert!(saved_text.contains("embedded_feed_capacity = 4096"));
@@ -284,6 +284,14 @@ fn custom_subtitle_settings_roundtrip_through_file() {
             shaping_cache_mb: 12,
             pgs_displayed_track_cache_mb: 48,
             pgs_background_track_window_s: 90,
+            stream: SubtitleStreamConfig {
+                ahead_s: 90,
+                behind_s: 20,
+                max_segment_kb: 512,
+                max_pending_segments: 4,
+                failure_threshold: 5,
+                live_retention_s: 300,
+            },
         },
         ..AppConfig::default()
     };
@@ -396,14 +404,14 @@ fn unknown_subtitle_key_or_decoration_is_a_parse_error() {
 
     fs::write(
         &config_path,
-        "schema_version = 22\n\n[subtitles]\ndecoration = \"glow\"\n",
+        "schema_version = 23\n\n[subtitles]\ndecoration = \"glow\"\n",
     )
     .expect("fixture written");
     assert!(load_from_path(&config_path).is_err());
 
     fs::write(
         &config_path,
-        "schema_version = 22\n\n[subtitles]\nmystery = 1\n",
+        "schema_version = 23\n\n[subtitles]\nmystery = 1\n",
     )
     .expect("fixture written");
     assert!(load_from_path(&config_path).is_err());

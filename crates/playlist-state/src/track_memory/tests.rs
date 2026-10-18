@@ -3,6 +3,7 @@
 mod matcher;
 mod persistence;
 mod segment_key;
+mod stream_choice;
 mod web_audio_language;
 mod web_choice;
 mod writer;

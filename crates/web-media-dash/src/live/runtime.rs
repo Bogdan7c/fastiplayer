@@ -32,6 +32,7 @@ mod open;
 mod refresh;
 mod replacement;
 mod session_timeline;
+mod text_source;
 mod timeline;
 mod track_publication;
 
@@ -128,9 +129,17 @@ pub struct DashLiveOpenRequest {
 pub struct DashLiveOpenResult {
     demuxer: ProgressiveDemuxer,
     timeline_port: DynamicMediaTimelinePort,
+    /// Субтитры текстовых AdaptationSet живого MPD; `None`, если их нет.
+    text_subtitles: Option<crate::text::DashTextSubtitles>,
 }
 
 impl DashLiveOpenResult {
+    /// Субтитры потока; берутся ДО `into_parts`. Следуют за каждым принятым обновлением MPD.
+    #[must_use]
+    pub fn text_subtitles(&self) -> Option<crate::text::DashTextSubtitles> {
+        self.text_subtitles.clone()
+    }
+
     /// Возвращает worker demuxer, seek handle и timeline port одной generation.
     pub fn into_parts(
         self,

@@ -20,6 +20,11 @@ pub(crate) const NO_SUBTITLES_MESSAGE: &str = "No subtitles for this video";
 /// Уведомление «Off» для клавиши V, когда цикл дошёл до выключения.
 pub(crate) const SUBTITLES_OFF_MESSAGE: &str = "Subtitles: off";
 
+/// Уведомление, когда субтитры потока (HLS) перестали загружаться. Дорожка остаётся в меню:
+/// повторный выбор пробует снова.
+pub(crate) const STREAM_SUBTITLES_UNAVAILABLE_MESSAGE: &str =
+    "Subtitles for this stream are unavailable right now.";
+
 /// Номер дорожки в меню, считая с единицы: для дорожек без языка («Track 3»).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TrackNumber(usize);
@@ -58,6 +63,7 @@ const fn origin_name(origin: SubtitleFileOrigin) -> &'static str {
         SubtitleFileOrigin::NextToVideo => "file",
         SubtitleFileOrigin::ChosenByUser => "added",
         SubtitleFileOrigin::Embedded => "embedded",
+        SubtitleFileOrigin::Stream => "stream",
         // Подпись web-дорожки собирает `web_track_text`: слова «file» там нет.
         SubtitleFileOrigin::Web(_) => "web",
     }
@@ -97,11 +103,16 @@ pub(crate) fn track_text(label: &SubtitleTrackLabel, track_number: TrackNumber) 
     if !flags.is_empty() {
         text.push_str(&format!(" — {}", flags.join(", ")));
     }
-    text.push_str(&format!(
-        " ({}, {})",
-        format_name(label.format),
-        origin_name(label.origin)
-    ));
+    // У дорожки потока формата в модели нет (WebVTT/TTML выбирает транспорт): "(stream)".
+    if label.origin == SubtitleFileOrigin::Stream {
+        text.push_str(&format!(" ({})", origin_name(label.origin)));
+    } else {
+        text.push_str(&format!(
+            " ({}, {})",
+            format_name(label.format),
+            origin_name(label.origin)
+        ));
+    }
     text
 }
 

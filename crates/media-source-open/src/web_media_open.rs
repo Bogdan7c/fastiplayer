@@ -176,6 +176,8 @@ struct OpenedWebCandidate {
     demuxer: Box<dyn Demuxer + Send>,
     /// Descriptor-only HLS subtitles.
     subtitles: Arc<[crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition]>,
+    /// Лента субтитров потока (только HLS); остальные ветки дают `None`.
+    stream_subtitles: Option<crate::stream_subtitles::StreamSubtitleSource>,
     /// Dynamic timeline only для proven live provider-а.
     timeline_port: Option<DynamicMediaTimelinePort>,
     /// Async demux seek only для provider-а, который требует worker receipt.
@@ -471,6 +473,7 @@ pub fn prepare_yt_dlp_web_media(
             catalog_selection_routes,
             audio_languages,
             subtitle_fetch,
+            stream_subtitles: opened_candidate.stream_subtitles,
         },
         presentation,
         extractor_reason,

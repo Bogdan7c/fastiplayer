@@ -54,6 +54,40 @@ impl ActiveSubtitleTrack {
         self.timeline = SubtitleTimeline::new();
     }
 
+    /// Сколько реплик давно закончились: их конец раньше `cutoff` (кандидаты на вытеснение).
+    ///
+    /// Реплика, которая идёт сейчас или ещё впереди, сюда не входит: вытесняются только те,
+    /// что целиком остались позади границы истории.
+    pub(super) fn count_ended_before(&self, cutoff: SubtitleTime) -> usize {
+        self.timeline
+            .iter()
+            .filter(|(_, event)| event.end() < cutoff)
+            .count()
+    }
+
+    /// Пересобирает таймлайн без реплик, закончившихся раньше `cutoff`, под НОВЫМ источником.
+    ///
+    /// Таймлайн умеет только дописывать и укорачивать, но не удалять, а зеркало потока-рисовальщика
+    /// и кэш растеризатора держатся за `CueKey` (источник + id события). Поэтому вытеснение —
+    /// это новая дорожка с новым `source_id`: старые ключи не могут ожить при другом
+    /// содержимом (тот же приём, что у пересборки PGS). Возвращает число вытесненных реплик.
+    pub(super) fn rebuild_without_ended_before(
+        &mut self,
+        cutoff: SubtitleTime,
+        new_source_id: CueSourceId,
+    ) -> usize {
+        let retained: Vec<SubtitleEvent> = self
+            .timeline
+            .iter()
+            .filter(|(_, event)| event.end() >= cutoff)
+            .map(|(_, event)| event.clone())
+            .collect();
+        let evicted = self.timeline.len() - retained.len();
+        self.restart_with_source(new_source_id);
+        self.timeline.extend(retained);
+        evicted
+    }
+
     /// Язык дорожки; `None` — дорожка его не объявляет (тогда решает язык системы).
     pub(super) fn language(&self) -> Option<&SubtitleLanguage> {
         self.language.as_ref()

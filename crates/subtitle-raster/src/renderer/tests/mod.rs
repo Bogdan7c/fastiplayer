@@ -25,6 +25,7 @@ mod language;
 mod limits;
 mod picture;
 mod robustness;
+mod ttml_regions;
 mod word_reveal;
 
 use subtitle_core::{

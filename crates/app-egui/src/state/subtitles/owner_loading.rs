@@ -236,6 +236,9 @@ impl SubtitleOwner {
     /// Гарантирует, что показываемая дорожка читается: если она ещё не загружена, запускает
     /// фоновую загрузку (предыдущая загрузка другой дорожки отменяется).
     pub(super) fn ensure_display_track_loading(&mut self) {
+        // Лента потока следует за показываемой дорожкой: эта точка вызывается при любой смене
+        // выбора, видимости и списка дорожек.
+        self.sync_stream_feed();
         let fonts = self.font_plan_for_next_job();
         let limits = self.settings.load_limits;
         let Some(media) = self.media.as_mut() else {

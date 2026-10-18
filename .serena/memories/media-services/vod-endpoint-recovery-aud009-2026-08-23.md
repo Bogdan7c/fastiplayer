@@ -46,6 +46,10 @@
 - Strict all-target Clippy for app/config/transport/http/adaptive: PASS.
 - Rustfmt check, refactor guardrails, diff check and Serena diagnostics: PASS.
 
+## Auxiliary resources (2026-10-18)
+
+- Субтитры HLS/DASH используют `AdaptiveHttpContext::for_auxiliary_resources()` (observer снят, свой кэш): их 4xx не могут взвести recovery. Тесты: `web-media-adaptive tests::auxiliary_resources`, `web-media-hls/tests/subtitle_recovery_isolation.rs`, `web-media-dash text::isolation_tests`.
+
 ## Known limits
 
 - Existing HLS/DASH live refresh is intentionally not routed through the VOD coordinator.

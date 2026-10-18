@@ -30,3 +30,7 @@
 
 ## Subtitles schema v13 (2026-10-15)
 - `CURRENT_SCHEMA_VERSION = 13`: новая секция `[subtitles]` (`schema/subtitles.rs`, `validation/subtitles.rs`, комментарии default-документа — `schema/default_document/subtitles.rs`, т.к. ключ `enabled` есть и в других секциях). Миграция v12→v13 только поднимает версию. Маршрут `subtitles.apply` (`fastiplayer-settings/src/routing/subtitles.rs`, `SettingStateOwner::SubtitlePolicy`), фикстура `tests/fixtures/current_schema_v13.toml`. Поля и семантика применения: `mem:subtitles/controls-s04`.
+
+## Subtitles schema v23 (2026-10-18, сессия 13)
+- `CURRENT_SCHEMA_VERSION = 23`: вложенная таблица `[subtitles.stream]` (`SubtitleStreamConfig`, `schema/subtitles_stream.rs`; валидация `validation/subtitles_stream.rs`, включая `live_retention_s >= behind_s`; комментарии default-документа — `default_document/subtitles.rs`, заголовок таблицы отдельной строкой). `SubtitlesConfig.stream` — `#[serde(default)] #[setting(nested)]`. Миграция v22→v23 только поднимает версию (`LEGACY_SCHEMA_VERSION_22`). Золотой файл `tests/fixtures/current_schema_v23.toml`. Подробности и значения: `mem:subtitles/stream-tracks-s13`.
+- При следующем bump-е: литералы `schema_version = 23` в config/settings tests и `scripts/tests/playback-smoke-self-test.sh`; число субтитровых настроек в `fastiplayer-settings/src/application_contract.rs` теперь 41.

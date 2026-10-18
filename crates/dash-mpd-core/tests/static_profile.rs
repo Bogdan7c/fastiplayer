@@ -324,6 +324,10 @@ fn known_non_playback_text_adaptation_does_not_hide_or_mutate_av_catalog() {
     let retained = &parsed.periods[0].adaptation_sets[0].representations[0];
     assert_eq!(retained.id, "video");
     assert_eq!(retained.media_kind, DashMediaKind::Video);
+    // Текст больше не отбрасывается: оба набора разобраны в отдельный список.
+    let text_sets = &parsed.periods[0].text_adaptation_sets;
+    assert_eq!(text_sets.len(), 2);
+    assert_eq!(parsed.periods[0].skipped_text_adaptation_set_count, 0);
 }
 
 #[test]
@@ -378,28 +382,6 @@ fn exact_namespace_dynamic_drm_base_cardinality_and_media_mismatch_fail_closed()
                <Period duration="PT1S"><AdaptationSet mimeType="video/webm" codecs="avc1.4d401f">
                  <Representation id="container-mismatch"/></AdaptationSet></Period></MPD>"#,
             DashMpdErrorKind::UnsupportedMediaEvidence,
-        ),
-        (
-            r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S">
-               <Period duration="PT1S"><AdaptationSet contentType="text"
-                 mimeType="application/mp4" codecs="unknown-text">
-                 <Representation id="unknown-text"/></AdaptationSet></Period></MPD>"#,
-            DashMpdErrorKind::UnsupportedMediaEvidence,
-        ),
-        (
-            r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S">
-               <Period duration="PT1S"><AdaptationSet contentType="text">
-                 <Representation id="provider-drift" mimeType="application/octet-stream"/>
-               </AdaptationSet></Period></MPD>"#,
-            DashMpdErrorKind::UnsupportedMediaEvidence,
-        ),
-        (
-            r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S">
-               <Period duration="PT1S"><AdaptationSet contentType="text"
-                 mimeType="application/mp4" codecs="wvtt">
-                 <ContentProtection/><Representation id="protected-text"/>
-               </AdaptationSet></Period></MPD>"#,
-            DashMpdErrorKind::ContentProtection,
         ),
         (
             r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S2M">

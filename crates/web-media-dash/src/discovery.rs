@@ -44,6 +44,7 @@ use crate::open::{
 };
 use crate::plan::{DashPlanError, build_manifest_plan_from_logical_selection};
 use crate::request::{DashVodHttpContext, DashVodInput, DashVodOpenPolicy, DashVodOpenRequest};
+use crate::text::static_text_subtitles;
 
 use lane_proof::{ProviderLaneProof, ProviderLaneProofContext};
 
@@ -433,6 +434,14 @@ fn prepare_discovered_logical(
         discovered.policy.maximum_planned_segments,
         DashRepresentationLaneTimelineMode::Static,
     )?;
+    // Субтитры считаются из того же MPD, что и план A/V, до передачи контекста демуксеру.
+    let text_subtitles = static_text_subtitles(
+        &discovered.mpd,
+        &discovered.manifest_base,
+        &discovered.http,
+        discovered.generation,
+        discovered.policy.maximum_planned_segments,
+    );
     prepare_planned_manifest_vod(
         plan,
         discovered.http,
@@ -440,5 +449,6 @@ fn prepare_discovered_logical(
         discovered.demux_registry,
         discovered.policy,
     )
+    .map(|opened| opened.with_text_subtitles(text_subtitles))
     .map_err(Into::into)
 }

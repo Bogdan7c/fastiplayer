@@ -1085,3 +1085,6 @@ fn decode_base64(encoded: &str) -> Vec<u8> {
 
 #[path = "live_runtime/no_suffix.rs"]
 mod no_suffix;
+
+#[path = "live_runtime/text_subtitles.rs"]
+mod text_subtitles;

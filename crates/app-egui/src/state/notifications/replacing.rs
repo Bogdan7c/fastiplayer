@@ -21,6 +21,9 @@ pub(crate) enum TransientReplaceKey {
     AudioTrack,
     /// Сбой скачивания web-субтитров («YouTube is limiting subtitle requests…»).
     SubtitleDownload,
+    /// Субтитры потока (HLS/DASH) недоступны: свой ключ, чтобы не вытеснять плашку сбоя
+    /// скачивания web-субтитров и не вытесняться ею.
+    StreamSubtitles,
 }
 
 impl NotificationCenter {

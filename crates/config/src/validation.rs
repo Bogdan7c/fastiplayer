@@ -11,6 +11,7 @@ mod playlist_drop;
 mod subtitles;
 mod subtitles_ass;
 mod subtitles_prerender;
+mod subtitles_stream;
 mod ui;
 
 pub(crate) use media_services::{

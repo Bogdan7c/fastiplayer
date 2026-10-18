@@ -188,6 +188,7 @@ impl WebOpenRuntime {
             return Ok(OpenedWebCandidate {
                 demuxer: prepared.demuxer,
                 subtitles: Arc::from([]),
+                stream_subtitles: None,
                 timeline_port: None,
                 demux_seek_port: Some(prepared.seek_port),
                 playback_window: None,
@@ -234,6 +235,7 @@ impl WebOpenRuntime {
             return Ok(OpenedWebCandidate {
                 demuxer: prepared.demuxer,
                 subtitles: Arc::from([]),
+                stream_subtitles: None,
                 timeline_port: None,
                 demux_seek_port: Some(prepared.seek_port),
                 playback_window: Some(prepared.playback_window),
@@ -261,6 +263,7 @@ impl WebOpenRuntime {
             return Ok(OpenedWebCandidate {
                 demuxer: prepared.demuxer,
                 subtitles: prepared.subtitles,
+                stream_subtitles: prepared.stream_subtitles,
                 timeline_port: prepared.timeline_port,
                 demux_seek_port: Some(prepared.seek_port),
                 playback_window: None,
@@ -288,6 +291,7 @@ impl WebOpenRuntime {
             return Ok(OpenedWebCandidate {
                 demuxer: prepared.demuxer,
                 subtitles: Arc::from([]),
+                stream_subtitles: None,
                 timeline_port: prepared.timeline_port,
                 demux_seek_port: Some(prepared.seek_port),
                 playback_window: None,
@@ -377,6 +381,7 @@ impl WebOpenRuntime {
         Ok(OpenedWebCandidate {
             demuxer,
             subtitles: Arc::from([]),
+            stream_subtitles: None,
             timeline_port: None,
             demux_seek_port,
             playback_window: None,

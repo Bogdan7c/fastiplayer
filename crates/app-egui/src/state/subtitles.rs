@@ -75,12 +75,15 @@ mod owner_loading;
 mod owner_memory;
 mod owner_placement;
 mod owner_render;
+mod owner_stream;
 mod owner_web;
 mod presentation;
 mod render_worker;
 mod sample_cue;
 mod settings;
 mod sidecar_job;
+mod stream_position;
+mod stream_track;
 mod sync_offset;
 mod system_language;
 #[cfg(test)]
@@ -93,6 +96,7 @@ mod web_track;
 
 use std::path::PathBuf;
 
+use media_source_open::stream_subtitles::StreamSubtitleSource;
 use media_source_open::web_subtitle_fetch::WebSubtitleFetchError;
 use player_core::MediaInstanceId;
 use subtitle_core::SubtitleLanguage;
@@ -152,6 +156,25 @@ pub(super) enum SubtitleMediaSource {
     NotLocal,
     /// Web-видео с дорожками субтитров, которые скачиваются по требованию (YouTube).
     Web(WebSubtitleSource),
+    /// Поток с рендициями субтитров (HLS): реплики подгружает фоновая лента вокруг позиции.
+    Stream(StreamSubtitleSource),
+    /// Оба списка сразу: субтитры extractor-а (yt-dlp) и рендиции потока.
+    WebAndStream {
+        /// Дорожки extractor-а.
+        web: WebSubtitleSource,
+        /// Рендиции потока.
+        stream: StreamSubtitleSource,
+    },
+}
+
+impl SubtitleMediaSource {
+    /// Дорожки известны сразу с установкой media (без поиска файлов и без чтения пакетов).
+    fn has_remote_tracks(&self) -> bool {
+        matches!(
+            self,
+            Self::Web(_) | Self::Stream(_) | Self::WebAndStream { .. }
+        )
+    }
 }
 
 /// Какое media сейчас видит плеер: сверяется с владельцем перед показом.
@@ -354,26 +377,21 @@ impl SubtitleOwner {
         let mut media = MediaSubtitles::new(media_instance_id, self.default_visibility);
         self.adopt_queued_files(&mut media);
         owner_memory::apply_restore_request(&mut media, restore);
-        let has_web_tracks = matches!(source, SubtitleMediaSource::Web(_));
+        let has_remote_tracks = source.has_remote_tracks();
         media.discovery = match source {
             SubtitleMediaSource::LocalFile(video_path) => {
                 self.start_discovery(Some(video_path), &media)
             }
-            // Web-дорожки известны сразу: ставим их в список, поиск файлов нужен только если
-            // из памяти ждём файл, который пользователь когда-то добавил сам.
-            SubtitleMediaSource::Web(web_source) => {
-                let descriptions = web_source.descriptions_for_menu(&self.preferred_languages());
-                media.install_web_source(&web_source, descriptions);
-                if media
-                    .pending_memory
-                    .as_ref()
-                    .and_then(PendingRememberedChoice::file_to_check)
-                    .is_some()
-                {
-                    self.start_discovery(None, &media)
-                } else {
-                    DiscoveryState::Finished
-                }
+            // Дорожки web и потока известны сразу: ставим их в список, поиск файлов нужен только
+            // если из памяти ждём файл, который пользователь когда-то добавил сам.
+            SubtitleMediaSource::Web(web) => {
+                self.install_remote_sources(&mut media, Some(&web), None)
+            }
+            SubtitleMediaSource::Stream(stream) => {
+                self.install_remote_sources(&mut media, None, Some(stream))
+            }
+            SubtitleMediaSource::WebAndStream { web, stream } => {
+                self.install_remote_sources(&mut media, Some(&web), Some(stream))
             }
             // Не локальный источник: искать рядом нечего, но запомненный файл надо проверить.
             SubtitleMediaSource::NotLocal if media.pending_memory.is_some() => {
@@ -384,8 +402,8 @@ impl SubtitleOwner {
         self.media = Some(media);
         // Труба могла принести сообщения этого media раньше, чем пришла установка.
         self.adopt_media_for_embedded_feed(media_instance_id);
-        if has_web_tracks {
-            // Список web-дорожек полный с самого начала: память выбора и автовыбор (ручная
+        if has_remote_tracks {
+            // Список дорожек web и потока полный с самого начала: память выбора и автовыбор (ручная
             // важнее распознанной речи, автоперевод — никогда) решаются сразу.
             self.reselect_automatically();
         }
@@ -496,10 +514,11 @@ impl SubtitleOwner {
         let fonts_changed = self.poll_fonts_bootstrap();
         let attached_fonts_changed = self.poll_attached_fonts();
         let media_changed = self.poll_media_jobs();
+        let stream_changed = self.poll_stream_feed();
         // Поток-рисовальщик опрашивается ПОСЛЕДНИМ: остальные опросы сбрасывают «взведённость»
         // wake-порта, а события потока не должны потеряться за этим сбросом.
         let worker_changed = self.poll_render_worker();
-        fonts_changed || attached_fonts_changed || media_changed || worker_changed
+        fonts_changed || attached_fonts_changed || media_changed || stream_changed || worker_changed
     }
 
     /// Опрос задач текущего media и уходящих задач (см. [`Self::poll_jobs`]).
@@ -644,8 +663,7 @@ impl SubtitleOwner {
 fn subtitle_source_of(source: &ActiveMediaSource) -> SubtitleMediaSource {
     match source.physical_source() {
         ActiveMediaSource::LocalFile(path) => SubtitleMediaSource::LocalFile(path.clone()),
-        ActiveMediaSource::Web(intent) => WebSubtitleSource::from_intent(intent)
-            .map_or(SubtitleMediaSource::NotLocal, SubtitleMediaSource::Web),
+        ActiveMediaSource::Web(intent) => stream_track::subtitle_source_of_web_intent(intent),
         ActiveMediaSource::PlaybackWindow { .. } => SubtitleMediaSource::NotLocal,
     }
 }

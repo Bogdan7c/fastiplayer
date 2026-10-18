@@ -4,8 +4,8 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 
 use dash_mpd_core::{
-    DashBaseUrl, DashInitialization, DashRepresentation, DashSegmentBase, DashSegmentList,
-    DashSegmentTemplate, DashTemplateContext, IndexRange,
+    DashBaseUrl, DashInitialization, DashSegmentBase, DashSegmentList, DashSegmentTemplate,
+    DashTemplateContext, IndexRange,
 };
 use source_core::{HttpBoundedByteRange, HttpRequestTarget};
 
@@ -22,7 +22,8 @@ use super::{
 
 /// Раскрывает finite SegmentTemplate duration/Timeline.
 pub(super) fn plan_template(
-    representation: &DashRepresentation,
+    representation_id: &str,
+    representation_bandwidth: Option<u64>,
     template: &DashSegmentTemplate,
     base: &HttpRequestTarget,
     period_bound: DashPeriodTimelineBound,
@@ -38,8 +39,8 @@ pub(super) fn plan_template(
     let mut resources = Vec::with_capacity(points.len().saturating_add(1));
     if let Some(initialization) = &template.initialization {
         let reference = initialization.expand(DashTemplateContext {
-            representation_id: &representation.id,
-            bandwidth: representation.bandwidth,
+            representation_id,
+            bandwidth: representation_bandwidth,
             number: first_point.number,
             time: first_point.raw_start_time,
         })?;
@@ -53,8 +54,8 @@ pub(super) fn plan_template(
     }
     for point in points {
         let reference = template.media.expand(DashTemplateContext {
-            representation_id: &representation.id,
-            bandwidth: representation.bandwidth,
+            representation_id,
+            bandwidth: representation_bandwidth,
             number: point.number,
             time: point.raw_start_time,
         })?;

@@ -18,6 +18,7 @@ use web_media_transport_api::{
 };
 
 mod async_job;
+mod auxiliary;
 mod execution;
 
 pub(crate) use async_job::fetch_with_redirects_async;

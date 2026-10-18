@@ -8,6 +8,7 @@ use media_core::{
 };
 
 use crate::plan::{HlsManifestSeekPoint, HlsSegmentRestartCoordinate};
+use crate::timestamp_origins::HlsTimestampOriginsWriter;
 
 /// Тип доказанной packet boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +62,8 @@ pub(crate) struct HlsSeekIndex {
     anchors: Vec<HlsSeekAnchor>,
     pending_preview: Option<HlsSeekDecision>,
     video_presence: HlsSeekVideoPresence,
+    /// Публикация origin-ов эпох для субтитров (только у main-компонента; иначе no-op).
+    timestamp_origins: HlsTimestampOriginsWriter,
 }
 
 impl HlsSeekIndex {
@@ -71,7 +74,22 @@ impl HlsSeekIndex {
             anchors: Vec::new(),
             pending_preview: None,
             video_presence: HlsSeekVideoPresence::Expected,
+            timestamp_origins: HlsTimestampOriginsWriter::disabled(),
         }
+    }
+
+    /// Публикует пару origin/timeline_start эпохи ровно в той точке, где демуксер ею пользуется.
+    fn publish_epoch_origin(
+        &mut self,
+        manifest_segment: HlsManifestSeekPoint,
+        timeline_origin: std::time::Duration,
+        epoch_timestamp_origin: std::time::Duration,
+    ) {
+        self.timestamp_origins.publish_if_changed(
+            manifest_segment.discontinuity_sequence,
+            epoch_timestamp_origin,
+            timeline_origin,
+        );
     }
 
     /// Фиксирует, что probe не нашёл видео: seek идёт по аудио-пакетам, а не по video RAP.
@@ -87,6 +105,8 @@ impl HlsSeekIndex {
         epoch_timestamp_origin: std::time::Duration,
         packet: &Packet,
     ) {
+        // Origin фиксируется первым пакетом эпохи: публикуем до фильтра якорей (любой пакет).
+        self.publish_epoch_origin(manifest_segment, timeline_origin, epoch_timestamp_origin);
         let kind = match (packet.kind, packet.keyframe) {
             (TrackKind::Video, PacketKeyframe::Keyframe) => {
                 HlsSeekAnchorKind::VideoRandomAccessPoint
@@ -138,6 +158,11 @@ impl HlsSeekIndex {
 
     /// Коммитит anchor, уже доказанный внутри offside manifest replacement-а.
     pub(crate) fn commit_proven_anchor(&mut self, anchor: HlsSeekAnchor) {
+        self.publish_epoch_origin(
+            anchor.manifest_segment,
+            anchor.timeline_origin,
+            anchor.epoch_timestamp_origin,
+        );
         self.insert_proven_anchor(anchor);
     }
 
@@ -440,6 +465,16 @@ impl SharedHlsSeekIndex {
     /// Создаёт отдельный component index.
     pub(crate) fn new(maximum_entries: usize) -> Self {
         Self(Arc::new(Mutex::new(HlsSeekIndex::new(maximum_entries))))
+    }
+
+    /// Отдельный index main-компонента, который публикует origin-ы эпох читателям субтитров.
+    pub(crate) fn new_publishing_timestamp_origins(
+        maximum_entries: usize,
+        timestamp_origins: HlsTimestampOriginsWriter,
+    ) -> Self {
+        let mut index = HlsSeekIndex::new(maximum_entries);
+        index.timestamp_origins = timestamp_origins;
+        Self(Arc::new(Mutex::new(index)))
     }
 
     /// Восстанавливает owned state после poison только для детерминированного shutdown/error path.

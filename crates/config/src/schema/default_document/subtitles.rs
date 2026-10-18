@@ -6,6 +6,11 @@
 /// Заголовок секции субтитров в сгенерированном TOML.
 const SUBTITLES_HEADER: &str = "[subtitles]";
 
+/// Заголовок вложенной таблицы потоковых лимитов и комментарий к ней.
+const STREAM_TABLE_HEADER: &str = "[subtitles.stream]";
+const STREAM_TABLE_COMMENT: &str =
+    "# Лимиты субтитров потоковых источников (HLS): окна загрузки, размеры, сбои, история live.";
+
 /// Пары «ключ -> комментарий» в порядке следования полей в `SubtitlesConfig`.
 const SUBTITLES_KEY_COMMENTS: &[(&str, &str)] = &[
     (
@@ -142,12 +147,36 @@ const SUBTITLES_KEY_COMMENTS: &[(&str, &str)] = &[
         "pgs_background_track_window_s",
         "# Сколько секунд перед позицией хранят картинки PGS-дорожек, которые сейчас не показываются.",
     ),
+    (
+        "ahead_s",
+        "# Сколько секунд субтитров качать вперёд от позиции воспроизведения.",
+    ),
+    (
+        "behind_s",
+        "# Сколько секунд субтитров докачивать назад от позиции (короткая перемотка назад).",
+    ),
+    (
+        "max_segment_kb",
+        "# Сегменты субтитров потока больше этого размера (КБ) пропускаются.",
+    ),
+    (
+        "max_pending_segments",
+        "# Сколько сегментов может ждать точку отсчёта времени видео; лишние вытесняются.",
+    ),
+    (
+        "failure_threshold",
+        "# После скольких неудавшихся сегментов подряд дорожка считается недоступной (одно уведомление).",
+    ),
+    (
+        "live_retention_s",
+        "# Сколько секунд реплик позади позиции хранит живая трансляция; старее вытесняются.",
+    ),
 ];
 
 /// Добавляет комментарии перед ключами секции `[subtitles]`.
 ///
 /// Если секции нет (не должно случаться для документа из `AppConfig`), текст не меняется;
-/// золотой файл `current_schema_v22.toml` тогда провалит тест стабильности схемы.
+/// золотой файл `current_schema_v23.toml` тогда провалит тест стабильности схемы.
 pub(super) fn document_subtitles_defaults(toml_text: &mut String) {
     let Some(header_offset) = toml_text.find(&format!("\n{SUBTITLES_HEADER}\n")) else {
         return;
@@ -164,6 +193,13 @@ pub(super) fn document_subtitles_defaults(toml_text: &mut String) {
         if let Some(key_offset) = section_text.find(&key_prefix) {
             section_text.insert_str(key_offset + 1, &format!("{comment}\n"));
         }
+    }
+
+    // Комментарий к заголовку вложенной таблицы: заголовок стоит в начале строки.
+    if !section_text.contains(STREAM_TABLE_COMMENT)
+        && let Some(table_offset) = section_text.find(&format!("\n{STREAM_TABLE_HEADER}\n"))
+    {
+        section_text.insert_str(table_offset + 1, &format!("{STREAM_TABLE_COMMENT}\n"));
     }
 
     toml_text.push_str(&section_text);

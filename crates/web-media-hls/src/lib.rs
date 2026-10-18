@@ -21,6 +21,8 @@ mod seek;
 mod selection;
 mod source;
 mod start;
+mod subtitles;
+mod timestamp_origins;
 mod transactional_av;
 
 pub use catalog::{
@@ -72,6 +74,13 @@ pub use selection::{
     HlsSubtitleRenditionDescriptor, HlsVariantSelectionIntent,
 };
 pub use start::{HlsVodRestoreFallbackReason, HlsVodStartDisposition, HlsVodStartIntent};
+pub use subtitles::{
+    HlsSubtitleFetchError, HlsSubtitlePlaylistSnapshot, HlsSubtitleRenditionId,
+    HlsSubtitleRenditionInfo, HlsSubtitleSegment, HlsSubtitleSegmentByteLimit,
+    HlsSubtitleSegmentRef, HlsSubtitleTransport, HlsSubtitleUnsupportedFeature,
+    PlaylistTimelineEpoch,
+};
+pub use timestamp_origins::{HlsEpochTimestampOrigin, HlsTimestampOrigins};
 
 #[cfg(test)]
 mod tests;

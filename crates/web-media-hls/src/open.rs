@@ -23,6 +23,8 @@ use crate::initial_open::{
 use crate::initial_position_proof::HlsInitialPositionProofPublisher;
 use crate::plan::{HlsComponentPlan, HlsPlanError, build_component_plan};
 use crate::seek::SharedHlsSeekIndex;
+use crate::subtitles::HlsSubtitleTransport;
+use crate::timestamp_origins::HlsTimestampOrigins;
 use crate::{
     HlsAudioLayoutIntent, HlsAudioRenditionEvidence, HlsContainerEvidence,
     HlsMainTrackLayoutIntent, HlsManifestInput, HlsRequiredContainer,
@@ -217,6 +219,7 @@ fn prepare_hls_vod_with_seek_boundary(
                 )?,
                 audio: None,
                 subtitles: Vec::new(),
+                subtitle_base: top_base.clone(),
                 main_track_layout: request.selection.main_track_layout,
             }
         }
@@ -242,6 +245,7 @@ fn prepare_hls_vod_with_seek_boundary(
     let cancellation = request.http.cancellation().clone();
     let main_http = request.http.clone();
     let audio_http = request.http.clone();
+    let subtitle_http = request.http.clone();
     let generation = request.generation;
     let policy = request.policy;
     let registry = request.demux_registry;
@@ -251,7 +255,12 @@ fn prepare_hls_vod_with_seek_boundary(
     let audio_component = selected.audio;
     let main_track_layout = selected.main_track_layout;
     let new_seek_index = || SharedHlsSeekIndex::new(policy.maximum_seek_index_entries.get());
-    let main_seek_index = new_seek_index();
+    // Origin-ы эпох публикует только main-компонент: по ним же пересчитывается видео.
+    let (timestamp_origins, timestamp_origins_writer) = HlsTimestampOrigins::new_pair();
+    let main_seek_index = SharedHlsSeekIndex::new_publishing_timestamp_origins(
+        policy.maximum_seek_index_entries.get(),
+        timestamp_origins_writer,
+    );
     // Alternate audio и его seek index создаются одной парой и не расходятся.
     let audio_with_seek_index = audio_component.map(|audio| (audio, new_seek_index()));
     let preview_main_index = main_seek_index.clone();
@@ -322,9 +331,18 @@ fn prepare_hls_vod_with_seek_boundary(
         )?,
     };
 
+    let subtitle_transport = HlsSubtitleTransport::new(
+        selected.subtitles.clone(),
+        selected.subtitle_base,
+        subtitle_http,
+        generation,
+        policy.parser_limits,
+    );
     Ok(HlsVodOpenResult::new(
         progressive,
         selected.subtitles,
+        subtitle_transport,
+        timestamp_origins,
         duration,
         initial_position_proof,
         start_disposition,
@@ -476,6 +494,7 @@ fn select_and_load_master(
         main,
         audio,
         subtitles: selected.subtitles,
+        subtitle_base: base.clone(),
         main_track_layout: request.selection.main_track_layout,
     })
 }
@@ -530,6 +549,7 @@ fn select_and_load_catalog_master(
         main,
         audio,
         subtitles: selected.subtitles,
+        subtitle_base: base.clone(),
         main_track_layout: selected.main_shape,
     })
 }
@@ -565,6 +585,8 @@ struct SelectedPlans {
     main: HlsPreparedInitialComponent,
     audio: Option<HlsPreparedInitialComponent>,
     subtitles: Vec<HlsSubtitleRenditionDescriptor>,
+    /// Эффективный адрес master playlist: база относительных ссылок subtitle rendition-ов.
+    subtitle_base: HttpRequestTarget,
     main_track_layout: HlsMainTrackLayoutIntent,
 }
 

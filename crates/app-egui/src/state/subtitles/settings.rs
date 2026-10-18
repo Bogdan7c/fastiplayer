@@ -9,7 +9,7 @@ use fastiplayer_config::SubtitlesConfig;
 use subtitle_raster::RasterLimits;
 
 use super::intents::SubtitleVisibility;
-use super::limits::{EmbeddedLimits, LoadLimits, raster_limits_from_config};
+use super::limits::{EmbeddedLimits, LoadLimits, StreamLimits, raster_limits_from_config};
 use super::owner_placement::AssLayerPositioning;
 use super::presentation::PresenterSettings;
 use super::user_style::UserSubtitleStyle;
@@ -33,6 +33,8 @@ pub(super) struct SubtitleSettings {
     pub(super) prepared_overlays: u32,
     /// Лимиты встроенных дорожек (читаются владельцем в момент использования).
     pub(super) embedded_limits: EmbeddedLimits,
+    /// Лимиты потоковых субтитров (захватываются лентой при её запуске).
+    pub(super) stream_limits: StreamLimits,
     /// Как размещать слой ASS/SSA (режим «ASS position»); читает размещение слоя.
     pub(super) ass_positioning: AssLayerPositioning,
 }
@@ -62,6 +64,7 @@ impl SubtitleSettings {
             prerender_frames: config.prerender_frames,
             prepared_overlays: config.prepared_overlays,
             embedded_limits: EmbeddedLimits::from_config(config),
+            stream_limits: StreamLimits::from_config(config),
             ass_positioning: AssLayerPositioning::from_config(config.ass_position_mode),
         }
     }

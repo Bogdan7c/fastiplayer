@@ -63,7 +63,9 @@ const WEBM_VP9_ORIGIN_COMPENSATION_MS: u8 = 14;
 /// Root переставляет реальные rows, чтобы exact selection доказывал semantic rematch.
 fn static_manifest(webm_first: bool) -> Vec<u8> {
     // Public MPD может содержать subtitle rows рядом с полностью playable A/V catalog.
-    // У плеера нет text consumer-а, поэтому такая row не должна блокировать реальные consumers.
+    // Текстовый набор разбирается в отдельную модель (дорожка субтитров потока), но не
+    // входит в A/V catalog и не должен блокировать реальные consumers; сам файл не отдаётся
+    // сервером, потому что до запуска ленты субтитров к нему никто не обращается.
     let text_row = r#"
       <AdaptationSet id="captions" contentType="text" lang="en" subsegmentAlignment="true">
         <Representation id="captions-en" bandwidth="256" mimeType="application/mp4"

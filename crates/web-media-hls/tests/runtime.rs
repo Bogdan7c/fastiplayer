@@ -455,14 +455,25 @@ fn separate_ts_video_and_fmp4_audio_compose_before_initial_tracks() {
     assert_eq!(opened.subtitle_renditions().len(), 1);
     assert_eq!(opened.subtitle_renditions()[0].group_id(), "subs");
     assert_eq!(opened.subtitle_renditions()[0].characteristics(), None);
+    let subtitle_transport = opened.subtitle_transport();
     let mut demuxer = opened.into_demuxer();
     assert_muxed_tracks(next_ready_event(&mut *demuxer).expect("composite tracks"));
-    assert!(
+    let subtitle_requests = || {
         server
             .requests()
             .iter()
-            .all(|request| !request.request_line.contains("subtitle.m3u8"))
+            .filter(|request| request.request_line.contains("subtitle.m3u8"))
+            .count()
+    };
+    // Открытие само по себе субтитры не запрашивает: только явный вызов транспорта.
+    assert_eq!(subtitle_requests(), 0);
+    let rendition = subtitle_transport.renditions()[0].id;
+    // Тестовый сервер не знает subtitle.m3u8 -> типизированный 404, но запрос реально ушёл.
+    assert_eq!(
+        subtitle_transport.load_playlist(rendition, &CancellationToken::new()),
+        Err(web_media_hls::HlsSubtitleFetchError::NotFound)
     );
+    assert_eq!(subtitle_requests(), 1);
 }
 
 #[test]

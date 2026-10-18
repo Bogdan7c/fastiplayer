@@ -356,6 +356,33 @@ impl WebMediaSourceIntent {
         }
     }
 
+    /// Субтитры самого потока: HLS `TYPE=SUBTITLES` (нативный HLS и HLS-кандидат yt-dlp) и
+    /// текстовые AdaptationSet нативного DASH.
+    ///
+    /// Источник принадлежит ТЕКУЩЕМУ открытию: после переоткрытия (смена варианта, settings)
+    /// у нового intent-а будет свой. `None` - у потока нет своих дорожек (прямые файлы,
+    /// HDS/Smooth, DASH через yt-dlp). Без URL в `Debug`; лента запускается через
+    /// `media_source_open::stream_subtitles::StreamSubtitleFeed`.
+    #[must_use]
+    pub(crate) fn stream_subtitle_source(
+        &self,
+    ) -> Option<media_source_open::stream_subtitles::StreamSubtitleSource> {
+        match &*self.adapter {
+            WebMediaSourceAdapter::NativeHls { source_state, .. } => {
+                source_state.stream_subtitle_source()
+            }
+            WebMediaSourceAdapter::Extractor { source_state, .. } => {
+                source_state.stream_subtitle_source()
+            }
+            WebMediaSourceAdapter::NativeDash { source_state, .. } => {
+                source_state.stream_subtitle_source()
+            }
+            WebMediaSourceAdapter::Direct { .. }
+            | WebMediaSourceAdapter::NativeHds { .. }
+            | WebMediaSourceAdapter::NativeSmooth { .. } => None,
+        }
+    }
+
     /// Безопасный (без ссылок) список дорожек субтитров extractor-а.
     #[must_use]
     pub(crate) fn web_subtitle_tracks(

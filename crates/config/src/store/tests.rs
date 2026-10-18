@@ -22,6 +22,7 @@ mod subtitles_glyph_cache_settings;
 mod subtitles_pgs_settings;
 mod subtitles_prerender_settings;
 mod subtitles_settings;
+mod subtitles_stream_settings;
 mod track_memory_settings;
 /// Проверяет, что atomic save не оставил временных файлов рядом с config.
 fn assert_no_save_temp_files(config_directory: &Path) {

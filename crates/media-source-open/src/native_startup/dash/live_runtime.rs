@@ -129,6 +129,10 @@ pub(super) fn prepare_native_dash_live(
         return Err(anyhow!("Native DASH live selection lost component catalog shape").into());
     };
     let opened = prepare_discovered_dash_live(discovered, component_selection.clone())?;
+    // Субтитры берутся ДО `into_parts`; каждое открытие/reopen даёт свежий источник.
+    let stream_subtitles = opened.text_subtitles().and_then(|text| {
+        crate::stream_subtitles::DashStreamSubtitleTransport::new(text).into_source()
+    });
     let (demuxer, async_seek_handle, timeline_port) = opened.into_parts();
     let seek_port = crate::web_media_dash_open::prepared_dash_seek_port(
         async_seek_handle.ok_or_else(|| anyhow!("DASH live runtime lost seek receipt handle"))?,
@@ -140,7 +144,8 @@ pub(super) fn prepare_native_dash_live(
             request.web_media_config,
         ),
     )
-    .context("native DASH live neutral catalog projection failed")?;
+    .context("native DASH live neutral catalog projection failed")?
+    .with_stream_subtitle_source(stream_subtitles);
 
     Ok(PreparedNativeDashMedia {
         demuxer: Box::new(demuxer),

@@ -85,6 +85,8 @@ impl SubtitleOwner {
         }
         // Повторный выбор дорожки, которая не скачалась, — единственный повод для новой попытки.
         entry.prepare_retry_after_failed_download();
+        // То же для дорожки потока, лента которой сообщила о недоступности: новая лента.
+        media.streams.note_user_selected(track_id);
         media.selected = Some(track_id);
         media.user_chose_track = true;
         media.note_user_choice();

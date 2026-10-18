@@ -35,7 +35,8 @@ use crate::open::{
 use crate::plan::{HlsComponentPlan, HlsPlanError, build_segment_scoped_component_plan};
 use crate::{
     HlsAudioLayoutIntent, HlsInitialReadinessCapability, HlsLiveOpenRequest, HlsManifestInput,
-    HlsRequiredContainer, HlsSubtitleRenditionDescriptor, HlsVodOpenRequest,
+    HlsRequiredContainer, HlsSubtitleRenditionDescriptor, HlsSubtitleTransport,
+    HlsTimestampOrigins, HlsVodOpenRequest,
 };
 
 /// Неустановленный live runtime и neutral S31L port.
@@ -45,6 +46,8 @@ pub struct HlsLiveOpenResult {
     initial_readiness: HlsInitialReadinessCapability,
     timeline_port: DynamicMediaTimelinePort,
     subtitles: Box<[HlsSubtitleRenditionDescriptor]>,
+    subtitle_transport: HlsSubtitleTransport,
+    timestamp_origins: HlsTimestampOrigins,
 }
 
 impl HlsLiveOpenResult {
@@ -76,6 +79,19 @@ impl HlsLiveOpenResult {
     pub fn subtitle_renditions(&self) -> &[HlsSubtitleRenditionDescriptor] {
         &self.subtitles
     }
+
+    /// Транспорт subtitle rendition-ов (playlist и сегменты). Сеть трогается только по его вызовам.
+    /// Берётся до `into_parts`/`into_demuxer`, которые потребляют результат.
+    #[must_use]
+    pub fn subtitle_transport(&self) -> HlsSubtitleTransport {
+        self.subtitle_transport.clone()
+    }
+
+    /// Read-only origin-ы сегментов видео для привязки субтитров к шкале плеера.
+    #[must_use]
+    pub fn timestamp_origins(&self) -> HlsTimestampOrigins {
+        self.timestamp_origins.clone()
+    }
 }
 
 impl std::fmt::Debug for HlsLiveOpenResult {
@@ -85,6 +101,7 @@ impl std::fmt::Debug for HlsLiveOpenResult {
             .field("tracks", &self.demuxer.tracks().len())
             .field("duration", &Option::<Duration>::None)
             .field("subtitles", &self.subtitles.len())
+            .field("timestamp_origins", &self.timestamp_origins)
             .field("initial_readiness", &self.initial_readiness)
             .finish_non_exhaustive()
     }
@@ -193,6 +210,8 @@ fn prepare_hls_live_with_catalog(
         request.common.generation,
     );
     let refresh_control = HlsLiveRefreshControl::new();
+    // Origin-ы публикует только main-компонент: по ним же пересчитывается видео.
+    let (timestamp_origins, timestamp_origins_writer) = HlsTimestampOrigins::new_pair();
     let main_factory = HlsLiveComponentFactory::new(
         HlsLiveComponentKind::Main,
         initial.main_container,
@@ -200,7 +219,8 @@ fn prepare_hls_live_with_catalog(
         Arc::clone(&request.common.demux_registry),
         Arc::clone(&coordinator),
         Arc::clone(&refresh_control),
-    );
+    )
+    .publishing_timestamp_origins(timestamp_origins_writer);
     let main = main_factory.open().map_err(HlsLiveOpenError::Runtime)?;
     if initial.main_track_layout
         == crate::HlsMainTrackLayoutIntent::VideoWithOptionalAudioOrAudioOnly
@@ -246,6 +266,13 @@ fn prepare_hls_live_with_catalog(
 
     let fatal = Arc::new(Mutex::new(None));
     let subtitles = initial.subtitles.clone().into_boxed_slice();
+    let subtitle_transport = HlsSubtitleTransport::new(
+        initial.subtitles.clone(),
+        initial.subtitle_base.clone(),
+        request.common.http.clone(),
+        request.common.generation,
+        request.common.policy.parser_limits,
+    );
     let refresh_owner = HlsLiveRefreshOwner::spawn(
         request,
         initial,
@@ -264,6 +291,8 @@ fn prepare_hls_live_with_catalog(
         initial_readiness: HlsInitialReadinessCapability::AlreadySynchronous,
         timeline_port,
         subtitles,
+        subtitle_transport,
+        timestamp_origins,
     })
 }
 
@@ -311,6 +340,8 @@ fn prepare_hls_live_receipted_with_catalog(
         demuxer,
         timeline_port,
         subtitles,
+        subtitle_transport,
+        timestamp_origins,
         ..
     } = opened;
     let progressive = ProgressiveDemuxer::new_receipted_seekable(
@@ -330,6 +361,8 @@ fn prepare_hls_live_receipted_with_catalog(
         initial_readiness,
         timeline_port,
         subtitles,
+        subtitle_transport,
+        timestamp_origins,
     })
 }
 
@@ -345,6 +378,8 @@ pub(super) struct SelectedLiveResources {
     pub(super) audio_reload_target: Option<HttpRequestTarget>,
     pub(super) audio_container: Option<HlsRequiredContainer>,
     pub(super) subtitles: Vec<HlsSubtitleRenditionDescriptor>,
+    /// Эффективный адрес master playlist: база относительных ссылок subtitle rendition-ов.
+    pub(super) subtitle_base: HttpRequestTarget,
 }
 
 pub(super) fn load_selected_live(
@@ -403,6 +438,7 @@ pub(super) fn load_selected_live(
                 audio_reload_target: None,
                 audio_container: None,
                 subtitles: Vec::new(),
+                subtitle_base: top_base,
             })
         }
         HlsPlaylist::Master(master) => {
@@ -501,6 +537,7 @@ pub(super) fn load_selected_live(
                 audio_reload_target,
                 audio_container,
                 subtitles,
+                subtitle_base: top_base,
             })
         }
     }

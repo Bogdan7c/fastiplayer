@@ -490,3 +490,14 @@ fn issue_list_is_capped_by_limit_but_counters_keep_counting() {
     assert_eq!(report.issues().len(), 2);
     assert_eq!(report.unreported_issues(), 3);
 }
+
+#[test]
+fn epoch_scale_hours_are_parsed_up_to_the_six_digit_hour_limit() {
+    // Эпоха Unix (~1.7e9 с) = 472222 ч: шесть цифр часов (предел грамматики) покрывают её
+    // и все даты примерно до 2084 года; сдвиг на шкалу плеера делается уже после разбора.
+    let loaded = load_vtt("WEBVTT\n\n472222:13:20.250 --> 472222:13:20.750\nepoch\n");
+    let seconds = 472_222_i64 * 3600 + 13 * 60 + 20;
+    let event = loaded.document().events().first().unwrap();
+    assert_eq!(event.start().as_micros(), seconds * 1_000_000 + 250_000);
+    assert_eq!(event.end().as_micros(), seconds * 1_000_000 + 750_000);
+}

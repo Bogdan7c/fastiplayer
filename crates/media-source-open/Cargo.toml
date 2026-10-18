@@ -60,6 +60,10 @@ dash-mpd-core.workspace = true
 bounded-xml-reader.workspace = true
 # Оркестрация HDS (`web_media_open::hds`): лимиты разбора F4M manifest-а и bootstrap-а.
 hds-manifest-core.workspace = true
+# Лента субтитров потоковых источников (`stream_subtitles`): нейтральная модель
+# событий и разбор WebVTT-сегментов (карта `X-TIMESTAMP-MAP`, сдвиг событий).
+subtitle-core.workspace = true
+subtitle-formats.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
@@ -72,6 +76,14 @@ video-frame-contract.workspace = true
 serde_json = "1.0"
 # Проверка, что probe плейлиста не пишет ERROR-записи `log` (их пишет Symphonia).
 log.workspace = true
+# Hermetic HLS-фикстуры (`tests/stream_subtitle_hls.rs`, общий `support` из web-media-hls
+# подключён через `#[path]`): сборка fMP4-сегментов.
+symphonia-format-isomp4.workspace = true
+
+# `symphonia-format-isomp4` нужен только общему файлу `support/mod.rs` web-media-hls, который
+# `tests/stream_subtitle_hls.rs` подключает через `#[path]`; cargo-machete его там не видит.
+[package.metadata.cargo-machete]
+ignored = ["symphonia-format-isomp4"]
 
 [lints]
 workspace = true

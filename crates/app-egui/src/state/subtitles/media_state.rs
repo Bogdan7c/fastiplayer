@@ -14,6 +14,7 @@ use super::intents::SubtitleVisibility;
 use super::job_runner::SidecarJob;
 use super::owner_embedded::{EmbeddedAssTracks, EmbeddedPgsTracks};
 use super::owner_memory::{MemoryDirty, PendingRememberedChoice};
+use super::owner_stream::StreamTracks;
 use super::sidecar_job::SubtitleLoadFailure;
 use super::track_list::{SubtitleTrackList, TrackLoadState};
 use super::web_download::WebSubtitleDownloader;
@@ -99,6 +100,8 @@ pub(super) struct MediaSubtitles {
     pub(super) embedded_pgs: EmbeddedPgsTracks,
     /// Кто скачивает web-дорожки этого media (`None` — у media web-дорожек нет).
     pub(super) web_downloader: Option<Arc<dyn WebSubtitleDownloader>>,
+    /// Источник и лента потоковых дорожек (HLS-рендиции) этого media.
+    pub(super) streams: StreamTracks,
 }
 
 impl MediaSubtitles {
@@ -120,6 +123,7 @@ impl MediaSubtitles {
             embedded_ass: EmbeddedAssTracks::default(),
             embedded_pgs: EmbeddedPgsTracks::default(),
             web_downloader: None,
+            streams: StreamTracks::default(),
         }
     }
 

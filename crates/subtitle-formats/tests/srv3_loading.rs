@@ -381,7 +381,11 @@ fn sniff_detects_srv3_with_and_without_declaration_or_bom() {
     );
     // Не принимаем другие корни и похожие имена.
     assert_eq!(detect("<timedtextual/>"), None);
-    assert_eq!(detect("<tt xmlns=\"http://www.w3.org/ns/ttml\"/>"), None);
+    // TTML теперь распознаётся как собственный формат (сессия 13), а не как srv3.
+    assert_eq!(
+        detect("<tt xmlns=\"http://www.w3.org/ns/ttml\"/>"),
+        Some(TextSubtitleFormat::Ttml)
+    );
     // SRT по-прежнему определяется как SRT.
     assert_eq!(
         detect("1\n00:00:01,000 --> 00:00:02,000\nHi\n"),

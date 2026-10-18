@@ -681,3 +681,9 @@ impl PreparedWebMediaEnvelope {
 
 #[cfg(test)]
 mod tests;
+
+/// Открытие HLS с субтитрами для сквозных тестов владельца субтитров.
+#[cfg(test)]
+pub(crate) use tests::stream_subtitles_dash_vertical::open_dash_with_subtitles;
+#[cfg(test)]
+pub(crate) use tests::stream_subtitles_vertical::open_hls_with_subtitles;

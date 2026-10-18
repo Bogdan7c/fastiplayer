@@ -26,7 +26,7 @@ fn schema_v17_without_ass_keys_loads_defaults_and_keeps_user_values() {
     fs::write(&config_path, SCHEMA_V17_WITHOUT_ASS_KEYS).expect("v17 fixture written");
 
     let migrated = load_from_path(&config_path).expect("v17 config loads");
-    assert_eq!(migrated.config.schema_version, 22);
+    assert_eq!(migrated.config.schema_version, 23);
     let subtitles = &migrated.config.subtitles;
     assert_eq!(
         subtitles.ass_position_mode,
@@ -42,7 +42,7 @@ fn schema_v17_without_ass_keys_loads_defaults_and_keeps_user_values() {
 
     save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
     let saved_text = fs::read_to_string(&config_path).expect("saved TOML readable");
-    assert!(saved_text.contains("schema_version = 22"));
+    assert!(saved_text.contains("schema_version = 23"));
     assert!(saved_text.contains("ass_position_mode = \"main_lines_avoid_controls\""));
     assert!(saved_text.contains("max_ass_header_kb = 1024"));
     let reloaded = load_from_path(&config_path).expect("saved config reloads");
@@ -116,7 +116,7 @@ fn ass_limits_out_of_range_are_rejected_and_unknown_mode_fails_to_parse() {
     let config_path = temp_dir.path().join("config.toml");
     fs::write(
         &config_path,
-        "schema_version = 22\n\n[subtitles]\nass_position_mode = \"somewhere\"\n",
+        "schema_version = 23\n\n[subtitles]\nass_position_mode = \"somewhere\"\n",
     )
     .expect("fixture written");
     assert!(load_from_path(&config_path).is_err());
@@ -139,7 +139,7 @@ fn every_ass_position_mode_value_parses_from_file() {
         let config_path = temp_dir.path().join("config.toml");
         fs::write(
             &config_path,
-            format!("schema_version = 22\n\n[subtitles]\nass_position_mode = \"{serialized}\"\n"),
+            format!("schema_version = 23\n\n[subtitles]\nass_position_mode = \"{serialized}\"\n"),
         )
         .expect("fixture written");
         let loaded = load_from_path(&config_path).expect("known mode value loads");

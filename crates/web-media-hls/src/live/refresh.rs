@@ -583,6 +583,7 @@ fn refresh_selected_media(
             audio_reload_target: current.audio_reload_target.clone(),
             audio_container: current.audio_container,
             subtitles: current.subtitles.clone(),
+            subtitle_base: current.subtitle_base.clone(),
         },
         due,
         main_changed,

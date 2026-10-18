@@ -23,6 +23,8 @@ pub struct ExtractorMediaSourceState {
     pub(super) audio_languages: ExtractorAudioLanguageCatalog,
     /// Загрузка субтитров видео; секретные ссылки живут только внутри дескриптора.
     pub(super) subtitle_fetch: crate::web_subtitle_fetch::WebSubtitleFetchHandle,
+    /// Субтитры самого потока (HLS `TYPE=SUBTITLES` выбранного кандидата); `None` вне HLS.
+    pub(super) stream_subtitles: Option<crate::stream_subtitles::StreamSubtitleSource>,
 }
 
 impl ExtractorMediaSourceState {
@@ -43,6 +45,12 @@ impl ExtractorMediaSourceState {
     /// Список дорожек без секретов: `stream_configuration().web_subtitle_tracks()`.
     pub fn web_subtitle_fetch_handle(&self) -> crate::web_subtitle_fetch::WebSubtitleFetchHandle {
         self.subtitle_fetch.clone()
+    }
+
+    /// Субтитры самого потока (HLS-дорожки) этого открытия; `None`, если их нет.
+    #[must_use]
+    pub fn stream_subtitle_source(&self) -> Option<crate::stream_subtitles::StreamSubtitleSource> {
+        self.stream_subtitles.clone()
     }
 
     /// Языки звука, между которыми можно переключиться без смены видео.

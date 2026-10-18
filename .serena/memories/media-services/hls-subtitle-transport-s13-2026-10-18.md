@@ -1,0 +1,22 @@
+# HLS subtitle transport + timestamp origins (субтитры, сессия 13, пакет P3)
+
+## Что добавлено в `web-media-hls`
+- `timestamp_origins.rs`: `HlsTimestampOrigins` (pub, Clone+Send+Sync, read-only) + внутренний `HlsTimestampOriginsWriter`. Ключ — discontinuity sequence; значение `HlsEpochTimestampOrigin{media_origin, timeline_start}` (ровно пара, которой демуксер считает `player = raw - media_origin + timeline_start`). Читатели: `epoch_origin(d)` (самая ранняя пара эпохи), `origin_for_media_time(d, raw)` (последняя пара с media_origin <= raw; для live по паре на сегмент), `known_epoch_count()`. Границы: 256 эпох, 512 пар на эпоху (вытесняются самые старые).
+- Публикация (корень истины, без копий): VOD — `seek.rs::HlsSeekIndex::observe_manifest_packet/commit_proven_anchor` (туда `remap_packet` уже передаёт реально использованные origin/timeline_start, включая восстановленные после seek); писатель живёт только в seek-индексе main-компонента (`SharedHlsSeekIndex::new_publishing_timestamp_origins`). Live — `live/demux.rs::remap_packet` в момент фиксации origin сегмента (`HlsLiveComponentFactory::publishing_timestamp_origins`, только main).
+- `subtitles/`: `HlsSubtitleTransport` (Clone; renditions/load_playlist/fetch_segment), `HlsSubtitleRenditionId`/`Info`, `HlsSubtitlePlaylistSnapshot`/`Segment`/`SegmentRef` (opaque, Debug без URL), `HlsSubtitleSegmentByteLimit`, `HlsSubtitleFetchError` (NotFound/Gone/HttpStatus/Network/RequestRejected/TooLarge/MalformedPlaylist/InvalidReference/Unsupported(Encryption)/Cancelled/Stale/UnknownRendition). Лёгкий профиль: только шифрование (`EXT-X-KEY` METHOD != NONE) отвергается. Playlist-ы — purpose Manifest, сегменты — MediaSegment + MergeScopedAddition (как видео).
+- ИЗОЛЯЦИЯ ОТ ВИДЕО (фикс live-acceptance): `HlsSubtitleTransport::new` берёт `http.for_auxiliary_resources()` (`web-media-adaptive/src/fetch/auxiliary.rs`): без `endpoint_expiry_observer` и со СВОИМ completed-cache. Иначе 404/410 субтитров шли в `AdaptiveHttpContext::observe_endpoint_expiry` (fetch.rs, вызывается из fetch/execution.rs и async_job.rs) -> AUD-009 RefreshRootManifestAndRematch -> повторное открытие видео. Тест `web-media-hls/tests/subtitle_recovery_isolation.rs` (+control: сбой видео-сегмента по-прежнему даёт сигнал). Любой новый вспомогательный транспорт обязан брать этот вид контекста.
+- HTTP: клон `AdaptiveHttpContext` открытия (тот же токен отмены источника: транспорт отменяется вместе с закрытием media/демуксера и живёт, пока жив демуксер; своего клиента/кэша нет). Токен вызова проверяется до/после сети; идущий запрос прервать может только отмена источника или таймауты.
+- Открытые результаты: `HlsVodOpenResult::{subtitle_transport(), timestamp_origins()}`, `HlsLiveOpenResult::{subtitle_transport(), timestamp_origins()}` (брать ДО `into_parts/into_demuxer`; `into_parts` не менялся). `HlsSubtitleRenditionDescriptor` получил `is_default()/is_autoselect()`.
+- Открытие субтитры НЕ запрашивает (тест `runtime.rs` + `subtitle_transport.rs`).
+
+## Ревью F1 (стабильная шкала, origins)
+- `subtitles/timeline.rs`: `PlaylistTimeline` (по rendition, в `Arc<Mutex<HashMap>>` транспорта, общий для клонов). `load_playlist` закрепляет `HlsSubtitleSegment.start` на сквозной шкале: перекрытие по `(media_sequence, discontinuity_sequence)` с прошлым снимком сохраняет прежний start; нет перекрытия → шкала продолжается от конца прошлого снимка и растёт `HlsSubtitlePlaylistSnapshot.timeline_epoch: PlaylistTimelineEpoch`. Потребитель обязан забыть выученные по start смещения при смене поколения.
+- `HlsTimestampOrigins`: пары эпохи вытесняются по ВОЗРАСТУ вставки (`EpochOrigins{sorted, insertion_order}`), не по значению (оборот 33 бит). VOD-публикация идёт через `HlsTimestampOriginsWriter::publish_if_changed(&mut self)` (кэш последней пары у самого писателя, `Clone` кэш не копирует) — `seek.rs` не берёт общий замок на каждом пакете.
+
+## Тесты
+`tests/subtitle_transport.rs` (loopback: playlist VOD/live по индексу запроса, сегменты, byte range, 404/410/403/too large, шифрование, malformed, cancel, stale, dead server, live open), `tests/timestamp_origins.rs` (VOD PTS=10 с, discontinuity, seek, live; мутация origin+1ms валит все три).
+
+## Известные ограничения
+- Live: после endpoint recovery транспорт субтитров держит исходный контекст/базу master (новый подписанный URL не подхватывает).
+- Live origin — по паре на сегмент; потребитель должен брать `origin_for_media_time`.
+- Вытеснение пар на очень длинном DVR делает привязку старых реплик приближённой (дрейф между сегментами).

@@ -63,6 +63,12 @@ RUST_NON_FUNCTION_DECLARATION_PATTERN = re.compile(
     r"([A-Za-z_][A-Za-z0-9_]*)\b"
 )
 
+# Исключение сессии 13: читатель ТЕКСТОВЫХ дорожек DASH (`stpp`/`wvtt`, ISO/IEC 14496-30)
+# живёт рядом с планировщиком субтитров. Он читает только `moov/trak/mdhd/stsd` и
+# `moof/traf/tfhd/tfdt/trun` текстовой дорожки и ничего не знает про A/V; обобщать его до
+# демуксера нельзя (A/V остаётся у ISO-BMFF patch).
+TEXT_TRACK_FMP4_READER_ROOT = Path("crates/web-media-dash/src/text_fmp4")
+
 # Generic fMP4 atom parse declarations принадлежат exact ISO-BMFF patch.
 FMP4_PATTERNS = (
     re.compile(
@@ -142,6 +148,11 @@ def find_f4f_fmp4_source_violations(
         F4F_ISO_ENVELOPE_PATTERNS,
         "F4F ISO-envelope adapter is only allowed in the exact flv-demux path",
     )
+    # Узкий читатель текстовых дорожек DASH проходит только F4F-проверку выше.
+    if TEXT_TRACK_FMP4_READER_ROOT in relative_path.parents:
+        return sorted(
+            violations, key=lambda item: (item.location, item.rule, item.evidence)
+        )
     # Generic fMP4 parser declarations остаются у standalone ISO-BMFF patch.
     violations.extend(
         _match_line_patterns(

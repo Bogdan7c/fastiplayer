@@ -21,6 +21,7 @@ use crate::selection::{
 mod continuation;
 mod lifecycle;
 mod resources;
+mod text;
 mod timeline;
 pub(crate) use continuation::{DashComponentContinuationPoint, DashPresentationContinuationPoint};
 use lifecycle::{component_snapshot_duration, validate_period_alignment};
@@ -28,6 +29,7 @@ use resources::{
     build_serialized_component, plan_list, plan_template, resolve_optional_base,
     segment_base_catalog_probe_content_length, validate_resource_alignment, validate_segment_base,
 };
+pub(crate) use text::{DashTextPeriodPlan, DashTextTimeBasis, plan_text_period};
 use timeline::{DashPeriodTimelineBound, DashTimelinePlanningIntent};
 
 /// Один ordered init/media resource и его explicit presentation interval.
@@ -490,7 +492,8 @@ fn build_manifest_period(
     let (input, timestamp_mapping, snapshot_duration) = match &selected.representation.addressing {
         DashAddressing::Template(template) => {
             let (resources, media_time_origin, snapshot_duration) = plan_template(
-                selected.representation,
+                &selected.representation.id,
+                selected.representation.bandwidth,
                 template,
                 &representation_base,
                 period_bound,

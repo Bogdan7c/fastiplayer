@@ -15,24 +15,27 @@ mod style_block;
 mod style_sheet;
 mod tag;
 mod timestamp;
+mod timestamp_map;
 
 use subtitle_core::{
     SubtitleContent, SubtitleEvent, SubtitleLayer, SubtitleRegion, SubtitleTextCue,
 };
 
-use self::blocks::{Block, NumberedLine, contains_timing_arrow, split_into_blocks};
+use self::blocks::{Block, NumberedLine, contains_timing_arrow, header_lines, split_into_blocks};
 use self::cue_settings::parse_cue_settings;
 use self::cue_text::{CueTimeWindow, parse_cue_text};
 use self::region::{parse_region_block, register_region};
 use self::style_block::parse_style_block;
 use self::style_sheet::CueStyleSheet;
 use self::timestamp::{TimingLine, is_webvtt_space, parse_timing_line};
+use self::timestamp_map::scan_header_for_timestamp_map;
 use crate::document::ParsedSubtitleDocument;
 use crate::error::SubtitleLoadError;
 use crate::limits::SubtitleParseLimits;
 use crate::report::{CueSettingName, LineNumber, ParseIssue, ParseIssueKind, SubtitleParseReport};
 
 pub(crate) use blocks::has_webvtt_signature;
+pub use timestamp_map::{MpegTsTimestamp90kHz, MpegTsTimestampOutOfRange, WebVttTimestampMap};
 
 /// Текст реплики WebVTT из пакета контейнера: без таймингов и таблицы стилей.
 ///
@@ -71,14 +74,15 @@ pub(crate) fn parse_webvtt(
         report: SubtitleParseReport::new(limits.max_reported_issues),
         seen_cue: false,
     };
+    // Заголовок смотрим до разбиения на блоки: `split_into_blocks` строки заголовка отбрасывает.
+    let timestamp_map = parser.read_timestamp_map(&normalized);
     for block in split_into_blocks(&normalized) {
         parser.parse_block(&block)?;
     }
-    Ok(ParsedSubtitleDocument::new(
-        parser.events,
-        parser.regions,
-        parser.report,
-    ))
+    Ok(
+        ParsedSubtitleDocument::new(parser.events, parser.regions, parser.report)
+            .with_webvtt_timestamp_map(timestamp_map),
+    )
 }
 
 /// Накопитель результата разбора; владеет событиями, регионами, стилями и отчётом.
@@ -93,6 +97,18 @@ struct WebVttParser {
 }
 
 impl WebVttParser {
+    /// Читает `X-TIMESTAMP-MAP` из заголовка; плохие строки уходят в отчёт, не в ошибку.
+    fn read_timestamp_map(&mut self, normalized: &str) -> Option<WebVttTimestampMap> {
+        let scanned = scan_header_for_timestamp_map(&header_lines(normalized));
+        for line_number in scanned.rejected_lines {
+            self.report.record_issue(ParseIssue {
+                line_number,
+                kind: ParseIssueKind::MalformedTimestampMap,
+            });
+        }
+        scanned.map
+    }
+
     /// Определяет вид блока по W3C: строка со стрелкой в первых двух строках — реплика
     /// (этот признак главнее ключевых слов), иначе `NOTE`/`STYLE`/`REGION`, иначе мусор.
     fn parse_block(&mut self, block: &Block<'_>) -> Result<(), SubtitleLoadError> {

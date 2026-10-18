@@ -177,6 +177,16 @@ impl AppWakePort {
         Self::new(owner, Arc::new(ClosedWakeEmitter))
     }
 
+    /// Порт того же владельца с НЕЗАВИСИМЫМ wake-флагом (общий только канал событий).
+    ///
+    /// Нужен продюсеру, чьё ожидающее состояние читает один потребитель в известный момент
+    /// (например, фоновая лента субтитров: UI очищает флаг прямо перед чтением её очереди).
+    /// С общим флагом чужой drain того же владельца мог бы очистить его между публикацией и
+    /// чтением, и следующее пробуждение слилось бы с уже "висящим" (потерялось бы).
+    pub(crate) fn with_independent_edge(&self) -> Self {
+        Self::new(self.inner.owner, self.inner.emitter.clone())
+    }
+
     /// Поднимает только false→true edge; payload должен быть опубликован раньше.
     pub(crate) fn request_wake(&self) -> WakeDelivery {
         self.inner.publish_epoch.fetch_add(1, Ordering::AcqRel);
@@ -453,6 +463,35 @@ mod tests {
 
     fn test_port(emitter: Arc<RecordingEmitter>) -> AppWakePort {
         AppWakePort::new(AppWakeOwner::PlaylistRuntime, emitter)
+    }
+
+    #[test]
+    fn independent_edge_keeps_its_own_pending_flag_but_shares_the_event_channel() {
+        let emitter = Arc::new(RecordingEmitter {
+            emits: AtomicUsize::new(0),
+            fail: AtomicBool::new(false),
+        });
+        let shared = test_port(emitter.clone());
+        let independent = shared.with_independent_edge();
+
+        assert_eq!(shared.request_wake(), WakeDelivery::Armed);
+        assert_eq!(
+            independent.request_wake(),
+            WakeDelivery::Armed,
+            "the independent edge is not coalesced with the shared one"
+        );
+        assert_eq!(
+            emitter.emits.load(Ordering::Relaxed),
+            2,
+            "same event channel"
+        );
+
+        // Очистка чужого флага не трогает наш: следующий вызов по-прежнему сливается.
+        shared.clear_pending_for_drain();
+        assert_eq!(independent.request_wake(), WakeDelivery::Coalesced);
+        independent.clear_pending_for_drain();
+        assert_eq!(independent.request_wake(), WakeDelivery::Armed);
+        assert_eq!(shared.request_wake(), WakeDelivery::Armed);
     }
 
     #[test]

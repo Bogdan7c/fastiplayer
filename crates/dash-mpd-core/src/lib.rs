@@ -13,6 +13,8 @@ mod dynamic;
 mod model;
 // Parser является единственным входом из недоверенного XML в модель.
 mod parser;
+// Текстовые наборы живут отдельной моделью от A/V.
+mod text_model;
 // Шаблоны и timeline имеют отдельную checked арифметику.
 mod template;
 
@@ -33,6 +35,7 @@ pub use model::{
     DashRepresentation, DashSegmentBase, DashSegmentList, DashSegmentListEntry,
     DashSegmentTemplate, DashTimelineEntry, DashUrlReference, IndexRange,
 };
+pub use text_model::{DashTextAdaptationSet, DashTextKind, DashTextRepresentation, DashTextRole};
 // Parser request требует explicit XML и schema budgets.
 pub use parser::{DashMpdLimits, DashMpdParseRequest, parse_dash_mpd};
 // Expansion API не смешан с XML traversal.

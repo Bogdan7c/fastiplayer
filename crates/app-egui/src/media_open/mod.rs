@@ -76,3 +76,5 @@ pub(crate) use web::{
     WebMediaSettingsReconfigureDecision, WebMediaSettingsReconfigurePolicy,
     WebMediaSettingsSelectionPolicy, WebMediaSourceIntent,
 };
+#[cfg(test)]
+pub(crate) use web::{open_dash_with_subtitles, open_hls_with_subtitles};

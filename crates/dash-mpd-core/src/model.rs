@@ -327,8 +327,12 @@ pub struct DashPeriod {
     pub duration: DashPresentationDuration,
     /// BaseURL текущего уровня.
     pub base_url: Option<DashBaseUrl>,
-    /// Ordered adaptation sets.
+    /// Ordered A/V adaptation sets.
     pub adaptation_sets: Box<[DashAdaptationSet]>,
+    /// Разобранные текстовые наборы; они не участвуют в подборе A/V.
+    pub text_adaptation_sets: Box<[crate::text_model::DashTextAdaptationSet]>,
+    /// Сколько текстовых наборов пропущено (DRM, неподдерживаемый формат, битое описание).
+    pub skipped_text_adaptation_set_count: usize,
 }
 
 /// Полностью проверенный static либо dynamic MPD presentation graph.

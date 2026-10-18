@@ -28,6 +28,67 @@ impl SubtitleTime {
     }
 }
 
+/// Сдвиг АБСОЛЮТНЫХ времён события (не пользовательская синхронизация): применяется один раз
+/// при переносе времени дорожки на шкалу плеера (например, HLS-сегмент WebVTT).
+///
+/// Знак: положительный сдвиг переносит время ПОЗЖЕ (`время + сдвиг`), отрицательный — раньше.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SubtitleTimeShift(i64);
+
+impl SubtitleTimeShift {
+    /// Отсутствие сдвига.
+    pub const ZERO: Self = Self(0);
+
+    /// Сдвиг в микросекундах (знаковый).
+    pub const fn from_micros(micros: i64) -> Self {
+        Self(micros)
+    }
+
+    /// Сдвиг в миллисекундах (насыщающее умножение на 1000).
+    pub const fn from_millis(millis: i64) -> Self {
+        Self(millis.saturating_mul(1_000))
+    }
+
+    /// Сдвиг в микросекундах.
+    pub const fn as_micros(self) -> i64 {
+        self.0
+    }
+}
+
+/// Сдвиг времени вышел за пределы i64. В отличие от арифметики синхронизации, здесь
+/// насыщение недопустимо: молча склеенные в `i64::MAX` времена дали бы неверную реплику.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("shifting subtitle time {time_micros} us by {shift_micros} us overflows i64")]
+pub struct SubtitleTimeShiftOverflow {
+    time_micros: i64,
+    shift_micros: i64,
+}
+
+impl SubtitleTimeShiftOverflow {
+    /// Время, которое не удалось сдвинуть.
+    pub fn time(self) -> SubtitleTime {
+        SubtitleTime(self.time_micros)
+    }
+
+    /// Запрошенный сдвиг.
+    pub fn shift(self) -> SubtitleTimeShift {
+        SubtitleTimeShift(self.shift_micros)
+    }
+}
+
+impl SubtitleTime {
+    /// Время, сдвинутое на `shift`; переполнение i64 — ошибка, а не насыщение.
+    pub fn shifted_by(self, shift: SubtitleTimeShift) -> Result<Self, SubtitleTimeShiftOverflow> {
+        self.0
+            .checked_add(shift.0)
+            .map(Self)
+            .ok_or(SubtitleTimeShiftOverflow {
+                time_micros: self.0,
+                shift_micros: shift.0,
+            })
+    }
+}
+
 /// Пользовательский сдвиг синхронизации субтитров.
 ///
 /// Соглашение о знаке: положительный сдвиг означает, что субтитры появляются ПОЗЖЕ.

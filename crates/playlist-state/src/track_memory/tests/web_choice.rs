@@ -15,7 +15,7 @@ fn web_choice(language: &str, kind: RememberedWebSubtitleKind) -> RememberedSubt
 }
 
 #[test]
-fn web_choice_of_every_kind_survives_write_and_inspect_and_file_uses_schema_two() {
+fn web_choice_of_every_kind_survives_write_and_inspect_and_file_uses_current_schema() {
     let directory = tempfile::tempdir().expect("dir");
     let store = store_in(&directory);
     let mut memory = TrackMemory::new(capacity(10));
@@ -35,9 +35,9 @@ fn web_choice_of_every_kind_survives_write_and_inspect_and_file_uses_schema_two(
     assert!(matches!(store.write(&memory), AtomicWriteOutcome::Durable));
 
     let text = std::fs::read_to_string(store.track_memory_path()).expect("file");
-    assert!(text.contains(r#""schema_version": 2"#), "{text}");
-    // Старый бинарник (схема 1) обязан увидеть «файл новее», а не «повреждён».
-    assert_eq!(CURRENT_TRACK_MEMORY_SCHEMA_VERSION, 2);
+    assert!(text.contains(r#""schema_version": 3"#), "{text}");
+    // Старый бинарник (схема 1 или 2) обязан увидеть «файл новее», а не «повреждён».
+    assert_eq!(CURRENT_TRACK_MEMORY_SCHEMA_VERSION, 3);
     let TrackMemoryInspection::Loaded(loaded) = store.inspect(capacity(10)) else {
         panic!("memory must load");
     };

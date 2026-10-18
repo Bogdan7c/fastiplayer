@@ -1,0 +1,21 @@
+//! Настройки ленты субтитров. Значений по умолчанию нет: их задаёт приложение из config.
+
+use std::num::{NonZeroU32, NonZeroUsize};
+use std::time::Duration;
+
+/// Лимиты и окна ленты субтитров одного потока.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamSubtitleFeedConfig {
+    /// Сколько субтитров загружать вперёд от позиции воспроизведения.
+    pub ahead: Duration,
+    /// Сколько загружать назад от позиции (для перемотки на короткое расстояние).
+    pub behind: Duration,
+    /// Максимальный размер одного сегмента в байтах.
+    pub max_segment_bytes: NonZeroUsize,
+    /// Сколько сегментов может ждать точку отсчёта времени видео (лишние вытесняются).
+    pub max_pending_segments: NonZeroUsize,
+    /// После скольких подряд неудачных сегментов дорожка считается недоступной.
+    pub failure_threshold: NonZeroU32,
+    /// Размер очереди сообщений к приложению (при переполнении лента ждёт).
+    pub message_capacity: NonZeroUsize,
+}

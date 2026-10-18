@@ -8,6 +8,7 @@ use crate::limits::SubtitleParseLimits;
 use crate::sniff::TextSubtitleFormat;
 use crate::srt::parse_srt;
 use crate::srv3::parse_srv3;
+use crate::ttml::{TtmlSampleWindow, parse_ttml, parse_ttml_in_window};
 use crate::webvtt::parse_webvtt;
 
 /// Загруженный файл субтитров вместе со сведениями о декодировании.
@@ -52,6 +53,34 @@ pub fn load_text_subtitle(
     hint: LegacyEncodingHint,
     limits: &SubtitleParseLimits,
 ) -> Result<LoadedTextSubtitle, SubtitleLoadError> {
+    load_with_sample_window(bytes, format, hint, limits, None)
+}
+
+/// Загружает TTML-документ из сэмпла контейнера (`stpp`): реплики действуют только в окне
+/// сэмпла (см. [`TtmlSampleWindow`]).
+pub fn load_ttml_sample(
+    bytes: &[u8],
+    hint: LegacyEncodingHint,
+    limits: &SubtitleParseLimits,
+    sample_window: TtmlSampleWindow,
+) -> Result<LoadedTextSubtitle, SubtitleLoadError> {
+    load_with_sample_window(
+        bytes,
+        TextSubtitleFormat::Ttml,
+        hint,
+        limits,
+        Some(sample_window),
+    )
+}
+
+/// Общий путь загрузки; `sample_window` влияет только на TTML.
+fn load_with_sample_window(
+    bytes: &[u8],
+    format: TextSubtitleFormat,
+    hint: LegacyEncodingHint,
+    limits: &SubtitleParseLimits,
+    sample_window: Option<TtmlSampleWindow>,
+) -> Result<LoadedTextSubtitle, SubtitleLoadError> {
     if bytes.len() > limits.max_input_bytes {
         return Err(SubtitleLoadError::InputTooLarge {
             actual_bytes: bytes.len(),
@@ -63,6 +92,10 @@ pub fn load_text_subtitle(
         TextSubtitleFormat::Srt => parse_srt(&decoded.text, limits)?,
         TextSubtitleFormat::WebVtt => parse_webvtt(&decoded.text, limits)?,
         TextSubtitleFormat::Srv3 => parse_srv3(&decoded.text, limits)?,
+        TextSubtitleFormat::Ttml => match sample_window {
+            Some(window) => parse_ttml_in_window(&decoded.text, limits, Some(window))?,
+            None => parse_ttml(&decoded.text, limits)?,
+        },
         TextSubtitleFormat::Ass => {
             let ass_limits = limits
                 .ass_limits()

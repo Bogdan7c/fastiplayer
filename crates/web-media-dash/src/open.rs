@@ -25,6 +25,7 @@ use crate::request::{
     DashFetchedManifestInput, DashManifestInput, DashVodHttpContext, DashVodInput,
     DashVodOpenPolicy, DashVodOpenRequest,
 };
+use crate::text::{DashTextSubtitles, static_text_subtitles};
 use crate::transactional_av::{TransactionalDashAvDemuxer, prepare_dash_component_pair};
 
 /// Authoritative presentation kind уже fetched MPD без повторного root I/O.
@@ -42,6 +43,8 @@ pub struct DashVodOpenResult {
     demuxer: ProgressiveDemuxer,
     /// Exact finite presentation duration.
     duration: Duration,
+    /// Дорожки субтитров из текстовых AdaptationSet того же MPD; `None`, если их нет.
+    text_subtitles: Option<DashTextSubtitles>,
 }
 
 impl DashVodOpenResult {
@@ -67,6 +70,18 @@ impl DashVodOpenResult {
     #[must_use]
     pub const fn duration(&self) -> Duration {
         self.duration
+    }
+
+    /// Субтитры потока (текстовые AdaptationSet этого MPD); берутся ДО `into_demuxer`.
+    #[must_use]
+    pub fn text_subtitles(&self) -> Option<DashTextSubtitles> {
+        self.text_subtitles.clone()
+    }
+
+    /// Прикрепляет субтитры, посчитанные из того же MPD, что и план этого открытия.
+    pub(crate) fn with_text_subtitles(mut self, text_subtitles: Option<DashTextSubtitles>) -> Self {
+        self.text_subtitles = text_subtitles;
+        self
     }
 }
 
@@ -134,9 +149,17 @@ pub fn prepare_dash_vod(
         demux_registry,
         policy,
     } = request;
+    let mut text_subtitles = None;
     let (plan, contexts) = match (input, http) {
         (DashVodInput::Manifest(manifest), DashVodHttpContext::Manifest(http)) => {
             let (mpd, manifest_base) = fetch_dash_manifest(&http, generation, manifest, policy)?;
+            text_subtitles = static_text_subtitles(
+                &mpd,
+                &manifest_base,
+                &http,
+                generation,
+                policy.maximum_planned_segments,
+            );
             let plan = build_manifest_plan(
                 &mpd,
                 &manifest_base,
@@ -155,6 +178,13 @@ pub fn prepare_dash_vod(
         (DashVodInput::FetchedManifest(manifest), DashVodHttpContext::Manifest(http)) => {
             let (mpd, manifest_base) =
                 parse_fetched_dash_manifest(&http, generation, &manifest, policy)?;
+            text_subtitles = static_text_subtitles(
+                &mpd,
+                &manifest_base,
+                &http,
+                generation,
+                policy.maximum_planned_segments,
+            );
             let plan = build_manifest_plan(
                 &mpd,
                 &manifest_base,
@@ -195,6 +225,7 @@ pub fn prepare_dash_vod(
         _ => return Err(DashVodOpenError::ContextLayout),
     };
     prepare_planned_dash_vod(plan, contexts, generation, demux_registry, policy)
+        .map(|opened| opened.with_text_subtitles(text_subtitles))
 }
 
 pub(crate) fn fetch_dash_manifest(
@@ -340,7 +371,11 @@ fn prepare_planned_dash_vod(
         ProgressiveRuntimeGeneration::new(generation.value()),
         policy.asynchronous_seek_limits,
     )?;
-    Ok(DashVodOpenResult { demuxer, duration })
+    Ok(DashVodOpenResult {
+        demuxer,
+        duration,
+        text_subtitles: None,
+    })
 }
 
 /// Проверяет generation/cancellation каждого component-scoped context-а до I/O.

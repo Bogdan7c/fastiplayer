@@ -65,3 +65,5 @@
 
 ## Раскладка плашки ошибки в центре (G3, 2026-10-11)
 Корень обрезки слева и «Повторить» под панелью телеметрии: `ui.set_max_width(560)` в `render_center_notice` РАСШИРЯЕТ ширину, если центральная область уже (панель телеметрии `Panel::right` отбирает 220–520 pt), а в обычном `ui.horizontal` переносимая подпись занимает всю ширину и выталкивает кнопки за край. Теперь `set_max_width(available.min(560))` + `horizontal_wrapped` (кнопки встают за текстом, при нехватке места — на новую строку). Тест: `notifications/render_tests.rs::center_failure_buttons_stay_fully_visible_beside_the_telemetry_panel` (панель телеметрии + центр, ширины 400/640/1280, rect кнопок внутри центральной области и clip-области, клик доходит). Toast-ы не менялись (проверено: в узкой области egui `Area` с `constrain_to` справляется сам).
+
+- Сессия 13: `TransientReplaceKey::SubtitleDownload` также несёт уведомление «Subtitles for this stream are unavailable right now.» для потоковых субтитров (HLS); доставка — `state/subtitles/app_state_api.rs::deliver_stream_notices`.

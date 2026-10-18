@@ -18,6 +18,7 @@ mod report;
 mod sniff;
 mod srt;
 mod srv3;
+mod ttml;
 mod webvtt;
 
 pub use ass::{
@@ -33,6 +34,8 @@ pub use encoding::{
 };
 pub use error::SubtitleLoadError;
 pub use limits::SubtitleParseLimits;
-pub use load::{LoadedTextSubtitle, load_text_subtitle};
+pub use load::{LoadedTextSubtitle, load_text_subtitle, load_ttml_sample};
 pub use report::{CueSettingName, LineNumber, ParseIssue, ParseIssueKind, SubtitleParseReport};
 pub use sniff::{TextSubtitleFormat, sniff_text_subtitle_format};
+pub use ttml::TtmlSampleWindow;
+pub use webvtt::{MpegTsTimestamp90kHz, MpegTsTimestampOutOfRange, WebVttTimestampMap};

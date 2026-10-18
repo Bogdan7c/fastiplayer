@@ -19,3 +19,6 @@
 - Reader fail-closed и fused после terminal error; document grammar допускает ровно один root, проверяет declaration placement/order/duplicates, exact XML whitespace outside root и namespace constraints.
 - Focused fixtures/tests находятся в `crates/bounded-xml-reader/tests` и покрывают entity/doctype/depth/attribute/namespace bombs, caller budgets, declarations, namespace resolution и terminal errors.
 - Уязвимый transitively pinned `quick-xml 0.39.3` закрыт локальным exact-source replacement `crates/wayland-scanner-patch` версии 0.31.10, обновлённым только до `quick-xml 0.41` и совместимого `xml_content(XmlVersion::Implicit1_0)`. Removal gate и provenance — `mem:dependency-patches/core` и `docs/dependency-patches.toml`.
+
+## Session 13 / P6: DASH text sets over `bounded-xml-reader`
+`dash-mpd-core` `EventCursor` got a replay buffer (`replay`, `next_buffered_event`): a text AdaptationSet subtree is first read into the buffer (limited by the same XML budgets) and parsed from it, so a content error inside a text set can never leave the cursor mid-element (the set is skipped, A/V parsing continues). `mem:subtitles/dash-text-tracks-s13`.

@@ -98,6 +98,8 @@ pub struct NativeHlsSourceState {
     neutral_selection: WebMediaSelection,
     stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
     catalog_attachment: crate::web_media_catalog::WebMediaCatalogAttachment,
+    /// Субтитры потока (HLS `TYPE=SUBTITLES`) этого открытия; без URL в `Debug`.
+    stream_subtitles: Option<crate::stream_subtitles::StreamSubtitleSource>,
 }
 
 impl NativeHlsSourceState {
@@ -127,7 +129,24 @@ impl NativeHlsSourceState {
             stream_configuration,
             catalog_attachment: crate::web_media_catalog::WebMediaCatalogAttachment::installed_only(
             ),
+            stream_subtitles: None,
         })
+    }
+
+    /// Прикрепляет субтитры потока, полученные тем же открытием, что и этот snapshot.
+    #[must_use]
+    pub fn with_stream_subtitle_source(
+        mut self,
+        stream_subtitles: Option<crate::stream_subtitles::StreamSubtitleSource>,
+    ) -> Self {
+        self.stream_subtitles = stream_subtitles;
+        self
+    }
+
+    /// Субтитры потока этого открытия; `None`, если master HLS дорожек не объявляет.
+    #[must_use]
+    pub fn stream_subtitle_source(&self) -> Option<crate::stream_subtitles::StreamSubtitleSource> {
+        self.stream_subtitles.clone()
     }
 
     /// Возвращает exact neutral selection свежего установленного snapshot-а.

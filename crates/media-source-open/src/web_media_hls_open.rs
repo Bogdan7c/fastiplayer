@@ -68,6 +68,8 @@ pub struct PreparedHlsCandidate {
     pub demuxer: Box<dyn Demuxer + Send>,
     pub seek_port: Arc<dyn PreparedDemuxSeekPort>,
     pub subtitles: Arc<[crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition]>,
+    /// Субтитры потока для ленты (`stream_subtitles`); `None`, если master их не объявляет.
+    pub stream_subtitles: Option<crate::stream_subtitles::StreamSubtitleSource>,
     pub timeline_port: Option<DynamicMediaTimelinePort>,
     pub component_variants:
         crate::web_media_open::component_variants::PreparedComponentVariantCatalog,
@@ -247,6 +249,11 @@ pub fn prepare_hls_candidate(
             .async_seek_handle()
             .ok_or_else(|| anyhow!("HLS live runtime lost its receipted seek handle"))?;
         let initial_readiness = opened.initial_readiness();
+        let stream_subtitles = crate::stream_subtitles::HlsStreamSubtitleTransport::new(
+            opened.subtitle_transport(),
+            opened.timestamp_origins(),
+        )
+        .into_source();
         let (mut demuxer, timeline_port, _) = opened.into_parts();
         // Любой live HLS должен доказать хотя бы один реальный track до Installed.
         // Иначе неизвестный fMP4 sample entry превращается в бесконечное пустое playback state.
@@ -260,6 +267,7 @@ pub fn prepare_hls_candidate(
                 handle: seek_handle,
             }),
             subtitles,
+            stream_subtitles,
             timeline_port: Some(timeline_port),
             component_variants,
         });
@@ -325,6 +333,11 @@ pub fn prepare_hls_candidate(
         .async_seek_handle()
         .ok_or_else(|| anyhow!("HLS VOD runtime lost its receipted seek handle"))?;
     let initial_readiness = opened.initial_readiness();
+    let stream_subtitles = crate::stream_subtitles::HlsStreamSubtitleTransport::new(
+        opened.subtitle_transport(),
+        opened.timestamp_origins(),
+    )
+    .into_source();
     let mut demuxer = opened.into_demuxer();
     // Static HLS обязан опубликовать tracks и duration до PreparedMedia/Installed:
     // startup restore начинается сразу после Installed и не ждёт поздний TracksChanged.
@@ -338,6 +351,7 @@ pub fn prepare_hls_candidate(
             handle: seek_handle,
         }),
         subtitles,
+        stream_subtitles,
         timeline_port: None,
         component_variants,
     })

@@ -566,7 +566,13 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
         | "subtitles.glyph_outline_cache_items"
         | "subtitles.shaping_cache_mb"
         | "subtitles.pgs_displayed_track_cache_mb"
-        | "subtitles.pgs_background_track_window_s" => SettingApplicationContract::new(
+        | "subtitles.pgs_background_track_window_s"
+        | "subtitles.stream.ahead_s"
+        | "subtitles.stream.behind_s"
+        | "subtitles.stream.max_segment_kb"
+        | "subtitles.stream.max_pending_segments"
+        | "subtitles.stream.failure_threshold"
+        | "subtitles.stream.live_retention_s" => SettingApplicationContract::new(
             setting_name,
             AppRuntimeRoute::Subtitles,
             SettingStateOwner::SubtitlePolicy,
@@ -686,7 +692,7 @@ mod tests {
         );
     }
 
-    /// Все 35 настроек субтитров идут своим route и владельцем, не задевая playlist/player.
+    /// Все 41 настройка субтитров идут своим route и владельцем, не задевая playlist/player.
     #[test]
     fn subtitle_descriptors_use_dedicated_route_and_owner() {
         let registry = crate::app_config_registry().expect("registry builds");
@@ -695,7 +701,7 @@ mod tests {
             .filter(|descriptor| descriptor.id.as_str().starts_with("subtitles."))
             .map(|descriptor| descriptor.id.clone())
             .collect();
-        assert_eq!(subtitle_ids.len(), 35);
+        assert_eq!(subtitle_ids.len(), 41);
 
         for setting_id in subtitle_ids {
             let contract = setting_application_contract(&setting_id)

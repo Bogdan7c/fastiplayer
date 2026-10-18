@@ -11,14 +11,18 @@ use player_core::MediaInstanceId;
 
 use super::intents::{AttachOutcome, QueueOutcome, SubtitleVisibility};
 use super::menu_view::SubtitleMenuView;
+use super::owner_stream::StreamSubtitleNotice;
 use super::render_worker::clock_tracker::PlaybackObservation;
+use super::stream_position::StreamPlaybackObservation;
 use super::{
     CurrentMediaForSubtitles, EmbeddedUpdate, PlacedSubtitleOverlay, SubmittedFrameForSubtitles,
     subtitle_source_of,
 };
 use crate::state::notifications::{NotificationCenter, TransientReplaceKey};
 use crate::state::{ActiveMediaSource, AppState};
-use crate::subtitle_message::{attach_batch_message, subtitle_download_failure_message};
+use crate::subtitle_message::{
+    STREAM_SUBTITLES_UNAVAILABLE_MESSAGE, attach_batch_message, subtitle_download_failure_message,
+};
 
 impl AppState {
     /// Media установлено в плеер: запускает (или сбрасывает) загрузку субтитров.
@@ -84,7 +88,12 @@ impl AppState {
             .subtitles
             .sync_embedded_tracks(snapshot.media_instance_id, &snapshot.tracks);
         let feed_update = self.subtitles.drain_embedded_feed();
-        if tracks_update.merge(feed_update) == EmbeddedUpdate::Changed {
+        // Реплики потока (HLS) приходят от своей ленты, а не из трубы контейнера.
+        let stream_update = self.subtitles.drain_stream_feed();
+        let notice_shown = self.show_stream_subtitle_notices();
+        if tracks_update.merge(feed_update).merge(stream_update) == EmbeddedUpdate::Changed
+            || notice_shown
+        {
             // Меню CC или реплика на экране изменились: нужен ещё один кадр.
             self.mark_pending_worker_redraw();
         }
@@ -96,7 +105,8 @@ impl AppState {
         let picker_changed = self.poll_subtitle_file_picker();
         let jobs_changed = self.subtitles.poll_jobs();
         let failures_shown = self.show_subtitle_download_failures();
-        jobs_changed || picker_changed || failures_shown
+        let stream_notice_shown = self.show_stream_subtitle_notices();
+        jobs_changed || picker_changed || failures_shown || stream_notice_shown
     }
 
     /// Показывает по уведомлению на каждую неудавшуюся попытку скачать web-субтитры.
@@ -111,6 +121,14 @@ impl AppState {
         !failures.is_empty()
     }
 
+    /// Показывает уведомление, что субтитры потока недоступны (по одному на неудавшуюся ленту).
+    /// Видео играет дальше; повторный выбор дорожки в меню запускает новую попытку.
+    fn show_stream_subtitle_notices(&mut self) -> bool {
+        let notices = self.subtitles.take_stream_notices();
+        deliver_stream_notices(&mut self.notifications, &notices, std::time::Instant::now());
+        !notices.is_empty()
+    }
+
     /// Передаёт субтитрам наблюдение за плеером из последнего snapshot: режим (игра, пауза,
     /// seek, scrub), цель seek/scrub, скорость и оценку длительности кадра. Дёшево: вызывается
     /// на каждом кадре UI; часы потоку-рисовальщику уходят, только если они изменились.
@@ -121,7 +139,16 @@ impl AppState {
             render_generation: snapshot.render_generation,
         };
         let observation = PlaybackObservation::from_snapshot(snapshot);
-        if self.subtitles.observe_playback(current, observation) == EmbeddedUpdate::Changed {
+        // Позиция для ленты субтитров потока (шкала плеера, без сдвига синхронизации).
+        let stream_update = self
+            .subtitles
+            .observe_stream_playback(current, &StreamPlaybackObservation::from_snapshot(snapshot));
+        if self
+            .subtitles
+            .observe_playback(current, observation)
+            .merge(stream_update)
+            == EmbeddedUpdate::Changed
+        {
             // Сброс по новому проходу чтения убрал картинку: нужен ещё один кадр.
             self.mark_pending_worker_redraw();
         }
@@ -138,6 +165,7 @@ impl AppState {
     ) -> Option<PlacedSubtitleOverlay<'_>> {
         // Новые пакеты, пришедшие после последнего снимка, видны уже на этом кадре.
         self.subtitles.drain_embedded_feed();
+        self.subtitles.drain_stream_feed();
         let current = CurrentMediaForSubtitles {
             media_instance_id: self.last_player_snapshot.media_instance_id,
             render_generation: self.last_player_snapshot.render_generation,
@@ -207,5 +235,25 @@ pub(super) fn deliver_download_failures(
             subtitle_download_failure_message(failure),
             now,
         );
+    }
+}
+
+/// Показывает уведомление о недоступных субтитрах потока (отдельная функция: проверяется
+/// настоящим центром уведомлений без `AppState`). Заменяет прежнее уведомление такого рода.
+pub(super) fn deliver_stream_notices(
+    notifications: &mut NotificationCenter,
+    notices: &[StreamSubtitleNotice],
+    now: std::time::Instant,
+) {
+    for notice in notices {
+        match notice {
+            StreamSubtitleNotice::TrackUnavailable => {
+                notifications.notify_transient_replacing(
+                    TransientReplaceKey::StreamSubtitles,
+                    STREAM_SUBTITLES_UNAVAILABLE_MESSAGE,
+                    now,
+                );
+            }
+        }
     }
 }

@@ -77,7 +77,8 @@ impl HlsVariantSelectionIntent {
     }
 }
 
-/// Bounded neutral descriptor; S32B не загружает и не декодирует subtitles.
+/// Bounded neutral descriptor; сам по себе ничего не загружает: загрузкой subtitles владеет
+/// `HlsSubtitleTransport`, а descriptor лишь несёт метаданные rendition-а и его exact reference.
 #[derive(Clone, PartialEq, Eq)]
 pub struct HlsSubtitleRenditionDescriptor {
     group_id: Box<str>,
@@ -85,6 +86,8 @@ pub struct HlsSubtitleRenditionDescriptor {
     language: Option<Box<str>>,
     characteristics: Option<Box<str>>,
     forced: bool,
+    is_default: bool,
+    autoselect: bool,
     reference: ExactReference,
 }
 
@@ -96,6 +99,8 @@ impl HlsSubtitleRenditionDescriptor {
             language: rendition.language.clone(),
             characteristics: rendition.characteristics.clone(),
             forced: rendition.forced,
+            is_default: rendition.is_default,
+            autoselect: rendition.autoselect,
             reference: rendition.uri.clone()?,
         })
     }
@@ -129,6 +134,16 @@ impl HlsSubtitleRenditionDescriptor {
     pub const fn is_forced(&self) -> bool {
         self.forced
     }
+
+    /// RFC `DEFAULT=YES`: провайдер предлагает rendition по умолчанию.
+    pub const fn is_default(&self) -> bool {
+        self.is_default
+    }
+
+    /// RFC `AUTOSELECT=YES`: плеер может выбрать rendition сам по языку пользователя.
+    pub const fn is_autoselect(&self) -> bool {
+        self.autoselect
+    }
 }
 
 impl fmt::Debug for HlsSubtitleRenditionDescriptor {
@@ -140,6 +155,8 @@ impl fmt::Debug for HlsSubtitleRenditionDescriptor {
             .field("language", &self.language)
             .field("characteristics", &self.characteristics)
             .field("forced", &self.forced)
+            .field("default", &self.is_default)
+            .field("autoselect", &self.autoselect)
             .field("reference", &self.reference)
             .finish()
     }

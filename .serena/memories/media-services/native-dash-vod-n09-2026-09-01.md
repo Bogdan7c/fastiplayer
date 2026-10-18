@@ -75,3 +75,5 @@ PASS:
 
 - Provider-owned representation lane proof, track validators, descriptor builders, codec matching и probe-error mapping перенесены без изменения semantics в `discovery/lane_proof.rs`; static VOD orchestration остаётся в `discovery.rs`/`discovery/native_vod.rs`.
 - Точные новые tests и verification: `mem:public-launch/s02-module-boundary-split-2026-09-04`.
+## Session 13 update (2026-10-18)
+`PreparedNativeDashMedia.source_state` (`NativeDashSourceState`) now carries `stream_subtitles` (text AdaptationSets of the same MPD, taken from `opened.text_subtitles()` before `into_demuxer`); app reads it through `WebMediaSourceIntent::stream_subtitle_source()`. The text row in the `native_dash_vertical` MPD is now a parsed (not served-until-selected) subtitle track. `mem:subtitles/dash-text-tracks-s13`.

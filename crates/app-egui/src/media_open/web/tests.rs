@@ -16,6 +16,10 @@ mod native_hls_live_vertical;
 mod native_hls_vertical;
 #[path = "tests/native_smooth_vertical.rs"]
 mod native_smooth_vertical;
+#[path = "tests/stream_subtitles_dash_vertical.rs"]
+pub(crate) mod stream_subtitles_dash_vertical;
+#[path = "tests/stream_subtitles_vertical.rs"]
+pub(crate) mod stream_subtitles_vertical;
 
 /// Absent optional attachments не должны превращаться в скрытые adapter defaults.
 #[test]
@@ -240,4 +244,99 @@ fn installed_only_action_and_unchanged_direct_settings_are_inert() {
     let label = request.safe_label().to_string();
     assert!(label.contains("cdn.example.test"));
     assert!(!label.contains("direct-secret"));
+}
+
+/// Транспорт субтитров с одной дорожкой: проверяет только доставку источника через intent.
+struct OneTrackSubtitleTransport;
+
+impl media_source_open::stream_subtitles::StreamSubtitleTransport for OneTrackSubtitleTransport {
+    fn tracks(&self) -> Vec<media_source_open::stream_subtitles::StreamSubtitleTrackInfo> {
+        vec![
+            media_source_open::stream_subtitles::StreamSubtitleTrackInfo {
+                id: media_source_open::stream_subtitles::StreamSubtitleTrackId::new(0),
+                language: Some("en".into()),
+                name: "English".into(),
+                forced: false,
+                default: true,
+                autoselect: true,
+            },
+        ]
+    }
+
+    fn load_index(
+        &self,
+        _track: media_source_open::stream_subtitles::StreamSubtitleTrackId,
+        _cancellation: &source_core::CancellationToken,
+    ) -> Result<
+        media_source_open::stream_subtitles::StreamSegmentIndex,
+        media_source_open::stream_subtitles::StreamSubtitleError,
+    > {
+        Err(media_source_open::stream_subtitles::StreamSubtitleError::Stale)
+    }
+
+    fn fetch_and_decode(
+        &self,
+        _segment: &media_source_open::stream_subtitles::StreamSegment,
+        _limits: media_source_open::stream_subtitles::StreamSegmentLimits,
+        _cancellation: &source_core::CancellationToken,
+    ) -> Result<
+        media_source_open::stream_subtitles::SegmentDecode,
+        media_source_open::stream_subtitles::StreamSubtitleError,
+    > {
+        Err(media_source_open::stream_subtitles::StreamSubtitleError::Stale)
+    }
+}
+
+#[test]
+fn native_hls_intent_hands_out_the_subtitle_source_of_its_own_open() {
+    let target = source_core::HttpRequestTarget::parse_exact(
+        "https://media.example.test/master.m3u8?token=native-secret",
+    )
+    .unwrap();
+    let source = NativeHlsUrl::new(
+        target,
+        SafeMediaLabel::from_service_safe_label("media.example.test"),
+    );
+    let identity = source.source_identity();
+    let parent = web_media_core::ExactSelectionIdentity::new(
+        web_media_core::CandidateIdentity::new(
+            identity,
+            web_media_core::ExtractionGeneration::new(1),
+            web_media_core::CandidateFormatIdentity::new("native-hls-vod").unwrap(),
+        ),
+        web_media_core::SemanticIdentity::new(identity, "native-hls-vod").unwrap(),
+    )
+    .unwrap();
+    let build_state = || {
+        NativeHlsSourceState::new(
+            web_media_core::WebMediaSelection::candidate(parent.clone()),
+            None,
+            crate::web_media_stream_model::WebMediaSelectionPreference::from_global_config(
+                &fastiplayer_config::WebMediaConfig::default(),
+            ),
+        )
+        .unwrap()
+    };
+    let subtitles = media_source_open::stream_subtitles::StreamSubtitleSource::new(
+        std::sync::Arc::new(OneTrackSubtitleTransport),
+    )
+    .expect("one track");
+
+    let with_subtitles = WebMediaSourceIntent::native_hls(
+        source.clone(),
+        WebMediaPresentationKind::Vod,
+        build_state().with_stream_subtitle_source(Some(subtitles.clone())),
+    );
+    assert_eq!(with_subtitles.stream_subtitle_source(), Some(subtitles));
+    let without_subtitles =
+        WebMediaSourceIntent::native_hls(source, WebMediaPresentationKind::Vod, build_state());
+    assert_eq!(without_subtitles.stream_subtitle_source(), None);
+
+    let direct = WebMediaSourceIntent::direct(
+        media_source_open::direct_progressive_open::classify_direct_media_url(
+            "https://cdn.example.test/movie.mp4",
+        )
+        .expect("Direct fixture locator is valid"),
+    );
+    assert_eq!(direct.stream_subtitle_source(), None);
 }

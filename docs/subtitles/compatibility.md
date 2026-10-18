@@ -19,7 +19,9 @@ Session 01 delivers parsing only (crates `subtitle-core`, `subtitle-formats`). N
 | PGS inside MKV | embedded | Supported (see "PGS (session 11)") | 11 |
 | YouTube srv3 (`<timedtext format="3">`) | web (yt-dlp) | Supported: manual, auto (speech recognition) and auto-translated tracks, downloaded on selection (see "YouTube srv3 (session 12)" and "YouTube tracks (session 12)") | 12 |
 | YouTube WebVTT | web (yt-dlp) | Supported as fallback when srv3 is unavailable for a track | 12 |
-| HLS WebVTT, DASH TTML/IMSC | streaming | Planned | 13 |
+| TTML / IMSC 1.1 Text Profile (`<tt xmlns="http://www.w3.org/ns/ttml">`) | streaming / sidecar data | Supported (see "TTML / IMSC (session 13)"); delivered from DASH (see "DASH text tracks (session 13)") | 13 |
+| HLS WebVTT (`EXT-X-MEDIA TYPE=SUBTITLES`, `X-TIMESTAMP-MAP`) | streaming (native HLS, HLS via yt-dlp) | Supported, VOD and live (see "Stream subtitle tracks in the app (session 13, HLS WebVTT)") | 13 |
+| DASH text tracks: sidecar TTML / WebVTT files, fMP4 `stpp` (TTML) and `wvtt` (WebVTT) | streaming (native DASH) | Supported, VOD and live (see "DASH text tracks (session 13)") | 13 |
 | VobSub, DVB, FLV subtitles | — | Backlog (embedded VobSub / DVB tracks are listed greyed out) | — |
 
 ## Rendering (crate `subtitle-raster`, session 02)
@@ -122,6 +124,7 @@ Gaps / differences:
 
 Supported:
 - `WEBVTT` signature and header, `NOTE`, `STYLE` and `REGION` blocks (STYLE/REGION only before the first cue, as in the W3C spec);
+- `X-TIMESTAMP-MAP` header (HLS segments, RFC 8216): parsed into a typed value for the stream loader; a malformed header is reported and ignored, cues still load;
 - strict timestamps `[hh:]mm:ss.ttt`;
 - cue settings `vertical`, `line` (number or %, with alignment), `position` (with alignment), `size`, `align`, `region`; invalid settings are ignored with a report entry, the cue stays;
 - tags `<c> <i> <b> <u> <v> <lang> <ruby>/<rt>` with classes on any tag, entities (`&amp; &lt; &gt; &nbsp; &lrm; &rlm;`, numeric);
@@ -266,6 +269,31 @@ Parser: `crates/subtitle-formats/src/srv3/` (XML is read through `bounded-xml-re
 
 Word reveal (`TextSpan::reveal_at`) also works for WebVTT karaoke timestamps (`<00:00:01.500>`). ASS karaoke is a separate path and is unchanged.
 
+## TTML / IMSC (session 13)
+
+Parser: `crates/subtitle-formats/src/ttml/` (XML through `bounded-xml-reader`, budgets derived from `SubtitleParseLimits`, like srv3). `sniff_text_subtitle_format` recognises a root `tt` that declares the namespace `http://www.w3.org/ns/ttml` (with or without prefix, BOM, XML declaration). Input must be UTF-8 or UTF-16 with BOM (decoded before XML reading); the primary source is W3C TTML2 / IMSC 1.1 Text Profile, `imscjs` was used as a behaviour reference only.
+
+| Feature | Status |
+|---|---|
+| Clock time `hh:mm:ss[.fraction]`, `hh:mm:ss:ff[.subframe]`; offset time `h m s ms f t` | Full. `ttp:frameRate`, `ttp:frameRateMultiplier`, `ttp:tickRate` (default tick rate: frame rate when given, else 1); `ttp:timeBase` other than `media` is read as `media` and counted in `ignored_style_rules` |
+| `begin` / `end` / `dur` on `body`, `div`, `p`, `span`, `br` | Parallel (`par`) semantics: child times are relative to the parent begin, the earlier of `end` and `begin + dur` wins, a missing end is the parent end, the result is clipped to the parent window; `timeContainer="seq"` is read as `par` and counted |
+| Paragraph without any end in its ancestors | Shown until the next paragraph begins (so open cues never cover later ones); the last one until the latest time mentioned in the document; if there is none later than its begin, 5 s (structural fallback, like srv3). A TTML document taken from an fMP4 `stpp` sample is clipped to its sample interval and an open paragraph ends with the sample (ISO/IEC 14496-30). Times up to the `i64` microsecond range are accepted (live packagers write epoch-scale media times) |
+| Spans / `br` with their own timing inside a `p` | The paragraph is cut at every change point (a simplified ISD): one event per interval with the text visible on it; equal adjacent intervals are merged |
+| Styles: `<style xml:id>` with chained `style` references, inline `tts:*`, inheritance region -> body -> div -> p -> span | `tts:color`, `tts:backgroundColor` (on `p` / `span` only; a transparent value clears an inherited one), `fontStyle` (`oblique` = italic), `fontWeight` (`normal` / `bold`), `textDecoration` (underline / lineThrough and their `no*` forms), `textAlign`, `displayAlign`, `writingMode`. `tts:direction` is accepted (bidi is decided by the rasterizer). Reference cycles and chains deeper than 16 are cut |
+| Colours | `#rrggbb`, `#rrggbbaa`, `rgb()`, `rgba()` (alpha 0..255), TTML named colours incl. `transparent`, `cyan`, `magenta` |
+| Author colours | Kept as `SpanStyle` values; the user style still fills the fields the document leaves unset. Span backgrounds are parsed but not drawn yet (rasterizer "Not done") |
+| Other `tts:*` properties (fontFamily, fontSize, lineHeight, textOutline, textShadow, opacity, padding, ...) and animation (`<set>`, `<animate>`) | Ignored; each ignored attribute / construct is counted in `ignored_style_rules` |
+| Regions `<layout><region xml:id tts:origin tts:extent>` | `%` always; `px` when the root has `tts:extent="Wpx Hpx"` (otherwise counted and the region becomes the full frame). A region reference on `body` / `div` / `p` is inherited; `region` on `span` / `br` is ignored and counted; an unknown region id gives the default placement and is counted |
+| Region -> `CuePlacement` | `size` = region width; `textAlign` start / left -> `position` = region left, `LineLeft`; centre -> region middle, `Center`; end / right -> region right, `LineRight`. `displayAlign` before -> `line` = region top, `Start`; after -> `line` = region bottom, `End`; centre -> `line` = region middle, `Center` (the rasterizer treats `Center` as `Start`, so a centre-aligned cue starts at the middle of the region). Without a region: default bottom-centre placement. The rasterizer multiplies `size` by the style `max_line_width`, so a block can be narrower than its region but never leaves it |
+| `textAlign` not set | Centre (TTML says `start`; centring is the usual player behaviour) |
+| Content not tied to a region while the document defines regions | Shown with the default placement (TTML would hide it) |
+| Text | `<br/>` is a line break. `xml:space="default"`: runs of whitespace collapse to one space, spaces at line starts / line ends are dropped (a space between two spans is kept). `xml:space="preserve"`: spaces kept, `\n` is a line break. Leading / trailing line breaks are trimmed |
+| `xml:lang` | The nearest `xml:lang` goes to `TextSpan::language` |
+| Broken XML, DOCTYPE, custom entities | Fatal `MalformedTtml`; root other than a TTML `tt` -> `NotTtml`; XML budgets or more than 2048 text pieces in one paragraph -> `TtmlTooComplex`. Messages never echo file content |
+| Per-element problems (bad time on `div` / `p` / `span`, empty text) | The element (with its subtree) is skipped; a bad time is recorded as an `InvalidTimestamp` issue, an empty paragraph as an empty cue; the report "line number" is the paragraph ordinal |
+
+Not supported (this session): TTML1 TTAF namespace `http://www.w3.org/2006/04/ttaf1`, `smpte` / `clock` time bases, `seq` time containers, animation, vertical text drawing (the direction is stored, the rasterizer draws horizontally), ruby, image subtitles (IMSC image profile), `tts:origin` inside `region` children (`<style>` nested in `<region>`), `ttm:` metadata.
+
 ## YouTube tracks (session 12)
 
 | Feature | Status |
@@ -280,3 +308,32 @@ Word reveal (`TextSpan::reveal_at`) also works for WebVTT karaoke timestamps (`<
 | Memory | The chosen web track (language + kind) is remembered per video |
 | Privacy | Signed subtitle links never appear in the UI or logs |
 | Audio language (dubs) | Videos with several audio languages show them in the ♪ menu (`English (original)` first, then alphabetical); `B` cycles; choosing reopens the same item at the same position; default is the original; the choice is remembered per video |
+
+## Stream subtitle tracks in the app (session 13, HLS WebVTT)
+
+HLS subtitle renditions (`#EXT-X-MEDIA:TYPE=SUBTITLES`) appear in the CC menu as `English (stream)`, `Russian — forced (stream)`; the rendition NAME is added in quotes only when it says more than the language name. A stream can carry both yt-dlp tracks and HLS renditions: both lists are shown.
+
+| Feature | Status |
+|---|---|
+| Loading | Only the shown track is loaded: a background feed downloads the subtitle segments around the playback position (`[subtitles.stream]` `ahead_s` / `behind_s`); selecting, deselecting, switching the track, changing the video or turning subtitles off cancels the feed. Video never waits for subtitles |
+| Auto-select | `DEFAULT=YES` acts like the container default flag; `AUTOSELECT=NO` renditions are never picked automatically (manual choice stays possible); `FORCED=YES` renditions of a preferred language are shown even with CC off, like embedded forced tracks |
+| Timing | Cues are mapped to the player timeline (`X-TIMESTAMP-MAP`, same origin as the video). Without the header: VOD cues are taken relative to the start of their discontinuity epoch (hls.js behaviour); live cues follow RFC 8216 §3.5 (no header means `MPEGTS:0` = `LOCAL:0`, so the cue time is the container time of the video, 33-bit wrap aware) and have no exact segment anchor, so the live window stays at the live edge. The segment start times of a sliding live playlist stay stable between reloads (re-anchored by the overlapping media sequences); a gap between reloads re-anchors the timeline and drops the learned offset. Segments that left the feed window are forgotten, so seeking back after the app trimmed old cues fetches them again. The feed window is built around the cue lookup time (player position minus the user's sync offset), and changing the offset re-centres it |
+| Failures | A skipped segment is only logged. A segment that never gets its video timeline origin (evicted from the pending list or gone from the playlist) counts as a failure too. After `failure_threshold` segments in a row the track is reported once ("Subtitles for this stream are unavailable right now."); it stays in the menu and selecting it again starts a new attempt. There is no automatic retry |
+| Live | Cues older than `live_retention_s` behind the lookup position are dropped by rebuilding the track timeline when at least as many are dead as alive (memory stays below twice the history). VOD tracks are never trimmed |
+| Remembered choice | The choice is remembered per video as language + rendition name + forced flag (`track-memory.json` schema 3); URLs are never stored |
+| Limits | `[subtitles.stream]`: `ahead_s` 60, `behind_s` 30, `max_segment_kb` 1024, `max_pending_segments` 8, `failure_threshold` 3, `live_retention_s` 600 (must not be smaller than `behind_s`); taken from the next feed start |
+
+## DASH text tracks (session 13)
+
+Text `AdaptationSet`s of a native DASH MPD (`.mpd` opened without yt-dlp) appear in the CC menu like HLS renditions (`English (stream)`; the `Label` is added in quotes when it says more than the language name). Specs: DASH-IF IOP (text tracks), ISO/IEC 23009-1 (`Role`, `Label`), ISO/IEC 14496-30 (`stpp` / `wvtt` in ISOBMFF).
+
+| Feature | Status |
+|---|---|
+| Detected sets | `contentType="text"`, or `mimeType` `application/ttml+xml` / `text/vtt`, or `application/mp4` with codecs `stpp*` / `wvtt` on the set. A set with no such evidence of its own is text when ALL its `Representation`s carry text evidence (`application/mp4` + `stpp`/`wvtt`, `text/vtt`, `application/ttml+xml`); a mixed set stays audio/video |
+| Formats | `SidecarTtml` / `SidecarWebVtt` (one file per Period, times relative to the Period start), `SegmentedStpp` / `SegmentedWvtt` (fMP4: SegmentTemplate incl. `SegmentTimeline`, SegmentList, or a whole fragmented file via SegmentBase / single resource). TTML / IMSC cues keep their regions (`tts:origin` / `tts:extent` -> cue placement) |
+| Timing | Same player timeline as the video. fMP4 text uses the track media timeline: `player = media time - presentationTimeOffset + Period start - session origin` (the very mapping of A/V packets). SegmentList has no PTO, so the first sample of the FIRST fetched segment of a Period (`tfdt`) is taken as that segment's start and later segments reuse the same offset (like A/V `NormalizeAtFirstPacket`); sparse tracks therefore keep their gaps. WebVTT hours accept up to 6 digits (covers epoch-scale `wvtt` times until ~2084). Live: the session origin is the one the live video uses |
+| Track info | language (set / representation `lang`), name (`Label`, else "Captions" for role `caption`, "Forced" for `forced-subtitle`, else "Subtitles"; duplicates get " (2)"), `forced-subtitle` role = forced, role `main` = default (else the first regular track), always auto-selectable |
+| Skipped sets | `ContentProtection`, unknown MIME/codec, broken addressing: the set is skipped and counted (`skipped_text_adaptation_set_count`); audio/video are never affected. A Period with only text sets still fails like before (no A/V) |
+| Live | The text plan is rebuilt with every accepted MPD refresh; the track index is re-read at `minimumUpdatePeriod` (at least 1 s) |
+| Failures | Same policy as HLS: a segment that fails after the built-in HTTP retries is skipped (logged without the URL), repeated failures give one "Subtitles for this stream are unavailable right now." notification |
+| Not supported | `wvtt` `ctim` (continuation of a split cue), non-fragmented MP4 text, text sets with `ContentProtection`, plain-text segments with PTO (segmented sidecar TTML / WebVTT is read Period-relative, a known limitation), yt-dlp DASH manifests (they carry no text sets), re-addressing of a failed live text segment after a CDN token rotation (the segment is skipped, the next index refresh uses the new address) |

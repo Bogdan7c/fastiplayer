@@ -28,5 +28,8 @@
 ## Сессия 12 (YouTube)
 Web-дорожки, скачивание, меню, память: `mem:subtitles/web-tracks-s12`; языки дубляжа: `mem:app-egui/web-audio-languages-s12d`. `language_table` расширена до полного ISO 639-1 + алиасы (`iw→he` …); язык из имени файла sidecar — только старый набор 42 (`is_common_sidecar_language`).
 
+## Сессия 13 (TTML/IMSC, пакет P2)
+- `crates/subtitle-formats/src/ttml/`: `TextSubtitleFormat::Ttml`, sniff корня `tt` в ns `http://www.w3.org/ns/ttml`, ошибки `MalformedTtml/NotTtml/TtmlTooComplex`. Модули: reader (XML->`RawTree`), timing (par-окна, clock/offset/frames/ticks), style (цепочки `style`, наследование), layout (регионы %/px), region_placement (регион -> `CuePlacement`: size=ширина, position+align по textAlign, line+line_align по displayAlign; растеризатор `Center` приравнивает к `Start`), paragraphs (обход, листья), emit (нарезка по точкам смены = упрощённый ISD, слияние равных интервалов), cue_text (пробелы xml:space). Неподдержанное -> `ignored_style_rules`. Абзац без конца -> до позднейшего времени документа, иначе +5 с. Тесты: `tests/ttml_loading.rs`, растровый `subtitle-raster/src/renderer/tests/ttml_regions.rs`. Матрица: раздел «TTML / IMSC (session 13)».
+
 ## Тесты
 - `crates/subtitle-core/src/timeline/tests.rs` (в т.ч. сверка с перебором на псевдослучайных данных), `crates/subtitle-formats/tests/{srt_loading,encoding_and_limits,webvtt_loading}.rs` — сквозь `load_text_subtitle` → `SubtitleTimeline::collect_active_at`.

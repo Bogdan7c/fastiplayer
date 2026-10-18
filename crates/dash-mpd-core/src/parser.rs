@@ -1,16 +1,19 @@
+use std::collections::VecDeque;
+
 use bounded_xml_reader::{BoundedXmlReader, XmlBudgets, XmlElement, XmlEvent};
 
 use crate::error::{DashMpdError, DashMpdErrorKind};
 use crate::model::{
     DashAdaptationSet, DashAddressing, DashAudioChannelConfiguration, DashBaseUrl,
     DashColorMetadata, DashContainer, DashFrameRate, DashInitialization, DashMediaKind, DashMpd,
-    DashPeriod, DashPresentationDuration, DashRepresentation, DashSegmentBase, DashSegmentList,
+    DashPresentationDuration, DashRepresentation, DashSegmentBase, DashSegmentList,
     DashSegmentListEntry, DashSegmentTemplate, DashTimelineEntry, DashUrlReference, IndexRange,
 };
 use crate::template::DashTemplateString;
 
 mod attributes;
 mod metadata;
+mod period;
 mod text_adaptation;
 
 pub(super) use attributes::{
@@ -21,7 +24,8 @@ use attributes::{
     read_text_leaf, required_bounded_attribute, validate_attributes_with_namespaced_allowlist,
 };
 use metadata::*;
-use text_adaptation::{consume_non_playback_text_adaptation_set, is_declared_text_adaptation_set};
+use period::finalize_periods;
+pub(crate) use period::{ParsedPeriod, parse_period};
 
 /// Narrow static profile allowlist, доказанный checked-in S34 matrix.
 pub(super) const SUPPORTED_DASH_PROFILES: &[&str] = &[
@@ -82,20 +86,8 @@ pub struct DashMpdParseRequest<'document> {
 pub(super) struct EventCursor<'document> {
     /// Hardened project-owned reader.
     pub(super) reader: BoundedXmlReader<'document>,
-}
-
-/// Period до вычисления omitted start/duration.
-pub(super) struct ParsedPeriod {
-    /// Optional schema identifier.
-    pub(super) id: Option<String>,
-    /// Optional explicit start.
-    pub(super) start_milliseconds: Option<u64>,
-    /// Optional explicit duration.
-    pub(super) duration_milliseconds: Option<u64>,
-    /// Period BaseURL.
-    pub(super) base_url: Option<DashBaseUrl>,
-    /// Parsed adaptations.
-    pub(super) adaptation_sets: Box<[DashAdaptationSet]>,
+    /// События, заранее вынутые из reader-а и ещё не отданные потребителю (см. `replay`).
+    replay: VecDeque<XmlEvent>,
 }
 
 /// Наследуемые media hints AdaptationSet.
@@ -109,10 +101,26 @@ struct MediaHints {
     codecs: Option<String>,
 }
 
-impl EventCursor<'_> {
+impl<'document> EventCursor<'document> {
     /// Возвращает следующий project-owned event.
     pub(super) fn next_event(&mut self) -> Result<Option<XmlEvent>, DashMpdError> {
+        if let Some(buffered) = self.replay.pop_front() {
+            return Ok(Some(buffered));
+        }
         self.reader.next_event().map_err(DashMpdError::from_xml)
+    }
+
+    /// Следующее событие только из буфера повторного чтения (reader не трогается).
+    pub(super) fn next_buffered_event(&mut self) -> Option<XmlEvent> {
+        self.replay.pop_front()
+    }
+
+    /// Создаёт cursor над reader-ом без буфера повторного чтения.
+    pub(super) fn new(reader: BoundedXmlReader<'document>) -> Self {
+        Self {
+            reader,
+            replay: VecDeque::new(),
+        }
     }
 }
 
@@ -121,7 +129,7 @@ pub fn parse_dash_mpd(request: DashMpdParseRequest<'_>) -> Result<DashMpd, DashM
     let limits = request.limits.validate()?;
     let reader = BoundedXmlReader::new(request.document_bytes, request.xml_budgets)
         .map_err(DashMpdError::from_xml)?;
-    let mut cursor = EventCursor { reader };
+    let mut cursor = EventCursor::new(reader);
     let root = match cursor.next_event()? {
         Some(XmlEvent::StartElement(element)) => element,
         _ => return Err(DashMpdError::new(DashMpdErrorKind::InvalidRoot)),
@@ -201,63 +209,6 @@ pub(super) fn validate_profiles(profiles: Option<&str>) -> Result<(), DashMpdErr
         }
     }
     Ok(())
-}
-
-/// Разбирает Period без предположений о следующем Period.
-pub(super) fn parse_period(
-    cursor: &mut EventCursor<'_>,
-    element: XmlElement,
-    limits: DashMpdLimits,
-) -> Result<ParsedPeriod, DashMpdError> {
-    validate_attributes(&element, &["id", "start", "duration"])?;
-    let id = bounded_optional_attribute(&element, "id", limits)?;
-    let start_milliseconds = optional_duration_attribute(&element, "start")?;
-    let duration_milliseconds = optional_duration_attribute(&element, "duration")?;
-    let mut base_url = None;
-    let mut adaptation_sets = Vec::new();
-    let mut encountered_adaptation_set_count = 0_usize;
-    loop {
-        match cursor.next_event()? {
-            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "BaseURL") => {
-                set_single_base_url(&mut base_url, parse_base_url(cursor, child, limits)?)?;
-            }
-            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "AdaptationSet") => {
-                if encountered_adaptation_set_count >= limits.maximum_adaptation_sets_per_period {
-                    return Err(DashMpdError::new(DashMpdErrorKind::LimitExceeded));
-                }
-                encountered_adaptation_set_count += 1;
-                if is_declared_text_adaptation_set(&child, limits)? {
-                    consume_non_playback_text_adaptation_set(cursor, &child, limits)?;
-                } else {
-                    adaptation_sets.push(parse_adaptation_set(cursor, child, limits)?);
-                }
-            }
-            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "ContentProtection") => {
-                return Err(DashMpdError::new(DashMpdErrorKind::ContentProtection));
-            }
-            Some(XmlEvent::EmptyElement(child)) if is_name(child.name(), "ContentProtection") => {
-                return Err(DashMpdError::new(DashMpdErrorKind::ContentProtection));
-            }
-            Some(XmlEvent::EmptyElement(child)) if is_name(child.name(), "ContentProtection") => {
-                return Err(DashMpdError::new(DashMpdErrorKind::ContentProtection));
-            }
-            Some(XmlEvent::EndElement(name)) if is_name(&name, "Period") => break,
-            Some(XmlEvent::Text(text)) if text.content().trim().is_empty() => {}
-            Some(_) | None => {
-                return Err(DashMpdError::new(DashMpdErrorKind::UnsupportedConstruct));
-            }
-        }
-    }
-    if adaptation_sets.is_empty() {
-        return Err(DashMpdError::new(DashMpdErrorKind::MalformedSchema));
-    }
-    Ok(ParsedPeriod {
-        id,
-        start_milliseconds,
-        duration_milliseconds,
-        base_url,
-        adaptation_sets: adaptation_sets.into_boxed_slice(),
-    })
 }
 
 /// Разбирает AdaptationSet и применяет его addressing к Representation без собственного.
@@ -701,48 +652,6 @@ fn validate_main_role(element: &XmlElement, limits: DashMpdLimits) -> Result<(),
         return Err(DashMpdError::new(DashMpdErrorKind::UnsupportedConstruct));
     }
     Ok(())
-}
-
-/// Вычисляет exact contiguous Period timeline.
-pub(super) fn finalize_periods(
-    parsed: Vec<ParsedPeriod>,
-    presentation_duration: Option<u64>,
-) -> Result<(Box<[DashPeriod]>, u64), DashMpdError> {
-    let mut periods = Vec::with_capacity(parsed.len());
-    let mut expected_start = 0_u64;
-    for (index, period) in parsed.iter().enumerate() {
-        let start = period.start_milliseconds.unwrap_or(expected_start);
-        if start != expected_start {
-            return Err(DashMpdError::new(DashMpdErrorKind::InvalidPeriodTimeline));
-        }
-        let duration = period
-            .duration_milliseconds
-            .or_else(|| {
-                parsed
-                    .get(index + 1)
-                    .and_then(|next| next.start_milliseconds)
-                    .and_then(|next_start| next_start.checked_sub(start))
-            })
-            .or_else(|| presentation_duration.and_then(|total| total.checked_sub(start)))
-            .filter(|duration| *duration > 0)
-            .ok_or_else(|| DashMpdError::new(DashMpdErrorKind::InvalidPeriodTimeline))?;
-        expected_start = start
-            .checked_add(duration)
-            .ok_or_else(|| DashMpdError::new(DashMpdErrorKind::InvalidPeriodTimeline))?;
-        periods.push(DashPeriod {
-            id: period.id.clone(),
-            start_milliseconds: start,
-            duration: DashPresentationDuration::FiniteMilliseconds(duration),
-            base_url: period.base_url.clone(),
-            adaptation_sets: period.adaptation_sets.clone(),
-        });
-    }
-    if let Some(declared) = presentation_duration
-        && declared != expected_start
-    {
-        return Err(DashMpdError::new(DashMpdErrorKind::InvalidPeriodTimeline));
-    }
-    Ok((periods.into_boxed_slice(), expected_start))
 }
 
 /// Парсит BaseURL как text-only leaf.

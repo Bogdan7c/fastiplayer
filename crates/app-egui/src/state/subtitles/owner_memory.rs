@@ -24,8 +24,8 @@ use std::path::{Path, PathBuf};
 
 use player_core::MediaInstanceId;
 use playlist_state::{
-    RememberedFilePath, RememberedSubtitleChoice, RememberedTrackHint, RememberedWebSubtitle,
-    TrackHintCandidate, TrackHintMatch, find_matching_track,
+    RememberedFilePath, RememberedStreamSubtitle, RememberedSubtitleChoice, RememberedTrackHint,
+    RememberedWebSubtitle, TrackHintCandidate, TrackHintMatch, find_matching_track,
 };
 use subtitle_core::SubtitleSyncOffset;
 
@@ -63,6 +63,8 @@ pub(super) enum PendingRememberedChoice {
     File(PathBuf),
     /// Web-дорожка: ищется в списке видео по виду и языку (список полный с самого начала).
     Web(RememberedWebSubtitle),
+    /// Дорожка потока: ищется в списке по языку, названию и forced (список полный с начала).
+    Stream(RememberedStreamSubtitle),
 }
 
 impl PendingRememberedChoice {
@@ -75,7 +77,7 @@ impl PendingRememberedChoice {
     pub(super) fn file_to_check(&self) -> Option<PathBuf> {
         match self {
             Self::File(path) => Some(path.clone()),
-            Self::Embedded(_) | Self::Web(_) => None,
+            Self::Embedded(_) | Self::Web(_) | Self::Stream(_) => None,
         }
     }
 }
@@ -138,6 +140,9 @@ pub(super) fn apply_restore_request(media: &mut MediaSubtitles, request: Subtitl
         Some(RememberedSubtitleChoice::Web(web)) => {
             media.pending_memory = Some(PendingRememberedChoice::Web(web));
         }
+        Some(RememberedSubtitleChoice::Stream(stream)) => {
+            media.pending_memory = Some(PendingRememberedChoice::Stream(stream));
+        }
     }
 }
 
@@ -163,6 +168,7 @@ pub(super) fn resolve_pending_remembered_choice(media: &mut MediaSubtitles) -> P
         PendingRememberedChoice::Embedded(hint) => find_embedded_track(media, hint),
         PendingRememberedChoice::File(path) => find_file_track(media, path),
         PendingRememberedChoice::Web(web) => find_web_track(media, web),
+        PendingRememberedChoice::Stream(stream) => find_stream_track(media, stream),
     };
     match found {
         TrackLookup::Wait => PendingResolution::Waiting,
@@ -255,6 +261,22 @@ fn find_web_track(media: &MediaSubtitles, remembered: &RememberedWebSubtitle) ->
         .map_or(TrackLookup::Missing, |entry| TrackLookup::Found(entry.id))
 }
 
+/// Дорожки потока ставятся в список вместе с media: нет в списке - значит у потока такой
+/// рендиции больше нет (изменился манифест).
+fn find_stream_track(media: &MediaSubtitles, remembered: &RememberedStreamSubtitle) -> TrackLookup {
+    media
+        .tracks
+        .entries()
+        .iter()
+        .find(|entry| {
+            entry
+                .description
+                .stream()
+                .is_some_and(|stream| stream.matches_remembered(remembered))
+        })
+        .map_or(TrackLookup::Missing, |entry| TrackLookup::Found(entry.id))
+}
+
 fn find_file_track(media: &MediaSubtitles, path: &Path) -> TrackLookup {
     if let Some(track_id) = media.tracks.find_by_path(path) {
         return TrackLookup::Found(track_id);
@@ -297,6 +319,13 @@ fn choice_for_memory(media: &MediaSubtitles) -> Option<RememberedSubtitleChoice>
             Ok(web) => Some(RememberedSubtitleChoice::Web(web)),
             Err(error) => {
                 tracing::debug!(%error, "The web subtitle track cannot be remembered");
+                None
+            }
+        },
+        TrackDescription::Stream(description) => match description.to_remembered() {
+            Ok(stream) => Some(RememberedSubtitleChoice::Stream(stream)),
+            Err(error) => {
+                tracing::debug!(%error, "The stream subtitle track cannot be remembered");
                 None
             }
         },

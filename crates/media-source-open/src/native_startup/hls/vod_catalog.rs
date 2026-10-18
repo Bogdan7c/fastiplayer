@@ -205,7 +205,8 @@ pub(super) fn prepare_native_hls_attempt(
         }
     };
 
-    let (demuxer, seek_port, lifecycle) = prepared.into_parts();
+    let (demuxer, seek_port, lifecycle, stream_subtitles) = prepared.into_parts();
+    // Свежее открытие даёт свежий источник субтитров (reopen/смена варианта не наследует старый).
     let source_state = NativeHlsSourceState::new(
         neutral_selection,
         component_catalog,
@@ -213,7 +214,8 @@ pub(super) fn prepare_native_hls_attempt(
             request.web_media_config,
         ),
     )
-    .context("native HLS neutral catalog projection failed")?;
+    .context("native HLS neutral catalog projection failed")?
+    .with_stream_subtitle_source(stream_subtitles);
 
     Ok(NativeHlsAttempt::Prepared(PreparedNativeHlsMedia {
         demuxer,
@@ -258,6 +260,7 @@ impl PreparedNativeHlsRuntime {
         Box<dyn Demuxer + Send>,
         Arc<dyn PreparedDemuxSeekPort>,
         PreparedNativeHlsLifecycle,
+        Option<crate::stream_subtitles::StreamSubtitleSource>,
     ) {
         match self {
             Self::Vod {
@@ -269,6 +272,7 @@ impl PreparedNativeHlsRuntime {
                     demuxer,
                     seek_port,
                     initial_position,
+                    stream_subtitles,
                 } = prepared;
                 let demuxer = endpoint_recovery.wrap_demuxer(demuxer);
                 #[expect(
@@ -285,6 +289,7 @@ impl PreparedNativeHlsRuntime {
                         initial_position,
                         endpoint_recovery,
                     },
+                    stream_subtitles,
                 )
             }
             Self::Live(prepared) => (
@@ -293,6 +298,7 @@ impl PreparedNativeHlsRuntime {
                 PreparedNativeHlsLifecycle::Live {
                     timeline_port: prepared.timeline_port,
                 },
+                prepared.stream_subtitles,
             ),
         }
     }

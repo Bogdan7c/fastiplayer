@@ -7,6 +7,8 @@ pub struct PreparedNativeHlsVod {
     pub demuxer: Box<dyn Demuxer + Send>,
     pub seek_port: Arc<dyn PreparedDemuxSeekPort>,
     pub initial_position: PreparedInitialPosition,
+    /// Субтитры потока (HLS `TYPE=SUBTITLES`); `None`, если master их не объявляет.
+    pub stream_subtitles: Option<crate::stream_subtitles::StreamSubtitleSource>,
 }
 
 /// Native open сохраняет typed HLS failure для строго ограниченного extractor fallback-а.
@@ -72,6 +74,12 @@ fn finalize_native_hls_vod(
     let start_disposition = opened.start_disposition();
     let initial_position_proof = opened.initial_position_proof();
     let initial_readiness = opened.initial_readiness();
+    // Транспорт и точки отсчёта времени берутся ДО `into_demuxer`: они живут вместе с источником.
+    let stream_subtitles = crate::stream_subtitles::HlsStreamSubtitleTransport::new(
+        opened.subtitle_transport(),
+        opened.timestamp_origins(),
+    )
+    .into_source();
     let mut demuxer = opened.into_demuxer();
     wait_for_initial_hls_tracks(demuxer.as_mut(), &initial_readiness)
         .map_err(PrepareNativeHlsVodError::InitialTopology)?;
@@ -115,6 +123,7 @@ fn finalize_native_hls_vod(
             handle: seek_handle,
         }),
         initial_position,
+        stream_subtitles,
     })
 }
 

@@ -151,6 +151,8 @@ pub struct DashLiveSnapshot {
     selection: DashLiveSelection,
     /// Manifest-only availability cap.
     pub availability: DashLiveAvailability,
+    /// Текстовые дорожки этого снимка (субтитры); отказ планирования не мешает A/V.
+    pub(crate) text: std::sync::Arc<crate::text::DashTextPlanSet>,
 }
 
 /// Runtime-private selector сохраняет source-compatible evidence path и exact logical lane path.
@@ -265,11 +267,17 @@ pub(crate) fn build_dash_live_snapshot_with_selection(
     }
     .map_err(map_dynamic_plan_error)?;
     let availability = availability::calculate_availability(&mpd, &plan, &selection, clock)?;
+    let text = std::sync::Arc::new(crate::text::build_text_plan_set(
+        &mpd.presentation,
+        manifest_base,
+        maximum_segments,
+    ));
     Ok(DashLiveSnapshot {
         mpd,
         plan,
         selection,
         availability,
+        text,
     })
 }
 

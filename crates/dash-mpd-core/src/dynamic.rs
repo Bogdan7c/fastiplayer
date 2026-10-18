@@ -131,7 +131,7 @@ pub fn parse_dynamic_dash_mpd(
     let limits = request.limits.validate()?;
     let reader = BoundedXmlReader::new(request.document_bytes, request.xml_budgets)
         .map_err(DashMpdError::from_xml)?;
-    let mut cursor = EventCursor { reader };
+    let mut cursor = EventCursor::new(reader);
     let root = match cursor.next_event()? {
         Some(XmlEvent::StartElement(element)) => element,
         _ => return Err(DashMpdError::new(DashMpdErrorKind::InvalidRoot).into()),
@@ -332,6 +332,8 @@ fn finalize_dynamic_periods(
             duration: period_duration,
             base_url: parsed_period.base_url.clone(),
             adaptation_sets: parsed_period.adaptation_sets.clone(),
+            text_adaptation_sets: parsed_period.text_adaptation_sets.clone(),
+            skipped_text_adaptation_set_count: parsed_period.skipped_text_adaptation_set_count,
         });
     }
 

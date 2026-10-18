@@ -38,4 +38,14 @@ pub enum SubtitleLoadError {
     /// srv3: структура XML превысила лимиты (глубина, число токенов, атрибутов или текста).
     #[error("srv3 file exceeds the XML structure limits")]
     Srv3TooComplex,
+    /// TTML: файл не является корректным XML (или использует запрещённые конструкции:
+    /// DOCTYPE, пользовательские сущности). Содержимое файла в сообщение не попадает.
+    #[error("TTML file is not well-formed XML")]
+    MalformedTtml,
+    /// TTML: XML корректен, но корень не `tt` из пространства имён TTML.
+    #[error("file is not a TTML document")]
+    NotTtml,
+    /// TTML: структура превысила лимиты (глубина, число токенов, атрибутов, текста или листьев).
+    #[error("TTML file exceeds the structure limits")]
+    TtmlTooComplex,
 }

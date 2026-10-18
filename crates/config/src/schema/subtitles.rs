@@ -1,4 +1,4 @@
-//! Секция `[subtitles]`: показ, язык, стиль и лимиты ресурсов субтитров (схема v21).
+//! Секция `[subtitles]`: показ, язык, стиль и лимиты ресурсов субтитров (схема v23).
 //!
 //! Решение владельца (субтитры, сессия 04): лимиты и внешний вид живут в `config.toml`,
 //! значения по умолчанию равны прежним константам приложения, поэтому старый файл без
@@ -13,6 +13,7 @@ use super::subtitles_ass::{
 use super::subtitles_glyph_cache::*;
 use super::subtitles_limits::*;
 use super::subtitles_pgs::*;
+use super::subtitles_stream::SubtitleStreamConfig;
 use super::subtitles_style::*;
 
 /// Показ субтитров по умолчанию выключен: включает пользователь (кнопка CC / клавиша C).
@@ -720,6 +721,11 @@ pub struct SubtitlesConfig {
         apply = "subtitles.apply"
     )]
     pub pgs_background_track_window_s: u16,
+
+    /// Лимиты субтитров потоковых источников (HLS и другие): окна, размеры, сбои, история live.
+    #[serde(default)]
+    #[setting(nested)]
+    pub stream: SubtitleStreamConfig,
 }
 
 impl Default for SubtitlesConfig {
@@ -761,6 +767,7 @@ impl Default for SubtitlesConfig {
             shaping_cache_mb: DEFAULT_SHAPING_CACHE_MB,
             pgs_displayed_track_cache_mb: DEFAULT_PGS_DISPLAYED_TRACK_CACHE_MB,
             pgs_background_track_window_s: DEFAULT_PGS_BACKGROUND_TRACK_WINDOW_S,
+            stream: SubtitleStreamConfig::default(),
         }
     }
 }

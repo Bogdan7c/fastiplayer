@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use super::hint::RememberedTrackHint;
 use super::key::VideoKey;
+use super::stream_choice::RememberedStreamSubtitle;
 use super::web_audio_language::RememberedWebAudioLanguage;
 use super::web_choice::RememberedWebSubtitle;
 
@@ -194,6 +195,8 @@ pub enum RememberedSubtitleChoice {
     File(RememberedFilePath),
     /// Web-дорожка (язык + вид); схема файла 2 и новее.
     Web(RememberedWebSubtitle),
+    /// Дорожка потока (HLS-рендиция): язык + название + forced; схема файла 3 и новее.
+    Stream(RememberedStreamSubtitle),
 }
 
 /// Метка свежести записи: чем больше, тем позже запись использовалась.

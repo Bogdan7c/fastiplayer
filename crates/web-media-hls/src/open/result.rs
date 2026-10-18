@@ -7,7 +7,8 @@ use demux_api::{ProgressiveAsyncSeekHandle, ProgressiveDemuxReadinessPort, Progr
 use media_core::Demuxer;
 
 use crate::{
-    HlsInitialPositionProofCapability, HlsSubtitleRenditionDescriptor, HlsVodStartDisposition,
+    HlsInitialPositionProofCapability, HlsSubtitleRenditionDescriptor, HlsSubtitleTransport,
+    HlsTimestampOrigins, HlsVodStartDisposition,
 };
 
 /// Typed initial-readiness boundary HLS result-а до стирания concrete demuxer type.
@@ -23,6 +24,8 @@ pub enum HlsInitialReadinessCapability {
 pub struct HlsVodOpenResult {
     demuxer: ProgressiveDemuxer,
     subtitles: Vec<HlsSubtitleRenditionDescriptor>,
+    subtitle_transport: HlsSubtitleTransport,
+    timestamp_origins: HlsTimestampOrigins,
     duration: Duration,
     initial_position_proof: HlsInitialPositionProofCapability,
     start_disposition: HlsVodStartDisposition,
@@ -33,6 +36,8 @@ impl HlsVodOpenResult {
     pub(super) fn new(
         demuxer: ProgressiveDemuxer,
         subtitles: Vec<HlsSubtitleRenditionDescriptor>,
+        subtitle_transport: HlsSubtitleTransport,
+        timestamp_origins: HlsTimestampOrigins,
         duration: Duration,
         initial_position_proof: HlsInitialPositionProofCapability,
         start_disposition: HlsVodStartDisposition,
@@ -42,6 +47,8 @@ impl HlsVodOpenResult {
         Self {
             demuxer,
             subtitles,
+            subtitle_transport,
+            timestamp_origins,
             duration,
             initial_position_proof,
             start_disposition,
@@ -85,6 +92,18 @@ impl HlsVodOpenResult {
         &self.subtitles
     }
 
+    /// Транспорт subtitle rendition-ов (playlist и сегменты). Сеть трогается только по его вызовам.
+    #[must_use]
+    pub fn subtitle_transport(&self) -> HlsSubtitleTransport {
+        self.subtitle_transport.clone()
+    }
+
+    /// Read-only origin-ы эпох видео для привязки субтитров к шкале плеера.
+    #[must_use]
+    pub fn timestamp_origins(&self) -> HlsTimestampOrigins {
+        self.timestamp_origins.clone()
+    }
+
     /// Manifest-derived finite VOD duration до первого demux event.
     pub const fn duration(&self) -> Duration {
         self.duration
@@ -96,6 +115,8 @@ impl fmt::Debug for HlsVodOpenResult {
         formatter
             .debug_struct("HlsVodOpenResult")
             .field("subtitle_renditions", &self.subtitles)
+            .field("subtitle_transport", &self.subtitle_transport)
+            .field("timestamp_origins", &self.timestamp_origins)
             .field("duration", &self.duration)
             .field("initial_position_proof", &self.initial_position_proof)
             .field("start_disposition", &self.start_disposition)

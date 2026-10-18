@@ -85,6 +85,8 @@ pub(super) fn prepare_dash_live_with_selection(
             .plan
             .clone()
     };
+    // Субтитры читают тот же принятый снимок MPD и ту же точку отсчёта сессии, что и видео.
+    let text_subtitles = super::text_source::live_text_subtitles(&shared);
     let initial_continuation_point = initial_plan
         .continuation_point()
         .map_err(anyhow::Error::new)?;
@@ -147,6 +149,7 @@ pub(super) fn prepare_dash_live_with_selection(
     Ok(DashLiveOpenResult {
         demuxer,
         timeline_port,
+        text_subtitles,
     })
 }
 

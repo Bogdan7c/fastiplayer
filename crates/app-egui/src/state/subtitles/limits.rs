@@ -17,9 +17,11 @@ use subtitle_sidecar::SidecarSearchLimits;
 
 mod ass;
 mod pgs;
+mod stream;
 
 use self::ass::ass_parse_limits_from_config;
 pub(super) use self::pgs::PgsLimits;
+pub(super) use self::stream::StreamLimits;
 
 /// Байтов в мегабайте конфига (МБ = МиБ, как в прежней константе «8 МиБ»).
 const BYTES_PER_MEGABYTE: usize = 1024 * 1024;

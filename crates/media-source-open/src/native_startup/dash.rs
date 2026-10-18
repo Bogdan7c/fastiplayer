@@ -320,6 +320,10 @@ pub fn prepare_native_dash_attempt(
     let opened = prepare_discovered_dash_vod(discovered, component_selection.clone())
         .context("native DASH exact discovered selection open failed")?;
     let seek_port = crate::web_media_dash_open::prepared_dash_seek_port(opened.async_seek_handle());
+    // Субтитры берутся ДО `into_demuxer`; каждое открытие/reopen даёт свежий источник.
+    let stream_subtitles = opened.text_subtitles().and_then(|text| {
+        crate::stream_subtitles::DashStreamSubtitleTransport::new(text).into_source()
+    });
     let source_state = NativeDashSourceState::new(
         neutral_selection,
         component_catalog,
@@ -327,7 +331,8 @@ pub fn prepare_native_dash_attempt(
             request.web_media_config,
         ),
     )
-    .context("native DASH neutral catalog projection failed")?;
+    .context("native DASH neutral catalog projection failed")?
+    .with_stream_subtitle_source(stream_subtitles);
 
     Ok(NativeDashAttempt::Prepared(PreparedNativeDashMedia {
         demuxer: Box::new(opened.into_demuxer()),

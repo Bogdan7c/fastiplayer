@@ -34,6 +34,7 @@ use web_media_transport_api::{
 
 use super::*;
 
+mod auxiliary_resources;
 mod blocking_resource_fetch;
 mod completed_resource_cache;
 mod live_manifest_refresh;

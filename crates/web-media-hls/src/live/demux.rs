@@ -20,6 +20,7 @@ use super::{
 };
 use crate::epoch_demux::open_epoch_with_key_cache_and_observer;
 use crate::source::{HlsRefreshableResourceKind, HlsResourceExpiryObserver, SharedHlsKeyCache};
+use crate::timestamp_origins::HlsTimestampOriginsWriter;
 use crate::{HlsEndpointRefreshReason, HlsRequiredContainer, HlsVodOpenPolicy};
 
 const MAXIMUM_SEGMENT_TRANSITIONS_PER_READ: usize = 4;
@@ -33,6 +34,8 @@ pub(crate) struct HlsLiveComponentFactory {
     registry: Arc<DemuxRegistry>,
     coordinator: Arc<HlsLiveTimelineCoordinator>,
     refresh_control: Arc<HlsLiveRefreshControl>,
+    /// Публикация origin-ов сегментов для субтитров (только main-компонент; иначе no-op).
+    timestamp_origins: HlsTimestampOriginsWriter,
 }
 
 impl HlsLiveComponentFactory {
@@ -52,7 +55,17 @@ impl HlsLiveComponentFactory {
             registry,
             coordinator,
             refresh_control,
+            timestamp_origins: HlsTimestampOriginsWriter::disabled(),
         }
+    }
+
+    /// Включает публикацию origin-ов сегментов, которыми этот компонент пересчитывает пакеты.
+    pub(super) fn publishing_timestamp_origins(
+        mut self,
+        timestamp_origins: HlsTimestampOriginsWriter,
+    ) -> Self {
+        self.timestamp_origins = timestamp_origins;
+        self
     }
 
     pub fn open(&self) -> Result<HlsLiveComponentDemuxer> {
@@ -309,9 +322,18 @@ impl HlsLiveComponentDemuxer {
             .iter()
             .find_map(|(inner, public)| (*inner == packet.track_id).then_some(*public))
             .ok_or_else(|| anyhow!("HLS live packet has an unknown track id"))?;
+        let origin_is_new = self.current_timestamp_origin.is_none();
         let origin = *self
             .current_timestamp_origin
             .get_or_insert_with(|| packet.dts.map_or(packet.pts, |dts| packet.pts.min(dts)));
+        if origin_is_new {
+            // Origin сегмента зафиксирован ровно сейчас: публикуем ту же пару, что применяем ниже.
+            self.factory.timestamp_origins.publish(
+                self.current_identity.discontinuity_sequence,
+                origin,
+                self.current_timeline_start,
+            );
+        }
         packet.pts = packet
             .pts
             .saturating_sub(origin)

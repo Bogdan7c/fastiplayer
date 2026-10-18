@@ -68,6 +68,21 @@ pub(super) fn split_into_blocks(normalized: &str) -> Vec<Block<'_>> {
     blocks
 }
 
+/// Строки заголовка файла: после сигнатуры до первой пустой строки или строки со стрелкой
+/// (граница та же, что у [`split_into_blocks`]).
+pub(super) fn header_lines(normalized: &str) -> Vec<NumberedLine<'_>> {
+    normalized
+        .split('\n')
+        .enumerate()
+        .skip(1)
+        .take_while(|(_, text)| !text.is_empty() && !contains_timing_arrow(text))
+        .map(|(index, text)| NumberedLine {
+            number: LineNumber::from_zero_based_index(index),
+            text,
+        })
+        .collect()
+}
+
 /// Строка содержит разделитель времени `-->`.
 pub(super) fn contains_timing_arrow(text: &str) -> bool {
     text.contains(TIMING_ARROW)
@@ -122,6 +137,16 @@ mod tests {
                 vec!["NOTE x"]
             ]
         );
+    }
+
+    #[test]
+    fn header_lines_stop_at_blank_line_or_arrow() {
+        let lines = header_lines("WEBVTT\nKind: x\nA: b\n\nid\n00:01.000 --> 00:02.000\n");
+        let texts: Vec<&str> = lines.iter().map(|line| line.text).collect();
+        assert_eq!(texts, ["Kind: x", "A: b"]);
+        assert_eq!(lines[0].number.get(), 2);
+        let with_arrow = header_lines("WEBVTT\nX: y\n00:01.000 --> 00:02.000\ntext\n");
+        assert_eq!(with_arrow.len(), 1);
     }
 
     #[test]
