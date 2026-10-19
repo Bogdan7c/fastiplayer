@@ -37,6 +37,7 @@ use std::sync::Arc;
 
 use crate::atoms::{AtomError, AtomIterator, AtomType, ReadAtom};
 use crate::atoms::{FtypAtom, MetaAtom, MoofAtom, MoovAtom, SidxAtom, TrakAtom};
+use crate::edit_list::PresentationShift;
 use crate::stream::*;
 
 use log::{debug, info, trace, warn};
@@ -84,10 +85,18 @@ pub struct TrackState {
     next_sample: u32,
     /// The current sample byte position relative to the start of the track.
     next_sample_pos: u64,
+    /// Fastiplayer: сдвиг media-времени в presentation-время из `elst` (см. `edit_list`).
+    /// Применяется ко всем отдаваемым timestamp-ам и обратно к целям seek.
+    presentation_shift: PresentationShift,
 }
 
 impl TrackState {
-    pub fn make(track_num: usize, trak: &TrakAtom, timespan: &TimeSpan) -> (Self, Track) {
+    pub fn make(
+        track_num: usize,
+        trak: &TrakAtom,
+        timespan: &TimeSpan,
+        presentation_shift: PresentationShift,
+    ) -> (Self, Track) {
         let mut track = Track::new(trak.tkhd.id);
 
         // Create the codec parameters using the sample description atom.
@@ -128,6 +137,7 @@ impl TrackState {
             cur_seg: 0,
             next_sample: 0,
             next_sample_pos: 0,
+            presentation_shift,
         };
 
         (state, track)
@@ -738,16 +748,37 @@ impl<'s> IsoMp4Reader<'s> {
                     })
             } else {
                 // If non-fragmented, use the total duration (media timescale) from the track's
-                // stts atom. Since edits are not currently supported, this is the duration of all
-                // samples that will be yielded.
-                //
-                // TODO: Support edits. Once supported, prefer the tkhd duration.
+                // stts atom: это media-длительность всех samples. Fastiplayer: поддержан только
+                // сдвиг начала (ведущие пустые правки + `media_time`), поэтому ниже к ней
+                // применяется `presentation_duration_ticks`; хвостовые правки не учитываются.
                 let duration = Duration::from(trak.mdia.minf.stbl.stts.total_duration);
 
                 TimeSpan::new(trak.mdia.mdhd.timescale, Some(duration))
             };
 
-            let (track_state, track) = TrackState::make(t, trak, &timespan);
+            // Fastiplayer: сдвиг presentation-времени из `elst` (ведущие пустые правки и
+            // `media_time` первой обычной правки). Duration — конец презентации:
+            // `dwell + (media_duration - M)`, потому что consumer сравнивает его с presentation
+            // timestamp-ами пакетов, которые теперь тоже сдвинуты.
+            let presentation_shift = PresentationShift::from_track_edit_list(
+                trak.edts.as_ref().and_then(|edts| edts.elst.as_ref()),
+                moov.mvhd.timescale,
+                trak.mdia.mdhd.timescale,
+            );
+            let timespan = match timespan.duration {
+                Some(media_duration) if !presentation_shift.is_identity() => {
+                    let presentation_duration = presentation_shift
+                        .presentation_duration_ticks(media_duration.get(), timespan.timescale)
+                        .ok_or(Error::DecodeError("isomp4: presentation duration overflow"))?;
+                    TimeSpan::new(
+                        timespan.timescale,
+                        Some(Duration::new(presentation_duration)),
+                    )
+                }
+                _ => timespan,
+            };
+
+            let (track_state, track) = TrackState::make(t, trak, &timespan, presentation_shift);
 
             tracks.push(track);
             track_states.push(track_state);
@@ -894,12 +925,26 @@ impl<'s> IsoMp4Reader<'s> {
             return Ok(());
         }
         let track_id = self.indexed_seek_track_id(track_id);
+        // Fastiplayer: `sidx` хранит media-время, а `time` — presentation-время; переводим цель
+        // обратно сдвигом `elst` именно того трека, чей `sidx` используется.
+        let presentation_shift = self
+            .track_states
+            .iter()
+            .find(|state| state.track_id == track_id)
+            .map(|state| state.presentation_shift);
         let Some(seek_point) = self.sidx_seek_indexes.get(&track_id).and_then(|index| {
             let timestamp = TimeBase::from_recip(index.timescale).calc_timestamp(time)?;
             if timestamp.is_negative() {
                 return None;
             }
-            index.seek_point_for_timestamp(timestamp.get() as u64)
+            let media_ticks = match presentation_shift {
+                Some(shift) => {
+                    let net_shift = shift.net_shift_in(index.timescale)?;
+                    (i128::from(timestamp.get()) - i128::from(net_shift)).max(0)
+                }
+                None => i128::from(timestamp.get()),
+            };
+            index.seek_point_for_timestamp(u64::try_from(media_ticks).ok()?)
         }) else {
             return Ok(());
         };
@@ -937,15 +982,32 @@ impl<'s> IsoMp4Reader<'s> {
                 // Try to get the timestamp for the next sample of the track from the segment.
                 if let Some(timing) = seg.sample_timing(state.track_num, state.next_sample)? {
                     // Calculate the decode time used for inter-track sample ordering.
-                    let Some(pts) = timing.pts.try_into().ok() else {
+                    // Fastiplayer: media-время -> presentation-время трека (`elst`). После
+                    // composition offset, поэтому PTS/DTS сдвигаются одинаково.
+                    let Some(pts) = state
+                        .presentation_shift
+                        .presentation_ticks(timing.pts)
+                        .map(Timestamp::from)
+                    else {
                         return Ok(None);
                     };
 
-                    let Some(dts) = timing.dts.try_into().ok() else {
+                    let Some(dts) = state
+                        .presentation_shift
+                        .presentation_ticks(timing.dts)
+                        .map(Timestamp::from)
+                    else {
                         return Ok(None);
                     };
 
-                    let Some(sample_time) = tb.calc_time(dts) else {
+                    // Fastiplayer: порядок между дорожками определяется decode time, насыщенным
+                    // снизу нулём. Pre-roll packet-ы (AAC/E-AC-3 priming, B-frame с отрицательным
+                    // DTS после `elst`) раньше стояли в нуле и уступали первенство видео по
+                    // порядку дорожек; без насыщения аудио-priming обгонял бы первый keyframe, и
+                    // потребители, ищущие decode anchor (DASH), отбрасывали бы его. Задержанная
+                    // дорожка (dwell) по-прежнему идёт позже, повторяя физический interleave.
+                    let ordering_dts = if dts.is_negative() { Timestamp::ZERO } else { dts };
+                    let Some(sample_time) = tb.calc_time(ordering_dts) else {
                         return Ok(None);
                     };
 
@@ -1161,6 +1223,10 @@ impl<'s> IsoMp4Reader<'s> {
             return seek_error(SeekErrorKind::OutOfRange);
         }
 
+        // Fastiplayer: `ts` — presentation-время; таблицы samples живут в media-времени.
+        let presentation_shift = self.track_states[track_num].presentation_shift;
+        let media_ts = presentation_shift.media_ticks_for_presentation(ts.get() as u64);
+
         let mut seg_skip = 0;
         let mut best_seek_location = None;
 
@@ -1169,12 +1235,12 @@ impl<'s> IsoMp4Reader<'s> {
             // contains the desired timestamp. Skip segments already examined.
             for (seg_idx, seg) in self.segs.iter().enumerate().skip(seg_skip) {
                 let ts_range = seg.track_ts_range(track_num);
-                if !ts_range.is_empty() && ts_range.start > ts.get() as u64 {
+                if !ts_range.is_empty() && ts_range.start > media_ts {
                     break 'locate best_seek_location
                         .ok_or(Error::SeekError(SeekErrorKind::OutOfRange))?;
                 }
 
-                if let Some(sample_num) = seg.ts_sample(track_num, ts.get() as u64)? {
+                if let Some(sample_num) = seg.ts_sample(track_num, media_ts)? {
                     best_seek_location = Some(SeekLocation {
                         seg_idx,
                         sample_num,
@@ -1210,9 +1276,11 @@ impl<'s> IsoMp4Reader<'s> {
         let timing = seg.sample_timing(track_num, seek_loc.sample_num)?.unwrap();
 
         // Try to convert the sample timing to a timestamp.
-        let actual_ts = match Timestamp::try_from(timing.dts) {
-            Ok(ts) => ts,
-            _ => return seek_error(SeekErrorKind::OutOfRange),
+        // Fastiplayer: приземлённый timestamp возвращаем в presentation-времени; отрицательный
+        // результат (preroll перед началом презентации) насыщаем в 0, как и допустимый `ts`.
+        let actual_ts = match presentation_shift.presentation_ticks(timing.dts) {
+            Some(presentation_ticks) => Timestamp::from(presentation_ticks.max(0)),
+            None => return seek_error(SeekErrorKind::OutOfRange),
         };
 
         // Get the sample information.

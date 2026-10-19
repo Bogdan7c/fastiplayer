@@ -19,6 +19,7 @@ mod fp;
 // Реконструкция fragment/init остаётся внутри единственного ISO-BMFF owner-а.
 #[allow(dead_code)]
 mod fragment_reconstruction;
+mod edit_list;
 mod stream;
 
 pub use demuxer::{IsoMp4PacketWithSourceOffset, IsoMp4Reader};

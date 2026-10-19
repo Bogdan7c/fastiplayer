@@ -11,20 +11,26 @@ use crate::atoms::{Atom, AtomHeader, AtomIterator, ReadAtom, Result};
 use crate::atoms::{decode_error, limits::*};
 
 /// Edit list entry.
-#[allow(dead_code)]
-#[derive(Debug)]
+///
+/// Fastiplayer: поля стали `pub`, потому что модуль `edit_list` решает, какие формы списка
+/// правок поддерживаются (ISO/IEC 14496-12 §8.6.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ElstEntry {
-    segment_duration: u64,
-    media_time: i64,
-    media_rate_int: i16,
-    media_rate_frac: i16,
+    /// Длительность правки в timescale **movie** (`mvhd`), не трека.
+    pub segment_duration: u64,
+    /// Позиция в media timescale трека (`mdhd`) или `-1` для пустой правки (dwell).
+    pub media_time: i64,
+    /// Целая часть скорости воспроизведения media (норма: 1).
+    pub media_rate_int: i16,
+    /// Дробная часть скорости воспроизведения media (норма: 0).
+    pub media_rate_frac: i16,
 }
 
 /// Edit list atom.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ElstAtom {
-    entries: Vec<ElstEntry>,
+    /// Записи списка правок в порядке presentation timeline.
+    pub entries: Vec<ElstEntry>,
 }
 
 impl Atom for ElstAtom {
