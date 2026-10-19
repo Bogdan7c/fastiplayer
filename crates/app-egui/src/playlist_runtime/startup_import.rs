@@ -547,7 +547,9 @@ mod tests {
                     .start_startup_playlist_import(path)
                     .expect("start exact startup path")
             );
-            let deadline = Instant::now() + Duration::from_secs(2);
+            // Deadline только страхует от зависания: под полной параллельной нагрузкой
+            // тестов (CI runner на 4 ядра) фоновый парсер может стартовать не сразу.
+            let deadline = Instant::now() + Duration::from_secs(10);
             let preview = loop {
                 runtime.drain_owner_mailbox();
                 if let Some(preview) = runtime.pending_playlist_import_preview() {
@@ -557,7 +559,8 @@ mod tests {
                     Instant::now() < deadline,
                     "startup parser timeout: {file_name}"
                 );
-                std::thread::yield_now();
+                // Короткий sleep вместо yield_now: пустой цикл не отнимает CPU у парсера.
+                std::thread::sleep(Duration::from_millis(1));
             };
             assert_eq!(preview.intent(), PlaylistImportIntent::StartupReplace);
             assert!(matches!(
