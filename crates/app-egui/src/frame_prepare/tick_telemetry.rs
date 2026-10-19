@@ -15,7 +15,10 @@ pub(super) fn record_tick_telemetry(telemetry: &Telemetry, aggregate: Option<Pla
         return;
     };
     if aggregate.truncated_list_entries > 0 {
-        tracing::warn!(
+        // Штатная ситуация, а не сбой: на старте окно ~1,5 с не рисует кадры, а worker
+        // успевает прочитать тысячи пакетов. Lifecycle-события при этом доходят (у них
+        // своя очередь), теряется только детализация телеметрии, поэтому debug, а не warn.
+        tracing::debug!(
             truncated_entries = aggregate.truncated_list_entries,
             "Worker tick telemetry lists were truncated while the UI was not draining; \
              per-packet and per-drop counters may under-report"
