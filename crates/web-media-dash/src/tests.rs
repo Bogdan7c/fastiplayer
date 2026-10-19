@@ -1593,3 +1593,5 @@ fn cancelled_manifest_open_stops_before_network_side_effect() {
         DashVodOpenError::Transport(AdaptiveTransportError::Cancelled)
     ));
 }
+
+mod priming_av;

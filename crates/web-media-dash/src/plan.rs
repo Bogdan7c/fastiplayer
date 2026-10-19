@@ -20,9 +20,12 @@ use crate::selection::{
 
 mod continuation;
 mod lifecycle;
+mod period_coverage;
 mod resources;
 mod text;
 mod timeline;
+#[cfg(test)]
+mod timeline_coverage_tests;
 pub(crate) use continuation::{DashComponentContinuationPoint, DashPresentationContinuationPoint};
 use lifecycle::{component_snapshot_duration, validate_period_alignment};
 use resources::{

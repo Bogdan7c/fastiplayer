@@ -4,9 +4,10 @@
 //! - raw media time `T`, который без изменений подставляется в `$Time$`;
 //! - presentation time `(T - PTO) / timescale`, который используется scheduler-ом.
 //!
-//! Referenced segment принимается только целиком внутри Period. Пересечение
-//! границы пока требует sample-level clipping/decode-only preroll, которого нет
-//! в neutral demux API, поэтому такой профиль явно отклоняется.
+//! Dynamic referenced segment принимается только целиком внутри Period. Static
+//! Period допускает по одному сегменту priming-gap в начале и overshoot в конце
+//! (см. `period_coverage`); duration плана и последнего ресурса обрезается по
+//! Period end. Остальное пересечение границ отклоняется явно.
 
 use std::num::NonZeroUsize;
 use std::time::Duration;
@@ -14,6 +15,7 @@ use std::time::Duration;
 use dash_mpd_core::{DashSegmentTemplate, DashTimelineEntry};
 
 use super::DashPlanError;
+use super::period_coverage::{RawTimelineExtent, validate_static_period_coverage};
 
 /// Lifecycle intent делает static/dynamic различие явным на callsite.
 #[derive(Clone, Copy)]
@@ -51,7 +53,7 @@ pub(super) struct PlannedTemplateTimeline {
     pub segments: Vec<PlannedTemplateSegment>,
     /// PTO как exact neutral duration для component demuxer-а.
     pub media_time_origin: Duration,
-    /// Конец последнего объявленного segment-а относительно Period start.
+    /// Конец последнего объявленного segment-а относительно Period start, обрезанный по Period end.
     pub snapshot_duration: Duration,
 }
 
@@ -97,16 +99,22 @@ pub(super) fn plan_template_timeline(
     };
     validate_raw_contiguity(&raw_segments)?;
     validate_period_bounds(&raw_segments, period_start_raw, period_end_raw, intent)?;
-    let snapshot_end_raw = raw_segments
+    let last_end_raw = raw_segments
         .last()
         .and_then(|segment| segment.raw_start_time.checked_add(segment.duration))
         .ok_or(DashPlanError::TimelineOverflow)?;
-    let snapshot_duration_units = snapshot_end_raw
+    // Period «обрезает» медиа: выступающий хвост последнего сегмента не входит
+    // ни в duration плана, ни в duration ресурса (см. `period_coverage`).
+    let clip_end_raw = period_end_raw.map_or(last_end_raw, |end| end.min(last_end_raw));
+    let snapshot_duration_units = clip_end_raw
         .checked_sub(period_start_raw)
         .ok_or(DashPlanError::SegmentCrossesPeriodBoundary)?;
+    let clip_end_units = snapshot_duration_units;
 
     let segments = raw_segments
         .into_iter()
+        // Сегмент, начавшийся на/после Period end, целиком вне Period: не планируем.
+        .filter(|segment| segment.raw_start_time.saturating_sub(period_start_raw) < clip_end_units)
         .map(|segment| {
             let presentation_start_units = segment
                 .raw_start_time
@@ -114,7 +122,8 @@ pub(super) fn plan_template_timeline(
                 .ok_or(DashPlanError::SegmentCrossesPeriodBoundary)?;
             let presentation_end_units = presentation_start_units
                 .checked_add(segment.duration)
-                .ok_or(DashPlanError::TimelineOverflow)?;
+                .ok_or(DashPlanError::TimelineOverflow)?
+                .min(clip_end_units);
             let presentation_start =
                 units_to_duration(presentation_start_units, template.timescale)?;
             let presentation_end = units_to_duration(presentation_end_units, template.timescale)?;
@@ -283,34 +292,55 @@ fn validate_raw_contiguity(segments: &[RawTemplateSegment]) -> Result<(), DashPl
     Ok(())
 }
 
-/// Dynamic разрешает sliding head/tail, но не boundary-crossing reference.
+/// Dynamic разрешает sliding head/tail, но не boundary-crossing reference;
+/// static допускает ровно один сегмент priming-gap/overshoot (`period_coverage`).
 fn validate_period_bounds(
     segments: &[RawTemplateSegment],
     period_start_raw: u64,
     period_end_raw: Option<u64>,
     intent: DashTimelinePlanningIntent,
 ) -> Result<(), DashPlanError> {
-    let first_start = segments
+    let first = segments
         .first()
-        .map(|segment| segment.raw_start_time)
         .ok_or(DashPlanError::InvalidSerializedLifecycle)?;
-    let last_end = segments
+    let last = segments
         .last()
-        .and_then(|segment| segment.raw_start_time.checked_add(segment.duration))
+        .ok_or(DashPlanError::InvalidSerializedLifecycle)?;
+    let last_end = last
+        .raw_start_time
+        .checked_add(last.duration)
         .ok_or(DashPlanError::TimelineOverflow)?;
-    if first_start < period_start_raw
-        || period_end_raw.is_some_and(|period_end| last_end > period_end)
-    {
-        return Err(DashPlanError::SegmentCrossesPeriodBoundary);
-    }
-    if matches!(intent, DashTimelinePlanningIntent::StaticCompletePeriod) {
-        let period_end_raw =
-            period_end_raw.ok_or(DashPlanError::OpenEndedPeriodRequiresExplicitTimeline)?;
-        if first_start != period_start_raw || last_end != period_end_raw {
-            return Err(DashPlanError::IncompleteStaticPeriod);
+    match intent {
+        DashTimelinePlanningIntent::StaticCompletePeriod => {
+            if first.raw_start_time < period_start_raw {
+                return Err(DashPlanError::SegmentCrossesPeriodBoundary);
+            }
+            let period_end_raw =
+                period_end_raw.ok_or(DashPlanError::OpenEndedPeriodRequiresExplicitTimeline)?;
+            let longest_segment_duration = segments
+                .iter()
+                .map(|segment| segment.duration)
+                .max()
+                .ok_or(DashPlanError::InvalidSerializedLifecycle)?;
+            validate_static_period_coverage(
+                RawTimelineExtent {
+                    first_start: first.raw_start_time,
+                    last_end,
+                    longest_segment_duration,
+                },
+                period_start_raw,
+                period_end_raw,
+            )
+        }
+        DashTimelinePlanningIntent::DynamicSnapshot => {
+            if first.raw_start_time < period_start_raw
+                || period_end_raw.is_some_and(|period_end| last_end > period_end)
+            {
+                return Err(DashPlanError::SegmentCrossesPeriodBoundary);
+            }
+            Ok(())
         }
     }
-    Ok(())
 }
 
 /// Внутренний raw reference до преобразования в presentation time.

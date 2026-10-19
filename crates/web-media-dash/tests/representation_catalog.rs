@@ -551,3 +551,117 @@ fn ffmpeg_dash_mpd_builds_a_native_separate_video_audio_catalog() {
         DashLogicalRepresentationSelection::Separate { .. }
     ));
 }
+
+/// Static MPD, который `ffmpeg -f dash` пишет для видео + AAC: audio timeline начинается
+/// с priming offset 10832 и заканчивается на 5_771_856 тиков против Period 5_760_000.
+const FFMPEG_PRIMING_AUDIO_MPD: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+	profiles="urn:mpeg:dash:profile:isoff-live:2011"
+	type="static"
+	mediaPresentationDuration="PT2M0.0S"
+	maxSegmentDuration="PT6.0S"
+	minBufferTime="PT12.0S">
+	<Period id="0" start="PT0.0S">
+		<AdaptationSet id="0" contentType="video" startWithSAP="1" segmentAlignment="true" frameRate="24/1" maxWidth="960" maxHeight="408">
+			<Representation id="0" mimeType="video/mp4" codecs="avc1.64001e" bandwidth="585034" width="960" height="408">
+				<SegmentTemplate timescale="12288" initialization="init-stream$RepresentationID$.m4s" media="chunk-stream$RepresentationID$-$Number%05d$.m4s" startNumber="1">
+					<SegmentTimeline>
+						<S t="0" d="73728" r="19" />
+					</SegmentTimeline>
+				</SegmentTemplate>
+			</Representation>
+		</AdaptationSet>
+		<AdaptationSet id="1" contentType="audio" startWithSAP="1" segmentAlignment="true" lang="eng">
+			<Representation id="1" mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="128000" audioSamplingRate="48000">
+				<SegmentTemplate timescale="48000" initialization="init-stream$RepresentationID$.m4s" media="chunk-stream$RepresentationID$-$Number%05d$.m4s" startNumber="1">
+					<SegmentTimeline>
+						<S t="10832" d="273408" />
+						<S d="288768" />
+						<S d="287744" r="2" />
+						<S d="288768" />
+						<S d="287744" r="2" />
+						<S d="288768" />
+						<S d="287744" r="2" />
+						<S d="288768" />
+						<S d="287744" r="2" />
+						<S d="288768" />
+						<S d="287744" />
+						<S d="288768" />
+						<S d="14336" />
+					</SegmentTimeline>
+				</SegmentTemplate>
+			</Representation>
+		</AdaptationSet>
+	</Period>
+</MPD>"#;
+
+/// Proof port, подтверждающий ровно те дорожки, что объявлены в MPD с priming audio.
+struct PrimingProofPort;
+
+impl DashRepresentationLaneProofPort for PrimingProofPort {
+    fn prove_lane(
+        &mut self,
+        request: DashRepresentationLaneProbe,
+    ) -> Result<DashRepresentationLaneProof, DashRepresentationLaneProbeError> {
+        Ok(match request.kind() {
+            DashMediaKind::Video => DashRepresentationLaneProof::VideoOnly(video_track(
+                "avc1.64001e",
+                960,
+                408,
+                Some((24, 1)),
+                Some(585_034),
+                DynamicRange::Sdr,
+            )),
+            DashMediaKind::Audio => DashRepresentationLaneProof::AudioOnly(audio_track(
+                Some(128_000),
+                Some("eng"),
+                Some(2),
+            )),
+            DashMediaKind::Muxed => {
+                return Err(DashRepresentationLaneProbeError::CapabilityRejected);
+            }
+        })
+    }
+}
+
+#[test]
+fn ffmpeg_audio_priming_timeline_keeps_audio_lane_and_default_video_and_audio() {
+    let presentation = parse(FFMPEG_PRIMING_AUDIO_MPD);
+    let provider_default = DashPresentationSelection::Separate {
+        video: DashRepresentationEvidence {
+            media_kind: DashMediaKind::Video,
+            container: DashContainer::IsoBmff,
+            representation_id: Some("0".to_owned()),
+            codecs: Some("avc1.64001e".to_owned()),
+            bandwidth: Some(585_034),
+            dimensions: Some(DashVideoDimensions {
+                width: 960,
+                height: 408,
+            }),
+        },
+        audio: DashRepresentationEvidence {
+            media_kind: DashMediaKind::Audio,
+            container: DashContainer::IsoBmff,
+            representation_id: Some("1".to_owned()),
+            codecs: Some("mp4a.40.2".to_owned()),
+            bandwidth: Some(128_000),
+            dimensions: None,
+        },
+    };
+    let mut proof_port = PrimingProofPort;
+    let built = build_with_proof(&presentation, 1, 1, &provider_default, &mut proof_port)
+        .expect("audio lane with priming offset must not be rejected as TimelineIncompatible");
+
+    let ComponentVariantCatalog::Topology { video, audio, .. } = built.catalog() else {
+        panic!("DASH catalog must be a Topology");
+    };
+    assert_eq!(video.len(), 1, "video lane stays");
+    assert_eq!(audio.len(), 1, "audio lane must survive priming timeline");
+    // Default selection обязан быть VideoAndAudio, а не деградировать в VideoOnly.
+    assert!(matches!(
+        built
+            .resolve_selection(built.provider_default())
+            .expect("provider default mapping"),
+        DashLogicalRepresentationSelection::Separate { .. }
+    ));
+}
