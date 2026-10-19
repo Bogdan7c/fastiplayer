@@ -40,3 +40,6 @@ CLAUDE.local.md
 opencode.json
 opencode.jsonc
 /sub_old
+# Локально сгенерированные медиа и сырые прогоны бенчмарков (docs/benchmarks/tools)
+/benchmark-fixtures/
+/benchmark-output/
