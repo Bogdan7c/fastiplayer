@@ -67,7 +67,8 @@ fn suspend_and_terminal_exit_force_flush_pending_sidebar_resize_and_volume() {
 fn window_creation_uses_derived_minimum_size() {
     let event_loop_source = include_str!("event_loop.rs");
     let creation = event_loop_source
-        .split_once("let window_attributes = Window::default_attributes()")
+        // Ищем только начало привязки: rustfmt переносит правую часть на новую строку.
+        .split_once("let window_attributes =")
         .expect("window attributes construction must exist")
         .1
         .split_once("let window = match")
