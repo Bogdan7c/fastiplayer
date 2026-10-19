@@ -261,7 +261,9 @@ impl MprisRootInterface {
     }
     #[zbus(property)]
     fn desktop_entry(&self) -> &str {
-        "fastiplayer"
+        // Имя `.desktop`-файла без расширения; по нему Plasma берёт иконку медиа-виджета.
+        // Обязано совпадать с app_id окна и `packaging/linux/<id>.desktop`.
+        crate::FASTIPLAYER_APPLICATION_ID
     }
     #[zbus(property)]
     fn supported_uri_schemes(&self) -> Vec<&str> {

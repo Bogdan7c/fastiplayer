@@ -317,3 +317,20 @@ fn occupied_private_bus_claim_is_nonqueued_and_never_acquires_after_release() {
         .expect("only a new explicit claim may acquire the released name");
     drop(explicit_retry);
 }
+
+#[test]
+fn mpris_desktop_entry_names_the_packaged_desktop_file() {
+    // Plasma ищет `<DesktopEntry>.desktop`; иначе у медиа-виджета нет иконки плеера.
+    assert_eq!(
+        MprisRootInterface.desktop_entry(),
+        crate::FASTIPLAYER_APPLICATION_ID
+    );
+    let packaged_entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packaging/linux")
+        .join(format!("{}.desktop", MprisRootInterface.desktop_entry()));
+    assert!(
+        packaged_entry.is_file(),
+        "missing {}",
+        packaged_entry.display()
+    );
+}

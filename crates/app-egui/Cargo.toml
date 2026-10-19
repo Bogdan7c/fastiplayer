@@ -54,6 +54,8 @@ natural-sort-key.workspace = true
 playlist-state.workspace = true
 atomic-file-store.workspace = true
 desktop-integration.workspace = true
+# Чтение встроенной PNG-иконки окна (X11 `_NET_WM_ICON`).
+png.workspace = true
 url.workspace = true
 
 # Linux-v1 instance lease: O_NOFOLLOW/O_CLOEXEC, fcntl и effective uid.

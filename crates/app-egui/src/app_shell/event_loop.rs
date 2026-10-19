@@ -142,15 +142,17 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
 
         info!("Resumed: creating window");
 
-        let window_attributes = Window::default_attributes()
-            .with_title("Fastiplayer")
-            .with_inner_size(winit::dpi::PhysicalSize::new(1280, 720))
-            // Минимум выведен из реальных размеров titlebar и нижней панели, см. `window_limits`.
-            .with_min_inner_size(super::window_limits::min_inner_size())
-            .with_decorations(false)
-            // X11 требует запросить alpha-capable native window до создания WGPU surface.
-            .with_transparent(true)
-            .with_visible(true);
+        // App ID и иконка: по ним панель задач показывает лого Fastiplayer, см. `window_identity`.
+        let window_attributes =
+            super::window_identity::with_window_identity(Window::default_attributes())
+                .with_title("Fastiplayer")
+                .with_inner_size(winit::dpi::PhysicalSize::new(1280, 720))
+                // Минимум выведен из реальных размеров titlebar и нижней панели, см. `window_limits`.
+                .with_min_inner_size(super::window_limits::min_inner_size())
+                .with_decorations(false)
+                // X11 требует запросить alpha-capable native window до создания WGPU surface.
+                .with_transparent(true)
+                .with_visible(true);
 
         let window = match event_loop.create_window(window_attributes) {
             Ok(window) => Arc::new(window),

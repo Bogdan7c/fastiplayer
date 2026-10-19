@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Fastiplayer
+GenericName=Media Player
+Comment=Fast media player for local files and web streams
+Exec=fastiplayer %U
+Icon=io.github.Bogdan7c.Fastiplayer
+StartupWMClass=io.github.Bogdan7c.Fastiplayer
+Terminal=false
+Categories=AudioVideo;Video;Player;
+Keywords=video;audio;player;media;

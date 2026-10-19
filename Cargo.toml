@@ -282,7 +282,7 @@ harfrust = "0.12"
 fontdb = "0.24"
 # Двунаправленный текст (замена FriBidi из libass) для subtitle-raster, лицензия MIT OR Apache-2.0.
 unicode-bidi = "0.3"
-# Чтение PNG-эталонов libass в тестах паритета subtitle-raster (только dev-dependency), MIT OR Apache-2.0.
+# Чтение PNG: эталоны libass в тестах subtitle-raster и иконка окна app-egui, MIT OR Apache-2.0.
 png = "0.18"
 percent-encoding = "2"
 unicode-normalization = "0.1"

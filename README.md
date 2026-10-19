@@ -106,6 +106,15 @@ cargo build -p app-egui --release --locked
 ./target/release/fastiplayer /path/to/video.mp4
 ```
 
+**Add to the app menu (optional)**
+
+```bash
+scripts/install-desktop-entry.sh             # uses ./target/release/fastiplayer
+scripts/install-desktop-entry.sh --uninstall
+```
+
+This puts a `.desktop` file and icons into `~/.local/share`. On Wayland the taskbar shows the Fastiplayer logo only when this file is installed.
+
 Also install the Vulkan and VA-API drivers for your GPU (for example `vulkan-radeon`, `vulkan-intel`, or the NVIDIA driver on Arch). For web pages, install `yt-dlp`; the accepted extractor profile uses version **2026.07.04**. Direct media links do not need it.
 
 ## Good to know

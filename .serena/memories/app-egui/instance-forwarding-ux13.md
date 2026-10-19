@@ -25,7 +25,7 @@
 
 ## Ограничения
 - Пересланные не-http(s) ссылки (ftp, rtmp…) получают уведомление «не поддерживается», как при броске; первый запуск их открывает.
-- `DBusActivatable`/`.desktop` в репозитории нет; MPRIS `Raise` по-прежнему заглушка.
+- `.desktop` + иконки hicolor (белое лого с тёмным контуром, 16–512) лежат в `packaging/linux/` (2026-10-19), ставятся `scripts/install-desktop-entry.sh` в `~/.local/share` (Exec = абсолютный путь бинаря, `--uninstall`). Окно получает app_id/`WM_CLASS` = app ID и X11-иконку в `app-egui/src/app_shell/window_identity.rs` (копия 256px в `crates/app-egui/assets/`, тест сверяет с packaging). На Wayland winit 0.30 иконку не передаёт — только через `.desktop`. MPRIS `DesktopEntry` = app ID (было `fastiplayer`). `DBusActivatable` нет; MPRIS `Raise` по-прежнему заглушка.
 - Пересылка во время открытия файла → «Файл ещё открывается» (правило броска).
 
 ## Тесты

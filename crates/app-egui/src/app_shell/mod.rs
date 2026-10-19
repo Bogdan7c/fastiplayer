@@ -20,6 +20,7 @@ mod runtime_settings_flush;
 mod scale_factor;
 mod shutdown;
 mod track_memory_flush;
+mod window_identity;
 mod window_limits;
 
 #[cfg(test)]

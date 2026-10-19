@@ -195,6 +195,7 @@ dependencies = [
  "playlist-discovery",
  "playlist-io",
  "playlist-state",
+ "png",
  "pollster",
  "render-core",
  "render-wgpu-shell",
