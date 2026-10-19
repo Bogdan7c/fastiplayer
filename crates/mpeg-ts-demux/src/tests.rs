@@ -34,6 +34,8 @@ const AUDIO_PID: u16 = 0x0102;
 mod ac3_elementary;
 mod ac3_stream_recovery;
 mod cancellation_priority;
+mod duration_probe;
+mod far_seek;
 mod psi_section_assembly;
 mod seekable_playback_start;
 mod timeline_rebase;
@@ -1453,17 +1455,17 @@ fn on_demand_index_never_exceeds_configured_entry_cap() {
     )
     .expect("capped index");
 
-    let error = demuxer
+    // Индекс забит (cap 2) и цель за ним: далёкий seek ищет позицию по смещению и
+    // не расширяет индекс, поэтому cap не нарушается, а keyframe настоящий.
+    let result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::from_secs(
             8,
         )))
-        .expect_err("entry cap cannot claim uncovered target");
+        .expect("far seek does not depend on the capped index");
 
     assert_eq!(demuxer.test_index_entries(), 2);
-    assert!(matches!(
-        error.downcast_ref::<MpegTsDemuxError>(),
-        Some(MpegTsDemuxError::SeekAnchorUnavailable { .. })
-    ));
+    let landed = result.actual_position.as_duration();
+    assert!(landed <= Duration::from_secs(8), "{landed:?}");
 }
 
 #[test]

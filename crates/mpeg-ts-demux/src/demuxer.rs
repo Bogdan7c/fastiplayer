@@ -13,6 +13,7 @@ use source_core::CancellationToken;
 
 use crate::ac3_elementary::Ac3SyncState;
 use crate::continuity::{ContinuityTracker, ContinuityVerdict};
+use crate::duration_probe::ContainerDurationEstimate;
 use crate::elementary::ElementaryPacket;
 use crate::framing::{TransportPacket, TransportPacketReader, TransportReadOutcome};
 use crate::pes::{PesAssembler, PesPacket};
@@ -32,6 +33,8 @@ use crate::{MpegTsDemuxError, MpegTsDemuxOptions};
 mod audio;
 #[path = "demuxer_continuity.rs"]
 mod continuity_recovery;
+#[path = "far_seek.rs"]
+mod far_seek;
 #[path = "index.rs"]
 mod index;
 use index::{IndexContinuationState, SeekAnchor};
@@ -104,6 +107,9 @@ pub struct MpegTsDemuxer {
     index_reached_end: bool,
     index_continuation: Option<IndexContinuationState>,
     duration: Option<Duration>,
+    /// Происхождение `duration` для файла, не дочитанного до EOF при open
+    /// (`Unknown` — индекс дошёл до EOF или длительность неизвестна).
+    duration_basis: ContainerDurationEstimate,
     reached_end: bool,
 }
 
@@ -161,6 +167,7 @@ impl MpegTsDemuxer {
             index_reached_end: false,
             index_continuation: None,
             duration: None,
+            duration_basis: ContainerDurationEstimate::Unknown,
             reached_end: false,
         };
         // Начало playback-а для seekable входа: probe ниже читает PAT/PMT и первые PES,
@@ -686,15 +693,17 @@ impl Demuxer for MpegTsDemuxer {
             .get();
         self.expand_index_towards(target_units, request.mode)?;
         if !self.index_reached_end && !self.index_covers(target_units, request.mode) {
-            return Err(MpegTsDemuxError::SeekAnchorUnavailable {
-                target: request.timestamp,
-            }
-            .into());
+            // Цель за пределами индекса даже после расширения: ищем позицию по смещению.
+            return self
+                .seek_beyond_index(&request, target_units)
+                .map_err(Into::into);
         }
+        let coverage_end = self.index_coverage_end();
         let anchor = self
             .seek_index
             .iter()
             .rev()
+            .filter(|anchor| anchor.byte_offset < coverage_end)
             .filter(|anchor| request.mode != DemuxSeekMode::DecodePointBefore || anchor.decode_safe)
             .find(|anchor| anchor.timestamp_90khz <= target_units)
             .copied()
@@ -709,6 +718,17 @@ impl Demuxer for MpegTsDemuxer {
             .ok_or(MpegTsDemuxError::SeekAnchorUnavailable {
                 target: request.timestamp,
             })?;
+        Ok(self.land_on_anchor(anchor, request.timestamp)?)
+    }
+}
+
+impl MpegTsDemuxer {
+    /// Переставляет чтение на anchor: reader, parser, шкала презентации и очередь.
+    fn land_on_anchor(
+        &mut self,
+        anchor: SeekAnchor,
+        requested: Duration,
+    ) -> Result<DemuxSeekResult, MpegTsDemuxError> {
         self.reader.seek_absolute(anchor.byte_offset)?;
         self.reset_elementary_state();
         // Пакеты после anchor-а лежат в его эпохе: тот же сдвиг, что при
@@ -720,7 +740,7 @@ impl Demuxer for MpegTsDemuxer {
         let actual_timestamp =
             TrackTimestamp::new(TrackId::new(0), anchor.timestamp_90khz, mpeg_clock());
         Ok(DemuxSeekResult {
-            requested_position: MediaTime::from_duration(request.timestamp),
+            requested_position: MediaTime::from_duration(requested),
             actual_position: actual_timestamp.to_media_time(),
             actual_track_timestamp: Some(actual_timestamp),
         })

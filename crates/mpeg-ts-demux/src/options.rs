@@ -40,6 +40,15 @@ pub struct MpegTsDemuxOptions {
     pub index_entries: MpegTsLimit,
     /// Максимум TS packets одного on-demand seek scan.
     pub seek_scan_packets: MpegTsLimit,
+    /// Сколько байт с конца seekable файла читает tail-проба длительности,
+    /// когда начальный индекс не дошёл до EOF (файл больше окна `seek_scan_packets`).
+    /// Из этого хвоста берётся максимальный PTS — «точная» длительность контейнера.
+    pub tail_probe_bytes: MpegTsLimit,
+    /// Сколько байт читает один зонд бисекции далёкого seek-а в поисках PES.
+    pub far_seek_probe_bytes: MpegTsLimit,
+    /// Запас назад от цели далёкого seek-а: локальное сканирование начинается за
+    /// столько до цели, чтобы захватить keyframe не позже цели (длина GOP).
+    pub far_seek_preroll: Duration,
     /// Сколько байт AC-3 / E-AC-3 payload-а можно отбросить подряд при поиске
     /// синхронизации (битый кадр, мусор, висящие dependent-ы), прежде чем PID
     /// считается не-AC-3 (typed `Ac3SyncLost`).
@@ -127,6 +136,17 @@ impl Default for MpegTsDemuxOptions {
             index_entries: MpegTsLimit(const { NonZeroUsize::new(8_192).expect("non-zero") }),
             // Один seek не сканирует больше 32768 transport packets.
             seek_scan_packets: MpegTsLimit(const { NonZeroUsize::new(32_768).expect("non-zero") }),
+            // 2 MiB с конца файла: хватает на сотни кадров при типичных битрейтах,
+            // а чтение остаётся ограниченным (десятки миллисекунд на локальном диске).
+            tail_probe_bytes: MpegTsLimit(
+                const { NonZeroUsize::new(2 * 1024 * 1024).expect("non-zero") },
+            ),
+            // Зонд: 512 KiB хватает на PES следующего кадра даже у тяжёлых I-кадров.
+            far_seek_probe_bytes: MpegTsLimit(
+                const { NonZeroUsize::new(512 * 1024).expect("non-zero") },
+            ),
+            // GOP вещательных/камерных записей редко длиннее 2-5 с.
+            far_seek_preroll: Duration::from_secs(4),
             // 256 KiB ≈ 3 с самого плотного AC-3 (640 кбит/с) и десятки максимальных
             // syncframe-ов (≤ 4 KiB): повреждение кадра восстанавливается за один
             // кадр, а не-AC-3 payload не сканируется бесконечно.

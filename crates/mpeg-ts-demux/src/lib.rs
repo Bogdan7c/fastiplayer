@@ -9,6 +9,7 @@
 mod ac3_elementary;
 mod continuity;
 mod demuxer;
+mod duration_probe;
 mod elementary;
 mod error;
 mod factory;
@@ -18,6 +19,7 @@ mod pes;
 mod presentation_start;
 mod psi;
 mod psi_descriptors;
+mod seek_bisect;
 mod timeline_continuity;
 mod timestamps;
 mod video_assembler;

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 use media_core::{DemuxReadEvent, DemuxSeekMode, TrackInfo};
@@ -6,6 +6,10 @@ use media_core::{DemuxReadEvent, DemuxSeekMode, TrackInfo};
 use super::{AudioAccumulator, AudioTrackEvidence, MpegTsDemuxer, StreamTimestamps};
 use crate::MpegTsDemuxError;
 use crate::continuity::ContinuityTracker;
+use crate::duration_probe::{
+    ContainerDurationEstimate, HeadScanEvidence, TailScanRequest, estimate_container_duration,
+    scan_tail_max_pts,
+};
 use crate::framing::TransportReadOutcome;
 use crate::pes::PesAssembler;
 use crate::psi::{ProgramMap, ProgramMapEntry, PsiSectionAssembler, StreamKind};
@@ -24,7 +28,7 @@ pub(super) struct SeekAnchor {
 }
 
 /// Полный parser snapshot для transactional on-demand index scan.
-struct DemuxStateSnapshot {
+pub(super) struct DemuxStateSnapshot {
     pat_assembler: PsiSectionAssembler,
     pmt_assemblers: HashMap<u16, PsiSectionAssembler>,
     pat_version: Option<u8>,
@@ -168,12 +172,20 @@ impl MpegTsDemuxer {
                 }
             }
         }
-        if !reached_end {
-            self.duration = None;
-        }
+        let head_scan = self.head_scan_evidence(playback_start_offset);
+        // Позиция покрытия индекса фиксируется ДО tail-пробы: проба двигает reader.
         self.index_scan_offset = self.reader.position();
         self.index_reached_end = reached_end;
         self.index_continuation = (!reached_end).then(|| self.capture_index_continuation());
+        if !reached_end {
+            // До EOF не дошли: длительность головы не итог. Правило обновления:
+            // оценка заменяет `None`; далее `duration` только растёт (running max
+            // при воспроизведении), но не уменьшается и не «прыгает».
+            let estimate = self.estimate_duration_without_eof(head_scan)?;
+            self.duration = estimate.duration();
+            // От происхождения оценки зависит, чему верит далёкий seek (`far_seek`).
+            self.duration_basis = estimate;
+        }
         self.reader
             .restore_after_index_scan(playback_start_offset)?;
         self.reset_elementary_state();
@@ -186,7 +198,53 @@ impl MpegTsDemuxer {
         Ok(())
     }
 
-    fn snapshot_parser_state(&mut self) -> DemuxStateSnapshot {
+    /// Что видела голова скана: диапазон PTS и сколько байт она покрыла.
+    fn head_scan_evidence(&self, playback_start_offset: u64) -> HeadScanEvidence {
+        let end = self.duration.unwrap_or_default();
+        HeadScanEvidence {
+            start: self
+                .presentation_start
+                .presentation_start()
+                .unwrap_or_default()
+                .min(end),
+            end,
+            scanned_bytes: self.reader.position().saturating_sub(playback_start_offset),
+        }
+    }
+
+    /// Длительность seekable файла, не дочитанного до EOF (см. `duration_probe`).
+    ///
+    /// Читает хвост, не трогая parser state; reader после этого стоит в хвосте и
+    /// возвращается к playback вызывающим `restore_after_index_scan`. Отмена —
+    /// единственная ошибка; прочие сбои хвоста дают оценку по размеру или `None`.
+    fn estimate_duration_without_eof(
+        &mut self,
+        head_scan: HeadScanEvidence,
+    ) -> Result<ContainerDurationEstimate, MpegTsDemuxError> {
+        let content_length = self.reader.content_length();
+        let tail_end = match content_length {
+            Some(content_length) => {
+                let elementary_pids: HashSet<u16> = self.stream_by_pid.keys().copied().collect();
+                scan_tail_max_pts(
+                    &mut self.reader,
+                    content_length,
+                    TailScanRequest {
+                        elementary_pids: &elementary_pids,
+                        tail_bytes: self.options.tail_probe_bytes.get(),
+                        unwrap_reference: head_scan.end,
+                    },
+                )?
+            }
+            None => None,
+        };
+        Ok(estimate_container_duration(
+            head_scan,
+            content_length,
+            tail_end,
+        ))
+    }
+
+    pub(super) fn snapshot_parser_state(&mut self) -> DemuxStateSnapshot {
         DemuxStateSnapshot {
             pat_assembler: self.pat_assembler.clone(),
             pmt_assemblers: self.pmt_assemblers.clone(),
@@ -212,7 +270,7 @@ impl MpegTsDemuxer {
         }
     }
 
-    fn restore_parser_state(&mut self, snapshot: DemuxStateSnapshot) {
+    pub(super) fn restore_parser_state(&mut self, snapshot: DemuxStateSnapshot) {
         self.pat_assembler = snapshot.pat_assembler;
         self.pmt_assemblers = snapshot.pmt_assemblers;
         self.pat_version = snapshot.pat_version;
@@ -340,7 +398,7 @@ impl MpegTsDemuxer {
                         break;
                     }
                 }
-                if self.index_covers(target_90khz, mode)
+                if self.index_covers_within(target_90khz, mode, self.reader.position())
                     || self.seek_index.len() >= self.options.index_entries.get()
                 {
                     break;
@@ -365,18 +423,42 @@ impl MpegTsDemuxer {
         Ok(())
     }
 
+    /// Индекс покрывает цель в уже просканированной области.
     pub(super) fn index_covers(&self, target_90khz: i64, mode: DemuxSeekMode) -> bool {
-        let reached_target = self
+        self.index_covers_within(target_90khz, mode, self.index_coverage_end())
+    }
+
+    /// Верхняя граница байтовой области, о которой индекс может судить.
+    ///
+    /// Индекс — префиксное покрытие `[0, index_scan_offset)`. Anchor-ы за ней могут
+    /// появиться от воспроизведения после далёкого seek-а: они разрежены и ничего не
+    /// говорят о пропуске между покрытием и ними, поэтому в расчёт не берутся.
+    pub(super) fn index_coverage_end(&self) -> u64 {
+        if self.index_reached_end {
+            u64::MAX
+        } else {
+            self.index_scan_offset
+        }
+    }
+
+    /// Как `index_covers`, но учитывает только anchor-ы до `coverage_end`.
+    pub(super) fn index_covers_within(
+        &self,
+        target_90khz: i64,
+        mode: DemuxSeekMode,
+        coverage_end: u64,
+    ) -> bool {
+        let mut anchors = self
             .seek_index
             .iter()
-            .any(|anchor| anchor.timestamp_90khz >= target_90khz);
-        if !reached_target {
+            .filter(|anchor| anchor.byte_offset < coverage_end);
+        if !anchors
+            .clone()
+            .any(|anchor| anchor.timestamp_90khz >= target_90khz)
+        {
             return false;
         }
         mode != DemuxSeekMode::DecodePointBefore
-            || self
-                .seek_index
-                .iter()
-                .any(|anchor| anchor.decode_safe && anchor.timestamp_90khz <= target_90khz)
+            || anchors.any(|anchor| anchor.decode_safe && anchor.timestamp_90khz <= target_90khz)
     }
 }

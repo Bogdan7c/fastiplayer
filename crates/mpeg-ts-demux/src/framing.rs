@@ -138,6 +138,14 @@ impl TransportPacketReader {
         self.stream_position
     }
 
+    /// Полный размер входа в байтах, если источник его знает (для оценки длительности).
+    pub(crate) fn content_length(&self) -> Option<u64> {
+        match &self.input {
+            TransportInput::ByteSource(source) => source.content_length(),
+            _ => None,
+        }
+    }
+
     /// Проверяет random-access capability без догадок по duration.
     pub(crate) const fn is_seekable(&self) -> bool {
         self.source_seekable
