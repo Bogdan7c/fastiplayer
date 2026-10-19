@@ -203,7 +203,7 @@ symphonia = { version = "0.6", features = ["all-formats", "all-codecs", "all-met
 bytes = "1.0"
 cookie = "0.18"
 crossbeam-channel = "0.5"
-ringbuf = "0.4"
+ringbuf = "0.5"
 rand = "0.10.2"
 vp9-parser = { version = "0.1.0-alpha.1", path = "crates/vp9-parser" }
 ac3-syncframe = { version = "0.1.0-alpha.1", path = "crates/ac3-syncframe" }
