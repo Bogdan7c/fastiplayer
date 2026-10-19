@@ -521,7 +521,13 @@ impl AppState {
             .report_render_resource_previous_frame_reuse();
     }
 
-    /// Забирает worker events для shell telemetry.
+    /// Забирает агрегат tick-телеметрии worker-а (слитые tick-и с прошлого кадра).
+    #[must_use]
+    pub fn take_worker_tick_telemetry(&mut self) -> Option<player_core::PlayerTickResult> {
+        self.player_worker.take_tick_telemetry()
+    }
+
+    /// Забирает lifecycle-события worker-а.
     #[must_use]
     pub fn drain_worker_events(&mut self) -> Vec<PlayerWorkerEvent> {
         self.player_worker.drain_events()

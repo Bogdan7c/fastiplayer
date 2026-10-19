@@ -251,18 +251,13 @@ impl PlayerWorkerRuntime {
     }
 
     /// Публикует tick telemetry без блокировки worker-а.
-    fn publish_tick_result(&self, tick_result: PlayerTickResult) {
-        self.publish_worker_event(PlayerWorkerEvent::Tick(tick_result));
+    pub(super) fn publish_tick_result(&mut self, tick_result: PlayerTickResult) {
+        self.event_tx.publish_tick(tick_result);
     }
 
-    /// Публикует worker event, сбрасывая событие при переполнении receiver-а.
+    /// Публикует lifecycle-событие; при переполнении очереди пишет `warn!` (не молча).
     pub(super) fn publish_worker_event(&self, event: PlayerWorkerEvent) {
-        if let Err(error) = self.event_tx.try_send(event) {
-            match error {
-                TrySendError::Full(_) => debug!("Player worker event channel is full"),
-                TrySendError::Disconnected(_) => debug!("Player worker event receiver dropped"),
-            }
-        }
+        self.event_tx.publish_lifecycle(event);
     }
 }
 

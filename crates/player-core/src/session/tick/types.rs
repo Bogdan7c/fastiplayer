@@ -303,6 +303,11 @@ pub struct PlayerTickResult {
 
     /// `true`, если demux чтение остановилось из-за backpressure.
     pub demux_backpressured: bool,
+
+    /// Сколько записей списков выше отброшено при слиянии tick-ов в агрегат
+    /// (`PlayerTickResult::absorb`), когда UI долго не забирал телеметрию.
+    /// У tick-а прямо из session всегда `0`.
+    pub truncated_list_entries: u64,
 }
 
 impl PlayerTickPacket {

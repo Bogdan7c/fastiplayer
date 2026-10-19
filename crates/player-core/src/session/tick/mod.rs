@@ -14,6 +14,7 @@ mod audio_read_ahead;
 mod demux_admission;
 mod demux_read_failure;
 mod presentation_scheduler;
+mod result_merge;
 mod types;
 mod video_backlog_recovery_admission;
 mod video_decoder_io;

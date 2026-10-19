@@ -19,6 +19,7 @@ use super::*;
 
 mod command_loss;
 mod commands;
+mod event_streams;
 mod media_install;
 #[path = "tests/queued_intent.rs"]
 mod queued_intent;
@@ -298,7 +299,7 @@ fn runtime_for_tests_with_command_queue(
     let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
     let (command_queue, command_inbox) = worker_command_queue(command_tx.clone(), command_rx);
     let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
-    let (event_tx, _event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
+    let (event_tx, _event_rx) = event_stream::worker_event_stream();
     let (render_bridge, _render_bridge_client) = RenderLeaseBridge::new();
     let (_shutdown_tx, shutdown_rx) = bounded(1);
     let playback_intent_control = Arc::new(PlaybackIntentControl::default());
@@ -341,7 +342,7 @@ fn runtime_for_tests_with_wakeup_handles(
     let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
     let (_command_queue, command_inbox) = worker_command_queue(command_tx.clone(), command_rx);
     let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
-    let (event_tx, _event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
+    let (event_tx, _event_rx) = event_stream::worker_event_stream();
     let (render_bridge, render_bridge_client) = RenderLeaseBridge::new();
     let (shutdown_tx, shutdown_rx) = bounded(1);
     let playback_intent_control = Arc::new(PlaybackIntentControl::default());
@@ -509,7 +510,7 @@ fn worker_with_latest_handoffs_for_tests(
 ) {
     let (command_tx, _command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
     let (_snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
-    let (_event_tx, event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
+    let (_event_tx, event_rx) = event_stream::worker_event_stream();
     let (
         render_bridge_client,
         render_acquire_sample_rx,
@@ -549,7 +550,7 @@ fn worker_with_terminal_thread_for_tests(
     join_handle: JoinHandle<()>,
 ) -> PlayerWorker {
     let (_snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
-    let (_event_tx, event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
+    let (_event_tx, event_rx) = event_stream::worker_event_stream();
     let (_render_bridge, render_bridge_client) = RenderLeaseBridge::new();
     let playback_intent_control = Arc::new(PlaybackIntentControl::default());
     let (playback_intent_wake_tx, _playback_intent_wake_rx) = bounded(1);

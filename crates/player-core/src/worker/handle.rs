@@ -15,7 +15,7 @@ impl PlayerWorker {
         let playback_intent_control = Arc::new(PlaybackIntentControl::default());
         let (playback_intent_wake_tx, playback_intent_wake_rx) = bounded(1);
         let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
-        let (event_tx, event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
+        let (event_tx, event_rx) = event_stream::worker_event_stream();
         let (render_bridge, render_bridge_client) = RenderLeaseBridge::new();
         let (shutdown_tx, shutdown_rx) = bounded(1);
         let (subtitle_feed_sender, subtitle_feed_receiver) =
@@ -310,10 +310,19 @@ impl PlayerWorker {
         snapshot
     }
 
-    /// Забирает накопленные worker events без блокировки.
+    /// Забирает накопленные lifecycle-события без блокировки.
     #[must_use]
     pub fn drain_events(&self) -> Vec<PlayerWorkerEvent> {
-        self.event_rx.try_iter().collect()
+        self.event_rx.drain_lifecycle_events()
+    }
+
+    /// Забирает агрегат tick-телеметрии, накопленный с прошлого вызова.
+    ///
+    /// Tick-и, которые UI не успел забрать, слиты в один результат (счётчики
+    /// просуммированы), поэтому вызывать можно раз за кадр. `None` — новых нет.
+    #[must_use]
+    pub fn take_tick_telemetry(&self) -> Option<PlayerTickResult> {
+        self.event_rx.take_tick_telemetry()
     }
 
     /// Пытается получить текущий кадр для renderer-а без раскрытия `PlayerSession`.

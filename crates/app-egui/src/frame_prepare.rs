@@ -55,6 +55,8 @@ mod shared_frame_materialization;
 mod submit;
 #[path = "frame_prepare/telemetry_mapping.rs"]
 mod telemetry_mapping;
+#[path = "frame_prepare/tick_telemetry.rs"]
+mod tick_telemetry;
 #[path = "frame_prepare/timing.rs"]
 mod timing;
 #[path = "frame_prepare/ui_prepare.rs"]
@@ -309,16 +311,9 @@ fn record_player_tick_result(telemetry: &Telemetry, tick_result: &PlayerTickResu
     }
 }
 
-fn record_worker_events(
-    telemetry: &Telemetry,
-    app_state: &mut AppState,
-    events: Vec<PlayerWorkerEvent>,
-) {
+fn record_worker_events(app_state: &mut AppState, events: Vec<PlayerWorkerEvent>) {
     for event in events {
         match event {
-            PlayerWorkerEvent::Tick(tick_result) => {
-                record_player_tick_result(telemetry, &tick_result);
-            }
             PlayerWorkerEvent::Scrub(scrub_event) => {
                 app_state.handle_main_visual_override_scrub_event(&scrub_event);
                 app_state.handle_timeline_inline_status_scrub_event(&scrub_event);

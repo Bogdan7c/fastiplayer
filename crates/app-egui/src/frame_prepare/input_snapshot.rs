@@ -6,6 +6,7 @@ use winit::window::Window;
 
 use super::record_worker_events;
 use super::sequence::{FrameSequenceObserver, FrameSequenceStage};
+use super::tick_telemetry::record_tick_telemetry;
 use crate::state::{AppFrameContext, AppState};
 use crate::telemetry::Telemetry;
 
@@ -45,7 +46,11 @@ pub(super) fn prepare_frame_input(
     let worker_event_drain_elapsed = stage_started_at.elapsed();
 
     let stage_started_at = Instant::now();
-    record_worker_events(telemetry, app_state, worker_events);
+    record_worker_events(app_state, worker_events);
+    // Tick-телеметрия едет отдельно от lifecycle-событий (независимые состояния:
+    // телеметрия пишет только в `Telemetry`, lifecycle — только в `AppState`),
+    // поэтому порядок между ними не важен.
+    record_tick_telemetry(telemetry, app_state.take_worker_tick_telemetry());
     sequence.reached(FrameSequenceStage::WorkerEventRecord);
     if let Some(request) = app_state.take_pending_video_backend_reselection() {
         app_state.apply_video_backend_reselection(

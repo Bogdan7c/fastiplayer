@@ -32,7 +32,6 @@ fn command_ordering_for_play_pause_stop_open_shutdown_is_preserved() {
             PlayerWorkerEvent::Player(event) => Some(&event.event),
             PlayerWorkerEvent::Scrub(_) => None,
             PlayerWorkerEvent::RenderError(_) => None,
-            PlayerWorkerEvent::Tick(_) => None,
         })
         .collect::<Vec<_>>();
 

@@ -60,7 +60,9 @@ use crate::{
 };
 
 mod command_queue;
+mod event_stream;
 use command_queue::{WorkerCommandInbox, WorkerCommandQueue, worker_command_queue};
+use event_stream::{WorkerEventConsumer, WorkerEventPublisher};
 mod handle;
 mod media_install_compatibility;
 mod runtime_commands;
@@ -96,9 +98,6 @@ const MAX_COMMANDS_PER_LOOP: usize = 8;
 
 /// Ёмкость latest snapshot stream; worker публикует только актуальное состояние.
 const SNAPSHOT_CHANNEL_CAPACITY: usize = 1;
-
-/// Ёмкость event stream; переполнение не должно блокировать playback thread.
-const EVENT_CHANNEL_CAPACITY: usize = 512;
 
 /// Интервал throttled diagnostics summary в debug logs.
 const DIAGNOSTICS_SUMMARY_INTERVAL: Duration = Duration::from_secs(2);
@@ -362,7 +361,8 @@ impl fmt::Display for PlayerWorkerJoinError {
 
 impl std::error::Error for PlayerWorkerJoinError {}
 
-/// Событие worker boundary: core event или tick telemetry.
+/// Lifecycle-событие worker boundary. Tick-телеметрия едет отдельно
+/// (`PlayerWorker::take_tick_telemetry`) и с этими событиями не конкурирует.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayerWorkerEvent {
     /// Событие из `PlayerSession` с exact media-instance correlation.
@@ -373,9 +373,6 @@ pub enum PlayerWorkerEvent {
 
     /// Ошибка render bridge, полученная от shell/render thread.
     RenderError(PlayerRenderError),
-
-    /// Итог одного фонового playback tick.
-    Tick(PlayerTickResult),
 }
 
 /// Категория ошибки render bridge на границе shell -> worker.
@@ -514,8 +511,8 @@ pub struct PlayerWorker {
     /// Последний snapshot, прочитанный shell-ом.
     cached_snapshot: PlayerSnapshot,
 
-    /// Канал событий и tick telemetry.
-    event_rx: Receiver<PlayerWorkerEvent>,
+    /// Lifecycle-события и агрегат tick-телеметрии (два независимых потока).
+    event_rx: WorkerEventConsumer,
 
     /// Render-side handle для прежнего public API acquire/timing без доступа к runtime loop.
     render_bridge_client: RenderLeaseBridgeClient,
@@ -753,8 +750,8 @@ struct PlayerWorkerRuntime {
     /// Latest snapshot publisher.
     snapshot_publisher: LatestSnapshotPublisher,
 
-    /// Event stream sender.
-    event_tx: Sender<PlayerWorkerEvent>,
+    /// Публикация lifecycle-событий и tick-телеметрии.
+    event_tx: WorkerEventPublisher,
 
     /// Worker-side bridge render lease handoff/release/diagnostics.
     render_bridge: RenderLeaseBridge,
