@@ -11,6 +11,7 @@ Build: `cargo build -p app-egui --release --locked`, default features, Rust **1.
 - `fastiplayer-playback.png`: playback at 00:34 of the Sintel Trailer with the window maximized and no panels open (2026-10-11 capture, see below).
 - `fastiplayer-main.png`: the original 2026-09-06 playback screenshot, kept unchanged at the path used in the existing alpha release notes.
 - `fastiplayer-queue.png`: playback at 00:29 with the queue sidebar open, holding the Sintel Trailer and Big Buck Bunny (2026-10-11 capture, see below).
+- `fastiplayer-subtitles.png`: fullscreen Sintel with an English subtitle in the default style above the playback controls (2026-10-19 capture, see below).
 - `fastiplayer-settings.png`: video color settings during playback, with saturation deliberately raised to 2.45 to show its effect.
 
 Screenshots are **1920×1080 PNG** frames extracted from the real OBS recordings, with the recorded cursor included. The cover is extracted from the finished trailer. The player UI and movie frames are not retouched. The [demo page](../demo.md) supplies timecodes and distinguishes the demonstrated interactions from future features.
@@ -18,6 +19,14 @@ Screenshots are **1920×1080 PNG** frames extracted from the real OBS recordings
 ### 2026-10-11 screenshots
 
 `fastiplayer-playback.png` and `fastiplayer-queue.png` were re-captured on **2026-10-11** on the same computer (Linux **7.2.9-2-cachyos**) to show the current interface. Source revision [`727d5346`](https://github.com/Bogdan7c/fastiplayer/commit/727d5346f687614aaf79567ce4b14ef07af72edf), `cargo build -p app-egui --release --locked`, Rust **1.99.0**, with a separate temporary profile and telemetry hidden. The player ran in an isolated nested KWin Wayland session at 1920×1080 with VA-API hardware decoding and WGPU/Vulkan rendering; frames are KWin screenshots of that session without a cursor, losslessly recompressed. Media: the official Sintel Trailer and Big Buck Bunny, both © copyright Blender Foundation, CC BY 3.0. The UI and movie frames are not retouched.
+
+### 2026-10-19 subtitle screenshot
+
+`fastiplayer-subtitles.png` was captured on **2026-10-19** during the final acceptance of the subtitle engine (issue #1), on the same computer (Linux **7.2.10-1-cachyos**, KDE Plasma Wayland, single 1920×1080 monitor).
+- **Build:** source revision [`0c697dcf`](https://github.com/Bogdan7c/fastiplayer/commit/0c697dcf) plus the session 15 fixes committed right after it. Built with `cargo build -p app-egui --release --locked` (Rust **1.99.0**), using a separate temporary profile.
+- **Player state:** fullscreen, paused at 00:56 of a cut from the official Sintel 720p release, with the official English SubRip file next to the video. VA-API hardware decoding and WGPU/Vulkan rendering, subtitle style at its defaults, playback controls shown by a mouse move.
+- **Capture:** a spectacle full-screen capture without the cursor, losslessly recompressed. The UI, the subtitle and the movie frame are not retouched.
+- **Media:** *Sintel* © copyright Blender Foundation, CC BY 3.0. The subtitle text comes from the official Sintel subtitle files.
 
 Video is hosted on YouTube. Large recordings, film media, the DNxHR master, and the Resolve `.drp` project are kept outside Git. The previous silent 39-second MP4 is superseded by this trailer; its historical bytes remain in Git history. Existing releases and tags are unchanged.
 

@@ -44,6 +44,20 @@
 
 **Plays what you throw at it.** Drop files, folders, playlists, or links into the window. Local media, HTTP(S)/FTP(S), HLS and DASH (VOD, live, and DVR), internet radio, and — with optional `yt-dlp` — web pages.
 
+**Subtitles that just work, and look right.** Fastiplayer has its own subtitle engine, written from scratch in Rust and drawn on the GPU.
+- **Formats:** SRT and WebVTT; styled ASS/SSA rendered to match libass, with karaoke, animations, rotations and fonts packed into the MKV; Blu-ray PGS pictures.
+- **YouTube:** manual captions, automatic captions and auto-translations, plus dubbed audio languages.
+- **Streams:** subtitle tracks inside HLS and DASH.
+- **Your files:** subtitles next to the video are found automatically, and you can drop a file onto the window.
+- **Control:** press `C` to toggle them, `Z`/`X` to fix the sync, and drag them where you like right on the video.
+
+Fastiplayer remembers your choice for every video.
+
+<p align="center">
+  <img src="docs/assets/fastiplayer-subtitles.png" alt="Fastiplayer in fullscreen playing Sintel: a close-up of Sintel's face with the English subtitle “A dragon.” on a dark box above the playback controls" width="820"><br>
+  <sub>Film: <i>Sintel</i> © copyright Blender Foundation, CC BY 3.0 · <a href="docs/subtitles/compatibility.md">subtitle compatibility matrix</a> · <a href="docs/subtitles/user-guide.md">subtitle guide</a></sub>
+</p>
+
 **A queue that remembers.** M3U/M3U8, XSPF, and CUE playlists, import and export, and playback resumes where you stopped.
 
 ## What works today
@@ -56,12 +70,13 @@
 - **Playback:** local video and audio, seeking, audio/video stream selection, pitch-preserving speed, live scrubbing.
 - **Hardware decoding:** VA-API where the GPU and driver support it, FFmpeg software decoding otherwise; WGPU/Vulkan rendering; HDR-to-SDR tone mapping, including AV1 10-bit.
 - **Network:** progressive HTTP(S)/FTP(S), HLS and DASH VOD/live/DVR, audio-only HLS radio, static Smooth Streaming and HDS; web pages through optional system `yt-dlp`.
+- **Subtitles:** a native Rust engine with its own GPU pass. It plays SRT, WebVTT, ASS/SSA (libass-parity rendering, fonts attached to MKV), PGS and MP4 `mov_text`, YouTube manual and automatic captions, and HLS/DASH text tracks. Files next to the video are found automatically, and you can drop a file onto the window. A CC button, hotkeys and on-video appearance editing are included, and track and delay choices are remembered per video. See the [subtitle matrix](docs/subtitles/compatibility.md) and [user guide](docs/subtitles/user-guide.md).
 - **Drag-and-drop and "Open with":** drop on the panel to append to the queue, drop on the video to start a new queue; opening a file while the player runs hands it to the existing window.
 - **Queue:** playlist import/export (including legacy Windows-1251 `.m3u`/`.cue`), position restore, broken items skipped with a clear reason.
 - **Control:** mouse-wheel and arrow-key volume, speed hotkeys, Ctrl+O, timeline time hints; volume and mute are remembered.
 - **Runtime settings** with live preview and Apply/rollback.
 
-Exact supported containers, codecs, and protocols are listed in the [compatibility matrix](docs/web-media-compatibility-matrix.md).
+Exact supported containers, codecs, and protocols are listed in the [compatibility matrix](docs/web-media-compatibility-matrix.md). Subtitle formats and sources have their own [subtitle compatibility matrix](docs/subtitles/compatibility.md).
 
 ## Try it
 
@@ -97,7 +112,8 @@ Also install the Vulkan and VA-API drivers for your GPU (for example `vulkan-rad
 
 - **Linux only for now.** Windows is on the roadmap before 1.0; macOS may come later, without a promise.
 - **Vulkan is required**, even for software decoding. Hardware decoding depends on your GPU, driver, and codec.
-- **No subtitles yet** — they are the very next milestone. Native HDR output is not implemented; HDR is tone-mapped to SDR.
+- **Subtitles are in `main`, not in the `v0.1.0-alpha.1` release.** Some formats are not supported, among them VobSub, DVB and `.sup` files; the [subtitle matrix](docs/subtitles/compatibility.md#known-limitations-summary) lists the limits.
+- **Native HDR output is not implemented;** HDR is tone-mapped to SDR.
 - **The interface is unfinished** and partly in Russian. A full redesign and translations are planned.
 - **Not supported:** DRM, RTSP/RTP/MMS, RTMP. Web-page playback depends on `yt-dlp` and the site.
 
@@ -107,8 +123,8 @@ The [compatibility matrix](docs/web-media-compatibility-matrix.md) and [known li
 
 The order is fixed in [milestone 1.0](https://github.com/Bogdan7c/fastiplayer/milestone/1). These are planned, not shipped:
 
-1. [Native Rust subtitle engine](https://github.com/Bogdan7c/fastiplayer/issues/1) with a published text/styled/bitmap format matrix — **next up**.
-2. [Browser media handoff bridge and extension](https://github.com/Bogdan7c/fastiplayer/issues/2).
+1. ~~[Native Rust subtitle engine](https://github.com/Bogdan7c/fastiplayer/issues/1) with a published text/styled/bitmap format matrix~~ — **done** in `main` after `v0.1.0-alpha.1` (planned for 0.2.0); see the [subtitle matrix](docs/subtitles/compatibility.md).
+2. [Browser media handoff bridge and extension](https://github.com/Bogdan7c/fastiplayer/issues/2) — **next up**.
 3. [Cohesive application redesign](https://github.com/Bogdan7c/fastiplayer/issues/3), including new settings.
 4. [Fully configurable colors and appearance](https://github.com/Bogdan7c/fastiplayer/issues/4).
 5. [Localization and first translations](https://github.com/Bogdan7c/fastiplayer/issues/5).

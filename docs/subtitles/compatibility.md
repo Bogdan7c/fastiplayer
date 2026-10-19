@@ -1,10 +1,74 @@
-# Fastiplayer: subtitle compatibility matrix (draft)
+# Fastiplayer: subtitle compatibility matrix
 
-Status: **draft**, updated by each session of the subtitles plan (`user/subtitles/`). Final version — session 15.
+**Version 0.2.0** (not released yet: in `main` after `v0.1.0-alpha.1`). This matrix closes [issue #1](https://github.com/Bogdan7c/fastiplayer/issues/1) and the public plan [`user/subtitles/`](../../user/subtitles/README.md) (sessions 01–15, final acceptance 19 October 2026). Later changes update this file and name the version they ship in.
 
-Legend: **Full** — format features are parsed into the model; **Partial** — parsed with the listed gaps; **Planned** — scheduled in a later session; **Backlog** — not planned yet.
+Legend:
+- **Supported** — works end to end in the player. It is backed by automated tests: pixels read back after the GPU pass where the feature is visible, or parser and model tests for timing and markup. Many rows also have a dated manual acceptance in `user/subtitles/results/NN.md`.
+- **Partial** — works with the gaps listed in its section.
+- **Not supported** — known and refused safely: the track is listed greyed out with a reason, or the file is rejected with a message. Video keeps playing.
+- **Backlog** — not planned yet.
+- **Full** in the parser sections — every feature of that row is parsed into the model.
 
-Session 01 delivers parsing only (crates `subtitle-core`, `subtitle-formats`). Nothing is shown on screen until session 03.
+This matrix does not promise every historical subtitle format. A format or feature that is not listed here is not supported.
+
+User guide (CC button, menus, hotkeys, edit mode, files next to the video): [user-guide.md](user-guide.md).
+
+## Summary: formats and sources
+
+| Format | File next to the video / dropped / "Load file…" | Inside MKV | Inside MP4 | YouTube (yt-dlp) | HLS | DASH (native) |
+|---|---|---|---|---|---|---|
+| SubRip (SRT) | Supported (`.srt`) | Supported | — | — | — | — |
+| WebVTT | Partial (`.vtt`, see "WebVTT") | Supported (text and markup only, no positioning) | — | Supported (fallback when srv3 is missing) | Supported (VOD and live) | Supported (sidecar file and fMP4 `wvtt`) |
+| ASS / SSA | Supported (`.ass`, `.ssa`) | Supported, with attached fonts | — | — | — | — |
+| mov_text (`tx3g`) | — | — | Supported | — | — | — |
+| PGS (Blu-ray pictures) | Not supported (`.sup`) | Supported | — | — | — | — |
+| YouTube srv3 | Not searched for | — | — | Supported (manual, auto, auto-translated) | — | — |
+| TTML / IMSC 1.1 Text | Not searched for | — | — | — | — | Supported (sidecar file and fMP4 `stpp`) |
+| VobSub, DVB, other picture codecs | Not supported | Not supported (greyed out) | Not supported | — | — | — |
+| MicroDVD, SAMI, SubViewer, LRC and other legacy text formats | Not supported | — | — | — | — | — |
+
+Subtitle tracks inside MPEG-TS, M2TS and FLV files are not read (backlog). DASH manifests produced by yt-dlp carry no text sets, so a YouTube video shows its yt-dlp tracks instead.
+
+## Summary: behaviour by kind of track
+
+| Capability | Simple text (SRT, WebVTT, mov_text, srv3, TTML) | ASS / SSA | PGS |
+|---|---|---|---|
+| Shown at the time of the frame actually drawn; pause keeps it; seek and new video leave no stale cue | Supported | Supported | Supported |
+| Track switch during playback | Supported (embedded: instant from the cache; files, web and stream tracks: loaded on selection) | Supported | Supported |
+| Sync offset (`Z` / `X`, menu) and per-video memory of track and offset | Supported | Supported | Supported |
+| Auto-selection by preferred languages; forced tracks shown with CC off | Supported | Supported | Supported (also forced pictures inside a normal track) |
+| User style (colours, box / outline, size, position) | Supported | Scale and vertical lift only; "Force my style" replaces the author's look | Not applied (author pictures) |
+| On the black bars below the picture | Allowed | Never | Never |
+| Lift above the control panel | Supported | Main lines only (setting `ass_position_mode`) | Pictures in the lower half only |
+| Broken input | Bad cues skipped and counted; a file with no cue is "unavailable" with a reason | Bad lines skipped; an oversized header falls back to plain text | Broken segments skipped and counted |
+
+## How support is verified (issue #1 acceptance criteria)
+
+**1. Supported fixtures are drawn at the right time, including seek and track changes.** GPU read-back tests in `crates/app-egui/src/state/subtitles/tests/` render the real overlay pass and read the frame back:
+- files next to the video: `gpu_chain.rs` (`subtitle_file_next_to_the_video_reaches_the_bottom_of_the_picture_and_only_while_the_cue_lasts`, on/off toggling);
+- embedded SRT, track switch, mov_text, attached fonts: `embedded_gpu.rs` (`switching_the_track_during_playback_changes_the_rendered_text_from_cache`, `mp4_mov_text_cue_reaches_the_gpu_frame`);
+- ASS: `ass_layer1_gpu.rs`, `ass_animation_gpu.rs`, `ass_karaoke_gpu.rs`, `ass_layer3_gpu.rs`, `ass_position_lift_gpu.rs`;
+- PGS with seek back from the cache: `embedded_pgs_gpu.rs`, `embedded_pgs_placement_gpu.rs`;
+- YouTube download and word-by-word captions: `web_gpu.rs`, `word_reveal_gpu.rs`;
+- HLS and DASH opened for real: `stream_hls_vertical.rs`, `stream_dash_gpu.rs`, `stream_gpu.rs`.
+
+Seek and frame timing of text tracks are also checked at the overlay level: `presentation.rs::seek_past_the_cue_hides_it_on_the_very_first_frame_and_seeking_back_restores_it`. Every source was also checked live; the final pass is in `user/subtitles/results/15.md`.
+
+**2. Styled and picture references have a reproducible visual check; broken input fails safely.**
+- ASS and styled text are compared with **libass 0.17.5** reference PNGs: 187 cases and 327 images in `crates/subtitle-raster/tests/fixtures/libass/`, tests in `crates/subtitle-raster/src/libass_parity/`. Drawings and strokes must match exactly; events and text match within per-case measured tolerances, with at most 1 % of the area differing.
+- The references are regenerated by `scripts/subtitle-reference/generate.py`. It needs a system libass, but neither the build nor CI does.
+- PGS pictures are checked pixel by pixel on synthetic streams (`crates/subtitle-pgs/src/decoder/tests.rs`) and on the GPU (`embedded_pgs_gpu.rs`).
+- Broken input: malformed SRT / WebVTT / ASS / srv3 / TTML / PGS, size and count limits, broken and oversized fonts and absurd ASS values give typed errors or skip-and-count, never a panic. Tests are in `crates/subtitle-formats/tests/`, `crates/subtitle-pgs/src/`, `crates/subtitle-raster/src/renderer/tests/{ass_robustness,limits,font_fallback}.rs` and `crates/subtitle-raster/tests/fonts_library.rs`.
+- A subtitle failure never stops video. This is checked in `crates/player-core/src/session/tests/subtitle_feed.rs` (full queue, receiver gone) and in the app owner tests (`sidecar_job.rs`, `stream_tracks.rs`, `web_tracks.rs`). DASH has an extra test proving a text 404 never reaches video recovery: `crates/web-media-dash/src/text/isolation_tests.rs`.
+
+**3. Published matrix and limits.** This file. Known limits are listed in each section and collected in "Known limitations (summary)" at the end. Subtitle crates stay independent of the GPU and UI: `scripts/check-refactor-guardrails.py` allows `subtitle-core`, `subtitle-formats`, `subtitle-pgs`, `subtitle-raster` and `subtitle-sidecar` only their listed dependencies (no wgpu, egui, winit or `render-*`).
+
+Not covered by a dedicated automated test, so stated with care below:
+- legacy encodings other than Windows-1251;
+- Indic shaping against libass;
+- the effect of TTML `seq` / `timeBase` counting;
+- a device node dropped as subtitles (FIFO and directory are tested);
+- moving the window between monitors with different scales (one-monitor rig).
 
 ## Formats
 
@@ -26,21 +90,21 @@ Session 01 delivers parsing only (crates `subtitle-core`, `subtitle-formats`). N
 
 ## Rendering (crate `subtitle-raster`, session 02)
 
-Pure-Rust rasterizer, a port of libass 0.17.5 behaviour (ISC). Output: a list of 8-bit coverage masks with one colour each (like libass `ASS_Image`). Not on screen yet; the GPU pass is session 03.
+Pure-Rust rasterizer, a port of libass 0.17.5 behaviour (ISC). Output: a list of 8-bit coverage masks with one colour each (like libass `ASS_Image`), plus RGBA pictures for PGS (session 11). Any renderer can draw them; the wgpu pass is described in "On screen".
 
 | Feature | Status |
 |---|---|
 | Glyph rasterizer, border stroker, shadow (libass port) | Full — bit-exact with libass on vector drawings |
 | Plain text with the default style (Latin, Cyrillic, two lines, smart wrap, BorderStyle 1/3/4) | Partial — near pixel-exact with libass (a few to ~100 pixels differ per 720p frame due to FreeType vs skrifa outline rounding) |
-| Right-to-left text (Arabic, Hebrew), complex shaping (Indic) | Partial — `unicode-bidi` + `harfrust`; Arabic differs from libass by ~1 px on some glyphs (autohinter advance rounding) |
+| Right-to-left text (Arabic, Hebrew), complex shaping (Indic) | Partial — `unicode-bidi` + `harfrust`. Arabic is compared with a libass reference and differs by ~1 px on some glyphs (autohinter advance rounding). Indic scripts are shaped by the same engine, but no libass reference compares them yet |
 | Built-in fonts | Noto Sans Regular/Bold (Latin, Greek, Cyrillic) + Regular for Arabic, Hebrew, Devanagari, Bengali, Tamil, Telugu, Kannada, Malayalam, Gujarati, Gurmukhi, Thai, Lao, Georgian, Armenian, Ethiopic, Khmer, Myanmar, Sinhala, symbols (~3.3 MiB, OFL-1.1) |
 | CJK, emoji | from system fonts only; missing glyphs are drawn as `.notdef` and counted. The system fallback face is ranked like fontconfig: slant, language, nearest weight. The regional CJK variant (JP/SC/TC/HK/KR) follows the track language, otherwise the system language |
-| First CJK cue | ~12–14 ms once per run (loading a ~20 MB system font); background warm-up — session 14 |
+| First CJK cue | The needed system faces are loaded in the background while the render thread is idle (session 14), so the first cue does not wait for a ~20 MB font file. The cost of that load (~12–14 ms) was measured with `crates/subtitle-raster/examples/measure_render_time.rs`; no test asserts the time |
 | Fonts attached to MKV | Supported (session 06): prepared off the UI thread, installed per video, removed when the video changes |
 | User styles | "YouTube-like" (white text on a rounded 75% dark box per line) and "outline + shadow" |
 | WebVTT placement | `line`, `position`, `size`, `align`, `\anN` anchors; regions and vertical text are drawn horizontally |
 | Underline / strikethrough, synthetic bold / italic | Full (session 08) — also for SRT / WebVTT: a face without a real italic / bold is slanted / emboldened like libass |
-| Span background | not yet (later sessions / backlog) |
+| Span background (WebVTT `background`, srv3 `bc`, TTML `backgroundColor`) | Not supported (backlog): parsed into the model, drawn without the per-span box; the user style box still applies |
 | Line breaks in CJK text without spaces | Simple formats (SRT, WebVTT, srv3, TTML, mov_text, web) wrap between CJK characters with kinsoku rules (no line starts with closing punctuation, small kana or the long-vowel mark; no line ends with an opening bracket; combining marks stay attached). ASS keeps libass behaviour: breaks only after spaces, so a long CJK line without spaces stays one line |
 | ASS layer-1 override tags | Supported (session 08, see below) |
 | ASS layer-2 tags: rotations, shear, 3D, `\org`, `\move`, `\fad` / `\fade` | Supported (session 09, see below) |
@@ -53,7 +117,7 @@ Pure-Rust rasterizer, a port of libass 0.17.5 behaviour (ISC). Output: a list of
 |---|---|
 | GPU pass between video and UI (menus and buttons always on top) | Full (wgpu); one draw per frame, texture upload only when the cue set, picture size or style changes |
 | Timing | by the pts of the frame actually drawn; pause keeps the cue, seek drops it on the first new frame, cues of the previous file never appear |
-| Placement | bottom of the picture area (never on the letterbox bars yet — bars and lifting above the controls: session 05) |
+| Placement | bottom of the picture area by default; position, the black bars and lifting above the controls: see "Appearance and position (session 05)" |
 | Track choice | automatic by preferred languages, or from the CC menu (session 04, see below) |
 | Files with a non-zero container start time (MPEG-TS) | supported for subtitle files beside the video and dropped files of a local MPEG-TS: they count from 0 (like ffmpeg and mpv), so the demuxer publishes the container start (earliest PTS of the first recording) and the file times are shifted by it. Embedded tracks (same timeline as the video), HLS/DASH stream tracks and web tracks are not shifted. The player position shown in the UI is still the raw container time; M2TS (192-byte) is not supported by the demuxer at all |
 
@@ -68,7 +132,8 @@ Video `Movie.mkv`. Searched in the video folder, in `Subs`/`Sub`/`Subtitles`/`Su
 | `Subs/Movie.en.srt`, `Subtitles/Movie.vtt` | yes | from the suffix |
 | `Subs/Movie/2_English.srt` (any name inside a folder named after the video) | yes | from the name |
 | `Other.srt`, `Movie2.srt`, `Extras/Movie.srt`, `Subs/Other/x.srt` | no | — |
-| `.ass` / `.ssa` | yes, shown (session 08; the file's PlayRes, styles and layer-1 and layer-2 tags are used) | from the suffix |
+| `.ass` / `.ssa` | yes, shown with the file's PlayRes, styles and all supported tags (sessions 08–10) | from the suffix |
+| `.sup`, `.idx` / `.sub`, `.srv3`, `.ttml`, other extensions | not searched for | — |
 | Non-UTF-8 file names | yes, paths are kept byte-exact | — |
 
 ## Controls (session 04)
@@ -82,7 +147,7 @@ Video `Movie.mkv`. Searched in the video folder, in `Subs`/`Sub`/`Subtitles`/`Su
 | Remembered | whether subtitles are on (config `subtitles.enabled`); per-video track, Off and delay: see "Audio tracks and per-video memory (session 07)" |
 | Drop a subtitle file on the window | attaches to the current video (local or web) and shows it; the queue is not changed. Nothing playing → "Open a video first, then add subtitles." Video + subtitle file dropped together → attached to that video; dropped on the playlist panel → not attached (notification) |
 | Language from a dropped / loaded file name | `Movie.ru.srt`, `sintel_ru.srt`, `Movie English.srt`, `Movie [Forced].srt`; only known languages (no video name to compare with, so `The_Big_Lie.srt` is not "lie") |
-| Settings | Settings → `subtitles`: show subtitles, preferred languages, style (box / outline, size, colors, box opacity), resource limits (config schema v15) |
+| Settings | Settings → `subtitles`: show subtitles, preferred languages, style (box / outline, size, colors, box opacity), resource limits (config schema v23 since session 13; the full list of keys is in the [user guide](user-guide.md#settings)) |
 
 ## Appearance and position (session 05)
 
@@ -104,7 +169,7 @@ Video `Movie.mkv`. Searched in the video folder, in `Subs`/`Sub`/`Subtitles`/`Su
 | UTF-8 with or without BOM | exact |
 | UTF-16 LE/BE with BOM | exact |
 | UTF-16 LE/BE without BOM | detected when the text contains Latin/ASCII (timings always do); pure non-ASCII UTF-16 without BOM is not detected |
-| Legacy 8-bit (Windows-1251, KOI8-R, Windows-1250, Greek, CJK, …) | statistical guess (`chardetng`) with a Cyrillic preference hint; the result is reported so the UI can say "read as …" |
+| Legacy 8-bit (Windows-1251, KOI8-R, Windows-1250, Greek, CJK, …) | statistical guess (`chardetng`) with a Cyrillic preference hint; the result is recorded in the parse report (the UI does not show it yet). Windows-1251 and Windows-1256 (Arabic) are covered by tests or live checks; the other encodings rely on `chardetng` without dedicated tests. Very short files can be guessed wrong (see "Known limitations (session 14)") |
 
 ## SubRip (`.srt`) — Partial
 
@@ -242,7 +307,7 @@ Placement: events with `\pos`, `\move`, `\org`, rotation, shear or a Banner / Sc
 - Vertical text `\fn@Font` is not supported.
 - Collision memory (stacking of simultaneous lines) is kept only for the cues active on the current frame, and it is reset at every new seek / scrub target (session 14), so the stacking at a target does not depend on where you jumped from. libass keeps that memory across any frames; during continuous playback both behave the same.
 - Glyph storage size equals the display size (no separate `LayoutRes`-based storage scaling beyond the script header).
-- A vector clip whose mask would be larger than the maximum canvas side is ignored (the cue is drawn unclipped) and counted in the render statistics.
+- A vector clip with coordinates outside the range libass accepts is invalid: like libass, it is not applied (the cue is drawn unclipped) and it is counted in the render statistics. A valid clip larger than the maximum canvas side still clips the visible part.
 - "Force my style" (`ass_force_user_style` on) hides author drawings (`\p`) and ignores author blur (`\blur`, `\be`). This is an owner decision (17.10.2026): drawings and blur are part of the author's geometry and look, which the user style replaces. Letters and the rest of the cue are drawn as before.
 - Drawings are drawn in a style with `Fontsize: 0` (the font size is irrelevant for them, as in libass). Letters in such a style are not drawn, while libass draws them at a size chosen by FreeType for a zero request (about unitsPerEm / 64 pixels); this difference is known and not ported.
 - A vector clip mask is re-rasterized for every new animation key of the cue (the mask is part of the cached cue) and does not use the glyph caches. Letter outlines, borders, letter masks and merged run masks of animated scenes are cached across frames (see "Glyph caches" above), as in libass.
@@ -349,12 +414,12 @@ Text `AdaptationSet`s of a native DASH MPD (`.mpd` opened without yt-dlp) appear
 | File content vs extension | SRT / WebVTT / ASS are recognised by content; the extension is the fallback (an ASS file named `.srt` works) |
 | A file without any cue | The track is unavailable with "No subtitles could be read from this file." |
 | A dropped / "Load file…" file that fails | One notification with the file name (no folder) and the reason: cannot be opened, too large, or nothing could be read. Files found automatically next to the video only show the grey hint in the CC menu |
-| FIFO, device or directory dropped as subtitles | Rejected before reading ("could not be opened"); loading and app exit never hang |
+| FIFO, directory or another non-regular file dropped as subtitles | Rejected before reading with "… is not a regular file, so it can't be used as subtitles."; loading and app exit never hang. A FIFO next to the video is not offered as a track. Tests cover FIFO and directory; a device node goes through the same file-type check |
 | CJK text without spaces | Simple formats (SRT, WebVTT, srv3, TTML, mov_text, web) break lines between CJK characters with kinsoku rules; ASS keeps the libass behaviour (breaks only after spaces) |
 | First CJK cue with a system font | The needed system font faces are prepared in the background while the render thread is idle, once per shown track |
 | Network outage on HLS / DASH subtitles | Failed segments are retried with a growing pause within `network.reconnect_wait_ms`; only an outage longer than that makes the track unavailable (one notification) |
 | MPEG-TS with a non-zero start (typical 1.4 s) | Subtitle files next to a local TS (and dropped files) are shifted by the container start, so they count from 0 as in ffmpeg / mpv. Embedded, stream and web tracks are not shifted; the user sync offset is applied on top and is not affected |
-| Display scale change / moving between monitors | The interface keeps the monitor scale (previously 150 % became 225 %) |
+| Display scale change | The interface keeps the monitor scale (previously 150 % became 225 %); checked live by changing the KDE scale. Moving the window between monitors with different scales was not checked (one-monitor rig) |
 
 ### Known limitations (session 14)
 
@@ -367,3 +432,30 @@ Text `AdaptationSet`s of a native DASH MPD (`.mpd` opened without yt-dlp) appear
 - When a video and a subtitle file are dropped together in one gesture, a failing subtitle file only shows the grey hint in the menu (no notification).
 - Simple subtitles of a vertical video stay within the picture width (they may use the top / bottom bars, not the side bars) — owner decision.
 
+## Known limitations (summary)
+
+The sections above give the details. This list collects the limits a viewer is most likely to notice in 0.2.0.
+
+- **Formats:** VobSub, DVB, `.sup` files, subtitles inside MPEG-TS / M2TS / FLV, and legacy text formats (MicroDVD, SAMI, SubViewer) are not supported. TTML1 (TTAF namespace) and the IMSC image profile are not supported either.
+- **Look:**
+  - per-span backgrounds are not drawn;
+  - colour emoji are drawn as a monochrome outline;
+  - WebVTT `vertical`, TTML vertical writing and ASS `\fn@Font` are drawn horizontally;
+  - ASS `Fontsize: 0` letters are not drawn (libass draws them tiny).
+- **Text:**
+  - encodings of very short legacy files can be guessed wrong, and there is no manual encoding choice yet;
+  - negative SRT / WebVTT times drop the cue;
+  - Thai and Khmer without spaces do not wrap.
+- **Timing:**
+  - an embedded cue without a duration is shown for `embedded_cue_max_open_duration_ms`;
+  - after a forward seek, an embedded cue that started earlier appears once the demuxer reaches its packet (like mpv);
+  - the player position of an MPEG-TS file is the raw container time.
+- **Tracks:**
+  - an ASS track that appears later through `TracksChanged` has no style header and is drawn as plain text;
+  - the same web video opened through a different kind of link has separate per-video memory.
+- **Streams:**
+  - no automatic retry after a stream track is reported unavailable;
+  - DASH `wvtt` `ctim`, non-fragmented MP4 text and protected text sets are not supported.
+- **Resources:** the GPU subtitle atlas only grows within one video; the cue cache and the ASS layer cache count shared memory twice, so `render_cache_mb` evicts earlier than it could.
+
+Bugs and wishes: [issue tracker](https://github.com/Bogdan7c/fastiplayer/issues) with the `area/subtitles` label.

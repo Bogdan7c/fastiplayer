@@ -42,7 +42,7 @@ This foundation could eventually support other multimedia applications, includin
 
 The [ordered roadmap](../README.md#roadmap-to-10) and [GitHub milestone](https://github.com/Bogdan7c/fastiplayer/milestone/1) keep the agreed sequence:
 
-1. Native Rust subtitles with a published format compatibility matrix.
+1. Native Rust subtitles with a published format compatibility matrix — done in `main` after `v0.1.0-alpha.1` (planned for 0.2.0); see the [subtitle matrix](subtitles/compatibility.md).
 2. Browser media handoff and an extension.
 3. Cohesive application redesign, including settings.
 4. Configurable application colors and appearance.
@@ -51,7 +51,7 @@ The [ordered roadmap](../README.md#roadmap-to-10) and [GitHub milestone](https:/
 7. Drag-and-drop for local files and URLs — done in `main` after `v0.1.0-alpha.1`.
 8. Native Windows application support.
 
-These are planned capabilities. They do not imply that subtitles, browser integration, or Windows support already ship in the alpha.
+Items not marked done are planned capabilities. They do not imply that browser integration or Windows support already ship. Subtitles and drag-and-drop are in `main`, but not in the `v0.1.0-alpha.1` release.
 
 ## Beyond the current roadmap
 

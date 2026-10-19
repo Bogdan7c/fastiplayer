@@ -46,6 +46,8 @@ Start with the English [project overview and build instructions](../README.md) a
 | Document | Language | Purpose |
 | --- | --- | --- |
 | [Web-media compatibility matrix](web-media-compatibility-matrix.md) | RU | Accepted protocols, containers/codecs and exclusions |
+| [Subtitle compatibility matrix](subtitles/compatibility.md) | EN | Subtitle formats × sources × features, evidence and known limits (issue #1) |
+| [Subtitle user guide](subtitles/user-guide.md) | EN | CC button, menus, hotkeys, edit mode, files next to the video, settings |
 | [Operational errors](web-media-operational-errors.md) | EN/RU | Typed failures and safe recovery actions |
 | [Progressive/web S27](progressive-web-s27.md) | RU | Historical ownership/hardening evidence; newer native ingress is covered by N15 |
 | [Classic ISO BMFF S28A1](iso-bmff-s28a1.md) | RU | MP4/M4A/MOV/3GP scope and proof |

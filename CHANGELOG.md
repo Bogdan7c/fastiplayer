@@ -4,8 +4,17 @@ Notable project changes are recorded here in a Keep a Changelog-like structure. 
 
 ## [Unreleased]
 
+Planned as 0.2.0.
+
 ### Added
 
+- Native Rust subtitle engine (roadmap item 1, [issue #1](https://github.com/Bogdan7c/fastiplayer/issues/1)) drawn by its own GPU pass between the video and the interface. Its exact limits are in the [subtitle compatibility matrix](docs/subtitles/compatibility.md).
+  - Formats: SRT, WebVTT, ASS/SSA (a port of libass 0.17.5 behaviour, checked against libass reference images), PGS inside MKV, MP4 `mov_text`, YouTube srv3, TTML/IMSC.
+  - Sources: files next to the video, dropped and loaded files, embedded MKV/MP4 tracks with attached fonts, YouTube manual / automatic / auto-translated captions through yt-dlp, HLS WebVTT and DASH text tracks.
+  - Controls: CC button and menu, an audio-track menu, hotkeys `C` / `V` / `Z` / `X` / `B`, auto-selection by preferred languages with forced tracks, sync delay.
+  - Look: on-video appearance editing; subtitles rise above the control panel.
+  - Memory: track, Off and delay choices are remembered per video. See the [user guide](docs/subtitles/user-guide.md).
+- YouTube videos with dubbed audio list their audio languages in the audio menu.
 - Drag-and-drop of files, folders, playlists, and links on Wayland and X11 (roadmap item 7), backed by an additive [winit patch](docs/dependency-patches.toml).
 - Opening a file while Fastiplayer is running forwards it to the existing window over D-Bus instead of refusing to start.
 - Volume from the mouse wheel and arrow keys, playback-speed hotkeys, Ctrl+O, a timeline time hint; volume and mute persist between launches.
@@ -24,6 +33,8 @@ Notable project changes are recorded here in a Keep a Changelog-like structure. 
 
 ### Fixed
 
+- MP4 and fragmented MP4 (local files, HLS fMP4, DASH) honour the common ISO BMFF edit lists written by ffmpeg: a leading empty edit (audio that starts later) and a start shift (B-frame video). Audio no longer runs up to ~0.3 s ahead of the picture on such files.
+- Native DASH opens static MPDs whose audio timeline starts slightly after the Period start or ends slightly after it (typical `ffmpeg -f dash` output); it used to fail with an internal "component selection shape" error. DASH streams that offer only video or only audio no longer fail the same way.
 - Settings Apply that rebuilds media no longer freezes the window.
 - Stop during source preparation cancels opening quietly, without an error.
 - Pausing before the first frame shows a poster frame instead of a black screen.
