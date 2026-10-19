@@ -28,6 +28,8 @@ use component_variants::WebMediaComponentVariantConfiguration;
 #[cfg(test)]
 mod component_variants_equivalent_video_tests;
 #[cfg(test)]
+mod component_variants_single_axis_tests;
+#[cfg(test)]
 mod component_variants_tests;
 
 /// Поколение extraction snapshot-а без candidate format identity.

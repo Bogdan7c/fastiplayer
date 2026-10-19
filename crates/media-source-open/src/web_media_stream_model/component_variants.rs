@@ -18,11 +18,13 @@ use super::{WebMediaStreamConfiguration, WebMediaStreamGeneration, known_codec};
 
 mod coupled;
 mod equivalent_video;
+mod single_axis;
 
 use coupled::coupled_axis;
 pub use coupled::{
     WebMediaCoupledComponentVariantAxis, WebMediaCoupledComponentVariantPresentation,
 };
+use single_axis::{audio_only_pool, video_only_pool};
 
 /// Конфигурация component variants, принадлежащая exact Installed web-media source.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -486,15 +488,36 @@ impl InstalledWebMediaComponentVariants {
     ) -> Result<ComponentVariantSelection, ComponentVariantActionError> {
         match axis {
             WebMediaComponentVariantAxisKind::Video => {
-                let variants = self
-                    .catalog
-                    .required_video_variants()
-                    .map_err(ComponentVariantActionError::ReplacementFailed)?;
+                // Индекс из sidebar считается в том пуле, который показан: при одноосевом
+                // выборе это отфильтрованный `video_only` (см. `single_axis`).
+                let variants = match &self.selection {
+                    ComponentVariantSelection::VideoOnly { .. } => video_only_pool(&self.catalog),
+                    _ => self
+                        .catalog
+                        .required_video_variants()
+                        .map(|variants| variants.iter().collect()),
+                }
+                .map_err(ComponentVariantActionError::ReplacementFailed)?;
                 self.selection
                     .replace_video(&self.catalog, variants[variant_index].exact_identity())
                     .map_err(ComponentVariantActionError::ReplacementFailed)
             }
             WebMediaComponentVariantAxisKind::Audio => {
+                if matches!(self.selection, ComponentVariantSelection::AudioOnly { .. }) {
+                    // Одноосевой audio: индекс в пуле `audio_only`, видео нет и сохранять нечего.
+                    let pool = audio_only_pool(&self.catalog)
+                        .map_err(ComponentVariantActionError::ReplacementFailed)?;
+                    let requested = pool
+                        .get(variant_index)
+                        .ok_or(ComponentVariantActionError::ReplacementFailed(
+                            ComponentVariantError::LayoutMismatch,
+                        ))?
+                        .exact_identity();
+                    return self
+                        .selection
+                        .replace_audio(&self.catalog, requested)
+                        .map_err(ComponentVariantActionError::ReplacementFailed);
+                }
                 let variants = self
                     .catalog
                     .required_audio_variants()
@@ -578,29 +601,39 @@ fn build_presentation(
         ) => Ok(
             WebMediaInstalledComponentVariantPresentation::VideoAndAudio {
                 catalog_generation,
-                video: video_axis(video, active_video.exact_identity())?,
-                audio: audio_axis(audio, active_audio.exact_identity())?,
+                video: video_axis(video.iter(), active_video.exact_identity())?,
+                audio: audio_axis(audio.iter(), active_audio.exact_identity())?,
             },
         ),
+        // Плоский и Topology-каталоги одинаково публикуют пул одноосевого выбора:
+        // у плоского он совпадает со всем списком, у Topology фильтруется (`single_axis`).
         (
-            ComponentVariantCatalog::VideoOnly { video, .. },
+            ComponentVariantCatalog::VideoOnly { .. } | ComponentVariantCatalog::Topology { .. },
             ComponentVariantSelection::VideoOnly {
                 video: active_video,
                 ..
             },
         ) => Ok(WebMediaInstalledComponentVariantPresentation::VideoOnly {
             catalog_generation,
-            video: video_axis(video, active_video.exact_identity())?,
+            video: video_axis(
+                video_only_pool(catalog)
+                    .map_err(ComponentVariantInstallationError::InvalidSelection)?,
+                active_video.exact_identity(),
+            )?,
         }),
         (
-            ComponentVariantCatalog::AudioOnly { audio, .. },
+            ComponentVariantCatalog::AudioOnly { .. } | ComponentVariantCatalog::Topology { .. },
             ComponentVariantSelection::AudioOnly {
                 audio: active_audio,
                 ..
             },
         ) => Ok(WebMediaInstalledComponentVariantPresentation::AudioOnly {
             catalog_generation,
-            audio: audio_axis(audio, active_audio.exact_identity())?,
+            audio: audio_axis(
+                audio_only_pool(catalog)
+                    .map_err(ComponentVariantInstallationError::InvalidSelection)?,
+                active_audio.exact_identity(),
+            )?,
         }),
         _ => Err(ComponentVariantInstallationError::InvalidSelection(
             ComponentVariantError::LayoutMismatch,
@@ -608,10 +641,11 @@ fn build_presentation(
     }
 }
 
-fn video_axis(
-    variants: &[VideoComponentVariant],
+fn video_axis<'a>(
+    variants: impl IntoIterator<Item = &'a VideoComponentVariant>,
     active_identity: &web_media_core::ComponentVariantExactIdentity,
 ) -> Result<WebMediaVideoComponentVariantAxis, ComponentVariantInstallationError> {
+    let variants = variants.into_iter().collect::<Vec<_>>();
     let active_index = variants
         .iter()
         .position(|variant| variant.exact_identity() == active_identity)
@@ -619,7 +653,7 @@ fn video_axis(
             axis: WebMediaComponentVariantAxisKind::Video,
         })?;
     let variants = variants
-        .iter()
+        .into_iter()
         .map(video_presentation)
         .collect::<Vec<_>>()
         .into();
@@ -629,10 +663,11 @@ fn video_axis(
     })
 }
 
-fn audio_axis(
-    variants: &[AudioComponentVariant],
+fn audio_axis<'a>(
+    variants: impl IntoIterator<Item = &'a AudioComponentVariant>,
     active_identity: &web_media_core::ComponentVariantExactIdentity,
 ) -> Result<WebMediaAudioComponentVariantAxis, ComponentVariantInstallationError> {
+    let variants = variants.into_iter().collect::<Vec<_>>();
     let active_index = variants
         .iter()
         .position(|variant| variant.exact_identity() == active_identity)
@@ -640,7 +675,7 @@ fn audio_axis(
             axis: WebMediaComponentVariantAxisKind::Audio,
         })?;
     let variants = variants
-        .iter()
+        .into_iter()
         .map(audio_presentation)
         .collect::<Vec<_>>()
         .into();
