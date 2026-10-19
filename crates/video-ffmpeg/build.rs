@@ -2,6 +2,12 @@
 //!
 //! Этот build script намеренно ничего не проверяет в default build-е. FFmpeg
 //! должен быть runtime capability, а не условие сборки всего workspace.
+//!
+//! Два режима FFmpeg:
+//! - `vendored-ffmpeg`: закреплённый FFmpeg собирает crate `ffmpeg-vendor`;
+//!   здесь только пересылаем его метаданные (где лежат `.so` и лицензии)
+//!   дальше в `app-egui`, который кладёт библиотеки рядом с бинарём;
+//! - `ffmpeg` без vendored: системный FFmpeg, проверяем pkg-config/`FFMPEG_DIR`.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -9,6 +15,23 @@ use std::process;
 
 /// Cargo feature, который включает raw FFmpeg FFI dependency.
 const FFMPEG_FEATURE_ENV: &str = "CARGO_FEATURE_FFMPEG";
+
+/// Cargo feature закреплённой (vendored) сборки FFmpeg.
+const VENDORED_FFMPEG_FEATURE_ENV: &str = "CARGO_FEATURE_VENDORED_FFMPEG";
+
+/// Метаданные `ffmpeg-vendor` (`links = "fastiplayer_ffmpeg_vendor"`), которые
+/// пересылаем дальше. Формат: (переменная от ffmpeg-vendor, ключ для `app-egui`).
+const FORWARDED_VENDORED_METADATA: [(&str, &str); 3] = [
+    (
+        "DEP_FASTIPLAYER_FFMPEG_VENDOR_RUNTIME_LIB_DIR",
+        "runtime_lib_dir",
+    ),
+    (
+        "DEP_FASTIPLAYER_FFMPEG_VENDOR_RUNTIME_LIBRARIES",
+        "runtime_libraries",
+    ),
+    ("DEP_FASTIPLAYER_FFMPEG_VENDOR_LICENSE_DIR", "license_dir"),
+];
 
 /// Env var, которую понимает `ffmpeg-sys-next` для явного FFmpeg prefix-а.
 const FFMPEG_SYS_PREFIX_ENV: &str = "FFMPEG_DIR";
@@ -32,15 +55,40 @@ fn main() {
         return;
     }
 
-    if let Err(error) = verify_ffmpeg_build_inputs() {
+    // Vendored-режим: системный FFmpeg не нужен, проверять pkg-config незачем.
+    let build_result = if env::var_os(VENDORED_FFMPEG_FEATURE_ENV).is_some() {
+        forward_vendored_metadata()
+    } else {
+        verify_ffmpeg_build_inputs()
+    };
+
+    if let Err(error) = build_result {
         eprintln!("{error}");
         process::exit(1);
     }
 }
 
+/// Пересылает в `app-egui` (через `links`) пути к vendored `.so` и лицензиям.
+///
+/// Cargo отдаёт метаданные только прямым зависимым, а `app-egui` зависит от
+/// `video-ffmpeg`, но не от `ffmpeg-vendor` — поэтому нужен этот шаг.
+fn forward_vendored_metadata() -> Result<(), String> {
+    for (vendor_variable, forwarded_key) in FORWARDED_VENDORED_METADATA {
+        println!("cargo:rerun-if-env-changed={vendor_variable}");
+        let metadata_value = env::var(vendor_variable).map_err(|_| {
+            format!(
+                "feature `vendored-ffmpeg` is enabled, but ffmpeg-vendor did not report {vendor_variable}"
+            )
+        })?;
+        println!("cargo::metadata={forwarded_key}={metadata_value}");
+    }
+    Ok(())
+}
+
 /// Фиксирует env inputs, которые должны пересобирать crate при изменении.
 fn emit_rerun_inputs() {
     println!("cargo:rerun-if-env-changed={FFMPEG_FEATURE_ENV}");
+    println!("cargo:rerun-if-env-changed={VENDORED_FFMPEG_FEATURE_ENV}");
     println!("cargo:rerun-if-env-changed={FFMPEG_SYS_PREFIX_ENV}");
     println!("cargo:rerun-if-env-changed={FASTIPLAYER_PREFIX_ENV}");
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
@@ -158,6 +206,6 @@ fn verify_pkg_config_inputs() -> Result<(), String> {
 /// Форматирует ошибку так, чтобы пользователь понимал, как включить feature.
 fn format_pkg_config_error(library_name: &str, error: pkg_config::Error) -> String {
     format!(
-        "FFmpeg feature is enabled, but pkg-config could not find `{library_name}`: {error}\nInstall the FFmpeg development package or build a local dynamic LGPL FFmpeg with scripts/tooling/build-ffmpeg-lgpl.sh, then set one of:\n- {FFMPEG_SYS_PREFIX_ENV}=/path/to/ffmpeg-prefix\n- PKG_CONFIG_PATH=/path/to/ffmpeg-prefix/lib/pkgconfig:$PKG_CONFIG_PATH\nThe default workspace build does not require FFmpeg: leave feature `ffmpeg` disabled when headers/libraries are unavailable."
+        "FFmpeg feature is enabled, but pkg-config could not find `{library_name}`: {error}\nThis is the `system-ffmpeg` build. Install the FFmpeg development package (FFmpeg 8.1+), or drop `system-ffmpeg` to use the default vendored FFmpeg, or point to your own prefix with one of:\n- {FFMPEG_SYS_PREFIX_ENV}=/path/to/ffmpeg-prefix\n- PKG_CONFIG_PATH=/path/to/ffmpeg-prefix/lib/pkgconfig:$PKG_CONFIG_PATH\nThe default workspace build does not require FFmpeg: leave feature `ffmpeg` disabled when headers/libraries are unavailable."
     )
 }

@@ -1,4 +1,6 @@
 use crate::FFMPEG_SOFTWARE_BACKEND_ID;
+#[cfg(any(feature = "ffmpeg", test))]
+use crate::ffi::runtime_version::LinkedFfmpegRuntime;
 
 /// Минимальная версия libavcodec для baseline FFmpeg 8.1.x.
 pub const MINIMUM_LIBAVCODEC_VERSION: FfmpegLibraryVersion = FfmpegLibraryVersion::new(62, 28, 0);
@@ -14,27 +16,6 @@ pub enum FfmpegBuildStatus {
 
     /// Crate собран с optional raw binding dependency.
     FeatureEnabled,
-}
-
-/// Runtime-библиотека FFmpeg, которая нужна software backend-у.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FfmpegRuntimeLibrary {
-    /// libavcodec содержит codec registry и будущий software decoder API.
-    LibAvCodec,
-
-    /// libavutil содержит shared version/pixel-format/frame utility API.
-    LibAvUtil,
-}
-
-impl FfmpegRuntimeLibrary {
-    /// Возвращает короткое имя для diagnostics без привязки к platform suffix.
-    #[must_use]
-    pub const fn diagnostic_name(self) -> &'static str {
-        match self {
-            Self::LibAvCodec => "libavcodec",
-            Self::LibAvUtil => "libavutil",
-        }
-    }
 }
 
 /// Версия одной FFmpeg/libav runtime-библиотеки.
@@ -168,15 +149,6 @@ pub enum FfmpegProbeFailure {
     /// Crate собран без FFmpeg feature, поэтому runtime probe намеренно не выполнялся.
     NoBuild,
 
-    /// Runtime dynamic loader не нашёл одну из обязательных libav* библиотек.
-    MissingRuntimeLibraries {
-        /// Какая library boundary не загрузилась.
-        library: FfmpegRuntimeLibrary,
-
-        /// Подробность от dynamic loader-а и список имён, которые пробовались.
-        details: String,
-    },
-
     /// Runtime FFmpeg найден, но его version baseline слишком старый.
     TooOld {
         /// Минимально поддерживаемые версии.
@@ -202,7 +174,6 @@ impl FfmpegProbeFailure {
     pub const fn diagnostic_code(&self) -> &'static str {
         match self {
             Self::NoBuild => "no-build",
-            Self::MissingRuntimeLibraries { .. } => "missing-runtime-libs",
             Self::TooOld { .. } => "too-old",
             Self::ProbeFailed { .. } => "probe-failed",
         }
@@ -335,267 +306,38 @@ fn classify_runtime_versions(versions: FfmpegLibraryVersions) -> FfmpegRuntimePr
     }
 }
 
+/// Опрашивает FFmpeg, с которым процесс реально слинкован.
+///
+/// Раньше здесь был `dlopen` по списку имён `.so`: при жёсткой линковке он
+/// ничего не добавлял (без библиотеки процесс не стартует), зато мог найти
+/// чужой FFmpeg — например, системный при нашем vendored — и сообщить его версию.
 #[cfg(feature = "ffmpeg")]
 fn execute_runtime_probe() -> FfmpegRuntimeProbeStatus {
-    match runtime_loader::probe_runtime() {
-        Ok(versions) => classify_runtime_versions(versions),
-        Err(error) => FfmpegRuntimeProbeStatus::Unavailable(error),
-    }
+    classify_linked_runtime(crate::ffi::runtime_version::linked_ffmpeg_runtime())
 }
 
-#[cfg(feature = "ffmpeg")]
-mod runtime_loader {
-    use super::{
-        FfmpegLibraryVersion, FfmpegLibraryVersions, FfmpegProbeFailure, FfmpegRuntimeLibrary,
-    };
-    use libloading::Library;
-    use std::os::raw::{c_uint, c_void};
-
-    /// ABI type для `avcodec_version`/`avutil_version`.
-    type VersionFunction = unsafe extern "C" fn() -> c_uint;
-
-    /// ABI type для `avcodec_find_decoder`.
-    type FindDecoderFunction = unsafe extern "C" fn(c_uint) -> *const c_void;
-
-    /// ABI type для `av_pix_fmt_desc_get`.
-    type PixelFormatDescriptorFunction = unsafe extern "C" fn(c_uint) -> *const c_void;
-
-    /// Стабильное FFmpeg enum value для `AV_CODEC_ID_H264` из C headers.
-    const AV_CODEC_ID_H264: c_uint = 27;
-
-    /// Стабильное FFmpeg enum value для `AV_PIX_FMT_YUV420P` из C headers.
-    const AV_PIX_FMT_YUV420P: c_uint = 0;
-
-    /// libavcodec SONAME candidates от future/current к older fallback names.
-    #[cfg(target_os = "linux")]
-    const AVCODEC_LIBRARY_CANDIDATES: &[&str] = &[
-        "libavcodec.so.64",
-        "libavcodec.so.63",
-        "libavcodec.so.62",
-        "libavcodec.so",
-        "libavcodec.so.61",
-        "libavcodec.so.60",
-        "libavcodec.so.59",
-        "libavcodec.so.58",
-    ];
-
-    /// libavutil SONAME candidates от future/current к older fallback names.
-    #[cfg(target_os = "linux")]
-    const AVUTIL_LIBRARY_CANDIDATES: &[&str] = &[
-        "libavutil.so.62",
-        "libavutil.so.61",
-        "libavutil.so.60",
-        "libavutil.so",
-        "libavutil.so.59",
-        "libavutil.so.58",
-        "libavutil.so.57",
-        "libavutil.so.56",
-    ];
-
-    /// macOS dylib candidates для libavcodec.
-    #[cfg(target_os = "macos")]
-    const AVCODEC_LIBRARY_CANDIDATES: &[&str] = &[
-        "libavcodec.64.dylib",
-        "libavcodec.63.dylib",
-        "libavcodec.62.dylib",
-        "libavcodec.dylib",
-        "libavcodec.61.dylib",
-        "libavcodec.60.dylib",
-        "libavcodec.59.dylib",
-        "libavcodec.58.dylib",
-    ];
-
-    /// macOS dylib candidates для libavutil.
-    #[cfg(target_os = "macos")]
-    const AVUTIL_LIBRARY_CANDIDATES: &[&str] = &[
-        "libavutil.62.dylib",
-        "libavutil.61.dylib",
-        "libavutil.60.dylib",
-        "libavutil.dylib",
-        "libavutil.59.dylib",
-        "libavutil.58.dylib",
-        "libavutil.57.dylib",
-        "libavutil.56.dylib",
-    ];
-
-    /// Windows DLL candidates для libavcodec.
-    #[cfg(target_os = "windows")]
-    const AVCODEC_LIBRARY_CANDIDATES: &[&str] = &[
-        "avcodec-64.dll",
-        "avcodec-63.dll",
-        "avcodec-62.dll",
-        "avcodec.dll",
-        "avcodec-61.dll",
-        "avcodec-60.dll",
-        "avcodec-59.dll",
-        "avcodec-58.dll",
-    ];
-
-    /// Windows DLL candidates для libavutil.
-    #[cfg(target_os = "windows")]
-    const AVUTIL_LIBRARY_CANDIDATES: &[&str] = &[
-        "avutil-62.dll",
-        "avutil-61.dll",
-        "avutil-60.dll",
-        "avutil.dll",
-        "avutil-59.dll",
-        "avutil-58.dll",
-        "avutil-57.dll",
-        "avutil-56.dll",
-    ];
-
-    /// Осторожные fallback names для unsupported target OSes.
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    const AVCODEC_LIBRARY_CANDIDATES: &[&str] = &["libavcodec"];
-
-    /// Осторожные fallback names для unsupported target OSes.
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    const AVUTIL_LIBRARY_CANDIDATES: &[&str] = &["libavutil"];
-
-    /// Загружает libav* runtime и выполняет минимальный version/API smoke check.
-    pub(super) fn probe_runtime() -> Result<FfmpegLibraryVersions, FfmpegProbeFailure> {
-        // libavutil загружается первым намеренно: Rust освобождает local values
-        // в обратном порядке, поэтому зависимый libavcodec выгружается раньше.
-        // `Symbol` не выходит из helper-вызовов ниже и всегда drop-ается раньше
-        // соответствующей `Library`.
-        let avutil = load_library(FfmpegRuntimeLibrary::LibAvUtil, AVUTIL_LIBRARY_CANDIDATES)?;
-        let avcodec = load_library(FfmpegRuntimeLibrary::LibAvCodec, AVCODEC_LIBRARY_CANDIDATES)?;
-
-        let avutil_version = call_version_function(
-            &avutil,
-            FfmpegRuntimeLibrary::LibAvUtil,
-            b"avutil_version\0",
-            "avutil_version",
-        )?;
-        let avcodec_version = call_version_function(
-            &avcodec,
-            FfmpegRuntimeLibrary::LibAvCodec,
-            b"avcodec_version\0",
-            "avcodec_version",
-        )?;
-
-        require_decoder_api(&avcodec)?;
-        require_pixel_format_api(&avutil)?;
-
-        Ok(FfmpegLibraryVersions::new(
-            FfmpegLibraryVersion::from_packed(avcodec_version),
-            FfmpegLibraryVersion::from_packed(avutil_version),
-        ))
+/// Классифицирует снимок прилинкованного FFmpeg в typed runtime status.
+///
+/// Сначала базовое API (иначе версии бессмысленны), затем минимальные версии.
+#[cfg(any(feature = "ffmpeg", test))]
+fn classify_linked_runtime(linked_runtime: LinkedFfmpegRuntime) -> FfmpegRuntimeProbeStatus {
+    if !linked_runtime.has_h264_decoder {
+        return FfmpegRuntimeProbeStatus::Unavailable(FfmpegProbeFailure::ProbeFailed {
+            step: "codec-api",
+            details: "avcodec_find_decoder(AV_CODEC_ID_H264) returned null".to_owned(),
+        });
+    }
+    if !linked_runtime.has_yuv420p_descriptor {
+        return FfmpegRuntimeProbeStatus::Unavailable(FfmpegProbeFailure::ProbeFailed {
+            step: "pixel-format-api",
+            details: "av_pix_fmt_desc_get(AV_PIX_FMT_YUV420P) returned null".to_owned(),
+        });
     }
 
-    /// Пытается загрузить одну runtime-библиотеку по platform-specific candidate names.
-    fn load_library(
-        library: FfmpegRuntimeLibrary,
-        candidates: &'static [&'static str],
-    ) -> Result<Library, FfmpegProbeFailure> {
-        let mut attempt_details = Vec::new();
-
-        for candidate in candidates {
-            // SAFETY: `Library::new` запускает platform loader; мы не берём symbols здесь.
-            match unsafe { Library::new(candidate) } {
-                Ok(loaded_library) => return Ok(loaded_library),
-                Err(error) => attempt_details.push(format!("{candidate}: {error}")),
-            }
-        }
-
-        Err(FfmpegProbeFailure::MissingRuntimeLibraries {
-            library,
-            details: attempt_details.join("; "),
-        })
-    }
-
-    /// Достаёт и вызывает version function из уже загруженной runtime library.
-    fn call_version_function(
-        library: &Library,
-        runtime_library: FfmpegRuntimeLibrary,
-        symbol_name: &[u8],
-        diagnostic_symbol_name: &'static str,
-    ) -> Result<u32, FfmpegProbeFailure> {
-        // SAFETY: signature сверена с FFmpeg C API: `unsigned name(void)`.
-        let version_function =
-            unsafe { library.get::<VersionFunction>(symbol_name) }.map_err(|error| {
-                FfmpegProbeFailure::ProbeFailed {
-                    step: "load-version-symbol",
-                    details: format!(
-                        "{} missing in {}: {error}",
-                        diagnostic_symbol_name,
-                        runtime_library.diagnostic_name()
-                    ),
-                }
-            })?;
-
-        // SAFETY: symbol загружен из живой `Library`; функция не требует аргументов.
-        Ok(unsafe { version_function() })
-    }
-
-    /// Проверяет, что libavcodec умеет найти базовый software decoder entry.
-    fn require_decoder_api(library: &Library) -> Result<(), FfmpegProbeFailure> {
-        // SAFETY: signature сверена с FFmpeg C API: `const AVCodec *fn(enum AVCodecID)`.
-        let find_decoder = unsafe { library.get::<FindDecoderFunction>(b"avcodec_find_decoder\0") }
-            .map_err(|error| FfmpegProbeFailure::ProbeFailed {
-                step: "load-codec-symbol",
-                details: format!("avcodec_find_decoder missing in libavcodec: {error}"),
-            })?;
-
-        // SAFETY: `AV_CODEC_ID_H264` — stable enum value; null return is handled below.
-        let decoder = unsafe { find_decoder(AV_CODEC_ID_H264) };
-
-        if decoder.is_null() {
-            Err(FfmpegProbeFailure::ProbeFailed {
-                step: "codec-api",
-                details: "avcodec_find_decoder(AV_CODEC_ID_H264) returned null".to_owned(),
-            })
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Проверяет, что libavutil отдаёт descriptor для базового planar YUV format-а.
-    fn require_pixel_format_api(library: &Library) -> Result<(), FfmpegProbeFailure> {
-        // SAFETY: signature сверена с FFmpeg C API: `const AVPixFmtDescriptor *fn(enum AVPixelFormat)`.
-        let pixel_format_descriptor =
-            unsafe { library.get::<PixelFormatDescriptorFunction>(b"av_pix_fmt_desc_get\0") }
-                .map_err(|error| FfmpegProbeFailure::ProbeFailed {
-                    step: "load-pixel-format-symbol",
-                    details: format!("av_pix_fmt_desc_get missing in libavutil: {error}"),
-                })?;
-
-        // SAFETY: `AV_PIX_FMT_YUV420P` — stable enum value; null return is handled below.
-        let descriptor = unsafe { pixel_format_descriptor(AV_PIX_FMT_YUV420P) };
-
-        if descriptor.is_null() {
-            Err(FfmpegProbeFailure::ProbeFailed {
-                step: "pixel-format-api",
-                details: "av_pix_fmt_desc_get(AV_PIX_FMT_YUV420P) returned null".to_owned(),
-            })
-        } else {
-            Ok(())
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn missing_runtime_library_maps_to_typed_failure_without_panic() {
-            let failure = match load_library(
-                FfmpegRuntimeLibrary::LibAvUtil,
-                &["fastiplayer-definitely-missing-libavutil-for-probe-test"],
-            ) {
-                Ok(_) => panic!("missing runtime candidate unexpectedly loaded"),
-                Err(failure) => failure,
-            };
-
-            assert!(matches!(
-                failure,
-                FfmpegProbeFailure::MissingRuntimeLibraries {
-                    library: FfmpegRuntimeLibrary::LibAvUtil,
-                    ..
-                }
-            ));
-        }
-    }
+    classify_runtime_versions(FfmpegLibraryVersions::new(
+        FfmpegLibraryVersion::from_packed(linked_runtime.avcodec_packed_version),
+        FfmpegLibraryVersion::from_packed(linked_runtime.avutil_packed_version),
+    ))
 }
 
 #[cfg(test)]
@@ -658,10 +400,6 @@ mod tests {
 
     #[test]
     fn failure_diagnostic_codes_distinguish_required_outcomes() {
-        let missing_runtime = FfmpegProbeFailure::MissingRuntimeLibraries {
-            library: FfmpegRuntimeLibrary::LibAvCodec,
-            details: "not found".to_owned(),
-        };
         let too_old = FfmpegProbeFailure::TooOld {
             minimum: minimum_supported_versions(),
             found: FfmpegLibraryVersions::new(
@@ -675,24 +413,85 @@ mod tests {
         };
 
         assert_eq!(FfmpegProbeFailure::NoBuild.diagnostic_code(), "no-build");
-        assert_eq!(missing_runtime.diagnostic_code(), "missing-runtime-libs");
         assert_eq!(too_old.diagnostic_code(), "too-old");
         assert_eq!(probe_failed.diagnostic_code(), "probe-failed");
     }
 
-    #[test]
-    fn report_mapping_preserves_missing_runtime_failure() {
-        let failure = FfmpegProbeFailure::MissingRuntimeLibraries {
-            library: FfmpegRuntimeLibrary::LibAvUtil,
-            details: "libavutil.so.60: not found".to_owned(),
-        };
-        let report = report_from_runtime_status(
-            FfmpegBuildStatus::FeatureEnabled,
-            FfmpegRuntimeProbeStatus::Unavailable(failure.clone()),
-        );
+    /// Снимок «здорового» FFmpeg 8.1.3 (libavcodec 62.28.103, libavutil 60.26.103).
+    fn healthy_linked_runtime() -> LinkedFfmpegRuntime {
+        LinkedFfmpegRuntime {
+            avcodec_packed_version: (62 << 16) | (28 << 8) | 103,
+            avutil_packed_version: (60 << 16) | (26 << 8) | 103,
+            has_h264_decoder: true,
+            has_yuv420p_descriptor: true,
+        }
+    }
 
-        assert!(!report.is_available());
-        assert_eq!(report.failure(), Some(&failure));
+    #[test]
+    fn linked_runtime_with_supported_versions_is_available_with_exact_versions() {
+        let status = classify_linked_runtime(healthy_linked_runtime());
+
+        let FfmpegRuntimeProbeStatus::Available(runtime_info) = status else {
+            panic!("healthy linked FFmpeg must be available, got {status:?}");
+        };
+        assert_eq!(runtime_info.versions().avcodec().display(), "62.28.103");
+        assert_eq!(runtime_info.versions().avutil().display(), "60.26.103");
+    }
+
+    #[test]
+    fn linked_runtime_without_h264_decoder_fails_codec_api_step() {
+        let linked_runtime = LinkedFfmpegRuntime {
+            has_h264_decoder: false,
+            ..healthy_linked_runtime()
+        };
+
+        let status = classify_linked_runtime(linked_runtime);
+
+        assert!(matches!(
+            status,
+            FfmpegRuntimeProbeStatus::Unavailable(FfmpegProbeFailure::ProbeFailed {
+                step: "codec-api",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn linked_runtime_without_pixel_format_descriptor_fails_pixel_format_step() {
+        let linked_runtime = LinkedFfmpegRuntime {
+            has_yuv420p_descriptor: false,
+            ..healthy_linked_runtime()
+        };
+
+        let status = classify_linked_runtime(linked_runtime);
+
+        assert!(matches!(
+            status,
+            FfmpegRuntimeProbeStatus::Unavailable(FfmpegProbeFailure::ProbeFailed {
+                step: "pixel-format-api",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn linked_old_system_ffmpeg_is_reported_too_old_with_found_versions() {
+        // FFmpeg 6.1 (Ubuntu 24.04): libavcodec 60.31.102, libavutil 58.29.100.
+        let linked_runtime = LinkedFfmpegRuntime {
+            avcodec_packed_version: (60 << 16) | (31 << 8) | 102,
+            avutil_packed_version: (58 << 16) | (29 << 8) | 100,
+            ..healthy_linked_runtime()
+        };
+
+        let status = classify_linked_runtime(linked_runtime);
+
+        let FfmpegRuntimeProbeStatus::Unavailable(FfmpegProbeFailure::TooOld { found, .. }) =
+            status
+        else {
+            panic!("old linked FFmpeg must be too-old, got {status:?}");
+        };
+        assert_eq!(found.avcodec().display(), "60.31.102");
+        assert_eq!(found.avutil().display(), "58.29.100");
     }
 
     #[test]

@@ -62,17 +62,19 @@ members = [
     "crates/video-backend-api",
     "crates/video-present-core",
     "crates/video-ffmpeg",
+    "crates/ffmpeg-vendor",
     "crates/render-core",
     "crates/render-wgpu-video",
     "crates/render-wgpu-shell",
     "crates/video-vaapi",
     "crates/service-ytdlp",
 ]
-# Эти восемь каталогов — инвентаризированные upstream patch crates из [replace].
+# Эти девять каталогов — инвентаризированные upstream patch crates из [replace].
 # Они намеренно не наследуют first-party workspace metadata и MIT license.
 exclude = [
     "crates/cros-codecs-patch",
     "crates/cros-libva-patch",
+    "crates/ffmpeg-sys-next-patch",
     "crates/symphonia-codec-aac-patch",
     "crates/symphonia-format-caf-patch",
     "crates/symphonia-format-isomp4-patch",
@@ -115,6 +117,7 @@ resolver = "2"
 # текст). Публичный `WindowEvent` не меняется (egui-winit матчит его
 # исчерпывающе). Удалить, когда egui-winit перейдёт на стабильный winit 0.31.
 "winit:0.30.13" = { path = "crates/winit-patch" }
+"ffmpeg-sys-next:8.1.0" = { path = "crates/ffmpeg-sys-next-patch" }
 
 # Все внешние зависимости в dev собираются оптимизированными: egui/wgpu/symphonia/cpal
 # на opt-level 0 не вытягивают realtime пути (UI tessellation, GPU submit/validation,
@@ -202,7 +205,6 @@ cookie = "0.18"
 crossbeam-channel = "0.5"
 ringbuf = "0.4"
 rand = "0.10.2"
-libloading = "0.8"
 vp9-parser = { version = "0.1.0-alpha.1", path = "crates/vp9-parser" }
 ac3-syncframe = { version = "0.1.0-alpha.1", path = "crates/ac3-syncframe" }
 ac3-elementary-demux = { version = "0.1.0-alpha.1", path = "crates/ac3-elementary-demux" }

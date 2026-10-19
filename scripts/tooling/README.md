@@ -1,5 +1,11 @@
 # FFmpeg LGPL Build Tooling
 
+> **Обычная сборка этот скрипт не использует.** С 2026-10-20 `cargo build -p app-egui`
+> по умолчанию (фича `vendored-ffmpeg`) сам собирает закреплённый FFmpeg 8.1.3 + dav1d
+> через crate `crates/ffmpeg-vendor` (архивы с проверкой SHA-256, библиотеки
+> `libavcodec_fastiplayer.so` рядом с бинарём). Скрипт ниже остаётся для сборки
+> `--no-default-features --features system-ffmpeg` со своим FFmpeg-prefix-ом.
+
 Этот каталог содержит tooling для локальной сборки dynamic LGPL FFmpeg/libav*
 под optional software decode backend. Сам tooling не делает запуск плеера
 зависимым от FFmpeg; workspace crate `video-ffmpeg` подключает raw binding

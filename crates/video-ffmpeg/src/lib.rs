@@ -29,8 +29,8 @@ pub use codec_adapter::{
 pub use decoder_thread::{FfmpegDecoderThreadConfig, FfmpegDecoderThreadError};
 pub use probe::{
     FfmpegBuildStatus, FfmpegLibraryVersion, FfmpegLibraryVersions, FfmpegProbeFailure,
-    FfmpegProbeReport, FfmpegRuntimeInfo, FfmpegRuntimeLibrary, FfmpegRuntimeProbeStatus,
-    compile_time_probe, minimum_supported_versions, probe_runtime_availability,
+    FfmpegProbeReport, FfmpegRuntimeInfo, FfmpegRuntimeProbeStatus, compile_time_probe,
+    minimum_supported_versions, probe_runtime_availability,
 };
 pub use software_frame::{SoftwareFramePlan, SoftwareFramePlanError};
 

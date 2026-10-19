@@ -523,6 +523,8 @@ FFMPEG_FORBIDDEN_DEPENDENCIES = frozenset(
         "libavformat-sys",
         "libavutil",
         "libavutil-sys",
+        # Наш crate сборки закреплённого FFmpeg: та же граница, что у FFmpeg-биндингов.
+        "ffmpeg-vendor",
         "rsmpeg",
     }
 )
@@ -713,7 +715,12 @@ RUST_SOURCE_SUFFIXES = frozenset({".rs"})
 
 SOURCE_POLICY_SCAN_ROOTS = ("crates",)
 
-DIRECT_FFMPEG_TYPE_ALLOWED_ROOTS = (Path("crates/video-ffmpeg"),)
+# Exact-копия upstream ffmpeg-sys-next (патч vendored-режима): это сами FFmpeg-биндинги,
+# поэтому политики «raw FFmpeg только в video-ffmpeg / без swscale / без hwaccel»
+# относятся к нашему коду, который их использует, а не к сгенерированному API.
+UPSTREAM_FFMPEG_BINDINGS_ROOT = Path("crates/ffmpeg-sys-next-patch")
+
+DIRECT_FFMPEG_TYPE_ALLOWED_ROOTS = (Path("crates/video-ffmpeg"), UPSTREAM_FFMPEG_BINDINGS_ROOT)
 
 DIRECT_FFMPEG_TYPE_PATTERNS = (
     (
@@ -1933,23 +1940,31 @@ def find_direct_ffmpeg_type_violations(repo_root: Path) -> list[SourcePolicyViol
 def find_cpu_rgb_conversion_violations(repo_root: Path) -> list[SourcePolicyViolation]:
     """Запрещает FFmpeg/swscale-style CPU color conversion artifacts в source tree."""
 
-    return find_regex_violations_in_roots(
-        repo_root,
-        SOURCE_POLICY_SCAN_ROOTS,
-        RUST_SOURCE_SUFFIXES,
-        CPU_RGB_CONVERSION_PATTERNS,
-    )
+    return [
+        violation
+        for violation in find_regex_violations_in_roots(
+            repo_root,
+            SOURCE_POLICY_SCAN_ROOTS,
+            RUST_SOURCE_SUFFIXES,
+            CPU_RGB_CONVERSION_PATTERNS,
+        )
+        if not path_is_under_any(violation.path, (UPSTREAM_FFMPEG_BINDINGS_ROOT,))
+    ]
 
 
 def find_ffmpeg_hardware_decode_violations(repo_root: Path) -> list[SourcePolicyViolation]:
     """Запрещает FFmpeg hardware decode API даже внутри `video-ffmpeg`."""
 
-    return find_regex_violations_in_roots(
-        repo_root,
-        SOURCE_POLICY_SCAN_ROOTS,
-        RUST_SOURCE_SUFFIXES,
-        FFMPEG_HARDWARE_DECODE_PATTERNS,
-    )
+    return [
+        violation
+        for violation in find_regex_violations_in_roots(
+            repo_root,
+            SOURCE_POLICY_SCAN_ROOTS,
+            RUST_SOURCE_SUFFIXES,
+            FFMPEG_HARDWARE_DECODE_PATTERNS,
+        )
+        if not path_is_under_any(violation.path, (UPSTREAM_FFMPEG_BINDINGS_ROOT,))
+    ]
 
 
 def find_direct_vaapi_display_violations(repo_root: Path) -> list[SourcePolicyViolation]:

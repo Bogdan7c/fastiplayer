@@ -1775,15 +1775,28 @@ checksum = "b97b65636e5b9ef369943878ac74335ba1c55c1cb6adbf1e2c293c624248d693"
 [[package]]
 name = "ffmpeg-sys-next"
 version = "8.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a314bc0e022a33a99567ed4bd2576bd58ffd8fcff7891c29194cfecc26a62547"
 dependencies = [
  "bindgen 0.72.1",
  "cc",
+ "ffmpeg-vendor",
  "libc",
  "num_cpus",
  "pkg-config",
  "vcpkg",
+]
+
+[[package]]
+name = "ffmpeg-sys-next"
+version = "8.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a314bc0e022a33a99567ed4bd2576bd58ffd8fcff7891c29194cfecc26a62547"
+replace = "ffmpeg-sys-next 8.1.0"
+
+[[package]]
+name = "ffmpeg-vendor"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "sha2",
 ]
 
 [[package]]
@@ -5837,8 +5850,8 @@ dependencies = [
  "codec-core",
  "crossbeam-channel",
  "demux-api",
- "ffmpeg-sys-next",
- "libloading",
+ "ffmpeg-sys-next 8.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ffmpeg-vendor",
  "media-core",
  "mpeg-ts-demux",
  "pkg-config",

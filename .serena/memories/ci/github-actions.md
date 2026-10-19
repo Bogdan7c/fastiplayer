@@ -4,6 +4,12 @@
 
 # GitHub Actions CI
 
+## Vendored FFmpeg (2026-10-20) — supersedes native-package lists below
+- Default/all-features builds собирают закреплённый FFmpeg + dav1d crate-ом `ffmpeg-vendor` (`mem:video-ffmpeg/build-tooling`). Jobs clippy/docs/tests/msrv/toolchain-policy и vertical-seek больше НЕ ставят `libavcodec-dev`/`libavutil-dev`; вместо них `meson nasm ninja-build` (curl/tar/make есть на runner). Контракт — `scripts/tests/test_ci_native_prerequisites.py` (EXPECTED_* sets).
+- Matrix `Dependency patch (ffmpeg-sys-next)` (9-й патч) ставит system libav*-dev (avcodec/avdevice/avfilter/avformat/avutil/swresample/swscale), т.к. standalone `cargo test --manifest-path crates/ffmpeg-sys-next-patch/Cargo.toml --locked` идёт с upstream default features (system-режим).
+- Job `Vertical seek acceptance`: системный `ffmpeg` CLI только генерирует TS-корпус; `media-regression.sh` и `playback-smoke.sh` используют `--features vendored-ffmpeg`. Добавлен шаг `cargo +1.99.0 test -p video-ffmpeg --features vendored-ffmpeg --locked --test av1_software_decode -- --include-ignored` (AV1 через libdav1d до WGPU submit на lavapipe, маркер `AV1_SOFTWARE_WGPU`).
+- `ci-checks.sh`: `crates/ffmpeg-vendor` в WORKSPACE_CRATE_DIRECTORIES (machete), `crates/ffmpeg-sys-next-patch/Cargo.toml` в DEPENDENCY_PATCH_MANIFESTS.
+
 ## Public launch S03: all-target CI prerequisites и bounded artifacts (2026-09-04)
 
 - `Workspace tests (all features)` и `Coverage ratchet` компилируют Cargo examples, включая `audio-timestretch/examples/backend_shootout`, который линкуется с системной `libSoundTouch` через crate `soundtouch`/`soundtouch-ffi`.

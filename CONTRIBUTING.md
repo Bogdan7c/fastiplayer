@@ -21,7 +21,8 @@ Ubuntu 24.04 build and test prerequisites, matching the [CI dependency policy](d
 ```bash
 sudo apt-get update
 sudo apt-get install build-essential clang libclang-dev pkg-config \
-  libasound2-dev libavcodec-dev libavutil-dev libdrm-dev libgbm-dev libva-dev \
+  curl meson nasm ninja-build \
+  libasound2-dev libdrm-dev libgbm-dev libva-dev \
   libsoundtouch-dev libvulkan1 mesa-vulkan-drivers
 ```
 
@@ -33,7 +34,7 @@ cd fastiplayer
 cargo build -p app-egui --release --locked
 ```
 
-The executable is `target/release/fastiplayer`. The repository is public. System `yt-dlp` is optional for supported web-page extraction; native direct sources do not require it. See the [media compatibility matrix](docs/web-media-compatibility-matrix.md) for its accepted version and profiles.
+The executable is `target/release/fastiplayer`; the pinned FFmpeg libraries it uses are in `target/release/lib/` (built by the `ffmpeg-vendor` crate, see the README). The repository is public. System `yt-dlp` is optional for supported web-page extraction; native direct sources do not require it. See the [media compatibility matrix](docs/web-media-compatibility-matrix.md) for its accepted version and profiles.
 
 ## Ordinary contributor checks
 

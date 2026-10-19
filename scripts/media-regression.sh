@@ -165,9 +165,10 @@ run_selected_test() {
     local -a package_feature_arguments=()
     IFS='|' read -r package_name test_target test_name <<<"${command_spec}"
 
-    # Реальный software decode test компилируется только при explicit FFmpeg feature.
+    # Реальный software decode test компилируется только при explicit FFmpeg feature;
+    # берём закреплённый FFmpeg, как в сборке плеера по умолчанию.
     if [[ "${package_name}" == "video-ffmpeg" ]]; then
-        package_feature_arguments=(--features ffmpeg)
+        package_feature_arguments=(--features vendored-ffmpeg)
     fi
 
     printf 'RUN: scenario=%s; path=%s\n' "${scenario_name}" "${selected_path}" >&2

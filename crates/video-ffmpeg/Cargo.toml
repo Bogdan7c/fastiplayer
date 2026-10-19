@@ -5,18 +5,26 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 build = "build.rs"
+# `links` нужен только чтобы переслать в app-egui метаданные ffmpeg-vendor
+# (где лежат .so и лицензии): cargo отдаёт их лишь прямым зависимым.
+links = "fastiplayer_video_ffmpeg"
 
 [features]
 default = []
-ffmpeg = ["dep:ffmpeg-sys-next", "dep:libloading"]
+# Код FFmpeg FFI; без vendored-ffmpeg линкуется системный FFmpeg (pkg-config/FFMPEG_DIR).
+ffmpeg = ["dep:ffmpeg-sys-next"]
+# Закреплённый LGPL FFmpeg 8.1.3 + dav1d собирается патчем ffmpeg-sys-next.
+vendored-ffmpeg = ["ffmpeg", "ffmpeg-sys-next/fastiplayer-vendored", "dep:ffmpeg-vendor"]
 
 [dependencies]
 anyhow.workspace = true
 capability-core = { workspace = true }
 codec-core.workspace = true
 crossbeam-channel.workspace = true
-libloading = { workspace = true, optional = true }
 thiserror.workspace = true
+# Не workspace-зависимость намеренно: guardrail разрешает FFmpeg-crate-ы только здесь.
+# Прямая зависимость нужна, чтобы получить DEP_FASTIPLAYER_FFMPEG_VENDOR_* в build.rs.
+ffmpeg-vendor = { path = "../ffmpeg-vendor", optional = true }
 video-backend-api.workspace = true
 video-core.workspace = true
 video-frame-contract.workspace = true

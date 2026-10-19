@@ -85,7 +85,7 @@ You need Linux x86_64, a GPU with a working Vulkan driver, and [rustup](https://
 **Arch Linux / CachyOS / Manjaro**
 
 ```bash
-sudo pacman -S --needed base-devel git clang pkgconf alsa-lib ffmpeg libdrm mesa libva vulkan-icd-loader rustup
+sudo pacman -S --needed base-devel git clang pkgconf curl meson nasm alsa-lib libdrm mesa libva vulkan-icd-loader rustup
 ```
 
 **Ubuntu 24.04 / Debian-based**
@@ -93,8 +93,19 @@ sudo pacman -S --needed base-devel git clang pkgconf alsa-lib ffmpeg libdrm mesa
 ```bash
 sudo apt-get update
 sudo apt-get install build-essential git clang libclang-dev pkg-config \
-  libasound2-dev libavcodec-dev libavutil-dev libdrm-dev libgbm-dev libva-dev \
+  curl meson nasm ninja-build \
+  libasound2-dev libdrm-dev libgbm-dev libva-dev \
   libvulkan1 mesa-vulkan-drivers
+```
+
+**Fedora / RHEL-based**
+
+```bash
+sudo dnf install gcc gcc-c++ make git clang clang-devel pkgconf-pkg-config \
+  curl meson nasm ninja-build \
+  alsa-lib-devel libdrm-devel mesa-libgbm-devel libva-devel \
+  vulkan-loader mesa-vulkan-drivers rustup
+rustup-init   # Fedora ships rustup as a package; this installs the toolchain manager
 ```
 
 **Build and play**
@@ -105,6 +116,11 @@ cd fastiplayer
 cargo build -p app-egui --release --locked
 ./target/release/fastiplayer /path/to/video.mp4
 ```
+
+The software decoder does not depend on the FFmpeg installed on your system. The first build downloads FFmpeg 8.1.3 and dav1d 1.5.4, checks them against pinned SHA-256 sums, and builds a minimal LGPL copy in about a minute. It goes to `target/release/lib/` next to the player, so if you copy the player somewhere else, copy `lib/` along with it. This copy also gives you AV1 software decoding through dav1d.
+
+- **Offline build:** download the two archives yourself and set `FASTIPLAYER_FFMPEG_ARCHIVE` and `FASTIPLAYER_DAV1D_ARCHIVE` to their absolute paths. The sums are still checked.
+- **Distribution packagers:** `cargo build -p app-egui --release --locked --no-default-features --features system-ffmpeg` links the system FFmpeg instead (8.1 or newer).
 
 **Add to the app menu (optional)**
 
@@ -171,4 +187,4 @@ The project is also open to support with development tools and test hardware —
 
 ## License
 
-First-party code is [MIT licensed](LICENSE). The eight [patched upstream crates](docs/dependency-patches.toml) keep their own licenses: BSD-3-Clause for cros-codecs/cros-libva, MPL-2.0 for the four Symphonia patches, MIT for wayland-scanner, and Apache-2.0 for winit. [Changelog](CHANGELOG.md) · [Releases](https://github.com/Bogdan7c/fastiplayer/releases).
+First-party code is [MIT licensed](LICENSE). The nine [patched upstream crates](docs/dependency-patches.toml) keep their own licenses: BSD-3-Clause for cros-codecs/cros-libva, MPL-2.0 for the four Symphonia patches, MIT for wayland-scanner, Apache-2.0 for winit, and WTFPL for ffmpeg-sys-next. The FFmpeg the build bundles is LGPL-2.1-or-later and dav1d is BSD-2-Clause; their license texts are copied into `target/<profile>/lib/` next to the libraries, and both libraries can be replaced with your own build. [Changelog](CHANGELOG.md) · [Releases](https://github.com/Bogdan7c/fastiplayer/releases).

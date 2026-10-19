@@ -148,11 +148,6 @@ fn ffmpeg_probe_failure_reason(failure: &FfmpegProbeFailure) -> String {
             "FFmpeg software backend unavailable (no-build): crate built without feature `ffmpeg`"
                 .to_string()
         }
-        FfmpegProbeFailure::MissingRuntimeLibraries { library, details } => format!(
-            "FFmpeg software backend unavailable ({}): missing {}, {details}",
-            failure.diagnostic_code(),
-            library.diagnostic_name()
-        ),
         FfmpegProbeFailure::TooOld { minimum, found } => format!(
             "FFmpeg software backend unavailable ({}): need libavcodec >= {} and libavutil >= {}, found libavcodec {} and libavutil {}",
             failure.diagnostic_code(),
@@ -424,7 +419,7 @@ mod tests {
 
     use crate::probe::{
         FfmpegBuildStatus, FfmpegLibraryVersion, FfmpegLibraryVersions, FfmpegRuntimeInfo,
-        FfmpegRuntimeLibrary, minimum_supported_versions, report_from_runtime_status,
+        minimum_supported_versions, report_from_runtime_status,
     };
 
     use super::*;
@@ -439,13 +434,13 @@ mod tests {
         )
     }
 
-    /// Возвращает synthetic missing-library probe для unavailable diagnostics.
-    fn missing_runtime_probe() -> FfmpegProbeReport {
+    /// Возвращает synthetic probe, где прилинкованный libavcodec не знает H.264.
+    fn broken_codec_api_probe() -> FfmpegProbeReport {
         report_from_runtime_status(
             FfmpegBuildStatus::FeatureEnabled,
-            FfmpegRuntimeProbeStatus::Unavailable(FfmpegProbeFailure::MissingRuntimeLibraries {
-                library: FfmpegRuntimeLibrary::LibAvCodec,
-                details: "libavcodec.so was not found".to_string(),
+            FfmpegRuntimeProbeStatus::Unavailable(FfmpegProbeFailure::ProbeFailed {
+                step: "codec-api",
+                details: "avcodec_find_decoder(AV_CODEC_ID_H264) returned null".to_string(),
             }),
         )
     }
@@ -517,10 +512,10 @@ mod tests {
         );
     }
 
-    /// Проверяет, что missing runtime не публикует raw outputs и сохраняет diagnostic.
+    /// Проверяет, что сломанное codec API не публикует raw outputs и сохраняет diagnostic.
     #[test]
-    fn missing_ffmpeg_registers_unavailable_diagnostics() {
-        let provider = FfmpegSoftwareCapabilityProvider::with_runtime_probe(missing_runtime_probe);
+    fn broken_codec_api_registers_unavailable_diagnostics() {
+        let provider = FfmpegSoftwareCapabilityProvider::with_runtime_probe(broken_codec_api_probe);
         let capabilities = provider.probe();
 
         assert!(!capabilities.status.is_available());
@@ -529,7 +524,7 @@ mod tests {
             capabilities
                 .diagnostics
                 .iter()
-                .any(|message| message.contains("missing-runtime-libs"))
+                .any(|message| message.contains("probe-failed") && message.contains("codec-api"))
         );
     }
 

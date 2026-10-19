@@ -21,17 +21,19 @@ TOOLCHAIN_WORKFLOW_PATH = (
 RUST_TOOLCHAIN_ACTION = (
     "dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88"
 )
-# Эти packages следуют из workspace manifests и build scripts, а не из полного FFmpeg SDK.
+# Эти packages следуют из workspace manifests и build scripts. FFmpeg SDK не нужен:
+# crate ffmpeg-vendor собирает закреплённый FFmpeg + dav1d сам (meson/nasm/ninja).
 EXPECTED_WORKSPACE_NATIVE_PACKAGES = frozenset(
     {
         "clang",
         "libclang-dev",
         "libasound2-dev",
-        "libavcodec-dev",
-        "libavutil-dev",
         "libdrm-dev",
         "libgbm-dev",
         "libva-dev",
+        "meson",
+        "nasm",
+        "ninja-build",
         "pkg-config",
     }
 )
@@ -41,13 +43,14 @@ EXPECTED_ALL_TARGET_NATIVE_PACKAGES = frozenset(
         "clang",
         "libclang-dev",
         "libasound2-dev",
-        "libavcodec-dev",
-        "libavutil-dev",
         "libgbm-dev",
         "libsoundtouch-dev",
         "libva-dev",
         "libvulkan1",
         "mesa-vulkan-drivers",
+        "meson",
+        "nasm",
+        "ninja-build",
         "pkg-config",
     }
 )

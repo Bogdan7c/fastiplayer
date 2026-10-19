@@ -1,0 +1,20 @@
+[package]
+name = "ffmpeg-vendor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Builds the pinned LGPL FFmpeg + dav1d used by Fastiplayer's software decoder"
+build = "build.rs"
+# Через `links` cargo передаёт пути к собранному FFmpeg прямым зависимым
+# (патч ffmpeg-sys-next и video-ffmpeg) как DEP_FASTIPLAYER_FFMPEG_VENDOR_*.
+links = "fastiplayer_ffmpeg_vendor"
+
+[dependencies]
+sha2.workspace = true
+
+[build-dependencies]
+sha2.workspace = true
+
+[lints]
+workspace = true

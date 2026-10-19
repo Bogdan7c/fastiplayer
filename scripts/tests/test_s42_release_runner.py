@@ -76,6 +76,7 @@ class S42ReleaseRunnerTests(unittest.TestCase):
         expected_manifests = (
             "crates/cros-libva-patch/Cargo.toml",
             "crates/cros-codecs-patch/Cargo.toml",
+            "crates/ffmpeg-sys-next-patch/Cargo.toml",
             "crates/symphonia-format-caf-patch/Cargo.toml",
             "crates/symphonia-format-isomp4-patch/Cargo.toml",
             "crates/symphonia-codec-aac-patch/Cargo.toml",

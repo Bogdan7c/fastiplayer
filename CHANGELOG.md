@@ -14,6 +14,8 @@ Planned as 0.2.0.
   - Controls: CC button and menu, an audio-track menu, hotkeys `C` / `V` / `Z` / `X` / `B`, auto-selection by preferred languages with forced tracks, sync delay.
   - Look: on-video appearance editing; subtitles rise above the control panel.
   - Memory: track, Off and delay choices are remembered per video. See the [user guide](docs/subtitles/user-guide.md).
+- The software decoder no longer depends on the system FFmpeg. The build downloads FFmpeg 8.1.3 and dav1d 1.5.4, checks them against pinned SHA-256 sums, and builds a minimal LGPL copy next to the player in `target/<profile>/lib/`. Machines without VA-API, NVIDIA among them, can always play H.264, H.265, VP8, VP9, and AV1 in software. Packagers can link the system FFmpeg 8.1+ with `--no-default-features --features system-ffmpeg`.
+- Build instructions for Fedora and RHEL-based distributions.
 - YouTube videos with dubbed audio list their audio languages in the audio menu.
 - Drag-and-drop of files, folders, playlists, and links on Wayland and X11 (roadmap item 7), backed by an additive [winit patch](docs/dependency-patches.toml).
 - Opening a file while Fastiplayer is running forwards it to the existing window over D-Bus instead of refusing to start.
@@ -30,6 +32,7 @@ Planned as 0.2.0.
 - A lost audio device falls back to the default output.
 - New installations start playing an opened file immediately and hide the diagnostic telemetry panel; existing configs keep their saved values.
 - Upgraded to Rust 1.99, egui 0.36, and wgpu 30.
+- Building now needs `meson`, `nasm`, `ninja`, and `curl` instead of FFmpeg development packages.
 
 ### Fixed
 

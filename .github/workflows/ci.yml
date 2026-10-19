@@ -36,16 +36,17 @@ jobs:
   vertical-seek-acceptance:
     # Стабильное имя позволяет сделать сквозную media-приёмку required check-ом.
     name: Vertical seek acceptance (FFmpeg + WGPU)
-    # Ubuntu фиксирует FFmpeg ABI и предоставляет Mesa lavapipe для headless Vulkan submit.
+    # Декодирует закреплённый FFmpeg из ffmpeg-vendor; Ubuntu даёт Mesa lavapipe для headless Vulkan submit.
     runs-on: ubuntu-24.04
     steps:
       # Checkout предоставляет production crates, runner и deterministic corpus recipe.
       - uses: actions/checkout@v4
-      # FFmpeg создаёт/декодирует synthetic corpus, lavapipe исполняет настоящий WGPU submit.
+      # Системный ffmpeg CLI только создаёт synthetic corpus; meson/nasm/ninja собирают
+      # vendored FFmpeg для декода, lavapipe исполняет настоящий WGPU submit.
       - name: Install FFmpeg and headless Vulkan prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends ffmpeg libavcodec-dev libavutil-dev libvulkan1 mesa-vulkan-drivers pkg-config
+          sudo apt-get install --yes --no-install-recommends ffmpeg libvulkan1 mesa-vulkan-drivers meson nasm ninja-build pkg-config
       # Corpus локальный, synthetic и воспроизводимый; сетевые media assets не используются.
       - name: Generate deterministic H.264 MPEG-TS corpus
         run: |
@@ -61,6 +62,12 @@ jobs:
           # Принудительно выбираем Vulkan; display server и swapchain тесту не нужны.
           WGPU_BACKEND: vulkan
         run: scripts/media-regression.sh --scenario h264-ts-seek-wgpu-ffmpeg --path /tmp/fastiplayer-aud013-vertical-seek.ts
+      # Программный AV1 есть только через libdav1d внутри закреплённого FFmpeg:
+      # закоммиченная фикстура IVF проходит декод и настоящий WGPU submit/release.
+      - name: Run vendored AV1 software decode to WGPU acceptance
+        env:
+          WGPU_BACKEND: vulkan
+        run: cargo +1.99.0 test -p video-ffmpeg --features vendored-ffmpeg --locked --test av1_software_decode -- --include-ignored --nocapture
 
   # Каждый matrix entry является отдельным GitHub Actions job для одного standalone fork.
   dependency-patch-tests:
@@ -73,13 +80,15 @@ jobs:
       fail-fast: false
       matrix:
         # Пути совпадают с root workspace.exclude и checked inventory.
-        patch: [cros-libva, cros-codecs, symphonia-format-caf, symphonia-format-isomp4, symphonia-format-mkv, symphonia-codec-aac, wayland-scanner, winit]
+        patch: [cros-libva, cros-codecs, ffmpeg-sys-next, symphonia-format-caf, symphonia-format-isomp4, symphonia-format-mkv, symphonia-codec-aac, wayland-scanner, winit]
         include:
           # Каждый entry хранит собственный manifest и Cargo.lock.
           - patch: cros-libva
             manifest: crates/cros-libva-patch/Cargo.toml
           - patch: cros-codecs
             manifest: crates/cros-codecs-patch/Cargo.toml
+          - patch: ffmpeg-sys-next
+            manifest: crates/ffmpeg-sys-next-patch/Cargo.toml
           - patch: symphonia-format-caf
             manifest: crates/symphonia-format-caf-patch/Cargo.toml
           - patch: symphonia-format-isomp4
@@ -100,6 +109,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends clang libclang-dev libgbm-dev libva-dev pkg-config
+      # Upstream default features ffmpeg-sys-next (system-режим) линкуют все libav*;
+      # vendored-режим патча проверяется workspace-тестами video-ffmpeg.
+      - name: Install system FFmpeg development headers
+        if: matrix.patch == 'ffmpeg-sys-next'
+        run: |
+          sudo apt-get install --yes --no-install-recommends libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev
       # Noble поставляет libva 2.20 / VA-API 1.20: это реальный pre-1.23 bindgen path.
       - name: Assert legacy VA-API 1.20 headers
         if: matrix.patch == 'cros-libva'
@@ -216,7 +231,7 @@ jobs:
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libva-dev pkg-config
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libgbm-dev meson nasm ninja-build libva-dev pkg-config
       # Cache major закреплён; mode и manifests исключают несовместимые artifacts.
       - uses: actions/cache@v4
         with:
@@ -244,7 +259,7 @@ jobs:
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libva-dev pkg-config
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libgbm-dev meson nasm ninja-build libva-dev pkg-config
       # Cache не смешивается с Clippy и test artifacts.
       - uses: actions/cache@v4
         with:
@@ -276,7 +291,7 @@ jobs:
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libsoundtouch-dev libva-dev libvulkan1 mesa-vulkan-drivers pkg-config
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libgbm-dev meson nasm ninja-build libsoundtouch-dev libva-dev libvulkan1 mesa-vulkan-drivers pkg-config
       # Test artifacts хранятся отдельно от lint/docs modes.
       - uses: actions/cache@v4
         with:
@@ -332,7 +347,7 @@ jobs:
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libva-dev pkg-config
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libgbm-dev meson nasm ninja-build libva-dev pkg-config
       # Rustup устанавливает exact MSRV, не меняя primary repo pin.
       - name: Install MSRV toolchain
         run: rustup toolchain install 1.99.0 --profile minimal

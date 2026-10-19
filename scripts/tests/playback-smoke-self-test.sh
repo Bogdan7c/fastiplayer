@@ -148,7 +148,7 @@ require_absent "${dry_run_output}" "PASS: FFmpeg runtime probe acceptance"
 # Прямой probe-only dry-run должен завершиться успешно без запуска обеих Cargo-проверок.
 probe_dry_run_output="$(${PLAYBACK_SMOKE} --mode probe-only --dry-run 2>&1)"
 # Вывод команды доказывает, что пользователь видит конкретный план probe workflow.
-require_output "${probe_dry_run_output}" "cargo test -p video-ffmpeg --features ffmpeg probe::tests"
+require_output "${probe_dry_run_output}" "cargo test -p video-ffmpeg --features vendored-ffmpeg probe::tests"
 # Outcome явно отделяет запланированный probe от реально выполненного acceptance.
 require_output "${probe_dry_run_output}" "DRY-RUN: WOULD RUN FFmpeg runtime probe acceptance; no checks were executed"
 # Главный regression invariant запрещает production PASS в direct dry-run режиме.

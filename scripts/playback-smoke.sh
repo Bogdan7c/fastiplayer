@@ -767,13 +767,13 @@ run_hardware_av1_positive_scenario() {
 run_probe_steps() {
     # Unit/fake probe tests покрывают missing/too-old FFmpeg без runtime override.
     run_step \
-        "cargo test -p video-ffmpeg --features ffmpeg probe::tests" \
-        cargo test -p video-ffmpeg --features ffmpeg --locked probe::tests
+        "cargo test -p video-ffmpeg --features vendored-ffmpeg probe::tests" \
+        cargo test -p video-ffmpeg --features vendored-ffmpeg --locked probe::tests
 
     # Exact integration-test selector не запускает соседние ignored media/WGPU regressions.
     run_step \
-        "cargo test -p video-ffmpeg --features ffmpeg --test ffmpeg_runtime_probe -- --ignored --exact installed_ffmpeg_runtime_probe_reports_available_runtime" \
-        cargo test -p video-ffmpeg --features ffmpeg --locked \
+        "cargo test -p video-ffmpeg --features vendored-ffmpeg --test ffmpeg_runtime_probe -- --ignored --exact installed_ffmpeg_runtime_probe_reports_available_runtime" \
+        cargo test -p video-ffmpeg --features vendored-ffmpeg --locked \
             --test ffmpeg_runtime_probe -- --ignored --exact \
             installed_ffmpeg_runtime_probe_reports_available_runtime
 

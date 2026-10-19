@@ -4,16 +4,26 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# build.rs кладёт vendored FFmpeg рядом с бинарём и прописывает RUNPATH.
+build = "build.rs"
 
 [[bin]]
 name = "fastiplayer"
 path = "src/main.rs"
 
 [features]
-# FFmpeg software decode включён по умолчанию для debug и release сборок
-# бинаря `fastiplayer`. Сборка без FFmpeg: `--no-default-features`.
-default = ["ffmpeg"]
+# Программный декодер FFmpeg включён по умолчанию, и по умолчанию это наш
+# закреплённый FFmpeg 8.1.3 + dav1d (собирается вместе с бинарём, кладётся
+# в target/<profile>/lib/). Варианты:
+# - `--no-default-features --features system-ffmpeg` — системный FFmpeg 8.1+
+#   (для мейнтейнеров пакетов дистрибутивов);
+# - `--no-default-features` — без программного декодера.
+# Фичи cargo складываются: если включены обе, побеждает vendored.
+default = ["vendored-ffmpeg"]
+# Код FFmpeg-декодера (используется в cfg); сам по себе = системный FFmpeg.
 ffmpeg = ["video-ffmpeg/ffmpeg"]
+vendored-ffmpeg = ["ffmpeg", "video-ffmpeg/vendored-ffmpeg"]
+system-ffmpeg = ["ffmpeg"]
 
 [dependencies]
 animation-core.workspace = true

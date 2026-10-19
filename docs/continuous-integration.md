@@ -42,18 +42,20 @@ suites. Local-media regressions получают только explicit `--scenar
 
 All-target job `Workspace tests (all features)` на clean Ubuntu 24.04 runner
 явно устанавливает только native build dependencies:
-`clang`, `libclang-dev`, `libasound2-dev`, `libavcodec-dev`, `libavutil-dev`,
-`libgbm-dev`, `libsoundtouch-dev`, `libva-dev`, `libvulkan1`,
-`mesa-vulkan-drivers` и `pkg-config`. Они нужны для bindgen, CPAL/ALSA, FFmpeg,
-GBM, VA-API, линковки SoundTouch backend example и headless lavapipe adapter.
+`clang`, `libclang-dev`, `libasound2-dev`, `libgbm-dev`, `libsoundtouch-dev`,
+`libva-dev`, `libvulkan1`, `mesa-vulkan-drivers`, `meson`, `nasm`,
+`ninja-build` и `pkg-config`. Они нужны для bindgen, CPAL/ALSA, GBM, VA-API,
+линковки SoundTouch backend example, headless lavapipe adapter и сборки
+закреплённого FFmpeg + dav1d crate-ом `ffmpeg-vendor` (системный FFmpeg SDK
+не нужен).
 Job задаёт job-local `CARGO_PROFILE_TEST_DEBUG=0`: состав тестов сохраняется, а полный DWARF не переполняет диск hosted runner до
 запуска test binaries. Остальные jobs и локальные Cargo profiles не меняются.
 WGPU acceptance в этом job выполняется через software Vulkan/lavapipe; реальный
 GPU, VA display, звуковое устройство и окно не требуются и не эмулируются.
 
 Toolchain-policy matrix устанавливает тот же workspace minimum явно, включая
-прямой `libdrm-dev`: ALSA, libavcodec/libavutil, VA-API/DRM/GBM,
-clang/libclang и pkg-config. `Format and guardrails` отдельно устанавливает
+прямой `libdrm-dev`: ALSA, VA-API/DRM/GBM, clang/libclang, pkg-config и
+meson/nasm/ninja для vendored FFmpeg. `Format and guardrails` отдельно устанавливает
 exact Rust 1.99.0 + `rustfmt`, а `Strict Clippy` — exact Rust 1.99.0 +
 `clippy`, поэтому quality jobs не зависят от состава runner tool cache.
 

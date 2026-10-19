@@ -110,14 +110,16 @@ require_asset() {
     [[ -f "${asset_path}" ]] || skip_acceptance "${option_name} local asset not found: ${asset_path}"
 }
 
-# Проверяет software build/runtime prerequisites до запуска acceptance suite.
+# Проверяет prerequisites программного декодера до запуска acceptance suite.
+# Системный FFmpeg не нужен: сборка по умолчанию собирает закреплённый FFmpeg
+# (crate ffmpeg-vendor), для чего нужны meson, ninja и nasm.
 require_ffmpeg_runtime() {
     [[ "${dry_run}" == "true" ]] && return
-    command -v pkg-config >/dev/null 2>&1 || skip_acceptance "pkg-config not available for FFmpeg runtime preflight"
-    pkg-config --atleast-version=62 libavcodec >/dev/null 2>&1 || \
-        skip_acceptance "libavcodec >= 62 not available via pkg-config"
-    pkg-config --atleast-version=60 libavutil >/dev/null 2>&1 || \
-        skip_acceptance "libavutil >= 60 unavailable pkg-config"
+    local build_tool
+    for build_tool in meson ninja nasm; do
+        command -v "${build_tool}" >/dev/null 2>&1 || \
+            skip_acceptance "${build_tool} not available for the vendored FFmpeg build"
+    done
 }
 
 # Проверяет локальный VA-API runtime и exact AV1 decode capability без запуска GUI.

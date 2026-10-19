@@ -99,9 +99,9 @@ def validate() -> list[str]:
         # Точное совпадение предотвращает незаметный запуск через root workspace.
         if expected_command not in patch["focused_automated_tests"]:
             errors.append(f"{patch_path}: missing direct locked test command")
-    # Ровно восемь записей защищают от удаления replace без обновления policy.
-    if len(inventory.get("patch", [])) != 8:
-        errors.append("docs/dependency-patches.toml: exactly eight patch records are expected")
+    # Ровно девять записей защищают от удаления replace без обновления policy.
+    if len(inventory.get("patch", [])) != 9:
+        errors.append("docs/dependency-patches.toml: exactly nine patch records are expected")
     # Возвращаем полный набор нарушений вызывающему runner-у.
     return errors
 
@@ -117,7 +117,7 @@ def main() -> int:
     if errors:
         return 1
     # Короткое подтверждение показывает число проверенных forks.
-    print("Dependency patch inventory: 8 standalone patch crates checked")
+    print("Dependency patch inventory: 9 standalone patch crates checked")
     # Ноль означает полное соответствие inventory и manifests.
     return 0
 

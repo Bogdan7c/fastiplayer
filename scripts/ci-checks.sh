@@ -84,6 +84,7 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/video-backend-api
     crates/video-present-core
     crates/video-ffmpeg
+    crates/ffmpeg-vendor
     crates/render-core
     crates/render-wgpu-video
     crates/render-wgpu-shell
@@ -94,6 +95,7 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
 readonly -a DEPENDENCY_PATCH_MANIFESTS=(
     crates/cros-libva-patch/Cargo.toml
     crates/cros-codecs-patch/Cargo.toml
+    crates/ffmpeg-sys-next-patch/Cargo.toml
     crates/symphonia-format-caf-patch/Cargo.toml
     crates/symphonia-format-isomp4-patch/Cargo.toml
     crates/symphonia-codec-aac-patch/Cargo.toml
