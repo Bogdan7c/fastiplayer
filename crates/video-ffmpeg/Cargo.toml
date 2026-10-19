@@ -24,7 +24,7 @@ crossbeam-channel.workspace = true
 thiserror.workspace = true
 # Не workspace-зависимость намеренно: guardrail разрешает FFmpeg-crate-ы только здесь.
 # Прямая зависимость нужна, чтобы получить DEP_FASTIPLAYER_FFMPEG_VENDOR_* в build.rs.
-ffmpeg-vendor = { path = "../ffmpeg-vendor", optional = true }
+ffmpeg-vendor = { version = "0.2.0", path = "../ffmpeg-vendor", optional = true }
 video-backend-api.workspace = true
 video-core.workspace = true
 video-frame-contract.workspace = true
@@ -52,8 +52,10 @@ pkg-config = "0.3"
 
 # cargo-machete 0.9.2 не связывает build.rs с [build-dependencies];
 # реальное использование закреплено verify_pkg_config_inputs().
+# ffmpeg-vendor не импортируется в Rust-коде: зависимость нужна только чтобы build.rs
+# получил его метаданные DEP_FASTIPLAYER_FFMPEG_VENDOR_* (пути к .so и лицензиям).
 [package.metadata.cargo-machete]
-ignored = ["pkg-config"]
+ignored = ["pkg-config", "ffmpeg-vendor"]
 
 [lints]
 workspace = true

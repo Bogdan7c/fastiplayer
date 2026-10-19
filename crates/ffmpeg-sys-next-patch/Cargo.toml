@@ -131,6 +131,7 @@ version = "0.2"
 
 # Fastiplayer: собирает FFmpeg и передаёт prefix как DEP_FASTIPLAYER_FFMPEG_VENDOR_PREFIX.
 [dependencies.ffmpeg-vendor]
+version = "0.2.0"
 path = "../ffmpeg-vendor"
 optional = true
 
