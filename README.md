@@ -137,7 +137,7 @@ Also install the Vulkan and VA-API drivers for your GPU (for example `vulkan-rad
 
 - **Linux only for now.** Windows is on the roadmap before 1.0; macOS may come later, without a promise.
 - **Vulkan is required**, even for software decoding. Hardware decoding depends on your GPU, driver, and codec.
-- **Subtitles are in `main`, not in the `v0.1.0-alpha.1` release.** Some formats are not supported, among them VobSub, DVB and `.sup` files; the [subtitle matrix](docs/subtitles/compatibility.md#known-limitations-summary) lists the limits.
+- **Subtitles ship since `v0.2.0`.** Some formats are not supported, among them VobSub, DVB and `.sup` files; the [subtitle matrix](docs/subtitles/compatibility.md#known-limitations-summary) lists the limits.
 - **Native HDR output is not implemented;** HDR is tone-mapped to SDR.
 - **The interface is unfinished** and partly in Russian. A full redesign and translations are planned.
 - **Not supported:** DRM, RTSP/RTP/MMS, RTMP. Web-page playback depends on `yt-dlp` and the site.
@@ -148,13 +148,13 @@ The [compatibility matrix](docs/web-media-compatibility-matrix.md) and [known li
 
 The order is fixed in [milestone 1.0](https://github.com/Bogdan7c/fastiplayer/milestone/1). These are planned, not shipped:
 
-1. ~~[Native Rust subtitle engine](https://github.com/Bogdan7c/fastiplayer/issues/1) with a published text/styled/bitmap format matrix~~ — **done** in `main` after `v0.1.0-alpha.1` (planned for 0.2.0); see the [subtitle matrix](docs/subtitles/compatibility.md).
+1. ~~[Native Rust subtitle engine](https://github.com/Bogdan7c/fastiplayer/issues/1) with a published text/styled/bitmap format matrix~~ — **done** in `v0.2.0`; see the [subtitle matrix](docs/subtitles/compatibility.md).
 2. [Browser media handoff bridge and extension](https://github.com/Bogdan7c/fastiplayer/issues/2) — **next up**.
 3. [Cohesive application redesign](https://github.com/Bogdan7c/fastiplayer/issues/3), including new settings.
 4. [Fully configurable colors and appearance](https://github.com/Bogdan7c/fastiplayer/issues/4).
 5. [Localization and first translations](https://github.com/Bogdan7c/fastiplayer/issues/5).
 6. [OpenGL ES 2.0 renderer for older Linux hardware](https://github.com/Bogdan7c/fastiplayer/issues/6).
-7. ~~[Drag-and-drop for local files and URLs](https://github.com/Bogdan7c/fastiplayer/issues/7)~~ — **done** in `main` after `v0.1.0-alpha.1`.
+7. ~~[Drag-and-drop for local files and URLs](https://github.com/Bogdan7c/fastiplayer/issues/7)~~ — **done** in `v0.2.0`.
 8. [Native Windows support](https://github.com/Bogdan7c/fastiplayer/issues/8).
 
 NVDEC, native HDR output, and macOS are possible later directions without dates. See the [vision](docs/vision.md) for where the project is heading.

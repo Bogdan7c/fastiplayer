@@ -1,6 +1,6 @@
 # Fastiplayer: subtitle compatibility matrix
 
-**Version 0.2.0** (not released yet: in `main` after `v0.1.0-alpha.1`). This matrix closes [issue #1](https://github.com/Bogdan7c/fastiplayer/issues/1) and the public plan [`user/subtitles/`](../../user/subtitles/README.md) (sessions 01–15, final acceptance 19 October 2026). Later changes update this file and name the version they ship in.
+**Version 0.2.0** (released 20 October 2026 as `v0.2.0`). This matrix closes [issue #1](https://github.com/Bogdan7c/fastiplayer/issues/1) and the public plan [`user/subtitles/`](../../user/subtitles/README.md) (sessions 01–15, final acceptance 19 October 2026). Later changes update this file and name the version they ship in.
 
 Legend:
 - **Supported** — works end to end in the player. It is backed by automated tests: pixels read back after the GPU pass where the feature is visible, or parser and model tests for timing and markup. Many rows also have a dated manual acceptance in `user/subtitles/results/NN.md`.

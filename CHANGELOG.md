@@ -4,7 +4,11 @@ Notable project changes are recorded here in a Keep a Changelog-like structure. 
 
 ## [Unreleased]
 
-Planned as 0.2.0.
+Nothing yet.
+
+## [0.2.0] - 2026-10-20
+
+Second public development release: Linux-first, source-only, active development before 1.0. Workspace packages and their internal version requirements are aligned to `0.2.0`. See the [release notes](docs/releases/v0.2.0.md).
 
 ### Added
 
@@ -44,6 +48,10 @@ Planned as 0.2.0.
 - Live HLS starts behind the live edge, removing buffering cycles at the edge.
 - Recreating the audio output no longer shifts audio against video.
 - VA-API AV1 global-motion parsing no longer hangs AMD VCN; AV1/VP9 frame presentation times follow the shown temporal unit.
+
+### Security
+
+- `rustls` 0.23.46 (RUSTSEC-2026-0285, -0346, -0348, -0349) and `ringbuf` 0.5.3 (RUSTSEC-2026-0293; the audio ring holds `f32`, so the double-free path was not reachable).
 
 ### Planned
 

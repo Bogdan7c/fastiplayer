@@ -20,6 +20,7 @@ Start with the English [project overview and build instructions](../README.md) a
 | [Support](../SUPPORT.md) | EN | Bugs/proposals routing; Discussions enabled |
 | [Maintainers](../MAINTAINERS.md) | EN | Sole core maintainer and deliberately deferred conduct enforcement contact |
 | [Changelog](../CHANGELOG.md) | EN | Development history and alpha release scope |
+| [0.2.0 release notes](releases/v0.2.0.md) | EN | Subtitles, bundled FFmpeg, drag-and-drop and other changes since the alpha |
 | [Alpha release notes](releases/v0.1.0-alpha.1.md) | EN | Source-only prerelease scope, evidence and limitations |
 | [Issue forms and chooser](../.github/ISSUE_TEMPLATE) | EN | Bug/feature forms and support/security routes (YAML; internal comment in RU) |
 | [Pull request template](../.github/pull_request_template.md) | EN | Problem, scope, contributor checks and hardware evidence |
