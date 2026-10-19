@@ -209,3 +209,11 @@ Reopen у хвоста/конца (2026-10-17, #21): anchor PTS > target доп�
 - `WorkerWakeupReason::DemuxRetryDeadline` и `StagedPreflightDeadline` входят в existing `PlayerWorkerWakeupPlan`; минимальный deadline выигрывает, при равенстве сохраняется existing-work-first.
 - `PlayerTickConfig::staged_video_preflight_timeout` задаёт bounded wall-clock timeout (default 15s), который worker передаёт session builder-у.
 - Проверки: `cargo test -p player-core`, `cargo clippy -p player-core --all-targets -- -D warnings`, `cargo +1.96.0 check --workspace --locked`, `scripts/check-refactor-guardrails.py`.
+
+
+## События worker → UI: два потока (2026-10-19, коммит ec65c597)
+- Раньше lifecycle-события (`Player`/`Scrub`/`RenderError`) и tick-телеметрия делили один bounded канал на 512; при быстром decoder-е tick-и забивали его и события молча терялись (например `AudioPlaybackResumed` → стартовая проверка звука не закрывалась ~1 из 5 HLS-стартов; под риском `MediaOpened`, `SeekCommitted`, `FatalError`).
+- Теперь `worker/event_stream.rs`: `WorkerEventPublisher`/`WorkerEventConsumer`. Lifecycle — упорядоченная очередь `LIFECYCLE_EVENT_CAPACITY = 512`, переполнение → `warn!` с событием. Tick-телеметрия — слот-накопитель `Arc<Mutex<Option<PlayerTickResult>>>`, публикация через `try_lock` + локальный `tick_carry` (worker никогда не ждёт UI).
+- `PlayerTickResult::absorb` (`session/tick/result_merge.rs`): счётчики — насыщающая сумма, списки дописываются с лимитом `MAX_AGGREGATED_LIST_ENTRIES = 4096` (лишнее в `truncated_list_entries`), `demux_backpressured` — ИЛИ; деструктуризация без `..` заставляет задать семантику новому полю.
+- `PlayerWorkerEvent::Tick` удалён; UI: `PlayerWorker::take_tick_telemetry()` → app-egui `frame_prepare/tick_telemetry.rs` (усечение на старте — штатное, лог debug). `drain_events()` отдаёт только lifecycle.
+- Тесты: `worker/tests/event_streams.rs`, юниты в `result_merge.rs`.

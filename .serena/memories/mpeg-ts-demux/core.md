@@ -70,3 +70,12 @@
 ## S12 cancellation priority proof (2026-09-05)
 
 - `tests/cancellation_priority.rs` отменяет source token внутри ordered-resource read перед возвратом restartable error. Consumer уже получил настоящие AAC packets; затем получает typed `MpegTsDemuxError::Cancelled`, не EOF/interruption. Производственный contract не изменён.
+
+
+## Длительность и дальний seek больших файлов (2026-10-19, коммит 9cdf01f6)
+- Проблема была: начальный индекс (`seek_scan_packets` ≈ 6 МБ) не доходил до EOF → `duration = None` → player-core запрещал seek (`UnknownTimeline`), `--:--` у любого локального TS > ~6 МБ.
+- `src/duration_probe.rs`: для seekable-входа без EOF читается хвост (`tail_probe_bytes`, 2 МиБ), max PTS (развёртка 33 бит от конца головы), семантика = сырой max PTS как при EOF. `ContainerDurationEstimate::{FromTailTimestamps, FromByteRate, Unknown}`; хвост принимается, если позже головы и битрейт файла в [2/3, 3/2] от битрейта головы, иначе оценка по размеру (решение владельца для склеек). Поле `duration_basis` у демуксера. Правило: оценка заменяет None, дальше duration только растёт.
+- `src/far_seek.rs` (+ `src/seek_bisect.rs`): цель за покрытием индекса → бисекция по PTS (зонд `far_seek_probe_bytes` 512 КиБ, ≤48 зондов), для `FromByteRate`/немонотонных PTS — пропорциональная позиция; локальное окно индекса от точки (`far_seek_preroll` 4 с) и выбор anchor прежними правилами через `land_on_anchor`. Транзакционно: reader/parser восстанавливаются, `seek_index`/`index_scan_offset`/continuation не меняются.
+- Инвариант покрытия: `index_coverage_end`/`index_covers_within` считают только anchor-ы до `index_scan_offset` (anchor-ы воспроизведения за покрытием больше не считаются покрытием — раньше обратный seek после дальнего садился на край индекса).
+- Склейки по размеру позиционируются приблизительно (зависит от равномерности битрейта). Замер: 320 МБ / 1530 с — open 34 мс, seek ~40 мс, промах ≤0,12 с.
+- Тесты: `src/tests/duration_probe.rs`, `src/tests/far_seek.rs`, `tests/large_file_duration.rs` (TS ~7,2 МБ через `LocalFileSource`).

@@ -15,3 +15,7 @@
 
 ## Известные нестабильности
 GPU-тесты app-egui под `--test-threads=64` (stream_gpu live_history, stream_dash_gpu, stream_hls_vertical) и `startup_import` 2 с — падают и до сессии 14.
+
+
+## После приёмки (2026-10-19, коммит 82659de8)
+- Брошенный путь не к обычному файлу (FIFO, папка, устройство, сокет): `SubtitleLoadFailure::NotARegularFile` из `file_loader/regular_file.rs` → `SubtitleFileProblem::NotARegularFile` → свой текст уведомления («"x" is not a regular file, so it can't be used as subtitles.») и подсказки меню. Нечитаемый обычный файл остаётся `ReadFailed` → `CannotOpen`. FIFO рядом с видео автопоиск вообще не предлагает. Тесты: `state/subtitles/tests/{special_files,file_failure_toasts}.rs`.
