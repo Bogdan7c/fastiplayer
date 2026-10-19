@@ -45,14 +45,14 @@ fn fifo_named_like_a_subtitle_fails_promptly_instead_of_hanging() {
     assert!(
         matches!(
             outcome,
-            SidecarJobOutcome::Failed(SubtitleLoadFailure::ReadFailed { .. })
+            SidecarJobOutcome::Failed(SubtitleLoadFailure::NotARegularFile)
         ),
-        "a FIFO is reported as a file that does not open"
+        "a FIFO is reported as not a regular file"
     );
 }
 
 #[test]
-fn directory_named_like_a_subtitle_is_reported_as_not_openable() {
+fn directory_named_like_a_subtitle_is_reported_as_not_a_regular_file() {
     let directory = tempfile::tempdir().expect("tempdir");
     let folder = directory.path().join("Folder.srt");
     std::fs::create_dir(&folder).expect("create dir");
@@ -61,7 +61,7 @@ fn directory_named_like_a_subtitle_is_reported_as_not_openable() {
 
     assert!(matches!(
         outcome,
-        SidecarJobOutcome::Failed(SubtitleLoadFailure::ReadFailed { .. })
+        SidecarJobOutcome::Failed(SubtitleLoadFailure::NotARegularFile)
     ));
 }
 

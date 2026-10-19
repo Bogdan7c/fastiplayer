@@ -33,6 +33,7 @@ impl SubtitleLoadFailure {
     pub(super) fn file_problem(&self) -> SubtitleFileProblem {
         match self {
             Self::ReadFailed { .. } => SubtitleFileProblem::CannotOpen,
+            Self::NotARegularFile => SubtitleFileProblem::NotARegularFile,
             Self::FileTooLarge { .. } => SubtitleFileProblem::TooLarge,
             Self::ParseFailed(
                 SubtitleLoadError::InputTooLarge { .. }

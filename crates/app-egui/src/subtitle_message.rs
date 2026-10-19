@@ -208,6 +208,7 @@ pub(crate) const fn unavailable_reason_text(reason: &SubtitleUnavailableReason) 
         }
         SubtitleUnavailableReason::LoadFailed(problem) => match problem {
             SubtitleFileProblem::CannotOpen => "This subtitle file could not be opened.",
+            SubtitleFileProblem::NotARegularFile => "This is not a regular subtitle file.",
             SubtitleFileProblem::TooLarge => "This subtitle file is too large.",
             SubtitleFileProblem::CannotParse => "No subtitles could be read from this file.",
             SubtitleFileProblem::Other => "This subtitle file could not be read.",
@@ -223,6 +224,9 @@ pub(crate) fn file_failure_toast(file_name: &str, problem: SubtitleFileProblem) 
             format!(
                 "Could not open \"{file_name}\". Check that the file exists and you can read it."
             )
+        }
+        SubtitleFileProblem::NotARegularFile => {
+            format!("\"{file_name}\" is not a regular file, so it can't be used as subtitles.")
         }
         SubtitleFileProblem::TooLarge => {
             format!("\"{file_name}\" is too large to use as subtitles.")

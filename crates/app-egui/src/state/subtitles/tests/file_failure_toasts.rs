@@ -63,7 +63,7 @@ fn missing_file_gives_one_cannot_open_toast_with_the_file_name_and_no_directory(
 }
 
 #[test]
-fn fifo_gives_the_cannot_open_toast_instead_of_hanging() {
+fn fifo_gives_the_not_a_regular_file_toast_instead_of_hanging() {
     let (mut owner, directory) = owner_with_video();
     let fifo = directory.path().join("Pipe.srt");
     assert!(
@@ -78,8 +78,10 @@ fn fifo_gives_the_cannot_open_toast_instead_of_hanging() {
 
     assert_eq!(
         toasts,
-        ["Could not open \"Pipe.srt\". Check that the file exists and you can read it."]
+        ["\"Pipe.srt\" is not a regular file, so it can't be used as subtitles."]
     );
+    let directory_text = directory.path().to_string_lossy().into_owned();
+    assert!(!toasts[0].contains(&directory_text), "no directory path");
 }
 
 #[test]
@@ -130,6 +132,47 @@ fn a_file_that_loads_fine_gives_no_toast() {
 }
 
 #[test]
+fn unreadable_regular_file_keeps_the_cannot_open_toast() {
+    use std::os::unix::fs::PermissionsExt;
+    let (mut owner, directory) = owner_with_video();
+    let locked = directory.path().join("Locked.srt");
+    std::fs::write(&locked, TWO_CUE_SRT).expect("write");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    if std::fs::File::open(&locked).is_ok() {
+        // Запуск от root (или ФС без прав): файл всё равно читается, проверять нечего.
+        return;
+    }
+
+    let toasts = toasts_after_user_adds(&mut owner, &locked);
+
+    assert_eq!(
+        toasts,
+        ["Could not open \"Locked.srt\". Check that the file exists and you can read it."]
+    );
+    let directory_text = directory.path().to_string_lossy().into_owned();
+    assert!(!toasts[0].contains(&directory_text), "no directory path");
+}
+
+#[test]
+fn fifo_sidecar_next_to_the_video_is_not_offered_and_gives_no_toast() {
+    let (directory, video) = movie_with(&[]);
+    assert!(
+        Command::new("mkfifo")
+            .arg(directory.path().join("Movie.srt"))
+            .status()
+            .expect("mkfifo")
+            .success()
+    );
+    let mut owner = owner();
+    begin_and_wait(&mut owner, instance(1), &video);
+    settle(&mut owner);
+
+    assert!(owner.take_user_file_failures().is_empty());
+    // Автопоиск вообще не предлагает не-файл как дорожку, поэтому подсказки в меню нет.
+    assert!(owner.menu_view().tracks.is_empty());
+}
+
+#[test]
 fn failures_are_handed_out_once() {
     let (mut owner, directory) = owner_with_video();
     owner.attach_file(&directory.path().join("Gone.srt"));
@@ -166,6 +209,10 @@ fn menu_hints_distinguish_the_reasons_without_paths() {
     assert_eq!(
         hint(SubtitleFileProblem::CannotOpen),
         "This subtitle file could not be opened."
+    );
+    assert_eq!(
+        hint(SubtitleFileProblem::NotARegularFile),
+        "This is not a regular subtitle file."
     );
     assert_eq!(
         hint(SubtitleFileProblem::TooLarge),

@@ -154,6 +154,11 @@ pub(super) enum SubtitleLoadFailure {
         /// Вид ошибки ввода-вывода (без пути).
         kind: io::ErrorKind,
     },
+    /// Путь ведёт не к обычному файлу: канал (FIFO), папка, устройство или сокет. Такой «файл»
+    /// не читаем вовсе (чтение FIFO без писателя повисло бы навсегда), поэтому это отдельная
+    /// причина, а не «не открылся»: человеку нужен другой совет.
+    #[error("subtitle path is not a regular file")]
+    NotARegularFile,
     /// Файл прочитан, но не разобран (слишком много реплик, не WebVTT и т.п.).
     #[error("subtitle file could not be parsed: {0}")]
     ParseFailed(SubtitleLoadError),

@@ -44,11 +44,9 @@ fn open_without_blocking(path: &Path) -> io::Result<File> {
     OpenOptions::new().read(true).open(path)
 }
 
-/// Причина для всего, что не обычный файл: тот же отказ, что у недоступного файла.
-fn not_a_regular_file() -> SubtitleLoadFailure {
-    SubtitleLoadFailure::ReadFailed {
-        kind: io::ErrorKind::InvalidInput,
-    }
+/// Причина для всего, что не обычный файл: своя, а не выдуманная ошибка ввода-вывода.
+const fn not_a_regular_file() -> SubtitleLoadFailure {
+    SubtitleLoadFailure::NotARegularFile
 }
 
 /// Ошибка ввода-вывода без пути в причине.
