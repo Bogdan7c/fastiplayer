@@ -26,18 +26,29 @@ const EXPECTED_FRAME_SEQUENCE: [FrameSequenceStage; 6] = [
 ];
 
 /// Лёгкий production contract проверяет перестановку стадий в debug/test сборках.
+///
+/// С сессии 04 кадр может пропускать стадии (без egui-прохода нет `EguiOutput`, без
+/// показа нет `MaterializerLookup`/`RendererSubmit`), поэтому контракт требует только
+/// монотонного порядка достигнутых стадий, а не полного прохода всех шести.
 #[derive(Default)]
 pub(super) struct FrameSequenceContract {
+    /// Индекс последней достигнутой стадии в `EXPECTED_FRAME_SEQUENCE` (+1).
     next_stage_index: usize,
 }
 
 impl FrameSequenceObserver for FrameSequenceContract {
     fn reached(&mut self, stage: FrameSequenceStage) {
-        debug_assert_eq!(
-            EXPECTED_FRAME_SEQUENCE.get(self.next_stage_index),
-            Some(&stage)
+        let position = EXPECTED_FRAME_SEQUENCE
+            .iter()
+            .position(|expected| *expected == stage);
+        debug_assert!(
+            position.is_some_and(|position| position >= self.next_stage_index),
+            "frame stage {stage:?} reached out of order (next expected index {})",
+            self.next_stage_index
         );
-        self.next_stage_index += 1;
+        if let Some(position) = position {
+            self.next_stage_index = position + 1;
+        }
     }
 }
 
@@ -56,11 +67,40 @@ mod tests {
         assert_eq!(contract.next_stage_index, EXPECTED_FRAME_SEQUENCE.len());
     }
 
+    /// Пропуск стадий разрешён (кадр без egui-прохода и без показа), порядок — нет.
+    #[test]
+    fn contract_allows_skipped_stages_but_keeps_order() {
+        let mut skipping_ui = FrameSequenceContract::default();
+        skipping_ui.reached(FrameSequenceStage::WorkerEventDrain);
+        skipping_ui.reached(FrameSequenceStage::WorkerEventRecord);
+        skipping_ui.reached(FrameSequenceStage::DesktopPublish);
+        skipping_ui.reached(FrameSequenceStage::MaterializerLookup);
+        skipping_ui.reached(FrameSequenceStage::RendererSubmit);
+        assert_eq!(skipping_ui.next_stage_index, EXPECTED_FRAME_SEQUENCE.len());
+
+        let mut skipping_frame = FrameSequenceContract::default();
+        skipping_frame.reached(FrameSequenceStage::WorkerEventDrain);
+        skipping_frame.reached(FrameSequenceStage::WorkerEventRecord);
+        skipping_frame.reached(FrameSequenceStage::DesktopPublish);
+        assert_eq!(skipping_frame.next_stage_index, 3);
+    }
+
+    /// Возврат к уже пройденной стадии (egui после submit-а) ловится контрактом.
+    #[test]
+    #[should_panic(expected = "reached out of order")]
+    fn contract_rejects_stage_after_a_later_one() {
+        let mut contract = FrameSequenceContract::default();
+        contract.reached(FrameSequenceStage::WorkerEventDrain);
+        contract.reached(FrameSequenceStage::RendererSubmit);
+        contract.reached(FrameSequenceStage::EguiOutput);
+    }
+
     /// Перестановка стадий (publish до drain-а worker events) ловится контрактом.
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "reached out of order")]
     fn contract_rejects_reordered_runtime_stage() {
         let mut contract = FrameSequenceContract::default();
         contract.reached(FrameSequenceStage::DesktopPublish);
+        contract.reached(FrameSequenceStage::WorkerEventDrain);
     }
 }

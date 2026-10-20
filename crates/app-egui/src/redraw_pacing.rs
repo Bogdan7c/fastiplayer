@@ -1,20 +1,51 @@
+//! Планировщик пробуждений UI-потока (cpu-parity, сессия 04): события вместо vsync.
+//!
+//! До сессии 04 при активном воспроизведении shell после каждого кадра просил `request_redraw`
+//! и просыпался на каждом frame callback (vsync), делая полный проход даже без изменений.
+//! Теперь источники пробуждения — события: ввод, wake worker-а (новый кадр, событие плеера),
+//! запросы egui, таймеры UI-модели (тост, автоскрытие, секунда/пиксель позиции) и фоновые
+//! задачи. Во время воспроизведения дополнительно работает страховочный таймер
+//! [`PLAYBACK_REDRAW_FALLBACK_INTERVAL`]: если какое-то событие потеряно, UI всё равно
+//! проверит себя не позже чем через 250 мс (счётчик `redraw_fallback_found_work` покажет,
+//! сработала ли страховка по делу).
+//!
+//! Инвариант: в паузе и простое пробуждений без причины нет (как и раньше — `Wait`).
+
 use std::time::{Duration, Instant};
 
 use winit::{event::WindowEvent, event_loop::ControlFlow};
 
 use crate::startup_media::STARTUP_MEDIA_POLL_INTERVAL;
 
-/// Единый интервал polling-а shell background jobs, когда playback не даёт continuous redraw.
+/// Единый интервал polling-а shell background jobs, когда UI не рисует по событиям.
 const BACKGROUND_JOB_POLL_INTERVAL: Duration = STARTUP_MEDIA_POLL_INTERVAL;
 
-/// Решение render pass-а о том, нужен ли следующий redraw без внешнего window event-а.
+/// Страховочный таймер воспроизведения: верхняя граница «UI не проверял себя».
+///
+/// Это не ритм отрисовки, а сеть под канатоходцем: в норме кадр будят события раньше.
+pub(crate) const PLAYBACK_REDRAW_FALLBACK_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Решение render pass-а о следующем пробуждении без внешнего window event-а.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RedrawPacing {
-    /// Playback/seek/opening state требует непрерывного render loop-а.
-    continuous: bool,
+    /// Нужен ещё один проход сразу: egui просил, worker-команда ушла, действия панелей.
+    immediate: bool,
 
-    /// Worker command или egui попросили ещё один redraw для доставки нового состояния.
-    follow_up: bool,
+    /// Воспроизведение активно: держим страховочный таймер, но НЕ непрерывный redraw.
+    playback_active: bool,
+}
+
+/// Почему планировщик запросил redraw без внешнего события.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RedrawCause {
+    /// Кадр сам попросил продолжение (egui, worker-команда, действия панелей).
+    Immediate,
+    /// Настал дедлайн UI-модели (таймер, egui `request_repaint_after`, позиция).
+    UiDeadline,
+    /// Настал срок опроса фоновой задачи.
+    BackgroundPoll,
+    /// Страховочный таймер воспроизведения.
+    PlaybackFallback,
 }
 
 /// Действие, которое shell должен применить к winit event loop после решения pacing-а.
@@ -23,59 +54,68 @@ pub(crate) struct RedrawControlAction {
     /// Следующий режим ожидания winit event loop.
     pub(crate) control_flow: ControlFlow,
 
-    /// Нужно ли запросить redraw у окна вместе с установкой `control_flow`.
-    pub(crate) request_redraw: bool,
+    /// Почему нужно запросить redraw у окна вместе с установкой `control_flow`; `None` — не нужно.
+    pub(crate) redraw_cause: Option<RedrawCause>,
 }
 
 impl RedrawControlAction {
     /// Собирает action без раскрытия деталей хранения scheduler-а наружу.
-    const fn new(control_flow: ControlFlow, request_redraw: bool) -> Self {
+    const fn new(control_flow: ControlFlow, redraw_cause: Option<RedrawCause>) -> Self {
         Self {
             control_flow,
-            request_redraw,
+            redraw_cause,
         }
+    }
+
+    /// Нужно ли запросить redraw у окна.
+    #[must_use]
+    pub(crate) const fn request_redraw(self) -> bool {
+        self.redraw_cause.is_some()
     }
 }
 
 impl RedrawPacing {
-    /// Создаёт итоговое pacing-решение после render pass-а.
-    pub(crate) const fn new(continuous: bool, follow_up: bool) -> Self {
+    /// Создаёт итоговое pacing-решение после кадра.
+    pub(crate) const fn new(immediate: bool, playback_active: bool) -> Self {
         Self {
-            continuous,
-            follow_up,
+            immediate,
+            playback_active,
         }
-    }
-
-    /// Возвращает `true`, если shell должен перерисовываться непрерывно (playback).
-    pub(crate) const fn wants_continuous_redraw(self) -> bool {
-        self.continuous
     }
 
     /// Возвращает `true`, если следующий redraw надо запросить сразу.
     pub(crate) const fn wants_immediate_redraw(self) -> bool {
-        self.continuous || self.follow_up
+        self.immediate
+    }
+
+    /// Возвращает `true`, если воспроизведение активно и нужен страховочный таймер.
+    pub(crate) const fn playback_active(self) -> bool {
+        self.playback_active
     }
 }
 
-/// Scheduler timed wakeup-ов для shell background jobs.
+/// Scheduler timed wakeup-ов: фоновые задачи, дедлайны UI-модели и страховка воспроизведения.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BackgroundPollScheduler {
     /// Ближайший deadline, когда idle loop должен снова проверить background jobs.
     next_background_job_poll_at: Option<Instant>,
-    /// Ближайшая видимая UI смена (countdown/expiry), независимая от background jobs.
+    /// Ближайшая видимая UI смена (countdown/expiry/позиция/egui), независимая от background jobs.
     next_ui_wake_at: Option<Instant>,
+    /// Страховочный таймер воспроизведения; `None` вне воспроизведения.
+    next_playback_fallback_at: Option<Instant>,
 }
 
 impl BackgroundPollScheduler {
-    /// Создаёт scheduler без запланированного background wakeup-а.
+    /// Создаёт scheduler без запланированных wakeup-ов.
     pub(crate) const fn new() -> Self {
         Self {
             next_background_job_poll_at: None,
             next_ui_wake_at: None,
+            next_playback_fallback_at: None,
         }
     }
 
-    /// Возвращает winit action после render pass-а и обновляет deadline background polling-а.
+    /// Возвращает winit action после кадра и обновляет deadline-ы.
     #[cfg(test)]
     pub(crate) fn after_render(
         &mut self,
@@ -96,43 +136,54 @@ impl BackgroundPollScheduler {
     ) -> RedrawControlAction {
         self.next_ui_wake_at = ui_deadline;
         self.clear_deadline_if_background_jobs_finished(has_pending_background_job);
-
-        if pacing.wants_continuous_redraw() {
-            // Continuous playback перерисовывается каждый frame callback (vsync),
-            // но event loop СПИТ между кадрами. ControlFlow::Poll крутил loop
-            // вхолостую между 60Hz redraw-ами (redraw гейтится frame callback-ом,
-            // present не блокирует), сжигая целое ядро. Wait + request_redraw даёт
-            // тот же 60fps без busy-spin.
-            return RedrawControlAction::new(ControlFlow::Wait, true);
-        }
+        self.rearm_playback_fallback_after_render(pacing.playback_active(), now);
 
         if pacing.wants_immediate_redraw() {
-            return RedrawControlAction::new(ControlFlow::Wait, true);
+            return RedrawControlAction::new(ControlFlow::Wait, Some(RedrawCause::Immediate));
         }
 
         let background =
             self.schedule_idle_background_poll_after_render(has_pending_background_job, now);
-        merge_ui_deadline(background, ui_deadline, now)
+        let with_ui = merge_ui_deadline(background, ui_deadline, now);
+        merge_playback_fallback(with_ui, self.next_playback_fallback_at)
     }
 
     /// Возвращает winit action прямо перед idle wait.
     pub(crate) fn before_idle_wait(
         &mut self,
-        has_continuous_redraw: bool,
+        playback_active: bool,
         has_pending_background_job: bool,
         now: Instant,
     ) -> RedrawControlAction {
         self.clear_deadline_if_background_jobs_finished(has_pending_background_job);
-
-        if has_continuous_redraw {
-            // См. after_render: continuous playback держим на Wait + request_redraw,
-            // а не на Poll, чтобы не крутить event loop между frame callback-ами.
-            return RedrawControlAction::new(ControlFlow::Wait, true);
+        if !playback_active {
+            self.next_playback_fallback_at = None;
         }
 
         let background =
             self.schedule_background_poll_before_idle_wait(has_pending_background_job, now);
-        merge_ui_deadline(background, self.next_ui_wake_at, now)
+        let with_ui = merge_ui_deadline(background, self.next_ui_wake_at, now);
+        if !playback_active {
+            return with_ui;
+        }
+        if with_ui.request_redraw() {
+            return with_ui;
+        }
+
+        // Страховка воспроизведения: созрела — один redraw и перевзвод, нет — ждём до неё.
+        let fallback_at = self
+            .next_playback_fallback_at
+            .unwrap_or(now + PLAYBACK_REDRAW_FALLBACK_INTERVAL);
+        if now >= fallback_at {
+            let next_fallback_at = now + PLAYBACK_REDRAW_FALLBACK_INTERVAL;
+            self.next_playback_fallback_at = Some(next_fallback_at);
+            return RedrawControlAction::new(
+                ControlFlow::WaitUntil(next_fallback_at),
+                Some(RedrawCause::PlaybackFallback),
+            );
+        }
+        self.next_playback_fallback_at = Some(fallback_at);
+        merge_playback_fallback(with_ui, Some(fallback_at))
     }
 
     /// Сбрасывает stale deadline, когда shell больше не ждёт фоновых задач.
@@ -142,6 +193,12 @@ impl BackgroundPollScheduler {
         }
     }
 
+    /// Кадр только что нарисован (или осознанно пропущен): страховка отсчитывается заново.
+    fn rearm_playback_fallback_after_render(&mut self, playback_active: bool, now: Instant) {
+        self.next_playback_fallback_at =
+            playback_active.then(|| now + PLAYBACK_REDRAW_FALLBACK_INTERVAL);
+    }
+
     /// Планирует первый timed wakeup после idle render-а без немедленного redraw.
     fn schedule_idle_background_poll_after_render(
         &mut self,
@@ -149,14 +206,14 @@ impl BackgroundPollScheduler {
         now: Instant,
     ) -> RedrawControlAction {
         if !has_pending_background_job {
-            return RedrawControlAction::new(ControlFlow::Wait, false);
+            return RedrawControlAction::new(ControlFlow::Wait, None);
         }
 
         let deadline = self
             .next_background_job_poll_at
             .unwrap_or(now + BACKGROUND_JOB_POLL_INTERVAL);
         self.next_background_job_poll_at = Some(deadline);
-        RedrawControlAction::new(ControlFlow::WaitUntil(deadline), false)
+        RedrawControlAction::new(ControlFlow::WaitUntil(deadline), None)
     }
 
     /// Будит shell для due background poll-а или оставляет текущий timed wakeup.
@@ -166,21 +223,25 @@ impl BackgroundPollScheduler {
         now: Instant,
     ) -> RedrawControlAction {
         if !has_pending_background_job {
-            return RedrawControlAction::new(ControlFlow::Wait, false);
+            return RedrawControlAction::new(ControlFlow::Wait, None);
         }
 
         let current_deadline = self.next_background_job_poll_at.unwrap_or(now);
         if now >= current_deadline {
             let next_deadline = now + BACKGROUND_JOB_POLL_INTERVAL;
             self.next_background_job_poll_at = Some(next_deadline);
-            return RedrawControlAction::new(ControlFlow::WaitUntil(next_deadline), true);
+            return RedrawControlAction::new(
+                ControlFlow::WaitUntil(next_deadline),
+                Some(RedrawCause::BackgroundPoll),
+            );
         }
 
         self.next_background_job_poll_at = Some(current_deadline);
-        RedrawControlAction::new(ControlFlow::WaitUntil(current_deadline), false)
+        RedrawControlAction::new(ControlFlow::WaitUntil(current_deadline), None)
     }
 }
 
+/// Вливает дедлайн UI-модели: созревший даёт один redraw, будущий — `WaitUntil`.
 fn merge_ui_deadline(
     action: RedrawControlAction,
     ui_deadline: Option<Instant>,
@@ -190,13 +251,39 @@ fn merge_ui_deadline(
         return action;
     };
     if ui_deadline <= now {
-        return RedrawControlAction::new(ControlFlow::Wait, true);
+        return RedrawControlAction::new(ControlFlow::Wait, Some(RedrawCause::UiDeadline));
     }
-    let control_flow = match action.control_flow {
-        ControlFlow::WaitUntil(existing) => ControlFlow::WaitUntil(existing.min(ui_deadline)),
-        ControlFlow::Wait | ControlFlow::Poll => ControlFlow::WaitUntil(ui_deadline),
+    RedrawControlAction::new(
+        earliest_control_flow(action.control_flow, ui_deadline),
+        action.redraw_cause,
+    )
+}
+
+/// Вливает страховочный таймер воспроизведения как ещё один `WaitUntil` без redraw.
+fn merge_playback_fallback(
+    action: RedrawControlAction,
+    fallback_at: Option<Instant>,
+) -> RedrawControlAction {
+    let Some(fallback_at) = fallback_at else {
+        return action;
     };
-    RedrawControlAction::new(control_flow, action.request_redraw)
+    if action.request_redraw() {
+        return action;
+    }
+    RedrawControlAction::new(
+        earliest_control_flow(action.control_flow, fallback_at),
+        None,
+    )
+}
+
+/// Ближайший из уже выбранного `ControlFlow` и нового дедлайна.
+fn earliest_control_flow(existing: ControlFlow, deadline: Instant) -> ControlFlow {
+    match existing {
+        ControlFlow::WaitUntil(existing_deadline) => {
+            ControlFlow::WaitUntil(existing_deadline.min(deadline))
+        }
+        ControlFlow::Wait | ControlFlow::Poll => ControlFlow::WaitUntil(deadline),
+    }
 }
 
 /// Возвращает `true`, если window/input событие должно дать один redraw в Wait mode.
@@ -221,22 +308,13 @@ mod tests {
         }
     }
 
-    /// Проверяет, что continuous playback всегда требует следующий redraw.
+    /// Проверяет, что immediate pacing требует следующий redraw.
     #[test]
-    fn continuous_pacing_requests_immediate_redraw() {
+    fn immediate_pacing_requests_immediate_redraw() {
         let pacing = RedrawPacing::new(true, false);
 
-        assert!(pacing.wants_continuous_redraw());
         assert!(pacing.wants_immediate_redraw());
-    }
-
-    /// Проверяет, что follow-up от worker/egui тоже будит render loop.
-    #[test]
-    fn follow_up_pacing_requests_immediate_redraw() {
-        let pacing = RedrawPacing::new(false, true);
-
-        assert!(!pacing.wants_continuous_redraw());
-        assert!(pacing.wants_immediate_redraw());
+        assert!(!pacing.playback_active());
     }
 
     /// Проверяет, что idle frame без причин остаётся в Wait mode.
@@ -244,8 +322,8 @@ mod tests {
     fn idle_pacing_does_not_request_immediate_redraw() {
         let pacing = RedrawPacing::new(false, false);
 
-        assert!(!pacing.wants_continuous_redraw());
         assert!(!pacing.wants_immediate_redraw());
+        assert!(!pacing.playback_active());
     }
 
     /// Проверяет, что сам redraw event не создаёт бесконечный redraw в Wait mode.
@@ -264,28 +342,90 @@ mod tests {
         ));
     }
 
-    /// Continuous playback держит Wait + request_redraw (без busy-spin), а не Poll.
+    /// Сессия 04: воспроизведение больше НЕ просит redraw после каждого кадра —
+    /// только страховочный `WaitUntil` на 250 мс. Падает на прежней политике «Wait + redraw».
     #[test]
-    fn after_render_continuous_requests_wait_and_redraw() {
-        let mut scheduler = BackgroundPollScheduler::new();
-        let now = Instant::now();
-
-        let action = scheduler.after_render(RedrawPacing::new(true, false), false, now);
-
-        assert!(matches!(action.control_flow, ControlFlow::Wait));
-        assert!(action.request_redraw);
-    }
-
-    /// Проверяет, что follow-up redraw остаётся в Wait mode и не включает busy polling.
-    #[test]
-    fn after_render_follow_up_requests_wait_and_redraw() {
+    fn after_render_playback_waits_for_events_with_fallback_deadline() {
         let mut scheduler = BackgroundPollScheduler::new();
         let now = Instant::now();
 
         let action = scheduler.after_render(RedrawPacing::new(false, true), false, now);
 
+        assert!(
+            !action.request_redraw(),
+            "playback must not spin on vsync any more"
+        );
+        assert_eq!(
+            wait_until_deadline(action),
+            now + PLAYBACK_REDRAW_FALLBACK_INTERVAL
+        );
+    }
+
+    /// Перед idle wait во время воспроизведения тоже нет redraw, пока страховка не созрела.
+    #[test]
+    fn before_idle_wait_playback_keeps_fallback_without_redraw_until_due() {
+        let mut scheduler = BackgroundPollScheduler::new();
+        let now = Instant::now();
+        scheduler.after_render(RedrawPacing::new(false, true), false, now);
+
+        let early = scheduler.before_idle_wait(true, false, now + Duration::from_millis(10));
+        assert!(!early.request_redraw());
+        assert_eq!(
+            wait_until_deadline(early),
+            now + PLAYBACK_REDRAW_FALLBACK_INTERVAL
+        );
+
+        let due_at = now + PLAYBACK_REDRAW_FALLBACK_INTERVAL;
+        let due = scheduler.before_idle_wait(true, false, due_at);
+        assert_eq!(due.redraw_cause, Some(RedrawCause::PlaybackFallback));
+        assert_eq!(
+            wait_until_deadline(due),
+            due_at + PLAYBACK_REDRAW_FALLBACK_INTERVAL,
+            "a due fallback re-arms itself for the next interval"
+        );
+    }
+
+    /// Нарисованный кадр перевзводит страховку: отсчёт идёт от кадра, а не от старого дедлайна.
+    #[test]
+    fn rendered_frame_rearms_playback_fallback() {
+        let mut scheduler = BackgroundPollScheduler::new();
+        let now = Instant::now();
+        scheduler.after_render(RedrawPacing::new(false, true), false, now);
+
+        let later = now + Duration::from_millis(100);
+        let action = scheduler.after_render(RedrawPacing::new(false, true), false, later);
+        assert_eq!(
+            wait_until_deadline(action),
+            later + PLAYBACK_REDRAW_FALLBACK_INTERVAL
+        );
+    }
+
+    /// Пауза/простой: страховки нет, остаётся чистый `Wait` без redraw (инвариант 5).
+    #[test]
+    fn pause_has_no_fallback_timer_and_no_redraw() {
+        let mut scheduler = BackgroundPollScheduler::new();
+        let now = Instant::now();
+        scheduler.after_render(RedrawPacing::new(false, true), false, now);
+
+        let paused = scheduler.after_render(RedrawPacing::new(false, false), false, now);
+        assert_eq!(paused.control_flow, ControlFlow::Wait);
+        assert!(!paused.request_redraw());
+
+        let idle = scheduler.before_idle_wait(false, false, now + Duration::from_secs(1));
+        assert_eq!(idle.control_flow, ControlFlow::Wait);
+        assert!(!idle.request_redraw());
+    }
+
+    /// Проверяет, что immediate redraw остаётся в Wait mode и не включает busy polling.
+    #[test]
+    fn after_render_immediate_requests_wait_and_redraw() {
+        let mut scheduler = BackgroundPollScheduler::new();
+        let now = Instant::now();
+
+        let action = scheduler.after_render(RedrawPacing::new(true, true), false, now);
+
         assert!(matches!(action.control_flow, ControlFlow::Wait));
-        assert!(action.request_redraw);
+        assert_eq!(action.redraw_cause, Some(RedrawCause::Immediate));
     }
 
     /// Проверяет, что отсутствие background jobs очищает deadline и не будит окно.
@@ -298,7 +438,7 @@ mod tests {
         let action = scheduler.after_render(RedrawPacing::new(false, false), false, now);
 
         assert!(matches!(action.control_flow, ControlFlow::Wait));
-        assert!(!action.request_redraw);
+        assert!(!action.request_redraw());
         assert!(scheduler.next_background_job_poll_at.is_none());
     }
 
@@ -312,7 +452,7 @@ mod tests {
         let action = scheduler.after_render(RedrawPacing::new(false, false), true, now);
 
         assert_eq!(wait_until_deadline(action), expected_deadline);
-        assert!(!action.request_redraw);
+        assert!(!action.request_redraw());
         assert_eq!(
             scheduler.next_background_job_poll_at,
             Some(expected_deadline)
@@ -333,7 +473,7 @@ mod tests {
             wait_until_deadline(action),
             due_at + BACKGROUND_JOB_POLL_INTERVAL
         );
-        assert!(action.request_redraw);
+        assert_eq!(action.redraw_cause, Some(RedrawCause::BackgroundPoll));
     }
 
     /// Проверяет, что ранний wakeup до deadline не создаёт лишний redraw.
@@ -348,7 +488,7 @@ mod tests {
         let action = scheduler.before_idle_wait(false, true, before_deadline);
 
         assert_eq!(wait_until_deadline(action), expected_deadline);
-        assert!(!action.request_redraw);
+        assert!(!action.request_redraw());
     }
 
     #[test]
@@ -363,19 +503,37 @@ mod tests {
             now,
         );
         assert_eq!(after_render.control_flow, ControlFlow::WaitUntil(deadline));
-        assert!(!after_render.request_redraw);
+        assert!(!after_render.request_redraw());
 
         let before_deadline = scheduler.before_idle_wait(false, false, now);
         assert_eq!(
             before_deadline.control_flow,
             ControlFlow::WaitUntil(deadline)
         );
-        assert!(!before_deadline.request_redraw);
+        assert!(!before_deadline.request_redraw());
 
         let due = scheduler.before_idle_wait(false, false, deadline);
-        assert!(due.request_redraw);
+        assert_eq!(due.redraw_cause, Some(RedrawCause::UiDeadline));
         let cleared = scheduler.after_render(RedrawPacing::new(false, false), false, deadline);
         assert_eq!(cleared.control_flow, ControlFlow::Wait);
-        assert!(!cleared.request_redraw);
+        assert!(!cleared.request_redraw());
+    }
+
+    /// Дедлайн позиции (секунда/пиксель) короче страховки: ждём до него, а не до 250 мс.
+    #[test]
+    fn earlier_ui_deadline_wins_over_playback_fallback() {
+        let mut scheduler = BackgroundPollScheduler::new();
+        let now = Instant::now();
+        let position_deadline = now + Duration::from_millis(70);
+
+        let action = scheduler.after_render_with_deadline(
+            RedrawPacing::new(false, true),
+            false,
+            Some(position_deadline),
+            now,
+        );
+
+        assert_eq!(wait_until_deadline(action), position_deadline);
+        assert!(!action.request_redraw());
     }
 }

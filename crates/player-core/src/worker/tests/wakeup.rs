@@ -371,7 +371,7 @@ fn render_release_ack_is_drained_before_latest_publish() {
         })
         .unwrap();
 
-    runtime
+    let _publication = runtime
         .render_bridge
         .publish_latest_present_frame(&mut runtime.session);
 
@@ -764,5 +764,155 @@ fn output_clamped_playback_without_activity_notifier_keeps_bounded_polling() {
         window.ticks_for_reason(crate::WorkerWakeupReason::DecodeReadiness) >= 10,
         "fallback without notifier must keep the bounded readiness poll: {}",
         window.reasons_for_log()
+    );
+}
+
+/// Сколько диагностических замеров рендера отправляет «UI-поток» за прогон зажатого worker-а.
+const OUTPUT_CLAMPED_RENDER_SAMPLES: usize = 200;
+
+/// Прогон для release-теста: кадры показа идут с 140 мс по 16 мс, и за 400 мс UI-сторона
+/// успевает сменить несколько кадров (отпустить предыдущие).
+const OUTPUT_CLAMPED_RELEASE_RUN_TIME: Duration = Duration::from_millis(400);
+
+/// Гоняет зажатый worker, пока «UI-поток» шлёт ему замеры рендера и забирает кадры показа.
+///
+/// Возвращает оконные счётчики пробуждений, пару «замеров отправлено / дошло до диагностики
+/// session» и число кадров, отпущенных UI-стороной.
+fn run_output_clamped_worker_with_render_feedback(
+    send_timing_samples: bool,
+    acquire_and_release_frames: bool,
+    run_time: Duration,
+) -> (
+    super::super::wakeup_counters::WorkerWakeupWindow,
+    (u64, u64),
+    u64,
+) {
+    let started_at = Instant::now();
+    let (mut runtime, _command_tx, _shutdown_tx, render_client) =
+        runtime_for_tests_with_wakeup_handles(started_at);
+    let (_activity_notifier, activity_subscription) =
+        video_core::VideoDecoderActivityNotifier::new();
+    let queued_frames = (0..OUTPUT_CLAMPED_QUEUED_FRAMES)
+        .map(|frame_index| {
+            decoded_frame_with_pts_for_tests(
+                OUTPUT_CLAMPED_FRONT_FRAME_PTS + Duration::from_millis(16 * frame_index),
+                FrameResourceHandle(frame_index + 1),
+            )
+        })
+        .collect();
+    runtime.session.install_output_clamped_playback_for_tests(
+        WorkerActivityDecoderThread::new(activity_subscription.snapshot()),
+        queued_frames,
+        Duration::from_millis(400),
+    );
+    runtime.wakeup_counters = WorkerWakeupCounters::new(started_at);
+
+    // «UI-поток»: шлёт замеры каждые ~2 мс и/или держит последний кадр показа, отпуская
+    // предыдущий, когда worker уже положил в слот следующий (как делает кэш кадра в app).
+    let feedback_thread = std::thread::spawn(move || {
+        let mut held_frame: Option<video_present_core::VideoFrameLease> = None;
+        let mut released_frames = 0_u64;
+        let feedback_started_at = Instant::now();
+        let mut samples_sent = 0_usize;
+        while feedback_started_at.elapsed() < run_time
+            && samples_sent < OUTPUT_CLAMPED_RENDER_SAMPLES
+        {
+            samples_sent += 1;
+            if send_timing_samples {
+                render_client.report_gpu_submit_present_latency(Duration::from_micros(300));
+            }
+            if acquire_and_release_frames
+                && let Some(latest) = render_client.try_acquire_present_frame()
+            {
+                let changed = held_frame.as_ref().is_none_or(|held| {
+                    held.decoded_frame().resource_handle != latest.decoded_frame().resource_handle
+                });
+                if changed && held_frame.replace(latest).is_some() {
+                    released_frames += 1;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        drop(held_frame);
+        (samples_sent as u64, released_frames)
+    });
+
+    while started_at.elapsed() < run_time {
+        let shutdown_requested = runtime.wait_for_worker_wakeup();
+        assert!(!shutdown_requested);
+    }
+    let (samples_sent, released_frames) = feedback_thread
+        .join()
+        .expect("render feedback thread must finish");
+    // Хвост: замеры, пришедшие после последнего tick-а, вычитывает следующий виток цикла.
+    runtime.drain_render_feedback();
+
+    let window = runtime.wakeup_counters.take_window(Instant::now());
+    let drained_timing_samples = runtime
+        .session
+        .snapshot_with_frame_counters(crate::FrameCounters::default())
+        .diagnostics
+        .worst_latencies
+        .gpu_submit_present
+        .samples;
+    (
+        window,
+        (samples_sent, drained_timing_samples),
+        released_frames,
+    )
+}
+
+/// Замеры рендера (submit/present timing и т.п.) не будят worker, но доходят до диагностики:
+/// их вычитывает tick. До сессии 04 каждый замер был отдельным пробуждением (~3 на кадр).
+#[test]
+fn output_clamped_render_timing_samples_reach_diagnostics_without_waking_worker() {
+    let (window, (samples_sent, drained_timing_samples), _released) =
+        run_output_clamped_worker_with_render_feedback(true, false, OUTPUT_CLAMPED_RUN_TIME);
+
+    assert_eq!(
+        window.render_release_wakeups,
+        0,
+        "diagnostic samples must not wake the worker: {}",
+        window.reasons_for_log()
+    );
+    assert!(
+        window.ticks_total() <= 4,
+        "samples must not add ticks either, got {} ticks ({})",
+        window.ticks_total(),
+        window.reasons_for_log()
+    );
+    assert!(
+        samples_sent >= 10,
+        "fixture must send a meaningful number of samples"
+    );
+    assert_eq!(
+        drained_timing_samples, samples_sent,
+        "every sample must reach diagnostics through tick-time draining"
+    );
+}
+
+/// Release-ack кадра по-прежнему будит worker: он возвращает поверхность декодеру, и
+/// задерживать его до следующего дедлайна нельзя (backpressure пула).
+#[test]
+fn output_clamped_frame_release_ack_still_wakes_worker() {
+    let (window, _drained, released_frames) = run_output_clamped_worker_with_render_feedback(
+        false,
+        true,
+        OUTPUT_CLAMPED_RELEASE_RUN_TIME,
+    );
+
+    assert!(
+        released_frames >= 1,
+        "fixture must release at least one presented frame from the UI side"
+    );
+    assert!(
+        window.render_release_wakeups >= 1,
+        "a release ack must wake the worker: released={released_frames}, {}",
+        window.reasons_for_log()
+    );
+    assert!(
+        window.render_release_wakeups <= released_frames,
+        "at most one wakeup per released frame: wakeups={} released={released_frames}",
+        window.render_release_wakeups
     );
 }

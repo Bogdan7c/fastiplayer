@@ -22,6 +22,7 @@ mod command_loss;
 mod commands;
 mod event_streams;
 mod media_install;
+mod presentation_wake;
 #[path = "tests/queued_intent.rs"]
 mod queued_intent;
 mod runtime_settings;
@@ -50,6 +51,7 @@ fn worker_config_for_tests() -> PlayerWorkerConfig {
             .validate()
             .expect("default frame-server config must validate"),
         timeline_activity_wake: None,
+        presentation_wake: None,
         subtitle_feed_capacity: SubtitleFeedCapacity::FALLBACK,
     }
 }

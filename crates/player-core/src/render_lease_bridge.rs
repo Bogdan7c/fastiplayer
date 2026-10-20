@@ -56,6 +56,38 @@ pub(crate) enum LatestPresentFrameAcquire {
     Busy,
 }
 
+/// Что изменилось в слоте показа после публикации worker-ом (cpu-parity, сессия 04).
+///
+/// По этому итогу worker решает, будить ли UI-поток: `Unchanged` — нечего показывать нового,
+/// `Published`/`Cleared` — картинка на экране должна измениться.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "по итогу публикации worker будит UI; молча терять его нельзя"]
+pub(crate) enum PresentFramePublication {
+    /// Слот не менялся: тот же кадр, что и раньше (или по-прежнему пусто).
+    Unchanged,
+    /// В слот положен новый кадр.
+    Published,
+    /// Слот очищен: кадра для показа больше нет.
+    Cleared,
+}
+
+impl PresentFramePublication {
+    /// `true`, если UI-поток должен проснуться и перерисовать видео.
+    #[must_use]
+    pub(crate) const fn changes_presentation(self) -> bool {
+        !matches!(self, Self::Unchanged)
+    }
+}
+
+/// Итог неблокирующего чтения identity слота показа (без clone lease-а).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentFrameIdentityProbe {
+    /// Слот прочитан: `None` — кадра для показа нет.
+    Known(Option<video_present_core::VideoPresentFrameIdentity>),
+    /// Worker прямо сейчас обновляет слот; читающий обязан считать кадр изменившимся.
+    Busy,
+}
+
 /// Latest-slot для передачи frame lease-а из worker thread в render thread без request/reply.
 pub(crate) struct LatestPresentFrameHandoff {
     /// Единственный опубликованный lease; его clone-ы разделяют один RAII drop-ack.
@@ -98,6 +130,26 @@ impl LatestPresentFrameHandoff {
         self.latest_frame_guard()
             .as_ref()
             .map(present_frame_identity_from_lease)
+    }
+
+    /// Неблокирующе читает identity слота для render hot path (без clone lease-а).
+    ///
+    /// Нужно UI-потоку, чтобы решить «кадр новый или тот же» до любой GPU-работы
+    /// (сессия 04): `Busy` означает, что worker прямо сейчас меняет слот.
+    pub(crate) fn try_current_identity(&self) -> PresentFrameIdentityProbe {
+        match self.latest_frame.try_lock() {
+            Ok(guard) => PresentFrameIdentityProbe::Known(
+                guard.as_ref().map(present_frame_identity_from_lease),
+            ),
+            Err(TryLockError::WouldBlock) => PresentFrameIdentityProbe::Busy,
+            Err(TryLockError::Poisoned(poisoned)) => {
+                warn!("Latest present frame handoff mutex was poisoned; recovering slot");
+                let guard = poisoned.into_inner();
+                PresentFrameIdentityProbe::Known(
+                    guard.as_ref().map(present_frame_identity_from_lease),
+                )
+            }
+        }
     }
 
     /// Очищает latest-slot и отдаёт release ack старого frame-а через RAII.
@@ -366,6 +418,12 @@ impl RenderLeaseBridgeClient {
         }
     }
 
+    /// Неблокирующе читает identity слота показа без clone lease-а и без diagnostics sample.
+    #[must_use]
+    pub(crate) fn try_present_frame_identity(&self) -> PresentFrameIdentityProbe {
+        self.latest_present_frame_handoff.try_current_identity()
+    }
+
     /// Пытается получить scrub visual override lease без смешивания с playback latest-slot.
     #[must_use]
     pub(crate) fn try_acquire_scrub_visual_override_frame(&self) -> Option<VideoFrameLease> {
@@ -499,33 +557,11 @@ impl RenderLeaseBridge {
         self.render_release_rx.clone()
     }
 
-    /// Возвращает receiver clone для `select!`, не отдавая владение diagnostics очередью.
-    #[must_use]
-    pub(crate) fn render_acquire_sample_receiver(&self) -> Receiver<RenderAcquireSample> {
-        self.render_acquire_sample_rx.clone()
-    }
-
-    /// Возвращает receiver clone для `select!`, не отдавая владение timing очередью.
-    #[must_use]
-    pub(crate) fn render_timing_sample_receiver(&self) -> Receiver<RenderTimingSample> {
-        self.render_timing_sample_rx.clone()
-    }
-
-    /// Возвращает receiver clone для `select!`, не отдавая владение resource diagnostics.
-    #[must_use]
-    pub(crate) fn resource_lock_sample_receiver(&self) -> Receiver<RenderResourceLockSample> {
-        self.resource_lock_sample_rx.clone()
-    }
-
-    /// Возвращает receiver clone для reuse diagnostics, не отдавая владение очередью.
-    #[must_use]
-    pub(crate) fn resource_previous_frame_reuse_sample_receiver(
-        &self,
-    ) -> Receiver<RenderResourcePreviousFrameReuseSample> {
-        self.resource_previous_frame_reuse_sample_rx.clone()
-    }
-
     /// Обрабатывает wakeup от bounded release ack queue.
+    ///
+    /// Это единственный render-feedback, который будит worker: release возвращает поверхность
+    /// декодеру. Диагностические замеры (acquire/timing/lock/reuse) идут по неблокирующим
+    /// каналам без собственных пробуждений и снимаются `drain_diagnostics` (сессия 04).
     pub(crate) fn handle_release_wakeup(
         &mut self,
         session: &mut PlayerSession,
@@ -533,54 +569,6 @@ impl RenderLeaseBridge {
     ) {
         if let Ok(release) = release_result {
             Self::record_release(session, release);
-        }
-    }
-
-    /// Обрабатывает wakeup от render-acquire diagnostics stream.
-    pub(crate) fn handle_acquire_sample_wakeup(
-        &mut self,
-        session: &mut PlayerSession,
-        sample_result: Result<RenderAcquireSample, RecvError>,
-    ) {
-        if let Ok(sample) = sample_result {
-            Self::record_acquire_sample(session, sample);
-            self.drain_render_acquire_samples(session);
-        }
-    }
-
-    /// Обрабатывает wakeup от renderer submit/present diagnostics stream.
-    pub(crate) fn handle_timing_sample_wakeup(
-        &mut self,
-        session: &mut PlayerSession,
-        sample_result: Result<RenderTimingSample, RecvError>,
-    ) {
-        if let Ok(sample) = sample_result {
-            Self::record_timing_sample(session, sample);
-            self.drain_render_timing_samples(session);
-        }
-    }
-
-    /// Обрабатывает wakeup от resource lock diagnostics stream.
-    pub(crate) fn handle_resource_lock_sample_wakeup(
-        &mut self,
-        session: &mut PlayerSession,
-        sample_result: Result<RenderResourceLockSample, RecvError>,
-    ) {
-        if let Ok(sample) = sample_result {
-            Self::record_resource_lock_sample(session, sample);
-            self.drain_resource_lock_samples(session);
-        }
-    }
-
-    /// Обрабатывает wakeup от resource previous-frame reuse diagnostics stream.
-    pub(crate) fn handle_resource_previous_frame_reuse_sample_wakeup(
-        &mut self,
-        session: &mut PlayerSession,
-        sample_result: Result<RenderResourcePreviousFrameReuseSample, RecvError>,
-    ) {
-        if sample_result.is_ok() {
-            Self::record_resource_previous_frame_reuse_sample(session);
-            self.drain_resource_previous_frame_reuse_samples(session);
         }
     }
 
@@ -600,19 +588,34 @@ impl RenderLeaseBridge {
     }
 
     /// Публикует latest present frame lease, если worker-side frame identity изменилась.
-    pub(crate) fn publish_latest_present_frame(&mut self, session: &mut PlayerSession) {
+    ///
+    /// Возвращает, изменился ли слот показа: по этому итогу worker будит UI-поток
+    /// (`PlayerWorkerPresentationWake`), а не оставляет его ждать vsync.
+    pub(crate) fn publish_latest_present_frame(
+        &mut self,
+        session: &mut PlayerSession,
+    ) -> PresentFramePublication {
         self.drain_releases(session);
         let Some(current_identity) = Self::current_present_frame_identity(session) else {
+            let had_frame = self
+                .latest_present_frame_handoff
+                .current_identity()
+                .is_some();
             self.latest_present_frame_handoff.clear();
-            return;
+            return if had_frame {
+                PresentFramePublication::Cleared
+            } else {
+                PresentFramePublication::Unchanged
+            };
         };
 
         if self.latest_present_frame_handoff.current_identity() == Some(current_identity) {
-            return;
+            return PresentFramePublication::Unchanged;
         }
 
         let present_frame = self.build_present_frame(session);
         self.latest_present_frame_handoff.publish(present_frame);
+        PresentFramePublication::Published
     }
 
     /// Возвращает identity текущего present frame без создания нового render lease-а.

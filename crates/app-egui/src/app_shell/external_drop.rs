@@ -23,6 +23,8 @@ impl AppShell {
             renderer,
         );
         if needs_redraw && let Some(window) = self.window.as_deref() {
+            // Жест броска меняет оверлей: следующий кадр обязан сделать egui-проход.
+            app_state.note_visible_mutation_for_redraw();
             window.request_redraw();
         }
     }

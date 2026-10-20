@@ -90,6 +90,8 @@ pub(crate) use playlist_transport::LifecycleTimelineSeekSettlement;
 #[cfg(test)]
 pub(crate) use playlist_transport::settle_timeline_seek_receipts_until;
 mod present_frame_cache;
+mod redraw_runtime;
+pub(crate) use redraw_runtime::{RetainedUiGeometry, SettingsVisualFacts};
 mod rendered_ui;
 pub(crate) use rendered_ui::{AppUiRenderTimings, PlaylistUiFrameModels, RenderedAppUi};
 mod same_item_candidate_switch;
@@ -98,6 +100,8 @@ mod startup_context;
 mod strong_media_open;
 mod subtitle_appearance_edit;
 mod subtitle_control_actions;
+mod ui_frame_model;
+pub(crate) use ui_frame_model::{PlaylistVisualKey, UiFrameModel};
 mod subtitles;
 mod suspended_media_resume;
 #[cfg(test)]
@@ -342,6 +346,9 @@ pub struct AppState {
 
     /// Момент последнего advance анимации sidebar для вычисления дельты времени кадра.
     sidebar_slide_last_tick: Option<Instant>,
+
+    /// Решение «надо ли рисовать»: триггеры, запросы egui, память последнего прохода (сессия 04).
+    redraw: redraw_runtime::RedrawRuntime,
 }
 
 /// Кап дельты времени кадра для анимации sidebar: после паузы/лага кадров
@@ -385,6 +392,7 @@ impl AppState {
             audio::AudioDecodeCapabilityProvider::audio_decode_capability_snapshot(
                 audio_decoder_factory.as_ref(),
             );
+        let redraw = redraw_runtime::RedrawRuntime::new(&egui_ctx, &player_timeline_wake_port);
         let timeline_activity_wake = player_timeline_wake_bridge(player_timeline_wake_port);
         let worker_config =
             PlayerWorkerConfig::from_app_config(committed_config_snapshot.as_config())
@@ -395,7 +403,8 @@ impl AppState {
                 .with_audio_tempo_processor_factory(Arc::new(
                     audio_signalsmith::SignalsmithTempoProcessorFactory,
                 ))
-                .with_timeline_activity_wake(timeline_activity_wake);
+                .with_timeline_activity_wake(timeline_activity_wake)
+                .with_presentation_wake(redraw.presentation_wake_bridge());
         let mut player_worker = PlayerWorker::spawn(worker_config)?;
         // Приёмник трубы встроенных субтитров: единственный потребитель — владелец субтитров.
         let subtitle_feed_receiver = player_worker.take_subtitle_feed_receiver();
@@ -481,6 +490,7 @@ impl AppState {
             requested_web_audio_switch: None,
             sidebar_host_state,
             sidebar_slide_last_tick: None,
+            redraw,
         };
         match subtitle_feed_receiver {
             Some(receiver) => app_state.attach_subtitle_feed(receiver),
@@ -770,18 +780,6 @@ impl AppState {
             player_snapshot.timeline.live_revision,
         );
         (current_identity != previous_identity).then_some(player_snapshot)
-    }
-
-    /// Возвращает `true`, пока shell должен поддерживать непрерывные redraw-и.
-    #[must_use]
-    pub fn wants_continuous_redraw(&self) -> bool {
-        self.last_player_snapshot
-            .playback_state
-            .is_playback_active()
-            || self.last_player_snapshot.playback_state == PlaybackState::Opening
-            || self.last_player_snapshot.playback_state == PlaybackState::Scrubbing
-            || self.last_player_snapshot.timeline.scrubbing
-            || self.has_pending_vod_endpoint_recovery()
     }
 
     /// Забирает одноразовый follow-up redraw после асинхронной worker command.

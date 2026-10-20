@@ -35,7 +35,7 @@ const TOAST_SPACING: f32 = 8.0;
 /// Длительность плавного проявления нового toast-а.
 ///
 /// Короткая, чтобы не задерживать чтение; при reduced motion проявления нет совсем.
-const TOAST_FADE_IN: Duration = Duration::from_millis(150);
+pub(crate) const TOAST_FADE_IN: Duration = Duration::from_millis(150);
 
 /// Цвет текста прогресса в центре (как было до сессии 04).
 const PROGRESS_TEXT_COLOR: egui::Color32 = egui::Color32::LIGHT_BLUE;

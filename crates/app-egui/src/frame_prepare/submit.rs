@@ -1,7 +1,9 @@
 //! Renderer submit, mark-submitted и surface telemetry одного кадра.
 
 use player_core::PlayerRenderError;
-use render_wgpu_shell::{RenderFrameOutcome, RenderFrameTiming, Renderer, SubtitleOverlayFrame};
+use render_wgpu_shell::{
+    RenderFrameDropReason, RenderFrameOutcome, RenderFrameTiming, Renderer, SubtitleOverlayFrame,
+};
 use winit::window::Window;
 
 use super::ui_prepare::PreparedUiFrame;
@@ -61,8 +63,7 @@ pub(super) fn submit_render_frame(
     let render_frame_outcome = renderer.render_frame(render_wgpu_shell::RenderFrameInput {
         window,
         video_frame: video_frame.as_ref(),
-        egui_paint_jobs: prepared_ui_frame.paint_jobs,
-        egui_textures_delta: prepared_ui_frame.textures_delta,
+        egui: prepared_ui_frame.egui_content,
         screen: prepared_ui_frame.screen,
         video_viewport: prepared_ui_frame.video_viewport,
         video_exclusion_rects: prepared_ui_frame.video_exclusion_rects,
@@ -99,6 +100,15 @@ pub(super) fn submit_render_frame(
                 app_state.note_startup_surface_frame_presented(frame_identity);
             }
             Some(timing)
+        }
+        RenderFrameOutcome::Dropped(RenderFrameDropReason::RetainedUiUnavailable) => {
+            // Shell не смог повторить прежний интерфейс (нечего удерживать или другой размер):
+            // это не потеря кадра surface-ом, а наш промах решения. Следующий кадр — полным
+            // проходом и сразу (кадр видео ещё не показан).
+            telemetry.record_retained_ui_refused();
+            app_state.force_full_ui_pass();
+            app_state.request_follow_up_redraw_after_retained_ui_refusal();
+            None
         }
         RenderFrameOutcome::Dropped(reason) => {
             telemetry.record_surface_dropped_frame();

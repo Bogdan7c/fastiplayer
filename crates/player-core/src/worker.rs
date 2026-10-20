@@ -27,6 +27,7 @@ use crate::audio_boundary::{
 };
 use crate::media_install::{AcceptedPlaybackIntent, PlaybackIntentControl};
 use crate::pipeline::VideoDecoderActivityStatus;
+pub use crate::render_lease_bridge::PresentFrameIdentityProbe;
 #[cfg(test)]
 use crate::render_lease_bridge::{
     LatestPresentFrameAcquire, LatestPresentFrameHandoff, RenderAcquireSample, RenderLeaseRelease,
@@ -65,6 +66,7 @@ use command_queue::{WorkerCommandInbox, WorkerCommandQueue, worker_command_queue
 use event_stream::{WorkerEventConsumer, WorkerEventPublisher};
 mod handle;
 mod media_install_compatibility;
+mod presentation_wake;
 mod runtime_commands;
 mod runtime_publish;
 use runtime_publish::LatestSnapshotPublisher;
@@ -79,6 +81,7 @@ use wakeup_counters::{WorkerTickTrigger, WorkerWakeupCounters};
 #[cfg(test)]
 mod tests;
 
+pub use presentation_wake::PlayerWorkerPresentationWake;
 use staged_media_install::{MediaInstallControlCommand, StagePreparedMediaInstallCommand};
 pub use staged_media_install::{MediaInstallControlReceipt, MediaInstallControlReceiptError};
 use terminal::PlayerWorkerTerminalState;
@@ -146,6 +149,9 @@ pub struct PlayerWorkerConfig {
     /// App-owned bridge, который будит UI после player-visible live revision.
     pub timeline_activity_wake: Option<Arc<dyn PlayerWorkerTimelineWake>>,
 
+    /// App-owned bridge, который будит UI после публикации кадра показа или события плеера.
+    pub presentation_wake: Option<Arc<dyn PlayerWorkerPresentationWake>>,
+
     /// Ёмкость трубы встроенных субтитров (в сообщениях); см. `subtitle_config.rs`.
     pub subtitle_feed_capacity: SubtitleFeedCapacity,
 }
@@ -174,6 +180,7 @@ impl PlayerWorkerConfig {
                 .validate()
                 .expect("default frame-server config must validate"),
             timeline_activity_wake: None,
+            presentation_wake: None,
             subtitle_feed_capacity: SubtitleFeedCapacity::FALLBACK,
         }
     }
@@ -192,6 +199,7 @@ impl PlayerWorkerConfig {
             audio_tempo_processor_factory: missing_audio_tempo_processor_factory(),
             frame_server_config: Self::frame_server_config_from_app_config(config),
             timeline_activity_wake: None,
+            presentation_wake: None,
             subtitle_feed_capacity: subtitle_config::subtitle_feed_capacity_from_app_config(config),
         }
     }
@@ -233,6 +241,16 @@ impl PlayerWorkerConfig {
         timeline_activity_wake: Arc<dyn PlayerWorkerTimelineWake>,
     ) -> Self {
         self.timeline_activity_wake = Some(timeline_activity_wake);
+        self
+    }
+
+    /// Подключает app-owned bridge пробуждения показа (новый кадр / событие плеера).
+    #[must_use]
+    pub fn with_presentation_wake(
+        mut self,
+        presentation_wake: Arc<dyn PlayerWorkerPresentationWake>,
+    ) -> Self {
+        self.presentation_wake = Some(presentation_wake);
         self
     }
 

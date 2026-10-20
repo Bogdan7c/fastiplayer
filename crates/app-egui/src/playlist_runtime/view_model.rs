@@ -182,7 +182,8 @@ impl PlaylistViewModel {
         self
     }
 
-    #[cfg(test)]
+    /// Ревизия presentation snapshot-а: UI-модель кадра (сессия 04) сравнивает её вместо
+    /// содержимого панели плейлиста.
     pub(crate) fn revision(&self) -> super::view::PlaylistViewRevision {
         self.snapshot.revision()
     }

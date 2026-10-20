@@ -20,7 +20,10 @@ use crate::app_wake::{AppWakeEvent, AppWakeOwner};
 use crate::external_open::winit_source::gesture_event_from_external_drag;
 use crate::fatal_startup::FatalStartupError;
 use crate::frame_prepare::render_frame;
-use crate::redraw_pacing::should_request_redraw_after_window_event;
+use crate::redraw_pacing::{
+    RedrawCause, RedrawControlAction, should_request_redraw_after_window_event,
+};
+use crate::state::AppState;
 
 use super::AppShell;
 use super::escape_dismissal;
@@ -42,6 +45,23 @@ pub(super) const fn should_request_redraw_for_wake(
     visible_mutation: bool,
 ) -> bool {
     has_window && visible_mutation
+}
+
+/// Страховочный redraw воспроизведения помечается в `AppState`: кадр посчитает, нашла ли
+/// страховка работу (признак пропущенного события), а остальные причины redraw ничего
+/// не помечают — их кадр узнаёт сам (ввод, wake, дедлайны).
+fn note_scheduled_redraw_cause(app_state: &mut AppState, action: RedrawControlAction) {
+    if action.redraw_cause == Some(RedrawCause::PlaybackFallback) {
+        app_state.note_redraw_fallback_probe();
+    }
+}
+
+/// Видимая мутация от owner-wake обязана дать полный egui-проход на следующем кадре
+/// (сессия 04): иначе кадр мог бы решить, что интерфейс не менялся, и пропустить её.
+fn note_visible_mutation_for_redraw(app_state: Option<&mut AppState>) {
+    if let Some(app_state) = app_state {
+        app_state.note_visible_mutation_for_redraw();
+    }
 }
 
 impl ApplicationHandler<AppWakeEvent> for AppShell {
@@ -99,8 +119,23 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                     None => false,
                 }
             }
+            // Сессия 04: worker опубликовал кадр показа или событие плеера. Порт живёт в
+            // `AppState`; без него (suspend) событие просто теряется вместе с прежним edge-ом.
+            AppWakeOwner::PlayerPresentation => match self.app_state.as_mut() {
+                Some(app_state) => {
+                    app_state.note_presentation_wake();
+                    true
+                }
+                None => false,
+            },
         };
 
+        // Wake показа — не «видимая мутация интерфейса»: что рисовать (кадр, интерфейс или
+        // ничего), решает сам кадр по слоту показа и событиям. Пометка здесь заставила бы
+        // делать полный egui-проход на каждый новый кадр.
+        if visible_mutation && event.owner() != AppWakeOwner::PlayerPresentation {
+            note_visible_mutation_for_redraw(self.app_state.as_mut());
+        }
         request_redraw_for_visible_wake(self.window.as_deref(), visible_mutation);
     }
 
@@ -217,6 +252,12 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
         // Сначала отдаём событие egui, чтобы shell hotkeys не перехватывали текстовый ввод.
         let egui_response = app_state.egui_winit_state.on_window_event(&window, &event);
         let redraw_after_event = should_request_redraw_after_window_event(&event);
+        // Любое оконное событие, кроме самого redraw и закрытия, до сессии 04 давало redraw с
+        // полным проходом; теперь оно помечает «был ввод», и следующий кадр обязан сделать
+        // egui-проход (ввод не теряется: egui уже получил событие выше).
+        if redraw_after_event {
+            app_state.note_window_input_for_redraw();
+        }
 
         if let WindowEvent::KeyboardInput {
             event: key_event, ..
@@ -331,6 +372,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                     frame_result.next_ui_wake_deadline,
                     Instant::now(),
                 );
+                note_scheduled_redraw_cause(app_state, action);
                 Self::apply_redraw_control_action(event_loop, Some(&window), action);
                 return;
             }
@@ -352,15 +394,21 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
         #[cfg(not(target_os = "linux"))]
         self.flush_legacy_file_drop();
         let persistence_changed = self.drain_playlist_persistence();
+        if persistence_changed {
+            note_visible_mutation_for_redraw(self.app_state.as_mut());
+        }
         request_redraw_for_visible_wake(self.window.as_deref(), persistence_changed);
-        let has_continuous_redraw = self.has_continuous_redraw();
+        let playback_active = self.has_continuous_redraw();
         let has_pending_background_job = self.has_pending_background_job();
         let now = Instant::now();
         let action = self.background_poll_scheduler.before_idle_wait(
-            has_continuous_redraw,
+            playback_active,
             has_pending_background_job,
             now,
         );
+        if let Some(app_state) = self.app_state.as_mut() {
+            note_scheduled_redraw_cause(app_state, action);
+        }
 
         Self::apply_redraw_control_action(event_loop, self.window.as_deref(), action);
     }

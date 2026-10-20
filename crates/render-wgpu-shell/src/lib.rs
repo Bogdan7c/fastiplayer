@@ -20,8 +20,9 @@ mod vulkan_device;
 mod window_corner_mask;
 
 pub use frame::{
-    RenderFrameDropReason, RenderFrameFailure, RenderFrameInput, RenderFrameOutcome,
-    RenderFrameSlowestStage, RenderFrameStageTimings, RenderFrameTiming, RenderScreenDescriptor,
+    EguiFrameContent, RenderFrameDropReason, RenderFrameFailure, RenderFrameInput,
+    RenderFrameOutcome, RenderFrameSlowestStage, RenderFrameStageTimings, RenderFrameTiming,
+    RenderScreenDescriptor,
 };
 pub use shell::{GpuContext, GpuDeviceLost, Renderer, RendererGpuDrainError};
 pub use subtitle_overlay::{

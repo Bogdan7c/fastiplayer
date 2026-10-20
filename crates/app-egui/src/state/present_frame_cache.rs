@@ -1,3 +1,5 @@
+use player_core::PresentFrameIdentityProbe;
+
 use super::*;
 
 /// Явный результат получения frame lease-а для render boundary.
@@ -75,6 +77,25 @@ impl PresentFrameIdentity {
             pts: frame.pts,
         }
     }
+
+    /// Тот же кадр, что лежит в слоте показа worker-а (нейтральная identity player-core).
+    pub(super) fn matches_slot(&self, slot: &VideoPresentFrameIdentity) -> bool {
+        self.render_generation == slot.render_generation()
+            && self.resource_handle == slot.resource_handle()
+            && self.decoded_generation == slot.decoded_generation()
+            && self.pts == slot.pts()
+    }
+}
+
+/// Изменится ли картинка видео при показе сейчас — ответ `peek_present_frame_change`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PresentFrameChange {
+    /// В слоте тот же кадр, что уже на экране (или слот пуст, а кэш ещё действителен).
+    Unchanged,
+    /// Кадр другой, слот занят worker-ом или кэш устарел: показывать надо.
+    Changed,
+    /// Ни в слоте, ни в кэше кадра нет: видео показывать нечего.
+    NoFrame,
 }
 
 /// Причина явного освобождения cached present frame-а.
@@ -307,6 +328,71 @@ impl PresentFrameAcquisition {
 }
 
 impl AppState {
+    /// Изменится ли картинка видео, если показать кадр сейчас (сессия 04).
+    ///
+    /// Читает только identity слота показа и кэша: без clone lease-а, без materializer-а и без
+    /// побочных эффектов (кэш не трогается, повторы не считаются). `Busy` слот и любое
+    /// расхождение с кэшем трактуются как «кадр новый» — fail-safe в сторону показа.
+    #[must_use]
+    pub(crate) fn peek_present_frame_change(
+        &self,
+        player_snapshot: &PlayerSnapshot,
+    ) -> PresentFrameChange {
+        let cached_identity = self
+            .cached_renderable_present_frame
+            .as_ref()
+            .map(|cached_frame| {
+                Self::present_frame_identity(&cached_frame.renderable_frame.present_frame)
+            });
+        // Кэш, который `acquire_present_frame_for_render` всё равно отбросит (другой источник,
+        // другая generation), не считается «кадром на экране».
+        let cached_is_valid =
+            self.cached_renderable_present_frame
+                .as_ref()
+                .is_some_and(|cached_frame| {
+                    cached_present_frame_stale_reason(CachedPresentFrameValidationState {
+                        current_video_frame_present: player_snapshot.current_video_frame.is_some(),
+                        source_matches: cached_frame.source_label.as_deref()
+                            == player_snapshot.source_label.as_deref(),
+                        cached_generation: cached_frame
+                            .renderable_frame
+                            .present_frame
+                            .render_generation(),
+                        current_generation: player_snapshot.render_generation,
+                    })
+                    .is_none()
+                });
+        match self.player_worker.try_present_frame_identity() {
+            PresentFrameIdentityProbe::Busy => PresentFrameChange::Changed,
+            PresentFrameIdentityProbe::Known(None) => {
+                if cached_is_valid {
+                    PresentFrameChange::Unchanged
+                } else if cached_identity.is_some() {
+                    PresentFrameChange::Changed
+                } else {
+                    PresentFrameChange::NoFrame
+                }
+            }
+            PresentFrameIdentityProbe::Known(Some(slot_identity)) => {
+                if slot_identity.render_generation() != player_snapshot.render_generation {
+                    // Слот из другой generation будет отвергнут: картинка не меняется.
+                    return if cached_is_valid {
+                        PresentFrameChange::Unchanged
+                    } else {
+                        PresentFrameChange::Changed
+                    };
+                }
+                if cached_is_valid
+                    && cached_identity.is_some_and(|cached| cached.matches_slot(&slot_identity))
+                {
+                    PresentFrameChange::Unchanged
+                } else {
+                    PresentFrameChange::Changed
+                }
+            }
+        }
+    }
+
     /// Пытается получить текущий video frame для renderer-а.
     #[must_use]
     pub fn acquire_present_frame_for_render(

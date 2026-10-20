@@ -14,12 +14,26 @@ pub struct TimelineUiState {
     transient_drag_position: Option<MediaTime>,
     live_scrub_gesture_active: bool,
     live_scrub_dispatch: Option<LiveScrubDispatchState>,
+    /// Ширина дорожки ползунка в физических пикселях на последнем проходе. Нужна UI-модели
+    /// кадра (сессия 04), чтобы квантовать позицию до пикселя ровно так, как её рисует UI.
+    observed_track_width_px: Option<u32>,
 }
 
 impl TimelineUiState {
     #[must_use]
     pub const fn has_active_drag(&self) -> bool {
         self.transient_drag_position.is_some()
+    }
+
+    /// Запоминает ширину дорожки, по которой UI только что рисовал ползунок.
+    pub fn note_track_width_px(&mut self, width_px: u32) {
+        self.observed_track_width_px = Some(width_px);
+    }
+
+    /// Ширина дорожки ползунка с последнего прохода; `None` до первого прохода.
+    #[must_use]
+    pub const fn observed_track_width_px(&self) -> Option<u32> {
+        self.observed_track_width_px
     }
 
     #[must_use]

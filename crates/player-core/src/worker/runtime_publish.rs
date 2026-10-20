@@ -79,6 +79,10 @@ impl PlayerWorkerRuntime {
     ) {
         let now = Instant::now();
         let tick_late_by = now.saturating_duration_since(deadline);
+        // Release-ack и диагностические замеры рендера вычитываются перед tick-ом, а не по
+        // собственным пробуждениям (сессия 04): tick видит свежие release-ы и свободные слоты
+        // декодера, а замеры попадают в диагностику без лишних пробуждений потока.
+        self.drain_render_feedback();
         self.wakeup_counters.record_tick(trigger, plan.reason);
         self.session
             .record_worker_wakeup(plan.diagnostics(tick_late_by));
@@ -222,7 +226,7 @@ impl PlayerWorkerRuntime {
             worker_ticks_decoder_activity = wakeup_window.ticks_decoder_activity,
             worker_ticks_after_commands = wakeup_window.ticks_after_commands,
             worker_decoder_pulses = wakeup_window.decoder_pulses,
-            worker_render_feedback_wakeups = wakeup_window.render_feedback_wakeups,
+            worker_render_release_wakeups = wakeup_window.render_release_wakeups,
             worker_tick_reasons = %wakeup_window.reasons_for_log(),
             wake_late_ms,
             pts_target_ms = ?pts_target_ms,
@@ -252,8 +256,13 @@ impl PlayerWorkerRuntime {
     }
 
     /// Публикует latest snapshot и накопленные session events.
+    ///
+    /// Порядок важен для пробуждения UI (сессия 04): сначала кадр кладётся в слот показа,
+    /// snapshot — в latest-канал, события — в очередь, и только потом будится UI-поток.
+    /// Иначе проснувшийся UI мог бы прочитать старое состояние и уснуть до следующего vsync.
     pub(super) fn publish_session_outputs(&mut self) {
-        self.render_bridge
+        let publication = self
+            .render_bridge
             .publish_latest_present_frame(&mut self.session);
 
         let snapshot = self
@@ -267,6 +276,12 @@ impl PlayerWorkerRuntime {
         for event in self.session.take_scrub_events() {
             self.publish_worker_event(PlayerWorkerEvent::Scrub(event));
         }
+
+        // Позиция и буферы меняются на каждом тике, но сами по себе UI не будят:
+        // квантованные видимые изменения UI планирует себе сам (дедлайн секунды/пикселя).
+        if publication.changes_presentation() {
+            self.wake_presentation();
+        }
     }
 
     /// Публикует tick telemetry без блокировки worker-а.
@@ -275,8 +290,19 @@ impl PlayerWorkerRuntime {
     }
 
     /// Публикует lifecycle-событие; при переполнении очереди пишет `warn!` (не молча).
+    ///
+    /// Каждое событие (смена состояния, seek, буферизация, ошибка, scrub) будит UI-поток:
+    /// он рисует по событию, а не по vsync, и иначе увидел бы смену состояния с опозданием.
     pub(super) fn publish_worker_event(&self, event: PlayerWorkerEvent) {
         self.event_tx.publish_lifecycle(event);
+        self.wake_presentation();
+    }
+
+    /// Будит UI-поток через app-owned bridge; без bridge (тесты, headless) — no-op.
+    fn wake_presentation(&self) {
+        if let Some(wake) = self.config.presentation_wake.as_ref() {
+            wake.wake_presentation();
+        }
     }
 }
 

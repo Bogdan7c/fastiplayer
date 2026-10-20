@@ -240,6 +240,12 @@ impl MainVisualOverrideState {
         self.active = None;
     }
 
+    /// Есть ли активный override (без проверки stale: это дешёвый read-only факт для
+    /// решения «показывать ли кадр» в сессии 04; stale снимается на видео-стадии).
+    pub(super) const fn is_active(&self) -> bool {
+        self.active.is_some()
+    }
+
     fn clear_if_committed_matches(&mut self, event: &ScrubCommittedEvent) {
         self.clear_if_matches(
             event.context,
@@ -359,6 +365,12 @@ impl AppState {
     /// Сбрасывает visual override при owner/source/backend lifecycle boundary.
     pub(crate) fn clear_main_visual_override(&mut self) {
         self.main_visual_override_state.clear();
+    }
+
+    /// `true`, пока scrub/seek override активен: кадр для показа решает видео-стадия.
+    #[must_use]
+    pub(crate) const fn has_main_visual_override(&self) -> bool {
+        self.main_visual_override_state.is_active()
     }
 }
 

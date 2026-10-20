@@ -63,11 +63,31 @@ impl player_core::PlayerWorkerTimelineWake for PlayerTimelineWakeBridge {
     }
 }
 
+/// Создаёт wake bridge «новый кадр показа / событие плеера» (cpu-parity, сессия 04).
+pub(super) fn player_presentation_wake_bridge(
+    wake_port: AppWakePort,
+) -> Arc<dyn player_core::PlayerWorkerPresentationWake> {
+    Arc::new(PlayerPresentationWakeBridge { wake_port })
+}
+
+/// Payload-free adapter: кадр и события уже лежат в слотах worker-а, порт только будит.
+struct PlayerPresentationWakeBridge {
+    /// Порт владельца `AppWakeOwner::PlayerPresentation`; наводнение сливается в один edge.
+    wake_port: AppWakePort,
+}
+
+impl player_core::PlayerWorkerPresentationWake for PlayerPresentationWakeBridge {
+    /// Один coalescing wake edge на любое число публикаций между проходами UI.
+    fn wake_presentation(&self) {
+        let _delivery = self.wake_port.request_wake();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::player_timeline_wake_bridge;
+    use super::{player_presentation_wake_bridge, player_timeline_wake_bridge};
     use crate::app_wake::{AppWakeEvent, AppWakeOwner, AppWakePort, WakeEmitter};
 
     /// Запоминает application owner настоящего `AppWakePort`, не подменяя сам порт.
@@ -114,6 +134,47 @@ mod tests {
                 .expect("recording wake mutex must not be poisoned")
                 .as_slice(),
             &[AppWakeOwner::PlayerTimeline]
+        );
+    }
+
+    /// Bridge показа доходит до winit как owner `PlayerPresentation`, и наводнение публикаций
+    /// между проходами UI сливается в одно пробуждение (edge не очищен — второй wake коalesced).
+    #[test]
+    fn presentation_wake_bridge_reaches_event_loop_once_until_drained() {
+        let delivered_owners = Arc::new(Mutex::new(Vec::new()));
+        let timeline_port = AppWakePort::new(
+            AppWakeOwner::PlayerTimeline,
+            Arc::new(RecordingWakeEmitter {
+                delivered_owners: Arc::clone(&delivered_owners),
+            }),
+        );
+        // Как в `AppState::new`: порт показа — сосед порта timeline над тем же event loop.
+        let presentation_port = timeline_port.sibling_for_owner(AppWakeOwner::PlayerPresentation);
+        let presentation_wake = player_presentation_wake_bridge(presentation_port.clone());
+
+        presentation_wake.wake_presentation();
+        presentation_wake.wake_presentation();
+        presentation_wake.wake_presentation();
+
+        assert_eq!(presentation_port.publish_epoch_for_test(), 3);
+        assert_eq!(
+            delivered_owners
+                .lock()
+                .expect("recording wake mutex must not be poisoned")
+                .as_slice(),
+            &[AppWakeOwner::PlayerPresentation],
+            "three publications before a UI drain must become one event-loop wake"
+        );
+
+        presentation_port.clear_pending_for_drain();
+        presentation_wake.wake_presentation();
+        assert_eq!(
+            delivered_owners
+                .lock()
+                .expect("recording wake mutex must not be poisoned")
+                .len(),
+            2,
+            "after the UI drained the edge, the next publication wakes the loop again"
         );
     }
 }

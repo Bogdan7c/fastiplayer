@@ -35,6 +35,10 @@ pub fn render_timeline(
     };
     let desired_size = Vec2::new(ui.available_width(), style.hit_height);
     let (response, painter) = ui.allocate_painter(desired_size, sense);
+    // Ширина дорожки в пикселях — для квантования позиции в UI-модели кадра (сессия 04).
+    let track_width_px =
+        (timeline_track_rect(response.rect, style).width() * ui.ctx().pixels_per_point()).round();
+    state.note_track_width_px(track_width_px.max(0.0) as u32);
     let pointer_input = pointer_input_from_response(&response, bounds, style);
     // Подсказка времени под курсором; для live и неперематываемого таймлайна текста нет.
     let hover_text = response.hover_pos().and_then(|hover_position| {

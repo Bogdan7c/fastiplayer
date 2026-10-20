@@ -55,6 +55,11 @@ impl TimelineInlineStatusState {
         self.active_failure = None;
     }
 
+    /// Когда статус истечёт и его надо убрать с экрана без ввода (UI рисует по событию).
+    pub(super) fn next_wake_deadline(&self) -> Option<Instant> {
+        self.active_failure.map(|failure| failure.expires_at)
+    }
+
     #[cfg(test)]
     fn show_failure_for_tests(&mut self, message: &'static str, now: Instant) {
         self.active_failure = Some(TimelineInlineFailure {
@@ -79,6 +84,12 @@ impl AppState {
     /// Следующее timeline действие явно снимает прошлый failure status.
     pub(super) fn clear_timeline_inline_status_for_action(&mut self) {
         self.timeline_inline_status.clear_for_timeline_action();
+    }
+
+    /// Дедлайн исчезновения inline-статуса для планировщика redraw.
+    #[must_use]
+    pub(crate) fn timeline_inline_status_wake_deadline(&self) -> Option<Instant> {
+        self.timeline_inline_status.next_wake_deadline()
     }
 }
 
@@ -140,6 +151,26 @@ mod tests {
             state.visible_message(now + TIMELINE_INLINE_FAILURE_DURATION),
             None
         );
+    }
+
+    /// Дедлайн пробуждения совпадает с истечением статуса и исчезает вместе с ним.
+    #[test]
+    fn wake_deadline_matches_expiry_and_clears_with_status() {
+        let mut state = TimelineInlineStatusState::default();
+        let now = Instant::now();
+        assert_eq!(state.next_wake_deadline(), None);
+
+        state.show_failure_for_tests("Audio resume failed", now);
+        assert_eq!(
+            state.next_wake_deadline(),
+            Some(now + TIMELINE_INLINE_FAILURE_DURATION)
+        );
+
+        assert_eq!(
+            state.visible_message(now + TIMELINE_INLINE_FAILURE_DURATION),
+            None
+        );
+        assert_eq!(state.next_wake_deadline(), None);
     }
 
     #[test]

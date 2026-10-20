@@ -28,6 +28,10 @@ impl fmt::Debug for PlayerWorkerConfig {
                 "timeline_activity_wake",
                 &self.timeline_activity_wake.as_ref().map(|_| "<configured>"),
             )
+            .field(
+                "presentation_wake",
+                &self.presentation_wake.as_ref().map(|_| "<configured>"),
+            )
             .field("subtitle_feed_capacity", &self.subtitle_feed_capacity)
             .finish()
     }

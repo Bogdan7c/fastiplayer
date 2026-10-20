@@ -169,7 +169,11 @@ impl PlayerWorkerRuntime {
     }
 
     /// Снимает render feedback, которым worker владеет как частью session lifecycle.
-    fn drain_render_feedback(&mut self) {
+    ///
+    /// Диагностические замеры рендера (acquire/timing/lock/reuse) приходят по неблокирующим
+    /// каналам и НЕ будят worker (сессия 04): они вычитываются здесь — в начале витка цикла и
+    /// перед каждым tick-ом. Будит worker только release-ack: он возвращает поверхность декодеру.
+    pub(super) fn drain_render_feedback(&mut self) {
         self.render_bridge.drain_releases(&mut self.session);
         self.render_bridge.drain_diagnostics(&mut self.session);
     }
@@ -390,38 +394,13 @@ impl PlayerWorkerRuntime {
             recv(timeline_receiver) -> activity_result => {
                 self.handle_dynamic_timeline_activity(timeline_generation, activity_result)
             }
+            // Только release-ack будит worker: он возвращает поверхность декодеру (backpressure).
+            // Диагностические замеры рендера (acquire/timing/lock/reuse) идут по неблокирующим
+            // каналам без пробуждения и вычитываются здесь же и перед каждым tick-ом.
             recv(self.render_bridge.render_release_receiver()) -> release_result => {
-                self.wakeup_counters.record_render_feedback_wakeup();
+                self.wakeup_counters.record_render_release_wakeup();
                 self.render_bridge
                     .handle_release_wakeup(&mut self.session, release_result);
-                self.drain_render_feedback();
-                WorkerTimedWaitOutcome::ContinueWaiting
-            }
-            recv(self.render_bridge.render_acquire_sample_receiver()) -> sample_result => {
-                self.wakeup_counters.record_render_feedback_wakeup();
-                self.render_bridge
-                    .handle_acquire_sample_wakeup(&mut self.session, sample_result);
-                self.drain_render_feedback();
-                WorkerTimedWaitOutcome::ContinueWaiting
-            }
-            recv(self.render_bridge.render_timing_sample_receiver()) -> sample_result => {
-                self.wakeup_counters.record_render_feedback_wakeup();
-                self.render_bridge
-                    .handle_timing_sample_wakeup(&mut self.session, sample_result);
-                self.drain_render_feedback();
-                WorkerTimedWaitOutcome::ContinueWaiting
-            }
-            recv(self.render_bridge.resource_lock_sample_receiver()) -> sample_result => {
-                self.wakeup_counters.record_render_feedback_wakeup();
-                self.render_bridge
-                    .handle_resource_lock_sample_wakeup(&mut self.session, sample_result);
-                self.drain_render_feedback();
-                WorkerTimedWaitOutcome::ContinueWaiting
-            }
-            recv(self.render_bridge.resource_previous_frame_reuse_sample_receiver()) -> sample_result => {
-                self.wakeup_counters.record_render_feedback_wakeup();
-                self.render_bridge
-                    .handle_resource_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
                 self.drain_render_feedback();
                 WorkerTimedWaitOutcome::ContinueWaiting
             }
@@ -468,38 +447,13 @@ impl PlayerWorkerRuntime {
             recv(timeline_receiver) -> activity_result => {
                 self.handle_dynamic_timeline_activity(timeline_generation, activity_result)
             }
+            // Только release-ack будит worker: он возвращает поверхность декодеру (backpressure).
+            // Диагностические замеры рендера (acquire/timing/lock/reuse) идут по неблокирующим
+            // каналам без пробуждения и вычитываются здесь же и перед каждым tick-ом.
             recv(self.render_bridge.render_release_receiver()) -> release_result => {
-                self.wakeup_counters.record_render_feedback_wakeup();
+                self.wakeup_counters.record_render_release_wakeup();
                 self.render_bridge
                     .handle_release_wakeup(&mut self.session, release_result);
-                self.drain_render_feedback();
-                WorkerTimedWaitOutcome::ContinueWaiting
-            }
-            recv(self.render_bridge.render_acquire_sample_receiver()) -> sample_result => {
-                self.wakeup_counters.record_render_feedback_wakeup();
-                self.render_bridge
-                    .handle_acquire_sample_wakeup(&mut self.session, sample_result);
-                self.drain_render_feedback();
-                WorkerTimedWaitOutcome::ContinueWaiting
-            }
-            recv(self.render_bridge.render_timing_sample_receiver()) -> sample_result => {
-                self.wakeup_counters.record_render_feedback_wakeup();
-                self.render_bridge
-                    .handle_timing_sample_wakeup(&mut self.session, sample_result);
-                self.drain_render_feedback();
-                WorkerTimedWaitOutcome::ContinueWaiting
-            }
-            recv(self.render_bridge.resource_lock_sample_receiver()) -> sample_result => {
-                self.wakeup_counters.record_render_feedback_wakeup();
-                self.render_bridge
-                    .handle_resource_lock_sample_wakeup(&mut self.session, sample_result);
-                self.drain_render_feedback();
-                WorkerTimedWaitOutcome::ContinueWaiting
-            }
-            recv(self.render_bridge.resource_previous_frame_reuse_sample_receiver()) -> sample_result => {
-                self.wakeup_counters.record_render_feedback_wakeup();
-                self.render_bridge
-                    .handle_resource_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
                 self.drain_render_feedback();
                 WorkerTimedWaitOutcome::ContinueWaiting
             }
@@ -587,34 +541,11 @@ impl PlayerWorkerRuntime {
                     WorkerTimedWaitOutcome::Finished { shutdown_requested: true }
                 )
             }
+            // Idle-ожидание: будит только release-ack; замеры рендера вычитает новый виток `run`.
             recv(self.render_bridge.render_release_receiver()) -> release_result => {
-                self.wakeup_counters.record_render_feedback_wakeup();
+                self.wakeup_counters.record_render_release_wakeup();
                 self.render_bridge
                     .handle_release_wakeup(&mut self.session, release_result);
-                false
-            }
-            recv(self.render_bridge.render_acquire_sample_receiver()) -> sample_result => {
-                self.wakeup_counters.record_render_feedback_wakeup();
-                self.render_bridge
-                    .handle_acquire_sample_wakeup(&mut self.session, sample_result);
-                false
-            }
-            recv(self.render_bridge.render_timing_sample_receiver()) -> sample_result => {
-                self.wakeup_counters.record_render_feedback_wakeup();
-                self.render_bridge
-                    .handle_timing_sample_wakeup(&mut self.session, sample_result);
-                false
-            }
-            recv(self.render_bridge.resource_lock_sample_receiver()) -> sample_result => {
-                self.wakeup_counters.record_render_feedback_wakeup();
-                self.render_bridge
-                    .handle_resource_lock_sample_wakeup(&mut self.session, sample_result);
-                false
-            }
-            recv(self.render_bridge.resource_previous_frame_reuse_sample_receiver()) -> sample_result => {
-                self.wakeup_counters.record_render_feedback_wakeup();
-                self.render_bridge
-                    .handle_resource_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
                 false
             }
             recv(self.shutdown_rx) -> _ => {

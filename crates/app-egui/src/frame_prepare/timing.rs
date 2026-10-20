@@ -102,10 +102,35 @@ fn render_frame_budget(player_snapshot: &PlayerSnapshot) -> Duration {
     }
 }
 
+/// Что делал кадр по решению сессии 04 — для строки трассы.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct FrameWorkTrace {
+    pub(super) plan: &'static str,
+    pub(super) ui_pass_reason: &'static str,
+    pub(super) present_reason: &'static str,
+    pub(super) counters: crate::telemetry::FrameWorkCounters,
+}
+
+/// Пробуждение без показа: отдельная строка трассы, чтобы `agg_timing.py` считал только
+/// настоящие кадры, а пропуски были видны своим счётчиком.
+pub(super) fn log_skipped_frame(frame_work: FrameWorkTrace, wake_total: Duration) {
+    trace!(
+        target: RENDER_FRAME_TIMING_TARGET,
+        wake_total_ms = duration_ms(wake_total),
+        frame_work_plan = frame_work.plan,
+        ui_pass_reason = frame_work.ui_pass_reason,
+        present_reason = frame_work.present_reason,
+        redraw_skips = frame_work.counters.skips,
+        redraw_fallback_found_work = frame_work.counters.fallback_found_work,
+        "render frame skipped"
+    );
+}
+
 /// Логирует подробную разбивку кадра: trace для всех кадров, debug только для slow frame.
 pub(super) fn log_render_frame_timings(
     player_snapshot: &PlayerSnapshot,
     app_timings: AppRenderFrameTimings,
+    frame_work: FrameWorkTrace,
     video_acquisition_state: &'static str,
     texture_view_lookup_state: &'static str,
     surface_frame_counters: SurfaceFrameCounters,
@@ -139,6 +164,15 @@ pub(super) fn log_render_frame_timings(
         target: RENDER_FRAME_TIMING_TARGET,
         frame_total_ms = duration_ms(app_timings.total),
         frame_budget_ms = duration_ms(frame_budget),
+        // Сессия 04: что именно делал этот кадр и почему (полный проход / показ без egui).
+        frame_work_plan = frame_work.plan,
+        ui_pass_reason = frame_work.ui_pass_reason,
+        present_reason = frame_work.present_reason,
+        ui_full_passes = frame_work.counters.full_passes,
+        ui_reused_presents = frame_work.counters.reused_presents,
+        redraw_skips = frame_work.counters.skips,
+        redraw_fallback_found_work = frame_work.counters.fallback_found_work,
+        retained_ui_refusals = frame_work.counters.retained_ui_refusals,
         input_snapshot_ms = duration_ms(input_timings.total),
         ui_prepare_ms = duration_ms(ui_timings.total),
         video_prepare_ms = duration_ms(video_timings.total),

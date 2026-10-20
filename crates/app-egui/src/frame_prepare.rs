@@ -39,6 +39,15 @@ use crate::ui::window_chrome::{WindowChromeAction, WindowChromeResizeDirection};
 use crate::user_audio_level::PlayerAudioObservation;
 use media_source_open::video_codec_mapping::runtime_video_codec;
 
+#[path = "frame_prepare/frame_decision.rs"]
+mod frame_decision;
+#[path = "frame_prepare/frame_work_plan.rs"]
+mod frame_work_plan;
+#[path = "frame_prepare/present.rs"]
+mod present;
+use frame_decision::{FrameDecisionInputs, decide_frame_work};
+pub(crate) use frame_work_plan::{FrameWorkPlan, PresentReasons};
+use present::{PresentedFrameTimings, present_frame_for_plan};
 #[path = "frame_prepare/geometry.rs"]
 mod geometry;
 #[path = "frame_prepare/input_snapshot.rs"]
@@ -72,12 +81,9 @@ use shared_frame_materialization::{
     SharedVideoFrameMaterializationOutcome, SharedVideoFrameMaterializationRequest,
     materialize_shared_video_frame,
 };
-use submit::submit_render_frame;
 use telemetry_mapping::map_video_frame_telemetry_event;
-use timing::{
-    AppRenderFrameTimings, SurfaceFrameCounters, VideoPrepareTimings, log_render_frame_timings,
-};
-use ui_prepare::prepare_ui_frame;
+use timing::{FrameWorkTrace, VideoPrepareTimings, log_skipped_frame};
+use ui_prepare::{advance_ui_timers, prepare_ui_frame_for_plan};
 
 /// Результат полного render frame-а с shell-level запросами от window chrome.
 pub(crate) struct AppRenderFrameResult {
@@ -815,10 +821,14 @@ pub(crate) fn with_lifecycle_settings_adapter<R>(
     flush(&mut runtime_adapter)
 }
 
-/// Рендерит один полный кадр: видео + egui overlay.
+/// Обрабатывает одно пробуждение UI-потока: решает, нужен ли egui-проход и показ кадра,
+/// и выполняет ровно столько, сколько решено (cpu-parity, сессия 04).
 ///
-/// Измеряет время кадра, обновляет телеметрию,
-/// и вызывает renderer.render_frame().
+/// Порядок стадий: ввод и snapshot → публикация desktop → таймеры интерфейса → решение о
+/// плане → (egui-проход) → действия панелей и runtime-опросы → (видео → submit → present) →
+/// трасса и pacing. Housekeeping (persist по таймерам, транспорт плейлиста, preview настроек)
+/// выполняется на каждом пробуждении независимо от плана, чтобы поведение не зависело от того,
+/// рисовался ли кадр.
 #[instrument(skip(
     telemetry,
     window,
@@ -857,7 +867,38 @@ pub(crate) fn render_frame(
     let transport_model = playlist_runtime
         .playlist_transport_ui_model(frame_context.player_snapshot().current_position);
     let undo_model = playlist_runtime.playlist_undo_ui_snapshot(playlist_ui_now);
-    let mut prepared_ui_frame = prepare_ui_frame(
+
+    // Таймеры интерфейса идут на каждом пробуждении, затем — решение, что делать с кадром.
+    advance_ui_timers(
+        window,
+        app_state,
+        settings_runtime,
+        &egui_input,
+        playlist_ui_now,
+    );
+    let decision = decide_frame_work(
+        app_state,
+        settings_runtime,
+        FrameDecisionInputs {
+            window,
+            renderer,
+            frame_context: &frame_context,
+            worker_event_count: input_snapshot_timings.worker_event_count,
+            playlist: crate::state::PlaylistVisualKey {
+                view_revision: app_state
+                    .playlist_view_model()
+                    .map(|model| model.revision()),
+                interaction: playlist_interaction.clone(),
+                transport: transport_model,
+                undo: undo_model,
+                import_preview: playlist_import_preview.clone(),
+                confirmation: playlist_confirmation.clone(),
+            },
+            now: playlist_ui_now,
+        },
+    );
+    let (mut prepared_ui_frame, plan) = prepare_ui_frame_for_plan(
+        decision.plan,
         window,
         app_state,
         settings_runtime,
@@ -871,8 +912,20 @@ pub(crate) fn render_frame(
             undo: &undo_model,
         },
     );
-    frame_sequence.reached(FrameSequenceStage::EguiOutput);
-    let egui_requested_repaint = prepared_ui_frame.requested_repaint;
+    telemetry.record_frame_work_plan(plan);
+    if decision.fallback_probe && plan.presents() {
+        telemetry.record_redraw_fallback_found_work();
+    }
+    // Квантованная позиция этого кадра нужна дедлайну «следующий пиксель/секунда» ниже.
+    let quantized_position = decision.ui_frame_model.position;
+    if plan.runs_ui_pass() {
+        frame_sequence.reached(FrameSequenceStage::EguiOutput);
+        app_state.remember_full_ui_pass(
+            decision.ui_frame_model,
+            prepared_ui_frame.retained_geometry(),
+            playlist_ui_now,
+        );
+    }
     let settings_actions = std::mem::take(&mut prepared_ui_frame.settings_actions);
     let sidebar_width_change = prepared_ui_frame.sidebar_width_change.take();
     let transport_actions = std::mem::take(&mut prepared_ui_frame.transport_actions);
@@ -1006,74 +1059,54 @@ pub(crate) fn render_frame(
             crate::settings_runtime::SettingsPreviewTick::default()
         }
     };
-    if let Some(repaint_after) = settings_preview_tick.repaint_after {
-        app_state.egui_ctx.request_repaint_after(repaint_after);
-    }
+    // Следующий preview-тик — дедлайн планировщика, а не запрос egui: запрос после прохода
+    // egui сбросил бы в начале следующего, и тик терялся (дефект до сессии 04).
+    let settings_preview_deadline = settings_preview_tick
+        .repaint_after
+        .map(|repaint_after| Instant::now() + repaint_after);
 
-    let stage_started_at = Instant::now();
-    let prepared_video_frame =
-        prepare_video_frame(telemetry, app_state, frame_context.player_snapshot());
-    frame_sequence.reached(FrameSequenceStage::MaterializerLookup);
-    if let Err(fallback_failure) = app_state.apply_pending_dma_buf_runtime_fallback(
-        renderer.instance(),
-        renderer.adapter(),
-        renderer.device(),
-        renderer.queue(),
-    ) {
-        warn!(error = %fallback_failure.error, "Runtime DMA-BUF layout recovery rejected");
-        report_video_render_boundary_error(app_state, fallback_failure.player_error);
-    }
-    let mut video_prepare_timings = prepared_video_frame.timings;
-    video_prepare_timings.total = stage_started_at.elapsed();
-    let video_acquisition_state = prepared_video_frame.acquisition_state;
-    let texture_view_lookup_state = prepared_video_frame.texture_view_lookup_state;
-
-    let stage_started_at = Instant::now();
-    frame_sequence.reached(FrameSequenceStage::RendererSubmit);
-    let renderer_timing = submit_render_frame(
-        telemetry,
-        window,
-        renderer,
-        app_state,
-        prepared_ui_frame,
-        prepared_video_frame,
-    );
-    let renderer_submit_elapsed = stage_started_at.elapsed();
-
-    let frame_duration = frame_start.elapsed();
-    let frame_time_ms = frame_duration.as_secs_f64() * 1000.0;
-    telemetry.update_fps(frame_time_ms);
-    let surface_frame_counters = SurfaceFrameCounters {
-        presented: telemetry.frames_presented_to_surface(),
-        dropped: telemetry.surface_dropped_frames(),
+    let frame_work_trace = FrameWorkTrace {
+        plan: plan.metric_name(),
+        ui_pass_reason: decision.ui_reasons.primary_name(),
+        present_reason: decision.present_reasons.primary_name(),
+        counters: telemetry.frame_work_counters(),
     };
-    log_render_frame_timings(
-        frame_context.player_snapshot(),
-        AppRenderFrameTimings {
-            total: frame_duration,
-            input_snapshot: input_snapshot_timings,
-            ui_prepare: ui_prepare_timings,
-            video_prepare: video_prepare_timings,
-            renderer_submit: renderer_submit_elapsed,
-            dma_buf_import_stats: app_state
-                .wgpu_frame_materializer()
-                .and_then(|materializer| materializer.dma_buf_import_stats()),
-        },
-        video_acquisition_state,
-        texture_view_lookup_state,
-        surface_frame_counters,
-        renderer_timing,
-    );
+    if plan.presents() {
+        present_frame_for_plan(
+            telemetry,
+            window,
+            renderer,
+            app_state,
+            &frame_context,
+            prepared_ui_frame,
+            &mut frame_sequence,
+            PresentedFrameTimings {
+                frame_start,
+                input_snapshot: input_snapshot_timings,
+                ui_prepare: ui_prepare_timings,
+                frame_work: frame_work_trace,
+            },
+        );
+    } else {
+        log_skipped_frame(frame_work_trace, frame_start.elapsed());
+    }
 
+    // Запрос egui после прохода и действий: «сейчас» → немедленный redraw, иначе дедлайн.
+    // Без прохода запрос не сбрасывается: его дедлайн по-прежнему ждёт планировщик.
+    let egui_request = if plan.runs_ui_pass() {
+        app_state.take_egui_repaint_request()
+    } else {
+        app_state.peek_egui_repaint_request()
+    };
     AppRenderFrameResult {
         pacing: RedrawPacing::new(
-            app_state.wants_continuous_redraw(),
             app_state.take_pending_worker_redraw()
-                || egui_requested_repaint
+                || egui_request.immediate
                 || settings_action_requested_repaint
                 || playlist_action_requested_repaint
                 || url_action_requested_repaint
                 || audio_version_requested_repaint,
+            app_state.wants_continuous_redraw(),
         ),
         close_requested: chrome_close_requested,
         next_ui_wake_deadline: earliest_ui_wake_deadline([
@@ -1084,6 +1117,15 @@ pub(crate) fn render_frame(
             app_state.track_memory_wake_deadline(),
             app_state.next_notification_wake_deadline(),
             app_state.fullscreen_chrome_wake_deadline(),
+            app_state.timeline_inline_status_wake_deadline(),
+            app_state.next_telemetry_refresh_deadline(),
+            egui_request.deadline,
+            settings_preview_deadline,
+            app_state.next_position_wake_deadline(
+                frame_context.player_snapshot(),
+                quantized_position,
+                Instant::now(),
+            ),
         ]),
     }
 }

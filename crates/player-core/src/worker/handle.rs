@@ -332,6 +332,15 @@ impl PlayerWorker {
         self.render_bridge_client.try_acquire_present_frame()
     }
 
+    /// Неблокирующе читает identity кадра в слоте показа (сессия 04).
+    ///
+    /// Дешевле `try_acquire_present_frame`: без clone lease-а и без diagnostics sample.
+    /// UI сравнивает её с кадром на экране и пропускает кадр, если он тот же.
+    #[must_use]
+    pub fn try_present_frame_identity(&self) -> PresentFrameIdentityProbe {
+        self.render_bridge_client.try_present_frame_identity()
+    }
+
     /// Пытается получить scrub visual override frame без доступа к `PlayerSession`.
     #[must_use]
     pub fn try_acquire_scrub_visual_override_frame(&self) -> Option<VideoFrameLease> {

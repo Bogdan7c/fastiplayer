@@ -59,11 +59,41 @@ pub enum VideoFrameTelemetryEvent {
     SeekDiscard(SeekDiscardReason),
 }
 
+/// Накопительные счётчики планов пробуждения UI-потока (сессия 04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FrameWorkCounters {
+    /// Полные egui-проходы.
+    pub full_passes: u64,
+    /// Показы видео с удержанным интерфейсом (без egui-прохода).
+    pub reused_presents: u64,
+    /// Пробуждения, на которых ничего не рисовалось и не презентовалось.
+    pub skips: u64,
+    /// Страховочный таймер нашёл работу: признак пропущенного события.
+    pub fallback_found_work: u64,
+    /// Отказы shell-а повторить прежний интерфейс (кадр ушёл полным проходом).
+    pub retained_ui_refusals: u64,
+}
+
 /// Глобальные счётчики телеметрии.
 ///
 /// Синглтон через OnceLock для ленивой инициализации.
 /// Доступен из любого места приложения без передачи ссылок.
 pub struct Telemetry {
+    /// Полные egui-проходы (сессия 04).
+    ui_full_passes: AtomicU64,
+
+    /// Показы видео с удержанным интерфейсом (сессия 04).
+    ui_reused_presents: AtomicU64,
+
+    /// Пропущенные пробуждения без показа (сессия 04).
+    redraw_skips: AtomicU64,
+
+    /// Срабатывания страховочного таймера, нашедшие работу (сессия 04).
+    redraw_fallback_found_work: AtomicU64,
+
+    /// Отказы shell-а повторить прежний интерфейс (сессия 04).
+    retained_ui_refusals: AtomicU64,
+
     /// Количество render frames, успешно отправленных в swapchain surface.
     frames_presented_to_surface: AtomicU64,
 
@@ -140,6 +170,11 @@ impl Telemetry {
     /// Создаёт новый экземпляр телеметрии с нулевыми счётчиками.
     pub fn new() -> Self {
         Self {
+            ui_full_passes: AtomicU64::new(0),
+            ui_reused_presents: AtomicU64::new(0),
+            redraw_skips: AtomicU64::new(0),
+            redraw_fallback_found_work: AtomicU64::new(0),
+            retained_ui_refusals: AtomicU64::new(0),
             frames_presented_to_surface: AtomicU64::new(0),
             surface_dropped_frames: AtomicU64::new(0),
             current_fps: AtomicU64::new(0),
@@ -332,6 +367,39 @@ impl Telemetry {
     #[inline]
     pub fn record_video_frame_repeated(&self) {
         self.repeated_frames.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Учитывает план пробуждения UI-потока (сессия 04): полный проход / показ / пропуск.
+    pub fn record_frame_work_plan(&self, plan: crate::frame_prepare::FrameWorkPlan) {
+        let counter = match plan {
+            crate::frame_prepare::FrameWorkPlan::FullPass => &self.ui_full_passes,
+            crate::frame_prepare::FrameWorkPlan::PresentReusingUi => &self.ui_reused_presents,
+            crate::frame_prepare::FrameWorkPlan::Skip => &self.redraw_skips,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Страховочный таймер (250 мс) разбудил UI и нашёл работу: пропущенное событие.
+    pub fn record_redraw_fallback_found_work(&self) {
+        self.redraw_fallback_found_work
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Сколько раз shell отказал повторить прежний интерфейс и кадр пошёл полным проходом.
+    pub fn record_retained_ui_refused(&self) {
+        self.retained_ui_refusals.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Снимок счётчиков планов кадра для трассы и панели телеметрии.
+    #[must_use]
+    pub fn frame_work_counters(&self) -> FrameWorkCounters {
+        FrameWorkCounters {
+            full_passes: self.ui_full_passes.load(Ordering::Relaxed),
+            reused_presents: self.ui_reused_presents.load(Ordering::Relaxed),
+            skips: self.redraw_skips.load(Ordering::Relaxed),
+            fallback_found_work: self.redraw_fallback_found_work.load(Ordering::Relaxed),
+            retained_ui_refusals: self.retained_ui_refusals.load(Ordering::Relaxed),
+        }
     }
 
     #[inline]

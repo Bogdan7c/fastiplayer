@@ -35,8 +35,8 @@ use winit::window::Window;
 use crate::egui_compositor::EguiCompositor;
 use crate::frame::{
     RenderFrameDropReason, RenderFrameFailure, RenderFrameInput, RenderFrameOutcome,
-    RenderFrameStageTimings, RenderFrameTiming, clamp_video_exclusion_rects_to_screen,
-    clamp_video_viewport_to_screen,
+    RenderFrameStageTimings, RenderFrameTiming, RenderScreenDescriptor,
+    clamp_video_exclusion_rects_to_screen, clamp_video_viewport_to_screen,
 };
 use crate::subtitle_overlay::{
     SubtitleOverlayRenderer, SubtitleOverlayTarget, SubtitleOverlayUploadStats,
@@ -445,6 +445,19 @@ impl Renderer {
         self.video_renderer.diagnostics().clone()
     }
 
+    /// `true`, если shell может нарисовать интерфейс прежними примитивами для этого размера
+    /// экрана ([`crate::EguiFrameContent::ReusePrevious`]). App спрашивает это ДО решения пропустить
+    /// egui-проход; после пересоздания renderer-а или смены размера ответ `false`.
+    #[must_use]
+    pub fn can_reuse_retained_ui(&self, screen: RenderScreenDescriptor) -> bool {
+        self.egui_compositor
+            .retained_frame_availability(&egui_wgpu::ScreenDescriptor {
+                size_in_pixels: screen.size_in_pixels,
+                pixels_per_point: screen.pixels_per_point,
+            })
+            .is_ok()
+    }
+
     /// Передаёт пользовательские SDR color settings во внутренний video renderer.
     pub fn set_color_pipeline_settings(&mut self, settings: ColorPipelineSettings) {
         self.video_renderer.set_color_pipeline_settings(settings);
@@ -469,8 +482,7 @@ impl Renderer {
         let RenderFrameInput {
             window,
             video_frame,
-            egui_paint_jobs,
-            egui_textures_delta,
+            egui,
             screen,
             video_viewport,
             video_exclusion_rects,
@@ -497,14 +509,26 @@ impl Renderer {
             pixels_per_point: screen.pixels_per_point,
         };
 
-        // Загружаем новые/изменённые egui текстуры.
-        // Retired-текстуры остаются живы до submit-а текущих paint jobs.
+        // Свежий кадр: загружаем новые/изменённые egui текстуры (retired-текстуры остаются
+        // живы до submit-а текущих paint jobs). Повторный кадр: проверяем, что удержанные
+        // примитивы существуют и загружены для этого же размера экрана — иначе отказ ДО
+        // acquire, и app повторит кадр полным egui-проходом.
         let stage_started_at = Instant::now();
-        self.egui_compositor.upload_changed_textures(
+        let pending_egui = match self.egui_compositor.begin_frame_content(
             &self.gpu.device,
             &self.gpu.queue,
-            &egui_textures_delta,
-        );
+            egui,
+            &screen_descriptor,
+        ) {
+            Ok(pending_egui) => pending_egui,
+            Err(reason) => {
+                debug!(
+                    ?reason,
+                    "Retained egui frame unavailable; the app must redraw with a fresh UI pass"
+                );
+                return RenderFrameOutcome::Dropped(RenderFrameDropReason::RetainedUiUnavailable);
+            }
+        };
         let egui_texture_update_elapsed = stage_started_at.elapsed();
 
         // Создаём command encoder для этого кадра
@@ -517,15 +541,17 @@ impl Renderer {
             });
         let encoder_creation_elapsed = stage_started_at.elapsed();
 
-        // Обновляем egui буферы (vertex/index) перед рендерингом
+        // Свежий кадр обновляет egui буферы (vertex/index) и становится удержанным;
+        // повторный кадр читает буферы последнего свежего без новой загрузки.
         let stage_started_at = Instant::now();
-        let egui_callback_command_buffers = self.egui_compositor.update_buffers(
-            &self.gpu.device,
-            &self.gpu.queue,
-            &mut encoder,
-            &egui_paint_jobs,
-            &screen_descriptor,
-        );
+        let (egui_callback_command_buffers, egui_textures_delta) =
+            self.egui_compositor.prepare_pending_content(
+                &self.gpu.device,
+                &self.gpu.queue,
+                &mut encoder,
+                pending_egui,
+                screen_descriptor,
+            );
         let egui_buffer_update_elapsed = stage_started_at.elapsed();
 
         // Получаем surface texture для текущего кадра
@@ -602,7 +628,7 @@ impl Renderer {
                 // Текущий encoder не будет submitted, поэтому его paint jobs больше
                 // не удерживают retired-текстуры. Предыдущие submit-ы уже переданы wgpu.
                 self.egui_compositor
-                    .free_retired_textures(egui_textures_delta);
+                    .free_retired_textures_if_any(egui_textures_delta);
                 return dropped_frame;
             }
         };
@@ -636,7 +662,7 @@ impl Renderer {
                 tracing::error!(error = %error, "Video render failed");
                 // Encoder с egui paint jobs отбрасывается вместе с failed frame.
                 self.egui_compositor
-                    .free_retired_textures(egui_textures_delta);
+                    .free_retired_textures_if_any(egui_textures_delta);
                 return RenderFrameOutcome::Failed(RenderFrameFailure::new(error.to_string()));
             }
         };
@@ -657,14 +683,10 @@ impl Renderer {
         );
         let subtitle_overlay_elapsed = stage_started_at.elapsed();
 
-        // Рендерим egui поверх видео.
+        // Рендерим egui поверх видео: удержанные примитивы — свежие или прошлого кадра.
         let stage_started_at = Instant::now();
-        self.egui_compositor.render_overlay(
-            &mut encoder,
-            &surface_view,
-            &egui_paint_jobs,
-            &screen_descriptor,
-        );
+        self.egui_compositor
+            .render_retained_overlay(&mut encoder, &surface_view);
         let egui_render_elapsed = stage_started_at.elapsed();
 
         // Маска идёт строго последней: она одинаково обрезает video, egui и hover surfaces.
@@ -702,7 +724,7 @@ impl Renderer {
         // После submit-а wgpu самостоятельно удерживает ресурсы до завершения GPU work.
         // Теперь retired-текстуры можно безопасно уничтожить, не повреждая текущий кадр.
         self.egui_compositor
-            .free_retired_textures(egui_textures_delta);
+            .free_retired_textures_if_any(egui_textures_delta);
         let queue_submit_elapsed = stage_started_at.elapsed();
 
         // Продвигаем wgpu callbacks для submitted work.

@@ -197,6 +197,9 @@ pub(crate) struct SettingsRuntime {
     /// Memoized visual model; сбрасывается при любой мутации settings state.
     ui_model_cache: Option<SettingsUiModel>,
 
+    /// Ревизия visual model: растёт с каждой инвалидацией, читается UI-моделью кадра.
+    ui_model_revision: u64,
+
     /// Что известно о VA-API (из capability report-а, собранного при старте).
     /// Нужно только для предупреждения рядом с режимом «Hardware».
     hardware_decode_availability: HardwareDecodeAvailability,
@@ -256,6 +259,7 @@ impl SettingsRuntime {
             dynamic_options_shutdown_completed: false,
             last_preview_sent_at: None,
             ui_model_cache: None,
+            ui_model_revision: 0,
             hardware_decode_availability: HardwareDecodeAvailability::Unknown,
             visual_hold: false,
         };
@@ -349,6 +353,16 @@ impl SettingsRuntime {
     /// Сбрасывает memoized visual model; обязан вызываться после любой мутации.
     fn invalidate_ui_model(&mut self) {
         self.ui_model_cache = None;
+        self.ui_model_revision = self.ui_model_revision.wrapping_add(1);
+    }
+
+    /// Ревизия visual model: растёт при каждой инвалидации кэша.
+    ///
+    /// UI-модель кадра (сессия 04) сравнивает ревизии вместо полной модели настроек:
+    /// пока настройки не мутировали, панель перерисовывать не нужно.
+    #[must_use]
+    pub(crate) const fn ui_model_revision(&self) -> u64 {
+        self.ui_model_revision
     }
 
     /// View-level hint от shell: панель закрыта, но ещё видна (анимация закрытия),

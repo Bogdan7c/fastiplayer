@@ -190,8 +190,8 @@ pub(crate) use selection::{
 #[cfg(test)]
 pub(crate) use view::PlaylistVisibleRowTestFixture;
 pub(crate) use view::{
-    PlaylistStructuralActionAvailability, PlaylistStructuralRevision, PlaylistViewSnapshot,
-    PlaylistVisibleRow,
+    PlaylistStructuralActionAvailability, PlaylistStructuralRevision, PlaylistViewRevision,
+    PlaylistViewSnapshot, PlaylistVisibleRow,
 };
 #[cfg(test)]
 pub(crate) use view_model::PlaylistSaveAttempt;

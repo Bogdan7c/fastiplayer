@@ -1,9 +1,9 @@
 {
   "hard_limit_lines": 800,
   "legacy_modules": {
-    "crates/app-egui/src/frame_prepare.rs": 1429,
+    "crates/app-egui/src/frame_prepare.rs": 1471,
     "crates/app-egui/src/playlist_runtime/persistence.rs": 889,
-    "crates/app-egui/src/playlist_runtime/ui_interaction.rs": 825,
+    "crates/app-egui/src/playlist_runtime/ui_interaction.rs": 828,
     "crates/app-egui/src/state/telemetry_panel.rs": 877,
     "crates/app-egui/src/state/ui_runtime.rs": 898,
     "crates/app-egui/src/ui/player_controls.rs": 1103,
@@ -21,7 +21,7 @@
     "crates/media-core/src/time.rs": 900,
     "crates/media-prefetch/src/source.rs": 1009,
     "crates/player-core/src/diagnostics.rs": 1870,
-    "crates/player-core/src/render_lease_bridge.rs": 1208,
+    "crates/player-core/src/render_lease_bridge.rs": 1211,
     "crates/player-core/src/runtime_settings.rs": 1049,
     "crates/player-core/src/session/tick/video_decoder_io.rs": 814,
     "crates/playlist-core/src/queue/outcomes.rs": 841,

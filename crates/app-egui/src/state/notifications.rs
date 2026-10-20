@@ -77,6 +77,14 @@ pub(crate) const OPEN_STILL_IN_PROGRESS_MESSAGE: &str = "File still opens.";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct NotificationId(u64);
 
+impl NotificationId {
+    /// Явный идентификатор для тестов проекций кадра (production выдаёт их центр уведомлений).
+    #[cfg(test)]
+    pub(crate) const fn for_tests(id: u64) -> Self {
+        Self(id)
+    }
+}
+
 /// Вид toast-уведомления: определяет время жизни и тон отрисовки.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToastKind {

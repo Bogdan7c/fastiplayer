@@ -704,7 +704,7 @@ impl AppShell {
     ) {
         event_loop.set_control_flow(action.control_flow);
 
-        if action.request_redraw
+        if action.request_redraw()
             && let Some(window) = window
         {
             window.request_redraw();

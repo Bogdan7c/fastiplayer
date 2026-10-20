@@ -451,7 +451,10 @@ pub(crate) struct PlaylistSafeFeedback {
 }
 
 /// Immutable interaction snapshot одного frame-а. Raw URL не реализует `Debug`.
-#[derive(Clone)]
+///
+/// `PartialEq` нужен UI-модели кадра (сессия 04): пока snapshot не изменился, панель
+/// плейлиста перерисовывать не нужно.
+#[derive(Clone, PartialEq)]
 pub(crate) struct PlaylistInteractionModel {
     pub(crate) structural_action_availability: PlaylistStructuralActionAvailability,
     pub(crate) item_count: usize,

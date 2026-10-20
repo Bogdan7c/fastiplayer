@@ -78,9 +78,9 @@ pub(super) struct WorkerWakeupCounters {
     /// которые epoch-проверка отбросила без tick-а).
     decoder_pulses: u64,
 
-    /// Пробуждения от render feedback (release, acquire/timing/lock samples):
-    /// они не запускают tick, но будят поток и стоят CPU.
-    render_feedback_wakeups: u64,
+    /// Пробуждения от release-ack рендера (UI отдал кадр): они не запускают tick, но
+    /// будят поток и стоят CPU. Диагностические замеры рендера с сессии 04 не будят.
+    render_release_wakeups: u64,
 }
 
 impl WorkerWakeupCounters {
@@ -94,7 +94,7 @@ impl WorkerWakeupCounters {
             ticks_after_commands: 0,
             ticks_by_reason: [0; ALL_WAKEUP_REASONS.len()],
             decoder_pulses: 0,
-            render_feedback_wakeups: 0,
+            render_release_wakeups: 0,
         }
     }
 
@@ -115,9 +115,9 @@ impl WorkerWakeupCounters {
         self.decoder_pulses = self.decoder_pulses.saturating_add(1);
     }
 
-    /// Учитывает пробуждение от render feedback event-а.
-    pub(super) fn record_render_feedback_wakeup(&mut self) {
-        self.render_feedback_wakeups = self.render_feedback_wakeups.saturating_add(1);
+    /// Учитывает пробуждение от release-ack рендера.
+    pub(super) fn record_render_release_wakeup(&mut self) {
+        self.render_release_wakeups = self.render_release_wakeups.saturating_add(1);
     }
 
     /// Закрывает текущее окно, возвращает его итог и начинает новое с `now`.
@@ -129,7 +129,7 @@ impl WorkerWakeupCounters {
             ticks_after_commands: self.ticks_after_commands,
             ticks_by_reason: self.ticks_by_reason,
             decoder_pulses: self.decoder_pulses,
-            render_feedback_wakeups: self.render_feedback_wakeups,
+            render_release_wakeups: self.render_release_wakeups,
         };
         *self = Self::new(now);
         finished
@@ -157,8 +157,8 @@ pub(super) struct WorkerWakeupWindow {
     /// Принятые decoder pulse-ы.
     pub(super) decoder_pulses: u64,
 
-    /// Пробуждения от render feedback event-ов.
-    pub(super) render_feedback_wakeups: u64,
+    /// Пробуждения от release-ack рендера.
+    pub(super) render_release_wakeups: u64,
 }
 
 impl WorkerWakeupWindow {
@@ -233,7 +233,7 @@ mod tests {
         );
         counters.record_decoder_pulse();
         counters.record_decoder_pulse();
-        counters.record_render_feedback_wakeup();
+        counters.record_render_release_wakeup();
 
         let window = counters.take_window(started_at + Duration::from_secs(2));
 
@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(window.ticks_decoder_activity, 1);
         assert_eq!(window.ticks_after_commands, 1);
         assert_eq!(window.decoder_pulses, 2);
-        assert_eq!(window.render_feedback_wakeups, 1);
+        assert_eq!(window.render_release_wakeups, 1);
         assert_eq!(
             window.ticks_for_reason(WorkerWakeupReason::FramePtsDeadline),
             2

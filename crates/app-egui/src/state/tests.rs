@@ -647,7 +647,11 @@ fn app_state_player_snapshot_boundary_stays_explicit() {
     let refresh_section = source_section_between(
         &state_source,
         refresh_signature,
-        concat!("pub fn ", "wants_continuous_redraw", "(&self) -> bool"),
+        concat!(
+            "pub fn ",
+            "take_pending_worker_redraw",
+            "(&mut self) -> bool"
+        ),
     );
     assert!(
         !refresh_section.contains("publish_desktop_snapshot"),
@@ -673,8 +677,10 @@ fn app_state_player_snapshot_boundary_stays_explicit() {
     let publish_position = frame_prepare_source
         .find("playlist_runtime.publish_desktop_snapshot(frame_context.player_snapshot());")
         .expect("The frame adapter must transfer the snapshot process to the owner.");
+    // Сессия 04: UI готовится под план кадра (полный проход или повтор удержанного интерфейса),
+    // но по-прежнему после публикации того же AppFrameContext.
     let ui_prepare_position = frame_prepare_source
-        .find("let mut prepared_ui_frame = prepare_ui_frame(")
+        .find("let (mut prepared_ui_frame, plan) = prepare_ui_frame_for_plan(")
         .expect("render_frame should be used to prepare UI via AppFrameContext.");
 
     assert!(

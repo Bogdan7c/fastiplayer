@@ -22,6 +22,9 @@ pub(crate) enum AppWakeOwner {
     PlaylistRuntime,
     /// Player-visible dynamic timeline revision без payload.
     PlayerTimeline,
+    /// Worker опубликовал новый кадр показа или событие плеера (cpu-parity, сессия 04):
+    /// UI рисует по этому пробуждению, а не по vsync. Payload — в слоте показа и очереди событий.
+    PlayerPresentation,
     /// Фоновая загрузка субтитров текущего media (поиск файла рядом, чтение, разбор).
     Subtitles,
     /// Запросы следующих запусков плеера (сессия 13): payload в ящике
@@ -185,6 +188,14 @@ impl AppWakePort {
     /// чтением, и следующее пробуждение слилось бы с уже "висящим" (потерялось бы).
     pub(crate) fn with_independent_edge(&self) -> Self {
         Self::new(self.inner.owner, self.inner.emitter.clone())
+    }
+
+    /// Порт ДРУГОГО владельца над тем же event loop (общий только канал событий).
+    ///
+    /// Нужен, когда владелец порта создаётся там, где proxy event loop-а уже недоступен
+    /// (например, `AppState` заводит порт показа плеера из порта timeline).
+    pub(crate) fn sibling_for_owner(&self, owner: AppWakeOwner) -> Self {
+        Self::new(owner, self.inner.emitter.clone())
     }
 
     /// Поднимает только false→true edge; payload должен быть опубликован раньше.

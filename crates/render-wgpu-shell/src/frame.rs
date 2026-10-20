@@ -168,11 +168,8 @@ pub struct RenderFrameInput<'frame> {
     /// Video frame boundary; `None` означает, что target нужно очистить в чёрный.
     pub video_frame: Option<&'frame WgpuRenderableFrame<'frame>>,
 
-    /// Уже tessellated egui primitives.
-    pub egui_paint_jobs: Vec<egui::epaint::ClippedPrimitive>,
-
-    /// Изменения egui textures для текущего кадра.
-    pub egui_textures_delta: egui::TexturesDelta,
+    /// Свежие egui-примитивы либо просьба повторить прежние.
+    pub egui: EguiFrameContent,
 
     /// Размер target-а и UI scale для egui-wgpu.
     pub screen: RenderScreenDescriptor,
@@ -248,6 +245,29 @@ pub enum RenderFrameDropReason {
 
     /// Повторный acquisition после Outdated/Reconfigure тоже не дал frame.
     SurfaceOutdatedRecoveryFailed,
+
+    /// App попросил нарисовать интерфейс прежними примитивами, а удерживать нечего
+    /// (первый кадр после создания renderer-а) или размер экрана изменился.
+    /// Кадр отброшен ДО acquire; app обязан повторить его полным egui-проходом.
+    RetainedUiUnavailable,
+}
+
+/// Чем рисовать интерфейс в этом кадре (cpu-parity, сессия 04).
+pub enum EguiFrameContent {
+    /// Свежий egui-проход: новые примитивы и изменения текстур этого кадра.
+    Fresh {
+        /// Уже tessellated egui primitives.
+        paint_jobs: Vec<egui::epaint::ClippedPrimitive>,
+
+        /// Изменения egui textures для текущего кадра.
+        textures_delta: egui::TexturesDelta,
+    },
+
+    /// Интерфейс не менялся: нарисовать примитивы последнего свежего кадра поверх нового видео.
+    ///
+    /// Допустимо только при том же `RenderScreenDescriptor`, что у последнего свежего кадра;
+    /// иначе shell вернёт [`RenderFrameDropReason::RetainedUiUnavailable`] до acquire.
+    ReusePrevious,
 }
 
 #[cfg(test)]

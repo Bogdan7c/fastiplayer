@@ -20,6 +20,11 @@
 - PASS: app-shell focused 13/13; full `app-egui` no-default 1002/1002 и all-features 1002/1002; strict Clippy обеих matrices/all-targets; rustfmt; diff check; refactor guardrails; S42 final acceptance 24/24; Serena diagnostics.
 - `scripts/check_s42_guardrails.py` ожидаемо остаётся red: `scripts/module-size-baseline.json` всё ещё содержит запрещённую к правке legacy запись app-shell `1004`, теперь stale при 712, вместе с другими repository-wide wave deltas. Snapshot baseline в этой задаче намеренно не менялся.
 
+## Политика redraw: события вместо vsync (cpu-parity сессия 04, 2026-10-20)
+
+- Воспроизведение больше НЕ держит `Wait + request_redraw` после каждого кадра. `redraw_pacing.rs`: `RedrawPacing { immediate, playback_active }`, `RedrawControlAction { control_flow, redraw_cause }`; при воспроизведении — `WaitUntil(min(дедлайны UI-модели, страховка 250 мс))`. Источники пробуждения: ввод (любое оконное событие кроме Redraw/Close → `AppState::note_window_input_for_redraw`), `AppWakeOwner::PlayerPresentation` (worker опубликовал кадр/событие → `note_presentation_wake`, НЕ «видимая мутация»), остальные owner-wake с `visible_mutation` → `note_visible_mutation_for_redraw` (полный проход), дедлайны (`frame_result.next_ui_wake_deadline`: тосты, chrome, Undo, inline-статус, телеметрия, egui `request_repaint_after`, preview настроек, секунда/пиксель позиции), страховка `RedrawCause::PlaybackFallback` → `note_redraw_fallback_probe`. Кадр решает сам (`frame_prepare::frame_work_plan`): полный проход / показ с прежним интерфейсом / пропуск. Полный контракт, инварианты и тесты: `mem:app-egui/render-on-change-s04-2026-10-20`.
+- Тесты планировщика в `redraw_pacing.rs` (воспроизведение не спинит на vsync, страховка перевзводится кадром, пауза — чистый `Wait`, ближний дедлайн позиции побеждает страховку).
+
 ## Клавиатура: владелец фокуса и Esc (UX edge cases, сессия 01, 2026-10-04)
 
 - Хоткеи больше не гасятся флагом «egui занят» (`egui_wants_keyboard_input()` и `egui_response.consumed` = фокус у ЛЮБОГО виджета, из-за этого хоткеи глохли после клика по кнопке). `ui/keyboard_focus.rs::keyboard_focus_owner(&Context) -> KeyboardFocusOwner { Nobody, Widget, TextInput }` читает память egui предыдущего кадра; event loop передаёт результат в `hotkeys::classify_key_event`.
