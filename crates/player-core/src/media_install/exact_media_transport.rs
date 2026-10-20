@@ -35,7 +35,7 @@ pub enum ExactMediaTransportFailureStage {
     Pause,
     /// Seek к нулю не применился; preceding Pause мог уже завершиться.
     SeekToBeginning,
-    /// Play после успешного seek не применился.
+    /// Play не применился (explicit Playing intent или replay после `Ended`).
     Play,
     /// Полный reset media не применился.
     ResetMedia,

@@ -1,5 +1,6 @@
 //! Serialized exact-instance restart и neutral Stop внутри player owner-а.
 
+use crate::seek_state::PlaybackResumeIntent;
 use crate::{
     ExactMediaTransportAction, ExactMediaTransportFailureStage, ExactMediaTransportOutcome,
     ExactMediaTransportRequest, PlaybackIntent, PlayerError, PlayerErrorKind, PlayerResult,
@@ -73,7 +74,7 @@ impl PlayerSession {
                 error,
             };
         }
-        if let Err(error) = self.start_exact_seek_to_beginning() {
+        if let Err(error) = self.start_exact_seek_to_beginning(PlaybackResumeIntent::Pause) {
             return ExactMediaTransportOutcome::PartiallyApplied {
                 media_instance_id,
                 completed_stage: ExactMediaTransportFailureStage::Pause,
@@ -84,7 +85,14 @@ impl PlayerSession {
         ExactMediaTransportOutcome::Applied { media_instance_id }
     }
 
-    /// Seek выполняется до final intent, поэтому failed seek не маскируется как navigation.
+    /// Перезапуск с начала: итоговое Playing/Paused передаётся самой seek-транзакции.
+    ///
+    /// Инвариант: после старта seek-а к нулю в этом же owner turn-е нельзя вызывать
+    /// `play()`/`pause()`. Для них только что начатый seek выглядит как активная
+    /// SeekLanding, и они отменяют её как внешнюю команду (`UserCancelled`): demuxer и
+    /// decoder уже перемотаны к нулю, а часы и позиция остаются на старом месте. Так
+    /// Previous (restart current) ломал воспроизведение видео. Поэтому намерение
+    /// задаётся как resume intent seek-а и применяется штатным commit-ом landing-а.
     fn apply_exact_restart(
         &mut self,
         media_instance_id: crate::MediaInstanceId,
@@ -102,25 +110,14 @@ impl PlayerSession {
                 },
             };
         }
-        if let Err(error) = self.start_exact_seek_to_beginning() {
+        let resume_intent = match intent {
+            PlaybackIntent::StartPlaying => PlaybackResumeIntent::Play,
+            PlaybackIntent::StartPaused => PlaybackResumeIntent::Pause,
+        };
+        if let Err(error) = self.start_exact_seek_to_beginning(resume_intent) {
             return ExactMediaTransportOutcome::Failed {
                 media_instance_id,
                 stage: ExactMediaTransportFailureStage::SeekToBeginning,
-                error,
-            };
-        }
-        let final_state_result = match intent {
-            PlaybackIntent::StartPlaying => self.play(),
-            PlaybackIntent::StartPaused => self.pause(),
-        };
-        if let Err(error) = final_state_result {
-            return ExactMediaTransportOutcome::PartiallyApplied {
-                media_instance_id,
-                completed_stage: ExactMediaTransportFailureStage::SeekToBeginning,
-                failed_stage: match intent {
-                    PlaybackIntent::StartPlaying => ExactMediaTransportFailureStage::Play,
-                    PlaybackIntent::StartPaused => ExactMediaTransportFailureStage::Pause,
-                },
                 error,
             };
         }
@@ -129,7 +126,12 @@ impl PlayerSession {
 
     /// Старый public seek сохраняет recoverable-error compatibility и поэтому возвращает `Ok`.
     /// Exact transport добавляет owner-side pre/postcondition, чтобы app получил typed failure.
-    fn start_exact_seek_to_beginning(&mut self) -> PlayerResult<()> {
+    /// `resume_intent` — состояние, в которое seek-транзакция вернёт playback после commit-а.
+    fn start_exact_seek_to_beginning(
+        &mut self,
+        resume_intent: PlaybackResumeIntent,
+    ) -> PlayerResult<()> {
+        self.ensure_not_shutdown()?;
         if !self.snapshot.timeline.seekable {
             let reason = self
                 .snapshot
@@ -147,7 +149,10 @@ impl PlayerSession {
                 "Exact seek-to-zero is not possible: media pipeline is not open",
             ));
         }
-        self.seek(SeekRequest::absolute(std::time::Duration::ZERO.into()))?;
+        self.start_seek_with_resume_intent(
+            SeekRequest::absolute(std::time::Duration::ZERO.into()),
+            resume_intent,
+        )?;
         if self.seek_runtime.seek_landing_active() || self.snapshot.timeline.seeking {
             return Ok(());
         }

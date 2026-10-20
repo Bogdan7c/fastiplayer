@@ -1,9 +1,11 @@
 use std::num::NonZeroU64;
+use std::time::Duration;
 
 use media_core::{DemuxSeekability, TimelineNotSeekableReason};
 
 use super::test_support::{
-    ScriptedAudioOutput, install_fake_media, install_fake_media_with_seekability,
+    ScriptedAudioOutput, SeekRegressionHarness, fake_track, install_fake_media,
+    install_fake_media_with_seekability, scripted_seek_demuxer,
 };
 use super::*;
 use crate::{
@@ -229,4 +231,144 @@ fn exact_play_pause_intent_never_falls_through_to_newer_instance() {
         }
     );
     assert_eq!(session.playback_state(), PlaybackState::Playing);
+}
+
+/// Ставит играющее video-only media на ненулевую позицию через обычный committed seek.
+///
+/// Видео без аудио-дорожки — именно тот случай, где Previous (restart current)
+/// замораживал картинку: seek к нулю идёт через reused-decoder SeekLanding.
+fn playing_video_only_harness_at(
+    instance_id: MediaInstanceId,
+    position: Duration,
+) -> SeekRegressionHarness {
+    let video_track = fake_track(1, TrackKind::Video);
+    // Первый seek (к `position`) получает scripted результат; seek к нулю — default fake-а.
+    let demuxer = scripted_seek_demuxer(vec![video_track.clone()], position, position, Vec::new());
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+    harness.session.snapshot.media_instance_id = Some(instance_id);
+
+    harness.start_final_seek(MediaTime::from_duration(position));
+    harness.push_decoded_frame(position, 600, 0);
+    let positioning_tick = harness.tick_once_fast_preroll();
+    assert_eq!(positioning_tick.video_frames_presented, 1);
+    assert!(harness.session.seek_commit().is_none());
+    assert_eq!(harness.session.snapshot().current_position, position);
+
+    harness
+        .session
+        .dispatch_command(PlayerCommand::Play)
+        .expect("Play must reach the session");
+    assert_eq!(harness.session.playback_state(), PlaybackState::Playing);
+    harness
+}
+
+/// Доводит restart-landing до commit-а: декодер отдаёт кадры с нуля, session тикает.
+fn land_restart_at_zero(harness: &mut SeekRegressionHarness) {
+    for (handle, pts_ms) in [(1_u64, 0_u64), (2, 33), (3, 66), (4, 100)] {
+        harness.push_decoded_frame(Duration::from_millis(pts_ms), handle, 0);
+    }
+    for _ in 0..8 {
+        harness.tick_once_fast_preroll();
+        if harness.session.seek_commit().is_none() {
+            return;
+        }
+    }
+}
+
+#[test]
+fn restart_from_playing_video_lands_at_zero_and_resumes_playing() {
+    let instance_id = media_instance_id(8);
+    let old_position = Duration::from_secs(6);
+    let mut harness = playing_video_only_harness_at(instance_id, old_position);
+
+    assert_eq!(
+        harness.session.apply_exact_media_transport(request(
+            instance_id,
+            ExactMediaTransportAction::RestartFromBeginning {
+                intent: PlaybackIntent::StartPlaying,
+            },
+        )),
+        ExactMediaTransportOutcome::Applied {
+            media_instance_id: instance_id,
+        }
+    );
+    // Seek к нулю остаётся активным: собственный Play restart-а не имеет права его отменить.
+    let restart_seek = harness
+        .session
+        .seek_commit()
+        .expect("restart must keep its seek-to-zero transaction in flight");
+    assert_eq!(
+        restart_seek.target_position,
+        MediaTime::from_duration(Duration::ZERO)
+    );
+    assert_eq!(restart_seek.resume_intent, PlaybackResumeIntent::Play);
+
+    land_restart_at_zero(&mut harness);
+
+    // Наблюдаемый результат: commit состоялся, на экране кадр с нуля, позиция и часы
+    // у начала файла, playback снова идёт (а не застрял на старой позиции).
+    assert!(harness.session.seek_commit().is_none());
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(Duration::ZERO)
+    );
+    assert_eq!(harness.session.playback_state(), PlaybackState::Playing);
+    assert!(!harness.session.snapshot().timeline.seeking);
+    assert!(!harness.session.snapshot().timeline.scrubbing);
+    assert!(harness.session.snapshot().current_position < Duration::from_secs(1));
+    assert!(
+        harness
+            .session
+            .presentation_clock_position_at(Instant::now())
+            < Duration::from_secs(1),
+        "presentation clock must restart from zero, not continue from the old position"
+    );
+    assert_eq!(
+        harness
+            .seek_requests()
+            .last()
+            .map(|request| request.timestamp),
+        Some(Duration::ZERO)
+    );
+}
+
+#[test]
+fn restart_with_paused_intent_from_playing_video_lands_at_zero_paused() {
+    let instance_id = media_instance_id(9);
+    let mut harness = playing_video_only_harness_at(instance_id, Duration::from_secs(6));
+
+    assert_eq!(
+        harness.session.apply_exact_media_transport(request(
+            instance_id,
+            ExactMediaTransportAction::RestartFromBeginning {
+                intent: PlaybackIntent::StartPaused,
+            },
+        )),
+        ExactMediaTransportOutcome::Applied {
+            media_instance_id: instance_id,
+        }
+    );
+    let restart_seek = harness
+        .session
+        .seek_commit()
+        .expect("restart must keep its seek-to-zero transaction in flight");
+    assert_eq!(restart_seek.resume_intent, PlaybackResumeIntent::Pause);
+
+    land_restart_at_zero(&mut harness);
+
+    assert!(harness.session.seek_commit().is_none());
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(Duration::ZERO)
+    );
+    assert_eq!(harness.session.playback_state(), PlaybackState::Paused);
+    assert_eq!(harness.session.snapshot().current_position, Duration::ZERO);
 }

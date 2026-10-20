@@ -160,7 +160,7 @@ impl PlayerSession {
     }
 
     /// Общая command/recovery граница перед единым one-shot seek lifecycle.
-    fn start_seek_with_resume_intent(
+    pub(super) fn start_seek_with_resume_intent(
         &mut self,
         request: SeekRequest,
         resume_intent: PlaybackResumeIntent,
