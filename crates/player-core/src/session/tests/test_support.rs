@@ -2096,6 +2096,60 @@ impl SeekRegressionHarness {
     }
 }
 
+/// Ставит paused video-only media на ненулевую позицию через обычный committed seek.
+///
+/// Видео без аудио-дорожки идёт через reused-decoder SeekLanding — именно тот route,
+/// где отмена landing-а внешней командой рассинхронизировала decoder и часы.
+pub(super) fn paused_video_only_harness_at(
+    instance_id: crate::MediaInstanceId,
+    position: Duration,
+) -> SeekRegressionHarness {
+    let video_track = fake_track(1, TrackKind::Video);
+    // Первый seek (к `position`) получает scripted результат; следующие — default fake-а.
+    let demuxer = scripted_seek_demuxer(vec![video_track.clone()], position, position, Vec::new());
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+    harness.session.snapshot.media_instance_id = Some(instance_id);
+
+    harness.start_final_seek(MediaTime::from_duration(position));
+    harness.push_decoded_frame(position, 600, 0);
+    let positioning_tick = harness.tick_once_fast_preroll();
+    assert_eq!(positioning_tick.video_frames_presented, 1);
+    assert!(harness.session.seek_commit().is_none());
+    assert_eq!(harness.session.snapshot().current_position, position);
+    assert_eq!(harness.session.playback_state(), PlaybackState::Paused);
+    harness
+}
+
+/// То же, что [`paused_video_only_harness_at`], но после позиционирования playback идёт.
+pub(super) fn playing_video_only_harness_at(
+    instance_id: crate::MediaInstanceId,
+    position: Duration,
+) -> SeekRegressionHarness {
+    let mut harness = paused_video_only_harness_at(instance_id, position);
+    harness
+        .session
+        .dispatch_command(PlayerCommand::Play)
+        .expect("Play must reach the session");
+    assert_eq!(harness.session.playback_state(), PlaybackState::Playing);
+    harness
+}
+
+/// Доводит активный video seek landing до commit-а: декодер отдаёт кадры от `landing_start`.
+///
+/// Тикает реальный session path (demux -> fake decoder -> present -> commit gates),
+/// пока commit не закроется или не кончится bounded число шагов.
+pub(super) fn land_video_seek_from(harness: &mut SeekRegressionHarness, landing_start: Duration) {
+    for (handle, offset_ms) in [(1_u64, 0_u64), (2, 33), (3, 66), (4, 100)] {
+        harness.push_decoded_frame(landing_start + Duration::from_millis(offset_ms), handle, 0);
+    }
+    for _ in 0..8 {
+        harness.tick_once_fast_preroll();
+        if harness.session.seek_commit().is_none() {
+            return;
+        }
+    }
+}
+
 /// Конфиг tick-а regression harness с включённым accurate-seek fast-preroll.
 ///
 /// Тот же маленький per-tick budget, но ненулевой `seek_fast_preroll_time_budget`, чтобы

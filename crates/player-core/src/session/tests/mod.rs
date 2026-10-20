@@ -85,6 +85,7 @@ mod seek_commit_gates;
 mod seek_completion;
 mod seek_diagnostics;
 mod seek_regressions;
+mod seek_resume_intent;
 mod seek_start;
 mod seek_trace;
 mod short_media_startup;

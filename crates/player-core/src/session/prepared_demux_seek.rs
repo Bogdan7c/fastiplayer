@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use media_core::{DemuxSeekRequest, DemuxSeekResult, MediaTime};
 
-use crate::seek_state::{SeekCommitState, SeekTargetRetention};
+use crate::seek_state::{InFlightSeekResumeIntentRetarget, SeekCommitState, SeekTargetRetention};
 use crate::{
     MediaInstanceId, PlaybackResumeIntent, PlayerError, PlayerErrorKind,
     PreparedDemuxSeekLandingPolicy, PreparedDemuxSeekMode, PreparedDemuxSeekOutcome,
@@ -256,6 +256,29 @@ impl PreparedDemuxSeekRuntime {
     /// Старый intent больше не может войти в commit после нового timeline command-а.
     pub(super) fn supersede_pending(&mut self) {
         self.pending = None;
+    }
+
+    /// Resume intent seek-а, который ещё ждёт worker receipt (commit-а пока нет).
+    #[must_use]
+    pub(super) fn pending_resume_intent(&self) -> Option<PlaybackResumeIntent> {
+        self.pending.as_ref().map(|pending| pending.resume_intent)
+    }
+
+    /// Меняет resume intent seek-а, ждущего worker receipt.
+    ///
+    /// До receipt-а у seek-а нет `SeekCommitState`: намерение живёт только здесь и
+    /// перейдёт в commit в `accept_worker_receipted_demux_seek`. Request identity,
+    /// generation и target не меняются — receipt остаётся тем же самым.
+    pub(super) fn retarget_pending_resume_intent(
+        &mut self,
+        resume_intent: PlaybackResumeIntent,
+    ) -> InFlightSeekResumeIntentRetarget {
+        let Some(pending) = self.pending.as_mut() else {
+            return InFlightSeekResumeIntentRetarget::NoSeekInFlight;
+        };
+        let previous = pending.resume_intent;
+        pending.resume_intent = resume_intent;
+        InFlightSeekResumeIntentRetarget::Retargeted { previous }
     }
 
     /// Передаёт seek port-у и публикует pending только после успешного enqueue.

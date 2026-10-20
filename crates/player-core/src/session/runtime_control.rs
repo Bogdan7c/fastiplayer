@@ -4,18 +4,31 @@ use frame_server_core::{CancelScrubReason, ValidatedFrameServerConfig};
 use media_core::MediaTime;
 use tracing::{debug, info, warn};
 
-use crate::seek_state::PlaybackResumeIntent;
+use crate::seek_state::{InFlightSeekResumeIntentRetarget, PlaybackResumeIntent};
 use crate::{
     MediaInstallCancellationCause, PlaybackState, PlayerError, PlayerErrorKind, PlayerEvent,
     PlayerResult, QualitySelection, TrackId,
 };
 
 use super::PlayerSession;
+use super::seek_resume_intent::{OneShotSeekPlaybackCommand, PlaybackCommandSeekRoute};
 
 impl PlayerSession {
     /// Переключает playback между пользовательскими смыслами "сейчас слышно/идёт" and "пауза".
+    ///
+    /// Во время одноразового seek-а public state (`Scrubbing`/`Seeking`) ничего не говорит
+    /// о намерении пользователя, поэтому toggle переворачивает resume intent самого seek-а:
+    /// играл → seek → toggle закончит на паузе в новой точке, второй toggle — снова Playing.
     pub fn toggle_playback(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        if let PlaybackCommandSeekRoute::OneShotSeekInFlight { resume_intent } =
+            self.playback_command_seek_route()
+        {
+            return match resume_intent {
+                PlaybackResumeIntent::Play => self.pause(),
+                PlaybackResumeIntent::Pause => self.play(),
+            };
+        }
         self.cancel_active_scrub_for_external_command(CancelScrubReason::UserCancelled);
         if self.playback_state().is_playback_active() {
             // EOF drain тоже active: audio tail ещё может звучать, поэтому toggle обязан ставить pause.
@@ -26,8 +39,16 @@ impl PlayerSession {
     }
 
     /// Переводит playback в `Playing` и запускает audio output.
+    ///
+    /// Одноразовый seek в полёте не отменяется: Play становится его resume intent-ом
+    /// (см. `session/seek_resume_intent.rs`). Отменяется только живой scrub-жест.
     pub(super) fn play(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        if self.apply_playback_command_to_one_shot_seek(PlaybackResumeIntent::Play)
+            == OneShotSeekPlaybackCommand::ResumeIntentUpdated
+        {
+            return Ok(());
+        }
         self.cancel_active_scrub_for_external_command(CancelScrubReason::UserCancelled);
         if self.has_no_media_to_play() {
             // Инвариант: `Playing` бывает только у установленного media. Play без источника
@@ -44,8 +65,11 @@ impl PlayerSession {
     /// Вынесено, чтобы юнит-тесты scheduler-а/аудио (у которых нет настоящего demuxer-а)
     /// могли запускать playback через [`Self::begin_playback_without_media_for_test`].
     fn begin_playback(&mut self) -> PlayerResult<()> {
-        if let Some(seek_commit) = self.seek_runtime.active_commit_mut() {
-            seek_commit.resume_intent = PlaybackResumeIntent::Play;
+        // Seek пережил отмену scrub-жеста (commit без landing-а или ожидание worker
+        // receipt-а): Play становится его resume intent-ом во всех носителях сразу.
+        if let InFlightSeekResumeIntentRetarget::Retargeted { .. } =
+            self.retarget_in_flight_seek_resume_intent(PlaybackResumeIntent::Play)
+        {
             self.set_playback_state(PlaybackState::Seeking);
             return Ok(());
         }
@@ -232,11 +256,21 @@ impl PlayerSession {
     }
 
     /// Переводит playback в `Paused` и останавливает audio output.
+    ///
+    /// Одноразовый seek в полёте не отменяется: Pause становится его resume intent-ом,
+    /// и seek штатно закончится на паузе в новой точке. Отменяется только scrub-жест.
     pub(super) fn pause(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        if self.apply_playback_command_to_one_shot_seek(PlaybackResumeIntent::Pause)
+            == OneShotSeekPlaybackCommand::ResumeIntentUpdated
+        {
+            return Ok(());
+        }
         self.cancel_active_scrub_for_external_command(CancelScrubReason::UserCancelled);
-        if let Some(seek_commit) = self.seek_runtime.active_commit_mut() {
-            seek_commit.resume_intent = PlaybackResumeIntent::Pause;
+        // Seek пережил отмену scrub-жеста (commit без landing-а или ожидание receipt-а).
+        if let InFlightSeekResumeIntentRetarget::Retargeted { .. } =
+            self.retarget_in_flight_seek_resume_intent(PlaybackResumeIntent::Pause)
+        {
             self.pause_audio_output_for_seek();
             self.set_playback_state(PlaybackState::Seeking);
             return Ok(());

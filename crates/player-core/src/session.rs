@@ -73,6 +73,7 @@ mod seek_commit_gates;
 mod seek_completion;
 mod seek_diagnostics;
 mod seek_receipts;
+mod seek_resume_intent;
 mod seek_start;
 mod seek_transaction;
 mod snapshot_builder;

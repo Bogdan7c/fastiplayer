@@ -49,6 +49,22 @@ impl PlaybackResumeIntent {
     }
 }
 
+/// Результат смены resume intent у seek-а, который сейчас в полёте.
+///
+/// Play/Pause во время одноразового seek-а не отменяет его, а только меняет, в каком
+/// состоянии playback окажется после commit-а. Вызывающему важно отличать «намерение
+/// принято seek-ом» от «seek-а нет — нужен обычный Play/Pause», поэтому это enum, а не bool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InFlightSeekResumeIntentRetarget {
+    /// Seek в полёте принял новое намерение; `previous` — каким оно было до команды.
+    Retargeted {
+        /// Resume intent до смены (для diagnostics и тестов).
+        previous: PlaybackResumeIntent,
+    },
+    /// У этого владельца нет seek-а в полёте; состояние не менялось.
+    NoSeekInFlight,
+}
+
 /// Timeline range, который обязан удерживать target до завершения seek commit-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SeekTargetRetention {
@@ -118,7 +134,8 @@ pub(crate) struct ActiveSeekLandingState {
     /// Пользовательский seek mode, сохранённый до demux-level mapping-а.
     seek_mode: SeekMode,
 
-    /// Resume policy, выбранная в момент входа в one-shot route.
+    /// Resume policy route-а: выбирается при входе, Play/Pause до commit-а меняют её
+    /// синхронно с `SeekCommitState::resume_intent` (см. `retarget_in_flight_seek_resume_intent`).
     resume_intent: PlaybackResumeIntent,
 
     /// Кто владеет моментом final commit-а для этого route-а.

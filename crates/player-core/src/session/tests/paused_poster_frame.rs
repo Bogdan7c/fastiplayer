@@ -119,11 +119,12 @@ fn pause_on_audio_only_media_does_not_start_poster_seek() {
     assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
 }
 
-/// Pause отменяет идущую перемотку и остаётся на прежней позиции; постер берётся оттуда же,
-/// а не с отменённой цели.
+/// Pause во время перемотки (решение владельца A, 2026-10-20) не отменяет её и не заводит
+/// отдельный seek за постером: перемотка штатно садится в цель уже на паузе, и постером
+/// становится landing-кадр цели.
 #[test]
-fn pause_cancelling_seek_without_frame_requests_poster_at_held_position_not_cancelled_target() {
-    let (mut session, _fake_decoder) = paused_media_without_frame();
+fn pause_during_seek_without_frame_lands_paused_at_seek_target_without_poster_seek() {
+    let (mut session, fake_decoder) = paused_media_without_frame();
     session.dispatch_command(PlayerCommand::Play).unwrap();
     session
         .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
@@ -133,14 +134,35 @@ fn pause_cancelling_seek_without_frame_requests_poster_at_held_position_not_canc
 
     session.dispatch_command(PlayerCommand::Pause).unwrap();
 
+    let seek_commit = session
+        .seek_commit()
+        .expect("Pause must keep the in-flight seek instead of cancelling it");
+    assert_eq!(seek_commit.target_position, MediaTime::from_secs(9));
+    assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Pause);
+
+    fake_decoder.push_decoded_frame(decoded_frame_for_current_seek_generation(
+        &session,
+        Duration::from_secs(9),
+        1,
+    ));
+    for _ in 0..4 {
+        let _tick_result = session.tick(PlayerTickContext::with_config(
+            Instant::now(),
+            seek_admission_tick_config(2, 4),
+        ));
+        if session.seek_commit().is_none() {
+            break;
+        }
+    }
+
+    assert!(session.seek_commit().is_none());
     assert_eq!(
-        session.seek_commit().map(|commit| commit.target_position),
-        Some(MediaTime::from_duration(
-            session.snapshot().current_position
-        ))
+        session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(Duration::from_secs(9))
     );
-    assert_ne!(
-        session.seek_commit().map(|commit| commit.target_position),
-        Some(MediaTime::from_secs(9))
-    );
+    assert_eq!(session.snapshot().playback_state, PlaybackState::Paused);
+    assert_eq!(session.snapshot().current_position, Duration::from_secs(9));
 }

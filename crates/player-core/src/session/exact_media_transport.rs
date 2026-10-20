@@ -87,12 +87,12 @@ impl PlayerSession {
 
     /// Перезапуск с начала: итоговое Playing/Paused передаётся самой seek-транзакции.
     ///
-    /// Инвариант: после старта seek-а к нулю в этом же owner turn-е нельзя вызывать
-    /// `play()`/`pause()`. Для них только что начатый seek выглядит как активная
-    /// SeekLanding, и они отменяют её как внешнюю команду (`UserCancelled`): demuxer и
-    /// decoder уже перемотаны к нулю, а часы и позиция остаются на старом месте. Так
-    /// Previous (restart current) ломал воспроизведение видео. Поэтому намерение
-    /// задаётся как resume intent seek-а и применяется штатным commit-ом landing-а.
+    /// Намерение задаётся как resume intent самого seek-а и применяется штатным commit-ом
+    /// landing-а. Раньше здесь после seek-а вызывались `play()`/`pause()`, и они отменяли
+    /// только что начатую SeekLanding как внешнюю команду: demuxer и decoder уже стояли в
+    /// нуле, а часы и позиция — на старом месте (Previous замораживал видео). С 2026-10-20
+    /// Play/Pause во время одноразового seek-а сами только меняют его resume intent
+    /// (`session/seek_resume_intent.rs`), но restart всё равно передаёт intent напрямую.
     fn apply_exact_restart(
         &mut self,
         media_instance_id: crate::MediaInstanceId,

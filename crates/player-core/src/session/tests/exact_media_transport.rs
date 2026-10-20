@@ -4,8 +4,8 @@ use std::time::Duration;
 use media_core::{DemuxSeekability, TimelineNotSeekableReason};
 
 use super::test_support::{
-    ScriptedAudioOutput, SeekRegressionHarness, fake_track, install_fake_media,
-    install_fake_media_with_seekability, scripted_seek_demuxer,
+    ScriptedAudioOutput, SeekRegressionHarness, install_fake_media,
+    install_fake_media_with_seekability, land_video_seek_from, playing_video_only_harness_at,
 };
 use super::*;
 use crate::{
@@ -233,46 +233,9 @@ fn exact_play_pause_intent_never_falls_through_to_newer_instance() {
     assert_eq!(session.playback_state(), PlaybackState::Playing);
 }
 
-/// Ставит играющее video-only media на ненулевую позицию через обычный committed seek.
-///
-/// Видео без аудио-дорожки — именно тот случай, где Previous (restart current)
-/// замораживал картинку: seek к нулю идёт через reused-decoder SeekLanding.
-fn playing_video_only_harness_at(
-    instance_id: MediaInstanceId,
-    position: Duration,
-) -> SeekRegressionHarness {
-    let video_track = fake_track(1, TrackKind::Video);
-    // Первый seek (к `position`) получает scripted результат; seek к нулю — default fake-а.
-    let demuxer = scripted_seek_demuxer(vec![video_track.clone()], position, position, Vec::new());
-    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
-    harness.session.snapshot.media_instance_id = Some(instance_id);
-
-    harness.start_final_seek(MediaTime::from_duration(position));
-    harness.push_decoded_frame(position, 600, 0);
-    let positioning_tick = harness.tick_once_fast_preroll();
-    assert_eq!(positioning_tick.video_frames_presented, 1);
-    assert!(harness.session.seek_commit().is_none());
-    assert_eq!(harness.session.snapshot().current_position, position);
-
-    harness
-        .session
-        .dispatch_command(PlayerCommand::Play)
-        .expect("Play must reach the session");
-    assert_eq!(harness.session.playback_state(), PlaybackState::Playing);
-    harness
-}
-
 /// Доводит restart-landing до commit-а: декодер отдаёт кадры с нуля, session тикает.
 fn land_restart_at_zero(harness: &mut SeekRegressionHarness) {
-    for (handle, pts_ms) in [(1_u64, 0_u64), (2, 33), (3, 66), (4, 100)] {
-        harness.push_decoded_frame(Duration::from_millis(pts_ms), handle, 0);
-    }
-    for _ in 0..8 {
-        harness.tick_once_fast_preroll();
-        if harness.session.seek_commit().is_none() {
-            return;
-        }
-    }
+    land_video_seek_from(harness, Duration::ZERO);
 }
 
 #[test]

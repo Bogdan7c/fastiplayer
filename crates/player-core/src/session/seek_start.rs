@@ -127,8 +127,9 @@ impl PlayerSession {
 
     pub(super) fn seek(&mut self, request: SeekRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        // Учитывает и seek, ждущий worker receipt: Play/Pause до receipt-а меняют его
+        // intent, и новый seek поверх обязан его унаследовать.
         let resume_intent = self
-            .seek_runtime
             .in_flight_seek_resume_intent()
             .unwrap_or_else(|| PlaybackResumeIntent::from_playback_state(self.playback_state()));
         self.start_seek_with_resume_intent(request, resume_intent)

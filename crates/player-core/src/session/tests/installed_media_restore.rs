@@ -176,7 +176,7 @@ fn track_list_rebase_preserves_in_flight_position_restore_receipt() {
 }
 
 #[test]
-fn cancelled_video_seek_never_publishes_false_restore_applied() {
+fn superseded_video_restore_seek_never_publishes_false_restore_applied() {
     let video_track = fake_track(1, TrackKind::Video);
     let (mut session, request_id, media_instance_id) =
         correlated_installed_session(vec![video_track]);
@@ -191,14 +191,26 @@ fn cancelled_video_seek_never_publishes_false_restore_applied() {
         "video restore wait codec-neutral SeekLanding terminal"
     );
 
+    // Pause (решение владельца A, 2026-10-20) не отменяет restore-seek, а только задаёт,
+    // что после commit-а playback останется на паузе: receipt ещё не терминален.
     session
         .dispatch_command(PlayerCommand::Pause)
-        .expect("Delays must be safely cancelled for an incomplete video search");
+        .expect("Pause must reach the session");
+    assert_eq!(outcome_rx.try_recv(), Err(TryRecvError::Empty));
+    assert!(session.seek_runtime.seek_landing_active());
+
+    // Новый пользовательский seek вытесняет незавершённый restore-seek: receipt обязан
+    // закрыться ошибкой, а не ложным Applied.
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            MediaTime::from_secs(11),
+        )))
+        .expect("superseding seek must reach the session");
 
     assert!(matches!(
         outcome_rx
-            .recv()
-            .expect("Received Recovery from Terminal Failure"),
+            .try_recv()
+            .expect("superseded restore must publish its terminal failure"),
         InstalledMediaStateRestoreOutcome::Failed {
             stage: InstalledMediaRestoreFailureStage::Position,
             error,

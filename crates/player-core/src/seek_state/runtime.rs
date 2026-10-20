@@ -15,9 +15,59 @@ impl SeekRuntimeState {
         self.commit
     }
 
-    /// Возвращает mutable active commit, когда command меняет только resume intent.
-    pub(crate) fn active_commit_mut(&mut self) -> Option<&mut SeekCommitState> {
-        self.commit.as_mut()
+    /// Меняет resume intent seek-а в полёте сразу во всех его носителях.
+    ///
+    /// Один seek описывают до трёх записей: pending SeekLanding (до выдачи scrub
+    /// generation), active SeekLanding и `SeekCommitState`. Commit применяет intent из
+    /// commit-а, а новый seek поверх незавершённого и cancel-маршруты читают intent
+    /// landing-а. Инвариант: все три обязаны совпадать, иначе Play/Pause «потеряется»
+    /// при следующем seek-е или cancel-е. Поэтому смена делается только здесь.
+    ///
+    /// Метод не решает, *можно* ли менять intent (живой scrub-жест — нельзя): это
+    /// решение session-уровня, см. `in_flight_seek_belongs_to_scrub_gesture`.
+    pub(crate) fn retarget_in_flight_seek_resume_intent(
+        &mut self,
+        resume_intent: PlaybackResumeIntent,
+    ) -> InFlightSeekResumeIntentRetarget {
+        // Текущее намерение берём тем же приоритетом, что и `in_flight_seek_resume_intent`;
+        // pending landing существует только внутри синхронного старта route-а.
+        let pending_landing_intent = self
+            .pending_seek_landing
+            .map(|pending| pending.resume_intent);
+        let Some(previous) = self
+            .in_flight_seek_resume_intent()
+            .or(pending_landing_intent)
+        else {
+            return InFlightSeekResumeIntentRetarget::NoSeekInFlight;
+        };
+
+        if let Some(pending) = self.pending_seek_landing.as_mut() {
+            pending.resume_intent = resume_intent;
+        }
+        if let Some(active) = self.active_seek_landing.as_mut() {
+            active.resume_intent = resume_intent;
+        }
+        if let Some(commit) = self.commit.as_mut() {
+            commit.resume_intent = resume_intent;
+        }
+        InFlightSeekResumeIntentRetarget::Retargeted { previous }
+    }
+
+    /// `true`, если seek в полёте принадлежит ещё не отпущенному scrub-жесту.
+    ///
+    /// Жест — это active simple scrub (Begin/Update/PreviewScrub до EndScrub) или live
+    /// scrub route, которому release ещё не разрешил commit. Для них внешние Play/Pause
+    /// сохраняют прежнюю cancel-first семантику. Live route после EndScrub
+    /// (`commit_requested`) жестом уже не является: это финальный seek отпущенного drag-а.
+    #[must_use]
+    pub(crate) const fn in_flight_seek_belongs_to_scrub_gesture(&self) -> bool {
+        if self.simple_scrub.active() {
+            return true;
+        }
+        match self.active_seek_landing {
+            Some(active) => active.route().is_live_scrub() && !active.route().commit_allowed(),
+            None => false,
+        }
     }
 
     /// Открывает commit state после accepted demux seek.
