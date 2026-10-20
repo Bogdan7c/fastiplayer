@@ -7,9 +7,12 @@
 #![forbid(unsafe_code)]
 
 mod detached_backend;
+mod resource_identity;
 
 use std::sync::Arc;
 use std::time::Duration;
+
+pub use resource_identity::PresentFrameResourceIdentityLookup;
 
 pub use detached_backend::{
     ConfiguredDetachedVideoBackend, DetachedVideoBackend,
@@ -241,6 +244,15 @@ pub trait PresentFrameResourceProvider: Send + Sync {
         self.resource_descriptor_lookup(handle)
     }
 
+    /// Идентичность ресурса без дублирования fd; по умолчанию `Unsupported`, и
+    /// renderer идёт через `try_resource_descriptor_lookup` (VA-API переопределяет).
+    fn try_resource_identity_lookup(
+        &self,
+        _handle: video_core::FrameResourceHandle,
+    ) -> PresentFrameResourceIdentityLookup {
+        PresentFrameResourceIdentityLookup::Unsupported
+    }
+
     /// Освобождает renderer-owned frame после submitted GPU work или fallback release.
     fn release_frame(&self, handle: video_core::FrameResourceHandle);
 }
@@ -295,6 +307,15 @@ impl PresentFrameResourceProviderHandle {
         handle: video_core::FrameResourceHandle,
     ) -> PresentFrameResourceDescriptorLookup {
         self.provider.try_resource_descriptor_lookup(handle)
+    }
+
+    /// Пытается получить стабильную идентичность ресурса без дублирования fd.
+    #[must_use]
+    pub fn try_resource_identity_lookup(
+        &self,
+        handle: video_core::FrameResourceHandle,
+    ) -> PresentFrameResourceIdentityLookup {
+        self.provider.try_resource_identity_lookup(handle)
     }
 
     /// Освобождает frame через backend provider, который создал texture handle.
@@ -671,6 +692,35 @@ mod tests {
                 .expect("descriptor lookup calls must be recorded")
                 .as_slice(),
             [frame_handle]
+        );
+    }
+
+    /// Provider без identity-поддержки отвечает `Unsupported` и не трогает descriptor path.
+    #[test]
+    fn identity_lookup_defaults_to_unsupported_without_touching_descriptor_lookups() {
+        let (provider, state) = RecordingResourceProvider::new();
+        let handle = PresentFrameResourceProviderHandle::new(provider);
+        let frame_handle = video_core::FrameResourceHandle(23);
+
+        let lookup = handle.try_resource_identity_lookup(frame_handle);
+
+        assert_eq!(lookup, PresentFrameResourceIdentityLookup::Unsupported);
+        assert_eq!(lookup.resource_pool_lock_wait(), Duration::ZERO);
+        assert!(
+            state
+                .resource_descriptor_lookup_handles
+                .lock()
+                .expect("descriptor lookup calls must be recorded")
+                .is_empty(),
+            "default identity lookup must not duplicate descriptors"
+        );
+        assert!(
+            state
+                .try_resource_descriptor_lookup_handles
+                .lock()
+                .expect("try descriptor lookup calls must be recorded")
+                .is_empty(),
+            "default identity lookup must not fall back to descriptor path by itself"
         );
     }
 

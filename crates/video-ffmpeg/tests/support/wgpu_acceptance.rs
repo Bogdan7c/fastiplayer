@@ -239,8 +239,12 @@ impl OffscreenWgpuHarness {
             })
             .expect("production WGPU renderer must accept materialized frame");
         assert!(
-            drew_video,
+            drew_video.frame_drawn,
             "renderer should not replace video draw clear-only pass"
+        );
+        assert!(
+            drew_video.external_sync.is_none(),
+            "host-upload frames have no external writer to synchronize with"
         );
 
         // Copy записывается после render pass в тот же command buffer.

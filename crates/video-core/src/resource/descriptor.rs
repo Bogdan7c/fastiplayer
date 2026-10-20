@@ -348,7 +348,7 @@ impl HostPlanarFrameDescriptor {
 }
 
 /// Layout exported DMA-BUF frame-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DmaBufFrameExportLayout {
     /// Один DRM layer описывает весь multi-planar image.
     ComposedLayers,
@@ -399,7 +399,7 @@ impl DmaBufObjectDescriptor {
 }
 
 /// Один DRM PRIME layer decoded frame-а.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DmaBufLayerDescriptor {
     /// DRM fourcc этого layer-а.
     pub drm_format: u32,

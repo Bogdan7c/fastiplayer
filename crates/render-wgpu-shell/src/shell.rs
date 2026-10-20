@@ -201,17 +201,24 @@ impl GpuContext {
             "WGPU device with video texture features"
         );
 
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
+        // Устройство создаётся с `VK_EXT_queue_family_foreign`, если adapter его даёт:
+        // это позволяет video renderer-у переиспользовать DMA-BUF image между кадрами.
+        let (device, queue, foreign_queue_family) = crate::vulkan_device::create_video_device(
+            &adapter,
+            wgpu::DeviceDescriptor {
                 label: Some("fastiplayer device"),
                 required_features,
                 required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
                 trace: wgpu::Trace::Off,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            })
-            .await
-            .context("Cannot create wgpu device with video texture features")?;
+            },
+        )
+        .await?;
+        info!(
+            foreign_queue_family = foreign_queue_family.diagnostic_label(),
+            "WGPU device external memory synchronization"
+        );
 
         let device_lost = Arc::new(Mutex::new(None));
         let device_lost_callback_state = device_lost.clone();
@@ -613,7 +620,9 @@ impl Renderer {
         );
 
         let stage_started_at = Instant::now();
-        match self.video_renderer.render_or_clear(WgpuVideoRenderInput {
+        // Барьеры DMA-BUF кадра (если image переиспользуется) отправляются вокруг
+        // основного command buffer-а; renderer их записал, shell обязан их submit-ить.
+        let video_external_sync = match self.video_renderer.render_or_clear(WgpuVideoRenderInput {
             frame: video_frame,
             video_viewport: clamped_video_viewport,
             video_exclusion_rects: &clamped_video_exclusion_rects,
@@ -622,7 +631,7 @@ impl Renderer {
             device: &self.gpu.device,
             queue: &self.gpu.queue,
         }) {
-            Ok(_video_rendered) => {}
+            Ok(outcome) => outcome.external_sync,
             Err(error) => {
                 tracing::error!(error = %error, "Video render failed");
                 // Encoder с egui paint jobs отбрасывается вместе с failed frame.
@@ -630,7 +639,7 @@ impl Renderer {
                     .free_retired_textures(egui_textures_delta);
                 return RenderFrameOutcome::Failed(RenderFrameFailure::new(error.to_string()));
             }
-        }
+        };
         let video_render_elapsed = stage_started_at.elapsed();
 
         // Субтитры: поверх видео, под egui; запись pass-а целиком в subtitle_overlay.
@@ -675,12 +684,20 @@ impl Renderer {
         }
         let window_corner_mask_elapsed = stage_started_at.elapsed();
 
-        // Отправляем команды на GPU
+        // Отправляем команды на GPU. Порядок внутри одного submit-а задаёт
+        // очередность исполнения: acquire DMA-BUF кадра → egui callbacks → основной
+        // encoder (video + overlay + egui) → release DMA-BUF кадра декодеру.
         let stage_started_at = Instant::now();
+        let (video_acquire, video_release) = match video_external_sync {
+            Some(sync) => (Some(sync.acquire), Some(sync.release)),
+            None => (None, None),
+        };
         self.gpu.queue.submit(
-            egui_callback_command_buffers
+            video_acquire
                 .into_iter()
-                .chain(std::iter::once(encoder.finish())),
+                .chain(egui_callback_command_buffers)
+                .chain(std::iter::once(encoder.finish()))
+                .chain(video_release),
         );
         // После submit-а wgpu самостоятельно удерживает ресурсы до завершения GPU work.
         // Теперь retired-текстуры можно безопасно уничтожить, не повреждая текущий кадр.

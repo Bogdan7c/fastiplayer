@@ -12,11 +12,9 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::os::fd::AsRawFd;
 
 use cros_codecs::decoder::{DecodedDmaBufExportLayout, DecodedDmaBufImage};
-use nix::sys::stat::fstat;
-use video_core::FrameResourceHandle;
+use video_core::{DmaBufObjectIdentity, FrameResourceHandle};
 
 /// Явный backend contract для persistent zero-copy imports.
 ///
@@ -50,8 +48,12 @@ impl ZeroCopyImportReuseContract {
     ///
     /// VA surface удерживается decoded handle-ом до release ack, а renderer-side
     /// GPU work подтверждается через renderer queue callback перед возвратом surface
-    /// в decoder frame pool. Persistent import reuse пока выключен: текущий
-    /// Vulkan import слой не оформляет явные VA writer -> Vulkan sampler transitions.
+    /// в decoder frame pool. Persistent import reuse включён (cpu-parity сессия 03):
+    /// рендерер кэширует Vulkan image по стабильной идентичности буфера и сам
+    /// оформляет acquire/release барьеры VA writer -> Vulkan sampler на каждом
+    /// проходе; там, где барьер недоступен, рендерер не переиспользует image и
+    /// импортирует заново (fail-closed на его стороне), поэтому `Reuse` здесь
+    /// безопасен в обоих случаях.
     pub const fn vaapi_vulkan_dma_buf() -> Self {
         Self {
             backend_name: "VA-API Vulkan DMA-BUF",
@@ -59,7 +61,7 @@ impl ZeroCopyImportReuseContract {
             decoder_reuse_waits_for_gpu_completion: true,
             import_identity_is_surface_id: true,
             dma_buf_object_identity_checked: true,
-            explicit_external_memory_reuse_sync: false,
+            explicit_external_memory_reuse_sync: true,
         }
     }
 
@@ -150,34 +152,40 @@ pub struct ZeroCopySurfaceDescriptor {
 }
 
 impl ZeroCopySurfaceDescriptor {
-    /// Строит descriptor из exported DMA-BUF image.
+    /// Строит descriptor из exported DMA-BUF image и уже снятых kernel identity.
+    ///
+    /// Identity объектов снимает владелец export-а один раз (`fstat` на объект)
+    /// и передаёт сюда и в neutral descriptor, чтобы не делать syscall дважды.
     pub fn from_dma_buf_image(
         image: &DecodedDmaBufImage,
+        object_identities: &[DmaBufObjectIdentity],
     ) -> Result<Self, ZeroCopySurfacePoolError> {
+        if object_identities.len() != image.objects.len() {
+            return Err(ZeroCopySurfacePoolError::ObjectIdentityUnavailable {
+                surface_id: image.surface_id,
+                object_index: object_identities.len(),
+                reason: format!(
+                    "{} identities for {} DMA-BUF objects",
+                    object_identities.len(),
+                    image.objects.len()
+                ),
+            });
+        }
+
         let objects = image
             .objects
             .iter()
-            .enumerate()
-            .map(|(object_index, object)| {
-                let file_stat = fstat(object.fd.as_raw_fd()).map_err(|error| {
-                    ZeroCopySurfacePoolError::ObjectIdentityUnavailable {
-                        surface_id: image.surface_id,
-                        object_index,
-                        reason: error.to_string(),
-                    }
-                })?;
-
-                Ok(ZeroCopyObjectDescriptor {
-                    size: object.size,
-                    drm_format_modifier: object.drm_format_modifier,
-                    identity: ZeroCopyObjectIdentity {
-                        device: file_stat.st_dev,
-                        inode: file_stat.st_ino,
-                        special_device: file_stat.st_rdev,
-                    },
-                })
+            .zip(object_identities)
+            .map(|(object, identity)| ZeroCopyObjectDescriptor {
+                size: object.size,
+                drm_format_modifier: object.drm_format_modifier,
+                identity: ZeroCopyObjectIdentity {
+                    device: identity.device,
+                    inode: identity.inode,
+                    special_device: identity.special_device,
+                },
             })
-            .collect::<Result<Vec<_>, ZeroCopySurfacePoolError>>()?;
+            .collect();
 
         let layers = image
             .layers
@@ -923,17 +931,18 @@ mod tests {
         }
     }
 
-    /// Создаёт contract, где unit test явно моделирует backend-safe reuse.
-    fn verified_reuse_contract_for_tests() -> ZeroCopyImportReuseContract {
+    /// Контракт без явной синхронизации: прежняя fail-closed политика, при которой
+    /// та же surface заменяет слот вместо reuse.
+    fn no_sync_contract_for_tests() -> ZeroCopyImportReuseContract {
         ZeroCopyImportReuseContract {
-            explicit_external_memory_reuse_sync: true,
+            explicit_external_memory_reuse_sync: false,
             ..ZeroCopyImportReuseContract::vaapi_vulkan_dma_buf()
         }
     }
 
-    /// Создаёт pool с test contract-ом, который разрешает persistent reuse.
+    /// Создаёт pool с production contract-ом (persistent reuse разрешён).
     fn pool(capacity: usize) -> ZeroCopySurfacePool {
-        ZeroCopySurfacePool::new(capacity, verified_reuse_contract_for_tests())
+        production_pool(capacity)
     }
 
     /// Создаёт pool с production VAAPI/DMA-BUF contract-ом.
@@ -1046,8 +1055,40 @@ mod tests {
         assert_eq!(import_plan, ZeroCopyImportPlan::Replace { slot_index: 0 });
     }
 
+    /// Production contract переиспользует import той же surface: барьер
+    /// Контракт без явной синхронизации сохраняет прежнюю fail-closed политику:
+    /// та же surface после release заменяет слот, а `imports_reused` не растёт.
     #[test]
-    fn production_contract_replaces_same_descriptor_until_explicit_sync_exists() {
+    fn contract_without_explicit_sync_replaces_same_descriptor() {
+        let mut surface_pool = ZeroCopySurfacePool::new(2, no_sync_contract_for_tests());
+        let first_handle = FrameResourceHandle(10);
+        let first_descriptor = descriptor(7);
+
+        surface_pool
+            .begin_import_or_reuse(first_descriptor.clone(), first_handle)
+            .unwrap();
+        surface_pool
+            .register_imported_surface(first_descriptor.clone(), first_handle, 0)
+            .unwrap();
+        surface_pool
+            .release_without_gpu_submission(first_handle)
+            .unwrap();
+        surface_pool
+            .acknowledge_decoder_reuse(first_handle)
+            .unwrap();
+
+        let import_plan = surface_pool
+            .begin_import_or_reuse(first_descriptor, FrameResourceHandle(11))
+            .unwrap();
+
+        assert_eq!(import_plan, ZeroCopyImportPlan::Replace { slot_index: 0 });
+        assert_eq!(surface_pool.stats().imports_reused, 0);
+    }
+
+    /// VA -> Vulkan оформляет рендерер (cpu-parity сессия 03), поэтому слот
+    /// не заменяется, а счётчик `imports_reused` растёт.
+    #[test]
+    fn production_contract_reuses_same_descriptor_with_renderer_owned_sync() {
         let mut surface_pool = production_pool(2);
         let first_handle = FrameResourceHandle(10);
         let second_handle = FrameResourceHandle(11);
@@ -1070,8 +1111,19 @@ mod tests {
             .begin_import_or_reuse(first_descriptor, second_handle)
             .unwrap();
 
-        assert_eq!(import_plan, ZeroCopyImportPlan::Replace { slot_index: 0 });
-        assert_eq!(surface_pool.stats().imports_reused, 0);
+        assert_eq!(import_plan, ZeroCopyImportPlan::Reuse { slot_index: 0 });
+        assert_eq!(surface_pool.stats().imports_reused, 1);
+        assert_eq!(surface_pool.stats().imports_replaced, 0);
+        assert_eq!(
+            surface_pool.leased_slot_index(second_handle),
+            Some(0),
+            "reused slot must be leased to the new per-frame handle"
+        );
+        assert_eq!(
+            surface_pool.leased_slot_index(first_handle),
+            None,
+            "the old handle must not stay leased after reuse"
+        );
     }
 
     #[test]

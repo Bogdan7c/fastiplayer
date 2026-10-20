@@ -1,13 +1,13 @@
 use video_backend_api::{
-    PresentFrameResourceDescriptorLookup, PresentFrameResourceProvider,
-    PresentFrameResourceProviderHandle, PresentFrameResourceProviderLookup, StartedVideoBackend,
-    VideoBackendFactory,
+    PresentFrameResourceDescriptorLookup, PresentFrameResourceIdentityLookup,
+    PresentFrameResourceProvider, PresentFrameResourceProviderHandle,
+    PresentFrameResourceProviderLookup, StartedVideoBackend, VideoBackendFactory,
 };
 use video_core::{VideoDecoderActivitySnapshot, VideoDecoderThreadHandle};
 
 use crate::{
     VideoDecodeThread, VideoDecodeThreadConfig, VideoFrameResourceDescriptorLookup,
-    VideoFrameResourceLookup, VideoFrameResourceProvider,
+    VideoFrameResourceIdentityLookup, VideoFrameResourceLookup, VideoFrameResourceProvider,
 };
 
 /// Canonical backend id, совпадающий с `DecodeBackendId::vaapi()` в capability report-е.
@@ -125,6 +125,16 @@ impl PresentFrameResourceProvider for VideoFrameResourceProvider {
         resource_descriptor_lookup_from_vaapi(lookup)
     }
 
+    /// Делегирует дешёвый identity lookup (без dup fd) в VA-API provider.
+    fn try_resource_identity_lookup(
+        &self,
+        handle: video_core::FrameResourceHandle,
+    ) -> PresentFrameResourceIdentityLookup {
+        let lookup = VideoFrameResourceProvider::try_resource_identity_lookup(self, handle);
+
+        resource_identity_lookup_from_vaapi(lookup)
+    }
+
     /// Делегирует renderer-owned release в текущий VA-API production provider.
     fn release_frame(&self, handle: video_core::FrameResourceHandle) {
         VideoFrameResourceProvider::release_frame(self, handle);
@@ -203,6 +213,37 @@ fn resource_descriptor_lookup_from_vaapi(
         }
         VideoFrameResourceDescriptorLookup::Fatal { lock_diagnostics } => {
             PresentFrameResourceDescriptorLookup::Fatal {
+                resource_pool_lock_wait: lock_diagnostics.wait,
+            }
+        }
+    }
+}
+
+/// Конвертирует VA-API identity lookup в neutral backend API, сохраняя
+/// различие Busy/Missing/Fatal.
+fn resource_identity_lookup_from_vaapi(
+    lookup: VideoFrameResourceIdentityLookup,
+) -> PresentFrameResourceIdentityLookup {
+    match lookup {
+        VideoFrameResourceIdentityLookup::Ready {
+            identity,
+            lock_diagnostics,
+        } => PresentFrameResourceIdentityLookup::Ready {
+            identity,
+            resource_pool_lock_wait: lock_diagnostics.wait,
+        },
+        VideoFrameResourceIdentityLookup::Busy { lock_diagnostics } => {
+            PresentFrameResourceIdentityLookup::Busy {
+                resource_pool_lock_wait: lock_diagnostics.wait,
+            }
+        }
+        VideoFrameResourceIdentityLookup::Missing { lock_diagnostics } => {
+            PresentFrameResourceIdentityLookup::Missing {
+                resource_pool_lock_wait: lock_diagnostics.wait,
+            }
+        }
+        VideoFrameResourceIdentityLookup::Fatal { lock_diagnostics } => {
+            PresentFrameResourceIdentityLookup::Fatal {
                 resource_pool_lock_wait: lock_diagnostics.wait,
             }
         }

@@ -738,17 +738,13 @@ fn build_render_input_video_frame<'frame>(
 
     let boundary_frame = match frame_format {
         DecodedPixelFormat::Nv12 => match texture_views.dma_buf_views() {
-            Some((y_view, uv_view)) => {
-                WgpuRenderableFrame::from_decoded_nv12(decoded_frame, y_view, uv_view)
-            }
+            Some(plane_views) => WgpuRenderableFrame::from_decoded_nv12(decoded_frame, plane_views),
             None => Err(anyhow::anyhow!(
                 "NV12 decoded video surface requires DMA-BUF Y/UV texture views"
             )),
         },
         DecodedPixelFormat::P010 => match texture_views.dma_buf_views() {
-            Some((y_view, uv_view)) => {
-                WgpuRenderableFrame::from_decoded_p010(decoded_frame, y_view, uv_view)
-            }
+            Some(plane_views) => WgpuRenderableFrame::from_decoded_p010(decoded_frame, plane_views),
             None => Err(anyhow::anyhow!(
                 "P010 decoded video surface requires DMA-BUF Y/UV texture views"
             )),
@@ -1059,6 +1055,9 @@ pub(crate) fn render_frame(
             ui_prepare: ui_prepare_timings,
             video_prepare: video_prepare_timings,
             renderer_submit: renderer_submit_elapsed,
+            dma_buf_import_stats: app_state
+                .wgpu_frame_materializer()
+                .and_then(|materializer| materializer.dma_buf_import_stats()),
         },
         video_acquisition_state,
         texture_view_lookup_state,

@@ -6,6 +6,7 @@ use video_frame_contract::{
 use super::descriptor::{
     DmaBufDescriptorRejection, DmaBufFrameDescriptor, DmaBufFrameExportLayout,
 };
+use super::identity::DmaBufFrameIdentity;
 /// Проверяет object/layer topology до late renderer import-а.
 ///
 /// `SeparateLayers` намеренно допускает разные objects у разных layers: renderer
@@ -74,6 +75,51 @@ pub fn validate_dma_buf_descriptor_against_frame_contract(
     coded_height: u32,
     descriptor: &DmaBufFrameDescriptor,
 ) -> Result<(), DmaBufDescriptorRejection> {
+    let expected_layout = expected_dma_buf_layout_for_frame(contract, coded_width, coded_height)?;
+
+    validate_dma_buf_descriptor_against_expected_contract(
+        expected_layout,
+        coded_width,
+        coded_height,
+        descriptor,
+    )
+}
+
+/// Проверяет уже импортированный (кэшированный) DMA-BUF image против contract-а
+/// нового кадра. Topology проверялась при импорте того же буфера, поэтому здесь
+/// сверяются только layout и coded size — то, что могло измениться на стороне кадра.
+pub fn validate_dma_buf_identity_against_frame_contract(
+    contract: VideoFrameContract,
+    coded_width: u32,
+    coded_height: u32,
+    identity: &DmaBufFrameIdentity,
+) -> Result<(), DmaBufDescriptorRejection> {
+    let expected_layout = expected_dma_buf_layout_for_frame(contract, coded_width, coded_height)?;
+    let actual_layout = dma_buf_export_layout_to_image_layout(identity.export_layout);
+    if actual_layout != expected_layout {
+        return Err(DmaBufDescriptorRejection::ImageLayoutMismatch {
+            expected: expected_layout,
+            actual: actual_layout,
+        });
+    }
+    if identity.width != coded_width || identity.height != coded_height {
+        return Err(DmaBufDescriptorRejection::CodedSizeMismatch {
+            expected_width: coded_width,
+            expected_height: coded_height,
+            actual_width: identity.width,
+            actual_height: identity.height,
+        });
+    }
+    Ok(())
+}
+
+/// Общая часть contract-проверок: валидность contract-а, ненулевой coded size и
+/// DMA-BUF transfer path; возвращает layout, который обещал contract.
+fn expected_dma_buf_layout_for_frame(
+    contract: VideoFrameContract,
+    coded_width: u32,
+    coded_height: u32,
+) -> Result<DmaBufImageLayout, DmaBufDescriptorRejection> {
     if let Err(error) = contract.validate() {
         return Err(DmaBufDescriptorRejection::InvalidFrameContract {
             reason: error.to_string(),
@@ -86,21 +132,14 @@ pub fn validate_dma_buf_descriptor_against_frame_contract(
         });
     }
 
-    let expected_layout = match contract.transfer_path {
+    match contract.transfer_path {
         VideoFrameTransferPath::HardwareZeroCopy {
             handle: HardwareFrameHandle::DmaBuf { image_layout },
-        } => image_layout,
+        } => Ok(image_layout),
         VideoFrameTransferPath::SoftwareHostUpload => {
-            return Err(DmaBufDescriptorRejection::FrameContractRequiresHostUpload);
+            Err(DmaBufDescriptorRejection::FrameContractRequiresHostUpload)
         }
-    };
-
-    validate_dma_buf_descriptor_against_expected_contract(
-        expected_layout,
-        coded_width,
-        coded_height,
-        descriptor,
-    )
+    }
 }
 
 pub(super) fn validate_dma_buf_descriptor_against_contract(

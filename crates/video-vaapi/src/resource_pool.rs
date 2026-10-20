@@ -1,11 +1,13 @@
 use std::os::fd::AsRawFd;
+use std::sync::Arc;
 
 use anyhow::Context;
 use cros_codecs::decoder::{DecodedDmaBufExportLayout, DecodedDmaBufImage};
 use nix::sys::stat::fstat;
 use video_core::{
-    DmaBufFrameDescriptor, DmaBufFrameExportLayout, DmaBufLayerDescriptor, DmaBufObjectDescriptor,
-    DmaBufObjectIdentity, FrameResourceDescriptor, FrameResourceHandle,
+    DmaBufFrameDescriptor, DmaBufFrameExportLayout, DmaBufFrameIdentity, DmaBufLayerDescriptor,
+    DmaBufObjectDescriptor, DmaBufObjectIdentity, FrameResourceDescriptor, FrameResourceHandle,
+    FrameResourceIdentity,
 };
 
 use crate::zero_copy_surface_pool::{
@@ -65,6 +67,24 @@ impl ResourcePoolStats {
 struct ResourceSlot {
     /// Neutral descriptor с owned fd, живущими до replacement/invalidation.
     descriptor: FrameResourceDescriptor,
+
+    /// Стабильная идентичность буфера без fd; рендерер сверяет по ней кэш
+    /// импортов на каждом кадре, поэтому значение разделяется через `Arc`.
+    identity: Arc<DmaBufFrameIdentity>,
+}
+
+impl ResourceSlot {
+    /// Собирает slot из neutral descriptor-а, снимая идентичность один раз.
+    fn from_descriptor(descriptor: FrameResourceDescriptor) -> anyhow::Result<Self> {
+        let FrameResourceDescriptor::DmaBuf(dma_buf_descriptor) = &descriptor else {
+            anyhow::bail!("VAAPI resource slot accepts only DMA-BUF descriptors");
+        };
+        let identity = Arc::new(dma_buf_descriptor.identity());
+        Ok(Self {
+            descriptor,
+            identity,
+        })
+    }
 }
 
 /// VAAPI-side таблица decoded resources, индексируемых через [`FrameResourceHandle`].
@@ -140,14 +160,29 @@ impl FrameResourcePool {
             .with_context(|| format!("duplicate DMA-BUF descriptor for handle {}", handle.0))
     }
 
+    /// Возвращает стабильную идентичность буфера для active renderer lease-а.
+    ///
+    /// В отличие от `duplicate_descriptor`, не дублирует fd: это дешёвая проверка
+    /// для кэша импортов рендерера. `None` — handle сейчас не leased.
+    pub fn resource_identity(&self, handle: FrameResourceHandle) -> Option<FrameResourceIdentity> {
+        let slot_index = self.surface_pool.leased_slot_index(handle)?;
+        let slot = self.slots.get(slot_index)?;
+        Some(FrameResourceIdentity::DmaBuf(Arc::clone(&slot.identity)))
+    }
+
     /// Регистрирует или переиспользует exported DMA-BUF descriptor decoded VA surface-а.
     pub fn register_dma_buf_image(
         &mut self,
         image: DecodedDmaBufImage,
     ) -> anyhow::Result<FrameResourceHandle> {
+        // Kernel identity объектов снимается один раз на export и идёт и в
+        // lifecycle descriptor, и в neutral descriptor.
+        let object_identities = dma_buf_object_identities(&image)?;
         let lifecycle_descriptor =
-            ZeroCopySurfaceDescriptor::from_dma_buf_image(&image).map_err(anyhow::Error::from)?;
-        let resource_descriptor = frame_resource_descriptor_from_dma_buf_image(image)?;
+            ZeroCopySurfaceDescriptor::from_dma_buf_image(&image, &object_identities)
+                .map_err(anyhow::Error::from)?;
+        let resource_descriptor =
+            frame_resource_descriptor_from_dma_buf_image(image, object_identities);
         let resource_handle = self.allocate_handle()?;
 
         match self
@@ -168,6 +203,9 @@ impl FrameResourcePool {
                 Ok(resource_handle)
             }
             ZeroCopyImportPlan::Create => {
+                // Slot собирается до изменения lifecycle pool-а: при ошибке оба
+                // пула остаются согласованными.
+                let slot = ResourceSlot::from_descriptor(resource_descriptor)?;
                 let slot_index = self.slots.len();
                 self.surface_pool
                     .register_imported_surface(
@@ -176,9 +214,7 @@ impl FrameResourcePool {
                         slot_index,
                     )
                     .map_err(anyhow::Error::from)?;
-                self.slots.push(ResourceSlot {
-                    descriptor: resource_descriptor,
-                });
+                self.slots.push(slot);
 
                 tracing::debug!(
                     surface_id = lifecycle_descriptor.surface_id(),
@@ -194,6 +230,7 @@ impl FrameResourcePool {
                 self.slots
                     .get(slot_index)
                     .ok_or(ZeroCopySurfacePoolError::MissingStorageSlot { slot_index })?;
+                let slot = ResourceSlot::from_descriptor(resource_descriptor)?;
 
                 self.surface_pool
                     .register_replaced_surface(
@@ -203,9 +240,7 @@ impl FrameResourcePool {
                     )
                     .map_err(anyhow::Error::from)?;
 
-                self.slots[slot_index] = ResourceSlot {
-                    descriptor: resource_descriptor,
-                };
+                self.slots[slot_index] = slot;
 
                 tracing::debug!(
                     surface_id = lifecycle_descriptor.surface_id(),
@@ -294,11 +329,13 @@ impl Default for FrameResourcePool {
     }
 }
 
-/// Строит neutral frame resource descriptor, сохраняя owned fd внутри provider-а.
-fn frame_resource_descriptor_from_dma_buf_image(
-    image: DecodedDmaBufImage,
-) -> anyhow::Result<FrameResourceDescriptor> {
-    let object_identities = image
+/// Снимает kernel identity (`st_dev`/`st_ino`/`st_rdev`) каждого exported
+/// DMA-BUF объекта. Это единственный `fstat` на export: результат переиспользуют
+/// и lifecycle pool, и neutral descriptor.
+fn dma_buf_object_identities(
+    image: &DecodedDmaBufImage,
+) -> anyhow::Result<Vec<DmaBufObjectIdentity>> {
+    image
         .objects
         .iter()
         .enumerate()
@@ -315,8 +352,17 @@ fn frame_resource_descriptor_from_dma_buf_image(
                 special_device: file_stat.st_rdev,
             })
         })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .collect()
+}
 
+/// Строит neutral frame resource descriptor, сохраняя owned fd внутри provider-а.
+///
+/// `object_identities` обязаны быть сняты с объектов `image` в том же порядке
+/// (см. `dma_buf_object_identities`).
+fn frame_resource_descriptor_from_dma_buf_image(
+    image: DecodedDmaBufImage,
+    object_identities: Vec<DmaBufObjectIdentity>,
+) -> FrameResourceDescriptor {
     let objects = image
         .objects
         .into_iter()
@@ -341,7 +387,7 @@ fn frame_resource_descriptor_from_dma_buf_image(
         })
         .collect();
 
-    Ok(FrameResourceDescriptor::DmaBuf(DmaBufFrameDescriptor {
+    FrameResourceDescriptor::DmaBuf(DmaBufFrameDescriptor {
         resource_id: image.surface_id,
         fourcc: image.fourcc,
         export_layout: match image.export_layout {
@@ -352,7 +398,7 @@ fn frame_resource_descriptor_from_dma_buf_image(
         height: image.height,
         objects,
         layers,
-    }))
+    })
 }
 
 #[cfg(test)]
@@ -442,6 +488,73 @@ mod tests {
             .as_fd()
             .try_clone_to_owned()
             .expect("renderer-owned duplicated fd must be valid");
+    }
+
+    /// Identity lookup не дублирует fd и совпадает с идентичностью descriptor-а.
+    #[test]
+    fn resource_identity_matches_descriptor_identity_without_duplicating_fd() {
+        let mut resource_pool = FrameResourcePool::new_with_capacity(2);
+        let handle = resource_pool
+            .register_dma_buf_image(decoded_dma_buf_image(93))
+            .expect("synthetic DMA-BUF image must register");
+
+        let FrameResourceIdentity::DmaBuf(identity) = resource_pool
+            .resource_identity(handle)
+            .expect("leased handle must have identity");
+        let descriptor = resource_pool
+            .duplicate_descriptor(handle)
+            .expect("descriptor duplication must not fail")
+            .expect("registered handle must have descriptor");
+        let FrameResourceDescriptor::DmaBuf(dma_buf_descriptor) = descriptor else {
+            panic!("expected DMA-BUF descriptor");
+        };
+
+        assert_eq!(*identity, dma_buf_descriptor.identity());
+        assert_eq!(identity.resource_id, 93);
+        assert_eq!(
+            resource_pool.resource_identity(FrameResourceHandle(404)),
+            None,
+            "missing handle must not synthesize identity"
+        );
+    }
+
+    /// Та же surface после полного release/ack переиспользуется: новый handle,
+    /// та же идентичность, слот не заменяется, `imports_reused` растёт.
+    #[test]
+    fn same_surface_registered_again_reuses_slot_with_stable_identity() {
+        let mut resource_pool = FrameResourcePool::new_with_capacity(2);
+        let first_handle = resource_pool
+            .register_dma_buf_image(decoded_dma_buf_image(7))
+            .expect("first registration");
+        let FrameResourceIdentity::DmaBuf(first_identity) = resource_pool
+            .resource_identity(first_handle)
+            .expect("first handle identity");
+
+        resource_pool
+            .release_without_gpu_submission(first_handle)
+            .expect("release first handle");
+        resource_pool
+            .acknowledge_decoder_reuse(first_handle)
+            .expect("decoder reuse ack");
+
+        let second_handle = resource_pool
+            .register_dma_buf_image(decoded_dma_buf_image(7))
+            .expect("second registration of the same surface");
+        let FrameResourceIdentity::DmaBuf(second_identity) = resource_pool
+            .resource_identity(second_handle)
+            .expect("second handle identity");
+
+        assert_ne!(first_handle, second_handle, "handle stays unique per frame");
+        assert_eq!(
+            first_identity, second_identity,
+            "identity is stable per surface"
+        );
+        assert_eq!(resource_pool.resource_identity(first_handle), None);
+        let stats = resource_pool.stats();
+        assert_eq!(stats.imports_created, 1);
+        assert_eq!(stats.imports_reused, 1);
+        assert_eq!(stats.imports_replaced, 0);
+        assert_eq!(stats.slots, 1);
     }
 
     /// Проверяет typed absent-resource path без descriptor synthesis.

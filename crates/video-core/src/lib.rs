@@ -24,10 +24,12 @@ pub use diagnostics::{
 };
 pub use resource::{
     DmaBufDescriptorRejection, DmaBufFrameDescriptor, DmaBufFrameExportLayout,
-    DmaBufLayerDescriptor, DmaBufObjectDescriptor, DmaBufObjectIdentity, FrameResourceDescriptor,
-    FrameResourceHandle, HostPlanarFrameDescriptor, HostPlanarFrameOwner, HostPlanarOwnedBuffer,
-    HostPlanarVisiblePlaneBlock, HostPlaneDescriptor, HostPlaneRole,
+    DmaBufFrameFormatSignature, DmaBufFrameIdentity, DmaBufLayerDescriptor, DmaBufObjectDescriptor,
+    DmaBufObjectIdentity, DmaBufObjectIdentityDescriptor, FrameResourceDescriptor,
+    FrameResourceHandle, FrameResourceIdentity, HostPlanarFrameDescriptor, HostPlanarFrameOwner,
+    HostPlanarOwnedBuffer, HostPlanarVisiblePlaneBlock, HostPlaneDescriptor, HostPlaneRole,
     validate_dma_buf_descriptor_against_frame_contract,
-    validate_dma_buf_descriptor_import_topology, validate_resource_descriptor_against_contract,
+    validate_dma_buf_descriptor_import_topology, validate_dma_buf_identity_against_frame_contract,
+    validate_resource_descriptor_against_contract,
 };
 pub use sync::{AvSync, FrameAction};

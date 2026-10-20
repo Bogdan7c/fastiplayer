@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use player_core::{LatencyCounterSnapshot, PlayerSnapshot};
 use render_wgpu_shell::RenderFrameTiming;
+use render_wgpu_video::DmaBufImportStats;
 use tracing::{debug, trace};
 
 use super::input_snapshot::AppFrameInputTimings;
@@ -73,6 +74,9 @@ pub(super) struct AppRenderFrameTimings {
 
     /// Вызов renderer-owned submit/present path вместе с app-level outcome handling.
     pub(super) renderer_submit: Duration,
+
+    /// Кэш Vulkan-импортов DMA-BUF materializer-а; `None` для host-upload backend-а.
+    pub(super) dma_buf_import_stats: Option<DmaBufImportStats>,
 }
 
 /// Превращает длительность в миллисекунды для числовых tracing fields.
@@ -128,6 +132,7 @@ pub(super) fn log_render_frame_timings(
     let decoder_submit = latencies.decoder_submit;
     let decoder_event_drain = latencies.decoder_event_drain;
     let dma_buf_import = latencies.dma_buf_import;
+    let dma_buf_import_stats = app_timings.dma_buf_import_stats;
     let frame_counters = player_snapshot.frame_counters;
 
     trace!(
@@ -152,6 +157,16 @@ pub(super) fn log_render_frame_timings(
             .unwrap_or_default(),
         surface_present_ms = renderer_timing
             .map(|timing| duration_ms(timing.stages.surface_present))
+            .unwrap_or_default(),
+        // Кэш Vulkan-импортов: доказательство «импорт один раз на поверхность» в живом прогоне.
+        dma_buf_vulkan_imports = dma_buf_import_stats
+            .map(|stats| stats.imports_performed)
+            .unwrap_or_default(),
+        dma_buf_cache_hits = dma_buf_import_stats
+            .map(|stats| stats.cache.hits)
+            .unwrap_or_default(),
+        dma_buf_cache_entries = dma_buf_import_stats
+            .map(|stats| stats.cache.entries)
             .unwrap_or_default(),
         "render frame stage timings"
     );
@@ -276,6 +291,21 @@ pub(super) fn log_render_frame_timings(
             .unwrap_or_default(),
         texture_imports_replaced = texture_slots
             .map(|slots| slots.imports_replaced)
+            .unwrap_or_default(),
+        dma_buf_vulkan_imports = dma_buf_import_stats
+            .map(|stats| stats.imports_performed)
+            .unwrap_or_default(),
+        dma_buf_import_failures = dma_buf_import_stats
+            .map(|stats| stats.import_failures)
+            .unwrap_or_default(),
+        dma_buf_cache_hits = dma_buf_import_stats
+            .map(|stats| stats.cache.hits)
+            .unwrap_or_default(),
+        dma_buf_cache_entries = dma_buf_import_stats
+            .map(|stats| stats.cache.entries)
+            .unwrap_or_default(),
+        dma_buf_image_reuse = dma_buf_import_stats
+            .map(|stats| stats.image_reuse_enabled)
             .unwrap_or_default(),
         render_resource_lock_busy_count = diagnostics.render_resource_lock_busy_count,
         render_resource_previous_frame_reuse_count = diagnostics

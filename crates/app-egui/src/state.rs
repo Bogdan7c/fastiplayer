@@ -19,9 +19,9 @@ use player_core::{
 };
 use render_core::RenderDiagnostics;
 use render_wgpu_video::{
-    DmaBufWgpuFrameMaterializer, HostPlanarWgpuFrameMaterializer, WgpuFrameTextureViewMaterializer,
-    WgpuFrameTextureViews, WgpuSubmissionQueueBinding, WgpuSubmissionQueueRebindError,
-    wrap_video_backend_for_wgpu_submission,
+    DmaBufImportCacheCapacity, DmaBufWgpuFrameMaterializer, HostPlanarWgpuFrameMaterializer,
+    WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews, WgpuSubmissionQueueBinding,
+    WgpuSubmissionQueueRebindError, wrap_video_backend_for_wgpu_submission,
 };
 use tracing::{debug, info, instrument, warn};
 use video_ffmpeg::FfmpegSoftwareVideoBackendFactory;

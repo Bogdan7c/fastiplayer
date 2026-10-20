@@ -15,10 +15,14 @@ use anyhow::Context;
 use ash::vk;
 use video_core::{DmaBufFrameDescriptor, DmaBufFrameExportLayout, DmaBufLayerDescriptor};
 
+mod external_sync;
 mod image_create_state;
 mod safety;
 #[cfg(test)]
 mod udmabuf_render_tests;
+
+pub(crate) use external_sync::ExternalMemorySyncSupport;
+pub use external_sync::{ImportedImageExternalSync, foreign_queue_family_extension_name};
 
 /// Значение VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT из Vulkan headers.
 /// ash 0.38 не экспортирует эту константу напрямую.
@@ -419,6 +423,12 @@ pub struct DmaBufImporter {
     device: wgpu::Device,
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
+
+    /// Queue для одноразового submit-а инициализации владения после импорта.
+    queue: wgpu::Queue,
+
+    /// Определяется один раз на устройство: есть ли `VK_EXT_queue_family_foreign`.
+    external_sync_support: ExternalMemorySyncSupport,
 }
 
 /// Владелец wgpu textures, созданных из exported DMA-BUF.
@@ -438,8 +448,9 @@ pub(crate) enum ImportedDmaBufStorage {
 
 /// Результат zero-copy импорта multi-planar DMA-BUF.
 ///
-/// Хранит два typed plane view и texture storage.
-pub(crate) struct ImportedDmaBufTexture {
+/// Хранит два typed plane view и texture storage. Тип `pub` только как
+/// associated type publicного importer trait-а; поля и методы остаются crate-local.
+pub struct ImportedDmaBufTexture {
     /// Формат decoded frame, выбранный из DRM fourcc descriptor-а.
     pub(crate) frame_format: DmaBufFrameFormat,
 
@@ -454,6 +465,11 @@ pub(crate) struct ImportedDmaBufTexture {
     /// Поле объявлено после views намеренно: Rust уничтожает поля по порядку
     /// объявления, поэтому view handles отпускаются до storage/drop callback.
     pub(crate) storage: ImportedDmaBufStorage,
+
+    /// Барьеры VA writer -> Vulkan sampler для переиспользования image между
+    /// кадрами; `None`, когда устройство не даёт `VK_EXT_queue_family_foreign`
+    /// (тогда image живёт один кадр, как раньше).
+    pub(crate) external_sync: Option<ImportedImageExternalSync>,
 }
 
 impl ImportedDmaBufStorage {
@@ -512,13 +528,27 @@ struct DmaBufPlaneImport {
 }
 
 impl DmaBufImporter {
-    /// Создаёт импортёр.
-    pub fn new(device: wgpu::Device, instance: wgpu::Instance, adapter: wgpu::Adapter) -> Self {
+    /// Создаёт импортёр и один раз определяет, доступна ли явная синхронизация с
+    /// внешним писателем (нужна для переиспользования image между кадрами).
+    pub fn new(
+        device: wgpu::Device,
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+        queue: wgpu::Queue,
+    ) -> Self {
+        let external_sync_support = ExternalMemorySyncSupport::detect_for_device(&device);
         Self {
             device,
             instance,
             adapter,
+            queue,
+            external_sync_support,
         }
+    }
+
+    /// Поддержка явной синхронизации на этом устройстве.
+    pub(crate) const fn external_sync_support(&self) -> ExternalMemorySyncSupport {
+        self.external_sync_support
     }
 
     /// Импортирует neutral DMA-BUF descriptor в renderer-owned WGPU textures.
@@ -704,7 +734,8 @@ impl DmaBufImporter {
         let view_formats = image_create_state::multi_planar_view_formats(frame_format)?;
         let mut view_format_list_info =
             vk::ImageFormatListCreateInfo::default().view_formats(view_formats.as_slice());
-        let start_state = image_create_state::imported_dma_buf_start_state();
+        let start_state =
+            image_create_state::imported_dma_buf_start_state(self.external_sync_support);
 
         let mut drm_modifier_info = if use_drm_modifier {
             Some(
@@ -887,12 +918,20 @@ impl DmaBufImporter {
             aspect: view_contract.uv_plane.aspect,
             ..Default::default()
         });
+        // При ошибке инициализации владения texture уничтожается drop callback-ом.
+        let external_sync = external_sync::attach_external_sync(
+            self,
+            raw_device,
+            [vk_image],
+            vec![texture.clone()],
+        )?;
 
         Ok(ImportedDmaBufTexture {
             frame_format,
             storage: ImportedDmaBufStorage::Multiplanar(texture),
             y_view,
             uv_view,
+            external_sync,
         })
     }
 
@@ -969,6 +1008,8 @@ impl DmaBufImporter {
             format: Some(view_contract.uv_plane.format),
             ..Default::default()
         });
+        let external_sync =
+            external_sync::attach_separate_plane_external_sync(self, &y_texture, &uv_texture)?;
 
         Ok(ImportedDmaBufTexture {
             frame_format,
@@ -978,6 +1019,7 @@ impl DmaBufImporter {
             },
             y_view,
             uv_view,
+            external_sync,
         })
     }
 
@@ -1027,7 +1069,8 @@ impl DmaBufImporter {
         )?;
 
         // Начальное состояние общее с multi-planar путём (Vulkan layout + wgpu tracker).
-        let start_state = image_create_state::imported_dma_buf_start_state();
+        let start_state =
+            image_create_state::imported_dma_buf_start_state(self.external_sync_support);
 
         // 1. Создаём VkImage с external memory handle type.
         let mut external_memory_info = vk::ExternalMemoryImageCreateInfo::default()

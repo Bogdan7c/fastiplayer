@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use video_backend_api::{
-    PresentFrameResourceDescriptorLookup, PresentFrameResourceProvider,
-    PresentFrameResourceProviderHandle, PresentFrameResourceProviderLookup,
-    SharedVideoBackendDecoderThreadHandle, StartedVideoBackend, VideoBackendLifetimeGuard,
-    share_video_backend_decoder_thread,
+    PresentFrameResourceDescriptorLookup, PresentFrameResourceIdentityLookup,
+    PresentFrameResourceProvider, PresentFrameResourceProviderHandle,
+    PresentFrameResourceProviderLookup, SharedVideoBackendDecoderThreadHandle, StartedVideoBackend,
+    VideoBackendLifetimeGuard, share_video_backend_decoder_thread,
 };
 use video_core::{
     DecodeSendError, DecodeThreadError, DecodedFrame, DecoderResourceSnapshot,
@@ -114,6 +114,21 @@ impl WgpuSubmissionQueueBinding {
             inner: Arc::new(WgpuSubmissionQueueBindingInner {
                 state: Mutex::new(WgpuSubmissionQueueState {
                     active_queue: Some(queue.clone()),
+                    pending_releases: BTreeMap::new(),
+                }),
+                next_release_id: AtomicU64::new(0),
+            }),
+        }
+    }
+
+    /// Создаёт binding без живой queue (как после доказанного device lost), чтобы
+    /// тесты wrapper-а могли работать без GPU.
+    #[cfg(test)]
+    fn detached_for_tests() -> Self {
+        Self {
+            inner: Arc::new(WgpuSubmissionQueueBindingInner {
+                state: Mutex::new(WgpuSubmissionQueueState {
+                    active_queue: None,
                     pending_releases: BTreeMap::new(),
                 }),
                 next_release_id: AtomicU64::new(0),
@@ -285,6 +300,16 @@ impl PresentFrameResourceProvider for WgpuSubmittedResourceProvider {
         handle: video_core::FrameResourceHandle,
     ) -> PresentFrameResourceDescriptorLookup {
         self.inner_provider.try_resource_descriptor_lookup(handle)
+    }
+
+    /// Identity lookup обязан пробрасываться явно: default trait-метода вернул бы
+    /// `Unsupported`, и кэш импортов рендерера в приложении никогда бы не попадал
+    /// дёшево (тот же класс дыры, что у `decoder_activity_snapshot` в сессии 02).
+    fn try_resource_identity_lookup(
+        &self,
+        handle: video_core::FrameResourceHandle,
+    ) -> PresentFrameResourceIdentityLookup {
+        self.inner_provider.try_resource_identity_lookup(handle)
     }
 
     fn release_frame(&self, handle: video_core::FrameResourceHandle) {
@@ -527,6 +552,67 @@ mod tests {
         assert_eq!(decoder_drop_count.load(Ordering::Relaxed), 0);
         drop(pending_release);
         assert_eq!(decoder_drop_count.load(Ordering::Relaxed), 1);
+    }
+
+    /// Provider fake с identity-поддержкой: считает identity lookup-ы.
+    struct IdentityResourceProvider {
+        identity_lookups: Arc<AtomicUsize>,
+    }
+
+    impl PresentFrameResourceProvider for IdentityResourceProvider {
+        fn resource_lookup(
+            &self,
+            _handle: video_core::FrameResourceHandle,
+        ) -> PresentFrameResourceProviderLookup {
+            PresentFrameResourceProviderLookup::Missing {
+                resource_pool_lock_wait: std::time::Duration::ZERO,
+            }
+        }
+
+        fn try_resource_identity_lookup(
+            &self,
+            _handle: video_core::FrameResourceHandle,
+        ) -> PresentFrameResourceIdentityLookup {
+            self.identity_lookups.fetch_add(1, Ordering::Relaxed);
+            PresentFrameResourceIdentityLookup::Busy {
+                resource_pool_lock_wait: std::time::Duration::from_micros(5),
+            }
+        }
+
+        fn release_frame(&self, _handle: video_core::FrameResourceHandle) {}
+    }
+
+    /// Wrapper submitted-release обязан пробрасывать identity lookup inner provider-а,
+    /// иначе кэш импортов в приложении никогда не попадает дёшево.
+    #[test]
+    fn wgpu_submitted_provider_forwards_identity_lookup_to_inner_provider() {
+        let identity_lookups = Arc::new(AtomicUsize::new(0));
+        let inner_provider = PresentFrameResourceProviderHandle::new(IdentityResourceProvider {
+            identity_lookups: identity_lookups.clone(),
+        });
+        let decoder_thread: Box<video_backend_api::VideoBackendDecoderThreadHandle> =
+            Box::new(LifetimeFakeDecoderThread {
+                provider: inner_provider.clone(),
+                drop_count: Arc::new(AtomicUsize::new(0)),
+                activity_snapshot: VideoDecoderActivitySnapshot::unsupported(),
+            });
+        let (_shared_decoder, backend_lifetime) =
+            share_video_backend_decoder_thread(decoder_thread);
+        let wrapped = WgpuSubmittedResourceProvider {
+            inner_provider,
+            submission_queue: WgpuSubmissionQueueBinding::detached_for_tests(),
+            backend_lifetime,
+        };
+
+        let lookup = wrapped.try_resource_identity_lookup(video_core::FrameResourceHandle(8));
+
+        assert_eq!(
+            lookup,
+            PresentFrameResourceIdentityLookup::Busy {
+                resource_pool_lock_wait: std::time::Duration::from_micros(5),
+            }
+        );
+        assert_eq!(identity_lookups.load(Ordering::Relaxed), 1);
     }
 
     #[test]

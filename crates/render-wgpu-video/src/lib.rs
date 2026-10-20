@@ -8,21 +8,26 @@
 mod capabilities;
 mod color_pipeline;
 mod dma_buf_import;
+mod external_sync_device;
 mod resource_provider;
 mod video;
 
 #[cfg(test)]
 mod bt2446c_reference;
 
+pub use dma_buf_import::{ImportedImageExternalSync, foreign_queue_family_extension_name};
+pub use external_sync_device::create_video_device_with_external_sync;
 pub use resource_provider::{
     WgpuSubmissionQueueBinding, WgpuSubmissionQueueRebindError,
     wrap_video_backend_for_wgpu_submission,
 };
 pub use video::{
-    DmaBufWgpuFrameMaterializer, HostPlanarWgpuFrameMaterializer, HostPlanarWgpuTextureViewLookup,
-    HostPlanarWgpuTextureViews, WgpuFrameMaterializationUnsupportedReason, WgpuFramePlanes,
-    WgpuFrameTextureViewLookup, WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
-    WgpuRenderableFrame, WgpuVideoRenderInput, WgpuVideoRenderer, clear_to_black,
+    DmaBufImportCacheCapacity, DmaBufImportCacheSnapshot, DmaBufImportStats,
+    DmaBufWgpuFrameMaterializer, ExternalFrameSyncCommandBuffers, HostPlanarWgpuFrameMaterializer,
+    HostPlanarWgpuTextureViewLookup, HostPlanarWgpuTextureViews, WgpuDmaBufPlaneViews,
+    WgpuFrameMaterializationUnsupportedReason, WgpuFramePlanes, WgpuFrameTextureViewLookup,
+    WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews, WgpuRenderableFrame,
+    WgpuVideoRenderInput, WgpuVideoRenderOutcome, WgpuVideoRenderer, clear_to_black,
 };
 
 /// Возвращает набор WGPU features, обязательный для video texture boundary.

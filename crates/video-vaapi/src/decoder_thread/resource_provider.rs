@@ -102,6 +102,36 @@ impl VideoFrameResourceDescriptorLookup {
     }
 }
 
+/// Результат renderer-facing identity lookup-а: стабильная идентичность буфера без fd.
+pub enum VideoFrameResourceIdentityLookup {
+    /// Handle leased, идентичность известна.
+    Ready {
+        /// Neutral идентичность буфера (shared `Arc`, без platform handles).
+        identity: video_core::FrameResourceIdentity,
+
+        /// Timing ожидания `FrameResourcePool` lock-а.
+        lock_diagnostics: VideoFrameResourceLockDiagnostics,
+    },
+
+    /// Resource pool сейчас занят другим потоком, render hot path не должен ждать.
+    Busy {
+        /// Timing короткой non-blocking попытки получить `FrameResourcePool`.
+        lock_diagnostics: VideoFrameResourceLockDiagnostics,
+    },
+
+    /// Resource pool доступен, но handle не указывает на active resource.
+    Missing {
+        /// Timing ожидания `FrameResourcePool` lock-а.
+        lock_diagnostics: VideoFrameResourceLockDiagnostics,
+    },
+
+    /// Poisoned/fatal состояние pool-а.
+    Fatal {
+        /// Timing ожидания `FrameResourcePool` lock-а.
+        lock_diagnostics: VideoFrameResourceLockDiagnostics,
+    },
+}
+
 /// Узкий provider для VAAPI resource status, descriptor duplication и release.
 #[derive(Clone)]
 pub struct VideoFrameResourceProvider {
@@ -144,6 +174,16 @@ impl VideoFrameResourceProvider {
         handle: video_core::FrameResourceHandle,
     ) -> VideoFrameResourceDescriptorLookup {
         try_resource_descriptor_lookup_from_pool(self.resource_pool.as_ref(), handle)
+    }
+
+    /// Пытается получить стабильную идентичность буфера без дублирования fd и без
+    /// ожидания resource pool mutex-а.
+    #[must_use]
+    pub fn try_resource_identity_lookup(
+        &self,
+        handle: video_core::FrameResourceHandle,
+    ) -> VideoFrameResourceIdentityLookup {
+        try_resource_identity_lookup_from_pool(self.resource_pool.as_ref(), handle)
     }
 
     /// Освобождает frame после того, как caller уже дождался GPU completion.
@@ -307,6 +347,42 @@ fn resource_lookup_from_locked_pool(
         VideoFrameResourceLookup::Ready { lock_diagnostics }
     } else {
         VideoFrameResourceLookup::Missing { lock_diagnostics }
+    }
+}
+
+/// Неблокирующе читает идентичность буфера; `Busy`/`Fatal` различаются так же,
+/// как у descriptor lookup-а, но fd здесь не дублируются.
+pub(super) fn try_resource_identity_lookup_from_pool(
+    resource_pool: &Mutex<crate::resource_pool::FrameResourcePool>,
+    handle: video_core::FrameResourceHandle,
+) -> VideoFrameResourceIdentityLookup {
+    let lock_started_at = Instant::now();
+    match resource_pool.try_lock() {
+        Ok(resource_pool) => {
+            let lock_diagnostics = VideoFrameResourceLockDiagnostics {
+                wait: lock_started_at.elapsed(),
+            };
+            match resource_pool.resource_identity(handle) {
+                Some(identity) => VideoFrameResourceIdentityLookup::Ready {
+                    identity,
+                    lock_diagnostics,
+                },
+                None => VideoFrameResourceIdentityLookup::Missing { lock_diagnostics },
+            }
+        }
+        Err(TryLockError::WouldBlock) => VideoFrameResourceIdentityLookup::Busy {
+            lock_diagnostics: VideoFrameResourceLockDiagnostics {
+                wait: lock_started_at.elapsed(),
+            },
+        },
+        Err(TryLockError::Poisoned(error)) => {
+            tracing::warn!(error = %error, "Resource pool mutex poisoned during identity lookup");
+            VideoFrameResourceIdentityLookup::Fatal {
+                lock_diagnostics: VideoFrameResourceLockDiagnostics {
+                    wait: lock_started_at.elapsed(),
+                },
+            }
+        }
     }
 }
 

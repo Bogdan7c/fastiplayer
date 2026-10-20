@@ -4,8 +4,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use render_wgpu_video::{
-    DmaBufWgpuFrameMaterializer, HostPlanarWgpuFrameMaterializer, WgpuFrameTextureViewMaterializer,
-    WgpuSubmissionQueueBinding, wrap_video_backend_for_wgpu_submission,
+    DmaBufImportCacheCapacity, DmaBufWgpuFrameMaterializer, HostPlanarWgpuFrameMaterializer,
+    WgpuFrameTextureViewMaterializer, WgpuSubmissionQueueBinding,
+    wrap_video_backend_for_wgpu_submission,
 };
 use video_backend_api::{DetachedVideoBackend, DetachedVideoBackendResourceError};
 use video_ffmpeg::FfmpegSoftwareVideoBackendFactory;
@@ -203,6 +204,10 @@ impl CandidateVideoPipelineResourceDriver for WgpuCandidateVideoPipelineResource
             VideoPipelinePlan::VaapiDmaBufWgpu {
                 decoder_thread_config,
             } => {
+                // Кэш Vulkan-импортов рендерера повторяет ёмкость zero-copy пула декодера.
+                let import_cache_capacity = DmaBufImportCacheCapacity::matching_surface_pool(
+                    decoder_thread_config.zero_copy_surface_pool_slots,
+                );
                 // VA-API factory создаёт отдельный decoder thread/resource owner.
                 let started_backend =
                     VaapiVideoBackendFactory::new_with_decoder_config(decoder_thread_config)
@@ -222,7 +227,9 @@ impl CandidateVideoPipelineResourceDriver for WgpuCandidateVideoPipelineResource
                         &self.instance,
                         &self.adapter,
                         &self.device,
+                        &self.queue,
                         resource_provider,
+                        import_cache_capacity,
                     ));
 
                 // Split ещё не выполнен: все ресурсы освобождаются вместе при early error/drop.

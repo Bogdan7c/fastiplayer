@@ -8,6 +8,7 @@
 
 use ash::vk;
 
+use super::external_sync::ExternalMemorySyncSupport;
 use super::{DmaBufFrameFormat, plane_view_contract_for_imported_format};
 
 /// Согласованная пара начальных состояний импортированного image.
@@ -42,15 +43,30 @@ pub(super) struct ImportedImageStartState {
 ///   в котором image создан. Так же делает собственный импорт wgpu-hal
 ///   (`texture_from_dmabuf_fd`).
 ///
-/// Известное ограничение (решение владельца, сессия 03 обновления egui/wgpu):
-/// переход из `UNDEFINED` формально разрешает драйверу не сохранять содержимое.
-/// Для несжатых modifiers (наш AMD GFX11 `64K_R_X` без DCC) драйверу нечего
-/// выбрасывать. Строгая гарантия для сжатых modifiers требует acquire-барьера из
-/// `VK_QUEUE_FAMILY_FOREIGN_EXT`, который wgpu 30 сам не записывает; это бэклог.
-pub(super) const fn imported_dma_buf_start_state() -> ImportedImageStartState {
+/// Когда устройство даёт `VK_EXT_queue_family_foreign` (cpu-parity сессия 03),
+/// первый переход `UNDEFINED -> SHADER_READ_ONLY_OPTIMAL` делает НЕ wgpu, а наш
+/// собственный acquire-барьер из `VK_QUEUE_FAMILY_FOREIGN_EXT` сразу после
+/// импорта (`ImportedImageExternalSync::initialize_ownership`, отдельный submit).
+/// Поэтому tracker-у wgpu сообщается `TextureUses::RESOURCE`: к моменту первого
+/// прохода рендера image уже в sampled layout, и wgpu не должен ставить ещё
+/// один переход из `UNDEFINED` (он мог бы потерять содержимое). Без расширения
+/// остаётся прежняя пара `UNDEFINED` + `UNINITIALIZED`, и image живёт один кадр.
+///
+/// Известное ограничение: сам переход из `UNDEFINED` в момент импорта формально
+/// разрешает драйверу не сохранять содержимое. Для несжатых modifiers (наш AMD
+/// GFX11 `64K_R_X` без DCC) драйверу нечего выбрасывать; при переиспользовании
+/// image в `UNDEFINED` больше не возвращается.
+pub(super) const fn imported_dma_buf_start_state(
+    external_sync: ExternalMemorySyncSupport,
+) -> ImportedImageStartState {
+    let wgpu_initial_state = if external_sync.allows_image_reuse() {
+        wgpu::TextureUses::RESOURCE
+    } else {
+        wgpu::TextureUses::UNINITIALIZED
+    };
     ImportedImageStartState {
         vulkan_initial_layout: vk::ImageLayout::UNDEFINED,
-        wgpu_initial_state: wgpu::TextureUses::UNINITIALIZED,
+        wgpu_initial_state,
     }
 }
 
@@ -151,28 +167,38 @@ mod tests {
         }
     }
 
-    /// Выбранный layout допустим и для LINEAR, и для DRM modifier tiling.
+    /// Оба режима синхронизации, с которыми создаётся image.
+    const SYNC_MODES: [ExternalMemorySyncSupport; 2] = [
+        ExternalMemorySyncSupport::Unavailable,
+        ExternalMemorySyncSupport::ForeignQueueOwnershipTransfer {
+            queue_family_index: 0,
+        },
+    ];
+
+    /// Выбранный layout допустим и для LINEAR, и для DRM modifier tiling, независимо
+    /// от того, кто делает первый барьер (wgpu или наш foreign acquire).
     #[test]
     fn start_layout_is_spec_valid_for_linear_and_drm_modifier_imports() {
-        let start_state = imported_dma_buf_start_state();
-
-        for tiling in IMPORT_TILINGS {
-            assert!(
-                spec_allows_external_import_initial_layout(
-                    start_state.vulkan_initial_layout,
-                    tiling
-                ),
-                "{:?} must be valid for external DMA-BUF import with {tiling:?}",
-                start_state.vulkan_initial_layout
-            );
+        for sync_mode in SYNC_MODES {
+            let start_state = imported_dma_buf_start_state(sync_mode);
+            for tiling in IMPORT_TILINGS {
+                assert!(
+                    spec_allows_external_import_initial_layout(
+                        start_state.vulkan_initial_layout,
+                        tiling
+                    ),
+                    "{:?} must be valid for external DMA-BUF import with {tiling:?}",
+                    start_state.vulkan_initial_layout
+                );
+            }
         }
     }
 
-    /// Состояние tracker-а wgpu описывает тот же layout, в котором создан image:
-    /// wgpu-hal 30 переводит `UNINITIALIZED` именно в `UNDEFINED` для первого барьера.
+    /// Без foreign sync состояние tracker-а wgpu описывает тот же layout, в котором
+    /// создан image: wgpu-hal 30 переводит `UNINITIALIZED` в `UNDEFINED` для первого барьера.
     #[test]
-    fn wgpu_tracker_state_matches_vulkan_initial_layout() {
-        let start_state = imported_dma_buf_start_state();
+    fn without_external_sync_wgpu_tracker_starts_uninitialized() {
+        let start_state = imported_dma_buf_start_state(ExternalMemorySyncSupport::Unavailable);
 
         assert_eq!(
             start_state.vulkan_initial_layout,
@@ -182,6 +208,24 @@ mod tests {
             start_state.wgpu_initial_state,
             wgpu::TextureUses::UNINITIALIZED
         );
+    }
+
+    /// С foreign sync первый переход из `UNDEFINED` делает наш acquire-барьер при
+    /// импорте, поэтому tracker wgpu стартует сразу из `RESOURCE` и не ставит
+    /// второй переход из `UNDEFINED`.
+    #[test]
+    fn with_external_sync_wgpu_tracker_starts_in_resource_state() {
+        let start_state = imported_dma_buf_start_state(
+            ExternalMemorySyncSupport::ForeignQueueOwnershipTransfer {
+                queue_family_index: 1,
+            },
+        );
+
+        assert_eq!(
+            start_state.vulkan_initial_layout,
+            vk::ImageLayout::UNDEFINED
+        );
+        assert_eq!(start_state.wgpu_initial_state, wgpu::TextureUses::RESOURCE);
     }
 
     /// NV12: формат image + R8 (Y) + RG8 (UV), ровно те, что использует wgpu-hal для view.

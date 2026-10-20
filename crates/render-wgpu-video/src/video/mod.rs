@@ -11,17 +11,22 @@ use render_core::{
 };
 #[cfg(test)]
 use video_core::FrameResourceDescriptor;
-use video_core::{
-    DecodedFrame, DecodedPixelFormat, DmaBufDescriptorRejection, FrameResourceHandle,
-};
+use video_core::{DecodedFrame, DecodedPixelFormat, DmaBufDescriptorRejection};
 use video_frame_contract::{HardwareFrameHandle, VideoFramePixelLayout, VideoFrameTransferPath};
 
 use crate::capabilities::wgpu_capabilities_from_features;
-use crate::dma_buf_import::ImportedDmaBufTexture;
+use crate::dma_buf_import::{ImportedDmaBufTexture, ImportedImageExternalSync};
 
 pub use self::dma_buf_materializer::DmaBufWgpuFrameMaterializer;
 #[cfg(test)]
 use self::dma_buf_materializer::unsupported_lookup_for_non_dma_buf_descriptor;
+pub use self::dma_buf_texture_cache::{
+    DmaBufImportCacheCapacity, DmaBufImportCacheSnapshot, DmaBufImportStats,
+};
+use self::external_frame_sync::record_external_frame_sync;
+pub use self::external_frame_sync::{
+    ExternalFrameSyncCommandBuffers, WgpuDmaBufPlaneViews, WgpuVideoRenderOutcome,
+};
 pub use self::host_planar_upload::{
     HostPlanarWgpuFrameMaterializer, HostPlanarWgpuTextureViewLookup, HostPlanarWgpuTextureViews,
 };
@@ -30,6 +35,8 @@ use self::nv12_renderer::Nv12VideoRenderer;
 use self::p010_renderer::P010VideoRenderer;
 
 mod dma_buf_materializer;
+mod dma_buf_texture_cache;
+mod external_frame_sync;
 mod host_planar_upload;
 mod host_yuv420_renderer;
 mod nv12_renderer;
@@ -53,7 +60,7 @@ enum WgpuFrameTextureViewStorage {
         uv_view: wgpu::TextureView,
 
         /// Guard держит imported texture storage живым как минимум до drop-а views.
-        _imported_texture_guard: Option<Arc<ImportedDmaBufTexture>>,
+        imported_texture_guard: Option<Arc<ImportedDmaBufTexture>>,
     },
 
     /// HostPlanar upload даёт отдельные Y/U/V texture views.
@@ -68,7 +75,7 @@ impl WgpuFrameTextureViews {
             storage: WgpuFrameTextureViewStorage::DmaBuf {
                 y_view: imported_texture.y_view.clone(),
                 uv_view: imported_texture.uv_view.clone(),
-                _imported_texture_guard: Some(imported_texture),
+                imported_texture_guard: Some(imported_texture),
             },
         }
     }
@@ -80,13 +87,22 @@ impl WgpuFrameTextureViews {
         }
     }
 
-    /// Возвращает DMA-BUF Y/UV views, если materializer создал именно DMA-BUF storage.
+    /// Возвращает DMA-BUF Y/UV views вместе с синхронизацией image, если
+    /// materializer создал именно DMA-BUF storage.
     #[must_use]
-    pub fn dma_buf_views(&self) -> Option<(&wgpu::TextureView, &wgpu::TextureView)> {
+    pub fn dma_buf_views(&self) -> Option<WgpuDmaBufPlaneViews<'_>> {
         match &self.storage {
             WgpuFrameTextureViewStorage::DmaBuf {
-                y_view, uv_view, ..
-            } => Some((y_view, uv_view)),
+                y_view,
+                uv_view,
+                imported_texture_guard,
+            } => Some(WgpuDmaBufPlaneViews {
+                y_view,
+                uv_view,
+                external_sync: imported_texture_guard
+                    .as_ref()
+                    .and_then(|texture| texture.external_sync.as_ref()),
+            }),
             WgpuFrameTextureViewStorage::HostPlanar(_) => None,
         }
     }
@@ -234,6 +250,11 @@ pub trait WgpuFrameTextureViewMaterializer: Send + Sync {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) -> Arc<dyn WgpuFrameTextureViewMaterializer>;
+
+    /// Счётчики кэша импортов DMA-BUF; `None` у materializer-ов без такого кэша.
+    fn dma_buf_import_stats(&self) -> Option<DmaBufImportStats> {
+        None
+    }
 }
 
 /// GPU context одного video render pass-а.
@@ -383,34 +404,44 @@ pub struct WgpuRenderableFrame<'frame> {
 
     /// WGPU texture views, соответствующие `metadata.format`.
     pub planes: WgpuFramePlanes<'frame>,
+
+    /// Синхронизация импортированного image с внешним писателем (только DMA-BUF
+    /// с переиспользованием image); renderer записывает по ней барьеры pass-а.
+    external_sync: Option<&'frame ImportedImageExternalSync>,
 }
 
 impl<'frame> WgpuRenderableFrame<'frame> {
-    /// Собирает WGPU frame wrapper из decoded NV12 frame и texture views.
+    /// Собирает WGPU frame wrapper из decoded NV12 frame и DMA-BUF plane views.
     pub fn from_decoded_nv12(
         frame: &DecodedFrame,
-        y_view: &'frame wgpu::TextureView,
-        uv_view: &'frame wgpu::TextureView,
+        views: WgpuDmaBufPlaneViews<'frame>,
     ) -> Result<Self> {
         validate_decoded_nv12_frame(frame)?;
 
         Ok(Self {
             metadata: renderable_metadata_from_decoded(frame, VideoFramePixelLayout::Nv12),
-            planes: WgpuFramePlanes::Nv12 { y_view, uv_view },
+            planes: WgpuFramePlanes::Nv12 {
+                y_view: views.y_view,
+                uv_view: views.uv_view,
+            },
+            external_sync: views.external_sync,
         })
     }
 
-    /// Собирает WGPU frame wrapper из P010 boundary frame и texture views.
+    /// Собирает WGPU frame wrapper из P010 boundary frame и DMA-BUF plane views.
     pub fn from_decoded_p010(
         frame: &DecodedFrame,
-        y_view: &'frame wgpu::TextureView,
-        uv_view: &'frame wgpu::TextureView,
+        views: WgpuDmaBufPlaneViews<'frame>,
     ) -> Result<Self> {
         validate_decoded_p010_frame(frame)?;
 
         Ok(Self {
             metadata: renderable_metadata_from_decoded(frame, VideoFramePixelLayout::P010),
-            planes: WgpuFramePlanes::P010 { y_view, uv_view },
+            planes: WgpuFramePlanes::P010 {
+                y_view: views.y_view,
+                uv_view: views.uv_view,
+            },
+            external_sync: views.external_sync,
         })
     }
 
@@ -430,6 +461,8 @@ impl<'frame> WgpuRenderableFrame<'frame> {
                 u_view,
                 v_view,
             },
+            // Host-upload textures принадлежат рендереру целиком: внешнего писателя нет.
+            external_sync: None,
         })
     }
 
@@ -505,22 +538,6 @@ fn validate_current_dma_buf_frame_contract(
     );
 
     Ok(())
-}
-
-/// Превращает ошибку renderer-side DMA-BUF import-а в typed render lookup failure.
-pub(super) fn texture_view_lookup_after_import_failure(
-    handle: FrameResourceHandle,
-    error: anyhow::Error,
-    texture_pool_lock_wait: Duration,
-) -> WgpuFrameTextureViewLookup {
-    tracing::warn!(
-        error = %error,
-        handle_id = handle.0,
-        "Renderer DMA-BUF import failed; CPU fallback is disabled"
-    );
-    WgpuFrameTextureViewLookup::Error {
-        texture_pool_lock_wait,
-    }
 }
 
 /// Копирует renderer-neutral metadata из decoded frame без backend-specific handles.
@@ -718,20 +735,27 @@ impl WgpuVideoRenderer {
 
     /// Рендерит video frame или очищает target в чёрный цвет, если кадра нет.
     ///
-    /// Возвращает `true`, если video pass реально нарисовал кадр.
-    pub fn render_or_clear(&mut self, input: WgpuVideoRenderInput<'_, '_>) -> Result<bool> {
+    /// В исходе `frame_drawn == true`, если video pass реально нарисовал кадр, а
+    /// `external_sync` — барьеры, которые shell обязан отправить вокруг encoder-а.
+    pub fn render_or_clear(
+        &mut self,
+        input: WgpuVideoRenderInput<'_, '_>,
+    ) -> Result<WgpuVideoRenderOutcome> {
         if input.frame.is_none() {
             self.diagnostics = RenderDiagnostics::default();
             clear_to_black(input.target, input.encoder);
-            return Ok(false);
+            return Ok(WgpuVideoRenderOutcome::without_frame());
         }
         self.render_video_frame(input, VideoRenderTargetLoad::ClearBlack, true)
     }
 
     /// Рендерит video overlay поверх уже нарисованного target-а без clear.
-    pub fn render_overlay(&mut self, input: WgpuVideoRenderInput<'_, '_>) -> Result<bool> {
+    pub fn render_overlay(
+        &mut self,
+        input: WgpuVideoRenderInput<'_, '_>,
+    ) -> Result<WgpuVideoRenderOutcome> {
         if input.frame.is_none() {
-            return Ok(false);
+            return Ok(WgpuVideoRenderOutcome::without_frame());
         }
         self.render_video_frame(input, VideoRenderTargetLoad::LoadExisting, false)
     }
@@ -742,7 +766,7 @@ impl WgpuVideoRenderer {
         input: WgpuVideoRenderInput<'_, '_>,
         target_load: VideoRenderTargetLoad,
         update_diagnostics: bool,
-    ) -> Result<bool> {
+    ) -> Result<WgpuVideoRenderOutcome> {
         let WgpuVideoRenderInput {
             frame,
             video_viewport,
@@ -753,8 +777,10 @@ impl WgpuVideoRenderer {
             queue,
         } = input;
         let Some(frame) = frame else {
-            return Ok(false);
+            return Ok(WgpuVideoRenderOutcome::without_frame());
         };
+        // Барьеры пишутся до pass-а: если их не записать, кадр рисовать нельзя.
+        let external_sync = record_external_frame_sync(device, frame.external_sync)?;
         if update_diagnostics {
             self.diagnostics = RenderDiagnostics::default();
         }
@@ -782,6 +808,10 @@ impl WgpuVideoRenderer {
             );
         }
 
+        let drawn = WgpuVideoRenderOutcome {
+            frame_drawn: true,
+            external_sync,
+        };
         match select_renderer_dispatch(frame.metadata.format, frame.planes.kind())? {
             RendererDispatch::Nv12 => {
                 let WgpuFramePlanes::Nv12 { y_view, uv_view } = &frame.planes else {
@@ -796,7 +826,7 @@ impl WgpuVideoRenderer {
                 if update_diagnostics {
                     self.diagnostics.active_color_path = Some(active_color_path);
                 }
-                Ok(true)
+                Ok(drawn)
             }
             RendererDispatch::P010 => {
                 let WgpuFramePlanes::P010 { y_view, uv_view } = &frame.planes else {
@@ -813,7 +843,7 @@ impl WgpuVideoRenderer {
                     self.diagnostics.hdr_reference_defaults =
                         p010_diagnostics.hdr_reference_defaults;
                 }
-                Ok(true)
+                Ok(drawn)
             }
             RendererDispatch::HostYuvPlanar => {
                 let WgpuFramePlanes::HostYuvPlanar {
@@ -837,7 +867,7 @@ impl WgpuVideoRenderer {
                     self.diagnostics.hdr_reference_defaults =
                         host_yuv_diagnostics.hdr_reference_defaults;
                 }
-                Ok(true)
+                Ok(drawn)
             }
         }
     }

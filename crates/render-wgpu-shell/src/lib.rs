@@ -16,6 +16,7 @@ mod shell;
 mod subtitle_overlay;
 mod surface_alpha;
 mod surface_settings;
+mod vulkan_device;
 mod window_corner_mask;
 
 pub use frame::{
@@ -29,4 +30,5 @@ pub use subtitle_overlay::{
 };
 pub use surface_alpha::SurfaceAlphaPreference;
 pub use surface_settings::{ShellPresentMode, SurfacePresentSettings};
+pub use vulkan_device::ForeignQueueFamilySupport;
 pub use window_corner_mask::WindowCornerMask;

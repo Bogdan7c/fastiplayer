@@ -28,11 +28,26 @@ use video_core::{
 };
 use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
-use super::{DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_NV12, DmaBufImporter};
+use super::{DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_NV12, DmaBufImporter, ImportedDmaBufTexture};
 use crate::{
-    WgpuRenderableFrame, WgpuVideoRenderInput, WgpuVideoRenderer,
+    ExternalFrameSyncCommandBuffers, WgpuDmaBufPlaneViews, WgpuRenderableFrame,
+    WgpuVideoRenderInput, WgpuVideoRenderer, create_video_device_with_external_sync,
     required_wgpu_video_texture_features,
 };
+
+/// Отправляет кадр так же, как shell: acquire → основной encoder → release.
+fn submit_with_external_sync(
+    queue: &wgpu::Queue,
+    external_sync: Option<ExternalFrameSyncCommandBuffers>,
+    encoder: wgpu::CommandEncoder,
+) -> wgpu::SubmissionIndex {
+    match external_sync {
+        Some(ExternalFrameSyncCommandBuffers { acquire, release }) => {
+            queue.submit([acquire, encoder.finish(), release])
+        }
+        None => queue.submit([encoder.finish()]),
+    }
+}
 
 /// Ширина тестового кадра; кратна 256, чтобы linear row pitch подходил любому драйверу.
 const FRAME_WIDTH: u32 = 256;
@@ -127,6 +142,13 @@ fn split_red_blue_nv12_frame() -> Vec<u8> {
 
 /// Создаёт настоящий DMA-BUF fd с содержимым `frame_bytes` через memfd + udmabuf.
 fn create_udmabuf_with_contents(frame_bytes: &[u8]) -> (OwnedFd, u32) {
+    let (dma_buf_fd, buffer_size, _memfd_file) = create_udmabuf_keeping_memfd(frame_bytes);
+    (dma_buf_fd, buffer_size)
+}
+
+/// То же, но memfd остаётся открытым: через него тест перезаписывает содержимое
+/// буфера между кадрами (udmabuf делит страницы с memfd).
+fn create_udmabuf_keeping_memfd(frame_bytes: &[u8]) -> (OwnedFd, u32, std::fs::File) {
     // SAFETY: `sysconf` только читает системную константу.
     let page_size = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
         .expect("page size must be positive");
@@ -201,7 +223,21 @@ fn create_udmabuf_with_contents(frame_bytes: &[u8]) -> (OwnedFd, u32) {
     (
         dma_buf_fd,
         u32::try_from(buffer_size).expect("test buffer fits u32"),
+        memfd_file,
     )
+}
+
+/// Перезаписывает содержимое буфера через memfd (новый «кадр» от внешнего писателя).
+fn overwrite_udmabuf_contents(memfd_file: &mut std::fs::File, frame_bytes: &[u8]) {
+    use std::io::{Seek, SeekFrom, Write};
+
+    memfd_file
+        .seek(SeekFrom::Start(0))
+        .expect("rewind memfd before overwrite");
+    memfd_file
+        .write_all(frame_bytes)
+        .expect("overwrite NV12 frame inside memfd");
+    memfd_file.sync_all().expect("flush memfd pages");
 }
 
 /// Descriptor в форме VA-API composed NV12 export с linear modifier.
@@ -280,15 +316,21 @@ impl GpuTestContext {
             apply_limit_buckets: false,
         }))
         .expect("Vulkan adapter for the udmabuf GPU test");
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        let descriptor = wgpu::DeviceDescriptor {
             label: Some("udmabuf import render test device"),
             required_features: required_wgpu_video_texture_features(&adapter),
             required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
             memory_hints: wgpu::MemoryHints::MemoryUsage,
             trace: wgpu::Trace::Off,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        }))
-        .expect("Create a Vulkan device with NV12 feature");
+        };
+        // Как production shell: сначала устройство с foreign queue family, иначе обычное.
+        let (device, queue) = match create_video_device_with_external_sync(&adapter, &descriptor) {
+            Ok(Some(device_and_queue)) => device_and_queue,
+            Ok(None) => pollster::block_on(adapter.request_device(&descriptor))
+                .expect("Create a Vulkan device with NV12 feature"),
+            Err(error) => panic!("device with VK_EXT_queue_family_foreign failed: {error}"),
+        };
 
         Self {
             instance,
@@ -435,37 +477,57 @@ fn assert_dominant_channel(pixel: [u8; 4], dominant: usize, description: &str) {
     }
 }
 
-/// Известный кадр из настоящего DMA-BUF проходит production импорт и рендер без
-/// потери содержимого: слева красный, справа синий, а не нули/мусор.
-#[test]
-#[ignore = "Vulkan GPU with NV12+DMA-BUF and /dev/udmabuf access"]
-fn udmabuf_nv12_frame_survives_import_and_renders_known_colors() {
-    let gpu = GpuTestContext::new();
-    let (dma_buf_fd, object_size) = create_udmabuf_with_contents(&split_red_blue_nv12_frame());
-    let descriptor = composed_linear_nv12_descriptor(dma_buf_fd, object_size);
+/// Известный NV12 кадр с переставленными половинами: слева синий, справа красный.
+fn split_blue_red_nv12_frame() -> Vec<u8> {
+    let half_width = FRAME_WIDTH / 2;
+    let color_for_column = |column: u32| {
+        if column < half_width {
+            BT709_LIMITED_BLUE
+        } else {
+            BT709_LIMITED_RED
+        }
+    };
 
-    let importer = DmaBufImporter::new(
-        gpu.device.clone(),
-        gpu.instance.clone(),
-        gpu.adapter.clone(),
-    );
-    let imported = importer
-        .import_exported_dma_buf_image(&descriptor)
-        .expect("production imports linear NV12 DMA-BUF");
+    let mut frame_bytes = Vec::new();
+    for _row in 0..FRAME_HEIGHT {
+        for column in 0..FRAME_WIDTH {
+            frame_bytes.push(color_for_column(column).luma);
+        }
+    }
+    for _chroma_row in 0..FRAME_HEIGHT / 2 {
+        for chroma_column in 0..FRAME_WIDTH / 2 {
+            let color = color_for_column(chroma_column * 2);
+            frame_bytes.push(color.blue_difference);
+            frame_bytes.push(color.red_difference);
+        }
+    }
+    frame_bytes
+}
+
+/// Рисует импортированный image production renderer-ом с барьерами (как shell)
+/// и возвращает пиксели в центрах левой и правой половин.
+fn render_imported_frame_and_read_halves(
+    gpu: &GpuTestContext,
+    renderer: &mut WgpuVideoRenderer,
+    target: &OffscreenTarget,
+    imported: &ImportedDmaBufTexture,
+) -> Vec<[u8; 4]> {
     let decoded_frame = decoded_nv12_frame();
-    let renderable_frame =
-        WgpuRenderableFrame::from_decoded_nv12(&decoded_frame, &imported.y_view, &imported.uv_view)
-            .expect("Create a renderable NV12 frame");
-
-    let target = OffscreenTarget::new(&gpu.device);
-    let mut renderer = WgpuVideoRenderer::new(&gpu.device, TARGET_FORMAT);
-    renderer.resize(FRAME_WIDTH, FRAME_HEIGHT);
+    let renderable_frame = WgpuRenderableFrame::from_decoded_nv12(
+        &decoded_frame,
+        WgpuDmaBufPlaneViews {
+            y_view: &imported.y_view,
+            uv_view: &imported.uv_view,
+            external_sync: imported.external_sync.as_ref(),
+        },
+    )
+    .expect("Create a renderable NV12 frame");
     let mut encoder = gpu
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("udmabuf test encoder"),
+            label: Some("udmabuf reuse test encoder"),
         });
-    let drew_video = renderer
+    let outcome = renderer
         .render_or_clear(WgpuVideoRenderInput {
             frame: Some(&renderable_frame),
             video_viewport: RenderViewport {
@@ -481,9 +543,123 @@ fn udmabuf_nv12_frame_survives_import_and_renders_known_colors() {
             queue: &gpu.queue,
         })
         .expect("renderer accepts imported frame");
-    assert!(drew_video, "The frame should be painted, not just cleaned.");
+    assert!(outcome.frame_drawn);
     target.record_copy_to_readback(&mut encoder);
-    let submission_index = gpu.queue.submit([encoder.finish()]);
+    let submission_index = submit_with_external_sync(&gpu.queue, outcome.external_sync, encoder);
+
+    let left_center = (FRAME_WIDTH / 4, FRAME_HEIGHT / 2);
+    let right_center = (FRAME_WIDTH * 3 / 4, FRAME_HEIGHT / 2);
+    target.read_pixels(&gpu.device, submission_index, &[left_center, right_center])
+}
+
+/// Один и тот же импортированный image показывается дважды, а между показами
+/// внешний писатель (здесь — CPU через memfd) перезаписывает буфер. После
+/// acquire-барьера рендер обязан увидеть НОВОЕ содержимое. Это ровно сценарий
+/// переиспользования image из кэша (cpu-parity сессия 03).
+///
+/// Если устройство не даёт `VK_EXT_queue_family_foreign`, тест всё равно
+/// проверяет содержимое, но сообщает, что барьер не записывался: тогда это
+/// проверка покадрового пути, а не синхронизации.
+#[test]
+#[ignore = "Vulkan GPU with NV12+DMA-BUF and /dev/udmabuf access"]
+fn udmabuf_rewritten_between_frames_is_visible_after_acquire_barrier() {
+    let gpu = GpuTestContext::new();
+    let (dma_buf_fd, object_size, mut memfd_file) =
+        create_udmabuf_keeping_memfd(&split_red_blue_nv12_frame());
+    let descriptor = composed_linear_nv12_descriptor(dma_buf_fd, object_size);
+
+    let importer = DmaBufImporter::new(
+        gpu.device.clone(),
+        gpu.instance.clone(),
+        gpu.adapter.clone(),
+        gpu.queue.clone(),
+    );
+    let imported = importer
+        .import_exported_dma_buf_image(&descriptor)
+        .expect("production imports linear NV12 DMA-BUF");
+    eprintln!(
+        "udmabuf reuse test: external sync = {}",
+        importer.external_sync_support().diagnostic_label()
+    );
+    let target = OffscreenTarget::new(&gpu.device);
+    let mut renderer = WgpuVideoRenderer::new(&gpu.device, TARGET_FORMAT);
+    renderer.resize(FRAME_WIDTH, FRAME_HEIGHT);
+
+    let first = render_imported_frame_and_read_halves(&gpu, &mut renderer, &target, &imported);
+    assert_dominant_channel(first[0], 0, "first frame: left half red");
+    assert_dominant_channel(first[1], 2, "first frame: right half blue");
+
+    overwrite_udmabuf_contents(&mut memfd_file, &split_blue_red_nv12_frame());
+
+    let second = render_imported_frame_and_read_halves(&gpu, &mut renderer, &target, &imported);
+    assert_dominant_channel(second[0], 2, "second frame: left half must turn blue");
+    assert_dominant_channel(second[1], 0, "second frame: right half must turn red");
+    assert_eq!(
+        imported.external_sync.is_some(),
+        importer.external_sync_support().allows_image_reuse(),
+        "image carries sync state exactly when the device supports foreign queue transfer"
+    );
+}
+
+/// Известный кадр из настоящего DMA-BUF проходит production импорт и рендер без
+/// потери содержимого: слева красный, справа синий, а не нули/мусор.
+#[test]
+#[ignore = "Vulkan GPU with NV12+DMA-BUF and /dev/udmabuf access"]
+fn udmabuf_nv12_frame_survives_import_and_renders_known_colors() {
+    let gpu = GpuTestContext::new();
+    let (dma_buf_fd, object_size) = create_udmabuf_with_contents(&split_red_blue_nv12_frame());
+    let descriptor = composed_linear_nv12_descriptor(dma_buf_fd, object_size);
+
+    let importer = DmaBufImporter::new(
+        gpu.device.clone(),
+        gpu.instance.clone(),
+        gpu.adapter.clone(),
+        gpu.queue.clone(),
+    );
+    let imported = importer
+        .import_exported_dma_buf_image(&descriptor)
+        .expect("production imports linear NV12 DMA-BUF");
+    let decoded_frame = decoded_nv12_frame();
+    let renderable_frame = WgpuRenderableFrame::from_decoded_nv12(
+        &decoded_frame,
+        WgpuDmaBufPlaneViews {
+            y_view: &imported.y_view,
+            uv_view: &imported.uv_view,
+            external_sync: imported.external_sync.as_ref(),
+        },
+    )
+    .expect("Create a renderable NV12 frame");
+
+    let target = OffscreenTarget::new(&gpu.device);
+    let mut renderer = WgpuVideoRenderer::new(&gpu.device, TARGET_FORMAT);
+    renderer.resize(FRAME_WIDTH, FRAME_HEIGHT);
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("udmabuf test encoder"),
+        });
+    let outcome = renderer
+        .render_or_clear(WgpuVideoRenderInput {
+            frame: Some(&renderable_frame),
+            video_viewport: RenderViewport {
+                x: 0,
+                y: 0,
+                width: FRAME_WIDTH,
+                height: FRAME_HEIGHT,
+            },
+            video_exclusion_rects: &[],
+            target: &target.view,
+            encoder: &mut encoder,
+            device: &gpu.device,
+            queue: &gpu.queue,
+        })
+        .expect("renderer accepts imported frame");
+    assert!(
+        outcome.frame_drawn,
+        "The frame should be painted, not just cleaned."
+    );
+    target.record_copy_to_readback(&mut encoder);
+    let submission_index = submit_with_external_sync(&gpu.queue, outcome.external_sync, encoder);
 
     // Точки в середине каждой половины, вдали от границы цветов.
     let left_center = (FRAME_WIDTH / 4, FRAME_HEIGHT / 2);

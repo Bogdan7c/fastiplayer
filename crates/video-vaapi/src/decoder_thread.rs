@@ -49,8 +49,8 @@ use control::{
     wait_for_end_of_stream_drain_ack, wait_for_flush_ack, wait_for_preroll_output_floor_ack,
 };
 pub use resource_provider::{
-    VideoFrameResourceDescriptorLookup, VideoFrameResourceLockDiagnostics,
-    VideoFrameResourceLookup, VideoFrameResourceProvider,
+    VideoFrameResourceDescriptorLookup, VideoFrameResourceIdentityLookup,
+    VideoFrameResourceLockDiagnostics, VideoFrameResourceLookup, VideoFrameResourceProvider,
 };
 #[cfg(test)]
 use resource_provider::{

@@ -185,7 +185,7 @@ impl OffscreenWgpuHarness {
             })
             .expect("WGPU renderer must accept direct WebM frame");
         assert!(
-            drew_video,
+            drew_video.frame_drawn,
             "direct WebM frame must not become a clear-only pass"
         );
         encoder.copy_texture_to_buffer(

@@ -179,6 +179,10 @@ impl AppState {
             VideoPipelinePlan::VaapiDmaBufWgpu {
                 decoder_thread_config,
             } => {
+                // Кэш Vulkan-импортов рендерера повторяет ёмкость zero-copy пула декодера.
+                let import_cache_capacity = DmaBufImportCacheCapacity::matching_surface_pool(
+                    decoder_thread_config.zero_copy_surface_pool_slots,
+                );
                 let backend_factory =
                     VaapiVideoBackendFactory::new_with_decoder_config(decoder_thread_config);
                 let started_backend = backend_factory.start_for_composition().map_err(|error| {
@@ -194,7 +198,9 @@ impl AppState {
                         instance,
                         adapter,
                         device,
+                        queue,
                         frame_resource_provider,
+                        import_cache_capacity,
                     ));
 
                 (player_backend, frame_materializer, submission_queue_binding)

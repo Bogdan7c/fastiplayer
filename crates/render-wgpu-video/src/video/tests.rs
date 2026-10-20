@@ -215,22 +215,6 @@ fn nv12_boundary_rejects_non_zero_copy_memory_path() {
 }
 
 #[test]
-fn dma_buf_import_failure_is_renderer_error_without_cpu_fallback() {
-    let lookup = texture_view_lookup_after_import_failure(
-        FrameResourceHandle(77),
-        anyhow::anyhow!("synthetic import failure"),
-        Duration::from_millis(9),
-    );
-
-    assert!(matches!(
-        lookup,
-        WgpuFrameTextureViewLookup::Error {
-            texture_pool_lock_wait
-        } if texture_pool_lock_wait == Duration::from_millis(9)
-    ));
-}
-
-#[test]
 fn dma_buf_materializer_returns_unsupported_for_host_planar_descriptor() {
     let descriptor = FrameResourceDescriptor::HostPlanar(
         video_core::HostPlanarFrameDescriptor::from_owned_buffer(

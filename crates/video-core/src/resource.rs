@@ -1,6 +1,7 @@
 mod descriptor;
 mod dma_buf_validation;
 mod host_planar_validation;
+mod identity;
 
 use anyhow::{Context, bail, ensure};
 use video_frame_contract::{HardwareFrameHandle, VideoFrameContract, VideoFrameTransferPath};
@@ -12,7 +13,12 @@ pub use descriptor::{
     HostPlanarVisiblePlaneBlock, HostPlaneDescriptor, HostPlaneRole,
 };
 pub use dma_buf_validation::{
-    validate_dma_buf_descriptor_against_frame_contract, validate_dma_buf_descriptor_import_topology,
+    validate_dma_buf_descriptor_against_frame_contract,
+    validate_dma_buf_descriptor_import_topology, validate_dma_buf_identity_against_frame_contract,
+};
+pub use identity::{
+    DmaBufFrameFormatSignature, DmaBufFrameIdentity, DmaBufObjectIdentityDescriptor,
+    FrameResourceIdentity,
 };
 
 use dma_buf_validation::validate_dma_buf_descriptor_against_contract;

@@ -2,142 +2,383 @@
 //!
 //! Модуль владеет преобразованием neutral resource descriptor в импортированные
 //! WGPU texture views. Renderer facade не знает устройство cache/importer-а.
+//!
+//! Порядок на горячем пути (cpu-parity сессия 03):
+//! 1. дешёвый identity lookup у provider-а (без dup fd) → ключ кэша;
+//! 2. попадание в кэш → готовые views, Vulkan не трогаем вовсе;
+//! 3. только на промахе — descriptor lookup с dup fd, проверка контракта и импорт.
+//!
+//! Переиспользование image между кадрами разрешено лишь когда importer умеет
+//! явную синхронизацию с внешним писателем; иначе кэш попадает только для того
+//! же `FrameResourceHandle` (повтор одного кадра на нескольких vsync), как раньше.
 
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
-use anyhow::bail;
-use video_backend_api::{PresentFrameResourceDescriptorLookup, PresentFrameResourceProviderHandle};
+use video_backend_api::{
+    PresentFrameResourceDescriptorLookup, PresentFrameResourceIdentityLookup,
+    PresentFrameResourceProviderHandle,
+};
 use video_core::{
-    DecodedFrame, FrameResourceDescriptor, FrameResourceHandle,
-    validate_dma_buf_descriptor_against_frame_contract,
+    DecodedFrame, DmaBufFrameDescriptor, DmaBufFrameIdentity, FrameResourceDescriptor,
+    FrameResourceIdentity, validate_dma_buf_descriptor_against_frame_contract,
+    validate_dma_buf_identity_against_frame_contract,
 };
 
 use crate::dma_buf_import::{DmaBufImporter, ImportedDmaBufTexture};
 
+use super::dma_buf_texture_cache::{
+    DmaBufImportCacheCapacity, DmaBufImportCacheSnapshot, DmaBufTextureCache,
+    DmaBufTextureReusePolicy,
+};
 use super::{
-    WgpuFrameMaterializationUnsupportedReason, WgpuFrameTextureViewLookup,
+    DmaBufImportStats, WgpuFrameMaterializationUnsupportedReason, WgpuFrameTextureViewLookup,
     WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
-    texture_view_lookup_after_import_failure,
 };
 
 /// Renderer-side materializer, который импортирует neutral DMA-BUF descriptors в WGPU.
-pub struct DmaBufWgpuFrameMaterializer {
-    /// Backend provider возвращает duplicated descriptors и lock diagnostics.
+///
+/// Generic по importer-у, чтобы вся логика identity/кэша/контракта проверялась
+/// hermetic-тестами с fake importer-ом; production тип — `DmaBufImporter`.
+pub struct DmaBufWgpuFrameMaterializer<I: DmaBufTextureImporter = DmaBufImporter> {
+    /// Backend provider возвращает identity, duplicated descriptors и lock diagnostics.
     resource_provider: PresentFrameResourceProviderHandle,
 
-    /// Renderer-owned cache/importer; VAAPI/cros types сюда не попадают.
-    texture_cache: Mutex<DmaBufWgpuTextureCache>,
+    /// Владелец unsafe platform import-а; VAAPI/cros types сюда не попадают.
+    importer: I,
+
+    /// Renderer-owned bounded cache импортов по идентичности буфера.
+    texture_cache: Mutex<DmaBufTextureCache<I::Texture>>,
+
+    /// Счётчики самого materializer-а (кэш считает свои внутри).
+    import_counters: Mutex<ImportCounters>,
+}
+
+/// Счётчики фактических обращений к importer-у.
+#[derive(Debug, Default, Clone, Copy)]
+struct ImportCounters {
+    /// Сколько раз вызван platform import.
+    imports_performed: u64,
+
+    /// Сколько import-ов завершились ошибкой.
+    import_failures: u64,
+}
+
+/// Результат materialization одного кадра до создания views.
+///
+/// Те же различимые исходы, что у `WgpuFrameTextureViewLookup`, но с shared
+/// image вместо views, чтобы fake importer в тестах не нуждался в GPU.
+pub(super) enum DmaBufMaterialization<T> {
+    /// Image готов (из кэша или свежеимпортирован).
+    Ready {
+        /// Shared импортированный image.
+        texture: Arc<T>,
+
+        /// Суммарное ожидание lock-ов provider-а и кэша.
+        lock_wait: Duration,
+    },
+
+    /// Provider или кэш заняты; hot path выбирает fallback без ожидания.
+    Busy {
+        /// Ожидание lock-а.
+        lock_wait: Duration,
+    },
+
+    /// Provider не знает такого handle.
+    Missing {
+        /// Ожидание lock-а.
+        lock_wait: Duration,
+    },
+
+    /// Descriptor не подходит этому materializer-у (typed причина).
+    Unsupported {
+        /// Причина отказа.
+        reason: WgpuFrameMaterializationUnsupportedReason,
+
+        /// Ожидание lock-а.
+        lock_wait: Duration,
+    },
+
+    /// Fatal/poison состояние или ошибка импорта.
+    Error {
+        /// Ожидание lock-а.
+        lock_wait: Duration,
+    },
 }
 
 impl DmaBufWgpuFrameMaterializer {
     /// Создаёт materializer из WGPU handles renderer layer-а и neutral provider-а.
+    ///
+    /// `cache_capacity` обязан совпадать с ёмкостью zero-copy пула декодера этого
+    /// же backend-а, иначе кэш либо промахивается по кругу, либо держит лишние image.
     #[must_use]
     pub fn new(
         instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         resource_provider: PresentFrameResourceProviderHandle,
+        cache_capacity: DmaBufImportCacheCapacity,
     ) -> Self {
-        Self {
+        Self::new_with_importer(
             resource_provider,
-            texture_cache: Mutex::new(DmaBufWgpuTextureCache::new(DmaBufImporter::new(
+            DmaBufImporter::new(
                 device.clone(),
                 instance.clone(),
                 adapter.clone(),
-            ))),
-        }
-    }
-
-    /// Создаёт materializer с test double-ом ровно на unsafe importer boundary.
-    #[cfg(test)]
-    fn new_with_importer(
-        resource_provider: PresentFrameResourceProviderHandle,
-        importer: impl DmaBufTextureImporter + 'static,
-    ) -> Self {
-        Self {
-            resource_provider,
-            texture_cache: Mutex::new(DmaBufWgpuTextureCache::new(importer)),
-        }
+                queue.clone(),
+            ),
+            cache_capacity,
+        )
     }
 }
 
-impl WgpuFrameTextureViewMaterializer for DmaBufWgpuFrameMaterializer {
-    fn try_texture_view_lookup(&self, frame: &DecodedFrame) -> WgpuFrameTextureViewLookup {
-        let handle = frame.resource_handle;
-        let provider_lookup = self
-            .resource_provider
-            .try_resource_descriptor_lookup(handle);
-        let provider_wait = provider_lookup.resource_pool_lock_wait();
+impl<I: DmaBufTextureImporter> DmaBufWgpuFrameMaterializer<I> {
+    /// Создаёт materializer вокруг конкретного importer-а (production или fake).
+    pub(super) fn new_with_importer(
+        resource_provider: PresentFrameResourceProviderHandle,
+        importer: I,
+        cache_capacity: DmaBufImportCacheCapacity,
+    ) -> Self {
+        Self {
+            resource_provider,
+            importer,
+            texture_cache: Mutex::new(DmaBufTextureCache::new(cache_capacity)),
+            import_counters: Mutex::new(ImportCounters::default()),
+        }
+    }
 
-        let descriptor = match provider_lookup {
-            PresentFrameResourceDescriptorLookup::Ready { descriptor, .. } => descriptor,
-            PresentFrameResourceDescriptorLookup::Busy { .. } => {
-                return WgpuFrameTextureViewLookup::Busy {
-                    texture_pool_lock_wait: provider_wait,
-                };
+    /// Ёмкость кэша, с которой создан materializer (для `recreate_for_renderer`).
+    fn cache_capacity(&self) -> DmaBufImportCacheCapacity {
+        self.texture_cache
+            .lock()
+            .map(|cache| cache.capacity())
+            .unwrap_or_else(|_| DmaBufImportCacheCapacity::matching_surface_pool(1))
+    }
+
+    /// Снимок счётчиков кэша и импортов для диагностики/тестов.
+    ///
+    /// Poisoned mutex (паника на UI-потоке) даёт пустой снимок с warn-ом: сам
+    /// materializer в таком состоянии уже возвращает `Error` на каждый кадр.
+    pub(super) fn import_stats(&self) -> DmaBufImportStats {
+        let cache = self.texture_cache.lock().map_or_else(
+            |error| {
+                tracing::warn!(error = %error, "DMA-BUF texture cache mutex poisoned; stats unavailable");
+                DmaBufImportCacheSnapshot::default()
+            },
+            |cache| cache.snapshot(),
+        );
+        let counters = self.import_counters.lock().map_or_else(
+            |error| {
+                tracing::warn!(error = %error, "DMA-BUF import counters mutex poisoned; stats unavailable");
+                ImportCounters::default()
+            },
+            |counters| *counters,
+        );
+        DmaBufImportStats {
+            cache,
+            imports_performed: counters.imports_performed,
+            import_failures: counters.import_failures,
+            image_reuse_enabled: self.importer.supports_image_reuse(),
+        }
+    }
+
+    /// Политика попаданий кэша: между кадрами только при доказанной синхронизации.
+    fn reuse_policy(&self) -> DmaBufTextureReusePolicy {
+        if self.importer.supports_image_reuse() {
+            DmaBufTextureReusePolicy::AcrossFrames
+        } else {
+            DmaBufTextureReusePolicy::SameFrameHandleOnly
+        }
+    }
+
+    /// Полный путь materialization кадра: identity → кэш → (промах) descriptor → импорт.
+    pub(super) fn materialize_frame(
+        &self,
+        frame: &DecodedFrame,
+    ) -> DmaBufMaterialization<I::Texture> {
+        let handle = frame.resource_handle;
+
+        // Шаг 1: дешёвая идентичность без dup fd.
+        let identity_lookup = self.resource_provider.try_resource_identity_lookup(handle);
+        let mut lock_wait = identity_lookup.resource_pool_lock_wait();
+        let known_identity = match identity_lookup {
+            PresentFrameResourceIdentityLookup::Ready {
+                identity: FrameResourceIdentity::DmaBuf(identity),
+                ..
+            } => Some(identity),
+            PresentFrameResourceIdentityLookup::Unsupported => None,
+            PresentFrameResourceIdentityLookup::Busy { .. } => {
+                return DmaBufMaterialization::Busy { lock_wait };
             }
-            PresentFrameResourceDescriptorLookup::Missing { .. } => {
-                return WgpuFrameTextureViewLookup::Missing {
-                    texture_pool_lock_wait: provider_wait,
-                };
+            PresentFrameResourceIdentityLookup::Missing { .. } => {
+                return DmaBufMaterialization::Missing { lock_wait };
             }
-            PresentFrameResourceDescriptorLookup::Fatal { .. } => {
-                return WgpuFrameTextureViewLookup::Error {
-                    texture_pool_lock_wait: provider_wait,
-                };
+            PresentFrameResourceIdentityLookup::Fatal { .. } => {
+                return DmaBufMaterialization::Error { lock_wait };
             }
         };
 
-        if let Some(unsupported_lookup) =
-            unsupported_lookup_for_non_dma_buf_descriptor(&descriptor, provider_wait)
+        // Шаг 2: кэш. Lock держится до конца импорта, чтобы один промах дал один импорт.
+        let cache_lock_started_at = Instant::now();
+        let mut texture_cache = match self.texture_cache.try_lock() {
+            Ok(texture_cache) => texture_cache,
+            Err(TryLockError::WouldBlock) => {
+                return DmaBufMaterialization::Busy {
+                    lock_wait: lock_wait.saturating_add(cache_lock_started_at.elapsed()),
+                };
+            }
+            Err(TryLockError::Poisoned(error)) => {
+                tracing::warn!(error = %error, "WGPU DMA-BUF texture cache mutex poisoned");
+                return DmaBufMaterialization::Error {
+                    lock_wait: lock_wait.saturating_add(cache_lock_started_at.elapsed()),
+                };
+            }
+        };
+        lock_wait = lock_wait.saturating_add(cache_lock_started_at.elapsed());
+        let reuse_policy = self.reuse_policy();
+        if let Some(identity) = &known_identity
+            && let Some(texture) = texture_cache.lookup(identity, handle, reuse_policy)
         {
-            return unsupported_lookup;
+            // Попадание не отменяет проверку контракта кадра: буфер тот же, но кадр
+            // мог прийти с другим coded size или layout contract-ом.
+            return match validate_cached_image_against_frame(frame, identity) {
+                Ok(()) => DmaBufMaterialization::Ready { texture, lock_wait },
+                Err(unsupported) => DmaBufMaterialization::Unsupported {
+                    reason: unsupported,
+                    lock_wait,
+                },
+            };
         }
 
-        let FrameResourceDescriptor::DmaBuf(dma_buf_descriptor) = &descriptor else {
-            unreachable!("non-DMA-BUF descriptor was rejected above");
+        // Шаг 3: промах — descriptor с dup fd, контракт, импорт.
+        let descriptor_lookup = self
+            .resource_provider
+            .try_resource_descriptor_lookup(handle);
+        lock_wait = lock_wait.saturating_add(descriptor_lookup.resource_pool_lock_wait());
+        let descriptor = match descriptor_lookup {
+            PresentFrameResourceDescriptorLookup::Ready { descriptor, .. } => descriptor,
+            PresentFrameResourceDescriptorLookup::Busy { .. } => {
+                return DmaBufMaterialization::Busy { lock_wait };
+            }
+            PresentFrameResourceDescriptorLookup::Missing { .. } => {
+                return DmaBufMaterialization::Missing { lock_wait };
+            }
+            PresentFrameResourceDescriptorLookup::Fatal { .. } => {
+                return DmaBufMaterialization::Error { lock_wait };
+            }
+        };
+        let dma_buf_descriptor = match descriptor {
+            FrameResourceDescriptor::DmaBuf(dma_buf_descriptor) => dma_buf_descriptor,
+            FrameResourceDescriptor::HostPlanar(_) => {
+                return DmaBufMaterialization::Unsupported {
+                    reason: WgpuFrameMaterializationUnsupportedReason::HostPlanarRequiresUploadMaterializer,
+                    lock_wait,
+                };
+            }
         };
         if let Err(rejection) = validate_dma_buf_descriptor_against_frame_contract(
             frame.frame_contract,
             frame.width,
             frame.height,
-            dma_buf_descriptor,
+            &dma_buf_descriptor,
         ) {
-            return WgpuFrameTextureViewLookup::Unsupported {
+            return DmaBufMaterialization::Unsupported {
                 reason: WgpuFrameMaterializationUnsupportedReason::DmaBufDescriptorRejected(
                     rejection,
                 ),
-                texture_pool_lock_wait: provider_wait,
+                lock_wait,
             };
         }
 
-        let cache_lock_started_at = Instant::now();
-        let mut texture_cache = match self.texture_cache.try_lock() {
-            Ok(texture_cache) => texture_cache,
-            Err(TryLockError::WouldBlock) => {
-                return WgpuFrameTextureViewLookup::Busy {
-                    texture_pool_lock_wait: provider_wait
-                        .saturating_add(cache_lock_started_at.elapsed()),
-                };
-            }
-            Err(TryLockError::Poisoned(error)) => {
-                tracing::warn!(error = %error, "WGPU DMA-BUF texture cache mutex poisoned");
-                return WgpuFrameTextureViewLookup::Error {
-                    texture_pool_lock_wait: provider_wait
-                        .saturating_add(cache_lock_started_at.elapsed()),
-                };
+        // Provider без identity-поддержки: ключ снимается с descriptor-а, и кэш
+        // проверяется только теперь (у provider-а с identity промах уже засчитан).
+        let identity = match known_identity {
+            Some(identity) => identity,
+            None => {
+                let identity = Arc::new(dma_buf_descriptor.identity());
+                if let Some(texture) = texture_cache.lookup(&identity, handle, reuse_policy) {
+                    return DmaBufMaterialization::Ready { texture, lock_wait };
+                }
+                identity
             }
         };
-        let total_lock_wait = provider_wait.saturating_add(cache_lock_started_at.elapsed());
 
-        match texture_cache.materialize(handle, descriptor) {
-            Ok(views) => WgpuFrameTextureViewLookup::Ready {
-                views,
-                texture_pool_lock_wait: total_lock_wait,
+        // Старые image уничтожаются ДО создания нового, чтобы пиковая память не
+        // держала два набора буферов при смене формата.
+        texture_cache.prepare_for_insert(&identity);
+        match self.import_once(&dma_buf_descriptor) {
+            Ok(texture) => DmaBufMaterialization::Ready {
+                texture: texture_cache.insert(identity, handle, texture),
+                lock_wait,
             },
-            Err(error) => texture_view_lookup_after_import_failure(handle, error, total_lock_wait),
+            Err(error) => {
+                tracing::warn!(
+                    handle_id = handle.0,
+                    error = %error,
+                    "WGPU DMA-BUF import failed for decoded frame"
+                );
+                DmaBufMaterialization::Error { lock_wait }
+            }
+        }
+    }
+
+    /// Единственная точка вызова platform import-а со счётчиками.
+    fn import_once(&self, descriptor: &DmaBufFrameDescriptor) -> anyhow::Result<I::Texture> {
+        let result = self.importer.import(descriptor);
+        match self.import_counters.lock() {
+            Ok(mut counters) => {
+                counters.imports_performed = counters.imports_performed.saturating_add(1);
+                if result.is_err() {
+                    counters.import_failures = counters.import_failures.saturating_add(1);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "DMA-BUF import counters mutex poisoned; import not counted");
+            }
+        }
+        result
+    }
+}
+
+/// Сверяет кадр с кэшированным image той же идентичности (layout + coded size).
+fn validate_cached_image_against_frame(
+    frame: &DecodedFrame,
+    identity: &DmaBufFrameIdentity,
+) -> Result<(), WgpuFrameMaterializationUnsupportedReason> {
+    validate_dma_buf_identity_against_frame_contract(
+        frame.frame_contract,
+        frame.width,
+        frame.height,
+        identity,
+    )
+    .map_err(WgpuFrameMaterializationUnsupportedReason::DmaBufDescriptorRejected)
+}
+
+impl WgpuFrameTextureViewMaterializer for DmaBufWgpuFrameMaterializer {
+    fn try_texture_view_lookup(&self, frame: &DecodedFrame) -> WgpuFrameTextureViewLookup {
+        match self.materialize_frame(frame) {
+            DmaBufMaterialization::Ready { texture, lock_wait } => {
+                WgpuFrameTextureViewLookup::Ready {
+                    views: WgpuFrameTextureViews::from_imported_texture(texture),
+                    texture_pool_lock_wait: lock_wait,
+                }
+            }
+            DmaBufMaterialization::Busy { lock_wait } => WgpuFrameTextureViewLookup::Busy {
+                texture_pool_lock_wait: lock_wait,
+            },
+            DmaBufMaterialization::Missing { lock_wait } => WgpuFrameTextureViewLookup::Missing {
+                texture_pool_lock_wait: lock_wait,
+            },
+            DmaBufMaterialization::Unsupported { reason, lock_wait } => {
+                WgpuFrameTextureViewLookup::Unsupported {
+                    reason,
+                    texture_pool_lock_wait: lock_wait,
+                }
+            }
+            DmaBufMaterialization::Error { lock_wait } => WgpuFrameTextureViewLookup::Error {
+                texture_pool_lock_wait: lock_wait,
+            },
         }
     }
 
@@ -146,17 +387,55 @@ impl WgpuFrameTextureViewMaterializer for DmaBufWgpuFrameMaterializer {
         instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
-        _queue: &wgpu::Queue,
+        queue: &wgpu::Queue,
     ) -> Arc<dyn WgpuFrameTextureViewMaterializer> {
+        // Новый renderer = новый device: кэш старых image не переносится.
         Arc::new(Self::new(
             instance,
             adapter,
             device,
+            queue,
             self.resource_provider.clone(),
+            self.cache_capacity(),
         ))
+    }
+
+    fn dma_buf_import_stats(&self) -> Option<DmaBufImportStats> {
+        Some(self.import_stats())
     }
 }
 
+/// Internal boundary между логикой materializer-а и unsafe platform import-ом.
+///
+/// Позволяет тесту доказать порядок identity → кэш → контракт → импорт без GPU.
+/// Trait `pub` только потому, что он параметр публичного типа materializer-а;
+/// наружу из crate он не экспортируется.
+pub trait DmaBufTextureImporter: Send + Sync {
+    /// Импортированный image; `ImportedDmaBufTexture` в production.
+    type Texture: Send + Sync;
+
+    /// Импортирует один уже полностью проверенный neutral DMA-BUF descriptor.
+    fn import(&self, descriptor: &DmaBufFrameDescriptor) -> anyhow::Result<Self::Texture>;
+
+    /// `true`, если импортированный image можно показывать повторно после новой
+    /// записи декодера (importer оформляет явную синхронизацию).
+    fn supports_image_reuse(&self) -> bool;
+}
+
+impl DmaBufTextureImporter for DmaBufImporter {
+    type Texture = ImportedDmaBufTexture;
+
+    fn import(&self, descriptor: &DmaBufFrameDescriptor) -> anyhow::Result<ImportedDmaBufTexture> {
+        self.import_exported_dma_buf_image(descriptor)
+    }
+
+    fn supports_image_reuse(&self) -> bool {
+        self.external_sync_support().allows_image_reuse()
+    }
+}
+
+/// HostPlanar descriptor не подходит DMA-BUF materializer-у (общий helper для тестов facade).
+#[cfg(test)]
 pub(super) fn unsupported_lookup_for_non_dma_buf_descriptor(
     descriptor: &FrameResourceDescriptor,
     texture_pool_lock_wait: Duration,
@@ -170,393 +449,5 @@ pub(super) fn unsupported_lookup_for_non_dma_buf_descriptor(
     }
 }
 
-/// Bounded renderer-side cache imported DMA-BUF textures.
-struct DmaBufWgpuTextureCache {
-    /// Vulkan/WGPU importer владеет unsafe platform import code.
-    importer: Box<dyn DmaBufTextureImporter>,
-
-    /// FIFO cache по frame resource handle; views держат storage через Arc guard.
-    cached_textures: VecDeque<CachedDmaBufTexture>,
-
-    /// Верхняя граница renderer-owned imported textures.
-    capacity: usize,
-}
-
-impl DmaBufWgpuTextureCache {
-    /// Default cache size совпадает с bounded decoder/resource pool порядком.
-    const DEFAULT_CAPACITY: usize = 24;
-
-    /// Создаёт cache вокруг renderer-owned importer-а.
-    fn new(importer: impl DmaBufTextureImporter + 'static) -> Self {
-        Self {
-            importer: Box::new(importer),
-            cached_textures: VecDeque::with_capacity(Self::DEFAULT_CAPACITY),
-            capacity: Self::DEFAULT_CAPACITY,
-        }
-    }
-
-    /// Возвращает cached views или импортирует descriptor как renderer error boundary.
-    fn materialize(
-        &mut self,
-        handle: FrameResourceHandle,
-        descriptor: FrameResourceDescriptor,
-    ) -> anyhow::Result<WgpuFrameTextureViews> {
-        if let Some(cached_texture) = self
-            .cached_textures
-            .iter()
-            .find(|cached_texture| cached_texture.handle == handle)
-        {
-            return Ok(WgpuFrameTextureViews::from_imported_texture(
-                cached_texture.imported_texture.clone(),
-            ));
-        }
-
-        let FrameResourceDescriptor::DmaBuf(dma_buf_descriptor) = descriptor else {
-            bail!("WGPU DMA-BUF texture cache received non-DMA-BUF descriptor");
-        };
-        let imported_texture = Arc::new(self.importer.import(&dma_buf_descriptor)?);
-        let views = WgpuFrameTextureViews::from_imported_texture(imported_texture.clone());
-
-        if self.cached_textures.len() >= self.capacity {
-            self.cached_textures.pop_front();
-        }
-        self.cached_textures.push_back(CachedDmaBufTexture {
-            handle,
-            imported_texture,
-        });
-
-        Ok(views)
-    }
-}
-
-/// Internal boundary позволяет тесту доказать, что contract rejection предшествует unsafe import-у.
-trait DmaBufTextureImporter: Send {
-    /// Импортирует один уже полностью проверенный neutral DMA-BUF descriptor.
-    fn import(
-        &self,
-        descriptor: &video_core::DmaBufFrameDescriptor,
-    ) -> anyhow::Result<ImportedDmaBufTexture>;
-}
-
-impl DmaBufTextureImporter for DmaBufImporter {
-    fn import(
-        &self,
-        descriptor: &video_core::DmaBufFrameDescriptor,
-    ) -> anyhow::Result<ImportedDmaBufTexture> {
-        self.import_exported_dma_buf_image(descriptor)
-    }
-}
-
-/// Один cached renderer import.
-struct CachedDmaBufTexture {
-    /// Frame resource handle, для которого выполнен import.
-    handle: FrameResourceHandle,
-
-    /// Imported storage и typed plane views.
-    imported_texture: Arc<ImportedDmaBufTexture>,
-}
-
 #[cfg(test)]
-mod tests {
-    use std::fs::File;
-    use std::os::fd::OwnedFd;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Duration;
-
-    use codec_core::{VideoColorMetadata, VideoDisplayOrientation};
-    use video_backend_api::{
-        PresentFrameResourceDescriptorLookup, PresentFrameResourceProvider,
-        PresentFrameResourceProviderHandle, PresentFrameResourceProviderLookup,
-    };
-    use video_core::{
-        DecodedFrame, DmaBufDescriptorRejection, DmaBufFrameDescriptor, DmaBufFrameExportLayout,
-        DmaBufLayerDescriptor, DmaBufObjectDescriptor, DmaBufObjectIdentity,
-        FrameResourceDescriptor, FrameResourceHandle, VideoFrameDiagnostics,
-        validate_dma_buf_descriptor_import_topology,
-    };
-    use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
-    use video_present_core::{
-        SharedVideoFrameReleaseSink, VideoFrameLease, VideoFrameLeaseConfig, VideoFrameRelease,
-        VideoFrameReleaseOutcome, VideoFrameReleaseSink,
-    };
-
-    use super::{
-        DmaBufTextureImporter, DmaBufWgpuFrameMaterializer, ImportedDmaBufTexture,
-        WgpuFrameMaterializationUnsupportedReason, WgpuFrameTextureViewLookup,
-        WgpuFrameTextureViewMaterializer,
-    };
-
-    /// Параметры descriptor-а, публикуемого fake provider-ом.
-    #[derive(Clone, Copy)]
-    struct DescriptorScenario {
-        /// Фактический layout экспортированного DMA-BUF.
-        export_layout: DmaBufFrameExportLayout,
-        /// Фактическая coded ширина descriptor-а.
-        width: u32,
-        /// Фактическая coded высота descriptor-а.
-        height: u32,
-    }
-
-    /// Ожидаемое поведение materializer-а на importer boundary.
-    enum ExpectedImportBoundary {
-        /// Typed contract rejection должен остановить путь до importer-а.
-        RejectedBeforeImport(DmaBufDescriptorRejection),
-        /// Полностью совместимый descriptor должен дойти до importer-а.
-        ReachesImporter,
-    }
-
-    /// Recording importer доказывает достижение unsafe boundary без зависимости от GPU.
-    struct RecordingFailingImporter {
-        /// Число попыток передать descriptor importer-у.
-        import_calls: Arc<AtomicUsize>,
-    }
-
-    impl DmaBufTextureImporter for RecordingFailingImporter {
-        fn import(
-            &self,
-            _descriptor: &DmaBufFrameDescriptor,
-        ) -> anyhow::Result<ImportedDmaBufTexture> {
-            self.import_calls.fetch_add(1, Ordering::SeqCst);
-            Err(anyhow::anyhow!(
-                "recording importer stops before unsafe Vulkan/HAL import"
-            ))
-        }
-    }
-
-    /// Provider создаёт owned descriptor на каждый lookup и записывает release calls.
-    struct RecordingDescriptorProvider {
-        /// Единственный допустимый resource handle тестового кадра.
-        expected_handle: FrameResourceHandle,
-        /// Descriptor scenario для текущего теста.
-        scenario: DescriptorScenario,
-        /// Счётчик фактических provider release calls.
-        release_calls: Arc<AtomicUsize>,
-    }
-
-    impl PresentFrameResourceProvider for RecordingDescriptorProvider {
-        fn resource_lookup(
-            &self,
-            handle: FrameResourceHandle,
-        ) -> PresentFrameResourceProviderLookup {
-            assert_eq!(handle, self.expected_handle);
-            PresentFrameResourceProviderLookup::Ready {
-                resource_pool_lock_wait: Duration::ZERO,
-            }
-        }
-
-        fn resource_descriptor_lookup(
-            &self,
-            handle: FrameResourceHandle,
-        ) -> PresentFrameResourceDescriptorLookup {
-            assert_eq!(handle, self.expected_handle);
-            PresentFrameResourceDescriptorLookup::Ready {
-                descriptor: FrameResourceDescriptor::DmaBuf(descriptor_for_scenario(self.scenario)),
-                resource_pool_lock_wait: Duration::ZERO,
-            }
-        }
-
-        fn try_resource_descriptor_lookup(
-            &self,
-            handle: FrameResourceHandle,
-        ) -> PresentFrameResourceDescriptorLookup {
-            self.resource_descriptor_lookup(handle)
-        }
-
-        fn release_frame(&self, handle: FrameResourceHandle) {
-            assert_eq!(handle, self.expected_handle);
-            self.release_calls.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
-    /// Release sink сохраняет production ownership: lease освобождает provider resource.
-    struct ForwardingReleaseSink;
-
-    impl VideoFrameReleaseSink for ForwardingReleaseSink {
-        fn release_frame(&self, release: VideoFrameRelease) -> VideoFrameReleaseOutcome {
-            let provider = release
-                .resource_provider()
-                .expect("DMA-BUF lease must retain its resource provider");
-            provider.release_frame(release.resource_handle());
-            VideoFrameReleaseOutcome::Accepted
-        }
-    }
-
-    /// Открывает harmless owned fd, который recording importer не передаёт Vulkan-у.
-    fn test_owned_fd() -> OwnedFd {
-        File::open("/dev/null")
-            .expect("/dev/null must be available for a DMA-BUF test fd")
-            .into()
-    }
-
-    /// Создаёт topology-valid composed либо separate NV12 descriptor.
-    fn descriptor_for_scenario(scenario: DescriptorScenario) -> DmaBufFrameDescriptor {
-        let chroma_offset = scenario.width.saturating_mul(scenario.height);
-        let layers = match scenario.export_layout {
-            DmaBufFrameExportLayout::ComposedLayers => vec![DmaBufLayerDescriptor {
-                drm_format: 0x3231_564e,
-                num_planes: 2,
-                object_index: [0, 0, 0, 0],
-                offset: [0, chroma_offset, 0, 0],
-                pitch: [scenario.width, scenario.width, 0, 0],
-            }],
-            DmaBufFrameExportLayout::SeparateLayers => vec![
-                DmaBufLayerDescriptor {
-                    drm_format: 0x2020_3852,
-                    num_planes: 1,
-                    object_index: [0, 0, 0, 0],
-                    offset: [0, 0, 0, 0],
-                    pitch: [scenario.width, 0, 0, 0],
-                },
-                DmaBufLayerDescriptor {
-                    drm_format: 0x3838_5247,
-                    num_planes: 1,
-                    object_index: [0, 0, 0, 0],
-                    offset: [chroma_offset, 0, 0, 0],
-                    pitch: [scenario.width, 0, 0, 0],
-                },
-            ],
-        };
-
-        DmaBufFrameDescriptor {
-            resource_id: 1600,
-            fourcc: 0x3231_564e,
-            export_layout: scenario.export_layout,
-            width: scenario.width,
-            height: scenario.height,
-            objects: vec![DmaBufObjectDescriptor {
-                fd: test_owned_fd(),
-                size: 16 * 1024 * 1024,
-                drm_format_modifier: 0,
-                identity: DmaBufObjectIdentity {
-                    device: 1,
-                    inode: 2,
-                    special_device: 3,
-                },
-            }],
-            layers,
-        }
-    }
-
-    /// Создаёт decoded frame с composed NV12 contract-ом и coded size 640x360.
-    fn decoded_frame(resource_handle: FrameResourceHandle) -> DecodedFrame {
-        DecodedFrame {
-            generation: 16,
-            pts: Duration::from_millis(16),
-            frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
-            width: 640,
-            height: 360,
-            render_width: 640,
-            render_height: 360,
-            display_orientation: VideoDisplayOrientation::Identity,
-            color: VideoColorMetadata::sdr_bt709_limited(),
-            resource_handle,
-            diagnostics: VideoFrameDiagnostics::default(),
-        }
-    }
-
-    /// Запускает production lookup boundary и проверяет importer/release accounting.
-    fn run_materializer_scenario(
-        scenario: DescriptorScenario,
-        expected_boundary: ExpectedImportBoundary,
-    ) {
-        let resource_handle = FrameResourceHandle(1600);
-        let descriptor = descriptor_for_scenario(scenario);
-        assert_eq!(
-            validate_dma_buf_descriptor_import_topology(&descriptor),
-            Ok(()),
-            "scenario must isolate frame-contract validation from topology validation"
-        );
-
-        let import_calls = Arc::new(AtomicUsize::new(0));
-        let release_calls = Arc::new(AtomicUsize::new(0));
-        let provider = PresentFrameResourceProviderHandle::new(RecordingDescriptorProvider {
-            expected_handle: resource_handle,
-            scenario,
-            release_calls: release_calls.clone(),
-        });
-        let materializer = DmaBufWgpuFrameMaterializer::new_with_importer(
-            provider.clone(),
-            RecordingFailingImporter {
-                import_calls: import_calls.clone(),
-            },
-        );
-        let release_sink: SharedVideoFrameReleaseSink = Arc::new(ForwardingReleaseSink);
-        let lease = VideoFrameLease::new(
-            VideoFrameLeaseConfig::new(16, decoded_frame(resource_handle), release_sink)
-                .with_resource_provider(provider),
-        );
-
-        let lookup = materializer.try_texture_view_lookup(lease.decoded_frame());
-        match expected_boundary {
-            ExpectedImportBoundary::RejectedBeforeImport(expected_rejection) => {
-                assert!(matches!(
-                    lookup,
-                    WgpuFrameTextureViewLookup::Unsupported {
-                        reason: WgpuFrameMaterializationUnsupportedReason::DmaBufDescriptorRejected(
-                            actual_rejection
-                        ),
-                        ..
-                    } if actual_rejection == expected_rejection
-                ));
-                assert_eq!(import_calls.load(Ordering::SeqCst), 0);
-            }
-            ExpectedImportBoundary::ReachesImporter => {
-                assert!(matches!(lookup, WgpuFrameTextureViewLookup::Error { .. }));
-                assert_eq!(import_calls.load(Ordering::SeqCst), 1);
-            }
-        }
-
-        assert_eq!(release_calls.load(Ordering::SeqCst), 0);
-        drop(lease);
-        assert_eq!(release_calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn wrong_coded_dimensions_are_rejected_before_dma_buf_import() {
-        run_materializer_scenario(
-            DescriptorScenario {
-                export_layout: DmaBufFrameExportLayout::ComposedLayers,
-                width: 800,
-                height: 450,
-            },
-            ExpectedImportBoundary::RejectedBeforeImport(
-                DmaBufDescriptorRejection::CodedSizeMismatch {
-                    expected_width: 640,
-                    expected_height: 360,
-                    actual_width: 800,
-                    actual_height: 450,
-                },
-            ),
-        );
-    }
-
-    #[test]
-    fn incompatible_layout_is_rejected_before_dma_buf_import() {
-        run_materializer_scenario(
-            DescriptorScenario {
-                export_layout: DmaBufFrameExportLayout::SeparateLayers,
-                width: 640,
-                height: 360,
-            },
-            ExpectedImportBoundary::RejectedBeforeImport(
-                DmaBufDescriptorRejection::ImageLayoutMismatch {
-                    expected: DmaBufImageLayout::ComposedLayers,
-                    actual: DmaBufImageLayout::SeparateLayers,
-                },
-            ),
-        );
-    }
-
-    #[test]
-    fn valid_descriptor_reaches_dma_buf_import_without_release_regression() {
-        run_materializer_scenario(
-            DescriptorScenario {
-                export_layout: DmaBufFrameExportLayout::ComposedLayers,
-                width: 640,
-                height: 360,
-            },
-            ExpectedImportBoundary::ReachesImporter,
-        );
-    }
-}
+mod tests;

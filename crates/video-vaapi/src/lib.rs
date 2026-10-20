@@ -21,8 +21,8 @@ pub use decoder::VaapiVideoDecoder;
 pub use decoder_thread::{
     DecodePacket, DecodeThreadBackpressureReason, DecodeThreadError, DecodeThreadSendError,
     VideoDecodeThread, VideoDecodeThreadConfig, VideoDecoderControlChannelPressureStats,
-    VideoFrameResourceDescriptorLookup, VideoFrameResourceLockDiagnostics,
-    VideoFrameResourceLookup, VideoFrameResourceProvider,
+    VideoFrameResourceDescriptorLookup, VideoFrameResourceIdentityLookup,
+    VideoFrameResourceLockDiagnostics, VideoFrameResourceLookup, VideoFrameResourceProvider,
 };
 pub use player_core_adapter::VaapiVideoBackendFactory;
 pub use probe::{VaapiCapabilityProvider, probe_vaapi_capabilities};
