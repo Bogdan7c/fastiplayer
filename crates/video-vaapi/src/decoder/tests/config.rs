@@ -40,3 +40,50 @@ fn suppressed_reclaim_default_bound_uses_surface_accounting() {
         "The screen must show the surface headroom outside of reclaim queue."
     );
 }
+
+/// Правило «ноль → один» живёт в одном месте и используется всеми выводами из конфига.
+#[test]
+fn zero_surface_pool_setting_is_normalized_to_one_everywhere() {
+    assert_eq!(non_zero_or_one(0).get(), 1);
+    assert_eq!(non_zero_or_one(7).get(), 7);
+
+    let from_accounting = VaapiDecoderRuntimeConfig::from_surface_accounting(0, 0);
+    assert_eq!(from_accounting.surface_pool_frames, 1);
+    assert_eq!(from_accounting.ready_queue_frames, 1);
+    assert_eq!(from_accounting.surface_pool_frames_non_zero().get(), 1);
+
+    let normalized = VaapiDecoderRuntimeConfig {
+        surface_pool_frames: 0,
+        ready_queue_frames: 0,
+        max_suppressed_reclaim_frames: 0,
+    }
+    .normalized();
+    assert_eq!(normalized.surface_pool_frames, 1);
+    assert_eq!(normalized.ready_queue_frames, 1);
+    assert_eq!(normalized.max_suppressed_reclaim_frames, 1);
+}
+
+/// Бюджеты от поднятой ёмкости: reclaim bound считается заново от реального числа surfaces.
+#[test]
+fn effective_surface_pool_frames_rederive_the_reclaim_bound() {
+    let configured = VaapiDecoderRuntimeConfig::from_surface_accounting(2, 8).normalized();
+    assert_eq!(
+        configured.max_suppressed_reclaim_frames, 1,
+        "tiny pool → bound 1"
+    );
+
+    let raised =
+        configured.with_effective_surface_pool_frames(NonZeroUsize::new(25).expect("non-zero"));
+
+    assert_eq!(raised.surface_pool_frames, 25);
+    assert_eq!(
+        raised.ready_queue_frames, 8,
+        "ready queue bound is not touched"
+    );
+    assert_eq!(
+        raised.max_suppressed_reclaim_frames,
+        default_max_suppressed_reclaim_frames(25, 8),
+        "bound follows the effective capacity"
+    );
+    assert!(raised.max_suppressed_reclaim_frames > configured.max_suppressed_reclaim_frames);
+}

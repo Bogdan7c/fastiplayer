@@ -54,7 +54,7 @@ pub(crate) const MIN_DECODER_QUEUE_FRAMES: usize = 1;
 /// Верхний предел decoder packet/frame queues, чтобы config не стал memory cache.
 pub(crate) const MAX_DECODER_QUEUE_FRAMES: usize = 128;
 
-/// Верхний предел VA output surface descriptors.
+/// Верхний предел пула VA output surfaces.
 pub(crate) const MAX_DECODER_SURFACE_POOL_FRAMES: usize = 64;
 
 /// Верхний предел zero-copy import slots.

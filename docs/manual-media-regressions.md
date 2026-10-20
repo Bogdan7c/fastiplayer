@@ -60,6 +60,29 @@ seek нет кадров раньше decode point. PTS каждого кадр�
 который его показал (AV1 `show_existing_frame`). Возврат бага global motion вешает VCN, и Mesa
 обрывает процесс.
 
+## Ограниченный пул выходных VA surfaces (H.264)
+
+Аппаратная регрессия пула выходных VA surfaces (`video-vaapi::output_surface_pool`,
+план `user/cpu-parity/`, сессия 01). Нужен MP4 H.264 8-bit длиной не меньше 10 s и хост с
+VA-API H.264 VLD. Подходит синтетическая фикстура из
+`docs/benchmarks/tools/t480s/make_fixtures.py` (`synthetic-h264-1080p60.mp4`):
+
+```bash
+scripts/media-regression.sh \
+  --scenario h264-mp4-vaapi-surface-pool \
+  --path benchmark-fixtures/synthetic-h264-1080p60.mp4
+```
+
+Сценарий декодирует файл production decoder thread-ом со скользящим окном удержанных кадров,
+затем перестаёт отпускать кадры, пока пул не исчерпается, отпускает их, дожимает файл до EOF,
+делает seek-flush в середину и декодирует ещё 120 кадров. По счётчикам пула
+(`VideoDecodeThread::output_surface_pool_stats`) проверяется, что surfaces переиспользуются
+(создано не больше наибольшей ёмкости, а не по одной на кадр), backpressure начинается ровно при
+занятой ёмкости, ни одна поверхность не вернулась в пул с неизвестным состоянием драйвера
+(`surfaces_destroyed_not_idle == 0`), а каждый отправленный access unit показан ровно одним
+кадром (нет потери и повтора).
+Возврат к `vaCreateSurfaces` на каждый кадр роняет тест на первой фазе.
+
 Web-media/app UX is checked separately through the S42 manual runner:
 
 ```bash

@@ -21,12 +21,29 @@ struct FakeDecodedHandle {
     readiness: FakeSurfaceReadiness,
     /// Флаг защищает тест от случайного blocking `sync()` в `surface_ready()`.
     sync_called: Rc<Cell<bool>>,
+    /// Ставится в `Drop`: decoder отпустил handle. В production это момент, когда
+    /// VA surface (если её больше никто не держит) возвращается в пул.
+    released: Rc<Cell<bool>>,
+}
+
+impl Drop for FakeDecodedHandle {
+    fn drop(&mut self) {
+        self.released.set(true);
+    }
 }
 
 impl FakeDecodedHandle {
     /// Создаёт fake handle с минимальным internal VA frame descriptor-ом.
-    fn new(readiness: FakeSurfaceReadiness, sync_called: Rc<Cell<bool>>) -> Self {
-        let frame = Arc::new(InternalVaapiFrame::new(
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "cros DecodedHandle contract hands out Arc<Frame>; frame stays on one thread"
+    )]
+    fn new(
+        readiness: FakeSurfaceReadiness,
+        sync_called: Rc<Cell<bool>>,
+        released: Rc<Cell<bool>>,
+    ) -> Self {
+        let frame = Arc::new(InternalVaapiFrame::without_surface(
             cros_codecs::Resolution {
                 width: 16,
                 height: 16,
@@ -38,6 +55,7 @@ impl FakeDecodedHandle {
             frame,
             readiness,
             sync_called,
+            released,
         }
     }
 }
@@ -99,11 +117,21 @@ impl cros_codecs::decoder::DecodedHandle for FakeDecodedHandle {
 pub(crate) fn fake_decoded_frame_handle(
     readiness: FakeSurfaceReadiness,
 ) -> (VaapiDecodedFrameHandle, Rc<Cell<bool>>) {
+    let (handle, sync_called, _released) = fake_decoded_frame_handle_with_release_probe(readiness);
+    (handle, sync_called)
+}
+
+/// Как [`fake_decoded_frame_handle`], плюс флаг «decoder отпустил handle».
+pub(crate) fn fake_decoded_frame_handle_with_release_probe(
+    readiness: FakeSurfaceReadiness,
+) -> (VaapiDecodedFrameHandle, Rc<Cell<bool>>, Rc<Cell<bool>>) {
     let sync_called = Rc::new(Cell::new(false));
-    let fake_handle = FakeDecodedHandle::new(readiness, sync_called.clone());
+    let released = Rc::new(Cell::new(false));
+    let fake_handle = FakeDecodedHandle::new(readiness, sync_called.clone(), released.clone());
 
     (
         VaapiDecodedFrameHandle::new(Box::new(fake_handle)),
         sync_called,
+        released,
     )
 }

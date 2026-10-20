@@ -32,20 +32,18 @@ fn poisoned_resource_pool_returns_typed_fatal_error_on_every_lock_attempt() {
 /// Проверяет discard helper: flush tail frame синхронизируется и не попадает в reclaim queue.
 #[test]
 fn sync_discard_ready_frame_syncs_and_returns_handle_to_pool() {
-    let mut frame_pool = reclaim_frame_pool_for_tests();
-    let initial_free_frames = frame_pool.num_free();
-    let (handle, sync_called) = fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
+    let (handle, sync_called, handle_released) =
+        fake_decoded_frame_handle_with_release_probe(FakeSurfaceReadiness::Ready(false));
 
-    sync_discard_ready_frame(&mut frame_pool, handle, "flush")
+    sync_discard_ready_frame(handle, "flush")
         .expect("flush discard must sync-lash ready tail frame");
 
     assert!(
         sync_called.get(),
         "discard path muster blocking sync beforehand release"
     );
-    assert_eq!(
-        frame_pool.num_free(),
-        initial_free_frames + 1,
+    assert!(
+        handle_released.get(),
         "discard path should be returned backing frame into pool"
     );
 }
@@ -55,7 +53,6 @@ fn sync_discard_ready_frame_syncs_and_returns_handle_to_pool() {
 fn overflow_forces_sync_of_oldest_only_as_fallback() {
     let mut suppressed_reclaim_queue = VecDeque::new();
     let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
-    let mut frame_pool = reclaim_frame_pool_for_tests();
     let (oldest_handle, oldest_sync_called) =
         fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
     let (incoming_handle, incoming_sync_called) =
@@ -64,7 +61,6 @@ fn overflow_forces_sync_of_oldest_only_as_fallback() {
     enqueue_suppressed_frame_for_reclaim_in_queue(
         &mut suppressed_reclaim_queue,
         &mut suppressed_reclaim_counters,
-        &mut frame_pool,
         reclaim_capacity_for_tests(1),
         oldest_handle,
         "overflow_test_first",
@@ -77,7 +73,6 @@ fn overflow_forces_sync_of_oldest_only_as_fallback() {
     enqueue_suppressed_frame_for_reclaim_in_queue(
         &mut suppressed_reclaim_queue,
         &mut suppressed_reclaim_counters,
-        &mut frame_pool,
         reclaim_capacity_for_tests(1),
         incoming_handle,
         "overflow_test_second",

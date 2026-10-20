@@ -131,7 +131,9 @@ pub struct VideoConfig {
     )]
     pub decoder_ready_queue_frames: usize,
 
-    /// Количество VA output surface descriptors для hardware decoder-а.
+    /// Потолок числа VA output surfaces, которые hardware decoder переиспользует.
+    ///
+    /// Если кодеку стрима нужно больше (DPB + запас), decoder поднимает пул до минимума кодека.
     #[setting(
         id = "video.decoder_surface_pool_frames",
         path = "video.decoder_surface_pool_frames",
@@ -141,7 +143,7 @@ pub struct VideoConfig {
         label_id = "settings.video.decoder_surface_pool_frames.label",
         label_ru = "Decoder surface pool",
         description_id = "settings.video.decoder_surface_pool_frames.description",
-        description_ru = "Number of VA output surface descriptors for the hardware decoder.",
+        description_ru = "Maximum number of VA output surfaces the hardware decoder reuses (raised to the codec minimum if lower).",
         editor = "integer",
         min = crate::validation::MIN_DECODER_QUEUE_FRAMES,
         max = crate::validation::MAX_DECODER_SURFACE_POOL_FRAMES,

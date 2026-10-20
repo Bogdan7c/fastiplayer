@@ -178,7 +178,10 @@ where
                 );
             }
             Err(VaapiAdapterDecodeError::NotEnoughOutputBuffers(needed)) => {
-                warn!(
+                // Пул выходных surfaces ограничен: исчерпание — штатный backpressure
+                // (decoder thread повторит packet после release), поэтому debug, а не
+                // warn на каждую попытку. Частота видна в `OutputSurfacePoolStats`.
+                debug!(
                     pts_ms = pts_ms,
                     keyframe = keyframe,
                     attempt = attempt,
@@ -191,6 +194,15 @@ where
                 report.record_drain(drain_report, drain_start.elapsed());
                 report.output_backpressured = true;
                 return Ok(report);
+            }
+            Err(VaapiAdapterDecodeError::OutputSurfaceAllocation(message)) => {
+                // Драйвер не создал surface при свободной ёмкости пула: повтор того же
+                // packet-а не поможет. Decoder останавливается fatal-ошибкой surface
+                // lifecycle, как и раньше, когда `vaCreateSurfaces` падал внутри cros
+                // (тогда — паникой), а не пропускает packet как recoverable.
+                return Err(anyhow::Error::new(VaapiSurfaceLifecycleError::new(
+                    format!("{codec_label} output surface allocation failed: {message}"),
+                )));
             }
             Err(VaapiAdapterDecodeError::ParseFrameError(message)) => {
                 report.skipped_packet = true;
@@ -413,7 +425,7 @@ impl super::VaapiVideoDecoder {
             pts_ms,
             reason, "Discarding decoder-ready frame without DMA-BUF export"
         );
-        sync_discard_ready_frame(&mut self.frame_pool, handle, reason)?;
+        sync_discard_ready_frame(handle, reason)?;
         Ok(())
     }
 
@@ -422,7 +434,7 @@ impl super::VaapiVideoDecoder {
     /// Этот event меняет lifecycle decoder-owned resources, поэтому его нельзя
     /// игнорировать даже при seek flush cleanup.
     fn handle_format_changed_event(&mut self) -> Result<()> {
-        info!("Format changed, invalidating resource pool and frame pool");
+        info!("Format changed, invalidating resource pool and output surface pool");
 
         // Retained candidate мог относиться к старому surface/format contract.
         self.force_drain_preroll_candidate_and_suppressed_surfaces("format_changed")?;
@@ -433,46 +445,11 @@ impl super::VaapiVideoDecoder {
         self.release_decoder_owned_ready_frames("format_changed")?;
         self.invalidate_idle_resource_pool_after_format_change()?;
 
-        // Пересоздаём frame pool под новое разрешение/формат.
+        // Переключаем пул выходных surfaces на новое разрешение/формат.
         // `stream_info()` уже обновлён внутри cros-codecs перед event-ом.
-        if let Some(stream_info) = self.adapter.stream_info() {
-            let res = stream_info.coded_resolution;
-            let rt_format = match rt_format_for_decoded_format(stream_info.format) {
-                Ok(rt_format) => rt_format,
-                Err(error) => {
-                    warn!(
-                        error = %error,
-                        decoded_format = ?stream_info.format,
-                        "Cannot map decoded format to VA RT format"
-                    );
-                    return Ok(());
-                }
-            };
-            if let Err(error) = self.frame_pool.resize_with_rt_format(
-                res.width,
-                res.height,
-                self.runtime_config.surface_pool_frames,
-                rt_format,
-            ) {
-                warn!(
-                    error = %error,
-                    width = res.width,
-                    height = res.height,
-                    rt_format,
-                    "Failed to resize frame pool after format change"
-                );
-            } else {
-                info!(
-                    width = res.width,
-                    height = res.height,
-                    decoded_format = ?stream_info.format,
-                    rt_format,
-                    "Frame pool resized for new format"
-                );
-            }
-        } else {
-            warn!("FormatChanged event without stream_info — cannot resize frame pool");
-        }
+        // Ошибка здесь фатальна: пул со старым форматом отдал бы под новый
+        // стрим surfaces прежнего размера.
+        self.reconfigure_output_surface_pool_for_stream()?;
 
         Ok(())
     }

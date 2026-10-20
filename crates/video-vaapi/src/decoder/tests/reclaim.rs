@@ -1,18 +1,56 @@
 use super::*;
 
+/// Поднятая ёмкость пула расширяет reclaim bound: очередь на 1 перестаёт быть полной.
+#[test]
+fn adopting_effective_pool_capacity_rederives_the_reclaim_bound_without_touching_the_queue() {
+    let configured = VaapiDecoderRuntimeConfig::from_surface_accounting(2, 8).normalized();
+    let mut state = SuppressedReclaimState::new(configured);
+    let (busy_handle, _sync_called) = fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
+    state
+        .enqueue(
+            busy_handle,
+            "test_enqueue",
+            PrerollFallbackCandidateMetadata {
+                pts: Duration::from_millis(40),
+                generation: 3,
+            },
+        )
+        .expect("one handle fits the bound of 1");
+    assert!(state.is_full(), "bound 1 is full with one handle");
+
+    let adoption = state.adopt_runtime_config(
+        configured.with_effective_surface_pool_frames(NonZeroUsize::new(25).expect("non-zero")),
+    );
+
+    assert!(adoption.changed());
+    assert_eq!(adoption.previous_bound, 1);
+    assert_eq!(
+        adoption.current_bound,
+        default_max_suppressed_reclaim_frames(25, 8)
+    );
+    assert_eq!(state.depth(), 1, "the queued handle stays queued");
+    assert!(
+        !state.is_full(),
+        "the same queue is no longer full under the new bound"
+    );
+
+    let unchanged = state.adopt_runtime_config(
+        configured.with_effective_surface_pool_frames(NonZeroUsize::new(25).expect("non-zero")),
+    );
+    assert!(!unchanged.changed(), "same capacity twice is a no-op");
+}
+
 /// Проверяет pre-submit decision: full reclaim queue должна остановить submit.
 #[test]
 fn pre_submit_full_reclaim_queue_backpressures_before_packet_submit() {
     let mut suppressed_reclaim_queue = VecDeque::new();
     let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
-    let mut frame_pool = reclaim_frame_pool_for_tests();
     let (busy_handle, sync_called) = fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
     suppressed_reclaim_queue.push_back(busy_handle);
 
     let report = reclaim_ready_suppressed_surfaces_from_queue(
         &mut suppressed_reclaim_queue,
         &mut suppressed_reclaim_counters,
-        &mut frame_pool,
         reclaim_capacity_for_tests(1),
     )
     .expect("pre-submit reclaim should leave busy handle queued");
@@ -46,14 +84,12 @@ fn pre_submit_full_reclaim_queue_backpressures_before_packet_submit() {
 fn pre_submit_reclaim_that_frees_ready_handles_allows_packet_submit() {
     let mut suppressed_reclaim_queue = VecDeque::new();
     let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
-    let mut frame_pool = reclaim_frame_pool_for_tests();
     let (ready_handle, sync_called) = fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(true));
     suppressed_reclaim_queue.push_back(ready_handle);
 
     let report = reclaim_ready_suppressed_surfaces_from_queue(
         &mut suppressed_reclaim_queue,
         &mut suppressed_reclaim_counters,
-        &mut frame_pool,
         reclaim_capacity_for_tests(1),
     )
     .expect("pre-submit reclaim free ready handle");
@@ -85,23 +121,20 @@ fn suppressed_drop_frame_enqueues_for_reclaim_without_immediate_release() {
 fn ready_suppressed_handle_reclaimed_by_nonblocking_pass() {
     let mut suppressed_reclaim_queue = VecDeque::new();
     let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
-    let mut frame_pool = reclaim_frame_pool_for_tests();
-    let initial_free_frames = frame_pool.num_free();
-    let (handle, sync_called) = fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(true));
+    let (handle, sync_called, handle_released) =
+        fake_decoded_frame_handle_with_release_probe(FakeSurfaceReadiness::Ready(true));
     suppressed_reclaim_queue.push_back(handle);
 
     let report = reclaim_ready_suppressed_surfaces_from_queue(
         &mut suppressed_reclaim_queue,
         &mut suppressed_reclaim_counters,
-        &mut frame_pool,
         reclaim_capacity_for_tests(4),
     )
     .expect("ready reclaim pass must pass");
 
     assert_eq!(suppressed_reclaim_queue.len(), 0);
-    assert_eq!(
-        frame_pool.num_free(),
-        initial_free_frames + 1,
+    assert!(
+        handle_released.get(),
         "ready handle should be back frame pool"
     );
     assert!(
@@ -118,21 +151,22 @@ fn ready_suppressed_handle_reclaimed_by_nonblocking_pass() {
 fn not_ready_suppressed_handle_stays_queued() {
     let mut suppressed_reclaim_queue = VecDeque::new();
     let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
-    let mut frame_pool = reclaim_frame_pool_for_tests();
-    let initial_free_frames = frame_pool.num_free();
-    let (handle, sync_called) = fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
+    let (handle, sync_called, handle_released) =
+        fake_decoded_frame_handle_with_release_probe(FakeSurfaceReadiness::Ready(false));
     suppressed_reclaim_queue.push_back(handle);
 
     let report = reclaim_ready_suppressed_surfaces_from_queue(
         &mut suppressed_reclaim_queue,
         &mut suppressed_reclaim_counters,
-        &mut frame_pool,
         reclaim_capacity_for_tests(4),
     )
     .expect("The busy reclaim pass will pass without blocking sync.");
 
     assert_eq!(suppressed_reclaim_queue.len(), 1);
-    assert_eq!(frame_pool.num_free(), initial_free_frames);
+    assert!(
+        !handle_released.get(),
+        "handle still in reclaim queue must keep its VA surface"
+    );
     assert!(!sync_called.get(), "busy reclaim pass does not cause sync");
     assert_eq!(report.current_depth, 1);
     assert_eq!(report.reclaimed_this_pass, 0);
@@ -144,22 +178,23 @@ fn not_ready_suppressed_handle_stays_queued() {
 fn query_error_keeps_suppressed_handle_queued() {
     let mut suppressed_reclaim_queue = VecDeque::new();
     let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
-    let mut frame_pool = reclaim_frame_pool_for_tests();
-    let initial_free_frames = frame_pool.num_free();
-    let (handle, sync_called) =
-        fake_decoded_frame_handle(FakeSurfaceReadiness::QueryError("query failed"));
+    let (handle, sync_called, handle_released) = fake_decoded_frame_handle_with_release_probe(
+        FakeSurfaceReadiness::QueryError("query failed"),
+    );
     suppressed_reclaim_queue.push_back(handle);
 
     let report = reclaim_ready_suppressed_surfaces_from_queue(
         &mut suppressed_reclaim_queue,
         &mut suppressed_reclaim_counters,
-        &mut frame_pool,
         reclaim_capacity_for_tests(4),
     )
     .expect("query error must remain the meter, not Result error");
 
     assert_eq!(suppressed_reclaim_queue.len(), 1);
-    assert_eq!(frame_pool.num_free(), initial_free_frames);
+    assert!(
+        !handle_released.get(),
+        "handle still in reclaim queue must keep its VA surface"
+    );
     assert!(!sync_called.get(), "query error path don't blocking sync");
     assert_eq!(report.current_depth, 1);
     assert_eq!(report.query_errors_this_pass, 1);
@@ -184,14 +219,12 @@ fn dropping_retained_candidate_enqueues_for_reclaim() {
 fn suppressed_reclaim_queue_respects_bound() {
     let mut suppressed_reclaim_queue = VecDeque::new();
     let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
-    let mut frame_pool = reclaim_frame_pool_for_tests();
 
     for generation in 1..=3 {
         let (handle, _sync_called) = fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
         enqueue_suppressed_frame_for_reclaim_in_queue(
             &mut suppressed_reclaim_queue,
             &mut suppressed_reclaim_counters,
-            &mut frame_pool,
             reclaim_capacity_for_tests(2),
             handle,
             "bound_test",
@@ -226,7 +259,6 @@ fn surface_lifecycle_sync_error_is_fatal_decoder_error() {
 fn flush_force_drain_leaves_suppressed_reclaim_queue_empty() {
     let mut suppressed_reclaim_queue = VecDeque::new();
     let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
-    let mut frame_pool = reclaim_frame_pool_for_tests();
     let (first_handle, first_sync_called) =
         fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
     let (second_handle, second_sync_called) =
@@ -237,7 +269,6 @@ fn flush_force_drain_leaves_suppressed_reclaim_queue_empty() {
     force_drain_suppressed_surfaces_from_queue(
         &mut suppressed_reclaim_queue,
         &mut suppressed_reclaim_counters,
-        &mut frame_pool,
         "flush",
         reclaim_capacity_for_tests(4),
     )

@@ -380,6 +380,7 @@ fn decoder_thread_for_control_tests(
         }
         .normalized(),
         backend_name: "VA-API test",
+        output_surface_pool_counters: Arc::default(),
     }
 }
 

@@ -239,7 +239,7 @@ impl VaapiCodecAdapter for Av1VaapiCodecAdapter {
         timestamp_us: u64,
         packet_data: &[u8],
         _decode_hints: VaapiPacketDecodeHints,
-        frame_pool: &mut DmaFramePool,
+        surface_pool: &VaapiOutputSurfacePool,
     ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
         if let Err(error) = self
             .temporal_unit_input
@@ -254,17 +254,9 @@ impl VaapiCodecAdapter for Av1VaapiCodecAdapter {
         let inner = &mut self.inner;
         let pending_temporal_unit = self.temporal_unit_input.pending_temporal_unit_mut()?;
         let feed_result = pending_temporal_unit.feed_until_blocked(|remaining_bytes| {
-            let mut alloc_cb = || {
-                let frame = frame_pool.alloc_or_allocate();
-                if frame.is_none() {
-                    tracing::warn!("Frame pool exhausted; AV1 decoder needs output buffers");
-                }
-                frame
-            };
-
-            inner
-                .decode(timestamp_us, remaining_bytes, &mut alloc_cb)
-                .map_err(VaapiAdapterDecodeError::from)
+            decode_with_pooled_output_surfaces(surface_pool, |lease_output_frame| {
+                inner.decode(timestamp_us, remaining_bytes, lease_output_frame)
+            })
         });
 
         match feed_result {

@@ -52,6 +52,7 @@ h265-hvcc                      ISO BMFF H.265 with hvcC codec private data.
 h265-mkv-cue                   Matroska H.265 with usable nearby cues, at least 10 s.
 vp9-decode-point               WebM/Matroska VP9 with a keyframe near 66.93 s.
 av1-mp4-vaapi-global-motion    MP4 AV1 Main 8-bit with global motion, ≥40s: VA-API AV1 decode before/after seek.
+h264-mp4-vaapi-surface-pool    MP4 H.264 8-bit, ≥10s: bounded VA output surface pool through backpressure, seek and EOF.
 audio-decode-seek              Decodable audio with duration for a middle accurate seek.
 audio-eof-replay               Decodable audio short enough to drain to EOF.
 audio-unseekable-eof-seek      Decodable audio with an extension that can be opened as a stream.
@@ -145,6 +146,7 @@ scenario_test_command() {
         h265-hvcc) printf '%s\n' 'symphonia-demux|h265_fixtures|h265_iso_bmff_track_exposes_hvcc_codec_private' ;;
         h265-mkv-cue) printf '%s\n' 'symphonia-demux|h265_fixtures|h265_matroska_cue_seek_uses_near_decode_anchor' ;;
         av1-mp4-vaapi-global-motion) printf '%s\n' 'video-vaapi|av1_mp4_seek_regression|av1_mp4_vaapi_decodes_global_motion_before_and_after_seek' ;;
+        h264-mp4-vaapi-surface-pool) printf '%s\n' 'video-vaapi|output_surface_pool_regression|h264_vaapi_recycles_bounded_output_surfaces_through_backpressure_seek_and_eof' ;;
         vp9-decode-point) printf '%s\n' 'symphonia-demux|vp9_fixtures|vp9_decode_point_before_seek_reaches_near_target_keyframe' ;;
         audio-decode-seek) printf '%s\n' 'symphonia-demux|audio_fixture_decode_seek|audio_decode_and_middle_seek_preserve_decodable_pcm' ;;
         audio-eof-replay) printf '%s\n' 'symphonia-demux|audio_fixture_decode_seek|audio_eof_replay_returns_first_selected_audio_packet' ;;

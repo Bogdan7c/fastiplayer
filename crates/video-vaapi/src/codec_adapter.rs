@@ -25,8 +25,9 @@ use cros_codecs::libva::Display;
 use video_core::{VideoStreamConfigRejection, VideoStreamDecodeConfig, VideoStreamPacketization};
 use video_frame_contract::{HardwareFrameHandle, VideoFramePixelLayout, VideoFrameTransferPath};
 
-use crate::frame_pool::DmaFramePool;
 use crate::internal_vaapi_frame::InternalVaapiFrame;
+use crate::output_surface_pool::VaapiOutputSurfacePool;
+use output_surfaces::decode_with_pooled_output_surfaces;
 
 /// Codec-neutral формат decoded frame-а внутри VAAPI adapter boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,6 +257,11 @@ pub(crate) enum VaapiAdapterDecodeError {
 
     /// Backend VAAPI/cros layer вернул ошибку.
     Backend(String),
+
+    /// Драйвер не смог создать выходную VA surface, хотя ёмкость пула позволяла.
+    ///
+    /// Терминальная ошибка, а не backpressure: повтор того же packet-а не поможет.
+    OutputSurfaceAllocation(String),
 }
 
 impl fmt::Display for VaapiAdapterDecodeError {
@@ -272,6 +278,9 @@ impl fmt::Display for VaapiAdapterDecodeError {
             Self::ParseFrameError(message) => write!(formatter, "parse frame error: {message}"),
             Self::Decoder(message) => write!(formatter, "decoder error: {message}"),
             Self::Backend(message) => write!(formatter, "backend error: {message}"),
+            Self::OutputSurfaceAllocation(message) => {
+                write!(formatter, "output surface allocation failed: {message}")
+            }
         }
     }
 }
@@ -316,7 +325,7 @@ pub(crate) trait VaapiCodecAdapter {
         timestamp_us: u64,
         packet_data: &[u8],
         decode_hints: VaapiPacketDecodeHints,
-        frame_pool: &mut DmaFramePool,
+        surface_pool: &VaapiOutputSurfacePool,
     ) -> std::result::Result<usize, VaapiAdapterDecodeError>;
 
     /// Flush-ит adapter-owned codec state.
@@ -336,6 +345,7 @@ mod av1;
 mod factory;
 mod h264;
 mod h265;
+mod output_surfaces;
 mod presentation_time;
 mod vp9;
 

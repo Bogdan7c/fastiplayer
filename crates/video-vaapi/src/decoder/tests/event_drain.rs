@@ -53,6 +53,29 @@ fn not_enough_output_buffers_marks_packet_as_backpressured() {
     assert_eq!(driver.submissions, vec![(0, packet_data)]);
 }
 
+/// Ошибка драйвера при создании output surface — fatal, а не backpressure или пропуск.
+#[test]
+fn output_surface_allocation_failure_stops_decoder_instead_of_skipping_packet() {
+    let packet_data = vec![0x82, 0x49, 0x83, 0x42];
+    let mut driver = FakeRetryDriver::new(
+        vec![Err(VaapiAdapterDecodeError::OutputSurfaceAllocation(
+            "out of video memory".to_string(),
+        ))],
+        Vec::new(),
+    );
+
+    let error = run_decode_with_event_retry(&mut driver, 0, &packet_data, true, 19)
+        .expect_err("allocation failure must not be reported as an accepted packet");
+
+    assert!(
+        is_fatal_decoder_error(&error),
+        "allocation failure must stop the decoder: {error:#}"
+    );
+    assert!(format!("{error:#}").contains("out of video memory"));
+    assert_eq!(driver.submissions, vec![(0, packet_data)], "no retry loop");
+    assert!(driver.ready_frames.is_empty());
+}
+
 /// Проверяет seek flush policy: H.264 tail event не попадает в ready queue.
 #[test]
 fn seek_flush_discard_policy_drops_tail_frame_events() {

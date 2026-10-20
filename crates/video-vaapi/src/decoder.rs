@@ -29,7 +29,10 @@ use crate::codec_adapter::{
     VaapiAdapterDecodeError, VaapiCodecAdapter, VaapiCodecAdapterFactory, VaapiDecodedFrameHandle,
     VaapiDecoderEvent, VaapiPacketDecodeHints,
 };
-use crate::frame_pool::DmaFramePool;
+use crate::output_surface_pool::{
+    OutputSurfaceFormat, OutputSurfacePoolCounters, OutputSurfacePoolStats,
+    VaOutputSurfaceAllocator, VaapiOutputSurfacePool,
+};
 use crate::resource_pool::FrameResourcePool;
 use crate::shared_hardware_owner::{
     VaapiPlaybackHardwareReservation, VaapiSharedHardwareOwner, VaapiSharedHardwareOwnerContext,
@@ -38,10 +41,12 @@ use crate::shared_hardware_owner::{
 mod config;
 mod event_drain;
 mod h264_recovery;
+mod output_surface_format;
 mod preroll;
 mod suppressed_reclaim;
 mod surface_contract;
 
+pub(crate) use config::non_zero_or_one;
 pub use config::{
     DEFAULT_DECODER_READY_QUEUE_FRAMES, DEFAULT_DECODER_SURFACE_POOL_FRAMES,
     VaapiDecoderRuntimeConfig,
@@ -55,6 +60,8 @@ use config::{
 use event_drain::*;
 use h264_recovery::H264DecodeRecovery;
 use preroll::*;
+#[cfg(test)]
+use std::num::NonZeroUsize;
 use suppressed_reclaim::*;
 use surface_contract::*;
 /// Итог обработки packet-а для decoder thread-а.
@@ -160,8 +167,8 @@ pub struct VaapiVideoDecoder {
     /// Активный codec adapter, который скрывает concrete cros-codecs decoder type.
     adapter: Box<dyn VaapiCodecAdapter>,
 
-    /// Пул lightweight frame descriptors для выходных VA surfaces.
-    frame_pool: DmaFramePool,
+    /// Ограниченный пул выходных VA surfaces: surfaces переиспользуются между кадрами.
+    output_surface_pool: VaapiOutputSurfacePool,
 
     /// Пул exported DMA-BUF resource descriptors для decoded surfaces.
     ///
@@ -247,6 +254,7 @@ impl VaapiVideoDecoder {
             diagnostic_tx,
             runtime_config,
             None,
+            Arc::default(),
         )
     }
 
@@ -255,6 +263,7 @@ impl VaapiVideoDecoder {
         diagnostic_tx: Option<std::sync::mpsc::SyncSender<VideoDecoderDiagnosticEvent>>,
         runtime_config: VaapiDecoderRuntimeConfig,
         activity_notifier: Option<VideoDecoderActivityNotifier>,
+        surface_pool_counters: Arc<OutputSurfacePoolCounters>,
     ) -> Result<Self> {
         let runtime_config = runtime_config.normalized();
         let reclaim_capacity = SuppressedReclaimCapacity::from_runtime_config(runtime_config);
@@ -287,15 +296,17 @@ impl VaapiVideoDecoder {
         let backend_name = adapter.backend_name();
         let adapter_codec = adapter.codec();
 
-        info!("Creating internal VA frame pool");
-
-        // Создаём пул выходных буферов. Декодер требует буферы до первого вызова decode().
-        let frame_pool = DmaFramePool::new(
-            INITIAL_WIDTH,
-            INITIAL_HEIGHT,
-            runtime_config.surface_pool_frames,
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to create frame pool: {}", e))?;
+        // Пустой пул: surfaces создаются лениво при первой аренде. Начальный формат
+        // заменится на реальный на первом `FormatChanged` (cros шлёт его до кадров).
+        let output_surface_pool = VaapiOutputSurfacePool::new(
+            VaOutputSurfaceAllocator::new(display.clone()),
+            OutputSurfaceFormat {
+                coded_resolution: cros_codecs::Resolution::from((INITIAL_WIDTH, INITIAL_HEIGHT)),
+                rt_format: cros_codecs::libva::VA_RT_FORMAT_YUV420,
+            },
+            runtime_config.surface_pool_frames_non_zero(),
+            surface_pool_counters,
+        );
 
         let shared_hardware_context = VaapiSharedHardwareOwnerContext::from_surface_accounting(
             runtime_config.surface_pool_frames,
@@ -322,7 +333,7 @@ impl VaapiVideoDecoder {
         Ok(Self {
             display,
             adapter,
-            frame_pool,
+            output_surface_pool,
             resource_pool,
             _shared_hardware_owner: shared_hardware_owner,
             _playback_hardware_reservation: playback_hardware_reservation,
@@ -494,8 +505,14 @@ impl VaapiVideoDecoder {
     }
 
     /// Освобождает VA handle, удерживаемый zero-copy кадром.
+    ///
+    /// Порядок важен: сначала resource pool подтверждает, что slot действительно
+    /// ждёт decoder reuse (`WaitingDecoderReuse`), и только потом VA surface
+    /// возвращается в пул. Иначе при ошибке подтверждения (slot ещё
+    /// `WaitingGpuCompletion` или handle неизвестен) surface уже была бы
+    /// свободна для нового кадра, пока рендерер может её читать.
     pub fn release_zero_copy_frame(&mut self, resource_handle: FrameResourceHandle) -> Result<()> {
-        let Some(handle) = self.zero_copy_guards.remove(&resource_handle.0) else {
+        if !self.zero_copy_guards.contains_key(&resource_handle.0) {
             warn!(
                 handle_id = resource_handle.0,
                 "No zero-copy guard found for released frame"
@@ -504,24 +521,35 @@ impl VaapiVideoDecoder {
                 "zero-copy guard missing for released handle {}",
                 resource_handle.0
             ));
-        };
+        }
 
-        self.return_frame_from_handle(handle);
         lock_resource_pool(&self.resource_pool, "decoder reuse acknowledgement")?
             .acknowledge_decoder_reuse(resource_handle)
             .map_err(anyhow::Error::from)?;
+
+        // Подтверждение получено: guard можно снять, и surface вернётся в пул,
+        // когда её отпустит последний владелец.
+        if let Some(handle) = self.zero_copy_guards.remove(&resource_handle.0) {
+            release_decoded_frame_handle(handle);
+        }
         Ok(())
     }
 
-    /// Возвращает backing frame в pool после того, как decoded handle больше не нужен.
-    fn return_frame_from_handle(&mut self, handle: VaapiDecodedFrameHandle) {
-        return_frame_to_pool_from_handle(&mut self.frame_pool, handle);
+    /// Снимок счётчиков пула выходных VA surfaces для диагностики decoder thread-а.
+    #[must_use]
+    pub(crate) fn output_surface_pool_stats(&self) -> OutputSurfacePoolStats {
+        self.output_surface_pool.stats()
+    }
+
+    /// Сколько подавленных VA handles сейчас ждут non-blocking reclaim.
+    #[must_use]
+    pub(crate) fn suppressed_reclaim_depth(&self) -> usize {
+        self.suppressed_reclaim_state.depth()
     }
 
     /// Неблокирующе освобождает ready suppressed surfaces из backend-local queue.
     fn reclaim_ready_suppressed_surfaces(&mut self) -> Result<ReclaimPassReport> {
-        self.suppressed_reclaim_state
-            .reclaim_ready(&mut self.frame_pool)
+        self.suppressed_reclaim_state.reclaim_ready()
     }
 
     /// Дешёвый reclaim pass, доступный только decoder thread boundary.
@@ -536,8 +564,7 @@ impl VaapiVideoDecoder {
 
     /// Принудительно дренирует suppressed queue перед lifecycle boundary.
     fn force_drain_suppressed_surfaces(&mut self, reason: &'static str) -> Result<()> {
-        self.suppressed_reclaim_state
-            .force_drain(&mut self.frame_pool, reason)
+        self.suppressed_reclaim_state.force_drain(reason)
     }
 
     /// Очищает retained candidate и suppressed queue перед lifecycle boundary.
@@ -570,7 +597,6 @@ impl VaapiVideoDecoder {
         generation: u64,
     ) -> Result<()> {
         self.suppressed_reclaim_state.enqueue(
-            &mut self.frame_pool,
             handle,
             reason,
             PrerollFallbackCandidateMetadata { pts, generation },
@@ -1093,7 +1119,7 @@ impl DecoderRetryDriver for VaapiVideoDecoder {
             timestamp_us,
             packet_data,
             decode_hints,
-            &mut self.frame_pool,
+            &self.output_surface_pool,
         )
     }
 

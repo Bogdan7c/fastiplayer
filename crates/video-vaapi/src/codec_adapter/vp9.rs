@@ -60,22 +60,15 @@ impl VaapiCodecAdapter for Vp9VaapiCodecAdapter {
         timestamp_us: u64,
         packet_data: &[u8],
         _decode_hints: VaapiPacketDecodeHints,
-        frame_pool: &mut DmaFramePool,
+        surface_pool: &VaapiOutputSurfacePool,
     ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
         // Все кадры, выпущенные до следующего packet-а, показаны этим packet-ом.
         self.presentation_time.begin_unit(timestamp_us);
 
-        let mut alloc_cb = || {
-            let frame = frame_pool.alloc_or_allocate();
-            if frame.is_none() {
-                tracing::warn!("Frame pool exhausted; decoder needs more output buffers");
-            }
-            frame
-        };
-
-        self.inner
-            .decode(timestamp_us, packet_data, &mut alloc_cb)
-            .map_err(VaapiAdapterDecodeError::from)
+        decode_with_pooled_output_surfaces(surface_pool, |lease_output_frame| {
+            self.inner
+                .decode(timestamp_us, packet_data, lease_output_frame)
+        })
     }
 
     /// Flush-ит текущий VP9 decoder state.

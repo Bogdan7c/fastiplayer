@@ -1,6 +1,8 @@
 use super::*;
 
-use crate::codec_adapter::test_support::{FakeSurfaceReadiness, fake_decoded_frame_handle};
+use crate::codec_adapter::test_support::{
+    FakeSurfaceReadiness, fake_decoded_frame_handle, fake_decoded_frame_handle_with_release_probe,
+};
 
 /// Создаёт neutral decoded frame без реального VA resource-а для ownership tests.
 fn decoded_frame_for_tests(resource_handle: FrameResourceHandle) -> DecodedFrame {
@@ -19,11 +21,6 @@ fn decoded_frame_for_tests(resource_handle: FrameResourceHandle) -> DecodedFrame
     }
 }
 
-/// Создаёт пустой frame pool для reclaim tests без реального VA display.
-fn reclaim_frame_pool_for_tests() -> DmaFramePool {
-    DmaFramePool::new(16, 16, 0).expect("test frame pool must be created")
-}
-
 /// Создаёт diagnostics capacity для focused reclaim tests без runtime decoder-а.
 fn reclaim_capacity_for_tests(max_suppressed_reclaim_frames: usize) -> SuppressedReclaimCapacity {
     SuppressedReclaimCapacity::new(
@@ -37,14 +34,12 @@ fn reclaim_capacity_for_tests(max_suppressed_reclaim_frames: usize) -> Suppresse
 fn assert_reclaim_enqueue_for_reason(reason: &'static str) {
     let mut suppressed_reclaim_queue = VecDeque::new();
     let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
-    let mut frame_pool = reclaim_frame_pool_for_tests();
-    let initial_free_frames = frame_pool.num_free();
-    let (handle, sync_called) = fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
+    let (handle, sync_called, handle_released) =
+        fake_decoded_frame_handle_with_release_probe(FakeSurfaceReadiness::Ready(false));
 
     enqueue_suppressed_frame_for_reclaim_in_queue(
         &mut suppressed_reclaim_queue,
         &mut suppressed_reclaim_counters,
-        &mut frame_pool,
         reclaim_capacity_for_tests(4),
         handle,
         reason,
@@ -60,9 +55,8 @@ fn assert_reclaim_enqueue_for_reason(reason: &'static str) {
         1,
         "drop path should be handled in reclaim queue"
     );
-    assert_eq!(
-        frame_pool.num_free(),
-        initial_free_frames,
+    assert!(
+        !handle_released.get(),
         "enqueue should not surface immediately"
     );
     assert!(
@@ -191,7 +185,6 @@ fn preroll_floor_policy(
 fn assert_lifecycle_force_drain_clears_candidate_and_queue(reason: &'static str) {
     let mut suppressed_reclaim_queue = VecDeque::new();
     let mut suppressed_reclaim_counters = SuppressedReclaimCounters::default();
-    let mut frame_pool = reclaim_frame_pool_for_tests();
     let (candidate_handle, candidate_sync_called) =
         fake_decoded_frame_handle(FakeSurfaceReadiness::Ready(false));
     let (queued_handle, queued_sync_called) =
@@ -209,7 +202,6 @@ fn assert_lifecycle_force_drain_clears_candidate_and_queue(reason: &'static str)
     enqueue_suppressed_frame_for_reclaim_in_queue(
         &mut suppressed_reclaim_queue,
         &mut suppressed_reclaim_counters,
-        &mut frame_pool,
         reclaim_capacity_for_tests(4),
         retained_candidate.handle,
         reason,
@@ -219,7 +211,6 @@ fn assert_lifecycle_force_drain_clears_candidate_and_queue(reason: &'static str)
     force_drain_suppressed_surfaces_from_queue(
         &mut suppressed_reclaim_queue,
         &mut suppressed_reclaim_counters,
-        &mut frame_pool,
         reason,
         reclaim_capacity_for_tests(4),
     )
@@ -234,5 +225,6 @@ fn assert_lifecycle_force_drain_clears_candidate_and_queue(reason: &'static str)
 mod config;
 mod contracts;
 mod event_drain;
+mod output_surface_format;
 mod preroll;
 mod reclaim;

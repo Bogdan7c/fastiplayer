@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#[cfg(feature = "vaapi")]
+use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::fmt::Debug;
 #[cfg(feature = "vaapi")]
@@ -77,8 +79,15 @@ pub trait VideoFrame: Sized + Debug + 'static {
 
     #[cfg(feature = "vaapi")]
     type MemDescriptor: SurfaceMemoryDescriptor;
+    /// Владелец VA surface, в которую декодируется picture.
+    ///
+    /// Локальный патч: upstream требовал ровно `Surface` (`Equivalent`), и surface
+    /// умирала вместе с picture (`vaDestroySurfaces` на каждый кадр). `Borrow` даёт
+    /// декодеру доступ к surface, а владелец может быть обёрткой пула, которая в
+    /// `Drop` возвращает surface обратно. `Into<Surface>` нужен encoder import-у,
+    /// которому surface отдаётся во владение. Обычный `Surface` удовлетворяет обоим.
     #[cfg(feature = "vaapi")]
-    type NativeHandle: Equivalent<Surface<Self::MemDescriptor>>;
+    type NativeHandle: Borrow<Surface<Self::MemDescriptor>> + Into<Surface<Self::MemDescriptor>>;
 
     fn fourcc(&self) -> Fourcc;
 

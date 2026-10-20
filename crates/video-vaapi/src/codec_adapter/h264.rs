@@ -278,7 +278,7 @@ impl VaapiCodecAdapter for H264VaapiCodecAdapter {
         timestamp_us: u64,
         packet_data: &[u8],
         decode_hints: VaapiPacketDecodeHints,
-        frame_pool: &mut DmaFramePool,
+        surface_pool: &VaapiOutputSurfacePool,
     ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
         if self.pending_access_unit.is_none() {
             self.pending_access_unit = Some(
@@ -293,17 +293,10 @@ impl VaapiCodecAdapter for H264VaapiCodecAdapter {
             ));
         };
         let feed_result = pending_access_unit.feed_until_blocked(|remaining_bytes| {
-            let mut alloc_cb = || {
-                let frame = frame_pool.alloc_or_allocate();
-                if frame.is_none() {
-                    tracing::warn!("Frame pool exhausted; H.264 decoder needs output buffers");
-                }
-                frame
-            };
-
-            self.inner
-                .decode(timestamp_us, remaining_bytes, &mut alloc_cb)
-                .map_err(VaapiAdapterDecodeError::from)
+            decode_with_pooled_output_surfaces(surface_pool, |lease_output_frame| {
+                self.inner
+                    .decode(timestamp_us, remaining_bytes, lease_output_frame)
+            })
         });
 
         match feed_result {

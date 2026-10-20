@@ -3,6 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use tracing::warn;
 
+use crate::decoder::non_zero_or_one;
+
 /// VAAPI-local контекст для reservation accounting playback decoder-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VaapiSharedHardwareOwnerContext {
@@ -309,11 +311,6 @@ impl std::error::Error for VaapiPlaybackReservationError {}
 struct VaapiSharedHardwareOwnerSnapshot {
     playback_active: bool,
     playback_surface_budget: NonZeroUsize,
-}
-
-/// Нормализует `usize` budget в positive non-zero значение.
-fn non_zero_or_one(value: usize) -> NonZeroUsize {
-    NonZeroUsize::new(value).unwrap_or(NonZeroUsize::MIN)
 }
 
 #[cfg(test)]

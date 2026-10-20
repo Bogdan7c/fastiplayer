@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use codec_core::VideoColorMetadata;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, select};
@@ -13,8 +13,10 @@ use super::{
     QueuedDecodePacket,
 };
 
+mod backpressure_stall;
 mod frame_publication;
 
+use backpressure_stall::{OutputBackpressureStallMonitor, log_output_backpressure_stall};
 use frame_publication::release_pending_publish_frame;
 #[cfg(test)]
 pub(super) use frame_publication::send_frame_publish_pressure_event;
@@ -114,8 +116,14 @@ pub(super) fn decoder_thread_loop(
     let mut output_backpressured_packet: Option<QueuedDecodePacket> = None;
     let mut publish_pressure = FramePublishPressureCounters::default();
     let mut latest_color_metadata: Option<VideoColorMetadata> = None;
+    let mut backpressure_stall = OutputBackpressureStallMonitor::new();
 
     loop {
+        // Нет отложенного packet-а — backpressure снято (принят, flush или reconfigure).
+        if output_backpressured_packet.is_none() {
+            backpressure_stall.note_progress();
+        }
+
         if let Err(error) = decoder.reclaim_suppressed_surfaces_for_thread() {
             send_decoder_thread_error(
                 &error_tx,
@@ -194,6 +202,10 @@ pub(super) fn decoder_thread_loop(
         }
 
         if let Some(queued_packet) = output_backpressured_packet.take() {
+            // Повтор того же packet-а: короткое ожидание — норма, долгое — warn.
+            if let Some(warning) = backpressure_stall.note_backpressured(Instant::now()) {
+                log_output_backpressure_stall(&decoder, warning);
+            }
             match decode_queued_packet(
                 &mut decoder,
                 queued_packet,

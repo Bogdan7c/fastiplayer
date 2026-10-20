@@ -12,7 +12,7 @@ use anyhow::anyhow;
 use anyhow::Context as AnyhowContext;
 use libva::{
     Buffer, Context, Display, Image, Picture, PictureEnd, PictureNew, PictureSync, Surface,
-    SurfaceMemoryDescriptor, VaError,
+    VaError,
 };
 
 use crate::decoder::{
@@ -181,14 +181,18 @@ pub(crate) trait VaStreamInfo {
 }
 
 /// Rendering state of a VA picture.
-enum PictureState<M: SurfaceMemoryDescriptor> {
-    Ready(Picture<PictureSync, Surface<M>>),
-    Pending(Picture<PictureEnd, Surface<M>>),
+///
+/// Локальный патч: picture хранит владельца surface `V::NativeHandle`, а не голый
+/// `Surface`. Так frame type может вернуть surface в свой пул, когда последний
+/// handle (включая DPB-ссылки) отпущен, вместо `vaDestroySurfaces` на каждый кадр.
+enum PictureState<V: VideoFrame> {
+    Ready(Picture<PictureSync, V::NativeHandle>),
+    Pending(Picture<PictureEnd, V::NativeHandle>),
     // Only set in sync when we take ownership of the VA picture.
     Invalid,
 }
 
-impl<M: SurfaceMemoryDescriptor> PictureState<M> {
+impl<V: VideoFrame> PictureState<V> {
     /// Make sure that all pending operations on the picture have completed.
     fn sync(&mut self) -> Result<(), VaError> {
         let res;
@@ -205,7 +209,7 @@ impl<M: SurfaceMemoryDescriptor> PictureState<M> {
         res
     }
 
-    fn surface(&self) -> &Surface<M> {
+    fn surface(&self) -> &Surface<V::MemDescriptor> {
         match self {
             PictureState::Ready(picture) => picture.surface(),
             PictureState::Pending(picture) => picture.surface(),
@@ -232,7 +236,7 @@ impl<M: SurfaceMemoryDescriptor> PictureState<M> {
         }
     }
 
-    fn new_from_same_surface(&self, timestamp: u64) -> Picture<PictureNew, Surface<M>> {
+    fn new_from_same_surface(&self, timestamp: u64) -> Picture<PictureNew, V::NativeHandle> {
         match &self {
             PictureState::Ready(picture) => Picture::new_from_same_surface(timestamp, picture),
             PictureState::Pending(picture) => Picture::new_from_same_surface(timestamp, picture),
@@ -247,7 +251,7 @@ impl<M: SurfaceMemoryDescriptor> PictureState<M> {
 /// meta-information.
 pub struct VaapiDecodedHandle<V: VideoFrame> {
     backing_frame: Arc<V>,
-    state: PictureState<<V as VideoFrame>::MemDescriptor>,
+    state: PictureState<V>,
     /// Actual resolution of the visible rectangle in the decoded buffer.
     display_resolution: Resolution,
     display: Rc<Display>,
@@ -765,17 +769,18 @@ impl<V: VideoFrame> VaapiBackend<V> {
 
 /// Shortcut for pictures used for the VAAPI backend.
 pub struct VaapiPicture<V: VideoFrame> {
-    picture: Picture<PictureNew, Surface<V::MemDescriptor>>,
+    picture: Picture<PictureNew, V::NativeHandle>,
     backing_frame: Arc<V>,
 }
 
 impl<V: VideoFrame> VaapiPicture<V> {
     pub fn new(timestamp: u64, context: Rc<Context>, backing_frame: V) -> Self {
         let display = context.display();
+        // Локальный патч: владелец surface сохраняется как есть (без `.into()` в
+        // голый `Surface`), чтобы пул frame type-а получил surface обратно.
         let surface = backing_frame
             .to_native_handle(display)
-            .expect("Failed to export video frame to vaapi picture!")
-            .into();
+            .expect("Failed to export video frame to vaapi picture!");
         Self {
             backing_frame: Arc::new(backing_frame),
             picture: Picture::new(timestamp, context, surface),

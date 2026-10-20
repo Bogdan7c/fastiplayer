@@ -97,6 +97,8 @@ pub struct VideoDecodeThread {
     end_of_stream_drain_state: Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
     config: VideoDecodeThreadConfig,
     backend_name: &'static str,
+    /// Счётчики пула выходных VA surfaces; пишет decoder thread, читают диагностика/тесты.
+    output_surface_pool_counters: Arc<crate::output_surface_pool::OutputSurfacePoolCounters>,
 }
 
 impl VideoDecodeThread {
@@ -133,6 +135,9 @@ impl VideoDecodeThread {
             video_core::VideoDecoderEndOfStreamDrainState::Idle,
         ));
         let end_of_stream_drain_state_for_thread = end_of_stream_drain_state.clone();
+        let output_surface_pool_counters =
+            Arc::<crate::output_surface_pool::OutputSurfacePoolCounters>::default();
+        let output_surface_pool_counters_for_thread = output_surface_pool_counters.clone();
 
         std::thread::Builder::new()
             .name("video-decode".into())
@@ -144,6 +149,7 @@ impl VideoDecodeThread {
                     Some(diagnostic_tx),
                     decoder_runtime_config,
                     Some(decoder_activity_notifier),
+                    output_surface_pool_counters_for_thread,
                 ) {
                     Ok(decoder) => {
                         if init_tx.send(Ok(())).is_err() {
@@ -209,6 +215,7 @@ impl VideoDecodeThread {
             // Thread обслуживает разные codec adapters; конкретный codec появляется
             // только после configure_stream и отдельно отражается в diagnostics.
             backend_name: "VA-API",
+            output_surface_pool_counters,
         })
     }
 
@@ -677,6 +684,12 @@ impl VideoDecodeThread {
                 None
             }
         }
+    }
+
+    /// Возвращает снимок счётчиков пула выходных VA surfaces (backend-local диагностика).
+    #[must_use]
+    pub fn output_surface_pool_stats(&self) -> crate::output_surface_pool::OutputSurfacePoolStats {
+        self.output_surface_pool_counters.snapshot()
     }
 
     /// Возвращает sender-side pressure snapshot bounded control channel-а.

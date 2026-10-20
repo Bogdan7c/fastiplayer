@@ -225,7 +225,7 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,
         "decoder_surface_pool_frames = 24",
-        "# VA output surface descriptors для hardware decoder-а.",
+        "# Потолок пула VA output surfaces hardware decoder-а (не ниже минимума кодека).",
     );
     insert_default_config_comment(
         toml_text,

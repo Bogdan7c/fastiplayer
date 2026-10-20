@@ -2,10 +2,8 @@ use super::VaapiSurfaceLifecycleError;
 use super::config::VaapiDecoderRuntimeConfig;
 use super::preroll::PrerollFallbackCandidateMetadata;
 use crate::codec_adapter::VaapiDecodedFrameHandle;
-use crate::frame_pool::DmaFramePool;
 use anyhow::Result;
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, trace, warn};
 
@@ -167,20 +165,15 @@ pub(super) fn is_suppressed_reclaim_queue_full(
     current_depth >= max_suppressed_reclaim_frames.max(1)
 }
 
-/// Возвращает backing frame в pool после того, как decoded handle больше не нужен.
-pub(super) fn return_frame_to_pool_from_handle(
-    frame_pool: &mut DmaFramePool,
-    handle: VaapiDecodedFrameHandle,
-) {
-    let frame_arc = handle.video_frame();
+/// Отпускает decoded handle, который decoder больше не держит.
+///
+/// Пул здесь не нужен: VA surface принадлежит аренде `OutputSurfaceLease` внутри
+/// cros-codecs picture и сама возвращается в `OutputSurfacePool`, когда отпущен
+/// последний владелец (этот handle, DPB-ссылки декодера, клоны picture). Если DPB
+/// ещё ссылается на кадр, surface вернётся позже — без участия этого кода.
+pub(super) fn release_decoded_frame_handle(handle: VaapiDecodedFrameHandle) {
     drop(handle);
-
-    if let Ok(frame) = Arc::try_unwrap(frame_arc) {
-        frame_pool.return_frame(frame);
-        trace!("Frame returned to pool");
-    } else {
-        debug!("Frame still referenced by decoder, cannot return to pool yet");
-    }
+    trace!("Decoder released decoded VA handle");
 }
 
 /// Синхронно выбрасывает ready handle из редкого discard/lifecycle path-а.
@@ -189,7 +182,6 @@ pub(super) fn return_frame_to_pool_from_handle(
 /// `surface_ready()` pass. Этот helper нужен для flush/reconfigure tail events,
 /// где очередь reclaim после boundary должна остаться пустой.
 pub(super) fn sync_discard_ready_frame(
-    frame_pool: &mut DmaFramePool,
     handle: VaapiDecodedFrameHandle,
     reason: &'static str,
 ) -> Result<Duration> {
@@ -209,7 +201,7 @@ pub(super) fn sync_discard_ready_frame(
     }
 
     let sync_latency = sync_start.elapsed();
-    return_frame_to_pool_from_handle(frame_pool, handle);
+    release_decoded_frame_handle(handle);
     debug!(
         pts_ms,
         reason,
@@ -223,7 +215,6 @@ pub(super) fn sync_discard_ready_frame(
 pub(super) fn reclaim_ready_suppressed_surfaces_from_queue(
     suppressed_reclaim_queue: &mut VecDeque<VaapiDecodedFrameHandle>,
     suppressed_reclaim_counters: &mut SuppressedReclaimCounters,
-    frame_pool: &mut DmaFramePool,
     reclaim_capacity: SuppressedReclaimCapacity,
 ) -> Result<ReclaimPassReport> {
     let queued_handles_to_scan = suppressed_reclaim_queue.len();
@@ -238,7 +229,7 @@ pub(super) fn reclaim_ready_suppressed_surfaces_from_queue(
 
         match handle.surface_ready() {
             Ok(true) => {
-                return_frame_to_pool_from_handle(frame_pool, handle);
+                release_decoded_frame_handle(handle);
                 suppressed_reclaim_counters.total_reclaimed += 1;
                 reclaimed_this_pass += 1;
             }
@@ -303,7 +294,6 @@ pub(super) fn reclaim_ready_suppressed_surfaces_from_queue(
 pub(super) fn force_reclaim_oldest_suppressed_surface_from_queue(
     suppressed_reclaim_queue: &mut VecDeque<VaapiDecodedFrameHandle>,
     suppressed_reclaim_counters: &mut SuppressedReclaimCounters,
-    frame_pool: &mut DmaFramePool,
     reason: &'static str,
     reclaim_capacity: SuppressedReclaimCapacity,
 ) -> Result<bool> {
@@ -335,7 +325,7 @@ pub(super) fn force_reclaim_oldest_suppressed_surface_from_queue(
     }
 
     let sync_latency = sync_start.elapsed();
-    return_frame_to_pool_from_handle(frame_pool, handle);
+    release_decoded_frame_handle(handle);
     suppressed_reclaim_counters.total_reclaimed += 1;
     debug!(
         pts_ms,
@@ -357,7 +347,6 @@ pub(super) fn force_reclaim_oldest_suppressed_surface_from_queue(
 pub(super) fn force_drain_suppressed_surfaces_from_queue(
     suppressed_reclaim_queue: &mut VecDeque<VaapiDecodedFrameHandle>,
     suppressed_reclaim_counters: &mut SuppressedReclaimCounters,
-    frame_pool: &mut DmaFramePool,
     reason: &'static str,
     reclaim_capacity: SuppressedReclaimCapacity,
 ) -> Result<()> {
@@ -378,7 +367,6 @@ pub(super) fn force_drain_suppressed_surfaces_from_queue(
     while force_reclaim_oldest_suppressed_surface_from_queue(
         suppressed_reclaim_queue,
         suppressed_reclaim_counters,
-        frame_pool,
         reason,
         reclaim_capacity,
     )? {}
@@ -406,7 +394,6 @@ pub(super) fn force_drain_suppressed_surfaces_from_queue(
 pub(super) fn enqueue_suppressed_frame_for_reclaim_in_queue(
     suppressed_reclaim_queue: &mut VecDeque<VaapiDecodedFrameHandle>,
     suppressed_reclaim_counters: &mut SuppressedReclaimCounters,
-    frame_pool: &mut DmaFramePool,
     reclaim_capacity: SuppressedReclaimCapacity,
     handle: VaapiDecodedFrameHandle,
     reason: &'static str,
@@ -415,7 +402,6 @@ pub(super) fn enqueue_suppressed_frame_for_reclaim_in_queue(
     reclaim_ready_suppressed_surfaces_from_queue(
         suppressed_reclaim_queue,
         suppressed_reclaim_counters,
-        frame_pool,
         reclaim_capacity,
     )?;
 
@@ -439,7 +425,6 @@ pub(super) fn enqueue_suppressed_frame_for_reclaim_in_queue(
         if let Err(error) = force_reclaim_oldest_suppressed_surface_from_queue(
             suppressed_reclaim_queue,
             suppressed_reclaim_counters,
-            frame_pool,
             reason,
             reclaim_capacity,
         ) {
@@ -485,6 +470,23 @@ pub(super) fn enqueue_suppressed_frame_for_reclaim_in_queue(
     Ok(())
 }
 
+/// Итог пересчёта reclaim bound-а под действующую ёмкость пула.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ReclaimBoundAdoption {
+    /// Bound до пересчёта.
+    pub(super) previous_bound: usize,
+    /// Bound после пересчёта.
+    pub(super) current_bound: usize,
+}
+
+impl ReclaimBoundAdoption {
+    /// Изменился ли bound (иначе логировать нечего).
+    #[must_use]
+    pub(super) fn changed(self) -> bool {
+        self.previous_bound != self.current_bound
+    }
+}
+
 /// Владелец bounded очереди и accounting подавленных VA surfaces.
 pub(super) struct SuppressedReclaimState {
     queue: VecDeque<VaapiDecodedFrameHandle>,
@@ -502,26 +504,39 @@ impl SuppressedReclaimState {
     pub(super) fn depth(&self) -> usize {
         self.queue.len()
     }
+
+    /// Пересчитывает bound и диагностику под config от действующей ёмкости пула.
+    ///
+    /// Вызывается на lifecycle boundary (`FormatChanged`), когда очередь уже
+    /// принудительно осушена, поэтому уменьшение bound-а не оставляет очередь
+    /// переполненной. Возвращает, изменился ли bound, чтобы decoder залогировал это.
+    pub(super) fn adopt_runtime_config(
+        &mut self,
+        runtime_config: VaapiDecoderRuntimeConfig,
+    ) -> ReclaimBoundAdoption {
+        let previous_bound = self.capacity.max_suppressed_reclaim_frames;
+        self.capacity = SuppressedReclaimCapacity::from_runtime_config(runtime_config);
+        ReclaimBoundAdoption {
+            previous_bound,
+            current_bound: self.capacity.max_suppressed_reclaim_frames,
+        }
+    }
+
     pub(super) fn is_full(&self) -> bool {
         is_suppressed_reclaim_queue_full(
             self.queue.len(),
             self.capacity.max_suppressed_reclaim_frames,
         )
     }
-    pub(super) fn reclaim_ready(
-        &mut self,
-        frame_pool: &mut DmaFramePool,
-    ) -> Result<ReclaimPassReport> {
+    pub(super) fn reclaim_ready(&mut self) -> Result<ReclaimPassReport> {
         reclaim_ready_suppressed_surfaces_from_queue(
             &mut self.queue,
             &mut self.counters,
-            frame_pool,
             self.capacity,
         )
     }
     pub(super) fn enqueue(
         &mut self,
-        frame_pool: &mut DmaFramePool,
         handle: VaapiDecodedFrameHandle,
         reason: &'static str,
         metadata: PrerollFallbackCandidateMetadata,
@@ -529,22 +544,16 @@ impl SuppressedReclaimState {
         enqueue_suppressed_frame_for_reclaim_in_queue(
             &mut self.queue,
             &mut self.counters,
-            frame_pool,
             self.capacity,
             handle,
             reason,
             metadata,
         )
     }
-    pub(super) fn force_drain(
-        &mut self,
-        frame_pool: &mut DmaFramePool,
-        reason: &'static str,
-    ) -> Result<()> {
+    pub(super) fn force_drain(&mut self, reason: &'static str) -> Result<()> {
         force_drain_suppressed_surfaces_from_queue(
             &mut self.queue,
             &mut self.counters,
-            frame_pool,
             reason,
             self.capacity,
         )

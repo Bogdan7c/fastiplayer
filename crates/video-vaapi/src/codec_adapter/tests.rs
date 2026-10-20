@@ -33,7 +33,7 @@ impl VaapiCodecAdapter for DefaultReusePolicyAdapter {
         _timestamp_us: u64,
         packet_data: &[u8],
         _decode_hints: VaapiPacketDecodeHints,
-        _frame_pool: &mut DmaFramePool,
+        _surface_pool: &VaapiOutputSurfacePool,
     ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
         Ok(packet_data.len())
     }

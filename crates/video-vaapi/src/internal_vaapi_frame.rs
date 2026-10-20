@@ -1,30 +1,51 @@
+use std::cell::Cell;
+use std::fmt;
 use std::rc::Rc;
 
-use cros_codecs::libva::{
-    Display, Surface, UsageHint, VA_RT_FORMAT_YUV420_10, VA_RT_FORMAT_YUV420_12,
-};
+use cros_codecs::libva::{Display, VA_RT_FORMAT_YUV420_10, VA_RT_FORMAT_YUV420_12};
 use cros_codecs::video_frame::{ReadMapping, VideoFrame, WriteMapping};
 use cros_codecs::{Fourcc, Resolution};
-use tracing::debug;
 
-/// Лёгкий descriptor кадра для decode в internal VA surface.
+use crate::output_surface_pool::{OutputSurfaceFormat, VaapiOutputSurfaceLease};
+
+/// Выходной кадр декодера во internal VA surface из [`crate::output_surface_pool`].
 ///
-/// Память выделяет сам VA драйвер. Это fallback для Intel/Mesa путей,
-/// где decode в external DRM PRIME/GBM BO завершается без ошибки, но память остаётся нулевой.
-#[derive(Clone, Copy, Debug)]
+/// Память выделяет сам VA драйвер (fallback для Intel/Mesa путей, где decode в
+/// external DRM PRIME/GBM BO завершается без ошибки, но память остаётся нулевой).
+///
+/// Кадр несёт арендованную у пула surface. cros-codecs забирает её ровно один раз
+/// в [`VideoFrame::to_native_handle`] при создании picture; дальше surface живёт в
+/// picture/DPB и сама возвращается в пул, когда отпущен последний handle.
 pub struct InternalVaapiFrame {
     /// Coded resolution кадра.
     resolution: Resolution,
     /// VA RT format поверхности, который должен совпадать с VAConfig decoder context.
     rt_format: u32,
+    /// Арендованная surface до передачи в picture; после передачи — `None`.
+    leased_surface: Cell<Option<VaapiOutputSurfaceLease>>,
 }
 
 impl InternalVaapiFrame {
-    /// Создаёт descriptor внутреннего VA кадра.
-    pub fn new(resolution: Resolution, rt_format: u32) -> Self {
+    /// Кадр поверх арендованной у пула surface.
+    pub(crate) fn from_leased_surface(lease: VaapiOutputSurfaceLease) -> Self {
+        let OutputSurfaceFormat {
+            coded_resolution,
+            rt_format,
+        } = lease.format();
+        Self {
+            resolution: coded_resolution,
+            rt_format,
+            leased_surface: Cell::new(Some(lease)),
+        }
+    }
+
+    /// Descriptor без surface — только для тестовых fake handle-ов.
+    #[cfg(test)]
+    pub(crate) fn without_surface(resolution: Resolution, rt_format: u32) -> Self {
         Self {
             resolution,
             rt_format,
+            leased_surface: Cell::new(None),
         }
     }
 
@@ -42,9 +63,20 @@ impl InternalVaapiFrame {
     }
 }
 
+impl fmt::Debug for InternalVaapiFrame {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `Cell<Option<_>>` нельзя прочитать без take(); для Debug важны только формат.
+        formatter
+            .debug_struct("InternalVaapiFrame")
+            .field("resolution", &self.resolution)
+            .field("rt_format", &self.rt_format)
+            .finish_non_exhaustive()
+    }
+}
+
 impl VideoFrame for InternalVaapiFrame {
     type MemDescriptor = ();
-    type NativeHandle = Surface<()>;
+    type NativeHandle = VaapiOutputSurfaceLease;
 
     fn fourcc(&self) -> Fourcc {
         match self.rt_format {
@@ -84,34 +116,14 @@ impl VideoFrame for InternalVaapiFrame {
         Err("Internal VA surfaces are not CPU-writable through VideoFrame::map_mut()".to_string())
     }
 
-    fn to_native_handle(&self, display: &Rc<Display>) -> Result<Self::NativeHandle, String> {
-        // Для decoder surface не задаём FourCC вручную: VA-драйвер сам выбирает
-        // внутренний layout поверхности, а NV12 мы запрашиваем позже на readback.
-        //
-        // `USAGE_HINT_EXPORT` важен для P010 zero-copy: без него часть драйверов
-        // создаёт decode-only surface, который потом отвергает `vaExportSurfaceHandle`.
-        let usage_hint = UsageHint::USAGE_HINT_DECODER | UsageHint::USAGE_HINT_EXPORT;
-        debug!(
-            width = self.resolution.width,
-            height = self.resolution.height,
-            rt_format = self.rt_format,
-            usage_hint = usage_hint.bits(),
-            "Creating internal VA decoder/export surface without forced FourCC"
-        );
-
-        let mut surfaces = display
-            .create_surfaces(
-                self.rt_format,
-                None,
-                self.resolution.width,
-                self.resolution.height,
-                Some(usage_hint),
-                vec![()],
-            )
-            .map_err(|e| format!("Failed to create internal VA surface: {e:?}"))?;
-
-        surfaces
-            .pop()
-            .ok_or_else(|| "VA driver returned no internal surfaces".to_string())
+    /// Передаёт арендованную surface в cros-codecs picture.
+    ///
+    /// Surface уже создана (или переиспользована) пулом в alloc-callback-е, здесь
+    /// `vaCreateSurfaces` не вызывается. Второй вызов для того же кадра — ошибка:
+    /// одна surface не может стать render target-ом двух разных pictures.
+    fn to_native_handle(&self, _display: &Rc<Display>) -> Result<Self::NativeHandle, String> {
+        self.leased_surface.take().ok_or_else(|| {
+            "output frame has no leased VA surface (already handed to a picture)".to_string()
+        })
     }
 }

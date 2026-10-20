@@ -1,11 +1,13 @@
 use std::env;
+use std::num::NonZeroUsize;
 
 use tracing::{info, warn};
 
-/// Production default количества кадров в VA DMA-пуле.
+/// Production default ёмкости пула выходных VA surfaces.
 ///
-/// Текущий VP9 adapter может держать до 8 reference frames. 24 descriptors дают
-/// запас для 4k60 burst-ов, но остаются bounded через `VaapiDecoderRuntimeConfig`.
+/// Покрывает самый большой DPB кодеков (H.264/H.265 до 16 + 4 по cros-codecs) плюс
+/// кадры у плеера и рендерера. Surfaces создаются лениво, поэтому реально живёт
+/// столько, сколько нужно одновременно (в плеере на 1080p60/4K60 — около 20).
 pub const DEFAULT_DECODER_SURFACE_POOL_FRAMES: usize = 24;
 
 /// Production default кадров, которые decoder держит импортированными до publish boundary.
@@ -41,10 +43,37 @@ pub(super) const SUPPRESSED_RECLAIM_READY_PUBLISH_HEADROOM_FRAMES: usize = 2;
 /// Минимальный запас от off-by-one/in-flight accounting ошибок.
 pub(super) const SUPPRESSED_RECLAIM_MARGIN_FRAMES: usize = 1;
 
+/// Сколько surfaces одновременно держат вне кодека плеер и рендерер.
+///
+/// cros-codecs считает `min_num_frames` как DPB + 4 и предполагает, что клиент
+/// возвращает кадры сразу. У нас кадр после публикации живёт в ready queue,
+/// у плеера (preroll, pending publish) и у рендерера (zero-copy guard до
+/// `on_submitted_work_done`). Если пул поднимается только до DPB + 4, DPB съедает
+/// почти всю ёмкость, плеер ждёт preroll и не отпускает кадры, а декодер ждёт
+/// плеер — взаимная блокировка. Поэтому минимум стрима = минимум кодека + эта
+/// добавка. Она собрана из тех же оценок, что и reclaim accounting выше, чтобы
+/// «сколько держат снаружи» было записано в одном месте.
+pub(super) const OUTPUT_SURFACE_EXTERNAL_HOLDERS_HEADROOM_FRAMES: usize =
+    SUPPRESSED_RECLAIM_RENDER_HELD_HEADROOM_FRAMES
+        + SUPPRESSED_RECLAIM_READY_PUBLISH_HEADROOM_FRAMES
+        + SUPPRESSED_RECLAIM_MARGIN_FRAMES;
+
+/// Единственное место правила «очередь или пул не бывают пустыми»: `0` → `1`.
+///
+/// Прямой вызов backend API может передать ноль; TOML-валидация до сюда ноль не
+/// пропускает. Это же правило использует shared hardware owner для playback budget.
+#[must_use]
+pub(crate) fn non_zero_or_one(value: usize) -> NonZeroUsize {
+    NonZeroUsize::new(value).unwrap_or(NonZeroUsize::MIN)
+}
+
 /// Runtime-limits VA-API decoder-а, которые относятся к backend-local очередям.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VaapiDecoderRuntimeConfig {
-    /// Количество output surface descriptors, доступных hardware decoder-у.
+    /// Потолок числа выходных VA surfaces hardware decoder-а (пул переиспользует их).
+    ///
+    /// Если кодеку стрима нужно больше (DPB + запас), пул поднимает ёмкость до
+    /// минимума кодека (решение владельца 2026-10-20), чтобы видео не застыло.
     pub surface_pool_frames: usize,
 
     /// Максимум готовых frames внутри backend ready queue до publish boundary.
@@ -74,8 +103,8 @@ impl VaapiDecoderRuntimeConfig {
         surface_pool_frames: usize,
         ready_queue_frames: usize,
     ) -> Self {
-        let normalized_surface_pool_frames = surface_pool_frames.max(1);
-        let normalized_ready_queue_frames = ready_queue_frames.max(1);
+        let normalized_surface_pool_frames = non_zero_or_one(surface_pool_frames).get();
+        let normalized_ready_queue_frames = non_zero_or_one(ready_queue_frames).get();
         Self {
             surface_pool_frames: normalized_surface_pool_frames,
             ready_queue_frames: normalized_ready_queue_frames,
@@ -86,11 +115,19 @@ impl VaapiDecoderRuntimeConfig {
         }
     }
 
+    /// Ёмкость пула выходных VA surfaces из настройки пользователя.
+    ///
+    /// Минимум стрима (DPB кодека + кадры у плеера/рендерера) добавляет уже сам пул.
+    #[must_use]
+    pub(super) fn surface_pool_frames_non_zero(&self) -> NonZeroUsize {
+        non_zero_or_one(self.surface_pool_frames)
+    }
+
     /// Нормализует public config, чтобы прямой вызов backend API не создал нулевые очереди.
     #[must_use]
     pub(super) fn normalized(self) -> Self {
-        let surface_pool_frames = self.surface_pool_frames.max(1);
-        let ready_queue_frames = self.ready_queue_frames.max(1);
+        let surface_pool_frames = non_zero_or_one(self.surface_pool_frames).get();
+        let ready_queue_frames = non_zero_or_one(self.ready_queue_frames).get();
         let configured_suppressed_reclaim_frames = if self.max_suppressed_reclaim_frames == 0 {
             default_max_suppressed_reclaim_frames(surface_pool_frames, ready_queue_frames)
         } else {
@@ -106,6 +143,23 @@ impl VaapiDecoderRuntimeConfig {
             ready_queue_frames,
             max_suppressed_reclaim_frames,
         }
+    }
+
+    /// Config для бюджетов, которые считаются от действующей ёмкости пула.
+    ///
+    /// Пул мог поднять ёмкость выше настройки пользователя до минимума стрима (или
+    /// вернуть её назад на следующем стриме). Reclaim bound и его диагностика
+    /// должны считаться от того числа surfaces, которое реально существует, иначе
+    /// при настройке меньше DPB bound остаётся единицей, а headroom в логах врёт.
+    /// Bound выводится заново из accounting (как default), а env override и
+    /// clamp применяются как при обычной нормализации.
+    #[must_use]
+    pub(super) fn with_effective_surface_pool_frames(
+        self,
+        effective_surface_pool_frames: NonZeroUsize,
+    ) -> Self {
+        Self::from_surface_accounting(effective_surface_pool_frames.get(), self.ready_queue_frames)
+            .normalized()
     }
 }
 
