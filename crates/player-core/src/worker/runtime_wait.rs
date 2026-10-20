@@ -208,7 +208,10 @@ impl PlayerWorkerRuntime {
     pub(super) fn wait_for_worker_wakeup(&mut self) -> bool {
         match self.plan_next_worker_wakeup_with_decoder_activity() {
             Some(wait_plan) if wait_plan.timeout().is_zero() => {
-                self.handle_worker_timeout(wait_plan.deadline());
+                self.handle_worker_timeout(
+                    wait_plan.deadline(),
+                    WorkerTickTrigger::PlannedDeadline,
+                );
                 false
             }
             Some(wait_plan) => self.wait_for_worker_wakeup_with_timeout(wait_plan),
@@ -228,7 +231,7 @@ impl PlayerWorkerRuntime {
             let wakeup = wait_plan.wakeup;
             let timeout = Self::remaining_wakeup_timeout(wakeup);
             if timeout.is_zero() {
-                self.handle_worker_timeout(wakeup.deadline());
+                self.handle_worker_timeout(wakeup.deadline(), WorkerTickTrigger::PlannedDeadline);
                 return false;
             }
 
@@ -265,7 +268,10 @@ impl PlayerWorkerRuntime {
                 if let DecoderActivityWaitAction::RunPlaybackTick =
                     self.check_decoder_activity_before_select(decoder_activity)
                 {
-                    self.handle_worker_timeout(wakeup.deadline());
+                    self.handle_worker_timeout(
+                        wakeup.deadline(),
+                        WorkerTickTrigger::DecoderActivity,
+                    );
                     return false;
                 }
 
@@ -362,6 +368,7 @@ impl PlayerWorkerRuntime {
                 }
             }
             recv(decoder_pulse_receiver) -> activity_result => {
+                self.wakeup_counters.record_decoder_pulse();
                 let activity_outcome = decoder_activity
                     .snapshot
                     .activity_after_recv(decoder_activity.observed_epoch, activity_result);
@@ -370,7 +377,7 @@ impl PlayerWorkerRuntime {
                     activity_outcome,
                 ) {
                     DecoderActivityWaitAction::RunPlaybackTick => {
-                        self.handle_worker_timeout(wakeup.deadline());
+                        self.handle_worker_timeout(wakeup.deadline(), WorkerTickTrigger::DecoderActivity);
                         WorkerTimedWaitOutcome::Finished {
                             shutdown_requested: false,
                         }
@@ -384,37 +391,42 @@ impl PlayerWorkerRuntime {
                 self.handle_dynamic_timeline_activity(timeline_generation, activity_result)
             }
             recv(self.render_bridge.render_release_receiver()) -> release_result => {
+                self.wakeup_counters.record_render_feedback_wakeup();
                 self.render_bridge
                     .handle_release_wakeup(&mut self.session, release_result);
                 self.drain_render_feedback();
                 WorkerTimedWaitOutcome::ContinueWaiting
             }
             recv(self.render_bridge.render_acquire_sample_receiver()) -> sample_result => {
+                self.wakeup_counters.record_render_feedback_wakeup();
                 self.render_bridge
                     .handle_acquire_sample_wakeup(&mut self.session, sample_result);
                 self.drain_render_feedback();
                 WorkerTimedWaitOutcome::ContinueWaiting
             }
             recv(self.render_bridge.render_timing_sample_receiver()) -> sample_result => {
+                self.wakeup_counters.record_render_feedback_wakeup();
                 self.render_bridge
                     .handle_timing_sample_wakeup(&mut self.session, sample_result);
                 self.drain_render_feedback();
                 WorkerTimedWaitOutcome::ContinueWaiting
             }
             recv(self.render_bridge.resource_lock_sample_receiver()) -> sample_result => {
+                self.wakeup_counters.record_render_feedback_wakeup();
                 self.render_bridge
                     .handle_resource_lock_sample_wakeup(&mut self.session, sample_result);
                 self.drain_render_feedback();
                 WorkerTimedWaitOutcome::ContinueWaiting
             }
             recv(self.render_bridge.resource_previous_frame_reuse_sample_receiver()) -> sample_result => {
+                self.wakeup_counters.record_render_feedback_wakeup();
                 self.render_bridge
                     .handle_resource_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
                 self.drain_render_feedback();
                 WorkerTimedWaitOutcome::ContinueWaiting
             }
             default(timeout) => {
-                self.handle_worker_timeout(wakeup.deadline());
+                self.handle_worker_timeout(wakeup.deadline(), WorkerTickTrigger::PlannedDeadline);
                 WorkerTimedWaitOutcome::Finished {
                     shutdown_requested: false,
                 }
@@ -457,37 +469,42 @@ impl PlayerWorkerRuntime {
                 self.handle_dynamic_timeline_activity(timeline_generation, activity_result)
             }
             recv(self.render_bridge.render_release_receiver()) -> release_result => {
+                self.wakeup_counters.record_render_feedback_wakeup();
                 self.render_bridge
                     .handle_release_wakeup(&mut self.session, release_result);
                 self.drain_render_feedback();
                 WorkerTimedWaitOutcome::ContinueWaiting
             }
             recv(self.render_bridge.render_acquire_sample_receiver()) -> sample_result => {
+                self.wakeup_counters.record_render_feedback_wakeup();
                 self.render_bridge
                     .handle_acquire_sample_wakeup(&mut self.session, sample_result);
                 self.drain_render_feedback();
                 WorkerTimedWaitOutcome::ContinueWaiting
             }
             recv(self.render_bridge.render_timing_sample_receiver()) -> sample_result => {
+                self.wakeup_counters.record_render_feedback_wakeup();
                 self.render_bridge
                     .handle_timing_sample_wakeup(&mut self.session, sample_result);
                 self.drain_render_feedback();
                 WorkerTimedWaitOutcome::ContinueWaiting
             }
             recv(self.render_bridge.resource_lock_sample_receiver()) -> sample_result => {
+                self.wakeup_counters.record_render_feedback_wakeup();
                 self.render_bridge
                     .handle_resource_lock_sample_wakeup(&mut self.session, sample_result);
                 self.drain_render_feedback();
                 WorkerTimedWaitOutcome::ContinueWaiting
             }
             recv(self.render_bridge.resource_previous_frame_reuse_sample_receiver()) -> sample_result => {
+                self.wakeup_counters.record_render_feedback_wakeup();
                 self.render_bridge
                     .handle_resource_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
                 self.drain_render_feedback();
                 WorkerTimedWaitOutcome::ContinueWaiting
             }
             default(timeout) => {
-                self.handle_worker_timeout(wakeup.deadline());
+                self.handle_worker_timeout(wakeup.deadline(), WorkerTickTrigger::PlannedDeadline);
                 WorkerTimedWaitOutcome::Finished {
                     shutdown_requested: false,
                 }
@@ -571,26 +588,31 @@ impl PlayerWorkerRuntime {
                 )
             }
             recv(self.render_bridge.render_release_receiver()) -> release_result => {
+                self.wakeup_counters.record_render_feedback_wakeup();
                 self.render_bridge
                     .handle_release_wakeup(&mut self.session, release_result);
                 false
             }
             recv(self.render_bridge.render_acquire_sample_receiver()) -> sample_result => {
+                self.wakeup_counters.record_render_feedback_wakeup();
                 self.render_bridge
                     .handle_acquire_sample_wakeup(&mut self.session, sample_result);
                 false
             }
             recv(self.render_bridge.render_timing_sample_receiver()) -> sample_result => {
+                self.wakeup_counters.record_render_feedback_wakeup();
                 self.render_bridge
                     .handle_timing_sample_wakeup(&mut self.session, sample_result);
                 false
             }
             recv(self.render_bridge.resource_lock_sample_receiver()) -> sample_result => {
+                self.wakeup_counters.record_render_feedback_wakeup();
                 self.render_bridge
                     .handle_resource_lock_sample_wakeup(&mut self.session, sample_result);
                 false
             }
             recv(self.render_bridge.resource_previous_frame_reuse_sample_receiver()) -> sample_result => {
+                self.wakeup_counters.record_render_feedback_wakeup();
                 self.render_bridge
                     .handle_resource_previous_frame_reuse_sample_wakeup(&mut self.session, sample_result);
                 false
@@ -681,6 +703,6 @@ impl PlayerWorkerRuntime {
         }
 
         let WorkerWakeupDeadline::Playback { plan, deadline } = wakeup.deadline();
-        self.run_tick_for_wakeup_plan(plan, deadline);
+        self.run_tick_for_wakeup_plan(plan, deadline, WorkerTickTrigger::AfterCommands);
     }
 }

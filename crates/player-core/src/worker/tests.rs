@@ -146,6 +146,25 @@ impl Demuxer for WorkerFakeDemuxer {
     }
 }
 
+/// Provider без настоящих GPU-ресурсов: каждый кадр «готов», release — no-op.
+///
+/// Нужен вертикальным wakeup-тестам, где worker реально показывает кадры из
+/// очереди, но рендерер не участвует.
+struct ReadyNoopResourceProvider;
+
+impl crate::PresentFrameResourceProvider for ReadyNoopResourceProvider {
+    fn resource_lookup(
+        &self,
+        _handle: FrameResourceHandle,
+    ) -> crate::PresentFrameResourceProviderLookup {
+        crate::PresentFrameResourceProviderLookup::Ready {
+            resource_pool_lock_wait: Duration::ZERO,
+        }
+    }
+
+    fn release_frame(&self, _handle: FrameResourceHandle) {}
+}
+
 /// Минимальный fake decoder для worker activity wait tests.
 #[derive(Clone)]
 struct WorkerActivityDecoderThread {
@@ -212,7 +231,7 @@ impl video_core::VideoDecoderThreadHandle for WorkerActivityDecoderThread {
     }
 
     fn resource_provider(&self) -> crate::PresentFrameResourceProviderHandle {
-        panic!("worker activity fake decoder has no renderer resources")
+        crate::PresentFrameResourceProviderHandle::new(ReadyNoopResourceProvider)
     }
 
     fn decoder_resource_snapshot(&self) -> Option<crate::DecoderResourceSnapshot> {
@@ -323,6 +342,7 @@ fn runtime_for_tests_with_command_queue(
             config,
             last_tick_at,
             last_diagnostics_summary_at: last_tick_at,
+            wakeup_counters: WorkerWakeupCounters::new(last_tick_at),
             last_seek_stall_log_key: None,
             last_seek_stall_log_at: None,
         },
@@ -366,6 +386,7 @@ fn runtime_for_tests_with_wakeup_handles(
             config,
             last_tick_at,
             last_diagnostics_summary_at: last_tick_at,
+            wakeup_counters: WorkerWakeupCounters::new(last_tick_at),
             last_seek_stall_log_key: None,
             last_seek_stall_log_at: None,
         },

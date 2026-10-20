@@ -64,6 +64,12 @@ impl FramePublishPressureCounters {
             self.pressure.pending_publish_retry_count.saturating_add(1);
     }
 
+    /// Учитывает пробуждение ожидающего decoder-а жетоном «worker забрал кадр».
+    pub(in super::super) fn record_frame_room_wakeup(&mut self) {
+        self.pressure.frame_room_wakeup_count =
+            self.pressure.frame_room_wakeup_count.saturating_add(1);
+    }
+
     /// Учитывает latency только один раз: когда frame реально опубликован worker-у.
     fn record_published_latency(&mut self, latency: Duration) {
         self.pressure.total_decoded_frame_publish_latency = self
@@ -217,11 +223,17 @@ pub(in super::super) fn publish_pending_frame(
             };
             blocked_frame.mark_channel_full();
             *pending_publish = Some(blocked_frame);
-            send_frame_publish_pressure_event(
-                diagnostic_tx,
-                publish_pressure.snapshot(),
-                activity_notifier,
-            );
+            // Событие давления (и пульс worker-у) — только на входе в давление.
+            // Повтор, снова упёршийся в полный канал, меняет лишь счётчики: они
+            // уйдут накопленным snapshot-ом при успешной публикации, а пульс на
+            // каждом повторе будил бы worker без нового для него состояния.
+            if !is_retry {
+                send_frame_publish_pressure_event(
+                    diagnostic_tx,
+                    publish_pressure.snapshot(),
+                    activity_notifier,
+                );
+            }
             true
         }
         Err(TrySendError::Disconnected(frame)) => {

@@ -28,11 +28,12 @@ use crate::resource_pool::ResourcePoolStats;
 
 mod config;
 mod control;
+mod frame_room;
 mod resource_provider;
 mod runtime_loop;
 
 use config::{
-    DECODER_DIAGNOSTIC_CHANNEL_CAPACITY, DECODER_FRAME_PUBLISH_RETRY_MS, DecodePacketAck,
+    DECODER_DIAGNOSTIC_CHANNEL_CAPACITY, DECODER_OUTPUT_BACKPRESSURE_RETRY_MS, DecodePacketAck,
     DecoderDiagnosticReceiver, DecoderDiagnosticSender, DecoderThreadState,
 };
 pub use config::{
@@ -87,6 +88,8 @@ pub struct VideoDecodeThread {
     control_tx: Sender<ThreadControlMsg>,
     control_pressure: Arc<DecoderControlChannelPressureCounters>,
     frame_rx: Receiver<DecodedFrame>,
+    /// Будит decoder thread, упёршийся в полный `frame_rx`, когда worker забрал кадр.
+    frame_room: frame_room::FrameRoomNotifier,
     packet_ack_rx: Receiver<DecodePacketAck>,
     error_rx: Receiver<DecodeThreadError>,
     diagnostic_rx: Mutex<DecoderDiagnosticReceiver>,
@@ -121,6 +124,7 @@ impl VideoDecodeThread {
         let (control_tx, control_rx) = bounded::<ThreadControlMsg>(config.control_channel_frames);
         let control_pressure = Arc::new(DecoderControlChannelPressureCounters::default());
         let (frame_tx, frame_rx) = bounded::<DecodedFrame>(config.frame_channel_frames);
+        let (frame_room, frame_room_waiter) = frame_room::frame_room_channel();
         let (packet_ack_tx, packet_ack_rx) = unbounded::<DecodePacketAck>();
         let (error_tx, error_rx) = bounded::<DecodeThreadError>(1);
         let (diagnostic_tx, diagnostic_rx) =
@@ -176,6 +180,7 @@ impl VideoDecodeThread {
                         packet_rx,
                         control_rx,
                         frame_tx,
+                        frame_room: frame_room_waiter,
                         packet_ack_tx,
                         error_tx,
                         diagnostic_tx: thread_diagnostic_tx,
@@ -203,6 +208,7 @@ impl VideoDecodeThread {
             control_tx,
             control_pressure,
             frame_rx,
+            frame_room,
             packet_ack_rx,
             error_rx,
             diagnostic_rx: Mutex::new(diagnostic_rx),
@@ -600,7 +606,10 @@ impl VideoDecodeThread {
 
     /// Забирает готовый decoded frame из очереди (неблокирующий).
     pub fn try_recv_frame(&self) -> Option<DecodedFrame> {
-        self.frame_rx.try_recv().ok()
+        let frame = self.frame_rx.try_recv().ok()?;
+        // В канале освободился слот: decoder, ждущий места, публикует pending кадр сразу.
+        self.frame_room.notify_frame_taken();
+        Some(frame)
     }
 
     /// Забирает backend diagnostics event без блокировки.

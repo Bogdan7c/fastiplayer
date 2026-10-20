@@ -8,9 +8,10 @@ use tracing::trace;
 use video_core::{DecodedFrame, VideoDecoder, VideoDecoderActivityNotifier};
 
 use super::control::ThreadControlMsg;
+use super::frame_room::{FrameRoomWaiter, PublishBlockedWake, wait_for_frame_room_or_control};
 use super::{
-    DECODER_FRAME_PUBLISH_RETRY_MS, DecodePacketAck, DecodeThreadError, DecoderDiagnosticSender,
-    QueuedDecodePacket,
+    DECODER_OUTPUT_BACKPRESSURE_RETRY_MS, DecodePacketAck, DecodeThreadError,
+    DecoderDiagnosticSender, QueuedDecodePacket,
 };
 
 mod backpressure_stall;
@@ -42,6 +43,9 @@ pub(super) struct DecoderThreadChannels {
 
     /// Decoded frames обратно в player worker.
     pub(super) frame_tx: Sender<DecodedFrame>,
+
+    /// Жетон «worker забрал кадр»: будит decoder, упёршийся в полный `frame_tx`.
+    pub(super) frame_room: FrameRoomWaiter,
 
     /// Packet completion ACK-и для player-side in-flight accounting.
     pub(super) packet_ack_tx: Sender<DecodePacketAck>,
@@ -106,6 +110,7 @@ pub(super) fn decoder_thread_loop(
         packet_rx,
         control_rx,
         frame_tx,
+        frame_room,
         packet_ack_tx,
         error_tx,
         diagnostic_tx,
@@ -167,9 +172,12 @@ pub(super) fn decoder_thread_loop(
             break;
         }
 
+        // Кадр не влез в полный frame channel: спим до жетона «worker забрал кадр»
+        // или control message (flush/seek/release немедленно прерывают ожидание).
+        // Прежний 2-мс опрос здесь просыпался впустую.
         if pending_publish.is_some() {
-            match control_rx.recv_timeout(Duration::from_millis(DECODER_FRAME_PUBLISH_RETRY_MS)) {
-                Ok(control_message) => {
+            match wait_for_frame_room_or_control(&control_rx, &frame_room) {
+                PublishBlockedWake::Control(control_message) => {
                     let mut control_context = DecoderControlContext {
                         packet_rx: &packet_rx,
                         error_tx: &error_tx,
@@ -186,8 +194,10 @@ pub(super) fn decoder_thread_loop(
                         break;
                     }
                 }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => break,
+                PublishBlockedWake::FrameRoom => publish_pressure.record_frame_room_wakeup(),
+                PublishBlockedWake::ControlDisconnected | PublishBlockedWake::FrameConsumerGone => {
+                    break;
+                }
             }
             continue;
         }
@@ -225,7 +235,7 @@ pub(super) fn decoder_thread_loop(
                 DecodeQueuedPacketResult::OutputBackpressured(queued_packet) => {
                     output_backpressured_packet = Some(queued_packet);
                     match control_rx
-                        .recv_timeout(Duration::from_millis(DECODER_FRAME_PUBLISH_RETRY_MS))
+                        .recv_timeout(Duration::from_millis(DECODER_OUTPUT_BACKPRESSURE_RETRY_MS))
                     {
                         Ok(control_message) => {
                             let mut control_context = DecoderControlContext {

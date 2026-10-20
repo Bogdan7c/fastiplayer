@@ -3,6 +3,8 @@ use codec_core::VideoColorMetadata;
 use video_core::FrameResourceHandle;
 use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
+mod publish_wait;
+
 /// Создаёт decoded frame без реальных GPU resources для channel-level тестов.
 fn decoded_frame_for_tests(handle_id: u64) -> DecodedFrame {
     DecodedFrame {
@@ -353,6 +355,7 @@ fn decoder_thread_for_control_tests(
 ) -> VideoDecodeThread {
     let (packet_tx, _packet_rx) = bounded(1);
     let (_frame_tx, frame_rx) = bounded(1);
+    let (frame_room, _frame_room_waiter) = super::frame_room::frame_room_channel();
     let (_packet_ack_tx, packet_ack_rx) = unbounded();
     let (_error_tx, error_rx) = bounded(1);
     let (_diagnostic_tx, diagnostic_rx) =
@@ -364,6 +367,7 @@ fn decoder_thread_for_control_tests(
         control_tx,
         control_pressure,
         frame_rx,
+        frame_room,
         packet_ack_rx,
         error_rx,
         diagnostic_rx: Mutex::new(diagnostic_rx),

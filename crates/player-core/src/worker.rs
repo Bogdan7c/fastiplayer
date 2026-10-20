@@ -74,6 +74,8 @@ mod sender;
 mod staged_media_install;
 mod subtitle_config;
 mod terminal;
+mod wakeup_counters;
+use wakeup_counters::{WorkerTickTrigger, WorkerWakeupCounters};
 #[cfg(test)]
 mod tests;
 
@@ -767,6 +769,9 @@ struct PlayerWorkerRuntime {
 
     /// Последний debug diagnostics summary.
     last_diagnostics_summary_at: Instant,
+
+    /// Оконные счётчики пробуждений для diagnostics summary.
+    wakeup_counters: WorkerWakeupCounters,
 
     /// Последний active seek transaction, для которого печатали stall diagnostics.
     last_seek_stall_log_key: Option<(u64, &'static str)>,

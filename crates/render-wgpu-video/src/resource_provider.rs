@@ -10,8 +10,8 @@ use video_backend_api::{
 };
 use video_core::{
     DecodeSendError, DecodeThreadError, DecodedFrame, DecoderResourceSnapshot,
-    VideoDecoderControlChannelPressureSnapshot, VideoDecoderDiagnosticEvent,
-    VideoDecoderThreadHandle,
+    VideoDecoderActivitySnapshot, VideoDecoderControlChannelPressureSnapshot,
+    VideoDecoderDiagnosticEvent, VideoDecoderThreadHandle,
 };
 
 /// Оборачивает started backend так, чтобы submitted releases ждали WGPU queue completion.
@@ -389,6 +389,14 @@ impl VideoDecoderThreadHandle for WgpuReleaseVideoDecoderThreadHandle {
         self.inner.decoder_control_channel_pressure()
     }
 
+    // Без этого проброса срабатывал default трейта `unsupported()`: worker в
+    // живом приложении не видел decoder activity и опрашивал decoder каждые 2 мс
+    // (cpu-parity сессия 02). Обёртка меняет только provider release-а, все
+    // остальные сигналы decoder-а обязана отдавать как есть.
+    fn decoder_activity_snapshot(&self) -> VideoDecoderActivitySnapshot {
+        self.inner.decoder_activity_snapshot()
+    }
+
     fn packet_queue_depth(&self) -> usize {
         self.inner.packet_queue_depth()
     }
@@ -427,6 +435,7 @@ mod tests {
     struct LifetimeFakeDecoderThread {
         provider: PresentFrameResourceProviderHandle,
         drop_count: Arc<AtomicUsize>,
+        activity_snapshot: VideoDecoderActivitySnapshot,
     }
 
     impl Drop for LifetimeFakeDecoderThread {
@@ -476,6 +485,10 @@ mod tests {
             None
         }
 
+        fn decoder_activity_snapshot(&self) -> VideoDecoderActivitySnapshot {
+            self.activity_snapshot.clone()
+        }
+
         fn packet_queue_depth(&self) -> usize {
             0
         }
@@ -496,6 +509,7 @@ mod tests {
             Box::new(LifetimeFakeDecoderThread {
                 provider: provider.clone(),
                 drop_count: decoder_drop_count.clone(),
+                activity_snapshot: VideoDecoderActivitySnapshot::unsupported(),
             });
         let (shared_decoder, backend_lifetime) = share_video_backend_decoder_thread(decoder_thread);
         drop(shared_decoder);
@@ -513,5 +527,40 @@ mod tests {
         assert_eq!(decoder_drop_count.load(Ordering::Relaxed), 0);
         drop(pending_release);
         assert_eq!(decoder_drop_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn wgpu_release_wrapper_forwards_decoder_activity_to_player() {
+        let (activity_notifier, activity_subscription) =
+            video_core::VideoDecoderActivityNotifier::new();
+        let provider = PresentFrameResourceProviderHandle::new(CountingResourceProvider {
+            release_count: Arc::new(AtomicUsize::new(0)),
+        });
+        let decoder_thread: Box<video_backend_api::VideoBackendDecoderThreadHandle> =
+            Box::new(LifetimeFakeDecoderThread {
+                provider: provider.clone(),
+                drop_count: Arc::new(AtomicUsize::new(0)),
+                activity_snapshot: activity_subscription.snapshot(),
+            });
+        let (shared_decoder, _backend_lifetime) =
+            share_video_backend_decoder_thread(decoder_thread);
+        let wrapped_thread = WgpuReleaseVideoDecoderThreadHandle {
+            inner: shared_decoder,
+            renderer_provider: provider,
+        };
+
+        let snapshot = wrapped_thread.decoder_activity_snapshot();
+        let observed_epoch = snapshot
+            .captured_epoch()
+            .expect("wrapped decoder must expose the backend activity notifier");
+        let _ = activity_notifier.notify_activity();
+
+        assert!(
+            matches!(
+                snapshot.activity_since(observed_epoch),
+                video_core::VideoDecoderActivityWaitOutcome::ActivityReceived { .. }
+            ),
+            "activity published by the backend must reach the player through the wrapper"
+        );
     }
 }

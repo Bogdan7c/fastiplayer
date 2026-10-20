@@ -101,6 +101,10 @@ pub struct VideoFramePublishPressureDiagnostics {
 
     /// Сколько повторных publish attempts сделано для уже pending frame.
     pub pending_publish_retry_count: u64,
+
+    /// Сколько раз decoder, ждущий места в полном frame channel, разбудил
+    /// сигнал «worker забрал кадр» (backend без такого ожидания оставляет 0).
+    pub frame_room_wakeup_count: u64,
 }
 
 /// Typed diagnostics event от video backend-а в player-core.

@@ -57,10 +57,17 @@ pub(super) fn acquire_snapshot_publication_barrier(
 }
 
 impl PlayerWorkerRuntime {
-    /// Обрабатывает timeout, который не был command/render event-ом.
-    pub(super) fn handle_worker_timeout(&mut self, deadline: WorkerWakeupDeadline) {
+    /// Выполняет playback tick по плану, который разбудил worker не command/render event-ом.
+    ///
+    /// `trigger` — повод пробуждения (deadline или decoder activity); он идёт
+    /// только в оконные счётчики и не меняет семантику tick-а.
+    pub(super) fn handle_worker_timeout(
+        &mut self,
+        deadline: WorkerWakeupDeadline,
+        trigger: WorkerTickTrigger,
+    ) {
         let WorkerWakeupDeadline::Playback { plan, deadline } = deadline;
-        self.run_tick_for_wakeup_plan(plan, deadline);
+        self.run_tick_for_wakeup_plan(plan, deadline, trigger);
     }
 
     /// Выполняет playback tick по media-clock-driven wakeup plan.
@@ -68,9 +75,11 @@ impl PlayerWorkerRuntime {
         &mut self,
         plan: PlayerWorkerWakeupPlan,
         deadline: Instant,
+        trigger: WorkerTickTrigger,
     ) {
         let now = Instant::now();
         let tick_late_by = now.saturating_duration_since(deadline);
+        self.wakeup_counters.record_tick(trigger, plan.reason);
         self.session
             .record_worker_wakeup(plan.diagnostics(tick_late_by));
         let tick_result = self.session.tick(PlayerTickContext::with_timing(
@@ -137,6 +146,7 @@ impl PlayerWorkerRuntime {
         }
 
         self.last_diagnostics_summary_at = now;
+        let wakeup_window = self.wakeup_counters.take_window(now);
         let worst_stage = summary
             .worst_stage
             .map(|stage| stage.metric_name())
@@ -183,6 +193,7 @@ impl PlayerWorkerRuntime {
             render_resource_previous_frame_reuse_count = summary.render_resource_previous_frame_reuse_count,
             decoder_publish_channel_full_count = publish_pressure.frame_publish_channel_full_count,
             decoder_publish_retry_count = publish_pressure.pending_publish_retry_count,
+            decoder_publish_room_wakeups = publish_pressure.frame_room_wakeup_count,
             decoder_publish_total_ms = duration_to_millis(
                 publish_pressure.total_decoded_frame_publish_latency
             ),
@@ -205,6 +216,14 @@ impl PlayerWorkerRuntime {
             release_ack_worst_ms = ?worst_latency_millis(latencies.release_acknowledgement),
             wake_reason,
             wake_delay_ms = ?wake_delay_ms,
+            wake_window_ms = duration_to_millis(wakeup_window.duration),
+            worker_ticks = wakeup_window.ticks_total(),
+            worker_ticks_deadline = wakeup_window.ticks_planned_deadline,
+            worker_ticks_decoder_activity = wakeup_window.ticks_decoder_activity,
+            worker_ticks_after_commands = wakeup_window.ticks_after_commands,
+            worker_decoder_pulses = wakeup_window.decoder_pulses,
+            worker_render_feedback_wakeups = wakeup_window.render_feedback_wakeups,
+            worker_tick_reasons = %wakeup_window.reasons_for_log(),
             wake_late_ms,
             pts_target_ms = ?pts_target_ms,
             pending_video_packets = summary.queues.pending_video_packets,

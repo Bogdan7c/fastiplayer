@@ -450,6 +450,9 @@ pub struct DecoderFramePublishPressureSnapshot {
 
     /// Сколько retry attempts сделал decoder thread для pending publish frame.
     pub pending_publish_retry_count: u64,
+
+    /// Сколько раз сигнал «worker забрал кадр» разбудил decoder, ждущий места.
+    pub frame_room_wakeup_count: u64,
 }
 
 impl DecoderFramePublishPressureSnapshot {
@@ -458,6 +461,7 @@ impl DecoderFramePublishPressureSnapshot {
         // Latency totals считаются из `DecodedFrame`: event может прийти раньше frame drain-а.
         self.frame_publish_channel_full_count = pressure.frame_publish_channel_full_count;
         self.pending_publish_retry_count = pressure.pending_publish_retry_count;
+        self.frame_room_wakeup_count = pressure.frame_room_wakeup_count;
     }
 
     /// Учитывает publish latency ровно один раз после получения decoded frame.
@@ -1721,6 +1725,7 @@ mod tests {
         let pressure = VideoFramePublishPressureDiagnostics {
             frame_publish_channel_full_count: 3,
             pending_publish_retry_count: 2,
+            frame_room_wakeup_count: 2,
             max_decoded_frame_publish_latency: Duration::from_millis(99),
             total_decoded_frame_publish_latency: Duration::from_millis(150),
         };
@@ -1744,6 +1749,7 @@ mod tests {
 
         assert_eq!(publish_pressure.frame_publish_channel_full_count, 3);
         assert_eq!(publish_pressure.pending_publish_retry_count, 2);
+        assert_eq!(publish_pressure.frame_room_wakeup_count, 2);
         assert_eq!(
             publish_pressure.max_decoded_frame_publish_latency,
             Duration::from_millis(6)

@@ -33,6 +33,7 @@ mod audio_fallback_wakeup;
 mod audio_packet_window;
 mod audio_read_ahead;
 mod audio_refill_wakeup;
+mod output_clamped_wakeup;
 mod video_decode_ahead;
 
 /// Scripted demuxer для focused admission tests без реального container backend-а.
@@ -1129,7 +1130,7 @@ fn worker_wakeup_records_front_frame_pts_diff_for_diagnostics() {
 
 #[test]
 fn decoder_readiness_poll_keeps_seek_decoder_inflight_from_idling() {
-    let poll_needed = decoder_readiness_poll_needed_for_state(DecoderReadinessPollState {
+    let readiness_wait = decoder_readiness_wait_for_state(DecoderReadinessPollState {
         video_track_selected: true,
         video_frame_queue_len: 0,
         video_present_queue_target: video_present_queue_target(&PlayerTickConfig::default()),
@@ -1138,16 +1139,17 @@ fn decoder_readiness_poll_keeps_seek_decoder_inflight_from_idling() {
         decoder_has_queued_packets: false,
         decoder_has_in_flight_packets: true,
         seek_commit_active: true,
+        decoder_activity_wakes_worker: true,
     });
 
-    assert!(poll_needed);
+    assert_eq!(readiness_wait, DecoderReadinessWait::BoundedPoll);
 }
 
 #[test]
 fn decoder_readiness_poll_keeps_seek_decoder_inflight_when_present_queue_is_full() {
     let tick_config = PlayerTickConfig::default();
     let present_queue_target = video_present_queue_target(&tick_config);
-    let poll_needed = decoder_readiness_poll_needed_for_state(DecoderReadinessPollState {
+    let readiness_wait = decoder_readiness_wait_for_state(DecoderReadinessPollState {
         video_track_selected: true,
         video_frame_queue_len: present_queue_target,
         video_present_queue_target: present_queue_target,
@@ -1156,14 +1158,15 @@ fn decoder_readiness_poll_keeps_seek_decoder_inflight_when_present_queue_is_full
         decoder_has_queued_packets: false,
         decoder_has_in_flight_packets: true,
         seek_commit_active: true,
+        decoder_activity_wakes_worker: true,
     });
 
-    assert!(poll_needed);
+    assert_eq!(readiness_wait, DecoderReadinessWait::BoundedPoll);
 }
 
 #[test]
 fn decoder_readiness_poll_ignores_decoder_inflight_outside_seek() {
-    let poll_needed = decoder_readiness_poll_needed_for_state(DecoderReadinessPollState {
+    let readiness_wait = decoder_readiness_wait_for_state(DecoderReadinessPollState {
         video_track_selected: true,
         video_frame_queue_len: 0,
         video_present_queue_target: video_present_queue_target(&PlayerTickConfig::default()),
@@ -1172,9 +1175,10 @@ fn decoder_readiness_poll_ignores_decoder_inflight_outside_seek() {
         decoder_has_queued_packets: false,
         decoder_has_in_flight_packets: true,
         seek_commit_active: false,
+        decoder_activity_wakes_worker: true,
     });
 
-    assert!(!poll_needed);
+    assert_eq!(readiness_wait, DecoderReadinessWait::NotNeeded);
 }
 
 #[test]

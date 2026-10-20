@@ -74,6 +74,7 @@ impl PlayerWorker {
                     config,
                     last_tick_at: worker_started_at,
                     last_diagnostics_summary_at: worker_started_at,
+                    wakeup_counters: WorkerWakeupCounters::new(worker_started_at),
                     last_seek_stall_log_key: None,
                     last_seek_stall_log_at: None,
                 };

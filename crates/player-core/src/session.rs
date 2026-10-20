@@ -55,6 +55,8 @@ mod eof_drain;
 mod exact_media_transport;
 mod installed_media_restore;
 mod media_lifecycle;
+#[cfg(test)]
+mod output_clamped_test_support;
 mod paused_poster_frame;
 mod playback_rate;
 mod position_clock;

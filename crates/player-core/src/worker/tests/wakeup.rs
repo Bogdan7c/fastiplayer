@@ -553,7 +553,7 @@ fn tick_runs_while_render_lease_is_active() {
         runtime.config.coarse_wakeup_interval,
     );
 
-    runtime.run_tick_for_wakeup_plan(plan, Instant::now());
+    runtime.run_tick_for_wakeup_plan(plan, Instant::now(), WorkerTickTrigger::PlannedDeadline);
 
     assert!(runtime.last_tick_at > previous_tick_at);
 }
@@ -686,4 +686,83 @@ fn frame_server_mapping_accepts_persisted_live_scrub_rate_bounds() {
 
         assert_eq!(mapped.live_scrub_max_hz(), live_scrub_max_hz);
     }
+}
+
+/// Сколько кадров в очереди показа держит вертикальный сценарий (production limit).
+const OUTPUT_CLAMPED_QUEUED_FRAMES: u64 = 8;
+
+/// Длительность одного прохода вертикального сценария реального времени.
+const OUTPUT_CLAMPED_RUN_TIME: Duration = Duration::from_millis(100);
+
+/// PTS первого кадра очереди: чуть позже окна прохода, чтобы прежний 2-мс poll
+/// успел бы десятки раз, а новый план — только дождаться дедлайна.
+const OUTPUT_CLAMPED_FRONT_FRAME_PTS: Duration = Duration::from_millis(140);
+
+/// Гоняет настоящий worker wait loop над Playing session, зажатой очередью показа,
+/// и возвращает оконные счётчики пробуждений.
+fn run_output_clamped_worker(
+    activity_snapshot: VideoDecoderActivitySnapshot,
+) -> super::super::wakeup_counters::WorkerWakeupWindow {
+    let started_at = Instant::now();
+    // Handles держим живыми: drop shutdown sender-а worker воспринял бы как shutdown.
+    let (mut runtime, _command_tx, _shutdown_tx, _render_client) =
+        runtime_for_tests_with_wakeup_handles(started_at);
+    let queued_frames = (0..OUTPUT_CLAMPED_QUEUED_FRAMES)
+        .map(|frame_index| {
+            decoded_frame_with_pts_for_tests(
+                OUTPUT_CLAMPED_FRONT_FRAME_PTS + Duration::from_millis(16 * frame_index),
+                FrameResourceHandle(frame_index + 1),
+            )
+        })
+        .collect();
+    runtime.session.install_output_clamped_playback_for_tests(
+        WorkerActivityDecoderThread::new(activity_snapshot),
+        queued_frames,
+        Duration::from_millis(400),
+    );
+    runtime.wakeup_counters = WorkerWakeupCounters::new(started_at);
+
+    while started_at.elapsed() < OUTPUT_CLAMPED_RUN_TIME {
+        let shutdown_requested = runtime.wait_for_worker_wakeup();
+        assert!(!shutdown_requested);
+    }
+
+    runtime.wakeup_counters.take_window(Instant::now())
+}
+
+#[test]
+fn output_clamped_playback_sleeps_until_frame_deadline_instead_of_polling() {
+    let (_activity_notifier, activity_subscription) =
+        video_core::VideoDecoderActivityNotifier::new();
+
+    let window = run_output_clamped_worker(activity_subscription.snapshot());
+
+    assert_eq!(
+        window.ticks_for_reason(crate::WorkerWakeupReason::DecodeReadiness),
+        0,
+        "output-clamped playback must not poll decoder readiness: {}",
+        window.reasons_for_log()
+    );
+    assert!(
+        window.ticks_total() <= 4,
+        "worker must tick about once per frame deadline, got {} ticks ({})",
+        window.ticks_total(),
+        window.reasons_for_log()
+    );
+    assert!(
+        window.ticks_for_reason(crate::WorkerWakeupReason::FramePtsDeadline) >= 1,
+        "the front frame deadline must wake the worker: {}",
+        window.reasons_for_log()
+    );
+}
+
+#[test]
+fn output_clamped_playback_without_activity_notifier_keeps_bounded_polling() {
+    let window = run_output_clamped_worker(VideoDecoderActivitySnapshot::unsupported());
+
+    assert!(
+        window.ticks_for_reason(crate::WorkerWakeupReason::DecodeReadiness) >= 10,
+        "fallback without notifier must keep the bounded readiness poll: {}",
+        window.reasons_for_log()
+    );
 }

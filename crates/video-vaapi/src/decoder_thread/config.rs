@@ -42,8 +42,13 @@ pub const DEFAULT_DECODER_FRAME_CHANNEL_FRAMES: usize = 8;
 /// Внутренний control/release channel: release не должен стоять за packet backlog.
 const DEFAULT_DECODER_CONTROL_CHANNEL_FRAMES: usize = 32;
 
-/// Небольшой timeout poll-а, пока decoder ждёт место в bounded frame channel.
-pub(super) const DECODER_FRAME_PUBLISH_RETRY_MS: u64 = 2;
+/// Fallback-опрос, пока packet ждёт свободную выходную VA-поверхность.
+///
+/// Ожидание места в frame channel больше не опрашивается (см. `frame_room`).
+/// Здесь опрос остаётся: поверхности возвращаются и через `ReleaseZeroCopy`
+/// (control message будит сразу), и через фоновый suppressed-surface reclaim,
+/// у которого нет события — только неблокирующий запрос готовности VA surface.
+pub(super) const DECODER_OUTPUT_BACKPRESSURE_RETRY_MS: u64 = 2;
 
 /// Runtime limits decoder thread boundary.
 ///

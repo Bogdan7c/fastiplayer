@@ -182,13 +182,31 @@ impl PlayerSession {
             audio_buffer_refill_wakeup_delay(self, tick_config, audio_buffer_level);
         let front_frame_delay = front_frame_scheduler_delay(self, tick_config, now);
 
-        if decoder_readiness_poll_needed(self, tick_config) {
+        let decoder_activity_wakes_worker = decoder_activity_status.can_wait_for_activity();
+        let readiness_wait =
+            decoder_readiness_wait(self, tick_config, decoder_activity_wakes_worker);
+
+        // Pipeline зажат очередью показа: до дедлайна показа (или audio refill)
+        // decoder-у нечего делать, а его реальные события разбудят worker раньше.
+        if readiness_wait == DecoderReadinessWait::UntilPresentationDeadline
+            && let Some(existing_plan) = presentation_deadline_wakeup_plan_with_decoder_activity(
+                audio_refill_delay,
+                front_frame_delay,
+                frame_timing,
+            )
+        {
+            return prefer_earlier_demux_retry(self, tick_config, now, existing_plan);
+        }
+
+        // Дедлайна показа нет (например, clock ещё не идёт) — остаётся прежний
+        // bounded poll, чтобы worker не уснул без гарантированного пробуждения.
+        if readiness_wait != DecoderReadinessWait::NotNeeded {
             let existing_plan = decoder_readiness_wakeup_plan(
                 audio_refill_delay,
                 front_frame_delay,
                 decoder_readiness_poll_interval,
                 frame_timing,
-                decoder_activity_status.can_wait_for_activity(),
+                decoder_activity_wakes_worker,
             );
             return prefer_earlier_demux_retry(self, tick_config, now, existing_plan);
         }
@@ -341,6 +359,40 @@ fn decoder_readiness_wakeup_plan(
         frame_timing,
         wait_for_decoder_activity,
     )
+}
+
+/// Планирует сон до ближайшего дедлайна показа или audio refill-а.
+///
+/// Используется, когда decoder зажат очередью показа: новый packet всё равно
+/// нельзя отправить, пока presentation не освободит слот, а это случится только
+/// на дедлайне PTS первого кадра. Activity decoder-а (новый кадр, ACK packet-а,
+/// ошибка, EOF drain) по-прежнему будит worker раньше. `None` — дедлайна нет,
+/// caller обязан остаться на bounded poll.
+fn presentation_deadline_wakeup_plan_with_decoder_activity(
+    audio_refill_delay: Option<Duration>,
+    front_frame_delay: Option<Duration>,
+    frame_timing: Option<WorkerFrameTimingSnapshot>,
+) -> Option<PlayerWorkerWakeupPlan> {
+    let audio_refill_is_earlier = match (audio_refill_delay, front_frame_delay) {
+        (Some(audio_refill_delay), Some(front_frame_delay)) => {
+            audio_refill_delay < front_frame_delay
+        }
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
+    let (delay, reason) = if audio_refill_is_earlier {
+        (audio_refill_delay?, WorkerWakeupReason::PipelineWorkReady)
+    } else {
+        (front_frame_delay?, WorkerWakeupReason::FramePtsDeadline)
+    };
+
+    Some(PlayerWorkerWakeupPlan::after_with_decoder_activity(
+        delay,
+        reason,
+        frame_timing,
+        // wait_for_decoder_activity: реальные события decoder-а будят раньше дедлайна.
+        true,
+    ))
 }
 
 /// Уровень audio buffer-а, снятый один раз на весь проход wakeup planning-а.
@@ -560,17 +612,37 @@ fn seek_fast_preroll_active(session: &PlayerSession, tick_config: &PlayerTickCon
     )
 }
 
-/// Проверяет, нужен ли короткий poll decoded-frame readiness.
-pub(super) fn decoder_readiness_poll_needed(
+/// Как worker должен ждать прогресса decoder-а в текущем состоянии pipeline.
+///
+/// Три состояния нельзя слить в `bool`: «опрос не нужен» уводит planner к
+/// обычным PTS/audio/coarse deadline-ам, bounded poll — короткий fallback, а
+/// сон до дедлайна показа — штатный режим установившегося воспроизведения.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DecoderReadinessWait {
+    /// Decoder readiness не влияет на план.
+    NotNeeded,
+
+    /// Короткий bounded poll (`decoder_readiness_poll_interval`); activity
+    /// decoder-а может разбудить раньше, если notifier доступен.
+    BoundedPoll,
+
+    /// Decoder зажат очередью показа: ждём дедлайн PTS первого кадра или audio
+    /// refill, activity decoder-а будит раньше. Без 2-мс опроса.
+    UntilPresentationDeadline,
+}
+
+/// Выбирает режим ожидания decoder readiness через session boundary.
+pub(super) fn decoder_readiness_wait(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
-) -> bool {
+    decoder_activity_wakes_worker: bool,
+) -> DecoderReadinessWait {
     let Some(decoder_packet_queue_depth) = session.pipeline.video_decoder_packet_queue_depth()
     else {
-        return false;
+        return DecoderReadinessWait::NotNeeded;
     };
 
-    decoder_readiness_poll_needed_for_state(DecoderReadinessPollState {
+    decoder_readiness_wait_for_state(DecoderReadinessPollState {
         video_track_selected: session.pipeline.has_selected_video_track(),
         video_frame_queue_len: session.pipeline.video_present_queue_len(),
         video_present_queue_target: video_present_queue_target(tick_config),
@@ -579,6 +651,7 @@ pub(super) fn decoder_readiness_poll_needed(
         decoder_has_queued_packets: decoder_packet_queue_depth > 0,
         decoder_has_in_flight_packets: session.pipeline.video_decode_in_flight_packets() > 0,
         seek_commit_active: session.has_active_seek_commit(),
+        decoder_activity_wakes_worker,
     })
 }
 
@@ -607,10 +680,16 @@ pub(super) struct DecoderReadinessPollState {
 
     /// Активный seek ждёт landing/commit и не должен засыпать на in-flight decoder-е.
     pub(super) seek_commit_active: bool,
+
+    /// Neutral decoder activity notifier доступен: decoder сам разбудит worker
+    /// при новом кадре, ACK packet-а, ошибке или переходе EOF drain.
+    pub(super) decoder_activity_wakes_worker: bool,
 }
 
 /// Чистая часть decoder readiness policy без реального GPU decoder thread.
-pub(super) fn decoder_readiness_poll_needed_for_state(state: DecoderReadinessPollState) -> bool {
+pub(super) fn decoder_readiness_wait_for_state(
+    state: DecoderReadinessPollState,
+) -> DecoderReadinessWait {
     let decoder_has_seek_in_flight_packets =
         state.seek_commit_active && state.decoder_has_in_flight_packets;
     let worker_has_decode_inputs = state.worker_has_pending_video_packets
@@ -618,18 +697,34 @@ pub(super) fn decoder_readiness_poll_needed_for_state(state: DecoderReadinessPol
         || state.decoder_has_queued_packets
         || decoder_has_seek_in_flight_packets;
     if !worker_has_decode_inputs {
-        return false;
+        return DecoderReadinessWait::NotNeeded;
     }
 
-    if decoder_has_seek_in_flight_packets {
-        return state.video_track_selected;
+    // Seek landing/commit ждёт вывод decoder-а, а недобор очереди показа (старт,
+    // refill после seek, buffering) требует decoder без пауз — прежний bounded poll.
+    if decoder_has_seek_in_flight_packets
+        || state.video_frame_queue_len < state.video_present_queue_target
+    {
+        return if state.video_track_selected {
+            DecoderReadinessWait::BoundedPoll
+        } else {
+            DecoderReadinessWait::NotNeeded
+        };
     }
 
-    if state.video_frame_queue_len < state.video_present_queue_target {
-        return state.video_track_selected;
+    if !state.worker_has_pending_video_packets {
+        return DecoderReadinessWait::NotNeeded;
     }
 
-    state.worker_has_pending_video_packets
+    // Очередь показа набрана, packet ждёт слота: освободить слот может только
+    // presentation на дедлайне PTS. Опрос каждые 2 мс здесь холостой — но только
+    // если decoder умеет будить worker сам; иначе остаётся fallback-опрос.
+    // Активный seek без in-flight packets сохраняет прежнее поведение.
+    if state.decoder_activity_wakes_worker && !state.seek_commit_active {
+        return DecoderReadinessWait::UntilPresentationDeadline;
+    }
+
+    DecoderReadinessWait::BoundedPoll
 }
 
 /// Проверяет, должен ли активный seek получить bounded wakeup хотя бы для timeout/gates.

@@ -434,6 +434,7 @@ fn playback_pipeline_decoder_boundary_forwards_diagnostic_events() {
     let pressure = video_core::VideoFramePublishPressureDiagnostics {
         frame_publish_channel_full_count: 2,
         pending_publish_retry_count: 1,
+        frame_room_wakeup_count: 1,
         max_decoded_frame_publish_latency: Duration::from_millis(8),
         total_decoded_frame_publish_latency: Duration::from_millis(8),
     };
