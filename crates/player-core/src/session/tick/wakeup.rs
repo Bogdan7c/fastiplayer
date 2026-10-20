@@ -6,10 +6,13 @@
 
 use std::time::{Duration, Instant};
 
+use audio_core::AudioOutputCallbackCadence;
+
 use super::{
     PlayerTickConfig,
     audio_fallback_wakeup::coarse_progress_interval_for_audio_runway,
     audio_read_ahead::audio_read_ahead_limit_ms,
+    audio_refill_cadence::audio_refill_delay_above_high_water,
     demux_admission::{
         audio_demux_catchup_needed, can_read_next_demux_packet_with_audio_priority,
         selected_audio_bootstrap_needs_demux,
@@ -406,14 +409,29 @@ fn presentation_deadline_wakeup_plan_with_decoder_activity(
 pub(super) struct PlannedAudioBufferLevel {
     /// `None` — audio output ещё не создан (или звук выключен).
     level_ms: Option<f64>,
+
+    /// Ритм callback-а, снятый сразу после уровня (`audio_refill_cadence.rs`).
+    callback_cadence: AudioOutputCallbackCadence,
 }
 
 impl PlannedAudioBufferLevel {
-    /// Снимает текущий уровень через session boundary.
+    /// Снимает текущий уровень и ритм callback-а через session/pipeline boundary.
+    ///
+    /// Порядок важен: callback между двумя чтениями даст старый (больший) уровень со
+    /// свежим ритмом — пробуждение максимум на период позже, что безопасно при запасе
+    /// high-water; обратный порядок будил бы раньше ступеньки впустую.
     #[must_use]
     pub(super) fn observe(session: &PlayerSession) -> Self {
+        let level_ms = session.audio_buffer_level_ms();
+        let callback_cadence = session
+            .pipeline
+            .audio_output_clock()
+            .map_or(AudioOutputCallbackCadence::NotObserved, |clock| {
+                clock.callback_cadence()
+            });
         Self {
-            level_ms: session.audio_buffer_level_ms(),
+            level_ms,
+            callback_cadence,
         }
     }
 
@@ -444,8 +462,13 @@ pub(super) fn audio_buffer_refill_wakeup_delay(
         return None;
     }
 
-    let delay_seconds = (audio_buffer_level_ms - high_water_mark_ms) / 1000.0;
-    Some(Duration::from_secs_f64(delay_seconds))
+    // Уровень падает ступеньками в callback-е: будим на нужной ступеньке, а не по
+    // непрерывной оценке (`audio_refill_cadence.rs`, cpu-parity 02b).
+    Some(audio_refill_delay_above_high_water(
+        Duration::from_secs_f64((audio_buffer_level_ms - high_water_mark_ms) / 1000.0),
+        Duration::from_secs_f64(high_water_mark_ms / 1000.0),
+        audio_buffer_level.callback_cadence,
+    ))
 }
 
 /// Проверяет, есть ли audio work, которое станет runnable после снижения buffer level.

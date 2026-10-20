@@ -23,8 +23,8 @@ pub use decode_capability::{
     AudioDecodeCapabilitySnapshot, AudioDecodeCodecFamily, AudioDecodeCodecFamilyQuery,
 };
 pub use output_backend::{
-    AudioOutputDeviceRequest, AudioOutputDeviceRoute, AudioOutputFactory, AudioOutputStreamHealth,
-    CreatedAudioOutput, PlayerAudioClock,
+    AudioOutputCallbackCadence, AudioOutputDeviceRequest, AudioOutputDeviceRoute,
+    AudioOutputFactory, AudioOutputStreamHealth, CreatedAudioOutput, PlayerAudioClock,
 };
 pub use tempo::{
     AudioTempoChannelCount, AudioTempoDecodedMedia, AudioTempoFrameCount, AudioTempoFrameSpan,

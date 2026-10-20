@@ -32,6 +32,7 @@ use crate::{
 mod audio_fallback_wakeup;
 mod audio_packet_window;
 mod audio_read_ahead;
+mod audio_refill_cadence;
 mod audio_refill_wakeup;
 mod output_clamped_wakeup;
 mod video_decode_ahead;

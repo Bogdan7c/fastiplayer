@@ -11,6 +11,7 @@ use crate::{PipelinePauseReason, PlaybackState};
 
 mod audio_fallback_wakeup;
 mod audio_read_ahead;
+mod audio_refill_cadence;
 mod demux_admission;
 mod demux_read_failure;
 mod presentation_scheduler;

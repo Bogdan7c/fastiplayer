@@ -91,6 +91,11 @@
 - Source `pre_skip`/seek preroll не спрятаны в decoder `reset()`: существующий lifecycle не различает initial start и post-seek discontinuity. Будущая sample-exact работа должна передать trim/discontinuity intent на demux/player boundary, а не менять ownership внутри codec adapter-а.
 
 
+## Ритм output callback-а (cpu-parity 02b, 2026-10-20)
+- Нейтрально: `audio_core::AudioOutputCallbackCadence::{NotObserved, Observed { since_last_callback, callback_period }}` и `PlayerAudioClock::callback_cadence()` с дефолтом `NotObserved` (= «backend не знает», потребитель остаётся на прежней логике). Обёртки/адаптеры clock-а обязаны пробрасывать метод (дефолт молча выключает фичу; урок 02).
+- Concrete: `audio/src/clock/callback_cadence.rs` — `OutputCallbackCadenceRecorder` (2 атомика, без блокировок), пишется из `AudioClock::record_output_callback` (только играющие callback-и: PCM или тишина underrun-а); `Held` callback-и (пауза/до `play`) не пишут → возраст растёт, факт устаревает. Время — реальное от `origin` (паузы не вычитаются). `reset()` факт не стирает. CPAL 0.15 не даёт собрать `OutputCallbackInfo` в тестах, поэтому запись — отдельный тестируемый метод `record_callback_cadence`.
+- Потребитель — планировщик подпитки player-core: `mem:player-core/audio-runtime` (02b).
+
 ## F2: stream удерживается до первого play (2026-10-11)
 - CPAL 0.15 на ALSA/PipeWire запускает stream при построении. `AudioOutput::new_with_device_id` замораживает clock ДО build_stream и ставит stream на backend-паузу (`output/lifecycle.rs::hold_new_stream`; unsupported pause -> logical gate). До `play()` callback выдаёт тишину, не считает underrun и не берёт PCM из ring-а.
 - Чистая часть data callback-а — `output/callback_fill.rs::fill_from_ring` -> `CallbackFill::{Held, Played}`; `Held` не underrun. Underrun = тишина при играющем output-е. Тесты там же.

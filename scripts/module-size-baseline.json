@@ -10,7 +10,7 @@
     "crates/app-egui/src/ui/playlist/active_accent.rs": 889,
     "crates/app-egui/src/ui/playlist/toolbar/icon_bar.rs": 1085,
     "crates/audio-core/src/lib.rs": 812,
-    "crates/audio/src/clock.rs": 808,
+    "crates/audio/src/clock.rs": 814,
     "crates/audio/src/output.rs": 947,
     "crates/capability-core/src/selection.rs": 899,
     "crates/codec-core/src/adapter.rs": 1577,

@@ -95,6 +95,30 @@ pub enum AudioOutputStreamHealth {
     Failed,
 }
 
+/// Что output знает о ритме своего realtime callback-а, который забирает PCM из буфера.
+///
+/// Уровень буфера (`PlayerAudioOutput::buffer_level_ms`) падает не плавно, а ступеньками:
+/// только когда callback забирает очередной период. Планировщику подпитки важно знать,
+/// когда будет следующая ступенька, иначе он просыпается раньше и видит тот же уровень.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioOutputCallbackCadence {
+    /// Ритм неизвестен: callback ещё не забирал звук (output не запущен или удержан
+    /// с самого начала), либо backend этот факт не сообщает.
+    NotObserved,
+
+    /// Последний callback, который реально выводил звук (PCM или тишину underrun-а).
+    Observed {
+        /// Сколько времени прошло с начала последнего такого callback-а.
+        ///
+        /// Растёт без ограничения, пока callback-и не идут (пауза, зависшее устройство):
+        /// по этому возрасту потребитель отличает живой ритм от устаревшего.
+        since_last_callback: Duration,
+
+        /// Длительность звука, которую забрал последний callback (его период).
+        callback_period: Duration,
+    },
+}
+
 /// Нейтральная фабрика audio output-а без знания о CPAL или concrete backend-е.
 pub trait AudioOutputFactory: Send + Sync {
     /// Создаёт output под decoded audio spec на устройстве согласно `device_request`.
@@ -122,4 +146,47 @@ pub trait PlayerAudioClock: Send + Sync {
 
     /// Возвращает количество output callbacks, где stream недополучил samples.
     fn underrun_callbacks(&self) -> u64;
+
+    /// Возвращает наблюдённый ритм output callback-а (read-only, без блокировок).
+    ///
+    /// По умолчанию `NotObserved`: backend без этого знания оставляет потребителю
+    /// прежнюю, не зависящую от ритма логику.
+    fn callback_cadence(&self) -> AudioOutputCallbackCadence {
+        AudioOutputCallbackCadence::NotObserved
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Clock, реализующий только обязательные методы контракта.
+    struct ClockWithoutCadence;
+
+    impl PlayerAudioClock for ClockWithoutCadence {
+        fn now(&self) -> Duration {
+            Duration::from_millis(5)
+        }
+
+        fn output_timing(&self) -> AudioOutputClockTiming {
+            AudioOutputClockTiming::new(Duration::ZERO, Duration::ZERO)
+        }
+
+        fn reset(&self) {}
+
+        fn underrun_callbacks(&self) -> u64 {
+            0
+        }
+    }
+
+    /// Backend без знания о ритме честно сообщает «не наблюдался», а не выдуманный период.
+    #[test]
+    fn clock_without_cadence_support_reports_not_observed() {
+        let clock: &dyn PlayerAudioClock = &ClockWithoutCadence;
+
+        assert_eq!(
+            clock.callback_cadence(),
+            AudioOutputCallbackCadence::NotObserved
+        );
+    }
 }

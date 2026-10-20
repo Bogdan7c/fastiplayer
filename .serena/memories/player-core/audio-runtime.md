@@ -38,6 +38,15 @@ Temporary installed-demux starvation with selected audio now proactively freezes
 
 Потолок fallback-а (решение владельца, вариант b): `session/tick/audio_fallback_wakeup.rs::coarse_progress_interval_for_audio_runway` ограничивает интервал `CoarseProgress` (ветки eof-drain и active pipeline в `wakeup.rs`; `SeekOrPreroll`, refill и прочие plan-ы не трогаются) значением `sanitize_audio_high_water_mark(audio_buffer_high_water_mark_ms) × 0.5` (`AUDIO_FALLBACK_WAKEUP_BUFFER_FRACTION`), только пока звук реально тратит буфер: выбран audio track, `pipeline.audio_output_is_playing()` и state `Playing`/`Draining`. Buffering/пауза/нет output-а → настроенные 250 мс; cap только укорачивает. Тесты: `session/tick/tests/audio_fallback_wakeup.rs`; `session/tests/eof_drain.rs::audio_only_eof_after_buffered_samples_keeps_bounded_wakeup_until_drain` теперь ждёт 100 мс.
 
+## Refill wakeup по ритму callback-а (cpu-parity 02b, 2026-10-20)
+
+Правила подпитки (high-water, порция) не менялись; меняется только момент пробуждения. Уровень буфера падает ступенькой в CPAL callback-е, а прежняя формула `уровень − high-water` будила worker до ступеньки (~4 пустых пробуждения на подпитку, `pipeline_work_ready` ~190/с). Теперь:
+- `PlannedAudioBufferLevel` (снимок на проход) хранит ещё `AudioOutputCallbackCadence`, читаемый через `pipeline.audio_output_clock()` сразу ПОСЛЕ уровня (callback между чтениями → максимум на период позже, не раньше).
+- `session/tick/audio_refill_cadence.rs::audio_refill_delay_above_high_water`: при доверенном ритме будить после k-го callback-а, `k = ⌈превышение/период⌉`, + 1/8 периода на дрожание; опоздавший callback = «сейчас». Прежняя формула, если ритм `NotObserved`, устарел (> 2 периодов), период 0 или > high-water/2.
+- Инварианты: при уровне > high-water дедлайн есть всегда (AC-3 #19); пробуждение не раньше ступеньки и не позже `превышение + 1,125 периода`.
+- Тесты: `session/tick/tests/audio_refill_cadence.rs` (чистая функция + перебор сетки), `session/tick/tests/audio_refill_wakeup.rs` (через session), вертикальный `worker/tests/audio_refill_wakeup.rs` (реальный wait loop, ступенчатый fake output; test-support `session/audio_drain_test_support.rs`: демуксер на EOF + очередь packet-ов).
+- Живой итог: `pipeline_work_ready` 190 → 47/с (HW), 232 → 39/с (SW); отчёт `user/cpu-parity/results/02b.md`. Факт ритма — `mem:audio/core`.
+
 ## F4: пауза output-а на конце файла (2026-10-11)
 
 `finish_eof_drain_if_ready` (`session/eof_drain.rs`) перед `Ended` вызывает `park_audio_output_after_eof` -> `pipeline.pause_audio_output_and_capture_clock()` (путь `Pause`). Только после `eof_drain_ready_to_end`, поэтому хвост не обрезается. Ошибка паузы не фатальна (warn). Флаг play-request сброшен, поэтому replay/seek после `Ended` зовут `play` как обычно. Тесты: `session/tests/eof_audio_park.rs`, `audio::output::callback_fill` (`tail_is_played_fully_then_paused_output_is_held_without_underruns`).

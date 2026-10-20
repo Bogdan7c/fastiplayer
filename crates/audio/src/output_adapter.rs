@@ -8,9 +8,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use audio_core::{
-    AudioOutputClockTiming, AudioOutputDeviceRequest, AudioOutputFactory, AudioOutputSpec,
-    AudioOutputStreamHealth, AudioOutputWriteError, AudioOutputWriteIntent, AudioOutputWriteReport,
-    CreatedAudioOutput, PlayerAudioClock, PlayerAudioOutput,
+    AudioOutputCallbackCadence, AudioOutputClockTiming, AudioOutputDeviceRequest,
+    AudioOutputFactory, AudioOutputSpec, AudioOutputStreamHealth, AudioOutputWriteError,
+    AudioOutputWriteIntent, AudioOutputWriteReport, CreatedAudioOutput, PlayerAudioClock,
+    PlayerAudioOutput,
 };
 
 use crate::output_device_fallback::open_output_for_device_request;
@@ -129,6 +130,11 @@ impl PlayerAudioClock for AudioClock {
     /// Возвращает число CPAL callbacks, где output писал silence из-за underrun-а.
     fn underrun_callbacks(&self) -> u64 {
         AudioClock::underrun_callbacks(self)
+    }
+
+    /// Пробрасывает ритм CPAL callback-а; дефолт трейта здесь отключил бы планировщик подпитки.
+    fn callback_cadence(&self) -> AudioOutputCallbackCadence {
+        AudioClock::callback_cadence(self)
     }
 }
 

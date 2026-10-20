@@ -8,6 +8,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+mod callback_cadence;
 mod lifecycle;
 
 /// Clock для audio playback.
@@ -90,6 +91,9 @@ pub struct AudioClock {
 
     /// Количество silence samples, добавленных из-за underrun.
     underrun_samples: AtomicU64,
+
+    /// Ритм играющих callback-ов для планировщика подпитки (`clock/callback_cadence.rs`).
+    callback_cadence: callback_cadence::OutputCallbackCadenceRecorder,
 }
 
 impl AudioClock {
@@ -120,6 +124,7 @@ impl AudioClock {
             playback_anchor_output_end_ns: AtomicU64::new(0),
             underrun_callbacks: AtomicU64::new(0),
             underrun_samples: AtomicU64::new(0),
+            callback_cadence: callback_cadence::OutputCallbackCadenceRecorder::new(),
         }
     }
 
@@ -252,6 +257,8 @@ impl AudioClock {
         callback_info: &cpal::OutputCallbackInfo,
         callback_observed_at: Instant,
     ) {
+        let callback_output_samples = played_samples.saturating_add(silence_samples);
+        self.record_callback_cadence(callback_output_samples, callback_observed_at);
         if silence_samples > 0 {
             self.underrun_callbacks.fetch_add(1, Ordering::Relaxed);
             self.underrun_samples
@@ -279,7 +286,6 @@ impl AudioClock {
             .checked_add(playback_delay)
             .unwrap_or(callback_observed_at);
         let reported_playback_ns = self.logical_origin_ns_for_instant(playback_at);
-        let callback_output_samples = played_samples.saturating_add(silence_samples);
         let callback_output_duration_ns =
             samples_to_nanos(callback_output_samples, self.samples_per_second());
 

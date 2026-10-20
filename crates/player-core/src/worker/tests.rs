@@ -17,6 +17,7 @@ use video_present_core::VideoFrameLeaseConfig;
 
 use super::*;
 
+mod audio_refill_wakeup;
 mod command_loss;
 mod commands;
 mod event_streams;
