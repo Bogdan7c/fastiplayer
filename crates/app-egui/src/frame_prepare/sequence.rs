@@ -7,6 +7,9 @@ pub(super) enum FrameSequenceStage {
     WorkerEventRecord,
     DesktopPublish,
     EguiOutput,
+    /// Буфер swapchain получен. Строго до выбора видеокадра (`MaterializerLookup`): иначе
+    /// ожидание FIFO делает выбранный кадр старше на vsync (сессия 06a).
+    SurfaceAcquire,
     MaterializerLookup,
     RendererSubmit,
 }
@@ -16,11 +19,12 @@ pub(super) trait FrameSequenceObserver {
     fn reached(&mut self, stage: FrameSequenceStage);
 }
 
-const EXPECTED_FRAME_SEQUENCE: [FrameSequenceStage; 6] = [
+const EXPECTED_FRAME_SEQUENCE: [FrameSequenceStage; 7] = [
     FrameSequenceStage::WorkerEventDrain,
     FrameSequenceStage::WorkerEventRecord,
     FrameSequenceStage::DesktopPublish,
     FrameSequenceStage::EguiOutput,
+    FrameSequenceStage::SurfaceAcquire,
     FrameSequenceStage::MaterializerLookup,
     FrameSequenceStage::RendererSubmit,
 ];
@@ -29,7 +33,7 @@ const EXPECTED_FRAME_SEQUENCE: [FrameSequenceStage; 6] = [
 ///
 /// С сессии 04 кадр может пропускать стадии (без egui-прохода нет `EguiOutput`, без
 /// показа нет `MaterializerLookup`/`RendererSubmit`), поэтому контракт требует только
-/// монотонного порядка достигнутых стадий, а не полного прохода всех шести.
+/// монотонного порядка достигнутых стадий, а не полного прохода всех.
 #[derive(Default)]
 pub(super) struct FrameSequenceContract {
     /// Индекс последней достигнутой стадии в `EXPECTED_FRAME_SEQUENCE` (+1).
@@ -93,6 +97,17 @@ mod tests {
         contract.reached(FrameSequenceStage::WorkerEventDrain);
         contract.reached(FrameSequenceStage::RendererSubmit);
         contract.reached(FrameSequenceStage::EguiOutput);
+    }
+
+    /// Выбор видеокадра до получения буфера swapchain (прежний порядок до сессии 06a)
+    /// ловится контрактом.
+    #[test]
+    #[should_panic(expected = "reached out of order")]
+    fn contract_rejects_video_selection_before_surface_acquire() {
+        let mut contract = FrameSequenceContract::default();
+        contract.reached(FrameSequenceStage::EguiOutput);
+        contract.reached(FrameSequenceStage::MaterializerLookup);
+        contract.reached(FrameSequenceStage::SurfaceAcquire);
     }
 
     /// Перестановка стадий (publish до drain-а worker events) ловится контрактом.

@@ -165,6 +165,10 @@ pub struct RenderFrameInput<'frame> {
     /// Окно, для которого выполняется present notification.
     pub window: &'frame Window,
 
+    /// Буфер swapchain, уже полученный `Renderer::acquire_surface_frame` ДО выбора
+    /// видеокадра (сессия 06a): ожидание FIFO не делает выбранный кадр старше на vsync.
+    pub surface: AcquiredSurfaceFrame,
+
     /// Video frame boundary; `None` означает, что target нужно очистить в чёрный.
     pub video_frame: Option<&'frame WgpuRenderableFrame<'frame>>,
 
@@ -211,6 +215,39 @@ pub(crate) fn clamp_video_exclusion_rects_to_screen(
         .collect()
 }
 
+/// Буфер swapchain, в который будет записан и показан текущий кадр (cpu-parity, сессия 06a).
+///
+/// Получается отдельно от записи кадра: под FIFO получение блокируется до свободного места
+/// в очереди показа (под XWayland — почти весь интервал vsync). App берёт буфер первым и
+/// только потом выбирает видеокадр и субтитры, поэтому на экран уходит кадр, выбранный
+/// непосредственно перед показом. Не использованный буфер возвращается swapchain-у при
+/// drop-е (wgpu `SurfaceTexture::drop` → discard).
+pub struct AcquiredSurfaceFrame {
+    /// Текстура swapchain текущего кадра.
+    pub(crate) surface_texture: wgpu::SurfaceTexture,
+
+    /// Сколько заняло получение (включая ожидание FIFO); идёт в стадию `surface_acquire`.
+    pub(crate) acquire_elapsed: Duration,
+}
+
+impl AcquiredSurfaceFrame {
+    /// Сколько главный поток ждал буфер swapchain.
+    #[must_use]
+    pub const fn acquire_elapsed(&self) -> Duration {
+        self.acquire_elapsed
+    }
+}
+
+/// Итог получения буфера swapchain.
+#[must_use = "без буфера кадр не показан; причину пропуска обязан учесть app"]
+pub enum SurfaceFrameAcquire {
+    /// Буфер получен: можно выбирать видеокадр и вызывать `Renderer::render_frame`.
+    Acquired(AcquiredSurfaceFrame),
+    /// Буфер не получен (окно скрыто, surface потерян/устарел, таймаут): кадр пропущен
+    /// до выбора видеокадра, кадр плеера остаётся в передаче для следующего показа.
+    Dropped(RenderFrameDropReason),
+}
+
 /// Ошибка video render path, которую app/player layer не должен превращать в fallback.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderFrameFailure {
@@ -248,7 +285,8 @@ pub enum RenderFrameDropReason {
 
     /// App попросил нарисовать интерфейс прежними примитивами, а удерживать нечего
     /// (первый кадр после создания renderer-а) или размер экрана изменился.
-    /// Кадр отброшен ДО acquire; app обязан повторить его полным egui-проходом.
+    /// Кадр отброшен до записи (полученный буфер swapchain возвращается без показа);
+    /// app обязан повторить его полным egui-проходом.
     RetainedUiUnavailable,
 }
 

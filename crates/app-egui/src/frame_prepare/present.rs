@@ -1,21 +1,26 @@
 //! Видео-стадия, submit, present и трасса показанного кадра (планы `FullPass` и
 //! `PresentReusingUi` сессии 04). Пропущенный кадр сюда не попадает.
+//!
+//! Порядок с сессии 06a: сначала буфер swapchain (под FIFO здесь главный поток ждёт
+//! vsync), потом выбор видеокадра и субтитров, потом запись и показ. Раньше кадр выбирался
+//! до ожидания и уходил на экран на ~16 мс старше. Если буфер не получен, кадр плеера не
+//! забирается и остаётся в передаче для следующего показа.
 
 use std::sync::Arc;
 use std::time::Instant;
 
-use render_wgpu_shell::Renderer;
+use render_wgpu_shell::{RenderFrameOutcome, Renderer, SurfaceFrameAcquire};
 use tracing::warn;
 use winit::window::Window;
 
 use super::input_snapshot::AppFrameInputTimings;
 use super::sequence::{FrameSequenceContract, FrameSequenceObserver, FrameSequenceStage};
-use super::submit::submit_render_frame;
+use super::submit::{FrameSubmission, account_render_frame_outcome, submit_render_frame};
 use super::timing::{
     AppRenderFrameTimings, FrameWorkTrace, SurfaceFrameCounters, log_render_frame_timings,
 };
 use super::ui_prepare::{PreparedUiFrame, UiPrepareTimings};
-use super::{prepare_video_frame, report_video_render_boundary_error};
+use super::{PreparedVideoFrame, prepare_video_frame, report_video_render_boundary_error};
 use crate::state::{AppFrameContext, AppState};
 use crate::telemetry::Telemetry;
 
@@ -42,7 +47,27 @@ pub(super) fn present_frame_for_plan(
     frame_sequence: &mut FrameSequenceContract,
     timings: PresentedFrameTimings,
 ) {
+    let renderer_started_at = Instant::now();
+    let surface = match renderer.acquire_surface_frame(prepared_ui_frame.screen) {
+        SurfaceFrameAcquire::Acquired(surface) => surface,
+        SurfaceFrameAcquire::Dropped(reason) => {
+            log_frame_without_surface(
+                telemetry,
+                renderer,
+                app_state,
+                frame_context,
+                RenderFrameOutcome::Dropped(reason),
+                timings,
+                renderer_started_at,
+            );
+            return;
+        }
+    };
+
+    frame_sequence.reached(FrameSequenceStage::SurfaceAcquire);
+
     let stage_started_at = Instant::now();
+    let video_selected_at = stage_started_at;
     let prepared_video_frame =
         prepare_video_frame(telemetry, app_state, frame_context.player_snapshot());
     frame_sequence.reached(FrameSequenceStage::MaterializerLookup);
@@ -60,17 +85,24 @@ pub(super) fn present_frame_for_plan(
     let video_acquisition_state = prepared_video_frame.acquisition_state;
     let texture_view_lookup_state = prepared_video_frame.texture_view_lookup_state;
 
-    let stage_started_at = Instant::now();
     frame_sequence.reached(FrameSequenceStage::RendererSubmit);
     let renderer_timing = submit_render_frame(
         telemetry,
         window,
         renderer,
         app_state,
-        prepared_ui_frame,
-        prepared_video_frame,
+        FrameSubmission {
+            prepared_ui_frame,
+            prepared_video_frame,
+            surface,
+            video_selected_at,
+        },
     );
-    let renderer_submit_elapsed = stage_started_at.elapsed();
+    // Стадия renderer-а — ожидание буфера + запись/показ; выбор кадра (video_prepare)
+    // идёт между ними и считается своей стадией.
+    let renderer_submit_elapsed = renderer_started_at
+        .elapsed()
+        .saturating_sub(video_prepare_timings.total);
     if renderer_timing.is_some() {
         // Только после настоящего показа: при свёрнутом окне/потерянной surface follow-up
         // крутил бы redraw вхолостую. Итог нужен лишь диагностике решения, не управлению.
@@ -101,6 +133,50 @@ pub(super) fn present_frame_for_plan(
         timings.frame_work,
         video_acquisition_state,
         texture_view_lookup_state,
+        surface_frame_counters,
+        renderer_timing,
+    );
+}
+
+/// Буфер swapchain не получен: учитываем пропуск и пишем трассу кадра без видео.
+///
+/// Видеокадр плеера не забирается (он покажется следующим кадром), но субтитры узнают режим
+/// плеера, как и на любом кадре UI.
+fn log_frame_without_surface(
+    telemetry: &Telemetry,
+    renderer: &Renderer,
+    app_state: &mut AppState,
+    frame_context: &AppFrameContext,
+    dropped_outcome: RenderFrameOutcome,
+    timings: PresentedFrameTimings,
+    renderer_started_at: Instant,
+) {
+    app_state.observe_playback_for_subtitles();
+    let renderer_timing = account_render_frame_outcome(telemetry, app_state, dropped_outcome, None);
+    let renderer_submit_elapsed = renderer_started_at.elapsed();
+    let not_prepared_video = PreparedVideoFrame::empty("surface_unavailable");
+    let frame_duration = timings.frame_start.elapsed();
+    telemetry.update_fps(frame_duration.as_secs_f64() * 1000.0);
+    let surface_frame_counters = SurfaceFrameCounters {
+        presented: telemetry.frames_presented_to_surface(),
+        dropped: telemetry.surface_dropped_frames(),
+    };
+    log_render_frame_timings(
+        frame_context,
+        AppRenderFrameTimings {
+            total: frame_duration,
+            input_snapshot: timings.input_snapshot,
+            ui_prepare: timings.ui_prepare,
+            video_prepare: not_prepared_video.timings,
+            renderer_submit: renderer_submit_elapsed,
+            dma_buf_import_stats: app_state
+                .wgpu_frame_materializer()
+                .and_then(|materializer| materializer.dma_buf_import_stats()),
+            video_hot_path: renderer.video_hot_path_stats(),
+        },
+        timings.frame_work,
+        not_prepared_video.acquisition_state,
+        not_prepared_video.texture_view_lookup_state,
         surface_frame_counters,
         renderer_timing,
     );

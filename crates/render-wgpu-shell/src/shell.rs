@@ -12,7 +12,8 @@
 /// где decoded VkImage будет рендериться напрямую без CPU readback.
 ///
 /// Архитектура рендеринга:
-/// 1. Получаем surface texture из swapchain
+/// 1. Получаем surface texture из swapchain (`Renderer::acquire_surface_frame`, до выбора
+///    видеокадра app-ом — сессия 06a)
 /// 2. Рендерим decoded video frame или чёрный фон
 /// 3. Рендерим egui overlay поверх видео
 /// 4. Present на экран
@@ -34,8 +35,8 @@ use winit::window::Window;
 
 use crate::egui_compositor::EguiCompositor;
 use crate::frame::{
-    RenderFrameDropReason, RenderFrameFailure, RenderFrameInput, RenderFrameOutcome,
-    RenderFrameStageTimings, RenderFrameTiming, RenderScreenDescriptor,
+    AcquiredSurfaceFrame, RenderFrameDropReason, RenderFrameFailure, RenderFrameInput,
+    RenderFrameOutcome, RenderFrameStageTimings, RenderFrameTiming, RenderScreenDescriptor,
     clamp_video_exclusion_rects_to_screen, clamp_video_viewport_to_screen,
 };
 use crate::subtitle_overlay::{
@@ -45,26 +46,12 @@ use crate::surface_alpha::choose_alpha_mode;
 use crate::surface_settings::{SurfacePresentSettings, choose_present_mode, choose_surface_format};
 use crate::window_corner_mask::{SurfaceAlphaEncoding, WindowCornerMaskRenderer};
 
+mod surface_acquire;
 mod video_hot_path;
 
 /// Превращает длительность в миллисекунды для числовых tracing fields.
 fn duration_ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
-}
-
-/// Возвращает dropped outcome и логирует timing даже для кадров без успешного present.
-fn dropped_frame_after_surface_acquire(
-    reason: RenderFrameDropReason,
-    renderer_started_at: Instant,
-    surface_acquire_started_at: Instant,
-) -> RenderFrameOutcome {
-    tracing::debug!(
-        reason = ?reason,
-        renderer_elapsed_ms = duration_ms(renderer_started_at.elapsed()),
-        surface_acquire_ms = duration_ms(surface_acquire_started_at.elapsed()),
-        "render frame dropped before present"
-    );
-    RenderFrameOutcome::Dropped(reason)
 }
 
 /// GPU ресурсы: device, queue, surface и их конфигурация.
@@ -474,15 +461,19 @@ impl Renderer {
     ///
     /// Последовательность:
     /// 1. Обновляем egui textures/buffers
-    /// 2. Получаем surface texture из swapchain
-    /// 3. Рендерим video frame через backend facade или очищаем target
-    /// 4. Рендерим egui поверх видео
-    /// 5. Последним pass-ом применяем прозрачный контур окна
-    /// 6. Submit и present
+    /// 2. Рендерим video frame через backend facade или очищаем target в уже полученный
+    ///    буфер swapchain (`input.surface`, см. `acquire_surface_frame`)
+    /// 3. Рендерим egui поверх видео
+    /// 4. Последним pass-ом применяем прозрачный контур окна
+    /// 5. Submit и present
+    ///
+    /// `renderer_elapsed` итогового timing-а = ожидание буфера + эта функция; выбор
+    /// видеокадра app-ом между ними сюда не входит.
     pub fn render_frame(&mut self, input: RenderFrameInput<'_>) -> RenderFrameOutcome {
         let renderer_started_at = Instant::now();
         let RenderFrameInput {
             window,
+            surface,
             video_frame,
             egui,
             screen,
@@ -491,17 +482,11 @@ impl Renderer {
             window_corner_mask,
             subtitle_overlay,
         } = input;
-        // Window::inner_size может измениться до доставки Resized, особенно в XWayland.
-        // Surface должна соответствовать размеру подготовленного UI до acquire:
-        // иначе egui scissor выходит за старый attachment при fullscreen переходе.
-        if [
-            self.gpu.surface_config.width,
-            self.gpu.surface_config.height,
-        ] != screen.size_in_pixels
-        {
-            self.gpu
-                .resize(screen.size_in_pixels[0], screen.size_in_pixels[1]);
-        }
+        // Размер surface уже приведён к `screen` в `acquire_surface_frame`.
+        let AcquiredSurfaceFrame {
+            surface_texture,
+            acquire_elapsed: surface_acquire_elapsed,
+        } = surface;
         let video_frame: Option<&WgpuRenderableFrame<'_>> = video_frame;
         let clamped_video_viewport = clamp_video_viewport_to_screen(video_viewport, &screen);
         let clamped_video_exclusion_rects =
@@ -513,8 +498,9 @@ impl Renderer {
 
         // Свежий кадр: загружаем новые/изменённые egui текстуры (retired-текстуры остаются
         // живы до submit-а текущих paint jobs). Повторный кадр: проверяем, что удержанные
-        // примитивы существуют и загружены для этого же размера экрана — иначе отказ ДО
-        // acquire, и app повторит кадр полным egui-проходом.
+        // примитивы существуют и загружены для этого же размера экрана — иначе отказ до
+        // записи (буфер swapchain вернётся без показа при drop-е), и app повторит кадр
+        // полным egui-проходом.
         let stage_started_at = Instant::now();
         let pending_egui = match self.egui_compositor.begin_frame_content(
             &self.gpu.device,
@@ -555,86 +541,6 @@ impl Renderer {
                 screen_descriptor,
             );
         let egui_buffer_update_elapsed = stage_started_at.elapsed();
-
-        // Получаем surface texture для текущего кадра
-        let stage_started_at = Instant::now();
-        let surface_acquire_started_at = stage_started_at;
-        let surface_texture_result = match self.gpu.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                // Surface был уничтожен и воссоздан (например, при смене монитора)
-                self.gpu
-                    .surface
-                    .configure(&self.gpu.device, &self.gpu.surface_config);
-                match self.gpu.surface.get_current_texture() {
-                    wgpu::CurrentSurfaceTexture::Success(frame)
-                    | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
-                    other => {
-                        tracing::error!(
-                            "Failed to obtain surface texture afterward reconfigure: {:?}",
-                            other
-                        );
-                        Err(dropped_frame_after_surface_acquire(
-                            RenderFrameDropReason::SurfaceOutdatedRecoveryFailed,
-                            renderer_started_at,
-                            surface_acquire_started_at,
-                        ))
-                    }
-                }
-            }
-            wgpu::CurrentSurfaceTexture::Timeout => {
-                // Таймаут — пропускаем кадр, не блокируем
-                Err(dropped_frame_after_surface_acquire(
-                    RenderFrameDropReason::SurfaceTimeout,
-                    renderer_started_at,
-                    surface_acquire_started_at,
-                ))
-            }
-            wgpu::CurrentSurfaceTexture::Occluded => {
-                // Окно скрыто другим окном — пропускаем кадр
-                tracing::debug!("Surface occluded — skipping frame");
-                Err(dropped_frame_after_surface_acquire(
-                    RenderFrameDropReason::SurfaceOccluded,
-                    renderer_started_at,
-                    surface_acquire_started_at,
-                ))
-            }
-            wgpu::CurrentSurfaceTexture::Lost => {
-                // Surface потерян: сначала пробуем штатный reconfigure текущей surface.
-                // Если драйвер не восстановит surface, следующий redraw снова попадёт
-                // сюда, и внешний lifecycle сможет пересоздать runtime через resumed/suspend.
-                tracing::warn!("Surface lost — try out reconfigure");
-                self.gpu
-                    .surface
-                    .configure(&self.gpu.device, &self.gpu.surface_config);
-                Err(dropped_frame_after_surface_acquire(
-                    RenderFrameDropReason::SurfaceLost,
-                    renderer_started_at,
-                    surface_acquire_started_at,
-                ))
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                // Validation error при получении surface texture — пропускаем кадр
-                tracing::warn!("Surface validation error — skipping frame");
-                Err(dropped_frame_after_surface_acquire(
-                    RenderFrameDropReason::SurfaceValidation,
-                    renderer_started_at,
-                    surface_acquire_started_at,
-                ))
-            }
-        };
-        let surface_texture = match surface_texture_result {
-            Ok(surface_texture) => surface_texture,
-            Err(dropped_frame) => {
-                // Текущий encoder не будет submitted, поэтому его paint jobs больше
-                // не удерживают retired-текстуры. Предыдущие submit-ы уже переданы wgpu.
-                self.egui_compositor
-                    .free_retired_textures_if_any(egui_textures_delta);
-                return dropped_frame;
-            }
-        };
-        let surface_acquire_elapsed = stage_started_at.elapsed();
 
         let stage_started_at = Instant::now();
         let surface_view = surface_texture
@@ -767,7 +673,7 @@ impl Renderer {
         };
         RenderFrameOutcome::Presented(RenderFrameTiming::new(
             stages,
-            renderer_started_at.elapsed(),
+            surface_acquire_elapsed + renderer_started_at.elapsed(),
         ))
     }
 }

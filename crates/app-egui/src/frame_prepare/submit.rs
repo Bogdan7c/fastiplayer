@@ -1,9 +1,13 @@
 //! Renderer submit, mark-submitted и surface telemetry одного кадра.
 
+use std::time::Instant;
+
 use player_core::PlayerRenderError;
 use render_wgpu_shell::{
-    RenderFrameDropReason, RenderFrameOutcome, RenderFrameTiming, Renderer, SubtitleOverlayFrame,
+    AcquiredSurfaceFrame, RenderFrameDropReason, RenderFrameOutcome, RenderFrameTiming, Renderer,
+    SubtitleOverlayFrame,
 };
+use video_present_core::VideoPresentFrameIdentity;
 use winit::window::Window;
 
 use super::ui_prepare::PreparedUiFrame;
@@ -17,15 +21,32 @@ use crate::telemetry::Telemetry;
 /// Отдельный tracing target позволяет acceptance включить покадровое доказательство точечно.
 const VIDEO_RENDER_ACCEPTANCE_TARGET: &str = "fastiplayer::video_render_acceptance";
 
+/// Кадр, уходящий в renderer вместе с уже полученным буфером swapchain.
+pub(super) struct FrameSubmission {
+    /// Подготовленный интерфейс (свежий или удержанный).
+    pub(super) prepared_ui_frame: PreparedUiFrame,
+    /// Видеокадр, выбранный ПОСЛЕ получения буфера (сессия 06a).
+    pub(super) prepared_video_frame: PreparedVideoFrame,
+    /// Буфер swapchain от `Renderer::acquire_surface_frame`.
+    pub(super) surface: AcquiredSurfaceFrame,
+    /// Момент выбора видеокадра — для трассы «выбор → показ».
+    pub(super) video_selected_at: Instant,
+}
+
 /// Передаёт краткоживущие UI/video resources renderer-у и учитывает outcome.
 pub(super) fn submit_render_frame(
     telemetry: &Telemetry,
     window: &Window,
     renderer: &mut Renderer,
     app_state: &mut AppState,
-    prepared_ui_frame: PreparedUiFrame,
-    prepared_video_frame: PreparedVideoFrame,
+    submission: FrameSubmission,
 ) -> Option<RenderFrameTiming> {
+    let FrameSubmission {
+        prepared_ui_frame,
+        prepared_video_frame,
+        surface,
+        video_selected_at,
+    } = submission;
     let video_frame = match prepared_video_frame.render_input_video_frame() {
         Ok(video_frame) => video_frame,
         Err(error) => {
@@ -62,6 +83,7 @@ pub(super) fn submit_render_frame(
 
     let render_frame_outcome = renderer.render_frame(render_wgpu_shell::RenderFrameInput {
         window,
+        surface,
         video_frame: video_frame.as_ref(),
         egui: prepared_ui_frame.egui_content,
         screen: prepared_ui_frame.screen,
@@ -82,21 +104,44 @@ pub(super) fn submit_render_frame(
             // Acceptance различает новые PTS и повторный submit того же кадра.
             // Событие находится за Presented gate; UI redraw сам по себе его
             // не создаёт. Это surface handoff, а не доказательство scanout.
+            // `selection_to_present_ms` — возраст выбранного кадра к моменту показа: после
+            // сессии 06a кадр выбирается после ожидания буфера swapchain, а не до него.
             tracing::trace!(
                 target: VIDEO_RENDER_ACCEPTANCE_TARGET,
                 frame_pts_ns = ?identity.pts().as_nanos(),
                 render_generation = identity.render_generation(),
                 decoded_generation = identity.decoded_generation(),
+                selection_to_present_ms = video_selected_at.elapsed().as_secs_f64() * 1000.0,
                 "current video frame submitted to surface"
             );
         }
     }
 
+    account_render_frame_outcome(
+        telemetry,
+        app_state,
+        render_frame_outcome,
+        video_was_submitted
+            .then_some(startup_frame_identity)
+            .flatten(),
+    )
+}
+
+/// Учитывает итог кадра renderer-а: телеметрия surface, отказ удержанного UI, сброс кэша.
+///
+/// `submitted_frame_identity` — identity видеокадра, реально ушедшего в renderer (для
+/// startup-доказательства первого показанного кадра); `None`, если видео не отправлялось.
+pub(super) fn account_render_frame_outcome(
+    telemetry: &Telemetry,
+    app_state: &mut AppState,
+    render_frame_outcome: RenderFrameOutcome,
+    submitted_frame_identity: Option<VideoPresentFrameIdentity>,
+) -> Option<RenderFrameTiming> {
     match render_frame_outcome {
         RenderFrameOutcome::Presented(timing) => {
             telemetry.record_frame_presented_to_surface();
             app_state.report_gpu_submit_present_latency(timing.submit_present_elapsed);
-            if video_was_submitted && let Some(frame_identity) = startup_frame_identity {
+            if let Some(frame_identity) = submitted_frame_identity {
                 app_state.note_startup_surface_frame_presented(frame_identity);
             }
             Some(timing)
