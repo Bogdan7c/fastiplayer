@@ -8,13 +8,6 @@ use super::*;
 pub(crate) struct VaapiCodecAdapterFactory;
 
 impl VaapiCodecAdapterFactory {
-    /// Создаёт production adapter для текущего backend default-а.
-    pub(crate) fn create_default_adapter(
-        display: Rc<Display>,
-    ) -> Result<Box<dyn VaapiCodecAdapter>> {
-        Ok(Box::new(Vp9VaapiCodecAdapter::new(display)?))
-    }
-
     /// Создаёт adapter, который соответствует уже принятому stream config-у.
     pub(crate) fn create_adapter_for_config(
         display: Rc<Display>,

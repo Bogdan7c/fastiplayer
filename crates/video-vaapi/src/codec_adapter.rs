@@ -262,6 +262,13 @@ pub(crate) enum VaapiAdapterDecodeError {
     ///
     /// Терминальная ошибка, а не backpressure: повтор того же packet-а не поможет.
     OutputSurfaceAllocation(String),
+
+    /// Пакет пришёл раньше `configure_stream`: codec adapter ещё не создан.
+    ///
+    /// Терминальная ошибка оркестрации (решение владельца, вариант A1): декодировать
+    /// поток неизвестного кодека нельзя, а молча пропускать пакет — значит скрыть
+    /// нарушение порядка вызовов player-core.
+    StreamNotConfigured,
 }
 
 impl fmt::Display for VaapiAdapterDecodeError {
@@ -280,6 +287,9 @@ impl fmt::Display for VaapiAdapterDecodeError {
             Self::Backend(message) => write!(formatter, "backend error: {message}"),
             Self::OutputSurfaceAllocation(message) => {
                 write!(formatter, "output surface allocation failed: {message}")
+            }
+            Self::StreamNotConfigured => {
+                formatter.write_str("packet submitted before VA-API stream configure")
             }
         }
     }

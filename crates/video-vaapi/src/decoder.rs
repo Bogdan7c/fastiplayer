@@ -1,6 +1,5 @@
 use std::any::Any;
 use std::collections::{HashMap, VecDeque};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -26,8 +25,7 @@ use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 #[cfg(test)]
 use crate::codec_adapter::VaapiDecodedFormat;
 use crate::codec_adapter::{
-    VaapiAdapterDecodeError, VaapiCodecAdapter, VaapiCodecAdapterFactory, VaapiDecodedFrameHandle,
-    VaapiDecoderEvent, VaapiPacketDecodeHints,
+    VaapiAdapterDecodeError, VaapiDecodedFrameHandle, VaapiDecoderEvent, VaapiPacketDecodeHints,
 };
 use crate::output_surface_pool::{
     OutputSurfaceFormat, OutputSurfacePoolCounters, OutputSurfacePoolStats,
@@ -38,6 +36,7 @@ use crate::shared_hardware_owner::{
     VaapiPlaybackHardwareReservation, VaapiSharedHardwareOwner, VaapiSharedHardwareOwnerContext,
 };
 
+mod active_codec_adapter;
 mod config;
 mod event_drain;
 mod h264_recovery;
@@ -46,6 +45,9 @@ mod preroll;
 mod suppressed_reclaim;
 mod surface_contract;
 
+use active_codec_adapter::{
+    ActiveCodecAdapter, DisplayCodecAdapterSource, VaapiStreamNotConfiguredError,
+};
 pub(crate) use config::non_zero_or_one;
 pub use config::{
     DEFAULT_DECODER_READY_QUEUE_FRAMES, DEFAULT_DECODER_SURFACE_POOL_FRAMES,
@@ -141,6 +143,9 @@ pub(crate) fn is_fatal_decoder_error(error: &anyhow::Error) -> bool {
         || error
             .downcast_ref::<VaapiResourcePoolPoisonError>()
             .is_some()
+        || error
+            .downcast_ref::<VaapiStreamNotConfiguredError>()
+            .is_some()
 }
 
 /// Забирает handles только из decoder-owned ready queue.
@@ -161,11 +166,11 @@ fn drain_decoder_owned_ready_frame_handles(
 /// Активный adapter владеет concrete cros-codecs decoder-ом, а этот слой владеет
 /// internal VA surfaces, DMA-BUF resource pool и drain events внутри `decode()`.
 pub struct VaapiVideoDecoder {
-    /// VA display, через который создаются codec adapters при stream reconfigure.
-    display: Rc<cros_codecs::libva::Display>,
+    /// Создаёт codec adapters через VA display декодера при настройке потока.
+    adapter_source: DisplayCodecAdapterSource,
 
-    /// Активный codec adapter, который скрывает concrete cros-codecs decoder type.
-    adapter: Box<dyn VaapiCodecAdapter>,
+    /// Активный codec adapter; до первого `configure_stream` его нет (ленивое создание).
+    adapter: ActiveCodecAdapter,
 
     /// Ограниченный пул выходных VA surfaces: surfaces переиспользуются между кадрами.
     output_surface_pool: VaapiOutputSurfacePool,
@@ -212,9 +217,6 @@ pub struct VaapiVideoDecoder {
     /// Была ли уже залогирована проверенная P010 zero-copy boundary.
     p010_boundary_verified_logged: bool,
 
-    /// Имя бэкенда для отображения в UI.
-    backend_name: &'static str,
-
     /// Frame contract, выбранный capability layer и обязательный для export-а.
     expected_frame_contract: VideoFrameContract,
 
@@ -232,13 +234,11 @@ pub struct VaapiVideoDecoder {
 }
 
 impl VaapiVideoDecoder {
-    /// Создаёт новый VA-API decoder с production adapter-ом по умолчанию.
+    /// Создаёт VA-API decoder без codec adapter-а: он появится на `configure_stream`.
     ///
     /// # Ошибки
-    /// Возвращает ошибку если:
-    /// - VA-API display недоступен,
-    /// - не удалось создать production codec adapter,
-    /// - не удалось создать GBM frame pool.
+    /// Возвращает ошибку если VA-API display недоступен или не удалось
+    /// зарезервировать playback branch.
     pub fn new() -> Result<Self> {
         let resource_pool = Arc::new(Mutex::new(FrameResourcePool::new()));
         Self::new_with_pool(resource_pool, None, VaapiDecoderRuntimeConfig::default())
@@ -287,14 +287,9 @@ impl VaapiVideoDecoder {
         let display = cros_codecs::libva::Display::open()
             .ok_or_else(|| anyhow::anyhow!("Failed to open VA-API display: libva not available"))?;
 
-        info!("Creating VA-API codec adapter");
-
-        // Создаём production adapter через internal factory. Сейчас factory
-        // выбирает VP9, а будущие codec adapters смогут заменить active adapter
-        // без раскрытия cros-codecs generic типов наружу этого boundary.
-        let adapter = VaapiCodecAdapterFactory::create_default_adapter(display.clone())?;
-        let backend_name = adapter.backend_name();
-        let adapter_codec = adapter.codec();
+        // Codec adapter здесь НЕ создаётся: кодек потока станет известен только в
+        // `configure_stream`. Ошибка «нет VA-API» по-прежнему возникает выше, на открытии display.
+        let adapter = ActiveCodecAdapter::awaiting_stream_config();
 
         // Пустой пул: surfaces создаются лениво при первой аренде. Начальный формат
         // заменится на реальный на первом `FormatChanged` (cros шлёт его до кадров).
@@ -317,8 +312,8 @@ impl VaapiVideoDecoder {
             .map_err(|error| anyhow::anyhow!("Failed to reserve VAAPI playback branch: {error}"))?;
 
         info!(
-            backend_name,
-            codec = %adapter_codec,
+            backend_name = adapter.backend_name(),
+            codec_adapter = "awaiting stream config",
             surface_pool_frames = runtime_config.surface_pool_frames,
             ready_queue_frames = runtime_config.ready_queue_frames,
             playback_reserved_surface_frames = playback_hardware_reservation.surface_frames().get(),
@@ -331,7 +326,7 @@ impl VaapiVideoDecoder {
         );
 
         Ok(Self {
-            display,
+            adapter_source: DisplayCodecAdapterSource::new(display),
             adapter,
             output_surface_pool,
             resource_pool,
@@ -345,7 +340,6 @@ impl VaapiVideoDecoder {
             diagnostic_tx,
             activity_notifier,
             p010_boundary_verified_logged: false,
-            backend_name,
             expected_frame_contract: VideoFrameContract::dma_buf_nv12(
                 DmaBufImageLayout::ComposedLayers,
             ),
@@ -472,16 +466,10 @@ impl VaapiVideoDecoder {
         self.display_orientation = config.display_orientation;
         self.expected_frame_contract = config.frame_contract;
 
-        if self.adapter.can_reuse_for_config(config) {
-            // Факт «декодер настроен под этот поток» пишется и при переиспользовании:
-            // по нему внешние проверки (бенчмарк-сборщик, приёмка) доказывают кодек
-            // потока. Иначе у VP9 — кодека адаптера по умолчанию — строки не было вовсе.
-            info!(
-                backend_name = self.backend_name,
-                codec = %self.adapter.codec(),
-                reused_adapter = true,
-                "VA-API codec adapter configured for stream"
-            );
+        if let Some(reused) = self.adapter.reuse_for_config(config) {
+            // Строка «configured for stream» пишется и при переиспользовании (контракт
+            // бенчмарк-сборщика, см. `log_configured_for_stream`).
+            reused.log_configured_for_stream();
             return Ok(());
         }
 
@@ -495,21 +483,15 @@ impl VaapiVideoDecoder {
         self.release_decoder_owned_ready_frames("configure_stream")?;
         self.invalidate_idle_resource_pool_after_format_change()?;
 
-        let adapter =
-            VaapiCodecAdapterFactory::create_adapter_for_config(self.display.clone(), config)?;
-        self.backend_name = adapter.backend_name();
-        self.adapter = adapter;
+        let created = self
+            .adapter
+            .recreate_for_config(config, &mut self.adapter_source)?;
         self.h264_decode_recovery
-            .reset_for_stream(self.adapter.codec() == VideoCodec::H264);
+            .reset_for_stream(self.adapter.codec() == Some(VideoCodec::H264));
         self.zero_copy_success_logged = false;
         self.p010_boundary_verified_logged = false;
 
-        info!(
-            backend_name = self.backend_name,
-            codec = %self.adapter.codec(),
-            "VA-API codec adapter configured for stream"
-        );
-
+        created.log_configured_for_stream();
         Ok(())
     }
 
@@ -1004,7 +986,8 @@ impl VaapiVideoDecoder {
         ) {
             Ok(report) => report,
             Err(error) => {
-                if !is_fatal_decoder_error(&error) && self.adapter.codec() == VideoCodec::H264 {
+                if !is_fatal_decoder_error(&error) && self.adapter.codec() == Some(VideoCodec::H264)
+                {
                     self.recover_h264_after_decode_error(&error)?;
                 }
                 return Err(error);
@@ -1124,7 +1107,8 @@ impl DecoderRetryDriver for VaapiVideoDecoder {
         packet_data: &[u8],
         decode_hints: VaapiPacketDecodeHints,
     ) -> std::result::Result<usize, VaapiAdapterDecodeError> {
-        self.adapter.submit_packet(
+        // До `configure_stream` adapter-а нет: это вернёт фатальный `StreamNotConfigured`.
+        self.adapter.adapter_for_packet_submit()?.submit_packet(
             timestamp_us,
             packet_data,
             decode_hints,
@@ -1158,13 +1142,13 @@ impl VideoDecoder for VaapiVideoDecoder {
     fn flush(&mut self) -> Result<()> {
         self.flush_decoder_owned_state("flush")?;
         self.h264_decode_recovery
-            .reset_for_stream(self.adapter.codec() == VideoCodec::H264);
+            .reset_for_stream(self.adapter.codec() == Some(VideoCodec::H264));
         Ok(())
     }
 
     /// Возвращает имя бэкенда для отображения в UI.
     fn backend_name(&self) -> &'static str {
-        self.backend_name
+        self.adapter.backend_name()
     }
 
     /// Downcast к конкретному типу для backend-specific операций.

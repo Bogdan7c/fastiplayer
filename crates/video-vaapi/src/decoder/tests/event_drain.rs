@@ -76,6 +76,38 @@ fn output_surface_allocation_failure_stops_decoder_instead_of_skipping_packet() 
     assert!(driver.ready_frames.is_empty());
 }
 
+/// A1: пакет до `configure_stream` — fatal ошибка декодера, а не пропуск/ACK пакета.
+/// Поймает маппинг `StreamNotConfigured` в обычную (non-fatal) decode error.
+#[test]
+fn packet_before_stream_configure_stops_decoder_as_fatal() {
+    let packet_data = vec![0x00, 0x00, 0x01];
+    let mut driver = FakeRetryDriver::new(
+        vec![Err(VaapiAdapterDecodeError::StreamNotConfigured)],
+        Vec::new(),
+    );
+
+    let error = run_decode_with_event_retry(&mut driver, 40_000, &packet_data, true, 3)
+        .expect_err("packet before configure must not be accepted or skipped");
+
+    assert!(
+        is_fatal_decoder_error(&error),
+        "packet before configure must stop the decoder: {error:#}"
+    );
+    assert!(
+        error
+            .downcast_ref::<VaapiStreamNotConfiguredError>()
+            .is_some(),
+        "typed error must survive for diagnostics: {error:#}"
+    );
+    assert!(format!("{error:#}").contains("40 ms"));
+    assert_eq!(
+        driver.submissions,
+        vec![(40_000, packet_data)],
+        "no retry loop"
+    );
+    assert!(driver.ready_frames.is_empty());
+}
+
 /// Проверяет seek flush policy: H.264 tail event не попадает в ready queue.
 #[test]
 fn seek_flush_discard_policy_drops_tail_frame_events() {

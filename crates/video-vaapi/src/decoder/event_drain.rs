@@ -204,6 +204,13 @@ where
                     format!("{codec_label} output surface allocation failed: {message}"),
                 )));
             }
+            Err(VaapiAdapterDecodeError::StreamNotConfigured) => {
+                // Пакет до `configure_stream` — ошибка оркестрации, а не битый поток:
+                // fatal-тип останавливает decoder thread вместо ACK/пропуска пакета.
+                return Err(anyhow::Error::new(
+                    VaapiStreamNotConfiguredError::for_packet(pts_ms),
+                ));
+            }
             Err(VaapiAdapterDecodeError::ParseFrameError(message)) => {
                 report.skipped_packet = true;
                 warn!(
