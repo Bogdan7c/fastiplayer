@@ -1,5 +1,7 @@
 use player_core::PresentFrameIdentityProbe;
 
+use super::redraw_runtime::WaitingPresentFrameFollowUp;
+
 use super::*;
 
 /// Явный результат получения frame lease-а для render boundary.
@@ -289,6 +291,24 @@ pub(super) fn texture_busy_fallback_reject_reason(
     None
 }
 
+/// Кадр в передаче плеера, ради которого после показа нужен follow-up redraw (сессия 06a).
+///
+/// `None`, если ждать нечего: передача пуста, worker прямо сейчас публикует (`Busy` — его
+/// пробуждение придёт после публикации), в передаче уже показанный кадр или кадр другого
+/// render generation (acquire его всё равно отвергнет — redraw ради него был бы холостым).
+pub(super) fn waiting_present_frame_for_follow_up(
+    probe: PresentFrameIdentityProbe,
+    shown_frame: Option<PresentFrameIdentity>,
+    current_render_generation: u64,
+) -> Option<VideoPresentFrameIdentity> {
+    let PresentFrameIdentityProbe::Known(Some(waiting_frame)) = probe else {
+        return None;
+    };
+    let already_shown = shown_frame.is_some_and(|shown| shown.matches_slot(&waiting_frame));
+    let current_generation = waiting_frame.render_generation() == current_render_generation;
+    (!already_shown && current_generation).then_some(waiting_frame)
+}
+
 /// Решает, можно ли использовать previous renderable frame при busy texture lock-е.
 #[cfg(test)]
 pub(super) fn texture_busy_fallback_can_reuse_previous_frame(
@@ -391,6 +411,39 @@ impl AppState {
                 }
             }
         }
+    }
+
+    /// После показа кадра: если передача плеера уже держит следующий кадр, просит redraw
+    /// сразу (сессия 06a).
+    ///
+    /// Зачем: worker мог выбрать два кадра, пока главный поток ждал буфер swapchain. Их
+    /// пробуждения слились в одно, первый кадр только что показан, а второй ждёт в передаче
+    /// (она его не перезаписывает). Без follow-up он ждал бы следующей публикации, а на
+    /// паузе — вечно. Кадр другого поколения ждущим не считается (acquire его отвергнет), а
+    /// для одного и того же кадра follow-up просится один раз — защита от холостого redraw
+    /// на каждом vsync, если кадр не удаётся показать.
+    pub(crate) fn request_follow_up_redraw_for_waiting_present_frame(
+        &mut self,
+        player_snapshot: &PlayerSnapshot,
+    ) -> WaitingPresentFrameFollowUp {
+        let shown_frame = self
+            .cached_renderable_present_frame
+            .as_ref()
+            .map(|cached_frame| {
+                Self::present_frame_identity(&cached_frame.renderable_frame.present_frame)
+            });
+        let Some(waiting_frame) = waiting_present_frame_for_follow_up(
+            self.player_worker.try_present_frame_identity(),
+            shown_frame,
+            player_snapshot.render_generation,
+        ) else {
+            return WaitingPresentFrameFollowUp::NotNeeded;
+        };
+        let follow_up = self.redraw.claim_waiting_frame_follow_up(waiting_frame);
+        if follow_up == WaitingPresentFrameFollowUp::Requested {
+            self.mark_pending_worker_redraw();
+        }
+        follow_up
     }
 
     /// Пытается получить текущий video frame для renderer-а.
@@ -619,3 +672,6 @@ impl AppState {
         self.player_worker.drain_events()
     }
 }
+
+#[cfg(test)]
+mod tests;

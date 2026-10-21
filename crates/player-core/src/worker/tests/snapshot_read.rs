@@ -14,7 +14,7 @@ fn latest_snapshot_waits_for_atomic_replacement_instead_of_returning_old_instanc
     let (result_tx, result_rx) = bounded(1);
     let reader = thread::spawn(move || {
         let (mut worker, ..) =
-            worker_with_latest_handoff_for_tests(Arc::new(LatestPresentFrameHandoff::new()));
+            worker_with_present_handoff_for_tests(Arc::new(OrderedPresentFrameHandoff::new()));
         worker.snapshot_rx = snapshot_rx;
         worker.snapshot_publication_lock = lock;
         Arc::make_mut(&mut worker.cached_snapshot).media_instance_id = Some(old_instance);
@@ -61,7 +61,7 @@ fn poisoned_publication_barrier_still_delivers_latest_snapshot_to_handle() {
     assert!(publisher.publication_lock.is_poisoned());
 
     let (mut worker, ..) =
-        worker_with_latest_handoff_for_tests(Arc::new(LatestPresentFrameHandoff::new()));
+        worker_with_present_handoff_for_tests(Arc::new(OrderedPresentFrameHandoff::new()));
     worker.snapshot_rx = snapshot_rx;
     worker.snapshot_publication_lock = Arc::clone(&publisher.publication_lock);
     let published_instance = MediaInstanceId::new_unique();

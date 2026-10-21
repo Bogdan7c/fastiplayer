@@ -510,22 +510,22 @@ fn present_frame_lease_for_tests(
     VideoFrameLease::new(config)
 }
 
-fn worker_with_latest_handoff_for_tests(
-    latest_present_frame_handoff: Arc<LatestPresentFrameHandoff>,
+fn worker_with_present_handoff_for_tests(
+    present_frame_handoff: Arc<OrderedPresentFrameHandoff>,
 ) -> (
     PlayerWorker,
     Receiver<RenderAcquireSample>,
     Receiver<RenderTimingSample>,
     Receiver<RenderResourcePreviousFrameReuseSample>,
 ) {
-    worker_with_latest_handoffs_for_tests(
-        latest_present_frame_handoff,
+    worker_with_present_handoffs_for_tests(
+        present_frame_handoff,
         Arc::new(LatestPresentFrameHandoff::new()),
     )
 }
 
-fn worker_with_latest_handoffs_for_tests(
-    latest_present_frame_handoff: Arc<LatestPresentFrameHandoff>,
+fn worker_with_present_handoffs_for_tests(
+    present_frame_handoff: Arc<OrderedPresentFrameHandoff>,
     latest_scrub_visual_override_handoff: Arc<LatestPresentFrameHandoff>,
 ) -> (
     PlayerWorker,
@@ -542,7 +542,7 @@ fn worker_with_latest_handoffs_for_tests(
         render_timing_sample_rx,
         render_resource_previous_frame_reuse_sample_rx,
     ) = RenderLeaseBridgeClient::with_handoff_for_tests(
-        latest_present_frame_handoff,
+        present_frame_handoff,
         latest_scrub_visual_override_handoff,
     );
     let (shutdown_tx, _shutdown_rx) = bounded(1);

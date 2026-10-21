@@ -234,6 +234,7 @@ impl PlayerWorkerRuntime {
             repeated_video_frames = summary.repeated_video_frames,
             render_resource_lock_busy_count = summary.render_resource_lock_busy_count,
             render_resource_previous_frame_reuse_count = summary.render_resource_previous_frame_reuse_count,
+            present_frames_dropped_untaken = summary.present_frames_dropped_untaken,
             decoder_publish_channel_full_count = publish_pressure.frame_publish_channel_full_count,
             decoder_publish_retry_count = publish_pressure.pending_publish_retry_count,
             decoder_publish_room_wakeups = publish_pressure.frame_room_wakeup_count,
@@ -300,9 +301,7 @@ impl PlayerWorkerRuntime {
     /// snapshot — в latest-канал, события — в очередь, и только потом будится UI-поток.
     /// Иначе проснувшийся UI мог бы прочитать старое состояние и уснуть до следующего vsync.
     pub(super) fn publish_session_outputs(&mut self) {
-        let publication = self
-            .render_bridge
-            .publish_latest_present_frame(&mut self.session);
+        let publication = self.render_bridge.publish_present_frame(&mut self.session);
 
         // Результат публикации UI не будит: позиция/буферы меняются на каждом тике,
         // а видимые изменения UI планирует сам (см. комментарий ниже).

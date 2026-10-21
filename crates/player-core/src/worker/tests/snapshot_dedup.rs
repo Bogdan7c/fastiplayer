@@ -9,7 +9,7 @@ fn publisher_with_handle() -> (LatestSnapshotPublisher, PlayerWorker) {
     let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
     let publisher = LatestSnapshotPublisher::new(snapshot_tx, snapshot_rx.clone());
     let (mut worker, ..) =
-        worker_with_latest_handoff_for_tests(Arc::new(LatestPresentFrameHandoff::new()));
+        worker_with_present_handoff_for_tests(Arc::new(OrderedPresentFrameHandoff::new()));
     worker.snapshot_rx = snapshot_rx;
     worker.snapshot_publication_lock = Arc::clone(&publisher.publication_lock);
     (publisher, worker)

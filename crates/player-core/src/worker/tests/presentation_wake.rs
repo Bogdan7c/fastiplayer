@@ -97,7 +97,7 @@ fn present_frame_publication_reports_published_unchanged_and_cleared() {
     assert_eq!(
         runtime
             .render_bridge
-            .publish_latest_present_frame(&mut empty_session),
+            .publish_present_frame(&mut empty_session),
         PresentFramePublication::Unchanged,
         "an empty slot stays unchanged when the session has no frame either"
     );
@@ -109,20 +109,75 @@ fn present_frame_publication_reports_published_unchanged_and_cleared() {
     assert_eq!(
         runtime
             .render_bridge
-            .publish_latest_present_frame(&mut runtime.session),
+            .publish_present_frame(&mut runtime.session),
         PresentFramePublication::Published
     );
     assert_eq!(
         runtime
             .render_bridge
-            .publish_latest_present_frame(&mut runtime.session),
+            .publish_present_frame(&mut runtime.session),
         PresentFramePublication::Unchanged
     );
     assert_eq!(
         runtime
             .render_bridge
-            .publish_latest_present_frame(&mut empty_session),
+            .publish_present_frame(&mut empty_session),
         PresentFramePublication::Cleared,
         "a session without a frame clears the slot that still held one"
+    );
+}
+
+/// Сессия 06a: worker выбрал несколько кадров подряд, пока UI их не забирал (главный поток
+/// ждал буфер swapchain). Через настоящий путь «сессия → мост → публичный клиент» UI
+/// получает их по порядку; кадр сверх ёмкости сбрасывает старший незабранный, и это видно
+/// в сводке диагностики. Раньше второй кадр перезаписывал первый молча.
+#[test]
+fn frames_selected_before_ui_takes_them_reach_render_in_order() {
+    let (mut runtime, _command_tx, _shutdown_tx, render_client) =
+        runtime_for_tests_with_wakeup_handles(Instant::now());
+    install_playing_session_with_fake_decoder(&mut runtime);
+    let frame_interval = Duration::from_micros(16_667);
+    let select_frame = |runtime: &mut PlayerWorkerRuntime, frame_index: u32| {
+        runtime
+            .session
+            .show_frame_on_screen_for_tests(decoded_frame_with_pts_for_tests(
+                frame_interval * frame_index,
+                FrameResourceHandle(u64::from(frame_index) + 1),
+            ));
+        runtime.publish_session_outputs();
+    };
+    let take_pts = |render_client: &RenderLeaseBridgeClient| {
+        render_client
+            .try_acquire_present_frame()
+            .map(|frame| frame.decoded_frame().pts)
+    };
+
+    select_frame(&mut runtime, 0);
+    assert_eq!(take_pts(&render_client), Some(Duration::ZERO));
+    select_frame(&mut runtime, 1);
+    select_frame(&mut runtime, 2);
+    assert_eq!(take_pts(&render_client), Some(frame_interval));
+    assert_eq!(take_pts(&render_client), Some(frame_interval * 2));
+    assert_eq!(
+        runtime
+            .session
+            .diagnostics_log_summary()
+            .present_frames_dropped_untaken,
+        0,
+        "two frames between UI reads fit the handoff without a drop"
+    );
+
+    select_frame(&mut runtime, 3);
+    select_frame(&mut runtime, 4);
+    select_frame(&mut runtime, 5);
+    assert_eq!(take_pts(&render_client), Some(frame_interval * 4));
+    assert_eq!(take_pts(&render_client), Some(frame_interval * 5));
+    assert_eq!(
+        runtime
+            .session
+            .diagnostics_log_summary()
+            .present_frames_dropped_untaken,
+        1,
+        "the third untaken frame drops exactly the oldest one and it is counted"
     );
 }

@@ -1,8 +1,10 @@
-use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+#[cfg(test)]
+use std::sync::MutexGuard;
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvError, SendTimeoutError, Sender, TrySendError, bounded};
-use tracing::warn;
+use tracing::{debug, warn};
 use video_present_core::{
     SharedVideoFrameLeaseDiagnosticsSink, SharedVideoFrameReleaseSink, VideoFrameLease,
     VideoFrameLeaseConfig, VideoFrameLeaseDiagnosticsSink, VideoFrameRelease,
@@ -16,6 +18,11 @@ use crate::decoder_boundary::PresentFrameResourceProvider;
 #[cfg(test)]
 use crate::decoder_boundary::PresentFrameResourceProviderLookup;
 use crate::session::{LeasedPresentFrame, PlayerSession, PresentFrameIdentity};
+
+mod ordered_present_handoff;
+
+pub(crate) use ordered_present_handoff::OrderedPresentFrameHandoff;
+use ordered_present_handoff::OrderedPresentFramePublish;
 
 /// Ёмкость release ack stream; защищает worker от бесконечного роста drop-ack очереди.
 const RENDER_RELEASE_CHANNEL_CAPACITY: usize = 512;
@@ -89,6 +96,10 @@ pub enum PresentFrameIdentityProbe {
 }
 
 /// Latest-slot для передачи frame lease-а из worker thread в render thread без request/reply.
+///
+/// С сессии 06a служит только scrub visual override: там нужен именно последний кадр жеста.
+/// Кадры воспроизведения идут через упорядоченную `OrderedPresentFrameHandoff`, которая не
+/// перезаписывает незабранный UI кадр.
 pub(crate) struct LatestPresentFrameHandoff {
     /// Единственный опубликованный lease; его clone-ы разделяют один RAII drop-ack.
     latest_frame: Mutex<Option<VideoFrameLease>>,
@@ -117,6 +128,10 @@ impl LatestPresentFrameHandoff {
     }
 
     /// Публикует новый latest frame и dropping старого lease-а выполняет вне mutex guard-а.
+    ///
+    /// Только тесты: в production scrub-override слот пока никто не заполняет (UI его лишь
+    /// читает), а кадры воспроизведения с сессии 06a идут через `OrderedPresentFrameHandoff`.
+    #[cfg(test)]
     pub(crate) fn publish(&self, frame: Option<VideoFrameLease>) {
         let previous_frame = {
             let mut guard = self.latest_frame_guard();
@@ -125,34 +140,8 @@ impl LatestPresentFrameHandoff {
         drop(previous_frame);
     }
 
-    /// Возвращает identity текущего slot-а, чтобы worker не создавал новый lease без причины.
-    fn current_identity(&self) -> Option<PresentFrameIdentity> {
-        self.latest_frame_guard()
-            .as_ref()
-            .map(present_frame_identity_from_lease)
-    }
-
-    /// Неблокирующе читает identity слота для render hot path (без clone lease-а).
-    ///
-    /// Нужно UI-потоку, чтобы решить «кадр новый или тот же» до любой GPU-работы
-    /// (сессия 04): `Busy` означает, что worker прямо сейчас меняет слот.
-    pub(crate) fn try_current_identity(&self) -> PresentFrameIdentityProbe {
-        match self.latest_frame.try_lock() {
-            Ok(guard) => PresentFrameIdentityProbe::Known(
-                guard.as_ref().map(present_frame_identity_from_lease),
-            ),
-            Err(TryLockError::WouldBlock) => PresentFrameIdentityProbe::Busy,
-            Err(TryLockError::Poisoned(poisoned)) => {
-                warn!("Latest present frame handoff mutex was poisoned; recovering slot");
-                let guard = poisoned.into_inner();
-                PresentFrameIdentityProbe::Known(
-                    guard.as_ref().map(present_frame_identity_from_lease),
-                )
-            }
-        }
-    }
-
     /// Очищает latest-slot и отдаёт release ack старого frame-а через RAII.
+    #[cfg(test)]
     pub(crate) fn clear(&self) {
         self.publish(None);
     }
@@ -167,6 +156,7 @@ impl LatestPresentFrameHandoff {
     }
 
     /// Берёт mutex для worker-side обновлений и восстанавливается после poison.
+    #[cfg(test)]
     fn latest_frame_guard(&self) -> MutexGuard<'_, Option<VideoFrameLease>> {
         match self.latest_frame.lock() {
             Ok(guard) => guard,
@@ -371,8 +361,9 @@ fn build_video_frame_lease(
 
 /// Shell/render-side handle, через который public `PlayerWorker` API остаётся прежним.
 pub(crate) struct RenderLeaseBridgeClient {
-    /// Shared latest-slot, из которого render thread неблокирующе clone-ит frame lease.
-    latest_present_frame_handoff: Arc<LatestPresentFrameHandoff>,
+    /// Упорядоченная передача кадров показа: render thread неблокирующе забирает следующий
+    /// кадр, незабранные не перезаписываются (сессия 06a).
+    present_frame_handoff: Arc<OrderedPresentFrameHandoff>,
 
     /// Отдельный latest-slot для scrub visual override; playback acquisition его не читает.
     latest_scrub_visual_override_handoff: Arc<LatestPresentFrameHandoff>,
@@ -390,14 +381,14 @@ pub(crate) struct RenderLeaseBridgeClient {
 impl RenderLeaseBridgeClient {
     /// Создаёт render-side handle поверх уже созданных worker-side каналов.
     fn new(
-        latest_present_frame_handoff: Arc<LatestPresentFrameHandoff>,
+        present_frame_handoff: Arc<OrderedPresentFrameHandoff>,
         latest_scrub_visual_override_handoff: Arc<LatestPresentFrameHandoff>,
         render_acquire_sample_tx: Sender<RenderAcquireSample>,
         render_timing_sample_tx: Sender<RenderTimingSample>,
         resource_previous_frame_reuse_sample_tx: Sender<RenderResourcePreviousFrameReuseSample>,
     ) -> Self {
         Self {
-            latest_present_frame_handoff,
+            present_frame_handoff,
             latest_scrub_visual_override_handoff,
             render_acquire_sample_tx,
             render_timing_sample_tx,
@@ -405,11 +396,15 @@ impl RenderLeaseBridgeClient {
         }
     }
 
-    /// Пытается получить текущий кадр для renderer-а без раскрытия `PlayerSession`.
+    /// Забирает следующий кадр для renderer-а без раскрытия `PlayerSession`.
+    ///
+    /// Кадры одной последовательности приходят по порядку: если worker успел опубликовать
+    /// два кадра между двумя вызовами, второй вызов вернёт следующий, а не пропустит его.
+    /// Без нового кадра возвращается уже забранный (тот же identity).
     #[must_use]
     pub(crate) fn try_acquire_present_frame(&self) -> Option<VideoFrameLease> {
         let acquire_started_at = Instant::now();
-        let acquire_result = self.latest_present_frame_handoff.try_clone_latest();
+        let acquire_result = self.present_frame_handoff.try_take_next();
         self.report_render_acquire_sample(acquire_started_at.elapsed());
 
         match acquire_result {
@@ -418,10 +413,11 @@ impl RenderLeaseBridgeClient {
         }
     }
 
-    /// Неблокирующе читает identity слота показа без clone lease-а и без diagnostics sample.
+    /// Неблокирующе читает identity кадра, который вернёт следующий
+    /// `try_acquire_present_frame`, без clone lease-а и без diagnostics sample.
     #[must_use]
     pub(crate) fn try_present_frame_identity(&self) -> PresentFrameIdentityProbe {
-        self.latest_present_frame_handoff.try_current_identity()
+        self.present_frame_handoff.try_next_identity()
     }
 
     /// Пытается получить scrub visual override lease без смешивания с playback latest-slot.
@@ -457,7 +453,7 @@ impl RenderLeaseBridgeClient {
     /// Создаёт test client с внешним latest-slot-ом для проверки public worker API.
     #[cfg(test)]
     pub(crate) fn with_handoff_for_tests(
-        latest_present_frame_handoff: Arc<LatestPresentFrameHandoff>,
+        present_frame_handoff: Arc<OrderedPresentFrameHandoff>,
         latest_scrub_visual_override_handoff: Arc<LatestPresentFrameHandoff>,
     ) -> (
         Self,
@@ -474,7 +470,7 @@ impl RenderLeaseBridgeClient {
 
         (
             Self::new(
-                latest_present_frame_handoff,
+                present_frame_handoff,
                 latest_scrub_visual_override_handoff,
                 render_acquire_sample_tx,
                 render_timing_sample_tx,
@@ -489,8 +485,8 @@ impl RenderLeaseBridgeClient {
 
 /// Worker-side владелец render lease handoff, release ack и render diagnostics потоков.
 pub(crate) struct RenderLeaseBridge {
-    /// Shared latest-slot для публикации frame lease-а render thread-у.
-    latest_present_frame_handoff: Arc<LatestPresentFrameHandoff>,
+    /// Упорядоченная передача кадров показа render thread-у (сессия 06a).
+    present_frame_handoff: Arc<OrderedPresentFrameHandoff>,
 
     /// Sender render lease release ack-ов для новых present frames.
     render_release_tx: Sender<RenderLeaseRelease>,
@@ -526,10 +522,10 @@ impl RenderLeaseBridge {
             bounded(RENDER_RESOURCE_DIAGNOSTIC_CHANNEL_CAPACITY);
         let (resource_previous_frame_reuse_sample_tx, resource_previous_frame_reuse_sample_rx) =
             bounded(RENDER_RESOURCE_REUSE_DIAGNOSTIC_CHANNEL_CAPACITY);
-        let latest_present_frame_handoff = Arc::new(LatestPresentFrameHandoff::new());
+        let present_frame_handoff = Arc::new(OrderedPresentFrameHandoff::new());
         let latest_scrub_visual_override_handoff = Arc::new(LatestPresentFrameHandoff::new());
         let client = RenderLeaseBridgeClient::new(
-            Arc::clone(&latest_present_frame_handoff),
+            Arc::clone(&present_frame_handoff),
             Arc::clone(&latest_scrub_visual_override_handoff),
             render_acquire_sample_tx,
             render_timing_sample_tx,
@@ -538,7 +534,7 @@ impl RenderLeaseBridge {
 
         (
             Self {
-                latest_present_frame_handoff,
+                present_frame_handoff,
                 render_release_tx,
                 render_release_rx,
                 render_acquire_sample_rx,
@@ -587,35 +583,64 @@ impl RenderLeaseBridge {
         self.drain_resource_previous_frame_reuse_samples(session);
     }
 
-    /// Публикует latest present frame lease, если worker-side frame identity изменилась.
+    /// Публикует кадр показа, если worker-side frame identity изменилась.
     ///
     /// Возвращает, изменился ли слот показа: по этому итогу worker будит UI-поток
-    /// (`PlayerWorkerPresentationWake`), а не оставляет его ждать vsync.
-    pub(crate) fn publish_latest_present_frame(
+    /// (`PlayerWorkerPresentationWake`), а не оставляет его ждать vsync. Кадр встаёт в
+    /// упорядоченную передачу и не перезаписывает незабранный UI кадр (сессия 06a); сброс
+    /// незабранного при переполнении считается в диагностике сессии.
+    pub(crate) fn publish_present_frame(
         &mut self,
         session: &mut PlayerSession,
     ) -> PresentFramePublication {
         self.drain_releases(session);
         let Some(current_identity) = Self::current_present_frame_identity(session) else {
-            let had_frame = self
-                .latest_present_frame_handoff
-                .current_identity()
-                .is_some();
-            self.latest_present_frame_handoff.clear();
-            return if had_frame {
-                PresentFramePublication::Cleared
-            } else {
-                PresentFramePublication::Unchanged
-            };
+            return self.clear_present_frames();
         };
 
-        if self.latest_present_frame_handoff.current_identity() == Some(current_identity) {
+        if self.present_frame_handoff.newest_identity() == Some(current_identity) {
             return PresentFramePublication::Unchanged;
         }
 
-        let present_frame = self.build_present_frame(session);
-        self.latest_present_frame_handoff.publish(present_frame);
+        let Some(present_frame) = self.build_present_frame(session) else {
+            // Identity есть, а lease не выдан (кадр без ресурса): показывать нечего, как и
+            // раньше, когда в слот публиковался `None`.
+            return self.clear_present_frames();
+        };
+        let handoff_publication = self.present_frame_handoff.publish(present_frame);
+        Self::record_handoff_publication(session, handoff_publication, current_identity);
         PresentFramePublication::Published
+    }
+
+    /// Очищает передачу кадров показа и сообщает, была ли в ней картинка.
+    fn clear_present_frames(&self) -> PresentFramePublication {
+        let had_frame = self.present_frame_handoff.newest_identity().is_some();
+        self.present_frame_handoff.clear();
+        if had_frame {
+            PresentFramePublication::Cleared
+        } else {
+            PresentFramePublication::Unchanged
+        }
+    }
+
+    /// Учитывает итог публикации: сброс незабранного кадра — потеря показа, которую раньше
+    /// не видел ни один счётчик; новая последовательность (seek) — не потеря.
+    fn record_handoff_publication(
+        session: &mut PlayerSession,
+        handoff_publication: OrderedPresentFramePublish,
+        published_identity: PresentFrameIdentity,
+    ) {
+        match handoff_publication {
+            OrderedPresentFramePublish::Queued
+            | OrderedPresentFramePublish::RestartedSequence { .. } => {}
+            OrderedPresentFramePublish::DroppedOldestUntaken => {
+                debug!(
+                    published_pts_ms = published_identity.pts().as_secs_f64() * 1000.0,
+                    "Present frame handoff dropped the oldest frame the UI had not taken yet"
+                );
+                session.record_present_frame_dropped_untaken();
+            }
+        }
     }
 
     /// Возвращает identity текущего present frame без создания нового render lease-а.
@@ -708,10 +733,10 @@ impl RenderLeaseBridge {
         self.render_release_tx.clone()
     }
 
-    /// Читает latest-slot в unit-тестах без прохождения через public worker API.
+    /// Забирает следующий кадр показа в unit-тестах без прохождения через public worker API.
     #[cfg(test)]
-    pub(crate) fn try_clone_latest_for_tests(&self) -> LatestPresentFrameAcquire {
-        self.latest_present_frame_handoff.try_clone_latest()
+    pub(crate) fn try_take_present_frame_for_tests(&self) -> LatestPresentFrameAcquire {
+        self.present_frame_handoff.try_take_next()
     }
 }
 

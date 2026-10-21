@@ -71,6 +71,12 @@ pub(super) fn present_frame_for_plan(
         prepared_video_frame,
     );
     let renderer_submit_elapsed = stage_started_at.elapsed();
+    if renderer_timing.is_some() {
+        // Только после настоящего показа: при свёрнутом окне/потерянной surface follow-up
+        // крутил бы redraw вхолостую. Итог нужен лишь диагностике решения, не управлению.
+        let _follow_up = app_state
+            .request_follow_up_redraw_for_waiting_present_frame(frame_context.player_snapshot());
+    }
 
     let frame_duration = timings.frame_start.elapsed();
     let frame_time_ms = frame_duration.as_secs_f64() * 1000.0;

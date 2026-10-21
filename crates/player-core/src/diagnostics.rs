@@ -827,6 +827,11 @@ pub struct PlaybackDiagnosticsSnapshot {
     /// Сколько раз renderer переиспользовал previous valid frame из-за busy lock-а.
     pub render_resource_previous_frame_reuse_count: u64,
 
+    /// Сколько выбранных worker-ом кадров сброшено из передачи показа, так и не дойдя до
+    /// UI (UI отстал больше чем на ёмкость очереди; сессия 06a). На 60 fps при дисплее
+    /// 59,96 Гц неизбежен один такой сброс примерно раз в 26 с.
+    pub present_frames_dropped_untaken: u64,
+
     /// Давление на bounded decoder->worker decoded-frame publish channel.
     pub decoder_frame_publish_pressure: DecoderFramePublishPressureSnapshot,
 
@@ -852,6 +857,7 @@ impl Default for PlaybackDiagnosticsSnapshot {
             repeated_video_frames: 0,
             render_resource_lock_busy_count: 0,
             render_resource_previous_frame_reuse_count: 0,
+            present_frames_dropped_untaken: 0,
             decoder_frame_publish_pressure: DecoderFramePublishPressureSnapshot::default(),
             worker_wakeup: WorkerWakeupDiagnosticsSnapshot::default(),
             frame_server_scrub: ScrubDiagnosticsSnapshot::new(),
@@ -889,6 +895,9 @@ pub struct PlaybackDiagnosticsLogSummary {
     /// Сколько раз renderer переиспользовал previous valid frame из-за busy lock-а.
     pub render_resource_previous_frame_reuse_count: u64,
 
+    /// Сколько выбранных кадров сброшено из передачи показа, не дойдя до UI.
+    pub present_frames_dropped_untaken: u64,
+
     /// Давление на bounded decoder->worker decoded-frame publish channel.
     pub decoder_frame_publish_pressure: DecoderFramePublishPressureSnapshot,
 
@@ -918,6 +927,7 @@ impl PlaybackDiagnosticsLogSummary {
             || self.seek_bootstrap.first_accepted_keyframe.is_some()
             || self.render_resource_lock_busy_count > 0
             || self.render_resource_previous_frame_reuse_count > 0
+            || self.present_frames_dropped_untaken > 0
             || self
                 .decoder_frame_publish_pressure
                 .frame_publish_channel_full_count
@@ -1299,6 +1309,18 @@ impl PlaybackDiagnostics {
         self.snapshot.queues = queues;
     }
 
+    /// Записывает сброс выбранного кадра из передачи показа до того, как UI его забрал.
+    pub(crate) fn record_present_frame_dropped_untaken(
+        &mut self,
+        queues: PipelineQueueDepthSnapshot,
+    ) {
+        self.snapshot.present_frames_dropped_untaken = self
+            .snapshot
+            .present_frames_dropped_untaken
+            .saturating_add(1);
+        self.snapshot.queues = queues;
+    }
+
     /// Записывает последнее решение worker wakeup planner-а.
     pub(crate) fn record_worker_wakeup(
         &mut self,
@@ -1346,6 +1368,7 @@ impl PlaybackDiagnostics {
             render_resource_previous_frame_reuse_count: self
                 .snapshot
                 .render_resource_previous_frame_reuse_count,
+            present_frames_dropped_untaken: self.snapshot.present_frames_dropped_untaken,
             decoder_frame_publish_pressure: self.snapshot.decoder_frame_publish_pressure,
             worker_wakeup: self.snapshot.worker_wakeup,
             worst_stage,

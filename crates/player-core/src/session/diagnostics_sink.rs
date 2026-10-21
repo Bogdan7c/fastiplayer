@@ -168,6 +168,13 @@ impl PlayerSession {
             .record_render_resource_previous_frame_reuse(queues);
     }
 
+    /// Записывает сброс выбранного кадра из передачи показа до того, как UI его забрал.
+    pub(crate) fn record_present_frame_dropped_untaken(&mut self) {
+        let queues = self.diagnostic_queue_depths();
+        self.diagnostics
+            .record_present_frame_dropped_untaken(queues);
+    }
+
     /// Записывает latency release ack от render side до worker.
     pub(crate) fn record_release_ack_latency(&mut self, latency: Duration) {
         self.record_pipeline_latency(

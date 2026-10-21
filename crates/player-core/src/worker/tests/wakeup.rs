@@ -373,11 +373,11 @@ fn render_release_ack_is_drained_before_latest_publish() {
 
     let _publication = runtime
         .render_bridge
-        .publish_latest_present_frame(&mut runtime.session);
+        .publish_present_frame(&mut runtime.session);
 
     assert_eq!(runtime.session.render_lease_count(), 0);
     assert!(matches!(
-        runtime.render_bridge.try_clone_latest_for_tests(),
+        runtime.render_bridge.try_take_present_frame_for_tests(),
         LatestPresentFrameAcquire::Empty
     ));
 }
@@ -441,18 +441,18 @@ fn latest_present_frame_handoff_keeps_generation_safe_stale_identity() {
 
 #[test]
 fn player_worker_try_acquire_present_frame_reads_latest_slot_without_reply_wait() {
-    let latest_present_frame_handoff = Arc::new(LatestPresentFrameHandoff::new());
+    let present_frame_handoff = Arc::new(OrderedPresentFrameHandoff::new());
     let (release_tx, _release_rx) = unbounded();
     let expected_resource_handle = FrameResourceHandle(44);
     let frame =
         present_frame_lease_for_tests(3, expected_resource_handle, false, release_tx.clone());
-    latest_present_frame_handoff.publish(Some(frame));
+    let _ = present_frame_handoff.publish(frame);
     let (
         worker,
         render_acquire_sample_rx,
         _render_timing_sample_rx,
         _render_resource_previous_frame_reuse_sample_rx,
-    ) = worker_with_latest_handoff_for_tests(Arc::clone(&latest_present_frame_handoff));
+    ) = worker_with_present_handoff_for_tests(Arc::clone(&present_frame_handoff));
 
     let acquired_frame = worker.try_acquire_present_frame().unwrap();
 
@@ -463,17 +463,17 @@ fn player_worker_try_acquire_present_frame_reads_latest_slot_without_reply_wait(
 
 #[test]
 fn player_worker_scrub_visual_override_handoff_stays_separate_from_playback_slot() {
-    let playback_handoff = Arc::new(LatestPresentFrameHandoff::new());
+    let playback_handoff = Arc::new(OrderedPresentFrameHandoff::new());
     let scrub_override_handoff = Arc::new(LatestPresentFrameHandoff::new());
     let (release_tx, _release_rx) = unbounded();
     let playback_handle = FrameResourceHandle(44);
     let scrub_override_handle = FrameResourceHandle(45);
-    playback_handoff.publish(Some(present_frame_lease_for_tests(
+    let _ = playback_handoff.publish(present_frame_lease_for_tests(
         3,
         playback_handle,
         false,
         release_tx.clone(),
-    )));
+    ));
     scrub_override_handoff.publish(Some(present_frame_lease_for_tests(
         3,
         scrub_override_handle,
@@ -485,7 +485,7 @@ fn player_worker_scrub_visual_override_handoff_stays_separate_from_playback_slot
         _render_acquire_sample_rx,
         _render_timing_sample_rx,
         _render_resource_previous_frame_reuse_sample_rx,
-    ) = worker_with_latest_handoffs_for_tests(playback_handoff, scrub_override_handoff);
+    ) = worker_with_present_handoffs_for_tests(playback_handoff, scrub_override_handoff);
 
     let playback_frame = worker.try_acquire_present_frame().unwrap();
     let scrub_override_frame = worker.try_acquire_scrub_visual_override_frame().unwrap();
@@ -499,13 +499,13 @@ fn player_worker_scrub_visual_override_handoff_stays_separate_from_playback_slot
 
 #[test]
 fn player_worker_reports_gpu_submit_present_latency_without_command_queue() {
-    let latest_present_frame_handoff = Arc::new(LatestPresentFrameHandoff::new());
+    let present_frame_handoff = Arc::new(OrderedPresentFrameHandoff::new());
     let (
         worker,
         _render_acquire_sample_rx,
         render_timing_sample_rx,
         _render_resource_previous_frame_reuse_sample_rx,
-    ) = worker_with_latest_handoff_for_tests(latest_present_frame_handoff);
+    ) = worker_with_present_handoff_for_tests(present_frame_handoff);
 
     worker.report_gpu_submit_present_latency(Duration::from_millis(1));
 
@@ -517,13 +517,13 @@ fn player_worker_reports_gpu_submit_present_latency_without_command_queue() {
 
 #[test]
 fn player_worker_reports_render_resource_previous_frame_reuse_without_command_queue() {
-    let latest_present_frame_handoff = Arc::new(LatestPresentFrameHandoff::new());
+    let present_frame_handoff = Arc::new(OrderedPresentFrameHandoff::new());
     let (
         worker,
         _render_acquire_sample_rx,
         _render_timing_sample_rx,
         render_resource_previous_frame_reuse_sample_rx,
-    ) = worker_with_latest_handoff_for_tests(latest_present_frame_handoff);
+    ) = worker_with_present_handoff_for_tests(present_frame_handoff);
 
     worker.report_render_resource_previous_frame_reuse();
 

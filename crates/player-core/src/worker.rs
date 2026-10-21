@@ -30,8 +30,9 @@ use crate::pipeline::VideoDecoderActivityStatus;
 pub use crate::render_lease_bridge::PresentFrameIdentityProbe;
 #[cfg(test)]
 use crate::render_lease_bridge::{
-    LatestPresentFrameAcquire, LatestPresentFrameHandoff, RenderAcquireSample, RenderLeaseRelease,
-    RenderLeaseReleaseSink, RenderResourcePreviousFrameReuseSample, RenderTimingSample,
+    LatestPresentFrameAcquire, LatestPresentFrameHandoff, OrderedPresentFrameHandoff,
+    RenderAcquireSample, RenderLeaseRelease, RenderLeaseReleaseSink,
+    RenderResourcePreviousFrameReuseSample, RenderTimingSample,
 };
 use crate::render_lease_bridge::{RenderLeaseBridge, RenderLeaseBridgeClient};
 use crate::runtime_settings::{validate_runtime_default_volume, validate_runtime_tick_config};

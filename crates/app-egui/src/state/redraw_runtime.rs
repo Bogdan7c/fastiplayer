@@ -168,6 +168,32 @@ pub(crate) struct RedrawRuntime {
     last_full_pass_at: Option<Instant>,
     /// Последний дедлайн позиции и позиция, для которой он считался.
     position_wake: Option<PositionWakeMemory>,
+    /// Память follow-up redraw-ов ради ждущего кадра плеера (сессия 06a).
+    waiting_frame_follow_up: WaitingFrameFollowUpMemory,
+}
+
+/// Кадр плеера, ради которого уже запрошен follow-up redraw после показа (сессия 06a).
+///
+/// Второй раз для того же кадра не просим: кадр, который не удаётся показать (например,
+/// отказ texture view), не должен крутить redraw на каждом vsync.
+#[derive(Debug, Default)]
+pub(super) struct WaitingFrameFollowUpMemory {
+    /// Identity кадра последнего запроса.
+    requested_for: Option<video_present_core::VideoPresentFrameIdentity>,
+}
+
+impl WaitingFrameFollowUpMemory {
+    /// Отмечает follow-up ради `waiting_frame`; повтор для того же кадра — no-op.
+    pub(super) fn claim(
+        &mut self,
+        waiting_frame: video_present_core::VideoPresentFrameIdentity,
+    ) -> WaitingPresentFrameFollowUp {
+        if self.requested_for == Some(waiting_frame) {
+            return WaitingPresentFrameFollowUp::AlreadyRequested;
+        }
+        self.requested_for = Some(waiting_frame);
+        WaitingPresentFrameFollowUp::Requested
+    }
 }
 
 impl RedrawRuntime {
@@ -186,7 +212,16 @@ impl RedrawRuntime {
             retained_ui_geometry: None,
             last_full_pass_at: None,
             position_wake: None,
+            waiting_frame_follow_up: WaitingFrameFollowUpMemory::default(),
         }
+    }
+
+    /// Отмечает follow-up redraw ради ждущего кадра; повтор для того же кадра — no-op.
+    pub(super) fn claim_waiting_frame_follow_up(
+        &mut self,
+        waiting_frame: video_present_core::VideoPresentFrameIdentity,
+    ) -> WaitingPresentFrameFollowUp {
+        self.waiting_frame_follow_up.claim(waiting_frame)
     }
 
     /// Bridge для `PlayerWorkerConfig::with_presentation_wake`.
@@ -195,6 +230,18 @@ impl RedrawRuntime {
     ) -> Arc<dyn player_core::PlayerWorkerPresentationWake> {
         player_presentation_wake_bridge(self.presentation_wake_port.clone())
     }
+}
+
+/// Итог проверки после показа: ждёт ли в передаче плеера следующий кадр (сессия 06a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WaitingPresentFrameFollowUp {
+    /// Ждёт кадр текущего поколения, отличный от показанного: следующий redraw запрошен.
+    Requested,
+    /// Ждущего кадра нет: показан последний, кадр другого поколения или worker прямо
+    /// сейчас публикует (его пробуждение придёт после публикации).
+    NotNeeded,
+    /// Для этого кадра follow-up уже запрашивался и не помог; повтор не крутит redraw.
+    AlreadyRequested,
 }
 
 /// Факты настроек, которые знает только `SettingsRuntime`.
