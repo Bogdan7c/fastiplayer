@@ -473,6 +473,15 @@ impl VaapiVideoDecoder {
         self.expected_frame_contract = config.frame_contract;
 
         if self.adapter.can_reuse_for_config(config) {
+            // Факт «декодер настроен под этот поток» пишется и при переиспользовании:
+            // по нему внешние проверки (бенчмарк-сборщик, приёмка) доказывают кодек
+            // потока. Иначе у VP9 — кодека адаптера по умолчанию — строки не было вовсе.
+            info!(
+                backend_name = self.backend_name,
+                codec = %self.adapter.codec(),
+                reused_adapter = true,
+                "VA-API codec adapter configured for stream"
+            );
             return Ok(());
         }
 
