@@ -17,6 +17,7 @@ mod audio_packet_window;
 mod backlog_recovery;
 mod clock_mapping;
 mod demux_timing;
+mod passthrough_audio_history;
 /// Fake demuxer для проверки source-slot boundaries без реального container backend-а.
 struct SourceSlotFakeDemuxer {
     /// Metadata tracks, которые demuxer отдаёт по neutral contract.

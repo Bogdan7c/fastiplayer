@@ -3,11 +3,12 @@
 //! Раньше `PlayerRejected`/`PlayerFailed` несли только `request_id`, а `MediaInstallFailure`
 //! выбрасывался. Эти тесты ломаются, если причину снова потерять или подменить.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use player_core::{
-    FrameCounters, MediaInstallFailure, MediaInstallFailureStage, PlayerError, PlayerErrorKind,
-    PlayerSnapshot, PlayerWorker, PlayerWorkerConfig,
+    MediaInstallFailure, MediaInstallFailureStage, PlayerError, PlayerErrorKind, PlayerSnapshot,
+    PlayerWorker, PlayerWorkerConfig,
 };
 
 use super::*;
@@ -318,10 +319,10 @@ impl Demuxer for UnknownVideoCodecDemuxer {
 pub(super) fn wait_for_worker_snapshot(
     worker: &mut PlayerWorker,
     predicate: impl Fn(&PlayerSnapshot) -> bool,
-) -> PlayerSnapshot {
+) -> Arc<PlayerSnapshot> {
     let deadline = Instant::now() + REAL_WORKER_DEADLINE;
     loop {
-        let snapshot = worker.latest_snapshot(FrameCounters::default());
+        let snapshot = worker.latest_snapshot();
         if predicate(&snapshot) {
             return snapshot;
         }

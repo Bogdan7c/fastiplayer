@@ -759,13 +759,12 @@ fn build_render_input_video_frame<'frame>(
             "RGBA8 decoded video surface is not a production zero-copy render path"
         )),
         host_planar_layout if host_planar_layout.is_host_planar() => {
-            match texture_views.host_planar_views() {
-                Some((y_view, u_view, v_view)) => WgpuRenderableFrame::from_decoded_host_yuv(
-                    decoded_frame,
-                    y_view,
-                    u_view,
-                    v_view,
-                ),
+            // Views вместе с кэшем bind group слота загрузки: рендерер не пересоздаёт
+            // bind group на каждый кадр, пока слот держит те же текстуры.
+            match texture_views.host_planar_plane_views() {
+                Some(plane_views) => {
+                    WgpuRenderableFrame::from_decoded_host_planar(decoded_frame, plane_views)
+                }
                 None => Err(anyhow::anyhow!(
                     "{} decoded video surface requires HostPlanar Y/U/V texture views",
                     host_planar_layout
@@ -829,14 +828,11 @@ pub(crate) fn with_lifecycle_settings_adapter<R>(
 /// трасса и pacing. Housekeeping (persist по таймерам, транспорт плейлиста, preview настроек)
 /// выполняется на каждом пробуждении независимо от плана, чтобы поведение не зависело от того,
 /// рисовался ли кадр.
-#[instrument(skip(
-    telemetry,
-    window,
-    renderer,
-    app_state,
-    playlist_runtime,
-    settings_runtime
-))]
+// Span кадра — уровня TRACE и без полей: на уровне INFO он создавался на каждом
+// пробуждении окна и форматировал `Debug` координатора рендерера в строку
+// (~2 % главного потока по профилю cpu-parity сессии 05). Стадии кадра пишет
+// отдельная трасса `fastiplayer::render_frame_timing`.
+#[instrument(level = "trace", skip_all)]
 pub(crate) fn render_frame(
     telemetry: &Telemetry,
     window: &Arc<Window>,

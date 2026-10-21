@@ -45,6 +45,8 @@ use crate::surface_alpha::choose_alpha_mode;
 use crate::surface_settings::{SurfacePresentSettings, choose_present_mode, choose_surface_format};
 use crate::window_corner_mask::{SurfaceAlphaEncoding, WindowCornerMaskRenderer};
 
+mod video_hot_path;
+
 /// Превращает длительность в миллисекунды для числовых tracing fields.
 fn duration_ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0

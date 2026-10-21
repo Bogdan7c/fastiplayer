@@ -1,3 +1,7 @@
+## cpu-parity 05: публикация только при изменении (2026-10-21)
+
+`publish_from_player` делает полную публикацию (revision+1) только если изменилось что-то кроме позиции; позиция-only → `DesktopIntegration::publish_position` (без revision/сигнала, Linux `Position` читает `latest_position()`). Входы metadata сравниваются без аллокаций (`desktop_transport/publish_gate.rs`, `ExternalPlaybackIdentity` + `build_metadata`). Детали: `mem:cpu-parity/hot-path-churn-s05-2026-10-21`.
+
 ## S31L live desktop transport (2026-07-23)
 
 For `TimelineMode::Live`, desktop/MPRIS metadata never exposes `mpris:length`; `CanSeek` follows current DVR availability/range. Exact targets that age out resolve `Expired` and must not emit `Seeked`. See `mem:player-core/dynamic-live-timeline-s31l-2026-07-23`.

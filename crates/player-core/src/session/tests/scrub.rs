@@ -710,10 +710,7 @@ fn cold_seek_landing_keeps_old_confirmed_frame_visible_while_pending() {
         Some(MediaTime::from_secs(11))
     );
     assert!(session.seek_commit().is_some());
-    let diagnostics = session
-        .snapshot_with_frame_counters(FrameCounters::default())
-        .diagnostics
-        .frame_server_scrub;
+    let diagnostics = session.compose_snapshot().diagnostics.frame_server_scrub;
     assert_eq!(diagnostics.outcomes.decode_point_seeked, 1);
     let scrub_events = session.take_scrub_events();
     assert!(

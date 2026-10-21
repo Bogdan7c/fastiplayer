@@ -267,10 +267,7 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
         }
     );
     wait_until(|| {
-        (worker
-            .latest_snapshot(crate::FrameCounters::default())
-            .volume
-            - 0.37)
+        (worker.latest_snapshot().volume - 0.37)
             .abs()
             .lt(&f32::EPSILON)
             .then_some(())
@@ -347,7 +344,7 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
     );
     wait_until(|| {
         worker
-            .latest_snapshot(crate::FrameCounters::default())
+            .latest_snapshot()
             .media_instance_id
             .is_none()
             .then_some(())
@@ -452,7 +449,7 @@ fn exact_restore_reports_typed_position_unavailable_for_non_seekable_source() {
         unexpected => panic!("Installed terminal received {unexpected:?}"),
     };
     let installed_snapshot = wait_until(|| {
-        let snapshot = worker.latest_snapshot(crate::FrameCounters::default());
+        let snapshot = worker.latest_snapshot();
         (snapshot.media_instance_id == Some(installed_instance)).then_some(snapshot)
     });
     assert_eq!(installed_snapshot.playback_state, PlaybackState::Paused);
@@ -484,9 +481,7 @@ fn exact_restore_reports_typed_position_unavailable_for_non_seekable_source() {
         "unexpected restore outcome: {restore_outcome:?}"
     );
     assert_eq!(
-        worker
-            .latest_snapshot(crate::FrameCounters::default())
-            .playback_state,
+        worker.latest_snapshot().playback_state,
         PlaybackState::Paused,
         "non-seekable outcome can't turn on for a short time Playing before post-seek intent"
     );
@@ -543,7 +538,7 @@ fn staged_pause_updates_old_current_and_cancel_preserves_latest_state() {
         .expect("Old compatibility install must be accepted");
     wait_until(|| old_receipt.try_take_completion());
     wait_until(|| {
-        let snapshot = worker.latest_snapshot(crate::FrameCounters::default());
+        let snapshot = worker.latest_snapshot();
         (snapshot.playback_state == PlaybackState::Paused).then_some(())
     });
 
@@ -573,7 +568,7 @@ fn staged_pause_updates_old_current_and_cancel_preserves_latest_state() {
         Some(PlaybackIntentUpdateOutcome::AppliedToStaged)
     );
     wait_until(|| {
-        let snapshot = worker.latest_snapshot(crate::FrameCounters::default());
+        let snapshot = worker.latest_snapshot();
         (snapshot.playback_state == PlaybackState::Paused).then_some(())
     });
 
@@ -591,9 +586,7 @@ fn staged_pause_updates_old_current_and_cancel_preserves_latest_state() {
         MediaInstallControlOutcome::CancellationAccepted
     );
     assert_eq!(
-        worker
-            .latest_snapshot(crate::FrameCounters::default())
-            .playback_state,
+        worker.latest_snapshot().playback_state,
         PlaybackState::Paused
     );
 
@@ -650,7 +643,7 @@ fn highest_intent_commits_without_wrong_state_and_post_barrier_update_is_exact()
     );
 
     let paused_snapshot = wait_until(|| {
-        let snapshot = worker.latest_snapshot(crate::FrameCounters::default());
+        let snapshot = worker.latest_snapshot();
         (snapshot.playback_state == PlaybackState::Paused && snapshot.media_instance_id.is_some())
             .then(|| snapshot.clone())
     });

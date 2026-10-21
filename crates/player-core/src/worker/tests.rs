@@ -27,6 +27,7 @@ mod presentation_wake;
 mod queued_intent;
 mod runtime_settings;
 mod shutdown;
+mod snapshot_dedup;
 #[path = "tests/snapshot_read.rs"]
 mod snapshot_read;
 mod wakeup;
@@ -257,11 +258,11 @@ impl video_core::VideoDecoderThreadHandle for WorkerActivityDecoderThread {
 fn wait_for_snapshot(
     worker: &mut PlayerWorker,
     predicate: impl Fn(&PlayerSnapshot) -> bool,
-) -> PlayerSnapshot {
+) -> Arc<PlayerSnapshot> {
     let deadline = Instant::now() + Duration::from_secs(2);
 
     while Instant::now() < deadline {
-        let snapshot = worker.latest_snapshot(FrameCounters::default());
+        let snapshot = worker.latest_snapshot();
         if predicate(&snapshot) {
             return snapshot;
         }
@@ -552,7 +553,7 @@ fn worker_with_latest_handoffs_for_tests(
             snapshot_publication_lock: Arc::new(Mutex::new(())),
             command_sender,
             snapshot_rx,
-            cached_snapshot: PlayerSnapshot::empty(),
+            cached_snapshot: Arc::new(PlayerSnapshot::empty()),
             event_rx,
             render_bridge_client,
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
@@ -589,7 +590,7 @@ fn worker_with_terminal_thread_for_tests(
             admission_closed,
         },
         snapshot_rx,
-        cached_snapshot: PlayerSnapshot::empty(),
+        cached_snapshot: Arc::new(PlayerSnapshot::empty()),
         event_rx,
         render_bridge_client,
         decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),

@@ -1,13 +1,13 @@
 //! AUD-014: production worker seek receipt обязан быть settled до suspend checkpoint-а.
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use media_core::{DemuxReadEvent, DemuxRetryHint, DemuxSeekRequest, DemuxSeekResult, Demuxer};
 use player_core::{
-    ExactTimelineSeekOutcome, ExactTimelineSeekRequest, FrameCounters, MediaInstallCompletion,
-    PlayerWorker, PlayerWorkerConfig, PreparedDemuxSeekEnqueueError, PreparedDemuxSeekOutcome,
+    ExactTimelineSeekOutcome, ExactTimelineSeekRequest, MediaInstallCompletion, PlayerWorker,
+    PlayerWorkerConfig, PreparedDemuxSeekEnqueueError, PreparedDemuxSeekOutcome,
     PreparedDemuxSeekPort, PreparedDemuxSeekReceipt, PreparedDemuxSeekRequestId, PreparedMedia,
     TimelineSeekKind, TimelineSeekRequestId,
 };
@@ -206,10 +206,10 @@ fn wait_for_install_completion(
 fn wait_for_snapshot(
     worker: &mut PlayerWorker,
     predicate: impl Fn(&PlayerSnapshot) -> bool,
-) -> PlayerSnapshot {
+) -> Arc<PlayerSnapshot> {
     let deadline = Instant::now() + TEST_DEADLINE_BUDGET;
     loop {
-        let snapshot = worker.latest_snapshot(FrameCounters::default());
+        let snapshot = worker.latest_snapshot();
         if predicate(&snapshot) {
             return snapshot;
         }
@@ -341,7 +341,7 @@ fn n14b_lifecycle_close_restart_restores_confirmed_receipted_seek_position() {
             checkpoint_position: Duration::from_secs(90),
         }
     );
-    let post_settlement_snapshot = worker.latest_snapshot(FrameCounters::default());
+    let post_settlement_snapshot = worker.latest_snapshot();
     let (mut playlist_runtime, binding, _active_media) =
         runtime_with_installed_media(media_instance_id);
 

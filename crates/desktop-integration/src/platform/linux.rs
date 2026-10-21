@@ -499,9 +499,11 @@ impl MprisPlayerInterface {
     }
     #[zbus(property(emits_changed_signal = "false"))]
     fn position(&self) -> fdo::Result<i64> {
-        Ok(media_time_to_mpris_microseconds(
-            self.desktop_view()?.position,
-        ))
+        // Читаем только позицию, без клона всего вида с metadata-строками.
+        self.snapshot_source
+            .latest_position()
+            .map(media_time_to_mpris_microseconds)
+            .map_err(to_fdo_error)
     }
     #[zbus(property(emits_changed_signal = "const"))]
     fn minimum_rate(&self) -> f64 {

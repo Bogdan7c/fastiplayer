@@ -336,7 +336,7 @@ fn audio_only_prepared_media_opens_without_missing_video_fatal() {
 
     session.load_prepared_media_with_autoplay(prepared_media, false);
 
-    let snapshot = session.snapshot_with_frame_counters(FrameCounters::default());
+    let snapshot = session.compose_snapshot();
     assert_eq!(snapshot.playback_state, PlaybackState::Paused);
     assert_eq!(snapshot.source_label.as_deref(), Some("/tmp/song.flac"));
     assert_eq!(snapshot.media_title.as_deref(), Some("song.flac"));

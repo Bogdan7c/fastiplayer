@@ -17,7 +17,7 @@ mod wgpu_backend;
 use self::wgpu_backend::{WgpuHostPlanarUploadBackend, WgpuHostPlanarUploadedTextures};
 
 use super::{
-    WgpuFrameMaterializationUnsupportedReason, WgpuFrameTextureViewLookup,
+    FrameBindGroupCache, WgpuFrameMaterializationUnsupportedReason, WgpuFrameTextureViewLookup,
     WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
 };
 
@@ -95,6 +95,11 @@ pub struct HostPlanarWgpuTextureViews {
 }
 
 impl HostPlanarWgpuTextureViews {
+    /// Кэш bind group-ов слота загрузки, которому принадлежат эти views.
+    pub(super) fn bind_group_cache(&self) -> &FrameBindGroupCache {
+        &self._uploaded_texture_guard.bind_groups
+    }
+
     fn from_uploaded_textures(uploaded_textures: Arc<WgpuHostPlanarUploadedTextures>) -> Self {
         Self {
             y_view: uploaded_textures.y_view.clone(),

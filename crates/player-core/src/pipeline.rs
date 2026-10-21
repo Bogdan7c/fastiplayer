@@ -39,6 +39,7 @@ mod audio_packet_window;
 mod audio_track_switch;
 mod media_slots;
 mod overlapped_audio_output;
+mod passthrough_audio_history;
 mod render_resources;
 mod retired_video_decoders;
 #[cfg(test)]
@@ -51,6 +52,7 @@ pub(crate) use audio_output_spec_change::{
     ReplacementOutputPlayback, SpecChangeClockAnchor, SpecChangeTimeline,
 };
 pub(crate) use audio_packet_window::PendingAudioPacket;
+use passthrough_audio_history::PassthroughAudioHistory;
 use video_backlog_recovery::VideoBacklogRecoveryState;
 pub(crate) use video_backlog_recovery::{
     VideoBacklogRecoveryRouteOutcome, VideoBacklogRecoveryScanLimit,
@@ -540,15 +542,13 @@ pub(crate) struct PlaybackPipeline {
     /// Следующий monotonic tempo segment id внутри текущего media pipeline.
     next_audio_tempo_segment_id: u64,
 
-    /// Bounded история последнего passthrough PCM для warmup нового tempo processor-а.
+    /// Bounded кольцевая история последнего passthrough PCM (и её PCM spec) для
+    /// warmup нового tempo processor-а.
     ///
     /// Phase vocoder имеет startup latency (~FFT window): без прайминга первый
     /// stretched output не продолжает волну последнего passthrough sample —
     /// слышимый клик на первом переходе 1.0x -> non-1x.
-    passthrough_audio_history: Vec<f32>,
-
-    /// Полный decoded PCM spec, под который записана passthrough история.
-    passthrough_audio_history_spec: Option<audio_core::AudioOutputSpec>,
+    passthrough_audio_history: PassthroughAudioHistory,
 
     /// Pipeline-owned фаза поиска безопасной точки переключения video backlog.
     video_backlog_recovery_state: VideoBacklogRecoveryState,
@@ -716,8 +716,7 @@ impl Default for PlaybackPipeline {
             audio_tempo_processor: None,
             audio_tempo_output_buffer: Vec::new(),
             next_audio_tempo_segment_id: 1,
-            passthrough_audio_history: Vec::new(),
-            passthrough_audio_history_spec: None,
+            passthrough_audio_history: PassthroughAudioHistory::default(),
             video_backlog_recovery_state: VideoBacklogRecoveryState::Inactive,
             video_backlog_recovery_staged_packets: VecDeque::new(),
             video_backlog_recovery_staged_bytes: 0,

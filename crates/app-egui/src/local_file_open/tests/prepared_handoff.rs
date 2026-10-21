@@ -12,9 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use player_core::{
-    FrameCounters, PlaybackState, PlayerSnapshot, PlayerWorker, PlayerWorkerConfig, PreparedMedia,
-};
+use player_core::{PlaybackState, PlayerSnapshot, PlayerWorker, PlayerWorkerConfig, PreparedMedia};
 
 use super::super::{LocalFileOpenJob, LocalFileOpenResult};
 use super::capturing_audio_output::{CapturedAudio, CapturingAudioOutputFactory};
@@ -148,7 +146,7 @@ fn play_to_terminal_state(prepared_media: PreparedMedia) -> (PlayerSnapshot, Cap
 
     let deadline = Instant::now() + SCENARIO_DEADLINE;
     let final_snapshot = loop {
-        let snapshot = worker.latest_snapshot(FrameCounters::default());
+        let snapshot = worker.latest_snapshot();
         if matches!(
             snapshot.playback_state,
             PlaybackState::Ended | PlaybackState::Failed
@@ -162,7 +160,7 @@ fn play_to_terminal_state(prepared_media: PreparedMedia) -> (PlayerSnapshot, Cap
         );
         std::thread::sleep(Duration::from_millis(1));
     };
-    (final_snapshot, output_factory.captured())
+    ((*final_snapshot).clone(), output_factory.captured())
 }
 
 /// Общий oracle: файл доиграл до конца без ошибки, и почти весь его звук дошёл до output-а.

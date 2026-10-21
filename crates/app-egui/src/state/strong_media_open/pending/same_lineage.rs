@@ -61,7 +61,7 @@ impl AppState {
             return Err(StrongMediaOpenError::SameLineageStale);
         }
         let visual_checkpoint = self.capture_backend_swap_video_checkpoint();
-        let (fresh_intent, mut fresh_restore) = same_lineage_controls_from_snapshot(snapshot);
+        let (fresh_intent, mut fresh_restore) = same_lineage_controls_from_snapshot(&snapshot);
         if let SameLineageRestorePosition::Exact(exact_position) = restore_position {
             fresh_restore.position = *exact_position;
         }
@@ -85,14 +85,14 @@ impl AppState {
 
 /// Чистая граница фиксирует, какие fresh controls пересекают S25 barrier.
 fn same_lineage_controls_from_snapshot(
-    snapshot: player_core::PlayerSnapshot,
+    snapshot: &player_core::PlayerSnapshot,
 ) -> (PlaybackIntent, SameLineageRestoreSnapshot) {
     (
-        super::super::super::playback_intent_from_snapshot(&snapshot),
+        super::super::super::playback_intent_from_snapshot(snapshot),
         SameLineageRestoreSnapshot {
             position: snapshot.current_position,
             volume: snapshot.volume,
-            selected_tracks: snapshot.selected_tracks,
+            selected_tracks: snapshot.selected_tracks.clone(),
         },
     )
 }
@@ -108,7 +108,7 @@ mod tests {
         playing.current_position = std::time::Duration::from_secs(17);
         playing.volume = 0.41;
         playing.selected_tracks.video_track = Some(media_core::TrackId::new(3));
-        let (playing_intent, playing_restore) = same_lineage_controls_from_snapshot(playing);
+        let (playing_intent, playing_restore) = same_lineage_controls_from_snapshot(&playing);
 
         assert_eq!(playing_intent, player_core::PlaybackIntent::StartPlaying);
         assert_eq!(playing_restore.position, std::time::Duration::from_secs(17));
@@ -122,7 +122,7 @@ mod tests {
         paused.playback_state = player_core::PlaybackState::Paused;
         paused.current_position = std::time::Duration::from_secs(29);
         paused.volume = 0.73;
-        let (paused_intent, paused_restore) = same_lineage_controls_from_snapshot(paused);
+        let (paused_intent, paused_restore) = same_lineage_controls_from_snapshot(&paused);
 
         assert_eq!(paused_intent, player_core::PlaybackIntent::StartPaused);
         assert_eq!(paused_restore.position, std::time::Duration::from_secs(29));
@@ -137,7 +137,7 @@ mod tests {
         snapshot.volume = 0.62;
         snapshot.selected_tracks.audio_track = Some(media_core::TrackId::new(7));
 
-        let (intent, mut restore) = same_lineage_controls_from_snapshot(snapshot);
+        let (intent, mut restore) = same_lineage_controls_from_snapshot(&snapshot);
         let policy = SameLineageRestorePosition::Exact(std::time::Duration::from_secs(91));
         if let SameLineageRestorePosition::Exact(exact_position) = policy {
             restore.position = exact_position;

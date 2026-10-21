@@ -1,40 +1,79 @@
 use super::*;
 
+/// Итог попытки опубликовать собранный snapshot.
+///
+/// Различает «ушёл в канал» и «не отличается от уже опубликованного», чтобы
+/// вызывающий код и тесты не путали отсутствие публикации с ошибкой доставки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub(super) enum SnapshotPublication {
+    /// Snapshot отличался от последнего опубликованного и положен в latest-канал.
+    Published,
+    /// Snapshot равен последнему опубликованному: канал не трогали, `Arc` у UI прежний.
+    Unchanged,
+    /// Snapshot изменился, но доставить его некому (receiver отключён) или слот занят.
+    /// Последний опубликованный при этом не обновляется, чтобы следующая попытка повторилась.
+    NotDelivered,
+}
+
 /// Publisher latest snapshot поверх bounded channel.
+///
+/// Владеет «последним опубликованным» `Arc`: снимок уходит в канал только если
+/// он не равен ему. Начальное значение совпадает с кэшем `PlayerWorker`
+/// (`PlayerSnapshot::empty()`), поэтому UI никогда не «застревает» на старом
+/// состоянии: любое отличие от того, что UI уже видит, обязано быть опубликовано.
 pub(super) struct LatestSnapshotPublisher {
     /// Общий с consumer-ом барьер атомарной замены latest snapshot.
     pub(super) publication_lock: Arc<Mutex<()>>,
     /// Sender snapshot'ов в app shell.
-    pub(super) snapshot_tx: Sender<PlayerSnapshot>,
+    pub(super) snapshot_tx: Sender<Arc<PlayerSnapshot>>,
 
     /// Receiver clone нужен worker-у для политики `latest wins`.
-    pub(super) snapshot_rx_for_drain_latest: Receiver<PlayerSnapshot>,
+    pub(super) snapshot_rx_for_drain_latest: Receiver<Arc<PlayerSnapshot>>,
+
+    /// Последний snapshot, доставленный в канал (или начальный пустой, который UI видит по умолчанию).
+    last_published: Arc<PlayerSnapshot>,
 }
 
 impl LatestSnapshotPublisher {
     /// Создаёт publisher с private drain receiver clone.
     pub(super) fn new(
-        snapshot_tx: Sender<PlayerSnapshot>,
-        snapshot_rx_for_drain_latest: Receiver<PlayerSnapshot>,
+        snapshot_tx: Sender<Arc<PlayerSnapshot>>,
+        snapshot_rx_for_drain_latest: Receiver<Arc<PlayerSnapshot>>,
     ) -> Self {
         Self {
             publication_lock: Arc::new(Mutex::new(())),
             snapshot_tx,
             snapshot_rx_for_drain_latest,
+            last_published: Arc::new(PlayerSnapshot::empty()),
         }
     }
 
     /// Публикует latest snapshot, удаляя устаревший pending snapshot.
-    pub(super) fn publish(&self, snapshot: PlayerSnapshot) {
+    ///
+    /// Равный последнему опубликованному snapshot не публикуется вовсе: UI не
+    /// просыпается ради дубликата и не делает лишних сравнений/клонов.
+    pub(super) fn publish(&mut self, snapshot: PlayerSnapshot) -> SnapshotPublication {
+        if *self.last_published == snapshot {
+            return SnapshotPublication::Unchanged;
+        }
+        let snapshot = Arc::new(snapshot);
         // Ни I/O, ни построение snapshot не выполняются под lock. Он закрывает
         // только короткую замену канального slot-а, чтобы Installed ack оставался
         // доказательством доступности snapshot даже при следующем publish.
         let _publication = acquire_snapshot_publication_barrier(&self.publication_lock);
         drain_receiver_without_blocking(&self.snapshot_rx_for_drain_latest);
-        if let Err(error) = self.snapshot_tx.try_send(snapshot) {
-            match error {
-                TrySendError::Full(_) => debug!("Latest snapshot channel is full"),
-                TrySendError::Disconnected(_) => debug!("Snapshot receiver disconnected"),
+        match self.snapshot_tx.try_send(Arc::clone(&snapshot)) {
+            Ok(()) => {
+                self.last_published = snapshot;
+                SnapshotPublication::Published
+            }
+            Err(error) => {
+                match error {
+                    TrySendError::Full(_) => debug!("Latest snapshot channel is full"),
+                    TrySendError::Disconnected(_) => debug!("Snapshot receiver disconnected"),
+                }
+                SnapshotPublication::NotDelivered
             }
         }
     }
@@ -265,10 +304,11 @@ impl PlayerWorkerRuntime {
             .render_bridge
             .publish_latest_present_frame(&mut self.session);
 
-        let snapshot = self
-            .session
-            .snapshot_with_frame_counters(FrameCounters::default());
-        self.snapshot_publisher.publish(snapshot);
+        // Результат публикации UI не будит: позиция/буферы меняются на каждом тике,
+        // а видимые изменения UI планирует сам (см. комментарий ниже).
+        let _snapshot_publication = self
+            .snapshot_publisher
+            .publish(self.session.compose_snapshot());
 
         for event in self.session.take_correlated_events() {
             self.publish_worker_event(PlayerWorkerEvent::Player(event));

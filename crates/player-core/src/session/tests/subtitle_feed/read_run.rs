@@ -111,10 +111,7 @@ fn snapshot_shows_the_current_read_run_before_and_after_a_seek_even_without_new_
     run_ticks(&mut harness.session, 3);
     drain(&harness.receiver);
     assert_eq!(
-        harness
-            .session
-            .snapshot_with_frame_counters(FrameCounters::default())
-            .subtitle_read_run,
+        harness.session.compose_snapshot().subtitle_read_run,
         SubtitleReadRun::INITIAL
     );
 
@@ -122,10 +119,7 @@ fn snapshot_shows_the_current_read_run_before_and_after_a_seek_even_without_new_
     seek_to(&mut harness, 10);
     assert!(packets_of(&drain(&harness.receiver)).is_empty());
     assert_eq!(
-        harness
-            .session
-            .snapshot_with_frame_counters(FrameCounters::default())
-            .subtitle_read_run,
+        harness.session.compose_snapshot().subtitle_read_run,
         SubtitleReadRun::INITIAL.next(),
         "приложение должно узнать о разрыве по снимку, не дожидаясь пакета"
     );
@@ -137,10 +131,7 @@ fn a_full_feed_drops_the_packet_and_the_next_packet_starts_a_new_read_run() {
     let mut harness = harness_with(2, standard_tracks(), interleaved_packets(), None);
     run_ticks(&mut harness.session, 3);
     assert_ne!(
-        harness
-            .session
-            .snapshot_with_frame_counters(FrameCounters::default())
-            .subtitle_read_run,
+        harness.session.compose_snapshot().subtitle_read_run,
         SubtitleReadRun::INITIAL,
         "потеря пакета двигает проход чтения"
     );

@@ -27,6 +27,9 @@ use self::external_frame_sync::record_external_frame_sync;
 pub use self::external_frame_sync::{
     ExternalFrameSyncCommandBuffers, WgpuDmaBufPlaneViews, WgpuVideoRenderOutcome,
 };
+pub(crate) use self::frame_bind_group_cache::FrameBindGroupCache;
+pub use self::frame_bind_group_cache::VideoHotPathStats;
+pub use self::host_planar_plane_views::WgpuHostPlanarPlaneViews;
 pub use self::host_planar_upload::{
     HostPlanarWgpuFrameMaterializer, HostPlanarWgpuTextureViewLookup, HostPlanarWgpuTextureViews,
 };
@@ -37,6 +40,8 @@ use self::p010_renderer::P010VideoRenderer;
 mod dma_buf_materializer;
 mod dma_buf_texture_cache;
 mod external_frame_sync;
+mod frame_bind_group_cache;
+mod host_planar_plane_views;
 mod host_planar_upload;
 mod host_yuv420_renderer;
 mod nv12_renderer;
@@ -102,8 +107,25 @@ impl WgpuFrameTextureViews {
                 external_sync: imported_texture_guard
                     .as_ref()
                     .and_then(|texture| texture.external_sync.as_ref()),
+                bind_group_cache: imported_texture_guard
+                    .as_ref()
+                    .map(|texture| &texture.bind_groups),
             }),
             WgpuFrameTextureViewStorage::HostPlanar(_) => None,
+        }
+    }
+
+    /// Возвращает HostPlanar Y/U/V views вместе с кэшем bind group-ов слота загрузки.
+    ///
+    /// В отличие от `host_planar_views()` кадр, собранный из этих views, переиспользует
+    /// bind group между показами одного слота пула.
+    #[must_use]
+    pub fn host_planar_plane_views(&self) -> Option<WgpuHostPlanarPlaneViews<'_>> {
+        match &self.storage {
+            WgpuFrameTextureViewStorage::DmaBuf { .. } => None,
+            WgpuFrameTextureViewStorage::HostPlanar(views) => {
+                Some(WgpuHostPlanarPlaneViews::from_uploaded_views(views))
+            }
         }
     }
 
@@ -282,6 +304,10 @@ pub(crate) struct VideoRenderPassContext<'pass> {
 
     /// LoadOp render target-а для main/overlay video pass-а.
     pub(crate) target_load: VideoRenderTargetLoad,
+
+    /// Кэш bind group-ов владельца texture views кадра; `None` — кадр без
+    /// владельца, bind group создаётся на кадр (см. `frame_bind_group_cache`).
+    pub(crate) frame_bind_groups: Option<&'pass FrameBindGroupCache>,
 }
 
 /// Явный load mode video pass-а, чтобы overlay preview не очищал main surface.
@@ -408,6 +434,9 @@ pub struct WgpuRenderableFrame<'frame> {
     /// Синхронизация импортированного image с внешним писателем (только DMA-BUF
     /// с переиспользованием image); renderer записывает по ней барьеры pass-а.
     external_sync: Option<&'frame ImportedImageExternalSync>,
+
+    /// Кэш bind group-ов владельца views (импортированная текстура / слот загрузки).
+    bind_group_cache: Option<&'frame FrameBindGroupCache>,
 }
 
 impl<'frame> WgpuRenderableFrame<'frame> {
@@ -425,6 +454,7 @@ impl<'frame> WgpuRenderableFrame<'frame> {
                 uv_view: views.uv_view,
             },
             external_sync: views.external_sync,
+            bind_group_cache: views.bind_group_cache,
         })
     }
 
@@ -442,6 +472,7 @@ impl<'frame> WgpuRenderableFrame<'frame> {
                 uv_view: views.uv_view,
             },
             external_sync: views.external_sync,
+            bind_group_cache: views.bind_group_cache,
         })
     }
 
@@ -463,7 +494,20 @@ impl<'frame> WgpuRenderableFrame<'frame> {
             },
             // Host-upload textures принадлежат рендереру целиком: внешнего писателя нет.
             external_sync: None,
+            // Views пришли по отдельности: владельца кэша не видно, bind group на кадр.
+            bind_group_cache: None,
         })
+    }
+
+    /// Собирает HostPlanar кадр из views слота загрузки, сохраняя кэш его bind group.
+    pub fn from_decoded_host_planar(
+        frame: &DecodedFrame,
+        views: WgpuHostPlanarPlaneViews<'frame>,
+    ) -> Result<Self> {
+        let mut renderable =
+            Self::from_decoded_host_yuv(frame, views.y_view, views.u_view, views.v_view)?;
+        renderable.bind_group_cache = views.bind_group_cache;
+        Ok(renderable)
     }
 
     /// Совместимый wrapper для старого YUV420-only имени.
@@ -679,6 +723,15 @@ impl WgpuVideoRenderer {
         &self.diagnostics
     }
 
+    /// Счётчики создания/переиспользования bind group-ов и записей uniform за всё время жизни.
+    #[must_use]
+    pub fn hot_path_stats(&self) -> VideoHotPathStats {
+        self.nv12_renderer
+            .hot_path_stats()
+            .merged_with(self.p010_renderer.hot_path_stats())
+            .merged_with(self.host_yuv_renderer.hot_path_stats())
+    }
+
     /// Обновляет color pipeline settings для всех текущих video paths.
     pub fn set_color_pipeline_settings(&mut self, settings: ColorPipelineSettings) {
         self.nv12_renderer.set_color_pipeline_settings(settings);
@@ -798,6 +851,7 @@ impl WgpuVideoRenderer {
             viewport: video_viewport,
             draw_rects,
             target_load,
+            frame_bind_groups: frame.bind_group_cache,
         };
 
         if !frame.metadata.has_display_size() {

@@ -107,7 +107,7 @@ fn paused_idle_worker_wakes_on_sliding_live_window_and_publishes_latest_snapshot
     wake_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("paused worker emits app wake");
-    let moved = worker.latest_snapshot(FrameCounters::default());
+    let moved = worker.latest_snapshot();
     assert_eq!(moved.timeline.seekable_range, Some(moved_range));
     assert_eq!(
         moved.timeline.live_edge,

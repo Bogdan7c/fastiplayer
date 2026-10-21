@@ -7,11 +7,12 @@ use std::time::Duration;
 
 use player_core::{LatencyCounterSnapshot, PlayerSnapshot};
 use render_wgpu_shell::RenderFrameTiming;
-use render_wgpu_video::DmaBufImportStats;
+use render_wgpu_video::{DmaBufImportStats, VideoHotPathStats};
 use tracing::{debug, trace};
 
 use super::input_snapshot::AppFrameInputTimings;
 use super::ui_prepare::UiPrepareTimings;
+use crate::state::AppFrameContext;
 
 /// Tracing target для чистого включения render frame timings без packet debug шума.
 const RENDER_FRAME_TIMING_TARGET: &str = "fastiplayer::render_frame_timing";
@@ -77,6 +78,10 @@ pub(super) struct AppRenderFrameTimings {
 
     /// Кэш Vulkan-импортов DMA-BUF materializer-а; `None` для host-upload backend-а.
     pub(super) dma_buf_import_stats: Option<DmaBufImportStats>,
+
+    /// Накопленные счётчики bind group/uniform видео-прохода (сессия 05): в установившемся
+    /// показе `bind_groups_created` и `uniform_writes` не растут.
+    pub(super) video_hot_path: VideoHotPathStats,
 }
 
 /// Превращает длительность в миллисекунды для числовых tracing fields.
@@ -128,7 +133,7 @@ pub(super) fn log_skipped_frame(frame_work: FrameWorkTrace, wake_total: Duration
 
 /// Логирует подробную разбивку кадра: trace для всех кадров, debug только для slow frame.
 pub(super) fn log_render_frame_timings(
-    player_snapshot: &PlayerSnapshot,
+    frame_context: &AppFrameContext,
     app_timings: AppRenderFrameTimings,
     frame_work: FrameWorkTrace,
     video_acquisition_state: &'static str,
@@ -136,6 +141,8 @@ pub(super) fn log_render_frame_timings(
     surface_frame_counters: SurfaceFrameCounters,
     renderer_timing: Option<RenderFrameTiming>,
 ) {
+    let player_snapshot = frame_context.player_snapshot();
+    let frame_counters = frame_context.frame_counters();
     let frame_budget = render_frame_budget(player_snapshot);
     let slow_frame_threshold = frame_budget + SLOW_RENDER_FRAME_SLACK;
     let slowest_renderer_stage = renderer_timing.map(|timing| timing.stages.slowest_stage());
@@ -158,7 +165,6 @@ pub(super) fn log_render_frame_timings(
     let decoder_event_drain = latencies.decoder_event_drain;
     let dma_buf_import = latencies.dma_buf_import;
     let dma_buf_import_stats = app_timings.dma_buf_import_stats;
-    let frame_counters = player_snapshot.frame_counters;
 
     trace!(
         target: RENDER_FRAME_TIMING_TARGET,
@@ -202,6 +208,10 @@ pub(super) fn log_render_frame_timings(
         dma_buf_cache_entries = dma_buf_import_stats
             .map(|stats| stats.cache.entries)
             .unwrap_or_default(),
+        video_bind_groups_created = app_timings.video_hot_path.bind_groups_created,
+        video_bind_groups_reused = app_timings.video_hot_path.bind_groups_reused,
+        video_uniform_writes = app_timings.video_hot_path.uniform_writes,
+        video_uniform_writes_skipped = app_timings.video_hot_path.uniform_writes_skipped,
         "render frame stage timings"
     );
 

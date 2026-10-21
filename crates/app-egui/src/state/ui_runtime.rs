@@ -165,14 +165,8 @@ impl AppState {
     /// Рендерит egui UI поверх видео.
     ///
     /// UI читает только `PlayerSnapshot`, а действия после egui closure отправляет worker-у.
-    #[instrument(skip(
-        self,
-        window,
-        frame_context,
-        egui_input,
-        settings_ui_model,
-        playlist_models
-    ))]
+    // TRACE: span на каждом полном проходе UI не нужен обычному логу (cpu-parity сессия 05).
+    #[instrument(level = "trace", skip_all)]
     pub fn render_ui(
         &mut self,
         window: &Window,
@@ -260,6 +254,7 @@ impl AppState {
                 Instant::now(),
                 TelemetryPanelState {
                     player_snapshot,
+                    frame_counters: frame_context.frame_counters(),
                     telemetry: &telemetry,
                     render_diagnostics,
                     timeline_ui_state: &timeline_ui_state,

@@ -65,7 +65,7 @@ struct RebuildContext {
     backend_constraint: MediaInstallVideoBackendConstraint,
     /// Controls старого media, снятые перед установкой (подготовка может идти секундами,
     /// поэтому позиция берётся не в момент нажатия Apply).
-    snapshot: PlayerSnapshot,
+    snapshot: Arc<PlayerSnapshot>,
 }
 
 /// Фаза одной пересборки.

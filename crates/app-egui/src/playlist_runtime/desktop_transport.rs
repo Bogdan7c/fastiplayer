@@ -15,12 +15,17 @@ use player_core::{PlaybackState, PlayerSnapshot};
 use playlist_core::RepeatMode;
 use tracing::{debug, warn};
 
+mod publish_gate;
+#[cfg(test)]
+mod publish_tests;
+
+use self::publish_gate::{MetadataInputs, ScalarSnapshotState};
 use super::controller::AppTransportDisposition;
 use super::controller::{
     ControllerStableIntentDispatch, StablePlaybackIntent, TransportGuardOutcome,
 };
 use super::external_projection::{
-    ExternalPlaybackBinding, ExternalPlaybackProjection, capture_binding,
+    ExternalPlaybackBinding, ExternalPlaybackIdentity, capture_binding,
 };
 use super::identity::TransportActionOrigin;
 use super::transport_ui::NavigationControlAvailability;
@@ -65,6 +70,8 @@ pub(super) struct DesktopTransportOwner {
     active_track_key: Option<DesktopTrackKey>,
     active_lineage: Option<u64>,
     last_snapshot: DesktopSnapshotView,
+    /// Входы metadata последней полной публикации (см. [`MetadataInputs`]).
+    metadata_inputs: MetadataInputs,
     last_seek_outcome: Option<DesktopTimelineSeekOutcome>,
 }
 
@@ -92,6 +99,7 @@ impl DesktopTransportOwner {
             active_track_key: None,
             active_lineage: None,
             last_snapshot,
+            metadata_inputs: MetadataInputs::default(),
             last_seek_outcome: None,
         }
     }
@@ -192,24 +200,29 @@ impl DesktopTransportOwner {
         self.active_track_key = Some(next_track_key);
     }
 
+    /// Публикует состояние плеера во внешний desktop snapshot.
+    ///
+    /// Инвариант: любое изменение metadata/статуса/capabilities/loop/shuffle/volume/
+    /// control revision/seeked даёт ровно одну полную публикацию (revision + 1).
+    /// Если не изменилось ничего, кроме позиции, обновляется только позиция
+    /// ([`DesktopIntegration::publish_position`]): без revision, без клонов вида и
+    /// без пересборки строк metadata.
     pub(super) fn publish_from_player(
         &mut self,
         player_snapshot: &PlayerSnapshot,
         runtime: &mut PlaylistRuntime,
     ) {
-        let projection = ExternalPlaybackProjection::capture(runtime, player_snapshot);
-        let active_lineage = projection
+        let identity = ExternalPlaybackIdentity::capture(runtime, player_snapshot);
+        let binding = identity.as_ref().map(|identity| identity.binding);
+        let active_lineage = identity.as_ref().map(|identity| identity.active_lineage);
+        let item_id = identity
             .as_ref()
-            .map(|projection| projection.active_lineage);
-        let item_id = projection
-            .as_ref()
-            .and_then(|projection| projection.active_part_item_id)
+            .and_then(|identity| identity.active_part_item_id)
             .and_then(|item_id| NonZeroU64::new(item_id.expose_value_for_persistence()));
         self.observe_installed_track(active_lineage, item_id);
-        let control_revision =
-            self.observe_control_binding(projection.as_ref().map(|projection| projection.binding));
+        let control_revision = self.observe_control_binding(binding);
 
-        let has_binding = projection.is_some();
+        let has_binding = identity.is_some();
         if has_binding
             && let Ok(player_volume) = EffectiveVolume::from_player(player_snapshot.volume)
         {
@@ -237,23 +250,6 @@ impl DesktopTransportOwner {
                 .duration
                 .or_else(|| player_snapshot.duration.map(MediaDuration::from_duration))
         };
-        let mut metadata = projection.map_or_else(
-            || self.last_snapshot.metadata.clone(),
-            |projection| projection.metadata,
-        );
-        metadata.track_key = self.active_track_key;
-        metadata.duration = has_binding.then_some(duration).flatten();
-        if metadata.track_key == self.last_snapshot.metadata.track_key {
-            metadata.title = metadata
-                .title
-                .or_else(|| self.last_snapshot.metadata.title.clone());
-            metadata.source_label = metadata
-                .source_label
-                .or_else(|| self.last_snapshot.metadata.source_label.clone());
-            if player_snapshot.timeline.mode != media_core::TimelineMode::Live {
-                metadata.duration = metadata.duration.or(self.last_snapshot.metadata.duration);
-            }
-        }
         let (loop_status, shuffle) =
             runtime
                 .playlist_controller()
@@ -267,13 +263,9 @@ impl DesktopTransportOwner {
                         controller.queue().shuffle_enabled(),
                     )
                 });
-        self.revision = self.revision.saturating_add(1);
-        let view = DesktopSnapshotView {
-            revision: DesktopSnapshotRevision::new(self.revision),
+        let scalar_state = ScalarSnapshotState {
             control_revision,
             playback_status,
-            metadata,
-            position: player_snapshot.timeline.current_position,
             capabilities: DesktopCapabilities {
                 can_go_next: has_binding
                     && navigation.next != NavigationControlAvailability::Disabled,
@@ -286,9 +278,97 @@ impl DesktopTransportOwner {
             loop_status,
             shuffle,
             volume: self.effective_volume,
+        };
+        let position = player_snapshot.timeline.current_position;
+
+        // Дальше metadata. Если входы не менялись, строки прошлой публикации актуальны:
+        // слияние ниже с `last_snapshot` для них идемпотентно (None -> прежнее значение).
+        let metadata_inputs_unchanged = self.metadata_inputs.matches(binding, player_snapshot)
+            && self.active_track_key == self.last_snapshot.metadata.track_key;
+        let mut next_duration = has_binding.then_some(duration).flatten();
+        if self.active_track_key == self.last_snapshot.metadata.track_key
+            && player_snapshot.timeline.mode != media_core::TimelineMode::Live
+        {
+            next_duration = next_duration.or(self.last_snapshot.metadata.duration);
+        }
+        let seeked_pending_clear = self.last_snapshot.seeked.is_some();
+
+        if metadata_inputs_unchanged
+            && !seeked_pending_clear
+            && next_duration == self.last_snapshot.metadata.duration
+            && scalar_state == ScalarSnapshotState::of_view(&self.last_snapshot)
+        {
+            self.publish_position_only(position);
+            return;
+        }
+
+        let mut metadata = if metadata_inputs_unchanged {
+            self.last_snapshot.metadata.clone()
+        } else {
+            self.metadata_inputs = MetadataInputs::capture(binding, player_snapshot);
+            identity.map_or_else(
+                || self.last_snapshot.metadata.clone(),
+                |identity| identity.build_metadata(),
+            )
+        };
+        metadata.track_key = self.active_track_key;
+        metadata.duration = has_binding.then_some(duration).flatten();
+        if metadata.track_key == self.last_snapshot.metadata.track_key {
+            metadata.title = metadata
+                .title
+                .or_else(|| self.last_snapshot.metadata.title.clone());
+            metadata.source_label = metadata
+                .source_label
+                .or_else(|| self.last_snapshot.metadata.source_label.clone());
+            if player_snapshot.timeline.mode != media_core::TimelineMode::Live {
+                metadata.duration = metadata.duration.or(self.last_snapshot.metadata.duration);
+            }
+        }
+        // Входы изменились, но итоговый вид отличается только позицией (например, смена
+        // title на ту же строку после merge): полная публикация не нужна.
+        if !seeked_pending_clear
+            && metadata == self.last_snapshot.metadata
+            && scalar_state == ScalarSnapshotState::of_view(&self.last_snapshot)
+        {
+            self.publish_position_only(position);
+            return;
+        }
+        self.revision = self.revision.saturating_add(1);
+        let view = DesktopSnapshotView {
+            revision: DesktopSnapshotRevision::new(self.revision),
+            control_revision: scalar_state.control_revision,
+            playback_status: scalar_state.playback_status,
+            metadata,
+            position,
+            capabilities: scalar_state.capabilities,
+            loop_status: scalar_state.loop_status,
+            shuffle: scalar_state.shuffle,
+            volume: scalar_state.volume,
             seeked: None,
         };
         self.publish(view);
+    }
+
+    /// Дешёвый путь: меняется только позиция; revision и D-Bus-сигналы не затрагиваются.
+    fn publish_position_only(&mut self, position: MediaTime) {
+        if self.last_snapshot.position != position {
+            self.last_snapshot.position = position;
+            if let Some(integration) = &self.integration
+                && let Err(error) = integration.publish_position(position)
+            {
+                warn!(error = %error, "Unable to publish desktop position");
+            }
+        }
+        self.drain_integration_events();
+    }
+
+    /// Забирает события backend-а в лог (общий хвост полной и позиционной публикации).
+    fn drain_integration_events(&self) {
+        if let Some(integration) = &self.integration {
+            for event in integration.drain_events() {
+                debug!(?event, "Desktop integration event");
+            }
+        }
     }
 
     pub(super) fn publish_detached(&mut self) {
@@ -307,14 +387,12 @@ impl DesktopTransportOwner {
 
     fn publish(&mut self, view: DesktopSnapshotView) {
         self.last_snapshot = view.clone();
-        if let Some(integration) = &self.integration {
-            if let Err(error) = integration.publish_snapshot(view) {
-                warn!(error = %error, "Unable to publish committed desktop snapshot");
-            }
-            for event in integration.drain_events() {
-                debug!(?event, "Desktop integration event");
-            }
+        if let Some(integration) = &self.integration
+            && let Err(error) = integration.publish_snapshot(view)
+        {
+            warn!(error = %error, "Unable to publish committed desktop snapshot");
         }
+        self.drain_integration_events();
     }
 
     fn publish_seeked(&mut self, request_id: TimelineSeekRequestId, position: MediaTime) {

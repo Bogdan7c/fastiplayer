@@ -4,68 +4,82 @@ use codec_core::{ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunctio
 use media_core::TrackInfo;
 
 use crate::{
-    AudioBufferSnapshot, BackendSnapshot, FrameCounters, PlayerSnapshot, QueueSnapshot,
-    TexturePoolSnapshot, TrackSelectionSnapshot, TrackSummarySnapshot, VideoFrameSnapshot,
+    AudioBufferSnapshot, BackendSnapshot, PlayerSnapshot, QueueSnapshot, TexturePoolSnapshot,
+    TrackSelectionSnapshot, TrackSummarySnapshot, VideoFrameSnapshot,
 };
 
 use super::PlayerSession;
 
 /// Собирает актуальный read-model snapshot из immutable session state.
-pub(super) fn build_snapshot(
-    session: &PlayerSession,
-    frame_counters: FrameCounters,
-) -> PlayerSnapshot {
-    PlayerSnapshotBuilder::new(session, frame_counters).build()
+pub(super) fn build_snapshot(session: &PlayerSession) -> PlayerSnapshot {
+    PlayerSnapshotBuilder::new(session).build()
 }
 
 /// Read-only builder, который не владеет session state и не меняет lifecycle pipeline-а.
 struct PlayerSnapshotBuilder<'session> {
     /// Session остаётся единственным владельцем playback state и pipeline данных.
     session: &'session PlayerSession,
-
-    /// Runtime frame counters приходят от shell/worker boundary и только подмешиваются в read model.
-    frame_counters: FrameCounters,
 }
 
 impl<'session> PlayerSnapshotBuilder<'session> {
     /// Создаёт builder поверх immutable session reference.
-    fn new(session: &'session PlayerSession, frame_counters: FrameCounters) -> Self {
-        Self {
-            session,
-            frame_counters,
+    fn new(session: &'session PlayerSession) -> Self {
+        Self { session }
+    }
+
+    /// Собирает полный `PlayerSnapshot`.
+    ///
+    /// Снимок строится литералом без `..`, поэтому новое поле `PlayerSnapshot`
+    /// не скомпилируется, пока не решено, откуда оно берётся. Раньше сборка
+    /// начиналась с глубокого клона `session.snapshot` и почти все тяжёлые поля
+    /// (tracks, media_info, строки) тут же перезаписывались: двойная работа на
+    /// каждом тике. Теперь из `session.snapshot` клонируются только поля, которые
+    /// владеет сама session (команды/события), остальные строятся из pipeline.
+    fn build(&self) -> PlayerSnapshot {
+        let base = &self.session.snapshot;
+        PlayerSnapshot {
+            // --- Поля, которыми владеет session.snapshot (pipeline их не знает) ---
+            media_instance_id: base.media_instance_id,
+            duration: base.duration,
+            current_position: base.current_position,
+            timeline: base.timeline,
+            volume: base.volume,
+            muted: base.muted,
+            playback_rate: base.playback_rate,
+            available_qualities: base.available_qualities.clone(),
+            last_error: base.last_error.clone(),
+            capability_summary: base.capability_summary.clone(),
+            // --- Поля, собираемые из живого состояния pipeline/session ---
+            playback_state: self.session.playback_state(),
+            source_label: self.source_label(),
+            media_title: self.media_title(),
+            media_info: self.media_info_snapshot(),
+            selected_tracks: self.track_selection_snapshot(),
+            tracks: self.track_summary_snapshot(),
+            active_backend: self.backend_snapshot(),
+            current_video_frame: self.current_video_frame_snapshot(),
+            subtitle_read_run: self.session.subtitle_feed.current_read_run(),
+            render_generation: self.session.pipeline.render_generation(),
+            video_frame_duration_estimate: self.session.pipeline.video_frame_duration_estimate(),
+            audio_buffer: self.audio_buffer_snapshot(),
+            queues: self.queue_snapshot(),
+            diagnostics: self.session.diagnostics_snapshot(),
         }
     }
 
-    /// Собирает полный `PlayerSnapshot`, сохраняя прежнее содержимое и порядок overrides.
-    fn build(&self) -> PlayerSnapshot {
-        let mut snapshot = self.session.snapshot.clone();
-        snapshot.playback_state = self.session.playback_state();
-        snapshot.source_label = self.source_label();
-        snapshot.media_title = self.media_title();
-        snapshot.media_info = self
-            .session
+    /// Собирает информацию об источнике; длительность и seekability берёт из базового снимка.
+    fn media_info_snapshot(&self) -> Option<crate::MediaInfoSnapshot> {
+        let base = &self.session.snapshot;
+        self.session
             .pipeline
             .media_source_info()
             .cloned()
             .map(|source| crate::MediaInfoSnapshot {
                 source,
                 metadata: self.session.pipeline.media_metadata().cloned(),
-                duration: snapshot.duration,
-                seekable: self.session.snapshot.timeline.not_seekable_reason.is_none(),
-            });
-        snapshot.selected_tracks = self.track_selection_snapshot();
-        snapshot.tracks = self.track_summary_snapshot();
-        snapshot.active_backend = self.backend_snapshot();
-        snapshot.current_video_frame = self.current_video_frame_snapshot();
-        snapshot.subtitle_read_run = self.session.subtitle_feed.current_read_run();
-        snapshot.render_generation = self.session.pipeline.render_generation();
-        snapshot.video_frame_duration_estimate =
-            self.session.pipeline.video_frame_duration_estimate();
-        snapshot.audio_buffer = self.audio_buffer_snapshot();
-        snapshot.queues = self.queue_snapshot();
-        snapshot.frame_counters = self.frame_counters;
-        snapshot.diagnostics = self.session.diagnostics_snapshot();
-        snapshot
+                duration: base.duration,
+                seekable: base.timeline.not_seekable_reason.is_none(),
+            })
     }
 
     /// Формирует метку источника без раскрытия mutable demuxer state наружу.
@@ -249,8 +263,8 @@ mod tests {
     use bytes::Bytes;
     use media_core::{DemuxSeekResult, Demuxer, MediaTime, TrackKind};
 
+    use crate::TrackId;
     use crate::pipeline::{PendingAudioPacket, PendingVideoPacket};
-    use crate::{FrameCounters, TrackId};
 
     use super::*;
 
@@ -266,17 +280,39 @@ mod tests {
         );
 
         let snapshot_before_build = session.snapshot.clone();
-        let frame_counters = FrameCounters {
-            presented: 3,
-            dropped: 2,
-            repeated: 1,
-        };
-
-        let snapshot = build_snapshot(&session, frame_counters);
+        let snapshot = build_snapshot(&session);
 
         assert_eq!(snapshot.source_label.as_deref(), Some("pipeline source"));
-        assert_eq!(snapshot.frame_counters, frame_counters);
         assert_eq!(session.snapshot, snapshot_before_build);
+    }
+
+    /// Поля, которыми владеет `session.snapshot` (команды/события), доходят до результата
+    /// без изменений: сборка литералом не должна терять то, что раньше давал клон базы.
+    #[test]
+    fn builder_carries_session_owned_fields_from_base_snapshot() {
+        let mut session = PlayerSession::default();
+        let instance = crate::MediaInstanceId::new_unique();
+        session.snapshot.media_instance_id = Some(instance);
+        session.snapshot.volume = 0.4;
+        session.snapshot.muted = true;
+        session.snapshot.capability_summary = Some("caps".to_owned());
+        session.snapshot.last_error = Some(crate::PlayerError::new(
+            crate::PlayerErrorKind::RuntimeError,
+            "boom",
+        ));
+        session
+            .snapshot
+            .set_timeline_position(MediaTime::from_duration(Duration::from_secs(7)));
+
+        let snapshot = build_snapshot(&session);
+
+        assert_eq!(snapshot.media_instance_id, Some(instance));
+        assert!((snapshot.volume - 0.4).abs() < f32::EPSILON);
+        assert!(snapshot.muted);
+        assert_eq!(snapshot.capability_summary.as_deref(), Some("caps"));
+        assert_eq!(snapshot.last_error, session.snapshot.last_error);
+        assert_eq!(snapshot.current_position, Duration::from_secs(7));
+        assert_eq!(snapshot.timeline, session.snapshot.timeline);
     }
 
     #[test]
@@ -291,7 +327,7 @@ mod tests {
             Vec::new(),
         );
 
-        let snapshot = build_snapshot(&session, FrameCounters::default());
+        let snapshot = build_snapshot(&session);
 
         assert_eq!(snapshot.source_label.as_deref(), Some("/tmp/sample.webm"));
         assert_eq!(snapshot.media_title.as_deref(), Some("sample.webm"));
@@ -309,7 +345,7 @@ mod tests {
             Vec::new(),
         );
 
-        let snapshot = build_snapshot(&session, FrameCounters::default());
+        let snapshot = build_snapshot(&session);
 
         let start = snapshot
             .media_info
@@ -325,7 +361,7 @@ mod tests {
         session.pipeline.advance_render_generation();
         session.pipeline.advance_render_generation();
 
-        let snapshot = build_snapshot(&session, FrameCounters::default());
+        let snapshot = build_snapshot(&session);
 
         assert_eq!(
             snapshot.render_generation,
@@ -347,7 +383,7 @@ mod tests {
             track_infos,
         );
 
-        let snapshot = build_snapshot(&session, FrameCounters::default());
+        let snapshot = build_snapshot(&session);
 
         assert_eq!(snapshot.tracks.len(), 2);
         assert_eq!(snapshot.tracks[0].id, TrackId::new(1));
@@ -383,7 +419,7 @@ mod tests {
                 true,
             ));
 
-        let snapshot = build_snapshot(&session, FrameCounters::default());
+        let snapshot = build_snapshot(&session);
 
         assert_eq!(snapshot.queues.pending_audio_packets, 1);
         assert_eq!(snapshot.queues.pending_video_packets, 1);

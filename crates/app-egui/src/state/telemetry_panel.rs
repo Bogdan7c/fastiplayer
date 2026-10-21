@@ -17,6 +17,9 @@ pub(super) struct TelemetryPanelState<'panel> {
     /// Snapshot player-а на начало egui frame.
     pub(super) player_snapshot: &'panel PlayerSnapshot,
 
+    /// Счётчики кадров окна (ведёт UI, в snapshot плеера не входят).
+    pub(super) frame_counters: FrameCounters,
+
     /// Shared telemetry counters.
     pub(super) telemetry: &'panel Telemetry,
 
@@ -592,7 +595,7 @@ impl AppState {
         )));
         panel_rows.push(TelemetryPanelRow::normal(format!(
             "video_frames_presented: {}",
-            player_snapshot.frame_counters.presented
+            panel_state.frame_counters.presented
         )));
         panel_rows.push(TelemetryPanelRow::normal(format!(
             "Playback visible drops: {}",
@@ -600,7 +603,7 @@ impl AppState {
         )));
         panel_rows.push(TelemetryPanelRow::normal(format!(
             "Playback drops incl pause: {}",
-            player_snapshot.frame_counters.dropped
+            panel_state.frame_counters.dropped
         )));
         panel_rows.push(TelemetryPanelRow::normal(format!(
             "  video_late_drops: {}",
@@ -652,7 +655,7 @@ impl AppState {
         )));
         panel_rows.push(TelemetryPanelRow::normal(format!(
             "repeated_frames: {}",
-            player_snapshot.frame_counters.repeated
+            panel_state.frame_counters.repeated
         )));
         panel_rows.push(TelemetryPanelRow::normal(format!(
             "Worker repeats: {}",

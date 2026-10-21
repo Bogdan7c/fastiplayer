@@ -28,10 +28,9 @@ use crate::seek_state::PlaybackResumeIntent;
 use crate::seek_state::SeekRuntimeState;
 use crate::{
     AudioDecoderFactory, AudioOutputFactory, AudioTempoProcessorFactory, CorrelatedPlayerEvent,
-    FrameCounters, MediaPlaybackWindow, PlaybackDiagnostics, PlaybackPipeline, PlaybackState,
-    PlayerError, PlayerErrorKind, PlayerEvent, PlayerRuntimeApplyError,
-    PlayerRuntimeBoundaryActivity, PlayerSnapshot, PlayerVideoBackendInstallIntent,
-    StartedVideoBackend, TrackId,
+    MediaPlaybackWindow, PlaybackDiagnostics, PlaybackPipeline, PlaybackState, PlayerError,
+    PlayerErrorKind, PlayerEvent, PlayerRuntimeApplyError, PlayerRuntimeBoundaryActivity,
+    PlayerSnapshot, PlayerVideoBackendInstallIntent, StartedVideoBackend, TrackId,
 };
 #[cfg(test)]
 use crate::{PlayerCommandOutcome, PlayerResult};
@@ -349,8 +348,8 @@ impl PlayerSession {
 
     /// Собирает актуальный snapshot для UI, renderer и desktop integration.
     #[must_use]
-    pub fn snapshot_with_frame_counters(&self, frame_counters: FrameCounters) -> PlayerSnapshot {
-        snapshot_builder::build_snapshot(self, frame_counters)
+    pub fn compose_snapshot(&self) -> PlayerSnapshot {
+        snapshot_builder::build_snapshot(self)
     }
 
     /// Сообщает, что session уже получила shutdown-запрос.

@@ -251,29 +251,7 @@ impl PlaybackPipeline {
         samples: &[f32],
         output_spec: audio_core::AudioOutputSpec,
     ) {
-        let sample_rate = output_spec.sample_rate;
-        let channels = output_spec.channels();
-        if sample_rate == 0 || channels == 0 || samples.is_empty() {
-            return;
-        }
-
-        if self.passthrough_audio_history_spec != Some(output_spec) {
-            self.passthrough_audio_history.clear();
-            self.passthrough_audio_history_spec = Some(output_spec);
-        }
-
-        self.passthrough_audio_history.extend_from_slice(samples);
-
-        let max_samples = passthrough_audio_history_max_samples(sample_rate, channels);
-        let overflow = self
-            .passthrough_audio_history
-            .len()
-            .saturating_sub(max_samples);
-        if overflow > 0 {
-            let frame_aligned_overflow = overflow.next_multiple_of(channels as usize);
-            let drain_end = frame_aligned_overflow.min(self.passthrough_audio_history.len());
-            self.passthrough_audio_history.drain(..drain_end);
-        }
+        self.passthrough_audio_history.record(samples, output_spec);
     }
 
     /// Забирает warmup историю для прайминга нового tempo processor-а.
@@ -284,16 +262,13 @@ impl PlaybackPipeline {
         &mut self,
         output_spec: audio_core::AudioOutputSpec,
     ) -> Vec<f32> {
-        let history = std::mem::take(&mut self.passthrough_audio_history);
-        let matches_spec = self.passthrough_audio_history_spec == Some(output_spec);
-        self.passthrough_audio_history_spec = None;
-        if matches_spec { history } else { Vec::new() }
+        self.passthrough_audio_history.take_for_priming(output_spec)
     }
 
     /// Возвращает typed PCM format доступной warmup истории без чтения storage tuple снаружи.
     #[must_use]
     pub(crate) fn passthrough_audio_history_pcm_format(&self) -> Option<AudioTempoPcmFormat> {
-        AudioTempoPcmFormat::from_audio_output_spec(self.passthrough_audio_history_spec?).ok()
+        AudioTempoPcmFormat::from_audio_output_spec(self.passthrough_audio_history.spec()?).ok()
     }
 
     /// Возвращает полный decoded PCM spec warmup истории для layout-safe rollback-а.
@@ -301,13 +276,12 @@ impl PlaybackPipeline {
     pub(crate) const fn passthrough_audio_history_output_spec(
         &self,
     ) -> Option<audio_core::AudioOutputSpec> {
-        self.passthrough_audio_history_spec
+        self.passthrough_audio_history.spec()
     }
 
     /// Сбрасывает warmup историю на seek/media boundary.
     pub(crate) fn clear_passthrough_audio_history(&mut self) {
         self.passthrough_audio_history.clear();
-        self.passthrough_audio_history_spec = None;
     }
 
     /// Завершает stream, пишет весь DSP tail одним result и очищает processor slot.
@@ -780,18 +754,4 @@ fn route_audio_output_samples(
         Ok(report) => AudioOutputRoutingStatus::Written(report),
         Err(error) => AudioOutputRoutingStatus::WriteFailed(error),
     }
-}
-
-/// Бюджет warmup истории passthrough PCM в миллисекундах.
-///
-/// Должен с запасом покрывать startup latency tempo backend-а (у текущего
-/// Signalsmith preset_default это ~120-150 ms; бюджет держит headroom и для
-/// более латентных бэкендов), оставаясь bounded по памяти
-/// (600 ms 48k stereo f32 ≈ 230 KB).
-const PASSTHROUGH_AUDIO_HISTORY_MAX_MS: u64 = 600;
-
-/// Считает bounded сэмпловый бюджет warmup истории для decoded PCM spec.
-fn passthrough_audio_history_max_samples(sample_rate: u32, channels: u32) -> usize {
-    let frames = (u64::from(sample_rate) * PASSTHROUGH_AUDIO_HISTORY_MAX_MS).div_ceil(1000);
-    usize::try_from(frames * u64::from(channels)).unwrap_or(usize::MAX)
 }

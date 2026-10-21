@@ -81,6 +81,9 @@ pub struct AudioOutput {
     /// Reusable storage channel mixer-а без packet-local allocation.
     channel_mix_buffer: Vec<f32>,
 
+    /// Переиспользуемый буфер результата resampler-а (пуст, если resampling не нужен).
+    resample_buffer: Vec<f32>,
+
     /// Громкость playback. 0.0 = silence, 1.0 = исходная амплитуда.
     volume: f32,
 
@@ -222,6 +225,7 @@ impl AudioOutput {
             decoder_channels,
             channel_mixer: ChannelMixer::new(decoder_layout, stream_channels),
             channel_mix_buffer: Vec::new(),
+            resample_buffer: Vec::new(),
             volume: 1.0,
             is_playing: false,
             backend_stream_state,
@@ -266,13 +270,15 @@ impl AudioOutput {
         let stream_layout_samples = self
             .channel_mixer
             .mix_interleaved_into(samples, &mut self.channel_mix_buffer)?;
-        let resampled_samples = self
-            .resampler
-            .as_mut()
-            .map(|resampler| resampler.resample_interleaved(stream_layout_samples));
-        let samples_for_output = resampled_samples
-            .as_deref()
-            .unwrap_or(stream_layout_samples);
+        // Ресемплинг пишет в переиспользуемый буфер потока (без аллокаций на пакет).
+        let samples_for_output = match self.resampler.as_mut() {
+            Some(resampler) => {
+                resampler
+                    .resample_interleaved_into(stream_layout_samples, &mut self.resample_buffer);
+                self.resample_buffer.as_slice()
+            }
+            None => stream_layout_samples,
+        };
 
         // Ring buffer обязан оставаться frame-aligned: запись, оборванная
         // посреди interleaved кадра, навсегда меняет каналы местами для всего

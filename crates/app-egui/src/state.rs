@@ -61,6 +61,8 @@ mod audio_tracks;
 mod automatic_web_media_quality;
 mod dropped_subtitles;
 mod external_open;
+mod frame_context;
+pub use frame_context::AppFrameContext;
 mod fullscreen_chrome_routing;
 mod language_label_disambiguation;
 mod local_open_install;
@@ -163,29 +165,6 @@ pub(crate) use sidebar_controller::{
 use telemetry_panel::TelemetryPanelCache;
 use timeline_inline_status::TimelineInlineStatusState;
 
-/// Immutable данные, зафиксированные один раз для текущего render frame-а.
-pub struct AppFrameContext {
-    /// Snapshot player-а, общий для UI, renderer boundary, desktop integration и pacing.
-    player_snapshot: PlayerSnapshot,
-
-    /// Renderer-neutral diagnostics, которые UI показывает в этом же frame-е.
-    render_diagnostics: RenderDiagnostics,
-}
-
-impl AppFrameContext {
-    /// Возвращает единственный player snapshot текущего render frame-а.
-    #[must_use]
-    pub const fn player_snapshot(&self) -> &PlayerSnapshot {
-        &self.player_snapshot
-    }
-
-    /// Возвращает render diagnostics, зафиксированные для текущего render frame-а.
-    #[must_use]
-    pub const fn render_diagnostics(&self) -> &RenderDiagnostics {
-        &self.render_diagnostics
-    }
-}
-
 /// Состояние приложения без владения playback pipeline.
 pub struct AppState {
     /// Egui context — корневой объект egui для создания UI.
@@ -234,7 +213,7 @@ pub struct AppState {
     pub startup_pending: Option<String>,
 
     /// Последний snapshot, уже доставленный UI; используется shell redraw pacing-ом.
-    last_player_snapshot: PlayerSnapshot,
+    last_player_snapshot: Arc<PlayerSnapshot>,
 
     /// Нужен один follow-up redraw после команды, которая уйдёт в worker асинхронно.
     pending_redraw_after_worker_command: bool,
@@ -440,7 +419,7 @@ impl AppState {
             ),
             external_open: crate::external_open::ExternalOpenOwner::default(),
             startup_pending: None,
-            last_player_snapshot: PlayerSnapshot::empty(),
+            last_player_snapshot: Arc::new(PlayerSnapshot::empty()),
             pending_redraw_after_worker_command: false,
             cached_renderable_present_frame: None,
             main_visual_override_state: MainVisualOverrideState::default(),
@@ -682,10 +661,11 @@ impl AppState {
         self.startup_readiness
             .reconcile_tracks(&player_snapshot, Instant::now());
 
-        AppFrameContext {
+        AppFrameContext::new(
             player_snapshot,
+            self.frame_counters_snapshot(),
             render_diagnostics,
-        }
+        )
     }
 
     /// Фиксирует user-visible startup origin до начала media preparation/network path-а.
@@ -756,20 +736,21 @@ impl AppState {
 
     /// Обновляет кешированный read-only snapshot из `player-core` без внешней публикации.
     ///
-    /// Это mutable boundary для worker snapshot: метод учитывает frame counters и обновляет
-    /// `last_player_snapshot`, но не выполняет desktop integration side effects.
+    /// Это mutable boundary для worker snapshot: метод обновляет `last_player_snapshot`, но не
+    /// выполняет desktop integration side effects. Снимок общий (`Arc`) с кэшем worker handle:
+    /// повторный вызов без новой публикации worker-а отдаёт тот же `Arc` без глубокого клона.
     #[must_use]
-    pub(crate) fn refresh_player_snapshot(&mut self) -> PlayerSnapshot {
-        let player_snapshot = self
-            .player_worker
-            .latest_snapshot(self.frame_counters_snapshot());
-        self.last_player_snapshot = player_snapshot.clone();
+    pub(crate) fn refresh_player_snapshot(&mut self) -> Arc<PlayerSnapshot> {
+        let player_snapshot = self.player_worker.latest_snapshot();
+        self.last_player_snapshot = Arc::clone(&player_snapshot);
         self.pump_embedded_subtitles();
         player_snapshot
     }
 
     /// Drain-ит worker snapshot только если wake действительно принёс новую live revision.
-    pub(crate) fn refresh_player_snapshot_if_timeline_changed(&mut self) -> Option<PlayerSnapshot> {
+    pub(crate) fn refresh_player_snapshot_if_timeline_changed(
+        &mut self,
+    ) -> Option<Arc<PlayerSnapshot>> {
         let previous_identity = (
             self.last_player_snapshot.media_instance_id,
             self.last_player_snapshot.timeline.live_revision,

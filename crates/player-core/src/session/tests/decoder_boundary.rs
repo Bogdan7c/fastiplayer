@@ -608,7 +608,7 @@ fn snapshot_backend_name_uses_pipeline_decoder_boundary() {
         .pipeline
         .set_video_decoder_thread(SharedFakeVideoDecoderThread::new());
 
-    let snapshot = session.snapshot_with_frame_counters(FrameCounters::default());
+    let snapshot = session.compose_snapshot();
 
     assert_eq!(
         snapshot.active_backend.name.as_deref(),

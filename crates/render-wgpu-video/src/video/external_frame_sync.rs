@@ -16,6 +16,8 @@ use anyhow::Context;
 
 use crate::dma_buf_import::ImportedImageExternalSync;
 
+use super::FrameBindGroupCache;
+
 /// DMA-BUF plane views одного кадра вместе с его синхронизацией.
 ///
 /// Получается из `WgpuFrameTextureViews::dma_buf_views()` и передаётся в
@@ -30,6 +32,9 @@ pub struct WgpuDmaBufPlaneViews<'views> {
 
     /// Синхронизация image с внешним писателем; `None` при покадровом импорте.
     pub(crate) external_sync: Option<&'views ImportedImageExternalSync>,
+
+    /// Кэш bind group-ов импортированной текстуры; `None` — bind group на кадр.
+    pub(crate) bind_group_cache: Option<&'views FrameBindGroupCache>,
 }
 
 /// Command buffer-ы барьеров одного video pass-а.

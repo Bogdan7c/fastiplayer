@@ -519,6 +519,7 @@ fn render_imported_frame_and_read_halves(
             y_view: &imported.y_view,
             uv_view: &imported.uv_view,
             external_sync: imported.external_sync.as_ref(),
+            bind_group_cache: Some(&imported.bind_groups),
         },
     )
     .expect("Create a renderable NV12 frame");
@@ -626,6 +627,7 @@ fn udmabuf_nv12_frame_survives_import_and_renders_known_colors() {
             y_view: &imported.y_view,
             uv_view: &imported.uv_view,
             external_sync: imported.external_sync.as_ref(),
+            bind_group_cache: Some(&imported.bind_groups),
         },
     )
     .expect("Create a renderable NV12 frame");

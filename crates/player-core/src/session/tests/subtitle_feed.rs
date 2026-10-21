@@ -25,7 +25,7 @@ use crate::subtitle_feed::{
     SubtitleFeedReceiver, subtitle_feed,
 };
 use crate::{
-    AuthorizeInstallCommit, FrameCounters, MediaInstallCompletion, MediaInstallControl,
+    AuthorizeInstallCommit, MediaInstallCompletion, MediaInstallControl,
     MediaInstallControlOutcome, MediaInstallPhase, MediaInstallReceipt, MediaInstallRequestId,
     MediaInstanceId, PlaybackIntent, PlaybackIntentRevision,
 };
@@ -492,9 +492,7 @@ fn snapshot_publishes_labels_for_video_audio_and_subtitle_tracks() {
     let expected: Vec<_> = tracks.iter().map(|track| track.labels.clone()).collect();
     let harness = harness_with(8, tracks, Vec::new(), None);
 
-    let snapshot = harness
-        .session
-        .snapshot_with_frame_counters(FrameCounters::default());
+    let snapshot = harness.session.compose_snapshot();
 
     let published: Vec<_> = snapshot
         .tracks

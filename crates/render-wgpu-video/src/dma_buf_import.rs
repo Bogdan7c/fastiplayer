@@ -11,6 +11,7 @@
 use std::os::fd::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::video::FrameBindGroupCache;
 use anyhow::Context;
 use ash::vk;
 use video_core::{DmaBufFrameDescriptor, DmaBufFrameExportLayout, DmaBufLayerDescriptor};
@@ -451,6 +452,12 @@ pub(crate) enum ImportedDmaBufStorage {
 /// Хранит два typed plane view и texture storage. Тип `pub` только как
 /// associated type publicного importer trait-а; поля и методы остаются crate-local.
 pub struct ImportedDmaBufTexture {
+    /// Кэш bind group-ов рендерера для этой текстуры; умирает вместе с ней.
+    ///
+    /// Объявлен ПЕРВЫМ намеренно: поля уничтожаются по порядку объявления, значит
+    /// bind group-ы отпускаются раньше views и storage (см. `video::frame_bind_group_cache`).
+    pub(crate) bind_groups: FrameBindGroupCache,
+
     /// Формат decoded frame, выбранный из DRM fourcc descriptor-а.
     pub(crate) frame_format: DmaBufFrameFormat,
 
@@ -927,6 +934,7 @@ impl DmaBufImporter {
         )?;
 
         Ok(ImportedDmaBufTexture {
+            bind_groups: FrameBindGroupCache::default(),
             frame_format,
             storage: ImportedDmaBufStorage::Multiplanar(texture),
             y_view,
@@ -1012,6 +1020,7 @@ impl DmaBufImporter {
             external_sync::attach_separate_plane_external_sync(self, &y_texture, &uv_texture)?;
 
         Ok(ImportedDmaBufTexture {
+            bind_groups: FrameBindGroupCache::default(),
             frame_format,
             storage: ImportedDmaBufStorage::SeparatePlanes {
                 y_texture,

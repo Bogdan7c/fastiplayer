@@ -1112,7 +1112,10 @@ impl PlaybackDiagnostics {
             self.push_recent_worst_sample(sample);
         }
 
-        self.snapshot.worst_latencies = self.latency_counters.snapshot();
+        // Замер меняет одну стадию — и в снимке обновляется только она (см.
+        // `latency_stage_update`): полный пересчёт 13 стадий на каждом замере не нужен.
+        *self.snapshot.worst_latencies.stage_mut(stage) =
+            self.latency_counters.stage_snapshot(stage);
         self.snapshot.queues = queues;
     }
 
@@ -1576,6 +1579,8 @@ fn average_duration(total: Duration, samples: u64) -> Duration {
     Duration::from_nanos(average_nanos.min(u128::from(u64::MAX)) as u64)
 }
 
+mod latency_stage_update;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1867,4 +1872,7 @@ mod tests {
         assert_eq!(snapshot.render_resource_lock_busy_count, 1);
         assert_eq!(snapshot.render_resource_previous_frame_reuse_count, 2);
     }
+
+    // Вынесено из legacy-файла (лимит размера модуля): cpu-parity сессия 05.
+    mod latency_materialization;
 }

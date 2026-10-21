@@ -8,6 +8,7 @@ use video_frame_contract::VideoFramePixelLayout;
 
 use crate::color_pipeline::{COLOR_PIPELINE_UNIFORM_SIZE, prepare_nv12_color_pipeline};
 
+use super::frame_bind_group_cache::{PassBinding, VideoHotPathStats};
 use super::{VideoRenderPassContext, display_orientation_uv_transform, letterbox_scale_and_offset};
 
 const HOST_YUV420_8BIT_SHADER_SOURCE: &str =
@@ -137,6 +138,12 @@ pub(crate) struct HostPlanarYuvVideoRenderer {
 
     /// Live HDR-to-SDR settings для high-bit host upload.
     hdr_to_sdr_settings: HdrToSdrSettings,
+
+    /// Привязочное состояние 8-bit pipeline-а (гейт uniform, кэш bind group-ов).
+    unorm8_binding: PassBinding,
+
+    /// Привязочное состояние 16-bit pipeline-а; у него свой id и свои uniform-буферы.
+    uint16_binding: PassBinding,
 }
 
 impl HostPlanarYuvVideoRenderer {
@@ -199,7 +206,16 @@ impl HostPlanarYuvVideoRenderer {
             uint16_uniform_buffers,
             color_settings: ColorPipelineSettings::default(),
             hdr_to_sdr_settings: HdrToSdrSettings::default(),
+            unorm8_binding: PassBinding::new(),
+            uint16_binding: PassBinding::new(),
         }
+    }
+
+    /// Счётчики записи uniform и bind group-ов обоих pipeline-ов.
+    pub fn hot_path_stats(&self) -> VideoHotPathStats {
+        self.unorm8_binding
+            .stats()
+            .merged_with(self.uint16_binding.stats())
     }
 
     /// Применяет live color pipeline settings без пересоздания pipeline-а.
@@ -260,41 +276,49 @@ impl HostPlanarYuvVideoRenderer {
             orientation_transform,
         );
 
-        let uniform_buffer = &self.unorm8_uniform_buffers[pass_context.target_load.uniform_slot()];
-        pass_context.queue.write_buffer(
+        let uniform_slot = pass_context.target_load.uniform_slot();
+        let uniform_buffer = &self.unorm8_uniform_buffers[uniform_slot];
+        self.unorm8_binding.write_uniforms_if_changed(
+            pass_context.queue,
             uniform_buffer,
-            0,
+            uniform_slot,
             bytemuck::bytes_of(&prepared_color_pipeline.uniforms),
         );
 
-        let bind_group = pass_context
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("host yuv420 8-bit bind group"),
-                layout: &self.unorm8_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.unorm8_sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(y_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(u_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(v_view),
-                    },
-                ],
-            });
+        let bind_group = self.unorm8_binding.resolve_bind_group(
+            uniform_slot,
+            pass_context.frame_bind_groups,
+            || {
+                pass_context
+                    .device
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("host yuv420 8-bit bind group"),
+                        layout: &self.unorm8_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: uniform_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(&self.unorm8_sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::TextureView(y_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: wgpu::BindingResource::TextureView(u_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 4,
+                                resource: wgpu::BindingResource::TextureView(v_view),
+                            },
+                        ],
+                    })
+            },
+        );
 
         draw_host_yuv420_pass(
             pass_context,
@@ -324,37 +348,45 @@ impl HostPlanarYuvVideoRenderer {
             pass_context.viewport.size(),
         )?;
 
-        let uniform_buffer = &self.uint16_uniform_buffers[pass_context.target_load.uniform_slot()];
-        pass_context.queue.write_buffer(
+        let uniform_slot = pass_context.target_load.uniform_slot();
+        let uniform_buffer = &self.uint16_uniform_buffers[uniform_slot];
+        self.uint16_binding.write_uniforms_if_changed(
+            pass_context.queue,
             uniform_buffer,
-            0,
+            uniform_slot,
             bytemuck::bytes_of(&prepared_render.uniforms),
         );
 
-        let bind_group = pass_context
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("host yuv420 16-bit bind group"),
-                layout: &self.uint16_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(y_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(u_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(v_view),
-                    },
-                ],
-            });
+        let bind_group = self.uint16_binding.resolve_bind_group(
+            uniform_slot,
+            pass_context.frame_bind_groups,
+            || {
+                pass_context
+                    .device
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("host yuv420 16-bit bind group"),
+                        layout: &self.uint16_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: uniform_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(y_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::TextureView(u_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: wgpu::BindingResource::TextureView(v_view),
+                            },
+                        ],
+                    })
+            },
+        );
 
         draw_host_yuv420_pass(
             pass_context,

@@ -36,7 +36,9 @@ pub use instance_forwarding::{
 pub use notification::{
     CriticalDesktopNotification, DesktopNotificationError, send_critical_desktop_notification,
 };
-pub use runtime::{DesktopIntegration, LatestSnapshotHandle, LatestSnapshotSource};
+pub use runtime::{
+    DesktopIntegration, DesktopPositionOutcome, LatestSnapshotHandle, LatestSnapshotSource,
+};
 pub use shutdown::{DesktopIntegrationShutdownOutcome, DesktopIntegrationShutdownTransportFailure};
 pub use snapshot::{
     DesktopCapabilities, DesktopControlRevision, DesktopMetadata, DesktopPlaybackStatus,

@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::worker::MediaInstallControlCommand;
-use crate::{FrameCounters, MediaInstallControl, MediaInstallReceipt};
+use crate::{MediaInstallControl, MediaInstallReceipt};
 
 #[test]
 fn installed_snapshot_is_visible_before_authorization_acknowledgement() {
@@ -37,9 +37,7 @@ fn installed_snapshot_is_visible_before_authorization_acknowledgement() {
                 outcome_tx,
             },
         ));
-        runtime
-            .session
-            .snapshot_with_frame_counters(FrameCounters::default())
+        runtime.session.compose_snapshot()
     });
     let snapshots = snapshots_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     let snapshot_before_ack = snapshots.recv_timeout(Duration::from_secs(2));

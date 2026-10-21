@@ -91,7 +91,7 @@ impl PlayerWorker {
             command_sender,
             snapshot_rx,
             snapshot_publication_lock,
-            cached_snapshot: PlayerSnapshot::empty(),
+            cached_snapshot: Arc::new(PlayerSnapshot::empty()),
             event_rx,
             render_bridge_client,
             decoder_thread_config,
@@ -295,20 +295,18 @@ impl PlayerWorker {
     }
 
     /// Возвращает последний snapshot без ожидания нового worker output-а.
+    ///
+    /// Это дешёвый `Arc::clone`: пока worker не опубликовал новое состояние,
+    /// повторные вызовы отдают тот же `Arc` (`Arc::ptr_eq`).
     #[must_use]
-    pub fn latest_snapshot(&mut self, frame_counters: FrameCounters) -> PlayerSnapshot {
-        {
-            let _publication = super::runtime_publish::acquire_snapshot_publication_barrier(
-                &self.snapshot_publication_lock,
-            );
-            for snapshot in self.snapshot_rx.try_iter() {
-                self.cached_snapshot = snapshot;
-            }
+    pub fn latest_snapshot(&mut self) -> Arc<PlayerSnapshot> {
+        let _publication = super::runtime_publish::acquire_snapshot_publication_barrier(
+            &self.snapshot_publication_lock,
+        );
+        for snapshot in self.snapshot_rx.try_iter() {
+            self.cached_snapshot = snapshot;
         }
-
-        let mut snapshot = self.cached_snapshot.clone();
-        snapshot.frame_counters = frame_counters;
-        snapshot
+        Arc::clone(&self.cached_snapshot)
     }
 
     /// Забирает накопленные lifecycle-события без блокировки.

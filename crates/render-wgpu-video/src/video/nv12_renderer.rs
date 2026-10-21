@@ -6,6 +6,7 @@ use render_core::{ActiveColorPath, ColorPipelineSettings, RenderableFrame};
 use crate::color_pipeline::{COLOR_PIPELINE_UNIFORM_SIZE, prepare_nv12_color_pipeline};
 
 use super::VideoRenderPassContext;
+use super::frame_bind_group_cache::{PassBinding, VideoHotPathStats};
 
 /// Приватный renderer для NV12 decoded frames с YUV->RGB conversion.
 pub(crate) struct Nv12VideoRenderer {
@@ -16,6 +17,8 @@ pub(crate) struct Nv12VideoRenderer {
     uniform_buffers: [wgpu::Buffer; super::VideoRenderTargetLoad::UNIFORM_SLOT_COUNT],
     sampler: wgpu::Sampler,
     color_settings: ColorPipelineSettings,
+    /// Гейт записи uniform, id для кэша bind group-ов и счётчики.
+    binding: PassBinding,
 }
 
 /// Возвращает non-zero binding size для uniform buffer-а.
@@ -155,7 +158,13 @@ impl Nv12VideoRenderer {
             uniform_buffers,
             sampler,
             color_settings: ColorPipelineSettings::default(),
+            binding: PassBinding::new(),
         }
+    }
+
+    /// Счётчики записи uniform и bind group-ов этого рендерера.
+    pub fn hot_path_stats(&self) -> VideoHotPathStats {
+        self.binding.stats()
     }
 
     /// Обновляет SDR color settings без пересоздания GPU pipeline.
@@ -186,43 +195,49 @@ impl Nv12VideoRenderer {
             orientation_transform,
         );
 
-        let uniform_buffer = &self.uniform_buffers[pass_context.target_load.uniform_slot()];
-        pass_context.queue.write_buffer(
+        let uniform_slot = pass_context.target_load.uniform_slot();
+        let uniform_buffer = &self.uniform_buffers[uniform_slot];
+        self.binding.write_uniforms_if_changed(
+            pass_context.queue,
             uniform_buffer,
-            0,
+            uniform_slot,
             bytemuck::bytes_of(&prepared_color_pipeline.uniforms),
         );
 
-        // Bind group создаётся на кадр, потому что texture views приходят из decoder pool.
-        // Позже это место можно заменить на pool/cache без изменения public facade.
-        let bind_group = pass_context
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("nv12 bind group"),
-                layout: &self.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(y_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(uv_view),
-                    },
-                ],
-            });
+        // Bind group берётся из кэша владельца texture views (см.
+        // `frame_bind_group_cache`); у кадра без владельца создаётся на кадр.
+        let bind_group =
+            self.binding
+                .resolve_bind_group(uniform_slot, pass_context.frame_bind_groups, || {
+                    pass_context
+                        .device
+                        .create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("nv12 bind group"),
+                            layout: &self.bind_group_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: uniform_buffer.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 2,
+                                    resource: wgpu::BindingResource::TextureView(y_view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 3,
+                                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 4,
+                                    resource: wgpu::BindingResource::TextureView(uv_view),
+                                },
+                            ],
+                        })
+                });
 
         let mut pass = pass_context
             .encoder

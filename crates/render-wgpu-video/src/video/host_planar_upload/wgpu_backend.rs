@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, ensure};
 
+use crate::video::FrameBindGroupCache;
+
 use super::{HostPlanarUploadBackend, HostPlanarUploadLayout, HostPlanarUploadPlaneLayout};
 
 pub(super) struct WgpuHostPlanarUploadBackend {
@@ -266,6 +268,9 @@ fn copy_plane_block_into_staging(
 }
 
 pub(super) struct WgpuHostPlanarUploadedTextures {
+    /// Кэш bind group-ов рендерера для этого слота; умирает вместе со слотом.
+    /// Объявлен первым: bind group-ы отпускаются раньше views/textures.
+    pub(super) bind_groups: FrameBindGroupCache,
     layout: HostPlanarUploadLayout,
     y_texture: wgpu::Texture,
     u_texture: wgpu::Texture,
@@ -297,6 +302,7 @@ impl WgpuHostPlanarUploadedTextures {
         });
 
         Self {
+            bind_groups: FrameBindGroupCache::default(),
             layout,
             y_texture,
             u_texture,

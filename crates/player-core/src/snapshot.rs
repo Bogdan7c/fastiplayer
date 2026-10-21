@@ -80,9 +80,6 @@ pub struct PlayerSnapshot {
     /// Состояние очередей player pipeline.
     pub queues: QueueSnapshot,
 
-    /// Счётчики frame pacing.
-    pub frame_counters: FrameCounters,
-
     /// Typed playback diagnostics без UI/render handles.
     pub diagnostics: PlaybackDiagnosticsSnapshot,
 
@@ -157,7 +154,6 @@ impl Default for PlayerSnapshot {
             video_frame_duration_estimate: Duration::ZERO,
             audio_buffer: AudioBufferSnapshot::default(),
             queues: QueueSnapshot::default(),
-            frame_counters: FrameCounters::default(),
             diagnostics: PlaybackDiagnosticsSnapshot::default(),
             last_error: None,
             capability_summary: None,
@@ -338,6 +334,10 @@ pub struct QueueSnapshot {
 }
 
 /// Счётчики кадров для frame pacing diagnostics.
+///
+/// Это данные окна/показа, а не состояния плеера: их ведёт UI-слой, и в
+/// [`PlayerSnapshot`] они не входят (иначе каждый показанный кадр делал бы
+/// снимок «изменившимся»). Тип остаётся в player-core как общий словарь.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrameCounters {
     /// Общее количество представленных кадров.

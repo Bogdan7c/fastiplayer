@@ -850,7 +850,7 @@ fn run_output_clamped_worker_with_render_feedback(
     let window = runtime.wakeup_counters.take_window(Instant::now());
     let drained_timing_samples = runtime
         .session
-        .snapshot_with_frame_counters(crate::FrameCounters::default())
+        .compose_snapshot()
         .diagnostics
         .worst_latencies
         .gpu_submit_present

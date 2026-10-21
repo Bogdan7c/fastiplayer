@@ -23,8 +23,15 @@ impl PlaylistRuntime {
     /// Event-driven drain применяет startup completion и worker reports одним UI intent-ом.
     pub(crate) fn drain_playlist_persistence(&mut self) -> Result<bool, PlaylistStartupApplyError> {
         let before_startup = self.playlist_startup_view();
-        let quarantine_name = self.persistence.next_quarantine_file_name();
-        let startup_outcome = self.drain_playlist_state_startup(quarantine_name)?;
+        // Имя quarantine-файла (форматирование timestamp) нужно только при реальном
+        // completion; на каждом about_to_wait без completion его не строим.
+        let startup_outcome = match self.startup.drain_completion() {
+            None => PlaylistStartupDrainOutcome::NoCompletion,
+            Some(completion) => {
+                let quarantine_name = self.persistence.next_quarantine_file_name();
+                self.apply_startup_completion(completion, quarantine_name)?
+            }
+        };
         let startup_changed = !matches!(startup_outcome, PlaylistStartupDrainOutcome::NoCompletion)
             && self.playlist_startup_view() != before_startup;
         let save_changed = self.persistence.drain_worker_events();
@@ -81,3 +88,6 @@ impl PlaylistRuntime {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

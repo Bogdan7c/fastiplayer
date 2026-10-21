@@ -80,7 +80,7 @@ pub(super) fn present_frame_for_plan(
         dropped: telemetry.surface_dropped_frames(),
     };
     log_render_frame_timings(
-        frame_context.player_snapshot(),
+        frame_context,
         AppRenderFrameTimings {
             total: frame_duration,
             input_snapshot: timings.input_snapshot,
@@ -90,6 +90,7 @@ pub(super) fn present_frame_for_plan(
             dma_buf_import_stats: app_state
                 .wgpu_frame_materializer()
                 .and_then(|materializer| materializer.dma_buf_import_stats()),
+            video_hot_path: renderer.video_hot_path_stats(),
         },
         timings.frame_work,
         video_acquisition_state,

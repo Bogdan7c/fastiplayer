@@ -103,12 +103,15 @@ impl AppState {
         self.active_media_source = None;
         self.clear_subtitles_for_released_media();
         self.clear_installed_vod_endpoint_recovery();
-        self.last_player_snapshot.media_instance_id = None;
-        self.last_player_snapshot.playback_state = PlaybackState::Stopped;
-        self.last_player_snapshot.source_label = None;
-        self.last_player_snapshot.media_title = None;
-        self.last_player_snapshot.current_video_frame = None;
-        self.last_player_snapshot.clear_timeline();
+        // Редкий путь: если снимок ещё делит `Arc` с worker handle или контекстом кадра,
+        // `make_mut` делает копию, и общий снимок worker-а остаётся нетронутым.
+        let cached_snapshot = Arc::make_mut(&mut self.last_player_snapshot);
+        cached_snapshot.media_instance_id = None;
+        cached_snapshot.playback_state = PlaybackState::Stopped;
+        cached_snapshot.source_label = None;
+        cached_snapshot.media_title = None;
+        cached_snapshot.current_video_frame = None;
+        cached_snapshot.clear_timeline();
         self.mark_pending_worker_redraw();
     }
 
@@ -128,12 +131,15 @@ impl AppState {
         self.current_local_file = None;
         self.active_media_source = None;
         self.clear_subtitles_for_released_media();
-        self.last_player_snapshot.media_instance_id = None;
-        self.last_player_snapshot.playback_state = PlaybackState::Stopped;
-        self.last_player_snapshot.source_label = None;
-        self.last_player_snapshot.media_title = None;
-        self.last_player_snapshot.current_video_frame = None;
-        self.last_player_snapshot.clear_timeline();
+        // Редкий путь: если снимок ещё делит `Arc` с worker handle или контекстом кадра,
+        // `make_mut` делает копию, и общий снимок worker-а остаётся нетронутым.
+        let cached_snapshot = Arc::make_mut(&mut self.last_player_snapshot);
+        cached_snapshot.media_instance_id = None;
+        cached_snapshot.playback_state = PlaybackState::Stopped;
+        cached_snapshot.source_label = None;
+        cached_snapshot.media_title = None;
+        cached_snapshot.current_video_frame = None;
+        cached_snapshot.clear_timeline();
         self.mark_pending_worker_redraw();
         ExactMediaResetCleanup::Cleared
     }

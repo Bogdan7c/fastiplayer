@@ -17,12 +17,10 @@ fn latest_snapshot_waits_for_atomic_replacement_instead_of_returning_old_instanc
             worker_with_latest_handoff_for_tests(Arc::new(LatestPresentFrameHandoff::new()));
         worker.snapshot_rx = snapshot_rx;
         worker.snapshot_publication_lock = lock;
-        worker.cached_snapshot.media_instance_id = Some(old_instance);
+        Arc::make_mut(&mut worker.cached_snapshot).media_instance_id = Some(old_instance);
         ready_tx.send(()).unwrap();
         start_rx.recv().unwrap();
-        result_tx
-            .send(worker.latest_snapshot(FrameCounters::default()))
-            .unwrap();
+        result_tx.send(worker.latest_snapshot()).unwrap();
     });
     ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
 
@@ -33,7 +31,7 @@ fn latest_snapshot_waits_for_atomic_replacement_instead_of_returning_old_instanc
     let premature = result_rx.recv_timeout(Duration::from_millis(50));
     let mut installed = PlayerSnapshot::empty();
     installed.media_instance_id = Some(new_instance);
-    publisher.snapshot_tx.send(installed).unwrap();
+    publisher.snapshot_tx.send(Arc::new(installed)).unwrap();
     drop(replacement);
     reader
         .join()
@@ -53,7 +51,7 @@ fn latest_snapshot_waits_for_atomic_replacement_instead_of_returning_old_instanc
 #[test]
 fn poisoned_publication_barrier_still_delivers_latest_snapshot_to_handle() {
     let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
-    let publisher = LatestSnapshotPublisher::new(snapshot_tx, snapshot_rx.clone());
+    let mut publisher = LatestSnapshotPublisher::new(snapshot_tx, snapshot_rx.clone());
     let poisoning_lock = Arc::clone(&publisher.publication_lock);
     let poisoning_thread = thread::spawn(move || {
         let _held_barrier = poisoning_lock.lock().unwrap();
@@ -70,8 +68,8 @@ fn poisoned_publication_barrier_still_delivers_latest_snapshot_to_handle() {
     let mut published = PlayerSnapshot::empty();
     published.media_instance_id = Some(published_instance);
 
-    publisher.publish(published);
-    let observed = worker.latest_snapshot(FrameCounters::default());
+    let _ = publisher.publish(published);
+    let observed = worker.latest_snapshot();
 
     assert_eq!(observed.media_instance_id, Some(published_instance));
 }

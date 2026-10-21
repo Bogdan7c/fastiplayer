@@ -13,6 +13,7 @@ use render_core::{
 use video_frame_contract::VideoFramePixelLayout;
 
 use super::VideoRenderPassContext;
+use super::frame_bind_group_cache::{PassBinding, VideoHotPathStats};
 
 /// WGSL source dedicated to P010 rendering.
 pub(crate) const P010_SHADER_SOURCE: &str = include_str!("../../shaders/p010_bt2446c_to_sdr.wgsl");
@@ -167,6 +168,8 @@ pub(crate) struct P010VideoRenderer {
     sampler: wgpu::Sampler,
     color_settings: ColorPipelineSettings,
     hdr_to_sdr_settings: HdrToSdrSettings,
+    /// Гейт записи uniform, id для кэша bind group-ов и счётчики.
+    binding: PassBinding,
 }
 
 /// Возвращает non-zero binding size для P010 uniform buffer-а.
@@ -295,7 +298,13 @@ impl P010VideoRenderer {
             sampler,
             color_settings: ColorPipelineSettings::default(),
             hdr_to_sdr_settings: HdrToSdrSettings::default(),
+            binding: PassBinding::new(),
         }
+    }
+
+    /// Счётчики записи uniform и bind group-ов этого рендерера.
+    pub fn hot_path_stats(&self) -> VideoHotPathStats {
+        self.binding.stats()
     }
 
     /// Обновляет color settings, которые P010 diagnostics наследуют от общего renderer config.
@@ -324,39 +333,45 @@ impl P010VideoRenderer {
         )?;
         log_first_p010_render_dispatch(frame, &prepared_p010_render);
 
-        let uniform_buffer = &self.uniform_buffers[pass_context.target_load.uniform_slot()];
-        pass_context.queue.write_buffer(
+        let uniform_slot = pass_context.target_load.uniform_slot();
+        let uniform_buffer = &self.uniform_buffers[uniform_slot];
+        self.binding.write_uniforms_if_changed(
+            pass_context.queue,
             uniform_buffer,
-            0,
+            uniform_slot,
             bytemuck::bytes_of(&prepared_p010_render.uniforms),
         );
 
-        // Bind group создаётся на кадр, потому что plane views приходят из decoder pool.
-        // Renderer получает только пару views и не знает, какой storage layout был импортирован.
-        let bind_group = pass_context
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("p010 bind group"),
-                layout: &self.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(y_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(uv_view),
-                    },
-                ],
-            });
+        // Bind group берётся из кэша владельца plane views (см.
+        // `frame_bind_group_cache`); renderer не знает storage layout импорта.
+        let bind_group =
+            self.binding
+                .resolve_bind_group(uniform_slot, pass_context.frame_bind_groups, || {
+                    pass_context
+                        .device
+                        .create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("p010 bind group"),
+                            layout: &self.bind_group_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: uniform_buffer.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 2,
+                                    resource: wgpu::BindingResource::TextureView(y_view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 3,
+                                    resource: wgpu::BindingResource::TextureView(uv_view),
+                                },
+                            ],
+                        })
+                });
 
         let mut pass = pass_context
             .encoder

@@ -9,9 +9,9 @@ use frame_server_core::{
 };
 use media_core::MediaTime;
 use player_core::{
-    MediaOpenRequest, MediaSource, MediaSummary, PlaybackRate, PlaybackResumeIntent, PlaybackState,
-    PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSnapshot, ScrubCommitPolicy,
-    SeekCommitInfo, SeekRequest,
+    FrameCounters, MediaOpenRequest, MediaSource, MediaSummary, PlaybackRate, PlaybackResumeIntent,
+    PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSnapshot,
+    ScrubCommitPolicy, SeekCommitInfo, SeekRequest,
 };
 use render_core::{
     ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
@@ -102,6 +102,7 @@ fn telemetry_panel_state_for_tests<'state>(
 ) -> TelemetryPanelState<'state> {
     TelemetryPanelState {
         player_snapshot,
+        frame_counters: FrameCounters::default(),
         telemetry,
         render_diagnostics,
         timeline_ui_state,
@@ -625,7 +626,7 @@ fn app_state_player_snapshot_boundary_stays_explicit() {
     let refresh_signature = concat!(
         "pub(crate) fn ",
         "refresh_player_snapshot",
-        "(&mut self) -> PlayerSnapshot"
+        "(&mut self) -> Arc<PlayerSnapshot>"
     );
     let publish_signature =
         "pub(crate) fn publish_desktop_snapshot(&mut self, snapshot: &PlayerSnapshot)";
@@ -637,6 +638,10 @@ fn app_state_player_snapshot_boundary_stays_explicit() {
     assert!(
         state_source.contains(refresh_signature),
         "AppState must explicitly read worker snapshot through refresh_player_snapshot()"
+    );
+    assert!(
+        state_source.contains("last_player_snapshot: Arc<PlayerSnapshot>"),
+        "cached player snapshot must stay a shared Arc (no deep clone per refresh)"
     );
     assert!(
         !state_source.contains("desktop_integration: Option<DesktopIntegration>")
@@ -818,18 +823,27 @@ fn playlist_transport_routes_only_pre_barrier_failure_through_navigation_owner()
     );
 }
 
-/// Проверяет, что AppFrameContext отдаёт уже зафиксированный snapshot по ссылке.
+/// Проверяет, что AppFrameContext отдаёт уже зафиксированный snapshot по ссылке на тот же `Arc`
+/// и вместе с ним зафиксированные счётчики кадров.
 #[test]
 fn app_frame_context_returns_fixed_player_snapshot_reference() {
-    let frame_context = AppFrameContext {
-        player_snapshot: PlayerSnapshot::empty(),
-        render_diagnostics: RenderDiagnostics::default(),
+    let shared_snapshot = Arc::new(PlayerSnapshot::empty());
+    let counters = FrameCounters {
+        presented: 11,
+        dropped: 2,
+        repeated: 1,
     };
+    let frame_context = AppFrameContext::new(
+        Arc::clone(&shared_snapshot),
+        counters,
+        RenderDiagnostics::default(),
+    );
 
     assert!(std::ptr::eq(
         frame_context.player_snapshot(),
-        &frame_context.player_snapshot
+        Arc::as_ptr(&shared_snapshot)
     ));
+    assert_eq!(frame_context.frame_counters(), counters);
 }
 
 /// Проверяет pure-classifier stale cache без создания GPU lease-а.

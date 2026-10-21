@@ -100,6 +100,10 @@ impl PlaylistRuntime {
     }
 
     /// Забирает максимум один lossless completion и применяет typed startup policy.
+    ///
+    /// Production-путь (`drain_playlist_persistence`) берёт completion сам и строит
+    /// quarantine-имя лениво; эта форма с готовым именем нужна focused-тестам.
+    #[cfg(test)]
     pub(crate) fn drain_playlist_state_startup(
         &mut self,
         quarantine_file_name: QuarantineFileName,
@@ -107,6 +111,18 @@ impl PlaylistRuntime {
         let Some(completion) = self.startup.drain_completion() else {
             return Ok(PlaylistStartupDrainOutcome::NoCompletion);
         };
+        self.apply_startup_completion(completion, quarantine_file_name)
+    }
+
+    /// Применяет уже забранный startup completion.
+    ///
+    /// Вынесено отдельно, чтобы вызывающий мог получить quarantine-имя
+    /// (форматирование timestamp) только когда completion реально есть.
+    pub(super) fn apply_startup_completion(
+        &mut self,
+        completion: startup::StartupJobCompletion,
+        quarantine_file_name: QuarantineFileName,
+    ) -> Result<PlaylistStartupDrainOutcome, PlaylistStartupApplyError> {
         match completion {
             startup::StartupJobCompletion::Inspection {
                 generation,

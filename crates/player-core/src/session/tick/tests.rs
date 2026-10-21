@@ -22,11 +22,11 @@ use super::video_decoder_io::{
 use super::*;
 use super::{demux_admission::*, presentation_scheduler::*, wakeup::*};
 use crate::{
-    DecodeBackpressureReason, DecodeSendError, DecodeThreadError, FrameCounters,
-    PendingAudioPacket, PendingVideoPacket, PendingVideoPacketTimestamps, PlaybackPipeline,
-    PlaybackRate, PlaybackResumeIntent, PlayerAudioClock, PlayerAudioOutput, PlayerCommand,
-    PlayerDecodePacket, PlayerErrorKind, PlayerSession, PresentFrameResourceProviderHandle,
-    StartedVideoBackend, WorkerWakeupReason,
+    DecodeBackpressureReason, DecodeSendError, DecodeThreadError, PendingAudioPacket,
+    PendingVideoPacket, PendingVideoPacketTimestamps, PlaybackPipeline, PlaybackRate,
+    PlaybackResumeIntent, PlayerAudioClock, PlayerAudioOutput, PlayerCommand, PlayerDecodePacket,
+    PlayerErrorKind, PlayerSession, PresentFrameResourceProviderHandle, StartedVideoBackend,
+    WorkerWakeupReason,
 };
 
 mod audio_fallback_wakeup;
@@ -1584,20 +1584,10 @@ fn scheduler_repeats_current_frame_when_queue_is_empty() {
         Some(Duration::ZERO)
     );
     assert_eq!(
-        session
-            .snapshot_with_frame_counters(crate::FrameCounters::default())
-            .diagnostics
-            .repeated_video_frames,
+        session.compose_snapshot().diagnostics.repeated_video_frames,
         1
     );
-    assert_eq!(
-        session
-            .snapshot_with_frame_counters(crate::FrameCounters::default())
-            .diagnostics
-            .drops
-            .late,
-        0
-    );
+    assert_eq!(session.compose_snapshot().diagnostics.drops.late, 0);
 }
 
 #[test]
@@ -4104,10 +4094,7 @@ fn unknown_keyframe_bootstrap_packet_is_sent_as_decoder_decode_start() {
     assert_eq!(decoder_packets.len(), 1);
     assert!(decoder_packets[0].keyframe);
     assert!(!session.pipeline.video_decoder_needs_keyframe());
-    let diagnostics = session
-        .snapshot_with_frame_counters(FrameCounters::default())
-        .diagnostics
-        .seek_bootstrap;
+    let diagnostics = session.compose_snapshot().diagnostics.seek_bootstrap;
     assert_eq!(diagnostics.dropped_until_keyframe, 0);
     assert_eq!(
         diagnostics.first_accepted_keyframe,
@@ -4339,7 +4326,7 @@ fn decoder_bootstrap_drops_interframes_until_keyframe() {
     assert!(session.pipeline.video_decoder_needs_keyframe());
     assert_eq!(
         session
-            .snapshot_with_frame_counters(FrameCounters::default())
+            .compose_snapshot()
             .diagnostics
             .seek_bootstrap
             .dropped_until_keyframe,
@@ -4352,10 +4339,7 @@ fn decoder_bootstrap_drops_interframes_until_keyframe() {
         Duration::from_millis(20)
     ));
     assert!(!session.pipeline.video_decoder_needs_keyframe());
-    let diagnostics = session
-        .snapshot_with_frame_counters(FrameCounters::default())
-        .diagnostics
-        .seek_bootstrap;
+    let diagnostics = session.compose_snapshot().diagnostics.seek_bootstrap;
     assert_eq!(diagnostics.dropped_until_keyframe, 1);
     assert_eq!(
         diagnostics.first_accepted_keyframe,

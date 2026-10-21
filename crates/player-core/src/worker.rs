@@ -40,7 +40,7 @@ use crate::{
     ActiveSeekDiagnosticsSnapshot, AudioDecoderFactory, AudioOutputFactory,
     AudioTempoProcessorFactory, AuthorizeInstallCommit, CancelMediaInstall, CorrelatedPlayerEvent,
     ExactMediaTransportOutcome, ExactMediaTransportReceipt, ExactMediaTransportRequest,
-    ExactTimelineSeekOutcome, ExactTimelineSeekReceipt, ExactTimelineSeekRequest, FrameCounters,
+    ExactTimelineSeekOutcome, ExactTimelineSeekReceipt, ExactTimelineSeekRequest,
     InstalledMediaRelease, InstalledMediaReleaseOutcome, InstalledMediaReleaseReceipt,
     InstalledMediaStateRestore, InstalledMediaStateRestoreOutcome,
     InstalledMediaStateRestoreReceipt, LatencyCounterSnapshot, MediaInstallCancellationCause,
@@ -523,13 +523,13 @@ pub struct PlayerWorker {
     command_sender: PlayerCommandSender,
 
     /// Канал latest snapshot от worker-а.
-    snapshot_rx: Receiver<PlayerSnapshot>,
+    snapshot_rx: Receiver<Arc<PlayerSnapshot>>,
 
     /// Не позволяет consumer-у увидеть промежуток drain -> publish latest snapshot.
     snapshot_publication_lock: Arc<Mutex<()>>,
 
     /// Последний snapshot, прочитанный shell-ом.
-    cached_snapshot: PlayerSnapshot,
+    cached_snapshot: Arc<PlayerSnapshot>,
 
     /// Lifecycle-события и агрегат tick-телеметрии (два независимых потока).
     event_rx: WorkerEventConsumer,
