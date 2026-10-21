@@ -21,6 +21,12 @@ const APPLICATION_OBJECT_PATH: &str = "/io/github/Bogdan7c/Fastiplayer";
 const ACTIVATION_TOKEN_PLATFORM_KEY: &str = "activation-token";
 /// Ключ `platform_data` с билетом запуска X11 (`DESKTOP_STARTUP_ID`).
 const DESKTOP_STARTUP_ID_PLATFORM_KEY: &str = "desktop-startup-id";
+/// Ключ `platform_data` «на весь экран» (`b`, только `true`; cpu-parity 06b).
+///
+/// Спецификация разрешает приложению свои ключи; префикс ID приложения исключает
+/// столкновение со стандартными. Старый получатель неизвестный ключ просто не читает
+/// и открывает файлы в окне, как раньше.
+const FULLSCREEN_PLATFORM_KEY: &str = "io.github.Bogdan7c.Fastiplayer.fullscreen";
 
 /// Полные имена ошибок D-Bus, которые служба возвращает отправителю.
 ///

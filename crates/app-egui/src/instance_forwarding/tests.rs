@@ -6,10 +6,11 @@ use std::sync::{Arc, Mutex};
 
 use desktop_integration::{
     ForwardedInstanceAction, ForwardedInstanceRequest, ForwardedRequestAcknowledgement,
-    ForwardedRequestDelivery, ForwardedRequestSink, ForwardedRequestSinkError,
-    InstanceForwardingError, InstanceForwardingServiceError,
+    ForwardedRequestDelivery, ForwardedRequestSink, ForwardedRequestSinkError, FullscreenIntent,
+    InstanceForwardingError, InstanceForwardingServiceError, WindowActivationToken,
 };
 
+use super::execution::{ForwardedRequestTarget, execute_forwarded_request};
 use super::{
     DELIVERY_MAILBOX_CAPACITY, InstanceForwardingInbox, PENDING_REQUEST_LIMIT,
     external_open_request_for,
@@ -21,7 +22,9 @@ use crate::app_wake::{AppWakeOwner, AppWakePort};
 use crate::external_open::DropTarget;
 use crate::external_open::dispatch_external_open_request;
 use crate::external_open::pipeline_tests::RecordingHost;
-use crate::external_open::request::ExternalOpenItem;
+use crate::external_open::request::{ExternalOpenItem, ExternalOpenRequest};
+use crate::window_fullscreen::test_support::FakeFullscreenWindow;
+use crate::window_fullscreen::{FullscreenWindowPort, enter_fullscreen};
 
 /// Ящик без настоящей службы: приёмник, который получила бы служба, сохраняется
 /// для теста, сама «служба» не запускается (как при отсутствии шины).
@@ -207,7 +210,7 @@ fn forwarded_uris_become_a_video_drop_with_exact_paths() {
     );
 
     let request = open_request(&["file:///tmp/%FFclip.mkv", "https://example.org/v"]);
-    let (action, _token) = request.into_parts();
+    let action = request.into_parts().action;
     let open = external_open_request_for(action).expect("There's something to open.");
 
     assert_eq!(open.target, DropTarget::Video);
@@ -244,11 +247,47 @@ impl RunningInstanceForwarder for InProcessTransport<'_> {
     }
 }
 
-/// Прогоняет второй запуск с аргументами через пересылку и исполняет у первого.
+/// Первый экземпляр без winit: настоящий диспетчер внешнего открытия (`RecordingHost`
+/// записывает решения) и настоящий вход в фуллскрин на фальшивом окне.
+struct FirstInstanceUnderTest {
+    host: RecordingHost,
+    window: FakeFullscreenWindow,
+    /// Шаги исполнения в порядке вызова.
+    steps: Vec<String>,
+}
+
+impl ForwardedRequestTarget for FirstInstanceUnderTest {
+    fn raise_window(&mut self, _activation_token: Option<WindowActivationToken>) {
+        self.steps.push("raise".to_owned());
+    }
+
+    fn open_forwarded_media(&mut self, request: ExternalOpenRequest) {
+        dispatch_external_open_request(&mut self.host, request);
+        self.steps.push("open".to_owned());
+    }
+
+    fn enter_fullscreen(&mut self) {
+        let entry = enter_fullscreen(&self.window);
+        self.steps.push(format!("fullscreen:{entry:?}"));
+    }
+}
+
+/// Что увидел первый экземпляр после исполнения пересланного запроса.
+struct FirstInstanceObservation {
+    /// Решения диспетчера открытия (`open:…`, `replace:…`).
+    opened: Vec<String>,
+    steps: Vec<String>,
+    window_fullscreen: bool,
+}
+
+/// Прогоняет второй запуск с аргументами через пересылку и исполняет у первого тем же
+/// исполнителем, что shell (`execute_forwarded_request`).
 fn second_launch_reaches_first(
     arguments: &[OsString],
+    fullscreen: FullscreenIntent,
     working_directory: &std::path::Path,
-) -> Vec<String> {
+    first_window: FakeFullscreenWindow,
+) -> FirstInstanceObservation {
     let (inbox, sink) = inbox_with_captured_sink();
     let inbox = RefCell::new(inbox);
     let transport = InProcessTransport {
@@ -258,6 +297,7 @@ fn second_launch_reaches_first(
 
     forward_arguments_to_running_instance(
         arguments,
+        fullscreen,
         ForwardingEnvironment {
             current_directory: Some(working_directory.to_path_buf()),
             activation_token: None,
@@ -270,11 +310,17 @@ fn second_launch_reaches_first(
         .borrow_mut()
         .take_next_pending_request()
         .expect("The first copy received the request");
-    let (action, _token) = request.into_parts();
-    let open = external_open_request_for(action).expect("There's something to open.");
-    let mut host = RecordingHost::default();
-    dispatch_external_open_request(&mut host, open);
-    host.calls
+    let mut first = FirstInstanceUnderTest {
+        host: RecordingHost::default(),
+        window: first_window,
+        steps: Vec::new(),
+    };
+    execute_forwarded_request(request, &mut first);
+    FirstInstanceObservation {
+        opened: first.host.calls,
+        steps: first.steps,
+        window_fullscreen: first.window.is_fullscreen(),
+    }
 }
 
 #[test]
@@ -284,9 +330,20 @@ fn second_launch_with_one_file_opens_it_in_first_like_the_open_button() {
     std::fs::write(&file, b"media").expect("file");
 
     // Второй процесс запущен в этой папке с относительным путём.
-    let calls = second_launch_reaches_first(&[OsString::from("фильм 1.mkv")], folder.path());
+    let first = second_launch_reaches_first(
+        &[OsString::from("фильм 1.mkv")],
+        FullscreenIntent::LeaveAsIs,
+        folder.path(),
+        FakeFullscreenWindow::default(),
+    );
 
-    assert_eq!(calls, [format!("open:{}", file.display())]);
+    assert_eq!(first.opened, [format!("open:{}", file.display())]);
+    assert_eq!(
+        first.steps,
+        ["raise", "open"],
+        "no fullscreen without the flag"
+    );
+    assert!(!first.window_fullscreen);
 }
 
 #[test]
@@ -297,16 +354,67 @@ fn second_launch_with_several_files_asks_first_to_replace_queue_in_given_order()
     std::fs::write(&second, b"media").expect("file");
     std::fs::write(&first, b"media").expect("file");
 
-    let calls = second_launch_reaches_first(
+    let first_instance = second_launch_reaches_first(
         &[
             second.clone().into_os_string(),
             first.clone().into_os_string(),
         ],
+        FullscreenIntent::LeaveAsIs,
         std::path::Path::new("/"),
+        FakeFullscreenWindow::default(),
     );
 
     assert_eq!(
-        calls,
+        first_instance.opened,
         [format!("replace:{}|{}", second.display(), first.display())]
     );
+}
+
+/// `fastiplayer --fullscreen film.mkv` при открытом окне: окно поднято, файл поставлен тем
+/// же путём, что кнопка Open, и только потом окно ушло в фуллскрин тем же входом, что кнопка.
+#[test]
+fn second_launch_with_fullscreen_opens_the_file_then_enters_fullscreen() {
+    let folder = tempfile::tempdir().expect("time-folder");
+    let file = folder.path().join("film.mkv");
+    std::fs::write(&file, b"media").expect("file");
+
+    let first = second_launch_reaches_first(
+        &[OsString::from("film.mkv")],
+        FullscreenIntent::Enter,
+        folder.path(),
+        FakeFullscreenWindow::default(),
+    );
+
+    assert_eq!(first.opened, [format!("open:{}", file.display())]);
+    assert_eq!(first.steps, ["raise", "open", "fullscreen:Requested"]);
+    assert!(first.window_fullscreen);
+}
+
+/// `fastiplayer --fullscreen` без файлов (`Activate`) тоже переводит окно в фуллскрин.
+#[test]
+fn second_launch_with_only_the_fullscreen_flag_enters_fullscreen() {
+    let first = second_launch_reaches_first(
+        &[],
+        FullscreenIntent::Enter,
+        std::path::Path::new("/"),
+        FakeFullscreenWindow::default(),
+    );
+
+    assert!(first.opened.is_empty());
+    assert_eq!(first.steps, ["raise", "fullscreen:Requested"]);
+    assert!(first.window_fullscreen);
+}
+
+/// Уже полноэкранный первый экземпляр остаётся полноэкранным (флаг — не переключатель).
+#[test]
+fn fullscreen_flag_keeps_an_already_fullscreen_first_instance_fullscreen() {
+    let first = second_launch_reaches_first(
+        &[],
+        FullscreenIntent::Enter,
+        std::path::Path::new("/"),
+        FakeFullscreenWindow::already_fullscreen(),
+    );
+
+    assert_eq!(first.steps, ["raise", "fullscreen:AlreadyFullscreen"]);
+    assert!(first.window_fullscreen);
 }

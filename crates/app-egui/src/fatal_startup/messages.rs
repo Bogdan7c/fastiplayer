@@ -124,7 +124,7 @@ fn message_for(reason: &FatalStartupReason) -> String {
 
 fn invalid_arguments_message(arguments_error: ProcessArgsError) -> String {
     match arguments_error {
-        ProcessArgsError::UnknownOption => "The player was started with an unknown option.\n\nIf the file name starts with '-', put '--' before it, for example: fastiplayer -- -video.mkv"
+        ProcessArgsError::UnknownOption => "The player was started with an unknown option. The only supported option is --fullscreen.\n\nIf the file name starts with '-', put '--' before it, for example: fastiplayer -- -video.mkv"
             .to_owned(),
     }
 }

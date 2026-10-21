@@ -26,12 +26,13 @@ pub use error::{DesktopIntegrationError, DesktopIntegrationResult};
 pub use event::{DesktopBackendKind, DesktopIntegrationEvent};
 pub use instance_forwarding::{
     FASTIPLAYER_APPLICATION_ID, ForwardedInstanceAction, ForwardedInstanceRequest,
-    ForwardedRequestAcknowledgement, ForwardedRequestDelivery, ForwardedRequestRejection,
-    ForwardedRequestSink, ForwardedRequestSinkError, ForwardedUri, InstanceForwardingClientConfig,
-    InstanceForwardingError, InstanceForwardingService, InstanceForwardingServiceConfig,
-    InstanceForwardingServiceError, MAX_ACTIVATION_TOKEN_BYTES, MAX_FORWARDED_URI_BYTES,
-    MAX_FORWARDED_URIS, MAX_TOTAL_FORWARDED_URI_BYTES, WindowActivationToken,
-    forward_to_running_instance, start_instance_forwarding_service,
+    ForwardedInstanceRequestParts, ForwardedRequestAcknowledgement, ForwardedRequestDelivery,
+    ForwardedRequestRejection, ForwardedRequestSink, ForwardedRequestSinkError, ForwardedUri,
+    FullscreenIntent, InstanceForwardingClientConfig, InstanceForwardingError,
+    InstanceForwardingService, InstanceForwardingServiceConfig, InstanceForwardingServiceError,
+    MAX_ACTIVATION_TOKEN_BYTES, MAX_FORWARDED_URI_BYTES, MAX_FORWARDED_URIS,
+    MAX_TOTAL_FORWARDED_URI_BYTES, WindowActivationToken, forward_to_running_instance,
+    start_instance_forwarding_service,
 };
 pub use notification::{
     CriticalDesktopNotification, DesktopNotificationError, send_critical_desktop_notification,

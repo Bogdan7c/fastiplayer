@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use tracing::warn;
+use tracing::debug;
 use winit::window::Window;
 
 use super::AppState;
@@ -43,22 +43,10 @@ impl AppState {
         self.fullscreen_chrome.next_wake_deadline()
     }
 
-    /// Переключает fullscreen состояние окна.
+    /// Переключает fullscreen состояние окна (кнопка, F, двойной клик). Вход — тот же
+    /// [`crate::window_fullscreen::enter_fullscreen`], что у `--fullscreen` (сессия 06b).
     pub(super) fn toggle_fullscreen(window: &Window) {
-        let is_fullscreen = window.fullscreen().is_some();
-        if is_fullscreen {
-            window.set_fullscreen(None);
-            return;
-        }
-
-        // Монитор неизвестен (бывает на Wayland до первого `surface.enter`) — `Borderless(None)`
-        // по контракту winit означает «текущий монитор», а не молчаливый отказ.
-        let monitor = window.current_monitor();
-        if monitor.is_none() {
-            warn!(
-                "Current window monitor unknown; full screen requested on monitor at system choice"
-            );
-        }
-        window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(monitor)));
+        let toggle = crate::window_fullscreen::toggle_fullscreen(window);
+        debug!(?toggle, "Fullscreen toggled by the user");
     }
 }

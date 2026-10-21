@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use desktop_integration::{
-    ForwardedInstanceRequest, ForwardedRequestRejection, InstanceForwardingClientConfig,
-    InstanceForwardingError, WindowActivationToken,
+    ForwardedInstanceRequest, ForwardedRequestRejection, FullscreenIntent,
+    InstanceForwardingClientConfig, InstanceForwardingError, WindowActivationToken,
 };
 use thiserror::Error;
 
@@ -125,15 +125,21 @@ impl ForwardingEnvironment {
 }
 
 /// Строит запрос из аргументов и отдаёт его транспорту.
+///
+/// `fullscreen` едет вместе с файлами (или с одной активацией окна): получатель
+/// применяет его после постановки файлов (решение владельца, сессия 06b).
 pub(crate) fn forward_arguments_to_running_instance(
     arguments: &[OsString],
+    fullscreen: FullscreenIntent,
     environment: ForwardingEnvironment,
     forwarder: &impl RunningInstanceForwarder,
 ) -> Result<(), RunningInstanceForwardingError> {
     let payload = ForwardedPayload::for_arguments(arguments);
     let into_error = |failure| RunningInstanceForwardingError { failure, payload };
 
-    let request = forwarded_request_from_arguments(arguments, environment).map_err(into_error)?;
+    let request = forwarded_request_from_arguments(arguments, environment)
+        .map_err(into_error)?
+        .with_fullscreen_intent(fullscreen);
     forwarder
         .forward(&request)
         .map_err(RunningInstanceForwardingFailure::Delivery)

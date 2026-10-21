@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use fastiplayer_config::ConfigPaths;
 
-use desktop_integration::InstanceForwardingError;
+use desktop_integration::{FullscreenIntent, InstanceForwardingError};
 
 use super::{
     AppInstanceLease, AppInstanceLeaseError, AppInstanceLeaseIoOperation, AppInstanceLeasePlatform,
@@ -80,6 +80,66 @@ fn process_args_double_dash_allows_several_leading_dash_local_paths() {
         parsed.initial_media_arguments(),
         os_strings(&["a.mkv", "-movie.mkv", "--", "-b"])
     );
+}
+
+/// `--fullscreen` до `--` — опция в любом месте (повтор не ошибка), файлы остаются в порядке.
+#[test]
+fn fullscreen_option_is_recognized_anywhere_before_the_delimiter() {
+    let plain = ProcessArgs::parse(os_strings(&["a.mkv"])).expect("plain launch");
+    assert_eq!(plain.fullscreen_intent(), FullscreenIntent::LeaveAsIs);
+
+    let leading =
+        ProcessArgs::parse(os_strings(&["--fullscreen", "a.mkv", "b.mkv"])).expect("leading flag");
+    assert_eq!(leading.fullscreen_intent(), FullscreenIntent::Enter);
+    assert_eq!(
+        leading.initial_media_arguments(),
+        os_strings(&["a.mkv", "b.mkv"])
+    );
+
+    let mixed = ProcessArgs::parse(os_strings(&[
+        "a.mkv",
+        "--fullscreen",
+        "b.mkv",
+        "--fullscreen",
+    ]))
+    .expect("flag between and after files, repeated");
+    assert_eq!(mixed.fullscreen_intent(), FullscreenIntent::Enter);
+    assert_eq!(
+        mixed.initial_media_arguments(),
+        os_strings(&["a.mkv", "b.mkv"])
+    );
+
+    let flag_only = ProcessArgs::parse(os_strings(&["--fullscreen"])).expect("flag only");
+    assert_eq!(flag_only.fullscreen_intent(), FullscreenIntent::Enter);
+    assert!(flag_only.initial_media_arguments().is_empty());
+}
+
+/// После `--` строка `--fullscreen` — имя файла, а не опция.
+#[test]
+fn fullscreen_after_the_delimiter_is_a_file_name() {
+    let parsed = ProcessArgs::parse(os_strings(&["--", "--fullscreen"])).expect("file name");
+
+    assert_eq!(parsed.fullscreen_intent(), FullscreenIntent::LeaveAsIs);
+    assert_eq!(
+        parsed.initial_media_arguments(),
+        os_strings(&["--fullscreen"])
+    );
+}
+
+/// Знакомая опция не открывает дорогу похожим: `--fs`, `--fullscreen=1` — неизвестные.
+#[test]
+fn other_options_stay_unknown_next_to_fullscreen() {
+    for arguments in [
+        &["--fullscreen", "--fs"][..],
+        &["--fullscreen=1", "a.mkv"][..],
+        &["-f", "a.mkv"][..],
+    ] {
+        assert_eq!(
+            ProcessArgs::parse(os_strings(arguments)),
+            Err(ProcessArgsError::UnknownOption),
+            "{arguments:?}"
+        );
+    }
 }
 
 #[cfg(unix)]
@@ -367,6 +427,41 @@ fn already_running_forwards_untouched_arguments_and_never_loads_config() {
     assert_eq!(
         *forwarded_arguments.borrow(),
         [OsString::from("b.mkv"), OsString::from("-a.mkv")]
+    );
+}
+
+/// Второй запуск с `--fullscreen`: намерение доходит до пересылки вместе с файлами
+/// (сама опция среди файлов не пересылается).
+#[test]
+fn already_running_forwards_the_fullscreen_intent_with_files() {
+    let forwarded = Rc::new(RefCell::new(None));
+    let platform = FakePlatform {
+        calls: Rc::new(RefCell::new(Vec::new())),
+        outcome: Err(AppInstanceLeaseError::AlreadyRunning),
+    };
+
+    bootstrap_with(
+        os_strings(&["--fullscreen", "film.mkv"]),
+        || Ok(ConfigPaths::from_config_dir("/explicit/test-root")),
+        &platform,
+        |_| Ok(()),
+        |_, _, _| (),
+        {
+            let forwarded = forwarded.clone();
+            move |process_args| {
+                *forwarded.borrow_mut() = Some((
+                    process_args.initial_media_arguments().to_vec(),
+                    process_args.fullscreen_intent(),
+                ));
+                Ok(())
+            }
+        },
+    )
+    .expect("forwarding");
+
+    assert_eq!(
+        *forwarded.borrow(),
+        Some((os_strings(&["film.mkv"]), FullscreenIntent::Enter))
     );
 }
 

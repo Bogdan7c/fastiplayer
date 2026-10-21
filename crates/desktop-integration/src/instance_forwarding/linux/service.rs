@@ -26,13 +26,14 @@ use zbus::{DBusError, interface};
 
 use super::{
     ACTIVATION_TOKEN_PLATFORM_KEY, APPLICATION_OBJECT_PATH, DESKTOP_STARTUP_ID_PLATFORM_KEY,
+    FULLSCREEN_PLATFORM_KEY,
 };
 use crate::instance_forwarding::admission::admit_peer;
 use crate::instance_forwarding::{
     FASTIPLAYER_APPLICATION_ID, ForwardedInstanceRequest, ForwardedRequestAcknowledgement,
     ForwardedRequestDelivery, ForwardedRequestRejection, ForwardedRequestSink,
-    ForwardedRequestSinkError, InstanceForwardingServiceConfig, InstanceForwardingServiceError,
-    WindowActivationToken,
+    ForwardedRequestSinkError, FullscreenIntent, InstanceForwardingServiceConfig,
+    InstanceForwardingServiceError, WindowActivationToken,
 };
 
 /// Ошибки, которые служба возвращает отправителю по шине.
@@ -78,7 +79,8 @@ impl FreedesktopApplicationEndpoint {
     ) -> Result<(), ForwardingServiceFailure> {
         self.admit_sender(&header, connection).await?;
         let request =
-            ForwardedInstanceRequest::activate(activation_token_from_platform_data(&platform_data));
+            ForwardedInstanceRequest::activate(activation_token_from_platform_data(&platform_data))
+                .with_fullscreen_intent(fullscreen_intent_from_platform_data(&platform_data));
         self.deliver_and_wait(request).await
     }
 
@@ -95,7 +97,8 @@ impl FreedesktopApplicationEndpoint {
             uris,
             activation_token_from_platform_data(&platform_data),
         )
-        .inspect_err(|rejection| warn!(%rejection, "Transmitted Open request denied"))?;
+        .inspect_err(|rejection| warn!(%rejection, "Transmitted Open request denied"))?
+        .with_fullscreen_intent(fullscreen_intent_from_platform_data(&platform_data));
         self.deliver_and_wait(request).await
     }
 
@@ -235,6 +238,30 @@ fn activation_token_from_platform_data(
         Value::Str(token) => WindowActivationToken::from_raw(token.as_str().to_owned()),
         _ => None,
     })
+}
+
+/// Достаёт намерение «на весь экран» из `platform_data`.
+///
+/// Нет ключа (старый отправитель, запуск без флага) или `false` — режим окна не трогать.
+/// Значение не того типа игнорируется с предупреждением: как и с билетом активации,
+/// запрос из-за него не отклоняется — файлы важнее режима окна.
+fn fullscreen_intent_from_platform_data(
+    platform_data: &HashMap<String, OwnedValue>,
+) -> FullscreenIntent {
+    match platform_data
+        .get(FULLSCREEN_PLATFORM_KEY)
+        .map(|value| &**value)
+    {
+        Some(Value::Bool(true)) => FullscreenIntent::Enter,
+        None | Some(Value::Bool(false)) => FullscreenIntent::LeaveAsIs,
+        Some(unexpected) => {
+            warn!(
+                signature = %unexpected.value_signature(),
+                "Fullscreen request in platform data has the wrong type and is ignored"
+            );
+            FullscreenIntent::LeaveAsIs
+        }
+    }
 }
 
 /// Работающая служба: соединение, на котором зарегистрированы объект и имя.

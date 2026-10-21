@@ -117,7 +117,12 @@ fn bad_command_line_is_shown_with_nonzero_exit() {
     let (conclusion, presenter) = conclude_with_fake(error);
 
     assert_eq!(conclusion, ProcessConclusion::FailedToStart);
-    assert!(single_shown_message(&presenter).contains("unknown option"));
+    let message = single_shown_message(&presenter);
+    assert!(message.contains("unknown option"));
+    assert!(
+        message.contains("--fullscreen"),
+        "the user learns the supported option: {message}"
+    );
 }
 
 #[test]

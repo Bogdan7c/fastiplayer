@@ -18,12 +18,12 @@ use zbus::zvariant::Value;
 use super::client::forward_with;
 use super::service::{ForwardingServiceFailure, ServiceBackend, start_with};
 use super::{
-    APPLICATION_OBJECT_PATH, NOT_RESPONDING_ERROR_NAME, REJECTED_ERROR_NAME,
-    SHUTTING_DOWN_ERROR_NAME,
+    APPLICATION_OBJECT_PATH, FULLSCREEN_PLATFORM_KEY, NOT_RESPONDING_ERROR_NAME,
+    REJECTED_ERROR_NAME, SHUTTING_DOWN_ERROR_NAME,
 };
 use crate::instance_forwarding::{
     FASTIPLAYER_APPLICATION_ID, ForwardedInstanceAction, ForwardedInstanceRequest,
-    ForwardedRequestDelivery, ForwardedRequestSink, ForwardedRequestSinkError,
+    ForwardedRequestDelivery, ForwardedRequestSink, ForwardedRequestSinkError, FullscreenIntent,
     InstanceForwardingClientConfig, InstanceForwardingError, InstanceForwardingServiceConfig,
     InstanceForwardingServiceError, MAX_FORWARDED_URIS, WindowActivationToken,
 };
@@ -492,6 +492,92 @@ fn invalid_activation_token_is_ignored_but_request_is_delivered() {
     let received = sink.received();
     assert_eq!(received.len(), 1);
     assert_eq!(received[0].activation_token(), None);
+}
+
+/// `--fullscreen` второго запуска доезжает до первого и с файлами (`Open`), и без них
+/// (`Activate`); запрос без флага приходит с прежним «режим окна не трогать».
+#[test]
+fn fullscreen_intent_travels_with_open_and_activate() {
+    let bus = PrivateSessionBus::spawn();
+    let sink = RecordingSink::new(SinkBehaviour::Acknowledge);
+    let _service = start_service(&bus, sink.clone());
+    let open = ForwardedInstanceRequest::open(
+        vec!["file:///tmp/film.mkv".to_owned()],
+        Some(token("kwin-token-2")),
+    )
+    .expect("correct request")
+    .with_fullscreen_intent(FullscreenIntent::Enter);
+    let activate =
+        ForwardedInstanceRequest::activate(None).with_fullscreen_intent(FullscreenIntent::Enter);
+    let plain_open = ForwardedInstanceRequest::open(vec!["file:///tmp/other.mkv".to_owned()], None)
+        .expect("correct request");
+
+    for request in [&open, &activate, &plain_open] {
+        assert_eq!(forward(&bus, request, Duration::from_secs(1)), Ok(()));
+    }
+
+    let received = sink.received();
+    assert_eq!(received.len(), 3);
+    assert_eq!(received[0], open, "Open keeps URIs, token and the intent");
+    assert_eq!(received[1].action(), &ForwardedInstanceAction::Activate);
+    assert_eq!(received[1].fullscreen_intent(), FullscreenIntent::Enter);
+    assert_eq!(received[2].fullscreen_intent(), FullscreenIntent::LeaveAsIs);
+}
+
+/// Старый отправитель (без ключа) — прежнее поведение: файлы открываются, режим окна
+/// не трогается.
+#[test]
+fn old_sender_without_fullscreen_key_keeps_window_mode() {
+    let bus = PrivateSessionBus::spawn();
+    let sink = RecordingSink::new(SinkBehaviour::Acknowledge);
+    let _service = start_service(&bus, sink.clone());
+    let platform_data = HashMap::from([("activation-token", Value::from("kwin-token-3"))]);
+
+    raw_call(
+        &bus,
+        "Open",
+        &(vec!["file:///tmp/film.mkv"], &platform_data),
+    )
+    .expect("request");
+
+    let received = sink.received();
+    assert_eq!(received.len(), 1);
+    assert!(matches!(received[0].action(), ForwardedInstanceAction::Open(uris) if uris.len() == 1));
+    assert_eq!(received[0].fullscreen_intent(), FullscreenIntent::LeaveAsIs);
+}
+
+/// Ключ не того типа или `false` игнорируется, а запрос всё равно исполняется; чужие
+/// неизвестные ключи не мешают настоящему `true`.
+#[test]
+fn malformed_or_false_fullscreen_key_is_ignored_but_files_still_open() {
+    let bus = PrivateSessionBus::spawn();
+    let sink = RecordingSink::new(SinkBehaviour::Acknowledge);
+    let _service = start_service(&bus, sink.clone());
+    let wrong_type = HashMap::from([(FULLSCREEN_PLATFORM_KEY, Value::from("yes"))]);
+    let explicit_false = HashMap::from([(FULLSCREEN_PLATFORM_KEY, Value::from(false))]);
+    let with_unknown_key = HashMap::from([
+        (FULLSCREEN_PLATFORM_KEY, Value::from(true)),
+        ("org.example.unknown", Value::from(7_u32)),
+    ]);
+
+    for platform_data in [&wrong_type, &explicit_false, &with_unknown_key] {
+        raw_call(&bus, "Open", &(vec!["file:///tmp/film.mkv"], platform_data))
+            .expect("request is delivered regardless of the fullscreen key");
+    }
+
+    let intents: Vec<FullscreenIntent> = sink
+        .received()
+        .iter()
+        .map(ForwardedInstanceRequest::fullscreen_intent)
+        .collect();
+    assert_eq!(
+        intents,
+        [
+            FullscreenIntent::LeaveAsIs,
+            FullscreenIntent::LeaveAsIs,
+            FullscreenIntent::Enter
+        ]
+    );
 }
 
 #[test]

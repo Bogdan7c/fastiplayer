@@ -130,11 +130,35 @@ pub enum ForwardedInstanceAction {
     Open(Vec<ForwardedUri>),
 }
 
+/// Просит ли запуск показать окно на весь экран (CLI-флаг `--fullscreen`, cpu-parity 06b).
+///
+/// Едет вместе с действием: `fastiplayer --fullscreen film.mkv` показывает фильм на весь
+/// экран и при первом запуске, и когда окно уже открыто. Отсутствие намерения у старого
+/// отправителя — это [`Self::LeaveAsIs`], то есть прежнее поведение.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FullscreenIntent {
+    /// Режим окна не трогать.
+    #[default]
+    LeaveAsIs,
+    /// Перевести окно в полноэкранный режим; уже полноэкранное таким и остаётся.
+    Enter,
+}
+
 /// Полный запрос второго экземпляра.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardedInstanceRequest {
     action: ForwardedInstanceAction,
     activation_token: Option<WindowActivationToken>,
+    fullscreen: FullscreenIntent,
+}
+
+/// Части запроса для исполнителя; именованные поля, чтобы новое намерение нельзя было
+/// потерять при разборе молча.
+#[derive(Debug)]
+pub struct ForwardedInstanceRequestParts {
+    pub action: ForwardedInstanceAction,
+    pub activation_token: Option<WindowActivationToken>,
+    pub fullscreen: FullscreenIntent,
 }
 
 impl ForwardedInstanceRequest {
@@ -143,6 +167,7 @@ impl ForwardedInstanceRequest {
         Self {
             action: ForwardedInstanceAction::Activate,
             activation_token,
+            fullscreen: FullscreenIntent::LeaveAsIs,
         }
     }
 
@@ -158,7 +183,14 @@ impl ForwardedInstanceRequest {
         Ok(Self {
             action,
             activation_token,
+            fullscreen: FullscreenIntent::LeaveAsIs,
         })
+    }
+
+    /// Тот же запрос с намерением о полноэкранном режиме.
+    #[must_use]
+    pub fn with_fullscreen_intent(self, fullscreen: FullscreenIntent) -> Self {
+        Self { fullscreen, ..self }
     }
 
     /// Действие запроса.
@@ -171,9 +203,18 @@ impl ForwardedInstanceRequest {
         self.activation_token.as_ref()
     }
 
+    /// Просит ли отправитель полноэкранный режим.
+    pub fn fullscreen_intent(&self) -> FullscreenIntent {
+        self.fullscreen
+    }
+
     /// Разбирает запрос на части для исполнителя.
-    pub fn into_parts(self) -> (ForwardedInstanceAction, Option<WindowActivationToken>) {
-        (self.action, self.activation_token)
+    pub fn into_parts(self) -> ForwardedInstanceRequestParts {
+        ForwardedInstanceRequestParts {
+            action: self.action,
+            activation_token: self.activation_token,
+            fullscreen: self.fullscreen,
+        }
     }
 }
 

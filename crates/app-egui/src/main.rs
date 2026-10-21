@@ -54,6 +54,7 @@ mod web_media_open;
 mod web_media_stream_model;
 mod web_open_message;
 mod window_corner_policy;
+mod window_fullscreen;
 
 // Архитектурные сторожа provider DTO yt-dlp по исходникам app-egui.
 #[cfg(test)]
@@ -103,8 +104,7 @@ fn run_application(process_started_at: std::time::Instant) -> Result<(), FatalSt
         config_paths,
         instance_lease,
         loaded_config,
-        initial_media,
-        startup_error: cli_startup_error,
+        command_line,
     } = match process_start {
         ProcessStart::Primary(bootstrap) => *bootstrap,
         // Плеер уже запущен и принял файлы/активацию: этому процессу делать нечего,
@@ -139,14 +139,13 @@ fn run_application(process_started_at: std::time::Instant) -> Result<(), FatalSt
     // Idle default — Wait; playback включает Poll только на активном render loop-е.
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    if matches!(initial_media, Some(InitialMedia::File(_))) {
+    if matches!(command_line.initial_media, Some(InitialMedia::File(_))) {
         info!("CLI argument: local file for playback");
     }
 
     let mut app = AppShell::new(
         process_started_at,
-        initial_media,
-        cli_startup_error,
+        command_line,
         loaded_config,
         wake_proxy,
         config_paths,

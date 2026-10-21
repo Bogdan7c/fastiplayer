@@ -16,12 +16,12 @@ use zbus::names::BusName;
 use zbus::zvariant::Value;
 
 use super::{
-    ACTIVATION_TOKEN_PLATFORM_KEY, APPLICATION_OBJECT_PATH, NOT_RESPONDING_ERROR_NAME,
-    REJECTED_ERROR_NAME, SHUTTING_DOWN_ERROR_NAME,
+    ACTIVATION_TOKEN_PLATFORM_KEY, APPLICATION_OBJECT_PATH, FULLSCREEN_PLATFORM_KEY,
+    NOT_RESPONDING_ERROR_NAME, REJECTED_ERROR_NAME, SHUTTING_DOWN_ERROR_NAME,
 };
 use crate::instance_forwarding::{
     FASTIPLAYER_APPLICATION_ID, ForwardedInstanceAction, ForwardedInstanceRequest,
-    InstanceForwardingClientConfig, InstanceForwardingError,
+    FullscreenIntent, InstanceForwardingClientConfig, InstanceForwardingError,
 };
 
 /// Стандартная ошибка шины: у имени нет владельца.
@@ -157,13 +157,17 @@ fn ensure_listener_belongs_to_same_user(
     }
 }
 
-/// `platform_data` по спецификации: только билет активации, если он есть.
+/// `platform_data` по спецификации: билет активации, если он есть, и ключ «на весь
+/// экран», только если его просили (без флага запрос побайтно прежний).
 fn platform_data_for(request: &ForwardedInstanceRequest) -> HashMap<&str, Value<'_>> {
-    request
+    let activation_token = request
         .activation_token()
-        .map(|token| (ACTIVATION_TOKEN_PLATFORM_KEY, Value::from(token.as_str())))
-        .into_iter()
-        .collect()
+        .map(|token| (ACTIVATION_TOKEN_PLATFORM_KEY, Value::from(token.as_str())));
+    let fullscreen = match request.fullscreen_intent() {
+        FullscreenIntent::Enter => Some((FULLSCREEN_PLATFORM_KEY, Value::from(true))),
+        FullscreenIntent::LeaveAsIs => None,
+    };
+    activation_token.into_iter().chain(fullscreen).collect()
 }
 
 /// Переводит ошибку вызова в типизированную причину для пользователя.

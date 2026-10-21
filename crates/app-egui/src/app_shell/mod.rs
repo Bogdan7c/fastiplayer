@@ -29,7 +29,7 @@ mod tests;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::app_instance::AppInstanceLease;
+use crate::app_instance::{AppInstanceLease, CommandLineStartup};
 use crate::app_wake::{AppWakeOwner, AppWakeProxy};
 use crate::render_settings::{
     surface_present_settings_from_config, warn_legacy_tone_mapping_config,
@@ -52,7 +52,7 @@ use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
 use crate::redraw_pacing::{BackgroundPollScheduler, RedrawControlAction};
 use crate::renderer_recreation::RendererLifecycleCoordinator;
 use crate::settings_runtime::{HardwareDecodeAvailability, SettingsRuntime};
-use crate::startup_media::{InitialMedia, StartupMediaController};
+use crate::startup_media::StartupMediaController;
 use crate::state::{
     AppState, AppStateStartupContext, LifecycleTimelineSeekSettlement, TrackMemoryHandle,
 };
@@ -134,6 +134,8 @@ pub(crate) struct AppShell {
 
     /// Приём файлов от следующих запусков (сессия 13); process-lifetime, как lease.
     instance_forwarding: crate::instance_forwarding::InstanceForwardingInbox,
+    /// `--fullscreen` первого запуска; применяется один раз, когда окно готово (06b).
+    startup_fullscreen: desktop_integration::FullscreenIntent,
 
     /// Exact local-file job переживает renderer suspend без detach или process flush.
     suspended_local_file_open_job: Option<LocalFileOpenJob>,
@@ -179,8 +181,7 @@ impl AppShell {
     /// Ресурсы инициализируются в Resumed, когда окно готово.
     pub(crate) fn new(
         process_started_at: Instant,
-        initial_media: Option<InitialMedia>,
-        startup_error: Option<String>,
+        command_line: CommandLineStartup,
         loaded_config: LoadedConfig,
         wake_proxy: AppWakeProxy,
         config_paths: ConfigPaths,
@@ -238,8 +239,8 @@ impl AppShell {
             app_state: None,
             telemetry: Arc::new(Telemetry::new()),
             startup_media: StartupMediaController::with_wake_port(
-                initial_media,
-                startup_error,
+                command_line.initial_media,
+                command_line.startup_error,
                 startup_wake_port,
             ),
             playlist_runtime,
@@ -247,6 +248,7 @@ impl AppShell {
             player_timeline_wake_port,
             subtitle_wake_port,
             instance_forwarding,
+            startup_fullscreen: command_line.fullscreen,
             suspended_local_file_open_job: None,
             settings_runtime,
             pending_config_warning,
@@ -436,8 +438,8 @@ impl AppShell {
         self.app_state = Some(app_state);
         // Runtime поднялся целиком: дальнейшие провалы пересоздания — уже не запуск.
         self.fatal_error_phase = FatalErrorPhase::RuntimeRecreation;
-        // Запросы второго запуска, пришедшие до готовности окна, исполняются сейчас.
-        self.execute_pending_forwarded_requests();
+        // `--fullscreen` запуска и запросы второго запуска, ждавшие окна, исполняются сейчас.
+        self.execute_pending_window_requests();
         window.request_redraw();
     }
 

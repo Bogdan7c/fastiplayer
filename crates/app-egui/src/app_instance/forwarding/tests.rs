@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use desktop_integration::{
-    ForwardedInstanceAction, ForwardedInstanceRequest, ForwardedRequestRejection,
+    ForwardedInstanceAction, ForwardedInstanceRequest, ForwardedRequestRejection, FullscreenIntent,
     InstanceForwardingError, MAX_FORWARDED_URIS, WindowActivationToken,
 };
 
@@ -75,6 +75,7 @@ fn local_paths_arrive_at_receiver_as_the_same_absolute_paths() {
 
     forward_arguments_to_running_instance(
         &arguments,
+        FullscreenIntent::LeaveAsIs,
         environment_in("/home/u/Загрузки"),
         &forwarder,
     )
@@ -102,8 +103,13 @@ fn links_are_forwarded_verbatim_and_keep_their_order_with_files() {
     ];
     let forwarder = RecordingForwarder::answering(Ok(()));
 
-    forward_arguments_to_running_instance(&arguments, environment_in("/"), &forwarder)
-        .expect("forwarding");
+    forward_arguments_to_running_instance(
+        &arguments,
+        FullscreenIntent::LeaveAsIs,
+        environment_in("/"),
+        &forwarder,
+    )
+    .expect("forwarding");
 
     let uris = sent_uris(&forwarder.single_sent());
     assert_eq!(uris[0], "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=5");
@@ -117,6 +123,7 @@ fn launch_without_arguments_only_activates_the_window_with_the_desktop_token() {
 
     forward_arguments_to_running_instance(
         &[],
+        FullscreenIntent::LeaveAsIs,
         ForwardingEnvironment {
             current_directory: None,
             activation_token: Some(token.clone()),
@@ -130,12 +137,41 @@ fn launch_without_arguments_only_activates_the_window_with_the_desktop_token() {
     assert_eq!(sent.activation_token(), Some(&token));
 }
 
+/// `--fullscreen` уходит и с файлами (`Open`), и с одной активацией окна (`Activate`).
+#[test]
+fn fullscreen_intent_is_forwarded_with_files_and_with_plain_activation() {
+    let with_files = RecordingForwarder::answering(Ok(()));
+    forward_arguments_to_running_instance(
+        &[OsString::from("/videos/a.mkv")],
+        FullscreenIntent::Enter,
+        environment_in("/"),
+        &with_files,
+    )
+    .expect("forwarding");
+    let sent = with_files.single_sent();
+    assert_eq!(sent_uris(&sent), ["file:///videos/a.mkv"]);
+    assert_eq!(sent.fullscreen_intent(), FullscreenIntent::Enter);
+
+    let activation_only = RecordingForwarder::answering(Ok(()));
+    forward_arguments_to_running_instance(
+        &[],
+        FullscreenIntent::Enter,
+        environment_in("/"),
+        &activation_only,
+    )
+    .expect("forwarding");
+    let sent = activation_only.single_sent();
+    assert_eq!(sent.action(), &ForwardedInstanceAction::Activate);
+    assert_eq!(sent.fullscreen_intent(), FullscreenIntent::Enter);
+}
+
 #[test]
 fn relative_path_without_working_directory_is_an_error_not_a_wrong_file() {
     let forwarder = RecordingForwarder::answering(Ok(()));
 
     let error = forward_arguments_to_running_instance(
         &[OsString::from("movie.mkv")],
+        FullscreenIntent::LeaveAsIs,
         ForwardingEnvironment {
             current_directory: None,
             activation_token: None,
@@ -157,8 +193,13 @@ fn too_many_files_are_refused_before_touching_the_bus() {
     let forwarder = RecordingForwarder::answering(Ok(()));
     let arguments = vec![OsString::from("/videos/a.mkv"); MAX_FORWARDED_URIS + 1];
 
-    let error = forward_arguments_to_running_instance(&arguments, environment_in("/"), &forwarder)
-        .expect_err("limit");
+    let error = forward_arguments_to_running_instance(
+        &arguments,
+        FullscreenIntent::LeaveAsIs,
+        environment_in("/"),
+        &forwarder,
+    )
+    .expect_err("limit");
 
     assert_eq!(
         error.failure,
@@ -183,9 +224,13 @@ fn transport_failure_keeps_its_reason_and_what_was_forwarded() {
         let forwarder =
             RecordingForwarder::answering(Err(InstanceForwardingError::InstanceNotResponding));
 
-        let error =
-            forward_arguments_to_running_instance(&arguments, environment_in("/"), &forwarder)
-                .expect_err("transport refused");
+        let error = forward_arguments_to_running_instance(
+            &arguments,
+            FullscreenIntent::LeaveAsIs,
+            environment_in("/"),
+            &forwarder,
+        )
+        .expect_err("transport refused");
 
         assert_eq!(
             error.failure,

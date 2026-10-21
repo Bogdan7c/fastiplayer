@@ -15,7 +15,9 @@
 //! появятся окно и состояние приложения (запрос пришёл во время запуска).
 //!
 //! Поднятие окна — `window_activation` (единственный winit-aware файл модуля).
+//! Порядок шагов исполнения (окно → файлы → фуллскрин) — `execution`.
 
+pub(crate) mod execution;
 pub(crate) mod window_activation;
 
 use std::collections::VecDeque;

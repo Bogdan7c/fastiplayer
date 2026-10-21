@@ -8,6 +8,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::PathBuf;
 
+use desktop_integration::FullscreenIntent;
 use fastiplayer_config::{ConfigError, ConfigPaths, LoadedConfig};
 use thiserror::Error;
 
@@ -26,16 +27,23 @@ pub(crate) use forwarding::{
     ForwardingEnvironment, RunningInstanceForwarder, forward_arguments_to_running_instance,
 };
 
+/// Опция «показать окно на весь экран» (как `mpv --fs`), cpu-parity 06b.
+const FULLSCREEN_OPTION: &str = "--fullscreen";
+
 /// Уже разобранные process arguments без lossy UTF-8 преобразования media path.
 ///
-/// Грамматика: ноль или больше позиционных media-аргументов; option-подобная строка
-/// до `--` — ошибка `UnknownOption`, после `--` любой аргумент считается media.
+/// Грамматика: ноль или больше позиционных media-аргументов и опция [`FULLSCREEN_OPTION`]
+/// в любом месте до `--` (повтор не ошибка); любая другая option-подобная строка до `--` —
+/// ошибка `UnknownOption`, после `--` любой аргумент (и `--fullscreen` тоже) считается media.
 /// Несколько аргументов — обычный случай «Открыть с помощью» на нескольких выделенных
 /// файлах в файловом менеджере (решение владельца, сессия 13).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProcessArgs {
     /// Media positionals в исходном порядке, байт-в-байт как их передала ОС.
     initial_media_arguments: Vec<OsString>,
+    /// Просит ли запуск полноэкранный режим. Действует и при первом запуске, и при
+    /// пересылке в уже открытое окно (решение владельца, сессия 06b).
+    fullscreen: FullscreenIntent,
 }
 
 impl ProcessArgs {
@@ -44,11 +52,17 @@ impl ProcessArgs {
         arguments: impl IntoIterator<Item = OsString>,
     ) -> Result<Self, ProcessArgsError> {
         let mut initial_media_arguments = Vec::new();
+        let mut fullscreen = FullscreenIntent::LeaveAsIs;
         let mut options_ended = false;
 
         for argument in arguments {
             if !options_ended && argument == OsStr::new("--") {
                 options_ended = true;
+                continue;
+            }
+
+            if !options_ended && argument == OsStr::new(FULLSCREEN_OPTION) {
+                fullscreen = FullscreenIntent::Enter;
                 continue;
             }
 
@@ -61,7 +75,13 @@ impl ProcessArgs {
 
         Ok(Self {
             initial_media_arguments,
+            fullscreen,
         })
+    }
+
+    /// Просит ли запуск полноэкранный режим (`--fullscreen`).
+    pub(crate) fn fullscreen_intent(&self) -> FullscreenIntent {
+        self.fullscreen
     }
 
     /// Сырые media-аргументы в исходном порядке без перекодировки (только чтение).
@@ -208,10 +228,18 @@ pub(crate) struct ProcessBootstrap {
     pub(crate) instance_lease: AppInstanceLease,
     /// Config читается или создаётся только после успешного lease.
     pub(crate) loaded_config: LoadedConfig,
+    /// Что попросила командная строка первого запуска.
+    pub(crate) command_line: CommandLineStartup,
+}
+
+/// Просьба командной строки первого запуска, уже разобранная и классифицированная.
+pub(crate) struct CommandLineStartup {
     /// Классифицированный ID-less media intent для существующего startup flow.
     pub(crate) initial_media: Option<InitialMedia>,
     /// Secret-safe ошибка классификации media, показываемая существующим UI path.
     pub(crate) startup_error: Option<String>,
+    /// `--fullscreen`: окно входит в фуллскрин, когда готово (cpu-parity 06b).
+    pub(crate) fullscreen: FullscreenIntent,
 }
 
 /// Typed bootstrap errors фиксируют этап, не раскрывая CLI media или lock path.
@@ -270,14 +298,16 @@ pub(crate) fn bootstrap_process() -> Result<ProcessStart, ProcessBootstrapError>
             )
         },
         |process_args, _paths, loaded_config| {
-            resolve_initial_media_arguments(
+            let media = resolve_initial_media_arguments(
                 process_args.take_initial_media_arguments(),
                 &loaded_config.config,
-            )
+            );
+            (media, process_args.fullscreen_intent())
         },
         |process_args| {
             forwarding::forward_arguments_to_running_instance(
                 process_args.initial_media_arguments(),
+                process_args.fullscreen_intent(),
                 forwarding::ForwardingEnvironment::of_current_process(),
                 &forwarding::DesktopRunningInstanceForwarder,
             )
@@ -289,14 +319,17 @@ pub(crate) fn bootstrap_process() -> Result<ProcessStart, ProcessBootstrapError>
             return Ok(ProcessStart::ForwardedToRunningInstance);
         }
     };
-    let (initial_media, startup_error) = bootstrap.prepared;
+    let ((initial_media, startup_error), fullscreen) = bootstrap.prepared;
 
     Ok(ProcessStart::Primary(Box::new(ProcessBootstrap {
         config_paths: bootstrap.paths,
         instance_lease: bootstrap.lease,
         loaded_config: bootstrap.config,
-        initial_media,
-        startup_error,
+        command_line: CommandLineStartup {
+            initial_media,
+            startup_error,
+            fullscreen,
+        },
     })))
 }
 
