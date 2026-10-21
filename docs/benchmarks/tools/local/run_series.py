@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Последовательная возобновляемая серия; protocol hash фиксируется до первого attempt."""
+"""Последовательная возобновляемая серия; protocol hash фиксируется до первого attempt.
+
+Протокол v2: quiet-пары идут до 3/6/9 повторов с правилом остановки, diagnostic —
+``diagnostic_repetitions`` повторов (по умолчанию 1) только для quality-gate и
+описательного observer-control. Сцена может ограничить список плееров полем
+``players`` (например, профиль, который эталон на этой машине не воспроизводит).
+"""
 
 import argparse
 import json
@@ -11,11 +17,44 @@ from analyze import LOOKS, analyze
 from host import sha256, write_json
 
 
+
+def run_attempt(root, tooling, plan, scenario, player, mode, repetition):
+    """Запускает одну попытку; уже завершённая попытка не перезапускается.
+
+    Возвращает код завершения collector-а (0 — валидное наблюдение) или 0 для
+    уже сохранённой попытки. Прерванная попытка без ``result.json`` требует ручного
+    разбора: заменять её молча нельзя.
+    """
+    label = f'{scenario["scenario"]}-{mode}-{repetition:02}-{player}'
+    scenario_fields = {key: value for key, value in scenario.items() if key != 'players'}
+    spec = {**plan['common'], **scenario_fields, **plan['players'][player],
+            'player': player, 'mode': mode, 'repetition': repetition}
+    spec_path = root / 'specs' / f'{label}.json'
+    write_json(spec_path, spec)
+    attempt = root / 'attempts' / label
+    if attempt.exists():
+        if not (attempt / 'result.json').exists():
+            raise ValueError(f'interrupted attempt requires review: {label}')
+        return 0
+    with (root / 'runner.log').open('a') as log:
+        completed = subprocess.run([sys.executable, str(tooling / 'collect.py'),
+                                    str(spec_path), str(attempt)], stdout=log, stderr=subprocess.STDOUT)
+    print(label, 'exit', completed.returncode, flush=True)
+    return completed.returncode
+
+
+def ordered(values, repetition):
+    """AB/BA: на чётных повторах порядок разворачивается, чтобы дрейф не копился у одного."""
+    return values if repetition % 2 else tuple(reversed(values))
+
+
 def run_series(plan_path, root):
     plan_path, root = plan_path.resolve(), root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     lock = root / 'plan.json'
     plan = json.loads(plan_path.read_text())
+    if plan.get('protocol_version') != 2:
+        raise ValueError('plan must declare protocol_version 2')
     if lock.exists() and json.loads(lock.read_text()) != plan:
         raise ValueError('plan changed: use a new series directory')
     if not lock.exists():
@@ -31,40 +70,41 @@ def run_series(plan_path, root):
     write_json(tool_lock, provenance)
     (root / 'attempts').mkdir(exist_ok=True)
     (root / 'specs').mkdir(exist_ok=True)
+    diagnostic_repetitions = int(plan.get('diagnostic_repetitions', 1))
+    # Порядок плееров задаёт план (Fastiplayer и один эталон); AB/BA разворачивает его.
+    all_players = tuple(plan['players'])
+    if 'fastiplayer' not in all_players or len(all_players) != 2:
+        raise ValueError('plan must list fastiplayer and exactly one reference player')
     stopped = set()
     for repetition in range(1, LOOKS[-1] + 1):
         for scenario in plan['scenarios']:
-            # AB/BA чередуется и для player, и для diagnostic/quiet, без параллельного playback.
-            for mode in (('quiet', 'diagnostic') if repetition % 2 else ('diagnostic', 'quiet')):
-                key = (scenario['scenario'], mode)
-                if key in stopped:
+            players = tuple(p for p in all_players if p in scenario.get('players', all_players))
+            modes = ('quiet', 'diagnostic') if repetition <= diagnostic_repetitions else ('quiet',)
+            for mode in ordered(modes, repetition):
+                if (scenario['scenario'], mode) in stopped:
                     continue
-                for player in (('fastiplayer', 'vlc') if repetition % 2 else ('vlc', 'fastiplayer')):
-                    label = f'{scenario["scenario"]}-{mode}-{repetition:02}-{player}'
-                    spec = {**plan['common'], **scenario, **plan['players'][player],
-                            'player': player, 'mode': mode, 'repetition': repetition}
-                    spec_path = root / 'specs' / f'{label}.json'
-                    write_json(spec_path, spec)
-                    attempt = root / 'attempts' / label
-                    if attempt.exists():
-                        if not (attempt / 'result.json').exists():
-                            raise ValueError(f'interrupted attempt requires review: {label}')
-                        continue
-                    with (root / 'runner.log').open('a') as log:
-                        completed = subprocess.run([sys.executable, str(tooling / 'collect.py'),
-                                                    str(spec_path), str(attempt)], stdout=log, stderr=subprocess.STDOUT)
-                    print(label, 'exit', completed.returncode, flush=True)
-                    if completed.returncode:
+                for player in ordered(players, repetition):
+                    if run_attempt(root, tooling, plan, scenario, player, mode, repetition):
                         # Не удаляем/не заменяем неудачный запуск и не тратим полный
                         # corpus на уже доказанно сломанный путь измерения.
                         write_json(root / 'summary.json', analyze(root))
                         return 1
+        summary = analyze(root)
+        write_json(root / 'summary.json', summary)
+        if repetition == diagnostic_repetitions:
+            failed = [name for name, gate in summary['quality_gates'].items() if gate['status'] == 'FAIL']
+            if failed:
+                # Решение владельца: «WIN по CPU с потерей кадров» не принимается —
+                # серия останавливается на диагностике, CPU-таблицу не добираем.
+                print('quality gate FAILED:', ', '.join(failed), flush=True)
+                return 2
         if repetition in LOOKS:
-            summary = analyze(root)
-            write_json(root / 'summary.json', summary)
-            for cohort in summary:
-                if cohort['resource_verdict']['status'] in {'WIN', 'WORSE'}:
+            for cohort in summary['cohorts']:
+                if cohort['mode'] == 'quiet' and cohort['resource_verdict']['status'] in {'WIN', 'WORSE', 'NOT TESTED'}:
                     stopped.add((cohort['scenario'], cohort['mode']))
+            remaining = [s for s in plan['scenarios'] if (s['scenario'], 'quiet') not in stopped]
+            if not remaining:
+                return 0
     return 0
 
 

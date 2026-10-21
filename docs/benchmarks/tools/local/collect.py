@@ -13,7 +13,7 @@ import time
 import tempfile
 
 import evidence
-from host import cpu_percent, probe_media, sample, sha256, write_json
+from host import cpu_percent, probe_media, sample, sha256, source_fps, summarize_gpu, write_json
 from service import MeasuredService, isolated_environment
 
 
@@ -37,10 +37,46 @@ def summarize(samples):
     return result
 
 
+# Версия протокола, которую реализует этот collector (README, «Measurement protocol»).
+PROTOCOL_VERSION = 2
+
+
+def vlc_command(binary, socket_path, mode, media):
+    """Командная строка VLC — эталона протокола v1, без изменений против PR #12.
+
+    В v2 эталон — mpv (у VLC 3.0.24 нет аппаратного AV1 на этой машине). Команда VLC
+    сохранена байт-в-байт, чтобы серии v1 можно было воспроизвести и сравнить.
+    """
+    return [str(binary), '--ignore-config', '--no-one-instance', '--intf', 'dummy',
+            '--extraintf', 'oldrc', '--rc-fake-tty', f'--rc-unix={socket_path}',
+            '--avcodec-hw=vaapi', '--vout=gl', '--fullscreen', '--no-video-title-show', '--gain=0',
+            *(['-vv'] if mode == 'diagnostic' else []), str(media)]
+
+
+def mpv_command(binary, socket_path, mode, media):
+    """Командная строка mpv по протоколу v2 (эталон с 2026-10-21, решение владельца).
+
+    ``--no-config`` — аналог ``vlc --ignore-config``: ни пользовательский, ни системный
+    mpv.conf не меняют нагрузку. Аппаратное декодирование mpv по умолчанию выключено
+    ради надёжности; руководство mpv рекомендует включать его как ``hwdec=auto``, и
+    это единственное отличие от поведения «из коробки». Какой hwdec mpv выбрал
+    (на 780M — ``vulkan``, Vulkan Video на том же блоке VCN), фиксирует свойство
+    ``hwdec-current`` на границах окна. ``--volume=0`` — аналог ``--gain=0``:
+    аудиовывод работает. Встроенный интерфейс (OSC) остаётся по умолчанию.
+    JSON IPC нужен только для чтения свойств.
+    """
+    return [str(binary), '--no-config', '--hwdec=auto', '--fs', '--volume=0',
+            f'--input-ipc-server={socket_path}', *(['-v'] if mode == 'diagnostic' else []), str(media)]
+
+
+PLAYER_COMMANDS = {'vlc': vlc_command, 'mpv': mpv_command}
+
+
 def collect(spec, directory):
     directory = directory.resolve()
     directory.mkdir(parents=True, exist_ok=False)
-    observation = {'schema_version': 1, 'status': 'INVALID', 'spec': spec, 'samples': [],
+    observation = {'schema_version': 1, 'protocol_version': PROTOCOL_VERSION,
+                   'status': 'INVALID', 'spec': spec, 'samples': [],
                    'failures': [], 'clk_tck': os.sysconf('SC_CLK_TCK'),
                    'gpu_memory': {'status': 'N/A', 'reason': 'no qualified per-allocation DRM deduplication'},
                    'limitations': ['RSS sum includes shared mappings; PSS apportions them',
@@ -61,7 +97,7 @@ def collect(spec, directory):
         if sha256(window_helper) != spec['window_helper_sha256']:
             raise ValueError('window helper hash mismatch')
         mode, player = spec['mode'], spec['player']
-        if mode not in {'quiet', 'diagnostic'} or player not in {'fastiplayer', 'vlc'}:
+        if mode not in {'quiet', 'diagnostic'} or player not in {'fastiplayer', *PLAYER_COMMANDS}:
             raise ValueError('unsupported player or mode')
         rust_log = 'info' + (',fastiplayer::video_render_acceptance=trace' if mode == 'diagnostic' else '')
         environment = isolated_environment(directory, rust_log)
@@ -76,11 +112,8 @@ def collect(spec, directory):
         control_directory = tempfile.TemporaryDirectory(prefix='fi-bench-', dir=os.environ['XDG_RUNTIME_DIR'])
         socket_path = Path(control_directory.name) / 'rc'
         observation['control_socket'] = str(socket_path)
-        command = [str(binary), str(media)] if player == 'fastiplayer' else [
-            str(binary), '--ignore-config', '--no-one-instance', '--intf', 'dummy',
-            '--extraintf', 'oldrc', '--rc-fake-tty', f'--rc-unix={socket_path}',
-            '--avcodec-hw=vaapi', '--vout=gl', '--fullscreen', '--no-video-title-show', '--gain=0',
-            *(['-vv'] if mode == 'diagnostic' else []), str(media)]
+        command = [str(binary), str(media)] if player == 'fastiplayer' else PLAYER_COMMANDS[player](
+            binary, socket_path, mode, media)
         observation['command'] = command
         observation['environment'] = environment
         # Полное чтение одинаково прогревает page cache; вне lifecycle/CPU окна.
@@ -127,6 +160,9 @@ def collect(spec, directory):
             observation['before'], observation['after'], start_offset, end_offset)
         observation['failures'].extend(observation['evidence']['failures'])
         observation['metrics'] = summarize(observation['samples'])
+        # GPU — отдельная метрика v2 рядом с CPU, никогда не складывается с ним.
+        observation['gpu'] = summarize_gpu(observation['samples'][0], observation['samples'][-1])
+        observation['source_fps'] = source_fps(observation['media_probe'])
         observation['observer_cpu_percent'] = 100 * (observer_cpu_end - observer_cpu_start) / observer_elapsed
         for boundary_value in (observation['before'], observation['after']):
             window = boundary_value['window']

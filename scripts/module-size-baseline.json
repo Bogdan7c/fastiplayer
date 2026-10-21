@@ -42,7 +42,7 @@
     "crates/video-ffmpeg/src/codec_adapter.rs": 1103,
     "crates/video-ffmpeg/src/ffi/frame.rs": 961,
     "crates/video-present-core/src/lib.rs": 1000,
-    "crates/video-vaapi/src/decoder.rs": 1188,
+    "crates/video-vaapi/src/decoder.rs": 1197,
     "crates/video-vaapi/src/probe.rs": 813,
     "crates/video-vaapi/src/zero_copy_surface_pool.rs": 1335
   },

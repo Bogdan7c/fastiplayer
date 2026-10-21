@@ -19,6 +19,9 @@ files and publish only reviewed, anonymized evidence.
   render-event and VLC-counter readers. Fastiplayer MPRIS intentionally omits URLs.
 - `window_owner.c` queries XRes local client PID and window geometry, including VLC
   windows that do not expose `_NET_WM_PID`.
+- `make_matrix.py` generates the protocol-v2 scene matrix from one master and
+  verifies every file; `host.summarize_gpu` turns DRM fdinfo engine time into the
+  separate GPU metric.
 - `collect.py` owns attempt validation and persistence; `run_series.py` owns
   alternating repetitions and immutable plan/tool hashes; `analyze.py` owns
   per-scenario resource comparisons. `compare_snapshots.py` compares actual before/current
@@ -37,7 +40,7 @@ cc -Wall -Wextra -Werror -O2 docs/benchmarks/tools/local/window_owner.c \
   -lxcb -lxcb-res -o /absolute/artifact-directory/window-owner
 python3 -m unittest discover -s docs/benchmarks/tools/local -p 'test_*.py' -v
 python3 docs/benchmarks/tools/local/smoke.py /absolute/fastiplayer-spec.json /absolute/new-smoke \
-  --vlc-spec /absolute/vlc-spec.json
+  --reference-spec /absolute/mpv-spec.json
 python3 docs/benchmarks/tools/local/collect.py /absolute/spec.json /absolute/new-attempt
 python3 docs/benchmarks/tools/local/run_series.py /absolute/plan.json /absolute/new-series
 python3 docs/benchmarks/tools/local/analyze.py /absolute/new-series
@@ -124,6 +127,46 @@ The following rules apply before looking at scored results:
    crossing zero is uncertainty, not permission for additional memory. In session 00
    these measurements establish the baseline; they cannot prove absence of a future
    regression. Same-build repetitions report noise before optimization claims.
+
+## Measurement protocol, version 2
+
+Introduced 2026-10-21 for the CPU-parity hardware qualification (session 06 of
+`user/cpu-parity/`). Version 1 numbers above and in the 2026-09-08 baseline are
+**not recalculated**; a v1 and a v2 series are never mixed in one comparison
+(`compare_snapshots.py` already refuses different observer tool hashes).
+Everything not listed here is unchanged from version 1.
+
+| # | Version 1 | Version 2 | Reason |
+|---|---|---|---|
+| 3 | Reference: VLC `--intf dummy`, OpenGL, VA-API | Reference: **mpv** (`--no-config --hwdec=auto --fs --volume=0`, JSON IPC for properties; default OSC interface and `gpu-next` output). mpv keeps hardware decoding off by default; `hwdec=auto` is its documented way to enable it and the only deviation from defaults. The actual hwdec (on the Radeon 780M: `vulkan`, Vulkan Video on the same VCN block, zero-copy) is recorded from `hwdec-current` at both boundaries; `*-copy` and software decoding are rejected | Owner decision 2026-10-21: VLC 3.0.24 has no hardware AV1 decoding on this host (default dav1d is software; forcing avcodec fails), so it cannot be the reference for a four-codec hardware matrix. The earlier decision "VLC with Qt" is superseded. VLC support stays in the code for version 1 history |
+| 4 | VLC frames lost / buffers | mpv `frame-drop-count` + `decoder-frame-drop-count` deltas (must be 0), `vo-delayed-frame-count` recorded; mpv path + inode, `time-pos` progress, PipeWire stream running | Same evidence classes as v1 |
+| 3 | Fastiplayer codecs H.264, HEVC, AV1 | adds **VP9** (`VA-API VP9` backend proof) | Matrix covers four codecs |
+| 2 | GPU: memory counters only, N/A total | adds **GPU engine busy time** per player tree: `drm-engine-*` nanoseconds per DRM client from fdinfo, max over FD aliases, summed over clients present at both window ends, divided by the interval between those reads. Stored as a separate `gpu` block; never added to CPU | Session exit criterion "GPU gfx not above the reference player" |
+| 4–5 | Quiet and diagnostic both 3 → 6 → 9 pairs | **quiet only** follows 3 → 6 → 9 with the same stopping rule; diagnostic runs `diagnostic_repetitions` pairs (default 1) in the first round, used for the quality gate and as a descriptive observer control | Owner decision: 16-scene matrix; diagnostic CPU is never a published result |
+| 4 | Quality evidence inspected manually | **Automatic quality gate** after the diagnostic round: Fastiplayer unique `(PTS, render generation, decoded generation)` identities ≥ **99 %** of `source fps × log-window seconds`; the reference player's lost-frame counters (mpv drops; VLC `frames_lost` for v1) = 0 in every valid attempt. Any FAIL stops the series (exit 2) before CPU cohorts are completed. A scene without a Fastiplayer diagnostic count is NOT TESTED, never PASS | Owner decision: a CPU WIN with lost frames is not accepted |
+| 6–7 | WIN / WORSE / INCONCLUSIVE | unchanged statuses; quiet verdicts also carry `within_exit_band` = WIN, or INCONCLUSIVE with the whole interval inside ±0.5 percentage points. The same paired rule is applied separately to GPU gfx busy % (floor 0, nanosecond counter) | Session exit criterion; still **no PARITY** label |
+| — | All scenarios measure both players | a scenario may set `players` (e.g. `["fastiplayer"]` when the reference cannot play a profile on this host); its CPU verdict is NOT TESTED with the reason, measured 3 times descriptively | Main10/P010 profile |
+| plan | no version field | the plan must declare `"protocol_version": 2`; `collect.py` records `protocol_version` in every attempt | Prevents silent mixing |
+
+**Known limitation of version 2 (found in session 06).** Both players are made
+fullscreen by a KWin script, but mpv also enters fullscreen itself (`--fs`).
+Under XWayland, winit reports `window.fullscreen()` only for fullscreen set by the
+application, so Fastiplayer does not know it is fullscreen. It keeps its title
+bar and player controls visible and never auto-hides them, while mpv hides its
+OSC. Resource numbers therefore include Fastiplayer UI work a user would not see.
+Changing how Fastiplayer enters fullscreen is a protocol change (version 3)
+requiring an owner decision; see `user/cpu-parity/results/06.md`, diagnosis D2.
+
+Matrix media are generated by `make_matrix.py` from one owner-selected master
+(4 resolutions/frame rates × H.264/HEVC/AV1/VP9, "heavy but real-world" bitrates at
+the upper end of each codec level, 2-second GOP, 8-bit 4:2:0, AAC or Opus audio).
+The script verifies each output with ffprobe and writes `manifest.json` with hashes and
+actual bitrates. Media stay outside Git; reports publish the recipe and hashes.
+
+```sh
+python3 docs/benchmarks/tools/local/make_matrix.py /absolute/master-4k60.mp4 \
+  /absolute/benchmark-matrix --start 300 --duration 45 --jobs 4
+```
 
 Record OS/kernel/CPU/GPU/Mesa/libva/PipeWire/display protocol/mode, tool versions,
 AC/governor/EPP/background conditions, exact build command/toolchain/features,

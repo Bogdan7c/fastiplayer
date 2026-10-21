@@ -1,0 +1,26 @@
+# Квалификация HW против эталона (cpu-parity сессия 06, 2026-10-21) — протокол v2
+
+Отчёт: `user/cpu-parity/results/06.md`. Статус: ОСТАНОВЛЕНА на quality-gate (критерий выхода не выполнен), предложены сессии 06a/06b/06c (см. `user/cpu-parity/README.md`).
+
+## Инструменты (`docs/benchmarks/tools/local/`, README — протокол v1 и таблица diff v2)
+- Восстановлены байт-в-байт из осиротевшего merge-коммита PR #12 `09ab9060` (коммит `5c5a5f29`); зависят от `tools/t480s/{collect.py,fullscreen.py}` (render_events, KWin-фуллскрин).
+- `collect.py` — одна попытка (transient user systemd unit + cgroup tree CPU, RSS/PSS, DRM fdinfo, доказательства плеера); `PLAYER_COMMANDS` = vlc (v1 история) | mpv (эталон v2); `PROTOCOL_VERSION = 2`.
+- `evidence.py` — Fastiplayer: строка `VA-API codec adapter configured for stream backend_name="VA-API <codec>"` + `VA-API Vulkan DMA-BUF` + нет `ffmpeg-host-upload-wgpu`, MPRIS + inode, render handoff identities (diagnostic); mpv: JSON IPC (`mpv_properties`, ответы по `request_id`), `hwdec-current ∈ {vaapi, vulkan}` на обеих границах, `time-pos`, PipeWire stream running, дельты `frame-drop-count`/`decoder-frame-drop-count`/`vo-delayed-frame-count`.
+- `host.py` — `summarize_gpu`: `drm-engine-*` нс по client-ам, присутствующим на обеих границах, своя метка времени `drm_time`; отдельная метрика, не CPU. На 780M видеоблок VCN виден как движок `enc` даже при декодировании.
+- `analyze.py` — quiet: Student t=10 interval, `within_exit_band` (WIN или INCONCLUSIVE внутри ±0,5 п.п.), отдельный GPU gfx вердикт; diagnostic: `DESCRIPTIVE`; `quality_gates` (Fastiplayer ≥ 99 % от fps×log-окно; эталон 0 потерь; без diagnostic-подсчёта = NOT TESTED). Эталон когорты = единственный не-fastiplayer плеер.
+- `run_series.py` — план обязан иметь `protocol_version: 2`, 2 плеера (fastiplayer + эталон); quiet 3/6/9 с остановкой, diagnostic `diagnostic_repetitions` (1) в первом круге; FAIL quality-gate → exit 2; сцена с `players: ["fastiplayer"]` → NOT TESTED. Любая правка инструментов/бинарника/плана = новая серия (provenance-lock хэшей).
+- `make_matrix.py` — матрица 16 + `hevc10-4k60` из одного 4K60 мастера (отрезок 45 с), ffprobe-проверка, `manifest.json` (хэши, фактический битрейт), частичные запуски дополняют манифест, чужой мастер/отрезок отвергается до кодирования. SVT-AV1 нужен `undershoot-pct=0` (иначе −20–30 % битрейта).
+- Тесты: `python3 -m unittest discover -s docs/benchmarks/tools/local -p 'test_*.py'` (31; `test_protocol_v2.py`, `test_make_matrix.py` с настоящим ffmpeg), запускать вне sandbox (systemd-run, /dev/dri).
+
+## Эталон
+VLC 3.0.24 не умеет аппаратный AV1 на 780M (dav1d SW по умолчанию; `--codec=avcodec` → buffer deadlock) → решение владельца: эталон mpv 0.41 `--no-config --hwdec=auto --fs --volume=0` (выбирает Vulkan Video, `gpu-next`).
+
+## Метод/уроки
+- Серию запускать отвязанно (`setsid nohup` скрипт), ждать Monitor-ом по `series.log`; окна на весь экран ~1,5 ч — машину не трогать.
+- Фуллскрин-скрипт KWin под XWayland НЕ делает Fastiplayer «фуллскрин» для winit: панель/заголовок видимы (D2). Двойной клик по видео через виртуальную абсолютную мышь `/dev/uinput` (у пользователя есть права) включает наш фуллскрин и автоскрытие.
+- Быстрая разбивка по потокам — `tools/dev/run_pass.py` + `RUST_LOG=...,fastiplayer::render_frame_timing=trace` и подсчёт `frame_work_plan`/`ui_pass_reason`.
+
+## Диагнозы (для 06a/06b)
+- D1: `UiFrameModel::build` всегда включает `quantize_timeline_position` (пиксель ползунка) независимо от видимости таймлайна → ~25–28 полных egui-проходов/с на 45-с клипах даже со скрытой панелью; главный поток на 30 fps почти не дешевле 60 fps.
+- D2: см. выше; протокол v3 — решение владельца (uinput-клик, CLI `--fullscreen` или распознавание WM-фуллскрина под X11).
+- D3: повтор+пропуск на 60 fps (3/16 прогонов, любой кодек): выбор кадра `presentation_scheduler.rs` по `PTS ≤ часы + 0,5 кадра` без гистерезиса/vsync, latest-slot + слияние пробуждений UI.

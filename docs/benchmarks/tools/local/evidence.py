@@ -59,6 +59,42 @@ def opened_media(pid, media):
     raise ValueError('measured process does not hold the exact media inode')
 
 
+# Свойства mpv, читаемые на обеих границах окна. Счётчики потерь — те, что mpv сам
+# называет потерянными кадрами: VO (framedrop=vo) и декодер (framedrop=decoder).
+MPV_BOUNDARY_PROPERTIES = ('path', 'pause', 'time-pos', 'hwdec-current', 'video-codec', 'current-vo',
+                           'current-ao', 'frame-drop-count', 'decoder-frame-drop-count',
+                           'vo-delayed-frame-count')
+# Аппаратные hwdec без копирования кадра в память CPU; ``*-copy`` и ``no`` не засчитываются.
+MPV_ZERO_COPY_HWDEC = {'vaapi', 'vulkan'}
+
+
+def mpv_properties(socket_path, names):
+    """Читает свойства mpv через JSON IPC; отсутствующее свойство остаётся с ошибкой mpv.
+
+    Каждый запрос несёт свой ``request_id``: асинхронные события mpv в том же сокете
+    пропускаются, а не принимаются за ответ.
+    """
+    import socket
+    with socket.socket(socket.AF_UNIX) as control:
+        control.settimeout(2)
+        control.connect(str(socket_path))
+        for index, name in enumerate(names):
+            control.sendall((json.dumps({'command': ['get_property', name], 'request_id': index}) + '\n').encode())
+        replies, buffer = {}, b''
+        while len(replies) < len(names):
+            block = control.recv(65536)
+            if not block:
+                raise ValueError('mpv IPC closed before all replies')
+            buffer += block
+            *lines, buffer = buffer.split(b'\n')
+            for line in lines:
+                message = json.loads(line)
+                if 'request_id' in message:
+                    replies[names[message['request_id']]] = (message.get('data') if message.get('error') == 'success'
+                                                             else {'error': message.get('error')})
+    return replies
+
+
 def boundary(player, pid, socket_path, media, window_helper):
     started = time.monotonic()
     if player == 'fastiplayer':
@@ -76,6 +112,12 @@ def boundary(player, pid, socket_path, media, window_helper):
         media_matches = opened_media(pid, media)
         details = {'position_us': position, 'metadata': metadata, 'media_matches': media_matches,
                    'playback_status': command_output([*prefix, 'PlaybackStatus']).strip()}
+    elif player == 'mpv':
+        details = mpv_properties(socket_path, MPV_BOUNDARY_PROPERTIES)
+        # path подтверждает текущий вход mpv, inode — что это тот самый файл.
+        if details.get('path') != str(media):
+            raise ValueError('mpv current input does not match measured file')
+        details['media_matches'] = opened_media(pid, media)
     else:
         details = legacy.read_vlc_statistics(socket_path, 0)
         # oldrc status включает current input; argv/open FD сами по себе не доказывают playback.
@@ -110,7 +152,8 @@ def validate(player, codec, mode, log_path, before, after, start_offset, end_off
     if 'panicked at' in runtime or 'video output creation failed' in runtime:
         failures.append('runtime fatal marker')
     if player == 'fastiplayer':
-        expected = {'h264': 'VA-API H.264', 'hevc': 'VA-API H.265', 'av1': 'VA-API AV1'}[codec]
+        expected = {'h264': 'VA-API H.264', 'hevc': 'VA-API H.265', 'av1': 'VA-API AV1',
+                    'vp9': 'VA-API VP9'}[codec]
         backend = (f'configured for stream backend_name="{expected}"' in runtime
                    and 'VA-API Vulkan DMA-BUF' in runtime
                    and 'plan="ffmpeg-host-upload-wgpu"' not in runtime)
@@ -127,6 +170,9 @@ def validate(player, codec, mode, log_path, before, after, start_offset, end_off
                    'limitation': 'quiet has no cadence proof; MPRIS/audio-sink evidence is not audible PCM validation'}
         if mode == 'diagnostic' and (len(events) < 2 or len({e['pts_ns'] for e in events}) < 2):
             failures.append('no advancing render handoffs')
+    elif player == 'mpv':
+        backend, progress, audio, quality, extra = validate_mpv(before, after)
+        failures.extend(extra)
     else:
         backend = bool(re.search(r'Using .* for hardware decoding', runtime, re.I))
         if mode == 'diagnostic':
@@ -149,6 +195,33 @@ def validate(player, codec, mode, log_path, before, after, start_offset, end_off
         failures.append('audio progression evidence missing')
     return {'backend_confirmed': backend, 'playback_advancing': progress,
             'audio_evidence': audio, 'quality': quality, 'failures': failures}
+
+
+def validate_mpv(before, after):
+    """Доказательства mpv: zero-copy hwdec на обеих границах, ход времени, звук, потери.
+
+    Возвращает (backend, progress, audio, quality, failures). Пропавший счётчик потерь —
+    это failure, а не ноль: без него quality-gate эталона не доказан.
+    """
+    a, b = before['details'], after['details']
+    failures = []
+    backend = a.get('hwdec-current') in MPV_ZERO_COPY_HWDEC and b.get('hwdec-current') == a.get('hwdec-current')
+    progress = (isinstance(a.get('time-pos'), (int, float)) and isinstance(b.get('time-pos'), (int, float))
+                and b['time-pos'] > a['time-pos'] and a.get('pause') is False and b.get('pause') is False)
+    audio = bool(a.get('current-ao')) and all(
+        any(s['state'] == 'running' for s in boundary_value['audio_sinks']) for boundary_value in (before, after))
+    counters = ('frame-drop-count', 'decoder-frame-drop-count', 'vo-delayed-frame-count')
+    deltas = {}
+    for name in counters:
+        if not isinstance(a.get(name), int) or not isinstance(b.get(name), int):
+            failures.append(f'missing mpv counter {name}')
+            continue
+        deltas[name] = b[name] - a[name]
+        if deltas[name] < 0:
+            failures.append('mpv counters reset')
+    quality = {'kind': 'mpv_counters_not_handoff_or_scanout', 'deltas': deltas,
+               'hwdec': a.get('hwdec-current'), 'vo': a.get('current-vo')}
+    return backend, progress, audio, quality, failures
 
 
 def capture(directory, phase, pid, window_helper, display_size):

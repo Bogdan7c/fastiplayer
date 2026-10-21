@@ -47,6 +47,9 @@
 - Эффект: ffmpeg-MP4 с B-frame (video M=1328) и задержанным звуком (dwell) больше не идут с ~0,3 с рассинхрона; DASH/HLS fMP4 с `elst` — тоже. Риск: packager, пишущий и пустую правку, и `tfdt == S@t`, получит двойной сдвиг (по спецификации; образца нет).
 - Тесты: патч `src/edit_list/{tests,reader_tests}.rs` (синтетический MP4 `test_mp4.rs`), нейтральный `symphonia-demux/tests/edit_list_av_sync.rs` + фикстура `tests/fixtures/edit-list/audio-delayed-bframes.mp4` (4 КБ, `generate.sh`), DASH `web-media-dash/src/tests/priming_av.rs`. Inventory `docs/dependency-patches.toml` (owned areas, manual matrix, removal gate: upstream должен поддержать эти формы `elst`).
 
+## isomp4 `avcC`/`hvcC` > 1 КиБ (2026-10-21, cpu-parity 06)
+- Upstream-лимит 1 КиБ на AVC/HEVCDecoderConfigurationRecord заменён общим `atoms::limits::MAX_DECODER_CONFIGURATION_RECORD_SIZE` = 64 КиБ (ISO/IEC 14496-15 предела нет; x265 кладёт SEI с настройками в `hvcC`, ~2,5 КиБ — такие HEVC-MP4 от ffmpeg/HandBrake не открывались вовсе). Тесты: патч `src/atoms/decoder_configuration_tests.rs` (через `stsd`), сквозной `symphonia-demux/tests/hevc_x265_mp4.rs` + фикстура `tests/fixtures/hevc-x265/` (generate.sh). MKV-патч такого лимита не имеет. Внимание: `cargo fmt --manifest-path <patch>` переформатирует чужие файлы патча — откатывать их.
+
 ## Why Each Patch Is Still Needed
 
 - `symphonia-format-caf`: exact 0.6.0 replacement for S28C forward-only CAF. It stops initial chunk scan at `data` on non-seekable sources while preserving seekable full scan/seek-back, and exact-reads declared fixed/variable packets so structural truncation cannot become a short packet or clean EOS. Stream-friendly CAF must place `desc` and required codec configuration before `data`. Removal gate and tests live in `docs/dependency-patches.toml`; full proof: `mem:symphonia-demux/audio-containers-s28c-2026-07-22`.

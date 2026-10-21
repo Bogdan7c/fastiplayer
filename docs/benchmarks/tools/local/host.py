@@ -98,6 +98,11 @@ def sample(pid, cgroup):
             processes.append(read_process(member))
         except (FileNotFoundError, ProcessLookupError):
             vanished.append(member)
+    # GPU-счётчики читаются отдельно и получают свою метку времени: знаменатель
+    # занятости движков — интервал между этими чтениями, а не между CPU-чтениями.
+    drm_started = time.monotonic()
+    drm = {str(p['pid']): drm_clients(p['pid']) for p in processes}
+    drm_time = (drm_started + time.monotonic()) / 2
     return {'started': started, 'ended': time.monotonic(), 'process': primary,
             'cgroup_cpu': group_cpu, 'processes': processes, 'vanished_members': vanished,
             'rss_sum_kib': sum(p['memory_kib']['Rss'] for p in processes),
@@ -105,7 +110,7 @@ def sample(pid, cgroup):
             'cgroup_memory_current': optional_text(cgroup / 'memory.current'),
             'cgroup_memory_peak': optional_text(cgroup / 'memory.peak'),
             'cgroup_memory_stat': optional_text(cgroup / 'memory.stat'),
-            'conditions': conditions(), 'drm': {str(p['pid']): drm_clients(p['pid']) for p in processes}}
+            'conditions': conditions(), 'drm': drm, 'drm_time': drm_time}
 
 
 def probe_media(path, expected_hash, warmup, duration):
@@ -122,17 +127,26 @@ def probe_media(path, expected_hash, warmup, duration):
     return probe
 
 
+def source_fps(probe):
+    """Номинальная частота кадров первого видеопотока из ffprobe (r_frame_rate)."""
+    video = next(s for s in probe['streams'] if s['codec_type'] == 'video')
+    numerator, denominator = (int(part) for part in video['r_frame_rate'].split('/'))
+    if numerator <= 0 or denominator <= 0:
+        raise ValueError('media has no nominal frame rate')
+    return numerator / denominator
+
+
 def drm_clients(pid):
     """FD aliases дедуплицируются по DRM device/client; между clients не суммируем.
 
     Один DMA-BUF может быть импортирован разными clients. fdinfo не раскрывает
     достаточную allocation topology для корректного общего GPU total.
     """
-    clients, errors = {}, []
+    clients, engines, errors = {}, {}, []
     try:
         descriptors = list(Path(f'/proc/{pid}/fdinfo').iterdir())
     except (FileNotFoundError, ProcessLookupError) as error:
-        return {'clients_not_additive': {}, 'observation_errors': [str(error)],
+        return {'clients_not_additive': {}, 'engine_busy_ns': {}, 'observation_errors': [str(error)],
                 'total': None, 'total_status': 'N/A: process exited during observation'}
     for descriptor in descriptors:
         try:
@@ -146,9 +160,54 @@ def drm_clients(pid):
             if key in clients and clients[key] != counters:
                 errors.append(f'client {key}: counters changed between alias reads')
             clients[key] = counters
+            # Протокол v2: накопленное время занятости движков GPU (drm-engine-*, нс)
+            # на client. Это время, а не память: между alias одного client-а оно
+            # растёт само, поэтому берём максимум из прочитанных alias, а не
+            # объявляем расхождение ошибкой. Разные clients не делят время движка,
+            # их суммирует только summarize_gpu (в отличие от памяти).
+            busy = engines.setdefault(key, {})
+            for name, value in fields.items():
+                if name.startswith('drm-engine-') and value.strip().endswith(' ns'):
+                    engine = name[len('drm-engine-'):]
+                    busy[engine] = max(busy.get(engine, 0), int(value.split()[0]))
         except (FileNotFoundError, ProcessLookupError):
             errors.append('fd disappeared during DRM observation')
         except PermissionError as error:
             errors.append(str(error))
-    return {'clients_not_additive': clients, 'observation_errors': errors,
+    return {'clients_not_additive': clients, 'engine_busy_ns': engines, 'observation_errors': errors,
             'total': None, 'total_status': 'N/A: cross-client shared allocations are not identifiable'}
+
+
+def summarize_gpu(first, last):
+    """Занятость движков GPU деревом процессов за окно, % времени одного движка.
+
+    Отдельная метрика протокола v2, никогда не смешивается с CPU. Время движка
+    считается по clients, существовавшим и в первом, и в последнем sample:
+    client, открытый внутри окна, не имеет начальной точки и не учитывается
+    (это записывается в ``clients_without_window_start``), а закрытый внутри
+    окна теряет свою долю — оба случая для установившегося воспроизведения
+    исключение, но не скрываются. Знаменатель — интервал между чтениями.
+    """
+    def by_client(sample_value):
+        merged = {}
+        for process in sample_value['drm'].values():
+            for client, busy in process.get('engine_busy_ns', {}).items():
+                merged.setdefault(client, {}).update(busy)
+        return merged
+
+    start, end = by_client(first), by_client(last)
+    elapsed = last['drm_time'] - first['drm_time']
+    if elapsed <= 0:
+        raise ValueError('invalid GPU observation interval')
+    totals = {}
+    for client in start.keys() & end.keys():
+        for engine, value in end[client].items():
+            delta = value - start[client].get(engine, 0)
+            if delta < 0:
+                raise ValueError(f'GPU engine counter decreased for client {client}')
+            totals[engine] = totals.get(engine, 0) + delta
+    return {'engine_busy_percent': {engine: 100 * ns / 1e9 / elapsed for engine, ns in sorted(totals.items())},
+            'window_seconds': elapsed, 'clients': len(start.keys() & end.keys()),
+            'clients_without_window_start': sorted(end.keys() - start.keys()),
+            'clients_closed_in_window': sorted(start.keys() - end.keys()),
+            'scope': 'DRM fdinfo of player process tree; not compositor, not whole-GPU'}
