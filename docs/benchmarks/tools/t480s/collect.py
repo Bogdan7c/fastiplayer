@@ -26,8 +26,16 @@ def power_conditions():
     """Обезличенные доступные power/thermal значения; никаких device IDs."""
     result = {'thermal_zones': []}
     for zone in sorted(Path('/sys/class/thermal').glob('thermal_zone*')):
-        result['thermal_zones'].append({'type': (zone / 'type').read_text().strip(),
-                                        'millidegrees_celsius': int((zone / 'temp').read_text())})
+        entry: dict[str, object] = {'type': (zone / 'type').read_text().strip()}
+        # Драйвер может держать зону без данных (например, iwlwifi отвечает
+        # ENODATA при выключенном радио). Это наблюдение условий, а не причина
+        # терять attempt: значение сохраняется явно недоступным с причиной.
+        try:
+            entry['millidegrees_celsius'] = int((zone / 'temp').read_text())
+        except OSError as error:
+            entry['millidegrees_celsius'] = None
+            entry['unavailable'] = error.strerror or type(error).__name__
+        result['thermal_zones'].append(entry)
     for label, path in {
         'governor': '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor',
         'energy_performance_preference': '/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference',
