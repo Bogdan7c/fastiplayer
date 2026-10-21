@@ -11,6 +11,7 @@ use symphonia_core::codecs::video::VideoExtraData;
 use symphonia_core::codecs::video::well_known::CODEC_ID_HEVC;
 use symphonia_core::codecs::video::well_known::extra_data::VIDEO_EXTRA_DATA_ID_HEVC_DECODER_CONFIG;
 
+use crate::atoms::limits::MAX_DECODER_CONFIGURATION_RECORD_SIZE;
 use crate::atoms::stsd::VisualSampleEntry;
 use crate::atoms::{Atom, AtomHeader, AtomIterator, ReadAtom, Result, decode_error};
 
@@ -25,13 +26,12 @@ pub struct HvcCAtom {
 
 impl Atom for HvcCAtom {
     fn read<R: ReadAtom>(it: &mut AtomIterator<R>, header: &AtomHeader) -> Result<Self> {
-        const MAX_HVCC_ATOM_SIZE: u64 = 1 * 1024;
-
         // The HEVCConfiguration atom payload is a single HEVCDecoderConfigurationRecord. This
-        // record forms the defacto codec extra data. It should not exceed 1 kB.
+        // record forms the defacto codec extra data. Fastiplayer: см. `limits` — запись с SEI
+        // от x265 больше 1 КиБ, поэтому лимит общий для avcC/hvcC и выше upstream.
         let len = match header.data_size() {
-            Some(len) if len <= MAX_HVCC_ATOM_SIZE => len as usize,
-            Some(_) => return decode_error("isomp4 (hvcC): atom size is greater than 1 kb"),
+            Some(len) if len <= MAX_DECODER_CONFIGURATION_RECORD_SIZE => len as usize,
+            Some(_) => return decode_error("isomp4 (hvcC): atom size is greater than 64 KiB"),
             None => return decode_error("isomp4 (hvcC): expected atom size to be known"),
         };
 

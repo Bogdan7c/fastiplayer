@@ -20,6 +20,16 @@ pub mod limits {
     /// The maximum capacity a table vector may be pre-allocated. This limit prevents malicious
     /// files from exhausting a system's memory by stating an excessively large table length.
     pub const MAX_TABLE_INITIAL_CAPACITY: usize = 1024;
+
+    /// Fastiplayer: потолок размера `avcC`/`hvcC` (AVC/HEVCDecoderConfigurationRecord).
+    ///
+    /// Upstream ограничивал запись 1 КиБ («should not exceed 1 kB»), но ISO/IEC 14496-15
+    /// такого предела не задаёт: запись несёт массивы VPS/SPS/PPS/SEI с 16-битными длинами.
+    /// x265 (и всё, что его использует: ffmpeg, HandBrake) кладёт в `hvcC` SEI со строкой
+    /// своих настроек, и реальные файлы весят ~2,5 КиБ — с лимитом 1 КиБ такой HEVC-в-MP4
+    /// не открывался вовсе. 64 КиБ — с запасом выше реальных записей, но по-прежнему
+    /// не даёт битому заголовку с огромным размером заставить нас выделить много памяти.
+    pub const MAX_DECODER_CONFIGURATION_RECORD_SIZE: u64 = 64 * 1024;
 }
 
 pub(crate) mod alac;
@@ -1171,3 +1181,6 @@ impl<R: ReadAtom> AtomIterator<R> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod decoder_configuration_tests;

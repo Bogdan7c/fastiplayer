@@ -11,6 +11,7 @@ use symphonia_core::codecs::video::VideoExtraData;
 use symphonia_core::codecs::video::well_known::CODEC_ID_H264;
 use symphonia_core::codecs::video::well_known::extra_data::VIDEO_EXTRA_DATA_ID_AVC_DECODER_CONFIG;
 
+use crate::atoms::limits::MAX_DECODER_CONFIGURATION_RECORD_SIZE;
 use crate::atoms::stsd::VisualSampleEntry;
 use crate::atoms::{Atom, AtomHeader, AtomIterator, ReadAtom, Result, decode_error};
 
@@ -25,14 +26,13 @@ pub struct AvcCAtom {
 impl Atom for AvcCAtom {
     fn read<R: ReadAtom>(it: &mut AtomIterator<R>, header: &AtomHeader) -> Result<Self> {
         // TODO: Validate.
-        const MAX_AVCC_ATOM_SIZE: u64 = 1 * 1024;
-
         // The AVCConfiguration atom payload is a single AVCDecoderConfigurationRecord. This record
-        // forms the defacto codec extra data. It should not exceed 1 kB.
+        // forms the defacto codec extra data. Fastiplayer: лимит общий с hvcC (см. `limits`):
+        // SPS/PPS имеют 16-битные длины, 1 КиБ upstream — не требование стандарта.
         let len = match header.data_size() {
-            Some(len) if len <= MAX_AVCC_ATOM_SIZE => len as usize,
+            Some(len) if len <= MAX_DECODER_CONFIGURATION_RECORD_SIZE => len as usize,
             Some(_) => {
-                return decode_error("isomp4 (avcC): atom size is greater than 1 kb");
+                return decode_error("isomp4 (avcC): atom size is greater than 64 KiB");
             }
             None => {
                 return decode_error("isomp4 (avcC): expected atom size to be known");
