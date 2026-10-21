@@ -8,6 +8,12 @@ import subprocess
 import time
 
 
+# Версия протокола замера (README, «Measurement protocol»): её пишет collector в каждую
+# попытку, требует план серии и сообщает сводка анализа. v3 (cpu-parity 06b): Fastiplayer
+# входит в фуллскрин сам, флагом `--fullscreen`.
+PROTOCOL_VERSION = 3
+
+
 def command_output(command):
     try:
         completed = subprocess.run(command, capture_output=True, text=True, timeout=15)

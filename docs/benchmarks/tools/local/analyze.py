@@ -11,7 +11,7 @@ import math
 from pathlib import Path
 import statistics
 
-from host import write_json
+from host import PROTOCOL_VERSION, write_json
 
 LOOKS = (3, 6, 9)
 # Критерий выхода сессии 06: INCONCLUSIVE засчитывается, только если весь интервал
@@ -192,7 +192,7 @@ def analyze(root):
                        'resource_verdict': verdict,
                        'gpu_gfx_verdict': gpu_verdict, 'players': players, 'equal_quality': 'NOT ESTABLISHED',
                        'invalid_attempts': [a['failures'] for a in cohort if a['status'] == 'INVALID']})
-    return {'protocol_version': 2, 'cohorts': output, 'quality_gates': quality_gates(attempts)}
+    return {'protocol_version': PROTOCOL_VERSION, 'cohorts': output, 'quality_gates': quality_gates(attempts)}
 
 
 def main():

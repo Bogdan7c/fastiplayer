@@ -49,14 +49,18 @@ def isolated_env(attempt_root):
     return environment
 
 
-def build_command(player, mode, media, attempt_root, environment, vlc_intf, binary):
-    """Командная строка плеера; конфиг Fastiplayer копируется из шаблона t480s."""
+def build_command(player, mode, media, attempt_root, environment, vlc_intf, binary, fastiplayer_args):
+    """Командная строка плеера; конфиг Fastiplayer копируется из шаблона t480s.
+
+    ``fastiplayer_args`` — опции Fastiplayer перед файлом (например ``--fullscreen``,
+    как в протоколе v3); у VLC не используются.
+    """
     if player == "fastiplayer":
         config_dir = attempt_root / "config" / "fastiplayer"
         config_dir.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(HW_TEMPLATE if mode == "hw" else SW_TEMPLATE, config_dir / "config.toml")
         environment.setdefault("RUST_LOG", "info")
-        return [str(binary), str(media)]
+        return [str(binary), *fastiplayer_args, str(media)]
     command = ["vlc", "--ignore-config", "--no-one-instance", "--gain=0",
                "--no-video-title-show", f"--avcodec-hw={'vaapi' if mode == 'hw' else 'none'}"]
     if vlc_intf == "dummy":
@@ -64,7 +68,8 @@ def build_command(player, mode, media, attempt_root, environment, vlc_intf, bina
     return command + [str(media)]
 
 
-def run_attempt(label, player, mode, media, out_dir, warmup, duration, vlc_intf, extra_env, binary):
+def run_attempt(label, player, mode, media, out_dir, warmup, duration, vlc_intf, extra_env, binary,
+                fastiplayer_args):
     attempt_root = out_dir / label
     if attempt_root.exists():
         shutil.rmtree(attempt_root)
@@ -72,7 +77,8 @@ def run_attempt(label, player, mode, media, out_dir, warmup, duration, vlc_intf,
     preread(media)
     environment = isolated_env(attempt_root)
     environment.update(extra_env)
-    command = build_command(player, mode, media, attempt_root, environment, vlc_intf, binary)
+    command = build_command(player, mode, media, attempt_root, environment, vlc_intf, binary,
+                            fastiplayer_args)
     with open(attempt_root / "player.log", "wb") as log:
         process = subprocess.Popen(command, env=environment, stdout=log, stderr=subprocess.STDOUT,
                                    cwd=str(attempt_root), start_new_session=True)
@@ -107,6 +113,8 @@ def main():
     parser.add_argument("--warmup", type=float, default=15)
     parser.add_argument("--duration", type=float, default=20)
     parser.add_argument("--env", action="append", default=[], help="KEY=VALUE для плеера, например RUST_LOG=...")
+    parser.add_argument("--fastiplayer-arg", action="append", default=[], dest="fastiplayer_args",
+                        help="опция Fastiplayer перед файлом, например --fastiplayer-arg=--fullscreen")
     arguments = parser.parse_args()
 
     media = {
@@ -130,7 +138,7 @@ def main():
         if not path.is_file():
             parser.error(f"media file not found: {path}")
         run_attempt(label, player, mode, path, arguments.out, arguments.warmup, arguments.duration,
-                    vlc_intf, extra_env, arguments.binary)
+                    vlc_intf, extra_env, arguments.binary, tuple(arguments.fastiplayer_args))
         time.sleep(2)
 
 

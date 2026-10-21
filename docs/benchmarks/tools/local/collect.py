@@ -13,7 +13,8 @@ import time
 import tempfile
 
 import evidence
-from host import cpu_percent, probe_media, sample, sha256, source_fps, summarize_gpu, write_json
+from host import (PROTOCOL_VERSION, cpu_percent, probe_media, sample, sha256, source_fps,
+                  summarize_gpu, write_json)
 from service import MeasuredService, isolated_environment
 
 
@@ -35,10 +36,6 @@ def summarize(samples):
         values = [s[metric] for s in samples]
         result[metric] = {'mean': statistics.mean(values), 'sampled_max': max(values), 'minimum': min(values)}
     return result
-
-
-# Версия протокола, которую реализует этот collector (README, «Measurement protocol»).
-PROTOCOL_VERSION = 2
 
 
 def vlc_command(binary, socket_path, mode, media):
@@ -67,6 +64,18 @@ def mpv_command(binary, socket_path, mode, media):
     """
     return [str(binary), '--no-config', '--hwdec=auto', '--fs', '--volume=0',
             f'--input-ipc-server={socket_path}', *(['-v'] if mode == 'diagnostic' else []), str(media)]
+
+
+def fastiplayer_command(binary, media):
+    """Командная строка Fastiplayer по протоколу v3 (cpu-parity 06b, решение владельца).
+
+    ``--fullscreen`` — аналог ``mpv --fs``: плеер сам входит в фуллскрин тем же путём, что
+    кнопка, поэтому автоскрытие панели работает, как у пользователя. В v1/v2 окно делал
+    полноэкранным только скрипт KWin, а под XWayland winit такой фуллскрин не видит:
+    заголовок и панель оставались на экране (диагноз D2 сессии 06). Скрипт KWin остаётся
+    у обоих плееров и в v3 — он же подтверждает, что окно на весь экран.
+    """
+    return [str(binary), '--fullscreen', str(media)]
 
 
 PLAYER_COMMANDS = {'vlc': vlc_command, 'mpv': mpv_command}
@@ -112,7 +121,7 @@ def collect(spec, directory):
         control_directory = tempfile.TemporaryDirectory(prefix='fi-bench-', dir=os.environ['XDG_RUNTIME_DIR'])
         socket_path = Path(control_directory.name) / 'rc'
         observation['control_socket'] = str(socket_path)
-        command = [str(binary), str(media)] if player == 'fastiplayer' else PLAYER_COMMANDS[player](
+        command = fastiplayer_command(binary, media) if player == 'fastiplayer' else PLAYER_COMMANDS[player](
             binary, socket_path, mode, media)
         observation['command'] = command
         observation['environment'] = environment

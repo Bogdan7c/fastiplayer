@@ -14,7 +14,7 @@ import subprocess
 import sys
 
 from analyze import LOOKS, analyze
-from host import sha256, write_json
+from host import PROTOCOL_VERSION, sha256, write_json
 
 
 
@@ -53,8 +53,8 @@ def run_series(plan_path, root):
     root.mkdir(parents=True, exist_ok=True)
     lock = root / 'plan.json'
     plan = json.loads(plan_path.read_text())
-    if plan.get('protocol_version') != 2:
-        raise ValueError('plan must declare protocol_version 2')
+    if plan.get('protocol_version') != PROTOCOL_VERSION:
+        raise ValueError(f'plan must declare protocol_version {PROTOCOL_VERSION}')
     if lock.exists() and json.loads(lock.read_text()) != plan:
         raise ValueError('plan changed: use a new series directory')
     if not lock.exists():

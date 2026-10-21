@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 import analyze
-from collect import mpv_command, vlc_command
+from collect import fastiplayer_command, mpv_command, vlc_command
 import evidence
 from host import drm_clients, summarize_gpu
 import run_series
@@ -40,7 +40,7 @@ class SeriesStoppingTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
-        plan = {'protocol_version': 2, 'diagnostic_repetitions': 1, 'common': {},
+        plan = {'protocol_version': 3, 'diagnostic_repetitions': 1, 'common': {},
                 'players': {'fastiplayer': {}, 'mpv': {}},
                 'scenarios': [s if isinstance(s, dict) else {'scenario': s} for s in scenarios]}
         (root / 'plan-input.json').write_text(json.dumps(plan))
@@ -251,6 +251,25 @@ class MpvEvidenceTests(unittest.TestCase):
         self.assertIn('--input-ipc-server=/run/ipc', command)
         self.assertNotIn('-v', command)
         self.assertIn('-v', mpv_command('/usr/bin/mpv', Path('/run/ipc'), 'diagnostic', Path('/media.mp4')))
+
+
+class FastiplayerCommandTests(unittest.TestCase):
+    def test_version_three_fastiplayer_enters_fullscreen_itself(self):
+        command = fastiplayer_command('/opt/fastiplayer', Path('/media.mp4'))
+        # Флаг стоит до файла: после файла он тоже сработал бы, но так порядок как у mpv.
+        self.assertEqual(command, ['/opt/fastiplayer', '--fullscreen', '/media.mp4'])
+
+
+class ProtocolVersionTests(unittest.TestCase):
+    def test_plan_of_previous_protocol_is_rejected_before_any_attempt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = {'protocol_version': 2, 'diagnostic_repetitions': 1, 'common': {},
+                    'players': {'fastiplayer': {}, 'mpv': {}}, 'scenarios': []}
+            (root / 'plan.json').write_text(json.dumps(plan))
+            with self.assertRaisesRegex(ValueError, 'protocol_version 3'):
+                run_series.run_series(root / 'plan.json', root / 'series')
+            self.assertFalse((root / 'series/attempts').exists())
 
 
 class VlcCommandTests(unittest.TestCase):
