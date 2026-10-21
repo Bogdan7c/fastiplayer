@@ -87,6 +87,7 @@ pub(crate) use media_retry::{
 pub(crate) use media_retry::{MediaRetryTarget, RetryPlan};
 mod playlist_attachment;
 mod playlist_transport;
+mod position_wake;
 mod preparation_cancel;
 pub(crate) use playlist_transport::LifecycleTimelineSeekSettlement;
 #[cfg(test)]

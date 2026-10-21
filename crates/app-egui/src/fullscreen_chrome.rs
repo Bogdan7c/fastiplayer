@@ -138,6 +138,34 @@ pub(crate) struct ChromePresentation {
     pub(crate) cursor: CursorVisibility,
 }
 
+/// Видит ли пользователь панели chrome (заголовок и нижнюю панель с таймлайном).
+///
+/// Это факт владельца автоскрытия, а не геометрии: другие модули (UI-модель кадра,
+/// дедлайны позиции) спрашивают его здесь, а не сравнивают `hidden_fraction` сами.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChromePanelsOnScreen {
+    /// Панели на месте или ещё едут: то, что на них нарисовано, видно хотя бы частично.
+    Shown,
+    /// Панели целиком за краем экрана: их содержимое (время, ползунок) не видно.
+    OffScreen,
+}
+
+impl ChromePresentation {
+    /// Видны ли панели в этом кадре.
+    ///
+    /// `OffScreen` — только когда уезд закончен: `eased_progress` на закрытом конце равен
+    /// ровно `0.0`, поэтому `hidden_fraction` становится ровно `1.0`. Во время анимации
+    /// (в обе стороны) панели считаются видимыми — их содержимое должно быть актуальным.
+    #[must_use]
+    pub(crate) fn panels_on_screen(self) -> ChromePanelsOnScreen {
+        if self.hidden_fraction >= 1.0 {
+            ChromePanelsOnScreen::OffScreen
+        } else {
+            ChromePanelsOnScreen::Shown
+        }
+    }
+}
+
 /// Ввод одного кадра для [`FullscreenChromeController::advance`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChromeFrameInput {

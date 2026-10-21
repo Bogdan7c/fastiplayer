@@ -6,6 +6,13 @@
 //! позиция здесь квантуется ([`QuantizedTimelinePosition`]), а поля, не влияющие на картинку
 //! (очереди, диагностика, счётчики), в модель не входят.
 //!
+//! Позиция входит в модель, только пока её видно (cpu-parity, сессия 06b): время и ползунок
+//! рисуются лишь на нижней панели, и когда автоскрытие фуллскрина увело её за край экрана,
+//! позиция становится [`VisibleTimelinePosition::OffScreen`] и перестаёт менять модель.
+//! Иначе невидимый ползунок давал полный egui-проход почти на каждом кадре. Другие места,
+//! где видна позиция, её в модели не требуют: телеметрия обновляет строки своим ритмом
+//! (250 мс), подсказка над таймлайном показывает время под курсором, а не позицию.
+//!
 //! Что сюда НЕ входит и почему это безопасно:
 //! - содержимое дорожек, качества, ошибки, медиа — меняются только вместе с событиями плеера,
 //!   а события всегда дают полный проход (`UiPassReasons::player_events`);
@@ -25,7 +32,7 @@ use player_core::{MediaInstanceId, PlaybackState, PlayerSnapshot, TrackSelection
 
 use super::notifications::NotificationsFrame;
 use super::sidebar_controller::{SidebarContentTransition, SidebarSection};
-use crate::fullscreen_chrome::ChromePresentation;
+use crate::fullscreen_chrome::{ChromePanelsOnScreen, ChromePresentation};
 use crate::playlist_runtime::{
     PendingPlaylistConfirmation, PlaylistImportPreview, PlaylistInteractionModel,
     PlaylistTransportUiModel, PlaylistUndoUiSnapshot, PlaylistViewRevision,
@@ -50,6 +57,35 @@ pub(crate) struct QuantizedTimelinePosition {
     pub(crate) whole_seconds: u64,
     /// Номер пикселя ползунка (`floor(fraction × ширина дорожки)`); `None` без дорожки.
     pub(crate) slider_step: Option<u64>,
+}
+
+/// Позиция в UI-модели кадра: квантованная, если её видно, иначе — «за экраном».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VisibleTimelinePosition {
+    /// Нижняя панель на экране (или едет): секунда текста и пиксель ползунка видны.
+    Shown(QuantizedTimelinePosition),
+    /// Нижняя панель целиком скрыта автоскрытием: позиция картинку не меняет.
+    OffScreen,
+}
+
+impl VisibleTimelinePosition {
+    /// Позиция так, как её сейчас видит пользователь.
+    ///
+    /// Факт видимости берётся у владельца автоскрытия ([`ChromePanelsOnScreen`]), а не
+    /// вычисляется здесь заново. В окне панели всегда `Shown`.
+    #[must_use]
+    pub(crate) fn observe(
+        panels: ChromePanelsOnScreen,
+        timeline: &TimelineSnapshot,
+        track_width_px: Option<u32>,
+    ) -> Self {
+        match panels {
+            ChromePanelsOnScreen::Shown => {
+                Self::Shown(quantize_timeline_position(timeline, track_width_px))
+            }
+            ChromePanelsOnScreen::OffScreen => Self::OffScreen,
+        }
+    }
 }
 
 /// Поля `TimelineSnapshot`, влияющие на картинку (без непрерывной позиции).
@@ -153,7 +189,7 @@ pub(crate) struct UiFrameModel {
     pub(crate) media_instance_id: Option<MediaInstanceId>,
     pub(crate) render_generation: u64,
     pub(crate) duration: Option<Duration>,
-    pub(crate) position: QuantizedTimelinePosition,
+    pub(crate) position: VisibleTimelinePosition,
     pub(crate) timeline: TimelineVisualKey,
     pub(crate) timeline_ui_state: TimelineUiState,
     pub(crate) timeline_inline_status: Option<&'static str>,
@@ -209,7 +245,8 @@ impl UiFrameModel {
             media_instance_id: snapshot.media_instance_id,
             render_generation: snapshot.render_generation,
             duration: snapshot.duration,
-            position: quantize_timeline_position(
+            position: VisibleTimelinePosition::observe(
+                app.chrome.panels_on_screen(),
                 &snapshot.timeline,
                 player.timeline_track_width_px,
             ),
@@ -511,3 +548,6 @@ mod tests {
         assert!(!settled.any_toast_fading_in(fade_in));
     }
 }
+
+#[cfg(test)]
+mod visibility_tests;

@@ -20,12 +20,13 @@ use render_wgpu_shell::{RenderScreenDescriptor, WindowCornerMask};
 use winit::window::Window;
 
 use super::AppState;
+use super::position_wake::{PositionWakeFacts, PositionWakeTracker};
 use super::present_frame_cache::PresentFrameChange;
 use super::startup_context::player_presentation_wake_bridge;
 use super::telemetry_panel::TELEMETRY_PANEL_REFRESH_INTERVAL;
 use super::ui_frame_model::{
-    AppVisualFacts, PlayerVisualFacts, PlaylistVisualKey, QuantizedTimelinePosition,
-    SidebarVisualKey, UiFrameModel, WindowFacts, next_visible_position_change,
+    AppVisualFacts, PlayerVisualFacts, PlaylistVisualKey, SidebarVisualKey, UiFrameModel,
+    VisibleTimelinePosition, WindowFacts,
 };
 use crate::app_wake::{AppWakeOwner, AppWakePort};
 use crate::frame_prepare::PresentReasons;
@@ -119,39 +120,6 @@ pub(crate) struct RetainedUiGeometry {
     pub(crate) window_corner_mask: WindowCornerMask,
 }
 
-/// Память последнего дедлайна позиции: защита от холостого спина, когда snapshot ещё не
-/// догнал границу секунды/пикселя (позиция в snapshot-е обновляется только тиком worker-а).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PositionWakeMemory {
-    /// Квантованная позиция, для которой считался дедлайн.
-    position: QuantizedTimelinePosition,
-    /// Сам дедлайн.
-    deadline: Instant,
-}
-
-/// Нижняя граница ожидания, если дедлайн позиции прошёл, а snapshot не изменился.
-const POSITION_STALE_BACKOFF: Duration = Duration::from_millis(8);
-
-/// Дедлайн позиции с учётом «snapshot ещё не догнал границу».
-///
-/// Если предыдущий дедлайн уже прошёл, а квантованная позиция та же, значит worker ещё не
-/// опубликовал новую позицию: ждём его тик (длительность кадра, не меньше
-/// [`POSITION_STALE_BACKOFF`]), а не считанные миллисекунды до «той же» границы снова.
-fn position_wake_with_backoff(
-    previous: Option<PositionWakeMemory>,
-    current: QuantizedTimelinePosition,
-    computed: Instant,
-    frame_duration: Duration,
-    now: Instant,
-) -> Instant {
-    match previous {
-        Some(previous) if previous.position == current && now >= previous.deadline => {
-            now + frame_duration.max(POSITION_STALE_BACKOFF)
-        }
-        _ => computed,
-    }
-}
-
 /// Состояние решения о перерисовке; одно поле `AppState`.
 pub(crate) struct RedrawRuntime {
     /// Порт владельца `PlayerPresentation`; worker будит его через bridge.
@@ -166,8 +134,8 @@ pub(crate) struct RedrawRuntime {
     retained_ui_geometry: Option<RetainedUiGeometry>,
     /// Момент последнего полного прохода (ритм обновления панели телеметрии).
     last_full_pass_at: Option<Instant>,
-    /// Последний дедлайн позиции и позиция, для которой он считался.
-    position_wake: Option<PositionWakeMemory>,
+    /// Дедлайн следующего видимого изменения позиции и его память.
+    position_wake: PositionWakeTracker,
     /// Память follow-up redraw-ов ради ждущего кадра плеера (сессия 06a).
     waiting_frame_follow_up: WaitingFrameFollowUpMemory,
 }
@@ -211,7 +179,7 @@ impl RedrawRuntime {
             last_ui_frame_model: None,
             retained_ui_geometry: None,
             last_full_pass_at: None,
-            position_wake: None,
+            position_wake: PositionWakeTracker::default(),
             waiting_frame_follow_up: WaitingFrameFollowUpMemory::default(),
         }
     }
@@ -419,28 +387,22 @@ impl AppState {
     }
 
     /// Когда позиция в следующий раз изменит картинку (секунда текста / пиксель ползунка),
-    /// с защитой от спина на не догнавшем границу snapshot-е.
+    /// с защитой от спина на не догнавшем границу snapshot-е. Позиция за экраном
+    /// (нижняя панель скрыта автоскрытием) дедлайна не даёт.
     #[must_use]
     pub(crate) fn next_position_wake_deadline(
         &mut self,
         player_snapshot: &PlayerSnapshot,
-        quantized_position: QuantizedTimelinePosition,
+        visible_position: VisibleTimelinePosition,
         now: Instant,
     ) -> Option<Instant> {
-        let computed =
-            next_visible_position_change(player_snapshot, self.timeline_track_width_px(), now)?;
-        let deadline = position_wake_with_backoff(
-            self.redraw.position_wake,
-            quantized_position,
-            computed,
-            player_snapshot.video_frame_duration_estimate,
+        let track_width_px = self.timeline_track_width_px();
+        self.redraw.position_wake.next_deadline(PositionWakeFacts {
+            snapshot: player_snapshot,
+            position: visible_position,
+            track_width_px,
             now,
-        );
-        self.redraw.position_wake = Some(PositionWakeMemory {
-            position: quantized_position,
-            deadline,
-        });
-        Some(deadline)
+        })
     }
 
     /// Причины показать кадр независимо от интерфейса. Read-only: кэш кадра не трогается.
@@ -512,69 +474,6 @@ mod tests {
         let taken = sink.take();
         assert!(taken.immediate);
         assert_eq!(sink.peek(), EguiRepaintRequest::default());
-    }
-
-    /// Дедлайн позиции: обычно — вычисленная граница; если прошлый дедлайн прошёл, а snapshot
-    /// не изменился, — ожидание тика worker-а, не меньше 8 мс (иначе спин по 1 мс).
-    #[test]
-    fn position_wake_backs_off_while_snapshot_lags_behind_the_boundary() {
-        let now = Instant::now();
-        let position = QuantizedTimelinePosition {
-            whole_seconds: 12,
-            slider_step: Some(120),
-        };
-        let other_position = QuantizedTimelinePosition {
-            whole_seconds: 12,
-            slider_step: Some(121),
-        };
-        let computed = now + Duration::from_millis(1);
-        let frame_duration = Duration::from_millis(33);
-
-        assert_eq!(
-            position_wake_with_backoff(None, position, computed, frame_duration, now),
-            computed,
-            "first deadline is the computed boundary"
-        );
-        let pending = PositionWakeMemory {
-            position,
-            deadline: now + Duration::from_millis(20),
-        };
-        assert_eq!(
-            position_wake_with_backoff(Some(pending), position, computed, frame_duration, now),
-            computed,
-            "a deadline still in the future keeps the computed boundary"
-        );
-        let expired = PositionWakeMemory {
-            position,
-            deadline: now - Duration::from_millis(1),
-        };
-        assert_eq!(
-            position_wake_with_backoff(Some(expired), position, computed, frame_duration, now),
-            now + frame_duration,
-            "expired deadline with the same position waits for the worker tick"
-        );
-        assert_eq!(
-            position_wake_with_backoff(
-                Some(expired),
-                position,
-                computed,
-                Duration::from_millis(2),
-                now
-            ),
-            now + POSITION_STALE_BACKOFF,
-            "backoff never drops below the floor"
-        );
-        assert_eq!(
-            position_wake_with_backoff(
-                Some(expired),
-                other_position,
-                computed,
-                frame_duration,
-                now
-            ),
-            computed,
-            "a changed position is a fresh boundary, not a stale one"
-        );
     }
 
     /// Настоящий `Context::request_repaint*` доходит до приёмника через callback egui.

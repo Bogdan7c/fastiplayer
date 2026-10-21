@@ -218,6 +218,35 @@ fn reduced_motion_hides_and_shows_without_animation() {
     assert!(!harness.controller.is_animating());
 }
 
+/// «Панели за экраном» — только после конца уезда: в окне, на месте и во время анимации
+/// (в обе стороны) их содержимое видно, и UI-модель обязана держать его актуальным.
+#[test]
+fn panels_are_off_screen_only_after_the_slide_out_finishes() {
+    let mut harness = Harness::fullscreen();
+    let at_start = harness.frame(Duration::ZERO, UserActivity::Detected);
+    assert_eq!(at_start.panels_on_screen(), ChromePanelsOnScreen::Shown);
+
+    // Решение «прятать» созрело, панели только начали уезжать.
+    harness.idle_for(DELAY - Duration::from_millis(100));
+    let sliding_out = harness.idle_for(Duration::from_millis(150));
+    assert!(harness.controller.is_animating(), "{sliding_out:?}");
+    assert!(sliding_out.hidden_fraction > 0.0, "{sliding_out:?}");
+    assert_eq!(sliding_out.panels_on_screen(), ChromePanelsOnScreen::Shown);
+
+    let hidden = harness.idle_for(Duration::from_secs(1));
+    assert!(fully_hidden(hidden), "{hidden:?}");
+    assert_eq!(hidden.panels_on_screen(), ChromePanelsOnScreen::OffScreen);
+
+    // Движение мыши: панели поехали обратно — уже видны, хотя ещё не на месте.
+    let sliding_in = harness.frame(FRAME, UserActivity::Detected);
+    assert!(sliding_in.hidden_fraction < 1.0, "{sliding_in:?}");
+    assert_eq!(sliding_in.panels_on_screen(), ChromePanelsOnScreen::Shown);
+
+    harness.mode = WindowPresentationMode::Windowed;
+    let windowed = harness.idle_for(DELAY * 2);
+    assert_eq!(windowed.panels_on_screen(), ChromePanelsOnScreen::Shown);
+}
+
 #[test]
 fn config_zero_means_disabled_and_other_values_are_milliseconds() {
     assert_eq!(

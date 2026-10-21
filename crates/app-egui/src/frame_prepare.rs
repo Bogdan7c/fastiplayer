@@ -912,8 +912,8 @@ pub(crate) fn render_frame(
     if decision.fallback_probe && plan.presents() {
         telemetry.record_redraw_fallback_found_work();
     }
-    // Квантованная позиция этого кадра нужна дедлайну «следующий пиксель/секунда» ниже.
-    let quantized_position = decision.ui_frame_model.position;
+    // Видимая позиция кадра (за экраном — без дедлайна) нужна дедлайну пикселя/секунды ниже.
+    let visible_position = decision.ui_frame_model.position;
     if plan.runs_ui_pass() {
         frame_sequence.reached(FrameSequenceStage::EguiOutput);
         app_state.remember_full_ui_pass(
@@ -1119,7 +1119,7 @@ pub(crate) fn render_frame(
             settings_preview_deadline,
             app_state.next_position_wake_deadline(
                 frame_context.player_snapshot(),
-                quantized_position,
+                visible_position,
                 Instant::now(),
             ),
         ]),
