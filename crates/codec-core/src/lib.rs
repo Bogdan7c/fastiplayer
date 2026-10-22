@@ -7,6 +7,7 @@
 
 mod adapter;
 mod av1;
+mod container_codec_id;
 mod h264;
 mod h265;
 mod model;

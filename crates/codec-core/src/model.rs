@@ -26,18 +26,11 @@ pub enum VideoCodec {
 }
 
 impl VideoCodec {
-    /// Нормализует container codec id в общий codec enum.
+    /// Нормализует container codec id в общий codec enum (без heap allocation —
+    /// вызывается на каждый video packet; таблица алиасов в `container_codec_id`).
     #[must_use]
     pub fn from_container_codec_id(codec_id: &str) -> Option<Self> {
-        let normalized_codec_id = codec_id.trim().to_ascii_uppercase();
-        match normalized_codec_id.as_str() {
-            "V_VP9" | "VP9" => Some(Self::Vp9),
-            "V_AV1" | "AV1" | "AV01" => Some(Self::Av1),
-            "V_MPEG4/ISO/AVC" | "AVC1" | "H264" | "H.264" => Some(Self::H264),
-            "V_MPEGH/ISO/HEVC" | "HEV1" | "HVC1" | "H265" | "H.265" => Some(Self::H265),
-            "V_VP8" | "VP8" => Some(Self::Vp8),
-            _ => None,
-        }
+        crate::container_codec_id::video_codec_from_container_id(codec_id)
     }
 
     /// Возвращает стабильное имя codec для UI/report.
@@ -75,16 +68,11 @@ pub enum AudioCodec {
 }
 
 impl AudioCodec {
-    /// Нормализует container codec id в общий audio codec enum.
+    /// Нормализует container codec id в общий audio codec enum (без heap allocation;
+    /// таблица алиасов в `container_codec_id`).
     #[must_use]
     pub fn from_container_codec_id(codec_id: &str) -> Option<Self> {
-        let normalized_codec_id = codec_id.trim().to_ascii_uppercase();
-        match normalized_codec_id.as_str() {
-            "A_OPUS" | "OPUS" => Some(Self::Opus),
-            "A_AAC" | "A_AAC/MPEG2/LC" | "A_AAC/MPEG4/LC" | "AAC" => Some(Self::Aac),
-            "A_VORBIS" | "VORBIS" => Some(Self::Vorbis),
-            _ => None,
-        }
+        crate::container_codec_id::audio_codec_from_container_id(codec_id)
     }
 
     /// Возвращает стабильное имя codec для UI/report/errors.

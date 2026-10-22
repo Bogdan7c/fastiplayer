@@ -94,6 +94,70 @@ fn metadata_revisions_precede_packets_without_changing_packet_order() {
     assert_eq!(second_packet.pts, Duration::from_millis(20));
 }
 
+/// Статичная metadata из заголовка не порождает событий на packet-ах, а live revision
+/// поверх уже применённой всё равно замечается и сливается с ней как upsert.
+#[test]
+fn open_time_metadata_stays_silent_until_a_live_revision_arrives() {
+    let open_revision = metadata_revision(vec![
+        StandardTag::TrackTitle(Arc::new("Header title".into())),
+        StandardTag::DiscNumber(1),
+    ]);
+    let live_revision =
+        metadata_revision(vec![StandardTag::TrackTitle(Arc::new("Live title".into()))]);
+    let reader = FakeFormatReader::new(
+        vec![vp9_video_track(1)],
+        vec![
+            Ok(small_vp9_keyframe_packet(1, 10)),
+            Ok(small_vp9_keyframe_packet(1, 20)),
+            Ok(small_vp9_keyframe_packet(1, 30)),
+        ],
+    )
+    .with_open_metadata_revision(open_revision)
+    .with_metadata_schedule_after_packets(vec![None, None, Some(live_revision)]);
+    let mut demuxer = SymphoniaDemuxer::from_format_reader(
+        Box::new(reader),
+        "fake",
+        HashMap::new(),
+        DemuxSeekability::Seekable,
+        DemuxerOptions::default(),
+    )
+    .expect("The fake demuxer must open.");
+
+    let open_metadata = demuxer
+        .media_metadata()
+        .expect("Symphonia demuxer always publishes a metadata snapshot");
+    assert_eq!(open_metadata.tags.title.as_deref(), Some("Header title"));
+
+    let mut events = Vec::new();
+    loop {
+        let event = demuxer.next_event().expect("fake events must read");
+        if event == DemuxReadEvent::EndOfStream {
+            break;
+        }
+        events.push(event);
+    }
+
+    let [
+        DemuxReadEvent::Packet(first_packet),
+        DemuxReadEvent::Packet(second_packet),
+        DemuxReadEvent::MediaMetadataChanged(live_metadata),
+        DemuxReadEvent::Packet(third_packet),
+    ] = events.as_slice()
+    else {
+        panic!("Expected two silent packets, then metadata before the third packet: {events:?}");
+    };
+    assert_eq!(first_packet.pts, Duration::from_millis(10));
+    assert_eq!(second_packet.pts, Duration::from_millis(20));
+    assert_eq!(third_packet.pts, Duration::from_millis(30));
+    assert_eq!(live_metadata.tags.title.as_deref(), Some("Live title"));
+    assert_eq!(
+        live_metadata.tags.disc_number,
+        Some(media_core::DiscNumber::new(1)),
+        "live revision is an upsert over the header tags"
+    );
+    assert_eq!(demuxer.media_metadata().as_ref(), Some(live_metadata));
+}
+
 #[test]
 fn normal_eof_returns_terminal_event_without_error() {
     let mut demuxer =

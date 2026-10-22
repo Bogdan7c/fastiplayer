@@ -70,7 +70,8 @@ struct FakeFormatReader {
     tracks: Vec<Track>,
     reset_track_updates: VecDeque<Vec<Track>>,
     metadata: MetadataLog,
-    metadata_revisions_after_packets: VecDeque<MetadataRevision>,
+    /// Расписание по packet-ам: `None` — packet без новой revision.
+    metadata_revisions_after_packets: VecDeque<Option<MetadataRevision>>,
     packets: VecDeque<std::result::Result<Packet, SymphoniaError>>,
     seek_packet_scripts: VecDeque<VecDeque<std::result::Result<Packet, SymphoniaError>>>,
     seek_mode_log: Option<Arc<Mutex<Vec<SeekMode>>>>,
@@ -151,8 +152,23 @@ impl FakeFormatReader {
     }
 
     /// Публикует по одной metadata revision после чтения каждого следующего packet-а.
-    fn with_metadata_revisions_after_packets(mut self, revisions: Vec<MetadataRevision>) -> Self {
-        self.metadata_revisions_after_packets = VecDeque::from(revisions);
+    fn with_metadata_revisions_after_packets(self, revisions: Vec<MetadataRevision>) -> Self {
+        self.with_metadata_schedule_after_packets(revisions.into_iter().map(Some).collect())
+    }
+
+    /// Расписание live revisions: элемент `i` публикуется после чтения packet-а `i`
+    /// (`None` — этот packet новой revision не приносит).
+    fn with_metadata_schedule_after_packets(
+        mut self,
+        schedule: Vec<Option<MetadataRevision>>,
+    ) -> Self {
+        self.metadata_revisions_after_packets = VecDeque::from(schedule);
+        self
+    }
+
+    /// Revision, которую reader уже держит в log-е к моменту открытия (теги заголовка файла).
+    fn with_open_metadata_revision(mut self, revision: MetadataRevision) -> Self {
+        self.metadata.push(revision);
         self
     }
 
@@ -304,7 +320,7 @@ impl FormatReader for FakeFormatReader {
 
         match self.packets.pop_front() {
             Some(Ok(packet)) => {
-                if let Some(revision) = self.metadata_revisions_after_packets.pop_front() {
+                if let Some(Some(revision)) = self.metadata_revisions_after_packets.pop_front() {
                     // Live revision добавляется в конец time-ordered log-а; `current()` остаётся
                     // на старой revision, пока adapter не вызовет `pop()`.
                     self.metadata.push(revision);

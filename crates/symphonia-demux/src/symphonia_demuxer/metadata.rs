@@ -71,6 +71,59 @@ pub(crate) fn consume_media_metadata(
     *current != before
 }
 
+/// Насколько metadata log активного Symphonia reader-а уже учтён в накопленной `MediaMetadata`.
+///
+/// Нужен, чтобы на каждом packet-е не клонировать и не сравнивать `MediaMetadata`,
+/// когда reader не принёс новой revision. Опирается на контракт Symphonia 0.6
+/// `Metadata::pop()`: log никогда не опустошается до нуля, поэтому после полного
+/// применения в нём остаётся ровно уже учтённая `current()` revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReaderMetadataLogProgress {
+    /// Log этого reader-а ещё не применялся (свежий reader, в том числе после rebuild)
+    /// или был пуст. Единственная revision в log-е может оказаться новой, а
+    /// `is_latest()` для log-а из одной записи всегда `true` — его здесь недостаточно.
+    CurrentRevisionNotApplied,
+    /// `current()` revision уже применена. Новая revision может появиться только
+    /// позади неё, то есть станет видна как `!is_latest()`.
+    CurrentRevisionApplied,
+}
+
+/// Применяет только ещё не учтённые revisions reader-а; `true`, если `current` изменилась.
+///
+/// Результат и итоговая `MediaMetadata` совпадают с `consume_media_metadata`, но если
+/// новых revisions нет, функция не клонирует и не сравнивает metadata (горячий путь
+/// каждого packet-а).
+pub(super) fn consume_unapplied_media_metadata(
+    format: &mut FormatReaderBox<'_>,
+    current: &mut MediaMetadata,
+    progress: &mut ReaderMetadataLogProgress,
+) -> bool {
+    if !has_unapplied_metadata_revision(format, *progress) {
+        return false;
+    }
+    let changed = consume_media_metadata(format, current);
+    // Log был непуст (иначе ранний выход выше), а `pop()` его не опустошает:
+    // теперь в нём осталась ровно применённая revision.
+    *progress = ReaderMetadataLogProgress::CurrentRevisionApplied;
+    changed
+}
+
+/// Есть ли в metadata log-е reader-а revision, которую demuxer ещё не применил.
+fn has_unapplied_metadata_revision(
+    format: &mut FormatReaderBox<'_>,
+    progress: ReaderMetadataLogProgress,
+) -> bool {
+    let metadata_log = format.metadata();
+    if metadata_log.current().is_none() {
+        // Пустой log: `consume_media_metadata` здесь ничего бы не применил.
+        return false;
+    }
+    match progress {
+        ReaderMetadataLogProgress::CurrentRevisionNotApplied => true,
+        ReaderMetadataLogProgress::CurrentRevisionApplied => !metadata_log.is_latest(),
+    }
+}
+
 /// Адаптирует один уже типизированный Symphonia tag в нейтральный media contract.
 fn apply_standard_tag(tags: &mut MediaTagMetadata, standard_tag: &StandardTag) {
     match standard_tag {

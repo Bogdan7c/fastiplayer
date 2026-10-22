@@ -15,7 +15,7 @@
     "crates/capability-core/src/selection.rs": 899,
     "crates/codec-core/src/adapter.rs": 1577,
     "crates/codec-core/src/h265.rs": 1465,
-    "crates/codec-core/src/model.rs": 1153,
+    "crates/codec-core/src/model.rs": 1141,
     "crates/codec-core/src/vp9.rs": 1300,
     "crates/frame-server-core/src/diagnostics.rs": 889,
     "crates/media-core/src/time.rs": 900,

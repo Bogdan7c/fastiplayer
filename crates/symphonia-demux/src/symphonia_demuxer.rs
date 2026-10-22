@@ -46,7 +46,7 @@ use self::matroska_source_probe::{
     source_seekability_to_demux_seekability as map_source_seekability,
 };
 
-use self::metadata::summarize_symphonia_format_metadata;
+use self::metadata::{ReaderMetadataLogProgress, summarize_symphonia_format_metadata};
 use self::track_state::{track_layout_snapshot, track_state_from_format_reader};
 
 #[cfg(test)]
@@ -75,6 +75,9 @@ pub struct SymphoniaDemuxer {
     options: DemuxerOptions,
     pending_events: VecDeque<DemuxReadEvent>,
     media_metadata: media_core::MediaMetadata,
+    /// Учтена ли `current()` revision metadata log-а текущего `format` в `media_metadata`;
+    /// сбрасывается вместе с заменой reader-а.
+    reader_metadata_progress: ReaderMetadataLogProgress,
     end_of_stream_reached: bool,
     /// Названия дорожек из container metadata (MKV `Name`); log уже вычитан, поэтому кэш здесь.
     track_titles_by_track: HashMap<TrackId, String>,
@@ -430,7 +433,13 @@ impl SymphoniaDemuxer {
         );
 
         let mut media_metadata = media_core::MediaMetadata::default();
-        metadata::consume_media_metadata(&mut format, &mut media_metadata);
+        let mut reader_metadata_progress = ReaderMetadataLogProgress::CurrentRevisionNotApplied;
+        // Стартовая metadata — исходный snapshot, а не событие изменения: флаг не нужен.
+        metadata::consume_unapplied_media_metadata(
+            &mut format,
+            &mut media_metadata,
+            &mut reader_metadata_progress,
+        );
         Ok(Self {
             format: Some(format),
             packet_source_offset_observer,
@@ -445,6 +454,7 @@ impl SymphoniaDemuxer {
             options,
             pending_events: VecDeque::new(),
             media_metadata,
+            reader_metadata_progress,
             end_of_stream_reached: false,
             track_titles_by_track,
             skipped_attachments,
@@ -465,9 +475,11 @@ impl SymphoniaDemuxer {
 
     /// Возвращает активный Symphonia reader; `None` допустим только внутри consuming rebuild-а.
     fn format_mut(&mut self, operation: &'static str) -> Result<&mut FormatReaderBox<'static>> {
+        // Ошибка строится лениво: `anyhow::Error` — heap allocation, а метод вызывается
+        // на каждом packet-е, где reader почти всегда есть.
         self.format
             .as_mut()
-            .ok_or(DemuxError::ReaderUnavailable { operation }.into())
+            .ok_or_else(|| DemuxError::ReaderUnavailable { operation }.into())
     }
 
     /// Забирает reader для `FormatReader::into_inner()`, не раскрывая storage наружу.
@@ -561,6 +573,9 @@ impl SymphoniaDemuxer {
         );
 
         self.format = Some(rebuilt_format);
+        // Log нового reader-а ещё не сверялся: следующий packet пройдёт полный upsert,
+        // как и до rebuild-а, а `media_metadata` сохраняется.
+        self.reader_metadata_progress = ReaderMetadataLogProgress::CurrentRevisionNotApplied;
         self.track_titles_by_track = rebuilt_track_titles;
         self.packet_source_offset_observer = rebuilt_packet_source_offset_observer;
         self.track_map = track_state.track_map;
@@ -604,6 +619,22 @@ impl SymphoniaDemuxer {
         ))
     }
 
+    /// Применяет новые metadata revisions reader-а; `true`, если `media_metadata` изменилась.
+    fn consume_unapplied_reader_metadata(&mut self) -> Result<bool> {
+        // Поля заимствуются раздельно: reader, накопленная metadata и прогресс её log-а.
+        let Some(format) = self.format.as_mut() else {
+            return Err(DemuxError::ReaderUnavailable {
+                operation: "metadata",
+            }
+            .into());
+        };
+        Ok(metadata::consume_unapplied_media_metadata(
+            format,
+            &mut self.media_metadata,
+            &mut self.reader_metadata_progress,
+        ))
+    }
+
     /// Читает следующий event напрямую из Symphonia, не трогая prebuffered seek-prefix.
     fn read_next_event_from_format(&mut self) -> Result<DemuxReadEvent> {
         loop {
@@ -621,18 +652,7 @@ impl SymphoniaDemuxer {
                 ) {
                     Ok(our_packet) => {
                         self.record_successful_packet();
-                        let metadata_changed = {
-                            let mut metadata_snapshot = self.media_metadata.clone();
-                            let changed = metadata::consume_media_metadata(
-                                self.format_mut("metadata")?,
-                                &mut metadata_snapshot,
-                            );
-                            if changed {
-                                self.media_metadata = metadata_snapshot;
-                            }
-                            changed
-                        };
-                        if metadata_changed {
+                        if self.consume_unapplied_reader_metadata()? {
                             self.pending_events
                                 .push_back(DemuxReadEvent::Packet(our_packet));
                             return Ok(DemuxReadEvent::MediaMetadataChanged(
