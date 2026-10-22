@@ -5,7 +5,11 @@
 //! - mapping family 1 приходит в Vorbis lane order и переставляется в
 //!   канонический [`AudioChannelLayout`] до пересечения audio-core boundary;
 //! - mono/stereo без codec private сохраняют legacy fallback path;
-//! - multichannel без точной mapping table не угадывается по channel count.
+//! - multichannel без точной mapping table не угадывается по channel count;
+//! - PCM декодируется сразу во float (`opus_decode_float`), без 16-битной
+//!   квантизации. Порядок обработки packet-а такой же, как в прежнем i16-пути:
+//!   libopus decode → soft clip пиков (раньше его делал libopus внутри i16 API,
+//!   теперь [`soft_clip::OpusSoftClipStage`]) → обязательный OpusHead output gain.
 
 use anyhow::{Context, Result};
 use tracing::warn;
@@ -15,8 +19,13 @@ use super::{
 };
 
 mod header;
+mod soft_clip;
+
+#[cfg(test)]
+mod float_decode_tests;
 
 use header::{OpusBackendConfig, OpusHeadError, parse_opus_head};
+use soft_clip::OpusSoftClipStage;
 
 /// Стандартная частота playback для Opus; `OpusHead::input_sample_rate` ей не является.
 const DEFAULT_OPUS_PLAYBACK_SAMPLE_RATE: u32 = 48_000;
@@ -50,11 +59,16 @@ enum OpusDecoderBackend {
 }
 
 impl OpusDecoderBackend {
-    /// Декодирует packet в caller-owned interleaved i16 buffer.
-    fn decode(&mut self, packet: &[u8], output: &mut [i16]) -> opus::Result<usize> {
+    /// Декодирует packet в caller-owned interleaved f32 buffer.
+    ///
+    /// Float API libopus не делает soft clip: значения выше 1.0 возвращаются
+    /// как есть, ограничение пиков — обязанность вызывающего adapter-а.
+    /// Возвращает число frames (сэмплов на канал).
+    fn decode_float(&mut self, packet: &[u8], output: &mut [f32]) -> opus::Result<usize> {
+        // `fec = false`: in-band FEC не запрашиваем, как и в прежнем i16-пути.
         match self {
-            Self::SingleStream(decoder) => decoder.decode(packet, output, false),
-            Self::Multistream(decoder) => decoder.decode(packet, output, false),
+            Self::SingleStream(decoder) => decoder.decode_float(packet, output, false),
+            Self::Multistream(decoder) => decoder.decode_float(packet, output, false),
         }
     }
 
@@ -87,8 +101,13 @@ pub(super) struct OpusFallbackDecoder {
     /// Обязательный OpusHead output gain в линейном масштабе.
     output_gain_multiplier: f32,
 
-    /// Reusable buffer для i16 samples из libopus.
-    i16_buffer: Vec<i16>,
+    /// Reusable buffer для float PCM из libopus (до soft clip и gain),
+    /// рассчитан на самый длинный Opus packet (120 ms).
+    pcm_buffer: Vec<f32>,
+
+    /// Soft clip пиков с памятью между packet-ами (замена встроенного
+    /// soft clip i16 API libopus).
+    soft_clip: OpusSoftClipStage,
 }
 
 impl OpusFallbackDecoder {
@@ -101,6 +120,7 @@ impl OpusFallbackDecoder {
             .unwrap_or(DEFAULT_OPUS_PLAYBACK_SAMPLE_RATE);
         let playback_plan = opus_playback_plan(config)?;
         let decoder = create_backend(sample_rate, &playback_plan.backend)?;
+        let soft_clip = OpusSoftClipStage::for_backend(&playback_plan.backend);
         let buffer_sample_count = MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL
             .checked_mul(playback_plan.channels as usize)
             .ok_or_else(|| AudioDecoderError::InvalidConfig {
@@ -115,7 +135,8 @@ impl OpusFallbackDecoder {
             channels: playback_plan.channels,
             channel_layout: playback_plan.channel_layout,
             output_gain_multiplier: playback_plan.output_gain_multiplier,
-            i16_buffer: vec![0_i16; buffer_sample_count],
+            pcm_buffer: vec![0.0_f32; buffer_sample_count],
+            soft_clip,
         })
     }
 
@@ -131,6 +152,34 @@ impl OpusFallbackDecoder {
             packet.track_id()
         );
     }
+
+    /// Доводит только что декодированный float PCM до выходного вида.
+    ///
+    /// Порядок совпадает с прежним i16-путём: сначала soft clip (его делал
+    /// libopus внутри `opus_decode`), затем OpusHead output gain. Поэтому при
+    /// положительном gain выход, как и раньше, может превышать 1.0 — защиту от
+    /// перегрузки дальше выполняет output-слой, а не codec adapter.
+    fn finish_decoded_pcm(&mut self, frame_count: usize) -> Result<Vec<f32>> {
+        let total_samples = frame_count
+            .checked_mul(self.channels as usize)
+            .context("Opus fallback decoded sample count overflow")?;
+        let buffer_capacity = self.pcm_buffer.len();
+        let decoded_samples = self.pcm_buffer.get_mut(..total_samples).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Opus fallback backend returned {total_samples} samples with capacity {buffer_capacity}"
+            )
+        })?;
+
+        self.soft_clip.apply(decoded_samples);
+
+        // Трейт отдаёт владеющий `Vec`, поэтому одна копия неизбежна; gain
+        // применяется в этом же проходе, без отдельной конверсии сэмплов.
+        let output_gain_multiplier = self.output_gain_multiplier;
+        Ok(decoded_samples
+            .iter()
+            .map(|&sample| sample * output_gain_multiplier)
+            .collect())
+    }
 }
 
 impl AudioDecoder for OpusFallbackDecoder {
@@ -138,26 +187,11 @@ impl AudioDecoder for OpusFallbackDecoder {
     fn decode(&mut self, packet: &EncodedAudioPacket<'_>) -> Result<Vec<f32>> {
         self.ensure_packet_track_matches(packet)?;
 
-        match self.decoder.decode(packet.data(), &mut self.i16_buffer) {
-            Ok(frame_count) => {
-                let total_samples = frame_count
-                    .checked_mul(self.channels as usize)
-                    .context("Opus fallback decoded sample count overflow")?;
-                let decoded_samples = self.i16_buffer.get(..total_samples).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Opus fallback backend returned {} samples with capacity {}",
-                        total_samples,
-                        self.i16_buffer.len()
-                    )
-                })?;
-                let output_gain_multiplier = self.output_gain_multiplier;
-                let f32_samples = decoded_samples
-                    .iter()
-                    .map(|&sample| sample as f32 / 32_768.0 * output_gain_multiplier)
-                    .collect();
-
-                Ok(f32_samples)
-            }
+        match self
+            .decoder
+            .decode_float(packet.data(), &mut self.pcm_buffer)
+        {
+            Ok(frame_count) => self.finish_decoded_pcm(frame_count),
             Err(error) if error.code() == opus::ErrorCode::InvalidPacket => {
                 warn!("Corrupted Opus packet skipped by fallback decoder");
                 Ok(Vec::new())
@@ -168,6 +202,9 @@ impl AudioDecoder for OpusFallbackDecoder {
 
     /// Сбрасывает Opus state после seek.
     fn reset(&mut self) -> Result<()> {
+        // Память soft clip принадлежит прежнему сигналу и сбрасывается вместе
+        // с codec state, как `OPUS_RESET_STATE` сбрасывал её в i16-пути libopus.
+        self.soft_clip.reset();
         self.decoder
             .reset_state()
             .map_err(|error| anyhow::anyhow!("Opus fallback reset error: {error}"))
@@ -301,13 +338,13 @@ mod tests {
     use crate::{channel_mixer::ChannelMixer, decoder::create_audio_decoder};
 
     /// Точный OpusHead acceptance asset-а `Big_buck_bunny_720p_5mb.webm`.
-    const ACCEPTANCE_5_1_OPUS_HEAD: [u8; 27] = [
+    pub(super) const ACCEPTANCE_5_1_OPUS_HEAD: [u8; 27] = [
         b'O', b'p', b'u', b's', b'H', b'e', b'a', b'd', 1, 6, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0,
         1, 4, 2, 0, 4, 1, 2, 3, 5,
     ];
 
     /// Raw mapping table того же acceptance asset-а в Vorbis output order.
-    const ACCEPTANCE_5_1_CODEC_MAPPING: [u8; 6] = [0, 4, 1, 2, 3, 5];
+    pub(super) const ACCEPTANCE_5_1_CODEC_MAPPING: [u8; 6] = [0, 4, 1, 2, 3, 5];
 
     /// Кодирует настоящий 20 ms multistream packet с параметрами acceptance asset-а.
     fn encode_acceptance_5_1_packet() -> Result<(Vec<u8>, usize)> {
