@@ -10,8 +10,9 @@ use video_backend_api::{
 };
 use video_core::{
     DecodeSendError, DecodeThreadError, DecodedFrame, DecoderResourceSnapshot,
-    VideoDecoderActivitySnapshot, VideoDecoderControlChannelPressureSnapshot,
-    VideoDecoderDiagnosticEvent, VideoDecoderThreadHandle,
+    HostUploadResourceSnapshotStatus, VideoDecoderActivitySnapshot,
+    VideoDecoderControlChannelPressureSnapshot, VideoDecoderDiagnosticEvent,
+    VideoDecoderThreadHandle,
 };
 
 /// Оборачивает started backend так, чтобы submitted releases ждали WGPU queue completion.
@@ -408,6 +409,13 @@ impl VideoDecoderThreadHandle for WgpuReleaseVideoDecoderThreadHandle {
         self.inner.decoder_resource_snapshot()
     }
 
+    // Без этого проброса срабатывал default трейта `UnsupportedBackend`: player-core в
+    // живом приложении не видел заполненную ready-очередь и исчерпанные upload-слоты
+    // программного декодера и не притормаживал отправку пакетов (cpu-parity сессия 07).
+    fn host_upload_resource_snapshot(&self) -> HostUploadResourceSnapshotStatus {
+        self.inner.host_upload_resource_snapshot()
+    }
+
     fn decoder_control_channel_pressure(
         &self,
     ) -> Option<VideoDecoderControlChannelPressureSnapshot> {
@@ -461,6 +469,7 @@ mod tests {
         provider: PresentFrameResourceProviderHandle,
         drop_count: Arc<AtomicUsize>,
         activity_snapshot: VideoDecoderActivitySnapshot,
+        host_upload_snapshot: HostUploadResourceSnapshotStatus,
     }
 
     impl Drop for LifetimeFakeDecoderThread {
@@ -514,6 +523,10 @@ mod tests {
             self.activity_snapshot.clone()
         }
 
+        fn host_upload_resource_snapshot(&self) -> HostUploadResourceSnapshotStatus {
+            self.host_upload_snapshot
+        }
+
         fn packet_queue_depth(&self) -> usize {
             0
         }
@@ -535,6 +548,7 @@ mod tests {
                 provider: provider.clone(),
                 drop_count: decoder_drop_count.clone(),
                 activity_snapshot: VideoDecoderActivitySnapshot::unsupported(),
+                host_upload_snapshot: HostUploadResourceSnapshotStatus::UnsupportedBackend,
             });
         let (shared_decoder, backend_lifetime) = share_video_backend_decoder_thread(decoder_thread);
         drop(shared_decoder);
@@ -595,6 +609,7 @@ mod tests {
                 provider: inner_provider.clone(),
                 drop_count: Arc::new(AtomicUsize::new(0)),
                 activity_snapshot: VideoDecoderActivitySnapshot::unsupported(),
+                host_upload_snapshot: HostUploadResourceSnapshotStatus::UnsupportedBackend,
             });
         let (_shared_decoder, backend_lifetime) =
             share_video_backend_decoder_thread(decoder_thread);
@@ -627,6 +642,7 @@ mod tests {
                 provider: provider.clone(),
                 drop_count: Arc::new(AtomicUsize::new(0)),
                 activity_snapshot: activity_subscription.snapshot(),
+                host_upload_snapshot: HostUploadResourceSnapshotStatus::UnsupportedBackend,
             });
         let (shared_decoder, _backend_lifetime) =
             share_video_backend_decoder_thread(decoder_thread);
@@ -647,6 +663,69 @@ mod tests {
                 video_core::VideoDecoderActivityWaitOutcome::ActivityReceived { .. }
             ),
             "activity published by the backend must reach the player through the wrapper"
+        );
+    }
+
+    /// Обёртка с заданным software host-upload snapshot-ом внутреннего декодера.
+    fn wrapped_decoder_with_host_upload(
+        host_upload_snapshot: HostUploadResourceSnapshotStatus,
+    ) -> WgpuReleaseVideoDecoderThreadHandle {
+        let provider = PresentFrameResourceProviderHandle::new(CountingResourceProvider {
+            release_count: Arc::new(AtomicUsize::new(0)),
+        });
+        let decoder_thread: Box<video_backend_api::VideoBackendDecoderThreadHandle> =
+            Box::new(LifetimeFakeDecoderThread {
+                provider: provider.clone(),
+                drop_count: Arc::new(AtomicUsize::new(0)),
+                activity_snapshot: VideoDecoderActivitySnapshot::unsupported(),
+                host_upload_snapshot,
+            });
+        let (shared_decoder, _backend_lifetime) =
+            share_video_backend_decoder_thread(decoder_thread);
+        WgpuReleaseVideoDecoderThreadHandle {
+            inner: shared_decoder,
+            renderer_provider: provider,
+        }
+    }
+
+    #[test]
+    fn wgpu_release_wrapper_forwards_host_upload_backpressure_to_player() {
+        // Ready-очередь программного декодера полна, свободных upload-слотов нет.
+        let saturated = video_core::HostUploadResourceSnapshot {
+            host_frames_ready: 8,
+            host_frames_in_flight: 8,
+            upload_slots_capacity: 8,
+            upload_slots_free: 0,
+            upload_failures: 0,
+        };
+        let wrapped_thread = wrapped_decoder_with_host_upload(
+            HostUploadResourceSnapshotStatus::Available(saturated),
+        );
+
+        let forwarded = wrapped_thread.host_upload_resource_snapshot();
+
+        assert_eq!(
+            forwarded,
+            HostUploadResourceSnapshotStatus::Available(saturated),
+            "player-core must see the software decoder counters, not the trait default"
+        );
+        let HostUploadResourceSnapshotStatus::Available(snapshot) = forwarded else {
+            unreachable!("checked above");
+        };
+        assert!(
+            snapshot.backpressure_reason(8).is_some(),
+            "the forwarded counters must be able to pause packet sending"
+        );
+    }
+
+    #[test]
+    fn wgpu_release_wrapper_keeps_backend_without_host_upload_unsupported() {
+        let wrapped_thread =
+            wrapped_decoder_with_host_upload(HostUploadResourceSnapshotStatus::UnsupportedBackend);
+
+        assert_eq!(
+            wrapped_thread.host_upload_resource_snapshot(),
+            HostUploadResourceSnapshotStatus::UnsupportedBackend
         );
     }
 }
