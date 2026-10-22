@@ -538,7 +538,7 @@ pub(super) fn pending_video_work_available(
         return true;
     }
 
-    if accurate_seek_pending_video_waits_for_decoder_readiness(session, tick_config) {
+    if decoder_packet_channel_full_waits_for_decoder_readiness(session, tick_config) {
         return false;
     }
 
@@ -569,17 +569,22 @@ pub(super) fn pending_video_work_available(
     )
 }
 
-/// Проверяет, что Accurate seek уже упёрся в полный decoder send channel.
+/// Проверяет, что decoder send channel полон и pending packet ждёт decoder.
 ///
 /// В этом состоянии очередной zero-delay tick не может отправить packet: он
 /// снова получит bounded-channel backpressure. Поэтому planner должен перейти
-/// к `DecodeReadiness`, где worker ждёт decoder activity или bounded fallback.
-fn accurate_seek_pending_video_waits_for_decoder_readiness(
+/// к `DecodeReadiness`, где worker ждёт decoder activity (ACK packet-а) или
+/// bounded fallback.
+///
+/// Правило общее для Accurate seek и обычного воспроизведения (cpu-parity 08):
+/// раньше проверка жила только в seek preroll-е, и медленный software decoder
+/// (4K AV1, decoder не успевает за 60 fps) крутил worker zero-delay тиками
+/// `PipelineWorkReady` — ~175 тыс. пустых тиков в секунду, 79 % ядра.
+fn decoder_packet_channel_full_waits_for_decoder_readiness(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
 ) -> bool {
-    seek_fast_preroll_active(session, tick_config)
-        && decoder_send_queue_reached_tick_capacity(session, tick_config)
+    decoder_send_queue_reached_tick_capacity(session, tick_config)
 }
 
 /// Сравнивает neutral decoder queue depth с tick capacity без доступа к backend storage.

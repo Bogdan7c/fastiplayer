@@ -34,6 +34,7 @@ mod audio_packet_window;
 mod audio_read_ahead;
 mod audio_refill_cadence;
 mod audio_refill_wakeup;
+mod decoder_packet_channel_wakeup;
 mod output_clamped_wakeup;
 mod video_decode_ahead;
 
@@ -1398,7 +1399,8 @@ fn immediate_video_work_keeps_zero_wakeup_without_decoder_activity_wait() {
     };
     let decoder_thread =
         RecordingVideoDecoderThread::new_with_activity_snapshot(activity_subscription.snapshot())
-            .with_packet_queue_depth(4);
+            // Channel не полон (3 из 4): полный — не «готовая работа» (cpu-parity 08).
+            .with_packet_queue_depth(3);
     let mut session = PlayerSession::new();
     session.set_playback_state(PlaybackState::Playing);
     session.pipeline.set_video_decoder_thread(decoder_thread);
