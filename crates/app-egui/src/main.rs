@@ -1,6 +1,7 @@
 //! Entrypoint приложения.
 //!
 //! Модуль отвечает только за запуск процесса:
+//! - обход ошибки Mesa WSI на Wayland в окружении процесса (`mesa_wsi_workaround`, до всего);
 //! - инициализацию tracing (первым делом, чтобы ошибки bootstrap попали в лог);
 //! - загрузку пользовательского config;
 //! - разбор initial media из CLI;
@@ -22,6 +23,7 @@ mod instance_forwarding;
 mod local_file_open;
 mod local_open_message;
 mod media_open;
+mod mesa_wsi_workaround;
 mod player_error_message;
 mod playlist_action_runtime;
 mod playlist_runtime;
@@ -77,8 +79,14 @@ use crate::startup_media::InitialMedia;
 /// Любая фатальная ошибка запуска показывается пользователю и даёт ненулевой код
 /// выхода; штатное завершение — код 0.
 fn main() -> ExitCode {
+    // Первым делом, пока поток один: меняет окружение процесса до создания Vulkan.
+    let mesa_commit_timing = mesa_wsi_workaround::disable_mesa_wayland_commit_timing();
     let process_started_at = std::time::Instant::now();
     init_tracing();
+    info!(
+        outcome = ?mesa_commit_timing,
+        "Mesa Wayland commit timing disabled for this process (video freeze after pause)"
+    );
     let run_outcome = run_application(process_started_at);
     conclude_process(run_outcome, &SystemFatalStartupPresenter).exit_code()
 }
