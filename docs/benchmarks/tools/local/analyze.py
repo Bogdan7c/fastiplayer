@@ -22,6 +22,8 @@ EXIT_BAND_PERCENTAGE_POINTS = 0.5
 # кадров за окно не меньше 99 % от частоты источника × длительность окна.
 QUALITY_UNIQUE_FRAME_RATIO = 0.99
 VALID = 'VALID_RESOURCE_OBSERVATION'
+# Политики потерь у эталона (поле плана ``reference_losses``): см. reference_losses_policy.
+REFERENCE_LOSSES_POLICIES = ('stop', 'annotate')
 
 
 def comparison(differences, quantization_bound, *, unit="percentage_points"):
@@ -44,14 +46,30 @@ def comparison(differences, quantization_bound, *, unit="percentage_points"):
             'parity': 'exact equality cannot be established by finite noisy samples; no loss margin authorized'}
 
 
-def exit_band(verdict):
-    """Проходит ли вердикт критерий выхода: WIN или INCONCLUSIVE целиком внутри ±0,5 п.п."""
+def exit_band(verdict, band=EXIT_BAND_PERCENTAGE_POINTS):
+    """Проходит ли вердикт критерий выхода: WIN или INCONCLUSIVE целиком внутри ±band п.п."""
     if verdict['status'] == 'WIN':
         return True
     if verdict['status'] != 'INCONCLUSIVE':
         return False
     low, high = verdict['interval']
-    return -EXIT_BAND_PERCENTAGE_POINTS <= low and high <= EXIT_BAND_PERCENTAGE_POINTS
+    return -band <= low and high <= band
+
+
+def plan_exit_band(pairs):
+    """Коридор выхода из плана серии (поле ``exit_band_percentage_points`` в ``common``).
+
+    Без поля — коридор HW-сессий 06/06c (±0,5 п.п.). У SW-серии сессии 08 по её плану
+    ±1 п.п. Значение одно на серию: разные коридоры внутри когорты — ошибка плана.
+    """
+    bands = {a['spec'].get('exit_band_percentage_points', EXIT_BAND_PERCENTAGE_POINTS)
+             for pair in pairs for a in pair}
+    if len(bands) != 1:
+        raise ValueError(f'cohort mixes exit bands {sorted(bands)}')
+    band = bands.pop()
+    if not isinstance(band, (int, float)) or not math.isfinite(band) or band <= 0:
+        raise ValueError(f'invalid exit band {band!r}')
+    return band
 
 
 def gfx_percent(attempt):
@@ -96,12 +114,30 @@ def attempt_quality(attempt):
             'frames_lost': deltas['frames_lost'], 'frames_displayed': deltas.get('frames_displayed')}
 
 
+def reference_losses_policy(attempts):
+    """Что делать с потерями кадров у эталона (поле плана ``reference_losses``).
+
+    ``stop`` (умолчание, решение владельца сессии 06): потеря у эталона — FAIL сцены,
+    серия останавливается. ``annotate`` (план сессии 08, правило T480s-отчёта):
+    сцена получает ``REFERENCE_LOSSES``, серия продолжается, а CPU-таблица
+    публикуется с оговоркой «при потерях у эталона» и без заявлений о превосходстве.
+    Потери у Fastiplayer остаются FAIL при любой политике.
+    """
+    policies = {a['spec'].get('reference_losses', 'stop') for a in attempts}
+    if not policies <= set(REFERENCE_LOSSES_POLICIES) or len(policies) > 1:
+        raise ValueError(f'invalid or mixed reference_losses policy {sorted(policies)}')
+    return policies.pop() if policies else 'stop'
+
+
 def quality_gates(attempts):
     """Итог quality-gate по сцене: FAIL, если провалилась хоть одна попытка.
 
     NOT TESTED, если у сцены нет ни одной diagnostic-попытки Fastiplayer: без
     подсчёта кадров «не потеряли кадры» не доказано, даже если CPU измерен.
+    REFERENCE_LOSSES — Fastiplayer прошёл, а эталон терял кадры при политике
+    ``annotate`` (см. :func:`reference_losses_policy`).
     """
+    policy = reference_losses_policy([a for a in attempts if a['status'] == VALID])
     scenes = {}
     for attempt in attempts:
         if attempt['status'] != VALID:
@@ -114,10 +150,17 @@ def quality_gates(attempts):
             {'player': spec['player'], 'mode': spec['mode'], 'repetition': spec['repetition'], **result})
     output = {}
     for scenario, results in sorted(scenes.items()):
-        statuses = {r['status'] for r in results}
-        has_fastiplayer_count = any(r['player'] == 'fastiplayer' and r['status'] != 'NOT TESTED' for r in results)
-        status = ('FAIL' if 'FAIL' in statuses else
-                  'PASS' if has_fastiplayer_count and statuses == {'PASS'} else 'NOT TESTED')
+        ours = {r['status'] for r in results if r['player'] == 'fastiplayer'}
+        reference = {r['status'] for r in results if r['player'] != 'fastiplayer'}
+        has_fastiplayer_count = bool(ours - {'NOT TESTED'})
+        if 'FAIL' in ours or ('FAIL' in reference and policy == 'stop'):
+            status = 'FAIL'
+        elif not has_fastiplayer_count or (ours | reference) - {'PASS', 'FAIL'}:
+            status = 'NOT TESTED'
+        elif 'FAIL' in reference:
+            status = 'REFERENCE_LOSSES'
+        else:
+            status = 'PASS'
         output[scenario] = {'status': status, 'attempts': results}
     return output
 
@@ -140,7 +183,9 @@ def cohort_verdicts(mode, pairs, cohort):
                          b['metrics']['tree_cpu_percent_window_seconds']) for a, b in pairs)
     cpu = comparison(differences, resolution)
     if cpu['status'] != 'NOT TESTED':
-        cpu['within_exit_band'] = exit_band(cpu)
+        band = plan_exit_band(pairs)
+        cpu['exit_band_percentage_points'] = band
+        cpu['within_exit_band'] = exit_band(cpu, band)
     gfx = [(gfx_percent(a), gfx_percent(b)) for a, b in pairs]
     if any(value is None for pair in gfx for value in pair):
         gpu = {'status': 'NOT TESTED', 'reason': 'gfx engine counter missing'}

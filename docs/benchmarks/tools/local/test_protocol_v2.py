@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 import analyze
-from collect import fastiplayer_command, mpv_command, vlc_command
+from collect import decode_path, fastiplayer_command, mpv_command, vlc_command
 import evidence
 from host import drm_clients, summarize_gpu
 import run_series
@@ -97,6 +97,17 @@ class SeriesStoppingTests(unittest.TestCase):
         self.assertEqual(summary['quality_gates']['hevc-4k60']['status'], 'FAIL')
         self.assertEqual(summary['quality_gates']['h264-1080p60']['status'], 'PASS')
 
+    def test_annotated_reference_losses_do_not_stop_the_series(self):
+        def behaviour(scenario, player, mode, repetition):
+            attempt = fake_attempt(scenario, player, mode, repetition, 3.0 if player == 'fastiplayer' else 5.0,
+                                   frames_lost=3 if player == 'mpv' else 0)
+            attempt['spec']['reference_losses'] = 'annotate'
+            return attempt
+        code, launched, summary = self.run_plan(behaviour)
+        self.assertEqual(code, 0)
+        self.assertGreater(max(item[3] for item in launched), 1)
+        self.assertEqual(summary['quality_gates']['h264-1080p60']['status'], 'REFERENCE_LOSSES')
+
     def test_reference_less_scenario_is_not_tested_and_runs_only_fastiplayer(self):
         def behaviour(scenario, player, mode, repetition):
             return fake_attempt(scenario, player, mode, repetition, 4.0)
@@ -140,6 +151,23 @@ class QualityGateTests(unittest.TestCase):
                                        fake_attempt('s', 'mpv', 'quiet', 1, 1)])
         self.assertEqual(gates['s']['status'], 'NOT TESTED')
 
+    def test_reference_losses_are_annotated_only_when_the_plan_says_so(self):
+        def scene(policy=None, reference_lost=2, our_unique=1200):
+            attempts = [fake_attempt('s', 'fastiplayer', 'diagnostic', 1, 1, unique=our_unique),
+                        fake_attempt('s', 'mpv', 'diagnostic', 1, 1, frames_lost=reference_lost)]
+            if policy:
+                for attempt in attempts:
+                    attempt['spec']['reference_losses'] = policy
+            return analyze.quality_gates(attempts)['s']['status']
+        self.assertEqual(scene(), 'FAIL')
+        self.assertEqual(scene('stop'), 'FAIL')
+        self.assertEqual(scene('annotate'), 'REFERENCE_LOSSES')
+        self.assertEqual(scene('annotate', reference_lost=0), 'PASS')
+        # Свои потери не прощаются никакой политикой.
+        self.assertEqual(scene('annotate', our_unique=1000), 'FAIL')
+        with self.assertRaisesRegex(ValueError, 'reference_losses'):
+            scene('ignore')
+
     def test_missing_counters_are_not_tested_not_pass(self):
         attempt = fake_attempt('s', 'fastiplayer', 'diagnostic', 1, 1)
         attempt['evidence']['quality'] = {}
@@ -150,6 +178,57 @@ class QualityGateTests(unittest.TestCase):
         self.assertFalse(analyze.exit_band({'status': 'INCONCLUSIVE', 'interval': [-0.3, 0.7]}))
         self.assertFalse(analyze.exit_band({'status': 'WORSE', 'interval': [0.1, 0.2]}))
         self.assertTrue(analyze.exit_band({'status': 'WIN', 'interval': [-3, -1]}))
+
+    @staticmethod
+    def quiet_cohort(cpu_pairs, **spec_fields):
+        attempts = []
+        for repetition, (ours, reference) in enumerate(cpu_pairs, start=1):
+            for player, cpu in (('fastiplayer', ours), ('mpv', reference)):
+                attempt = fake_attempt('s', player, 'quiet', repetition, cpu)
+                attempt['spec'].update(spec_fields)
+                attempts.append(attempt)
+        return attempts
+
+    def verdict(self, attempts):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        for attempt in attempts:
+            spec = attempt['spec']
+            path = root / 'attempts' / f"{spec['scenario']}-{spec['mode']}-{spec['repetition']:02}-{spec['player']}"
+            path.mkdir(parents=True)
+            (path / 'result.json').write_text(json.dumps(attempt))
+        return analyze.analyze(root)['cohorts'][0]['resource_verdict']
+
+    def test_plan_exit_band_widens_the_corridor_only_when_declared(self):
+        # Разности +0,1/−0,1/0: sd 0,1, радиус 10·0,1/√3 + 0,1 (разрешение) ≈ 0,68 —
+        # INCONCLUSIVE шире ±0,5, но внутри ±1.
+        middle = [(10.1, 10.0), (9.9, 10.0), (10.0, 10.0)]
+        default_band = self.verdict(self.quiet_cohort(middle))
+        self.assertEqual(default_band['status'], 'INCONCLUSIVE')
+        self.assertEqual(default_band['exit_band_percentage_points'], 0.5)
+        self.assertFalse(default_band['within_exit_band'])
+        software_band = self.verdict(self.quiet_cohort(middle, exit_band_percentage_points=1.0))
+        self.assertEqual(software_band['exit_band_percentage_points'], 1.0)
+        self.assertTrue(software_band['within_exit_band'])
+        # Разброс ±0,3: радиус ≈ 1,83 — не проходит и ±1.
+        wide = self.verdict(self.quiet_cohort([(10.3, 10.0), (9.7, 10.0), (10.0, 10.0)],
+                                              exit_band_percentage_points=1.0))
+        self.assertEqual(wide['status'], 'INCONCLUSIVE')
+        self.assertFalse(wide['within_exit_band'])
+
+    def test_band_of_one_point_accepts_what_half_point_rejects(self):
+        verdict = {'status': 'INCONCLUSIVE', 'interval': [-0.8, 0.9]}
+        self.assertFalse(analyze.exit_band(verdict))
+        self.assertTrue(analyze.exit_band(verdict, 1.0))
+
+    def test_mixed_or_invalid_plan_exit_band_is_rejected(self):
+        mixed = self.quiet_cohort([(10.2, 10.0)] * 3, exit_band_percentage_points=1.0)
+        mixed[0]['spec']['exit_band_percentage_points'] = 0.5
+        with self.assertRaisesRegex(ValueError, 'mixes exit bands'):
+            self.verdict(mixed)
+        with self.assertRaisesRegex(ValueError, 'invalid exit band'):
+            self.verdict(self.quiet_cohort([(10.2, 10.0)] * 3, exit_band_percentage_points=0))
 
 
 class GpuMetricTests(unittest.TestCase):
@@ -245,12 +324,55 @@ class MpvEvidenceTests(unittest.TestCase):
         self.assertFalse(audio)
         self.assertIn('missing mpv counter decoder-frame-drop-count', failures)
 
+    def test_software_reference_requires_hwdec_no_on_both_boundaries(self):
+        backend, progress, audio, quality, failures = evidence.validate_mpv(
+            self.boundary('no', 10.0, 0), self.boundary('no', 30.0, 1), 'software')
+        self.assertEqual((backend, progress, audio, failures), (True, True, True, []))
+        self.assertEqual(quality['deltas']['frame-drop-count'], 1)
+        # mpv, сам включивший hwdec хоть на одной границе, не эталон SW-сцены.
+        for first, second in (('vulkan', 'vulkan'), ('no', 'vaapi-copy'), (None, 'no')):
+            backend, *_ = evidence.validate_mpv(self.boundary(first, 1.0, 0), self.boundary(second, 2.0, 0),
+                                                'software')
+            self.assertFalse(backend, (first, second))
+
+    def test_mpv_software_command_differs_only_by_hwdec(self):
+        hardware = mpv_command('/usr/bin/mpv', Path('/run/ipc'), 'quiet', Path('/media.mp4'))
+        software = mpv_command('/usr/bin/mpv', Path('/run/ipc'), 'quiet', Path('/media.mp4'), 'software')
+        self.assertEqual(software[2], '--hwdec=no')
+        self.assertEqual(hardware[:2] + hardware[3:], software[:2] + software[3:])
+
     def test_mpv_command_enables_only_hwdec_over_defaults(self):
         command = mpv_command('/usr/bin/mpv', Path('/run/ipc'), 'quiet', Path('/media.mp4'))
         self.assertEqual(command[1:5], ['--no-config', '--hwdec=auto', '--fs', '--volume=0'])
         self.assertIn('--input-ipc-server=/run/ipc', command)
         self.assertNotIn('-v', command)
         self.assertIn('-v', mpv_command('/usr/bin/mpv', Path('/run/ipc'), 'diagnostic', Path('/media.mp4')))
+
+
+class DecodePathTests(unittest.TestCase):
+    SOFTWARE_LOG = 'INFO resumed: Selected video pipeline plan="ffmpeg-host-upload-wgpu"\n'
+    HARDWARE_LOG = ('INFO VA-API codec adapter configured for stream backend_name="VA-API H.264"\n'
+                    'INFO Selected video pipeline plan="VA-API Vulkan DMA-BUF"\n')
+
+    def test_plans_without_decode_stay_hardware(self):
+        self.assertEqual(decode_path({'player': 'mpv'}), 'hardware')
+        self.assertEqual(decode_path({'player': 'fastiplayer', 'decode': 'software'}), 'software')
+
+    def test_unknown_decode_or_vlc_software_is_a_plan_error(self):
+        with self.assertRaisesRegex(ValueError, 'unsupported decode path'):
+            decode_path({'player': 'mpv', 'decode': 'hw'})
+        with self.assertRaisesRegex(ValueError, 'only hardware'):
+            decode_path({'player': 'vlc', 'decode': 'software'})
+
+    def test_fastiplayer_software_proof_needs_host_upload_plan_without_vaapi(self):
+        self.assertTrue(evidence.fastiplayer_backend_proven(self.SOFTWARE_LOG, 'h264', 'software'))
+        self.assertFalse(evidence.fastiplayer_backend_proven(self.HARDWARE_LOG, 'h264', 'software'))
+        # Оба следа сразу (например, откат с VA-API на SW посреди попытки) — не доказательство.
+        self.assertFalse(evidence.fastiplayer_backend_proven(self.SOFTWARE_LOG + self.HARDWARE_LOG,
+                                                             'h264', 'software'))
+        # Аппаратное доказательство не изменилось и не принимает SW-лог.
+        self.assertTrue(evidence.fastiplayer_backend_proven(self.HARDWARE_LOG, 'h264', 'hardware'))
+        self.assertFalse(evidence.fastiplayer_backend_proven(self.SOFTWARE_LOG, 'h264', 'hardware'))
 
 
 class FastiplayerCommandTests(unittest.TestCase):

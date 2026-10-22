@@ -50,7 +50,7 @@ def vlc_command(binary, socket_path, mode, media):
             *(['-vv'] if mode == 'diagnostic' else []), str(media)]
 
 
-def mpv_command(binary, socket_path, mode, media):
+def mpv_command(binary, socket_path, mode, media, decode='hardware'):
     """Командная строка mpv по протоколу v2 (эталон с 2026-10-21, решение владельца).
 
     ``--no-config`` — аналог ``vlc --ignore-config``: ни пользовательский, ни системный
@@ -61,8 +61,14 @@ def mpv_command(binary, socket_path, mode, media):
     ``hwdec-current`` на границах окна. ``--volume=0`` — аналог ``--gain=0``:
     аудиовывод работает. Встроенный интерфейс (OSC) остаётся по умолчанию.
     JSON IPC нужен только для чтения свойств.
+
+    ``decode='software'`` (cpu-parity 08, эталон SW — тоже mpv по решению владельца):
+    ``--hwdec=no`` — это поведение mpv «из коробки», так что SW-команда отличается от
+    умолчаний mpv только фуллскрином, громкостью и IPC. Остальное (потоки FFmpeg/dav1d,
+    ``gpu-next``) mpv выбирает сам.
     """
-    return [str(binary), '--no-config', '--hwdec=auto', '--fs', '--volume=0',
+    hwdec = MPV_HWDEC_BY_DECODE_PATH[decode]
+    return [str(binary), '--no-config', f'--hwdec={hwdec}', '--fs', '--volume=0',
             f'--input-ipc-server={socket_path}', *(['-v'] if mode == 'diagnostic' else []), str(media)]
 
 
@@ -79,6 +85,33 @@ def fastiplayer_command(binary, media):
 
 
 PLAYER_COMMANDS = {'vlc': vlc_command, 'mpv': mpv_command}
+# Путь декодирования попытки (поле ``decode`` плана). Аппаратный — умолчание: планы
+# HW-серий 06/06c его не объявляют и должны давать прежние команды и доказательства.
+# Программный путь Fastiplayer задаёт его конфиг (``preferred_backend = "software"``),
+# а не командная строка; ``decode`` нужен эталону и проверке доказательств.
+DECODE_PATHS = ('hardware', 'software')
+MPV_HWDEC_BY_DECODE_PATH = {'hardware': 'auto', 'software': 'no'}
+
+
+def decode_path(spec):
+    """Путь декодирования попытки; неизвестное значение — ошибка плана, а не HW по умолчанию."""
+    decode = spec.get('decode', 'hardware')
+    if decode not in DECODE_PATHS:
+        raise ValueError(f'unsupported decode path {decode!r}')
+    if decode == 'software' and spec['player'] == 'vlc':
+        # Команда VLC заморожена для воспроизведения серий v1 и умеет только VA-API.
+        raise ValueError('VLC v1 reference command supports only hardware decode')
+    return decode
+
+
+def player_command(spec, binary, socket_path, mode, media, decode):
+    """Командная строка плеера попытки (Fastiplayer, mpv или VLC v1)."""
+    player = spec['player']
+    if player == 'fastiplayer':
+        return fastiplayer_command(binary, media)
+    if player == 'mpv':
+        return mpv_command(binary, socket_path, mode, media, decode)
+    return vlc_command(binary, socket_path, mode, media)
 
 
 def collect(spec, directory):
@@ -108,6 +141,7 @@ def collect(spec, directory):
         mode, player = spec['mode'], spec['player']
         if mode not in {'quiet', 'diagnostic'} or player not in {'fastiplayer', *PLAYER_COMMANDS}:
             raise ValueError('unsupported player or mode')
+        decode = decode_path(spec)
         rust_log = 'info' + (',fastiplayer::video_render_acceptance=trace' if mode == 'diagnostic' else '')
         environment = isolated_environment(directory, rust_log)
         config = Path(spec['config'])
@@ -121,8 +155,7 @@ def collect(spec, directory):
         control_directory = tempfile.TemporaryDirectory(prefix='fi-bench-', dir=os.environ['XDG_RUNTIME_DIR'])
         socket_path = Path(control_directory.name) / 'rc'
         observation['control_socket'] = str(socket_path)
-        command = fastiplayer_command(binary, media) if player == 'fastiplayer' else PLAYER_COMMANDS[player](
-            binary, socket_path, mode, media)
+        command = player_command(spec, binary, socket_path, mode, media, decode)
         observation['command'] = command
         observation['environment'] = environment
         # Полное чтение одинаково прогревает page cache; вне lifecycle/CPU окна.
@@ -165,7 +198,7 @@ def collect(spec, directory):
         observation['boundary_skew_seconds'] = {
             'before': observation['samples'][0]['cgroup_cpu']['time'] - observation['before']['started'],
             'after': observation['after']['ended'] - observation['samples'][-1]['cgroup_cpu']['time']}
-        observation['evidence'] = evidence.validate(player, spec['codec'], mode, log_path,
+        observation['evidence'] = evidence.validate(player, spec['codec'], mode, decode, log_path,
             observation['before'], observation['after'], start_offset, end_offset)
         observation['failures'].extend(observation['evidence']['failures'])
         observation['metrics'] = summarize(observation['samples'])

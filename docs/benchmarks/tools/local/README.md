@@ -171,6 +171,19 @@ Everything not listed here is unchanged from version 2.
 | 3 | KWin script makes both windows fullscreen | **unchanged** for both players; it also provides the `_NET_WM_STATE_FULLSCREEN` window proof | Same window conditions for both players |
 | plan | `"protocol_version": 2` | `"protocol_version": 3`; the version lives once in `host.py` (`PROTOCOL_VERSION`) for the collector, the series runner and the summary | Prevents silent mixing |
 
+**Software decode series (session 08 of `user/cpu-parity/`).** Version 3 also covers
+the software path through two optional plan fields in `common`. Plans without them
+behave exactly as before (hardware decode, ±0.5 percentage-point exit band):
+
+| Field | Values | Effect |
+|---|---|---|
+| `decode` | `hardware` (default) / `software` | mpv gets `--hwdec=no` instead of `--hwdec=auto`, and `hwdec-current` must be `no` at both boundaries. Fastiplayer's software path comes from its config (`preferred_backend = "software"`); the evidence must show `plan="ffmpeg-host-upload-wgpu"` and no VA-API trace. The frozen version 1 VLC command supports hardware only, so `vlc` + `software` is a plan error |
+| `reference_losses` | `stop` (default) / `annotate` | `stop`: lost frames of the reference fail the scene and stop the series (session 06 rule). `annotate`: the scene gets `REFERENCE_LOSSES`, the series continues, and the CPU table must be published with the caveat "with reference frame losses" and without any superiority claim (session 08 plan, T480s report rule). Fastiplayer's own losses are `FAIL` under either policy |
+| `exit_band_percentage_points` | positive number, default `0.5` | Width of the "INCONCLUSIVE inside ±band" exit criterion recorded as `within_exit_band`. Session 08 uses `1.0` for software scenes (session plan). One value per series |
+
+The owner chose mpv as the software reference as well (2026-10-22), so hardware and
+software reports compare against the same player.
+
 **Measurement condition in version 3.** Keep the pointer away from the player's
 panels (for example in the middle of the screen) and do not touch the mouse. A
 pointer resting over the title bar or the bottom controls holds them visible by

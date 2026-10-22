@@ -146,17 +146,31 @@ def boundary(player, pid, socket_path, media, window_helper):
             'audio_sinks': sinks, 'window': window}
 
 
-def validate(player, codec, mode, log_path, before, after, start_offset, end_offset):
+def fastiplayer_backend_proven(runtime, codec, decode):
+    """Доказан ли нужный путь декодирования Fastiplayer по его runtime-логу.
+
+    Аппаратный: VA-API адаптер кодека + DMA-BUF импорт и ни одного SW-плана.
+    Программный (cpu-parity 08): план ``ffmpeg-host-upload-wgpu`` и ни одного следа
+    VA-API — иначе «SW-замер» мог бы тихо уйти в аппаратный путь.
+    """
+    software_plan = 'plan="ffmpeg-host-upload-wgpu"' in runtime
+    vaapi_traces = 'configured for stream backend_name="VA-API' in runtime or 'VA-API Vulkan DMA-BUF' in runtime
+    if decode == 'software':
+        return software_plan and not vaapi_traces
+    expected = {'h264': 'VA-API H.264', 'hevc': 'VA-API H.265', 'av1': 'VA-API AV1',
+                'vp9': 'VA-API VP9'}[codec]
+    return (f'configured for stream backend_name="{expected}"' in runtime
+            and 'VA-API Vulkan DMA-BUF' in runtime
+            and not software_plan)
+
+
+def validate(player, codec, mode, decode, log_path, before, after, start_offset, end_offset):
     runtime = log_path.read_text(errors='replace')
     failures = []
     if 'panicked at' in runtime or 'video output creation failed' in runtime:
         failures.append('runtime fatal marker')
     if player == 'fastiplayer':
-        expected = {'h264': 'VA-API H.264', 'hevc': 'VA-API H.265', 'av1': 'VA-API AV1',
-                    'vp9': 'VA-API VP9'}[codec]
-        backend = (f'configured for stream backend_name="{expected}"' in runtime
-                   and 'VA-API Vulkan DMA-BUF' in runtime
-                   and 'plan="ffmpeg-host-upload-wgpu"' not in runtime)
+        backend = fastiplayer_backend_proven(runtime, codec, decode)
         a, b = before['details'], after['details']
         if not a['media_matches'] or not b['media_matches']:
             failures.append('MPRIS media does not match measured file')
@@ -171,7 +185,7 @@ def validate(player, codec, mode, log_path, before, after, start_offset, end_off
         if mode == 'diagnostic' and (len(events) < 2 or len({e['pts_ns'] for e in events}) < 2):
             failures.append('no advancing render handoffs')
     elif player == 'mpv':
-        backend, progress, audio, quality, extra = validate_mpv(before, after)
+        backend, progress, audio, quality, extra = validate_mpv(before, after, decode)
         failures.extend(extra)
     else:
         backend = bool(re.search(r'Using .* for hardware decoding', runtime, re.I))
@@ -188,7 +202,7 @@ def validate(player, codec, mode, log_path, before, after, start_offset, end_off
         if any(value < 0 for value in deltas.values()):
             failures.append('VLC counters reset')
     if not backend:
-        failures.append('expected hardware backend not proven')
+        failures.append(f'expected {decode} backend not proven')
     if not progress:
         failures.append('media time/video did not advance')
     if not audio:
@@ -197,15 +211,20 @@ def validate(player, codec, mode, log_path, before, after, start_offset, end_off
             'audio_evidence': audio, 'quality': quality, 'failures': failures}
 
 
-def validate_mpv(before, after):
-    """Доказательства mpv: zero-copy hwdec на обеих границах, ход времени, звук, потери.
+def validate_mpv(before, after, decode='hardware'):
+    """Доказательства mpv: путь декодирования на обеих границах, ход времени, звук, потери.
 
+    Аппаратный путь — zero-copy hwdec; программный (cpu-parity 08) — ``hwdec-current``
+    ровно ``no`` на обеих границах: mpv, тихо включивший hwdec, не эталон SW-сцены.
     Возвращает (backend, progress, audio, quality, failures). Пропавший счётчик потерь —
     это failure, а не ноль: без него quality-gate эталона не доказан.
     """
     a, b = before['details'], after['details']
     failures = []
-    backend = a.get('hwdec-current') in MPV_ZERO_COPY_HWDEC and b.get('hwdec-current') == a.get('hwdec-current')
+    if decode == 'software':
+        backend = a.get('hwdec-current') == 'no' and b.get('hwdec-current') == 'no'
+    else:
+        backend = a.get('hwdec-current') in MPV_ZERO_COPY_HWDEC and b.get('hwdec-current') == a.get('hwdec-current')
     progress = (isinstance(a.get('time-pos'), (int, float)) and isinstance(b.get('time-pos'), (int, float))
                 and b['time-pos'] > a['time-pos'] and a.get('pause') is False and b.get('pause') is False)
     audio = bool(a.get('current-ao')) and all(
