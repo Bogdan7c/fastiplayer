@@ -80,7 +80,7 @@ jobs:
       fail-fast: false
       matrix:
         # Пути совпадают с root workspace.exclude и checked inventory.
-        patch: [cros-libva, cros-codecs, ffmpeg-sys-next, symphonia-format-caf, symphonia-format-isomp4, symphonia-format-mkv, symphonia-codec-aac, wayland-scanner, winit]
+        patch: [cros-libva, cros-codecs, ffmpeg-sys-next, symphonia-format-caf, symphonia-format-isomp4, symphonia-format-mkv, symphonia-codec-aac, smithay-clipboard, wayland-scanner, winit]
         include:
           # Каждый entry хранит собственный manifest и Cargo.lock.
           - patch: cros-libva
@@ -97,6 +97,8 @@ jobs:
             manifest: crates/symphonia-format-mkv-patch/Cargo.toml
           - patch: symphonia-codec-aac
             manifest: crates/symphonia-codec-aac-patch/Cargo.toml
+          - patch: smithay-clipboard
+            manifest: crates/smithay-clipboard-patch/Cargo.toml
           - patch: wayland-scanner
             manifest: crates/wayland-scanner-patch/Cargo.toml
           - patch: winit
@@ -115,6 +117,11 @@ jobs:
         if: matrix.patch == 'ffmpeg-sys-next'
         run: |
           sudo apt-get install --yes --no-install-recommends libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev
+      # Dev-зависимость smithay-clipboard (sctk с фичей xkbcommon для upstream-примера) линкует libxkbcommon.
+      - name: Install libxkbcommon development files
+        if: matrix.patch == 'smithay-clipboard'
+        run: |
+          sudo apt-get install --yes --no-install-recommends libxkbcommon-dev
       # Noble поставляет libva 2.20 / VA-API 1.20: это реальный pre-1.23 bindgen path.
       - name: Assert legacy VA-API 1.20 headers
         if: matrix.patch == 'cros-libva'

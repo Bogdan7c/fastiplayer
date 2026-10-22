@@ -81,6 +81,7 @@ class S42ReleaseRunnerTests(unittest.TestCase):
             "crates/symphonia-format-isomp4-patch/Cargo.toml",
             "crates/symphonia-codec-aac-patch/Cargo.toml",
             "crates/symphonia-format-mkv-patch/Cargo.toml",
+            "crates/smithay-clipboard-patch/Cargo.toml",
             "crates/wayland-scanner-patch/Cargo.toml",
             "crates/winit-patch/Cargo.toml",
         )

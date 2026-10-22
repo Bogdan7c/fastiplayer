@@ -69,7 +69,7 @@ members = [
     "crates/video-vaapi",
     "crates/service-ytdlp",
 ]
-# Эти девять каталогов — инвентаризированные upstream patch crates из [replace].
+# Эти десять каталогов — инвентаризированные upstream patch crates из [replace].
 # Они намеренно не наследуют first-party workspace metadata и MIT license.
 exclude = [
     "crates/cros-codecs-patch",
@@ -79,6 +79,7 @@ exclude = [
     "crates/symphonia-format-caf-patch",
     "crates/symphonia-format-isomp4-patch",
     "crates/symphonia-format-mkv-patch",
+    "crates/smithay-clipboard-patch",
     "crates/wayland-scanner-patch",
     "crates/winit-patch",
 ]
@@ -118,6 +119,13 @@ resolver = "2"
 # исчерпывающе). Удалить, когда egui-winit перейдёт на стабильный winit 0.31.
 "winit:0.30.13" = { path = "crates/winit-patch" }
 "ffmpeg-sys-next:8.1.0" = { path = "crates/ffmpeg-sys-next-patch" }
+# smithay-clipboard 0.7.3 (через egui-winit): поток буфера обмена больше не
+# слушает общий Wayland-сокет окна постоянно — иначе он просыпался на каждом
+# событии композитора (~100 раз/с при воспроизведении). Очередь буфера
+# разбирается по команде copy/paste и раз в секунду; сокет слушается только
+# пока приложение владеет скопированным текстом. Удалить, когда upstream
+# перестанет будить поток событиями чужих очередей.
+"smithay-clipboard:0.7.3" = { path = "crates/smithay-clipboard-patch" }
 
 # Все внешние зависимости в dev собираются оптимизированными: egui/wgpu/symphonia/cpal
 # на opt-level 0 не вытягивают realtime пути (UI tessellation, GPU submit/validation,

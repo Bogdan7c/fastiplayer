@@ -130,3 +130,19 @@ dependent_crates = ["video-ffmpeg", "app-egui"]
 focused_automated_tests = ["cargo test --manifest-path crates/ffmpeg-sys-next-patch/Cargo.toml --locked", "cargo test --manifest-path crates/ffmpeg-sys-next-patch/Cargo.toml --locked --no-default-features --features fastiplayer-vendored,avcodec", "cargo test -p ffmpeg-vendor --locked", "cargo test -p video-ffmpeg --features vendored-ffmpeg --locked"]
 manual_media_matrix = ["H.264/H.265/VP9/AV1 с video.preferred_backend = software на vendored-сборке", "ldd target/release/fastiplayer показывает libavcodec_fastiplayer.so.62 из target/release/lib", "сборка `--no-default-features --features system-ffmpeg` с системным FFmpeg 8.1+"]
 removal_gate = "Удалить, когда upstream ffmpeg-sys-next научится линковать prefix, переданный метаданными другого crate-а (без глобального env), либо проект откажется от vendored FFmpeg; в обоих случаях — с прохождением video-ffmpeg vendored suite и AV1/H.264 software WGPU-приёмок."
+
+# Запись фиксирует поток буфера обмена smithay-clipboard 0.7.3 (зависимость egui-winit),
+# который больше не опрашивает общий Wayland-сокет окна, пока приложение не владеет выделением.
+[[patch]]
+path = "crates/smithay-clipboard-patch"
+package = "smithay-clipboard"
+version = "0.7.3"
+upstream_repository = "https://github.com/smithay/smithay-clipboard"
+# Checksum подтверждает exact crates.io archive; из копии убраны только .github/, .gitignore (игнорировал Cargo.lock) и .cargo-ok.
+upstream_revision = "crates.io:sha256:71704c03f739f7745053bde45fa203a46c58d25bc5c4efba1d9a60e9dba81226"
+reason = "egui-winit создаёт smithay_clipboard::Clipboard поверх wl_display окна winit; upstream-поток вставляет общий сокет в свой calloop (WaylandSource, level-triggered READ) и просыпается на каждом событии любой очереди соединения — при видео на нативном Wayland ~90–140 раз/с и 0,2–0,3 % ядра без пользы. Патч опрашивает сокет только пока приложение владеет выделением (нужно мгновенно отвечать на send); иначе поток спит, перед каждой командой load/store делает roundtrip своей очереди (видит актуальное выделение и свежий serial), раз в секунду разбирает накопленное (предел памяти). Публичный API Clipboard не менялся."
+owned_diff_areas = ["Cargo.toml", "src/lib.rs", "src/socket_watch.rs", "src/state.rs", "src/worker.rs", "tests/"]
+dependent_crates = ["egui-winit", "app-egui"]
+focused_automated_tests = ["cargo test --manifest-path crates/smithay-clipboard-patch/Cargo.toml --locked", "cargo check --workspace --all-targets --locked"]
+manual_media_matrix = ["тесты tests/ запускаются в живой Wayland-сессии (без WAYLAND_DISPLAY пропускаются): до патча worker_wakeups ловит ~200 пробуждений на 200 событий чужой очереди", "wl-copy -> Ctrl+V в поле Add URL fastiplayer на KDE Wayland, в том числе первая вставка после запуска", "Ctrl+C в текстовом поле fastiplayer -> wl-paste и вставка в другое приложение", "вставка в fastiplayer собственного скопированного текста", "поток smithay-clipboa при воспроизведении: ~1 пробуждение/с вместо ~100"]
+removal_gate = "Удалить, когда upstream smithay-clipboard (или egui-winit) перестанет опрашивать общий сокет в отдельном потоке без своих событий; проверка — тест worker_wakeups на upstream-версии и живой замер потока при воспроизведении."

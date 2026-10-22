@@ -1560,7 +1560,7 @@ dependencies = [
  "objc2-ui-kit 0.3.2",
  "profiling",
  "raw-window-handle",
- "smithay-clipboard",
+ "smithay-clipboard 0.7.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "web-time",
  "webbrowser",
  "winit 0.30.13 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -4743,13 +4743,18 @@ dependencies = [
 [[package]]
 name = "smithay-clipboard"
 version = "0.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71704c03f739f7745053bde45fa203a46c58d25bc5c4efba1d9a60e9dba81226"
 dependencies = [
  "libc",
  "smithay-client-toolkit 0.20.0",
  "wayland-backend",
 ]
+
+[[package]]
+name = "smithay-clipboard"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71704c03f739f7745053bde45fa203a46c58d25bc5c4efba1d9a60e9dba81226"
+replace = "smithay-clipboard 0.7.3"
 
 [[package]]
 name = "smol_str"
