@@ -1,54 +1,29 @@
-# HostPlanar upload через StagingBelt + polосная параллельная копия (2026-07-03)
+# HostPlanar upload: StagingBelt, однопоточная копия, GPU-копия в submit кадра
 
-> **Superseded notice (2026-07-03):** любые упоминания hover preview, hover predecode, hover budget/reservation, timeline-hover prepare или hover overlay ниже являются историческими и не описывают активный контракт. Актуальные owners и запреты: `mem:core` и `mem:frame-server/core`. Остальная non-hover информация этой memory остаётся действующей.
+Актуально с cpu-parity сессии 07 (2026-10-22, коммиты `8298c676`, `d80084cb`). История до 07 (полосная копия в 4 потока через `std::thread::scope`, свой `queue.submit` на кадр, сессия 2026-07-03) — в git-истории этой memory; не возвращать.
 
-## Что сделано
-`render-wgpu-video::video/host_planar_upload.rs` (`WgpuHostPlanarUploadBackend`):
-- `Queue::write_texture` заменён на `wgpu::util::StagingBelt::allocate` + полосная
-  параллельная копия plane block-а в mapped chunk (`copy_plane_block_into_staging`,
-  `std::thread::scope`, полосы ≥1МиБ, максимум 4 потока) + `copy_buffer_to_texture`.
-- GPU-копии всех planes одного кадра батчатся в ОДИН encoder/submit: trait
-  `HostPlanarUploadBackend` получил `flush_plane_uploads()` (default no-op), его
-  зовёт `upload_host_planar_visible_rows` после цикла planes; wgpu backend там
-  делает `belt.finish()` → `queue.submit` → `belt.recall()`.
-- Chunk belt-а 16МиБ (весь 4K-кадр). `bytes_per_row` staging выравнивается к
-  `COPY_BYTES_PER_ROW_ALIGNMENT` (256) — chroma stride 1920 не выровнен, поэтому
-  per-row repack, а не flat memcpy.
+## Как устроено сейчас
+`render-wgpu-video::video::host_planar_upload` (`WgpuHostPlanarUploadBackend` в `host_planar_upload/wgpu_backend.rs`):
+- Плоскости кадра копируются в mapped chunk `wgpu::util::StagingBelt` (chunk 16 МиБ — весь 4K-кадр) **на текущем (главном) потоке**, строка за строкой (`copy_plane_block_into_staging`): stride источника FFmpeg и staging (выравнивание `COPY_BYTES_PER_ROW_ALIGNMENT` = 256) в общем случае разные. Потоков-помощников нет. Замер 07 (AV1 4K60, 7840HS): 4 потока давали `video_prepare` 1,07 мс против 1,12 мс одним потоком, а создание 3 потоков на кадр стоило ~8 п.п. ядра процесса (181 новый поток/с). Решение владельца 07: однопоточно; проверить хвост на T480s в сессии 10, при регрессии — постоянный пул в одной функции.
+- `copy_buffer_to_texture` всех плоскостей кадра пишется в один encoder (`FrameUploadRecording { encoder, destination }`). `flush_plane_uploads` НЕ делает submit: `StagingBelt::finish_and_recall_on_submit(&encoder)` (wgpu 30.0.1, re-map чанков после submit-а именно этого command buffer-а), `encoder.finish()` кладётся в слот — `PendingHostPlanarUpload` (`host_planar_upload/pending_upload.rs`, поле `WgpuHostPlanarUploadedTextures::pending_upload: Arc<..>`).
+- Кадр из views материализатора: `HostPlanarWgpuTextureViews::plane_views()` / `WgpuFrameTextureViews::host_planar_plane_views()` → `WgpuRenderableFrame::from_decoded_host_planar` (несёт `host_upload: Option<&PendingHostPlanarUpload>`). `WgpuVideoRenderer` после **успешной** записи host-planar pass-а забирает копию (`claim_host_upload`) в `WgpuVideoRenderOutcome::host_upload: Option<HostPlanarUploadCommands>`; shell (`render-wgpu-shell::shell.rs`) отправляет её ПЕРВОЙ в общем `queue.submit` кадра (upload → DMA-BUF acquire → egui callbacks → encoder кадра → DMA-BUF release). Один submit на кадр.
+- Невостребованная копия (кадр загрузили, но не нарисовали; рендер упал) уходит отдельным submit-ом в начале следующей загрузки (`ensure_frame_upload_recording` → `submit_unclaimed_upload`) и, на всякий случай, в `flush_plane_uploads` перед сохранением новой. Инвариант: каждая записанная копия попадает в очередь ровно один раз и раньше любого submit-а, который семплит слот. Повторный показ слота копию не повторяет.
+- `WgpuRenderableFrame::from_decoded_host_yuv` (отдельные views без слота) — `pub(crate)`, только для тестов рендерера; `from_decoded_host_yuv420` удалён. Views материализатора через него рендерить нельзя: копия не попадёт в submit.
+- `uploaded_textures_are_idle` = `Arc::strong_count(slot) == 1`; ожидающая копия держит `Arc<PendingHostPlanarUpload>`, а не слот, и на idle не влияет. Пул 24 слота, `MIN_REUSE_RING_SLOTS = 4`, `Busy` при полном — без изменений.
 
-## Почему так
-- Одиночный memcpy 8-12МБ внутри write_texture на memory-bandwidth-bound CPU под
-  нагрузкой dav1d стоил p50 ~4мс / p99 ~20мс / max 30мс в `video_prepare`.
-- ВАЖНО: `create_buffer(mapped_at_creation)` на каждый кадр — АНТИПАТТЕРН: wgpu
-  zero-инициализирует буфер, это дороже самой копии (замерено: 25% кадров сверх
-  бюджета против 7.8% у write_texture). Только belt/reuse.
-- Это НЕ upload-ahead (см. `mem:video-ffmpeg/software-upload-ahead-REJECTED`):
-  копия и submit остаются на render-потоке синхронно, отклонённый worker-scheduler
-  не возвращён. Belt-подход с явным submit НЕ конфликтует с тем вердиктом.
-- `WriteOnly<[u8]>` в wgpu 29 не Send (Sized-bound) — обёртка `StagingCopyBand`
-  c `unsafe impl Send` (полосы дизъюнктны через `split_at`); в замыкании нужен
-  захват ВСЕЙ обёртки одним place-выражением (edition-2021 precise capture поля
-  .0 обошёл бы Send impl).
+## Почему так (не повторять отклонённое)
+- `create_buffer(mapped_at_creation)` на кадр — АНТИПАТТЕРН: wgpu zero-инициализирует буфер дороже самой копии. Только belt/reuse.
+- `Queue::write_texture` — та же CPU-копия в staging wgpu, без выигрыша; upload-ahead на отдельном потоке отклонён (`mem:video-ffmpeg/software-upload-ahead-REJECTED`). Копия и запись остаются на render-потоке синхронно.
+- Отдельный submit загрузки стоил главному потоку ~0,12 мс/кадр (профиль samply 07), дороже submit-а всего кадра.
 
-## Потоки software-декода (та же сессия)
-- `video.sw_decode_threads` (config, default 0=auto, 0..=64, живая через
-  PlayerDecoderThreadConfig group): 0 → `SoftwareDecodeThreadBudget::Auto`.
-- Auto резолвится в `video-core::SoftwareDecodeThreadBudget::resolved_thread_count()`
-  = `max(2, available_parallelism − 2)`; те же цифры видит hover accounting
-  (`playback_thread_budget_from_decoder_config`) и ffmpeg
-  (`ffmpeg_thread_count_from_budget` больше НЕ отдаёт 0=все ядра).
-- Причина: 8 dav1d-воркеров на 8 HT (4 ядра KBL) вытесняли render-поток.
+## Backpressure SW-загрузки
+`render-wgpu-video::resource_provider::WgpuReleaseVideoDecoderThreadHandle` пробрасывает `host_upload_resource_snapshot` (с 07; до этого default `UnsupportedBackend` → в живом приложении player-core не тормозил отправку пакетов по полной ready-очереди/исчерпанным upload-слотам FFmpeg). Правило: обёртка обязана пробрасывать ВСЕ default-методы `VideoDecoderThreadHandle` (та же дыра была у `decoder_activity_snapshot`, сессия 02).
 
-## Замеры (AV1 4K60, UHD620 ноутбук, pool=8, панель телеметрии включена)
-- До: 7.8% UI-кадров сверх 16.7мс, p99 26.8мс, max 169мс.
-- Belt + threads auto(6): 1.7% сверх бюджета, p99 19.8.
-- Belt + threads 5 (у пользователя в конфиге): 0.6% сверх бюджета, p99 13.8мс,
-  max 40мс, 1 дроп/42с — стабильные 60fps.
-- `sw_decoder_surface_pool_frames = 4` (было у пользователя) — катастрофа на ЛЮБОЙ
-  версии кода (~130-146 Late-дропов/40с): рендер пинит 2-3 кадра, декодеру не
-  остаётся opережения. Минимум для 4K60 — дефолтные 8.
+## Тесты
+- `host_planar_upload/pending_upload/tests.rs` (GPU, реальный материализатор → `render_or_clear` → submit → чтение пикселя): копия в submit кадра даёт белый кадр; без неё кадр не белый (материализатор не отправляет сам); незабранная копия уходит перед следующей загрузкой; повторный показ без второй копии. Пропуск без адаптера.
+- `host_planar_upload/wgpu_backend/tests.rs`: копия строк с padding-ом, вся 4K-плоскость, нулевая высота.
+- `resource_provider.rs` tests: проброс host-upload снимка и `UnsupportedBackend` без придумывания.
+- Внешние потребители: `video-ffmpeg/tests/support/wgpu_acceptance.rs` (AV1 vendored, `--features vendored-ffmpeg -- --include-ignored`), `app-egui/.../content_probe_tests/direct_progressive_webm.rs` отправляют `host_upload` первым в своём submit-е.
 
-## Замерочный harness
-`/tmp/rusti-perf-test/measure.sh` + `analyze.py` (в /tmp, эфемерные): 30с прогон с
-`RUST_LOG=fastiplayer::render_frame_timing=trace`, XDG_CONFIG_HOME-подмена конфига,
-per-stage перцентили и CPU по потокам из /proc. Логи испорчены ANSI-кодами — grep
-только после `sed 's/\x1b\[[0-9;]*m//g'`. Не запускать замер параллельно с cargo.
+## Потоки software-декода
+`video.sw_decode_threads` (0 = auto = `max(2, available_parallelism − 2)`), `video.sw_decoder_surface_pool_frames` = 8 (`mem:video-ffmpeg/software-frame-pool-setting`) — без изменений; политика потоков — сессия 08 плана `user/cpu-parity/`.
