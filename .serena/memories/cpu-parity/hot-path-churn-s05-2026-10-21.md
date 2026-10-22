@@ -18,6 +18,6 @@
 
 ## Не сделано / бэклог
 - SW `std::thread::scope` на каждую загрузку кадра (20 % главного потока на SW 1080p60) — сессия 07.
-- `smithay-clipboard` поток (0,3 %): слушает то же Wayland-соединение, что и окно, просыпается на каждом событии композитора; устройство зависимости egui-winit — не патчено.
+- `smithay-clipboard` поток (0,3 %): слушает то же Wayland-соединение, что и окно, просыпается на каждом событии композитора. ЗАКРЫТО в 06d (2026-10-22) патчем `crates/smithay-clipboard-patch` — `mem:dependency-patches/core` (0,21 → 0,003 %, ~1 пробуждение/с).
 - `VideoDecodeThread::resource_pool_stats` (VA-API, ~4 % worker-а: lock + stats на каждом тике через `texture_pool_snapshot`) — не трогали.
 - `refresh_player_snapshot` по-прежнему вызывается ≥ 2 раза за пробуждение (теперь это `Arc::clone` + `pump_embedded_subtitles`).
