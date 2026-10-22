@@ -60,7 +60,7 @@ pub(crate) const MAX_DECODER_SURFACE_POOL_FRAMES: usize = 64;
 /// Верхний предел zero-copy import slots.
 pub(crate) const MAX_ZERO_COPY_SURFACE_POOL_SLOTS: usize = 64;
 
-/// Минимум потоков software-декода; 0 = auto (ядра − 2).
+/// Минимум потоков software-декода; 0 = auto (ядра − 2, у AV1 потолок 4/6).
 pub(crate) const MIN_SW_DECODE_THREADS: usize = 0;
 
 /// Верхний предел потоков software-декода.

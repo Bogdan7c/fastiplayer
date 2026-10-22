@@ -235,7 +235,7 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,
         "sw_decode_threads = 0",
-        "# Потоки software-декода; 0 = авто (ядра − 2, чтобы render-поток не голодал).",
+        "# Потоки software-декода; 0 = авто (ядра − 2, чтобы render-поток не голодал; AV1 — до 4/6 потоков).",
     );
     insert_default_config_comment(
         toml_text,

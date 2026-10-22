@@ -10,9 +10,7 @@ use video_core::{
 use video_core::{SoftwareDecodeThreadBudget, VideoStreamDecodeConfig};
 
 #[cfg(feature = "ffmpeg")]
-use crate::codec_adapter::{
-    FfmpegDecoderId, color_metadata_plan_from_ffmpeg_frame, plan_ffmpeg_software_decode,
-};
+use crate::codec_adapter::{color_metadata_plan_from_ffmpeg_frame, plan_ffmpeg_software_decode};
 #[cfg(feature = "ffmpeg")]
 use crate::ffi::codec_context::{CodecContext, FfmpegCodecContextRequest};
 #[cfg(feature = "ffmpeg")]
@@ -36,6 +34,12 @@ use super::{FfmpegDecoderThreadError, set_eof_drain_state};
 
 #[cfg(any(test, feature = "ffmpeg"))]
 mod timestamps;
+
+#[cfg(any(test, feature = "ffmpeg"))]
+mod decode_threading;
+
+#[cfg(feature = "ffmpeg")]
+use decode_threading::{CodedFrameSize, SoftwareDecodeWorkload};
 
 #[cfg(any(test, feature = "ffmpeg"))]
 use timestamps::FramePtsResolver;
@@ -81,10 +85,13 @@ impl RealFfmpegDecodeApi {
             adapter_plan.decoder_id(),
             adapter_plan.accepted_pixel_formats().clone(),
         );
-        if adapter_plan.decoder_id() == FfmpegDecoderId::Av1 {
-            request = request.with_max_frame_delay(1);
-        }
-        request = request.with_software_decode_thread_budget(software_decode_thread_budget);
+        // Frame delay и число потоков зависят от кодека и размера кадра (cpu-parity 08).
+        // Ручной `sw_decode_threads` остаётся как есть.
+        let stream_workload = SoftwareDecodeWorkload {
+            decoder: adapter_plan.decoder_id(),
+            coded_size: CodedFrameSize::from_optional(config.coded_width, config.coded_height),
+        };
+        request = stream_workload.apply_to_request(request, software_decode_thread_budget);
         if let Some(extradata) = extradata_for_stream_config(config)? {
             request = request.with_extradata(extradata);
         }

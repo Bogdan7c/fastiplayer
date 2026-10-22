@@ -173,7 +173,8 @@ pub struct VideoConfig {
     )]
     pub sw_decoder_surface_pool_frames: usize,
 
-    /// Лимит потоков software (FFmpeg) декода; 0 = auto (ядра − 2, минимум 2).
+    /// Лимит потоков software (FFmpeg) декода; 0 = auto (ядра − 2, минимум 2;
+    /// AV1 — не больше 4 до 1080p и 6 выше, решение владельца cpu-parity 08).
     #[setting(
         id = "video.sw_decode_threads",
         path = "video.sw_decode_threads",
@@ -183,7 +184,7 @@ pub struct VideoConfig {
         label_id = "settings.video.sw_decode_threads.label",
         label_ru = "Software decode threads",
         description_id = "settings.video.sw_decode_threads.description",
-        description_ru = "Threads assigned to the software decoder (FFmpeg). 0 = automatic: all cores minus 2, leaving capacity for rendering/upload to maintain stable render FPS. Using all cores (for example, 8 of 8) speeds up decoding but competes with rendering and causes stuttering at 4K60. Applies during playback.",
+        description_ru = "Threads assigned to the software decoder (FFmpeg). 0 = automatic: all cores minus 2, leaving capacity for rendering/upload to maintain stable render FPS; AV1 uses at most 4 threads up to 1080p and 6 above, because more threads only add CPU load there. Using all cores (for example, 8 of 8) speeds up decoding but competes with rendering and causes stuttering at 4K60. Applies during playback.",
         editor = "integer",
         min = crate::validation::MIN_SW_DECODE_THREADS,
         max = crate::validation::MAX_SW_DECODE_THREADS,

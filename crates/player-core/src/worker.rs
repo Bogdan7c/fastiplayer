@@ -303,7 +303,7 @@ fn decoder_thread_config_from_app_config(
 
 /// Конвертирует `video.sw_decode_threads` в neutral thread budget.
 ///
-/// `0` = auto (резолв «ядра − 2» живёт в `SoftwareDecodeThreadBudget`),
+/// `0` = auto («ядра − 2» в `SoftwareDecodeThreadBudget`, потолок кодека — в backend-е),
 /// положительное значение = уже разрешённый пользователем лимит.
 fn software_decode_thread_budget_from_config(
     sw_decode_threads: usize,
