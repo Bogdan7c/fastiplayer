@@ -8,6 +8,9 @@ fits the session's ±0.5 percentage-point exit band. The planned exit criterion
 was therefore **not met**. Equal smoothness is not established. No PARITY label
 is emitted.
 
+The software-decode qualification of session 08 is in
+[Software decode (session 08)](#software-decode-session-08) below.
+
 Task: session 06c of the CPU-parity plan (`user/cpu-parity/`);
 tracking goal: [#10](https://github.com/Bogdan7c/fastiplayer/issues/10).
 Measurement tools: [local protocol, version 3](tools/local/README.md#measurement-protocol-version-3).
@@ -240,3 +243,132 @@ H.264 1080p60 and 118 MiB for HEVC 4K60. No systematic growth was observed.
 - Raw artifacts (runtime logs, screenshots, full per-sample observations) are kept
   privately because they contain local paths. The compressed evidence file holds
   the sanitized per-attempt metrics, summaries and quality gates.
+
+## Software decode (session 08)
+
+**Same protocol (version 3), same reference player (mpv), software decoding on
+both sides.** Fastiplayer showed no frame loss on all 5 scenes. Its GPU
+render-engine time was 2–6× lower on every scene. CPU results:
+
+- **WIN** on both AV1 4K60 scenes, by −98 pp on the tiled Big Buck Bunny file;
+- **INCONCLUSIVE** on HEVC 4K60 (mean −5.4 pp in Fastiplayer's favour);
+- **WORSE by about 3.5 pp** on H.264 1080p60 and VP9 4K60.
+
+mpv lost frames on one scene (single-tile AV1 4K60). That scene's CPU result
+holds **only with that caveat** and claims no superiority. The session's exit
+criterion (WIN, or INCONCLUSIVE inside ±1 pp, on every scene) was **not met** on 3
+of 5 scenes.
+
+Task: session 08 of `user/cpu-parity/`. Before this series, session 08 changed the
+software decoder's thread policy:
+
+- AV1 is capped at 4 threads up to 1080p and at 6 above, and decodes 2 frames in
+  parallel above 1080p;
+- H.264, HEVC and VP9 keep "cores − 2" threads;
+- it also fixed a worker busy-spin that occurred while a slow decoder kept its
+  packet channel full.
+
+### Provenance and scope
+
+- Production source: `b817df134c6adca9a2c41f659283a91b6e8f5c87` (tree clean for
+  production code). Fastiplayer release SHA-256
+  `73ff53300b680f900ae65097f9e1299cf51dff02e4037bf8aa46d012279b244f`, rebuilt
+  bit-identically from that commit with `cargo build --release -p app-egui --locked`
+  (default features: vendored LGPL FFmpeg 8.1.3 + dav1d 1.5.4, no LTO).
+- Reference: mpv 0.41.0 (same binary as the hardware series), launched as
+  `--no-config --hwdec=no --fs --volume=0`. `--hwdec=no` is mpv's default.
+  `hwdec-current = no` was proven at both window boundaries of every attempt.
+  mpv's thread choices are its own defaults: libavcodec with `cores + 1` (16) frame
+  threads, and dav1d with its automatic thread count and frame delay.
+- Fastiplayer: `--fullscreen`, the hardware series' configuration with
+  `preferred_backend = "software"`, and `sw_decode_threads = 0` (automatic policy).
+  The `ffmpeg-host-upload-wgpu` plan, with no VA-API trace, was proven from the
+  runtime log of every attempt.
+- Host, session, display, timing (12 s warm-up, 20 s window), XWayland
+  fullscreen and alternation are as in the hardware series above.
+- New plan fields:
+  - `decode = software`;
+  - `exit_band_percentage_points = 1.0` (the session-08 criterion is ±1 pp);
+  - `reference_losses = annotate`: reference losses mark the scene
+    `REFERENCE_LOSSES` instead of stopping the series. Fastiplayer losses still
+    fail.
+
+  See [the tools README](tools/local/README.md#measurement-protocol-version-3).
+
+### Media
+
+| Scene | File | SHA-256 (prefix) |
+|---|---|---|
+| h264-1080p60 | matrix `1080p60_h264-high_40mbps_aac.mp4` | `f9799510bad2d958` |
+| hevc-4k60 | matrix `4k60_hevc-main_60mbps_aac.mp4` | `09986b5a08066a75` |
+| vp9-4k60 | matrix `4k60_vp9-profile0_50mbps_opus.webm` | `616b393bbeed683e` |
+| av1-4k60 | matrix `4k60_av1-main_40mbps_aac.mp4` (SVT-AV1, a single tile per frame) | `3fdddb1855b8d727` |
+| av1bbb-4k60 | Big Buck Bunny 4K60 (Blender Foundation, CC BY 3.0), AV1 8-bit with tiles, AAC 5.1, 9.4 Mbit/s, 4–5 s GOP | `e647620fa682a1ca` |
+
+Matrix files are the 45-second clips described in [Media](#media) above.
+
+### Attempts
+
+- 58 of 58 attempts were valid, with none excluded or replaced.
+- Every scene had 1 diagnostic pair.
+- Quiet pairs per scene:
+  - 3 for av1-4k60, av1bbb-4k60 and vp9-4k60 (verdict reached at the first look);
+  - 6 for h264-1080p60;
+  - 9 for hevc-4k60.
+- A pilot (one diagnostic attempt per player on av1-4k60) was valid and is not
+  scored.
+
+### Quality gate
+
+| Scene | Fastiplayer unique frames / expected | mpv lost frames | Gate |
+|---|---|---|---|
+| h264-1080p60 | 1201 / 1200.3 | 0 in all 7 attempts | PASS |
+| hevc-4k60 | 1201 / 1200.4 | 0 in all 10 | PASS |
+| vp9-4k60 | 1201 / 1200.3 | 0 in all 4 | PASS |
+| av1-4k60 | 1201 / 1200.3 | **3 in every one of 4** | REFERENCE_LOSSES |
+| av1bbb-4k60 | 1200 / 1200.2 | 0 in all 4 | PASS |
+
+### CPU, GPU and memory (quiet mode)
+
+Process-tree CPU in % of one logical CPU. The difference is Fastiplayer − mpv,
+with a conservative Student interval (t = 10).
+
+| Scene | Pairs | Fastiplayer CPU, mean (range) | mpv CPU, mean (range) | Difference | Interval | CPU verdict | GPU gfx busy %, Fastiplayer / mpv (verdict) | RSS MiB, Fastiplayer / mpv | PSS MiB, Fastiplayer / mpv |
+|---|---|---|---|---|---|---|---|---|---|
+| h264-1080p60 | 6 | 52.4 (51.7–53.0) | 48.8 (48.4–49.0) | +3.66 | [+1.11; +6.21] | **WORSE** | 3.82 / 8.32 (WIN) | 241 / 274 | 231 / 260 |
+| hevc-4k60 | 9 | 173.3 (170.9–176.3) | 178.7 (177.9–180.2) | −5.38 | [−12.59; +1.83] | INCONCLUSIVE | 6.62 / 37.13 (WIN) | **672 / 515** | **662 / 500** |
+| vp9-4k60 | 3 | 113.6 (112.9–114.5) | 110.2 (110.0–110.5) | +3.35 | [+0.20; +6.50] | **WORSE** | 6.59 / 36.89 (WIN) | **421 / 236** | **411 / 222** |
+| av1-4k60 ¹ | 3 | 126.8 (126.1–127.7) | 132.0 (131.8–132.1) | −5.23 | [−9.62; −0.84] | WIN ¹ | 6.63 / 37.00 (WIN) | 404 / 572 | 395 / 558 |
+| av1bbb-4k60 | 3 | 113.7 (112.8–114.3) | 211.5 (207.3–213.6) | −97.78 | [−113.99; −81.58] | **WIN** | 6.81 / 38.88 (WIN) | 404 / 579 | 395 / 565 |
+
+¹ **With reference frame losses:** mpv dropped 3 frames in every attempt on this
+scene, and Fastiplayer dropped none. The CPU difference is reported but is not a
+claim of superiority.
+
+**Where the gap comes from (diagnostic per-thread split, outside the protocol):**
+
+- On H.264 1080p60 and VP9 4K60 the decoders cost the same or less in
+  Fastiplayer: 43.6 vs 44.9 % and ~98 vs 105 %. Both players use libavcodec with
+  frame threading.
+- The difference is Fastiplayer's presentation path:
+  - main thread ≈ 6 % on 1080p60 and ≈ 10 % on 4K60;
+  - mpv's `vo` thread 2.4 % and 3.3 %.
+- Fastiplayer copies each decoded frame into a staging buffer on its main thread
+  before the GPU upload (session 07).
+- On AV1 the thread cap removes dav1d's synchronisation overhead. mpv runs dav1d
+  with all 16 logical CPUs.
+
+### Software-decode limitations
+
+- **Exit criterion not met** on h264-1080p60 and vp9-4k60 (WORSE) and on hevc-4k60
+  (interval wider than ±1 pp).
+- **Memory:** Fastiplayer's RSS is higher than mpv's on VP9 and HEVC 4K60, and
+  lower on H.264 and AV1. AV1 4K grew by about +110 MiB in session 08, the
+  owner-accepted price of decoding 2 frames in parallel.
+- Session 08b (planned) covers the presentation-path cost and the 4K memory gap.
+- One machine, XWayland only, 45-second matrix clips plus one long file. The weak
+  Intel laptop (T480s) was not measured, so the thread caps there are untested.
+- The players' renderers, scalers, demuxers and FFmpeg builds differ. mpv uses
+  the distribution FFmpeg, Fastiplayer the vendored FFmpeg 8.1.3. This is a
+  default-behaviour comparison.
+- Sanitized per-attempt evidence: `local-cpu-parity-sw-2026-10-22.json.gz`.
