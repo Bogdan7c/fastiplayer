@@ -6,7 +6,9 @@ Fastiplayer publishes measurements with their scope, environment, and limitation
 
 ## Local measurement development
 
-The [2026-09-08 AMD local baseline](local-cpu-baseline-2026-09-08.md) and [measurement tools](tools/local/README.md) use a separately frozen local protocol. They preserve the historical S08 results and do not claim equal smoothness or replace T480s qualification. The tools and the baseline were restored on 2026-10-21 from the merge commit of PR #12 (`09ab9060`), which the public-history cutover had left outside `main`; protocol version 2 (VLC with its Qt interface, GPU engine time, automatic quality gate) is documented in the tools README and does not recalculate version 1 numbers.
+The [2026-09-08 AMD local baseline](local-cpu-baseline-2026-09-08.md) and [measurement tools](tools/local/README.md) use a separately frozen local protocol. They preserve the historical S08 results and do not claim equal smoothness or replace T480s qualification. The tools and the baseline were restored on 2026-10-21 from the merge commit of PR #12 (`09ab9060`), which the public-history cutover had left outside `main`; protocol versions 2 (mpv reference, GPU engine time, automatic quality gate) and 3 (Fastiplayer enters fullscreen through `--fullscreen`) are documented in the tools README and do not recalculate version 1 numbers.
+
+The [2026-10-22 hardware-decode report](local-cpu-parity-2026-10-22.md) is the first protocol-v3 series against mpv: 17 scenes, 9 alternating pairs each, quality gate passed on all scenes, GPU render-engine time lower on all scenes, CPU unresolved (INCONCLUSIVE everywhere, no WORSE).
 
 ## Existing N15 ingress experiment
 

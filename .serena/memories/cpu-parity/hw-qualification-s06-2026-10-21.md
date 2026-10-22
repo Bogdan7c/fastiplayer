@@ -20,6 +20,13 @@ VLC 3.0.24 не умеет аппаратный AV1 на 780M (dav1d SW по у�
 - Фуллскрин-скрипт KWin под XWayland НЕ делает Fastiplayer «фуллскрин» для winit: панель/заголовок видимы (D2). Двойной клик по видео через виртуальную абсолютную мышь `/dev/uinput` (у пользователя есть права) включает наш фуллскрин и автоскрытие.
 - Быстрая разбивка по потокам — `tools/dev/run_pass.py` + `RUST_LOG=...,fastiplayer::render_frame_timing=trace` и подсчёт `frame_work_plan`/`ui_pass_reason`.
 
+## Серия 06c (протокол v3, 2026-10-22) — итог и уроки
+- Артефакты: `benchmark-output/cpu-parity-06c/` (plan-v3.json, pilot/, series-v3/, run-*.sh, environment-*.txt). План v3 = plan-v2 06 с `protocol_version: 3`, новым хэшем бинарника, тем же конфигом и window-owner. Пилот — `collect.py` на spec-ах с `capture: true` (скриншоты вне CPU-окна).
+- Длительность: 68 попыток первого круга ≈ 45 мин, тихий круг 34 попытки ≈ 21 мин; до 9 пар ≈ 3 ч. summary.json пишется только в конце круга.
+- Итог: quality 17/17, gfx WIN 17/17, CPU INCONCLUSIVE 17/17 без WORSE (подробно — `mem:cpu-parity/core`, `user/cpu-parity/results/06c.md`).
+- Урок: коридор ±0,5 п.п. при t=10 и n ≤ 9 требует sd парных разниц ≤ ~0,12 п.п. (ширина = 3,33·sd + 0,10); mpv на 60 fps скачет между прогонами одного файла до 2,3 п.п. → коридор почти недостижим, вопрос протокола (v4) — владельцу (06d).
+- Публикация: обезличенная выгрузка per-attempt (`.json.gz` в `docs/benchmarks/`) делалась скриптом в scratchpad (не в tools/local — новый .py там меняет хэши provenance серии). Поля: метрики, хэши, quality без событий, gpu engines, loadavg; без путей/PID/unit.
+
 ## Диагнозы (для 06a/06b)
 - D1 (ЗАКРЫТ в 06b: позиция в модели только при видимой панели): `UiFrameModel::build` всегда включал `quantize_timeline_position` (пиксель ползунка) независимо от видимости таймлайна → ~25–28 полных egui-проходов/с на 45-с клипах даже со скрытой панелью; главный поток на 30 fps почти не дешевле 60 fps.
 - D2: см. выше. ЗАКРЫТ в 06b (2026-10-22): протокол v3 — `collect.py::fastiplayer_command` = `--fullscreen`, `PROTOCOL_VERSION = 3` в `host.py`, план серии обязан объявить 3 (`mem:cpu-parity/ui-visible-changes-fullscreen-s06b-2026-10-22`). Решение владельца 2026-10-21: протокол v3 входит в фуллскрин CLI-флагом `--fullscreen` (сессия 06b), флаг передаётся и в уже открытое окно (D-Bus `platform_data`); uinput-клик и распознавание WM-фуллскрина отклонены. Лишние VA-API декодеры на старте — подзадача 06b, сабагент Opus 5.5 / medium. Файлы сессий: `user/cpu-parity/06a-*.md`, `06b-*.md`, `06c-*.md`.
