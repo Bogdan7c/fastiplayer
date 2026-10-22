@@ -27,7 +27,7 @@ use render_core::{
     RenderLiveSettingsUpdate,
 };
 use render_wgpu_video::{
-    WgpuRenderableFrame, WgpuVideoRenderInput, WgpuVideoRenderer,
+    HostPlanarUploadCommands, WgpuRenderableFrame, WgpuVideoRenderInput, WgpuVideoRenderer,
     required_wgpu_video_texture_features,
 };
 use tracing::{debug, info, instrument};
@@ -555,8 +555,9 @@ impl Renderer {
 
         let stage_started_at = Instant::now();
         // Барьеры DMA-BUF кадра (если image переиспользуется) отправляются вокруг
-        // основного command buffer-а; renderer их записал, shell обязан их submit-ить.
-        let video_external_sync = match self.video_renderer.render_or_clear(WgpuVideoRenderInput {
+        // основного command buffer-а, а GPU-копия плоскостей host-planar кадра — перед
+        // ним; renderer их отдал, shell обязан их submit-ить в том же submit-е.
+        let video_render_outcome = match self.video_renderer.render_or_clear(WgpuVideoRenderInput {
             frame: video_frame,
             video_viewport: clamped_video_viewport,
             video_exclusion_rects: &clamped_video_exclusion_rects,
@@ -565,7 +566,7 @@ impl Renderer {
             device: &self.gpu.device,
             queue: &self.gpu.queue,
         }) {
-            Ok(outcome) => outcome.external_sync,
+            Ok(outcome) => outcome,
             Err(error) => {
                 tracing::error!(error = %error, "Video render failed");
                 // Encoder с egui paint jobs отбрасывается вместе с failed frame.
@@ -615,16 +616,21 @@ impl Renderer {
         let window_corner_mask_elapsed = stage_started_at.elapsed();
 
         // Отправляем команды на GPU. Порядок внутри одного submit-а задаёт
-        // очередность исполнения: acquire DMA-BUF кадра → egui callbacks → основной
-        // encoder (video + overlay + egui) → release DMA-BUF кадра декодеру.
+        // очередность исполнения: загрузка host-planar кадра в текстуры → acquire
+        // DMA-BUF кадра → egui callbacks → основной encoder (video + overlay + egui) →
+        // release DMA-BUF кадра декодеру.
         let stage_started_at = Instant::now();
-        let (video_acquire, video_release) = match video_external_sync {
+        let video_host_upload = video_render_outcome
+            .host_upload
+            .map(HostPlanarUploadCommands::into_command_buffer);
+        let (video_acquire, video_release) = match video_render_outcome.external_sync {
             Some(sync) => (Some(sync.acquire), Some(sync.release)),
             None => (None, None),
         };
         self.gpu.queue.submit(
-            video_acquire
+            video_host_upload
                 .into_iter()
+                .chain(video_acquire)
                 .chain(egui_callback_command_buffers)
                 .chain(std::iter::once(encoder.finish()))
                 .chain(video_release),

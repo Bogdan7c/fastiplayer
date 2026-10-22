@@ -155,13 +155,10 @@ impl OffscreenWgpuHarness {
                 panic!("HostPlanar materializer ended up with an error")
             }
         };
-        let renderable_frame = WgpuRenderableFrame::from_decoded_host_yuv(
-            &frame,
-            &uploaded_views.y_view,
-            &uploaded_views.u_view,
-            &uploaded_views.v_view,
-        )
-        .expect("WGPU renderable direct WebM frame");
+        // Views слота несут ожидающую GPU-копию плоскостей: рендерер отдаст её в submit кадра.
+        let renderable_frame =
+            WgpuRenderableFrame::from_decoded_host_planar(&frame, uploaded_views.plane_views())
+                .expect("WGPU renderable direct WebM frame");
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -209,7 +206,13 @@ impl OffscreenWgpuHarness {
                 depth_or_array_layers: 1,
             },
         );
-        let submission_index = self.queue.submit([encoder.finish()]);
+        // Копия загрузки кадра идёт первой в том же submit-е, что и его render pass.
+        let host_upload = drew_video
+            .host_upload
+            .map(|upload| upload.into_command_buffer());
+        let submission_index = self
+            .queue
+            .submit(host_upload.into_iter().chain([encoder.finish()]));
         renderer_provider.release_frame(resource_handle);
         let readback_slice = self.readback_buffer.slice(..);
         let (mapping_sender, mapping_receiver) = mpsc::sync_channel(1);

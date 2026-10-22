@@ -205,13 +205,10 @@ impl OffscreenWgpuHarness {
         };
 
         // Renderable wrapper проверяет decoded metadata/contract перед shader boundary.
-        let renderable_frame = WgpuRenderableFrame::from_decoded_host_yuv(
-            &frame,
-            &uploaded_views.y_view,
-            &uploaded_views.u_view,
-            &uploaded_views.v_view,
-        )
-        .expect("gather up production WGPU renderable frame");
+        // Views слота несут ожидающую GPU-копию плоскостей: рендерер отдаст её в submit кадра.
+        let renderable_frame =
+            WgpuRenderableFrame::from_decoded_host_planar(&frame, uploaded_views.plane_views())
+                .expect("gather up production WGPU renderable frame");
 
         // Один encoder содержит настоящий video render pass и texture-to-buffer evidence copy.
         let mut encoder = self
@@ -270,8 +267,14 @@ impl OffscreenWgpuHarness {
             },
         );
 
-        // Настоящий Queue::submit является обязательной границей AUD-013.
-        let submission_index = self.queue.submit([encoder.finish()]);
+        // Настоящий Queue::submit является обязательной границей AUD-013: копия
+        // загрузки кадра идёт первой в том же submit-е, что и его render pass.
+        let host_upload = drew_video
+            .host_upload
+            .map(|upload| upload.into_command_buffer());
+        let submission_index = self
+            .queue
+            .submit(host_upload.into_iter().chain([encoder.finish()]));
 
         // Renderer-owned provider регистрирует release только после уже выполненного submit.
         renderer_provider.release_frame(resource_handle);

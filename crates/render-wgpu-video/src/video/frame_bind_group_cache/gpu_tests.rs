@@ -74,6 +74,7 @@ impl FakeUploadSlot {
             u_view: &self.u_view,
             v_view: &self.v_view,
             bind_group_cache: Some(&self.bind_groups),
+            pending_upload: None,
         }
     }
 }

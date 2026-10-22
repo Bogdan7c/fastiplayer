@@ -1,7 +1,9 @@
 //! Конкретный WGPU staging backend HostPlanar upload-а.
 //!
-//! Здесь сосредоточены allocation textures, mapped staging bands, alignment и
-//! один batched submit на кадр. Materializer/pool зависят только от trait-а.
+//! Здесь сосредоточены allocation textures, копия плоскостей в mapped staging,
+//! alignment и запись GPU-копий кадра в один command buffer. Сам backend этот
+//! command buffer не отправляет: он ждёт submit-а кадра (см. `pending_upload`).
+//! Materializer/pool зависят только от trait-а.
 
 use std::sync::Arc;
 
@@ -9,15 +11,26 @@ use anyhow::{Context, Result, anyhow, ensure};
 
 use crate::video::FrameBindGroupCache;
 
+use super::pending_upload::PendingHostPlanarUpload;
 use super::{HostPlanarUploadBackend, HostPlanarUploadLayout, HostPlanarUploadPlaneLayout};
 
 pub(super) struct WgpuHostPlanarUploadBackend {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    /// Копии plane→texture одного кадра батчатся в один encoder/submit.
-    pending_upload_encoder: Option<wgpu::CommandEncoder>,
+    /// Копии plane→texture текущего кадра, которые ещё пишутся в encoder.
+    recording: Option<FrameUploadRecording>,
+    /// Последняя записанная копия: если её не забрал нарисованный кадр, она уходит
+    /// в очередь отдельным submit-ом перед следующей загрузкой.
+    last_recorded_upload: Option<Arc<PendingHostPlanarUpload>>,
     /// Переиспользуемые mapped staging chunks: без per-frame allocate+zero-init.
     staging_belt: Option<wgpu::util::StagingBelt>,
+}
+
+/// GPU-копии плоскостей одного кадра в один слот, пока они пишутся в encoder.
+struct FrameUploadRecording {
+    encoder: wgpu::CommandEncoder,
+    /// Ожидающая загрузка слота-получателя: туда уйдёт готовый command buffer.
+    destination: Arc<PendingHostPlanarUpload>,
 }
 
 impl WgpuHostPlanarUploadBackend {
@@ -25,8 +38,52 @@ impl WgpuHostPlanarUploadBackend {
         Self {
             device,
             queue,
-            pending_upload_encoder: None,
+            recording: None,
+            last_recorded_upload: None,
             staging_belt: None,
+        }
+    }
+
+    /// Готовит запись копий в слот `destination`: продолжает текущую или начинает новую.
+    ///
+    /// Плоскости одного кадра приходят подряд в один слот, поэтому запись продолжается,
+    /// пока слот тот же. Новый слот означает новый кадр:
+    /// - недописанная запись прошлого кадра (upload упал посреди плоскостей) выбрасывается:
+    ///   у её слота уже нет handle-а, его частично записанные pixels никто не покажет;
+    /// - невостребованная копия прошлого кадра отправляется в очередь раньше новой.
+    fn ensure_frame_upload_recording(&mut self, destination: &Arc<PendingHostPlanarUpload>) {
+        let continues_current_frame = self
+            .recording
+            .as_ref()
+            .is_some_and(|recording| Arc::ptr_eq(&recording.destination, destination));
+        if continues_current_frame {
+            return;
+        }
+        self.recording = None;
+        self.submit_unclaimed_upload();
+        self.recording = Some(FrameUploadRecording {
+            encoder: self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("host-planar-frame-upload"),
+                }),
+            destination: Arc::clone(destination),
+        });
+    }
+
+    /// Отправляет последнюю копию отдельным submit-ом, если её не забрал ни один кадр.
+    ///
+    /// В обычном воспроизведении копию забирает submit кадра и здесь ничего не
+    /// происходит. Отдельный submit нужен, когда кадр загрузили, но не нарисовали
+    /// (рендер упал, кадр вытеснен другим до показа): копия всё равно должна попасть
+    /// в очередь, иначе слот останется без pixels, а staging-чанки — без возврата.
+    fn submit_unclaimed_upload(&mut self) {
+        let unclaimed_commands = self
+            .last_recorded_upload
+            .take()
+            .and_then(|pending_upload| pending_upload.take_unclaimed());
+        if let Some(commands) = unclaimed_commands {
+            self.queue.submit(std::iter::once(commands));
         }
     }
 }
@@ -83,10 +140,9 @@ impl HostPlanarUploadBackend for WgpuHostPlanarUploadBackend {
             expected_block_bytes
         );
 
-        // Staging belt + copy_buffer_to_texture вместо Queue::write_texture: memcpy 4K
-        // plane (8-12МБ) на memory-bandwidth-bound CPU под нагрузкой декодера стоил до
-        // 15-30мс одним потоком внутри write_texture. Полосная копия в переиспользуемый
-        // mapped chunk срезает хвост p99, а GPU-копии батчатся в один submit на кадр.
+        // Staging belt + copy_buffer_to_texture вместо Queue::write_texture: копия идёт
+        // в переиспользуемый mapped chunk, а GPU-копии всех плоскостей кадра пишутся в
+        // один command buffer, который уходит в очередь вместе с кадром.
         // Belt (а не create_buffer(mapped_at_creation) на кадр) — иначе wgpu каждый раз
         // zero-инициализирует буфер, что дороже самой копии.
         let staging_stride = u32::try_from(visible_row_bytes)
@@ -98,6 +154,10 @@ impl HostPlanarUploadBackend for WgpuHostPlanarUploadBackend {
             .and_then(|rows| rows.checked_add(visible_row_bytes as u64))
             .context("host-planar staging length overflow")?
             .next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT);
+
+        // Запись начинается до выделения staging: невостребованная копия прошлого кадра
+        // уходит в очередь раньше, и её staging-чанк быстрее возвращается в belt.
+        self.ensure_frame_upload_recording(&uploaded_textures.pending_upload);
 
         let device = self.device.clone();
         let staging_belt = self.staging_belt.get_or_insert_with(|| {
@@ -128,14 +188,12 @@ impl HostPlanarUploadBackend for WgpuHostPlanarUploadBackend {
             );
         }
 
-        // Один encoder копит все upload-ы кадра до общего submit.
-        let device = &self.device;
-        let encoder = self.pending_upload_encoder.get_or_insert_with(|| {
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("host-planar-frame-upload"),
-            })
-        });
-        encoder.copy_buffer_to_texture(
+        // Один encoder копит все плоскости кадра до передачи в submit кадра.
+        let recording = self
+            .recording
+            .as_mut()
+            .context("host-planar upload recording was not started")?;
+        recording.encoder.copy_buffer_to_texture(
             wgpu::TexelCopyBufferInfo {
                 buffer: staging_slice.buffer(),
                 layout: wgpu::TexelCopyBufferLayout {
@@ -164,18 +222,34 @@ impl HostPlanarUploadBackend for WgpuHostPlanarUploadBackend {
         Arc::strong_count(uploaded_textures) == 1
     }
 
+    /// Закрывает запись копий кадра и кладёт готовый command buffer в слот-получатель.
+    ///
+    /// Submit-а здесь нет: копию отправит shell вместе с кадром, который рисует слот
+    /// (или сам backend перед следующей загрузкой, если кадр не нарисуют).
     fn flush_plane_uploads(&mut self) -> Result<()> {
-        if let Some(encoder) = self.pending_upload_encoder.take() {
-            if let Some(staging_belt) = self.staging_belt.as_mut() {
-                staging_belt.finish();
-            }
-            self.queue.submit(std::iter::once(encoder.finish()));
-            if let Some(staging_belt) = self.staging_belt.as_mut() {
-                // Возврат chunk-ов в belt: map_async завершится на обычных device polls
-                // render-цикла, к следующему кадру chunk снова доступен без zero-init.
-                staging_belt.recall();
-            }
+        let Some(FrameUploadRecording {
+            encoder,
+            destination,
+        }) = self.recording.take()
+        else {
+            return Ok(());
+        };
+        // Обычно невостребованная копия уже ушла в начале записи. Сюда она доходит, только
+        // если запись продолжила недописанный кадр в том же слоте (upload упал посреди
+        // плоскостей): тогда начала записи не было, а прежняя копия старше новой.
+        self.submit_unclaimed_upload();
+        if let Some(staging_belt) = self.staging_belt.as_mut() {
+            // Чанки belt-а вернутся (re-map) после submit-а именно этого command buffer-а
+            // и завершения GPU-копии — кто бы его ни отправил: shell с кадром или backend.
+            staging_belt.finish_and_recall_on_submit(&encoder);
         }
+        if let Some(older_commands) = destination.store_recorded_commands(encoder.finish()) {
+            // По протоколу недостижимо: невостребованная копия уходит в очередь выше.
+            // Если всё же осталась, она старше только что записанной и обязана
+            // выполниться раньше — отправляем её сейчас, новая ещё ждёт submit-а.
+            self.queue.submit(std::iter::once(older_commands));
+        }
+        self.last_recorded_upload = Some(destination);
         Ok(())
     }
 }
@@ -183,94 +257,36 @@ impl HostPlanarUploadBackend for WgpuHostPlanarUploadBackend {
 /// Размер chunk-а staging belt: вмещает все планы 4K-кадра одним chunk-ом.
 const HOST_PLANAR_STAGING_BELT_CHUNK_BYTES: u64 = 16 * 1024 * 1024;
 
-/// Полоса меньше этого объёма копируется без отдельного потока.
-const HOST_PLANAR_STAGING_COPY_BAND_MIN_BYTES: usize = 1024 * 1024;
-
-/// Верхний предел потоков полосной staging-копии одного plane.
-const HOST_PLANAR_STAGING_COPY_MAX_THREADS: usize = 4;
-
-/// Дизъюнктная полоса mapped staging, передаваемая scoped copy-потоку.
+/// Копирует видимые строки plane block-а в mapped staging на текущем потоке.
 ///
-/// # Safety-обоснование
-/// `WriteOnly<'_, [u8]>` указывает в host-mapped память staging buffer-а; полосы
-/// получены через `split_at` и не пересекаются, а запись mapped-байтов в wgpu не
-/// привязана к конкретному потоку (mapping/unmap остаются на вызывающем потоке).
-/// `Send` у `WriteOnly<[u8]>` отсутствует только из-за `Sized`-bound generic-а.
-struct StagingCopyBand<'a>(wgpu::WriteOnly<'a, [u8]>);
-
-// SAFETY: полосы дизъюнктны и указывают в host-mapped память; см. док выше.
-unsafe impl Send for StagingCopyBand<'_> {}
-
-/// Копирует plane block в mapped staging полосами в несколько потоков.
-///
-/// Одиночный memcpy 4K-плоскости упирается в memory bandwidth и под нагрузкой
-/// software-декодера растягивается до десятков миллисекунд; полосы делят копию
-/// между ядрами и держат стадию upload в бюджете кадра.
+/// Копия намеренно однопоточная. Она упирается в пропускную способность памяти, а не в
+/// ядра: замер cpu-parity 07 (AV1 4K60, Ryzen 7 7840HS) — копия в 4 потока давала
+/// `video_prepare` 1,07 мс против 1,12 мс одним потоком, а создание потоков на каждый
+/// кадр стоило ~8 п.п. ядра всего процесса. Строки копируются по одной, потому что
+/// stride источника (FFmpeg) и staging (выравнивание 256 байт) в общем случае разные.
 fn copy_plane_block_into_staging(
     block_bytes: &[u8],
-    staging: wgpu::WriteOnly<'_, [u8]>,
+    mut staging: wgpu::WriteOnly<'_, [u8]>,
     src_stride: usize,
     dst_stride: usize,
     visible_row_bytes: usize,
     visible_height: usize,
 ) {
-    if visible_height == 0 || visible_row_bytes == 0 {
-        return;
+    for row in 0..visible_height {
+        let src_offset = row * src_stride;
+        let dst_offset = row * dst_stride;
+        staging
+            .slice(dst_offset..dst_offset + visible_row_bytes)
+            .copy_from_slice(&block_bytes[src_offset..src_offset + visible_row_bytes]);
     }
-
-    let total_bytes = visible_row_bytes.saturating_mul(visible_height);
-    let band_count = (total_bytes / HOST_PLANAR_STAGING_COPY_BAND_MIN_BYTES)
-        .clamp(1, HOST_PLANAR_STAGING_COPY_MAX_THREADS)
-        .min(visible_height);
-    let rows_per_band = visible_height.div_ceil(band_count);
-
-    std::thread::scope(|scope| {
-        let mut staging_rest = staging;
-        let mut row_start = 0usize;
-        while row_start < visible_height {
-            let band_rows = rows_per_band.min(visible_height - row_start);
-            let is_last_band = row_start + band_rows == visible_height;
-            let dst_band;
-            if is_last_band {
-                dst_band = staging_rest;
-                staging_rest = wgpu::WriteOnly::from_mut(&mut []);
-            } else {
-                let (band, rest) = staging_rest.split_at(band_rows * dst_stride);
-                dst_band = band;
-                staging_rest = rest;
-            }
-
-            let base_row = row_start;
-            let dst_band = StagingCopyBand(dst_band);
-            let copy_band = move || {
-                // Перенос всей обёртки одним place-выражением: precise capture поля .0
-                // обошёл бы Send impl обёртки (деструктуризация в pattern не спасает).
-                let band = dst_band;
-                let StagingCopyBand(mut dst_band) = band;
-                for row in 0..band_rows {
-                    let src_offset = (base_row + row) * src_stride;
-                    let dst_offset = row * dst_stride;
-                    dst_band
-                        .slice(dst_offset..dst_offset + visible_row_bytes)
-                        .copy_from_slice(&block_bytes[src_offset..src_offset + visible_row_bytes]);
-                }
-            };
-            if is_last_band {
-                // Последняя полоса на текущем потоке: scope join не ждёт лишний spawn.
-                copy_band();
-            } else {
-                scope.spawn(copy_band);
-            }
-
-            row_start += band_rows;
-        }
-    });
 }
 
 pub(super) struct WgpuHostPlanarUploadedTextures {
     /// Кэш bind group-ов рендерера для этого слота; умирает вместе со слотом.
     /// Объявлен первым: bind group-ы отпускаются раньше views/textures.
     pub(super) bind_groups: FrameBindGroupCache,
+    /// Записанная, но ещё не отправленная GPU-копия плоскостей в этот слот.
+    pub(super) pending_upload: Arc<PendingHostPlanarUpload>,
     layout: HostPlanarUploadLayout,
     y_texture: wgpu::Texture,
     u_texture: wgpu::Texture,
@@ -303,6 +319,7 @@ impl WgpuHostPlanarUploadedTextures {
 
         Self {
             bind_groups: FrameBindGroupCache::default(),
+            pending_upload: Arc::default(),
             layout,
             y_texture,
             u_texture,
@@ -345,3 +362,6 @@ fn create_upload_plane_texture(
         view_formats: &[],
     })
 }
+
+#[cfg(test)]
+mod tests;

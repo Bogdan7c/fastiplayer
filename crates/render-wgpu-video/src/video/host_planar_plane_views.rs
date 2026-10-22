@@ -1,9 +1,12 @@
-//! Граница «HostPlanar Y/U/V views слота загрузки + его кэш bind group-ов».
+//! Граница «HostPlanar Y/U/V views слота загрузки + его кэш bind group-ов и
+//! ожидающая GPU-копия».
 //!
 //! Аналог `WgpuDmaBufPlaneViews` для программного пути: app получает набор
 //! через `WgpuFrameTextureViews::host_planar_plane_views()` и передаёт в
-//! `WgpuRenderableFrame::from_decoded_host_planar`, не зная про кэш.
+//! `WgpuRenderableFrame::from_decoded_host_planar`, не зная ни про кэш, ни про то,
+//! что копия плоскостей ещё ждёт submit-а кадра.
 
+use super::host_planar_upload::pending_upload::PendingHostPlanarUpload;
 use super::{FrameBindGroupCache, HostPlanarWgpuTextureViews};
 
 /// Y/U/V views одного слота host-planar загрузки с кэшем его bind group-ов.
@@ -20,6 +23,9 @@ pub struct WgpuHostPlanarPlaneViews<'views> {
 
     /// Кэш bind group-ов слота; `None` — bind group создаётся на кадр.
     pub(crate) bind_group_cache: Option<&'views FrameBindGroupCache>,
+
+    /// Ожидающая GPU-копия плоскостей слота; `None` — views без слота загрузки.
+    pub(crate) pending_upload: Option<&'views PendingHostPlanarUpload>,
 }
 
 impl<'views> WgpuHostPlanarPlaneViews<'views> {
@@ -30,6 +36,7 @@ impl<'views> WgpuHostPlanarPlaneViews<'views> {
             u_view: &views.u_view,
             v_view: &views.v_view,
             bind_group_cache: Some(views.bind_group_cache()),
+            pending_upload: Some(views.pending_upload()),
         }
     }
 }

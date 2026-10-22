@@ -30,6 +30,8 @@ pub use self::external_frame_sync::{
 pub(crate) use self::frame_bind_group_cache::FrameBindGroupCache;
 pub use self::frame_bind_group_cache::VideoHotPathStats;
 pub use self::host_planar_plane_views::WgpuHostPlanarPlaneViews;
+pub use self::host_planar_upload::pending_upload::HostPlanarUploadCommands;
+use self::host_planar_upload::pending_upload::PendingHostPlanarUpload;
 pub use self::host_planar_upload::{
     HostPlanarWgpuFrameMaterializer, HostPlanarWgpuTextureViewLookup, HostPlanarWgpuTextureViews,
 };
@@ -437,6 +439,9 @@ pub struct WgpuRenderableFrame<'frame> {
 
     /// Кэш bind group-ов владельца views (импортированная текстура / слот загрузки).
     bind_group_cache: Option<&'frame FrameBindGroupCache>,
+
+    /// Ещё не отправленная GPU-копия плоскостей слота загрузки (только host-planar).
+    host_upload: Option<&'frame PendingHostPlanarUpload>,
 }
 
 impl<'frame> WgpuRenderableFrame<'frame> {
@@ -455,6 +460,7 @@ impl<'frame> WgpuRenderableFrame<'frame> {
             },
             external_sync: views.external_sync,
             bind_group_cache: views.bind_group_cache,
+            host_upload: None,
         })
     }
 
@@ -473,11 +479,16 @@ impl<'frame> WgpuRenderableFrame<'frame> {
             },
             external_sync: views.external_sync,
             bind_group_cache: views.bind_group_cache,
+            host_upload: None,
         })
     }
 
-    /// Собирает WGPU frame wrapper из HostPlanar YUV frame и upload texture views.
-    pub fn from_decoded_host_yuv(
+    /// Собирает WGPU frame wrapper из HostPlanar YUV frame и отдельных texture views.
+    ///
+    /// Только для views без слота загрузки (тесты рендерера). Views материализатора
+    /// идут через `from_decoded_host_planar`: иначе ожидающая GPU-копия слота не
+    /// попадёт в submit кадра и текстура будет нарисована до загрузки.
+    pub(crate) fn from_decoded_host_yuv(
         frame: &DecodedFrame,
         y_view: &'frame wgpu::TextureView,
         u_view: &'frame wgpu::TextureView,
@@ -496,10 +507,12 @@ impl<'frame> WgpuRenderableFrame<'frame> {
             external_sync: None,
             // Views пришли по отдельности: владельца кэша не видно, bind group на кадр.
             bind_group_cache: None,
+            host_upload: None,
         })
     }
 
-    /// Собирает HostPlanar кадр из views слота загрузки, сохраняя кэш его bind group.
+    /// Собирает HostPlanar кадр из views слота загрузки: с кэшем его bind group и
+    /// ожидающей GPU-копией, которую рендерер отдаст в submit кадра.
     pub fn from_decoded_host_planar(
         frame: &DecodedFrame,
         views: WgpuHostPlanarPlaneViews<'frame>,
@@ -507,17 +520,8 @@ impl<'frame> WgpuRenderableFrame<'frame> {
         let mut renderable =
             Self::from_decoded_host_yuv(frame, views.y_view, views.u_view, views.v_view)?;
         renderable.bind_group_cache = views.bind_group_cache;
+        renderable.host_upload = views.pending_upload;
         Ok(renderable)
-    }
-
-    /// Совместимый wrapper для старого YUV420-only имени.
-    pub fn from_decoded_host_yuv420(
-        frame: &DecodedFrame,
-        y_view: &'frame wgpu::TextureView,
-        u_view: &'frame wgpu::TextureView,
-        v_view: &'frame wgpu::TextureView,
-    ) -> Result<Self> {
-        Self::from_decoded_host_yuv(frame, y_view, u_view, v_view)
     }
 }
 
@@ -865,6 +869,7 @@ impl WgpuVideoRenderer {
         let drawn = WgpuVideoRenderOutcome {
             frame_drawn: true,
             external_sync,
+            host_upload: None,
         };
         match select_renderer_dispatch(frame.metadata.format, frame.planes.kind())? {
             RendererDispatch::Nv12 => {
@@ -921,7 +926,12 @@ impl WgpuVideoRenderer {
                     self.diagnostics.hdr_reference_defaults =
                         host_yuv_diagnostics.hdr_reference_defaults;
                 }
-                Ok(drawn)
+                // Копия забирается только после успешной записи pass-а: при ошибке
+                // она остаётся в слоте, и загрузчик отправит её сам.
+                Ok(WgpuVideoRenderOutcome {
+                    host_upload: frame.claim_host_upload(),
+                    ..drawn
+                })
             }
         }
     }

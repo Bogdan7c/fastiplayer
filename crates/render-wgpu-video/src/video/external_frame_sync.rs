@@ -16,7 +16,7 @@ use anyhow::Context;
 
 use crate::dma_buf_import::ImportedImageExternalSync;
 
-use super::FrameBindGroupCache;
+use super::{FrameBindGroupCache, HostPlanarUploadCommands};
 
 /// DMA-BUF plane views одного кадра вместе с его синхронизацией.
 ///
@@ -51,14 +51,19 @@ pub struct ExternalFrameSyncCommandBuffers {
 
 /// Итог одного video pass-а для shell-а.
 ///
-/// `must_use`: потерять `external_sync` значит показать image без acquire-барьера.
-#[must_use = "external_sync command buffers must be submitted around the frame encoder"]
+/// `must_use`: потерять `external_sync` значит показать image без acquire-барьера,
+/// потерять `host_upload` — нарисовать слот загрузки без его pixels.
+#[must_use = "external_sync/host_upload command buffers must be submitted with the frame encoder"]
 pub struct WgpuVideoRenderOutcome {
     /// `true`, если video pass реально нарисовал кадр (а не только очистил target).
     pub frame_drawn: bool,
 
     /// Барьеры, которые shell обязан отправить вокруг основного command buffer-а.
     pub external_sync: Option<ExternalFrameSyncCommandBuffers>,
+
+    /// GPU-копия плоскостей host-planar кадра, которую shell обязан отправить первой
+    /// в submit-е кадра. `None`, если кадр не host-planar или копия уже в очереди.
+    pub host_upload: Option<HostPlanarUploadCommands>,
 }
 
 impl WgpuVideoRenderOutcome {
@@ -67,6 +72,7 @@ impl WgpuVideoRenderOutcome {
         Self {
             frame_drawn: false,
             external_sync: None,
+            host_upload: None,
         }
     }
 }

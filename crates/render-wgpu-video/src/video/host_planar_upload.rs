@@ -12,6 +12,7 @@ use video_frame_contract::{
     FrameChromaSubsampling, VideoFrameContract, VideoFramePixelLayout, VideoFrameTransferPath,
 };
 
+pub(super) mod pending_upload;
 mod wgpu_backend;
 
 use self::wgpu_backend::{WgpuHostPlanarUploadBackend, WgpuHostPlanarUploadedTextures};
