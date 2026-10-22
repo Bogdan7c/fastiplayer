@@ -184,6 +184,41 @@ def drm_clients(pid):
             'total': None, 'total_status': 'N/A: cross-client shared allocations are not identifiable'}
 
 
+_DRM_MEMORY_UNITS_KIB = {'KiB': 1, 'MiB': 1024, 'GiB': 1024 * 1024}
+
+
+def parse_drm_memory_kib(text):
+    """'171 KiB' из fdinfo -> 171; единицы MiB/GiB приводятся к KiB. Иное -> None."""
+    parts = text.split()
+    if not parts or not parts[0].isdigit():
+        return None
+    unit = parts[1] if len(parts) > 1 else 'KiB'
+    factor = _DRM_MEMORY_UNITS_KIB.get(unit)
+    return int(parts[0]) * factor if factor else None
+
+
+def gpu_memory_kib(sample_value):
+    """GTT и VRAM (KiB) дерева процессов в одном sample, или None, если DRM-clients нет.
+
+    Решение владельца 22.10.2026 (сессия 08b): mpv с direct rendering декодирует
+    кадры в GPU-отображаемую память (amdgpu GTT), страницы которой имеют Rss = 0,
+    поэтому один RSS скрывает сотни МиБ. Память складывается по уникальным
+    DRM-clients (device:client-id): fork-потомки делят client с родителем и не
+    считаются дважды. Это оценка «память, видимая клиентам дерева», а не
+    общий итог GPU: общие между clients аллокации fdinfo не различает.
+    """
+    clients = {}
+    for process in sample_value['drm'].values():
+        clients.update(process.get('clients_not_additive', {}))
+    if not clients:
+        return None
+    totals = {'gtt': 0, 'vram': 0}
+    for counters in clients.values():
+        for kind in totals:
+            totals[kind] += parse_drm_memory_kib(counters.get(f'drm-memory-{kind}', '')) or 0
+    return totals
+
+
 def summarize_gpu(first, last):
     """Занятость движков GPU деревом процессов за окно, % времени одного движка.
 

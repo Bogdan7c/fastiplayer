@@ -195,6 +195,34 @@ def cohort_verdicts(mode, pairs, cohort):
     return cpu, gpu
 
 
+def optional_mib(group, metric, field, reduce):
+    """Агрегат метрики памяти в МиБ или None, если её нет в сохранённых попытках.
+
+    Старые серии (до сессии 08b) не содержат gpu_gtt_kib/gpu_vram_kib: отсутствие
+    даёт None (в отчёте «—»), а не ошибку и не ноль.
+    """
+    values = [a['metrics'][metric][field] for a in group if metric in a['metrics']]
+    if len(values) != len(group):
+        return None
+    return reduce(values) / 1024
+
+
+def memory_summary(group):
+    """RSS-колонки без изменений плюс GTT/VRAM и RSS+GTT (решение владельца 08b)."""
+    mean = statistics.mean
+    gtt = optional_mib(group, 'gpu_gtt_kib', 'mean', mean)
+    rss = mean(a['metrics']['rss_sum_kib']['mean'] for a in group) / 1024
+    return {'rss_mean_mib': rss,
+            'pss_mean_mib': mean(a['metrics']['pss_sum_kib']['mean'] for a in group) / 1024,
+            'rss_sampled_max_mib': max(a['metrics']['rss_sum_kib']['sampled_max'] for a in group) / 1024,
+            'pss_sampled_max_mib': max(a['metrics']['pss_sum_kib']['sampled_max'] for a in group) / 1024,
+            'gtt_mean_mib': gtt,
+            'gtt_sampled_max_mib': optional_mib(group, 'gpu_gtt_kib', 'sampled_max', max),
+            'vram_mean_mib': optional_mib(group, 'gpu_vram_kib', 'mean', mean),
+            'vram_sampled_max_mib': optional_mib(group, 'gpu_vram_kib', 'sampled_max', max),
+            'rss_plus_gtt_mean_mib': None if gtt is None else rss + gtt}
+
+
 def analyze(root):
     attempts = [json.loads(path.read_text()) for path in sorted(root.glob('attempts/*/result.json'))]
     cohorts = {}
@@ -229,10 +257,7 @@ def analyze(root):
                 'cpu_min': min(cpu), 'cpu_max': max(cpu),
                 'cpu_stdev': statistics.stdev(cpu) if len(cpu) > 1 else None,
                 'gfx_busy_percent_mean': statistics.mean(gfx) if gfx else None,
-                'rss_mean_mib': statistics.mean(a['metrics']['rss_sum_kib']['mean'] for a in group) / 1024,
-                'pss_mean_mib': statistics.mean(a['metrics']['pss_sum_kib']['mean'] for a in group) / 1024,
-                'rss_sampled_max_mib': max(a['metrics']['rss_sum_kib']['sampled_max'] for a in group) / 1024,
-                'pss_sampled_max_mib': max(a['metrics']['pss_sum_kib']['sampled_max'] for a in group) / 1024}
+                **memory_summary(group)}
         output.append({'scenario': scenario, 'mode': mode, 'reference_player': reference,
                        'resource_verdict': verdict,
                        'gpu_gfx_verdict': gpu_verdict, 'players': players, 'equal_quality': 'NOT ESTABLISHED',

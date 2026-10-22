@@ -88,6 +88,17 @@ The following rules apply before looking at scored results:
    cgroup memory is not a claim to measure all GPU/compositor memory. Available
    DRM fdinfo memory counters are retained per device/client, deduplicating FD
    aliases. They are deliberately not summed across clients sharing allocations.
+   **GPU memory columns (session 08b, owner decision 22.10.2026).** RSS alone hides
+   frames mpv decodes straight into GPU-mapped memory (direct rendering, amdgpu GTT
+   mapped from `/dev/dri/renderD*`): those pages have `Rss = 0` in smaps. Each sample
+   therefore also sums `drm-memory-gtt`/`drm-memory-vram` over the tree's unique DRM
+   clients (`host.gpu_memory_kib`), stored as `gpu_gtt_kib` / `gpu_vram_kib`
+   (`mean`/`sampled_max`/`minimum`, KiB). `summary.json` players gain `gtt_mean_mib`,
+   `vram_mean_mib`, `*_sampled_max_mib` and `rss_plus_gtt_mean_mib` next to the RSS
+   fields; the sum is the honest cross-player memory figure. It is an estimate (clients
+   may share allocations, fdinfo cannot tell) and not a whole-GPU total. Older attempts
+   without these keys give `null`. The CPU verdict is unaffected. `protocol_version`
+   is not bumped: the change only adds fields.
 3. Use equal minimum warmup and pre-read the file before spawn. Run both players
    XWayland fullscreen, VLC dummy/OpenGL/VA-API and Fastiplayer controls/Vulkan/
    VA-API. Record actual geometry and display modes at both boundaries. Audio stays

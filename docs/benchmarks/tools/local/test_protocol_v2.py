@@ -14,7 +14,7 @@ from unittest import mock
 import analyze
 from collect import decode_path, fastiplayer_command, mpv_command, vlc_command
 import evidence
-from host import drm_clients, summarize_gpu
+from host import drm_clients, gpu_memory_kib, parse_drm_memory_kib, summarize_gpu
 import run_series
 
 
@@ -268,6 +268,77 @@ class GpuMetricTests(unittest.TestCase):
         self.assertEqual(observed['observation_errors'], [])
         self.assertTrue(observed['clients_not_additive'])
         self.assertEqual(observed['clients_not_additive'].keys(), observed['engine_busy_ns'].keys())
+        # Реальный fdinfo парсится в неотрицательные GTT/VRAM, а не в None.
+        memory = gpu_memory_kib({'drm': {str(holder.pid): observed}})
+        self.assertGreaterEqual(memory['gtt'], 0)
+        self.assertGreaterEqual(memory['vram'], 0)
+
+
+class GpuMemoryTests(unittest.TestCase):
+    """Память GPU (GTT/VRAM) дерева процессов: решение владельца 08b."""
+
+    @staticmethod
+    def drm_sample(**processes):
+        return {'drm': {pid: {'clients_not_additive': clients} for pid, clients in processes.items()}}
+
+    def test_units_are_normalised_to_kib(self):
+        self.assertEqual(parse_drm_memory_kib('171 KiB'), 171)
+        self.assertEqual(parse_drm_memory_kib('2 MiB'), 2048)
+        self.assertIsNone(parse_drm_memory_kib('garbage'))
+        self.assertIsNone(parse_drm_memory_kib(''))
+
+    def test_shared_client_is_counted_once_across_processes(self):
+        shared = {'drm-memory-gtt': '1000 KiB', 'drm-memory-vram': '50 KiB'}
+        sample_value = self.drm_sample(**{'1': {'226:7': shared},
+                                          '2': {'226:7': shared, '226:9': {'drm-memory-gtt': '24 KiB'}}})
+        self.assertEqual(gpu_memory_kib(sample_value), {'gtt': 1024, 'vram': 50})
+
+    def test_no_drm_clients_gives_none_not_zero(self):
+        self.assertIsNone(gpu_memory_kib(self.drm_sample(**{'1': {}})))
+
+    def test_summarize_exposes_gtt_and_vram_with_mean_and_max(self):
+        from collect import summarize
+        samples = [self.fake_sample(t, gtt) for t, gtt in enumerate((100, 300))]
+        result = summarize(samples)
+        self.assertEqual(result['gpu_gtt_kib'], {'mean': 200, 'sampled_max': 300, 'minimum': 100})
+        self.assertEqual(result['gpu_vram_kib']['mean'], 7)
+
+    @staticmethod
+    def fake_sample(second, gtt):
+        return {'process': {'start_ticks': 1, 'cpu_ticks': 100 * second, 'cpu_time': float(second)},
+                'cgroup_cpu': {'usage_usec': 1_000_000 * second, 'time': float(second)},
+                'rss_sum_kib': 10, 'pss_sum_kib': 5,
+                'drm': {'1': {'clients_not_additive': {'226:1': {'drm-memory-gtt': f'{gtt} KiB',
+                                                                  'drm-memory-vram': '7 KiB'}}}}}
+
+    def test_aggregation_adds_rss_plus_gtt_and_old_attempts_stay_readable(self):
+        def with_memory(attempt, gtt, vram):
+            attempt['metrics']['gpu_gtt_kib'] = {'mean': gtt, 'sampled_max': gtt + 1024}
+            attempt['metrics']['gpu_vram_kib'] = {'mean': vram, 'sampled_max': vram}
+            return attempt
+
+        new = [with_memory(fake_attempt('s', 'fastiplayer', 'quiet', 1, 10.0), 51_200, 2048),
+               with_memory(fake_attempt('s', 'mpv', 'quiet', 1, 12.0), 102_400, 0)]
+        old = [fake_attempt('s', 'fastiplayer', 'quiet', 1, 10.0), fake_attempt('s', 'mpv', 'quiet', 1, 12.0)]
+        summaries = {}
+        for name, attempts in (('new', new), ('old', old)):
+            directory = tempfile.TemporaryDirectory()
+            self.addCleanup(directory.cleanup)
+            for attempt in attempts:
+                path = Path(directory.name) / 'attempts' / attempt['spec']['player']
+                path.mkdir(parents=True)
+                (path / 'result.json').write_text(json.dumps(attempt))
+            summaries[name] = analyze.analyze(Path(directory.name))['cohorts'][0]['players']
+        mpv_new = summaries['new']['mpv']
+        self.assertAlmostEqual(mpv_new['rss_mean_mib'], 100_000 / 1024)
+        self.assertAlmostEqual(mpv_new['gtt_mean_mib'], 100.0)
+        self.assertAlmostEqual(mpv_new['gtt_sampled_max_mib'], 101.0)
+        self.assertAlmostEqual(mpv_new['rss_plus_gtt_mean_mib'], 100_000 / 1024 + 100.0)
+        self.assertEqual(summaries['new']['fastiplayer']['vram_mean_mib'], 2.0)
+        old_mpv = summaries['old']['mpv']
+        self.assertAlmostEqual(old_mpv['rss_mean_mib'], 100_000 / 1024)
+        for key in ('gtt_mean_mib', 'vram_mean_mib', 'rss_plus_gtt_mean_mib', 'gtt_sampled_max_mib'):
+            self.assertIsNone(old_mpv[key])
 
 
 class MpvEvidenceTests(unittest.TestCase):
