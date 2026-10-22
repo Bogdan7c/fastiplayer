@@ -159,6 +159,23 @@ impl SoftwarePixelFormat {
         }
     }
 
+    /// Raw FFmpeg enum формата — для FFmpeg-вызовов внутри FFI boundary
+    /// (расчёт строк кадра в нашем `get_buffer2`).
+    #[cfg(feature = "ffmpeg")]
+    #[must_use]
+    pub(crate) const fn av_pixel_format(self) -> ffmpeg_sys_next::AVPixelFormat {
+        match self {
+            Self::Yuv420Planar8 => ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P,
+            Self::Yuv420Planar10Le => ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P10LE,
+            Self::Yuv420Planar12Le => ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P12LE,
+            Self::Yuv422Planar8 => ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV422P,
+            Self::Yuv422Planar10Le => ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV422P10LE,
+            Self::Yuv422Planar12Le => ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV422P12LE,
+            Self::Yuv444Planar8 => ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV444P,
+            Self::Yuv444Planar10Le => ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV444P10LE,
+        }
+    }
+
     /// Converts from raw FFmpeg enum and preserves a typed rejection reason.
     #[cfg(feature = "ffmpeg")]
     pub(crate) fn try_from_av_pixel_format(

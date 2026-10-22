@@ -5,6 +5,8 @@ use std::{fmt, io};
 use anyhow::{Context, ensure};
 use video_frame_contract::DmaBufImageLayout;
 
+use super::host_import::{HostPlanarImportableMemory, validate_importable_memory};
+
 /// Opaque handle decoded frame resource-а.
 ///
 /// Handle не раскрывает backend storage: decoder/provider владеет таблицей
@@ -109,6 +111,22 @@ pub trait HostPlanarFrameOwner: fmt::Debug + Send + Sync {
         plane: &HostPlaneDescriptor,
         block_len: usize,
     ) -> anyhow::Result<&[u8]>;
+
+    /// Блок памяти процесса со всеми plane-ами кадра, если GPU может прочитать его
+    /// напрямую, без CPU-копии в staging (cpu-parity 08b).
+    ///
+    /// По умолчанию `None`: renderer копирует plane-ы через staging, как раньше.
+    /// Provider, который сам раскладывает кадр в выровненный блок (FFmpeg-декодер
+    /// со своим `get_buffer2`), возвращает блок и offset каждой plane-ы. Descriptor
+    /// проверяет, что все видимые строки лежат внутри блока
+    /// (`HostPlanarFrameDescriptor::importable_memory`).
+    fn importable_memory(
+        &self,
+        planes: &[HostPlaneDescriptor],
+    ) -> Option<HostPlanarImportableMemory> {
+        let _planes = planes;
+        None
+    }
 }
 
 /// Простая owned-buffer реализация owner-а для тестов и будущих CPU-owned paths.
@@ -217,6 +235,25 @@ pub(super) fn host_plane_visible_row_bytes(plane: &HostPlaneDescriptor) -> anyho
         .context("host-planar visible row byte count overflow")
 }
 
+/// Длина непрерывного блока plane-а, покрывающего все видимые строки.
+///
+/// `block_len = (visible_height - 1) * stride + visible_row_bytes` — ровно столько
+/// байт читает host->GPU копия `visible_height` строк со `stride`; правый padding
+/// последней строки не входит. `visible_height > 0` гарантирует
+/// `host_plane_visible_row_bytes`, который caller вызывает раньше.
+pub(super) fn host_plane_block_len(
+    plane: &HostPlaneDescriptor,
+    visible_row_bytes: usize,
+) -> anyhow::Result<usize> {
+    let visible_height = usize::try_from(plane.visible_height)
+        .context("host-planar visible height does not fit usize")?;
+    plane
+        .stride
+        .checked_mul(visible_height.saturating_sub(1))
+        .and_then(|rows| rows.checked_add(visible_row_bytes))
+        .context("host-planar plane block length overflow")
+}
+
 /// Owned host-planar decoded frame без raw pointers и layout второго порядка.
 #[derive(Debug, Clone)]
 pub struct HostPlanarFrameDescriptor {
@@ -307,16 +344,7 @@ impl HostPlanarFrameDescriptor {
             visible_row_bytes
         );
 
-        let visible_height = usize::try_from(plane.visible_height)
-            .context("host-planar visible height does not fit usize")?;
-        // block_len = (visible_height - 1) * stride + visible_row_bytes — ровно
-        // столько байт требует wgpu::Queue::write_texture для копии height строк
-        // со stride; visible_height > 0 гарантирован host_plane_visible_row_bytes.
-        let block_len = plane
-            .stride
-            .checked_mul(visible_height - 1)
-            .and_then(|rows| rows.checked_add(visible_row_bytes))
-            .context("host-planar plane block length overflow")?;
+        let block_len = host_plane_block_len(plane, visible_row_bytes)?;
 
         let bytes = self
             .owner
@@ -335,6 +363,25 @@ impl HostPlanarFrameDescriptor {
             visible_row_bytes,
             visible_height: plane.visible_height,
         })
+    }
+
+    /// Блок памяти кадра для импорта в GPU без CPU-копии, если provider его даёт.
+    ///
+    /// - `Ok(None)` — provider не раскладывает кадр в импортируемый блок (обычный путь
+    ///   через staging);
+    /// - `Ok(Some(_))` — блок проверен: offset есть у каждой plane-ы и все её видимые
+    ///   строки лежат внутри блока;
+    /// - `Err` — provider вернул противоречивый блок (ошибка provider-а). Renderer
+    ///   не имеет права импортировать такой блок и идёт обычным путём.
+    ///
+    /// Содержимое блока остаётся содержимым этого кадра, пока жив descriptor (или
+    /// его clone): GPU-копия обязана держать descriptor до своего завершения.
+    pub fn importable_memory(&self) -> anyhow::Result<Option<HostPlanarImportableMemory>> {
+        let Some(memory) = self.owner.importable_memory(&self.planes) else {
+            return Ok(None);
+        };
+        validate_importable_memory(&memory, &self.planes)?;
+        Ok(Some(memory))
     }
 
     /// Дешёвый clone для lookup-а: owner/refcount клонируется без копирования bytes.

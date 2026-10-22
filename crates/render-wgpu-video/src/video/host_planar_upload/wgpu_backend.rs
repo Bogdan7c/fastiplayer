@@ -11,8 +11,13 @@ use anyhow::{Context, Result, anyhow, ensure};
 
 use crate::video::FrameBindGroupCache;
 
+use super::direct_upload::DirectHostPlanarUpload;
+use super::host_memory_import::{HostMemoryImportStats, HostMemoryImporter};
 use super::pending_upload::PendingHostPlanarUpload;
-use super::{HostPlanarUploadBackend, HostPlanarUploadLayout, HostPlanarUploadPlaneLayout};
+use super::{
+    DirectFrameUploadRecording, HostPlanarUploadBackend, HostPlanarUploadLayout,
+    HostPlanarUploadPlaneLayout,
+};
 
 pub(super) struct WgpuHostPlanarUploadBackend {
     device: wgpu::Device,
@@ -24,6 +29,25 @@ pub(super) struct WgpuHostPlanarUploadBackend {
     last_recorded_upload: Option<Arc<PendingHostPlanarUpload>>,
     /// Переиспользуемые mapped staging chunks: без per-frame allocate+zero-init.
     staging_belt: Option<wgpu::util::StagingBelt>,
+    /// Импорт памяти кадров декодера в GPU (cpu-parity 08b); `None` — только staging.
+    host_memory_importer: Option<HostMemoryImporter>,
+    /// Счётчики путей загрузки кадров.
+    upload_path_stats: HostPlanarUploadPathStats,
+    /// Причина первого кадра с блоком, не подошедшего для прямой копии, уже в логе.
+    unsuitable_direct_upload_reported: bool,
+}
+
+/// Сколько кадров загружено каждым путём и как работает импорт.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HostPlanarUploadPathStats {
+    /// Кадры, скопированные GPU прямо из памяти декодера (без CPU-копии).
+    pub frames_without_cpu_copy: u64,
+    /// Кадры, скопированные на CPU в staging.
+    pub frames_through_staging: u64,
+    /// Кадры с импортируемым блоком, который не подошёл для прямой копии.
+    pub unsuitable_direct_uploads: u64,
+    /// Счётчики импортёра (нули, если импорт недоступен).
+    pub host_memory_import: HostMemoryImportStats,
 }
 
 /// GPU-копии плоскостей одного кадра в один слот, пока они пишутся в encoder.
@@ -36,11 +60,26 @@ struct FrameUploadRecording {
 impl WgpuHostPlanarUploadBackend {
     pub(super) fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         Self {
-            device,
+            device: device.clone(),
             queue,
             recording: None,
             last_recorded_upload: None,
             staging_belt: None,
+            host_memory_importer: HostMemoryImporter::new(&device),
+            upload_path_stats: HostPlanarUploadPathStats::default(),
+            unsuitable_direct_upload_reported: false,
+        }
+    }
+
+    /// Счётчики путей загрузки (тесты и диагностика).
+    pub(super) fn upload_path_stats(&self) -> HostPlanarUploadPathStats {
+        HostPlanarUploadPathStats {
+            host_memory_import: self
+                .host_memory_importer
+                .as_ref()
+                .map(HostMemoryImporter::stats)
+                .unwrap_or_default(),
+            ..self.upload_path_stats
         }
     }
 
@@ -101,6 +140,77 @@ impl HostPlanarUploadBackend for WgpuHostPlanarUploadBackend {
         )))
     }
 
+    fn supports_direct_frame_upload(&self) -> bool {
+        self.host_memory_importer.is_some()
+    }
+
+    /// Пишет копии plane-ов из импортированного блока кадра в текстуры слота.
+    ///
+    /// Копия идёт в тот же command buffer кадра, что и копия через staging, и уходит в
+    /// очередь тем же путём (submit кадра или невостребованная копия перед следующей
+    /// загрузкой), поэтому инварианты `pending_upload` не меняются.
+    fn record_direct_frame_upload(
+        &mut self,
+        uploaded_textures: &Self::UploadedTextures,
+        upload: &DirectHostPlanarUpload,
+    ) -> Result<DirectFrameUploadRecording> {
+        let Some(importer) = self.host_memory_importer.as_mut() else {
+            return Ok(DirectFrameUploadRecording::NotRecorded);
+        };
+        let Some(source_buffer) = importer.frame_source_buffer(upload) else {
+            return Ok(DirectFrameUploadRecording::NotRecorded);
+        };
+
+        self.ensure_frame_upload_recording(&uploaded_textures.pending_upload);
+        let recording = self
+            .recording
+            .as_mut()
+            .context("host-planar upload recording was not started")?;
+        for plane_index in 0..uploaded_textures.layout.planes.len() {
+            let plane_layout = uploaded_textures.layout.plane(plane_index)?;
+            let plane_copy = upload
+                .plane(plane_index)
+                .with_context(|| format!("direct upload plan has no plane {plane_index}"))?;
+            recording.encoder.copy_buffer_to_texture(
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &source_buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: plane_copy.offset,
+                        bytes_per_row: Some(plane_copy.bytes_per_row),
+                        rows_per_image: None,
+                    },
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: uploaded_textures.plane_texture(plane_index)?,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: plane_layout.width,
+                    height: plane_layout.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        // Обёртка отпускается сразу: wgpu держит её до выполнения submit-а с копией, а
+        // потом её callback отпустит кадр и импорт.
+        drop(source_buffer);
+        self.upload_path_stats.frames_without_cpu_copy += 1;
+        Ok(DirectFrameUploadRecording::Recorded)
+    }
+
+    fn note_unsuitable_direct_upload(&mut self, reason: &anyhow::Error) {
+        self.upload_path_stats.unsuitable_direct_uploads += 1;
+        if !self.unsuitable_direct_upload_reported {
+            self.unsuitable_direct_upload_reported = true;
+            tracing::warn!(
+                reason = %reason,
+                "Software video frame cannot be uploaded from decoder memory; using the staging copy"
+            );
+        }
+    }
+
     fn upload_plane_block(
         &mut self,
         uploaded_textures: &Self::UploadedTextures,
@@ -158,6 +268,9 @@ impl HostPlanarUploadBackend for WgpuHostPlanarUploadBackend {
         // Запись начинается до выделения staging: невостребованная копия прошлого кадра
         // уходит в очередь раньше, и её staging-чанк быстрее возвращается в belt.
         self.ensure_frame_upload_recording(&uploaded_textures.pending_upload);
+        if plane_index == 0 {
+            self.upload_path_stats.frames_through_staging += 1;
+        }
 
         let device = self.device.clone();
         let staging_belt = self.staging_belt.get_or_insert_with(|| {

@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 use render_core::RenderViewport;
 use render_wgpu_video::{
     HostPlanarWgpuFrameMaterializer, HostPlanarWgpuTextureViewLookup, WgpuRenderableFrame,
-    WgpuVideoRenderInput, WgpuVideoRenderer, wrap_video_backend_for_wgpu_submission,
+    WgpuVideoRenderInput, WgpuVideoRenderer, create_video_device_with_external_sync,
+    wrap_video_backend_for_wgpu_submission,
 };
 use video_backend_api::{
     PresentFrameResourceDescriptorLookup, PresentFrameResourceProviderHandle,
@@ -76,6 +77,19 @@ pub struct SubmittedFrameEvidence {
 
     /// Readback обнаружил хотя бы один ненулевой RGB-компонент video draw-а.
     pub contains_visible_video: bool,
+
+    /// FNV-1a видимых байт readback-а: сравнение кадров, нарисованных разными путями загрузки.
+    pub visible_pixels_checksum: u64,
+}
+
+/// Каким устройством стенд рисует кадры.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OffscreenDeviceKind {
+    /// Обычный `request_device` wgpu: загрузка software-кадров только через staging.
+    PlainWgpu,
+    /// Устройство, как его создаёт приложение (`create_video_device_with_external_sync`),
+    /// с `VK_EXT_external_memory_host`: кадры FFmpeg загружаются без CPU-копии.
+    ProductionVideo,
 }
 
 /// Headless WGPU boundary без window/surface/compositor ownership.
@@ -105,6 +119,11 @@ pub struct OffscreenWgpuHarness {
 impl OffscreenWgpuHarness {
     /// Создаёт настоящий Vulkan device/queue и renderer без display server-а.
     pub fn new() -> Self {
+        Self::with_device(OffscreenDeviceKind::PlainWgpu)
+    }
+
+    /// То же на устройстве выбранного вида.
+    pub fn with_device(device_kind: OffscreenDeviceKind) -> Self {
         // Production shell тоже создаёт Vulkan-only instance без заранее захваченного display.
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
@@ -121,15 +140,25 @@ impl OffscreenWgpuHarness {
         .expect("Get Vulkan adapter for headless WGPU acceptance");
 
         // Software host-planar path не требует NV12/P010 device features.
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        let device_descriptor = wgpu::DeviceDescriptor {
             label: Some("AUD-013 offscreen acceptance device"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
             memory_hints: wgpu::MemoryHints::MemoryUsage,
             trace: wgpu::Trace::Off,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        }))
-        .expect("WGPU device for software host-upload acceptance");
+        };
+        let (device, queue) = match device_kind {
+            OffscreenDeviceKind::PlainWgpu => {
+                pollster::block_on(adapter.request_device(&device_descriptor))
+                    .expect("WGPU device for software host-upload acceptance")
+            }
+            OffscreenDeviceKind::ProductionVideo => {
+                create_video_device_with_external_sync(&adapter, &device_descriptor)
+                    .expect("production video device")
+                    .expect("Vulkan adapter offers the video device extensions")
+            }
+        };
 
         // Target поддерживает production render attachment и последующий acceptance readback.
         let target_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -306,6 +335,13 @@ impl OffscreenWgpuHarness {
             .expect("Get mapped range WGPU readback");
         let visible_row_bytes = usize::try_from(TARGET_WIDTH * 4).expect("row bytes are placed");
         let padded_row_bytes = usize::try_from(self.padded_bytes_per_row).expect("stride fits");
+        let visible_pixels_checksum = mapped_bytes
+            .chunks_exact(padded_row_bytes)
+            .take(usize::try_from(TARGET_HEIGHT).expect("height-place"))
+            .flat_map(|row| &row[..visible_row_bytes])
+            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, &byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+            });
         let contains_visible_video = mapped_bytes
             .chunks_exact(padded_row_bytes)
             .take(usize::try_from(TARGET_HEIGHT).expect("height-place"))
@@ -327,6 +363,7 @@ impl OffscreenWgpuHarness {
             pts,
             resource_handle,
             contains_visible_video,
+            visible_pixels_checksum,
         }
     }
 }

@@ -12,9 +12,18 @@ use video_frame_contract::{
     FrameChromaSubsampling, VideoFrameContract, VideoFramePixelLayout, VideoFrameTransferPath,
 };
 
+mod direct_upload;
+mod host_memory_import;
 pub(super) mod pending_upload;
 mod wgpu_backend;
 
+use self::direct_upload::{
+    DirectFrameUploadRecording, DirectHostPlanarUpload, try_record_direct_upload,
+};
+pub(crate) use self::host_memory_import::host_memory_import_extension_name;
+
+pub use self::host_memory_import::HostMemoryImportStats;
+pub use self::wgpu_backend::HostPlanarUploadPathStats;
 use self::wgpu_backend::{WgpuHostPlanarUploadBackend, WgpuHostPlanarUploadedTextures};
 
 use super::{
@@ -55,6 +64,19 @@ impl HostPlanarWgpuFrameMaterializer {
         frame: &DecodedFrame,
     ) -> HostPlanarWgpuTextureViewLookup {
         HostPlanarWgpuTextureViewLookup::from_core_lookup(self.inner.try_upload_lookup(frame))
+    }
+
+    /// Сколько кадров загружено без CPU-копии и через staging (cpu-parity 08b).
+    ///
+    /// Ждёт lock пула текстур: вызывать вне горячего пути (тесты, диагностика).
+    #[must_use]
+    pub fn upload_path_stats(&self) -> HostPlanarUploadPathStats {
+        self.inner
+            .texture_pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .backend
+            .upload_path_stats()
     }
 }
 
@@ -631,6 +653,30 @@ trait HostPlanarUploadBackend {
         visible_height: u32,
     ) -> Result<()>;
 
+    /// `true`, если backend умеет копировать кадр в текстуры прямо из импортированной
+    /// памяти декодера (cpu-parity 08b); иначе план прямой копии даже не строится.
+    fn supports_direct_frame_upload(&self) -> bool {
+        false
+    }
+
+    /// Записывает GPU-копию всех plane-ов кадра прямо из памяти декодера, без CPU-копии.
+    ///
+    /// `NotRecorded` — блок не импортировался (причина уже учтена backend-ом): caller
+    /// грузит кадр обычным путём через staging.
+    fn record_direct_frame_upload(
+        &mut self,
+        uploaded_textures: &Self::UploadedTextures,
+        upload: &DirectHostPlanarUpload,
+    ) -> Result<DirectFrameUploadRecording> {
+        let _unused = (uploaded_textures, upload);
+        Ok(DirectFrameUploadRecording::NotRecorded)
+    }
+
+    /// Кадр с импортируемым блоком не подошёл для прямой копии (диагностика backend-а).
+    fn note_unsuitable_direct_upload(&mut self, reason: &anyhow::Error) {
+        let _unused = reason;
+    }
+
     /// Завершает накопленные plane uploads одного кадра (batch boundary).
     fn flush_plane_uploads(&mut self) -> Result<()> {
         Ok(())
@@ -696,6 +742,12 @@ fn upload_host_planar_visible_rows<B>(
 where
     B: HostPlanarUploadBackend,
 {
+    // Сначала путь без CPU-копии (cpu-parity 08b); любой отказ — обычная копия ниже.
+    let direct = try_record_direct_upload(descriptor, layout, uploaded_textures, backend)?;
+    if direct == DirectFrameUploadRecording::Recorded {
+        return backend.flush_plane_uploads();
+    }
+
     for (plane_index, plane_layout) in layout.planes.into_iter().enumerate() {
         upload_host_planar_plane_visible_rows(
             descriptor,

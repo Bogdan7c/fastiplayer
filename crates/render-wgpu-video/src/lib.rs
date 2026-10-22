@@ -23,12 +23,13 @@ pub use resource_provider::{
 };
 pub use video::{
     DmaBufImportCacheCapacity, DmaBufImportCacheSnapshot, DmaBufImportStats,
-    DmaBufWgpuFrameMaterializer, ExternalFrameSyncCommandBuffers, HostPlanarUploadCommands,
-    HostPlanarWgpuFrameMaterializer, HostPlanarWgpuTextureViewLookup, HostPlanarWgpuTextureViews,
-    VideoHotPathStats, WgpuDmaBufPlaneViews, WgpuFrameMaterializationUnsupportedReason,
-    WgpuFramePlanes, WgpuFrameTextureViewLookup, WgpuFrameTextureViewMaterializer,
-    WgpuFrameTextureViews, WgpuHostPlanarPlaneViews, WgpuRenderableFrame, WgpuVideoRenderInput,
-    WgpuVideoRenderOutcome, WgpuVideoRenderer, clear_to_black,
+    DmaBufWgpuFrameMaterializer, ExternalFrameSyncCommandBuffers, HostMemoryImportStats,
+    HostPlanarUploadCommands, HostPlanarUploadPathStats, HostPlanarWgpuFrameMaterializer,
+    HostPlanarWgpuTextureViewLookup, HostPlanarWgpuTextureViews, VideoHotPathStats,
+    WgpuDmaBufPlaneViews, WgpuFrameMaterializationUnsupportedReason, WgpuFramePlanes,
+    WgpuFrameTextureViewLookup, WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
+    WgpuHostPlanarPlaneViews, WgpuRenderableFrame, WgpuVideoRenderInput, WgpuVideoRenderOutcome,
+    WgpuVideoRenderer, clear_to_black,
 };
 
 /// Возвращает набор WGPU features, обязательный для video texture boundary.

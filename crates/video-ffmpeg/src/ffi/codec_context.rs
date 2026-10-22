@@ -8,11 +8,16 @@ use std::ptr::{self, NonNull};
 use codec_core::VideoCodec;
 use video_core::SoftwareDecodeThreadBudget;
 
+#[cfg(feature = "ffmpeg")]
+use self::callbacks::{
+    CodecCallbacks, FormatNegotiator, decoder_supports_custom_frame_buffers,
+    get_importable_frame_buffer, select_software_pixel_format,
+};
 use super::error::{FfiResult, FfmpegError};
 use super::frame::OwnedAvFrame;
-use super::packet::{OwnedAvPacket, PacketTimeBase};
 #[cfg(feature = "ffmpeg")]
-use super::pixel_format::av_pixel_format_is_software;
+use super::host_frame_memory::HostFrameBlockPool;
+use super::packet::{OwnedAvPacket, PacketTimeBase};
 use super::pixel_format::{SoftwarePixelFormat, SoftwarePixelFormatSet};
 use crate::codec_adapter::FfmpegDecoderId;
 
@@ -35,6 +40,23 @@ pub struct FfmpegCodecContextRequest {
     /// нужно установить как `AVCodecContext.extradata` до `avcodec_open2`.
     /// Хранятся как нейтральные bytes; raw FFmpeg типы наружу не выносятся.
     extradata: Option<Vec<u8>>,
+
+    /// Куда декодер кладёт кадры: обычное выделение FFmpeg или наши блоки для импорта в GPU.
+    frame_memory: SoftwareFrameMemory,
+}
+
+/// Где декодер выделяет память кадров (cpu-parity 08b).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SoftwareFrameMemory {
+    /// Обычное выделение libavcodec (`avcodec_default_get_buffer2`).
+    #[default]
+    DecoderDefault,
+
+    /// Свой `get_buffer2`: каждый кадр в одном блоке, выровненном по странице, со stride,
+    /// кратным 256, — renderer может импортировать его в GPU без CPU-копии.
+    /// Ставится только декодерам с `AV_CODEC_CAP_DR1`; остальные остаются на
+    /// `DecoderDefault` (например, libdav1d со своим пулом).
+    ImportableBlocks,
 }
 
 /// Project-owned decoder selector.
@@ -57,6 +79,7 @@ impl FfmpegCodecContextRequest {
             max_frame_delay: None,
             software_decode_thread_budget: SoftwareDecodeThreadBudget::auto(),
             extradata: None,
+            frame_memory: SoftwareFrameMemory::DecoderDefault,
         }
     }
 
@@ -84,6 +107,7 @@ impl FfmpegCodecContextRequest {
             max_frame_delay: None,
             software_decode_thread_budget: SoftwareDecodeThreadBudget::auto(),
             extradata: None,
+            frame_memory: SoftwareFrameMemory::DecoderDefault,
         }
     }
 
@@ -110,6 +134,19 @@ impl FfmpegCodecContextRequest {
     pub fn with_extradata(mut self, extradata: Vec<u8>) -> Self {
         self.extradata = Some(extradata);
         self
+    }
+
+    /// Просит декодер класть кадры в блоки, которые GPU импортирует без CPU-копии.
+    #[must_use]
+    pub fn with_frame_memory(mut self, frame_memory: SoftwareFrameMemory) -> Self {
+        self.frame_memory = frame_memory;
+        self
+    }
+
+    /// Где декодер выделяет память кадров.
+    #[must_use]
+    pub const fn frame_memory(&self) -> SoftwareFrameMemory {
+        self.frame_memory
     }
 
     /// Возвращает codec name для error/reporting layers.
@@ -153,9 +190,9 @@ pub struct CodecContext {
     #[cfg(feature = "ffmpeg")]
     raw_context: NonNull<ffmpeg_sys_next::AVCodecContext>,
 
-    /// State pointed to by `AVCodecContext.opaque` for `get_format`.
+    /// State pointed to by `AVCodecContext.opaque` for `get_format`/`get_buffer2`.
     #[cfg(feature = "ffmpeg")]
-    _format_negotiator: Box<FormatNegotiator>,
+    callbacks: Box<CodecCallbacks>,
 
     /// Marker, чтобы type существовал в default build-е без FFmpeg headers/libs.
     #[cfg(not(feature = "ffmpeg"))]
@@ -258,24 +295,33 @@ impl CodecContext {
                 operation: "avcodec_alloc_context3",
             })?;
 
+            let frame_block_pool = (request.frame_memory == SoftwareFrameMemory::ImportableBlocks
+                && decoder_supports_custom_frame_buffers(decoder))
+            .then(HostFrameBlockPool::new);
             let mut context_owner = Self {
                 raw_context,
-                _format_negotiator: Box::new(FormatNegotiator::new(
-                    request.accepted_pixel_formats.clone(),
-                )),
+                callbacks: Box::new(CodecCallbacks {
+                    format_negotiator: FormatNegotiator::new(
+                        request.accepted_pixel_formats.clone(),
+                    ),
+                    frame_block_pool,
+                }),
             };
 
             #[cfg(test)]
             LIVE_CODEC_CONTEXT_ALLOCATIONS.with(|live| live.set(live.get() + 1));
 
-            // SAFETY: context принадлежит wrapper-у. `format_negotiator` находится
-            // в Box, поэтому address стабилен до Drop. FFmpeg может вызывать
-            // callback из разных decoder threads, но Context7/FFmpeg docs говорят,
-            // что не одновременно; state immutable, дополнительных locks не нужно.
+            // SAFETY: context принадлежит wrapper-у. `callbacks` находится в Box,
+            // поэтому address стабилен до Drop. FFmpeg может вызывать callbacks
+            // из разных decoder threads, но Context7/FFmpeg docs говорят, что не
+            // одновременно; negotiator immutable, пул блоков сам под mutex-ом.
             unsafe {
                 let context = raw_context.as_ptr();
-                (*context).opaque = context_owner._format_negotiator.as_mut_ptr();
+                (*context).opaque = context_owner.callbacks.as_mut_ptr();
                 (*context).get_format = Some(select_software_pixel_format);
+                if context_owner.callbacks.frame_block_pool.is_some() {
+                    (*context).get_buffer2 = Some(get_importable_frame_buffer);
+                }
             }
 
             // Codec-private global headers (avcC/hvcC) должны попасть в decoder до
@@ -337,6 +383,17 @@ impl CodecContext {
 
             Ok(context_owner)
         }
+    }
+
+    /// Счётчики пула блоков нашего `get_buffer2`; `None` — кадры выделяет FFmpeg.
+    #[cfg(all(test, feature = "ffmpeg"))]
+    pub(crate) fn frame_block_pool_stats(
+        &self,
+    ) -> Option<super::host_frame_memory::HostFrameBlockPoolStats> {
+        self.callbacks
+            .frame_block_pool
+            .as_ref()
+            .map(|pool| pool.stats())
     }
 
     /// Selected pixel format after decoder negotiation, if known.
@@ -475,6 +532,11 @@ impl CodecContext {
                 return Err(FfmpegError::from_averror("avcodec_receive_frame", status));
             }
 
+            // Кадр из нашего блока запоминает блок: renderer импортирует его в GPU.
+            if let Some(pool) = &self.callbacks.frame_block_pool {
+                frame.attach_importable_block(pool);
+            }
+
             Ok(())
         }
     }
@@ -494,6 +556,11 @@ impl CodecContext {
 impl Drop for CodecContext {
     fn drop(&mut self) {
         free_context(self.raw_context);
+        // Декодер закрыт: свободные блоки больше не нужны. Кадры, которые ещё держат
+        // плеер или renderer, остаются валидными и освободят свои блоки сами.
+        if let Some(pool) = &self.callbacks.frame_block_pool {
+            pool.close();
+        }
 
         #[cfg(test)]
         LIVE_CODEC_CONTEXT_ALLOCATIONS.with(|live| live.set(live.get().saturating_sub(1)));
@@ -516,76 +583,6 @@ thread_local! {
 #[cfg(all(test, feature = "ffmpeg"))]
 fn live_codec_context_allocations_for_test() -> usize {
     LIVE_CODEC_CONTEXT_ALLOCATIONS.with(std::cell::Cell::get)
-}
-
-#[cfg(feature = "ffmpeg")]
-#[derive(Debug)]
-struct FormatNegotiator {
-    accepted_pixel_formats: SoftwarePixelFormatSet,
-}
-
-#[cfg(feature = "ffmpeg")]
-impl FormatNegotiator {
-    fn new(accepted_pixel_formats: SoftwarePixelFormatSet) -> Self {
-        Self {
-            accepted_pixel_formats,
-        }
-    }
-
-    fn as_mut_ptr(&mut self) -> *mut std::ffi::c_void {
-        self as *mut Self as *mut std::ffi::c_void
-    }
-
-    fn accepts(&self, pixel_format: ffmpeg_sys_next::AVPixelFormat) -> bool {
-        self.accepted_pixel_formats
-            .contains_av_pixel_format(pixel_format)
-            && av_pixel_format_is_software(pixel_format)
-    }
-}
-
-#[cfg(feature = "ffmpeg")]
-unsafe extern "C" fn select_software_pixel_format(
-    context: *mut ffmpeg_sys_next::AVCodecContext,
-    offered_formats: *const ffmpeg_sys_next::AVPixelFormat,
-) -> ffmpeg_sys_next::AVPixelFormat {
-    if context.is_null() || offered_formats.is_null() {
-        return ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_NONE;
-    }
-
-    // SAFETY: FFmpeg передаёт pointer на текущий `AVCodecContext`.
-    // Мы читаем только `opaque`, который сами установили до `avcodec_open2`.
-    let opaque = unsafe { (*context).opaque };
-
-    if opaque.is_null() {
-        return ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_NONE;
-    }
-
-    // SAFETY: `opaque` указывает на `FormatNegotiator` в `CodecContext`.
-    // Box не перемещается, живёт не меньше context-а, callback не вызывается
-    // после `avcodec_free_context`. State immutable, поэтому thread-safe для
-    // documented non-concurrent `get_format` calls.
-    let format_negotiator = unsafe { &*(opaque as *const FormatNegotiator) };
-    let mut format_index = 0usize;
-
-    loop {
-        // SAFETY: FFmpeg передаёт список `AVPixelFormat`, завершённый
-        // `AV_PIX_FMT_NONE`. Loop останавливается на sentinel-е.
-        let candidate = unsafe { *offered_formats.add(format_index) };
-
-        if candidate == ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_NONE {
-            return ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_NONE;
-        }
-
-        if format_negotiator.accepts(candidate) {
-            return candidate;
-        }
-
-        format_index += 1;
-
-        if format_index > 256 {
-            return ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_NONE;
-        }
-    }
 }
 
 #[cfg(feature = "ffmpeg")]
@@ -678,7 +675,7 @@ fn free_context(raw_context: NonNull<ffmpeg_sys_next::AVCodecContext>) {
 
     // SAFETY: pointer получен из `avcodec_alloc_context3` и ещё не освобождён.
     // FFmpeg closes/frees context-owned state and writes null into local
-    // variable; `_format_negotiator` освобождается Rust Drop-ом отдельно.
+    // variable; `callbacks` освобождается Rust Drop-ом отдельно.
     unsafe { ffmpeg_sys_next::avcodec_free_context(&mut context_to_free) };
 }
 
@@ -745,6 +742,9 @@ fn ffmpeg_thread_count_from_budget(budget: SoftwareDecodeThreadBudget) -> FfiRes
         ),
     })
 }
+
+#[cfg(feature = "ffmpeg")]
+mod callbacks;
 
 #[cfg(test)]
 mod tests;

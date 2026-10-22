@@ -10,7 +10,8 @@ use video_backend_api::{
     PresentFrameResourceProviderLookup,
 };
 use video_core::{
-    FrameResourceDescriptor, FrameResourceHandle, HostPlanarFrameDescriptor, HostPlanarFrameOwner,
+    FrameResourceDescriptor, FrameResourceHandle, HostImportableMemoryBlock,
+    HostPlanarFrameDescriptor, HostPlanarFrameOwner, HostPlanarImportableMemory,
     HostPlaneDescriptor, HostPlaneRole, HostUploadResourceSnapshot,
     validate_resource_descriptor_against_contract,
 };
@@ -348,6 +349,29 @@ struct AvFrameHostPlanarOwner {
 unsafe impl Sync for AvFrameHostPlanarOwner {}
 
 impl HostPlanarFrameOwner for AvFrameHostPlanarOwner {
+    /// Блок кадра для импорта в GPU без CPU-копии, если FFmpeg декодировал кадр в наш
+    /// пул (`SoftwareFrameMemory::ImportableBlocks`, cpu-parity 08b).
+    ///
+    /// Offset plane-ы — расстояние от начала блока до `AVFrame.data[i]`; что все видимые
+    /// строки лежат внутри блока, проверяет descriptor. Кадр без блока (AV1/dav1d,
+    /// fallback `get_buffer2`) или plane вне блока — `None`, renderer идёт через staging.
+    fn importable_memory(
+        &self,
+        planes: &[HostPlaneDescriptor],
+    ) -> Option<HostPlanarImportableMemory> {
+        let block = self.frame.importable_block()?;
+        let block_start = block.address().as_ptr() as usize;
+        let plane_offsets = (0..planes.len())
+            .map(|plane_index| {
+                self.frame
+                    .plane_data_address(plane_index)?
+                    .checked_sub(block_start)
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let block: Arc<dyn HostImportableMemoryBlock> = Arc::clone(block) as _;
+        Some(HostPlanarImportableMemory::new(block, plane_offsets))
+    }
+
     fn visible_row_bytes(
         &self,
         plane_index: usize,

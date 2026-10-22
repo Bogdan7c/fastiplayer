@@ -12,7 +12,7 @@ use video_core::{SoftwareDecodeThreadBudget, VideoStreamDecodeConfig};
 #[cfg(feature = "ffmpeg")]
 use crate::codec_adapter::{color_metadata_plan_from_ffmpeg_frame, plan_ffmpeg_software_decode};
 #[cfg(feature = "ffmpeg")]
-use crate::ffi::codec_context::{CodecContext, FfmpegCodecContextRequest};
+use crate::ffi::codec_context::{CodecContext, FfmpegCodecContextRequest, SoftwareFrameMemory};
 #[cfg(feature = "ffmpeg")]
 use crate::ffi::error::FfmpegError;
 #[cfg(feature = "ffmpeg")]
@@ -95,6 +95,9 @@ impl RealFfmpegDecodeApi {
         if let Some(extradata) = extradata_for_stream_config(config)? {
             request = request.with_extradata(extradata);
         }
+        // Кадры в блоках, которые renderer импортирует в GPU без CPU-копии (cpu-parity 08b).
+        // Декодеры без `AV_CODEC_CAP_DR1` (libdav1d) остаются на выделении FFmpeg.
+        request = request.with_frame_memory(SoftwareFrameMemory::ImportableBlocks);
         let codec_context = CodecContext::open(&request)
             .map_err(FfmpegDecoderThreadError::from)
             .map_err(FfmpegOpenDecoderError::Fatal)?;

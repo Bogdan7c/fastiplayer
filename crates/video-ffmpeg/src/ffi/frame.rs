@@ -6,9 +6,17 @@ use std::os::raw::c_int;
 use std::ptr::NonNull;
 #[cfg(feature = "ffmpeg")]
 use std::slice;
+#[cfg(feature = "ffmpeg")]
+use std::sync::Arc;
+
+#[cfg(feature = "ffmpeg")]
+use super::host_frame_memory::HostFrameBlock;
 
 use super::error::{FfiResult, FfmpegError};
 use super::pixel_format::SoftwarePixelFormat;
+
+#[cfg(feature = "ffmpeg")]
+mod importable_block;
 
 /// Количество `AVFrame::data` / `AVFrame::linesize` slots.
 pub const AV_FRAME_DATA_POINTERS: usize = 8;
@@ -19,6 +27,10 @@ pub struct OwnedAvFrame {
     /// Raw frame живёт только внутри FFI boundary.
     #[cfg(feature = "ffmpeg")]
     raw_frame: NonNull<ffmpeg_sys_next::AVFrame>,
+
+    /// Блок нашего пула, в котором лежат plane-ы кадра (cpu-parity 08b), см. `importable_block`.
+    #[cfg(feature = "ffmpeg")]
+    importable_block: Option<Arc<HostFrameBlock>>,
 
     /// Marker, чтобы type существовал в default build-е без FFmpeg headers/libs.
     #[cfg(not(feature = "ffmpeg"))]
@@ -167,7 +179,10 @@ impl OwnedAvFrame {
                 operation: "av_frame_alloc",
             })?;
 
-            Ok(Self { raw_frame })
+            Ok(Self {
+                raw_frame,
+                importable_block: None,
+            })
         }
     }
 
@@ -203,6 +218,8 @@ impl OwnedAvFrame {
                 return Err(FfmpegError::from_averror("av_frame_ref", status));
             }
 
+            let mut referenced_frame = referenced_frame;
+            referenced_frame.importable_block = source.importable_block.clone();
             Ok(referenced_frame)
         }
     }
@@ -220,6 +237,7 @@ impl OwnedAvFrame {
             // гарантирует, что active borrowed plane slices через safe API уже
             // закончились до release.
             unsafe { ffmpeg_sys_next::av_frame_unref(self.raw_frame.as_ptr()) };
+            self.importable_block = None;
         }
     }
 

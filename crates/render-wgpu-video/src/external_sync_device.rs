@@ -16,10 +16,16 @@
 //! shell и GPU-тесты только вызывают его. Fail-closed: `Ok(None)` означает, что
 //! расширения нет, и caller создаёт обычное устройство, а импорт DMA-BUF остаётся
 //! покадровым.
+//!
+//! Вторым, необязательным, добавляется `VK_EXT_external_memory_host` (cpu-parity 08b):
+//! с ним программный кадр FFmpeg импортируется в GPU прямо из памяти декодера, без
+//! CPU-копии в staging (`video::host_planar_upload::host_memory_import`). Если adapter
+//! его не даёт, устройство создаётся как раньше, а кадры идут через staging.
 
 use anyhow::{Context, Result};
 
 use crate::dma_buf_import::foreign_queue_family_extension_name;
+use crate::video::host_memory_import_extension_name;
 
 /// Создаёт device/queue с `VK_EXT_queue_family_foreign`.
 ///
@@ -43,6 +49,10 @@ pub fn create_video_device_with_external_sync(
     {
         return Ok(None);
     }
+    let host_memory_extension_name = host_memory_import_extension_name();
+    let host_memory_import_supported = hal_adapter
+        .physical_device_capabilities()
+        .supports_extension(host_memory_extension_name);
 
     // `request_device` сам проверяет features/limits против adapter-а; hal-путь
     // этого не делает, поэтому те же проверки выполняются здесь явно.
@@ -56,9 +66,9 @@ pub fn create_video_device_with_external_sync(
         "Vulkan adapter limits are below the requested wgpu limits"
     );
 
-    // SAFETY (контракт `open_with_callback`): callback только ДОБАВЛЯЕТ одно
-    // расширение, поддержку которого adapter подтвердил выше; features/limits и
-    // queue create info не меняются и не урезаются.
+    // SAFETY (контракт `open_with_callback`): callback только ДОБАВЛЯЕТ расширения,
+    // поддержку которых adapter подтвердил выше; features/limits и queue create info
+    // не меняются и не урезаются.
     let open_device = unsafe {
         hal_adapter.open_with_callback(
             descriptor.required_features,
@@ -70,6 +80,11 @@ pub fn create_video_device_with_external_sync(
                     // (`VUID-vkCreateDevice-ppEnabledExtensionNames-01840`).
                     if !args.extensions.contains(&extension_name) {
                         args.extensions.push(extension_name);
+                    }
+                    if host_memory_import_supported
+                        && !args.extensions.contains(&host_memory_extension_name)
+                    {
+                        args.extensions.push(host_memory_extension_name);
                     }
                 },
             )),

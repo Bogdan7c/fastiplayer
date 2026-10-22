@@ -30,10 +30,12 @@ pub use self::external_frame_sync::{
 pub(crate) use self::frame_bind_group_cache::FrameBindGroupCache;
 pub use self::frame_bind_group_cache::VideoHotPathStats;
 pub use self::host_planar_plane_views::WgpuHostPlanarPlaneViews;
+pub(crate) use self::host_planar_upload::host_memory_import_extension_name;
 pub use self::host_planar_upload::pending_upload::HostPlanarUploadCommands;
 use self::host_planar_upload::pending_upload::PendingHostPlanarUpload;
 pub use self::host_planar_upload::{
-    HostPlanarWgpuFrameMaterializer, HostPlanarWgpuTextureViewLookup, HostPlanarWgpuTextureViews,
+    HostMemoryImportStats, HostPlanarUploadPathStats, HostPlanarWgpuFrameMaterializer,
+    HostPlanarWgpuTextureViewLookup, HostPlanarWgpuTextureViews,
 };
 use self::host_yuv420_renderer::HostPlanarYuvVideoRenderer;
 use self::nv12_renderer::Nv12VideoRenderer;

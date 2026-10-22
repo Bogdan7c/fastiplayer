@@ -1,5 +1,6 @@
 mod descriptor;
 mod dma_buf_validation;
+mod host_import;
 mod host_planar_validation;
 mod identity;
 
@@ -15,6 +16,10 @@ pub use descriptor::{
 pub use dma_buf_validation::{
     validate_dma_buf_descriptor_against_frame_contract,
     validate_dma_buf_descriptor_import_topology, validate_dma_buf_identity_against_frame_contract,
+};
+pub use host_import::{
+    HOST_IMPORTABLE_BLOCK_ALIGNMENT, HOST_IMPORTABLE_ROW_PITCH_ALIGNMENT,
+    HostImportableMemoryBlock, HostMemoryBlockId, HostMemoryRegion, HostPlanarImportableMemory,
 };
 pub use identity::{
     DmaBufFrameFormatSignature, DmaBufFrameIdentity, DmaBufObjectIdentityDescriptor,

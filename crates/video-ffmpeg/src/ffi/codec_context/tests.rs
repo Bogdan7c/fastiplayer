@@ -114,14 +114,17 @@ fn get_format_chooses_only_adapter_accepted_software_format() {
         ffmpeg_sys_next::avcodec_alloc_context3(ptr::null())
     };
     let raw_context = NonNull::new(raw_context).expect("context allocation should succeed");
-    let mut negotiator = FormatNegotiator::new(
-        SoftwarePixelFormatSet::new([SoftwarePixelFormat::Yuv420Planar8])
-            .expect("allowlist should be valid"),
-    );
+    let mut callbacks = CodecCallbacks {
+        format_negotiator: FormatNegotiator::new(
+            SoftwarePixelFormatSet::new([SoftwarePixelFormat::Yuv420Planar8])
+                .expect("allowlist should be valid"),
+        ),
+        frame_block_pool: None,
+    };
 
-    // SAFETY: test owns context and negotiator for the whole callback call.
+    // SAFETY: test owns context and callbacks for the whole callback call.
     unsafe {
-        (*raw_context.as_ptr()).opaque = negotiator.as_mut_ptr();
+        (*raw_context.as_ptr()).opaque = callbacks.as_mut_ptr();
     }
 
     let offered_formats = [
@@ -152,14 +155,17 @@ fn get_format_returns_none_when_adapter_accepts_no_offered_software_format() {
         ffmpeg_sys_next::avcodec_alloc_context3(ptr::null())
     };
     let raw_context = NonNull::new(raw_context).expect("context allocation should succeed");
-    let mut negotiator = FormatNegotiator::new(
-        SoftwarePixelFormatSet::new([SoftwarePixelFormat::Yuv444Planar10Le])
-            .expect("allowlist should be valid"),
-    );
+    let mut callbacks = CodecCallbacks {
+        format_negotiator: FormatNegotiator::new(
+            SoftwarePixelFormatSet::new([SoftwarePixelFormat::Yuv444Planar10Le])
+                .expect("allowlist should be valid"),
+        ),
+        frame_block_pool: None,
+    };
 
-    // SAFETY: test owns context and negotiator for the whole callback call.
+    // SAFETY: test owns context and callbacks for the whole callback call.
     unsafe {
-        (*raw_context.as_ptr()).opaque = negotiator.as_mut_ptr();
+        (*raw_context.as_ptr()).opaque = callbacks.as_mut_ptr();
     }
 
     let offered_formats = [
