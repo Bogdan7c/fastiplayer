@@ -9,7 +9,8 @@ was therefore **not met**. Equal smoothness is not established. No PARITY label
 is emitted.
 
 The software-decode qualification of session 08 is in
-[Software decode (session 08)](#software-decode-session-08) below.
+[Software decode (session 08)](#software-decode-session-08) below; its repeat after
+session 08b is in [Software decode (session 08b)](#software-decode-session-08b).
 
 Task: session 06c of the CPU-parity plan (`user/cpu-parity/`);
 tracking goal: [#10](https://github.com/Bogdan7c/fastiplayer/issues/10).
@@ -365,10 +366,100 @@ claim of superiority.
 - **Memory:** Fastiplayer's RSS is higher than mpv's on VP9 and HEVC 4K60, and
   lower on H.264 and AV1. AV1 4K grew by about +110 MiB in session 08, the
   owner-accepted price of decoding 2 frames in parallel.
-- Session 08b (planned) covers the presentation-path cost and the 4K memory gap.
+- Session 08b covers the presentation-path cost and the 4K memory gap: see
+  [Software decode (session 08b)](#software-decode-session-08b).
 - One machine, XWayland only, 45-second matrix clips plus one long file. The weak
   Intel laptop (T480s) was not measured, so the thread caps there are untested.
 - The players' renderers, scalers, demuxers and FFmpeg builds differ. mpv uses
   the distribution FFmpeg, Fastiplayer the vendored FFmpeg 8.1.3. This is a
   default-behaviour comparison.
 - Sanitized per-attempt evidence: `local-cpu-parity-sw-2026-10-22.json.gz`.
+
+## Software decode (session 08b)
+
+**Same protocol, plan, media, configuration and reference as session 08; only the
+Fastiplayer binary changed.** Fastiplayer showed no frame loss on all 5 scenes and
+used 2.6–6× less GPU render-engine time. CPU results:
+
+- **WIN** on VP9 4K60 (−5.4 pp, was WORSE +3.4), HEVC 4K60 (−14.6 pp, was
+  INCONCLUSIVE) and both AV1 4K60 scenes;
+- **INCONCLUSIVE** on H.264 1080p60: mean +0.66 pp (was WORSE +3.7), 7 of 9 pairs
+  between +0.3 and +1.6 pp. The interval [−2.30; +3.62] is wider than the ±1 pp
+  exit band, so the session's exit criterion is **not met on this scene**.
+
+mpv again lost 2–4 frames per attempt on the single-tile AV1 4K60 scene: that
+result holds only with the caveat and claims no superiority.
+
+**What changed (session 08b).** Fastiplayer no longer copies a software-decoded
+frame on the CPU before the GPU upload. Like mpv's default direct rendering, the
+decoder writes each frame where the GPU can read it; unlike mpv, that memory is
+ordinary process memory, imported per GPU copy through `VK_EXT_external_memory_host`,
+so the decoder does not depend on the GPU device. AV1 (dav1d has its own frame pool)
+and drivers without the extension keep the previous staging copy. Diagnostic
+evidence outside the protocol:
+
+- profile of the old build: the staging copy was 43 % (H.264 1080p60) and 59 %
+  (VP9 4K60) of the main thread;
+- mpv with `--vd-lavc-dr=no` spends as much as the old Fastiplayer (`vo` 5.5 % and
+  9.5 %, process 51.8 % and 114.4 %), so the old gap was direct rendering;
+- the remaining H.264 1080p60 overhead is about 1 pp of kernel time: on amdgpu an
+  imported host buffer is a `userptr` object, and the kernel revalidates the pages
+  of every live one on each submit.
+
+### Provenance and scope
+
+- Production source: `e313720c` (tree clean for production code). Fastiplayer
+  release SHA-256 `3af25a0e290f0f9f…`, built with
+  `cargo build --release -p app-egui --locked` (default features, no LTO).
+- Reference: mpv 0.41.0, same binary and command as session 08
+  (`--no-config --hwdec=no --fs --volume=0`).
+- Plan, configuration, window helper, media and timing as in session 08 above.
+- Memory columns now include GTT and RSS+GTT (protocol tools, commit `2036c3ba`):
+  mpv's direct-rendering frames live in amdgpu GTT, whose pages have `Rss = 0`.
+  Fastiplayer's imported frames are counted in GTT only while a GPU copy is in
+  flight, and they are also in its RSS, so its RSS+GTT is overstated by 2–3
+  frames (≈ 30 MiB at 4K).
+
+### Attempts and quality gate
+
+- 58 of 58 attempts were valid, with none excluded or replaced; 1 diagnostic pair
+  per scene, then 3 quiet pairs (VP9, both AV1), 6 (HEVC) and 9 (H.264).
+
+| Scene | Fastiplayer unique frames / expected | mpv lost frames | Gate |
+|---|---|---|---|
+| h264-1080p60 | 1200 / 1200.2 | 0 in all 10 attempts | PASS |
+| hevc-4k60 | 1200 / 1200.3 | 0 in all 7 | PASS |
+| vp9-4k60 | 1199 / 1200.2 | 0 in all 4 | PASS |
+| av1-4k60 | 1200 / 1200.2 | **3, 2, 3, 4** | REFERENCE_LOSSES |
+| av1bbb-4k60 | 1200 / 1200.2 | 0 in all 4 | PASS |
+
+### CPU, GPU and memory (quiet mode)
+
+| Scene | Pairs | Fastiplayer CPU, mean (range) | mpv CPU, mean (range) | Difference | Interval | CPU verdict | GPU gfx busy %, Fastiplayer / mpv (verdict) | RSS MiB | GTT MiB | RSS+GTT MiB | PSS MiB |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| h264-1080p60 | 9 | 49.6 (48.7–50.4) | 49.0 (48.4–49.8) | +0.66 | [−2.30; +3.62] | INCONCLUSIVE | 3.26 / 8.48 (WIN) | 268 / 273 | 47 / 134 | 315 / 407 | 259 / 259 |
+| hevc-4k60 | 6 | 163.1 (160.6–165.1) | 177.7 (176.1–178.9) | −14.59 | [−23.69; −5.50] | **WIN** | 6.42 / 37.16 (WIN) | 706 / 515 | 153 / 575 | 859 / 1090 | 697 / 501 |
+| vp9-4k60 | 3 | 104.7 (104.4–105.2) | 110.1 (109.8–110.3) | −5.36 | [−8.08; −2.64] | **WIN** | 6.44 / 36.86 (WIN) | 454 / 236 | 152 / 579 | 606 / 815 | 445 / 223 |
+| av1-4k60 ¹ | 3 | 126.4 (125.9–126.9) | 131.9 (131.5–132.3) | −5.53 | [−7.90; −3.17] | WIN ¹ | 6.89 / 37.07 (WIN) | 408 / 571 | 171 / 250 | 579 / 821 | 399 / 557 |
+| av1bbb-4k60 | 3 | 113.1 (111.2–114.6) | 216.1 (213.1–217.9) | −102.92 | [−110.40; −95.44] | **WIN** | 6.88 / 38.93 (WIN) | 407 / 575 | 171 / 213 | 578 / 788 | 398 / 562 |
+
+Memory pairs are Fastiplayer / mpv. ¹ With reference frame losses (see the
+quality gate): reported, not a claim of superiority.
+
+### Session 08b limitations
+
+- **Exit criterion not met on h264-1080p60**: the interval is wider than ±1 pp. As
+  in session 06c, mpv's run-to-run spread at 60 fps keeps the conservative
+  interval (t = 10) wide; the mean is inside the band.
+- **Memory:** RSS is higher than mpv's on VP9 and HEVC 4K60 because mpv's frames
+  are in GTT; RSS+GTT is lower than mpv's on every scene. Against session 08,
+  Fastiplayer's RSS grew by +27…34 MiB on H.264/VP9/HEVC (rows padded to a
+  256-byte multiple for the GPU copy) while GTT fell by 18–28 MiB (no staging
+  buffer, diagnostic before/after runs); this was accepted by the owner.
+- Imports were verified only on AMD Radeon 780M (RADV); the per-copy import is the
+  same Vulkan path that discrete GPUs use for host memory, but no discrete GPU and
+  no Intel GPU were measured.
+- One machine, XWayland only; different FFmpeg builds (distribution vs vendored
+  8.1.3) and renderers; default-behaviour comparison.
+- Sanitized per-attempt evidence: `local-cpu-parity-sw-2026-10-23.json.gz`.
+
