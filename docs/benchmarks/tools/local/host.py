@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import statistics
 import subprocess
 import time
 
@@ -197,6 +198,41 @@ def parse_drm_memory_kib(text):
     return int(parts[0]) * factor if factor else None
 
 
+# Имена счётчиков DRM fdinfo задаёт драйвер (ядро, Documentation/gpu/drm-usage-stats.rst:
+# ``drm-engine-<keystr>``, ``drm-resident-<region>``; amdgpu дополнительно держит старые
+# ``drm-memory-<region>``). Протокол писался на amdgpu (780M); ThinkPad T480s (i915,
+# сессия 10) называет те же вещи иначе, и без этой таблицы GPU-метрики там молча
+# пропадали («gfx engine counter missing», GTT = 0). Порядок имён — приоритет: у
+# client-а берётся первое найденное, поэтому серии amdgpu считаются ровно как раньше.
+RENDER_ENGINE_NAMES = ('gfx', 'render')  # amdgpu; i915
+
+# Память GPU вне RSS по видам. amdgpu: GTT (системная RAM, отображённая для GPU) и VRAM.
+# i915: объекты встроенной графики лежат в регионе ``system0`` (обычная RAM, драйвер
+# отображает её сам, у страниц Rss = 0 — проверено на T480s: RSS 95 МиБ при 204 МиБ
+# resident у DRM-clients), а ``local0`` — память дискретной Intel. Берётся resident,
+# то есть реально занятые страницы, как и у amdgpu ``drm-memory-gtt``.
+GPU_MEMORY_FIELDS = {
+    'gtt': ('drm-memory-gtt', 'drm-resident-system0'),
+    'vram': ('drm-memory-vram', 'drm-resident-local0'),
+}
+
+
+def render_engine_busy_percent(engine_busy_percent):
+    """Занятость движка 3D/рендера, % — под тем именем, которое дал драйвер; нет — None."""
+    for name in RENDER_ENGINE_NAMES:
+        if name in engine_busy_percent:
+            return engine_busy_percent[name]
+    return None
+
+
+def client_memory_kib(counters, kind):
+    """Память одного DRM-client-а вида ``kind`` (KiB): первое поле из GPU_MEMORY_FIELDS."""
+    for field in GPU_MEMORY_FIELDS[kind]:
+        if field in counters:
+            return parse_drm_memory_kib(counters[field]) or 0
+    return 0
+
+
 def gpu_memory_kib(sample_value):
     """GTT и VRAM (KiB) дерева процессов в одном sample, или None, если DRM-clients нет.
 
@@ -206,17 +242,31 @@ def gpu_memory_kib(sample_value):
     DRM-clients (device:client-id): fork-потомки делят client с родителем и не
     считаются дважды. Это оценка «память, видимая клиентам дерева», а не
     общий итог GPU: общие между clients аллокации fdinfo не различает.
+    Имена полей по драйверам — ``GPU_MEMORY_FIELDS``.
     """
     clients = {}
     for process in sample_value['drm'].values():
         clients.update(process.get('clients_not_additive', {}))
     if not clients:
         return None
-    totals = {'gtt': 0, 'vram': 0}
-    for counters in clients.values():
-        for kind in totals:
-            totals[kind] += parse_drm_memory_kib(counters.get(f'drm-memory-{kind}', '')) or 0
-    return totals
+    return {kind: sum(client_memory_kib(counters, kind) for counters in clients.values())
+            for kind in GPU_MEMORY_FIELDS}
+
+
+def gpu_memory_summary(samples):
+    """Среднее/максимум/минимум GTT и VRAM по samples окна; без DRM-clients — пустой dict.
+
+    Общая функция collector-а и анализа: сводка памяти всегда выводится из сохранённых
+    сырых samples, поэтому исправление разбора полей (как i915 в сессии 10) применяется
+    к уже снятой серии без повторного замера, а для amdgpu даёт прежние числа.
+    """
+    memory = [m for m in map(gpu_memory_kib, samples) if m is not None]
+    if not memory:
+        return {}
+    return {f'gpu_{kind}_kib': {'mean': statistics.mean(values), 'sampled_max': max(values),
+                                'minimum': min(values)}
+            for kind in GPU_MEMORY_FIELDS
+            for values in [[m[kind] for m in memory]]}
 
 
 def summarize_gpu(first, last):

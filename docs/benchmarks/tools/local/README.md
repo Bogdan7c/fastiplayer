@@ -99,6 +99,16 @@ The following rules apply before looking at scored results:
    may share allocations, fdinfo cannot tell) and not a whole-GPU total. Older attempts
    without these keys give `null`. The CPU verdict is unaffected. `protocol_version`
    is not bumped: the change only adds fields.
+   **Driver naming (session 10, ThinkPad T480s, 2026-10-23).** DRM fdinfo names are
+   driver-defined. amdgpu reports the render engine as `gfx` and memory as
+   `drm-memory-gtt`/`vram`; i915 reports `render` and `drm-resident-system0`/`local0`.
+   `host.RENDER_ENGINE_NAMES` and `host.GPU_MEMORY_FIELDS` map both (amdgpu names keep
+   priority, so 780M series compute exactly as before); report columns keep the names
+   `gfx`/`gtt`. `analyze.py` recomputes the GPU memory summary from the stored raw
+   samples of attempts whose collector already recorded memory, so a parsing fix
+   reaches an existing series without re-measurement. On the hardware path the per-client
+   sum counts surfaces shared between the player's own VA-API and Vulkan clients twice;
+   reports state this next to the column.
 3. Use equal minimum warmup and pre-read the file before spawn. Run both players
    XWayland fullscreen, VLC dummy/OpenGL/VA-API and Fastiplayer controls/Vulkan/
    VA-API. Record actual geometry and display modes at both boundaries. Audio stays

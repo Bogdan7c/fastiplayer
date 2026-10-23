@@ -13,7 +13,7 @@ import time
 import tempfile
 
 import evidence
-from host import (PROTOCOL_VERSION, cpu_percent, gpu_memory_kib, probe_media, sample, sha256, source_fps,
+from host import (PROTOCOL_VERSION, cpu_percent, gpu_memory_summary, probe_media, sample, sha256, source_fps,
                   summarize_gpu, write_json)
 from service import MeasuredService, isolated_environment
 
@@ -37,12 +37,7 @@ def summarize(samples):
         result[metric] = {'mean': statistics.mean(values), 'sampled_max': max(values), 'minimum': min(values)}
     # Память GPU (GTT/VRAM) рядом с RSS: см. host.gpu_memory_kib. Если DRM-clients
     # не было ни в одном sample, метрики нет вовсе (в отчёте «—»), а не ложный 0.
-    memory = [m for m in map(gpu_memory_kib, samples) if m is not None]
-    if memory:
-        for kind in ('gtt', 'vram'):
-            values = [m[kind] for m in memory]
-            result[f'gpu_{kind}_kib'] = {'mean': statistics.mean(values), 'sampled_max': max(values),
-                                         'minimum': min(values)}
+    result.update(gpu_memory_summary(samples))
     return result
 
 

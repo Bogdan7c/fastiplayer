@@ -11,7 +11,7 @@ import math
 from pathlib import Path
 import statistics
 
-from host import PROTOCOL_VERSION, write_json
+from host import PROTOCOL_VERSION, gpu_memory_summary, render_engine_busy_percent, write_json
 
 LOOKS = (3, 6, 9)
 # Критерий выхода сессии 06: INCONCLUSIVE засчитывается, только если весь интервал
@@ -73,8 +73,12 @@ def plan_exit_band(pairs):
 
 
 def gfx_percent(attempt):
-    """Занятость gfx-движка деревом процессов плеера, % (нет записи — None)."""
-    return attempt.get('gpu', {}).get('engine_busy_percent', {}).get('gfx')
+    """Занятость движка рендера деревом процессов плеера, % (нет записи — None).
+
+    Поле отчёта по-прежнему называется «gfx» (имя amdgpu); у i915 тот же движок
+    называется ``render`` — сопоставление в ``host.RENDER_ENGINE_NAMES``.
+    """
+    return render_engine_busy_percent(attempt.get('gpu', {}).get('engine_busy_percent', {}))
 
 
 def attempt_quality(attempt):
@@ -195,13 +199,29 @@ def cohort_verdicts(mode, pairs, cohort):
     return cpu, gpu
 
 
+def gpu_memory_metrics(attempt):
+    """Сводка GTT/VRAM попытки: из сохранённых сырых samples, а без них — из metrics.
+
+    Пересчёт из samples нужен, чтобы исправление разбора fdinfo (i915, сессия 10)
+    дошло до уже снятых серий; для amdgpu пересчёт совпадает с сохранённым значением.
+    Пересчитываются только попытки, чей collector уже записывал память (есть
+    ``gpu_*_kib`` в metrics): старые серии до 08b остаются без этих колонок, как были.
+    """
+    stored = {key: value for key, value in attempt['metrics'].items() if key.startswith('gpu_')}
+    samples = attempt.get('samples')
+    if stored and samples and all('drm' in sample_value for sample_value in samples):
+        return gpu_memory_summary(samples)
+    return stored
+
+
 def optional_mib(group, metric, field, reduce):
     """Агрегат метрики памяти в МиБ или None, если её нет в сохранённых попытках.
 
     Старые серии (до сессии 08b) не содержат gpu_gtt_kib/gpu_vram_kib: отсутствие
     даёт None (в отчёте «—»), а не ошибку и не ноль.
     """
-    values = [a['metrics'][metric][field] for a in group if metric in a['metrics']]
+    memory = [gpu_memory_metrics(a) for a in group]
+    values = [m[metric][field] for m in memory if metric in m]
     if len(values) != len(group):
         return None
     return reduce(values) / 1024

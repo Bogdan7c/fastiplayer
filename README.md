@@ -40,7 +40,7 @@
 
 **Live picture controls.** Brightness, contrast, saturation, and per-channel color change on the running video, with instant preview and one-click reset.
 
-**Hardware-accelerated and light on memory.** VA-API decoding on supported GPUs, Vulkan rendering through WGPU, and GPU HDR-to-SDR tone mapping. In a recorded test, Fastiplayer held under 90 MiB of RAM on 1080p60 and 4K60, where VLC used 127–300 MiB ([details](#performance)).
+**Light enough for a 2018 laptop.** VA-API decoding on supported GPUs, Vulkan rendering through WGPU, and GPU HDR-to-SDR tone mapping. On a ThinkPad T480s, Fastiplayer played 4K60 HEVC and AV1 without losing a frame, while mpv dropped 37–56 % of them; it used less CPU, a fraction of the GPU render time and up to 3× less process memory ([details](#performance)).
 
 **Plays what you throw at it.** Drop files, folders, playlists, or links into the window. Local media, HTTP(S)/FTP(S), HLS and DASH (VOD, live, and DVR), internet radio, and — with optional `yt-dlp` — web pages.
 
@@ -161,14 +161,27 @@ NVDEC, native HDR output, and macOS are possible later directions without dates.
 
 ## Performance
 
-Fastiplayer aims to be lighter than the established players, and it publishes measurements even where it is not there yet. In the **2026-09-05 ThinkPad T480s** comparison with VLC 3.0.23 (hardware decoding, fullscreen, five scored runs):
+Fastiplayer is built to be light, and it publishes how that is measured. On **2026-10-23** a 2018 **ThinkPad T480s** (Core i5-8350U, Intel UHD Graphics 620) played the same files in Fastiplayer and in mpv 0.41: both fullscreen with default settings, in alternating runs with 20-second windows.
 
-| Workload | Memory (RSS): Fastiplayer | Memory (RSS): VLC | CPU: Fastiplayer | CPU: VLC |
-| --- | ---: | ---: | ---: | ---: |
-| H.264 1080p60 | **87 MiB** | 127 MiB | 16.9% | **4.8%** |
-| HEVC 4K60 | **88 MiB** | 300 MiB | 30.4% | **5.8%** |
+<p align="center">
+  <img src="docs/assets/fastiplayer-t480s-av1-4k60.png" alt="Fastiplayer on the ThinkPad T480s playing Big Buck Bunny in AV1 4K60 at 00:41: a sleeping rabbit in a grassy burrow, with the timeline and playback controls below" width="720"><br>
+  <sub>The measured AV1 4K60 file on the T480s, software decoding. Film: <i>Big Buck Bunny</i> © 2008 Blender Foundation, CC BY 3.0</sub>
+</p>
 
-Fastiplayer used up to 3.4× less memory, while VLC still uses less CPU. Closing that gap is tracked in [#10](https://github.com/Bogdan7c/fastiplayer/issues/10). The numbers describe revision `9165200c` and synthetic test files; the [full report](docs/benchmarks/thinkpad-t480s.md) has the methodology, raw data, and limitations, and the [benchmark guide](docs/benchmarks/README.md) covers other experiments.
+| Workload | Frames lost in 20 s | CPU (100% = one core) | GPU render time | Memory (RSS) |
+| --- | --- | --- | --- | --- |
+| H.264 1080p60, hardware | **0** · mpv 0 | **8.5%** · mpv 9.5% | **6%** · mpv 26% | **95 MiB** · mpv 212 MiB |
+| HEVC 4K60, hardware | **0** · mpv 458 | **8.6%** · mpv 13.8% | **11%** · mpv 93% | **94 MiB** · mpv 307 MiB |
+| H.264 1080p60, software | **0** · mpv 0 | 83.8% · mpv 88.2% | **12%** · mpv 29% | **174 MiB** · mpv 224 MiB |
+| AV1 4K60, software | **0** · mpv 671 | **364%** · mpv 619% | **22%** · mpv 86% | **378 MiB** · mpv 514 MiB |
+
+- **4K60 is where it shows.** This laptop is at its limit there. mpv's renderer kept the GPU 93% busy and dropped over a third of the HEVC frames. In software AV1 it used six cores and dropped over half. Fastiplayer showed every frame. Because mpv did less work there, read those two rows as "Fastiplayer keeps up", not as an efficiency ratio.
+- **1080p60.** Both players showed every frame. Hardware H.264 is a statistically confirmed CPU win (−1.0 pp). Software H.264 was lower in all 9 runs (−4.4 pp on average), but the strict test calls it inconclusive.
+- **Memory.** The table shows process memory (RSS). GPU-driver memory is reported separately in the full report: on hardware 4K, Fastiplayer holds slightly more there for its pool of decoded frames, and its total is still lower.
+
+Six weeks earlier the same laptop measured Fastiplayer at 16.9% (H.264) and 30.4% (HEVC 4K60) CPU against VLC, which needed under 6% ([September report](docs/benchmarks/thinkpad-t480s.md)). The work in [#10](https://github.com/Bogdan7c/fastiplayer/issues/10) found the overhead in Fastiplayer's own plumbing, not its decoders, and removed it. The protocols and files differ, so this shows the direction, not a ratio. On a fast AMD laptop (Ryzen 7 7840HS / Radeon 780M), 17 hardware scenes against mpv show the same picture: no frame loss, no scene where its CPU was proven higher, 5–17× less GPU render time and about half the memory.
+
+The numbers describe revision `cba51ace` and the files listed in the reports. The [two-laptop report](docs/benchmarks/t480s-cpu-parity-2026-10-23.md) has the methodology, raw data, and limitations, and the [benchmark guide](docs/benchmarks/README.md) covers the other experiments.
 
 Media tests check that video actually reaches rendered frames and audio produces real samples. CI runs workspace tests, strict Clippy/rustdoc, formatting, architecture boundaries, locked dependencies, and the toolchain policy — see [CI](docs/continuous-integration.md).
 

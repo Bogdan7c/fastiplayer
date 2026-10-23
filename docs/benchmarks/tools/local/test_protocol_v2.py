@@ -14,7 +14,7 @@ from unittest import mock
 import analyze
 from collect import decode_path, fastiplayer_command, mpv_command, vlc_command
 import evidence
-from host import drm_clients, gpu_memory_kib, parse_drm_memory_kib, summarize_gpu
+from host import drm_clients, gpu_memory_kib, parse_drm_memory_kib, render_engine_busy_percent, summarize_gpu
 import run_series
 
 
@@ -339,6 +339,88 @@ class GpuMemoryTests(unittest.TestCase):
         self.assertAlmostEqual(old_mpv['rss_mean_mib'], 100_000 / 1024)
         for key in ('gtt_mean_mib', 'vram_mean_mib', 'rss_plus_gtt_mean_mib', 'gtt_sampled_max_mib'):
             self.assertIsNone(old_mpv[key])
+
+
+
+# Реальная форма fdinfo i915 (ThinkPad T480s, сессия 10): память — регионы system0/local0,
+# движок рендера — ``render``. Значения из настоящей попытки Fastiplayer.
+I915_VULKAN_CLIENT = {'drm-total-system0': '126308 KiB', 'drm-shared-system0': '98292 KiB',
+                      'drm-resident-system0': '124260 KiB', 'drm-total-stolen-system0': '0',
+                      'drm-resident-stolen-system0': '0'}
+I915_VAAPI_CLIENT = {'drm-total-system0': '80308 KiB', 'drm-shared-system0': '72 MiB',
+                     'drm-resident-system0': '79756 KiB'}
+
+
+class DriverNamingTests(unittest.TestCase):
+    """GPU-метрики не должны зависеть от того, как драйвер называет движок и регион памяти."""
+
+    @staticmethod
+    def sample(clients, second=0):
+        return {'process': {'start_ticks': 1, 'cpu_ticks': 100 * second, 'cpu_time': float(second)},
+                'cgroup_cpu': {'usage_usec': 1_000_000 * second, 'time': float(second)},
+                'rss_sum_kib': 10, 'pss_sum_kib': 5,
+                'drm': {'1': {'clients_not_additive': clients}}}
+
+    def test_i915_resident_system_memory_counts_as_gtt(self):
+        memory = gpu_memory_kib(self.sample({'226:416': I915_VULKAN_CLIENT, '226:421': I915_VAAPI_CLIENT}))
+        self.assertEqual(memory, {'gtt': 124260 + 79756, 'vram': 0})
+
+    def test_i915_discrete_local_memory_counts_as_vram(self):
+        memory = gpu_memory_kib(self.sample({'226:1': {'drm-resident-local0': '2 MiB',
+                                                       'drm-resident-system0': '3 KiB'}}))
+        self.assertEqual(memory, {'gtt': 3, 'vram': 2048})
+
+    def test_amdgpu_legacy_field_wins_over_newer_duplicate(self):
+        # Новые amdgpu пишут и drm-memory-gtt, и drm-resident-gtt — одну и ту же память
+        # нельзя посчитать дважды, а серии 780M должны считаться как раньше.
+        memory = gpu_memory_kib(self.sample({'226:1': {'drm-memory-gtt': '100 KiB',
+                                                       'drm-resident-gtt': '100 KiB',
+                                                       'drm-memory-vram': '5 KiB'}}))
+        self.assertEqual(memory, {'gtt': 100, 'vram': 5})
+
+    def test_render_engine_is_found_under_the_driver_name(self):
+        self.assertEqual(render_engine_busy_percent({'gfx': 1.5, 'dec': 9.0}), 1.5)
+        self.assertEqual(render_engine_busy_percent({'render': 6.2, 'video': 7.4}), 6.2)
+        self.assertIsNone(render_engine_busy_percent({'video': 7.4}))
+
+    def test_i915_series_gets_gpu_verdict_and_memory_from_raw_samples(self):
+        # Попытки, снятые до исправления: в metrics нули GTT, в gpu — движок ``render``.
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        for repetition in (1, 2, 3):
+            for player, render, clients in (('fastiplayer', 6.0 + repetition / 10, {'226:1': I915_VULKAN_CLIENT}),
+                                            ('mpv', 19.0, {'226:2': I915_VAAPI_CLIENT})):
+                attempt = fake_attempt('h264-1080p60', player, 'quiet', repetition, 9.0)
+                attempt['gpu'] = {'engine_busy_percent': {'render': render, 'video': 7.0}}
+                attempt['metrics']['gpu_gtt_kib'] = {'mean': 0, 'sampled_max': 0, 'minimum': 0}
+                attempt['metrics']['gpu_vram_kib'] = {'mean': 0, 'sampled_max': 0, 'minimum': 0}
+                attempt['samples'] = [self.sample(clients, second) for second in (0, 1)]
+                path = Path(directory.name) / 'attempts' / f'{player}-{repetition}'
+                path.mkdir(parents=True)
+                (path / 'result.json').write_text(json.dumps(attempt))
+        cohort = analyze.analyze(Path(directory.name))['cohorts'][0]
+        self.assertEqual(cohort['gpu_gfx_verdict']['status'], 'WIN')
+        players = cohort['players']
+        self.assertAlmostEqual(players['fastiplayer']['gfx_busy_percent_mean'], 6.2)
+        self.assertAlmostEqual(players['fastiplayer']['gtt_mean_mib'], 124260 / 1024)
+        self.assertAlmostEqual(players['mpv']['gtt_mean_mib'], 79756 / 1024)
+        self.assertAlmostEqual(players['mpv']['rss_plus_gtt_mean_mib'], 100_000 / 1024 + 79756 / 1024)
+
+    def test_amdgpu_recalculation_equals_stored_summary(self):
+        from collect import summarize
+        samples = [self.sample({'226:1': {'drm-memory-gtt': f'{gtt} KiB', 'drm-memory-vram': '7 KiB'}}, second)
+                   for second, gtt in enumerate((100, 300, 200))]
+        attempt = fake_attempt('s', 'mpv', 'quiet', 1, 10.0)
+        attempt['metrics'].update({key: value for key, value in summarize(samples).items()
+                                   if key.startswith('gpu_')})
+        attempt['samples'] = samples
+        self.assertEqual(analyze.gpu_memory_metrics(attempt),
+                         {key: value for key, value in attempt['metrics'].items() if key.startswith('gpu_')})
+
+    def test_attempt_from_before_memory_columns_is_not_recalculated(self):
+        attempt = fake_attempt('s', 'mpv', 'quiet', 1, 10.0)
+        attempt['samples'] = [self.sample({'226:1': {'drm-memory-gtt': '100 KiB'}})]
+        self.assertEqual(analyze.gpu_memory_metrics(attempt), {})
 
 
 class MpvEvidenceTests(unittest.TestCase):

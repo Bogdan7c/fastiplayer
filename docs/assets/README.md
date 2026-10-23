@@ -12,6 +12,7 @@ Build: `cargo build -p app-egui --release --locked`, default features, Rust **1.
 - `fastiplayer-main.png`: the original 2026-09-06 playback screenshot, kept unchanged at the path used in the existing alpha release notes.
 - `fastiplayer-queue.png`: playback at 00:29 with the queue sidebar open, holding the Sintel Trailer and Big Buck Bunny (2026-10-11 capture, see below).
 - `fastiplayer-subtitles.png`: fullscreen Sintel with an English subtitle in the default style above the playback controls (2026-10-19 capture, see below).
+- `fastiplayer-t480s-av1-4k60.png`: Big Buck Bunny AV1 4K60 playing on the ThinkPad T480s of the October CPU-parity report (2026-10-23 capture, see below).
 - `fastiplayer-settings.png`: video color settings during playback, with saturation deliberately raised to 2.45 to show its effect.
 
 Screenshots are **1920×1080 PNG** frames extracted from the real OBS recordings, with the recorded cursor included. The cover is extracted from the finished trailer. The player UI and movie frames are not retouched. The [demo page](../demo.md) supplies timecodes and distinguishes the demonstrated interactions from future features.
@@ -28,9 +29,17 @@ Screenshots are **1920×1080 PNG** frames extracted from the real OBS recordings
 - **Capture:** a spectacle full-screen capture without the cursor, losslessly recompressed. The UI, the subtitle and the movie frame are not retouched.
 - **Media:** *Sintel* © copyright Blender Foundation, CC BY 3.0. The subtitle text comes from the official Sintel subtitle files.
 
+### 2026-10-23 ThinkPad T480s screenshot
+
+`fastiplayer-t480s-av1-4k60.png` was captured on **2026-10-23** during session 10 of the CPU-parity plan, on the laptop of the [T480s CPU-parity report](../benchmarks/t480s-cpu-parity-2026-10-23.md). Hardware: ThinkPad T480s, Intel Core i5-8350U, UHD Graphics 620. Software: Linux **7.2.9-2-cachyos**, KDE Plasma Wayland, 1920×1080 at 1.25 scale.
+- **Build:** source revision `cba51ace`, `cargo build -p app-egui --release --locked` (Rust **1.99.0**), the same binary as the report, with a separate temporary profile (the report's software template).
+- **Player state:** native Wayland window at its default size, playing at 00:41 of the Big Buck Bunny AV1 4K60 file from the report. Software AV1 decoding, frames imported into Vulkan without a CPU copy (confirmed by the runtime log), volume 0.
+- **Capture:** spectacle active-window capture, 1280×720 logical pixels, without the cursor. The UI and the movie frame are not retouched.
+- **Media:** *Big Buck Bunny* © 2008 Blender Foundation / www.bigbuckbunny.org, CC BY 3.0.
+
 Video is hosted on YouTube. Large recordings, film media, the DNxHR master, and the Resolve `.drp` project are kept outside Git. The previous silent 39-second MP4 is superseded by this trailer; its historical bytes remain in Git history. Existing releases and tags are unchanged.
 
-These captures are **not performance measurements** and are **not the historical ThinkPad T480s captures**. The [T480s report](../benchmarks/thinkpad-t480s.md) and [tagged asset directory](https://github.com/Bogdan7c/fastiplayer/tree/v0.1.0-alpha.1/docs/assets) retain their own provenance. The September 5 presentation and Big Buck Bunny attribution remain in [the preceding asset documentation](https://github.com/Bogdan7c/fastiplayer/blob/0638b476bba429e4f80d617c3a5e73319cd80984/docs/assets/README.md).
+These captures are **not performance measurements**. Apart from the 2026-10-23 screenshot above, they are **not ThinkPad T480s captures**. The [T480s report](../benchmarks/thinkpad-t480s.md) and [tagged asset directory](https://github.com/Bogdan7c/fastiplayer/tree/v0.1.0-alpha.1/docs/assets) retain their own provenance. The September 5 presentation and Big Buck Bunny attribution remain in [the preceding asset documentation](https://github.com/Bogdan7c/fastiplayer/blob/0638b476bba429e4f80d617c3a5e73319cd80984/docs/assets/README.md).
 
 ## Recording, editing, and verification
 
