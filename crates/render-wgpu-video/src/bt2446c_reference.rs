@@ -670,6 +670,9 @@ fn multiply_matrix_vector(matrix: [[f64; 3]; 3], vector: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+/// GPU-readback 16-битного host-planar пути против этого эталона (gles2-renderer сессия 06).
+mod gpu_readback;
+
 #[cfg(test)]
 mod tests {
     use super::*;

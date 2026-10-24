@@ -26,7 +26,7 @@
     "crates/player-core/src/session/tick/video_decoder_io.rs": 814,
     "crates/playlist-core/src/queue/outcomes.rs": 841,
     "crates/playlist-discovery/src/job.rs": 818,
-    "crates/render-wgpu-video/src/bt2446c_reference.rs": 1151,
+    "crates/render-wgpu-video/src/bt2446c_reference.rs": 1154,
     "crates/render-wgpu-video/src/dma_buf_import.rs": 1445,
     "crates/render-wgpu-video/src/video/host_planar_upload.rs": 1555,
     "crates/render-wgpu-video/src/video/host_yuv420_renderer.rs": 1325,
