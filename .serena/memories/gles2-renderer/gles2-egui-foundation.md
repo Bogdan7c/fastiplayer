@@ -1,0 +1,31 @@
+# `gles2-egui` — фундамент своего рендера GLES2 (сессия 03 плана gles2-renderer, 2026-10-24)
+
+Отчёт: `user/gles2-renderer/results/03.md`. Crate `crates/gles2-egui` — переиспользуемый (Fasticut и др.), НИ ОДНОЙ зависимости от crate-ов workspace кроме будущих `gles2-*` (guardrail: allowlist `GLES2_EGUI_ALLOWED_DEPENDENCIES` = glow, khronos-egl, log, raw-window-handle, thiserror, wayland-sys + `find_reusable_gles2_workspace_dependencies`, dev-deps тоже). dev-dep только winit (пример).
+
+## Решения владельца (README 25–27)
+- `wl_egl_window` из `wayland-sys` 0.31 (`client,dlopen,egl`, уже через wgpu-hal), не crate `wayland-egl`.
+- Минимум EGL 1.5 (`DynamicInstance<EGL1_5>`); 1.4 → `CreateError::EglVersionUnsupported`; `EGL_EXT_platform_base` — бэклог.
+- CI job `tests` ставит `libegl1 libegl-mesa0 libgles2 libgl1-mesa-dri`, env `GLES2_EGUI_REQUIRE_EGL=1` (пропуск без EGL → падение). Контракт: `scripts/tests/test_ci_native_prerequisites.py`.
+
+## Устройство
+- `context/driver.rs`: `trait EglDriver` (Send+Sync), дескрипторы — `usize`-newtype (DisplayId/ConfigId/ContextId/SurfaceId/SyncId/WaylandEglWindowId), указателями становятся только в safety. Fake: `src/test_support/fake_egl.rs` (журнал `FakeCall`, живые объекты, повторное разрушение/terminate при живых объектах = panic теста, Mesa-подобно один EGLDisplay на native display).
+- `context/safety.rs` + `context/safety/gl.rs` — ЕДИНСТВЕННЫЙ `unsafe` (crate `#![deny(unsafe_code)]`, `#[allow]` только на `mod safety`). `SystemEgl` (libEGL.so.1→libEGL.so), `CurrentGl` (обёртки GL, создаётся только после eglMakeCurrent; Gles2Context !Send).
+- **glow паникует** в `from_loader_function*` (пустой/не-UTF8/неразборный GL_VERSION, NULL GL_EXTENSIONS у ES2) → `load_gl_for_current_context` проверяет сам правилом `gles_version::parse_like_glow` (rsplit " ES ", нормализация minor как у glow) до сборки glow.
+- `display_registry.rs`: один EGLDisplay на native display + счётчик аренд; `eglTerminate` только после последней (Mesa отдаёт тот же EGLDisplay на тот же wl_display — иначе пересоздание рендера 02a убило бы новый контекст). Fence держит `Arc<DisplayLease>`. Реестр процесса — `OnceLock` в `context/creation.rs` (libEGL грузится один раз).
+- `egl_objects.rs`: `EglSession` — ПОРЯДОК ПОЛЕЙ = порядок разрушения (binding/surface → context → lease); Drop сначала `make_current(Nothing)`. `SurfaceOwner` разрушает EGLSurface, потом `wl_egl_window`. detach/reattach; `detach_window_after_context_loss` (окно освобождается и у потерянного контекста). Robust-контекст (`EGL_LOSE_CONTEXT_ON_RESET_EXT`) с фолбэком на обычный; offscreen без `EGL_KHR_surfaceless_context` — pbuffer 1×1 (конфиг с PBUFFER_BIT).
+- `config_select.rs`: ровно 8 бит RGB; X11 — обязательное совпадение `EGL_NATIVE_VISUAL_ID` с visual окна (winit `with_transparent` → ARGB visual); альфа ≥8 для прозрачности, иначе `Opaque{NoAlphaConfig}`; `framebuffer_has_alpha` → художник пишет альфу=1.
+- `Gles2Context` (`context/{mod,creation,presentation_ops}.rs`): `for_window(Arc<dyn WindowSource>, PixelExtent, PresentationSettings)`, `offscreen(SurfaceSize)`, `begin_frame()→FrameStart::{Ready(ActiveFrame{gl,clear,present}),Skipped(PresentationDetached|ZeroSize)}`, `resize`, `insert_fence`, `check_context_health`, `reconfigure_presentation`(AlreadyActive/Applied, смена альфы → `AlphaChangeRequiresRecreation`), `detach/reattach_presentation`, `read_offscreen_pixels`, `compile_es100_program`/`delete_program`, `gl()` (делает текущим), `presentation()` (+`WindowSystem`), `fence_stats/strategy`, `context_loss`. Здоровье в `Cell<ContextHealth>`: после потери всё отвечает `ContextLost`, Drop не трогает GL.
+- `capabilities/`: `Gles2Capabilities::tiers()` (`baseline/precision/zero_copy/zero_copy_10bit` = `TierStatus::{Available,Missing(Vec<MissingRequirement>)}` + `Conveniences`), строго из ES2 + строк расширений; `dma_buf::query_support` (eglQueryDmaBufFormats/ModifiersEXT; `FormatSampling::{Sampler2D,ExternalOnly,ImplicitModifierOnly}`; zero-copy требует `_modifiers` и sampler2D для R8+GR88; 10-бит + highp + ABGR8888).
+- `fence.rs`: `FenceIssuer` (EGL sync + glFlush, или glFinish + `fence_fallback_finishes`), `GpuFence` (Send+Sync), `GpuCompletionQueue<T>` (FIFO `drain_completed` → `CompletedPayloads{released, stopped_by}`, `drain_after_context_lost`).
+- `loss.rs`: `ContextLoss{reason: Guilty/Innocent/UnknownReset/EglContextLost, detection}`; `glGetGraphicsResetStatus{KHR,EXT}` только у robust-контекста.
+- Тайминги `Gles2FrameTimings{surface_acquire (eglMakeCurrent), surface_present (eglSwapBuffers)}` — имена как в `RenderFrameStageTimings`.
+
+## Тесты и проверка
+- `cargo test -p gles2-egui --locked`: 62 unit (fake-EGL, уровни на строках Ironlake/radeonsi, fence, выбор конфига, платформа, версия, потеря на настоящем offscreen) + `tests/headless.rs` 8 (настоящий EGL surfaceless: readback цвета, 2 кадра, resize, fence+очередь, `#version 100`, общий display). Без EGL — `skip <test>: …` в stderr.
+- Ручная: `cargo run -p gles2-egui --example clear_window -- [--transparent] [--immediate] [--scripted-check]`; XWayland — `env -u WAYLAND_DISPLAY`. `--scripted-check` для ssh (печатает `scripted check: PASS`). Сессия 03: PASS на 780M и T410 во всех 4 режимах; headless-бинарь тестов прогнан и на T410.
+- Живые факты: T410 crocus — ES 2.0/GLSL 1.0.16, EGL 1.5, highp 23, MAX_TEXTURE 8192, все удобства, R8/GR88/ABGR8888 `LINEAR`+`X_TILED` sampler2D, NV12/P010 external-only; `buffer_age` только у оконного display (не у surfaceless). Все 5 уровней на обеих машинах.
+
+## Не сделано / для следующих сессий
+- Настоящий сброс GPU не вызывался (риск неустранимого HANG на Ironlake) — живьём в 10–11.
+- Маска углов, egui-художник — 04. EGLImage/fence-освобождение кадров — 07. Маппинг в `RenderShell` (vsync/Mailbox fallback, frame latency no-op, device lost) — 09.
+- X11 только Xlib; `swap_buffers_with_damage`/`buffer_age` не используются.

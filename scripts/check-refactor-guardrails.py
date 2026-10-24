@@ -162,6 +162,24 @@ RENDER_SHELL_API_ALLOWED_DEPENDENCIES = frozenset(
     }
 )
 
+# Переиспользуемый фундамент своего рендера GLES2 (issue #6, сессия 03 плана user/gles2-renderer/):
+# EGL-контекст, возможности драйвера, показ, fence. Подключается к любому egui-приложению, поэтому
+# normal-зависимости — только тонкие «провода» к драйверу и мелкие утилиты из allowlist-а.
+GLES2_EGUI_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "glow",
+        "khronos-egl",
+        "log",
+        "raw-window-handle",
+        "thiserror",
+        "wayland-sys",
+    }
+)
+# Переиспользуемые GLES2-crate-ы не зависят ни от одного crate-а workspace, кроме своих `gles2-*`,
+# даже в dev-dependencies (иначе тесты притянули бы плеер в чужое приложение).
+REUSABLE_GLES2_CRATES = frozenset({"gles2-egui"})
+REUSABLE_GLES2_WORKSPACE_PREFIX = "gles2-"
+
 # Будущие crate-ы своего рендера GLES2 (`gles2-egui`, `gles2-video`, `render-gles2-shell`,
 # сессии 03–09 плана user/gles2-renderer/) перечислены в forbidden-наборах ниже: нейтральные
 # контракты, плеер, декодеры и wgpu-рендер не должны зависеть от них ни сейчас, ни потом.
@@ -1338,6 +1356,15 @@ def find_dependency_violations(
         )
     )
     violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"gles2-egui"}),
+            GLES2_EGUI_ALLOWED_DEPENDENCIES,
+            "gles2-egui is a reusable GLES2 foundation: only glow/khronos-egl/wayland-sys and small utilities",
+        )
+    )
+    violations.extend(find_reusable_gles2_workspace_dependencies(all_dependency_map))
+    violations.extend(
         find_forbidden_dependencies(
             dependency_map,
             frozenset({"app-egui"}),
@@ -2330,6 +2357,27 @@ def find_disallowed_dependencies(
         dependencies = dependency_map.get(owner, frozenset())
         for dependency in sorted(dependencies.difference(allowed_dependencies)):
             violations.append(DependencyViolation(owner=owner, dependency=dependency, rule=rule))
+    return violations
+
+
+def find_reusable_gles2_workspace_dependencies(
+    all_dependency_map: dict[str, frozenset[str]],
+) -> list[DependencyViolation]:
+    """Переиспользуемые GLES2-crate-ы видят из workspace только другие `gles2-*` (любой вид зависимости)."""
+
+    workspace_crates = frozenset(all_dependency_map)
+    violations: list[DependencyViolation] = []
+    for owner in sorted(REUSABLE_GLES2_CRATES.intersection(workspace_crates)):
+        for dependency in sorted(all_dependency_map[owner].intersection(workspace_crates)):
+            if dependency.startswith(REUSABLE_GLES2_WORKSPACE_PREFIX):
+                continue
+            violations.append(
+                DependencyViolation(
+                    owner=owner,
+                    dependency=dependency,
+                    rule="reusable GLES2 crates depend on no workspace crate except gles2-* (dev included)",
+                )
+            )
     return violations
 
 

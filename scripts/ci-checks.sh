@@ -89,6 +89,7 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/render-shell-api
     crates/render-wgpu-video
     crates/render-wgpu-shell
+    crates/gles2-egui
     crates/video-vaapi
     crates/service-ytdlp
 )

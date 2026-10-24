@@ -1,0 +1,31 @@
+[package]
+name = "gles2-egui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Переиспользуемый фундамент рендера OpenGL ES 2.0: EGL-контекст на окне, возможности драйвера, показ, fence и потеря контекста"
+
+# Переиспользуемый crate (issue #6, план user/gles2-renderer/): ни одной зависимости от crate-ов
+# плеера. Это проверяет scripts/check-refactor-guardrails.py.
+[dependencies]
+# Таблица функций OpenGL ES (только «провод» к драйверу, рисуем сами).
+glow.workspace = true
+# EGL: display, конфиг, контекст, surface, sync. libEGL грузится динамически (feature `dynamic`),
+# поэтому отсутствие библиотеки — типизированная ошибка, а не отказ запуска.
+khronos-egl.workspace = true
+# Диагностика выбора конфига, фолбэков и потери контекста.
+log.workspace = true
+# Нейтральные дескрипторы окна (winit и любое другое оконное API).
+raw-window-handle.workspace = true
+# Типизированные ошибки создания и работы контекста.
+thiserror.workspace = true
+# `wl_egl_window` для нативного Wayland (libwayland-egl грузится динамически).
+wayland-sys.workspace = true
+
+[dev-dependencies]
+# Только пример `examples/clear_window.rs`: окно для ручной проверки на живом железе.
+winit.workspace = true
+
+[lints]
+workspace = true

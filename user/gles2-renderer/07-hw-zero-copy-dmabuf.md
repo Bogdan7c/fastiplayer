@@ -46,6 +46,16 @@
 - В контракте появился `RenderShell::video_import_preparer() -> Box<dyn VideoImportPreparer>` (решение владельца в сессии 02). Кандидат нового файла запускается в потоке плеера, поэтому подготовка импорта (обёртка provider-а с освобождением по EGL fence) обязана работать вне потока GL: подготовщик не создаёт GL/EGL-объектов, EGLImage делаются в `materialize` на потоке рендера. Conformance-проверка №7 закрепляет это для каждого рендера.
 - Образец склада — `render-wgpu-shell/src/video_import.rs`: `PendingImportOrigin::{FreshDecoder, RecreatedRenderer}` (перепривязка очереди освобождений только для пересоздания), проверка «контракт объявлен» первой в `materialize`.
 
+## Наследство сессии 03 (`results/03.md`)
+
+- Освобождение по fence:
+  - `Gles2Context::insert_fence()` → `GpuFence` (`Send + Sync`, ждать можно из потока плеера);
+  - `GpuCompletionQueue<T>`: `drain_completed()` по порядку и ровно один раз, `drain_after_context_lost()` при потере;
+  - без `EGL_KHR_fence_sync` — `glFinish` и счётчик `FenceStats::fence_fallback_finishes`.
+- Форматы и модификаторы импорта: `capabilities().dma_buf()` (`DmaBufImportSupport::Queried`, `FormatSampling::{Sampler2D, ExternalOnly, ImplicitModifierOnly}`). Уровни — `tiers().zero_copy` / `zero_copy_10bit`.
+- Живой вывод 03: на T410 R8/GR88/ABGR8888 — `LINEAR` и `X_TILED` (`0x0100000000000001`) как `sampler2D`, NV12/P010 только external.
+- Функции `eglCreateImage`/`glEGLImageTargetTexture2DOES` — в свой модуль безопасности (по образцу `context/safety.rs`).
+
 ## Тесты
 
 - `#[ignore]` GPU: udmabuf (memfd → `/dev/udmabuf`) NV12 с известными цветами → production-импорт → readback; перезапись буфера между кадрами видна без переимпорта (порт `udmabuf_*` тестов wgpu).

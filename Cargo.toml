@@ -67,6 +67,7 @@ members = [
     "crates/render-shell-api",
     "crates/render-wgpu-video",
     "crates/render-wgpu-shell",
+    "crates/gles2-egui",
     "crates/video-vaapi",
     "crates/service-ytdlp",
 ]
@@ -186,6 +187,12 @@ egui = "0.36"
 ui-artwork-egui = { version = "0.2.0", path = "crates/ui-artwork-egui" }
 egui-winit = "0.36"
 egui-wgpu = "0.36"
+# Свой рендер GLES2 (issue #6): тонкие «провода» к драйверу. Версии совпадают с теми, что уже
+# тянет wgpu-hal, чтобы в дереве не появилось новых копий чужого кода.
+glow = "0.17"
+khronos-egl = { version = "6", features = ["dynamic"] }
+raw-window-handle = "0.6"
+wayland-sys = { version = "0.31", features = ["client", "dlopen", "egl"] }
 pollster = "0.4"
 anyhow = "1.0"
 etcetera = "0.11"
@@ -228,6 +235,7 @@ render-core = { version = "0.2.0", path = "crates/render-core" }
 render-shell-api = { version = "0.2.0", path = "crates/render-shell-api" }
 render-wgpu-video = { version = "0.2.0", path = "crates/render-wgpu-video" }
 render-wgpu-shell = { version = "0.2.0", path = "crates/render-wgpu-shell" }
+gles2-egui = { version = "0.2.0", path = "crates/gles2-egui" }
 player-core = { version = "0.2.0", path = "crates/player-core" }
 bounded-work-executor = { version = "0.2.0", path = "crates/bounded-work-executor" }
 atomic-file-store = { version = "0.2.0", path = "crates/atomic-file-store" }

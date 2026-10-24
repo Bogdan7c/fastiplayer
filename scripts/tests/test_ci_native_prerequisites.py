@@ -38,12 +38,17 @@ EXPECTED_WORKSPACE_NATIVE_PACKAGES = frozenset(
     }
 )
 # Tests компилируют Cargo examples и поэтому линкуют SoundTouch backend.
+# Mesa EGL/GLES + llvmpipe дают surfaceless GLES2 пиксельным тестам gles2-egui.
 EXPECTED_ALL_TARGET_NATIVE_PACKAGES = frozenset(
     {
         "clang",
         "libclang-dev",
         "libasound2-dev",
+        "libegl1",
+        "libegl-mesa0",
         "libgbm-dev",
+        "libgl1-mesa-dri",
+        "libgles2",
         "libsoundtouch-dev",
         "libva-dev",
         "libvulkan1",
@@ -54,6 +59,8 @@ EXPECTED_ALL_TARGET_NATIVE_PACKAGES = frozenset(
         "pkg-config",
     }
 )
+# Без EGL пиксельные тесты gles2-egui в CI падают, а не пропускаются тихо.
+EXPECTED_ALL_TARGET_REQUIRE_EGL = '      GLES2_EGUI_REQUIRE_EGL: "1"'
 # Обе тяжёлые jobs обязаны отключать полный DWARF в Cargo test profile.
 EXPECTED_ALL_TARGET_TEST_PROFILE_DEBUG = '      CARGO_PROFILE_TEST_DEBUG: "0"'
 # Standalone cros-libva не компилирует audio/FFmpeg/GBM consumers.
@@ -194,6 +201,11 @@ class CiNativePrerequisitesTests(unittest.TestCase):
         # Exact job-level env не позволяет полному DWARF снова переполнить runner.
         self.assertIn(
             EXPECTED_ALL_TARGET_TEST_PROFILE_DEBUG,
+            all_target_job.splitlines(),
+        )
+        # Пропавший пакет Mesa не должен тихо выключить пиксельные тесты GLES2.
+        self.assertIn(
+            EXPECTED_ALL_TARGET_REQUIRE_EGL,
             all_target_job.splitlines(),
         )
         # Именованный step является единственным владельцем native inventory этой VM.

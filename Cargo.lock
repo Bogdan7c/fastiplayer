@@ -2091,6 +2091,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gles2-egui"
+version = "0.2.0"
+dependencies = [
+ "glow",
+ "khronos-egl",
+ "log",
+ "raw-window-handle",
+ "thiserror 2.0.18",
+ "wayland-sys",
+ "winit 0.30.13 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "glifo"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

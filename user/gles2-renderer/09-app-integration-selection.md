@@ -36,6 +36,14 @@
 - Каталог: запись GLES2 даёт маппинг настроек показа (как `wgpu_vulkan::surface_present_settings` для `[render.vulkan]`) для `render_backend::presentation_settings`. Классификатор `classify_renderer_settings_change` (`app-egui/src/renderer_recreation/settings_change.rs`) сравнивает группы целиком. Сейчас любое изменение `[render.opengles]` — полное пересоздание, любое изменение `[render.vulkan]` — перенастройка на месте. Если в группу добавляется поле, привязанное к устройству, или поле показа GLES2 (vsync), классификатор надо уточнить по полям. Компилятор ловит только новое поле верхнего уровня.
 - Пересоздание внутри семейства GLES2 идёт той же транзакцией «отпустить окно → кандидат → …». Полный набор текстур новому рендеру даёт `UiTextureSync` — отдельной работы не нужно.
 
+## Наследство сессии 03 (`results/03.md`)
+
+- Маппинг показа в адаптере: `ShellPresentMode::{Auto, Fifo}` → `VsyncMode::WaitForVblank`, `Immediate` → `VsyncMode::Immediate`. `Mailbox` в EGL нет — `PresentationReconfigured::PresentModeFallback`. `max_frame_latency` у EGL не управляется — явный no-op-исход. `SurfaceAlphaPreference` → `WindowAlphaRequest`, смена альфы — `PresentationError::AlphaChangeRequiresRecreation` (у wgpu — `AlphaPreferenceChangeUnsupported`).
+- `detach_presentation` работает и у потерянного контекста: окно освобождается для нового рендера после сброса GPU.
+- Потеря: `Gles2Error::ContextLost` / `ContextLoss` → `RendererDeviceLost` + `release_after_device_lost` (через `GpuCompletionQueue::drain_after_context_lost`).
+- Проба каталога: `CreateError::{EglUnavailable, EglVersionUnsupported, PlatformExtensionMissing, NoGles2Config, …}` — причины «не годен» без запуска рендера целиком.
+- Тайминги `Gles2FrameTimings { surface_acquire, surface_present }` ложатся в одноимённые поля `RenderFrameStageTimings`.
+
 ## Тесты (функциональные, результат, а не вызов)
 
 - Видео из фикстуры через GLES2 доходит до показа: headless EGL + реальный FFmpeg-декодер → `RenderFrameOutcome::Presented` с ожидаемым pts и пикселями кадра (не «декодер открылся»). Для HW — `#[ignore]` на машине с VA-API.

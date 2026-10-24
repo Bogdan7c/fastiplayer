@@ -4,6 +4,9 @@
 
 # GitHub Actions CI
 
+## GLES2 headless (2026-10-24, gles2-renderer сессия 03)
+- Job `tests` дополнительно ставит `libegl1 libegl-mesa0 libgles2 libgl1-mesa-dri` (surfaceless GLES2 на llvmpipe для `crates/gles2-egui/tests/headless.rs`) и задаёт env `GLES2_EGUI_REQUIRE_EGL: "1"` — без EGL пиксельные тесты падают, а не пропускаются. Оба закреплены в `scripts/tests/test_ci_native_prerequisites.py` (`EXPECTED_ALL_TARGET_NATIVE_PACKAGES`, `EXPECTED_ALL_TARGET_REQUIRE_EGL`). Решение владельца 27 README плана `user/gles2-renderer/`.
+
 ## Vendored FFmpeg (2026-10-20) — supersedes native-package lists below
 - Default/all-features builds собирают закреплённый FFmpeg + dav1d crate-ом `ffmpeg-vendor` (`mem:video-ffmpeg/build-tooling`). Jobs clippy/docs/tests/msrv/toolchain-policy и vertical-seek больше НЕ ставят `libavcodec-dev`/`libavutil-dev`; вместо них `meson nasm ninja-build` (curl/tar/make есть на runner). Контракт — `scripts/tests/test_ci_native_prerequisites.py` (EXPECTED_* sets).
 - Matrix `Dependency patch (ffmpeg-sys-next)` (9-й патч) ставит system libav*-dev (avcodec/avdevice/avfilter/avformat/avutil/swresample/swscale), т.к. standalone `cargo test --manifest-path crates/ffmpeg-sys-next-patch/Cargo.toml --locked` идёт с upstream default features (system-режим).

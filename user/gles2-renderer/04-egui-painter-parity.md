@@ -23,6 +23,16 @@
 - Частичная правка текстуры, которой у художника нет (или правка за её границами), — не паника, а `Dropped(UiTexturesOutOfSync)`. Приложение (`render_shell_api::UiTextureSync`) в ответ пришлёт полный набор.
 - Это проверяют conformance-проверки 10 и 11, их обязан пройти и GLES2.
 
+## Наследство сессии 03 (`results/03.md`)
+
+- Кадр: `Gles2Context::begin_frame()` → `FrameStart::Ready(ActiveFrame)` (контекст текущий, цель привязана, viewport на весь размер) → `ActiveFrame::gl()` для своих вызовов GL → `ActiveFrame::present()` с `Gles2FrameTimings`. `FrameStart::Skipped(PresentationDetached | ZeroSize)` — кадра нет.
+- Свои `unsafe`-вызовы GL художник держит в своём модуле безопасности. В `gles2-egui` весь crate под `#![deny(unsafe_code)]`, разрешение выдано только `context::safety`.
+- Шейдеры — только через `Gles2Context::compile_es100_program` (`#version 100` проверяется до драйвера), удаление — `delete_program`.
+- Прозрачность: `presentation().alpha`:
+  - `PremultipliedTransparent` — маска углов работает;
+  - `Opaque { framebuffer_has_alpha: true }` — альфу кадра обязательно писать = 1, иначе композитор просветит окно.
+- Пиксельный стенд: `Gles2Context::offscreen(size)` + `read_offscreen_pixels()`. Пропуск без EGL — как в `crates/gles2-egui/tests/headless.rs` (с `GLES2_EGUI_REQUIRE_EGL`).
+
 ## Что сделать
 
 1. **`gles2-egui::painter`**:
