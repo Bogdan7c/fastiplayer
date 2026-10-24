@@ -6,7 +6,7 @@
 //! владельцу очереди. Автоматический пропуск продолжает тот же фиксированный план (C после
 //! битого B), ручной выбор сохраняет прежнюю D55-семантику.
 
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 use tracing::{debug, warn};
 
 use super::target_failure_class::playlist_target_failure;
@@ -23,7 +23,7 @@ impl AppState {
     pub(super) fn finish_playlist_target_failed_before_admission(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
         active_request_id: MediaOpenRequestId,
         unstaged: UnstagedPlaylistMediaOpenError,
     ) {

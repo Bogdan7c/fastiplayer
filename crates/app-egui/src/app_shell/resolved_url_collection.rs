@@ -8,7 +8,8 @@ impl AppShell {
     /// Пока окна/renderer-а нет (suspend), коллекция остаётся у владельца URL-импорта и будет
     /// применена при следующем drain после resume; отмена/новое открытие очищают её там же.
     pub(super) fn drain_resolved_url_collection(&mut self) -> bool {
-        let (Some(app_state), Some(renderer)) = (self.app_state.as_mut(), self.renderer.as_ref())
+        let (Some(app_state), Some(renderer)) =
+            (self.app_state.as_mut(), self.renderer.as_deref_mut())
         else {
             return false;
         };

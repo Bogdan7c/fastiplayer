@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use player_core::PlayerSnapshot;
 use render_core::RenderViewport;
-use render_wgpu_shell::{RenderScreenDescriptor, WindowCornerMask};
+use render_shell_api::{RenderScreenDescriptor, WindowCornerMask};
 use winit::window::Window;
 
 use super::AppState;

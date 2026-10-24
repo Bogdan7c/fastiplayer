@@ -13,7 +13,8 @@ impl AppShell {
         if self.process_lifecycle != AppShellProcessLifecycle::Running {
             return;
         }
-        let (Some(renderer), Some(app_state)) = (self.renderer.as_ref(), self.app_state.as_mut())
+        let (Some(renderer), Some(app_state)) =
+            (self.renderer.as_deref_mut(), self.app_state.as_mut())
         else {
             return;
         };

@@ -1,7 +1,12 @@
 //! Renderer-bound candidate video pipeline resources для strong media install.
 //!
 //! Session 00C создаёт bounded resource boundary, а Session 00C1 использует его
-//! после player `Installed` только для exact infallible pointer commit-а.
+//! после player `Installed` только для exact infallible commit-а.
+//!
+//! С сессии 02 плана `user/gles2-renderer/` renderer half кандидата — это один
+//! `render_shell_api::PendingVideoImport` (обёртка декодера, материализатор и привязка
+//! освобождений живут внутри рендера). Commit отдаёт его владельцу, а тот ставит его в рендер
+//! через `VideoFrameImport::install_video_import`.
 
 use std::sync::{Arc, Mutex};
 
@@ -27,35 +32,35 @@ pub(crate) use protocol::{
 };
 use protocol::{StagedVideoPipelineCandidate, StagedVideoPipelineCandidateState};
 
-#[allow(
-    unused_imports,
-    reason = "production callsite подключается в Session 10D"
-)]
-pub(crate) use resource_driver::WgpuCandidateVideoPipelineResourceDriver;
 use resource_driver::{CandidateVideoPipelineDescriptor, CandidateVideoPipelineResourceDriver};
+pub(crate) use resource_driver::{
+    RendererCandidateVideoPipelineResourceDriver, start_decoder_backend,
+};
 
 /// App-owned shared handle exact candidate slot-а; player видит только neutral port.
-pub(crate) struct AppVideoPipelineCandidateOwner<Materializer, SubmissionBinding> {
-    slot: Arc<Mutex<StagedVideoPipelineCandidateSlot<Materializer, SubmissionBinding>>>,
+pub(crate) struct AppVideoPipelineCandidateOwner<RendererImport> {
+    slot: Arc<Mutex<StagedVideoPipelineCandidateSlot<RendererImport>>>,
 }
 
-impl<Materializer, SubmissionBinding>
-    AppVideoPipelineCandidateOwner<Materializer, SubmissionBinding>
-{
-    /// После exact `Installed` infallibly переключает только заранее подготовленные app pointers.
+impl<RendererImport> AppVideoPipelineCandidateOwner<RendererImport> {
+    /// После exact `Installed` infallibly отдаёт заранее подготовленный импорт рендера.
+    ///
+    /// Установку в рендер делает вызывающий (`install_video_import`): здесь нет ни startup,
+    /// ни allocation, ни ожидания GPU.
     pub(crate) fn commit_installed(
         &self,
         request_id: MediaInstallRequestId,
         renderer_generation: RendererGeneration,
-        active: &mut ActiveVideoPipelinePointers<Materializer, SubmissionBinding>,
-    ) -> Result<(), PostInstalledVideoPipelineInvariantViolation> {
+    ) -> Result<
+        CommittedVideoPipelineCandidate<RendererImport>,
+        PostInstalledVideoPipelineInvariantViolation,
+    > {
         let mut slot = self
             .slot
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let token = slot.prepare_post_installed_commit(request_id, renderer_generation)?;
-        token.commit(active);
-        Ok(())
+        Ok(token.commit())
     }
 
     /// Неблокирующе забирает app-half terminal outcome exactly once.
@@ -85,13 +90,12 @@ pub(crate) fn player_selected_video_candidate_boundary<Driver>(
     backend_constraint: MediaInstallVideoBackendConstraint,
     driver: Driver,
 ) -> (
-    AppVideoPipelineCandidateOwner<Driver::Materializer, Driver::SubmissionBinding>,
+    AppVideoPipelineCandidateOwner<Driver::RendererImport>,
     MediaInstallVideoResourcePort,
 )
 where
     Driver: CandidateVideoPipelineResourceDriver + Send + 'static,
-    Driver::Materializer: Send + 'static,
-    Driver::SubmissionBinding: Send + 'static,
+    Driver::RendererImport: Send + 'static,
 {
     let slot = Arc::new(Mutex::new(StagedVideoPipelineCandidateSlot::new()));
     let owner = AppVideoPipelineCandidateOwner {
@@ -114,9 +118,7 @@ struct PlayerSelectedVideoCandidatePort<Driver>
 where
     Driver: CandidateVideoPipelineResourceDriver,
 {
-    slot: Arc<
-        Mutex<StagedVideoPipelineCandidateSlot<Driver::Materializer, Driver::SubmissionBinding>>,
-    >,
+    slot: Arc<Mutex<StagedVideoPipelineCandidateSlot<Driver::RendererImport>>>,
     renderer_generation: RendererGeneration,
     decoder_thread_config: PlayerVideoDecoderThreadConfig,
     driver: Driver,
@@ -125,8 +127,7 @@ where
 impl<Driver> DetachedVideoBackendResourcePort for PlayerSelectedVideoCandidatePort<Driver>
 where
     Driver: CandidateVideoPipelineResourceDriver + Send,
-    Driver::Materializer: Send,
-    Driver::SubmissionBinding: Send,
+    Driver::RendererImport: Send,
 {
     type RequestId = MediaInstallRequestId;
 
@@ -219,9 +220,9 @@ impl DetachedVideoBackendResourcePort for PlayerOwnerAbortAcknowledgement {
 }
 
 /// Ровно один candidate slot и один terminal outcome slot.
-pub(crate) struct StagedVideoPipelineCandidateSlot<Materializer, SubmissionBinding> {
+pub(crate) struct StagedVideoPipelineCandidateSlot<RendererImport> {
     /// `Some` означает единственный admitted app half.
-    candidate: Option<StagedVideoPipelineCandidate<Materializer, SubmissionBinding>>,
+    candidate: Option<StagedVideoPipelineCandidate<RendererImport>>,
 
     /// Terminal outcome не coalesce-ится и drain-ится exactly once.
     terminal_outcome: Option<StagedVideoPipelineCandidateTerminalOutcome>,
@@ -230,9 +231,7 @@ pub(crate) struct StagedVideoPipelineCandidateSlot<Materializer, SubmissionBindi
     diagnostics: StagedVideoPipelineCandidateDiagnostics,
 }
 
-impl<Materializer, SubmissionBinding>
-    StagedVideoPipelineCandidateSlot<Materializer, SubmissionBinding>
-{
+impl<RendererImport> StagedVideoPipelineCandidateSlot<RendererImport> {
     /// Создаёт пустой slot без backend pool или hidden queue.
     #[must_use]
     pub(crate) const fn new() -> Self {
@@ -259,10 +258,7 @@ impl<Materializer, SubmissionBinding>
         driver: &mut Driver,
     ) -> DetachedVideoBackendReply<MediaInstallRequestId>
     where
-        Driver: CandidateVideoPipelineResourceDriver<
-                Materializer = Materializer,
-                SubmissionBinding = SubmissionBinding,
-            >,
+        Driver: CandidateVideoPipelineResourceDriver<RendererImport = RendererImport>,
     {
         // Новый backend нельзя запускать, пока occupied candidate/terminal не обработан.
         if self.candidate.is_some() || self.terminal_outcome.is_some() {
@@ -280,15 +276,15 @@ impl<Materializer, SubmissionBinding>
 
         // Descriptor вычисляется до fallible work и фиксирует matching pair.
         let descriptor = CandidateVideoPipelineDescriptor::from_plan(plan);
-        // Driver не получает active pointers и не способен их мутировать.
+        // Driver не получает активный импорт рендера и не способен его мутировать.
         let resources = match driver.prepare_candidate_resources(plan) {
             Ok(resources) => resources,
             Err(error) => {
                 // Preparation failure публикуется в единственный lossless terminal slot.
                 self.diagnostics.preparation_failures =
                     self.diagnostics.preparation_failures.saturating_add(1);
-                // Backend ID здесь является stable plan label, а не config knob.
-                let backend_label = plan.diagnostic_label();
+                // Backend ID здесь является stable plan label (маршрут × семейство рендера).
+                let backend_label = plan.diagnostic_label(driver.renderer_family());
                 // Neutral reply сохраняет resource-exhausted/unavailable distinction.
                 let resource_error = error.to_resource_error(backend_label);
                 // Admitted work terminal outcome не теряется до explicit drain.
@@ -313,8 +309,7 @@ impl<Materializer, SubmissionBinding>
             descriptor,
             backend_id,
             state: StagedVideoPipelineCandidateState::AwaitingPlayer,
-            materializer: resources.materializer,
-            submission_binding: resources.submission_binding,
+            renderer_import: resources.renderer_import,
         });
         // Successful admission увеличивает bounded counter ровно один раз.
         self.diagnostics.admitted = self.diagnostics.admitted.saturating_add(1);
@@ -472,7 +467,7 @@ impl<Materializer, SubmissionBinding>
         request_id: MediaInstallRequestId,
         current_renderer_generation: RendererGeneration,
     ) -> Result<
-        PreparedPostInstalledVideoPipelineCommit<'_, Materializer, SubmissionBinding>,
+        PreparedPostInstalledVideoPipelineCommit<'_, RendererImport>,
         PostInstalledVideoPipelineInvariantViolation,
     > {
         // Installed без admitted candidate является stale protocol event-ом.
@@ -487,7 +482,7 @@ impl<Materializer, SubmissionBinding>
                 match_error: StagedVideoPipelineCandidateMatchError::RequestMismatch,
             });
         }
-        // Stale renderer resources нельзя переместить в active pointers.
+        // Импорт stale renderer-а нельзя отдать на установку в текущий рендер.
         if candidate.renderer_generation != current_renderer_generation {
             return Err(PostInstalledVideoPipelineInvariantViolation {
                 match_error: StagedVideoPipelineCandidateMatchError::RendererGenerationMismatch,
@@ -500,7 +495,7 @@ impl<Materializer, SubmissionBinding>
             });
         }
 
-        // Barrier marker устанавливается до извлечения pointers в linear commit token.
+        // Barrier marker устанавливается до извлечения импорта в linear commit token.
         self.candidate
             .as_mut()
             .expect("candidate was validated above")
@@ -560,7 +555,7 @@ impl<Materializer, SubmissionBinding>
             .as_ref()
             .expect("finish_cancelled requires an admitted candidate")
             .request_id;
-        // `take` освобождает materializer и submission binding ровно один раз.
+        // `take` освобождает подготовленный импорт рендера ровно один раз.
         #[expect(
             clippy::expect_used,
             reason = "инвариант: finish_cancelled requires an admitted candidate"
@@ -590,116 +585,69 @@ impl<Materializer, SubmissionBinding>
     }
 }
 
-impl<Materializer, SubmissionBinding> Default
-    for StagedVideoPipelineCandidateSlot<Materializer, SubmissionBinding>
-{
+impl<RendererImport> Default for StagedVideoPipelineCandidateSlot<RendererImport> {
     fn default() -> Self {
         // Default не создаёт resources и эквивалентен explicit empty slot.
         Self::new()
     }
 }
 
-/// App-side active pointers без player/media ownership.
-pub(crate) struct ActiveVideoPipelinePointers<Materializer, SubmissionBinding> {
-    /// Active backend class остаётся matching materializer-у.
+/// Кандидат, отданный commit-ом после player `Installed`: класс backend-а и импорт рендера.
+pub(crate) struct CommittedVideoPipelineCandidate<RendererImport> {
+    /// Класс backend-а нового decoder-а (становится текущим классом приложения).
     backend_kind: VideoBackendKind,
 
-    /// Active renderer materializer pointer.
-    materializer: Materializer,
-
-    /// Active submitted-release queue binding.
-    submission_binding: SubmissionBinding,
+    /// Подготовленный импорт рендера, который владелец ставит в рендер.
+    renderer_import: RendererImport,
 }
 
-impl<Materializer, SubmissionBinding> ActiveVideoPipelinePointers<Materializer, SubmissionBinding> {
-    /// Создаёт active pointer fixture/adapter без backend startup.
-    #[must_use]
-    pub(crate) const fn new(
-        backend_kind: VideoBackendKind,
-        materializer: Materializer,
-        submission_binding: SubmissionBinding,
-    ) -> Self {
-        // Constructor только группирует уже существующие owners.
-        Self {
-            backend_kind,
-            materializer,
-            submission_binding,
-        }
-    }
-
-    /// Возвращает active backend class без доступа к storage fields.
+impl<RendererImport> CommittedVideoPipelineCandidate<RendererImport> {
+    /// Класс backend-а без доступа к storage fields.
     #[must_use]
     #[cfg(test)]
     pub(crate) const fn backend_kind(&self) -> VideoBackendKind {
-        // Named accessor сохраняет boundary intent.
         self.backend_kind
     }
 
-    /// Возвращает materializer reference только для owner-level adapter/tests.
+    /// Импорт рендера только для проверок теста (borrow не меняет ownership).
     #[must_use]
     #[cfg(test)]
-    pub(crate) const fn materializer(&self) -> &Materializer {
-        // Borrow не меняет active ownership.
-        &self.materializer
+    pub(crate) const fn renderer_import(&self) -> &RendererImport {
+        &self.renderer_import
     }
 
-    /// Возвращает submission binding reference без release/rebind side effects.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) const fn submission_binding(&self) -> &SubmissionBinding {
-        // Borrow не запускает queue wait или callback drain.
-        &self.submission_binding
-    }
-    /// Возвращает ownership aggregate app owner-у после infallible pointer commit-а.
-    pub(crate) fn into_parts(self) -> (VideoBackendKind, Materializer, SubmissionBinding) {
-        (
-            self.backend_kind,
-            self.materializer,
-            self.submission_binding,
-        )
+    /// Отдаёт класс backend-а и импорт владельцу для установки в рендер.
+    pub(crate) fn into_parts(self) -> (VideoBackendKind, RendererImport) {
+        (self.backend_kind, self.renderer_import)
     }
 }
 
 /// Validated post-Installed token: все fallible work завершено до его создания.
 #[must_use = "afterward matching Installed token must immediately comply with infallible commit"]
-pub(crate) struct PreparedPostInstalledVideoPipelineCommit<'slot, Materializer, SubmissionBinding> {
+pub(crate) struct PreparedPostInstalledVideoPipelineCommit<'slot, RendererImport> {
     /// Exclusive borrow не позволяет lifecycle owner-у cancel/drop slot до commit-а.
-    owner_slot: &'slot mut StagedVideoPipelineCandidateSlot<Materializer, SubmissionBinding>,
+    owner_slot: &'slot mut StagedVideoPipelineCandidateSlot<RendererImport>,
 
-    /// `Some` содержит заранее подготовленные pointers; allocation/startup здесь нет.
-    candidate: Option<StagedVideoPipelineCandidate<Materializer, SubmissionBinding>>,
+    /// `Some` содержит заранее подготовленный импорт; allocation/startup здесь нет.
+    candidate: Option<StagedVideoPipelineCandidate<RendererImport>>,
 }
 
-impl<Materializer, SubmissionBinding>
-    PreparedPostInstalledVideoPipelineCommit<'_, Materializer, SubmissionBinding>
-{
-    /// Infallibly заменяет только app-side pointers/binding после player Installed.
-    pub(crate) fn commit(
-        mut self,
-        active: &mut ActiveVideoPipelinePointers<Materializer, SubmissionBinding>,
-    ) {
+impl<RendererImport> PreparedPostInstalledVideoPipelineCommit<'_, RendererImport> {
+    /// Infallibly отдаёт подготовленный импорт рендера после player Installed.
+    pub(crate) fn commit(mut self) -> CommittedVideoPipelineCandidate<RendererImport> {
         // Candidate уже прошёл request/generation/configuration validation.
         #[expect(
             clippy::expect_used,
-            reason = "инвариант: prepared post-Installed commit owns candidate pointers"
+            reason = "инвариант: prepared post-Installed commit owns the candidate import"
         )]
         let candidate = self
             .candidate
             .take()
-            .expect("prepared post-Installed commit owns candidate pointers");
-        // IDs копируются до pointer move для lossless terminal outcome.
+            .expect("prepared post-Installed commit owns the candidate import");
+        // IDs копируются до move импорта для lossless terminal outcome.
         let request_id = candidate.request_id;
         // Exact renderer generation фиксируется в commit diagnostics.
         let renderer_generation = candidate.renderer_generation;
-        // Новый active aggregate строится только из заранее созданных owners.
-        let replacement = ActiveVideoPipelinePointers {
-            backend_kind: candidate.descriptor.backend_kind(),
-            materializer: candidate.materializer,
-            submission_binding: candidate.submission_binding,
-        };
-
-        // Единственная active mutation — pointer/binding replacement без Result/callback/wait.
-        *active = replacement;
         // Commit counter изменяется в том же owner turn-е.
         self.owner_slot.diagnostics.commits = self.owner_slot.diagnostics.commits.saturating_add(1);
         // Installed terminal публикуется до возврата commit primitive-а.
@@ -708,12 +656,15 @@ impl<Materializer, SubmissionBinding>
                 request_id,
                 renderer_generation,
             });
+        // Единственный результат — заранее созданный импорт, без Result/callback/wait.
+        CommittedVideoPipelineCandidate {
+            backend_kind: candidate.descriptor.backend_kind(),
+            renderer_import: candidate.renderer_import,
+        }
     }
 }
 
-impl<Materializer, SubmissionBinding> Drop
-    for PreparedPostInstalledVideoPipelineCommit<'_, Materializer, SubmissionBinding>
-{
+impl<RendererImport> Drop for PreparedPostInstalledVideoPipelineCommit<'_, RendererImport> {
     fn drop(&mut self) {
         // Успешный commit уже забрал candidate и ничего восстанавливать не должен.
         let Some(candidate) = self.candidate.take() else {
@@ -724,7 +675,7 @@ impl<Materializer, SubmissionBinding> Drop
             self.owner_slot.candidate.is_none(),
             "post-Installed commit token cannot overwrite another candidate"
         );
-        // Abandoned token возвращает pointers в commit-required state, а не drop-ит их.
+        // Abandoned token возвращает импорт в commit-required state, а не drop-ит его.
         self.owner_slot.candidate = Some(candidate);
     }
 }

@@ -31,9 +31,8 @@ use std::time::Instant;
 
 use crate::app_instance::{AppInstanceLease, CommandLineStartup};
 use crate::app_wake::{AppWakeOwner, AppWakeProxy};
-use crate::render_settings::{
-    surface_present_settings_from_config, warn_legacy_tone_mapping_config,
-};
+use crate::render_backend::create_startup_renderer;
+use crate::render_settings::warn_legacy_tone_mapping_config;
 use crate::system_capabilities::probe_system_capabilities;
 use fastiplayer_config::{ConfigPaths, LoadedConfig};
 
@@ -42,7 +41,7 @@ use crate::fatal_startup::{
     FatalErrorPhase, FatalStartupError, FatalStartupErrorSlot, FatalStartupReason,
 };
 use playlist_state::{PlaylistResumeStore, PlaylistStateStore};
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 use tracing::{debug, info};
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
@@ -54,7 +53,8 @@ use crate::renderer_recreation::RendererLifecycleCoordinator;
 use crate::settings_runtime::{HardwareDecodeAvailability, SettingsRuntime};
 use crate::startup_media::StartupMediaController;
 use crate::state::{
-    AppState, AppStateStartupContext, LifecycleTimelineSeekSettlement, TrackMemoryHandle,
+    AppState, AppStateStartupContext, LifecycleTimelineSeekSettlement, RendererVideoImportTarget,
+    TrackMemoryHandle,
 };
 use crate::telemetry::Telemetry;
 use shutdown::{
@@ -109,7 +109,7 @@ pub(crate) struct AppShell {
     window: Option<Arc<Window>>,
 
     /// Рендерер с GPU ресурсами. None до Resumed.
-    renderer: Option<Renderer>,
+    renderer: Option<Box<dyn RenderShell>>,
 
     /// Состояние приложения (egui, player state). None до Resumed.
     app_state: Option<AppState>,
@@ -278,24 +278,7 @@ impl AppShell {
         }
         let runtime_restore_started_at = Instant::now();
 
-        let surface_present_settings =
-            surface_present_settings_from_config(self.settings_runtime.committed_config());
-        let mut renderer = match Renderer::new(window.clone(), surface_present_settings) {
-            Ok(renderer) => renderer,
-            Err(error) => {
-                self.exit_with_fatal_startup_error(
-                    event_loop,
-                    FatalStartupError::graphics_unavailable(&error),
-                );
-                return;
-            }
-        };
-        info!(
-            process_elapsed_ms = self.process_started_at.elapsed().as_secs_f64() * 1_000.0,
-            runtime_restore_elapsed_ms =
-                runtime_restore_started_at.elapsed().as_secs_f64() * 1_000.0,
-            "Startup window/GPU renderer ready"
-        );
+        // Стартовые настройки цвета нужны фабрике рендера (прежние `set_*` до первого кадра).
         let initial_render_settings = match self.settings_runtime.initial_render_settings() {
             Ok(settings) => settings,
             Err(error) => {
@@ -307,8 +290,26 @@ impl AppShell {
             }
         };
         warn_legacy_tone_mapping_config(self.settings_runtime.committed_config());
-        renderer.set_color_pipeline_settings(initial_render_settings.color_pipeline);
-        renderer.set_hdr_to_sdr_settings(initial_render_settings.hdr_to_sdr);
+        let mut renderer = match create_startup_renderer(
+            self.settings_runtime.committed_config(),
+            window.clone(),
+            initial_render_settings,
+        ) {
+            Ok(renderer) => renderer,
+            Err(error) => {
+                self.exit_with_fatal_startup_error(
+                    event_loop,
+                    FatalStartupError::renderer_unavailable(&error),
+                );
+                return;
+            }
+        };
+        info!(
+            process_elapsed_ms = self.process_started_at.elapsed().as_secs_f64() * 1_000.0,
+            runtime_restore_elapsed_ms =
+                runtime_restore_started_at.elapsed().as_secs_f64() * 1_000.0,
+            "Startup window/GPU renderer ready"
+        );
 
         let mut app_state = match AppState::new(
             &window,
@@ -343,19 +344,14 @@ impl AppShell {
                 runtime_restore_started_at.elapsed().as_secs_f64() * 1_000.0,
             "Startup player worker ready"
         );
-        let system_capabilities = probe_system_capabilities(renderer.render_capabilities());
+        let system_capabilities = probe_system_capabilities(renderer.capabilities().clone());
         info!("{}", system_capabilities.summary_text());
         // Окно настроек предупреждает о режиме «Hardware» по этому же отчёту (UX2 B6).
         self.settings_runtime.set_hardware_decode_availability(
             HardwareDecodeAvailability::from_system_capabilities(&system_capabilities),
         );
         app_state.set_system_capabilities(system_capabilities.clone());
-        app_state.init_video_pipeline(
-            renderer.instance(),
-            renderer.adapter(),
-            renderer.device(),
-            renderer.queue(),
-        );
+        app_state.init_video_pipeline(RendererVideoImportTarget::for_renderer(renderer.as_mut()));
         info!(
             process_elapsed_ms = self.process_started_at.elapsed().as_secs_f64() * 1_000.0,
             runtime_restore_elapsed_ms =
@@ -421,13 +417,16 @@ impl AppShell {
         self.startup_media.start_pending_initial_media(
             &mut app_state,
             &mut self.playlist_runtime,
-            &renderer,
+            &mut *renderer,
             self.settings_runtime.committed_config(),
             &system_capabilities,
         );
-        self.startup_media
-            .poll_startup_jobs(&mut app_state, &mut self.playlist_runtime, &renderer);
-        app_state.poll_local_file_open_job(&mut self.playlist_runtime, &renderer);
+        self.startup_media.poll_startup_jobs(
+            &mut app_state,
+            &mut self.playlist_runtime,
+            &mut *renderer,
+        );
+        app_state.poll_local_file_open_job(&mut self.playlist_runtime, &mut *renderer);
 
         // Shell явно разделяет обновление snapshot и публикацию в desktop integration.
         let player_snapshot = app_state.refresh_player_snapshot();
@@ -454,7 +453,10 @@ impl AppShell {
             let resume_checkpoint_already_exists =
                 self.playlist_runtime.has_suspended_media_checkpoint();
             let lifecycle_result = app_state
-                .resolve_same_item_switch_for_suspend(&mut self.playlist_runtime)
+                .resolve_same_item_switch_for_suspend(
+                    &mut self.playlist_runtime,
+                    self.renderer.as_mut(),
+                )
                 .and_then(|()| {
                     app_state.cancel_suspended_media_resume_for_suspend(&mut self.playlist_runtime)
                 })
@@ -746,7 +748,7 @@ impl AppShell {
     fn drain_playlist_persistence(&mut self) -> bool {
         self.playlist_runtime.drain_owner_mailbox();
         let desktop_commands = self.playlist_runtime.drain_desktop_commands();
-        let desktop_changed = match (self.app_state.as_mut(), self.renderer.as_ref()) {
+        let desktop_changed = match (self.app_state.as_mut(), self.renderer.as_deref_mut()) {
             (Some(app_state), Some(renderer)) => {
                 let snapshot = app_state.refresh_player_snapshot();
                 let changed = crate::transport_runtime::apply_desktop_commands(
@@ -770,13 +772,13 @@ impl AppShell {
             }
         };
         let discovery_changed = self.playlist_runtime.drain_playlist_discovery();
-        let resume_changed = match (self.app_state.as_mut(), self.renderer.as_ref()) {
+        let resume_changed = match (self.app_state.as_mut(), self.renderer.as_deref_mut()) {
             (Some(app_state), Some(renderer)) => {
                 app_state.drive_suspended_media_resume(&mut self.playlist_runtime, renderer)
             }
             _ => false,
         };
-        let startup_changed = match (self.app_state.as_mut(), self.renderer.as_ref()) {
+        let startup_changed = match (self.app_state.as_mut(), self.renderer.as_deref_mut()) {
             (Some(app_state), Some(renderer)) => self.startup_media.poll_startup_jobs(
                 app_state,
                 &mut self.playlist_runtime,

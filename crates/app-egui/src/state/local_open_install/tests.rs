@@ -294,7 +294,7 @@ fn open_path_uses_only_stepwise_strong_install_boundary() {
     }
     assert!(owner_source.contains("self.begin_prepared_media_strong("));
     assert!(media_jobs_source.contains("self.begin_local_open_install(*prepared"));
-    assert!(media_jobs_source.contains("self.poll_local_open_install(playlist_runtime)"));
+    assert!(media_jobs_source.contains("self.poll_local_open_install(playlist_runtime, "));
 }
 
 /// Guard транспорта узнаёт установку из Open раньше общего «чужой request — это старт».

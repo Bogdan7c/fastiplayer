@@ -3,17 +3,16 @@
 use std::time::Instant;
 
 use player_core::PlayerRenderError;
-use render_wgpu_shell::{
-    AcquiredSurfaceFrame, RenderFrameDropReason, RenderFrameOutcome, RenderFrameTiming, Renderer,
-    SubtitleOverlayFrame,
+use render_shell_api::{
+    AcquiredSurfaceFrame, RenderFrameDropReason, RenderFrameOutcome, RenderFrameTiming,
+    RenderShell, SubtitleOverlayFrame,
 };
 use video_present_core::VideoPresentFrameIdentity;
-use winit::window::Window;
 
 use super::ui_prepare::PreparedUiFrame;
 use super::{
     PreparedVideoFrame, render_drop_reason_invalidates_cached_present_frame,
-    render_outcome_marks_video_submitted, report_video_render_boundary_error,
+    render_outcome_marks_video_submitted,
 };
 use crate::state::{AppState, SubmittedFrameForSubtitles};
 use crate::telemetry::Telemetry;
@@ -27,7 +26,7 @@ pub(super) struct FrameSubmission {
     pub(super) prepared_ui_frame: PreparedUiFrame,
     /// Видеокадр, выбранный ПОСЛЕ получения буфера (сессия 06a).
     pub(super) prepared_video_frame: PreparedVideoFrame,
-    /// Буфер swapchain от `Renderer::acquire_surface_frame`.
+    /// Буфер swapchain от `RenderShell::acquire_surface_frame`.
     pub(super) surface: AcquiredSurfaceFrame,
     /// Момент выбора видеокадра — для трассы «выбор → показ».
     pub(super) video_selected_at: Instant,
@@ -36,8 +35,7 @@ pub(super) struct FrameSubmission {
 /// Передаёт краткоживущие UI/video resources renderer-у и учитывает outcome.
 pub(super) fn submit_render_frame(
     telemetry: &Telemetry,
-    window: &Window,
-    renderer: &mut Renderer,
+    renderer: &mut dyn RenderShell,
     app_state: &mut AppState,
     submission: FrameSubmission,
 ) -> Option<RenderFrameTiming> {
@@ -47,13 +45,9 @@ pub(super) fn submit_render_frame(
         surface,
         video_selected_at,
     } = submission;
-    let video_frame = match prepared_video_frame.render_input_video_frame() {
-        Ok(video_frame) => video_frame,
-        Err(error) => {
-            report_video_render_boundary_error(app_state, error);
-            None
-        }
-    };
+    // Несовпадение формата кадра и его ресурсов рендер отклоняет ещё в `materialize`
+    // (`Unsupported`), поэтому здесь ключ либо есть, либо кадра нет.
+    let video_frame = prepared_video_frame.render_input_video_frame();
     let submitted_video_frame = video_frame.is_some();
     let startup_frame_identity = prepared_video_frame.current_frame_identity();
 
@@ -63,10 +57,10 @@ pub(super) fn submit_render_frame(
     // UI, даже без нового видеокадра: во время seek/scrub старый кадр остаётся без субтитров,
     // а цель уже известна, и поток-рисовальщик готовит её заранее.
     app_state.observe_playback_for_subtitles();
-    let subtitle_frame = video_frame.as_ref().and_then(|frame| {
+    let subtitle_frame = video_frame.and_then(|frame_key| {
         SubmittedFrameForSubtitles::from_submission(
             startup_frame_identity,
-            &frame.metadata,
+            frame_key.decoded_frame(),
             prepared_ui_frame.video_viewport,
             prepared_ui_frame.screen.size_in_pixels,
         )
@@ -81,10 +75,9 @@ pub(super) fn submit_render_frame(
             })
     });
 
-    let render_frame_outcome = renderer.render_frame(render_wgpu_shell::RenderFrameInput {
-        window,
+    let render_frame_outcome = renderer.render_frame(render_shell_api::RenderFrameInput {
         surface,
-        video_frame: video_frame.as_ref(),
+        video_frame,
         egui: prepared_ui_frame.egui_content,
         screen: prepared_ui_frame.screen,
         video_viewport: prepared_ui_frame.video_viewport,

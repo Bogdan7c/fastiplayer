@@ -22,7 +22,7 @@
 //!   (`media_reconfigure_install_failure`): от него зависит, нужен ли откат.
 
 use player_core::MediaInstallVideoBackendConstraint;
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 
 use super::*;
 use crate::media_open::MediaOpenRequestId;
@@ -135,7 +135,7 @@ impl AppState {
     pub(crate) fn poll_settings_media_rebuild(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) -> MediaRebuildProgress {
         let Some(mut active) = self.settings_media_rebuild.active.take() else {
             tracing::error!("Polled a media rebuild without an active rebuild");
@@ -187,7 +187,7 @@ impl AppState {
         phase: RebuildPhase,
         context: &mut RebuildContext,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) -> RebuildStep {
         match phase {
             RebuildPhase::Preparing(mut job) => match job.poll() {
@@ -200,7 +200,7 @@ impl AppState {
                 }
             },
             RebuildPhase::Installing { request_id } => {
-                self.poll_rebuild_install(request_id, context, playlist_runtime)
+                self.poll_rebuild_install(request_id, context, playlist_runtime, renderer)
             }
             RebuildPhase::RestoringState(restore) => match restore.poll() {
                 PlaybackRestorePoll::Pending => {
@@ -220,7 +220,7 @@ impl AppState {
         prepared: PreparedSingleMediaOpen,
         context: &mut RebuildContext,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) -> RebuildStep {
         // Controls снимаются только сейчас: пока готовился источник, воспроизведение шло.
         context.snapshot = self.refresh_player_snapshot();
@@ -255,6 +255,7 @@ impl AppState {
         request_id: MediaOpenRequestId,
         context: &RebuildContext,
         playlist_runtime: &mut PlaylistRuntime,
+        renderer: &mut dyn RenderShell,
     ) -> RebuildStep {
         if self.pending_prepared_media_strong_request_id() != Some(request_id) {
             tracing::error!("Rebuild media lost its request in the overall strong-open slot");
@@ -262,7 +263,7 @@ impl AppState {
                 message: crate::settings_rebuild_message::install_rebuild_failed_message(),
             });
         }
-        match self.poll_prepared_media_strong(playlist_runtime) {
+        match self.poll_prepared_media_strong(playlist_runtime, renderer.video_frames()) {
             StrongMediaOpenPoll::Pending => {
                 RebuildStep::Waiting(RebuildPhase::Installing { request_id })
             }

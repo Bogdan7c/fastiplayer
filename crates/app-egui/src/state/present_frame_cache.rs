@@ -19,24 +19,35 @@ pub enum PresentFrameAcquisition {
     StaleFrameRejected,
 }
 
-/// Кадр, для которого уже получены WGPU texture views и удерживается правильный render lease.
+/// Кадр, подготовленный рендером к показу: непрозрачный ключ рендера с арендой внутри.
+///
+/// С сессии 02 плана `user/gles2-renderer/` приложение не держит GPU-текстуры: ключ
+/// (`render_shell_api::RenderableFrameKey`) хранит клон аренды и ресурсы рендера в одном
+/// `Arc`. Пока жив хоть один клон (кэш «прошлый кадр», замороженный кадр смены backend-а,
+/// override скраба), кадр не вернётся декодеру.
 #[derive(Clone)]
 pub struct RenderablePresentFrame {
-    /// Lease удерживает backend texture resource до завершения render-side использования.
-    pub present_frame: VideoFrameLease,
-
-    /// WGPU texture views соответствуют `present_frame` и не используются без его lease-а.
-    pub texture_views: WgpuFrameTextureViews,
+    /// Ключ рендера; аренда кадра — внутри него.
+    key: RenderableFrameKey,
 }
 
 impl RenderablePresentFrame {
-    /// Собирает renderable frame из lease-а и WGPU texture views одного decoded кадра.
+    /// Оборачивает ключ, полученный от `VideoFrameImport::materialize`.
     #[must_use]
-    pub fn new(present_frame: VideoFrameLease, texture_views: WgpuFrameTextureViews) -> Self {
-        Self {
-            present_frame,
-            texture_views,
-        }
+    pub fn new(key: RenderableFrameKey) -> Self {
+        Self { key }
+    }
+
+    /// Аренда кадра (pts, generation, отметка «отправлен в рендер»).
+    #[must_use]
+    pub fn present_frame(&self) -> &VideoFrameLease {
+        self.key.lease()
+    }
+
+    /// Ключ кадра для входа `render_frame`.
+    #[must_use]
+    pub const fn key(&self) -> &RenderableFrameKey {
+        &self.key
     }
 }
 
@@ -362,7 +373,7 @@ impl AppState {
             .cached_renderable_present_frame
             .as_ref()
             .map(|cached_frame| {
-                Self::present_frame_identity(&cached_frame.renderable_frame.present_frame)
+                Self::present_frame_identity(cached_frame.renderable_frame.present_frame())
             });
         // Кэш, который `acquire_present_frame_for_render` всё равно отбросит (другой источник,
         // другая generation), не считается «кадром на экране».
@@ -376,7 +387,7 @@ impl AppState {
                             == player_snapshot.source_label.as_deref(),
                         cached_generation: cached_frame
                             .renderable_frame
-                            .present_frame
+                            .present_frame()
                             .render_generation(),
                         current_generation: player_snapshot.render_generation,
                     })
@@ -430,7 +441,7 @@ impl AppState {
             .cached_renderable_present_frame
             .as_ref()
             .map(|cached_frame| {
-                Self::present_frame_identity(&cached_frame.renderable_frame.present_frame)
+                Self::present_frame_identity(cached_frame.renderable_frame.present_frame())
             });
         let Some(waiting_frame) = waiting_present_frame_for_follow_up(
             self.player_worker.try_present_frame_identity(),
@@ -469,7 +480,7 @@ impl AppState {
                 self.cached_renderable_present_frame
                     .as_ref()
                     .map(|cached_frame| {
-                        Self::present_frame_identity(&cached_frame.renderable_frame.present_frame)
+                        Self::present_frame_identity(cached_frame.renderable_frame.present_frame())
                     });
             let acquired_frame_identity = Self::present_frame_identity(&present_frame);
 
@@ -477,7 +488,7 @@ impl AppState {
                 return self
                     .cached_renderable_present_frame
                     .as_ref()
-                    .map(|cached_frame| cached_frame.renderable_frame.present_frame.clone())
+                    .map(|cached_frame| cached_frame.renderable_frame.present_frame().clone())
                     .map(|mut cached_present_frame| {
                         if present_frame.is_stale() {
                             cached_present_frame.mark_timeline_stale();
@@ -493,7 +504,7 @@ impl AppState {
         if let Some(mut cached_present_frame) = self
             .cached_renderable_present_frame
             .as_ref()
-            .map(|cached_frame| cached_frame.renderable_frame.present_frame.clone())
+            .map(|cached_frame| cached_frame.renderable_frame.present_frame().clone())
         {
             if player_snapshot.timeline.stale_frame {
                 cached_present_frame.mark_timeline_stale();
@@ -523,7 +534,7 @@ impl AppState {
                 == player_snapshot.source_label.as_deref(),
             cached_generation: cached_renderable_frame
                 .renderable_frame
-                .present_frame
+                .present_frame()
                 .render_generation(),
             current_generation: player_snapshot.render_generation,
         };
@@ -607,7 +618,7 @@ impl AppState {
         let reuse_state = TextureBusyFallbackReuseState {
             cached_generation: cached_renderable_frame
                 .renderable_frame
-                .present_frame
+                .present_frame()
                 .render_generation(),
             current_generation: player_snapshot.render_generation,
             source_matches: cached_renderable_frame.source_label.as_deref()
@@ -615,7 +626,7 @@ impl AppState {
             has_current_video_frame: player_snapshot.current_video_frame.is_some(),
             cached_frame_is_stale: cached_renderable_frame
                 .renderable_frame
-                .present_frame
+                .present_frame()
                 .is_stale(),
             timeline_marks_frame_stale: player_snapshot.timeline.stale_frame,
         };

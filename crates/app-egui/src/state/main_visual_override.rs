@@ -106,7 +106,8 @@ impl MainVisualOverride {
         if self.metadata.stale_for_snapshot(player_snapshot) {
             return None;
         }
-        if renderable_frame.present_frame.render_generation() != player_snapshot.render_generation {
+        if renderable_frame.present_frame().render_generation() != player_snapshot.render_generation
+        {
             return None;
         }
         Some(renderable_frame.clone())
@@ -114,6 +115,11 @@ impl MainVisualOverride {
 }
 
 /// Результат app-level acquisition перед materialization stage.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "значение не хранится: возвращается раз за кадр скраба и сразу разбирается; \
+              `Ready` стал маленьким ключом рендера (сессия 02), а Box аренды дал бы аллокацию на кадр"
+)]
 pub(crate) enum MainVisualOverrideAcquisition {
     NoOverride,
     WaitingForExactFrame,

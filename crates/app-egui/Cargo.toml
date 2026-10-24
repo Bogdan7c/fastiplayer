@@ -27,7 +27,6 @@ system-ffmpeg = ["ffmpeg"]
 
 [dependencies]
 animation-core.workspace = true
-wgpu.workspace = true
 winit.workspace = true
 egui.workspace = true
 ui-artwork-egui.workspace = true
@@ -94,8 +93,11 @@ video-present-core.workspace = true
 video-ffmpeg.workspace = true
 video-vaapi.workspace = true
 render-core.workspace = true
+# Контракт «приложение ↔ рендер»: приложение держит `Box<dyn RenderShell>` (сессия 02
+# плана `user/gles2-renderer/`).
+render-shell-api.workspace = true
+# Конкретный wgpu-рендер знает только каталог рендеров `render_backend` (фабрика кандидата).
 render-wgpu-shell.workspace = true
-render-wgpu-video.workspace = true
 
 # Субтитры: модель/тайминг, разбор файлов, поиск рядом с видео и растеризатор.
 # Все пять crate-ов нейтральны (без GPU/UI): композиция с wgpu-проходом живёт здесь.
@@ -112,6 +114,11 @@ media-source-open = { workspace = true, features = ["test-fixtures"] }
 codec-core.workspace = true
 flate2 = "1"
 tempfile = "3"
+# GPU-тесты субтитров и web-media рисуют напрямую через `WgpuVideoRenderer` /
+# `SubtitleOverlayRenderer` в offscreen-текстуру, мимо `RenderShell`: им нужны wgpu-типы.
+# Production-код `app-egui` wgpu не видит (guardrail `scripts/check-refactor-guardrails.py`).
+render-wgpu-video.workspace = true
+wgpu.workspace = true
 
 [lints]
 workspace = true

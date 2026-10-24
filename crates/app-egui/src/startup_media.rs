@@ -472,7 +472,7 @@ impl StartupMediaController {
         &mut self,
         app_state: &mut AppState,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
         app_config: &AppConfig,
         system_capabilities: &SystemCapabilities,
     ) {
@@ -613,7 +613,7 @@ impl StartupMediaController {
         &mut self,
         app_state: &mut AppState,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) -> bool {
         self.drive_startup_orchestration(app_state, playlist_runtime, renderer)
     }

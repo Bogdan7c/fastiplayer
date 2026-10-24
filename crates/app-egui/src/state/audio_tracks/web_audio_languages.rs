@@ -15,7 +15,7 @@
 use media_source_open::web_media_open::audio_languages::{
     WebAudioLanguageAction, WebAudioLanguageChoice,
 };
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 
 use super::labels::language_display_name;
 use super::web_audio_language_memory::language_to_remember;
@@ -97,7 +97,7 @@ impl AppState {
         &mut self,
         action: WebAudioLanguageAction,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) {
         // Подпись берётся до запуска: после Installed источник получит новое поколение.
         let label = self.web_audio_language_entries().and_then(|entries| {

@@ -14,7 +14,7 @@ use render_core::{
 
 use crate::{
     RenderFrameInput, RenderFrameOutcome, RenderScreenDescriptor, RendererFamily,
-    RendererInstanceId, SurfaceFrameAcquire, VideoFrameImport,
+    RendererInstanceId, SurfaceFrameAcquire, VideoFrameImport, VideoImportPreparer,
 };
 
 /// Рендер окна приложения. Object-safe: приложение держит `Box<dyn RenderShell>`.
@@ -71,6 +71,15 @@ pub trait RenderShell {
 
     /// Склад кадров: импорт кадров декодера и освобождение после GPU.
     fn video_frames(&mut self) -> &mut dyn VideoFrameImport;
+
+    /// Переносимый подготовщик импорта для этого рендера (первый шаг подключения декодера в
+    /// другом потоке — у кандидата нового файла это поток плеера).
+    ///
+    /// Подготовщик держит только то, что нужно для обёртки декодера и подготовки импорта
+    /// (у wgpu — клоны device/queue, у GLES2 — очередь освобождений по fence, без GL-объектов),
+    /// и помечает импорты паспортом этого рендера: установить их можно только на нём через
+    /// `video_frames().install_video_import`. Склад рендера при этом не меняется.
+    fn video_import_preparer(&self) -> Box<dyn VideoImportPreparer>;
 }
 
 /// Размер surface окна в физических пикселях.

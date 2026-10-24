@@ -6,7 +6,7 @@
 //! до успешной установки нового, действия с чужим поколением отвергаются как `Stale`.
 
 use media_source_open::web_media_open::audio_languages::WebAudioLanguageAction;
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 
 use super::{AppState, SameItemSwitchError, SameItemSwitchKind, UrlSidebarActionApplyOutcome};
 use crate::media_open::{
@@ -67,7 +67,7 @@ impl AppState {
         action: WebAudioLanguageAction,
         purpose: AudioLanguagePurpose,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
         let active_source = self.preflight_same_item_switch()?;
         self.start_resolved_same_item_switch(

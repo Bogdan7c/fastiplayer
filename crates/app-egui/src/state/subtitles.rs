@@ -272,7 +272,7 @@ pub(super) struct SubtitleOwner {
     last_placed_picture_rect: Option<render_core::PictureRect>,
     /// Фактический сдвиг слоя того же кадра (после зажимов и подъёма над панелью): от него
     /// режим правки начинает перенос мышью. Задаётся и сбрасывается вместе с прямоугольником.
-    last_placed_layer_offset: Option<render_wgpu_shell::SubtitleLayerOffset>,
+    last_placed_layer_offset: Option<render_shell_api::SubtitleLayerOffset>,
     /// Лимиты растеризатора изменились: пересоздать его при следующем media.
     rasterizer_reset_pending: bool,
     /// Сессия правки внешнего вида на видео (`None` - не правим).

@@ -10,7 +10,7 @@ impl StartupMediaController {
         &mut self,
         app_state: &mut crate::state::AppState,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) -> bool {
         if self.preparation_stopped_by_user {
             // Stop отменил подготовку: итоги оставшихся job-ов не имеют права ничего начать

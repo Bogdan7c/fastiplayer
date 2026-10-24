@@ -1,12 +1,18 @@
 //! Выбор concrete video pipeline для app-owned composition layer-а.
 //!
 //! Selector остаётся pure: он читает committed config intent и capability snapshot,
-//! но не запускает backend, не создаёт WGPU resources и не пересчитывает renderer
+//! но не запускает backend, не создаёт GPU resources и не пересчитывает renderer
 //! intersection. Исполнение выбранного плана остаётся в `AppState`.
+//!
+//! План — это маршрут декода (VA-API + DMA-BUF или FFmpeg + загрузка плоскостей), а не
+//! семейство рендера (сессия 02 плана `user/gles2-renderer/`): возможности активного рендера
+//! уже учтены в `SystemCapabilities`. Семейство нужно только диагностической метке
+//! ([`VideoPipelinePlan::diagnostic_label`]), по которой классифицируют прогоны инструменты.
 
 use capability_core::{SupportedVideoOutput, SystemCapabilities};
 use fastiplayer_config::VideoBackendPreference;
 use player_core::{PlayerVideoDecoderThreadConfig, VideoDecodeRequirement};
+use render_shell_api::{DecoderSurfacePoolSlots, RendererFamily, VideoImportPath, VideoImportPlan};
 use thiserror::Error;
 use video_backend_api::DetachedVideoBackendSelection;
 use video_ffmpeg::FFMPEG_SOFTWARE_BACKEND_ID;
@@ -26,17 +32,17 @@ pub(crate) enum VideoBackendKind {
     FfmpegSoftware,
 }
 
-/// Concrete video pipeline, который `app-egui` умеет реально запустить сейчас.
+/// Маршрут декода, который `app-egui` умеет реально запустить сейчас.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VideoPipelinePlan {
-    /// Production path: VA-API decode, DMA-BUF zero-copy transfer, WGPU materializer.
-    VaapiDmaBufWgpu {
+    /// Production path: VA-API decode, DMA-BUF zero-copy transfer в рендер.
+    VaapiDmaBuf {
         /// Runtime limits decoder thread-а, которые нужно передать concrete backend factory.
         decoder_thread_config: PlayerVideoDecoderThreadConfig,
     },
 
-    /// Software path: FFmpeg decode, HostPlanar upload, WGPU renderer.
-    FfmpegHostUploadWgpu {
+    /// Software path: FFmpeg decode, HostPlanar upload плоскостей в текстуры рендера.
+    FfmpegHostUpload {
         /// Runtime limits decoder thread-а, которые нужно передать concrete backend factory.
         decoder_thread_config: PlayerVideoDecoderThreadConfig,
     },
@@ -53,12 +59,12 @@ impl VideoPipelinePlan {
             selection.frame_contract().transfer_path,
         ) {
             (VAAPI_BACKEND_ID, VideoFrameTransferPath::HardwareZeroCopy { .. }) => {
-                Ok(Self::VaapiDmaBufWgpu {
+                Ok(Self::VaapiDmaBuf {
                     decoder_thread_config,
                 })
             }
             (FFMPEG_SOFTWARE_BACKEND_ID, VideoFrameTransferPath::SoftwareHostUpload) => {
-                Ok(Self::FfmpegHostUploadWgpu {
+                Ok(Self::FfmpegHostUpload {
                     decoder_thread_config,
                 })
             }
@@ -71,19 +77,54 @@ impl VideoPipelinePlan {
         }
     }
 
-    /// Короткая stable метка для startup diagnostics.
-    pub const fn diagnostic_label(self) -> &'static str {
+    /// Короткая stable метка «маршрут × семейство рендера» для startup diagnostics.
+    ///
+    /// Строки wgpu — байт-в-байт прежние: `plan="ffmpeg-host-upload-wgpu"` ищут инструменты
+    /// замера (`docs/benchmarks/tools/local/evidence.py`, `t480s/collect.py`).
+    pub const fn diagnostic_label(self, renderer_family: RendererFamily) -> &'static str {
+        match (self, renderer_family) {
+            (Self::VaapiDmaBuf { .. }, RendererFamily::WgpuVulkan) => "vaapi-dmabuf-wgpu",
+            (Self::FfmpegHostUpload { .. }, RendererFamily::WgpuVulkan) => {
+                "ffmpeg-host-upload-wgpu"
+            }
+            (Self::VaapiDmaBuf { .. }, RendererFamily::Gles2) => "vaapi-dmabuf-gles2",
+            (Self::FfmpegHostUpload { .. }, RendererFamily::Gles2) => "ffmpeg-host-upload-gles2",
+        }
+    }
+
+    /// Runtime limits decoder thread-а для concrete backend factory.
+    pub const fn decoder_thread_config(self) -> PlayerVideoDecoderThreadConfig {
         match self {
-            Self::VaapiDmaBufWgpu { .. } => "vaapi-dmabuf-wgpu",
-            Self::FfmpegHostUploadWgpu { .. } => "ffmpeg-host-upload-wgpu",
+            Self::VaapiDmaBuf {
+                decoder_thread_config,
+            }
+            | Self::FfmpegHostUpload {
+                decoder_thread_config,
+            } => decoder_thread_config,
+        }
+    }
+
+    /// Что рендер должен подготовить для кадров этого маршрута.
+    ///
+    /// Размер пула поверхностей — предел кэша импорта DMA-BUF рендера (cpu-parity 03).
+    pub const fn import_plan(self) -> VideoImportPlan {
+        let path = match self {
+            Self::VaapiDmaBuf { .. } => VideoImportPath::HardwareZeroCopy,
+            Self::FfmpegHostUpload { .. } => VideoImportPath::SoftwareHostUpload,
+        };
+        VideoImportPlan {
+            path,
+            decoder_surface_pool: DecoderSurfacePoolSlots::new(
+                self.decoder_thread_config().zero_copy_surface_pool_slots,
+            ),
         }
     }
 
     /// Класс backend-а выбранного плана для сравнения с уже активным backend-ом.
     pub const fn backend_kind(self) -> VideoBackendKind {
         match self {
-            Self::VaapiDmaBufWgpu { .. } => VideoBackendKind::HardwareZeroCopy,
-            Self::FfmpegHostUploadWgpu { .. } => VideoBackendKind::FfmpegSoftware,
+            Self::VaapiDmaBuf { .. } => VideoBackendKind::HardwareZeroCopy,
+            Self::FfmpegHostUpload { .. } => VideoBackendKind::FfmpegSoftware,
         }
     }
 }
@@ -163,7 +204,7 @@ pub(crate) fn select_video_pipeline_plan(
                     && output_serves_requirement(output, stream_requirement)
             }) =>
         {
-            Ok(VideoPipelinePlan::VaapiDmaBufWgpu {
+            Ok(VideoPipelinePlan::VaapiDmaBuf {
                 decoder_thread_config,
             })
         }
@@ -217,7 +258,7 @@ fn select_auto_fallback_plan(
         is_playable_vaapi_dma_buf_output(output)
             && output_serves_requirement(output, stream_requirement)
     }) {
-        return Ok(VideoPipelinePlan::VaapiDmaBufWgpu {
+        return Ok(VideoPipelinePlan::VaapiDmaBuf {
             decoder_thread_config,
         });
     }
@@ -287,7 +328,7 @@ fn select_software_plan(
         is_playable_ffmpeg_host_upload_output(output)
             && output_serves_requirement(output, stream_requirement)
     }) {
-        return Ok(VideoPipelinePlan::FfmpegHostUploadWgpu {
+        return Ok(VideoPipelinePlan::FfmpegHostUpload {
             decoder_thread_config,
         });
     }

@@ -18,7 +18,10 @@
 //! 5. кадр декодера освобождается ровно один раз и не раньше, чем приложение отпустило
 //!    аренду и ключ ([`check_frame_released_exactly_once`]);
 //! 6. потеря устройства освобождает ждущие кадры ровно один раз
-//!    ([`check_device_lost_releases_exactly_once`]).
+//!    ([`check_device_lost_releases_exactly_once`]);
+//! 7. подготовщик импорта работает в другом потоке, не трогает активный импорт, а его импорт
+//!    ставится на выдавший рендер и даёт готовый кадр
+//!    ([`check_preparer_prepares_on_another_thread`]).
 
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -126,6 +129,8 @@ pub enum ConformanceCheck {
     FrameReleasedExactlyOnce,
     /// Потеря устройства освобождает ждущие кадры ровно один раз.
     DeviceLostReleasesExactlyOnce,
+    /// Подготовщик импорта работает в другом потоке и готовит импорт для своего рендера.
+    PreparerPreparesOnAnotherThread,
 }
 
 /// Нарушение контракта с объяснением.
@@ -159,13 +164,14 @@ impl std::error::Error for ConformanceViolation {}
 pub fn run_render_shell_conformance(
     harness: &mut dyn RenderShellConformanceHarness,
 ) -> Vec<ConformanceViolation> {
-    let checks: [ConformanceCheckFn; 6] = [
+    let checks: [ConformanceCheckFn; 7] = [
         check_foreign_surface_frame_is_rejected,
         check_reuse_previous_requires_retained_ui,
         check_unsupported_contract_is_not_error,
         check_missing_video_backend_is_distinct,
         check_frame_released_exactly_once,
         check_device_lost_releases_exactly_once,
+        check_preparer_prepares_on_another_thread,
     ];
     checks
         .into_iter()
@@ -387,6 +393,68 @@ pub fn check_device_lost_releases_exactly_once(
         }
     }
     expect_release_count(check, "after late GPU completion", &ledger, handle, 1)
+}
+
+/// Проверка 7: подготовщик импорта работает в другом потоке (как кандидат нового файла в
+/// потоке плеера), не трогает активный импорт рендера, а подготовленный им импорт ставится
+/// на выдавший рендер и превращает кадр в ключ.
+pub fn check_preparer_prepares_on_another_thread(
+    harness: &mut dyn RenderShellConformanceHarness,
+) -> Result<(), ConformanceViolation> {
+    let check = ConformanceCheck::PreparerPreparesOnAnotherThread;
+    let mut renderer = create_renderer(harness)?;
+    let ConformanceVideoSource {
+        backend,
+        plan,
+        frame,
+        ledger: _,
+    } = harness.supported_video_source();
+    let mut preparer = renderer.video_import_preparer();
+
+    let prepared = std::thread::spawn(move || preparer.prepare_video_import(backend, plan))
+        .join()
+        .map_err(|_panic| ConformanceViolation::new(check, "preparer panicked on another thread"))?
+        .map_err(|error| {
+            ConformanceViolation::new(check, format!("preparer failed to prepare: {error:?}"))
+        })?;
+    if renderer.video_frames().active_video_import_path().is_some() {
+        return Err(ConformanceViolation::new(
+            check,
+            "preparing on another thread must not change the active import",
+        ));
+    }
+    renderer
+        .video_frames()
+        .install_video_import(prepared.pending)
+        .map_err(|error| {
+            ConformanceViolation::new(
+                check,
+                format!("import prepared by the renderer's own preparer must install: {error:?}"),
+            )
+        })?;
+    if renderer.video_frames().active_video_import_path() != Some(plan.path) {
+        return Err(ConformanceViolation::new(
+            check,
+            "installed import must become the active import of its path",
+        ));
+    }
+
+    let decoder_thread = prepared.backend.into_decoder_thread();
+    let lease = VideoFrameLease::new(
+        VideoFrameLeaseConfig::new(
+            CONFORMANCE_RENDER_GENERATION,
+            frame,
+            Arc::new(ProviderReleaseSink),
+        )
+        .with_resource_provider(decoder_thread.resource_provider()),
+    );
+    match renderer.video_frames().materialize(&lease).outcome {
+        FrameMaterializationOutcome::Ready(_) => Ok(()),
+        other => Err(ConformanceViolation::new(
+            check,
+            format!("frame of the prepared import must be Ready, got {other:?}"),
+        )),
+    }
 }
 
 /// Показанный поддерживаемый кадр, который приложение ещё держит.

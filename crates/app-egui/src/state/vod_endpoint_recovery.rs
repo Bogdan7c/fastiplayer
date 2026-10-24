@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use player_core::{MediaInstallCompletion, MediaInstanceId, PlaybackIntent, PlayerSnapshot};
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 use tracing::{debug, warn};
 use web_media_transport_api::{EndpointExpirySignal, SourceGeneration};
 
@@ -366,7 +366,7 @@ impl AppState {
     pub(crate) fn poll_vod_endpoint_recovery(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) {
         if self.vod_endpoint_recovery.pending.is_some() {
             self.poll_claimed_vod_endpoint_recovery(playlist_runtime, renderer);
@@ -406,7 +406,7 @@ impl AppState {
     fn poll_claimed_vod_endpoint_recovery(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) {
         let Some(mut pending) = self.vod_endpoint_recovery.pending.take() else {
             return;
@@ -462,7 +462,7 @@ impl AppState {
             pending.strong_open_started = true;
         }
         self.vod_endpoint_recovery.pending = Some(pending);
-        match self.poll_prepared_media_strong(playlist_runtime) {
+        match self.poll_prepared_media_strong(playlist_runtime, renderer.video_frames()) {
             StrongMediaOpenPoll::Pending => {}
             StrongMediaOpenPoll::Installed(installed) => {
                 debug!(

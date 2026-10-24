@@ -11,7 +11,7 @@
 
 use std::time::Duration;
 
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 use tracing::{debug, warn};
 
 use super::{apply_manual_navigation_outcome, apply_playlist_row_play};
@@ -27,7 +27,7 @@ use crate::state::AppState;
 pub(crate) fn apply_guarded_transport(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
     guard: TransportGuardOutcome,
     current_position: Duration,
 ) {
@@ -65,7 +65,7 @@ pub(crate) fn apply_guarded_transport(
 pub(crate) fn poll_playlist_transport(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
 ) {
     app_state.poll_playlist_transport(playlist_runtime, renderer);
     if !app_state.strong_media_open_slot_is_idle() {
@@ -81,7 +81,7 @@ pub(crate) fn poll_playlist_transport(
 pub(crate) fn apply_neutral_stop_request(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
     stop: Option<Result<player_core::ExactMediaTransportRequest, TransportGuardOutcome>>,
     current_position: Duration,
 ) {
@@ -103,7 +103,7 @@ pub(crate) fn apply_neutral_stop_request(
 fn apply_deferred_transport_execution(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
     executed: DeferredTransportExecutionOutcome,
 ) {
     let current_position = app_state.last_known_player_position();

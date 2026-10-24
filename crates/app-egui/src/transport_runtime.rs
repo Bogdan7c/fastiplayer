@@ -13,7 +13,7 @@ use player_core::{
     TimelineSeekRequestId,
 };
 use playlist_core::ManualNavigationDirection;
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 use tracing::warn;
 
 use crate::playlist_runtime::{
@@ -37,7 +37,7 @@ use guarded::{apply_guarded_transport, apply_neutral_stop_request};
 pub(crate) fn apply_playlist_row_play(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
     outcome: RuntimeRowPlayOutcome,
 ) -> bool {
     let RuntimeRowPlayOutcome::Controller(outcome) = outcome else {
@@ -86,7 +86,7 @@ pub(crate) fn apply_playlist_row_play(
 pub(crate) fn apply_initial_queue_playback_action(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
 ) -> bool {
     let Some(action) = playlist_runtime.take_initial_queue_playback_action() else {
         return false;
@@ -113,7 +113,7 @@ pub(crate) fn apply_initial_queue_playback_action(
 pub(crate) fn apply_transport_actions(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
     player_snapshot: &PlayerSnapshot,
     actions: Vec<TransportControlAction>,
 ) {
@@ -131,7 +131,7 @@ pub(crate) fn apply_transport_actions(
 pub(crate) fn apply_transport_action(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
     player_snapshot: &PlayerSnapshot,
     action: TransportControlAction,
 ) {
@@ -199,7 +199,7 @@ pub(crate) fn apply_transport_action(
 pub(crate) fn apply_discovery_navigation_action(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
 ) {
     let Some(action) = playlist_runtime.take_playlist_discovery_navigation_action() else {
         return;
@@ -222,7 +222,7 @@ pub(crate) fn apply_discovery_navigation_action(
 pub(crate) fn apply_playlist_automatic_snapshot(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
     player_snapshot: &PlayerSnapshot,
 ) {
     let Some(binding) = app_state.playlist_runtime_binding() else {
@@ -243,7 +243,7 @@ pub(crate) fn apply_playlist_automatic_snapshot(
 fn apply_automatic_lifecycle_outcome(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
     outcome: AutomaticLifecycleOutcome,
 ) {
     match outcome {
@@ -274,7 +274,7 @@ pub(crate) const fn playback_toggle_will_pause(state: PlaybackState) -> bool {
 pub(crate) fn request_navigation(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
     direction: ManualNavigationDirection,
     player_snapshot: &PlayerSnapshot,
     origin: TransportActionOrigin,
@@ -294,7 +294,7 @@ pub(crate) fn apply_desktop_commands(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
     startup_media: &mut StartupMediaController,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
     player_snapshot: &PlayerSnapshot,
     commands: Vec<DesktopCommand>,
 ) -> bool {
@@ -474,7 +474,7 @@ fn apply_desktop_intent(
 fn apply_relative_desktop_seek(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
     snapshot: &PlayerSnapshot,
     request_id: DesktopTimelineSeekRequestId,
     offset_microseconds: i64,
@@ -574,7 +574,7 @@ fn player_seek_request_id(request_id: DesktopTimelineSeekRequestId) -> TimelineS
 pub(crate) fn apply_manual_navigation_outcome(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
     outcome: ControllerManualNavigationOutcome,
 ) {
     match outcome {

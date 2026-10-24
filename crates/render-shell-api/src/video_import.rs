@@ -17,6 +17,11 @@
 //! «в стороне» (активный импорт не тронут, можно отменить простым drop-ом), потом
 //! [`VideoFrameImport::install_video_import`] разом переключает активный импорт.
 //!
+//! Кандидат нового файла запускается в потоке плеера, а рендер живёт в потоке окна. Для
+//! этого рендер выдаёт переносимый [`VideoImportPreparer`] (`RenderShell::video_import_preparer`,
+//! решение владельца в сессии 02):
+//! первый шаг выполняется им в потоке плеера, установка — по-прежнему на рендере в потоке окна.
+//!
 //! # Пересоздание рендера того же семейства
 //!
 //! Старый рендер отдаёт [`VideoImportHandoff`] (provider декодера + план + привязка отложенных
@@ -91,6 +96,23 @@ pub trait VideoFrameImport {
     /// После вызова поздние сигналы старого GPU не могут освободить кадр повторно, а новые
     /// освобождения до установки нового импорта проходят сразу.
     fn release_after_device_lost(&mut self) -> Result<ReleasedFrameCount, VideoImportReleaseError>;
+}
+
+/// Подготовщик импорта, который можно отдать в другой поток (например, в поток плеера,
+/// где запускается кандидат нового файла).
+///
+/// Выдаёт `RenderShell::video_import_preparer`. Смысл [`Self::prepare_video_import`] тот же,
+/// что у [`VideoFrameImport::prepare_video_import`]:
+/// активный импорт рендера не меняется, `PendingVideoImport` устанавливается потом на выдавшем
+/// подготовщик рендере. Пересоздание рендера делает импорты старого подготовщика чужими
+/// (`PreparedByAnotherRenderer`).
+pub trait VideoImportPreparer: Send {
+    /// Оборачивает запущенный декодер и готовит импорт для рендера, выдавшего подготовщик.
+    fn prepare_video_import(
+        &mut self,
+        backend: StartedVideoBackend,
+        plan: VideoImportPlan,
+    ) -> Result<PreparedVideoImport, VideoImportPrepareError>;
 }
 
 /// Путь передачи кадров, под который готовится импорт.

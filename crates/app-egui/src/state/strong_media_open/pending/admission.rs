@@ -7,7 +7,7 @@ impl AppState {
     pub(crate) fn begin_prepared_media_strong(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
         prepared_input: PreparedSingleMediaOpen,
         intent: PlaybackIntent,
     ) -> Result<(), StrongMediaOpenError> {
@@ -31,7 +31,7 @@ impl AppState {
     pub(crate) fn begin_prepared_media_strong_with_backend_constraint(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
         prepared_input: PreparedSingleMediaOpen,
         intent: PlaybackIntent,
         video_backend_constraint: MediaInstallVideoBackendConstraint,
@@ -70,12 +70,7 @@ impl AppState {
             }
         };
 
-        let driver = WgpuCandidateVideoPipelineResourceDriver::new(
-            renderer.instance(),
-            renderer.adapter(),
-            renderer.device(),
-            renderer.queue(),
-        );
+        let driver = RendererCandidateVideoPipelineResourceDriver::new(renderer);
         let (candidate_owner, video_resource_port) = player_selected_video_candidate_boundary(
             self.renderer_generation,
             self.player_worker.decoder_thread_config(),
@@ -175,7 +170,7 @@ impl AppState {
     pub(crate) fn begin_playlist_source_media_strong(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
         source_request: MediaOpenSourceRequest,
         install: crate::playlist_runtime::PlannedPlaylistInstall,
         supersedes: Option<MediaOpenRequestId>,
@@ -222,7 +217,7 @@ impl AppState {
     pub(crate) fn begin_preloaded_playlist_media_strong(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
         prepared_open: PreparedMediaOpen,
         safe_label: SafeMediaLabel,
         install: crate::playlist_runtime::PlannedPlaylistInstall,
@@ -269,7 +264,7 @@ impl AppState {
     /// Единственная queue staging boundary после locator-based или prepared source ingress.
     fn begin_playlist_media_staging_after_start(
         &mut self,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
         request_id: MediaOpenRequestId,
         install: crate::playlist_runtime::PlannedPlaylistInstall,
         supersedes: Option<MediaOpenRequestId>,
@@ -278,12 +273,7 @@ impl AppState {
         let intent_revision = install.intent_revision;
         // Обычные переходы очереди стартуют с начала; Undo Clear возвращает точную позицию.
         let startup_position = install.start_position;
-        let driver = WgpuCandidateVideoPipelineResourceDriver::new(
-            renderer.instance(),
-            renderer.adapter(),
-            renderer.device(),
-            renderer.queue(),
-        );
+        let driver = RendererCandidateVideoPipelineResourceDriver::new(renderer);
         let (candidate_owner, video_resource_port) = player_selected_video_candidate_boundary(
             self.renderer_generation,
             self.player_worker.decoder_thread_config(),
@@ -322,7 +312,7 @@ impl AppState {
     pub(crate) fn begin_same_lineage_source_media_strong(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
         source_request: MediaOpenSourceRequest,
         expected_active: crate::playlist_runtime::ActiveMediaIdentity,
         intent: PlaybackIntent,
@@ -341,7 +331,7 @@ impl AppState {
     pub(crate) fn begin_vod_endpoint_recovery_strong(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
         source_request: MediaOpenSourceRequest,
         expected_active: crate::playlist_runtime::ActiveMediaIdentity,
         intent: PlaybackIntent,
@@ -361,7 +351,7 @@ impl AppState {
     fn begin_same_lineage_source_media_strong_with_position(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
         source_request: MediaOpenSourceRequest,
         expected_active: crate::playlist_runtime::ActiveMediaIdentity,
         intent: PlaybackIntent,
@@ -380,12 +370,7 @@ impl AppState {
                 return Err(StrongMediaOpenError::Start(MediaOpenStartError::Busy));
             }
         };
-        let driver = WgpuCandidateVideoPipelineResourceDriver::new(
-            renderer.instance(),
-            renderer.adapter(),
-            renderer.device(),
-            renderer.queue(),
-        );
+        let driver = RendererCandidateVideoPipelineResourceDriver::new(renderer);
         let (candidate_owner, video_resource_port) = player_selected_video_candidate_boundary(
             self.renderer_generation,
             self.player_worker.decoder_thread_config(),

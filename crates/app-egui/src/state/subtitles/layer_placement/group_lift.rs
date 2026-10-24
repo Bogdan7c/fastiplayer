@@ -14,7 +14,7 @@
 //! 3. Верх группы не выше картинки: на чёрные полосы и за экран ничего не выходит.
 //! 4. Фиксированная группа не двигается; горизонтальный сдвиг всегда нулевой.
 
-use render_wgpu_shell::{SubtitleLayerOffset, SubtitleLayerOffsets};
+use render_shell_api::{SubtitleLayerOffset, SubtitleLayerOffsets};
 use subtitle_raster::CanvasRect;
 
 use super::{

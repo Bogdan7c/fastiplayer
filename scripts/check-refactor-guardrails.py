@@ -134,6 +134,22 @@ VIDEO_FRAME_CONTRACT_ALLOWED_DEPENDENCIES = frozenset({"serde"})
 # Контракт «приложение ↔ рендер» (issue #6, план user/gles2-renderer/): только нейтральные
 # crate-ы плеера и egui ради типов мешей/текстур интерфейса. Allowlist автоматически запрещает
 # wgpu/ash/glow/khronos-egl/winit/egui-wgpu, player-core, конкретные декодеры и рендеры.
+# Сессия 02 плана `user/gles2-renderer/`: GPU-API и материализаторы кадров — внутри рендеров.
+# Приложение держит `Box<dyn RenderShell>`; `render-wgpu-shell` остаётся только ради фабрики
+# каталога рендеров, а `wgpu`/`render-wgpu-video` нужны лишь GPU-тестам (dev-dependencies).
+APP_EGUI_FORBIDDEN_RENDERER_DEPENDENCIES = frozenset(
+    {
+        "ash",
+        "glow",
+        "khronos-egl",
+        "render-wgpu-video",
+        "wgpu",
+        "wgpu-core",
+        "wgpu-hal",
+        "wgpu-types",
+    }
+)
+
 RENDER_SHELL_API_ALLOWED_DEPENDENCIES = frozenset(
     {
         "egui",
@@ -1322,6 +1338,14 @@ def find_dependency_violations(
         )
     )
     violations.extend(
+        find_forbidden_dependencies(
+            dependency_map,
+            frozenset({"app-egui"}),
+            APP_EGUI_FORBIDDEN_RENDERER_DEPENDENCIES,
+            "app-egui sees renderers only through render-shell-api; GPU APIs and frame materializers stay inside renderer crates",
+        )
+    )
+    violations.extend(
         find_disallowed_dependencies(
             dependency_map,
             frozenset({"video-present-core"}),
@@ -1735,6 +1759,7 @@ def find_source_policy_violations(
     violations.extend(find_main_video_second_session_violations(repo_root))
     violations.extend(find_prepared_branch_promotion_violations(repo_root))
     violations.extend(find_app_egui_custom_paint_violations(repo_root))
+    violations.extend(find_app_egui_concrete_renderer_violations(repo_root))
     violations.extend(find_playlist_topology_boundary_violations(repo_root))
     violations.extend(find_progressive_web_boundary_violations(repo_root))
     violations.extend(find_existing_demux_boundary_violations(repo_root))
@@ -1890,6 +1915,65 @@ def find_app_egui_custom_paint_violations(repo_root: Path) -> list[SourcePolicyV
                         line_number=line_number,
                         rule="custom-drawing app-egui must pass through ui-artwork-egui",
                         matched_text=line.strip(),
+                    )
+                )
+    return violations
+
+
+# Сессия 02 плана `user/gles2-renderer/`: app-egui видит рендер только как
+# `Box<dyn render_shell_api::RenderShell>`. Конкретный wgpu-рендер знает лишь каталог рендеров
+# (`render_backend/`, фабрика кандидата). wgpu-типы и материализаторы остаются в тестах,
+# которые рисуют напрямую через `WgpuVideoRenderer` / `SubtitleOverlayRenderer`.
+APP_EGUI_CONCRETE_RENDERER_SOURCE_ROOT = Path("crates/app-egui/src")
+APP_EGUI_RENDERER_CATALOG_ROOTS = (Path("crates/app-egui/src/render_backend"),)
+APP_EGUI_GPU_TEST_ROOTS = (
+    Path("crates/app-egui/src/state/subtitles/tests"),
+    Path("crates/app-egui/src/web_media_open/content_probe_tests"),
+    Path("crates/app-egui/src/media_open/web/tests"),
+)
+APP_EGUI_CONCRETE_RENDERER_PATTERN = re.compile(r"\brender_wgpu_shell\b")
+APP_EGUI_GPU_API_PATTERN = re.compile(r"\b(?:render_wgpu_video|wgpu)::")
+
+
+def find_app_egui_concrete_renderer_violations(repo_root: Path) -> list[SourcePolicyViolation]:
+    """Не даёт production app-egui снова увидеть конкретный рендер или GPU-API.
+
+    `render_wgpu_shell` разрешён только каталогу рендеров и GPU-тестам; `wgpu::` и
+    `render_wgpu_video::` — только GPU-тестам (в production они и не собрались бы: это
+    dev-dependencies). Строки-комментарии не проверяются.
+    """
+
+    violations: list[SourcePolicyViolation] = []
+    source_root = repo_root / APP_EGUI_CONCRETE_RENDERER_SOURCE_ROOT
+    if not source_root.exists():
+        return violations
+    for source_path in sorted(source_root.rglob("*.rs")):
+        relative_path = source_path.relative_to(repo_root)
+        if path_is_under_any(relative_path, APP_EGUI_GPU_TEST_ROOTS):
+            continue
+        concrete_renderer_allowed = path_is_under_any(
+            relative_path, APP_EGUI_RENDERER_CATALOG_ROOTS
+        )
+        for line_number, line in enumerate(read_text_lossy(source_path).splitlines(), start=1):
+            stripped_line = line.strip()
+            if stripped_line.startswith("//"):
+                continue
+            if APP_EGUI_GPU_API_PATTERN.search(line):
+                violations.append(
+                    SourcePolicyViolation(
+                        path=relative_path,
+                        line_number=line_number,
+                        rule="app-egui production code must not use wgpu or render-wgpu-video types",
+                        matched_text=stripped_line,
+                    )
+                )
+            elif not concrete_renderer_allowed and APP_EGUI_CONCRETE_RENDERER_PATTERN.search(line):
+                violations.append(
+                    SourcePolicyViolation(
+                        path=relative_path,
+                        line_number=line_number,
+                        rule="only the app-egui renderer catalog (render_backend) may name render_wgpu_shell",
+                        matched_text=stripped_line,
                     )
                 )
     return violations

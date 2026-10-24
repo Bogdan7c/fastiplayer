@@ -198,6 +198,7 @@ dependencies = [
  "png",
  "pollster",
  "render-core",
+ "render-shell-api",
  "render-wgpu-shell",
  "render-wgpu-video",
  "rfd",
@@ -4187,6 +4188,7 @@ name = "render-wgpu-shell"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "codec-core",
  "egui",
  "egui-wgpu",
  "pollster",
@@ -4198,6 +4200,10 @@ dependencies = [
  "subtitle-pgs",
  "subtitle-raster",
  "tracing",
+ "video-backend-api",
+ "video-core",
+ "video-frame-contract",
+ "video-present-core",
  "wgpu",
  "winit 0.30.13 (registry+https://github.com/rust-lang/crates.io-index)",
 ]

@@ -8,7 +8,8 @@ impl AppShell {
     /// Пока окна/renderer-а нет (suspend), результат остаётся у владельца и будет применён
     /// при следующем drain после resume: терять его нельзя, а применять без UI нечему.
     pub(super) fn drain_dropped_collection_walk(&mut self) -> bool {
-        let (Some(app_state), Some(renderer)) = (self.app_state.as_mut(), self.renderer.as_ref())
+        let (Some(app_state), Some(renderer)) =
+            (self.app_state.as_mut(), self.renderer.as_deref_mut())
         else {
             return false;
         };

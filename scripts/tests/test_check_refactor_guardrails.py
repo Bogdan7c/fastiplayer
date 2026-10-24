@@ -105,6 +105,72 @@ class TempoDependencyGuardrailTests(unittest.TestCase):
         )
 
 
+class AppEguiConcreteRendererGuardrailTests(unittest.TestCase):
+    """Production app-egui видит рендер только через контракт (сессия 02 gles2-renderer)."""
+
+    def test_catalog_may_name_the_concrete_wgpu_renderer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = TemporaryPolicyRepository(Path(temporary_directory))
+            repository.write(
+                "crates/app-egui/src/render_backend/wgpu_vulkan.rs",
+                "use render_wgpu_shell::Renderer;\n",
+            )
+            repository.write(
+                "crates/app-egui/src/frame_prepare.rs",
+                "// Раньше здесь был render_wgpu_shell::Renderer.\nuse render_shell_api::RenderShell;\n",
+            )
+            self.assertEqual(
+                [],
+                GUARDRAIL.find_app_egui_concrete_renderer_violations(repository.root),
+            )
+
+    def test_production_code_outside_catalog_cannot_name_concrete_renderer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = TemporaryPolicyRepository(Path(temporary_directory))
+            repository.write(
+                "crates/app-egui/src/state.rs",
+                "fn draw(renderer: &mut render_wgpu_shell::Renderer) {}\n",
+            )
+            violations = GUARDRAIL.find_app_egui_concrete_renderer_violations(repository.root)
+            self.assertEqual(1, len(violations))
+            self.assertIn("render_backend", violations[0].rule)
+
+    def test_gpu_types_are_rejected_even_in_the_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = TemporaryPolicyRepository(Path(temporary_directory))
+            repository.write(
+                "crates/app-egui/src/render_backend/mod.rs",
+                "fn queue(queue: &wgpu::Queue) {}\n",
+            )
+            repository.write(
+                "crates/app-egui/src/state/video_backend.rs",
+                "use render_wgpu_video::DmaBufWgpuFrameMaterializer;\nfn x(_: render_wgpu_video::DmaBufImportStats) {}\n",
+            )
+            violations = GUARDRAIL.find_app_egui_concrete_renderer_violations(repository.root)
+            # Каждая строка с GPU-типом — отдельное нарушение (в video_backend.rs их две).
+            self.assertEqual(
+                [
+                    (Path("crates/app-egui/src/render_backend/mod.rs"), 1),
+                    (Path("crates/app-egui/src/state/video_backend.rs"), 1),
+                    (Path("crates/app-egui/src/state/video_backend.rs"), 2),
+                ],
+                [(violation.path, violation.line_number) for violation in violations],
+            )
+            self.assertTrue(all("wgpu" in violation.rule for violation in violations))
+
+    def test_gpu_tests_may_draw_through_wgpu_directly(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = TemporaryPolicyRepository(Path(temporary_directory))
+            repository.write(
+                "crates/app-egui/src/state/subtitles/tests/gpu_chain.rs",
+                "use render_wgpu_shell::SubtitleOverlayRenderer;\nconst F: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;\n",
+            )
+            self.assertEqual(
+                [],
+                GUARDRAIL.find_app_egui_concrete_renderer_violations(repository.root),
+            )
+
+
 class ArtworkBoundaryGuardrailTests(unittest.TestCase):
     """Закрепляет визуальную boundary между app-egui и ui-artwork-egui."""
 
@@ -868,6 +934,43 @@ class DependencyGraphPolicyTests(unittest.TestCase):
                     ),
                     f"{owner} -> {forbidden}",
                 )
+
+    def test_app_egui_keeps_gpu_apis_out_of_normal_dependencies(self) -> None:
+        """app-egui держит `Box<dyn RenderShell>`: GPU-API только в dev-dependencies тестов."""
+
+        packages = complete_workspace_packages()
+        packages["app-egui"] = package_with_dependencies(
+            "app-egui",
+            (
+                ("render-shell-api", None),
+                ("render-wgpu-shell", None),
+                ("wgpu", "dev"),
+                ("render-wgpu-video", "dev"),
+            ),
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(packages, frozenset())
+        self.assertFalse(
+            any(
+                violation.owner == "app-egui"
+                and violation.dependency in GUARDRAIL.APP_EGUI_FORBIDDEN_RENDERER_DEPENDENCIES
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        for forbidden in ("wgpu", "render-wgpu-video", "ash", "glow", "khronos-egl"):
+            packages["app-egui"] = package_with_dependencies(
+                "app-egui", (("render-shell-api", None), (forbidden, None))
+            )
+            failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+                packages, frozenset()
+            )
+            self.assertTrue(
+                any(
+                    violation.owner == "app-egui" and violation.dependency == forbidden
+                    for violation in failing_result.dependency_violations
+                ),
+                forbidden,
+            )
 
     def test_player_and_backends_reject_render_shell_contract(self) -> None:
         """Плеер и декодеры не знают о рендере: контракт рендера им запрещён."""

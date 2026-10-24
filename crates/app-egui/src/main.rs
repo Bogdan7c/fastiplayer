@@ -30,6 +30,7 @@ mod playlist_runtime;
 mod playlist_skip_message;
 mod process_shutdown;
 mod redraw_pacing;
+mod render_backend;
 mod render_settings;
 mod renderer_recreation;
 mod settings_rebuild_message;

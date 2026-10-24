@@ -16,7 +16,7 @@
 //! (`resolve_escape_target`) → исполнение теми же путями, что и кнопки
 //! «Отмена» (`dismiss_topmost`).
 
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 use tracing::debug;
 use winit::window::Window;
 
@@ -153,7 +153,7 @@ pub(super) fn dismiss_topmost(
     window: &Window,
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
 ) -> EscapeTarget {
     let context = EscapeContext::collect(
         &app_state.egui_ctx,

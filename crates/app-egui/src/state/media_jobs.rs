@@ -192,11 +192,12 @@ impl AppState {
     pub fn poll_local_file_open_job(
         &mut self,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) -> bool {
         // Установка опрашивается первой: её terminal освобождает общий слот для того,
         // что могло ждать за ней (например, Next, отменивший открытие).
-        let install_changed = self.poll_local_open_install(playlist_runtime);
+        let install_changed =
+            self.poll_local_open_install(playlist_runtime, renderer.video_frames());
         let job_changed = self.drain_local_file_open_job(playlist_runtime, renderer);
         // После опроса: если открытие закончилось без установки, файлы субтитров из того же
         // броска не должны дожидаться чужого видео.
@@ -208,7 +209,7 @@ impl AppState {
     fn drain_local_file_open_job(
         &mut self,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) -> bool {
         let Some(job) = self.local_file_open_job.as_mut() else {
             self.local_file_open_wake_port
@@ -235,7 +236,7 @@ impl AppState {
         &mut self,
         result: LocalFileOpenResult,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         match result {
             LocalFileOpenResult::Cancelled => {
@@ -268,7 +269,7 @@ impl AppState {
         &mut self,
         path: std::path::PathBuf,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         if let crate::playlist_runtime::LocalFileSelectionDisposition::PlayCommittedItem {
             item_id,
@@ -303,7 +304,7 @@ impl AppState {
             crate::playlist_runtime::QueueReplacementAdmissionError,
         >,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         match admission {
             Ok(crate::playlist_runtime::InAppQueueReplacementAdmission::StartNow(admitted)) => {
@@ -325,7 +326,7 @@ impl AppState {
         &mut self,
         admitted: crate::playlist_runtime::AdmittedQueueReplacementIntent,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         let local_open = match admitted {
             crate::playlist_runtime::AdmittedQueueReplacementIntent::LocalFile(local_open) => {
@@ -389,7 +390,7 @@ impl AppState {
         &mut self,
         action: crate::playlist_runtime::PlaylistConfirmationAction,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         let outcome = playlist_runtime.respond_to_playlist_confirmation(action);
         playlist_runtime.finish_url_draft_after_confirmation(&outcome);

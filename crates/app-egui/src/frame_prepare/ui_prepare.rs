@@ -9,7 +9,7 @@
 use std::time::{Duration, Instant};
 
 use render_core::RenderViewport;
-use render_wgpu_shell::EguiFrameContent;
+use render_shell_api::EguiFrameContent;
 use winit::window::Window;
 
 use super::geometry::{video_exclusion_from_ui_rect, video_viewport_from_ui_rect};
@@ -21,10 +21,10 @@ use crate::ui::window_chrome::WindowChromeAction;
 pub(super) struct PreparedUiFrame {
     /// Свежие примитивы egui или просьба повторить удержанные shell-ом.
     pub(super) egui_content: EguiFrameContent,
-    pub(super) screen: render_wgpu_shell::RenderScreenDescriptor,
+    pub(super) screen: render_shell_api::RenderScreenDescriptor,
     pub(super) video_viewport: RenderViewport,
     pub(super) video_exclusion_rects: Vec<RenderViewport>,
-    pub(super) window_corner_mask: render_wgpu_shell::WindowCornerMask,
+    pub(super) window_corner_mask: render_shell_api::WindowCornerMask,
     pub(super) settings_actions: Vec<crate::settings_ui::SettingsUiAction>,
     pub(super) sidebar_width_change: Option<crate::ui::sidebar::SidebarWidthChange>,
     pub(super) transport_actions: Vec<crate::ui::player_controls::TransportControlAction>,
@@ -203,7 +203,7 @@ pub(super) fn prepare_ui_frame(
             paint_jobs,
             textures_delta: egui_full_output.textures_delta,
         },
-        screen: render_wgpu_shell::RenderScreenDescriptor {
+        screen: render_shell_api::RenderScreenDescriptor {
             size_in_pixels: screen_size_in_pixels,
             pixels_per_point,
         },

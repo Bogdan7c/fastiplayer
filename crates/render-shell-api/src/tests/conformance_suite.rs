@@ -55,6 +55,10 @@ fn each_contract_defect_is_caught_by_its_own_check() {
             FakeDefect::KeepsPendingAfterDeviceLost,
             vec![ConformanceCheck::DeviceLostReleasesExactlyOnce],
         ),
+        (
+            FakeDefect::PreparerStampsForeignOwner,
+            vec![ConformanceCheck::PreparerPreparesOnAnotherThread],
+        ),
     ];
 
     for (defect, expected_checks) in cases {

@@ -18,8 +18,16 @@ render-core.workspace = true
 # Нейтральный контракт «приложение ↔ рендер»: словарь кадра реэкспортируется отсюда.
 render-shell-api.workspace = true
 subtitle-raster.workspace = true
+# Склад кадров (сессия 02 `user/gles2-renderer/`): аренда кадра, provider декодера, метаданные.
+video-backend-api.workspace = true
+video-core.workspace = true
+video-present-core.workspace = true
 
 [dev-dependencies]
+# Conformance-набор контракта гоняется на настоящем wgpu-рендере без окна.
+render-shell-api = { workspace = true, features = ["conformance"] }
+video-frame-contract.workspace = true
+codec-core.workspace = true
 subtitle-core.workspace = true
 subtitle-formats.workspace = true
 # Кодировщик RLE для сборки растровых реплик (PGS) в GPU-тестах; dev-only, как в subtitle-raster.

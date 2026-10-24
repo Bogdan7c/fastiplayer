@@ -9,7 +9,7 @@
 mod startup_window;
 
 use desktop_integration::WindowActivationToken;
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 use winit::window::Window;
 
 use super::AppShell;
@@ -38,7 +38,7 @@ impl AppShell {
         }
         let (Some(window), Some(renderer), Some(app_state)) = (
             self.window.as_deref(),
-            self.renderer.as_ref(),
+            self.renderer.as_deref_mut(),
             self.app_state.as_mut(),
         ) else {
             return false;
@@ -64,7 +64,7 @@ struct ShellForwardedRequestTarget<'shell> {
     window: &'shell Window,
     app_state: &'shell mut AppState,
     playlist_runtime: &'shell mut PlaylistRuntime,
-    renderer: &'shell Renderer,
+    renderer: &'shell mut dyn RenderShell,
 }
 
 impl ForwardedRequestTarget for ShellForwardedRequestTarget<'_> {

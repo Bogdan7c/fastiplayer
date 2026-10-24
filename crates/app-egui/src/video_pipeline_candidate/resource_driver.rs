@@ -1,12 +1,13 @@
 //! Concrete/fake-able preparation driver renderer-bound candidate pair-а.
+//!
+//! С сессии 02 плана `user/gles2-renderer/` production-драйвер не знает GPU-API: он
+//! запускает декодер и отдаёт его подготовщику импорта рендера
+//! (`render_shell_api::VideoImportPreparer`), полученному в потоке окна.
 
 use std::fmt;
-use std::sync::Arc;
 
-use render_wgpu_video::{
-    DmaBufImportCacheCapacity, DmaBufWgpuFrameMaterializer, HostPlanarWgpuFrameMaterializer,
-    WgpuFrameTextureViewMaterializer, WgpuSubmissionQueueBinding,
-    wrap_video_backend_for_wgpu_submission,
+use render_shell_api::{
+    PendingVideoImport, RenderShell, RendererFamily, VideoImportPrepareError, VideoImportPreparer,
 };
 use video_backend_api::{DetachedVideoBackend, DetachedVideoBackendResourceError};
 use video_ffmpeg::FfmpegSoftwareVideoBackendFactory;
@@ -24,7 +25,7 @@ pub(crate) enum CandidateVideoMaterializerKind {
     HostPlanarUpload,
 }
 
-/// Exact app composition plan без concrete WGPU/decoder owner types.
+/// Exact app composition plan без concrete GPU/decoder owner types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CandidateVideoPipelineDescriptor {
     /// Backend class защищает active/candidate pairing diagnostics.
@@ -40,11 +41,11 @@ impl CandidateVideoPipelineDescriptor {
     pub(crate) const fn from_plan(plan: VideoPipelinePlan) -> Self {
         // Match остаётся exhaustive при добавлении нового selectable plan-а.
         match plan {
-            VideoPipelinePlan::VaapiDmaBufWgpu { .. } => Self {
+            VideoPipelinePlan::VaapiDmaBuf { .. } => Self {
                 backend_kind: VideoBackendKind::HardwareZeroCopy,
                 materializer_kind: CandidateVideoMaterializerKind::DmaBufZeroCopy,
             },
-            VideoPipelinePlan::FfmpegHostUploadWgpu { .. } => Self {
+            VideoPipelinePlan::FfmpegHostUpload { .. } => Self {
                 backend_kind: VideoBackendKind::FfmpegSoftware,
                 materializer_kind: CandidateVideoMaterializerKind::HostPlanarUpload,
             },
@@ -75,6 +76,9 @@ pub(crate) enum CandidateVideoPipelinePreparationStage {
 
     /// Concrete decoder factory не смогла запустить detached backend.
     BackendStartup,
+
+    /// Рендер не смог подготовить импорт кадров запущенного decoder-а.
+    RendererImport,
 }
 
 /// Typed preparation failure до передачи decoder half-а player owner-у.
@@ -126,150 +130,128 @@ impl fmt::Display for CandidateVideoPipelinePreparationError {
 impl std::error::Error for CandidateVideoPipelinePreparationError {}
 
 /// Обе согласованные половины candidate resource set-а до split handoff.
-pub(crate) struct PreparedCandidateVideoPipelineResources<Materializer, SubmissionBinding> {
+pub(crate) struct PreparedCandidateVideoPipelineResources<RendererImport> {
     /// Detached player half нельзя установить до successful stream configuration.
     pub(super) detached_backend: DetachedVideoBackend,
 
-    /// Renderer-bound app half materialize-ит resources того же provider-а.
-    pub(super) materializer: Materializer,
-
-    /// Submission binding сохраняет old/new release callback ordering.
-    pub(super) submission_binding: SubmissionBinding,
+    /// Renderer-bound app half: подготовленный импорт того же provider-а декодера.
+    pub(super) renderer_import: RendererImport,
 }
 
 /// Fake-able owner boundary создания конкретной candidate pair.
 pub(crate) trait CandidateVideoPipelineResourceDriver {
-    /// Materializer может быть production WGPU trait object-ом или focused fake-ом.
-    type Materializer;
+    /// Импорт рендера: production `PendingVideoImport` или focused fake.
+    type RendererImport;
 
-    /// Submission binding может быть production queue binding-ом или focused fake-ом.
-    type SubmissionBinding;
+    /// Семейство рендера, под которое готовится импорт (часть диагностической метки плана).
+    fn renderer_family(&self) -> RendererFamily;
 
     /// Создаёт один bounded pair, не получая ссылок на active AppState resources.
     fn prepare_candidate_resources(
         &mut self,
         plan: VideoPipelinePlan,
     ) -> Result<
-        PreparedCandidateVideoPipelineResources<Self::Materializer, Self::SubmissionBinding>,
+        PreparedCandidateVideoPipelineResources<Self::RendererImport>,
         CandidateVideoPipelinePreparationError,
     >;
 }
 
-/// Production driver сохраняет concrete backend/render knowledge в composition root-е.
-pub(crate) struct WgpuCandidateVideoPipelineResourceDriver {
-    /// WGPU instance принадлежит exact renderer generation.
-    instance: wgpu::Instance,
+/// Production driver: concrete decoder factory + подготовщик импорта активного рендера.
+pub(crate) struct RendererCandidateVideoPipelineResourceDriver {
+    /// Подготовщик импорта exact renderer instance-а (импорт чужого рендера не установится).
+    preparer: Box<dyn VideoImportPreparer>,
 
-    /// WGPU adapter принадлежит тому же renderer generation.
-    adapter: wgpu::Adapter,
-
-    /// WGPU device используется только во время fallible preparation.
-    device: wgpu::Device,
-
-    /// WGPU queue связывает submitted release callbacks exact renderer-а.
-    queue: wgpu::Queue,
+    /// Семейство рендера для диагностической метки плана.
+    renderer_family: RendererFamily,
 }
 
-impl WgpuCandidateVideoPipelineResourceDriver {
-    /// Создаёт owned ref-counted driver handles exact renderer generation-а.
+impl RendererCandidateVideoPipelineResourceDriver {
+    /// Берёт подготовщик импорта у активного рендера (вызывается в потоке окна).
     #[must_use]
-    pub(crate) fn new(
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) -> Self {
+    pub(crate) fn new(renderer: &mut dyn RenderShell) -> Self {
         Self {
-            instance: instance.clone(),
-            adapter: adapter.clone(),
-            device: device.clone(),
-            queue: queue.clone(),
+            preparer: renderer.video_import_preparer(),
+            renderer_family: renderer.family(),
         }
     }
 }
 
-impl CandidateVideoPipelineResourceDriver for WgpuCandidateVideoPipelineResourceDriver {
-    type Materializer = Arc<dyn WgpuFrameTextureViewMaterializer>;
-    type SubmissionBinding = WgpuSubmissionQueueBinding;
+impl CandidateVideoPipelineResourceDriver for RendererCandidateVideoPipelineResourceDriver {
+    type RendererImport = PendingVideoImport;
+
+    fn renderer_family(&self) -> RendererFamily {
+        self.renderer_family
+    }
 
     fn prepare_candidate_resources(
         &mut self,
         plan: VideoPipelinePlan,
     ) -> Result<
-        PreparedCandidateVideoPipelineResources<Self::Materializer, Self::SubmissionBinding>,
+        PreparedCandidateVideoPipelineResources<Self::RendererImport>,
         CandidateVideoPipelinePreparationError,
     > {
-        // Exhaustive match гарантирует matching decoder/materializer path.
-        match plan {
-            VideoPipelinePlan::VaapiDmaBufWgpu {
-                decoder_thread_config,
-            } => {
-                // Кэш Vulkan-импортов рендерера повторяет ёмкость zero-copy пула декодера.
-                let import_cache_capacity = DmaBufImportCacheCapacity::matching_surface_pool(
-                    decoder_thread_config.zero_copy_surface_pool_slots,
-                );
-                // VA-API factory создаёт отдельный decoder thread/resource owner.
-                let started_backend =
-                    VaapiVideoBackendFactory::new_with_decoder_config(decoder_thread_config)
-                        .start_for_composition()
-                        .map_err(|error| {
-                            CandidateVideoPipelinePreparationError::at_stage(
-                                CandidateVideoPipelinePreparationStage::BackendStartup,
-                                error.to_string(),
-                            )
-                        })?;
-                // Wrapper связывает releases candidate provider-а только с candidate queue.
-                let (wrapped_backend, resource_provider, submission_binding) =
-                    wrap_video_backend_for_wgpu_submission(started_backend, &self.queue);
-                // DMA-BUF materializer получает provider именно этого wrapped backend-а.
-                let materializer: Arc<dyn WgpuFrameTextureViewMaterializer> =
-                    Arc::new(DmaBufWgpuFrameMaterializer::new(
-                        &self.instance,
-                        &self.adapter,
-                        &self.device,
-                        &self.queue,
-                        resource_provider,
-                        import_cache_capacity,
-                    ));
-
-                // Split ещё не выполнен: все ресурсы освобождаются вместе при early error/drop.
-                Ok(PreparedCandidateVideoPipelineResources {
-                    detached_backend: DetachedVideoBackend::from_started(wrapped_backend),
-                    materializer,
-                    submission_binding,
-                })
-            }
-            VideoPipelinePlan::FfmpegHostUploadWgpu {
-                decoder_thread_config,
-            } => {
-                // FFmpeg factory создаёт отдельный software decoder thread/resource owner.
-                let started_backend = FfmpegSoftwareVideoBackendFactory::new_with_decoder_config(
-                    decoder_thread_config,
+        let started_backend = start_decoder_backend(plan).map_err(|message| {
+            CandidateVideoPipelinePreparationError::at_stage(
+                CandidateVideoPipelinePreparationStage::BackendStartup,
+                message,
+            )
+        })?;
+        // Рендер оборачивает decoder: releases candidate provider-а ждут его очередь GPU.
+        let prepared = self
+            .preparer
+            .prepare_video_import(started_backend, plan.import_plan())
+            .map_err(|error| {
+                CandidateVideoPipelinePreparationError::at_stage(
+                    CandidateVideoPipelinePreparationStage::RendererImport,
+                    describe_import_prepare_error(&error),
                 )
-                .start_for_composition()
-                .map_err(|error| {
-                    CandidateVideoPipelinePreparationError::at_stage(
-                        CandidateVideoPipelinePreparationStage::BackendStartup,
-                        error.to_string(),
-                    )
-                })?;
-                // Тот же submission wrapper удерживает HostPlanar releases до queue callback.
-                let (wrapped_backend, resource_provider, submission_binding) =
-                    wrap_video_backend_for_wgpu_submission(started_backend, &self.queue);
-                // HostPlanar materializer использует exact provider и queue этого pair-а.
-                let materializer = Arc::new(HostPlanarWgpuFrameMaterializer::new(
-                    &self.device,
-                    &self.queue,
-                    resource_provider,
-                )) as Arc<dyn WgpuFrameTextureViewMaterializer>;
+            })?;
 
-                // Candidate остаётся detached и не изменяет active software/hardware path.
-                Ok(PreparedCandidateVideoPipelineResources {
-                    detached_backend: DetachedVideoBackend::from_started(wrapped_backend),
-                    materializer,
-                    submission_binding,
-                })
-            }
+        // Split ещё не выполнен: все ресурсы освобождаются вместе при early error/drop.
+        Ok(PreparedCandidateVideoPipelineResources {
+            detached_backend: DetachedVideoBackend::from_started(prepared.backend),
+            renderer_import: prepared.pending,
+        })
+    }
+}
+
+/// Запускает decoder backend маршрута декода плана (VA-API или FFmpeg).
+///
+/// Общий для кандидатов strong open и прямого пути `AppState::install_video_pipeline_plan`;
+/// ошибка — текст factory без потери категории (её задаёт вызывающий).
+pub(crate) fn start_decoder_backend(
+    plan: VideoPipelinePlan,
+) -> Result<video_backend_api::StartedVideoBackend, String> {
+    let decoder_thread_config = plan.decoder_thread_config();
+    // Exhaustive match гарантирует, что каждый маршрут запускает свой decoder.
+    match plan {
+        // VA-API factory создаёт отдельный decoder thread/resource owner.
+        VideoPipelinePlan::VaapiDmaBuf { .. } => {
+            VaapiVideoBackendFactory::new_with_decoder_config(decoder_thread_config)
+                .start_for_composition()
+                .map_err(|error| error.to_string())
+        }
+        // FFmpeg factory создаёт отдельный software decoder thread/resource owner.
+        VideoPipelinePlan::FfmpegHostUpload { .. } => {
+            FfmpegSoftwareVideoBackendFactory::new_with_decoder_config(decoder_thread_config)
+                .start_for_composition()
+                .map_err(|error| error.to_string())
+        }
+    }
+}
+
+/// Текст отказа подготовки импорта для диагностики кандидата.
+fn describe_import_prepare_error(error: &VideoImportPrepareError) -> String {
+    match error {
+        VideoImportPrepareError::PathUnsupported { path } => {
+            format!("renderer does not support the {path:?} import path")
+        }
+        VideoImportPrepareError::HandoffFromAnotherFamily { handoff_family } => format!(
+            "renderer import handoff came from family '{}'",
+            handoff_family.stable_id()
+        ),
+        VideoImportPrepareError::ResourceCreationFailed { message } => {
+            format!("renderer import resources were not created: {message}")
         }
     }
 }

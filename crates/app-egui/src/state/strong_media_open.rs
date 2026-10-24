@@ -12,14 +12,14 @@ pub(super) use pending::{
 };
 
 use std::num::NonZeroU64;
-use std::sync::Arc;
 
 use player_core::{
     MediaInstallCancellationCause, MediaInstallCompletion, MediaInstallRequestId,
     MediaInstallVideoBackendConstraint, PlaybackIntent, PlaybackIntentRevision, PreparedMedia,
 };
-use render_wgpu_shell::Renderer;
-use render_wgpu_video::WgpuFrameTextureViewMaterializer;
+use render_shell_api::{
+    PendingVideoImport, RenderShell, VideoFrameImport, VideoImportInstallError,
+};
 
 use super::AppState;
 use crate::media_open::{
@@ -31,11 +31,9 @@ use crate::media_open::{
 };
 use crate::playlist_runtime::{PlaylistMediaOpenGateError, PlaylistRuntime};
 use crate::video_pipeline_candidate::{
-    ActiveVideoPipelinePointers, AppVideoPipelineCandidateOwner,
-    PostInstalledVideoPipelineInvariantViolation, WgpuCandidateVideoPipelineResourceDriver,
-    player_selected_video_candidate_boundary,
+    AppVideoPipelineCandidateOwner, PostInstalledVideoPipelineInvariantViolation,
+    RendererCandidateVideoPipelineResourceDriver, player_selected_video_candidate_boundary,
 };
-use render_wgpu_video::WgpuSubmissionQueueBinding;
 
 /// Один policy-neutral client key сериализует временные single-media callers.
 const SINGLE_MEDIA_CLIENT_KEY: MediaOpenClientKey = MediaOpenClientKey::from_non_zero(
@@ -292,6 +290,10 @@ pub(crate) enum StrongMediaOpenError {
     MissingActiveVideoPointers,
     #[error("post-Installed app video pointer commit violated correlation: {0:?}")]
     PostInstalledVideo(PostInstalledVideoPipelineInvariantViolation),
+    /// Рендер не принял импорт кадров кандидата после player Installed (нарушение инварианта:
+    /// импорт подготовлен подготовщиком этого же рендера того же поколения).
+    #[error("renderer rejected the committed video import of the installed candidate: {0:?}")]
+    RendererRejectedVideoImport(VideoImportInstallError),
     #[error("successful strong install could not be registered in app lineage owner: {0:?}")]
     LineageRegistration(crate::playlist_runtime::ResumeCheckpointError),
     #[error("post-Installed failure was compensated after exact release: {failure}")]
@@ -352,6 +354,7 @@ impl StrongMediaOpenError {
                 | Self::PositionRestore(_)
                 | Self::MissingActiveVideoPointers
                 | Self::PostInstalledVideo(_)
+                | Self::RendererRejectedVideoImport(_)
                 | Self::PostInstalledCompensated { .. }
                 | Self::PostInstalledCompensationFailed { .. }
         )
@@ -392,17 +395,15 @@ impl From<PostInstalledVideoPipelineInvariantViolation> for StrongMediaOpenError
     }
 }
 
-pub(super) type ProductionCandidateOwner = AppVideoPipelineCandidateOwner<
-    Arc<dyn WgpuFrameTextureViewMaterializer>,
-    WgpuSubmissionQueueBinding,
->;
+/// Production-слот кандидата: renderer half — подготовленный импорт активного рендера.
+pub(super) type ProductionCandidateOwner = AppVideoPipelineCandidateOwner<PendingVideoImport>;
 
 impl AppState {
     /// Проводит уже prepared media через exact Ready/authorize/barrier/Installed ordering.
     pub(crate) fn install_prepared_media_strong(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
         prepared_input: PreparedSingleMediaOpen,
         intent: PlaybackIntent,
         video_backend_constraint: MediaInstallVideoBackendConstraint,
@@ -428,12 +429,7 @@ impl AppState {
             }
         };
 
-        let driver = WgpuCandidateVideoPipelineResourceDriver::new(
-            renderer.instance(),
-            renderer.adapter(),
-            renderer.device(),
-            renderer.queue(),
-        );
+        let driver = RendererCandidateVideoPipelineResourceDriver::new(renderer);
         let (candidate_owner, video_resource_port) = player_selected_video_candidate_boundary(
             self.renderer_generation,
             self.player_worker.decoder_thread_config(),
@@ -505,6 +501,7 @@ impl AppState {
 
         self.drive_media_open_to_terminal(
             playlist_runtime,
+            renderer.video_frames(),
             request_id,
             candidate_owner,
             source,
@@ -516,6 +513,7 @@ impl AppState {
     fn drive_media_open_to_terminal(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
+        video_frames: &mut dyn VideoFrameImport,
         request_id: MediaOpenRequestId,
         candidate_owner: ProductionCandidateOwner,
         source: ActiveMediaSource,
@@ -567,6 +565,7 @@ impl AppState {
                         .ok_or(StrongMediaOpenError::MissingTerminal)?;
                     let installed = Self::installed_media_from_terminal(source, terminal)?;
                     if let Err(failure) = self.commit_installed_video_candidate(
+                        video_frames,
                         &candidate_owner,
                         installed.player_request_id,
                     ) {
@@ -752,39 +751,33 @@ impl AppState {
         })
     }
 
-    /// Переключает renderer pointers после player Installed, сохраняя old aggregate при mismatch.
+    /// После player Installed ставит импорт кадров кандидата в активный рендер.
+    ///
+    /// Прежний инвариант сохранён: кандидат заменяет уже установленный video pipeline. При
+    /// mismatch request/generation активный импорт рендера и класс backend-а не меняются.
     pub(super) fn commit_installed_video_candidate(
         &mut self,
+        video_frames: &mut dyn VideoFrameImport,
         candidate_owner: &ProductionCandidateOwner,
         player_request_id: MediaInstallRequestId,
     ) -> Result<(), StrongMediaOpenError> {
         if !candidate_owner.has_candidate() {
             return Ok(());
         }
-        let Some(backend_kind) = self.current_video_backend_kind.take() else {
+        if self.current_video_backend_kind.is_none()
+            || video_frames.active_video_import_path().is_none()
+        {
             return Err(StrongMediaOpenError::MissingActiveVideoPointers);
-        };
-        let Some(materializer) = self.wgpu_frame_materializer.take() else {
-            self.current_video_backend_kind = Some(backend_kind);
-            return Err(StrongMediaOpenError::MissingActiveVideoPointers);
-        };
-        let Some(submission_binding) = self.wgpu_submission_queue_binding.take() else {
-            self.current_video_backend_kind = Some(backend_kind);
-            self.wgpu_frame_materializer = Some(materializer);
-            return Err(StrongMediaOpenError::MissingActiveVideoPointers);
-        };
-        let mut active =
-            ActiveVideoPipelinePointers::new(backend_kind, materializer, submission_binding);
-        let commit_result = candidate_owner.commit_installed(
-            player_request_id,
-            self.renderer_generation,
-            &mut active,
-        );
-        let (backend_kind, materializer, submission_binding) = active.into_parts();
+        }
+        let committed = candidate_owner
+            .commit_installed(player_request_id, self.renderer_generation)
+            .map_err(StrongMediaOpenError::from)?;
+        let (backend_kind, renderer_import) = committed.into_parts();
+        video_frames
+            .install_video_import(renderer_import)
+            .map_err(StrongMediaOpenError::RendererRejectedVideoImport)?;
         self.current_video_backend_kind = Some(backend_kind);
-        self.wgpu_frame_materializer = Some(materializer);
-        self.wgpu_submission_queue_binding = Some(submission_binding);
-        commit_result.map_err(StrongMediaOpenError::from)
+        Ok(())
     }
 
     /// Controlled recreation invalidates every candidate tied to the previous renderer lifetime.

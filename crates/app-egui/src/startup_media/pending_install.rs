@@ -136,11 +136,12 @@ impl StartupMediaController {
         &mut self,
         app_state: &mut crate::state::AppState,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+        video_frames: &mut dyn render_shell_api::VideoFrameImport,
     ) -> bool {
         let Some(pending_context) = self.orchestration.pending_install.take() else {
             return false;
         };
-        match app_state.poll_prepared_media_strong(playlist_runtime) {
+        match app_state.poll_prepared_media_strong(playlist_runtime, video_frames) {
             StrongMediaOpenPoll::Pending => {
                 self.orchestration.pending_install = Some(pending_context);
                 false

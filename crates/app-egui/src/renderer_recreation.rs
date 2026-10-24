@@ -1,26 +1,27 @@
 //! Controlled transactional recreation renderer/device/surface lifecycle-а.
 //!
 //! Модуль живёт в app composition layer-е: только здесь одновременно доступны окно,
-//! concrete renderer и intent-boundary `AppState`. Settings/UI не получают WGPU handles.
+//! слот рендера и intent-boundary `AppState`. Settings/UI не получают GPU handles.
+//!
+//! С сессии 02 плана `user/gles2-renderer/` рендер — `Box<dyn RenderShell>`: новый экземпляр
+//! того же семейства создаёт каталог (`render_backend::create_renderer`), импорт кадров
+//! переносится контрактом (`export_video_import_for_recreation` → `prepare_recreated_video_import`
+//! → `install_video_import` после ожидания старого GPU).
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use fastiplayer_config::{RenderProfile, VulkanPresentMode};
+use fastiplayer_config::RenderProfile;
 use fastiplayer_settings::{
     AppRouteApplyResult, RenderCommittedSettingsUpdate, RendererRecreationApplyError,
     RendererRecreationApplyErrorKind, RendererRecreationRollbackError,
     RendererRecreationRollbackErrorKind, SettingStateOwner, SettingsApplyFailure,
     SettingsBoundaryActivity,
 };
-use render_core::RenderLiveSettingsAdapter;
-use render_wgpu_shell::{
-    Renderer, RendererGpuDrainError, ShellPresentMode, SurfaceAlphaPreference,
-    SurfacePresentSettings,
-};
-use render_wgpu_video::WgpuFrameTextureViewMaterializer;
+use render_shell_api::{PendingVideoImport, RenderShell, RenderSurfaceSize, RendererGpuDrainError};
 use winit::window::Window;
 
+use crate::render_backend::{RendererCreateRequest, RendererInitialColor, create_renderer};
 use crate::state::AppState;
 use crate::system_capabilities::probe_system_capabilities;
 
@@ -53,9 +54,14 @@ impl RendererLifecycleCoordinator {
     }
 
     /// Выполняет обычный resize под тем же lifecycle boundary.
-    pub(crate) fn resize_renderer(&mut self, renderer: &mut Renderer, width: u32, height: u32) {
+    pub(crate) fn resize_renderer(
+        &mut self,
+        renderer: &mut dyn RenderShell,
+        width: u32,
+        height: u32,
+    ) {
         self.activity = Some(SettingsBoundaryActivity::RendererLifecycle);
-        renderer.resize(width, height);
+        renderer.resize(RenderSurfaceSize { width, height });
         self.activity = None;
     }
 
@@ -188,11 +194,11 @@ where
 
 /// Candidate renderer path, подготовленный до release старых frame leases.
 pub(crate) struct PreparedRendererCandidate {
-    /// Новый device/surface/video/egui renderer.
-    renderer: Renderer,
+    /// Новый рендер того же семейства (device/surface/video/egui).
+    renderer: Box<dyn RenderShell>,
 
-    /// Materializer того же active backend provider-а на новом device.
-    materializer: Option<Arc<dyn WgpuFrameTextureViewMaterializer>>,
+    /// Импорт кадров того же active decoder provider-а на ресурсах нового рендера.
+    video_import: Option<PendingVideoImport>,
 
     /// Capability snapshot candidate-а, commit-имый вместе с renderer-ом.
     system_capabilities: capability_core::SystemCapabilities,
@@ -203,8 +209,8 @@ pub(crate) struct LiveRendererRecreation<'runtime> {
     /// Window владеет native surface target lifecycle-ом.
     window: Arc<Window>,
 
-    /// Active renderer slot, которым владеет shell.
-    renderer: &'runtime mut Renderer,
+    /// Active renderer slot, которым владеет shell (commit заменяет рендер в нём).
+    renderer: &'runtime mut Box<dyn RenderShell>,
 
     /// AppState владеет leases и neutral backend/materializer intent state.
     app_state: &'runtime mut AppState,
@@ -217,7 +223,7 @@ impl<'runtime> LiveRendererRecreation<'runtime> {
     /// Создаёт adapter без передачи GPU ownership в `AppState`.
     pub(crate) fn new(
         window: Arc<Window>,
-        renderer: &'runtime mut Renderer,
+        renderer: &'runtime mut Box<dyn RenderShell>,
         app_state: &'runtime mut AppState,
     ) -> Self {
         let live_settings = renderer.live_settings();
@@ -231,7 +237,7 @@ impl<'runtime> LiveRendererRecreation<'runtime> {
 
     /// Строит renderer path для указанного committed config-а.
     fn build_candidate(
-        &self,
+        &mut self,
         settings: &RenderCommittedSettingsUpdate,
     ) -> Result<PreparedRendererCandidate, RendererRecreationApplyError> {
         if settings.profile == RenderProfile::OpenGles {
@@ -241,15 +247,22 @@ impl<'runtime> LiveRendererRecreation<'runtime> {
             ));
         }
 
-        let surface_settings = surface_settings(settings);
-        let mut renderer =
-            Renderer::new(self.window.clone(), surface_settings).map_err(|error| {
-                apply_error(
-                    RendererRecreationApplyErrorKind::CandidateCreation,
-                    format!("candidate renderer creation failed: {error}"),
-                )
-            })?;
+        let mut renderer = create_renderer(
+            self.renderer.family(),
+            RendererCreateRequest {
+                window: self.window.clone(),
+                vulkan: &settings.vulkan,
+                initial_color: RendererInitialColor::RendererDefaults,
+            },
+        )
+        .map_err(|error| {
+            apply_error(
+                RendererRecreationApplyErrorKind::CandidateCreation,
+                format!("candidate renderer creation failed: {}", error.message),
+            )
+        })?;
         renderer
+            .live_settings_adapter()
             .commit_live_settings(&self.live_settings)
             .map_err(|error| {
                 apply_error(
@@ -258,8 +271,27 @@ impl<'runtime> LiveRendererRecreation<'runtime> {
                 )
             })?;
 
-        let materializer = self.app_state.prepare_materializer_for_renderer(&renderer);
-        let system_capabilities = probe_system_capabilities(renderer.render_capabilities());
+        // Импорт активного decoder-а готовится на новом рендере «в стороне»: старый рендер
+        // продолжает показывать кадры до commit-а.
+        let video_import = match self
+            .renderer
+            .video_frames()
+            .export_video_import_for_recreation()
+        {
+            Some(handoff) => Some(
+                renderer
+                    .video_frames()
+                    .prepare_recreated_video_import(handoff)
+                    .map_err(|error| {
+                        apply_error(
+                            RendererRecreationApplyErrorKind::CandidatePreparation,
+                            format!("candidate video import preparation failed: {error:?}"),
+                        )
+                    })?,
+            ),
+            None => None,
+        };
+        let system_capabilities = probe_system_capabilities(renderer.capabilities().clone());
         self.app_state
             .validate_renderer_candidate_capabilities(&system_capabilities)
             .map_err(|error| {
@@ -271,28 +303,39 @@ impl<'runtime> LiveRendererRecreation<'runtime> {
 
         Ok(PreparedRendererCandidate {
             renderer,
-            materializer,
+            video_import,
             system_capabilities,
         })
     }
 
     /// Commit-ит candidate так, чтобы fallible queue rebind произошёл до assignments.
+    ///
+    /// Установка импорта на новом рендере перепривязывает отложенные освобождения к его
+    /// очереди; это делается только после ожидания старого GPU (`drain_old_gpu_work`).
     fn install_candidate(
         &mut self,
         candidate: PreparedRendererCandidate,
     ) -> Result<(), RendererRecreationApplyError> {
-        self.app_state
-            .commit_recreated_materializer(candidate.materializer, candidate.renderer.queue())
-            .map_err(|error| {
-                apply_error(
-                    RendererRecreationApplyErrorKind::Commit,
-                    format!("candidate materializer queue commit failed: {error}"),
-                )
-            })?;
-        self.app_state
-            .set_system_capabilities(candidate.system_capabilities);
-        *self.renderer = candidate.renderer;
+        let PreparedRendererCandidate {
+            mut renderer,
+            video_import,
+            system_capabilities,
+        } = candidate;
+        if let Some(video_import) = video_import {
+            renderer
+                .video_frames()
+                .install_video_import(video_import)
+                .map_err(|error| {
+                    apply_error(
+                        RendererRecreationApplyErrorKind::Commit,
+                        format!("candidate materializer queue commit failed: {error:?}"),
+                    )
+                })?;
+        }
+        self.app_state.set_system_capabilities(system_capabilities);
+        *self.renderer = renderer;
         self.app_state.advance_renderer_generation();
+        self.app_state.mark_pending_worker_redraw();
         Ok(())
     }
 }
@@ -335,12 +378,13 @@ impl RendererRecreationLifecycle for LiveRendererRecreation<'_> {
     ) -> Result<(), RendererRecreationRollbackError> {
         match apply_error.kind {
             RendererRecreationApplyErrorKind::DeviceLost => {
-                self.app_state
-                    .release_submitted_frames_after_device_lost()
+                self.renderer
+                    .video_frames()
+                    .release_after_device_lost()
                     .map_err(|error| RendererRecreationRollbackError {
                         kind: RendererRecreationRollbackErrorKind::DeviceLost,
                         message: format!(
-                            "submitted frame release recovery after device lost failed: {error}"
+                            "submitted frame release recovery after device lost failed: {error:?}"
                         ),
                     })?;
                 let restored_candidate = self.build_candidate(previous).map_err(|error| {
@@ -373,21 +417,6 @@ impl RendererRecreationLifecycle for LiveRendererRecreation<'_> {
 
     fn resume_submissions(&mut self) {
         self.app_state.mark_pending_worker_redraw();
-    }
-}
-
-/// Маппинг validated Vulkan config-а в shell surface settings.
-fn surface_settings(settings: &RenderCommittedSettingsUpdate) -> SurfacePresentSettings {
-    let present_mode = match settings.vulkan.present_mode {
-        VulkanPresentMode::Auto => ShellPresentMode::Auto,
-        VulkanPresentMode::Fifo => ShellPresentMode::Fifo,
-        VulkanPresentMode::Mailbox => ShellPresentMode::Mailbox,
-        VulkanPresentMode::Immediate => ShellPresentMode::Immediate,
-    };
-    SurfacePresentSettings {
-        present_mode,
-        max_frame_latency: settings.vulkan.max_frame_latency,
-        alpha_preference: SurfaceAlphaPreference::TransparentPreferred,
     }
 }
 
@@ -739,16 +768,5 @@ mod tests {
         coordinator.set_surface_event_pending(false);
         let retried = coordinator.recreate(&mut lifecycle, &settings(), &settings());
         assert_eq!(retried, AppRouteApplyResult::Applied);
-    }
-
-    /// Controlled recreation сохраняет запрос прозрачной композиции нового surface-а.
-    #[test]
-    fn controlled_recreation_preserves_transparent_surface_preference() {
-        let surface_settings = surface_settings(&settings());
-
-        assert_eq!(
-            surface_settings.alpha_preference,
-            SurfaceAlphaPreference::TransparentPreferred
-        );
     }
 }

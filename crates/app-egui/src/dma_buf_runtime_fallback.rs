@@ -176,7 +176,7 @@ mod tests {
     }
 
     fn software_plan() -> VideoPipelinePlan {
-        VideoPipelinePlan::FfmpegHostUploadWgpu {
+        VideoPipelinePlan::FfmpegHostUpload {
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
         }
     }

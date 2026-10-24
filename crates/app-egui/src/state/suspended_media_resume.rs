@@ -26,9 +26,9 @@ use crate::playlist_runtime::{
     ResumePositionWarning,
 };
 use crate::video_pipeline_candidate::{
-    WgpuCandidateVideoPipelineResourceDriver, player_selected_video_candidate_boundary,
+    RendererCandidateVideoPipelineResourceDriver, player_selected_video_candidate_boundary,
 };
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 
 const RESUME_MEDIA_CLIENT_KEY: MediaOpenClientKey = MediaOpenClientKey::from_non_zero(
     NonZeroU64::new(2).expect("resume media client key is non-zero"),
@@ -310,7 +310,7 @@ impl AppState {
     pub(crate) fn drive_suspended_media_resume(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) -> bool {
         let Some(mut resume) = self.suspended_media_resume.take() else {
             return false;
@@ -321,6 +321,7 @@ impl AppState {
             }
             ResumePhase::Installing { candidate } => self.drive_resume_installing(
                 playlist_runtime,
+                renderer.video_frames(),
                 &resume.attempt,
                 resume.request_id,
                 candidate,
@@ -382,7 +383,7 @@ impl AppState {
     fn drive_resume_preparing(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
         resume: &mut SuspendedMediaResume,
     ) -> ResumeDrive {
         let Some(snapshot) = playlist_runtime.media_open_snapshot() else {
@@ -400,12 +401,7 @@ impl AppState {
                     .descriptor
                     .as_ref()
                     .and_then(crate::media_open::PreparedMediaDescriptor::vod_endpoint_recovery);
-                let driver = WgpuCandidateVideoPipelineResourceDriver::new(
-                    renderer.instance(),
-                    renderer.adapter(),
-                    renderer.device(),
-                    renderer.queue(),
-                );
+                let driver = RendererCandidateVideoPipelineResourceDriver::new(renderer);
                 let (candidate, video_resource_port) = player_selected_video_candidate_boundary(
                     self.renderer_generation,
                     self.player_worker.decoder_thread_config(),
@@ -451,6 +447,7 @@ impl AppState {
     fn drive_resume_installing(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
+        video_frames: &mut dyn render_shell_api::VideoFrameImport,
         attempt: &ResumeAttempt,
         request_id: MediaOpenRequestId,
         candidate: &ProductionCandidateOwner,
@@ -499,7 +496,7 @@ impl AppState {
                     return ResumeDrive::Finished;
                 };
                 if self
-                    .commit_installed_video_candidate(candidate, player_request_id)
+                    .commit_installed_video_candidate(video_frames, candidate, player_request_id)
                     .is_err()
                 {
                     return self.release_failed_resume_candidate(

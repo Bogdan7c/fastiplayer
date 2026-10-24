@@ -6,8 +6,8 @@
 use std::time::Duration;
 
 use player_core::{LatencyCounterSnapshot, PlayerSnapshot};
-use render_wgpu_shell::RenderFrameTiming;
-use render_wgpu_video::{DmaBufImportStats, VideoHotPathStats};
+use render_shell_api::RenderFrameTiming;
+use render_shell_api::{FrameImportStats, RenderHotPathStats};
 use tracing::{debug, trace};
 
 use super::input_snapshot::AppFrameInputTimings;
@@ -76,12 +76,13 @@ pub(super) struct AppRenderFrameTimings {
     /// Вызов renderer-owned submit/present path вместе с app-level outcome handling.
     pub(super) renderer_submit: Duration,
 
-    /// Кэш Vulkan-импортов DMA-BUF materializer-а; `None` для host-upload backend-а.
-    pub(super) dma_buf_import_stats: Option<DmaBufImportStats>,
+    /// Кэш импорта DMA-BUF активного импорта рендера; `None` для host-upload backend-а.
+    pub(super) dma_buf_import_stats: Option<FrameImportStats>,
 
-    /// Накопленные счётчики bind group/uniform видео-прохода (сессия 05): в установившемся
-    /// показе `bind_groups_created` и `uniform_writes` не растут.
-    pub(super) video_hot_path: VideoHotPathStats,
+    /// Накопленные счётчики привязок ресурсов/uniform видео-прохода (сессия 05): в
+    /// установившемся показе `resource_bindings_created` и `uniform_writes` не растут.
+    /// Трасса пишет их под прежними именами `video_bind_groups_*` / `video_uniform_*`.
+    pub(super) video_hot_path: RenderHotPathStats,
 }
 
 /// Превращает длительность в миллисекунды для числовых tracing fields.
@@ -208,8 +209,8 @@ pub(super) fn log_render_frame_timings(
         dma_buf_cache_entries = dma_buf_import_stats
             .map(|stats| stats.cache.entries)
             .unwrap_or_default(),
-        video_bind_groups_created = app_timings.video_hot_path.bind_groups_created,
-        video_bind_groups_reused = app_timings.video_hot_path.bind_groups_reused,
+        video_bind_groups_created = app_timings.video_hot_path.resource_bindings_created,
+        video_bind_groups_reused = app_timings.video_hot_path.resource_bindings_reused,
         video_uniform_writes = app_timings.video_hot_path.uniform_writes,
         video_uniform_writes_skipped = app_timings.video_hot_path.uniform_writes_skipped,
         "render frame stage timings"

@@ -14,7 +14,10 @@ use crate::fatal_startup::dialog_utility::DialogUtility;
 use crate::fatal_startup::test_support::{RecordingChannel, ShownNotice};
 
 fn graphics_error() -> FatalStartupError {
-    FatalStartupError::graphics_unavailable(&anyhow::anyhow!("no adapter"))
+    FatalStartupError::renderer_unavailable(&render_shell_api::RendererCreateError::new(
+        render_shell_api::RendererCreateStage::AdapterSelection,
+        "no adapter",
+    ))
 }
 
 fn channel(

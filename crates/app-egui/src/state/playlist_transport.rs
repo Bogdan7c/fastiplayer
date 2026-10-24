@@ -19,7 +19,7 @@ use player_core::{
     ExactTimelineSeekReceipt, ExactTimelineSeekRequest, MediaInstallCancellationCause,
     PlayerSnapshot, TimelineSeekRequestId,
 };
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 use tracing::{debug, warn};
 
 use super::strong_media_open::PlaylistStrongMediaOpenPoll;
@@ -102,7 +102,7 @@ impl AppState {
     pub(crate) fn begin_startup_playlist_install(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
         install: PlannedPlaylistInstall,
     ) -> Result<(), StartupPlaylistInstallStartError> {
         let item_id = install.item_id;
@@ -132,7 +132,7 @@ impl AppState {
     pub(crate) fn begin_planned_playlist_install(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
         install: PlannedPlaylistInstall,
         supersedes: Option<MediaOpenRequestId>,
     ) {
@@ -347,7 +347,7 @@ impl AppState {
     pub(crate) fn poll_playlist_transport(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) {
         self.drive_pending_playlist_media_reset(playlist_runtime);
         self.poll_exact_playlist_transport_receipts(playlist_runtime);
@@ -421,7 +421,9 @@ impl AppState {
             .playlist_transport
             .active_item_id
             .expect("active playlist request always retains its exact item ID");
-        let poll = match self.poll_prepared_playlist_media_strong(playlist_runtime) {
+        let poll = match self
+            .poll_prepared_playlist_media_strong(playlist_runtime, renderer.video_frames())
+        {
             PlaylistStrongMediaOpenPoll::Strong(poll) => poll,
             PlaylistStrongMediaOpenPoll::TargetFailedBeforeAdmission(unstaged) => {
                 self.finish_playlist_target_failed_before_admission(

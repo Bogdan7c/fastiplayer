@@ -1,6 +1,6 @@
 //! Per-frame input I/O и единый immutable snapshot для UI/desktop/render стадий.
 
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 use std::time::{Duration, Instant};
 use winit::window::Window;
 
@@ -30,7 +30,7 @@ pub(super) struct AppFrameInputTimings {
 pub(super) fn prepare_frame_input(
     telemetry: &Telemetry,
     window: &Window,
-    renderer: &mut Renderer,
+    renderer: &mut dyn RenderShell,
     app_state: &mut AppState,
     sequence: &mut impl FrameSequenceObserver,
 ) -> PreparedFrameInput {
@@ -55,10 +55,7 @@ pub(super) fn prepare_frame_input(
     if let Some(request) = app_state.take_pending_video_backend_reselection() {
         app_state.apply_video_backend_reselection(
             &request,
-            renderer.instance(),
-            renderer.adapter(),
-            renderer.device(),
-            renderer.queue(),
+            crate::state::RendererVideoImportTarget::for_renderer(renderer),
         );
     }
     let worker_event_record_elapsed = stage_started_at.elapsed();

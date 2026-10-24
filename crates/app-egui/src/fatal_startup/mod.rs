@@ -152,12 +152,13 @@ impl FatalStartupError {
 
     /// Рендерер не поднялся: нет адаптера Vulkan, surface или device.
     ///
-    /// `{:#}` сохраняет всю цепочку причин anyhow (включая ответ wgpu), которую
-    /// прежний лог с `{}` терял, оставляя только верхний контекст.
-    pub(crate) fn graphics_unavailable(error: &anyhow::Error) -> Self {
+    /// С сессии 02 плана `user/gles2-renderer/` ошибку отдаёт каталог рендеров. Фабрика кладёт
+    /// в `message` всю цепочку причин `{:#}` (включая ответ wgpu), поэтому текст прежний:
+    /// «could not initialize the renderer: <цепочка>».
+    pub(crate) fn renderer_unavailable(error: &render_shell_api::RendererCreateError) -> Self {
         Self::new(
             FatalStartupReason::GraphicsUnavailable,
-            format!("could not initialize the renderer: {error:#}"),
+            format!("could not initialize the renderer: {}", error.message),
         )
     }
 

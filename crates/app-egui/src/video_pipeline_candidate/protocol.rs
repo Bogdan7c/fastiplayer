@@ -46,7 +46,7 @@ impl RendererGeneration {
 }
 
 /// App-owned renderer half одного admitted candidate-а.
-pub(super) struct StagedVideoPipelineCandidate<Materializer, SubmissionBinding> {
+pub(super) struct StagedVideoPipelineCandidate<RendererImport> {
     /// Exact media install request связывает обе split halves.
     pub(super) request_id: MediaInstallRequestId,
 
@@ -62,11 +62,8 @@ pub(super) struct StagedVideoPipelineCandidate<Materializer, SubmissionBinding> 
     /// Player status переводит candidate только Awaiting -> StreamConfigured.
     pub(super) state: StagedVideoPipelineCandidateState,
 
-    /// Renderer-bound materializer ещё не является active.
-    pub(super) materializer: Materializer,
-
-    /// Candidate submission binding ещё не является active.
-    pub(super) submission_binding: SubmissionBinding,
+    /// Подготовленный импорт рендера (materializer + привязка освобождений) ещё не активен.
+    pub(super) renderer_import: RendererImport,
 }
 
 /// Минимальное app-side состояние без player ReadyToCommit state machine 00C1.

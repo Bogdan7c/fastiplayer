@@ -22,8 +22,9 @@ pub(super) mod worker_link;
 
 use std::time::Duration;
 
-use render_core::{PictureLayout, PictureRect, PictureSize, RenderViewport, RenderableFrame};
+use render_core::{PictureLayout, PictureRect, PictureSize, RenderViewport};
 use subtitle_raster::{AssStorageSize, TextLanguagePreference};
+use video_core::DecodedFrame;
 use video_present_core::VideoPresentFrameIdentity;
 
 pub(super) use self::presenter::{PresenterSettings, SubtitlePresenter};
@@ -47,25 +48,36 @@ pub(crate) struct SubmittedFrameForSubtitles {
     video_viewport: RenderViewport,
 }
 
+/// Ориентированный display-размер кадра (тот же, что `RenderableFrame::oriented_display_*`):
+/// поворот на четверть оборота меняет ширину и высоту местами.
+const fn oriented_picture_size(frame: &DecodedFrame) -> PictureSize {
+    if frame.display_orientation.swaps_axes() {
+        PictureSize::new(frame.render_height, frame.render_width)
+    } else {
+        PictureSize::new(frame.render_width, frame.render_height)
+    }
+}
+
 impl SubmittedFrameForSubtitles {
     /// Собирает описание кадра или `None`, если субтитры на нём показывать нельзя:
     /// - нет identity (stale-lease: во время seek показывается старый кадр — реплику
     ///   скрываем, чтобы «старая» реплика исчезала сразу);
     /// - у картинки или области видео нулевой размер.
     ///
-    /// Область видео зажимается к экрану так же, как это делает `Renderer::render_frame`
+    /// Область видео зажимается к экрану так же, как это делает рендер в `render_frame`
     /// (`RenderViewport::clamp_to_surface`), поэтому прямоугольник картинки совпадает с тем,
-    /// что нарисует видео-проход.
+    /// что нарисует видео-проход. Кадр — метаданные декодера из ключа рендера (с сессии 02
+    /// плана `user/gles2-renderer/` приложение не видит wgpu-кадр).
     pub(crate) fn from_submission(
         frame_identity: Option<VideoPresentFrameIdentity>,
-        frame: &RenderableFrame,
+        frame: &DecodedFrame,
         video_viewport: RenderViewport,
         screen_size_in_pixels: [u32; 2],
     ) -> Option<Self> {
         let frame_identity = frame_identity?;
         let clamped_viewport =
             video_viewport.clamp_to_surface(screen_size_in_pixels[0], screen_size_in_pixels[1]);
-        let picture_size = PictureSize::from_frame(frame);
+        let picture_size = oriented_picture_size(frame);
         let layout = PictureLayout::fit(picture_size, clamped_viewport)?;
         Some(Self {
             frame_pts: frame.pts,

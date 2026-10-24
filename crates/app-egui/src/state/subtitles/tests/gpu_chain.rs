@@ -9,10 +9,8 @@
 use std::sync::mpsc;
 
 use render_core::PictureRect;
-use render_wgpu_shell::{
-    SubtitleLayerOffset, SubtitleLayerOffsets, SubtitleOverlayFrame, SubtitleOverlayOutcome,
-    SubtitleOverlayRenderer, SubtitleOverlayTarget,
-};
+use render_shell_api::{SubtitleLayerOffset, SubtitleLayerOffsets, SubtitleOverlayFrame};
+use render_wgpu_shell::{SubtitleOverlayOutcome, SubtitleOverlayRenderer, SubtitleOverlayTarget};
 
 use super::*;
 

@@ -4,7 +4,7 @@
 //! «есть ли элемент очереди, который Play обязан открыть вместо переключения паузы».
 
 use player_core::PlaybackState;
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 use tracing::warn;
 
 use super::apply_playlist_row_play;
@@ -30,7 +30,7 @@ const fn is_playback_idle_for_queue_resume(state: PlaybackState) -> bool {
 pub(super) fn resume_queue_from_idle(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
     player_state: PlaybackState,
 ) -> bool {
     if is_playback_idle_for_queue_resume(player_state)

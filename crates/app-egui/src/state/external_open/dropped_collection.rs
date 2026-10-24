@@ -30,7 +30,7 @@ impl AppState {
         &mut self,
         completion: DroppedCollectionWalkCompletion,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         match completion {
             DroppedCollectionWalkCompletion::Cancelled => {
@@ -51,7 +51,7 @@ impl AppState {
         &mut self,
         collected: CollectedDroppedFiles,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         // В логе только числа: пути и имена папок приватны.
         info!(

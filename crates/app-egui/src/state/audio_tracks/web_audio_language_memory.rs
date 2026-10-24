@@ -30,7 +30,7 @@ use media_source_open::web_media_open::audio_languages::{
     WebAudioLanguageAction, WebAudioLanguageChoice,
 };
 use playlist_state::RememberedWebAudioLanguage;
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 
 use super::web_version_switch::WebAudioSwitchRequest;
 use crate::playlist_runtime::PlaylistRuntime;
@@ -159,7 +159,7 @@ impl AppState {
         action: WebAudioLanguageAction,
         attempts_left: u16,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) {
         let outcome = self.apply_audio_language_action(
             action,

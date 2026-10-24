@@ -33,4 +33,6 @@ Existing `WgpuSubmissionQueueBinding`/submitted release CAS ownership не ме�
 - targeted strict Clippy, fmt, locked workspace check, refactor guardrails, git diff check, Serena references/diagnostics: PASS.
 - Context7 pinned WGPU 29.0.3/winit 0.30.13 verified callback/poll and suspended-surface lifecycle assumptions.
 
+**Обновление 2026-10-24 (сессия 02 `user/gles2-renderer/`):** слот обобщён по ОДНОМУ `RendererImport` (production — `render_shell_api::PendingVideoImport`: материализатор и привязка освобождений внутри рендера); драйвер — `RendererCandidateVideoPipelineResourceDriver` (подготовщик импорта рендера + `start_decoder_backend`); `ActiveVideoPipelinePointers` удалены — infallible commit отдаёт `CommittedVideoPipelineCandidate`, а владелец ставит импорт в рендер `install_video_import`. Детали — `mem:gles2-renderer/render-shell-contract`.
+
 Session 00C1 выполнена; актуальный ownership/worker/commit handoff находится в `mem:investigations/playlist-session-00c1-staged-media-transaction-2026-07-13`. Next: Session 00D only. Concrete factories/render types по-прежнему не переносить в player-core/video-backend-api.

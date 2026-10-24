@@ -182,6 +182,8 @@ impl LocalOpenInstallOwner {
 struct AppStateStrongOpenSlot<'state> {
     app_state: &'state mut AppState,
     playlist_runtime: &'state mut PlaylistRuntime,
+    /// Склад кадров рендера: после Installed в него ставится импорт кадров кандидата.
+    video_frames: &'state mut dyn render_shell_api::VideoFrameImport,
 }
 
 impl StrongOpenSlotPort for AppStateStrongOpenSlot<'_> {
@@ -195,7 +197,7 @@ impl StrongOpenSlotPort for AppStateStrongOpenSlot<'_> {
     fn poll(&mut self) -> StrongOpenSlotPoll<Self::Installed, Self::Failure> {
         match self
             .app_state
-            .poll_prepared_media_strong(self.playlist_runtime)
+            .poll_prepared_media_strong(self.playlist_runtime, self.video_frames)
         {
             StrongMediaOpenPoll::Pending => StrongOpenSlotPoll::Pending,
             StrongMediaOpenPoll::Installed(installed) => StrongOpenSlotPoll::Installed(installed),
@@ -213,7 +215,7 @@ impl AppState {
         &mut self,
         prepared: crate::media_open::PreparedLocalOpenResult,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         let path = prepared.source_path.clone();
         if self.local_open_install.is_installing() {
@@ -281,12 +283,14 @@ impl AppState {
     pub(super) fn poll_local_open_install(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
+        video_frames: &mut dyn render_shell_api::VideoFrameImport,
     ) -> bool {
         // Владелец временно вынимается, чтобы порт мог занять `AppState` целиком.
         let mut owner = std::mem::take(&mut self.local_open_install);
         let progress = owner.poll(&mut AppStateStrongOpenSlot {
             app_state: self,
             playlist_runtime,
+            video_frames,
         });
         self.local_open_install = owner;
         match progress {

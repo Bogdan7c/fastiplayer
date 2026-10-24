@@ -32,7 +32,7 @@ impl AppState {
         &mut self,
         event: DropGestureEvent,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) -> bool {
         let pixels_per_point = self.egui_ctx.pixels_per_point();
         if let Some(request) = self
@@ -59,7 +59,7 @@ impl AppState {
         &mut self,
         request: crate::external_open::request::ExternalOpenRequest,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         let mut host = AppStateExternalOpenHost {
             app_state: self,
@@ -91,7 +91,7 @@ impl AppState {
         paths: Vec<PathBuf>,
         truncation: Option<DroppedCollectionTruncation>,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         match playlist_runtime.replace_queue_with_local_files(paths) {
             LocalFilesReplacementOutcome::Replaced {
@@ -138,7 +138,7 @@ impl AppState {
         &mut self,
         paths: Vec<PathBuf>,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         let intent = InAppQueueReplacementIntent::local_files(paths);
         self.request_queue_replacement_with_intent(intent, playlist_runtime, renderer);
@@ -149,7 +149,7 @@ impl AppState {
         &mut self,
         intent: InAppQueueReplacementIntent,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         // До load decision очереди ещё нет: admission записал бы startup-замену, а менять
         // было бы нечего. Отказываем заранее и ничего не трогаем.
@@ -200,7 +200,7 @@ pub(super) fn playlist_panel_rect(
 struct AppStateExternalOpenHost<'host> {
     app_state: &'host mut AppState,
     playlist_runtime: &'host mut PlaylistRuntime,
-    renderer: &'host render_wgpu_shell::Renderer,
+    renderer: &'host mut dyn render_shell_api::RenderShell,
 }
 
 impl ExternalOpenHost for AppStateExternalOpenHost<'_> {

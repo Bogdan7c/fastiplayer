@@ -1,56 +1,12 @@
-//! wgpu-вход кадра и буфер swapchain wgpu.
+//! Зажим геометрии видео из приложения к текущей цели показа.
 //!
-//! Нейтральный словарь кадра (исходы, причины пропуска, тайминги, интерфейс) живёт в
-//! `render-shell-api` и реэкспортируется из корня crate-а без изменения путей для `app-egui`.
-//! Здесь остаются типы, в которых пока зашиты wgpu/winit: вход кадра с окном и
-//! `WgpuRenderableFrame`, билет с `wgpu::SurfaceTexture`. Их нейтральные версии —
-//! `render_shell_api::{RenderFrameInput, AcquiredSurfaceFrame}`; переход — сессия 02 плана
-//! `user/gles2-renderer/`.
-
-use std::time::Duration;
+//! Нейтральный словарь кадра (вход кадра, билет буфера, исходы, причины пропуска, тайминги)
+//! живёт в `render-shell-api`. С сессии 02 плана `user/gles2-renderer/` wgpu-версий входа
+//! кадра и билета больше нет: здесь остались только чистые функции зажима viewport-ов.
 
 use render_core::RenderViewport;
-use render_wgpu_video::WgpuRenderableFrame;
-use winit::window::Window;
 
-use crate::{
-    EguiFrameContent, RenderFrameDropReason, RenderScreenDescriptor, SubtitleOverlayFrame,
-    WindowCornerMask,
-};
-
-/// Входные данные одного полного кадра shell renderer-а.
-///
-/// App layer отвечает за egui tessellation и сбор video frame lease, а shell layer
-/// получает уже готовый пакет данных для записи swapchain кадра.
-pub struct RenderFrameInput<'frame> {
-    /// Окно, для которого выполняется present notification.
-    pub window: &'frame Window,
-
-    /// Буфер swapchain, уже полученный `Renderer::acquire_surface_frame` ДО выбора
-    /// видеокадра (сессия 06a): ожидание FIFO не делает выбранный кадр старше на vsync.
-    pub surface: AcquiredSurfaceFrame,
-
-    /// Video frame boundary; `None` означает, что target нужно очистить в чёрный.
-    pub video_frame: Option<&'frame WgpuRenderableFrame<'frame>>,
-
-    /// Свежие egui-примитивы либо просьба повторить прежние.
-    pub egui: EguiFrameContent,
-
-    /// Размер target-а и UI scale для egui-wgpu.
-    pub screen: RenderScreenDescriptor,
-
-    /// Renderer-neutral content viewport, по которому video pass сохраняет aspect ratio.
-    pub video_viewport: RenderViewport,
-
-    /// Renderer-neutral области, где video pass не должен рисовать кадр.
-    pub video_exclusion_rects: Vec<RenderViewport>,
-
-    /// Разрешённая app-слоем форма текущего desktop-кадра.
-    pub window_corner_mask: WindowCornerMask,
-
-    /// Субтитры между video и egui; `None` — рисовать нечего.
-    pub subtitle_overlay: Option<SubtitleOverlayFrame<'frame>>,
-}
+use crate::RenderScreenDescriptor;
 
 /// Зажимает app-computed video viewport к текущему swapchain target-у.
 #[must_use]
@@ -74,39 +30,6 @@ pub(crate) fn clamp_video_exclusion_rects_to_screen(
         .into_iter()
         .filter_map(|exclusion_rect| exclusion_rect.intersection(full_surface))
         .collect()
-}
-
-/// Буфер swapchain, в который будет записан и показан текущий кадр (cpu-parity, сессия 06a).
-///
-/// Получается отдельно от записи кадра: под FIFO получение блокируется до свободного места
-/// в очереди показа (под XWayland — почти весь интервал vsync). App берёт буфер первым и
-/// только потом выбирает видеокадр и субтитры, поэтому на экран уходит кадр, выбранный
-/// непосредственно перед показом. Не использованный буфер возвращается swapchain-у при
-/// drop-е (wgpu `SurfaceTexture::drop` → discard).
-pub struct AcquiredSurfaceFrame {
-    /// Текстура swapchain текущего кадра.
-    pub(crate) surface_texture: wgpu::SurfaceTexture,
-
-    /// Сколько заняло получение (включая ожидание FIFO); идёт в стадию `surface_acquire`.
-    pub(crate) acquire_elapsed: Duration,
-}
-
-impl AcquiredSurfaceFrame {
-    /// Сколько главный поток ждал буфер swapchain.
-    #[must_use]
-    pub const fn acquire_elapsed(&self) -> Duration {
-        self.acquire_elapsed
-    }
-}
-
-/// Итог получения буфера swapchain.
-#[must_use = "без буфера кадр не показан; причину пропуска обязан учесть app"]
-pub enum SurfaceFrameAcquire {
-    /// Буфер получен: можно выбирать видеокадр и вызывать `Renderer::render_frame`.
-    Acquired(AcquiredSurfaceFrame),
-    /// Буфер не получен (окно скрыто, surface потерян/устарел, таймаут): кадр пропущен
-    /// до выбора видеокадра, кадр плеера остаётся в передаче для следующего показа.
-    Dropped(RenderFrameDropReason),
 }
 
 #[cfg(test)]

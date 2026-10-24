@@ -12,6 +12,11 @@
 - Проверки 08C: app-egui 234 tests; player-core 474; render-wgpu-video 92; render-wgpu-shell 12; fastiplayer-settings 15; strict targeted Clippy; `cargo +1.96.0 check --workspace --locked`; refactor guardrails; playback smoke probe-only including installed FFmpeg runtime probe.
 - End-to-end persistence order всё ещё принадлежит Session 08D: settings-core пока persist-ит перед runtime apply и фиксирует `PersistedRuntimeDiverged` на failure; 08C не удаляет этот transitional contract.
 
+## Сессия 02 gles2-renderer (2026-10-24): пересоздание через контракт
+- `LiveRendererRecreation` держит слот `&mut Box<dyn RenderShell>`; кандидат создаёт каталог (`render_backend::create_renderer(renderer.family(), RendererCreateRequest{.., initial_color: RendererDefaults})`), затем `live_settings_adapter().commit_live_settings(snapshot)`.
+- Материализатор больше не в `AppState`: `build_candidate` берёт `old.video_frames().export_video_import_for_recreation()` и готовит `new.video_frames().prepare_recreated_video_import(handoff)` (wgpu: `recreate_for_renderer` на новом device, та же привязка освобождений). `install_candidate` после drain ставит импорт на новом рендере (rebind очереди внутри `install_video_import`, отказ → `Commit`), затем caps, замена рендера в слоте, `advance_renderer_generation`, `mark_pending_worker_redraw`.
+- Device lost в restore: `old.video_frames().release_after_device_lost()` вместо `AppState::release_submitted_frames_after_device_lost`. Ветка `RenderProfile::OpenGles → UnsupportedProfile` оставлена до сессии 09.
+
 ## S25 integration note (2026-07-22)
 - Controlled same-item candidate switching reuses the existing player-selected candidate ownership and renderer-generation commit path; it adds no second renderer/backend authority. Same/cross-class swaps retain exactly-once candidate release, and audio-only installs explicitly finish the present-frame freeze after generation change.
 - See `mem:app-egui/same-item-candidate-switch-s25-2026-07-22`.

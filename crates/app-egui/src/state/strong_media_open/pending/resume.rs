@@ -155,6 +155,7 @@ impl AppState {
     pub(super) fn begin_post_installed_intent(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
+        video_frames: &mut dyn render_shell_api::VideoFrameImport,
         pending: &mut PendingStrongMediaOpen,
     ) -> StrongMediaOpenPoll {
         let terminal = match playlist_runtime.take_media_open_terminal(pending.request_id) {
@@ -190,8 +191,9 @@ impl AppState {
             Ok(installed) => installed,
             Err(error) => return StrongMediaOpenPoll::completed(Err(error)),
         };
+        let player_request_id = installed.player_request_id;
         if let Err(error) =
-            self.commit_installed_video_candidate(&candidate_owner, installed.player_request_id)
+            self.commit_installed_video_candidate(video_frames, &candidate_owner, player_request_id)
         {
             return self.begin_post_installed_compensation(
                 playlist_runtime,

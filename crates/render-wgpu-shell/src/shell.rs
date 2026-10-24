@@ -12,295 +12,69 @@
 /// где decoded VkImage будет рендериться напрямую без CPU readback.
 ///
 /// Архитектура рендеринга:
-/// 1. Получаем surface texture из swapchain (`Renderer::acquire_surface_frame`, до выбора
+/// 1. Получаем буфер цели показа (`RenderShell::acquire_surface_frame`, до выбора
 ///    видеокадра app-ом — сессия 06a)
 /// 2. Рендерим decoded video frame или чёрный фон
 /// 3. Рендерим egui overlay поверх видео
 /// 4. Present на экран
-use std::sync::{Arc, Mutex};
+///
+/// С сессии 02 плана `user/gles2-renderer/` приложение видит рендер только через
+/// контракт `render_shell_api::RenderShell` (`render_shell.rs`), а импортом кадров декодера
+/// владеет склад `crate::video_import`.
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use render_core::{
-    ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, RenderDiagnostics,
-    RenderLiveApplyReport, RenderLiveSettings, RenderLiveSettingsAdapter, RenderLiveSettingsError,
-    RenderLiveSettingsUpdate,
+    ColorPipelineSettings, HdrToSdrSettings, RenderLiveApplyReport, RenderLiveSettings,
+    RenderLiveSettingsAdapter, RenderLiveSettingsError, RenderLiveSettingsUpdate,
 };
+use render_shell_api::{RenderFrameInput, RenderableFrameKey, RendererInstanceId};
 use render_wgpu_video::{
     HostPlanarUploadCommands, WgpuRenderableFrame, WgpuVideoRenderInput, WgpuVideoRenderer,
-    required_wgpu_video_texture_features,
 };
 use tracing::{debug, info, instrument};
 use winit::window::Window;
 
 use crate::egui_compositor::EguiCompositor;
-use crate::frame::{
-    AcquiredSurfaceFrame, RenderFrameInput, clamp_video_exclusion_rects_to_screen,
-    clamp_video_viewport_to_screen,
-};
+use crate::frame::{clamp_video_exclusion_rects_to_screen, clamp_video_viewport_to_screen};
 use crate::subtitle_overlay::{
     SubtitleOverlayRenderer, SubtitleOverlayTarget, SubtitleOverlayUploadStats,
 };
-use crate::surface_alpha::choose_alpha_mode;
-use crate::surface_settings::{choose_present_mode, choose_surface_format};
-use crate::window_corner_mask::{SurfaceAlphaEncoding, WindowCornerMaskRenderer};
+use crate::video_import::{
+    WgpuImportDevice, WgpuPreparedFrame, WgpuVideoFrameImport, renderable_frame_from_views,
+};
+use crate::window_corner_mask::WindowCornerMaskRenderer;
 use crate::{
     RenderFrameDropReason, RenderFrameFailure, RenderFrameOutcome, RenderFrameStageTimings,
-    RenderFrameTiming, RenderScreenDescriptor, SurfacePresentSettings,
+    RenderFrameTiming, SurfacePresentSettings,
 };
 
+mod gpu_context;
+mod present_target;
+mod render_shell;
 mod surface_acquire;
-mod video_hot_path;
+
+use gpu_context::GpuContext;
+use present_target::{PresentTarget, TargetFrame};
 
 /// Превращает длительность в миллисекунды для числовых tracing fields.
 fn duration_ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
 
-/// GPU ресурсы: device, queue, surface и их конфигурация.
-///
-/// Владеет всеми wgpu объектами, необходимыми для рендеринга.
-/// При ресайзе окна пересоздаёт surface configuration.
-pub struct GpuContext {
-    /// wgpu instance — нужна для zero-copy DMA-BUF import в video decoder.
-    pub instance: wgpu::Instance,
-
-    /// wgpu adapter — нужен для zero-copy DMA-BUF import в video decoder.
-    pub adapter: wgpu::Adapter,
-
-    /// Surface — абстракция wgpu над платформенным swapchain.
-    pub surface: wgpu::Surface<'static>,
-
-    /// Логическое устройство GPU, через которое создаются ресурсы.
-    pub device: wgpu::Device,
-
-    /// Очередь команд для отправки buffer/texture updates на GPU.
-    pub queue: wgpu::Queue,
-
-    /// Текущая конфигурация surface (формат, размер, present mode).
-    pub surface_config: wgpu::SurfaceConfiguration,
-
-    /// Формат surface, выбранный из поддерживаемых адаптером.
-    pub surface_format: wgpu::TextureFormat,
-
-    /// Typed device-lost state, который callback WGPU публикует lifecycle owner-у.
-    device_lost: Arc<Mutex<Option<GpuDeviceLost>>>,
-
-    /// Подтверждённое surface-кодирование alpha; `None` запрещает прозрачную маску.
-    window_alpha_encoding: Option<SurfaceAlphaEncoding>,
-}
-
-/// Доказанный WGPU device-lost cause без string flattening lifecycle state-а.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GpuDeviceLost {
-    /// Причина, сообщённая WGPU backend-ом.
-    pub reason: wgpu::DeviceLostReason,
-
-    /// Backend diagnostic message для логов и UI failure report-а.
-    pub message: String,
-}
-
-/// Ошибка ожидания старой GPU queue перед renderer commit-ом.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RendererGpuDrainError {
-    /// WGPU callback доказал потерю device-а.
-    DeviceLost(GpuDeviceLost),
-
-    /// GPU work не завершилась за bounded lifecycle timeout.
-    Timeout,
-
-    /// WGPU отклонил submission index при ожидании.
-    WrongSubmissionIndex,
-
-    /// Device-lost state mutex poisoned, поэтому lifecycle state недостоверен.
-    DeviceLostStatePoisoned,
-}
-
-impl std::fmt::Display for RendererGpuDrainError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::DeviceLost(device_lost) => write!(
-                formatter,
-                "WGPU device lost ({:?}): {}",
-                device_lost.reason, device_lost.message
-            ),
-            Self::Timeout => {
-                formatter.write_str("The wait for the old GPU queue ended with timeout")
-            }
-            Self::WrongSubmissionIndex => {
-                formatter.write_str("WGPU rejects submission index while waiting for GPU queue")
-            }
-            Self::DeviceLostStatePoisoned => {
-                formatter.write_str("device-lost lifecycle state poisoned")
-            }
-        }
-    }
-}
-
-impl std::error::Error for RendererGpuDrainError {}
-
-impl GpuContext {
-    /// Создаёт GPU контекст асинхронно через стандартный WGPU Vulkan instance.
-    ///
-    /// Последовательность:
-    /// 1. WGPU Vulkan instance без display handle ownership
-    /// 2. Surface — привязка к окну
-    /// 3. Adapter — выбор GPU
-    /// 4. Device/Queue — с feature gates, нужными video renderer boundary
-    /// 5. Surface configuration — настройка swapchain
-    #[instrument(skip(window), fields(window = "fastiplayer"))]
-    pub async fn new(window: Arc<Window>, surface_present: SurfacePresentSettings) -> Result<Self> {
-        info!("Initialization of WGPU Vulkan instance");
-
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-
-        let surface = instance
-            .create_surface(window.clone())
-            .context("Could not create the window surface")?;
-
-        info!("Requesting a GPU adapter");
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::LowPower,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-                // wgpu 30: `false` сохраняет прежнее поведение — реальные лимиты адаптера
-                // без округления до «корзин» (защита от fingerprinting нужна браузерам).
-                apply_limit_buckets: false,
-            })
-            .await
-            .context("Couldn't get a GPU adapter. Check Vulkan drivers")?;
-
-        let adapter_info = adapter.get_info();
-        info!(
-            name = %adapter_info.name,
-            vendor = %adapter_info.vendor,
-            device_type = ?adapter_info.device_type,
-            backend = ?adapter_info.backend,
-            "Selected GPU adapter"
-        );
-
-        let required_features = required_wgpu_video_texture_features(&adapter);
-        info!(
-            nv12_texture_format = required_features.contains(wgpu::Features::TEXTURE_FORMAT_NV12),
-            p010_texture_format = required_features.contains(wgpu::Features::TEXTURE_FORMAT_P010),
-            texture_format_16bit_norm =
-                required_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
-            "WGPU device with video texture features"
-        );
-
-        // Устройство создаётся с `VK_EXT_queue_family_foreign`, если adapter его даёт:
-        // это позволяет video renderer-у переиспользовать DMA-BUF image между кадрами.
-        let (device, queue, foreign_queue_family) = crate::vulkan_device::create_video_device(
-            &adapter,
-            wgpu::DeviceDescriptor {
-                label: Some("fastiplayer device"),
-                required_features,
-                required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-                trace: wgpu::Trace::Off,
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            },
-        )
-        .await?;
-        info!(
-            foreign_queue_family = foreign_queue_family.diagnostic_label(),
-            "WGPU device external memory synchronization"
-        );
-
-        let device_lost = Arc::new(Mutex::new(None));
-        let device_lost_callback_state = device_lost.clone();
-        device.set_device_lost_callback(move |reason, message| {
-            match device_lost_callback_state.lock() {
-                Ok(mut state) => {
-                    *state = Some(GpuDeviceLost { reason, message });
-                }
-                Err(_) => {
-                    tracing::error!("Could not write WGPU device-lost state: mutex poisoned");
-                }
-            }
-        });
-
-        let surface_caps = surface.get_capabilities(&adapter);
-
-        // Предпочитаем 8-bit формат: текущий SDR/NV12 shader пишет обычный RGBA.
-        let surface_format = choose_surface_format(&surface_caps.formats)?;
-
-        let present_mode =
-            choose_present_mode(&surface_caps.present_modes, surface_present.present_mode)?;
-        let (alpha_mode, window_alpha_encoding) =
-            choose_alpha_mode(&surface_caps.alpha_modes, surface_present.alpha_preference)?;
-
-        // 0 кадров latency недопустимо для swapchain — нормализуем к 1.
-        let desired_maximum_frame_latency = surface_present.max_frame_latency.max(1);
-
-        let size = window.inner_size();
-        let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode,
-            alpha_mode,
-            view_formats: vec![],
-            desired_maximum_frame_latency,
-            // wgpu 30: `Auto` воспроизводит историческое поведение (sRGB для наших
-            // 8-битных форматов). HDR-вывод на экран — отдельная фича из бэклога.
-            color_space: wgpu::SurfaceColorSpace::Auto,
-        };
-
-        surface.configure(&device, &surface_config);
-
-        info!(
-            format = ?surface_format,
-            present_mode = ?present_mode,
-            desired_maximum_frame_latency,
-            width = size.width,
-            height = size.height,
-            "Surface is set to be set up"
-        );
-
-        Ok(Self {
-            instance,
-            adapter,
-            surface,
-            device,
-            queue,
-            surface_config,
-            surface_format,
-            device_lost,
-            window_alpha_encoding,
-        })
-    }
-
-    /// Пересоздаёт surface с новыми размерами.
-    ///
-    /// Вызывается при WindowEvent::Resized.
-    /// Игнорирует нулевые размеры (окно свёрнуто).
-    #[instrument(skip(self), fields(width, height))]
-    pub fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
-            debug!("Resize skip: Zero size");
-            return;
-        }
-
-        self.surface_config.width = width;
-        self.surface_config.height = height;
-        self.surface.configure(&self.device, &self.surface_config);
-        debug!(width, height, "Surface resized");
-    }
-}
-
 /// Полный рендерер: GPU контекст + видеопайплайн + egui рендерер.
 ///
 /// Координирует рендеринг видео и UI overlay в каждом кадре.
 pub struct Renderer {
-    /// GPU ресурсы (device, queue, surface).
+    /// Паспорт экземпляра: им помечены билеты буфера и ключи кадров этого рендера.
+    instance_id: RendererInstanceId,
+
+    /// GPU ресурсы (instance, adapter, device, queue, учёт потери устройства).
     gpu: GpuContext,
+
+    /// Куда рисуются кадры: swapchain окна (или offscreen-текстура в тестах).
+    target: PresentTarget,
 
     /// Композитор egui overlay поверх video pass-а.
     egui_compositor: EguiCompositor,
@@ -313,37 +87,106 @@ pub struct Renderer {
 
     /// Субтитры между video и egui.
     subtitle_overlay_renderer: SubtitleOverlayRenderer,
+
+    /// Склад кадров декодера: материализаторы и отложенные освобождения после GPU.
+    video_import: WgpuVideoFrameImport,
+}
+
+/// Причина, по которой ключ видеокадра нельзя нарисовать этим рендером.
+enum VideoFrameKeyRejection {
+    /// Ключ подготовлен другим экземпляром рендера.
+    Foreign,
+
+    /// Views ключа не собираются в кадр video pass-а (сообщение для логов).
+    Unrenderable(String),
 }
 
 impl Renderer {
     /// Создаёт полный рендерер.
     ///
     /// Инициализирует:
-    /// - GPU контекст (async)
+    /// - GPU контекст (async) и swapchain окна
     /// - video renderer facade
     /// - egui_wgpu renderer
     #[instrument(skip(window))]
     pub fn new(window: Arc<Window>, surface_present: SurfacePresentSettings) -> Result<Self> {
-        let gpu = pollster::block_on(GpuContext::new(window.clone(), surface_present))?;
+        let (gpu, target) =
+            pollster::block_on(GpuContext::new_for_window(window, surface_present))?;
+        Ok(Self::from_gpu_and_target(gpu, target))
+    }
 
-        let egui_compositor = EguiCompositor::new(&gpu.device, gpu.surface_format);
-        let video_renderer = WgpuVideoRenderer::new(&gpu.device, gpu.surface_format);
+    /// Собирает рендер поверх готового GPU-контекста и цели показа.
+    fn from_gpu_and_target(gpu: GpuContext, target: PresentTarget) -> Self {
+        let instance_id = RendererInstanceId::allocate();
+        let egui_compositor = EguiCompositor::new(&gpu.device, gpu.target_format);
+        let video_renderer = WgpuVideoRenderer::new(&gpu.device, gpu.target_format);
         let window_corner_mask_renderer = gpu.window_alpha_encoding.map(|alpha_encoding| {
-            WindowCornerMaskRenderer::new(&gpu.device, gpu.surface_format, alpha_encoding)
+            WindowCornerMaskRenderer::new(&gpu.device, gpu.target_format, alpha_encoding)
         });
 
         let subtitle_overlay_renderer =
-            SubtitleOverlayRenderer::new(&gpu.device, gpu.surface_format);
+            SubtitleOverlayRenderer::new(&gpu.device, gpu.target_format);
 
-        info!("Renderer is fully initialized");
+        // Склад кадров знает возможности рендера: они неизменны до пересоздания рендера.
+        let video_import = WgpuVideoFrameImport::new(
+            instance_id,
+            WgpuImportDevice {
+                instance: gpu.instance.clone(),
+                adapter: gpu.adapter.clone(),
+                device: gpu.device.clone(),
+                queue: gpu.queue.clone(),
+            },
+            video_renderer.capabilities().clone(),
+        );
 
-        Ok(Self {
+        info!(
+            renderer_instance = instance_id.value(),
+            "Renderer is fully initialized"
+        );
+
+        Self {
+            instance_id,
             gpu,
+            target,
             egui_compositor,
             video_renderer,
             window_corner_mask_renderer,
             subtitle_overlay_renderer,
-        })
+            video_import,
+        }
+    }
+
+    /// Рендер без окна: кадры пишутся в offscreen-текстуру `size` (conformance и пиксельные
+    /// тесты, решение владельца в сессии 02). `Ok(None)` — в системе нет Vulkan-адаптера.
+    #[cfg(test)]
+    pub(crate) fn new_headless(size: [u32; 2]) -> Result<Option<Self>> {
+        use present_target::OffscreenPresentTarget;
+
+        /// 8-битный линейный формат: пиксели readback-а сравниваются без sRGB-кривой.
+        const HEADLESS_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+        let Some(gpu) = pollster::block_on(GpuContext::new_headless(HEADLESS_TARGET_FORMAT))?
+        else {
+            return Ok(None);
+        };
+        let target = PresentTarget::Offscreen(OffscreenPresentTarget::new(
+            &gpu.device,
+            size,
+            gpu.target_format,
+        ));
+        Ok(Some(Self::from_gpu_and_target(gpu, target)))
+    }
+
+    /// Пиксель RGBA8 последнего кадра offscreen-цели (только рендер без окна).
+    #[cfg(test)]
+    pub(crate) fn read_offscreen_pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
+        let offscreen = self.target.offscreen()?;
+        Some(crate::test_support::read_texture_pixel(
+            &self.gpu.device,
+            &self.gpu.queue,
+            offscreen.texture(),
+            [x, y],
+        ))
     }
 
     /// Счётчики загрузок субтитров в GPU (диагностика и приёмочные тесты).
@@ -352,130 +195,47 @@ impl Renderer {
         self.subtitle_overlay_renderer.upload_stats()
     }
 
-    /// Возвращает wgpu instance для decoder backend-ов, которым нужен shared GPU context.
-    #[must_use]
-    pub const fn instance(&self) -> &wgpu::Instance {
-        &self.gpu.instance
-    }
-
-    /// Возвращает выбранный wgpu adapter.
-    #[must_use]
-    pub const fn adapter(&self) -> &wgpu::Adapter {
-        &self.gpu.adapter
-    }
-
-    /// Возвращает wgpu device для decoder texture pool.
-    #[must_use]
-    pub const fn device(&self) -> &wgpu::Device {
-        &self.gpu.device
-    }
-
-    /// Возвращает wgpu queue для decoder uploads.
-    #[must_use]
-    pub const fn queue(&self) -> &wgpu::Queue {
-        &self.gpu.queue
-    }
-
-    /// Возвращает live render snapshot, который candidate обязан сохранить при recreation.
-    #[must_use]
-    pub fn live_settings(&self) -> RenderLiveSettings {
-        self.video_renderer.live_settings().clone()
-    }
-
-    /// Дожидается завершения уже submitted GPU work перед заменой device/surface.
-    pub fn wait_for_gpu_idle(
-        &self,
-        timeout: Duration,
-    ) -> std::result::Result<(), RendererGpuDrainError> {
-        if let Some(device_lost) = self.device_lost_state()? {
-            return Err(RendererGpuDrainError::DeviceLost(device_lost));
-        }
-
-        let poll_result = self.gpu.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: Some(timeout),
-        });
-
-        if let Some(device_lost) = self.device_lost_state()? {
-            return Err(RendererGpuDrainError::DeviceLost(device_lost));
-        }
-
-        match poll_result {
-            Ok(_) => Ok(()),
-            Err(wgpu::PollError::Timeout) => Err(RendererGpuDrainError::Timeout),
-            Err(wgpu::PollError::WrongSubmissionIndex(_, _)) => {
-                Err(RendererGpuDrainError::WrongSubmissionIndex)
-            }
-        }
-    }
-
-    /// Читает callback state без предположений о причине poll error-а.
-    fn device_lost_state(
-        &self,
-    ) -> std::result::Result<Option<GpuDeviceLost>, RendererGpuDrainError> {
-        self.gpu
-            .device_lost
-            .lock()
-            .map(|state| state.clone())
-            .map_err(|_| RendererGpuDrainError::DeviceLostStatePoisoned)
-    }
-
-    /// Пересоздаёт surface configuration при изменении размера окна.
-    pub fn resize(&mut self, width: u32, height: u32) {
-        self.gpu.resize(width, height);
-    }
-
-    /// Возвращает renderer capabilities для общего system capability report.
-    #[must_use]
-    pub fn render_capabilities(&self) -> RenderCapabilities {
-        self.video_renderer.capabilities().clone()
-    }
-
-    /// Возвращает renderer-neutral диагностику последнего video pass.
-    #[must_use]
-    pub fn diagnostics(&self) -> RenderDiagnostics {
-        self.video_renderer.diagnostics().clone()
-    }
-
-    /// `true`, если shell может нарисовать интерфейс прежними примитивами для этого размера
-    /// экрана ([`crate::EguiFrameContent::ReusePrevious`]). App спрашивает это ДО решения пропустить
-    /// egui-проход; после пересоздания renderer-а или смены размера ответ `false`.
-    #[must_use]
-    pub fn can_reuse_retained_ui(&self, screen: RenderScreenDescriptor) -> bool {
-        self.egui_compositor
-            .retained_frame_availability(&egui_wgpu::ScreenDescriptor {
-                size_in_pixels: screen.size_in_pixels,
-                pixels_per_point: screen.pixels_per_point,
-            })
-            .is_ok()
-    }
-
-    /// Передаёт пользовательские SDR color settings во внутренний video renderer.
+    /// Задаёт стартовые SDR color settings (до первого кадра, без проверки live-контракта).
+    ///
+    /// Вызывает фабрика каталога рендеров приложения: это прежнее стартовое поведение
+    /// (`set_*`), а не `commit_live_settings`, который отклоняет неподдержанные поля.
     pub fn set_color_pipeline_settings(&mut self, settings: ColorPipelineSettings) {
         self.video_renderer.set_color_pipeline_settings(settings);
     }
 
-    /// Передаёт HDR-to-SDR settings во внутренний P010 renderer.
+    /// Задаёт стартовые HDR-to-SDR settings (см. [`Self::set_color_pipeline_settings`]).
     pub fn set_hdr_to_sdr_settings(&mut self, settings: HdrToSdrSettings) {
         self.video_renderer.set_hdr_to_sdr_settings(settings);
+    }
+
+    /// Открывает подготовленные ресурсы ключа и собирает кадр video pass-а.
+    fn renderable_frame_for_key<'key>(
+        &self,
+        key: &'key RenderableFrameKey,
+    ) -> Result<WgpuRenderableFrame<'key>, VideoFrameKeyRejection> {
+        let prepared = key
+            .prepared_for::<WgpuPreparedFrame>(self.instance_id)
+            .ok_or(VideoFrameKeyRejection::Foreign)?;
+        renderable_frame_from_views(key.decoded_frame(), &prepared.views)
+            .map_err(|error| VideoFrameKeyRejection::Unrenderable(error.to_string()))
     }
 
     /// Рендерит один полный кадр: видео + egui overlay + контур desktop-окна.
     ///
     /// Последовательность:
-    /// 1. Обновляем egui textures/buffers
-    /// 2. Рендерим video frame через backend facade или очищаем target в уже полученный
-    ///    буфер swapchain (`input.surface`, см. `acquire_surface_frame`)
-    /// 3. Рендерим egui поверх видео
-    /// 4. Последним pass-ом применяем прозрачный контур окна
-    /// 5. Submit и present
+    /// 1. Открываем билет буфера и ключ видеокадра (чужие — `Failed` без записи)
+    /// 2. Обновляем egui textures/buffers
+    /// 3. Рендерим video frame через backend facade или очищаем target в уже полученный
+    ///    буфер (`input.surface`, см. `acquire_surface_frame`)
+    /// 4. Рендерим egui поверх видео
+    /// 5. Последним pass-ом применяем прозрачный контур окна
+    /// 6. Submit и present
     ///
     /// `renderer_elapsed` итогового timing-а = ожидание буфера + эта функция; выбор
     /// видеокадра app-ом между ними сюда не входит.
-    pub fn render_frame(&mut self, input: RenderFrameInput<'_>) -> RenderFrameOutcome {
+    fn record_and_present_frame(&mut self, input: RenderFrameInput<'_>) -> RenderFrameOutcome {
         let renderer_started_at = Instant::now();
         let RenderFrameInput {
-            window,
             surface,
             video_frame,
             egui,
@@ -485,12 +245,25 @@ impl Renderer {
             window_corner_mask,
             subtitle_overlay,
         } = input;
-        // Размер surface уже приведён к `screen` в `acquire_surface_frame`.
-        let AcquiredSurfaceFrame {
-            surface_texture,
-            acquire_elapsed: surface_acquire_elapsed,
-        } = surface;
-        let video_frame: Option<&WgpuRenderableFrame<'_>> = video_frame;
+        // Билет открывает только выдавший его рендер; чужой буфер роняется внутри
+        // `into_buffer` и возвращается своему swapchain-у.
+        let Ok(opened_surface) = surface.into_buffer::<TargetFrame>(self.instance_id) else {
+            return RenderFrameOutcome::Failed(RenderFrameFailure::foreign_surface_frame());
+        };
+        // Размер цели уже приведён к `screen` в `acquire_surface_frame`.
+        let target_frame = opened_surface.buffer;
+        let surface_acquire_elapsed = opened_surface.acquire_elapsed;
+        let video_frame = match video_frame.map(|key| self.renderable_frame_for_key(key)) {
+            None => None,
+            Some(Ok(video_frame)) => Some(video_frame),
+            Some(Err(VideoFrameKeyRejection::Foreign)) => {
+                return RenderFrameOutcome::Failed(RenderFrameFailure::foreign_video_frame());
+            }
+            Some(Err(VideoFrameKeyRejection::Unrenderable(message))) => {
+                tracing::error!(error = %message, "Failed to build WGPU renderable frame");
+                return RenderFrameOutcome::Failed(RenderFrameFailure::new(message));
+            }
+        };
         let clamped_video_viewport = clamp_video_viewport_to_screen(video_viewport, &screen);
         let clamped_video_exclusion_rects =
             clamp_video_exclusion_rects_to_screen(video_exclusion_rects, &screen);
@@ -546,22 +319,20 @@ impl Renderer {
         let egui_buffer_update_elapsed = stage_started_at.elapsed();
 
         let stage_started_at = Instant::now();
-        let surface_view = surface_texture
-            .texture
+        let surface_view = target_frame
+            .texture()
             .create_view(&wgpu::TextureViewDescriptor::default());
         let surface_view_creation_elapsed = stage_started_at.elapsed();
 
-        self.video_renderer.resize(
-            self.gpu.surface_config.width,
-            self.gpu.surface_config.height,
-        );
+        let [target_width, target_height] = self.target.size();
+        self.video_renderer.resize(target_width, target_height);
 
         let stage_started_at = Instant::now();
         // Барьеры DMA-BUF кадра (если image переиспользуется) отправляются вокруг
         // основного command buffer-а, а GPU-копия плоскостей host-planar кадра — перед
         // ним; renderer их отдал, shell обязан их submit-ить в том же submit-е.
         let video_render_outcome = match self.video_renderer.render_or_clear(WgpuVideoRenderInput {
-            frame: video_frame,
+            frame: video_frame.as_ref(),
             video_viewport: clamped_video_viewport,
             video_exclusion_rects: &clamped_video_exclusion_rects,
             target: &surface_view,
@@ -608,10 +379,7 @@ impl Renderer {
                 &self.gpu.queue,
                 &mut encoder,
                 &surface_view,
-                [
-                    self.gpu.surface_config.width,
-                    self.gpu.surface_config.height,
-                ],
+                [target_width, target_height],
                 screen.pixels_per_point,
                 window_corner_mask,
             );
@@ -655,14 +423,14 @@ impl Renderer {
 
         // Сообщаем winit, что сейчас будет present: это помогает backend/compositor timing.
         let stage_started_at = Instant::now();
-        window.pre_present_notify();
+        self.target.pre_present_notify();
         let pre_present_notify_elapsed = stage_started_at.elapsed();
 
         // Показываем кадр на экране.
         let stage_started_at = Instant::now();
         // wgpu 30: `SurfaceTexture::present()` заменён на `Queue::present`; замер
         // покрывает тот же участок — только сам вызов present.
-        self.gpu.queue.present(surface_texture);
+        PresentTarget::present(&self.gpu.queue, target_frame);
         let surface_present_elapsed = stage_started_at.elapsed();
 
         let stages = RenderFrameStageTimings {

@@ -30,7 +30,7 @@ fn advertised_av1_main_outputs_select_vaapi_for_auto_and_hardware() {
 
             assert_eq!(
                 plan,
-                VideoPipelinePlan::VaapiDmaBufWgpu {
+                VideoPipelinePlan::VaapiDmaBuf {
                     decoder_thread_config,
                 },
                 "unexpected AV1 plan for {preferred_backend:?}, {bit_depth:?}"
@@ -61,7 +61,7 @@ fn av1_auto_falls_back_to_ffmpeg_when_no_hardware_av1_is_advertised() {
 
         assert_eq!(
             plan,
-            VideoPipelinePlan::FfmpegHostUploadWgpu {
+            VideoPipelinePlan::FfmpegHostUpload {
                 decoder_thread_config,
             },
             "unexpected AV1 fallback plan for {bit_depth:?}"

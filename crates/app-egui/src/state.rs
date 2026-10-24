@@ -18,15 +18,9 @@ use player_core::{
     SeekRequest, VideoBackendSelectionRequest, VideoDecodeRequirement,
 };
 use render_core::RenderDiagnostics;
-use render_wgpu_video::{
-    DmaBufImportCacheCapacity, DmaBufWgpuFrameMaterializer, HostPlanarWgpuFrameMaterializer,
-    WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews, WgpuSubmissionQueueBinding,
-    WgpuSubmissionQueueRebindError, wrap_video_backend_for_wgpu_submission,
-};
+use render_shell_api::RenderableFrameKey;
 use tracing::{debug, info, instrument, warn};
-use video_ffmpeg::FfmpegSoftwareVideoBackendFactory;
 use video_present_core::{VideoFrameLease, VideoPresentFrameIdentity};
-use video_vaapi::VaapiVideoBackendFactory;
 use winit::window::Window;
 
 use crate::app_wake::AppWakePort;
@@ -153,8 +147,8 @@ pub(crate) use track_memory::{
     TrackMemoryHandle, TrackMemoryShutdownOutcome, TrackMemoryStartOutcome, start_track_memory,
 };
 pub(crate) use video_backend::{
-    BackendSwapVideoCheckpoint, BackendSwapVideoPhase, VideoPipelineRebuildError,
-    VideoPipelineRebuildRequest,
+    BackendSwapVideoCheckpoint, BackendSwapVideoPhase, RendererVideoImportTarget,
+    VideoPipelineRebuildError, VideoPipelineRebuildRequest,
 };
 
 use main_visual_override::MainVisualOverrideState;
@@ -227,12 +221,6 @@ pub struct AppState {
 
     /// Короткий inline статус timeline для scrub failures, owned только UI-слоем.
     timeline_inline_status: TimelineInlineStatusState,
-
-    /// WGPU video materializer concrete backend-а; `player-core` его не видит.
-    wgpu_frame_materializer: Option<Arc<dyn WgpuFrameTextureViewMaterializer>>,
-
-    /// Queue binding release path-а, переключаемый только controlled renderer recreation-ом.
-    wgpu_submission_queue_binding: Option<WgpuSubmissionQueueBinding>,
 
     /// Класс активного video backend-а, чтобы не пересоздавать pipeline без нужды.
     current_video_backend_kind: Option<VideoBackendKind>,
@@ -425,8 +413,6 @@ impl AppState {
             cached_renderable_present_frame: None,
             main_visual_override_state: MainVisualOverrideState::default(),
             timeline_inline_status: TimelineInlineStatusState::default(),
-            wgpu_frame_materializer: None,
-            wgpu_submission_queue_binding: None,
             current_video_backend_kind: None,
             renderer_generation: crate::video_pipeline_candidate::RendererGeneration::new_unique(),
             pending_video_backend_reselection: None,
@@ -569,7 +555,7 @@ impl AppState {
     pub(crate) fn window_corner_mask(
         &self,
         window: &winit::window::Window,
-    ) -> render_wgpu_shell::WindowCornerMask {
+    ) -> render_shell_api::WindowCornerMask {
         crate::window_corner_policy::resolve_window_corner_mask(
             self.committed_config_snapshot.window_corner_radius_points(),
             window.is_maximized(),

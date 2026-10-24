@@ -156,11 +156,8 @@ struct FakeCandidateDriver {
     /// Decoder half release counter.
     decoder_drop_count: Arc<AtomicUsize>,
 
-    /// Materializer half release counter.
-    materializer_drop_count: Arc<AtomicUsize>,
-
-    /// Submission binding half release counter.
-    binding_drop_count: Arc<AtomicUsize>,
+    /// Renderer import half release counter (materializer + привязка освобождений рендера).
+    renderer_import_drop_count: Arc<AtomicUsize>,
 }
 
 impl FakeCandidateDriver {
@@ -173,8 +170,7 @@ impl FakeCandidateDriver {
             destructive_fallback_calls: 0,
             prepared_descriptors: Vec::new(),
             decoder_drop_count: Arc::new(AtomicUsize::new(0)),
-            materializer_drop_count: Arc::new(AtomicUsize::new(0)),
-            binding_drop_count: Arc::new(AtomicUsize::new(0)),
+            renderer_import_drop_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -189,14 +185,17 @@ impl FakeCandidateDriver {
 }
 
 impl CandidateVideoPipelineResourceDriver for FakeCandidateDriver {
-    type Materializer = DropProbe;
-    type SubmissionBinding = DropProbe;
+    type RendererImport = DropProbe;
+
+    fn renderer_family(&self) -> render_shell_api::RendererFamily {
+        render_shell_api::RendererFamily::WgpuVulkan
+    }
 
     fn prepare_candidate_resources(
         &mut self,
         plan: VideoPipelinePlan,
     ) -> Result<
-        PreparedCandidateVideoPipelineResources<Self::Materializer, Self::SubmissionBinding>,
+        PreparedCandidateVideoPipelineResources<Self::RendererImport>,
         CandidateVideoPipelinePreparationError,
     > {
         // Invocation учитывается до outcome, поэтому retry/fallback виден тесту.
@@ -225,11 +224,10 @@ impl CandidateVideoPipelineResourceDriver for FakeCandidateDriver {
             },
         );
 
-        // Pair содержит ровно одну player half и две app-side owners.
+        // Pair содержит ровно одну player half и одну renderer half (импорт рендера).
         Ok(PreparedCandidateVideoPipelineResources {
             detached_backend: DetachedVideoBackend::from_started(started_backend),
-            materializer: DropProbe::new(200, self.materializer_drop_count.clone()),
-            submission_binding: DropProbe::new(300, self.binding_drop_count.clone()),
+            renderer_import: DropProbe::new(200, self.renderer_import_drop_count.clone()),
         })
     }
 }
@@ -359,7 +357,7 @@ fn renderer_generation(raw: u64) -> RendererGeneration {
 /// Строит VA-API production-shaped plan без запуска concrete backend-а.
 fn vaapi_plan() -> VideoPipelinePlan {
     // Default decoder config содержит только bounded production limits.
-    VideoPipelinePlan::VaapiDmaBufWgpu {
+    VideoPipelinePlan::VaapiDmaBuf {
         decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
     }
 }
@@ -367,7 +365,7 @@ fn vaapi_plan() -> VideoPipelinePlan {
 /// Строит FFmpeg production-shaped plan без запуска concrete backend-а.
 fn ffmpeg_plan() -> VideoPipelinePlan {
     // Тот же neutral config передаётся software factory path-у.
-    VideoPipelinePlan::FfmpegHostUploadWgpu {
+    VideoPipelinePlan::FfmpegHostUpload {
         decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
     }
 }

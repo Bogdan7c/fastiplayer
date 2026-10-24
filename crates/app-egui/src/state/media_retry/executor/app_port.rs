@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use playlist_core::PlaylistItemId;
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 use tracing::debug;
 
 use super::{
@@ -19,7 +19,7 @@ use crate::state::media_retry::ReopenPosition;
 struct AppRetryPort<'a> {
     app_state: &'a mut AppState,
     playlist_runtime: &'a mut PlaylistRuntime,
-    renderer: &'a Renderer,
+    renderer: &'a mut dyn RenderShell,
 }
 
 impl AppRetryPort<'_> {
@@ -101,7 +101,7 @@ impl AppState {
     pub(crate) fn apply_requested_media_retry(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) {
         let Some(target) = self.notifications.take_retry_request() else {
             return;

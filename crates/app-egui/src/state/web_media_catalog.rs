@@ -210,7 +210,7 @@ impl AppState {
     pub(crate) fn apply_automatic_web_media_preference(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) -> bool {
         let Some(pending) = self.pending_automatic_web_media_switch.take() else {
             return false;

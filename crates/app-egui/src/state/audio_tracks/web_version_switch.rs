@@ -17,7 +17,7 @@
 //! (решение владельца, см. memory `app-egui/web-audio-versions-menu`).
 
 use player_core::PlayerSnapshot;
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 
 use media_source_open::web_media_open::audio_languages::WebAudioLanguageAction;
 
@@ -113,7 +113,7 @@ impl AppState {
     pub(crate) fn apply_requested_web_audio_version(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) -> bool {
         let version = match self.requested_web_audio_switch.take() {
             Some(WebAudioSwitchRequest::Version(version)) => version,

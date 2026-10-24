@@ -1,6 +1,6 @@
 //! Размещение PGS-слоя: числа проверяются по итоговым сдвигам групп и прямоугольнику слоя.
 
-use render_wgpu_shell::SubtitleLayerOffset;
+use render_shell_api::SubtitleLayerOffset;
 
 use super::*;
 use crate::state::subtitles::layer_placement::PlacedLayerRect;

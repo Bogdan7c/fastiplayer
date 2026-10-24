@@ -24,6 +24,13 @@
    - Факт 00: с установленным lavapipe текущий плеер на T410 стартует на процессорном Vulkan и тратит 216–280 % CPU. Проба `DeviceType::Cpu` → `SoftwareAdapterOnly` → GLES2 обязательна и проверяется на T410 с поставленным на время `vulkan-swrast`.
 6. **Телеметрия/инфо**: в панели телеметрии и в «About/Diagnostics» видно активный рендер и причину выбора (`Auto: no hardware Vulkan adapter`).
 
+## Поправки по итогам сессии 02 (`results/02.md`)
+
+- Каталог уже есть: `app-egui::render_backend` (`selection.rs` — чистая `select_renderer` с таблицей тестов, `wgpu_vulkan.rs` — фабрика и единственный маппинг `[render.vulkan]`, `mod.rs` — `create_renderer` / `create_startup_renderer`). GLES2 добавляется строкой в `platform_candidates()` и своим модулем-фабрикой. Проба wgpu сейчас всегда «годен»: проверку аппаратного Vulkan и lavapipe (`DeviceType::Cpu`) добавляет эта сессия.
+- Метка незавершённого старта: тип `RendererStartupMarker` и его ветки в `select_renderer` уже закреплены тестами; запись и чтение метки — здесь.
+- Профиль `opengles` до этой сессии стартует wgpu с предупреждением в лог (`RequestedFamilyNotBuilt`); Apply в настройках с `opengles` — прежний `UnsupportedProfile` в `renderer_recreation.rs`. Обе ветки меняются здесь.
+- Решение 5 («смена семейства только после перезапуска») уже соблюдается: пересоздание (`LiveRendererRecreation`) создаёт рендер того же семейства (`renderer.family()`).
+
 ## Тесты (функциональные, результат, а не вызов)
 
 - Видео из фикстуры через GLES2 доходит до показа: headless EGL + реальный FFmpeg-декодер → `RenderFrameOutcome::Presented` с ожидаемым pts и пикселями кадра (не «декодер открылся»). Для HW — `#[ignore]` на машине с VA-API.

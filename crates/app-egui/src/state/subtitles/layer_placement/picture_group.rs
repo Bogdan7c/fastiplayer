@@ -17,7 +17,7 @@
 //! 4. Верх картинки важнее подъёма: группа не уходит выше картинки.
 //! 5. Фиксированная группа и горизонталь: сдвиг ноль.
 
-use render_wgpu_shell::{SubtitleLayerOffset, SubtitleLayerOffsets};
+use render_shell_api::{SubtitleLayerOffset, SubtitleLayerOffsets};
 use subtitle_raster::CanvasRect;
 
 use super::group_lift::{MainGroupLift, screen_rect, union_rects};

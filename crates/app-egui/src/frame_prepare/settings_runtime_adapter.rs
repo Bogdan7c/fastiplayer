@@ -9,8 +9,8 @@ use crate::settings_runtime::{
     SettingsRuntimePreflightFailure,
 };
 use crate::state::{
-    RebuildPrepareRequest, RebuildSourceInput, SettingsMediaRebuildStart,
-    media_reconfigure_install_failure, prepare_rebuild_source,
+    RebuildPrepareRequest, RebuildSourceInput, RendererVideoImportTarget,
+    SettingsMediaRebuildStart, media_reconfigure_install_failure, prepare_rebuild_source,
 };
 use player_core::MediaInstallVideoBackendConstraint;
 use reconfigure_projection::{
@@ -27,8 +27,8 @@ pub(crate) struct FrameSettingsRuntimeAdapter<'frame> {
     /// App state владеет player worker и app-level media/source identity.
     app_state: &'frame mut AppState,
 
-    /// Renderer владеет WGPU context и live render settings.
-    renderer: &'frame mut Renderer,
+    /// Слот рендера: live settings, склад кадров и пересоздание (commit заменяет рендер).
+    renderer: &'frame mut Box<dyn RenderShell>,
 
     /// Process-lifetime coordinator проводит settings reinstall до exact terminal.
     playlist_runtime: &'frame mut crate::playlist_runtime::PlaylistRuntime,
@@ -42,7 +42,7 @@ impl<'frame> FrameSettingsRuntimeAdapter<'frame> {
     pub(super) fn new(
         window: Arc<Window>,
         app_state: &'frame mut AppState,
-        renderer: &'frame mut Renderer,
+        renderer: &'frame mut Box<dyn RenderShell>,
         playlist_runtime: &'frame mut crate::playlist_runtime::PlaylistRuntime,
         renderer_lifecycle: &'frame mut RendererLifecycleCoordinator,
     ) -> Self {
@@ -153,7 +153,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
             },
             ActiveMediaSource::Web(web_intent) => {
                 let system_capabilities =
-                    probe_system_capabilities(self.renderer.render_capabilities());
+                    probe_system_capabilities(self.renderer.capabilities().clone());
                 let adaptive_settings = crate::media_open::WebMediaOpenSettings {
                     network_config: config.network.clone(),
                     web_media_config: config.web_media.clone(),
@@ -227,7 +227,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
         };
         let installed = match self.app_state.install_prepared_media_strong(
             self.playlist_runtime,
-            self.renderer,
+            self.renderer.as_mut(),
             prepared_input,
             desired_intent,
             backend_constraint,
@@ -253,21 +253,27 @@ impl RenderLiveSettingsAdapter for FrameSettingsRuntimeAdapter<'_> {
         &mut self,
         update: &RenderLiveSettingsUpdate,
     ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
-        self.renderer.preview_live_settings(update)
+        self.renderer
+            .live_settings_adapter()
+            .preview_live_settings(update)
     }
 
     fn commit_live_settings(
         &mut self,
         settings: &RenderLiveSettings,
     ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
-        self.renderer.commit_live_settings(settings)
+        self.renderer
+            .live_settings_adapter()
+            .commit_live_settings(settings)
     }
 
     fn rollback_live_settings(
         &mut self,
         baseline: &RenderLiveSettings,
     ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
-        self.renderer.rollback_live_settings(baseline)
+        self.renderer
+            .live_settings_adapter()
+            .rollback_live_settings(baseline)
     }
 }
 
@@ -473,7 +479,7 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
 
     fn poll_media_rebuild(&mut self) -> MediaRebuildProgress {
         self.app_state
-            .poll_settings_media_rebuild(self.playlist_runtime, self.renderer)
+            .poll_settings_media_rebuild(self.playlist_runtime, self.renderer.as_mut())
     }
 
     fn cancel_media_rebuild(&mut self) {
@@ -530,10 +536,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
                         player_core::PlayerVideoBackendInstallIntent::SettingsReconfigure,
                     decoder_thread_config,
                     stream_requirement: stream_requirement.as_ref(),
-                    instance: self.renderer.instance(),
-                    adapter: self.renderer.adapter(),
-                    device: self.renderer.device(),
-                    queue: self.renderer.queue(),
+                    import_target: RendererVideoImportTarget::for_renderer(self.renderer.as_mut()),
                 },
             ) {
                 return PlayerApplyStart::Finished(Ok(player_pipeline_rebuild_failure_report(

@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 use winit::window::Window;
 
 use crate::playlist_runtime::{
@@ -19,7 +19,7 @@ pub(crate) fn apply_playlist_actions(
     window: &Window,
     app_state: &mut AppState,
     runtime: &mut PlaylistRuntime,
-    renderer: &Renderer,
+    renderer: &mut dyn RenderShell,
     actions: Vec<PlaylistAction>,
 ) -> bool {
     let mut changed = false;

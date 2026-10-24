@@ -170,13 +170,8 @@ fn every_software_hardware_transition_commits_one_exact_pipeline_pair() {
                     CandidateVideoMaterializerKind::HostPlanarUpload,
                 )
             };
-            let old_materializer_drops = Arc::new(AtomicUsize::new(0));
-            let old_binding_drops = Arc::new(AtomicUsize::new(0));
-            let mut active = ActiveVideoPipelinePointers::new(
-                old_backend,
-                DropProbe::new(10, old_materializer_drops.clone()),
-                DropProbe::new(20, old_binding_drops.clone()),
-            );
+            // Активный импорт старого класса живёт в рендере, слот его не видит.
+            let _old_backend_in_renderer = old_backend;
             let mut slot = StagedVideoPipelineCandidateSlot::new();
             let mut driver = FakeCandidateDriver::successful();
             let candidate_request_id = request_id((old_index * 2 + new_index + 20) as u64);
@@ -194,71 +189,62 @@ fn every_software_hardware_transition_commits_one_exact_pipeline_pair() {
             let status = port.configure(candidate_request_id);
             slot.record_player_status(status, generation, &mut port)
                 .expect("matching configured status must be accepted");
-            slot.prepare_post_installed_commit(candidate_request_id, generation)
-                .expect("matching Installed must prepare pointer commit")
-                .commit(&mut active);
+            let committed = slot
+                .prepare_post_installed_commit(candidate_request_id, generation)
+                .expect("matching Installed must prepare the commit")
+                .commit();
 
-            assert_eq!(active.backend_kind(), expected_backend);
-            assert_eq!(active.materializer().id, 200);
-            assert_eq!(active.submission_binding().id, 300);
-            assert_eq!(old_materializer_drops.load(Ordering::SeqCst), 1);
-            assert_eq!(old_binding_drops.load(Ordering::SeqCst), 1);
+            // Commit отдаёт ровно подготовленный импорт и класс нового backend-а.
+            assert_eq!(committed.backend_kind(), expected_backend);
+            assert_eq!(committed.renderer_import().id, 200);
+            assert_eq!(driver.renderer_import_drop_count.load(Ordering::SeqCst), 0);
+            drop(committed);
+            assert_eq!(driver.renderer_import_drop_count.load(Ordering::SeqCst), 1);
             drop(port);
         }
     }
 }
 
 #[test]
-fn candidate_success_does_not_change_active_pointers_until_infallible_commit() {
-    // Old active pointers имеют отдельные IDs и release counters.
-    let old_materializer_drops = Arc::new(AtomicUsize::new(0));
-    let old_binding_drops = Arc::new(AtomicUsize::new(0));
-    let mut active = ActiveVideoPipelinePointers::new(
-        VideoBackendKind::HardwareZeroCopy,
-        DropProbe::new(10, old_materializer_drops.clone()),
-        DropProbe::new(20, old_binding_drops.clone()),
-    );
-    // Candidate preparation не получает mutable active reference.
+fn candidate_import_is_handed_out_only_by_infallible_commit() {
+    // Candidate preparation не получает активный импорт рендера.
     let mut slot = StagedVideoPipelineCandidateSlot::new();
     let mut driver = FakeCandidateDriver::successful();
     let candidate_request_id = request_id(10);
     let generation = renderer_generation(3);
 
-    // Candidate pair создаётся рядом с old active pair.
+    // Candidate pair создаётся рядом с активным импортом рендера и держится в слоте.
     let reply =
         slot.prepare_and_stage(candidate_request_id, generation, ffmpeg_plan(), &mut driver);
-    // Old decoder/materializer class остаётся active после successful creation.
-    assert_eq!(active.backend_kind(), VideoBackendKind::HardwareZeroCopy);
-    assert_eq!(active.materializer().id, 10);
-    assert_eq!(active.submission_binding().id, 20);
-    assert_eq!(old_materializer_drops.load(Ordering::SeqCst), 0);
-    assert_eq!(old_binding_drops.load(Ordering::SeqCst), 0);
+    assert!(slot.has_candidate());
+    assert_eq!(driver.renderer_import_drop_count.load(Ordering::SeqCst), 0);
 
-    // Player half настраивается fallibly отдельно от app pointers.
+    // Player half настраивается fallibly отдельно от импорта рендера.
     let mut port = FakeCandidatePort::connected(available_backend(reply, candidate_request_id));
     let status = port.configure(candidate_request_id);
     // Matching configured status только меняет staged marker.
     slot.record_player_status(status, generation, &mut port)
         .expect("matching configured status must be accepted");
-    // Active pointers всё ещё old до Installed barrier.
-    assert_eq!(active.materializer().id, 10);
-    assert_eq!(active.submission_binding().id, 20);
+    // Импорт всё ещё в слоте до Installed barrier.
+    assert!(slot.has_candidate());
+    assert_eq!(driver.renderer_import_drop_count.load(Ordering::SeqCst), 0);
 
-    // Matching validation выполняется до pointer-only primitive-а.
+    // Matching validation выполняется до infallible primitive-а.
     let prepared_commit = slot
         .prepare_post_installed_commit(candidate_request_id, generation)
         .expect("matching Installed must prepare commit token");
     // Commit не возвращает Result и не вызывает driver/factory повторно.
-    prepared_commit.commit(&mut active);
-    // Новый active pair перемещён атомарной assignment-границей.
-    assert_eq!(active.backend_kind(), VideoBackendKind::FfmpegSoftware);
-    assert_eq!(active.materializer().id, 200);
-    assert_eq!(active.submission_binding().id, 300);
-    // Old app pointers освобождены ровно один раз после replacement.
-    assert_eq!(old_materializer_drops.load(Ordering::SeqCst), 1);
-    assert_eq!(old_binding_drops.load(Ordering::SeqCst), 1);
+    let committed = prepared_commit.commit();
+    // Наружу уходит ровно подготовленный импорт нового класса; слот пуст.
+    assert_eq!(committed.backend_kind(), VideoBackendKind::FfmpegSoftware);
+    assert_eq!(committed.renderer_import().id, 200);
+    assert!(!slot.has_candidate());
+    assert_eq!(driver.renderer_import_drop_count.load(Ordering::SeqCst), 0);
     // Post-Installed primitive не выполнял startup/provider/materializer work.
     assert_eq!(driver.prepare_calls, 1);
+    // Импорт освобождается владельцем (рендером) ровно один раз.
+    drop(committed);
+    assert_eq!(driver.renderer_import_drop_count.load(Ordering::SeqCst), 1);
 
     // Installed outcome lossless и drain-ится exactly once.
     assert!(matches!(
@@ -276,7 +262,7 @@ fn candidate_success_does_not_change_active_pointers_until_infallible_commit() {
 #[test]
 fn missing_or_mismatched_app_half_after_installed_is_a_fatal_invariant() {
     // Player `Installed` означает, что rollback к старому player instance уже запрещён.
-    let mut empty_slot = StagedVideoPipelineCandidateSlot::<DropProbe, DropProbe>::new();
+    let mut empty_slot = StagedVideoPipelineCandidateSlot::<DropProbe>::new();
     let Err(missing_error) =
         empty_slot.prepare_post_installed_commit(request_id(11), renderer_generation(3))
     else {
@@ -342,9 +328,8 @@ fn stale_request_is_ignored_but_renderer_generation_mismatch_cancels_both_halves
             StagedVideoPipelineCandidateMatchError::RendererGenerationMismatch,
         ))
     );
-    // App materializer/binding и configured player backend освобождены по одному разу.
-    assert_eq!(driver.materializer_drop_count.load(Ordering::SeqCst), 1);
-    assert_eq!(driver.binding_drop_count.load(Ordering::SeqCst), 1);
+    // Импорт рендера и configured player backend освобождены по одному разу.
+    assert_eq!(driver.renderer_import_drop_count.load(Ordering::SeqCst), 1);
     assert_eq!(driver.decoder_drop_count.load(Ordering::SeqCst), 1);
     // Terminal cause остаётся distinct от generic cancellation.
     assert!(matches!(
@@ -358,14 +343,7 @@ fn stale_request_is_ignored_but_renderer_generation_mismatch_cancels_both_halves
 
 #[test]
 fn configuration_failure_releases_candidate_without_touching_active_pair() {
-    // Active pair stays separate from candidate resource driver.
-    let active_materializer_drops = Arc::new(AtomicUsize::new(0));
-    let active_binding_drops = Arc::new(AtomicUsize::new(0));
-    let active = ActiveVideoPipelinePointers::new(
-        VideoBackendKind::HardwareZeroCopy,
-        DropProbe::new(401, active_materializer_drops.clone()),
-        DropProbe::new(402, active_binding_drops.clone()),
-    );
+    // Активный импорт живёт в рендере; slot отвечает только за импорт кандидата.
     let mut driver = FakeCandidateDriver::successful();
     let mut slot = StagedVideoPipelineCandidateSlot::new();
     let candidate_request_id = request_id(60);
@@ -396,14 +374,10 @@ fn configuration_failure_releases_candidate_without_touching_active_pair() {
     )
     .expect("matching configuration failure must finish candidate");
 
-    // Candidate halves released exactly once; active pointers remain alive/unchanged.
+    // Candidate halves released exactly once; ничего наружу не отдано на установку.
     assert_eq!(driver.decoder_drop_count.load(Ordering::SeqCst), 1);
-    assert_eq!(driver.materializer_drop_count.load(Ordering::SeqCst), 1);
-    assert_eq!(driver.binding_drop_count.load(Ordering::SeqCst), 1);
-    assert_eq!(active.materializer().id, 401);
-    assert_eq!(active.submission_binding().id, 402);
-    assert_eq!(active_materializer_drops.load(Ordering::SeqCst), 0);
-    assert_eq!(active_binding_drops.load(Ordering::SeqCst), 0);
+    assert_eq!(driver.renderer_import_drop_count.load(Ordering::SeqCst), 1);
+    assert!(!slot.has_candidate());
     // Typed configuration error remains lossless.
     assert!(matches!(
         slot.drain_terminal_outcome(),

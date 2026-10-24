@@ -1,6 +1,6 @@
 //! Testable production bridge controlled same-item switch-а к strong media lifecycle.
 
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 
 use crate::media_open::{MediaOpenRequestId, MediaOpenSourceRequest};
 use crate::playlist_runtime::{ActiveMediaIdentity, PlaylistRuntime};
@@ -378,7 +378,7 @@ impl SameItemSwitchAppPath {
 pub(super) struct ProductionSameItemSwitchStartContext<'app, 'runtime, 'renderer> {
     app_state: &'app mut AppState,
     playlist_runtime: &'runtime mut PlaylistRuntime,
-    renderer: &'renderer Renderer,
+    renderer: &'renderer mut dyn RenderShell,
 }
 
 /// Внутренний projection даёт общему selector impl доступ только к его AppState owner-у.
@@ -448,7 +448,7 @@ impl<'app, 'runtime, 'renderer> ProductionSameItemSwitchStartContext<'app, 'runt
     pub(super) fn new(
         app_state: &'app mut AppState,
         playlist_runtime: &'runtime mut PlaylistRuntime,
-        renderer: &'renderer Renderer,
+        renderer: &'renderer mut dyn RenderShell,
     ) -> Self {
         Self {
             app_state,
@@ -485,17 +485,21 @@ impl ProductionSameItemSwitchSelectorContext for ProductionSameItemSwitchStartCo
 pub(super) struct ProductionSameItemSwitchPollContext<'app, 'runtime> {
     app_state: &'app mut AppState,
     playlist_runtime: &'runtime mut PlaylistRuntime,
+    /// Склад кадров рендера: после Installed в него ставится импорт кадров кандидата.
+    video_frames: &'runtime mut dyn render_shell_api::VideoFrameImport,
 }
 
 impl<'app, 'runtime> ProductionSameItemSwitchPollContext<'app, 'runtime> {
-    /// Создаёт scoped poll adapter без renderer dependency.
+    /// Создаёт scoped poll adapter; рендер виден только как склад кадров.
     pub(super) fn new(
         app_state: &'app mut AppState,
         playlist_runtime: &'runtime mut PlaylistRuntime,
+        video_frames: &'runtime mut dyn render_shell_api::VideoFrameImport,
     ) -> Self {
         Self {
             app_state,
             playlist_runtime,
+            video_frames,
         }
     }
 }
@@ -512,7 +516,7 @@ impl SameItemSwitchLifecyclePollPort for ProductionSameItemSwitchPollContext<'_,
         }
         match self
             .app_state
-            .poll_prepared_media_strong(self.playlist_runtime)
+            .poll_prepared_media_strong(self.playlist_runtime, self.video_frames)
         {
             StrongMediaOpenPoll::Pending => SameItemSwitchLifecyclePoll::Pending,
             StrongMediaOpenPoll::Installed(installed) => {

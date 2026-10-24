@@ -58,10 +58,10 @@ fn normal_run_completes_with_zero_exit_code_and_shows_nothing() {
 #[test]
 fn missing_gpu_adapter_is_shown_as_vulkan_problem_with_nonzero_exit() {
     // Тот же текст, что `render-wgpu-shell` кладёт в контекст при отсутствии адаптера.
-    let renderer_error = anyhow::anyhow!("adapter request failed: no suitable adapter")
+    let wgpu_error = anyhow::anyhow!("adapter request failed: no suitable adapter")
         .context("Couldn't get a GPU adapter. Check Vulkan drivers");
 
-    let error = FatalStartupError::graphics_unavailable(&renderer_error);
+    let error = FatalStartupError::renderer_unavailable(&renderer_error(format!("{wgpu_error:#}")));
     let (conclusion, presenter) = conclude_with_fake(error.clone());
 
     assert_eq!(conclusion, ProcessConclusion::FailedToStart);
@@ -255,12 +255,27 @@ fn slot_keeps_first_error_and_is_empty_after_take() {
     assert_eq!(slot.take(), None);
 }
 
+/// Ошибка каталога рендеров даёт тот же текст, что прежняя ошибка `Renderer::new` (`{:#}`).
+#[test]
+fn renderer_catalog_failure_keeps_the_previous_graphics_error_text() {
+    let wgpu_error = anyhow::anyhow!("adapter request failed: no suitable adapter")
+        .context("Couldn't get a GPU adapter. Check Vulkan drivers");
+
+    let error = FatalStartupError::renderer_unavailable(&renderer_error(format!("{wgpu_error:#}")));
+
+    assert_eq!(
+        error.technical_detail(),
+        "could not initialize the renderer: Couldn't get a GPU adapter. Check Vulkan drivers: \
+         adapter request failed: no suitable adapter"
+    );
+}
+
 #[test]
 fn graphics_failure_during_runtime_recreation_is_not_shown_as_startup_error() {
     // Технический текст, как его кладёт renderer при провале после resume.
-    let renderer_error = anyhow::anyhow!("surface lost: device lost after suspend")
+    let wgpu_error = anyhow::anyhow!("surface lost: device lost after suspend")
         .context("Failed to get a GPU adapter");
-    let error = FatalStartupError::graphics_unavailable(&renderer_error)
+    let error = FatalStartupError::renderer_unavailable(&renderer_error(format!("{wgpu_error:#}")))
         .in_phase(FatalErrorPhase::RuntimeRecreation);
     let (conclusion, presenter) = conclude_with_fake(error.clone());
 
@@ -287,7 +302,7 @@ fn graphics_failure_during_runtime_recreation_is_not_shown_as_startup_error() {
 
 #[test]
 fn startup_phase_is_the_default_and_keeps_the_startup_title() {
-    let error = FatalStartupError::graphics_unavailable(&anyhow::anyhow!("no adapter"));
+    let error = FatalStartupError::renderer_unavailable(&renderer_error("no adapter"));
     assert_eq!(error.phase(), FatalErrorPhase::Startup);
     let (_, presenter) = conclude_with_fake(error);
 
@@ -309,4 +324,12 @@ fn slot_keeps_phase_of_the_first_recorded_error() {
     let taken = slot.take().expect("first error saved");
     assert_eq!(taken.phase(), FatalErrorPhase::RuntimeRecreation);
     assert_eq!(*taken.reason(), FatalStartupReason::InternalFailure);
+}
+
+/// Ошибка каталога рендеров с цепочкой причин, как её кладёт фабрика wgpu (`{:#}` anyhow).
+fn renderer_error(chain: impl Into<String>) -> render_shell_api::RendererCreateError {
+    render_shell_api::RendererCreateError::new(
+        render_shell_api::RendererCreateStage::DeviceCreation,
+        chain,
+    )
 }

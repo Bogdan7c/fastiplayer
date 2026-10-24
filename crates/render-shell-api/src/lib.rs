@@ -61,7 +61,7 @@ pub use video_import::{
     FrameImportUnsupportedReason, FrameMaterialization, FrameMaterializationOutcome,
     PendingVideoImport, PreparedVideoImport, ReleasedFrameCount, RenderableFrameKey,
     VideoFrameImport, VideoImportHandoff, VideoImportInstallError, VideoImportPath,
-    VideoImportPlan, VideoImportPrepareError, VideoImportReleaseError,
+    VideoImportPlan, VideoImportPrepareError, VideoImportPreparer, VideoImportReleaseError,
 };
 pub use window_corner_mask::WindowCornerMask;
 

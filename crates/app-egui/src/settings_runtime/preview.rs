@@ -15,7 +15,8 @@ impl SettingsRuntime {
         now: Instant,
     ) -> SettingsResult<SettingsPreviewTick>
     where
-        A: RenderLiveSettingsAdapter,
+        // `?Sized`: адаптер может быть `dyn` (живые настройки активного `RenderShell`).
+        A: RenderLiveSettingsAdapter + ?Sized,
     {
         let pending_routes = self.controller.preview().pending_routes();
         if pending_routes.is_empty() {
@@ -82,7 +83,7 @@ impl SettingsRuntimeRouteAppliers {
         render_adapter: &mut A,
     ) -> PreviewApplyResult
     where
-        A: RenderLiveSettingsAdapter,
+        A: RenderLiveSettingsAdapter + ?Sized,
     {
         let next_settings = match render_live_settings_from_config(document) {
             Ok(settings) => settings,
@@ -160,7 +161,7 @@ impl SettingsRuntimeRouteAppliers {
     }
 }
 /// Delegate preview-а: controller отвечает за coalescing, runtime - за renderer boundary.
-struct SettingsRuntimePreviewDelegate<'runtime, A> {
+struct SettingsRuntimePreviewDelegate<'runtime, A: ?Sized> {
     /// App-owned route snapshots.
     route_appliers: &'runtime mut SettingsRuntimeRouteAppliers,
 
@@ -170,7 +171,7 @@ struct SettingsRuntimePreviewDelegate<'runtime, A> {
 
 impl<A> PreviewSettingsApplier<AppConfig> for SettingsRuntimePreviewDelegate<'_, A>
 where
-    A: RenderLiveSettingsAdapter,
+    A: RenderLiveSettingsAdapter + ?Sized,
 {
     fn apply_preview(
         &mut self,

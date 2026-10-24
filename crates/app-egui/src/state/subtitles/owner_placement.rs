@@ -9,7 +9,7 @@
 mod ass_positioning;
 mod picture_positioning;
 
-use render_wgpu_shell::SubtitleLayerOffsets;
+use render_shell_api::SubtitleLayerOffsets;
 use subtitle_raster::{OverlayPlacementGroup, SubtitleOverlay};
 
 use super::active_track::ActiveSubtitleTrack;

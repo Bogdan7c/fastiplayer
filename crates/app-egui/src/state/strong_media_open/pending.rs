@@ -194,8 +194,9 @@ impl AppState {
     pub(crate) fn poll_prepared_media_strong(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
+        video_frames: &mut dyn VideoFrameImport,
     ) -> StrongMediaOpenPoll {
-        match self.poll_prepared_playlist_media_strong(playlist_runtime) {
+        match self.poll_prepared_playlist_media_strong(playlist_runtime, video_frames) {
             PlaylistStrongMediaOpenPoll::Strong(poll) => poll,
             PlaylistStrongMediaOpenPoll::TargetFailedBeforeAdmission(unstaged) => {
                 StrongMediaOpenPoll::Failed(Box::new(unstaged.error))
@@ -208,6 +209,7 @@ impl AppState {
     pub(crate) fn poll_prepared_playlist_media_strong(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
+        video_frames: &mut dyn VideoFrameImport,
     ) -> PlaylistStrongMediaOpenPoll {
         let Some(mut pending) = self.pending_strong_media_open.take() else {
             return PlaylistStrongMediaOpenPoll::Strong(StrongMediaOpenPoll::Pending);
@@ -223,6 +225,7 @@ impl AppState {
             } => {
                 let result = self.poll_strong_media_protocol(
                     playlist_runtime,
+                    video_frames,
                     &mut pending,
                     &mut deferred_rejection,
                     &mut pending_staging,
@@ -363,6 +366,7 @@ impl AppState {
     fn poll_strong_media_protocol(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
+        video_frames: &mut dyn VideoFrameImport,
         pending: &mut PendingStrongMediaOpen,
         deferred_rejection: &mut Option<PlaylistMediaOpenGateError>,
         pending_staging: &mut Option<PendingStrongMediaStaging>,
@@ -498,7 +502,7 @@ impl AppState {
                 }
             }
             MediaOpenPhase::Installed => {
-                self.begin_post_installed_intent(playlist_runtime, pending)
+                self.begin_post_installed_intent(playlist_runtime, video_frames, pending)
             }
             MediaOpenPhase::Failed => {
                 let terminal = match playlist_runtime.take_media_open_terminal(pending.request_id) {

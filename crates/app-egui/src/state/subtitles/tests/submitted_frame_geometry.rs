@@ -1,4 +1,4 @@
-//! Геометрия субтитров от настоящего `RenderableFrame`: `SubmittedFrameForSubtitles::from_submission`.
+//! Геометрия субтитров от настоящего кадра декодера: `SubmittedFrameForSubtitles::from_submission`.
 //!
 //! Остальные тесты строят описание кадра через `for_test*` и готовый прямоугольник. Здесь
 //! проверяется именно путь точки submit: размер кадра с учётом поворота, вписывание в область
@@ -9,10 +9,10 @@
 
 use std::time::Duration;
 
-use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata, VideoDisplayOrientation};
-use render_core::{PictureRect, PictureSize, RenderColorMetadata, RenderViewport, RenderableFrame};
+use codec_core::{VideoColorMetadata, VideoDisplayOrientation};
+use render_core::{PictureRect, PictureSize, RenderViewport};
 use video_core::{DecodedFrame, FrameResourceHandle, VideoFrameDiagnostics};
-use video_frame_contract::{DmaBufImageLayout, VideoFrameContract, VideoFramePixelLayout};
+use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 use video_present_core::VideoPresentFrameIdentity;
 
 use super::super::presentation::SubmittedFrameForSubtitles;
@@ -29,19 +29,19 @@ fn frame(
     render_width: u32,
     render_height: u32,
     orientation: VideoDisplayOrientation,
-) -> RenderableFrame {
-    RenderableFrame {
-        handle: 1,
+) -> DecodedFrame {
+    DecodedFrame {
+        generation: 3,
         pts: FRAME_PTS,
-        format: VideoFramePixelLayout::Nv12,
-        bit_depth: BitDepth::Eight,
-        chroma: ChromaSubsampling::Yuv420,
-        coded_width: render_width,
-        coded_height: render_height,
+        frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+        width: render_width,
+        height: render_height,
         render_width,
         render_height,
         display_orientation: orientation,
-        color: RenderColorMetadata::sdr_bt709_limited(),
+        color: VideoColorMetadata::sdr_bt709_limited(),
+        resource_handle: FrameResourceHandle(1),
+        diagnostics: VideoFrameDiagnostics::default(),
     }
 }
 
@@ -76,7 +76,7 @@ fn assert_rect_close(actual: PictureRect, expected: [f32; 4]) {
 
 /// Собирает описание кадра через точку submit; тест упадёт, если вернулось `None`.
 fn submit(
-    frame: &RenderableFrame,
+    frame: &DecodedFrame,
     video_viewport: RenderViewport,
     screen_size_in_pixels: [u32; 2],
 ) -> SubmittedFrameForSubtitles {

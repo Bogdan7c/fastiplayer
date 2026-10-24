@@ -34,7 +34,7 @@
 //!   [`picture_group`]).
 
 use render_core::{PictureRect, RenderViewport};
-use render_wgpu_shell::SubtitleLayerOffset;
+use render_shell_api::SubtitleLayerOffset;
 use subtitle_raster::CanvasRect;
 
 use super::controls_obstruction::BottomControlsObstruction;

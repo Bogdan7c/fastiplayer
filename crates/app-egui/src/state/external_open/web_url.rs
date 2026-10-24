@@ -46,7 +46,7 @@ impl AppState {
         &mut self,
         url: &DroppedWebUrl,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         // До load decision очереди ещё нет: заменять нечего (как у остальных бросков на видео).
         if playlist_runtime.queue_load_decision_is_pending() {
@@ -70,7 +70,7 @@ impl AppState {
         &mut self,
         locator: &StartupUrlLocator,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         let outcome = playlist_runtime.replace_queue_with_service_url(locator);
         self.finish_dropped_url_queue_replacement(outcome, playlist_runtime, renderer);
@@ -84,7 +84,7 @@ impl AppState {
         &mut self,
         outcome: ServiceUrlReplacementOutcome,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         match outcome {
             ServiceUrlReplacementOutcome::Replaced { item } => {

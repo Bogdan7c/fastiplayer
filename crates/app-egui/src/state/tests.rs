@@ -555,14 +555,15 @@ fn video_pipeline_rebuild_stops_before_vaapi_startup_when_selector_rejects() {
     let rebuild_section = source_section_between(
         &state_source,
         "pub(crate) fn rebuild_video_pipeline_with_decoder_config",
-        "/// Возвращает WGPU materializer текущего concrete video backend-а.",
+        "/// Запоминает последний запрос player-core на подбор backend-а под активный стрим.",
     );
     let selector_error_return = rebuild_section
         .find("video pipeline selection failed: {error}")
         .expect("Recovery must return selection error through ? to backend startup");
+    // Запуск decoder-а (VA-API/FFmpeg по плану) — общий `start_decoder_backend`.
     let vaapi_factory_start = rebuild_section
-        .find("VaapiVideoBackendFactory::new_with_decoder_config")
-        .expect("Recovery must save the current VAAPI startup plan after selector");
+        .find("start_decoder_backend(plan)")
+        .expect("Recovery must save the current decoder startup after selector");
 
     assert!(
         selector_error_return < vaapi_factory_start,
@@ -677,7 +678,7 @@ fn app_state_player_snapshot_boundary_stays_explicit() {
     );
 
     let input_prepare_position = frame_prepare_source
-        .find("prepare_frame_input(telemetry, window, renderer, app_state, &mut frame_sequence)")
+        .find("let prepared_frame_input = prepare_frame_input(")
         .expect("render_frame must delegate input snapshot to a separate adapter.");
     let publish_position = frame_prepare_source
         .find("playlist_runtime.publish_desktop_snapshot(frame_context.player_snapshot());")
@@ -702,7 +703,7 @@ fn render_frame_routes_player_snapshot_into_playlist_automatic_lifecycle() {
         frame_prepare_source,
         "pub(crate) fn render_frame(",
         // Poll идёт через transport adapter: он же исполняет команду, отложенную до terminal.
-        "crate::transport_runtime::poll_playlist_transport(app_state, playlist_runtime, renderer);",
+        "crate::transport_runtime::poll_playlist_transport(",
     );
 
     let explicit_transport_position = render_frame_section

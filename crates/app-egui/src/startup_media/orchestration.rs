@@ -125,7 +125,7 @@ impl StartupMediaController {
         &mut self,
         app_state: &mut crate::state::AppState,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) -> bool {
         if self.terminal_shutdown_started {
             self.orchestration.phase = StartupMediaPhase::Shutdown;
@@ -160,7 +160,8 @@ impl StartupMediaController {
                 }
                 changed = true;
             }
-            return self.poll_pending_install(app_state, playlist_runtime) || changed;
+            return self.poll_pending_install(app_state, playlist_runtime, renderer.video_frames())
+                || changed;
         }
 
         if gate_open
@@ -400,7 +401,7 @@ impl StartupMediaController {
         &mut self,
         app_state: &mut crate::state::AppState,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) -> bool {
         let Some(prepared) = self.orchestration.prepared.take() else {
             return false;

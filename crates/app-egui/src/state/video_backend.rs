@@ -1,4 +1,5 @@
 use super::*;
+use crate::video_pipeline_candidate::start_decoder_backend;
 
 /// Typed failure controlled video-pipeline rebuild-а.
 #[derive(Debug)]
@@ -32,8 +33,31 @@ impl std::fmt::Display for VideoPipelineRebuildError {
     }
 }
 
+/// Куда ставится импорт кадров нового decoder-а: склад активного рендера и его семейство.
+///
+/// С сессии 02 плана `user/gles2-renderer/` пересборке пайплайна не нужны GPU-объекты: рендер
+/// сам оборачивает decoder и создаёт материализатор (`VideoFrameImport`).
+pub(crate) struct RendererVideoImportTarget<'renderer> {
+    /// Семейство рендера (диагностическая метка плана).
+    pub(crate) renderer_family: render_shell_api::RendererFamily,
+    /// Склад кадров активного рендера.
+    pub(crate) video_frames: &'renderer mut dyn render_shell_api::VideoFrameImport,
+}
+
+impl<'renderer> RendererVideoImportTarget<'renderer> {
+    /// Цель импорта активного рендера.
+    pub(crate) fn for_renderer(renderer: &'renderer mut dyn render_shell_api::RenderShell) -> Self {
+        Self {
+            renderer_family: renderer.family(),
+            video_frames: renderer.video_frames(),
+        }
+    }
+}
+
 /// Именованный request controlled video-pipeline rebuild-а.
-pub(crate) struct VideoPipelineRebuildRequest<'resource> {
+///
+/// Два времени жизни: требование стрима живёт у владельца стрима, склад кадров — у рендера.
+pub(crate) struct VideoPipelineRebuildRequest<'requirement, 'renderer> {
     /// User policy выбора backend-а.
     pub(crate) backend_preference: fastiplayer_config::VideoBackendPreference,
     /// Lifecycle intent, определяющий retryable busy semantics.
@@ -41,15 +65,9 @@ pub(crate) struct VideoPipelineRebuildRequest<'resource> {
     /// Queue/pool/thread config нового decoder-а.
     pub(crate) decoder_thread_config: PlayerVideoDecoderThreadConfig,
     /// Requirement текущего stream-а, если media уже активно.
-    pub(crate) stream_requirement: Option<&'resource VideoDecodeRequirement>,
-    /// WGPU instance для backend startup.
-    pub(crate) instance: &'resource wgpu::Instance,
-    /// WGPU adapter для materializer selection.
-    pub(crate) adapter: &'resource wgpu::Adapter,
-    /// WGPU device для materializer creation.
-    pub(crate) device: &'resource wgpu::Device,
-    /// WGPU queue для frame-resource bridge.
-    pub(crate) queue: &'resource wgpu::Queue,
+    pub(crate) stream_requirement: Option<&'requirement VideoDecodeRequirement>,
+    /// Склад кадров активного рендера, куда ставится импорт нового decoder-а.
+    pub(crate) import_target: RendererVideoImportTarget<'renderer>,
 }
 
 /// Решение video-пайплайна на время живой смены backend-а.
@@ -97,14 +115,8 @@ fn active_video_pipeline_satisfies_reselection(
 }
 
 impl AppState {
-    /// Инициализирует video pipeline и сохраняет WGPU materializer в shell layer-е.
-    pub fn init_video_pipeline(
-        &mut self,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) {
+    /// Инициализирует video pipeline и ставит импорт кадров decoder-а в активный рендер.
+    pub fn init_video_pipeline(&mut self, import_target: RendererVideoImportTarget<'_>) {
         let decoder_thread_config = self.player_worker.decoder_thread_config();
         let backend_preference = self.committed_config_snapshot.video_backend_preference();
         if let Err(error) =
@@ -113,10 +125,7 @@ impl AppState {
                 install_intent: player_core::PlayerVideoBackendInstallIntent::PipelineDemand,
                 decoder_thread_config,
                 stream_requirement: None,
-                instance,
-                adapter,
-                device,
-                queue,
+                import_target,
             })
         {
             warn!(error = %error, "Video pipeline unavailable");
@@ -126,7 +135,7 @@ impl AppState {
     /// Пересоздаёт concrete video backend через app-owned composition boundary.
     pub(crate) fn rebuild_video_pipeline_with_decoder_config(
         &mut self,
-        request: VideoPipelineRebuildRequest<'_>,
+        request: VideoPipelineRebuildRequest<'_, '_>,
     ) -> Result<(), VideoPipelineRebuildError> {
         let plan = select_video_pipeline_plan(
             request.backend_preference,
@@ -140,95 +149,38 @@ impl AppState {
             ))
         })?;
 
-        self.install_video_pipeline_plan(
-            plan,
-            request.install_intent,
-            request.instance,
-            request.adapter,
-            request.device,
-            request.queue,
-        )
+        self.install_video_pipeline_plan(plan, request.install_intent, request.import_target)
     }
 
-    /// Запускает уже выбранный plan и атомарно устанавливает backend/materializer pair.
+    /// Запускает уже выбранный plan и атомарно устанавливает decoder + импорт рендера.
+    ///
+    /// Второй путь установки decoder-а (кроме кандидатов strong open): старт приложения,
+    /// реактивная смена backend-а, runtime fallback DMA-BUF → SW, пересборка из настроек.
     fn install_video_pipeline_plan(
         &mut self,
         plan: VideoPipelinePlan,
         install_intent: player_core::PlayerVideoBackendInstallIntent,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        import_target: RendererVideoImportTarget<'_>,
     ) -> Result<(), VideoPipelineRebuildError> {
-        let plan_label = plan.diagnostic_label();
+        let plan_label = plan.diagnostic_label(import_target.renderer_family);
         let plan_backend_kind = plan.backend_kind();
-        let decoder_thread_config = match plan {
-            VideoPipelinePlan::VaapiDmaBufWgpu {
-                decoder_thread_config,
-            }
-            | VideoPipelinePlan::FfmpegHostUploadWgpu {
-                decoder_thread_config,
-            } => decoder_thread_config,
-        };
+        let decoder_thread_config = plan.decoder_thread_config();
 
-        let (player_backend, frame_materializer, submission_queue_binding): (
-            player_core::StartedVideoBackend,
-            Arc<dyn WgpuFrameTextureViewMaterializer>,
-            WgpuSubmissionQueueBinding,
-        ) = match plan {
-            VideoPipelinePlan::VaapiDmaBufWgpu {
-                decoder_thread_config,
-            } => {
-                // Кэш Vulkan-импортов рендерера повторяет ёмкость zero-copy пула декодера.
-                let import_cache_capacity = DmaBufImportCacheCapacity::matching_surface_pool(
-                    decoder_thread_config.zero_copy_surface_pool_slots,
-                );
-                let backend_factory =
-                    VaapiVideoBackendFactory::new_with_decoder_config(decoder_thread_config);
-                let started_backend = backend_factory.start_for_composition().map_err(|error| {
-                    VideoPipelineRebuildError::BackendStartup {
-                        plan_label,
-                        message: error.to_string(),
-                    }
-                })?;
-                let (player_backend, frame_resource_provider, submission_queue_binding) =
-                    wrap_video_backend_for_wgpu_submission(started_backend, queue);
-                let frame_materializer: Arc<dyn WgpuFrameTextureViewMaterializer> =
-                    Arc::new(DmaBufWgpuFrameMaterializer::new(
-                        instance,
-                        adapter,
-                        device,
-                        queue,
-                        frame_resource_provider,
-                        import_cache_capacity,
-                    ));
-
-                (player_backend, frame_materializer, submission_queue_binding)
+        let started_backend = start_decoder_backend(plan).map_err(|message| {
+            VideoPipelineRebuildError::BackendStartup {
+                plan_label,
+                message,
             }
-            VideoPipelinePlan::FfmpegHostUploadWgpu {
-                decoder_thread_config,
-            } => {
-                let backend_factory = FfmpegSoftwareVideoBackendFactory::new_with_decoder_config(
-                    decoder_thread_config,
-                );
-                let started_backend = backend_factory.start_for_composition().map_err(|error| {
-                    VideoPipelineRebuildError::BackendStartup {
-                        plan_label,
-                        message: error.to_string(),
-                    }
-                })?;
-                let (player_backend, frame_resource_provider, submission_queue_binding) =
-                    wrap_video_backend_for_wgpu_submission(started_backend, queue);
-                let frame_materializer = Arc::new(HostPlanarWgpuFrameMaterializer::new(
-                    device,
-                    queue,
-                    frame_resource_provider,
+        })?;
+        // Рендер оборачивает decoder (releases ждут его GPU) и готовит импорт «в стороне».
+        let prepared = import_target
+            .video_frames
+            .prepare_video_import(started_backend, plan.import_plan())
+            .map_err(|error| {
+                VideoPipelineRebuildError::Preparation(format!(
+                    "renderer could not prepare the video import for {plan_label}: {error:?}"
                 ))
-                    as Arc<dyn WgpuFrameTextureViewMaterializer>;
-
-                (player_backend, frame_materializer, submission_queue_binding)
-            }
-        };
+            })?;
 
         let previous_backend_kind = self.current_video_backend_kind;
         let backend_swap_checkpoint = previous_backend_kind
@@ -237,7 +189,7 @@ impl AppState {
 
         self.player_worker
             .set_video_backend(
-                player_backend,
+                prepared.backend,
                 install_intent,
                 (install_intent
                     == player_core::PlayerVideoBackendInstallIntent::SettingsReconfigure)
@@ -246,8 +198,17 @@ impl AppState {
             .map_err(VideoPipelineRebuildError::Worker)?;
 
         self.clear_main_visual_override();
-        self.wgpu_frame_materializer = Some(frame_materializer);
-        self.wgpu_submission_queue_binding = Some(submission_queue_binding);
+        // Импорт только что подготовлен этим же рендером, поэтому отказ установки — нарушение
+        // инварианта, а не рабочая ветка; он всё равно типизирован и не глотается.
+        import_target
+            .video_frames
+            .install_video_import(prepared.pending)
+            .map_err(|error| {
+                tracing::error!(error = ?error, plan = plan_label, "Renderer rejected its own video import");
+                VideoPipelineRebuildError::Preparation(format!(
+                    "renderer rejected the prepared video import for {plan_label}: {error:?}"
+                ))
+            })?;
 
         // Живая смена backend-а: сохраняем последний кадр до первого кадра нового
         // generation, а worker-owned install boundary сохраняет position/playback intent.
@@ -289,10 +250,7 @@ impl AppState {
     pub(crate) fn apply_video_backend_reselection(
         &mut self,
         request: &VideoBackendSelectionRequest,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        import_target: RendererVideoImportTarget<'_>,
     ) {
         let decoder_thread_config = self.current_decoder_thread_config();
         let preference = self.committed_config_snapshot.video_backend_preference();
@@ -320,10 +278,7 @@ impl AppState {
                             player_core::PlayerVideoBackendInstallIntent::PipelineDemand,
                         decoder_thread_config,
                         stream_requirement: Some(&request.requirement),
-                        instance,
-                        adapter,
-                        device,
-                        queue,
+                        import_target,
                     })
                 {
                     warn!(error = %error, "Could not switch the video backend to the current stream");
@@ -370,10 +325,7 @@ impl AppState {
     /// rejection вместе с typed policy/startup/restore failure context.
     pub(crate) fn apply_pending_dma_buf_runtime_fallback(
         &mut self,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        import_target: RendererVideoImportTarget<'_>,
     ) -> Result<(), Box<DmaBufRuntimeFallbackFailure>> {
         let Some(pending_rejection) = self.pending_dma_buf_layout_rejection.take() else {
             return Ok(());
@@ -424,10 +376,7 @@ impl AppState {
         match self.install_video_pipeline_plan(
             plan,
             player_core::PlayerVideoBackendInstallIntent::PipelineDemand,
-            instance,
-            adapter,
-            device,
-            queue,
+            import_target,
         ) {
             Ok(()) => {
                 info!(
@@ -455,28 +404,6 @@ impl AppState {
         if let Err(error) = self.player_worker.reject_pending_video_backend(reason) {
             warn!(error = %error, "Failed to deliver reject pending video backend into worker");
         }
-    }
-
-    /// Возвращает WGPU materializer текущего concrete video backend-а.
-    pub(crate) fn wgpu_frame_materializer(
-        &self,
-    ) -> Option<Arc<dyn WgpuFrameTextureViewMaterializer>> {
-        self.wgpu_frame_materializer.clone()
-    }
-
-    /// Готовит materializer для candidate renderer-а без изменения active GPU path-а.
-    pub(crate) fn prepare_materializer_for_renderer(
-        &self,
-        renderer: &render_wgpu_shell::Renderer,
-    ) -> Option<Arc<dyn WgpuFrameTextureViewMaterializer>> {
-        self.wgpu_frame_materializer.as_ref().map(|materializer| {
-            materializer.recreate_for_renderer(
-                renderer.instance(),
-                renderer.adapter(),
-                renderer.device(),
-                renderer.queue(),
-            )
-        })
     }
 
     /// Проверяет, что candidate renderer сохраняет контракт уже установленного backend-а.
@@ -510,37 +437,11 @@ impl AppState {
         Ok(())
     }
 
-    /// Освобождает все visual leases/views, привязанные к старому WGPU device.
+    /// Освобождает все visual leases/ключи кадров, привязанные к старому рендеру.
     pub(crate) fn release_renderer_bound_visual_state(&mut self) {
         self.clear_main_visual_override();
         self.finish_backend_swap_video_freeze();
         self.clear_cached_present_frame_for_runtime_drop();
-    }
-
-    /// Commit-ит materializer и completion queue нового renderer-а одним owner method-ом.
-    pub(crate) fn commit_recreated_materializer(
-        &mut self,
-        materializer: Option<Arc<dyn WgpuFrameTextureViewMaterializer>>,
-        queue: &wgpu::Queue,
-    ) -> Result<(), WgpuSubmissionQueueRebindError> {
-        if let Some(submission_queue_binding) = &self.wgpu_submission_queue_binding {
-            submission_queue_binding.rebind(queue)?;
-        }
-        self.wgpu_frame_materializer = materializer;
-        self.mark_pending_worker_redraw();
-        Ok(())
-    }
-
-    /// Завершает submitted releases старого device-а после доказанного device lost.
-    ///
-    /// Exactly-once guards внутри queue binding-а не допускают double release, если
-    /// поздний WGPU callback всё же будет доставлен.
-    pub(crate) fn release_submitted_frames_after_device_lost(
-        &self,
-    ) -> Result<usize, WgpuSubmissionQueueRebindError> {
-        self.wgpu_submission_queue_binding
-            .as_ref()
-            .map_or(Ok(0), WgpuSubmissionQueueBinding::release_after_device_lost)
     }
 
     /// Снимает visual checkpoint до player install barrier-а.
@@ -650,7 +551,7 @@ mod tests {
     /// но player уже снял decoder предыдущего media и ждёт новый decoder того же класса.
     #[test]
     fn same_backend_kind_without_active_decoder_requires_pipeline_rebuild() {
-        let selected_plan = VideoPipelinePlan::VaapiDmaBufWgpu {
+        let selected_plan = VideoPipelinePlan::VaapiDmaBuf {
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
         };
         let request_without_active_decoder = VideoBackendSelectionRequest {
@@ -669,7 +570,7 @@ mod tests {
     /// что его активный decoder уже обслуживает текущий stream.
     #[test]
     fn same_backend_kind_with_compatible_active_decoder_is_reused() {
-        let selected_plan = VideoPipelinePlan::VaapiDmaBufWgpu {
+        let selected_plan = VideoPipelinePlan::VaapiDmaBuf {
             decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
         };
         let request_with_active_decoder = VideoBackendSelectionRequest {

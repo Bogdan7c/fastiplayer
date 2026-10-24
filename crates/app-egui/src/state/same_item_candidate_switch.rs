@@ -4,7 +4,7 @@ mod audio_language;
 mod lifecycle_bridge;
 
 use player_core::MediaInstallCancellationCause;
-use render_wgpu_shell::Renderer;
+use render_shell_api::RenderShell;
 
 use crate::media_open::{MediaOpenRequestId, MediaOpenSourceRequest};
 use crate::playlist_runtime::{ActiveMediaIdentity, PlaylistRuntime};
@@ -213,7 +213,7 @@ impl AppState {
         &mut self,
         action: UrlSidebarAction,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
         self.apply_same_item_action(
             action,
@@ -230,7 +230,7 @@ impl AppState {
         &mut self,
         action: crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
         self.apply_same_item_action(
             UrlSidebarAction::ComponentVariant(action),
@@ -246,7 +246,7 @@ impl AppState {
         action: UrlSidebarAction,
         origin: ComponentSwitchOrigin,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
         let generation = action.parent_generation();
         let result = self.start_same_item_switch(action, origin, playlist_runtime, renderer);
@@ -264,7 +264,7 @@ impl AppState {
         action: UrlSidebarAction,
         origin: ComponentSwitchOrigin,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
         let active_source = self.preflight_same_item_switch()?;
         let stream_configuration = active_source
@@ -363,7 +363,7 @@ impl AppState {
         &mut self,
         pending: super::web_media_catalog::PendingAutomaticWebMediaSwitch,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
         let active_source = self.preflight_same_item_switch()?;
         let stream_configuration = active_source
@@ -429,7 +429,7 @@ impl AppState {
         selection_intent: impl Into<SameItemSelectionRequest>,
         kind: SameItemSwitchKind,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &Renderer,
+        renderer: &mut dyn RenderShell,
     ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
         let selection_intent = selection_intent.into();
         let expected_active = playlist_runtime
@@ -500,7 +500,11 @@ impl AppState {
     }
 
     /// Продвигает shared strong envelope и публикует selectors только после exact Installed.
-    pub(crate) fn poll_same_item_switch(&mut self, playlist_runtime: &mut PlaylistRuntime) {
+    pub(crate) fn poll_same_item_switch(
+        &mut self,
+        playlist_runtime: &mut PlaylistRuntime,
+        video_frames: &mut dyn render_shell_api::VideoFrameImport,
+    ) {
         if self.same_item_switch.is_none() {
             return;
         }
@@ -511,7 +515,8 @@ impl AppState {
             .and_then(PendingSameItemSwitch::component_origin);
         let mut app_path = SameItemSwitchAppPath::take(&mut self.same_item_switch);
         let outcome = {
-            let mut context = ProductionSameItemSwitchPollContext::new(self, playlist_runtime);
+            let mut context =
+                ProductionSameItemSwitchPollContext::new(self, playlist_runtime, video_frames);
             app_path.poll(&mut context)
         };
         app_path.restore(&mut self.same_item_switch);
@@ -525,12 +530,19 @@ impl AppState {
     }
 
     /// Suspend отменяет pre-barrier работу либо дренирует commit-winner до rebind-а.
+    ///
+    /// Рендер нужен, если commit-winner успеет дойти до Installed: импорт кадров кандидата
+    /// ставится в него. Переключение без рендера — нарушение инварианта shell-а.
     pub(crate) fn resolve_same_item_switch_for_suspend(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
+        renderer: Option<&mut Box<dyn render_shell_api::RenderShell>>,
     ) -> Result<(), crate::playlist_runtime::ResumeCheckpointError> {
         let Some(pending) = self.same_item_switch.as_ref() else {
             return Ok(());
+        };
+        let Some(renderer) = renderer else {
+            return Err(crate::playlist_runtime::ResumeCheckpointError::ControllerInvariant);
         };
         let request_id = pending.request_id;
         playlist_runtime
@@ -543,7 +555,7 @@ impl AppState {
             let phase_before_poll = playlist_runtime
                 .media_open_snapshot()
                 .map(|snapshot| snapshot.phase);
-            self.poll_same_item_switch(playlist_runtime);
+            self.poll_same_item_switch(playlist_runtime, renderer.video_frames());
             if self.same_item_switch.is_none() {
                 break;
             }

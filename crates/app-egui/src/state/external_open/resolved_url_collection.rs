@@ -30,7 +30,7 @@ impl AppState {
         &mut self,
         collection: ResolvedUrlCollection,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         // В логе только число: сама ссылка и адреса роликов приватны.
         info!(
@@ -55,7 +55,7 @@ impl AppState {
         &mut self,
         admitted: AdmittedResolvedUrlCollection,
         playlist_runtime: &mut PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        renderer: &mut dyn render_shell_api::RenderShell,
     ) {
         let outcome = playlist_runtime.replace_queue_with_resolved_url_collection(admitted);
         if matches!(

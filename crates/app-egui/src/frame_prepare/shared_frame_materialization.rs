@@ -1,15 +1,16 @@
 //! Общий helper materialization-а для shared `VideoFrameLease`.
 //!
 //! Модуль намеренно не выбирает playback/scrub priority и не трогает UI layout.
-//! Он только связывает shared lease, renderer materializer lookup и typed app policy.
+//! Он только связывает shared lease, склад кадров рендера (`VideoFrameImport::materialize`)
+//! и typed app policy. С сессии 02 плана `user/gles2-renderer/` payload готового кадра —
+//! непрозрачный `RenderableFrameKey` рендера, а не wgpu-текстуры.
 
 use std::time::{Duration, Instant};
 
-use render_wgpu_video::{
-    WgpuFrameMaterializationUnsupportedReason, WgpuFrameTextureViewLookup,
-    WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
+use render_shell_api::{
+    FrameImportUnsupportedReason, FrameMaterialization, FrameMaterializationOutcome,
+    RenderableFrameKey, VideoFrameImport,
 };
-use video_core::DecodedFrame;
 use video_present_core::VideoFrameLease;
 
 use crate::state::RenderablePresentFrame;
@@ -111,8 +112,8 @@ pub(super) enum SharedTextureViewLookup<TextureViews> {
 
 /// Причина unsupported lookup-а без потери production payload в общей testable стадии.
 pub(super) enum SharedMaterializationUnsupportedReason {
-    /// Причина, возвращённая concrete WGPU materializer-ом.
-    Wgpu(WgpuFrameMaterializationUnsupportedReason),
+    /// Причина, возвращённая складом кадров рендера.
+    Renderer(FrameImportUnsupportedReason),
     /// Синтетический отказ unit-test-а без renderer objects.
     #[cfg(test)]
     SyntheticTest,
@@ -159,36 +160,32 @@ impl<TextureViews> SharedTextureViewLookup<TextureViews> {
     }
 }
 
-impl From<WgpuFrameTextureViewLookup> for SharedTextureViewLookup<WgpuFrameTextureViews> {
-    fn from(lookup: WgpuFrameTextureViewLookup) -> Self {
-        match lookup {
-            WgpuFrameTextureViewLookup::Ready {
-                views,
-                texture_pool_lock_wait,
-            } => Self::Ready {
-                views,
+impl From<FrameMaterialization> for SharedTextureViewLookup<RenderableFrameKey> {
+    fn from(materialization: FrameMaterialization) -> Self {
+        let texture_pool_lock_wait = materialization.resource_pool_lock_wait;
+        match materialization.outcome {
+            FrameMaterializationOutcome::Ready(key) => Self::Ready {
+                views: key,
                 texture_pool_lock_wait,
             },
-            WgpuFrameTextureViewLookup::Busy {
-                texture_pool_lock_wait,
-            } => Self::Busy {
+            FrameMaterializationOutcome::Busy => Self::Busy {
                 texture_pool_lock_wait,
             },
-            WgpuFrameTextureViewLookup::Missing {
-                texture_pool_lock_wait,
-            } => Self::Missing {
+            FrameMaterializationOutcome::Missing => Self::Missing {
                 texture_pool_lock_wait,
             },
-            WgpuFrameTextureViewLookup::Unsupported {
-                reason,
-                texture_pool_lock_wait,
-            } => Self::Unsupported {
-                reason: SharedMaterializationUnsupportedReason::Wgpu(reason),
+            // Политика приложения прежняя: «декодер не подключён» — это ресурс кадра,
+            // которого нет (как прежняя ветка «нет материализатора» → missing render
+            // resources). Вызывающий проверяет подключённый импорт до lookup-а, поэтому
+            // сюда этот исход доходит только при гонке, которой в одном потоке окна нет.
+            FrameMaterializationOutcome::NoVideoBackendBound => Self::Missing {
                 texture_pool_lock_wait,
             },
-            WgpuFrameTextureViewLookup::Error {
+            FrameMaterializationOutcome::Unsupported(reason) => Self::Unsupported {
+                reason: SharedMaterializationUnsupportedReason::Renderer(reason),
                 texture_pool_lock_wait,
-            } => Self::Error {
+            },
+            FrameMaterializationOutcome::Error(_import_error) => Self::Error {
                 texture_pool_lock_wait,
             },
         }
@@ -198,16 +195,28 @@ impl From<WgpuFrameTextureViewLookup> for SharedTextureViewLookup<WgpuFrameTextu
 /// Уже materialized shared frame: lease и views остаются одной ownership единицей.
 pub(super) struct MaterializedSharedVideoFrame<TextureViews> {
     /// Lease удерживает backend resource до renderer submission/drop.
+    ///
+    /// В production аренда дальше живёт клоном внутри ключа рендера, поэтому само поле
+    /// читают только тесты (проверка, что payload и аренда одного кадра).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "в production аренду держит клон внутри RenderableFrameKey"
+        )
+    )]
     present_frame: VideoFrameLease,
 
     /// Texture views, полученные для этого lease-а.
     texture_views: TextureViews,
 }
 
-impl MaterializedSharedVideoFrame<WgpuFrameTextureViews> {
+impl MaterializedSharedVideoFrame<RenderableFrameKey> {
     /// Конвертирует generic helper output в текущий app renderable frame.
+    ///
+    /// Исходная аренда отпускается: ключ держит её клон до последнего использования кадра.
     pub(super) fn into_renderable_present_frame(self) -> RenderablePresentFrame {
-        RenderablePresentFrame::new(self.present_frame, self.texture_views)
+        RenderablePresentFrame::new(self.texture_views)
     }
 }
 
@@ -268,20 +277,20 @@ pub(super) struct SharedVideoFrameMaterialization<TextureViews> {
     pub(super) timings: SharedVideoFrameMaterializationTimings,
 }
 
-/// Materialize shared lease через production WGPU materializer.
+/// Materialize shared lease через склад кадров активного рендера.
 pub(super) fn materialize_shared_video_frame(
     request: SharedVideoFrameMaterializationRequest,
-    materializer: &dyn WgpuFrameTextureViewMaterializer,
-) -> SharedVideoFrameMaterialization<WgpuFrameTextureViews> {
-    materialize_shared_video_frame_with_lookup(request, |decoded_frame| {
-        materializer.try_texture_view_lookup(decoded_frame).into()
+    video_frames: &mut dyn VideoFrameImport,
+) -> SharedVideoFrameMaterialization<RenderableFrameKey> {
+    materialize_shared_video_frame_with_lookup(request, |lease| {
+        video_frames.materialize(lease).into()
     })
 }
 
-/// Общая реализация, тестируемая fake lookup payload-ом без реальных WGPU handles.
+/// Общая реализация, тестируемая fake lookup payload-ом без реальных GPU handles.
 fn materialize_shared_video_frame_with_lookup<TextureViews>(
     request: SharedVideoFrameMaterializationRequest,
-    lookup_texture_views: impl FnOnce(&DecodedFrame) -> SharedTextureViewLookup<TextureViews>,
+    lookup_texture_views: impl FnOnce(&VideoFrameLease) -> SharedTextureViewLookup<TextureViews>,
 ) -> SharedVideoFrameMaterialization<TextureViews> {
     let role = request.role;
     let present_frame = request.lease;
@@ -294,7 +303,7 @@ fn materialize_shared_video_frame_with_lookup<TextureViews>(
     );
 
     let lookup_started_at = Instant::now();
-    let texture_view_lookup = lookup_texture_views(present_frame.decoded_frame());
+    let texture_view_lookup = lookup_texture_views(&present_frame);
     let texture_view_lookup_duration = lookup_started_at.elapsed();
 
     let report_started_at = Instant::now();
@@ -348,6 +357,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use codec_core::{VideoColorMetadata, VideoDisplayOrientation};
+    use video_core::DecodedFrame;
     use video_core::{FrameResourceHandle, VideoFrameDiagnostics};
     use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
     use video_present_core::{
@@ -440,8 +450,8 @@ mod tests {
 
         let materialization = materialize_shared_video_frame_with_lookup(
             SharedVideoFrameMaterializationRequest::new(role, lease),
-            |decoded_frame| {
-                assert_eq!(decoded_frame.resource_handle, FrameResourceHandle(42));
+            |lease| {
+                assert_eq!(lease.resource_handle(), FrameResourceHandle(42));
                 SharedTextureViewLookup::Ready {
                     views: FakeTextureViews { id: 9001 },
                     texture_pool_lock_wait: Duration::from_micros(7),
@@ -503,7 +513,7 @@ mod tests {
 
         let materialization = materialize_shared_video_frame_with_lookup(
             SharedVideoFrameMaterializationRequest::new(SharedVideoFrameLeaseRole::Playback, lease),
-            |_decoded_frame| SharedTextureViewLookup::<FakeTextureViews>::Busy {
+            |_lease| SharedTextureViewLookup::<FakeTextureViews>::Busy {
                 texture_pool_lock_wait: Duration::from_micros(11),
             },
         );
@@ -589,7 +599,7 @@ mod tests {
                     SharedVideoFrameLeaseRole::Playback,
                     lease,
                 ),
-                |_decoded_frame| lookup,
+                |_lease| lookup,
             );
 
             assert_eq!(materialization.outcome.lookup_kind(), expected_kind);

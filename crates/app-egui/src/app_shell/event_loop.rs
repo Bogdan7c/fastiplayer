@@ -71,16 +71,18 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
             return;
         }
         let visible_mutation = match event.owner() {
-            AppWakeOwner::StartupMedia => match (self.app_state.as_mut(), self.renderer.as_ref()) {
-                (Some(app_state), Some(renderer)) => self.startup_media.poll_startup_jobs(
-                    app_state,
-                    &mut self.playlist_runtime,
-                    renderer,
-                ),
-                _ => false,
-            },
+            AppWakeOwner::StartupMedia => {
+                match (self.app_state.as_mut(), self.renderer.as_deref_mut()) {
+                    (Some(app_state), Some(renderer)) => self.startup_media.poll_startup_jobs(
+                        app_state,
+                        &mut self.playlist_runtime,
+                        renderer,
+                    ),
+                    _ => false,
+                }
+            }
             AppWakeOwner::LocalFileOpen => {
-                match (self.app_state.as_mut(), self.renderer.as_ref()) {
+                match (self.app_state.as_mut(), self.renderer.as_deref_mut()) {
                     (Some(app_state), Some(renderer)) => {
                         app_state.poll_local_file_open_job(&mut self.playlist_runtime, renderer)
                     }
@@ -275,7 +277,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                             &window,
                             app_state,
                             &mut self.playlist_runtime,
-                            renderer,
+                            renderer.as_mut(),
                         );
                     }
                     ShellHotkeyAction::Legacy(key_code) => {
@@ -287,7 +289,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                         crate::transport_runtime::apply_transport_action(
                             app_state,
                             &mut self.playlist_runtime,
-                            renderer,
+                            renderer.as_mut(),
                             &snapshot,
                             action,
                         );
@@ -305,7 +307,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
             app_state.handle_external_drop_gesture(
                 gesture_event,
                 &mut self.playlist_runtime,
-                renderer,
+                renderer.as_mut(),
             );
             window.request_redraw();
         }
@@ -326,7 +328,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
             WindowEvent::Resized(PhysicalSize { width, height }) => {
                 debug!(width, height, "Window resized");
                 self.renderer_lifecycle
-                    .resize_renderer(renderer, width, height);
+                    .resize_renderer(renderer.as_mut(), width, height);
             }
 
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -337,9 +339,9 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                 self.startup_media.poll_startup_jobs(
                     app_state,
                     &mut self.playlist_runtime,
-                    renderer,
+                    renderer.as_mut(),
                 );
-                app_state.poll_local_file_open_job(&mut self.playlist_runtime, renderer);
+                app_state.poll_local_file_open_job(&mut self.playlist_runtime, renderer.as_mut());
                 let frame_result = render_frame(
                     &self.telemetry,
                     &window,

@@ -15,11 +15,12 @@ use render_core::{
     RenderLiveApplyReport, RenderLiveSettings, RenderLiveSettingsAdapter, RenderLiveSettingsError,
     RenderLiveSettingsUpdate,
 };
-use render_wgpu_shell::{RenderFrameDropReason, RenderFrameOutcome, Renderer};
-use render_wgpu_video::WgpuRenderableFrame;
+use render_shell_api::{
+    FrameImportUnsupportedReason, RenderFrameDropReason, RenderFrameOutcome, RenderShell,
+    RenderableFrameKey, VideoFrameImport,
+};
 use settings_core::SettingId;
 use tracing::{error, instrument, warn};
-use video_core::DecodedPixelFormat;
 use video_present_core::VideoPresentFrameIdentity;
 use winit::window::{ResizeDirection, Window};
 
@@ -102,9 +103,9 @@ fn earliest_ui_wake_deadline<const N: usize>(deadlines: [Option<Instant>; N]) ->
     deadlines.into_iter().flatten().min()
 }
 
-/// Video stage, подготовленный до финального `render_wgpu_shell::RenderFrameInput`.
+/// Video stage, подготовленный до финального `render_shell_api::RenderFrameInput`.
 pub(super) struct PreparedVideoFrame {
-    /// Lease и texture views живут вместе, чтобы `WgpuRenderableFrame` не пережил owner-а.
+    /// Ключ рендера с арендой внутри: кадр не вернётся декодеру, пока ключ жив.
     renderable_frame: Option<RenderablePresentFrame>,
 
     /// Диагностическое имя acquisition state для tracing.
@@ -149,28 +150,35 @@ impl PreparedVideoFrame {
         self
     }
 
-    /// Собирает video boundary frame на время одного `render-wgpu-shell` call-а.
-    pub(super) fn render_input_video_frame(
-        &self,
-    ) -> Result<Option<WgpuRenderableFrame<'_>>, PlayerRenderError> {
-        self.renderable_frame
-            .as_ref()
-            .map(|renderable_frame| {
-                build_render_input_video_frame(renderable_frame, self.acquisition_state)
-            })
-            .transpose()
+    /// Ключ видеокадра для входа `render_frame` (`None` — очистить target в чёрный).
+    pub(super) fn render_input_video_frame(&self) -> Option<&RenderableFrameKey> {
+        let renderable_frame = self.renderable_frame.as_ref()?;
+        let present_frame = renderable_frame.present_frame();
+        let decoded_frame = present_frame.decoded_frame();
+        tracing::trace!(
+            handle_id = decoded_frame.resource_handle.0,
+            pts_ms = decoded_frame.pts.as_millis(),
+            format = %decoded_frame.format(),
+            memory_path = %decoded_frame.memory_path(),
+            stale = present_frame.is_stale(),
+            acquisition = self.acquisition_state,
+            "Present frame acquired from playback worker"
+        );
+        Some(renderable_frame.key())
     }
 
     /// Отмечает, что подготовленный video frame реально попал в renderer submit.
     pub(super) fn mark_submitted_to_renderer(&self) {
         if let Some(renderable_frame) = &self.renderable_frame {
-            renderable_frame.present_frame.mark_submitted_to_renderer();
+            renderable_frame
+                .present_frame()
+                .mark_submitted_to_renderer();
         }
     }
 
     /// Возвращает identity только текущего, не помеченного stale video lease-а.
     fn current_frame_identity(&self) -> Option<VideoPresentFrameIdentity> {
-        let present_frame = &self.renderable_frame.as_ref()?.present_frame;
+        let present_frame = &self.renderable_frame.as_ref()?.present_frame();
         if present_frame.is_stale() {
             return None;
         }
@@ -423,6 +431,7 @@ fn winit_resize_direction(direction: WindowChromeResizeDirection) -> ResizeDirec
 fn prepare_video_frame(
     telemetry: &Telemetry,
     app_state: &mut AppState,
+    video_frames: &mut dyn VideoFrameImport,
     player_snapshot: &PlayerSnapshot,
 ) -> PreparedVideoFrame {
     let video_prepare_started_at = Instant::now();
@@ -444,7 +453,7 @@ fn prepare_video_frame(
     }
 
     if let Some(prepared_override_frame) =
-        prepare_main_visual_override_frame(app_state, player_snapshot)
+        prepare_main_visual_override_frame(app_state, video_frames, player_snapshot)
     {
         return prepared_override_frame;
     }
@@ -468,10 +477,10 @@ fn prepare_video_frame(
     };
 
     let stage_started_at = Instant::now();
-    let texture_view_materializer = app_state.wgpu_frame_materializer();
+    let video_import_bound = video_frames.active_video_import_path().is_some();
     timings.materializer_access = stage_started_at.elapsed();
 
-    let Some(texture_view_materializer) = texture_view_materializer else {
+    if !video_import_bound {
         let stage_started_at = Instant::now();
         report_video_render_boundary_error(
             app_state,
@@ -481,14 +490,14 @@ fn prepare_video_frame(
         timings.total = video_prepare_started_at.elapsed();
         return PreparedVideoFrame::empty(acquisition_state)
             .with_diagnostics("missing_materializer", timings);
-    };
+    }
 
     let materialization = materialize_shared_video_frame(
         SharedVideoFrameMaterializationRequest::new(
             SharedVideoFrameLeaseRole::Playback,
             present_frame,
         ),
-        texture_view_materializer.as_ref(),
+        video_frames,
     );
     timings.texture_view_lookup = materialization.timings.texture_view_lookup;
     timings.resource_lookup_report = materialization.timings.resource_lookup_report;
@@ -592,10 +601,8 @@ fn prepare_video_frame(
             );
             debug_assert!(preparation_action.clears_cached_renderable_frame());
             match reason {
-                SharedMaterializationUnsupportedReason::Wgpu(
-                    render_wgpu_video::WgpuFrameMaterializationUnsupportedReason::DmaBufDescriptorRejected(
-                        layout_rejection,
-                    ),
+                SharedMaterializationUnsupportedReason::Renderer(
+                    FrameImportUnsupportedReason::DmaBufDescriptorRejected(layout_rejection),
                 ) => {
                     let render_generation = present_frame.render_generation();
                     let player_error = PlayerRenderError::unsupported_frame_format(
@@ -638,6 +645,7 @@ fn prepare_video_frame(
 
 fn prepare_main_visual_override_frame(
     app_state: &mut AppState,
+    video_frames: &mut dyn VideoFrameImport,
     player_snapshot: &PlayerSnapshot,
 ) -> Option<PreparedVideoFrame> {
     let video_prepare_started_at = Instant::now();
@@ -657,17 +665,19 @@ fn prepare_main_visual_override_frame(
         }
         MainVisualOverrideAcquisition::Lease { metadata, lease } => {
             let stage_started_at = Instant::now();
-            let texture_view_materializer = app_state.wgpu_frame_materializer();
+            let video_import_bound = video_frames.active_video_import_path().is_some();
             timings.materializer_access = stage_started_at.elapsed();
 
-            let texture_view_materializer = texture_view_materializer?;
+            if !video_import_bound {
+                return None;
+            }
 
             let materialization = materialize_shared_video_frame(
                 SharedVideoFrameMaterializationRequest::new(
                     SharedVideoFrameLeaseRole::ScrubOverride,
                     lease,
                 ),
-                texture_view_materializer.as_ref(),
+                video_frames,
             );
             timings.texture_view_lookup = materialization.timings.texture_view_lookup;
             timings.resource_lookup_report = materialization.timings.resource_lookup_report;
@@ -721,77 +731,6 @@ pub(super) fn report_video_render_boundary_error(
     );
 }
 
-/// Строит renderer-facing video frame из prepared lease-а и texture views.
-fn build_render_input_video_frame<'frame>(
-    renderable_frame: &'frame RenderablePresentFrame,
-    acquisition_state: &'static str,
-) -> Result<WgpuRenderableFrame<'frame>, PlayerRenderError> {
-    let present_frame = &renderable_frame.present_frame;
-    let texture_views = &renderable_frame.texture_views;
-    let decoded_frame = present_frame.decoded_frame();
-    let frame_format = decoded_frame.format();
-    let frame_memory_path = decoded_frame.memory_path();
-
-    tracing::trace!(
-        handle_id = decoded_frame.resource_handle.0,
-        pts_ms = decoded_frame.pts.as_millis(),
-        format = %frame_format,
-        memory_path = %frame_memory_path,
-        stale = present_frame.is_stale(),
-        acquisition = acquisition_state,
-        "Present frame acquired from playback worker"
-    );
-
-    let boundary_frame = match frame_format {
-        DecodedPixelFormat::Nv12 => match texture_views.dma_buf_views() {
-            Some(plane_views) => WgpuRenderableFrame::from_decoded_nv12(decoded_frame, plane_views),
-            None => Err(anyhow::anyhow!(
-                "NV12 decoded video surface requires DMA-BUF Y/UV texture views"
-            )),
-        },
-        DecodedPixelFormat::P010 => match texture_views.dma_buf_views() {
-            Some(plane_views) => WgpuRenderableFrame::from_decoded_p010(decoded_frame, plane_views),
-            None => Err(anyhow::anyhow!(
-                "P010 decoded video surface requires DMA-BUF Y/UV texture views"
-            )),
-        },
-        DecodedPixelFormat::Rgba8 => Err(anyhow::anyhow!(
-            "RGBA8 decoded video surface is not a production zero-copy render path"
-        )),
-        host_planar_layout if host_planar_layout.is_host_planar() => {
-            // Views вместе с кэшем bind group слота загрузки: рендерер не пересоздаёт
-            // bind group на каждый кадр, пока слот держит те же текстуры.
-            match texture_views.host_planar_plane_views() {
-                Some(plane_views) => {
-                    WgpuRenderableFrame::from_decoded_host_planar(decoded_frame, plane_views)
-                }
-                None => Err(anyhow::anyhow!(
-                    "{} decoded video surface requires HostPlanar Y/U/V texture views",
-                    host_planar_layout
-                )),
-            }
-        }
-        unsupported_layout => Err(anyhow::anyhow!(
-            "{} decoded video surface is not a production zero-copy render path",
-            unsupported_layout
-        )),
-    };
-
-    boundary_frame.map_err(|error| {
-        let message = format!(
-            "WGPU renderable frame rejected decoded {} frame: {}",
-            frame_format, error
-        );
-        tracing::error!(
-            error = %error,
-            format = %frame_format,
-            memory_path = %frame_memory_path,
-            "Failed to build WGPU renderable frame"
-        );
-        PlayerRenderError::unsupported_frame_format(present_frame, message)
-    })
-}
-
 /// Возвращает `true`, только если renderer реально принял video input в presented frame.
 pub(super) fn render_outcome_marks_video_submitted(
     render_frame_outcome: &RenderFrameOutcome,
@@ -804,7 +743,7 @@ pub(super) fn render_outcome_marks_video_submitted(
 /// AppState ещё доступен: перед suspend и terminal exit.
 pub(crate) fn with_lifecycle_settings_adapter<R>(
     window: &Arc<Window>,
-    renderer: &mut Renderer,
+    renderer: &mut Box<dyn RenderShell>,
     app_state: &mut AppState,
     playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
     renderer_lifecycle: &mut RendererLifecycleCoordinator,
@@ -836,7 +775,7 @@ pub(crate) fn with_lifecycle_settings_adapter<R>(
 pub(crate) fn render_frame(
     telemetry: &Telemetry,
     window: &Arc<Window>,
-    renderer: &mut Renderer,
+    renderer: &mut Box<dyn RenderShell>,
     app_state: &mut AppState,
     playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
     settings_runtime: &mut SettingsRuntime,
@@ -845,8 +784,13 @@ pub(crate) fn render_frame(
     let frame_start = Instant::now();
     let mut frame_sequence = FrameSequenceContract::default();
 
-    let prepared_frame_input =
-        prepare_frame_input(telemetry, window, renderer, app_state, &mut frame_sequence);
+    let prepared_frame_input = prepare_frame_input(
+        telemetry,
+        window,
+        renderer.as_mut(),
+        app_state,
+        &mut frame_sequence,
+    );
     let input_snapshot_timings = prepared_frame_input.timings;
     let egui_input = prepared_frame_input.egui_input;
     let frame_context = prepared_frame_input.frame_context;
@@ -877,7 +821,7 @@ pub(crate) fn render_frame(
         settings_runtime,
         FrameDecisionInputs {
             window,
-            renderer,
+            renderer: renderer.as_ref(),
             frame_context: &frame_context,
             worker_event_count: input_snapshot_timings.worker_event_count,
             playlist: crate::state::PlaylistVisualKey {
@@ -986,24 +930,24 @@ pub(crate) fn render_frame(
     renderer_lifecycle.set_surface_event_pending(false);
 
     if let Some(action) = playlist_confirmation_action {
-        app_state.apply_playlist_confirmation_action(action, playlist_runtime, renderer);
+        app_state.apply_playlist_confirmation_action(action, playlist_runtime, renderer.as_mut());
     }
     let playlist_action_requested_repaint = crate::playlist_action_runtime::apply_playlist_actions(
         window,
         app_state,
         playlist_runtime,
-        renderer,
+        renderer.as_mut(),
         playlist_actions,
     );
     // «Повторить» на ошибке открытия: исполняется тем же путём, что исходное действие.
-    app_state.apply_requested_media_retry(playlist_runtime, renderer);
+    app_state.apply_requested_media_retry(playlist_runtime, renderer.as_mut());
     // Web-версия звука из меню «♪»/`B` идёт тем же same-item switch-ем, что строка sidebar.
     let audio_version_requested_repaint =
-        app_state.apply_requested_web_audio_version(playlist_runtime, renderer);
+        app_state.apply_requested_web_audio_version(playlist_runtime, renderer.as_mut());
     let url_action_requested_repaint = match url_sidebar_action {
         Some(action) => {
             if let Err(error) =
-                app_state.apply_url_sidebar_action(action, playlist_runtime, renderer)
+                app_state.apply_url_sidebar_action(action, playlist_runtime, renderer.as_mut())
             {
                 tracing::warn!(error = %error, "URL same-item switch intent rejected");
             }
@@ -1021,34 +965,40 @@ pub(crate) fn render_frame(
     crate::transport_runtime::apply_transport_actions(
         app_state,
         playlist_runtime,
-        renderer,
+        renderer.as_mut(),
         frame_context.player_snapshot(),
         transport_actions,
     );
     crate::transport_runtime::apply_initial_queue_playback_action(
         app_state,
         playlist_runtime,
-        renderer,
+        renderer.as_mut(),
     );
     crate::transport_runtime::apply_playlist_automatic_snapshot(
         app_state,
         playlist_runtime,
-        renderer,
+        renderer.as_mut(),
         frame_context.player_snapshot(),
     );
     crate::transport_runtime::apply_discovery_navigation_action(
         app_state,
         playlist_runtime,
-        renderer,
+        renderer.as_mut(),
     );
-    web_media_runtime::advance_after_actions(app_state, playlist_runtime, renderer);
-    crate::transport_runtime::poll_playlist_transport(app_state, playlist_runtime, renderer);
+    web_media_runtime::advance_after_actions(app_state, playlist_runtime, renderer.as_mut());
+    crate::transport_runtime::poll_playlist_transport(
+        app_state,
+        playlist_runtime,
+        renderer.as_mut(),
+    );
     // Итоги пропусков битых файлов очереди — после всех transport-шагов этого кадра.
     app_state.show_playlist_queue_notices(playlist_runtime.drain_automatic_queue_notices());
     // Как прочитан импортированный плейлист (например, запасная кодировка Windows-1251).
     app_state.show_playlist_import_notices(playlist_runtime.drain_playlist_import_notices());
 
-    let settings_preview_tick = match settings_runtime.apply_due_preview(renderer, Instant::now()) {
+    let settings_preview_tick = match settings_runtime
+        .apply_due_preview(renderer.live_settings_adapter(), Instant::now())
+    {
         Ok(tick) => tick,
         Err(error) => {
             settings_runtime.report_runtime_error("Could not apply live preview", error);
@@ -1070,8 +1020,7 @@ pub(crate) fn render_frame(
     if plan.presents() {
         present_frame_for_plan(
             telemetry,
-            window,
-            renderer,
+            renderer.as_mut(),
             app_state,
             &frame_context,
             prepared_ui_frame,
@@ -1132,7 +1081,7 @@ mod tests {
     use std::time::Duration;
 
     use player_core::{PlayerRenderErrorKind, PlayerVideoDropReason, PlayerVideoFrameDrop};
-    use render_wgpu_shell::{
+    use render_shell_api::{
         RenderFrameDropReason, RenderFrameFailure, RenderFrameStageTimings, RenderFrameTiming,
     };
 
@@ -1321,9 +1270,7 @@ mod tests {
     fn prepared_video_frame_without_lease_has_no_render_input() {
         let prepared_video_frame = PreparedVideoFrame::empty("no_frame_yet");
 
-        let render_input_frame = prepared_video_frame
-            .render_input_video_frame()
-            .expect("empty prepared video frame must not fail");
+        let render_input_frame = prepared_video_frame.render_input_video_frame();
 
         assert!(render_input_frame.is_none());
     }

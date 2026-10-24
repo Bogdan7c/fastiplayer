@@ -6,7 +6,7 @@
 
 use std::time::Instant;
 
-use render_wgpu_shell::{RenderScreenDescriptor, Renderer};
+use render_shell_api::{RenderScreenDescriptor, RenderShell};
 use winit::window::Window;
 
 use super::frame_work_plan::{FrameWorkPlan, PresentReasons, UiPassReasons, plan_frame_work};
@@ -30,7 +30,7 @@ pub(super) struct FrameDecision {
 /// Внешние факты кадра, которые знает только координатор `render_frame`.
 pub(super) struct FrameDecisionInputs<'frame> {
     pub(super) window: &'frame Window,
-    pub(super) renderer: &'frame Renderer,
+    pub(super) renderer: &'frame dyn RenderShell,
     pub(super) frame_context: &'frame AppFrameContext,
     /// Сколько событий плеера вычитано в этом пробуждении.
     pub(super) worker_event_count: usize,

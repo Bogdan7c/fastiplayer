@@ -4,32 +4,12 @@
 //! чистое преобразование валидированного `AppConfig` в типы `render-core`.
 
 use anyhow::{Result, bail};
-use fastiplayer_config::{AppConfig, HdrToSdrOperatorConfig, VulkanPresentMode};
+use fastiplayer_config::{AppConfig, HdrToSdrOperatorConfig};
 use render_core::{
     ColorAdjustment, ColorPipelineSettings, HdrOutputMode, HdrToSdrSettings,
     HdrToneMappingOperator, SwapchainTransferMode,
 };
-use render_wgpu_shell::{ShellPresentMode, SurfaceAlphaPreference, SurfacePresentSettings};
 use tracing::warn;
-
-/// Преобразует пользовательский `[render.vulkan]` config в нейтральные shell
-/// surface present настройки (present mode + желаемая swapchain latency).
-pub(crate) fn surface_present_settings_from_config(
-    app_config: &AppConfig,
-) -> SurfacePresentSettings {
-    let present_mode = match app_config.render.vulkan.present_mode {
-        VulkanPresentMode::Auto => ShellPresentMode::Auto,
-        VulkanPresentMode::Fifo => ShellPresentMode::Fifo,
-        VulkanPresentMode::Mailbox => ShellPresentMode::Mailbox,
-        VulkanPresentMode::Immediate => ShellPresentMode::Immediate,
-    };
-
-    SurfacePresentSettings {
-        present_mode,
-        max_frame_latency: app_config.render.vulkan.max_frame_latency,
-        alpha_preference: SurfaceAlphaPreference::TransparentPreferred,
-    }
-}
 
 /// Логирует legacy tone mapping placeholder, который Phase 10 не превращает в UI preset.
 pub(crate) fn warn_legacy_tone_mapping_config(app_config: &AppConfig) {
@@ -146,16 +126,5 @@ mod tests {
         let settings = hdr_to_sdr_settings_from_config(&AppConfig::default());
 
         assert_eq!(settings, HdrToSdrSettings::default());
-    }
-
-    /// Первичное создание renderer-а всегда запрашивает прозрачную surface-композицию.
-    #[test]
-    fn initial_surface_settings_prefer_transparency() {
-        let settings = surface_present_settings_from_config(&AppConfig::default());
-
-        assert_eq!(
-            settings.alpha_preference,
-            SurfaceAlphaPreference::TransparentPreferred
-        );
     }
 }

@@ -37,7 +37,7 @@ use crate::{
     RenderScreenDescriptor, RenderShell, RenderSurfaceSize, RenderableFrameKey, RendererFamily,
     RendererGpuDrainError, RendererInstanceId, SurfaceFrameAcquire, VideoFrameImport,
     VideoImportHandoff, VideoImportInstallError, VideoImportPath, VideoImportPlan,
-    VideoImportPrepareError, VideoImportReleaseError,
+    VideoImportPrepareError, VideoImportPreparer, VideoImportReleaseError,
 };
 
 /// Какое правило контракта fake нарушает (для доказательства, что проверки его ловят).
@@ -57,6 +57,8 @@ pub(super) enum FakeDefect {
     RetainsKeys,
     /// При потере устройства освобождает кадры, но оставляет их в очереди «GPU».
     KeepsPendingAfterDeviceLost,
+    /// Подготовщик импорта помечает импорт паспортом другого рендера.
+    PreparerStampsForeignOwner,
 }
 
 /// Fake-«GPU»: кадры, ждущие завершения работы.
@@ -485,6 +487,70 @@ impl RenderShell for FakeRenderShell {
     fn video_frames(&mut self) -> &mut dyn VideoFrameImport {
         self
     }
+
+    fn video_import_preparer(&self) -> Box<dyn VideoImportPreparer> {
+        // Дефектный подготовщик ставит на импорт паспорт несуществующего рендера.
+        let owner = if self.defect == FakeDefect::PreparerStampsForeignOwner {
+            RendererInstanceId::allocate()
+        } else {
+            self.id
+        };
+        Box::new(FakeVideoImportPreparer {
+            owner,
+            gpu: self.gpu.clone(),
+        })
+    }
+}
+
+/// Подготовщик fake-рендера: та же подготовка, что у склада, но в любом потоке.
+struct FakeVideoImportPreparer {
+    owner: RendererInstanceId,
+    gpu: Arc<FakeGpu>,
+}
+
+impl VideoImportPreparer for FakeVideoImportPreparer {
+    fn prepare_video_import(
+        &mut self,
+        backend: StartedVideoBackend,
+        plan: VideoImportPlan,
+    ) -> Result<PreparedVideoImport, VideoImportPrepareError> {
+        Ok(prepare_fake_import(self.owner, &self.gpu, backend, plan))
+    }
+}
+
+/// Оборачивает декодер так, что освобождения отправленных кадров ждут fake-«GPU».
+fn prepare_fake_import(
+    owner: RendererInstanceId,
+    gpu: &Arc<FakeGpu>,
+    backend: StartedVideoBackend,
+    plan: VideoImportPlan,
+) -> PreparedVideoImport {
+    let backend_id = backend.backend_id().to_owned();
+    let decoder_thread = backend.into_decoder_thread();
+    let binding = FakeSubmissionBinding::new(gpu.clone());
+    let renderer_provider = PresentFrameResourceProviderHandle::new(FakeSubmittedProvider {
+        inner: decoder_thread.resource_provider(),
+        binding: binding.clone(),
+    });
+    let wrapped = StartedVideoBackend::from_decoder_thread(
+        backend_id,
+        FakeWrappedDecoderThread {
+            inner: decoder_thread,
+            renderer_provider: renderer_provider.clone(),
+        },
+    );
+    PreparedVideoImport {
+        backend: wrapped,
+        pending: PendingVideoImport::new(
+            owner,
+            plan.path,
+            FakeImportState {
+                path: plan.path,
+                renderer_provider,
+                binding,
+            },
+        ),
+    }
 }
 
 impl VideoFrameImport for FakeRenderShell {
@@ -496,32 +562,7 @@ impl VideoFrameImport for FakeRenderShell {
         if !self.import_handles(plan.path) {
             return Err(VideoImportPrepareError::PathUnsupported { path: plan.path });
         }
-        let backend_id = backend.backend_id().to_owned();
-        let decoder_thread = backend.into_decoder_thread();
-        let binding = FakeSubmissionBinding::new(self.gpu.clone());
-        let renderer_provider = PresentFrameResourceProviderHandle::new(FakeSubmittedProvider {
-            inner: decoder_thread.resource_provider(),
-            binding: binding.clone(),
-        });
-        let wrapped = StartedVideoBackend::from_decoder_thread(
-            backend_id,
-            FakeWrappedDecoderThread {
-                inner: decoder_thread,
-                renderer_provider: renderer_provider.clone(),
-            },
-        );
-        Ok(PreparedVideoImport {
-            backend: wrapped,
-            pending: PendingVideoImport::new(
-                self.id,
-                plan.path,
-                FakeImportState {
-                    path: plan.path,
-                    renderer_provider,
-                    binding,
-                },
-            ),
-        })
+        Ok(prepare_fake_import(self.id, &self.gpu, backend, plan))
     }
 
     fn install_video_import(

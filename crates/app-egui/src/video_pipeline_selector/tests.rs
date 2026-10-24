@@ -209,7 +209,7 @@ fn auto_prefers_vaapi_when_both_vaapi_and_ffmpeg_are_playable() {
 
     assert_eq!(
         plan,
-        VideoPipelinePlan::VaapiDmaBufWgpu {
+        VideoPipelinePlan::VaapiDmaBuf {
             decoder_thread_config,
         }
     );
@@ -233,7 +233,7 @@ fn hardware_preference_requires_native_hardware_dma_buf_output() {
 
     assert_eq!(
         plan,
-        VideoPipelinePlan::VaapiDmaBufWgpu {
+        VideoPipelinePlan::VaapiDmaBuf {
             decoder_thread_config,
         }
     );
@@ -269,7 +269,7 @@ fn auto_selects_ffmpeg_when_hardware_cannot_play_but_software_can() {
 
     assert_eq!(
         plan,
-        VideoPipelinePlan::FfmpegHostUploadWgpu {
+        VideoPipelinePlan::FfmpegHostUpload {
             decoder_thread_config,
         }
     );
@@ -396,7 +396,7 @@ fn software_preference_selects_ffmpeg_when_ffmpeg_is_playable() {
 
     assert_eq!(
         plan,
-        VideoPipelinePlan::FfmpegHostUploadWgpu {
+        VideoPipelinePlan::FfmpegHostUpload {
             decoder_thread_config,
         }
     );
@@ -449,4 +449,69 @@ fn missing_capability_snapshot_is_typed_error() {
     .expect_err("selector cannot run before shell capability probe");
 
     assert_eq!(error, VideoPipelineSelectionError::MissingCapabilities);
+}
+
+/// Метки плана для wgpu — байт-в-байт прежние: по `plan="ffmpeg-host-upload-wgpu"` инструменты
+/// замера (`docs/benchmarks/tools/local/evidence.py`, `t480s/collect.py`) классифицируют прогоны.
+/// Метки GLES2 отличаются, чтобы прогоны двух рендеров не смешались (сессия 02 gles2-renderer).
+#[test]
+fn plan_labels_combine_decode_route_and_renderer_family() {
+    use render_shell_api::RendererFamily;
+
+    let decoder_thread_config = PlayerVideoDecoderThreadConfig::default();
+    let hardware = VideoPipelinePlan::VaapiDmaBuf {
+        decoder_thread_config,
+    };
+    let software = VideoPipelinePlan::FfmpegHostUpload {
+        decoder_thread_config,
+    };
+
+    assert_eq!(
+        hardware.diagnostic_label(RendererFamily::WgpuVulkan),
+        "vaapi-dmabuf-wgpu"
+    );
+    assert_eq!(
+        software.diagnostic_label(RendererFamily::WgpuVulkan),
+        "ffmpeg-host-upload-wgpu"
+    );
+    assert_eq!(
+        hardware.diagnostic_label(RendererFamily::Gles2),
+        "vaapi-dmabuf-gles2"
+    );
+    assert_eq!(
+        software.diagnostic_label(RendererFamily::Gles2),
+        "ffmpeg-host-upload-gles2"
+    );
+}
+
+/// Маршрут декода превращается в план импорта рендера: путь передачи и размер пула декодера
+/// (предел кэша импорта DMA-BUF) берутся из плана, а не задаются рендером.
+#[test]
+fn import_plan_carries_transfer_path_and_decoder_surface_pool() {
+    use render_shell_api::VideoImportPath;
+
+    let decoder_thread_config = PlayerVideoDecoderThreadConfig {
+        zero_copy_surface_pool_slots: 17,
+        ..PlayerVideoDecoderThreadConfig::default()
+    };
+    let hardware = VideoPipelinePlan::VaapiDmaBuf {
+        decoder_thread_config,
+    }
+    .import_plan();
+    let software = VideoPipelinePlan::FfmpegHostUpload {
+        decoder_thread_config,
+    }
+    .import_plan();
+
+    assert_eq!(hardware.path, VideoImportPath::HardwareZeroCopy);
+    assert_eq!(hardware.decoder_surface_pool.get(), 17);
+    assert_eq!(software.path, VideoImportPath::SoftwareHostUpload);
+    assert_eq!(software.decoder_surface_pool.get(), 17);
+    assert_eq!(
+        VideoPipelinePlan::FfmpegHostUpload {
+            decoder_thread_config
+        }
+        .decoder_thread_config(),
+        decoder_thread_config
+    );
 }
