@@ -4,19 +4,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 
+use crate::SurfaceAlphaPreference;
 use crate::window_corner_mask::SurfaceAlphaEncoding;
 
 /// Process-wide защита от повторения fallback warning при controlled recreation.
 static TRANSPARENCY_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
-
-/// Политика выбора alpha mode для desktop surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SurfaceAlphaPreference {
-    /// Выбирать только непрозрачную композицию для обычных прямоугольных окон.
-    Opaque,
-    /// Предпочесть подтверждённую прозрачность, но безопасно продолжить с opaque fallback.
-    TransparentPreferred,
-}
 
 /// Выбирает фактический alpha mode и сообщает, можно ли безопасно исполнять corner mask.
 pub(crate) fn choose_alpha_mode(

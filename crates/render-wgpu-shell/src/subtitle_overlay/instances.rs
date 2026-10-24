@@ -4,6 +4,7 @@
 //! vertex buffer-а и переводит прямоугольник картинки видео в целый пиксельный origin.
 
 use render_core::PictureRect;
+use render_shell_api::{SubtitleLayerOffset, SubtitleLayerOffsets};
 use subtitle_raster::{OverlayPlacementGroup, PixelPoint, SubtitleBitmap};
 
 use super::atlas::AtlasSlot;
@@ -82,51 +83,6 @@ impl BitmapInstance {
         }
         bytes.extend_from_slice(&self.color_rgba);
         bytes.extend_from_slice(&self.group_index.to_ne_bytes());
-    }
-}
-
-/// Сдвиг всего слоя субтитров относительно левого верхнего угла картинки видео.
-///
-/// Единицы — пиксели surface (не точки egui); `x` вправо, `y` вниз. Слой едет целиком одним
-/// сдвигом uniform-а: перерастеризация и повторная загрузка атласа не нужны. Решает сдвиг
-/// вызывающий (пользовательская позиция, подъём над панелью управления), рендер лишь
-/// применяет его.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct SubtitleLayerOffset {
-    /// Сдвиг вправо в пикселях surface (отрицательный — влево).
-    pub x: f32,
-    /// Сдвиг вниз в пикселях surface (отрицательный — вверх).
-    pub y: f32,
-}
-
-impl SubtitleLayerOffset {
-    /// Без сдвига: слой лежит ровно на картинке видео.
-    pub const NONE: Self = Self { x: 0.0, y: 0.0 };
-}
-
-/// Сдвиги групп размещения слоя: основная и фиксированная двигаются независимо.
-///
-/// Нужны режиму «поднять основной диалог над панелью, надписи оставить на месте»; для всех
-/// остальных случаев обе группы получают один сдвиг ([`Self::uniform`]). Оба сдвига живут в
-/// uniform-е: смена любого из них не перезагружает маски и инстансы.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct SubtitleLayerOffsets {
-    /// Сдвиг основной группы (SRT/WebVTT, ASS-диалог без `\pos`, снизу).
-    pub main: SubtitleLayerOffset,
-    /// Сдвиг фиксированной группы (ASS с `\pos`/`\move`, верх и середина).
-    pub fixed: SubtitleLayerOffset,
-}
-
-impl SubtitleLayerOffsets {
-    /// Обе группы на месте.
-    pub const NONE: Self = Self::uniform(SubtitleLayerOffset::NONE);
-
-    /// Один сдвиг для обеих групп: слой едет целиком.
-    pub const fn uniform(offset: SubtitleLayerOffset) -> Self {
-        Self {
-            main: offset,
-            fixed: offset,
-        }
     }
 }
 

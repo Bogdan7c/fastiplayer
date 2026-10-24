@@ -1,35 +1,7 @@
 //! Финальный GPU-контур desktop-окна поверх video и egui композиции.
 
-/// Намерение app-слоя о форме текущего кадра в логических UI points.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct WindowCornerMask {
-    radius_points: f32,
-}
-
-impl WindowCornerMask {
-    /// Создаёт полностью прямоугольный контур без дополнительного GPU-pass-а.
-    #[must_use]
-    pub const fn square() -> Self {
-        Self { radius_points: 0.0 }
-    }
-
-    /// Создаёт скруглённый контур; отрицательные и нечисловые значения безопасно отключаются.
-    #[must_use]
-    pub fn rounded_in_points(radius_points: f32) -> Self {
-        let radius_points = if radius_points.is_finite() {
-            radius_points.max(0.0)
-        } else {
-            0.0
-        };
-        Self { radius_points }
-    }
-
-    /// Возвращает радиус в той же логической системе координат, что и egui.
-    #[must_use]
-    pub const fn radius_points(self) -> f32 {
-        self.radius_points
-    }
-}
+// `WindowCornerMask` (намерение приложения) живёт в `render-shell-api`; здесь — GPU-pass.
+use crate::WindowCornerMask;
 
 /// Фактическое кодирование RGB относительно alpha, подтверждённое surface capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

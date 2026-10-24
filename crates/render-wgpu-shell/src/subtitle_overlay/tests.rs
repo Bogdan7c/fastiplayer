@@ -17,6 +17,7 @@ use subtitle_raster::{
 };
 
 use super::*;
+use crate::{SubtitleLayerOffset, SubtitleLayerOffsets};
 
 const TARGET_WIDTH: u32 = 256;
 const TARGET_HEIGHT: u32 = 144;

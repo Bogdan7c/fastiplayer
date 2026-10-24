@@ -1,0 +1,35 @@
+[package]
+name = "render-shell-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# Набор проверок контракта (conformance), который прогоняется для каждого реального
+# рендера из его dev-dependencies. В production-сборку приложения не входит.
+conformance = []
+
+[dependencies]
+# Типы мешей и изменений текстур интерфейса (ClippedPrimitive, TexturesDelta): только данные,
+# без GPU. Рендер egui рисует сам.
+egui.workspace = true
+# Нейтральные возможности, диагностика, живые настройки цвета и геометрия кадра.
+render-core.workspace = true
+# Картинка субтитров кадра (CPU-растеризатор); рендер только рисует готовый overlay.
+subtitle-raster.workspace = true
+# Запущенный декодер и нейтральный provider ресурсов кадров.
+video-backend-api.workspace = true
+# Кадр декодера и его нейтральные дескрипторы.
+video-core.workspace = true
+# Словарь контрактов кадра (раскладка + путь передачи).
+video-frame-contract.workspace = true
+# Аренда кадра (VideoFrameLease), которую рендер превращает в непрозрачный ключ.
+video-present-core.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+codec-core.workspace = true
+
+[lints]
+workspace = true

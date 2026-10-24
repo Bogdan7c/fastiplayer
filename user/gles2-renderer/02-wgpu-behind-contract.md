@@ -28,6 +28,15 @@
 5. **Пересоздание рендера** (`renderer_recreation.rs`, `RendererLifecycleCoordinator`) работает через контракт. Ветку `RenderProfile::OpenGles → UnsupportedProfile` (`renderer_recreation.rs:237`) оставить до сессии 09.
 6. **Guardrail**: `app-egui` больше не зависит от `wgpu` напрямую (кроме тестов, если без этого никак — с явным объяснением). `render-wgpu-video` остаётся без `app-egui`/`egui`/`winit`.
 
+## Поправки по итогам сессии 01 (`results/01.md`)
+
+- Подключение декодера в контракте двухшаговое: `prepare_video_import(StartedVideoBackend, VideoImportPlan)` → `install_video_import(PendingVideoImport)` (имя `bind_video_backend` выше — из плана до 01). Пересоздание: `export_video_import_for_recreation` → `prepare_recreated_video_import` → `install_video_import`.
+- Есть **второй путь установки декодера мимо кандидатов**: `state/video_backend.rs:195,221,249-250` (`install_video_pipeline_plan`). Его тоже перевести на контракт.
+- Видео во входе кадра — `&RenderableFrameKey` (держит клон аренды); `RenderablePresentFrame { present_frame, texture_views }` в кэшах приложения превращается в ключ. Рендер не хранит ключи после `render_frame`.
+- Нейтральные `RenderFrameInput`/`AcquiredSurfaceFrame` уже в контракте; wgpu-версии в `render-wgpu-shell/src/frame.rs` удаляются. Окно winit wgpu-рендер держит сам (`pre_present_notify`). Билет — одна аллокация `Box` на кадр: подтвердить замером, что она в шуме.
+- `RendererGpuDrainError` контракта: `WaitRejected` вместо `WrongSubmissionIndex`, `RendererDeviceLost` вместо `GpuDeviceLost` с `wgpu::DeviceLostReason`. `RenderHotPathStats` — нейтральные имена `VideoHotPathStats`; трасса `render_frame_timing` пишет прежние имена полей.
+- Conformance подключается так: `render-shell-api = { workspace = true, features = ["conformance"] }` в dev-dependencies, harness реализует `RenderShellConformanceHarness`.
+
 ## Размер модулей
 
 `app_shell/mod.rs` = 798 строк, `frame_prepare.rs` = 1467 (legacy), `state.rs` = 776, `renderer_recreation.rs` = 754. В эти файлы — только замена типов в одну строку. Новый код — в новые модули (`render_backend/`). Ratchet `module-size-baseline.json` обновить, если legacy-файл уменьшился.

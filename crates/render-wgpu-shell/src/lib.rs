@@ -19,17 +19,18 @@ mod surface_settings;
 mod vulkan_device;
 mod window_corner_mask;
 
-pub use frame::{
-    AcquiredSurfaceFrame, EguiFrameContent, RenderFrameDropReason, RenderFrameFailure,
-    RenderFrameInput, RenderFrameOutcome, RenderFrameSlowestStage, RenderFrameStageTimings,
-    RenderFrameTiming, RenderScreenDescriptor, SurfaceFrameAcquire,
+pub use frame::{AcquiredSurfaceFrame, RenderFrameInput, SurfaceFrameAcquire};
+// Нейтральный словарь кадра и настроек показа — из контракта `render-shell-api` (сессия 01
+// плана `user/gles2-renderer/`); пути `render_wgpu_shell::...` для app-egui не меняются.
+pub use render_shell_api::{
+    EguiFrameContent, RenderFrameDropReason, RenderFrameFailure, RenderFrameOutcome,
+    RenderFrameSlowestStage, RenderFrameStageTimings, RenderFrameTiming, RenderScreenDescriptor,
+    ShellPresentMode, SubtitleLayerOffset, SubtitleLayerOffsets, SubtitleOverlayFrame,
+    SurfaceAlphaPreference, SurfacePresentSettings, WindowCornerMask,
 };
 pub use shell::{GpuContext, GpuDeviceLost, Renderer, RendererGpuDrainError};
 pub use subtitle_overlay::{
-    SubtitleLayerOffset, SubtitleLayerOffsets, SubtitleOverlayFrame, SubtitleOverlayOutcome,
-    SubtitleOverlayRenderer, SubtitleOverlayTarget, SubtitleOverlayUploadStats,
+    SubtitleOverlayOutcome, SubtitleOverlayRenderer, SubtitleOverlayTarget,
+    SubtitleOverlayUploadStats,
 };
-pub use surface_alpha::SurfaceAlphaPreference;
-pub use surface_settings::{ShellPresentMode, SurfacePresentSettings};
 pub use vulkan_device::ForeignQueueFamilySupport;
-pub use window_corner_mask::WindowCornerMask;

@@ -52,28 +52,16 @@ mod runs;
 #[cfg(test)]
 mod tests;
 
-use render_core::{PictureRect, RenderViewport};
+use render_core::RenderViewport;
 use subtitle_raster::{OverlayRevision, SubtitleBitmap, SubtitleOverlay};
 
 use self::instances::placement_origins;
-pub use self::instances::{SubtitleLayerOffset, SubtitleLayerOffsets};
+// Нейтральный вход субтитров живёт в контракте `render-shell-api` (crate реэкспортирует его
+// из корня).
 use self::layer::{BitmapLayer, LayerGpuContext, LayerOutcome};
 use self::pipeline::{LayerKind, UNIFORM_SIZE_BYTES, create_uniform_buffer};
 use self::runs::{DrawRun, partition_overlay};
-
-/// Субтитры одного кадра: растеризованный overlay и где на экране лежит картинка видео.
-#[derive(Debug, Clone, Copy)]
-pub struct SubtitleOverlayFrame<'frame> {
-    /// Результат растеризатора; холст = округлённый размер `picture_rect`.
-    pub overlay: &'frame SubtitleOverlay,
-    /// Картинка видео без чёрных полос в пикселях surface; её округлённый левый верхний
-    /// угол — точка, куда ложится (0, 0) холста.
-    pub picture_rect: PictureRect,
-    /// Сдвиги групп слоя относительно `picture_rect` в пикселях surface (позиция по выбору
-    /// пользователя, подъём над панелью управления). Меняется только uniform.
-    /// `SubtitleLayerOffsets::uniform` двигает слой целиком.
-    pub layer_offsets: SubtitleLayerOffsets,
-}
+use render_shell_api::SubtitleOverlayFrame;
 
 /// Счётчики загрузок для тестов и диагностики.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

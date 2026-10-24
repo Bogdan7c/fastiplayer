@@ -96,6 +96,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "playlist-discovery",
         "playlist-state",
         "render-core",
+        "render-shell-api",
         "render-wgpu-shell",
         "render-wgpu-video",
         "fastiplayer-config",
@@ -129,6 +130,25 @@ REQUIRED_ROLE_CRATES = frozenset(
 REMOVED_WORKSPACE_CRATES = frozenset({"video-vulkan"})
 
 VIDEO_FRAME_CONTRACT_ALLOWED_DEPENDENCIES = frozenset({"serde"})
+
+# Контракт «приложение ↔ рендер» (issue #6, план user/gles2-renderer/): только нейтральные
+# crate-ы плеера и egui ради типов мешей/текстур интерфейса. Allowlist автоматически запрещает
+# wgpu/ash/glow/khronos-egl/winit/egui-wgpu, player-core, конкретные декодеры и рендеры.
+RENDER_SHELL_API_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "egui",
+        "render-core",
+        "subtitle-raster",
+        "video-backend-api",
+        "video-core",
+        "video-frame-contract",
+        "video-present-core",
+    }
+)
+
+# Будущие crate-ы своего рендера GLES2 (`gles2-egui`, `gles2-video`, `render-gles2-shell`,
+# сессии 03–09 плана user/gles2-renderer/) перечислены в forbidden-наборах ниже: нейтральные
+# контракты, плеер, декодеры и wgpu-рендер не должны зависеть от них ни сейчас, ни потом.
 
 VIDEO_PRESENT_CORE_ALLOWED_DEPENDENCIES = frozenset(
     {
@@ -389,6 +409,8 @@ MEDIA_SOURCE_OPEN_FORBIDDEN_DEPENDENCIES = frozenset(
         "egui-wgpu",
         "egui-winit",
         "render-core",
+        "render-gles2-shell",
+        "render-shell-api",
         "render-wgpu-shell",
         "render-wgpu-video",
         "ui-artwork-egui",
@@ -561,10 +583,14 @@ CONTRACT_FORBIDDEN_DEPENDENCIES = frozenset(
         "gbm",
         "gbm-sys",
         "player-core",
+        "render-gles2-shell",
+        "render-shell-api",
         "render-wgpu-shell",
         "render-wgpu-video",
         "fastiplayer-config",
         "fastiplayer-settings",
+        "gles2-egui",
+        "gles2-video",
         "service-direct-media",
         "service-ytdlp",
         "settings-derive",
@@ -593,6 +619,10 @@ LOW_LEVEL_CRATES = frozenset(
 LOW_LEVEL_FORBIDDEN_DEPENDENCIES = frozenset(
     {
         "ash",
+        "gles2-egui",
+        "gles2-video",
+        "render-gles2-shell",
+        "render-shell-api",
         "render-wgpu-shell",
         "render-wgpu-video",
         "video-ffmpeg",
@@ -610,6 +640,10 @@ PLAYER_CORE_FORBIDDEN_DEPENDENCIES = frozenset(
         "egui",
         "egui-wgpu",
         "egui-winit",
+        "gles2-egui",
+        "gles2-video",
+        "render-gles2-shell",
+        "render-shell-api",
         "render-wgpu-shell",
         "render-wgpu-video",
         "service-ytdlp",
@@ -636,8 +670,12 @@ VIDEO_BACKEND_CRATES = frozenset(
 VIDEO_BACKEND_FORBIDDEN_DEPENDENCIES = frozenset(
     {
         "ash",
+        "gles2-egui",
+        "gles2-video",
         "player-core",
         "render-core",
+        "render-gles2-shell",
+        "render-shell-api",
         "render-wgpu-shell",
         "render-wgpu-video",
         "wgpu",
@@ -648,7 +686,10 @@ VIDEO_BACKEND_FORBIDDEN_DEPENDENCIES = frozenset(
 RENDER_WGPU_SHELL_FORBIDDEN_DEPENDENCIES = frozenset(
     {
         "audio",
+        "gles2-egui",
+        "gles2-video",
         "player-core",
+        "render-gles2-shell",
         "service-ytdlp",
         "source-core",
         "symphonia-demux",
@@ -667,8 +708,11 @@ RENDER_WGPU_VIDEO_FORBIDDEN_DEPENDENCIES = frozenset(
         "egui",
         "egui-wgpu",
         "egui-winit",
+        "gles2-egui",
+        "gles2-video",
         "player-core",
         "pollster",
+        "render-gles2-shell",
         "render-wgpu-shell",
         "service-ytdlp",
         "source-core",
@@ -1267,6 +1311,14 @@ def find_dependency_violations(
             frozenset({"video-frame-contract"}),
             VIDEO_FRAME_CONTRACT_ALLOWED_DEPENDENCIES,
             "video-frame-contract remains leaf contract crate It depends only on serde",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"render-shell-api"}),
+            RENDER_SHELL_API_ALLOWED_DEPENDENCIES,
+            "render-shell-api is the neutral app/renderer contract without GPU/window/player/backend deps",
         )
     )
     violations.extend(

@@ -27,4 +27,5 @@
 
 ## Статус сессий
 - Планирование — DONE 2026-10-23.
-- 00 (разведка T410, эталон mpv/VLC) — DONE 2026-10-24, `results/00.md`; генератор фикстур `make_matrix.py --preset t410|t410-hdr`. Маршрут: 01 → … → 09 → 09b → 10 → 11 …, 09a — параллельно, лучше до 07.
+- 00 (разведка T410, эталон mpv/VLC) — DONE 2026-10-24, `results/00.md`; генератор фикстур `make_matrix.py --preset t410|t410-hdr`.
+- 01 (контракт `render-shell-api`) — DONE 2026-10-24, `results/01.md`: crate, fake + conformance, guardrail; app-egui не тронут, нейтральные типы кадра реэкспортируются из render-wgpu-shell. Решения владельца: каталог — модуль `app-egui::render_backend`; поведение `Unsupported` в Auto не меняется. Детали контракта и долги 02 — `mem:gles2-renderer/render-shell-contract`. Маршрут: 01 → … → 09 → 09b → 10 → 11 …, 09a — параллельно, лучше до 07.

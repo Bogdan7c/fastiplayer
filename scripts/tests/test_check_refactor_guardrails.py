@@ -795,6 +795,98 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_render_shell_api_keeps_neutral_renderer_contract(self) -> None:
+        """Контракт «приложение ↔ рендер» принимает только нейтральные crate-ы и egui."""
+
+        packages = complete_workspace_packages()
+        packages["render-shell-api"] = package_with_dependencies(
+            "render-shell-api",
+            tuple(
+                (dependency, None)
+                for dependency in sorted(GUARDRAIL.RENDER_SHELL_API_ALLOWED_DEPENDENCIES)
+            )
+            + (("anyhow", "dev"), ("codec-core", "dev")),
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "render-shell-api"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        for forbidden in (
+            "wgpu",
+            "ash",
+            "glow",
+            "khronos-egl",
+            "winit",
+            "egui-wgpu",
+            "player-core",
+            "video-vaapi",
+            "render-wgpu-shell",
+            "render-gles2-shell",
+        ):
+            packages["render-shell-api"] = package_with_dependencies(
+                "render-shell-api", (("render-core", None), (forbidden, None))
+            )
+            failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+                packages, frozenset()
+            )
+            self.assertTrue(
+                any(
+                    violation.owner == "render-shell-api"
+                    and violation.dependency == forbidden
+                    for violation in failing_result.dependency_violations
+                ),
+                forbidden,
+            )
+
+    def test_neutral_and_wgpu_crates_reject_future_gles2_renderer(self) -> None:
+        """Нейтральные контракты, плеер, декодеры и wgpu-рендер не зависят от GLES2-crate-ов."""
+
+        for owner in (
+            "video-core",
+            "render-core",
+            "player-core",
+            "video-vaapi",
+            "render-wgpu-shell",
+            "render-wgpu-video",
+        ):
+            for forbidden in ("render-gles2-shell", "gles2-egui", "gles2-video"):
+                packages = complete_workspace_packages()
+                packages[owner] = package_with_dependencies(owner, ((forbidden, None),))
+                result = GUARDRAIL.evaluate_dependency_graph_policies(
+                    packages, frozenset()
+                )
+                self.assertTrue(
+                    any(
+                        violation.owner == owner and violation.dependency == forbidden
+                        for violation in result.dependency_violations
+                    ),
+                    f"{owner} -> {forbidden}",
+                )
+
+    def test_player_and_backends_reject_render_shell_contract(self) -> None:
+        """Плеер и декодеры не знают о рендере: контракт рендера им запрещён."""
+
+        for owner in ("player-core", "video-vaapi", "video-ffmpeg", "video-core"):
+            packages = complete_workspace_packages()
+            packages[owner] = package_with_dependencies(
+                owner, (("render-shell-api", None),)
+            )
+            result = GUARDRAIL.evaluate_dependency_graph_policies(packages, frozenset())
+            self.assertTrue(
+                any(
+                    violation.owner == owner
+                    and violation.dependency == "render-shell-api"
+                    for violation in result.dependency_violations
+                ),
+                owner,
+            )
+
     def test_subtitle_sidecar_rejects_gpu_dependency(self) -> None:
         """Поиск файлов субтитров не может зависеть от wgpu, но может от модели и thiserror."""
 

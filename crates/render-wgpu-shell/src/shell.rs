@@ -35,16 +35,19 @@ use winit::window::Window;
 
 use crate::egui_compositor::EguiCompositor;
 use crate::frame::{
-    AcquiredSurfaceFrame, RenderFrameDropReason, RenderFrameFailure, RenderFrameInput,
-    RenderFrameOutcome, RenderFrameStageTimings, RenderFrameTiming, RenderScreenDescriptor,
-    clamp_video_exclusion_rects_to_screen, clamp_video_viewport_to_screen,
+    AcquiredSurfaceFrame, RenderFrameInput, clamp_video_exclusion_rects_to_screen,
+    clamp_video_viewport_to_screen,
 };
 use crate::subtitle_overlay::{
     SubtitleOverlayRenderer, SubtitleOverlayTarget, SubtitleOverlayUploadStats,
 };
 use crate::surface_alpha::choose_alpha_mode;
-use crate::surface_settings::{SurfacePresentSettings, choose_present_mode, choose_surface_format};
+use crate::surface_settings::{choose_present_mode, choose_surface_format};
 use crate::window_corner_mask::{SurfaceAlphaEncoding, WindowCornerMaskRenderer};
+use crate::{
+    RenderFrameDropReason, RenderFrameFailure, RenderFrameOutcome, RenderFrameStageTimings,
+    RenderFrameTiming, RenderScreenDescriptor, SurfacePresentSettings,
+};
 
 mod surface_acquire;
 mod video_hot_path;

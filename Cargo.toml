@@ -64,6 +64,7 @@ members = [
     "crates/video-ffmpeg",
     "crates/ffmpeg-vendor",
     "crates/render-core",
+    "crates/render-shell-api",
     "crates/render-wgpu-video",
     "crates/render-wgpu-shell",
     "crates/video-vaapi",
@@ -224,6 +225,7 @@ video-present-core = { version = "0.2.0", path = "crates/video-present-core" }
 video-ffmpeg = { version = "0.2.0", path = "crates/video-ffmpeg" }
 video-vaapi = { version = "0.2.0", path = "crates/video-vaapi" }
 render-core = { version = "0.2.0", path = "crates/render-core" }
+render-shell-api = { version = "0.2.0", path = "crates/render-shell-api" }
 render-wgpu-video = { version = "0.2.0", path = "crates/render-wgpu-video" }
 render-wgpu-shell = { version = "0.2.0", path = "crates/render-wgpu-shell" }
 player-core = { version = "0.2.0", path = "crates/player-core" }

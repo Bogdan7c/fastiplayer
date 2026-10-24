@@ -15,6 +15,8 @@ winit.workspace = true
 wgpu.workspace = true
 render-wgpu-video = { workspace = true }
 render-core.workspace = true
+# Нейтральный контракт «приложение ↔ рендер»: словарь кадра реэкспортируется отсюда.
+render-shell-api.workspace = true
 subtitle-raster.workspace = true
 
 [dev-dependencies]

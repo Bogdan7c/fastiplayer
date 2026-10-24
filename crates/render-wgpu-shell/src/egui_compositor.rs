@@ -9,7 +9,7 @@
 /// Это допустимо по контракту egui-wgpu: `Renderer::render` читает vertex/index буферы
 /// последнего `update_buffers`, а `ScreenDescriptor` обязан совпадать (uniform размера
 /// экрана пишется только в `update_buffers`).
-use crate::frame::EguiFrameContent;
+use crate::EguiFrameContent;
 
 pub(crate) struct EguiCompositor {
     /// Непосредственный renderer из egui-wgpu.

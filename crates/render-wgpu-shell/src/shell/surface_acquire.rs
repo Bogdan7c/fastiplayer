@@ -11,9 +11,8 @@
 use std::time::Instant;
 
 use super::{GpuContext, Renderer, duration_ms};
-use crate::frame::{
-    AcquiredSurfaceFrame, RenderFrameDropReason, RenderScreenDescriptor, SurfaceFrameAcquire,
-};
+use crate::frame::{AcquiredSurfaceFrame, SurfaceFrameAcquire};
+use crate::{RenderFrameDropReason, RenderScreenDescriptor};
 
 impl Renderer {
     /// Получает буфер swapchain для кадра размера `screen` (может ждать FIFO).
