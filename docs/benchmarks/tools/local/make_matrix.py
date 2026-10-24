@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Генерирует матрицу сцен HW-квалификации: 4 разрешения/частоты × 4 кодека из одного мастера.
+"""Генерирует наборы сцен для замеров из одного мастера: матрицу HW-квалификации и пресеты T410.
 
 Решение владельца (сессия 06 cpu-parity): одна и та же картинка во всех 16 файлах,
 чтобы кодеки и разрешения сравнивались между собой честно, и «тяжёлые, но жизненные»
 битрейты — у верхней границы уровня кодека, который реально встречается у камер,
 Blu-ray и веб-загрузок, но без лабораторного запредела.
 
-Мастер и отрезок задаются аргументами; рецепт полностью описан таблицей ``MATRIX``
-и функцией ``encoder_arguments``. Готовый файл проверяется ffprobe (кодек, размер,
-частота, длительность, наличие звука), а хэши и фактический битрейт пишутся в
+Мастер и отрезок задаются аргументами; рецепт полностью описан таблицами ``PRESETS``
+(``matrix`` — 16 + Main10 сессии 06; ``t410`` и ``t410-hdr`` — старое железо, план
+``user/gles2-renderer/`` сессия 00) и функцией ``encoder_arguments``. Готовый файл
+проверяется ffprobe (кодек, размер, частота, длительность, наличие звука), а хэши и фактический битрейт пишутся в
 ``manifest.json`` рядом с файлами. Существующий файл никогда не перезаписывается
 молча: повторный запуск без ``--force`` только перепроверяет его.
 """
@@ -28,31 +29,44 @@ from host import sha256, write_json
 class Variant:
     """Одна сцена матрицы: что кодируем и каким человекочитаемым именем называем файл."""
 
-    resolution: str  # метка каталога и имени: 1080p30, 1080p60, 4k30, 4k60
+    resolution: str  # метка каталога и имени: 720p30, 1080p60, 4k60, 576i25, 1080i30
     width: int
     height: int
-    fps: int
-    codec: str  # ключ кодека в протоколе: h264, hevc, av1, vp9
+    fps: int  # кадров в секунду; у чересстрочных — полных кадров (полей вдвое больше)
+    codec: str  # ключ кодека в протоколе: h264, hevc, av1, vp9, mpeg2
     profile: str  # профиль для имени файла и проверки ffprobe
     video_mbps: int  # целевой средний битрейт видео
-    bit_depth: int = 8  # 10 — только у дополнительной сцены HEVC Main10 (путь P010)
+    bit_depth: int = 8  # 10 — сцены HEVC Main10 (путь P010)
+    scan: str = 'progressive'  # 'interlaced' — MPEG-2 сцены эфира/DVD (поля сверху первыми)
+    dynamic_range: str = 'sdr'  # 'hdr10' — PQ/BT.2020, нагрузка HDR→SDR на рендер
+    tier: str = ''  # различает сцены одного кодека и разрешения, например 'stress'
 
     @property
     def pixel_format(self):
         return 'yuv420p10le' if self.bit_depth == 10 else 'yuv420p'
 
     @property
+    def interlaced(self):
+        return self.scan == 'interlaced'
+
+    @property
+    def hdr(self):
+        return self.dynamic_range == 'hdr10'
+
+    @property
     def container(self):
-        # VP9 живёт в WebM с Opus (как у YouTube); остальное — MP4 с AAC.
-        return 'webm' if self.codec == 'vp9' else 'mp4'
+        # VP9 живёт в WebM с Opus (как у YouTube); MPEG-2 — в MPEG-TS с MP2 (как эфир DVB);
+        # остальное — MP4 с AAC.
+        return {'vp9': 'webm', 'mpeg2': 'ts'}.get(self.codec, 'mp4')
 
     @property
     def audio_label(self):
-        return 'opus' if self.codec == 'vp9' else 'aac'
+        return {'vp9': 'opus', 'mpeg2': 'mp2'}.get(self.codec, 'aac')
 
     @property
     def relative_path(self):
-        name = (f'{self.resolution}_{self.codec}-{self.profile}_{self.video_mbps}mbps_'
+        range_label = f'-{self.dynamic_range}' if self.hdr else ''
+        name = (f'{self.resolution}_{self.codec}-{self.profile}{range_label}_{self.video_mbps}mbps_'
                 f'{self.audio_label}.{self.container}')
         return Path(self.resolution) / name
 
@@ -60,7 +74,8 @@ class Variant:
     def scenario(self):
         """Нейтральная метка сцены для плана серии и публичного отчёта."""
         depth = '10' if self.bit_depth == 10 else ''
-        return f'{self.codec}{depth}-{self.resolution}'
+        qualifiers = ''.join(f'-{label}' for label in ('hdr' if self.hdr else '', self.tier) if label)
+        return f'{self.codec}{depth}{qualifiers}-{self.resolution}'
 
 
 # Битрейты, Мбит/с. Ориентиры — верх «жизненного» диапазона и предел уровня кодека
@@ -75,20 +90,64 @@ BITRATES_MBPS = {
     'av1': {'1080p30': 10, '1080p60': 15, '4k30': 30, '4k60': 40},
     'vp9': {'1080p30': 12, '1080p60': 20, '4k30': 35, '4k60': 50},
 }
-PROFILES = {'h264': 'high', 'hevc': 'main', 'av1': 'main', 'vp9': 'profile0'}
+PROFILES = {'h264': 'high', 'hevc': 'main', 'av1': 'main', 'vp9': 'profile0', 'mpeg2': 'main'}
 RESOLUTIONS = {
+    '720p30': (1280, 720, 30), '720p60': (1280, 720, 60),
     '1080p30': (1920, 1080, 30), '1080p60': (1920, 1080, 60),
     '4k30': (3840, 2160, 30), '4k60': (3840, 2160, 60),
+    # Чересстрочные: 576i — PAL/DVD (25 кадров = 50 полей), 1080i — HD-эфир (30 кадров = 60 полей).
+    '576i25': (720, 576, 25), '1080i30': (1920, 1080, 30),
 }
+MATRIX_RESOLUTIONS = ('1080p30', '1080p60', '4k30', '4k60')
 MATRIX = [Variant(resolution, *RESOLUTIONS[resolution], codec, PROFILES[codec], rates[resolution])
-          for codec, rates in BITRATES_MBPS.items() for resolution in RESOLUTIONS]
+          for codec, rates in BITRATES_MBPS.items() for resolution in MATRIX_RESOLUTIONS]
 # Дополнительная сцена плана сессии 06: 10-битный HEVC (аппаратный путь P010) на том же
 # мастере и с тем же битрейтом, что 8-битный HEVC 4K60, — отличается только глубина цвета.
 MATRIX.append(Variant('4k60', 3840, 2160, 60, 'hevc', 'main10', BITRATES_MBPS['hevc']['4k60'], bit_depth=10))
 
+
+def t410_variant(resolution, codec, video_mbps, **options):
+    """Сцена с размером и частотой из ``RESOLUTIONS`` и профилем кодека по умолчанию."""
+    return Variant(resolution, *RESOLUTIONS[resolution], codec, PROFILES[codec], video_mbps, **options)
+
+
+# Сцены ThinkPad T410 (план user/gles2-renderer, сессия 00). «Обычные» H.264 — жизненный
+# битрейт веб-загрузок и телефонов (то, что владелец старого ноутбука реально смотрит);
+# стресс-лесенка — по возрастанию нагрузки на процессор, 1080p-ступени совпадают с матрицей
+# сессии 06 по битрейту, чтобы цифры двух наборов можно было сопоставлять.
+T410 = [
+    t410_variant('720p30', 'h264', 5), t410_variant('720p60', 'h264', 8),
+    t410_variant('1080p30', 'h264', 10), t410_variant('1080p60', 'h264', 15),
+    t410_variant('1080p60', 'h264', BITRATES_MBPS['h264']['1080p60'], tier='stress'),
+    t410_variant('720p30', 'hevc', 4), t410_variant('1080p30', 'hevc', BITRATES_MBPS['hevc']['1080p30']),
+    t410_variant('1080p60', 'hevc', BITRATES_MBPS['hevc']['1080p60']),
+    t410_variant('720p30', 'vp9', 4), t410_variant('720p60', 'vp9', 6),
+    t410_variant('1080p30', 'vp9', BITRATES_MBPS['vp9']['1080p30']),
+    t410_variant('1080p60', 'vp9', BITRATES_MBPS['vp9']['1080p60']),
+    t410_variant('720p30', 'av1', 3), t410_variant('1080p30', 'av1', BITRATES_MBPS['av1']['1080p30']),
+    t410_variant('1080p60', 'av1', BITRATES_MBPS['av1']['1080p60']),
+    # MPEG-2: решение по аппаратному MPEG-2 (бэклог плана) принимается по замеру программного.
+    # Битрейты — DVD (576i) и HD-эфир (1080i).
+    t410_variant('576i25', 'mpeg2', 6, scan='interlaced'),
+    t410_variant('1080i30', 'mpeg2', 20, scan='interlaced'),
+]
+# Отдельный пресет, потому что нужен другой мастер — 10-битный HDR10 (PQ/BT.2020):
+# программный 10-бит + HDR→SDR, нагрузка и на декодер, и на шейдер рендера.
+T410_HDR = [Variant('1080p30', *RESOLUTIONS['1080p30'], 'hevc', 'main10', BITRATES_MBPS['hevc']['1080p30'],
+                    bit_depth=10, dynamic_range='hdr10')]
+PRESETS = {'matrix': MATRIX, 't410': T410, 't410-hdr': T410_HDR}
+
 # Имя кодека и профиля так, как их печатает ffprobe: проверка результата, а не имени файла.
+FFPROBE_CODEC = {'mpeg2': 'mpeg2video'}
 FFPROBE_PROFILE = {('h264', 'high'): 'High', ('hevc', 'main'): 'Main', ('hevc', 'main10'): 'Main 10',
-                   ('av1', 'main'): 'Main', ('vp9', 'profile0'): 'Profile 0'}
+                   ('av1', 'main'): 'Main', ('vp9', 'profile0'): 'Profile 0', ('mpeg2', 'main'): 'Main'}
+# Буфер VBV MPEG-2 ограничен стандартом (Main profile: Main level 1 835 008 бит, High level
+# 9 781 248 бит); правило «2× битрейта» других кодеков дало бы недопустимый поток.
+MPEG2_VBV_BITS = {'576i25': 1_835_008, '1080i30': 9_781_248}
+# Анаморфные сцены: SAR, при котором кадр показывается как 16:9 мастера (PAL 16:9).
+ANAMORPHIC_SAR = {'576i25': '64/45'}
+# Цветовые метки HDR10, которые проверяются у готового файла и передаются энкодеру.
+HDR10_COLOR = {'color_primaries': 'bt2020', 'color_transfer': 'smpte2084', 'color_space': 'bt2020nc'}
 
 
 def encoder_arguments(variant):
@@ -109,11 +168,20 @@ def encoder_arguments(variant):
         # hvc1 — тег, с которым HEVC в MP4 открывают и Apple, и VLC, и браузеры.
         video = ['-c:v', 'libx265', '-preset', 'medium', '-profile:v', variant.profile, '-tag:v', 'hvc1',
                  *common, *vbv]
+        if variant.hdr:
+            # Метки PQ/BT.2020 в потоке и контейнере: по ним плеер включает HDR→SDR.
+            video += ['-color_primaries', 'bt2020', '-color_trc', 'smpte2084', '-colorspace', 'bt2020nc',
+                      '-x265-params', 'hdr10=1:repeat-headers=1']
     elif variant.codec == 'av1':
         # Однопроходный VBR SVT-AV1 по умолчанию недобирает цель на 20–30 % (замер
         # сессии 06: 7,1 вместо 10 Мбит/с); undershoot-pct=0 запрещает недобор,
         # перебор остаётся ограничен штатным overshoot-pct энкодера.
         video = ['-c:v', 'libsvtav1', '-preset', '6', '-svtav1-params', 'undershoot-pct=0', *common]
+    elif variant.codec == 'mpeg2':
+        # ilme/ildct — чересстрочное кодирование движения и DCT.
+        # Порядок полей (верхнее первым) энкодер берёт из кадров фильтра ``interlace``.
+        video = ['-c:v', 'mpeg2video', '-flags', '+ilme+ildct', *common,
+                 '-maxrate', str(rate * 3 // 2), '-bufsize', str(MPEG2_VBV_BITS[variant.resolution])]
     elif variant.codec == 'vp9':
         # Тайлы по ширине — как у реальных VP9-файлов YouTube; row-mt только ускоряет энкод.
         tiles = '2' if variant.width >= 3840 else '1'
@@ -121,18 +189,32 @@ def encoder_arguments(variant):
                  '-tile-columns', tiles, *common, *vbv]
     else:
         raise ValueError(f'unknown codec {variant.codec}')
-    audio = (['-c:a', 'libopus', '-b:a', '160k'] if variant.codec == 'vp9'
-             else ['-c:a', 'aac', '-b:a', '256k'])
+    audio = {'vp9': ['-c:a', 'libopus', '-b:a', '160k'],
+             'mpeg2': ['-c:a', 'mp2', '-b:a', '192k']}.get(variant.codec, ['-c:a', 'aac', '-b:a', '256k'])
     return [*video, *audio, '-ar', '48000', '-ac', '2']
 
 
 def ffmpeg_command(variant, master, start_seconds, duration_seconds, output):
     """Полная команда: точный отрезок мастера → масштаб/частота → энкодер → файл."""
     filters = []
-    if variant.fps != 60:
-        # Мастер 60 fps; 30 fps получается выбрасыванием каждого второго кадра без смешивания.
-        filters.append(f'fps={variant.fps}')
+    # У чересстрочной сцены каждый кадр мастера становится полем: частота полей = 2 × кадров.
+    source_rate = variant.fps * 2 if variant.interlaced else variant.fps
+    if source_rate != 60:
+        # Мастер 60 fps; 30 fps — выбрасывание каждого второго кадра без смешивания,
+        # 50 полей 576i — выбрасывание каждого шестого.
+        filters.append(f'fps={source_rate}')
     filters.append(f'scale={variant.width}:{variant.height}:flags=lanczos')
+    if variant.resolution in ANAMORPHIC_SAR:
+        # 576i из 16:9 мастера — анаморфный PAL 16:9 (пиксель шире квадратного).
+        filters.append(f'setsar={ANAMORPHIC_SAR[variant.resolution]}')
+    if variant.interlaced:
+        # Два соседних кадра → два поля одного кадра (верхнее первым), с вертикальным
+        # low-pass, как у настоящего эфира: иначе мерцание тонких линий.
+        filters.append('interlace=scan=tff:lowpass=complex')
+    if variant.hdr:
+        # Метки HDR10 на кадрах: ffmpeg берёт цветовые свойства потока из кадров фильтра,
+        # и без этого шага энкодер записал бы «не указано» вместо PQ/BT.2020.
+        filters.append('setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc')
     container = ['-movflags', '+faststart'] if variant.container == 'mp4' else []
     return ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-n',
             '-ss', str(start_seconds), '-i', str(master), '-t', str(duration_seconds),
@@ -157,22 +239,44 @@ def verify(variant, path, duration_seconds):
     profile = FFPROBE_PROFILE[(variant.codec, variant.profile)]
     actual = (video['codec_name'], video.get('profile'), video['width'], video['height'],
               video['r_frame_rate'], video['pix_fmt'])
-    expected = (variant.codec, profile, variant.width, variant.height, f'{variant.fps}/1', variant.pixel_format)
+    expected = (FFPROBE_CODEC.get(variant.codec, variant.codec), profile, variant.width, variant.height,
+                f'{variant.fps}/1', variant.pixel_format)
     if actual != expected:
         raise ValueError(f'{path}: stream {actual} != expected {expected}')
+    # Чересстрочность и HDR-метки — свойства потока, которые меняют путь плеера; проверяем их явно.
+    if variant.interlaced and video.get('field_order') != 'tt':
+        raise ValueError(f'{path}: field_order {video.get("field_order")!r} != top field first')
+    if variant.hdr:
+        color = {key: video.get(key) for key in HDR10_COLOR}
+        if color != HDR10_COLOR:
+            raise ValueError(f'{path}: color {color} != HDR10 {HDR10_COLOR}')
     duration = float(info['format']['duration'])
     if duration < duration_seconds - 0.5:
         raise ValueError(f'{path}: duration {duration:.2f}s shorter than {duration_seconds}s')
     # Битрейт видео считаем по сумме размеров пакетов: у WebM поле bit_rate потока пустое.
-    packets = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries',
-                              'packet=size', '-of', 'csv=p=0', str(path)],
-                             capture_output=True, text=True, check=True).stdout.split()
-    video_mbps = sum(int(size) for size in packets) * 8 / duration / 1e6
+    # JSON, а не CSV: у MPEG-TS к строке пакета дописываются поля побочных данных.
+    packets = json.loads(subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries',
+                                         'packet=size', '-of', 'json', str(path)],
+                                        capture_output=True, text=True, check=True).stdout)['packets']
+    video_mbps = sum(int(packet['size']) for packet in packets) * 8 / duration / 1e6
     return {'scenario': variant.scenario, 'path': str(variant.relative_path), 'codec': variant.codec,
             'profile': variant.profile, 'width': variant.width, 'height': variant.height,
-            'fps': variant.fps, 'target_video_mbps': variant.video_mbps,
+            'fps': variant.fps, 'scan': variant.scan, 'dynamic_range': variant.dynamic_range,
+            'target_video_mbps': variant.video_mbps,
             'actual_video_mbps': round(video_mbps, 2), 'duration_seconds': round(duration, 3),
             'audio_codec': audios[0]['codec_name'], 'sha256': sha256(path)}
+
+
+def master_rejection(variants, master_info):
+    """Почему мастер не годится для выбранных сцен; ``None`` — годится.
+
+    HDR10-сцену нельзя получить из SDR-мастера: метки PQ на кадрах выставляет сам
+    генератор, поэтому проверка готового файла такую подмену не заметит — проверяем вход.
+    """
+    video = next(s for s in master_info['streams'] if s['codec_type'] == 'video')
+    if any(variant.hdr for variant in variants) and video.get('color_transfer') != 'smpte2084':
+        return f'HDR10 scenes need an HDR10 (PQ) master, got color_transfer={video.get("color_transfer")!r}'
+    return None
 
 
 def build_one(variant, arguments):
@@ -195,18 +299,23 @@ def build_one(variant, arguments):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('master', type=Path, help='4K60 8-bit мастер со звуком')
+    parser.add_argument('master', type=Path,
+                        help='4K60 мастер со звуком: 8-bit SDR, для пресета t410-hdr — 10-bit HDR10')
     parser.add_argument('output_root', type=Path, help='каталог матрицы (вне git)')
     parser.add_argument('--start', type=float, required=True, help='начало отрезка мастера, с')
     parser.add_argument('--duration', type=float, default=45, help='длина отрезка, с')
     parser.add_argument('--jobs', type=int, default=3, help='сколько файлов кодировать параллельно')
     parser.add_argument('--only', action='append', default=[], help='сцена codec-resolution; можно повторять')
     parser.add_argument('--force', action='store_true', help='перекодировать существующие файлы')
+    parser.add_argument('--preset', choices=sorted(PRESETS), default='matrix', help='набор сцен')
     arguments = parser.parse_args()
-    variants = [v for v in MATRIX if not arguments.only or v.scenario in arguments.only]
+    variants = [v for v in PRESETS[arguments.preset] if not arguments.only or v.scenario in arguments.only]
     if not variants:
         parser.error('no variants selected')
     master_info = probe(arguments.master)
+    rejection = master_rejection(variants, master_info)
+    if rejection:
+        parser.error(rejection)
     manifest_path = arguments.output_root / 'manifest.json'
     segment = {'start_seconds': arguments.start, 'duration_seconds': arguments.duration}
     master_hash = sha256(arguments.master)

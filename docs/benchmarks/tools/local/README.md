@@ -224,6 +224,21 @@ python3 docs/benchmarks/tools/local/make_matrix.py /absolute/master-4k60.mp4 \
   /absolute/benchmark-matrix --start 300 --duration 45 --jobs 4
 ```
 
+`--preset` selects the scene set (default `matrix`, the 17 scenes above). The
+`t410` preset holds the old-hardware scenes of the GLES2 plan
+(`user/gles2-renderer/results/00.md`). It has real-world H.264 720p/1080p at 30/60 fps,
+a stress ladder (H.264 40 Mbit/s, HEVC/VP9/AV1 720p–1080p60), and MPEG-2 576i/1080i
+encoded interlaced (top field first, PAL 16:9 SAR, MPEG-TS + MP2, level-limited VBV).
+`t410-hdr` is one HEVC Main10 HDR10 scene and needs a PQ master. An SDR master is
+rejected before encoding, because the generator stamps PQ tags on the frames itself.
+
+```sh
+python3 docs/benchmarks/tools/local/make_matrix.py --preset t410 --start 300 --jobs 4 \
+  /absolute/master-4k60-sdr.mp4 /absolute/benchmark-t410
+python3 docs/benchmarks/tools/local/make_matrix.py --preset t410-hdr --start 300 --jobs 1 \
+  /absolute/master-4k60-hdr10.mp4 /absolute/benchmark-t410-hdr
+```
+
 Record OS/kernel/CPU/GPU/Mesa/libva/PipeWire/display protocol/mode, tool versions,
 AC/governor/EPP/background conditions, exact build command/toolchain/features,
 source commit and complete patch or source archive, binary and Cargo.lock hashes,

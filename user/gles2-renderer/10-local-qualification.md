@@ -12,7 +12,8 @@
 
 1. **Протокол v3** (`docs/benchmarks/tools/local/`, `mem:cpu-parity/hw-qualification-s06-2026-10-21`) с новым параметром «рендер Fastiplayer» в плане серии (`render.profile` в шаблоне конфига). Эталоны:
    - Fastiplayer wgpu (наш верхний ориентир на этом железе);
-   - mpv `--vo=gpu --gpu-api=opengl` (+ `--hwdec=vaapi` / `no`) — сопоставимый с GLES2 класс вывода.
+   - mpv `--vo=gpu --gpu-api=opengl` (+ `--hwdec=vaapi` / `no`, с `--profile=fast` и без) — сопоставимый с GLES2 класс вывода.
+   - CPU — двумя числами, процесс и процесс + композитор (kwin_wayland, Xwayland), решение владельца 12.
 2. **Сцены**: подмножество матрицы 06 (H.264 1080p30/60 HW и SW, HEVC 4K30 HW, VP9 4K60 SW, AV1 4K60 SW, HEVC Main10 SW) + сцены T410 из `results/00.md` (720p/1080p H.264, 60 fps).
 3. **Оба режима окна**: нативный Wayland и XWayland (решение владельца), эталоны в том же режиме.
 4. **Quality-gate до CPU**: ≥ 99 % уникальных кадров, 0 потерь у эталона, A/V-синхрон.

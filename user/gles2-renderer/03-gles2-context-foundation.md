@@ -30,6 +30,12 @@
 6. **Headless-стенд для тестов.** EGL surfaceless (`EGL_MESA_platform_surfaceless`) или pbuffer → offscreen FBO → `glReadPixels`. На машине разработчика — железо, в CI — llvmpipe. Если EGL недоступен, тест пропускается с причиной в выводе. Проверить, что CI (`mem:ci/github-actions`) может поставить Mesa EGL. Если нет — `#[ignore]` с инструкцией запуска, решение владельцу.
 7. **Пример** `examples/clear_window.rs`: окно winit, заливка цветом, вывод `Gles2Capabilities`. Это первый ручной тест на T410 по ssh.
 
+## Факты разведки 00 (`results/00.md`)
+
+- **Строгий ES 2.0.** radeonsi и llvmpipe на запрос «GLES 2» отдают контекст ES 3.2. `Gles2Capabilities` строится только из ES 2.0 + строк расширений. Возможности ES3 (`texelFetch`, целочисленные текстуры, `GL_RED` без `EXT_texture_rg`, `#version 300 es`) не используются нигде, даже если есть. Иначе пиксельные тесты на 780M и в CI зелёные, а на T410 чёрный экран. Тест: шейдеры компилируются как `#version 100`, а набор возможностей на fake-строках Ironlake совпадает с таблицей 00.
+- T410: EGL-конфиги с альфой есть (Wayland 8; X11 — 4 с 32-битным ARGB visual), `buffer_age`, `swap_buffers_with_damage`, robustness, `KHR_fence_sync` и `ANDROID_native_fence_sync` есть, surfaceless работает (на железе и на llvmpipe).
+- **GPU Ironlake иногда виснет под нагрузкой** (два случая в 00, один со сбросом контекста). Потеря и сброс контекста — не теоретический путь: пример и `render-gles2-shell` обязаны его переживать без падения процесса.
+
 ## Безопасность
 
 FFI EGL/GL — отдельный модуль `context/safety.rs` с `// SAFETY:` на каждом `unsafe`. Владение `EGLSurface`/`EGLContext`/`EGLSync` в RAII-типах с `Drop`. Порядок разрушения: surface → context → display (тест). Без `unwrap/expect` в production.

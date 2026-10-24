@@ -16,7 +16,15 @@
 - wgpu на Ironlake невозможен (GL-бэкенду нужен GLES 3.0/GL 3.3; наш shell включает только `Backends::VULKAN`, CPU-адаптеры не отсекает).
 - В коде уже есть: `RenderBackendKind::OpenGles`, `RenderProfile {Auto, Vulkan, OpenGles}` (default Vulkan), `OpenGlesConfig {enabled, simple_ui}`, отказ `UnsupportedProfile` в `app-egui/src/renderer_recreation.rs:~237`; контракт субтитров для GLES2 — `mem:subtitles/on-screen-s03`, `mem:subtitles/pgs-s11`.
 - `app-egui` связан с wgpu: ~30 сигнатур `&render_wgpu_shell::Renderer`, ~25 мест с сырыми device/queue (`VideoPipelineRebuildRequest`), материализаторы и `wrap_video_backend_for_wgpu_submission` в `AppState`; `VideoPipelinePlan` только wgpu-варианты; capability-core должен видеть возможности только активного рендера.
-- Расширения crocus/Ironlake не подтверждены — сессия 00 (живой eglinfo/es2_info/vainfo + стенд VA→DMA-BUF→EGLImage).
+- Разведка 00 (2026-10-24) подтвердила живьём все расширения уровней README на crocus, линейные VA-поверхности и цепочку VA→DMA-BUF→EGLImage (readback бит-в-бит), а также нашла: H.264 VA-API на Gen5 декодирует на EU того же 3D-движка (потолок 1080p ~39 кадров/с, HW 1080p60 невозможен), наш VA-API декодер даёт 72–75 % потолка, radeonsi/llvmpipe на запрос GLES2 отдают ES 3.2. Детали, эталон соперников, бюджет GPU и грабли метода — `mem:gles2-renderer/t410-recon-s00-2026-10-24`.
+
+## Решения владельца после разведки (2026-10-24, README 12–17)
+- CPU соперников двумя числами: процесс и процесс + композитор (kwin_wayland + Xwayland); победа нужна по обоим.
+- Новый режим декода `dynamic` (`video.preferred_backend`): HW по умолчанию для файла, переход на SW при отставании HW-декодера, возврат на HW только со следующим файлом; default остаётся `auto`; на GLES2 — предупреждение «включите Dynamic», на wgpu нет (так же для будущего legacy-рендера на Windows). Сессия 09b.
+- Критерий T410 мерится в `dynamic`; принудительный HW — вторичный (720p30/720p60/1080p30; HW 1080p60 исключён).
+- Сессия 09a: конвейер VA-API декодера до потолка кремния, без поломок воспроизведения/scrub/seek (тщательная проверка стабильности — требование владельца).
+- VLC `--vout=xcb_xv` исключён (после него неустранимое GPU HANG на T410).
 
 ## Статус сессий
-- Планирование — DONE 2026-10-23. Следующая — 00 (разведка T410 и эталон mpv/VLC).
+- Планирование — DONE 2026-10-23.
+- 00 (разведка T410, эталон mpv/VLC) — DONE 2026-10-24, `results/00.md`; генератор фикстур `make_matrix.py --preset t410|t410-hdr`. Маршрут: 01 → … → 09 → 09b → 10 → 11 …, 09a — параллельно, лучше до 07.
