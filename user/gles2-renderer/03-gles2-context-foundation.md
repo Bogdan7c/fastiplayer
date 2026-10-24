@@ -30,6 +30,10 @@
 6. **Headless-стенд для тестов.** EGL surfaceless (`EGL_MESA_platform_surfaceless`) или pbuffer → offscreen FBO → `glReadPixels`. На машине разработчика — железо, в CI — llvmpipe. Если EGL недоступен, тест пропускается с причиной в выводе. Проверить, что CI (`mem:ci/github-actions`) может поставить Mesa EGL. Если нет — `#[ignore]` с инструкцией запуска, решение владельцу.
 7. **Пример** `examples/clear_window.rs`: окно winit, заливка цветом, вывод `Gles2Capabilities`. Это первый ручной тест на T410 по ssh.
 
+## Наследство сессии 02a (`results/02a.md`)
+
+- Контракт показа: `RenderShell::{reconfigure_presentation, detach_presentation, reattach_presentation}`. Фундамент EGL должен уметь отпустить окно (уничтожить EGLSurface и сохранить конфигурацию), вернуть его (новая EGLSurface на том же `EGLDisplay`/конфиге) и перенастроить показ на месте (`eglSwapInterval`; задержка кадра у EGL — no-op с явным исходом). Пока окно отпущено — `Dropped(PresentationDetached)`. На одном окне одновременно допустима только одна EGLSurface.
+
 ## Факты разведки 00 (`results/00.md`)
 
 - **Строгий ES 2.0.** radeonsi и llvmpipe на запрос «GLES 2» отдают контекст ES 3.2. `Gles2Capabilities` строится только из ES 2.0 + строк расширений. Возможности ES3 (`texelFetch`, целочисленные текстуры, `GL_RED` без `EXT_texture_rg`, `#version 300 es`) не используются нигде, даже если есть. Иначе пиксельные тесты на 780M и в CI зелёные, а на T410 чёрный экран. Тест: шейдеры компилируются как `#version 100`, а набор возможностей на fake-строках Ironlake совпадает с таблицей 00.

@@ -33,10 +33,10 @@ use render_shell_api::{RenderFrameInput, RenderableFrameKey, RendererInstanceId}
 use render_wgpu_video::{
     HostPlanarUploadCommands, WgpuRenderableFrame, WgpuVideoRenderInput, WgpuVideoRenderer,
 };
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 use winit::window::Window;
 
-use crate::egui_compositor::EguiCompositor;
+use crate::egui_compositor::{EguiCompositor, EguiFrameRefusal};
 use crate::frame::{clamp_video_exclusion_rects_to_screen, clamp_video_viewport_to_screen};
 use crate::subtitle_overlay::{
     SubtitleOverlayRenderer, SubtitleOverlayTarget, SubtitleOverlayUploadStats,
@@ -189,6 +189,17 @@ impl Renderer {
         ))
     }
 
+    /// Весь последний кадр offscreen-цели, RGBA8 построчно (только рендер без окна).
+    #[cfg(test)]
+    pub(crate) fn read_offscreen_frame(&self) -> Option<crate::test_support::RgbaFrame> {
+        let offscreen = self.target.offscreen()?;
+        Some(crate::test_support::read_texture_frame(
+            &self.gpu.device,
+            &self.gpu.queue,
+            offscreen.texture(),
+        ))
+    }
+
     /// Счётчики загрузок субтитров в GPU (диагностика и приёмочные тесты).
     #[must_use]
     pub fn subtitle_overlay_upload_stats(&self) -> SubtitleOverlayUploadStats {
@@ -223,13 +234,16 @@ impl Renderer {
     /// Рендерит один полный кадр: видео + egui overlay + контур desktop-окна.
     ///
     /// Последовательность:
-    /// 1. Открываем билет буфера и ключ видеокадра (чужие — `Failed` без записи)
-    /// 2. Обновляем egui textures/buffers
-    /// 3. Рендерим video frame через backend facade или очищаем target в уже полученный
+    /// 1. Загружаем изменения egui-текстур (сессия 02a: это состояние рендера, оно применяется
+    ///    даже в отклонённом кадре; `free` отклонённого кадра — сразу)
+    /// 2. Открываем билет буфера и ключ видеокадра (чужие — `Failed` без записи)
+    /// 3. Проверяем, можно ли рисовать интерфейс (рассинхронизированные текстуры, удержанный
+    ///    кадр для повтора), и обновляем egui buffers
+    /// 4. Рендерим video frame через backend facade или очищаем target в уже полученный
     ///    буфер (`input.surface`, см. `acquire_surface_frame`)
-    /// 4. Рендерим egui поверх видео
-    /// 5. Последним pass-ом применяем прозрачный контур окна
-    /// 6. Submit и present
+    /// 5. Рендерим egui поверх видео
+    /// 6. Последним pass-ом применяем прозрачный контур окна
+    /// 7. Submit и present
     ///
     /// `renderer_elapsed` итогового timing-а = ожидание буфера + эта функция; выбор
     /// видеокадра app-ом между ними сюда не входит.
@@ -245,9 +259,19 @@ impl Renderer {
             window_corner_mask,
             subtitle_overlay,
         } = input;
+
+        // Текстуры загружаются первыми: приложение второй раз эти изменения не пришлёт, и
+        // отказ кадра ниже не должен развести набор текстур рендера и egui.
+        let stage_started_at = Instant::now();
+        let applied_egui =
+            self.egui_compositor
+                .apply_frame_textures(&self.gpu.device, &self.gpu.queue, egui);
+        let egui_texture_update_elapsed = stage_started_at.elapsed();
+
         // Билет открывает только выдавший его рендер; чужой буфер роняется внутри
         // `into_buffer` и возвращается своему swapchain-у.
         let Ok(opened_surface) = surface.into_buffer::<TargetFrame>(self.instance_id) else {
+            self.egui_compositor.discard_applied_content(applied_egui);
             return RenderFrameOutcome::Failed(RenderFrameFailure::foreign_surface_frame());
         };
         // Размер цели уже приведён к `screen` в `acquire_surface_frame`.
@@ -257,10 +281,12 @@ impl Renderer {
             None => None,
             Some(Ok(video_frame)) => Some(video_frame),
             Some(Err(VideoFrameKeyRejection::Foreign)) => {
+                self.egui_compositor.discard_applied_content(applied_egui);
                 return RenderFrameOutcome::Failed(RenderFrameFailure::foreign_video_frame());
             }
             Some(Err(VideoFrameKeyRejection::Unrenderable(message))) => {
                 tracing::error!(error = %message, "Failed to build WGPU renderable frame");
+                self.egui_compositor.discard_applied_content(applied_egui);
                 return RenderFrameOutcome::Failed(RenderFrameFailure::new(message));
             }
         };
@@ -272,20 +298,22 @@ impl Renderer {
             pixels_per_point: screen.pixels_per_point,
         };
 
-        // Свежий кадр: загружаем новые/изменённые egui текстуры (retired-текстуры остаются
-        // живы до submit-а текущих paint jobs). Повторный кадр: проверяем, что удержанные
-        // примитивы существуют и загружены для этого же размера экрана — иначе отказ до
-        // записи (буфер swapchain вернётся без показа при drop-е), и app повторит кадр
-        // полным egui-проходом.
-        let stage_started_at = Instant::now();
-        let pending_egui = match self.egui_compositor.begin_frame_content(
-            &self.gpu.device,
-            &self.gpu.queue,
-            egui,
-            &screen_descriptor,
-        ) {
+        // Свежий кадр с рассинхронизированными текстурами и повтор без удержанных примитивов
+        // того же размера отклоняются до записи (буфер swapchain вернётся без показа при
+        // drop-е): app пришлёт полный набор текстур / повторит кадр полным egui-проходом.
+        let pending_egui = match self
+            .egui_compositor
+            .pending_content_for_drawing(applied_egui, &screen_descriptor)
+        {
             Ok(pending_egui) => pending_egui,
-            Err(reason) => {
+            Err(EguiFrameRefusal::TexturesOutOfSync { texture_id }) => {
+                warn!(
+                    ?texture_id,
+                    "UI texture edit for a texture the renderer does not have; the app must send the full UI texture set"
+                );
+                return RenderFrameOutcome::Dropped(RenderFrameDropReason::UiTexturesOutOfSync);
+            }
+            Err(EguiFrameRefusal::RetainedUnavailable(reason)) => {
                 debug!(
                     ?reason,
                     "Retained egui frame unavailable; the app must redraw with a fresh UI pass"
@@ -293,7 +321,6 @@ impl Renderer {
                 return RenderFrameOutcome::Dropped(RenderFrameDropReason::RetainedUiUnavailable);
             }
         };
-        let egui_texture_update_elapsed = stage_started_at.elapsed();
 
         // Создаём command encoder для этого кадра
         let stage_started_at = Instant::now();

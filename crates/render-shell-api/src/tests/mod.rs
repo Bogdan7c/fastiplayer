@@ -3,7 +3,9 @@
 mod catalog;
 mod conformance_suite;
 mod fake_decoder;
+mod fake_presentation;
 mod fake_shell;
+mod fake_ui_textures;
 mod video_import;
 
 use video_core::FrameResourceHandle;
@@ -12,7 +14,7 @@ use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 use crate::conformance::{ConformanceVideoSource, RenderShellConformanceHarness};
 use crate::{
     DecoderSurfacePoolSlots, RenderScreenDescriptor, RenderShell, RendererCreateError,
-    RendererFamily, VideoImportPath, VideoImportPlan,
+    RendererFamily, SurfacePresentSettings, VideoImportPath, VideoImportPlan,
 };
 
 use self::fake_decoder::{FakeDecoder, decoded_frame};
@@ -51,6 +53,11 @@ impl RenderShellConformanceHarness for FakeHarness {
 
     fn screen(&self) -> RenderScreenDescriptor {
         SCREEN
+    }
+
+    fn initial_presentation(&self) -> SurfacePresentSettings {
+        // Fake создаётся с умолчаниями (как рендер без окна у wgpu).
+        SurfacePresentSettings::default()
     }
 
     fn unsupported_frame(&mut self) -> video_core::DecodedFrame {

@@ -17,6 +17,7 @@ use std::sync::Arc;
 use fastiplayer_config::{AppConfig, VulkanConfig};
 use render_shell_api::{
     RenderShell, RendererCreateError, RendererCreateStage, RendererFamily, RendererProbe,
+    SurfacePresentSettings,
 };
 use tracing::warn;
 use winit::window::Window;
@@ -60,6 +61,10 @@ struct RendererCandidate {
 
     /// Фабрика рендера.
     create: fn(RendererCreateRequest<'_>) -> Result<Box<dyn RenderShell>, RendererCreateError>,
+
+    /// Перевод committed настроек показа в нейтральные (тот же, что у фабрики при создании):
+    /// им пользуется перенастройка показа на месте (сессия 02a).
+    presentation_settings: fn(&VulkanConfig) -> SurfacePresentSettings,
 }
 
 /// Кандидаты платформы в порядке предпочтения (сессия 02: только wgpu/Vulkan).
@@ -68,6 +73,7 @@ fn platform_candidates() -> &'static [RendererCandidate] {
         family: RendererFamily::WgpuVulkan,
         probe: wgpu_vulkan::probe,
         create: wgpu_vulkan::create,
+        presentation_settings: wgpu_vulkan::surface_present_settings,
     }];
     LINUX_CANDIDATES
 }
@@ -101,6 +107,28 @@ pub(crate) fn create_renderer(
         ));
     };
     (candidate.create)(request)
+}
+
+/// Семейства рендера нет в каталоге этой сборки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RendererFamilyNotBuilt {
+    /// Какое семейство просили.
+    pub(crate) family: RendererFamily,
+}
+
+/// Настройки показа для перенастройки рендера семейства `family` на месте.
+///
+/// Перевод `[render.vulkan]` → [`SurfacePresentSettings`] — тот же, что фабрика кандидата
+/// применяет при создании рендера: дублировать его в пересоздании запрещено.
+pub(crate) fn presentation_settings(
+    family: RendererFamily,
+    vulkan: &VulkanConfig,
+) -> Result<SurfacePresentSettings, RendererFamilyNotBuilt> {
+    platform_candidates()
+        .iter()
+        .find(|candidate| candidate.family == family)
+        .map(|candidate| (candidate.presentation_settings)(vulkan))
+        .ok_or(RendererFamilyNotBuilt { family })
 }
 
 /// Выбирает семейство по профилю из config-а и создаёт рендер для старта приложения.
@@ -165,9 +193,34 @@ fn log_selection_notice(family: RendererFamily, notice: &RendererSelectionNotice
 
 #[cfg(test)]
 mod tests {
-    use render_shell_api::{RendererFamily, RendererProbe};
+    use fastiplayer_config::{AppConfig, VulkanPresentMode};
+    use render_shell_api::{RendererFamily, RendererProbe, ShellPresentMode};
 
-    use super::{platform_candidates, probe_platform_candidates};
+    use super::{
+        RendererFamilyNotBuilt, platform_candidates, presentation_settings,
+        probe_platform_candidates,
+    };
+
+    /// Перенастройка на месте получает от каталога тот же перевод `[render.vulkan]`, что
+    /// фабрика при создании; семейства вне сборки — типизированный отказ, а не умолчания.
+    #[test]
+    fn presentation_settings_come_from_the_family_candidate() {
+        let mut vulkan = AppConfig::default().render.vulkan;
+        vulkan.present_mode = VulkanPresentMode::Mailbox;
+        vulkan.max_frame_latency = 4;
+
+        let settings = presentation_settings(RendererFamily::WgpuVulkan, &vulkan)
+            .expect("wgpu candidate is built");
+        assert_eq!(settings.present_mode, ShellPresentMode::Mailbox);
+        assert_eq!(settings.max_frame_latency, 4);
+
+        assert_eq!(
+            presentation_settings(RendererFamily::Gles2, &vulkan),
+            Err(RendererFamilyNotBuilt {
+                family: RendererFamily::Gles2
+            })
+        );
+    }
 
     /// Каталог Linux сессии 02: ровно один кандидат, wgpu/Vulkan, проба «годен».
     #[test]

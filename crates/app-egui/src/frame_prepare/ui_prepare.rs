@@ -9,18 +9,21 @@
 use std::time::{Duration, Instant};
 
 use render_core::RenderViewport;
-use render_shell_api::EguiFrameContent;
 use winit::window::Window;
 
 use super::geometry::{video_exclusion_from_ui_rect, video_viewport_from_ui_rect};
 use crate::settings_runtime::SettingsRuntime;
-use crate::state::{AppFrameContext, AppState, AppUiRenderTimings, RetainedUiGeometry};
+use crate::state::{
+    AppFrameContext, AppState, AppUiRenderTimings, PreparedEguiContent, RetainedUiGeometry,
+};
 use crate::ui::window_chrome::WindowChromeAction;
 
 /// Результат UI stage, полностью готовый для renderer submit.
 pub(super) struct PreparedUiFrame {
-    /// Свежие примитивы egui или просьба повторить удержанные shell-ом.
-    pub(super) egui_content: EguiFrameContent,
+    /// Свежие примитивы egui или просьба повторить удержанные shell-ом. Изменений текстур
+    /// здесь нет (сессия 02a): их держит синхронизатор `AppState` до `render_frame`, поэтому
+    /// выброшенный кадр их не теряет.
+    pub(super) egui_content: PreparedEguiContent,
     pub(super) screen: render_shell_api::RenderScreenDescriptor,
     pub(super) video_viewport: RenderViewport,
     pub(super) video_exclusion_rects: Vec<RenderViewport>,
@@ -42,7 +45,7 @@ impl PreparedUiFrame {
     /// геометрия — с последнего полного прохода. Действий панелей в таком кадре нет.
     pub(super) fn reusing_retained(geometry: &RetainedUiGeometry) -> Self {
         Self {
-            egui_content: EguiFrameContent::ReusePrevious,
+            egui_content: PreparedEguiContent::ReusePrevious,
             screen: geometry.screen,
             video_viewport: geometry.video_viewport,
             video_exclusion_rects: geometry.video_exclusion_rects.clone(),
@@ -197,12 +200,12 @@ pub(super) fn prepare_ui_frame(
         .egui_ctx
         .tessellate(egui_full_output.shapes, pixels_per_point);
     let tessellate_elapsed = stage_started_at.elapsed();
+    // Изменения текстур уходят синхронизатору сразу: в рендер они попадут перед
+    // `render_frame` (даже если этот кадр не дойдёт до показа — со следующим).
+    app_state.accept_ui_pass_textures(egui_full_output.textures_delta);
 
     PreparedUiFrame {
-        egui_content: EguiFrameContent::Fresh {
-            paint_jobs,
-            textures_delta: egui_full_output.textures_delta,
-        },
+        egui_content: PreparedEguiContent::Fresh { paint_jobs },
         screen: render_shell_api::RenderScreenDescriptor {
             size_in_pixels: screen_size_in_pixels,
             pixels_per_point,

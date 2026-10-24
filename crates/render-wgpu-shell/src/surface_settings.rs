@@ -18,17 +18,29 @@ pub(crate) fn choose_present_mode(
             .copied()
             .context("Surface capabilities have not returned any present mode")
     };
-    let requested = match preference {
-        ShellPresentMode::Auto => return auto_choice(),
-        ShellPresentMode::Fifo => wgpu::PresentMode::Fifo,
-        ShellPresentMode::Mailbox => wgpu::PresentMode::Mailbox,
-        ShellPresentMode::Immediate => wgpu::PresentMode::Immediate,
+    let Some(requested) = requested_wgpu_present_mode(preference) else {
+        return auto_choice();
     };
     if present_modes.contains(&requested) {
         return Ok(requested);
     }
     tracing::warn!(requested = ?requested, available = ?present_modes, "Requested present mode not supported by surface; rollback to FIFO/first available");
     auto_choice()
+}
+
+/// Конкретный режим wgpu, который просит пользователь; `None` у `Auto` (решает surface).
+///
+/// Единственный перевод нейтрального режима в wgpu: им же перенастройка показа на месте
+/// (сессия 02a) определяет, пришлось ли откатиться на запасной режим.
+pub(crate) const fn requested_wgpu_present_mode(
+    preference: ShellPresentMode,
+) -> Option<wgpu::PresentMode> {
+    match preference {
+        ShellPresentMode::Auto => None,
+        ShellPresentMode::Fifo => Some(wgpu::PresentMode::Fifo),
+        ShellPresentMode::Mailbox => Some(wgpu::PresentMode::Mailbox),
+        ShellPresentMode::Immediate => Some(wgpu::PresentMode::Immediate),
+    }
 }
 
 /// Выбирает формат swapchain для SDR-видео.

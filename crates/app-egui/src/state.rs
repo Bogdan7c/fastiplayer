@@ -99,6 +99,7 @@ mod subtitle_appearance_edit;
 mod subtitle_control_actions;
 mod ui_frame_model;
 pub(crate) use ui_frame_model::{PlaylistVisualKey, UiFrameModel};
+pub(crate) use ui_textures::PreparedEguiContent;
 mod subtitles;
 mod suspended_media_resume;
 #[cfg(test)]
@@ -116,6 +117,7 @@ mod telemetry_panel;
 mod timeline_inline_status;
 mod track_memory;
 mod ui_runtime;
+mod ui_textures;
 mod video_backend;
 mod vod_endpoint_recovery;
 mod volume_steps;
@@ -167,6 +169,9 @@ pub struct AppState {
 
     /// Egui_winit state — обработка ввода от winit.
     pub egui_winit_state: egui_winit::State,
+
+    /// Текстуры интерфейса, ещё не доставленные в рендер, и запрос полного набора (02a).
+    ui_textures: render_shell_api::UiTextureSync,
 
     /// Playback worker владеет `PlayerSession` и media pipeline на отдельном thread.
     pub player_worker: PlayerWorker,
@@ -391,6 +396,7 @@ impl AppState {
         let mut app_state = Self {
             egui_ctx,
             egui_winit_state,
+            ui_textures: render_shell_api::UiTextureSync::new(),
             player_worker,
             frame_index: 0,
             start_time: std::time::Instant::now(),

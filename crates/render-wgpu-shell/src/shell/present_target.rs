@@ -5,13 +5,29 @@
 //! её конфигурация, `pre_present_notify`, present), собрано здесь за одним enum-ом, а весь
 //! остальной путь кадра (egui, видео, субтитры, submit) в `shell.rs` общий для обеих целей.
 //! В production-сборке вариант `Offscreen` не существует.
+//!
+//! С сессии 02a здесь же жизненный цикл показа («одно окно — одна surface»): перенастройка
+//! present mode/задержки на месте и «отпустить/вернуть окно» при полном пересоздании рендера
+//! (окно — `window_lifecycle.rs`, offscreen-модель тех же состояний — `offscreen_lifecycle.rs`).
 
 use std::sync::Arc;
 
+use render_shell_api::{
+    PresentationDetachOutcome, PresentationReattachError, PresentationReattachOutcome,
+    PresentationReconfigureError, PresentationReconfigured,
+};
 use tracing::{debug, instrument};
 use winit::window::Window;
 
-use crate::RenderFrameDropReason;
+use super::gpu_context::GpuContext;
+use crate::{RenderFrameDropReason, SurfacePresentSettings};
+
+#[cfg(test)]
+mod offscreen_lifecycle;
+mod window_lifecycle;
+
+#[cfg(test)]
+use offscreen_lifecycle::OffscreenPresentationState;
 
 /// Куда рендер рисует кадры.
 pub(crate) enum PresentTarget {
@@ -25,14 +41,35 @@ pub(crate) enum PresentTarget {
 
 /// Swapchain окна: winit-окно, surface и её текущая конфигурация.
 pub(crate) struct WindowPresentTarget {
-    /// Окно получает `pre_present_notify` перед каждым present (frame callback Wayland).
+    /// Окно получает `pre_present_notify` перед каждым present (frame callback Wayland);
+    /// на нём же создаётся новая surface при возврате окна.
     window: Arc<Window>,
 
-    /// Surface — абстракция wgpu над платформенным swapchain.
-    surface: wgpu::Surface<'static>,
+    /// Surface окна и её состояние (настроена / без рабочей конфигурации / окно отпущено).
+    surface: WindowSurface,
 
-    /// Текущая конфигурация surface (формат, размер, present mode).
+    /// Последняя принятая конфигурация surface (формат, размер, present mode, задержка).
+    /// Переживает «отпустить окно»: возврат настраивает новую surface ею же.
     config: wgpu::SurfaceConfiguration,
+
+    /// Запрошенные приложением настройки показа (до выбора режима по возможностям surface).
+    presentation: SurfacePresentSettings,
+}
+
+/// Состояние surface окна.
+///
+/// Инвариант «одно окно — одна surface»: `Detached` означает, что у рендера нет ни
+/// `wgpu::Surface`, ни swapchain-а на этом окне, и другой рендер может создать свою.
+enum WindowSurface {
+    /// Surface настроена конфигурацией `config`, буферы выдаются.
+    Configured(wgpu::Surface<'static>),
+
+    /// Surface есть, но не приняла ни новую, ни прежнюю конфигурацию (перенастройка на месте
+    /// провалилась целиком). Каждый acquire пробует снова настроить её прежней `config`.
+    Unconfigured(wgpu::Surface<'static>),
+
+    /// Окно отпущено: surface (и swapchain) уничтожены, буферов нет до возврата окна.
+    Detached,
 }
 
 /// Offscreen-цель: одна текстура, в которую пишется каждый кадр.
@@ -43,6 +80,9 @@ pub(crate) struct OffscreenPresentTarget {
 
     /// Формат текстуры (тот же, под который собраны пайплайны рендера).
     format: wgpu::TextureFormat,
+
+    /// Модель «окна» без окна: держит ли цель «окно» и действующие настройки показа.
+    presentation: OffscreenPresentationState,
 }
 
 /// Буфер одного кадра, полученный из цели показа; лежит в билете `AcquiredSurfaceFrame`.
@@ -72,26 +112,48 @@ impl WindowPresentTarget {
         window: Arc<Window>,
         surface: wgpu::Surface<'static>,
         config: wgpu::SurfaceConfiguration,
+        presentation: SurfacePresentSettings,
     ) -> Self {
         Self {
             window,
-            surface,
+            surface: WindowSurface::Configured(surface),
             config,
+            presentation,
         }
     }
 
-    /// Один шаг получения текстуры swapchain с восстановлением устаревшей/потерянной surface.
+    /// Получает текстуру swapchain; без окна — `PresentationDetached`, без рабочей
+    /// конфигурации — сначала попытка восстановить прежнюю.
     fn acquire_current_texture(
         &mut self,
         device: &wgpu::Device,
     ) -> Result<wgpu::SurfaceTexture, RenderFrameDropReason> {
-        match self.surface.get_current_texture() {
+        if matches!(self.surface, WindowSurface::Detached) {
+            return Err(RenderFrameDropReason::PresentationDetached);
+        }
+        if matches!(self.surface, WindowSurface::Unconfigured(_)) {
+            self.recover_unconfigured_surface(device)?;
+        }
+        let WindowSurface::Configured(surface) = &self.surface else {
+            // Недостижимо после проверок выше; честный отказ вместо паники.
+            return Err(RenderFrameDropReason::SurfaceLost);
+        };
+        Self::acquire_configured_texture(surface, &self.config, device)
+    }
+
+    /// Один шаг получения текстуры swapchain с восстановлением устаревшей/потерянной surface.
+    fn acquire_configured_texture(
+        surface: &wgpu::Surface<'static>,
+        config: &wgpu::SurfaceConfiguration,
+        device: &wgpu::Device,
+    ) -> Result<wgpu::SurfaceTexture, RenderFrameDropReason> {
+        match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
             wgpu::CurrentSurfaceTexture::Outdated => {
                 // Surface был уничтожен и воссоздан (например, при смене монитора).
-                self.surface.configure(device, &self.config);
-                match self.surface.get_current_texture() {
+                surface.configure(device, config);
+                match surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(frame)
                     | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
                     other => {
@@ -115,7 +177,7 @@ impl WindowPresentTarget {
                 // Если драйвер не восстановит surface, следующий redraw снова попадёт
                 // сюда, и внешний lifecycle сможет пересоздать runtime через resumed/suspend.
                 tracing::warn!("Surface lost — try out reconfigure");
-                self.surface.configure(device, &self.config);
+                surface.configure(device, config);
                 Err(RenderFrameDropReason::SurfaceLost)
             }
             wgpu::CurrentSurfaceTexture::Validation => {
@@ -129,11 +191,13 @@ impl WindowPresentTarget {
 
 #[cfg(test)]
 impl OffscreenPresentTarget {
-    /// Создаёт offscreen-цель размера `size` в формате `format`.
+    /// Создаёт offscreen-цель размера `size` в формате `format`; настройки показа — умолчания
+    /// (как у рендера без окна в conformance-стенде).
     pub(crate) fn new(device: &wgpu::Device, size: [u32; 2], format: wgpu::TextureFormat) -> Self {
         Self {
             texture: create_offscreen_texture(device, size, format),
             format,
+            presentation: OffscreenPresentationState::new(SurfacePresentSettings::default()),
         }
     }
 
@@ -179,6 +243,9 @@ impl PresentTarget {
     }
 
     /// Меняет размер цели. Нулевой размер (окно свёрнуто) игнорируется.
+    ///
+    /// Без настроенной surface (окно отпущено или конфигурация не принята) размер только
+    /// запоминается: его применит возврат окна или восстановление конфигурации.
     #[instrument(skip(self, device), fields(width, height))]
     pub(crate) fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         if width == 0 || height == 0 {
@@ -189,9 +256,9 @@ impl PresentTarget {
             Self::Window(window_target) => {
                 window_target.config.width = width;
                 window_target.config.height = height;
-                window_target
-                    .surface
-                    .configure(device, &window_target.config);
+                if let WindowSurface::Configured(surface) = &window_target.surface {
+                    surface.configure(device, &window_target.config);
+                }
             }
             #[cfg(test)]
             Self::Offscreen(offscreen) => {
@@ -212,7 +279,44 @@ impl PresentTarget {
                 .acquire_current_texture(device)
                 .map(TargetFrame::Swapchain),
             #[cfg(test)]
-            Self::Offscreen(offscreen) => Ok(TargetFrame::Offscreen(offscreen.texture.clone())),
+            Self::Offscreen(offscreen) => {
+                offscreen.presentation.check_acquire()?;
+                Ok(TargetFrame::Offscreen(offscreen.texture.clone()))
+            }
+        }
+    }
+
+    /// Перенастройка показа на месте (сессия 02a). Вызывать только без живого буфера кадра.
+    pub(crate) fn reconfigure_presentation(
+        &mut self,
+        gpu: &GpuContext,
+        settings: SurfacePresentSettings,
+    ) -> Result<PresentationReconfigured, PresentationReconfigureError> {
+        match self {
+            Self::Window(window_target) => window_target.reconfigure_presentation(gpu, settings),
+            #[cfg(test)]
+            Self::Offscreen(offscreen) => offscreen.presentation.reconfigure(settings),
+        }
+    }
+
+    /// Отпускает окно (сессия 02a). Вызывать только без живого буфера кадра.
+    pub(crate) fn detach_presentation(&mut self) -> PresentationDetachOutcome {
+        match self {
+            Self::Window(window_target) => window_target.detach_presentation(),
+            #[cfg(test)]
+            Self::Offscreen(offscreen) => offscreen.presentation.detach(),
+        }
+    }
+
+    /// Возвращает окно (сессия 02a): новая surface с прежней конфигурацией.
+    pub(crate) fn reattach_presentation(
+        &mut self,
+        gpu: &GpuContext,
+    ) -> Result<PresentationReattachOutcome, PresentationReattachError> {
+        match self {
+            Self::Window(window_target) => window_target.reattach_presentation(gpu),
+            #[cfg(test)]
+            Self::Offscreen(offscreen) => Ok(offscreen.presentation.reattach()),
         }
     }
 

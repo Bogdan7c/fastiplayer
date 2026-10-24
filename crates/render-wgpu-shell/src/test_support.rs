@@ -1,6 +1,7 @@
 //! Общий стенд тестов настоящего wgpu-рендера без окна (сессия 02 `user/gles2-renderer/`).
 //!
-//! - [`read_texture_pixel`] — readback одного пикселя offscreen-цели;
+//! - [`read_texture_pixel`] — readback одного пикселя offscreen-цели, [`read_texture_frame`] —
+//!   всего кадра (пиксельные тесты интерфейса, сессия 02a);
 //! - [`SolidFrameDecoder`] — «декодер» без декодирования: provider отдаёт HostPlanar-кадр
 //!   4×2 (белый для [`WHITE_FRAME`], чёрный для остальных) и записывает каждое освобождение;
 //! - [`lease_for`] — аренда кадра, как её строит плеер (освобождение уходит в provider).
@@ -435,4 +436,94 @@ pub(crate) fn read_texture_pixel(
     drop(mapped);
     readback.unmap();
     pixel
+}
+
+/// Кадр offscreen-цели после readback-а: RGBA8 построчно, без выравнивания строк.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RgbaFrame {
+    /// Ширина и высота в пикселях.
+    pub(crate) size: [u32; 2],
+    /// Пиксели построчно сверху вниз.
+    pub(crate) pixels: Vec<[u8; 4]>,
+}
+
+impl RgbaFrame {
+    /// Пиксели прямоугольника `[x0, y0]..[x1, y1)` построчно.
+    pub(crate) fn region(&self, [x0, y0]: [u32; 2], [x1, y1]: [u32; 2]) -> Vec<[u8; 4]> {
+        let width = self.size[0] as usize;
+        (y0..y1)
+            .flat_map(|y| (x0..x1).map(move |x| (y as usize) * width + x as usize))
+            .map(|index| self.pixels[index])
+            .collect()
+    }
+}
+
+/// Читает всю RGBA8-текстуру (копия в буфер с выравниванием строк → map → ожидание GPU).
+pub(crate) fn read_texture_frame(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+) -> RgbaFrame {
+    let [width, height] = [texture.width(), texture.height()];
+    let unpadded_bytes_per_row = width * 4;
+    let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("render shell test frame readback"),
+        size: u64::from(padded_bytes_per_row) * u64::from(height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("render shell test frame readback encoder"),
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    let submission = queue.submit(std::iter::once(encoder.finish()));
+    let slice = readback.slice(..);
+    let (sender, receiver) = mpsc::sync_channel(1);
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        sender.send(result).expect("send frame readback result");
+    });
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: Some(GPU_TEST_TIMEOUT),
+        })
+        .expect("wait for GPU frame readback");
+    receiver
+        .recv_timeout(GPU_TEST_TIMEOUT)
+        .expect("frame readback callback")
+        .expect("map frame readback");
+    let mapped = slice.get_mapped_range().expect("mapped frame range");
+    let pixels = mapped
+        .chunks_exact(padded_bytes_per_row as usize)
+        .flat_map(|row| row[..unpadded_bytes_per_row as usize].as_chunks::<4>().0)
+        .copied()
+        .collect();
+    drop(mapped);
+    readback.unmap();
+    RgbaFrame {
+        size: [width, height],
+        pixels,
+    }
 }

@@ -28,6 +28,10 @@ use video_core::{
 use video_frame_contract::{DmaBufImageLayout, VideoFrameContract, VideoFrameTransferPath};
 use video_present_core::VideoFrameLease;
 
+use super::fake_presentation::FakePresentation;
+use super::fake_ui_textures::{
+    FakeAppliedUi, FakeMissingTexturePolicy, FakeUiFrame, FakeUiTextureSync, FakeUiTextures,
+};
 use crate::AcquiredSurfaceFrame;
 use crate::{
     EguiFrameContent, FrameImportError, FrameImportStats, FrameImportUnsupportedReason,
@@ -38,6 +42,10 @@ use crate::{
     RendererGpuDrainError, RendererInstanceId, SurfaceFrameAcquire, VideoFrameImport,
     VideoImportHandoff, VideoImportInstallError, VideoImportPath, VideoImportPlan,
     VideoImportPrepareError, VideoImportPreparer, VideoImportReleaseError,
+};
+use crate::{
+    PresentationDetachOutcome, PresentationReattachError, PresentationReattachOutcome,
+    PresentationReconfigureError, PresentationReconfigured, SurfacePresentSettings,
 };
 
 /// Какое правило контракта fake нарушает (для доказательства, что проверки его ловят).
@@ -59,6 +67,14 @@ pub(super) enum FakeDefect {
     KeepsPendingAfterDeviceLost,
     /// Подготовщик импорта помечает импорт паспортом другого рендера.
     PreparerStampsForeignOwner,
+    /// Выдаёт буферы и после того, как отпустил окно (вторая surface на окне).
+    AcquiresWhileDetached,
+    /// Перенастройка показа всегда «применена», даже когда ничего не меняется.
+    ReconfigureNeverReportsNoOp,
+    /// Частичную правку неизвестной текстуры интерфейса молча принимает (как будто она есть).
+    AcceptsPartialEditOfUnknownUiTexture,
+    /// Применяет текстуры интерфейса только в кадре, который рисуется (теряет их при отказе).
+    AppliesUiTexturesOnlyWhenDrawing,
 }
 
 /// Fake-«GPU»: кадры, ждущие завершения работы.
@@ -288,6 +304,8 @@ pub(super) struct FakeRenderShell {
     live_settings: FakeLiveSettings,
     presented_video: Vec<FrameResourceHandle>,
     retained_keys: Vec<RenderableFrameKey>,
+    presentation: FakePresentation,
+    ui_textures: FakeUiTextures,
 }
 
 impl FakeRenderShell {
@@ -305,6 +323,8 @@ impl FakeRenderShell {
             },
             presented_video: Vec::new(),
             retained_keys: Vec::new(),
+            presentation: FakePresentation::new(SurfacePresentSettings::default()),
+            ui_textures: FakeUiTextures::default(),
         }
     }
 
@@ -363,6 +383,23 @@ impl FakeRenderShell {
     fn reject_frame(&self, failure: RenderFrameFailure) -> RenderFrameOutcome {
         RenderFrameOutcome::Failed(failure)
     }
+
+    fn missing_texture_policy(&self) -> FakeMissingTexturePolicy {
+        if self.defect == FakeDefect::AcceptsPartialEditOfUnknownUiTexture {
+            FakeMissingTexturePolicy::SilentlyAccept
+        } else {
+            FakeMissingTexturePolicy::Report
+        }
+    }
+
+    /// Первый шаг кадра: текстуры интерфейса — состояние рендера, применяются до отказов.
+    fn begin_ui_frame(&mut self, egui: EguiFrameContent) -> FakeUiFrame {
+        if self.defect == FakeDefect::AppliesUiTexturesOnlyWhenDrawing {
+            return FakeUiFrame::Deferred(egui);
+        }
+        let policy = self.missing_texture_policy();
+        FakeUiFrame::Applied(self.ui_textures.apply_frame(egui, policy))
+    }
 }
 
 /// Путь передачи кадра по его контракту.
@@ -406,7 +443,33 @@ impl RenderShell for FakeRenderShell {
         // У fake нет настоящего surface: буфер «подходит» к любому размеру.
     }
 
+    fn reconfigure_presentation(
+        &mut self,
+        settings: SurfacePresentSettings,
+    ) -> Result<PresentationReconfigured, PresentationReconfigureError> {
+        self.presentation.reconfigure(
+            settings,
+            self.defect == FakeDefect::ReconfigureNeverReportsNoOp,
+        )
+    }
+
+    fn detach_presentation(&mut self) -> PresentationDetachOutcome {
+        self.presentation.detach()
+    }
+
+    fn reattach_presentation(
+        &mut self,
+    ) -> Result<PresentationReattachOutcome, PresentationReattachError> {
+        self.presentation.reattach()
+    }
+
     fn acquire_surface_frame(&mut self, _screen: RenderScreenDescriptor) -> SurfaceFrameAcquire {
+        if let Err(reason) = self
+            .presentation
+            .check_acquire(self.defect == FakeDefect::AcquiresWhileDetached)
+        {
+            return SurfaceFrameAcquire::Dropped(reason);
+        }
         SurfaceFrameAcquire::Acquired(AcquiredSurfaceFrame::new(
             self.id,
             FakeSurfaceBuffer,
@@ -426,31 +489,38 @@ impl RenderShell for FakeRenderShell {
             screen,
             ..
         } = input;
+        let ui_frame = self.begin_ui_frame(egui);
         let acquire_elapsed = match surface.into_buffer::<FakeSurfaceBuffer>(self.id) {
             Ok(opened) => opened.acquire_elapsed,
             Err(_foreign) if self.defect == FakeDefect::AcceptsForeignSurface => Duration::ZERO,
-            Err(_foreign) => return self.reject_frame(RenderFrameFailure::foreign_surface_frame()),
+            Err(_foreign) => {
+                ui_frame.discard_on_rejection();
+                return self.reject_frame(RenderFrameFailure::foreign_surface_frame());
+            }
         };
         let video_handle = match video_frame {
             Some(key) => match key.prepared_for::<FakePreparedFrame>(self.id) {
                 Some(prepared) => Some(prepared.handle),
-                None => return self.reject_frame(RenderFrameFailure::foreign_video_frame()),
+                None => {
+                    ui_frame.discard_on_rejection();
+                    return self.reject_frame(RenderFrameFailure::foreign_video_frame());
+                }
             },
             None => None,
         };
-        match egui {
-            EguiFrameContent::ReusePrevious
+        let policy = self.missing_texture_policy();
+        match self.ui_textures.finish_frame(ui_frame, policy) {
+            FakeAppliedUi::Fresh(FakeUiTextureSync::OutOfSync) => {
+                return RenderFrameOutcome::Dropped(RenderFrameDropReason::UiTexturesOutOfSync);
+            }
+            FakeAppliedUi::ReusePrevious
                 if self.retained_ui != Some(screen)
                     && self.defect != FakeDefect::ReusesWithoutRetainedUi =>
             {
                 return RenderFrameOutcome::Dropped(RenderFrameDropReason::RetainedUiUnavailable);
             }
-            EguiFrameContent::ReusePrevious => {}
-            EguiFrameContent::Fresh {
-                mut textures_delta, ..
-            } => {
-                // Как и настоящий рендер: изменения текстур применены (здесь — отброшены).
-                textures_delta.clear();
+            FakeAppliedUi::ReusePrevious => {}
+            FakeAppliedUi::Fresh(FakeUiTextureSync::InSync) => {
                 self.retained_ui = Some(screen);
             }
         }

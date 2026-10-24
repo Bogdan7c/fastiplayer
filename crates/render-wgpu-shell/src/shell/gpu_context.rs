@@ -143,8 +143,12 @@ impl GpuContext {
             "Surface is set to be set up"
         );
 
-        let target =
-            PresentTarget::Window(WindowPresentTarget::new(window, surface, surface_config));
+        let target = PresentTarget::Window(WindowPresentTarget::new(
+            window,
+            surface,
+            surface_config,
+            surface_present,
+        ));
         Ok((
             Self {
                 instance,

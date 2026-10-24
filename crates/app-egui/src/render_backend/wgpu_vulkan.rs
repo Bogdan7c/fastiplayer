@@ -44,8 +44,9 @@ pub(super) fn create(
 /// Маппинг validated `[render.vulkan]` в настройки показа surface.
 ///
 /// Окно всегда просит прозрачную композицию (скруглённые углы); если её нет, рендер сам
-/// откатывается на непрозрачную surface.
-fn surface_present_settings(vulkan: &VulkanConfig) -> SurfacePresentSettings {
+/// откатывается на непрозрачную surface. Тот же маппинг использует перенастройка показа на
+/// месте (сессия 02a) — через [`super::presentation_settings`].
+pub(super) fn surface_present_settings(vulkan: &VulkanConfig) -> SurfacePresentSettings {
     let present_mode = match vulkan.present_mode {
         VulkanPresentMode::Auto => ShellPresentMode::Auto,
         VulkanPresentMode::Fifo => ShellPresentMode::Fifo,

@@ -31,6 +31,11 @@
 - Профиль `opengles` до этой сессии стартует wgpu с предупреждением в лог (`RequestedFamilyNotBuilt`); Apply в настройках с `opengles` — прежний `UnsupportedProfile` в `renderer_recreation.rs`. Обе ветки меняются здесь.
 - Решение 5 («смена семейства только после перезапуска») уже соблюдается: пересоздание (`LiveRendererRecreation`) создаёт рендер того же семейства (`renderer.family()`).
 
+## Поправки по итогам сессии 02a (`results/02a.md`)
+
+- Каталог: запись GLES2 даёт маппинг настроек показа (как `wgpu_vulkan::surface_present_settings` для `[render.vulkan]`) для `render_backend::presentation_settings`. Классификатор `classify_renderer_settings_change` (`app-egui/src/renderer_recreation/settings_change.rs`) сравнивает группы целиком. Сейчас любое изменение `[render.opengles]` — полное пересоздание, любое изменение `[render.vulkan]` — перенастройка на месте. Если в группу добавляется поле, привязанное к устройству, или поле показа GLES2 (vsync), классификатор надо уточнить по полям. Компилятор ловит только новое поле верхнего уровня.
+- Пересоздание внутри семейства GLES2 идёт той же транзакцией «отпустить окно → кандидат → …». Полный набор текстур новому рендеру даёт `UiTextureSync` — отдельной работы не нужно.
+
 ## Тесты (функциональные, результат, а не вызов)
 
 - Видео из фикстуры через GLES2 доходит до показа: headless EGL + реальный FFmpeg-декодер → `RenderFrameOutcome::Presented` с ожидаемым pts и пикселями кадра (не «декодер открылся»). Для HW — `#[ignore]` на машине с VA-API.

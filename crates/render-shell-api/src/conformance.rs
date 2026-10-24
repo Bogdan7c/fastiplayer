@@ -21,7 +21,16 @@
 //!    ([`check_device_lost_releases_exactly_once`]);
 //! 7. подготовщик импорта работает в другом потоке, не трогает активный импорт, а его импорт
 //!    ставится на выдавший рендер и даёт готовый кадр
-//!    ([`check_preparer_prepares_on_another_thread`]).
+//!    ([`check_preparer_prepares_on_another_thread`]);
+//! 8. (02a) отпущенное окно не даёт буферов, повторы detach/reattach — явные no-op, после
+//!    возврата окна кадр показывается ([`check_detached_presentation_gives_no_frames`]);
+//! 9. (02a) перенастройка показа на месте различает «применено», «уже так» и отказ без
+//!    изменений ([`check_presentation_reconfigure_distinguishes_no_op`]);
+//! 10. (02a) частичная правка неизвестной текстуры интерфейса — `UiTexturesOutOfSync`, а не
+//!     паника; после целой загрузки правки проходят
+//!     ([`check_partial_edit_of_unknown_ui_texture_is_reported`]);
+//! 11. (02a) изменения текстур интерфейса (`set` и `free`) применяются и в отклонённом кадре
+//!     ([`check_ui_textures_apply_on_rejected_frames`]).
 
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -34,11 +43,23 @@ use video_present_core::{
     VideoFrameReleaseSink,
 };
 
+mod presentation;
+mod ui_textures;
+
+pub use presentation::{
+    check_detached_presentation_gives_no_frames, check_presentation_reconfigure_distinguishes_no_op,
+};
+pub use ui_textures::{
+    check_partial_edit_of_unknown_ui_texture_is_reported,
+    check_ui_textures_apply_on_rejected_frames,
+};
+
 use crate::{
     AcquiredSurfaceFrame, EguiFrameContent, FrameImportUnsupportedReason,
     FrameMaterializationOutcome, RenderFrameDropReason, RenderFrameFailureKind, RenderFrameInput,
     RenderFrameOutcome, RenderScreenDescriptor, RenderShell, RendererCreateError,
-    RendererGpuDrainError, SurfaceFrameAcquire, VideoImportPlan, WindowCornerMask,
+    RendererGpuDrainError, SurfaceFrameAcquire, SurfacePresentSettings, VideoImportPlan,
+    WindowCornerMask,
 };
 
 /// Сколько проверка ждёт завершения работы GPU (как bounded drain пересоздания рендера).
@@ -58,6 +79,10 @@ pub trait RenderShellConformanceHarness {
 
     /// Экран, под который рендер получает буфер (размер его surface и масштаб интерфейса).
     fn screen(&self) -> RenderScreenDescriptor;
+
+    /// Настройки показа, с которыми стенд создаёт рендер (02a: от них отталкивается проверка
+    /// перенастройки на месте).
+    fn initial_presentation(&self) -> SurfacePresentSettings;
 
     /// Кадр, контракт которого рендер заведомо не объявляет в `RenderCapabilities`.
     fn unsupported_frame(&mut self) -> DecodedFrame;
@@ -131,6 +156,14 @@ pub enum ConformanceCheck {
     DeviceLostReleasesExactlyOnce,
     /// Подготовщик импорта работает в другом потоке и готовит импорт для своего рендера.
     PreparerPreparesOnAnotherThread,
+    /// Отпущенное окно не даёт буферов; после возврата показ продолжается.
+    DetachedPresentationGivesNoFrames,
+    /// Перенастройка показа на месте отличает «применено» от «уже так» и от отказа.
+    PresentationReconfigureDistinguishesNoOp,
+    /// Частичная правка неизвестной текстуры интерфейса — типизированный отказ, а не паника.
+    PartialEditOfUnknownUiTextureIsReported,
+    /// Изменения текстур интерфейса применяются и в отклонённом кадре.
+    UiTexturesApplyOnRejectedFrames,
 }
 
 /// Нарушение контракта с объяснением.
@@ -164,7 +197,7 @@ impl std::error::Error for ConformanceViolation {}
 pub fn run_render_shell_conformance(
     harness: &mut dyn RenderShellConformanceHarness,
 ) -> Vec<ConformanceViolation> {
-    let checks: [ConformanceCheckFn; 7] = [
+    let checks: [ConformanceCheckFn; 11] = [
         check_foreign_surface_frame_is_rejected,
         check_reuse_previous_requires_retained_ui,
         check_unsupported_contract_is_not_error,
@@ -172,6 +205,10 @@ pub fn run_render_shell_conformance(
         check_frame_released_exactly_once,
         check_device_lost_releases_exactly_once,
         check_preparer_prepares_on_another_thread,
+        check_detached_presentation_gives_no_frames,
+        check_presentation_reconfigure_distinguishes_no_op,
+        check_partial_edit_of_unknown_ui_texture_is_reported,
+        check_ui_textures_apply_on_rejected_frames,
     ];
     checks
         .into_iter()

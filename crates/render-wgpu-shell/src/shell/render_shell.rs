@@ -10,9 +10,11 @@ use render_core::{
     RenderCapabilities, RenderDiagnostics, RenderLiveSettings, RenderLiveSettingsAdapter,
 };
 use render_shell_api::{
-    RenderFrameInput, RenderFrameOutcome, RenderHotPathStats, RenderScreenDescriptor, RenderShell,
-    RenderSurfaceSize, RendererFamily, RendererGpuDrainError, RendererInstanceId,
-    SurfaceFrameAcquire, VideoFrameImport, VideoImportPreparer,
+    PresentationDetachOutcome, PresentationReattachError, PresentationReattachOutcome,
+    PresentationReconfigureError, PresentationReconfigured, RenderFrameInput, RenderFrameOutcome,
+    RenderHotPathStats, RenderScreenDescriptor, RenderShell, RenderSurfaceSize, RendererFamily,
+    RendererGpuDrainError, RendererInstanceId, SurfaceFrameAcquire, SurfacePresentSettings,
+    VideoFrameImport, VideoImportPreparer,
 };
 use render_wgpu_video::VideoHotPathStats;
 
@@ -40,6 +42,27 @@ impl RenderShell for Renderer {
     fn resize(&mut self, size: RenderSurfaceSize) {
         self.target
             .resize(&self.gpu.device, size.width, size.height);
+    }
+
+    /// Перенастройка present mode/задержки на текущей surface (сессия 02a): тот же device,
+    /// импорт кадров и пайплайны не трогаются.
+    fn reconfigure_presentation(
+        &mut self,
+        settings: SurfacePresentSettings,
+    ) -> Result<PresentationReconfigured, PresentationReconfigureError> {
+        self.target.reconfigure_presentation(&self.gpu, settings)
+    }
+
+    /// Роняет surface окна (swapchain и `VkSurfaceKHR`): окно свободно для нового рендера.
+    fn detach_presentation(&mut self) -> PresentationDetachOutcome {
+        self.target.detach_presentation()
+    }
+
+    /// Новая surface тем же instance-ом на том же окне с прежней конфигурацией.
+    fn reattach_presentation(
+        &mut self,
+    ) -> Result<PresentationReattachOutcome, PresentationReattachError> {
+        self.target.reattach_presentation(&self.gpu)
     }
 
     fn acquire_surface_frame(&mut self, screen: RenderScreenDescriptor) -> SurfaceFrameAcquire {
@@ -91,6 +114,9 @@ impl RenderShell for Renderer {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod ui_texture_tests;
 
 /// «Привязка ресурсов» контракта у wgpu — bind group кадра.
 const fn neutral_hot_path_stats(stats: VideoHotPathStats) -> RenderHotPathStats {

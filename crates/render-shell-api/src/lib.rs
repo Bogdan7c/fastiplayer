@@ -9,7 +9,11 @@
 //! # Что здесь есть
 //!
 //! - [`RenderShell`] — что приложение может попросить у рендера;
+//! - [`PresentationReconfigured`] и соседи — жизненный цикл показа на окне («одно окно —
+//!   одна surface», сессия 02a);
 //! - [`VideoFrameImport`] — склад кадров: подключение декодера, ключи кадров, освобождение;
+//! - [`UiTextureSync`] — синхронизация текстур интерфейса egui с рендером (полный набор для
+//!   нового рендера, недоставленные изменения не теряются; сессия 02a);
 //! - словарь кадра: исходы, причины пропуска, тайминги стадий, интерфейс, субтитры, маска углов;
 //! - словарь каталога: [`RendererFamily`], [`RendererProbe`], [`RendererCreateError`];
 //! - `conformance` (feature) — одинаковые для всех рендеров проверки контракта.
@@ -30,9 +34,11 @@ mod frame;
 mod frame_input;
 mod identity;
 mod present_settings;
+mod presentation;
 mod shell;
 mod subtitle_frame;
 mod surface_ticket;
+mod ui_textures;
 mod video_import;
 mod window_corner_mask;
 
@@ -48,6 +54,10 @@ pub use frame::{
 pub use frame_input::RenderFrameInput;
 pub use identity::RendererInstanceId;
 pub use present_settings::{ShellPresentMode, SurfaceAlphaPreference, SurfacePresentSettings};
+pub use presentation::{
+    PresentationDetachOutcome, PresentationReattachError, PresentationReattachOutcome,
+    PresentationReconfigureError, PresentationReconfigured,
+};
 pub use shell::{
     RenderHotPathStats, RenderShell, RenderSurfaceSize, RendererDeviceLossReason,
     RendererDeviceLost, RendererGpuDrainError,
@@ -56,6 +66,7 @@ pub use subtitle_frame::{SubtitleLayerOffset, SubtitleLayerOffsets, SubtitleOver
 pub use surface_ticket::{
     AcquiredSurfaceFrame, ForeignSurfaceFrame, OpenedSurfaceFrame, SurfaceFrameAcquire,
 };
+pub use ui_textures::{UiTextureFullSetReason, UiTextureSync};
 pub use video_import::{
     DecoderSurfacePoolSlots, FrameImportCacheSnapshot, FrameImportError, FrameImportStats,
     FrameImportUnsupportedReason, FrameMaterialization, FrameMaterializationOutcome,

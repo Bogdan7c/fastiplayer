@@ -7,6 +7,12 @@
 //! того же семейства создаёт каталог (`render_backend::create_renderer`), импорт кадров
 //! переносится контрактом (`export_video_import_for_recreation` → `prepare_recreated_video_import`
 //! → `install_video_import` после ожидания старого GPU).
+//!
+//! Сессия 02a («одно окно — одна surface», решение владельца): изменение только
+//! `[render.vulkan]` применяется перенастройкой показа текущего рендера на месте
+//! ([`settings_change`]); полное пересоздание сначала просит старый рендер отпустить окно,
+//! а откат возвращает окно ему же. Вторая surface на одном окне запрещена оконной системой
+//! (Wayland `wp_fifo_v1`, одна `EGLSurface` у EGL).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,16 +20,25 @@ use std::time::Duration;
 use fastiplayer_config::RenderProfile;
 use fastiplayer_settings::{
     AppRouteApplyResult, RenderCommittedSettingsUpdate, RendererRecreationApplyError,
-    RendererRecreationApplyErrorKind, RendererRecreationRollbackError,
+    RendererRecreationApplyErrorKind, RendererRecreationFailure, RendererRecreationRollbackError,
     RendererRecreationRollbackErrorKind, SettingStateOwner, SettingsApplyFailure,
     SettingsBoundaryActivity,
 };
-use render_shell_api::{PendingVideoImport, RenderShell, RenderSurfaceSize, RendererGpuDrainError};
+use render_shell_api::{
+    PendingVideoImport, RenderShell, RenderSurfaceSize, RendererGpuDrainError,
+    UiTextureFullSetReason,
+};
 use winit::window::Window;
 
 use crate::render_backend::{RendererCreateRequest, RendererInitialColor, create_renderer};
 use crate::state::AppState;
 use crate::system_capabilities::probe_system_capabilities;
+
+mod presentation;
+mod settings_change;
+
+pub(crate) use presentation::PresentationReconfigureFailure;
+use settings_change::{RendererSettingsChange, classify_renderer_settings_change};
 
 /// Bounded wait старой queue: event loop не должен зависнуть навсегда при driver failure.
 const GPU_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -65,7 +80,8 @@ impl RendererLifecycleCoordinator {
         self.activity = None;
     }
 
-    /// Запускает одну controlled recreation transaction без hidden retry queue.
+    /// Применяет изменение renderer-bound настроек без hidden retry queue: только
+    /// `[render.vulkan]` — перенастройкой показа на месте, иначе — транзакцией пересоздания.
     pub(crate) fn recreate<L>(
         &mut self,
         lifecycle: &mut L,
@@ -88,12 +104,57 @@ impl RendererLifecycleCoordinator {
         }
 
         self.activity = Some(SettingsBoundaryActivity::RendererLifecycle);
-        let result = Self::run_transaction(lifecycle, previous, next);
+        let result = match classify_renderer_settings_change(previous, next) {
+            RendererSettingsChange::Unchanged => AppRouteApplyResult::Noop,
+            RendererSettingsChange::PresentationOnly => {
+                Self::run_presentation_reconfigure(lifecycle, next)
+            }
+            RendererSettingsChange::FullRecreation => {
+                Self::run_transaction(lifecycle, previous, next)
+            }
+        };
         self.activity = None;
         result
     }
 
-    /// Выполняет ordered prepare -> release -> drain -> commit sequence.
+    /// Перенастройка показа текущего рендера на месте: без кандидата, без ожидания GPU и без
+    /// освобождения кадров/кэша импорта (их рендер не теряет).
+    fn run_presentation_reconfigure<L>(
+        lifecycle: &mut L,
+        next: &RenderCommittedSettingsUpdate,
+    ) -> AppRouteApplyResult
+    where
+        L: RendererRecreationLifecycle,
+    {
+        match lifecycle.reconfigure_presentation(next) {
+            Ok(()) => {
+                lifecycle.resume_submissions();
+                AppRouteApplyResult::Applied
+            }
+            Err(PresentationReconfigureFailure::Rejected(apply_error)) => {
+                // Прежняя конфигурация показа работает: показ продолжается.
+                lifecycle.resume_submissions();
+                renderer_failure(SettingsApplyFailure::ApplyFailed {
+                    owner: SettingStateOwner::RendererLifecycle,
+                    error: apply_error,
+                })
+            }
+            Err(PresentationReconfigureFailure::PresentationLost {
+                apply_error,
+                rollback_error,
+            }) => renderer_failure(SettingsApplyFailure::ApplyAndRollbackFailed {
+                apply_owner: SettingStateOwner::RendererLifecycle,
+                apply_error,
+                rollback_owner: SettingStateOwner::RendererLifecycle,
+                rollback_error,
+            }),
+        }
+    }
+
+    /// Выполняет ordered check -> detach -> prepare -> release -> drain -> commit sequence.
+    ///
+    /// Старый рендер отпускает окно ДО создания кандидата (у окна одна surface). При любой
+    /// ошибке кандидат уничтожается ДО того, как старый рендер вернёт себе окно.
     fn run_transaction<L>(
         lifecycle: &mut L,
         previous: &RenderCommittedSettingsUpdate,
@@ -102,22 +163,53 @@ impl RendererLifecycleCoordinator {
     where
         L: RendererRecreationLifecycle,
     {
+        // Отказ по одним настройкам (например, профиль без рендера) — до того, как окно
+        // отпущено: старый рендер не теряет surface ради заведомо невозможного кандидата.
+        if let Err(apply_error) = lifecycle.check_candidate_settings(next) {
+            return restore_after_failure(
+                lifecycle,
+                previous,
+                apply_error,
+                OldRendererWindow::Held,
+            );
+        }
+
+        lifecycle.detach_presentation();
+
+        // Кандидат, не созданный до конца, уничтожается внутри `prepare_candidate`.
         let candidate = match lifecycle.prepare_candidate(next) {
             Ok(candidate) => candidate,
             Err(apply_error) => {
-                return restore_after_failure(lifecycle, previous, apply_error);
+                return restore_after_failure(
+                    lifecycle,
+                    previous,
+                    apply_error,
+                    OldRendererWindow::Detached,
+                );
             }
         };
 
         lifecycle.release_renderer_bound_visual_state();
 
         if let Err(apply_error) = lifecycle.drain_old_gpu_work() {
+            // Кандидат (и его surface) уничтожается до возврата окна старому рендеру.
             drop(candidate);
-            return restore_after_failure(lifecycle, previous, apply_error);
+            return restore_after_failure(
+                lifecycle,
+                previous,
+                apply_error,
+                OldRendererWindow::Detached,
+            );
         }
 
+        // При отказе commit сам роняет кандидата до возврата Err.
         if let Err(apply_error) = lifecycle.commit_candidate(candidate) {
-            return restore_after_failure(lifecycle, previous, apply_error);
+            return restore_after_failure(
+                lifecycle,
+                previous,
+                apply_error,
+                OldRendererWindow::Detached,
+            );
         }
 
         lifecycle.resume_submissions();
@@ -133,7 +225,26 @@ pub(crate) trait RendererRecreationLifecycle {
     /// Возвращает занятую внешнюю boundary до первой мутации.
     fn preflight_activity(&self) -> Option<SettingsBoundaryActivity>;
 
-    /// Создаёт candidate resources, не меняя old runtime.
+    /// Отклоняет пересоздание по одним настройкам (без мутаций, до «отпустить окно»).
+    fn check_candidate_settings(
+        &self,
+        next: &RenderCommittedSettingsUpdate,
+    ) -> Result<(), RendererRecreationApplyError>;
+
+    /// Применяет новые настройки показа к текущему рендеру на месте.
+    fn reconfigure_presentation(
+        &mut self,
+        next: &RenderCommittedSettingsUpdate,
+    ) -> Result<(), PresentationReconfigureFailure>;
+
+    /// Старый рендер отпускает окно: его surface уничтожается до создания кандидата.
+    fn detach_presentation(&mut self);
+
+    /// Старый рендер возвращает себе окно (откат); провал — `SurfaceInvalidated`.
+    fn reattach_presentation(&mut self) -> Result<(), RendererRecreationRollbackError>;
+
+    /// Создаёт candidate resources, не меняя old runtime (окно уже отпущено старым рендером).
+    /// При ошибке частично созданный кандидат уничтожается до возврата `Err`.
     fn prepare_candidate(
         &mut self,
         next: &RenderCommittedSettingsUpdate,
@@ -145,13 +256,18 @@ pub(crate) trait RendererRecreationLifecycle {
     /// Дожидается callbacks и завершения старой GPU work.
     fn drain_old_gpu_work(&mut self) -> Result<(), RendererRecreationApplyError>;
 
-    /// Делает готовый candidate active; partial mutation при Err запрещена.
+    /// Делает готовый candidate active; partial mutation при Err запрещена, а кандидат при
+    /// Err уничтожается до возврата.
     fn commit_candidate(
         &mut self,
         candidate: Self::Candidate,
     ) -> Result<(), RendererRecreationApplyError>;
 
     /// Пытается восстановить именно предыдущую конфигурацию.
+    ///
+    /// При `DeviceLost` ставит в слот НОВЫЙ рендер прежней конфигурации (старый device
+    /// мёртв, старый рендер остаётся отпущенным и уничтожается заменой); при остальных ошибках
+    /// активным остаётся старый рендер, и окно ему возвращает координатор.
     fn restore_previous(
         &mut self,
         previous: &RenderCommittedSettingsUpdate,
@@ -162,34 +278,69 @@ pub(crate) trait RendererRecreationLifecycle {
     fn resume_submissions(&mut self);
 }
 
+/// Держит ли старый рендер окно в момент ошибки транзакции.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OldRendererWindow {
+    /// Окно не отпускалось (отказ по настройкам до detach).
+    Held,
+
+    /// Окно отпущено перед созданием кандидата: откат обязан вернуть его старому рендеру.
+    Detached,
+}
+
 /// Всегда вызывает concrete restore boundary и сохраняет обе typed errors при failure.
+///
+/// Порядок отката: restore прежней конфигурации → возврат окна старому рендеру (если он
+/// остаётся активным и окно было отпущено) → возобновление показа. Кандидат к этому моменту
+/// уже уничтожен вызывающим кодом.
 fn restore_after_failure<L>(
     lifecycle: &mut L,
     previous: &RenderCommittedSettingsUpdate,
     apply_error: RendererRecreationApplyError,
+    old_window: OldRendererWindow,
 ) -> AppRouteApplyResult
 where
     L: RendererRecreationLifecycle,
 {
-    match lifecycle.restore_previous(previous, &apply_error) {
+    let restore_result = lifecycle.restore_previous(previous, &apply_error);
+    // DeviceLost: restore заменяет старый рендер новым — возвращать окно мёртвому нельзя.
+    let old_renderer_stays_active =
+        apply_error.kind != RendererRecreationApplyErrorKind::DeviceLost;
+    let reattach_result = (old_window == OldRendererWindow::Detached && old_renderer_stays_active)
+        .then(|| lifecycle.reattach_presentation());
+    let rollback_result = match (restore_result, reattach_result) {
+        (Ok(()), None | Some(Ok(()))) => Ok(()),
+        (Ok(()), Some(Err(reattach_error))) => Err(reattach_error),
+        (Err(restore_error), Some(Err(reattach_error))) => {
+            // В отчёт идёт первая причина отката; вторую не теряем молча.
+            tracing::warn!(
+                message = %reattach_error.message,
+                "Old renderer could not take the window back after a failed restore"
+            );
+            Err(restore_error)
+        }
+        (Err(restore_error), None | Some(Ok(()))) => Err(restore_error),
+    };
+    match rollback_result {
         Ok(()) => {
             lifecycle.resume_submissions();
-            AppRouteApplyResult::RendererRecreationFailed {
-                failure: SettingsApplyFailure::ApplyFailed {
-                    owner: SettingStateOwner::RendererLifecycle,
-                    error: apply_error,
-                },
-            }
+            renderer_failure(SettingsApplyFailure::ApplyFailed {
+                owner: SettingStateOwner::RendererLifecycle,
+                error: apply_error,
+            })
         }
-        Err(rollback_error) => AppRouteApplyResult::RendererRecreationFailed {
-            failure: SettingsApplyFailure::ApplyAndRollbackFailed {
-                apply_owner: SettingStateOwner::RendererLifecycle,
-                apply_error,
-                rollback_owner: SettingStateOwner::RendererLifecycle,
-                rollback_error,
-            },
-        },
+        Err(rollback_error) => renderer_failure(SettingsApplyFailure::ApplyAndRollbackFailed {
+            apply_owner: SettingStateOwner::RendererLifecycle,
+            apply_error,
+            rollback_owner: SettingStateOwner::RendererLifecycle,
+            rollback_error,
+        }),
     }
+}
+
+/// Итог Apply с typed failure рендера.
+const fn renderer_failure(failure: RendererRecreationFailure) -> AppRouteApplyResult {
+    AppRouteApplyResult::RendererRecreationFailed { failure }
 }
 
 /// Candidate renderer path, подготовленный до release старых frame leases.
@@ -240,12 +391,7 @@ impl<'runtime> LiveRendererRecreation<'runtime> {
         &mut self,
         settings: &RenderCommittedSettingsUpdate,
     ) -> Result<PreparedRendererCandidate, RendererRecreationApplyError> {
-        if settings.profile == RenderProfile::OpenGles {
-            return Err(apply_error(
-                RendererRecreationApplyErrorKind::UnsupportedProfile,
-                "OpenGL ES renderer is absent; the active Vulkan renderer was preserved",
-            ));
-        }
+        ensure_candidate_profile_supported(settings)?;
 
         let mut renderer = create_renderer(
             self.renderer.family(),
@@ -334,6 +480,11 @@ impl<'runtime> LiveRendererRecreation<'runtime> {
         }
         self.app_state.set_system_capabilities(system_capabilities);
         *self.renderer = renderer;
+        // Новый рендер не видел ни одной текстуры интерфейса (сессия 02a): ближайший свежий
+        // кадр обязан нести полный набор, иначе частичная правка атласа шрифтов ему не к чему.
+        // Путь отката после потери устройства ставит рендер тоже здесь.
+        self.app_state
+            .request_full_ui_texture_set(UiTextureFullSetReason::RendererInstalled);
         self.app_state.advance_renderer_generation();
         self.app_state.mark_pending_worker_redraw();
         Ok(())
@@ -345,6 +496,28 @@ impl RendererRecreationLifecycle for LiveRendererRecreation<'_> {
 
     fn preflight_activity(&self) -> Option<SettingsBoundaryActivity> {
         None
+    }
+
+    fn check_candidate_settings(
+        &self,
+        next: &RenderCommittedSettingsUpdate,
+    ) -> Result<(), RendererRecreationApplyError> {
+        ensure_candidate_profile_supported(next)
+    }
+
+    fn reconfigure_presentation(
+        &mut self,
+        next: &RenderCommittedSettingsUpdate,
+    ) -> Result<(), PresentationReconfigureFailure> {
+        self.reconfigure_current_presentation(next)
+    }
+
+    fn detach_presentation(&mut self) {
+        self.detach_current_presentation();
+    }
+
+    fn reattach_presentation(&mut self) -> Result<(), RendererRecreationRollbackError> {
+        self.reattach_current_presentation()
     }
 
     fn prepare_candidate(
@@ -420,6 +593,19 @@ impl RendererRecreationLifecycle for LiveRendererRecreation<'_> {
     }
 }
 
+/// Профиль без реализованного рендера отклоняется до создания кандидата (до сессии 09).
+fn ensure_candidate_profile_supported(
+    settings: &RenderCommittedSettingsUpdate,
+) -> Result<(), RendererRecreationApplyError> {
+    if settings.profile == RenderProfile::OpenGles {
+        return Err(apply_error(
+            RendererRecreationApplyErrorKind::UnsupportedProfile,
+            "OpenGL ES renderer is absent; the active Vulkan renderer was preserved",
+        ));
+    }
+    Ok(())
+}
+
 /// Сохраняет typed distinction device-lost vs обычный drain failure.
 fn renderer_drain_apply_error(error: RendererGpuDrainError) -> RendererRecreationApplyError {
     let kind = if matches!(error, RendererGpuDrainError::DeviceLost(_)) {
@@ -442,331 +628,4 @@ fn apply_error(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Materializer path, который fake lifecycle переносит на candidate device.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum FakeMaterializerPath {
-        NoActiveVideo,
-        DmaBuf,
-        HostPlanar,
-    }
-
-    /// Наблюдаемые lifecycle steps для проверки release/drain/commit порядка.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum FakeLifecycleEvent {
-        Prepare(FakeMaterializerPath),
-        ReleaseActiveLease,
-        ReleaseVisualState,
-        DrainGpuWork,
-        Commit(FakeMaterializerPath),
-        RestorePrevious,
-        ResumeSubmissions,
-    }
-
-    /// Fake owner воспроизводит failures без WGPU/device зависимости тестов.
-    struct FakeRendererLifecycle {
-        materializer_path: FakeMaterializerPath,
-        active_lease: bool,
-        activity: Option<SettingsBoundaryActivity>,
-        prepare_error: Option<RendererRecreationApplyError>,
-        drain_error: Option<RendererRecreationApplyError>,
-        commit_error: Option<RendererRecreationApplyError>,
-        rollback_error: Option<RendererRecreationRollbackError>,
-        events: Vec<FakeLifecycleEvent>,
-    }
-
-    impl FakeRendererLifecycle {
-        fn ready(materializer_path: FakeMaterializerPath) -> Self {
-            Self {
-                materializer_path,
-                active_lease: false,
-                activity: None,
-                prepare_error: None,
-                drain_error: None,
-                commit_error: None,
-                rollback_error: None,
-                events: Vec::new(),
-            }
-        }
-    }
-
-    impl RendererRecreationLifecycle for FakeRendererLifecycle {
-        type Candidate = FakeMaterializerPath;
-
-        fn preflight_activity(&self) -> Option<SettingsBoundaryActivity> {
-            self.activity
-        }
-
-        fn prepare_candidate(
-            &mut self,
-            _next: &RenderCommittedSettingsUpdate,
-        ) -> Result<Self::Candidate, RendererRecreationApplyError> {
-            self.events
-                .push(FakeLifecycleEvent::Prepare(self.materializer_path));
-            if let Some(error) = self.prepare_error.clone() {
-                return Err(error);
-            }
-            Ok(self.materializer_path)
-        }
-
-        fn release_renderer_bound_visual_state(&mut self) {
-            if self.active_lease {
-                self.events.push(FakeLifecycleEvent::ReleaseActiveLease);
-                self.active_lease = false;
-            }
-            self.events.push(FakeLifecycleEvent::ReleaseVisualState);
-        }
-
-        fn drain_old_gpu_work(&mut self) -> Result<(), RendererRecreationApplyError> {
-            self.events.push(FakeLifecycleEvent::DrainGpuWork);
-            if let Some(error) = self.drain_error.clone() {
-                return Err(error);
-            }
-            Ok(())
-        }
-
-        fn commit_candidate(
-            &mut self,
-            candidate: Self::Candidate,
-        ) -> Result<(), RendererRecreationApplyError> {
-            self.events.push(FakeLifecycleEvent::Commit(candidate));
-            if let Some(error) = self.commit_error.clone() {
-                return Err(error);
-            }
-            Ok(())
-        }
-
-        fn restore_previous(
-            &mut self,
-            _previous: &RenderCommittedSettingsUpdate,
-            _apply_error: &RendererRecreationApplyError,
-        ) -> Result<(), RendererRecreationRollbackError> {
-            self.events.push(FakeLifecycleEvent::RestorePrevious);
-            if let Some(error) = self.rollback_error.clone() {
-                return Err(error);
-            }
-            Ok(())
-        }
-
-        fn resume_submissions(&mut self) {
-            self.events.push(FakeLifecycleEvent::ResumeSubmissions);
-        }
-    }
-
-    fn settings() -> RenderCommittedSettingsUpdate {
-        let config = fastiplayer_config::AppConfig::default();
-        RenderCommittedSettingsUpdate {
-            profile: config.render.profile,
-            tone_mapping: config.render.tone_mapping,
-            vulkan: config.render.vulkan,
-            opengles: config.render.opengles,
-        }
-    }
-
-    #[test]
-    fn successful_recreation_orders_prepare_release_drain_commit_and_resume() {
-        let mut coordinator = RendererLifecycleCoordinator::default();
-        let mut lifecycle = FakeRendererLifecycle::ready(FakeMaterializerPath::DmaBuf);
-
-        let result = coordinator.recreate(&mut lifecycle, &settings(), &settings());
-
-        assert_eq!(result, AppRouteApplyResult::Applied);
-        assert_eq!(
-            lifecycle.events,
-            vec![
-                FakeLifecycleEvent::Prepare(FakeMaterializerPath::DmaBuf),
-                FakeLifecycleEvent::ReleaseVisualState,
-                FakeLifecycleEvent::DrainGpuWork,
-                FakeLifecycleEvent::Commit(FakeMaterializerPath::DmaBuf),
-                FakeLifecycleEvent::ResumeSubmissions,
-            ]
-        );
-    }
-
-    #[test]
-    fn recreation_without_active_video_commits_renderer_without_materializer() {
-        let mut coordinator = RendererLifecycleCoordinator::default();
-        let mut lifecycle = FakeRendererLifecycle::ready(FakeMaterializerPath::NoActiveVideo);
-
-        let result = coordinator.recreate(&mut lifecycle, &settings(), &settings());
-
-        assert_eq!(result, AppRouteApplyResult::Applied);
-        assert!(lifecycle.events.contains(&FakeLifecycleEvent::Commit(
-            FakeMaterializerPath::NoActiveVideo
-        )));
-    }
-
-    #[test]
-    fn resource_busy_is_retryable_and_does_not_start_or_queue_recreation() {
-        let mut coordinator = RendererLifecycleCoordinator::default();
-        let mut lifecycle = FakeRendererLifecycle::ready(FakeMaterializerPath::DmaBuf);
-        lifecycle.activity = Some(SettingsBoundaryActivity::SettingsTransaction);
-
-        let result = coordinator.recreate(&mut lifecycle, &settings(), &settings());
-
-        assert_eq!(
-            result,
-            AppRouteApplyResult::RuntimeBusy {
-                activity: SettingsBoundaryActivity::SettingsTransaction,
-            }
-        );
-        assert!(lifecycle.events.is_empty());
-    }
-
-    #[test]
-    fn creation_failure_attempts_restore_and_keeps_original_error_typed() {
-        let mut coordinator = RendererLifecycleCoordinator::default();
-        let mut lifecycle = FakeRendererLifecycle::ready(FakeMaterializerPath::DmaBuf);
-        lifecycle.prepare_error = Some(apply_error(
-            RendererRecreationApplyErrorKind::CandidateCreation,
-            "fake creation failure",
-        ));
-
-        let result = coordinator.recreate(&mut lifecycle, &settings(), &settings());
-
-        assert!(matches!(
-            result,
-            AppRouteApplyResult::RendererRecreationFailed {
-                failure: SettingsApplyFailure::ApplyFailed {
-                    error: RendererRecreationApplyError {
-                        kind: RendererRecreationApplyErrorKind::CandidateCreation,
-                        ..
-                    },
-                    ..
-                }
-            }
-        ));
-        assert_eq!(
-            lifecycle.events,
-            vec![
-                FakeLifecycleEvent::Prepare(FakeMaterializerPath::DmaBuf),
-                FakeLifecycleEvent::RestorePrevious,
-                FakeLifecycleEvent::ResumeSubmissions,
-            ]
-        );
-    }
-
-    #[test]
-    fn device_lost_with_failed_restore_preserves_both_typed_causes() {
-        let mut coordinator = RendererLifecycleCoordinator::default();
-        let mut lifecycle = FakeRendererLifecycle::ready(FakeMaterializerPath::DmaBuf);
-        lifecycle.drain_error = Some(apply_error(
-            RendererRecreationApplyErrorKind::DeviceLost,
-            "fake device lost",
-        ));
-        lifecycle.rollback_error = Some(RendererRecreationRollbackError {
-            kind: RendererRecreationRollbackErrorKind::DeviceLost,
-            message: "fake old renderer restore failure".into(),
-        });
-
-        let result = coordinator.recreate(&mut lifecycle, &settings(), &settings());
-
-        assert!(matches!(
-            result,
-            AppRouteApplyResult::RendererRecreationFailed {
-                failure: SettingsApplyFailure::ApplyAndRollbackFailed {
-                    apply_error: RendererRecreationApplyError {
-                        kind: RendererRecreationApplyErrorKind::DeviceLost,
-                        ..
-                    },
-                    rollback_error: RendererRecreationRollbackError {
-                        kind: RendererRecreationRollbackErrorKind::DeviceLost,
-                        ..
-                    },
-                    ..
-                }
-            }
-        ));
-        assert!(
-            !lifecycle
-                .events
-                .contains(&FakeLifecycleEvent::ResumeSubmissions)
-        );
-    }
-
-    #[test]
-    fn active_dma_buf_lease_is_released_before_gpu_drain() {
-        let mut coordinator = RendererLifecycleCoordinator::default();
-        let mut lifecycle = FakeRendererLifecycle::ready(FakeMaterializerPath::DmaBuf);
-        lifecycle.active_lease = true;
-
-        let result = coordinator.recreate(&mut lifecycle, &settings(), &settings());
-
-        assert_eq!(result, AppRouteApplyResult::Applied);
-        let release_index = lifecycle
-            .events
-            .iter()
-            .position(|event| *event == FakeLifecycleEvent::ReleaseActiveLease)
-            .expect("active DMA-BUF lease must be released");
-        let drain_index = lifecycle
-            .events
-            .iter()
-            .position(|event| *event == FakeLifecycleEvent::DrainGpuWork)
-            .expect("old GPU work must be drained");
-        assert!(release_index < drain_index);
-    }
-
-    #[test]
-    fn host_planar_path_recreates_the_same_materializer_kind() {
-        let mut coordinator = RendererLifecycleCoordinator::default();
-        let mut lifecycle = FakeRendererLifecycle::ready(FakeMaterializerPath::HostPlanar);
-
-        let result = coordinator.recreate(&mut lifecycle, &settings(), &settings());
-
-        assert_eq!(result, AppRouteApplyResult::Applied);
-        assert!(lifecycle.events.contains(&FakeLifecycleEvent::Commit(
-            FakeMaterializerPath::HostPlanar
-        )));
-    }
-
-    #[test]
-    fn commit_failure_restores_previous_configuration_before_resuming() {
-        let mut coordinator = RendererLifecycleCoordinator::default();
-        let mut lifecycle = FakeRendererLifecycle::ready(FakeMaterializerPath::DmaBuf);
-        lifecycle.commit_error = Some(apply_error(
-            RendererRecreationApplyErrorKind::Commit,
-            "fake commit failure",
-        ));
-
-        let result = coordinator.recreate(&mut lifecycle, &settings(), &settings());
-
-        assert!(matches!(
-            result,
-            AppRouteApplyResult::RendererRecreationFailed {
-                failure: SettingsApplyFailure::ApplyFailed {
-                    error: RendererRecreationApplyError {
-                        kind: RendererRecreationApplyErrorKind::Commit,
-                        ..
-                    },
-                    ..
-                }
-            }
-        ));
-        assert_eq!(
-            lifecycle.events.last(),
-            Some(&FakeLifecycleEvent::ResumeSubmissions)
-        );
-    }
-
-    #[test]
-    fn resize_or_fullscreen_tick_conflicts_then_same_draft_can_retry() {
-        let mut coordinator = RendererLifecycleCoordinator::default();
-        coordinator.set_surface_event_pending(true);
-        let mut lifecycle = FakeRendererLifecycle::ready(FakeMaterializerPath::DmaBuf);
-
-        let blocked = coordinator.recreate(&mut lifecycle, &settings(), &settings());
-        assert_eq!(
-            blocked,
-            AppRouteApplyResult::RuntimeBusy {
-                activity: SettingsBoundaryActivity::RendererLifecycle,
-            }
-        );
-        assert!(lifecycle.events.is_empty());
-
-        coordinator.set_surface_event_pending(false);
-        let retried = coordinator.recreate(&mut lifecycle, &settings(), &settings());
-        assert_eq!(retried, AppRouteApplyResult::Applied);
-    }
-}
+mod tests;

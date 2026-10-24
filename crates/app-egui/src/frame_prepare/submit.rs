@@ -5,7 +5,7 @@ use std::time::Instant;
 use player_core::PlayerRenderError;
 use render_shell_api::{
     AcquiredSurfaceFrame, RenderFrameDropReason, RenderFrameOutcome, RenderFrameTiming,
-    RenderShell, SubtitleOverlayFrame,
+    RenderShell, SubtitleOverlayFrame, UiTextureFullSetReason,
 };
 use video_present_core::VideoPresentFrameIdentity;
 
@@ -57,6 +57,9 @@ pub(super) fn submit_render_frame(
     // UI, даже без нового видеокадра: во время seek/scrub старый кадр остаётся без субтитров,
     // а цель уже известна, и поток-рисовальщик готовит её заранее.
     app_state.observe_playback_for_subtitles();
+    // Изменения текстур забираются здесь, а не при UI-проходе: рендер мог быть заменён в
+    // этом же кадре (Apply настроек), и полный набор для нового рендера уйдёт сразу.
+    let egui_content = app_state.egui_content_for_renderer(prepared_ui_frame.egui_content);
     let subtitle_frame = video_frame.and_then(|frame_key| {
         SubmittedFrameForSubtitles::from_submission(
             startup_frame_identity,
@@ -78,7 +81,7 @@ pub(super) fn submit_render_frame(
     let render_frame_outcome = renderer.render_frame(render_shell_api::RenderFrameInput {
         surface,
         video_frame,
-        egui: prepared_ui_frame.egui_content,
+        egui: egui_content,
         screen: prepared_ui_frame.screen,
         video_viewport: prepared_ui_frame.video_viewport,
         video_exclusion_rects: prepared_ui_frame.video_exclusion_rects,
@@ -144,6 +147,16 @@ pub(super) fn account_render_frame_outcome(
             // это не потеря кадра surface-ом, а наш промах решения. Следующий кадр — полным
             // проходом и сразу (кадр видео ещё не показан).
             telemetry.record_retained_ui_refused();
+            app_state.force_full_ui_pass();
+            app_state.request_follow_up_redraw_after_retained_ui_refusal();
+            None
+        }
+        RenderFrameOutcome::Dropped(RenderFrameDropReason::UiTexturesOutOfSync) => {
+            // Рендер не знает текстуры, которую правит дельта (новый рендер, сбой учёта): это
+            // не потеря кадра surface-ом. Следующий кадр — свежий проход с полным набором.
+            app_state.request_full_ui_texture_set(
+                UiTextureFullSetReason::RendererReportedMissingTexture,
+            );
             app_state.force_full_ui_pass();
             app_state.request_follow_up_redraw_after_retained_ui_refusal();
             None

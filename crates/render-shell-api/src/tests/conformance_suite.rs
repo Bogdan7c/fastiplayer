@@ -24,7 +24,9 @@ fn honest_fake_renderer_passes_every_conformance_check() {
 /// Каждый дефект ловится своей проверкой и не задевает чужие.
 ///
 /// Удержание ключей рендером ломает обе проверки освобождения: кадр не возвращается декодеру
-/// ни обычным путём, ни при потере устройства (ключ держит аренду).
+/// ни обычным путём, ни при потере устройства (ключ держит аренду). Молчаливое принятие правки
+/// неизвестной текстуры ломает и проверку 11: её последний шаг (правка после `free`) тоже
+/// обязан закончиться `UiTexturesOutOfSync`.
 #[test]
 fn each_contract_defect_is_caught_by_its_own_check() {
     let cases = [
@@ -58,6 +60,25 @@ fn each_contract_defect_is_caught_by_its_own_check() {
         (
             FakeDefect::PreparerStampsForeignOwner,
             vec![ConformanceCheck::PreparerPreparesOnAnotherThread],
+        ),
+        (
+            FakeDefect::AcquiresWhileDetached,
+            vec![ConformanceCheck::DetachedPresentationGivesNoFrames],
+        ),
+        (
+            FakeDefect::ReconfigureNeverReportsNoOp,
+            vec![ConformanceCheck::PresentationReconfigureDistinguishesNoOp],
+        ),
+        (
+            FakeDefect::AcceptsPartialEditOfUnknownUiTexture,
+            vec![
+                ConformanceCheck::PartialEditOfUnknownUiTextureIsReported,
+                ConformanceCheck::UiTexturesApplyOnRejectedFrames,
+            ],
+        ),
+        (
+            FakeDefect::AppliesUiTexturesOnlyWhenDrawing,
+            vec![ConformanceCheck::UiTexturesApplyOnRejectedFrames],
         ),
     ];
 

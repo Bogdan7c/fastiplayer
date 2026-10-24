@@ -41,6 +41,39 @@ pub(crate) enum PendingEguiContent {
     Reused,
 }
 
+/// Итог загрузки изменений текстур одного кадра.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UiTextureUpload {
+    /// Все изменения применены.
+    InSync,
+
+    /// Частичная правка пришла для текстуры, которой нет (или в которую она не помещается);
+    /// остальные изменения применены. `texture_id` — первая такая текстура (для лога).
+    OutOfSync { texture_id: egui::TextureId },
+}
+
+/// Содержимое egui после первого шага кадра: текстуры свежего уже загружены.
+pub(crate) enum AppliedEguiContent {
+    /// Свежие примитивы; их delta ждёт `free` после submit-а или отказа.
+    Fresh {
+        paint_jobs: Vec<egui::epaint::ClippedPrimitive>,
+        textures_delta: egui::TexturesDelta,
+        upload: UiTextureUpload,
+    },
+    /// Повтор удержанных примитивов (текстур нет).
+    ReusePrevious,
+}
+
+/// Почему интерфейс кадра рисовать нельзя.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EguiFrameRefusal {
+    /// Повторять нечего или размер экрана другой.
+    RetainedUnavailable(RetainedEguiFrameUnavailable),
+
+    /// Текстуры рассинхронизированы с приложением (нужен полный набор).
+    TexturesOutOfSync { texture_id: egui::TextureId },
+}
+
 /// Почему удержанный egui-кадр нельзя нарисовать повторно.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RetainedEguiFrameUnavailable {
@@ -75,21 +108,66 @@ impl EguiCompositor {
     /// Retired-текстуры здесь намеренно не освобождаются: текущие paint jobs всё ещё
     /// могут ссылаться на них. Владелец frame submission обязан вызвать
     /// [`Self::free_retired_textures`] только после submit-а либо отказа от кадра.
+    ///
+    /// Частичная правка текстуры, которой нет (или в которую она не помещается), не
+    /// применяется: egui-wgpu на ней паникует («texture that has not been allocated yet»), а
+    /// wgpu на выходе за границы даёт validation error. Остальные дельты применяются, итог —
+    /// [`UiTextureUpload::OutOfSync`] (сессия 02a: так бывает после пересоздания рендера, пока
+    /// приложение не прислало полный набор).
+    #[must_use]
     pub fn upload_changed_textures(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         textures_delta: &egui::TexturesDelta,
-    ) {
+    ) -> UiTextureUpload {
+        let mut upload = UiTextureUpload::InSync;
         // egui 0.36 группирует дельты по текстуре: внутри одного id порядок дельт
         // важен (частичные обновления поверх целой загрузки), между разными id — нет,
         // как и в эталонной интеграции `egui_wgpu::winit`.
         for (id, image_deltas) in &textures_delta.set {
             for image_delta in image_deltas {
+                if !self.can_apply_image_delta(*id, image_delta) {
+                    // Запоминаем первую рассинхронизированную текстуру (для лога).
+                    if upload == UiTextureUpload::InSync {
+                        upload = UiTextureUpload::OutOfSync { texture_id: *id };
+                    }
+                    continue;
+                }
                 self.renderer
                     .update_texture(device, queue, *id, image_delta);
             }
         }
+        upload
+    }
+
+    /// Можно ли отдать дельту egui-wgpu без паники и без validation error.
+    ///
+    /// Целая загрузка создаёт текстуру заново — всегда можно. Частичной нужна уже загруженная
+    /// egui-текстура (не чужая native-текстура без `wgpu::Texture`), в которую правка помещается.
+    fn can_apply_image_delta(
+        &self,
+        id: egui::TextureId,
+        image_delta: &egui::epaint::ImageDelta,
+    ) -> bool {
+        let Some([x, y]) = image_delta.pos else {
+            return true;
+        };
+        let Some(texture) = self
+            .renderer
+            .texture(&id)
+            .and_then(|texture| texture.texture.as_ref())
+        else {
+            return false;
+        };
+        let [patch_width, patch_height] = image_delta.image.size();
+        let fits = |offset: usize, extent: usize, limit: u32| {
+            offset
+                .checked_add(extent)
+                .and_then(|end| u32::try_from(end).ok())
+                .is_some_and(|end| end <= limit)
+        };
+        fits(x, patch_width, texture.width()) && fits(y, patch_height, texture.height())
     }
 
     /// Освобождает текстуры, которые egui больше не использует.
@@ -111,28 +189,67 @@ impl EguiCompositor {
         textures_delta.clear();
     }
 
-    /// Первая стадия кадра: свежему содержимому загружает текстуры, для повторного проверяет,
-    /// что удержанные примитивы есть и загружены для того же размера экрана.
-    pub fn begin_frame_content(
+    /// Первый шаг кадра (сессия 02a): изменения текстур свежего содержимого — состояние рендера,
+    /// поэтому они загружаются ДО любых проверок кадра. Если кадр затем отклонён, его
+    /// содержимое отдаётся в [`Self::discard_applied_content`] (там же применяется `free`).
+    pub fn apply_frame_textures(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         egui: EguiFrameContent,
-        screen_descriptor: &egui_wgpu::ScreenDescriptor,
-    ) -> Result<PendingEguiContent, RetainedEguiFrameUnavailable> {
+    ) -> AppliedEguiContent {
         match egui {
             EguiFrameContent::Fresh {
                 paint_jobs,
                 textures_delta,
             } => {
-                self.upload_changed_textures(device, queue, &textures_delta);
-                Ok(PendingEguiContent::Fresh {
+                let upload = self.upload_changed_textures(device, queue, &textures_delta);
+                AppliedEguiContent::Fresh {
                     paint_jobs,
                     textures_delta,
-                })
+                    upload,
+                }
             }
-            EguiFrameContent::ReusePrevious => {
-                self.retained_frame_availability(screen_descriptor)?;
+            EguiFrameContent::ReusePrevious => AppliedEguiContent::ReusePrevious,
+        }
+    }
+
+    /// Кадр отклонён до записи (чужой билет/ключ, неотрисовываемый кадр): рисования не будет,
+    /// поэтому `free` свежего содержимого применяется сразу.
+    pub fn discard_applied_content(&mut self, applied: AppliedEguiContent) {
+        if let AppliedEguiContent::Fresh { textures_delta, .. } = applied {
+            self.free_retired_textures(textures_delta);
+        }
+    }
+
+    /// Второй шаг: можно ли рисовать интерфейс. Свежее содержимое с рассинхронизированными
+    /// текстурами отклоняется (с `free`), повторное — проверяется на удержанный кадр того же
+    /// размера экрана.
+    pub fn pending_content_for_drawing(
+        &mut self,
+        applied: AppliedEguiContent,
+        screen_descriptor: &egui_wgpu::ScreenDescriptor,
+    ) -> Result<PendingEguiContent, EguiFrameRefusal> {
+        match applied {
+            AppliedEguiContent::Fresh {
+                textures_delta,
+                upload: UiTextureUpload::OutOfSync { texture_id },
+                ..
+            } => {
+                self.free_retired_textures(textures_delta);
+                Err(EguiFrameRefusal::TexturesOutOfSync { texture_id })
+            }
+            AppliedEguiContent::Fresh {
+                paint_jobs,
+                textures_delta,
+                upload: UiTextureUpload::InSync,
+            } => Ok(PendingEguiContent::Fresh {
+                paint_jobs,
+                textures_delta,
+            }),
+            AppliedEguiContent::ReusePrevious => {
+                self.retained_frame_availability(screen_descriptor)
+                    .map_err(EguiFrameRefusal::RetainedUnavailable)?;
                 Ok(PendingEguiContent::Reused)
             }
         }
@@ -207,8 +324,9 @@ impl EguiCompositor {
 
     /// Рендерит удержанные egui primitives поверх уже нарисованного video target-а.
     ///
-    /// Вызывается после [`Self::begin_frame_content`] того же кадра: свежий кадр уже загружен
-    /// и удержан, повторный — проверен. Удержанного кадра не может не быть; если это всё же
+    /// Вызывается после [`Self::pending_content_for_drawing`] и
+    /// [`Self::prepare_pending_content`] того же кадра: свежий кадр уже загружен и удержан,
+    /// повторный — проверен. Удержанного кадра не может не быть; если это всё же
     /// случилось (ошибка программы, не окружения), pass не открывается, а в лог идёт `error!`.
     pub fn render_retained_overlay(
         &mut self,

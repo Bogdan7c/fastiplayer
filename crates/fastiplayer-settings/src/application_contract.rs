@@ -161,6 +161,9 @@ pub enum RendererRecreationApplyErrorKind {
     DeviceLost,
     /// Финальный owner commit candidate-а не завершился.
     Commit,
+    /// Перенастройка показа текущего рендера на месте (только `[render.vulkan]`, без нового
+    /// device) отклонена; прежняя конфигурация показа сохранена (сессия 02a gles2-renderer).
+    PresentationReconfigure,
 }
 
 /// Typed apply error controlled renderer recreation-а.

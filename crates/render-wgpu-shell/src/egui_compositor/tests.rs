@@ -205,9 +205,12 @@ fn reused_frame_draws_identical_ui_pixels_over_new_video() {
 
     // Свежий кадр: синее «видео», свежие примитивы.
     let mut encoder = harness.encoder_with_video_cleared_to(wgpu::Color::BLUE);
-    harness
-        .compositor
-        .upload_changed_textures(&harness.device, &harness.queue, &textures_delta);
+    let upload = harness.compositor.upload_changed_textures(
+        &harness.device,
+        &harness.queue,
+        &textures_delta,
+    );
+    assert_eq!(upload, super::UiTextureUpload::InSync);
     let callback_buffers = harness.compositor.prepare_fresh_frame(
         &harness.device,
         &harness.queue,
@@ -274,9 +277,12 @@ fn retained_frame_is_refused_without_fresh_frame_or_with_other_screen() {
         .render_retained_overlay(&mut encoder, &harness.view);
 
     let (paint_jobs, textures_delta) = tessellated_ui_frame();
-    harness
-        .compositor
-        .upload_changed_textures(&harness.device, &harness.queue, &textures_delta);
+    let upload = harness.compositor.upload_changed_textures(
+        &harness.device,
+        &harness.queue,
+        &textures_delta,
+    );
+    assert_eq!(upload, super::UiTextureUpload::InSync);
     let _callbacks = harness.compositor.prepare_fresh_frame(
         &harness.device,
         &harness.queue,

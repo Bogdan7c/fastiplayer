@@ -13,8 +13,10 @@ use render_core::{
 };
 
 use crate::{
-    RenderFrameInput, RenderFrameOutcome, RenderScreenDescriptor, RendererFamily,
-    RendererInstanceId, SurfaceFrameAcquire, VideoFrameImport, VideoImportPreparer,
+    PresentationDetachOutcome, PresentationReattachError, PresentationReattachOutcome,
+    PresentationReconfigureError, PresentationReconfigured, RenderFrameInput, RenderFrameOutcome,
+    RenderScreenDescriptor, RendererFamily, RendererInstanceId, SurfaceFrameAcquire,
+    SurfacePresentSettings, VideoFrameImport, VideoImportPreparer,
 };
 
 /// Рендер окна приложения. Object-safe: приложение держит `Box<dyn RenderShell>`.
@@ -39,7 +41,40 @@ pub trait RenderShell {
     fn diagnostics(&self) -> RenderDiagnostics;
 
     /// Новый размер окна в физических пикселях; применяется до следующего acquire.
+    ///
+    /// Пока окно отпущено ([`Self::detach_presentation`]), размер только запоминается и
+    /// применяется при возврате окна.
     fn resize(&mut self, size: RenderSurfaceSize);
+
+    /// Применяет новые настройки показа (present mode, задержка) к ТЕКУЩЕЙ surface окна,
+    /// без нового device и без пересоздания импорта кадров (сессия 02a, «одно окно — одна
+    /// surface»).
+    ///
+    /// Режим выбирается по тем же правилам, что при создании рендера. Отказ surface
+    /// откатывается к прежней конфигурации (`RejectedPreviousRestored`); если не принята и она —
+    /// `PresentationLost`. Смена политики прозрачности — `AlphaPreferenceChangeUnsupported`,
+    /// без окна — `PresentationDetached`; в обоих случаях ничего не меняется.
+    ///
+    /// Вызывать только между кадрами: без живого билета этого рендера.
+    fn reconfigure_presentation(
+        &mut self,
+        settings: SurfacePresentSettings,
+    ) -> Result<PresentationReconfigured, PresentationReconfigureError>;
+
+    /// Отпускает окно: уничтожает surface (и swapchain), запоминая конфигурацию и окно.
+    ///
+    /// Нужен полному пересозданию рендера: новый рендер создаёт свою surface на том же окне
+    /// только после того, как старый отпустил свою. Пока окно отпущено,
+    /// [`Self::acquire_surface_frame`] даёт `Dropped(PresentationDetached)`. Повтор —
+    /// `AlreadyDetached`. Вызывать только между кадрами.
+    fn detach_presentation(&mut self) -> PresentationDetachOutcome;
+
+    /// Возвращает окно: новая surface на прежнем окне с прежней конфигурацией и текущим
+    /// размером окна. Повтор при уже держащем окно рендере — `AlreadyAttached`. При ошибке
+    /// рендер остаётся без окна.
+    fn reattach_presentation(
+        &mut self,
+    ) -> Result<PresentationReattachOutcome, PresentationReattachError>;
 
     /// Получает буфер swapchain под кадр.
     fn acquire_surface_frame(&mut self, screen: RenderScreenDescriptor) -> SurfaceFrameAcquire;
@@ -55,6 +90,11 @@ pub trait RenderShell {
     /// Чужой билет или чужой ключ кадра — `Failed` с типом `ForeignSurfaceFrame`/
     /// `ForeignVideoFrame`, без записи. `ReusePrevious` без удержанного интерфейса —
     /// `Dropped(RetainedUiUnavailable)`.
+    ///
+    /// Изменения текстур `EguiFrameContent::Fresh` — состояние рендера (сессия 02a): они
+    /// применяются ПЕРВЫМ шагом, до любых отказов, и `free` тоже (раз рисования не будет,
+    /// освобождать можно сразу). Частичная правка текстуры, которой у рендера нет, — не паника,
+    /// а `Dropped(UiTexturesOutOfSync)`: остальные изменения применены, кадр не рисуется.
     fn render_frame(&mut self, input: RenderFrameInput<'_>) -> RenderFrameOutcome;
 
     /// Снимок живых настроек цвета (переносится на новый рендер при пересоздании).
