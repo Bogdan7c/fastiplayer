@@ -1070,28 +1070,14 @@ fn select_renderer_dispatch(
 }
 
 /// Возвращает scissor-rects, в которых video pass должен рисовать кадр.
+///
+/// Разбиение живёт в `render-core` (`RenderViewport::visible_parts`): им же пользуется
+/// GLES2-рендер, и части под исключениями совпадают у обоих.
 fn visible_video_draw_rects(
     video_viewport: RenderViewport,
     video_exclusion_rects: &[RenderViewport],
 ) -> Vec<RenderViewport> {
-    let mut visible_rects = vec![video_viewport];
-
-    for exclusion_rect in video_exclusion_rects {
-        let Some(exclusion_rect) = exclusion_rect.intersection(video_viewport) else {
-            continue;
-        };
-
-        visible_rects = visible_rects
-            .into_iter()
-            .flat_map(|visible_rect| visible_rect.subtract(exclusion_rect))
-            .collect();
-
-        if visible_rects.is_empty() {
-            break;
-        }
-    }
-
-    visible_rects
+    video_viewport.visible_parts(video_exclusion_rects)
 }
 
 /// Очищает swapchain target в чёрный цвет, когда video frame ещё не готов.

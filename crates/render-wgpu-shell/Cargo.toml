@@ -36,6 +36,10 @@ subtitle-pgs = { workspace = true, features = ["test-support"] }
 # художник шелла с GLES2-художником. Только dev-зависимость: normal-зависимость на GLES2-crate-ы
 # запрещает guardrail.
 gles2-egui.workspace = true
+# Паритет видео (сессия 05): тот же кадр декодера рисуют wgpu-рендер и видеослой GLES2 через его
+# адаптер плеера. Тоже только dev-зависимости (решение владельца 28).
+gles2-video.workspace = true
+render-gles2-shell.workspace = true
 # Иконки плеера в эталонных кадрах паритета.
 ui-artwork-egui.workspace = true
 

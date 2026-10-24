@@ -132,6 +132,34 @@ impl RenderViewport {
         visible_rects
     }
 
+    /// Видимые части viewport-а после вычитания всех `exclusions` (UI, который прячет видео,
+    /// например сайдбар). Рендер рисует кадр по одному draw-вызову на часть; пропорции картинки
+    /// по-прежнему считаются по целому `self`.
+    ///
+    /// Общий источник истины для всех рендеров (wgpu и GLES2): разбиение на части должно
+    /// совпадать, иначе разойдутся пиксели под исключениями.
+    #[must_use]
+    pub fn visible_parts(self, exclusions: &[Self]) -> Vec<Self> {
+        let mut visible_rects = vec![self];
+
+        for exclusion in exclusions {
+            let Some(exclusion) = exclusion.intersection(self) else {
+                continue;
+            };
+
+            visible_rects = visible_rects
+                .into_iter()
+                .flat_map(|visible_rect| visible_rect.subtract(exclusion))
+                .collect();
+
+            if visible_rects.is_empty() {
+                break;
+            }
+        }
+
+        visible_rects
+    }
+
     /// Зажимает viewport к surface; некорректный запрос возвращает full-surface fallback.
     ///
     /// Fallback нужен, чтобы отсутствие/сбой layout rect-а не создавали нулевой scissor

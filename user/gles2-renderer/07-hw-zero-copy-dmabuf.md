@@ -56,6 +56,13 @@
 - Живой вывод 03: на T410 R8/GR88/ABGR8888 — `LINEAR` и `X_TILED` (`0x0100000000000001`) как `sampler2D`, NV12/P010 только external.
 - Функции `eglCreateImage`/`glEGLImageTargetTexture2DOES` — в свой модуль безопасности (по образцу `context/safety.rs`).
 
+## Наследство сессии 05 (`results/05.md`)
+
+- Тип источника уже есть: `gles2_video::PlaneSource::DmaBuf(DmaBufPlane { fd, offset, pitch, modifier, drm_format })`, сейчас — `VideoUploadError::PlaneSourceUnsupported`.
+- Кольцо слотов, fence и `retire_submitted_work(Arc<GpuFence>)` готовы. Для импорта EGLImage слот — это кэш импорта, а охрана та же: кадр держится до fence последнего кадра показа (решение 30).
+- Шейдер и uniform-ы цвета, letterbox, поворот и исключения переиспользуются как есть (`program.rs`, `draw_uniforms.rs`). Для NV12 (UV в одной текстуре) нужен свой вариант программы с той же схемой координат.
+
+
 ## Тесты
 
 - `#[ignore]` GPU: udmabuf (memfd → `/dev/udmabuf`) NV12 с известными цветами → production-импорт → readback; перезапись буфера между кадрами видна без переимпорта (порт `udmabuf_*` тестов wgpu).

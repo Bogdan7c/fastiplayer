@@ -1,0 +1,28 @@
+# `gles2-video` + начало `render-gles2-shell`: SW-видео 8 бит, одна копия (сессия 05 плана gles2-renderer, 2026-10-24)
+
+Отчёт: `user/gles2-renderer/results/05.md`. Решение владельца 30 README: кадр программного декодера возвращается в пул ТОЛЬКО после fence кадра показа, где GPU его последний раз трогал — одно правило для копии/HW zero-copy/SW zero-copy (исполняет обёртка освобождения сессии 09). По спецификации ES 2.0 §2.1 «сразу после glTexSubImage2D» тоже корректно, но в 12 тот же HostPlanar-кадр может прийти копией или импортом.
+
+## `crates/gles2-video` (переиспользуемый; из workspace только `gles2-egui`; guardrail `GLES2_VIDEO_ALLOWED_DEPENDENCIES` = gles2-egui, glow, log, thiserror; dev — egui)
+- `planes`: свой словарь (`ChromaSubsampling`, `SampleDepth::Bits8`, `PlanarFrameUpload{key: VideoFrameKey, layout, luma_extent, luma/chroma_u/chroma_v: PlaneSource}`), `PlaneSource::{HostRows, DmaBuf}` (DmaBuf → `VideoUploadError::PlaneSourceUnsupported` до 07/12). `HostRows::new` принимает блок без хвоста последней строки (как `visible_plane_block` FFmpeg).
+- `upload_plan`: с `EXT_unpack_subimage` — 1 вызов с `UNPACK_ROW_LENGTH`; без — текстура шириной в stride и ДВА вызова (все строки кроме последней + последняя видимой частью: один вызов прочитал бы за концом блока). `UNPACK_ALIGNMENT=1`. `copied_bytes` = реально записанные в текстуру байты (с row length — без хвостов).
+- `ring`: `UploadRing<T, F: FenceProbe>` (чистый), `UploadSlotCount` ≥2, default 3; текущий слот не перезаписывается; тронутый работой без fence — занят; `Busy(AwaitingSubmittedWorkFence|GpuStillReading)`; ошибка fence — ошибка.
+- `color`: вся SDR-цепочка wgpu (нормализация 16/256 → матрица → насыщенность → контраст → 2^exposure → brightness → gain/offset) — ОДНА аффинная матрица 3×4 на кадр в f64 (`ColorTransform`), шаги раздельно `yuv_to_rgb`/`sdr_adjustment` для HDR в 06. Отличие от пошаговой f32 < 1e-5.
+- `program`: по программе на раскладку (`#define CHROMA_SUBSAMPLED_X/Y`); letterbox (`display_uv`) и поворот (`source_uv`) — в ВЕРШИННОМ шейдере (аффинно, интерполяция); фрагмент: зажим координаты до центра последнего видимого текселя (stride-текстура не подмешивает хвост; = CLAMP_TO_EDGE wgpu), co-sited цветность `floor(luma_texel/2)` только по прореженной оси, 3 dot + clamp. 8 векторов uniform-ов во фрагменте (минимум GLES2 — 16). Uniform-ы, которые раскладке не нужны, компилятор выкидывает → `Option` (`chroma_coord_scale_min` нет у 4:2:0, `chroma_texel_size` нет у 4:4:4).
+- `draw_uniforms` (чистый расчёт), `geometry` (`PixelRect` intersection/subtract, `uncovered_parts`, переворот Y), `textures`, `gl_calls` (единственный `unsafe`, проверка числа читаемых байт до драйвера, `glGetError` при выделении), `layer_api` (опции/ошибки/исходы/счётчики), `renderer` (`VideoLayerRenderer::{new, upload, draw, retire_submitted_work(Arc<GpuFence>), forget_uploaded_frames, stats, destroy}`), `underlay` (`VideoUnderlay` для `FrameLayers`).
+- Рисование: чёрная заливка только того, куда видео не рисует (дополнение видимых прямоугольников ∩ области); пиксели = полной заливке wgpu.
+
+## `crates/render-gles2-shell` (адаптер плеера; guardrail `RENDER_GLES2_SHELL_FORBIDDEN_DEPENDENCIES`: нет wgpu/render-wgpu-*/player-core/app-egui/video-vaapi/video-ffmpeg в normal)
+- `host_planar_frame_upload(&DecodedFrame, &FrameResourceDescriptor)` (без копии, через `validate_resource_descriptor_against_contract`), `VideoDrawPlan::for_frame(&RenderableFrame, VideoPlacement, &ColorPipelineSettings)` (clamp → `RenderViewport::visible_parts` → `PictureLayout::fit_frame` → `ActiveColorPath` + подмена fallback на SDR BT.709 limited как wgpu), `renderable_frame`, `gles2_render_capabilities` (3 контракта SW 8 бит; без highp предел 2048).
+- `render-core::RenderViewport::visible_parts` — общий источник разбиения для wgpu и GLES2 (wgpu `visible_video_draw_rects` делегирует).
+
+## Тесты
+- `cargo test -p gles2-video` (34 unit + 18 EGL: цвет/ручки против CPU-транскрипции wgpu, поворот, letterbox, сайдбар, co-sited, хвост stride, кольцо Busy/reuse, отказы, подложка под egui), `cargo test -p render-gles2-shell` (11 + функциональный кадр→экран).
+- Паритет: `cargo test -p render-wgpu-shell software_video_frames_match` (настоящий wgpu-материализатор + `WgpuVideoRenderer` против адаптера+видеослоя, 9 сцен, max Δ 1).
+- FFmpeg: `cargo test -p video-ffmpeg --features vendored-ffmpeg --test gles2_host_upload` (VP9 176×100, каждый пиксель ±1, кадры потоково возвращаются по fence; держать все кадры нельзя — пул декодера 8, хвост DPB ждёт освобождений).
+- Тестовые бинари гонялись на T410 (crocus): fixture FFmpeg-теста ищется по абсолютному пути компиляции (`env!(CARGO_MANIFEST_DIR)`), на T410 fixture кладётся по тому же пути, что `<REPO_ROOT>` машины сборки.
+
+## Замер (стенд `video-ffmpeg/examples/gles2_upload_bench.rs`: `--codec h264|vp9 --input raw.h264|.ivf`, `--pace-hz`, `--gpu-probe N`, `--stride-wide`, `--luminance`; LD_LIBRARY_PATH=target/release/lib)
+- GPU-проход 1440×900 на T410: 21,2 → 11,8 мс (причина первой версии по `MESA_SHADER_CACHE_DISABLE=true INTEL_DEBUG=fs`: 3 выборки по очереди из-за адресов, посчитанных в шейдере, + ветвления по uniform-ам; `exp2`/деления — мелочь). Полная заливка — 2,2 мс. 780M — 0,12 мс.
+- Загрузка (главный поток): T410 1080p 4:2:0 2,4 мс CPU (копия crocus — CPU нашего потока, ~1 ГБ/с, INTEL_DEBUG=perf молчит; функцию даст perf в 11), 4K 13,6 мс, 720p 0,86 мс; 780M 1080p 0,38 мс по часам / 0,07 CPU потока (radeonsi копирует в своём потоке).
+- T410 720p60 при 60 Гц — 60,1 к/с, 0 Busy. Отстающий стенд (декодер медленнее темпа) показывает кадры пачками → Busy кольца честный; плеер показывает по PTS.
+- Для 09: пропускать заливку фона `FrameCompositor`, когда видео накрывает цель (−2,2 мс GPU на T410).

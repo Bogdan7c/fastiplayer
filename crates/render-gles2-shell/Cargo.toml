@@ -1,0 +1,33 @@
+[package]
+name = "render-gles2-shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Адаптер плеера к своему рендеру OpenGL ES 2.0: кадры декодера → плоскости gles2-video, план рисования из render-core, возможности рендера"
+
+# Другая реализация того же шва «приложение ↔ рендер», что wgpu-шелл (план
+# user/gles2-renderer/, сессии 05–09). Не видит wgpu, плеер, приложение и конкретные декодеры:
+# это проверяет scripts/check-refactor-guardrails.py.
+[dependencies]
+# Метаданные кадра (поворот, цвет) из декодера.
+codec-core.workspace = true
+# Контекст GLES2 и найденные возможности драйвера.
+gles2-egui.workspace = true
+# Видеослой: плоскости, кольцо текстур, цвет.
+gles2-video.workspace = true
+# Нейтральные правила рендера плеера: letterbox, исключения, цветовой путь, возможности.
+render-core.workspace = true
+# Типизированные ошибки адаптера.
+thiserror.workspace = true
+# Кадр декодера и его дескриптор ресурса.
+video-core.workspace = true
+# Словарь раскладок и контрактов кадра.
+video-frame-contract.workspace = true
+
+[dev-dependencies]
+# Ошибки своего владельца памяти кадра в функциональном тесте (трейт `HostPlanarFrameOwner`).
+anyhow.workspace = true
+
+[lints]
+workspace = true

@@ -61,3 +61,28 @@ fn render_viewport_subtract_returns_no_rects_when_fully_excluded() {
 
     assert!(viewport.subtract(viewport).is_empty());
 }
+
+#[test]
+fn visible_parts_subtract_every_exclusion_and_ignore_outside_ones() {
+    let viewport = RenderViewport::new(0, 0, 100, 50);
+    let sidebar = RenderViewport::new(0, 0, 30, 50);
+    let outside = RenderViewport::new(200, 200, 10, 10);
+
+    assert_eq!(viewport.visible_parts(&[]), vec![viewport]);
+    assert_eq!(viewport.visible_parts(&[outside]), vec![viewport]);
+    assert_eq!(
+        viewport.visible_parts(&[sidebar, outside]),
+        vec![RenderViewport::new(30, 0, 70, 50)]
+    );
+    // Второе исключение режет уже оставшуюся часть: сверху справа квадрат 20×10.
+    let corner = RenderViewport::new(80, 0, 20, 10);
+    assert_eq!(
+        viewport.visible_parts(&[sidebar, corner]),
+        vec![
+            RenderViewport::new(30, 10, 70, 40),
+            RenderViewport::new(30, 0, 50, 10),
+        ]
+    );
+    // Исключение на весь viewport — рисовать нечего.
+    assert_eq!(viewport.visible_parts(&[viewport]), Vec::new());
+}

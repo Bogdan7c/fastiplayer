@@ -179,10 +179,42 @@ GLES2_EGUI_ALLOWED_DEPENDENCIES = frozenset(
         "wayland-sys",
     }
 )
+# Переиспользуемый видеослой GLES2 (сессия 05 плана user/gles2-renderer/): YUV-плоскости, кольцо
+# текстур, цвет. Из workspace — только `gles2-egui` (контекст, кадр, fence, слой кадра), снаружи —
+# `glow` и мелкие утилиты. Словарь кадра свой, не `video-core`.
+GLES2_VIDEO_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "gles2-egui",
+        "glow",
+        "log",
+        "thiserror",
+    }
+)
 # Переиспользуемые GLES2-crate-ы не зависят ни от одного crate-а workspace, кроме своих `gles2-*`,
 # даже в dev-dependencies (иначе тесты притянули бы плеер в чужое приложение).
-REUSABLE_GLES2_CRATES = frozenset({"gles2-egui"})
+REUSABLE_GLES2_CRATES = frozenset({"gles2-egui", "gles2-video"})
 REUSABLE_GLES2_WORKSPACE_PREFIX = "gles2-"
+
+# Адаптер плеера к GLES2-рендеру (`render-gles2-shell`, сессии 05–09): переводит дескрипторы
+# `video-core` в словарь `gles2-video`, объявляет `RenderCapabilities`. Он — другая реализация
+# того же шва, что wgpu-шелл, поэтому не видит wgpu и wgpu-рендер, а также плеер, приложение и
+# конкретные декодеры (кадры приходят нейтральными дескрипторами). Dev-зависимость на декодер
+# допустима только для функциональных тестов (как у wgpu-рендера).
+RENDER_GLES2_SHELL_FORBIDDEN_DEPENDENCIES = frozenset(
+    {
+        "app-egui",
+        "ash",
+        "egui-wgpu",
+        "player-core",
+        "render-wgpu-shell",
+        "render-wgpu-video",
+        "video-ffmpeg",
+        "video-vaapi",
+        "wgpu",
+        "wgpu-hal",
+        "wgpu-types",
+    }
+)
 
 # Будущие crate-ы своего рендера GLES2 (`gles2-egui`, `gles2-video`, `render-gles2-shell`,
 # сессии 03–09 плана user/gles2-renderer/) перечислены в forbidden-наборах ниже: нейтральные
@@ -721,9 +753,10 @@ VIDEO_BACKEND_FORBIDDEN_DEPENDENCIES = frozenset(
     }
 )
 
-# Normal-зависимости render-wgpu-shell. GLES2-crate-ы здесь запрещены; dev-зависимость на
-# `gles2-egui` — осознанное исключение (решение владельца 28, сессия 04 плана gles2-renderer):
-# пиксельный паритет сравнивает настоящий wgpu-художник с GLES2 в тестах шелла, без копий.
+# Normal-зависимости render-wgpu-shell. GLES2-crate-ы здесь запрещены; dev-зависимости на
+# `gles2-egui` (сессия 04), `gles2-video` и `render-gles2-shell` (сессия 05) — осознанное
+# исключение (решение владельца 28 плана gles2-renderer): пиксельный паритет интерфейса и видео
+# сравнивает настоящий wgpu-путь с GLES2 в тестах шелла, без копий.
 RENDER_WGPU_SHELL_FORBIDDEN_DEPENDENCIES = frozenset(
     {
         "audio",
@@ -1368,6 +1401,22 @@ def find_dependency_violations(
             frozenset({"gles2-egui"}),
             GLES2_EGUI_ALLOWED_DEPENDENCIES,
             "gles2-egui is a reusable GLES2 renderer: only glow/khronos-egl/wayland-sys, epaint and small utilities",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"gles2-video"}),
+            GLES2_VIDEO_ALLOWED_DEPENDENCIES,
+            "gles2-video is a reusable GLES2 video layer: only gles2-egui, glow and small utilities",
+        )
+    )
+    violations.extend(
+        find_forbidden_dependencies(
+            dependency_map,
+            frozenset({"render-gles2-shell"}),
+            RENDER_GLES2_SHELL_FORBIDDEN_DEPENDENCIES,
+            "render-gles2-shell is the GLES2 side of the render seam: no wgpu, player, app or concrete decoders",
         )
     )
     violations.extend(find_reusable_gles2_workspace_dependencies(all_dependency_map))

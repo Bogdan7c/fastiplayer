@@ -57,6 +57,16 @@
 - Художнику передавать в egui `RawInput::max_texture_side = EguiPainter::max_texture_side()`. Текстура больше `GL_MAX_TEXTURE_SIZE` пропускается со счётчиком.
 - `FrameCompositor::destroy(&context)` — до разрушения контекста (иначе в лог уходит предупреждение об утечке до смерти контекста).
 
+## Наследство сессии 05 (`results/05.md`)
+
+- Видеослой: `gles2_video::VideoLayerRenderer`. Порядок: `upload` до кадра → `VideoUnderlay` в `UiFrameRequest.layers` → после `FrameCompositor::render` один fence кадра, `Arc<GpuFence>`. Этот fence отдаётся `retire_submitted_work` и им же освобождаются кадры декодера.
+- **Решение 30:** кадр декодера возвращается в пул только после fence кадра показа, в котором GPU его последний раз трогал, — для любого вида кадра. Обёртка освобождения строится по образцу `WgpuSubmittedResourceProvider` (`release_frame` откладывается до fence, ровно один раз; при потере контекста — сразу).
+- `Busy` кольца — как `Busy` пула wgpu: прошлый кадр остаётся, кадр декодера не освобождается, тот же кадр — на следующем показе. После смены декодера (ключи кадров начнутся заново) — `forget_uploaded_frames`.
+- Перевод кадра — `render_gles2_shell::host_planar_frame_upload`; где и как рисовать — `VideoDrawPlan::for_frame` (тот же `render-core`, что у wgpu); возможности — `gles2_render_capabilities`.
+- **Пропускать заливку фона `FrameCompositor`, когда видео накрывает цель:** видеослой сам заливает чёрным всё, куда не рисует. На T410 полная заливка — 2,2 мс GPU, а бюджет 1080p60 у края (проход 11,8 + загрузка ~1,8 + фон 2,2 ≈ 16 мс).
+- Стенд замера с настоящим FFmpeg без плеера — `video-ffmpeg/examples/gles2_upload_bench.rs`.
+
+
 ## Тесты (функциональные, результат, а не вызов)
 
 - Видео из фикстуры через GLES2 доходит до показа: headless EGL + реальный FFmpeg-декодер → `RenderFrameOutcome::Presented` с ожидаемым pts и пикселями кадра (не «декодер открылся»). Для HW — `#[ignore]` на машине с VA-API.

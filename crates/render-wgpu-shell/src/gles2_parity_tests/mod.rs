@@ -11,6 +11,7 @@
 //! провалом.
 
 mod scenes;
+mod video;
 mod wgpu_target;
 
 use gles2_egui::{
@@ -65,9 +66,9 @@ fn compare(wgpu_pixels: &[u8], gles2_pixels: &[u8], width: u32) -> ParityReport 
 }
 
 /// GLES2-контекст без окна (premultiplied-цель, чтобы работала маска углов) или пропуск.
-fn gles2_or_skip(test_name: &str, size: [u32; 2]) -> Option<Gles2Context> {
+fn gles2_or_skip(test_name: &str, size: [u32; 2], alpha: OffscreenAlpha) -> Option<Gles2Context> {
     let target = SurfaceSize::new(size[0], size[1]).expect("non-zero parity target");
-    match Gles2Context::offscreen_with_alpha(target, OffscreenAlpha::PremultipliedLayer) {
+    match Gles2Context::offscreen_with_alpha(target, alpha) {
         Ok(context) => Some(context),
         Err(
             error @ (CreateError::EglUnavailable { .. }
@@ -133,7 +134,8 @@ fn assert_parity(test_name: &str, size: [u32; 2], pixels_per_point: f32) {
         eprintln!("skip {test_name}: no wgpu adapter");
         return;
     };
-    let Some(mut context) = gles2_or_skip(test_name, size) else {
+    let Some(mut context) = gles2_or_skip(test_name, size, OffscreenAlpha::PremultipliedLayer)
+    else {
         return;
     };
     let mut compositor =

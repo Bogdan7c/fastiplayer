@@ -1,0 +1,27 @@
+[package]
+name = "gles2-video"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Переиспользуемый видеослой OpenGL ES 2.0: планарный YUV (4:2:0/4:2:2/4:4:4), загрузка с одной копией, кольцо текстур по fence, перевод YUV→RGB и цветокоррекция в шейдере"
+
+# Переиспользуемый crate (issue #6, план user/gles2-renderer/, сессия 05): ни одной зависимости
+# от crate-ов плеера, из workspace — только `gles2-*`. Это проверяет
+# scripts/check-refactor-guardrails.py.
+[dependencies]
+# Контекст GLES2, кадр, fence и слой кадра (`FrameLayers`), на котором рисуется видео.
+gles2-egui.workspace = true
+# Таблица функций OpenGL ES (только «провод» к драйверу, рисуем сами).
+glow.workspace = true
+# Диагностика: объект пережил контекст, отказ удаления.
+log.workspace = true
+# Типизированные ошибки загрузки и рисования.
+thiserror.workspace = true
+
+[dev-dependencies]
+# Настоящий кадр egui поверх видео в тесте сборки кадра (подложка под интерфейсом).
+egui.workspace = true
+
+[lints]
+workspace = true

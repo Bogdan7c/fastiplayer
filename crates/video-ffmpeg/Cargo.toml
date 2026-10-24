@@ -37,6 +37,12 @@ optional = true
 
 [dev-dependencies]
 bytes.workspace = true
+# Функциональный тест и стенд замера GLES2-пути (сессия 05 плана gles2-renderer): настоящие кадры
+# FFmpeg через адаптер плеера доходят до экрана видеослоя. Только dev-зависимости: normal-
+# зависимость декодера на рендер запрещает guardrail.
+gles2-egui.workspace = true
+gles2-video.workspace = true
+render-gles2-shell.workspace = true
 demux-api.workspace = true
 media-core.workspace = true
 mpeg-ts-demux.workspace = true
@@ -46,6 +52,12 @@ render-wgpu-video.workspace = true
 source-core.workspace = true
 static_assertions = "1.1"
 wgpu.workspace = true
+
+# Стенд замера GLES2-пути программного декода (сессия 05 плана gles2-renderer): стоимость
+# загрузки кадра на главном потоке с настоящим FFmpeg. Только с закреплённым FFmpeg.
+[[example]]
+name = "gles2_upload_bench"
+required-features = ["vendored-ffmpeg"]
 
 [build-dependencies]
 pkg-config = "0.3"

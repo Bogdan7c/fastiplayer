@@ -12,8 +12,31 @@ use crate::window_corner_mask::{SurfaceAlphaEncoding, WindowCornerMaskRenderer};
 
 use super::scenes::ParityFrame;
 
-const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+pub(super) const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const GPU_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Headless wgpu-устройство паритета: тот же Vulkan-instance, что у production (сессия 04,
+/// дефект 3: GL-бэкенд wgpu делил бы `EGLDisplay` с GLES2). `None` — нет адаптера.
+pub(super) fn parity_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    let instance = crate::shell::gpu_context::vulkan_instance();
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::LowPower,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+        apply_limit_buckets: false,
+    }))
+    .ok()?;
+    let device_and_queue = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("gles2 parity wgpu device"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
+        memory_hints: wgpu::MemoryHints::MemoryUsage,
+        trace: wgpu::Trace::Off,
+        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+    }))
+    .expect("create parity wgpu device");
+    Some(device_and_queue)
+}
 
 /// Headless wgpu + цель + художник и маска шелла.
 pub(super) struct WgpuParityTarget {
@@ -29,23 +52,7 @@ pub(super) struct WgpuParityTarget {
 impl WgpuParityTarget {
     /// `None` — нет GPU-адаптера (тест пропускается с сообщением).
     pub(super) fn new(size: [u32; 2]) -> Option<Self> {
-        let instance = crate::shell::gpu_context::vulkan_instance();
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-            apply_limit_buckets: false,
-        }))
-        .ok()?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("gles2 parity wgpu device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
-            memory_hints: wgpu::MemoryHints::MemoryUsage,
-            trace: wgpu::Trace::Off,
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        }))
-        .expect("create parity wgpu device");
+        let (device, queue) = parity_device()?;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gles2 parity wgpu target"),
             size: wgpu::Extent3d {
@@ -160,61 +167,85 @@ impl WgpuParityTarget {
         encoder
     }
 
-    fn read_back(&self, mut encoder: wgpu::CommandEncoder) -> Vec<u8> {
-        let [width, height] = self.size;
-        let bytes_per_row = width * 4;
-        let padded = bytes_per_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("gles2 parity wgpu readback"),
-            size: u64::from(padded) * u64::from(height),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-        let submission = self.queue.submit([encoder.finish()]);
-        let slice = readback.slice(..);
-        let (sender, receiver) = mpsc::sync_channel(1);
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            sender.send(result).expect("send readback result");
-        });
-        self.device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(submission),
-                timeout: Some(GPU_TIMEOUT),
-            })
-            .expect("wait for GPU");
-        receiver
-            .recv_timeout(GPU_TIMEOUT)
-            .expect("readback callback")
-            .expect("map readback");
-        let mapped = slice.get_mapped_range().expect("mapped range");
-        let pixels = mapped
-            .chunks_exact(padded as usize)
-            .flat_map(|row| row[..bytes_per_row as usize].iter().copied())
-            .collect::<Vec<_>>();
-        drop(mapped);
-        readback.unmap();
-        pixels
+    fn read_back(&self, encoder: wgpu::CommandEncoder) -> Vec<u8> {
+        read_back_texture(&self.device, &self.queue, &self.texture, self.size, encoder)
     }
+}
+
+/// Отправить `encoder` вместе с копией `texture` в буфер и вернуть плотные RGBA8 строки сверху
+/// вниз (отступы строк копии `COPY_BYTES_PER_ROW_ALIGNMENT` срезаются).
+pub(super) fn read_back_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    size: [u32; 2],
+    encoder: wgpu::CommandEncoder,
+) -> Vec<u8> {
+    read_back_texture_after(device, queue, texture, size, Vec::new(), encoder)
+}
+
+/// То же, но сначала отправляются `preceding` (например, копия загрузки кадра) — одним submit-ом.
+pub(super) fn read_back_texture_after(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    size: [u32; 2],
+    preceding: Vec<wgpu::CommandBuffer>,
+    mut encoder: wgpu::CommandEncoder,
+) -> Vec<u8> {
+    let [width, height] = size;
+    let bytes_per_row = width * 4;
+    let padded = bytes_per_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("gles2 parity wgpu readback"),
+        size: u64::from(padded) * u64::from(height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    let submission = queue.submit(preceding.into_iter().chain([encoder.finish()]));
+    let slice = readback.slice(..);
+    let (sender, receiver) = mpsc::sync_channel(1);
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        sender.send(result).expect("send readback result");
+    });
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: Some(GPU_TIMEOUT),
+        })
+        .expect("wait for GPU");
+    receiver
+        .recv_timeout(GPU_TIMEOUT)
+        .expect("readback callback")
+        .expect("map readback");
+    let mapped = slice.get_mapped_range().expect("mapped range");
+    let pixels = mapped
+        .chunks_exact(padded as usize)
+        .flat_map(|row| row[..bytes_per_row as usize].iter().copied())
+        .collect::<Vec<_>>();
+    drop(mapped);
+    readback.unmap();
+    pixels
 }

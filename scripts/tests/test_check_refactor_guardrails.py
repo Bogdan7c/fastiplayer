@@ -981,6 +981,94 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_gles2_video_stays_reusable_on_top_of_gles2_egui_only(self) -> None:
+        """Видеослой GLES2 видит из workspace только `gles2-egui`, словарь кадра — свой."""
+
+        packages = complete_workspace_packages()
+        packages["gles2-video"] = package_with_dependencies(
+            "gles2-video",
+            tuple(
+                (dependency, None)
+                for dependency in sorted(GUARDRAIL.GLES2_VIDEO_ALLOWED_DEPENDENCIES)
+            )
+            + (("egui", "dev"),),
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "gles2-video"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        for forbidden in ("video-core", "render-core", "wgpu", "khronos-egl", "player-core"):
+            packages["gles2-video"] = package_with_dependencies(
+                "gles2-video", (("gles2-egui", None), (forbidden, None))
+            )
+            failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+                packages, frozenset()
+            )
+            self.assertTrue(
+                any(
+                    violation.owner == "gles2-video" and violation.dependency == forbidden
+                    for violation in failing_result.dependency_violations
+                ),
+                forbidden,
+            )
+
+        # Тесты видеослоя тоже не тащат плеер: dev-зависимость на crate плеера — нарушение.
+        packages["gles2-video"] = package_with_dependencies(
+            "gles2-video", (("gles2-egui", None), ("video-core", "dev"))
+        )
+        dev_result = GUARDRAIL.evaluate_dependency_graph_policies(packages, frozenset())
+        self.assertTrue(
+            any(
+                violation.owner == "gles2-video" and violation.dependency == "video-core"
+                for violation in dev_result.dependency_violations
+            )
+        )
+
+    def test_render_gles2_shell_stays_on_its_side_of_the_render_seam(self) -> None:
+        """Адаптер GLES2 берёт нейтральные контракты и GLES2-crate-ы, но не wgpu, плеер и декодеры."""
+
+        packages = complete_workspace_packages()
+        packages["render-gles2-shell"] = package_with_dependencies(
+            "render-gles2-shell",
+            (
+                ("gles2-egui", None),
+                ("gles2-video", None),
+                ("render-core", None),
+                ("video-core", None),
+                ("video-ffmpeg", "dev"),
+            ),
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "render-gles2-shell"
+                for violation in passing_result.dependency_violations
+            )
+        )
+        for forbidden in sorted(GUARDRAIL.RENDER_GLES2_SHELL_FORBIDDEN_DEPENDENCIES):
+            packages["render-gles2-shell"] = package_with_dependencies(
+                "render-gles2-shell", (("gles2-video", None), (forbidden, None))
+            )
+            failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+                packages, frozenset()
+            )
+            self.assertTrue(
+                any(
+                    violation.owner == "render-gles2-shell"
+                    and violation.dependency == forbidden
+                    for violation in failing_result.dependency_violations
+                ),
+                forbidden,
+            )
+
     def test_neutral_and_wgpu_crates_reject_future_gles2_renderer(self) -> None:
         """Нейтральные контракты, плеер, декодеры и wgpu-рендер не зависят от GLES2-crate-ов."""
 
