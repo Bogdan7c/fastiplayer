@@ -10,6 +10,9 @@
 //! letterbox, поворот, исключение под сайдбаром, BT.601/709, limited/full, все ручки
 //! цветокоррекции, stride с хвостом и текстуру шириной в stride (путь без `unpack_subimage`).
 //! Допуск ±2 на канал; пиксели за допуском — провал с координатой и обоими значениями.
+//!
+//! Стенд общий с паритетом 10/12 бит и HDR (`video_high_bit.rs`, сессия 06): кадры любой
+//! разрядности строятся одним узором, у сцены — свои настройки HDR → SDR.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -18,7 +21,9 @@ use std::time::Duration;
 use codec_core::{ColorRange, MatrixCoefficients, VideoColorMetadata, VideoDisplayOrientation};
 use gles2_egui::{FrameStart, OffscreenAlpha};
 use gles2_video::{RowLengthPreference, UploadOutcome, VideoLayerOptions, VideoLayerRenderer};
-use render_core::{ColorAdjustment, ColorPipelineSettings, RenderViewport};
+use render_core::{
+    ColorAdjustment, ColorPipelineSettings, HdrToSdrSettings, RenderLiveSettings, RenderViewport,
+};
 use render_gles2_shell::{
     VideoDrawPlan, VideoPlacement, host_planar_frame_upload, renderable_frame,
 };
@@ -40,17 +45,18 @@ use super::wgpu_target::{TARGET_FORMAT, parity_device, read_back_texture_after};
 use super::{CHANNEL_TOLERANCE, compare, gles2_or_skip};
 
 /// Сцена паритета: кадр, его размещение и настройки цвета.
-struct VideoScene {
-    name: &'static str,
-    layout: VideoFramePixelLayout,
-    frame_size: [u32; 2],
-    /// Байт мусора в конце каждой строки (stride больше видимой части).
-    row_tail: usize,
-    orientation: VideoDisplayOrientation,
-    color: VideoColorMetadata,
-    adjustment: ColorAdjustment,
-    exclusions: Vec<RenderViewport>,
-    gles2_row_length: RowLengthPreference,
+pub(super) struct VideoScene {
+    pub(super) name: &'static str,
+    pub(super) layout: VideoFramePixelLayout,
+    pub(super) frame_size: [u32; 2],
+    /// Отсчётов мусора в конце каждой строки (stride больше видимой части).
+    pub(super) row_tail: usize,
+    pub(super) orientation: VideoDisplayOrientation,
+    pub(super) color: VideoColorMetadata,
+    pub(super) adjustment: ColorAdjustment,
+    pub(super) hdr_to_sdr: HdrToSdrSettings,
+    pub(super) exclusions: Vec<RenderViewport>,
+    pub(super) gles2_row_length: RowLengthPreference,
 }
 
 /// Отсчёт плоскости: гладкие градиенты (проверяют билинейную яркость) и резкая клетка
@@ -72,10 +78,39 @@ fn sample(role: HostPlaneRole, x: u32, y: u32) -> u8 {
 
 fn chroma_size(layout: VideoFramePixelLayout, [width, height]: [u32; 2]) -> [u32; 2] {
     match layout {
-        VideoFramePixelLayout::Yuv420Planar8 => [width.div_ceil(2), height.div_ceil(2)],
-        VideoFramePixelLayout::Yuv422Planar8 => [width.div_ceil(2), height],
+        VideoFramePixelLayout::Yuv420Planar8
+        | VideoFramePixelLayout::Yuv420Planar10Le
+        | VideoFramePixelLayout::Yuv420Planar12Le => [width.div_ceil(2), height.div_ceil(2)],
+        VideoFramePixelLayout::Yuv422Planar8
+        | VideoFramePixelLayout::Yuv422Planar10Le
+        | VideoFramePixelLayout::Yuv422Planar12Le => [width.div_ceil(2), height],
         _ => [width, height],
     }
+}
+
+/// Значащих бит отсчёта раскладки сцены.
+fn sample_bits(layout: VideoFramePixelLayout) -> u32 {
+    match layout {
+        VideoFramePixelLayout::Yuv420Planar10Le
+        | VideoFramePixelLayout::Yuv422Planar10Le
+        | VideoFramePixelLayout::Yuv444Planar10Le => 10,
+        VideoFramePixelLayout::Yuv420Planar12Le | VideoFramePixelLayout::Yuv422Planar12Le => 12,
+        _ => 8,
+    }
+}
+
+/// Байты отсчёта: 8 бит — сам узор; 10/12 — узор в старших битах и меняющиеся младшие биты
+/// (проверяют, что младший байт пары доходит до цвета), 16-битное слово LE.
+fn sample_bytes(layout: VideoFramePixelLayout, role: HostPlaneRole, x: u32, y: u32) -> Vec<u8> {
+    let bits = sample_bits(layout);
+    let base = u32::from(sample(role, x, y));
+    if bits == 8 {
+        return vec![sample(role, x, y)];
+    }
+    let shift = bits - 8;
+    let low_bits = (x * 3 + y * 5) % (1 << shift);
+    let code = u16::try_from((base << shift) | low_bits).unwrap_or(u16::MAX);
+    code.to_le_bytes().to_vec()
 }
 
 /// Кадр декодера сцены: плоскости как у FFmpeg (блок кончается на видимой части последней
@@ -86,6 +121,7 @@ fn decoded_scene_frame(
 ) -> (DecodedFrame, HostPlanarFrameDescriptor) {
     let [width, height] = scene.frame_size;
     let [chroma_width, chroma_height] = chroma_size(scene.layout, scene.frame_size);
+    let bytes_per_sample = if sample_bits(scene.layout) == 8 { 1 } else { 2 };
     let mut bytes = Vec::new();
     let mut planes = Vec::new();
     for (role, plane_width, plane_height) in [
@@ -95,18 +131,20 @@ fn decoded_scene_frame(
     ] {
         let offset = bytes.len();
         for row in 0..plane_height {
-            bytes.extend((0..plane_width).map(|x| sample(role, x, row)));
+            for x in 0..plane_width {
+                bytes.extend(sample_bytes(scene.layout, role, x, row));
+            }
             if row + 1 < plane_height {
-                bytes.extend(std::iter::repeat_n(0xFF, scene.row_tail));
+                bytes.extend(std::iter::repeat_n(0xFF, scene.row_tail * bytes_per_sample));
             }
         }
         planes.push(HostPlaneDescriptor {
             role,
             offset,
-            stride: plane_width as usize + scene.row_tail,
+            stride: (plane_width as usize + scene.row_tail) * bytes_per_sample,
             visible_width: plane_width,
             visible_height: plane_height,
-            bytes_per_sample: 1,
+            bytes_per_sample,
         });
     }
     let frame = DecodedFrame {
@@ -177,7 +215,7 @@ fn color_settings(adjustment: ColorAdjustment) -> ColorPipelineSettings {
 }
 
 /// wgpu-сторона: настоящий материализатор и видеорендер, цель `Rgba8Unorm`.
-fn render_wgpu(scene: &VideoScene, size: [u32; 2]) -> Option<Vec<u8>> {
+pub(super) fn render_wgpu(scene: &VideoScene, size: [u32; 2]) -> Option<Vec<u8>> {
     let (device, queue) = parity_device()?;
     let handle = FrameResourceHandle(1);
     let (frame, descriptor) = decoded_scene_frame(scene, handle);
@@ -198,6 +236,7 @@ fn render_wgpu(scene: &VideoScene, size: [u32; 2]) -> Option<Vec<u8>> {
     let mut renderer = WgpuVideoRenderer::new(&device, TARGET_FORMAT);
     renderer.resize(size[0], size[1]);
     renderer.set_color_pipeline_settings(color_settings(scene.adjustment));
+    renderer.set_hdr_to_sdr_settings(scene.hdr_to_sdr);
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("gles2 video parity wgpu target"),
         size: wgpu::Extent3d {
@@ -237,7 +276,7 @@ fn render_wgpu(scene: &VideoScene, size: [u32; 2]) -> Option<Vec<u8>> {
 }
 
 /// GLES2-сторона: адаптер плеера и видеослой.
-fn render_gles2(scene: &VideoScene, size: [u32; 2]) -> Option<Vec<u8>> {
+pub(super) fn render_gles2(scene: &VideoScene, size: [u32; 2]) -> Option<Vec<u8>> {
     let mut context = gles2_or_skip(scene.name, size, OffscreenAlpha::Opaque)?;
     let (frame, descriptor) = decoded_scene_frame(scene, FrameResourceHandle(1));
     let descriptor = FrameResourceDescriptor::HostPlanar(descriptor);
@@ -263,7 +302,11 @@ fn render_gles2(scene: &VideoScene, size: [u32; 2]) -> Option<Vec<u8>> {
             video_viewport: RenderViewport::full_surface(size[0], size[1]),
             exclusions: &scene.exclusions,
         },
-        &color_settings(scene.adjustment),
+        &RenderLiveSettings {
+            color_pipeline: color_settings(scene.adjustment),
+            hdr_to_sdr: scene.hdr_to_sdr,
+            ..RenderLiveSettings::default()
+        },
     )
     .expect("draw plan");
     match context.begin_frame().expect("GLES2 frame") {
@@ -300,6 +343,7 @@ fn scenes() -> Vec<VideoScene> {
         orientation: VideoDisplayOrientation::Identity,
         color: sdr_709_limited.clone(),
         adjustment: ColorAdjustment::identity(),
+        hdr_to_sdr: HdrToSdrSettings::default(),
         exclusions: Vec::new(),
         gles2_row_length: RowLengthPreference::BestAvailable,
     };

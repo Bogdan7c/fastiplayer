@@ -9,23 +9,25 @@
 //!    [`VideoLayerRenderer::retire_submitted_work`] с fence этого кадра (`Gles2Context::insert_fence`).
 //!    Один fence на кадр показа: он же охраняет и кадр декодера у вызывающего.
 //!
-//! Владение: рендер владеет программой, буфером вершин и текстурами кольца; байты кадра он
-//! только читает во время `upload` и не хранит.
+//! Владение: рендер владеет программами, буфером вершин, текстурами кольца и текстурой таблицы
+//! HDR → SDR; байты кадра он только читает во время `upload` и не хранит.
 
 use std::sync::Arc;
 
 use gles2_egui::{ActiveFrame, ContextId, Gles2Context, GpuFence};
 
 use crate::draw_uniforms::{DrawUniformValues, PlaneSampling};
+use crate::frame_color::{ColorUniformValues, FrameColorPlan, plan_frame_color};
 use crate::geometry::{PixelRect, to_gl_window_rect, uncovered_parts};
 use crate::gl_calls::{PlaneTextureFormat, VideoGl};
+use crate::hdr_table_texture::{HdrTableReadiness, HdrTableTexture};
 use crate::layer_api::{
     PlaneFormatPreference, RowLengthPreference, UploadOutcome, UploadReport, VideoDrawError,
     VideoDrawOutcome, VideoDrawRequest, VideoLayerError, VideoLayerOptions, VideoLayerStats,
     VideoUploadError,
 };
 use crate::planes::{
-    ChromaSubsampling, FrameLayoutError, PlanarFrameUpload, PlaneRole, PlaneSource,
+    FrameLayoutError, PlanarFrameUpload, PlanarLayout, PlaneRole, PlaneSource, SampleDepth,
     validate_host_plane,
 };
 use crate::program::{FULLSCREEN_TRIANGLE, ShaderPrecision, VideoProgram, VideoPrograms};
@@ -40,8 +42,12 @@ pub struct VideoLayerRenderer {
     programs: VideoPrograms,
     vertex_buffer: glow::NativeBuffer,
     ring: UploadRing<PlaneTextureSet, GpuFence>,
+    /// Формат 8-битных плоскостей (`RedExt` или `Luminance`); 10/12 бит — всегда
+    /// `LuminanceAlpha`.
     plane_format: PlaneTextureFormat,
     row_length: RowLengthSupport,
+    /// Таблица HDR → SDR; создаётся при первом HDR-кадре.
+    hdr_table: Option<HdrTableTexture>,
     max_texture_size: u32,
     stats: VideoLayerStats,
     destroyed: bool,
@@ -95,6 +101,7 @@ impl VideoLayerRenderer {
             ring: UploadRing::new(options.upload_slots),
             plane_format,
             row_length,
+            hdr_table: None,
             max_texture_size,
             stats: VideoLayerStats::default(),
             destroyed: false,
@@ -107,10 +114,20 @@ impl VideoLayerRenderer {
         self.programs.precision
     }
 
-    /// Формат текстур плоскостей, который выбран для этого драйвера.
+    /// Формат текстур 8-битных плоскостей, который выбран для этого драйвера.
     #[must_use]
     pub const fn plane_texture_format(&self) -> PlaneTextureFormat {
         self.plane_format
+    }
+
+    /// Формат текстур плоскостей разрядности `depth`.
+    #[must_use]
+    pub const fn plane_texture_format_for(&self, depth: SampleDepth) -> PlaneTextureFormat {
+        if depth.is_high_bit() {
+            PlaneTextureFormat::LuminanceAlpha
+        } else {
+            self.plane_format
+        }
     }
 
     /// Накопленные счётчики.
@@ -181,9 +198,13 @@ impl VideoLayerRenderer {
         if frame.luma_extent.is_empty() {
             return Err(VideoUploadError::Layout(FrameLayoutError::EmptyFrame));
         }
+        let depth = frame.layout.depth;
+        if depth.is_high_bit() && !self.programs.precision.supports_high_bit_depth() {
+            return Err(VideoUploadError::HighBitDepthNeedsHighPrecision { depth });
+        }
         let [(luma_role, luma), (u_role, chroma_u), (v_role, chroma_v)] = frame.planes();
         Ok(PreparedFrame {
-            chroma: frame.layout.chroma,
+            layout: frame.layout,
             planes: [
                 self.prepare_plane(frame, luma_role, luma)?,
                 self.prepare_plane(frame, u_role, chroma_u)?,
@@ -241,7 +262,7 @@ impl VideoLayerRenderer {
         slot: WritableSlot,
         prepared: &PreparedFrame<'_>,
     ) -> Result<UploadReport, VideoUploadError> {
-        let plane_format = self.plane_format;
+        let plane_format = self.plane_texture_format_for(prepared.layout.depth);
         let ring_slot = self
             .ring
             .slot_mut(slot)
@@ -268,7 +289,7 @@ impl VideoLayerRenderer {
             report.copied_bytes += plane.plan.copied_bytes();
             plane_texture.visible = plane.plan.visible;
         }
-        textures.chroma = Some(prepared.chroma);
+        textures.layout = Some(prepared.layout);
         Ok(report)
     }
 
@@ -288,8 +309,13 @@ impl VideoLayerRenderer {
     /// VAO не тронут (контракт слоя кадра), scissor выключен, активен текстурный блок 0, viewport
     /// снова на всю цель.
     ///
+    /// Таблица HDR → SDR считается и загружается здесь же, когда её ключ (передаточная функция,
+    /// уровни) отличается от загруженного: на смене настроек, а не на кадр
+    /// ([`VideoLayerStats::hdr_table_builds`]).
+    ///
     /// # Errors
-    /// [`VideoDrawError`]: чужой контекст, прямоугольник вне координат GL.
+    /// [`VideoDrawError`]: чужой контекст, прямоугольник вне координат GL, HDR для 8-битного
+    /// кадра, отказ текстуры таблицы. Все проверки — до записи в цель.
     pub fn draw(
         &mut self,
         frame: &ActiveFrame<'_>,
@@ -308,10 +334,17 @@ impl VideoLayerRenderer {
         };
         let full_target = to_gl_window_rect(target_rect, target_height)?;
         let viewport = to_gl_window_rect(request.viewport, target_height)?;
-        let current = self
+        // Цвет выбирается до любой записи в цель: несовместимый запрос не оставляет полкадра.
+        let current = match self
             .ring
             .current_textures()
-            .and_then(|textures| textures.chroma.map(|chroma| (textures, chroma)));
+            .and_then(|textures| textures.layout.map(|layout| (textures, layout)))
+        {
+            Some((textures, layout)) => {
+                Some((textures, layout, plan_frame_color(layout, request.color)?))
+            }
+            None => None,
+        };
         // Видео рисует каждый пиксель своих прямоугольников (полосы letterbox — тоже, чёрным),
         // поэтому чёрная заливка нужна только там, куда видео не рисует: под исключениями и
         // вне области. Пиксели те же, что у полной заливки wgpu, а GPU не заливает цель
@@ -334,6 +367,25 @@ impl VideoLayerRenderer {
             .collect::<Result<Vec<_>, _>>()?;
 
         let gl = VideoGl::for_active_frame(frame);
+        let hdr_table = match current.as_ref().and_then(|(_, _, color)| color.hdr_table) {
+            Some(required) => {
+                let (texture, readiness) = HdrTableTexture::ensure(
+                    &mut self.hdr_table,
+                    gl,
+                    required,
+                    self.max_texture_size,
+                )?;
+                if readiness == HdrTableReadiness::Built {
+                    self.stats.hdr_table_builds += 1;
+                }
+                Some(texture)
+            }
+            None => None,
+        };
+        let program = match &current {
+            Some((_, layout, color)) => Some(self.program_for(*layout, color)?),
+            None => None,
+        };
         gl.set_opaque_video_state();
         for clear_rect in uncovered {
             gl.enable_scissor();
@@ -341,17 +393,16 @@ impl VideoLayerRenderer {
             gl.clear_opaque_black();
         }
         gl.disable_scissor();
-        let Some((textures, chroma)) = current else {
+        let (Some((textures, layout, color)), Some(program)) = (current, program) else {
             return Ok(VideoDrawOutcome::ClearedWithoutFrame);
         };
         if scissors.is_empty() {
             return Ok(VideoDrawOutcome::ClearedNothingVisible);
         }
 
-        let program = self.programs.for_layout(chroma);
         gl.use_program(Some(program.program));
-        set_frame_uniforms(gl, program, textures, request);
-        gl.bind_plane_textures(textures.textures());
+        set_frame_uniforms(gl, program, textures, layout, request, color.uniforms);
+        gl.bind_plane_textures(textures.textures(), hdr_table);
         gl.bind_vertex_positions(self.vertex_buffer, program.position_attribute);
         gl.viewport(viewport);
         gl.enable_scissor();
@@ -368,6 +419,20 @@ impl VideoLayerRenderer {
         let draw_calls = u32::try_from(scissors.len()).unwrap_or(u32::MAX);
         self.stats.draw_calls += u64::from(draw_calls);
         Ok(VideoDrawOutcome::Drawn { draw_calls })
+    }
+
+    /// Программа выбранного варианта. Варианта 10/12 бит нет только без `highp` — такие кадры
+    /// отклоняет уже `upload`, здесь это защита, а не ожидаемый путь.
+    fn program_for(
+        &self,
+        layout: PlanarLayout,
+        color: &FrameColorPlan,
+    ) -> Result<&VideoProgram, VideoDrawError> {
+        self.programs.for_variant(color.variant).ok_or(
+            VideoDrawError::HighBitDepthNeedsHighPrecision {
+                depth: layout.depth,
+            },
+        )
     }
 
     /// Работа загрузок и рисований с прошлого вызова отдана драйверу; `fence` поставлен после неё
@@ -405,6 +470,9 @@ impl VideoLayerRenderer {
                 for set in textures {
                     set.delete(gl);
                 }
+                if let Some(table) = self.hdr_table.take() {
+                    table.delete(gl);
+                }
                 gl.delete_buffer(self.vertex_buffer);
                 self.programs.delete(context);
             }
@@ -435,7 +503,9 @@ fn set_frame_uniforms(
     gl: VideoGl<'_>,
     program: &VideoProgram,
     textures: &PlaneTextureSet,
+    layout: PlanarLayout,
     request: &VideoDrawRequest<'_>,
+    color: ColorUniformValues,
 ) {
     let sampling = |plane: &crate::textures::PlaneTexture| {
         let allocated = plane
@@ -447,13 +517,18 @@ fn set_frame_uniforms(
         PlaneSampling::new(plane.visible, allocated)
     };
     let [luma, chroma_u, _] = &textures.planes;
+    let chroma_sampling = if layout.depth.is_high_bit() {
+        // 10/12 бит: nearest-цветность wgpu через масштаб координаты (см. `PlaneSampling`).
+        PlaneSampling::nearest_chroma(sampling(chroma_u), luma.visible, layout.chroma)
+    } else {
+        sampling(chroma_u)
+    };
     let values = DrawUniformValues::new(
         sampling(luma),
-        sampling(chroma_u),
+        chroma_sampling,
         request.picture,
         request.orientation,
-        request.color,
-        request.adjustment,
+        color,
     );
     let uniforms = &program.uniforms;
     gl.set_uniform_vec4(&uniforms.display_mapping, values.display_mapping);
@@ -476,7 +551,38 @@ fn set_frame_uniforms(
     if let Some(location) = &uniforms.chroma_texel_size {
         gl.set_uniform_vec2(location, values.chroma_texel_size);
     }
-    for (location, row) in uniforms.rgb_rows.iter().zip(values.color.rows) {
+    set_color_uniforms(gl, uniforms, values.color);
+}
+
+/// Цветовые uniform-ы варианта. Входы, которых у программы нет, пропускаются: вариант и
+/// значения выбраны одним `plan_frame_color`, поэтому они согласованы.
+fn set_color_uniforms(
+    gl: VideoGl<'_>,
+    uniforms: &crate::program::VideoProgramUniforms,
+    color: ColorUniformValues,
+) {
+    let matrix = match color {
+        ColorUniformValues::EightBit(matrix) => matrix,
+        ColorUniformValues::HighBit {
+            normalization,
+            matrix,
+            hdr_table,
+        } => {
+            if let Some(locations) = &uniforms.code_normalization {
+                gl.set_uniform_vec3(&locations.scale, normalization.scale);
+                gl.set_uniform_vec3(&locations.offset, normalization.offset);
+                gl.set_uniform_vec3(&locations.min, normalization.min);
+                gl.set_uniform_vec3(&locations.max, normalization.max);
+            }
+            if let (Some(locations), Some(values)) = (&uniforms.hdr_table, hdr_table) {
+                gl.set_uniform_vec3(&locations.layout, values.layout);
+                gl.set_uniform_vec2(&locations.texel_size, values.texel_size);
+                gl.set_uniform_vec2(&locations.decode, values.decode);
+            }
+            matrix
+        }
+    };
+    for (location, row) in uniforms.rgb_rows.iter().zip(matrix.rows) {
         gl.set_uniform_vec4(location, row);
     }
 }
@@ -489,7 +595,7 @@ struct PreparedPlane<'frame> {
 
 /// Три плоскости кадра в порядке Y, U, V.
 struct PreparedFrame<'frame> {
-    chroma: ChromaSubsampling,
+    layout: PlanarLayout,
     planes: [PreparedPlane<'frame>; 3],
 }
 

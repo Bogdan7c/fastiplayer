@@ -9,7 +9,7 @@
 //! - метаданные кадра для правил `render-core` ([`renderable_frame`]);
 //! - что умеет рендер на этом драйвере ([`gles2_render_capabilities`]).
 //!
-//! Сессия 05 — начало crate-а: программный путь 8 бит. Встраивание в приложение за контрактом
+//! Сессия 05 — начало crate-а: программный путь 8 бит; сессия 06 — 10/12 бит и HDR → SDR. Встраивание в приложение за контрактом
 //! `RenderShell` (импорт кадров, освобождение кадра декодера по fence) — сессия 09.
 //!
 //! Правило освобождения кадра декодера (решение владельца сессии 05): кадр возвращается
@@ -19,11 +19,16 @@
 mod capabilities;
 mod draw_plan;
 mod frame_metadata;
+mod high_bit_color;
 mod host_planar;
 #[cfg(test)]
 mod test_support;
 
-pub use capabilities::{GLES2_SOFTWARE_FRAME_CONTRACTS, gles2_render_capabilities};
+pub use capabilities::{
+    GLES2_HIGH_BIT_SOFTWARE_FRAME_CONTRACTS, GLES2_SOFTWARE_FRAME_CONTRACTS,
+    gles2_render_capabilities, gles2_render_capabilities_for,
+};
 pub use draw_plan::{VideoDrawPlan, VideoDrawPlanError, VideoPlacement};
 pub use frame_metadata::{NotYuvFrame, renderable_frame};
+pub use high_bit_color::{HdrColorRejection, HighBitColorError, high_bit_color_conversion};
 pub use host_planar::{HostPlanarFrameError, host_planar_frame_upload};

@@ -1,6 +1,7 @@
 //! Функциональный тест адаптера на настоящем EGL: кадр программного декодера (`DecodedFrame` +
 //! `HostPlanarFrameDescriptor`) через адаптер и видеослой доходит до экрана — letterbox,
-//! сайдбар и цвет из `render-core`; кадр декодера отпускается только после fence.
+//! сайдбар и цвет из `render-core`; кадр декодера отпускается только после fence. То же для
+//! HDR-кадра 10 бит (PQ, BT.2020): HDR → SDR по живым настройкам.
 
 #![allow(
     clippy::unwrap_used,
@@ -12,13 +13,19 @@
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use codec_core::{VideoColorMetadata, VideoDisplayOrientation};
+use codec_core::{
+    ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction, VideoColorMetadata,
+    VideoDisplayOrientation,
+};
 use gles2_egui::{CreateError, FenceStatus, FrameStart, Gles2Context, OffscreenAlpha, SurfaceSize};
-use gles2_video::{UploadOutcome, VideoDrawOutcome, VideoLayerOptions, VideoLayerRenderer};
-use render_core::{ColorPipelineSettings, PictureLayout, RenderViewport};
+use gles2_video::{
+    HdrReferenceLevels, HdrTransfer, ShaderPrecision, UploadOutcome, VideoDrawOutcome,
+    VideoLayerOptions, VideoLayerRenderer, bt2446c_to_sdr,
+};
+use render_core::{PictureLayout, RenderLiveSettings, RenderViewport};
 use render_gles2_shell::{
-    GLES2_SOFTWARE_FRAME_CONTRACTS, VideoDrawPlan, VideoPlacement, gles2_render_capabilities,
-    host_planar_frame_upload, renderable_frame,
+    GLES2_HIGH_BIT_SOFTWARE_FRAME_CONTRACTS, GLES2_SOFTWARE_FRAME_CONTRACTS, VideoDrawPlan,
+    VideoPlacement, gles2_render_capabilities, host_planar_frame_upload, renderable_frame,
 };
 use video_core::{
     DecodedFrame, FrameResourceDescriptor, FrameResourceHandle, HostPlanarFrameDescriptor,
@@ -75,11 +82,57 @@ impl HostPlanarFrameOwner for TrackedOwner {
     }
 }
 
-/// Кадр 4:2:0 64×32: левая половина серая (Y 180), правая тёмная (Y 60); stride с хвостом мусора.
+/// Как разложить кадр 4:2:0 64×32: две половины яркости и нейтральная цветность.
+struct FrameSamples {
+    pixel_layout: VideoFramePixelLayout,
+    /// Байт на отсчёт (1 — 8 бит, 2 — 10/12 бит LE).
+    bytes_per_sample: usize,
+    left_luma: u16,
+    right_luma: u16,
+    neutral_chroma: u16,
+    color: VideoColorMetadata,
+}
+
+/// 8 бит, полный диапазон: серый Y даёт тот же байт на экране.
+fn eight_bit_samples() -> FrameSamples {
+    FrameSamples {
+        pixel_layout: VideoFramePixelLayout::Yuv420Planar8,
+        bytes_per_sample: 1,
+        left_luma: 180,
+        right_luma: 60,
+        neutral_chroma: 128,
+        color: VideoColorMetadata {
+            range: ColorRange::Full,
+            ..VideoColorMetadata::sdr_bt709_limited()
+        },
+    }
+}
+
+/// 10 бит HDR PQ BT.2020 limited: светлая (~200 нит) и тёмная половины.
+fn hdr_pq_samples() -> FrameSamples {
+    FrameSamples {
+        pixel_layout: VideoFramePixelLayout::Yuv420Planar10Le,
+        bytes_per_sample: 2,
+        left_luma: 575,
+        right_luma: 300,
+        neutral_chroma: 512,
+        color: VideoColorMetadata {
+            range: ColorRange::Limited,
+            matrix: MatrixCoefficients::Bt2020,
+            primaries: ColorPrimaries::Bt2020,
+            transfer: TransferFunction::Pq,
+            ..VideoColorMetadata::sdr_bt709_limited()
+        },
+    }
+}
+
+/// Кадр 4:2:0 64×32: левая половина — `left_luma`, правая — `right_luma`; stride с хвостом мусора.
 fn decoded_frame(
     orientation: VideoDisplayOrientation,
+    samples: &FrameSamples,
 ) -> (DecodedFrame, FrameResourceDescriptor, Weak<TrackedOwner>) {
-    let (width, height, tail) = (64_u32, 32_u32, 16_usize);
+    let (width, height, tail_samples) = (64_u32, 32_u32, 16_usize);
+    let sample_bytes = samples.bytes_per_sample;
     let mut bytes = Vec::new();
     let mut planes = Vec::new();
     for (role, plane_width, plane_height) in [
@@ -90,23 +143,24 @@ fn decoded_frame(
         let offset = bytes.len();
         for row in 0..plane_height {
             for x in 0..plane_width {
-                bytes.push(match role {
-                    HostPlaneRole::Luma if x < plane_width / 2 => 180,
-                    HostPlaneRole::Luma => 60,
-                    HostPlaneRole::ChromaU | HostPlaneRole::ChromaV => 128,
-                });
+                let code = match role {
+                    HostPlaneRole::Luma if x < plane_width / 2 => samples.left_luma,
+                    HostPlaneRole::Luma => samples.right_luma,
+                    HostPlaneRole::ChromaU | HostPlaneRole::ChromaV => samples.neutral_chroma,
+                };
+                bytes.extend_from_slice(&code.to_le_bytes()[..sample_bytes]);
             }
             if row + 1 < plane_height {
-                bytes.extend(std::iter::repeat_n(0xFF, tail));
+                bytes.extend(std::iter::repeat_n(0xFF, tail_samples * sample_bytes));
             }
         }
         planes.push(HostPlaneDescriptor {
             role,
             offset,
-            stride: plane_width as usize + tail,
+            stride: (plane_width as usize + tail_samples) * sample_bytes,
             visible_width: plane_width,
             visible_height: plane_height,
-            bytes_per_sample: 1,
+            bytes_per_sample: sample_bytes,
         });
     }
     let owner = Arc::new(TrackedOwner(HostPlanarOwnedBuffer::new(bytes)));
@@ -117,7 +171,7 @@ fn decoded_frame(
         generation: 1,
         pts: Duration::ZERO,
         frame_contract: VideoFrameContract {
-            pixel_layout: VideoFramePixelLayout::Yuv420Planar8,
+            pixel_layout: samples.pixel_layout,
             transfer_path: VideoFrameTransferPath::SoftwareHostUpload,
         },
         width,
@@ -125,11 +179,7 @@ fn decoded_frame(
         render_width: width,
         render_height: height,
         display_orientation: orientation,
-        // Полный диапазон: серый Y даёт тот же байт на экране.
-        color: VideoColorMetadata {
-            range: codec_core::ColorRange::Full,
-            ..VideoColorMetadata::sdr_bt709_limited()
-        },
+        color: samples.color.clone(),
         resource_handle: FrameResourceHandle(7),
         diagnostics: VideoFrameDiagnostics::default(),
     };
@@ -156,10 +206,19 @@ fn decoder_frame_reaches_the_screen_through_the_adapter() {
             "{contract:?}"
         );
     }
-    assert!(!capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar10le()));
+    // 10/12 бит объявлены ровно тогда, когда у драйвера есть highp.
+    let highp = ShaderPrecision::for_capabilities(context.capabilities()).supports_high_bit_depth();
+    for contract in GLES2_HIGH_BIT_SOFTWARE_FRAME_CONTRACTS {
+        assert_eq!(
+            capabilities.supports_frame_contract(contract),
+            highp,
+            "{contract:?}"
+        );
+    }
 
     let mut video = VideoLayerRenderer::new(&context, VideoLayerOptions::default()).unwrap();
-    let (frame, descriptor, owner) = decoded_frame(VideoDisplayOrientation::Identity);
+    let (frame, descriptor, owner) =
+        decoded_frame(VideoDisplayOrientation::Identity, &eight_bit_samples());
     let upload = host_planar_frame_upload(&frame, &descriptor).unwrap();
     assert!(matches!(
         video.upload(&context, &upload).unwrap(),
@@ -175,7 +234,7 @@ fn decoder_frame_reaches_the_screen_through_the_adapter() {
             video_viewport: RenderViewport::full_surface(surface_width, surface_height),
             exclusions: &[sidebar],
         },
-        &ColorPipelineSettings::identity(),
+        &RenderLiveSettings::default(),
     )
     .unwrap();
     let outcome = match context.begin_frame().unwrap() {
@@ -243,5 +302,90 @@ fn decoder_frame_reaches_the_screen_through_the_adapter() {
             "right edge without row tail at y={y}"
         );
     }
+    video.destroy(&context).unwrap();
+}
+
+/// HDR-кадр 10 бит (PQ, BT.2020) доходит до экрана через адаптер: HDR → SDR по живым
+/// настройкам по умолчанию, обе половины — цвет точной формулы с допуском таблицы (3/255);
+/// кадр декодера отпускается после fence.
+#[test]
+fn hdr_decoder_frame_reaches_the_screen_through_the_adapter() {
+    const TABLE_TOLERANCE: u8 = 3;
+    let Some(mut context) = offscreen_or_skip("hdr_decoder_frame_reaches_the_screen", 64, 32)
+    else {
+        return;
+    };
+    if !ShaderPrecision::for_capabilities(context.capabilities()).supports_high_bit_depth() {
+        eprintln!("skip hdr_decoder_frame_reaches_the_screen: driver has no highp");
+        return;
+    }
+    let samples = hdr_pq_samples();
+    let mut video = VideoLayerRenderer::new(&context, VideoLayerOptions::default()).unwrap();
+    let (frame, descriptor, owner) = decoded_frame(VideoDisplayOrientation::Identity, &samples);
+    let upload = host_planar_frame_upload(&frame, &descriptor).unwrap();
+    assert!(matches!(
+        video.upload(&context, &upload).unwrap(),
+        UploadOutcome::Uploaded(_)
+    ));
+    let renderable = renderable_frame(&frame).unwrap();
+    let plan = VideoDrawPlan::for_frame(
+        &renderable,
+        VideoPlacement {
+            surface_size: (64, 32),
+            video_viewport: RenderViewport::full_surface(64, 32),
+            exclusions: &[],
+        },
+        &RenderLiveSettings::default(),
+    )
+    .unwrap();
+    let FrameStart::Ready(active) = context.begin_frame().unwrap() else {
+        panic!("offscreen frame skipped");
+    };
+    assert_eq!(
+        video.draw(&active, &plan.request()).unwrap(),
+        VideoDrawOutcome::Drawn { draw_calls: 1 }
+    );
+    active.present().unwrap();
+    let fence = Arc::new(context.insert_fence().unwrap());
+    video.retire_submitted_work(Arc::clone(&fence));
+    assert!(
+        owner.upgrade().is_some(),
+        "decoder frame is held until its fence"
+    );
+    assert_eq!(
+        fence.wait(Duration::from_secs(5)).unwrap(),
+        FenceStatus::Signaled
+    );
+    drop(descriptor);
+    assert!(
+        owner.upgrade().is_none(),
+        "decoder frame released after the fence"
+    );
+
+    let pixels = context.read_offscreen_pixels().unwrap();
+    // Нейтраль: U = V = центр, R' = G' = B' = нормализованный Y.
+    let expected = |luma_code: u16| {
+        let normalized = (f64::from(luma_code) - 64.0) / 876.0;
+        bt2446c_to_sdr(
+            [normalized; 3],
+            HdrTransfer::Pq,
+            HdrReferenceLevels::REFERENCE_DEFAULT,
+        )
+        .map(|value| (value * 255.0).round() as u8)
+    };
+    for (x, luma_code) in [(10, samples.left_luma), (50, samples.right_luma)] {
+        let want = expected(luma_code);
+        let got = pixels.pixel(x, 16).unwrap();
+        for channel in 0..3 {
+            assert!(
+                got[channel].abs_diff(want[channel]) <= TABLE_TOLERANCE,
+                "x={x} code {luma_code}: {got:?} vs {want:?}"
+            );
+        }
+    }
+    assert!(
+        expected(samples.left_luma)[1] > expected(samples.right_luma)[1] + 50,
+        "the two halves are clearly different tones"
+    );
     video.destroy(&context).unwrap();
 }

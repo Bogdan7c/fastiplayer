@@ -1,8 +1,10 @@
-use gles2_video::{ChromaSubsampling, PlaneExtent, PlaneSource, VideoFrameKey};
+use gles2_video::{
+    ChromaSubsampling, PlanarLayout, PlaneExtent, PlaneSource, SampleDepth, VideoFrameKey,
+};
 use video_frame_contract::{VideoFramePixelLayout, VideoFrameTransferPath};
 
 use super::*;
-use crate::test_support::host_frame;
+use crate::test_support::{high_bit_host_frame, host_frame};
 
 fn host_rows(source: PlaneSource<'_>) -> HostRows<'_> {
     match source {
@@ -88,20 +90,69 @@ fn every_8bit_layout_maps_to_its_chroma_subsampling() {
 }
 
 #[test]
-fn high_bit_depth_layout_is_rejected_until_session_06() {
-    let mut test_frame = host_frame(
-        VideoFramePixelLayout::Yuv420Planar8,
-        [4, 4],
-        0,
-        [16, 128, 128],
-    );
-    test_frame.frame.frame_contract.pixel_layout = VideoFramePixelLayout::Yuv420Planar10Le;
-    assert_eq!(
-        host_planar_frame_upload(&test_frame.frame, &test_frame.descriptor).err(),
-        Some(HostPlanarFrameError::UnsupportedLayout(
-            VideoFramePixelLayout::Yuv420Planar10Le
-        ))
-    );
+fn every_high_bit_layout_maps_to_its_depth_and_two_byte_rows() {
+    for (layout, chroma, depth) in [
+        (
+            VideoFramePixelLayout::Yuv420Planar10Le,
+            ChromaSubsampling::Yuv420,
+            SampleDepth::Bits10,
+        ),
+        (
+            VideoFramePixelLayout::Yuv420Planar12Le,
+            ChromaSubsampling::Yuv420,
+            SampleDepth::Bits12,
+        ),
+        (
+            VideoFramePixelLayout::Yuv422Planar10Le,
+            ChromaSubsampling::Yuv422,
+            SampleDepth::Bits10,
+        ),
+        (
+            VideoFramePixelLayout::Yuv422Planar12Le,
+            ChromaSubsampling::Yuv422,
+            SampleDepth::Bits12,
+        ),
+        (
+            VideoFramePixelLayout::Yuv444Planar10Le,
+            ChromaSubsampling::Yuv444,
+            SampleDepth::Bits10,
+        ),
+    ] {
+        let test_frame = high_bit_host_frame(layout, [5, 3], 2, [700, 300, 900]);
+        let upload = host_planar_frame_upload(&test_frame.frame, &test_frame.descriptor)
+            .expect("v1 high-bit layouts are supported");
+        assert_eq!(upload.layout, PlanarLayout { chroma, depth }, "{layout:?}");
+        let luma = host_rows(upload.luma);
+        // 5 отсчётов × 2 байта видимо, + 2 отсчёта хвоста; блок без хвоста последней строки.
+        assert_eq!(
+            (luma.stride(), luma.visible_row_bytes(), luma.bytes().len()),
+            (14, 10, 2 * 14 + 10),
+            "{layout:?}"
+        );
+        assert_eq!(&luma.bytes()[..2], &700_u16.to_le_bytes(), "LE word as is");
+        assert_eq!(
+            host_rows(upload.chroma_v).bytes()[..2],
+            900_u16.to_le_bytes(),
+            "{layout:?}"
+        );
+    }
+}
+
+#[test]
+fn hardware_and_rgba_layouts_are_not_host_planar_layouts() {
+    for layout in [VideoFramePixelLayout::P010, VideoFramePixelLayout::Rgba8] {
+        let mut test_frame = host_frame(
+            VideoFramePixelLayout::Yuv420Planar8,
+            [4, 4],
+            0,
+            [16, 128, 128],
+        );
+        test_frame.frame.frame_contract.pixel_layout = layout;
+        assert_eq!(
+            host_planar_frame_upload(&test_frame.frame, &test_frame.descriptor).err(),
+            Some(HostPlanarFrameError::UnsupportedLayout(layout))
+        );
+    }
 }
 
 #[test]

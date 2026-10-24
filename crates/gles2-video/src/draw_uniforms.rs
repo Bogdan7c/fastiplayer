@@ -1,9 +1,10 @@
 //! Значения uniform-ов кадра (чистая логика, без GL): что считает CPU один раз на кадр, чтобы
 //! шейдер не делил и не ветвился на каждом пикселе.
 
-use crate::color::{ColorAdjustment, ColorTransform, YuvColorEncoding};
+use crate::frame_color::ColorUniformValues;
 use crate::geometry::{PictureMapping, QuarterTurn};
-use crate::planes::PlaneExtent;
+use crate::planes::{ChromaSubsampling, PlaneExtent};
+use crate::program::chroma_subsampled_axes;
 use crate::upload_plan::TextureExtent;
 
 /// Как шейдер берёт билинейную выборку плоскости: `clamp(source_uv × scale, min, max)` в
@@ -38,6 +39,34 @@ impl PlaneSampling {
             visible,
         }
     }
+
+    /// Nearest-выборка цветности 10/12 бит: по прореженной оси координата масштабируется так,
+    /// что `floor(u × размер_текстуры) = floor(uv × яркость / 2)` — это `floor(floor(uv × яркость)
+    /// / 2)` wgpu (для целого делителя `floor(floor(a) / 2) = floor(a / 2)`), в том числе при
+    /// нечётной ширине, где `ceil(яркость / 2) ≠ яркость / 2`. Границы — центры первого и
+    /// последнего видимого текселя.
+    pub(crate) fn nearest_chroma(
+        chroma: Self,
+        luma_visible: PlaneExtent,
+        subsampling: ChromaSubsampling,
+    ) -> Self {
+        let (subsampled_x, subsampled_y) = chroma_subsampled_axes(subsampling);
+        let axis_scale = |subsampled: bool, luma_side: u32, axis: usize| {
+            if subsampled {
+                // Половина яркости в текселях текстуры цветности.
+                texel_count(luma_side) * 0.5 * chroma.texel_size[axis]
+            } else {
+                chroma.scale[axis]
+            }
+        };
+        Self {
+            scale: [
+                axis_scale(subsampled_x, luma_visible.width, 0),
+                axis_scale(subsampled_y, luma_visible.height, 1),
+            ],
+            ..chroma
+        }
+    }
 }
 
 /// Число текселей как `f32`: стороны текстур GLES2 не больше `GL_MAX_TEXTURE_SIZE` (единицы
@@ -65,7 +94,7 @@ pub(crate) struct DrawUniformValues {
     /// `1 / размер текстуры цветности`.
     pub(crate) chroma_texel_size: [f32; 2],
     /// Цвет.
-    pub(crate) color: ColorTransform,
+    pub(crate) color: ColorUniformValues,
 }
 
 impl DrawUniformValues {
@@ -75,8 +104,7 @@ impl DrawUniformValues {
         chroma: PlaneSampling,
         picture: PictureMapping,
         orientation: QuarterTurn,
-        encoding: YuvColorEncoding,
-        adjustment: ColorAdjustment,
+        color: ColorUniformValues,
     ) -> Self {
         let [uv_scale_x, uv_scale_y] = picture.uv_scale;
         let [uv_offset_x, uv_offset_y] = picture.uv_offset;
@@ -98,7 +126,7 @@ impl DrawUniformValues {
                 chroma.visible[1] - 1.0,
             ],
             chroma_texel_size: chroma.texel_size,
-            color: ColorTransform::new(encoding, adjustment),
+            color,
         }
     }
 }

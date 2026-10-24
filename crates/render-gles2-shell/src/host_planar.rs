@@ -27,8 +27,8 @@ pub enum HostPlanarFrameError {
     /// Контракт кадра — не программная загрузка из памяти процесса.
     #[error("frame contract transfer path {0:?} is not a software host upload")]
     NotSoftwareHostUpload(VideoFrameTransferPath),
-    /// Раскладка, которую GLES2-рендер пока не объявляет (10/12 бит — сессия 06).
-    #[error("pixel layout {0:?} is not supported by the GLES2 software path yet")]
+    /// Раскладка вне программного пути GLES2 (NV12/P010 — аппаратные, сессия 07; RGBA).
+    #[error("pixel layout {0:?} is not supported by the GLES2 software path")]
     UnsupportedLayout(VideoFramePixelLayout),
     /// Дескриптор противоречит контракту кадра (проверка `video-core`).
     #[error("host-planar descriptor does not match the frame contract: {message}")]
@@ -62,7 +62,8 @@ pub enum HostPlanarFrameError {
 ///
 /// # Errors
 /// [`HostPlanarFrameError`]: DMA-BUF вместо памяти процесса, контракт не программной загрузки,
-/// раскладка вне трёх 8-битных, дескриптор не совпал с контрактом.
+/// раскладка вне матрицы v1 (YUV 4:2:0/4:2:2 8/10/12 бит, 4:4:4 8/10 бит), дескриптор не совпал
+/// с контрактом.
 pub fn host_planar_frame_upload<'descriptor>(
     frame: &DecodedFrame,
     descriptor: &'descriptor FrameResourceDescriptor,
@@ -77,17 +78,14 @@ pub fn host_planar_frame_upload<'descriptor>(
             contract.transfer_path,
         ));
     }
-    let chroma = chroma_for_layout(contract.pixel_layout)?;
+    let layout = planar_layout(contract.pixel_layout)?;
     validate_resource_descriptor_against_contract(contract, frame.width, frame.height, descriptor)
         .map_err(|error| HostPlanarFrameError::ContractRejected {
             message: format!("{error:#}"),
         })?;
     Ok(PlanarFrameUpload {
         key: VideoFrameKey(frame.resource_handle.0),
-        layout: PlanarLayout {
-            chroma,
-            depth: SampleDepth::Bits8,
-        },
+        layout,
         luma_extent: PlaneExtent {
             width: frame.width,
             height: frame.height,
@@ -98,23 +96,25 @@ pub fn host_planar_frame_upload<'descriptor>(
     })
 }
 
-/// Прореживание цветности для трёх раскладок, которые объявляет GLES2-рендер.
-fn chroma_for_layout(
-    layout: VideoFramePixelLayout,
-) -> Result<ChromaSubsampling, HostPlanarFrameError> {
-    match layout {
-        VideoFramePixelLayout::Yuv420Planar8 => Ok(ChromaSubsampling::Yuv420),
-        VideoFramePixelLayout::Yuv422Planar8 => Ok(ChromaSubsampling::Yuv422),
-        VideoFramePixelLayout::Yuv444Planar8 => Ok(ChromaSubsampling::Yuv444),
+/// Раскладка видеослоя для программных раскладок плеера (матрица v1 wgpu). 10/12 бит у FFmpeg —
+/// 16-битные слова LE (`*Le`), ровно то, что видеослой грузит парами байтов.
+fn planar_layout(layout: VideoFramePixelLayout) -> Result<PlanarLayout, HostPlanarFrameError> {
+    let (chroma, depth) = match layout {
+        VideoFramePixelLayout::Yuv420Planar8 => (ChromaSubsampling::Yuv420, SampleDepth::Bits8),
+        VideoFramePixelLayout::Yuv422Planar8 => (ChromaSubsampling::Yuv422, SampleDepth::Bits8),
+        VideoFramePixelLayout::Yuv444Planar8 => (ChromaSubsampling::Yuv444, SampleDepth::Bits8),
+        VideoFramePixelLayout::Yuv420Planar10Le => (ChromaSubsampling::Yuv420, SampleDepth::Bits10),
+        VideoFramePixelLayout::Yuv420Planar12Le => (ChromaSubsampling::Yuv420, SampleDepth::Bits12),
+        VideoFramePixelLayout::Yuv422Planar10Le => (ChromaSubsampling::Yuv422, SampleDepth::Bits10),
+        VideoFramePixelLayout::Yuv422Planar12Le => (ChromaSubsampling::Yuv422, SampleDepth::Bits12),
+        VideoFramePixelLayout::Yuv444Planar10Le => (ChromaSubsampling::Yuv444, SampleDepth::Bits10),
         VideoFramePixelLayout::Nv12
         | VideoFramePixelLayout::P010
-        | VideoFramePixelLayout::Yuv420Planar10Le
-        | VideoFramePixelLayout::Yuv420Planar12Le
-        | VideoFramePixelLayout::Yuv422Planar10Le
-        | VideoFramePixelLayout::Yuv422Planar12Le
-        | VideoFramePixelLayout::Yuv444Planar10Le
-        | VideoFramePixelLayout::Rgba8 => Err(HostPlanarFrameError::UnsupportedLayout(layout)),
-    }
+        | VideoFramePixelLayout::Rgba8 => {
+            return Err(HostPlanarFrameError::UnsupportedLayout(layout));
+        }
+    };
+    Ok(PlanarLayout { chroma, depth })
 }
 
 /// Срез одной плоскости дескриптора как строки видеослоя.

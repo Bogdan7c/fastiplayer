@@ -20,8 +20,10 @@
 //! на Ironlake (T410) пошаговая формула на пиксель занимала заметную долю бюджета кадра, а
 //! результат совпадает с пошаговым в `f32` до ~1e-6 — на три порядка точнее шага 1/255.
 //!
-//! Сессия 06 (HDR→SDR) вставит нелинейный шаг между 2 и 3: тогда цепочка разделится на две
-//! матрицы ([`yuv_to_rgb`] и [`sdr_adjustment`]) с тон-маппингом между ними.
+//! 10/12 бит ([`high_bit`]) нормализуют коды отдельным шагом с ограничением (как wgpu), после
+//! него — та же матрица (без множителя limited) и цветокоррекция одной матрицей. HDR → SDR
+//! ([`crate::hdr`]): нормализация → матрица BT.2020 → таблица тон-маппинга; цветокоррекции SDR у
+//! HDR-пути нет (у wgpu тоже).
 
 /// Матрица YUV → RGB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -232,6 +234,8 @@ pub(crate) fn sdr_adjustment(encoding: YuvColorEncoding, adjustment: ColorAdjust
         .after(&saturate)
 }
 
+/// Строки матрицы кодировки. У full-диапазона это матрица нормализованного отсчёта (Y `0..1`,
+/// U/V `−0,5..0,5`): её же берёт путь 10/12 бит, где нормализацию делает отдельный шаг.
 fn matrix_rows(encoding: YuvColorEncoding) -> [[f64; 3]; 3] {
     match (encoding.matrix, encoding.range) {
         (YuvMatrix::Bt601, YuvRange::Limited) => BT601_LIMITED_ROWS,
@@ -249,9 +253,29 @@ pub(crate) struct ColorTransform {
 }
 
 impl ColorTransform {
-    /// Вся SDR-цепочка (шаги 1–3) одной матрицей.
+    /// Вся SDR-цепочка 8 бит (шаги 1–3) одной матрицей.
     pub(crate) fn new(encoding: YuvColorEncoding, adjustment: ColorAdjustment) -> Self {
-        let combined = sdr_adjustment(encoding, adjustment).after(&yuv_to_rgb(encoding));
+        Self::from_affine(&sdr_adjustment(encoding, adjustment).after(&yuv_to_rgb(encoding)))
+    }
+
+    /// Матрица для отсчёта, уже нормализованного [`high_bit::CodeNormalization`]: матрица
+    /// кодировки и цветокоррекция.
+    pub(crate) fn for_normalized_sdr(
+        encoding: YuvColorEncoding,
+        adjustment: ColorAdjustment,
+    ) -> Self {
+        Self::from_affine(
+            &sdr_adjustment(encoding, adjustment)
+                .after(&high_bit::normalized_yuv_to_rgb(encoding.matrix)),
+        )
+    }
+
+    /// Нормализованный отсчёт → нелинейный R'G'B' BT.2020 (вход таблицы HDR → SDR).
+    pub(crate) fn bt2020_nonlinear_rgb() -> Self {
+        Self::from_affine(&high_bit::bt2020_normalized_yuv_to_rgb())
+    }
+
+    fn from_affine(combined: &Affine3) -> Self {
         // Uniform-ы шейдера — f32: сужение один раз на элемент, точность f32 на три порядка выше
         // шага 1/255.
         let narrow = |value: f64| value as f32;
@@ -269,6 +293,8 @@ impl ColorTransform {
         }
     }
 }
+
+pub(crate) mod high_bit;
 
 #[cfg(test)]
 mod tests;

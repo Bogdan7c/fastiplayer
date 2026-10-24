@@ -1,0 +1,23 @@
+# GLES2: программные 10/12 бит и HDR→SDR (сессия 06 плана gles2-renderer, 2026-10-25)
+
+Отчёт: `user/gles2-renderer/results/06.md`. Решение владельца 31 README: HDR→SDR в GLES2 — таблица 65³ везде и ТОЛЬКО в GLES2 (wgpu считает формулу в шейдере, его путь не трогать). Причина: точная формула в шейдере на T410 39,7 мс GPU/кадр 1440×900, таблица 20,5 мс.
+
+## `gles2-video`
+- `SampleDepth::{Bits8, Bits10, Bits12}` (16-битное слово LE, `max_code`, `is_high_bit`). 10/12 бит → `PlaneTextureFormat::LuminanceAlpha` (L = младший байт, A = старший), фильтр ТОЛЬКО `NEAREST` (байты не смешивать; паритет с `textureLoad` wgpu). Формат по разрядности кадра: `VideoLayerRenderer::plane_texture_format_for(depth)`, смена разрядности в слоте перевыделяет текстуры.
+- Программы: `ProgramVariant::{EightBit(chroma), HighBitSdr, HighBitHdrTable}`; шейдеры в `program/shaders.rs`. Высокобитных программ две (не по раскладке): nearest-цветность wgpu `floor(floor(uv·w)/2)` даёт масштаб координаты `PlaneSampling::nearest_chroma` (uniform), адреса не считаются на пиксель. Собираются только при `highp` (`ShaderPrecision::supports_high_bit_depth`); без него upload → `VideoUploadError::HighBitDepthNeedsHighPrecision`.
+- Код: `dot(t.ra, vec2(255, 65280))`; нормализация `color/high_bit::CodeNormalization` = wgpu `host_yuv420_range_normalization` (limited Y 16·2^s..235·2^s с clamp, chroma центр 128·2^s делитель 224·2^s, clamp 0..max; full — делитель max) одним `clamp(code*scale+offset,min,max)`; дальше матрица (full-строки = нормализованный отсчёт; BT.2020 для HDR).
+- Запрос рисования: `VideoDrawRequest.color: VideoColorConversion::{Sdr{encoding, adjustment}, HdrToSdr(HdrToSdrConversion{range, transfer: HdrTransfer::{Pq,Hlg}, levels: HdrReferenceLevels})}`; выбор программы — чистый `frame_color::plan_frame_color` (HDR у 8 бит → `VideoDrawError::HdrToSdrNeedsHighBitFrame`); все проверки до записи в цель.
+- HDR: `hdr/bt2446c.rs` — CPU-формула f64 (порт WGSL, публичная `bt2446c_to_sdr`, константы `gles2_video::bt2446c_constants`); `hdr/lut.rs` — атлас 65³ срезами 8 в ряд (520×585, RGBA8), узел хранит значение ДО финального clamp (знаковая гамма, диапазон −0,05…1,25; без запаса излом clamp давал до 8/255), байт — поиск по 255 границам в линейной шкале (`ByteThresholds`, без powf). Шейдер: 2 билинейные выборки соседних срезов + mix, `×1,3 − 0,05`, clamp. `hdr_table_texture::HdrTableTexture` перестраивает только при смене ключа (перенос + уровни), счётчик `VideoLayerStats::hdr_table_builds`. Сборка в потоке `draw`: T410 41/50 мс (PQ/HLG), 780M 16 мс — решение где строить (фон / «Применить») отложено в 09.
+- Точность против f64: худшее 3/255; >1/255 у 0,16–0,36 % на железе, 1–2 % на llvmpipe (фильтр unorm8 в 8-битной целой арифметике), >2/255 ≤ 0,03 %. Тесты проверяют худший случай и долю >2/255, не >1/255. Паритет с wgpu: HDR max Δ 2, SDR 10/12 max Δ 1.
+
+## `render-gles2-shell`
+- `high_bit_color::high_bit_color_conversion` — правила 16-битного пути wgpu: SDR только BT.709 с явным диапазоном и БЕЗ ручек цветокоррекции (wgpu их на 16-бит не применяет); HDR BT.2020+PQ/HLG, мастеринг согласован, `HdrToSdrSettings::is_phase10_bt2446_c_sdr_bt709`; иначе `HighBitColorError`/`HdrColorRejection` → `VideoDrawPlanError::HighBitColor`.
+- `VideoDrawPlan::for_frame(frame, placement, &RenderLiveSettings)`; `host_planar` — 5 раскладок 10/12; `gles2_render_capabilities_for(precision, limit)`: highp → 8 контрактов + BT.2446-C, mediump → 3 и предел 2048.
+
+## `render-core`
+- `RenderCapabilities::supports_hdr_to_sdr_for_contract` (P010 требует renderable P010, программная загрузка — нет); `check_video_output` и summary через неё. Решения wgpu не изменились — тест `wgpu_hdr_decisions_per_contract_match_the_p010_rule`.
+
+## Тесты и стенды
+- `cargo test -p gles2-video` (EGL: `high_bit_readback`, `hdr_readback`), `-p render-gles2-shell` (функциональный HDR-кадр → экран), паритет `cargo test -p render-wgpu-shell high_bit_and_hdr_video_frames_match_wgpu` (сцены без «ничьих» nearest: центр пикселя ровно на границе текселей — соседа выбирает округление float, wgpu и GLES2 расходятся), константы `gles2_bt2446c_constants_match_both_wgpu_hdr_shaders` (include_str обоих WGSL), wgpu GPU readback 16-бит `cargo test -p render-wgpu-video gpu_readback` (дочерний модуль `bt2446c_reference/gpu_readback.rs`).
+- Замер таблицы: `cargo test --release -p gles2-video table_build_time -- --ignored --nocapture`. Стенд `gles2_upload_bench`: `--codec hevc` (Annex B с AUD: `-bsf:v hevc_mp4toannexb,hevc_metadata=aud=insert -f hevc`) и `--ten-bit`.
+- T410 GPU-проход 1080p в 1440×900: 8 бит 11,8, 10 бит SDR 14,5, HDR 20,5 мс; живой HEVC Main10 HDR 1080p30 — 17,9 к/с, упор в CPU (декод + 5,5 мс копии).

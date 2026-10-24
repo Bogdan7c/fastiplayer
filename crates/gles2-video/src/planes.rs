@@ -45,12 +45,17 @@ impl ChromaSubsampling {
 
 /// Разрядность отсчёта плоскости.
 ///
-/// В сессии 05 — только 8 бит. 10/12 бит (пары байтов, сборка в шейдере) добавляет сессия 06
-/// новым вариантом, не меняя остальной словарь.
+/// 10 и 12 бит лежат в памяти так, как их отдаёт FFmpeg (`yuv4xxp10le`/`p12le`): 16-битное
+/// слово little-endian на отсчёт, значение в младших битах. Загрузка их не переупаковывает: пара
+/// байтов уходит в тексель `GL_LUMINANCE_ALPHA` как есть, код собирает шейдер.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SampleDepth {
     /// Один байт на отсчёт, значение `0..=255`.
     Bits8,
+    /// Два байта LE на отсчёт, значение `0..=1023`.
+    Bits10,
+    /// Два байта LE на отсчёт, значение `0..=4095`.
+    Bits12,
 }
 
 impl SampleDepth {
@@ -59,7 +64,30 @@ impl SampleDepth {
     pub const fn bytes_per_sample(self) -> usize {
         match self {
             Self::Bits8 => 1,
+            Self::Bits10 | Self::Bits12 => 2,
         }
+    }
+
+    /// Значащих бит в отсчёте.
+    #[must_use]
+    pub const fn bits(self) -> u32 {
+        match self {
+            Self::Bits8 => 8,
+            Self::Bits10 => 10,
+            Self::Bits12 => 12,
+        }
+    }
+
+    /// Наибольший код отсчёта: `2^bits − 1`.
+    #[must_use]
+    pub const fn max_code(self) -> u32 {
+        (1 << self.bits()) - 1
+    }
+
+    /// Отсчёт шире байта (пара байтов, сборка кода в шейдере).
+    #[must_use]
+    pub const fn is_high_bit(self) -> bool {
+        self.bytes_per_sample() > 1
     }
 }
 

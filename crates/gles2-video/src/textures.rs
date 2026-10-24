@@ -5,7 +5,7 @@
 //! одного видео не выделяет память на кадр.
 
 use crate::gl_calls::{PlaneTextureFormat, VideoGl, VideoGlError};
-use crate::planes::{ChromaSubsampling, PlaneExtent};
+use crate::planes::{PlanarLayout, PlaneExtent};
 use crate::upload_plan::{PlaneUploadPlan, TextureExtent};
 
 /// Текстура одной плоскости.
@@ -24,7 +24,7 @@ pub(crate) struct PlaneTextureSet {
     pub(crate) planes: [PlaneTexture; 3],
     pub(crate) format: PlaneTextureFormat,
     /// Раскладка последнего загруженного кадра (выбирает вариант программы); `None` до загрузки.
-    pub(crate) chroma: Option<ChromaSubsampling>,
+    pub(crate) layout: Option<PlanarLayout>,
 }
 
 /// Что сделал `ensure_allocated`.
@@ -65,7 +65,7 @@ impl PlaneTextureSet {
                 unallocated(chroma_v),
             ],
             format,
-            chroma: None,
+            layout: None,
         })
     }
 

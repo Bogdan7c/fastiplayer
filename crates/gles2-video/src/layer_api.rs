@@ -11,7 +11,8 @@ use gles2_egui::{FenceWaitError, GlAccessError, ShaderError};
 use crate::color::{ColorAdjustment, YuvColorEncoding};
 use crate::geometry::{PictureMapping, PixelRect, QuarterTurn, RectOutOfRange};
 use crate::gl_calls::VideoGlError;
-use crate::planes::{FrameLayoutError, PlaneRole, PlaneSourceKind};
+use crate::hdr::HdrToSdrConversion;
+use crate::planes::{FrameLayoutError, PlaneRole, PlaneSourceKind, SampleDepth};
 use crate::ring::{BusyReason, UploadSlotCount};
 
 /// Какой формат текстур плоскостей брать.
@@ -110,6 +111,14 @@ pub enum VideoUploadError {
     /// случаться — индекс выдаёт само кольцо, а слоты не удаляются).
     #[error("upload ring handed out a slot it does not own")]
     RingSlotUnavailable,
+    /// 10/12 бит без `highp` во фрагментном шейдере: в fp16 код до 4095 не собрать точно.
+    /// Возможности рендера такие кадры не объявляют; это защита от вызывающего, который их не
+    /// спросил.
+    #[error("{depth:?} planes need highp fragment precision, the driver has only mediump")]
+    HighBitDepthNeedsHighPrecision {
+        /// Разрядность кадра.
+        depth: SampleDepth,
+    },
 }
 
 /// Итог загрузки кадра.
@@ -146,10 +155,25 @@ pub struct VideoDrawRequest<'a> {
     pub picture: PictureMapping,
     /// Поворот картинки.
     pub orientation: QuarterTurn,
-    /// Кодировка цвета кадра.
-    pub color: YuvColorEncoding,
-    /// Цветокоррекция.
-    pub adjustment: ColorAdjustment,
+    /// Перевод цвета кадра.
+    pub color: VideoColorConversion,
+}
+
+/// Как перевести цвет кадра в SDR-выход.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VideoColorConversion {
+    /// SDR: матрица кодировки и цветокоррекция. 8 бит — одна матрица на кадр (сессия 05);
+    /// 10/12 бит — сначала нормализация кодов по разрядности текущего кадра (с ограничением, как
+    /// wgpu), затем та же матрица без множителя limited.
+    Sdr {
+        /// Кодировка цвета кадра.
+        encoding: YuvColorEncoding,
+        /// Цветокоррекция.
+        adjustment: ColorAdjustment,
+    },
+    /// HDR → SDR BT.2446-C (только кадры 10/12 бит): нормализация → BT.2020 → таблица
+    /// тон-маппинга ([`HdrToSdrConversion`]). Цветокоррекции SDR у этого пути нет — как у wgpu.
+    HdrToSdr(HdrToSdrConversion),
 }
 
 /// Итог рисования.
@@ -175,6 +199,33 @@ pub enum VideoDrawError {
     /// Прямоугольник не помещается в координаты GL.
     #[error(transparent)]
     RectOutOfRange(#[from] RectOutOfRange),
+    /// HDR → SDR запрошен для кадра 8 бит: таблица и нормализация рассчитаны на 10/12 бит (у
+    /// плеера 8-битный HDR и не объявляется — wgpu рисует его как SDR, это решает адаптер).
+    #[error("HDR-to-SDR needs a 10/12-bit frame, the current frame is {depth:?}")]
+    HdrToSdrNeedsHighBitFrame {
+        /// Разрядность текущего кадра.
+        depth: SampleDepth,
+    },
+    /// Текущий кадр 10/12 бит, а программ 10/12 бит нет (драйвер без `highp`; такие кадры
+    /// отклоняет уже загрузка, это защита).
+    #[error("{depth:?} frame needs highp fragment precision, the driver has only mediump")]
+    HighBitDepthNeedsHighPrecision {
+        /// Разрядность кадра.
+        depth: SampleDepth,
+    },
+    /// Атлас таблицы HDR больше лимита текстур драйвера.
+    #[error("HDR tone-mapping table needs a {width}x{height} texture, driver limit is {max}")]
+    HdrTableTooLarge {
+        /// Ширина атласа.
+        width: u32,
+        /// Высота атласа.
+        height: u32,
+        /// `GL_MAX_TEXTURE_SIZE`.
+        max: u32,
+    },
+    /// Драйвер не создал или не выделил текстуру таблицы HDR.
+    #[error("HDR tone-mapping table texture: {0}")]
+    HdrTableTexture(#[source] VideoGlError),
 }
 
 /// Счётчики видеослоя (накопительные).
@@ -196,4 +247,7 @@ pub struct VideoLayerStats {
     pub texture_allocations: u64,
     /// Draw-вызовов видео.
     pub draw_calls: u64,
+    /// Таблиц HDR → SDR посчитано и загружено (одна на смену передаточной функции или уровней,
+    /// не на кадр).
+    pub hdr_table_builds: u64,
 }

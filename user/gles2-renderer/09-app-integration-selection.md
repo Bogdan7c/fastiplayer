@@ -67,6 +67,15 @@
 - Стенд замера с настоящим FFmpeg без плеера — `video-ffmpeg/examples/gles2_upload_bench.rs`.
 
 
+## Наследство сессии 06 (`results/06.md`)
+
+- `VideoDrawPlan::for_frame` принимает `&RenderLiveSettings`, то есть тот же снимок цвета и HDR→SDR, что wgpu. Живые настройки GLES2-шелла идут через `RenderLiveSettingsAdapter`.
+- Возможности — `gles2_render_capabilities(caps)`: при `highp` объявлены 10/12 бит и BT.2446-C. HDR программной загрузки проверяется `RenderCapabilities::supports_hdr_to_sdr_for_contract` (P010 не нужен).
+- **Решение владельца до кода:** где строить таблицу HDR. Сейчас она строится в `VideoLayerRenderer::draw` при смене «перенос + уровни». На T410 это 41–50 мс CPU разово, при перетаскивании ползунка уровней — на каждом шаге. Варианты:
+  - строить в фоне (`HdrLutTable::build` — чистая функция без GL) и держать старую таблицу до готовности;
+  - строить только на «Применить».
+- Ошибки плана 10/12 бит (`VideoDrawPlanError::HighBitColor`) — ошибки рендера, как у wgpu. Тихой подмены нет.
+
 ## Тесты (функциональные, результат, а не вызов)
 
 - Видео из фикстуры через GLES2 доходит до показа: headless EGL + реальный FFmpeg-декодер → `RenderFrameOutcome::Presented` с ожидаемым pts и пикселями кадра (не «декодер открылся»). Для HW — `#[ignore]` на машине с VA-API.

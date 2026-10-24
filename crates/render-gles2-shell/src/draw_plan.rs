@@ -4,18 +4,26 @@
 //! 1. область видео зажимается к цели (`RenderViewport::clamp_to_surface`);
 //! 2. части области без исключений (`RenderViewport::visible_parts`) — по draw-вызову на часть;
 //! 3. letterbox — `PictureLayout::fit_frame` по размеру области (начало области не влияет на uv);
-//! 4. цвет — `ActiveColorPath::from_frame`; неизвестный, широкий или HDR вход на 8-битном пути
-//!    рисуется как SDR BT.709 limited (так же подменяет wgpu `effective_shader_color_metadata`).
+//! 4. цвет:
+//!    - 8 бит — `ActiveColorPath::from_frame`; неизвестный, широкий или HDR вход рисуется как SDR
+//!      BT.709 limited (так же подменяет wgpu `effective_shader_color_metadata`);
+//!    - 10/12 бит — правила 16-битного пути wgpu ([`crate::high_bit_color`]): SDR BT.709 без
+//!      цветокоррекции или HDR → SDR BT.2446-C, остальное — ошибка, как у wgpu.
 
-use codec_core::{ColorRange, MatrixCoefficients, VideoColorMetadata, VideoDisplayOrientation};
+use codec_core::{
+    BitDepth, ColorRange, MatrixCoefficients, VideoColorMetadata, VideoDisplayOrientation,
+};
 use gles2_video::{
-    ColorAdjustment, PictureMapping, PixelRect, QuarterTurn, VideoDrawRequest, YuvColorEncoding,
-    YuvMatrix, YuvRange,
+    ColorAdjustment, PictureMapping, PixelRect, QuarterTurn, VideoColorConversion,
+    VideoDrawRequest, YuvColorEncoding, YuvMatrix, YuvRange,
 };
 use render_core::{
-    ActiveColorPath, ColorPipelineSettings, PictureLayout, RenderViewport, RenderableFrame,
+    ActiveColorPath, ColorPipelineSettings, PictureLayout, RenderLiveSettings, RenderViewport,
+    RenderableFrame, SwapchainTransferMode,
 };
 use thiserror::Error;
+
+use crate::high_bit_color::{HighBitColorError, high_bit_color_conversion};
 
 /// Где лежит видео на цели.
 #[derive(Debug, Clone, Copy)]
@@ -35,8 +43,7 @@ pub struct VideoDrawPlan {
     visible_rects: Vec<PixelRect>,
     picture: PictureMapping,
     orientation: QuarterTurn,
-    color: YuvColorEncoding,
-    adjustment: ColorAdjustment,
+    color: VideoColorConversion,
     active_color_path: ActiveColorPath,
 }
 
@@ -51,17 +58,22 @@ pub enum VideoDrawPlanError {
         /// Высота показа.
         height: u32,
     },
+    /// Цвет кадра 10/12 бит вне пути wgpu или HDR без включённого HDR → SDR.
+    #[error(transparent)]
+    HighBitColor(#[from] HighBitColorError),
 }
 
 impl VideoDrawPlan {
-    /// План для кадра `frame` в `placement` с настройками цвета `settings`.
+    /// План для кадра `frame` в `placement` с живыми настройками рендера `settings` (цвет и
+    /// HDR → SDR — тот же снимок, что получает wgpu).
     ///
     /// # Errors
-    /// [`VideoDrawPlanError::InvalidDisplaySize`] — у кадра нулевой размер показа.
+    /// [`VideoDrawPlanError::InvalidDisplaySize`] — у кадра нулевой размер показа;
+    /// [`VideoDrawPlanError::HighBitColor`] — цвет кадра 10/12 бит не рисуется (как у wgpu).
     pub fn for_frame(
         frame: &RenderableFrame,
         placement: VideoPlacement<'_>,
-        settings: &ColorPipelineSettings,
+        settings: &RenderLiveSettings,
     ) -> Result<Self, VideoDrawPlanError> {
         if !frame.has_display_size() {
             return Err(VideoDrawPlanError::InvalidDisplaySize {
@@ -90,15 +102,13 @@ impl VideoDrawPlan {
                 uv_offset,
             }
         });
-        let active_color_path = ActiveColorPath::from_frame(frame, settings);
-        let color = yuv_encoding(&effective_shader_color(&active_color_path));
+        let (color, active_color_path) = frame_color(frame, settings)?;
         Ok(Self {
             viewport: pixel_rect(viewport),
             visible_rects,
             picture,
             orientation: quarter_turn(frame.display_orientation),
             color,
-            adjustment: color_adjustment(settings),
             active_color_path,
         })
     }
@@ -112,7 +122,6 @@ impl VideoDrawPlan {
             picture: self.picture,
             orientation: self.orientation,
             color: self.color,
-            adjustment: self.adjustment,
         }
     }
 
@@ -130,6 +139,37 @@ fn pixel_rect(viewport: RenderViewport) -> PixelRect {
         width: viewport.width,
         height: viewport.height,
     }
+}
+
+/// Перевод цвета кадра и цветовой путь для диагностики — по разрядности, как разводит wgpu
+/// (8 бит — `render_unorm8_frame`, 10/12 — `render_uint16_frame`).
+fn frame_color(
+    frame: &RenderableFrame,
+    settings: &RenderLiveSettings,
+) -> Result<(VideoColorConversion, ActiveColorPath), VideoDrawPlanError> {
+    let pipeline = &settings.color_pipeline;
+    if frame.bit_depth == BitDepth::Eight {
+        let active_color_path = ActiveColorPath::from_frame(frame, pipeline);
+        let conversion = VideoColorConversion::Sdr {
+            encoding: yuv_encoding(&effective_shader_color(&active_color_path)),
+            adjustment: color_adjustment(pipeline),
+        };
+        return Ok((conversion, active_color_path));
+    }
+    let conversion = high_bit_color_conversion(&frame.color, &settings.hdr_to_sdr)?;
+    // Диагностика пути — как `active_color_path_for_host_yuv420` wgpu.
+    let active_color_path = match conversion {
+        VideoColorConversion::Sdr { .. } => ActiveColorPath::from_frame(frame, pipeline),
+        VideoColorConversion::HdrToSdr(_) => ActiveColorPath::from_frame_with_hdr_to_sdr(
+            frame,
+            &ColorPipelineSettings {
+                swapchain_transfer: SwapchainTransferMode::ExplicitShaderOetf,
+                ..*pipeline
+            },
+            Some(settings.hdr_to_sdr),
+        ),
+    };
+    Ok((conversion, active_color_path))
 }
 
 /// Цвет, который реально уходит в шейдер 8-битного SDR-пути: подмена на SDR BT.709 limited при

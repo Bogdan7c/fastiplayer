@@ -10,8 +10,10 @@
 //! или без EGL тест пропускается с причиной; `GLES2_EGUI_REQUIRE_EGL=1` делает отсутствие EGL
 //! провалом.
 
+mod hdr_constants;
 mod scenes;
 mod video;
+mod video_high_bit;
 mod wgpu_target;
 
 use gles2_egui::{
@@ -39,6 +41,16 @@ struct ParityReport {
 }
 
 fn compare(wgpu_pixels: &[u8], gles2_pixels: &[u8], width: u32) -> ParityReport {
+    compare_with_tolerance(wgpu_pixels, gles2_pixels, width, CHANNEL_TOLERANCE)
+}
+
+/// Сравнение с допуском `tolerance` на канал (HDR — документированный допуск таблицы GLES2).
+fn compare_with_tolerance(
+    wgpu_pixels: &[u8],
+    gles2_pixels: &[u8],
+    width: u32,
+    tolerance: u8,
+) -> ParityReport {
     assert_eq!(wgpu_pixels.len(), gles2_pixels.len(), "same target size");
     let mut report = ParityReport::default();
     let mut colors = std::collections::HashSet::new();
@@ -52,7 +64,7 @@ fn compare(wgpu_pixels: &[u8], gles2_pixels: &[u8], width: u32) -> ParityReport 
             .unwrap_or(0);
         report.max_channel_difference = report.max_channel_difference.max(difference);
         report.pixels_differing += usize::from(difference > 0);
-        if difference > CHANNEL_TOLERANCE {
+        if difference > tolerance {
             report.pixels_over_tolerance += 1;
             if report.first_over_tolerance.is_none() {
                 let index = index as u32;

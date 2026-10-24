@@ -20,45 +20,80 @@ pub(crate) struct TestHostFrame {
 /// (`samples` = Y, U, V), к stride добавлено `row_tail` байт.
 pub(crate) fn host_frame(
     layout: VideoFramePixelLayout,
-    [width, height]: [u32; 2],
+    size: [u32; 2],
     row_tail: usize,
     samples: [u8; 3],
 ) -> TestHostFrame {
+    build_host_frame(layout, size, row_tail, samples.map(|sample| vec![sample]))
+}
+
+/// Кадр 10/12 бит: каждая плоскость заполнена своим кодом (`codes` = Y, U, V) 16-битными словами
+/// LE, к stride добавлено `row_tail_samples` отсчётов.
+pub(crate) fn high_bit_host_frame(
+    layout: VideoFramePixelLayout,
+    size: [u32; 2],
+    row_tail_samples: usize,
+    codes: [u16; 3],
+) -> TestHostFrame {
+    build_host_frame(
+        layout,
+        size,
+        row_tail_samples,
+        codes.map(|code| code.to_le_bytes().to_vec()),
+    )
+}
+
+/// Общая сборка: `sample_bytes` — байты одного отсчёта каждой плоскости (их длина — байт на
+/// отсчёт).
+fn build_host_frame(
+    layout: VideoFramePixelLayout,
+    [width, height]: [u32; 2],
+    row_tail_samples: usize,
+    sample_bytes: [Vec<u8>; 3],
+) -> TestHostFrame {
     let (chroma_width, chroma_height) = match layout {
-        VideoFramePixelLayout::Yuv420Planar8 => (width.div_ceil(2), height.div_ceil(2)),
-        VideoFramePixelLayout::Yuv422Planar8 => (width.div_ceil(2), height),
+        VideoFramePixelLayout::Yuv420Planar8
+        | VideoFramePixelLayout::Yuv420Planar10Le
+        | VideoFramePixelLayout::Yuv420Planar12Le => (width.div_ceil(2), height.div_ceil(2)),
+        VideoFramePixelLayout::Yuv422Planar8
+        | VideoFramePixelLayout::Yuv422Planar10Le
+        | VideoFramePixelLayout::Yuv422Planar12Le => (width.div_ceil(2), height),
         _ => (width, height),
     };
+    let bytes_per_sample = sample_bytes[0].len();
     let mut bytes = Vec::new();
     let mut planes = Vec::new();
     for (role, (plane_width, plane_height), sample) in [
-        (HostPlaneRole::Luma, (width, height), samples[0]),
+        (HostPlaneRole::Luma, (width, height), &sample_bytes[0]),
         (
             HostPlaneRole::ChromaU,
             (chroma_width, chroma_height),
-            samples[1],
+            &sample_bytes[1],
         ),
         (
             HostPlaneRole::ChromaV,
             (chroma_width, chroma_height),
-            samples[2],
+            &sample_bytes[2],
         ),
     ] {
-        let stride = plane_width as usize + row_tail;
+        let row_bytes = plane_width as usize * bytes_per_sample;
+        let tail_bytes = row_tail_samples * bytes_per_sample;
         let offset = bytes.len();
         for row in 0..plane_height {
-            bytes.extend(std::iter::repeat_n(sample, plane_width as usize));
+            for _ in 0..plane_width {
+                bytes.extend_from_slice(sample);
+            }
             if row + 1 < plane_height {
-                bytes.extend(std::iter::repeat_n(0xEE, row_tail));
+                bytes.extend(std::iter::repeat_n(0xEE, tail_bytes));
             }
         }
         planes.push(HostPlaneDescriptor {
             role,
             offset,
-            stride,
+            stride: row_bytes + tail_bytes,
             visible_width: plane_width,
             visible_height: plane_height,
-            bytes_per_sample: 1,
+            bytes_per_sample,
         });
     }
     TestHostFrame {

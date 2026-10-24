@@ -20,13 +20,19 @@ use gles2_egui::{ActiveFrame, GlAccessError, Gles2Context};
 use crate::geometry::GlWindowRect;
 use crate::upload_plan::{TextureExtent, UploadCall};
 
-/// Как хранится одноканальная плоскость в текстуре.
+/// Как хранится плоскость в текстуре.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlaneTextureFormat {
     /// `GL_LUMINANCE` ядра GLES 2.0: выборка даёт `(L, L, L, 1)`.
     Luminance,
     /// `GL_RED_EXT` из `GL_EXT_texture_rg`: настоящая одноканальная текстура, `(R, 0, 0, 1)`.
     RedExt,
+    /// `GL_LUMINANCE_ALPHA` ядра GLES 2.0 для 10/12 бит: два байта на тексель, первый (младший
+    /// байт LE-слова) — `L`, второй (старший) — `A`; выборка `(L, L, L, A)`. Шейдер собирает код
+    /// `L·255 + A·255·256`. Фильтрация только `NEAREST`: смешивание соседних текселей смешало бы
+    /// байты по отдельности и дало мусорный код (у wgpu 16-битный путь тоже без фильтрации —
+    /// `textureLoad`).
+    LuminanceAlpha,
 }
 
 impl PlaneTextureFormat {
@@ -36,13 +42,23 @@ impl PlaneTextureFormat {
             Self::Luminance => glow::LUMINANCE,
             // `GL_RED_EXT` = 0x1903 = `GL_RED` (спецификация `EXT_texture_rg`).
             Self::RedExt => glow::RED,
+            Self::LuminanceAlpha => glow::LUMINANCE_ALPHA,
         }
     }
 
-    /// Байт на тексель (8-битная плоскость).
-    const fn bytes_per_texel(self) -> usize {
+    /// Байт на тексель.
+    pub(crate) const fn bytes_per_texel(self) -> usize {
         match self {
             Self::Luminance | Self::RedExt => 1,
+            Self::LuminanceAlpha => 2,
+        }
+    }
+
+    /// Фильтр выборки: 8 бит — билинейный (паритет с wgpu), пары байтов — только nearest.
+    const fn filter(self) -> u32 {
+        match self {
+            Self::Luminance | Self::RedExt => glow::LINEAR,
+            Self::LuminanceAlpha => glow::NEAREST,
         }
     }
 }
@@ -81,6 +97,20 @@ pub enum VideoGlError {
         /// Что именно.
         what: &'static str,
     },
+}
+
+/// Текстурный блок таблицы HDR → SDR (после Y, U, V в блоках 0–2).
+pub(crate) const HDR_LUT_TEXTURE_UNIT: i32 = 3;
+
+/// Что задаёт `glTexImage2D` текстуры видеослоя.
+struct TextureDefinition<'a> {
+    /// `internalformat`/`format` (в GLES 2.0 совпадают).
+    format: u32,
+    /// `MIN`/`MAG` фильтр.
+    filter: u32,
+    extent: TextureExtent,
+    /// Данные уровня 0 или `None` — только выделить.
+    pixels: Option<&'a [u8]>,
 }
 
 /// Таблица GL контекста, текущего в этом потоке.
@@ -182,27 +212,83 @@ impl<'a> VideoGl<'a> {
 
     // --- Текстуры плоскостей -------------------------------------------------------------
 
-    /// Выделить текстуру плоскости без данных: линейная фильтрация, `CLAMP_TO_EDGE`, без mip
-    /// (единственный вариант для текстур не степени двойки в ядре GLES 2.0, §3.8.2). Привязка —
-    /// к блоку 0.
+    /// Выделить текстуру плоскости без данных: фильтр формата ([`PlaneTextureFormat`]),
+    /// `CLAMP_TO_EDGE`, без mip (единственный вариант для текстур не степени двойки в ядре
+    /// GLES 2.0, §3.8.2). Привязка — к блоку 0.
     pub(crate) fn allocate_plane_texture(
         self,
         texture: glow::NativeTexture,
         format: PlaneTextureFormat,
         extent: TextureExtent,
     ) -> Result<(), VideoGlError> {
-        let width = gl_int(extent.width, "plane texture width")?;
-        let height = gl_int(extent.height, "plane texture height")?;
-        let gl_format = format.gl_format();
+        self.define_texture(
+            texture,
+            TextureDefinition {
+                format: format.gl_format(),
+                filter: format.filter(),
+                extent,
+                pixels: None,
+            },
+        )
+    }
+
+    /// Создать текстуру атласа таблицы HDR → SDR (RGBA8, билинейная) сразу с данными.
+    /// `rgba` — ровно `ширина × высота × 4` байт, иначе отказ до драйвера.
+    pub(crate) fn allocate_hdr_lut_texture(
+        self,
+        texture: glow::NativeTexture,
+        extent: TextureExtent,
+        rgba: &[u8],
+    ) -> Result<(), VideoGlError> {
+        let to_usize = |value: u32| usize::try_from(value).ok();
+        let expected = to_usize(extent.width)
+            .zip(to_usize(extent.height))
+            .and_then(|(width, height)| width.checked_mul(height)?.checked_mul(4))
+            .ok_or(VideoGlError::IntegerOverflow {
+                what: "HDR table byte size",
+            })?;
+        if expected != rgba.len() {
+            return Err(VideoGlError::UploadSizeMismatch {
+                gl_reads: expected,
+                available: rgba.len(),
+            });
+        }
+        self.define_texture(
+            texture,
+            TextureDefinition {
+                format: glow::RGBA,
+                filter: glow::LINEAR,
+                extent,
+                pixels: Some(rgba),
+            },
+        )
+    }
+
+    /// `glTexImage2D` уровня 0 с параметрами выборки; ошибка выделения — по `glGetError`.
+    fn define_texture(
+        self,
+        texture: glow::NativeTexture,
+        definition: TextureDefinition<'_>,
+    ) -> Result<(), VideoGlError> {
+        let TextureDefinition {
+            format,
+            filter,
+            extent,
+            pixels,
+        } = definition;
+        let width = gl_int(extent.width, "texture width")?;
+        let height = gl_int(extent.height, "texture height")?;
         self.report_stale_gl_errors();
         // SAFETY: контекст текущий; текстура создана этим контекстом; параметры — константы
-        // GLES 2.0; данные `None` (NULL) — драйвер только выделяет память, ничего не читая.
+        // GLES 2.0. Данные: `None` (NULL) — драйвер только выделяет память; `Some` — срез, длину
+        // которого вызывающий сверил с `ширина × высота × байт на тексель` при `UNPACK_ALIGNMENT`
+        // 1 (ставится здесь же), то есть драйвер не читает за его концом.
         let allocation_error = unsafe {
             self.gl.active_texture(glow::TEXTURE0);
             self.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
             for (parameter, value) in [
-                (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
-                (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+                (glow::TEXTURE_MIN_FILTER, filter),
+                (glow::TEXTURE_MAG_FILTER, filter),
                 (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
                 (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
             ] {
@@ -210,16 +296,17 @@ impl<'a> VideoGl<'a> {
                 self.gl
                     .tex_parameter_i32(glow::TEXTURE_2D, parameter, value.cast_signed());
             }
+            self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             self.gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
-                gl_format.cast_signed(),
+                format.cast_signed(),
                 width,
                 height,
                 0,
-                gl_format,
+                format,
                 glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(None),
+                glow::PixelUnpackData::Slice(pixels),
             );
             self.gl.get_error()
         };
@@ -369,10 +456,15 @@ impl<'a> VideoGl<'a> {
         unsafe { self.gl.scissor(rect.x, rect.y, rect.width, rect.height) }
     }
 
-    /// Привязать текстуры Y, U, V к блокам 0, 1, 2; активным остаётся блок 0 (его ждёт художник).
-    pub(crate) fn bind_plane_textures(self, textures: [glow::NativeTexture; 3]) {
-        // SAFETY: контекст текущий; текстуры созданы этим контекстом; блоки 0–2 есть в любой
-        // реализации GLES 2.0 (`MAX_COMBINED_TEXTURE_IMAGE_UNITS` ≥ 8, таблица 6.20).
+    /// Привязать текстуры Y, U, V к блокам 0, 1, 2 и таблицу HDR (если есть) к блоку
+    /// [`HDR_LUT_TEXTURE_UNIT`]; активным остаётся блок 0 (его ждёт художник).
+    pub(crate) fn bind_plane_textures(
+        self,
+        textures: [glow::NativeTexture; 3],
+        hdr_lut: Option<glow::NativeTexture>,
+    ) {
+        // SAFETY: контекст текущий; текстуры созданы этим контекстом; блоки 0–3 есть в любой
+        // реализации GLES 2.0 (`MAX_TEXTURE_IMAGE_UNITS` ≥ 8, таблица 6.20).
         unsafe {
             for (unit, texture) in [glow::TEXTURE0, glow::TEXTURE1, glow::TEXTURE2]
                 .into_iter()
@@ -380,6 +472,11 @@ impl<'a> VideoGl<'a> {
             {
                 self.gl.active_texture(unit);
                 self.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            }
+            if let Some(table) = hdr_lut {
+                self.gl
+                    .active_texture(glow::TEXTURE0 + HDR_LUT_TEXTURE_UNIT.cast_unsigned());
+                self.gl.bind_texture(glow::TEXTURE_2D, Some(table));
             }
             self.gl.active_texture(glow::TEXTURE0);
         }

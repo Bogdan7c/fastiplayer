@@ -12,14 +12,16 @@
     reason = "каждый тестовый бинарь использует свою часть стенда"
 )]
 
+pub mod high_bit;
+
 use gles2_egui::{
     CreateError, FrameStart, Gles2Context, OffscreenAlpha, OffscreenPixels, SurfaceSize,
 };
 use gles2_video::{
     ChromaSubsampling, ColorAdjustment, HostRows, PictureMapping, PixelRect, PlanarFrameUpload,
-    PlanarLayout, PlaneExtent, PlaneSource, QuarterTurn, SampleDepth, VideoDrawOutcome,
-    VideoDrawRequest, VideoFrameKey, VideoLayerOptions, VideoLayerRenderer, YuvColorEncoding,
-    YuvMatrix, YuvRange,
+    PlanarLayout, PlaneExtent, PlaneSource, QuarterTurn, SampleDepth, VideoColorConversion,
+    VideoDrawOutcome, VideoDrawRequest, VideoFrameKey, VideoLayerOptions, VideoLayerRenderer,
+    YuvColorEncoding, YuvMatrix, YuvRange,
 };
 
 pub const REQUIRE_EGL_VARIABLE: &str = "GLES2_EGUI_REQUIRE_EGL";
@@ -180,20 +182,35 @@ pub fn extent(width: u32, height: u32) -> PlaneExtent {
     PlaneExtent { width, height }
 }
 
-/// Запрос «картинка на всю цель без поворота».
+/// Запрос «SDR-картинка на всю цель без поворота».
 pub fn fill_request<'a>(
     target: SurfaceSize,
     visible_rects: &'a [PixelRect],
-    color: YuvColorEncoding,
+    encoding: YuvColorEncoding,
     adjustment: ColorAdjustment,
 ) -> VideoDrawRequest<'a> {
+    fill_request_with(
+        target,
+        visible_rects,
+        VideoColorConversion::Sdr {
+            encoding,
+            adjustment,
+        },
+    )
+}
+
+/// Запрос «картинка на всю цель без поворота» с любым переводом цвета.
+pub fn fill_request_with(
+    target: SurfaceSize,
+    visible_rects: &[PixelRect],
+    color: VideoColorConversion,
+) -> VideoDrawRequest<'_> {
     VideoDrawRequest {
         viewport: full_rect(target),
         visible_rects,
         picture: PictureMapping::FILL,
         orientation: QuarterTurn::Identity,
         color,
-        adjustment,
     }
 }
 
@@ -319,7 +336,7 @@ pub fn reference_rgba(
 
 /// `apply_sdr_adjustments` из WGSL: насыщенность → контраст → экспозиция → яркость →
 /// gain/offset → clamp.
-fn apply_sdr_adjustments(
+pub fn apply_sdr_adjustments(
     rgb: [f32; 3],
     weights: [f32; 3],
     adjustment: ColorAdjustment,

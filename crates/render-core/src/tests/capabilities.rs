@@ -618,3 +618,115 @@ fn host_yuv420_hdr_policy_requires_high_bit_gpu_shader_contract() {
         VideoFrameContract::host_yuv420_planar12le(),
     ));
 }
+
+/// Программный renderer с HDR-to-SDR, но без импорта P010 (GLES2 сессии 06): HDR 10/12 бит
+/// рисуется, P010 и 8 бит — нет.
+#[test]
+fn host_upload_hdr_to_sdr_does_not_need_p010_import() {
+    let mut capabilities = RenderCapabilities::fake_host_upload_for_tests(
+        &[
+            VideoFramePixelLayout::Yuv420Planar8,
+            VideoFramePixelLayout::Yuv420Planar10Le,
+            VideoFramePixelLayout::Yuv422Planar12Le,
+        ],
+        Some(4096),
+    );
+    capabilities.backend = RenderBackendKind::OpenGles;
+    capabilities.supports_hdr_to_sdr = true;
+    capabilities
+        .supported_hdr_to_sdr_operators
+        .push(HdrToneMappingOperator::Bt2446C);
+    let settings = HdrToSdrSettings::default();
+
+    let mut ten_bit_hdr = video_requirement_for_tests(BitDepth::Ten, ChromaSubsampling::Yuv420);
+    ten_bit_hdr.hdr = true;
+    let mut twelve_bit_hdr =
+        video_requirement_for_tests(BitDepth::Twelve, ChromaSubsampling::Yuv422);
+    twelve_bit_hdr.hdr = true;
+    let mut eight_bit_hdr = video_requirement_for_tests(BitDepth::Eight, ChromaSubsampling::Yuv420);
+    eight_bit_hdr.hdr = true;
+
+    assert_eq!(
+        capabilities.check_video_output(
+            &ten_bit_hdr,
+            host_upload_contract_for_tests(VideoFramePixelLayout::Yuv420Planar10Le)
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        capabilities.check_video_output(
+            &twelve_bit_hdr,
+            host_upload_contract_for_tests(VideoFramePixelLayout::Yuv422Planar12Le)
+        ),
+        Ok(())
+    );
+    let eight_bit = host_upload_contract_for_tests(VideoFramePixelLayout::Yuv420Planar8);
+    assert_eq!(
+        capabilities.check_video_output(&eight_bit_hdr, eight_bit),
+        Err(RenderVideoOutputRejection::HdrUnsupported {
+            frame_contract: eight_bit
+        })
+    );
+    let p010 = VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers);
+    assert!(!capabilities.supports_hdr_to_sdr_for_contract(&settings, p010));
+    // P010-правило прежнее: без renderable P010 «HDR через P010» не объявлен.
+    assert!(!capabilities.supports_hdr_to_sdr_with(&settings));
+    assert!(
+        capabilities
+            .summary_text()
+            .contains("HDR available via HDR-to-SDR"),
+        "{}",
+        capabilities.summary_text()
+    );
+
+    // Выключенный HDR-to-SDR или чужой оператор — снова отказ.
+    let disabled = HdrToSdrSettings {
+        enabled: false,
+        ..settings
+    };
+    let ten_bit = host_upload_contract_for_tests(VideoFramePixelLayout::Yuv420Planar10Le);
+    assert!(!capabilities.supports_hdr_to_sdr_for_contract(&disabled, ten_bit));
+    capabilities.supported_hdr_to_sdr_operators.clear();
+    assert_eq!(
+        capabilities.check_video_output(&ten_bit_hdr, ten_bit),
+        Err(RenderVideoOutputRejection::HdrUnsupported {
+            frame_contract: ten_bit
+        })
+    );
+}
+
+/// Решения wgpu не изменились: для каждого конструктора и каждого объявленного контракта
+/// проверка по контракту равна прежнему правилу «HDR-to-SDR через renderable P010 и раскладка с
+/// HDR-путём».
+#[test]
+fn wgpu_hdr_decisions_per_contract_match_the_p010_rule() {
+    let settings = HdrToSdrSettings::default();
+    let constructors = [
+        RenderCapabilities::wgpu_nv12(Some(4096)),
+        RenderCapabilities::wgpu_p010_bt2446c(Some(4096)),
+        RenderCapabilities::wgpu_p010_bt2446c_with_dma_buf_image_layouts(
+            Some(8192),
+            vec![DmaBufImageLayout::SeparateLayers],
+        ),
+        RenderCapabilities::wgpu_p010_bt2446c_with_dma_buf_image_layouts(
+            Some(8192),
+            vec![
+                DmaBufImageLayout::SeparateLayers,
+                DmaBufImageLayout::ComposedLayers,
+            ],
+        ),
+    ];
+    for capabilities in constructors {
+        assert!(!capabilities.supported_frame_contracts.is_empty());
+        for contract in &capabilities.supported_frame_contracts {
+            let previous_rule = capabilities.supports_hdr_to_sdr_with(&settings)
+                && crate::color::pixel_layout_supports_phase10_hdr_to_sdr(contract.pixel_layout);
+            assert_eq!(
+                capabilities.supports_hdr_to_sdr_for_contract(&settings, *contract),
+                previous_rule,
+                "{} {contract:?}",
+                capabilities.display_name
+            );
+        }
+    }
+}

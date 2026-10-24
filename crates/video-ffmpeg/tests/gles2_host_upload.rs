@@ -27,11 +27,11 @@ use gles2_egui::{
     CreateError, FenceStatus, FrameStart, Gles2Context, GpuFence, OffscreenAlpha, SurfaceSize,
 };
 use gles2_video::{
-    RowLengthPreference, UploadOutcome, VideoLayerOptions, VideoLayerRenderer, YuvColorEncoding,
-    YuvMatrix, YuvRange,
+    RowLengthPreference, UploadOutcome, VideoColorConversion, VideoLayerOptions,
+    VideoLayerRenderer, YuvColorEncoding, YuvMatrix, YuvRange,
 };
 use media_core::TrackId;
-use render_core::{ColorPipelineSettings, RenderViewport};
+use render_core::{RenderLiveSettings, RenderViewport};
 use render_gles2_shell::{
     VideoDrawPlan, VideoPlacement, host_planar_frame_upload, renderable_frame,
 };
@@ -296,7 +296,7 @@ fn render_fixture_through_gles2(row_length: RowLengthPreference) {
                 video_viewport: RenderViewport::full_surface(FRAME_WIDTH, FRAME_HEIGHT),
                 exclusions: &[],
             },
-            &ColorPipelineSettings::identity(),
+            &RenderLiveSettings::default(),
         )
         .unwrap();
         match context.begin_frame().unwrap() {
@@ -311,7 +311,9 @@ fn render_fixture_through_gles2(row_length: RowLengthPreference) {
         video.retire_submitted_work(Arc::clone(&fence));
 
         let pixels = context.read_offscreen_pixels().unwrap();
-        let encoding = plan.request().color;
+        let VideoColorConversion::Sdr { encoding, .. } = plan.request().color else {
+            panic!("8-bit VP9 draws through the SDR conversion");
+        };
         for y in 0..FRAME_HEIGHT {
             for x in 0..FRAME_WIDTH {
                 let expected = reference_rgba(encoding, source_samples(&descriptor, x, y));

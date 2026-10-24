@@ -22,7 +22,12 @@
 //! Вход — сырые потоки без контейнера (контейнер разбирает плеер, а не стенд):
 //! - `--codec h264 --input file.h264` — Annex B с AUD (`ffmpeg … -bsf:v
 //!   h264_mp4toannexb,h264_metadata=aud=insert -f h264`);
-//! - `--codec vp9 --input file.ivf` — IVF (`ffmpeg … -c copy -f ivf`).
+//! - `--codec vp9 --input file.ivf` — IVF (`ffmpeg … -c copy -f ivf`);
+//! - `--codec hevc --input file.h265` — Annex B с AUD (`ffmpeg … -c copy -bsf:v
+//!   hevc_mp4toannexb,hevc_metadata=aud=insert -f hevc`).
+//!
+//! `--ten-bit` — кадры 4:2:0 10 бит (`yuv420p10le`, сессия 06): цвет кадра (в том числе HDR PQ/HLG)
+//! FFmpeg берёт из битового потока, HDR → SDR — по настройкам по умолчанию.
 //!
 //! Пример: `cargo run --release -p video-ffmpeg --features vendored-ffmpeg --example
 //! gles2_upload_bench -- --codec vp9 --input vp9-4k60.ivf --frames 600`.
@@ -40,14 +45,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use codec_core::{VideoCodec, VideoDecodeRequirement};
+use codec_core::{BitDepth, VideoCodec, VideoDecodeRequirement};
 use gles2_egui::{FenceStatus, FrameStart, Gles2Context, GpuFence, OffscreenAlpha, SurfaceSize};
 use gles2_video::{
     PlaneFormatPreference, RowLengthPreference, UploadOutcome, VideoLayerOptions,
     VideoLayerRenderer,
 };
 use media_core::TrackId;
-use render_core::{ColorPipelineSettings, RenderViewport};
+use render_core::{RenderLiveSettings, RenderViewport};
 use render_gles2_shell::{
     VideoDrawPlan, VideoPlacement, host_planar_frame_upload, renderable_frame,
 };
@@ -71,6 +76,7 @@ struct BenchArguments {
     pace: Option<Duration>,
     gpu_probe_draws: usize,
     plane_format: PlaneFormatPreference,
+    ten_bit: bool,
 }
 
 fn parse_arguments() -> BenchArguments {
@@ -82,6 +88,7 @@ fn parse_arguments() -> BenchArguments {
     let mut pace_hz: u32 = 60;
     let mut gpu_probe_draws = 0;
     let mut plane_format = PlaneFormatPreference::BestAvailable;
+    let mut ten_bit = false;
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         let mut value = || {
@@ -94,7 +101,8 @@ fn parse_arguments() -> BenchArguments {
                 codec = Some(match value().as_str() {
                     "h264" => VideoCodec::H264,
                     "vp9" => VideoCodec::Vp9,
-                    other => panic!("unsupported --codec {other} (h264 | vp9)"),
+                    "hevc" => VideoCodec::H265,
+                    other => panic!("unsupported --codec {other} (h264 | vp9 | hevc)"),
                 });
             }
             "--input" => input = Some(PathBuf::from(value())),
@@ -111,11 +119,12 @@ fn parse_arguments() -> BenchArguments {
             "--pace-hz" => pace_hz = value().parse().expect("--pace-hz is a number"),
             "--luminance" => plane_format = PlaneFormatPreference::LuminanceOnly,
             "--gpu-probe" => gpu_probe_draws = value().parse().expect("--gpu-probe is a number"),
+            "--ten-bit" => ten_bit = true,
             other => panic!("unknown argument {other}"),
         }
     }
     BenchArguments {
-        codec: codec.expect("--codec h264|vp9"),
+        codec: codec.expect("--codec h264|vp9|hevc"),
         input: input.expect("--input PATH"),
         frame_limit,
         target,
@@ -123,6 +132,7 @@ fn parse_arguments() -> BenchArguments {
         pace: (pace_hz > 0).then(|| Duration::from_secs(1) / pace_hz),
         gpu_probe_draws,
         plane_format,
+        ten_bit,
     }
 }
 
@@ -154,11 +164,21 @@ fn ivf_packets(file_bytes: &[u8]) -> Vec<Bytes> {
     packets
 }
 
-/// Access unit-ы Annex B по разделителям AUD (`00 00 01 09` после любого числа нулей).
-fn annex_b_access_units(file_bytes: &[u8]) -> Vec<Bytes> {
+/// Тип NAL разделителя access unit-ов (AUD): H.264 — 9 (младшие 5 бит), HEVC — 35 (биты 1–6).
+fn is_access_unit_delimiter(codec: VideoCodec, nal_header: u8) -> bool {
+    match codec {
+        VideoCodec::H265 => (nal_header >> 1) & 0x3F == 35,
+        _ => nal_header & 0x1F == 9,
+    }
+}
+
+/// Access unit-ы Annex B по разделителям AUD (`00 00 01` + AUD после любого числа нулей).
+fn annex_b_access_units(codec: VideoCodec, file_bytes: &[u8]) -> Vec<Bytes> {
     let mut starts = Vec::new();
     for index in 0..file_bytes.len().saturating_sub(3) {
-        if file_bytes[index..index + 3] == [0, 0, 1] && file_bytes[index + 3] & 0x1F == 9 {
+        if file_bytes[index..index + 3] == [0, 0, 1]
+            && is_access_unit_delimiter(codec, file_bytes[index + 3])
+        {
             // Включаем ведущий ноль 4-байтного стартового кода.
             let start = if index > 0 && file_bytes[index - 1] == 0 {
                 index - 1
@@ -286,7 +306,7 @@ impl Gles2Screen {
                 video_viewport: RenderViewport::full_surface(width, height),
                 exclusions: &[],
             },
-            &ColorPipelineSettings::identity(),
+            &RenderLiveSettings::default(),
         )
         .expect("draw plan");
         match self.context.begin_frame().expect("frame") {
@@ -308,17 +328,24 @@ fn main() {
     let file_bytes = std::fs::read(&arguments.input).expect("read input stream");
     let packets = match arguments.codec {
         VideoCodec::Vp9 => ivf_packets(&file_bytes),
-        _ => annex_b_access_units(&file_bytes),
+        codec => annex_b_access_units(codec, &file_bytes),
     };
     let started = FfmpegSoftwareVideoBackendFactory::new()
         .start_for_composition()
         .expect("software FFmpeg backend starts");
     let decoder = started.into_decoder_thread();
-    let config = VideoStreamDecodeConfig::from_requirement(
-        TRACK_ID,
-        &VideoDecodeRequirement::new(arguments.codec),
-        VideoFrameContract::host_yuv420_planar8(),
-    );
+    let (requirement, output_contract) = if arguments.ten_bit {
+        (
+            VideoDecodeRequirement::new(arguments.codec).with_bit_depth(BitDepth::Ten),
+            VideoFrameContract::host_yuv420_planar10le(),
+        )
+    } else {
+        (
+            VideoDecodeRequirement::new(arguments.codec),
+            VideoFrameContract::host_yuv420_planar8(),
+        )
+    };
+    let config = VideoStreamDecodeConfig::from_requirement(TRACK_ID, &requirement, output_contract);
     assert_eq!(
         decoder.configure_stream(config),
         VideoStreamConfigResult::Configured
@@ -461,6 +488,7 @@ fn main() {
         summary("upload thread CPU", &mut screen.upload_cpu_times)
     );
     println!("{}", summary("draw+present+fence", &mut screen.draw_times));
+    println!("HDR tone-mapping tables built: {}", stats.hdr_table_builds);
     for frame in &in_flight {
         frame
             .fence

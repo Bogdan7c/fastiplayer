@@ -315,16 +315,49 @@ impl RenderCapabilities {
             && self.supports_frame_contract(VideoFrameContract::dma_buf_p010(layout))
     }
 
-    /// Проверяет production-ready HDR-to-SDR support для конкретных settings.
+    /// Проверяет production-ready HDR-to-SDR support для конкретных settings на аппаратном
+    /// P010-пути (требует production-renderable P010).
     #[must_use]
     pub fn supports_hdr_to_sdr_with(&self, settings: &HdrToSdrSettings) -> bool {
+        self.supports_p010_rendering() && self.supports_hdr_to_sdr_settings(settings)
+    }
+
+    /// HDR-to-SDR для конкретного frame contract-а (gles2-renderer сессия 06).
+    ///
+    /// P010 (аппаратный импорт) по-прежнему требует production-renderable P010. Программная
+    /// загрузка 10/12 бит P010 не нужна: renderer, объявивший такой контракт вместе с
+    /// HDR-to-SDR, рисует его своим шейдером (GLES2 без DMA-BUF-импорта P010). У wgpu
+    /// `supports_hdr_to_sdr` объявляется только вместе с renderable P010, поэтому его решения не
+    /// меняются (тест `wgpu_hdr_decisions_per_contract_match_the_p010_rule`).
+    #[must_use]
+    pub fn supports_hdr_to_sdr_for_contract(
+        &self,
+        settings: &HdrToSdrSettings,
+        frame_contract: VideoFrameContract,
+    ) -> bool {
+        let p010_ready = frame_contract.pixel_layout != VideoFramePixelLayout::P010
+            || self.supports_p010_rendering();
+        frame_contract_supports_hdr_to_sdr(frame_contract)
+            && p010_ready
+            && self.supports_hdr_to_sdr_settings(settings)
+    }
+
+    /// Renderer объявил HDR-to-SDR, и settings укладываются в объявленный контракт.
+    fn supports_hdr_to_sdr_settings(&self, settings: &HdrToSdrSettings) -> bool {
         self.supports_hdr_to_sdr
-            && self.supports_p010_rendering()
             && settings.is_phase10_bt2446_c_sdr_bt709()
             && self.hdr_output_mode == settings.output_mode
             && self
                 .supported_hdr_to_sdr_operators
                 .contains(&settings.operator)
+    }
+
+    /// Хоть один объявленный контракт рисуется с HDR-to-SDR при settings по умолчанию.
+    fn declares_any_hdr_to_sdr_contract(&self) -> bool {
+        let settings = HdrToSdrSettings::default();
+        self.supported_frame_contracts
+            .iter()
+            .any(|contract| self.supports_hdr_to_sdr_for_contract(&settings, *contract))
     }
 
     /// Проверяет stream-level renderability для уже выбранного frame contract-а.
@@ -358,8 +391,8 @@ impl RenderCapabilities {
         }
 
         if requirement.hdr
-            && !((self.supports_hdr_to_sdr_with(&HdrToSdrSettings::default())
-                && frame_contract_supports_hdr_to_sdr(frame_contract))
+            && !(self
+                .supports_hdr_to_sdr_for_contract(&HdrToSdrSettings::default(), frame_contract)
                 || self.supports_native_hdr_output)
         {
             return Err(RenderVideoOutputRejection::HdrUnsupported { frame_contract });
@@ -398,7 +431,7 @@ impl RenderCapabilities {
             .collect::<Vec<_>>()
             .join(", ");
 
-        let hdr_support_label = if self.supports_hdr_to_sdr_with(&HdrToSdrSettings::default()) {
+        let hdr_support_label = if self.declares_any_hdr_to_sdr_contract() {
             "HDR available via HDR-to-SDR"
         } else if self.supports_native_hdr_output {
             "HDR available via native HDR output"

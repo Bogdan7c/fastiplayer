@@ -6,15 +6,20 @@
 //! дескрипторов декодера плеера в него делает адаптер (`render-gles2-shell`).
 //!
 //! # Что здесь есть
-//! - планарный YUV 8 бит 4:2:0 / 4:2:2 / 4:4:4 из памяти процесса с **ровно одной копией**
+//! - планарный YUV 8 бит 4:2:0 / 4:2:2 / 4:4:4 и 10/12 бит (4:4:4 — 10 бит, матрица v1 wgpu)
+//!   из памяти процесса с **ровно одной копией**
 //!   (драйвер копирует строки в текстуру; без `GL_EXT_unpack_subimage` — текстура шириной в
-//!   stride, хвост строки обрезает шейдер, без переупаковки);
+//!   stride, хвост строки обрезает шейдер, без переупаковки; 10/12 бит — пара байтов LE в
+//!   `GL_LUMINANCE_ALPHA` как есть, код собирает шейдер, нужен `highp`);
 //! - источник плоскостей сразу допускает 0 копий ([`PlaneSource::DmaBuf`], реализуют сессии 07
 //!   и 12);
 //! - кольцо слотов текстур ([`UploadSlotCount`], по умолчанию 3): запись только в слот, который
 //!   GPU больше не читает (fence кадра); нет слота — [`UploadOutcome::Busy`], кольцо не растёт;
 //! - перевод YUV → RGB (BT.601/BT.709, limited/full), цветокоррекция, поворот, letterbox и
 //!   исключения (сайдбар) — строгий паритет с wgpu-рендером плеера;
+//! - HDR → SDR BT.2446-C для 10/12 бит ([`HdrToSdrConversion`]): формула wgpu в `f64` на CPU в
+//!   узлах таблицы 65³, шейдер смешивает узлы (решение владельца сессии 06 ради старого железа;
+//!   допуск и замер — модуль `hdr`);
 //! - подложка кадра [`VideoUnderlay`] для `gles2_egui::FrameCompositor`.
 //!
 //! # Безопасность
@@ -29,12 +34,15 @@
 
 mod color;
 mod draw_uniforms;
+mod frame_color;
 mod geometry;
 #[allow(
     unsafe_code,
     reason = "модуль безопасности вызовов GL видеослоя; каждый блок с // SAFETY:"
 )]
 mod gl_calls;
+mod hdr;
+mod hdr_table_texture;
 mod layer_api;
 mod planes;
 mod program;
@@ -47,11 +55,24 @@ mod upload_plan;
 pub use color::{ColorAdjustment, YuvColorEncoding, YuvMatrix, YuvRange};
 pub use geometry::{PictureMapping, PixelRect, QuarterTurn, RectOutOfRange};
 pub use gl_calls::{PlaneTextureFormat, VideoGlError};
-pub use layer_api::{
-    PlaneFormatPreference, RowLengthPreference, UploadOutcome, UploadReport, VideoDrawError,
-    VideoDrawOutcome, VideoDrawRequest, VideoLayerError, VideoLayerOptions, VideoLayerStats,
-    VideoUploadError,
+pub use hdr::{
+    HdrLevelsError, HdrReferenceLevels, HdrToSdrConversion, HdrTransfer, bt2446c_to_sdr,
 };
+pub use layer_api::{
+    PlaneFormatPreference, RowLengthPreference, UploadOutcome, UploadReport, VideoColorConversion,
+    VideoDrawError, VideoDrawOutcome, VideoDrawRequest, VideoLayerError, VideoLayerOptions,
+    VideoLayerStats, VideoUploadError,
+};
+/// Константы формулы BT.2446-C (тот же набор, что в шейдере wgpu плеера): для сверки констант
+/// и для своих CPU-расчётов вызывающего.
+pub mod bt2446c_constants {
+    pub use crate::hdr::{
+        BT1886_REFERENCE_GAMMA, BT2020_KB, BT2020_KG, BT2020_KR, BT2020_LINEAR_RGB_TO_XYZ,
+        BT2446C_CROSSTALK_ALPHA, BT2446C_K1, BT2446C_K2, BT2446C_K3, BT2446C_K4,
+        BT2446C_SDR_INFLECTION_NITS, HLG_A, HLG_B, HLG_C, HLG_REFERENCE_SYSTEM_GAMMA, PQ_C1, PQ_C2,
+        PQ_C3, PQ_M1, PQ_M2, PQ_REFERENCE_PEAK_NITS, XYZ_TO_BT709_LINEAR_RGB,
+    };
+}
 pub use planes::{
     ChromaSubsampling, DmaBufPlane, FrameLayoutError, HostRows, PlanarFrameUpload, PlanarLayout,
     PlaneExtent, PlaneRole, PlaneSource, PlaneSourceError, PlaneSourceKind, SampleDepth,
