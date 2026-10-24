@@ -933,7 +933,15 @@ class DependencyGraphPolicyTests(unittest.TestCase):
         )
 
         # Normal-зависимость вне allowlist-а и crate-ы плеера — нарушение.
-        for forbidden in ("wgpu", "egui-wgpu", "render-shell-api", "player-core", "video-core"):
+        # `egui` целиком (виджеты) тоже: художнику нужны только типы `epaint`.
+        for forbidden in (
+            "wgpu",
+            "egui",
+            "egui-wgpu",
+            "render-shell-api",
+            "player-core",
+            "video-core",
+        ):
             packages["gles2-egui"] = package_with_dependencies(
                 "gles2-egui", (("glow", None), (forbidden, None))
             )

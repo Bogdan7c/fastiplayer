@@ -16,6 +16,9 @@
 
 mod egui_compositor;
 mod frame;
+// Пиксельный паритет с GLES2-художником (сессия 04 плана gles2-renderer): только тесты.
+#[cfg(test)]
+mod gles2_parity_tests;
 mod shell;
 mod subtitle_overlay;
 mod surface_alpha;

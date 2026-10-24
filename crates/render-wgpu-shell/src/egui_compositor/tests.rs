@@ -28,7 +28,7 @@ struct Harness {
 impl Harness {
     /// `None`, если нет GPU adapter-а.
     fn new() -> Option<Self> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = crate::shell::gpu_context::vulkan_instance();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,

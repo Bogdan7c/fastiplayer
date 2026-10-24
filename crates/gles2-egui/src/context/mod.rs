@@ -32,6 +32,7 @@ mod tests;
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -112,6 +113,7 @@ enum RenderTarget {
 /// порядку объявления — `session` (surface → context → display), и только потом `window`:
 /// окно переживает EGLSurface поверх него.
 pub struct Gles2Context {
+    id: ContextId,
     gl: glow::Context,
     reset_status: Option<GraphicsResetStatusQuery>,
     capabilities: Gles2Capabilities,
@@ -128,7 +130,28 @@ pub struct Gles2Context {
     _thread_bound: PhantomData<*const ()>,
 }
 
+/// Идентичность контекста в процессе. GL-объекты (текстуры, буферы, программы) живут в своём
+/// контексте: имя текстуры одного контекста в другом означает «ничего» или чужой объект.
+/// Владельцы GL-объектов (художник egui, маска углов) запоминают идентичность и отказывают
+/// чужому контексту типизированной ошибкой, а не рисуют чужими именами.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ContextId(u64);
+
+impl ContextId {
+    /// Новая уникальная идентичность (монотонный счётчик процесса; переполнение `u64` на
+    /// практике недостижимо).
+    fn next() -> Self {
+        static NEXT_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT_CONTEXT_ID.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 impl Gles2Context {
+    /// Идентичность этого контекста (см. [`ContextId`]).
+    pub fn id(&self) -> ContextId {
+        self.id
+    }
+
     /// Что умеет драйвер.
     pub fn capabilities(&self) -> &Gles2Capabilities {
         &self.capabilities

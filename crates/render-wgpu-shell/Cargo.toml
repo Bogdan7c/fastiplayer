@@ -32,6 +32,12 @@ subtitle-core.workspace = true
 subtitle-formats.workspace = true
 # Кодировщик RLE для сборки растровых реплик (PGS) в GPU-тестах; dev-only, как в subtitle-raster.
 subtitle-pgs = { workspace = true, features = ["test-support"] }
+# Пиксельный паритет интерфейса wgpu ↔ GLES2 (решение владельца 28): тест сравнивает настоящий
+# художник шелла с GLES2-художником. Только dev-зависимость: normal-зависимость на GLES2-crate-ы
+# запрещает guardrail.
+gles2-egui.workspace = true
+# Иконки плеера в эталонных кадрах паритета.
+ui-artwork-egui.workspace = true
 
 [lints]
 workspace = true

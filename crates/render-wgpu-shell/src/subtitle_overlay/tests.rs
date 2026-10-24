@@ -44,7 +44,7 @@ impl Harness {
     /// То же, но с искусственно сниженным лимитом стороны текстуры (чтобы проверять поведение
     /// на границе лимита GPU без огромных картинок); лимит не меньше размера цели.
     fn with_texture_limit(max_texture_side: Option<u32>) -> Option<Self> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = crate::shell::gpu_context::vulkan_instance();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,

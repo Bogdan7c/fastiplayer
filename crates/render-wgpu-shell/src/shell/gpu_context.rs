@@ -226,7 +226,11 @@ impl GpuContext {
 }
 
 /// WGPU Vulkan instance без владения display handle (как было в `GpuContext::new`).
-fn vulkan_instance() -> wgpu::Instance {
+///
+/// GPU-тесты шелла берут этот же instance: production работает только через Vulkan, а GL-бэкенд
+/// wgpu в тестах открыл бы тот же `EGLDisplay`, что и GLES2-рендер паритетных тестов (Mesa отдаёт
+/// один display на платформу), и `eglTerminate` одного убивал бы другой (сессия 04).
+pub(crate) fn vulkan_instance() -> wgpu::Instance {
     wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN,
         ..wgpu::InstanceDescriptor::new_without_display_handle()

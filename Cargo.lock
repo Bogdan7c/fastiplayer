@@ -2094,6 +2094,9 @@ dependencies = [
 name = "gles2-egui"
 version = "0.2.0"
 dependencies = [
+ "bytemuck",
+ "egui",
+ "epaint",
  "glow",
  "khronos-egl",
  "log",
@@ -4204,6 +4207,7 @@ dependencies = [
  "codec-core",
  "egui",
  "egui-wgpu",
+ "gles2-egui",
  "pollster",
  "render-core",
  "render-shell-api",
@@ -4213,6 +4217,7 @@ dependencies = [
  "subtitle-pgs",
  "subtitle-raster",
  "tracing",
+ "ui-artwork-egui",
  "video-backend-api",
  "video-core",
  "video-frame-contract",

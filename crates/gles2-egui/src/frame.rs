@@ -7,8 +7,8 @@
 
 use std::time::{Duration, Instant};
 
-use crate::context::Gles2Context;
 use crate::context::driver::SurfaceSize;
+use crate::context::{ContextId, Gles2Context};
 use crate::error::Gles2Error;
 
 /// Тайминги стадий кадра.
@@ -70,6 +70,11 @@ impl<'context> ActiveFrame<'context> {
     /// Размер цели в пикселях.
     pub fn size(&self) -> SurfaceSize {
         self.size
+    }
+
+    /// Идентичность контекста, в котором идёт кадр.
+    pub fn context_id(&self) -> ContextId {
+        self.context.id()
     }
 
     /// Таблица функций GL. Контекст текущий, цель привязана.

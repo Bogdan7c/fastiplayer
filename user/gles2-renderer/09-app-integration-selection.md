@@ -44,6 +44,19 @@
 - Проба каталога: `CreateError::{EglUnavailable, EglVersionUnsupported, PlatformExtensionMissing, NoGles2Config, …}` — причины «не годен» без запуска рендера целиком.
 - Тайминги `Gles2FrameTimings { surface_acquire, surface_present }` ложатся в одноимённые поля `RenderFrameStageTimings`.
 
+## Наследство сессии 04 (`results/04.md`)
+
+- Сборщик кадра `gles2_egui::FrameCompositor` уже повторяет стадии `EguiCompositor`. Адаптер `RenderShell` переводит их один к одному:
+  - `UiContent::{Fresh, ReusePrevious}` ← `EguiFrameContent`;
+  - `UiFrameOutcome::Dropped(RetainedUiUnavailable | UiTexturesOutOfSync | UiTexturesNotApplied)` → `Dropped(RetainedUiUnavailable)` / `Dropped(UiTexturesOutOfSync)` (последние два — оба в `UiTexturesOutOfSync`);
+  - `Skipped(PresentationDetached | ZeroSize)` → свои исходы;
+  - `can_reuse_retained_ui` → `FrameCompositor::can_reuse_retained_ui`;
+  - `WindowCornerMask` → `CornerRadius::from_points`;
+  - тайминги `UiFrameTimings` названы как `RenderFrameStageTimings`.
+- Билет `AcquiredSurfaceFrame` у GLES2 — это `begin_frame` внутри `render`. Если адаптеру нужен отдельный acquire (контракт 06a), разделить `FrameCompositor::render` на «принять содержимое» и «нарисовать в начатом кадре», не меняя порядок стадий.
+- Художнику передавать в egui `RawInput::max_texture_side = EguiPainter::max_texture_side()`. Текстура больше `GL_MAX_TEXTURE_SIZE` пропускается со счётчиком.
+- `FrameCompositor::destroy(&context)` — до разрушения контекста (иначе в лог уходит предупреждение об утечке до смерти контекста).
+
 ## Тесты (функциональные, результат, а не вызов)
 
 - Видео из фикстуры через GLES2 доходит до показа: headless EGL + реальный FFmpeg-декодер → `RenderFrameOutcome::Presented` с ожидаемым pts и пикселями кадра (не «декодер открылся»). Для HW — `#[ignore]` на машине с VA-API.

@@ -193,6 +193,10 @@ glow = "0.17"
 khronos-egl = { version = "6", features = ["dynamic"] }
 raw-window-handle = "0.6"
 wayland-sys = { version = "0.31", features = ["client", "dlopen", "egl"] }
+# Художник egui на GLES2 (сессия 04): только типы мешей/текстур egui (epaint уже в дереве через
+# egui) и безопасный взгляд на вершины как на байты (bytemuck уже в дереве через egui-wgpu).
+epaint = "0.36"
+bytemuck = "1.25"
 pollster = "0.4"
 anyhow = "1.0"
 etcetera = "0.11"

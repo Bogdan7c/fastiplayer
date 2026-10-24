@@ -91,6 +91,16 @@ pub enum WindowAlphaMode {
     },
 }
 
+/// Смысл альфы offscreen-цели ([`crate::Gles2Context::offscreen_with_alpha`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OffscreenAlpha {
+    /// Непрозрачная цель, как окно без альфы: углы квадратные.
+    Opaque,
+    /// Прозрачный premultiplied-слой, как окно с прозрачностью у композитора: маска углов
+    /// работает ([`WindowAlphaMode::PremultipliedTransparent`]).
+    PremultipliedLayer,
+}
+
 impl WindowAlphaMode {
     /// Можно ли скруглять углы окна маской.
     pub fn supports_transparent_corners(self) -> bool {

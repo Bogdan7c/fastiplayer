@@ -50,7 +50,7 @@ use crate::{
     RenderFrameTiming, SurfacePresentSettings,
 };
 
-mod gpu_context;
+pub(crate) mod gpu_context;
 mod present_target;
 mod render_shell;
 mod surface_acquire;

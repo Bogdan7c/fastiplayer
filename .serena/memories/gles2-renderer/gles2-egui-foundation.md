@@ -1,6 +1,6 @@
 # `gles2-egui` — фундамент своего рендера GLES2 (сессия 03 плана gles2-renderer, 2026-10-24)
 
-Отчёт: `user/gles2-renderer/results/03.md`. Crate `crates/gles2-egui` — переиспользуемый (Fasticut и др.), НИ ОДНОЙ зависимости от crate-ов workspace кроме будущих `gles2-*` (guardrail: allowlist `GLES2_EGUI_ALLOWED_DEPENDENCIES` = glow, khronos-egl, log, raw-window-handle, thiserror, wayland-sys + `find_reusable_gles2_workspace_dependencies`, dev-deps тоже). dev-dep только winit (пример).
+Отчёт: `user/gles2-renderer/results/03.md`. Crate `crates/gles2-egui` — переиспользуемый (Fasticut и др.), НИ ОДНОЙ зависимости от crate-ов workspace кроме будущих `gles2-*` (guardrail: allowlist `GLES2_EGUI_ALLOWED_DEPENDENCIES` = bytemuck, epaint (с 04), glow, khronos-egl, log, raw-window-handle, thiserror, wayland-sys + `find_reusable_gles2_workspace_dependencies`, dev-deps тоже; `egui` целиком как normal-зависимость запрещён — художнику нужны только типы `epaint`). dev-deps: winit (примеры), egui (кадры в тестах и примерах).
 
 ## Решения владельца (README 25–27)
 - `wl_egl_window` из `wayland-sys` 0.31 (`client,dlopen,egl`, уже через wgpu-hal), не crate `wayland-egl`.
@@ -27,5 +27,5 @@
 
 ## Не сделано / для следующих сессий
 - Настоящий сброс GPU не вызывался (риск неустранимого HANG на Ironlake) — живьём в 10–11.
-- Маска углов, egui-художник — 04. EGLImage/fence-освобождение кадров — 07. Маппинг в `RenderShell` (vsync/Mailbox fallback, frame latency no-op, device lost) — 09.
+- Маска углов, egui-художник, сборка кадра — сделаны в 04: `mem:gles2-renderer/egui-painter-s04` (там же `ContextId`, `offscreen_with_alpha`, модуль `draw_gl`, allowlist +`epaint`/`bytemuck`). EGLImage/fence-освобождение кадров — 07. Маппинг в `RenderShell` (vsync/Mailbox fallback, frame latency no-op, device lost) — 09.
 - X11 только Xlib; `swap_buffers_with_damage`/`buffer_age` не используются.

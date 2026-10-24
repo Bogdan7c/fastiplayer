@@ -12,14 +12,15 @@ use super::egl_objects::{EglSession, ResetNotification, SessionRequest, SessionT
 use super::platform;
 use super::safety::gl::CurrentGl;
 use super::safety::{GlLoadError, LoadedGl, RobustnessExtension, SystemEgl, SystemEglLoadError};
-use super::{Gles2Context, PixelExtent, RenderTarget, WindowSource};
+use super::{ContextId, Gles2Context, PixelExtent, RenderTarget, WindowSource};
 use crate::capabilities::{DriverReport, ExtensionSet, Gles2Capabilities, dma_buf};
 use crate::error::CreateError;
 use crate::fence::{FenceIssuer, FenceStrategy};
 use crate::loss::{ContextHealth, ContextLoss};
 use crate::offscreen::OffscreenTarget;
 use crate::presentation::{
-    PresentationSettings, PresentationState, VsyncMode, WindowAlphaRequest, WindowSystem,
+    OffscreenAlpha, PresentationSettings, PresentationState, VsyncMode, WindowAlphaMode,
+    WindowAlphaRequest, WindowSystem,
 };
 
 /// libEGL процесса и реестр её display. Загружается один раз: повторная загрузка дала бы
@@ -113,8 +114,22 @@ impl Gles2Context {
     }
 
     /// Контекст без окна (EGL surfaceless): кадр рисуется в FBO и читается
-    /// [`Gles2Context::read_offscreen_pixels`]. Стенд пиксельных тестов.
+    /// [`Gles2Context::read_offscreen_pixels`]. Стенд пиксельных тестов. Цель непрозрачная —
+    /// как окно без альфы.
     pub fn offscreen(size: SurfaceSize) -> Result<Self, CreateError> {
+        Self::offscreen_with_alpha(size, OffscreenAlpha::Opaque)
+    }
+
+    /// Контекст без окна с выбранным смыслом альфы цели.
+    ///
+    /// Цвет FBO — всегда RGBA8, альфа в нём есть. [`OffscreenAlpha::PremultipliedLayer`]
+    /// говорит рисующим (маска углов), что цель — прозрачный premultiplied-слой, как окно с
+    /// прозрачностью у композитора. Это и стенд маски углов, и честный режим для приложения,
+    /// которое само композитит результат как текстуру.
+    pub fn offscreen_with_alpha(
+        size: SurfaceSize,
+        target_alpha: OffscreenAlpha,
+    ) -> Result<Self, CreateError> {
         let runtime = system_runtime()?;
         let session = EglSession::open(
             &runtime.registry,
@@ -130,8 +145,11 @@ impl Gles2Context {
                 vsync: VsyncMode::Immediate,
                 alpha: WindowAlphaRequest::Opaque,
             },
-            // Выбор конфига уже отметил offscreen-цель (`OpaqueWindowReason::OffscreenTarget`).
-            alpha: session.config().alpha,
+            alpha: match target_alpha {
+                // Выбор конфига уже отметил offscreen-цель (`OpaqueWindowReason::OffscreenTarget`).
+                OffscreenAlpha::Opaque => session.config().alpha,
+                OffscreenAlpha::PremultipliedLayer => WindowAlphaMode::PremultipliedTransparent,
+            },
             swap_interval: None,
             detached: false,
         };
@@ -201,6 +219,7 @@ fn assemble(
     };
 
     let mut context = Gles2Context {
+        id: ContextId::next(),
         gl: loaded.gl,
         reset_status,
         capabilities,

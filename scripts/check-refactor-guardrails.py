@@ -162,11 +162,15 @@ RENDER_SHELL_API_ALLOWED_DEPENDENCIES = frozenset(
     }
 )
 
-# Переиспользуемый фундамент своего рендера GLES2 (issue #6, сессия 03 плана user/gles2-renderer/):
-# EGL-контекст, возможности драйвера, показ, fence. Подключается к любому egui-приложению, поэтому
-# normal-зависимости — только тонкие «провода» к драйверу и мелкие утилиты из allowlist-а.
+# Переиспользуемый фундамент своего рендера GLES2 (issue #6, сессии 03–04 плана
+# user/gles2-renderer/): EGL-контекст, возможности драйвера, показ, fence, художник egui, маска
+# углов. Подключается к любому egui-приложению, поэтому normal-зависимости — только тонкие
+# «провода» к драйверу, типы мешей/текстур egui (`epaint`, без библиотеки виджетов `egui`) и
+# мелкие утилиты из allowlist-а.
 GLES2_EGUI_ALLOWED_DEPENDENCIES = frozenset(
     {
+        "bytemuck",
+        "epaint",
         "glow",
         "khronos-egl",
         "log",
@@ -717,6 +721,9 @@ VIDEO_BACKEND_FORBIDDEN_DEPENDENCIES = frozenset(
     }
 )
 
+# Normal-зависимости render-wgpu-shell. GLES2-crate-ы здесь запрещены; dev-зависимость на
+# `gles2-egui` — осознанное исключение (решение владельца 28, сессия 04 плана gles2-renderer):
+# пиксельный паритет сравнивает настоящий wgpu-художник с GLES2 в тестах шелла, без копий.
 RENDER_WGPU_SHELL_FORBIDDEN_DEPENDENCIES = frozenset(
     {
         "audio",
@@ -1360,7 +1367,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"gles2-egui"}),
             GLES2_EGUI_ALLOWED_DEPENDENCIES,
-            "gles2-egui is a reusable GLES2 foundation: only glow/khronos-egl/wayland-sys and small utilities",
+            "gles2-egui is a reusable GLES2 renderer: only glow/khronos-egl/wayland-sys, epaint and small utilities",
         )
     )
     violations.extend(find_reusable_gles2_workspace_dependencies(all_dependency_map))
