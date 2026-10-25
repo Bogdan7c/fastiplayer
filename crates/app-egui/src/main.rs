@@ -58,6 +58,7 @@ mod web_media_stream_model;
 mod web_open_message;
 mod window_corner_policy;
 mod window_fullscreen;
+mod window_surface_opacity;
 
 // Архитектурные сторожа provider DTO yt-dlp по исходникам app-egui.
 #[cfg(test)]
