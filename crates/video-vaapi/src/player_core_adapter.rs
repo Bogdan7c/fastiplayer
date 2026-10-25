@@ -372,7 +372,7 @@ impl VideoDecoderThreadHandle for VaapiVideoDecoderThreadHandle {
     }
 
     fn decoder_resource_snapshot(&self) -> Option<video_core::DecoderResourceSnapshot> {
-        VideoDecodeThread::resource_pool_stats(&self.decoder_thread).map(Into::into)
+        VideoDecodeThread::decoder_resource_snapshot(&self.decoder_thread)
     }
 
     fn decoder_control_channel_pressure(

@@ -83,6 +83,25 @@ scripts/media-regression.sh \
 кадром (нет потери и повтора).
 Возврат к `vaCreateSurfaces` на каждый кадр роняет тест на первой фазе.
 
+## Пропускная способность VA-API декодера (H.264)
+
+Аппаратный замер потолка нашего декодера без показа (план `user/gles2-renderer/`, сессия 09a).
+Нужен MP4 H.264 8-bit и хост с VA-API H.264 VLD. Подходят фикстуры
+`docs/benchmarks/tools/local/make_matrix.py --preset t410`:
+
+```bash
+scripts/media-regression.sh \
+  --scenario h264-mp4-vaapi-throughput \
+  --path test-assets/benchmark-t410/1080p30/1080p30_h264-high_10mbps_aac.mp4
+```
+
+Файл целиком идёт через production decoder thread конвейером (до 8 packet-ов в полёте), кадры
+освобождаются сразу. Тест проверяет, что каждый access unit дал ровно один кадр со своим PTS и
+пул выходных surfaces ограничен, и печатает строку `vaapi_decode_throughput frames=… fps=…`.
+Порог кадров/с в тесте не задан: он зависит от машины. Сравнение — с
+`ffmpeg -hwaccel vaapi -hwaccel_output_format vaapi -i FILE -f null -` на том же файле в тот же
+день, в release-сборке (`cargo test --release`).
+
 Web-media/app UX is checked separately through the S42 manual runner:
 
 ```bash

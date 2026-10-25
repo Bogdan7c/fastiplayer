@@ -7,6 +7,9 @@ use media_core::{Packet, TrackKind};
 use tracing::trace;
 use video_core::{DecodedFrame, VideoDecoder, VideoDecoderActivityNotifier};
 
+use crate::decoder::DecoderGpuWaitReason;
+use gpu_pending_wait::complete_gpu_pending_frames_before_waiting;
+
 use super::control::ThreadControlMsg;
 use super::frame_room::{FrameRoomWaiter, PublishBlockedWake, wait_for_frame_room_or_control};
 use super::{
@@ -16,6 +19,7 @@ use super::{
 
 mod backpressure_stall;
 mod frame_publication;
+mod gpu_pending_wait;
 
 use backpressure_stall::{OutputBackpressureStallMonitor, log_output_backpressure_stall};
 use frame_publication::release_pending_publish_frame;
@@ -176,6 +180,7 @@ pub(super) fn decoder_thread_loop(
         // или control message (flush/seek/release немедленно прерывают ожидание).
         // Прежний 2-мс опрос здесь просыпался впустую.
         if pending_publish.is_some() {
+            backpressure_stall.note_waiting_for_frame_consumer();
             match wait_for_frame_room_or_control(&control_rx, &frame_room) {
                 PublishBlockedWake::Control(control_message) => {
                     let mut control_context = DecoderControlContext {
@@ -234,6 +239,19 @@ pub(super) fn decoder_thread_loop(
                 DecodeQueuedPacketResult::Stop => break,
                 DecodeQueuedPacketResult::OutputBackpressured(queued_packet) => {
                     output_backpressured_packet = Some(queued_packet);
+                    // Кадры «в полёте» держат surfaces исчерпанного пула: отдаём их
+                    // вместо сна, иначе release, которого ждёт decoder, не придёт.
+                    if decoder.has_gpu_pending_frames() {
+                        if !complete_gpu_pending_frames_before_waiting(
+                            &mut decoder,
+                            DecoderGpuWaitReason::OutputBackpressure,
+                            &error_tx,
+                            &activity_notifier,
+                        ) {
+                            break;
+                        }
+                        continue;
+                    }
                     match control_rx
                         .recv_timeout(Duration::from_millis(DECODER_OUTPUT_BACKPRESSURE_RETRY_MS))
                     {
@@ -260,6 +278,21 @@ pub(super) fn decoder_thread_loop(
                     continue;
                 }
             }
+        }
+
+        // Подать GPU следующую работу нечем: дальше поток будет только ждать, поэтому
+        // кадры «в полёте» отдаются сейчас (иначе последний кадр застрял бы до
+        // следующего packet-а — на паузе, перед seek или в конце входа).
+        if decoder.has_gpu_pending_frames() && packet_rx.is_empty() {
+            if !complete_gpu_pending_frames_before_waiting(
+                &mut decoder,
+                DecoderGpuWaitReason::NoPacketToSubmit,
+                &error_tx,
+                &activity_notifier,
+            ) {
+                break;
+            }
+            continue;
         }
 
         select! {
@@ -375,7 +408,8 @@ fn complete_decoder_eof_drain_if_ready(
     end_of_stream_drain_state: &Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
     activity_notifier: &VideoDecoderActivityNotifier,
 ) -> Result<(), DecodeThreadError> {
-    if pending_publish.is_some() || decoder.has_ready_frames() {
+    // Кадры «в полёте» тоже ещё не опубликованы: drain не завершён, пока GPU их не отдал.
+    if pending_publish.is_some() || decoder.has_ready_frames() || decoder.has_gpu_pending_frames() {
         return Ok(());
     }
 

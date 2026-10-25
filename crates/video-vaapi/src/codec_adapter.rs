@@ -29,6 +29,20 @@ use crate::internal_vaapi_frame::InternalVaapiFrame;
 use crate::output_surface_pool::VaapiOutputSurfacePool;
 use output_surfaces::decode_with_pooled_output_surfaces;
 
+/// Режим, в котором все codec adapter-ы создают cros-codecs `StatelessDecoder`.
+///
+/// `Blocking` вызывает `vaSyncSurface` сразу после `vaEndPicture` каждой
+/// картинки: поток декодера ждёт GPU и только потом разбирает следующий
+/// packet, а GPU в это время простаивает. На T410 (Ironlake) это давало
+/// 72–75 % пропускной способности кремния (gles2-renderer, сессия 09a).
+///
+/// `NonBlocking` отдаёт `FrameReady` с ещё не готовой surface. Ожидание GPU
+/// живёт у владельца очереди «в полёте» (`decoder::gpu_pending_frames`): кадр
+/// доделывается, когда GPU уже получил следующую работу или декодеру больше
+/// нечего подавать. Зависимости reference-кадров драйвер соблюдает сам:
+/// surfaces одного VA context-а исполняются в порядке submit.
+pub(crate) const STATELESS_DECODER_BLOCKING_MODE: BlockingMode = BlockingMode::NonBlocking;
+
 /// Codec-neutral формат decoded frame-а внутри VAAPI adapter boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VaapiDecodedFormat {

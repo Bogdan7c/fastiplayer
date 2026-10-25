@@ -27,6 +27,7 @@ use crate::codec_adapter::VaapiDecodedFormat;
 use crate::codec_adapter::{
     VaapiAdapterDecodeError, VaapiDecodedFrameHandle, VaapiDecoderEvent, VaapiPacketDecodeHints,
 };
+use crate::gpu_pending_stats::GpuPendingFrameCounters;
 use crate::output_surface_pool::{
     OutputSurfaceFormat, OutputSurfacePoolCounters, OutputSurfacePoolStats,
     VaOutputSurfaceAllocator, VaapiOutputSurfacePool,
@@ -39,6 +40,8 @@ use crate::shared_hardware_owner::{
 mod active_codec_adapter;
 mod config;
 mod event_drain;
+mod gpu_pending_completion;
+mod gpu_pending_frames;
 mod h264_recovery;
 mod output_surface_format;
 mod preroll;
@@ -60,6 +63,8 @@ use config::{
     default_max_suppressed_reclaim_frames,
 };
 use event_drain::*;
+pub(crate) use gpu_pending_completion::DecoderGpuWaitReason;
+use gpu_pending_frames::{GpuPendingCompletionReason, GpuPendingFrames, GpuPendingSurvivorScope};
 use h264_recovery::H264DecodeRecovery;
 use preroll::*;
 #[cfg(test)]
@@ -231,6 +236,9 @@ pub struct VaapiVideoDecoder {
 
     /// Не даёт подавать inter-frames в пустой после configure/flush/recovery H.264 DPB.
     h264_decode_recovery: H264DecodeRecovery,
+
+    /// Кадры «отправлено в GPU, ещё не отдано» (`gpu_pending_frames`, сессия 09a).
+    gpu_pending_frames: GpuPendingFrames,
 }
 
 impl VaapiVideoDecoder {
@@ -255,6 +263,7 @@ impl VaapiVideoDecoder {
             runtime_config,
             None,
             Arc::default(),
+            Arc::default(),
         )
     }
 
@@ -264,6 +273,7 @@ impl VaapiVideoDecoder {
         runtime_config: VaapiDecoderRuntimeConfig,
         activity_notifier: Option<VideoDecoderActivityNotifier>,
         surface_pool_counters: Arc<OutputSurfacePoolCounters>,
+        gpu_pending_counters: Arc<GpuPendingFrameCounters>,
     ) -> Result<Self> {
         let runtime_config = runtime_config.normalized();
         let reclaim_capacity = SuppressedReclaimCapacity::from_runtime_config(runtime_config);
@@ -347,6 +357,10 @@ impl VaapiVideoDecoder {
             preroll_output_floor: PrerollOutputFloorState::default(),
             preroll_fallback_candidate: None,
             h264_decode_recovery: H264DecodeRecovery::default(),
+            gpu_pending_frames: GpuPendingFrames::new(
+                runtime_config.ready_queue_frames,
+                gpu_pending_counters,
+            ),
         })
     }
 
@@ -394,6 +408,9 @@ impl VaapiVideoDecoder {
         &mut self,
         policy: VideoPrerollOutputFloor,
     ) -> VideoPrerollOutputFloorResult {
+        if let Some(fatal) = self.complete_gpu_pending_frames_before_floor_change("set") {
+            return fatal;
+        }
         let result = self.preroll_output_floor.set_floor(policy);
         if result == VideoPrerollOutputFloorResult::Applied {
             if let Err(error) = self
@@ -426,6 +443,9 @@ impl VaapiVideoDecoder {
         &mut self,
         clear: VideoPrerollOutputFloorClear,
     ) -> VideoPrerollOutputFloorResult {
+        if let Some(fatal) = self.complete_gpu_pending_frames_before_floor_change("clear") {
+            return fatal;
+        }
         let result = self.preroll_output_floor.clear_floor(clear);
         if result == VideoPrerollOutputFloorResult::Cleared {
             if let Err(error) = self
@@ -463,6 +483,9 @@ impl VaapiVideoDecoder {
 
     /// Переключает active codec adapter под уже валидированный stream config.
     pub(crate) fn configure_stream(&mut self, config: &VideoStreamDecodeConfig) -> Result<()> {
+        // Кадры прошлых packet-ов доделываются со старыми orientation/contract.
+        let survivors = self
+            .take_gpu_pending_survivors(GpuPendingSurvivorScope::AllPending, "configure_stream")?;
         self.display_orientation = config.display_orientation;
         self.expected_frame_contract = config.frame_contract;
 
@@ -470,7 +493,7 @@ impl VaapiVideoDecoder {
             // Строка «configured for stream» пишется и при переиспользовании (контракт
             // бенчмарк-сборщика, см. `log_configured_for_stream`).
             reused.log_configured_for_stream();
-            return Ok(());
+            return self.restore_gpu_pending_survivors(survivors);
         }
 
         let floor_clear_result = self
@@ -492,7 +515,7 @@ impl VaapiVideoDecoder {
         self.p010_boundary_verified_logged = false;
 
         created.log_configured_for_stream();
-        Ok(())
+        self.restore_gpu_pending_survivors(survivors)
     }
 
     /// Освобождает VA handle, удерживаемый zero-copy кадром.
@@ -788,7 +811,8 @@ impl VaapiVideoDecoder {
         }
 
         let promoted_pts = candidate.metadata.pts;
-        self.process_ready_frame(candidate.handle, generation)?;
+        let decoded_contract = self.current_decoded_contract(&candidate.handle)?;
+        self.process_ready_frame(candidate.handle, generation, decoded_contract)?;
         self.preroll_output_floor
             .record_candidate_promoted(generation);
         debug!(
@@ -977,6 +1001,7 @@ impl VaapiVideoDecoder {
         // Шаг 1-2: submit packet и drain pending events.
         // При `CheckEvents` тот же packet отправляется повторно после drain,
         // потому что нижний decoder ещё не обязан был consume-ить bitstream.
+        self.begin_gpu_pending_packet_submission();
         let loop_report = match run_decode_with_event_retry(
             self,
             timestamp_us,
@@ -993,6 +1018,8 @@ impl VaapiVideoDecoder {
                 return Err(error);
             }
         };
+        // GPU уже получил этот packet: кадры прошлых packet-ов можно доделать без простоя GPU.
+        self.complete_gpu_pending_frames_after_packet_submit()?;
         if loop_report.output_backpressured {
             return Ok(VaapiDecodePacketOutcome::OutputBackpressured);
         }
@@ -1061,12 +1088,19 @@ impl VaapiVideoDecoder {
             .begin_end_of_stream_drain()
             .map_err(|error| anyhow::anyhow!("EOF drain error: {error}"))?;
         self.drain_decoder_events(DecoderEventDrainPolicy::Publish { generation })?;
+        // Хвост DPB и кадры «в полёте» отдаются до решения о fallback-кандидате.
+        self.complete_all_gpu_pending_frames(GpuPendingCompletionReason::LifecycleBoundary)?;
         self.promote_preroll_fallback_candidate_if_needed(generation)?;
         Ok(())
     }
 
     /// Очищает повреждённый H.264 DPB и переводит backend в ожидание keyframe.
     fn recover_h264_after_decode_error(&mut self, decode_error: &anyhow::Error) -> Result<()> {
+        // Кадры прошлых packet-ов декодированы до ошибки и переживают recovery flush.
+        let survivors = self.take_gpu_pending_survivors(
+            GpuPendingSurvivorScope::EarlierPacketsOnly,
+            "h264_decode_recovery",
+        )?;
         if let Err(flush_error) = self.flush_decoder_owned_state("h264_decode_recovery") {
             return Err(VaapiSurfaceLifecycleError::new(format!(
                 "H.264 decoder recovery flush failed after {decode_error:#}: {flush_error:#}"
@@ -1078,11 +1112,12 @@ impl VaapiVideoDecoder {
             error = %decode_error,
             "H.264 decoder flushed after recoverable decode error; waiting for keyframe"
         );
-        Ok(())
+        self.restore_gpu_pending_survivors(survivors)
     }
 
     /// Общий codec/resource flush без изменения владельца recovery policy.
     fn flush_decoder_owned_state(&mut self, reason: &'static str) -> Result<()> {
+        self.discard_all_gpu_pending_frames(reason)?;
         self.force_drain_preroll_candidate_and_suppressed_surfaces(reason)?;
         self.adapter
             .flush()
@@ -1165,6 +1200,7 @@ impl VideoDecoder for VaapiVideoDecoder {
 impl Drop for VaapiVideoDecoder {
     /// Best-effort cleanup для suppressed handles при остановке decoder-а.
     fn drop(&mut self) {
+        self.discard_gpu_pending_frames_on_decoder_drop();
         if let Err(error) =
             self.force_drain_preroll_candidate_and_suppressed_surfaces("decoder_drop")
         {

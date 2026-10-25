@@ -23,7 +23,7 @@ impl Vp9VaapiCodecAdapter {
             cros_codecs::backend::vaapi::decoder::VaapiBackend<InternalVaapiFrame>,
         >;
 
-        let decoder = VaapiVp9Decoder::new_vaapi(display, BlockingMode::Blocking)
+        let decoder = VaapiVp9Decoder::new_vaapi(display, STATELESS_DECODER_BLOCKING_MODE)
             .map_err(|error| anyhow::anyhow!("Failed to create VA-API VP9 decoder: {error:?}"))?;
 
         Ok(Self {

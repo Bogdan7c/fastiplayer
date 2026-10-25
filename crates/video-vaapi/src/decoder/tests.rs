@@ -225,6 +225,7 @@ fn assert_lifecycle_force_drain_clears_candidate_and_queue(reason: &'static str)
 mod config;
 mod contracts;
 mod event_drain;
+mod gpu_pending_frames;
 mod output_surface_format;
 mod preroll;
 mod reclaim;

@@ -3,6 +3,7 @@ mod codec_adapter;
 pub mod decoder;
 pub mod decoder_thread;
 pub mod dma_heap;
+pub mod gpu_pending_stats;
 pub mod import_target;
 pub mod internal_vaapi_frame;
 pub mod output_surface_pool;

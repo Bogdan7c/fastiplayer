@@ -244,7 +244,7 @@ impl H264VaapiCodecAdapter {
             .map_err(|rejection| anyhow::anyhow!("Invalid H.264 VA-API config: {rejection}"))?;
         let inner = StatelessDecoder::<H264, VaapiBackend<InternalVaapiFrame>>::new_vaapi(
             display,
-            BlockingMode::Blocking,
+            STATELESS_DECODER_BLOCKING_MODE,
         )
         .map_err(|error| anyhow::anyhow!("Failed to create VA-API H.264 decoder: {error:?}"))?;
 

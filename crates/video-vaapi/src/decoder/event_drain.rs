@@ -239,19 +239,36 @@ where
 }
 
 impl super::VaapiVideoDecoder {
-    /// Обрабатывает готовый кадр от decoder: sync, DMA-BUF export и resource registration.
-    ///
-    /// # Аргументы
-    /// * `handle` — handle декодированного кадра от cros-codecs.
-    /// * `generation` — seek generation, которому принадлежит event drain.
+    /// Доделывает кадр и кладёт его в `ready_queue` (обычный путь публикации).
     ///
     /// # Ошибки
-    /// Возвращает ошибку если sync, DMA-BUF export или registration не удался.
+    /// Возвращает ошибку если sync, DMA-BUF export, registration или contract validation не удались.
     pub(super) fn process_ready_frame(
         &mut self,
         handle: VaapiDecodedFrameHandle,
         generation: u64,
+        decoded_contract: DecodedSurfaceContract,
     ) -> Result<()> {
+        let frame = self.export_ready_frame(handle, generation, decoded_contract)?;
+        self.push_ready_frame(frame)
+    }
+
+    /// Доделывает готовый кадр от decoder: sync, DMA-BUF export и resource registration.
+    ///
+    /// # Аргументы
+    /// * `handle` — handle декодированного кадра от cros-codecs.
+    /// * `generation` — seek generation, которому принадлежит event drain.
+    /// * `decoded_contract` — формат поверхности, снятый в момент `FrameReady`
+    ///   (к моменту доделки `stream_info()` может уже описывать следующий поток).
+    ///
+    /// # Ошибки
+    /// Возвращает ошибку если sync, DMA-BUF export или registration не удался.
+    pub(super) fn export_ready_frame(
+        &mut self,
+        handle: VaapiDecodedFrameHandle,
+        generation: u64,
+        decoded_contract: DecodedSurfaceContract,
+    ) -> Result<DecodedFrame> {
         // Получаем разрешения кадра ДО sync (sync может потребовать mutable borrow).
         let resolution = handle.coded_resolution();
         let display_resolution = handle.display_resolution();
@@ -267,14 +284,15 @@ impl super::VaapiVideoDecoder {
         );
 
         // Шаг 1: Синхронизируемся с завершением GPU-декодирования.
-        // `sync()` блокируется до тех пор, пока VA-API не закончит decode job.
+        // `sync()` блокируется до тех пор, пока VA-API не закончит decode job. Очередь
+        // «в полёте» зовёт доделку, когда GPU уже получил следующую работу или кадр
+        // готов, поэтому обычно это ожидание короткое или нулевое.
         let sync_start = std::time::Instant::now();
         if let Err(e) = handle.sync() {
             warn!(error = %e, "GPU decode sync failed — dropping frame");
             return Err(anyhow::anyhow!("GPU decode sync failed: {}", e));
         }
         let hardware_sync_latency = sync_start.elapsed();
-        let decoded_contract = self.current_decoded_contract(&handle)?;
 
         // Шаг 2: Экспортируем VA surface как DMA-BUF. Отсутствие export-а — fatal contract error.
         let export_start = std::time::Instant::now();
@@ -390,8 +408,8 @@ impl super::VaapiVideoDecoder {
         // Шаг 4: Удерживаем VA handle, пока renderer не подтвердит release после GPU work.
         self.zero_copy_guards.insert(resource_handle.0, handle);
 
-        // Шаг 5: Публикуем только zero-copy frame metadata.
-        self.push_ready_frame(DecodedFrame {
+        // Шаг 5: Отдаём только zero-copy frame metadata; куда его положить, решает вызывающий.
+        Ok(DecodedFrame {
             generation,
             pts: Duration::from_micros(timestamp),
             frame_contract,
@@ -411,9 +429,7 @@ impl super::VaapiVideoDecoder {
                 decoder_ready_queue_depth: None,
                 resource_pool: Some(resource_pool_diagnostics),
             },
-        })?;
-
-        Ok(())
+        })
     }
 
     /// Выбрасывает готовый backend frame без DMA-BUF export-а и publish-а.
@@ -443,6 +459,18 @@ impl super::VaapiVideoDecoder {
     fn handle_format_changed_event(&mut self) -> Result<()> {
         info!("Format changed, invalidating resource pool and output surface pool");
 
+        // Кадры прошлых packet-ов старый код успел бы отдать до этого вызова: они
+        // доделываются со своим (старым) контрактом и возвращаются после boundary.
+        let survivors = self.take_gpu_pending_survivors(
+            GpuPendingSurvivorScope::EarlierPacketsOnly,
+            "format_changed",
+        )?;
+        self.release_decoder_state_for_format_change()?;
+        self.restore_gpu_pending_survivors(survivors)
+    }
+
+    /// Освобождает decoder-owned состояние старого формата и перенастраивает пул.
+    fn release_decoder_state_for_format_change(&mut self) -> Result<()> {
         // Retained candidate мог относиться к старому surface/format contract.
         self.force_drain_preroll_candidate_and_suppressed_surfaces("format_changed")?;
 
@@ -482,25 +510,9 @@ impl super::VaapiVideoDecoder {
                     trace!(pts_ms = pts_ms, "DecoderEvent::FrameReady");
                     match policy {
                         DecoderEventDrainPolicy::Publish { generation } => {
-                            let pts = Duration::from_micros(handle.timestamp());
-                            if let Some(floor) = self.should_suppress_ready_frame(pts, generation) {
-                                self.suppress_ready_frame(handle, generation, floor)?;
-                                continue;
-                            }
-
-                            if self.should_drop_preroll_candidate_before_publish(pts, generation) {
-                                self.drop_preroll_fallback_candidate(
-                                    "target_or_after_ready_frame",
-                                )?;
-                            }
-                            if let Err(error) = self.process_ready_frame(handle, generation) {
-                                if is_fatal_decoder_error(&error) {
-                                    return Err(error);
-                                }
-                                warn!(error = %error, "Failed to process ready frame");
-                            } else {
-                                self.record_target_or_after_frame_published(pts, generation)?;
-                            }
+                            // GPU, возможно, ещё декодирует картинку: решение о
+                            // публикации и экспорт — когда очередь «в полёте» её отдаст.
+                            self.enqueue_gpu_pending_frame(handle, generation)?;
                         }
                         DecoderEventDrainPolicy::Discard { reason } => {
                             self.discard_ready_frame(handle, reason)?;

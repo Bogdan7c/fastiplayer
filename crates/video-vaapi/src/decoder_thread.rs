@@ -29,6 +29,7 @@ use crate::resource_pool::ResourcePoolStats;
 mod config;
 mod control;
 mod frame_room;
+mod in_flight_snapshot;
 mod resource_provider;
 mod runtime_loop;
 
@@ -102,6 +103,8 @@ pub struct VideoDecodeThread {
     backend_name: &'static str,
     /// Счётчики пула выходных VA surfaces; пишет decoder thread, читают диагностика/тесты.
     output_surface_pool_counters: Arc<crate::output_surface_pool::OutputSurfacePoolCounters>,
+    /// Счётчики очереди «в полёте» (сессия 09a); пишет decoder thread.
+    gpu_pending_frame_counters: Arc<crate::gpu_pending_stats::GpuPendingFrameCounters>,
 }
 
 impl VideoDecodeThread {
@@ -143,6 +146,9 @@ impl VideoDecodeThread {
         let output_surface_pool_counters =
             Arc::<crate::output_surface_pool::OutputSurfacePoolCounters>::default();
         let output_surface_pool_counters_for_thread = output_surface_pool_counters.clone();
+        let gpu_pending_frame_counters =
+            Arc::<crate::gpu_pending_stats::GpuPendingFrameCounters>::default();
+        let gpu_pending_frame_counters_for_thread = gpu_pending_frame_counters.clone();
 
         std::thread::Builder::new()
             .name("video-decode".into())
@@ -155,6 +161,7 @@ impl VideoDecodeThread {
                     decoder_runtime_config,
                     Some(decoder_activity_notifier),
                     output_surface_pool_counters_for_thread,
+                    gpu_pending_frame_counters_for_thread,
                 ) {
                     Ok(decoder) => {
                         if init_tx.send(Ok(())).is_err() {
@@ -223,6 +230,7 @@ impl VideoDecodeThread {
             // только после configure_stream и отдельно отражается в diagnostics.
             backend_name: "VA-API",
             output_surface_pool_counters,
+            gpu_pending_frame_counters,
         })
     }
 

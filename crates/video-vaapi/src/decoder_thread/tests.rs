@@ -387,6 +387,7 @@ fn decoder_thread_for_control_tests(
         .normalized(),
         backend_name: "VA-API test",
         output_surface_pool_counters: Arc::default(),
+        gpu_pending_frame_counters: Arc::default(),
     }
 }
 
@@ -847,4 +848,95 @@ fn eof_drain_ack_timeout_marks_thread_fatal_once() {
     assert!(thread_state.current_error().is_some());
     assert!(thread_state.take_pending_error().is_some());
     assert!(thread_state.take_pending_error().is_none());
+}
+
+/// Без кадров «в полёте» снимок для плеера совпадает со статистикой пула импорта.
+#[test]
+fn decoder_resource_snapshot_without_in_flight_frames_matches_resource_pool() {
+    let (control_tx, _control_rx) = bounded(1);
+    let decoder_thread = decoder_thread_for_control_tests(
+        control_tx,
+        Arc::new(DecoderControlChannelPressureCounters::default()),
+        DecoderThreadState::new(),
+    );
+    let pool_snapshot = video_core::DecoderResourceSnapshot::from(
+        decoder_thread
+            .resource_pool_stats()
+            .expect("healthy pool has stats"),
+    );
+
+    assert_eq!(
+        decoder_thread.decoder_resource_snapshot(),
+        Some(pool_snapshot)
+    );
+}
+
+/// Кадры «в полёте» держат surfaces: плеер обязан видеть их как занятые слоты.
+#[test]
+fn decoder_resource_snapshot_counts_in_flight_frames_as_in_use() {
+    let (control_tx, _control_rx) = bounded(1);
+    let decoder_thread = decoder_thread_for_control_tests(
+        control_tx,
+        Arc::new(DecoderControlChannelPressureCounters::default()),
+        DecoderThreadState::new(),
+    );
+    let pool_snapshot = video_core::DecoderResourceSnapshot::from(
+        decoder_thread
+            .resource_pool_stats()
+            .expect("healthy pool has stats"),
+    );
+    decoder_thread.gpu_pending_frame_counters.record_enqueued(3);
+    let counters_before = decoder_thread.gpu_pending_frame_stats();
+
+    let snapshot = decoder_thread
+        .decoder_resource_snapshot()
+        .expect("healthy pool has a snapshot");
+
+    assert_eq!(snapshot.in_use, pool_snapshot.in_use + 3);
+    assert_eq!(
+        snapshot.available_slots(),
+        pool_snapshot.available_slots().saturating_sub(3),
+        "the player's send gate must lose one slot per frame still on the GPU"
+    );
+    assert_eq!(
+        video_core::DecoderResourceSnapshot {
+            in_use: pool_snapshot.in_use,
+            ..snapshot
+        },
+        pool_snapshot,
+        "only in_use may include in-flight frames"
+    );
+    assert_eq!(
+        decoder_thread.gpu_pending_frame_stats(),
+        counters_before,
+        "reading the snapshot must not change queue counters"
+    );
+}
+
+/// Отравленный пул импорта: снимка нет, ошибка становится sticky fatal, как у stats.
+#[test]
+fn decoder_resource_snapshot_with_poisoned_pool_is_absent_and_fatal() {
+    let (control_tx, _control_rx) = bounded(1);
+    let decoder_thread = decoder_thread_for_control_tests(
+        control_tx,
+        Arc::new(DecoderControlChannelPressureCounters::default()),
+        DecoderThreadState::new(),
+    );
+    let resource_pool = Arc::clone(&decoder_thread.resource_pool);
+    std::thread::scope(|scope| {
+        let poison_thread = scope.spawn(|| {
+            let _resource_pool_guard = resource_pool
+                .lock()
+                .expect("fresh test mutex must be lockable before deliberate poison");
+            panic!("deliberately poison decoder-thread resource pool");
+        });
+        assert!(poison_thread.join().is_err());
+    });
+    decoder_thread.gpu_pending_frame_counters.record_enqueued(2);
+
+    assert_eq!(decoder_thread.decoder_resource_snapshot(), None);
+    assert!(
+        decoder_thread.try_recv_error().is_some(),
+        "poisoned pool must still be reported as a fatal decoder error"
+    );
 }

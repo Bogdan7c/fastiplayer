@@ -206,7 +206,7 @@ pub(super) struct Av1VaapiCodecAdapter {
 impl Av1VaapiCodecAdapter {
     /// Создаёт AV1 decoder для уже открытого VA display.
     pub(super) fn new(display: Rc<Display>) -> Result<Self> {
-        let inner = VaapiAv1Decoder::new_vaapi(display, BlockingMode::Blocking)
+        let inner = VaapiAv1Decoder::new_vaapi(display, STATELESS_DECODER_BLOCKING_MODE)
             .map_err(|error| anyhow::anyhow!("Failed to create VA-API AV1 decoder: {error:?}"))?;
 
         Ok(Self {

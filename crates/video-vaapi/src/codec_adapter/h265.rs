@@ -320,7 +320,7 @@ impl H265VaapiCodecAdapter {
             .map_err(|rejection| anyhow::anyhow!("Invalid H.265 VA-API config: {rejection}"))?;
         let inner = StatelessDecoder::<H265, VaapiBackend<InternalVaapiFrame>>::new_vaapi(
             display,
-            BlockingMode::Blocking,
+            STATELESS_DECODER_BLOCKING_MODE,
         )
         .map_err(|error| anyhow::anyhow!("Failed to create VA-API H.265 decoder: {error:?}"))?;
 

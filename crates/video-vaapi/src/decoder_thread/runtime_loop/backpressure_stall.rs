@@ -99,6 +99,19 @@ impl OutputBackpressureStallMonitor {
         self.stalled_since = None;
         self.last_warning_at = None;
     }
+
+    /// Поток уходит ждать, пока плеер заберёт кадр (канал кадров полон).
+    ///
+    /// Пока канал полон, декодер стоит из-за потребителя, а не из-за нехватки
+    /// surfaces: это время нельзя приписывать застою пула. С очередью «в полёте»
+    /// (сессия 09a) декодер успевает взять следующий packet раньше, чем
+    /// канал заполнится, и тот «паркуется» на исчерпанном пуле; без сброса
+    /// удержание scrub на паузе давало ложный warn «frame leak». Реальную
+    /// утечку сброс не прячет: при ней новых кадров нет, канал не наполняется,
+    /// и повторы идут непрерывно до порога.
+    pub(super) fn note_waiting_for_frame_consumer(&mut self) {
+        self.note_progress();
+    }
 }
 
 /// Пишет warn о застрявшем backpressure вместе с состоянием пула и reclaim queue.
@@ -175,6 +188,30 @@ mod tests {
                 stalled_for: Duration::from_millis(600),
                 repeated: true,
             })
+        );
+    }
+
+    #[test]
+    fn waiting_for_frame_consumer_is_not_counted_as_surface_stall() {
+        let mut monitor = monitor();
+        let start = Instant::now();
+        assert_eq!(monitor.note_backpressured(start), None);
+
+        // Поток долго ждал плеер (канал кадров полон), потом снова упёрся в пул.
+        monitor.note_waiting_for_frame_consumer();
+        let after_consumer_wait = start + Duration::from_secs(3);
+        assert_eq!(
+            monitor.note_backpressured(after_consumer_wait),
+            None,
+            "time spent waiting for the frame consumer must not become a pool stall"
+        );
+        assert_eq!(
+            monitor.note_backpressured(after_consumer_wait + Duration::from_millis(100)),
+            Some(OutputBackpressureStallWarning {
+                stalled_for: Duration::from_millis(100),
+                repeated: false,
+            }),
+            "a real continuous pool stall after the wait must still warn"
         );
     }
 
