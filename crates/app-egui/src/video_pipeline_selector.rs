@@ -193,11 +193,14 @@ pub(crate) fn select_video_pipeline_plan(
     let playable_video_outputs = system_capabilities.playable_video_outputs.as_slice();
 
     match preferred_backend {
-        VideoBackendPreference::Auto => select_auto_fallback_plan(
-            playable_video_outputs,
-            decoder_thread_config,
-            stream_requirement,
-        ),
+        // Dynamic на старте файла выбирает план как Auto.
+        VideoBackendPreference::Auto | VideoBackendPreference::Dynamic => {
+            select_auto_fallback_plan(
+                playable_video_outputs,
+                decoder_thread_config,
+                stream_requirement,
+            )
+        }
         VideoBackendPreference::Hardware
             if playable_video_outputs.iter().any(|output| {
                 is_playable_vaapi_dma_buf_output(output)
@@ -392,6 +395,7 @@ fn preference_label(preferred_backend: VideoBackendPreference) -> &'static str {
         VideoBackendPreference::Auto => "auto",
         VideoBackendPreference::Hardware => "hardware",
         VideoBackendPreference::Software => "software",
+        VideoBackendPreference::Dynamic => "dynamic",
     }
 }
 

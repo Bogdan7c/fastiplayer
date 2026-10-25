@@ -356,6 +356,7 @@ impl StartupReadinessTracker {
             | PlayerEvent::QualitySelectionChanged(_)
             | PlayerEvent::ConfigReloadRequested
             | PlayerEvent::AudioOutputSwitchedToSystemDefault(_)
+            | PlayerEvent::VideoDecoderFallingBehind(_)
             | PlayerEvent::RecoverableError(_) => {}
         }
     }
@@ -796,5 +797,4 @@ fn elapsed_milliseconds(started_at: Instant, observed_at: Instant) -> u128 {
 }
 
 #[cfg(test)]
-#[path = "startup_readiness/tests.rs"]
 mod tests;

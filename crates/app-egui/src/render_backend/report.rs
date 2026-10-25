@@ -34,13 +34,6 @@ impl RendererStartupReport {
     }
 
     /// Семейство активного рендера.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "сессия 09b: владельцы настроек берут семейство активного рендера отсюда"
-        )
-    )]
     pub(crate) fn family(&self) -> RendererFamily {
         self.family
     }

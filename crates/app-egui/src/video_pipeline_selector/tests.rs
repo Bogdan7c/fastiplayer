@@ -113,6 +113,52 @@ fn auto_with_stream_requirement_prefers_hardware_then_falls_back_to_ffmpeg() {
     );
 }
 
+/// Dynamic на старте файла выбирает ровно тот же план, что Auto: HW для HW-тянущего потока и
+/// ffmpeg для потока, который HW не тянет.
+#[test]
+fn dynamic_preference_selects_same_plan_as_auto_at_file_start() {
+    let decoder_thread_config = PlayerVideoDecoderThreadConfig::default();
+    let capabilities = capabilities_with_playable_outputs(vec![
+        current_vaapi_output(),
+        ffmpeg_host_upload_output(),
+        ffmpeg_vp9_profile2_output(),
+    ]);
+    let hardware_stream = VideoDecodeRequirement::new(VideoCodec::Vp9)
+        .with_profile(VideoProfile::Vp9(Vp9Profile::Profile0))
+        .with_bit_depth(BitDepth::Eight)
+        .with_chroma(ChromaSubsampling::Yuv420);
+    let software_stream = VideoDecodeRequirement::new(VideoCodec::Vp9)
+        .with_profile(VideoProfile::Vp9(Vp9Profile::Profile2))
+        .with_bit_depth(BitDepth::Ten)
+        .with_chroma(ChromaSubsampling::Yuv420);
+
+    for stream in [&hardware_stream, &software_stream] {
+        let select = |preference| {
+            select_video_pipeline_plan(
+                preference,
+                Some(&capabilities),
+                decoder_thread_config,
+                Some(stream),
+            )
+        };
+        assert_eq!(
+            select(VideoBackendPreference::Dynamic).expect("Dynamic must select a plan"),
+            select(VideoBackendPreference::Auto).expect("Auto must select a plan"),
+        );
+    }
+    let dynamic_hardware_plan = select_video_pipeline_plan(
+        VideoBackendPreference::Dynamic,
+        Some(&capabilities),
+        decoder_thread_config,
+        Some(&hardware_stream),
+    )
+    .expect("Dynamic must select a plan");
+    assert_eq!(
+        dynamic_hardware_plan.backend_kind(),
+        VideoBackendKind::HardwareZeroCopy
+    );
+}
+
 #[test]
 fn hardware_preference_rejects_stream_no_hardware_output_can_decode() {
     let decoder_thread_config = PlayerVideoDecoderThreadConfig::default();

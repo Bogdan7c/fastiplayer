@@ -134,8 +134,9 @@ pub use runtime_settings::{
 };
 pub use seek_state::PlaybackResumeIntent;
 pub use session::{
-    PlayerPipelinePause, PlayerSession, PlayerTickConfig, PlayerTickContext, PlayerTickPacket,
-    PlayerTickResult, PlayerVideoDropReason, PlayerVideoFrameDrop,
+    DecoderPaceEvidence, DecoderPaceThresholds, PlayerPipelinePause, PlayerSession,
+    PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult, PlayerVideoDropReason,
+    PlayerVideoFrameDrop,
 };
 pub(crate) use session::{
     PlayerWorkerWakeupPlan, SchedulerTimingDiagnosticsSnapshot, scheduler_timing_diagnostics,

@@ -25,6 +25,7 @@ mod subtitles_prerender_settings;
 mod subtitles_settings;
 mod subtitles_stream_settings;
 mod track_memory_settings;
+mod video_backend_dynamic;
 /// Проверяет, что atomic save не оставил временных файлов рядом с config.
 fn assert_no_save_temp_files(config_directory: &Path) {
     let leftover_temp_file_count = fs::read_dir(config_directory)

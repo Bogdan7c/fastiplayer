@@ -9,7 +9,7 @@
 use std::time::Instant;
 
 use render_shell_api::{RenderFrameOutcome, RenderShell, SurfaceFrameAcquire};
-use tracing::warn;
+use tracing::{error, warn};
 
 use super::input_snapshot::AppFrameInputTimings;
 use super::sequence::{FrameSequenceContract, FrameSequenceObserver, FrameSequenceStage};
@@ -19,7 +19,10 @@ use super::timing::{
 };
 use super::ui_prepare::{PreparedUiFrame, UiPrepareTimings};
 use super::{PreparedVideoFrame, prepare_video_frame, report_video_render_boundary_error};
-use crate::state::{AppFrameContext, AppState, RendererVideoImportTarget};
+use crate::state::{
+    AppFrameContext, AppState, RejectedSwitchImpact, RendererVideoImportTarget,
+    classify_rejected_switch,
+};
 use crate::telemetry::Telemetry;
 
 /// Тайминги стадий до показа, которые нужны строке трассы показанного кадра.
@@ -71,8 +74,27 @@ pub(super) fn present_frame_for_plan(
     if let Err(fallback_failure) = app_state
         .apply_pending_dma_buf_runtime_fallback(RendererVideoImportTarget::for_renderer(renderer))
     {
-        warn!(error = %fallback_failure.error, "Runtime DMA-BUF layout recovery rejected");
-        report_video_render_boundary_error(app_state, fallback_failure.player_error);
+        match fallback_failure.player_error {
+            Some(player_error) => {
+                warn!(error = %fallback_failure.error, "Runtime DMA-BUF layout recovery rejected");
+                report_video_render_boundary_error(app_state, player_error);
+            }
+            // Отказ перехода Dynamic по «не успевает»: ошибка рендера нужна, только если
+            // SW-декодер уже установлен, а переход не завершился (видео сломано).
+            None => match classify_rejected_switch(&fallback_failure) {
+                RejectedSwitchImpact::VideoKeepsPlaying => warn!(
+                    error = %fallback_failure.error,
+                    "Dynamic decode switch to software was rejected; staying on the current decoder"
+                ),
+                RejectedSwitchImpact::VideoBroken(player_error) => {
+                    error!(
+                        error = %fallback_failure.error,
+                        "Dynamic decode switch failed after the software decoder was installed"
+                    );
+                    report_video_render_boundary_error(app_state, player_error);
+                }
+            },
+        }
     }
     let mut video_prepare_timings = prepared_video_frame.timings;
     video_prepare_timings.total = stage_started_at.elapsed();

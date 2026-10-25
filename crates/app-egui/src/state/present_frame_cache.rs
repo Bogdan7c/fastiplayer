@@ -232,6 +232,7 @@ pub(super) fn cached_present_frame_discard_reason_for_player_event(
         | PlayerEvent::QualitySelectionChanged(_)
         | PlayerEvent::ConfigReloadRequested
         | PlayerEvent::VideoBackendSelectionRequested(_)
+        | PlayerEvent::VideoDecoderFallingBehind(_)
         | PlayerEvent::RecoverableError(_) => None,
     }
 }

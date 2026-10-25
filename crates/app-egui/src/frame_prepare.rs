@@ -344,9 +344,16 @@ fn record_worker_events(app_state: &mut AppState, events: Vec<PlayerWorkerEvent>
                     PlayerEvent::MediaOpenRequested(_) => {
                         app_state.reset_dma_buf_runtime_fallback_for_new_media();
                     }
+                    PlayerEvent::PlaybackStateChanged(player_core::PlaybackState::Stopped) => {
+                        // Stop закрывает медиа и сбрасывает видеодекодер: требования нет.
+                        app_state.clear_active_video_stream_requirement();
+                    }
                     PlayerEvent::FatalError(fatal_error) => log_player_fatal_error(&fatal_error),
                     PlayerEvent::VideoBackendSelectionRequested(request) => {
                         app_state.note_video_backend_reselection_request(request);
+                    }
+                    PlayerEvent::VideoDecoderFallingBehind(evidence) => {
+                        app_state.note_video_decoder_falling_behind(evidence);
                     }
                     PlayerEvent::SeekTargetFramePresented(presentation) => {
                         app_state
@@ -608,7 +615,7 @@ fn prepare_video_frame(
                     app_state.note_dma_buf_fallback_trigger(
                         trigger,
                         render_generation,
-                        player_error,
+                        Some(player_error),
                     );
                 }
                 None => report_video_render_boundary_error(

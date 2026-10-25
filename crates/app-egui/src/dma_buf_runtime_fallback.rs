@@ -1,6 +1,12 @@
 //! Controlled runtime fallback policy для DMA-BUF layout, известного только после first frame.
+//!
+//! Контроллер из этого модуля — «единственный на файл переход на программный декод»: его
+//! защёлка пускает не больше одной попытки перехода HW -> SW на открытое медиа, какой бы
+//! повод ни сработал первым (отказ рендера, отказ дескриптора или режим Dynamic: аппаратный
+//! декодер не успевает).
 
 use fastiplayer_config::VideoBackendPreference;
+use player_core::DecoderPaceEvidence;
 use render_shell_api::{FrameImportUnsupportedReason, HardwareFrameRefusal};
 use video_core::DmaBufDescriptorRejection;
 
@@ -11,12 +17,18 @@ use crate::video_pipeline_selector::{VideoPipelinePlan, VideoPipelineSelectionEr
 ///
 /// Два разных источника, не слитых в один: отказ дескриптора (его нашёл валидатор по данным
 /// декодера) и отказ самого рендера (решение владельца 41: рендер не умеет показывать кадр).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Третий повод — режим Dynamic: аппаратный декодер устойчиво не успевает за видео.
+///
+/// `Eq` не выводится: доказательство отставания несёт дробные доли кадров (`f64`).
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum DmaBufFallbackTrigger {
     /// Дескриптор DMA-BUF отклонён до импорта.
     DescriptorRejected(DmaBufDescriptorRejection),
     /// Рендер не может показать аппаратный кадр с исправным дескриптором.
     RendererCannotShowHardwareFrame(HardwareFrameRefusal),
+    /// Аппаратный декодер устойчиво не успевает за видео (сигнал детектора player-core).
+    /// Переход по этому поводу разрешён только режиму Dynamic.
+    HardwareDecoderFallingBehind(DecoderPaceEvidence),
 }
 
 impl DmaBufFallbackTrigger {
@@ -40,10 +52,12 @@ impl DmaBufFallbackTrigger {
     ///
     /// Отказ рендера лечится всегда; из отказов дескриптора — только составной
     /// multi-object (прежняя политика приложения, остальные остаются ошибкой).
+    /// Медленный аппаратный декодер лечится программным по замыслу режима Dynamic.
     pub(crate) const fn is_cured_by_software_decode(&self) -> bool {
         matches!(
             self,
             Self::RendererCannotShowHardwareFrame(_)
+                | Self::HardwareDecoderFallingBehind(_)
                 | Self::DescriptorRejected(
                     DmaBufDescriptorRejection::UnsupportedComposedMultiObject { .. }
                 )
@@ -56,6 +70,12 @@ impl std::fmt::Display for DmaBufFallbackTrigger {
         match self {
             Self::DescriptorRejected(rejection) => write!(formatter, "{rejection}"),
             Self::RendererCannotShowHardwareFrame(refusal) => write!(formatter, "{refusal}"),
+            Self::HardwareDecoderFallingBehind(evidence) => write!(
+                formatter,
+                "hardware decoder is falling behind: {:.0}% of {:.0} expected frames missed",
+                evidence.missed_frame_ratio * 100.0,
+                evidence.expected_frames
+            ),
         }
     }
 }
@@ -67,8 +87,9 @@ pub(crate) struct PendingDmaBufFallback {
     pub(crate) trigger: DmaBufFallbackTrigger,
     /// Generation кадра, на котором обнаружено ограничение.
     pub(crate) render_generation: u64,
-    /// Typed player error с frame identity для финальной диагностики.
-    pub(crate) player_error: player_core::PlayerRenderError,
+    /// Typed player error с frame identity для финальной диагностики; `None` у поводов,
+    /// не связанных с конкретным кадром (декодер не успевает): плееру об отказе сообщать нечего.
+    pub(crate) player_error: Option<player_core::PlayerRenderError>,
 }
 
 /// Редкий error-path payload для shell reporting без раздувания success-path `Result`.
@@ -76,8 +97,9 @@ pub(crate) struct PendingDmaBufFallback {
 pub(crate) struct DmaBufRuntimeFallbackFailure {
     /// Typed recovery policy/startup/restore error.
     pub(crate) error: DmaBufRuntimeFallbackError,
-    /// Player-facing typed error с identity исходного frame lease-а.
-    pub(crate) player_error: player_core::PlayerRenderError,
+    /// Player-facing typed error с identity исходного frame lease-а; `None` — отказ перехода
+    /// по поводу «декодер не успевает», который не должен превращаться в ошибку рендера.
+    pub(crate) player_error: Option<player_core::PlayerRenderError>,
 }
 
 /// Typed итог отказа runtime layout recovery.
@@ -158,6 +180,9 @@ impl std::error::Error for DmaBufRuntimeFallbackError {}
 #[derive(Debug, Default)]
 pub(crate) struct DmaBufRuntimeFallbackController {
     attempted_render_generation: Option<u64>,
+    /// Committed preference, при которой программный декод УСПЕШНО установлен для этого медиа.
+    /// `None` — перехода не было (или он не удался).
+    software_installed_under: Option<VideoBackendPreference>,
 }
 
 impl DmaBufRuntimeFallbackController {
@@ -169,6 +194,10 @@ impl DmaBufRuntimeFallbackController {
         trigger: DmaBufFallbackTrigger,
         software_plan: Result<VideoPipelinePlan, VideoPipelineSelectionError>,
     ) -> Result<VideoPipelinePlan, DmaBufRuntimeFallbackError> {
+        let is_pace_trigger = matches!(
+            trigger,
+            DmaBufFallbackTrigger::HardwareDecoderFallingBehind(_)
+        );
         match preference {
             VideoBackendPreference::Hardware => {
                 return Err(DmaBufRuntimeFallbackError::HardwareFallbackForbidden { trigger });
@@ -176,7 +205,12 @@ impl DmaBufRuntimeFallbackController {
             VideoBackendPreference::Software => {
                 return Err(DmaBufRuntimeFallbackError::FallbackNotApplicable { trigger });
             }
-            VideoBackendPreference::Auto => {}
+            // Auto по медленности декодера не переключает: это привилегия режима Dynamic.
+            VideoBackendPreference::Auto if is_pace_trigger => {
+                return Err(DmaBufRuntimeFallbackError::FallbackNotApplicable { trigger });
+            }
+            // Dynamic пускает любые поводы; Auto — прежние (не про медленность).
+            VideoBackendPreference::Auto | VideoBackendPreference::Dynamic => {}
         }
 
         if self.attempted_render_generation.is_some() {
@@ -197,9 +231,41 @@ impl DmaBufRuntimeFallbackController {
         })
     }
 
-    /// Открытие нового media создаёт новый recovery scope.
+    /// Была ли для текущего медиа уже попытка перехода (успешная или нет).
+    pub(crate) const fn has_attempted_switch(&self) -> bool {
+        self.attempted_render_generation.is_some()
+    }
+
+    /// Фиксирует, что программный декод установлен при committed preference `preference`.
+    pub(crate) fn note_software_switch_installed(&mut self, preference: VideoBackendPreference) {
+        self.software_installed_under = Some(preference);
+    }
+
+    /// Действующий режим текущего файла.
+    ///
+    /// После успешного перехода — `Software`, чтобы читатели preference (переподбор, рендер,
+    /// live-пересборка) не вернули аппаратный декод посреди файла. Если пользователь с тех пор
+    /// сменил `video.preferred_backend`, его новый выбор главнее и override не действует.
+    /// Известное ограничение: возврат к прежнему значению в том же файле снова включает override.
+    pub(crate) fn effective_preference(
+        &self,
+        committed: VideoBackendPreference,
+    ) -> VideoBackendPreference {
+        if self.software_installed_under == Some(committed) {
+            VideoBackendPreference::Software
+        } else {
+            committed
+        }
+    }
+
+    /// Открытие нового media создаёт новый recovery scope: защёлка и override сбрасываются.
+    ///
+    /// Вызывается на каждое `MediaOpenRequested`, в том числе при переоткрытии того же файла
+    /// пересборкой по настройкам — такой файл тоже начнёт с аппаратного декода (известное
+    /// допустимое поведение).
     pub(crate) fn reset_for_new_media(&mut self) {
         self.attempted_render_generation = None;
+        self.software_installed_under = None;
     }
 
     /// Оборачивает startup/restore failure, не теряя исходную typed layout rejection.
@@ -216,7 +282,7 @@ impl DmaBufRuntimeFallbackController {
 
 #[cfg(test)]
 mod tests {
-    use player_core::PlayerVideoDecoderThreadConfig;
+    use player_core::{DecoderPaceEvidence, PlayerVideoDecoderThreadConfig};
 
     use super::*;
 
@@ -247,6 +313,22 @@ mod tests {
                 Ok(software_plan()),
             )
             .expect("confirmed software fallback must be selected");
+
+        assert_eq!(selected, software_plan());
+    }
+
+    #[test]
+    fn dynamic_accepts_confirmed_software_fallback_like_auto() {
+        let mut controller = DmaBufRuntimeFallbackController::default();
+
+        let selected = controller
+            .begin(
+                VideoBackendPreference::Dynamic,
+                7,
+                unsupported_layout(),
+                Ok(software_plan()),
+            )
+            .expect("Dynamic must allow the same confirmed software fallback as Auto");
 
         assert_eq!(selected, software_plan());
     }
@@ -471,6 +553,194 @@ mod tests {
                 "{unrelated:?}"
             );
         }
+    }
+
+    fn falling_behind() -> DmaBufFallbackTrigger {
+        DmaBufFallbackTrigger::HardwareDecoderFallingBehind(DecoderPaceEvidence {
+            evaluation_window: std::time::Duration::from_secs(4),
+            expected_frames: 100.0,
+            late_frames: 30,
+            starved_frames: 10.0,
+            missed_frame_ratio: 0.4,
+            playback_rate: player_core::PlaybackRate::default(),
+            media_instance_id: None,
+            render_generation: 3,
+        })
+    }
+
+    /// Dynamic: «не успевает» даёт подтверждённый программный план.
+    #[test]
+    fn dynamic_accepts_software_switch_for_falling_behind() {
+        let mut controller = DmaBufRuntimeFallbackController::default();
+
+        let selected = controller
+            .begin(
+                VideoBackendPreference::Dynamic,
+                3,
+                falling_behind(),
+                Ok(software_plan()),
+            )
+            .expect("Dynamic must switch on a falling-behind decoder");
+
+        assert_eq!(selected, software_plan());
+    }
+
+    /// Auto по медленности декодера не переключает, но прежние поводы обслуживает.
+    #[test]
+    fn auto_does_not_switch_for_falling_behind() {
+        let mut controller = DmaBufRuntimeFallbackController::default();
+
+        let error = controller
+            .begin(
+                VideoBackendPreference::Auto,
+                3,
+                falling_behind(),
+                Ok(software_plan()),
+            )
+            .expect_err("Auto must not switch because of slowness");
+
+        assert!(matches!(
+            error,
+            DmaBufRuntimeFallbackError::FallbackNotApplicable { .. }
+        ));
+        // Отказ по политике не тратит защёлку: прежний повод в Auto всё ещё работает.
+        assert!(!controller.has_attempted_switch());
+        controller
+            .begin(
+                VideoBackendPreference::Auto,
+                3,
+                renderer_refusal(),
+                Ok(software_plan()),
+            )
+            .expect("the old trigger must still be served after a rejected slowness event");
+    }
+
+    #[test]
+    fn hardware_forbids_and_software_does_not_apply_for_falling_behind() {
+        let mut controller = DmaBufRuntimeFallbackController::default();
+        let forbidden = controller
+            .begin(
+                VideoBackendPreference::Hardware,
+                3,
+                falling_behind(),
+                Ok(software_plan()),
+            )
+            .expect_err("Hardware forbids software fallback");
+        assert!(matches!(
+            forbidden,
+            DmaBufRuntimeFallbackError::HardwareFallbackForbidden { .. }
+        ));
+
+        let not_applicable = controller
+            .begin(
+                VideoBackendPreference::Software,
+                3,
+                falling_behind(),
+                Ok(software_plan()),
+            )
+            .expect_err("Software has nothing to switch from");
+        assert!(matches!(
+            not_applicable,
+            DmaBufRuntimeFallbackError::FallbackNotApplicable { .. }
+        ));
+    }
+
+    /// Один переход на файл: второй повод (любой) блокируется, новое медиа снова разрешает.
+    #[test]
+    fn second_trigger_on_same_media_is_a_loop_and_new_media_reopens() {
+        let mut controller = DmaBufRuntimeFallbackController::default();
+        controller
+            .begin(
+                VideoBackendPreference::Dynamic,
+                3,
+                falling_behind(),
+                Ok(software_plan()),
+            )
+            .expect("first switch is allowed");
+
+        for second in [falling_behind(), renderer_refusal(), unsupported_layout()] {
+            let error = controller
+                .begin(
+                    VideoBackendPreference::Dynamic,
+                    3,
+                    second,
+                    Ok(software_plan()),
+                )
+                .expect_err("only one switch per file");
+            assert!(matches!(
+                error,
+                DmaBufRuntimeFallbackError::FallbackLoopPrevented { .. }
+            ));
+        }
+
+        controller.reset_for_new_media();
+        controller
+            .begin(
+                VideoBackendPreference::Dynamic,
+                4,
+                falling_behind(),
+                Ok(software_plan()),
+            )
+            .expect("the next file may switch again");
+    }
+
+    /// Dynamic с прежними поводами ведёт себя как Auto.
+    #[test]
+    fn dynamic_serves_old_triggers_like_auto() {
+        for trigger in [renderer_refusal(), unsupported_layout()] {
+            let mut controller = DmaBufRuntimeFallbackController::default();
+            let selected = controller
+                .begin(
+                    VideoBackendPreference::Dynamic,
+                    3,
+                    trigger,
+                    Ok(software_plan()),
+                )
+                .expect("Dynamic serves old triggers");
+            assert_eq!(selected, software_plan());
+        }
+    }
+
+    /// Действующий режим файла: committed -> Software после установки -> committed при смене
+    /// настройки пользователем или новом медиа; неуспешная попытка режим не меняет.
+    #[test]
+    fn effective_preference_follows_the_installed_switch_only() {
+        let mut controller = DmaBufRuntimeFallbackController::default();
+        let dynamic = VideoBackendPreference::Dynamic;
+        assert_eq!(controller.effective_preference(dynamic), dynamic);
+
+        // Попытка без успешной установки (begin отдал план, но установка упала).
+        controller
+            .begin(dynamic, 3, falling_behind(), Ok(software_plan()))
+            .expect("allowed");
+        assert_eq!(
+            controller.effective_preference(dynamic),
+            dynamic,
+            "a failed or not yet installed switch must not change the mode"
+        );
+
+        controller.note_software_switch_installed(dynamic);
+        assert_eq!(
+            controller.effective_preference(dynamic),
+            VideoBackendPreference::Software
+        );
+        // Пользователь сам выбрал другое значение: его выбор главнее.
+        assert_eq!(
+            controller.effective_preference(VideoBackendPreference::Hardware),
+            VideoBackendPreference::Hardware
+        );
+
+        controller.reset_for_new_media();
+        assert_eq!(controller.effective_preference(dynamic), dynamic);
+    }
+
+    #[test]
+    fn falling_behind_is_cured_by_software_and_has_english_display() {
+        assert!(falling_behind().is_cured_by_software_decode());
+        assert_eq!(
+            falling_behind().to_string(),
+            "hardware decoder is falling behind: 40% of 100 expected frames missed"
+        );
     }
 
     /// Лечится программным декодом: любой отказ рендера и составной multi-object; прочие

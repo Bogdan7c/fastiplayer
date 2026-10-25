@@ -1,7 +1,7 @@
 {
   "hard_limit_lines": 800,
   "legacy_modules": {
-    "crates/app-egui/src/frame_prepare.rs": 1410,
+    "crates/app-egui/src/frame_prepare.rs": 1417,
     "crates/app-egui/src/playlist_runtime/persistence.rs": 889,
     "crates/app-egui/src/playlist_runtime/ui_interaction.rs": 828,
     "crates/app-egui/src/state/telemetry_panel.rs": 878,
@@ -22,7 +22,7 @@
     "crates/media-prefetch/src/source.rs": 1009,
     "crates/player-core/src/diagnostics.rs": 1901,
     "crates/player-core/src/render_lease_bridge.rs": 1236,
-    "crates/player-core/src/runtime_settings.rs": 1049,
+    "crates/player-core/src/runtime_settings.rs": 1052,
     "crates/player-core/src/session/tick/video_decoder_io.rs": 814,
     "crates/playlist-core/src/queue/outcomes.rs": 841,
     "crates/playlist-discovery/src/job.rs": 818,
@@ -32,7 +32,7 @@
     "crates/render-wgpu-video/src/video/host_yuv420_renderer.rs": 1325,
     "crates/render-wgpu-video/src/video/mod.rs": 1104,
     "crates/render-wgpu-video/src/video/p010_renderer.rs": 1410,
-    "crates/fastiplayer-settings/src/routing.rs": 1956,
+    "crates/fastiplayer-settings/src/routing.rs": 1957,
     "crates/settings-core/src/controller.rs": 1311,
     "crates/settings-core/src/metadata.rs": 929,
     "crates/source-core/src/ftp_session.rs": 824,

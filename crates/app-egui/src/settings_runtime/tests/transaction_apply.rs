@@ -700,9 +700,34 @@ fn next_item_preload_persistence_failure_rolls_back_once_without_finalize() {
 /// а compensating rollback использует previous policy ещё до обратного Player route-а.
 #[test]
 fn combined_backend_and_quality_persist_failure_threads_exact_route_targets() {
+    assert_combined_persist_failure_threads_targets(
+        "software",
+        VideoBackendPreference::Software,
+        "combined-backend-quality-target-policy",
+    );
+}
+
+/// То же для нового режима Dynamic: он доходит до Player/Media маршрутов как есть
+/// (не схлопывается в Auto), а откат возвращает прежний Hardware.
+#[test]
+fn dynamic_backend_persist_failure_threads_exact_route_targets() {
+    assert_combined_persist_failure_threads_targets(
+        "dynamic",
+        VideoBackendPreference::Dynamic,
+        "dynamic-backend-quality-target-policy",
+    );
+}
+
+/// Общая проверка: применяем `applied_id` вместе с URL quality при сломанной записью config и
+/// ждём, что оба route-а увидели `applied_preference`, а затем откат к Hardware.
+fn assert_combined_persist_failure_threads_targets(
+    applied_id: &str,
+    applied_preference: VideoBackendPreference,
+    temp_name: &str,
+) {
     let mut config = custom_config_for_test();
     config.video.preferred_backend = VideoBackendPreference::Hardware;
-    let path = temp_config_path("combined-backend-quality-target-policy");
+    let path = temp_config_path(temp_name);
     remove_file_if_exists(&path);
     fs::create_dir_all(&path).expect("Target director creates deterministic rename failure");
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
@@ -719,7 +744,7 @@ fn combined_backend_and_quality_persist_failure_threads_exact_route_targets() {
             SettingsUiAction::Open,
             SettingsUiAction::SetValue {
                 setting_id: SettingId::from("video.preferred_backend"),
-                value: SettingValue::Select("software".into()),
+                value: SettingValue::Select(applied_id.into()),
             },
             SettingsUiAction::SetValue {
                 setting_id: SettingId::from("web_media.preferred_video_height"),
@@ -737,17 +762,11 @@ fn combined_backend_and_quality_persist_failure_threads_exact_route_targets() {
     assert_eq!(report.rollback.len(), 2);
     assert_eq!(
         adapter.player_target_backend_preferences,
-        vec![
-            VideoBackendPreference::Software,
-            VideoBackendPreference::Hardware,
-        ]
+        vec![applied_preference, VideoBackendPreference::Hardware,]
     );
     assert_eq!(
         adapter.media_target_backend_preferences,
-        vec![
-            VideoBackendPreference::Software,
-            VideoBackendPreference::Hardware,
-        ]
+        vec![applied_preference, VideoBackendPreference::Hardware,]
     );
     assert_eq!(
         runtime.committed_config().video.preferred_backend,

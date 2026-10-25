@@ -10,6 +10,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use codec_core::VideoDecodeRequirement;
 use player_core::{
     MediaInstallRequestId, MediaInstallVideoBackendConstraint, MediaInstallVideoResourcePort,
     PlayerVideoDecoderThreadConfig,
@@ -154,7 +155,13 @@ where
             .slot
             .lock()
             .map_err(|_| DetachedVideoBackendPortError)?;
-        Ok(slot.prepare_and_stage(request_id, self.renderer_generation, plan, &mut self.driver))
+        Ok(slot.prepare_and_stage_for_stream(
+            request_id,
+            self.renderer_generation,
+            plan,
+            selection.stream_requirement().cloned(),
+            &mut self.driver,
+        ))
     }
 
     fn publish_candidate_status(
@@ -249,12 +256,31 @@ impl<RendererImport> StagedVideoPipelineCandidateSlot<RendererImport> {
         }
     }
 
-    /// Создаёт и stage-ит один pair либо возвращает request-correlated typed reply.
+    /// То же, что [`Self::prepare_and_stage_for_stream`], для кандидата без требования потока.
+    #[cfg(test)]
     pub(crate) fn prepare_and_stage<Driver>(
         &mut self,
         request_id: MediaInstallRequestId,
         renderer_generation: RendererGeneration,
         plan: VideoPipelinePlan,
+        driver: &mut Driver,
+    ) -> DetachedVideoBackendReply<MediaInstallRequestId>
+    where
+        Driver: CandidateVideoPipelineResourceDriver<RendererImport = RendererImport>,
+    {
+        self.prepare_and_stage_for_stream(request_id, renderer_generation, plan, None, driver)
+    }
+
+    /// Создаёт и stage-ит один pair либо возвращает request-correlated typed reply.
+    ///
+    /// `stream_requirement` едет вместе с кандидатом и становится активным требованием
+    /// приложения только при commit-е (отказ/отмена кандидата его не меняют).
+    pub(crate) fn prepare_and_stage_for_stream<Driver>(
+        &mut self,
+        request_id: MediaInstallRequestId,
+        renderer_generation: RendererGeneration,
+        plan: VideoPipelinePlan,
+        stream_requirement: Option<VideoDecodeRequirement>,
         driver: &mut Driver,
     ) -> DetachedVideoBackendReply<MediaInstallRequestId>
     where
@@ -309,6 +335,7 @@ impl<RendererImport> StagedVideoPipelineCandidateSlot<RendererImport> {
             descriptor,
             backend_id,
             state: StagedVideoPipelineCandidateState::AwaitingPlayer,
+            stream_requirement,
             renderer_import: resources.renderer_import,
         });
         // Successful admission увеличивает bounded counter ровно один раз.
@@ -597,6 +624,9 @@ pub(crate) struct CommittedVideoPipelineCandidate<RendererImport> {
     /// Класс backend-а нового decoder-а (становится текущим классом приложения).
     backend_kind: VideoBackendKind,
 
+    /// Требование видеопотока этого кандидата; `None` — player его не приложил.
+    stream_requirement: Option<VideoDecodeRequirement>,
+
     /// Подготовленный импорт рендера, который владелец ставит в рендер.
     renderer_import: RendererImport,
 }
@@ -616,10 +646,26 @@ impl<RendererImport> CommittedVideoPipelineCandidate<RendererImport> {
         &self.renderer_import
     }
 
-    /// Отдаёт класс backend-а и импорт владельцу для установки в рендер.
-    pub(crate) fn into_parts(self) -> (VideoBackendKind, RendererImport) {
-        (self.backend_kind, self.renderer_import)
+    /// Отдаёт класс backend-а, требование потока и импорт владельцу.
+    pub(crate) fn into_parts(self) -> CommittedVideoPipelineParts<RendererImport> {
+        CommittedVideoPipelineParts {
+            backend_kind: self.backend_kind,
+            stream_requirement: self.stream_requirement,
+            renderer_import: self.renderer_import,
+        }
     }
+}
+
+/// Разобранный committed-кандидат: поля названы, а не позиционные.
+pub(crate) struct CommittedVideoPipelineParts<RendererImport> {
+    /// Класс backend-а нового decoder-а.
+    pub(crate) backend_kind: VideoBackendKind,
+
+    /// Требование видеопотока, если player его приложил.
+    pub(crate) stream_requirement: Option<VideoDecodeRequirement>,
+
+    /// Подготовленный импорт рендера.
+    pub(crate) renderer_import: RendererImport,
 }
 
 /// Validated post-Installed token: все fallible work завершено до его создания.
@@ -659,6 +705,7 @@ impl<RendererImport> PreparedPostInstalledVideoPipelineCommit<'_, RendererImport
         // Единственный результат — заранее созданный импорт, без Result/callback/wait.
         CommittedVideoPipelineCandidate {
             backend_kind: candidate.descriptor.backend_kind(),
+            stream_requirement: candidate.stream_requirement,
             renderer_import: candidate.renderer_import,
         }
     }

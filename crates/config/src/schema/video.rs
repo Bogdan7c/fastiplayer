@@ -20,13 +20,14 @@ pub struct VideoConfig {
         label_id = "settings.video.preferred_backend.label",
         label_ru = "Decode backend",
         description_id = "settings.video.preferred_backend.description",
-        description_ru = "Preferred video decode path: automatic, native hardware, or software FFmpeg.",
+        description_ru = "Preferred video decode path. Automatic: uses hardware decoding when available, otherwise software. Hardware: hardware decoding only. Software: software FFmpeg only. Dynamic: uses hardware decoding and switches this video to software decoding if the hardware can't keep up.",
         editor = "select",
         apply = "video.apply",
         options(
             option(id = "auto", label_id = "settings.video.preferred_backend.auto", label_ru = "Automatic", value = VideoBackendPreference::Auto),
             option(id = "hardware", label_id = "settings.video.preferred_backend.hardware", label_ru = "Hardware", value = VideoBackendPreference::Hardware),
             option(id = "software", label_id = "settings.video.preferred_backend.software", label_ru = "Software FFmpeg", value = VideoBackendPreference::Software),
+            option(id = "dynamic", label_id = "settings.video.preferred_backend.dynamic", label_ru = "Dynamic", value = VideoBackendPreference::Dynamic),
         )
     )]
     pub preferred_backend: VideoBackendPreference,
@@ -455,9 +456,14 @@ pub enum VideoBackendPreference {
 
     /// Только FFmpeg software decode path.
     Software,
+
+    /// Как `Auto` на старте файла; если HW-декодер устойчиво не успевает, текущий файл
+    /// переключается на software decode (политику ведёт app-egui, возврат на HW — со следующим файлом).
+    Dynamic,
 }
 
-const SUPPORTED_VIDEO_BACKEND_PREFERENCE_VALUES: &[&str] = &["auto", "hardware", "software"];
+const SUPPORTED_VIDEO_BACKEND_PREFERENCE_VALUES: &[&str] =
+    &["auto", "hardware", "software", "dynamic"];
 const LEGACY_VAAPI_VIDEO_BACKEND_PREFERENCE: &str = "vaapi";
 const REMOVED_VULKAN_VIDEO_BACKEND_PREFERENCE: &str = "vulkan";
 
@@ -490,6 +496,7 @@ impl<'de> Visitor<'de> for VideoBackendPreferenceVisitor {
             "auto" => Ok(VideoBackendPreference::Auto),
             "hardware" => Ok(VideoBackendPreference::Hardware),
             "software" => Ok(VideoBackendPreference::Software),
+            "dynamic" => Ok(VideoBackendPreference::Dynamic),
             LEGACY_VAAPI_VIDEO_BACKEND_PREFERENCE => Ok(VideoBackendPreference::Hardware),
             REMOVED_VULKAN_VIDEO_BACKEND_PREFERENCE => Err(E::custom(
                 "video.preferred_backend = \"vulkan\" was removed; replace it with \"auto\" so Fastiplayer can select a supported backend, or \"hardware\" to explicitly require native hardware decoding",

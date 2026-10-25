@@ -499,7 +499,9 @@ fn render_field_messages(
     }
 
     // Статус и кнопка перезапуска стоят в одной строке: кнопка относится к этому статусу.
-    ui.horizontal(|ui| {
+    // Именно `horizontal_wrapped`: в обычном `horizontal` egui не переносит текст
+    // (`TextWrapMode::Extend`), и длинный статус уходил за правый край боковой панели.
+    ui.horizontal_wrapped(|ui| {
         if let Some(status) = &field.status {
             ui.label(status);
         }

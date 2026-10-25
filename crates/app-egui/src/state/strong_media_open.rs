@@ -3,6 +3,7 @@
 //! Модуль владеет orchestration, но не player/session данными: coordinator хранит
 //! request phases, player — atomic install, а `AppState` — renderer pointers.
 
+mod candidate_commit;
 mod compensation;
 mod user_failure_reason;
 pub(crate) use user_failure_reason::StrongMediaOpenUserOutcome;
@@ -749,35 +750,6 @@ impl AppState {
             descriptor,
             position_warning: None,
         })
-    }
-
-    /// После player Installed ставит импорт кадров кандидата в активный рендер.
-    ///
-    /// Прежний инвариант сохранён: кандидат заменяет уже установленный video pipeline. При
-    /// mismatch request/generation активный импорт рендера и класс backend-а не меняются.
-    pub(super) fn commit_installed_video_candidate(
-        &mut self,
-        video_frames: &mut dyn VideoFrameImport,
-        candidate_owner: &ProductionCandidateOwner,
-        player_request_id: MediaInstallRequestId,
-    ) -> Result<(), StrongMediaOpenError> {
-        if !candidate_owner.has_candidate() {
-            return Ok(());
-        }
-        if self.current_video_backend_kind.is_none()
-            || video_frames.active_video_import_path().is_none()
-        {
-            return Err(StrongMediaOpenError::MissingActiveVideoPointers);
-        }
-        let committed = candidate_owner
-            .commit_installed(player_request_id, self.renderer_generation)
-            .map_err(StrongMediaOpenError::from)?;
-        let (backend_kind, renderer_import) = committed.into_parts();
-        video_frames
-            .install_video_import(renderer_import)
-            .map_err(StrongMediaOpenError::RendererRejectedVideoImport)?;
-        self.current_video_backend_kind = Some(backend_kind);
-        Ok(())
     }
 
     /// Controlled recreation invalidates every candidate tied to the previous renderer lifetime.

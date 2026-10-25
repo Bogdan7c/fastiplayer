@@ -43,12 +43,14 @@ mod audio_packet_window;
 mod audio_playback_bounds;
 mod audio_runtime;
 mod audio_spec_change;
+mod audio_stall;
 mod audio_starvation;
 mod audio_tempo_rate_change;
 mod audio_tempo_runtime;
 mod audio_track_switch;
 mod capability_selection;
 mod command_dispatch;
+mod decoder_pace;
 mod demux_retry;
 mod diagnostics_sink;
 mod dynamic_timeline;
@@ -93,6 +95,7 @@ use self::audio_runtime::{
     AudioAutoplayReadiness, AudioDecoderInitSpec, audio_decoder_init_spec_from_tracks,
     classify_autoplay_audio_readiness, classify_seek_audio_gate,
 };
+pub use self::decoder_pace::{DecoderPaceEvidence, DecoderPaceThresholds};
 use self::demux_retry::DemuxRetryRuntime;
 use self::dynamic_timeline::DynamicTimelineRuntime;
 pub(crate) use self::dynamic_timeline::DynamicTimelineWaitSource;
@@ -249,6 +252,9 @@ pub struct PlayerSession {
 
     /// Момент предыдущего tick-а для диагностики стопора worker-треда.
     last_tick_observed_at: Option<Instant>,
+
+    /// Детектор «видеодекодер не успевает»; владеет собственным накоплением и окном тишины.
+    decoder_pace: decoder_pace::DecoderPaceMonitor,
 }
 
 /// Отложенный выбор video-трека до установки совместимого decode backend-а.
@@ -767,6 +773,7 @@ impl Default for PlayerSession {
             last_seen_audio_underrun_callbacks: 0,
             subtitle_feed: crate::subtitle_feed::SubtitleFeedSender::disabled(),
             last_tick_observed_at: None,
+            decoder_pace: decoder_pace::DecoderPaceMonitor::default(),
         }
     }
 }

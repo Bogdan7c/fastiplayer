@@ -19,6 +19,7 @@ fn advertised_av1_main_outputs_select_vaapi_for_auto_and_hardware() {
         for preferred_backend in [
             VideoBackendPreference::Auto,
             VideoBackendPreference::Hardware,
+            VideoBackendPreference::Dynamic,
         ] {
             let plan = select_video_pipeline_plan(
                 preferred_backend,

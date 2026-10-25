@@ -289,6 +289,9 @@ pub enum PlayerRuntimeVideoBackendPreference {
     Hardware,
     /// Разрешить только software decode backend.
     Software,
+    /// Как `Auto` на старте файла, с переключением на software, если hardware не успевает.
+    /// player-core значение лишь переносит; политику переключения ведёт приложение.
+    Dynamic,
 }
 
 /// Причина установки уже подготовленного backend-а на worker boundary.

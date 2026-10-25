@@ -511,7 +511,9 @@ impl FrameSettingsRuntimeAdapter<'_> {
 
         if player_update.decoder_thread_config.is_some() || player_update.video_backend.is_some() {
             let backend_preference = player_update.video_backend.as_ref().map_or_else(
-                || self.app_state.video_backend_preference(),
+                // Без смены настройки действует режим файла: после HW->SW перехода пересборка
+                // по decoder-настройкам не вернёт аппаратный декод посреди файла.
+                || self.app_state.effective_video_backend_preference(),
                 |backend_update| match backend_update.preference {
                     player_core::PlayerRuntimeVideoBackendPreference::Auto => {
                         fastiplayer_config::VideoBackendPreference::Auto
@@ -521,6 +523,9 @@ impl FrameSettingsRuntimeAdapter<'_> {
                     }
                     player_core::PlayerRuntimeVideoBackendPreference::Software => {
                         fastiplayer_config::VideoBackendPreference::Software
+                    }
+                    player_core::PlayerRuntimeVideoBackendPreference::Dynamic => {
+                        fastiplayer_config::VideoBackendPreference::Dynamic
                     }
                 },
             );

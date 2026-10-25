@@ -34,6 +34,7 @@ use render_core::{
 };
 #[cfg(test)]
 use render_core::{RenderLiveApplyReport, RenderLiveSettingsError};
+use render_shell_api::RendererFamily;
 use settings_core::{
     ApplyFinalState, ApplyMechanism, ApplyReport, ApplyRouteReport, ApplyRouteResult, CancelReport,
     CommittedApplyRequest, CommittedFinalizeRequest, CommittedRollbackRequest,
@@ -206,6 +207,9 @@ pub(crate) struct SettingsRuntime {
     /// Нужно только для предупреждения рядом с режимом «Hardware».
     hardware_decode_availability: HardwareDecodeAvailability,
 
+    /// Семейство рендера, с которым запущен процесс (`None` — ещё не сообщено).
+    active_renderer_family: Option<RendererFamily>,
+
     /// Профиль рендера, с которым запущен процесс: от него считается «Applies after restart».
     startup_render_profile: render_profile_restart::StartupRenderProfile,
 
@@ -273,6 +277,7 @@ impl SettingsRuntime {
             ui_model_cache: None,
             ui_model_revision: 0,
             hardware_decode_availability: HardwareDecodeAvailability::Unknown,
+            active_renderer_family: None,
             visual_hold: false,
             startup_render_profile,
             relaunch_request: RelaunchRequest::NotRequested,
@@ -360,6 +365,17 @@ impl SettingsRuntime {
     ) {
         if self.hardware_decode_availability != availability {
             self.hardware_decode_availability = availability;
+            self.invalidate_ui_model();
+        }
+    }
+
+    /// Сообщает окну настроек семейство активного рендера (для подсказки про Dynamic).
+    ///
+    /// Достаточно одного вызова при старте: пересоздание рендера семейство не меняет, а смена
+    /// семейства возможна только после перезапуска приложения (решение 5).
+    pub(crate) fn set_active_renderer_family(&mut self, family: RendererFamily) {
+        if self.active_renderer_family != Some(family) {
+            self.active_renderer_family = Some(family);
             self.invalidate_ui_model();
         }
     }
@@ -510,9 +526,10 @@ impl SettingsRuntime {
                         .apply_to(field);
                 }
                 if descriptor.id.as_str() == hardware_decode_hint::VIDEO_BACKEND_SETTING_ID
-                    && let Some(warning) = hardware_decode_hint::hardware_unavailable_warning(
+                    && let Some(warning) = hardware_decode_hint::backend_field_status(
                         self.controller.draft().video.preferred_backend,
                         self.hardware_decode_availability,
+                        self.active_renderer_family,
                     )
                 {
                     field = field.with_status(warning);

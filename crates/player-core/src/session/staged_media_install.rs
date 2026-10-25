@@ -525,8 +525,11 @@ fn prepare_detached_video_backend(
             ));
         }
     };
+    // Требование потока едет вместе с выбором: приложение сделает его активным в момент
+    // commit-а кандидата и не будет гадать по кодеку прошлого файла.
     let selection =
-        DetachedVideoBackendSelection::selected(expected_backend_id, video_plan.frame_contract);
+        DetachedVideoBackendSelection::selected(expected_backend_id, video_plan.frame_contract)
+            .with_stream_requirement(video_plan.requirement.clone());
     let reply = video_resource_port
         .request_detached_backend(DetachedVideoBackendRequest::new(request_id, selection))
         .map_err(|error| media_install_port_failure(error, "detached backend request"))?;

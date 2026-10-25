@@ -945,7 +945,7 @@ fn static_enum_and_string_options_use_stable_ids() {
     assert_select_options(
         &registry,
         "video.preferred_backend",
-        &["auto", "hardware", "software"],
+        &["auto", "hardware", "software", "dynamic"],
     );
     assert_select_options(
         &registry,
@@ -1050,7 +1050,7 @@ fn video_backend_options_do_not_expose_implementation_specific_public_id() {
     let implementation_specific_underscore_id = ["ffmpeg", "sw"].join("_");
     let implementation_specific_dash_id = ["ffmpeg", "sw"].join("-");
 
-    assert_eq!(ids, vec!["auto", "hardware", "software"]);
+    assert_eq!(ids, vec!["auto", "hardware", "software", "dynamic"]);
     assert!(!ids.contains(&implementation_specific_underscore_id.as_str()));
     assert!(!ids.contains(&implementation_specific_dash_id.as_str()));
 }

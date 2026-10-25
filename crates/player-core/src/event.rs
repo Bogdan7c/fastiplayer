@@ -3,8 +3,8 @@ use std::time::Duration;
 use codec_core::VideoDecodeRequirement;
 
 use crate::{
-    MediaInstanceId, MediaOpenRequest, PlaybackResumeIntent, PlaybackState, PlayerError,
-    QualitySelection, SeekRequest, TrackId,
+    DecoderPaceEvidence, MediaInstanceId, MediaOpenRequest, PlaybackResumeIntent, PlaybackState,
+    PlayerError, QualitySelection, SeekRequest, TrackId,
 };
 
 /// Требование текущего активного video-стрима, под которое shell должен подобрать backend.
@@ -192,6 +192,12 @@ pub enum PlayerEvent {
     /// (например, hardware zero-copy для поддерживаемого кодека и FFmpeg software для
     /// неподдерживаемого). Эмитится при каждом выборе active video-трека.
     VideoBackendSelectionRequested(VideoBackendSelectionRequest),
+
+    /// Видеодекодер устойчиво не успевает за воспроизведением (нейтральный сигнал).
+    ///
+    /// Политику реакции (например, смену backend-а) выбирает shell; событие может
+    /// повторяться не чаще одного раза за полное окно оценки.
+    VideoDecoderFallingBehind(DecoderPaceEvidence),
 
     /// Audio track выбран.
     AudioTrackSelected(TrackId),

@@ -24,7 +24,7 @@ fn run() -> Result<(), String> {
             parse_current_config(PathBuf::from(config_path))
         }
         _ => Err(format!(
-            "usage: {program_name} generate-current <path> <auto|hardware|software>\n       \
+            "usage: {program_name} generate-current <path> <auto|hardware|software|dynamic>\n       \
              {program_name} parse-current <path>"
         )),
     }
@@ -73,8 +73,9 @@ fn parse_backend_preference(backend: &str) -> Result<VideoBackendPreference, Str
         "auto" => Ok(VideoBackendPreference::Auto),
         "hardware" => Ok(VideoBackendPreference::Hardware),
         "software" => Ok(VideoBackendPreference::Software),
+        "dynamic" => Ok(VideoBackendPreference::Dynamic),
         unsupported => Err(format!(
-            "unsupported backend '{unsupported}'; expected auto, hardware or software"
+            "unsupported backend '{unsupported}'; expected auto, hardware, software or dynamic"
         )),
     }
 }

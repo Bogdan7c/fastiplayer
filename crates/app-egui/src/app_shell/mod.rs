@@ -292,6 +292,9 @@ impl AppShell {
                 return;
             }
         };
+        // Семейство рендера для подсказки в настройках; одного вызова при старте достаточно.
+        self.settings_runtime
+            .set_active_renderer_family(renderer_report.family());
         info!(
             process_elapsed_ms = self.process_started_at.elapsed().as_secs_f64() * 1_000.0,
             runtime_restore_elapsed_ms =

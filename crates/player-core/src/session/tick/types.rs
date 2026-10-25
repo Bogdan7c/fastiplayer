@@ -4,7 +4,7 @@ use fastiplayer_config::AppConfig;
 use media_core::{PacketKeyframe, TrackId, TrackKind, TrackTimestamp};
 
 use super::presentation_scheduler::video_present_queue_limit;
-use crate::PipelinePauseReason;
+use crate::{DecoderPaceThresholds, PipelinePauseReason};
 
 /// Контекст одного playback tick.
 #[derive(Debug, Clone, Copy)]
@@ -159,6 +159,9 @@ pub struct PlayerTickConfig {
 
     /// Grace перед late-drop в долях video frame.
     pub video_late_drop_grace_frames: f64,
+
+    /// Пороги детектора «видеодекодер не успевает» (стартовые, калибруются на T410).
+    pub decoder_pace: DecoderPaceThresholds,
 }
 
 impl Default for PlayerTickConfig {
@@ -201,6 +204,7 @@ impl Default for PlayerTickConfig {
             video_present_lead_frames: 0.5,
             video_present_window_frames: 1.0,
             video_late_drop_grace_frames: 2.0,
+            decoder_pace: DecoderPaceThresholds::default(),
         }
     }
 }
@@ -367,6 +371,26 @@ impl PlayerTickResult {
     ) {
         self.dropped_video_frames
             .push(PlayerVideoFrameDrop { pts, reason });
+    }
+
+    /// Сколько кадров за tick отброшено как опоздавшие (точный счётчик по списку tick-а).
+    #[must_use]
+    pub(crate) fn late_video_drop_count(&self) -> u64 {
+        self.dropped_video_frames
+            .iter()
+            .filter(|drop| drop.reason == PlayerVideoDropReason::Late)
+            .count() as u64
+    }
+
+    /// Была ли за tick зафиксирована пауза по конкретной причине.
+    #[must_use]
+    pub(crate) fn has_pipeline_pause(
+        &self,
+        predicate: impl Fn(PipelinePauseReason) -> bool,
+    ) -> bool {
+        self.pipeline_pauses
+            .iter()
+            .any(|pause| predicate(pause.reason))
     }
 
     /// Учитывает typed pipeline pause.

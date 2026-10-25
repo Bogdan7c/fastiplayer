@@ -19,7 +19,10 @@ use super::{
         send_pending_video_packets_to_decoder,
     },
 };
-use crate::{PipelineLatencyStage, PipelinePauseReason, PlaybackState, session::PlayerSession};
+use crate::{
+    PipelineLatencyStage, PipelinePauseReason, PlaybackState,
+    session::{PlayerSession, audio_stall::AudioClockStall},
+};
 
 mod timing;
 
@@ -647,11 +650,12 @@ pub(super) fn process_pending_video_packets(
         .pipeline
         .note_audio_clock_sample(audio_now, tick_context.now);
 
-    let audio_stall_elapsed = session.pipeline.audio_clock_stalled_for(tick_context.now);
-    let audio_stalled = audio_now >= tick_config.audio_stall_min_position
-        && audio_stall_elapsed >= tick_config.audio_stall_timeout;
+    let audio_clock_stall = session.audio_clock_stall(tick_context.now, tick_config);
 
-    if audio_stalled {
+    if let AudioClockStall::Stalled {
+        stalled_for: audio_stall_elapsed,
+    } = audio_clock_stall
+    {
         tracing::debug!(
             audio_ms = audio_now.as_secs_f64() * 1000.0,
             stalled_ms = audio_stall_elapsed.as_millis(),

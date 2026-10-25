@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 24;
+pub const CURRENT_SCHEMA_VERSION: u32 = 25;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -125,14 +125,21 @@ pub(crate) const LEGACY_SCHEMA_VERSION_22: u32 = 22;
 /// `[render.opengles]` удаляется целиком.
 pub(crate) const LEGACY_SCHEMA_VERSION_23: u32 = 23;
 
+/// Последняя схема до значения `video.preferred_backend = "dynamic"`.
+///
+/// Новое значение не меняет формат остальных полей, поэтому миграция v24 -> v25 только поднимает
+/// версию. Bump нужен ради старых бинарей: без него они увидели бы незнакомое `dynamic` и сочли
+/// файл битым (переименовали бы в `.bak`), а с ним видят схему новее своей и не трогают файл.
+pub(crate) const LEGACY_SCHEMA_VERSION_24: u32 = 24;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v24 и полная цепочка поддерживаемых legacy-версий v2..v23.
+    /// Текущая схема v25 и полная цепочка поддерживаемых legacy-версий v2..v24.
     #[test]
-    fn schema_v24_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 24);
+    fn schema_v25_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 25);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -157,9 +164,10 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_21,
                 LEGACY_SCHEMA_VERSION_22,
                 LEGACY_SCHEMA_VERSION_23,
+                LEGACY_SCHEMA_VERSION_24,
             ],
             [
-                2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23
+                2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24
             ]
         );
     }

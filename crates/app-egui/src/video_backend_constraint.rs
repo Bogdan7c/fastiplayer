@@ -11,7 +11,10 @@ pub(crate) fn media_install_video_backend_constraint(
     preference: VideoBackendPreference,
 ) -> MediaInstallVideoBackendConstraint {
     match preference {
-        VideoBackendPreference::Auto => MediaInstallVideoBackendConstraint::AnyPlayable,
+        // Dynamic на старте файла ведёт себя как Auto; переключение HW -> SW делает отдельная политика.
+        VideoBackendPreference::Auto | VideoBackendPreference::Dynamic => {
+            MediaInstallVideoBackendConstraint::AnyPlayable
+        }
         VideoBackendPreference::Hardware => {
             MediaInstallVideoBackendConstraint::RequireBackend(codec_core::DecodeBackendId::vaapi())
         }
@@ -30,6 +33,10 @@ mod tests {
     fn committed_preferences_map_to_request_scoped_backend_constraints() {
         assert_eq!(
             media_install_video_backend_constraint(VideoBackendPreference::Auto),
+            MediaInstallVideoBackendConstraint::AnyPlayable
+        );
+        assert_eq!(
+            media_install_video_backend_constraint(VideoBackendPreference::Dynamic),
             MediaInstallVideoBackendConstraint::AnyPlayable
         );
         assert_eq!(

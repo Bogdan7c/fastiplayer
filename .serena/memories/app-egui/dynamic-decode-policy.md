@@ -1,0 +1,16 @@
+# Режим Dynamic: переход HW -> SW на лету (сессия 09b, пакет P4)
+
+- Детектор: player-core `session/decoder_pace.rs`, событие `PlayerEvent::VideoDecoderFallingBehind(DecoderPaceEvidence)`. Политика — app-egui.
+- Приём: `frame_prepare.rs::record_worker_events` -> `AppState::note_video_decoder_falling_behind` (`state/dynamic_decode.rs`). Чистая политика `classify_decoder_pace_event` (чужое медиа / старая generation / не HW-декод / уже была попытка / режим не Dynamic -> игнор, debug-лог; иначе очередь).
+- Очередь и применение — прежние `note_dma_buf_fallback_trigger` / `apply_pending_dma_buf_runtime_fallback` (повод `DmaBufFallbackTrigger::HardwareDecoderFallingBehind`, `player_error: None` -> отказ перехода только warn, не ошибка рендера).
+- Контроллер `DmaBufRuntimeFallbackController` = единственный переход на файл (защёлка) + override «действующий режим»: `note_software_switch_installed(committed)`, `effective_preference(committed)`; сброс на `MediaOpenRequested` (`reset_for_new_media`). Переоткрытие того же файла пересборкой настроек тоже сбрасывает (файл снова с HW — допустимо).
+- `AppState::effective_video_backend_preference()` читают: `apply_video_backend_reselection`, `validate_renderer_candidate_capabilities`, live-пересборка в `settings_runtime_adapter.rs` (ветка без явной смены preference). Это же чинит у Auto возврат на HW после фолбэка «рендер не умеет показать кадр».
+- Auto/Hardware/Software событие «не успевает» не переключает (фильтр в классификаторе + `begin`).
+- Успех -> info-toast `DYNAMIC_SWITCH_TO_SOFTWARE_MESSAGE` + `info!("Dynamic decode switched to software")`.
+- Ограничение: возврат preference к прежнему значению в том же файле снова включает override. Headless-AppState нет: проводка защищена source-guard тестом в `state/dynamic_decode/tests.rs`; e2e на player-core — `session/tick/tests/decoder_pace_backend_swap.rs`.
+
+## Исправления по ревью (P5)
+- A (детектор): tick с обрезанным `MAX_OBSERVATION_GAP` не засчитывает late-drop-ы (после зависания/скачка часов пачка устаревших кадров не признак отставания).
+- B (детектор): голодание шага — вина декодера, только если входная работа была и в начале шага (прошлое наблюдение, `previous_decoder_input`), и в конце.
+- C (детектор): остановка аудио-часов (`PlayerSession::audio_clock_stall`, `session/audio_stall.rs`, им же пользуется планировщик) даёт `AudioClockActivity::Stalled` -> сброс окна с тишиной. Причину паузы планировщика (`DecoderStarvation`) не меняли: на неё опираются счётчики диагностики.
+- D (политика): `VideoPipelineRebuildError::ImportInstallAfterBackendSwap` = SW-бэкенд уже в worker, импорт рендера упал. `classify_rejected_switch` (state/dynamic_decode.rs) -> `RejectedSwitchImpact`: `VideoKeepsPlaying` (только warn) или `VideoBroken(PlayerRenderError::video_backend_switch_failed("Switching to software decoding failed: ..."))` (вид `PlayerRenderErrorKind::VideoBackendSwitchFailed` → `PlayerErrorKind::RuntimeError`: пользователь видит «Internal player error», а не ложное «The graphics card stopped responding», как было бы с `render_device_lost`) (идёт в `report_video_render_boundary_error` из frame_prepare/present.rs). Также `Worker(ApplyAndRollbackFailed)` считается сломанным видео. Повод «рендер не умеет показать кадр» (player_error = Some) не тронут.

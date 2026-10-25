@@ -369,6 +369,17 @@ impl PlaybackPipeline {
             .saturating_sub(packet_count);
     }
 
+    /// Есть ли у декодера входная работа: pending packets, send queue или packets в обработке.
+    ///
+    /// Не раскрывает устройство очередей; отличает «декодер занят/отстаёт» от
+    /// «декодеру нечего декодировать» (сеть/демукс).
+    #[must_use]
+    pub(crate) fn video_decoder_has_input_work(&self) -> bool {
+        self.pending_video_packet_len() > 0
+            || self.video_decoder_packet_queue_depth().unwrap_or(0) > 0
+            || self.video_decode_in_flight_packets() > 0
+    }
+
     /// Возвращает приблизительное число packets, которые decoder уже забрал, но ещё не ack-нул.
     #[must_use]
     pub(crate) const fn video_decode_in_flight_packets(&self) -> usize {

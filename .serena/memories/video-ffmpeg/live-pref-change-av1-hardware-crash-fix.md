@@ -1,5 +1,7 @@
 # Live смена preference software→auto на AV1 роняла плейбек (2026-06-19)
 
+> **Обновлено 2026-10-25 (gles2-renderer 09b, бэклог п. 12):** поле теперь `ActiveVideoStreamRequirement` (`app-egui/src/state/video_stream_requirement.rs`) — единственный владелец. Кроме реактивного события (`adopt_reported`) требование приходит с кандидатом обычной установки (`video-backend-api::DetachedVideoBackendSelection::stream_requirement`) и активируется при commit (`state/strong_media_open/candidate_commit.rs`, `adopt_committed`); Stop → `clear`. Раньше после strong install оно было пустым или от прошлого файла. Live-пересборка по настройкам дополнительно берёт `AppState::effective_video_backend_preference()` (после runtime-перехода на SW — Software до конца файла).
+
 > **Current status (2026-08-24):** эта memory сохраняет историческую причину requirement-loss. Native VAAPI теперь поддерживает AV1 Main/Profile 0 8/10-bit YUV420, поэтому software→auto выбирает VAAPI при matching playable NV12/P010 output и остаётся на FFmpeg только без matching hardware. Передача active stream requirement по-прежнему обязательна; утверждения ниже «VAAPI не умеет AV1»/«auto+AV1 всегда FFmpeg» считать superseded через `mem:video-vaapi/av1-hardware-2026-08-24`.
 
 Багфикс: при живой смене `video.preferred_backend` software→auto во время

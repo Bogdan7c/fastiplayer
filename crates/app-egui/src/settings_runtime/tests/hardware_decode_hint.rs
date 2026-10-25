@@ -14,7 +14,10 @@ use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
 use super::*;
 use crate::settings_runtime::HardwareDecodeAvailability;
-use crate::settings_runtime::hardware_decode_hint::HARDWARE_UNAVAILABLE_WARNING;
+use crate::settings_runtime::hardware_decode_hint::{
+    GLES2_DYNAMIC_HINT, HARDWARE_UNAVAILABLE_WARNING,
+};
+use render_shell_api::RendererFamily;
 
 const BACKEND_FIELD_ID: &str = "video.preferred_backend";
 
@@ -227,4 +230,156 @@ fn warning_follows_the_draft_choice_and_late_probe_result() {
         )
         .expect("The return of the car must pass.");
     assert_eq!(backend_field(&mut runtime).status, None);
+}
+
+/// Нарисована ли в окне строка подсказки GLES2 (а не только выставлено поле модели).
+fn gles2_hint_is_painted(runtime: &mut SettingsRuntime) -> bool {
+    painted_texts_of(&backend_field(runtime))
+        .iter()
+        .any(|text| text == GLES2_DYNAMIC_HINT)
+}
+
+#[test]
+fn gles2_renderer_with_auto_shows_dynamic_recommendation() {
+    let mut runtime = open_runtime(VideoBackendPreference::Auto);
+    runtime.set_active_renderer_family(RendererFamily::Gles2);
+
+    assert_eq!(
+        backend_field(&mut runtime).status.as_deref(),
+        Some(GLES2_DYNAMIC_HINT)
+    );
+    assert!(gles2_hint_is_painted(&mut runtime));
+}
+
+#[test]
+fn gles2_renderer_with_dynamic_has_no_hint() {
+    let mut runtime = open_runtime(VideoBackendPreference::Dynamic);
+    runtime.set_active_renderer_family(RendererFamily::Gles2);
+
+    assert_eq!(backend_field(&mut runtime).status, None);
+    assert!(!gles2_hint_is_painted(&mut runtime));
+}
+
+#[test]
+fn wgpu_renderer_with_auto_has_no_hint() {
+    let mut runtime = open_runtime(VideoBackendPreference::Auto);
+    runtime.set_active_renderer_family(RendererFamily::WgpuVulkan);
+
+    assert_eq!(backend_field(&mut runtime).status, None);
+    assert!(!gles2_hint_is_painted(&mut runtime));
+}
+
+#[test]
+fn unknown_renderer_family_has_no_hint() {
+    // Семейство не сообщалось: состояние окна до завершения старта рендера.
+    let mut runtime = open_runtime(VideoBackendPreference::Auto);
+
+    assert_eq!(backend_field(&mut runtime).status, None);
+}
+
+#[test]
+fn hardware_unavailable_warning_wins_over_gles2_hint() {
+    let mut runtime = open_runtime(VideoBackendPreference::Hardware);
+    runtime.set_active_renderer_family(RendererFamily::Gles2);
+    runtime.set_hardware_decode_availability(HardwareDecodeAvailability::Unavailable);
+
+    assert_eq!(
+        backend_field(&mut runtime).status.as_deref(),
+        Some(HARDWARE_UNAVAILABLE_WARNING)
+    );
+    assert!(!gles2_hint_is_painted(&mut runtime));
+}
+
+#[test]
+fn gles2_hint_follows_the_draft_choice() {
+    let mut runtime = open_runtime(VideoBackendPreference::Auto);
+    runtime.set_active_renderer_family(RendererFamily::Gles2);
+    let mut render_adapter = RecordingRenderAdapter::from_config(&custom_config_for_test())
+        .expect("The adapter should start.");
+    assert!(gles2_hint_is_painted(&mut runtime));
+
+    runtime
+        .handle_ui_actions(
+            vec![SettingsUiAction::SetValue {
+                setting_id: SettingId::from(BACKEND_FIELD_ID),
+                value: SettingValue::Select(SettingOptionId::from("dynamic")),
+            }],
+            &mut render_adapter,
+        )
+        .expect("choosing Dynamic in the draft must pass");
+    assert!(
+        !gles2_hint_is_painted(&mut runtime),
+        "Dynamic chosen in the draft: the line disappears before Apply"
+    );
+
+    runtime
+        .handle_ui_actions(
+            vec![SettingsUiAction::SetValue {
+                setting_id: SettingId::from(BACKEND_FIELD_ID),
+                value: SettingValue::Select(SettingOptionId::from("software")),
+            }],
+            &mut render_adapter,
+        )
+        .expect("choosing Software in the draft must pass");
+    assert!(gles2_hint_is_painted(&mut runtime));
+}
+
+/// Прямоугольники нарисованных текстов поля в боковой панели минимальной ширины.
+fn painted_text_rects_in_narrowest_sidebar(
+    field: &crate::settings_ui::SettingsUiField,
+) -> (egui::Rect, Vec<(String, egui::Rect)>) {
+    let sidebar_width = f32::from(fastiplayer_config::MIN_SIDEBAR_WIDTH_POINTS);
+    let context = egui::Context::default();
+    let mut actions = Vec::new();
+    let mut panel_rect = egui::Rect::NOTHING;
+    let output = crate::ui::test_frame::run_ui_frame(
+        &context,
+        crate::ui::test_frame::input_at(0.0, Vec::new()),
+        |ui| {
+            // Поле получает ровно ширину самой узкой боковой панели, как в окне настроек.
+            ui.allocate_ui(egui::vec2(sidebar_width, 600.0), |ui| {
+                ui.set_max_width(sidebar_width);
+                panel_rect = ui.max_rect();
+                crate::settings_ui::field_widget::show(ui, field, &mut actions);
+            });
+        },
+    );
+    let texts = output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some((
+                text.galley.text().to_owned(),
+                text.galley.rect.translate(text.pos.to_vec2()),
+            )),
+            _ => None,
+        })
+        .collect();
+    (panel_rect, texts)
+}
+
+#[test]
+fn long_gles2_hint_wraps_inside_the_narrowest_sidebar() {
+    let mut runtime = open_runtime(VideoBackendPreference::Auto);
+    runtime.set_active_renderer_family(RendererFamily::Gles2);
+
+    let (panel_rect, texts) = painted_text_rects_in_narrowest_sidebar(&backend_field(&mut runtime));
+    let (_, hint_rect) = texts
+        .iter()
+        .find(|(text, _)| text == GLES2_DYNAMIC_HINT)
+        .expect("the GLES2 hint should be painted in full");
+
+    // Раньше строка статуса стояла в `ui.horizontal` без переноса и уходила за правый край.
+    assert!(
+        hint_rect.max.x <= panel_rect.max.x + 0.5,
+        "hint {hint_rect:?} must stay inside the sidebar {panel_rect:?}"
+    );
+    let line_height = texts
+        .iter()
+        .map(|(_, rect)| rect.height())
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        hint_rect.height() > line_height * 1.5,
+        "the long hint should wrap onto several lines, got {hint_rect:?}"
+    );
 }

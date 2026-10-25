@@ -857,6 +857,21 @@ fn vp9_hdr_packet_preflight_selects_p010_and_replays_interleaved_audio() {
             .request_count,
         1
     );
+    // Запрос приложению несёт требование именно этого потока (VP9 profile2 10-bit), чтобы
+    // приложение сделало его активным при commit-е кандидата.
+    let requirement_in_request = resource_state
+        .lock()
+        .expect("fake resource state lock")
+        .requested_selections
+        .last()
+        .and_then(|selection| selection.stream_requirement().cloned())
+        .expect("detached backend request must carry the stream requirement");
+    assert_eq!(requirement_in_request.codec, codec_core::VideoCodec::Vp9);
+    assert_eq!(
+        requirement_in_request.profile,
+        Some(VideoProfile::Vp9(Vp9Profile::Profile2))
+    );
+    assert_eq!(requirement_in_request.bit_depth, Some(BitDepth::Ten));
     let configured_streams = decoder.configured_streams();
     let configured_stream = configured_streams
         .last()

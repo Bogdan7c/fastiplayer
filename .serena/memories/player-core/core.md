@@ -221,3 +221,10 @@ Reopen у хвоста/конца (2026-10-17, #21): anchor PTS > target доп�
 - `PlayerTickResult::absorb` (`session/tick/result_merge.rs`): счётчики — насыщающая сумма, списки дописываются с лимитом `MAX_AGGREGATED_LIST_ENTRIES = 4096` (лишнее в `truncated_list_entries`), `demux_backpressured` — ИЛИ; деструктуризация без `..` заставляет задать семантику новому полю.
 - `PlayerWorkerEvent::Tick` удалён; UI: `PlayerWorker::take_tick_telemetry()` → app-egui `frame_prepare/tick_telemetry.rs` (усечение на старте — штатное, лог debug). `drain_events()` отдаёт только lifecycle.
 - Тесты: `worker/tests/event_streams.rs`, юниты в `result_merge.rs`.
+## Детектор отставания видеодекодера (gles2-renderer 09b, 2026-10-25)
+- Нейтральный (без знания VA-API/FFmpeg) `session/decoder_pace.rs` `DecoderPaceMonitor` + мост `decoder_pace/tick_bridge.rs` (`PlayerSession::observe_decoder_pace` из `tick/mod.rs` после `process_pending_video_packets`). Событие `PlayerEvent::VideoDecoderFallingBehind(DecoderPaceEvidence)` — одно на прогон (медиа, render_generation, скорость). Пороги — `PlayerTickConfig.decoder_pace` (`DecoderPaceThresholds`: 2 с тишины, окно 4 с, 10 %). Снимок плеера не менялся.
+- «Аудио-часы стоят» — один владелец `session/audio_stall.rs` (`PlayerSession::audio_clock_stall`), им пользуются планировщик показа и детектор.
+- Intent-методы для детектора: `PlaybackPipeline::video_decoder_has_input_work`, `PlayerTickResult::late_video_drop_count`, `PlayerTickResult::has_pipeline_pause`.
+- Запрос кандидата приложению несёт требование потока: `DetachedVideoBackendSelection::stream_requirement` (`staged_media_install.rs::prepare_detached_video_backend`).
+- Типы ошибок рендера — `worker/render_error.rs` (реэкспорт из `worker.rs`); новый вид `VideoBackendSwitchFailed` → `PlayerErrorKind::RuntimeError`.
+- Детали и замер: `mem:gles2-renderer/dynamic-decode-s09b`.

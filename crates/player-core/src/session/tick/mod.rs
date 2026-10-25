@@ -87,6 +87,7 @@ impl PlayerSession {
         self.recover_failed_audio_output_if_needed(tick_context.now);
 
         process_pending_video_packets(self, tick_context, &mut tick_result);
+        self.observe_decoder_pace(&tick_context, &tick_result);
         // Demuxer мог создать deadline через `Instant::now()` уже после начала tick-а.
         // Runway decision обязан использовать один свежий owner timestamp, а не
         // более ранний `tick_context.now`, иначе remaining wait будет завышен.

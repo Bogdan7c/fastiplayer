@@ -34,6 +34,8 @@ mod audio_packet_window;
 mod audio_read_ahead;
 mod audio_refill_cadence;
 mod audio_refill_wakeup;
+mod decoder_pace;
+mod decoder_pace_backend_swap;
 mod decoder_packet_channel_wakeup;
 mod output_clamped_wakeup;
 mod video_decode_ahead;
@@ -429,6 +431,9 @@ struct RecordingVideoDecoderThread {
 
     /// Scripted packet queue depth, который видит wakeup planner.
     packet_queue_depth: usize,
+
+    /// Принимает ли fake настройку потока (нужно сценариям живой смены бэкенда).
+    accepts_stream_configuration: bool,
 }
 
 impl RecordingVideoDecoderThread {
@@ -443,6 +448,12 @@ impl RecordingVideoDecoderThread {
             activity_snapshot: Some(snapshot),
             ..Self::default()
         }
+    }
+
+    /// Возвращает fake decoder, принимающий настройку потока (для живой смены бэкенда).
+    fn with_stream_configuration(mut self) -> Self {
+        self.accepts_stream_configuration = true;
+        self
     }
 
     /// Возвращает fake decoder с заданной глубиной packet queue.
@@ -521,6 +532,23 @@ impl RecordingVideoDecoderThread {
 
 impl video_core::VideoDecoderThreadHandle for RecordingVideoDecoderThread {
     type ResourceProvider = PresentFrameResourceProviderHandle;
+
+    fn configure_stream(
+        &self,
+        _config: video_core::VideoStreamDecodeConfig,
+    ) -> video_core::VideoStreamConfigResult {
+        if self.accepts_stream_configuration {
+            return video_core::VideoStreamConfigResult::Configured;
+        }
+        video_core::VideoStreamConfigResult::Unsupported(
+            video_core::VideoStreamConfigRejection::BackendUnsupported {
+                reason: format!(
+                    "{} decoder handle does not implement stream configuration",
+                    self.backend_name()
+                ),
+            },
+        )
+    }
 
     fn backend_name(&self) -> &'static str {
         "Recording fake decoder"

@@ -960,6 +960,7 @@ fn player_update_from_settings(
             VideoBackendPreference::Auto => PlayerRuntimeVideoBackendPreference::Auto,
             VideoBackendPreference::Hardware => PlayerRuntimeVideoBackendPreference::Hardware,
             VideoBackendPreference::Software => PlayerRuntimeVideoBackendPreference::Software,
+            VideoBackendPreference::Dynamic => PlayerRuntimeVideoBackendPreference::Dynamic,
         };
         player_core = player_core
             .with_video_backend(preference, [PlayerRuntimeSettingId::VideoPreferredBackend]);

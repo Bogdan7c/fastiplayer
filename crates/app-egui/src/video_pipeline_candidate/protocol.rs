@@ -6,6 +6,7 @@
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use codec_core::VideoDecodeRequirement;
 use player_core::MediaInstallRequestId;
 use video_backend_api::{
     DetachedVideoBackendCandidateCancellationCause, DetachedVideoBackendConfigurationError,
@@ -61,6 +62,9 @@ pub(super) struct StagedVideoPipelineCandidate<RendererImport> {
 
     /// Player status переводит candidate только Awaiting -> StreamConfigured.
     pub(super) state: StagedVideoPipelineCandidateState,
+
+    /// Требование видеопотока, под которое player выбрал backend; активным станет при commit-е.
+    pub(super) stream_requirement: Option<VideoDecodeRequirement>,
 
     /// Подготовленный импорт рендера (materializer + привязка освобождений) ещё не активен.
     pub(super) renderer_import: RendererImport,

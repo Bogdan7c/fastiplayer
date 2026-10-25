@@ -1,3 +1,6 @@
+use codec_core::VideoDecodeRequirement;
+use fastiplayer_config::VideoBackendPreference;
+
 use super::*;
 use crate::video_pipeline_candidate::start_decoder_backend;
 
@@ -15,12 +18,19 @@ pub(crate) enum VideoPipelineRebuildError {
     },
     /// Worker отклонил commit или сообщил apply/rollback failure.
     Worker(player_core::PlayerRuntimeApplyError),
+    /// Новый backend УЖЕ установлен в worker, но рендер не принял его импорт кадров.
+    ///
+    /// Отличие от `Preparation`: там видео осталось на прежнем декодере, здесь декодер и
+    /// импорт рассогласованы — видео сломано, и пользователю об этом надо сообщить.
+    ImportInstallAfterBackendSwap(String),
 }
 
 impl std::fmt::Display for VideoPipelineRebuildError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Preparation(message) => formatter.write_str(message),
+            Self::Preparation(message) | Self::ImportInstallAfterBackendSwap(message) => {
+                formatter.write_str(message)
+            }
             Self::BackendStartup {
                 plan_label,
                 message,
@@ -206,7 +216,7 @@ impl AppState {
             .install_video_import(prepared.pending)
             .map_err(|error| {
                 tracing::error!(error = ?error, plan = plan_label, "Renderer rejected its own video import");
-                VideoPipelineRebuildError::Preparation(format!(
+                VideoPipelineRebuildError::ImportInstallAfterBackendSwap(format!(
                     "renderer rejected the prepared video import for {plan_label}: {error:?}"
                 ))
             })?;
@@ -229,13 +239,32 @@ impl AppState {
     ) {
         // Requirement активного стрима живёт дольше одного кадра: его использует
         // live-смена настроек, чтобы пересобрать pipeline под реальный кодек/профиль.
-        self.active_video_stream_requirement = Some(request.requirement.clone());
+        self.active_video_stream_requirement
+            .adopt_reported(request.requirement.clone());
         self.pending_video_backend_reselection = Some(request);
     }
 
     /// Requirement активного video-стрима, известный shell-у на текущий момент.
     pub(crate) fn active_video_stream_requirement(&self) -> Option<&VideoDecodeRequirement> {
-        self.active_video_stream_requirement.as_ref()
+        self.active_video_stream_requirement.get()
+    }
+
+    /// Делает требованием активного стрима требование только что установленного кандидата.
+    ///
+    /// Вызывается ровно в момент commit-а кандидата, когда новое медиа уже играет. `None` от
+    /// кандидата (player требование не приложил) прежнее требование не трогает: лучше помнить
+    /// последнее известное, чем потерять фильтр выбора декодера.
+    pub(crate) fn adopt_committed_video_stream_requirement(
+        &mut self,
+        committed_requirement: Option<VideoDecodeRequirement>,
+    ) {
+        self.active_video_stream_requirement
+            .adopt_committed(committed_requirement);
+    }
+
+    /// Забывает требование активного стрима: видео больше не играет (stop, медиа без видео).
+    pub(crate) fn clear_active_video_stream_requirement(&mut self) {
+        self.active_video_stream_requirement.clear();
     }
 
     /// Забирает отложенный запрос на подбор backend-а для обработки в текущем кадре.
@@ -254,7 +283,8 @@ impl AppState {
         import_target: RendererVideoImportTarget<'_>,
     ) {
         let decoder_thread_config = self.current_decoder_thread_config();
-        let preference = self.committed_config_snapshot.video_backend_preference();
+        // Действующий режим файла: после HW->SW перехода переподбор не вернёт аппаратный декод.
+        let preference = self.effective_video_backend_preference();
         match select_video_pipeline_plan(
             preference,
             self.system_capabilities_snapshot.as_ref(),
@@ -305,7 +335,7 @@ impl AppState {
         &mut self,
         trigger: DmaBufFallbackTrigger,
         render_generation: u64,
-        player_error: PlayerRenderError,
+        player_error: Option<PlayerRenderError>,
     ) {
         if self.pending_dma_buf_fallback.is_none() {
             self.pending_dma_buf_fallback = Some(PendingDmaBufFallback {
@@ -339,7 +369,9 @@ impl AppState {
 
         if !trigger.is_cured_by_software_decode() {
             let policy_error = DmaBufRuntimeFallbackError::FallbackNotApplicable { trigger };
-            player_error.message = policy_error.to_string();
+            if let Some(player_error) = player_error.as_mut() {
+                player_error.message = policy_error.to_string();
+            }
             return Err(Box::new(DmaBufRuntimeFallbackFailure {
                 error: policy_error,
                 player_error,
@@ -347,22 +379,25 @@ impl AppState {
         }
 
         let decoder_thread_config = self.current_decoder_thread_config();
-        let stream_requirement = self.active_video_stream_requirement.as_ref();
+        let stream_requirement = self.active_video_stream_requirement.get();
         let software_plan = select_confirmed_software_fallback_plan(
             self.system_capabilities_snapshot.as_ref(),
             decoder_thread_config,
             stream_requirement,
         );
         let original_trigger = trigger.clone();
+        let committed_preference = self.video_backend_preference();
         let plan = match self.dma_buf_runtime_fallback.begin(
-            self.committed_config_snapshot.video_backend_preference(),
+            committed_preference,
             render_generation,
             trigger,
             software_plan,
         ) {
             Ok(plan) => plan,
             Err(policy_error) => {
-                player_error.message = policy_error.to_string();
+                if let Some(player_error) = player_error.as_mut() {
+                    player_error.message = policy_error.to_string();
+                }
                 return Err(Box::new(DmaBufRuntimeFallbackFailure {
                     error: policy_error,
                     player_error,
@@ -376,10 +411,18 @@ impl AppState {
             import_target,
         ) {
             Ok(()) => {
+                // Успех фиксируем только после установки: неудачная попытка режим не меняет.
+                self.dma_buf_runtime_fallback
+                    .note_software_switch_installed(committed_preference);
                 info!(
                     render_generation,
                     "Hardware frame cannot be shown; controlled software fallback applied"
                 );
+                if let DmaBufFallbackTrigger::HardwareDecoderFallingBehind(evidence) =
+                    &original_trigger
+                {
+                    self.announce_dynamic_switch_to_software(evidence);
+                }
                 Ok(())
             }
             Err(fallback_failure) => {
@@ -387,7 +430,9 @@ impl AppState {
                     original_trigger,
                     fallback_failure,
                 );
-                player_error.message = policy_error.to_string();
+                if let Some(player_error) = player_error.as_mut() {
+                    player_error.message = policy_error.to_string();
+                }
                 Err(Box::new(DmaBufRuntimeFallbackFailure {
                     error: policy_error,
                     player_error,
@@ -414,24 +459,13 @@ impl AppState {
         let Some(current_backend_kind) = self.current_video_backend_kind else {
             return Ok(());
         };
-        let candidate_plan = select_video_pipeline_plan(
-            self.video_backend_preference(),
-            Some(capabilities),
+        ensure_renderer_candidate_keeps_backend_kind(
+            current_backend_kind,
+            self.effective_video_backend_preference(),
+            capabilities,
             self.current_decoder_thread_config(),
-            self.active_video_stream_requirement.as_ref(),
+            self.active_video_stream_requirement.get(),
         )
-        .map_err(|error| {
-            VideoPipelineRebuildError::Preparation(format!(
-                "candidate renderer incompatible with active video requirement: {error}"
-            ))
-        })?;
-        let candidate_backend_kind = candidate_plan.backend_kind();
-        if candidate_backend_kind != current_backend_kind {
-            return Err(VideoPipelineRebuildError::Preparation(format!(
-                "candidate renderer requires backend transition {current_backend_kind:?} -> {candidate_backend_kind:?}"
-            )));
-        }
-        Ok(())
     }
 
     /// Освобождает все visual leases/ключи кадров, привязанные к старому рендеру.
@@ -525,15 +559,146 @@ impl AppState {
     }
 }
 
+/// Проверяет, что кандидат рендера не потребует смены класса декода для играющего потока.
+///
+/// План строится по требованию ИГРАЮЩЕГО видео: устаревшее требование прошлого файла
+/// давало ложный переход «программный -> аппаратный» и отклоняло пересоздание рендера.
+fn ensure_renderer_candidate_keeps_backend_kind(
+    current_backend_kind: VideoBackendKind,
+    preference: VideoBackendPreference,
+    capabilities: &SystemCapabilities,
+    decoder_thread_config: PlayerVideoDecoderThreadConfig,
+    stream_requirement: Option<&VideoDecodeRequirement>,
+) -> Result<(), VideoPipelineRebuildError> {
+    let candidate_plan = select_video_pipeline_plan(
+        preference,
+        Some(capabilities),
+        decoder_thread_config,
+        stream_requirement,
+    )
+    .map_err(|error| {
+        VideoPipelineRebuildError::Preparation(format!(
+            "candidate renderer incompatible with active video requirement: {error}"
+        ))
+    })?;
+    let candidate_backend_kind = candidate_plan.backend_kind();
+    if candidate_backend_kind != current_backend_kind {
+        return Err(VideoPipelineRebuildError::Preparation(format!(
+            "candidate renderer requires backend transition {current_backend_kind:?} -> {candidate_backend_kind:?}"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use codec_core::{VideoCodec, VideoDecodeRequirement};
+    use capability_core::{
+        BackendCapabilities, BackendDriverInfo, BackendProbeStatus,
+        CURRENT_CAPABILITY_SCHEMA_VERSION, SupportedVideoOutput, SystemCapabilities,
+    };
+    use codec_core::{
+        BitDepth, ChromaSubsampling, DecodeBackendId, SupportedVideoDecodeFormat, VideoCodec,
+        VideoDecodeRequirement, VideoProfile, Vp9Profile,
+    };
     use player_core::VideoBackendSelectionRequest;
+    use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
     use super::{
-        PlayerVideoDecoderThreadConfig, VideoBackendKind, VideoPipelinePlan,
-        active_video_pipeline_satisfies_reselection, backend_swap_new_frame_ready,
+        PlayerVideoDecoderThreadConfig, VideoBackendKind, VideoBackendPreference,
+        VideoPipelinePlan, active_video_pipeline_satisfies_reselection,
+        backend_swap_new_frame_ready, ensure_renderer_candidate_keeps_backend_kind,
     };
+
+    fn vp9_format(profile: Vp9Profile, bit_depth: BitDepth) -> SupportedVideoDecodeFormat {
+        SupportedVideoDecodeFormat {
+            codec: VideoCodec::Vp9,
+            profile: VideoProfile::Vp9(profile),
+            bit_depth,
+            chroma: ChromaSubsampling::Yuv420,
+            max_width: Some(3840),
+            max_height: Some(2160),
+            max_fps: Some(60.0),
+            hdr_input: false,
+        }
+    }
+
+    /// Железо: VA-API тянет VP9 profile0 8-bit, а profile2 10-bit — только FFmpeg software.
+    fn capabilities_hardware_for_profile0_software_for_profile2() -> SystemCapabilities {
+        let hardware = SupportedVideoOutput {
+            backend: DecodeBackendId::vaapi(),
+            decode_format: vp9_format(Vp9Profile::Profile0, BitDepth::Eight),
+            frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+        };
+        let software = SupportedVideoOutput {
+            backend: DecodeBackendId::new(video_ffmpeg::FFMPEG_SOFTWARE_BACKEND_ID)
+                .expect("valid FFmpeg backend id"),
+            decode_format: vp9_format(Vp9Profile::Profile2, BitDepth::Ten),
+            frame_contract: VideoFrameContract::host_yuv420_planar8(),
+        };
+        let playable_video_outputs = vec![hardware, software];
+        SystemCapabilities {
+            schema_version: CURRENT_CAPABILITY_SCHEMA_VERSION,
+            probed_at_unix_seconds: 1,
+            video_backends: vec![BackendCapabilities {
+                backend_id: DecodeBackendId::vaapi(),
+                display_name: "Test VA-API".to_string(),
+                status: BackendProbeStatus::Available,
+                driver: BackendDriverInfo::default(),
+                raw_supported_outputs: playable_video_outputs.clone(),
+                raw_profiles: Vec::new(),
+                raw_entrypoints: Vec::new(),
+                raw_rt_formats: Vec::new(),
+                quirks: Vec::new(),
+                diagnostics: Vec::new(),
+            }],
+            render_backends: Vec::new(),
+            playable_video_outputs,
+        }
+    }
+
+    fn vp9_requirement(profile: Vp9Profile, bit_depth: BitDepth) -> VideoDecodeRequirement {
+        VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_profile(VideoProfile::Vp9(profile))
+            .with_bit_depth(bit_depth)
+            .with_chroma(ChromaSubsampling::Yuv420)
+    }
+
+    /// Сценарий бэклога п. 12: очередь «аппаратный файл -> программный файл», смена
+    /// render-настройки при программном декоде. Со ставшим активным требованием второго
+    /// файла рендер пересоздаётся без смены класса декода; со старым требованием первого
+    /// файла проверка ложно требует перехода на аппаратный декод.
+    #[test]
+    fn renderer_candidate_check_follows_requirement_of_the_playing_file() {
+        let capabilities = capabilities_hardware_for_profile0_software_for_profile2();
+        let config = PlayerVideoDecoderThreadConfig::default();
+        let first_file_hardware = vp9_requirement(Vp9Profile::Profile0, BitDepth::Eight);
+        let second_file_software_only = vp9_requirement(Vp9Profile::Profile2, BitDepth::Ten);
+
+        // Играет второй файл (программный декод) и требование — его.
+        assert!(
+            ensure_renderer_candidate_keeps_backend_kind(
+                VideoBackendKind::FfmpegSoftware,
+                VideoBackendPreference::Auto,
+                &capabilities,
+                config,
+                Some(&second_file_software_only),
+            )
+            .is_ok()
+        );
+
+        // Устаревшее требование первого файла воспроизводит ложный отказ из бэклога.
+        let stale = ensure_renderer_candidate_keeps_backend_kind(
+            VideoBackendKind::FfmpegSoftware,
+            VideoBackendPreference::Auto,
+            &capabilities,
+            config,
+            Some(&first_file_hardware),
+        );
+        assert!(
+            format!("{stale:?}").contains("FfmpegSoftware -> HardwareZeroCopy"),
+            "stale requirement must reproduce the backlog failure, got {stale:?}"
+        );
+    }
 
     #[test]
     fn pre_barrier_generation_releases_freeze_on_first_installed_frame() {

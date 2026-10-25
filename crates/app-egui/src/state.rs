@@ -15,7 +15,7 @@ use player_core::{
     PlayerRenderError, PlayerRuntimeApplyResult, PlayerRuntimeSettingsUpdate, PlayerSnapshot,
     PlayerVideoDecoderThreadConfig, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
     PlayerWorkerShutdownDeadline, PlayerWorkerShutdownOutcome, QualitySelection, ScrubCommitPolicy,
-    SeekRequest, VideoBackendSelectionRequest, VideoDecodeRequirement,
+    SeekRequest, VideoBackendSelectionRequest,
 };
 use render_core::RenderDiagnostics;
 use render_shell_api::RenderableFrameKey;
@@ -114,12 +114,15 @@ pub(crate) use strong_media_open::{
     InstalledSingleMediaOpen, PreparedSingleMediaOpen, StrongMediaOpenError, StrongMediaOpenPoll,
     StrongMediaOpenUserOutcome,
 };
+mod dynamic_decode;
+pub(crate) use dynamic_decode::{RejectedSwitchImpact, classify_rejected_switch};
 mod telemetry_panel;
 mod timeline_inline_status;
 mod track_memory;
 mod ui_runtime;
 mod ui_textures;
 mod video_backend;
+mod video_stream_requirement;
 mod vod_endpoint_recovery;
 mod volume_steps;
 mod web_media_catalog;
@@ -240,7 +243,7 @@ pub struct AppState {
     /// Requirement последнего активированного video-стрима, чтобы live-смена
     /// настроек (preference/decoder config) пересобирала pipeline с учётом того,
     /// какой именно кодек/профиль сейчас играет, а не выбирала backend вслепую.
-    active_video_stream_requirement: Option<VideoDecodeRequirement>,
+    active_video_stream_requirement: video_stream_requirement::ActiveVideoStreamRequirement,
 
     /// Замороженный кадр прошлого backend-а на время живой смены backend/materializer:
     /// держится, пока worker не переключится и не выдаст первый кадр нового backend-а.
@@ -426,7 +429,8 @@ impl AppState {
             current_video_backend_kind: None,
             renderer_generation: crate::video_pipeline_candidate::RendererGeneration::new_unique(),
             pending_video_backend_reselection: None,
-            active_video_stream_requirement: None,
+            active_video_stream_requirement:
+                video_stream_requirement::ActiveVideoStreamRequirement::default(),
             backend_swap_frozen_frame: None,
             backend_swap_from_generation: None,
             dma_buf_runtime_fallback: DmaBufRuntimeFallbackController::default(),

@@ -739,7 +739,7 @@ fn live_settings_rebuild_passes_active_stream_requirement() {
 
     // AppState кэширует requirement активного стрима и отдаёт его по boundary-методу.
     assert!(
-        state_source.contains("active_video_stream_requirement: Option<VideoDecodeRequirement>"),
+        state_source.contains("active_video_stream_requirement: video_stream_requirement::ActiveVideoStreamRequirement"),
         "AppState must store the requirement of an active video stream for live-rebuild"
     );
     assert!(

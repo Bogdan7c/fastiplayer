@@ -400,3 +400,80 @@ fn candidate_boundary_contains_no_second_player_session_or_backend_pool() {
     // Hidden retry loop отсутствует в bounded resource boundary.
     assert!(!candidate_source.contains("loop {"));
 }
+
+/// Требование потока едет через production-порт и выходит из commit-а вместе с импортом.
+#[test]
+fn stream_requirement_travels_with_candidate_and_is_handed_out_only_by_commit() {
+    let generation = renderer_generation(5);
+    let candidate_request_id = request_id(910);
+    let (owner, mut port) = player_selected_video_candidate_boundary(
+        generation,
+        PlayerVideoDecoderThreadConfig::default(),
+        player_core::MediaInstallVideoBackendConstraint::AnyPlayable,
+        FakeCandidateDriver::successful(),
+    );
+    let vp8_requirement = codec_core::VideoDecodeRequirement::new(VideoCodec::Vp8);
+
+    let reply = port
+        .request_detached_backend(DetachedVideoBackendRequest::new(
+            candidate_request_id,
+            DetachedVideoBackendSelection::selected(
+                video_ffmpeg::FFMPEG_SOFTWARE_BACKEND_ID,
+                VideoFrameContract::host_yuv420_planar8(),
+            )
+            .with_stream_requirement(vp8_requirement.clone()),
+        ))
+        .expect("production port must stay connected");
+    let backend = available_backend(reply, candidate_request_id);
+    port.publish_candidate_status(DetachedVideoBackendCandidateStatus::StreamConfigured {
+        request_id: candidate_request_id,
+        backend_id: video_ffmpeg::FFMPEG_SOFTWARE_BACKEND_ID.to_owned(),
+    })
+    .expect("matching player status must configure app half");
+
+    let committed = owner
+        .commit_installed(candidate_request_id, generation)
+        .expect("matching Installed must commit");
+    let parts = committed.into_parts();
+    assert_eq!(parts.stream_requirement, Some(vp8_requirement));
+    assert_eq!(parts.backend_kind, VideoBackendKind::FfmpegSoftware);
+    drop(backend);
+}
+
+/// Отменённый кандидат ничего не отдаёт: commit невозможен, требование не утекает наружу.
+#[test]
+fn cancelled_candidate_cannot_hand_out_its_stream_requirement() {
+    let generation = renderer_generation(5);
+    let candidate_request_id = request_id(911);
+    let (owner, mut port) = player_selected_video_candidate_boundary(
+        generation,
+        PlayerVideoDecoderThreadConfig::default(),
+        player_core::MediaInstallVideoBackendConstraint::AnyPlayable,
+        FakeCandidateDriver::successful(),
+    );
+    let reply = port
+        .request_detached_backend(DetachedVideoBackendRequest::new(
+            candidate_request_id,
+            DetachedVideoBackendSelection::selected(
+                video_ffmpeg::FFMPEG_SOFTWARE_BACKEND_ID,
+                VideoFrameContract::host_yuv420_planar8(),
+            )
+            .with_stream_requirement(codec_core::VideoDecodeRequirement::new(VideoCodec::Vp8)),
+        ))
+        .expect("production port must stay connected");
+    let backend = available_backend(reply, candidate_request_id);
+
+    port.cancel_candidate(
+        candidate_request_id,
+        DetachedVideoBackendCandidateCancellationCause::Requested,
+    )
+    .expect("cancel of the admitted candidate must be accepted");
+
+    assert!(!owner.has_candidate());
+    assert!(
+        owner
+            .commit_installed(candidate_request_id, generation)
+            .is_err()
+    );
+    drop(backend);
+}

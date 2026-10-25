@@ -1,4 +1,4 @@
-schema_version = 24
+schema_version = 25
 
 [player]
 start_paused = false
