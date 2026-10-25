@@ -13,6 +13,9 @@
 //!   `GL_LUMINANCE_ALPHA` как есть, код собирает шейдер, нужен `highp`);
 //! - источник плоскостей сразу допускает 0 копий ([`PlaneSource::DmaBuf`], реализуют сессии 07
 //!   и 12);
+//! - аппаратный NV12 из DMA-BUF без копии (сессия 07): [`DmaBufNv12Frame`] →
+//!   [`VideoLayerRenderer::import_dma_buf_frame`], кэш импортов по [`DmaBufBufferIdentity`],
+//!   контракт с производителем — [`DmaBufSharingContract`]; только 8 бит (решение владельца 33);
 //! - кольцо слотов текстур ([`UploadSlotCount`], по умолчанию 3): запись только в слот, который
 //!   GPU больше не читает (fence кадра); нет слота — [`UploadOutcome::Busy`], кольцо не растёт;
 //! - перевод YUV → RGB (BT.601/BT.709, limited/full), цветокоррекция, поворот, letterbox и
@@ -33,6 +36,10 @@
 #![deny(unsafe_code)]
 
 mod color;
+mod dma_buf_api;
+mod dma_buf_cache;
+mod dma_buf_frame;
+mod dma_buf_import;
 mod draw_uniforms;
 mod frame_color;
 mod geometry;
@@ -53,6 +60,14 @@ mod underlay;
 mod upload_plan;
 
 pub use color::{ColorAdjustment, YuvColorEncoding, YuvMatrix, YuvRange};
+pub use dma_buf_api::{
+    CachedDmaBufFrame, DmaBufImportOutcome, DmaBufImportReport, VideoImportError,
+};
+pub use dma_buf_cache::{DmaBufImportCacheCapacity, DmaBufImportCacheSnapshot};
+pub use dma_buf_frame::{
+    DmaBufBufferIdentity, DmaBufFrameError, DmaBufFrameFormat, DmaBufNv12Frame,
+    DmaBufObjectIdentity, DmaBufPlaneArrangement, DmaBufPlaneRole, DmaBufSharingContract,
+};
 pub use geometry::{PictureMapping, PixelRect, QuarterTurn, RectOutOfRange};
 pub use gl_calls::{PlaneTextureFormat, VideoGlError};
 pub use hdr::{

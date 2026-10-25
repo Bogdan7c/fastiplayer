@@ -42,6 +42,8 @@ gles2-video.workspace = true
 render-gles2-shell.workspace = true
 # Иконки плеера в эталонных кадрах паритета.
 ui-artwork-egui.workspace = true
+# Буфер ядра `/dev/udmabuf` для паритета HW-видео (memfd + ioctl); только тесты.
+libc.workspace = true
 
 [lints]
 workspace = true

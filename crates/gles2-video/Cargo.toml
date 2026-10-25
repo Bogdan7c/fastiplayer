@@ -22,6 +22,8 @@ thiserror.workspace = true
 [dev-dependencies]
 # Настоящий кадр egui поверх видео в тесте сборки кадра (подложка под интерфейсом).
 egui.workspace = true
+# `memfd_create`/`udmabuf`/`fstat` в тестах импорта DMA-BUF: настоящий буфер ядра без видеокарты.
+libc.workspace = true
 
 [lints]
 workspace = true

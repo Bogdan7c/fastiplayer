@@ -76,6 +76,21 @@
   - строить только на «Применить».
 - Ошибки плана 10/12 бит (`VideoDrawPlanError::HighBitColor`) — ошибки рендера, как у wgpu. Тихой подмены нет.
 
+## Наследство сессии 07 (`results/07.md`)
+
+- Обёртка освобождения: `render_gles2_shell::{Gles2FrameReleaseBinding, wrap_video_backend_for_gles2_release}` (решения 30 и 32).
+  - Подготовщик импорта оборачивает backend в потоке плеера, без GL-объектов.
+  - Рендер после КАЖДОГО кадра показа зовёт `publish_presented_frame_fence(Arc<GpuFence>)` — тот же `Arc`, что `VideoLayerRenderer::retire_submitted_work`.
+  - При потере контекста — `release_after_context_lost`. При пересоздании — `resume_after_context_recreated`.
+  - **Перед уничтожением `Gles2Context` рендер обязан вызвать `renderer_detaching(RendererDetachGrace::DEFAULT)`.** Без этого на T410 процесс падает при выходе (дефект 2 отчёта 07).
+- HW-импорт: `render_gles2_shell::materialize_dma_buf_frame(renderer, context, provider, frame)`.
+  - Исходы отображаются в `FrameMaterializationOutcome` по таблице в `dma_buf_frame/outcome.rs`. `Unsupported(..)` → `Unsupported(DmaBufDescriptorRejected)`: это запускает существующий программный фолбэк.
+  - По плану импорта — `set_dma_buf_import_capacity(dma_buf_import_capacity_for(plan.decoder_surface_pool))`.
+  - При смене декодера — `purge_dma_buf_imports`: текстуры держат память старых поверхностей.
+  - Счётчики кэша — `dma_buf_import_snapshot()` в `FrameImportStats`. Поле трассы `dma_buf_vulkan_imports` переиспользуется под импорты EGL.
+- Возможности: `gles2_render_capabilities` объявляет NV12 DMA-BUF (composed и separate) только при уровне `zero_copy`. P010 не объявляется (решение 33).
+- Поток VA-API декодера не присоединяется при уничтожении (общий бэклог, п. 13). Проверить выход приложения на T410 в обоих режимах окна.
+
 ## Тесты (функциональные, результат, а не вызов)
 
 - Видео из фикстуры через GLES2 доходит до показа: headless EGL + реальный FFmpeg-декодер → `RenderFrameOutcome::Presented` с ожидаемым pts и пикселями кадра (не «декодер открылся»). Для HW — `#[ignore]` на машине с VA-API.

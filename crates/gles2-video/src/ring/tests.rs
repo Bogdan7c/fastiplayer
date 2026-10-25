@@ -192,3 +192,28 @@ fn textures_are_kept_per_slot_and_taken_once() {
     assert_eq!(ring.allocated_slots(), 0);
     assert_eq!(ring.current_key(), None);
 }
+
+#[test]
+fn cleared_current_stops_being_current_but_the_gpu_still_guards_the_slot() {
+    let mut ring = three_slot_ring();
+    let shown = upload_and_draw(&mut ring, 1);
+    assert_eq!(ring.current_key(), Some(VideoFrameKey(1)));
+    ring.clear_current();
+    assert_eq!(ring.current_key(), None);
+    assert!(ring.current_textures().is_none());
+    // Слот нарисованного кадра ещё в неотданной работе: писать в него нельзя, пока нет fence.
+    let fence = Arc::new(ManualFence::default());
+    ring.retire(&fence);
+    let mut written = Vec::new();
+    for key in 2..=3 {
+        let slot = free_slot(&mut ring);
+        assert_ne!(slot, shown, "the drawn slot is still read by the GPU");
+        ring.commit_upload(slot, VideoFrameKey(key));
+        ring.mark_current_drawn();
+        ring.retire(&fence);
+        written.push(slot);
+    }
+    assert!(matches!(ring.slot_for_write(), Ok(SlotForWrite::Busy(_))));
+    fence.signal();
+    assert!(matches!(ring.slot_for_write(), Ok(SlotForWrite::Free(_))));
+}

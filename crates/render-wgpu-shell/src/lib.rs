@@ -12,7 +12,10 @@
 //! `user/gles2-renderer/`); конкретный [`Renderer`] создаёт фабрика каталога рендеров.
 //! Video renderer/materializer boundary остаётся в `render-wgpu-video`.
 
-#![forbid(unsafe_code)]
+// `unsafe` запрещён целиком; в тестовой сборке он `deny`, и разрешён лишь одному модулю — стенду
+// `/dev/udmabuf` паритета HW-видео (`gles2_parity_tests::udmabuf`, каждый блок с `SAFETY`).
+#![cfg_attr(not(test), forbid(unsafe_code))]
+#![cfg_attr(test, deny(unsafe_code))]
 
 mod egui_compositor;
 mod frame;

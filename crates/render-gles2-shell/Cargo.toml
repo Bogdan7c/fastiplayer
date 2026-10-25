@@ -10,24 +10,34 @@ description = "Адаптер плеера к своему рендеру OpenGL
 # user/gles2-renderer/, сессии 05–09). Не видит wgpu, плеер, приложение и конкретные декодеры:
 # это проверяет scripts/check-refactor-guardrails.py.
 [dependencies]
+# Ошибки `flush` декодерного трейта (`VideoDecoderThreadHandle`) в обёртке освобождения кадров.
+anyhow.workspace = true
 # Метаданные кадра (поворот, цвет) из декодера.
 codec-core.workspace = true
-# Контекст GLES2 и найденные возможности драйвера.
+# Контекст GLES2, найденные возможности драйвера и fence кадра показа.
 gles2-egui.workspace = true
 # Видеослой: плоскости, кольцо текстур, цвет.
 gles2-video.workspace = true
 # Нейтральные правила рендера плеера: letterbox, исключения, цветовой путь, возможности.
 render-core.workspace = true
+# Предупреждения потока-ожидателя: отказ ожидания fence, отказ запуска потока.
+log.workspace = true
 # Типизированные ошибки адаптера.
 thiserror.workspace = true
+# Нейтральный провайдер ресурсов кадра и владение декодером (обёртка освобождения по fence).
+video-backend-api.workspace = true
 # Кадр декодера и его дескриптор ресурса.
 video-core.workspace = true
 # Словарь раскладок и контрактов кадра.
 video-frame-contract.workspace = true
 
 [dev-dependencies]
-# Ошибки своего владельца памяти кадра в функциональном тесте (трейт `HostPlanarFrameOwner`).
-anyhow.workspace = true
+# `memfd_create`/`udmabuf`/`fstat` в функциональном тесте DMA-BUF: настоящий буфер ядра без видеокарты.
+libc = { workspace = true }
+# Пакет декодера (`DecodePacket`) в тесте проброса обёртки декодера.
+bytes.workspace = true
+# Идентификатор дорожки в пакете и конфиге потока тех же тестов.
+media-core.workspace = true
 
 [lints]
 workspace = true

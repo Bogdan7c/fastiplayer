@@ -10,8 +10,10 @@
 //! или без EGL тест пропускается с причиной; `GLES2_EGUI_REQUIRE_EGL=1` делает отсутствие EGL
 //! провалом.
 
+mod dma_buf_video;
 mod hdr_constants;
 mod scenes;
+mod udmabuf;
 mod video;
 mod video_high_bit;
 mod wgpu_target;

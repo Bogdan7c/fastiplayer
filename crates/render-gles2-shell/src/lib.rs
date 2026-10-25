@@ -7,9 +7,11 @@
 //! - где и как рисовать: letterbox, исключения, поворот и цветовой путь — из `render-core`, того
 //!   же источника, что у wgpu ([`VideoDrawPlan`]);
 //! - метаданные кадра для правил `render-core` ([`renderable_frame`]);
+//! - аппаратный кадр NV12 из DMA-BUF без копии ([`materialize_dma_buf_frame`]);
 //! - что умеет рендер на этом драйвере ([`gles2_render_capabilities`]).
 //!
-//! Сессия 05 — начало crate-а: программный путь 8 бит; сессия 06 — 10/12 бит и HDR → SDR. Встраивание в приложение за контрактом
+//! Сессия 05 — начало crate-а: программный путь 8 бит; сессия 06 — 10/12 бит и HDR → SDR;
+//! сессия 07 — аппаратный NV12 (P010 не объявляется, решение владельца 33). Встраивание в приложение за контрактом
 //! `RenderShell` (импорт кадров, освобождение кадра декодера по fence) — сессия 09.
 //!
 //! Правило освобождения кадра декодера (решение владельца сессии 05): кадр возвращается
@@ -17,18 +19,30 @@
 //! правило для копии, HW zero-copy (07) и SW zero-copy (12). Механизм — `gles2_egui::GpuCompletionQueue`.
 
 mod capabilities;
+mod dma_buf_frame;
 mod draw_plan;
 mod frame_metadata;
+mod frame_release;
 mod high_bit_color;
 mod host_planar;
 #[cfg(test)]
 mod test_support;
 
 pub use capabilities::{
-    GLES2_HIGH_BIT_SOFTWARE_FRAME_CONTRACTS, GLES2_SOFTWARE_FRAME_CONTRACTS,
-    gles2_render_capabilities, gles2_render_capabilities_for,
+    GLES2_HARDWARE_FRAME_CONTRACTS, GLES2_HIGH_BIT_SOFTWARE_FRAME_CONTRACTS,
+    GLES2_SOFTWARE_FRAME_CONTRACTS, HardwareZeroCopy, gles2_render_capabilities,
+    gles2_render_capabilities_for,
+};
+pub use dma_buf_frame::{
+    DmaBufMaterialization, DmaBufMaterializeOutcome, DmaBufShownFrom, DmaBufUnsupportedReason,
+    Nv12DmaBufError, dma_buf_buffer_identity, dma_buf_frame_key, dma_buf_import_capacity_for,
+    ensure_nv12_frame_contract, materialize_dma_buf_frame, nv12_dma_buf_frame,
 };
 pub use draw_plan::{VideoDrawPlan, VideoDrawPlanError, VideoPlacement};
 pub use frame_metadata::{NotYuvFrame, renderable_frame};
+pub use frame_release::{
+    FrameReleaseStats, Gles2FrameReleaseBinding, RendererDetachGrace, RendererDetachReport,
+    wrap_video_backend_for_gles2_release,
+};
 pub use high_bit_color::{HdrColorRejection, HighBitColorError, high_bit_color_conversion};
 pub use host_planar::{HostPlanarFrameError, host_planar_frame_upload};

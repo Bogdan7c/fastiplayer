@@ -25,6 +25,16 @@ gbm-sys = "0.3"
 [dev-dependencies]
 static_assertions = "1.1"
 symphonia-demux.workspace = true
+# Стенд замера GLES2-пути аппаратного декода (сессия 07 плана gles2-renderer): настоящие кадры
+# VA-API доходят до экрана GLES2 без копий. Только dev-зависимости: normal-зависимость
+# декодера на рендер запрещает guardrail.
+gles2-egui.workspace = true
+gles2-video.workspace = true
+render-gles2-shell.workspace = true
+render-core.workspace = true
+
+[[example]]
+name = "gles2_dmabuf_bench"
 
 [lints]
 workspace = true

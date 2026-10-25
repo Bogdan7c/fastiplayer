@@ -13,6 +13,8 @@
 )]
 
 pub mod high_bit;
+pub mod nv12_dma_buf;
+pub mod udmabuf;
 
 use gles2_egui::{
     CreateError, FrameStart, Gles2Context, OffscreenAlpha, OffscreenPixels, SurfaceSize,

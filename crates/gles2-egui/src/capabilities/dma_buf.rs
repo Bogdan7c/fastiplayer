@@ -38,6 +38,31 @@ impl fmt::Debug for DrmFourcc {
     }
 }
 
+/// Модификатор DRM (`DRM_FORMAT_MOD_*`, `drm_fourcc.h`): раскладка/тайлинг памяти буфера.
+///
+/// Отдельный тип от [`DmaBufModifier`]: тот описывает СТРОКУ ответа драйвера на запрос
+/// возможностей (с признаком `external_only`), а этот — модификатор конкретного буфера.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DrmModifier(pub u64);
+
+impl DrmModifier {
+    /// `DRM_FORMAT_MOD_LINEAR`: строки подряд, без тайлинга.
+    pub const LINEAR: Self = Self(0);
+    /// `DRM_FORMAT_MOD_INVALID`: «модификатор неизвестен», выбор остаётся за реализацией.
+    pub const INVALID: Self = Self(0x00ff_ffff_ffff_ffff);
+
+    /// `true`, если это `DRM_FORMAT_MOD_INVALID`.
+    pub const fn is_invalid(self) -> bool {
+        self.0 == Self::INVALID.0
+    }
+}
+
+impl fmt::Debug for DrmModifier {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "DrmModifier({:#018x})", self.0)
+    }
+}
+
 /// Как формат можно читать в шейдере после импорта.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormatSampling {
@@ -48,6 +73,22 @@ pub enum FormatSampling {
     /// Драйвер не назвал ни одного модификатора: возможен только импорт без атрибутов
     /// модификатора, а на тайловых буферах это тихий мусор (разведка 00). Не считаем годным.
     ImplicitModifierOnly,
+}
+
+/// Можно ли читать буфер пары «формат + модификатор» обычной текстурой `sampler2D`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModifierSampling {
+    /// Пара объявлена драйвером и импортируется как `sampler2D`.
+    Sampler2D,
+    /// Пара объявлена, но только как `GL_TEXTURE_EXTERNAL_OES`: наш `sampler2D` её не прочтёт.
+    ExternalOnly,
+    /// Драйвер не называл такой пары (формата нет в списке либо у него нет этого модификатора).
+    NotListed,
+    /// Форматы и модификаторы спросить нельзя (нет `_modifiers` либо запрос отказал): решает
+    /// сам `eglCreateImage`.
+    FormatQueryUnavailable,
+    /// Импорт DMA-BUF в драйвере отсутствует вовсе.
+    ImportUnavailable,
 }
 
 /// Один формат импорта и его модификаторы.
@@ -105,6 +146,47 @@ impl DmaBufImportSupport {
                 .find(|format| format.fourcc == fourcc)
                 .map(DmaBufFormatSupport::sampling),
             Self::Unavailable | Self::WithoutFormatQuery | Self::QueryFailed { .. } => None,
+        }
+    }
+}
+
+impl DmaBufImportSupport {
+    /// Как читается буфер пары «формат + модификатор».
+    ///
+    /// [`DrmModifier::INVALID`] означает «модификатор выберет реализация»: пара годится, если у
+    /// формата нет ни одного названного модификатора (список пуст) или есть хотя бы один
+    /// `sampler2D`. Явный модификатор ищется в списке драйвера точно.
+    pub fn sampling_of_modifier(
+        &self,
+        fourcc: DrmFourcc,
+        modifier: DrmModifier,
+    ) -> ModifierSampling {
+        let formats = match self {
+            Self::Unavailable => return ModifierSampling::ImportUnavailable,
+            Self::WithoutFormatQuery | Self::QueryFailed { .. } => {
+                return ModifierSampling::FormatQueryUnavailable;
+            }
+            Self::Queried { formats } => formats,
+        };
+        let Some(format) = formats.iter().find(|format| format.fourcc == fourcc) else {
+            return ModifierSampling::NotListed;
+        };
+        if modifier.is_invalid() {
+            return match format.sampling() {
+                FormatSampling::ExternalOnly => ModifierSampling::ExternalOnly,
+                FormatSampling::Sampler2D | FormatSampling::ImplicitModifierOnly => {
+                    ModifierSampling::Sampler2D
+                }
+            };
+        }
+        match format
+            .modifiers
+            .iter()
+            .find(|candidate| candidate.modifier == modifier.0)
+        {
+            None => ModifierSampling::NotListed,
+            Some(candidate) if candidate.external_only => ModifierSampling::ExternalOnly,
+            Some(_) => ModifierSampling::Sampler2D,
         }
     }
 }

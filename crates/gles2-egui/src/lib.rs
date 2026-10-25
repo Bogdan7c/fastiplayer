@@ -61,11 +61,16 @@ mod test_support;
 
 pub use capabilities::{
     CapabilityTiers, Conveniences, DmaBufFormatSupport, DmaBufImportSupport, DrmFourcc,
-    ExtensionSet, FormatSampling, Gles2Capabilities, MissingRequirement, TierStatus,
+    DrmModifier, ExtensionSet, FormatSampling, Gles2Capabilities, MissingRequirement,
+    ModifierSampling, TierStatus,
 };
 pub use composition::{
     FrameCompositor, FrameLayerError, FrameLayers, NoFrameLayers, PresentedUiFrame, UiContent,
     UiFrameDropReason, UiFrameError, UiFrameOutcome, UiFrameRequest, UiFrameTimings, UiFrameWork,
+};
+pub use context::dma_buf_texture::{
+    DmaBufAttribute, DmaBufMissingRequirement, DmaBufPlaneTexture, DmaBufTextureAttached,
+    DmaBufTextureError, DmaBufTextureStats, ImageRelease, ModifierAttribute,
 };
 pub use context::driver::{
     DmaBufModifier, EglCallError, EglErrorCode, EglOperation, EglVersion, SurfaceSize,

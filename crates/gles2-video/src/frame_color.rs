@@ -123,5 +123,30 @@ pub(crate) fn plan_frame_color(
     }
 }
 
+/// Цвет кадра NV12 из DMA-BUF: одна матрица SDR-цепочки, программа одна.
+///
+/// Формула та же, что у `nv12_to_rgba.wgsl` плеера: нормализация диапазона
+/// (`yuv_range`/`chroma_scale` — Y: `(Y − 0,0625) × 1,1643836` у limited; U/V: `− 0,5`, множитель
+/// цветности 1), матрица, цветокоррекция, `clamp`. Те же числа считает [`ColorTransform::new`] для
+/// планарных 8 бит (их wgpu-шейдер `host_yuv420_8bit_to_rgba.wgsl` читает из тех же uniform-ов
+/// `color_pipeline.rs`), поэтому отдельной NV12-формулы нет.
+///
+/// # Errors
+/// [`VideoDrawError::HdrToSdrNeedsHighBitFrame`] — HDR → SDR запрошен: у NV12 8 бит его нет
+/// (HW 10 бит в GLES2 не объявляется, решение владельца 33).
+pub(crate) fn plan_nv12_color(
+    conversion: VideoColorConversion,
+) -> Result<ColorTransform, VideoDrawError> {
+    match conversion {
+        VideoColorConversion::Sdr {
+            encoding,
+            adjustment,
+        } => Ok(ColorTransform::new(encoding, adjustment)),
+        VideoColorConversion::HdrToSdr(_) => Err(VideoDrawError::HdrToSdrNeedsHighBitFrame {
+            depth: crate::planes::SampleDepth::Bits8,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests;

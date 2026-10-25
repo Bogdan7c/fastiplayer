@@ -191,6 +191,20 @@ pub(super) fn read_back_texture_after(
     texture: &wgpu::Texture,
     size: [u32; 2],
     preceding: Vec<wgpu::CommandBuffer>,
+    encoder: wgpu::CommandEncoder,
+) -> Vec<u8> {
+    read_back_texture_around(device, queue, texture, size, preceding, Vec::new(), encoder)
+}
+
+/// То же, но барьеры вокруг кадра: `preceding` уходит до `encoder`, `following` — после него
+/// (acquire/release внешней очереди для DMA-BUF), всё одним submit-ом, как в шелле.
+pub(super) fn read_back_texture_around(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    size: [u32; 2],
+    preceding: Vec<wgpu::CommandBuffer>,
+    following: Vec<wgpu::CommandBuffer>,
     mut encoder: wgpu::CommandEncoder,
 ) -> Vec<u8> {
     let [width, height] = size;
@@ -224,7 +238,12 @@ pub(super) fn read_back_texture_after(
             depth_or_array_layers: 1,
         },
     );
-    let submission = queue.submit(preceding.into_iter().chain([encoder.finish()]));
+    let submission = queue.submit(
+        preceding
+            .into_iter()
+            .chain([encoder.finish()])
+            .chain(following),
+    );
     let slice = readback.slice(..);
     let (sender, receiver) = mpsc::sync_channel(1);
     slice.map_async(wgpu::MapMode::Read, move |result| {

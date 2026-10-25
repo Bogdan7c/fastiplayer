@@ -482,6 +482,43 @@ impl<'a> VideoGl<'a> {
         }
     }
 
+    /// Привязать текстуры яркости и цветности NV12 (импорт DMA-BUF) к блокам 0 и 1; активным
+    /// остаётся блок 0.
+    pub(crate) fn bind_nv12_textures(self, luma: glow::NativeTexture, chroma: glow::NativeTexture) {
+        // SAFETY: контекст текущий; текстуры созданы этим контекстом; блоки 0 и 1 есть в любой
+        // реализации GLES 2.0 (`MAX_TEXTURE_IMAGE_UNITS` ≥ 8, таблица 6.20).
+        unsafe {
+            self.gl.active_texture(glow::TEXTURE1);
+            self.gl.bind_texture(glow::TEXTURE_2D, Some(chroma));
+            self.gl.active_texture(glow::TEXTURE0);
+            self.gl.bind_texture(glow::TEXTURE_2D, Some(luma));
+        }
+    }
+
+    /// Параметры выборки текстуры, чьё хранилище задано `EGLImage`: билинейный фильтр и
+    /// `CLAMP_TO_EDGE`, как у `Sampler` NV12-пути wgpu. Ставятся ПОСЛЕ привязки образа: без
+    /// них текстура остаётся с умолчанием `NEAREST_MIPMAP_LINEAR`, а у текстуры без мипмапов
+    /// это «неполная» текстура, и выборка вернула бы чёрный (OpenGL ES 2.0.25, §3.7.10
+    /// «Texture Completeness»). Привязка блока 0 после вызова сброшена.
+    pub(crate) fn set_imported_texture_sampling(self, texture: glow::NativeTexture) {
+        // SAFETY: контекст текущий; текстура создана этим контекстом; параметры — константы
+        // GLES 2.0 (значения фильтра и wrap — небольшие u32, в i32 помещаются без потерь).
+        unsafe {
+            self.gl.active_texture(glow::TEXTURE0);
+            self.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            for (parameter, value) in [
+                (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
+                (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+                (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+                (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+            ] {
+                self.gl
+                    .tex_parameter_i32(glow::TEXTURE_2D, parameter, value.cast_signed());
+            }
+            self.gl.bind_texture(glow::TEXTURE_2D, None);
+        }
+    }
+
     /// Атрибут позиции из буфера вершин: 2 × f32 подряд.
     pub(crate) fn bind_vertex_positions(self, buffer: glow::NativeBuffer, location: u32) {
         // SAFETY: контекст текущий; буфер создан этим контекстом и держит 3 вершины по 2 f32;

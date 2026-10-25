@@ -100,3 +100,31 @@ fn hdr_on_an_eight_bit_frame_is_a_typed_refusal() {
         })
     );
 }
+
+#[test]
+fn nv12_sdr_uses_the_same_matrix_as_planar_eight_bit() {
+    let nv12 = plan_nv12_color(sdr(YuvRange::Limited)).expect("NV12 SDR");
+    let planar = plan_frame_color(
+        layout(ChromaSubsampling::Yuv420, SampleDepth::Bits8),
+        sdr(YuvRange::Limited),
+    )
+    .expect("planar SDR");
+    assert_eq!(ColorUniformValues::EightBit(nv12), planar.uniforms);
+}
+
+#[test]
+fn nv12_full_range_differs_from_limited() {
+    let limited = plan_nv12_color(sdr(YuvRange::Limited)).expect("limited");
+    let full = plan_nv12_color(sdr(YuvRange::Full)).expect("full");
+    assert_ne!(limited, full);
+}
+
+#[test]
+fn nv12_rejects_hdr_to_sdr_as_an_eight_bit_frame() {
+    assert_eq!(
+        plan_nv12_color(hdr(HdrTransfer::Pq)),
+        Err(VideoDrawError::HdrToSdrNeedsHighBitFrame {
+            depth: SampleDepth::Bits8
+        })
+    );
+}

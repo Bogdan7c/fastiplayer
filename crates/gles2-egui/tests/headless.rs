@@ -169,6 +169,32 @@ fn fence_after_a_frame_signals_and_releases_its_payload_once() {
     assert_eq!(stats.egl_fences_created + stats.fence_fallback_finishes, 2);
 }
 
+/// Поток-ожидатель освобождения кадров (сессия 07, решение владельца 32) ждёт fence в потоке, где
+/// НИ ОДИН контекст не текущий. EGL_KHR_fence_sync это разрешает (`eglClientWaitSyncKHR` — объект
+/// display-а, флаг FLUSH без текущего контекста игнорируется), поэтому fence обязан быть сброшен
+/// в конвейер при вставке. Тест ловит fence, который без сброса или на чужом потоке не сработал бы.
+#[test]
+fn fence_signals_when_waited_from_a_thread_without_current_context() {
+    let Some(mut context) = offscreen_or_skip("fence_cross_thread", size(64, 64)) else {
+        return;
+    };
+    draw_clear_frame(&mut context, [0.25, 0.5, 0.75, 1.0]);
+    let fence = std::sync::Arc::new(context.insert_fence().expect("fence is inserted"));
+
+    let waited_on_another_thread = std::sync::Arc::clone(&fence);
+    let status = std::thread::spawn(move || {
+        waited_on_another_thread
+            .wait(Duration::from_secs(5))
+            .expect("fence wait on a thread without a current context")
+    })
+    .join()
+    .expect("waiter thread finished");
+
+    assert_eq!(status, FenceStatus::Signaled);
+    // Поток рендера видит тот же итог: fence один и общий.
+    assert_eq!(fence.poll().expect("fence poll"), FenceStatus::Signaled);
+}
+
 #[test]
 fn es100_program_compiles_and_es3_or_broken_sources_are_typed_errors() {
     let Some(context) = offscreen_or_skip("es100_shaders", size(2, 2)) else {

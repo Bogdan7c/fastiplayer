@@ -8,11 +8,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use crate::context::display_registry::DisplayRegistry;
+use crate::context::dma_buf_texture::DmaBufImageAttributes;
 use crate::context::driver::{
     ConfigDescription, ConfigId, ConfigQuery, ContextId, ContextRequest, CurrentBinding, DisplayId,
     DisplayString, DmaBufModifier, EglCallError, EglDriver, EglErrorCode, EglOperation, EglVersion,
-    NativeDisplay, PlatformWindowTarget, ResetNotificationRequest, SurfaceId, SurfaceSize, SyncId,
-    SyncWaitStatus, WaylandEglWindowId,
+    ImageId, NativeDisplay, PlatformWindowTarget, ResetNotificationRequest, SurfaceId, SurfaceSize,
+    SyncId, SyncWaitStatus, WaylandEglWindowId,
 };
 
 /// Один вызов драйвера в журнале.
@@ -38,6 +39,8 @@ pub(crate) enum FakeCall {
     CreateSync(SyncId),
     ClientWaitSync(SyncId),
     DestroySync(SyncId),
+    CreateImage(ImageId),
+    DestroyImage(ImageId),
 }
 
 /// Программируемое поведение драйвера.
@@ -53,6 +56,8 @@ pub(crate) struct FakeBehavior {
     pub(crate) make_current_error: Option<EglErrorCode>,
     pub(crate) swap_error: Option<EglErrorCode>,
     pub(crate) wait_error: Option<EglErrorCode>,
+    pub(crate) image_create_error: Option<EglErrorCode>,
+    pub(crate) image_destroy_error: Option<EglErrorCode>,
     pub(crate) new_syncs_pending: bool,
     pub(crate) dma_buf_formats: Result<Vec<(u32, Vec<DmaBufModifier>)>, EglErrorCode>,
 }
@@ -74,6 +79,8 @@ impl Default for FakeBehavior {
             make_current_error: None,
             swap_error: None,
             wait_error: None,
+            image_create_error: None,
+            image_destroy_error: None,
             new_syncs_pending: false,
             dma_buf_formats: Ok(Vec::new()),
         }
@@ -110,6 +117,9 @@ struct FakeState {
     live_surfaces: BTreeSet<usize>,
     live_wayland_windows: BTreeSet<usize>,
     live_syncs: BTreeSet<usize>,
+    live_images: BTreeSet<usize>,
+    /// Списки атрибутов всех удачных и неудачных `eglCreateImage` по порядку вызовов.
+    image_attribute_lists: Vec<Vec<usize>>,
     pending_syncs: BTreeSet<usize>,
 }
 
@@ -174,6 +184,17 @@ impl FakeEgl {
             "wl_egl_windows alive"
         );
         assert!(state.live_syncs.is_empty(), "syncs alive");
+        assert!(state.live_images.is_empty(), "EGLImages alive");
+    }
+
+    /// Списки атрибутов, с которыми вызывали `eglCreateImage`.
+    pub(crate) fn image_attribute_lists(&self) -> Vec<Vec<usize>> {
+        self.lock().image_attribute_lists.clone()
+    }
+
+    /// Число живых `EGLImage`.
+    pub(crate) fn live_image_count(&self) -> usize {
+        self.lock().live_images.len()
     }
 
     /// Число вызовов, подходящих под условие.
@@ -460,5 +481,33 @@ impl EglDriver for FakeEgl {
                 .unwrap_or_default()),
             Err(code) => Err(EglCallError::new(EglOperation::QueryDmaBuf, *code)),
         }
+    }
+
+    fn create_dma_buf_image(
+        &self,
+        display: DisplayId,
+        attributes: &DmaBufImageAttributes,
+    ) -> Result<ImageId, EglCallError> {
+        let mut state = self.lock();
+        assert!(state.initialized_displays.contains(&display.0));
+        state
+            .image_attribute_lists
+            .push(attributes.as_slice().to_vec());
+        failure(EglOperation::CreateImage, state.behavior.image_create_error)?;
+        let image = ImageId(state.next());
+        state.live_images.insert(image.0);
+        state.journal.push(FakeCall::CreateImage(image));
+        Ok(image)
+    }
+
+    fn destroy_image(&self, display: DisplayId, image: ImageId) -> Result<(), EglCallError> {
+        let mut state = self.lock();
+        assert!(state.initialized_displays.contains(&display.0));
+        state.journal.push(FakeCall::DestroyImage(image));
+        remove_live(&mut state.live_images, image.0, "EGLImage");
+        failure(
+            EglOperation::DestroyImage,
+            state.behavior.image_destroy_error,
+        )
     }
 }

@@ -13,7 +13,10 @@ mod tiers;
 #[cfg(test)]
 mod tests;
 
-pub use dma_buf::{DmaBufFormatSupport, DmaBufImportSupport, DrmFourcc, FormatSampling};
+pub use dma_buf::{
+    DmaBufFormatSupport, DmaBufImportSupport, DrmFourcc, DrmModifier, FormatSampling,
+    ModifierSampling,
+};
 pub use extensions::ExtensionSet;
 pub use tiers::{CapabilityTiers, Conveniences, MissingRequirement, TierStatus};
 

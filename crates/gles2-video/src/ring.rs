@@ -237,6 +237,16 @@ impl<T, F: FenceProbe> UploadRing<T, F> {
         }
     }
 
+    /// Кадр кольца больше не показывается (текущим стал импортированный кадр): слот перестаёт
+    /// быть «текущим» и не защищён от записи этим званием. Защита от чтения GPU остаётся: слот,
+    /// который GPU ещё читает, держит `gpu_use`, а не «текущий».
+    pub(crate) fn clear_current(&mut self) {
+        if let Some(slot) = self.current.and_then(|index| self.slots.get_mut(index)) {
+            slot.key = None;
+        }
+        self.current = None;
+    }
+
     /// Все текстуры кольца (для удаления вместе с рендером).
     pub(crate) fn take_all_textures(&mut self) -> Vec<T> {
         self.current = None;

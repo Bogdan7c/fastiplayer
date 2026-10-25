@@ -44,6 +44,7 @@
 //! видит [`ShaderPrecision::exact_texel_limit`]. Uniform-ов во фрагментном шейдере: 8 векторов у
 //! 8 бит, 14 у HDR (минимум GLES 2.0 — 16); сэмплеров 3 и 4 (минимум 8).
 
+mod nv12;
 mod shaders;
 
 use gles2_egui::{Es100ProgramSources, Gles2Capabilities, Gles2Context};
@@ -51,6 +52,8 @@ use gles2_egui::{Es100ProgramSources, Gles2Capabilities, Gles2Context};
 use crate::VideoLayerError;
 use crate::gl_calls::{HDR_LUT_TEXTURE_UNIT, VideoGl};
 use crate::planes::ChromaSubsampling;
+
+pub(crate) use nv12::Nv12Program;
 
 /// Точность фрагментного шейдера видеослоя.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -160,6 +163,8 @@ pub(crate) struct VideoPrograms {
     yuv422: VideoProgram,
     yuv444: VideoProgram,
     high_bit: Option<HighBitPrograms>,
+    /// Программа NV12 из DMA-BUF (сессия 07): собирается всегда, как программы 8 бит.
+    pub(crate) nv12: Nv12Program,
     pub(crate) precision: ShaderPrecision,
 }
 
@@ -189,11 +194,19 @@ impl VideoPrograms {
         } else {
             None
         };
+        // Отказ NV12 удаляет уже собранные программы (замыкание `build` больше не используется,
+        // поэтому список `built` снова доступен).
+        let nv12 = Nv12Program::build(context, precision).inspect_err(|_| {
+            for program in &built {
+                delete_program_logged(context, *program);
+            }
+        })?;
         Ok(Self {
             yuv420,
             yuv422,
             yuv444,
             high_bit,
+            nv12,
             precision,
         })
     }
@@ -223,6 +236,7 @@ impl VideoPrograms {
         {
             delete_program_logged(context, program.program);
         }
+        delete_program_logged(context, self.nv12.program);
     }
 }
 
@@ -384,7 +398,8 @@ fn fragment_shader_source(precision: ShaderPrecision, variant: ProgramVariant) -
         ProgramVariant::HighBitSdr | ProgramVariant::HighBitHdrTable => {
             let hdr_table = u8::from(matches!(variant, ProgramVariant::HighBitHdrTable));
             format!(
-                "#version 100\n{precision_line}\n#define HDR_TABLE {hdr_table}\n{}{}",
+                "#version 100\n{precision_line}\n{}#define HDR_TABLE {hdr_table}\n{}{}",
+                shaders::SAMPLER_PRECISION_STATEMENT,
                 shaders::PLANE_CODE_FUNCTION,
                 shaders::HIGH_BIT_FRAGMENT_BODY
             )

@@ -12,6 +12,8 @@
 use std::fmt;
 use std::time::Duration;
 
+use super::dma_buf_texture::DmaBufImageAttributes;
+
 /// Дескриптор `EGLDisplay`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct DisplayId(pub(crate) usize);
@@ -31,6 +33,10 @@ pub(crate) struct SurfaceId(pub(crate) usize);
 /// Дескриптор `EGLSync`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct SyncId(pub(crate) usize);
+
+/// Дескриптор `EGLImage` (EGL 1.5, `EGL_KHR_image_base`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ImageId(pub(crate) usize);
 
 /// Дескриптор `wl_egl_window` (обёртка libwayland-egl над `wl_surface`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -264,6 +270,10 @@ pub enum EglOperation {
     DestroySync,
     /// `eglQueryDmaBufFormatsEXT` / `eglQueryDmaBufModifiersEXT`.
     QueryDmaBuf,
+    /// `eglCreateImage(EGL_LINUX_DMA_BUF_EXT)`.
+    CreateImage,
+    /// `eglDestroyImage`.
+    DestroyImage,
 }
 
 /// Код ошибки EGL (`eglGetError`, EGL 1.5, раздел 3.1).
@@ -405,4 +415,15 @@ pub(crate) trait EglDriver: Send + Sync {
         display: DisplayId,
         fourcc: u32,
     ) -> Result<Vec<DmaBufModifier>, EglCallError>;
+    /// `eglCreateImage(EGL_LINUX_DMA_BUF_EXT)` с готовым списком атрибутов (контекст
+    /// `EGL_NO_CONTEXT`, буфер NULL — так требует `EGL_EXT_image_dma_buf_import`).
+    /// Драйвер НЕ забирает fd из атрибутов: закрывает их вызывающий.
+    fn create_dma_buf_image(
+        &self,
+        display: DisplayId,
+        attributes: &DmaBufImageAttributes,
+    ) -> Result<ImageId, EglCallError>;
+    /// `eglDestroyImage`. Уже созданные из образа текстуры остаются валидными
+    /// (`EGL_KHR_image_base`).
+    fn destroy_image(&self, display: DisplayId, image: ImageId) -> Result<(), EglCallError>;
 }

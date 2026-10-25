@@ -309,6 +309,19 @@ impl<'a> CurrentGl<'a> {
         // SAFETY: контекст текущий; программа этого контекста, владелец удаляет её один раз.
         unsafe { self.gl.delete_program(program) }
     }
+
+    /// Привязывает текстуру к `GL_TEXTURE_2D` активного юнита (`None` — отвязка).
+    pub(crate) fn bind_texture_2d(self, texture: Option<glow::NativeTexture>) {
+        // SAFETY: контекст текущий; текстура создана этим контекстом (вызывающий отвечает за
+        // чужие имена, см. документацию `attach_dma_buf_plane_to_texture`).
+        unsafe { self.gl.bind_texture(glow::TEXTURE_2D, texture) }
+    }
+
+    /// `glGetError`: снимает и возвращает один накопленный флаг ошибки (`GL_NO_ERROR` — нет).
+    pub(crate) fn take_error_flag(self) -> u32 {
+        // SAFETY: контекст текущий; функция без аргументов.
+        unsafe { self.gl.get_error() }
+    }
 }
 
 impl crate::fence::GpuCommandSubmission for CurrentGl<'_> {

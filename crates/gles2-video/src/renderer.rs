@@ -16,8 +16,10 @@ use std::sync::Arc;
 
 use gles2_egui::{ActiveFrame, ContextId, Gles2Context, GpuFence};
 
+use crate::dma_buf_cache::DmaBufImportCacheCapacity;
+use crate::dma_buf_import::DmaBufImports;
 use crate::draw_uniforms::{DrawUniformValues, PlaneSampling};
-use crate::frame_color::{ColorUniformValues, FrameColorPlan, plan_frame_color};
+use crate::frame_color::ColorUniformValues;
 use crate::geometry::{PixelRect, to_gl_window_rect, uncovered_parts};
 use crate::gl_calls::{PlaneTextureFormat, VideoGl};
 use crate::hdr_table_texture::{HdrTableReadiness, HdrTableTexture};
@@ -28,12 +30,17 @@ use crate::layer_api::{
 };
 use crate::planes::{
     FrameLayoutError, PlanarFrameUpload, PlanarLayout, PlaneRole, PlaneSource, SampleDepth,
-    validate_host_plane,
+    VideoFrameKey, validate_host_plane,
 };
 use crate::program::{FULLSCREEN_TRIANGLE, ShaderPrecision, VideoProgram, VideoPrograms};
+
+mod dma_buf;
+mod draw_plan;
+
 use crate::ring::{SlotForWrite, UploadRing, WritableSlot};
 use crate::textures::PlaneTextureSet;
 use crate::upload_plan::{PlaneUploadPlan, RowLengthSupport, plan_plane_upload};
+use draw_plan::{PlannedFrame, activate, plan_current_frame};
 
 /// Видеослой GLES2.
 #[derive(Debug)]
@@ -42,6 +49,9 @@ pub struct VideoLayerRenderer {
     programs: VideoPrograms,
     vertex_buffer: glow::NativeBuffer,
     ring: UploadRing<PlaneTextureSet, GpuFence>,
+    /// Кэш импортов DMA-BUF и импортированный текущий кадр. Текущим бывает либо кадр кольца,
+    /// либо импортированный: никогда оба сразу (см. `current_key`).
+    dma_buf_imports: DmaBufImports,
     /// Формат 8-битных плоскостей (`RedExt` или `Luminance`); 10/12 бит — всегда
     /// `LuminanceAlpha`.
     plane_format: PlaneTextureFormat,
@@ -99,6 +109,7 @@ impl VideoLayerRenderer {
             programs,
             vertex_buffer,
             ring: UploadRing::new(options.upload_slots),
+            dma_buf_imports: DmaBufImports::new(DmaBufImportCacheCapacity::DEFAULT),
             plane_format,
             row_length,
             hdr_table: None,
@@ -130,6 +141,14 @@ impl VideoLayerRenderer {
         }
     }
 
+    /// Ключ текущего кадра: загруженного в кольцо или импортированного. Не бывает обоих сразу:
+    /// каждый из способов показа снимает «текущий» с другого.
+    fn current_key(&self) -> Option<VideoFrameKey> {
+        self.ring
+            .current_key()
+            .or_else(|| self.dma_buf_imports.current_key())
+    }
+
     /// Накопленные счётчики.
     #[must_use]
     pub const fn stats(&self) -> VideoLayerStats {
@@ -159,7 +178,7 @@ impl VideoLayerRenderer {
         if context.id() != self.owner {
             return Err(VideoUploadError::ForeignContext);
         }
-        if self.ring.current_key() == Some(frame.key) {
+        if self.current_key() == Some(frame.key) {
             self.stats.repeated_frames += 1;
             return Ok(UploadOutcome::AlreadyCurrent);
         }
@@ -180,6 +199,8 @@ impl VideoLayerRenderer {
         match self.write_slot(gl, slot, &prepared) {
             Ok(report) => {
                 self.ring.commit_upload(slot, frame.key);
+                // Текущим стал загруженный кадр: импортированный больше не показывается.
+                self.dma_buf_imports.clear_current();
                 self.record_upload(report);
                 Ok(UploadOutcome::Uploaded(report))
             }
@@ -334,17 +355,10 @@ impl VideoLayerRenderer {
         };
         let full_target = to_gl_window_rect(target_rect, target_height)?;
         let viewport = to_gl_window_rect(request.viewport, target_height)?;
-        // Цвет выбирается до любой записи в цель: несовместимый запрос не оставляет полкадра.
-        let current = match self
-            .ring
-            .current_textures()
-            .and_then(|textures| textures.layout.map(|layout| (textures, layout)))
-        {
-            Some((textures, layout)) => {
-                Some((textures, layout, plan_frame_color(layout, request.color)?))
-            }
-            None => None,
-        };
+        // Кадр, программа и цвет выбираются до любой записи в цель: несовместимый запрос не
+        // оставляет полкадра.
+        let current =
+            plan_current_frame(&self.ring, &self.dma_buf_imports, &self.programs, request)?;
         // Видео рисует каждый пиксель своих прямоугольников (полосы letterbox — тоже, чёрным),
         // поэтому чёрная заливка нужна только там, куда видео не рисует: под исключениями и
         // вне области. Пиксели те же, что у полной заливки wgpu, а GPU не заливает цель
@@ -367,7 +381,7 @@ impl VideoLayerRenderer {
             .collect::<Result<Vec<_>, _>>()?;
 
         let gl = VideoGl::for_active_frame(frame);
-        let hdr_table = match current.as_ref().and_then(|(_, _, color)| color.hdr_table) {
+        let hdr_table = match current.as_ref().and_then(PlannedFrame::hdr_table) {
             Some(required) => {
                 let (texture, readiness) = HdrTableTexture::ensure(
                     &mut self.hdr_table,
@@ -382,10 +396,6 @@ impl VideoLayerRenderer {
             }
             None => None,
         };
-        let program = match &current {
-            Some((_, layout, color)) => Some(self.program_for(*layout, color)?),
-            None => None,
-        };
         gl.set_opaque_video_state();
         for clear_rect in uncovered {
             gl.enable_scissor();
@@ -393,17 +403,15 @@ impl VideoLayerRenderer {
             gl.clear_opaque_black();
         }
         gl.disable_scissor();
-        let (Some((textures, layout, color)), Some(program)) = (current, program) else {
+        let Some(planned) = current else {
             return Ok(VideoDrawOutcome::ClearedWithoutFrame);
         };
         if scissors.is_empty() {
             return Ok(VideoDrawOutcome::ClearedNothingVisible);
         }
 
-        gl.use_program(Some(program.program));
-        set_frame_uniforms(gl, program, textures, layout, request, color.uniforms);
-        gl.bind_plane_textures(textures.textures(), hdr_table);
-        gl.bind_vertex_positions(self.vertex_buffer, program.position_attribute);
+        let position_attribute = activate(gl, &planned, request, hdr_table);
+        gl.bind_vertex_positions(self.vertex_buffer, position_attribute);
         gl.viewport(viewport);
         gl.enable_scissor();
         for scissor in &scissors {
@@ -411,28 +419,15 @@ impl VideoLayerRenderer {
             gl.draw_fullscreen_triangle();
         }
         gl.disable_scissor();
-        gl.unbind_vertex_positions(program.position_attribute);
+        gl.unbind_vertex_positions(position_attribute);
         gl.use_program(None);
         gl.viewport(full_target);
 
+        // Для импортированного кадра в кольце нет «текущего» слота: вызов ничего не отмечает.
         self.ring.mark_current_drawn();
         let draw_calls = u32::try_from(scissors.len()).unwrap_or(u32::MAX);
         self.stats.draw_calls += u64::from(draw_calls);
         Ok(VideoDrawOutcome::Drawn { draw_calls })
-    }
-
-    /// Программа выбранного варианта. Варианта 10/12 бит нет только без `highp` — такие кадры
-    /// отклоняет уже `upload`, здесь это защита, а не ожидаемый путь.
-    fn program_for(
-        &self,
-        layout: PlanarLayout,
-        color: &FrameColorPlan,
-    ) -> Result<&VideoProgram, VideoDrawError> {
-        self.programs.for_variant(color.variant).ok_or(
-            VideoDrawError::HighBitDepthNeedsHighPrecision {
-                depth: layout.depth,
-            },
-        )
     }
 
     /// Работа загрузок и рисований с прошлого вызова отдана драйверу; `fence` поставлен после неё
@@ -452,6 +447,8 @@ impl VideoLayerRenderer {
     /// `upload` загрузит кадр, даже если ключ совпал; `draw` до него рисует только чёрный.
     pub fn forget_uploaded_frames(&mut self) {
         self.ring.forget_keys();
+        // Импортированный текущий кадр тоже забывается; кэш остаётся (очистка — `purge_dma_buf_imports`).
+        self.dma_buf_imports.clear_current();
     }
 
     /// Удалить GL-объекты видеослоя.
@@ -470,6 +467,7 @@ impl VideoLayerRenderer {
                 for set in textures {
                     set.delete(gl);
                 }
+                self.dma_buf_imports.purge(gl);
                 if let Some(table) = self.hdr_table.take() {
                     table.delete(gl);
                 }

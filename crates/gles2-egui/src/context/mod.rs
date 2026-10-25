@@ -15,6 +15,7 @@
 mod config_select;
 mod creation;
 pub(crate) mod display_registry;
+pub(crate) mod dma_buf_texture;
 pub(crate) mod driver;
 mod egl_objects;
 pub(crate) mod gles_version;
@@ -40,6 +41,7 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use self::driver::{EglCallError, SurfaceSize};
 use self::egl_objects::EglSession;
 use self::safety::GraphicsResetStatusQuery;
+use self::safety::egl_image::ImageTargetTexture;
 use self::safety::gl::CurrentGl;
 use crate::capabilities::Gles2Capabilities;
 use crate::error::Gles2Error;
@@ -116,6 +118,10 @@ pub struct Gles2Context {
     id: ContextId,
     gl: glow::Context,
     reset_status: Option<GraphicsResetStatusQuery>,
+    /// `glEGLImageTargetTexture2DOES` (`None` — расширения нет или драйвер не дал адрес).
+    image_target_texture: Option<ImageTargetTexture>,
+    /// Счётчики импорта DMA-BUF (см. `dma_buf_texture`).
+    dma_buf_stats: Cell<dma_buf_texture::DmaBufTextureStats>,
     capabilities: Gles2Capabilities,
     fences: FenceIssuer,
     presentation: PresentationState,

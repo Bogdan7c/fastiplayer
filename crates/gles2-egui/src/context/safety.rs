@@ -18,12 +18,15 @@ use std::time::Duration;
 
 use khronos_egl as egl;
 
+use super::dma_buf_texture::DmaBufImageAttributes;
+
+pub(crate) mod egl_image;
 pub(crate) mod gl;
 
 use super::driver::{
     ConfigDescription, ConfigId, ConfigQuery, ConfigSurfaceKind, ContextId, ContextRequest,
     CurrentBinding, DisplayId, DisplayString, DmaBufModifier, EglCallError, EglDriver,
-    EglErrorCode, EglOperation, EglVersion, NativeDisplay, PlatformWindowTarget,
+    EglErrorCode, EglOperation, EglVersion, ImageId, NativeDisplay, PlatformWindowTarget,
     ResetNotificationRequest, SurfaceId, SurfaceSize, SyncId, SyncWaitStatus, WaylandEglWindowId,
 };
 
@@ -644,6 +647,18 @@ impl EglDriver for SystemEgl {
                 external_only: external_only == egl::TRUE,
             })
             .collect())
+    }
+
+    fn create_dma_buf_image(
+        &self,
+        display: DisplayId,
+        attributes: &DmaBufImageAttributes,
+    ) -> Result<ImageId, EglCallError> {
+        self.create_dma_buf_image_checked(display, attributes)
+    }
+
+    fn destroy_image(&self, display: DisplayId, image: ImageId) -> Result<(), EglCallError> {
+        self.destroy_image_checked(display, image)
     }
 }
 

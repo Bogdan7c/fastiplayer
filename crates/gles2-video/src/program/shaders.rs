@@ -88,6 +88,15 @@ void main() {
 }
 ";
 
+/// Точность выборки для 10/12 бит и таблицы HDR.
+///
+/// GLSL ES 1.00 §4.5.3: у `sampler2D` во фрагментном шейдере точность по умолчанию `lowp`, а
+/// результат `texture2D` имеет точность сэмплера. Mesa llvmpipe реально округляет `lowp`-результат
+/// (байт 254 приходил как ≈253,875, и код 12 бит терял 1/8 кода), а `highp` даёт точный `b / 255`.
+/// Radeonsi и crocus `lowp` не урезают, поэтому ошибка видна только на программном рендере.
+/// Оператор действует на все `sampler2D`, объявленные ниже (плоскости и атлас HDR).
+pub(super) const SAMPLER_PRECISION_STATEMENT: &str = "precision highp sampler2D;\n";
+
 /// Сборка кода из пары байтов `GL_LUMINANCE_ALPHA`: `L·255 + A·255·256`. Байт приходит в шейдер
 /// как `b / 255`, поэтому умножение возвращает целое `b` (с ошибкой fp32 ~1e-5, на шесть порядков
 /// меньше шага кода); `floor`/округление не нужно — дальше код только нормализуется линейно.
@@ -191,6 +200,41 @@ void main() {
 #if HDR_TABLE
         rgb = hdr_table_lookup(clamp(rgb, 0.0, 1.0));
 #endif
+        gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
+    }
+}
+";
+
+/// Тело фрагментного шейдера NV12 из DMA-BUF (после `#version` и строки точности).
+///
+/// Паритет с `nv12_to_rgba.wgsl` плеера: яркость и цветность читаются билинейно в ОДНОЙ
+/// координате `source_uv` по всей импортированной текстуре (текстура ровно размера плоскости,
+/// `CLAMP_TO_EDGE`; ни co-sited, ни зажима к видимой ширине). Цветность GR88 — `.rg` = (U, V):
+/// DRM хранит `GR88` как слово little-endian `G:R`, то есть первый байт (U у NV12) лежит в R.
+///
+/// Под Ironlake: обе выборки идут по varying как есть — адрес не считается во фрагменте, нет
+/// зависимых выборок и ветвлений по uniform-ам (урок замера сессии 05).
+pub(super) const NV12_FRAGMENT_BODY: &str = "
+uniform sampler2D u_luma_plane;
+uniform sampler2D u_chroma_plane;
+// Цвет: rgb = clamp(rows * (Y, U, V, 1), 0, 1) — вся SDR-цепочка одной матрицей.
+uniform vec4 u_rgb_row0;
+uniform vec4 u_rgb_row1;
+uniform vec4 u_rgb_row2;
+
+varying vec2 v_display_uv;
+varying vec2 v_source_uv;
+
+void main() {
+    if (v_display_uv.x < 0.0 || v_display_uv.x > 1.0 || v_display_uv.y < 0.0 || v_display_uv.y > 1.0) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    } else {
+        vec4 yuv = vec4(
+            texture2D(u_luma_plane, v_source_uv).r,
+            texture2D(u_chroma_plane, v_source_uv).rg,
+            1.0
+        );
+        vec3 rgb = vec3(dot(u_rgb_row0, yuv), dot(u_rgb_row1, yuv), dot(u_rgb_row2, yuv));
         gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
     }
 }

@@ -210,6 +210,14 @@ fn assemble(
         _ => None,
     };
 
+    // `glEGLImageTargetTexture2DOES` нужна только для импорта DMA-BUF; грузим, если заявлено
+    // `GL_OES_EGL_image`. NULL от драйвера — `None`: импорт ответит типизированной ошибкой.
+    let image_target_texture = if gl_extensions.contains("GL_OES_EGL_image") {
+        runtime.egl.load_image_target_texture()
+    } else {
+        None
+    };
+
     let report = driver_report(&loaded, session.lease(), runtime.registry.driver().as_ref());
     let capabilities = Gles2Capabilities::from_report(report);
     let fence_strategy = if capabilities.tiers().conveniences.egl_fence_sync {
@@ -222,6 +230,8 @@ fn assemble(
         id: ContextId::next(),
         gl: loaded.gl,
         reset_status,
+        image_target_texture,
+        dma_buf_stats: super::dma_buf_texture::initial_stats(),
         capabilities,
         fences: FenceIssuer::new(fence_strategy),
         presentation,
