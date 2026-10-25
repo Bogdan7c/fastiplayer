@@ -7,7 +7,7 @@ use super::*;
 /// Диалог у правого нижнего угла холста 256x144: буквы выходят за правый и нижний край.
 const EDGE_SCRIPT: &str = "[Script Info]\nScriptType: v4.00+\nPlayResX: 256\nPlayResY: 144\nScaledBorderAndShadow: yes\nWrapStyle: 2\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Noto Sans,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,7,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\\pos(200,110)}EDGE\n";
 
-fn edge_overlay() -> SubtitleOverlay {
+pub(crate) fn edge_overlay() -> SubtitleOverlay {
     let cues = cues_of_script(EDGE_SCRIPT);
     let renderables: Vec<RenderableCue<'_>> = cues
         .iter()

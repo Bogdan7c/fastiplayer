@@ -506,6 +506,16 @@ class DecodePathTests(unittest.TestCase):
     SOFTWARE_LOG = 'INFO resumed: Selected video pipeline plan="ffmpeg-host-upload-wgpu"\n'
     HARDWARE_LOG = ('INFO VA-API codec adapter configured for stream backend_name="VA-API H.264"\n'
                     'INFO Selected video pipeline plan="VA-API Vulkan DMA-BUF"\n')
+    # Строки, как их пишет плеер (план видеоконвейера и контракт пула поверхностей VA-API).
+    WGPU_HARDWARE_LOG = ('INFO Zero-copy resource lifecycle contract configured '
+                         'backend_contract="VA-API Vulkan DMA-BUF" sample_only=true\n'
+                         'INFO VA-API codec adapter configured for stream backend_name="VA-API H.264"\n'
+                         'INFO Selected video pipeline plan="vaapi-dmabuf-wgpu"\n')
+    GLES2_SOFTWARE_LOG = 'INFO resumed: Selected video pipeline plan="ffmpeg-host-upload-gles2"\n'
+    GLES2_HARDWARE_LOG = ('INFO Zero-copy resource lifecycle contract configured '
+                          'backend_contract="VA-API EGL DMA-BUF" sample_only=true\n'
+                          'INFO VA-API codec adapter configured for stream backend_name="VA-API H.264"\n'
+                          'INFO Selected video pipeline plan="vaapi-dmabuf-gles2"\n')
 
     def test_plans_without_decode_stay_hardware(self):
         self.assertEqual(decode_path({'player': 'mpv'}), 'hardware')
@@ -526,6 +536,37 @@ class DecodePathTests(unittest.TestCase):
         # Аппаратное доказательство не изменилось и не принимает SW-лог.
         self.assertTrue(evidence.fastiplayer_backend_proven(self.HARDWARE_LOG, 'h264', 'hardware'))
         self.assertFalse(evidence.fastiplayer_backend_proven(self.SOFTWARE_LOG, 'h264', 'hardware'))
+        self.assertTrue(evidence.fastiplayer_backend_proven(self.WGPU_HARDWARE_LOG, 'h264', 'hardware'))
+
+    def test_gles2_runs_are_classified_and_proven_by_their_own_strings(self):
+        self.assertEqual(evidence.fastiplayer_renderer_family(self.GLES2_SOFTWARE_LOG), 'gles2')
+        self.assertEqual(evidence.fastiplayer_renderer_family(self.GLES2_HARDWARE_LOG), 'gles2')
+        self.assertEqual(evidence.fastiplayer_renderer_family(self.WGPU_HARDWARE_LOG), 'wgpu')
+        self.assertEqual(evidence.fastiplayer_renderer_family(self.SOFTWARE_LOG), 'wgpu')
+        self.assertIsNone(evidence.fastiplayer_renderer_family('INFO nothing about the renderer\n'))
+        self.assertTrue(evidence.fastiplayer_backend_proven(self.GLES2_SOFTWARE_LOG, 'h264', 'software'))
+        self.assertTrue(evidence.fastiplayer_backend_proven(self.GLES2_HARDWARE_LOG, 'h264', 'hardware'))
+        self.assertFalse(evidence.fastiplayer_backend_proven(self.GLES2_HARDWARE_LOG, 'h264', 'software'))
+        self.assertFalse(evidence.fastiplayer_backend_proven(self.GLES2_SOFTWARE_LOG, 'h264', 'hardware'))
+        self.assertFalse(evidence.fastiplayer_backend_proven(self.GLES2_HARDWARE_LOG, 'hevc', 'hardware'))
+
+    def test_gles2_hardware_needs_its_plan_and_egl_import_contract(self):
+        # План GLES2, но пул поверхностей заявил импорт в Vulkan: следы двух рендеров сразу.
+        vulkan_contract = self.GLES2_HARDWARE_LOG.replace('VA-API EGL DMA-BUF', 'VA-API Vulkan DMA-BUF')
+        self.assertIsNone(evidence.fastiplayer_renderer_family(vulkan_contract))
+        self.assertFalse(evidence.fastiplayer_backend_proven(vulkan_contract, 'h264', 'hardware'))
+        # Контракт EGL без аппаратного плана GLES2 — не доказано, что кадры импортировал GLES2.
+        without_plan = self.GLES2_HARDWARE_LOG.replace('plan="vaapi-dmabuf-gles2"', '')
+        self.assertFalse(evidence.fastiplayer_backend_proven(without_plan, 'h264', 'hardware'))
+
+    def test_mixed_renderer_families_prove_nothing(self):
+        mixed = self.SOFTWARE_LOG + self.GLES2_SOFTWARE_LOG
+        self.assertIsNone(evidence.fastiplayer_renderer_family(mixed))
+        self.assertFalse(evidence.fastiplayer_backend_proven(mixed, 'h264', 'software'))
+        # След VA-API в SW-попытке GLES2 — тоже не программный путь.
+        self.assertFalse(evidence.fastiplayer_backend_proven(
+            self.GLES2_SOFTWARE_LOG + 'INFO VA-API codec adapter configured for stream '
+            'backend_name="VA-API H.264"\n', 'h264', 'software'))
 
 
 class FastiplayerCommandTests(unittest.TestCase):

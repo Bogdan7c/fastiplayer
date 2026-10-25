@@ -51,6 +51,7 @@ mod draw_gl;
 mod error;
 mod fence;
 mod frame;
+mod frame_layer_stack;
 mod loss;
 mod offscreen;
 mod painter;
@@ -91,6 +92,7 @@ pub use fence::{
     GpuFence,
 };
 pub use frame::{ActiveFrame, FrameSkipReason, FrameStart, Gles2FrameTimings, PresentedFrame};
+pub use frame_layer_stack::FrameLayerStack;
 pub use loss::{ContextLoss, ContextLossDetection, ContextLossReason};
 pub use offscreen::OffscreenPixels;
 pub use painter::{

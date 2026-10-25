@@ -13,6 +13,7 @@
 mod dma_buf_video;
 mod hdr_constants;
 mod scenes;
+mod subtitles;
 mod udmabuf;
 mod video;
 mod video_high_bit;

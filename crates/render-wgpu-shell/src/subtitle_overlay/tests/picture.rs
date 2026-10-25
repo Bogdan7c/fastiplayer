@@ -27,7 +27,11 @@ fn non_zero(value: u32) -> NonZeroU32 {
 }
 
 /// Однотонная картинка `size` цвета `fill` с левым верхним углом `origin` (в опорных пикселях).
-fn solid_cue(origin: (u32, u32), size: (u16, u16), fill: PaletteColor) -> SubtitlePictureCue {
+pub(crate) fn solid_cue(
+    origin: (u32, u32),
+    size: (u16, u16),
+    fill: PaletteColor,
+) -> SubtitlePictureCue {
     let indices = vec![1_u8; usize::from(size.0) * usize::from(size.1)];
     let encoded = encode_rle(&indices, size.0, size.1);
     let picture = IndexedPicture::new(
@@ -56,7 +60,7 @@ fn solid_cue(origin: (u32, u32), size: (u16, u16), fill: PaletteColor) -> Subtit
     .expect("visible region is the whole picture")
 }
 
-fn rgba(red: u8, green: u8, blue: u8, alpha: u8) -> PaletteColor {
+pub(crate) fn rgba(red: u8, green: u8, blue: u8, alpha: u8) -> PaletteColor {
     PaletteColor {
         red,
         green,
@@ -83,7 +87,7 @@ fn event_id(content: SubtitleContent) -> SubtitleEventId {
 
 /// Сцена кадра: необязательный текст (источник 1) и картинки (источники 100, 101, ...).
 /// Одинаковые источники в одном растеризаторе дают одни и те же буферы из кэша.
-fn render_scene(
+pub(crate) fn render_scene(
     rasterizer: &mut SubtitleRasterizer,
     canvas: CanvasSize,
     text: Option<&str>,
@@ -126,7 +130,7 @@ fn render_scene(
         .clone()
 }
 
-fn target_canvas() -> CanvasSize {
+pub(crate) fn target_canvas() -> CanvasSize {
     CanvasSize::new(TARGET_WIDTH, TARGET_HEIGHT).expect("canvas")
 }
 

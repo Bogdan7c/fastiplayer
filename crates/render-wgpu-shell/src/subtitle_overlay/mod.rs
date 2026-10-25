@@ -50,12 +50,11 @@ mod layer;
 mod pipeline;
 mod runs;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use render_core::RenderViewport;
 use subtitle_raster::{OverlayRevision, SubtitleBitmap, SubtitleOverlay};
 
-use self::instances::placement_origins;
 // Нейтральный вход субтитров живёт в контракте `render-shell-api` (crate реэкспортирует его
 // из корня).
 use self::layer::{BitmapLayer, LayerGpuContext, LayerOutcome};
@@ -209,7 +208,7 @@ impl SubtitleOverlayRenderer {
         let screen_area =
             RenderViewport::full_surface(target.screen_size[0], target.screen_size[1]);
         let (Some(origins), Some(scissor)) = (
-            placement_origins(frame.picture_rect, frame.layer_offsets),
+            frame.canvas_origins(),
             target.visible_area.intersection(screen_area),
         ) else {
             return SubtitleOverlayOutcome::NothingToDraw;
@@ -228,10 +227,10 @@ impl SubtitleOverlayRenderer {
             [
                 target.screen_size[0] as f32,
                 target.screen_size[1] as f32,
-                origins[0][0],
-                origins[0][1],
-                origins[1][0],
-                origins[1][1],
+                origins.main[0],
+                origins.main[1],
+                origins.fixed[0],
+                origins.fixed[1],
                 0.0,
                 0.0,
             ],

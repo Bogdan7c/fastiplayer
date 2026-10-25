@@ -91,6 +91,25 @@
 - Возможности: `gles2_render_capabilities` объявляет NV12 DMA-BUF (composed и separate) только при уровне `zero_copy`. P010 не объявляется (решение 33).
 - Поток VA-API декодера не присоединяется при уничтожении (общий бэклог, п. 13). **Проверка обязательна (решение 34):** серия выходов приложения на T410 во время воспроизведения HW-видео, в обоих режимах окна. Падение → причина и явное завершение потока декодера до выхода.
 
+## Наследство сессии 08 (`results/08.md`)
+
+- Субтитры: `render_gles2_shell::{Gles2SubtitleOverlayRenderer, SubtitleOverlayLayer}`.
+  - Видео и субтитры в одном кадре — `gles2_egui::FrameLayerStack::new(&mut video_underlay, &mut subtitle_layer)`.
+  - Видимая область — `clamp_to_surface` области видео, как `clamp_video_viewport_to_screen` у wgpu.
+  - Отказ загрузки атласа не роняет кадр: исход `SkippedUploadFailed` и счётчик `failed_uploads`.
+  - Ошибка кадра — только чужой контекст или отказ рисования.
+  - `destroy` слоя — до уничтожения контекста, как у видеослоя.
+- Диагностика:
+  - `render_gles2_shell::render_frame_timing(&UiFrameTimings, renderer_elapsed)` строит `RenderFrameOutcome::Presented`. `renderer_elapsed` — всё время кадра рендера, вместе с `surface_acquire`, как у wgpu.
+  - Исход строится только из `UiFrameOutcome::Presented`: его сборщик возвращает после успешного `eglSwapBuffers`, а по нему приложение пишет `video_render_acceptance`.
+  - `RenderShell::diagnostics` — `video_pass_diagnostics(&RenderableFrame, &VideoDrawPlan)` последнего видеопрохода; кадр без видео — `RenderDiagnostics::default()`.
+  - `import_stats` — `frame_import_stats(&renderer.dma_buf_import_snapshot())`.
+  - `hot_path_stats` — нули (`RenderHotPathStats::default()`): групп привязки у GLES2 нет, а записи uniform-ов видеослой пока не считает. Если 10–11 понадобятся — счётчик у видеослоя, не в шелле.
+- **Имя контракта VA-API декодера под GLES2 — обязательно.**
+  - Сейчас `video-vaapi` всегда пишет `backend_contract="VA-API Vulkan DMA-BUF"` (`ZeroCopyImportReuseContract::vaapi_vulkan_dma_buf`).
+  - Под GLES2 он обязан писать `VA-API EGL DMA-BUF`: рендер передаёт свой контракт импорта при старте декодера.
+  - `evidence.py` (сессия 08) доказывает аппаратный путь GLES2 только по `plan="vaapi-dmabuf-gles2"` вместе с `VA-API EGL DMA-BUF`. Следы двух семейств в одной попытке — не доказательство: прогоны 10–11 упадут на `backend_confirmed`, пока имя не исправлено.
+
 ## Тесты (функциональные, результат, а не вызов)
 
 - Видео из фикстуры через GLES2 доходит до показа: headless EGL + реальный FFmpeg-декодер → `RenderFrameOutcome::Presented` с ожидаемым pts и пикселями кадра (не «декодер открылся»). Для HW — `#[ignore]` на машине с VA-API.

@@ -14,6 +14,7 @@
 
 pub mod high_bit;
 pub mod nv12_dma_buf;
+pub mod overlay;
 pub mod udmabuf;
 
 use gles2_egui::{

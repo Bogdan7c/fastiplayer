@@ -67,3 +67,61 @@ pub struct SubtitleOverlayFrame<'frame> {
     /// `SubtitleLayerOffsets::uniform` двигает слой целиком.
     pub layer_offsets: SubtitleLayerOffsets,
 }
+
+/// Левые верхние углы холста субтитров на экране для обеих групп размещения, в целых пикселях
+/// surface (значения уже округлены, но хранятся в `f32` — так их берёт uniform шейдера).
+///
+/// Это единственная формула «где лежит (0, 0) холста» для всех рендеров: wgpu и GLES2 обязаны
+/// класть маски в одни и те же пиксели (строгий паритет, решение 7 плана `user/gles2-renderer/`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SubtitleCanvasOrigins {
+    /// Угол холста основной группы `[x, y]`.
+    pub main: [f32; 2],
+    /// Угол холста фиксированной группы `[x, y]`.
+    pub fixed: [f32; 2],
+}
+
+impl SubtitleCanvasOrigins {
+    /// Углы холста: левый верхний угол картинки видео плюс сдвиг группы, округлённые до целого
+    /// пикселя surface.
+    ///
+    /// Холст растеризуется 1:1 к пикселям экрана, поэтому дробный угол дал бы «мыло» от
+    /// интерполяции; округление кладёт маску ровно на пиксельную сетку. Округляется сумма, а не
+    /// слагаемые: иначе сдвиг `0.4 + 0.4` потерялся бы дважды. Правило округления — `f32::round`
+    /// (половина — от нуля).
+    ///
+    /// `None`, если координата картинки или любой сдвиг нечисловые (защита от NaN/inf, а не
+    /// штатный случай): рисовать тогда нечего.
+    #[must_use]
+    pub fn for_picture(picture_rect: PictureRect, offsets: SubtitleLayerOffsets) -> Option<Self> {
+        Some(Self {
+            main: rounded_canvas_origin(picture_rect, offsets.main)?,
+            fixed: rounded_canvas_origin(picture_rect, offsets.fixed)?,
+        })
+    }
+}
+
+impl SubtitleOverlayFrame<'_> {
+    /// Углы холста этого кадра (см. [`SubtitleCanvasOrigins::for_picture`]).
+    #[must_use]
+    pub fn canvas_origins(&self) -> Option<SubtitleCanvasOrigins> {
+        SubtitleCanvasOrigins::for_picture(self.picture_rect, self.layer_offsets)
+    }
+}
+
+/// Угол холста одной группы: сумма угла картинки и сдвига, округлённая до целого пикселя.
+fn rounded_canvas_origin(
+    picture_rect: PictureRect,
+    layer_offset: SubtitleLayerOffset,
+) -> Option<[f32; 2]> {
+    let x = picture_rect.x + layer_offset.x;
+    let y = picture_rect.y + layer_offset.y;
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    Some([x.round(), y.round()])
+}
+
+#[cfg(test)]
+#[path = "tests/subtitle_frame.rs"]
+mod tests;

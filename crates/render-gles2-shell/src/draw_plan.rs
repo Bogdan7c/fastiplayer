@@ -130,6 +130,20 @@ impl VideoDrawPlan {
     pub const fn active_color_path(&self) -> &ActiveColorPath {
         &self.active_color_path
     }
+
+    /// Сколько прямоугольников рисует видеопроход (1 без исключений) — `video_draw_rect_count`
+    /// диагностики wgpu (там тоже считается по плану, до рисования).
+    #[must_use]
+    pub fn visible_rect_count(&self) -> usize {
+        self.visible_rects.len()
+    }
+
+    /// Идёт ли кадр через HDR → SDR (тогда диагностика отмечает, какие метаданные кадра взяты
+    /// по умолчанию).
+    #[must_use]
+    pub const fn converts_hdr_to_sdr(&self) -> bool {
+        matches!(self.color, VideoColorConversion::HdrToSdr(_))
+    }
 }
 
 fn pixel_rect(viewport: RenderViewport) -> PixelRect {

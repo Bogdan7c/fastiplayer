@@ -34,5 +34,8 @@
 ## Сессия 11
 В проходе два слоя: маски R8 и картинки Rgba8Unorm (ленивое создание, `layer.rs`, серии по порядку списка `runs.rs`, `fs_picture`); контракт для GLES2 дополнен RGBA — `mem:subtitles/pgs-s11`.
 
+## GLES2 (план gles2-renderer, сессия 08, 2026-10-25)
+Контракт реализован на GLES2: `render_gles2_shell::Gles2SubtitleOverlayRenderer` поверх переиспользуемого `gles2-video::overlay`; угол холста теперь считает контракт (`render_shell_api::SubtitleCanvasOrigins` / `SubtitleOverlayFrame::canvas_origins()`), wgpu делегирует. Порт GPU-тестов — `render-gles2-shell/tests/subtitle_overlay/`, паритет — `render-wgpu-shell gles2_parity_tests::subtitles` — `mem:gles2-renderer/subtitles-diagnostics-s08`.
+
 ## Сессия 08
 Сдвиг слоя стал двухгрупповым: `SubtitleLayerOffsets{main, fixed}` (SRT — `uniform`), картинки помечены `OverlayPlacementGroup`. Размещение: `LayerPlacementPolicy::{UserPlaced{bounds: PictureAndBars|PictureOnly}, AuthorPlaced, LiftMainGroupOnly}`; ASS никогда не на полосах — `mem:subtitles/ass-layer1-s08`.

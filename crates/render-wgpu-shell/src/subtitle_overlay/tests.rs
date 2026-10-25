@@ -19,15 +19,16 @@ use subtitle_raster::{
 use super::*;
 use crate::{SubtitleLayerOffset, SubtitleLayerOffsets};
 
-const TARGET_WIDTH: u32 = 256;
-const TARGET_HEIGHT: u32 = 144;
+pub(crate) const TARGET_WIDTH: u32 = 256;
+pub(crate) const TARGET_HEIGHT: u32 = 144;
 const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const GPU_TEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Допуск на округление GPU (unorm8) и целочисленного эталона растеризатора.
 const BLEND_TOLERANCE: i32 = 3;
 
-/// Headless GPU + целевая текстура + рендерер под тестом.
-struct Harness {
+/// Headless GPU + целевая текстура + рендерер под тестом (его же берёт паритет с GLES2,
+/// `gles2_parity_tests::subtitles`).
+pub(crate) struct Harness {
     device: wgpu::Device,
     queue: wgpu::Queue,
     texture: wgpu::Texture,
@@ -37,7 +38,7 @@ struct Harness {
 
 impl Harness {
     /// `None`, если нет GPU adapter-а.
-    fn new() -> Option<Self> {
+    pub(crate) fn new() -> Option<Self> {
         Self::with_texture_limit(None)
     }
 
@@ -91,7 +92,7 @@ impl Harness {
     }
 
     /// Один кадр: очистка «видео» известным цветом, overlay, readback RGBA.
-    fn frame(
+    pub(crate) fn frame(
         &mut self,
         overlay_frame: Option<&SubtitleOverlayFrame<'_>>,
         visible_area: RenderViewport,
@@ -196,7 +197,7 @@ impl Harness {
 }
 
 /// Растеризатор со встроенными шрифтами (как в тестах subtitle-raster).
-fn rasterizer() -> SubtitleRasterizer {
+pub(crate) fn rasterizer() -> SubtitleRasterizer {
     let fonts = SubtitleFontLibrary::with_embedded_fonts(FontLookupCacheLimits {
         max_cached_chars: 4096,
     })
@@ -224,7 +225,7 @@ fn rasterizer() -> SubtitleRasterizer {
 }
 
 /// Растеризует одну реплику (или ни одной при `None`) на холсте `canvas`.
-fn rasterize(
+pub(crate) fn rasterize(
     rasterizer: &mut SubtitleRasterizer,
     source: u64,
     text: Option<&str>,
@@ -266,7 +267,7 @@ fn rasterize(
 }
 
 /// Картинка 2.39:1 в окне 256x144: прямоугольник (с полосами) и холст под него.
-fn letterboxed_picture() -> (render_core::PictureRect, CanvasSize) {
+pub(crate) fn letterboxed_picture() -> (render_core::PictureRect, CanvasSize) {
     let layout = PictureLayout::fit(
         PictureSize::new(2390, 1000),
         RenderViewport::full_surface(TARGET_WIDTH, TARGET_HEIGHT),
@@ -278,7 +279,7 @@ fn letterboxed_picture() -> (render_core::PictureRect, CanvasSize) {
     (rect, canvas)
 }
 
-fn full_view() -> RenderViewport {
+pub(crate) fn full_view() -> RenderViewport {
     RenderViewport::full_surface(TARGET_WIDTH, TARGET_HEIGHT)
 }
 
@@ -635,6 +636,6 @@ fn layer_offset_is_still_clipped_by_the_visible_video_area() {
     }
 }
 
-mod edge_cut;
-mod group_offsets;
-mod picture;
+pub(crate) mod edge_cut;
+pub(crate) mod group_offsets;
+pub(crate) mod picture;

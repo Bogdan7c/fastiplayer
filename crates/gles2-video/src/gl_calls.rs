@@ -97,6 +97,17 @@ pub enum VideoGlError {
         /// Что именно.
         what: &'static str,
     },
+    /// Draw-вызов прочитал бы вершины за концом буфера (ошибка плана рисования — защита до
+    /// драйвера).
+    #[error("draw call would read vertices {first}..{end}, but the buffer holds {available}")]
+    DrawOutOfBuffer {
+        /// Первая вершина вызова.
+        first: usize,
+        /// Конец диапазона (не включая).
+        end: usize,
+        /// Вершин в буфере.
+        available: usize,
+    },
 }
 
 /// Текстурный блок таблицы HDR → SDR (после Y, U, V в блоках 0–2).
@@ -570,5 +581,6 @@ fn gl_read_size(format: PlaneTextureFormat, call: &UploadCall) -> Result<usize, 
         .ok_or(overflow)
 }
 
+pub(crate) mod overlay;
 #[cfg(test)]
 mod tests;

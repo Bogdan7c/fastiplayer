@@ -146,21 +146,64 @@ def boundary(player, pid, socket_path, media, window_helper):
             'audio_sinks': sinks, 'window': window}
 
 
+# Строки плана видеоконвейера Fastiplayer (`Selected video pipeline plan="…"`, app-egui
+# `VideoPipelinePlan::diagnostic_label`): маршрут декода × семейство рендера (план
+# user/gles2-renderer/, сессия 08). Строки wgpu не менялись с cpu-parity.
+SOFTWARE_PLANS = {
+    'wgpu': 'plan="ffmpeg-host-upload-wgpu"',
+    'gles2': 'plan="ffmpeg-host-upload-gles2"',
+}
+HARDWARE_PLANS = {
+    'wgpu': 'plan="vaapi-dmabuf-wgpu"',
+    'gles2': 'plan="vaapi-dmabuf-gles2"',
+}
+# Имя контракта пула поверхностей VA-API декодера: какой рендер импортирует его DMA-BUF.
+DMA_BUF_IMPORT_BACKENDS = {
+    'wgpu': 'VA-API Vulkan DMA-BUF',
+    'gles2': 'VA-API EGL DMA-BUF',
+}
+RENDERER_FAMILIES = ('wgpu', 'gles2')
+
+
+def fastiplayer_renderer_families(runtime):
+    """Семейства рендера, следы которых есть в runtime-логе (строка плана или контракт импорта)."""
+    return {family for family in RENDERER_FAMILIES
+            if SOFTWARE_PLANS[family] in runtime or HARDWARE_PLANS[family] in runtime
+            or DMA_BUF_IMPORT_BACKENDS[family] in runtime}
+
+
+def fastiplayer_renderer_family(runtime):
+    """Чем рисовала попытка: ``'wgpu'``, ``'gles2'`` или ``None`` — следов нет или их два вида
+    сразу (смена семейства посреди попытки — не доказательство ни одного)."""
+    families = fastiplayer_renderer_families(runtime)
+    return next(iter(families)) if len(families) == 1 else None
+
+
 def fastiplayer_backend_proven(runtime, codec, decode):
     """Доказан ли нужный путь декодирования Fastiplayer по его runtime-логу.
 
-    Аппаратный: VA-API адаптер кодека + DMA-BUF импорт и ни одного SW-плана.
-    Программный (cpu-parity 08): план ``ffmpeg-host-upload-wgpu`` и ни одного следа
+    Аппаратный: VA-API адаптер кодека + импорт DMA-BUF рендером попытки и ни одного SW-плана.
+    У GLES2 нужна ещё строка его аппаратного плана (``vaapi-dmabuf-gles2``): по ней видно, что
+    кадры импортировал именно GLES2-рендер.
+    Программный (cpu-parity 08): план ``ffmpeg-host-upload-<рендер>`` и ни одного следа
     VA-API — иначе «SW-замер» мог бы тихо уйти в аппаратный путь.
+    Следы двух семейств рендера сразу — не доказательство.
     """
-    software_plan = 'plan="ffmpeg-host-upload-wgpu"' in runtime
-    vaapi_traces = 'configured for stream backend_name="VA-API' in runtime or 'VA-API Vulkan DMA-BUF' in runtime
+    family = fastiplayer_renderer_family(runtime)
+    if family is None:
+        return False
+    software_plan = any(plan in runtime for plan in SOFTWARE_PLANS.values())
+    vaapi_traces = ('configured for stream backend_name="VA-API' in runtime
+                    or any(name in runtime for name in DMA_BUF_IMPORT_BACKENDS.values()))
     if decode == 'software':
-        return software_plan and not vaapi_traces
+        return SOFTWARE_PLANS[family] in runtime and not vaapi_traces
     expected = {'h264': 'VA-API H.264', 'hevc': 'VA-API H.265', 'av1': 'VA-API AV1',
                 'vp9': 'VA-API VP9'}[codec]
+    renderer_imports = DMA_BUF_IMPORT_BACKENDS[family] in runtime
+    if family == 'gles2':
+        renderer_imports = renderer_imports and HARDWARE_PLANS['gles2'] in runtime
     return (f'configured for stream backend_name="{expected}"' in runtime
-            and 'VA-API Vulkan DMA-BUF' in runtime
+            and renderer_imports
             and not software_plan)
 
 
@@ -207,8 +250,10 @@ def validate(player, codec, mode, decode, log_path, before, after, start_offset,
         failures.append('media time/video did not advance')
     if not audio:
         failures.append('audio progression evidence missing')
-    return {'backend_confirmed': backend, 'playback_advancing': progress,
-            'audio_evidence': audio, 'quality': quality, 'failures': failures}
+    renderer_family = fastiplayer_renderer_family(runtime) if player == 'fastiplayer' else None
+    return {'backend_confirmed': backend, 'renderer_family': renderer_family,
+            'playback_advancing': progress, 'audio_evidence': audio, 'quality': quality,
+            'failures': failures}
 
 
 def validate_mpv(before, after, decode='hardware'):

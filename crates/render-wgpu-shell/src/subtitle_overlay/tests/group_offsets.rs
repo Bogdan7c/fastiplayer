@@ -23,7 +23,7 @@ fn two_group_cues() -> Vec<(CueKey, SubtitleLayer, AssCue, AssEventTiming)> {
 }
 
 /// Реплики произвольного файла ASS, прошедшие настоящий разбор.
-pub(super) fn cues_of_script(script: &str) -> Vec<(CueKey, SubtitleLayer, AssCue, AssEventTiming)> {
+pub(crate) fn cues_of_script(script: &str) -> Vec<(CueKey, SubtitleLayer, AssCue, AssEventTiming)> {
     let limits = SubtitleParseLimits::new(1 << 20, 1000, 100).with_ass_limits(AssParseLimits {
         max_header_bytes: 1 << 16,
         max_styles: 16,
@@ -64,7 +64,7 @@ pub(super) fn cues_of_script(script: &str) -> Vec<(CueKey, SubtitleLayer, AssCue
 }
 
 /// Растеризует обе реплики на холсте 256x144.
-fn two_group_overlay() -> SubtitleOverlay {
+pub(crate) fn two_group_overlay() -> SubtitleOverlay {
     let cues = two_group_cues();
     let renderables: Vec<RenderableCue<'_>> = cues
         .iter()
@@ -83,7 +83,7 @@ fn two_group_overlay() -> SubtitleOverlay {
         .clone()
 }
 
-pub(super) fn full_picture() -> render_core::PictureRect {
+pub(crate) fn full_picture() -> render_core::PictureRect {
     render_core::PictureRect {
         x: 0.0,
         y: 0.0,

@@ -12,9 +12,9 @@ mod support;
 
 use egui::{Color32, Context, Rect, TextureId, pos2};
 use gles2_egui::{
-    ActiveFrame, CornerRadius, EguiPainterOptions, FrameCompositor, FrameLayerError, FrameLayers,
-    FrameSkipReason, OffscreenAlpha, PixelExtent, UiContent, UiFrameError, UiFrameOutcome,
-    UiFrameRequest,
+    ActiveFrame, CornerRadius, EguiPainterOptions, FrameCompositor, FrameLayerError,
+    FrameLayerStack, FrameLayers, FrameSkipReason, OffscreenAlpha, PixelExtent, UiContent,
+    UiFrameError, UiFrameOutcome, UiFrameRequest,
 };
 use glow::HasContext;
 use support::{egui_frame, offscreen_or_skip, pixel, read, screen_for, size, solid_texture};
@@ -304,4 +304,60 @@ fn opaque_target_always_gets_alpha_one() {
         }
         compositor.destroy(&context).unwrap();
     }
+}
+
+/// Стек слоёв: подложка от одного владельца, оверлеи от другого; чужие методы не вызываются.
+#[test]
+fn layer_stack_takes_the_underlay_from_one_layer_and_overlays_from_another() {
+    let Some(mut context) = offscreen_or_skip(
+        "layer_stack_takes_the_underlay_from_one_layer",
+        size(48, 32),
+        OffscreenAlpha::Opaque,
+    ) else {
+        return;
+    };
+    let mut compositor = FrameCompositor::new(&context, EguiPainterOptions::default()).unwrap();
+    let egui_context = Context::default();
+    let (primitives, textures_delta) = egui_frame(&egui_context, [48.0, 32.0], 1.0, |_| {});
+    let screen = screen_for(&context, 1.0);
+    let mut video = RecordingLayers::default();
+    let mut subtitles = RecordingLayers::default();
+    let mut stack = FrameLayerStack::new(&mut video, &mut subtitles);
+    let outcome = compositor
+        .render(
+            &mut context,
+            UiFrameRequest {
+                screen,
+                content: UiContent::Fresh {
+                    primitives,
+                    textures_delta,
+                },
+                background: [0.0, 0.0, 0.0, 1.0],
+                layers: &mut stack,
+                corner_radius: CornerRadius::square(),
+            },
+        )
+        .unwrap();
+    assert!(
+        matches!(outcome, UiFrameOutcome::Presented(_)),
+        "{outcome:?}"
+    );
+    assert_eq!(video.calls, ["underlay"], "у видео — только подложка");
+    assert_eq!(
+        subtitles.calls,
+        ["overlays"],
+        "у субтитров — только оверлеи"
+    );
+    let pixels = read(&context);
+    assert_eq!(
+        pixel(&pixels, 4, 4),
+        [255, 0, 0, 255],
+        "оверлей над подложкой"
+    );
+    assert_eq!(
+        pixel(&pixels, 30, 20),
+        [0, 255, 0, 255],
+        "подложка вне оверлея"
+    );
+    compositor.destroy(&context).unwrap();
 }

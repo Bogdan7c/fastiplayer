@@ -20,6 +20,11 @@ gles2-egui.workspace = true
 gles2-video.workspace = true
 # Нейтральные правила рендера плеера: letterbox, исключения, цветовой путь, возможности.
 render-core.workspace = true
+# Контракт шва «приложение ↔ рендер»: субтитры кадра (`SubtitleOverlayFrame`, угол холста) и
+# нейтральные тайминги/диагностика кадра (`RenderFrameStageTimings`, `FrameImportStats`).
+render-shell-api.workspace = true
+# Картинки растеризатора субтитров (`SubtitleOverlay`, `SubtitleBitmap`) — вход прохода субтитров.
+subtitle-raster.workspace = true
 # Предупреждения потока-ожидателя: отказ ожидания fence, отказ запуска потока.
 log.workspace = true
 # Типизированные ошибки адаптера.
@@ -38,6 +43,12 @@ libc = { workspace = true }
 bytes.workspace = true
 # Идентификатор дорожки в пакете и конфиге потока тех же тестов.
 media-core.workspace = true
+# Реплики субтитров (текст, PGS-картинки) для порта GPU-тестов wgpu-прохода субтитров.
+subtitle-core.workspace = true
+# Настоящий разбор ASS в тех же тестах (группы сдвига, обрез по краю холста).
+subtitle-formats.workspace = true
+# Кодировщик RLE для сборки PGS-реплик в тех же тестах (dev-only, как у wgpu-шелла).
+subtitle-pgs = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

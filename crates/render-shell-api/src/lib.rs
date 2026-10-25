@@ -62,7 +62,9 @@ pub use shell::{
     RenderHotPathStats, RenderShell, RenderSurfaceSize, RendererDeviceLossReason,
     RendererDeviceLost, RendererGpuDrainError,
 };
-pub use subtitle_frame::{SubtitleLayerOffset, SubtitleLayerOffsets, SubtitleOverlayFrame};
+pub use subtitle_frame::{
+    SubtitleCanvasOrigins, SubtitleLayerOffset, SubtitleLayerOffsets, SubtitleOverlayFrame,
+};
 pub use surface_ticket::{
     AcquiredSurfaceFrame, ForeignSurfaceFrame, OpenedSurfaceFrame, SurfaceFrameAcquire,
 };

@@ -76,6 +76,10 @@ def playback_log_proofs(log_path):
         'rust_hevc_vaapi_configured': 'configured for stream backend_name="VA-API H.265"',
         'rust_software_pipeline': 'plan="ffmpeg-host-upload-wgpu"',
         'rust_dmabuf_pipeline': 'VA-API Vulkan DMA-BUF',
+        # Свой рендер OpenGL ES 2.0 (план user/gles2-renderer/, сессия 08): те же маршруты.
+        'rust_software_pipeline_gles2': 'plan="ffmpeg-host-upload-gles2"',
+        'rust_hardware_pipeline_gles2': 'plan="vaapi-dmabuf-gles2"',
+        'rust_dmabuf_pipeline_gles2': 'VA-API EGL DMA-BUF',
         'vlc_ihd_hardware_decode': 'for hardware decoding',
         'vlc_dav1d_decoder': 'using video decoder module "dav1d"',
         'video_output_creation_failed': 'video output creation failed',

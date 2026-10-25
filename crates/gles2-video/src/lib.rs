@@ -23,7 +23,10 @@
 //! - HDR → SDR BT.2446-C для 10/12 бит ([`HdrToSdrConversion`]): формула wgpu в `f64` на CPU в
 //!   узлах таблицы 65³, шейдер смешивает узлы (решение владельца сессии 06 ради старого железа;
 //!   допуск и замер — модуль `hdr`);
-//! - подложка кадра [`VideoUnderlay`] для `gles2_egui::FrameCompositor`.
+//! - подложка кадра [`VideoUnderlay`] для `gles2_egui::FrameCompositor`;
+//! - слой bitmap-оверлеев поверх видео (сессия 08): маски покрытия + цвет и RGBA-картинки с
+//!   премультиплицированной альфой, два атласа, две группы сдвига ([`BitmapOverlayRenderer`],
+//!   трейт картинки [`OverlayBitmap`]) — субтитры плеера, титры редактора.
 //!
 //! # Безопасность
 //! Весь `unsafe` — в модуле `gl_calls`, каждый блок с `// SAFETY:`. До драйвера проверяется,
@@ -51,6 +54,7 @@ mod gl_calls;
 mod hdr;
 mod hdr_table_texture;
 mod layer_api;
+mod overlay;
 mod planes;
 mod program;
 mod renderer;
@@ -88,6 +92,13 @@ pub mod bt2446c_constants {
         PQ_C3, PQ_M1, PQ_M2, PQ_REFERENCE_PEAK_NITS, XYZ_TO_BT709_LINEAR_RGB,
     };
 }
+pub use overlay::{
+    AtlasSideLimit, BitmapOverlayRenderer, OverlayAtlasOutcome, OverlayAtlasStats, OverlayBitmap,
+    OverlayBitmapRect, OverlayCanvasOrigins, OverlayDrawError, OverlayDrawOutcome,
+    OverlayDrawRequest, OverlayLayerError, OverlayLayerOptions, OverlayLayerStats,
+    OverlayPixelFormat, OverlayPixels, OverlayPlacementGroup, OverlayPrepareError,
+    OverlayPrepareReport, OverlayRowUploadPreference, OverlayTint,
+};
 pub use planes::{
     ChromaSubsampling, DmaBufPlane, FrameLayoutError, HostRows, PlanarFrameUpload, PlanarLayout,
     PlaneExtent, PlaneRole, PlaneSource, PlaneSourceError, PlaneSourceKind, SampleDepth,

@@ -12,6 +12,8 @@
 - `make_matrix.py` — матрица 16 + `hevc10-4k60` из одного 4K60 мастера (отрезок 45 с), ffprobe-проверка, `manifest.json` (хэши, фактический битрейт), частичные запуски дополняют манифест, чужой мастер/отрезок отвергается до кодирования. SVT-AV1 нужен `undershoot-pct=0` (иначе −20–30 % битрейта).
 - Тесты: `python3 -m unittest discover -s docs/benchmarks/tools/local -p 'test_*.py'` (31; `test_protocol_v2.py`, `test_make_matrix.py` с настоящим ffmpeg), запускать вне sandbox (systemd-run, /dev/dri).
 
+- GLES2 (план gles2-renderer, сессия 08, 2026-10-25): `evidence.py` классифицирует семейство рендера (`fastiplayer_renderer_family`: `wgpu`|`gles2`|None при двух следах), SW GLES2 = `plan="ffmpeg-host-upload-gles2"`, HW GLES2 = `plan="vaapi-dmabuf-gles2"` + `VA-API EGL DMA-BUF`; `validate` пишет `renderer_family`; `t480s/collect.py` маркеры `rust_*_gles2`. Тесты `DecodePathTests`, `t480s/test_collect.py::PlaybackLogProofTests`. Правка инструментов = новая серия (provenance).
+
 ## Эталон
 VLC 3.0.24 не умеет аппаратный AV1 на 780M (dav1d SW по умолчанию; `--codec=avcodec` → buffer deadlock) → решение владельца: эталон mpv 0.41 `--no-config --hwdec=auto --fs --volume=0` (выбирает Vulkan Video, `gpu-next`).
 

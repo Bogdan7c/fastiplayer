@@ -1,10 +1,9 @@
 //! Данные инстансов (по одному на картинку) и геометрия размещения на экране.
 //!
-//! Чистая логика без GPU: превращает `SubtitleBitmap` + слот атласа в 28 байт для
-//! vertex buffer-а и переводит прямоугольник картинки видео в целый пиксельный origin.
+//! Чистая логика без GPU: превращает `SubtitleBitmap` + слот атласа в 32 байта для
+//! vertex buffer-а. Угол холста на экране считает контракт
+//! (`render_shell_api::SubtitleCanvasOrigins`) — одна формула для wgpu и GLES2.
 
-use render_core::PictureRect;
-use render_shell_api::{SubtitleLayerOffset, SubtitleLayerOffsets};
 use subtitle_raster::{OverlayPlacementGroup, PixelPoint, SubtitleBitmap};
 
 use super::atlas::AtlasSlot;
@@ -86,107 +85,9 @@ impl BitmapInstance {
     }
 }
 
-/// Левый верхний угол холста субтитров на экране: origin картинки видео плюс сдвиг слоя,
-/// округлённый до целого пикселя surface.
-///
-/// Холст растеризуется 1:1 к пикселям экрана, поэтому дробный origin дал бы «мыло» от
-/// интерполяции; округление гарантирует, что маска ложится ровно на пиксельную сетку.
-/// Округляется сумма (а не слагаемые): иначе сдвиг `0.4 + 0.4` потерялся бы дважды.
-/// `None` для нечисловых координат или сдвига (защита от NaN/inf, а не штатный случай).
-pub(super) fn placement_origin(
-    picture_rect: PictureRect,
-    layer_offset: SubtitleLayerOffset,
-) -> Option<[f32; 2]> {
-    let x = picture_rect.x + layer_offset.x;
-    let y = picture_rect.y + layer_offset.y;
-    if !x.is_finite() || !y.is_finite() {
-        return None;
-    }
-    Some([x.round(), y.round()])
-}
-
-/// Углы холста для обеих групп: `[основная, фиксированная]`; `None`, если любой сдвиг
-/// нечисловой (см. [`placement_origin`]).
-pub(super) fn placement_origins(
-    picture_rect: PictureRect,
-    offsets: SubtitleLayerOffsets,
-) -> Option<[[f32; 2]; 2]> {
-    Some([
-        placement_origin(picture_rect, offsets.main)?,
-        placement_origin(picture_rect, offsets.fixed)?,
-    ])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn rect(x: f32, y: f32) -> PictureRect {
-        PictureRect {
-            x,
-            y,
-            width: 100.0,
-            height: 50.0,
-        }
-    }
-
-    #[test]
-    fn placement_origin_rounds_to_whole_surface_pixels() {
-        let none = SubtitleLayerOffset::NONE;
-        assert_eq!(placement_origin(rect(10.4, 18.5), none), Some([10.0, 19.0]));
-        assert_eq!(placement_origin(rect(0.0, 17.6), none), Some([0.0, 18.0]));
-    }
-
-    #[test]
-    fn placement_origin_rejects_non_finite_coordinates() {
-        let none = SubtitleLayerOffset::NONE;
-        assert_eq!(placement_origin(rect(f32::NAN, 0.0), none), None);
-        assert_eq!(placement_origin(rect(0.0, f32::INFINITY), none), None);
-        let nan_offset = SubtitleLayerOffset {
-            x: f32::NAN,
-            y: 0.0,
-        };
-        assert_eq!(placement_origin(rect(0.0, 0.0), nan_offset), None);
-        let inf_offset = SubtitleLayerOffset {
-            x: 0.0,
-            y: f32::NEG_INFINITY,
-        };
-        assert_eq!(placement_origin(rect(0.0, 0.0), inf_offset), None);
-    }
-
-    #[test]
-    fn group_origins_follow_their_own_offsets() {
-        let offsets = SubtitleLayerOffsets {
-            main: SubtitleLayerOffset { x: 0.0, y: -30.0 },
-            fixed: SubtitleLayerOffset::NONE,
-        };
-        assert_eq!(
-            placement_origins(rect(10.0, 20.0), offsets),
-            Some([[10.0, -10.0], [10.0, 20.0]])
-        );
-        let broken = SubtitleLayerOffsets {
-            main: SubtitleLayerOffset::NONE,
-            fixed: SubtitleLayerOffset {
-                x: f32::NAN,
-                y: 0.0,
-            },
-        };
-        assert_eq!(placement_origins(rect(0.0, 0.0), broken), None);
-        assert_eq!(
-            SubtitleLayerOffsets::uniform(SubtitleLayerOffset { x: 1.0, y: 2.0 }).fixed,
-            SubtitleLayerOffset { x: 1.0, y: 2.0 }
-        );
-    }
-
-    #[test]
-    fn placement_origin_adds_the_layer_offset_before_rounding() {
-        let offset = SubtitleLayerOffset { x: 0.4, y: -30.4 };
-        // 10.4 + 0.4 = 10.8 -> 11; 18.5 - 30.4 = -11.9 -> -12 (слой может уйти выше картинки).
-        assert_eq!(
-            placement_origin(rect(10.4, 18.5), offset),
-            Some([11.0, -12.0])
-        );
-    }
 
     #[test]
     fn instance_keeps_canvas_geometry_atlas_slot_and_color() {
