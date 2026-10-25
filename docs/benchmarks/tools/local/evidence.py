@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import time
 
 from host import command_output
+import kwin
 
 T480S = Path(__file__).resolve().parents[1] / 't480s'
 _spec = importlib.util.spec_from_file_location('t480s_collector', T480S / 'collect.py')
@@ -31,6 +32,47 @@ def window_proof(pid, window_helper):
             return {'window_id': identifier, 'fullscreen': True, 'width': width, 'height': height,
                     'display': command_output(['xrandr', '--current'])}
     raise ValueError('no XWayland window for measured PID')
+
+
+def x11_windows_of(pid, window_helper):
+    """X11-окна (id), чей владелец по XRes — ``pid``; для нативного Wayland список обязан быть пуст."""
+    clients = command_output(['xprop', '-root', '_NET_CLIENT_LIST'])
+    owned = []
+    for identifier in re.findall(r'0x[0-9a-f]+', clients):
+        owner, _, _ = map(int, command_output([str(window_helper), identifier]).split())
+        if owner == pid:
+            owned.append(identifier)
+    return owned
+
+
+def wayland_window_proof(pid, window_helper, display_size):
+    """Окно нативного Wayland-клиента: одно окно KWin этого PID, fullscreen, размер экрана.
+
+    Плюс отрицательная проверка: у PID нет ни одного X11-окна. Иначе «нативный» замер мог
+    тихо уйти в XWayland (например, плеер проигнорировал WAYLAND_DISPLAY), и режимы
+    окна смешались бы в одной колонке.
+    """
+    windows = kwin.windows_of(pid)
+    if len(windows) != 1:
+        raise ValueError(f'expected one KWin window for measured PID, got {len(windows)}')
+    window = windows[0]
+    if not window['fullscreen']:
+        raise ValueError('measured window is not fullscreen')
+    width, height = display_size
+    if (window['width'], window['height']) != (width, height):
+        raise ValueError(f'measured window is {window["width"]}x{window["height"]}, expected {width}x{height}')
+    x11 = x11_windows_of(pid, window_helper)
+    if x11:
+        raise ValueError(f'window_mode wayland but measured PID owns X11 windows {x11}')
+    return {'source': 'kwin', 'fullscreen': True, 'width': window['width'], 'height': window['height'],
+            'output': window['output'], 'active': window['active'], 'x11_windows': x11}
+
+
+def window_evidence(pid, window_helper, window_mode, display_size):
+    """Доказательство окна по режиму: xprop/XRes для XWayland, KWin для нативного Wayland."""
+    if window_mode == 'wayland':
+        return wayland_window_proof(pid, window_helper, display_size)
+    return window_proof(pid, window_helper)
 
 
 def audio_sink(pid):
@@ -63,7 +105,7 @@ def opened_media(pid, media):
 # называет потерянными кадрами: VO (framedrop=vo) и декодер (framedrop=decoder).
 MPV_BOUNDARY_PROPERTIES = ('path', 'pause', 'time-pos', 'hwdec-current', 'video-codec', 'current-vo',
                            'current-ao', 'frame-drop-count', 'decoder-frame-drop-count',
-                           'vo-delayed-frame-count')
+                           'vo-delayed-frame-count', 'current-gpu-context', 'avsync')
 # Аппаратные hwdec без копирования кадра в память CPU; ``*-copy`` и ``no`` не засчитываются.
 MPV_ZERO_COPY_HWDEC = {'vaapi', 'vulkan'}
 
@@ -95,7 +137,8 @@ def mpv_properties(socket_path, names):
     return replies
 
 
-def boundary(player, pid, socket_path, media, window_helper):
+def boundary(player, pid, socket_path, media, window_helper, window_mode='xwayland', display_size=None):
+    """Снимок доказательств на границе окна; ``player`` — тип игрока (fastiplayer/mpv/vlc)."""
     started = time.monotonic()
     if player == 'fastiplayer':
         service = 'org.mpris.MediaPlayer2.fastiplayer'
@@ -141,7 +184,7 @@ def boundary(player, pid, socket_path, media, window_helper):
         if media.resolve().as_uri() not in details['status'] and str(media.resolve()) not in details['status']:
             raise ValueError('VLC current input does not match measured file')
     sinks = audio_sink(pid)
-    window = window_proof(pid, window_helper)
+    window = window_evidence(pid, window_helper, window_mode, display_size)
     return {'started': started, 'ended': time.monotonic(), 'details': details,
             'audio_sinks': sinks, 'window': window}
 
@@ -207,7 +250,15 @@ def fastiplayer_backend_proven(runtime, codec, decode):
             and not software_plan)
 
 
-def validate(player, codec, mode, decode, log_path, before, after, start_offset, end_offset):
+def validate(player, codec, mode, decode, log_path, before, after, start_offset, end_offset, *,
+             expect=None, renderer=None):
+    """Итог доказательств попытки; ``player`` — тип игрока.
+
+    ``renderer`` (gles2/wgpu, поле записи Fastiplayer в плане) — каким рендером попытка
+    обязана рисовать: следы другого семейства в логе делают попытку невалидной, иначе
+    подмена конфига тихо подменила бы субъект сравнения. ``expect`` — свойства mpv,
+    которые обязаны совпасть на обеих границах (см. :func:`validate_mpv`).
+    """
     runtime = log_path.read_text(errors='replace')
     failures = []
     if 'panicked at' in runtime or 'video output creation failed' in runtime:
@@ -228,7 +279,7 @@ def validate(player, codec, mode, decode, log_path, before, after, start_offset,
         if mode == 'diagnostic' and (len(events) < 2 or len({e['pts_ns'] for e in events}) < 2):
             failures.append('no advancing render handoffs')
     elif player == 'mpv':
-        backend, progress, audio, quality, extra = validate_mpv(before, after, decode)
+        backend, progress, audio, quality, extra = validate_mpv(before, after, decode, expect)
         failures.extend(extra)
     else:
         backend = bool(re.search(r'Using .* for hardware decoding', runtime, re.I))
@@ -251,18 +302,24 @@ def validate(player, codec, mode, decode, log_path, before, after, start_offset,
     if not audio:
         failures.append('audio progression evidence missing')
     renderer_family = fastiplayer_renderer_family(runtime) if player == 'fastiplayer' else None
+    if renderer is not None and renderer_family != renderer:
+        failures.append(f'fastiplayer renderer {renderer_family!r} does not match plan renderer {renderer!r}')
     return {'backend_confirmed': backend, 'renderer_family': renderer_family,
             'playback_advancing': progress, 'audio_evidence': audio, 'quality': quality,
             'failures': failures}
 
 
-def validate_mpv(before, after, decode='hardware'):
+def validate_mpv(before, after, decode='hardware', expect=None):
     """Доказательства mpv: путь декодирования на обеих границах, ход времени, звук, потери.
 
     Аппаратный путь — zero-copy hwdec; программный (cpu-parity 08) — ``hwdec-current``
     ровно ``no`` на обеих границах: mpv, тихо включивший hwdec, не эталон SW-сцены.
     Возвращает (backend, progress, audio, quality, failures). Пропавший счётчик потерь —
     это failure, а не ноль: без него quality-gate эталона не доказан.
+
+    ``expect`` (сессия 10) — {свойство: значение}, например ``current-gpu-context: wayland``:
+    mpv с ``--gpu-api=opengl`` мог бы молча выбрать другой контекст, и тогда «mpv GL»
+    в таблице был бы не GL. Несовпадение на любой границе — failure.
     """
     a, b = before['details'], after['details']
     failures = []
@@ -283,13 +340,27 @@ def validate_mpv(before, after, decode='hardware'):
         deltas[name] = b[name] - a[name]
         if deltas[name] < 0:
             failures.append('mpv counters reset')
+    for name, expected in (expect or {}).items():
+        observed = (a.get(name), b.get(name))
+        if observed != (expected, expected):
+            failures.append(f'mpv {name} is {observed[0]!r}/{observed[1]!r}, expected {expected!r}')
+    # avsync — разница A−V (секунды), которую mpv сам видит в момент чтения; для
+    # quality-gate A/V берётся модуль на обеих границах (analyze.mpv_av_sync).
     quality = {'kind': 'mpv_counters_not_handoff_or_scanout', 'deltas': deltas,
-               'hwdec': a.get('hwdec-current'), 'vo': a.get('current-vo')}
+               'hwdec': a.get('hwdec-current'), 'vo': a.get('current-vo'),
+               'gpu_context': a.get('current-gpu-context'),
+               'avsync_seconds': [a.get('avsync'), b.get('avsync')]}
     return backend, progress, audio, quality, failures
 
 
-def capture(directory, phase, pid, window_helper, display_size):
-    """Тестовый screenshot вне CPU-окна; active window должен принадлежать нашему PID."""
+def capture(directory, phase, pid, window_helper, display_size, window_mode='xwayland'):
+    """Тестовый screenshot вне CPU-окна; active window должен принадлежать нашему PID.
+
+    Захват идёт через X11 (xprop + legacy capture), поэтому нативный Wayland не поддержан:
+    честная ошибка вместо скриншота чужого окна.
+    """
+    if window_mode == 'wayland':
+        raise ValueError('capture unsupported for window_mode wayland')
     window = window_proof(pid, window_helper)
     active = command_output(['xprop', '-root', '_NET_ACTIVE_WINDOW'])
     if window['window_id'] not in re.findall(r'0x[0-9a-f]+', active):

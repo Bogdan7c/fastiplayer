@@ -86,12 +86,38 @@ def read_gpu_engines(pid):
     return engines
 
 
+COMPOSITOR_NAMES = ("kwin_wayland", "Xwayland")
+
+
+def find_compositor_pids():
+    """PID-ы композитора сессии по имени процесса (comm) — {pid: comm}."""
+    found = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/comm") as handle:
+                comm = handle.read().strip()
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue
+        if comm in COMPOSITOR_NAMES:
+            found[int(entry)] = comm
+    return found
+
+
+def read_compositor_times(pids):
+    """{pid: utime+stime} композитора; исчезнувший процесс — ошибка окна, а не ноль."""
+    return {pid: read_process_times(pid) for pid in pids}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("pid", type=int)
     parser.add_argument("--duration", type=float, default=20.0, help="окно измерения, с")
     parser.add_argument("--warmup", type=float, default=15.0, help="ожидание до окна, с")
     parser.add_argument("--label", default="")
+    parser.add_argument("--compositor", action="store_true",
+                        help="CPU kwin_wayland и Xwayland за то же окно")
     arguments = parser.parse_args()
     pid = arguments.pid
 
@@ -100,6 +126,8 @@ def main():
     start_threads = read_thread_times(pid)
     start_process = read_process_times(pid)
     start_gpu = read_gpu_engines(pid)
+    compositor_pids = find_compositor_pids() if arguments.compositor else {}
+    start_compositor = read_compositor_times(compositor_pids)
     rss_samples = []
     pss_samples = []
     gpu_busy_samples = []
@@ -123,11 +151,19 @@ def main():
     end_threads = read_thread_times(pid)
     end_process = read_process_times(pid)
     end_gpu = read_gpu_engines(pid)
+    end_compositor = read_compositor_times(compositor_pids)
     elapsed = end_wall - start_wall
 
     print(f"=== {arguments.label} pid={pid} window={elapsed:.1f}s ===")
     total_percent = 100.0 * (end_process - start_process) / CLK_TCK / elapsed
     print(f"process CPU total: {total_percent:.2f}% of one core")
+    if compositor_pids:
+        compositor_total = 0.0
+        for compositor_pid, comm in sorted(compositor_pids.items()):
+            percent = 100.0 * (end_compositor[compositor_pid] - start_compositor[compositor_pid]) / CLK_TCK / elapsed
+            compositor_total += percent
+            print(f"compositor {comm} pid={compositor_pid}: {percent:.2f}%")
+        print(f"process + compositor: {total_percent + compositor_total:.2f}% of one core")
     if rss_samples:
         print(f"RSS mean/max MiB: {sum(rss_samples)/len(rss_samples):.1f} / {max(rss_samples):.1f}; "
               f"PSS mean MiB: {sum(pss_samples)/len(pss_samples):.1f}")

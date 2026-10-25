@@ -12,13 +12,21 @@ CPU по потокам и GPU-движкам у Fastiplayer и VLC на одн�
       --media av1=/path/to/av1-4k60.mp4 fp-sw-av1=fastiplayer:sw:av1
 
 Сценарий: label=player:mode:codec[:intf]
-  player — fastiplayer | vlc; mode — hw | sw; codec — ключ из --media или
+  player — fastiplayer | vlc | mpv; mode — hw | sw; codec — ключ из --media или
   встроенные h264/hevc (фикстуры make_fixtures.py в --fixtures);
   intf (только VLC) — qt (по умолчанию) | dummy.
+
+Рендер Fastiplayer задаёт --render-profile (auto | vulkan | opengles): строка
+``profile`` секции [render] шаблона заменяется перед копированием. Опции mpv
+(например ``--vo=gpu --gpu-api=opengl --profile=fast``) — через --mpv-arg.
+--window-mode x11 убирает WAYLAND_DISPLAY (плеер уходит в XWayland), wayland —
+оставляет как в сессии. --compositor добавляет в отчёт CPU kwin_wayland и Xwayland
+за то же окно (решение владельца 12 плана gles2-renderer: «процесс + композитор»).
 """
 
 import argparse
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -39,9 +47,20 @@ def preread(path):
             pass
 
 
-def isolated_env(attempt_root):
-    """Свежие XDG-каталоги на попытку: без личного config/resume/плейлистов."""
+RENDER_PROFILES = ("auto", "vulkan", "opengles")
+WINDOW_MODES = ("wayland", "x11")
+
+
+def isolated_env(attempt_root, window_mode):
+    """Свежие XDG-каталоги на попытку: без личного config/resume/плейлистов.
+
+    ``window_mode == "x11"`` убирает WAYLAND_DISPLAY: winit и mpv тогда идут
+    через XWayland (как строгий протокол v3), иначе — нативный Wayland сессии.
+    """
     environment = dict(os.environ)
+    if window_mode == "x11":
+        environment.pop("WAYLAND_DISPLAY", None)
+        environment["XDG_SESSION_TYPE"] = "x11"
     for name in ("CONFIG", "DATA", "CACHE", "STATE"):
         directory = attempt_root / name.lower()
         directory.mkdir(parents=True, exist_ok=True)
@@ -49,18 +68,40 @@ def isolated_env(attempt_root):
     return environment
 
 
-def build_command(player, mode, media, attempt_root, environment, vlc_intf, binary, fastiplayer_args):
+def config_with_render_profile(template_text, render_profile):
+    """Подменяет ``profile = "..."`` в секции [render] шаблона.
+
+    Ровно одна замена, иначе ошибка: молча оставить чужой рендер в замере нельзя.
+    """
+    replaced, count = re.subn(r'(?m)^(\[render\]\n(?:[^\[\n].*\n)*?)profile = "[a-z]+"',
+                              lambda match: f'{match.group(1)}profile = "{render_profile}"',
+                              template_text, count=1)
+    if count != 1:
+        raise SystemExit("template has no [render] profile line to override")
+    return replaced
+
+
+def build_command(player, mode, media, attempt_root, environment, vlc_intf, binary, fastiplayer_args,
+                  render_profile, mpv_args):
     """Командная строка плеера; конфиг Fastiplayer копируется из шаблона t480s.
 
     ``fastiplayer_args`` — опции Fastiplayer перед файлом (например ``--fullscreen``,
-    как в протоколе v3); у VLC не используются.
+    как в протоколе v3); ``render_profile`` — рендер Fastiplayer (None = как в шаблоне);
+    ``mpv_args`` — опции mpv поверх ``--no-config`` и выбора декода.
     """
     if player == "fastiplayer":
         config_dir = attempt_root / "config" / "fastiplayer"
         config_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(HW_TEMPLATE if mode == "hw" else SW_TEMPLATE, config_dir / "config.toml")
+        template_text = (HW_TEMPLATE if mode == "hw" else SW_TEMPLATE).read_text()
+        if render_profile is not None:
+            template_text = config_with_render_profile(template_text, render_profile)
+        (config_dir / "config.toml").write_text(template_text)
         environment.setdefault("RUST_LOG", "info")
         return [str(binary), *fastiplayer_args, str(media)]
+    if player == "mpv":
+        # Тот же базис, что у эталона протокола v3 (collect.py::mpv_command), плюс опции вывода.
+        return ["mpv", "--no-config", f"--hwdec={'vaapi' if mode == 'hw' else 'no'}", "--fs",
+                "--volume=0", *mpv_args, str(media)]
     command = ["vlc", "--ignore-config", "--no-one-instance", "--gain=0",
                "--no-video-title-show", f"--avcodec-hw={'vaapi' if mode == 'hw' else 'none'}"]
     if vlc_intf == "dummy":
@@ -69,22 +110,23 @@ def build_command(player, mode, media, attempt_root, environment, vlc_intf, bina
 
 
 def run_attempt(label, player, mode, media, out_dir, warmup, duration, vlc_intf, extra_env, binary,
-                fastiplayer_args):
+                fastiplayer_args, render_profile, mpv_args, window_mode, compositor):
     attempt_root = out_dir / label
     if attempt_root.exists():
         shutil.rmtree(attempt_root)
     attempt_root.mkdir(parents=True)
     preread(media)
-    environment = isolated_env(attempt_root)
+    environment = isolated_env(attempt_root, window_mode)
     environment.update(extra_env)
     command = build_command(player, mode, media, attempt_root, environment, vlc_intf, binary,
-                            fastiplayer_args)
+                            fastiplayer_args, render_profile, mpv_args)
     with open(attempt_root / "player.log", "wb") as log:
         process = subprocess.Popen(command, env=environment, stdout=log, stderr=subprocess.STDOUT,
                                    cwd=str(attempt_root), start_new_session=True)
         sampler = subprocess.run(
             [sys.executable, str(TOOLS_DIR / "thread_cpu.py"), str(process.pid),
-             "--warmup", str(warmup), "--duration", str(duration), "--label", label],
+             "--warmup", str(warmup), "--duration", str(duration), "--label", label,
+             *(["--compositor"] if compositor else [])],
             capture_output=True, text=True)
         exit_code = process.poll()
         if exit_code is None:
@@ -115,6 +157,14 @@ def main():
     parser.add_argument("--env", action="append", default=[], help="KEY=VALUE для плеера, например RUST_LOG=...")
     parser.add_argument("--fastiplayer-arg", action="append", default=[], dest="fastiplayer_args",
                         help="опция Fastiplayer перед файлом, например --fastiplayer-arg=--fullscreen")
+    parser.add_argument("--render-profile", choices=RENDER_PROFILES, default=None,
+                        help="рендер Fastiplayer в конфиге попытки (по умолчанию — как в шаблоне)")
+    parser.add_argument("--mpv-arg", action="append", default=[], dest="mpv_args",
+                        help="опция mpv, например --mpv-arg=--vo=gpu --mpv-arg=--gpu-api=opengl")
+    parser.add_argument("--window-mode", choices=WINDOW_MODES, default="wayland",
+                        help="wayland — нативное окно; x11 — через XWayland")
+    parser.add_argument("--compositor", action="store_true",
+                        help="добавить CPU kwin_wayland и Xwayland за то же окно")
     arguments = parser.parse_args()
 
     media = {
@@ -122,6 +172,11 @@ def main():
         "hevc": arguments.fixtures / "synthetic-hevc-4k60.mp4",
     }
     media.update(dict(item.split("=", 1) for item in arguments.media))
+    # Плеер запускается с cwd = каталог попытки, а XDG_*_HOME строятся от --out:
+    # относительные пути молча ушли бы в чужой каталог (конфиг по умолчанию, «файл не найден»).
+    media = {key: Path(path).resolve() for key, path in media.items()}
+    arguments.out = arguments.out.resolve()
+    arguments.binary = arguments.binary.resolve()
     extra_env = dict(item.split("=", 1) for item in arguments.env)
     arguments.out.mkdir(parents=True, exist_ok=True)
 
@@ -138,7 +193,9 @@ def main():
         if not path.is_file():
             parser.error(f"media file not found: {path}")
         run_attempt(label, player, mode, path, arguments.out, arguments.warmup, arguments.duration,
-                    vlc_intf, extra_env, arguments.binary, tuple(arguments.fastiplayer_args))
+                    vlc_intf, extra_env, arguments.binary, tuple(arguments.fastiplayer_args),
+                    arguments.render_profile, tuple(arguments.mpv_args), arguments.window_mode,
+                    arguments.compositor)
         time.sleep(2)
 
 

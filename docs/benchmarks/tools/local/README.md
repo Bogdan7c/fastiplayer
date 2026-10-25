@@ -205,6 +205,77 @@ behave exactly as before (hardware decode, ±0.5 percentage-point exit band):
 The owner chose mpv as the software reference as well (2026-10-22), so hardware and
 software reports compare against the same player.
 
+**Renderer, window mode, compositor and three players (session 10 of
+`user/gles2-renderer/`).** Version 3 also qualifies the OpenGL ES 2.0 renderer against
+our wgpu renderer and against mpv in GL mode. Every field below is optional, and a plan
+without these fields is analysed exactly as before: the old keys of the summary of the
+`cpu-parity-08b` series stay byte-for-byte equal, and new keys are only added.
+
+| Field | Where | Values | Effect |
+|---|---|---|---|
+| `kind` | player entry | `fastiplayer` / `mpv` / `vlc`, default = player name | Selects the command, the evidence and the quality gate. Player names are free identifiers `[a-z0-9-]+` |
+| `subject` | plan top level | player name, default `fastiplayer` | The Fastiplayer whose quality and CPU are judged. All other players are references; `analyze.py` writes one pair "subject × reference" per reference into `pairs` of each cohort. The old top-level `reference_player`/`resource_verdict`/`gpu_gfx_verdict` hold the first reference by name |
+| 2 or 3 players | `players` | — | Two players keep the AB/BA order. Three rotate cyclically per repetition (a Latin square: after three repetitions each player has held each position once). The 3/6/9 stop rule stops a scene only when the verdict of **every** pair is terminal |
+| `renderer` | Fastiplayer entry | `gles2` / `wgpu` | The renderer comes from the entry's own `config` (`[render] profile = "opengles"` or `"auto"`). The attempt is invalid unless `evidence.renderer_family` equals this value, so a wrong config cannot silently swap the subject |
+| `args` | mpv entry or scenario | list of `--option` strings | Appended after `--no-config --hwdec=… --fs --volume=0` and before the IPC socket; mpv takes the last occurrence of an option. `--input-ipc-server` is rejected |
+| `expect` | mpv entry | `{property: value}` of boundary properties | For example `{"current-vo": "gpu", "current-gpu-context": "wayland", "hwdec-current": "vaapi"}`. Every property must equal its value at both window boundaries. An unknown property name is a plan error before launch |
+| `window_mode` | `common` or scenario | `xwayland` (default) / `wayland` | `xwayland` withholds `WAYLAND_DISPLAY` as before and proves the window through xprop/XRes. `wayland` passes the collector's `WAYLAND_DISPLAY` and proves the window through a KWin script (`kwin.py`): exactly one KWin window of the PID, fullscreen, of `display_size`, and **no** X11 window of the PID. `capture` is unsupported under `wayland`. All players of a cohort must use the same mode |
+
+The compositor is measured in every new attempt. Before the player starts, the
+collector finds `kwin_wayland` and `Xwayland` of the current user by `comm` and keeps
+their identity (PID + `starttime`). Each sample reads their `utime+stime`. A
+compositor process that restarts, vanishes or appears during the window makes the
+attempt invalid. `kwin_wayland` is always required, and `Xwayland` is required under
+`xwayland`. Under native Wayland a live Xwayland is still counted as an honest part
+of the cost. The metrics are `compositor_cpu_percent` (with a per-name breakdown) and
+`tree_plus_compositor_cpu_percent`. `analyze.py` gives each pair a second CPU verdict,
+`compositor_resource_verdict`, on the sum. It uses the same Student interval and exit
+band. The quantisation bound adds one `/proc` tick per compositor process of both
+attempts. Old series have no such fields, so their verdict is `NOT TESTED` with the
+reason "compositor CPU not recorded".
+
+A reference of kind `fastiplayer` (for example wgpu against a GLES2 subject) passes
+the same unique-frame gate as the subject (≥ 99 % of source fps × window). It does not
+get mpv's "0 dropped frames". Its failure counts as a reference loss under
+`reference_losses`.
+
+A/V sync is reported in `quality_gates[scene].av_sync`, separately from the frame-gate
+status. mpv reports `avsync` (seconds, read at both boundaries); a reference attempt
+passes when the largest absolute value is ≤ 45 ms. That is the strictest detectability
+bound of ITU-R BT.1359, applied to both signs. Fastiplayer has no honest A/V offset
+source: MPRIS `Position` is the media clock, and the render trace carries no audio
+clock. The subject's A/V therefore stays `NOT TESTED` with that reason and is never
+inferred.
+
+Example: a native Wayland hardware series with three players (paths shortened).
+
+```json
+{
+  "protocol_version": 3,
+  "diagnostic_repetitions": 1,
+  "subject": "gles2",
+  "common": {"warmup_seconds": 12, "duration_seconds": 20, "interval_seconds": 1,
+             "display_size": [1920, 1080], "window_helper": ".../window-owner",
+             "window_helper_sha256": "…", "window_mode": "wayland", "decode": "hardware",
+             "snapshot": "gles2-10"},
+  "players": {
+    "gles2": {"kind": "fastiplayer", "renderer": "gles2", "binary": ".../fastiplayer",
+              "binary_sha256": "…", "config": ".../gles2-hardware.toml", "config_sha256": "…"},
+    "wgpu": {"kind": "fastiplayer", "renderer": "wgpu", "binary": ".../fastiplayer",
+             "binary_sha256": "…", "config": ".../wgpu-hardware.toml", "config_sha256": "…"},
+    "mpv-gl": {"kind": "mpv", "binary": "/usr/bin/mpv", "binary_sha256": "…",
+               "args": ["--vo=gpu", "--gpu-api=opengl"],
+               "expect": {"current-vo": "gpu", "current-gpu-context": "wayland", "hwdec-current": "vaapi"},
+               "config": ".../gles2-hardware.toml", "config_sha256": "…"}
+  },
+  "scenarios": [{"scenario": "h264-1080p60-wayland", "codec": "h264",
+                 "media": ".../1080p60_h264-high_40mbps_aac.mp4", "media_sha256": "…"}]
+}
+```
+
+The collector copies `config` for every player, so the mpv entry carries one too; mpv
+itself runs with `--no-config`.
+
 **Measurement condition in version 3.** Keep the pointer away from the player's
 panels (for example in the middle of the screen) and do not touch the mouse. A
 pointer resting over the title bar or the bottom controls holds them visible by

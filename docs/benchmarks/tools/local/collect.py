@@ -12,13 +12,20 @@ import subprocess
 import time
 import tempfile
 
+import compositor
 import evidence
 from host import (PROTOCOL_VERSION, cpu_percent, gpu_memory_summary, probe_media, sample, sha256, source_fps,
                   summarize_gpu, write_json)
+from players import player_kind, window_mode as spec_window_mode
 from service import MeasuredService, isolated_environment
 
 
-def summarize(samples):
+def summarize(samples, compositor_identities=None):
+    """Метрики окна. ``compositor_identities`` — процессы композитора, чьи снимки лежат в samples.
+
+    Без них (старые вызовы, тесты без композитора) метрик композитора нет вовсе: поля
+    отсутствуют, а не равны нулю.
+    """
     if len(samples) < 2:
         raise ValueError('fewer than two samples')
     first, last = samples[0], samples[-1]
@@ -38,6 +45,10 @@ def summarize(samples):
     # Память GPU (GTT/VRAM) рядом с RSS: см. host.gpu_memory_kib. Если DRM-clients
     # не было ни в одном sample, метрики нет вовсе (в отчёте «—»), а не ложный 0.
     result.update(gpu_memory_summary(samples))
+    if compositor_identities is not None:
+        result.update(compositor.summarize(compositor_identities, samples, os.sysconf('SC_CLK_TCK')))
+        # Второе число решения 12: дерево плеера + композитор за то же окно.
+        result['tree_plus_compositor_cpu_percent'] = result['tree_cpu_percent'] + result['compositor_cpu_percent']
     return result
 
 
@@ -53,7 +64,7 @@ def vlc_command(binary, socket_path, mode, media):
             *(['-vv'] if mode == 'diagnostic' else []), str(media)]
 
 
-def mpv_command(binary, socket_path, mode, media, decode='hardware'):
+def mpv_command(binary, socket_path, mode, media, decode='hardware', extra_args=()):
     """Командная строка mpv по протоколу v2 (эталон с 2026-10-21, решение владельца).
 
     ``--no-config`` — аналог ``vlc --ignore-config``: ни пользовательский, ни системный
@@ -69,9 +80,14 @@ def mpv_command(binary, socket_path, mode, media, decode='hardware'):
     ``--hwdec=no`` — это поведение mpv «из коробки», так что SW-команда отличается от
     умолчаний mpv только фуллскрином, громкостью и IPC. Остальное (потоки FFmpeg/dav1d,
     ``gpu-next``) mpv выбирает сам.
+
+    ``extra_args`` (поле ``args`` записи игрока, сессия 10) вставляются после базовых
+    ``--no-config --hwdec=… --fs --volume=0`` и до IPC: у mpv побеждает последняя опция,
+    поэтому ``--hwdec=vaapi`` или ``--vo=gpu`` в ``args`` переопределяют базовые, а то,
+    что mpv реально выбрал, доказывают свойства ``expect`` (см. ``evidence.validate_mpv``).
     """
     hwdec = MPV_HWDEC_BY_DECODE_PATH[decode]
-    return [str(binary), '--no-config', f'--hwdec={hwdec}', '--fs', '--volume=0',
+    return [str(binary), '--no-config', f'--hwdec={hwdec}', '--fs', '--volume=0', *extra_args,
             f'--input-ipc-server={socket_path}', *(['-v'] if mode == 'diagnostic' else []), str(media)]
 
 
@@ -101,19 +117,48 @@ def decode_path(spec):
     decode = spec.get('decode', 'hardware')
     if decode not in DECODE_PATHS:
         raise ValueError(f'unsupported decode path {decode!r}')
-    if decode == 'software' and spec['player'] == 'vlc':
+    if decode == 'software' and player_kind(spec) == 'vlc':
         # Команда VLC заморожена для воспроизведения серий v1 и умеет только VA-API.
         raise ValueError('VLC v1 reference command supports only hardware decode')
     return decode
 
 
+def mpv_extra_args(spec):
+    """Дополнительные аргументы mpv из плана; не список строк или чужой IPC — ошибка плана."""
+    extra = spec.get('args', [])
+    if not isinstance(extra, list) or not all(isinstance(item, str) and item.startswith('--') for item in extra):
+        raise ValueError('mpv args must be a list of --option strings')
+    if any(item.startswith('--input-ipc-server') for item in extra):
+        raise ValueError('mpv args must not replace the harness IPC socket')
+    return extra
+
+
+def mpv_expectations(spec):
+    """Свойства mpv, которые обязаны совпасть на обеих границах окна (поле ``expect``).
+
+    Проверяется до запуска: опечатка в имени свойства иначе всплыла бы только как
+    невалидная попытка после целого окна замера. Не у mpv поле ``expect`` — ошибка плана.
+    """
+    expect = spec.get('expect')
+    if expect is None:
+        return None
+    if player_kind(spec) != 'mpv':
+        raise ValueError('expect is supported only for players of kind mpv')
+    if not isinstance(expect, dict) or not expect:
+        raise ValueError('mpv expect must be a non-empty object')
+    unknown = sorted(set(expect) - set(evidence.MPV_BOUNDARY_PROPERTIES))
+    if unknown:
+        raise ValueError(f'mpv expect names properties not read at boundaries: {unknown}')
+    return expect
+
+
 def player_command(spec, binary, socket_path, mode, media, decode):
     """Командная строка плеера попытки (Fastiplayer, mpv или VLC v1)."""
-    player = spec['player']
-    if player == 'fastiplayer':
+    kind = player_kind(spec)
+    if kind == 'fastiplayer':
         return fastiplayer_command(binary, media)
-    if player == 'mpv':
-        return mpv_command(binary, socket_path, mode, media, decode)
+    if kind == 'mpv':
+        return mpv_command(binary, socket_path, mode, media, decode, mpv_extra_args(spec))
     return vlc_command(binary, socket_path, mode, media)
 
 
@@ -141,12 +186,15 @@ def collect(spec, directory):
         window_helper = Path(spec['window_helper'])
         if sha256(window_helper) != spec['window_helper_sha256']:
             raise ValueError('window helper hash mismatch')
-        mode, player = spec['mode'], spec['player']
-        if mode not in {'quiet', 'diagnostic'} or player not in {'fastiplayer', *PLAYER_COMMANDS}:
+        mode, player = spec['mode'], player_kind(spec)
+        if mode not in {'quiet', 'diagnostic'}:
             raise ValueError('unsupported player or mode')
         decode = decode_path(spec)
+        expectations = mpv_expectations(spec)
+        window_mode = spec_window_mode(spec)
+        observation['window_mode'] = window_mode
         rust_log = 'info' + (',fastiplayer::video_render_acceptance=trace' if mode == 'diagnostic' else '')
-        environment = isolated_environment(directory, rust_log)
+        environment = isolated_environment(directory, rust_log, window_mode)
         config = Path(spec['config'])
         if sha256(config) != spec['config_sha256']:
             raise ValueError('config hash mismatch')
@@ -165,19 +213,25 @@ def collect(spec, directory):
         with media.open('rb') as stream:
             while stream.read(1024 * 1024):
                 pass
+        # Композитор ищется ДО запуска плеера: процессы, поднятые плеером или после него,
+        # не должны попасть в «известные», а смена набора ловится на конце окна.
+        compositor_start = compositor.discover()
+        compositor.require_processes(compositor_start, window_mode)
+        observation['compositor'] = {'start': compositor_start}
         service = MeasuredService(command, environment, directory)
         service.start()
         observation['unit'] = service.unit
         observation['pid'] = service.pid
         origin = time.monotonic()
         time.sleep(2)
-        evidence.fullscreen(service.pid)
+        evidence.fullscreen(service.pid)  # KWin-скрипт: окно по PID годится и для X11, и для Wayland
         # Одинаковый minimum warmup; actual CPU start идёт сразу после boundary
         # RPC. Его длительность и skew сохраняются, а не выдаются за точное +12s.
         time.sleep(max(0, origin + warmup - time.monotonic()))
         if spec.get('capture', False):
-            observation['capture_before'] = evidence.capture(directory, 'before', service.pid, window_helper, spec['display_size'])
-        observation['before'] = evidence.boundary(player, service.pid, socket_path, media, window_helper)
+            observation['capture_before'] = evidence.capture(directory, 'before', service.pid, window_helper, spec['display_size'], window_mode)
+        observation['before'] = evidence.boundary(player, service.pid, socket_path, media, window_helper, window_mode,
+                                                  spec['display_size'])
         log_path = directory / 'runtime.log'
         start_offset = log_path.stat().st_size
         observation['log_window_started'] = time.monotonic()
@@ -186,7 +240,10 @@ def collect(spec, directory):
         next_sample = window_start
         while True:
             time.sleep(max(0, next_sample - time.monotonic()))
-            observation['samples'].append(sample(service.pid, service.cgroup))
+            process_sample = sample(service.pid, service.cgroup)
+            # Композитор читается сразу за снимком плеера: те же секунды окна, свой timestamp.
+            process_sample['compositor'] = compositor.read_sample(compositor_start)
+            observation['samples'].append(process_sample)
             if time.monotonic() >= window_start + duration:
                 break
             next_sample = min(window_start + duration, max(next_sample + interval, time.monotonic()))
@@ -194,17 +251,23 @@ def collect(spec, directory):
         observer_elapsed = time.monotonic() - window_start
         end_offset = log_path.stat().st_size
         observation['log_window_ended'] = time.monotonic()
-        observation['after'] = evidence.boundary(player, service.pid, socket_path, media, window_helper)
+        # Граница окна: набор процессов композитора (pid + starttime) совпал с началом.
+        compositor_end = compositor.discover()
+        observation['compositor']['end'] = compositor_end
+        compositor.verify_unchanged(compositor_start, compositor_end)
+        observation['after'] = evidence.boundary(player, service.pid, socket_path, media, window_helper, window_mode,
+                                                  spec['display_size'])
         if spec.get('capture', False):
-            observation['capture_after'] = evidence.capture(directory, 'after', service.pid, window_helper, spec['display_size'])
+            observation['capture_after'] = evidence.capture(directory, 'after', service.pid, window_helper, spec['display_size'], window_mode)
         observation['actual_warmup_seconds'] = window_start - origin
         observation['boundary_skew_seconds'] = {
             'before': observation['samples'][0]['cgroup_cpu']['time'] - observation['before']['started'],
             'after': observation['after']['ended'] - observation['samples'][-1]['cgroup_cpu']['time']}
         observation['evidence'] = evidence.validate(player, spec['codec'], mode, decode, log_path,
-            observation['before'], observation['after'], start_offset, end_offset)
+            observation['before'], observation['after'], start_offset, end_offset,
+            expect=expectations, renderer=spec.get('renderer'))
         observation['failures'].extend(observation['evidence']['failures'])
-        observation['metrics'] = summarize(observation['samples'])
+        observation['metrics'] = summarize(observation['samples'], compositor_start)
         # GPU — отдельная метрика v2 рядом с CPU, никогда не складывается с ним.
         observation['gpu'] = summarize_gpu(observation['samples'][0], observation['samples'][-1])
         observation['source_fps'] = source_fps(observation['media_probe'])

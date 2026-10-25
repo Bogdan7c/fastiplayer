@@ -6,6 +6,7 @@ import uuid
 import time
 
 from host import command_output
+from players import WINDOW_MODES
 
 
 class MeasuredService:
@@ -68,11 +69,24 @@ class MeasuredService:
 
 
 
-def isolated_environment(directory, rust_log):
+def isolated_environment(directory, rust_log, window_mode='xwayland'):
+    """Окружение плеера под ``env -i``: что не перечислено здесь, плеер не увидит.
+
+    ``window_mode`` решает, какой клиент оконной системы получит плеер. ``xwayland`` (прежнее
+    поведение) НЕ передаёт ``WAYLAND_DISPLAY``: winit/mpv вынужденно идут через X11.
+    ``wayland`` передаёт ``WAYLAND_DISPLAY`` сборщика; без него нативный режим невозможен,
+    и это ошибка, а не тихий откат на XWayland.
+    """
+    if window_mode not in WINDOW_MODES:
+        raise ValueError(f'unsupported window_mode {window_mode!r}')
     keys = ('HOME', 'USER', 'LOGNAME', 'PATH', 'DISPLAY', 'XAUTHORITY',
             'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'LANG', 'LC_ALL',
             'PULSE_SERVER', 'PIPEWIRE_REMOTE')
     environment = {key: os.environ[key] for key in keys if key in os.environ}
+    if window_mode == 'wayland':
+        if not os.environ.get('WAYLAND_DISPLAY'):
+            raise ValueError('window_mode wayland needs WAYLAND_DISPLAY in the collector environment')
+        environment['WAYLAND_DISPLAY'] = os.environ['WAYLAND_DISPLAY']
     for name, suffix in [('CONFIG', 'config'), ('DATA', 'data'), ('CACHE', 'cache'), ('STATE', 'state')]:
         path = directory.resolve() / suffix
         path.mkdir(parents=True)

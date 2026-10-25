@@ -5,6 +5,10 @@
 ``diagnostic_repetitions`` повторов (по умолчанию 1) только для quality-gate и
 описательного observer-control. Сцена может ограничить список плееров полем
 ``players`` (например, профиль, который эталон на этой машине не воспроизводит).
+
+Сессия 10 gles2-renderer: игроков два или три, у каждого может быть ``kind``; ``subject``
+плана — Fastiplayer, которого судим, остальные — эталоны. Сцена останавливается на
+3/6/9, когда терминален вердикт КАЖДОЙ пары «субъект × эталон» (см. ``players.py``).
 """
 
 import argparse
@@ -15,6 +19,7 @@ import sys
 
 from analyze import LOOKS, analyze
 from host import PROTOCOL_VERSION, sha256, write_json
+from players import repetition_order, subject_name, validate_players
 
 
 
@@ -29,6 +34,9 @@ def run_attempt(root, tooling, plan, scenario, player, mode, repetition):
     scenario_fields = {key: value for key, value in scenario.items() if key != 'players'}
     spec = {**plan['common'], **scenario_fields, **plan['players'][player],
             'player': player, 'mode': mode, 'repetition': repetition}
+    if 'subject' in plan:
+        # Субъект нужен analyze.py на уровне попытки; старые планы без ключа не меняются.
+        spec['subject'] = subject_name(plan)
     spec_path = root / 'specs' / f'{label}.json'
     write_json(spec_path, spec)
     attempt = root / 'attempts' / label
@@ -46,6 +54,15 @@ def run_attempt(root, tooling, plan, scenario, player, mode, repetition):
 def ordered(values, repetition):
     """AB/BA: на чётных повторах порядок разворачивается, чтобы дрейф не копился у одного."""
     return values if repetition % 2 else tuple(reversed(values))
+
+
+# Вердикты, после которых пара «субъект × эталон» больше не нуждается в повторах.
+TERMINAL_VERDICTS = {'WIN', 'WORSE', 'NOT TESTED'}
+
+
+def cohort_settled(cohort):
+    """Когорта решена, когда терминален вердикт каждой её пары (у когорты без эталона пар нет)."""
+    return all(pair['resource_verdict']['status'] in TERMINAL_VERDICTS for pair in cohort['pairs'].values())
 
 
 def run_series(plan_path, root):
@@ -71,10 +88,8 @@ def run_series(plan_path, root):
     (root / 'attempts').mkdir(exist_ok=True)
     (root / 'specs').mkdir(exist_ok=True)
     diagnostic_repetitions = int(plan.get('diagnostic_repetitions', 1))
-    # Порядок плееров задаёт план (Fastiplayer и один эталон); AB/BA разворачивает его.
-    all_players = tuple(plan['players'])
-    if 'fastiplayer' not in all_players or len(all_players) != 2:
-        raise ValueError('plan must list fastiplayer and exactly one reference player')
+    # Порядок плееров задаёт план; два — AB/BA, три — латинский квадрат (players.py).
+    all_players = validate_players(plan)
     stopped = set()
     for repetition in range(1, LOOKS[-1] + 1):
         for scenario in plan['scenarios']:
@@ -83,7 +98,7 @@ def run_series(plan_path, root):
             for mode in ordered(modes, repetition):
                 if (scenario['scenario'], mode) in stopped:
                     continue
-                for player in ordered(players, repetition):
+                for player in repetition_order(players, repetition):
                     if run_attempt(root, tooling, plan, scenario, player, mode, repetition):
                         # Не удаляем/не заменяем неудачный запуск и не тратим полный
                         # corpus на уже доказанно сломанный путь измерения.
@@ -100,7 +115,7 @@ def run_series(plan_path, root):
                 return 2
         if repetition in LOOKS:
             for cohort in summary['cohorts']:
-                if cohort['mode'] == 'quiet' and cohort['resource_verdict']['status'] in {'WIN', 'WORSE', 'NOT TESTED'}:
+                if cohort['mode'] == 'quiet' and cohort_settled(cohort):
                     stopped.add((cohort['scenario'], cohort['mode']))
             remaining = [s for s in plan['scenarios'] if (s['scenario'], 'quiet') not in stopped]
             if not remaining:
