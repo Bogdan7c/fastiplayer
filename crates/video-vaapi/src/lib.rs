@@ -3,6 +3,7 @@ mod codec_adapter;
 pub mod decoder;
 pub mod decoder_thread;
 pub mod dma_heap;
+pub mod import_target;
 pub mod internal_vaapi_frame;
 pub mod output_surface_pool;
 pub mod player_core_adapter;
@@ -24,6 +25,7 @@ pub use decoder_thread::{
     VideoFrameResourceDescriptorLookup, VideoFrameResourceIdentityLookup,
     VideoFrameResourceLockDiagnostics, VideoFrameResourceLookup, VideoFrameResourceProvider,
 };
+pub use import_target::ZeroCopyImportTarget;
 pub use player_core_adapter::VaapiVideoBackendFactory;
 pub use probe::{VaapiCapabilityProvider, probe_vaapi_capabilities};
 

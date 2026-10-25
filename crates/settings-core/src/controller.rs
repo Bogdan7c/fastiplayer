@@ -8,8 +8,10 @@ use crate::metadata::{
 };
 use crate::registry::SettingsRegistry;
 
+mod apply_mechanism;
 mod pending_apply;
 mod runtime_commit;
+pub use apply_mechanism::ApplyMechanism;
 pub use pending_apply::{BeginApply, CommittedApplyProgress, PollApply, StepwiseCommittedApplier};
 pub use runtime_commit::RuntimeCommitOutcome;
 
@@ -272,25 +274,6 @@ pub enum PersistOutcome {
     /// Changes are applied in memory only: the store disabled writing for this run
     /// (for example, the settings file belongs to a newer application version).
     SkippedSessionOnly,
-}
-
-/// Runtime mechanism used for one route.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApplyMechanism {
-    /// Owner updated runtime state in-place.
-    InPlace,
-
-    /// Owner asked a worker to reconfigure itself.
-    WorkerReconfigure,
-
-    /// Owner rebuilt a pipeline while preserving its invariants.
-    PipelineRebuild,
-
-    /// Owner recreated renderer resources.
-    RendererRecreate,
-
-    /// Previously active preview became committed runtime state.
-    PreviewPromoted,
 }
 
 /// Runtime result for one owner-level apply route.

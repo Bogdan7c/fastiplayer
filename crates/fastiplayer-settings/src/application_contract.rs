@@ -57,6 +57,9 @@ pub enum SettingApplyMechanism {
     VideoPipelineRebuild,
     /// Renderer/surface resources контролируемо пересоздаются.
     RendererRecreate,
+    /// Значение только сохраняется; живой runtime не меняется, эффект — после перезапуска
+    /// приложения (например, выбор семейства рендера `render.profile`).
+    AppliesAfterRestart,
     /// Уже активный preview становится committed runtime state.
     PreviewPromotion,
 }
@@ -149,8 +152,6 @@ pub enum SettingsBoundaryActivity {
 /// Typed stage исходной renderer recreation failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RendererRecreationApplyErrorKind {
-    /// Выбранный renderer profile не реализован текущим runtime-ом.
-    UnsupportedProfile,
     /// Candidate device/surface/renderer создать не удалось.
     CandidateCreation,
     /// Candidate не смог восстановить live render state или materializer compatibility.
@@ -314,6 +315,15 @@ const RENDER_RECREATE_TESTS: &[SettingApplyTestScenario] = &[
     SettingApplyTestScenario::DeviceLost,
 ];
 
+/// Сценарии для настроек, которые применяются только после перезапуска: живой runtime
+/// остаётся нетронутым, повтор того же значения — no-op, соседние owner-ы не затрагиваются.
+const APPLIES_AFTER_RESTART_TESTS: &[SettingApplyTestScenario] = &[
+    SettingApplyTestScenario::NoActiveResource,
+    SettingApplyTestScenario::ActiveResource,
+    SettingApplyTestScenario::RepeatedApplyNoop,
+    SettingApplyTestScenario::NoUnrelatedOwnerMutation,
+];
+
 /// Возвращает единственную строку application matrix для stable setting id.
 ///
 /// Match намеренно перечисляет ids явно: новый descriptor не должен молча
@@ -360,12 +370,18 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
             SettingApplyMechanism::RendererLiveUpdate,
             RENDER_LIVE_TESTS,
         ),
-        "render.profile"
-        | "render.tone_mapping"
+        // Решение владельца (gles2-renderer, сессия 09, №37): смена профиля не пересоздаёт
+        // рендер вживую, она действует после перезапуска приложения.
+        "render.profile" => SettingApplicationContract::new(
+            setting_name,
+            AppRuntimeRoute::RenderCommitted,
+            SettingStateOwner::RendererLifecycle,
+            SettingApplyMechanism::AppliesAfterRestart,
+            APPLIES_AFTER_RESTART_TESTS,
+        ),
+        "render.tone_mapping"
         | "render.vulkan.present_mode"
-        | "render.vulkan.max_frame_latency"
-        | "render.opengles.enabled"
-        | "render.opengles.simple_ui" => SettingApplicationContract::new(
+        | "render.vulkan.max_frame_latency" => SettingApplicationContract::new(
             setting_name,
             AppRuntimeRoute::RenderCommitted,
             SettingStateOwner::RendererLifecycle,
@@ -597,6 +613,7 @@ mod tests {
     use super::*;
     use crate::{app_config_registry, runtime_route_from_descriptor};
 
+    mod render_profile_restart;
     mod vod_endpoint_recovery;
 
     #[test]

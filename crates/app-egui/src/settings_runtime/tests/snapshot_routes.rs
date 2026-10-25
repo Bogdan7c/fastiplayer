@@ -371,20 +371,16 @@ fn render_recreation_route(next: RenderCommittedSettingsUpdate) -> RuntimeCommit
             affected_settings: vec![SettingId::from("render.vulkan.max_frame_latency")],
         }],
         update: RuntimeCommittedUpdate::RenderCommitted(RenderCommittedSettingsUpdate {
-            profile: next.profile,
             tone_mapping: next.tone_mapping,
             vulkan: next.vulkan,
-            opengles: next.opengles,
         }),
     }
 }
 
 fn render_update_from_config(config: &AppConfig) -> RenderCommittedSettingsUpdate {
     RenderCommittedSettingsUpdate {
-        profile: config.render.profile,
         tone_mapping: config.render.tone_mapping,
         vulkan: config.render.vulkan.clone(),
-        opengles: config.render.opengles.clone(),
     }
 }
 
@@ -419,6 +415,83 @@ fn render_recreation_commits_snapshot_only_after_owner_success() {
     assert_eq!(second_report.result, AppRouteApplyResult::Noop);
     assert_eq!(runtime_adapter.renderer_recreation_updates.len(), 1);
     assert_eq!(runtime_adapter.renderer_recreation_updates[0].1, next);
+}
+
+/// Маршрут с одним `render.profile`: рендер не трогается, исход — явное «после перезапуска».
+#[test]
+fn render_profile_only_route_reports_applies_after_restart_without_touching_renderer() {
+    let config = custom_config_for_test();
+    let route = RuntimeCommittedRoute {
+        route: AppRuntimeRoute::RenderCommitted,
+        source_routes: vec![SettingRouteId::from("render")],
+        affected_settings: vec![SettingId::from("render.profile")],
+        groups: vec![AppRuntimeRouteGroupUpdate {
+            group: AppRuntimeRouteGroup::RenderProfileRestart,
+            affected_settings: vec![SettingId::from("render.profile")],
+        }],
+        update: RuntimeCommittedUpdate::RenderCommitted(render_update_from_config(&config)),
+    };
+    let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
+        .expect("route appliers must accept validated config");
+    let mut runtime_adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
+
+    let report = appliers
+        .apply_committed_route_with_render_adapter(
+            route,
+            SettingsRouteTargetPolicy::from_config(&config),
+            &mut runtime_adapter,
+        )
+        .expect("profile route should report");
+
+    assert_eq!(report.result, AppRouteApplyResult::AppliesAfterRestart);
+    assert_eq!(report.mechanism, ApplyMechanism::AppliesAfterRestart);
+    assert_eq!(
+        report.groups[0].result,
+        AppRouteApplyResult::AppliesAfterRestart
+    );
+    assert!(
+        runtime_adapter.renderer_recreation_updates.is_empty(),
+        "the live renderer must not be recreated on a profile change"
+    );
+}
+
+/// Профиль вместе с живой настройкой: рендер пересоздаётся ради живой части, а группа
+/// профиля в отчёте остаётся «после перезапуска», не сливаясь с `Applied`.
+#[test]
+fn mixed_render_route_keeps_profile_group_distinct_from_recreation() {
+    let config = custom_config_for_test();
+    let mut next = render_update_from_config(&config);
+    next.vulkan.max_frame_latency += 1;
+    let mut route = render_recreation_route(next);
+    route
+        .affected_settings
+        .push(SettingId::from("render.profile"));
+    route.groups.push(AppRuntimeRouteGroupUpdate {
+        group: AppRuntimeRouteGroup::RenderProfileRestart,
+        affected_settings: vec![SettingId::from("render.profile")],
+    });
+    let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
+        .expect("route appliers must accept validated config");
+    let mut runtime_adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("The adapter should start.");
+
+    let report = appliers
+        .apply_committed_route_with_render_adapter(
+            route,
+            SettingsRouteTargetPolicy::from_config(&config),
+            &mut runtime_adapter,
+        )
+        .expect("mixed render route should report");
+
+    assert_eq!(report.result, AppRouteApplyResult::Applied);
+    assert_eq!(report.mechanism, ApplyMechanism::RendererRecreate);
+    assert_eq!(report.groups[0].result, AppRouteApplyResult::Applied);
+    assert_eq!(
+        report.groups[1].result,
+        AppRouteApplyResult::AppliesAfterRestart
+    );
+    assert_eq!(runtime_adapter.renderer_recreation_updates.len(), 1);
 }
 
 #[test]

@@ -576,3 +576,59 @@ fn oldest_warning_is_evicted_when_only_warnings_overflow() {
         vec!["Warning 3", "Warning 2", "Warning 1"]
     );
 }
+
+/// Сбой выбора рендера доходит до пользователя уведомлением «до ×» и не исчезает сам;
+/// обычный выбор Auto (включая обход негодного Vulkan) не показывает ничего (решение 40).
+#[test]
+fn renderer_selection_notice_appears_only_for_failures_and_stays_until_closed() {
+    use crate::render_backend::{CandidateProbe, RendererStartupReport, SelectionReason};
+    use crate::state::startup_context::announce_renderer_selection;
+    use render_shell_api::{RendererFamily, RendererProbe, RendererUnusableReason};
+
+    let now = Instant::now();
+    let quiet_reports = [
+        RendererStartupReport::new(RendererFamily::WgpuVulkan, SelectionReason::AutoFirstChoice),
+        RendererStartupReport::new(
+            RendererFamily::Gles2,
+            SelectionReason::AutoSkippedUnusable {
+                skipped: vec![CandidateProbe {
+                    family: RendererFamily::WgpuVulkan,
+                    probe: RendererProbe::Unusable {
+                        reason: RendererUnusableReason::SoftwareAdapterOnly,
+                    },
+                }],
+            },
+        ),
+    ];
+    for report in &quiet_reports {
+        let mut center = NotificationCenter::default();
+        announce_renderer_selection(Some(report), &mut center, now);
+        assert_eq!(
+            toast_messages(&idle_frame(&mut center, now)),
+            Vec::<String>::new()
+        );
+    }
+    let mut center = NotificationCenter::default();
+    announce_renderer_selection(None, &mut center, now);
+    assert_eq!(
+        toast_messages(&idle_frame(&mut center, now)),
+        Vec::<String>::new()
+    );
+
+    let failure = RendererStartupReport::new(
+        RendererFamily::Gles2,
+        SelectionReason::RequestedUnusable {
+            requested: RendererFamily::WgpuVulkan,
+            reason: RendererUnusableReason::SoftwareAdapterOnly,
+        },
+    );
+    let expected = failure.user_notice().expect("failure has a notice");
+    let mut center = NotificationCenter::default();
+    announce_renderer_selection(Some(&failure), &mut center, now);
+
+    let hour_later = now + Duration::from_secs(3_600);
+    assert_eq!(
+        toast_messages(&idle_frame(&mut center, hour_later)),
+        vec![expected]
+    );
+}

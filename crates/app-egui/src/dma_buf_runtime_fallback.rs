@@ -1,16 +1,70 @@
 //! Controlled runtime fallback policy для DMA-BUF layout, известного только после first frame.
 
 use fastiplayer_config::VideoBackendPreference;
+use render_shell_api::{FrameImportUnsupportedReason, HardwareFrameRefusal};
 use video_core::DmaBufDescriptorRejection;
 
 use crate::state::VideoPipelineRebuildError;
 use crate::video_pipeline_selector::{VideoPipelinePlan, VideoPipelineSelectionError};
 
+/// Причина, по которой аппаратный кадр нельзя показать и допустим программный фолбэк.
+///
+/// Два разных источника, не слитых в один: отказ дескриптора (его нашёл валидатор по данным
+/// декодера) и отказ самого рендера (решение владельца 41: рендер не умеет показывать кадр).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DmaBufFallbackTrigger {
+    /// Дескриптор DMA-BUF отклонён до импорта.
+    DescriptorRejected(DmaBufDescriptorRejection),
+    /// Рендер не может показать аппаратный кадр с исправным дескриптором.
+    RendererCannotShowHardwareFrame(HardwareFrameRefusal),
+}
+
+impl DmaBufFallbackTrigger {
+    /// Выделяет причину фолбэка из отказа склада кадров; `None` — отказ не про аппаратный
+    /// кадр (контракт не объявлен, не тот путь передачи): фолбэк тут не лечит.
+    pub(crate) fn from_unsupported_reason(reason: &FrameImportUnsupportedReason) -> Option<Self> {
+        match reason {
+            FrameImportUnsupportedReason::DmaBufDescriptorRejected(rejection) => {
+                Some(Self::DescriptorRejected(rejection.clone()))
+            }
+            FrameImportUnsupportedReason::RendererCannotShowHardwareFrame(refusal) => {
+                Some(Self::RendererCannotShowHardwareFrame(refusal.clone()))
+            }
+            FrameImportUnsupportedReason::ContractNotDeclared { .. }
+            | FrameImportUnsupportedReason::TransferPathNotHandledByActiveImport
+            | FrameImportUnsupportedReason::LayoutNotHandledByActiveImport => None,
+        }
+    }
+
+    /// Лечится ли причина переходом на программный декод.
+    ///
+    /// Отказ рендера лечится всегда; из отказов дескриптора — только составной
+    /// multi-object (прежняя политика приложения, остальные остаются ошибкой).
+    pub(crate) const fn is_cured_by_software_decode(&self) -> bool {
+        matches!(
+            self,
+            Self::RendererCannotShowHardwareFrame(_)
+                | Self::DescriptorRejected(
+                    DmaBufDescriptorRejection::UnsupportedComposedMultiObject { .. }
+                )
+        )
+    }
+}
+
+impl std::fmt::Display for DmaBufFallbackTrigger {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DescriptorRejected(rejection) => write!(formatter, "{rejection}"),
+            Self::RendererCannotShowHardwareFrame(refusal) => write!(formatter, "{refusal}"),
+        }
+    }
+}
+
 /// Pending runtime rejection, перенесённая из materialization stage к composition boundary.
 #[derive(Debug)]
-pub(crate) struct PendingDmaBufLayoutRejection {
-    /// Исходная typed descriptor/layout ошибка.
-    pub(crate) layout_rejection: DmaBufDescriptorRejection,
+pub(crate) struct PendingDmaBufFallback {
+    /// Исходная причина, по которой аппаратный кадр нельзя показать.
+    pub(crate) trigger: DmaBufFallbackTrigger,
     /// Generation кадра, на котором обнаружено ограничение.
     pub(crate) render_generation: u64,
     /// Typed player error с frame identity для финальной диагностики.
@@ -31,32 +85,32 @@ pub(crate) struct DmaBufRuntimeFallbackFailure {
 pub(crate) enum DmaBufRuntimeFallbackError {
     /// `hardware` запрещает software fallback по явной user policy.
     HardwareFallbackForbidden {
-        /// Исходная typed descriptor/layout ошибка.
-        layout_rejection: DmaBufDescriptorRejection,
+        /// Исходная причина, по которой аппаратный кадр нельзя показать.
+        trigger: DmaBufFallbackTrigger,
     },
     /// Текущий backend не является `auto` hardware path-ом, поэтому fallback неприменим.
     FallbackNotApplicable {
-        /// Исходная typed descriptor/layout ошибка.
-        layout_rejection: DmaBufDescriptorRejection,
+        /// Исходная причина, по которой аппаратный кадр нельзя показать.
+        trigger: DmaBufFallbackTrigger,
     },
     /// Для этого media generation controlled fallback уже пытались выполнить.
     FallbackLoopPrevented {
-        /// Исходная typed descriptor/layout ошибка.
-        layout_rejection: DmaBufDescriptorRejection,
+        /// Исходная причина, по которой аппаратный кадр нельзя показать.
+        trigger: DmaBufFallbackTrigger,
         /// Render generation, к которому привязана единственная попытка.
         render_generation: u64,
     },
     /// Capability snapshot не содержит заранее подтверждённого playable software plan-а.
     SoftwarePipelineUnavailable {
-        /// Исходная typed descriptor/layout ошибка.
-        layout_rejection: DmaBufDescriptorRejection,
+        /// Исходная причина, по которой аппаратный кадр нельзя показать.
+        trigger: DmaBufFallbackTrigger,
         /// Typed причина отказа selector-а.
         selection_error: VideoPipelineSelectionError,
     },
     /// Software backend startup либо worker restore/commit завершились ошибкой.
     SoftwarePipelineFailed {
-        /// Исходная typed descriptor/layout ошибка.
-        layout_rejection: DmaBufDescriptorRejection,
+        /// Исходная причина, по которой аппаратный кадр нельзя показать.
+        trigger: DmaBufFallbackTrigger,
         /// Typed failure controlled pipeline rebuild-а.
         fallback_failure: VideoPipelineRebuildError,
     },
@@ -65,34 +119,34 @@ pub(crate) enum DmaBufRuntimeFallbackError {
 impl std::fmt::Display for DmaBufRuntimeFallbackError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::HardwareFallbackForbidden { layout_rejection } => write!(
+            Self::HardwareFallbackForbidden { trigger } => write!(
                 formatter,
-                "unsupported DMA-BUF layout: {layout_rejection}; software fallback is forbidden by video.preferred_backend=hardware"
+                "hardware frame cannot be shown: {trigger}; software fallback is forbidden by video.preferred_backend=hardware"
             ),
-            Self::FallbackNotApplicable { layout_rejection } => write!(
+            Self::FallbackNotApplicable { trigger } => write!(
                 formatter,
-                "unsupported DMA-BUF layout: {layout_rejection}; runtime software fallback is not applicable to the active preference"
+                "hardware frame cannot be shown: {trigger}; runtime software fallback is not applicable to the active preference"
             ),
             Self::FallbackLoopPrevented {
-                layout_rejection,
+                trigger,
                 render_generation,
             } => write!(
                 formatter,
-                "unsupported DMA-BUF layout: {layout_rejection}; fallback loop prevented for render generation {render_generation}"
+                "hardware frame cannot be shown: {trigger}; fallback loop prevented for render generation {render_generation}"
             ),
             Self::SoftwarePipelineUnavailable {
-                layout_rejection,
+                trigger,
                 selection_error,
             } => write!(
                 formatter,
-                "unsupported DMA-BUF layout: {layout_rejection}; confirmed software fallback is unavailable: {selection_error}"
+                "hardware frame cannot be shown: {trigger}; confirmed software fallback is unavailable: {selection_error}"
             ),
             Self::SoftwarePipelineFailed {
-                layout_rejection,
+                trigger,
                 fallback_failure,
             } => write!(
                 formatter,
-                "unsupported DMA-BUF layout: {layout_rejection}; controlled software fallback failed: {fallback_failure}"
+                "hardware frame cannot be shown: {trigger}; controlled software fallback failed: {fallback_failure}"
             ),
         }
     }
@@ -112,24 +166,22 @@ impl DmaBufRuntimeFallbackController {
         &mut self,
         preference: VideoBackendPreference,
         render_generation: u64,
-        layout_rejection: DmaBufDescriptorRejection,
+        trigger: DmaBufFallbackTrigger,
         software_plan: Result<VideoPipelinePlan, VideoPipelineSelectionError>,
     ) -> Result<VideoPipelinePlan, DmaBufRuntimeFallbackError> {
         match preference {
             VideoBackendPreference::Hardware => {
-                return Err(DmaBufRuntimeFallbackError::HardwareFallbackForbidden {
-                    layout_rejection,
-                });
+                return Err(DmaBufRuntimeFallbackError::HardwareFallbackForbidden { trigger });
             }
             VideoBackendPreference::Software => {
-                return Err(DmaBufRuntimeFallbackError::FallbackNotApplicable { layout_rejection });
+                return Err(DmaBufRuntimeFallbackError::FallbackNotApplicable { trigger });
             }
             VideoBackendPreference::Auto => {}
         }
 
         if self.attempted_render_generation.is_some() {
             return Err(DmaBufRuntimeFallbackError::FallbackLoopPrevented {
-                layout_rejection,
+                trigger,
                 render_generation,
             });
         }
@@ -139,7 +191,7 @@ impl DmaBufRuntimeFallbackController {
 
         software_plan.map_err(|selection_error| {
             DmaBufRuntimeFallbackError::SoftwarePipelineUnavailable {
-                layout_rejection,
+                trigger,
                 selection_error,
             }
         })
@@ -152,11 +204,11 @@ impl DmaBufRuntimeFallbackController {
 
     /// Оборачивает startup/restore failure, не теряя исходную typed layout rejection.
     pub(crate) fn fallback_failed(
-        layout_rejection: DmaBufDescriptorRejection,
+        trigger: DmaBufFallbackTrigger,
         fallback_failure: VideoPipelineRebuildError,
     ) -> DmaBufRuntimeFallbackError {
         DmaBufRuntimeFallbackError::SoftwarePipelineFailed {
-            layout_rejection,
+            trigger,
             fallback_failure,
         }
     }
@@ -168,11 +220,13 @@ mod tests {
 
     use super::*;
 
-    fn unsupported_layout() -> DmaBufDescriptorRejection {
-        DmaBufDescriptorRejection::UnsupportedComposedMultiObject {
-            first_object_index: 0,
-            conflicting_object_index: 1,
-        }
+    fn unsupported_layout() -> DmaBufFallbackTrigger {
+        DmaBufFallbackTrigger::DescriptorRejected(
+            DmaBufDescriptorRejection::UnsupportedComposedMultiObject {
+                first_object_index: 0,
+                conflicting_object_index: 1,
+            },
+        )
     }
 
     fn software_plan() -> VideoPipelinePlan {
@@ -213,7 +267,9 @@ mod tests {
         assert!(matches!(
             error,
             DmaBufRuntimeFallbackError::SoftwarePipelineUnavailable {
-                layout_rejection: DmaBufDescriptorRejection::UnsupportedComposedMultiObject { .. },
+                trigger: DmaBufFallbackTrigger::DescriptorRejected(
+                    DmaBufDescriptorRejection::UnsupportedComposedMultiObject { .. }
+                ),
                 selection_error: VideoPipelineSelectionError::MissingSoftwareOutput,
             }
         ));
@@ -232,7 +288,9 @@ mod tests {
         assert!(matches!(
             error,
             DmaBufRuntimeFallbackError::SoftwarePipelineFailed {
-                layout_rejection: DmaBufDescriptorRejection::UnsupportedComposedMultiObject { .. },
+                trigger: DmaBufFallbackTrigger::DescriptorRejected(
+                    DmaBufDescriptorRejection::UnsupportedComposedMultiObject { .. }
+                ),
                 fallback_failure: VideoPipelineRebuildError::BackendStartup { .. },
             }
         ));
@@ -334,5 +392,96 @@ mod tests {
                 Ok(software_plan()),
             )
             .expect("explicit new media boundary receives a fresh one-shot guard");
+    }
+
+    fn renderer_refusal() -> DmaBufFallbackTrigger {
+        DmaBufFallbackTrigger::RendererCannotShowHardwareFrame(
+            HardwareFrameRefusal::DriverCannotImport {
+                details: "no sampler2D".to_owned(),
+            },
+        )
+    }
+
+    /// Отказ рендера в `auto` запускает программный фолбэк, как и составной multi-object.
+    #[test]
+    fn auto_accepts_software_fallback_for_a_renderer_refusal() {
+        let mut controller = DmaBufRuntimeFallbackController::default();
+
+        let selected = controller
+            .begin(
+                VideoBackendPreference::Auto,
+                3,
+                renderer_refusal(),
+                Ok(software_plan()),
+            )
+            .expect("a renderer refusal must start the software fallback");
+
+        assert_eq!(selected, software_plan());
+    }
+
+    /// `hardware` запрещает фолбэк и для отказа рендера; причина сохраняется целиком.
+    #[test]
+    fn hardware_preference_forbids_fallback_for_a_renderer_refusal() {
+        let mut controller = DmaBufRuntimeFallbackController::default();
+
+        let error = controller
+            .begin(
+                VideoBackendPreference::Hardware,
+                3,
+                renderer_refusal(),
+                Ok(software_plan()),
+            )
+            .expect_err("hardware preference must reject the fallback");
+
+        assert!(matches!(
+            error,
+            DmaBufRuntimeFallbackError::HardwareFallbackForbidden { trigger }
+                if trigger == renderer_refusal()
+        ));
+    }
+
+    /// Какие отказы склада кадров становятся причиной фолбэка, а какие нет.
+    #[test]
+    fn only_hardware_frame_refusals_become_fallback_triggers() {
+        let renderer_reason = FrameImportUnsupportedReason::RendererCannotShowHardwareFrame(
+            HardwareFrameRefusal::HostMemoryDescriptor,
+        );
+        assert_eq!(
+            DmaBufFallbackTrigger::from_unsupported_reason(&renderer_reason),
+            Some(DmaBufFallbackTrigger::RendererCannotShowHardwareFrame(
+                HardwareFrameRefusal::HostMemoryDescriptor
+            ))
+        );
+        let descriptor_reason = FrameImportUnsupportedReason::DmaBufDescriptorRejected(
+            DmaBufDescriptorRejection::AbsentLayers,
+        );
+        assert_eq!(
+            DmaBufFallbackTrigger::from_unsupported_reason(&descriptor_reason),
+            Some(DmaBufFallbackTrigger::DescriptorRejected(
+                DmaBufDescriptorRejection::AbsentLayers
+            ))
+        );
+        for unrelated in [
+            FrameImportUnsupportedReason::TransferPathNotHandledByActiveImport,
+            FrameImportUnsupportedReason::LayoutNotHandledByActiveImport,
+        ] {
+            assert_eq!(
+                DmaBufFallbackTrigger::from_unsupported_reason(&unrelated),
+                None,
+                "{unrelated:?}"
+            );
+        }
+    }
+
+    /// Лечится программным декодом: любой отказ рендера и составной multi-object; прочие
+    /// отказы дескриптора остаются ошибкой (прежняя политика).
+    #[test]
+    fn software_decode_cures_renderer_refusals_and_composed_layouts_only() {
+        assert!(renderer_refusal().is_cured_by_software_decode());
+        assert!(unsupported_layout().is_cured_by_software_decode());
+        assert!(
+            !DmaBufFallbackTrigger::DescriptorRejected(DmaBufDescriptorRejection::AbsentLayers)
+                .is_cured_by_software_decode()
+        );
     }
 }

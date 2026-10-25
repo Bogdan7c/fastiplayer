@@ -12,7 +12,7 @@
 //! | [`DmaBufMaterializeOutcome::Busy`]            | `Busy`: повторить без ожидания                       |
 //! | [`DmaBufMaterializeOutcome::Missing`]         | `Missing`                                            |
 //! | [`DmaBufMaterializeOutcome::ProviderFatal`]   | `Error` (фатальное состояние провайдера)             |
-//! | [`DmaBufMaterializeOutcome::Unsupported`]     | `Unsupported(DmaBufDescriptorRejected)` — запускает существующий `dma_buf_runtime_fallback` приложения (программный фолбэк) |
+//! | [`DmaBufMaterializeOutcome::Unsupported`]     | `Unsupported(DmaBufDescriptorRejected \| RendererCannotShowHardwareFrame)` — приложение запускает программный фолбэк |
 //! | [`DmaBufMaterializeOutcome::ImportFailed`]    | `Error`: драйвер отказал на валидном запросе         |
 //!
 //! `Unsupported` — это «ограничение, а не поломка»: HostPlanar-дескриптор на DMA-BUF пути,

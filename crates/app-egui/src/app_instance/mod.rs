@@ -17,9 +17,14 @@ use crate::startup_media::{InitialMedia, resolve_initial_media_arguments};
 mod forwarding;
 #[cfg(target_os = "linux")]
 mod linux;
+mod relaunch;
 
 pub(crate) use forwarding::{
     ForwardedPayload, RunningInstanceForwardingError, RunningInstanceForwardingFailure,
+};
+pub(crate) use relaunch::{
+    RelaunchRequest, ShutdownQuality, SystemExecutablePath, SystemProgramSpawner,
+    relaunch_after_release,
 };
 // Сквозной тест «второй запуск → первый» живёт у получателя (`instance_forwarding`).
 #[cfg(test)]

@@ -106,7 +106,7 @@ fn telemetry_panel_state_for_tests<'state>(
         telemetry,
         render_diagnostics,
         timeline_ui_state,
-        backend_name: "test-backend",
+        renderer_report: None,
         start_time,
         frame_duration_estimate_ms: 16.67,
     }
@@ -562,7 +562,7 @@ fn video_pipeline_rebuild_stops_before_vaapi_startup_when_selector_rejects() {
         .expect("Recovery must return selection error through ? to backend startup");
     // Запуск decoder-а (VA-API/FFmpeg по плану) — общий `start_decoder_backend`.
     let vaapi_factory_start = rebuild_section
-        .find("start_decoder_backend(plan)")
+        .find("start_decoder_backend(plan, ")
         .expect("Recovery must save the current decoder startup after selector");
 
     assert!(

@@ -2014,14 +2014,14 @@ APP_EGUI_GPU_TEST_ROOTS = (
     Path("crates/app-egui/src/web_media_open/content_probe_tests"),
     Path("crates/app-egui/src/media_open/web/tests"),
 )
-APP_EGUI_CONCRETE_RENDERER_PATTERN = re.compile(r"\brender_wgpu_shell\b")
+APP_EGUI_CONCRETE_RENDERER_PATTERN = re.compile(r"\b(?:render_wgpu_shell|render_gles2_shell)\b")
 APP_EGUI_GPU_API_PATTERN = re.compile(r"\b(?:render_wgpu_video|wgpu)::")
 
 
 def find_app_egui_concrete_renderer_violations(repo_root: Path) -> list[SourcePolicyViolation]:
     """Не даёт production app-egui снова увидеть конкретный рендер или GPU-API.
 
-    `render_wgpu_shell` разрешён только каталогу рендеров и GPU-тестам; `wgpu::` и
+    `render_wgpu_shell` и `render_gles2_shell` разрешены только каталогу рендеров и GPU-тестам; `wgpu::` и
     `render_wgpu_video::` — только GPU-тестам (в production они и не собрались бы: это
     dev-dependencies). Строки-комментарии не проверяются.
     """
@@ -2055,7 +2055,7 @@ def find_app_egui_concrete_renderer_violations(repo_root: Path) -> list[SourcePo
                     SourcePolicyViolation(
                         path=relative_path,
                         line_number=line_number,
-                        rule="only the app-egui renderer catalog (render_backend) may name render_wgpu_shell",
+                        rule="only the app-egui renderer catalog (render_backend) may name render_wgpu_shell or render_gles2_shell",
                         matched_text=stripped_line,
                     )
                 )

@@ -141,10 +141,6 @@ rgb_offset = [
 present_mode = "fifo"
 max_frame_latency = 2
 
-[render.opengles]
-enabled = false
-simple_ui = true
-
 [audio]
 volume = 0.0
 output_device = "default"

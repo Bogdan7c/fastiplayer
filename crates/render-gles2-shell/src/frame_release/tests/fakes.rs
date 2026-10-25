@@ -28,12 +28,12 @@ use super::super::binding::{Gles2FrameReleaseBinding, wrap_video_backend_for_gle
 use super::super::fence::PresentedFrameFence;
 
 /// Предел ожидания события в тестах: достаточно большой для медленной CI, но не бесконечный.
-pub(super) const EVENT_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const EVENT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Окно «ничего не должно произойти»: короче 100 мс, как требует план (поток-ожидатель
 /// дополнительно синхронизируется через `wait_until_waited`, так что окно не единственное
 /// доказательство).
-pub(super) const QUIET_WINDOW: Duration = Duration::from_millis(80);
+pub(crate) const QUIET_WINDOW: Duration = Duration::from_millis(80);
 
 /// Что сейчас отвечает fake-fence.
 #[derive(Clone, Copy)]
@@ -50,7 +50,7 @@ struct FakeFenceState {
 }
 
 /// Fence, которым управляет тест: `signal()` / `fail()`.
-pub(super) struct FakeFence {
+pub(crate) struct FakeFence {
     state: Mutex<FakeFenceState>,
     changed: Condvar,
     /// В каком потоке fence был разрушен (имитация `eglDestroySync`, который обязан случиться в
@@ -67,11 +67,11 @@ impl Drop for FakeFence {
 }
 
 impl FakeFence {
-    pub(super) fn pending() -> Arc<Self> {
+    pub(crate) fn pending() -> Arc<Self> {
         Self::with_outcome(FakeFenceOutcome::Pending)
     }
 
-    pub(super) fn already_signaled() -> Arc<Self> {
+    pub(crate) fn already_signaled() -> Arc<Self> {
         Self::with_outcome(FakeFenceOutcome::Signaled)
     }
 
@@ -87,17 +87,17 @@ impl FakeFence {
     }
 
     /// Журнал потоков, в которых fence был разрушен (пуст, пока fence жив).
-    pub(super) fn destruction_log(&self) -> Arc<Mutex<Vec<std::thread::ThreadId>>> {
+    pub(crate) fn destruction_log(&self) -> Arc<Mutex<Vec<std::thread::ThreadId>>> {
         Arc::clone(&self.destroyed_in)
     }
 
     /// GPU «прошёл» fence.
-    pub(super) fn signal(&self) {
+    pub(crate) fn signal(&self) {
         self.set_outcome(FakeFenceOutcome::Signaled);
     }
 
     /// Ожидание и проверка начинают отказывать потерей контекста.
-    pub(super) fn fail_with_context_loss(&self) {
+    pub(crate) fn fail_with_context_loss(&self) {
         self.set_outcome(FakeFenceOutcome::Failed(FenceWaitError::ContextLost(
             ContextLoss {
                 reason: ContextLossReason::EglContextLost,
@@ -112,7 +112,7 @@ impl FakeFence {
     }
 
     /// Ждёт, пока в `wait` зайдёт хотя бы один поток (поток-ожидатель реально ждёт fence).
-    pub(super) fn wait_until_waited(&self, timeout: Duration) -> bool {
+    pub(crate) fn wait_until_waited(&self, timeout: Duration) -> bool {
         let state = self.state.lock().expect("fake fence");
         let (state, _) = self
             .changed
@@ -151,7 +151,7 @@ impl PresentedFrameFence for FakeFence {
 
 /// Журнал внутреннего провайдера: какие кадры вернули и какие методы вызывали.
 #[derive(Default)]
-pub(super) struct InnerProviderLog {
+pub(crate) struct InnerProviderLog {
     released: Mutex<Vec<u64>>,
     released_changed: Condvar,
     /// Методы провайдера (`PresentFrameResourceProvider`), дошедшие до внутреннего провайдера.
@@ -162,12 +162,12 @@ pub(super) struct InnerProviderLog {
 
 impl InnerProviderLog {
     /// Номера вернувшихся кадров в порядке возврата (повтор — двойное освобождение).
-    pub(super) fn released_handles(&self) -> Vec<u64> {
+    pub(crate) fn released_handles(&self) -> Vec<u64> {
         self.released.lock().expect("journal").clone()
     }
 
     /// Ждёт, пока вернётся не меньше `count` кадров.
-    pub(super) fn wait_for_release_count(&self, count: usize, timeout: Duration) -> bool {
+    pub(crate) fn wait_for_release_count(&self, count: usize, timeout: Duration) -> bool {
         let released = self.released.lock().expect("journal");
         let (released, _) = self
             .released_changed
@@ -177,12 +177,12 @@ impl InnerProviderLog {
     }
 
     /// Имена вызванных методов внутреннего провайдера.
-    pub(super) fn called_provider_methods(&self) -> Vec<&'static str> {
+    pub(crate) fn called_provider_methods(&self) -> Vec<&'static str> {
         self.calls.lock().expect("journal").clone()
     }
 
     /// Имена вызванных методов внутреннего декодера.
-    pub(super) fn called_decoder_methods(&self) -> Vec<&'static str> {
+    pub(crate) fn called_decoder_methods(&self) -> Vec<&'static str> {
         self.decoder_calls.lock().expect("journal").clone()
     }
 
@@ -202,11 +202,11 @@ impl InnerProviderLog {
 }
 
 /// Внутренний провайдер: каждый lookup отвечает отличимым НЕ-дефолтным значением.
-pub(super) struct FakeInnerProvider {
-    pub(super) log: Arc<InnerProviderLog>,
+pub(crate) struct FakeInnerProvider {
+    pub(crate) log: Arc<InnerProviderLog>,
 }
 
-pub(super) fn lock_wait(micros: u64) -> Duration {
+pub(crate) fn lock_wait(micros: u64) -> Duration {
     Duration::from_micros(micros)
 }
 
@@ -264,7 +264,7 @@ impl PresentFrameResourceProvider for FakeInnerProvider {
 }
 
 /// Fake-декодер: каждый метод отвечает отличимым не-дефолтным значением и пишет своё имя.
-pub(super) struct FakeDecoder {
+pub(crate) struct FakeDecoder {
     provider: PresentFrameResourceProviderHandle,
     log: Arc<InnerProviderLog>,
     activity: VideoDecoderActivitySnapshot,
@@ -279,7 +279,7 @@ impl Drop for FakeDecoder {
 }
 
 /// Значение, которое fake-декодер отдаёт из `decoder_resource_snapshot`.
-pub(super) fn fake_resource_snapshot() -> DecoderResourceSnapshot {
+pub(crate) fn fake_resource_snapshot() -> DecoderResourceSnapshot {
     DecoderResourceSnapshot {
         capacity: 11,
         slots: 7,
@@ -295,7 +295,7 @@ pub(super) fn fake_resource_snapshot() -> DecoderResourceSnapshot {
 }
 
 /// Значение `host_upload_resource_snapshot` fake-декодера.
-pub(super) fn fake_host_upload_snapshot() -> HostUploadResourceSnapshot {
+pub(crate) fn fake_host_upload_snapshot() -> HostUploadResourceSnapshot {
     HostUploadResourceSnapshot {
         host_frames_ready: 6,
         host_frames_in_flight: 5,
@@ -306,7 +306,7 @@ pub(super) fn fake_host_upload_snapshot() -> HostUploadResourceSnapshot {
 }
 
 /// Значение `decoder_control_channel_pressure` fake-декодера.
-pub(super) fn fake_control_pressure() -> VideoDecoderControlChannelPressureSnapshot {
+pub(crate) fn fake_control_pressure() -> VideoDecoderControlChannelPressureSnapshot {
     VideoDecoderControlChannelPressureSnapshot {
         control_channel_len: 3,
         control_channel_capacity: 16,
@@ -448,21 +448,21 @@ impl VideoDecoderThreadHandle for FakeDecoder {
 }
 
 /// Собранный стенд: привязка, обёрнутый backend и всё, что нужно для наблюдения.
-pub(super) struct Harness {
-    pub(super) binding: Gles2FrameReleaseBinding,
+pub(crate) struct Harness {
+    pub(crate) binding: Gles2FrameReleaseBinding,
     /// Что видит плеер: провайдер для render leases.
-    pub(super) renderer_provider: PresentFrameResourceProviderHandle,
+    pub(crate) renderer_provider: PresentFrameResourceProviderHandle,
     /// Обёрнутый backend (`None` после `drop_backend`).
-    pub(super) backend: Option<StartedVideoBackend>,
-    pub(super) inner_log: Arc<InnerProviderLog>,
+    pub(crate) backend: Option<StartedVideoBackend>,
+    pub(crate) inner_log: Arc<InnerProviderLog>,
     /// Приходит сообщение, когда fake-декодер уничтожен.
-    pub(super) decoder_dropped: Receiver<()>,
+    pub(crate) decoder_dropped: Receiver<()>,
     /// Уведомитель активности: держим, чтобы подписка fake-декодера оставалась живой.
-    pub(super) activity_notifier: VideoDecoderActivityNotifier,
+    pub(crate) activity_notifier: VideoDecoderActivityNotifier,
 }
 
 impl Harness {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let inner_log = Arc::new(InnerProviderLog::default());
         let inner_provider = PresentFrameResourceProviderHandle::new(FakeInnerProvider {
             log: Arc::clone(&inner_log),
@@ -491,19 +491,19 @@ impl Harness {
     }
 
     /// Публикует fake-fence как fence последнего кадра показа.
-    pub(super) fn publish(&self, fence: &Arc<FakeFence>) {
+    pub(crate) fn publish(&self, fence: &Arc<FakeFence>) {
         let fence: Arc<dyn PresentedFrameFence> = fence.clone();
         self.binding.publish_fence(fence);
     }
 
     /// Плеер просит вернуть кадр `raw_handle` через провайдер render leases.
-    pub(super) fn request_release(&self, raw_handle: u64) {
+    pub(crate) fn request_release(&self, raw_handle: u64) {
         self.renderer_provider
             .release_frame(FrameResourceHandle(raw_handle));
     }
 
     /// Ждёт уничтожения fake-декодера.
-    pub(super) fn wait_decoder_dropped(&self) -> bool {
+    pub(crate) fn wait_decoder_dropped(&self) -> bool {
         self.decoder_dropped.recv_timeout(EVENT_TIMEOUT).is_ok()
     }
 }

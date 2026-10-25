@@ -10,11 +10,11 @@ use render_core::{
     RenderCapabilities, RenderDiagnostics, RenderLiveSettings, RenderLiveSettingsAdapter,
 };
 use render_shell_api::{
-    PresentationDetachOutcome, PresentationReattachError, PresentationReattachOutcome,
-    PresentationReconfigureError, PresentationReconfigured, RenderFrameInput, RenderFrameOutcome,
-    RenderHotPathStats, RenderScreenDescriptor, RenderShell, RenderSurfaceSize, RendererFamily,
-    RendererGpuDrainError, RendererInstanceId, SurfaceFrameAcquire, SurfacePresentSettings,
-    VideoFrameImport, VideoImportPreparer,
+    FollowUpFrame, PresentationDetachOutcome, PresentationReattachError,
+    PresentationReattachOutcome, PresentationReconfigureError, PresentationReconfigured,
+    RenderFrameInput, RenderFrameOutcome, RenderHotPathStats, RenderScreenDescriptor, RenderShell,
+    RenderSurfaceSize, RendererFamily, RendererGpuDrainError, RendererInstanceId,
+    SurfaceFrameAcquire, SurfacePresentSettings, VideoFrameImport, VideoImportPreparer,
 };
 use render_wgpu_video::VideoHotPathStats;
 
@@ -101,6 +101,12 @@ impl RenderShell for Renderer {
     /// пересоздания рендера начинаются с нуля.
     fn hot_path_stats(&self) -> RenderHotPathStats {
         neutral_hot_path_stats(self.video_renderer.hot_path_stats())
+    }
+
+    /// wgpu считает всё в кадре, где рисует: фоновой работы, меняющей картинку без новых
+    /// входных данных, у него нет.
+    fn needs_follow_up_frame(&self) -> FollowUpFrame {
+        FollowUpFrame::NotNeeded
     }
 
     fn video_frames(&mut self) -> &mut dyn VideoFrameImport {

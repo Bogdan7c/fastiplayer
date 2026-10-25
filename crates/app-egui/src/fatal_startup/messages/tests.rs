@@ -55,6 +55,10 @@ fn every_reason() -> Vec<FatalStartupReason> {
 /// Слово в стиле Rust-идентификатора (`OwnerMismatch`, `PermissionDenied`):
 /// заглавная буква после строчной внутри одного латинского слова.
 fn looks_like_rust_identifier(word: &str) -> bool {
+    // Название графического API — бренд, а не идентификатор Rust.
+    if word == "OpenGL" {
+        return false;
+    }
     let letters: Vec<char> = word.chars().collect();
     letters
         .windows(2)
@@ -184,5 +188,9 @@ fn startup_graphics_failure_keeps_the_original_vulkan_text() {
     );
 
     assert_eq!(notice.title, FATAL_STARTUP_TITLE);
-    assert!(notice.message.contains("graphics card with Vulkan support"));
+    assert!(
+        notice
+            .message
+            .contains("graphics card with Vulkan or OpenGL ES 2.0 support")
+    );
 }

@@ -111,7 +111,7 @@ fn text_reaches_stderr_even_when_every_graphical_channel_fails() {
     let printed = String::from_utf8(text_output).expect("utf-8 text");
     assert_eq!(delivery, NoticeDelivery::TextOutputOnly);
     assert!(printed.starts_with("Fastiplayer could not start.\n"));
-    assert!(printed.contains("graphics card with Vulkan support"));
+    assert!(printed.contains("graphics card with Vulkan or OpenGL ES 2.0 support"));
     // Техническая деталь — только в лог, не пользователю.
     assert!(!printed.contains("no adapter"));
 }

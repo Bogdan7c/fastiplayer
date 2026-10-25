@@ -1,4 +1,4 @@
-schema_version = 23
+schema_version = 24
 
 [player]
 start_paused = false
@@ -120,7 +120,7 @@ live_scrub_decode_mode = "throttled_latest"
 live_scrub_max_hz = 60
 
 [render]
-profile = "vulkan"
+profile = "auto"
 tone_mapping = "disabled"
 
 [render.hdr_to_sdr]
@@ -148,10 +148,6 @@ rgb_offset = [
 [render.vulkan]
 present_mode = "fifo"
 max_frame_latency = 2
-
-[render.opengles]
-enabled = false
-simple_ui = true
 
 [audio]
 volume = 0.8

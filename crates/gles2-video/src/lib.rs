@@ -52,6 +52,7 @@ mod geometry;
 )]
 mod gl_calls;
 mod hdr;
+mod hdr_table_builder;
 mod hdr_table_texture;
 mod layer_api;
 mod overlay;

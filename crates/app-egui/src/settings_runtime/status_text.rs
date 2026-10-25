@@ -248,6 +248,7 @@ fn applied_route_text(mechanism: ApplyMechanism) -> &'static str {
         ApplyMechanism::PipelineRebuild | ApplyMechanism::RendererRecreate => {
             "applied; playback may have been briefly interrupted"
         }
+        ApplyMechanism::AppliesAfterRestart => "saved; applies after restart",
     }
 }
 
@@ -305,6 +306,11 @@ pub(super) fn group_result(
     group: &AppRuntimeRouteGroup,
     route_result: &AppRouteApplyResult,
 ) -> AppRouteApplyResult {
-    let _ = group;
-    route_result.clone()
+    match group {
+        // Профиль рендера при успехе транзакции только сохранён: эффект после перезапуска.
+        AppRuntimeRouteGroup::RenderProfileRestart if route_result.is_success() => {
+            AppRouteApplyResult::AppliesAfterRestart
+        }
+        _ => route_result.clone(),
+    }
 }

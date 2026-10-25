@@ -198,6 +198,7 @@ dependencies = [
  "png",
  "pollster",
  "render-core",
+ "render-gles2-shell",
  "render-shell-api",
  "render-wgpu-shell",
  "render-wgpu-video",
@@ -4204,6 +4205,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "codec-core",
+ "egui",
  "gles2-egui",
  "gles2-video",
  "libc",
@@ -4218,7 +4220,10 @@ dependencies = [
  "thiserror 2.0.18",
  "video-backend-api",
  "video-core",
+ "video-ffmpeg",
  "video-frame-contract",
+ "video-present-core",
+ "winit 0.30.13 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]

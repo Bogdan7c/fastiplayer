@@ -250,6 +250,18 @@ impl Gles2Context {
         issued.map_err(|error| self.observe_egl_error(error))
     }
 
+    /// Синхронно дожидается GPU (`glFinish`): запасной путь, когда fence поставить не удалось, а
+    /// отправленные команды читают чужой ресурс (кадр декодера). Дорого: CPU ждёт GPU.
+    ///
+    /// # Errors
+    /// Контекст потерян или не может стать текущим.
+    pub fn finish_submitted_commands(&mut self) -> Result<(), Gles2Error> {
+        self.ensure_current_for_mutation()?;
+        let gl = CurrentGl::after_make_current(&self.gl);
+        crate::fence::GpuCommandSubmission::finish(&gl);
+        Ok(())
+    }
+
     /// Опрос сброса GPU (`glGetGraphicsResetStatus*`). Вызывается и сам — после каждого показа.
     pub fn check_context_health(&mut self) -> Result<(), ContextLoss> {
         self.health.get().ensure_healthy()?;
@@ -334,9 +346,11 @@ impl Gles2Context {
         }
     }
 
-    /// Пометить контекст потерянным (тест: настоящий сброс GPU в тестах вызвать нельзя).
-    #[cfg(test)]
-    pub(crate) fn simulate_context_loss(&self, loss: ContextLoss) {
+    /// Пометить контекст потерянным (тест: настоящий сброс GPU вызвать нельзя). Публичен под
+    /// feature `test-support` для тестов потребителей (`render-gles2-shell`: путь потери
+    /// устройства рендера); в production-сборку feature не входит.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn simulate_context_loss(&self, loss: ContextLoss) {
         self.health.set(ContextHealth::Lost(loss));
     }
 

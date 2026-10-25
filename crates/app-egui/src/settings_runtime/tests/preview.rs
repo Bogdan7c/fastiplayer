@@ -119,7 +119,7 @@ fn reset_group_profile_hits_both_visual_profile_groups() {
         .expect("render.tone_mapping should read");
     assert_eq!(
         profile_value,
-        SettingValue::Select(SettingOptionId::from("vulkan"))
+        SettingValue::Select(SettingOptionId::from("auto"))
     );
     assert_eq!(
         tone_mapping_value,

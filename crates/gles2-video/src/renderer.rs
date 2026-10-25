@@ -22,6 +22,7 @@ use crate::draw_uniforms::{DrawUniformValues, PlaneSampling};
 use crate::frame_color::ColorUniformValues;
 use crate::geometry::{PixelRect, to_gl_window_rect, uncovered_parts};
 use crate::gl_calls::{PlaneTextureFormat, VideoGl};
+use crate::hdr_table_builder::HdrTableBuilder;
 use crate::hdr_table_texture::{HdrTableReadiness, HdrTableTexture};
 use crate::layer_api::{
     PlaneFormatPreference, RowLengthPreference, UploadOutcome, UploadReport, VideoDrawError,
@@ -58,6 +59,8 @@ pub struct VideoLayerRenderer {
     row_length: RowLengthSupport,
     /// Таблица HDR → SDR; создаётся при первом HDR-кадре.
     hdr_table: Option<HdrTableTexture>,
+    /// Фоновая сборка новых таблиц, пока на GPU лежит старая (решение владельца 38).
+    hdr_table_builder: HdrTableBuilder,
     max_texture_size: u32,
     stats: VideoLayerStats,
     destroyed: bool,
@@ -113,6 +116,7 @@ impl VideoLayerRenderer {
             plane_format,
             row_length,
             hdr_table: None,
+            hdr_table_builder: HdrTableBuilder::new(),
             max_texture_size,
             stats: VideoLayerStats::default(),
             destroyed: false,
@@ -147,6 +151,23 @@ impl VideoLayerRenderer {
         self.ring
             .current_key()
             .or_else(|| self.dma_buf_imports.current_key())
+    }
+
+    /// Новая таблица HDR → SDR ещё считается в фоне: картинка рисуется со старой таблицей и
+    /// изменится, когда сборка закончится. Пока `true`, вызывающий обязан продолжать показывать
+    /// кадры (перерисовывать видео), иначе новая таблица не будет подхвачена: готовность
+    /// замечает только `draw`. Без HDR-кадров и без смены параметров всегда `false`.
+    #[must_use]
+    pub const fn has_pending_hdr_table(&self) -> bool {
+        self.hdr_table_builder.has_pending_work()
+    }
+
+    /// Отзывает ожидание новой таблицы HDR → SDR: видео на экране больше нет (файл закрыт,
+    /// кадра нет), и ждать готовность некому. Вызывать в кадре без видео; после этого
+    /// [`Self::has_pending_hdr_table`] — `false`, даже если фон ещё досчитывает (его результат
+    /// будет выброшен). Следующий HDR-кадр сам запросит нужную таблицу.
+    pub fn abandon_pending_hdr_table(&mut self) {
+        self.hdr_table_builder.withdraw();
     }
 
     /// Накопленные счётчики.
@@ -330,9 +351,12 @@ impl VideoLayerRenderer {
     /// VAO не тронут (контракт слоя кадра), scissor выключен, активен текстурный блок 0, viewport
     /// снова на всю цель.
     ///
-    /// Таблица HDR → SDR считается и загружается здесь же, когда её ключ (передаточная функция,
-    /// уровни) отличается от загруженного: на смене настроек, а не на кадр
-    /// ([`VideoLayerStats::hdr_table_builds`]).
+    /// Таблица HDR → SDR готовится здесь же, когда её ключ (передаточная функция, уровни)
+    /// отличается от загруженного: на смене настроек, а не на кадр
+    /// ([`VideoLayerStats::hdr_table_builds`]). Самая первая таблица считается синхронно; если на
+    /// GPU уже есть таблица прежних параметров, новая считается в фоновом потоке, а кадр
+    /// рисуется со старой, пока [`Self::has_pending_hdr_table`] не станет `false`
+    /// (решение владельца 38).
     ///
     /// # Errors
     /// [`VideoDrawError`]: чужой контекст, прямоугольник вне координат GL, HDR для 8-битного
@@ -383,18 +407,33 @@ impl VideoLayerRenderer {
         let gl = VideoGl::for_active_frame(frame);
         let hdr_table = match current.as_ref().and_then(PlannedFrame::hdr_table) {
             Some(required) => {
-                let (texture, readiness) = HdrTableTexture::ensure(
+                let ensured = HdrTableTexture::ensure(
                     &mut self.hdr_table,
+                    &mut self.hdr_table_builder,
                     gl,
                     required,
                     self.max_texture_size,
                 )?;
-                if readiness == HdrTableReadiness::Built {
-                    self.stats.hdr_table_builds += 1;
+                match ensured.readiness {
+                    HdrTableReadiness::BuiltSynchronously => {
+                        self.stats.hdr_table_builds += 1;
+                        self.stats.hdr_table_sync_builds += 1;
+                    }
+                    HdrTableReadiness::InstalledFromBackground => {
+                        self.stats.hdr_table_builds += 1;
+                        self.stats.hdr_table_background_builds += 1;
+                    }
+                    HdrTableReadiness::AlreadyLoaded | HdrTableReadiness::OldWhileBuilding => {}
                 }
-                Some(texture)
+                self.stats.hdr_table_superseded = self.hdr_table_builder.superseded_requests();
+                Some(ensured.texture)
             }
-            None => None,
+            None => {
+                // Кадр без HDR → SDR (SDR-кадр, видео нет): ждать новую таблицу некому и
+                // незачем, иначе `has_pending_hdr_table` держал бы приложение в перерисовке.
+                self.hdr_table_builder.withdraw();
+                None
+            }
         };
         gl.set_opaque_video_state();
         for clear_rect in uncovered {

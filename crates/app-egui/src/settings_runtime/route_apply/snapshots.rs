@@ -148,6 +148,10 @@ pub(super) fn combine_player_in_place_results(
                 baseline.value(),
                 current.value()
             )),
+            // Player-маршруты restart-bound настроек не содержат: это нарушение контракта.
+            AppRouteApplyResult::AppliesAfterRestart => {
+                failures.push("unexpected restart-bound outcome in a player route".to_owned());
+            }
             AppRouteApplyResult::RuntimeBusy { activity } => {
                 runtime_busy.get_or_insert(activity);
             }
@@ -202,47 +206,35 @@ pub(super) fn player_group_result(
 /// Snapshot renderer lifecycle настроек, которые нельзя применить как live preview.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RenderCommittedRuntimeSnapshot {
-    /// Renderer profile selection.
-    profile: RenderProfile,
-
     /// Legacy tone mapping config.
     tone_mapping: ToneMappingMode,
 
     /// Vulkan committed settings.
     vulkan: VulkanConfig,
-
-    /// OpenGL ES committed settings.
-    opengles: fastiplayer_config::OpenGlesConfig,
 }
 
 impl RenderCommittedRuntimeSnapshot {
     /// Создаёт snapshot из full config-а.
     pub(super) fn from_config(config: &AppConfig) -> Self {
         Self {
-            profile: config.render.profile,
             tone_mapping: config.render.tone_mapping,
             vulkan: config.render.vulkan.clone(),
-            opengles: config.render.opengles.clone(),
         }
     }
 
     /// Создаёт snapshot из committed route payload-а.
     pub(super) fn from_update(update: &RenderCommittedSettingsUpdate) -> Self {
         Self {
-            profile: update.profile,
             tone_mapping: update.tone_mapping,
             vulkan: update.vulkan.clone(),
-            opengles: update.opengles.clone(),
         }
     }
 
     /// Восстанавливает typed payload предыдущей конфигурации для compensating rollback-а.
     pub(super) fn to_update(&self) -> RenderCommittedSettingsUpdate {
         RenderCommittedSettingsUpdate {
-            profile: self.profile,
             tone_mapping: self.tone_mapping,
             vulkan: self.vulkan.clone(),
-            opengles: self.opengles.clone(),
         }
     }
 }

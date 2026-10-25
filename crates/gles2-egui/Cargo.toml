@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 description = "Переиспользуемый рендер OpenGL ES 2.0 для egui: EGL-контекст на окне, возможности драйвера, художник egui, маска скруглённых углов, показ, fence и потеря контекста"
 
+[features]
+# Хуки для тестов потребителей (например, имитация потери контекста). В production не включается.
+test-support = []
+
 # Переиспользуемый crate (issue #6, план user/gles2-renderer/): ни одной зависимости от crate-ов
 # плеера. Это проверяет scripts/check-refactor-guardrails.py.
 [dependencies]

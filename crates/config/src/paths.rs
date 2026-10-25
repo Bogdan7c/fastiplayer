@@ -16,6 +16,9 @@ const PLAYLIST_RESUME_FILE_NAME: &str = "playlist-resume.json";
 /// Имя файла памяти выбора дорожек и задержки субтитров по видео.
 const TRACK_MEMORY_FILE_NAME: &str = "track-memory.json";
 
+/// Имя метки «запуск рендера не дошёл до первого кадра» (сессия 09 плана gles2-renderer).
+const RENDERER_STARTUP_MARKER_FILE_NAME: &str = "renderer-startup.marker";
+
 /// Имя стабильного lock artifact, который нельзя удалять между запусками.
 const APP_INSTANCE_LOCK_FILE_NAME: &str = "fastiplayer.instance.lock";
 
@@ -85,6 +88,13 @@ impl ConfigPaths {
         self.config_dir.join(TRACK_MEMORY_FILE_NAME)
     }
 
+    /// Строит путь к метке незавершённого старта рендера: файл существует, только пока
+    /// запуск не дошёл до первого показанного кадра.
+    #[must_use]
+    pub fn renderer_startup_marker_file(&self) -> PathBuf {
+        self.config_dir.join(RENDERER_STARTUP_MARKER_FILE_NAME)
+    }
+
     /// Строит путь к стабильному process-instance lock artifact.
     #[must_use]
     pub fn app_instance_lock_file(&self) -> PathBuf {
@@ -116,6 +126,10 @@ mod tests {
         assert_eq!(
             paths.track_memory_file(),
             config_root.join("track-memory.json")
+        );
+        assert_eq!(
+            paths.renderer_startup_marker_file(),
+            config_root.join("renderer-startup.marker")
         );
         assert_eq!(
             paths.app_instance_lock_file(),

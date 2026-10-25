@@ -50,6 +50,7 @@ mod english_texts;
 mod hardware_decode_hint;
 mod preview;
 mod render_keeps_draft;
+mod render_profile_restart;
 mod session_only_persistence;
 mod sidebar_resize;
 mod snapshot_routes;

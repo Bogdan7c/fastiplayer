@@ -25,8 +25,8 @@ use winit::window::Window;
 
 use crate::app_wake::AppWakePort;
 use crate::dma_buf_runtime_fallback::{
-    DmaBufRuntimeFallbackController, DmaBufRuntimeFallbackError, DmaBufRuntimeFallbackFailure,
-    PendingDmaBufLayoutRejection,
+    DmaBufFallbackTrigger, DmaBufRuntimeFallbackController, DmaBufRuntimeFallbackError,
+    DmaBufRuntimeFallbackFailure, PendingDmaBufFallback,
 };
 use crate::local_file_open::{LocalFileOpenJob, LocalFileOpenRestoreOutcome, LocalFileOpenResult};
 use crate::local_open_message::local_open_preparing_message;
@@ -88,6 +88,7 @@ pub(crate) use playlist_transport::LifecycleTimelineSeekSettlement;
 pub(crate) use playlist_transport::settle_timeline_seek_receipts_until;
 mod present_frame_cache;
 mod redraw_runtime;
+mod renderer_follow_up;
 pub(crate) use redraw_runtime::{RetainedUiGeometry, SettingsVisualFacts};
 mod rendered_ui;
 pub(crate) use rendered_ui::{AppUiRenderTimings, PlaylistUiFrameModels, RenderedAppUi};
@@ -133,7 +134,7 @@ pub(crate) use media_jobs::ActiveMediaSource;
 pub use present_frame_cache::PresentFrameAcquisition;
 pub use present_frame_cache::RenderablePresentFrame;
 pub(crate) use startup_context::AppStateStartupContext;
-use startup_context::player_timeline_wake_bridge;
+use startup_context::{announce_renderer_selection, player_timeline_wake_bridge};
 pub(crate) use subtitles::SubmittedFrameForSubtitles;
 pub(crate) use subtitles::SubtitleMenuTrack;
 pub(crate) use subtitles::{
@@ -251,7 +252,7 @@ pub struct AppState {
     /// Exactly-once policy state runtime DMA-BUF -> software fallback-а.
     dma_buf_runtime_fallback: DmaBufRuntimeFallbackController,
     /// Layout rejection, ожидающая обработки на app composition boundary.
-    pending_dma_buf_layout_rejection: Option<PendingDmaBufLayoutRejection>,
+    pending_dma_buf_fallback: Option<PendingDmaBufFallback>,
 
     /// Последний локальный файл, открытый shell-ом, для восстановления после suspend.
     current_local_file: Option<PathBuf>,
@@ -298,6 +299,9 @@ pub struct AppState {
 
     /// Кэш строк telemetry panel; живёт в UI-слое и не владеет playback/render state.
     telemetry_panel_cache: TelemetryPanelCache,
+
+    /// Отчёт выбора рендера при старте: строка телеметрии и источник семейства рендера.
+    renderer_report: Option<crate::render_backend::RendererStartupReport>,
 
     /// Анимация выезда settings sidebar; runtime open-state остаётся целью перехода.
     sidebar_controller: SidebarController,
@@ -426,7 +430,7 @@ impl AppState {
             backend_swap_frozen_frame: None,
             backend_swap_from_generation: None,
             dma_buf_runtime_fallback: DmaBufRuntimeFallbackController::default(),
-            pending_dma_buf_layout_rejection: None,
+            pending_dma_buf_fallback: None,
             current_local_file: None,
             active_media_source: None,
             vod_endpoint_recovery: vod_endpoint_recovery::VodEndpointRecoveryRuntimeState::default(
@@ -451,6 +455,7 @@ impl AppState {
             track_memory: startup_context.track_memory.clone(),
             timeline_ui_state: TimelineUiState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
+            renderer_report: startup_context.renderer_report.clone(),
             sidebar_controller: SidebarController::default(),
             fullscreen_chrome: crate::fullscreen_chrome::FullscreenChromeController::default(),
             url_sidebar_controller: crate::web_media_stream_model::UrlSidebarController::default(),
@@ -464,6 +469,11 @@ impl AppState {
             sidebar_slide_last_tick: None,
             redraw,
         };
+        announce_renderer_selection(
+            app_state.renderer_report.as_ref(),
+            &mut app_state.notifications,
+            Instant::now(),
+        );
         match subtitle_feed_receiver {
             Some(receiver) => app_state.attach_subtitle_feed(receiver),
             None => {

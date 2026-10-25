@@ -38,6 +38,7 @@ use winit::window::Window;
 
 use crate::egui_compositor::{EguiCompositor, EguiFrameRefusal};
 use crate::frame::{clamp_video_exclusion_rects_to_screen, clamp_video_viewport_to_screen};
+use crate::probe::ProbedVulkanInstance;
 use crate::subtitle_overlay::{
     SubtitleOverlayRenderer, SubtitleOverlayTarget, SubtitleOverlayUploadStats,
 };
@@ -55,7 +56,7 @@ mod present_target;
 mod render_shell;
 mod surface_acquire;
 
-use gpu_context::GpuContext;
+use gpu_context::{GpuContext, vulkan_instance};
 use present_target::{PresentTarget, TargetFrame};
 
 /// Превращает длительность в миллисекунды для числовых tracing fields.
@@ -110,8 +111,32 @@ impl Renderer {
     /// - egui_wgpu renderer
     #[instrument(skip(window))]
     pub fn new(window: Arc<Window>, surface_present: SurfacePresentSettings) -> Result<Self> {
-        let (gpu, target) =
-            pollster::block_on(GpuContext::new_for_window(window, surface_present))?;
+        Self::new_on_instance(window, surface_present, vulkan_instance())
+    }
+
+    /// Создаёт рендерер на Vulkan instance, оставшемся от пробы того же запуска: второй
+    /// instance (загрузка loader-а и слоёв) не создаётся. Выбор адаптера, устройство и
+    /// surface — те же, что у [`Self::new`].
+    #[instrument(skip(window, probed_instance))]
+    pub fn new_reusing_instance(
+        window: Arc<Window>,
+        surface_present: SurfacePresentSettings,
+        probed_instance: ProbedVulkanInstance,
+    ) -> Result<Self> {
+        Self::new_on_instance(window, surface_present, probed_instance.into_instance())
+    }
+
+    /// Общий путь создания: instance приходит снаружи, остальное не зависит от его источника.
+    fn new_on_instance(
+        window: Arc<Window>,
+        surface_present: SurfacePresentSettings,
+        instance: wgpu::Instance,
+    ) -> Result<Self> {
+        let (gpu, target) = pollster::block_on(GpuContext::new_for_window(
+            window,
+            surface_present,
+            instance,
+        ))?;
         Ok(Self::from_gpu_and_target(gpu, target))
     }
 

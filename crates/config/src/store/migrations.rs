@@ -6,7 +6,7 @@ use crate::{
     LEGACY_SCHEMA_VERSION_13, LEGACY_SCHEMA_VERSION_14, LEGACY_SCHEMA_VERSION_15,
     LEGACY_SCHEMA_VERSION_16, LEGACY_SCHEMA_VERSION_17, LEGACY_SCHEMA_VERSION_18,
     LEGACY_SCHEMA_VERSION_19, LEGACY_SCHEMA_VERSION_20, LEGACY_SCHEMA_VERSION_21,
-    LEGACY_SCHEMA_VERSION_22,
+    LEGACY_SCHEMA_VERSION_22, LEGACY_SCHEMA_VERSION_23,
 };
 
 pub(super) const REMOVED_HARDWARE_DECODE_ONLY_KEY: &str = "hardware_decode_only";
@@ -55,9 +55,12 @@ pub(super) fn normalize_document(toml_document: &mut toml::Value) {
     if schema_at_most(root_table, LEGACY_SCHEMA_VERSION_10) {
         migrate_playlist_error_behavior_to_skip(root_table);
     }
+    if schema_at_most(root_table, LEGACY_SCHEMA_VERSION_23) {
+        migrate_render_profile_to_auto(root_table);
+    }
 }
 
-/// Поднимает поддерживаемые v2-v20 структуры до текущей in-memory версии.
+/// Поднимает поддерживаемые v2-v23 структуры до текущей in-memory версии.
 pub(super) fn upgrade_config(config: &mut AppConfig) {
     if matches!(
         config.schema_version,
@@ -82,6 +85,7 @@ pub(super) fn upgrade_config(config: &mut AppConfig) {
             | LEGACY_SCHEMA_VERSION_20
             | LEGACY_SCHEMA_VERSION_21
             | LEGACY_SCHEMA_VERSION_22
+            | LEGACY_SCHEMA_VERSION_23
     ) {
         config.schema_version = CURRENT_SCHEMA_VERSION;
     }
@@ -108,6 +112,28 @@ fn migrate_playlist_error_behavior_to_skip(root_table: &mut toml::Table) {
     if error_behavior.as_str() == Some(PLAYLIST_ERROR_BEHAVIOR_STOP_ID) {
         *error_behavior = toml::Value::String(PLAYLIST_ERROR_BEHAVIOR_SKIP_ID.to_owned());
     }
+}
+
+/// Значения `render.profile` в TOML (serde `lowercase` у `RenderProfile`).
+const RENDER_PROFILE_VULKAN_ID: &str = "vulkan";
+const RENDER_PROFILE_AUTO_ID: &str = "auto";
+
+/// v23 → v24: `render.profile = "vulkan"` становится `"auto"`, `[render.opengles]` удаляется.
+///
+/// Решение владельца (gles2-renderer, сессия 09, №36): default-документ v23 писал
+/// `vulkan` явно, отличить сознательный выбор нельзя, поэтому новый default `auto`
+/// применяется ко всем. Другие значения (`auto`, `opengles`) не трогаются. Таблица
+/// `[render.opengles]` целиком снимается: её поля больше не существуют в схеме.
+fn migrate_render_profile_to_auto(root_table: &mut toml::Table) {
+    let Some(toml::Value::Table(render_table)) = root_table.get_mut("render") else {
+        return;
+    };
+    if let Some(profile) = render_table.get_mut("profile")
+        && profile.as_str() == Some(RENDER_PROFILE_VULKAN_ID)
+    {
+        *profile = toml::Value::String(RENDER_PROFILE_AUTO_ID.to_owned());
+    }
+    render_table.remove("opengles");
 }
 
 /// Переносит web-media policy из extractor-specific `[yt_dlp]` в `[web_media]`.

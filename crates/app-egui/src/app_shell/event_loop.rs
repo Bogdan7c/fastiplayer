@@ -29,6 +29,7 @@ use super::AppShell;
 use super::escape_dismissal;
 use super::hotkeys::{self, ShellHotkeyAction};
 use super::shutdown::AppShellProcessLifecycle;
+use crate::app_instance::RelaunchRequest;
 use crate::ui::keyboard_focus::keyboard_focus_owner;
 
 /// Запрашивает redraw только после реально видимой UI mutation и только для живого окна.
@@ -351,10 +352,22 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                     &mut self.settings_runtime,
                     &mut self.renderer_lifecycle,
                 );
+                // Первый показанный кадр любого вида завершает старт рендера (снимает метку).
+                self.renderer_startup
+                    .settle_after_frame(|| self.telemetry.frames_presented_to_surface());
                 if frame_result.close_requested {
                     self.close_runtime_and_exit(
                         event_loop,
                         "Closing window through custom titlebar",
+                    );
+                    return;
+                }
+                // «Restart now» из настроек: тот же штатный выход, что и закрытие окна; сам
+                // запуск нового процесса делает `main` уже после освобождения замка.
+                if self.settings_runtime.relaunch_request() == RelaunchRequest::AfterExit {
+                    self.close_runtime_and_exit(
+                        event_loop,
+                        "Closing window to restart the application",
                     );
                     return;
                 }

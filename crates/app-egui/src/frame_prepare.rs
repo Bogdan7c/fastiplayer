@@ -16,8 +16,7 @@ use render_core::{
     RenderLiveSettingsUpdate,
 };
 use render_shell_api::{
-    FrameImportUnsupportedReason, RenderFrameDropReason, RenderFrameOutcome, RenderShell,
-    RenderableFrameKey, VideoFrameImport,
+    RenderFrameDropReason, RenderFrameOutcome, RenderShell, RenderableFrameKey, VideoFrameImport,
 };
 use settings_core::SettingId;
 use tracing::{error, instrument, warn};
@@ -78,9 +77,8 @@ use runtime_settings_persistence::persist_due_runtime_originated_settings;
 use sequence::{FrameSequenceContract, FrameSequenceObserver, FrameSequenceStage};
 pub(crate) use settings_runtime_adapter::FrameSettingsRuntimeAdapter;
 use shared_frame_materialization::{
-    SharedMaterializationUnsupportedReason, SharedVideoFrameLeaseRole,
-    SharedVideoFrameMaterializationOutcome, SharedVideoFrameMaterializationRequest,
-    materialize_shared_video_frame,
+    SharedVideoFrameLeaseRole, SharedVideoFrameMaterializationOutcome,
+    SharedVideoFrameMaterializationRequest, materialize_shared_video_frame,
 };
 use telemetry_mapping::map_video_frame_telemetry_event;
 use timing::{FrameWorkTrace, VideoPrepareTimings, log_skipped_frame};
@@ -600,22 +598,20 @@ fn prepare_video_frame(
                 acquisition_reused_previous_frame,
             );
             debug_assert!(preparation_action.clears_cached_renderable_frame());
-            match reason {
-                SharedMaterializationUnsupportedReason::Renderer(
-                    FrameImportUnsupportedReason::DmaBufDescriptorRejected(layout_rejection),
-                ) => {
+            match reason.fallback_trigger() {
+                Some(trigger) => {
                     let render_generation = present_frame.render_generation();
                     let player_error = PlayerRenderError::unsupported_frame_format(
                         &present_frame,
-                        layout_rejection.to_string(),
+                        trigger.to_string(),
                     );
-                    app_state.note_dma_buf_layout_rejection(
-                        layout_rejection,
+                    app_state.note_dma_buf_fallback_trigger(
+                        trigger,
                         render_generation,
                         player_error,
                     );
                 }
-                _ => report_video_render_boundary_error(
+                None => report_video_render_boundary_error(
                     app_state,
                     PlayerRenderError::render_resource_lookup_failed(&present_frame),
                 ),

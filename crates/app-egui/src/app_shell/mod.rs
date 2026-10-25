@@ -15,6 +15,8 @@ mod event_loop;
 mod external_drop;
 mod hotkeys;
 mod instance_forwarding;
+mod relaunch_request;
+mod renderer_startup_marker;
 mod resolved_url_collection;
 mod runtime_settings_flush;
 mod scale_factor;
@@ -31,7 +33,7 @@ use std::time::Instant;
 
 use crate::app_instance::{AppInstanceLease, CommandLineStartup};
 use crate::app_wake::{AppWakeOwner, AppWakeProxy};
-use crate::render_backend::create_startup_renderer;
+use crate::render_backend::{StartedRenderer, create_startup_renderer};
 use crate::render_settings::warn_legacy_tone_mapping_config;
 use crate::system_capabilities::probe_system_capabilities;
 use fastiplayer_config::{ConfigPaths, LoadedConfig};
@@ -42,7 +44,7 @@ use crate::fatal_startup::{
 };
 use playlist_state::{PlaylistResumeStore, PlaylistStateStore};
 use render_shell_api::RenderShell;
-use tracing::{debug, info};
+use tracing::info;
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
 use crate::local_file_open::{LocalFileOpenJob, LocalFileOpenRestoreOutcome};
@@ -53,45 +55,17 @@ use crate::renderer_recreation::RendererLifecycleCoordinator;
 use crate::settings_runtime::{HardwareDecodeAvailability, SettingsRuntime};
 use crate::startup_media::StartupMediaController;
 use crate::state::{
-    AppState, AppStateStartupContext, LifecycleTimelineSeekSettlement, RendererVideoImportTarget,
-    TrackMemoryHandle,
+    AppState, AppStateStartupContext, RendererVideoImportTarget, TrackMemoryHandle,
 };
 use crate::telemetry::Telemetry;
+use renderer_startup_marker::RendererStartupWatch;
 use shutdown::{
     AppShellProcessLifecycle, AppShellShutdownReport, OwnerTerminalDisposition,
     PROCESS_TERMINAL_SHUTDOWN_BUDGET, TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE,
-    TIMELINE_SEEK_LIFECYCLE_SETTLEMENT_BUDGET, TerminalEntryDisposition, player_disposition,
-    process_owner_disposition, terminal_entry_disposition,
+    TIMELINE_SEEK_LIFECYCLE_SETTLEMENT_BUDGET, TerminalEntryDisposition, lifecycle_after_shutdown,
+    process_owner_disposition, report_timeline_seek_lifecycle_settlement,
+    terminal_entry_disposition,
 };
-
-/// Публикует typed lifecycle settlement без выдачи timeout-а за успешный seek commit.
-fn report_timeline_seek_lifecycle_settlement(settlement: LifecycleTimelineSeekSettlement) {
-    match settlement {
-        LifecycleTimelineSeekSettlement::NoPendingSeek => {}
-        LifecycleTimelineSeekSettlement::Settled {
-            checkpoint_position,
-        } => debug!(
-            ?checkpoint_position,
-            "Lifecycle wait terminal outcomes everyone pending timeline seek-owls"
-        ),
-        LifecycleTimelineSeekSettlement::DeadlineElapsed {
-            checkpoint_position,
-            abandoned_receipt_count,
-        } => tracing::warn!(
-            ?checkpoint_position,
-            abandoned_receipt_count,
-            "Lifecycle deadline cancels pending timeline seek; keep pre-seek position"
-        ),
-        LifecycleTimelineSeekSettlement::MissingOwnerOutcome {
-            checkpoint_position,
-            abandoned_receipt_count,
-        } => tracing::error!(
-            ?checkpoint_position,
-            abandoned_receipt_count,
-            "Player owner loses pending timeline seek outcome; save pre-see position"
-        ),
-    }
-}
 
 /// Winit shell приложения.
 ///
@@ -167,6 +141,10 @@ pub(crate) struct AppShell {
     /// Память выбора дорожек «для каждого видео»: живёт весь процесс, `AppState` её только
     /// использует (пересоздание после suspend выбор не теряет).
     track_memory: TrackMemoryHandle,
+
+    /// Метка «рендер не дошёл до первого кадра»: пишется перед созданием, снимается после
+    /// первого показанного кадра или штатной остановки рендера.
+    renderer_startup: RendererStartupWatch,
 
     /// Единственный platform path owner для будущего state worker integration.
     _config_paths: ConfigPaths,
@@ -258,6 +236,9 @@ impl AppShell {
             fatal_startup_error: FatalStartupErrorSlot::default(),
             fatal_error_phase: FatalErrorPhase::Startup,
             track_memory,
+            renderer_startup: RendererStartupWatch::new(
+                config_paths.renderer_startup_marker_file(),
+            ),
             _config_paths: config_paths,
             _instance_lease: instance_lease,
         })
@@ -290,12 +271,19 @@ impl AppShell {
             }
         };
         warn_legacy_tone_mapping_config(self.settings_runtime.committed_config());
-        let mut renderer = match create_startup_renderer(
+        // Метка относится к конкретному созданию: кадры прошлого рендера её не снимают.
+        self.renderer_startup
+            .begin_startup(self.telemetry.render_frame_totals());
+        let StartedRenderer {
+            mut renderer,
+            report: renderer_report,
+        } = match create_startup_renderer(
             self.settings_runtime.committed_config(),
             window.clone(),
             initial_render_settings,
+            &mut self.renderer_startup,
         ) {
-            Ok(renderer) => renderer,
+            Ok(started) => started,
             Err(error) => {
                 self.exit_with_fatal_startup_error(
                     event_loop,
@@ -319,7 +307,8 @@ impl AppShell {
                 self.pending_config_warning.take(),
                 self.subtitle_wake_port.clone(),
                 self.track_memory.clone(),
-            ),
+            )
+            .with_renderer_report(renderer_report),
             self.telemetry.clone(),
             self.settings_runtime.committed_snapshot(),
             self.settings_runtime.audio_output_device_controller(),
@@ -511,6 +500,8 @@ impl AppShell {
         self.playlist_runtime.publish_detached_desktop_snapshot();
         self.app_state = None;
         self.renderer = None;
+        self.renderer_startup
+            .renderer_closed(self.telemetry.render_frame_totals());
     }
 
     /// Закрывает приложение через единый cleanup path shell-а.
@@ -530,6 +521,9 @@ impl AppShell {
         event_loop: &ActiveEventLoop,
         error: FatalStartupError,
     ) {
+        // Фатальная ошибка — штатная остановка, а не падение драйвера: метку снимаем.
+        self.renderer_startup
+            .renderer_closed(self.telemetry.render_frame_totals());
         self.fatal_startup_error
             .record(error.in_phase(self.fatal_error_phase));
         event_loop.exit();
@@ -652,30 +646,9 @@ impl AppShell {
         self.playlist_runtime.suspend_app_state_binding();
         self.app_state = None;
         self.renderer = None;
-        self.process_lifecycle = AppShellProcessLifecycle::ShutdownCompleted;
-    }
-
-    /// Bounded-завершает AppState, который ещё не был установлен в shell.
-    fn shutdown_uninstalled_app_state_or_exit(app_state: &mut AppState) {
-        let player = app_state
-            .shutdown_player_until(ShutdownDeadline::after(PROCESS_TERMINAL_SHUTDOWN_BUDGET));
-        let disposition = player_disposition(player);
-        match disposition {
-            OwnerTerminalDisposition::ExitRequired => {
-                tracing::error!(
-                    ?player,
-                    "AppState process owner fails after renderer construction error"
-                );
-                std::process::exit(TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE);
-            }
-            OwnerTerminalDisposition::Failed => {
-                tracing::warn!(
-                    ?player,
-                    "AppState process owner ended terminal failure after construction error"
-                );
-            }
-            OwnerTerminalDisposition::Completed => {}
-        }
+        self.renderer_startup
+            .renderer_closed(self.telemetry.render_frame_totals());
+        self.process_lifecycle = lifecycle_after_shutdown(report.terminal_disposition());
     }
 
     fn shutdown_rejected_local_job_or_exit(&mut self) {

@@ -135,6 +135,24 @@ class AppEguiConcreteRendererGuardrailTests(unittest.TestCase):
             self.assertEqual(1, len(violations))
             self.assertIn("render_backend", violations[0].rule)
 
+    def test_gles2_renderer_follows_the_same_catalog_only_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = TemporaryPolicyRepository(Path(temporary_directory))
+            repository.write(
+                "crates/app-egui/src/render_backend/gles2.rs",
+                "use render_gles2_shell::Gles2Renderer;\n",
+            )
+            repository.write(
+                "crates/app-egui/src/state.rs",
+                "fn draw(renderer: &mut render_gles2_shell::Gles2Renderer) {}\n",
+            )
+            violations = GUARDRAIL.find_app_egui_concrete_renderer_violations(repository.root)
+            self.assertEqual(
+                [(Path("crates/app-egui/src/state.rs"), 1)],
+                [(violation.path, violation.line_number) for violation in violations],
+            )
+            self.assertIn("render_gles2_shell", violations[0].rule)
+
     def test_gpu_types_are_rejected_even_in_the_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repository = TemporaryPolicyRepository(Path(temporary_directory))

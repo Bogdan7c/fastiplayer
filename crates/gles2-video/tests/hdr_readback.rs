@@ -82,7 +82,8 @@ fn hdr_gradient_matches_exact_formula_within_table_tolerance() {
             video.upload(&context, &frame.upload(key)).unwrap();
             let levels = HdrReferenceLevels::REFERENCE_DEFAULT;
             let request = fill_request_with(target, &rects, hdr(range, transfer, levels));
-            let (_, pixels) = draw_frame(&mut context, &mut video, &request);
+            // Смена передаточной функции — новая таблица в фоне: ждём её готовности.
+            let pixels = draw_until_table_settled(&mut context, &mut video, &request);
             let mut worst = 0;
             let mut above_one = 0;
             let mut above_two = 0;
@@ -153,7 +154,8 @@ fn solid_hdr_frames_of_every_layout_match_the_formula() {
                 video.upload(&context, &frame.upload(key)).unwrap();
                 let request =
                     fill_request_with(target, &rects, hdr(YuvRange::Limited, transfer, levels));
-                let (_, pixels) = draw_frame(&mut context, &mut video, &request);
+                // Смена передаточной функции — новая таблица в фоне: ждём её готовности.
+                let pixels = draw_until_table_settled(&mut context, &mut video, &request);
                 assert_rect(
                     &pixels,
                     full_rect(target),
@@ -205,9 +207,10 @@ fn hdr_table_is_rebuilt_only_when_settings_change() {
     let mut previous_pixels = None;
     for (index, (transfer, levels, builds)) in steps.into_iter().enumerate() {
         let request = fill_request_with(target, &rects, hdr(YuvRange::Limited, transfer, levels));
-        let (_, pixels) = draw_frame(&mut context, &mut video, &request);
+        // Смена параметров считается в фоне: рисуем, пока новая таблица не встанет на GPU.
+        let pixels = draw_until_table_settled(&mut context, &mut video, &request);
         assert_eq!(video.stats().hdr_table_builds, builds, "step {index}");
-        // Новые уровни видны сразу: белый 160 нит темнее белого 100.
+        // Новые уровни видны после готовности таблицы: белый 160 нит темнее белого 100.
         let center = pixel(&pixels, 2, 2);
         if index == 3 {
             let before: [u8; 4] = previous_pixels.expect("earlier frame");
@@ -282,4 +285,224 @@ fn hdr_for_an_eight_bit_frame_is_refused_before_drawing() {
         "SDR after refusal",
     );
     video.destroy(&context).unwrap();
+}
+
+/// Рисует, пока фон не доложил, что новая таблица встала на GPU; возвращает пиксели последнего
+/// кадра. Потолок по времени — защита от зависания теста, а не часть проверяемого поведения.
+fn draw_until_table_settled(
+    context: &mut gles2_egui::Gles2Context,
+    video: &mut gles2_video::VideoLayerRenderer,
+    request: &gles2_video::VideoDrawRequest<'_>,
+) -> gles2_egui::OffscreenPixels {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let (_, pixels) = draw_frame(context, video, request);
+        if !video.has_pending_hdr_table() {
+            return pixels;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "HDR table never became ready"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+/// Кадр HDR 4×4 однотонный: центр кадра — эталон формулы для заданных уровней.
+fn solid_hdr_setup() -> ([u16; 3], HighBitFrame) {
+    let codes = [600_u16, 500, 540];
+    let frame = HighBitFrame::solid(
+        ChromaSubsampling::Yuv420,
+        SampleDepth::Bits10,
+        extent(4, 4),
+        0,
+        codes,
+    );
+    (codes, frame)
+}
+
+fn expected_center(codes: [u16; 3], levels: HdrReferenceLevels) -> [u8; 4] {
+    reference_hdr(
+        SampleDepth::Bits10,
+        YuvRange::Limited,
+        HdrTransfer::Pq,
+        levels,
+        codes,
+    )
+}
+
+fn assert_center_near(actual: [u8; 4], expected: [u8; 4], what: &str) {
+    let difference = (0..3)
+        .map(|channel| actual[channel].abs_diff(expected[channel]))
+        .max()
+        .unwrap_or(0);
+    assert!(
+        difference <= MAX_DIFFERENCE,
+        "{what}: {actual:?} vs {expected:?}"
+    );
+}
+
+/// Самая первая таблица считается синхронно: первый же HDR-кадр правильный, фона нет.
+#[test]
+fn first_hdr_table_is_built_synchronously_and_the_first_frame_is_right() {
+    let target = size(4, 4);
+    let Some(mut context) = offscreen_or_skip("first_hdr_table_sync", target) else {
+        return;
+    };
+    let mut video = renderer(&context, VideoLayerOptions::default());
+    let rects = [full_rect(target)];
+    let (codes, frame) = solid_hdr_setup();
+    video.upload(&context, &frame.upload(1)).unwrap();
+    let levels = HdrReferenceLevels::REFERENCE_DEFAULT;
+    let request = fill_request_with(
+        target,
+        &rects,
+        hdr(YuvRange::Limited, HdrTransfer::Pq, levels),
+    );
+    let (_, pixels) = draw_frame(&mut context, &mut video, &request);
+    assert_center_near(
+        pixel(&pixels, 2, 2),
+        expected_center(codes, levels),
+        "first frame",
+    );
+    let stats = video.stats();
+    assert_eq!(stats.hdr_table_sync_builds, 1);
+    assert_eq!(stats.hdr_table_background_builds, 0);
+    assert!(!video.has_pending_hdr_table());
+    video.destroy(&context).unwrap();
+}
+
+/// Смена уровней при уже имеющейся таблице: `draw` не строит таблицу сам. Пока фон не готов,
+/// кадр со старой таблицей; когда готов — с новой. Счётчик синхронных сборок не растёт.
+#[test]
+fn level_change_is_built_in_background_old_table_until_ready() {
+    let target = size(4, 4);
+    let Some(mut context) = offscreen_or_skip("level_change_background", target) else {
+        return;
+    };
+    let mut video = renderer(&context, VideoLayerOptions::default());
+    let rects = [full_rect(target)];
+    let (codes, frame) = solid_hdr_setup();
+    video.upload(&context, &frame.upload(1)).unwrap();
+    let old_levels = HdrReferenceLevels::REFERENCE_DEFAULT;
+    let new_levels = HdrReferenceLevels::new(160.0, 1_000.0).unwrap();
+    let old_expected = expected_center(codes, old_levels);
+    let new_expected = expected_center(codes, new_levels);
+    assert!(
+        old_expected[1].abs_diff(new_expected[1]) > 2 * MAX_DIFFERENCE,
+        "scenario must tell the tables apart: {old_expected:?} vs {new_expected:?}"
+    );
+    let old_request = fill_request_with(
+        target,
+        &rects,
+        hdr(YuvRange::Limited, HdrTransfer::Pq, old_levels),
+    );
+    draw_frame(&mut context, &mut video, &old_request);
+    assert_eq!(video.stats().hdr_table_sync_builds, 1);
+
+    let new_request = fill_request_with(
+        target,
+        &rects,
+        hdr(YuvRange::Limited, HdrTransfer::Pq, new_levels),
+    );
+    let (_, first_pixels) = draw_frame(&mut context, &mut video, &new_request);
+    // Поток рисования таблицу не строил в любом случае.
+    assert_eq!(video.stats().hdr_table_sync_builds, 1, "no inline build");
+    // Фон мог успеть (быстрая машина): тогда кадр уже новый. Не успел — обязан быть старый, а не
+    // чёрный и не полуготовый.
+    let first_center = pixel(&first_pixels, 2, 2);
+    if video.has_pending_hdr_table() {
+        assert_center_near(first_center, old_expected, "old table while building");
+    } else {
+        assert_center_near(first_center, new_expected, "background finished at once");
+    }
+    let settled = draw_until_table_settled(&mut context, &mut video, &new_request);
+    assert_center_near(pixel(&settled, 2, 2), new_expected, "new table after ready");
+    let stats = video.stats();
+    assert_eq!(stats.hdr_table_sync_builds, 1);
+    assert_eq!(stats.hdr_table_background_builds, 1);
+    assert_eq!(stats.hdr_table_builds, 2);
+    video.destroy(&context).unwrap();
+}
+
+/// Быстрая серия смен (ползунок): в фоне строятся не все значения; итог — последнее.
+#[test]
+fn rapid_level_changes_skip_intermediate_tables() {
+    let target = size(4, 4);
+    let Some(mut context) = offscreen_or_skip("rapid_level_changes", target) else {
+        return;
+    };
+    let mut video = renderer(&context, VideoLayerOptions::default());
+    let rects = [full_rect(target)];
+    let (codes, frame) = solid_hdr_setup();
+    video.upload(&context, &frame.upload(1)).unwrap();
+    let first = fill_request_with(
+        target,
+        &rects,
+        hdr(
+            YuvRange::Limited,
+            HdrTransfer::Pq,
+            HdrReferenceLevels::REFERENCE_DEFAULT,
+        ),
+    );
+    draw_frame(&mut context, &mut video, &first);
+    let whites = [110.0_f32, 120.0, 130.0, 140.0, 150.0, 160.0];
+    let mut last_request = None;
+    for white in whites {
+        let levels = HdrReferenceLevels::new(white, 1_000.0).unwrap();
+        let request = fill_request_with(
+            target,
+            &rects,
+            hdr(YuvRange::Limited, HdrTransfer::Pq, levels),
+        );
+        draw_frame(&mut context, &mut video, &request);
+        last_request = Some(request);
+    }
+    let last_request = last_request.expect("changes were made");
+    let settled = draw_until_table_settled(&mut context, &mut video, &last_request);
+    let last_levels = HdrReferenceLevels::new(160.0, 1_000.0).unwrap();
+    assert_center_near(
+        pixel(&settled, 2, 2),
+        expected_center(codes, last_levels),
+        "last table wins",
+    );
+    let stats = video.stats();
+    assert_eq!(
+        stats.hdr_table_sync_builds, 1,
+        "only the very first table is inline"
+    );
+    assert!(
+        stats.hdr_table_background_builds < whites.len() as u64,
+        "intermediate tables are skipped: {stats:?}"
+    );
+    assert!(stats.hdr_table_superseded >= 1, "{stats:?}");
+    video.destroy(&context).unwrap();
+}
+
+/// Уничтожение слоя посреди сборки не зависает.
+#[test]
+fn destroy_during_background_build_returns() {
+    let target = size(4, 4);
+    let Some(mut context) = offscreen_or_skip("destroy_during_build", target) else {
+        return;
+    };
+    let mut video = renderer(&context, VideoLayerOptions::default());
+    let rects = [full_rect(target)];
+    let (_, frame) = solid_hdr_setup();
+    video.upload(&context, &frame.upload(1)).unwrap();
+    for white in [100.0_f32, 170.0] {
+        let levels = HdrReferenceLevels::new(white, 1_000.0).unwrap();
+        let request = fill_request_with(
+            target,
+            &rects,
+            hdr(YuvRange::Limited, HdrTransfer::Pq, levels),
+        );
+        draw_frame(&mut context, &mut video, &request);
+    }
+    let started = std::time::Instant::now();
+    video.destroy(&context).unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "destroy must not wait for the build"
+    );
 }

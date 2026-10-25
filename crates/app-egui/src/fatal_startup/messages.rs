@@ -113,7 +113,7 @@ fn message_for(reason: &FatalStartupReason) -> String {
             format!("Could not create the player window.\n\n{DETAILS_HINT}")
         }
         FatalStartupReason::GraphicsUnavailable => {
-            "Could not start video output: the player requires a graphics card with Vulkan support.\n\nInstall or update the Vulkan driver for your graphics card and start the player again."
+            "Could not start video output: the player requires a graphics card with Vulkan or OpenGL ES 2.0 support.\n\nInstall or update the graphics driver (Vulkan or Mesa OpenGL) for your graphics card and start the player again."
                 .to_owned()
         }
         FatalStartupReason::InternalFailure => {

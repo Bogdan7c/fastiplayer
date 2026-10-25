@@ -114,8 +114,9 @@ impl VideoDecodeThread {
     pub fn new_with_config(config: VideoDecodeThreadConfig) -> anyhow::Result<Self> {
         let config = config.normalized();
         let resource_pool = Arc::new(Mutex::new(
-            crate::resource_pool::FrameResourcePool::new_with_capacity(
+            crate::resource_pool::FrameResourcePool::new_with_import_target(
                 config.zero_copy_surface_pool_slots,
+                config.zero_copy_import_target,
             ),
         ));
         let resource_pool_for_thread = resource_pool.clone();

@@ -57,7 +57,6 @@ struct FakeRendererLifecycle {
     materializer_path: FakeMaterializerPath,
     active_lease: bool,
     activity: Option<SettingsBoundaryActivity>,
-    settings_error: Option<RendererRecreationApplyError>,
     prepare_error: Option<RendererRecreationApplyError>,
     drain_error: Option<RendererRecreationApplyError>,
     commit_error: Option<RendererRecreationApplyError>,
@@ -73,7 +72,6 @@ impl FakeRendererLifecycle {
             materializer_path,
             active_lease: false,
             activity: None,
-            settings_error: None,
             prepare_error: None,
             drain_error: None,
             commit_error: None,
@@ -99,13 +97,6 @@ impl RendererRecreationLifecycle for FakeRendererLifecycle {
 
     fn preflight_activity(&self) -> Option<SettingsBoundaryActivity> {
         self.activity
-    }
-
-    fn check_candidate_settings(
-        &self,
-        _next: &RenderCommittedSettingsUpdate,
-    ) -> Result<(), RendererRecreationApplyError> {
-        self.settings_error.clone().map_or(Ok(()), Err)
     }
 
     fn reconfigure_presentation(
@@ -189,10 +180,8 @@ impl RendererRecreationLifecycle for FakeRendererLifecycle {
 fn settings() -> RenderCommittedSettingsUpdate {
     let config = fastiplayer_config::AppConfig::default();
     RenderCommittedSettingsUpdate {
-        profile: config.render.profile,
         tone_mapping: config.render.tone_mapping,
         vulkan: config.render.vulkan,
-        opengles: config.render.opengles,
     }
 }
 
@@ -573,31 +562,6 @@ fn unchanged_settings_are_a_no_op() {
 
     assert_eq!(result, AppRouteApplyResult::Noop);
     assert!(lifecycle.events().is_empty());
-}
-
-/// 02a: отказ по одним настройкам (профиль без рендера) — до отпускания окна.
-#[test]
-fn unsupported_candidate_settings_are_refused_before_window_is_released() {
-    let mut coordinator = RendererLifecycleCoordinator::default();
-    let mut lifecycle = FakeRendererLifecycle::ready(FakeMaterializerPath::DmaBuf);
-    lifecycle.settings_error = Some(apply_error(
-        RendererRecreationApplyErrorKind::UnsupportedProfile,
-        "fake profile without renderer",
-    ));
-
-    let result = coordinator.recreate(&mut lifecycle, &settings(), &full_recreation_settings());
-
-    expect_apply_failed(
-        &result,
-        RendererRecreationApplyErrorKind::UnsupportedProfile,
-    );
-    assert_eq!(
-        lifecycle.events(),
-        vec![
-            FakeLifecycleEvent::RestorePrevious,
-            FakeLifecycleEvent::ResumeSubmissions,
-        ]
-    );
 }
 
 /// 02a: провал ожидания GPU — кандидат уничтожен ДО того, как старый рендер вернёт окно.

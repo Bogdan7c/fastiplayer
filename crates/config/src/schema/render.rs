@@ -15,7 +15,7 @@ pub struct RenderConfig {
         label_id = "settings.render.profile.label",
         label_ru = "Render profile",
         description_id = "settings.render.profile.description",
-        description_ru = "Active render profile for backend selection.",
+        description_ru = "Which renderer to use. Automatic picks Vulkan on a hardware GPU and OpenGL ES otherwise. Applies after restart.",
         editor = "select",
         apply = "render.apply",
         options(
@@ -58,22 +58,17 @@ pub struct RenderConfig {
     /// Vulkan-specific параметры.
     #[setting(nested)]
     pub vulkan: VulkanConfig,
-
-    /// OpenGL ES fallback-параметры.
-    #[setting(nested)]
-    pub opengles: OpenGlesConfig,
 }
 
 impl Default for RenderConfig {
-    /// Возвращает Vulkan-first defaults текущего MVP.
+    /// Возвращает defaults: профиль `auto` (Vulkan на аппаратном GPU, иначе OpenGL ES).
     fn default() -> Self {
         Self {
-            profile: RenderProfile::Vulkan,
+            profile: RenderProfile::Auto,
             hdr_to_sdr: HdrToSdrConfig::default(),
             tone_mapping: ToneMappingMode::Disabled,
             color_adjustment: RenderColorAdjustmentConfig::default(),
             vulkan: VulkanConfig::default(),
-            opengles: OpenGlesConfig::default(),
         }
     }
 }
@@ -463,52 +458,4 @@ pub enum VulkanPresentMode {
 
     /// Immediate без VSync.
     Immediate,
-}
-
-/// OpenGL ES fallback-настройки.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema)]
-#[settings(require_all_fields)]
-#[serde(default, deny_unknown_fields)]
-pub struct OpenGlesConfig {
-    /// Разрешает будущий OpenGL ES renderer.
-    #[setting(
-        id = "render.opengles.enabled",
-        path = "render.opengles.enabled",
-        section = "render",
-        group = "opengles",
-        surface = "main-settings-window",
-        label_id = "settings.render.opengles.enabled.label",
-        label_ru = "OpenGL ES renderer",
-        description_id = "settings.render.opengles.enabled.description",
-        description_ru = "Allow a future OpenGL ES fallback renderer.",
-        editor = "toggle",
-        apply = "render.apply"
-    )]
-    pub enabled: bool,
-
-    /// Включает упрощённый UI для слабого renderer-а.
-    #[setting(
-        id = "render.opengles.simple_ui",
-        path = "render.opengles.simple_ui",
-        section = "render",
-        group = "opengles",
-        surface = "main-settings-window",
-        label_id = "settings.render.opengles.simple_ui.label",
-        label_ru = "Simplified UI",
-        description_id = "settings.render.opengles.simple_ui.description",
-        description_ru = "Enable a simplified UI for a limited renderer.",
-        editor = "toggle",
-        apply = "render.apply"
-    )]
-    pub simple_ui: bool,
-}
-
-impl Default for OpenGlesConfig {
-    /// Возвращает disabled fallback для Vulkan-first MVP.
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            simple_ui: true,
-        }
-    }
 }

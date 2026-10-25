@@ -13,11 +13,15 @@
 //!   ([`render_frame_timing`], [`video_pass_diagnostics`], [`frame_import_stats`]) — те же имена,
 //!   что у wgpu, для трасс и инструментов замера (сессия 08);
 //! - субтитры кадра поверх видео ([`Gles2SubtitleOverlayRenderer`], слой кадра
-//!   [`SubtitleOverlayLayer`]) — паритет с wgpu-проходом субтитров (сессия 08).
+//!   [`SubtitleOverlayLayer`]) — паритет с wgpu-проходом субтитров (сессия 08);
+//! - полный рендер за контрактом приложения ([`Gles2Renderer`]: `RenderShell` + склад кадров
+//!   `VideoFrameImport` + переносимый подготовщик импорта [`Gles2VideoImportPreparer`]) и проба
+//!   для каталога рендеров ([`probe_gles2_renderer`]) — сессия 09.
 //!
 //! Сессия 05 — начало crate-а: программный путь 8 бит; сессия 06 — 10/12 бит и HDR → SDR;
-//! сессия 07 — аппаратный NV12 (P010 не объявляется, решение владельца 33). Встраивание в приложение за контрактом
-//! `RenderShell` (импорт кадров, освобождение кадра декодера по fence) — сессия 09.
+//! сессия 07 — аппаратный NV12 (P010 не объявляется, решение владельца 33); сессия 09 —
+//! встраивание в приложение за контрактом `RenderShell`: кадр, показ, живые настройки, потеря
+//! контекста, импорт кадров декодера и их освобождение по fence.
 //!
 //! Правило освобождения кадра декодера (решение владельца сессии 05): кадр возвращается
 //! декодеру только после fence кадра показа, в котором GPU его последний раз трогал, — одно
@@ -31,9 +35,11 @@ mod frame_metadata;
 mod frame_release;
 mod high_bit_color;
 mod host_planar;
+mod shell;
 mod subtitle_overlay;
 #[cfg(test)]
 mod test_support;
+mod video_import;
 
 pub use capabilities::{
     GLES2_HARDWARE_FRAME_CONTRACTS, GLES2_HIGH_BIT_SOFTWARE_FRAME_CONTRACTS,
@@ -51,12 +57,14 @@ pub use dma_buf_frame::{
 pub use draw_plan::{VideoDrawPlan, VideoDrawPlanError, VideoPlacement};
 pub use frame_metadata::{NotYuvFrame, renderable_frame};
 pub use frame_release::{
-    FrameReleaseStats, Gles2FrameReleaseBinding, RendererDetachGrace, RendererDetachReport,
-    wrap_video_backend_for_gles2_release,
+    FrameReleaseStats, Gles2FrameReleaseBinding, PendingReleaseDrain, PresentedWorkWait,
+    RendererDetachGrace, RendererDetachReport, wrap_video_backend_for_gles2_release,
 };
 pub use high_bit_color::{HdrColorRejection, HighBitColorError, high_bit_color_conversion};
 pub use host_planar::{HostPlanarFrameError, host_planar_frame_upload};
+pub use shell::{Gles2FrameCounters, Gles2Renderer, probe_gles2_renderer};
 pub use subtitle_overlay::{
     Gles2SubtitleOverlayRenderer, SubtitleOverlayError, SubtitleOverlayLayer,
     SubtitleOverlayOutcome, SubtitleOverlayUploadStats,
 };
+pub use video_import::Gles2VideoImportPreparer;

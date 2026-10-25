@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use fastiplayer_config::{
     AppConfig, FrameServerLiveScrubDecodeModeConfig, LoadedConfig, NetworkConfig,
-    PlayerDemuxConfig, RenderProfile, ToneMappingMode, UiConfig, VideoBackendPreference,
-    VulkanConfig, WebMediaConfig, YtDlpConfig,
+    PlayerDemuxConfig, ToneMappingMode, UiConfig, VideoBackendPreference, VulkanConfig,
+    WebMediaConfig, YtDlpConfig,
 };
 use fastiplayer_settings::{
     AppConfigStore, AppConfigValidator, AppRouteApplyReport, AppRouteApplyResult,
@@ -48,6 +48,7 @@ use settings_core::{
     SettingsValidator, ValidationReport, ValidationRequest,
 };
 
+use crate::app_instance::RelaunchRequest;
 #[cfg(test)]
 use crate::app_wake::AppWakeOwner;
 use crate::app_wake::AppWakePort;
@@ -70,6 +71,7 @@ mod committed_snapshot;
 mod dynamic_options;
 mod hardware_decode_hint;
 mod preview;
+mod render_profile_restart;
 mod route_apply;
 mod setting_labels;
 mod settings_error_message;
@@ -203,6 +205,13 @@ pub(crate) struct SettingsRuntime {
     /// Что известно о VA-API (из capability report-а, собранного при старте).
     /// Нужно только для предупреждения рядом с режимом «Hardware».
     hardware_decode_availability: HardwareDecodeAvailability,
+
+    /// Профиль рендера, с которым запущен процесс: от него считается «Applies after restart».
+    startup_render_profile: render_profile_restart::StartupRenderProfile,
+
+    /// Пользователь нажал «Restart now»: после штатного выхода запустить приложение снова.
+    /// Выставляется один раз и не снимается; читает его shell (`relaunch_request`).
+    relaunch_request: RelaunchRequest,
 }
 
 impl SettingsRuntime {
@@ -234,6 +243,9 @@ impl SettingsRuntime {
                 controller.committed(),
             );
 
+        let startup_render_profile =
+            render_profile_restart::StartupRenderProfile::from_config(controller.committed());
+
         let runtime = Self {
             controller,
             config_path: path,
@@ -262,6 +274,8 @@ impl SettingsRuntime {
             ui_model_revision: 0,
             hardware_decode_availability: HardwareDecodeAvailability::Unknown,
             visual_hold: false,
+            startup_render_profile,
+            relaunch_request: RelaunchRequest::NotRequested,
         };
 
         debug_assert_eq!(runtime.config_path(), runtime.store_path());
@@ -485,6 +499,16 @@ impl SettingsRuntime {
                 if let Some(options) = self.cached_options_for_descriptor(descriptor, &field) {
                     field = field.with_options(options);
                 }
+                if descriptor.id.as_str() == render_profile_restart::RENDER_PROFILE_SETTING_ID {
+                    field = self
+                        .startup_render_profile
+                        .field_presentation(
+                            self.controller.draft().render.profile,
+                            self.controller.committed().render.profile,
+                            Self::draft_changes_of(&dirty_ids),
+                        )
+                        .apply_to(field);
+                }
                 if descriptor.id.as_str() == hardware_decode_hint::VIDEO_BACKEND_SETTING_ID
                     && let Some(warning) = hardware_decode_hint::hardware_unavailable_warning(
                         self.controller.draft().video.preferred_backend,
@@ -529,6 +553,7 @@ impl SettingsRuntime {
                 );
                 Ok(false)
             }
+            SettingsUiAction::RestartNow => self.handle_restart_now(),
             SettingsUiAction::SetValue { setting_id, value } => {
                 if setting_id.as_str() == sidebar_resize::SIDEBAR_WIDTH_SETTING_ID {
                     let _flush_outcome = self.flush_pending_sidebar_resize(runtime_adapter)?;

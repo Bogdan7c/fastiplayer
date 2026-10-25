@@ -13,6 +13,7 @@ use render_shell_api::{
 };
 use video_present_core::VideoFrameLease;
 
+use crate::dma_buf_runtime_fallback::DmaBufFallbackTrigger;
 use crate::state::RenderablePresentFrame;
 
 use super::TextureViewLookupKind;
@@ -117,6 +118,18 @@ pub(super) enum SharedMaterializationUnsupportedReason {
     /// Синтетический отказ unit-test-а без renderer objects.
     #[cfg(test)]
     SyntheticTest,
+}
+
+impl SharedMaterializationUnsupportedReason {
+    /// Причина программного фолбэка, если отказ про аппаратный кадр (отказ дескриптора или
+    /// рендера); `None` — отказ другого рода, фолбэк его не лечит.
+    pub(super) fn fallback_trigger(&self) -> Option<DmaBufFallbackTrigger> {
+        match self {
+            Self::Renderer(reason) => DmaBufFallbackTrigger::from_unsupported_reason(reason),
+            #[cfg(test)]
+            Self::SyntheticTest => None,
+        }
+    }
 }
 
 impl<TextureViews> SharedTextureViewLookup<TextureViews> {
@@ -619,5 +632,43 @@ mod tests {
                 1
             );
         }
+    }
+
+    /// Отказ рендера «не умею показать аппаратный кадр» проходит весь путь склад → lookup и
+    /// становится причиной программного фолбэка; отказ другого рода — нет.
+    #[test]
+    fn renderer_refusal_reaches_the_lookup_as_a_fallback_trigger() {
+        use render_shell_api::{
+            FrameImportUnsupportedReason, FrameMaterialization, FrameMaterializationOutcome,
+            HardwareFrameRefusal,
+        };
+
+        let lookup_for = |reason| {
+            SharedTextureViewLookup::<RenderableFrameKey>::from(
+                FrameMaterialization::without_pool_wait(FrameMaterializationOutcome::Unsupported(
+                    reason,
+                )),
+            )
+        };
+        let SharedTextureViewLookup::Unsupported { reason, .. } = lookup_for(
+            FrameImportUnsupportedReason::RendererCannotShowHardwareFrame(
+                HardwareFrameRefusal::HostMemoryDescriptor,
+            ),
+        ) else {
+            panic!("the refusal must stay an unsupported lookup");
+        };
+        assert_eq!(
+            reason.fallback_trigger(),
+            Some(DmaBufFallbackTrigger::RendererCannotShowHardwareFrame(
+                HardwareFrameRefusal::HostMemoryDescriptor
+            ))
+        );
+
+        let SharedTextureViewLookup::Unsupported { reason, .. } =
+            lookup_for(FrameImportUnsupportedReason::LayoutNotHandledByActiveImport)
+        else {
+            panic!("the unrelated refusal must stay an unsupported lookup");
+        };
+        assert_eq!(reason.fallback_trigger(), None);
     }
 }

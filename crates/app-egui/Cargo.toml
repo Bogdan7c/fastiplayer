@@ -98,6 +98,8 @@ render-core.workspace = true
 render-shell-api.workspace = true
 # Конкретный wgpu-рендер знает только каталог рендеров `render_backend` (фабрика кандидата).
 render-wgpu-shell.workspace = true
+# Конкретный GLES2-рендер тоже знает только каталог `render_backend` (кандидат gles2).
+render-gles2-shell.workspace = true
 
 # Субтитры: модель/тайминг, разбор файлов, поиск рядом с видео и растеризатор.
 # Все пять crate-ов нейтральны (без GPU/UI): композиция с wgpu-проходом живёт здесь.

@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use codec_core::{VideoCodec, VideoDisplayOrientation};
 use media_core::TrackId;
 use player_core::{MediaInstallRequestId, PlayerVideoDecoderThreadConfig};
+use render_shell_api::RendererFamily;
 use video_backend_api::{
     DetachedVideoBackend, DetachedVideoBackendCandidateCancellationCause,
     DetachedVideoBackendCandidateStatus, DetachedVideoBackendConfigurationError,
@@ -401,3 +402,29 @@ fn available_backend(
     result.unwrap_or_else(|error| panic!("candidate backend must be available: {error}"))
 }
 mod scenarios;
+
+/// Семейство рендера определяет цель импорта VA-API, а значит и имя контракта в логе:
+/// под GLES2 декодер обязан писать EGL-контракт, под wgpu — прежний Vulkan байт-в-байт.
+#[test]
+fn decoder_import_target_follows_the_renderer_family() {
+    let config = PlayerVideoDecoderThreadConfig::default();
+
+    let wgpu_factory =
+        resource_driver::vaapi_factory_for_renderer(config, RendererFamily::WgpuVulkan);
+    let gles2_factory = resource_driver::vaapi_factory_for_renderer(config, RendererFamily::Gles2);
+
+    assert_eq!(
+        video_vaapi::zero_copy_surface_pool::ZeroCopyImportReuseContract::for_import_target(
+            wgpu_factory.zero_copy_import_target()
+        )
+        .backend_name,
+        "VA-API Vulkan DMA-BUF"
+    );
+    assert_eq!(
+        video_vaapi::zero_copy_surface_pool::ZeroCopyImportReuseContract::for_import_target(
+            gles2_factory.zero_copy_import_target()
+        )
+        .backend_name,
+        "VA-API EGL DMA-BUF"
+    );
+}

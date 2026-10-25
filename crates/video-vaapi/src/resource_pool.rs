@@ -10,6 +10,7 @@ use video_core::{
     FrameResourceIdentity,
 };
 
+use crate::import_target::ZeroCopyImportTarget;
 use crate::zero_copy_surface_pool::{
     ZeroCopyGpuCompletionLease, ZeroCopyImportPlan, ZeroCopyImportReuseContract,
     ZeroCopySurfaceDescriptor, ZeroCopySurfacePool, ZeroCopySurfacePoolError,
@@ -110,10 +111,18 @@ impl FrameResourcePool {
 
     /// Создаёт resource pool с явным bounded capacity.
     pub fn new_with_capacity(surface_pool_capacity: usize) -> Self {
+        Self::new_with_import_target(surface_pool_capacity, ZeroCopyImportTarget::default())
+    }
+
+    /// Создаёт resource pool под рендер, импортирующий кадры в `import_target` (Vulkan/EGL).
+    pub fn new_with_import_target(
+        surface_pool_capacity: usize,
+        import_target: ZeroCopyImportTarget,
+    ) -> Self {
         Self {
             surface_pool: ZeroCopySurfacePool::new(
                 surface_pool_capacity,
-                ZeroCopyImportReuseContract::vaapi_vulkan_dma_buf(),
+                ZeroCopyImportReuseContract::for_import_target(import_target),
             ),
             slots: Vec::with_capacity(surface_pool_capacity),
             next_handle: 0,

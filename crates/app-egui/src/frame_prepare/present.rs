@@ -101,6 +101,10 @@ pub(super) fn present_frame_for_plan(
         // крутил бы redraw вхолостую. Итог нужен лишь диагностике решения, не управлению.
         let _follow_up = app_state
             .request_follow_up_redraw_for_waiting_present_frame(frame_context.player_snapshot());
+        // Рендер досчитывает картинку сам (таблица HDR → SDR в фоне GLES2): без просьбы на
+        // паузе приложение спало бы, и готовая таблица не попала бы на экран.
+        let _renderer_follow_up =
+            app_state.request_follow_up_redraw_for_renderer(renderer.needs_follow_up_frame());
     }
 
     let frame_duration = timings.frame_start.elapsed();

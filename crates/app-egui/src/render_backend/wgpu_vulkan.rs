@@ -11,14 +11,19 @@ use render_shell_api::{
 };
 use render_wgpu_shell::Renderer;
 
-use super::{RendererCreateRequest, RendererInitialColor};
+use super::{ProbeLeftovers, RendererCreateRequest, RendererInitialColor};
 
-/// Проба кандидата без создания рендера.
+/// Проба кандидата без создания рендера: есть ли аппаратный Vulkan-адаптер с NV12.
 ///
-/// Сессия 02: «годен» всегда, как раньше — отсутствие Vulkan проявляется ошибкой создания.
-/// Настоящая проверка (аппаратный адаптер, lavapipe/llvmpipe, расширения) — сессия 09.
-pub(super) const fn probe() -> RendererProbe {
-    RendererProbe::Usable
+/// Только перечисление адаптеров (`render_wgpu_shell::probe_hardware_vulkan_adapter`): ни окна,
+/// ни устройства. Машина с одним lavapipe/llvmpipe или без Vulkan получает «негоден».
+///
+/// Vulkan instance пробы остаётся в `leftovers`: рендер этого запуска создаётся на нём, а не на
+/// втором instance.
+pub(super) fn probe(leftovers: &mut ProbeLeftovers) -> RendererProbe {
+    let outcome = render_wgpu_shell::probe_hardware_vulkan_adapter_keeping_instance();
+    leftovers.keep_wgpu_vulkan_instance(outcome.instance);
+    outcome.verdict
 }
 
 /// Создаёт wgpu-рендер на окне запроса.
@@ -26,11 +31,21 @@ pub(super) fn create(
     request: RendererCreateRequest<'_>,
 ) -> Result<Box<dyn RenderShell>, RendererCreateError> {
     let surface_present_settings = surface_present_settings(request.vulkan);
-    let mut renderer =
-        Renderer::new(request.window, surface_present_settings).map_err(|error| {
-            // Этапы создания wgpu-рендера не различаются в его ошибке; текст — прежний `{:#}`.
-            RendererCreateError::new(RendererCreateStage::DeviceCreation, format!("{error:#}"))
-        })?;
+    let mut probe_leftovers = request.probe_leftovers;
+    let created = match probe_leftovers.take_wgpu_vulkan_instance() {
+        // Старт после пробы: тот же instance, второй не создаётся.
+        Some(probed_instance) => Renderer::new_reusing_instance(
+            request.window,
+            surface_present_settings,
+            probed_instance,
+        ),
+        // Пересоздание рендера или старт без пробы: свой instance.
+        None => Renderer::new(request.window, surface_present_settings),
+    };
+    let mut renderer = created.map_err(|error| {
+        // Этапы создания wgpu-рендера не различаются в его ошибке; текст — прежний `{:#}`.
+        RendererCreateError::new(RendererCreateStage::DeviceCreation, format!("{error:#}"))
+    })?;
     match request.initial_color {
         RendererInitialColor::CommittedConfig(initial) => {
             renderer.set_color_pipeline_settings(initial.color_pipeline);
@@ -65,7 +80,7 @@ mod tests {
     use fastiplayer_config::{AppConfig, VulkanPresentMode};
     use render_shell_api::{ShellPresentMode, SurfaceAlphaPreference};
 
-    use super::surface_present_settings;
+    use super::{ProbeLeftovers, probe, surface_present_settings};
 
     /// Создание рендера всегда запрашивает прозрачную surface-композицию.
     #[test]
@@ -97,5 +112,23 @@ mod tests {
             assert_eq!(settings.present_mode, expected_mode);
             assert_eq!(settings.max_frame_latency, 3);
         }
+    }
+
+    /// Проба оставляет свой instance для рендера этого запуска и даёт тот же вердикт, что
+    /// проба без сохранения; повторная проба не копит instance-ы (остаётся один).
+    #[test]
+    fn probe_keeps_its_instance_for_the_renderer_of_the_same_run() {
+        let mut leftovers = ProbeLeftovers::default();
+
+        let verdict = probe(&mut leftovers);
+
+        assert_eq!(verdict, render_wgpu_shell::probe_hardware_vulkan_adapter());
+        assert!(leftovers.holds_wgpu_vulkan_instance());
+        probe(&mut leftovers);
+        assert!(leftovers.take_wgpu_vulkan_instance().is_some());
+        assert!(
+            leftovers.take_wgpu_vulkan_instance().is_none(),
+            "a repeated probe replaces the instance instead of stacking them"
+        );
     }
 }

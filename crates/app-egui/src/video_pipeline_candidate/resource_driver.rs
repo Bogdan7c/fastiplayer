@@ -11,7 +11,7 @@ use render_shell_api::{
 };
 use video_backend_api::{DetachedVideoBackend, DetachedVideoBackendResourceError};
 use video_ffmpeg::FfmpegSoftwareVideoBackendFactory;
-use video_vaapi::VaapiVideoBackendFactory;
+use video_vaapi::{VaapiVideoBackendFactory, ZeroCopyImportTarget};
 
 use crate::video_pipeline_selector::{VideoBackendKind, VideoPipelinePlan};
 
@@ -190,12 +190,13 @@ impl CandidateVideoPipelineResourceDriver for RendererCandidateVideoPipelineReso
         PreparedCandidateVideoPipelineResources<Self::RendererImport>,
         CandidateVideoPipelinePreparationError,
     > {
-        let started_backend = start_decoder_backend(plan).map_err(|message| {
-            CandidateVideoPipelinePreparationError::at_stage(
-                CandidateVideoPipelinePreparationStage::BackendStartup,
-                message,
-            )
-        })?;
+        let started_backend =
+            start_decoder_backend(plan, self.renderer_family).map_err(|message| {
+                CandidateVideoPipelinePreparationError::at_stage(
+                    CandidateVideoPipelinePreparationStage::BackendStartup,
+                    message,
+                )
+            })?;
         // Рендер оборачивает decoder: releases candidate provider-а ждут его очередь GPU.
         let prepared = self
             .preparer
@@ -218,16 +219,19 @@ impl CandidateVideoPipelineResourceDriver for RendererCandidateVideoPipelineReso
 /// Запускает decoder backend маршрута декода плана (VA-API или FFmpeg).
 ///
 /// Общий для кандидатов strong open и прямого пути `AppState::install_video_pipeline_plan`;
-/// ошибка — текст factory без потери категории (её задаёт вызывающий).
+/// ошибка — текст factory без потери категории (её задаёт вызывающий). `renderer_family` —
+/// семейство рендера, который будет импортировать кадры: от него зависит цель zero-copy
+/// импорта VA-API (имя контракта в логе, по которому evidence доказывает аппаратный путь).
 pub(crate) fn start_decoder_backend(
     plan: VideoPipelinePlan,
+    renderer_family: RendererFamily,
 ) -> Result<video_backend_api::StartedVideoBackend, String> {
     let decoder_thread_config = plan.decoder_thread_config();
     // Exhaustive match гарантирует, что каждый маршрут запускает свой decoder.
     match plan {
         // VA-API factory создаёт отдельный decoder thread/resource owner.
         VideoPipelinePlan::VaapiDmaBuf { .. } => {
-            VaapiVideoBackendFactory::new_with_decoder_config(decoder_thread_config)
+            vaapi_factory_for_renderer(decoder_thread_config, renderer_family)
                 .start_for_composition()
                 .map_err(|error| error.to_string())
         }
@@ -238,6 +242,24 @@ pub(crate) fn start_decoder_backend(
                 .map_err(|error| error.to_string())
         }
     }
+}
+
+/// Цель zero-copy импорта VA-API для семейства рендера (exhaustive: новое семейство
+/// не скомпилируется, пока для него не выбрана цель).
+pub(crate) const fn zero_copy_import_target_for(family: RendererFamily) -> ZeroCopyImportTarget {
+    match family {
+        RendererFamily::WgpuVulkan => ZeroCopyImportTarget::VulkanDmaBuf,
+        RendererFamily::Gles2 => ZeroCopyImportTarget::EglDmaBuf,
+    }
+}
+
+/// VA-API factory с целью импорта под рендер `renderer_family`.
+pub(crate) fn vaapi_factory_for_renderer(
+    decoder_thread_config: player_core::PlayerVideoDecoderThreadConfig,
+    renderer_family: RendererFamily,
+) -> VaapiVideoBackendFactory {
+    VaapiVideoBackendFactory::new_with_decoder_config(decoder_thread_config)
+        .with_zero_copy_import_target(zero_copy_import_target_for(renderer_family))
 }
 
 /// Текст отказа подготовки импорта для диагностики кандидата.

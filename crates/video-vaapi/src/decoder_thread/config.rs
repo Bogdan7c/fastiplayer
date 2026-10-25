@@ -13,6 +13,7 @@ use media_core::{TrackId, TrackTimestamp};
 use video_core::VideoDecoderDiagnosticEvent;
 
 use crate::decoder::VaapiDecoderRuntimeConfig;
+use crate::import_target::ZeroCopyImportTarget;
 use crate::resource_pool::{DEFAULT_ZERO_COPY_SURFACE_POOL_SLOTS, ResourcePoolStats};
 
 /// Подтверждение, что decoder thread уже обработал один packet из input channel.
@@ -77,6 +78,9 @@ pub struct VideoDecodeThreadConfig {
 
     /// Максимальное время ожидания подтверждения flush от decoder thread.
     pub flush_timeout: Duration,
+
+    /// В какой API рендер импортирует DMA-BUF кадры (определяет имя контракта в логе).
+    pub zero_copy_import_target: ZeroCopyImportTarget,
 }
 
 impl VideoDecodeThreadConfig {
@@ -151,6 +155,7 @@ impl VideoDecodeThreadConfig {
             decoder_surface_pool_frames: self.decoder_surface_pool_frames.max(1),
             zero_copy_surface_pool_slots: self.zero_copy_surface_pool_slots.max(1),
             flush_timeout: self.flush_timeout.max(Duration::from_millis(1)),
+            zero_copy_import_target: self.zero_copy_import_target,
         }
     }
 
@@ -175,6 +180,7 @@ impl Default for VideoDecodeThreadConfig {
             decoder_surface_pool_frames: crate::decoder::DEFAULT_DECODER_SURFACE_POOL_FRAMES,
             zero_copy_surface_pool_slots: DEFAULT_ZERO_COPY_SURFACE_POOL_SLOTS,
             flush_timeout: Self::default_flush_timeout(),
+            zero_copy_import_target: ZeroCopyImportTarget::default(),
         }
     }
 }
@@ -397,6 +403,8 @@ impl From<video_core::VideoDecoderThreadConfig> for VideoDecodeThreadConfig {
             decoder_surface_pool_frames: config.decoder_surface_pool_frames,
             zero_copy_surface_pool_slots: config.zero_copy_surface_pool_slots,
             flush_timeout: config.flush_timeout,
+            // Нейтральный конфиг цели не знает: приложение задаёт её отдельно.
+            zero_copy_import_target: ZeroCopyImportTarget::default(),
         }
     }
 }

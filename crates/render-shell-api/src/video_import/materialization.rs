@@ -199,6 +199,57 @@ pub enum FrameImportUnsupportedReason {
     /// Дескриптор DMA-BUF отклонён до импорта (раскладка/модификатор/плоскости).
     /// Приложение по этой причине переходит на программный декод для текущего файла.
     DmaBufDescriptorRejected(DmaBufDescriptorRejection),
+
+    /// Дескриптор кадра исправен, но САМ РЕНДЕР не может показать этот аппаратный кадр
+    /// (драйвер не импортирует формат, формат вне объявленного, провайдер отдал память
+    /// процесса вместо DMA-BUF). Это ограничение рендера, а не ошибка декодера: приложение
+    /// по этой причине тоже переходит на программный декод для текущего файла (решение
+    /// владельца 41; раньше GLES2 выдавал такой отказ за `InvalidFrameContract` дескриптора).
+    RendererCannotShowHardwareFrame(HardwareFrameRefusal),
+}
+
+/// Почему рендер не может показать аппаратный кадр с исправным дескриптором.
+///
+/// Тип нейтральный: подробности драйвера/формата рендер передаёт текстом для логов и
+/// диагностики, а различие классов остаётся типизированным.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HardwareFrameRefusal {
+    /// Провайдер отдал дескриптор памяти процесса там, где обещан аппаратный буфер.
+    HostMemoryDescriptor,
+
+    /// Формат/раскладка кадра вне того, что рендер объявляет (например, 10 бит на GLES2).
+    FrameFormatNotShown {
+        /// Что именно не подошло (для логов).
+        details: String,
+    },
+
+    /// Драйвер не объявил, что умеет импортировать этот буфер (нет расширений, нет
+    /// `sampler2D` для формата и модификатора).
+    DriverCannotImport {
+        /// Ответ драйвера/рендера (для логов).
+        details: String,
+    },
+}
+
+impl fmt::Display for HardwareFrameRefusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::HostMemoryDescriptor => formatter
+                .write_str("the provider returned a host-memory descriptor for a hardware frame"),
+            Self::FrameFormatNotShown { details } => {
+                write!(
+                    formatter,
+                    "the renderer does not show this frame format: {details}"
+                )
+            }
+            Self::DriverCannotImport { details } => {
+                write!(
+                    formatter,
+                    "the graphics driver cannot import this hardware frame: {details}"
+                )
+            }
+        }
+    }
 }
 
 /// Поломка при подготовке кадра.

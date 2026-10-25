@@ -100,6 +100,11 @@ pub struct Telemetry {
     /// Количество render frames, которые swapchain/surface не смог принять.
     surface_dropped_frames: AtomicU64,
 
+    /// Количество render frames, завершившихся `RenderFrameOutcome::Failed` (ошибка рендера,
+    /// а не потеря кадра surface-ом). Часть `surface_dropped_frames`, но отдельно: по нему метка
+    /// незавершённого старта отличает «рендер жив, но не рисует» от «окно закрыли до кадра».
+    render_failed_frames: AtomicU64,
+
     /// Текущий FPS, обновляется каждые 500 мс скользящим окном.
     current_fps: AtomicU64,
 
@@ -166,6 +171,15 @@ struct FpsTracker {
     frame_count: u64,
 }
 
+/// Итоги кадров рендера за жизнь процесса.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RenderFrameTotals {
+    /// Кадры, показанные на surface.
+    pub presented: u64,
+    /// Кадры, завершившиеся ошибкой рендера (`Failed`).
+    pub failed: u64,
+}
+
 impl Telemetry {
     /// Создаёт новый экземпляр телеметрии с нулевыми счётчиками.
     pub fn new() -> Self {
@@ -176,6 +190,7 @@ impl Telemetry {
             redraw_fallback_found_work: AtomicU64::new(0),
             retained_ui_refusals: AtomicU64::new(0),
             frames_presented_to_surface: AtomicU64::new(0),
+            render_failed_frames: AtomicU64::new(0),
             surface_dropped_frames: AtomicU64::new(0),
             current_fps: AtomicU64::new(0),
             last_frame_time_ms: AtomicU64::new(0),
@@ -218,6 +233,30 @@ impl Telemetry {
     #[inline]
     pub fn record_surface_dropped_frame(&self) {
         self.surface_dropped_frames.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Инкрементирует счётчик кадров, завершившихся ошибкой рендера (`Failed`).
+    ///
+    /// Зовётся вместе с [`Self::record_surface_dropped_frame`]: кадр остаётся в общем счёте
+    /// потерь surface, а этот счётчик выделяет из него именно отказы рендера.
+    #[inline]
+    pub fn record_render_failed_frame(&self) {
+        self.render_failed_frames.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Сколько кадров завершилось ошибкой рендера за жизнь процесса.
+    #[inline]
+    pub fn render_failed_frames(&self) -> u64 {
+        self.render_failed_frames.load(Ordering::Relaxed)
+    }
+
+    /// Итоги кадров рендера: показанные и отказанные (для метки незавершённого старта).
+    #[must_use]
+    pub fn render_frame_totals(&self) -> RenderFrameTotals {
+        RenderFrameTotals {
+            presented: self.frames_presented_to_surface(),
+            failed: self.render_failed_frames(),
+        }
     }
 
     /// Обновляет FPS на основе прошедшего времени кадра.
@@ -507,6 +546,25 @@ mod tests {
         assert_eq!(telemetry.video_frames_dropped(), 0);
         assert_eq!(telemetry.playback_visible_drops(), 0);
         assert_eq!(telemetry.seek_discarded_frames(), 0);
+    }
+
+    /// Отказы рендера входят в потери surface, но видны отдельно в итогах кадров.
+    #[test]
+    fn render_failures_are_counted_separately_in_frame_totals() {
+        let telemetry = Telemetry::new();
+
+        telemetry.record_frame_presented_to_surface();
+        telemetry.record_render_failed_frame();
+        telemetry.record_surface_dropped_frame();
+
+        assert_eq!(
+            telemetry.render_frame_totals(),
+            RenderFrameTotals {
+                presented: 1,
+                failed: 1
+            }
+        );
+        assert_eq!(telemetry.surface_dropped_frames(), 1);
     }
 
     /// Проверяет раздельный accounting playback drops и repeated frames.

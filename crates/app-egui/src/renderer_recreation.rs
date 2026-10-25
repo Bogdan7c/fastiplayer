@@ -17,7 +17,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use fastiplayer_config::RenderProfile;
 use fastiplayer_settings::{
     AppRouteApplyResult, RenderCommittedSettingsUpdate, RendererRecreationApplyError,
     RendererRecreationApplyErrorKind, RendererRecreationFailure, RendererRecreationRollbackError,
@@ -30,7 +29,9 @@ use render_shell_api::{
 };
 use winit::window::Window;
 
-use crate::render_backend::{RendererCreateRequest, RendererInitialColor, create_renderer};
+use crate::render_backend::{
+    ProbeLeftovers, RendererCreateRequest, RendererInitialColor, create_renderer,
+};
 use crate::state::AppState;
 use crate::system_capabilities::probe_system_capabilities;
 
@@ -151,7 +152,7 @@ impl RendererLifecycleCoordinator {
         }
     }
 
-    /// Выполняет ordered check -> detach -> prepare -> release -> drain -> commit sequence.
+    /// Выполняет ordered detach -> prepare -> release -> drain -> commit sequence.
     ///
     /// Старый рендер отпускает окно ДО создания кандидата (у окна одна surface). При любой
     /// ошибке кандидат уничтожается ДО того, как старый рендер вернёт себе окно.
@@ -163,29 +164,13 @@ impl RendererLifecycleCoordinator {
     where
         L: RendererRecreationLifecycle,
     {
-        // Отказ по одним настройкам (например, профиль без рендера) — до того, как окно
-        // отпущено: старый рендер не теряет surface ради заведомо невозможного кандидата.
-        if let Err(apply_error) = lifecycle.check_candidate_settings(next) {
-            return restore_after_failure(
-                lifecycle,
-                previous,
-                apply_error,
-                OldRendererWindow::Held,
-            );
-        }
-
         lifecycle.detach_presentation();
 
         // Кандидат, не созданный до конца, уничтожается внутри `prepare_candidate`.
         let candidate = match lifecycle.prepare_candidate(next) {
             Ok(candidate) => candidate,
             Err(apply_error) => {
-                return restore_after_failure(
-                    lifecycle,
-                    previous,
-                    apply_error,
-                    OldRendererWindow::Detached,
-                );
+                return restore_after_failure(lifecycle, previous, apply_error);
             }
         };
 
@@ -194,22 +179,12 @@ impl RendererLifecycleCoordinator {
         if let Err(apply_error) = lifecycle.drain_old_gpu_work() {
             // Кандидат (и его surface) уничтожается до возврата окна старому рендеру.
             drop(candidate);
-            return restore_after_failure(
-                lifecycle,
-                previous,
-                apply_error,
-                OldRendererWindow::Detached,
-            );
+            return restore_after_failure(lifecycle, previous, apply_error);
         }
 
         // При отказе commit сам роняет кандидата до возврата Err.
         if let Err(apply_error) = lifecycle.commit_candidate(candidate) {
-            return restore_after_failure(
-                lifecycle,
-                previous,
-                apply_error,
-                OldRendererWindow::Detached,
-            );
+            return restore_after_failure(lifecycle, previous, apply_error);
         }
 
         lifecycle.resume_submissions();
@@ -224,12 +199,6 @@ pub(crate) trait RendererRecreationLifecycle {
 
     /// Возвращает занятую внешнюю boundary до первой мутации.
     fn preflight_activity(&self) -> Option<SettingsBoundaryActivity>;
-
-    /// Отклоняет пересоздание по одним настройкам (без мутаций, до «отпустить окно»).
-    fn check_candidate_settings(
-        &self,
-        next: &RenderCommittedSettingsUpdate,
-    ) -> Result<(), RendererRecreationApplyError>;
 
     /// Применяет новые настройки показа к текущему рендеру на месте.
     fn reconfigure_presentation(
@@ -278,26 +247,15 @@ pub(crate) trait RendererRecreationLifecycle {
     fn resume_submissions(&mut self);
 }
 
-/// Держит ли старый рендер окно в момент ошибки транзакции.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OldRendererWindow {
-    /// Окно не отпускалось (отказ по настройкам до detach).
-    Held,
-
-    /// Окно отпущено перед созданием кандидата: откат обязан вернуть его старому рендеру.
-    Detached,
-}
-
 /// Всегда вызывает concrete restore boundary и сохраняет обе typed errors при failure.
 ///
 /// Порядок отката: restore прежней конфигурации → возврат окна старому рендеру (если он
-/// остаётся активным и окно было отпущено) → возобновление показа. Кандидат к этому моменту
+/// остаётся активным; окно отпускается до создания кандидата всегда) → возобновление показа. Кандидат к этому моменту
 /// уже уничтожен вызывающим кодом.
 fn restore_after_failure<L>(
     lifecycle: &mut L,
     previous: &RenderCommittedSettingsUpdate,
     apply_error: RendererRecreationApplyError,
-    old_window: OldRendererWindow,
 ) -> AppRouteApplyResult
 where
     L: RendererRecreationLifecycle,
@@ -306,8 +264,7 @@ where
     // DeviceLost: restore заменяет старый рендер новым — возвращать окно мёртвому нельзя.
     let old_renderer_stays_active =
         apply_error.kind != RendererRecreationApplyErrorKind::DeviceLost;
-    let reattach_result = (old_window == OldRendererWindow::Detached && old_renderer_stays_active)
-        .then(|| lifecycle.reattach_presentation());
+    let reattach_result = old_renderer_stays_active.then(|| lifecycle.reattach_presentation());
     let rollback_result = match (restore_result, reattach_result) {
         (Ok(()), None | Some(Ok(()))) => Ok(()),
         (Ok(()), Some(Err(reattach_error))) => Err(reattach_error),
@@ -391,14 +348,13 @@ impl<'runtime> LiveRendererRecreation<'runtime> {
         &mut self,
         settings: &RenderCommittedSettingsUpdate,
     ) -> Result<PreparedRendererCandidate, RendererRecreationApplyError> {
-        ensure_candidate_profile_supported(settings)?;
-
         let mut renderer = create_renderer(
             self.renderer.family(),
             RendererCreateRequest {
                 window: self.window.clone(),
                 vulkan: &settings.vulkan,
                 initial_color: RendererInitialColor::RendererDefaults,
+                probe_leftovers: ProbeLeftovers::default(),
             },
         )
         .map_err(|error| {
@@ -498,13 +454,6 @@ impl RendererRecreationLifecycle for LiveRendererRecreation<'_> {
         None
     }
 
-    fn check_candidate_settings(
-        &self,
-        next: &RenderCommittedSettingsUpdate,
-    ) -> Result<(), RendererRecreationApplyError> {
-        ensure_candidate_profile_supported(next)
-    }
-
     fn reconfigure_presentation(
         &mut self,
         next: &RenderCommittedSettingsUpdate,
@@ -591,19 +540,6 @@ impl RendererRecreationLifecycle for LiveRendererRecreation<'_> {
     fn resume_submissions(&mut self) {
         self.app_state.mark_pending_worker_redraw();
     }
-}
-
-/// Профиль без реализованного рендера отклоняется до создания кандидата (до сессии 09).
-fn ensure_candidate_profile_supported(
-    settings: &RenderCommittedSettingsUpdate,
-) -> Result<(), RendererRecreationApplyError> {
-    if settings.profile == RenderProfile::OpenGles {
-        return Err(apply_error(
-            RendererRecreationApplyErrorKind::UnsupportedProfile,
-            "OpenGL ES renderer is absent; the active Vulkan renderer was preserved",
-        ));
-    }
-    Ok(())
 }
 
 /// Сохраняет typed distinction device-lost vs обычный drain failure.

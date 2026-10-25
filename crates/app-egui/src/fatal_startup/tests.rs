@@ -66,7 +66,10 @@ fn missing_gpu_adapter_is_shown_as_vulkan_problem_with_nonzero_exit() {
 
     assert_eq!(conclusion, ProcessConclusion::FailedToStart);
     assert_eq!(conclusion.exit_code(), ExitCode::from(1));
-    assert!(single_shown_message(&presenter).contains("graphics card with Vulkan support"));
+    assert!(
+        single_shown_message(&presenter)
+            .contains("graphics card with Vulkan or OpenGL ES 2.0 support")
+    );
     // Вся цепочка причин сохраняется для лога, а не только верхний контекст.
     assert!(error.technical_detail().contains("no suitable adapter"));
     assert!(

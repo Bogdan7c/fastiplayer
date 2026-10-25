@@ -3,13 +3,18 @@
 //! Приложение знает рендер только как `Box<dyn RenderShell>`. Какие рендеры есть на
 //! платформе, в каком порядке их предпочитать и как создать конкретный — знает только этот
 //! модуль. Это единственное место `app-egui`, где упоминаются конкретные рендеры: добавить
-//! GLES2 (сессия 09) или DX10 — значит дописать кандидата в [`platform_candidates`] и его
-//! фабрику, не трогая остальное приложение.
+//! DX10 — значит дописать кандидата в [`platform_candidates`] и его фабрику, не трогая
+//! остальное приложение.
 //!
-//! Создание рендера идёт только отсюда: при старте ([`create_renderer`] после
-//! [`select_renderer`]) и при пересоздании внутри семейства (тот же [`create_renderer`]).
+//! Создание рендера идёт только отсюда: при старте ([`create_startup_renderer`]: ленивые
+//! пробы, [`select_renderer`](selection::select_renderer), фолбэк при ошибке создания) и при
+//! пересоздании внутри семейства ([`create_renderer`]).
 
+mod gles2;
+mod probe_leftovers;
+mod report;
 mod selection;
+mod startup;
 mod wgpu_vulkan;
 
 use std::sync::Arc;
@@ -19,15 +24,18 @@ use render_shell_api::{
     RenderShell, RendererCreateError, RendererCreateStage, RendererFamily, RendererProbe,
     SurfacePresentSettings,
 };
-use tracing::warn;
 use winit::window::Window;
 
 use crate::settings_runtime::InitialRenderSettings;
 
-use selection::{
-    CandidateProbe, RendererSelection, RendererSelectionNotice, RendererStartupMarker,
-    select_renderer,
-};
+pub(crate) use probe_leftovers::ProbeLeftovers;
+pub(crate) use report::RendererStartupReport;
+pub(crate) use selection::RendererStartupMarker;
+// Нужны только тестам соседних модулей, которые строят отчёты выбора руками.
+#[cfg(test)]
+pub(crate) use selection::{CandidateProbe, SelectionReason};
+pub(crate) use startup::{StartedRenderer, UnfinishedStartupTracker};
+use startup::{StartupCandidates, start_renderer};
 
 /// Что нужно фабрике кандидата для создания рендера.
 pub(crate) struct RendererCreateRequest<'config> {
@@ -39,6 +47,9 @@ pub(crate) struct RendererCreateRequest<'config> {
 
     /// Какие настройки цвета у рендера сразу после создания.
     pub(crate) initial_color: RendererInitialColor,
+
+    /// Что оставила проба этого запуска (пусто при пересоздании рендера).
+    pub(crate) probe_leftovers: ProbeLeftovers,
 }
 
 /// Настройки цвета нового рендера до первого кадра.
@@ -57,7 +68,10 @@ struct RendererCandidate {
     family: RendererFamily,
 
     /// Проверка «годен ли на этой машине» без создания рендера.
-    probe: fn() -> RendererProbe,
+    ///
+    /// Проба кладёт в остатки то, что дорого создавать дважды (instance Vulkan): фабрика
+    /// того же запуска их заберёт.
+    probe: fn(&mut ProbeLeftovers) -> RendererProbe,
 
     /// Фабрика рендера.
     create: fn(RendererCreateRequest<'_>) -> Result<Box<dyn RenderShell>, RendererCreateError>,
@@ -67,26 +81,23 @@ struct RendererCandidate {
     presentation_settings: fn(&VulkanConfig) -> SurfacePresentSettings,
 }
 
-/// Кандидаты платформы в порядке предпочтения (сессия 02: только wgpu/Vulkan).
+/// Кандидаты платформы в порядке предпочтения.
 fn platform_candidates() -> &'static [RendererCandidate] {
-    const LINUX_CANDIDATES: &[RendererCandidate] = &[RendererCandidate {
-        family: RendererFamily::WgpuVulkan,
-        probe: wgpu_vulkan::probe,
-        create: wgpu_vulkan::create,
-        presentation_settings: wgpu_vulkan::surface_present_settings,
-    }];
+    const LINUX_CANDIDATES: &[RendererCandidate] = &[
+        RendererCandidate {
+            family: RendererFamily::WgpuVulkan,
+            probe: wgpu_vulkan::probe,
+            create: wgpu_vulkan::create,
+            presentation_settings: wgpu_vulkan::surface_present_settings,
+        },
+        RendererCandidate {
+            family: RendererFamily::Gles2,
+            probe: gles2::probe,
+            create: gles2::create,
+            presentation_settings: gles2::surface_present_settings,
+        },
+    ];
     LINUX_CANDIDATES
-}
-
-/// Пробы всех кандидатов платформы для [`select_renderer`].
-fn probe_platform_candidates() -> Vec<CandidateProbe> {
-    platform_candidates()
-        .iter()
-        .map(|candidate| CandidateProbe {
-            family: candidate.family,
-            probe: (candidate.probe)(),
-        })
-        .collect()
 }
 
 /// Создаёт рендер семейства `family` фабрикой каталога.
@@ -131,75 +142,90 @@ pub(crate) fn presentation_settings(
         .ok_or(RendererFamilyNotBuilt { family })
 }
 
+/// Кандидаты платформы в роли источника для старта: пробы и фабрики с данными запуска.
+struct PlatformStartup<'config> {
+    /// Окно, на котором создаётся рендер.
+    window: Arc<Window>,
+
+    /// Настройки показа Vulkan/wgpu.
+    vulkan: &'config VulkanConfig,
+
+    /// Стартовые настройки цвета (клонируются на каждую попытку создания).
+    initial_render_settings: InitialRenderSettings,
+
+    /// Остатки проб; фабрика рендера забирает их при создании.
+    probe_leftovers: ProbeLeftovers,
+}
+
+impl StartupCandidates for PlatformStartup<'_> {
+    type Renderer = Box<dyn RenderShell>;
+
+    fn catalog_order(&self) -> Vec<RendererFamily> {
+        platform_candidates()
+            .iter()
+            .map(|candidate| candidate.family)
+            .collect()
+    }
+
+    fn probe(&mut self, family: RendererFamily) -> RendererProbe {
+        match platform_candidates()
+            .iter()
+            .find(|candidate| candidate.family == family)
+        {
+            Some(candidate) => (candidate.probe)(&mut self.probe_leftovers),
+            // Семейство берётся из `catalog_order`, поэтому сюда не попадает; на всякий случай
+            // отвечаем честным «нет», а не паникой.
+            None => RendererProbe::Unusable {
+                reason: render_shell_api::RendererUnusableReason::NoHardwareAdapter,
+            },
+        }
+    }
+
+    fn create(
+        &mut self,
+        family: RendererFamily,
+    ) -> Result<Box<dyn RenderShell>, RendererCreateError> {
+        create_renderer(
+            family,
+            RendererCreateRequest {
+                window: self.window.clone(),
+                vulkan: self.vulkan,
+                initial_color: RendererInitialColor::CommittedConfig(
+                    self.initial_render_settings.clone(),
+                ),
+                // Остатки проб достаются первой же попытке создания; фолбэк-попытки без них.
+                probe_leftovers: std::mem::take(&mut self.probe_leftovers),
+            },
+        )
+    }
+}
+
 /// Выбирает семейство по профилю из config-а и создаёт рендер для старта приложения.
 ///
-/// Сессия 02: метки незавершённого старта ещё нет (сессия 09), поэтому прошлый старт
-/// считается завершённым. Уведомление о замене выбора пока пишется только в лог.
+/// Пробы ленивые, при ошибке создания идёт фолбэк на следующего годного кандидата (решения
+/// 35, 39, 40 плана gles2-renderer). Метку незавершённого старта читает и пишет `tracker`
+/// (владелец — `app_shell`). Возвращает рендер и нейтральный отчёт выбора.
 pub(crate) fn create_startup_renderer(
     config: &AppConfig,
     window: Arc<Window>,
     initial_render_settings: InitialRenderSettings,
-) -> Result<Box<dyn RenderShell>, RendererCreateError> {
-    let candidates = probe_platform_candidates();
-    let selection = select_renderer(
-        config.render.profile,
-        &candidates,
-        RendererStartupMarker::NoUnfinishedStartup,
-    );
-    let family = match selection {
-        RendererSelection::Create { family, notice } => {
-            if let Some(notice) = notice {
-                log_selection_notice(family, &notice);
-            }
-            family
-        }
-        RendererSelection::NoUsableRenderer { rejected } => {
-            return Err(RendererCreateError::new(
-                RendererCreateStage::AdapterSelection,
-                format!("no usable renderer on this machine: {rejected:?}"),
-            ));
-        }
+    tracker: &mut dyn UnfinishedStartupTracker,
+) -> Result<StartedRenderer<Box<dyn RenderShell>>, RendererCreateError> {
+    let mut startup = PlatformStartup {
+        window,
+        vulkan: &config.render.vulkan,
+        initial_render_settings,
+        probe_leftovers: ProbeLeftovers::default(),
     };
-    create_renderer(
-        family,
-        RendererCreateRequest {
-            window,
-            vulkan: &config.render.vulkan,
-            initial_color: RendererInitialColor::CommittedConfig(initial_render_settings),
-        },
-    )
-}
-
-/// Пишет в лог, почему создаётся не тот рендер, которого ждал профиль.
-fn log_selection_notice(family: RendererFamily, notice: &RendererSelectionNotice) {
-    match notice {
-        RendererSelectionNotice::RequestedFamilyNotBuilt { requested } => warn!(
-            requested = requested.stable_id(),
-            selected = family.stable_id(),
-            "Requested renderer is not built into this version yet; starting the available renderer"
-        ),
-        RendererSelectionNotice::PreferredCandidateSkipped { skipped } => warn!(
-            skipped = skipped.family.stable_id(),
-            reason = ?skipped.probe,
-            selected = family.stable_id(),
-            "Preferred renderer skipped"
-        ),
-        RendererSelectionNotice::RetryingAfterUnfinishedStartup { family } => warn!(
-            family = family.stable_id(),
-            "The previous startup with this renderer did not finish; trying it again"
-        ),
-    }
+    start_renderer(config.render.profile, &mut startup, tracker)
 }
 
 #[cfg(test)]
 mod tests {
     use fastiplayer_config::{AppConfig, VulkanPresentMode};
-    use render_shell_api::{RendererFamily, RendererProbe, ShellPresentMode};
+    use render_shell_api::{RendererFamily, ShellPresentMode};
 
-    use super::{
-        RendererFamilyNotBuilt, platform_candidates, presentation_settings,
-        probe_platform_candidates,
-    };
+    use super::{platform_candidates, presentation_settings};
 
     /// Перенастройка на месте получает от каталога тот же перевод `[render.vulkan]`, что
     /// фабрика при создании; семейства вне сборки — типизированный отказ, а не умолчания.
@@ -214,26 +240,22 @@ mod tests {
         assert_eq!(settings.present_mode, ShellPresentMode::Mailbox);
         assert_eq!(settings.max_frame_latency, 4);
 
-        assert_eq!(
-            presentation_settings(RendererFamily::Gles2, &vulkan),
-            Err(RendererFamilyNotBuilt {
-                family: RendererFamily::Gles2
-            })
-        );
+        // GLES2 не зависит от `[render.vulkan]`: vsync при любых значениях секции.
+        let gles2 = presentation_settings(RendererFamily::Gles2, &vulkan)
+            .expect("gles2 candidate is built");
+        assert_eq!(gles2.present_mode, ShellPresentMode::Fifo);
     }
 
-    /// Каталог Linux сессии 02: ровно один кандидат, wgpu/Vulkan, проба «годен».
+    /// Каталог Linux: wgpu/Vulkan первым, GLES2 вторым (порядок = предпочтение).
     #[test]
-    fn linux_catalog_has_only_the_wgpu_candidate_until_session_09() {
+    fn linux_catalog_prefers_wgpu_then_gles2() {
         let families: Vec<RendererFamily> = platform_candidates()
             .iter()
             .map(|candidate| candidate.family)
             .collect();
-        assert_eq!(families, vec![RendererFamily::WgpuVulkan]);
-
-        let probes = probe_platform_candidates();
-        assert_eq!(probes.len(), 1);
-        assert_eq!(probes[0].family, RendererFamily::WgpuVulkan);
-        assert_eq!(probes[0].probe, RendererProbe::Usable);
+        assert_eq!(
+            families,
+            vec![RendererFamily::WgpuVulkan, RendererFamily::Gles2]
+        );
     }
 }

@@ -30,6 +30,7 @@
 //!
 //! - [`binding`] — публичная привязка: публикация fence, потеря контекста, статистика;
 //! - [`detach`] — штатная отвязка рендера перед уничтожением контекста (контракт с рендером);
+//! - [`drain`] — ожидание, пока запрошенные освобождения дойдут до декодера (`wait_for_gpu_idle`);
 //! - [`shared`] — общее состояние и счётчики, `PendingRelease` с гарантией «ровно один раз»;
 //! - [`waiter`] — поток-ожидатель и его жизненный цикл;
 //! - [`provider`] и [`decoder`] — обёртки провайдера и декодера (все методы форвардятся);
@@ -38,6 +39,7 @@
 mod binding;
 mod decoder;
 mod detach;
+mod drain;
 mod fence;
 mod provider;
 mod shared;
@@ -45,8 +47,9 @@ mod stats;
 mod waiter;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use binding::{Gles2FrameReleaseBinding, wrap_video_backend_for_gles2_release};
 pub use detach::{RendererDetachGrace, RendererDetachReport};
+pub use drain::{PendingReleaseDrain, PresentedWorkWait};
 pub use stats::FrameReleaseStats;

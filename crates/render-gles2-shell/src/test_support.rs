@@ -1,6 +1,8 @@
 //! Кадры декодера для тестов адаптера: настоящий `DecodedFrame` + `HostPlanarFrameDescriptor`
 //! поверх своих байтов (как отдаёт FFmpeg: строки со stride, хвост последней строки отрезан).
 
+pub(crate) mod fake_decoder;
+
 use std::time::Duration;
 
 use codec_core::{VideoColorMetadata, VideoDisplayOrientation};

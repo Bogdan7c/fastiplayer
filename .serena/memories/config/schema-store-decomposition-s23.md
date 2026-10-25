@@ -34,3 +34,10 @@
 ## Subtitles schema v23 (2026-10-18, сессия 13)
 - `CURRENT_SCHEMA_VERSION = 23`: вложенная таблица `[subtitles.stream]` (`SubtitleStreamConfig`, `schema/subtitles_stream.rs`; валидация `validation/subtitles_stream.rs`, включая `live_retention_s >= behind_s`; комментарии default-документа — `default_document/subtitles.rs`, заголовок таблицы отдельной строкой). `SubtitlesConfig.stream` — `#[serde(default)] #[setting(nested)]`. Миграция v22→v23 только поднимает версию (`LEGACY_SCHEMA_VERSION_22`). Золотой файл `tests/fixtures/current_schema_v23.toml`. Подробности и значения: `mem:subtitles/stream-tracks-s13`.
 - При следующем bump-е: литералы `schema_version = 23` в config/settings tests и `scripts/tests/playback-smoke-self-test.sh`; число субтитровых настроек в `fastiplayer-settings/src/application_contract.rs` теперь 41.
+
+
+## Render profile schema v24 (2026-10-25, gles2-renderer сессия 09)
+- `CURRENT_SCHEMA_VERSION = 24` (`LEGACY_SCHEMA_VERSION_23` со всей обвязкой). `RenderConfig::default().profile = RenderProfile::Auto`; `OpenGlesConfig` и `[render.opengles]` удалены (`RenderConfig` — `deny_unknown_fields`, v24-файл с этой таблицей отклоняется строгим разбором).
+- Миграция в `store/migrations.rs::migrate_render_profile_to_auto` (сырой TOML, `schema_at_most(23)`): `render.profile = "vulkan"` → `"auto"` у ВСЕХ (решение владельца 36: полный дамп конфига не различает выбор и умолчание; прецедент v10→v11), другие значения не трогаются; таблица `render.opengles` удаляется целиком. Тесты — `store/tests/render_profile_migration.rs`; золотой файл `tests/fixtures/current_schema_v24.toml` (переименован из v23).
+- Новый путь `ConfigPaths::renderer_startup_marker_file()` (`renderer-startup.marker`, метка незавершённого старта рендера — `mem:gles2-renderer/app-integration-s09`).
+- При следующем bump-е: литералы `schema_version = 24` в config/settings/app tests и `scripts/tests/playback-smoke-self-test.sh`. Шаблоны `docs/benchmarks/tools/t480s/*-template.toml` остаются на schema 12 с `profile = "vulkan"` → у нового бинаря мигрируют в `auto` (на GPU с Vulkan = wgpu).

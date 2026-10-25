@@ -660,7 +660,9 @@ impl FrameSettingsRuntimeAdapter<'_> {
                 ));
                 return Ok(continuation.report);
             }
-            AppRouteApplyResult::Conflict { .. } | AppRouteApplyResult::PreviewPromoted => {
+            AppRouteApplyResult::Conflict { .. }
+            | AppRouteApplyResult::PreviewPromoted
+            | AppRouteApplyResult::AppliesAfterRestart => {
                 report.push(PlayerRuntimeApplyGroupReport::fatal(
                     PlayerRuntimeApplyGroup::MediaPipeline,
                     affected_settings,

@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 23;
+pub const CURRENT_SCHEMA_VERSION: u32 = 24;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -117,14 +117,22 @@ pub(crate) const LEGACY_SCHEMA_VERSION_21: u32 = 21;
 /// значения нечего, поэтому миграция v22 -> v23 только поднимает версию.
 pub(crate) const LEGACY_SCHEMA_VERSION_22: u32 = 22;
 
+/// Последняя схема с `render.profile = "vulkan"` по умолчанию и секцией `[render.opengles]`.
+///
+/// Решение владельца (gles2-renderer, сессия 09, №36): значение по умолчанию стало `auto`;
+/// старый конфиг писал профиль явно, отличить выбор от умолчания нельзя, поэтому сохранённый
+/// `vulkan` один раз становится `auto` (прецедент v10 -> v11). Неиспользуемая таблица
+/// `[render.opengles]` удаляется целиком.
+pub(crate) const LEGACY_SCHEMA_VERSION_23: u32 = 23;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v23 и полная цепочка поддерживаемых legacy-версий v2..v22.
+    /// Текущая схема v24 и полная цепочка поддерживаемых legacy-версий v2..v23.
     #[test]
-    fn schema_v23_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 23);
+    fn schema_v24_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 24);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -148,9 +156,10 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_20,
                 LEGACY_SCHEMA_VERSION_21,
                 LEGACY_SCHEMA_VERSION_22,
+                LEGACY_SCHEMA_VERSION_23,
             ],
             [
-                2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22
+                2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23
             ]
         );
     }

@@ -90,6 +90,13 @@ impl Gles2FrameReleaseBinding {
         }
     }
 
+    /// Та же ли это привязка (общее состояние), а не просто такая же по типу: клоны одной
+    /// привязки равны, независимо созданные — нет.
+    #[must_use]
+    pub fn is_same_binding(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.owner, &other.owner)
+    }
+
     pub(super) fn core(&self) -> &Arc<ReleaseCore> {
         &self.owner.core
     }

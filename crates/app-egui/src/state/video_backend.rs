@@ -166,12 +166,13 @@ impl AppState {
         let plan_backend_kind = plan.backend_kind();
         let decoder_thread_config = plan.decoder_thread_config();
 
-        let started_backend = start_decoder_backend(plan).map_err(|message| {
-            VideoPipelineRebuildError::BackendStartup {
-                plan_label,
-                message,
-            }
-        })?;
+        let started_backend =
+            start_decoder_backend(plan, import_target.renderer_family).map_err(|message| {
+                VideoPipelineRebuildError::BackendStartup {
+                    plan_label,
+                    message,
+                }
+            })?;
         // Рендер оборачивает decoder (releases ждут его GPU) и готовит импорт «в стороне».
         let prepared = import_target
             .video_frames
@@ -300,15 +301,15 @@ impl AppState {
     }
 
     /// Ставит typed runtime layout rejection в очередь до app composition boundary.
-    pub(crate) fn note_dma_buf_layout_rejection(
+    pub(crate) fn note_dma_buf_fallback_trigger(
         &mut self,
-        layout_rejection: video_core::DmaBufDescriptorRejection,
+        trigger: DmaBufFallbackTrigger,
         render_generation: u64,
         player_error: PlayerRenderError,
     ) {
-        if self.pending_dma_buf_layout_rejection.is_none() {
-            self.pending_dma_buf_layout_rejection = Some(PendingDmaBufLayoutRejection {
-                layout_rejection,
+        if self.pending_dma_buf_fallback.is_none() {
+            self.pending_dma_buf_fallback = Some(PendingDmaBufFallback {
+                trigger,
                 render_generation,
                 player_error,
             });
@@ -318,7 +319,7 @@ impl AppState {
     /// Начинает новый exactly-once recovery scope при открытии другого media.
     pub(crate) fn reset_dma_buf_runtime_fallback_for_new_media(&mut self) {
         self.dma_buf_runtime_fallback.reset_for_new_media();
-        self.pending_dma_buf_layout_rejection = None;
+        self.pending_dma_buf_fallback = None;
     }
 
     /// Выполняет exactly-once auto fallback либо возвращает исходную typed layout
@@ -327,21 +328,17 @@ impl AppState {
         &mut self,
         import_target: RendererVideoImportTarget<'_>,
     ) -> Result<(), Box<DmaBufRuntimeFallbackFailure>> {
-        let Some(pending_rejection) = self.pending_dma_buf_layout_rejection.take() else {
+        let Some(pending_rejection) = self.pending_dma_buf_fallback.take() else {
             return Ok(());
         };
-        let PendingDmaBufLayoutRejection {
-            layout_rejection,
+        let PendingDmaBufFallback {
+            trigger,
             render_generation,
             mut player_error,
         } = pending_rejection;
 
-        if !matches!(
-            layout_rejection,
-            video_core::DmaBufDescriptorRejection::UnsupportedComposedMultiObject { .. }
-        ) {
-            let policy_error =
-                DmaBufRuntimeFallbackError::FallbackNotApplicable { layout_rejection };
+        if !trigger.is_cured_by_software_decode() {
+            let policy_error = DmaBufRuntimeFallbackError::FallbackNotApplicable { trigger };
             player_error.message = policy_error.to_string();
             return Err(Box::new(DmaBufRuntimeFallbackFailure {
                 error: policy_error,
@@ -356,11 +353,11 @@ impl AppState {
             decoder_thread_config,
             stream_requirement,
         );
-        let original_layout_rejection = layout_rejection.clone();
+        let original_trigger = trigger.clone();
         let plan = match self.dma_buf_runtime_fallback.begin(
             self.committed_config_snapshot.video_backend_preference(),
             render_generation,
-            layout_rejection,
+            trigger,
             software_plan,
         ) {
             Ok(plan) => plan,
@@ -381,13 +378,13 @@ impl AppState {
             Ok(()) => {
                 info!(
                     render_generation,
-                    "Runtime DMA-BUF layout rejected; controlled software fallback applied"
+                    "Hardware frame cannot be shown; controlled software fallback applied"
                 );
                 Ok(())
             }
             Err(fallback_failure) => {
                 let policy_error = DmaBufRuntimeFallbackController::fallback_failed(
-                    original_layout_rejection,
+                    original_trigger,
                     fallback_failure,
                 );
                 player_error.message = policy_error.to_string();

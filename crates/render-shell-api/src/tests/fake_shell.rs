@@ -34,14 +34,15 @@ use super::fake_ui_textures::{
 };
 use crate::AcquiredSurfaceFrame;
 use crate::{
-    EguiFrameContent, FrameImportError, FrameImportStats, FrameImportUnsupportedReason,
-    FrameMaterialization, FrameMaterializationOutcome, PendingVideoImport, PreparedVideoImport,
-    ReleasedFrameCount, RenderFrameDropReason, RenderFrameFailure, RenderFrameInput,
-    RenderFrameOutcome, RenderFrameStageTimings, RenderFrameTiming, RenderHotPathStats,
-    RenderScreenDescriptor, RenderShell, RenderSurfaceSize, RenderableFrameKey, RendererFamily,
-    RendererGpuDrainError, RendererInstanceId, SurfaceFrameAcquire, VideoFrameImport,
-    VideoImportHandoff, VideoImportInstallError, VideoImportPath, VideoImportPlan,
-    VideoImportPrepareError, VideoImportPreparer, VideoImportReleaseError,
+    EguiFrameContent, FollowUpFrame, FrameImportError, FrameImportStats,
+    FrameImportUnsupportedReason, FrameMaterialization, FrameMaterializationOutcome,
+    PendingVideoImport, PreparedVideoImport, ReleasedFrameCount, RenderFrameDropReason,
+    RenderFrameFailure, RenderFrameInput, RenderFrameOutcome, RenderFrameStageTimings,
+    RenderFrameTiming, RenderHotPathStats, RenderScreenDescriptor, RenderShell, RenderSurfaceSize,
+    RenderableFrameKey, RendererFamily, RendererGpuDrainError, RendererInstanceId,
+    SurfaceFrameAcquire, VideoFrameImport, VideoImportHandoff, VideoImportInstallError,
+    VideoImportPath, VideoImportPlan, VideoImportPrepareError, VideoImportPreparer,
+    VideoImportReleaseError,
 };
 use crate::{
     PresentationDetachOutcome, PresentationReattachError, PresentationReattachOutcome,
@@ -552,6 +553,11 @@ impl RenderShell for FakeRenderShell {
 
     fn hot_path_stats(&self) -> RenderHotPathStats {
         RenderHotPathStats::default()
+    }
+
+    /// У fake нет фоновой работы: картинка устоялась сразу после кадра.
+    fn needs_follow_up_frame(&self) -> FollowUpFrame {
+        FollowUpFrame::NotNeeded
     }
 
     fn video_frames(&mut self) -> &mut dyn VideoFrameImport {

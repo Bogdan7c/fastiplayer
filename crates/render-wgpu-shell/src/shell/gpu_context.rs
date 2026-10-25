@@ -76,23 +76,21 @@ struct CreatedVideoDevice {
 }
 
 impl GpuContext {
-    /// Создаёт GPU контекст и цель показа для окна через WGPU Vulkan instance.
+    /// Создаёт GPU контекст и цель показа для окна на готовом WGPU Vulkan instance
+    /// (`vulkan_instance()` или instance пробы того же запуска).
     ///
     /// Последовательность:
-    /// 1. WGPU Vulkan instance без display handle ownership
+    /// 1. WGPU Vulkan instance без display handle ownership (приходит снаружи)
     /// 2. Surface — привязка к окну
     /// 3. Adapter — выбор GPU, совместимого с surface
     /// 4. Device/Queue — с feature gates, нужными video renderer boundary
     /// 5. Surface configuration — настройка swapchain
-    #[instrument(skip(window), fields(window = "fastiplayer"))]
+    #[instrument(skip(window, instance), fields(window = "fastiplayer"))]
     pub(crate) async fn new_for_window(
         window: Arc<Window>,
         surface_present: SurfacePresentSettings,
+        instance: wgpu::Instance,
     ) -> Result<(Self, PresentTarget)> {
-        info!("Initialization of WGPU Vulkan instance");
-
-        let instance = vulkan_instance();
-
         let surface = instance
             .create_surface(window.clone())
             .context("Could not create the window surface")?;
@@ -102,6 +100,7 @@ impl GpuContext {
         let adapter = request_low_power_adapter(&instance, Some(&surface))
             .await
             .context("Couldn't get a GPU adapter. Check Vulkan drivers")?;
+        reject_software_adapter(&adapter)?;
         let created = create_video_device_for_adapter(&adapter).await?;
 
         let surface_caps = surface.get_capabilities(&adapter);
@@ -237,8 +236,9 @@ pub(crate) fn vulkan_instance() -> wgpu::Instance {
     })
 }
 
-/// Выбирает энергоэффективный adapter; с surface — только совместимый с ним.
-async fn request_low_power_adapter(
+/// Выбирает энергоэффективный adapter; с surface — только совместимый с ним. Пробу выбора
+/// ([`crate::probe`]) делает тот же вызов без surface: проба и создание оценивают один адаптер.
+pub(crate) async fn request_low_power_adapter(
     instance: &wgpu::Instance,
     compatible_surface: Option<&wgpu::Surface<'_>>,
 ) -> Result<wgpu::Adapter, wgpu::RequestAdapterError> {
@@ -262,6 +262,30 @@ async fn request_low_power_adapter(
         "Selected GPU adapter"
     );
     Ok(adapter)
+}
+
+/// Не принимает программный адаптер (lavapipe/llvmpipe) молча.
+///
+/// `request_adapter` вернёт CPU-растеризатор, если других адаптеров нет. Играть через него
+/// дороже, чем через GLES2 на аппаратном GPU, поэтому создание рендера падает с понятной
+/// ошибкой, и каталог приложения идёт на следующего кандидата. Только для окна: GPU-тесты
+/// без окна (`new_headless`) на CI штатно работают на lavapipe.
+fn reject_software_adapter(adapter: &wgpu::Adapter) -> Result<()> {
+    let adapter_info = adapter.get_info();
+    ensure_hardware_adapter(adapter_info.device_type, &adapter_info.name)
+}
+
+/// Чистое правило [`reject_software_adapter`]: `Cpu` — отказ с названием адаптера.
+pub(crate) fn ensure_hardware_adapter(
+    device_type: wgpu::DeviceType,
+    adapter_name: &str,
+) -> Result<()> {
+    if device_type == wgpu::DeviceType::Cpu {
+        anyhow::bail!(
+            "Only a software Vulkan adapter is available ({adapter_name}); a hardware GPU is required"
+        );
+    }
+    Ok(())
 }
 
 /// Создаёт device/queue с video features и подписку на потерю устройства.

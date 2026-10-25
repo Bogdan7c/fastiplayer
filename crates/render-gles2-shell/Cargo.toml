@@ -33,10 +33,22 @@ thiserror.workspace = true
 video-backend-api.workspace = true
 # Кадр декодера и его дескриптор ресурса.
 video-core.workspace = true
+# Аренда кадра (`VideoFrameLease`), которую рендер превращает в ключ кадра.
+video-present-core.workspace = true
 # Словарь раскладок и контрактов кадра.
 video-frame-contract.workspace = true
 
 [dev-dependencies]
+# Conformance-набор контракта гоняется на настоящем GLES2-рендере без окна (сессия 09).
+render-shell-api = { workspace = true, features = ["conformance"] }
+# Имитация потери контекста в тестах пути «устройство потеряно» (в production не входит).
+gles2-egui = { workspace = true, features = ["test-support"] }
+# Настоящие кадры egui (`Context::run_ui` + `tessellate`) в функциональных тестах рендера.
+egui.workspace = true
+# Функциональный тест «видео из настоящего FFmpeg-декодера доходит до показа». Только dev-
+# зависимость (normal-зависимость шелла на декодер запрещает guardrail); сам video-ffmpeg
+# тоже держит dev-зависимость на этот шелл — цикл через dev-зависимости Cargo допускает.
+video-ffmpeg = { workspace = true, features = ["vendored-ffmpeg"] }
 # `memfd_create`/`udmabuf`/`fstat` в функциональном тесте DMA-BUF: настоящий буфер ядра без видеокарты.
 libc = { workspace = true }
 # Пакет декодера (`DecodePacket`) в тесте проброса обёртки декодера.
@@ -49,6 +61,9 @@ subtitle-core.workspace = true
 subtitle-formats.workspace = true
 # Кодировщик RLE для сборки PGS-реплик в тех же тестах (dev-only, как у wgpu-шелла).
 subtitle-pgs = { workspace = true, features = ["test-support"] }
+
+# Только пример `shell_window`: настоящее окно (Wayland/X11) для живой проверки рендера.
+winit.workspace = true
 
 [lints]
 workspace = true

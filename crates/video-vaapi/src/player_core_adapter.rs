@@ -5,6 +5,7 @@ use video_backend_api::{
 };
 use video_core::{VideoDecoderActivitySnapshot, VideoDecoderThreadHandle};
 
+use crate::import_target::ZeroCopyImportTarget;
 use crate::{
     VideoDecodeThread, VideoDecodeThreadConfig, VideoFrameResourceDescriptorLookup,
     VideoFrameResourceIdentityLookup, VideoFrameResourceLookup, VideoFrameResourceProvider,
@@ -20,6 +21,9 @@ const VAAPI_BACKEND_ID: &str = "vaapi";
 pub struct VaapiVideoBackendFactory {
     /// Backend-neutral runtime limits, которые адаптируются к VA-API config при startup.
     decoder_thread_config: video_core::VideoDecoderThreadConfig,
+
+    /// В какой API рендер импортирует DMA-BUF кадры (по умолчанию Vulkan, как у wgpu).
+    zero_copy_import_target: ZeroCopyImportTarget,
 }
 
 impl VaapiVideoBackendFactory {
@@ -36,14 +40,34 @@ impl VaapiVideoBackendFactory {
     ) -> Self {
         Self {
             decoder_thread_config: decoder_thread_config.into(),
+            zero_copy_import_target: ZeroCopyImportTarget::default(),
+        }
+    }
+
+    /// Задаёт цель импорта кадров: от неё зависит имя контракта `backend_contract` в логе.
+    #[must_use]
+    pub const fn with_zero_copy_import_target(mut self, target: ZeroCopyImportTarget) -> Self {
+        self.zero_copy_import_target = target;
+        self
+    }
+
+    /// Цель импорта кадров, с которой фабрика запустит decoder thread.
+    #[must_use]
+    pub const fn zero_copy_import_target(&self) -> ZeroCopyImportTarget {
+        self.zero_copy_import_target
+    }
+
+    /// Конфиг decoder thread: нейтральные лимиты плюс цель импорта этого запуска.
+    fn decode_thread_config(&self) -> VideoDecodeThreadConfig {
+        VideoDecodeThreadConfig {
+            zero_copy_import_target: self.zero_copy_import_target,
+            ..VideoDecodeThreadConfig::from(self.decoder_thread_config)
         }
     }
 
     /// Стартует VA-API backend и возвращает playback-facing artifact.
     pub fn start_for_composition(&self) -> anyhow::Result<StartedVideoBackend> {
-        let decoder_thread = VideoDecodeThread::new_with_config(VideoDecodeThreadConfig::from(
-            self.decoder_thread_config,
-        ))?;
+        let decoder_thread = VideoDecodeThread::new_with_config(self.decode_thread_config())?;
         let player_backend = StartedVideoBackend::from_decoder_thread(
             VAAPI_BACKEND_ID,
             VaapiVideoDecoderThreadHandle::new(decoder_thread),
@@ -422,6 +446,33 @@ mod tests {
         assert_eq!(neutral_packet.encoded_bytes, packet.encoded_bytes);
         assert_eq!(neutral_packet.keyframe, packet.keyframe);
         assert_eq!(neutral_packet.resolved_color, packet.resolved_color);
+    }
+
+    /// Цель импорта фабрики доезжает до конфига decoder thread (оттуда — в пул и лог),
+    /// а лимиты нейтрального конфига при этом не теряются.
+    #[test]
+    fn factory_passes_import_target_and_limits_to_decoder_thread_config() {
+        let neutral = video_core::VideoDecoderThreadConfig {
+            zero_copy_surface_pool_slots: 7,
+            ..video_core::VideoDecoderThreadConfig::default()
+        };
+
+        let default_target = VaapiVideoBackendFactory::new_with_decoder_config(neutral);
+        let egl_target = VaapiVideoBackendFactory::new_with_decoder_config(neutral)
+            .with_zero_copy_import_target(ZeroCopyImportTarget::EglDmaBuf);
+
+        assert_eq!(
+            default_target
+                .decode_thread_config()
+                .zero_copy_import_target,
+            ZeroCopyImportTarget::VulkanDmaBuf
+        );
+        let egl_config = egl_target.decode_thread_config();
+        assert_eq!(
+            egl_config.zero_copy_import_target,
+            ZeroCopyImportTarget::EglDmaBuf
+        );
+        assert_eq!(egl_config.zero_copy_surface_pool_slots, 7);
     }
 
     /// Проверяет, что neutral defaults совпадают с текущими VA-API production defaults.

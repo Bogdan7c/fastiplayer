@@ -21,6 +21,8 @@ pub(crate) struct AppStateStartupContext {
     /// Память выбора дорожек: общая для всех `AppState` процесса, чтобы пересоздание после
     /// suspend не теряло выбор и не перечитывало файл.
     pub(super) track_memory: super::track_memory::TrackMemoryHandle,
+    /// Отчёт выбора рендера: строка телеметрии и уведомление о сбое выбора (сессия 09).
+    pub(super) renderer_report: Option<crate::render_backend::RendererStartupReport>,
 }
 
 impl AppStateStartupContext {
@@ -38,7 +40,32 @@ impl AppStateStartupContext {
             config_warning,
             subtitle_wake_port,
             track_memory,
+            renderer_report: None,
         }
+    }
+
+    /// Добавляет отчёт выбора рендера, с которым стартует приложение.
+    #[must_use]
+    pub(crate) fn with_renderer_report(
+        mut self,
+        report: crate::render_backend::RendererStartupReport,
+    ) -> Self {
+        self.renderer_report = Some(report);
+        self
+    }
+}
+
+/// Показывает уведомление «до ×» о сбое выбора рендера; обычный выбор молчит (решение 40).
+///
+/// Идёт тем же путём, что предупреждение о битом config-е: `AppShell` передаёт отчёт в
+/// startup-контекст, `AppState::new` показывает уведомление первым же `NotificationCenter`.
+pub(super) fn announce_renderer_selection(
+    renderer_report: Option<&crate::render_backend::RendererStartupReport>,
+    notifications: &mut super::notifications::NotificationCenter,
+    now: Instant,
+) {
+    if let Some(notice) = renderer_report.and_then(|report| report.user_notice()) {
+        notifications.notify_until_dismissed(notice, now);
     }
 }
 

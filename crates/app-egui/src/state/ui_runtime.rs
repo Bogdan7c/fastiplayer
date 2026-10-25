@@ -185,11 +185,6 @@ impl AppState {
             self.next_frame();
         }
 
-        let backend_name = player_snapshot
-            .active_backend
-            .name
-            .clone()
-            .unwrap_or_else(|| "Synthetic (test)".to_string());
         let telemetry = Arc::clone(&self.telemetry);
         let start_time = self.start_time;
         let frame_duration_estimate_ms =
@@ -258,7 +253,7 @@ impl AppState {
                     telemetry: &telemetry,
                     render_diagnostics,
                     timeline_ui_state: &timeline_ui_state,
-                    backend_name: &backend_name,
+                    renderer_report: self.renderer_report.as_ref(),
                     start_time,
                     frame_duration_estimate_ms,
                 },

@@ -5,8 +5,12 @@ use std::time::Duration;
 use desktop_integration::DesktopIntegrationShutdownOutcome;
 use player_core::PlayerWorkerShutdownOutcome;
 
+use super::AppShell;
+use crate::app_instance::ShutdownQuality;
 use crate::playlist_runtime::PlaylistTerminalShutdownOutcome;
-use crate::process_shutdown::ProcessOwnerShutdownOutcome;
+use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
+use crate::state::{AppState, LifecycleTimelineSeekSettlement};
+use tracing::debug;
 
 /// Единый process-terminal бюджет всех фоновых владельцев приложения.
 ///
@@ -24,12 +28,46 @@ pub(super) const TIMELINE_SEEK_LIFECYCLE_SETTLEMENT_BUDGET: Duration = Duration:
 /// Ненулевой код означает, что process обязан завершиться, не освобождая lease через `Drop`.
 pub(super) const TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE: i32 = 70;
 
+/// Публикует typed lifecycle settlement без выдачи timeout-а за успешный seek commit.
+pub(super) fn report_timeline_seek_lifecycle_settlement(
+    settlement: LifecycleTimelineSeekSettlement,
+) {
+    match settlement {
+        LifecycleTimelineSeekSettlement::NoPendingSeek => {}
+        LifecycleTimelineSeekSettlement::Settled {
+            checkpoint_position,
+        } => debug!(
+            ?checkpoint_position,
+            "Lifecycle wait terminal outcomes everyone pending timeline seek-owls"
+        ),
+        LifecycleTimelineSeekSettlement::DeadlineElapsed {
+            checkpoint_position,
+            abandoned_receipt_count,
+        } => tracing::warn!(
+            ?checkpoint_position,
+            abandoned_receipt_count,
+            "Lifecycle deadline cancels pending timeline seek; keep pre-seek position"
+        ),
+        LifecycleTimelineSeekSettlement::MissingOwnerOutcome {
+            checkpoint_position,
+            abandoned_receipt_count,
+        } => tracing::error!(
+            ?checkpoint_position,
+            abandoned_receipt_count,
+            "Player owner loses pending timeline seek outcome; save pre-see position"
+        ),
+    }
+}
+
 /// Process lifecycle shell-а отделён от renderer suspend/resume lifecycle-а.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum AppShellProcessLifecycle {
     Running,
     ShuttingDown,
     ShutdownCompleted,
+    /// Закрытие дошло до конца, но с типизированной ошибкой владельца (не таймаут:
+    /// таймаут завершает процесс кодом 70). Перезапуск после такого выхода не делается.
+    ShutdownCompletedWithErrors,
 }
 
 /// Pure решение для повторного входа в terminal lifecycle.
@@ -45,8 +83,63 @@ pub(super) const fn terminal_entry_disposition(
 ) -> TerminalEntryDisposition {
     match lifecycle {
         AppShellProcessLifecycle::Running => TerminalEntryDisposition::Begin,
-        AppShellProcessLifecycle::ShutdownCompleted => TerminalEntryDisposition::AlreadyCompleted,
+        AppShellProcessLifecycle::ShutdownCompleted
+        | AppShellProcessLifecycle::ShutdownCompletedWithErrors => {
+            TerminalEntryDisposition::AlreadyCompleted
+        }
         AppShellProcessLifecycle::ShuttingDown => TerminalEntryDisposition::ExitRequired,
+    }
+}
+
+/// Качество закрытия для решения о перезапуске: чистым считается только полностью
+/// завершённое закрытие без ошибок владельцев. Любое другое состояние (закрытие не
+/// запускалось, ещё идёт, закончилось ошибкой) перезапуск запрещает.
+pub(super) const fn shutdown_quality_of(lifecycle: AppShellProcessLifecycle) -> ShutdownQuality {
+    match lifecycle {
+        AppShellProcessLifecycle::ShutdownCompleted => ShutdownQuality::Clean,
+        AppShellProcessLifecycle::Running
+        | AppShellProcessLifecycle::ShuttingDown
+        | AppShellProcessLifecycle::ShutdownCompletedWithErrors => ShutdownQuality::Degraded,
+    }
+}
+
+/// Итоговое состояние shell-а после завершённого закрытия владельцев.
+///
+/// `ExitRequired` сюда не доходит (процесс уже завершён кодом 70); защитно он приравнен к
+/// закрытию с ошибкой.
+pub(super) const fn lifecycle_after_shutdown(
+    disposition: OwnerTerminalDisposition,
+) -> AppShellProcessLifecycle {
+    match disposition {
+        OwnerTerminalDisposition::Completed => AppShellProcessLifecycle::ShutdownCompleted,
+        OwnerTerminalDisposition::Failed | OwnerTerminalDisposition::ExitRequired => {
+            AppShellProcessLifecycle::ShutdownCompletedWithErrors
+        }
+    }
+}
+
+impl AppShell {
+    /// Bounded-завершает AppState, который ещё не был установлен в shell.
+    pub(super) fn shutdown_uninstalled_app_state_or_exit(app_state: &mut AppState) {
+        let player = app_state
+            .shutdown_player_until(ShutdownDeadline::after(PROCESS_TERMINAL_SHUTDOWN_BUDGET));
+        let disposition = player_disposition(player);
+        match disposition {
+            OwnerTerminalDisposition::ExitRequired => {
+                tracing::error!(
+                    ?player,
+                    "AppState process owner fails after renderer construction error"
+                );
+                std::process::exit(TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE);
+            }
+            OwnerTerminalDisposition::Failed => {
+                tracing::warn!(
+                    ?player,
+                    "AppState process owner ended terminal failure after construction error"
+                );
+            }
+            OwnerTerminalDisposition::Completed => {}
+        }
     }
 }
 
@@ -173,9 +266,11 @@ mod tests {
 
     use super::{
         AppShellProcessLifecycle, OwnerTerminalDisposition, TerminalEntryDisposition,
-        aggregate_terminal_dispositions, desktop_integration_disposition, player_disposition,
-        process_owner_disposition, terminal_entry_disposition,
+        aggregate_terminal_dispositions, desktop_integration_disposition, lifecycle_after_shutdown,
+        player_disposition, process_owner_disposition, shutdown_quality_of,
+        terminal_entry_disposition,
     };
+    use crate::app_instance::ShutdownQuality;
     use crate::process_shutdown::ProcessOwnerShutdownOutcome;
 
     #[test]
@@ -192,6 +287,40 @@ mod tests {
             terminal_entry_disposition(AppShellProcessLifecycle::ShuttingDown),
             TerminalEntryDisposition::ExitRequired
         );
+    }
+
+    #[test]
+    fn shutdown_with_errors_is_remembered_but_stays_terminal() {
+        assert_eq!(
+            lifecycle_after_shutdown(OwnerTerminalDisposition::Completed),
+            AppShellProcessLifecycle::ShutdownCompleted
+        );
+        for disposition in [
+            OwnerTerminalDisposition::Failed,
+            OwnerTerminalDisposition::ExitRequired,
+        ] {
+            let lifecycle = lifecycle_after_shutdown(disposition);
+            assert_eq!(
+                lifecycle,
+                AppShellProcessLifecycle::ShutdownCompletedWithErrors
+            );
+            assert_eq!(
+                terminal_entry_disposition(lifecycle),
+                TerminalEntryDisposition::AlreadyCompleted
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_fully_clean_shutdown_allows_relaunch() {
+        use AppShellProcessLifecycle::*;
+        assert_eq!(
+            shutdown_quality_of(ShutdownCompleted),
+            ShutdownQuality::Clean
+        );
+        for lifecycle in [Running, ShuttingDown, ShutdownCompletedWithErrors] {
+            assert_eq!(shutdown_quality_of(lifecycle), ShutdownQuality::Degraded);
+        }
     }
 
     #[test]

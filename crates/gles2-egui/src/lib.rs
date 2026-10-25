@@ -66,8 +66,9 @@ pub use capabilities::{
     ModifierSampling, TierStatus,
 };
 pub use composition::{
-    FrameCompositor, FrameLayerError, FrameLayers, NoFrameLayers, PresentedUiFrame, UiContent,
-    UiFrameDropReason, UiFrameError, UiFrameOutcome, UiFrameRequest, UiFrameTimings, UiFrameWork,
+    BackgroundFillOutcome, FrameCompositor, FrameLayerError, FrameLayers, NoFrameLayers,
+    PresentedUiFrame, UiContent, UiFrameDropReason, UiFrameError, UiFrameOutcome, UiFrameRequest,
+    UiFrameTimings, UiFrameWork, UnderlayCoverage,
 };
 pub use context::dma_buf_texture::{
     DmaBufAttribute, DmaBufMissingRequirement, DmaBufPlaneTexture, DmaBufTextureAttached,

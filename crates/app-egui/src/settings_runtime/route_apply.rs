@@ -1,6 +1,7 @@
 use super::*;
 
 mod mechanism;
+mod render_restart;
 mod snapshots;
 mod stepwise;
 #[cfg(test)]
@@ -9,6 +10,7 @@ mod tests;
 pub(super) use stepwise::{PendingRoute, RouteApplyStart};
 
 use mechanism::media_service_apply_mechanism;
+use render_restart::render_committed_outcome;
 pub(super) use snapshots::{
     MediaServiceRuntimeSnapshot, PlayerRuntimeSnapshot, simulated_player_runtime_report,
 };
@@ -464,12 +466,10 @@ impl SettingsRuntimeRouteAppliers {
                 Ok(Self::route_report(route, result, ApplyMechanism::InPlace))
             }
             RuntimeCommittedUpdate::RenderCommitted(update) => {
-                let result = self.apply_render_committed_update(&update, reconfigure_host);
-                Ok(Self::route_report(
-                    route,
-                    result,
-                    ApplyMechanism::RendererRecreate,
-                ))
+                let recreation_result =
+                    self.apply_render_committed_update(&update, reconfigure_host);
+                let outcome = render_committed_outcome(&route.groups, recreation_result);
+                Ok(Self::route_report(route, outcome.result, outcome.mechanism))
             }
             RuntimeCommittedUpdate::Player(update) => {
                 Ok(self.apply_player_route(route, &update, target_policy, reconfigure_host))

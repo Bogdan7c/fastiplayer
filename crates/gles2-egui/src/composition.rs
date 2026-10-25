@@ -7,7 +7,8 @@
 //!    `free`; повтор без удержанного кадра или на другом экране → `Dropped(RetainedUiUnavailable)`.
 //! 3. `begin_frame`. Нет кадра (окно отпущено, 0×0) → `Skipped`, `free` сразу.
 //! 4. Свежий UI → буферы GPU (до видео, как `update_buffers` у wgpu).
-//! 5. Фон: заливка, затем слой подложки (видео — с сессии 05) — [`FrameLayers::draw_underlay`].
+//! 5. Фон: заливка (её пропускает подложка, закрывающая всю цель, — [`UnderlayCoverage`]), затем
+//!    слой подложки (видео — с сессии 05) — [`FrameLayers::draw_underlay`].
 //! 6. Оверлеи между видео и egui (субтитры — сессия 08) — [`FrameLayers::draw_overlays`].
 //! 7. egui.
 //! 8. Маска углов (только у прозрачной цели).
@@ -67,6 +68,35 @@ pub trait FrameLayers {
         let _ = frame;
         Ok(())
     }
+
+    /// Закроет ли подложка всю цель (см. [`UnderlayCoverage`]). По умолчанию — нет.
+    fn underlay_coverage(&self) -> UnderlayCoverage {
+        UnderlayCoverage::LeavesTargetPartlyUntouched
+    }
+}
+
+/// Закрывает ли подложка слоёв всю цель непрозрачными пикселями.
+///
+/// Сборщик кадра спрашивает это до заливки фона: если подложка гарантированно перекрасит каждый
+/// пиксель цели (альфа 1), заливка фона — лишняя работа GPU (на Intel Ironlake полная заливка
+/// 1440×900 стоит ~2 мс на кадр, `results/05.md` плана gles2-renderer). Ответ — обещание слоя:
+/// слой, который обещал `PaintsWholeTarget` и не покрыл часть цели, оставит там мусор прошлого
+/// кадра.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UnderlayCoverage {
+    /// Подложки нет или она рисует не всю цель: фон заливается всегда.
+    LeavesTargetPartlyUntouched,
+    /// Подложка сама заливает всю цель (видео чёрным вне картинки): заливка фона не нужна.
+    PaintsWholeTarget,
+}
+
+/// Что сборщик сделал с фоном кадра (для счётчиков и тестов «лишней заливки нет»).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BackgroundFillOutcome {
+    /// Цель залита цветом фона перед слоями.
+    Cleared,
+    /// Подложка обещала покрыть всю цель ([`UnderlayCoverage::PaintsWholeTarget`]): не заливали.
+    SkippedUnderlayCoversTarget,
 }
 
 /// Слоёв нет: только заливка фона (до сессии 05 вместо видео).
@@ -140,6 +170,8 @@ pub struct UiFrameWork {
     pub textures: Option<TextureApplyReport>,
     /// Сборка свежего UI (`None` у повтора).
     pub prepare: Option<UiPrepareWork>,
+    /// Что сделано с фоном: залит или пропущен, потому что подложка закрывает цель.
+    pub background: BackgroundFillOutcome,
     /// Рисование egui.
     pub paint: UiPaintWork,
     /// Маска.
@@ -290,6 +322,7 @@ impl FrameCompositor {
             &mut timings,
         );
         let DrawnFrame {
+            background,
             textures,
             prepare,
             textures_delta,
@@ -321,11 +354,47 @@ impl FrameCompositor {
             work: UiFrameWork {
                 textures,
                 prepare,
+                background,
                 paint,
                 corner_mask,
                 texture_free,
             },
         }))
+    }
+
+    /// Применить изменения текстур UI, когда кадр рисовать нельзя (чужой билет буфера, ключ
+    /// видеокадра чужого рендера, непостроенный план видео): `set` применяется, `free` — сразу.
+    ///
+    /// Изменения текстур `UiContent::Fresh` — состояние рендера: приложение второй раз их не
+    /// пришлёт, поэтому кадр, отказанный ПОСЛЕ получения содержимого, всё равно обязан их принять
+    /// (иначе набор текстур рендера и egui разойдётся, а следующий кадр получит
+    /// `UiTexturesOutOfSync`). Удержанный UI не меняется. Правка неизвестной текстуры здесь не
+    /// сообщается: вызывающий уже отказывает кадру по другой причине, а полный набор текстур
+    /// приложение пришлёт и так.
+    ///
+    /// # Errors
+    /// Ошибки художника и контекста — как у [`Self::render`].
+    pub fn settle_content_without_frame(
+        &mut self,
+        context: &Gles2Context,
+        content: UiContent,
+    ) -> Result<(), UiFrameError> {
+        let UiContent::Fresh { textures_delta, .. } = content else {
+            return Ok(());
+        };
+        match self.painter.apply_textures(context, &textures_delta) {
+            Ok(_) => {}
+            Err(PainterError::GlAccess(GlAccessError::DetachedWithoutSurfacelessContext)) => {
+                // GL недоступен (окно отпущено без surfaceless-контекста): применять нечем,
+                // полный набор текстур приложение пришлёт при следующем кадре.
+            }
+            Err(error) => {
+                self.free_textures_after_failure(context, Some(textures_delta));
+                return Err(error.into());
+            }
+        }
+        self.painter.free_textures(context, textures_delta)?;
+        Ok(())
     }
 
     /// Разрушить GL-объекты (контекст жив) или забыть их (контекст потерян).
@@ -421,9 +490,10 @@ impl FrameCompositor {
                 textures_delta,
             })
         };
-        if let Err(error) = Self::draw_layers(frame, &mut plan, timings) {
-            return Err(failed(error, textures_delta));
-        }
+        let background = match Self::draw_layers(frame, &mut plan, timings) {
+            Ok(background) => background,
+            Err(error) => return Err(failed(error, textures_delta)),
+        };
         let started = Instant::now();
         let painted = self.painter.paint_retained(frame, plan.screen);
         timings.egui_render = started.elapsed();
@@ -444,6 +514,7 @@ impl FrameCompositor {
         timings.window_corner_mask = started.elapsed();
         match corner_mask {
             Ok(corner_mask) => Ok(DrawnFrame {
+                background,
                 textures,
                 prepare,
                 textures_delta,
@@ -454,20 +525,28 @@ impl FrameCompositor {
         }
     }
 
-    /// Шаги 5–6: заливка, подложка, оверлеи.
+    /// Шаги 5–6: заливка (если подложка не закрывает цель сама), подложка, оверлеи.
     fn draw_layers(
         frame: &ActiveFrame<'_>,
         plan: &mut DrawPlan<'_>,
         timings: &mut UiFrameTimings,
-    ) -> Result<(), UiFrameError> {
+    ) -> Result<BackgroundFillOutcome, UiFrameError> {
         let started = Instant::now();
-        frame.clear(background_for_target(plan.background, plan.alpha));
+        let background = match plan.layers.underlay_coverage() {
+            UnderlayCoverage::PaintsWholeTarget => {
+                BackgroundFillOutcome::SkippedUnderlayCoversTarget
+            }
+            UnderlayCoverage::LeavesTargetPartlyUntouched => {
+                frame.clear(background_for_target(plan.background, plan.alpha));
+                BackgroundFillOutcome::Cleared
+            }
+        };
         plan.layers.draw_underlay(frame)?;
         timings.video_render = started.elapsed();
         let started = Instant::now();
         plan.layers.draw_overlays(frame)?;
         timings.subtitle_overlay = started.elapsed();
-        Ok(())
+        Ok(background)
     }
 
     /// Кадр не нарисован: `free` сразу (изменения `set` уже применены).
@@ -510,6 +589,7 @@ impl FrameCompositor {
 
 /// Нарисованный, но ещё не показанный кадр.
 struct DrawnFrame {
+    background: BackgroundFillOutcome,
     textures: Option<TextureApplyReport>,
     prepare: Option<UiPrepareWork>,
     /// `free` выполняется после показа.

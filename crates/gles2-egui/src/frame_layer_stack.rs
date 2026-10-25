@@ -4,7 +4,7 @@
 //! состояния. Сборщик кадра принимает один [`FrameLayers`]; стек склеивает два, не смешивая их
 //! ответственность: у первого вызывается только подложка, у второго — только оверлеи.
 
-use crate::composition::{FrameLayerError, FrameLayers};
+use crate::composition::{FrameLayerError, FrameLayers, UnderlayCoverage};
 use crate::frame::ActiveFrame;
 
 /// Подложка `underlay` + оверлеи `overlays`.
@@ -30,5 +30,10 @@ impl FrameLayers for FrameLayerStack<'_, '_> {
 
     fn draw_overlays(&mut self, frame: &ActiveFrame<'_>) -> Result<(), FrameLayerError> {
         self.overlays.draw_overlays(frame)
+    }
+
+    /// Фон закрывает только подложка: оверлеи поверх неё цель целиком не перекрывают.
+    fn underlay_coverage(&self) -> UnderlayCoverage {
+        self.underlay.underlay_coverage()
     }
 }

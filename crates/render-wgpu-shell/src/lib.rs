@@ -22,6 +22,7 @@ mod frame;
 // Пиксельный паритет с GLES2-художником (сессия 04 плана gles2-renderer): только тесты.
 #[cfg(test)]
 mod gles2_parity_tests;
+mod probe;
 mod shell;
 mod subtitle_overlay;
 mod surface_alpha;
@@ -40,6 +41,10 @@ pub(crate) use render_shell_api::{
     SurfaceAlphaPreference, SurfacePresentSettings, WindowCornerMask,
 };
 // Сдвиги слоёв субтитров нужны только GPU-тестам subtitle overlay.
+pub use probe::{
+    ProbedVulkanInstance, VulkanProbeOutcome, probe_hardware_vulkan_adapter,
+    probe_hardware_vulkan_adapter_keeping_instance,
+};
 #[cfg(test)]
 pub(crate) use render_shell_api::{SubtitleLayerOffset, SubtitleLayerOffsets};
 pub use shell::Renderer;

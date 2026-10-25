@@ -20,9 +20,9 @@ use std::path::{Path, PathBuf};
 
 use fastiplayer_config::{
     AppConfig, ConfigSaveOutcome, ConfigSaveTarget, FrameServerConfig, HdrToSdrOperatorConfig,
-    NetworkConfig, OpenGlesConfig, PlayerDemuxConfig, PlaylistConfig, RenderProfile,
-    ToneMappingMode as ConfigToneMappingMode, UiConfig, VideoBackendPreference,
-    VideoCodec as ConfigVideoCodec, VulkanConfig, WebMediaConfig, YtDlpConfig,
+    NetworkConfig, PlayerDemuxConfig, PlaylistConfig, ToneMappingMode as ConfigToneMappingMode,
+    UiConfig, VideoBackendPreference, VideoCodec as ConfigVideoCodec, VulkanConfig, WebMediaConfig,
+    YtDlpConfig,
 };
 use player_core::{
     PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate, PlayerRuntimeVideoBackendPreference,

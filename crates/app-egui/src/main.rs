@@ -68,7 +68,10 @@ use std::process::ExitCode;
 use tracing::info;
 use winit::event_loop::{ControlFlow, EventLoop};
 
-use crate::app_instance::{ProcessBootstrap, ProcessStart, bootstrap_process};
+use crate::app_instance::{
+    ProcessBootstrap, ProcessStart, SystemExecutablePath, SystemProgramSpawner, bootstrap_process,
+    relaunch_after_release,
+};
 use crate::app_shell::AppShell;
 use crate::app_wake::{AppWakeEvent, AppWakeProxy};
 use crate::fatal_startup::{FatalStartupError, SystemFatalStartupPresenter, conclude_process};
@@ -171,15 +174,30 @@ fn run_application(process_started_at: std::time::Instant) -> Result<(), FatalSt
     // защищает error-return event loop-а от обычного Drop незавершённых owners.
     app.finish_process_shutdown();
     let fatal_error_inside_event_loop = app.take_fatal_startup_error();
-    // Shell (и вместе с ним lease) освобождается до показа ошибки: окно ошибки ждёт
+    let relaunch_request = app.relaunch_request();
+    let shutdown_quality = app.shutdown_quality();
+    // Shell разбирается, а lease освобождается до показа ошибки: окно ошибки ждёт
     // пользователя, и повторный запуск в это время не должен упираться в «уже запущен».
-    drop(app);
+    // Освобождение даёт токен: без него перезапуск ниже не вызвать (новый процесс иначе
+    // проиграл бы гонку за замок и ушёл бы пересылать активацию).
+    let lease_released = app.into_instance_lease().release();
 
     if let Some(fatal_error) = fatal_error_inside_event_loop {
         return Err(fatal_error);
     }
     event_loop_result
         .map_err(|error| FatalStartupError::internal_failure("Event loop failed", &error))?;
+
+    // Исход перезапуска (включая отказ) уже записан в лог и stderr внутри; обычный выход
+    // от неудачного перезапуска не становится фатальной ошибкой.
+    let relaunch_outcome = relaunch_after_release(
+        lease_released,
+        relaunch_request,
+        shutdown_quality,
+        &SystemExecutablePath,
+        &SystemProgramSpawner,
+    );
+    relaunch_outcome.report();
 
     info!("Application exited");
     Ok(())

@@ -170,6 +170,7 @@ pub(super) fn account_render_frame_outcome(
         }
         RenderFrameOutcome::Failed(failure) => {
             telemetry.record_surface_dropped_frame();
+            telemetry.record_render_failed_frame();
             app_state.clear_cached_present_frame_after_render_failure();
             app_state.report_render_error(PlayerRenderError::render_device_lost(format!(
                 "Video render failed: {}",

@@ -59,7 +59,7 @@ pub use presentation::{
     PresentationReconfigureError, PresentationReconfigured,
 };
 pub use shell::{
-    RenderHotPathStats, RenderShell, RenderSurfaceSize, RendererDeviceLossReason,
+    FollowUpFrame, RenderHotPathStats, RenderShell, RenderSurfaceSize, RendererDeviceLossReason,
     RendererDeviceLost, RendererGpuDrainError,
 };
 pub use subtitle_frame::{
@@ -72,9 +72,10 @@ pub use ui_textures::{UiTextureFullSetReason, UiTextureSync};
 pub use video_import::{
     DecoderSurfacePoolSlots, FrameImportCacheSnapshot, FrameImportError, FrameImportStats,
     FrameImportUnsupportedReason, FrameMaterialization, FrameMaterializationOutcome,
-    PendingVideoImport, PreparedVideoImport, ReleasedFrameCount, RenderableFrameKey,
-    VideoFrameImport, VideoImportHandoff, VideoImportInstallError, VideoImportPath,
-    VideoImportPlan, VideoImportPrepareError, VideoImportPreparer, VideoImportReleaseError,
+    HardwareFrameRefusal, PendingVideoImport, PreparedVideoImport, ReleasedFrameCount,
+    RenderableFrameKey, VideoFrameImport, VideoImportHandoff, VideoImportInstallError,
+    VideoImportPath, VideoImportPlan, VideoImportPrepareError, VideoImportPreparer,
+    VideoImportReleaseError,
 };
 pub use window_corner_mask::WindowCornerMask;
 

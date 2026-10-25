@@ -6,6 +6,8 @@
 
 pub mod field_widget;
 pub mod layout;
+#[cfg(test)]
+mod restart_offer_tests;
 pub mod section_extras;
 #[cfg(test)]
 mod section_extras_tests;
@@ -75,11 +77,26 @@ pub enum SettingsUiAction {
     /// выключена), а владелец приложения открывает режим правки на видео.
     EditSubtitleAppearanceOnVideo,
 
+    /// Пользователь нажал «Restart now» рядом с настройкой, которая действует после
+    /// перезапуска. Приложение закрывается штатным путём и запускается снова.
+    RestartNow,
+
     /// Пользователь нажал Apply; окно остаётся открытым до решения runtime-слоя.
     Apply,
 
     /// Пользователь нажал OK; runtime-слой закрывает окно только после полного успеха.
     Ok,
+}
+
+/// Предлагать ли рядом с полем кнопку «Restart now».
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RestartOffer {
+    /// Кнопки нет.
+    #[default]
+    None,
+
+    /// Сохранённое значение вступит в силу только после перезапуска: показать кнопку.
+    Available,
 }
 
 /// Один field visual-модели, собранный runtime-слоем из descriptor-а и draft state.
@@ -102,6 +119,9 @@ pub struct SettingsUiField {
 
     /// Cached dynamic options snapshot для select-like editor-ов.
     pub options: Option<SettingOptions>,
+
+    /// Предлагать ли кнопку «Restart now» (решает runtime-слой; UI только рисует).
+    pub restart_offer: RestartOffer,
 }
 
 impl SettingsUiField {
@@ -115,6 +135,7 @@ impl SettingsUiField {
             validation_error: None,
             status: None,
             options: None,
+            restart_offer: RestartOffer::None,
         }
     }
 
@@ -136,6 +157,13 @@ impl SettingsUiField {
     #[must_use]
     pub fn with_status(mut self, message: impl Into<String>) -> Self {
         self.status = Some(message.into());
+        self
+    }
+
+    /// Включает кнопку «Restart now» рядом со статусом поля.
+    #[must_use]
+    pub fn with_restart_offer(mut self, restart_offer: RestartOffer) -> Self {
+        self.restart_offer = restart_offer;
         self
     }
 

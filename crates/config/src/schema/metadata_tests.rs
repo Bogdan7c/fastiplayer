@@ -75,8 +75,6 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "render.color_adjustment.rgb_offset",
     "render.vulkan.present_mode",
     "render.vulkan.max_frame_latency",
-    "render.opengles.enabled",
-    "render.opengles.simple_ui",
     "audio.volume",
     "audio.muted",
     "audio.output_device",

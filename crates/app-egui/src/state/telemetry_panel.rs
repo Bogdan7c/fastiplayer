@@ -1,4 +1,5 @@
 use super::*;
+mod backend_rows;
 use frame_server_core::{
     CountSummary, DurationSummary, LiveScrubDecodeMode, ScrubDiagnosticsSnapshot,
 };
@@ -29,8 +30,8 @@ pub(super) struct TelemetryPanelState<'panel> {
     /// Transient состояние timeline UI.
     pub(super) timeline_ui_state: &'panel TimelineUiState,
 
-    /// Имя активного backend-а для diagnostics.
-    pub(super) backend_name: &'panel str,
+    /// Отчёт выбора рендера при старте (строка `Renderer:`); `None` — выбор неизвестен.
+    pub(super) renderer_report: Option<&'panel crate::render_backend::RendererStartupReport>,
 
     /// Время запуска приложения.
     pub(super) start_time: std::time::Instant,
@@ -324,10 +325,7 @@ impl AppState {
             "Playback state: {}",
             Self::playback_state_label_for_telemetry(panel_state.player_snapshot.playback_state)
         )));
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "Backend: {}",
-            panel_state.backend_name
-        )));
+        Self::append_backend_rows(panel_rows, panel_state);
         panel_rows.push(TelemetryPanelRow::normal(format!(
             "Elapsed: {:.1}s",
             panel_state.start_time.elapsed().as_secs_f64()

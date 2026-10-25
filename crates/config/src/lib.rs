@@ -30,7 +30,7 @@ pub use schema::{
     MIN_DROPPED_FOLDER_MAX_DEPTH, MIN_DROPPED_FOLDER_MAX_FILES,
     MIN_EMBEDDED_CUE_MAX_OPEN_DURATION_MS, MIN_EMBEDDED_FEED_CAPACITY, MIN_MAX_ATTACHED_FONT_MB,
     MIN_MAX_ATTACHED_FONTS_TOTAL_MB, MIN_SIDEBAR_WIDTH_POINTS, MIN_TRACK_MEMORY_MAX_ENTRIES,
-    MIN_WINDOW_CORNER_RADIUS_PX, NetworkConfig, OpenGlesConfig, PausedCommitBehavior, PlayerConfig,
+    MIN_WINDOW_CORNER_RADIUS_PX, NetworkConfig, PausedCommitBehavior, PlayerConfig,
     PlayerDemuxConfig, PlayerSeekConfig, PlaylistConfig, PlaylistErrorBehavior,
     PlaylistPlaybackBehavior, PlaylistSiblingMediaFilter, PreferredVideoHeight,
     PreferredVideoHeightError, RenderColorAdjustmentConfig, RenderConfig, RenderProfile,
@@ -96,6 +96,7 @@ pub(crate) use schema::{
     LEGACY_SCHEMA_VERSION_14, LEGACY_SCHEMA_VERSION_15, LEGACY_SCHEMA_VERSION_16,
     LEGACY_SCHEMA_VERSION_17, LEGACY_SCHEMA_VERSION_18, LEGACY_SCHEMA_VERSION_19,
     LEGACY_SCHEMA_VERSION_20, LEGACY_SCHEMA_VERSION_21, LEGACY_SCHEMA_VERSION_22,
+    LEGACY_SCHEMA_VERSION_23,
 };
 pub use store::{
     BrokenConfigProblem, BrokenConfigRecovery, ConfigLoadOrigin, ConfigSaveOutcome,

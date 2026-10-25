@@ -9,7 +9,10 @@ use settings_core::{
     VectorDescriptor,
 };
 
-use super::{SettingsUiAction, SettingsUiField};
+use super::{RestartOffer, SettingsUiAction, SettingsUiField};
+
+/// Подпись кнопки перезапуска рядом со статусом «Applies after restart».
+const RESTART_NOW_LABEL: &str = "Restart now";
 
 /// Display option для select widget-а, включая unavailable-current значение.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +44,7 @@ pub fn show(ui: &mut Ui, field: &SettingsUiField, actions: &mut Vec<SettingsUiAc
             render_read_only_value(ui, &field.draft_value);
         }
 
-        render_field_messages(ui, field);
+        render_field_messages(ui, field, actions);
     });
 }
 
@@ -482,14 +485,29 @@ fn render_read_only_value(ui: &mut Ui, value: &SettingValue) {
 }
 
 /// Рисует validation/status messages field-а.
-fn render_field_messages(ui: &mut Ui, field: &SettingsUiField) {
+fn render_field_messages(
+    ui: &mut Ui,
+    field: &SettingsUiField,
+    actions: &mut Vec<SettingsUiAction>,
+) {
     if let Some(error) = &field.validation_error {
         ui.colored_label(ui.visuals().error_fg_color, error);
     }
 
-    if let Some(status) = &field.status {
-        ui.label(status);
+    if field.status.is_none() && field.restart_offer == RestartOffer::None {
+        return;
     }
+
+    // Статус и кнопка перезапуска стоят в одной строке: кнопка относится к этому статусу.
+    ui.horizontal(|ui| {
+        if let Some(status) = &field.status {
+            ui.label(status);
+        }
+        if field.restart_offer == RestartOffer::Available && ui.button(RESTART_NOW_LABEL).clicked()
+        {
+            actions.push(SettingsUiAction::RestartNow);
+        }
+    });
 }
 
 /// Рисует явную ошибку несоответствия value/editor.

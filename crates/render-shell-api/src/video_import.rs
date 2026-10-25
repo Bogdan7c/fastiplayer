@@ -42,7 +42,7 @@ use crate::{RendererFamily, RendererInstanceId};
 
 pub use materialization::{
     FrameImportCacheSnapshot, FrameImportError, FrameImportStats, FrameImportUnsupportedReason,
-    FrameMaterialization, FrameMaterializationOutcome, RenderableFrameKey,
+    FrameMaterialization, FrameMaterializationOutcome, HardwareFrameRefusal, RenderableFrameKey,
 };
 
 /// Склад кадров рендера. Получается через `RenderShell::video_frames()`.

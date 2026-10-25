@@ -1,4 +1,5 @@
 use super::*;
+use crate::import_target::ZeroCopyImportTarget;
 use codec_core::VideoColorMetadata;
 use video_core::FrameResourceHandle;
 use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
@@ -75,6 +76,7 @@ fn decoder_thread_config_normalizes_zero_queue_limits() {
         decoder_surface_pool_frames: 0,
         zero_copy_surface_pool_slots: 0,
         flush_timeout: Duration::ZERO,
+        zero_copy_import_target: ZeroCopyImportTarget::default(),
     }
     .normalized();
 
