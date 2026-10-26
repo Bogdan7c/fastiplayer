@@ -60,6 +60,10 @@ pub(super) struct StagedVideoPipelineCandidate<RendererImport> {
     /// Canonical backend ID проверяет reply status против фактического decoder-а.
     pub(super) backend_id: String,
 
+    /// Stable метка маршрута «декод × семейство рендера» (`plan="…"` в INFO-логе): commit
+    /// пишет её так же, как старт, чтобы по логу было видно, каким путём играет файл.
+    pub(super) plan_label: &'static str,
+
     /// Player status переводит candidate только Awaiting -> StreamConfigured.
     pub(super) state: StagedVideoPipelineCandidateState,
 

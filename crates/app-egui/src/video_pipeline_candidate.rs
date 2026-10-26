@@ -328,12 +328,15 @@ impl<RendererImport> StagedVideoPipelineCandidateSlot<RendererImport> {
 
         // Canonical ID читается до передачи единственного detached owner-а.
         let backend_id = resources.detached_backend.backend_id().to_owned();
+        // Метка маршрута фиксируется вместе с descriptor-ом: commit пишет её в лог.
+        let plan_label = plan.diagnostic_label(driver.renderer_family());
         // App slot сохраняет только renderer half и matching metadata.
         self.candidate = Some(StagedVideoPipelineCandidate {
             request_id,
             renderer_generation,
             descriptor,
             backend_id,
+            plan_label,
             state: StagedVideoPipelineCandidateState::AwaitingPlayer,
             stream_requirement,
             renderer_import: resources.renderer_import,
@@ -627,6 +630,9 @@ pub(crate) struct CommittedVideoPipelineCandidate<RendererImport> {
     /// Требование видеопотока этого кандидата; `None` — player его не приложил.
     stream_requirement: Option<VideoDecodeRequirement>,
 
+    /// Метка маршрута для INFO-лога commit-а (`plan="…"`).
+    plan_label: &'static str,
+
     /// Подготовленный импорт рендера, который владелец ставит в рендер.
     renderer_import: RendererImport,
 }
@@ -637,6 +643,13 @@ impl<RendererImport> CommittedVideoPipelineCandidate<RendererImport> {
     #[cfg(test)]
     pub(crate) const fn backend_kind(&self) -> VideoBackendKind {
         self.backend_kind
+    }
+
+    /// Метка маршрута только для проверок теста.
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) const fn plan_label(&self) -> &'static str {
+        self.plan_label
     }
 
     /// Импорт рендера только для проверок теста (borrow не меняет ownership).
@@ -651,6 +664,7 @@ impl<RendererImport> CommittedVideoPipelineCandidate<RendererImport> {
         CommittedVideoPipelineParts {
             backend_kind: self.backend_kind,
             stream_requirement: self.stream_requirement,
+            plan_label: self.plan_label,
             renderer_import: self.renderer_import,
         }
     }
@@ -663,6 +677,9 @@ pub(crate) struct CommittedVideoPipelineParts<RendererImport> {
 
     /// Требование видеопотока, если player его приложил.
     pub(crate) stream_requirement: Option<VideoDecodeRequirement>,
+
+    /// Метка маршрута «декод × семейство рендера» для INFO-лога.
+    pub(crate) plan_label: &'static str,
 
     /// Подготовленный импорт рендера.
     pub(crate) renderer_import: RendererImport,
@@ -706,6 +723,7 @@ impl<RendererImport> PreparedPostInstalledVideoPipelineCommit<'_, RendererImport
         CommittedVideoPipelineCandidate {
             backend_kind: candidate.descriptor.backend_kind(),
             stream_requirement: candidate.stream_requirement,
+            plan_label: candidate.plan_label,
             renderer_import: candidate.renderer_import,
         }
     }

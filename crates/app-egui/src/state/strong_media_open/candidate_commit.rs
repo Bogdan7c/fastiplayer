@@ -36,12 +36,17 @@ impl AppState {
         let CommittedVideoPipelineParts {
             backend_kind,
             stream_requirement,
+            plan_label,
             renderer_import,
         } = committed.into_parts();
         video_frames
             .install_video_import(renderer_import)
             .map_err(StrongMediaOpenError::RendererRejectedVideoImport)?;
         self.current_video_backend_kind = Some(backend_kind);
+        // Та же строка, что у старта (`state/video_backend.rs`): без неё переход файла со
+        // стартового VA-API на программный декод (кодек без аппаратного адаптера) не виден
+        // в INFO-логе, и инструменты замера не могут доказать путь (gles2 сессия 11).
+        tracing::info!(plan = plan_label, "Selected video pipeline");
         // Требование меняется только после успешной установки импорта: отказ рендера
         // оставляет прежнее требование (старый pipeline остаётся активным).
         self.adopt_committed_video_stream_requirement(stream_requirement);

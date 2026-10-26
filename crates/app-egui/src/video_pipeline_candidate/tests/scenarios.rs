@@ -196,6 +196,11 @@ fn every_software_hardware_transition_commits_one_exact_pipeline_pair() {
 
             // Commit отдаёт ровно подготовленный импорт и класс нового backend-а.
             assert_eq!(committed.backend_kind(), expected_backend);
+            // Метка маршрута — та же, что пишет старт для этого плана и рендера.
+            assert_eq!(
+                committed.plan_label(),
+                plan.diagnostic_label(render_shell_api::RendererFamily::WgpuVulkan)
+            );
             assert_eq!(committed.renderer_import().id, 200);
             assert_eq!(driver.renderer_import_drop_count.load(Ordering::SeqCst), 0);
             drop(committed);
