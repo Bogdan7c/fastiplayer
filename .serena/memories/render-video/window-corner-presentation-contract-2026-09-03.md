@@ -25,3 +25,12 @@
 - The functional headless GPU test in window_corner_mask.rs executes the real render pass, reads back RGBA, verifies transparent corners, unchanged center/safe button areas, intermediate AA alpha, both alpha encodings, radius 24 safety, and square no-op.
 - Surface selection tests cover Pre > Post, Post-only, Opaque and Inherit fallback, empty capabilities, and opaque policy.
 - App policy tests cover normal/zero/max/fullscreen/restore.
+
+## Compositor opacity hint (gles2 session 10, e5f0467a + X11 follow-up 2026-10-26)
+- Owner: `app-egui::window_surface_opacity`. `AppState::frame_corner_mask` (state/window_frame_shape.rs) calls `WindowSurfaceOpacity::sync(mask, window)` on every full UI pass; square mask => `Opaque`, rounded => `Translucent`.
+- Policy `SurfaceOpacityDeclaration` (platform-free, tested with a fake `SurfaceOpacityPort`) produces `SurfaceOpacityRequest::{Translucent, OpaqueWholeSurface, OpaqueRectangle(SurfacePixelSize)}` from the hint and the port's `OpaqueRegionSizing`; the window is called only when the request changes. A rejected request is remembered (no per-frame retry); the next change tries again.
+- Wayland/other (`FollowsWindow`): `Window::set_transparent(request == Translucent)`; winit re-applies the opaque region itself on resize, size is never queried.
+- X11/XWayland (`FixedRectangle`, detected once from Xlib/Xcb `raw_window_handle`): winit `set_transparent` is a no-op after creation, so `native_window` routes to `x11_opaque_region::X11OpaqueRegionWriter`: own lazy `x11rb::RustConnection` to `$DISPLAY` (safe Rust, synchronous `check()`), `_NET_WM_OPAQUE_REGION` = `[0, 0, w, h]` CARDINAL/32 (REPLACE) from `window.inner_size()`; Translucent deletes the property. Resize while opaque re-declares once (size change already forces a full UI pass via `WindowFacts::inner_size`).
+- Errors: connect/connection failure disables the writer for the process (no reconnect); server rejection keeps it. First failure logged at warn, later at debug; never fatal.
+- Dependency: `x11rb 0.13` (`default-features = false`, linux-only target dep of app-egui), already in the lock via winit.
+- Tests: `window_surface_opacity/tests.rs` (policy, Wayland-like and X11-like fakes), `native_window/tests.rs` (handle routing), `x11_opaque_region/tests.rs` (payload + real-X-server test; skips without `$DISPLAY`, `FASTIPLAYER_REQUIRE_X11=1` makes absence a failure).

@@ -23,16 +23,14 @@ impl AppState {
     ///
     /// Квадратный кадр (фуллскрин, развёрнутое окно) объявляется непрозрачным, чтобы
     /// композитор не перерисовывал окна под нами (см. `crate::window_surface_opacity`).
+    /// Смена размера окна сама запускает полный проход UI (`WindowFacts::inner_size`
+    /// в модели кадра), поэтому на X11 регион догоняет новый размер на ближайшем кадре.
     pub(crate) fn frame_corner_mask(
         &mut self,
         window: &winit::window::Window,
     ) -> render_shell_api::WindowCornerMask {
         let mask = self.window_corner_mask(window);
-        if let crate::window_surface_opacity::SurfaceOpacitySync::Declared(hint) =
-            self.surface_opacity.sync(mask, window)
-        {
-            tracing::debug!(?hint, "Window surface opacity hint declared");
-        }
+        self.surface_opacity.sync(mask, window);
         mask
     }
 }
