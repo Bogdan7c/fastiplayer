@@ -244,6 +244,19 @@ VAAPI_BACKEND_NAMES = {'h264': 'VA-API H.264', 'hevc': 'VA-API H.265', 'av1': 'V
                        'vp9': 'VA-API VP9'}
 
 
+def committed_plan_slice(log_bytes, window_start_offset):
+    """Лог от последней строки ``Selected video pipeline`` до начала окна и дальше; None — строки нет.
+
+    Эта строка — план, который реально играет файл в окне: её пишет и старт, и установка
+    кандидата файла (``state/strong_media_open/candidate_commit.rs``).
+    """
+    position = log_bytes.rfind(dynamic_decode.PLAN_MARKER, 0, window_start_offset)
+    if position < 0:
+        return None
+    line_start = log_bytes.rfind(b'\n', 0, position) + 1
+    return log_bytes[line_start:].decode(errors='replace')
+
+
 def fastiplayer_backend_proven(runtime, codec, decode):
     """Доказан ли нужный путь декодирования Fastiplayer по его runtime-логу.
 
@@ -300,12 +313,17 @@ def validate(player, codec, mode, decode, log_path, before, after, start_offset,
             dynamic_switch = {'position': dynamic['switch_position'], 'seconds': dynamic['switch_seconds']}
             failures.extend(dynamic['failures'])
             if dynamic['switch_position'] == 'none' and not dynamic['failures']:
-                # Без перехода файл играет тем путём, который выбрал старт. Кодек, которого
-                # аппаратный декодер машины не умеет (на T410 — HEVC/VP9/AV1/MPEG-2), dynamic
-                # сразу открывает программно, без строки перехода: путь окна доказывает лог.
-                effective_decode = (dynamic_decode.EFFECTIVE_SOFTWARE
-                                    if fastiplayer_backend_proven(runtime, codec, 'software')
-                                    else dynamic_decode.EFFECTIVE_HARDWARE)
+                # Без перехода файл играет тем путём, который выбрал его кандидат. Кодек, которого
+                # аппаратный декодер машины не умеет (на T410 — HEVC/VP9/AV1), стартует через
+                # VA-API, а при открытии файла кандидат ставит программный план: по INFO-логу это
+                # последняя строка ``Selected video pipeline`` до окна. Стартовые VA-API строки
+                # лежат ДО неё, поэтому программный путь доказывается по куску лога от неё.
+                committed = committed_plan_slice(log_path.read_bytes(), start_offset)
+                if committed is not None and any(plan in committed for plan in SOFTWARE_PLANS.values()):
+                    effective_decode = dynamic_decode.EFFECTIVE_SOFTWARE
+                    dynamic['proof_log'] = committed
+                else:
+                    effective_decode = dynamic_decode.EFFECTIVE_HARDWARE
             backend = (effective_decode is not None
                        and fastiplayer_backend_proven(dynamic['proof_log'], codec, effective_decode))
         else:

@@ -45,6 +45,12 @@ SWITCH = (log_line(10, 'Selected video pipeline plan="ffmpeg-host-upload-gles2"'
 # Старт сразу на программном декоде: кодек без аппаратного адаптера на машине (T410: HEVC).
 SW_START = (log_line(1, 'Selected video pipeline plan="ffmpeg-host-upload-gles2"')
             + log_line(2, 'Startup audio playback resumed'))
+# Форма живого лога T410 (HEVC в dynamic): старт через VA-API, кандидат файла ставит программный план.
+VAAPI_START_THEN_SW_CANDIDATE = (
+    log_line(1, 'Zero-copy resource lifecycle contract configured backend_contract="VA-API EGL DMA-BUF"')
+    + log_line(1, 'Selected video pipeline plan="vaapi-dmabuf-gles2"')
+    + log_line(1, 'Selected video pipeline plan="ffmpeg-host-upload-gles2"')
+    + log_line(2, 'Startup audio playback resumed'))
 SERVICE_EPOCH = 1_793_016_000.0  # 2026-10-26T12:00:00Z
 
 
@@ -136,6 +142,19 @@ class DynamicDecodeTests(unittest.TestCase):
             self.assertTrue(result['backend_confirmed'], codec)
             self.assertEqual(result['failures'], [], codec)
             self.assertEqual(result['dynamic_switch']['position'], 'none', codec)
+
+    def test_vaapi_startup_then_software_candidate_proves_software_window(self):
+        result = validate_dynamic(VAAPI_START_THEN_SW_CANDIDATE + log_line(12, 'frame') + log_line(20, 'frame'),
+                                  12, 20, 'hevc')
+        self.assertEqual(result['effective_decode'], 'software')
+        self.assertTrue(result['backend_confirmed'])
+        self.assertEqual(result['failures'], [])
+
+    def test_vaapi_trace_after_the_software_candidate_is_not_proven(self):
+        leaked = (VAAPI_START_THEN_SW_CANDIDATE
+                  + log_line(5, 'VA-API codec adapter configured for stream backend_name="VA-API H.265"'))
+        result = validate_dynamic(leaked + log_line(12, 'frame') + log_line(20, 'frame'), 12, 20, 'hevc')
+        self.assertFalse(result['backend_confirmed'])
 
     def test_hardware_proof_of_a_codec_without_vaapi_adapter_is_false_not_a_crash(self):
         self.assertFalse(evidence.fastiplayer_backend_proven(HW_START, 'mpeg2', 'hardware'))
