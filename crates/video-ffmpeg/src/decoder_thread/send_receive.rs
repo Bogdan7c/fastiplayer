@@ -39,7 +39,7 @@ mod timestamps;
 mod decode_threading;
 
 #[cfg(feature = "ffmpeg")]
-use decode_threading::{CodedFrameSize, SoftwareDecodeWorkload};
+use decode_threading::{CodedFrameSize, HostCpuProfile, SoftwareDecodeWorkload};
 
 #[cfg(any(test, feature = "ffmpeg"))]
 use timestamps::FramePtsResolver;
@@ -91,7 +91,12 @@ impl RealFfmpegDecodeApi {
             decoder: adapter_plan.decoder_id(),
             coded_size: CodedFrameSize::from_optional(config.coded_width, config.coded_height),
         };
-        request = stream_workload.apply_to_request(request, software_decode_thread_budget);
+        // На слабой машине (≤ 4 логических CPU) AV1 и HEVC получают другие правила (gles2 11a).
+        request = stream_workload.apply_to_request(
+            request,
+            software_decode_thread_budget,
+            HostCpuProfile::detect(),
+        );
         if let Some(extradata) = extradata_for_stream_config(config)? {
             request = request.with_extradata(extradata);
         }
