@@ -24,10 +24,15 @@ use crate::{RenderFrameDropReason, SurfacePresentSettings};
 
 #[cfg(test)]
 mod offscreen_lifecycle;
+mod suboptimal_swapchain;
 mod window_lifecycle;
 
 #[cfg(test)]
 use offscreen_lifecycle::OffscreenPresentationState;
+use suboptimal_swapchain::{
+    AcquiredSwapchainFit, SuboptimalSwapchainRecovery, SwapchainAcquireFailure, SwapchainPort,
+};
+use window_lifecycle::configure_surface_checked;
 
 /// Куда рендер рисует кадры.
 pub(crate) enum PresentTarget {
@@ -54,6 +59,10 @@ pub(crate) struct WindowPresentTarget {
 
     /// Запрошенные приложением настройки показа (до выбора режима по возможностям surface).
     presentation: SurfacePresentSettings,
+
+    /// Пересоздание swapchain-а, который драйвер назвал неоптимальным (у Mesa на Wayland — после
+    /// нового dmabuf feedback-а композитора, без чего fullscreen не уходит в direct scanout).
+    suboptimal_recovery: SuboptimalSwapchainRecovery,
 }
 
 /// Состояние surface окна.
@@ -119,11 +128,13 @@ impl WindowPresentTarget {
             surface: WindowSurface::Configured(surface),
             config,
             presentation,
+            suboptimal_recovery: SuboptimalSwapchainRecovery::new(),
         }
     }
 
     /// Получает текстуру swapchain; без окна — `PresentationDetached`, без рабочей
-    /// конфигурации — сначала попытка восстановить прежнюю.
+    /// конфигурации — сначала попытка восстановить прежнюю. Неоптимальный swapchain прошлого
+    /// кадра пересоздаётся здесь, до получения буфера (живого `SurfaceTexture` в этот момент нет).
     fn acquire_current_texture(
         &mut self,
         device: &wgpu::Device,
@@ -138,24 +149,50 @@ impl WindowPresentTarget {
             // Недостижимо после проверок выше; честный отказ вместо паники.
             return Err(RenderFrameDropReason::SurfaceLost);
         };
-        Self::acquire_configured_texture(surface, &self.config, device)
+        let mut swapchain = ConfiguredWindowSwapchain {
+            surface,
+            config: &self.config,
+            device,
+        };
+        match self.suboptimal_recovery.acquire(&mut swapchain) {
+            Ok(frame) => Ok(frame),
+            Err(SwapchainAcquireFailure::Acquire(reason)) => Err(reason),
+            Err(SwapchainAcquireFailure::RebuildRejected { message }) => {
+                // Surface не приняла даже прежнюю конфигурацию: дальше acquire восстанавливает
+                // её так же, как после неудачной перенастройки показа.
+                tracing::warn!(error = %message, "Surface rejected the swapchain rebuild");
+                self.mark_unconfigured();
+                Err(RenderFrameDropReason::SurfaceLost)
+            }
+        }
     }
 
     /// Один шаг получения текстуры swapchain с восстановлением устаревшей/потерянной surface.
+    ///
+    /// Вместе с буфером возвращает, подходит ли swapchain surface: `Suboptimal` не ошибка
+    /// (буфер рабочий), но сигнал пересоздать swapchain перед следующим кадром.
     fn acquire_configured_texture(
         surface: &wgpu::Surface<'static>,
         config: &wgpu::SurfaceConfiguration,
         device: &wgpu::Device,
-    ) -> Result<wgpu::SurfaceTexture, RenderFrameDropReason> {
+    ) -> Result<(wgpu::SurfaceTexture, AcquiredSwapchainFit), RenderFrameDropReason> {
         match surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
+            wgpu::CurrentSurfaceTexture::Success(frame) => {
+                Ok((frame, AcquiredSwapchainFit::Optimal))
+            }
+            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                Ok((frame, AcquiredSwapchainFit::Suboptimal))
+            }
             wgpu::CurrentSurfaceTexture::Outdated => {
                 // Surface был уничтожен и воссоздан (например, при смене монитора).
                 surface.configure(device, config);
                 match surface.get_current_texture() {
-                    wgpu::CurrentSurfaceTexture::Success(frame)
-                    | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
+                    wgpu::CurrentSurfaceTexture::Success(frame) => {
+                        Ok((frame, AcquiredSwapchainFit::Optimal))
+                    }
+                    wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                        Ok((frame, AcquiredSwapchainFit::Suboptimal))
+                    }
                     other => {
                         tracing::error!(
                             "Failed to obtain surface texture afterward reconfigure: {:?}",
@@ -186,6 +223,34 @@ impl WindowPresentTarget {
                 Err(RenderFrameDropReason::SurfaceValidation)
             }
         }
+    }
+}
+
+/// Настроенная surface окна как [`SwapchainPort`] для политики пересоздания.
+struct ConfiguredWindowSwapchain<'target> {
+    /// Surface в состоянии `Configured`.
+    surface: &'target wgpu::Surface<'static>,
+
+    /// Действующая конфигурация: пересоздание идёт ею же (размер, формат, режим, альфа).
+    config: &'target wgpu::SurfaceConfiguration,
+
+    /// Устройство рендера.
+    device: &'target wgpu::Device,
+}
+
+impl SwapchainPort for ConfiguredWindowSwapchain<'_> {
+    type Frame = wgpu::SurfaceTexture;
+    type AcquireError = RenderFrameDropReason;
+
+    fn rebuild_swapchain(&mut self) -> Result<(), String> {
+        // Тот же `configure`, что при создании: Mesa выделит буферы по свежему feedback-у.
+        configure_surface_checked(self.surface, self.device, self.config)
+    }
+
+    fn acquire_image(
+        &mut self,
+    ) -> Result<(wgpu::SurfaceTexture, AcquiredSwapchainFit), RenderFrameDropReason> {
+        WindowPresentTarget::acquire_configured_texture(self.surface, self.config, self.device)
     }
 }
 
@@ -259,6 +324,8 @@ impl PresentTarget {
                 if let WindowSurface::Configured(surface) = &window_target.surface {
                     surface.configure(device, &window_target.config);
                 }
+                // Новый swapchain уже выделен по свежему feedback-у: ждущее пересоздание лишнее.
+                window_target.suboptimal_recovery.surface_reconfigured();
             }
             #[cfg(test)]
             Self::Offscreen(offscreen) => {

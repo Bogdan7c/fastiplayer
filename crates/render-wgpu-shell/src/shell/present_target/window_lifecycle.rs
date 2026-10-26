@@ -171,6 +171,7 @@ impl WindowPresentTarget {
         configure_surface_checked(&surface, &gpu.device, &self.config)
             .map_err(|message| PresentationReattachError::ConfigureRejected { message })?;
         self.surface = WindowSurface::Configured(surface);
+        self.suboptimal_recovery.surface_reconfigured();
         info!(
             width = self.config.width,
             height = self.config.height,
@@ -180,7 +181,11 @@ impl WindowPresentTarget {
     }
 
     /// Surface снова приняла конфигурацию (из «без рабочей конфигурации» — в «настроена»).
+    ///
+    /// Каждая такая настройка создаёт новый swapchain, поэтому политика неоптимального
+    /// swapchain-а начинает с чистого листа.
     fn mark_configured(&mut self) {
+        self.suboptimal_recovery.surface_reconfigured();
         self.surface = match std::mem::replace(&mut self.surface, WindowSurface::Detached) {
             WindowSurface::Configured(surface) | WindowSurface::Unconfigured(surface) => {
                 WindowSurface::Configured(surface)
@@ -190,7 +195,7 @@ impl WindowPresentTarget {
     }
 
     /// Surface не приняла ни одной конфигурации: дальше acquire пробует восстановить прежнюю.
-    fn mark_unconfigured(&mut self) {
+    pub(super) fn mark_unconfigured(&mut self) {
         self.surface = match std::mem::replace(&mut self.surface, WindowSurface::Detached) {
             WindowSurface::Configured(surface) | WindowSurface::Unconfigured(surface) => {
                 WindowSurface::Unconfigured(surface)
