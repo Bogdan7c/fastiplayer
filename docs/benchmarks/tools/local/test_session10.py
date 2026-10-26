@@ -89,7 +89,7 @@ class ThreePlayerSeriesTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
-        plan = {'protocol_version': 3, 'diagnostic_repetitions': 1, 'subject': 'gles2',
+        plan = {'protocol_version': 4, 'diagnostic_repetitions': 1, 'subject': 'gles2',
                 'common': {'window_mode': 'wayland'}, 'players': THREE_PLAYERS,
                 'scenarios': [{'scenario': 'h264-1080p60-wayland'}]}
         (root / 'plan-input.json').write_text(json.dumps(plan))

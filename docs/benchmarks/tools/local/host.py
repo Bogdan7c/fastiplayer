@@ -11,8 +11,9 @@ import time
 
 # Версия протокола замера (README, «Measurement protocol»): её пишет collector в каждую
 # попытку, требует план серии и сообщает сводка анализа. v3 (cpu-parity 06b): Fastiplayer
-# входит в фуллскрин сам, флагом `--fullscreen`.
-PROTOCOL_VERSION = 3
+# входит в фуллскрин сам, флагом `--fullscreen`. v4 (gles2-renderer 11, T410): режим
+# декода `dynamic`, режим на сцену, VLC Qt, стоп-краны (GPU HANG/экран/питание), лесенка.
+PROTOCOL_VERSION = 4
 
 
 def command_output(command):
@@ -143,15 +144,17 @@ def source_fps(probe):
     return numerator / denominator
 
 
-def drm_clients(pid):
+def drm_clients(pid, proc_root='/proc'):
     """FD aliases дедуплицируются по DRM device/client; между clients не суммируем.
 
     Один DMA-BUF может быть импортирован разными clients. fdinfo не раскрывает
     достаточную allocation topology для корректного общего GPU total.
+
+    ``proc_root`` — корень /proc (тесты читают поддельное дерево с образцом fdinfo).
     """
     clients, engines, errors = {}, {}, []
     try:
-        descriptors = list(Path(f'/proc/{pid}/fdinfo').iterdir())
+        descriptors = list((Path(proc_root) / str(pid) / 'fdinfo').iterdir())
     except (FileNotFoundError, ProcessLookupError) as error:
         return {'clients_not_additive': {}, 'engine_busy_ns': {}, 'observation_errors': [str(error)],
                 'total': None, 'total_status': 'N/A: process exited during observation'}
@@ -160,7 +163,7 @@ def drm_clients(pid):
             fields = dict(line.split(':', 1) for line in descriptor.read_text().splitlines() if ':' in line)
             if 'drm-client-id' not in fields:
                 continue
-            device = Path(f'/proc/{pid}/fd/{descriptor.name}').stat().st_rdev
+            device = (Path(proc_root) / str(pid) / 'fd' / descriptor.name).stat().st_rdev
             key = f'{device}:{fields["drm-client-id"].strip()}'
             counters = {name: value.strip() for name, value in fields.items()
                         if name.startswith(('drm-memory-', 'drm-resident-', 'drm-total-', 'drm-shared-'))}
@@ -297,8 +300,16 @@ def summarize_gpu(first, last):
             if delta < 0:
                 raise ValueError(f'GPU engine counter decreased for client {client}')
             totals[engine] = totals.get(engine, 0) + delta
-    return {'engine_busy_percent': {engine: 100 * ns / 1e9 / elapsed for engine, ns in sorted(totals.items())},
-            'window_seconds': elapsed, 'clients': len(start.keys() & end.keys()),
-            'clients_without_window_start': sorted(end.keys() - start.keys()),
-            'clients_closed_in_window': sorted(start.keys() - end.keys()),
-            'scope': 'DRM fdinfo of player process tree; not compositor, not whole-GPU'}
+    result = {'engine_busy_percent': {engine: 100 * ns / 1e9 / elapsed for engine, ns in sorted(totals.items())},
+              'window_seconds': elapsed, 'clients': len(start.keys() & end.keys()),
+              'clients_without_window_start': sorted(end.keys() - start.keys()),
+              'clients_closed_in_window': sorted(start.keys() - end.keys()),
+              'scope': 'DRM fdinfo of player process tree; not compositor, not whole-GPU'}
+    # i915 на Gen5 (Ironlake, T410) отдаёт в fdinfo только память: ни одного ``drm-engine-*``.
+    # Пустой словарь занятости тогда означает «драйвер не умеет», а не «GPU простаивал»:
+    # явная пометка не даёт читателю сводки принять отсутствие счётчика за 0 %.
+    if not any(busy for side in (start, end) for busy in side.values()):
+        result['busy_status'] = 'NOT TESTED'
+        result['busy_reason'] = ('driver exposes no drm-engine-* counters' if start or end
+                                 else 'no DRM clients in the player process tree')
+    return result

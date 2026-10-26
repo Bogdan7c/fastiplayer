@@ -19,6 +19,9 @@ files and publish only reviewed, anonymized evidence.
   render-event and VLC-counter readers. Fastiplayer MPRIS intentionally omits URLs.
 - `window_owner.c` queries XRes local client PID and window geometry, including VLC
   windows that do not expose `_NET_WM_PID`.
+- Protocol v4 modules (see its section): `plan_v4.py` (spec layers, plan validation),
+  `dynamic_decode.py`, `mpv_direct_rendering.py`, `intel_gpu.py`, `conditions.py`,
+  `ladder.py`, `remote.py`.
 - `make_matrix.py` generates the protocol-v2 scene matrix from one master and
   verifies every file; `host.summarize_gpu` turns DRM fdinfo engine time into the
   separate GPU metric.
@@ -283,6 +286,92 @@ design (fullscreen auto-hide, UX14). Under native Wayland a window that becomes
 fullscreen under a resting pointer receives the pointer position at once, so the
 hold applies without any movement; under XWayland (the protocol default) it was
 not observed in session 06b.
+
+## Measurement protocol, version 4
+
+Introduced 2026-10-26 (session 11 of `user/gles2-renderer/`) for qualifying the OpenGL ES 2.0
+renderer in `dynamic` decode mode against mpv and VLC 3 on the ThinkPad T410 (Intel Ironlake
+Gen5, i915, KWin Wayland + XWayland). A v3 and a v4 series are never mixed: `run_series.py`
+refuses a plan that does not declare version 4, and the changed collector hashes force a new
+series directory. Summaries of old v3 series are analysed as before: no key changes, only keys
+are added, and the summary reports the version the collector recorded in the attempts.
+Everything not listed here is unchanged from version 3.
+
+| # | Version 3 | Version 4 | Reason |
+|---|---|---|---|
+| plan | `"protocol_version": 3` | `"protocol_version": 4` (`host.PROTOCOL_VERSION`); `plan_v4.validate_plan` checks the whole plan before the first attempt | Prevents silent mixing; plan errors surface before a window is spent |
+| decode | `hardware` / `software` | adds **`dynamic`**, valid only for kind `fastiplayer` (its config sets `preferred_backend = "dynamic"`). The effective path of the window is proven from the runtime log (`dynamic_decode.py`) and written as `effective_decode` plus `dynamic_switch` (position and seconds from service start) | Dynamic starts on hardware and may switch once to software mid-file (`Dynamic decode switched to software`) |
+| decode proof | one backend proof for the whole log | switch before the window: `software`, proven from the switch (software plan `ffmpeg-host-upload-gles2` is logged just before the marker) onwards; no switch or switch after the window: `hardware`, proven from the log before the switch; switch **inside** the window: attempt invalid (`dynamic switch inside measurement window`) | A window mixing two paths measures nothing |
+| mode per scene | `args`/`expect` on the mpv entry only | `decode` on any player entry (overrides `common.decode`); `scenario.player_overrides: {player: {args?, expect?, decode?}}` (strongest layer); an unknown player or field is a plan error. Layers: `common` < scene fields < player entry < `player_overrides` | The best mode of a reference differs by scene |
+| VLC | v1 command (`--intf dummy`, fixed `--avcodec-hw=vaapi --vout=gl`), frozen | v4 command with the Qt interface: `--ignore-config --no-one-instance --extraintf oldrc --rc-fake-tty --rc-unix=… --fullscreen --no-video-title-show --gain=0 --no-qt-privacy-ask --no-qt-video-autoresize <args> [-vv] <media>`. `args` selects e.g. `["--avcodec-hw=none", "--vout=gl"]` (software) or `["--avcodec-hw=vaapi", "--vout=gl"]` (hardware). `decode: software` needs `--avcodec-hw=none` and no `Using … for hardware decoding` in the log; `hardware` forbids `--avcodec-hw=none` and needs that log line (diagnostic: also the VA-API module and the `--vout` module). `--vout=xcb_xv` is a plan error: it hung the GPU for good on the T410. `--intf`, `--extraintf`, `--rc-unix`, `--rc-fake-tty` belong to the harness. `vlc_command` (v1) is unchanged for history | Session 00 harness used the Qt interface |
+| window | `wayland` cohort: exactly one KWin window and no X11 window of the PID | VLC 3 has no native Wayland video window, so in a `wayland` cohort it draws through XWayland: the window is proved by xprop/XRes as in `xwayland`, the compositor check requires Xwayland, and the result records `window_path = "xwayland_forced"` (`native_wayland` / `xwayland` for the others). The environment still follows the cohort mode | An explicit exception instead of a silent one |
+| GPU, Gen5 | DRM engine counters only from `drm-engine-*` | i915 on Gen5 exposes memory only (`drm-total-system0`, `drm-resident-system0`, …), no `drm-engine-*`. The `gpu` block then carries `busy_status = "NOT TESTED"` and `busy_reason = "driver exposes no drm-engine-* counters"`, and the pair verdict reports that reason, never `0`. GPU memory comes from `drm-resident-system0` | An absent counter is not an idle GPU |
+| `intel_gpu_top` | — | with `"intel_gpu_top": true` in `common`, **diagnostic** attempts run `sudo -n intel_gpu_top -J -s 1000` for the window. The JSON stream is decoded object by object (a killed tool leaves a truncated tail); the first sample is dropped; means of `Render/3D` and `Video` busy are stored in `intel_gpu_top`. This is the **global** load of all processes: descriptive only, never added to CPU, never used in verdicts. If `sudo -n` fails the column is `NOT TESTED` with the reason and the attempt stays valid | Gen5 gives no per-process GPU time |
+| stop valves | none | before every attempt: `LockedHint` of the seat0 session must be `no` and AC power online (`/sys/class/power_supply/AC*/online`; a machine without AC nodes passes as `not_applicable`) — otherwise the series stops with **exit 4**. The count of `GPU HANG` lines in `journalctl -k -b` is read before and after every attempt: growth makes the attempt invalid (`gpu hang during attempt`) and stops the series with **exit 3**. Exit 2 stays the quality gate. Every player runs with `LC_ALL=C.UTF-8` (VLC rc prints counters by locale) | Unattended runs on a machine that hangs |
+| KWin step | one failure stops the series | the fullscreen script (`qdbus6`) is retried exactly once; the result records `fullscreen_step = {retried, first_error}` | It once failed with exit 2 and stopped a series |
+| mpv DR | not recorded | in a diagnostic attempt mpv runs with `-v --log-file=<attempt>/mpv.log`; `mpv_direct_rendering` is `yes` (`DR enabled: yes`), `no` (`DR enabled: no`, `DR failed`, `DR path suspected slow/uncached`; the last line wins), `not_applicable_hwdec` (no DR line and `hwdec-current` is not `no`) or `unknown` | The "equal conditions" check of session 10 |
+| ladder | quiet 3 → 6 → 9 with the stop rule | `quiet_looks` (in `common` or a scene; scene wins): increasing subset of `[3, 6, 9]`, default all three; `[3]` is exactly three pairs without extension; `[]` runs no quiet. `losses`: `stop` (default: reference losses follow `reference_losses`, subject losses are FAIL and stop the series) or `annotate_all` (losses of any player, subject included, are only recorded: the gate status is `LOSSES_ANNOTATED` and the series goes on). Old `reference_losses` keeps working | A ladder wants fixed schedules; losses are data there |
+| summary | `cohorts`, `quality_gates` | adds `scenes[scenario].players[player]`: `losses_per_window` and its mean (Fastiplayer: `round(fps × window) − unique identities`, diagnostic attempts only; mpv: VO + decoder drop deltas; VLC: `frames lost`), process CPU, tree CPU, tree + compositor CPU, RSS, GPU memory, `effective_decode`; player summaries gain `effective_decode` and `mpv_direct_rendering` | Ladder tables |
+
+Minimal v4 plan, a dynamic scene with three players (paths shortened; `common` also needs
+the usual timing, `display_size` and `window_helper` fields of version 3):
+
+```json
+{
+  "protocol_version": 4,
+  "diagnostic_repetitions": 1,
+  "subject": "gles2",
+  "common": {"decode": "hardware", "window_mode": "wayland", "intel_gpu_top": true,
+             "warmup_seconds": 12, "duration_seconds": 20, "interval_seconds": 1,
+             "display_size": [1440, 900], "window_helper": ".../window-owner",
+             "window_helper_sha256": "…"},
+  "players": {
+    "gles2": {"kind": "fastiplayer", "renderer": "gles2", "decode": "dynamic",
+              "binary": ".../fastiplayer", "binary_sha256": "…",
+              "config": ".../gles2-dynamic.toml", "config_sha256": "…"},
+    "mpv-gl": {"kind": "mpv", "binary": "/usr/bin/mpv", "binary_sha256": "…",
+               "args": ["--vo=gpu", "--gpu-api=opengl"], "expect": {"current-vo": "gpu"},
+               "config": ".../gles2-dynamic.toml", "config_sha256": "…"},
+    "vlc": {"kind": "vlc", "binary": "/usr/bin/vlc", "binary_sha256": "…",
+            "args": ["--avcodec-hw=vaapi", "--vout=gl"],
+            "config": ".../gles2-dynamic.toml", "config_sha256": "…"}
+  },
+  "scenarios": [{"scenario": "h264-1080p30", "codec": "h264", "media": ".../1080p30.mp4",
+                 "media_sha256": "…",
+                 "player_overrides": {"mpv-gl": {"decode": "software"},
+                                      "vlc": {"decode": "software",
+                                              "args": ["--avcodec-hw=none", "--vout=gl"]}}}]
+}
+```
+
+A ladder scene (fixed schedule, losses are data):
+
+```json
+{"scenario": "h264-720p60-ladder", "codec": "h264", "media": ".../720p60.mp4", "media_sha256": "…",
+ "quiet_looks": [3], "losses": "annotate_all"}
+```
+
+**Remote run (`remote.py`).** The series runs ON the T410; the main machine drives it over ssh
+(the T410 login shell is fish, so every remote command goes through `bash -c '…'`).
+`--alias` (default `t410`), `--remote-dir` (default `fastiplayer-bench`, relative to `$HOME`)
+and `--dry-run` (print commands, run nothing) apply to every action.
+
+```sh
+python3 docs/benchmarks/tools/local/remote.py push plan.json --config gles2-dynamic.toml
+python3 docs/benchmarks/tools/local/remote.py start plan.json gles2-t410-1
+python3 docs/benchmarks/tools/local/remote.py status gles2-t410-1
+python3 docs/benchmarks/tools/local/remote.py fetch gles2-t410-1 /absolute/local/series
+```
+
+`push` rsyncs `tools/local`, `tools/t480s`, `target/release/fastiplayer` with
+`target/release/lib/`, the configs and the plan, and builds `window-owner` on the target. Media
+are not pushed (they are large): the plan must name remote paths for media, binary and helper
+(`~/fastiplayer-bench/release/fastiplayer`, `…/tools/local/window-owner`). `start` runs
+`run_series.py` as a transient `systemd-run --user` unit that survives an ssh drop, with the live
+session environment (`XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `WAYLAND_DISPLAY`,
+`DISPLAY`, and `XAUTHORITY` found at start as the first `/run/user/1000/xauth_*`, because its
+name changes after a reboot). `status` shows the unit state and the tail of `runner.log`;
+`fetch` copies the series directory back.
 
 Matrix media are generated by `make_matrix.py` from one owner-selected master
 (4 resolutions/frame rates × H.264/HEVC/AV1/VP9, "heavy but real-world" bitrates at

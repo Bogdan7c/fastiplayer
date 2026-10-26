@@ -8,6 +8,7 @@ import sys
 from types import SimpleNamespace
 import time
 
+import dynamic_decode
 from host import command_output
 import kwin
 
@@ -19,6 +20,22 @@ _spec.loader.exec_module(legacy)
 
 def fullscreen(pid):
     command_output([sys.executable, str(T480S / 'fullscreen.py'), str(pid)])
+
+
+def fullscreen_with_retry(pid, step=None):
+    """Фуллскрин-скрипт KWin с ОДНИМ повтором именно этого шага (протокол v4).
+
+    qdbus6 однажды не ответил (exit 2) и остановил серию сессии 10. Один повтор лечит
+    такой разовый сбой, но второй отказ — настоящая ошибка и пробрасывается. Возвращает
+    запись о повторе для результата попытки: повтор не прячется.
+    """
+    step = step or fullscreen
+    try:
+        step(pid)
+    except RuntimeError as first_error:
+        step(pid)
+        return {'retried': True, 'first_error': str(first_error)}
+    return {'retried': False, 'first_error': None}
 
 
 def window_proof(pid, window_helper):
@@ -222,6 +239,11 @@ def fastiplayer_renderer_family(runtime):
     return next(iter(families)) if len(families) == 1 else None
 
 
+# Имя VA-API адаптера Fastiplayer по кодеку сцены (строка ``configured for stream``).
+VAAPI_BACKEND_NAMES = {'h264': 'VA-API H.264', 'hevc': 'VA-API H.265', 'av1': 'VA-API AV1',
+                       'vp9': 'VA-API VP9'}
+
+
 def fastiplayer_backend_proven(runtime, codec, decode):
     """Доказан ли нужный путь декодирования Fastiplayer по его runtime-логу.
 
@@ -240,8 +262,10 @@ def fastiplayer_backend_proven(runtime, codec, decode):
                     or any(name in runtime for name in DMA_BUF_IMPORT_BACKENDS.values()))
     if decode == 'software':
         return SOFTWARE_PLANS[family] in runtime and not vaapi_traces
-    expected = {'h264': 'VA-API H.264', 'hevc': 'VA-API H.265', 'av1': 'VA-API AV1',
-                'vp9': 'VA-API VP9'}[codec]
+    expected = VAAPI_BACKEND_NAMES.get(codec)
+    if expected is None:
+        # Аппаратного адаптера этого кодека у плеера нет (например, MPEG-2): HW не доказан.
+        return False
     renderer_imports = DMA_BUF_IMPORT_BACKENDS[family] in runtime
     if family == 'gles2':
         renderer_imports = renderer_imports and HARDWARE_PLANS['gles2'] in runtime
@@ -251,20 +275,41 @@ def fastiplayer_backend_proven(runtime, codec, decode):
 
 
 def validate(player, codec, mode, decode, log_path, before, after, start_offset, end_offset, *,
-             expect=None, renderer=None):
+             expect=None, renderer=None, service_started_epoch=None, vlc_vout='gl'):
     """Итог доказательств попытки; ``player`` — тип игрока.
 
     ``renderer`` (gles2/wgpu, поле записи Fastiplayer в плане) — каким рендером попытка
     обязана рисовать: следы другого семейства в логе делают попытку невалидной, иначе
     подмена конфига тихо подменила бы субъект сравнения. ``expect`` — свойства mpv,
     которые обязаны совпасть на обеих границах (см. :func:`validate_mpv`).
+
+    Протокол v4: ``decode='dynamic'`` (только Fastiplayer) доказывает ЭФФЕКТИВНЫЙ путь окна
+    по положению перехода HW→SW в логе (:mod:`dynamic_decode`); он пишется в результат как
+    ``effective_decode``. ``service_started_epoch`` нужен только для «секунды перехода»;
+    ``vlc_vout`` — вывод видео VLC, который обязан быть в diagnostic-логе (из ``args`` плана).
     """
     runtime = log_path.read_text(errors='replace')
     failures = []
+    effective_decode, dynamic_switch = decode, None
     if 'panicked at' in runtime or 'video output creation failed' in runtime:
         failures.append('runtime fatal marker')
     if player == 'fastiplayer':
-        backend = fastiplayer_backend_proven(runtime, codec, decode)
+        if decode == 'dynamic':
+            dynamic = dynamic_decode.assess(log_path.read_bytes(), start_offset, end_offset, service_started_epoch)
+            effective_decode = dynamic['effective_decode']
+            dynamic_switch = {'position': dynamic['switch_position'], 'seconds': dynamic['switch_seconds']}
+            failures.extend(dynamic['failures'])
+            if dynamic['switch_position'] == 'none' and not dynamic['failures']:
+                # Без перехода файл играет тем путём, который выбрал старт. Кодек, которого
+                # аппаратный декодер машины не умеет (на T410 — HEVC/VP9/AV1/MPEG-2), dynamic
+                # сразу открывает программно, без строки перехода: путь окна доказывает лог.
+                effective_decode = (dynamic_decode.EFFECTIVE_SOFTWARE
+                                    if fastiplayer_backend_proven(runtime, codec, 'software')
+                                    else dynamic_decode.EFFECTIVE_HARDWARE)
+            backend = (effective_decode is not None
+                       and fastiplayer_backend_proven(dynamic['proof_log'], codec, effective_decode))
+        else:
+            backend = fastiplayer_backend_proven(runtime, codec, decode)
         a, b = before['details'], after['details']
         if not a['media_matches'] or not b['media_matches']:
             failures.append('MPRIS media does not match measured file')
@@ -282,9 +327,16 @@ def validate(player, codec, mode, decode, log_path, before, after, start_offset,
         backend, progress, audio, quality, extra = validate_mpv(before, after, decode, expect)
         failures.extend(extra)
     else:
-        backend = bool(re.search(r'Using .* for hardware decoding', runtime, re.I))
-        if mode == 'diagnostic':
-            backend = backend and 'using hw decoder module "vaapi"' in runtime and 'using vout display module "gl"' in runtime
+        hardware_trace = bool(re.search(r'Using .* for hardware decoding', runtime, re.I))
+        if decode == 'software':
+            # Программный путь VLC (v4): ни одной строки об аппаратном декодере (``--avcodec-hw=none``
+            # в команде проверяет план до запуска).
+            backend = not hardware_trace
+        else:
+            backend = hardware_trace
+            if mode == 'diagnostic':
+                backend = (backend and 'using hw decoder module "vaapi"' in runtime
+                           and f'using vout display module "{vlc_vout}"' in runtime)
         a, b = before['details']['counters'], after['details']['counters']
         required = {'media_time_seconds', 'frames_displayed', 'frames_lost', 'buffers_played', 'buffers_lost', 'audio_decoded'}
         if not required <= a.keys() or not required <= b.keys():
@@ -304,7 +356,8 @@ def validate(player, codec, mode, decode, log_path, before, after, start_offset,
     renderer_family = fastiplayer_renderer_family(runtime) if player == 'fastiplayer' else None
     if renderer is not None and renderer_family != renderer:
         failures.append(f'fastiplayer renderer {renderer_family!r} does not match plan renderer {renderer!r}')
-    return {'backend_confirmed': backend, 'renderer_family': renderer_family,
+    return {'backend_confirmed': backend, 'effective_decode': effective_decode,
+            'dynamic_switch': dynamic_switch, 'renderer_family': renderer_family,
             'playback_advancing': progress, 'audio_evidence': audio, 'quality': quality,
             'failures': failures}
 

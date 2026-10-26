@@ -18,6 +18,7 @@ from pathlib import Path
 import statistics
 
 from host import PROTOCOL_VERSION, gpu_memory_summary, render_engine_busy_percent, write_json
+import ladder
 from players import player_kind, subject_name, window_mode
 
 LOOKS = (3, 6, 9)
@@ -30,7 +31,7 @@ EXIT_BAND_PERCENTAGE_POINTS = 0.5
 QUALITY_UNIQUE_FRAME_RATIO = 0.99
 VALID = 'VALID_RESOURCE_OBSERVATION'
 # Политики потерь у эталона (поле плана ``reference_losses``): см. reference_losses_policy.
-REFERENCE_LOSSES_POLICIES = ('stop', 'annotate')
+REFERENCE_LOSSES_POLICIES = ('stop', 'annotate', 'annotate_all')
 # A/V-синхрон эталона mpv: |avsync| на обеих границах окна не больше порога. 45 мс —
 # самая строгая граница заметности рассинхрона из ITU-R BT.1359 (звук впереди картинки);
 # берём её для обоих знаков, потому что знак avsync mpv в документации не закреплён.
@@ -95,6 +96,15 @@ def gfx_percent(attempt):
     return render_engine_busy_percent(attempt.get('gpu', {}).get('engine_busy_percent', {}))
 
 
+def gpu_busy_missing_reason(attempts):
+    """Почему нет занятости GPU процесса: причина драйвера (i915 Gen5: нет ``drm-engine-*``) или общая."""
+    for attempt in attempts:
+        reason = attempt.get('gpu', {}).get('busy_reason')
+        if reason:
+            return reason
+    return 'gfx engine counter missing'
+
+
 def attempt_quality(attempt):
     """Quality-gate одной попытки; для Fastiplayer осмыслен только diagnostic-режим.
 
@@ -141,9 +151,13 @@ def reference_losses_policy(attempts):
     серия останавливается. ``annotate`` (план сессии 08, правило T480s-отчёта):
     сцена получает ``REFERENCE_LOSSES``, серия продолжается, а CPU-таблица
     публикуется с оговоркой «при потерях у эталона» и без заявлений о превосходстве.
-    Потери у Fastiplayer остаются FAIL при любой политике.
+    Потери у Fastiplayer остаются FAIL при любой политике, кроме v4 ``annotate_all`` (поле
+    ``losses`` сцены): потери ЛЮБОГО игрока, и субъекта тоже, только пишутся — для лесенки
+    квалификации, где потери кадров — данные. ``losses: stop`` (умолчание) оставляет
+    решение за ``reference_losses`` как раньше.
     """
-    policies = {a['spec'].get('reference_losses', 'stop') for a in attempts}
+    policies = {'annotate_all' if a['spec'].get('losses') == 'annotate_all'
+                else a['spec'].get('reference_losses', 'stop') for a in attempts}
     if not policies <= set(REFERENCE_LOSSES_POLICIES) or len(policies) > 1:
         raise ValueError(f'invalid or mixed reference_losses policy {sorted(policies)}')
     return policies.pop() if policies else 'stop'
@@ -175,7 +189,9 @@ def quality_gates(attempts):
         ours = {r['status'] for r in results if r['player'] == subject}
         reference = {r['status'] for r in results if r['player'] != subject}
         has_fastiplayer_count = bool(ours - {'NOT TESTED'})
-        if 'FAIL' in ours or ('FAIL' in reference and policy == 'stop'):
+        if policy == 'annotate_all' and 'FAIL' in ours | reference:
+            status = 'LOSSES_ANNOTATED'
+        elif 'FAIL' in ours or ('FAIL' in reference and policy == 'stop'):
             status = 'FAIL'
         elif not has_fastiplayer_count or (ours | reference) - {'PASS', 'FAIL'}:
             status = 'NOT TESTED'
@@ -253,7 +269,7 @@ def cohort_verdicts(mode, pairs, cohort, subject='fastiplayer'):
         cpu['within_exit_band'] = exit_band(cpu, band)
     gfx = [(gfx_percent(a), gfx_percent(b)) for a, b in pairs]
     if any(value is None for pair in gfx for value in pair):
-        gpu = {'status': 'NOT TESTED', 'reason': 'gfx engine counter missing'}
+        gpu = {'status': 'NOT TESTED', 'reason': gpu_busy_missing_reason([x for pair in pairs for x in pair])}
     else:
         # Счётчик движка в наносекундах: собственного разрешения, сравнимого с шумом, нет.
         gpu = comparison([a - b for a, b in gfx], 0.0)
@@ -376,7 +392,12 @@ def player_summary(group):
             'gfx_busy_percent_mean': statistics.mean(gfx) if gfx else None,
             **memory_summary(group),
             'compositor_cpu_mean': optional_mean(group, 'compositor_cpu_percent'),
-            'tree_plus_compositor_cpu_mean': optional_mean(group, COMPOSITOR_METRIC)}
+            'tree_plus_compositor_cpu_mean': optional_mean(group, COMPOSITOR_METRIC),
+            # v4: эффективный декод попыток (dynamic: hardware или software) и DR mpv — только
+            # когда collector их писал; у серий v3 списки пусты.
+            'effective_decode': sorted({a['effective_decode'] for a in group if a.get('effective_decode')}),
+            'mpv_direct_rendering': sorted({a['mpv_direct_rendering'] for a in group
+                                            if a.get('mpv_direct_rendering')})}
 
 
 def cohort_window_mode(cohort):
@@ -421,7 +442,18 @@ def analyze(root):
                        'gpu_gfx_verdict': gpu_verdict, 'players': players, 'equal_quality': 'NOT ESTABLISHED',
                        'invalid_attempts': [a['failures'] for a in cohort if a['status'] == 'INVALID'],
                        'subject': subject, 'window_mode': cohort_window_mode(cohort), 'pairs': pairs})
-    return {'protocol_version': PROTOCOL_VERSION, 'cohorts': output, 'quality_gates': quality_gates(attempts)}
+    return {'protocol_version': series_protocol_version(attempts), 'cohorts': output,
+            'quality_gates': quality_gates(attempts),
+            'scenes': ladder.scene_summaries(attempts, VALID, attempt_quality, memory_summary)}
+
+
+def series_protocol_version(attempts):
+    """Версия протокола серии — та, что записал collector в попытки (v3-серия остаётся v3).
+
+    Без записи (синтетические попытки, очень старые серии) — текущая версия инструментов.
+    """
+    recorded = {attempt['protocol_version'] for attempt in attempts if 'protocol_version' in attempt}
+    return recorded.pop() if len(recorded) == 1 else PROTOCOL_VERSION
 
 
 def main():

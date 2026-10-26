@@ -40,7 +40,7 @@ class SeriesStoppingTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
-        plan = {'protocol_version': 3, 'diagnostic_repetitions': 1, 'common': {},
+        plan = {'protocol_version': 4, 'diagnostic_repetitions': 1, 'common': {},
                 'players': {'fastiplayer': {}, 'mpv': {}},
                 'scenarios': [s if isinstance(s, dict) else {'scenario': s} for s in scenarios]}
         (root / 'plan-input.json').write_text(json.dumps(plan))
@@ -521,11 +521,13 @@ class DecodePathTests(unittest.TestCase):
         self.assertEqual(decode_path({'player': 'mpv'}), 'hardware')
         self.assertEqual(decode_path({'player': 'fastiplayer', 'decode': 'software'}), 'software')
 
-    def test_unknown_decode_or_vlc_software_is_a_plan_error(self):
+    def test_unknown_decode_or_dynamic_outside_fastiplayer_is_a_plan_error(self):
         with self.assertRaisesRegex(ValueError, 'unsupported decode path'):
             decode_path({'player': 'mpv', 'decode': 'hw'})
-        with self.assertRaisesRegex(ValueError, 'only hardware'):
-            decode_path({'player': 'vlc', 'decode': 'software'})
+        # v4: VLC теперь умеет программный путь (Qt-команда), но режим dynamic есть только у Fastiplayer.
+        self.assertEqual(decode_path({'player': 'vlc', 'decode': 'software'}), 'software')
+        with self.assertRaisesRegex(ValueError, 'only for players of kind fastiplayer'):
+            decode_path({'player': 'vlc', 'decode': 'dynamic'})
 
     def test_fastiplayer_software_proof_needs_host_upload_plan_without_vaapi(self):
         self.assertTrue(evidence.fastiplayer_backend_proven(self.SOFTWARE_LOG, 'h264', 'software'))
@@ -580,10 +582,10 @@ class ProtocolVersionTests(unittest.TestCase):
     def test_plan_of_previous_protocol_is_rejected_before_any_attempt(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            plan = {'protocol_version': 2, 'diagnostic_repetitions': 1, 'common': {},
+            plan = {'protocol_version': 3, 'diagnostic_repetitions': 1, 'common': {},
                     'players': {'fastiplayer': {}, 'mpv': {}}, 'scenarios': []}
             (root / 'plan.json').write_text(json.dumps(plan))
-            with self.assertRaisesRegex(ValueError, 'protocol_version 3'):
+            with self.assertRaisesRegex(ValueError, 'protocol_version 4'):
                 run_series.run_series(root / 'plan.json', root / 'series')
             self.assertFalse((root / 'series/attempts').exists())
 

@@ -13,10 +13,13 @@ import time
 import tempfile
 
 import compositor
+import conditions
 import evidence
 from host import (PROTOCOL_VERSION, cpu_percent, gpu_memory_summary, probe_media, sample, sha256, source_fps,
                   summarize_gpu, write_json)
-from players import player_kind, window_mode as spec_window_mode
+import intel_gpu
+import mpv_direct_rendering
+from players import player_kind, window_mode as spec_window_mode, window_path, window_proof_mode
 from service import MeasuredService, isolated_environment
 
 
@@ -64,7 +67,25 @@ def vlc_command(binary, socket_path, mode, media):
             *(['-vv'] if mode == 'diagnostic' else []), str(media)]
 
 
-def mpv_command(binary, socket_path, mode, media, decode='hardware', extra_args=()):
+# Опции VLC, которые план не вправе задавать: --vout=xcb_xv на T410 вешал GPU намертво
+# (сессия 00), а интерфейс и rc-сокет принадлежат харнессу.
+VLC_FORBIDDEN_ARGS = ('--vout=xcb_xv', '--intf', '--extraintf', '--rc-unix', '--rc-fake-tty')
+
+
+def vlc_command_v4(binary, socket_path, mode, media, extra_args=()):
+    """Командная строка VLC протокола v4: Qt-интерфейс, как в харнессе сессии 00 (T410).
+
+    Команду v1 (:func:`vlc_command`) не трогаем — она заморожена для истории серий v1.
+    В v4 нет ``--intf dummy`` (VLC живёт с Qt), HW/SW и вывод видео выбирает ``args`` записи
+    игрока (``--avcodec-hw=none|vaapi``, ``--vout=gl``): лучший режим VLC разный по сценам.
+    """
+    return [str(binary), '--ignore-config', '--no-one-instance', '--extraintf', 'oldrc',
+            '--rc-fake-tty', f'--rc-unix={socket_path}', '--fullscreen', '--no-video-title-show',
+            '--gain=0', '--no-qt-privacy-ask', '--no-qt-video-autoresize', *extra_args,
+            *(['-vv'] if mode == 'diagnostic' else []), str(media)]
+
+
+def mpv_command(binary, socket_path, mode, media, decode='hardware', extra_args=(), log_file=None):
     """Командная строка mpv по протоколу v2 (эталон с 2026-10-21, решение владельца).
 
     ``--no-config`` — аналог ``vlc --ignore-config``: ни пользовательский, ни системный
@@ -87,8 +108,10 @@ def mpv_command(binary, socket_path, mode, media, decode='hardware', extra_args=
     что mpv реально выбрал, доказывают свойства ``expect`` (см. ``evidence.validate_mpv``).
     """
     hwdec = MPV_HWDEC_BY_DECODE_PATH[decode]
+    # v4: в diagnostic лог mpv пишется в файл попытки (по нему определяется direct rendering).
+    diagnostic = ['-v', *([f'--log-file={log_file}'] if log_file else [])] if mode == 'diagnostic' else []
     return [str(binary), '--no-config', f'--hwdec={hwdec}', '--fs', '--volume=0', *extra_args,
-            f'--input-ipc-server={socket_path}', *(['-v'] if mode == 'diagnostic' else []), str(media)]
+            f'--input-ipc-server={socket_path}', *diagnostic, str(media)]
 
 
 def fastiplayer_command(binary, media):
@@ -108,7 +131,7 @@ PLAYER_COMMANDS = {'vlc': vlc_command, 'mpv': mpv_command}
 # HW-серий 06/06c его не объявляют и должны давать прежние команды и доказательства.
 # Программный путь Fastiplayer задаёт его конфиг (``preferred_backend = "software"``),
 # а не командная строка; ``decode`` нужен эталону и проверке доказательств.
-DECODE_PATHS = ('hardware', 'software')
+DECODE_PATHS = ('hardware', 'software', 'dynamic')
 MPV_HWDEC_BY_DECODE_PATH = {'hardware': 'auto', 'software': 'no'}
 
 
@@ -117,20 +140,45 @@ def decode_path(spec):
     decode = spec.get('decode', 'hardware')
     if decode not in DECODE_PATHS:
         raise ValueError(f'unsupported decode path {decode!r}')
-    if decode == 'software' and player_kind(spec) == 'vlc':
-        # Команда VLC заморожена для воспроизведения серий v1 и умеет только VA-API.
-        raise ValueError('VLC v1 reference command supports only hardware decode')
+    if decode == 'dynamic' and player_kind(spec) != 'fastiplayer':
+        # Переход HW→SW посреди файла — функция Fastiplayer; у эталонов режим фиксирован.
+        raise ValueError('decode dynamic is valid only for players of kind fastiplayer')
     return decode
 
 
-def mpv_extra_args(spec):
-    """Дополнительные аргументы mpv из плана; не список строк или чужой IPC — ошибка плана."""
+def player_extra_args(spec):
+    """Дополнительные аргументы эталона из плана (``args``); для Fastiplayer их нет вовсе.
+
+    Не список ``--option``, чужой IPC/интерфейс harness-а и запрещённый ``--vout=xcb_xv`` у VLC —
+    ошибка плана до запуска. Для VLC вдобавок режим ``decode`` обязан совпасть с
+    ``--avcodec-hw`` в args: программный требует ``=none``, аппаратный его не допускает.
+    """
+    kind = player_kind(spec)
     extra = spec.get('args', [])
+    if kind == 'fastiplayer':
+        if extra:
+            raise ValueError('args are supported only for players of kind mpv or vlc')
+        return []
     if not isinstance(extra, list) or not all(isinstance(item, str) and item.startswith('--') for item in extra):
-        raise ValueError('mpv args must be a list of --option strings')
-    if any(item.startswith('--input-ipc-server') for item in extra):
-        raise ValueError('mpv args must not replace the harness IPC socket')
+        raise ValueError(f'{kind} args must be a list of --option strings')
+    if kind == 'mpv':
+        if any(item.startswith('--input-ipc-server') for item in extra):
+            raise ValueError('mpv args must not replace the harness IPC socket')
+        return extra
+    for item in extra:
+        if any(item == name or item.startswith(name + '=') for name in VLC_FORBIDDEN_ARGS):
+            raise ValueError(f'vlc args must not contain {item!r} (forbidden: GPU hang or harness-owned)')
+    software_requested = '--avcodec-hw=none' in extra
+    if decode_path(spec) == 'software' and not software_requested:
+        raise ValueError('vlc decode software requires --avcodec-hw=none in args')
+    if decode_path(spec) == 'hardware' and software_requested:
+        raise ValueError('vlc decode hardware conflicts with --avcodec-hw=none in args')
     return extra
+
+
+def mpv_extra_args(spec):
+    """Прежнее имя :func:`player_extra_args` для mpv (совместимость вызовов и тестов)."""
+    return player_extra_args({'player': 'mpv', **spec})
 
 
 def mpv_expectations(spec):
@@ -152,14 +200,29 @@ def mpv_expectations(spec):
     return expect
 
 
-def player_command(spec, binary, socket_path, mode, media, decode):
-    """Командная строка плеера попытки (Fastiplayer, mpv или VLC v1)."""
+def vlc_vout(spec):
+    """Вывод видео VLC из ``args`` (``--vout=X``); без него — ``gl`` (прежний вывод протокола)."""
+    outputs = [item.split('=', 1)[1] for item in spec.get('args', []) if item.startswith('--vout=')]
+    return outputs[-1] if outputs else 'gl'
+
+
+def player_command(spec, binary, socket_path, mode, media, decode, log_file=None):
+    """Командная строка плеера попытки (Fastiplayer, mpv или VLC v4 с Qt)."""
     kind = player_kind(spec)
     if kind == 'fastiplayer':
         return fastiplayer_command(binary, media)
     if kind == 'mpv':
-        return mpv_command(binary, socket_path, mode, media, decode, mpv_extra_args(spec))
-    return vlc_command(binary, socket_path, mode, media)
+        return mpv_command(binary, socket_path, mode, media, decode, player_extra_args(spec), log_file)
+    return vlc_command_v4(binary, socket_path, mode, media, player_extra_args(spec))
+
+
+def read_mpv_direct_rendering(log_path, before_boundary):
+    """``mpv_direct_rendering`` попытки по лог-файлу mpv; нет файла — ``unknown`` (не падение)."""
+    hwdec = before_boundary['details'].get('hwdec-current')
+    try:
+        return mpv_direct_rendering.classify(log_path.read_text(errors='replace'), hwdec)
+    except OSError:
+        return mpv_direct_rendering.DR_UNKNOWN
 
 
 def collect(spec, directory):
@@ -175,6 +238,8 @@ def collect(spec, directory):
                                    'physical scanout and speaker output are not measured']}
     service = None
     control_directory = None
+    global_gpu = None  # intel_gpu_top окна (diagnostic); останавливается и при сбое посреди окна
+    hangs_before = None  # счётчик GPU HANG до попытки; None — до его чтения
     try:
         warmup, duration, interval = (float(spec[k]) for k in ('warmup_seconds', 'duration_seconds', 'interval_seconds'))
         if not all(math.isfinite(v) for v in (warmup, duration, interval)) or warmup < 3 or duration <= 0 or interval <= 0 or interval > duration:
@@ -193,6 +258,10 @@ def collect(spec, directory):
         expectations = mpv_expectations(spec)
         window_mode = spec_window_mode(spec)
         observation['window_mode'] = window_mode
+        # Как окно доказывается: VLC в wayland-когорте идёт через XWayland явно (``xwayland_forced``).
+        observation['window_path'] = window_path(spec)
+        proof_mode = window_proof_mode(spec)
+        hangs_before = conditions.count_gpu_hangs()
         rust_log = 'info' + (',fastiplayer::video_render_acceptance=trace' if mode == 'diagnostic' else '')
         environment = isolated_environment(directory, rust_log, window_mode)
         config = Path(spec['config'])
@@ -206,7 +275,8 @@ def collect(spec, directory):
         control_directory = tempfile.TemporaryDirectory(prefix='fi-bench-', dir=os.environ['XDG_RUNTIME_DIR'])
         socket_path = Path(control_directory.name) / 'rc'
         observation['control_socket'] = str(socket_path)
-        command = player_command(spec, binary, socket_path, mode, media, decode)
+        mpv_log = directory / 'mpv.log'
+        command = player_command(spec, binary, socket_path, mode, media, decode, mpv_log)
         observation['command'] = command
         observation['environment'] = environment
         # Полное чтение одинаково прогревает page cache; вне lifecycle/CPU окна.
@@ -216,25 +286,31 @@ def collect(spec, directory):
         # Композитор ищется ДО запуска плеера: процессы, поднятые плеером или после него,
         # не должны попасть в «известные», а смена набора ловится на конце окна.
         compositor_start = compositor.discover()
-        compositor.require_processes(compositor_start, window_mode)
+        compositor.require_processes(compositor_start, proof_mode)
         observation['compositor'] = {'start': compositor_start}
         service = MeasuredService(command, environment, directory)
+        observation['service_started_epoch'] = time.time()
         service.start()
         observation['unit'] = service.unit
         observation['pid'] = service.pid
         origin = time.monotonic()
         time.sleep(2)
-        evidence.fullscreen(service.pid)  # KWin-скрипт: окно по PID годится и для X11, и для Wayland
+        # KWin-скрипт: окно по PID годится и для X11, и для Wayland; один повтор при сбое qdbus6.
+        observation['fullscreen_step'] = evidence.fullscreen_with_retry(service.pid)
         # Одинаковый minimum warmup; actual CPU start идёт сразу после boundary
         # RPC. Его длительность и skew сохраняются, а не выдаются за точное +12s.
         time.sleep(max(0, origin + warmup - time.monotonic()))
         if spec.get('capture', False):
-            observation['capture_before'] = evidence.capture(directory, 'before', service.pid, window_helper, spec['display_size'], window_mode)
-        observation['before'] = evidence.boundary(player, service.pid, socket_path, media, window_helper, window_mode,
+            observation['capture_before'] = evidence.capture(directory, 'before', service.pid, window_helper, spec['display_size'], proof_mode)
+        observation['before'] = evidence.boundary(player, service.pid, socket_path, media, window_helper, proof_mode,
                                                   spec['display_size'])
         log_path = directory / 'runtime.log'
         start_offset = log_path.stat().st_size
         observation['log_window_started'] = time.monotonic()
+        # Глобальная загрузка GPU — только диагностика и только по явному флагу плана.
+        if mode == 'diagnostic' and spec.get('intel_gpu_top') is True:
+            global_gpu = intel_gpu.IntelGpuTop(directory / 'intel_gpu_top.json')
+            global_gpu.start()
         observer_cpu_start = time.process_time()
         window_start = time.monotonic()
         next_sample = window_start
@@ -248,6 +324,8 @@ def collect(spec, directory):
                 break
             next_sample = min(window_start + duration, max(next_sample + interval, time.monotonic()))
         observer_cpu_end = time.process_time()
+        if global_gpu is not None:
+            observation['intel_gpu_top'] = global_gpu.stop()
         observer_elapsed = time.monotonic() - window_start
         end_offset = log_path.stat().st_size
         observation['log_window_ended'] = time.monotonic()
@@ -255,18 +333,22 @@ def collect(spec, directory):
         compositor_end = compositor.discover()
         observation['compositor']['end'] = compositor_end
         compositor.verify_unchanged(compositor_start, compositor_end)
-        observation['after'] = evidence.boundary(player, service.pid, socket_path, media, window_helper, window_mode,
+        observation['after'] = evidence.boundary(player, service.pid, socket_path, media, window_helper, proof_mode,
                                                   spec['display_size'])
         if spec.get('capture', False):
-            observation['capture_after'] = evidence.capture(directory, 'after', service.pid, window_helper, spec['display_size'], window_mode)
+            observation['capture_after'] = evidence.capture(directory, 'after', service.pid, window_helper, spec['display_size'], proof_mode)
         observation['actual_warmup_seconds'] = window_start - origin
         observation['boundary_skew_seconds'] = {
             'before': observation['samples'][0]['cgroup_cpu']['time'] - observation['before']['started'],
             'after': observation['after']['ended'] - observation['samples'][-1]['cgroup_cpu']['time']}
         observation['evidence'] = evidence.validate(player, spec['codec'], mode, decode, log_path,
             observation['before'], observation['after'], start_offset, end_offset,
-            expect=expectations, renderer=spec.get('renderer'))
+            expect=expectations, renderer=spec.get('renderer'),
+            service_started_epoch=observation['service_started_epoch'], vlc_vout=vlc_vout(spec))
         observation['failures'].extend(observation['evidence']['failures'])
+        observation['effective_decode'] = observation['evidence']['effective_decode']
+        if player == 'mpv' and mode == 'diagnostic':
+            observation['mpv_direct_rendering'] = read_mpv_direct_rendering(mpv_log, observation['before'])
         observation['metrics'] = summarize(observation['samples'], compositor_start)
         # GPU — отдельная метрика v2 рядом с CPU, никогда не складывается с ним.
         observation['gpu'] = summarize_gpu(observation['samples'][0], observation['samples'][-1])
@@ -282,6 +364,8 @@ def collect(spec, directory):
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
         observation['failures'].append(f'{type(error).__name__}: {error}')
     finally:
+        if global_gpu is not None and 'intel_gpu_top' not in observation:
+            observation['intel_gpu_top'] = global_gpu.stop()
         if service is not None:
             try:
                 observation['exit'] = service.stop()
@@ -289,6 +373,14 @@ def collect(spec, directory):
                     observation['failures'].append('forced kill during cleanup')
             except (OSError, RuntimeError) as error:
                 observation['failures'].append(f'cleanup: {error}')
+        # GPU HANG: рост счётчика за попытку делает её невалидной, а серию — остановленной.
+        if hangs_before is not None:
+            try:
+                observation['gpu_hang'], hang_failure = conditions.hang_check(hangs_before, conditions.count_gpu_hangs())
+                if hang_failure:
+                    observation['failures'].append(hang_failure)
+            except (OSError, RuntimeError) as error:
+                observation['failures'].append(f'gpu hang check: {error}')
         if control_directory is not None:
             try:
                 control_directory.cleanup()

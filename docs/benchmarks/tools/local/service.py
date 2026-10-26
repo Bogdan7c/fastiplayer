@@ -68,6 +68,9 @@ class MeasuredService:
         return {'before_cleanup': before, 'after_signal': ended, 'forced_kill': forced}
 
 
+# Локаль плееров (протокол v4): разбор вывода rc VLC и логов не зависит от локали сессии.
+PLAYER_LOCALE = 'C.UTF-8'
+
 
 def isolated_environment(directory, rust_log, window_mode='xwayland'):
     """Окружение плеера под ``env -i``: что не перечислено здесь, плеер не увидит.
@@ -91,5 +94,6 @@ def isolated_environment(directory, rust_log, window_mode='xwayland'):
         path = directory.resolve() / suffix
         path.mkdir(parents=True)
         environment[f'XDG_{name}_HOME'] = str(path)
-    environment.update(NO_COLOR='1', RUST_LOG=rust_log)
+    # v4: rc VLC печатает счётчики по локали; единая локаль у всех плееров.
+    environment.update(NO_COLOR='1', RUST_LOG=rust_log, LC_ALL=PLAYER_LOCALE)
     return environment

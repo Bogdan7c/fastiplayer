@@ -26,6 +26,11 @@ WINDOW_MODES = ('xwayland', 'wayland')
 DEFAULT_WINDOW_MODE = 'xwayland'
 # Рендеры Fastiplayer, которые можно потребовать у записи игрока (поле ``renderer``).
 FASTIPLAYER_RENDERERS = ('gles2', 'wgpu')
+# Протокол v4: как окно плеера доказано в итоге. VLC 3 не умеет нативное Wayland-окно видео,
+# поэтому в wayland-когорте он всё равно рисует через XWayland (``xwayland_forced``).
+WINDOW_PATH_XWAYLAND = 'xwayland'
+WINDOW_PATH_NATIVE_WAYLAND = 'native_wayland'
+WINDOW_PATH_XWAYLAND_FORCED = 'xwayland_forced'
 
 
 def player_kind(spec):
@@ -93,3 +98,23 @@ def repetition_order(names, repetition):
         return names if repetition % 2 else tuple(reversed(names))
     shift = (repetition - 1) % len(names)
     return names[shift:] + names[:shift]
+
+
+def window_path(spec):
+    """Каким путём окно плеера попадает на экран (и как его доказывать).
+
+    ``xwayland`` / ``native_wayland`` — как режим когорты. Исключение — VLC в когорте
+    ``wayland``: у него нет нативного Wayland-окна видео, и это явное состояние
+    (``xwayland_forced``), записываемое в результат попытки, а не тихая подмена.
+    """
+    mode = window_mode(spec)
+    if mode == 'xwayland':
+        return WINDOW_PATH_XWAYLAND
+    if player_kind(spec) == 'vlc':
+        return WINDOW_PATH_XWAYLAND_FORCED
+    return WINDOW_PATH_NATIVE_WAYLAND
+
+
+def window_proof_mode(spec):
+    """Режим ДОКАЗАТЕЛЬСТВА окна: нативный Wayland доказывается KWin, всё остальное — xprop/XRes."""
+    return 'wayland' if window_path(spec) == WINDOW_PATH_NATIVE_WAYLAND else 'xwayland'
