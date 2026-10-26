@@ -29,7 +29,7 @@ mod packet_validation;
 mod present_admission;
 
 pub(super) use decode_ahead::VideoDecoderDecodeAheadLimits;
-use decode_ahead::video_decode_ahead_allowance;
+use decode_ahead::{video_decode_ahead_allowance, video_decode_ahead_lead};
 use present_admission::{decoded_frame_receive_budget, video_packet_send_present_admission_budget};
 
 use packet_validation::{
@@ -203,10 +203,8 @@ pub(super) fn can_send_video_packet_to_decoder(
         return true;
     }
 
-    let media_audio_now = session.pipeline.media_position_from_audio_clock();
-    let packet_lead = packet_pts.saturating_sub(media_audio_now);
-
-    video_decode_ahead_allowance(session, decode_ahead_limits).admits(packet_lead)
+    let decode_ahead_lead = video_decode_ahead_lead(session, packet_pts);
+    video_decode_ahead_allowance(session, decode_ahead_limits).admits(decode_ahead_lead)
 }
 
 /// Проверяет запас texture slots для ещё одного decoded frame.
@@ -395,6 +393,7 @@ pub(super) fn drain_decoded_video_frames(
             return drained_frame_count;
         }
 
+        session.pipeline.note_video_decoder_output_frame(frame.pts);
         session.note_decoded_video_frame_for_seek_trace(frame.pts, frame.generation);
         tracing::debug!(
             generation = frame.generation,
@@ -619,6 +618,7 @@ pub(super) fn send_pending_video_packets_to_decoder(
             trace!(
                 pts_ms = packet_pts.as_millis(),
                 audio_ms = session.audio_clock_now().as_millis(),
+                lead_ms = video_decode_ahead_lead(session, packet_pts).as_millis(),
                 decode_ahead_limit_ms = limits.decode_ahead.admission_limit().as_millis(),
                 max_ahead_ms = limits.decode_ahead.max_limit().as_millis(),
                 "A/V sync: holding video packet to limit decode-ahead"

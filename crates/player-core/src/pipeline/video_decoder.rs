@@ -353,13 +353,18 @@ impl PlaybackPipeline {
     }
 
     /// Сбрасывает счётчик packets, которые могли остаться внутри decoder после flush/seek.
+    ///
+    /// Вместе с ним сбрасывается и прогноз выхода decoder-а: оба описывают одну эпоху
+    /// decoder-а, и кадры прошлой эпохи не должны двигать окно decode-ahead новой.
     pub(crate) fn reset_video_decode_in_flight(&mut self) {
         self.video_decode_in_flight_packets = 0;
+        self.reset_video_decoder_output_frontier();
     }
 
     /// Отмечает packet, успешно переданный через worker -> decoder boundary.
     pub(crate) fn note_video_packet_sent_to_decoder(&mut self) {
         self.video_decode_in_flight_packets = self.video_decode_in_flight_packets.saturating_add(1);
+        self.note_video_packet_submitted_to_output_frontier();
     }
 
     /// Отмечает packets, которые decoder thread обработал без привязки к числу output frames.

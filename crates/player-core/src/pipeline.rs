@@ -46,6 +46,7 @@ mod retired_video_decoders;
 mod tests;
 mod video_backlog_recovery;
 mod video_decoder;
+mod video_decoder_output_frontier;
 
 use audio_clock_mapping::{AudioClockMediaMapping, PlannedAudioOutputSpan};
 pub(crate) use audio_output_spec_change::{
@@ -58,6 +59,7 @@ pub(crate) use video_backlog_recovery::{
     VideoBacklogRecoveryRouteOutcome, VideoBacklogRecoveryScanLimit,
     VideoBacklogRecoveryScanLimits, VideoBacklogRecoveryScanStart,
 };
+use video_decoder_output_frontier::VideoDecoderOutputFrontier;
 
 /// Bootstrap-оценка длительности frame до первых PTS observations; не worker cadence.
 pub(crate) const DEFAULT_VIDEO_FRAME_DURATION: Duration = Duration::from_micros(16_667);
@@ -589,6 +591,9 @@ pub(crate) struct PlaybackPipeline {
     /// по отдельному channel независимо от того, дал packet output frame или нет.
     video_decode_in_flight_packets: usize,
 
+    /// Наблюдаемый выход decoder-а: прогноз следующего кадра для окна decode-ahead.
+    video_decoder_output_frontier: VideoDecoderOutputFrontier,
+
     /// Очередь декодированных видеокадров перед presentation.
     video_frame_queue: VecDeque<video_core::DecodedFrame>,
 
@@ -727,6 +732,7 @@ impl Default for PlaybackPipeline {
             video_decoder_thread: None,
             video_decoder_needs_keyframe: true,
             video_decode_in_flight_packets: 0,
+            video_decoder_output_frontier: VideoDecoderOutputFrontier::default(),
             video_frame_queue: VecDeque::new(),
             seek_preroll_fallback_video_frame: None,
             video_frame_duration_estimate: DEFAULT_VIDEO_FRAME_DURATION,
