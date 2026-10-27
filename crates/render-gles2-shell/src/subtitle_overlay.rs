@@ -162,6 +162,16 @@ impl Gles2SubtitleOverlayRenderer {
         self.layer.stats().picture.atlas_side != 0
     }
 
+    /// Подготовлен ли в слое именно этот overlay (те же пиксели всех картинок). Вопрос задаётся
+    /// ДО `render` кадра: он показывает, изменятся ли пиксели субтитров относительно прошлого
+    /// нарисованного кадра.
+    #[must_use]
+    pub fn has_prepared(&self, overlay: &SubtitleOverlay) -> bool {
+        self.uploaded
+            .as_ref()
+            .is_some_and(|uploaded| uploaded.is_same_as(overlay))
+    }
+
     /// Забыть загруженный overlay: следующий кадр загрузит субтитры заново (текстуры остаются).
     pub fn forget_uploaded(&mut self) {
         self.uploaded = None;

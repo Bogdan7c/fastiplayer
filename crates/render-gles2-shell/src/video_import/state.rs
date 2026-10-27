@@ -62,7 +62,7 @@ impl ActiveImport {
 
 /// Кадр, чья картинка сейчас на видеослое.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ShownFrame {
+pub(crate) struct ShownFrame {
     epoch: ImportEpoch,
     key: VideoFrameKey,
 }
@@ -80,6 +80,13 @@ impl ShownFrameTracker {
     /// Картинка кадра `key` эпохи `epoch` уже на видеослое.
     pub(crate) fn is_on_layer(&self, epoch: ImportEpoch, key: VideoFrameKey) -> bool {
         self.shown == Some(ShownFrame { epoch, key })
+    }
+
+    /// Какая картинка сейчас на видеослое (`None` — неизвестно или слой очищен). Две равные
+    /// картинки — один и тот же кадр декодера: сравнением пользуется учёт «слои не менялись»
+    /// частичного показа.
+    pub(crate) fn current(&self) -> Option<ShownFrame> {
+        self.shown
     }
 
     /// Готовит видеослой к показу кадра эпохи `epoch`.

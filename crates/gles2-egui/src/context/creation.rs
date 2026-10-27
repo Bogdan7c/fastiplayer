@@ -17,7 +17,7 @@ use crate::capabilities::{DriverReport, ExtensionSet, Gles2Capabilities, dma_buf
 use crate::error::CreateError;
 use crate::fence::{FenceIssuer, FenceStrategy};
 use crate::loss::{ContextHealth, ContextLoss};
-use crate::offscreen::OffscreenTarget;
+use crate::offscreen::{BackBufferRing, MAX_OFFSCREEN_BACK_BUFFERS, OffscreenTarget};
 use crate::presentation::{PresentationSettings, PresentationState, VsyncMode, WindowSystem};
 
 /// libEGL процесса и реестр её display. Загружается один раз: повторная загрузка дала бы
@@ -106,6 +106,7 @@ impl Gles2Context {
             extent,
             RenderTarget::Window,
             Some(window),
+            BackBufferRing::single_without_age(),
         )
     }
 
@@ -113,6 +114,34 @@ impl Gles2Context {
     /// [`Gles2Context::read_offscreen_pixels`]. Стенд пиксельных тестов. Цель непрозрачная —
     /// как окно: цвет FBO RGBA8, но рисующие обязаны писать альфу = 1.
     pub fn offscreen(size: SurfaceSize) -> Result<Self, CreateError> {
+        Self::create_offscreen(size, BackBufferRing::single_without_age())
+    }
+
+    /// Offscreen-цель с кольцом из `back_buffers` задних буферов, которое сообщает возраст
+    /// буфера так, как это делает EGL (`EGL_EXT_buffer_age`): 0 у ещё не показанного буфера,
+    /// дальше число кадров с его последнего показа. Каждый показ поворачивает кольцо, а
+    /// [`Self::read_offscreen_pixels`] читает буфер, показанный последним.
+    ///
+    /// Это стенд частичного показа: на нём проверяется, что перерисовка по возрасту даёт те же
+    /// пиксели, что полная, при любой глубине цепочки показа (1, 2, 3 буфера).
+    ///
+    /// # Errors
+    /// Нуль или больше восьми буферов; остальное — как у [`Self::offscreen`].
+    pub fn offscreen_with_back_buffers(
+        size: SurfaceSize,
+        back_buffers: usize,
+    ) -> Result<Self, CreateError> {
+        if back_buffers == 0 || back_buffers > MAX_OFFSCREEN_BACK_BUFFERS {
+            return Err(CreateError::OffscreenTarget {
+                reason: format!(
+                    "back buffer count must be 1..={MAX_OFFSCREEN_BACK_BUFFERS}, got {back_buffers}"
+                ),
+            });
+        }
+        Self::create_offscreen(size, BackBufferRing::with_age_reporting(back_buffers))
+    }
+
+    fn create_offscreen(size: SurfaceSize, ring: BackBufferRing) -> Result<Self, CreateError> {
         let runtime = system_runtime()?;
         let session = EglSession::open(
             &runtime.registry,
@@ -142,6 +171,7 @@ impl Gles2Context {
             extent,
             RenderTarget::Offscreen(None),
             None,
+            ring,
         )
     }
 }
@@ -165,6 +195,7 @@ fn assemble(
     extent: PixelExtent,
     target: RenderTarget,
     window: Option<Arc<dyn WindowSource>>,
+    offscreen_ring: BackBufferRing,
 ) -> Result<Gles2Context, CreateError> {
     let loaded = runtime
         .egl
@@ -220,7 +251,7 @@ fn assemble(
         _thread_bound: PhantomData,
     };
     if matches!(context.target, RenderTarget::Offscreen(None)) {
-        attach_offscreen_target(&mut context)?;
+        attach_offscreen_target(&mut context, offscreen_ring)?;
     }
     log::info!(
         "GLES2 context ready: {} / {} ({}), EGL {} ({}), fence {:?}, alpha {:?}",
@@ -235,14 +266,17 @@ fn assemble(
     Ok(context)
 }
 
-fn attach_offscreen_target(context: &mut Gles2Context) -> Result<(), CreateError> {
+fn attach_offscreen_target(
+    context: &mut Gles2Context,
+    ring: BackBufferRing,
+) -> Result<(), CreateError> {
     let Some(size) = context.extent.surface_size() else {
         return Err(CreateError::OffscreenTarget {
             reason: "offscreen target size is empty".to_owned(),
         });
     };
     let gl = CurrentGl::after_make_current(&context.gl);
-    let target = OffscreenTarget::create(gl, size)
+    let target = OffscreenTarget::create(gl, size, ring)
         .map_err(|reason| CreateError::OffscreenTarget { reason })?;
     context.target = RenderTarget::Offscreen(Some(target));
     Ok(())

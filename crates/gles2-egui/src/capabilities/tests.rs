@@ -122,6 +122,7 @@ fn ironlake_matches_the_session_00_table() {
             vertex_array_object: true,
             egl_fence_sync: true,
             buffer_age: true,
+            swap_buffers_with_damage: true,
         }
     );
     assert_eq!(capabilities.max_texture_size(), 8192);
@@ -251,6 +252,21 @@ fn no_fence_extension_means_no_fence_convenience() {
     let conveniences = Gles2Capabilities::from_report(report).tiers().conveniences;
     assert!(!conveniences.egl_fence_sync);
     assert!(conveniences.buffer_age);
+    assert!(!conveniences.swap_buffers_with_damage);
+}
+
+#[test]
+fn either_damage_swap_extension_enables_the_convenience() {
+    for extension in [
+        "EGL_KHR_swap_buffers_with_damage",
+        "EGL_EXT_swap_buffers_with_damage",
+    ] {
+        let mut report = ironlake_report();
+        report.egl_display_extensions = ExtensionSet::from_space_separated(extension);
+        let conveniences = Gles2Capabilities::from_report(report).tiers().conveniences;
+        assert!(conveniences.swap_buffers_with_damage, "{extension}");
+        assert!(!conveniences.buffer_age, "{extension}");
+    }
 }
 
 #[test]

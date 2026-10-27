@@ -80,6 +80,29 @@ pub(crate) enum PlatformWindowTarget {
     X11 { window_xid: std::os::raw::c_ulong },
 }
 
+/// Какое расширение показа с повреждениями есть у дисплея.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DamageSwapExtension {
+    /// `EGL_KHR_swap_buffers_with_damage` (`eglSwapBuffersWithDamageKHR`).
+    Khr,
+    /// `EGL_EXT_swap_buffers_with_damage` (`eglSwapBuffersWithDamageEXT`).
+    Ext,
+}
+
+/// Повреждённый прямоугольник в координатах EGL: начало — НИЖНИЙ левый угол surface
+/// (`EGL_KHR_swap_buffers_with_damage`: «relative to the bottom-left of the surface»).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DamageRect {
+    /// Левая граница.
+    pub x: i32,
+    /// Нижняя граница (от низа surface).
+    pub y: i32,
+    /// Ширина.
+    pub width: i32,
+    /// Высота.
+    pub height: i32,
+}
+
 /// Размер поверхности в пикселях. Оба измерения не меньше 1 — EGL и `wl_egl_window` не
 /// принимают пустые буферы.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -262,6 +285,10 @@ pub enum EglOperation {
     SwapBuffers,
     /// `eglSwapInterval`.
     SwapInterval,
+    /// `eglQuerySurface(EGL_BUFFER_AGE_EXT)`.
+    QueryBufferAge,
+    /// `eglSwapBuffersWithDamageKHR` / `eglSwapBuffersWithDamageEXT`.
+    SwapBuffersWithDamage,
     /// `eglCreateSync(EGL_SYNC_FENCE)`.
     CreateSync,
     /// `eglClientWaitSync`.
@@ -394,6 +421,21 @@ pub(crate) trait EglDriver: Send + Sync {
     -> Result<(), EglCallError>;
     /// `eglSwapBuffers`.
     fn swap_buffers(&self, display: DisplayId, surface: SurfaceId) -> Result<(), EglCallError>;
+    /// `eglQuerySurface(EGL_BUFFER_AGE_EXT)` (`EGL_EXT_buffer_age`): возраст заднего буфера
+    /// surface, текущей в этом потоке; `0` — содержимое не определено. Спрашивать нужно после
+    /// того, как surface стала текущей, и ДО рисования кадра.
+    fn query_buffer_age(&self, display: DisplayId, surface: SurfaceId)
+    -> Result<u32, EglCallError>;
+    /// `eglSwapBuffersWithDamage{KHR,EXT}`: показ с подсказкой композитору о изменённых
+    /// областях. Какую из двух функций вызвать, выбирает вызывающий по расширению дисплея.
+    /// Пустой список `rects` драйвер вправе трактовать как «повреждена вся surface».
+    fn swap_buffers_with_damage(
+        &self,
+        display: DisplayId,
+        surface: SurfaceId,
+        extension: DamageSwapExtension,
+        rects: &[DamageRect],
+    ) -> Result<(), EglCallError>;
     /// `eglSwapInterval` для surface, текущей в этом потоке.
     fn swap_interval(&self, display: DisplayId, interval: i32) -> Result<(), EglCallError>;
     /// `eglCreateSync(EGL_SYNC_FENCE)` в командном потоке текущего контекста.

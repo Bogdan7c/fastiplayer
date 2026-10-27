@@ -15,6 +15,7 @@ use render_shell_api::{
 
 use super::create_error::{pipeline_creation_error, renderer_create_error, required_feature_for};
 use super::layers::GlLayers;
+use super::layers_damage::PresentedLayersTracker;
 use super::live_settings::LiveSettingsState;
 use super::presentation::{PresentationController, context_settings_for};
 use super::{Gles2FrameCounters, Gles2Renderer};
@@ -77,6 +78,34 @@ impl Gles2Renderer {
         )
     }
 
+    /// Как [`Self::new_offscreen`], но цель — кольцо из `back_buffers` задних буферов,
+    /// сообщающее возраст как EGL (`Gles2Context::offscreen_with_back_buffers`): стенд проверки
+    /// частичного показа без окна. Без кольца рендер всегда перерисовывает кадр целиком.
+    ///
+    /// # Errors
+    /// Как у [`Self::new_offscreen`]; число буферов вне `1..=8` — стадия `SurfaceCreation`.
+    pub fn new_offscreen_with_back_buffers(
+        size: RenderSurfaceSize,
+        surface_present: SurfacePresentSettings,
+        back_buffers: usize,
+    ) -> Result<Self, RendererCreateError> {
+        let target = SurfaceSize::new(size.width, size.height).ok_or_else(|| {
+            RendererCreateError::new(
+                RendererCreateStage::SurfaceCreation,
+                format!(
+                    "offscreen target must not be empty, got {}x{}",
+                    size.width, size.height
+                ),
+            )
+        })?;
+        let context = Gles2Context::offscreen_with_back_buffers(target, back_buffers)
+            .map_err(|error| renderer_create_error(&error))?;
+        Self::assemble(
+            context,
+            PresentationController::for_offscreen(surface_present),
+        )
+    }
+
     /// Пиксели последнего кадра рендера без окна (RGBA8, строка 0 — верх).
     ///
     /// # Errors
@@ -132,6 +161,7 @@ impl Gles2Renderer {
             import_epoch: ImportEpoch::INITIAL,
             release: OwnedReleaseBinding::new(),
             shown: ShownFrameTracker::default(),
+            presented_layers: PresentedLayersTracker::default(),
             counters: Gles2FrameCounters::default(),
             software_frames: HostBlockZeroCopy::new(hardware),
             context,

@@ -13,6 +13,16 @@
 //! 7. egui.
 //! 8. Показ, затем `free` кадра.
 //!
+//! # Частичный показ
+//! Между шагами 4 и 5 сборщик решает, перерисовывать ли всю цель ([`DamageHistory::plan`]):
+//! возраст заднего буфера (`EGL_EXT_buffer_age`), повреждения последних показанных кадров,
+//! повреждение интерфейса этого кадра (границы его мешей плюс границы прошлого показанного
+//! интерфейса — то, что исчезло, тоже надо перерисовать) и сообщение вызывающего
+//! [`LayersDamage`] о слоях. Частичный кадр ограничивается областью
+//! ([`ActiveFrame::restrict_to_partial_repaint`]): заливка, подложка, оверлеи и egui рисуют только
+//! в ней, а показ сообщает композитору изменённый прямоугольник. Пиксели совпадают с полной
+//! перерисовкой.
+//!
 //! Альфа цели. Окно всегда непрозрачное (скругление углов удалено, решение 57 плана
 //! gles2-renderer). Если у буфера кадра есть канал альфы (`FramebufferAlpha::Present`), альфа
 //! обязана остаться 1, иначе композитор просветит окно. Заливка фона здесь пишет альфу 1 всегда, а
@@ -25,12 +35,16 @@ use epaint::textures::TexturesDelta;
 use epaint::{ClippedPrimitive, TextureId};
 use thiserror::Error;
 
+use crate::context::driver::SurfaceSize;
 use crate::context::{GlAccessError, Gles2Context};
+use crate::damage::{DamageHistory, LayersDamage, PartialPresentStats, RepaintPlan, TargetArea};
 use crate::error::Gles2Error;
-use crate::frame::{ActiveFrame, FrameSkipReason, FrameStart, Gles2FrameTimings};
+use crate::frame::{
+    ActiveFrame, FrameSkipReason, FrameStart, Gles2FrameTimings, PresentKind, PresentedFrame,
+};
 use crate::painter::{
     EguiPainter, EguiPainterOptions, PainterError, RetainedUiUnavailable, TextureApplyReport,
-    TextureFreeOutcome, UiPaintWork, UiPrepareWork, UiScreen, UiTextureUpload,
+    TextureFreeOutcome, UiFootprint, UiPaintWork, UiPrepareWork, UiScreen, UiTextureUpload,
 };
 
 /// Содержимое UI кадра (аналог `render_shell_api::EguiFrameContent`).
@@ -172,6 +186,10 @@ pub struct UiFrameWork {
 /// Показанный кадр.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PresentedUiFrame {
+    /// Способ показа.
+    pub present_kind: PresentKind,
+    /// Как перерисован кадр: целиком (с причиной) или частично.
+    pub repaint: RepaintPlan,
     /// Тайминги.
     pub timings: UiFrameTimings,
     /// Работа.
@@ -212,6 +230,12 @@ pub enum UiFrameError {
 #[derive(Debug)]
 pub struct FrameCompositor {
     painter: EguiPainter,
+    /// Повреждения последних показанных кадров (владеет логикой возраста буфера).
+    damage_history: DamageHistory,
+    /// Отпечаток интерфейса последнего ПОКАЗАННОГО кадра: повреждение нового интерфейса — то, что
+    /// отличается от него (и появившееся, и исчезнувшее).
+    presented_ui: Option<UiFootprint>,
+    partial_stats: PartialPresentStats,
 }
 
 /// Проверенное содержимое UI, готовое к рисованию.
@@ -228,7 +252,24 @@ impl FrameCompositor {
     /// Художник в этом контексте.
     pub fn new(context: &Gles2Context, options: EguiPainterOptions) -> Result<Self, UiFrameError> {
         let painter = EguiPainter::new(context, options)?;
-        Ok(Self { painter })
+        Ok(Self {
+            painter,
+            damage_history: DamageHistory::new(),
+            presented_ui: None,
+            partial_stats: PartialPresentStats::default(),
+        })
+    }
+
+    /// Счётчики частичного показа за всё время.
+    pub fn partial_present_stats(&self) -> PartialPresentStats {
+        self.partial_stats
+    }
+
+    /// Забыть историю повреждений (окно отпущено и возвращено, цель пересоздана): ближайший
+    /// кадр будет полным независимо от возраста буфера.
+    pub fn forget_damage_history(&mut self) {
+        self.damage_history.reset();
+        self.presented_ui = None;
     }
 
     /// Художник (счётчики, `max_texture_side`, проверка повтора).
@@ -242,11 +283,27 @@ impl FrameCompositor {
         self.painter.retained_availability(screen).is_ok()
     }
 
-    /// Нарисовать и показать кадр.
+    /// Нарисовать и показать кадр целиком: слои считаются изменёнными
+    /// ([`LayersDamage::Changed`]), частичной перерисовки нет. Всегда верный ответ.
     pub fn render(
         &mut self,
         context: &mut Gles2Context,
         request: UiFrameRequest<'_>,
+    ) -> Result<UiFrameOutcome, UiFrameError> {
+        self.render_with_layers_damage(context, request, LayersDamage::Changed)
+    }
+
+    /// Нарисовать и показать кадр; `layers_damage` сообщает вызывающий: изменились ли слои
+    /// (видео, субтитры) относительно прошлого показанного кадра. Знает это только он.
+    /// `Unchanged` разрешает частичную перерисовку, если драйвер сообщает возраст буфера.
+    ///
+    /// Отдельный метод, а не поле запроса: запрос собирают литералом несколько потребителей, и
+    /// поле без значения по умолчанию сломало бы их сборку.
+    pub fn render_with_layers_damage(
+        &mut self,
+        context: &mut Gles2Context,
+        request: UiFrameRequest<'_>,
+        layers_damage: LayersDamage,
     ) -> Result<UiFrameOutcome, UiFrameError> {
         let UiFrameRequest {
             screen,
@@ -255,17 +312,26 @@ impl FrameCompositor {
             layers,
         } = request;
         let mut timings = UiFrameTimings::default();
+        // Правки текстур применяются сразу при приёме содержимого. Если кадр после этого не
+        // показан, на экране остались пиксели со старыми текстурами под «неизменным» интерфейсом:
+        // ближайший кадр должен быть полным (`record_abandoned`).
+        let changes_textures = content_changes_textures(&content);
         let pending = match self.accept_content(context, content, screen, &mut timings)? {
             Ok(pending) => pending,
-            Err(drop_reason) => return Ok(UiFrameOutcome::Dropped(drop_reason)),
+            Err(drop_reason) => {
+                self.note_unpresented_texture_changes(changes_textures);
+                return Ok(UiFrameOutcome::Dropped(drop_reason));
+            }
         };
-        let frame = match context.begin_frame() {
+        let mut frame = match context.begin_frame() {
             Ok(FrameStart::Ready(frame)) => frame,
             Ok(FrameStart::Skipped(reason)) => {
+                self.note_unpresented_texture_changes(changes_textures);
                 self.finish_unpainted(context, pending)?;
                 return Ok(UiFrameOutcome::Skipped(reason));
             }
             Err(error) => {
+                self.note_unpresented_texture_changes(changes_textures);
                 // Основная ошибка — контекста; отказ `free` вторичен и только в лог.
                 if let Err(free_error) = self.finish_unpainted(context, pending) {
                     log::warn!(
@@ -276,11 +342,12 @@ impl FrameCompositor {
             }
         };
         let drawn = self.draw_frame(
-            &frame,
+            &mut frame,
             DrawPlan {
                 screen,
                 background,
                 layers,
+                layers_damage,
             },
             pending,
             &mut timings,
@@ -291,11 +358,15 @@ impl FrameCompositor {
             prepare,
             textures_delta,
             paint,
+            repaint,
+            change,
+            fresh_ui,
         } = match drawn {
             Ok(drawn) => drawn,
             Err(failed) => {
                 // Кадр выброшен (без показа): `frame` дальше не используется, контекст снова
-                // свободен для `free`.
+                // свободен для `free`. Задний буфер мог остаться недорисованным.
+                self.damage_history.record_abandoned();
                 let FailedDraw {
                     error,
                     textures_delta,
@@ -304,15 +375,29 @@ impl FrameCompositor {
                 return Err(error);
             }
         };
+        let target = frame.size();
         let presented = frame.present();
         let texture_free = self.free_frame_textures(context, textures_delta)?;
-        let Gles2FrameTimings {
-            surface_acquire,
-            surface_present,
-        } = presented?.timings;
+        let PresentedFrame {
+            timings:
+                Gles2FrameTimings {
+                    surface_acquire,
+                    surface_present,
+                },
+            kind: present_kind,
+        } = match presented {
+            Ok(presented) => presented,
+            Err(error) => {
+                self.damage_history.record_abandoned();
+                return Err(error.into());
+            }
+        };
+        self.record_presented(target, repaint, change, present_kind, fresh_ui);
         timings.surface_acquire = surface_acquire;
         timings.surface_present = surface_present;
         Ok(UiFrameOutcome::Presented(PresentedUiFrame {
+            present_kind,
+            repaint,
             timings,
             work: UiFrameWork {
                 textures,
@@ -341,9 +426,11 @@ impl FrameCompositor {
         context: &Gles2Context,
         content: UiContent,
     ) -> Result<(), UiFrameError> {
+        let changes_textures = content_changes_textures(&content);
         let UiContent::Fresh { textures_delta, .. } = content else {
             return Ok(());
         };
+        self.note_unpresented_texture_changes(changes_textures);
         match self.painter.apply_textures(context, &textures_delta) {
             Ok(_) => {}
             Err(PainterError::GlAccess(GlAccessError::DetachedWithoutSurfacelessContext)) => {
@@ -357,6 +444,14 @@ impl FrameCompositor {
         }
         self.painter.free_textures(context, textures_delta)?;
         Ok(())
+    }
+
+    /// Правки текстур применены, а кадр не показан: на экране могли остаться пиксели со старыми
+    /// текстурами, а по отпечатку интерфейса это не видно. Следующий кадр — полный.
+    fn note_unpresented_texture_changes(&mut self, changes_textures: bool) {
+        if changes_textures {
+            self.damage_history.record_abandoned();
+        }
     }
 
     /// Разрушить GL-объекты (контекст жив) или забыть их (контекст потерян).
@@ -417,7 +512,7 @@ impl FrameCompositor {
     /// всё равно выполнился.
     fn draw_frame(
         &mut self,
-        frame: &ActiveFrame<'_>,
+        frame: &mut ActiveFrame<'_>,
         mut plan: DrawPlan<'_>,
         pending: PendingUi,
         timings: &mut UiFrameTimings,
@@ -449,12 +544,14 @@ impl FrameCompositor {
                 textures_delta,
             })
         };
-        let background = match Self::draw_layers(frame, &mut plan, timings) {
+        let fresh_ui = textures_delta.is_some();
+        let (repaint, change) = self.plan_repaint(frame, &plan, fresh_ui);
+        let background = match Self::draw_layers(&*frame, &mut plan, timings) {
             Ok(background) => background,
             Err(error) => return Err(failed(error, textures_delta)),
         };
         let started = Instant::now();
-        let painted = self.painter.paint_retained(frame, plan.screen);
+        let painted = self.painter.paint_retained(&*frame, plan.screen);
         timings.egui_render = started.elapsed();
         let paint = match painted {
             Ok(paint) => paint,
@@ -466,7 +563,65 @@ impl FrameCompositor {
             prepare,
             textures_delta,
             paint,
+            repaint,
+            change,
+            fresh_ui,
         })
+    }
+
+    /// Решает, перерисовывать ли всю цель, и ограничивает кадр областью частичной перерисовки.
+    ///
+    /// Повреждение интерфейса: у свежего UI — плитки, где он отличается от прошлого показанного
+    /// (в том числе исчезнувшее); у повторного — пусто, интерфейс не меняется.
+    fn plan_repaint(
+        &self,
+        frame: &mut ActiveFrame<'_>,
+        plan: &DrawPlan<'_>,
+        fresh_ui: bool,
+    ) -> (RepaintPlan, TargetArea) {
+        let ui_damage = if fresh_ui {
+            self.painter
+                .retained_footprint()
+                .changed_since(self.presented_ui.as_ref())
+        } else {
+            None
+        };
+        let decision = self.damage_history.plan(
+            frame.buffer_age(),
+            frame.size(),
+            plan.layers_damage,
+            ui_damage,
+        );
+        if let RepaintPlan::Partial { repaint, changed } = decision {
+            frame.restrict_to_partial_repaint(repaint, changed);
+        }
+        let change = decision.presented_change(plan.layers_damage, ui_damage);
+        (decision, change)
+    }
+
+    /// История, границы интерфейса и счётчики после успешного показа.
+    fn record_presented(
+        &mut self,
+        target: SurfaceSize,
+        repaint: RepaintPlan,
+        change: TargetArea,
+        present_kind: PresentKind,
+        fresh_ui: bool,
+    ) {
+        self.damage_history.record_presented(target, change);
+        if fresh_ui {
+            // Показанным интерфейсом стал только что собранный (отпечаток переиспользует буфер).
+            let footprint = self.painter.retained_footprint();
+            match &mut self.presented_ui {
+                Some(presented) => presented.clone_from(footprint),
+                empty @ None => *empty = Some(footprint.clone()),
+            }
+        }
+        self.partial_stats.record_presented(
+            repaint,
+            target,
+            present_kind == PresentKind::WithDamage,
+        );
     }
 
     /// Шаги 5–6: заливка (если подложка не закрывает цель сама), подложка, оверлеи.
@@ -531,6 +686,14 @@ impl FrameCompositor {
     }
 }
 
+/// Меняет ли содержимое кадра текстуры (`set`; `free` пиксели на экране не меняет).
+fn content_changes_textures(content: &UiContent) -> bool {
+    match content {
+        UiContent::Fresh { textures_delta, .. } => !textures_delta.set.is_empty(),
+        UiContent::ReusePrevious => false,
+    }
+}
+
 /// Нарисованный, но ещё не показанный кадр.
 struct DrawnFrame {
     background: BackgroundFillOutcome,
@@ -539,6 +702,12 @@ struct DrawnFrame {
     /// `free` выполняется после показа.
     textures_delta: Option<TexturesDelta>,
     paint: UiPaintWork,
+    /// Как кадр перерисован.
+    repaint: RepaintPlan,
+    /// Что кадр изменил относительно прошлого показанного (запись для истории).
+    change: TargetArea,
+    /// Кадр показал свежий интерфейс (его отпечаток становится «показанным»).
+    fresh_ui: bool,
 }
 
 /// Отказ внутри кадра: ошибка и `TexturesDelta`, чей `free` всё равно нужно выполнить.
@@ -552,6 +721,7 @@ struct DrawPlan<'layers> {
     screen: UiScreen,
     background: [f32; 4],
     layers: &'layers mut dyn FrameLayers,
+    layers_damage: LayersDamage,
 }
 
 /// Заливка фона всегда с альфой 1: окно непрозрачное, а у буфера кадра канал альфы может быть

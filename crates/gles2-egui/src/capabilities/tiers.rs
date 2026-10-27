@@ -6,7 +6,7 @@
 //! | Точность | `highp float` во фрагментном шейдере |
 //! | Zero-copy | `EGL_EXT_image_dma_buf_import` + `_modifiers` + `GL_OES_EGL_image` + `R8` и `GR88` как `sampler2D` |
 //! | Zero-copy 10-бит | zero-copy + точность + `GR88` и `ABGR8888` как `sampler2D` |
-//! | Удобства | каждое отдельно: `unpack_subimage`, `element_index_uint`, VAO, `KHR_fence_sync`, `buffer_age` |
+//! | Удобства | каждое отдельно: `unpack_subimage`, `element_index_uint`, VAO, `KHR_fence_sync`, `buffer_age`, `swap_buffers_with_damage` |
 //!
 //! Модификаторы обязательны для zero-copy: без них тайловые буферы импортируются тихим мусором
 //! (разведка 00, 780M).
@@ -80,8 +80,12 @@ pub struct Conveniences {
     pub vertex_array_object: bool,
     /// `EGL_KHR_fence_sync`: «GPU дочитал кадр» без `glFinish`.
     pub egl_fence_sync: bool,
-    /// `EGL_EXT_buffer_age`: возраст заднего буфера (частичная перерисовка в будущем).
+    /// `EGL_EXT_buffer_age`: возраст заднего буфера (частичная перерисовка).
     pub buffer_age: bool,
+    /// `EGL_KHR_swap_buffers_with_damage` или `EGL_EXT_swap_buffers_with_damage`: показ с
+    /// подсказкой композитору об изменённых областях. Без него частичная перерисовка
+    /// остаётся верной (хватает возраста буфера), просто композитор не знает, что изменилось.
+    pub swap_buffers_with_damage: bool,
 }
 
 /// Все уровни сразу.
@@ -191,5 +195,9 @@ fn conveniences(report: &DriverReport) -> Conveniences {
         vertex_array_object: report.gl_extensions.contains("GL_OES_vertex_array_object"),
         egl_fence_sync: report.egl_display_extensions.contains("EGL_KHR_fence_sync"),
         buffer_age: report.egl_display_extensions.contains("EGL_EXT_buffer_age"),
+        swap_buffers_with_damage: report.egl_display_extensions.contains_any(&[
+            "EGL_KHR_swap_buffers_with_damage",
+            "EGL_EXT_swap_buffers_with_damage",
+        ]),
     }
 }

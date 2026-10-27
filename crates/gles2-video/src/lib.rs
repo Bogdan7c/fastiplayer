@@ -62,6 +62,7 @@ mod overlay;
 mod planes;
 mod program;
 mod renderer;
+mod repaint_clip;
 mod ring;
 mod textures;
 mod underlay;

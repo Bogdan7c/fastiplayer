@@ -21,8 +21,8 @@
 use std::time::{Duration, Instant};
 
 use gles2_egui::{
-    BackgroundFillOutcome, FrameLayerStack, Gles2Error, PixelExtent, PresentedUiFrame, UiContent,
-    UiFrameOutcome, UiFrameRequest, UiScreen,
+    BackgroundFillOutcome, FrameLayerStack, Gles2Error, LayersDamage, PixelExtent, PresentKind,
+    PresentedUiFrame, UiContent, UiFrameOutcome, UiFrameRequest, UiScreen,
 };
 use gles2_video::{VideoDrawOutcome, VideoUnderlay};
 use render_core::{RenderViewport, RenderableFrame};
@@ -37,6 +37,7 @@ use super::frame_fence::{FrameVideoUse, FrameWorkRetirement};
 use super::frame_layers::ShellUnderlay;
 use super::frame_outcome::{drop_reason_of, failure_of, skip_reason_of};
 use super::layers::GlLayers;
+use super::layers_damage::{LayersSnapshot, SubtitlePlacement, VideoLayerState};
 use crate::video_import::Gles2PreparedFrame;
 use crate::{
     SubtitleOverlayLayer, VideoDrawPlan, VideoPlacement, render_frame_timing, renderable_frame,
@@ -159,6 +160,29 @@ impl Gles2Renderer {
         } else {
             FrameVideoUse::WithoutVideo
         };
+        // Менялись ли слои с прошлого показанного кадра: решается ДО рисования (слой субтитров
+        // обновляет своё состояние в `render`).
+        let layers_snapshot = LayersSnapshot {
+            screen_size: screen.size_in_pixels,
+            video: video_pass.as_ref().map(|pass| VideoLayerState {
+                shown: self.shown.current(),
+                plan: pass.plan.clone(),
+            }),
+            subtitles: subtitle_overlay
+                .as_ref()
+                .map(|overlay_frame| SubtitlePlacement {
+                    origins: overlay_frame.canvas_origins(),
+                    visible_area,
+                }),
+        };
+        let subtitle_pixels_unchanged = subtitle_overlay
+            .as_ref()
+            .is_some_and(|overlay_frame| subtitles.has_prepared(overlay_frame.overlay));
+        let layers_damage = self.presented_layers.damage_of(
+            &layers_snapshot,
+            subtitle_pixels_unchanged,
+            video.has_pending_hdr_table(),
+        );
         let (rendered, video_outcome) = {
             let mut underlay = match &video_pass {
                 Some(pass) => ShellUnderlay::Video(VideoUnderlay::new(video, pass.plan.request())),
@@ -172,7 +196,7 @@ impl Gles2Renderer {
             let mut overlays = SubtitleOverlayLayer::new(subtitles, subtitle_overlay, visible_area);
             let rendered = {
                 let mut stack = FrameLayerStack::new(&mut underlay, &mut overlays);
-                compositor.render(
+                compositor.render_with_layers_damage(
                     &mut self.context,
                     UiFrameRequest {
                         screen: UiScreen {
@@ -183,11 +207,22 @@ impl Gles2Renderer {
                         background: FRAME_BACKGROUND,
                         layers: &mut stack,
                     },
+                    layers_damage,
                 )
             };
             (rendered, underlay.video_outcome())
         };
 
+        match &rendered {
+            Ok(UiFrameOutcome::Presented(_)) => {
+                self.presented_layers.record_presented(layers_snapshot);
+                if layers_damage == LayersDamage::Unchanged {
+                    self.counters.frames_with_unchanged_layers += 1;
+                }
+            }
+            // Не показан: слои заднего буфера и «прошлого кадра» больше не совпадают.
+            _ => self.presented_layers.forget(),
+        }
         match rendered {
             Ok(UiFrameOutcome::Presented(presented)) => self.complete_presented_frame(
                 presented,
@@ -209,6 +244,15 @@ impl Gles2Renderer {
                 self.retire_work_of_failed_frame(&error, frame_video_use);
                 RenderFrameOutcome::Failed(failure_of(&error))
             }
+        }
+    }
+
+    /// Забыть, что показано на цели: у новой EGLSurface буферы пустые, и ближайший кадр обязан
+    /// быть полным, как бы ни отвечал драйвер про возраст буфера.
+    pub(super) fn forget_presented_state(&mut self) {
+        self.presented_layers.forget();
+        if let Some(layers) = self.layers.as_mut() {
+            layers.compositor.forget_damage_history();
         }
     }
 
@@ -302,6 +346,17 @@ impl Gles2Renderer {
             video_pass_diagnostics(&pass.renderable, &pass.plan)
         });
         self.counters.frames_presented += 1;
+        if self.counters.frames_presented == 1
+            && presented.present_kind != PresentKind::OffscreenFlush
+        {
+            // Один раз на первом кадре окна: что реально дал драйвер для частичного показа.
+            log::info!(
+                "GLES2 first window frame: {}; present kind {:?}, repaint {:?}",
+                gles2_egui::describe_partial_present_support(self.context.capabilities()),
+                presented.present_kind,
+                presented.repaint
+            );
+        }
         match presented.work.background {
             BackgroundFillOutcome::Cleared => self.counters.background_fills += 1,
             BackgroundFillOutcome::SkippedUnderlayCoversTarget => {

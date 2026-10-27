@@ -37,6 +37,7 @@ use crate::planes::{
 use crate::program::{
     FULLSCREEN_TRIANGLE, SamplingEdge, ShaderPrecision, VideoProgram, VideoPrograms,
 };
+use crate::repaint_clip::clip_to_repaint_area;
 
 mod dma_buf;
 mod dma_buf_planar;
@@ -419,11 +420,16 @@ impl VideoLayerRenderer {
                 .collect(),
             _ => Vec::new(),
         };
-        let uncovered = uncovered_parts(target_rect, &drawn_rects)
+        // Кадр с частичной перерисовкой (`ActiveFrame::repaint_area`): и заливка вне картинки, и
+        // сама картинка пишутся только внутри области кадра, остальные пиксели уже верны.
+        // «Вне картинки» считается по полным прямоугольникам, отсечение — после.
+        let uncovered_full = uncovered_parts(target_rect, &drawn_rects);
+        let uncovered = clip_to_repaint_area(frame, &uncovered_full)
             .into_iter()
             .map(|rect| to_gl_window_rect(rect, target_height))
             .collect::<Result<Vec<_>, _>>()?;
-        let scissors = drawn_rects
+        let drawn_in_area = clip_to_repaint_area(frame, &drawn_rects);
+        let scissors = drawn_in_area
             .iter()
             .map(|rect| to_gl_window_rect(*rect, target_height))
             .collect::<Result<Vec<_>, _>>()?;
@@ -469,8 +475,12 @@ impl VideoLayerRenderer {
         let Some(planned) = current else {
             return Ok(VideoDrawOutcome::ClearedWithoutFrame);
         };
-        if scissors.is_empty() {
+        if drawn_rects.is_empty() {
             return Ok(VideoDrawOutcome::ClearedNothingVisible);
+        }
+        if scissors.is_empty() {
+            // Картинка есть, но область частичной перерисовки её не касается: рисовать нечего.
+            return Ok(VideoDrawOutcome::Drawn { draw_calls: 0 });
         }
 
         let position_attribute = activate(gl, &planned, request, hdr_table);
@@ -490,7 +500,7 @@ impl VideoLayerRenderer {
         self.ring.mark_current_drawn();
         let draw_calls = u32::try_from(scissors.len()).unwrap_or(u32::MAX);
         self.stats.draw_calls += u64::from(draw_calls);
-        self.stats.shaded_video_pixels += drawn_rects
+        self.stats.shaded_video_pixels += drawn_in_area
             .iter()
             .map(|rect| u64::from(rect.width) * u64::from(rect.height))
             .sum::<u64>();

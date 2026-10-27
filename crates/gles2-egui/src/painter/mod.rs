@@ -21,6 +21,7 @@ mod drawing;
 mod program;
 mod scissor;
 mod textures;
+mod ui_damage;
 mod upload;
 
 use epaint::textures::TexturesDelta;
@@ -38,7 +39,10 @@ pub use self::upload::UiPrepareWork;
 
 use self::drawing::create_buffer_objects;
 use self::program::PainterProgram;
+use self::scissor::paint_scissor_limit;
 use self::textures::{UiTextureStore, UploadLimits};
+use self::ui_damage::TextureChange;
+pub(crate) use self::ui_damage::UiFootprint;
 use self::upload::FrameStaging;
 
 /// Размер экрана кадра egui (аналог `egui_wgpu::ScreenDescriptor`).
@@ -170,6 +174,8 @@ pub struct UiPaintWork {
     pub texture_binds: u32,
     /// Мешей пропущено: их текстуры нет (как `log::warn!("Missing texture")` у egui-wgpu).
     pub skipped_missing_texture: u32,
+    /// Команд пропущено: целиком вне области частичной перерисовки кадра.
+    pub skipped_outside_repaint: u32,
 }
 
 /// Счётчики художника за всё время (оптимизации доказываются ими, а не «функция вызвалась»).
@@ -211,6 +217,9 @@ pub struct EguiPainter {
     limits: UploadLimits,
     /// `free`, которые не удалось выполнить без GL.
     deferred_frees: Vec<TextureId>,
+    /// Правки текстур, применённые с прошлой сборки кадра: следующая сборка повредит
+    /// треугольники затронутых текстур (см. `ui_damage`).
+    pending_texture_changes: Vec<(TextureId, TextureChange)>,
     stats: EguiPainterStats,
     destroyed: bool,
 }
@@ -262,6 +271,7 @@ impl EguiPainter {
             retained_screen: None,
             limits,
             deferred_frees: Vec::new(),
+            pending_texture_changes: Vec::new(),
             stats: EguiPainterStats::default(),
             destroyed: false,
         };
@@ -272,6 +282,12 @@ impl EguiPainter {
             gl.bind_vertex_array(None);
         }
         Ok(painter)
+    }
+
+    /// Отпечаток удержанного UI-кадра: основа повреждения для частичного показа. Сборщик
+    /// кадра сравнивает его с отпечатком прошлого показанного кадра.
+    pub(crate) fn retained_footprint(&self) -> &UiFootprint {
+        self.staging.footprint()
     }
 
     /// Сторона текстуры, которую стоит передавать egui (`RawInput::max_texture_side`).
@@ -324,6 +340,16 @@ impl EguiPainter {
             .map_err(PainterError::Gl)?;
         self.stats.texture_full_uploads += u64::from(report.full_uploads);
         self.stats.texture_patch_uploads += u64::from(report.patch_uploads);
+        for (texture_id, image_deltas) in &delta.set {
+            for image_delta in image_deltas {
+                let change = if image_delta.pos.is_some() {
+                    TextureChange::Patched
+                } else {
+                    TextureChange::Replaced
+                };
+                self.pending_texture_changes.push((*texture_id, change));
+            }
+        }
         Ok(report)
     }
 
@@ -348,9 +374,13 @@ impl EguiPainter {
         // До сборки: если загрузка откажет, старый удержанный кадр уже недействителен (буферы
         // наполовину перезаписаны), повтор должен честно отказать.
         self.retained_screen = None;
-        let work = self
-            .staging
-            .build(primitives, screen.pixels_per_point, screen.size_in_pixels);
+        let texture_changes = std::mem::take(&mut self.pending_texture_changes);
+        let work = self.staging.build(
+            primitives,
+            screen.pixels_per_point,
+            screen.size_in_pixels,
+            &texture_changes,
+        );
         self.stream_staging(gl)?;
         self.retained_screen = Some(screen);
         self.stats.fresh_prepares += 1;
@@ -387,8 +417,9 @@ impl EguiPainter {
                 what: "screen size",
             }));
         };
+        let limit = paint_scissor_limit(frame.repaint_area(), screen.size_in_pixels[1]);
         self.begin_paint_state(gl, screen, width, height);
-        let work = self.draw_commands(gl);
+        let work = self.draw_commands(gl, &limit);
         self.end_paint_state(gl);
         self.stats.paints += 1;
         self.stats.draw_calls += u64::from(work.draw_calls);

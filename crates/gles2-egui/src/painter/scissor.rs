@@ -7,6 +7,7 @@
 
 use epaint::Rect;
 
+use crate::damage::TargetArea;
 use crate::draw_gl::GlScissor;
 
 /// Прямоугольник в пикселях цели с началом в верхнем левом углу (как у egui и wgpu).
@@ -51,6 +52,54 @@ pub(super) fn gl_scissor(rect: TopLeftPixelRect, target_height: u32) -> GlScisso
     }
 }
 
+/// Разрешённая слою область в координатах `glScissor` (начало снизу). `None` — рисовать нечего
+/// (`TargetArea::Nothing`); `Some(None)`-случая нет: вся цель выражается отдельным вариантом.
+pub(super) enum PaintScissorLimit {
+    /// Ограничения нет.
+    Unrestricted,
+    /// Только этот прямоугольник.
+    Region(GlScissor),
+    /// Рисовать нечего.
+    Nothing,
+}
+
+/// Область перерисовки кадра → ограничение scissor-а художника.
+pub(super) fn paint_scissor_limit(area: TargetArea, target_height: u32) -> PaintScissorLimit {
+    match area {
+        TargetArea::Whole => PaintScissorLimit::Unrestricted,
+        TargetArea::Nothing => PaintScissorLimit::Nothing,
+        TargetArea::Region(rect) => PaintScissorLimit::Region(gl_scissor(
+            TopLeftPixelRect {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+            },
+            target_height,
+        )),
+    }
+}
+
+/// Пересечение двух scissor-ов GL; `None` — пересечения нет.
+pub(super) fn intersect_scissors(first: GlScissor, second: GlScissor) -> Option<GlScissor> {
+    let left = first.x.max(second.x);
+    let bottom = first.y.max(second.y);
+    let right = first
+        .x
+        .saturating_add(first.width)
+        .min(second.x.saturating_add(second.width));
+    let top = first
+        .y
+        .saturating_add(first.height)
+        .min(second.y.saturating_add(second.height));
+    (right > left && top > bottom).then_some(GlScissor {
+        x: left,
+        y: bottom,
+        width: right - left,
+        height: top - bottom,
+    })
+}
+
 fn saturating_gl_int(value: u32) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
 }
@@ -59,7 +108,7 @@ fn saturating_gl_int(value: u32) -> i32 {
 mod tests {
     use epaint::{Rect, pos2};
 
-    use super::{TopLeftPixelRect, clip_rect_in_pixels, gl_scissor};
+    use super::{TopLeftPixelRect, clip_rect_in_pixels, gl_scissor, intersect_scissors};
     use crate::draw_gl::GlScissor;
 
     #[test]
@@ -103,5 +152,37 @@ mod tests {
         assert_eq!(clip_rect_in_pixels(outside, 1.0, [64, 32]), None);
         let negative = Rect::from_min_max(pos2(-20.0, -20.0), pos2(-1.0, -1.0));
         assert_eq!(clip_rect_in_pixels(negative, 1.0, [64, 32]), None);
+    }
+
+    #[test]
+    fn scissor_intersection_is_the_common_part_or_nothing() {
+        let a = GlScissor {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        };
+        let b = GlScissor {
+            x: 6,
+            y: 4,
+            width: 10,
+            height: 10,
+        };
+        assert_eq!(
+            intersect_scissors(a, b),
+            Some(GlScissor {
+                x: 6,
+                y: 4,
+                width: 4,
+                height: 6
+            })
+        );
+        let touching = GlScissor {
+            x: 10,
+            y: 0,
+            width: 5,
+            height: 5,
+        };
+        assert_eq!(intersect_scissors(a, touching), None);
     }
 }

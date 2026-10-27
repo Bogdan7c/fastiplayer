@@ -10,10 +10,11 @@ use std::time::Duration;
 use crate::context::display_registry::DisplayRegistry;
 use crate::context::dma_buf_texture::DmaBufImageAttributes;
 use crate::context::driver::{
-    ConfigDescription, ConfigId, ConfigQuery, ContextId, ContextRequest, CurrentBinding, DisplayId,
-    DisplayString, DmaBufModifier, EglCallError, EglDriver, EglErrorCode, EglOperation, EglVersion,
-    ImageId, NativeDisplay, PlatformWindowTarget, ResetNotificationRequest, SurfaceId, SurfaceSize,
-    SyncId, SyncWaitStatus, WaylandEglWindowId,
+    ConfigDescription, ConfigId, ConfigQuery, ContextId, ContextRequest, CurrentBinding,
+    DamageRect, DamageSwapExtension, DisplayId, DisplayString, DmaBufModifier, EglCallError,
+    EglDriver, EglErrorCode, EglOperation, EglVersion, ImageId, NativeDisplay,
+    PlatformWindowTarget, ResetNotificationRequest, SurfaceId, SurfaceSize, SyncId, SyncWaitStatus,
+    WaylandEglWindowId,
 };
 
 /// Один вызов драйвера в журнале.
@@ -35,12 +36,21 @@ pub(crate) enum FakeCall {
     DestroySurface(SurfaceId),
     MakeCurrent(CurrentBinding),
     SwapBuffers(SurfaceId),
+    QueryBufferAge(SurfaceId),
+    SwapBuffersWithDamage(SurfaceId, DamageSwapExtension),
     SwapInterval(i32),
     CreateSync(SyncId),
     ClientWaitSync(SyncId),
     DestroySync(SyncId),
     CreateImage(ImageId),
     DestroyImage(ImageId),
+}
+
+/// Один показ с повреждениями (прямоугольники не влезают в `Copy`-журнал).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DamageSwapRecord {
+    pub(crate) extension: DamageSwapExtension,
+    pub(crate) rects: Vec<DamageRect>,
 }
 
 /// Программируемое поведение драйвера.
@@ -55,6 +65,11 @@ pub(crate) struct FakeBehavior {
     pub(crate) window_surface_error: Option<EglErrorCode>,
     pub(crate) make_current_error: Option<EglErrorCode>,
     pub(crate) swap_error: Option<EglErrorCode>,
+    /// Возрасты буфера по порядку запросов; когда список кончился, отвечает `default_buffer_age`.
+    pub(crate) buffer_age_script: std::collections::VecDeque<u32>,
+    pub(crate) default_buffer_age: u32,
+    pub(crate) buffer_age_error: Option<EglErrorCode>,
+    pub(crate) damage_swap_error: Option<EglErrorCode>,
     pub(crate) wait_error: Option<EglErrorCode>,
     pub(crate) image_create_error: Option<EglErrorCode>,
     pub(crate) image_destroy_error: Option<EglErrorCode>,
@@ -78,6 +93,10 @@ impl Default for FakeBehavior {
             window_surface_error: None,
             make_current_error: None,
             swap_error: None,
+            buffer_age_script: std::collections::VecDeque::new(),
+            default_buffer_age: 0,
+            buffer_age_error: None,
+            damage_swap_error: None,
             wait_error: None,
             image_create_error: None,
             image_destroy_error: None,
@@ -121,6 +140,8 @@ struct FakeState {
     /// Списки атрибутов всех удачных и неудачных `eglCreateImage` по порядку вызовов.
     image_attribute_lists: Vec<Vec<usize>>,
     pending_syncs: BTreeSet<usize>,
+    /// Параметры всех показов с повреждениями по порядку вызовов.
+    damage_swaps: Vec<DamageSwapRecord>,
 }
 
 impl FakeState {
@@ -198,6 +219,11 @@ impl FakeEgl {
     }
 
     /// Число вызовов, подходящих под условие.
+    /// Показы с повреждениями по порядку.
+    pub(crate) fn damage_swaps(&self) -> Vec<DamageSwapRecord> {
+        self.lock().damage_swaps.clone()
+    }
+
     pub(crate) fn count(&self, predicate: impl Fn(&FakeCall) -> bool) -> usize {
         self.lock()
             .journal
@@ -404,6 +430,44 @@ impl EglDriver for FakeEgl {
         assert!(state.live_surfaces.contains(&surface.0));
         state.journal.push(FakeCall::SwapBuffers(surface));
         failure(EglOperation::SwapBuffers, state.behavior.swap_error)
+    }
+
+    fn query_buffer_age(
+        &self,
+        _display: DisplayId,
+        surface: SurfaceId,
+    ) -> Result<u32, EglCallError> {
+        let mut state = self.lock();
+        assert!(state.live_surfaces.contains(&surface.0));
+        state.journal.push(FakeCall::QueryBufferAge(surface));
+        failure(
+            EglOperation::QueryBufferAge,
+            state.behavior.buffer_age_error,
+        )?;
+        let scripted = state.behavior.buffer_age_script.pop_front();
+        Ok(scripted.unwrap_or(state.behavior.default_buffer_age))
+    }
+
+    fn swap_buffers_with_damage(
+        &self,
+        _display: DisplayId,
+        surface: SurfaceId,
+        extension: DamageSwapExtension,
+        rects: &[DamageRect],
+    ) -> Result<(), EglCallError> {
+        let mut state = self.lock();
+        assert!(state.live_surfaces.contains(&surface.0));
+        state
+            .journal
+            .push(FakeCall::SwapBuffersWithDamage(surface, extension));
+        state.damage_swaps.push(DamageSwapRecord {
+            extension,
+            rects: rects.to_vec(),
+        });
+        failure(
+            EglOperation::SwapBuffersWithDamage,
+            state.behavior.damage_swap_error,
+        )
     }
 
     fn swap_interval(&self, _display: DisplayId, interval: i32) -> Result<(), EglCallError> {

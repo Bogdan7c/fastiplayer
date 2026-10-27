@@ -28,6 +28,7 @@ mod frame_layers;
 mod frame_outcome;
 mod gpu_idle;
 mod layers;
+mod layers_damage;
 mod live_settings;
 mod presentation;
 mod probe;
@@ -44,6 +45,7 @@ use render_core::{ColorPipelineSettings, HdrToSdrSettings, RenderCapabilities, R
 use render_shell_api::RendererInstanceId;
 
 use self::layers::GlLayers;
+use self::layers_damage::PresentedLayersTracker;
 use self::live_settings::LiveSettingsState;
 use self::presentation::PresentationController;
 use crate::capabilities::HardwareZeroCopy;
@@ -61,6 +63,9 @@ pub struct Gles2FrameCounters {
     pub background_fills_skipped: u64,
     /// Сколько раз картинку ключа пришлось вернуть на видеослой (ключ был не текущим).
     pub video_frames_reshown: u64,
+    /// Кадров, где слои (видео, субтитры) не менялись с прошлого показанного кадра: на них
+    /// возможна частичная перерисовка (`gles2_egui::LayersDamage::Unchanged`).
+    pub frames_with_unchanged_layers: u64,
     /// Кадров с видео, не показанных из-за ошибки ПОСЛЕ начала рисования: их работа GPU всё равно
     /// прикрыта fence (кадр декодера не вернётся, пока GPU может его читать).
     pub failed_frames_fenced: u64,
@@ -96,6 +101,8 @@ pub struct Gles2Renderer {
     release: OwnedReleaseBinding,
     /// Какой кадр сейчас на видеослое.
     shown: ShownFrameTracker,
+    /// Слои последнего показанного кадра (решает, возможна ли частичная перерисовка).
+    presented_layers: PresentedLayersTracker,
     /// Счётчики кадров.
     counters: Gles2FrameCounters,
     /// Программный кадр без CPU-копии (udmabuf): доступность, dma-buf блоков, счётчики.
@@ -122,6 +129,16 @@ impl Gles2Renderer {
         self.counters
     }
 
+    /// Счётчики частичного показа за жизнь рендера: сколько кадров перерисовано частично, по каким
+    /// причинам целиком и сколько пикселей перерисовано (доказательство выигрыша).
+    #[must_use]
+    pub fn partial_present_stats(&self) -> gles2_egui::PartialPresentStats {
+        self.layers
+            .as_ref()
+            .map(|layers| layers.compositor.partial_present_stats())
+            .unwrap_or_default()
+    }
+
     /// Путь программного кадра без CPU-копии: состояние и счётчики (диагностика, тесты).
     #[must_use]
     pub const fn software_zero_copy_stats(&self) -> SoftwareZeroCopyStats {
@@ -138,6 +155,11 @@ impl Gles2Renderer {
 impl Drop for Gles2Renderer {
     fn drop(&mut self) {
         self.software_frames.log_summary();
+        log::info!(
+            "GLES2 partial present summary: {}; {}",
+            self.partial_present_stats(),
+            gles2_egui::describe_partial_present_support(self.context.capabilities())
+        );
         if let Some(layers) = self.layers.take() {
             layers.destroy(&self.context);
         }

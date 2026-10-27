@@ -4,6 +4,7 @@
 
 use crate::draw_gl::{BlendFunction, DrawGl, DrawGlError, VertexAttribute};
 
+use super::scissor::{PaintScissorLimit, intersect_scissors};
 use super::upload::{
     DrawCommand, VERTEX_COLOR_OFFSET, VERTEX_STRIDE_BYTES, VERTEX_TEX_COORD_OFFSET, VertexBinding,
 };
@@ -43,11 +44,31 @@ impl EguiPainter {
     }
 
     /// Проиграть команды удержанного кадра.
-    pub(super) fn draw_commands(&self, gl: DrawGl<'_>) -> UiPaintWork {
+    ///
+    /// `limit` — область перерисовки кадра: scissor каждой команды пересекается с ней, команды без
+    /// пересечения пропускаются (`skipped_outside_repaint`). Так художник не меняет пиксели вне
+    /// области частичной перерисовки.
+    pub(super) fn draw_commands(&self, gl: DrawGl<'_>, limit: &PaintScissorLimit) -> UiPaintWork {
         let mut work = UiPaintWork::default();
         let mut bound_texture: Option<glow::NativeTexture> = None;
         let mut bound_vertex_offset = 0;
         for command in self.staging.commands() {
+            let scissor = match limit {
+                PaintScissorLimit::Unrestricted => command.scissor,
+                PaintScissorLimit::Region(region) => {
+                    match intersect_scissors(command.scissor, *region) {
+                        Some(scissor) => scissor,
+                        None => {
+                            work.skipped_outside_repaint += 1;
+                            continue;
+                        }
+                    }
+                }
+                PaintScissorLimit::Nothing => {
+                    work.skipped_outside_repaint += 1;
+                    continue;
+                }
+            };
             let Some(texture) = self.textures.gl_texture(command.texture_id) else {
                 work.skipped_missing_texture += 1;
                 continue;
@@ -58,7 +79,7 @@ impl EguiPainter {
                 bound_texture = Some(texture);
                 work.texture_binds += 1;
             }
-            gl.enable_scissor(command.scissor);
+            gl.enable_scissor(scissor);
             gl.draw_indexed_triangles(command.draw);
             work.draw_calls += 1;
         }

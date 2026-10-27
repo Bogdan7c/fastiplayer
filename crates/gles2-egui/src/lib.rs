@@ -41,6 +41,7 @@
 mod capabilities;
 mod composition;
 mod context;
+mod damage;
 #[allow(
     unsafe_code,
     reason = "модуль безопасности вызовов GL художника и маски; каждый блок с // SAFETY:"
@@ -80,13 +81,19 @@ pub use context::platform::UnsupportedWindowSystem;
 pub use context::{
     ContextId, GlAccessError, Gles2Context, PixelExtent, ReadbackError, WindowSource,
 };
+pub use damage::{
+    BufferAge, DAMAGE_HISTORY_FRAMES, DamageHistory, FullRepaintReason, LayersDamage,
+    PartialPresentStats, PixelRect, RepaintPlan, TargetArea, describe_partial_present_support,
+};
 pub use draw_gl::DrawGlError;
 pub use error::{CreateError, Gles2Error};
 pub use fence::{
     CompletedPayloads, FenceStats, FenceStatus, FenceStrategy, FenceWaitError, GpuCompletionQueue,
     GpuFence,
 };
-pub use frame::{ActiveFrame, FrameSkipReason, FrameStart, Gles2FrameTimings, PresentedFrame};
+pub use frame::{
+    ActiveFrame, FrameSkipReason, FrameStart, Gles2FrameTimings, PresentKind, PresentedFrame,
+};
 pub use frame_layer_stack::FrameLayerStack;
 pub use loss::{ContextLoss, ContextLossDetection, ContextLossReason};
 pub use offscreen::OffscreenPixels;

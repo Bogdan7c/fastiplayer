@@ -21,6 +21,7 @@ use epaint::{ClippedPrimitive, Mesh, Primitive, TextureId, Vertex};
 use crate::draw_gl::{GlScissor, IndexType, IndexedDraw, gl_int};
 
 use super::scissor::{clip_rect_in_pixels, gl_scissor};
+use super::ui_damage::{TextureChange, UiFootprint, damages_existing_pixels};
 
 /// Размер вершины egui в буфере. `epaint::Vertex` — `#[repr(C)]`: `pos: Pos2` (2×f32),
 /// `uv: Pos2` (2×f32), `color: Color32` (4×u8).
@@ -73,6 +74,8 @@ pub(super) struct FrameStaging {
     vertex_bytes: Vec<u8>,
     index_bytes: Vec<u8>,
     commands: Vec<DrawCommand>,
+    /// Отпечаток удержанного кадра: что он рисует в каждой плитке цели (для частичного показа).
+    footprint: UiFootprint,
 }
 
 impl FrameStaging {
@@ -82,6 +85,7 @@ impl FrameStaging {
             vertex_bytes: Vec::new(),
             index_bytes: Vec::new(),
             commands: Vec::new(),
+            footprint: UiFootprint::default(),
         }
     }
 
@@ -103,10 +107,12 @@ impl FrameStaging {
         primitives: Vec<ClippedPrimitive>,
         pixels_per_point: f32,
         target_size: [u32; 2],
+        texture_changes: &[(TextureId, TextureChange)],
     ) -> UiPrepareWork {
         self.vertex_bytes.clear();
         self.index_bytes.clear();
         self.commands.clear();
+        self.footprint.reset(target_size);
         let mut work = UiPrepareWork::default();
         for ClippedPrimitive {
             clip_rect,
@@ -132,6 +138,11 @@ impl FrameStaging {
                 continue;
             };
             let scissor = gl_scissor(clip, target_size[1]);
+            let texture_damaged = texture_changes.iter().any(|(texture, change)| {
+                *texture == mesh.texture_id && damages_existing_pixels(*texture, *change)
+            });
+            self.footprint
+                .add_mesh(&mesh, clip, pixels_per_point, texture_damaged);
             let pushed = match self.index_type {
                 IndexType::U32 => self.push_u32_mesh(&mesh, scissor),
                 IndexType::U16 => self.push_u16_batches(mesh, scissor),
@@ -222,6 +233,11 @@ impl FrameStaging {
         true
     }
 
+    /// Отпечаток удержанного кадра.
+    pub(super) fn footprint(&self) -> &UiFootprint {
+        &self.footprint
+    }
+
     /// Команды кадра (удержанные для повтора).
     pub(super) fn commands(&self) -> &[DrawCommand] {
         &self.commands
@@ -230,6 +246,7 @@ impl FrameStaging {
     /// Забыть кадр (контекст потерян или текстуры пересозданы целиком).
     pub(super) fn clear_commands(&mut self) {
         self.commands.clear();
+        self.footprint.reset([0, 0]);
     }
 }
 
@@ -272,6 +289,7 @@ mod tests {
             ],
             1.0,
             [16, 16],
+            &[],
         );
         assert_eq!(work.draw_commands, 2);
         assert_eq!(work.vertex_bytes, 8 * VERTEX_STRIDE_BYTES);
@@ -309,6 +327,7 @@ mod tests {
             }],
             1.0,
             [16, 16],
+            &[],
         );
         assert!(work.draw_commands >= 2, "{work:?}");
         let commands = staging.commands();
@@ -353,6 +372,7 @@ mod tests {
             ],
             1.0,
             [8, 8],
+            &[],
         );
         assert_eq!(work.skipped_invalid_meshes, 1);
         assert_eq!(work.skipped_paint_callbacks, 1);

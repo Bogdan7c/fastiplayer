@@ -145,7 +145,7 @@ pub struct UploadReport {
 }
 
 /// Что рисовать и где.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VideoDrawRequest<'a> {
     /// Область видео (по ней считается letterbox).
     pub viewport: PixelRect,

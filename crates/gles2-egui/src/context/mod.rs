@@ -38,15 +38,16 @@ use std::time::{Duration, Instant};
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
-use self::driver::{EglCallError, SurfaceSize};
+use self::driver::{DamageRect, EglCallError, SurfaceSize};
 use self::egl_objects::EglSession;
 use self::safety::GraphicsResetStatusQuery;
 use self::safety::egl_image::ImageTargetTexture;
 use self::safety::gl::CurrentGl;
 use crate::capabilities::Gles2Capabilities;
+use crate::damage::{BufferAge, TargetArea};
 use crate::error::Gles2Error;
 use crate::fence::{FenceIssuer, FenceStats, FenceStrategy, GpuFence};
-use crate::frame::{ActiveFrame, FrameSkipReason, FrameStart};
+use crate::frame::{ActiveFrame, FrameSkipReason, FrameStart, PresentKind};
 use crate::loss::{ContextHealth, ContextLoss};
 use crate::offscreen::{OffscreenPixels, OffscreenTarget};
 use crate::presentation::PresentationState;
@@ -210,15 +211,42 @@ impl Gles2Context {
         let gl = self.current_gl().map_err(Gles2Error::from_gl_access)?;
         let framebuffer = match &self.target {
             RenderTarget::Window => None,
-            RenderTarget::Offscreen(target) => target.as_ref().map(OffscreenTarget::framebuffer),
+            RenderTarget::Offscreen(target) => {
+                target.as_ref().and_then(OffscreenTarget::framebuffer)
+            }
         };
         gl.bind_framebuffer(framebuffer);
         gl.viewport(size);
+        // Возраст заднего буфера спрашивается после привязки surface и до любого рисования
+        // (`EGL_EXT_buffer_age`). Отказ запроса не фатален: кадр просто будет полным.
+        let buffer_age = self.query_buffer_age_for_frame()?;
         Ok(FrameStart::Ready(ActiveFrame::new(
             self,
             size,
             acquire_started_at,
+            buffer_age,
         )))
+    }
+
+    /// Возраст заднего буфера цели. Потеря контекста — ошибка, любой другой отказ запроса
+    /// превращается в [`BufferAge::Unsupported`] с предупреждением (полная перерисовка верна
+    /// всегда).
+    fn query_buffer_age_for_frame(&self) -> Result<BufferAge, Gles2Error> {
+        match &self.target {
+            RenderTarget::Offscreen(target) => Ok(target
+                .as_ref()
+                .map_or(BufferAge::Unsupported, OffscreenTarget::buffer_age)),
+            RenderTarget::Window => match self.session.query_buffer_age() {
+                Ok(age) => Ok(age),
+                Err(error) => match self.observe_egl_error(error) {
+                    lost @ Gles2Error::ContextLost(_) => Err(lost),
+                    other => {
+                        log::warn!("eglQuerySurface(EGL_BUFFER_AGE_EXT) failed: {other}");
+                        Ok(BufferAge::Unsupported)
+                    }
+                },
+            },
+        }
     }
 
     /// Новый размер цели. 0×0 запоминается: кадры пропускаются, пока окно не развернут.
@@ -364,20 +392,46 @@ impl Gles2Context {
         CurrentGl::after_make_current(&self.gl).clear_color(rgba);
     }
 
-    /// Показ начатого кадра; возвращает время `eglSwapBuffers` (`glFlush` без окна).
-    pub(crate) fn present_active_frame(&mut self) -> Result<Duration, Gles2Error> {
+    /// Заливка прямоугольника начатого кадра (координаты GL, начало снизу слева).
+    pub(crate) fn clear_region_for_active_frame(
+        &self,
+        rgba: [f32; 4],
+        region: (i32, i32, i32, i32),
+    ) {
+        let (x, y, width, height) = region;
+        CurrentGl::after_make_current(&self.gl).clear_color_in_region(rgba, x, y, width, height);
+    }
+
+    /// Показ начатого кадра; возвращает время `eglSwapBuffers` (`glFlush` без окна) и способ
+    /// показа. `changed` — что кадр изменил относительно прошлого показанного: у окна при
+    /// `TargetArea::Region` и расширении `swap_buffers_with_damage` композитору уходит этот
+    /// прямоугольник (в координатах EGL, начало снизу), иначе — обычный показ.
+    pub(crate) fn present_active_frame(
+        &mut self,
+        size: SurfaceSize,
+        changed: TargetArea,
+    ) -> Result<(Duration, PresentKind), Gles2Error> {
         let present_started_at = Instant::now();
-        match self.target {
+        let kind = match &mut self.target {
             RenderTarget::Window => {
-                self.session
-                    .swap_buffers()
+                let damage = damage_rects_for_egl(changed, size);
+                let presented = self
+                    .session
+                    .swap_buffers_with_damage(&damage)
                     .map_err(|error| self.observe_egl_error(error))?;
+                presented.unwrap_or(PresentKind::Plain)
             }
-            RenderTarget::Offscreen(_) => CurrentGl::after_make_current(&self.gl).flush(),
-        }
+            RenderTarget::Offscreen(target) => {
+                CurrentGl::after_make_current(&self.gl).flush();
+                if let Some(target) = target {
+                    target.present_current();
+                }
+                PresentKind::OffscreenFlush
+            }
+        };
         let elapsed = present_started_at.elapsed();
         self.poll_reset_status()?;
-        Ok(elapsed)
+        Ok((elapsed, kind))
     }
 }
 
@@ -408,5 +462,54 @@ impl std::fmt::Debug for Gles2Context {
             .field("health", &self.health.get())
             .field("fence_strategy", &self.fences.strategy())
             .finish_non_exhaustive()
+    }
+}
+
+/// Повреждение кадра в прямоугольниках EGL. Координаты EGL (`EGL_KHR_swap_buffers_with_damage`)
+/// отсчитываются от НИЖНЕГО левого угла surface, а наши — от верхнего: `y_egl = высота − (y +
+/// высота_прямоугольника)`. Пустой список означает «обычный показ целиком».
+fn damage_rects_for_egl(changed: TargetArea, size: SurfaceSize) -> Vec<DamageRect> {
+    let TargetArea::Region(rect) = changed else {
+        return Vec::new();
+    };
+    // Размеры цели помещаются в `EGLint` (иначе EGL не создал бы surface).
+    let to_int = |value: u32| i32::try_from(value).unwrap_or(i32::MAX);
+    let bottom_gap = size
+        .height()
+        .saturating_sub(rect.y.saturating_add(rect.height));
+    vec![DamageRect {
+        x: to_int(rect.x),
+        y: to_int(bottom_gap),
+        width: to_int(rect.width),
+        height: to_int(rect.height),
+    }]
+}
+
+#[cfg(test)]
+mod damage_rect_tests {
+    use super::*;
+    use crate::damage::PixelRect;
+
+    #[test]
+    fn region_is_flipped_to_bottom_left_origin() {
+        let size = SurfaceSize::new(100, 50).unwrap_or(SurfaceSize::ONE_PIXEL);
+        let rect = PixelRect {
+            x: 10,
+            y: 5,
+            width: 20,
+            height: 8,
+        };
+        assert_eq!(
+            damage_rects_for_egl(TargetArea::Region(rect), size),
+            vec![DamageRect {
+                x: 10,
+                y: 37,
+                width: 20,
+                height: 8
+            }],
+            "50 - (5 + 8) rows remain below the rectangle"
+        );
+        assert!(damage_rects_for_egl(TargetArea::Whole, size).is_empty());
+        assert!(damage_rects_for_egl(TargetArea::Nothing, size).is_empty());
     }
 }

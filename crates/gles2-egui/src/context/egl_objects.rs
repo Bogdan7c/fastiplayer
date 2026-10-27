@@ -10,13 +10,15 @@ use std::sync::Arc;
 use super::config_select::{self, ConfigSelectionError, ConfigSelectionRequest, SelectedConfig};
 use super::display_registry::{DisplayLease, DisplayOpenError, DisplayRegistry};
 use super::driver::{
-    ConfigQuery, ConfigSurfaceKind, ContextId, ContextRequest, CurrentBinding, EglCallError,
-    NativeDisplay, PlatformWindowTarget, ResetNotificationRequest, SurfaceId, SurfaceSize,
-    WaylandEglWindowId,
+    ConfigQuery, ConfigSurfaceKind, ContextId, ContextRequest, CurrentBinding, DamageRect,
+    DamageSwapExtension, EglCallError, NativeDisplay, PlatformWindowTarget,
+    ResetNotificationRequest, SurfaceId, SurfaceSize, WaylandEglWindowId,
 };
 use super::platform::{NativeWindow, required_platform_extensions};
 use crate::capabilities::ExtensionSet;
+use crate::damage::BufferAge;
 use crate::error::CreateError;
+use crate::frame::PresentKind;
 use crate::loss::ContextLoss;
 use crate::presentation::{DetachOutcome, ReattachOutcome, SwapIntervalOutcome, VsyncMode};
 
@@ -117,7 +119,23 @@ pub(crate) struct EglSession {
     config: SelectedConfig,
     reset_notification: ResetNotification,
     surfaceless_context: bool,
+    /// Дисплей заявляет `EGL_EXT_buffer_age`.
+    buffer_age_supported: bool,
+    /// Какую функцию показа с повреждениями вызывать (`None` — расширений нет).
+    damage_swap: Option<DamageSwapExtension>,
     lease: Arc<DisplayLease>,
+}
+
+/// Какое расширение показа с повреждениями выбрать по набору расширений дисплея. Оба имеют
+/// одну сигнатуру и семантику; KHR — основное, EXT — запасное.
+fn damage_swap_extension(extensions: &ExtensionSet) -> Option<DamageSwapExtension> {
+    if extensions.contains("EGL_KHR_swap_buffers_with_damage") {
+        Some(DamageSwapExtension::Khr)
+    } else if extensions.contains("EGL_EXT_swap_buffers_with_damage") {
+        Some(DamageSwapExtension::Ext)
+    } else {
+        None
+    }
 }
 
 impl EglSession {
@@ -177,6 +195,8 @@ impl EglSession {
             config,
             reset_notification,
             surfaceless_context,
+            buffer_age_supported: lease.info().extensions.contains("EGL_EXT_buffer_age"),
+            damage_swap: damage_swap_extension(&lease.info().extensions),
             lease,
         };
         // Отказ здесь разрушит уже созданное в правильном порядке (Drop сессии).
@@ -270,6 +290,56 @@ impl EglSession {
             }
             SurfaceBinding::Window { surface: None, .. } | SurfaceBinding::Offscreen { .. } => {
                 Ok(false)
+            }
+        }
+    }
+
+    /// Возраст заднего буфера surface окна (`EGL_EXT_buffer_age`). Вызывать после
+    /// `make_current` и до рисования кадра. [`BufferAge::Unsupported`] — расширения нет или
+    /// surface окна нет (окно отпущено, offscreen-цель).
+    pub(crate) fn query_buffer_age(&self) -> Result<BufferAge, EglCallError> {
+        if !self.buffer_age_supported {
+            return Ok(BufferAge::Unsupported);
+        }
+        let SurfaceBinding::Window {
+            surface: Some(surface),
+            ..
+        } = &self.binding
+        else {
+            return Ok(BufferAge::Unsupported);
+        };
+        let age = self
+            .lease
+            .driver()
+            .query_buffer_age(self.lease.display(), surface.surface)?;
+        Ok(BufferAge::from_egl_value(age))
+    }
+
+    /// Показ с подсказкой о повреждениях (`damage` — прямоугольники в координатах EGL, начало
+    /// снизу слева). Без расширения или с пустым списком (по спецификации 0 прямоугольников —
+    /// «повреждена вся surface») это обычный `eglSwapBuffers`. `Ok(None)` — показывать некуда.
+    pub(crate) fn swap_buffers_with_damage(
+        &self,
+        damage: &[DamageRect],
+    ) -> Result<Option<PresentKind>, EglCallError> {
+        let Some(extension) = self.damage_swap.filter(|_| !damage.is_empty()) else {
+            return Ok(self.swap_buffers()?.then_some(PresentKind::Plain));
+        };
+        match &self.binding {
+            SurfaceBinding::Window {
+                surface: Some(surface),
+                ..
+            } => {
+                self.lease.driver().swap_buffers_with_damage(
+                    self.lease.display(),
+                    surface.surface,
+                    extension,
+                    damage,
+                )?;
+                Ok(Some(PresentKind::WithDamage))
+            }
+            SurfaceBinding::Window { surface: None, .. } | SurfaceBinding::Offscreen { .. } => {
+                Ok(None)
             }
         }
     }

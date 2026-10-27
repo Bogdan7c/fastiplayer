@@ -111,6 +111,29 @@ impl<'a> CurrentGl<'a> {
         }
     }
 
+    /// Заливка только прямоугольника цели (`GL_SCISSOR_TEST` на время заливки). Прямоугольник в
+    /// координатах GL: начало снизу слева. Scissor после вызова выключен — так его оставляют
+    /// все слои кадра.
+    pub(crate) fn clear_color_in_region(
+        self,
+        rgba: [f32; 4],
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) {
+        let [red, green, blue, alpha] = rgba;
+        // SAFETY: контекст текущий; прямоугольник неотрицателен (строит `ActiveFrame::clear`
+        // из прямоугольника внутри цели).
+        unsafe {
+            self.gl.enable(glow::SCISSOR_TEST);
+            self.gl.scissor(x, y, width, height);
+            self.gl.clear_color(red, green, blue, alpha);
+            self.gl.clear(glow::COLOR_BUFFER_BIT);
+            self.gl.disable(glow::SCISSOR_TEST);
+        }
+    }
+
     /// Привязывает FBO (`None` — буфер окна/surface по умолчанию).
     pub(crate) fn bind_framebuffer(self, framebuffer: Option<glow::NativeFramebuffer>) {
         // SAFETY: контекст текущий; FBO создан этим же контекстом и ещё не удалён (владелец —

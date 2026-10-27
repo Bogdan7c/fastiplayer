@@ -35,7 +35,7 @@ pub(crate) use environment::{ImportEnvironment, PendingGles2Import, PendingOrigi
 pub(crate) use handoff::{Gles2ImportHandoff, OwnedReleaseBinding};
 pub(crate) use layer_feed::{LayerShow, LayerShowOutcome, show_frame_on_layer};
 pub(crate) use prepared::Gles2PreparedFrame;
-pub(crate) use state::{ActiveImport, ImportEpoch, ShownFrameTracker};
+pub(crate) use state::{ActiveImport, ImportEpoch, ShownFrame, ShownFrameTracker};
 
 /// Семейство рендера, которому принадлежат коробки склада (импорт, перенос при пересоздании).
 pub(crate) const GLES2_FAMILY: render_shell_api::RendererFamily =

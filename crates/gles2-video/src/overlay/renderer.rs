@@ -7,6 +7,7 @@ use crate::gl_calls::VideoGl;
 use crate::gl_calls::overlay::AtlasTextureFormat;
 use crate::layer_api::PlaneFormatPreference;
 use crate::program::ShaderPrecision;
+use crate::repaint_clip::clip_to_repaint_area;
 
 use super::OverlayBitmap;
 use super::api::{
@@ -214,6 +215,11 @@ impl<B: OverlayBitmap> BitmapOverlayRenderer<B> {
             height: target.height(),
         };
         let Some(clip) = request.clip.intersection(target_rect) else {
+            return Ok(OverlayDrawOutcome::NothingVisible);
+        };
+        // Кадр с частичной перерисовкой: субтитры пишутся только в его области (инвариант
+        // `ActiveFrame`). Отсекает сам слой, а не вызывающий: он один знает, какие пиксели трогает.
+        let Some(clip) = clip_to_repaint_area(frame, &[clip]).into_iter().next() else {
             return Ok(OverlayDrawOutcome::NothingVisible);
         };
         let scissor = to_gl_window_rect(clip, target.height())?;

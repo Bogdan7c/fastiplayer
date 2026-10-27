@@ -61,12 +61,14 @@ impl RenderShell for Gles2Renderer {
     }
 
     fn detach_presentation(&mut self) -> PresentationDetachOutcome {
+        self.forget_presented_state();
         self.presentation.detach(&mut self.context)
     }
 
     fn reattach_presentation(
         &mut self,
     ) -> Result<PresentationReattachOutcome, PresentationReattachError> {
+        self.forget_presented_state();
         self.presentation.reattach(&mut self.context)
     }
 

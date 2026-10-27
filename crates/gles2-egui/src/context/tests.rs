@@ -8,7 +8,9 @@ use super::driver::{
 use super::egl_objects::{EglSession, ResetNotification, SessionRequest, SessionTarget};
 use super::platform::NativeWindow;
 use super::safety::{SystemEgl, SystemEglLoadError};
+use crate::damage::BufferAge;
 use crate::error::CreateError;
+use crate::frame::PresentKind;
 use crate::presentation::{
     DetachOutcome, FramebufferAlpha, ReattachOutcome, SwapIntervalOutcome, VsyncMode,
 };
@@ -580,4 +582,174 @@ fn lost_context_answers_context_lost_everywhere_and_drops_without_gl() {
     assert_eq!(context.check_context_health(), Err(loss));
     // Разрушение после потери не трогает GL (объекты отдаются драйверу) и не паникует.
     drop(context);
+}
+
+// ---- Частичный показ: возраст буфера и показ с повреждениями на fake-драйвере ----
+
+fn behavior_with_extensions(extra: &str) -> FakeBehavior {
+    let base = FakeBehavior::default();
+    FakeBehavior {
+        display_extensions: format!("{} {extra}", base.display_extensions),
+        ..base
+    }
+}
+
+fn damage_rect(x: i32, y: i32, width: i32, height: i32) -> super::driver::DamageRect {
+    super::driver::DamageRect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+#[test]
+fn buffer_age_query_reaches_the_driver_and_maps_zero_to_undefined() {
+    let mut behavior = behavior_with_extensions("EGL_EXT_buffer_age");
+    behavior.buffer_age_script = [0, 1, 3].into();
+    let (fake, registry) = FakeEgl::with_registry(behavior);
+    let session = open_or_panic(&registry, wayland_request());
+    assert_eq!(session.query_buffer_age(), Ok(BufferAge::Undefined));
+    assert_eq!(session.query_buffer_age(), Ok(BufferAge::Frames(1)));
+    assert_eq!(session.query_buffer_age(), Ok(BufferAge::Frames(3)));
+    assert_eq!(
+        fake.count(|call| matches!(call, FakeCall::QueryBufferAge(_))),
+        3
+    );
+}
+
+#[test]
+fn missing_buffer_age_extension_never_asks_the_driver() {
+    let (fake, registry) = FakeEgl::with_registry(FakeBehavior::default());
+    let session = open_or_panic(&registry, wayland_request());
+    assert_eq!(session.query_buffer_age(), Ok(BufferAge::Unsupported));
+    assert_eq!(
+        fake.count(|call| matches!(call, FakeCall::QueryBufferAge(_))),
+        0
+    );
+}
+
+#[test]
+fn buffer_age_is_unsupported_while_the_window_is_detached() {
+    let mut behavior = behavior_with_extensions("EGL_EXT_buffer_age");
+    behavior.default_buffer_age = 2;
+    let (_fake, registry) = FakeEgl::with_registry(behavior);
+    let mut session = open_or_panic(&registry, wayland_request());
+    assert!(matches!(
+        session.detach_window(),
+        Ok(DetachOutcome::Detached)
+    ));
+    assert_eq!(session.query_buffer_age(), Ok(BufferAge::Unsupported));
+}
+
+#[test]
+fn buffer_age_driver_error_is_typed() {
+    let mut behavior = behavior_with_extensions("EGL_EXT_buffer_age");
+    behavior.buffer_age_error = Some(EglErrorCode::BadSurface);
+    let (_fake, registry) = FakeEgl::with_registry(behavior);
+    let session = open_or_panic(&registry, wayland_request());
+    assert_eq!(
+        session.query_buffer_age(),
+        Err(super::driver::EglCallError::new(
+            super::driver::EglOperation::QueryBufferAge,
+            EglErrorCode::BadSurface
+        ))
+    );
+}
+
+#[test]
+fn damage_swap_sends_bottom_left_rects_through_the_advertised_extension() {
+    for (extension_name, expected) in [
+        (
+            "EGL_KHR_swap_buffers_with_damage",
+            super::driver::DamageSwapExtension::Khr,
+        ),
+        (
+            "EGL_EXT_swap_buffers_with_damage",
+            super::driver::DamageSwapExtension::Ext,
+        ),
+    ] {
+        let (fake, registry) = FakeEgl::with_registry(behavior_with_extensions(extension_name));
+        let session = open_or_panic(&registry, wayland_request());
+        let rects = [damage_rect(10, 20, 30, 40)];
+        assert_eq!(
+            session.swap_buffers_with_damage(&rects),
+            Ok(Some(PresentKind::WithDamage))
+        );
+        let swaps = fake.damage_swaps();
+        assert_eq!(swaps.len(), 1, "{extension_name}");
+        assert_eq!(swaps[0].extension, expected);
+        assert_eq!(swaps[0].rects, rects.to_vec());
+        assert_eq!(
+            fake.count(|call| matches!(call, FakeCall::SwapBuffers(_))),
+            0,
+            "a damage swap replaces the plain swap"
+        );
+    }
+}
+
+#[test]
+fn khr_is_preferred_when_both_damage_extensions_exist() {
+    let (fake, registry) = FakeEgl::with_registry(behavior_with_extensions(
+        "EGL_EXT_swap_buffers_with_damage EGL_KHR_swap_buffers_with_damage",
+    ));
+    let session = open_or_panic(&registry, wayland_request());
+    assert!(
+        session
+            .swap_buffers_with_damage(&[damage_rect(0, 0, 1, 1)])
+            .is_ok()
+    );
+    assert_eq!(
+        fake.damage_swaps()[0].extension,
+        super::driver::DamageSwapExtension::Khr
+    );
+}
+
+#[test]
+fn damage_swap_without_extension_or_without_rects_is_a_plain_swap() {
+    // Расширения нет: тот же вызов превращается в обычный показ, прямоугольники не теряют кадр.
+    let (fake, registry) = FakeEgl::with_registry(FakeBehavior::default());
+    let session = open_or_panic(&registry, wayland_request());
+    assert_eq!(
+        session.swap_buffers_with_damage(&[damage_rect(1, 2, 3, 4)]),
+        Ok(Some(PresentKind::Plain))
+    );
+    assert!(fake.damage_swaps().is_empty());
+    assert_eq!(
+        fake.count(|call| matches!(call, FakeCall::SwapBuffers(_))),
+        1
+    );
+
+    // Расширение есть, но список пуст: по спецификации это «вся surface», то есть обычный показ.
+    let (fake, registry) =
+        FakeEgl::with_registry(behavior_with_extensions("EGL_KHR_swap_buffers_with_damage"));
+    let session = open_or_panic(&registry, wayland_request());
+    assert_eq!(
+        session.swap_buffers_with_damage(&[]),
+        Ok(Some(PresentKind::Plain))
+    );
+    assert!(fake.damage_swaps().is_empty());
+}
+
+#[test]
+fn damage_swap_has_nothing_to_present_while_detached_and_reports_driver_errors() {
+    let mut behavior = behavior_with_extensions("EGL_KHR_swap_buffers_with_damage");
+    behavior.damage_swap_error = Some(EglErrorCode::BadSurface);
+    let (_fake, registry) = FakeEgl::with_registry(behavior);
+    let mut session = open_or_panic(&registry, wayland_request());
+    assert_eq!(
+        session.swap_buffers_with_damage(&[damage_rect(0, 0, 1, 1)]),
+        Err(super::driver::EglCallError::new(
+            super::driver::EglOperation::SwapBuffersWithDamage,
+            EglErrorCode::BadSurface
+        ))
+    );
+    assert!(matches!(
+        session.detach_window(),
+        Ok(DetachOutcome::Detached)
+    ));
+    assert_eq!(
+        session.swap_buffers_with_damage(&[damage_rect(0, 0, 1, 1)]),
+        Ok(None)
+    );
 }
