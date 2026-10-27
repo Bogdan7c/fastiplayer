@@ -24,5 +24,8 @@ FFmpeg (`get_buffer2` 08b) пишет кадр в блок ЗАПЕЧАТАНН�
 - `video-ffmpeg`: memfd-пул, `direct_frame_buffers/tests.rs` (memfd побайтно = default), `decoder_thread/tests/host_frame_memory_kind.rs`.
 - Стенд: `gles2-egui/examples/udmabuf_zero_copy_probe.rs` (`--mode upload|import-cached|import-per-frame --verify --no-flush --flush-range --measure-reflush`).
 
+## Сессия 12a
+10/12 бит тоже без копии: плоскости как DRM `GR88`, программа `BytePairChannels::RedGreen` (`mem:gles2-renderer/extreme-optimization-s12a`). AV1 по-прежнему копией (dav1d без DR1).
+
 ## Ограничения / дальше (12a)
 Linux x86_64 + доступный udmabuf; 8 бит (10/12 и AV1 — копия); `CLFLUSH` в главном потоке — кандидат 12a; seek/пауза/смена файла и счётчик `dma_bufs_created` при ёмкости 24 — в переквалификации 12a.
