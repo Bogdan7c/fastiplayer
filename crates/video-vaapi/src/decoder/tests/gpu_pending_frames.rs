@@ -101,6 +101,36 @@ fn frame_already_finished_by_gpu_completes_without_waiting_for_next_packet() {
     assert_eq!(queue.stats().completed_already_ready, 1);
 }
 
+/// Правило простоя: декодеру нечего подавать, и неготовые кадры текущего packet-а
+/// больше не ждут следующего. С 12a.1 на быстрых GPU кадры почти всегда приходят
+/// готовыми, и аппаратный тест паузы это правило не всегда задевает, поэтому
+/// очередь проверяется здесь детерминированно.
+#[test]
+fn decoder_idle_hands_out_every_unfinished_frame_in_order_and_counts_it_as_idle() {
+    let mut queue = GpuPendingFrames::new(4, Arc::default());
+    queue.begin_packet_submission();
+    enqueue_fake_frame(&mut queue, FakeSurfaceReadiness::Ready(false), 1);
+    enqueue_fake_frame(&mut queue, FakeSurfaceReadiness::Ready(false), 2);
+    assert!(
+        queue.pop_completable_after_packet_submit().is_none(),
+        "unfinished frames of the current packet wait while packets keep coming"
+    );
+
+    let mut completed = Vec::new();
+    while let Some(frame) = queue.pop_front_for(GpuPendingCompletionReason::DecoderIdle) {
+        completed.push(frame);
+    }
+
+    assert_eq!(generations(&completed), vec![1, 2]);
+    assert!(queue.is_empty());
+    let stats = queue.stats();
+    assert_eq!(stats.completed_on_idle, 2);
+    assert_eq!(
+        stats.completed_after_next_packet + stats.completed_already_ready,
+        0
+    );
+}
+
 #[test]
 fn readiness_query_error_is_not_swallowed_and_hands_frame_to_sync_path() {
     let mut queue = GpuPendingFrames::new(4, Arc::default());

@@ -59,17 +59,17 @@ impl VaapiCodecAdapter for DefaultReusePolicyAdapter {
     }
 }
 
-/// Все адаптеры создают cros-codecs без ожидания GPU после каждой картинки.
+/// Все адаптеры создают cros-codecs в режиме «дождаться прошлую картинку».
 ///
-/// `Blocking` синхронизирует каждую картинку внутри `decode()`: поток декодера
-/// не может подать следующий packet, пока GPU не закончит предыдущий, и на
-/// T410 это стоило ~25 % пропускной способности (сессия 09a). Ожидание
-/// готовности принадлежит очереди «в полёте», а не cros-codecs.
+/// `Blocking` сериализует GPU-декод с разбором packet-ов (−25 % на T410, сессия 09a),
+/// `NonBlocking` пропускает в GPU пачки картинок, которые кодек держит для перестановки
+/// B-кадров, и показ кадра на Ironlake стоит за ними в очереди (подсессия 12a.1).
 #[test]
-fn stateless_decoders_do_not_block_on_every_picture() {
-    assert!(
-        STATELESS_DECODER_BLOCKING_MODE == BlockingMode::NonBlocking,
-        "cros-codecs Blocking mode serializes GPU decode with packet submission"
+fn stateless_decoders_wait_for_the_previous_picture_only() {
+    assert_eq!(
+        STATELESS_DECODER_BLOCKING_MODE,
+        BlockingMode::SyncPreviousPicture,
+        "Blocking serializes GPU decode with packet parsing; NonBlocking lets reordered pictures pile up on the GPU"
     );
 }
 

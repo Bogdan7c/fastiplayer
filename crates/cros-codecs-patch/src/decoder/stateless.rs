@@ -36,6 +36,8 @@ use crate::decoder::DecoderEvent;
 use crate::decoder::DynDecodedHandle;
 use crate::decoder::ReadyFramesQueue;
 use crate::decoder::StreamInfo;
+use crate::submitted_picture_sync::AwaitablePicture;
+use crate::submitted_picture_sync::SubmittedPictureSync;
 use crate::Resolution;
 
 /// Error returned by `new_picture` methods of the backend, usually to indicate which kind of
@@ -333,6 +335,19 @@ where
     /// Union of `awaiting_format_event` and `ready_queue` to signal whenever there is an event
     /// (frame ready or format change) pending.
     epoll_fd: Epoll,
+
+    /// Локальный патч: ожидание ускорителя после отправки картинки по `blocking_mode`
+    /// (единая политика для всех кодеков, см. `submitted_picture_sync`).
+    submitted_picture_sync: SubmittedPictureSync<B::Handle>,
+}
+
+/// Локальный патч: любую отправленную картинку backend-а можно дождаться через `sync`.
+impl<H: DecodedHandle + Clone> AwaitablePicture for H {
+    type WaitError = anyhow::Error;
+
+    fn wait_until_decoded(&self) -> anyhow::Result<()> {
+        self.sync()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -378,6 +393,7 @@ where
             codec: Default::default(),
             awaiting_format_event,
             epoll_fd,
+            submitted_picture_sync: SubmittedPictureSync::default(),
         })
     }
 

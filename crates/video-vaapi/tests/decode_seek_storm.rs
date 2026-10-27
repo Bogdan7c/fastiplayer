@@ -107,9 +107,15 @@ fn h264_vaapi_publishes_in_flight_frames_while_no_packet_follows() {
         !storm.current_generation_frames.is_empty(),
         "paused decoding must publish frames, got none: {stats:?}"
     );
-    assert!(
-        stats.completed_on_idle > 0,
-        "frames left on pause must be completed by the idle rule: {stats:?}"
+    // С 12a.1 cros-codecs сам ждёт прошлую отправленную картинку
+    // (`BlockingMode::SyncPreviousPicture`). Поэтому кадр, который кодек выдаёт с
+    // задержкой перестановки B-кадров, приходит в очередь уже готовым. Неготовыми
+    // приходят кадры, выданные сразу после отправки (поток без B-кадров): на паузе
+    // их обязано доделать правило простоя, а не следующий packet.
+    let frames_enqueued_not_ready = stats.enqueued - stats.completed_already_ready;
+    assert_eq!(
+        stats.completed_on_idle, frames_enqueued_not_ready,
+        "every frame left unfinished on pause must be completed by the idle rule: {stats:?}"
     );
     assert_eq!(
         stats.enqueued,

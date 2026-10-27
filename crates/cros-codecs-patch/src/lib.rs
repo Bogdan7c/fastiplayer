@@ -45,6 +45,10 @@ pub mod utils;
 #[cfg(feature = "backend")]
 pub mod video_frame;
 
+// Политика ожидания отправленных картинок не зависит от фичи `backend`, чтобы её тесты
+// шли в обычном `cargo test` патча: тесты декодеров cros-codecs 0.0.6 с `backend` не собираются.
+pub(crate) mod submitted_picture_sync;
+
 use std::str::FromStr;
 
 #[cfg(feature = "vaapi")]
@@ -428,6 +432,11 @@ pub enum BlockingMode {
     Blocking,
     #[default]
     NonBlocking,
+    /// Локальный патч Fastiplayer (gles2-renderer, 12a.1): stateless-декодер после отправки
+    /// картинки k ждёт картинку k−1, поэтому в ускорителе не больше двух картинок.
+    /// Правило и причина — в `submitted_picture_sync`. Кодер этот режим не различает и ведёт
+    /// себя как при `NonBlocking`.
+    SyncPreviousPicture,
 }
 
 #[cfg(test)]

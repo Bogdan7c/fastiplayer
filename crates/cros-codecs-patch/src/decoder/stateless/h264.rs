@@ -50,7 +50,6 @@ use crate::decoder::stateless::StatelessDecoder;
 use crate::decoder::stateless::StatelessDecoderBackend;
 use crate::decoder::stateless::StatelessDecoderBackendPicture;
 use crate::decoder::stateless::StatelessVideoDecoder;
-use crate::decoder::BlockingMode;
 use crate::decoder::DecodedHandle;
 use crate::decoder::DecoderEvent;
 use crate::decoder::StreamInfo;
@@ -1169,9 +1168,8 @@ where
     fn submit_picture(&mut self, backend_pic: B::Picture) -> Result<B::Handle, DecodeError> {
         let handle = self.backend.submit_picture(backend_pic)?;
 
-        if self.blocking_mode == BlockingMode::Blocking {
-            handle.sync()?;
-        }
+        // Локальный патч: режим ожидания ускорителя — одна политика для всех кодеков.
+        self.submitted_picture_sync.after_picture_submitted(self.blocking_mode, &handle)?;
 
         Ok(handle)
     }
@@ -1323,6 +1321,10 @@ where
 
     fn flush(&mut self) -> Result<(), DecodeError> {
         self.drain()?;
+        // Локальный патч: картинка, которую ждёт политика `SyncPreviousPicture`, не должна
+        // переживать flush (её поверхность иначе занята до следующей отправки). Ждём после
+        // `drain`: он сам может отправить последнюю незаконченную картинку.
+        self.submitted_picture_sync.complete_awaiting_picture()?;
         self.decoding_state = DecodingState::Reset;
 
         Ok(())

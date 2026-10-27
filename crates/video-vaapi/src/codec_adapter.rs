@@ -31,17 +31,24 @@ use output_surfaces::decode_with_pooled_output_surfaces;
 
 /// Режим, в котором все codec adapter-ы создают cros-codecs `StatelessDecoder`.
 ///
-/// `Blocking` вызывает `vaSyncSurface` сразу после `vaEndPicture` каждой
-/// картинки: поток декодера ждёт GPU и только потом разбирает следующий
-/// packet, а GPU в это время простаивает. На T410 (Ironlake) это давало
-/// 72–75 % пропускной способности кремния (gles2-renderer, сессия 09a).
+/// `SyncPreviousPicture` (локальный патч cros-codecs): отправив картинку k, декодер
+/// ждёт картинку k−1. В GPU не больше двух картинок, и GPU не простаивает: пока он
+/// декодирует k−1, поток уже разобрал и отправил k.
 ///
-/// `NonBlocking` отдаёт `FrameReady` с ещё не готовой surface. Ожидание GPU
-/// живёт у владельца очереди «в полёте» (`decoder::gpu_pending_frames`): кадр
-/// доделывается, когда GPU уже получил следующую работу или декодеру больше
-/// нечего подавать. Зависимости reference-кадров драйвер соблюдает сам:
-/// surfaces одного VA context-а исполняются в порядке submit.
-pub(crate) const STATELESS_DECODER_BLOCKING_MODE: BlockingMode = BlockingMode::NonBlocking;
+/// Почему не другие режимы:
+/// - `Blocking` ждёт каждую картинку сразу после `vaEndPicture`, и GPU простаивает,
+///   пока поток разбирает следующий packet. На T410 (Ironlake) это 72–75 % пропускной
+///   способности кремния, 1080p30 не тянется (gles2-renderer, сессии 09a и 12a.1).
+/// - `NonBlocking` не ждёт ничего. Очередь «в полёте» (`decoder::gpu_pending_frames`)
+///   видит только кадры, выданные через `FrameReady`, а картинки, которые кодек держит
+///   для перестановки B-кадров, в неё не попадают. После паузы декодер заливал в GPU
+///   5–7 картинок подряд. На Ironlake декод и показ делят одни блоки GPU, и проход
+///   показа стоял в очереди за пачкой: 1–2,5 % кадров HW 720p60 опаздывали к vsync
+///   (подсессия 12a.1).
+///
+/// Очередь «в полёте» остаётся: она доделывает (экспорт DMA-BUF, регистрация) кадры,
+/// выданные через `FrameReady`; к этому моменту они почти всегда уже готовы.
+pub(crate) const STATELESS_DECODER_BLOCKING_MODE: BlockingMode = BlockingMode::SyncPreviousPicture;
 
 /// Codec-neutral формат decoded frame-а внутри VAAPI adapter boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

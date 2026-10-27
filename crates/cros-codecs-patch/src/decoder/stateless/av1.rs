@@ -26,7 +26,6 @@ use crate::decoder::stateless::StatelessDecoder;
 use crate::decoder::stateless::StatelessDecoderBackend;
 use crate::decoder::stateless::StatelessDecoderBackendPicture;
 use crate::decoder::stateless::StatelessVideoDecoder;
-use crate::decoder::BlockingMode;
 use crate::decoder::DecodedHandle;
 use crate::Resolution;
 
@@ -242,9 +241,8 @@ where
             Some(CurrentPicState::RegularFrame { header, backend_picture }) => {
                 let handle = self.backend.submit_picture(backend_picture)?;
 
-                if self.blocking_mode == BlockingMode::Blocking {
-                    handle.sync()?;
-                }
+                // Локальный патч: режим ожидания ускорителя — одна политика для всех кодеков.
+                self.submitted_picture_sync.after_picture_submitted(self.blocking_mode, &handle)?;
                 (handle, header)
             }
             Some(CurrentPicState::ShowExistingFrame { header, handle }) => (handle, header),
@@ -491,6 +489,9 @@ where
     }
 
     fn flush(&mut self) -> Result<(), super::DecodeError> {
+        // Локальный патч: картинка, которую ждёт политика `SyncPreviousPicture`, не должна
+        // переживать flush (её поверхность иначе занята до следующей отправки).
+        self.submitted_picture_sync.complete_awaiting_picture()?;
         // Note: all the submitted frames are already in the ready queue.
         self.codec.reference_frames = Default::default();
         self.decoding_state = DecodingState::Reset;

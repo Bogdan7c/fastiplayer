@@ -32,7 +32,6 @@ use crate::decoder::stateless::StatelessDecoder;
 use crate::decoder::stateless::StatelessDecoderBackend;
 use crate::decoder::stateless::StatelessDecoderBackendPicture;
 use crate::decoder::stateless::StatelessVideoDecoder;
-use crate::decoder::BlockingMode;
 use crate::decoder::DecodedHandle;
 use crate::decoder::DecoderEvent;
 use crate::decoder::StreamInfo;
@@ -190,9 +189,8 @@ where
             &self.codec.segmentation,
         )?;
 
-        if self.blocking_mode == BlockingMode::Blocking {
-            decoded_handle.sync()?;
-        }
+        // Локальный патч: режим ожидания ускорителя — одна политика для всех кодеков.
+        self.submitted_picture_sync.after_picture_submitted(self.blocking_mode, &decoded_handle)?;
 
         // Do DPB management
         Self::update_references(
@@ -335,6 +333,9 @@ where
     }
 
     fn flush(&mut self) -> Result<(), DecodeError> {
+        // Локальный патч: картинка, которую ждёт политика `SyncPreviousPicture`, не должна
+        // переживать flush (её поверхность иначе занята до следующей отправки).
+        self.submitted_picture_sync.complete_awaiting_picture()?;
         // Note: all the submitted frames are already in the ready queue.
         self.codec.reference_frames = Default::default();
         self.decoding_state = DecodingState::Reset;
