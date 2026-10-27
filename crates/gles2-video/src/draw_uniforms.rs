@@ -83,22 +83,26 @@ pub(crate) struct DrawUniformValues {
     pub(crate) display_mapping: [f32; 4],
     /// Строки `display_uv → source_uv`.
     pub(crate) orientation_rows: [[f32; 3]; 2],
-    /// `xy` — scale, `zw` — min яркости.
-    pub(crate) luma_coord_scale_min: [f32; 4],
-    /// `xy` — max, `zw` — видимый размер яркости.
-    pub(crate) luma_coord_max_size: [f32; 4],
-    /// `xy` — scale, `zw` — min цветности.
-    pub(crate) chroma_coord_scale_min: [f32; 4],
-    /// `xy` — max, `zw` — номер последнего видимого текселя цветности.
-    pub(crate) chroma_coord_max_last: [f32; 4],
-    /// `1 / размер текстуры цветности`.
-    pub(crate) chroma_texel_size: [f32; 2],
+    /// Координата выборки яркости в вершинах: `source_uv × scale`.
+    pub(crate) luma_uv_scale: [f32; 2],
+    /// Координата выборки цветности в вершинах; у прореженной оси — nearest-масштаб
+    /// ([`PlaneSampling::nearest_chroma`]).
+    pub(crate) chroma_uv_scale: [f32; 2],
+    /// Зажим яркости (только текстуры шире видимой части): `xy` — min, `zw` — max.
+    pub(crate) luma_coord_clamp: [f32; 4],
+    /// Зажим цветности: `xy` — min, `zw` — max.
+    pub(crate) chroma_coord_clamp: [f32; 4],
+    /// Co-sited по X в шейдере (только 8 бит 4:2:2): видимая ширина яркости, номер последнего
+    /// видимого текселя цветности, `1 / ширина текстуры цветности`.
+    pub(crate) chroma_co_sited_x: [f32; 3],
     /// Цвет.
     pub(crate) color: ColorUniformValues,
 }
 
 impl DrawUniformValues {
-    /// Uniform-ы для плоскостей яркости `luma` и цветности `chroma` (U и V одного размера).
+    /// Uniform-ы для яркости `luma` и цветности `chroma` (U и V одного размера). `chroma` —
+    /// уже nearest-выборка ([`PlaneSampling::nearest_chroma`]): её масштаб по прореженной оси
+    /// выбирает тексель co-sited.
     pub(crate) fn new(
         luma: PlaneSampling,
         chroma: PlaneSampling,
@@ -108,24 +112,20 @@ impl DrawUniformValues {
     ) -> Self {
         let [uv_scale_x, uv_scale_y] = picture.uv_scale;
         let [uv_offset_x, uv_offset_y] = picture.uv_offset;
+        let clamp_of =
+            |plane: PlaneSampling| [plane.min[0], plane.min[1], plane.max[0], plane.max[1]];
         Self {
             display_mapping: [uv_scale_x, uv_scale_y, uv_offset_x, uv_offset_y],
             orientation_rows: orientation.display_to_source_rows(),
-            luma_coord_scale_min: [luma.scale[0], luma.scale[1], luma.min[0], luma.min[1]],
-            luma_coord_max_size: [luma.max[0], luma.max[1], luma.visible[0], luma.visible[1]],
-            chroma_coord_scale_min: [
-                chroma.scale[0],
-                chroma.scale[1],
-                chroma.min[0],
-                chroma.min[1],
-            ],
-            chroma_coord_max_last: [
-                chroma.max[0],
-                chroma.max[1],
+            luma_uv_scale: luma.scale,
+            chroma_uv_scale: chroma.scale,
+            luma_coord_clamp: clamp_of(luma),
+            chroma_coord_clamp: clamp_of(chroma),
+            chroma_co_sited_x: [
+                luma.visible[0],
                 chroma.visible[0] - 1.0,
-                chroma.visible[1] - 1.0,
+                chroma.texel_size[0],
             ],
-            chroma_texel_size: chroma.texel_size,
             color,
         }
     }

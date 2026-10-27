@@ -1,7 +1,10 @@
 //! Исходники GLSL ES 1.00 видеослоя. Почему они устроены так — в документации модуля
 //! [`super`]; здесь только текст.
 
-/// Вершинный шейдер: треугольник на весь viewport; letterbox и поворот — здесь, по вершинам.
+/// Вершинный шейдер: треугольник на весь viewport; letterbox, поворот и координаты выборок
+/// плоскостей — здесь, по вершинам. Все они аффинны по позиции, поэтому растеризатор
+/// интерполирует их точно (до округления `f32`), а фрагментный шейдер берёт выборки по varying
+/// как есть: на Ironlake любая арифметика до выборки стоит дороже самой выборки (сессия 12a).
 pub(super) const VERTEX_SHADER: &str = "#version 100
 precision highp float;
 
@@ -10,81 +13,80 @@ attribute vec2 a_position;
 uniform vec4 u_display_mapping;
 uniform vec3 u_orientation_row0;
 uniform vec3 u_orientation_row1;
-varying vec2 v_display_uv;
+// Координата выборки плоскости = source_uv * scale (видимый размер / размер текстуры; у
+// прореженной nearest-цветности — половина яркости / размер текстуры).
+uniform vec2 u_luma_uv_scale;
+uniform vec2 u_chroma_uv_scale;
 varying vec2 v_source_uv;
+varying vec2 v_luma_uv;
+varying vec2 v_chroma_uv;
 
 void main() {
     gl_Position = vec4(a_position, 0.0, 1.0);
     // Те же значения, что у wgpu в вершинах (0,1), (2,1), (0,-1): начало — слева сверху.
     vec2 viewport_uv = vec2((a_position.x + 1.0) * 0.5, (1.0 - a_position.y) * 0.5);
-    v_display_uv = viewport_uv * u_display_mapping.xy + u_display_mapping.zw;
-    vec3 affine_input = vec3(v_display_uv, 1.0);
+    vec2 display_uv = viewport_uv * u_display_mapping.xy + u_display_mapping.zw;
+    vec3 affine_input = vec3(display_uv, 1.0);
     v_source_uv = vec2(dot(u_orientation_row0, affine_input), dot(u_orientation_row1, affine_input));
+    v_luma_uv = v_source_uv * u_luma_uv_scale;
+    v_chroma_uv = v_source_uv * u_chroma_uv_scale;
 }
 ";
 
-/// Тело фрагментного шейдера 8 бит (после строк `#version`, точности и `#define` раскладки).
+/// Тело фрагментного шейдера 8 бит (после строк `#version`, точности и `#define` варианта).
+///
+/// Рисуется только внутри прямоугольника картинки (scissor), поэтому ветвления letterbox нет.
+/// Яркость — билинейно по `v_luma_uv`; цветность 4:2:0 — `GL_NEAREST` по `v_chroma_uv`
+/// (`floor(uv × яркость / 2)` — тексель co-sited wgpu); 4:4:4 — билинейно; у 4:2:2 фильтр
+/// текстуры один на обе оси, поэтому co-sited по X считается здесь, а Y остаётся билинейным.
 pub(super) const EIGHT_BIT_FRAGMENT_BODY: &str = "
 uniform sampler2D u_luma_plane;
 uniform sampler2D u_chroma_u_plane;
 uniform sampler2D u_chroma_v_plane;
 
-// Билинейная координата яркости: clamp(source_uv * scale, min, max).
-// xy — видимый размер / размер текстуры, zw — центр первого текселя (0.5 / размер текстуры).
-uniform vec4 u_luma_coord_scale_min;
-// xy — центр последнего видимого текселя / размер текстуры, zw — видимый размер в текселях.
-uniform vec4 u_luma_coord_max_size;
-// То же для цветности по непрореженной оси.
-uniform vec4 u_chroma_coord_scale_min;
-// xy — центр последнего видимого текселя / размер текстуры, zw — номер последнего видимого текселя.
-uniform vec4 u_chroma_coord_max_last;
-// 1 / размер текстуры цветности.
-uniform vec2 u_chroma_texel_size;
+#if SHADER_EDGE_CLAMP
+// Текстура шире видимой части (stride без EXT_unpack_subimage): координата упирается в центр
+// последнего видимого текселя. xy — центр первого текселя, zw — центр последнего видимого.
+uniform vec4 u_luma_coord_clamp;
+uniform vec4 u_chroma_coord_clamp;
+#endif
+#if CHROMA_CO_SITED_X_IN_SHADER
+// x — видимая ширина яркости, y — номер последнего видимого текселя цветности,
+// z — 1 / ширина текстуры цветности.
+uniform vec3 u_chroma_co_sited_x;
+#endif
 // Цвет: rgb = clamp(rows * (Y, U, V, 1), 0, 1).
 uniform vec4 u_rgb_row0;
 uniform vec4 u_rgb_row1;
 uniform vec4 u_rgb_row2;
 
-varying vec2 v_display_uv;
 varying vec2 v_source_uv;
+varying vec2 v_luma_uv;
+varying vec2 v_chroma_uv;
 
 void main() {
-    if (v_display_uv.x < 0.0 || v_display_uv.x > 1.0 || v_display_uv.y < 0.0 || v_display_uv.y > 1.0) {
-        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-    } else {
-        vec2 luma_coord = clamp(
-            v_source_uv * u_luma_coord_scale_min.xy,
-            u_luma_coord_scale_min.zw,
-            u_luma_coord_max_size.xy
-        );
-        vec2 chroma_coord = clamp(
-            v_source_uv * u_chroma_coord_scale_min.xy,
-            u_chroma_coord_scale_min.zw,
-            u_chroma_coord_max_last.xy
-        );
-#if CHROMA_SUBSAMPLED_X || CHROMA_SUBSAMPLED_Y
-        // Тексель яркости под source_uv: floor(clamp(uv) * size), не больше size - 1 (wgpu
-        // source_uv_to_texel); цветность — центр текселя floor(luma_texel / 2).
-        vec2 luma_size = u_luma_coord_max_size.zw;
-        vec2 luma_texel = min(floor(clamp(v_source_uv, 0.0, 1.0) * luma_size), luma_size - 1.0);
-        vec2 co_sited = (min(floor(luma_texel * 0.5), u_chroma_coord_max_last.zw) + 0.5)
-            * u_chroma_texel_size;
+    vec2 luma_coord = v_luma_uv;
+    vec2 chroma_coord = v_chroma_uv;
+#if SHADER_EDGE_CLAMP
+    luma_coord = clamp(luma_coord, u_luma_coord_clamp.xy, u_luma_coord_clamp.zw);
+    chroma_coord = clamp(chroma_coord, u_chroma_coord_clamp.xy, u_chroma_coord_clamp.zw);
 #endif
-#if CHROMA_SUBSAMPLED_X
-        chroma_coord.x = co_sited.x;
+#if CHROMA_CO_SITED_X_IN_SHADER
+    // Тексель яркости под source_uv: floor(clamp(uv) * w), не больше w - 1 (wgpu
+    // source_uv_to_texel); цветность — центр текселя floor(luma_texel / 2).
+    float luma_width = u_chroma_co_sited_x.x;
+    float luma_texel = min(floor(clamp(v_source_uv.x, 0.0, 1.0) * luma_width), luma_width - 1.0);
+    chroma_coord.x = (min(floor(luma_texel * 0.5), u_chroma_co_sited_x.y) + 0.5)
+        * u_chroma_co_sited_x.z;
 #endif
-#if CHROMA_SUBSAMPLED_Y
-        chroma_coord.y = co_sited.y;
-#endif
-        vec4 yuv = vec4(
-            texture2D(u_luma_plane, luma_coord).r,
-            texture2D(u_chroma_u_plane, chroma_coord).r,
-            texture2D(u_chroma_v_plane, chroma_coord).r,
-            1.0
-        );
-        vec3 rgb = vec3(dot(u_rgb_row0, yuv), dot(u_rgb_row1, yuv), dot(u_rgb_row2, yuv));
-        gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
-    }
+    vec4 yuv = vec4(
+        texture2D(u_luma_plane, luma_coord).r,
+        texture2D(u_chroma_u_plane, chroma_coord).r,
+        texture2D(u_chroma_v_plane, chroma_coord).r,
+        1.0
+    );
+    vec3 rgb = vec3(dot(u_rgb_row0, yuv), dot(u_rgb_row1, yuv), dot(u_rgb_row2, yuv));
+    gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
 }
 ";
 
@@ -115,14 +117,14 @@ uniform sampler2D u_luma_plane;
 uniform sampler2D u_chroma_u_plane;
 uniform sampler2D u_chroma_v_plane;
 
-// Nearest-координаты: clamp(source_uv * scale, центр первого текселя, центр последнего видимого).
-// Выбор текселя (floor) делает выборка GL_NEAREST: для яркости floor(uv * видимая_ширина), для
-// прореженной цветности scale = (яркость / 2) / ширина текстуры, то есть floor(floor(uv * w) / 2)
-// wgpu без вычислений на пиксель.
-uniform vec4 u_luma_coord_scale_min;
-uniform vec4 u_luma_coord_max_size;
-uniform vec4 u_chroma_coord_scale_min;
-uniform vec4 u_chroma_coord_max_last;
+// Nearest-координаты — varying v_luma_uv / v_chroma_uv. Выбор текселя (floor) делает выборка
+// GL_NEAREST: для яркости floor(uv * видимая_ширина), для прореженной цветности масштаб
+// (яркость / 2) / ширина текстуры, то есть floor(floor(uv * w) / 2) wgpu без вычислений на пиксель.
+#if SHADER_EDGE_CLAMP
+// Текстура шире видимой части: xy — центр первого текселя, zw — центр последнего видимого.
+uniform vec4 u_luma_coord_clamp;
+uniform vec4 u_chroma_coord_clamp;
+#endif
 // Нормализация кодов (Y, U, V): clamp(code * scale + offset, min, max), как wgpu.
 uniform vec3 u_code_scale;
 uniform vec3 u_code_offset;
@@ -142,8 +144,8 @@ uniform vec2 u_hdr_table_texel_size;
 uniform vec2 u_hdr_table_decode;
 #endif
 
-varying vec2 v_display_uv;
-varying vec2 v_source_uv;
+varying vec2 v_luma_uv;
+varying vec2 v_chroma_uv;
 
 #if HDR_TABLE
 // Левый верхний тексель среза с номером slice в атласе.
@@ -174,34 +176,26 @@ vec3 hdr_table_lookup(vec3 nonlinear_rgb) {
 #endif
 
 void main() {
-    if (v_display_uv.x < 0.0 || v_display_uv.x > 1.0 || v_display_uv.y < 0.0 || v_display_uv.y > 1.0) {
-        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-    } else {
-        vec2 luma_coord = clamp(
-            v_source_uv * u_luma_coord_scale_min.xy,
-            u_luma_coord_scale_min.zw,
-            u_luma_coord_max_size.xy
-        );
-        vec2 chroma_coord = clamp(
-            v_source_uv * u_chroma_coord_scale_min.xy,
-            u_chroma_coord_scale_min.zw,
-            u_chroma_coord_max_last.xy
-        );
-        vec3 codes = vec3(
-            plane_code(u_luma_plane, luma_coord),
-            plane_code(u_chroma_u_plane, chroma_coord),
-            plane_code(u_chroma_v_plane, chroma_coord)
-        );
-        vec4 yuv = vec4(
-            clamp(codes * u_code_scale + u_code_offset, u_normalized_min, u_normalized_max),
-            1.0
-        );
-        vec3 rgb = vec3(dot(u_rgb_row0, yuv), dot(u_rgb_row1, yuv), dot(u_rgb_row2, yuv));
-#if HDR_TABLE
-        rgb = hdr_table_lookup(clamp(rgb, 0.0, 1.0));
+    vec2 luma_coord = v_luma_uv;
+    vec2 chroma_coord = v_chroma_uv;
+#if SHADER_EDGE_CLAMP
+    luma_coord = clamp(luma_coord, u_luma_coord_clamp.xy, u_luma_coord_clamp.zw);
+    chroma_coord = clamp(chroma_coord, u_chroma_coord_clamp.xy, u_chroma_coord_clamp.zw);
 #endif
-        gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
-    }
+    vec3 codes = vec3(
+        plane_code(u_luma_plane, luma_coord),
+        plane_code(u_chroma_u_plane, chroma_coord),
+        plane_code(u_chroma_v_plane, chroma_coord)
+    );
+    vec4 yuv = vec4(
+        clamp(codes * u_code_scale + u_code_offset, u_normalized_min, u_normalized_max),
+        1.0
+    );
+    vec3 rgb = vec3(dot(u_rgb_row0, yuv), dot(u_rgb_row1, yuv), dot(u_rgb_row2, yuv));
+#if HDR_TABLE
+    rgb = hdr_table_lookup(clamp(rgb, 0.0, 1.0));
+#endif
+    gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
 }
 ";
 
@@ -213,7 +207,8 @@ void main() {
 /// DRM хранит `GR88` как слово little-endian `G:R`, то есть первый байт (U у NV12) лежит в R.
 ///
 /// Под Ironlake: обе выборки идут по varying как есть — адрес не считается во фрагменте, нет
-/// зависимых выборок и ветвлений по uniform-ам (урок замера сессии 05).
+/// зависимых выборок и ветвлений по uniform-ам (урок замера сессии 05). Полос letterbox шейдер
+/// не видит: рисование ограничено прямоугольником картинки (сессия 12a).
 pub(super) const NV12_FRAGMENT_BODY: &str = "
 uniform sampler2D u_luma_plane;
 uniform sampler2D u_chroma_plane;
@@ -222,20 +217,15 @@ uniform vec4 u_rgb_row0;
 uniform vec4 u_rgb_row1;
 uniform vec4 u_rgb_row2;
 
-varying vec2 v_display_uv;
 varying vec2 v_source_uv;
 
 void main() {
-    if (v_display_uv.x < 0.0 || v_display_uv.x > 1.0 || v_display_uv.y < 0.0 || v_display_uv.y > 1.0) {
-        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-    } else {
-        vec4 yuv = vec4(
-            texture2D(u_luma_plane, v_source_uv).r,
-            texture2D(u_chroma_plane, v_source_uv).rg,
-            1.0
-        );
-        vec3 rgb = vec3(dot(u_rgb_row0, yuv), dot(u_rgb_row1, yuv), dot(u_rgb_row2, yuv));
-        gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
-    }
+    vec4 yuv = vec4(
+        texture2D(u_luma_plane, v_source_uv).r,
+        texture2D(u_chroma_plane, v_source_uv).rg,
+        1.0
+    );
+    vec3 rgb = vec3(dot(u_rgb_row0, yuv), dot(u_rgb_row1, yuv), dot(u_rgb_row2, yuv));
+    gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
 }
 ";

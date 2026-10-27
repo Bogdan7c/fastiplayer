@@ -5,11 +5,14 @@
 //! - треугольник на весь viewport, `viewport_uv` с началом слева сверху (`uv.y = 0` — верхняя
 //!   строка, как у wgpu: у GL clip `y = +1` — тоже верх области);
 //! - `display_uv = viewport_uv × uv_scale + uv_offset`; вне `[0, 1]` — чёрный (полосы
-//!   letterbox), проверка до поворота;
+//!   letterbox). Проверки в шейдере нет: рисование ограничено scissor-ом по пикселям, чей центр
+//!   лежит в `[0, 1]` ([`crate::geometry::picture_pixel_rect`]), а полосы заливает `glClear`;
 //! - поворот: `source_uv` = аффинное преобразование `display_uv`;
 //! - яркость — билинейная выборка в `source_uv`;
 //! - цветность по прореженной оси — центр текселя `floor(тексель_яркости / 2)`, то есть
-//!   фактически nearest co-sited (как wgpu-хост); по непрореженной оси — билинейная, как яркость;
+//!   фактически nearest co-sited (как wgpu-хост); по непрореженной оси — билинейная, как яркость.
+//!   У 4:2:0 это выборка `GL_NEAREST` по координате из вершин; у 4:2:2 фильтр текстуры один на
+//!   обе оси, поэтому X считается в шейдере, а Y остаётся билинейным;
 //! - цвет — одна аффинная матрица ([`crate::color`]) и `clamp`.
 //!
 //! # 10/12 бит (сессия 06)
@@ -32,17 +35,25 @@
 //!   (`#define`), без ветвлений на пиксель; HDR — тоже `#define`, а не ветвление;
 //! - вместо делений на размер текстуры — умножение на готовые величины из uniform-ов.
 //!
+//! Сессия 12a (стенд `examples/video_shader_cost_probe.rs`, T410, кадр 1080p в цели 1440×900):
+//! 8 бит 4:2:0 стоил 11,45 мс GPU. Координаты выборок из вершин дали 7,53 мс, отказ от ветвления
+//! letterbox — 5,08 мс; NV12 без ветвления — 7,24 → 4,90 мс. Любая арифметика до выборки дорога:
+//! один зажим координат у края возвращает +2,5 мс. Поэтому зажим — вариант программы
+//! ([`SamplingEdge::ShaderClamp`]) только для драйверов, где текстура бывает шире кадра.
+//!
 //! Отличия от WGSL, вызванные GLSL ES 1.00, а не выбором:
 //! - нет `textureDimensions`: размеры плоскостей приходят uniform-ами;
 //! - текстура может быть шире видимой части (stride без `EXT_unpack_subimage`): координата
 //!   выборки упирается в центр последнего видимого текселя. Для текстуры ровно в видимую ширину
-//!   это то же самое, что `CLAMP_TO_EDGE` у wgpu, а для широкой — не даёт подмешать мусор хвоста;
+//!   это то же самое, что `CLAMP_TO_EDGE` у wgpu, поэтому зажим в шейдере есть только у
+//!   варианта [`SamplingEdge::ShaderClamp`];
 //! - целочисленные `u32` заменены на `floor()` над `float` (точно для целых значений).
 //!
 //! Точность: координаты и цвет считаются в `highp`, где он есть (сессия 04: `mediump` на
 //! radeonsi — настоящий fp16). Без `highp` номер текселя точен только до ширины 2048 — это
-//! видит [`ShaderPrecision::exact_texel_limit`]. Uniform-ов во фрагментном шейдере: 8 векторов у
-//! 8 бит, 14 у HDR (минимум GLES 2.0 — 16); сэмплеров 3 и 4 (минимум 8).
+//! видит [`ShaderPrecision::exact_texel_limit`]. Uniform-ов во фрагментном шейдере: 3–6 векторов у
+//! 8 бит, 10–12 у HDR (минимум GLES 2.0 — 16), в вершинном — 6 (минимум 128); сэмплеров 3 и 4
+//! (минимум 8).
 
 mod nv12;
 mod shaders;
@@ -93,6 +104,37 @@ impl ShaderPrecision {
     }
 }
 
+/// Как выборка не выходит за видимую часть плоскости. Выбирается один раз на рендер по
+/// возможностям драйвера, а не на кадр: обе ветви собирать незачем.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SamplingEdge {
+    /// Текстуры всегда ровно в видимый размер (есть `GL_EXT_unpack_subimage`, импорт DMA-BUF):
+    /// край держит `CLAMP_TO_EDGE` сэмплера, шейдер берёт выборки по varying как есть.
+    SamplerClampToEdge,
+    /// Текстура бывает шире видимой части (stride без `EXT_unpack_subimage`): шейдер зажимает
+    /// координаты в центры крайних видимых текселей (на T410 это +2,5 мс на кадр 1440×900).
+    ShaderClamp,
+}
+
+/// Фильтр выборки текстур цветности: свойство программы, задаётся при привязке текстур.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ChromaFilter {
+    /// Билинейный (8 бит без прореживания по обеим осям: 4:4:4 и 4:2:2).
+    Linear,
+    /// Nearest: co-sited 8 бит 4:2:0 и любые пары байтов 10/12 бит.
+    Nearest,
+}
+
+impl ChromaFilter {
+    /// Значение `GL_TEXTURE_MIN/MAG_FILTER`.
+    pub(crate) const fn gl_filter(self) -> u32 {
+        match self {
+            Self::Linear => glow::LINEAR,
+            Self::Nearest => glow::NEAREST,
+        }
+    }
+}
+
 /// Какая программа нужна кадру.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProgramVariant {
@@ -121,19 +163,25 @@ pub(crate) struct HdrTableUniforms {
     pub(crate) decode: glow::NativeUniformLocation,
 }
 
+/// Uniform-ы зажима координат у края (только [`SamplingEdge::ShaderClamp`]).
+#[derive(Debug)]
+pub(crate) struct EdgeClampUniforms {
+    pub(crate) luma: glow::NativeUniformLocation,
+    pub(crate) chroma: glow::NativeUniformLocation,
+}
+
 /// Uniform-ы программы.
 #[derive(Debug)]
 pub(crate) struct VideoProgramUniforms {
     pub(crate) display_mapping: glow::NativeUniformLocation,
     pub(crate) orientation_rows: [glow::NativeUniformLocation; 2],
-    pub(crate) luma_coord_scale_min: glow::NativeUniformLocation,
-    pub(crate) luma_coord_max_size: glow::NativeUniformLocation,
-    /// Билинейная цветность 8 бит — только у раскладок с непрореженной осью (4:2:2 по
-    /// вертикали, 4:4:4); у 4:2:0 компилятор выкидывает uniform. У 10/12 бит есть всегда.
-    pub(crate) chroma_coord_scale_min: Option<glow::NativeUniformLocation>,
-    pub(crate) chroma_coord_max_last: glow::NativeUniformLocation,
-    /// Центры текселей цветности — только у прореженных раскладок 8 бит (4:2:0, 4:2:2).
-    pub(crate) chroma_texel_size: Option<glow::NativeUniformLocation>,
+    /// Масштабы координат выборок в вершинном шейдере.
+    pub(crate) luma_uv_scale: glow::NativeUniformLocation,
+    pub(crate) chroma_uv_scale: glow::NativeUniformLocation,
+    /// Только у варианта [`SamplingEdge::ShaderClamp`].
+    pub(crate) edge_clamp: Option<EdgeClampUniforms>,
+    /// Co-sited по X в шейдере — только у 8 бит 4:2:2.
+    pub(crate) chroma_co_sited_x: Option<glow::NativeUniformLocation>,
     pub(crate) rgb_rows: [glow::NativeUniformLocation; 3],
     /// Только у программ 10/12 бит.
     pub(crate) code_normalization: Option<CodeNormalizationUniforms>,
@@ -147,6 +195,8 @@ pub(crate) struct VideoProgram {
     pub(crate) program: glow::NativeProgram,
     pub(crate) position_attribute: u32,
     pub(crate) uniforms: VideoProgramUniforms,
+    /// Фильтр текстур цветности, под который написан шейдер.
+    pub(crate) chroma_filter: ChromaFilter,
 }
 
 /// Программы 10/12 бит (собираются только при `highp`).
@@ -171,15 +221,19 @@ pub(crate) struct VideoPrograms {
 impl VideoPrograms {
     /// Компилирует программы всех вариантов, которые доступны при точности драйвера; отказ
     /// любой удаляет уже собранные.
-    pub(crate) fn build(context: &Gles2Context) -> Result<Self, VideoLayerError> {
+    pub(crate) fn build(
+        context: &Gles2Context,
+        edge: SamplingEdge,
+    ) -> Result<Self, VideoLayerError> {
         let precision = ShaderPrecision::for_capabilities(context.capabilities());
         let mut built = Vec::new();
         let mut build = |variant| {
-            let program = VideoProgram::build(context, precision, variant).inspect_err(|_| {
-                for program in &built {
-                    delete_program_logged(context, *program);
-                }
-            })?;
+            let program =
+                VideoProgram::build(context, precision, variant, edge).inspect_err(|_| {
+                    for program in &built {
+                        delete_program_logged(context, *program);
+                    }
+                })?;
             built.push(program.program);
             Ok::<_, VideoLayerError>(program)
         };
@@ -252,8 +306,9 @@ impl VideoProgram {
         context: &Gles2Context,
         precision: ShaderPrecision,
         variant: ProgramVariant,
+        edge: SamplingEdge,
     ) -> Result<Self, VideoLayerError> {
-        let fragment_source = fragment_shader_source(precision, variant);
+        let fragment_source = fragment_shader_source(precision, variant, edge);
         let program = context
             .compile_es100_program(Es100ProgramSources {
                 vertex: shaders::VERTEX_SHADER,
@@ -261,7 +316,7 @@ impl VideoProgram {
             })
             .map_err(VideoLayerError::Shader)?;
         // Программа уже создана: отказ поиска входов удаляет её, чтобы не оставить объект.
-        Self::locate(context, program, variant)
+        Self::locate(context, program, variant, edge)
             .inspect_err(|_| delete_program_logged(context, program))
     }
 
@@ -269,6 +324,7 @@ impl VideoProgram {
         context: &Gles2Context,
         program: glow::NativeProgram,
         variant: ProgramVariant,
+        edge: SamplingEdge,
     ) -> Result<Self, VideoLayerError> {
         let gl = VideoGl::for_context(context).map_err(VideoLayerError::GlAccess)?;
         let uniform = |name: &'static str| {
@@ -283,7 +339,7 @@ impl VideoProgram {
                 Ok(gl.uniform_location(program, name))
             }
         };
-        let needs = UniformNeeds::of(variant);
+        let needs = UniformNeeds::of(variant, edge);
         let position_attribute = gl
             .attribute_location(program, "a_position")
             .ok_or(VideoLayerError::MissingShaderInput { name: "a_position" })?;
@@ -298,6 +354,14 @@ impl VideoProgram {
                 offset: uniform("u_code_offset")?,
                 min: uniform("u_normalized_min")?,
                 max: uniform("u_normalized_max")?,
+            })
+        } else {
+            None
+        };
+        let edge_clamp = if needs.edge_clamp {
+            Some(EdgeClampUniforms {
+                luma: uniform("u_luma_coord_clamp")?,
+                chroma: uniform("u_chroma_coord_clamp")?,
             })
         } else {
             None
@@ -318,14 +382,10 @@ impl VideoProgram {
                 uniform("u_orientation_row0")?,
                 uniform("u_orientation_row1")?,
             ],
-            luma_coord_scale_min: uniform("u_luma_coord_scale_min")?,
-            luma_coord_max_size: uniform("u_luma_coord_max_size")?,
-            chroma_coord_scale_min: uniform_if(
-                "u_chroma_coord_scale_min",
-                needs.chroma_coord_scale_min,
-            )?,
-            chroma_coord_max_last: uniform("u_chroma_coord_max_last")?,
-            chroma_texel_size: uniform_if("u_chroma_texel_size", needs.chroma_texel_size)?,
+            luma_uv_scale: uniform("u_luma_uv_scale")?,
+            chroma_uv_scale: uniform("u_chroma_uv_scale")?,
+            edge_clamp,
+            chroma_co_sited_x: uniform_if("u_chroma_co_sited_x", needs.chroma_co_sited_x)?,
             rgb_rows: [
                 uniform("u_rgb_row0")?,
                 uniform("u_rgb_row1")?,
@@ -344,61 +404,83 @@ impl VideoProgram {
             program,
             position_attribute,
             uniforms,
+            chroma_filter: needs.chroma_filter,
         })
     }
 }
 
-/// Какие необязательные входы обязан иметь вариант.
+/// Какие необязательные входы обязан иметь вариант и какой фильтр цветности он ждёт.
 struct UniformNeeds {
-    chroma_coord_scale_min: bool,
-    chroma_texel_size: bool,
+    edge_clamp: bool,
+    chroma_co_sited_x: bool,
     code_normalization: bool,
     hdr_table: bool,
+    chroma_filter: ChromaFilter,
 }
 
 impl UniformNeeds {
-    const fn of(variant: ProgramVariant) -> Self {
+    const fn of(variant: ProgramVariant, edge: SamplingEdge) -> Self {
+        let edge_clamp = matches!(edge, SamplingEdge::ShaderClamp);
         match variant {
-            ProgramVariant::EightBit(chroma) => {
-                let (subsampled_x, subsampled_y) = chroma_subsampled_axes(chroma);
-                Self {
-                    chroma_coord_scale_min: !(subsampled_x && subsampled_y),
-                    chroma_texel_size: subsampled_x || subsampled_y,
-                    code_normalization: false,
-                    hdr_table: false,
-                }
-            }
+            ProgramVariant::EightBit(chroma) => Self {
+                edge_clamp,
+                chroma_co_sited_x: co_sited_x_in_shader(chroma),
+                code_normalization: false,
+                hdr_table: false,
+                chroma_filter: eight_bit_chroma_filter(chroma),
+            },
             ProgramVariant::HighBitSdr | ProgramVariant::HighBitHdrTable => Self {
-                chroma_coord_scale_min: true,
-                chroma_texel_size: false,
+                edge_clamp,
+                chroma_co_sited_x: false,
                 code_normalization: true,
                 hdr_table: matches!(variant, ProgramVariant::HighBitHdrTable),
+                chroma_filter: ChromaFilter::Nearest,
             },
         }
     }
 }
 
+/// Фильтр цветности 8 бит: прореживание по обеим осям — nearest (co-sited выбирает сама
+/// выборка), иначе билинейный (по непрореженной оси нужна интерполяция, как у яркости).
+const fn eight_bit_chroma_filter(chroma: ChromaSubsampling) -> ChromaFilter {
+    match chroma_subsampled_axes(chroma) {
+        (true, true) => ChromaFilter::Nearest,
+        _ => ChromaFilter::Linear,
+    }
+}
+
+/// Считать co-sited по X в шейдере: только когда X прорежен, а Y нет (4:2:2) — фильтр
+/// текстуры один на обе оси, nearest по X и билинейный по Y выборкой не выразить.
+const fn co_sited_x_in_shader(chroma: ChromaSubsampling) -> bool {
+    matches!(chroma_subsampled_axes(chroma), (true, false))
+}
+
 /// Исходник фрагментного шейдера: `#version 100` обязан быть первой строкой, поэтому точность и
 /// `#define` варианта вставляются после неё.
-fn fragment_shader_source(precision: ShaderPrecision, variant: ProgramVariant) -> String {
+fn fragment_shader_source(
+    precision: ShaderPrecision,
+    variant: ProgramVariant,
+    edge: SamplingEdge,
+) -> String {
     let precision_line = match precision {
         ShaderPrecision::High => "precision highp float;",
         ShaderPrecision::Medium => "precision mediump float;",
     };
+    let edge_clamp = u8::from(matches!(edge, SamplingEdge::ShaderClamp));
     match variant {
         ProgramVariant::EightBit(chroma) => {
-            let (subsampled_x, subsampled_y) = chroma_subsampled_axes(chroma);
-            let (subsampled_x, subsampled_y) = (u8::from(subsampled_x), u8::from(subsampled_y));
+            let co_sited_x = u8::from(co_sited_x_in_shader(chroma));
             format!(
-                "#version 100\n{precision_line}\n#define CHROMA_SUBSAMPLED_X {subsampled_x}\n\
-                 #define CHROMA_SUBSAMPLED_Y {subsampled_y}\n{}",
+                "#version 100\n{precision_line}\n#define SHADER_EDGE_CLAMP {edge_clamp}\n\
+                 #define CHROMA_CO_SITED_X_IN_SHADER {co_sited_x}\n{}",
                 shaders::EIGHT_BIT_FRAGMENT_BODY
             )
         }
         ProgramVariant::HighBitSdr | ProgramVariant::HighBitHdrTable => {
             let hdr_table = u8::from(matches!(variant, ProgramVariant::HighBitHdrTable));
             format!(
-                "#version 100\n{precision_line}\n{}#define HDR_TABLE {hdr_table}\n{}{}",
+                "#version 100\n{precision_line}\n{}#define SHADER_EDGE_CLAMP {edge_clamp}\n\
+                 #define HDR_TABLE {hdr_table}\n{}{}",
                 shaders::SAMPLER_PRECISION_STATEMENT,
                 shaders::PLANE_CODE_FUNCTION,
                 shaders::HIGH_BIT_FRAGMENT_BODY

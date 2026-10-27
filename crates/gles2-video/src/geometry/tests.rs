@@ -153,3 +153,117 @@ fn intersection_handles_touching_and_huge_rects() {
         })
     );
 }
+
+/// Картинка ли пиксель `index` области длиной `length` по формуле шейдера сессий 05–12:
+/// `display = (index + 0.5) / length × scale + offset` в `[0, 1]`.
+fn shader_would_paint(index: u32, length: u32, scale: f32, offset: f32) -> bool {
+    let display =
+        (f64::from(index) + 0.5) / f64::from(length) * f64::from(scale) + f64::from(offset);
+    (0.0..=1.0).contains(&display)
+}
+
+#[test]
+fn picture_rect_of_1080p_on_t410_panel_skips_45_rows_of_bars_on_each_side() {
+    // Кадр 16:9 во всю ширину панели 1440×900 (render-core `PictureLayout::fit`): картинка 810
+    // строк, полосы по 45 строк сверху и снизу.
+    let viewport = PixelRect {
+        x: 0,
+        y: 0,
+        width: 1440,
+        height: 900,
+    };
+    let scale_y = (1920.0_f32 / 1080.0) / (1440.0_f32 / 900.0);
+    let picture = PictureMapping {
+        uv_scale: [1.0, scale_y],
+        uv_offset: [0.0, (1.0 - scale_y) * 0.5],
+    };
+    assert_eq!(
+        picture_pixel_rect(viewport, picture),
+        Some(PixelRect {
+            x: 0,
+            y: 45,
+            width: 1440,
+            height: 810,
+        })
+    );
+}
+
+#[test]
+fn picture_rect_matches_the_former_shader_test_pixel_by_pixel() {
+    // Смещённая область, полосы слева и справа, дробные края: каждый пиксель внутри
+    // прямоугольника — ровно те, что раньше красил шейдер, и только они.
+    let viewport = PixelRect {
+        x: 37,
+        y: 11,
+        width: 333,
+        height: 201,
+    };
+    let picture = PictureMapping {
+        uv_scale: [1.37, 1.0],
+        uv_offset: [-0.185, 0.0],
+    };
+    let rect = picture_pixel_rect(viewport, picture).expect("picture is inside the area");
+    for column in 0..viewport.width {
+        let inside = (rect.x..rect.x + rect.width).contains(&(viewport.x + column));
+        assert_eq!(
+            inside,
+            shader_would_paint(column, viewport.width, 1.37, -0.185),
+            "column {column}"
+        );
+    }
+    assert_eq!((rect.y, rect.height), (viewport.y, viewport.height));
+}
+
+#[test]
+fn picture_rect_includes_a_pixel_whose_center_is_exactly_on_the_edge() {
+    // Картинка начинается ровно в центре пикселя 2 из 8 (display(2.5 / 8) = 0) и кончается ровно
+    // в центре пикселя 6 (display(6.5 / 8) = 1): оба внутри — границы включительно, как
+    // `x < 0.0 || x > 1.0` в прежнем шейдере.
+    let viewport = PixelRect {
+        x: 0,
+        y: 0,
+        width: 8,
+        height: 1,
+    };
+    let picture = PictureMapping {
+        uv_scale: [2.0, 1.0],
+        uv_offset: [-0.625, 0.0],
+    };
+    let rect = picture_pixel_rect(viewport, picture).expect("picture is inside the area");
+    assert_eq!((rect.x, rect.width), (2, 5));
+}
+
+#[test]
+fn picture_rect_is_absent_for_a_picture_outside_the_area_or_a_broken_mapping() {
+    let viewport = PixelRect {
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+    };
+    let shifted_away = PictureMapping {
+        uv_scale: [1.0, 1.0],
+        uv_offset: [2.0, 0.0],
+    };
+    assert_eq!(picture_pixel_rect(viewport, shifted_away), None);
+    let not_a_number = PictureMapping {
+        uv_scale: [f32::NAN, 1.0],
+        uv_offset: [0.0, 0.0],
+    };
+    assert_eq!(picture_pixel_rect(viewport, not_a_number), None);
+    assert_eq!(
+        picture_pixel_rect(
+            PixelRect {
+                width: 0,
+                ..viewport
+            },
+            PictureMapping::FILL
+        ),
+        None
+    );
+    // Картинка на всю область — вся область.
+    assert_eq!(
+        picture_pixel_rect(viewport, PictureMapping::FILL),
+        Some(viewport)
+    );
+}

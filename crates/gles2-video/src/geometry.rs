@@ -134,6 +134,76 @@ impl PictureMapping {
     };
 }
 
+/// Пиксели области видео `viewport`, которые принадлежат картинке, а не полосам letterbox.
+///
+/// Пиксель — картинка, если `display_uv` в его центре лежит в `[0, 1]` по обеим осям (границы
+/// включительно): ровно та проверка, которую раньше делал фрагментный шейдер. Видео рисуется
+/// только под scissor-ом этого прямоугольника, полосы заливает `glClear` вместе с остальными
+/// незакрытыми частями цели. Так шейдер не ветвится и не тратит выборки на полосы (сессия 12a:
+/// −2,4 мс GPU на кадр 1440×900 на T410).
+///
+/// Счёт в `f64` по точной формуле; шейдер считал в `f32` с интерполяцией, поэтому совпадение
+/// гарантировано везде, кроме центров пикселей ровно на границе картинки, — там и раньше решало
+/// округление (у wgpu тоже). `None` — картинки нет: пустая область, нулевой масштаб с картинкой
+/// вне `[0, 1]` или нечисловое отображение.
+#[must_use]
+pub(crate) fn picture_pixel_rect(
+    viewport: PixelRect,
+    picture: PictureMapping,
+) -> Option<PixelRect> {
+    let columns = picture_pixel_span(
+        viewport.x,
+        viewport.width,
+        picture.uv_scale[0],
+        picture.uv_offset[0],
+    )?;
+    let rows = picture_pixel_span(
+        viewport.y,
+        viewport.height,
+        picture.uv_scale[1],
+        picture.uv_offset[1],
+    )?;
+    Some(PixelRect {
+        x: columns.0,
+        y: rows.0,
+        width: columns.1,
+        height: rows.1,
+    })
+}
+
+/// Одна ось [`picture_pixel_rect`]: `(первый пиксель, число пикселей)` картинки внутри отрезка
+/// области `[start, start + length)`.
+fn picture_pixel_span(start: u32, length: u32, scale: f32, offset: f32) -> Option<(u32, u32)> {
+    if length == 0 || !scale.is_finite() || !offset.is_finite() {
+        return None;
+    }
+    let (scale, offset) = (f64::from(scale), f64::from(offset));
+    // display(uv) = uv × scale + offset, uv — доля области под центром пикселя.
+    let (first_uv, last_uv) = if scale == 0.0 {
+        // Вся область показывает одну точку картинки: она либо внутри, либо нет.
+        if (0.0..=1.0).contains(&offset) {
+            (0.0, 1.0)
+        } else {
+            return None;
+        }
+    } else {
+        let (at_zero, at_one) = ((0.0 - offset) / scale, (1.0 - offset) / scale);
+        (at_zero.min(at_one), at_zero.max(at_one))
+    };
+    let length_f = f64::from(length);
+    // Центр пикселя i (от начала области) — i + 0.5; он внутри, если uv = (i + 0.5) / length
+    // лежит в [first_uv, last_uv].
+    let first = (first_uv * length_f - 0.5).ceil().max(0.0);
+    let last = (last_uv * length_f - 0.5).floor().min(length_f - 1.0);
+    if last < first {
+        return None;
+    }
+    // Оба конца — целые в [0, length): преобразование точное.
+    let first_pixel = first as u32;
+    let pixel_count = (last - first) as u32 + 1;
+    Some((start.checked_add(first_pixel)?, pixel_count))
+}
+
 /// Поворот картинки на экране относительно кадра декодера (метаданные контейнера).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QuarterTurn {

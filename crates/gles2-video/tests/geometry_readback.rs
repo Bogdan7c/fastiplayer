@@ -142,6 +142,9 @@ fn letterbox_bars_are_black_and_picture_fills_its_rect() {
     assert_rect(&pixels, bar(0, 8), BLACK, 0, "top bar");
     assert_rect(&pixels, bar(8, 16), gray(200), 1, "picture");
     assert_rect(&pixels, bar(24, 8), BLACK, 0, "bottom bar");
+    // Шейдер видео прошёл только по картинке: полосы залил `glClear` (сессия 12a). С ветвлением
+    // в шейдере по всей области было бы 32 × 32.
+    assert_eq!(video.stats().shaded_video_pixels, 32 * 16);
     video.destroy(&context).unwrap();
 }
 
@@ -235,6 +238,55 @@ fn subsampled_chroma_is_taken_from_the_co_sited_texel() {
         }
         video.destroy(&context).unwrap();
     }
+}
+
+/// Уменьшение 9 → 6 столбцов с нечётной шириной (цветность 5 столбцов): цветность 4:2:0 —
+/// nearest-выборка по координате из вершин — обязана дать тексель формулы wgpu
+/// `floor(floor(u × w) / 2)` на каждом столбце.
+///
+/// Соотношение выбрано так, что центр пикселя цели не попадает ровно на границу текселя
+/// яркости (`(i + 0.5) × 9 / 6` не бывает целым). На точной границе выбор решает округление
+/// интерполяции `f32` — и у прежнего шейдера с `floor` на пикселе, и у wgpu (проверено в
+/// сессии 12a: на 8 → 6 прежний шейдер на radeonsi брал тот же «левый» тексель, что и новый).
+#[test]
+fn downscaled_chroma_follows_the_exact_co_sited_formula() {
+    let target = size(6, 4);
+    let Some(mut context) = offscreen_or_skip("downscaled_chroma_co_sited", target) else {
+        return;
+    };
+    let mut video = renderer(&context, VideoLayerOptions::default());
+    // Яркость ровная (билинейное смешивание её не меняет), цветность — своя на каждый столбец.
+    let luma = 128;
+    let chroma_by_column: [[u8; 2]; 5] = [[90, 240], [240, 110], [60, 60], [200, 200], [128, 30]];
+    let frame = OwnedFrame::from_pattern(
+        ChromaSubsampling::Yuv420,
+        extent(9, 4),
+        0,
+        &FramePattern {
+            luma: &|_, _| luma,
+            chroma_u: &|x, _| chroma_by_column[x as usize][0],
+            chroma_v: &|x, _| chroma_by_column[x as usize][1],
+        },
+    );
+    video.upload(&context, &frame.upload(1)).unwrap();
+    let encoding = YuvColorEncoding {
+        matrix: YuvMatrix::Bt709,
+        range: YuvRange::Limited,
+    };
+    let rects = [full_rect(target)];
+    let request = fill_request(target, &rects, encoding, ColorAdjustment::IDENTITY);
+    let (_, pixels) = draw_frame(&mut context, &mut video, &request);
+    for column in 0..6_u32 {
+        let luma_texel = ((f64::from(column) + 0.5) * 9.0 / 6.0).floor() as usize;
+        let [u, v] = chroma_by_column[luma_texel / 2];
+        assert_close(
+            pixel(&pixels, column, 1),
+            reference_rgba(encoding, ColorAdjustment::IDENTITY, [luma, u, v]),
+            1,
+            &format!("column {column} (luma texel {luma_texel})"),
+        );
+    }
+    video.destroy(&context).unwrap();
 }
 
 /// Нечётная ширина, stride больше ширины, текстура шириной в stride (путь без

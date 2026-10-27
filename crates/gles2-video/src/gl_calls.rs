@@ -18,6 +18,7 @@ use thiserror::Error;
 use gles2_egui::{ActiveFrame, GlAccessError, Gles2Context};
 
 use crate::geometry::GlWindowRect;
+use crate::program::ChromaFilter;
 use crate::upload_plan::{TextureExtent, UploadCall};
 
 /// Как хранится плоскость в текстуре.
@@ -55,7 +56,7 @@ impl PlaneTextureFormat {
     }
 
     /// Фильтр выборки: 8 бит — билинейный (паритет с wgpu), пары байтов — только nearest.
-    const fn filter(self) -> u32 {
+    pub(crate) const fn filter(self) -> u32 {
         match self {
             Self::Luminance | Self::RedExt => glow::LINEAR,
             Self::LuminanceAlpha => glow::NEAREST,
@@ -476,20 +477,38 @@ impl<'a> VideoGl<'a> {
 
     /// Привязать текстуры Y, U, V к блокам 0, 1, 2 и таблицу HDR (если есть) к блоку
     /// [`HDR_LUT_TEXTURE_UNIT`]; активным остаётся блок 0 (его ждёт художник).
+    ///
+    /// Фильтр задаётся здесь, при привязке, а не при выделении: импортированные и загруженные
+    /// текстуры рисуют одни и те же программы, а фильтр цветности — свойство программы
+    /// (`ChromaFilter`: co-sited 4:2:0 берёт сама nearest-выборка, сессия 12a). Повтор того же
+    /// значения драйвер пропускает.
     pub(crate) fn bind_plane_textures(
         self,
         textures: [glow::NativeTexture; 3],
+        format: PlaneTextureFormat,
+        chroma_filter: ChromaFilter,
         hdr_lut: Option<glow::NativeTexture>,
     ) {
+        let filters = [
+            format.filter(),
+            chroma_filter.gl_filter(),
+            chroma_filter.gl_filter(),
+        ];
         // SAFETY: контекст текущий; текстуры созданы этим контекстом; блоки 0–3 есть в любой
-        // реализации GLES 2.0 (`MAX_TEXTURE_IMAGE_UNITS` ≥ 8, таблица 6.20).
+        // реализации GLES 2.0 (`MAX_TEXTURE_IMAGE_UNITS` ≥ 8, таблица 6.20); значения фильтров —
+        // константы GLES 2.0, в i32 помещаются без потерь.
         unsafe {
-            for (unit, texture) in [glow::TEXTURE0, glow::TEXTURE1, glow::TEXTURE2]
+            for ((unit, texture), filter) in [glow::TEXTURE0, glow::TEXTURE1, glow::TEXTURE2]
                 .into_iter()
                 .zip(textures)
+                .zip(filters)
             {
                 self.gl.active_texture(unit);
                 self.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                for parameter in [glow::TEXTURE_MIN_FILTER, glow::TEXTURE_MAG_FILTER] {
+                    self.gl
+                        .tex_parameter_i32(glow::TEXTURE_2D, parameter, filter.cast_signed());
+                }
             }
             if let Some(table) = hdr_lut {
                 self.gl

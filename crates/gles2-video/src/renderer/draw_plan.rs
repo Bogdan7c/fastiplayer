@@ -100,7 +100,12 @@ pub(super) fn activate(
         } => {
             gl.use_program(Some(program.program));
             super::set_frame_uniforms(gl, program, textures, *layout, request, color.uniforms);
-            gl.bind_plane_textures(textures.textures(), hdr_table);
+            gl.bind_plane_textures(
+                textures.textures(),
+                textures.format,
+                program.chroma_filter,
+                hdr_table,
+            );
             program.position_attribute
         }
         PlannedFrame::Nv12 {

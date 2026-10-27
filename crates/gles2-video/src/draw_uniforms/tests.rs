@@ -42,7 +42,7 @@ fn stride_wide_texture_stops_before_the_row_tail() {
 }
 
 #[test]
-fn uniforms_pack_letterbox_orientation_and_last_chroma_texel() {
+fn uniforms_pack_letterbox_orientation_vertex_scales_and_clamps() {
     let luma = PlaneSampling::new(
         PlaneExtent {
             width: 6,
@@ -81,9 +81,17 @@ fn uniforms_pack_letterbox_orientation_and_last_chroma_texel() {
         values.orientation_rows,
         QuarterTurn::Clockwise90.display_to_source_rows()
     );
-    assert_eq!(values.luma_coord_max_size[2..], [6.0, 4.0]);
-    assert_eq!(values.chroma_coord_max_last[2..], [2.0, 1.0]);
-    assert_eq!(values.chroma_texel_size, [0.25, 0.5]);
+    // Координаты выборок — в вершинах: видимая часть / размер текстуры.
+    assert_eq!(values.luma_uv_scale, [1.0, 1.0]);
+    assert_eq!(values.chroma_uv_scale, [0.75, 1.0]);
+    // Зажим (только для текстур шире видимой части): центры первого и последнего видимого.
+    assert_eq!(
+        values.luma_coord_clamp,
+        [0.5 / 6.0, 0.5 / 4.0, 5.5 / 6.0, 3.5 / 4.0]
+    );
+    assert_eq!(values.chroma_coord_clamp, [0.125, 0.25, 0.625, 0.75]);
+    // Co-sited 4:2:2 по X: ширина яркости, последний видимый тексель цветности, 1 / ширина.
+    assert_eq!(values.chroma_co_sited_x, [6.0, 2.0, 0.25]);
 }
 
 /// Тексель, который выберет `GL_NEAREST` для координаты `coord` в текстуре ширины `texture`.

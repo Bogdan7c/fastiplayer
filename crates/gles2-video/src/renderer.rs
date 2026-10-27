@@ -21,7 +21,7 @@ use crate::dma_buf_import::DmaBufImports;
 use crate::dma_buf_planar_import::DmaBufPlanarImports;
 use crate::draw_uniforms::{DrawUniformValues, PlaneSampling};
 use crate::frame_color::ColorUniformValues;
-use crate::geometry::{PixelRect, to_gl_window_rect, uncovered_parts};
+use crate::geometry::{PixelRect, picture_pixel_rect, to_gl_window_rect, uncovered_parts};
 use crate::gl_calls::{PlaneTextureFormat, VideoGl};
 use crate::hdr_table_builder::HdrTableBuilder;
 use crate::hdr_table_texture::{HdrTableReadiness, HdrTableTexture};
@@ -34,7 +34,9 @@ use crate::planes::{
     FrameLayoutError, PlanarFrameUpload, PlanarLayout, PlaneRole, PlaneSource, SampleDepth,
     VideoFrameKey, validate_host_plane,
 };
-use crate::program::{FULLSCREEN_TRIANGLE, ShaderPrecision, VideoProgram, VideoPrograms};
+use crate::program::{
+    FULLSCREEN_TRIANGLE, SamplingEdge, ShaderPrecision, VideoProgram, VideoPrograms,
+};
 
 mod dma_buf;
 mod dma_buf_planar;
@@ -103,7 +105,13 @@ impl VideoLayerRenderer {
             }
         };
         let max_texture_size = capabilities.max_texture_size();
-        let programs = VideoPrograms::build(context)?;
+        // С `GL_EXT_unpack_subimage` текстуры кольца всегда ровно в видимый размер (как и
+        // импорты DMA-BUF): край держит сэмплер, и шейдер не платит за зажим координат.
+        let sampling_edge = match row_length {
+            RowLengthSupport::UnpackRowLength => SamplingEdge::SamplerClampToEdge,
+            RowLengthSupport::StrideWideTexture => SamplingEdge::ShaderClamp,
+        };
+        let programs = VideoPrograms::build(context, sampling_edge)?;
         let gl = VideoGl::for_context(context).map_err(VideoLayerError::GlAccess)?;
         let vertex_buffer = match gl.create_buffer() {
             Ok(buffer) => buffer,
@@ -397,17 +405,19 @@ impl VideoLayerRenderer {
             &self.programs,
             request,
         )?;
-        // Видео рисует каждый пиксель своих прямоугольников (полосы letterbox — тоже, чёрным),
-        // поэтому чёрная заливка нужна только там, куда видео не рисует: под исключениями и
-        // вне области. Пиксели те же, что у полной заливки wgpu, а GPU не заливает цель
-        // дважды (на T410 полная заливка 1440×900 — ~2 мс).
-        let drawn_rects: Vec<PixelRect> = match current {
-            Some(_) => request
+        // Видео рисует только пиксели картинки: полосы letterbox, исключения и всё вне области
+        // заливаются чёрным одним `glClear` под scissor. Пиксели те же, что у полной заливки
+        // wgpu, а GPU не заливает цель дважды (на T410 полная заливка 1440×900 — ~2 мс) и не
+        // гонит шейдер видео по полосам (сессия 12a: ветвление в шейдере стоило 2,4 мс).
+        let picture_rect = picture_pixel_rect(request.viewport, request.picture);
+        let drawn_rects: Vec<PixelRect> = match (current.as_ref(), picture_rect) {
+            (Some(_), Some(picture_rect)) => request
                 .visible_rects
                 .iter()
                 .filter_map(|rect| rect.intersection(request.viewport))
+                .filter_map(|rect| rect.intersection(picture_rect))
                 .collect(),
-            None => Vec::new(),
+            _ => Vec::new(),
         };
         let uncovered = uncovered_parts(target_rect, &drawn_rects)
             .into_iter()
@@ -480,6 +490,10 @@ impl VideoLayerRenderer {
         self.ring.mark_current_drawn();
         let draw_calls = u32::try_from(scissors.len()).unwrap_or(u32::MAX);
         self.stats.draw_calls += u64::from(draw_calls);
+        self.stats.shaded_video_pixels += drawn_rects
+            .iter()
+            .map(|rect| u64::from(rect.width) * u64::from(rect.height))
+            .sum::<u64>();
         Ok(VideoDrawOutcome::Drawn { draw_calls })
     }
 
@@ -570,12 +584,10 @@ fn set_frame_uniforms(
         PlaneSampling::new(plane.visible, allocated)
     };
     let [luma, chroma_u, _] = &textures.planes;
-    let chroma_sampling = if layout.depth.is_high_bit() {
-        // 10/12 бит: nearest-цветность wgpu через масштаб координаты (см. `PlaneSampling`).
-        PlaneSampling::nearest_chroma(sampling(chroma_u), luma.visible, layout.chroma)
-    } else {
-        sampling(chroma_u)
-    };
+    // Масштаб координаты цветности выбирает тексель co-sited для nearest-выборки (8 бит 4:2:0,
+    // 10/12 бит); по непрореженной оси он совпадает с билинейным (см. `PlaneSampling`).
+    let chroma_sampling =
+        PlaneSampling::nearest_chroma(sampling(chroma_u), luma.visible, layout.chroma);
     let values = DrawUniformValues::new(
         sampling(luma),
         chroma_sampling,
@@ -592,17 +604,14 @@ fn set_frame_uniforms(
     {
         gl.set_uniform_vec3(location, row);
     }
-    gl.set_uniform_vec4(&uniforms.luma_coord_scale_min, values.luma_coord_scale_min);
-    gl.set_uniform_vec4(&uniforms.luma_coord_max_size, values.luma_coord_max_size);
-    if let Some(location) = &uniforms.chroma_coord_scale_min {
-        gl.set_uniform_vec4(location, values.chroma_coord_scale_min);
+    gl.set_uniform_vec2(&uniforms.luma_uv_scale, values.luma_uv_scale);
+    gl.set_uniform_vec2(&uniforms.chroma_uv_scale, values.chroma_uv_scale);
+    if let Some(edge_clamp) = &uniforms.edge_clamp {
+        gl.set_uniform_vec4(&edge_clamp.luma, values.luma_coord_clamp);
+        gl.set_uniform_vec4(&edge_clamp.chroma, values.chroma_coord_clamp);
     }
-    gl.set_uniform_vec4(
-        &uniforms.chroma_coord_max_last,
-        values.chroma_coord_max_last,
-    );
-    if let Some(location) = &uniforms.chroma_texel_size {
-        gl.set_uniform_vec2(location, values.chroma_texel_size);
+    if let Some(location) = &uniforms.chroma_co_sited_x {
+        gl.set_uniform_vec3(location, values.chroma_co_sited_x);
     }
     set_color_uniforms(gl, uniforms, values.color);
 }
