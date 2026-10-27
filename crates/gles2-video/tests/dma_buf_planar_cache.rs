@@ -17,8 +17,7 @@ mod support;
 use gles2_egui::DmaBufTextureError;
 use gles2_video::{
     CachedDmaBufFrame, ChromaSubsampling, ColorAdjustment, DmaBufImportCacheCapacity,
-    DmaBufPlanarFrame, DmaBufPlanarFrameError, DmaBufPlanarIdentity, DmaBufPlaneLocation,
-    PlanarLayout, SampleDepth, VideoDrawOutcome, VideoFrameKey, VideoImportError,
+    DmaBufPlanarFrame, DmaBufPlaneLocation, VideoDrawOutcome, VideoFrameKey, VideoImportError,
     VideoLayerOptions,
 };
 use support::nv12_dma_buf::{Nv12Layout, PALETTE_A, TestNv12};
@@ -188,34 +187,6 @@ fn capacity_and_purge_cover_both_import_caches() {
     assert_eq!(video.planar_dma_buf_import_snapshot().entries, 0);
     assert_eq!(video.planar_dma_buf_import_snapshot().purged, 1);
     video.destroy(&context).unwrap();
-}
-
-/// 10 бит не доходит до драйвера: типизированный отказ при сборке кадра, привязок нет.
-#[test]
-fn ten_bit_frame_is_refused_before_any_import() {
-    let name = "ten_bit_frame_is_refused_before_any_import";
-    let target = size(TARGET_WIDTH, TARGET_HEIGHT);
-    let Some(context) = offscreen_or_skip(name, target) else {
-        return;
-    };
-    let host = patterned_frame(ChromaSubsampling::Yuv420, 32, 16, 1);
-    let Some(planar) = TestPlanar::create(name, 1, &host) else {
-        return;
-    };
-    let mut ten_bit: DmaBufPlanarIdentity = planar.identity.clone();
-    ten_bit.layout = PlanarLayout {
-        chroma: ChromaSubsampling::Yuv420,
-        depth: SampleDepth::Bits10,
-    };
-    let fd = planar.frame(1).dma_buf();
-    assert_eq!(
-        DmaBufPlanarFrame::new(VideoFrameKey(1), &ten_bit, fd).unwrap_err(),
-        DmaBufPlanarFrameError::UnsupportedDepth {
-            depth: SampleDepth::Bits10
-        }
-    );
-    assert_eq!(context.dma_buf_texture_stats().attaches_succeeded, 0);
-    assert_eq!(context.dma_buf_texture_stats().images_created, 0);
 }
 
 /// Чужой контекст: типизированный отказ, кэш не тронут.

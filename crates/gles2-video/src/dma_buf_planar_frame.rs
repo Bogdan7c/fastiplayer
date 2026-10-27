@@ -1,10 +1,12 @@
-//! Программный планарный кадр (8 бит) в DMA-BUF и его паспорт (чистая логика, без GL).
+//! Программный планарный кадр (8, 10 или 12 бит) в DMA-BUF и его паспорт (чистая логика, без GL).
 //!
 //! Откуда берётся такой кадр. Блок памяти декодера FFmpeg — запечатанный `memfd`, который ядро
 //! оборачивает в dma-buf (`/dev/udmabuf`); три плоскости Y, U, V лежат в одном буфере (по
 //! смещениям и шагам строк, которые выбрал декодер), и каждая становится своей текстурой
-//! `DRM_FORMAT_R8` + `DRM_FORMAT_MOD_LINEAR`. Видеослой рисует их ТОЙ ЖЕ планарной программой,
-//! что и кадр после загрузки (`upload`), поэтому картинка совпадает с копирующим путём.
+//! `DRM_FORMAT_R8` (8 бит) или `DRM_FORMAT_GR88` (10/12 бит: пара байтов LE на отсчёт, сессия
+//! 12a) + `DRM_FORMAT_MOD_LINEAR`. Видеослой рисует их ТОЙ ЖЕ программой, что и кадр после
+//! загрузки (`upload`); у 10/12 бит отличается только канал пары байтов (`.rg` вместо `.ra`),
+//! поэтому картинка совпадает с копирующим путём.
 //!
 //! Паспорт [`DmaBufPlanarIdentity`] — ключ кэша импортов. В отличие от паспорта NV12
 //! ([`crate::DmaBufBufferIdentity`]) смещения и шаги строк входят в паспорт: у программного
@@ -80,12 +82,6 @@ impl DmaBufPlanarIdentity {
 /// Планарный кадр в DMA-BUF противоречит сам себе или не годится для импорта.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum DmaBufPlanarFrameError {
-    /// Не 8 бит: 10/12 бит остаются на пути загрузки (решение владельца 3 сессии 12).
-    #[error("planar DMA-BUF import supports 8-bit samples only, the frame has {depth:?}")]
-    UnsupportedDepth {
-        /// Разрядность кадра.
-        depth: SampleDepth,
-    },
     /// Нулевая ширина или высота яркости.
     #[error("planar DMA-BUF frame has an empty luma extent {extent:?}")]
     EmptyExtent {
@@ -151,18 +147,13 @@ impl<'fd> DmaBufPlanarFrame<'fd> {
     /// NV12, по `BorrowedFd` этого не узнать.
     ///
     /// # Errors
-    /// [`DmaBufPlanarFrameError`]: не 8 бит, пустой размер, нелинейный модификатор, шаг короче
-    /// строки, смещение или шаг шире `EGLint`, плоскость за пределами объекта.
+    /// [`DmaBufPlanarFrameError`]: пустой размер, нелинейный модификатор, шаг короче строки,
+    /// смещение или шаг шире `EGLint`, плоскость за пределами объекта.
     pub fn new(
         key: VideoFrameKey,
         identity: &'fd DmaBufPlanarIdentity,
         dma_buf: BorrowedFd<'fd>,
     ) -> Result<Self, DmaBufPlanarFrameError> {
-        if identity.layout.depth != SampleDepth::Bits8 {
-            return Err(DmaBufPlanarFrameError::UnsupportedDepth {
-                depth: identity.layout.depth,
-            });
-        }
         if identity.luma_extent.is_empty() {
             return Err(DmaBufPlanarFrameError::EmptyExtent {
                 extent: identity.luma_extent,
@@ -209,8 +200,11 @@ fn validate_plane(
 ) -> Result<(), DmaBufPlanarFrameError> {
     let extent = identity.plane_extent(role);
     let location = identity.plane_location(role);
-    // `R8`: один байт на отсчёт, видимая строка = ширина плоскости.
-    let row_bytes = extent.width;
+    // `R8` — один байт на отсчёт, `GR88` (10/12 бит) — два: видимая строка = ширина × байты.
+    // Ширина плоскости — тысячи текселей, умножение на 2 в `u32` не переполняется.
+    let row_bytes = extent
+        .width
+        .saturating_mul(bytes_per_sample(identity.layout.depth));
     if location.pitch < row_bytes {
         return Err(DmaBufPlanarFrameError::PitchShorterThanRow {
             plane: role,
@@ -238,6 +232,14 @@ fn validate_plane(
         });
     }
     Ok(())
+}
+
+/// Байт на отсчёт плоскости в DMA-BUF.
+const fn bytes_per_sample(depth: SampleDepth) -> u32 {
+    match depth {
+        SampleDepth::Bits8 => 1,
+        SampleDepth::Bits10 | SampleDepth::Bits12 => 2,
+    }
 }
 
 #[cfg(test)]

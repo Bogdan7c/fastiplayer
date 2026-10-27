@@ -34,6 +34,12 @@ pub enum PlaneTextureFormat {
     /// байты по отдельности и дало мусорный код (у wgpu 16-битный путь тоже без фильтрации —
     /// `textureLoad`).
     LuminanceAlpha,
+    /// Пара байтов LE в двухканальной текстуре `(R, G)`: импорт 16-битной плоскости как DRM
+    /// `GR88` без CPU-копии (сессия 12a). DRM хранит `GR88` словом little-endian `G:R`, то есть
+    /// первый (младший) байт — `R`, второй (старший) — `G`; шейдер собирает `R·255 + G·255·256`.
+    /// Фильтрация только `NEAREST`, как у `LuminanceAlpha`. Загрузкой не выделяется: путь
+    /// загрузки 10/12 бит остаётся на `LuminanceAlpha` (ядро GLES 2.0, без расширений).
+    RgExt,
 }
 
 impl PlaneTextureFormat {
@@ -44,6 +50,8 @@ impl PlaneTextureFormat {
             // `GL_RED_EXT` = 0x1903 = `GL_RED` (спецификация `EXT_texture_rg`).
             Self::RedExt => glow::RED,
             Self::LuminanceAlpha => glow::LUMINANCE_ALPHA,
+            // `GL_RG_EXT` = 0x8227 = `GL_RG` (спецификация `EXT_texture_rg`).
+            Self::RgExt => glow::RG,
         }
     }
 
@@ -51,7 +59,7 @@ impl PlaneTextureFormat {
     pub(crate) const fn bytes_per_texel(self) -> usize {
         match self {
             Self::Luminance | Self::RedExt => 1,
-            Self::LuminanceAlpha => 2,
+            Self::LuminanceAlpha | Self::RgExt => 2,
         }
     }
 
@@ -59,7 +67,7 @@ impl PlaneTextureFormat {
     pub(crate) const fn filter(self) -> u32 {
         match self {
             Self::Luminance | Self::RedExt => glow::LINEAR,
-            Self::LuminanceAlpha => glow::NEAREST,
+            Self::LuminanceAlpha | Self::RgExt => glow::NEAREST,
         }
     }
 }

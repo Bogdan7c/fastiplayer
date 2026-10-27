@@ -6,11 +6,12 @@
 
 use crate::color::ColorTransform;
 use crate::color::high_bit::CodeNormalization;
+use crate::gl_calls::PlaneTextureFormat;
 use crate::hdr::lut::{self, HdrLutKey};
 use crate::hdr::{HdrReferenceLevels, HdrTransfer};
 use crate::layer_api::{VideoColorConversion, VideoDrawError};
 use crate::planes::PlanarLayout;
-use crate::program::ProgramVariant;
+use crate::program::{BytePairChannels, ProgramVariant};
 
 /// Цветовые uniform-ы варианта программы.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -67,14 +68,26 @@ pub(crate) struct FrameColorPlan {
     pub(crate) hdr_table: Option<RequiredHdrTable>,
 }
 
-/// Выбрать программу и цвет для кадра раскладки `layout`.
+/// Выбрать программу и цвет для кадра раскладки `layout`, чьи плоскости лежат в текстурах
+/// формата `texture_format` (у 10/12 бит формат решает, в каких каналах пара байтов).
 ///
 /// # Errors
-/// [`VideoDrawError::HdrToSdrNeedsHighBitFrame`] — HDR → SDR для 8-битного кадра.
+/// [`VideoDrawError::HdrToSdrNeedsHighBitFrame`] — HDR → SDR для 8-битного кадра;
+/// [`VideoDrawError::HighBitFrameWithoutBytePairTextures`] — 10/12 бит в 8-битных текстурах
+/// (нарушение инварианта загрузки или импорта).
 pub(crate) fn plan_frame_color(
     layout: PlanarLayout,
+    texture_format: PlaneTextureFormat,
     conversion: VideoColorConversion,
 ) -> Result<FrameColorPlan, VideoDrawError> {
+    let byte_pairs = || {
+        BytePairChannels::of(texture_format).ok_or(
+            VideoDrawError::HighBitFrameWithoutBytePairTextures {
+                depth: layout.depth,
+                format: texture_format,
+            },
+        )
+    };
     match (layout.depth.is_high_bit(), conversion) {
         (
             false,
@@ -99,7 +112,7 @@ pub(crate) fn plan_frame_color(
                 adjustment,
             },
         ) => Ok(FrameColorPlan {
-            variant: ProgramVariant::HighBitSdr,
+            variant: ProgramVariant::HighBitSdr(byte_pairs()?),
             uniforms: ColorUniformValues::HighBit {
                 normalization: CodeNormalization::new(layout.depth, encoding.range),
                 matrix: ColorTransform::for_normalized_sdr(encoding, adjustment),
@@ -108,7 +121,7 @@ pub(crate) fn plan_frame_color(
             hdr_table: None,
         }),
         (true, VideoColorConversion::HdrToSdr(hdr)) => Ok(FrameColorPlan {
-            variant: ProgramVariant::HighBitHdrTable,
+            variant: ProgramVariant::HighBitHdrTable(byte_pairs()?),
             uniforms: ColorUniformValues::HighBit {
                 normalization: CodeNormalization::new(layout.depth, hdr.range),
                 matrix: ColorTransform::bt2020_nonlinear_rgb(),

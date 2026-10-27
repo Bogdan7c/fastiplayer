@@ -10,7 +10,7 @@ use gles2_egui::{FenceWaitError, GlAccessError, ShaderError};
 
 use crate::color::{ColorAdjustment, YuvColorEncoding};
 use crate::geometry::{PictureMapping, PixelRect, QuarterTurn, RectOutOfRange};
-use crate::gl_calls::VideoGlError;
+use crate::gl_calls::{PlaneTextureFormat, VideoGlError};
 use crate::hdr::HdrToSdrConversion;
 use crate::planes::{FrameLayoutError, PlaneRole, PlaneSourceKind, SampleDepth};
 use crate::ring::{BusyReason, UploadSlotCount};
@@ -214,6 +214,15 @@ pub enum VideoDrawError {
         depth: SampleDepth,
     },
     /// Атлас таблицы HDR больше лимита текстур драйвера.
+    /// Кадр 10/12 бит лежит в текстурах 8-битного формата, где нет пары байтов. Загрузка и
+    /// импорт выбирают формат по разрядности, поэтому это нарушение инварианта, а не ввод.
+    #[error("{depth:?} frame is stored in {format:?} textures without byte pairs")]
+    HighBitFrameWithoutBytePairTextures {
+        /// Разрядность кадра.
+        depth: SampleDepth,
+        /// Формат текстур кадра.
+        format: PlaneTextureFormat,
+    },
     #[error("HDR tone-mapping table needs a {width}x{height} texture, driver limit is {max}")]
     HdrTableTooLarge {
         /// Ширина атласа.

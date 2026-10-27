@@ -100,14 +100,25 @@ fn every_chroma_subsampling_is_accepted_at_eight_bits() {
     }
 }
 
+/// 10/12 бит — пара байтов на отсчёт (`GR88`): тот же паспорт годен, если шаг вмещает
+/// `ширина × 2` байта, а шаг, достаточный для 8 бит, — уже нет.
 #[test]
-fn high_bit_depth_is_refused_before_any_driver_call() {
+fn high_bit_rows_are_two_bytes_per_sample() {
     for depth in [SampleDepth::Bits10, SampleDepth::Bits12] {
         let mut passport = identity();
         passport.layout.depth = depth;
+        // Y 64 отсчёта = 128 байт при шаге 128, U/V 32 отсчёта = 64 байта при шаге 64.
+        assert_eq!(build(&passport), Ok(()), "{depth:?}");
+        // Шаг 48 вмещает 32 байта строки цветности 8 бит, но не 64 байта 10/12 бит.
+        passport.planes[1].pitch = 48;
         assert_eq!(
             build(&passport),
-            Err(DmaBufPlanarFrameError::UnsupportedDepth { depth })
+            Err(DmaBufPlanarFrameError::PitchShorterThanRow {
+                plane: PlaneRole::ChromaU,
+                pitch: 48,
+                row_bytes: 64,
+            }),
+            "{depth:?}"
         );
     }
 }

@@ -3,7 +3,8 @@
 //! Обычный программный путь копирует кадр в текстуры (`glTexSubImage2D`, копию делает драйвер на
 //! CPU нашего потока). Здесь вместо копии: блок памяти кадра декодера (запечатанный memfd,
 //! `video_core::HostFrameMemoryKind::SealedMemfd` — его заказывает приложение для GLES2) →
-//! `/dev/udmabuf` → dma-buf → три `EGLImage` R8 → те же текстуры и та же программа, что у копии
+//! `/dev/udmabuf` → dma-buf → три `EGLImage` (`R8` у 8 бит, `GR88` у 10/12 бит, сессия 12a) → те
+//! же текстуры и та же программа, что у копии
 //! (`gles2_video::VideoLayerRenderer::import_planar_dma_buf_frame`).
 //!
 //! # Владелец состояния
@@ -30,8 +31,8 @@
 //!   декодера ([`HostBlockZeroCopy::decoder_changed`]): иначе udmabuf удерживал бы память блоков,
 //!   которые декодер уже выбросил.
 //! - Ошибка импорта выключает путь до пересоздания рендера (предупреждение один раз).
-//! - Только 8 бит (решение владельца 12); 10/12 бит и кадры без memfd-блока (AV1, wgpu-память)
-//!   идут копией без шума в логе.
+//! - 8, 10 и 12 бит (10/12 — решение владельца 62, сессия 12a: пара байтов LE как `GR88`). Кадры
+//!   без memfd-блока (AV1: dav1d не умеет DR1; wgpu-память) идут копией без шума в логе.
 
 mod block_dma_bufs;
 #[allow(
@@ -46,7 +47,7 @@ use std::io;
 use gles2_egui::{DrmModifier, Gles2Context};
 use gles2_video::{
     CachedDmaBufFrame, CpuWriteVisibility, DmaBufObjectIdentity, DmaBufPlanarFrame,
-    DmaBufPlanarIdentity, DmaBufPlaneLocation, PlanarFrameUpload, SampleDepth, VideoLayerRenderer,
+    DmaBufPlanarIdentity, DmaBufPlaneLocation, PlanarFrameUpload, VideoLayerRenderer,
     probe_cpu_write_visibility,
 };
 use video_core::{
@@ -302,7 +303,7 @@ impl HostBlockZeroCopy {
     }
 }
 
-/// Кадр годится: программный 8 бит, лежит в одном блоке с memfd.
+/// Кадр годится: программный планарный (8/10/12 бит), лежит в одном блоке с memfd.
 fn eligible_frame<'d>(
     frame: &DecodedFrame,
     descriptor: &'d FrameResourceDescriptor,
@@ -312,9 +313,6 @@ fn eligible_frame<'d>(
     };
     // Ошибки разбора здесь не важны: копия разберёт кадр ещё раз и честно сообщит о них.
     let upload = host_planar_frame_upload(frame, descriptor).ok()?;
-    if upload.layout.depth != SampleDepth::Bits8 {
-        return None;
-    }
     let memory = host.importable_memory().ok()??;
     memory.block().sealed_memfd()?;
     Some(EligibleFrame {

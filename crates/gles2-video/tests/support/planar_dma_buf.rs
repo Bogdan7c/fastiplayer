@@ -16,6 +16,7 @@ use gles2_video::{
     VideoDrawOutcome, VideoFrameKey, VideoLayerRenderer, YuvColorEncoding,
 };
 
+use super::high_bit::HighBitFrame;
 use super::udmabuf::Udmabuf;
 use super::{FramePattern, OwnedFrame, draw_frame, extent, fill_request, size};
 
@@ -52,17 +53,42 @@ fn plane_locations(
     (locations, offset)
 }
 
-/// Содержимое буфера для кадра `frame`: видимые байты по своим местам, отступы — мусор.
+/// Байты одной плоскости источника (8 или 16 бит): видимая часть строки и шаг.
+struct PlaneBytes<'a> {
+    bytes: &'a [u8],
+    stride: usize,
+    visible_row_bytes: usize,
+    rows: u32,
+}
+
+/// Плоскости 8-битного кадра в порядке Y, U, V.
+fn owned_planes(frame: &OwnedFrame) -> [PlaneBytes<'_>; 3] {
+    [&frame.luma, &frame.chroma_u, &frame.chroma_v].map(|plane| PlaneBytes {
+        bytes: &plane.bytes,
+        stride: plane.stride,
+        visible_row_bytes: plane.visible_row_bytes,
+        rows: plane.rows,
+    })
+}
+
+/// Плоскости 10/12-битного кадра (пары байтов LE) в порядке Y, U, V.
+fn high_bit_planes(frame: &HighBitFrame) -> [PlaneBytes<'_>; 3] {
+    [&frame.luma, &frame.chroma_u, &frame.chroma_v].map(|plane| PlaneBytes {
+        bytes: &plane.bytes,
+        stride: plane.stride,
+        visible_row_bytes: plane.visible_row_bytes,
+        rows: plane.rows,
+    })
+}
+
+/// Содержимое буфера: видимые байты плоскостей по своим местам, отступы — мусор.
 fn buffer_contents(
-    frame: &OwnedFrame,
+    planes: [PlaneBytes<'_>; 3],
     locations: &[DmaBufPlaneLocation; 3],
     total: u32,
 ) -> Vec<u8> {
     let mut bytes = vec![PADDING_BYTE; total as usize];
-    for (location, plane) in locations
-        .iter()
-        .zip([&frame.luma, &frame.chroma_u, &frame.chroma_v])
-    {
+    for (location, plane) in locations.iter().zip(planes) {
         for row in 0..plane.rows as usize {
             let source =
                 &plane.bytes[row * plane.stride..row * plane.stride + plane.visible_row_bytes];
@@ -82,10 +108,49 @@ pub struct TestPlanar {
 }
 
 impl TestPlanar {
-    /// Создать буфер с содержимым `frame`; `None` — нет `/dev/udmabuf`.
+    /// Создать буфер с содержимым 8-битного `frame`; `None` — нет `/dev/udmabuf`.
     pub fn create(test_name: &str, resource_id: u64, frame: &OwnedFrame) -> Option<Self> {
-        let (locations, total) = plane_locations(frame.luma_extent, frame.chroma);
-        let buffer = match Udmabuf::create(&buffer_contents(frame, &locations, total)) {
+        let layout = PlanarLayout {
+            chroma: frame.chroma,
+            depth: SampleDepth::Bits8,
+        };
+        Self::create_from(
+            test_name,
+            resource_id,
+            layout,
+            frame.luma_extent,
+            owned_planes(frame),
+        )
+    }
+
+    /// Создать буфер с содержимым 10/12-битного `frame` (плоскости импортируются как `GR88`).
+    pub fn create_high_bit(
+        test_name: &str,
+        resource_id: u64,
+        frame: &HighBitFrame,
+    ) -> Option<Self> {
+        let layout = PlanarLayout {
+            chroma: frame.chroma,
+            depth: frame.depth,
+        };
+        Self::create_from(
+            test_name,
+            resource_id,
+            layout,
+            frame.luma_extent,
+            high_bit_planes(frame),
+        )
+    }
+
+    fn create_from(
+        test_name: &str,
+        resource_id: u64,
+        layout: PlanarLayout,
+        luma_extent: PlaneExtent,
+        planes: [PlaneBytes<'_>; 3],
+    ) -> Option<Self> {
+        let (locations, total) = plane_locations(luma_extent, layout.chroma);
+        let buffer = match Udmabuf::create(&buffer_contents(planes, &locations, total)) {
             Ok(buffer) => buffer,
             Err(reason) => {
                 eprintln!("skip {test_name}: {reason}");
@@ -95,11 +160,8 @@ impl TestPlanar {
         let identity = DmaBufPlanarIdentity {
             resource_id,
             object: buffer.object_identity(0),
-            layout: PlanarLayout {
-                chroma: frame.chroma,
-                depth: SampleDepth::Bits8,
-            },
-            luma_extent: frame.luma_extent,
+            layout,
+            luma_extent,
             planes: locations,
         };
         Some(Self {
@@ -112,7 +174,7 @@ impl TestPlanar {
 
     /// Перезаписать память кадром `frame` (как производитель: с окном CPU-доступа и сбросом кэша).
     pub fn rewrite(&mut self, frame: &OwnedFrame) {
-        let contents = buffer_contents(frame, &self.locations, self.total);
+        let contents = buffer_contents(owned_planes(frame), &self.locations, self.total);
         self.buffer.overwrite_contents_as_cpu_producer(&contents);
     }
 

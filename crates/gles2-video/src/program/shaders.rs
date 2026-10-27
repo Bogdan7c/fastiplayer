@@ -99,14 +99,20 @@ void main() {
 /// Оператор действует на все `sampler2D`, объявленные ниже (плоскости и атлас HDR).
 pub(super) const SAMPLER_PRECISION_STATEMENT: &str = "precision highp sampler2D;\n";
 
-/// Сборка кода из пары байтов `GL_LUMINANCE_ALPHA`: `L·255 + A·255·256`. Байт приходит в шейдер
-/// как `b / 255`, поэтому умножение возвращает целое `b` (с ошибкой fp32 ~1e-5, на шесть порядков
+/// Сборка кода из пары байтов: `младший·255 + старший·255·256`. Байт приходит в шейдер как
+/// `b / 255`, поэтому умножение возвращает целое `b` (с ошибкой fp32 ~1e-5, на шесть порядков
 /// меньше шага кода); `floor`/округление не нужно — дальше код только нормализуется линейно.
+/// Где лежит пара, решает формат текстур кадра (`#define BYTE_PAIRS_IN_RED_GREEN`): загрузка —
+/// `GL_LUMINANCE_ALPHA` (`.ra`), импорт без копии — DRM `GR88` (`.rg`, сессия 12a).
 pub(super) const PLANE_CODE_FUNCTION: &str = "
 const vec2 BYTE_PAIR_TO_CODE = vec2(255.0, 65280.0);
 
 float plane_code(sampler2D plane, vec2 coord) {
+#if BYTE_PAIRS_IN_RED_GREEN
+    return dot(texture2D(plane, coord).rg, BYTE_PAIR_TO_CODE);
+#else
     return dot(texture2D(plane, coord).ra, BYTE_PAIR_TO_CODE);
+#endif
 }
 ";
 

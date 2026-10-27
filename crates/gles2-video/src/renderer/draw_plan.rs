@@ -69,7 +69,7 @@ pub(super) fn plan_current_frame<'a>(
     else {
         return Ok(None);
     };
-    let color = plan_frame_color(layout, request.color)?;
+    let color = plan_frame_color(layout, textures.format, request.color)?;
     let program = programs.for_variant(color.variant).ok_or(
         VideoDrawError::HighBitDepthNeedsHighPrecision {
             depth: layout.depth,

@@ -61,7 +61,7 @@ mod shaders;
 use gles2_egui::{Es100ProgramSources, Gles2Capabilities, Gles2Context};
 
 use crate::VideoLayerError;
-use crate::gl_calls::{HDR_LUT_TEXTURE_UNIT, VideoGl};
+use crate::gl_calls::{HDR_LUT_TEXTURE_UNIT, PlaneTextureFormat, VideoGl};
 use crate::planes::ChromaSubsampling;
 
 pub(crate) use nv12::Nv12Program;
@@ -135,15 +135,35 @@ impl ChromaFilter {
     }
 }
 
+/// В каких каналах текстуры лежит пара байтов 16-битного отсчёта.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum BytePairChannels {
+    /// `GL_LUMINANCE_ALPHA` пути загрузки: младший байт — `L` (`.r`), старший — `A` (`.a`).
+    LuminanceAlpha,
+    /// Импорт без копии как DRM `GR88`: младший байт — `R`, старший — `G` (`.rg`, сессия 12a).
+    RedGreen,
+}
+
+impl BytePairChannels {
+    /// Каналы пары у текстур формата `format`; `None` — формат 8 бит (пары байтов в нём нет).
+    pub(crate) const fn of(format: PlaneTextureFormat) -> Option<Self> {
+        match format {
+            PlaneTextureFormat::LuminanceAlpha => Some(Self::LuminanceAlpha),
+            PlaneTextureFormat::RgExt => Some(Self::RedGreen),
+            PlaneTextureFormat::Luminance | PlaneTextureFormat::RedExt => None,
+        }
+    }
+}
+
 /// Какая программа нужна кадру.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProgramVariant {
     /// 8 бит: билинейная выборка, одна матрица; по программе на раскладку.
     EightBit(ChromaSubsampling),
     /// 10/12 бит SDR: пары байтов, nearest, нормализация и матрица.
-    HighBitSdr,
+    HighBitSdr(BytePairChannels),
     /// 10/12 бит HDR → SDR: то же плюс таблица тон-маппинга.
-    HighBitHdrTable,
+    HighBitHdrTable(BytePairChannels),
 }
 
 /// Uniform-ы нормализации кодов 10/12 бит.
@@ -199,11 +219,36 @@ pub(crate) struct VideoProgram {
     pub(crate) chroma_filter: ChromaFilter,
 }
 
-/// Программы 10/12 бит (собираются только при `highp`).
+/// Программы 10/12 бит для одного расположения пары байтов.
 #[derive(Debug)]
 struct HighBitPrograms {
     sdr: VideoProgram,
     hdr_table: VideoProgram,
+}
+
+/// Программы 10/12 бит (собираются только при `highp`).
+#[derive(Debug)]
+struct HighBitProgramSets {
+    /// Путь загрузки (`GL_LUMINANCE_ALPHA`).
+    luminance_alpha: HighBitPrograms,
+    /// Импорт без копии (`GR88`): только если драйвер импортирует DMA-BUF (уровень zero-copy).
+    red_green: Option<HighBitPrograms>,
+}
+
+impl HighBitProgramSets {
+    fn for_channels(&self, channels: BytePairChannels) -> Option<&HighBitPrograms> {
+        match channels {
+            BytePairChannels::LuminanceAlpha => Some(&self.luminance_alpha),
+            BytePairChannels::RedGreen => self.red_green.as_ref(),
+        }
+    }
+
+    fn programs(&self) -> impl Iterator<Item = &VideoProgram> {
+        [Some(&self.luminance_alpha), self.red_green.as_ref()]
+            .into_iter()
+            .flatten()
+            .flat_map(|programs| [&programs.sdr, &programs.hdr_table])
+    }
 }
 
 /// Все программы одного контекста.
@@ -212,7 +257,7 @@ pub(crate) struct VideoPrograms {
     yuv420: VideoProgram,
     yuv422: VideoProgram,
     yuv444: VideoProgram,
-    high_bit: Option<HighBitPrograms>,
+    high_bit: Option<HighBitProgramSets>,
     /// Программа NV12 из DMA-BUF (сессия 07): собирается всегда, как программы 8 бит.
     pub(crate) nv12: Nv12Program,
     pub(crate) precision: ShaderPrecision,
@@ -241,9 +286,23 @@ impl VideoPrograms {
         let yuv422 = build(ProgramVariant::EightBit(ChromaSubsampling::Yuv422))?;
         let yuv444 = build(ProgramVariant::EightBit(ChromaSubsampling::Yuv444))?;
         let high_bit = if precision.supports_high_bit_depth() {
-            Some(HighBitPrograms {
-                sdr: build(ProgramVariant::HighBitSdr)?,
-                hdr_table: build(ProgramVariant::HighBitHdrTable)?,
+            let mut high_bit_programs = |channels| {
+                Ok::<_, VideoLayerError>(HighBitPrograms {
+                    sdr: build(ProgramVariant::HighBitSdr(channels))?,
+                    hdr_table: build(ProgramVariant::HighBitHdrTable(channels))?,
+                })
+            };
+            let luminance_alpha = high_bit_programs(BytePairChannels::LuminanceAlpha)?;
+            // Импорт `GR88` бывает только там, где драйвер импортирует DMA-BUF: на остальных
+            // драйверах эти две программы не нужны и не компилируются.
+            let red_green = if context.capabilities().tiers().zero_copy.is_available() {
+                Some(high_bit_programs(BytePairChannels::RedGreen)?)
+            } else {
+                None
+            };
+            Some(HighBitProgramSets {
+                luminance_alpha,
+                red_green,
             })
         } else {
             None
@@ -265,25 +324,30 @@ impl VideoPrograms {
         })
     }
 
-    /// Программа варианта; `None` — вариант 10/12 бит на драйвере без `highp`.
+    /// Программа варианта; `None` — вариант 10/12 бит на драйвере без `highp` (или пары `GR88`
+    /// на драйвере без импорта DMA-BUF, куда такой кадр прийти не может).
     pub(crate) fn for_variant(&self, variant: ProgramVariant) -> Option<&VideoProgram> {
+        let high_bit = |channels| {
+            self.high_bit
+                .as_ref()
+                .and_then(|sets| sets.for_channels(channels))
+        };
         match variant {
             ProgramVariant::EightBit(ChromaSubsampling::Yuv420) => Some(&self.yuv420),
             ProgramVariant::EightBit(ChromaSubsampling::Yuv422) => Some(&self.yuv422),
             ProgramVariant::EightBit(ChromaSubsampling::Yuv444) => Some(&self.yuv444),
-            ProgramVariant::HighBitSdr => self.high_bit.as_ref().map(|programs| &programs.sdr),
-            ProgramVariant::HighBitHdrTable => {
-                self.high_bit.as_ref().map(|programs| &programs.hdr_table)
+            ProgramVariant::HighBitSdr(channels) => {
+                high_bit(channels).map(|programs| &programs.sdr)
+            }
+            ProgramVariant::HighBitHdrTable(channels) => {
+                high_bit(channels).map(|programs| &programs.hdr_table)
             }
         }
     }
 
     /// Удалить все программы.
     pub(crate) fn delete(&self, context: &Gles2Context) {
-        let high_bit = self
-            .high_bit
-            .iter()
-            .flat_map(|programs| [&programs.sdr, &programs.hdr_table]);
+        let high_bit = self.high_bit.iter().flat_map(HighBitProgramSets::programs);
         for program in [&self.yuv420, &self.yuv422, &self.yuv444]
             .into_iter()
             .chain(high_bit)
@@ -429,11 +493,11 @@ impl UniformNeeds {
                 hdr_table: false,
                 chroma_filter: eight_bit_chroma_filter(chroma),
             },
-            ProgramVariant::HighBitSdr | ProgramVariant::HighBitHdrTable => Self {
+            ProgramVariant::HighBitSdr(_) | ProgramVariant::HighBitHdrTable(_) => Self {
                 edge_clamp,
                 chroma_co_sited_x: false,
                 code_normalization: true,
-                hdr_table: matches!(variant, ProgramVariant::HighBitHdrTable),
+                hdr_table: matches!(variant, ProgramVariant::HighBitHdrTable(_)),
                 chroma_filter: ChromaFilter::Nearest,
             },
         }
@@ -476,11 +540,12 @@ fn fragment_shader_source(
                 shaders::EIGHT_BIT_FRAGMENT_BODY
             )
         }
-        ProgramVariant::HighBitSdr | ProgramVariant::HighBitHdrTable => {
-            let hdr_table = u8::from(matches!(variant, ProgramVariant::HighBitHdrTable));
+        ProgramVariant::HighBitSdr(channels) | ProgramVariant::HighBitHdrTable(channels) => {
+            let hdr_table = u8::from(matches!(variant, ProgramVariant::HighBitHdrTable(_)));
+            let red_green = u8::from(matches!(channels, BytePairChannels::RedGreen));
             format!(
                 "#version 100\n{precision_line}\n{}#define SHADER_EDGE_CLAMP {edge_clamp}\n\
-                 #define HDR_TABLE {hdr_table}\n{}{}",
+                 #define HDR_TABLE {hdr_table}\n#define BYTE_PAIRS_IN_RED_GREEN {red_green}\n{}{}",
                 shaders::SAMPLER_PRECISION_STATEMENT,
                 shaders::PLANE_CODE_FUNCTION,
                 shaders::HIGH_BIT_FRAGMENT_BODY

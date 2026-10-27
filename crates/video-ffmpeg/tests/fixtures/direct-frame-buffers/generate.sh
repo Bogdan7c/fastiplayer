@@ -33,3 +33,11 @@ ffmpeg -hide_banner -loglevel error -y "${source[@]}" \
     -c:v libx265 -preset veryfast -crf 35 -x265-params "keyint=6:bframes=2:log-level=error" \
     -bsf:v hevc_metadata=aud=insert \
     -f hevc "$here/hevc-176x100-12frames.hevc"
+
+# VP9 profile 2, 10 бит (yuv420p10le): тот же источник, размер, число кадров и IVF, что у 8-битного.
+# Нужен сквозному тесту `render-gles2-shell/tests/ffmpeg_decoder_to_shell.rs` (10-битный кадр
+# в memfd-блоках доходит до экрана GLES2 без CPU-копии и совпадает с путём копии).
+ffmpeg -hide_banner -loglevel error -y -f lavfi -i "testsrc2=duration=2.4:size=176x100:rate=5" \
+    -vf format=yuv420p10le \
+    -c:v libvpx-vp9 -profile:v 2 -pix_fmt yuv420p10le -deadline realtime -cpu-used 8 -crf 40 -b:v 0 -g 6 \
+    -f ivf "$here/vp9-10bit-176x100-12frames.ivf"

@@ -1,4 +1,4 @@
-//! Импорт программного планарного кадра (8 бит) из DMA-BUF в три GL-текстуры и кэш импортов.
+//! Импорт программного планарного кадра (8/10/12 бит) из DMA-BUF в три GL-текстуры и кэш импортов.
 //!
 //! Владелец состояния «импортированный планарный кадр»: кэш (паспорт → три текстуры) и текущий
 //! кадр. Устроен так же, как [`crate::dma_buf_import`] (NV12), но плоскостей три, все `R8`, и
@@ -222,8 +222,15 @@ fn create_and_attach(
     let extent = identity.plane_extent(role);
     let location = identity.plane_location(role);
     let texture = gl.create_texture().map_err(VideoImportError::Gl)?;
+    // 8 бит — байт на отсчёт (`R8`); 10/12 бит — пара байтов LE (`GR88`: младший в R, старший
+    // в G), её собирает программа с `BYTE_PAIRS_IN_RED_GREEN`.
+    let fourcc = if identity.layout.depth.is_high_bit() {
+        DrmFourcc::GR88
+    } else {
+        DrmFourcc::R8
+    };
     let request = DmaBufPlaneTexture {
-        fourcc: DrmFourcc::R8,
+        fourcc,
         width: extent.width,
         height: extent.height,
         fd: frame.dma_buf(),

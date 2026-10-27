@@ -69,11 +69,12 @@ impl PlaneTextureSet {
         })
     }
 
-    /// Набор из трёх текстур, чьё хранилище — импортированные плоскости DMA-BUF (`R8`).
+    /// Набор из трёх текстур, чьё хранилище — импортированные плоскости DMA-BUF (`R8` у 8 бит,
+    /// `GR88` у 10/12 бит).
     ///
     /// Текстура ровно размера видимой плоскости (`allocated == visible`): шаг строки учёл
     /// `EGLImage` (pitch), поэтому хвоста строки в текстуре нет и шейдеру не нужна обрезка.
-    /// `format` номинальный (`RedExt`: один канал R): набор не переразмечается через
+    /// `format` номинальный ([`imported_plane_format`]): набор не переразмечается через
     /// `ensure_allocated`, импорт заменяет набор целиком.
     pub(crate) fn from_imported_planes(
         textures: [glow::NativeTexture; 3],
@@ -96,7 +97,7 @@ impl PlaneTextureSet {
                 plane(chroma_u, chroma_u_extent),
                 plane(chroma_v, chroma_v_extent),
             ],
-            format: PlaneTextureFormat::RedExt,
+            format: imported_plane_format(layout),
             layout: Some(layout),
         }
     }
@@ -133,5 +134,15 @@ impl PlaneTextureSet {
         for plane in self.planes {
             gl.delete_texture(plane.texture);
         }
+    }
+}
+
+/// Формат текстур импортированных плоскостей: один канал `R` у 8 бит, пара `(R, G)` у 10/12 бит.
+/// Номинальный: хранилище задаёт `EGLImage`, а формат выбирает фильтр и программу кадра.
+const fn imported_plane_format(layout: PlanarLayout) -> PlaneTextureFormat {
+    if layout.depth.is_high_bit() {
+        PlaneTextureFormat::RgExt
+    } else {
+        PlaneTextureFormat::RedExt
     }
 }

@@ -17,9 +17,10 @@ mod support;
 
 use gles2_egui::{Gles2Context, OffscreenPixels};
 use gles2_video::{
-    CachedDmaBufFrame, ChromaSubsampling, ColorAdjustment, PlanarDmaBufImportOutcome,
+    CachedDmaBufFrame, ChromaSubsampling, ColorAdjustment, PlanarDmaBufImportOutcome, SampleDepth,
     UploadOutcome, VideoFrameKey, VideoLayerOptions, VideoLayerRenderer,
 };
+use support::high_bit::{HighBitFrame, HighBitPattern, reference_high_bit_sdr};
 use support::nv12_dma_buf::{Nv12Layout, PALETTE_A, TestNv12};
 use support::planar_dma_buf::{
     ENCODING, TARGET_HEIGHT, TARGET_WIDTH, TestPlanar, drawn, full_draw, imported, patterned_frame,
@@ -118,6 +119,125 @@ fn imported_odd_sized_420_matches_the_upload_path() {
         15,
         "imported_odd_sized_420_matches_the_upload_path",
     );
+}
+
+/// 10/12 бит (сессия 12a): кадр из DMA-BUF как `GR88` и тот же кадр после загрузки в
+/// `LUMINANCE_ALPHA` дают одну картинку — та же сборка кода, только каналы пары `.rg` вместо `.ra`.
+fn high_bit_import_matches_upload(
+    chroma: ChromaSubsampling,
+    depth: SampleDepth,
+    width: u32,
+    height: u32,
+    name: &str,
+) {
+    let target = size(TARGET_WIDTH, TARGET_HEIGHT);
+    let Some(mut context) = offscreen_or_skip(name, target) else {
+        return;
+    };
+    let max_code = (1_u32 << depth.bits()) - 1;
+    // Коды по всему диапазону разрядности: старший байт пары тоже меняется по кадру.
+    let code = |x: u32, y: u32, seed: u32| {
+        u16::try_from((x * 97 + y * 389 + seed * 1031) % (max_code + 1)).unwrap()
+    };
+    let host = HighBitFrame::from_pattern(
+        chroma,
+        depth,
+        extent(width, height),
+        0,
+        &HighBitPattern {
+            luma: &|x, y| code(x, y, 1),
+            chroma_u: &|x, y| code(x, y, 2),
+            chroma_v: &|x, y| code(x, y, 3),
+        },
+    );
+    let Some(planar) = TestPlanar::create_high_bit(name, 1, &host) else {
+        return;
+    };
+    let mut video = renderer(&context, VideoLayerOptions::default());
+    imported(
+        video
+            .import_planar_dma_buf_frame(&context, &planar.frame(1))
+            .unwrap(),
+    );
+    let (outcome, from_import) = full_draw(&mut context, &mut video);
+    drawn(outcome);
+    assert!(matches!(
+        video.upload(&context, &host.upload(2)).unwrap(),
+        UploadOutcome::Uploaded(_)
+    ));
+    let (outcome, from_upload) = full_draw(&mut context, &mut video);
+    drawn(outcome);
+    let non_black = assert_images_match(&from_import, &from_upload, name);
+    assert!(
+        non_black > 1000,
+        "the pattern must be visible, only {non_black} non-black pixels"
+    );
+    video.destroy(&context).unwrap();
+}
+
+#[test]
+fn imported_10_bit_420_matches_the_upload_path() {
+    high_bit_import_matches_upload(
+        ChromaSubsampling::Yuv420,
+        SampleDepth::Bits10,
+        32,
+        16,
+        "imported_10_bit_420_matches_the_upload_path",
+    );
+}
+
+/// Нечётный размер и 12 бит 4:4:4: шаг строки в байтах пары и полная цветность.
+#[test]
+fn imported_odd_sized_12_bit_444_matches_the_upload_path() {
+    high_bit_import_matches_upload(
+        ChromaSubsampling::Yuv444,
+        SampleDepth::Bits12,
+        31,
+        15,
+        "imported_odd_sized_12_bit_444_matches_the_upload_path",
+    );
+}
+
+/// Независимая проверка цвета 10 бит без копии: одноцветный кадр равен CPU-эталону wgpu.
+#[test]
+fn solid_imported_10_bit_frame_has_the_reference_color() {
+    let name = "solid_imported_10_bit_frame_has_the_reference_color";
+    let target = size(TARGET_WIDTH, TARGET_HEIGHT);
+    let Some(mut context) = offscreen_or_skip(name, target) else {
+        return;
+    };
+    // Старшие байты кодов не нулевые: перепутанные каналы пары дали бы другой цвет.
+    let codes = [700, 300, 820];
+    let host = HighBitFrame::solid(
+        ChromaSubsampling::Yuv420,
+        SampleDepth::Bits10,
+        extent(32, 16),
+        0,
+        codes,
+    );
+    let Some(planar) = TestPlanar::create_high_bit(name, 1, &host) else {
+        return;
+    };
+    let mut video = renderer(&context, VideoLayerOptions::default());
+    imported(
+        video
+            .import_planar_dma_buf_frame(&context, &planar.frame(1))
+            .unwrap(),
+    );
+    let (outcome, pixels) = full_draw(&mut context, &mut video);
+    drawn(outcome);
+    assert_close(
+        pixel(&pixels, TARGET_WIDTH / 2, TARGET_HEIGHT / 2),
+        reference_high_bit_sdr(
+            SampleDepth::Bits10,
+            ENCODING,
+            ColorAdjustment::IDENTITY,
+            codes,
+        ),
+        1,
+        name,
+    );
+    video.destroy(&context).unwrap();
 }
 
 /// Независимая проверка цвета (а не только паритет двух путей нашего кода): одноцветный кадр

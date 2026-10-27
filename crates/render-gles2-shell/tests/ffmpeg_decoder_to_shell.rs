@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use codec_core::{VideoCodec, VideoDecodeRequirement};
+use codec_core::{VideoCodec, VideoColorMetadata, VideoDecodeRequirement};
 use gles2_video::{VideoColorConversion, YuvColorEncoding, YuvMatrix, YuvRange};
 use media_core::{TimeBase, TrackId, TrackTimestamp};
 use render_core::{RenderLiveSettings, RenderViewport};
@@ -57,6 +57,9 @@ use video_present_core::{
 
 const VP9_FIXTURE: &str =
     "../video-ffmpeg/tests/fixtures/direct-frame-buffers/vp9-176x100-12frames.ivf";
+/// 10-битный VP9 profile 2 (yuv420p10le): те же источник, размер и число кадров.
+const VP9_10BIT_FIXTURE: &str =
+    "../video-ffmpeg/tests/fixtures/direct-frame-buffers/vp9-10bit-176x100-12frames.ivf";
 const FIXTURE_FRAME_COUNT: usize = 12;
 const FIXTURE_FRAME_INTERVAL: Duration = Duration::from_millis(200);
 const VP9_TRACK_ID: TrackId = TrackId::new(1);
@@ -64,9 +67,55 @@ const FRAME_SIZE: [u32; 2] = [176, 100];
 const REQUIRE_EGL_VARIABLE: &str = "GLES2_EGUI_REQUIRE_EGL";
 const DECODER_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Как сверяются пиксели показанного кадра.
+#[derive(Clone, Copy)]
+enum PixelCheck {
+    /// Каждый пиксель сверяется с CPU-формулой цвета по 8-битным байтам дескриптора.
+    Cpu8BitReference,
+    /// Эталонной формулы нет (10 бит): кадр сверяет вызывающий тест, сравнивая два пути.
+    LeftToCaller,
+}
+
+/// Описание потока фикстуры: файл, контракт кадра хоста и способ сверки пикселей.
+#[derive(Clone)]
+struct FixtureStream {
+    ivf_path: &'static str,
+    contract: VideoFrameContract,
+    pixel_check: PixelCheck,
+    /// Цвет, который приложение определяет по контейнеру; 10-битному плану рисования он обязателен
+    /// (в сыром IVF метаданных цвета нет).
+    resolved_color: Option<VideoColorMetadata>,
+}
+
+impl FixtureStream {
+    fn vp9_8bit() -> Self {
+        Self {
+            ivf_path: VP9_FIXTURE,
+            contract: VideoFrameContract::host_yuv420_planar8(),
+            pixel_check: PixelCheck::Cpu8BitReference,
+            resolved_color: None,
+        }
+    }
+
+    fn vp9_10bit() -> Self {
+        Self {
+            ivf_path: VP9_10BIT_FIXTURE,
+            contract: VideoFrameContract::host_yuv420_planar10le(),
+            pixel_check: PixelCheck::LeftToCaller,
+            resolved_color: Some(VideoColorMetadata::sdr_bt709_limited()),
+        }
+    }
+}
+
+/// Показанный кадр: pts и RGBA-пиксели экрана после чтения обратно.
+struct PresentedImage {
+    pts: Duration,
+    rgba: Vec<u8>,
+}
+
 /// Режет IVF на пакеты-кадры (32-байтный заголовок файла, 12-байтный заголовок кадра).
-fn read_vp9_ivf_packets() -> Vec<Bytes> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(VP9_FIXTURE);
+fn read_vp9_ivf_packets(ivf_path: &str) -> Vec<Bytes> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(ivf_path);
     let file_bytes = std::fs::read(&path).unwrap_or_else(|error| {
         panic!(
             "VP9 IVF fixture {} is not readable: {error}",
@@ -263,8 +312,8 @@ fn show_and_verify(
     renderer: &mut Gles2Renderer,
     decoder: &VideoBackendDecoderThreadHandle,
     frame: DecodedFrame,
-    shown_pts: &mut Vec<Duration>,
-    distinct_pictures: &mut std::collections::HashSet<Vec<u8>>,
+    pixel_check: PixelCheck,
+    images: &mut Vec<PresentedImage>,
 ) {
     let pts = frame.pts;
     let provider = decoder.resource_provider();
@@ -288,9 +337,7 @@ fn show_and_verify(
         &RenderLiveSettings::default(),
     )
     .expect("draw plan");
-    let VideoColorConversion::Sdr { encoding, .. } = plan.request().color else {
-        panic!("8-bit VP9 is drawn through the SDR conversion");
-    };
+    let color = plan.request().color;
 
     let lease = VideoFrameLease::new(
         VideoFrameLeaseConfig::new(1, frame, Arc::new(ProviderReleaseSink))
@@ -324,20 +371,27 @@ fn show_and_verify(
     );
 
     let pixels = renderer.read_offscreen_pixels().expect("readback");
-    for y in 0..FRAME_SIZE[1] {
-        for x in 0..FRAME_SIZE[0] {
-            let expected = reference_rgba(encoding, source_samples(&descriptor, x, y));
-            let actual = pixels.pixel(x, y).unwrap();
-            for channel in 0..4 {
-                assert!(
-                    actual[channel].abs_diff(expected[channel]) <= 1,
-                    "frame {pts:?} pixel ({x},{y}): {actual:?} vs reference {expected:?}"
-                );
+    if matches!(pixel_check, PixelCheck::Cpu8BitReference) {
+        let VideoColorConversion::Sdr { encoding, .. } = color else {
+            panic!("8-bit VP9 is drawn through the SDR conversion");
+        };
+        for y in 0..FRAME_SIZE[1] {
+            for x in 0..FRAME_SIZE[0] {
+                let expected = reference_rgba(encoding, source_samples(&descriptor, x, y));
+                let actual = pixels.pixel(x, y).unwrap();
+                for channel in 0..4 {
+                    assert!(
+                        actual[channel].abs_diff(expected[channel]) <= 1,
+                        "frame {pts:?} pixel ({x},{y}): {actual:?} vs reference {expected:?}"
+                    );
+                }
             }
         }
     }
-    distinct_pictures.insert(pixels.as_rgba().to_vec());
-    shown_pts.push(pts);
+    images.push(PresentedImage {
+        pts,
+        rgba: pixels.as_rgba().to_vec(),
+    });
     // Ключ и аренда отпускаются приложением: кадр вернётся декодеру по fence показа.
     drop(key);
     drop(lease);
@@ -346,9 +400,10 @@ fn show_and_verify(
 /// Настоящий декодер → контракт рендера → экран, кадр за кадром, с возвратом кадров декодеру.
 #[test]
 fn ffmpeg_vp9_frames_are_presented_by_the_gles2_renderer_and_returned_to_the_decoder() {
-    let Some(renderer) = present_fixture_through_renderer(
+    let Some((renderer, _images)) = present_fixture_through_renderer(
         "ffmpeg_vp9_frames_are_presented_by_the_gles2_renderer_and_returned_to_the_decoder",
         HostFrameMemoryKind::Anonymous,
+        FixtureStream::vp9_8bit(),
     ) else {
         return;
     };
@@ -366,9 +421,10 @@ fn ffmpeg_vp9_frames_are_presented_by_the_gles2_renderer_and_returned_to_the_dec
 /// `show_and_verify` с CPU-формулой цвета), и возвращается декодеру по fence.
 #[test]
 fn ffmpeg_vp9_frames_in_memfd_blocks_reach_the_screen_without_a_cpu_copy() {
-    let Some(renderer) = present_fixture_through_renderer(
+    let Some((renderer, _images)) = present_fixture_through_renderer(
         "ffmpeg_vp9_frames_in_memfd_blocks_reach_the_screen_without_a_cpu_copy",
         HostFrameMemoryKind::SealedMemfd,
+        FixtureStream::vp9_8bit(),
     ) else {
         return;
     };
@@ -397,11 +453,123 @@ fn ffmpeg_vp9_frames_in_memfd_blocks_reach_the_screen_without_a_cpu_copy() {
     );
 }
 
-/// Прогон фикстуры через рендер с памятью декодера `memory`; все общие проверки — здесь.
+/// Допуск сравнения путей копии и без копии: ±1 на канал (округление шейдера).
+const PATH_PARITY_TOLERANCE: u8 = 1;
+
+/// Доля «не чёрных» пикселей, ниже которой кадр считается пустым (testsrc2 заполняет кадр).
+const MIN_LIT_PIXEL_SHARE: f64 = 0.25;
+
+/// Сколько пикселей кадра заметно светлее чёрного.
+fn lit_pixel_count(rgba: &[u8]) -> usize {
+    rgba.as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|pixel| pixel[..3].iter().any(|&channel| channel > 32))
+        .count()
+}
+
+/// 10-битный VP9 из настоящего FFmpeg доходит до экрана GLES2 БЕЗ CPU-копии (memfd → udmabuf →
+/// EGLImage `GR88`) и показывает те же пиксели, что путь копии: два прогона одной фикстуры —
+/// с обычной памятью декодера (каждый кадр через загрузку) и с запечатанным memfd (каждый кадр
+/// без копии) — дают одинаковые картинки по pts (допуск ±1 на канал), картинка не пустая и
+/// меняется от кадра к кадру. Счётчики путей строго делят кадры: копия — всё через загрузку,
+/// memfd — всё без копии.
+#[test]
+fn ffmpeg_vp9_10bit_frames_in_memfd_blocks_reach_the_screen_without_a_cpu_copy_and_match_the_copy_path()
+ {
+    let Some((copy_renderer, copy_images)) = present_fixture_through_renderer(
+        "ffmpeg_vp9_10bit_copy_path",
+        HostFrameMemoryKind::Anonymous,
+        FixtureStream::vp9_10bit(),
+    ) else {
+        return;
+    };
+    let copy_stats = copy_renderer.software_zero_copy_stats();
+    assert_eq!(
+        copy_stats.frames_through_upload, FIXTURE_FRAME_COUNT as u64,
+        "{copy_stats:?}"
+    );
+    assert_eq!(copy_stats.frames_without_cpu_copy, 0, "{copy_stats:?}");
+    drop(copy_renderer);
+
+    let Some((memfd_renderer, memfd_images)) = present_fixture_through_renderer(
+        "ffmpeg_vp9_10bit_memfd_path",
+        HostFrameMemoryKind::SealedMemfd,
+        FixtureStream::vp9_10bit(),
+    ) else {
+        return;
+    };
+    let memfd_stats = memfd_renderer.software_zero_copy_stats();
+    if let SoftwareZeroCopyState::Disabled(
+        reason @ (SoftwareZeroCopyDisabled::UdmabufUnavailable
+        | SoftwareZeroCopyDisabled::DriverCannotImportDmaBuf),
+    ) = memfd_stats.state
+    {
+        eprintln!("skip 10-bit zero-copy assertions: the path is unavailable here: {reason:?}");
+        assert_eq!(
+            memfd_stats.frames_through_upload,
+            FIXTURE_FRAME_COUNT as u64
+        );
+        return;
+    }
+    assert!(
+        matches!(memfd_stats.state, SoftwareZeroCopyState::Enabled(_)),
+        "{memfd_stats:?}"
+    );
+    assert_eq!(
+        memfd_stats.frames_without_cpu_copy, FIXTURE_FRAME_COUNT as u64,
+        "{memfd_stats:?}"
+    );
+    assert_eq!(memfd_stats.frames_through_upload, 0, "{memfd_stats:?}");
+
+    // Сверка по pts: порядок показа может отличаться между прогонами (потоки декодера).
+    let by_pts = |images: Vec<PresentedImage>| {
+        let mut sorted = images;
+        sorted.sort_by_key(|image| image.pts);
+        sorted
+    };
+    let copy_images = by_pts(copy_images);
+    let memfd_images = by_pts(memfd_images);
+    let pixel_count = (FRAME_SIZE[0] * FRAME_SIZE[1]) as usize;
+    for (copy, memfd) in copy_images.iter().zip(&memfd_images) {
+        assert_eq!(copy.pts, memfd.pts, "both runs present the same frames");
+        assert_eq!(copy.rgba.len(), memfd.rgba.len());
+        let worst_difference = copy
+            .rgba
+            .iter()
+            .zip(&memfd.rgba)
+            .map(|(left, right)| left.abs_diff(*right))
+            .max()
+            .unwrap();
+        assert!(
+            worst_difference <= PATH_PARITY_TOLERANCE,
+            "frame {:?}: the zero-copy picture differs from the copy path by {worst_difference}",
+            copy.pts
+        );
+        let lit = lit_pixel_count(&memfd.rgba);
+        assert!(
+            lit as f64 >= pixel_count as f64 * MIN_LIT_PIXEL_SHARE,
+            "frame {:?} looks empty: {lit} of {pixel_count} pixels are lit",
+            memfd.pts
+        );
+    }
+    let distinct: std::collections::HashSet<&[u8]> = memfd_images
+        .iter()
+        .map(|image| image.rgba.as_slice())
+        .collect();
+    assert!(
+        distinct.len() > FIXTURE_FRAME_COUNT / 2,
+        "the zero-copy picture changes from frame to frame"
+    );
+}
+
+/// Прогон фикстуры `stream` через рендер с памятью декодера `memory`; все общие проверки — здесь.
+/// Возвращает рендер (для счётчиков) и показанные кадры в порядке показа.
 fn present_fixture_through_renderer(
     test_name: &str,
     memory: HostFrameMemoryKind,
-) -> Option<Gles2Renderer> {
+    stream: FixtureStream,
+) -> Option<(Gles2Renderer, Vec<PresentedImage>)> {
     let mut renderer = renderer_or_skip(test_name)?;
     let started = FfmpegSoftwareVideoBackendFactory::new()
         .with_host_frame_memory(memory)
@@ -426,14 +594,16 @@ fn present_fixture_through_renderer(
         decoder.configure_stream(VideoStreamDecodeConfig::from_requirement(
             VP9_TRACK_ID,
             &VideoDecodeRequirement::new(VideoCodec::Vp9),
-            VideoFrameContract::host_yuv420_planar8(),
+            stream.contract,
         )),
         VideoStreamConfigResult::Configured
     );
 
-    let mut shown_pts = Vec::new();
-    let mut distinct_pictures = std::collections::HashSet::new();
-    for (index, payload) in read_vp9_ivf_packets().into_iter().enumerate() {
+    let mut images = Vec::new();
+    for (index, payload) in read_vp9_ivf_packets(stream.ivf_path)
+        .into_iter()
+        .enumerate()
+    {
         // Метки времени в базе дорожки (5 кадров в секунду): декодер выдаёт pts кадров из них.
         let track_time = TrackTimestamp::new(
             VP9_TRACK_ID,
@@ -449,15 +619,15 @@ fn present_fixture_through_renderer(
             generation: 1,
             encoded_bytes: payload,
             keyframe: index == 0,
-            resolved_color: None,
+            resolved_color: stream.resolved_color.clone(),
         };
         for frame in send_packet_and_collect(decoder.as_ref(), packet) {
             show_and_verify(
                 &mut renderer,
                 decoder.as_ref(),
                 frame,
-                &mut shown_pts,
-                &mut distinct_pictures,
+                stream.pixel_check,
+                &mut images,
             );
         }
     }
@@ -466,11 +636,14 @@ fn present_fixture_through_renderer(
             &mut renderer,
             decoder.as_ref(),
             frame,
-            &mut shown_pts,
-            &mut distinct_pictures,
+            stream.pixel_check,
+            &mut images,
         );
     });
 
+    let shown_pts: Vec<Duration> = images.iter().map(|image| image.pts).collect();
+    let distinct_pictures: std::collections::HashSet<&[u8]> =
+        images.iter().map(|image| image.rgba.as_slice()).collect();
     assert_eq!(
         shown_pts.len(),
         FIXTURE_FRAME_COUNT,
@@ -511,5 +684,5 @@ fn present_fixture_through_renderer(
         renderer.frame_counters().frames_presented,
         FIXTURE_FRAME_COUNT as u64
     );
-    Some(renderer)
+    Some((renderer, images))
 }
