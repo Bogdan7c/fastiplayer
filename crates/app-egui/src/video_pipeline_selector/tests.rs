@@ -582,6 +582,6 @@ fn automatic_surface_pool_reaches_import_plan_per_renderer_family() {
         .get()
     };
 
-    assert_eq!(import_slots_for(RendererFamily::Gles2), 16);
+    assert_eq!(import_slots_for(RendererFamily::Gles2), 24);
     assert_eq!(import_slots_for(RendererFamily::WgpuVulkan), 24);
 }

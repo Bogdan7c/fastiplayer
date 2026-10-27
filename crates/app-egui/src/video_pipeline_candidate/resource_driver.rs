@@ -278,8 +278,12 @@ pub(crate) const fn host_frame_memory_for(family: RendererFamily) -> HostFrameMe
 
 /// Размер пула поверхностей VA-API под OpenGL ES 2.0 (старое железо).
 ///
+/// Решение владельца 69 (gles2-renderer 12a) вернуло 24 вместо 16 из решения 66: на T410 с
+/// пулом 16 аппаратный 720p60 перерисовывал интерфейс на половине кадров (GPU 86 → 94 %,
+/// главный поток +2 п.п.), а потери кадров не уменьшились. Почему — бэклог.
+///
 /// `unwrap` в `const` вычисляется при компиляции: ноль здесь — ошибка сборки, а не паника.
-const GLES2_HARDWARE_SURFACE_POOL_FRAMES: NonZeroUsize = NonZeroUsize::new(16).unwrap();
+const GLES2_HARDWARE_SURFACE_POOL_FRAMES: NonZeroUsize = NonZeroUsize::new(24).unwrap();
 
 /// Размер пула поверхностей VA-API под wgpu/Vulkan (прежний default проекта).
 const WGPU_HARDWARE_SURFACE_POOL_FRAMES: NonZeroUsize = NonZeroUsize::new(24).unwrap();
@@ -288,9 +292,9 @@ const WGPU_HARDWARE_SURFACE_POOL_FRAMES: NonZeroUsize = NonZeroUsize::new(24).un
 ///
 /// Подставляется вместо `0` («авто») в `video.decoder_surface_pool_frames` и
 /// `video.zero_copy_surface_pool_slots`; явное число пользователя это значение не трогает.
-/// Решение владельца 66 (gles2-renderer): замер на ThinkPad T410 показал, что пул 16 даёт те
-/// же кадры, что 24, и экономит 30-70 МиБ видеопамяти — а на старом железе её мало.
-/// На wgpu/Vulkan остаётся прежние 24. Декодер всё равно поднимает пул до минимума стрима.
+/// Сейчас оба семейства получают 24 (решение 69 отменило 16 для GLES2 из решения 66); шов
+/// оставлен, чтобы число для старого железа можно было менять в одном месте по замеру.
+/// Декодер всё равно поднимает пул до минимума стрима.
 /// Единственное место соответствия «семейство -> число»: остальной код получает уже
 /// готовый `AutomaticSurfacePool`. Нижняя граница для валидации watermark-ов в config —
 /// `fastiplayer_config::MIN_AUTOMATIC_SURFACE_POOL_FRAMES` (закреплена тестом).
@@ -360,10 +364,10 @@ mod tests {
     }
 
     #[test]
-    fn gles2_automatic_pool_is_16_and_wgpu_keeps_24() {
+    fn both_families_resolve_the_automatic_pool_to_24() {
         assert_eq!(
             hardware_surface_pool_default_for(RendererFamily::Gles2).frames(),
-            16
+            24
         );
         assert_eq!(
             hardware_surface_pool_default_for(RendererFamily::WgpuVulkan).frames(),
@@ -393,8 +397,8 @@ mod tests {
         )
         .decoder_thread_config;
 
-        assert_eq!(decoder_thread_config.decoder_surface_pool_frames, 16);
-        assert_eq!(decoder_thread_config.zero_copy_surface_pool_slots, 16);
+        assert_eq!(decoder_thread_config.decoder_surface_pool_frames, 24);
+        assert_eq!(decoder_thread_config.zero_copy_surface_pool_slots, 24);
     }
 
     #[test]

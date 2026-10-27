@@ -80,7 +80,7 @@ decoder_packet_channel_frames = 32
 decoder_frame_channel_frames = 8
 # Backend-local ready queue для burst FrameReady events.
 decoder_ready_queue_frames = 8
-# Потолок пула VA output surfaces hardware decoder-а; 0 = авто (16 на OpenGL ES 2.0, 24 на Vulkan; не ниже минимума кодека).
+# Потолок пула VA output surfaces hardware decoder-а; 0 = авто (рендер выбирает размер, сейчас 24; не ниже минимума кодека).
 decoder_surface_pool_frames = 0
 # Сколько software (FFmpeg host RAM) кадров держать одновременно; меньше = стабильнее FPS на 4K.
 sw_decoder_surface_pool_frames = 8

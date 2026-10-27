@@ -225,7 +225,7 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,
         "decoder_surface_pool_frames = 0",
-        "# Потолок пула VA output surfaces hardware decoder-а; 0 = авто (16 на OpenGL ES 2.0, 24 на Vulkan; не ниже минимума кодека).",
+        "# Потолок пула VA output surfaces hardware decoder-а; 0 = авто (рендер выбирает размер, сейчас 24; не ниже минимума кодека).",
     );
     insert_default_config_comment(
         toml_text,

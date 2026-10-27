@@ -134,7 +134,7 @@ pub struct VideoConfig {
 
     /// Потолок числа VA output surfaces, которые hardware decoder переиспользует.
     ///
-    /// 0 = авто: размер выбирает активный рендерер (16 на OpenGL ES 2.0, 24 на Vulkan).
+    /// 0 = авто: размер выбирает активный рендерер (сейчас 24 у обоих рендеров, решение 69).
     /// Если кодеку стрима нужно больше (DPB + запас), decoder поднимает пул до минимума кодека.
     #[setting(
         id = "video.decoder_surface_pool_frames",
@@ -145,7 +145,7 @@ pub struct VideoConfig {
         label_id = "settings.video.decoder_surface_pool_frames.label",
         label_ru = "Decoder surface pool",
         description_id = "settings.video.decoder_surface_pool_frames.description",
-        description_ru = "Maximum number of VA output surfaces the hardware decoder reuses. 0 = automatic: 16 on the OpenGL ES 2.0 renderer (older GPUs), 24 on Vulkan; the decoder still raises it to what the stream needs.",
+        description_ru = "Maximum number of VA output surfaces the hardware decoder reuses. 0 = automatic: the renderer picks the size (currently 24 on both Vulkan and OpenGL ES 2.0); the decoder still raises it to what the stream needs.",
         editor = "integer",
         min = crate::validation::MIN_DECODER_SURFACE_POOL_FRAMES,
         max = crate::validation::MAX_DECODER_SURFACE_POOL_FRAMES,
@@ -206,7 +206,7 @@ pub struct VideoConfig {
         label_id = "settings.video.zero_copy_surface_pool_slots.label",
         label_ru = "Zero-copy import slots",
         description_id = "settings.video.zero_copy_surface_pool_slots.description",
-        description_ru = "Number of zero-copy external import slots. 0 = automatic: 16 on the OpenGL ES 2.0 renderer (older GPUs), 24 on Vulkan; the decoder still raises it to what the stream needs.",
+        description_ru = "Number of zero-copy external import slots. 0 = automatic: the renderer picks the size (currently 24 on both Vulkan and OpenGL ES 2.0); the decoder still raises it to what the stream needs.",
         editor = "integer",
         min = crate::validation::MIN_ZERO_COPY_SURFACE_POOL_SLOTS,
         max = crate::validation::MAX_ZERO_COPY_SURFACE_POOL_SLOTS,
