@@ -19,8 +19,14 @@ fn audio_muted_route_has_no_player_worker_payload() {
     let diff = registry
         .diff(&AppConfig::default(), &current)
         .expect("diff succeeds");
-    let plan = runtime_route_plan_from_diff(&registry, &AppConfig::default(), &current, &diff)
-        .expect("route plan builds");
+    let plan = runtime_route_plan_from_diff(
+        &registry,
+        &AppConfig::default(),
+        &current,
+        &diff,
+        crate::routing::TEST_AUTOMATIC_SURFACE_POOL,
+    )
+    .expect("route plan builds");
 
     let player_route = plan
         .committed_routes

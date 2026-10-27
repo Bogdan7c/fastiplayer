@@ -12,6 +12,7 @@ mod paths;
 mod schema;
 mod store;
 mod validation;
+pub use validation::MIN_AUTOMATIC_SURFACE_POOL_FRAMES;
 
 pub use error::{ConfigError, ConfigResult, ConfigWriteFailure};
 pub use frame_server::{FrameServerConfig, FrameServerLiveScrubDecodeModeConfig};
@@ -97,6 +98,7 @@ pub(crate) use schema::{
     LEGACY_SCHEMA_VERSION_17, LEGACY_SCHEMA_VERSION_18, LEGACY_SCHEMA_VERSION_19,
     LEGACY_SCHEMA_VERSION_20, LEGACY_SCHEMA_VERSION_21, LEGACY_SCHEMA_VERSION_22,
     LEGACY_SCHEMA_VERSION_23, LEGACY_SCHEMA_VERSION_24, LEGACY_SCHEMA_VERSION_25,
+    LEGACY_SCHEMA_VERSION_26,
 };
 pub use store::{
     BrokenConfigProblem, BrokenConfigRecovery, ConfigLoadOrigin, ConfigSaveOutcome,

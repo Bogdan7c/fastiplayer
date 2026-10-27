@@ -662,7 +662,7 @@ fn metadata_ranges_match_validation_constants() {
     assert_integer_range(
         &registry,
         "video.decoder_surface_pool_frames",
-        validation::MIN_DECODER_QUEUE_FRAMES,
+        validation::MIN_DECODER_SURFACE_POOL_FRAMES,
         validation::MAX_DECODER_SURFACE_POOL_FRAMES,
     );
     assert_integer_range(
@@ -680,7 +680,7 @@ fn metadata_ranges_match_validation_constants() {
     assert_integer_range(
         &registry,
         "video.zero_copy_surface_pool_slots",
-        validation::MIN_DECODER_QUEUE_FRAMES,
+        validation::MIN_ZERO_COPY_SURFACE_POOL_SLOTS,
         validation::MAX_ZERO_COPY_SURFACE_POOL_SLOTS,
     );
     assert_integer_range(

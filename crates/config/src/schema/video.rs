@@ -134,6 +134,7 @@ pub struct VideoConfig {
 
     /// Потолок числа VA output surfaces, которые hardware decoder переиспользует.
     ///
+    /// 0 = авто: размер выбирает активный рендерер (16 на OpenGL ES 2.0, 24 на Vulkan).
     /// Если кодеку стрима нужно больше (DPB + запас), decoder поднимает пул до минимума кодека.
     #[setting(
         id = "video.decoder_surface_pool_frames",
@@ -144,9 +145,9 @@ pub struct VideoConfig {
         label_id = "settings.video.decoder_surface_pool_frames.label",
         label_ru = "Decoder surface pool",
         description_id = "settings.video.decoder_surface_pool_frames.description",
-        description_ru = "Maximum number of VA output surfaces the hardware decoder reuses (raised to the codec minimum if lower).",
+        description_ru = "Maximum number of VA output surfaces the hardware decoder reuses. 0 = automatic: 16 on the OpenGL ES 2.0 renderer (older GPUs), 24 on Vulkan; the decoder still raises it to what the stream needs.",
         editor = "integer",
-        min = crate::validation::MIN_DECODER_QUEUE_FRAMES,
+        min = crate::validation::MIN_DECODER_SURFACE_POOL_FRAMES,
         max = crate::validation::MAX_DECODER_SURFACE_POOL_FRAMES,
         step = 1,
         unit = "frames",
@@ -195,7 +196,7 @@ pub struct VideoConfig {
     )]
     pub sw_decode_threads: usize,
 
-    /// Количество zero-copy external import slots.
+    /// Количество zero-copy external import slots; 0 = авто (как у `decoder_surface_pool_frames`).
     #[setting(
         id = "video.zero_copy_surface_pool_slots",
         path = "video.zero_copy_surface_pool_slots",
@@ -205,9 +206,9 @@ pub struct VideoConfig {
         label_id = "settings.video.zero_copy_surface_pool_slots.label",
         label_ru = "Zero-copy import slots",
         description_id = "settings.video.zero_copy_surface_pool_slots.description",
-        description_ru = "Number of zero-copy external import slots.",
+        description_ru = "Number of zero-copy external import slots. 0 = automatic: 16 on the OpenGL ES 2.0 renderer (older GPUs), 24 on Vulkan; the decoder still raises it to what the stream needs.",
         editor = "integer",
-        min = crate::validation::MIN_DECODER_QUEUE_FRAMES,
+        min = crate::validation::MIN_ZERO_COPY_SURFACE_POOL_SLOTS,
         max = crate::validation::MAX_ZERO_COPY_SURFACE_POOL_SLOTS,
         step = 1,
         unit = "slots",
@@ -230,10 +231,10 @@ impl Default for VideoConfig {
             decoder_packet_channel_frames: 32,
             decoder_frame_channel_frames: 8,
             decoder_ready_queue_frames: 8,
-            decoder_surface_pool_frames: 24,
+            decoder_surface_pool_frames: 0,
             sw_decoder_surface_pool_frames: 8,
             sw_decode_threads: 0,
-            zero_copy_surface_pool_slots: 24,
+            zero_copy_surface_pool_slots: 0,
             scheduler: VideoSchedulerConfig::default(),
         }
     }

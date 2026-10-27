@@ -17,8 +17,14 @@ fn render_profile_change_lands_in_restart_group_apart_from_recreation() {
     let diff = registry
         .diff(&AppConfig::default(), &current)
         .expect("diff succeeds");
-    let plan = runtime_route_plan_from_diff(&registry, &AppConfig::default(), &current, &diff)
-        .expect("route plan builds");
+    let plan = runtime_route_plan_from_diff(
+        &registry,
+        &AppConfig::default(),
+        &current,
+        &diff,
+        crate::routing::TEST_AUTOMATIC_SURFACE_POOL,
+    )
+    .expect("route plan builds");
 
     let render_route = plan
         .committed_routes

@@ -69,6 +69,11 @@ impl PlayerWorkerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AutomaticSurfacePool;
+    use std::num::NonZeroUsize;
+
+    /// Любой допустимый автоматический пул: эти тесты про субтитры, а не про пулы.
+    const TEST_AUTOMATIC_POOL: AutomaticSurfacePool = AutomaticSurfacePool::new(NonZeroUsize::MIN);
 
     /// Значение из `[subtitles]` доходит до конфига worker-а как есть.
     #[test]
@@ -76,7 +81,7 @@ mod tests {
         let mut app_config = fastiplayer_config::AppConfig::default();
         app_config.subtitles.embedded_feed_capacity = 1_000;
 
-        let worker_config = PlayerWorkerConfig::from_app_config(&app_config);
+        let worker_config = PlayerWorkerConfig::from_app_config(&app_config, TEST_AUTOMATIC_POOL);
 
         assert_eq!(worker_config.subtitle_feed_capacity.messages(), 1_000);
     }
@@ -84,8 +89,10 @@ mod tests {
     /// Конфиг по умолчанию даёт прежние 4096 пакетов (равны запасной константе).
     #[test]
     fn default_app_config_gives_default_capacity() {
-        let worker_config =
-            PlayerWorkerConfig::from_app_config(&fastiplayer_config::AppConfig::default());
+        let worker_config = PlayerWorkerConfig::from_app_config(
+            &fastiplayer_config::AppConfig::default(),
+            TEST_AUTOMATIC_POOL,
+        );
 
         assert_eq!(
             worker_config.subtitle_feed_capacity,
@@ -97,7 +104,10 @@ mod tests {
     /// Builder перекрывает значение и не трогает остальные поля.
     #[test]
     fn builder_overrides_only_the_capacity() {
-        let base = PlayerWorkerConfig::from_app_config(&fastiplayer_config::AppConfig::default());
+        let base = PlayerWorkerConfig::from_app_config(
+            &fastiplayer_config::AppConfig::default(),
+            TEST_AUTOMATIC_POOL,
+        );
         let default_volume = base.default_volume;
         let capacity = SubtitleFeedCapacity::from_messages(300).expect("non-zero");
 

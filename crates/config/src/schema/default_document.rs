@@ -224,8 +224,8 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
-        "decoder_surface_pool_frames = 24",
-        "# Потолок пула VA output surfaces hardware decoder-а (не ниже минимума кодека).",
+        "decoder_surface_pool_frames = 0",
+        "# Потолок пула VA output surfaces hardware decoder-а; 0 = авто (16 на OpenGL ES 2.0, 24 на Vulkan; не ниже минимума кодека).",
     );
     insert_default_config_comment(
         toml_text,
@@ -239,8 +239,8 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
-        "zero_copy_surface_pool_slots = 24",
-        "# Zero-copy external import slots; CPU fallback всё равно запрещён.",
+        "zero_copy_surface_pool_slots = 0",
+        "# Zero-copy external import slots; 0 = авто (как у пула surfaces); CPU fallback всё равно запрещён.",
     );
     insert_default_config_comment(
         toml_text,

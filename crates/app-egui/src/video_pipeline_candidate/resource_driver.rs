@@ -5,6 +5,7 @@
 //! (`render_shell_api::VideoImportPreparer`), полученному в потоке окна.
 
 use std::fmt;
+use std::num::NonZeroUsize;
 
 use render_shell_api::{
     PendingVideoImport, RenderShell, RendererFamily, VideoImportPrepareError, VideoImportPreparer,
@@ -275,6 +276,48 @@ pub(crate) const fn host_frame_memory_for(family: RendererFamily) -> HostFrameMe
     }
 }
 
+/// Размер пула поверхностей VA-API под OpenGL ES 2.0 (старое железо).
+///
+/// `unwrap` в `const` вычисляется при компиляции: ноль здесь — ошибка сборки, а не паника.
+const GLES2_HARDWARE_SURFACE_POOL_FRAMES: NonZeroUsize = NonZeroUsize::new(16).unwrap();
+
+/// Размер пула поверхностей VA-API под wgpu/Vulkan (прежний default проекта).
+const WGPU_HARDWARE_SURFACE_POOL_FRAMES: NonZeroUsize = NonZeroUsize::new(24).unwrap();
+
+/// Размер пула поверхностей hardware decoder-а для семейства рендера (exhaustive).
+///
+/// Подставляется вместо `0` («авто») в `video.decoder_surface_pool_frames` и
+/// `video.zero_copy_surface_pool_slots`; явное число пользователя это значение не трогает.
+/// Решение владельца 66 (gles2-renderer): замер на ThinkPad T410 показал, что пул 16 даёт те
+/// же кадры, что 24, и экономит 30-70 МиБ видеопамяти — а на старом железе её мало.
+/// На wgpu/Vulkan остаётся прежние 24. Декодер всё равно поднимает пул до минимума стрима.
+/// Единственное место соответствия «семейство -> число»: остальной код получает уже
+/// готовый `AutomaticSurfacePool`. Нижняя граница для валидации watermark-ов в config —
+/// `fastiplayer_config::MIN_AUTOMATIC_SURFACE_POOL_FRAMES` (закреплена тестом).
+pub(crate) const fn hardware_surface_pool_default_for(
+    family: RendererFamily,
+) -> player_core::AutomaticSurfacePool {
+    match family {
+        RendererFamily::WgpuVulkan => {
+            player_core::AutomaticSurfacePool::new(WGPU_HARDWARE_SURFACE_POOL_FRAMES)
+        }
+        RendererFamily::Gles2 => {
+            player_core::AutomaticSurfacePool::new(GLES2_HARDWARE_SURFACE_POOL_FRAMES)
+        }
+    }
+}
+
+/// Тот же выбор, когда семейство ещё не сообщено (`None`): считаем рендер wgpu/Vulkan,
+/// то есть прежнее поведение. В продакшене семейство известно до создания worker-а.
+pub(crate) const fn hardware_surface_pool_default_or_wgpu(
+    family: Option<RendererFamily>,
+) -> player_core::AutomaticSurfacePool {
+    match family {
+        Some(known_family) => hardware_surface_pool_default_for(known_family),
+        None => hardware_surface_pool_default_for(RendererFamily::WgpuVulkan),
+    }
+}
+
 /// FFmpeg software factory с видом памяти блоков под рендер `renderer_family`.
 pub(crate) fn ffmpeg_factory_for_renderer(
     decoder_thread_config: player_core::PlayerVideoDecoderThreadConfig,
@@ -314,6 +357,44 @@ mod tests {
             host_frame_memory_for(RendererFamily::WgpuVulkan),
             HostFrameMemoryKind::Anonymous
         );
+    }
+
+    #[test]
+    fn gles2_automatic_pool_is_16_and_wgpu_keeps_24() {
+        assert_eq!(
+            hardware_surface_pool_default_for(RendererFamily::Gles2).frames(),
+            16
+        );
+        assert_eq!(
+            hardware_surface_pool_default_for(RendererFamily::WgpuVulkan).frames(),
+            24
+        );
+        assert_eq!(hardware_surface_pool_default_or_wgpu(None).frames(), 24);
+    }
+
+    /// Валидация watermark-ов в config при `slots = 0` опирается на этот минимум.
+    #[test]
+    fn every_family_automatic_pool_respects_config_validation_floor() {
+        for family in [RendererFamily::WgpuVulkan, RendererFamily::Gles2] {
+            assert!(
+                hardware_surface_pool_default_for(family).frames()
+                    >= fastiplayer_config::MIN_AUTOMATIC_SURFACE_POOL_FRAMES,
+                "{family:?} automatic pool is below the config validation floor"
+            );
+        }
+    }
+
+    /// Путь GLES2: «авто» из default config доходит до decoder config и import plan.
+    #[test]
+    fn gles2_automatic_pool_reaches_decoder_config() {
+        let decoder_thread_config = player_core::PlayerWorkerConfig::from_app_config(
+            &fastiplayer_config::AppConfig::default(),
+            hardware_surface_pool_default_for(RendererFamily::Gles2),
+        )
+        .decoder_thread_config;
+
+        assert_eq!(decoder_thread_config.decoder_surface_pool_frames, 16);
+        assert_eq!(decoder_thread_config.zero_copy_surface_pool_slots, 16);
     }
 
     #[test]

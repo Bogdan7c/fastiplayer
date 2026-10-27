@@ -54,9 +54,14 @@ fn changes_form_one_exact_media_service_route() {
         expected_recovery_settings
     );
 
-    let recovery_plan =
-        runtime_route_plan_from_diff(&registry, &previous, &recovery_policy, &recovery_diff)
-            .expect("VOD recovery route plan builds");
+    let recovery_plan = runtime_route_plan_from_diff(
+        &registry,
+        &previous,
+        &recovery_policy,
+        &recovery_diff,
+        crate::routing::TEST_AUTOMATIC_SURFACE_POOL,
+    )
+    .expect("VOD recovery route plan builds");
     let RuntimeCommittedUpdate::MediaService(media_update) =
         &recovery_plan.committed_routes[0].update
     else {

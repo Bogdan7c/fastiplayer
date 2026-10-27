@@ -60,6 +60,7 @@ use crate::{
     PreparedMedia, SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend, SubtitleFeedCapacity,
     SubtitleFeedReceiver, scheduler_timing_diagnostics,
 };
+pub use surface_pool_default::AutomaticSurfacePool;
 
 mod command_queue;
 mod event_stream;
@@ -78,6 +79,7 @@ mod runtime_wait;
 mod sender;
 mod staged_media_install;
 mod subtitle_config;
+mod surface_pool_default;
 mod terminal;
 mod wakeup_counters;
 use wakeup_counters::{WorkerTickTrigger, WorkerWakeupCounters};
@@ -190,12 +192,18 @@ impl PlayerWorkerConfig {
 
     /// Создаёт worker config напрямую из validated app config.
     #[must_use]
-    pub fn from_app_config(config: &fastiplayer_config::AppConfig) -> Self {
+    pub fn from_app_config(
+        config: &fastiplayer_config::AppConfig,
+        automatic_surface_pool: AutomaticSurfacePool,
+    ) -> Self {
         Self {
             coarse_wakeup_interval: DEFAULT_WORKER_COARSE_WAKEUP_INTERVAL,
             decoder_readiness_poll_interval: DEFAULT_DECODER_READINESS_POLL_INTERVAL,
             tick_config: PlayerTickConfig::from(config),
-            decoder_thread_config: decoder_thread_config_from_app_config(config),
+            decoder_thread_config: decoder_thread_config_from_app_config(
+                config,
+                automatic_surface_pool,
+            ),
             default_volume: config.audio.volume as f32,
             audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
@@ -258,11 +266,15 @@ impl PlayerWorkerConfig {
     }
 
     /// Возвращает decoder-thread limits из validated app config для shell-owned backend factory.
+    ///
+    /// `automatic_surface_pool` — размер пула активного рендерера для значения `0` («авто»)
+    /// в `video.decoder_surface_pool_frames` и `video.zero_copy_surface_pool_slots`.
     #[must_use]
     pub fn decoder_thread_config_from_app_config(
         config: &fastiplayer_config::AppConfig,
+        automatic_surface_pool: AutomaticSurfacePool,
     ) -> PlayerVideoDecoderThreadConfig {
-        decoder_thread_config_from_app_config(config)
+        decoder_thread_config_from_app_config(config, automatic_surface_pool)
     }
 
     /// Возвращает validated frame-server policy тем же маппингом, что startup worker config.
@@ -285,19 +297,25 @@ impl Default for PlayerWorkerConfig {
 }
 
 /// Конвертирует validated TOML config в bounded decoder thread limits.
+///
+/// Единственная точка, где `0` («авто») у пулов поверхностей превращается в число:
+/// дальше по пути нейтральный decoder config нулей не видит.
 fn decoder_thread_config_from_app_config(
     config: &fastiplayer_config::AppConfig,
+    automatic_surface_pool: AutomaticSurfacePool,
 ) -> PlayerVideoDecoderThreadConfig {
     PlayerVideoDecoderThreadConfig {
         packet_channel_frames: config.video.decoder_packet_channel_frames,
         frame_channel_frames: config.video.decoder_frame_channel_frames,
         decoder_ready_queue_frames: config.video.decoder_ready_queue_frames,
-        decoder_surface_pool_frames: config.video.decoder_surface_pool_frames,
+        decoder_surface_pool_frames: automatic_surface_pool
+            .resolve(config.video.decoder_surface_pool_frames),
         software_frame_pool_frames: config.video.sw_decoder_surface_pool_frames,
         software_decode_thread_budget: software_decode_thread_budget_from_config(
             config.video.sw_decode_threads,
         ),
-        zero_copy_surface_pool_slots: config.video.zero_copy_surface_pool_slots,
+        zero_copy_surface_pool_slots: automatic_surface_pool
+            .resolve(config.video.zero_copy_surface_pool_slots),
         ..PlayerVideoDecoderThreadConfig::from_env()
     }
     .normalized()

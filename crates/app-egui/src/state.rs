@@ -374,17 +374,25 @@ impl AppState {
             );
         let redraw = redraw_runtime::RedrawRuntime::new(&egui_ctx, &player_timeline_wake_port);
         let timeline_activity_wake = player_timeline_wake_bridge(player_timeline_wake_port);
-        let worker_config =
-            PlayerWorkerConfig::from_app_config(committed_config_snapshot.as_config())
-                .with_audio_decoder_factory(audio_decoder_factory)
-                .with_audio_output_factory(Arc::new(audio::CpalAudioOutputFactory::new(
-                    audio_output_device_controller,
-                )))
-                .with_audio_tempo_processor_factory(Arc::new(
-                    audio_signalsmith::SignalsmithTempoProcessorFactory,
-                ))
-                .with_timeline_activity_wake(timeline_activity_wake)
-                .with_presentation_wake(redraw.presentation_wake_bridge());
+        let worker_config = PlayerWorkerConfig::from_app_config(
+            committed_config_snapshot.as_config(),
+            // Рендер создан до AppState, поэтому семейство и «авто»-пул известны здесь.
+            crate::video_pipeline_candidate::hardware_surface_pool_default_or_wgpu(
+                startup_context
+                    .renderer_report
+                    .as_ref()
+                    .map(crate::render_backend::RendererStartupReport::family),
+            ),
+        )
+        .with_audio_decoder_factory(audio_decoder_factory)
+        .with_audio_output_factory(Arc::new(audio::CpalAudioOutputFactory::new(
+            audio_output_device_controller,
+        )))
+        .with_audio_tempo_processor_factory(Arc::new(
+            audio_signalsmith::SignalsmithTempoProcessorFactory,
+        ))
+        .with_timeline_activity_wake(timeline_activity_wake)
+        .with_presentation_wake(redraw.presentation_wake_bridge());
         let mut player_worker = PlayerWorker::spawn(worker_config)?;
         // Приёмник трубы встроенных субтитров: единственный потребитель — владелец субтитров.
         let subtitle_feed_receiver = player_worker.take_subtitle_feed_receiver();

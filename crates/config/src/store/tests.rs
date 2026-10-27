@@ -24,6 +24,7 @@ mod subtitles_pgs_settings;
 mod subtitles_prerender_settings;
 mod subtitles_settings;
 mod subtitles_stream_settings;
+mod surface_pool_automatic_migration;
 mod track_memory_settings;
 mod video_backend_dynamic;
 /// Проверяет, что atomic save не оставил временных файлов рядом с config.

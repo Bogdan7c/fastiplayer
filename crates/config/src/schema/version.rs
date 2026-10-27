@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 26;
+pub const CURRENT_SCHEMA_VERSION: u32 = 27;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -139,14 +139,23 @@ pub(crate) const LEGACY_SCHEMA_VERSION_24: u32 = 24;
 /// неизвестные ключи, поэтому миграция v25 -> v26 молча удаляет его из файла.
 pub(crate) const LEGACY_SCHEMA_VERSION_25: u32 = 25;
 
+/// Последняя схема, где `video.decoder_surface_pool_frames` и `video.zero_copy_surface_pool_slots`
+/// по умолчанию были явным числом 24.
+///
+/// Решение владельца (gles2-renderer, решение 66): `0` теперь значит «автоматически» — рендерер
+/// сам выбирает размер пула (16 на OpenGL ES 2.0, 24 на Vulkan). Default-документ v26 писал 24
+/// явно, отличить выбор от умолчания нельзя, поэтому сохранённое 24 один раз становится 0
+/// (тот же компромисс, что у v23 -> v24). Любые другие значения не трогаются.
+pub(crate) const LEGACY_SCHEMA_VERSION_26: u32 = 26;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v26 и полная цепочка поддерживаемых legacy-версий v2..v25.
+    /// Текущая схема v27 и полная цепочка поддерживаемых legacy-версий v2..v26.
     #[test]
-    fn schema_v26_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 26);
+    fn schema_v27_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 27);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -173,10 +182,11 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_23,
                 LEGACY_SCHEMA_VERSION_24,
                 LEGACY_SCHEMA_VERSION_25,
+                LEGACY_SCHEMA_VERSION_26,
             ],
             [
                 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-                25
+                25, 26
             ]
         );
     }

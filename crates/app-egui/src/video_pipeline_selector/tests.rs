@@ -561,3 +561,27 @@ fn import_plan_carries_transfer_path_and_decoder_surface_pool() {
         decoder_thread_config
     );
 }
+
+/// Путь GLES2 целиком: default config («авто» = 0) -> worker config с пулом GLES2 -> план
+/// импорта рендера получает 16 слотов (а не 0 и не прежние 24); wgpu остаётся на 24.
+#[test]
+fn automatic_surface_pool_reaches_import_plan_per_renderer_family() {
+    use render_shell_api::RendererFamily;
+
+    let import_slots_for = |family: RendererFamily| {
+        let decoder_thread_config = player_core::PlayerWorkerConfig::from_app_config(
+            &fastiplayer_config::AppConfig::default(),
+            crate::video_pipeline_candidate::hardware_surface_pool_default_or_wgpu(Some(family)),
+        )
+        .decoder_thread_config;
+        VideoPipelinePlan::VaapiDmaBuf {
+            decoder_thread_config,
+        }
+        .import_plan()
+        .decoder_surface_pool
+        .get()
+    };
+
+    assert_eq!(import_slots_for(RendererFamily::Gles2), 16);
+    assert_eq!(import_slots_for(RendererFamily::WgpuVulkan), 24);
+}

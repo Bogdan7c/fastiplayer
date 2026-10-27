@@ -11,8 +11,14 @@ fn subtitle_changes_form_one_exact_subtitles_route() {
     current.subtitles.decoration = SubtitleDecorationPreference::Outline;
 
     let diff = registry.diff(&previous, &current).expect("diff succeeds");
-    let plan = runtime_route_plan_from_diff(&registry, &previous, &current, &diff)
-        .expect("subtitle route plan builds");
+    let plan = runtime_route_plan_from_diff(
+        &registry,
+        &previous,
+        &current,
+        &diff,
+        crate::routing::TEST_AUTOMATIC_SURFACE_POOL,
+    )
+    .expect("subtitle route plan builds");
 
     assert!(plan.preview_routes.is_empty());
     assert_eq!(plan.committed_routes.len(), 1);
@@ -47,8 +53,14 @@ fn non_subtitle_change_does_not_touch_subtitles_route() {
     current.playlist.load_siblings = !current.playlist.load_siblings;
 
     let diff = registry.diff(&previous, &current).expect("diff succeeds");
-    let plan = runtime_route_plan_from_diff(&registry, &previous, &current, &diff)
-        .expect("route plan builds");
+    let plan = runtime_route_plan_from_diff(
+        &registry,
+        &previous,
+        &current,
+        &diff,
+        crate::routing::TEST_AUTOMATIC_SURFACE_POOL,
+    )
+    .expect("route plan builds");
 
     assert!(
         plan.committed_routes

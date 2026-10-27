@@ -32,10 +32,81 @@ fn decoder_thread_config_maps_software_surface_pool_independently() {
     config.video.decoder_surface_pool_frames = 24;
     config.video.sw_decoder_surface_pool_frames = 6;
 
-    let thread_config = PlayerWorkerConfig::decoder_thread_config_from_app_config(&config);
+    let thread_config =
+        PlayerWorkerConfig::decoder_thread_config_from_app_config(&config, automatic_pool_of(16));
 
     assert_eq!(thread_config.software_frame_pool_frames, 6);
     assert_eq!(thread_config.decoder_surface_pool_frames, 24);
+}
+
+/// Автоматический пул для тестов: `frames` обязан быть положительным.
+fn automatic_pool_of(frames: usize) -> AutomaticSurfacePool {
+    AutomaticSurfacePool::new(std::num::NonZeroUsize::new(frames).expect("positive pool size"))
+}
+
+/// `0` в config («авто») раскрывается в размер рендерера для ОБОИХ полей; нуль не доходит
+/// до нейтрального decoder config.
+#[test]
+fn decoder_thread_config_resolves_automatic_surface_pools_to_renderer_default() {
+    let mut config = fastiplayer_config::AppConfig::default();
+    config.video.decoder_surface_pool_frames = 0;
+    config.video.zero_copy_surface_pool_slots = 0;
+
+    let thread_config =
+        PlayerWorkerConfig::decoder_thread_config_from_app_config(&config, automatic_pool_of(16));
+
+    assert_eq!(thread_config.decoder_surface_pool_frames, 16);
+    assert_eq!(thread_config.zero_copy_surface_pool_slots, 16);
+}
+
+/// Явное значение пользователя сохраняется как есть и не зависит от автоматического пула.
+#[test]
+fn decoder_thread_config_keeps_explicit_surface_pools() {
+    let mut config = fastiplayer_config::AppConfig::default();
+    config.video.decoder_surface_pool_frames = 12;
+    config.video.zero_copy_surface_pool_slots = 30;
+
+    let thread_config =
+        PlayerWorkerConfig::decoder_thread_config_from_app_config(&config, automatic_pool_of(16));
+
+    assert_eq!(thread_config.decoder_surface_pool_frames, 12);
+    assert_eq!(thread_config.zero_copy_surface_pool_slots, 30);
+}
+
+/// Поля независимы: «авто» в одном и явное значение в другом.
+#[test]
+fn decoder_thread_config_resolves_each_surface_pool_independently() {
+    let mut config = fastiplayer_config::AppConfig::default();
+    config.video.decoder_surface_pool_frames = 0;
+    config.video.zero_copy_surface_pool_slots = 20;
+
+    let thread_config =
+        PlayerWorkerConfig::decoder_thread_config_from_app_config(&config, automatic_pool_of(24));
+
+    assert_eq!(thread_config.decoder_surface_pool_frames, 24);
+    assert_eq!(thread_config.zero_copy_surface_pool_slots, 20);
+}
+
+/// Конфиг по умолчанию («авто») даёт worker-у размер рендерера и никогда не 0.
+#[test]
+fn worker_config_from_default_app_config_never_carries_zero_pools() {
+    let worker_config = PlayerWorkerConfig::from_app_config(
+        &fastiplayer_config::AppConfig::default(),
+        automatic_pool_of(16),
+    );
+
+    assert_eq!(
+        worker_config
+            .decoder_thread_config
+            .decoder_surface_pool_frames,
+        16
+    );
+    assert_eq!(
+        worker_config
+            .decoder_thread_config
+            .zero_copy_surface_pool_slots,
+        16
+    );
 }
 
 #[test]

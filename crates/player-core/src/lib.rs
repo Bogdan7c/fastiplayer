@@ -152,9 +152,9 @@ pub use subtitle_feed::{
     SubtitleFeedReceiver, SubtitleReadRun, SubtitleTrackHeader,
 };
 pub use worker::{
-    MediaInstallControlReceipt, MediaInstallControlReceiptError, PlayerCommandSender,
-    PlayerRenderError, PlayerRenderErrorKind, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
-    PlayerWorkerJoinError, PlayerWorkerPresentationWake, PlayerWorkerSendError,
-    PlayerWorkerShutdownDeadline, PlayerWorkerShutdownOutcome, PlayerWorkerShutdownRequestOutcome,
-    PlayerWorkerTimelineWake, PresentFrameIdentityProbe,
+    AutomaticSurfacePool, MediaInstallControlReceipt, MediaInstallControlReceiptError,
+    PlayerCommandSender, PlayerRenderError, PlayerRenderErrorKind, PlayerWorker,
+    PlayerWorkerConfig, PlayerWorkerEvent, PlayerWorkerJoinError, PlayerWorkerPresentationWake,
+    PlayerWorkerSendError, PlayerWorkerShutdownDeadline, PlayerWorkerShutdownOutcome,
+    PlayerWorkerShutdownRequestOutcome, PlayerWorkerTimelineWake, PresentFrameIdentityProbe,
 };

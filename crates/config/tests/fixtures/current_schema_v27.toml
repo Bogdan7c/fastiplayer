@@ -1,4 +1,4 @@
-schema_version = 26
+schema_version = 27
 
 [player]
 start_paused = false
@@ -80,14 +80,14 @@ decoder_packet_channel_frames = 32
 decoder_frame_channel_frames = 8
 # Backend-local ready queue для burst FrameReady events.
 decoder_ready_queue_frames = 8
-# Потолок пула VA output surfaces hardware decoder-а (не ниже минимума кодека).
-decoder_surface_pool_frames = 24
+# Потолок пула VA output surfaces hardware decoder-а; 0 = авто (16 на OpenGL ES 2.0, 24 на Vulkan; не ниже минимума кодека).
+decoder_surface_pool_frames = 0
 # Сколько software (FFmpeg host RAM) кадров держать одновременно; меньше = стабильнее FPS на 4K.
 sw_decoder_surface_pool_frames = 8
 # Потоки software-декода; 0 = авто (ядра − 2, чтобы render-поток не голодал; AV1 — до 4/6 потоков).
 sw_decode_threads = 0
-# Zero-copy external import slots; CPU fallback всё равно запрещён.
-zero_copy_surface_pool_slots = 24
+# Zero-copy external import slots; 0 = авто (как у пула surfaces); CPU fallback всё равно запрещён.
+zero_copy_surface_pool_slots = 0
 
 # Настройки worker scheduler-а для bounded catch-up после latency spike.
 [video.scheduler]

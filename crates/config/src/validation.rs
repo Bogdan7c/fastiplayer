@@ -54,6 +54,19 @@ pub(crate) const MIN_DECODER_QUEUE_FRAMES: usize = 1;
 /// Верхний предел decoder packet/frame queues, чтобы config не стал memory cache.
 pub(crate) const MAX_DECODER_QUEUE_FRAMES: usize = 128;
 
+/// Минимум `video.decoder_surface_pool_frames`; 0 = авто (размер выбирает активный рендерер).
+pub const MIN_DECODER_SURFACE_POOL_FRAMES: usize = 0;
+
+/// Минимум `video.zero_copy_surface_pool_slots`; 0 = авто (размер выбирает активный рендерер).
+pub const MIN_ZERO_COPY_SURFACE_POOL_SLOTS: usize = 0;
+
+/// Самый маленький пул поверхностей, который любой рендерер подставляет вместо «авто» (0).
+///
+/// Нужен валидации watermarks `video.scheduler.surface_free_slots_*`: при `slots == 0` реальный
+/// размер неизвестен до выбора рендерера, поэтому проверяем по худшему (минимальному) случаю.
+/// Тест в `app-egui` закрепляет, что ни одно семейство рендереров не резолвит «авто» ниже.
+pub const MIN_AUTOMATIC_SURFACE_POOL_FRAMES: usize = 16;
+
 /// Верхний предел пула VA output surfaces.
 pub(crate) const MAX_DECODER_SURFACE_POOL_FRAMES: usize = 64;
 
@@ -395,7 +408,7 @@ fn validate_video_section(config: &AppConfig) -> ConfigResult<()> {
     validate_usize_range(
         "video.decoder_surface_pool_frames",
         config.video.decoder_surface_pool_frames,
-        MIN_DECODER_QUEUE_FRAMES,
+        MIN_DECODER_SURFACE_POOL_FRAMES,
         MAX_DECODER_SURFACE_POOL_FRAMES,
     )?;
     validate_usize_range(
@@ -413,7 +426,7 @@ fn validate_video_section(config: &AppConfig) -> ConfigResult<()> {
     validate_usize_range(
         "video.zero_copy_surface_pool_slots",
         config.video.zero_copy_surface_pool_slots,
-        MIN_DECODER_QUEUE_FRAMES,
+        MIN_ZERO_COPY_SURFACE_POOL_SLOTS,
         MAX_ZERO_COPY_SURFACE_POOL_SLOTS,
     )?;
     validate_video_scheduler_config(config)?;
@@ -493,6 +506,12 @@ fn validate_scheduler_surface_watermarks(
     scheduler: &VideoSchedulerConfig,
     zero_copy_surface_pool_slots: usize,
 ) -> ConfigResult<()> {
+    // 0 = «авто»: реальный размер выберет рендерер, проверяем по минимально возможному.
+    let zero_copy_surface_pool_slots = if zero_copy_surface_pool_slots == 0 {
+        MIN_AUTOMATIC_SURFACE_POOL_FRAMES
+    } else {
+        zero_copy_surface_pool_slots
+    };
     validate_usize_range(
         "video.scheduler.surface_free_slots_min",
         scheduler.surface_free_slots_min,

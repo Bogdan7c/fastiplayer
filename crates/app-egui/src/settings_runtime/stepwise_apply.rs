@@ -144,6 +144,7 @@ where
             request.previous_committed,
             request.requested,
             request.route_updates,
+            self.automatic_surface_pool,
         )?;
         let target_policy = SettingsRouteTargetPolicy::from_config(request.requested);
         *self.route_sequence = Some(StepwiseRouteSequence::new(routes, target_policy));
@@ -292,12 +293,14 @@ impl SettingsRuntime {
     {
         self.invalidate_ui_model();
         let outcome = {
+            let automatic_surface_pool = self.automatic_surface_pool();
             let mut delegate = SettingsRuntimeApplyDelegate {
                 validator: AppConfigValidator,
                 store: &mut self.store,
                 route_appliers: &mut self.route_appliers,
                 runtime_adapter,
                 applied_route_count: 0,
+                automatic_surface_pool,
                 route_sequence: &mut self.route_sequence,
             };
             self.controller.begin_apply(&mut delegate)?
@@ -317,12 +320,14 @@ impl SettingsRuntime {
         A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
         let outcome = {
+            let automatic_surface_pool = self.automatic_surface_pool();
             let mut delegate = SettingsRuntimeApplyDelegate {
                 validator: AppConfigValidator,
                 store: &mut self.store,
                 route_appliers: &mut self.route_appliers,
                 runtime_adapter,
                 applied_route_count: 0,
+                automatic_surface_pool,
                 route_sequence: &mut self.route_sequence,
             };
             self.controller.poll_apply(&mut delegate)?
@@ -342,12 +347,14 @@ impl SettingsRuntime {
         self.pending_apply = None;
         self.invalidate_ui_model();
         let report = {
+            let automatic_surface_pool = self.automatic_surface_pool();
             let mut delegate = SettingsRuntimeApplyDelegate {
                 validator: AppConfigValidator,
                 store: &mut self.store,
                 route_appliers: &mut self.route_appliers,
                 runtime_adapter,
                 applied_route_count: 0,
+                automatic_surface_pool,
                 route_sequence: &mut self.route_sequence,
             };
             self.controller.cancel_pending_apply(&mut delegate)

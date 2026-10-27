@@ -77,17 +77,24 @@ pub struct AppConfigSettingsDelegate<A> {
     validator: AppConfigValidator,
     store: AppConfigStore,
     runtime_applier: A,
+    /// Размер пула поверхностей активного рендерера для значения «авто» (0) в config.
+    automatic_surface_pool: AutomaticSurfacePool,
     applied_route_count: usize,
 }
 
 impl<A> AppConfigSettingsDelegate<A> {
     /// Creates a delegate that validates, preflights, commits runtime, then persists.
     #[must_use]
-    pub fn new(path: impl Into<PathBuf>, runtime_applier: A) -> Self {
+    pub fn new(
+        path: impl Into<PathBuf>,
+        runtime_applier: A,
+        automatic_surface_pool: AutomaticSurfacePool,
+    ) -> Self {
         Self {
             validator: AppConfigValidator,
             store: AppConfigStore::new(path),
             runtime_applier,
+            automatic_surface_pool,
             applied_route_count: 0,
         }
     }
@@ -144,6 +151,7 @@ where
             request.previous_committed,
             request.requested,
             request.route_updates,
+            self.automatic_surface_pool,
         )?;
         Ok(self
             .runtime_applier
@@ -162,6 +170,7 @@ where
             request.previous_committed,
             request.requested,
             request.route_updates,
+            self.automatic_surface_pool,
         )?;
         let mut reports = Vec::with_capacity(routes.len());
 
@@ -188,6 +197,7 @@ where
             request.attempted,
             request.previous_committed,
             request.route_updates,
+            self.automatic_surface_pool,
         )?;
         let mut reports = Vec::with_capacity(self.applied_route_count);
         for route in rollback_routes
@@ -319,7 +329,7 @@ mod tests {
         let newer_text = AppConfig::default()
             .to_pretty_toml()
             .expect("defaults serialize")
-            .replace("schema_version = 26", "schema_version = 99");
+            .replace("schema_version = 27", "schema_version = 99");
         fs::write(&config_path, &newer_text).expect("newer config written");
         let loaded = load_or_recover_at(&config_path, SystemTime::now()).expect("startup loads");
         assert_eq!(

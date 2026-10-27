@@ -25,8 +25,8 @@ use fastiplayer_config::{
     YtDlpConfig,
 };
 use player_core::{
-    PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate, PlayerRuntimeVideoBackendPreference,
-    PlayerTickConfig, PlayerWorkerConfig,
+    AutomaticSurfacePool, PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate,
+    PlayerRuntimeVideoBackendPreference, PlayerTickConfig, PlayerWorkerConfig,
 };
 use render_core::{
     ColorAdjustment, ColorPipelineSettings, HdrOutputMode, HdrToSdrSettings,

@@ -544,6 +544,7 @@ pub fn runtime_route_plan_from_diff(
     previous: &AppConfig,
     current: &AppConfig,
     diff: &SettingsDiff,
+    automatic_surface_pool: AutomaticSurfacePool,
 ) -> SettingsResult<RuntimeRoutePlan> {
     let mut route_inputs: BTreeMap<AppRuntimeRoute, RouteInput> = BTreeMap::new();
 
@@ -576,9 +577,11 @@ pub fn runtime_route_plan_from_diff(
             AppRuntimeRoute::RenderCommitted => plan
                 .committed_routes
                 .push(render_committed_route(current, input)),
-            AppRuntimeRoute::Player => plan
-                .committed_routes
-                .push(player_committed_route(current, input)?),
+            AppRuntimeRoute::Player => plan.committed_routes.push(player_committed_route(
+                current,
+                input,
+                automatic_surface_pool,
+            )?),
             AppRuntimeRoute::MediaService => plan
                 .committed_routes
                 .push(media_service::committed_route(current, input)),
@@ -606,6 +609,7 @@ pub fn committed_routes_from_update(
     previous: &AppConfig,
     current: &AppConfig,
     update: &RouteApplyUpdate,
+    automatic_surface_pool: AutomaticSurfacePool,
 ) -> SettingsResult<Vec<RuntimeCommittedRoute>> {
     let mut route_inputs: BTreeMap<AppRuntimeRoute, RouteInput> = BTreeMap::new();
 
@@ -625,7 +629,9 @@ pub fn committed_routes_from_update(
                 render_preview_committed_route(previous, current, input)?
             }
             AppRuntimeRoute::RenderCommitted => render_committed_route(current, input),
-            AppRuntimeRoute::Player => player_committed_route(current, input)?,
+            AppRuntimeRoute::Player => {
+                player_committed_route(current, input, automatic_surface_pool)?
+            }
             AppRuntimeRoute::MediaService => media_service::committed_route(current, input),
             AppRuntimeRoute::FrameServer => frame_server_committed_route(current, input),
             AppRuntimeRoute::Playlist => playlist_committed_route(current, input),
@@ -642,10 +648,16 @@ pub fn committed_routes_for_updates(
     previous: &AppConfig,
     current: &AppConfig,
     updates: &[RouteApplyUpdate],
+    automatic_surface_pool: AutomaticSurfacePool,
 ) -> SettingsResult<Vec<RuntimeCommittedRoute>> {
     let mut routes = Vec::new();
     for update in updates {
-        routes.extend(committed_routes_from_update(previous, current, update)?);
+        routes.extend(committed_routes_from_update(
+            previous,
+            current,
+            update,
+            automatic_surface_pool,
+        )?);
     }
     // Один и тот же owner исполняется связно независимо от алфавитного metadata route id.
     // Reverse rollback строит тот же порядок и разворачивает только completed prefix.
@@ -806,9 +818,11 @@ fn ui_committed_route(current: &AppConfig, input: RouteInput) -> RuntimeCommitte
 fn player_committed_route(
     current: &AppConfig,
     input: RouteInput,
+    automatic_surface_pool: AutomaticSurfacePool,
 ) -> SettingsResult<RuntimeCommittedRoute> {
     let groups = input.groups();
-    let update = player_update_from_settings(current, &input.affected_settings);
+    let update =
+        player_update_from_settings(current, &input.affected_settings, automatic_surface_pool);
 
     Ok(RuntimeCommittedRoute {
         route: AppRuntimeRoute::Player,
@@ -866,6 +880,7 @@ fn frame_server_player_update_from_settings(
 fn player_update_from_settings(
     current: &AppConfig,
     affected_settings: &[SettingId],
+    automatic_surface_pool: AutomaticSurfacePool,
 ) -> SettingsResult<PlayerCommittedSettingsUpdate> {
     let mut player_core = PlayerRuntimeSettingsUpdate::empty();
     let mut tick_settings = Vec::new();
@@ -951,7 +966,10 @@ fn player_update_from_settings(
     }
     if !decoder_settings.is_empty() {
         player_core = player_core.with_decoder_thread_config(
-            PlayerWorkerConfig::decoder_thread_config_from_app_config(current),
+            PlayerWorkerConfig::decoder_thread_config_from_app_config(
+                current,
+                automatic_surface_pool,
+            ),
             decoder_settings,
         );
     }
@@ -1293,6 +1311,11 @@ pub(crate) fn settings_error_from_display(error: impl std::fmt::Display) -> Sett
     SettingsError::access_failed(error.to_string())
 }
 
+/// Автоматический пул для тестов маршрутов: конкретное число здесь ничего не проверяет.
+#[cfg(test)]
+pub(crate) const TEST_AUTOMATIC_SURFACE_POOL: AutomaticSurfacePool =
+    AutomaticSurfacePool::new(std::num::NonZeroUsize::MIN);
+
 #[cfg(test)]
 mod tests {
     use fastiplayer_config::RenderProfile;
@@ -1310,6 +1333,7 @@ mod tests {
 
     use super::*;
     mod subtitles_route;
+    mod surface_pool_automatic;
     mod vod_endpoint_recovery;
     #[test]
     fn validation_failure_blocks_persist_and_runtime_apply() {
@@ -1423,8 +1447,14 @@ mod tests {
         let diff = registry
             .diff(&AppConfig::default(), &current)
             .expect("diff succeeds");
-        let plan = runtime_route_plan_from_diff(&registry, &AppConfig::default(), &current, &diff)
-            .expect("route plan builds");
+        let plan = runtime_route_plan_from_diff(
+            &registry,
+            &AppConfig::default(),
+            &current,
+            &diff,
+            TEST_AUTOMATIC_SURFACE_POOL,
+        )
+        .expect("route plan builds");
 
         assert_eq!(plan.preview_routes.len(), 1);
         assert_eq!(plan.preview_routes[0].route, AppRuntimeRoute::RenderPreview);
@@ -1519,8 +1549,14 @@ mod tests {
         let diff = registry
             .diff(&AppConfig::default(), &current)
             .expect("frame_server diff should be readable");
-        let plan = runtime_route_plan_from_diff(&registry, &AppConfig::default(), &current, &diff)
-            .expect("frame_server S30B route should be planned");
+        let plan = runtime_route_plan_from_diff(
+            &registry,
+            &AppConfig::default(),
+            &current,
+            &diff,
+            TEST_AUTOMATIC_SURFACE_POOL,
+        )
+        .expect("frame_server S30B route should be planned");
 
         assert!(plan.preview_routes.is_empty());
         assert_eq!(plan.committed_routes.len(), 1);
@@ -1562,8 +1598,14 @@ mod tests {
         let diff = registry
             .diff(&AppConfig::default(), &current)
             .expect("diff succeeds");
-        let plan = runtime_route_plan_from_diff(&registry, &AppConfig::default(), &current, &diff)
-            .expect("route plan builds");
+        let plan = runtime_route_plan_from_diff(
+            &registry,
+            &AppConfig::default(),
+            &current,
+            &diff,
+            TEST_AUTOMATIC_SURFACE_POOL,
+        )
+        .expect("route plan builds");
 
         let player_route = plan
             .committed_routes
@@ -1596,8 +1638,14 @@ mod tests {
         let diff = registry
             .diff(&AppConfig::default(), &current)
             .expect("diff succeeds");
-        let plan = runtime_route_plan_from_diff(&registry, &AppConfig::default(), &current, &diff)
-            .expect("route plan builds");
+        let plan = runtime_route_plan_from_diff(
+            &registry,
+            &AppConfig::default(),
+            &current,
+            &diff,
+            TEST_AUTOMATIC_SURFACE_POOL,
+        )
+        .expect("route plan builds");
 
         let player_route = plan
             .committed_routes
@@ -1638,8 +1686,9 @@ mod tests {
             SettingId::from("player.preferred_video_codec_order"),
         ];
 
-        let update = player_update_from_settings(&config, &affected_settings)
-            .expect("checked settings must have live player routes");
+        let update =
+            player_update_from_settings(&config, &affected_settings, TEST_AUTOMATIC_SURFACE_POOL)
+                .expect("checked settings must have live player routes");
 
         assert_eq!(
             update.event_policy_settings,
@@ -1665,8 +1714,14 @@ mod tests {
         let diff = registry
             .diff(&AppConfig::default(), &current)
             .expect("diff succeeds");
-        let plan = runtime_route_plan_from_diff(&registry, &AppConfig::default(), &current, &diff)
-            .expect("route plan builds");
+        let plan = runtime_route_plan_from_diff(
+            &registry,
+            &AppConfig::default(),
+            &current,
+            &diff,
+            TEST_AUTOMATIC_SURFACE_POOL,
+        )
+        .expect("route plan builds");
 
         let player_route = plan
             .committed_routes
@@ -1717,8 +1772,14 @@ mod tests {
         let diff = registry
             .diff(&AppConfig::default(), &current)
             .expect("diff succeeds");
-        let plan = runtime_route_plan_from_diff(&registry, &AppConfig::default(), &current, &diff)
-            .expect("route plan builds");
+        let plan = runtime_route_plan_from_diff(
+            &registry,
+            &AppConfig::default(),
+            &current,
+            &diff,
+            TEST_AUTOMATIC_SURFACE_POOL,
+        )
+        .expect("route plan builds");
 
         let player_route = plan
             .committed_routes
@@ -1799,8 +1860,14 @@ mod tests {
         let diff = registry
             .diff(&AppConfig::default(), &current)
             .expect("diff succeeds");
-        let plan = runtime_route_plan_from_diff(&registry, &AppConfig::default(), &current, &diff)
-            .expect("route plan builds");
+        let plan = runtime_route_plan_from_diff(
+            &registry,
+            &AppConfig::default(),
+            &current,
+            &diff,
+            TEST_AUTOMATIC_SURFACE_POOL,
+        )
+        .expect("route plan builds");
         let media_route = plan
             .committed_routes
             .iter()
@@ -1830,8 +1897,14 @@ mod tests {
         let diff = registry
             .diff(&AppConfig::default(), &current)
             .expect("diff succeeds");
-        let plan = runtime_route_plan_from_diff(&registry, &AppConfig::default(), &current, &diff)
-            .expect("route plan builds");
+        let plan = runtime_route_plan_from_diff(
+            &registry,
+            &AppConfig::default(),
+            &current,
+            &diff,
+            TEST_AUTOMATIC_SURFACE_POOL,
+        )
+        .expect("route plan builds");
 
         let RuntimePreviewUpdate::Render(update) = &plan.preview_routes[0].update;
         assert_eq!(

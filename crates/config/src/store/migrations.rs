@@ -7,7 +7,7 @@ use crate::{
     LEGACY_SCHEMA_VERSION_16, LEGACY_SCHEMA_VERSION_17, LEGACY_SCHEMA_VERSION_18,
     LEGACY_SCHEMA_VERSION_19, LEGACY_SCHEMA_VERSION_20, LEGACY_SCHEMA_VERSION_21,
     LEGACY_SCHEMA_VERSION_22, LEGACY_SCHEMA_VERSION_23, LEGACY_SCHEMA_VERSION_24,
-    LEGACY_SCHEMA_VERSION_25,
+    LEGACY_SCHEMA_VERSION_25, LEGACY_SCHEMA_VERSION_26,
 };
 
 pub(super) const REMOVED_HARDWARE_DECODE_ONLY_KEY: &str = "hardware_decode_only";
@@ -62,9 +62,12 @@ pub(super) fn normalize_document(toml_document: &mut toml::Value) {
     if schema_at_most(root_table, LEGACY_SCHEMA_VERSION_25) {
         remove_removed_window_corner_radius(root_table);
     }
+    if schema_at_most(root_table, LEGACY_SCHEMA_VERSION_26) {
+        migrate_explicit_default_surface_pools_to_automatic(root_table);
+    }
 }
 
-/// Поднимает поддерживаемые v2-v25 структуры до текущей in-memory версии.
+/// Поднимает поддерживаемые v2-v26 структуры до текущей in-memory версии.
 pub(super) fn upgrade_config(config: &mut AppConfig) {
     if matches!(
         config.schema_version,
@@ -98,6 +101,9 @@ pub(super) fn upgrade_config(config: &mut AppConfig) {
             // v25 -> v26: ключ `ui.window.corner_radius_px` удалён миграцией документа
             // (`remove_removed_window_corner_radius`); остальные поля не меняются.
             | LEGACY_SCHEMA_VERSION_25
+            // v26 -> v27: сохранённое 24 в двух ключах пулов поверхностей стало 0 = «авто»
+            // (`migrate_explicit_default_surface_pools_to_automatic`).
+            | LEGACY_SCHEMA_VERSION_26
     ) {
         config.schema_version = CURRENT_SCHEMA_VERSION;
     }
@@ -160,6 +166,37 @@ fn remove_removed_window_corner_radius(root_table: &mut toml::Table) {
         return;
     };
     window_table.remove("corner_radius_px");
+}
+
+/// Ключи `[video]`, у которых значение 0 означает «размер выбирает активный рендерер».
+const AUTOMATIC_SURFACE_POOL_KEYS: &[&str] = &[
+    "decoder_surface_pool_frames",
+    "zero_copy_surface_pool_slots",
+];
+
+/// Прежний явный default обоих пулов; именно он заменяется на «авто».
+const LEGACY_DEFAULT_SURFACE_POOL_SIZE: i64 = 24;
+
+/// Значение «авто» для пулов поверхностей (см. `MIN_DECODER_SURFACE_POOL_FRAMES`).
+const AUTOMATIC_SURFACE_POOL_SIZE: i64 = 0;
+
+/// v26 → v27: `video.decoder_surface_pool_frames = 24` и `video.zero_copy_surface_pool_slots = 24`
+/// становятся `0` («авто»).
+///
+/// Решение владельца (gles2-renderer, решение 66): default-документ v26 писал 24 явно, отличить
+/// сознательный выбор нельзя, поэтому новый default «авто» применяется ко всем (тот же компромисс,
+/// что у `migrate_render_profile_to_auto`). Другие значения и отсутствующие ключи не трогаются.
+fn migrate_explicit_default_surface_pools_to_automatic(root_table: &mut toml::Table) {
+    let Some(toml::Value::Table(video_table)) = root_table.get_mut("video") else {
+        return;
+    };
+    for pool_key in AUTOMATIC_SURFACE_POOL_KEYS {
+        if let Some(pool_value) = video_table.get_mut(*pool_key)
+            && pool_value.as_integer() == Some(LEGACY_DEFAULT_SURFACE_POOL_SIZE)
+        {
+            *pool_value = toml::Value::Integer(AUTOMATIC_SURFACE_POOL_SIZE);
+        }
+    }
 }
 
 /// Переносит web-media policy из extractor-specific `[yt_dlp]` в `[web_media]`.

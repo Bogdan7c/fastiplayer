@@ -15,6 +15,8 @@ pub(super) struct SettingsRuntimeApplyDelegate<'runtime, A> {
     pub(super) runtime_adapter: &'runtime mut A,
     /// Completed route prefix that must be compensated after a failure.
     pub(super) applied_route_count: usize,
+    /// Размер пула поверхностей активного рендерера для «авто» (0) в config.
+    pub(super) automatic_surface_pool: player_core::AutomaticSurfacePool,
     /// Многокадровая очередь маршрутов (C2); синхронные пути передают пустой слот.
     pub(super) route_sequence: &'runtime mut Option<StepwiseRouteSequence>,
 }
@@ -57,6 +59,7 @@ where
             request.previous_committed,
             request.requested,
             request.route_updates,
+            self.automatic_surface_pool,
         )?;
         match self.runtime_adapter.preflight_settings_transaction(&routes) {
             Ok(()) => Ok(Vec::new()),
@@ -85,6 +88,7 @@ where
             request.previous_committed,
             request.requested,
             request.route_updates,
+            self.automatic_surface_pool,
         )?;
         let target_policy = SettingsRouteTargetPolicy::from_config(request.requested);
         let mut reports = Vec::with_capacity(routes.len());
@@ -134,6 +138,7 @@ where
             request.attempted,
             request.previous_committed,
             request.route_updates,
+            self.automatic_surface_pool,
         )?;
         let target_policy = SettingsRouteTargetPolicy::from_config(request.previous_committed);
         let mut reports = Vec::with_capacity(self.applied_route_count);
@@ -191,6 +196,7 @@ impl SettingsRuntime {
     {
         self.invalidate_ui_model();
         let mut unused_route_sequence = None;
+        let automatic_surface_pool = self.automatic_surface_pool();
         let outcome = {
             let mut delegate = SettingsRuntimeApplyDelegate {
                 validator: AppConfigValidator,
@@ -198,6 +204,7 @@ impl SettingsRuntime {
                 route_appliers: &mut self.route_appliers,
                 runtime_adapter,
                 applied_route_count: 0,
+                automatic_surface_pool,
                 route_sequence: &mut unused_route_sequence,
             };
             self.controller
@@ -238,6 +245,7 @@ impl SettingsRuntime {
     {
         self.invalidate_ui_model();
         let mut unused_route_sequence = None;
+        let automatic_surface_pool = self.automatic_surface_pool();
         let report = {
             let mut delegate = SettingsRuntimeApplyDelegate {
                 validator: AppConfigValidator,
@@ -245,6 +253,7 @@ impl SettingsRuntime {
                 route_appliers: &mut self.route_appliers,
                 runtime_adapter,
                 applied_route_count: 0,
+                automatic_surface_pool,
                 route_sequence: &mut unused_route_sequence,
             };
             self.controller.apply(&mut delegate)?

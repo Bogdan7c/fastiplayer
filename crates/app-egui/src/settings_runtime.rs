@@ -380,6 +380,16 @@ impl SettingsRuntime {
         }
     }
 
+    /// Размер пула поверхностей hardware decoder-а для «авто» (0) под активный рендер.
+    ///
+    /// Семейство не меняется до перезапуска, поэтому живое применение настроек резолвит «авто»
+    /// тем же числом, с которым worker был создан при старте.
+    fn automatic_surface_pool(&self) -> player_core::AutomaticSurfacePool {
+        crate::video_pipeline_candidate::hardware_surface_pool_default_or_wgpu(
+            self.active_renderer_family,
+        )
+    }
+
     /// Сбрасывает memoized visual model; обязан вызываться после любой мутации.
     fn invalidate_ui_model(&mut self) {
         self.ui_model_cache = None;
