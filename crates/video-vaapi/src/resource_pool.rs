@@ -11,6 +11,7 @@ use video_core::{
 };
 
 use crate::import_target::ZeroCopyImportTarget;
+use crate::zero_copy_surface_pool::capacity::ZeroCopyCapacityChange;
 use crate::zero_copy_surface_pool::{
     ZeroCopyGpuCompletionLease, ZeroCopyImportPlan, ZeroCopyImportReuseContract,
     ZeroCopySurfaceDescriptor, ZeroCopySurfacePool, ZeroCopySurfacePoolError,
@@ -302,6 +303,19 @@ impl FrameResourcePool {
         self.surface_pool.invalidate_all()?;
         self.slots.clear();
         Ok(())
+    }
+
+    /// Поднимает ёмкость import-слотов вслед за пулом выходных VA surfaces.
+    ///
+    /// Каждая живая surface занимает максимум один слот, поэтому слотов не может
+    /// быть меньше действующей ёмкости пула surfaces. Только рост; состояния
+    /// занятых слотов не меняются.
+    pub fn follow_output_surface_capacity(
+        &mut self,
+        output_surface_capacity: usize,
+    ) -> ZeroCopyCapacityChange {
+        self.surface_pool
+            .raise_capacity_to_follow_surfaces(output_surface_capacity)
     }
 
     /// Возвращает общее количество tracked descriptors.

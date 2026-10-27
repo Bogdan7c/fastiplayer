@@ -18,12 +18,15 @@ use tracing::{info, warn};
 
 use super::VaapiSurfaceLifecycleError;
 use super::config::OUTPUT_SURFACE_EXTERNAL_HOLDERS_HEADROOM_FRAMES;
+use super::lock_resource_pool;
 use super::surface_contract::rt_format_for_decoded_format;
 use crate::codec_adapter::{VaapiAdapterStreamInfo, VaapiDecodedFormat};
 use crate::output_surface_pool::{
     OutputSurfaceAllocator, OutputSurfaceFormat, OutputSurfacePool, OutputSurfaceReconfigureReport,
     StreamSurfaceMinimum,
 };
+use crate::resource_pool::FrameResourcePool;
+use crate::zero_copy_surface_pool::capacity::ZeroCopyCapacityChange;
 
 /// Почему stream info нельзя перевести в параметры пула.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +147,31 @@ pub(super) fn reconfigure_output_surface_pool_for_stream_info<A: OutputSurfaceAl
     Ok(report)
 }
 
+/// Согласует ёмкость import-слотов zero-copy с действующей ёмкостью пула surfaces.
+///
+/// Инвариант: каждая живая VA surface занимает максимум один слот, поэтому слотов
+/// не может быть меньше `effective_surface_capacity`. Пул surfaces сам поднимается
+/// до минимума стрима, а настройка слотов остаётся нижней границей. Владелец
+/// инварианта — этот boundary (место, где известна действующая ёмкость): без него
+/// `zero_copy_surface_pool_slots` меньше минимума стрима убивало декодер ошибкой
+/// `PoolExhausted`, хотя утечки не было.
+pub(super) fn follow_output_surface_capacity(
+    resource_pool: &mut FrameResourcePool,
+    effective_surface_capacity: NonZeroUsize,
+) -> ZeroCopyCapacityChange {
+    let change = resource_pool.follow_output_surface_capacity(effective_surface_capacity.get());
+    if let ZeroCopyCapacityChange::Raised { previous, current } = change {
+        warn!(
+            configured_zero_copy_surface_pool_slots = previous,
+            effective_zero_copy_surface_pool_slots = current,
+            effective_surface_pool_frames = effective_surface_capacity.get(),
+            "Zero-copy import slots are below the effective output surface pool capacity; \
+             raising import slots to follow the pool"
+        );
+    }
+    change
+}
+
 impl super::VaapiVideoDecoder {
     /// Переключает пул выходных surfaces на формат стрима после `FormatChanged`.
     ///
@@ -163,6 +191,9 @@ impl super::VaapiVideoDecoder {
             )))
         })?;
         self.adopt_effective_surface_pool_capacity(report.capacity);
+        // Слоты импорта обязаны покрывать все surfaces, которые пул может выдать.
+        let mut resource_pool = lock_resource_pool(&self.resource_pool, "import slot capacity")?;
+        follow_output_surface_capacity(&mut resource_pool, report.capacity);
         Ok(())
     }
 

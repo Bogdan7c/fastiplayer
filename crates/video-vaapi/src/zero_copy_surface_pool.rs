@@ -10,11 +10,11 @@
 //! 7. decoder guard отпускается, surface возвращается в decoder pool;
 //! 8. import slot становится free: backend contract решает reuse или replace.
 
-use std::collections::HashMap;
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
 use cros_codecs::decoder::{DecodedDmaBufExportLayout, DecodedDmaBufImage};
 use video_core::{DmaBufObjectIdentity, FrameResourceHandle};
+pub(crate) mod capacity;
 
 /// Явный backend contract для persistent zero-copy imports.
 ///
