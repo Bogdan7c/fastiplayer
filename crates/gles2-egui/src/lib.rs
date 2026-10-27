@@ -99,8 +99,8 @@ pub use loss::{ContextLoss, ContextLossDetection, ContextLossReason};
 pub use offscreen::OffscreenPixels;
 pub use painter::{
     EffectiveDithering, EguiPainter, EguiPainterOptions, EguiPainterStats, IndexWidthPreference,
-    PainterError, RetainedUiUnavailable, TextureApplyReport, TextureFreeOutcome, UiDithering,
-    UiPaintWork, UiPrepareWork, UiScreen, UiTextureUpload, VertexArrayPreference,
+    PainterError, RetainedUiUnavailable, TextureApplyReport, TextureFreeOutcome, UiDamageTracking,
+    UiDithering, UiPaintWork, UiPrepareWork, UiScreen, UiTextureUpload, VertexArrayPreference,
 };
 pub use presentation::{
     DetachOutcome, FramebufferAlpha, PresentationError, PresentationReconfigured,

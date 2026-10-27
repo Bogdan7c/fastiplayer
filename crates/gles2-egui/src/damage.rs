@@ -224,6 +224,10 @@ pub enum FullRepaintReason {
     PreviousFrameAbandoned,
     /// Область перерисовки покрывает всю цель: частичный путь ничего не экономит.
     DamageCoversTarget,
+    /// Отпечаток прошлого показанного интерфейса не считался (тот кадр был полным по другой
+    /// причине): сравнивать новый интерфейс не с чем. Этот кадр полный и считает отпечаток, чтобы
+    /// следующие могли быть частичными.
+    UiBaselineUnknown,
 }
 
 /// Решение о перерисовке кадра.
@@ -302,6 +306,39 @@ impl DamageHistory {
     /// Порядок проверок задаёт причину полной перерисовки: от самых «глубоких» (драйвер вообще
     /// не умеет) к частным.
     #[must_use]
+    pub fn forced_full_repaint(
+        &self,
+        age: BufferAge,
+        target: SurfaceSize,
+        layers: LayersDamage,
+    ) -> Option<FullRepaintReason> {
+        let frames_back = match age {
+            BufferAge::Unsupported => return Some(FullRepaintReason::BufferAgeUnsupported),
+            BufferAge::Undefined => return Some(FullRepaintReason::BufferAgeUndefined),
+            BufferAge::Frames(frames_back) => frames_back,
+        };
+        if self.abandoned {
+            return Some(FullRepaintReason::PreviousFrameAbandoned);
+        }
+        if self.target != Some(target) {
+            return Some(FullRepaintReason::TargetResized);
+        }
+        // Буфер возраста N равен кадру N-го назад: нужны повреждения N−1 прошлых кадров.
+        let previous_needed = usize::try_from(frames_back - 1).unwrap_or(usize::MAX);
+        if previous_needed > self.frames.len() {
+            return Some(FullRepaintReason::BufferTooOld);
+        }
+        (layers == LayersDamage::Changed).then_some(FullRepaintReason::LayersChanged)
+    }
+
+    /// Решает, как перерисовать кадр (см. [`Self::forced_full_repaint`] — причины, не зависящие
+    /// от интерфейса; по ним кадр можно отнести к полным ДО подсчёта повреждения интерфейса).
+    ///
+    /// - `age` — возраст заднего буфера, запрошенный ДО рисования;
+    /// - `target` — размер цели;
+    /// - `layers` — изменились ли слои под интерфейсом;
+    /// - `ui_damage` — что изменил интерфейс в этом кадре (`None` — ничего).
+    #[must_use]
     pub fn plan(
         &self,
         age: BufferAge,
@@ -309,29 +346,13 @@ impl DamageHistory {
         layers: LayersDamage,
         ui_damage: Option<PixelRect>,
     ) -> RepaintPlan {
-        let frames_back = match age {
-            BufferAge::Unsupported => {
-                return RepaintPlan::Full(FullRepaintReason::BufferAgeUnsupported);
-            }
-            BufferAge::Undefined => {
-                return RepaintPlan::Full(FullRepaintReason::BufferAgeUndefined);
-            }
-            BufferAge::Frames(frames_back) => frames_back,
+        if let Some(reason) = self.forced_full_repaint(age, target, layers) {
+            return RepaintPlan::Full(reason);
+        }
+        let BufferAge::Frames(frames_back) = age else {
+            return RepaintPlan::Full(FullRepaintReason::BufferAgeUnsupported);
         };
-        if self.abandoned {
-            return RepaintPlan::Full(FullRepaintReason::PreviousFrameAbandoned);
-        }
-        if self.target != Some(target) {
-            return RepaintPlan::Full(FullRepaintReason::TargetResized);
-        }
-        // Буфер возраста N равен кадру N-го назад: нужны повреждения N−1 прошлых кадров.
         let previous_needed = usize::try_from(frames_back - 1).unwrap_or(usize::MAX);
-        if previous_needed > self.frames.len() {
-            return RepaintPlan::Full(FullRepaintReason::BufferTooOld);
-        }
-        if layers == LayersDamage::Changed {
-            return RepaintPlan::Full(FullRepaintReason::LayersChanged);
-        }
         let repaint = self
             .frames
             .iter()
@@ -378,7 +399,7 @@ impl DamageHistory {
 
 impl FullRepaintReason {
     /// Все причины (порядок задаёт индексы счётчиков).
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::BufferAgeUnsupported,
         Self::BufferAgeUndefined,
         Self::TargetResized,
@@ -386,6 +407,7 @@ impl FullRepaintReason {
         Self::LayersChanged,
         Self::PreviousFrameAbandoned,
         Self::DamageCoversTarget,
+        Self::UiBaselineUnknown,
     ];
 
     const fn index(self) -> usize {
@@ -397,6 +419,7 @@ impl FullRepaintReason {
             Self::LayersChanged => 4,
             Self::PreviousFrameAbandoned => 5,
             Self::DamageCoversTarget => 6,
+            Self::UiBaselineUnknown => 7,
         }
     }
 }

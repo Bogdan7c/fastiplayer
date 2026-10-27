@@ -201,7 +201,7 @@ fn scenario() -> Vec<Step> {
         });
     };
     // Движущийся прямоугольник при неподвижном видео (пауза + мышь).
-    for index in 0..8 {
+    for index in 0..12 {
         push(ui(index * 6, true, false), still);
     }
     push(UiStep::Reuse, still);
@@ -265,13 +265,17 @@ struct Run {
 /// Прогнать сценарий. `partial` — сообщать ли `LayersDamage::Unchanged` для неизменившихся
 /// слоёв (тестовый контекст) или всегда перерисовывать целиком (эталон).
 fn run_scenario(rig: &mut Rig, partial: bool) -> Run {
+    run_steps(rig, partial, scenario())
+}
+
+fn run_steps(rig: &mut Rig, partial: bool, steps: Vec<Step>) -> Run {
     let egui_context = Context::default();
     let mut extent = TARGET;
     let mut previous_layers: Option<LayerScene> = None;
     let mut frames = Vec::new();
     let mut plans = Vec::new();
     let mut kinds = Vec::new();
-    for step in scenario() {
+    for step in steps {
         if let Some(new_extent) = step.resize_to {
             extent = new_extent;
             rig.context
@@ -379,11 +383,11 @@ fn check_ring(back_buffers: usize, test_name: &str) {
     // 2. Трюк реально работает: частичные кадры были и перерисовали заметно меньше цели.
     let stats = run.stats;
     assert!(
-        stats.partial_presents > 5,
+        stats.partial_presents >= 3,
         "ring of {back_buffers}: partial presents expected, got {stats:?}"
     );
     assert!(
-        stats.repainted_pixels * 4 < stats.target_pixels * 3,
+        stats.repainted_pixels * 10 < stats.target_pixels * 9,
         "ring of {back_buffers}: repainted {} of {} pixels",
         stats.repainted_pixels,
         stats.target_pixels
@@ -400,10 +404,12 @@ fn check_ring(back_buffers: usize, test_name: &str) {
         stats.full_presents_for(FullRepaintReason::LayersChanged) >= 3,
         "{stats:?}"
     );
-    // Кадры «движущийся прямоугольник над неподвижным видео» (шаги 0..8) после прогрева кольца
+    // Кадры «движущийся прямоугольник над неподвижным видео» (шаги 0..12) после прогрева кольца
     // перерисовывают малую часть цели: это и есть выигрыш трюка (без него — вся цель).
     let target_pixels = u64::from(TARGET.0) * u64::from(TARGET.1);
-    for index in (back_buffers + 1)..8 {
+    // Первые N кадров идут без отпечатка интерфейса (возраст 0), следующий строит базу
+    // (`UiBaselineUnknown`), потом ещё N−1 кадров видят в истории «всю цель».
+    for index in (2 * back_buffers)..12 {
         let RepaintPlan::Partial { repaint, .. } = run.plans[index] else {
             panic!(
                 "ring of {back_buffers}: UI-only frame {index} must be partial: {:?}",
@@ -665,4 +671,115 @@ fn nothing_area_draws_no_commands() {
             .all(|pixel| pixel[..3] == [255, 0, 0])
     );
     painter.destroy(&context).unwrap();
+}
+
+/// Воспроизведение (каждый кадр видео новый, интерфейс свежий), затем пауза: слои стоят,
+/// интерфейс меняется (мышь, подсказка).
+fn playback_then_pause(playback_frames: u32, pause_frames: u32) -> Vec<Step> {
+    let mut steps = Vec::new();
+    for generation in 0..playback_frames {
+        steps.push(Step {
+            ui: UiStep::Fresh(UiScene {
+                moving_x: generation % 5,
+                panel_visible: true,
+                tooltip_visible: false,
+            }),
+            layers: LayerScene {
+                video_generation: generation,
+                subtitle: None,
+            },
+            resize_to: None,
+        });
+    }
+    let paused = LayerScene {
+        video_generation: playback_frames.saturating_sub(1),
+        subtitle: None,
+    };
+    for index in 0..pause_frames {
+        steps.push(Step {
+            ui: UiStep::Fresh(UiScene {
+                moving_x: index * 7,
+                panel_visible: true,
+                tooltip_visible: index % 4 == 3,
+            }),
+            layers: paused,
+            resize_to: None,
+        });
+    }
+    steps
+}
+
+fn check_playback_then_pause(back_buffers: usize, name: &str) {
+    let Some(reference_context) = offscreen_or_skip(name, size(TARGET.0, TARGET.1)) else {
+        return;
+    };
+    let mut reference_rig = rig_from(reference_context);
+    let steps = playback_then_pause(10, 14);
+    let reference = run_steps(&mut reference_rig, false, steps.clone());
+    let context =
+        Gles2Context::offscreen_with_back_buffers(size(TARGET.0, TARGET.1), back_buffers).unwrap();
+    let mut rig = rig_from(context);
+    let run = run_steps(&mut rig, true, steps);
+    assert_same_pixels(&run, &reference, &format!("ring of {back_buffers}"));
+    // Воспроизведение (слои меняются каждый кадр) не строит отпечаток интерфейса вовсе; он
+    // появляется на одном кадре базы после паузы и дальше на частичных кадрах.
+    let computed = rig.compositor.painter().stats().ui_footprints_computed;
+    let pause_frames = 14;
+    assert!(
+        computed <= pause_frames,
+        "ring of {back_buffers}: footprints computed {computed}"
+    );
+    let baseline_frames = run
+        .plans
+        .iter()
+        .filter(|plan| **plan == RepaintPlan::Full(FullRepaintReason::UiBaselineUnknown))
+        .count();
+    assert_eq!(
+        baseline_frames, 1,
+        "ring of {back_buffers}: {:?}",
+        run.plans
+    );
+    assert!(
+        run.stats.partial_presents >= 3,
+        "partial presents must resume after the baseline frame: {:?}",
+        run.stats
+    );
+    let last = run.plans.last().copied().unwrap();
+    assert!(matches!(last, RepaintPlan::Partial { .. }), "{last:?}");
+}
+
+#[test]
+fn playback_then_pause_is_pixel_exact_with_one_back_buffer() {
+    check_playback_then_pause(1, "playback_then_pause_one");
+}
+
+#[test]
+fn playback_then_pause_is_pixel_exact_with_two_back_buffers() {
+    check_playback_then_pause(2, "playback_then_pause_two");
+}
+
+#[test]
+fn playback_then_pause_is_pixel_exact_with_three_back_buffers() {
+    check_playback_then_pause(3, "playback_then_pause_three");
+}
+
+/// Корень регрессии: кадры, которые заведомо полные (слои меняются, возраст неизвестен), не
+/// считают отпечаток интерфейса.
+#[test]
+fn frames_that_are_full_anyway_compute_no_ui_footprint() {
+    let name = "frames_that_are_full_anyway_compute_no_ui_footprint";
+    let Some(plain_context) = offscreen_or_skip(name, size(TARGET.0, TARGET.1)) else {
+        return;
+    };
+    // Возраст неизвестен: ни один кадр не окупает отпечаток, даже при неизменных слоях.
+    let mut plain = rig_from(plain_context);
+    run_steps(&mut plain, true, playback_then_pause(4, 6));
+    assert_eq!(plain.compositor.painter().stats().ui_footprints_computed, 0);
+
+    // Возраст есть, но слои менялись каждый кадр: отпечатков нет.
+    let ring = Gles2Context::offscreen_with_back_buffers(size(TARGET.0, TARGET.1), 2).unwrap();
+    let mut rig = rig_from(ring);
+    let run = run_steps(&mut rig, true, playback_then_pause(12, 0));
+    assert_eq!(rig.compositor.painter().stats().ui_footprints_computed, 0);
+    assert_eq!(run.stats.partial_presents, 0);
 }

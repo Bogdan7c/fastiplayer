@@ -37,14 +37,17 @@ use thiserror::Error;
 
 use crate::context::driver::SurfaceSize;
 use crate::context::{GlAccessError, Gles2Context};
-use crate::damage::{DamageHistory, LayersDamage, PartialPresentStats, RepaintPlan, TargetArea};
+use crate::damage::{
+    DamageHistory, FullRepaintReason, LayersDamage, PartialPresentStats, RepaintPlan, TargetArea,
+};
 use crate::error::Gles2Error;
 use crate::frame::{
     ActiveFrame, FrameSkipReason, FrameStart, Gles2FrameTimings, PresentKind, PresentedFrame,
 };
 use crate::painter::{
     EguiPainter, EguiPainterOptions, PainterError, RetainedUiUnavailable, TextureApplyReport,
-    TextureFreeOutcome, UiFootprint, UiPaintWork, UiPrepareWork, UiScreen, UiTextureUpload,
+    TextureFreeOutcome, UiDamageTracking, UiFootprint, UiPaintWork, UiPrepareWork, UiScreen,
+    UiTextureUpload,
 };
 
 /// Содержимое UI кадра (аналог `render_shell_api::EguiFrameContent`).
@@ -524,7 +527,25 @@ impl FrameCompositor {
                 textures,
             } => {
                 let started = Instant::now();
-                let prepared = self.painter.prepare_fresh(frame, plan.screen, primitives);
+                // Кадр, который заведомо будет полным, отпечаток интерфейса не получает: он стоит
+                // времени главного потока и не окупится (следующий кадр сравнивать не с чем, и это
+                // учтено — `UiBaselineUnknown`).
+                let forced_full = self.damage_history.forced_full_repaint(
+                    frame.buffer_age(),
+                    frame.size(),
+                    plan.layers_damage,
+                );
+                let tracking = if forced_full.is_some() {
+                    UiDamageTracking::Skip
+                } else {
+                    UiDamageTracking::Track
+                };
+                let prepared = self.painter.prepare_fresh_with_tracking(
+                    frame,
+                    plan.screen,
+                    primitives,
+                    tracking,
+                );
                 timings.egui_buffer_update = started.elapsed();
                 match prepared {
                     Ok(work) => (Some(textures), Some(work), Some(textures_delta)),
@@ -579,19 +600,34 @@ impl FrameCompositor {
         plan: &DrawPlan<'_>,
         fresh_ui: bool,
     ) -> (RepaintPlan, TargetArea) {
-        let ui_damage = if fresh_ui {
-            self.painter
-                .retained_footprint()
-                .changed_since(self.presented_ui.as_ref())
-        } else {
-            None
-        };
+        let tracked_footprint = self.painter.retained_footprint().filter(|_| fresh_ui);
+        if fresh_ui && tracked_footprint.is_none() {
+            // Отпечаток не считался: кадр полный, а что он изменил на экране, неизвестно.
+            let reason = self
+                .damage_history
+                .forced_full_repaint(frame.buffer_age(), frame.size(), plan.layers_damage)
+                .unwrap_or(FullRepaintReason::LayersChanged);
+            return (RepaintPlan::Full(reason), TargetArea::Whole);
+        }
+        let ui_damage = tracked_footprint
+            .and_then(|footprint| footprint.changed_since(self.presented_ui.as_ref()));
         let decision = self.damage_history.plan(
             frame.buffer_age(),
             frame.size(),
             plan.layers_damage,
             ui_damage,
         );
+        // Интерфейс прошлого показанного кадра не считался: диффа нет, этот кадр полный (и
+        // отпечаток у него есть — следующие кадры снова могут быть частичными).
+        let decision = match decision {
+            RepaintPlan::Partial { .. }
+            | RepaintPlan::Full(FullRepaintReason::DamageCoversTarget)
+                if fresh_ui && self.presented_ui.is_none() =>
+            {
+                RepaintPlan::Full(FullRepaintReason::UiBaselineUnknown)
+            }
+            other => other,
+        };
         if let RepaintPlan::Partial { repaint, changed } = decision {
             frame.restrict_to_partial_repaint(repaint, changed);
         }
@@ -611,10 +647,11 @@ impl FrameCompositor {
         self.damage_history.record_presented(target, change);
         if fresh_ui {
             // Показанным интерфейсом стал только что собранный (отпечаток переиспользует буфер).
-            let footprint = self.painter.retained_footprint();
-            match &mut self.presented_ui {
-                Some(presented) => presented.clone_from(footprint),
-                empty @ None => *empty = Some(footprint.clone()),
+            match (self.painter.retained_footprint(), &mut self.presented_ui) {
+                (Some(footprint), Some(presented)) => presented.clone_from(footprint),
+                (Some(footprint), empty @ None) => *empty = Some(footprint.clone()),
+                // Отпечаток пропущен: базовый интерфейс неизвестен.
+                (None, presented) => *presented = None,
             }
         }
         self.partial_stats.record_presented(

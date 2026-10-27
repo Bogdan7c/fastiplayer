@@ -21,7 +21,7 @@ use epaint::{ClippedPrimitive, Mesh, Primitive, TextureId, Vertex};
 use crate::draw_gl::{GlScissor, IndexType, IndexedDraw, gl_int};
 
 use super::scissor::{clip_rect_in_pixels, gl_scissor};
-use super::ui_damage::{TextureChange, UiFootprint, damages_existing_pixels};
+use super::ui_damage::{TextureChange, UiDamageTracking, UiFootprint, damages_existing_pixels};
 
 /// Размер вершины egui в буфере. `epaint::Vertex` — `#[repr(C)]`: `pos: Pos2` (2×f32),
 /// `uv: Pos2` (2×f32), `color: Color32` (4×u8).
@@ -108,11 +108,15 @@ impl FrameStaging {
         pixels_per_point: f32,
         target_size: [u32; 2],
         texture_changes: &[(TextureId, TextureChange)],
+        tracking: UiDamageTracking,
     ) -> UiPrepareWork {
         self.vertex_bytes.clear();
         self.index_bytes.clear();
         self.commands.clear();
-        self.footprint.reset(target_size);
+        match tracking {
+            UiDamageTracking::Track => self.footprint.reset(target_size),
+            UiDamageTracking::Skip => self.footprint.reset_untracked(),
+        }
         let mut work = UiPrepareWork::default();
         for ClippedPrimitive {
             clip_rect,
@@ -141,8 +145,10 @@ impl FrameStaging {
             let texture_damaged = texture_changes.iter().any(|(texture, change)| {
                 *texture == mesh.texture_id && damages_existing_pixels(*texture, *change)
             });
-            self.footprint
-                .add_mesh(&mesh, clip, pixels_per_point, texture_damaged);
+            if tracking == UiDamageTracking::Track {
+                self.footprint
+                    .add_mesh(&mesh, clip, pixels_per_point, texture_damaged);
+            }
             let pushed = match self.index_type {
                 IndexType::U32 => self.push_u32_mesh(&mesh, scissor),
                 IndexType::U16 => self.push_u16_batches(mesh, scissor),
@@ -254,7 +260,7 @@ impl FrameStaging {
 mod tests {
     use epaint::{ClippedPrimitive, Color32, Mesh, Primitive, Rect, TextureId, Vertex, pos2};
 
-    use super::{FrameStaging, VERTEX_STRIDE_BYTES, VertexBinding};
+    use super::{FrameStaging, UiDamageTracking, VERTEX_STRIDE_BYTES, VertexBinding};
     use crate::draw_gl::IndexType;
 
     fn quad(texture_id: TextureId, min: f32, max: f32) -> ClippedPrimitive {
@@ -290,6 +296,7 @@ mod tests {
             1.0,
             [16, 16],
             &[],
+            UiDamageTracking::Track,
         );
         assert_eq!(work.draw_commands, 2);
         assert_eq!(work.vertex_bytes, 8 * VERTEX_STRIDE_BYTES);
@@ -328,6 +335,7 @@ mod tests {
             1.0,
             [16, 16],
             &[],
+            UiDamageTracking::Track,
         );
         assert!(work.draw_commands >= 2, "{work:?}");
         let commands = staging.commands();
@@ -373,6 +381,7 @@ mod tests {
             1.0,
             [8, 8],
             &[],
+            UiDamageTracking::Track,
         );
         assert_eq!(work.skipped_invalid_meshes, 1);
         assert_eq!(work.skipped_paint_callbacks, 1);

@@ -25,6 +25,17 @@ use crate::damage::{PixelRect, union_damage};
 /// треугольник стоит ~5 тыс. умножений, а повреждение мельче сдвинутой кнопки не нужно.
 pub(super) const TILE_SIZE: u32 = 16;
 
+/// Нужен ли отпечаток интерфейса этого кадра. Он стоит заметного времени главного потока
+/// (хеш каждого треугольника), поэтому считается только там, где может окупиться: кадр, который
+/// всё равно будет полным (слои менялись, возраст буфера неизвестен), отпечаток не получает.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UiDamageTracking {
+    /// Посчитать отпечаток: по нему считается повреждение интерфейса.
+    Track,
+    /// Не считать: кадр полный, а следующий не сможет сравнивать с этим интерфейсом.
+    Skip,
+}
+
 /// Что произошло с текстурой с прошлого собранного кадра.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TextureChange {
@@ -54,6 +65,8 @@ pub(crate) struct UiFootprint {
     tiles: Vec<u64>,
     /// Площадь треугольников с изменившейся текстурой.
     texture_damage: Option<PixelRect>,
+    /// Отпечаток посчитан (`reset`); у пропущенного кадра `false`.
+    tracked: bool,
 }
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -78,6 +91,22 @@ impl UiFootprint {
         self.tiles
             .resize(usize::try_from(tile_count).unwrap_or(0), 0);
         self.texture_damage = None;
+        self.tracked = true;
+    }
+
+    /// Кадр без отпечатка ([`UiDamageTracking::Skip`]): буфер плиток пуст, отпечаток недействителен.
+    pub(super) fn reset_untracked(&mut self) {
+        self.target = [0, 0];
+        self.columns = 0;
+        self.rows = 0;
+        self.tiles.clear();
+        self.texture_damage = None;
+        self.tracked = false;
+    }
+
+    /// Посчитан ли отпечаток.
+    pub(super) fn is_tracked(&self) -> bool {
+        self.tracked
     }
 
     /// Учесть меш (порядок вызовов = порядок рисования).

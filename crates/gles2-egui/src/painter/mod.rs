@@ -42,6 +42,7 @@ use self::program::PainterProgram;
 use self::scissor::paint_scissor_limit;
 use self::textures::{UiTextureStore, UploadLimits};
 use self::ui_damage::TextureChange;
+pub use self::ui_damage::UiDamageTracking;
 pub(crate) use self::ui_damage::UiFootprint;
 use self::upload::FrameStaging;
 
@@ -195,6 +196,8 @@ pub struct EguiPainterStats {
     pub paints: u64,
     /// `glDrawElements` за всё время.
     pub draw_calls: u64,
+    /// Отпечатков интерфейса посчитано (кадры, где повреждение интерфейса могло пригодиться).
+    pub ui_footprints_computed: u64,
 }
 
 /// Художник egui. Владеет GL-объектами в одном контексте ([`ContextId`]).
@@ -286,8 +289,9 @@ impl EguiPainter {
 
     /// Отпечаток удержанного UI-кадра: основа повреждения для частичного показа. Сборщик
     /// кадра сравнивает его с отпечатком прошлого показанного кадра.
-    pub(crate) fn retained_footprint(&self) -> &UiFootprint {
-        self.staging.footprint()
+    /// `None` — отпечаток не считался ([`UiDamageTracking::Skip`]): сравнивать не с чем.
+    pub(crate) fn retained_footprint(&self) -> Option<&UiFootprint> {
+        Some(self.staging.footprint()).filter(|footprint| footprint.is_tracked())
     }
 
     /// Сторона текстуры, которую стоит передавать egui (`RawInput::max_texture_side`).
@@ -369,6 +373,18 @@ impl EguiPainter {
         screen: UiScreen,
         primitives: Vec<ClippedPrimitive>,
     ) -> Result<UiPrepareWork, PainterError> {
+        self.prepare_fresh_with_tracking(frame, screen, primitives, UiDamageTracking::Track)
+    }
+
+    /// То же, что [`Self::prepare_fresh`], но вызывающий решает, нужен ли отпечаток интерфейса
+    /// ([`UiDamageTracking`]): для кадра, который всё равно будет полным, он не считается.
+    pub fn prepare_fresh_with_tracking(
+        &mut self,
+        frame: &ActiveFrame<'_>,
+        screen: UiScreen,
+        primitives: Vec<ClippedPrimitive>,
+        tracking: UiDamageTracking,
+    ) -> Result<UiPrepareWork, PainterError> {
         self.ensure_owner(frame.context_id())?;
         let gl = DrawGl::for_active_frame(frame);
         // До сборки: если загрузка откажет, старый удержанный кадр уже недействителен (буферы
@@ -380,7 +396,11 @@ impl EguiPainter {
             screen.pixels_per_point,
             screen.size_in_pixels,
             &texture_changes,
+            tracking,
         );
+        if tracking == UiDamageTracking::Track {
+            self.stats.ui_footprints_computed += 1;
+        }
         self.stream_staging(gl)?;
         self.retained_screen = Some(screen);
         self.stats.fresh_prepares += 1;

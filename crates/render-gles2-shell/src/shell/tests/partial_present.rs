@@ -101,8 +101,8 @@ fn run_scenario(renderer: &mut Gles2Renderer) -> Vec<Vec<u8>> {
     let mut frames = Vec::new();
     let full = RenderViewport::full_surface(TARGET[0], TARGET[1]);
     // 1. Видео стоит, двигается только интерфейс (пауза и мышь).
-    for index in 0..8 {
-        let ui = fresh_ui(&egui_context, TARGET, 4.0 + index as f32 * 9.0);
+    for index in 0..18 {
+        let ui = fresh_ui(&egui_context, TARGET, 4.0 + index as f32 * 7.0);
         frames.push(present_with(renderer, TARGET, &key_a, full, ui));
     }
     // 2. Повтор удержанного интерфейса.
