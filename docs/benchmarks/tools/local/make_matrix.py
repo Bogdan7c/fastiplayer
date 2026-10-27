@@ -121,6 +121,9 @@ T410 = [
     t410_variant('1080p60', 'h264', BITRATES_MBPS['h264']['1080p60'], tier='stress'),
     t410_variant('720p30', 'hevc', 4), t410_variant('1080p30', 'hevc', BITRATES_MBPS['hevc']['1080p30']),
     t410_variant('1080p60', 'hevc', BITRATES_MBPS['hevc']['1080p60']),
+    # Кандидат «ступеньки тяжелее» сессии 12a (решение владельца 64): HEVC 60 к/с с битрейтом
+    # стресс-сцены H.264, чтобы развести ничью с VLC на верхней ступеньке.
+    t410_variant('1080p60', 'hevc', 25, tier='stress'),
     t410_variant('720p30', 'vp9', 4), t410_variant('720p60', 'vp9', 6),
     t410_variant('1080p30', 'vp9', BITRATES_MBPS['vp9']['1080p30']),
     t410_variant('1080p60', 'vp9', BITRATES_MBPS['vp9']['1080p60']),
@@ -134,6 +137,9 @@ T410 = [
 # Отдельный пресет, потому что нужен другой мастер — 10-битный HDR10 (PQ/BT.2020):
 # программный 10-бит + HDR→SDR, нагрузка и на декодер, и на шейдер рендера.
 T410_HDR = [Variant('1080p30', *RESOLUTIONS['1080p30'], 'hevc', 'main10', BITRATES_MBPS['hevc']['1080p30'],
+                    bit_depth=10, dynamic_range='hdr10'),
+            # Кандидат «ступеньки тяжелее» сессии 12a (решение владельца 64): 10-бит HDR 60 к/с.
+            Variant('1080p60', *RESOLUTIONS['1080p60'], 'hevc', 'main10', BITRATES_MBPS['hevc']['1080p60'],
                     bit_depth=10, dynamic_range='hdr10')]
 PRESETS = {'matrix': MATRIX, 't410': T410, 't410-hdr': T410_HDR}
 

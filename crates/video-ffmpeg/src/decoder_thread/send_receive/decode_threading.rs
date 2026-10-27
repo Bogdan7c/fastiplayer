@@ -24,8 +24,11 @@
 //!   - AV1 до 1080p получает `max_frame_delay = 2`: с одним кадром в полёте dav1d на
 //!     T410 декодирует AV1 1080p60 всего ~29 кадров/с (плеер показывает ~15), с двумя —
 //!     ~80 кадров/с;
-//!   - HEVC в `Auto` получает все логические CPU, а не «ядра − 2» (на T410 = 2 потока):
-//!     HEVC 1080p60 с 2 потоками — 56 кадров/с, с 4 — 60 при +20 п.п. CPU.
+//!   - HEVC в `Auto` получает все логические CPU и ещё два потока, а не «ядра − 2» (на T410
+//!     = 2 потока): HEVC 1080p60 с 2 потоками — 56 кадров/с, с 4 — 60 при +20 п.п. CPU
+//!     (11a). На тяжёлом HEVC 1080p60 25 Мбит/с 4 потока теряли 53 кадра за окно 20 с, а 6 —
+//!     ни одного при том же CPU (сессия 12a, решение владельца 67): лишние потоки frame
+//!     threading-а прячут ожидание на гипертрединге, как у VLC и mpv (те берут ядра + 1).
 //!
 //!   H.264 и VP9 на слабой машине не меняются: 2 потоков им хватает на 1080p60, а
 //!   каждый лишний поток там только добавляет 3–5 п.п. CPU на синхронизации.
@@ -81,6 +84,10 @@ const AV1_UP_TO_1080P_CONSTRAINED_HOST_MAX_FRAME_DELAY: u32 = 2;
 /// 4 — это 2 ядра с Hyper-Threading (T410) или 4 простых ядра: «ядра − 2» оставляет
 /// таким машинам всего 2 потока декода, и тяжёлым кодекам их не хватает.
 const CONSTRAINED_HOST_MAX_LOGICAL_CPUS: usize = 4;
+
+/// Сколько потоков HEVC получает сверх числа логических CPU на слабой машине (решение
+/// владельца 67, сессия 12a). Цена — по кадру в работе на поток (~7–10 МиБ на 1080p).
+const CONSTRAINED_HOST_HEVC_EXTRA_THREADS: usize = 2;
 
 /// Процессор машины, на которой открывается декодер, — вход политики потоков.
 ///
@@ -194,7 +201,8 @@ impl SoftwareDecodeWorkload {
         ))
     }
 
-    /// Получает ли поток в `Auto` все логические CPU слабой машины вместо «ядра − 2».
+    /// Получает ли поток в `Auto` все логические CPU слабой машины (плюс запас
+    /// [`CONSTRAINED_HOST_HEVC_EXTRA_THREADS`]) вместо «ядра − 2».
     ///
     /// Только HEVC: ему на слабой машине двух потоков не хватает уже на 1080p60, а
     /// H.264/VP9 укладываются и платили бы лишним CPU (замеры — в документации модуля).
@@ -228,7 +236,7 @@ impl SoftwareDecodeWorkload {
 /// `Fixed` (ручной `video.sw_decode_threads`) передаётся как есть: это осознанный
 /// override пользователя. `Auto` получает общий запас «ядра − 2» из `video-core` и
 /// кодек-зависимый потолок из [`SoftwareDecodeWorkload`]; HEVC на слабой машине —
-/// все логические CPU.
+/// все логические CPU и ещё два.
 fn resolve_decode_thread_budget(
     budget: SoftwareDecodeThreadBudget,
     workload: SoftwareDecodeWorkload,
@@ -248,14 +256,18 @@ fn resolve_decode_thread_budget(
 ///
 /// Потолок только уменьшает число: на слабой машине (4 логических CPU → 2 потока)
 /// AV1 получает те же 2 потока, что и раньше. Исключение — HEVC на слабой машине:
-/// он получает все логические CPU (`host`), потому что запаса «ядра − 2» ему не хватает.
+/// он получает все логические CPU (`host`) и ещё [`CONSTRAINED_HOST_HEVC_EXTRA_THREADS`],
+/// потому что запаса «ядра − 2» ему не хватает.
 fn auto_thread_count(
     host_headroom_threads: NonZeroUsize,
     workload: SoftwareDecodeWorkload,
     host: HostCpuProfile,
 ) -> NonZeroUsize {
     if host.is_constrained() && workload.takes_all_cpus_on_constrained_host() {
-        return host.logical_cpus.max(host_headroom_threads);
+        return host
+            .logical_cpus
+            .saturating_add(CONSTRAINED_HOST_HEVC_EXTRA_THREADS)
+            .max(host_headroom_threads);
     }
     match workload.auto_thread_cap() {
         Some(cap) => host_headroom_threads.min(cap),
@@ -472,8 +484,8 @@ mod tests {
     }
 
     #[test]
-    fn constrained_host_gives_hevc_every_logical_cpu() {
-        // «Ядра − 2» на 4 логических CPU = 2 потока; HEVC получает все 4.
+    fn constrained_host_gives_hevc_every_logical_cpu_plus_two() {
+        // «Ядра − 2» на 4 логических CPU = 2 потока; HEVC получает все 4 и ещё 2.
         let headroom = threads(2);
         assert_eq!(
             auto_thread_count(
@@ -481,7 +493,7 @@ mod tests {
                 workload(FfmpegDecoderId::Hevc, 1920, 1080),
                 T410_HOST
             ),
-            threads(4)
+            threads(6)
         );
         let two_cpus = HostCpuProfile::with_logical_cpus(threads(2));
         assert_eq!(
@@ -490,7 +502,7 @@ mod tests {
                 workload(FfmpegDecoderId::Hevc, 1920, 1080),
                 two_cpus
             ),
-            threads(2)
+            threads(4)
         );
         // На мощной машине HEVC остаётся на «ядра − 2».
         assert_eq!(
@@ -551,7 +563,7 @@ mod tests {
         let host_headroom = SoftwareDecodeThreadBudget::auto().resolved_thread_count();
         assert_eq!(
             hevc.software_decode_thread_budget(),
-            SoftwareDecodeThreadBudget::fixed(threads(4).max(host_headroom))
+            SoftwareDecodeThreadBudget::fixed(threads(6).max(host_headroom))
         );
         assert_eq!(hevc.max_frame_delay(), None);
     }
