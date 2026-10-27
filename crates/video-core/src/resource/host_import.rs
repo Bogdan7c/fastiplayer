@@ -19,6 +19,8 @@
 //!   GPU-копия обязана держать descriptor, пока не выполнится.
 
 use std::fmt;
+#[cfg(target_os = "linux")]
+use std::os::fd::BorrowedFd;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -109,16 +111,73 @@ impl HostMemoryRegion {
     }
 }
 
-/// Блок обычной памяти процесса, который GPU может импортировать без CPU-копии.
+/// Какой памятью декодер выделяет блоки кадров.
+///
+/// Вид выбирает приложение по семейству рендера, а не декодер: у разных рендеров
+/// разные способы импортировать память без CPU-копии, и они несовместимы.
+/// - [`Anonymous`](Self::Anonymous): обычная анонимная память процесса. Только её
+///   принимает путь wgpu/Vulkan (amdgpu `userptr` не умеет отображения файлов).
+/// - [`SealedMemfd`](Self::SealedMemfd): `MAP_SHARED`-отображение запечатанного
+///   memfd. Только из такой памяти можно сделать dma-buf (`/dev/udmabuf`) для
+///   GLES2/EGL; анонимную память udmabuf не принимает.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum HostFrameMemoryKind {
+    /// Анонимная память процесса (поведение по умолчанию).
+    #[default]
+    Anonymous,
+    /// Отображение запечатанного memfd, из которого можно получить dma-buf.
+    SealedMemfd,
+}
+
+/// Откуда блок памяти отображён: запечатанный memfd и сдвиг начала отображения в нём.
+///
+/// Нужен рендеру, чтобы сделать dma-buf (`UDMABUF_CREATE`) прямо из памяти блока.
+/// Описание заимствует fd у блока: оно живёт не дольше самого блока.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy)]
+pub struct SealedMemfdRegion<'fd> {
+    /// Файловый дескриптор memfd (принадлежит блоку).
+    memfd: BorrowedFd<'fd>,
+    /// Сдвиг начала отображения `region()` внутри memfd, в байтах.
+    offset: u64,
+}
+
+#[cfg(target_os = "linux")]
+impl<'fd> SealedMemfdRegion<'fd> {
+    /// Описывает отображение memfd, начинающееся со сдвига `offset`.
+    #[must_use]
+    pub const fn new(memfd: BorrowedFd<'fd>, offset: u64) -> Self {
+        Self { memfd, offset }
+    }
+
+    /// Дескриптор memfd (владелец — блок).
+    #[must_use]
+    pub const fn memfd(&self) -> BorrowedFd<'fd> {
+        self.memfd
+    }
+
+    /// Сдвиг начала отображения внутри memfd.
+    #[must_use]
+    pub const fn offset(&self) -> u64 {
+        self.offset
+    }
+}
+
+/// Блок памяти процесса, который GPU может импортировать без CPU-копии.
 ///
 /// # Safety
 ///
 /// Реализация гарантирует:
 /// - `region()` возвращает одно и то же значение всё время жизни блока;
 /// - адрес и длина кратны [`HOST_IMPORTABLE_BLOCK_ALIGNMENT`], длина больше нуля;
-/// - `[address, address + len)` — память, выделенная процессом (anonymous, не
-///   отображение файла или устройства), и она остаётся выделенной, пока жива хотя бы
-///   одна ссылка на блок: импорт GPU ссылается на эти страницы;
+/// - `[address, address + len)` — память, выделенная процессом и остающаяся выделенной,
+///   пока жива хотя бы одна ссылка на блок (импорт GPU ссылается на эти страницы). Это
+///   либо анонимная память, либо `MAP_SHARED`-отображение memfd, который возвращает
+///   `sealed_memfd()`; отображение любого другого файла или устройства недопустимо;
+/// - если `sealed_memfd()` возвращает `Some`: memfd запечатан минимум `F_SEAL_SHRINK`
+///   (файл не усохнет под импортом), но без `F_SEAL_WRITE` (декодер продолжает писать);
+///   отображение начинается со сдвига `offset` в memfd и покрывает ровно `region()`;
+///   fd остаётся открытым, пока жив блок;
 /// - `id()` не меняется и уникален среди всех блоков процесса.
 pub unsafe trait HostImportableMemoryBlock: fmt::Debug + Send + Sync {
     /// Номер блока для кэша импортов.
@@ -126,6 +185,15 @@ pub unsafe trait HostImportableMemoryBlock: fmt::Debug + Send + Sync {
 
     /// Диапазон памяти блока.
     fn region(&self) -> HostMemoryRegion;
+
+    /// Откуда блок отображён, если он лежит в запечатанном memfd.
+    ///
+    /// `None` — анонимная память (по умолчанию). `Some` — рендер может сделать из
+    /// блока dma-buf без копии; контракт отображения — в разделе Safety трейта.
+    #[cfg(target_os = "linux")]
+    fn sealed_memfd(&self) -> Option<SealedMemfdRegion<'_>> {
+        None
+    }
 }
 
 /// Блок памяти кадра плюс offset начала каждой plane-ы от начала блока.

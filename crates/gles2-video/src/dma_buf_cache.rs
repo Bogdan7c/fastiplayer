@@ -14,6 +14,48 @@
 
 use crate::dma_buf_frame::DmaBufBufferIdentity;
 
+/// Паспорт буфера как ключ кэша: что кэшу нужно знать, не зная устройства паспорта.
+///
+/// Два паспорта (NV12 и планарный) живут в разных кэшах, но подчиняются одним правилам:
+/// равенство паспортов = тот же буфер, `resource_id` пересоздаётся производителем, а смена
+/// сигнатуры формата потока выбрасывает весь старый набор буферов.
+pub(crate) trait ImportCacheKey: Clone + PartialEq {
+    /// Сигнатура формата потока: смена выбрасывает все старые записи.
+    type StreamFormat: PartialEq;
+
+    /// Номер ресурса у производителя.
+    fn resource_id(&self) -> u64;
+
+    /// Сигнатура формата потока.
+    fn stream_format(&self) -> Self::StreamFormat;
+}
+
+impl ImportCacheKey for DmaBufBufferIdentity {
+    type StreamFormat = crate::dma_buf_frame::DmaBufFrameFormat;
+
+    fn resource_id(&self) -> u64 {
+        self.resource_id
+    }
+
+    fn stream_format(&self) -> Self::StreamFormat {
+        self.format
+    }
+}
+
+impl ImportCacheKey for crate::dma_buf_planar_frame::DmaBufPlanarIdentity {
+    /// Формат потока планарного кадра: раскладка и размер яркости. Смещения и шаги в формат не
+    /// входят: их смена при том же `resource_id` — это замена записи, а не смена потока.
+    type StreamFormat = (crate::planes::PlanarLayout, crate::planes::PlaneExtent);
+
+    fn resource_id(&self) -> u64 {
+        self.resource_id
+    }
+
+    fn stream_format(&self) -> Self::StreamFormat {
+        (self.layout, self.luma_extent)
+    }
+}
+
 /// Ёмкость кэша: не меньше одной записи.
 ///
 /// Должна совпадать с числом поверхностей пула декодера: при меньшем кэше LRU на круговом пуле
@@ -71,8 +113,8 @@ pub struct DmaBufImportCacheSnapshot {
 
 /// Запись кэша.
 #[derive(Debug)]
-struct CacheEntry<T> {
-    identity: DmaBufBufferIdentity,
+struct CacheEntry<T, K> {
+    identity: K,
     value: T,
     /// Монотонная метка последнего обращения (для LRU).
     last_used_tick: u64,
@@ -80,15 +122,15 @@ struct CacheEntry<T> {
 
 /// LRU-кэш импортов.
 #[derive(Debug)]
-pub(crate) struct DmaBufImportCache<T> {
+pub(crate) struct DmaBufImportCache<T, K = DmaBufBufferIdentity> {
     /// Записи без порядка; поиск линейный (записей — единицы или десятки).
-    entries: Vec<CacheEntry<T>>,
+    entries: Vec<CacheEntry<T, K>>,
     capacity: usize,
     next_tick: u64,
     counters: DmaBufImportCacheSnapshot,
 }
 
-impl<T> DmaBufImportCache<T> {
+impl<T, K: ImportCacheKey> DmaBufImportCache<T, K> {
     /// Пустой кэш.
     pub(crate) fn new(capacity: DmaBufImportCacheCapacity) -> Self {
         Self {
@@ -103,7 +145,7 @@ impl<T> DmaBufImportCache<T> {
     }
 
     /// Найти запись для показа: попадание считается и освежает LRU-метку.
-    pub(crate) fn lookup(&mut self, identity: &DmaBufBufferIdentity) -> Option<&T> {
+    pub(crate) fn lookup(&mut self, identity: &K) -> Option<&T> {
         let tick = self.advance_tick();
         let entry = self
             .entries
@@ -115,7 +157,7 @@ impl<T> DmaBufImportCache<T> {
     }
 
     /// Запись без учёта обращения: для рисования текущего кадра (не попадание и не свежесть).
-    pub(crate) fn peek(&self, identity: &DmaBufBufferIdentity) -> Option<&T> {
+    pub(crate) fn peek(&self, identity: &K) -> Option<&T> {
         self.entries
             .iter()
             .find(|entry| entry.identity == *identity)
@@ -123,7 +165,7 @@ impl<T> DmaBufImportCache<T> {
     }
 
     /// Освежить LRU-метку без подсчёта попадания (импорт уже лежащего в кэше буфера).
-    pub(crate) fn touch(&mut self, identity: &DmaBufBufferIdentity) {
+    pub(crate) fn touch(&mut self, identity: &K) {
         let tick = self.advance_tick();
         if let Some(entry) = self
             .entries
@@ -136,15 +178,15 @@ impl<T> DmaBufImportCache<T> {
 
     /// Освободить место под будущий импорт `incoming` ДО самого импорта; возвращает убранные
     /// значения владельцу на удаление. Порядок: другой формат → тот же `resource_id` → LRU.
-    pub(crate) fn prepare_for_insert(&mut self, incoming: &DmaBufBufferIdentity) -> Vec<T> {
+    pub(crate) fn prepare_for_insert(&mut self, incoming: &K) -> Vec<T> {
         let mut removed = Vec::new();
         self.take_where(
-            |entry| entry.identity.format != incoming.format,
+            |entry| entry.identity.stream_format() != incoming.stream_format(),
             &mut removed,
             |counters, count| counters.evicted_format_change += count,
         );
         self.take_where(
-            |entry| entry.identity.resource_id == incoming.resource_id,
+            |entry| entry.identity.resource_id() == incoming.resource_id(),
             &mut removed,
             |counters, count| counters.replaced_same_resource += count,
         );
@@ -154,7 +196,7 @@ impl<T> DmaBufImportCache<T> {
 
     /// Вставить свежеимпортированное значение. Повторяет подготовку места (идемпотентно), чтобы
     /// инварианты держались и без явного `prepare_for_insert`; убранные значения возвращает.
-    pub(crate) fn insert(&mut self, identity: DmaBufBufferIdentity, value: T) -> Vec<T> {
+    pub(crate) fn insert(&mut self, identity: K, value: T) -> Vec<T> {
         let removed = self.prepare_for_insert(&identity);
         let tick = self.advance_tick();
         self.entries.push(CacheEntry {
@@ -195,7 +237,7 @@ impl<T> DmaBufImportCache<T> {
     }
 
     /// Есть ли запись с этим паспортом.
-    pub(crate) fn contains(&self, identity: &DmaBufBufferIdentity) -> bool {
+    pub(crate) fn contains(&self, identity: &K) -> bool {
         self.entries.iter().any(|entry| entry.identity == *identity)
     }
 
@@ -203,7 +245,7 @@ impl<T> DmaBufImportCache<T> {
     /// их число в счётчик, который выбирает `count_into`.
     fn take_where(
         &mut self,
-        matches: impl Fn(&CacheEntry<T>) -> bool,
+        matches: impl Fn(&CacheEntry<T, K>) -> bool,
         removed: &mut Vec<T>,
         count_into: impl FnOnce(&mut DmaBufImportCacheSnapshot, u64),
     ) {

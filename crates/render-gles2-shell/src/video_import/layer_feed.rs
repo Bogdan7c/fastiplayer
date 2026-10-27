@@ -17,6 +17,7 @@ use video_frame_contract::VideoFrameTransferPath;
 use super::dma_buf_outcome::layer_outcome_for_dma_buf;
 use super::prepared::FrameSource;
 use crate::dma_buf_frame::materialize_dma_buf_frame;
+use crate::host_block_import::{HostBlockZeroCopy, ZeroCopyShow};
 use crate::host_planar::{HostPlanarFrameError, host_planar_frame_upload};
 
 /// Итог показа кадра на видеослое и суммарное ожидание lock-ов пула ресурсов провайдера.
@@ -48,11 +49,14 @@ pub(crate) enum LayerShowOutcome {
 pub(crate) fn show_frame_on_layer(
     video: &mut VideoLayerRenderer,
     context: &Gles2Context,
+    software_frames: &mut HostBlockZeroCopy,
     source: &FrameSource,
     frame: &DecodedFrame,
 ) -> LayerShow {
     match source.path() {
-        VideoImportPath::SoftwareHostUpload => show_host_planar(video, context, source, frame),
+        VideoImportPath::SoftwareHostUpload => {
+            show_host_planar(video, context, software_frames, source, frame)
+        }
         VideoImportPath::HardwareZeroCopy => show_dma_buf(video, context, source, frame),
     }
 }
@@ -77,10 +81,12 @@ fn show_dma_buf(
     }
 }
 
-/// Программный путь: дескриптор плоскостей из провайдера → одна копия в кольцо слотов.
+/// Программный путь: дескриптор плоскостей из провайдера → без CPU-копии (блок декодера через
+/// udmabuf, `crate::host_block_import`), а если нельзя — одна копия в кольцо слотов.
 fn show_host_planar(
     video: &mut VideoLayerRenderer,
     context: &Gles2Context,
+    software_frames: &mut HostBlockZeroCopy,
     source: &FrameSource,
     frame: &DecodedFrame,
 ) -> LayerShow {
@@ -93,11 +99,19 @@ fn show_host_planar(
     let resource_pool_lock_wait = lookup.resource_pool_lock_wait();
     let outcome = match lookup {
         PresentFrameResourceDescriptorLookup::Ready { descriptor, .. } => {
+            if software_frames.try_show(video, context, frame, &descriptor) == ZeroCopyShow::Shown {
+                return LayerShow {
+                    outcome: LayerShowOutcome::Shown,
+                    resource_pool_lock_wait,
+                };
+            }
             match host_planar_frame_upload(frame, &descriptor) {
                 Ok(upload) => match video.upload(context, &upload) {
-                    Ok(UploadOutcome::Uploaded(_) | UploadOutcome::AlreadyCurrent) => {
+                    Ok(UploadOutcome::Uploaded(_)) => {
+                        software_frames.note_frame_uploaded();
                         LayerShowOutcome::Shown
                     }
+                    Ok(UploadOutcome::AlreadyCurrent) => LayerShowOutcome::Shown,
                     Ok(UploadOutcome::Busy(_)) => LayerShowOutcome::Busy,
                     Err(error) => LayerShowOutcome::Failed(FrameImportError::ImportFailed {
                         message: error.to_string(),

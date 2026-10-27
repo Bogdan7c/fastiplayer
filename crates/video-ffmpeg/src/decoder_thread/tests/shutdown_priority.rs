@@ -56,6 +56,7 @@ fn assert_shutdown_before_worker_start(signal: ShutdownSignal) {
             error_tx,
             software_decode_thread_budget: VideoDecoderThreadConfig::default()
                 .software_decode_thread_budget,
+            host_frame_memory: HostFrameMemoryKind::Anonymous,
             full_pool_wait_observer_tx,
         };
         worker.run(packet_rx, control_rx, shutdown_rx);

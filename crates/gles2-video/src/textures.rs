@@ -69,6 +69,38 @@ impl PlaneTextureSet {
         })
     }
 
+    /// Набор из трёх текстур, чьё хранилище — импортированные плоскости DMA-BUF (`R8`).
+    ///
+    /// Текстура ровно размера видимой плоскости (`allocated == visible`): шаг строки учёл
+    /// `EGLImage` (pitch), поэтому хвоста строки в текстуре нет и шейдеру не нужна обрезка.
+    /// `format` номинальный (`RedExt`: один канал R): набор не переразмечается через
+    /// `ensure_allocated`, импорт заменяет набор целиком.
+    pub(crate) fn from_imported_planes(
+        textures: [glow::NativeTexture; 3],
+        layout: PlanarLayout,
+        extents: [PlaneExtent; 3],
+    ) -> Self {
+        let plane = |texture, visible: PlaneExtent| PlaneTexture {
+            texture,
+            allocated: Some(TextureExtent {
+                width: visible.width,
+                height: visible.height,
+            }),
+            visible,
+        };
+        let [luma, chroma_u, chroma_v] = textures;
+        let [luma_extent, chroma_u_extent, chroma_v_extent] = extents;
+        Self {
+            planes: [
+                plane(luma, luma_extent),
+                plane(chroma_u, chroma_u_extent),
+                plane(chroma_v, chroma_v_extent),
+            ],
+            format: PlaneTextureFormat::RedExt,
+            layout: Some(layout),
+        }
+    }
+
     /// Выделить память тем текстурам, чей размер или формат не совпадает с планами кадра.
     pub(crate) fn ensure_allocated(
         &mut self,

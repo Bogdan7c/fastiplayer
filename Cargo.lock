@@ -5944,6 +5944,8 @@ dependencies = [
  "ffmpeg-vendor",
  "gles2-egui",
  "gles2-video",
+ "libc",
+ "log",
  "media-core",
  "mpeg-ts-demux",
  "pkg-config",

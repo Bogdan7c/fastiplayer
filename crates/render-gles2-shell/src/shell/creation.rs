@@ -1,5 +1,6 @@
 //! Создание GLES2-рендера: на окне приложения или без окна (тесты и снимки).
 
+use crate::host_block_import::HostBlockZeroCopy;
 use std::sync::Arc;
 
 use gles2_egui::{
@@ -132,6 +133,7 @@ impl Gles2Renderer {
             release: OwnedReleaseBinding::new(),
             shown: ShownFrameTracker::default(),
             counters: Gles2FrameCounters::default(),
+            software_frames: HostBlockZeroCopy::new(hardware),
             context,
         })
     }

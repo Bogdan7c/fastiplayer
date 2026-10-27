@@ -3,6 +3,7 @@
 
 use crate::color::ColorTransform;
 use crate::dma_buf_import::{DmaBufImports, ImportedNv12};
+use crate::dma_buf_planar_import::DmaBufPlanarImports;
 use crate::frame_color::{FrameColorPlan, RequiredHdrTable, plan_frame_color, plan_nv12_color};
 use crate::gl_calls::VideoGl;
 use crate::layer_api::{VideoDrawError, VideoDrawRequest};
@@ -15,7 +16,8 @@ use gles2_egui::GpuFence;
 
 /// Текущий кадр, готовый к рисованию.
 pub(super) enum PlannedFrame<'a> {
-    /// Кадр из кольца загрузок (три плоскости).
+    /// Планарный кадр (три плоскости): из кольца загрузок или импортированный из DMA-BUF.
+    /// Рисуется одной программой и одним набором uniform-ов в обоих случаях.
     Planar {
         textures: &'a PlaneTextureSet,
         layout: PlanarLayout,
@@ -48,6 +50,7 @@ impl PlannedFrame<'_> {
 pub(super) fn plan_current_frame<'a>(
     ring: &'a UploadRing<PlaneTextureSet, GpuFence>,
     imports: &'a DmaBufImports,
+    planar_imports: &'a DmaBufPlanarImports,
     programs: &'a VideoPrograms,
     request: &VideoDrawRequest<'_>,
 ) -> Result<Option<PlannedFrame<'a>>, VideoDrawError> {
@@ -58,8 +61,10 @@ pub(super) fn plan_current_frame<'a>(
             program: &programs.nv12,
         }));
     }
-    let Some((textures, layout)) = ring
+    // Планарный кадр — импортированный или из кольца — планируется одним путём.
+    let Some((textures, layout)) = planar_imports
         .current_textures()
+        .or_else(|| ring.current_textures())
         .and_then(|textures| textures.layout.map(|layout| (textures, layout)))
     else {
         return Ok(None);

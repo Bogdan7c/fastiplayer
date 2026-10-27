@@ -17,6 +17,9 @@ mod shutdown_priority;
 #[cfg(feature = "ffmpeg")]
 mod eof_pool_continuation;
 
+#[cfg(all(feature = "ffmpeg", target_os = "linux"))]
+mod host_frame_memory_kind;
+
 #[test]
 fn start_decoder_thread_reports_feature_disabled_without_ffmpeg() {
     if cfg!(feature = "ffmpeg") {

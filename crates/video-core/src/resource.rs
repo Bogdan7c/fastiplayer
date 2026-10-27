@@ -17,8 +17,10 @@ pub use dma_buf_validation::{
     validate_dma_buf_descriptor_against_frame_contract,
     validate_dma_buf_descriptor_import_topology, validate_dma_buf_identity_against_frame_contract,
 };
+#[cfg(target_os = "linux")]
+pub use host_import::SealedMemfdRegion;
 pub use host_import::{
-    HOST_IMPORTABLE_BLOCK_ALIGNMENT, HOST_IMPORTABLE_ROW_PITCH_ALIGNMENT,
+    HOST_IMPORTABLE_BLOCK_ALIGNMENT, HOST_IMPORTABLE_ROW_PITCH_ALIGNMENT, HostFrameMemoryKind,
     HostImportableMemoryBlock, HostMemoryBlockId, HostMemoryRegion, HostPlanarImportableMemory,
 };
 pub use identity::{

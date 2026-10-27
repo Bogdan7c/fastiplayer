@@ -158,8 +158,11 @@ impl FfmpegDecoderWorker {
             return VideoStreamConfigResult::Unchanged;
         }
 
-        let codec_api = match RealFfmpegDecodeApi::open(&config, self.software_decode_thread_budget)
-        {
+        let codec_api = match RealFfmpegDecodeApi::open(
+            &config,
+            self.software_decode_thread_budget,
+            self.host_frame_memory,
+        ) {
             Ok(codec_api) => codec_api,
             Err(FfmpegOpenDecoderError::Unsupported(rejection)) => {
                 return VideoStreamConfigResult::Unsupported(rejection);

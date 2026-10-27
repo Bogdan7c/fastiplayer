@@ -18,6 +18,7 @@ use gles2_egui::{ActiveFrame, ContextId, Gles2Context, GpuFence};
 
 use crate::dma_buf_cache::DmaBufImportCacheCapacity;
 use crate::dma_buf_import::DmaBufImports;
+use crate::dma_buf_planar_import::DmaBufPlanarImports;
 use crate::draw_uniforms::{DrawUniformValues, PlaneSampling};
 use crate::frame_color::ColorUniformValues;
 use crate::geometry::{PixelRect, to_gl_window_rect, uncovered_parts};
@@ -36,6 +37,7 @@ use crate::planes::{
 use crate::program::{FULLSCREEN_TRIANGLE, ShaderPrecision, VideoProgram, VideoPrograms};
 
 mod dma_buf;
+mod dma_buf_planar;
 mod draw_plan;
 
 use crate::ring::{SlotForWrite, UploadRing, WritableSlot};
@@ -53,6 +55,10 @@ pub struct VideoLayerRenderer {
     /// Кэш импортов DMA-BUF и импортированный текущий кадр. Текущим бывает либо кадр кольца,
     /// либо импортированный: никогда оба сразу (см. `current_key`).
     dma_buf_imports: DmaBufImports,
+    /// Кэш импортов программных планарных кадров (8 бит) и текущий импортированный планарный
+    /// кадр. Текущим бывает ровно один источник из трёх: кольцо, NV12-импорт или планарный
+    /// импорт (см. `current_key`).
+    planar_imports: DmaBufPlanarImports,
     /// Формат 8-битных плоскостей (`RedExt` или `Luminance`); 10/12 бит — всегда
     /// `LuminanceAlpha`.
     plane_format: PlaneTextureFormat,
@@ -113,6 +119,7 @@ impl VideoLayerRenderer {
             vertex_buffer,
             ring: UploadRing::new(options.upload_slots),
             dma_buf_imports: DmaBufImports::new(DmaBufImportCacheCapacity::DEFAULT),
+            planar_imports: DmaBufPlanarImports::new(DmaBufImportCacheCapacity::DEFAULT),
             plane_format,
             row_length,
             hdr_table: None,
@@ -145,12 +152,13 @@ impl VideoLayerRenderer {
         }
     }
 
-    /// Ключ текущего кадра: загруженного в кольцо или импортированного. Не бывает обоих сразу:
-    /// каждый из способов показа снимает «текущий» с другого.
+    /// Ключ текущего кадра: загруженного в кольцо, импортированного NV12 или импортированного
+    /// планарного. Не бывает двух сразу: каждый из способов показа снимает «текущий» с других.
     fn current_key(&self) -> Option<VideoFrameKey> {
         self.ring
             .current_key()
             .or_else(|| self.dma_buf_imports.current_key())
+            .or_else(|| self.planar_imports.current_key())
     }
 
     /// Новая таблица HDR → SDR ещё считается в фоне: картинка рисуется со старой таблицей и
@@ -220,8 +228,9 @@ impl VideoLayerRenderer {
         match self.write_slot(gl, slot, &prepared) {
             Ok(report) => {
                 self.ring.commit_upload(slot, frame.key);
-                // Текущим стал загруженный кадр: импортированный больше не показывается.
+                // Текущим стал загруженный кадр: импортированные больше не показываются.
                 self.dma_buf_imports.clear_current();
+                self.planar_imports.clear_current();
                 self.record_upload(report);
                 Ok(UploadOutcome::Uploaded(report))
             }
@@ -381,8 +390,13 @@ impl VideoLayerRenderer {
         let viewport = to_gl_window_rect(request.viewport, target_height)?;
         // Кадр, программа и цвет выбираются до любой записи в цель: несовместимый запрос не
         // оставляет полкадра.
-        let current =
-            plan_current_frame(&self.ring, &self.dma_buf_imports, &self.programs, request)?;
+        let current = plan_current_frame(
+            &self.ring,
+            &self.dma_buf_imports,
+            &self.planar_imports,
+            &self.programs,
+            request,
+        )?;
         // Видео рисует каждый пиксель своих прямоугольников (полосы letterbox — тоже, чёрным),
         // поэтому чёрная заливка нужна только там, куда видео не рисует: под исключениями и
         // вне области. Пиксели те же, что у полной заливки wgpu, а GPU не заливает цель
@@ -488,6 +502,7 @@ impl VideoLayerRenderer {
         self.ring.forget_keys();
         // Импортированный текущий кадр тоже забывается; кэш остаётся (очистка — `purge_dma_buf_imports`).
         self.dma_buf_imports.clear_current();
+        self.planar_imports.clear_current();
     }
 
     /// Удалить GL-объекты видеослоя.
@@ -507,6 +522,7 @@ impl VideoLayerRenderer {
                     set.delete(gl);
                 }
                 self.dma_buf_imports.purge(gl);
+                self.planar_imports.purge(gl);
                 if let Some(table) = self.hdr_table.take() {
                     table.delete(gl);
                 }

@@ -109,6 +109,22 @@ impl Udmabuf {
         sync_cpu_access(&self.dma_buf, CpuAccessWindow::End);
     }
 
+    /// Обычная запись CPU с начала БЕЗ сброса кэша: так пишет декодер, пока плеер не сбросил
+    /// кэш сам. На GPU с общим кэшем результат виден GPU сразу, на Ironlake — нет.
+    pub fn write_without_cache_flush(&mut self, contents: &[u8]) {
+        self.memfd.seek(SeekFrom::Start(0)).unwrap();
+        self.memfd.write_all(contents).unwrap();
+    }
+
+    /// Сбросить кэш CPU по всему буферу в окне CPU-доступа (то, что делает плеер после записи
+    /// кадра на GPU без общего кэша).
+    pub fn flush_written_cache(&mut self) {
+        let length = self.memfd.metadata().unwrap().len();
+        sync_cpu_access(&self.dma_buf, CpuAccessWindow::Begin);
+        flush_cpu_cache(&self.memfd, length);
+        sync_cpu_access(&self.dma_buf, CpuAccessWindow::End);
+    }
+
     /// Паспорт объекта ядра по `fstat` его dma-buf fd (как это делает адаптер плеера).
     pub fn object_identity(&self, modifier: u64) -> DmaBufObjectIdentity {
         // SAFETY: нулевая `stat` — допустимое начальное значение для заполнения ядром.

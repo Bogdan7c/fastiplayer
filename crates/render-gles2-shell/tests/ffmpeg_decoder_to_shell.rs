@@ -33,7 +33,10 @@ use codec_core::{VideoCodec, VideoDecodeRequirement};
 use gles2_video::{VideoColorConversion, YuvColorEncoding, YuvMatrix, YuvRange};
 use media_core::{TimeBase, TrackId, TrackTimestamp};
 use render_core::{RenderLiveSettings, RenderViewport};
-use render_gles2_shell::{Gles2Renderer, VideoDrawPlan, VideoPlacement, renderable_frame};
+use render_gles2_shell::{
+    Gles2Renderer, SoftwareZeroCopyDisabled, SoftwareZeroCopyState, VideoDrawPlan, VideoPlacement,
+    renderable_frame,
+};
 use render_shell_api::{
     DecoderSurfacePoolSlots, EguiFrameContent, FrameMaterializationOutcome, RenderFrameInput,
     RenderFrameOutcome, RenderScreenDescriptor, RenderShell, RenderSurfaceSize, RenderableFrameKey,
@@ -41,7 +44,7 @@ use render_shell_api::{
 };
 use video_backend_api::{PresentFrameResourceDescriptorLookup, VideoBackendDecoderThreadHandle};
 use video_core::{
-    DecodePacket, DecodeSendError, DecodedFrame, FrameResourceDescriptor,
+    DecodePacket, DecodeSendError, DecodedFrame, FrameResourceDescriptor, HostFrameMemoryKind,
     VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState, VideoStreamConfigResult,
     VideoStreamDecodeConfig,
 };
@@ -343,12 +346,65 @@ fn show_and_verify(
 /// Настоящий декодер → контракт рендера → экран, кадр за кадром, с возвратом кадров декодеру.
 #[test]
 fn ffmpeg_vp9_frames_are_presented_by_the_gles2_renderer_and_returned_to_the_decoder() {
-    let Some(mut renderer) = renderer_or_skip(
+    let Some(renderer) = present_fixture_through_renderer(
         "ffmpeg_vp9_frames_are_presented_by_the_gles2_renderer_and_returned_to_the_decoder",
+        HostFrameMemoryKind::Anonymous,
     ) else {
         return;
     };
+    // Обычная память декодера (заказ wgpu): каждый кадр — одна копия, путь без копии не берётся.
+    let software = renderer.software_zero_copy_stats();
+    assert_eq!(
+        software.frames_through_upload, FIXTURE_FRAME_COUNT as u64,
+        "{software:?}"
+    );
+    assert_eq!(software.frames_without_cpu_copy, 0, "{software:?}");
+}
+
+/// То же, но декодер пишет кадры в запечатанные memfd-блоки (заказ GLES2, сессия 12): каждый
+/// кадр доходит до экрана БЕЗ CPU-копии (udmabuf → EGLImage), с теми же пикселями (сверка
+/// `show_and_verify` с CPU-формулой цвета), и возвращается декодеру по fence.
+#[test]
+fn ffmpeg_vp9_frames_in_memfd_blocks_reach_the_screen_without_a_cpu_copy() {
+    let Some(renderer) = present_fixture_through_renderer(
+        "ffmpeg_vp9_frames_in_memfd_blocks_reach_the_screen_without_a_cpu_copy",
+        HostFrameMemoryKind::SealedMemfd,
+    ) else {
+        return;
+    };
+    let software = renderer.software_zero_copy_stats();
+    if let SoftwareZeroCopyState::Disabled(
+        reason @ (SoftwareZeroCopyDisabled::UdmabufUnavailable
+        | SoftwareZeroCopyDisabled::DriverCannotImportDmaBuf),
+    ) = software.state
+    {
+        eprintln!("skip zero-copy assertions: the path is unavailable here: {reason:?}");
+        assert_eq!(software.frames_through_upload, FIXTURE_FRAME_COUNT as u64);
+        return;
+    }
+    assert!(
+        matches!(software.state, SoftwareZeroCopyState::Enabled(_)),
+        "{software:?}"
+    );
+    assert_eq!(
+        software.frames_without_cpu_copy, FIXTURE_FRAME_COUNT as u64,
+        "{software:?}"
+    );
+    assert_eq!(software.frames_through_upload, 0, "{software:?}");
+    assert!(
+        (1..=FIXTURE_FRAME_COUNT as u64).contains(&software.dma_bufs_created),
+        "one dma-buf per decoder block: {software:?}"
+    );
+}
+
+/// Прогон фикстуры через рендер с памятью декодера `memory`; все общие проверки — здесь.
+fn present_fixture_through_renderer(
+    test_name: &str,
+    memory: HostFrameMemoryKind,
+) -> Option<Gles2Renderer> {
+    let mut renderer = renderer_or_skip(test_name)?;
     let started = FfmpegSoftwareVideoBackendFactory::new()
+        .with_host_frame_memory(memory)
         .start_for_composition()
         .expect("software FFmpeg backend starts");
     let prepared = renderer
@@ -455,4 +511,5 @@ fn ffmpeg_vp9_frames_are_presented_by_the_gles2_renderer_and_returned_to_the_dec
         renderer.frame_counters().frames_presented,
         FIXTURE_FRAME_COUNT as u64
     );
+    Some(renderer)
 }

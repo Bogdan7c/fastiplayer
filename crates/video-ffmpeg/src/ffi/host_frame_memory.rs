@@ -20,9 +20,17 @@ use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+#[cfg(target_os = "linux")]
+use video_core::SealedMemfdRegion;
 use video_core::{
-    HOST_IMPORTABLE_BLOCK_ALIGNMENT, HostImportableMemoryBlock, HostMemoryBlockId, HostMemoryRegion,
+    HOST_IMPORTABLE_BLOCK_ALIGNMENT, HostFrameMemoryKind, HostImportableMemoryBlock,
+    HostMemoryBlockId, HostMemoryRegion,
 };
+
+#[cfg(target_os = "linux")]
+mod sealed_memfd;
+#[cfg(target_os = "linux")]
+use sealed_memfd::SealedMemfdMapping;
 
 /// Выравнивание начала блока: 2 МиБ — размер «большой страницы» x86-64.
 ///
@@ -112,79 +120,179 @@ fn align_up(value: usize, alignment: usize) -> Option<usize> {
     value.checked_next_multiple_of(alignment)
 }
 
-/// Один блок памяти кадра: обнулённая память процесса, выровненная на 2 МиБ.
+/// Как выделена память блока; определяет, чем её освобождать.
+#[derive(Debug)]
+enum HostFrameBlockBacking {
+    /// Обнулённая анонимная память, выровненная на 2 МиБ.
+    Anonymous {
+        /// Начало выделения.
+        address: NonNull<u8>,
+        /// Размер (кратен странице) и выравнивание выделения.
+        layout: Layout,
+    },
+    /// `MAP_SHARED`-отображение запечатанного memfd (для dma-buf GLES2).
+    #[cfg(target_os = "linux")]
+    SealedMemfd(SealedMemfdMapping),
+}
+
+/// Один блок памяти кадра: обнулённая память, анонимная (на 2 МиБ) или из memfd.
 #[derive(Debug)]
 pub(crate) struct HostFrameBlock {
     /// Номер блока для кэша импортов renderer-а.
     id: HostMemoryBlockId,
-    /// Начало выделения.
-    address: NonNull<u8>,
-    /// Размер (кратен странице) и выравнивание (страница) выделения.
-    layout: Layout,
+    /// Выделение блока.
+    backing: HostFrameBlockBacking,
 }
 
 // SAFETY: блок эксклюзивно владеет своим выделением и не даёт доступа к памяти через
 // safe API (только адрес и длину). Запись в память делает FFmpeg через указатели,
 // которые мы отдаём в `get_buffer2`; синхронизацию обеспечивает refcount AVBuffer.
+// Отображение memfd (`SealedMemfdMapping`) устроено так же: fd и адрес неизменны.
 unsafe impl Send for HostFrameBlock {}
-// SAFETY: см. `Send` — через `&HostFrameBlock` доступны только неизменяемые id/адрес/длина.
+// SAFETY: см. `Send` — через `&HostFrameBlock` доступны только неизменяемые id/адрес/длина/fd.
 unsafe impl Sync for HostFrameBlock {}
 
 impl HostFrameBlock {
-    /// Выделяет обнулённый блок длиной `block_len` (кратной странице), начало — на границе
-    /// [`HOST_FRAME_BLOCK_ALIGNMENT`].
+    /// Выделяет обнулённый блок длиной `block_len` (кратной странице) заданного вида.
     ///
     /// Обнуление — как у FFmpeg (`av_buffer_allocz`): декодер в редких ошибках может
-    /// отдать кадр с неинициализированными участками, и там не должно быть чужих данных.
-    /// `None` — длина не кратна выравниванию блока или память не выделилась.
-    fn allocate_zeroed(block_len: usize) -> Option<Self> {
+    /// отдать кадр с неинициализированными участками, и там не должно быть чужих данных
+    /// (новые страницы memfd ядро тоже отдаёт нулями).
+    /// `Err` — длина не кратна странице или система отказала в памяти/memfd.
+    fn allocate_zeroed(
+        kind: HostFrameMemoryKind,
+        block_len: usize,
+    ) -> Result<Self, HostFrameBlockAllocationError> {
         if block_len == 0 || !block_len.is_multiple_of(HOST_IMPORTABLE_BLOCK_ALIGNMENT) {
-            return None;
+            return Err(HostFrameBlockAllocationError::InvalidLength { block_len });
         }
-        let layout = Layout::from_size_align(block_len, HOST_FRAME_BLOCK_ALIGNMENT).ok()?;
+        let backing = match kind {
+            HostFrameMemoryKind::Anonymous => Self::allocate_anonymous(block_len)?,
+            HostFrameMemoryKind::SealedMemfd => Self::allocate_sealed_memfd(block_len)?,
+        };
+        Ok(Self {
+            id: HostMemoryBlockId::allocate(),
+            backing,
+        })
+    }
+
+    /// Анонимная память, выровненная на [`HOST_FRAME_BLOCK_ALIGNMENT`].
+    fn allocate_anonymous(
+        block_len: usize,
+    ) -> Result<HostFrameBlockBacking, HostFrameBlockAllocationError> {
+        let layout = Layout::from_size_align(block_len, HOST_FRAME_BLOCK_ALIGNMENT)
+            .map_err(|_| HostFrameBlockAllocationError::InvalidLength { block_len })?;
         // SAFETY: layout ненулевого размера; результат проверяется на null ниже.
         let raw = unsafe { alloc_zeroed(layout) };
-        Some(Self {
-            id: HostMemoryBlockId::allocate(),
-            address: NonNull::new(raw)?,
-            layout,
-        })
+        let address =
+            NonNull::new(raw).ok_or(HostFrameBlockAllocationError::OutOfMemory { block_len })?;
+        Ok(HostFrameBlockBacking::Anonymous { address, layout })
+    }
+
+    /// Запечатанный memfd; вне Linux вида памяти нет.
+    #[cfg(target_os = "linux")]
+    fn allocate_sealed_memfd(
+        block_len: usize,
+    ) -> Result<HostFrameBlockBacking, HostFrameBlockAllocationError> {
+        SealedMemfdMapping::create(block_len)
+            .map(HostFrameBlockBacking::SealedMemfd)
+            .map_err(HostFrameBlockAllocationError::SealedMemfd)
+    }
+
+    /// Вне Linux memfd нет: пул откатится на обычное выделение FFmpeg.
+    #[cfg(not(target_os = "linux"))]
+    fn allocate_sealed_memfd(
+        _block_len: usize,
+    ) -> Result<HostFrameBlockBacking, HostFrameBlockAllocationError> {
+        Err(HostFrameBlockAllocationError::SealedMemfdUnsupported)
     }
 
     /// Начало блока.
     pub(crate) fn address(&self) -> NonNull<u8> {
-        self.address
+        match &self.backing {
+            HostFrameBlockBacking::Anonymous { address, .. } => *address,
+            #[cfg(target_os = "linux")]
+            HostFrameBlockBacking::SealedMemfd(mapping) => mapping.address(),
+        }
     }
 
     /// Длина блока в байтах.
     pub(crate) fn len(&self) -> usize {
-        self.layout.size()
+        match &self.backing {
+            HostFrameBlockBacking::Anonymous { layout, .. } => layout.size(),
+            #[cfg(target_os = "linux")]
+            HostFrameBlockBacking::SealedMemfd(mapping) => mapping.len(),
+        }
     }
 
     /// Адрес начала как число — ключ поиска блока по `AVBufferRef.data`.
     fn address_key(&self) -> usize {
-        self.address.as_ptr() as usize
+        self.address().as_ptr() as usize
     }
+}
+
+/// Почему блок не выделен; пул превращает любую причину в fallback на выделение FFmpeg.
+#[derive(Debug, thiserror::Error)]
+enum HostFrameBlockAllocationError {
+    /// Длина нулевая, не кратна странице или не годится для layout-а.
+    #[error("invalid host frame block length {block_len}")]
+    InvalidLength {
+        /// Запрошенная длина.
+        block_len: usize,
+    },
+
+    /// Анонимная память не выделилась.
+    #[error("out of memory allocating a {block_len} byte host frame block")]
+    OutOfMemory {
+        /// Запрошенная длина.
+        block_len: usize,
+    },
+
+    /// Отказ при создании блока memfd.
+    #[cfg(target_os = "linux")]
+    #[error("sealed memfd host frame block unavailable: {0}")]
+    SealedMemfd(#[from] sealed_memfd::SealedMemfdError),
+
+    /// Платформа не умеет memfd.
+    #[cfg(not(target_os = "linux"))]
+    #[error("sealed memfd host frame blocks are supported only on Linux")]
+    SealedMemfdUnsupported,
 }
 
 impl Drop for HostFrameBlock {
     fn drop(&mut self) {
-        // SAFETY: память выделена `alloc_zeroed` с этим layout-ом ровно один раз и
-        // освобождается ровно один раз: Drop вызывается, когда отпущена последняя `Arc`.
-        unsafe { dealloc(self.address.as_ptr(), self.layout) };
+        // Память memfd освобождает `Drop` отображения; анонимную освобождаем здесь.
+        if let HostFrameBlockBacking::Anonymous { address, layout } = &self.backing {
+            // SAFETY: память выделена `alloc_zeroed` с этим layout-ом ровно один раз и
+            // освобождается ровно один раз: Drop вызывается, когда отпущена последняя `Arc`.
+            unsafe { dealloc(address.as_ptr(), *layout) };
+        }
     }
 }
 
-// SAFETY: адрес и длина не меняются; выделение — обычная память процесса, выровненная
-// на 2 МиБ (кратно странице), длина кратна странице и больше нуля (`allocate_zeroed`); память живёт до
-// Drop, то есть пока жива любая `Arc` блока; id выдан `HostMemoryBlockId::allocate`.
+// SAFETY: адрес и длина не меняются; выделение — анонимная память, выровненная на 2 МиБ,
+// либо `MAP_SHARED`-отображение запечатанного memfd (`SealedMemfdMapping`: печати
+// SHRINK|GROW|SEAL без WRITE, отображение с offset 0 на всю длину, fd жив до Drop блока).
+// Длина кратна странице и больше нуля (`allocate_zeroed`); память живёт до Drop, то есть
+// пока жива любая `Arc` блока; id выдан `HostMemoryBlockId::allocate`.
 unsafe impl HostImportableMemoryBlock for HostFrameBlock {
     fn id(&self) -> HostMemoryBlockId {
         self.id
     }
 
     fn region(&self) -> HostMemoryRegion {
-        HostMemoryRegion::new(self.address, self.layout.size())
+        HostMemoryRegion::new(self.address(), self.len())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn sealed_memfd(&self) -> Option<SealedMemfdRegion<'_>> {
+        match &self.backing {
+            HostFrameBlockBacking::Anonymous { .. } => None,
+            // Отображение начинается с начала файла.
+            HostFrameBlockBacking::SealedMemfd(mapping) => {
+                Some(SealedMemfdRegion::new(mapping.memfd(), 0))
+            }
+        }
     }
 }
 
@@ -209,8 +317,10 @@ pub(crate) struct HostFrameBlockPoolStats {
 /// Потокобезопасен: FFmpeg вызывает `get_buffer2` из потоков декодирования, а
 /// освобождает буфер тот поток, который отпустил последнюю ссылку на кадр (в том
 /// числе главный поток после GPU-копии).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct HostFrameBlockPool {
+    /// Вид памяти всех блоков пула; задаётся при создании и не меняется.
+    memory_kind: HostFrameMemoryKind,
     state: Mutex<HostFrameBlockPoolState>,
 }
 
@@ -230,12 +340,17 @@ struct HostFrameBlockPoolState {
     reused: u64,
     /// Сколько кадров ушло на обычное выделение FFmpeg.
     fallbacks: u64,
+    /// Отказ выделения уже попал в лог (пишем один раз на пул, не на каждый кадр).
+    allocation_failure_logged: bool,
 }
 
 impl HostFrameBlockPool {
-    /// Создаёт пустой пул.
-    pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self::default())
+    /// Создаёт пустой пул, выделяющий блоки памяти вида `memory_kind`.
+    pub(crate) fn new(memory_kind: HostFrameMemoryKind) -> Arc<Self> {
+        Arc::new(Self {
+            memory_kind,
+            state: Mutex::new(HostFrameBlockPoolState::default()),
+        })
     }
 
     /// Выдаёт блок длиной `block_len`: свободный той же длины или новый.
@@ -256,11 +371,23 @@ impl HostFrameBlockPool {
                 state.reused += 1;
                 block
             }
-            None => {
-                let block = Arc::new(HostFrameBlock::allocate_zeroed(block_len)?);
-                state.allocated += 1;
-                block
-            }
+            None => match HostFrameBlock::allocate_zeroed(self.memory_kind, block_len) {
+                Ok(block) => {
+                    state.allocated += 1;
+                    Arc::new(block)
+                }
+                Err(error) => {
+                    // Отказ системы не фатален: caller пойдёт обычным выделением FFmpeg
+                    // (и посчитает fallback). В лог пишем один раз на пул.
+                    if !state.allocation_failure_logged {
+                        state.allocation_failure_logged = true;
+                        log::warn!(
+                            "host frame block allocation failed, falling back to FFmpeg buffers: {error}"
+                        );
+                    }
+                    return None;
+                }
+            },
         };
         state
             .checked_out

@@ -97,6 +97,13 @@ pub enum VideoGlError {
         /// Что именно.
         what: &'static str,
     },
+    /// Цель рисования самопроверки не стала полной (`glCheckFramebufferStatus` не
+    /// `GL_FRAMEBUFFER_COMPLETE`).
+    #[error("probe render target is incomplete (framebuffer status 0x{status:04x})")]
+    FramebufferIncomplete {
+        /// Ответ `glCheckFramebufferStatus`.
+        status: u32,
+    },
     /// Draw-вызов прочитал бы вершины за концом буфера (ошибка плана рисования — защита до
     /// драйвера).
     #[error("draw call would read vertices {first}..{end}, but the buffer holds {available}")]
@@ -582,5 +589,6 @@ fn gl_read_size(format: PlaneTextureFormat, call: &UploadCall) -> Result<usize, 
 }
 
 pub(crate) mod overlay;
+pub(crate) mod probe;
 #[cfg(test)]
 mod tests;

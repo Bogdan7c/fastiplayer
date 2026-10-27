@@ -47,6 +47,7 @@ use self::layers::GlLayers;
 use self::live_settings::LiveSettingsState;
 use self::presentation::PresentationController;
 use crate::capabilities::HardwareZeroCopy;
+use crate::host_block_import::{HostBlockZeroCopy, SoftwareZeroCopyStats};
 use crate::video_import::{ActiveImport, ImportEpoch, OwnedReleaseBinding, ShownFrameTracker};
 
 /// Счётчики кадров рендера за его жизнь (диагностика и приёмочные тесты).
@@ -97,6 +98,8 @@ pub struct Gles2Renderer {
     shown: ShownFrameTracker,
     /// Счётчики кадров.
     counters: Gles2FrameCounters,
+    /// Программный кадр без CPU-копии (udmabuf): доступность, dma-buf блоков, счётчики.
+    software_frames: HostBlockZeroCopy,
     /// Контекст EGL: объявлен последним и уничтожается после явной очистки в `Drop`.
     context: Gles2Context,
 }
@@ -119,6 +122,12 @@ impl Gles2Renderer {
         self.counters
     }
 
+    /// Путь программного кадра без CPU-копии: состояние и счётчики (диагностика, тесты).
+    #[must_use]
+    pub const fn software_zero_copy_stats(&self) -> SoftwareZeroCopyStats {
+        self.software_frames.stats()
+    }
+
     /// Привязка освобождения кадров: статистика возвратов декодеру (диагностика).
     #[must_use]
     pub fn frame_release_stats(&self) -> crate::FrameReleaseStats {
@@ -128,6 +137,7 @@ impl Gles2Renderer {
 
 impl Drop for Gles2Renderer {
     fn drop(&mut self) {
+        self.software_frames.log_summary();
         if let Some(layers) = self.layers.take() {
             layers.destroy(&self.context);
         }

@@ -10,6 +10,7 @@ use render_shell_api::{
     PendingVideoImport, RenderShell, RendererFamily, VideoImportPrepareError, VideoImportPreparer,
 };
 use video_backend_api::{DetachedVideoBackend, DetachedVideoBackendResourceError};
+use video_core::HostFrameMemoryKind;
 use video_ffmpeg::FfmpegSoftwareVideoBackendFactory;
 use video_vaapi::{VaapiVideoBackendFactory, ZeroCopyImportTarget};
 
@@ -237,7 +238,7 @@ pub(crate) fn start_decoder_backend(
         }
         // FFmpeg factory создаёт отдельный software decoder thread/resource owner.
         VideoPipelinePlan::FfmpegHostUpload { .. } => {
-            FfmpegSoftwareVideoBackendFactory::new_with_decoder_config(decoder_thread_config)
+            ffmpeg_factory_for_renderer(decoder_thread_config, renderer_family)
                 .start_for_composition()
                 .map_err(|error| error.to_string())
         }
@@ -262,6 +263,27 @@ pub(crate) fn vaapi_factory_for_renderer(
         .with_zero_copy_import_target(zero_copy_import_target_for(renderer_family))
 }
 
+/// Вид памяти блоков кадров программного декодера для семейства рендера (exhaustive).
+///
+/// GLES2 импортирует блок через dma-buf из `/dev/udmabuf`, а он делается только из
+/// memfd; wgpu-путь (08b) импортирует блок через amdgpu `userptr`, который принимает
+/// только анонимную память, — её менять нельзя.
+pub(crate) const fn host_frame_memory_for(family: RendererFamily) -> HostFrameMemoryKind {
+    match family {
+        RendererFamily::WgpuVulkan => HostFrameMemoryKind::Anonymous,
+        RendererFamily::Gles2 => HostFrameMemoryKind::SealedMemfd,
+    }
+}
+
+/// FFmpeg software factory с видом памяти блоков под рендер `renderer_family`.
+pub(crate) fn ffmpeg_factory_for_renderer(
+    decoder_thread_config: player_core::PlayerVideoDecoderThreadConfig,
+    renderer_family: RendererFamily,
+) -> FfmpegSoftwareVideoBackendFactory {
+    FfmpegSoftwareVideoBackendFactory::new_with_decoder_config(decoder_thread_config)
+        .with_host_frame_memory(host_frame_memory_for(renderer_family))
+}
+
 /// Текст отказа подготовки импорта для диагностики кандидата.
 fn describe_import_prepare_error(error: &VideoImportPrepareError) -> String {
     match error {
@@ -275,5 +297,33 @@ fn describe_import_prepare_error(error: &VideoImportPrepareError) -> String {
         VideoImportPrepareError::ResourceCreationFailed { message } => {
             format!("renderer import resources were not created: {message}")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gles2_uses_memfd_blocks_and_wgpu_keeps_anonymous() {
+        assert_eq!(
+            host_frame_memory_for(RendererFamily::Gles2),
+            HostFrameMemoryKind::SealedMemfd
+        );
+        assert_eq!(
+            host_frame_memory_for(RendererFamily::WgpuVulkan),
+            HostFrameMemoryKind::Anonymous
+        );
+    }
+
+    #[test]
+    fn ffmpeg_factory_gets_memory_kind_of_its_renderer() {
+        let config = player_core::PlayerVideoDecoderThreadConfig::default();
+
+        let gles2 = ffmpeg_factory_for_renderer(config, RendererFamily::Gles2);
+        let wgpu = ffmpeg_factory_for_renderer(config, RendererFamily::WgpuVulkan);
+
+        assert_eq!(gles2.host_frame_memory(), HostFrameMemoryKind::SealedMemfd);
+        assert_eq!(wgpu.host_frame_memory(), HostFrameMemoryKind::Anonymous);
     }
 }

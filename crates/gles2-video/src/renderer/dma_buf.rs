@@ -31,6 +31,7 @@ impl VideoLayerRenderer {
         let shown = self.dma_buf_imports.show_cached(buffer, key);
         if shown == CachedDmaBufFrame::Shown {
             self.ring.clear_current();
+            self.planar_imports.clear_current();
         }
         shown
     }
@@ -63,11 +64,12 @@ impl VideoLayerRenderer {
             .import(context, gl, frame, self.max_texture_size)?;
         // Импортированный кадр стал текущим: слот кольца больше не защищён званием «текущий».
         self.ring.clear_current();
+        self.planar_imports.clear_current();
         Ok(outcome)
     }
 
-    /// Новая ёмкость кэша импортов (обычно — число слотов пула поверхностей декодера); лишние
-    /// записи удаляются сразу.
+    /// Новая ёмкость кэшей импортов (обычно — число слотов пула поверхностей или блоков
+    /// декодера); действует на оба кэша (NV12 и планарный), лишние записи удаляются сразу.
     ///
     /// # Errors
     /// [`VideoImportError::ForeignContext`] / [`VideoImportError::GlAccess`]; кэш при ошибке не
@@ -79,11 +81,12 @@ impl VideoLayerRenderer {
     ) -> Result<(), VideoImportError> {
         let gl = self.gl_for_import_management(context)?;
         self.dma_buf_imports.set_capacity(gl, capacity);
+        self.planar_imports.set_capacity(gl, capacity);
         Ok(())
     }
 
-    /// Удалить все импорты (смена декодера): текстуры держат память старых поверхностей. Текущий
-    /// импортированный кадр забывается.
+    /// Удалить все импорты обоих кэшей (смена декодера): текстуры держат память старых
+    /// поверхностей и блоков. Текущий импортированный кадр забывается.
     ///
     /// # Errors
     /// Как у [`Self::set_dma_buf_import_capacity`].
@@ -93,6 +96,7 @@ impl VideoLayerRenderer {
     ) -> Result<(), VideoImportError> {
         let gl = self.gl_for_import_management(context)?;
         self.dma_buf_imports.purge(gl);
+        self.planar_imports.purge(gl);
         Ok(())
     }
 
@@ -102,7 +106,7 @@ impl VideoLayerRenderer {
         self.dma_buf_imports.snapshot()
     }
 
-    fn gl_for_import_management<'a>(
+    pub(super) fn gl_for_import_management<'a>(
         &self,
         context: &'a Gles2Context,
     ) -> Result<VideoGl<'a>, VideoImportError> {

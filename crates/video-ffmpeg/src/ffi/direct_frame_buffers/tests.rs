@@ -9,7 +9,7 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use video_core::{
-    HOST_IMPORTABLE_BLOCK_ALIGNMENT, HOST_IMPORTABLE_ROW_PITCH_ALIGNMENT,
+    HOST_IMPORTABLE_BLOCK_ALIGNMENT, HOST_IMPORTABLE_ROW_PITCH_ALIGNMENT, HostFrameMemoryKind,
     HostImportableMemoryBlock, SoftwareDecodeThreadBudget,
 };
 
@@ -42,6 +42,8 @@ struct FrameMemoryEvidence {
     planes_inside_aligned_block: bool,
     /// Stride всех plane-ов кратен 256.
     strides_fit_gpu_row_pitch: bool,
+    /// Сдвиг отображения в memfd, если блок кадра лежит в запечатанном memfd.
+    sealed_memfd_offset: Option<u64>,
 }
 
 fn fixture_bytes(file_name: &str) -> Vec<u8> {
@@ -152,6 +154,7 @@ fn memory_evidence(frame: &OwnedAvFrame) -> FrameMemoryEvidence {
             has_importable_block: false,
             planes_inside_aligned_block: false,
             strides_fit_gpu_row_pitch,
+            sealed_memfd_offset: None,
         };
     };
     let region = block.region();
@@ -167,6 +170,7 @@ fn memory_evidence(frame: &OwnedAvFrame) -> FrameMemoryEvidence {
         has_importable_block: true,
         planes_inside_aligned_block,
         strides_fit_gpu_row_pitch,
+        sealed_memfd_offset: block.sealed_memfd().map(|region| region.offset()),
     }
 }
 
@@ -216,9 +220,19 @@ fn decode_all(
 
 /// Сравнивает декод в наши блоки с обычным выделением FFmpeg на одном потоке.
 fn assert_direct_buffers_match_default(decoder_id: FfmpegDecoderId, packets: &[Vec<u8>]) {
+    assert_blocks_match_default(decoder_id, packets, HostFrameMemoryKind::Anonymous);
+}
+
+/// То же сравнение для блоков заданного вида памяти; вид должен быть виден у каждого кадра.
+fn assert_blocks_match_default(
+    decoder_id: FfmpegDecoderId,
+    packets: &[Vec<u8>],
+    memory: HostFrameMemoryKind,
+) {
     let mut default_context = open_decoder(decoder_id, SoftwareFrameMemory::DecoderDefault);
     let default_frames = decode_all(&mut default_context, packets);
-    let mut direct_context = open_decoder(decoder_id, SoftwareFrameMemory::ImportableBlocks);
+    let mut direct_context =
+        open_decoder(decoder_id, SoftwareFrameMemory::ImportableBlocks { memory });
     let direct_frames = decode_all(&mut direct_context, packets);
 
     assert_eq!(
@@ -253,6 +267,15 @@ fn assert_direct_buffers_match_default(decoder_id: FfmpegDecoderId, packets: &[V
         assert!(
             direct_memory.strides_fit_gpu_row_pitch,
             "{decoder_id:?} frame {index}: {direct_memory:?}"
+        );
+        // Вид памяти блока должен дойти до кадра: memfd отдаёт fd со сдвигом 0, анонимный — нет.
+        let expected_offset = match memory {
+            HostFrameMemoryKind::SealedMemfd => Some(0),
+            HostFrameMemoryKind::Anonymous => None,
+        };
+        assert_eq!(
+            direct_memory.sealed_memfd_offset, expected_offset,
+            "{decoder_id:?} frame {index}: wrong memory kind {memory:?}"
         );
     }
 
@@ -307,7 +330,12 @@ fn hevc_frames_decoded_into_importable_blocks_match_ffmpeg_default() {
 #[test]
 fn frames_keep_their_block_after_decoder_is_closed() {
     let packets = ivf_packets(&fixture_bytes("vp9-176x100-12frames.ivf"));
-    let mut context = open_decoder(FfmpegDecoderId::Vp9, SoftwareFrameMemory::ImportableBlocks);
+    let mut context = open_decoder(
+        FfmpegDecoderId::Vp9,
+        SoftwareFrameMemory::ImportableBlocks {
+            memory: HostFrameMemoryKind::Anonymous,
+        },
+    );
     let mut frame = OwnedAvFrame::allocate_for_decode().unwrap_or_else(|error| panic!("{error}"));
     let packet = OwnedAvPacket::new(&packets[0]).unwrap_or_else(|error| panic!("{error}"));
     context
@@ -339,7 +367,12 @@ fn frames_keep_their_block_after_decoder_is_closed() {
 fn decoder_without_dr1_keeps_ffmpeg_allocation() {
     // libdav1d (AV1) не объявляет `AV_CODEC_CAP_DR1`: наш get_buffer2 ему не ставится,
     // и запрос ImportableBlocks молча остаётся на выделении FFmpeg (без пула).
-    let context = open_decoder(FfmpegDecoderId::Av1, SoftwareFrameMemory::ImportableBlocks);
+    let context = open_decoder(
+        FfmpegDecoderId::Av1,
+        SoftwareFrameMemory::ImportableBlocks {
+            memory: HostFrameMemoryKind::Anonymous,
+        },
+    );
 
     assert!(context.frame_block_pool_stats().is_none());
 }
@@ -383,5 +416,38 @@ fn negative_linesize_is_rejected() {
     assert_eq!(
         cache_friendly_linesizes(&[-3840, 1920, 1920, 0], &[256; 4]),
         None
+    );
+}
+
+#[test]
+fn vp9_frames_decoded_into_memfd_blocks_match_ffmpeg_default() {
+    let packets = ivf_packets(&fixture_bytes("vp9-176x100-12frames.ivf"));
+
+    assert_blocks_match_default(
+        FfmpegDecoderId::Vp9,
+        &packets,
+        HostFrameMemoryKind::SealedMemfd,
+    );
+}
+
+#[test]
+fn h264_frames_decoded_into_memfd_blocks_match_ffmpeg_default() {
+    let packets = annex_b_access_units(&fixture_bytes("h264-176x100-12frames.h264"), is_h264_aud);
+
+    assert_blocks_match_default(
+        FfmpegDecoderId::H264,
+        &packets,
+        HostFrameMemoryKind::SealedMemfd,
+    );
+}
+
+#[test]
+fn hevc_frames_decoded_into_memfd_blocks_match_ffmpeg_default() {
+    let packets = annex_b_access_units(&fixture_bytes("hevc-176x100-12frames.hevc"), is_hevc_aud);
+
+    assert_blocks_match_default(
+        FfmpegDecoderId::Hevc,
+        &packets,
+        HostFrameMemoryKind::SealedMemfd,
     );
 }

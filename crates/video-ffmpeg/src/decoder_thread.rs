@@ -33,9 +33,6 @@ use video_backend_api::{
 #[cfg(feature = "ffmpeg")]
 use video_core::DecodeThreadError;
 #[cfg(feature = "ffmpeg")]
-use video_core::SoftwareDecodeThreadBudget;
-use video_core::VideoDecoderThreadConfig;
-#[cfg(feature = "ffmpeg")]
 use video_core::VideoStreamConfigRejection;
 #[cfg(all(test, feature = "ffmpeg"))]
 use video_core::VideoStreamPacketization;
@@ -54,6 +51,8 @@ use video_core::{
 };
 #[cfg(all(test, feature = "ffmpeg"))]
 use video_core::{FrameResourceDescriptor, HostPlanarFrameDescriptor};
+#[cfg(feature = "ffmpeg")]
+use video_core::{HostFrameMemoryKind, SoftwareDecodeThreadBudget, VideoDecoderThreadConfig};
 #[cfg(all(test, feature = "ffmpeg"))]
 use video_frame_contract::{VideoFramePixelLayout, VideoFrameTransferPath};
 
@@ -61,6 +60,7 @@ use video_frame_contract::{VideoFramePixelLayout, VideoFrameTransferPath};
 use crate::ffi::pixel_format::SoftwarePixelFormat;
 #[cfg(test)]
 use color_metadata::merge_frame_color_with_context_color;
+pub use config::FfmpegDecoderThreadConfig;
 #[cfg(feature = "ffmpeg")]
 use host_resources::FfmpegHostResourceProvider;
 #[cfg(feature = "ffmpeg")]
@@ -81,6 +81,7 @@ use stream_config::extradata_for_stream_config;
 
 #[cfg(any(test, feature = "ffmpeg"))]
 mod color_metadata;
+mod config;
 #[cfg(feature = "ffmpeg")]
 mod host_resources;
 #[cfg(feature = "ffmpeg")]
@@ -91,35 +92,6 @@ mod send_receive;
 mod stream_config;
 #[cfg(feature = "ffmpeg")]
 mod worker;
-
-/// Config object exists now so future fields do not leak through `player-core`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FfmpegDecoderThreadConfig {
-    /// Backend-neutral channel limits and flush timeout.
-    thread_config: VideoDecoderThreadConfig,
-}
-
-impl FfmpegDecoderThreadConfig {
-    /// Создаёт FFmpeg config из уже выбранных neutral decoder-thread limits.
-    #[must_use]
-    pub fn from_thread_config(thread_config: VideoDecoderThreadConfig) -> Self {
-        Self {
-            thread_config: thread_config.normalized(),
-        }
-    }
-
-    /// Возвращает normalized neutral runtime config.
-    #[must_use]
-    pub const fn thread_config(self) -> VideoDecoderThreadConfig {
-        self.thread_config
-    }
-}
-
-impl Default for FfmpegDecoderThreadConfig {
-    fn default() -> Self {
-        Self::from_thread_config(VideoDecoderThreadConfig::default())
-    }
-}
 
 /// Startup/decode errors owned by the FFmpeg backend layer.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -275,6 +247,7 @@ impl FfmpegVideoDecoderThread {
         let worker_resource_provider = host_resource_provider.clone();
         let worker_packet_completion_counter = packet_completion_counter.clone();
         let worker_software_decode_thread_budget = thread_config.software_decode_thread_budget;
+        let worker_host_frame_memory = config.host_frame_memory();
 
         let worker_thread = std::thread::Builder::new()
             .name("ffmpeg-video-decoder".to_owned())
@@ -294,6 +267,7 @@ impl FfmpegVideoDecoderThread {
                     packet_completion_counter: worker_packet_completion_counter,
                     error_tx,
                     software_decode_thread_budget: worker_software_decode_thread_budget,
+                    host_frame_memory: worker_host_frame_memory,
                     #[cfg(test)]
                     full_pool_wait_observer_tx,
                 };
@@ -723,6 +697,9 @@ struct FfmpegDecoderWorker {
 
     /// Software decode thread budget, применяемый при открытии FFmpeg context-а.
     software_decode_thread_budget: SoftwareDecodeThreadBudget,
+
+    /// Какой памятью декодер выделяет блоки кадров (задаёт приложение по семейству рендера).
+    host_frame_memory: HostFrameMemoryKind,
 
     /// Test-only coalesced publisher фактического входа в full-pool wait.
     #[cfg(test)]

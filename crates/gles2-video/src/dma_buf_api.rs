@@ -9,6 +9,7 @@ use gles2_egui::{DmaBufTextureAttached, DmaBufTextureError, GlAccessError};
 
 use crate::dma_buf_frame::DmaBufPlaneRole;
 use crate::gl_calls::VideoGlError;
+use crate::planes::PlaneRole;
 
 /// Итог попытки показать кадр по паспорту буфера без импорта (без GL и без fd).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +34,28 @@ pub enum DmaBufImportOutcome {
     ReusedCachedImport,
     /// Этот кадр (ключ) уже текущий: ничего не изменилось.
     AlreadyCurrent,
+}
+
+/// Что сделал импорт планарного кадра.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanarDmaBufImportOutcome {
+    /// Буфер импортирован заново: три текстуры на `EGLImage`, кадр стал текущим.
+    Imported(PlanarDmaBufImportReport),
+    /// Буфер уже лежал в кэше (вызывающий не спросил кэш заранее): импорта нет, кадр текущий.
+    ReusedCachedImport,
+    /// Этот кадр (ключ) уже текущий: ничего не изменилось.
+    AlreadyCurrent,
+}
+
+/// Отчёт об импорте трёх плоскостей планарного кадра.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlanarDmaBufImportReport {
+    /// Привязка яркости Y (`R8`).
+    pub luma: DmaBufTextureAttached,
+    /// Привязка цветности U (`R8`).
+    pub chroma_u: DmaBufTextureAttached,
+    /// Привязка цветности V (`R8`).
+    pub chroma_v: DmaBufTextureAttached,
 }
 
 /// Отчёт об импорте двух плоскостей.
@@ -69,6 +92,27 @@ pub enum VideoImportError {
         height: u32,
         /// `GL_MAX_TEXTURE_SIZE`.
         max: u32,
+    },
+    /// Плоскость планарного кадра больше, чем разрешает драйвер.
+    #[error("{role:?} plane needs a {width}x{height} texture, driver limit is {max}")]
+    PlanarPlaneTooLarge {
+        /// Плоскость.
+        role: PlaneRole,
+        /// Ширина.
+        width: u32,
+        /// Высота.
+        height: u32,
+        /// `GL_MAX_TEXTURE_SIZE`.
+        max: u32,
+    },
+    /// Драйвер не принял плоскость планарного кадра (причина от `gles2-egui` сохранена).
+    #[error("{role:?} plane import failed: {source}")]
+    PlanarAttach {
+        /// Плоскость.
+        role: PlaneRole,
+        /// Причина от `gles2-egui`.
+        #[source]
+        source: DmaBufTextureError,
     },
     /// Драйвер не создал объект текстуры.
     #[error("video layer GL: {0}")]

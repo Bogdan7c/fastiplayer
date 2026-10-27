@@ -7,6 +7,7 @@ use video_core::{HostPlaneDescriptor, HostPlaneRole};
 use video_frame_contract::{VideoFrameContract, VideoFramePixelLayout};
 
 use super::*;
+use crate::host_block_import::HostBlockZeroCopy;
 use crate::test_support::fake_decoder::{
     FakeDecoder, LookupMode, ProviderState, SplitPicture, split_picture_frame,
 };
@@ -19,6 +20,8 @@ struct Stand {
     video: VideoLayerRenderer,
     state: std::sync::Arc<ProviderState>,
     source: FrameSource,
+    // Путь без копии с драйвером «не умеет»: эти тесты проверяют копию.
+    software_frames: HostBlockZeroCopy,
     // Держит поток декодера (а с ним провайдер) живым.
     _decoder_thread: Box<video_backend_api::VideoBackendDecoderThreadHandle>,
 }
@@ -51,6 +54,7 @@ fn stand_or_skip(test_name: &str, path: VideoImportPath) -> Option<Stand> {
         video,
         state,
         source,
+        software_frames: HostBlockZeroCopy::new(crate::capabilities::HardwareZeroCopy::Unavailable),
         _decoder_thread: decoder_thread,
     })
 }
@@ -81,14 +85,26 @@ fn a_ready_software_frame_is_uploaded_once_and_a_repeat_is_not() {
     let (frame, descriptor) = split_picture_frame(picture(7));
     stand.state.add_frame(7, descriptor);
 
-    let first = show_frame_on_layer(&mut stand.video, &stand.context, &stand.source, &frame);
+    let first = show_frame_on_layer(
+        &mut stand.video,
+        &stand.context,
+        &mut stand.software_frames,
+        &stand.source,
+        &frame,
+    );
     assert!(
         matches!(first.outcome, LayerShowOutcome::Shown),
         "{first:?}"
     );
     assert_eq!(stats_of(&stand).frames_uploaded, 1);
 
-    let repeat = show_frame_on_layer(&mut stand.video, &stand.context, &stand.source, &frame);
+    let repeat = show_frame_on_layer(
+        &mut stand.video,
+        &stand.context,
+        &mut stand.software_frames,
+        &stand.source,
+        &frame,
+    );
     assert!(
         matches!(repeat.outcome, LayerShowOutcome::Shown),
         "{repeat:?}"
@@ -114,18 +130,36 @@ fn provider_busy_missing_and_fatal_stay_distinct_and_upload_nothing() {
     stand.state.add_frame(3, descriptor);
 
     stand.state.set_mode(LookupMode::Busy);
-    let busy = show_frame_on_layer(&mut stand.video, &stand.context, &stand.source, &frame);
+    let busy = show_frame_on_layer(
+        &mut stand.video,
+        &stand.context,
+        &mut stand.software_frames,
+        &stand.source,
+        &frame,
+    );
     assert!(matches!(busy.outcome, LayerShowOutcome::Busy), "{busy:?}");
 
     stand.state.set_mode(LookupMode::Missing);
-    let missing = show_frame_on_layer(&mut stand.video, &stand.context, &stand.source, &frame);
+    let missing = show_frame_on_layer(
+        &mut stand.video,
+        &stand.context,
+        &mut stand.software_frames,
+        &stand.source,
+        &frame,
+    );
     assert!(
         matches!(missing.outcome, LayerShowOutcome::Missing),
         "{missing:?}"
     );
 
     stand.state.set_mode(LookupMode::Fatal);
-    let fatal = show_frame_on_layer(&mut stand.video, &stand.context, &stand.source, &frame);
+    let fatal = show_frame_on_layer(
+        &mut stand.video,
+        &stand.context,
+        &mut stand.software_frames,
+        &stand.source,
+        &frame,
+    );
     assert!(
         matches!(
             fatal.outcome,
@@ -161,7 +195,13 @@ fn a_frame_of_another_transfer_path_is_unsupported_without_asking_the_provider()
         stand.state.add_frame(9, descriptor);
         frame.frame_contract = contract;
 
-        let shown = show_frame_on_layer(&mut stand.video, &stand.context, &stand.source, &frame);
+        let shown = show_frame_on_layer(
+            &mut stand.video,
+            &stand.context,
+            &mut stand.software_frames,
+            &stand.source,
+            &frame,
+        );
 
         assert!(
             matches!(
@@ -192,7 +232,13 @@ fn unknown_layout_is_unsupported_but_a_broken_descriptor_is_an_error() {
         pixel_layout: VideoFramePixelLayout::Rgba8,
         transfer_path: video_frame_contract::VideoFrameTransferPath::SoftwareHostUpload,
     };
-    let layout = show_frame_on_layer(&mut stand.video, &stand.context, &stand.source, &rgba_frame);
+    let layout = show_frame_on_layer(
+        &mut stand.video,
+        &stand.context,
+        &mut stand.software_frames,
+        &stand.source,
+        &rgba_frame,
+    );
     assert!(
         matches!(
             layout.outcome,
@@ -217,7 +263,13 @@ fn unknown_layout_is_unsupported_but_a_broken_descriptor_is_an_error() {
         }],
     );
     stand.state.add_frame(2, broken);
-    let broken = show_frame_on_layer(&mut stand.video, &stand.context, &stand.source, &frame);
+    let broken = show_frame_on_layer(
+        &mut stand.video,
+        &stand.context,
+        &mut stand.software_frames,
+        &stand.source,
+        &frame,
+    );
     assert!(
         matches!(
             broken.outcome,

@@ -6,7 +6,7 @@ use std::ffi::{CStr, CString};
 use std::ptr::{self, NonNull};
 
 use codec_core::VideoCodec;
-use video_core::SoftwareDecodeThreadBudget;
+use video_core::{HostFrameMemoryKind, SoftwareDecodeThreadBudget};
 
 #[cfg(feature = "ffmpeg")]
 use self::callbacks::{
@@ -56,7 +56,10 @@ pub enum SoftwareFrameMemory {
     /// кратным 256, — renderer может импортировать его в GPU без CPU-копии.
     /// Ставится только декодерам с `AV_CODEC_CAP_DR1`; остальные остаются на
     /// `DecoderDefault` (например, libdav1d со своим пулом).
-    ImportableBlocks,
+    ImportableBlocks {
+        /// Какой памятью выделять блоки: анонимной (wgpu) или memfd (GLES2 dma-buf).
+        memory: HostFrameMemoryKind,
+    },
 }
 
 /// Project-owned decoder selector.
@@ -295,9 +298,15 @@ impl CodecContext {
                 operation: "avcodec_alloc_context3",
             })?;
 
-            let frame_block_pool = (request.frame_memory == SoftwareFrameMemory::ImportableBlocks
-                && decoder_supports_custom_frame_buffers(decoder))
-            .then(HostFrameBlockPool::new);
+            let frame_block_pool = match request.frame_memory {
+                SoftwareFrameMemory::ImportableBlocks { memory }
+                    if decoder_supports_custom_frame_buffers(decoder) =>
+                {
+                    Some(HostFrameBlockPool::new(memory))
+                }
+                SoftwareFrameMemory::ImportableBlocks { .. }
+                | SoftwareFrameMemory::DecoderDefault => None,
+            };
             let mut context_owner = Self {
                 raw_context,
                 callbacks: Box::new(CodecCallbacks {

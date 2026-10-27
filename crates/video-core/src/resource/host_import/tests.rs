@@ -206,3 +206,75 @@ fn block_ids_are_unique() {
     assert_ne!(first, second);
     assert!(second.get() > first.get());
 }
+
+#[test]
+fn host_frame_memory_kind_defaults_to_anonymous() {
+    // Поведение по умолчанию обязано оставаться прежним (wgpu/amdgpu userptr).
+    assert_eq!(
+        HostFrameMemoryKind::default(),
+        HostFrameMemoryKind::Anonymous
+    );
+    assert_ne!(
+        HostFrameMemoryKind::Anonymous,
+        HostFrameMemoryKind::SealedMemfd
+    );
+}
+
+#[cfg(target_os = "linux")]
+mod sealed_memfd {
+    use std::fs::File;
+    use std::os::fd::{AsFd, AsRawFd};
+
+    use super::*;
+
+    #[test]
+    fn anonymous_block_reports_no_sealed_memfd_through_trait_object() {
+        let block: Arc<dyn HostImportableMemoryBlock> =
+            Arc::new(TestPageBlock::new(HOST_IMPORTABLE_BLOCK_ALIGNMENT));
+
+        assert!(block.sealed_memfd().is_none());
+    }
+
+    /// Блок, который притворяется отображением memfd со сдвигом.
+    #[derive(Debug)]
+    struct MemfdBackedBlock {
+        inner: TestPageBlock,
+        file: File,
+        offset: u64,
+    }
+
+    // SAFETY (теста): делегирует `id`/`region` реальному страничному блоку; fd живёт
+    // столько же, сколько блок. Сам файл — /dev/null: тест проверяет только передачу
+    // дескриптора и сдвига через трейт, память не отображается.
+    unsafe impl HostImportableMemoryBlock for MemfdBackedBlock {
+        fn id(&self) -> HostMemoryBlockId {
+            self.inner.id()
+        }
+
+        fn region(&self) -> HostMemoryRegion {
+            self.inner.region()
+        }
+
+        fn sealed_memfd(&self) -> Option<SealedMemfdRegion<'_>> {
+            Some(SealedMemfdRegion::new(self.file.as_fd(), self.offset))
+        }
+    }
+
+    #[test]
+    fn memfd_block_exposes_its_descriptor_and_offset() {
+        let file = File::open("/dev/null").unwrap_or_else(|error| unreachable!("{error}"));
+        let raw_fd = file.as_raw_fd();
+        let block: Arc<dyn HostImportableMemoryBlock> = Arc::new(MemfdBackedBlock {
+            inner: TestPageBlock::new(HOST_IMPORTABLE_BLOCK_ALIGNMENT),
+            file,
+            offset: 8192,
+        });
+
+        let region = block
+            .sealed_memfd()
+            .unwrap_or_else(|| unreachable!("memfd block must report its region"));
+
+        assert_eq!(region.memfd().as_raw_fd(), raw_fd);
+        assert_eq!(region.offset(), 8192);
+    }
+}

@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 use video_backend_api::{StartedVideoBackend, VideoBackendFactory};
-use video_core::VideoDecoderThreadConfig;
+use video_core::{HostFrameMemoryKind, VideoDecoderThreadConfig};
 
 use crate::decoder_thread::{FfmpegDecoderThreadConfig, FfmpegDecoderThreadError};
 
@@ -34,6 +34,23 @@ impl FfmpegSoftwareVideoBackendFactory {
         }
     }
 
+    /// Возвращает factory, чей декодер выделяет блоки кадров памятью `host_frame_memory`.
+    ///
+    /// Вид памяти выбирает приложение по семейству рендера; без вызова — анонимная.
+    #[must_use]
+    pub fn with_host_frame_memory(mut self, host_frame_memory: HostFrameMemoryKind) -> Self {
+        self.decoder_config = self
+            .decoder_config
+            .with_host_frame_memory(host_frame_memory);
+        self
+    }
+
+    /// Вид памяти блоков кадров, который получит запущенный декодер.
+    #[must_use]
+    pub const fn host_frame_memory(&self) -> HostFrameMemoryKind {
+        self.decoder_config.host_frame_memory()
+    }
+
     /// Стартует FFmpeg backend и возвращает playback-facing artifact для composition root-а.
     pub fn start_for_composition(&self) -> anyhow::Result<StartedVideoBackend> {
         <Self as VideoBackendFactory>::start_video_backend(self)
@@ -63,6 +80,22 @@ pub type FfmpegVideoBackendFactory = FfmpegSoftwareVideoBackendFactory;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn factory_host_frame_memory_reaches_decoder_config_and_defaults_to_anonymous() {
+        let default_factory = FfmpegSoftwareVideoBackendFactory::new();
+        let memfd_factory =
+            default_factory.with_host_frame_memory(HostFrameMemoryKind::SealedMemfd);
+
+        assert_eq!(
+            default_factory.host_frame_memory(),
+            HostFrameMemoryKind::Anonymous
+        );
+        assert_eq!(
+            memfd_factory.host_frame_memory(),
+            HostFrameMemoryKind::SealedMemfd
+        );
+    }
 
     #[test]
     fn backend_factory_reports_unavailable_instead_of_creating_fake_backend() {

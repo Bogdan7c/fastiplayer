@@ -21,6 +21,7 @@ use video_present_core::VideoFrameLease;
 use super::Gles2Renderer;
 use super::frame::{OpenedVideoKey, renderer_shut_down};
 use crate::frame_release::Gles2FrameReleaseBinding;
+use crate::host_block_import::BlockDmaBufCapacity;
 use crate::video_import::{
     ActiveImport, GLES2_FAMILY, Gles2ImportHandoff, Gles2PreparedFrame, ImportEnvironment,
     LayerShow, LayerShowOutcome, PendingGles2Import, PendingOrigin, show_frame_on_layer,
@@ -89,7 +90,13 @@ impl Gles2Renderer {
         };
         self.shown
             .prepare_layer_for(prepared.epoch(), &mut layers.video);
-        let show = show_frame_on_layer(&mut layers.video, &self.context, prepared.source(), frame);
+        let show = show_frame_on_layer(
+            &mut layers.video,
+            &self.context,
+            &mut self.software_frames,
+            prepared.source(),
+            frame,
+        );
         if matches!(show.outcome, LayerShowOutcome::Shown) {
             self.shown
                 .mark_shown(prepared.epoch(), prepared.layer_key());
@@ -161,14 +168,18 @@ impl VideoFrameImport for Gles2Renderer {
         if let Err(error) = layers.video.purge_dma_buf_imports(&self.context) {
             log::warn!("GLES2: кэш импортов DMA-BUF не сброшен при смене декодера: {error}");
         }
-        if plan.path == VideoImportPath::HardwareZeroCopy
-            && let Err(error) = layers.video.set_dma_buf_import_capacity(
-                &self.context,
-                dma_buf_import_capacity_for(plan.decoder_surface_pool.get()),
-            )
-        {
+        // Ёмкость кэшей импорта — по пулу плана: аппаратные поверхности VA-API или блоки
+        // программного декодера (путь без CPU-копии, сессия 12) — оба переиспользуются пулом.
+        if let Err(error) = layers.video.set_dma_buf_import_capacity(
+            &self.context,
+            dma_buf_import_capacity_for(plan.decoder_surface_pool.get()),
+        ) {
             log::warn!("GLES2: ёмкость кэша импортов DMA-BUF не задана: {error}");
         }
+        self.software_frames
+            .decoder_changed(BlockDmaBufCapacity::matching_surface_pool(
+                plan.decoder_surface_pool.get(),
+            ));
         self.shown.forget();
         self.active_import = Some(ActiveImport::new(plan, source, self.import_epoch));
         Ok(())

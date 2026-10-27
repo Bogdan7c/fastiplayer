@@ -39,10 +39,13 @@
 #![deny(unsafe_code)]
 
 mod color;
+mod cpu_write_probe;
 mod dma_buf_api;
 mod dma_buf_cache;
 mod dma_buf_frame;
 mod dma_buf_import;
+mod dma_buf_planar_frame;
+mod dma_buf_planar_import;
 mod draw_uniforms;
 mod frame_color;
 mod geometry;
@@ -65,13 +68,21 @@ mod underlay;
 mod upload_plan;
 
 pub use color::{ColorAdjustment, YuvColorEncoding, YuvMatrix, YuvRange};
+pub use cpu_write_probe::{
+    CPU_WRITE_PROBE_MIN_BUFFER_BYTES, CpuWriteProbeError, CpuWriteProbeProducer,
+    CpuWriteVisibility, probe_cpu_write_visibility,
+};
 pub use dma_buf_api::{
-    CachedDmaBufFrame, DmaBufImportOutcome, DmaBufImportReport, VideoImportError,
+    CachedDmaBufFrame, DmaBufImportOutcome, DmaBufImportReport, PlanarDmaBufImportOutcome,
+    PlanarDmaBufImportReport, VideoImportError,
 };
 pub use dma_buf_cache::{DmaBufImportCacheCapacity, DmaBufImportCacheSnapshot};
 pub use dma_buf_frame::{
     DmaBufBufferIdentity, DmaBufFrameError, DmaBufFrameFormat, DmaBufNv12Frame,
     DmaBufObjectIdentity, DmaBufPlaneArrangement, DmaBufPlaneRole, DmaBufSharingContract,
+};
+pub use dma_buf_planar_frame::{
+    DmaBufPlanarFrame, DmaBufPlanarFrameError, DmaBufPlanarIdentity, DmaBufPlaneLocation,
 };
 pub use geometry::{PictureMapping, PixelRect, QuarterTurn, RectOutOfRange};
 pub use gl_calls::{PlaneTextureFormat, VideoGlError};

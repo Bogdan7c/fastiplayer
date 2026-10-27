@@ -27,6 +27,10 @@
 //! декодеру только после fence кадра показа, в котором GPU его последний раз трогал, — одно
 //! правило для копии, HW zero-copy (07) и SW zero-copy (12). Механизм — `gles2_egui::GpuCompletionQueue`.
 
+// `unsafe` запрещён везде, кроме модуля безопасности `host_block_import::kernel` (вызовы ядра
+// Linux и сброс кэша CPU для кадров без копии; разрешён явно, каждый блок с // SAFETY:).
+#![deny(unsafe_code)]
+
 mod capabilities;
 mod diagnostics;
 mod dma_buf_frame;
@@ -34,6 +38,7 @@ mod draw_plan;
 mod frame_metadata;
 mod frame_release;
 mod high_bit_color;
+mod host_block_import;
 mod host_planar;
 mod shell;
 mod subtitle_overlay;
@@ -61,6 +66,9 @@ pub use frame_release::{
     RendererDetachGrace, RendererDetachReport, wrap_video_backend_for_gles2_release,
 };
 pub use high_bit_color::{HdrColorRejection, HighBitColorError, high_bit_color_conversion};
+pub use host_block_import::{
+    CpuCacheFlushPolicy, SoftwareZeroCopyDisabled, SoftwareZeroCopyState, SoftwareZeroCopyStats,
+};
 pub use host_planar::{HostPlanarFrameError, host_planar_frame_upload};
 pub use shell::{Gles2FrameCounters, Gles2Renderer, probe_gles2_renderer};
 pub use subtitle_overlay::{

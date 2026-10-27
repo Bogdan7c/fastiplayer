@@ -29,6 +29,9 @@ subtitle-raster.workspace = true
 log.workspace = true
 # Типизированные ошибки адаптера.
 thiserror.workspace = true
+# Программный кадр без CPU-копии (сессия 12): `/dev/udmabuf`, `fstat`, `memfd_create`, `mmap` —
+# только в модуле безопасности `host_block_import::kernel`.
+libc.workspace = true
 # Нейтральный провайдер ресурсов кадра и владение декодером (обёртка освобождения по fence).
 video-backend-api.workspace = true
 # Кадр декодера и его дескриптор ресурса.
@@ -49,8 +52,6 @@ egui.workspace = true
 # зависимость (normal-зависимость шелла на декодер запрещает guardrail); сам video-ffmpeg
 # тоже держит dev-зависимость на этот шелл — цикл через dev-зависимости Cargo допускает.
 video-ffmpeg = { workspace = true, features = ["vendored-ffmpeg"] }
-# `memfd_create`/`udmabuf`/`fstat` в функциональном тесте DMA-BUF: настоящий буфер ядра без видеокарты.
-libc = { workspace = true }
 # Пакет декодера (`DecodePacket`) в тесте проброса обёртки декодера.
 bytes.workspace = true
 # Идентификатор дорожки в пакете и конфиге потока тех же тестов.

@@ -21,6 +21,8 @@ anyhow.workspace = true
 capability-core = { workspace = true }
 codec-core.workspace = true
 crossbeam-channel.workspace = true
+libc.workspace = true
+log.workspace = true
 thiserror.workspace = true
 # Не workspace-зависимость намеренно: guardrail разрешает FFmpeg-crate-ы только здесь.
 # Прямая зависимость нужна, чтобы получить DEP_FASTIPLAYER_FFMPEG_VENDOR_* в build.rs.

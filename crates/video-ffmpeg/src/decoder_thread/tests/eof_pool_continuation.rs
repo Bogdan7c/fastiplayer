@@ -34,7 +34,8 @@ fn full_pool_release_resumes_real_eof_frame_then_reaches_terminal_drain() {
         let (notifier, _subscription) = VideoDecoderActivityNotifier::new();
         let config = extradata_test_stream_config(codec_core::VideoCodec::Vp9, None, None);
         let budget = VideoDecoderThreadConfig::default().software_decode_thread_budget;
-        let api = RealFfmpegDecodeApi::open(&config, budget).expect("open real VP9 decoder");
+        let api = RealFfmpegDecodeApi::open(&config, budget, HostFrameMemoryKind::Anonymous)
+            .expect("open real VP9 decoder");
         let mut decode_loop =
             SendReceiveDecodeLoop::new(api, notifier.clone(), drain_state.clone());
         let mut packet = decode_packet_with_pts(1, 0, Duration::ZERO);
@@ -64,6 +65,7 @@ fn full_pool_release_resumes_real_eof_frame_then_reaches_terminal_drain() {
             packet_completion_counter: Arc::new(FfmpegPacketCompletionCounter::default()),
             error_tx,
             software_decode_thread_budget: budget,
+            host_frame_memory: HostFrameMemoryKind::Anonymous,
             full_pool_wait_observer_tx: pool_wait_tx,
         }
         .run(packet_rx, control_rx, shutdown_rx);
