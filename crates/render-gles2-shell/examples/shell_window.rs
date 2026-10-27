@@ -24,11 +24,10 @@ use render_core::RenderViewport;
 use render_gles2_shell::Gles2Renderer;
 use render_shell_api::{
     DecoderSurfacePoolSlots, EguiFrameContent, FrameMaterializationOutcome,
-    PresentationDetachOutcome, PresentationReattachOutcome, PresentationReconfigureError,
-    PresentationReconfigured, RenderFrameDropReason, RenderFrameInput, RenderFrameOutcome,
-    RenderScreenDescriptor, RenderShell, RenderSurfaceSize, ShellPresentMode,
-    SurfaceAlphaPreference, SurfaceFrameAcquire, SurfacePresentSettings, VideoImportPath,
-    VideoImportPlan, WindowCornerMask,
+    PresentationDetachOutcome, PresentationReattachOutcome, PresentationReconfigured,
+    RenderFrameDropReason, RenderFrameInput, RenderFrameOutcome, RenderScreenDescriptor,
+    RenderShell, RenderSurfaceSize, ShellPresentMode, SurfaceFrameAcquire, SurfacePresentSettings,
+    VideoImportPath, VideoImportPlan,
 };
 use video_backend_api::VideoBackendDecoderThreadHandle;
 use video_core::{
@@ -190,7 +189,6 @@ fn show_frame(
         screen,
         video_viewport: RenderViewport::full_surface(size[0], size[1]),
         video_exclusion_rects: Vec::new(),
-        window_corner_mask: WindowCornerMask::square(),
         subtitle_overlay: None,
     });
     match outcome {
@@ -283,14 +281,6 @@ fn run_scripted_check(window: &Arc<Window>) -> Result<(), Box<dyn Error>> {
     if repeated != Ok(PresentationReconfigured::AlreadyActive) {
         return Err(format!("repeating the settings: {repeated:?}").into());
     }
-    let flipped = renderer.reconfigure_presentation(SurfacePresentSettings {
-        alpha_preference: SurfaceAlphaPreference::TransparentPreferred,
-        ..base
-    });
-    if flipped != Err(PresentationReconfigureError::AlphaPreferenceChangeUnsupported) {
-        return Err(format!("alpha flip: {flipped:?}").into());
-    }
-
     // 3. Отпуск и возврат окна («одно окно — одна surface»).
     if renderer.detach_presentation() != PresentationDetachOutcome::Detached {
         return Err("detach".into());

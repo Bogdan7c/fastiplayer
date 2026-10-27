@@ -17,7 +17,7 @@ use render_shell_api::conformance::ConformanceReleaseLedger;
 use render_shell_api::{
     DecoderSurfacePoolSlots, EguiFrameContent, FrameMaterializationOutcome, RenderFrameInput,
     RenderFrameOutcome, RenderScreenDescriptor, RenderShell, RenderableFrameKey,
-    SurfaceFrameAcquire, VideoImportPath, VideoImportPlan, WindowCornerMask,
+    SurfaceFrameAcquire, VideoImportPath, VideoImportPlan,
 };
 use video_backend_api::{
     PresentFrameResourceDescriptorLookup, PresentFrameResourceProvider,
@@ -76,7 +76,6 @@ pub(crate) fn present(
         screen,
         video_viewport: RenderViewport::full_surface(HEADLESS_SIZE[0], HEADLESS_SIZE[1]),
         video_exclusion_rects: Vec::new(),
-        window_corner_mask: WindowCornerMask::square(),
         subtitle_overlay: None,
     })
 }

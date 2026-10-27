@@ -9,7 +9,7 @@ use render_core::RenderViewport;
 
 use crate::{
     AcquiredSurfaceFrame, EguiFrameContent, RenderScreenDescriptor, RenderableFrameKey,
-    SubtitleOverlayFrame, WindowCornerMask,
+    SubtitleOverlayFrame,
 };
 
 /// Входные данные одного полного кадра рендера.
@@ -36,9 +36,6 @@ pub struct RenderFrameInput<'frame> {
 
     /// Области, где video pass не должен рисовать кадр (сейчас — только левый sidebar).
     pub video_exclusion_rects: Vec<RenderViewport>,
-
-    /// Разрешённая app-слоем форма текущего desktop-кадра.
-    pub window_corner_mask: WindowCornerMask,
 
     /// Субтитры между video и egui; `None` — рисовать нечего.
     pub subtitle_overlay: Option<SubtitleOverlayFrame<'frame>>,

@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use codec_core::{BitDepth, VideoCodec, VideoDecodeRequirement};
-use gles2_egui::{FenceStatus, FrameStart, Gles2Context, GpuFence, OffscreenAlpha, SurfaceSize};
+use gles2_egui::{FenceStatus, FrameStart, Gles2Context, GpuFence, SurfaceSize};
 use gles2_video::{
     PlaneFormatPreference, RowLengthPreference, UploadOutcome, VideoLayerOptions,
     VideoLayerRenderer,
@@ -353,8 +353,7 @@ fn main() {
 
     let target_size =
         SurfaceSize::new(arguments.target[0], arguments.target[1]).expect("target size");
-    let context = Gles2Context::offscreen_with_alpha(target_size, OffscreenAlpha::Opaque)
-        .expect("EGL offscreen context");
+    let context = Gles2Context::offscreen(target_size).expect("EGL offscreen context");
     let capabilities = context.capabilities();
     println!(
         "GL: {} | {} | unpack_subimage {} | texture_rg {}",

@@ -3,13 +3,13 @@
 use std::sync::Arc;
 
 use gles2_egui::{
-    Gles2Context, OffscreenAlpha, OffscreenPixels, PixelExtent, ReadbackError, SurfaceSize,
-    TierStatus, WindowSource,
+    Gles2Context, OffscreenPixels, PixelExtent, ReadbackError, SurfaceSize, TierStatus,
+    WindowSource,
 };
 use render_core::RenderDiagnostics;
 use render_shell_api::{
     RenderSurfaceSize, RendererCreateError, RendererCreateStage, RendererInstanceId,
-    SurfaceAlphaPreference, SurfacePresentSettings,
+    SurfacePresentSettings,
 };
 
 use super::create_error::{pipeline_creation_error, renderer_create_error, required_feature_for};
@@ -68,12 +68,8 @@ impl Gles2Renderer {
                 ),
             )
         })?;
-        let alpha = match surface_present.alpha_preference {
-            SurfaceAlphaPreference::Opaque => OffscreenAlpha::Opaque,
-            SurfaceAlphaPreference::TransparentPreferred => OffscreenAlpha::PremultipliedLayer,
-        };
-        let context = Gles2Context::offscreen_with_alpha(target, alpha)
-            .map_err(|error| renderer_create_error(&error))?;
+        let context =
+            Gles2Context::offscreen(target).map_err(|error| renderer_create_error(&error))?;
         Self::assemble(
             context,
             PresentationController::for_offscreen(surface_present),

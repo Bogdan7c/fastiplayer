@@ -1,4 +1,4 @@
-//! Показ кадра: ожидание вертикальной развёртки, прозрачность окна, отпуск и возврат окна.
+//! Показ кадра: ожидание вертикальной развёртки, отпуск и возврат окна.
 //!
 //! Типы нейтральные: адаптер плеера (`render-gles2-shell`, сессия 09) переводит в них
 //! `render_shell_api::SurfacePresentSettings`:
@@ -33,78 +33,44 @@ impl VsyncMode {
     }
 }
 
-/// Какую прозрачность окна просит вызывающий.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum WindowAlphaRequest {
-    /// Непрозрачное окно: углы квадратные.
-    Opaque,
-    /// Прозрачное окно, если драйвер даёт конфиг с альфой (скруглённые углы). Иначе честный
-    /// фолбэк [`WindowAlphaMode::Opaque`] с причиной.
-    TransparentPreferred,
-}
-
 /// Настройки показа от вызывающего (не захардкожены в crate).
+///
+/// Окно всегда непрозрачное (скругление углов удалено, решение 57 плана gles2-renderer),
+/// поэтому прозрачность здесь не настраивается.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PresentationSettings {
     /// Ожидание развёртки.
     pub vsync: VsyncMode,
-    /// Прозрачность окна. Меняется только пересозданием контекста: конфиг EGL выбирается
-    /// один раз.
-    pub alpha: WindowAlphaRequest,
 }
 
 impl Default for PresentationSettings {
-    /// Как у wgpu-рендера по умолчанию: развёртка + непрозрачное окно.
+    /// Как у wgpu-рендера по умолчанию: развёртка.
     fn default() -> Self {
         Self {
             vsync: VsyncMode::WaitForVblank,
-            alpha: WindowAlphaRequest::Opaque,
         }
     }
 }
 
-/// Почему окно показывается непрозрачным.
+/// Есть ли у буфера кадра канал альфы. Окно всегда непрозрачное; этот факт нужен рисующим:
+/// при `Present` альфа кадра обязана остаться 1, иначе композитор просветит окно.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum OpaqueWindowReason {
-    /// Так попросил вызывающий.
-    Requested,
-    /// Конфига с альфой нет (на X11 — для visual окна): углы квадратные, как у wgpu при
-    /// `Opaque`-surface.
-    NoAlphaConfig,
-    /// Цель без окна (offscreen-стенд): прозрачности показа нет вовсе.
-    OffscreenTarget,
+pub enum FramebufferAlpha {
+    /// Конфиг EGL без канала альфы: просвечивать нечему.
+    Absent,
+    /// Канал альфы есть (драйвер не дал конфиг без него, либо это RGBA8 FBO offscreen-цели):
+    /// художник обязан писать альфу = 1.
+    Present,
 }
 
-/// Что получилось с прозрачностью.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum WindowAlphaMode {
-    /// Кадр с альфой, композитор смешивает его как premultiplied (Wayland и ARGB-visual X11).
-    /// Маска углов работает.
-    PremultipliedTransparent,
-    /// Окно непрозрачное, углы квадратные.
-    Opaque {
-        /// Почему.
-        reason: OpaqueWindowReason,
-        /// У буфера кадра всё же есть канал альфы (другого конфига не нашлось). Тогда художник
-        /// обязан писать альфу = 1, иначе композитор просветит окно.
-        framebuffer_has_alpha: bool,
-    },
-}
-
-/// Смысл альфы offscreen-цели ([`crate::Gles2Context::offscreen_with_alpha`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum OffscreenAlpha {
-    /// Непрозрачная цель, как окно без альфы: углы квадратные.
-    Opaque,
-    /// Прозрачный premultiplied-слой, как окно с прозрачностью у композитора: маска углов
-    /// работает ([`WindowAlphaMode::PremultipliedTransparent`]).
-    PremultipliedLayer,
-}
-
-impl WindowAlphaMode {
-    /// Можно ли скруглять углы окна маской.
-    pub fn supports_transparent_corners(self) -> bool {
-        matches!(self, Self::PremultipliedTransparent)
+impl FramebufferAlpha {
+    /// По числу бит альфы выбранного конфига.
+    pub(crate) const fn from_alpha_bits(alpha_bits: i32) -> Self {
+        if alpha_bits > 0 {
+            Self::Present
+        } else {
+            Self::Absent
+        }
     }
 }
 
@@ -165,8 +131,8 @@ pub struct PresentationState {
     pub window_system: WindowSystem,
     /// Последние принятые настройки.
     pub settings: PresentationSettings,
-    /// Что вышло с прозрачностью.
-    pub alpha: WindowAlphaMode,
+    /// Есть ли у буфера кадра канал альфы.
+    pub alpha: FramebufferAlpha,
     /// Что вышло с интервалом (`None` у offscreen-цели).
     pub swap_interval: Option<SwapIntervalOutcome>,
     /// Отпущено ли окно.
@@ -207,9 +173,6 @@ pub enum PresentationError {
     /// Окно отпущено: перенастраивать нечего.
     #[error("presentation is detached from the window")]
     Detached,
-    /// Прозрачность выбирается конфигом EGL при создании; смена — только пересозданием.
-    #[error("window alpha can only change by recreating the GLES2 context")]
-    AlphaChangeRequiresRecreation,
     /// У offscreen-цели нет окна.
     #[error("offscreen target has no window presentation")]
     NotAWindowTarget,
@@ -249,14 +212,14 @@ mod tests {
     }
 
     #[test]
-    fn only_transparent_mode_rounds_corners() {
-        assert!(WindowAlphaMode::PremultipliedTransparent.supports_transparent_corners());
-        assert!(
-            !WindowAlphaMode::Opaque {
-                reason: OpaqueWindowReason::NoAlphaConfig,
-                framebuffer_has_alpha: false
-            }
-            .supports_transparent_corners()
+    fn framebuffer_alpha_follows_alpha_bits_of_the_config() {
+        assert_eq!(
+            FramebufferAlpha::from_alpha_bits(0),
+            FramebufferAlpha::Absent
+        );
+        assert_eq!(
+            FramebufferAlpha::from_alpha_bits(8),
+            FramebufferAlpha::Present
         );
     }
 }

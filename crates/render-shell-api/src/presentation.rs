@@ -51,10 +51,6 @@ pub enum PresentationReconfigureError {
     /// Ничего не изменено.
     PresentationDetached,
 
-    /// Смена политики прозрачности окна меняет пайплайн маски углов и требует пересоздания
-    /// рендера. Ничего не изменено.
-    AlphaPreferenceChangeUnsupported,
-
     /// Surface отклонила новую конфигурацию, прежняя восстановлена: показ продолжается.
     RejectedPreviousRestored {
         /// Сообщение API/драйвера о новой конфигурации.
@@ -75,8 +71,6 @@ impl fmt::Display for PresentationReconfigureError {
             Self::PresentationDetached => {
                 formatter.write_str("renderer does not hold the window presentation")
             }
-            Self::AlphaPreferenceChangeUnsupported => formatter
-                .write_str("changing the window alpha preference requires renderer recreation"),
             Self::RejectedPreviousRestored { message } => write!(
                 formatter,
                 "surface rejected the new presentation; previous one restored: {message}"

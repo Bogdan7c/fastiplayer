@@ -8,12 +8,6 @@ use std::time::Duration;
 
 /// Итог одного вызова `RenderShell::render_frame`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// Timing — небольшой Copy-снимок на кадр; Box добавил бы аллокацию на каждый present
-// ради варианта, который и так самый частый.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Copy-снимок timing на кадр дешевле, чем Box-аллокация на каждый present"
-)]
 pub enum RenderFrameOutcome {
     /// Кадр был отправлен в swapchain и представлен.
     Presented(RenderFrameTiming),
@@ -57,9 +51,6 @@ pub struct RenderFrameStageTimings {
     /// Overlay субтитров между video и egui.
     pub subtitle_overlay: Duration,
 
-    /// Финальная маска общего контура окна после video и egui.
-    pub window_corner_mask: Duration,
-
     /// Синхронная часть отправки работы GPU (у wgpu — `queue.submit(...)`).
     pub queue_submit: Duration,
 
@@ -96,7 +87,6 @@ impl RenderFrameStageTimings {
             ("video_render", self.video_render),
             ("subtitle_overlay", self.subtitle_overlay),
             ("egui_render", self.egui_render),
-            ("window_corner_mask", self.window_corner_mask),
             ("queue_submit", self.queue_submit),
             ("device_poll", self.device_poll),
             ("pre_present_notify", self.pre_present_notify),

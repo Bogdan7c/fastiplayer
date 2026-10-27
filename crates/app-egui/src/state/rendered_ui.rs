@@ -92,10 +92,6 @@ pub(crate) struct RenderedAppUi {
 
     /// UI-области, под которыми video pass не должен рисовать кадр.
     pub(crate) video_exclusion_rects: Vec<egui::Rect>,
-
-    /// Контур кадра, разрешённый из committed config и текущего состояния окна.
-    pub(crate) window_corner_mask: render_shell_api::WindowCornerMask,
-
     /// Timing внутренних участков `render_ui`.
     pub(crate) timings: AppUiRenderTimings,
 }

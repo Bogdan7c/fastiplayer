@@ -25,20 +25,18 @@ mod gles2_parity_tests;
 mod probe;
 mod shell;
 mod subtitle_overlay;
-mod surface_alpha;
 mod surface_settings;
 #[cfg(test)]
 mod test_support;
 mod video_import;
 mod vulkan_device;
-mod window_corner_mask;
 
 // Нейтральный словарь кадра — из контракта `render-shell-api`; внутри crate-а он доступен
 // по коротким путям `crate::X`. Наружу не реэкспортируется: приложение берёт его из контракта.
 pub(crate) use render_shell_api::{
     EguiFrameContent, RenderFrameDropReason, RenderFrameFailure, RenderFrameOutcome,
     RenderFrameStageTimings, RenderFrameTiming, RenderScreenDescriptor, ShellPresentMode,
-    SurfaceAlphaPreference, SurfacePresentSettings, WindowCornerMask,
+    SurfacePresentSettings,
 };
 // Сдвиги слоёв субтитров нужны только GPU-тестам subtitle overlay.
 pub use probe::{

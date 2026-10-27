@@ -1,14 +1,12 @@
 //! Кандидат каталога «OpenGL ES 2.0 через EGL» (старое железо без аппаратного Vulkan).
 //!
 //! Единственное место `app-egui`, где создаётся конкретный `render_gles2_shell::Gles2Renderer`.
-//! Показ GLES2 не зависит от `[render.vulkan]`: своих ручек показа у него нет, всегда vsync и
-//! предпочтительная прозрачная композиция.
+//! Показ GLES2 не зависит от `[render.vulkan]`: своих ручек показа у него нет, всегда vsync.
 
 use fastiplayer_config::VulkanConfig;
 use render_gles2_shell::{Gles2Renderer, probe_gles2_renderer};
 use render_shell_api::{
-    RenderShell, RendererCreateError, RendererProbe, ShellPresentMode, SurfaceAlphaPreference,
-    SurfacePresentSettings,
+    RenderShell, RendererCreateError, RendererProbe, ShellPresentMode, SurfacePresentSettings,
 };
 
 use super::{ProbeLeftovers, RendererCreateRequest, RendererInitialColor};
@@ -39,7 +37,6 @@ pub(super) fn create(
 pub(super) fn surface_present_settings(_vulkan: &VulkanConfig) -> SurfacePresentSettings {
     SurfacePresentSettings {
         present_mode: ShellPresentMode::Fifo,
-        alpha_preference: SurfaceAlphaPreference::TransparentPreferred,
         ..SurfacePresentSettings::default()
     }
 }
@@ -47,11 +44,11 @@ pub(super) fn surface_present_settings(_vulkan: &VulkanConfig) -> SurfacePresent
 #[cfg(test)]
 mod tests {
     use fastiplayer_config::{AppConfig, VulkanPresentMode};
-    use render_shell_api::{ShellPresentMode, SurfaceAlphaPreference};
+    use render_shell_api::ShellPresentMode;
 
     use super::surface_present_settings;
 
-    /// Показ GLES2 всегда vsync + прозрачность, что бы ни стояло в `[render.vulkan]`.
+    /// Показ GLES2 всегда vsync, что бы ни стояло в `[render.vulkan]`.
     #[test]
     fn present_settings_ignore_the_vulkan_section() {
         for mode in [VulkanPresentMode::Immediate, VulkanPresentMode::Mailbox] {
@@ -62,10 +59,6 @@ mod tests {
             let settings = surface_present_settings(&vulkan);
 
             assert_eq!(settings.present_mode, ShellPresentMode::Fifo);
-            assert_eq!(
-                settings.alpha_preference,
-                SurfaceAlphaPreference::TransparentPreferred
-            );
             assert_eq!(
                 settings,
                 surface_present_settings(&AppConfig::default().render.vulkan)

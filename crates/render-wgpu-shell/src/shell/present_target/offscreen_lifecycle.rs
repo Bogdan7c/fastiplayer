@@ -76,9 +76,6 @@ impl OffscreenPresentationState {
         if self.attached == OffscreenAttachment::Detached {
             return Err(PresentationReconfigureError::PresentationDetached);
         }
-        if settings.alpha_preference != self.requested.alpha_preference {
-            return Err(PresentationReconfigureError::AlphaPreferenceChangeUnsupported);
-        }
         let next = OffscreenEffectivePresentation::for_settings(settings);
         self.requested = settings;
         if next == self.effective {

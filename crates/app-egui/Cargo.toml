@@ -109,12 +109,6 @@ subtitle-pgs.workspace = true
 subtitle-raster.workspace = true
 subtitle-sidecar.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# X11 (Xorg и XWayland): свойство EWMH `_NET_WM_OPAQUE_REGION` для непрозрачного кадра
-# (`window_surface_opacity::x11_opaque_region`); winit на X11 прозрачность после создания
-# окна не меняет.
-x11rb.workspace = true
-
 [dev-dependencies]
 base64 = "0.22"
 # Тестовые конструкторы media-source-open нужны только тестам app-egui.

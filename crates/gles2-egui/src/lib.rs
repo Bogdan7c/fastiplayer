@@ -6,13 +6,13 @@
 //! `glow` (таблица функций GL) и `khronos-egl` (EGL), плюс `wayland-sys` для `wl_egl_window`.
 //!
 //! # Что здесь есть
-//! - [`Gles2Context`] — контекст GLES 2.0 на окне (нативный Wayland и X11/XWayland, прозрачность
-//!   для скруглённых углов) или без окна ([`Gles2Context::offscreen`], стенд пиксельных тестов);
+//! - [`Gles2Context`] — контекст GLES 2.0 на окне (нативный Wayland и X11/XWayland, непрозрачное окно
+//!   всегда) или без окна ([`Gles2Context::offscreen`], стенд пиксельных тестов);
 //! - [`Gles2Capabilities`] — что реально умеет драйвер, и уровни из таблицы README плана
 //!   ([`CapabilityTiers`]). Строго ES 2.0, даже если драйвер отдал ES 3.2;
 //! - кадр: [`Gles2Context::begin_frame`] → [`ActiveFrame`] → [`ActiveFrame::present`] с
 //!   таймингами [`Gles2FrameTimings`];
-//! - показ: [`PresentationSettings`] (vsync, прозрачность), перенастройка на месте, отпуск и
+//! - показ: [`PresentationSettings`] (vsync), перенастройка на месте, отпуск и
 //!   возврат окна (одно окно — одна EGLSurface);
 //! - «GPU закончил»: [`GpuFence`] (ждать можно из любого потока) и [`GpuCompletionQueue`]
 //!   (освобождение ровно один раз);
@@ -20,13 +20,12 @@
 //! - шейдеры только `#version 100` ([`Gles2Context::compile_es100_program`]);
 //! - художник egui ([`EguiPainter`], сессия 04): текстуры, меши, отсечение, удержание UI-кадра
 //!   для повтора без прохода egui — пиксель в пиксель с egui-wgpu;
-//! - маска скруглённых углов окна ([`CornerMaskRenderer`]) — только 4 угловых квадрата;
 //! - сборка кадра ([`FrameCompositor`]): фон → подложка/видео ([`FrameLayers`]) → оверлеи →
-//!   egui → маска → показ, в том же порядке, что у wgpu-шелла.
+//!   egui → показ, в том же порядке, что у wgpu-шелла.
 //!
 //! # Безопасность
 //! Весь `unsafe` FFI — в модуле `context::safety` (EGL, libwayland-egl, загрузка GL),
-//! `context::safety::gl` (вызовы GL фундамента) и `draw_gl` (вызовы GL художника и маски), каждый
+//! `context::safety::gl` (вызовы GL фундамента) и `draw_gl` (вызовы GL художника), каждый
 //! блок с комментарием `// SAFETY:`. Владение
 //! `EGLSurface`/`EGLContext`/`EGLDisplay`/`EGLSync` — RAII-типы, порядок разрушения
 //! surface → context → display закреплён тестами на fake-драйвере.
@@ -42,7 +41,6 @@
 mod capabilities;
 mod composition;
 mod context;
-mod corner_mask;
 #[allow(
     unsafe_code,
     reason = "модуль безопасности вызовов GL художника и маски; каждый блок с // SAFETY:"
@@ -82,10 +80,6 @@ pub use context::platform::UnsupportedWindowSystem;
 pub use context::{
     ContextId, GlAccessError, Gles2Context, PixelExtent, ReadbackError, WindowSource,
 };
-pub use corner_mask::{
-    CornerAlphaEncoding, CornerMaskError, CornerMaskOutcome, CornerMaskRenderer, CornerMaskStats,
-    CornerRadius,
-};
 pub use draw_gl::DrawGlError;
 pub use error::{CreateError, Gles2Error};
 pub use fence::{
@@ -102,8 +96,8 @@ pub use painter::{
     UiPaintWork, UiPrepareWork, UiScreen, UiTextureUpload, VertexArrayPreference,
 };
 pub use presentation::{
-    DetachOutcome, OffscreenAlpha, OpaqueWindowReason, PresentationError, PresentationReconfigured,
+    DetachOutcome, FramebufferAlpha, PresentationError, PresentationReconfigured,
     PresentationSettings, PresentationState, ReattachOutcome, SwapIntervalOutcome, VsyncMode,
-    WindowAlphaMode, WindowAlphaRequest, WindowSystem,
+    WindowSystem,
 };
 pub use shader::{Es100ProgramSources, ShaderError, ShaderStage};

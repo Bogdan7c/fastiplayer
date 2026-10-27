@@ -8,8 +8,8 @@
 //!   запрошенный интервал в пределы конфигурации;
 //! - `max_frame_latency` EGL не управляет (задержку кадра держит драйвер): значение
 //!   запоминается как действующее и больше ничего не меняет — явный no-op;
-//! - прозрачность окна ([`SurfaceAlphaPreference`]) выбирается при создании контекста и на
-//!   месте не меняется ([`PresentationReconfigureError::AlphaPreferenceChangeUnsupported`]).
+//! - окно всегда непрозрачное: прозрачности в настройках показа нет (решение 57 плана
+//!   gles2-renderer).
 //!
 //! Рендер без окна (для тестов и снимков) моделирует те же состояния: окно можно отпустить и
 //! вернуть, перенастройка различает «применено», «уже так» и отказ. Модель нужна, потому что
@@ -18,12 +18,12 @@
 use gles2_egui::{
     DetachOutcome, Gles2Context, PresentationError,
     PresentationReconfigured as ContextReconfigured, PresentationSettings, ReattachOutcome,
-    SwapIntervalOutcome, VsyncMode, WindowAlphaRequest,
+    SwapIntervalOutcome, VsyncMode,
 };
 use render_shell_api::{
     PresentationDetachOutcome, PresentationReattachError, PresentationReattachOutcome,
     PresentationReconfigureError, PresentationReconfigured, ShellPresentMode,
-    SurfaceAlphaPreference, SurfacePresentSettings,
+    SurfacePresentSettings,
 };
 
 /// Совпадает ли запрошенный режим показа с тем, что умеет EGL.
@@ -48,21 +48,11 @@ pub(super) const fn vsync_for(mode: ShellPresentMode) -> (VsyncMode, PresentMode
     }
 }
 
-/// Запрос прозрачности окна для контекста.
-#[must_use]
-pub(super) const fn alpha_request_for(preference: SurfaceAlphaPreference) -> WindowAlphaRequest {
-    match preference {
-        SurfaceAlphaPreference::Opaque => WindowAlphaRequest::Opaque,
-        SurfaceAlphaPreference::TransparentPreferred => WindowAlphaRequest::TransparentPreferred,
-    }
-}
-
 /// Настройки показа контекста для запроса контракта (задержка кадра EGL не касается).
 #[must_use]
 pub(super) const fn context_settings_for(settings: SurfacePresentSettings) -> PresentationSettings {
     PresentationSettings {
         vsync: vsync_for(settings.present_mode).0,
-        alpha: alpha_request_for(settings.alpha_preference),
     }
 }
 
@@ -116,9 +106,6 @@ impl PresentationController {
     ) -> Result<PresentationReconfigured, PresentationReconfigureError> {
         if self.is_detached(context) {
             return Err(PresentationReconfigureError::PresentationDetached);
-        }
-        if settings.alpha_preference != self.requested.alpha_preference {
-            return Err(PresentationReconfigureError::AlphaPreferenceChangeUnsupported);
         }
         if settings == self.requested {
             return Ok(PresentationReconfigured::AlreadyActive);
@@ -209,9 +196,6 @@ pub(super) fn reconfigure_error(error: PresentationError) -> PresentationReconfi
         PresentationError::Detached | PresentationError::NotAWindowTarget => {
             PresentationReconfigureError::PresentationDetached
         }
-        PresentationError::AlphaChangeRequiresRecreation => {
-            PresentationReconfigureError::AlphaPreferenceChangeUnsupported
-        }
         // Настройки контекста меняются только после успеха, значит прежние действуют.
         PresentationError::Driver(driver) => {
             PresentationReconfigureError::RejectedPreviousRestored {
@@ -240,9 +224,7 @@ pub(super) fn reattach_error(error: PresentationError) -> PresentationReattachEr
         | PresentationError::NotAWindowTarget
         | PresentationError::Detached => PresentationReattachError::SurfaceCreation { message },
         // Surface создана, но настройки показа на ней не приняты.
-        PresentationError::Driver(_) | PresentationError::AlphaChangeRequiresRecreation => {
-            PresentationReattachError::ConfigureRejected { message }
-        }
+        PresentationError::Driver(_) => PresentationReattachError::ConfigureRejected { message },
     }
 }
 

@@ -4,25 +4,25 @@
 //! 1. Предпочитаем ровно 8 бит на R/G/B (10-битные конфиги ломают premultiplied-смешивание egui
 //!    в гамма-пространстве и не нужны).
 //! 2. X11: конфиг ОБЯЗАН совпадать с visual окна (`EGL_NATIVE_VISUAL_ID`), иначе
-//!    `eglCreateWindowSurface` откажет или прозрачность сломается. Прозрачность на X11 решает
-//!    visual окна: winit с `with_transparent(true)` создаёт 32-битный ARGB visual.
-//! 3. Прозрачность: при `TransparentPreferred` — конфиг с альфой ≥ 8, иначе честный фолбэк
-//!    «непрозрачно, углы квадратные». При `Opaque` — предпочитаем конфиг без альфы.
+//!    `eglCreateWindowSurface` откажет. Visual окна у нас обычный непрозрачный (winit без
+//!    `with_transparent`).
+//! 3. Окно всегда непрозрачное (скругление углов удалено, решение 57 плана gles2-renderer):
+//!    предпочитаем конфиг БЕЗ альфы. Если драйвер даёт только конфиги с альфой, берём лучший из
+//!    них, а факт «у буфера есть альфа» ([`FramebufferAlpha::Present`]) сообщаем рисующим: они
+//!    обязаны писать альфу = 1.
 //!
 //! Порядок кандидатов внутри одной категории — порядок `eglChooseConfig` (EGL 1.5, 3.4.1.2:
 //! лучшие первыми).
 
 use super::driver::ConfigDescription;
-use crate::presentation::{OpaqueWindowReason, WindowAlphaMode, WindowAlphaRequest};
+use crate::presentation::FramebufferAlpha;
 
 /// Что учитывать при выборе.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ConfigSelectionRequest {
-    /// Желаемая прозрачность.
-    pub(crate) alpha: WindowAlphaRequest,
     /// Visual окна X11 (`None` — Wayland, offscreen или X11 без известного visual).
     pub(crate) required_native_visual: Option<i64>,
-    /// Цель — offscreen-стенд: прозрачности показа нет.
+    /// Цель — offscreen-стенд: показа окна нет, берём лучший конфиг как есть.
     pub(crate) offscreen: bool,
 }
 
@@ -31,8 +31,8 @@ pub(crate) struct ConfigSelectionRequest {
 pub(crate) struct SelectedConfig {
     /// Конфиг и его атрибуты.
     pub(crate) description: ConfigDescription,
-    /// Что вышло с прозрачностью.
-    pub(crate) alpha: WindowAlphaMode,
+    /// Есть ли у буфера выбранного конфига канал альфы.
+    pub(crate) alpha: FramebufferAlpha,
 }
 
 /// Почему конфиг не выбран.
@@ -43,8 +43,6 @@ pub(crate) enum ConfigSelectionError {
     /// Ни один конфиг не совпадает с visual окна X11.
     NoConfigForWindowVisual { visual_id: i64 },
 }
-
-const ALPHA_BITS_FOR_TRANSPARENCY: i32 = 8;
 
 /// Выбирает конфиг по правилам модуля.
 pub(crate) fn select_config(
@@ -75,57 +73,22 @@ pub(crate) fn select_config(
         let description = first_or_error(&preferred_depth)?;
         return Ok(SelectedConfig {
             description,
-            alpha: WindowAlphaMode::Opaque {
-                reason: OpaqueWindowReason::OffscreenTarget,
-                framebuffer_has_alpha: description.alpha_bits > 0,
-            },
+            alpha: FramebufferAlpha::from_alpha_bits(description.alpha_bits),
         });
     }
 
-    let with_alpha = preferred_depth
-        .iter()
-        .copied()
-        .find(|config| config.alpha_bits >= ALPHA_BITS_FOR_TRANSPARENCY);
+    // Окно непрозрачное: конфиг без альфы, а если его нет — лучший из имеющихся.
     let without_alpha = preferred_depth
         .iter()
         .copied()
         .find(|config| config.alpha_bits == 0);
-
-    match request.alpha {
-        WindowAlphaRequest::TransparentPreferred => match with_alpha {
-            Some(description) => Ok(SelectedConfig {
-                description,
-                alpha: WindowAlphaMode::PremultipliedTransparent,
-            }),
-            None => opaque(
-                without_alpha,
-                &preferred_depth,
-                OpaqueWindowReason::NoAlphaConfig,
-            ),
-        },
-        WindowAlphaRequest::Opaque => opaque(
-            without_alpha,
-            &preferred_depth,
-            OpaqueWindowReason::Requested,
-        ),
-    }
-}
-
-fn opaque(
-    without_alpha: Option<ConfigDescription>,
-    candidates: &[ConfigDescription],
-    reason: OpaqueWindowReason,
-) -> Result<SelectedConfig, ConfigSelectionError> {
     let description = match without_alpha {
         Some(description) => description,
-        None => first_or_error(candidates)?,
+        None => first_or_error(&preferred_depth)?,
     };
     Ok(SelectedConfig {
         description,
-        alpha: WindowAlphaMode::Opaque {
-            reason,
-            framebuffer_has_alpha: description.alpha_bits > 0,
-        },
+        alpha: FramebufferAlpha::from_alpha_bits(description.alpha_bits),
     })
 }
 
@@ -169,64 +132,31 @@ mod tests {
         }
     }
 
-    fn window_request(alpha: WindowAlphaRequest, visual: Option<i64>) -> ConfigSelectionRequest {
+    fn window_request(visual: Option<i64>) -> ConfigSelectionRequest {
         ConfigSelectionRequest {
-            alpha,
             required_native_visual: visual,
             offscreen: false,
         }
     }
 
     #[test]
-    fn transparent_request_picks_alpha_config() {
-        let candidates = [config(1, 8, 0, 0), config(2, 8, 8, 0)];
-        let selected = select_config(
-            &candidates,
-            window_request(WindowAlphaRequest::TransparentPreferred, None),
-        );
+    fn window_prefers_config_without_alpha_even_when_alpha_config_is_listed_first() {
+        let candidates = [config(1, 8, 8, 0), config(2, 8, 0, 0)];
+        let selected = select_config(&candidates, window_request(None));
         assert_eq!(
             selected.map(|selected| (selected.description.id, selected.alpha)),
-            Ok((ConfigId(2), WindowAlphaMode::PremultipliedTransparent))
+            Ok((ConfigId(2), FramebufferAlpha::Absent))
         );
     }
 
     #[test]
-    fn transparent_request_without_alpha_config_falls_back_to_square_corners() {
-        let candidates = [config(1, 8, 0, 0)];
-        let selected = select_config(
-            &candidates,
-            window_request(WindowAlphaRequest::TransparentPreferred, None),
-        );
-        assert_eq!(
-            selected.map(|selected| selected.alpha),
-            Ok(WindowAlphaMode::Opaque {
-                reason: OpaqueWindowReason::NoAlphaConfig,
-                framebuffer_has_alpha: false
-            })
-        );
-    }
-
-    #[test]
-    fn opaque_request_prefers_config_without_alpha_and_reports_forced_alpha() {
-        let both = [config(1, 8, 8, 0), config(2, 8, 0, 0)];
-        let selected = select_config(&both, window_request(WindowAlphaRequest::Opaque, None));
-        assert_eq!(
-            selected.map(|selected| selected.description.id),
-            Ok(ConfigId(2))
-        );
-
-        // Только конфиги с альфой: художник обязан писать альфу = 1.
+    fn window_with_only_alpha_configs_reports_framebuffer_alpha() {
+        // Только конфиги с альфой: берём лучший, художник обязан писать альфу = 1.
         let alpha_only = [config(3, 8, 8, 0)];
-        let selected = select_config(
-            &alpha_only,
-            window_request(WindowAlphaRequest::Opaque, None),
-        );
+        let selected = select_config(&alpha_only, window_request(None));
         assert_eq!(
-            selected.map(|selected| selected.alpha),
-            Ok(WindowAlphaMode::Opaque {
-                reason: OpaqueWindowReason::Requested,
-                framebuffer_has_alpha: true
-            })
+            selected.map(|selected| (selected.description.id, selected.alpha)),
+            Ok((ConfigId(3), FramebufferAlpha::Present))
         );
     }
 
@@ -238,36 +168,22 @@ mod tests {
             config(2, 8, 8, 0x21),
             config(3, 8, 0, 0x22),
         ];
-        let selected = select_config(
-            &candidates,
-            window_request(WindowAlphaRequest::TransparentPreferred, Some(0x21)),
-        );
-        assert_eq!(
-            selected.map(|selected| selected.description.id),
-            Ok(ConfigId(2))
-        );
-
-        // Непрозрачный visual окна: альфы нет, хотя у других visual она есть.
-        let selected = select_config(
-            &candidates,
-            window_request(WindowAlphaRequest::TransparentPreferred, Some(0x22)),
-        );
+        // Окно непрозрачное, но visual задан системой: берём конфиг этого visual, даже с альфой.
+        let selected = select_config(&candidates, window_request(Some(0x21)));
         assert_eq!(
             selected.map(|selected| (selected.description.id, selected.alpha)),
-            Ok((
-                ConfigId(3),
-                WindowAlphaMode::Opaque {
-                    reason: OpaqueWindowReason::NoAlphaConfig,
-                    framebuffer_has_alpha: false
-                }
-            ))
+            Ok((ConfigId(2), FramebufferAlpha::Present))
+        );
+
+        // Непрозрачный visual окна: альфы нет.
+        let selected = select_config(&candidates, window_request(Some(0x22)));
+        assert_eq!(
+            selected.map(|selected| (selected.description.id, selected.alpha)),
+            Ok((ConfigId(3), FramebufferAlpha::Absent))
         );
 
         assert_eq!(
-            select_config(
-                &candidates,
-                window_request(WindowAlphaRequest::Opaque, Some(0x99))
-            ),
+            select_config(&candidates, window_request(Some(0x99))),
             Err(ConfigSelectionError::NoConfigForWindowVisual { visual_id: 0x99 })
         );
     }
@@ -275,10 +191,7 @@ mod tests {
     #[test]
     fn exact_8bit_configs_win_over_deeper_ones() {
         let candidates = [config(1, 10, 2, 0), config(2, 8, 8, 0)];
-        let selected = select_config(
-            &candidates,
-            window_request(WindowAlphaRequest::TransparentPreferred, None),
-        );
+        let selected = select_config(&candidates, window_request(None));
         assert_eq!(
             selected.map(|selected| selected.description.id),
             Ok(ConfigId(2))
@@ -288,28 +201,24 @@ mod tests {
     #[test]
     fn empty_candidate_list_means_no_gles2() {
         assert_eq!(
-            select_config(&[], window_request(WindowAlphaRequest::Opaque, None)),
+            select_config(&[], window_request(None)),
             Err(ConfigSelectionError::NoGles2Config)
         );
     }
 
     #[test]
-    fn offscreen_target_reports_offscreen_reason() {
-        let candidates = [config(1, 8, 8, 0)];
+    fn offscreen_target_takes_best_config_and_reports_its_alpha() {
+        let candidates = [config(1, 8, 8, 0), config(2, 8, 0, 0)];
         let selected = select_config(
             &candidates,
             ConfigSelectionRequest {
-                alpha: WindowAlphaRequest::TransparentPreferred,
                 required_native_visual: None,
                 offscreen: true,
             },
         );
         assert_eq!(
-            selected.map(|selected| selected.alpha),
-            Ok(WindowAlphaMode::Opaque {
-                reason: OpaqueWindowReason::OffscreenTarget,
-                framebuffer_has_alpha: true
-            })
+            selected.map(|selected| (selected.description.id, selected.alpha)),
+            Ok((ConfigId(1), FramebufferAlpha::Present))
         );
     }
 }

@@ -45,7 +45,6 @@ use crate::subtitle_overlay::{
 use crate::video_import::{
     WgpuImportDevice, WgpuPreparedFrame, WgpuVideoFrameImport, renderable_frame_from_views,
 };
-use crate::window_corner_mask::WindowCornerMaskRenderer;
 use crate::{
     RenderFrameDropReason, RenderFrameFailure, RenderFrameOutcome, RenderFrameStageTimings,
     RenderFrameTiming, SurfacePresentSettings,
@@ -84,7 +83,6 @@ pub struct Renderer {
     video_renderer: WgpuVideoRenderer,
 
     /// Финальный compositor контура; отсутствует при opaque/inherit surface fallback.
-    window_corner_mask_renderer: Option<WindowCornerMaskRenderer>,
 
     /// Субтитры между video и egui.
     subtitle_overlay_renderer: SubtitleOverlayRenderer,
@@ -145,9 +143,6 @@ impl Renderer {
         let instance_id = RendererInstanceId::allocate();
         let egui_compositor = EguiCompositor::new(&gpu.device, gpu.target_format);
         let video_renderer = WgpuVideoRenderer::new(&gpu.device, gpu.target_format);
-        let window_corner_mask_renderer = gpu.window_alpha_encoding.map(|alpha_encoding| {
-            WindowCornerMaskRenderer::new(&gpu.device, gpu.target_format, alpha_encoding)
-        });
 
         let subtitle_overlay_renderer =
             SubtitleOverlayRenderer::new(&gpu.device, gpu.target_format);
@@ -175,7 +170,6 @@ impl Renderer {
             target,
             egui_compositor,
             video_renderer,
-            window_corner_mask_renderer,
             subtitle_overlay_renderer,
             video_import,
         }
@@ -281,7 +275,6 @@ impl Renderer {
             screen,
             video_viewport,
             video_exclusion_rects,
-            window_corner_mask,
             subtitle_overlay,
         } = input;
 
@@ -424,20 +417,6 @@ impl Renderer {
             .render_retained_overlay(&mut encoder, &surface_view);
         let egui_render_elapsed = stage_started_at.elapsed();
 
-        // Маска идёт строго последней: она одинаково обрезает video, egui и hover surfaces.
-        let stage_started_at = Instant::now();
-        if let Some(mask_renderer) = &self.window_corner_mask_renderer {
-            mask_renderer.render(
-                &self.gpu.queue,
-                &mut encoder,
-                &surface_view,
-                [target_width, target_height],
-                screen.pixels_per_point,
-                window_corner_mask,
-            );
-        }
-        let window_corner_mask_elapsed = stage_started_at.elapsed();
-
         // Отправляем команды на GPU. Порядок внутри одного submit-а задаёт
         // очередность исполнения: загрузка host-planar кадра в текстуры → acquire
         // DMA-BUF кадра → egui callbacks → основной encoder (video + overlay + egui) →
@@ -494,7 +473,6 @@ impl Renderer {
             video_render: video_render_elapsed,
             subtitle_overlay: subtitle_overlay_elapsed,
             egui_render: egui_render_elapsed,
-            window_corner_mask: window_corner_mask_elapsed,
             queue_submit: queue_submit_elapsed,
             device_poll: device_poll_elapsed,
             pre_present_notify: pre_present_notify_elapsed,

@@ -27,42 +27,41 @@ titlebar_height_px = {invalid_titlebar_height_px}
     }
 }
 
-/// Радиус принимает обе границы и default, но отвергает первое значение вне диапазона.
+/// Миграция v25 -> v26: файл с удалённым `corner_radius_px` грузится, ключ не возвращается,
+/// соседние поля `[ui.window]` и версия схемы сохраняются/поднимаются.
 #[test]
-fn ui_window_corner_radius_validation_uses_zero_through_twenty_four_range() {
-    for valid_radius in [0_u16, 12_u16, 24_u16] {
-        let mut config = AppConfig::default();
-        config.ui.window.corner_radius_px = valid_radius;
-        config
-            .validate()
-            .expect("valid window corner radius accepted");
-    }
-
-    let mut config = AppConfig::default();
-    config.ui.window.corner_radius_px = 25;
-    let error = config
-        .validate()
-        .expect_err("oversized corner radius rejected");
-
-    assert!(error.to_string().contains("ui.window.corner_radius_px"));
-}
-
-/// Additive поле текущей схемы получает default без отдельной миграции.
-#[test]
-fn current_schema_without_window_corner_radius_loads_default() {
+fn schema_v25_window_corner_radius_is_removed_by_migration() {
     let temp_dir = tempfile::tempdir().expect("temp dir created");
     let config_path = temp_dir.path().join("config.toml");
-    let legacy_document = include_str!("../../../tests/fixtures/current_schema_v25.toml")
-        .replace(
-            "# Радиус прозрачного контура окна; 0 отключает скругление, диапазон 0..24 px.\ncorner_radius_px = 12\n",
-            "",
-        );
-    fs::write(&config_path, legacy_document).expect("current schema fixture written");
+    fs::write(
+        &config_path,
+        "schema_version = 25\n\n[ui.window]\ntitlebar_height_px = 52\ncorner_radius_px = 18\n",
+    )
+    .expect("v25 fixture written");
 
-    let loaded =
-        load_from_path(&config_path).expect("current schema without additive field loaded");
+    let loaded = load_from_path(&config_path).expect("schema v25 config with radius loads");
 
-    assert_eq!(loaded.config.ui.window.corner_radius_px, 12);
+    assert_eq!(loaded.config.schema_version, CURRENT_SCHEMA_VERSION);
+    assert_eq!(loaded.config.ui.window.titlebar_height_px, 52);
+    let saved_text = loaded
+        .config
+        .to_pretty_toml()
+        .expect("migrated config serialized");
+    assert!(!saved_text.contains("corner_radius_px"));
+}
+
+/// В схеме v26 ключа `corner_radius_px` больше нет: strict parser его отклоняет.
+#[test]
+fn schema_v26_rejects_removed_window_corner_radius() {
+    let temp_dir = tempfile::tempdir().expect("temp dir created");
+    let config_path = temp_dir.path().join("config.toml");
+    fs::write(
+        &config_path,
+        "schema_version = 26\n\n[ui.window]\ncorner_radius_px = 12\n",
+    )
+    .expect("v26 fixture written");
+
+    assert!(load_from_path(&config_path).is_err());
 }
 
 /// Задержка автоскрытия: 0 («не прятать») и верхняя граница валидны, значение выше — отказ.
@@ -92,7 +91,7 @@ fn fullscreen_autohide_delay_validation_accepts_zero_and_rejects_above_max() {
 fn current_schema_without_fullscreen_autohide_delay_loads_default() {
     let temp_dir = tempfile::tempdir().expect("temp dir created");
     let config_path = temp_dir.path().join("config.toml");
-    let legacy_document = include_str!("../../../tests/fixtures/current_schema_v25.toml")
+    let legacy_document = include_str!("../../../tests/fixtures/current_schema_v26.toml")
         .replace(
             "# Через сколько мс бездействия прятать панели и курсор в фуллскрине; 0 — не прятать.\nfullscreen_autohide_delay_ms = 2500\n",
             "",

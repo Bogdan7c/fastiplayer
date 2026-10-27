@@ -38,7 +38,6 @@ use render_shell_api::{
     DecoderSurfacePoolSlots, EguiFrameContent, FrameMaterializationOutcome, RenderFrameInput,
     RenderFrameOutcome, RenderScreenDescriptor, RenderShell, RenderSurfaceSize, RenderableFrameKey,
     SurfaceFrameAcquire, SurfacePresentSettings, VideoImportPath, VideoImportPlan,
-    WindowCornerMask,
 };
 use video_backend_api::{PresentFrameResourceDescriptorLookup, VideoBackendDecoderThreadHandle};
 use video_core::{
@@ -309,7 +308,6 @@ fn show_and_verify(
         screen,
         video_viewport: RenderViewport::full_surface(FRAME_SIZE[0], FRAME_SIZE[1]),
         video_exclusion_rects: Vec::new(),
-        window_corner_mask: WindowCornerMask::square(),
         subtitle_overlay: None,
     });
     assert!(

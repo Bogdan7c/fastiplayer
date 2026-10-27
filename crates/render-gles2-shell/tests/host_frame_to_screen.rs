@@ -17,7 +17,7 @@ use codec_core::{
     ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction, VideoColorMetadata,
     VideoDisplayOrientation,
 };
-use gles2_egui::{CreateError, FenceStatus, FrameStart, Gles2Context, OffscreenAlpha, SurfaceSize};
+use gles2_egui::{CreateError, FenceStatus, FrameStart, Gles2Context, SurfaceSize};
 use gles2_video::{
     HdrReferenceLevels, HdrTransfer, ShaderPrecision, UploadOutcome, VideoDrawOutcome,
     VideoLayerOptions, VideoLayerRenderer, bt2446c_to_sdr,
@@ -38,7 +38,7 @@ const REQUIRE_EGL_VARIABLE: &str = "GLES2_EGUI_REQUIRE_EGL";
 
 fn offscreen_or_skip(test_name: &str, width: u32, height: u32) -> Option<Gles2Context> {
     let size = SurfaceSize::new(width, height).unwrap();
-    match Gles2Context::offscreen_with_alpha(size, OffscreenAlpha::Opaque) {
+    match Gles2Context::offscreen(size) {
         Ok(context) => Some(context),
         Err(
             error @ (CreateError::EglUnavailable { .. }

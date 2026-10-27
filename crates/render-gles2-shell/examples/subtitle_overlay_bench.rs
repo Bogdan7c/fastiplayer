@@ -33,7 +33,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gles2_egui::{FrameStart, Gles2Context, OffscreenAlpha, SurfaceSize};
+use gles2_egui::{FrameStart, Gles2Context, SurfaceSize};
 use gles2_video::OverlayLayerOptions;
 use render_core::{PictureLayout, PictureSize, RenderViewport};
 use render_gles2_shell::{Gles2SubtitleOverlayRenderer, SubtitleOverlayOutcome};
@@ -253,11 +253,9 @@ fn series(frames: usize, mut one_frame: impl FnMut(usize) -> gles2_egui::GpuFenc
 fn main() {
     let arguments = parse_arguments();
     let [width, height] = arguments.target;
-    let mut context = Gles2Context::offscreen_with_alpha(
-        SurfaceSize::new(width, height).expect("non-zero target"),
-        OffscreenAlpha::Opaque,
-    )
-    .expect("offscreen GLES2 context");
+    let mut context =
+        Gles2Context::offscreen(SurfaceSize::new(width, height).expect("non-zero target"))
+            .expect("offscreen GLES2 context");
     println!(
         "renderer: {} | {}",
         context.capabilities().gl_renderer(),

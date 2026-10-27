@@ -40,7 +40,7 @@ use codec_core::{
     H264Packetization, VideoCodec, VideoRequirementProbe, parse_avc_decoder_configuration_record,
     probe_video_packet_requirement_with_codec_private,
 };
-use gles2_egui::{FrameStart, Gles2Context, GpuFence, OffscreenAlpha, SurfaceSize};
+use gles2_egui::{FrameStart, Gles2Context, GpuFence, SurfaceSize};
 use gles2_video::{VideoLayerOptions, VideoLayerRenderer};
 use media_core::{DemuxReadEvent, Demuxer, Packet, TrackInfo, TrackKind};
 use render_core::{RenderLiveSettings, RenderViewport};
@@ -372,8 +372,7 @@ fn create_screen(
 ) -> Gles2Screen {
     let target_size =
         SurfaceSize::new(arguments.target[0], arguments.target[1]).expect("target size");
-    let context = Gles2Context::offscreen_with_alpha(target_size, OffscreenAlpha::Opaque)
-        .expect("EGL offscreen context");
+    let context = Gles2Context::offscreen(target_size).expect("EGL offscreen context");
     println!(
         "GL: {} | {} | layout {:?} | pool slots {pool_slots}",
         context.capabilities().gl_renderer(),

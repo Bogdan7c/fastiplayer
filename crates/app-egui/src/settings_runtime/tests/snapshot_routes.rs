@@ -81,23 +81,21 @@ fn committed_snapshot_maps_sidebar_slide_duration_to_seconds() {
 #[test]
 fn committed_snapshot_maps_window_and_sidebar_geometry_to_points() {
     let mut config = custom_config_for_test();
-    // Разные значения у всех трёх полей: перепутанное поле сразу даст несовпадение.
+    // Разные значения у обоих полей: перепутанное поле сразу даст несовпадение.
     config.ui.sidebar.width_points = 515;
     config.ui.window.titlebar_height_px = 64;
-    config.ui.window.corner_radius_px = 24;
 
     let snapshot = CommittedConfigSnapshot::from_config(&config);
 
     assert_eq!(snapshot.sidebar_width_points(), 515);
     assert_eq!(snapshot.titlebar_height_points(), 64.0);
-    assert_eq!(snapshot.window_corner_radius_points(), 24.0);
 }
 
-/// Draft и Cancel не меняют активный контур, а успешный Apply синхронизирует snapshot.
+/// Draft и Cancel не меняют активную высоту titlebar, а успешный Apply синхронизирует snapshot.
 #[test]
-fn window_corner_radius_activates_only_after_successful_apply() {
+fn window_titlebar_height_activates_only_after_successful_apply() {
     let config = custom_config_for_test();
-    let path = temp_config_path("window-corner-radius-apply");
+    let path = temp_config_path("window-titlebar-height-apply");
     remove_file_if_exists(&path);
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
         config.clone(),
@@ -111,66 +109,54 @@ fn window_corner_radius_activates_only_after_successful_apply() {
             vec![
                 SettingsUiAction::Open,
                 SettingsUiAction::SetValue {
-                    setting_id: SettingId::from("ui.window.corner_radius_px"),
-                    value: SettingValue::Integer(24),
+                    setting_id: SettingId::from("ui.window.titlebar_height_px"),
+                    value: SettingValue::Integer(64),
                 },
             ],
             &mut adapter,
         )
-        .expect("corner radius draft accepted");
-    assert_eq!(
-        runtime.committed_snapshot().window_corner_radius_points(),
-        12.0
-    );
+        .expect("titlebar height draft accepted");
+    assert_eq!(runtime.committed_snapshot().titlebar_height_points(), 40.0);
 
     runtime
         .handle_ui_actions_with_runtime_adapter(vec![SettingsUiAction::Cancel], &mut adapter)
-        .expect("Cancel discards corner radius draft");
-    assert_eq!(
-        runtime.committed_snapshot().window_corner_radius_points(),
-        12.0
-    );
+        .expect("Cancel discards titlebar height draft");
+    assert_eq!(runtime.committed_snapshot().titlebar_height_points(), 40.0);
 
     run_runtime_actions(
         &mut runtime,
         vec![
             SettingsUiAction::Open,
             SettingsUiAction::SetValue {
-                setting_id: SettingId::from("ui.window.corner_radius_px"),
-                value: SettingValue::Integer(24),
+                setting_id: SettingId::from("ui.window.titlebar_height_px"),
+                value: SettingValue::Integer(64),
             },
             SettingsUiAction::Apply,
         ],
         &mut adapter,
     );
-    assert_eq!(
-        runtime.committed_snapshot().window_corner_radius_points(),
-        24.0
-    );
+    assert_eq!(runtime.committed_snapshot().titlebar_height_points(), 64.0);
     assert_eq!(
         adapter
             .committed_snapshots
             .last()
             .expect("successful Apply syncs app snapshot")
-            .window_corner_radius_points(),
-        24.0
+            .titlebar_height_points(),
+        64.0
     );
 
     run_runtime_actions(
         &mut runtime,
         vec![
             SettingsUiAction::SetValue {
-                setting_id: SettingId::from("ui.window.corner_radius_px"),
-                value: SettingValue::Integer(0),
+                setting_id: SettingId::from("ui.window.titlebar_height_px"),
+                value: SettingValue::Integer(32),
             },
             SettingsUiAction::Ok,
         ],
         &mut adapter,
     );
-    assert_eq!(
-        runtime.committed_snapshot().window_corner_radius_points(),
-        0.0
-    );
+    assert_eq!(runtime.committed_snapshot().titlebar_height_points(), 32.0);
     remove_file_if_exists(&path);
 }
 

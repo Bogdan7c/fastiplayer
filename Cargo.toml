@@ -194,9 +194,6 @@ egui-wgpu = "0.36"
 glow = "0.17"
 khronos-egl = { version = "6", features = ["dynamic"] }
 raw-window-handle = "0.6"
-# Подсказка непрозрачности окна на X11 (`_NET_WM_OPAQUE_REGION`, app-egui): та же версия, что
-# уже тянет winit; без features — чистый Rust `RustConnection`, новых пакетов в дереве нет.
-x11rb = { version = "0.13", default-features = false }
 wayland-sys = { version = "0.31", features = ["client", "dlopen", "egl"] }
 # Художник egui на GLES2 (сессия 04): только типы мешей/текстур egui (epaint уже в дереве через
 # egui) и безопасный взгляд на вершины как на байты (bytemuck уже в дереве через egui-wgpu).

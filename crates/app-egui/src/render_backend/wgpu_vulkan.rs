@@ -7,7 +7,7 @@
 use fastiplayer_config::{VulkanConfig, VulkanPresentMode};
 use render_shell_api::{
     RenderShell, RendererCreateError, RendererCreateStage, RendererProbe, ShellPresentMode,
-    SurfaceAlphaPreference, SurfacePresentSettings,
+    SurfacePresentSettings,
 };
 use render_wgpu_shell::Renderer;
 
@@ -58,8 +58,8 @@ pub(super) fn create(
 
 /// Маппинг validated `[render.vulkan]` в настройки показа surface.
 ///
-/// Окно всегда просит прозрачную композицию (скруглённые углы); если её нет, рендер сам
-/// откатывается на непрозрачную surface. Тот же маппинг использует перенастройка показа на
+/// Окно всегда непрозрачное (скругление углов удалено, решение 57 плана gles2-renderer), поэтому
+/// прозрачность в настройки показа не входит. Тот же маппинг использует перенастройка показа на
 /// месте (сессия 02a) — через [`super::presentation_settings`].
 pub(super) fn surface_present_settings(vulkan: &VulkanConfig) -> SurfacePresentSettings {
     let present_mode = match vulkan.present_mode {
@@ -71,27 +71,15 @@ pub(super) fn surface_present_settings(vulkan: &VulkanConfig) -> SurfacePresentS
     SurfacePresentSettings {
         present_mode,
         max_frame_latency: vulkan.max_frame_latency,
-        alpha_preference: SurfaceAlphaPreference::TransparentPreferred,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use fastiplayer_config::{AppConfig, VulkanPresentMode};
-    use render_shell_api::{ShellPresentMode, SurfaceAlphaPreference};
+    use render_shell_api::ShellPresentMode;
 
     use super::{ProbeLeftovers, probe, surface_present_settings};
-
-    /// Создание рендера всегда запрашивает прозрачную surface-композицию.
-    #[test]
-    fn surface_settings_prefer_transparency() {
-        let settings = surface_present_settings(&AppConfig::default().render.vulkan);
-
-        assert_eq!(
-            settings.alpha_preference,
-            SurfaceAlphaPreference::TransparentPreferred
-        );
-    }
 
     /// Каждый present mode config-а доезжает до своего режима показа, задержка — как есть.
     #[test]

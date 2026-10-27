@@ -23,9 +23,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use codec_core::{VideoCodec, VideoDecodeRequirement};
-use gles2_egui::{
-    CreateError, FenceStatus, FrameStart, Gles2Context, GpuFence, OffscreenAlpha, SurfaceSize,
-};
+use gles2_egui::{CreateError, FenceStatus, FrameStart, Gles2Context, GpuFence, SurfaceSize};
 use gles2_video::{
     RowLengthPreference, UploadOutcome, VideoColorConversion, VideoLayerOptions,
     VideoLayerRenderer, YuvColorEncoding, YuvMatrix, YuvRange,
@@ -75,7 +73,7 @@ fn read_vp9_ivf_packets() -> Vec<Bytes> {
 
 fn offscreen_or_skip(test_name: &str) -> Option<Gles2Context> {
     let size = SurfaceSize::new(FRAME_WIDTH, FRAME_HEIGHT).unwrap();
-    match Gles2Context::offscreen_with_alpha(size, OffscreenAlpha::Opaque) {
+    match Gles2Context::offscreen(size) {
         Ok(context) => Some(context),
         Err(
             error @ (CreateError::EglUnavailable { .. }

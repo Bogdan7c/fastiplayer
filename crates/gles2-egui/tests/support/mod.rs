@@ -11,8 +11,8 @@
 use egui::epaint::{ClippedPrimitive, ImageDelta};
 use egui::{Color32, ColorImage, Context, Pos2, RawInput, Rect, TextureId, TextureOptions};
 use gles2_egui::{
-    CornerRadius, CreateError, FrameCompositor, Gles2Context, NoFrameLayers, OffscreenAlpha,
-    OffscreenPixels, SurfaceSize, UiContent, UiFrameOutcome, UiFrameRequest, UiScreen,
+    CreateError, FrameCompositor, Gles2Context, NoFrameLayers, OffscreenPixels, SurfaceSize,
+    UiContent, UiFrameOutcome, UiFrameRequest, UiScreen,
 };
 
 pub const REQUIRE_EGL_VARIABLE: &str = "GLES2_EGUI_REQUIRE_EGL";
@@ -22,12 +22,8 @@ pub fn size(width: u32, height: u32) -> SurfaceSize {
 }
 
 /// Контекст без окна или пропуск теста с причиной.
-pub fn offscreen_or_skip(
-    test_name: &str,
-    target_size: SurfaceSize,
-    alpha: OffscreenAlpha,
-) -> Option<Gles2Context> {
-    match Gles2Context::offscreen_with_alpha(target_size, alpha) {
+pub fn offscreen_or_skip(test_name: &str, target_size: SurfaceSize) -> Option<Gles2Context> {
+    match Gles2Context::offscreen(target_size) {
         Ok(context) => Some(context),
         Err(
             error @ (CreateError::EglUnavailable { .. }
@@ -82,7 +78,6 @@ pub fn render(
     screen: UiScreen,
     content: UiContent,
     background: [f32; 4],
-    corner_radius: CornerRadius,
 ) -> UiFrameOutcome {
     compositor
         .render(
@@ -92,7 +87,6 @@ pub fn render(
                 content,
                 background,
                 layers: &mut NoFrameLayers,
-                corner_radius,
             },
         )
         .expect("frame renders")

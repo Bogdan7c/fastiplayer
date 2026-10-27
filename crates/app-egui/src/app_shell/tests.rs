@@ -62,19 +62,3 @@ fn suspend_and_terminal_exit_force_flush_pending_sidebar_resize_and_volume() {
         .expect("terminal shutdown drops AppState");
     assert!(shutdown_flush < shutdown_drop);
 }
-
-#[test]
-fn window_creation_uses_derived_minimum_size() {
-    let event_loop_source = include_str!("event_loop.rs");
-    let creation = event_loop_source
-        // Ищем только начало привязки: rustfmt переносит правую часть на новую строку.
-        .split_once("let window_attributes =")
-        .expect("window attributes construction must exist")
-        .1
-        .split_once("let window = match")
-        .expect("window attributes construction must stay bounded")
-        .0;
-
-    // Минимум берётся из `window_limits`, а не из «магического» литерала в создании окна.
-    assert!(creation.contains("with_min_inner_size(super::window_limits::min_inner_size())"));
-}

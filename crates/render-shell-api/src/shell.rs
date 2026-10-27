@@ -52,8 +52,7 @@ pub trait RenderShell {
     ///
     /// Режим выбирается по тем же правилам, что при создании рендера. Отказ surface
     /// откатывается к прежней конфигурации (`RejectedPreviousRestored`); если не принята и она —
-    /// `PresentationLost`. Смена политики прозрачности — `AlphaPreferenceChangeUnsupported`,
-    /// без окна — `PresentationDetached`; в обоих случаях ничего не меняется.
+    /// `PresentationLost`. Без окна — `PresentationDetached`; при этом ничего не меняется.
     ///
     /// Вызывать только между кадрами: без живого билета этого рендера.
     fn reconfigure_presentation(

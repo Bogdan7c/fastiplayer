@@ -7,7 +7,7 @@
 //! текста. Пиксели сравниваются целиком с допуском ±2 на канал (округление unorm8 смешивания в
 //! разных API); каждая сцена обязана реально менять пиксели «видео».
 
-use gles2_egui::{FrameStart, Gles2Context, OffscreenAlpha};
+use gles2_egui::{FrameStart, Gles2Context};
 use gles2_video::OverlayLayerOptions;
 use render_core::{PictureRect, RenderViewport};
 use render_gles2_shell::{Gles2SubtitleOverlayRenderer, SubtitleOverlayOutcome};
@@ -148,11 +148,7 @@ fn subtitle_overlays_match_between_wgpu_and_gles2() {
         eprintln!("skip {test_name}: no wgpu adapter");
         return;
     };
-    let Some(mut context) = gles2_or_skip(
-        test_name,
-        [TARGET_WIDTH, TARGET_HEIGHT],
-        OffscreenAlpha::Opaque,
-    ) else {
+    let Some(mut context) = gles2_or_skip(test_name, [TARGET_WIDTH, TARGET_HEIGHT]) else {
         return;
     };
     let mut gles2 = Gles2SubtitleOverlayRenderer::new(&context, OverlayLayerOptions::default())

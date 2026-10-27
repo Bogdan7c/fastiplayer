@@ -17,7 +17,7 @@ fn missing_config_is_created_with_defaults() {
     assert!(loaded.config.render.color_adjustment.is_identity());
 
     let created_toml = fs::read_to_string(&loaded.path).expect("created config readable");
-    assert!(created_toml.contains("schema_version = 25"));
+    assert!(created_toml.contains("schema_version = 26"));
     assert!(created_toml.contains("[web_media]"));
     assert!(created_toml.contains("[player.seek]"));
     assert!(created_toml.contains("# Настройки seek commit"));
@@ -51,7 +51,6 @@ fn missing_config_is_created_with_defaults() {
     assert!(created_toml.contains("skin = \"minimal\""));
     assert!(created_toml.contains("[ui.window]"));
     assert!(created_toml.contains("titlebar_height_px = 40"));
-    assert!(created_toml.contains("corner_radius_px = 12"));
     assert!(created_toml.contains("[ui.settings]"));
     assert!(created_toml.contains("live_preview_max_hz = 60"));
     assert!(created_toml.contains("[render.hdr_to_sdr]"));
@@ -137,7 +136,6 @@ skin = "minimal"
 
     assert!(!loaded.config.ui.show_telemetry);
     assert_eq!(loaded.config.ui.window.titlebar_height_px, 40);
-    assert_eq!(loaded.config.ui.window.corner_radius_px, 12);
     assert_eq!(
         loaded.config.ui.sidebar.width_points,
         crate::DEFAULT_SIDEBAR_WIDTH_POINTS

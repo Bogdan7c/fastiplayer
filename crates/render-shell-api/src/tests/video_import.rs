@@ -16,7 +16,7 @@ use crate::{
     EguiFrameContent, FrameImportError, FrameImportUnsupportedReason, FrameMaterializationOutcome,
     RenderFrameFailureKind, RenderFrameInput, RenderFrameOutcome, RenderShell, RenderableFrameKey,
     RendererFamily, SurfaceFrameAcquire, VideoFrameImport, VideoImportInstallError,
-    VideoImportPath, VideoImportPrepareError, WindowCornerMask,
+    VideoImportPath, VideoImportPrepareError,
 };
 
 use super::fake_decoder::{
@@ -105,7 +105,6 @@ fn present(renderer: &mut dyn RenderShell, key: Option<&RenderableFrameKey>) -> 
         screen: SCREEN,
         video_viewport: render_core::RenderViewport::full_surface(800, 600),
         video_exclusion_rects: Vec::new(),
-        window_corner_mask: WindowCornerMask::square(),
         subtitle_overlay: None,
     })
 }

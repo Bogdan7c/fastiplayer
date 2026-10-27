@@ -21,8 +21,8 @@
 use std::time::{Duration, Instant};
 
 use gles2_egui::{
-    BackgroundFillOutcome, CornerRadius, FrameLayerStack, Gles2Error, PixelExtent,
-    PresentedUiFrame, UiContent, UiFrameOutcome, UiFrameRequest, UiScreen,
+    BackgroundFillOutcome, FrameLayerStack, Gles2Error, PixelExtent, PresentedUiFrame, UiContent,
+    UiFrameOutcome, UiFrameRequest, UiScreen,
 };
 use gles2_video::{VideoDrawOutcome, VideoUnderlay};
 use render_core::{RenderViewport, RenderableFrame};
@@ -112,7 +112,6 @@ impl Gles2Renderer {
             screen,
             video_viewport,
             video_exclusion_rects,
-            window_corner_mask,
             subtitle_overlay,
         } = input;
         let content = ui_content_of(egui);
@@ -183,9 +182,6 @@ impl Gles2Renderer {
                         content,
                         background: FRAME_BACKGROUND,
                         layers: &mut stack,
-                        corner_radius: CornerRadius::from_points(
-                            window_corner_mask.radius_points(),
-                        ),
                     },
                 )
             };

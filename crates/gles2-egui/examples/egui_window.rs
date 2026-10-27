@@ -1,12 +1,11 @@
 //! Ручная проверка и замер художника egui на живом железе (780M, T410): окно winit,
 //! интерфейс, похожий на плеер (верхняя и нижняя панели поверх «видео», открытая боковая панель
-//! настроек), скруглённые углы окна.
+//! настроек), обычное непрозрачное окно.
 //!
 //! Запуск:
 //! ```text
-//! cargo run --release -p gles2-egui --example egui_window -- [--transparent] [--immediate] [--bench]
+//! cargo run --release -p gles2-egui --example egui_window -- [--immediate] [--bench]
 //! ```
-//! - `--transparent` — прозрачное окно: углы скругляются маской (радиус 12 точек).
 //! - `--immediate` — `eglSwapInterval(0)`: кадры не ждут развёртки, интервал = цена кадра.
 //! - `--bench` — без клавиатуры (для ssh): 300 кадров полным проходом egui, затем 300 кадров
 //!   повтора UI (`ReusePrevious`); печатает медиану и p95 стадий и выходит.
@@ -20,9 +19,9 @@ use std::time::{Duration, Instant};
 
 use egui::{Color32, Context, RawInput, Rect, pos2, vec2};
 use gles2_egui::{
-    CornerRadius, EguiPainterOptions, FrameCompositor, Gles2Context, NoFrameLayers, PixelExtent,
+    EguiPainterOptions, FrameCompositor, Gles2Context, NoFrameLayers, PixelExtent,
     PresentationSettings, UiContent, UiFrameOutcome, UiFrameRequest, UiScreen, VsyncMode,
-    WindowAlphaRequest, WindowSource,
+    WindowSource,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -33,8 +32,6 @@ use winit::window::{Window, WindowId};
 
 /// Кадров на каждую фазу замера: 5 с при 60 Гц — хватает для устойчивой медианы и p95.
 const BENCH_FRAMES_PER_PHASE: usize = 300;
-/// Радиус углов окна, точки (умолчание плеера `ui.window.corner_radius_px`).
-const CORNER_RADIUS_POINTS: f32 = 12.0;
 /// «Видео» под интерфейсом — непрозрачная заливка.
 const VIDEO_STAND_IN: [f32; 4] = [0.12, 0.28, 0.42, 1.0];
 
@@ -62,7 +59,6 @@ impl ExampleOptions {
         let mut mode = RunMode::Interactive;
         for argument in arguments {
             match argument.as_str() {
-                "--transparent" => settings.alpha = WindowAlphaRequest::TransparentPreferred,
                 "--immediate" => settings.vsync = VsyncMode::Immediate,
                 "--bench" => mode = RunMode::Bench,
                 other => return Err(format!("unknown argument {other:?}")),
@@ -79,7 +75,6 @@ struct FrameSample {
     render_call: Duration,
     egui_buffer_update: Duration,
     egui_render: Duration,
-    window_corner_mask: Duration,
     surface_present: Duration,
     interval: Option<Duration>,
     draw_calls: u32,
@@ -201,7 +196,6 @@ impl EguiWindowApp {
                     content,
                     background: VIDEO_STAND_IN,
                     layers: &mut NoFrameLayers,
-                    corner_radius: CornerRadius::from_points(CORNER_RADIUS_POINTS),
                 },
             )
             .map_err(|error| format!("frame failed: {error}"))?;
@@ -222,7 +216,6 @@ impl EguiWindowApp {
                     render_call,
                     egui_buffer_update: presented.timings.egui_buffer_update,
                     egui_render: presented.timings.egui_render,
-                    window_corner_mask: presented.timings.window_corner_mask,
                     surface_present: presented.timings.surface_present,
                     interval,
                     draw_calls: presented.work.paint.draw_calls,
@@ -265,12 +258,9 @@ impl ApplicationHandler for EguiWindowApp {
         if self.window.is_some() {
             return;
         }
-        let transparent = self.options.settings.alpha == WindowAlphaRequest::TransparentPreferred;
         let attributes = Window::default_attributes()
             .with_title("gles2-egui: egui painter")
-            .with_inner_size(LogicalSize::new(960.0, 540.0))
-            .with_transparent(transparent)
-            .with_decorations(!transparent);
+            .with_inner_size(LogicalSize::new(960.0, 540.0));
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -447,9 +437,6 @@ fn print_bench_report(samples: &[(UiMode, FrameSample)]) {
             Some(sample.egui_buffer_update)
         });
         stage_line("egui_render", &phase, |sample| Some(sample.egui_render));
-        stage_line("window_corner_mask", &phase, |sample| {
-            Some(sample.window_corner_mask)
-        });
         stage_line("surface_present", &phase, |sample| {
             Some(sample.surface_present)
         });

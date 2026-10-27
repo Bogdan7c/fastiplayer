@@ -25,14 +25,14 @@ fn render_stage_timing_reports_slowest_stage() {
     let stages = RenderFrameStageTimings {
         surface_acquire: Duration::from_millis(7),
         device_poll: Duration::from_millis(11),
-        window_corner_mask: Duration::from_millis(13),
+        queue_submit: Duration::from_millis(13),
         surface_present: Duration::from_millis(5),
         ..RenderFrameStageTimings::default()
     };
 
     let slowest_stage = stages.slowest_stage();
 
-    assert_eq!(slowest_stage.name, "window_corner_mask");
+    assert_eq!(slowest_stage.name, "queue_submit");
     assert_eq!(slowest_stage.elapsed, Duration::from_millis(13));
 }
 
@@ -76,10 +76,6 @@ fn every_stage_reports_its_stable_trace_name() {
     assert_eq!(
         one_slow(|s| s.egui_render = Duration::from_millis(9)),
         "egui_render"
-    );
-    assert_eq!(
-        one_slow(|s| s.window_corner_mask = Duration::from_millis(9)),
-        "window_corner_mask"
     );
     assert_eq!(
         one_slow(|s| s.queue_submit = Duration::from_millis(9)),

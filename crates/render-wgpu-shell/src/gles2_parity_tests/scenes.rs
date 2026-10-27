@@ -18,7 +18,6 @@ pub(super) struct ParityFrame {
     pub(super) pixels_per_point: f32,
     /// Фон (очистка «видео»), RGBA 0..=1.
     pub(super) background: [f32; 4],
-    pub(super) corner_radius_points: f32,
     /// Свежий проход egui; `None` — повтор прошлого UI.
     pub(super) ui: Option<(Vec<ClippedPrimitive>, egui::TexturesDelta)>,
 }
@@ -52,7 +51,6 @@ pub(super) fn parity_frames(size_in_pixels: [u32; 2], pixels_per_point: f32) -> 
         slider: 0.4,
     };
     let background = [0.25, 0.5, 0.75, 1.0];
-    let corner_radius_points = 12.0;
 
     // Прогон «измерения»: окна egui в первом проходе невидимы (sizing pass). Его изменения
     // текстур (полный атлас) — часть первого кадра, примитивы выбрасываются.
@@ -80,28 +78,24 @@ pub(super) fn parity_frames(size_in_pixels: [u32; 2], pixels_per_point: f32) -> 
             name: "panels, text, icons, clip",
             pixels_per_point,
             background,
-            corner_radius_points,
             ui: Some((panels, warm_up_textures)),
         },
         ParityFrame {
             name: "new glyphs (partial atlas update) and a linear user texture",
             pixels_per_point,
             background,
-            corner_radius_points,
             ui: Some((glyphs, glyphs_textures)),
         },
         ParityFrame {
             name: "frame after freeing the user texture",
             pixels_per_point,
             background,
-            corner_radius_points,
             ui: Some((after_free, after_free_textures)),
         },
         ParityFrame {
             name: "reused UI over a new background",
             pixels_per_point,
             background: [0.1, 0.6, 0.2, 1.0],
-            corner_radius_points,
             ui: None,
         },
     ]
@@ -170,7 +164,7 @@ fn panels_text_icons(ui: &mut egui::Ui, widgets: &mut WidgetState) {
         .collapsible(false)
         .show(ui.ctx(), |ui| {
             ui.label("Renderer: OpenGL ES 2.0");
-            ui.checkbox(&mut widgets.checkbox, "Rounded corners");
+            ui.checkbox(&mut widgets.checkbox, "Option enabled");
             ui.add(egui::Slider::new(&mut widgets.slider, 0.0..=1.0));
         });
 }

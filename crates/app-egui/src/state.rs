@@ -126,7 +126,6 @@ mod video_stream_requirement;
 mod vod_endpoint_recovery;
 mod volume_steps;
 mod web_media_catalog;
-mod window_frame_shape;
 
 #[cfg(test)]
 mod tests;
@@ -311,8 +310,6 @@ pub struct AppState {
     sidebar_controller: SidebarController,
     /// Автоскрытие панелей и курсора в фуллскрине (`crate::fullscreen_chrome`).
     fullscreen_chrome: crate::fullscreen_chrome::FullscreenChromeController,
-    /// Подсказка композитору о непрозрачности окна (`crate::window_surface_opacity`).
-    surface_opacity: crate::window_surface_opacity::WindowSurfaceOpacity,
 
     /// Ephemeral pending/error state URL content; Installed source остаётся authoritative.
     url_sidebar_controller: crate::web_media_stream_model::UrlSidebarController,
@@ -465,8 +462,6 @@ impl AppState {
             renderer_report: startup_context.renderer_report.clone(),
             sidebar_controller: SidebarController::default(),
             fullscreen_chrome: crate::fullscreen_chrome::FullscreenChromeController::default(),
-            surface_opacity:
-                crate::window_surface_opacity::WindowSurfaceOpacity::for_transparent_window(),
             url_sidebar_controller: crate::web_media_stream_model::UrlSidebarController::default(),
             web_media_catalog_state: crate::web_media_catalog::WebMediaCatalogState::Inactive,
             automatic_web_media_quality:

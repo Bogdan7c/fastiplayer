@@ -9,12 +9,6 @@ pub const MIN_SIDEBAR_WIDTH_POINTS: u16 = 350;
 /// Максимальная ширина sidebar, чтобы панель не вытесняла основную часть видео.
 pub const MAX_SIDEBAR_WIDTH_POINTS: u16 = 600;
 
-/// Минимальный радиус контура окна: ноль полностью отключает скругление.
-pub const MIN_WINDOW_CORNER_RADIUS_PX: u16 = 0;
-
-/// Максимальный радиус сохраняет угловые controls в непрозрачной области.
-pub const MAX_WINDOW_CORNER_RADIUS_PX: u16 = 24;
-
 /// Настройки UI shell.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema)]
 #[settings(require_all_fields)]
@@ -145,28 +139,6 @@ pub struct UiWindowConfig {
     )]
     pub titlebar_height_px: u16,
 
-    /// Радиус прозрачного контура окна в логических UI pixels/egui points.
-    #[setting(
-        id = "ui.window.corner_radius_px",
-        path = "ui.window.corner_radius_px",
-        section = "ui",
-        group = "window",
-        surface = "main-settings-window",
-        label_id = "settings.ui.window.corner_radius_px.label",
-        label_ru = "Window corner radius",
-        description_id = "settings.ui.window.corner_radius_px.description",
-        description_ru = "Radius of transparent window corners in logical UI pixels.",
-        help_id = "settings.ui.window.corner_radius_px.help",
-        help_ru = "0 disables rounding. Maximized/fullscreen windows always have square corners; if the compositor does not support transparency, a safe square fallback is used.",
-        editor = "integer",
-        min = MIN_WINDOW_CORNER_RADIUS_PX,
-        max = MAX_WINDOW_CORNER_RADIUS_PX,
-        step = 1,
-        unit = "px",
-        apply = "ui.apply"
-    )]
-    pub corner_radius_px: u16,
-
     /// Через сколько миллисекунд бездействия в полноэкранном режиме прятать панели и курсор.
     ///
     /// `0` отключает автоскрытие. Окно в обычном режиме ничего не прячет (решение владельца,
@@ -198,7 +170,6 @@ impl Default for UiWindowConfig {
     fn default() -> Self {
         Self {
             titlebar_height_px: 40,
-            corner_radius_px: 12,
             fullscreen_autohide_delay_ms: 2500,
         }
     }

@@ -16,7 +16,6 @@ use std::time::Duration;
 use gles2_egui::{
     CreateError, Es100ProgramSources, FenceStatus, FrameStart, Gles2Context, GpuCompletionQueue,
     PixelExtent, PresentationError, PresentationSettings, ShaderError, ShaderStage, SurfaceSize,
-    WindowAlphaMode,
 };
 
 const REQUIRE_EGL_VARIABLE: &str = "GLES2_EGUI_REQUIRE_EGL";
@@ -125,10 +124,6 @@ fn real_driver_reports_strict_es2_baseline() {
         "ES 2.0 minimum is 64"
     );
     assert!(!capabilities.gl_extensions().is_empty());
-    assert!(matches!(
-        context.presentation().alpha,
-        WindowAlphaMode::Opaque { .. }
-    ));
     eprintln!(
         "driver: {} | {} | tiers {:?}",
         capabilities.gl_renderer(),

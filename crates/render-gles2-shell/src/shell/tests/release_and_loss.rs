@@ -125,7 +125,6 @@ fn a_lost_context_is_reported_and_decoder_frames_are_released_exactly_once() {
         screen: screen_for(TARGET),
         video_viewport: render_core::RenderViewport::full_surface(TARGET[0], TARGET[1]),
         video_exclusion_rects: Vec::new(),
-        window_corner_mask: render_shell_api::WindowCornerMask::square(),
         subtitle_overlay: None,
     });
     match outcome {

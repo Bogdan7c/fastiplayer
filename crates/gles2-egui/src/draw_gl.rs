@@ -1,5 +1,5 @@
 //! Модуль безопасности рисования: единственное место `unsafe` для художника egui
-//! ([`crate::EguiPainter`]) и маски углов ([`crate::CornerMaskRenderer`]).
+//! ([`crate::EguiPainter`]).
 //!
 //! Все функции `glow::HasContext` — `unsafe`: GL требует текущего в этом потоке контекста и
 //! допустимых аргументов. [`DrawGl`] держит оба условия:
@@ -367,21 +367,6 @@ impl<'a> DrawGl<'a> {
         Ok(())
     }
 
-    /// Залить привязанный буфер целиком (маленькая статичная геометрия маски углов).
-    pub(crate) fn upload_static_bound_buffer(
-        self,
-        target: BufferTarget,
-        bytes: &[u8],
-    ) -> Result<(), DrawGlError> {
-        gl_int(bytes.len(), "static buffer size")?;
-        // SAFETY: контекст текущий; буфер привязан к `target`; размер помещается в `GLsizeiptr`.
-        unsafe {
-            self.gl
-                .buffer_data_u8_slice(target.gl_enum(), bytes, glow::STATIC_DRAW)
-        }
-        Ok(())
-    }
-
     /// Описать атрибут вершины относительно привязанного `GL_ARRAY_BUFFER` и включить его.
     pub(crate) fn enable_vertex_attribute(self, attribute: VertexAttribute) {
         // SAFETY: контекст текущий; к `GL_ARRAY_BUFFER` привязан буфер (смещение — внутри
@@ -406,7 +391,7 @@ impl<'a> DrawGl<'a> {
 
     // --- Состояние конвейера -------------------------------------------------------------
 
-    /// Состояние, которое художник и маска задают явно, не полагаясь на чужие проходы:
+    /// Состояние, которое художник задаёт явно, не полагаясь на чужие проходы:
     /// без отбраковки граней (egui не держит единый порядок обхода), глубины, трафарета и
     /// аппаратного дизеринга GL (`GL_DITHER` включён по умолчанию, а его результат зависит от
     /// реализации — паритет требует предсказуемых пикселей), запись всех каналов.
@@ -433,11 +418,6 @@ impl<'a> DrawGl<'a> {
                 function.destination_alpha,
             );
         }
-    }
-
-    pub(crate) fn disable_blend(self) {
-        // SAFETY: контекст текущий; константа ядра GLES 2.0.
-        unsafe { self.gl.disable(glow::BLEND) }
     }
 
     pub(crate) fn viewport(self, width: i32, height: i32) {
@@ -474,13 +454,6 @@ impl<'a> DrawGl<'a> {
                 draw.first_index_byte_offset,
             );
         }
-    }
-
-    /// `glDrawArrays(GL_TRIANGLES, 0, vertex_count)`.
-    pub(crate) fn draw_triangles(self, vertex_count: i32) {
-        // SAFETY: контекст текущий; вызывающий (маска углов) загрузил в привязанный буфер ровно
-        // `vertex_count` вершин и описал атрибуты относительно него.
-        unsafe { self.gl.draw_arrays(glow::TRIANGLES, 0, vertex_count) }
     }
 }
 

@@ -3,10 +3,8 @@
 //!
 //! Запуск:
 //! ```text
-//! cargo run -p gles2-egui --example clear_window -- [--transparent] [--immediate]
+//! cargo run -p gles2-egui --example clear_window -- [--immediate]
 //! ```
-//! - `--transparent` — прозрачное окно (конфиг с альфой): заливка полупрозрачная, сквозь окно
-//!   виден рабочий стол. Если альфы нет, в выводе будет `Opaque { reason: NoAlphaConfig }`.
 //! - `--immediate` — `eglSwapInterval(0)` вместо ожидания развёртки.
 //! - `--scripted-check` — без клавиатуры (для запуска по ssh): 120 кадров, отпуск и возврат окна,
 //!   смена vsync на месте, resize, fence; печатает исходы и `scripted check: PASS`, затем выходит.
@@ -30,8 +28,7 @@ use std::time::{Duration, Instant};
 use gles2_egui::{
     DetachOutcome, DmaBufImportSupport, DrmFourcc, FenceStatus, FormatSampling, FrameStart,
     Gles2Capabilities, Gles2Context, Gles2Error, PixelExtent, PresentationReconfigured,
-    PresentationSettings, ReattachOutcome, VsyncMode, WindowAlphaMode, WindowAlphaRequest,
-    WindowSource,
+    PresentationSettings, ReattachOutcome, VsyncMode, WindowSource,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -62,7 +59,6 @@ impl ExampleOptions {
         let mut mode = RunMode::Interactive;
         for argument in arguments {
             match argument.as_str() {
-                "--transparent" => settings.alpha = WindowAlphaRequest::TransparentPreferred,
                 "--immediate" => settings.vsync = VsyncMode::Immediate,
                 "--scripted-check" => mode = RunMode::ScriptedCheck,
                 other => return Err(format!("unknown argument {other:?}")),
@@ -84,7 +80,6 @@ const CLEAR_COLORS: [[f32; 3]; 4] = [
     [0.15, 0.70, 0.35],
     [0.95, 0.80, 0.10],
 ];
-const TRANSPARENT_ALPHA: f32 = 0.6;
 
 struct ClearWindowApp {
     options: ExampleOptions,
@@ -123,30 +118,14 @@ impl ClearWindowApp {
         Ok(())
     }
 
-    /// Premultiplied-цвет заливки: у прозрачного окна RGB умножены на альфу (контракт egui и
-    /// композитора).
-    fn clear_color(&self, alpha_mode: WindowAlphaMode) -> [f32; 4] {
+    /// Цвет заливки: окно всегда непрозрачное, альфа 1.
+    fn clear_color(&self) -> [f32; 4] {
         let [red, green, blue] = CLEAR_COLORS[self.color_index % CLEAR_COLORS.len()];
-        match alpha_mode {
-            WindowAlphaMode::PremultipliedTransparent => [
-                red * TRANSPARENT_ALPHA,
-                green * TRANSPARENT_ALPHA,
-                blue * TRANSPARENT_ALPHA,
-                TRANSPARENT_ALPHA,
-            ],
-            WindowAlphaMode::Opaque { .. } => [red, green, blue, 1.0],
-        }
+        [red, green, blue, 1.0]
     }
 
     fn redraw(&mut self) {
-        let Some(alpha_mode) = self
-            .context
-            .as_ref()
-            .map(|context| context.presentation().alpha)
-        else {
-            return;
-        };
-        let color = self.clear_color(alpha_mode);
+        let color = self.clear_color();
         let Some(context) = self.context.as_mut() else {
             return;
         };
@@ -230,11 +209,9 @@ impl ApplicationHandler for ClearWindowApp {
         if self.window.is_some() {
             return;
         }
-        let transparent = self.options.settings.alpha == WindowAlphaRequest::TransparentPreferred;
         let attributes = Window::default_attributes()
             .with_title("gles2-egui clear_window")
-            .with_inner_size(LogicalSize::new(800.0, 450.0))
-            .with_transparent(transparent);
+            .with_inner_size(LogicalSize::new(800.0, 450.0));
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -361,7 +338,6 @@ fn run_scripted_check(context: &mut Gles2Context) -> Result<(), String> {
             VsyncMode::WaitForVblank => VsyncMode::Immediate,
             VsyncMode::Immediate => VsyncMode::WaitForVblank,
         },
-        ..current
     };
     let applied = context.reconfigure_presentation(toggled);
     println!("reconfigure {:?}: {applied:?}", toggled.vsync);

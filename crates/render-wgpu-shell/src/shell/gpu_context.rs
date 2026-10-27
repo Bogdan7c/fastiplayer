@@ -16,9 +16,9 @@ use winit::window::Window;
 
 use super::present_target::{PresentTarget, WindowPresentTarget};
 use crate::SurfacePresentSettings;
-use crate::surface_alpha::choose_alpha_mode;
-use crate::surface_settings::{choose_present_mode, choose_surface_format};
-use crate::window_corner_mask::SurfaceAlphaEncoding;
+use crate::surface_settings::{
+    choose_opaque_alpha_mode, choose_present_mode, choose_surface_format,
+};
 
 /// GPU ресурсы рендера, не зависящие от цели показа.
 pub(crate) struct GpuContext {
@@ -39,9 +39,6 @@ pub(crate) struct GpuContext {
 
     /// Typed device-lost state, который callback WGPU публикует lifecycle owner-у.
     device_lost: Arc<Mutex<Option<GpuDeviceLost>>>,
-
-    /// Подтверждённое surface-кодирование alpha; `None` запрещает прозрачную маску.
-    pub(crate) window_alpha_encoding: Option<SurfaceAlphaEncoding>,
 }
 
 /// Доказанная потеря устройства в форме wgpu (до перевода в нейтральный словарь).
@@ -110,8 +107,8 @@ impl GpuContext {
 
         let present_mode =
             choose_present_mode(&surface_caps.present_modes, surface_present.present_mode)?;
-        let (alpha_mode, window_alpha_encoding) =
-            choose_alpha_mode(&surface_caps.alpha_modes, surface_present.alpha_preference)?;
+        // Окно всегда непрозрачное: прозрачные composite-режимы не выбираются.
+        let alpha_mode = choose_opaque_alpha_mode(&surface_caps.alpha_modes)?;
 
         // 0 кадров latency недопустимо для swapchain — нормализуем к 1.
         let desired_maximum_frame_latency = surface_present.max_frame_latency.max(1);
@@ -156,7 +153,6 @@ impl GpuContext {
                 queue: created.queue,
                 target_format: surface_format,
                 device_lost: created.device_lost,
-                window_alpha_encoding,
             },
             target,
         ))
@@ -182,7 +178,6 @@ impl GpuContext {
             target_format,
             device_lost: created.device_lost,
             // Без окна прозрачной маски углов нет.
-            window_alpha_encoding: None,
         }))
     }
 

@@ -25,3 +25,5 @@
 
 ## Замер (пример `examples/egui_window.rs --bench [--immediate] [--transparent]`)
 - 780M и T410, Wayland и XWayland, прозрачное окно: с vsync ровно 60 к/с (T410 p95 интервала 16,9 мс). T410: полный проход = egui 0,44 мс + буферы 0,08 + рисование 0,05; повтор = рисование 0,05 мс (6 draw-call-ов, 0 байт); маска 0,012 мс. Без vsync интервал 1,7 мс у обоих (упор в swap/GPU). Плеер в режиме GLES2 появится только в 09, поэтому `run_pass.py` до/после в 04 неприменим.
+
+> С 27.10.2026 скругление углов окна удалено полностью (решение 57 gles2-renderer): окно непрозрачное, `corner_mask`/`CornerMaskRenderer`/`WindowCornerMask`/`SurfaceAlphaPreference`/`OffscreenAlpha`/`WindowAlphaRequest` и `ui.window.corner_radius_px` больше не существуют; wgpu выбирает только непрозрачный `CompositeAlphaMode`, EGL-конфиг предпочитается без альфы (`FramebufferAlpha::{Absent, Present}`), `Gles2Context::offscreen_with_alpha` заменён на `offscreen`. Упоминания ниже — история.

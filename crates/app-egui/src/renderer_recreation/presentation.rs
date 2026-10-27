@@ -121,7 +121,6 @@ pub(super) fn reconfigure_failure_from_contract(
             }
         }
         rejected @ (PresentationReconfigureError::PresentationDetached
-        | PresentationReconfigureError::AlphaPreferenceChangeUnsupported
         | PresentationReconfigureError::RejectedPreviousRestored { .. }) => {
             PresentationReconfigureFailure::Rejected(apply_error(
                 RendererRecreationApplyErrorKind::PresentationReconfigure,
@@ -158,7 +157,6 @@ mod tests {
     fn only_lost_presentation_becomes_a_rollback_failure() {
         let rejected = [
             PresentationReconfigureError::PresentationDetached,
-            PresentationReconfigureError::AlphaPreferenceChangeUnsupported,
             PresentationReconfigureError::RejectedPreviousRestored {
                 message: "driver said no".to_owned(),
             },

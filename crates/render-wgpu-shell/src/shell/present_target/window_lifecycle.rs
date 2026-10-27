@@ -39,10 +39,6 @@ impl WindowPresentTarget {
                 return Err(PresentationReconfigureError::PresentationDetached);
             }
         };
-        if settings.alpha_preference != self.presentation.alpha_preference {
-            // Альфа выбрана при создании и определяет пайплайн маски углов (GpuContext).
-            return Err(PresentationReconfigureError::AlphaPreferenceChangeUnsupported);
-        }
 
         // Режим выбирается теми же правилами и по тем же возможностям, что при создании.
         let capabilities = surface.get_capabilities(&gpu.adapter);

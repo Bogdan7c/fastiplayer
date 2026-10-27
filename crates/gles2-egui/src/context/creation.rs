@@ -18,10 +18,7 @@ use crate::error::CreateError;
 use crate::fence::{FenceIssuer, FenceStrategy};
 use crate::loss::{ContextHealth, ContextLoss};
 use crate::offscreen::OffscreenTarget;
-use crate::presentation::{
-    OffscreenAlpha, PresentationSettings, PresentationState, VsyncMode, WindowAlphaMode,
-    WindowAlphaRequest, WindowSystem,
-};
+use crate::presentation::{PresentationSettings, PresentationState, VsyncMode, WindowSystem};
 
 /// libEGL процесса и реестр её display. Загружается один раз: повторная загрузка дала бы
 /// второй реестр, и подсчёт пользователей display перестал бы работать.
@@ -85,7 +82,6 @@ impl Gles2Context {
                     window: binding.window,
                     size: initial_size,
                 },
-                alpha: settings.alpha,
             },
         )?;
         let swap_interval = session
@@ -115,41 +111,22 @@ impl Gles2Context {
 
     /// Контекст без окна (EGL surfaceless): кадр рисуется в FBO и читается
     /// [`Gles2Context::read_offscreen_pixels`]. Стенд пиксельных тестов. Цель непрозрачная —
-    /// как окно без альфы.
+    /// как окно: цвет FBO RGBA8, но рисующие обязаны писать альфу = 1.
     pub fn offscreen(size: SurfaceSize) -> Result<Self, CreateError> {
-        Self::offscreen_with_alpha(size, OffscreenAlpha::Opaque)
-    }
-
-    /// Контекст без окна с выбранным смыслом альфы цели.
-    ///
-    /// Цвет FBO — всегда RGBA8, альфа в нём есть. [`OffscreenAlpha::PremultipliedLayer`]
-    /// говорит рисующим (маска углов), что цель — прозрачный premultiplied-слой, как окно с
-    /// прозрачностью у композитора. Это и стенд маски углов, и честный режим для приложения,
-    /// которое само композитит результат как текстуру.
-    pub fn offscreen_with_alpha(
-        size: SurfaceSize,
-        target_alpha: OffscreenAlpha,
-    ) -> Result<Self, CreateError> {
         let runtime = system_runtime()?;
         let session = EglSession::open(
             &runtime.registry,
             SessionRequest {
                 native_display: NativeDisplay::Surfaceless,
                 target: SessionTarget::Offscreen,
-                alpha: WindowAlphaRequest::Opaque,
             },
         )?;
         let presentation = PresentationState {
             window_system: WindowSystem::Offscreen,
             settings: PresentationSettings {
                 vsync: VsyncMode::Immediate,
-                alpha: WindowAlphaRequest::Opaque,
             },
-            alpha: match target_alpha {
-                // Выбор конфига уже отметил offscreen-цель (`OpaqueWindowReason::OffscreenTarget`).
-                OffscreenAlpha::Opaque => session.config().alpha,
-                OffscreenAlpha::PremultipliedLayer => WindowAlphaMode::PremultipliedTransparent,
-            },
+            alpha: session.config().alpha,
             swap_interval: None,
             detached: false,
         };

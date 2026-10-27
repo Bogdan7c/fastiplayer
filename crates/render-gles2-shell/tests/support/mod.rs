@@ -20,9 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use codec_core::{VideoColorMetadata, VideoDisplayOrientation};
-use gles2_egui::{
-    CreateError, FrameStart, Gles2Context, GpuFence, OffscreenAlpha, OffscreenPixels, SurfaceSize,
-};
+use gles2_egui::{CreateError, FrameStart, Gles2Context, GpuFence, OffscreenPixels, SurfaceSize};
 use gles2_video::{VideoDrawOutcome, VideoLayerOptions, VideoLayerRenderer};
 use render_core::{PictureLayout, RenderLiveSettings, RenderViewport};
 use render_gles2_shell::{
@@ -46,7 +44,7 @@ pub const WAIT: Duration = Duration::from_secs(5);
 /// Контекст без окна или пропуск теста с причиной.
 pub fn offscreen_or_skip(test_name: &str) -> Option<Gles2Context> {
     let size = SurfaceSize::new(TARGET_WIDTH, TARGET_HEIGHT).unwrap();
-    match Gles2Context::offscreen_with_alpha(size, OffscreenAlpha::Opaque) {
+    match Gles2Context::offscreen(size) {
         Ok(context) => Some(context),
         Err(
             error @ (CreateError::EglUnavailable { .. }

@@ -18,9 +18,7 @@ use super::platform::{NativeWindow, required_platform_extensions};
 use crate::capabilities::ExtensionSet;
 use crate::error::CreateError;
 use crate::loss::ContextLoss;
-use crate::presentation::{
-    DetachOutcome, ReattachOutcome, SwapIntervalOutcome, VsyncMode, WindowAlphaRequest,
-};
+use crate::presentation::{DetachOutcome, ReattachOutcome, SwapIntervalOutcome, VsyncMode};
 
 /// Владелец `EGLContext`.
 struct ContextOwner {
@@ -89,8 +87,6 @@ pub(crate) struct SessionRequest {
     pub(crate) native_display: NativeDisplay,
     /// Цель.
     pub(crate) target: SessionTarget,
-    /// Прозрачность окна.
-    pub(crate) alpha: WindowAlphaRequest,
 }
 
 /// Удалось ли включить уведомление о сбросе GPU.
@@ -414,7 +410,6 @@ fn select_session_config(
     config_select::select_config(
         &candidates,
         ConfigSelectionRequest {
-            alpha: request.alpha,
             required_native_visual,
             offscreen,
         },

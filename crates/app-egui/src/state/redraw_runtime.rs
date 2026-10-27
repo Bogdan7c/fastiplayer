@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use player_core::PlayerSnapshot;
 use render_core::RenderViewport;
-use render_shell_api::{RenderScreenDescriptor, WindowCornerMask};
+use render_shell_api::RenderScreenDescriptor;
 use winit::window::Window;
 
 use super::AppState;
@@ -117,7 +117,6 @@ pub(crate) struct RetainedUiGeometry {
     pub(crate) screen: RenderScreenDescriptor,
     pub(crate) video_viewport: RenderViewport,
     pub(crate) video_exclusion_rects: Vec<RenderViewport>,
-    pub(crate) window_corner_mask: WindowCornerMask,
 }
 
 /// Состояние решения о перерисовке; одно поле `AppState`.

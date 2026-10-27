@@ -25,7 +25,6 @@ fn distinct_timings() -> UiFrameTimings {
         video_render: ms(4),
         subtitle_overlay: ms(5),
         egui_render: ms(6),
-        window_corner_mask: ms(7),
         surface_present: ms(8),
     }
 }
@@ -44,7 +43,6 @@ fn stages_keep_their_names_and_missing_stages_are_zero() {
             video_render: ms(4),
             egui_render: ms(6),
             subtitle_overlay: ms(5),
-            window_corner_mask: ms(7),
             queue_submit: Duration::ZERO,
             device_poll: Duration::ZERO,
             pre_present_notify: Duration::ZERO,

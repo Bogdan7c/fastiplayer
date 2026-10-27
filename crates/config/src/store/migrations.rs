@@ -7,6 +7,7 @@ use crate::{
     LEGACY_SCHEMA_VERSION_16, LEGACY_SCHEMA_VERSION_17, LEGACY_SCHEMA_VERSION_18,
     LEGACY_SCHEMA_VERSION_19, LEGACY_SCHEMA_VERSION_20, LEGACY_SCHEMA_VERSION_21,
     LEGACY_SCHEMA_VERSION_22, LEGACY_SCHEMA_VERSION_23, LEGACY_SCHEMA_VERSION_24,
+    LEGACY_SCHEMA_VERSION_25,
 };
 
 pub(super) const REMOVED_HARDWARE_DECODE_ONLY_KEY: &str = "hardware_decode_only";
@@ -58,9 +59,12 @@ pub(super) fn normalize_document(toml_document: &mut toml::Value) {
     if schema_at_most(root_table, LEGACY_SCHEMA_VERSION_23) {
         migrate_render_profile_to_auto(root_table);
     }
+    if schema_at_most(root_table, LEGACY_SCHEMA_VERSION_25) {
+        remove_removed_window_corner_radius(root_table);
+    }
 }
 
-/// Поднимает поддерживаемые v2-v24 структуры до текущей in-memory версии.
+/// Поднимает поддерживаемые v2-v25 структуры до текущей in-memory версии.
 pub(super) fn upgrade_config(config: &mut AppConfig) {
     if matches!(
         config.schema_version,
@@ -91,6 +95,9 @@ pub(super) fn upgrade_config(config: &mut AppConfig) {
             // `dynamic` ошибкой и переименовали бы файл в `.bak`, а с bump-ом видят «схема новее»
             // и оставляют файл нетронутым.
             | LEGACY_SCHEMA_VERSION_24
+            // v25 -> v26: ключ `ui.window.corner_radius_px` удалён миграцией документа
+            // (`remove_removed_window_corner_radius`); остальные поля не меняются.
+            | LEGACY_SCHEMA_VERSION_25
     ) {
         config.schema_version = CURRENT_SCHEMA_VERSION;
     }
@@ -139,6 +146,20 @@ fn migrate_render_profile_to_auto(root_table: &mut toml::Table) {
         *profile = toml::Value::String(RENDER_PROFILE_AUTO_ID.to_owned());
     }
     render_table.remove("opengles");
+}
+
+/// v25 → v26: удаляет `ui.window.corner_radius_px` — скругление окна убрано из продукта.
+///
+/// Решение владельца (gles2-renderer, решение 57): окно всегда непрозрачное, радиуса больше нет.
+/// Остальные ключи `[ui.window]` не трогаются; отсутствие таблицы или ключа — no-op.
+fn remove_removed_window_corner_radius(root_table: &mut toml::Table) {
+    let Some(toml::Value::Table(ui_table)) = root_table.get_mut("ui") else {
+        return;
+    };
+    let Some(toml::Value::Table(window_table)) = ui_table.get_mut("window") else {
+        return;
+    };
+    window_table.remove("corner_radius_px");
 }
 
 /// Переносит web-media policy из extractor-specific `[yt_dlp]` в `[web_media]`.

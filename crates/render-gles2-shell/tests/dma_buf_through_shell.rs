@@ -25,7 +25,6 @@ use render_shell_api::{
     FrameMaterializationOutcome, HardwareFrameRefusal, RenderFrameInput, RenderFrameOutcome,
     RenderScreenDescriptor, RenderShell, RenderSurfaceSize, RenderableFrameKey,
     SurfaceFrameAcquire, SurfacePresentSettings, VideoImportPath, VideoImportPlan,
-    WindowCornerMask,
 };
 use support::nv12_buffers::{Nv12Layout, PALETTE, TestNv12};
 use support::provider::{
@@ -156,7 +155,6 @@ impl Stand {
             screen,
             video_viewport: RenderViewport::full_surface(TARGET_WIDTH, TARGET_HEIGHT),
             video_exclusion_rects: Vec::new(),
-            window_corner_mask: WindowCornerMask::square(),
             subtitle_overlay: None,
         })
     }

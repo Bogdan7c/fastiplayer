@@ -1,4 +1,4 @@
-schema_version = 25
+schema_version = 26
 
 [player]
 start_paused = false
@@ -211,8 +211,6 @@ skin = "minimal"
 [ui.window]
 # Высота кастомного titlebar в логических UI px.
 titlebar_height_px = 40
-# Радиус прозрачного контура окна; 0 отключает скругление, диапазон 0..24 px.
-corner_radius_px = 12
 # Через сколько мс бездействия прятать панели и курсор в фуллскрине; 0 — не прятать.
 fullscreen_autohide_delay_ms = 2500
 

@@ -17,9 +17,7 @@ pub mod nv12_dma_buf;
 pub mod overlay;
 pub mod udmabuf;
 
-use gles2_egui::{
-    CreateError, FrameStart, Gles2Context, OffscreenAlpha, OffscreenPixels, SurfaceSize,
-};
+use gles2_egui::{CreateError, FrameStart, Gles2Context, OffscreenPixels, SurfaceSize};
 use gles2_video::{
     ChromaSubsampling, ColorAdjustment, HostRows, PictureMapping, PixelRect, PlanarFrameUpload,
     PlanarLayout, PlaneExtent, PlaneSource, QuarterTurn, SampleDepth, VideoColorConversion,
@@ -38,7 +36,7 @@ pub fn size(width: u32, height: u32) -> SurfaceSize {
 
 /// Контекст без окна или пропуск теста с причиной.
 pub fn offscreen_or_skip(test_name: &str, target_size: SurfaceSize) -> Option<Gles2Context> {
-    match Gles2Context::offscreen_with_alpha(target_size, OffscreenAlpha::Opaque) {
+    match Gles2Context::offscreen(target_size) {
         Ok(context) => Some(context),
         Err(
             error @ (CreateError::EglUnavailable { .. }

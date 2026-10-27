@@ -1,4 +1,4 @@
-//! Typed surface present settings и детерминированный выбор present mode.
+//! Typed surface present settings, детерминированный выбор present mode и alpha mode.
 
 use anyhow::{Context, Result};
 
@@ -67,6 +67,76 @@ pub(crate) fn choose_surface_format(
         .first()
         .copied()
         .context("Surface capabilities have not returned any texture format.")
+}
+
+/// Выбирает непрозрачный composite alpha mode окна.
+///
+/// Окно Fastiplayer всегда непрозрачное (скругление углов удалено, решение 57 gles2-renderer),
+/// поэтому прозрачные режимы (`PreMultiplied`/`PostMultiplied`) не выбираются никогда, даже если
+/// surface их предлагает: на Intel Ironlake альфа-поверхность не идёт на плоскость дисплея и
+/// композитор копирует каждый кадр. Порядок: `Opaque`, затем `Inherit`, затем `Auto`.
+pub(crate) fn choose_opaque_alpha_mode(
+    alpha_modes: &[wgpu::CompositeAlphaMode],
+) -> Result<wgpu::CompositeAlphaMode> {
+    if alpha_modes.is_empty() {
+        anyhow::bail!("Surface capabilities have not returned any alpha mode.");
+    }
+    [
+        wgpu::CompositeAlphaMode::Opaque,
+        wgpu::CompositeAlphaMode::Inherit,
+        wgpu::CompositeAlphaMode::Auto,
+    ]
+    .into_iter()
+    .find(|choice| alpha_modes.contains(choice))
+    .context("Surface does not support any opaque alpha mode.")
+}
+
+#[cfg(test)]
+mod alpha_mode_tests {
+    use super::choose_opaque_alpha_mode;
+    use wgpu::CompositeAlphaMode as Mode;
+
+    /// Прозрачные режимы игнорируются, даже когда они первые в списке surface.
+    #[test]
+    fn transparent_modes_are_never_selected_when_opaque_is_available() {
+        let selected =
+            choose_opaque_alpha_mode(&[Mode::PreMultiplied, Mode::PostMultiplied, Mode::Opaque])
+                .expect("opaque mode selected");
+        assert_eq!(selected, Mode::Opaque);
+    }
+
+    /// Без `Opaque` берётся `Inherit`, затем `Auto` — в этом порядке.
+    #[test]
+    fn opaque_falls_back_to_inherit_then_auto() {
+        assert_eq!(
+            choose_opaque_alpha_mode(&[Mode::Auto, Mode::PreMultiplied, Mode::Inherit])
+                .expect("inherit selected"),
+            Mode::Inherit
+        );
+        assert_eq!(
+            choose_opaque_alpha_mode(&[Mode::PostMultiplied, Mode::Auto]).expect("auto selected"),
+            Mode::Auto
+        );
+    }
+
+    /// Только прозрачные режимы — ошибка, а не молчаливый выбор прозрачного.
+    #[test]
+    fn transparent_only_surface_is_reported_as_error() {
+        let error = choose_opaque_alpha_mode(&[Mode::PreMultiplied, Mode::PostMultiplied])
+            .expect_err("transparent-only list rejected");
+        assert!(error.to_string().contains("any opaque alpha mode"));
+    }
+
+    /// Пустой список capabilities — явная ошибка.
+    #[test]
+    fn empty_alpha_mode_list_is_reported_as_error() {
+        let error = choose_opaque_alpha_mode(&[]).expect_err("empty alpha mode list rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("Surface capabilities have not returned any alpha mode.")
+        );
+    }
 }
 
 #[cfg(test)]

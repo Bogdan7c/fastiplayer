@@ -7,8 +7,8 @@
 use crate::{
     EguiFrameContent, PresentationDetachOutcome, PresentationReattachOutcome,
     PresentationReconfigureError, PresentationReconfigured, RenderFrameDropReason,
-    RenderScreenDescriptor, RenderShell, RenderSurfaceSize, ShellPresentMode,
-    SurfaceAlphaPreference, SurfaceFrameAcquire, SurfacePresentSettings,
+    RenderScreenDescriptor, RenderShell, RenderSurfaceSize, ShellPresentMode, SurfaceFrameAcquire,
+    SurfacePresentSettings,
 };
 
 use super::{
@@ -99,7 +99,6 @@ pub fn check_presentation_reconfigure_distinguishes_no_op(
     let requested = SurfacePresentSettings {
         present_mode: ShellPresentMode::Fifo,
         max_frame_latency: initial.max_frame_latency.max(1) + 1,
-        alpha_preference: initial.alpha_preference,
     };
 
     expect_equal(
@@ -111,27 +110,6 @@ pub fn check_presentation_reconfigure_distinguishes_no_op(
     expect_equal(
         check,
         "repeating the same presentation settings",
-        renderer.reconfigure_presentation(requested),
-        Ok(PresentationReconfigured::AlreadyActive),
-    )?;
-
-    let flipped_alpha = SurfacePresentSettings {
-        alpha_preference: match requested.alpha_preference {
-            SurfaceAlphaPreference::Opaque => SurfaceAlphaPreference::TransparentPreferred,
-            SurfaceAlphaPreference::TransparentPreferred => SurfaceAlphaPreference::Opaque,
-        },
-        ..requested
-    };
-    expect_equal(
-        check,
-        "alpha preference change in place",
-        renderer.reconfigure_presentation(flipped_alpha),
-        Err(PresentationReconfigureError::AlphaPreferenceChangeUnsupported),
-    )?;
-    // Отказ ничего не поменял: прежние настройки по-прежнему действуют.
-    expect_equal(
-        check,
-        "settings after the rejected alpha change",
         renderer.reconfigure_presentation(requested),
         Ok(PresentationReconfigured::AlreadyActive),
     )?;

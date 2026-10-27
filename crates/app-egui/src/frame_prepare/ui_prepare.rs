@@ -27,7 +27,6 @@ pub(super) struct PreparedUiFrame {
     pub(super) screen: render_shell_api::RenderScreenDescriptor,
     pub(super) video_viewport: RenderViewport,
     pub(super) video_exclusion_rects: Vec<RenderViewport>,
-    pub(super) window_corner_mask: render_shell_api::WindowCornerMask,
     pub(super) settings_actions: Vec<crate::settings_ui::SettingsUiAction>,
     pub(super) sidebar_width_change: Option<crate::ui::sidebar::SidebarWidthChange>,
     pub(super) transport_actions: Vec<crate::ui::player_controls::TransportControlAction>,
@@ -49,7 +48,6 @@ impl PreparedUiFrame {
             screen: geometry.screen,
             video_viewport: geometry.video_viewport,
             video_exclusion_rects: geometry.video_exclusion_rects.clone(),
-            window_corner_mask: geometry.window_corner_mask,
             settings_actions: Vec::new(),
             sidebar_width_change: None,
             transport_actions: Vec::new(),
@@ -68,7 +66,6 @@ impl PreparedUiFrame {
             screen: self.screen,
             video_viewport: self.video_viewport,
             video_exclusion_rects: self.video_exclusion_rects.clone(),
-            window_corner_mask: self.window_corner_mask,
         }
     }
 }
@@ -171,7 +168,6 @@ pub(super) fn prepare_ui_frame(
         playlist_visible_items_hint,
         video_viewport_rect,
         video_exclusion_rects,
-        window_corner_mask,
         timings: app_ui_timings,
     } = rendered_app_ui;
 
@@ -212,7 +208,6 @@ pub(super) fn prepare_ui_frame(
         },
         video_viewport,
         video_exclusion_rects,
-        window_corner_mask,
         settings_actions,
         sidebar_width_change,
         transport_actions,

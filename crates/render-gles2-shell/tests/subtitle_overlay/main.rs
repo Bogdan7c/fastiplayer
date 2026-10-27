@@ -17,7 +17,7 @@
     reason = "integration tests fail loudly on broken invariants; pixel math on small test sizes"
 )]
 
-use gles2_egui::{CreateError, FrameStart, Gles2Context, OffscreenAlpha, SurfaceSize};
+use gles2_egui::{CreateError, FrameStart, Gles2Context, SurfaceSize};
 use gles2_video::{AtlasSideLimit, OverlayLayerOptions};
 use render_core::{PictureLayout, PictureSize, RenderViewport};
 use render_gles2_shell::{
@@ -58,7 +58,7 @@ impl Harness {
     /// картинка крупнее предела пропускается).
     fn with_texture_limit(max_texture_side: Option<u32>) -> Option<Self> {
         let size = SurfaceSize::new(TARGET_WIDTH, TARGET_HEIGHT).expect("non-zero target");
-        let context = match Gles2Context::offscreen_with_alpha(size, OffscreenAlpha::Opaque) {
+        let context = match Gles2Context::offscreen(size) {
             Ok(context) => context,
             Err(
                 error @ (CreateError::EglUnavailable { .. }

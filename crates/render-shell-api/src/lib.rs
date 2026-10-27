@@ -40,7 +40,6 @@ mod subtitle_frame;
 mod surface_ticket;
 mod ui_textures;
 mod video_import;
-mod window_corner_mask;
 
 pub use catalog::{
     RendererCreateError, RendererCreateStage, RendererFamily, RendererProbe,
@@ -53,7 +52,7 @@ pub use frame::{
 };
 pub use frame_input::RenderFrameInput;
 pub use identity::RendererInstanceId;
-pub use present_settings::{ShellPresentMode, SurfaceAlphaPreference, SurfacePresentSettings};
+pub use present_settings::{ShellPresentMode, SurfacePresentSettings};
 pub use presentation::{
     PresentationDetachOutcome, PresentationReattachError, PresentationReattachOutcome,
     PresentationReconfigureError, PresentationReconfigured,
@@ -77,7 +76,6 @@ pub use video_import::{
     VideoImportPath, VideoImportPlan, VideoImportPrepareError, VideoImportPreparer,
     VideoImportReleaseError,
 };
-pub use window_corner_mask::WindowCornerMask;
 
 #[cfg(test)]
 mod tests;

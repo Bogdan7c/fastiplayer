@@ -2,16 +2,15 @@
 //! возврат окна. Без GPU и без окна.
 
 use super::driver::{
-    ContextId, CurrentBinding, EglErrorCode, EglVersion, NativeDisplay, PlatformWindowTarget,
-    ResetNotificationRequest, SurfaceSize,
+    ConfigId, ContextId, CurrentBinding, EglErrorCode, EglVersion, NativeDisplay,
+    PlatformWindowTarget, ResetNotificationRequest, SurfaceSize,
 };
 use super::egl_objects::{EglSession, ResetNotification, SessionRequest, SessionTarget};
 use super::platform::NativeWindow;
 use super::safety::{SystemEgl, SystemEglLoadError};
 use crate::error::CreateError;
 use crate::presentation::{
-    DetachOutcome, ReattachOutcome, SwapIntervalOutcome, VsyncMode, WindowAlphaMode,
-    WindowAlphaRequest,
+    DetachOutcome, FramebufferAlpha, ReattachOutcome, SwapIntervalOutcome, VsyncMode,
 };
 use crate::test_support::fake_egl::{FakeBehavior, FakeCall, FakeEgl, fake_config};
 
@@ -26,7 +25,7 @@ fn window_size() -> SurfaceSize {
     }
 }
 
-fn wayland_request(alpha: WindowAlphaRequest) -> SessionRequest {
+fn wayland_request() -> SessionRequest {
     SessionRequest {
         native_display: WAYLAND_DISPLAY,
         target: SessionTarget::Window {
@@ -35,7 +34,6 @@ fn wayland_request(alpha: WindowAlphaRequest) -> SessionRequest {
             },
             size: window_size(),
         },
-        alpha,
     }
 }
 
@@ -60,7 +58,7 @@ fn position(journal: &[FakeCall], predicate: impl Fn(&FakeCall) -> bool) -> usiz
 #[test]
 fn wayland_session_tears_down_surface_then_window_then_context_then_display() {
     let (fake, registry) = FakeEgl::with_registry(FakeBehavior::default());
-    let session = open_or_panic(&registry, wayland_request(WindowAlphaRequest::Opaque));
+    let session = open_or_panic(&registry, wayland_request());
     fake.clear_journal();
 
     drop(session);
@@ -85,8 +83,8 @@ fn wayland_session_tears_down_surface_then_window_then_context_then_display() {
 #[test]
 fn two_sessions_on_one_native_display_terminate_it_once_after_the_last() {
     let (fake, registry) = FakeEgl::with_registry(FakeBehavior::default());
-    let first = open_or_panic(&registry, wayland_request(WindowAlphaRequest::Opaque));
-    let second = open_or_panic(&registry, wayland_request(WindowAlphaRequest::Opaque));
+    let first = open_or_panic(&registry, wayland_request());
+    let second = open_or_panic(&registry, wayland_request());
     assert_eq!(registry.lease_count(WAYLAND_DISPLAY), 2);
     assert_eq!(
         fake.count(|call| matches!(call, FakeCall::Initialize(_))),
@@ -111,11 +109,8 @@ fn two_sessions_on_one_native_display_terminate_it_once_after_the_last() {
 #[test]
 fn reopening_after_the_last_session_initializes_the_display_again() {
     let (fake, registry) = FakeEgl::with_registry(FakeBehavior::default());
-    drop(open_or_panic(
-        &registry,
-        wayland_request(WindowAlphaRequest::Opaque),
-    ));
-    let reopened = open_or_panic(&registry, wayland_request(WindowAlphaRequest::Opaque));
+    drop(open_or_panic(&registry, wayland_request()));
+    let reopened = open_or_panic(&registry, wayland_request());
     assert_eq!(
         fake.count(|call| matches!(call, FakeCall::Initialize(_))),
         2
@@ -130,7 +125,7 @@ fn failed_window_surface_releases_everything_already_created() {
         window_surface_error: Some(EglErrorCode::BadNativeWindow),
         ..FakeBehavior::default()
     });
-    let result = EglSession::open(&registry, wayland_request(WindowAlphaRequest::Opaque));
+    let result = EglSession::open(&registry, wayland_request());
     assert!(matches!(
         result,
         Err(CreateError::SurfaceCreation(error)) if error.code == EglErrorCode::BadNativeWindow
@@ -149,7 +144,7 @@ fn missing_gles2_config_is_a_typed_error_without_leaks() {
         configs: Vec::new(),
         ..FakeBehavior::default()
     });
-    let result = EglSession::open(&registry, wayland_request(WindowAlphaRequest::Opaque));
+    let result = EglSession::open(&registry, wayland_request());
     assert!(matches!(result, Err(CreateError::NoGles2Config)));
     fake.assert_nothing_alive();
 }
@@ -160,7 +155,7 @@ fn missing_platform_extension_fails_before_opening_a_display() {
         client_extensions: "EGL_EXT_client_extensions EGL_KHR_platform_x11".to_owned(),
         ..FakeBehavior::default()
     });
-    let result = EglSession::open(&registry, wayland_request(WindowAlphaRequest::Opaque));
+    let result = EglSession::open(&registry, wayland_request());
     assert!(matches!(
         result,
         Err(CreateError::PlatformExtensionMissing {
@@ -176,7 +171,7 @@ fn egl_display_older_than_1_5_is_rejected_and_terminated() {
         display_version: EglVersion { major: 1, minor: 4 },
         ..FakeBehavior::default()
     });
-    let result = EglSession::open(&registry, wayland_request(WindowAlphaRequest::Opaque));
+    let result = EglSession::open(&registry, wayland_request());
     assert!(matches!(
         result,
         Err(CreateError::EglVersionUnsupported {
@@ -192,7 +187,7 @@ fn rejected_robust_context_falls_back_to_a_plain_one() {
         robust_context_error: Some(EglErrorCode::BadAttribute),
         ..FakeBehavior::default()
     });
-    let session = open_or_panic(&registry, wayland_request(WindowAlphaRequest::Opaque));
+    let session = open_or_panic(&registry, wayland_request());
     assert_eq!(session.reset_notification(), ResetNotification::Unavailable);
     assert_eq!(
         fake.count(|call| matches!(
@@ -211,7 +206,7 @@ fn rejected_robust_context_falls_back_to_a_plain_one() {
 #[test]
 fn robust_context_is_requested_when_the_extension_exists() {
     let (_fake, registry) = FakeEgl::with_registry(FakeBehavior::default());
-    let session = open_or_panic(&registry, wayland_request(WindowAlphaRequest::Opaque));
+    let session = open_or_panic(&registry, wayland_request());
     assert_eq!(
         session.reset_notification(),
         ResetNotification::LoseContextOnReset
@@ -225,7 +220,7 @@ fn context_creation_failure_is_reported_as_such() {
         context_error: Some(EglErrorCode::BadConfig),
         ..FakeBehavior::default()
     });
-    let result = EglSession::open(&registry, wayland_request(WindowAlphaRequest::Opaque));
+    let result = EglSession::open(&registry, wayland_request());
     assert!(matches!(
         result,
         Err(CreateError::ContextCreation(error)) if error.code == EglErrorCode::BadConfig
@@ -239,22 +234,29 @@ fn context_lost_on_first_make_current_is_context_lost_not_a_driver_error() {
         make_current_error: Some(EglErrorCode::ContextLost),
         ..FakeBehavior::default()
     });
-    let result = EglSession::open(&registry, wayland_request(WindowAlphaRequest::Opaque));
+    let result = EglSession::open(&registry, wayland_request());
     assert!(matches!(result, Err(CreateError::ContextLost(_))));
     fake.assert_nothing_alive();
 }
 
 #[test]
-fn transparent_request_selects_alpha_config_on_wayland() {
+fn window_session_selects_config_without_alpha_even_when_alpha_config_exists() {
+    // Конфиги по умолчанию: 1 без альфы, 2 с альфой. Окно непрозрачное — нужен первый.
     let (_fake, registry) = FakeEgl::with_registry(FakeBehavior::default());
-    let session = open_or_panic(
-        &registry,
-        wayland_request(WindowAlphaRequest::TransparentPreferred),
-    );
-    assert_eq!(
-        session.config().alpha,
-        WindowAlphaMode::PremultipliedTransparent
-    );
+    let session = open_or_panic(&registry, wayland_request());
+    assert_eq!(session.config().description.id, ConfigId(1));
+    assert_eq!(session.config().alpha, FramebufferAlpha::Absent);
+}
+
+#[test]
+fn window_session_with_only_alpha_configs_reports_framebuffer_alpha() {
+    let (_fake, registry) = FakeEgl::with_registry(FakeBehavior {
+        configs: vec![fake_config(7, 8, 8, 0x22)],
+        ..FakeBehavior::default()
+    });
+    let session = open_or_panic(&registry, wayland_request());
+    assert_eq!(session.config().description.id, ConfigId(7));
+    assert_eq!(session.config().alpha, FramebufferAlpha::Present);
 }
 
 #[test]
@@ -276,7 +278,6 @@ fn x11_session_passes_window_xid_and_matches_visual() {
                 },
                 size: window_size(),
             },
-            alpha: WindowAlphaRequest::TransparentPreferred,
         },
     );
     assert_eq!(session.config().description.native_visual_id, 0x21);
@@ -302,7 +303,7 @@ fn x11_session_passes_window_xid_and_matches_visual() {
 #[test]
 fn detach_destroys_only_the_surface_and_reattach_creates_a_new_one() {
     let (fake, registry) = FakeEgl::with_registry(FakeBehavior::default());
-    let mut session = open_or_panic(&registry, wayland_request(WindowAlphaRequest::Opaque));
+    let mut session = open_or_panic(&registry, wayland_request());
     fake.clear_journal();
 
     assert!(matches!(
@@ -364,7 +365,7 @@ fn detach_destroys_only_the_surface_and_reattach_creates_a_new_one() {
 #[test]
 fn lost_context_still_releases_the_window_for_the_next_renderer() {
     let (fake, registry) = FakeEgl::with_registry(FakeBehavior::default());
-    let mut session = open_or_panic(&registry, wayland_request(WindowAlphaRequest::Opaque));
+    let mut session = open_or_panic(&registry, wayland_request());
     // После сброса GPU любая привязка контекста отвечает EGL_CONTEXT_LOST.
     fake.update_behavior(|behavior| behavior.make_current_error = Some(EglErrorCode::ContextLost));
     fake.clear_journal();
@@ -398,7 +399,7 @@ fn detached_window_without_surfaceless_context_unbinds_the_context() {
         display_extensions: "EGL_KHR_fence_sync".to_owned(),
         ..FakeBehavior::default()
     });
-    let mut session = open_or_panic(&registry, wayland_request(WindowAlphaRequest::Opaque));
+    let mut session = open_or_panic(&registry, wayland_request());
     fake.clear_journal();
     assert!(matches!(
         session.detach_window(),
@@ -414,7 +415,7 @@ fn detached_window_without_surfaceless_context_unbinds_the_context() {
 #[test]
 fn vsync_is_applied_on_the_window_surface_and_clamped_by_config() {
     let (fake, registry) = FakeEgl::with_registry(FakeBehavior::default());
-    let session = open_or_panic(&registry, wayland_request(WindowAlphaRequest::Opaque));
+    let session = open_or_panic(&registry, wayland_request());
     assert_eq!(
         session.apply_vsync(VsyncMode::WaitForVblank),
         Ok(Some(SwapIntervalOutcome::AsRequested { interval: 1 }))
@@ -432,7 +433,7 @@ fn vsync_is_applied_on_the_window_surface_and_clamped_by_config() {
 #[test]
 fn resize_reaches_the_wayland_egl_window() {
     let (fake, registry) = FakeEgl::with_registry(FakeBehavior::default());
-    let session = open_or_panic(&registry, wayland_request(WindowAlphaRequest::Opaque));
+    let session = open_or_panic(&registry, wayland_request());
     let Some(bigger) = SurfaceSize::new(1280, 720) else {
         panic!("valid size");
     };
@@ -456,7 +457,6 @@ fn offscreen_without_surfaceless_context_binds_a_pbuffer() {
         SessionRequest {
             native_display: NativeDisplay::Surfaceless,
             target: SessionTarget::Offscreen,
-            alpha: WindowAlphaRequest::Opaque,
         },
     );
     assert_eq!(
@@ -480,7 +480,6 @@ fn offscreen_with_surfaceless_context_creates_no_surface() {
         SessionRequest {
             native_display: NativeDisplay::Surfaceless,
             target: SessionTarget::Offscreen,
-            alpha: WindowAlphaRequest::Opaque,
         },
     );
     assert_eq!(

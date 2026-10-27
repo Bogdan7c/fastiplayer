@@ -85,7 +85,6 @@ pub(super) fn submit_render_frame(
         screen: prepared_ui_frame.screen,
         video_viewport: prepared_ui_frame.video_viewport,
         video_exclusion_rects: prepared_ui_frame.video_exclusion_rects,
-        window_corner_mask: prepared_ui_frame.window_corner_mask,
         subtitle_overlay,
     });
     let video_was_submitted =

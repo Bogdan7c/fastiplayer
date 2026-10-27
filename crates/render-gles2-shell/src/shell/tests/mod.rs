@@ -21,7 +21,7 @@ use render_shell_api::{
     DecoderSurfacePoolSlots, EguiFrameContent, RenderFrameInput, RenderFrameOutcome,
     RenderScreenDescriptor, RenderShell, RenderSurfaceSize, RenderableFrameKey,
     RendererCreateStage, SubtitleOverlayFrame, SurfaceFrameAcquire, SurfacePresentSettings,
-    VideoImportPath, VideoImportPlan, WindowCornerMask,
+    VideoImportPath, VideoImportPlan,
 };
 use video_backend_api::{PresentFrameResourceProviderHandle, VideoBackendDecoderThreadHandle};
 use video_present_core::VideoFrameLease;
@@ -138,8 +138,6 @@ pub(super) struct FrameExtras<'frame> {
     pub(super) subtitles: Option<SubtitleOverlayFrame<'frame>>,
     /// Интерфейс кадра; по умолчанию — пустой свежий проход.
     pub(super) egui: Option<EguiFrameContent>,
-    /// Скругление углов окна; по умолчанию — квадратные.
-    pub(super) corner_mask: Option<WindowCornerMask>,
 }
 
 /// Получает буфер и рисует кадр с пустым интерфейсом.
@@ -162,7 +160,6 @@ pub(super) fn present(
             .viewport
             .unwrap_or_else(|| RenderViewport::full_surface(size[0], size[1])),
         video_exclusion_rects: extras.exclusions,
-        window_corner_mask: extras.corner_mask.unwrap_or_else(WindowCornerMask::square),
         subtitle_overlay: extras.subtitles,
     })
 }

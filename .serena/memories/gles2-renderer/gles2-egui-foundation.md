@@ -29,3 +29,5 @@
 - Настоящий сброс GPU не вызывался (риск неустранимого HANG на Ironlake) — живьём в 10–11.
 - Маска углов, egui-художник, сборка кадра — сделаны в 04: `mem:gles2-renderer/egui-painter-s04` (там же `ContextId`, `offscreen_with_alpha`, модуль `draw_gl`, allowlist +`epaint`/`bytemuck`). EGLImage/fence-освобождение кадров — 07. Маппинг в `RenderShell` (vsync/Mailbox fallback, frame latency no-op, device lost) — 09.
 - X11 только Xlib; `swap_buffers_with_damage`/`buffer_age` не используются.
+
+> С 27.10.2026 скругление углов окна удалено полностью (решение 57 gles2-renderer): окно непрозрачное, `corner_mask`/`CornerMaskRenderer`/`WindowCornerMask`/`SurfaceAlphaPreference`/`OffscreenAlpha`/`WindowAlphaRequest` и `ui.window.corner_radius_px` больше не существуют; wgpu выбирает только непрозрачный `CompositeAlphaMode`, EGL-конфиг предпочитается без альфы (`FramebufferAlpha::{Absent, Present}`), `Gles2Context::offscreen_with_alpha` заменён на `offscreen`. Упоминания ниже — история.

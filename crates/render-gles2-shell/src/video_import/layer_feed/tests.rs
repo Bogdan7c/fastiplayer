@@ -1,7 +1,7 @@
 //! Показ кадра на видеослое: исходы по ответам провайдера и по несовпадению пути передачи.
 //! Настоящий EGL без окна; пиксели проверяют функциональные тесты рендера.
 
-use gles2_egui::{CreateError, Gles2Context, OffscreenAlpha, SurfaceSize};
+use gles2_egui::{CreateError, Gles2Context, SurfaceSize};
 use gles2_video::{VideoLayerOptions, VideoLayerRenderer};
 use video_core::{HostPlaneDescriptor, HostPlaneRole};
 use video_frame_contract::{VideoFrameContract, VideoFramePixelLayout};
@@ -25,7 +25,7 @@ struct Stand {
 
 fn stand_or_skip(test_name: &str, path: VideoImportPath) -> Option<Stand> {
     let size = SurfaceSize::new(16, 16).expect("non-zero size");
-    let context = match Gles2Context::offscreen_with_alpha(size, OffscreenAlpha::Opaque) {
+    let context = match Gles2Context::offscreen(size) {
         Ok(context) => context,
         Err(
             error @ (CreateError::EglUnavailable { .. }

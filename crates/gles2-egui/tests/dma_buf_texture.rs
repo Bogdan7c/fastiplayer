@@ -20,7 +20,7 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 
 use gles2_egui::{
     DmaBufPlaneTexture, DmaBufTextureError, DrmFourcc, DrmModifier, Es100ProgramSources,
-    Gles2Context, ImageRelease, ModifierAttribute, OffscreenAlpha, OffscreenPixels,
+    Gles2Context, ImageRelease, ModifierAttribute, OffscreenPixels,
 };
 use glow::HasContext;
 use support::offscreen_or_skip;
@@ -388,11 +388,7 @@ fn plane_of<'fd>(kind: PlaneKind, buffer: &'fd OwnedFd) -> DmaBufPlaneTexture<'f
 
 /// Контекст + буфер или пропуск с причиной.
 fn setup(test_name: &str, kind: PlaneKind) -> Option<(Gles2Context, Udmabuf)> {
-    let context = offscreen_or_skip(
-        test_name,
-        support::size(WIDTH, HEIGHT),
-        OffscreenAlpha::Opaque,
-    )?;
+    let context = offscreen_or_skip(test_name, support::size(WIDTH, HEIGHT))?;
     match create_udmabuf(&plane_bytes(kind, 0)) {
         Ok(buffer) => Some((context, buffer)),
         Err(reason) => {

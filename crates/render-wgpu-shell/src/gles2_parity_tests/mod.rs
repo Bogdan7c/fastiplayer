@@ -2,7 +2,7 @@
 //! решение владельца 7 «строгий паритет», решение 28 «тест живёт в шелле wgpu»).
 //!
 //! Один и тот же проход egui (примитивы + изменения текстур) рисуют:
-//! - настоящий wgpu-путь шелла (`EguiCompositor` + `WindowCornerMaskRenderer`);
+//! - настоящий wgpu-путь шелла (`EguiCompositor`);
 //! - GLES2-сборщик `gles2_egui::FrameCompositor` на EGL без окна.
 //!
 //! Пиксели сравниваются целиком, допуск ±2 на канал (растеризация и дизеринг в разных API);
@@ -20,8 +20,8 @@ mod video_high_bit;
 mod wgpu_target;
 
 use gles2_egui::{
-    CornerRadius, CreateError, EguiPainterOptions, FrameCompositor, Gles2Context, NoFrameLayers,
-    OffscreenAlpha, SurfaceSize, UiContent, UiFrameOutcome, UiFrameRequest, UiScreen,
+    CreateError, EguiPainterOptions, FrameCompositor, Gles2Context, NoFrameLayers, SurfaceSize,
+    UiContent, UiFrameOutcome, UiFrameRequest, UiScreen,
 };
 
 use self::scenes::{ParityFrame, parity_frames};
@@ -80,10 +80,10 @@ fn compare_with_tolerance(
     report
 }
 
-/// GLES2-контекст без окна (premultiplied-цель, чтобы работала маска углов) или пропуск.
-fn gles2_or_skip(test_name: &str, size: [u32; 2], alpha: OffscreenAlpha) -> Option<Gles2Context> {
+/// GLES2-контекст без окна (непрозрачная цель, как окно плеера) или пропуск.
+fn gles2_or_skip(test_name: &str, size: [u32; 2]) -> Option<Gles2Context> {
     let target = SurfaceSize::new(size[0], size[1]).expect("non-zero parity target");
-    match Gles2Context::offscreen_with_alpha(target, alpha) {
+    match Gles2Context::offscreen(target) {
         Ok(context) => Some(context),
         Err(
             error @ (CreateError::EglUnavailable { .. }
@@ -125,7 +125,6 @@ fn render_gles2(
                 content,
                 background: frame.background,
                 layers: &mut NoFrameLayers,
-                corner_radius: CornerRadius::from_points(frame.corner_radius_points),
             },
         )
         .expect("GLES2 frame renders");
@@ -149,8 +148,7 @@ fn assert_parity(test_name: &str, size: [u32; 2], pixels_per_point: f32) {
         eprintln!("skip {test_name}: no wgpu adapter");
         return;
     };
-    let Some(mut context) = gles2_or_skip(test_name, size, OffscreenAlpha::PremultipliedLayer)
-    else {
+    let Some(mut context) = gles2_or_skip(test_name, size) else {
         return;
     };
     let mut compositor =
@@ -198,21 +196,13 @@ fn assert_parity(test_name: &str, size: [u32; 2], pixels_per_point: f32) {
         .expect("destroy GLES2 compositor");
 }
 
-/// Кадры действительно проверяют то, что заявлено: частичную правку, `free`, повтор, маску.
+/// Кадры действительно проверяют то, что заявлено: частичную правку, `free`, повтор.
 fn assert_scene_exercised(
     index: usize,
     frame: &ParityFrame,
     presented: &gles2_egui::PresentedUiFrame,
 ) {
     let work = presented.work;
-    assert!(
-        matches!(
-            work.corner_mask,
-            gles2_egui::CornerMaskOutcome::Drawn { .. }
-        ),
-        "{}: corner mask must be drawn",
-        frame.name
-    );
     match index {
         0 => assert!(
             work.textures

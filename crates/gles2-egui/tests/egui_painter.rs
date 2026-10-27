@@ -14,9 +14,9 @@ mod support;
 use egui::epaint::{ClippedPrimitive, Primitive, Vertex};
 use egui::{Color32, Context, Mesh, Rect, TextureId, pos2};
 use gles2_egui::{
-    CornerRadius, EguiPainterOptions, FrameCompositor, IndexWidthPreference, OffscreenAlpha,
-    PainterError, RetainedUiUnavailable, TextureFreeOutcome, UiContent, UiFrameDropReason,
-    UiFrameError, UiFrameOutcome, UiScreen, VertexArrayPreference,
+    EguiPainterOptions, FrameCompositor, IndexWidthPreference, PainterError, RetainedUiUnavailable,
+    TextureFreeOutcome, UiContent, UiFrameDropReason, UiFrameError, UiFrameOutcome, UiScreen,
+    VertexArrayPreference,
 };
 use support::{
     assert_close, egui_frame, offscreen_or_skip, patch_texture, pixel, read, render, screen_for,
@@ -48,7 +48,6 @@ fn fresh_frame_draws_opaque_and_premultiplied_blended_shapes_and_text() {
     let Some(mut context) = offscreen_or_skip(
         "fresh_frame_draws_opaque_and_premultiplied_blended_shapes_and_text",
         size(96, 48),
-        OffscreenAlpha::Opaque,
     ) else {
         return;
     };
@@ -82,7 +81,6 @@ fn fresh_frame_draws_opaque_and_premultiplied_blended_shapes_and_text() {
         screen,
         fresh(primitives, textures_delta),
         BLUE,
-        CornerRadius::square(),
     ));
 
     let pixels = read(&context);
@@ -113,7 +111,6 @@ fn partial_texture_update_changes_only_the_patch() {
     let Some(mut context) = offscreen_or_skip(
         "partial_texture_update_changes_only_the_patch",
         size(32, 16),
-        OffscreenAlpha::Opaque,
     ) else {
         return;
     };
@@ -132,7 +129,6 @@ fn partial_texture_update_changes_only_the_patch() {
         screen,
         fresh(rect(), solid_texture(TEST_TEXTURE, [4, 4], Color32::RED)),
         BLUE,
-        CornerRadius::square(),
     ));
     assert_eq!(pixel(&read(&context), 6, 6), [255, 0, 0, 255]);
 
@@ -145,7 +141,6 @@ fn partial_texture_update_changes_only_the_patch() {
             patch_texture(TEST_TEXTURE, [1, 1], [2, 2], Color32::GREEN),
         ),
         BLUE,
-        CornerRadius::square(),
     ));
     let textures = frame.work.textures.unwrap();
     assert_eq!((textures.full_uploads, textures.patch_uploads), (0, 1));
@@ -181,7 +176,6 @@ fn unknown_texture_patch_drops_frame_but_other_texture_changes_apply() {
     let Some(mut context) = offscreen_or_skip(
         "unknown_texture_patch_drops_frame_but_other_texture_changes_apply",
         size(16, 16),
-        OffscreenAlpha::Opaque,
     ) else {
         return;
     };
@@ -197,7 +191,6 @@ fn unknown_texture_patch_drops_frame_but_other_texture_changes_apply() {
         screen,
         fresh(Vec::new(), delta),
         BLUE,
-        CornerRadius::square(),
     );
     assert_eq!(
         outcome,
@@ -221,7 +214,6 @@ fn unknown_texture_patch_drops_frame_but_other_texture_changes_apply() {
             patch_texture(TEST_TEXTURE, [3, 3], [2, 2], Color32::GREEN),
         ),
         BLUE,
-        CornerRadius::square(),
     );
     assert_eq!(
         outcome,
@@ -239,7 +231,6 @@ fn unknown_texture_patch_drops_frame_but_other_texture_changes_apply() {
         screen,
         fresh(Vec::new(), delta),
         BLUE,
-        CornerRadius::square(),
     );
     assert!(matches!(
         outcome,
@@ -255,7 +246,6 @@ fn texture_is_freed_after_presenting_the_frame_that_uses_it() {
     let Some(mut context) = offscreen_or_skip(
         "texture_is_freed_after_presenting_the_frame_that_uses_it",
         size(32, 16),
-        OffscreenAlpha::Opaque,
     ) else {
         return;
     };
@@ -275,7 +265,6 @@ fn texture_is_freed_after_presenting_the_frame_that_uses_it() {
         screen,
         fresh(rect(), delta),
         BLUE,
-        CornerRadius::square(),
     ));
     assert_eq!(
         frame.work.texture_free,
@@ -295,7 +284,6 @@ fn texture_is_freed_after_presenting_the_frame_that_uses_it() {
         screen,
         fresh(rect(), egui::TexturesDelta::default()),
         BLUE,
-        CornerRadius::square(),
     ));
     assert_eq!(frame.work.paint.skipped_missing_texture, 1);
     assert_eq!(frame.work.paint.draw_calls, 0);
@@ -313,7 +301,6 @@ fn reused_frame_draws_identical_ui_over_new_background_without_uploads() {
     let Some(mut context) = offscreen_or_skip(
         "reused_frame_draws_identical_ui_over_new_background_without_uploads",
         size(96, 48),
-        OffscreenAlpha::Opaque,
     ) else {
         return;
     };
@@ -340,7 +327,6 @@ fn reused_frame_draws_identical_ui_over_new_background_without_uploads() {
         screen,
         fresh(primitives, textures_delta),
         BLUE,
-        CornerRadius::square(),
     ));
     let fresh_pixels = read(&context);
     let stats_after_fresh = compositor.painter().stats();
@@ -352,7 +338,6 @@ fn reused_frame_draws_identical_ui_over_new_background_without_uploads() {
         screen,
         UiContent::ReusePrevious,
         GREEN,
-        CornerRadius::square(),
     ));
     let reused_pixels = read(&context);
     let stats_after_reuse = compositor.painter().stats();
@@ -409,7 +394,6 @@ fn reuse_is_refused_without_retained_frame_or_on_another_screen() {
     let Some(mut context) = offscreen_or_skip(
         "reuse_is_refused_without_retained_frame_or_on_another_screen",
         size(32, 16),
-        OffscreenAlpha::Opaque,
     ) else {
         return;
     };
@@ -421,7 +405,6 @@ fn reuse_is_refused_without_retained_frame_or_on_another_screen() {
         screen,
         UiContent::ReusePrevious,
         BLUE,
-        CornerRadius::square(),
     );
     assert_eq!(
         outcome,
@@ -435,7 +418,6 @@ fn reuse_is_refused_without_retained_frame_or_on_another_screen() {
         screen,
         fresh(Vec::new(), egui::TexturesDelta::default()),
         BLUE,
-        CornerRadius::square(),
     ));
     for other_screen in [
         UiScreen {
@@ -454,7 +436,6 @@ fn reuse_is_refused_without_retained_frame_or_on_another_screen() {
             other_screen,
             UiContent::ReusePrevious,
             BLUE,
-            CornerRadius::square(),
         );
         assert_eq!(
             outcome,
@@ -469,11 +450,9 @@ fn reuse_is_refused_without_retained_frame_or_on_another_screen() {
 /// Отсечение: ось Y у `glScissor` снизу — верхняя половина остаётся верхней.
 #[test]
 fn clip_rect_limits_drawing_to_the_top_half() {
-    let Some(mut context) = offscreen_or_skip(
-        "clip_rect_limits_drawing_to_the_top_half",
-        size(32, 16),
-        OffscreenAlpha::Opaque,
-    ) else {
+    let Some(mut context) =
+        offscreen_or_skip("clip_rect_limits_drawing_to_the_top_half", size(32, 16))
+    else {
         return;
     };
     let mut compositor = FrameCompositor::new(&context, EguiPainterOptions::default()).unwrap();
@@ -495,7 +474,6 @@ fn clip_rect_limits_drawing_to_the_top_half() {
         screen,
         fresh(primitives, textures_delta),
         BLUE,
-        CornerRadius::square(),
     ));
     let pixels = read(&context);
     assert_eq!(pixel(&pixels, 10, 2), [255, 0, 0, 255], "inside clip (top)");
@@ -512,7 +490,6 @@ fn large_mesh_draws_identically_with_u16_batches_and_without_vao() {
     let Some(mut context) = offscreen_or_skip(
         "large_mesh_draws_identically_with_u16_batches_and_without_vao",
         size(128, 136),
-        OffscreenAlpha::Opaque,
     ) else {
         return;
     };
@@ -535,7 +512,6 @@ fn large_mesh_draws_identically_with_u16_batches_and_without_vao() {
                 solid_texture(TextureId::Managed(0), [1, 1], Color32::WHITE),
             ),
             BLUE,
-            CornerRadius::square(),
         ));
         let prepare = frame.work.prepare.unwrap();
         if options == fallback {
@@ -603,16 +579,8 @@ fn checker_mesh(count: u32, columns: u32) -> ClippedPrimitive {
 #[test]
 fn compositor_refuses_a_foreign_context() {
     let (Some(context_a), Some(mut context_b)) = (
-        offscreen_or_skip(
-            "compositor_refuses_a_foreign_context",
-            size(8, 8),
-            OffscreenAlpha::Opaque,
-        ),
-        offscreen_or_skip(
-            "compositor_refuses_a_foreign_context",
-            size(8, 8),
-            OffscreenAlpha::Opaque,
-        ),
+        offscreen_or_skip("compositor_refuses_a_foreign_context", size(8, 8)),
+        offscreen_or_skip("compositor_refuses_a_foreign_context", size(8, 8)),
     ) else {
         return;
     };
@@ -629,7 +597,6 @@ fn compositor_refuses_a_foreign_context() {
                 ),
                 background: BLUE,
                 layers: &mut gles2_egui::NoFrameLayers,
-                corner_radius: CornerRadius::square(),
             },
         )
         .unwrap_err();

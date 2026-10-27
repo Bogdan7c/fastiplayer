@@ -234,7 +234,6 @@ dependencies = [
  "web-media-transport-api",
  "wgpu",
  "winit 0.30.13 (registry+https://github.com/rust-lang/crates.io-index)",
- "x11rb",
 ]
 
 [[package]]

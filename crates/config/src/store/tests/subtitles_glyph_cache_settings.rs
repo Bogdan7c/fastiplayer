@@ -29,7 +29,7 @@ fn schema_v20_without_glyph_cache_keys_loads_defaults_and_keeps_user_values() {
     fs::write(&config_path, SCHEMA_V20_WITHOUT_GLYPH_CACHE_KEYS).expect("v20 fixture written");
 
     let migrated = load_from_path(&config_path).expect("v20 config loads");
-    assert_eq!(migrated.config.schema_version, 25);
+    assert_eq!(migrated.config.schema_version, 26);
     let subtitles = &migrated.config.subtitles;
     assert_eq!(subtitles.glyph_cache_mb, 64);
     assert_eq!(subtitles.glyph_cache_mb, DEFAULT_GLYPH_CACHE_MB);
@@ -48,7 +48,7 @@ fn schema_v20_without_glyph_cache_keys_loads_defaults_and_keeps_user_values() {
 
     save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
     let saved_text = fs::read_to_string(&config_path).expect("saved TOML readable");
-    assert!(saved_text.contains("schema_version = 25"));
+    assert!(saved_text.contains("schema_version = 26"));
     assert!(saved_text.contains("glyph_cache_mb = 64"));
     assert!(saved_text.contains("glyph_outline_cache_items = 10000"));
     assert!(saved_text.contains("shaping_cache_mb = 4"));

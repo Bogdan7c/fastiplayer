@@ -325,7 +325,6 @@ fn a_foreign_video_key_fails_but_ui_textures_of_the_frame_are_still_applied() {
         screen,
         video_viewport: RenderViewport::full_surface(64, 32),
         video_exclusion_rects: Vec::new(),
-        window_corner_mask: render_shell_api::WindowCornerMask::square(),
         subtitle_overlay: None,
     });
 

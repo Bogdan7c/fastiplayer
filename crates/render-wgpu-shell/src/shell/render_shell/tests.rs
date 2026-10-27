@@ -270,7 +270,6 @@ fn presentation_reconfigure_keeps_video_import_and_its_binding_cache() {
     let requested = SurfacePresentSettings {
         present_mode: ShellPresentMode::Mailbox,
         max_frame_latency: 3,
-        ..SurfacePresentSettings::default()
     };
 
     assert_eq!(

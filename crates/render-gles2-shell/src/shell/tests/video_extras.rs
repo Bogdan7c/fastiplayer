@@ -1,11 +1,11 @@
 //! Остальное содержимое кадра вокруг видео: интерфейс egui поверх картинки, живые настройки
-//! цвета в пикселях, субтитры, скруглённые углы окна, возможности по драйверу.
+//! цвета в пикселях, субтитры, прозрачность кадра, возможности по драйверу.
 
 use egui::{Color32, Context, Rect, pos2};
 use render_core::{PictureLayout, RenderLiveSettings, RenderViewport};
 use render_shell_api::{
     EguiFrameContent, RenderFrameOutcome, RenderShell, SubtitleLayerOffsets, SubtitleOverlayFrame,
-    SurfaceAlphaPreference, SurfacePresentSettings, WindowCornerMask,
+    SurfacePresentSettings,
 };
 use subtitle_raster::CanvasSize;
 
@@ -261,45 +261,29 @@ fn subtitles_are_drawn_over_the_video_and_not_over_the_letterbox_bars() {
     );
 }
 
-/// Скругление углов окна доходит до маски: у прозрачной цели угол прозрачный, центр нет; у
-/// непрозрачной цели скругления нет (альфа везде 1).
+/// Окно плеера непрозрачное целиком: альфа кадра 1 и в углах, и в центре (скругления углов
+/// нет, решение 57 плана gles2-renderer), даже при пустом интерфейсе над чёрным фоном.
 #[test]
-fn rounded_window_corners_reach_the_mask_only_on_a_transparent_target() {
+fn window_target_is_fully_opaque_including_corners() {
     let size = [64_u32, 64];
-    let rounded = WindowCornerMask::rounded_in_points(16.0);
-    for (alpha, corner_alpha) in [
-        (SurfaceAlphaPreference::TransparentPreferred, 0_u8),
-        (SurfaceAlphaPreference::Opaque, 255_u8),
-    ] {
-        let Ok(mut renderer) = Gles2Renderer::new_offscreen(
-            render_shell_api::RenderSurfaceSize {
-                width: size[0],
-                height: size[1],
-            },
-            SurfacePresentSettings {
-                alpha_preference: alpha,
-                ..SurfacePresentSettings::default()
-            },
-        ) else {
-            eprintln!("skip rounded corners: no EGL");
-            assert!(std::env::var_os("GLES2_EGUI_REQUIRE_EGL").is_none());
-            return;
-        };
-        let outcome = present(
-            &mut renderer,
-            size,
-            None,
-            FrameExtras {
-                corner_mask: Some(rounded),
-                ..FrameExtras::default()
-            },
-        );
-        assert!(
-            matches!(outcome, RenderFrameOutcome::Presented(_)),
-            "{outcome:?}"
-        );
-        assert_eq!(pixel(&renderer, 0, 0)[3], corner_alpha, "{alpha:?} corner");
-        assert_eq!(pixel(&renderer, 32, 32)[3], 255, "{alpha:?} center");
+    let Ok(mut renderer) = Gles2Renderer::new_offscreen(
+        render_shell_api::RenderSurfaceSize {
+            width: size[0],
+            height: size[1],
+        },
+        SurfacePresentSettings::default(),
+    ) else {
+        eprintln!("skip opaque corners: no EGL");
+        assert!(std::env::var_os("GLES2_EGUI_REQUIRE_EGL").is_none());
+        return;
+    };
+    let outcome = present(&mut renderer, size, None, FrameExtras::default());
+    assert!(
+        matches!(outcome, RenderFrameOutcome::Presented(_)),
+        "{outcome:?}"
+    );
+    for (x, y) in [(0, 0), (63, 0), (0, 63), (63, 63), (32, 32)] {
+        assert_eq!(pixel(&renderer, x, y)[3], 255, "alpha at ({x}, {y})");
     }
 }
 

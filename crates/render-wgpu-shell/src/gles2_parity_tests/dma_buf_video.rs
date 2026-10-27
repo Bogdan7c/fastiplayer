@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use codec_core::{ColorRange, MatrixCoefficients, VideoColorMetadata, VideoDisplayOrientation};
-use gles2_egui::{DrmFourcc, FrameStart, OffscreenAlpha};
+use gles2_egui::{DrmFourcc, FrameStart};
 use gles2_video::{
     DmaBufBufferIdentity, DmaBufFrameFormat, DmaBufImportOutcome, DmaBufNv12Frame,
     DmaBufObjectIdentity as Gles2ObjectIdentity, DmaBufPlane, DmaBufPlaneArrangement, PlaneExtent,
@@ -471,7 +471,7 @@ fn render_wgpu(scene: &DmaBufScene, buffers: &SceneBuffers, size: [u32; 2]) -> W
 
 /// GLES2-сторона: импорт DMA-BUF в EGLImage и рисование видеослоем. `None` — нет EGL.
 fn render_gles2(scene: &DmaBufScene, buffers: &SceneBuffers, size: [u32; 2]) -> Option<Vec<u8>> {
-    let mut context = gles2_or_skip(scene.name, size, OffscreenAlpha::Opaque)?;
+    let mut context = gles2_or_skip(scene.name, size)?;
     let [width, height] = scene.frame_size;
     let luma_extent = PlaneExtent { width, height };
     let identity = DmaBufBufferIdentity {

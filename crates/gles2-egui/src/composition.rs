@@ -11,12 +11,11 @@
 //!    слой подложки (видео — с сессии 05) — [`FrameLayers::draw_underlay`].
 //! 6. Оверлеи между видео и egui (субтитры — сессия 08) — [`FrameLayers::draw_overlays`].
 //! 7. egui.
-//! 8. Маска углов (только у прозрачной цели).
-//! 9. Показ, затем `free` кадра.
+//! 8. Показ, затем `free` кадра.
 //!
-//! Альфа непрозрачной цели. Если у буфера кадра есть канал альфы, а окно непрозрачное
-//! (`WindowAlphaMode::Opaque { framebuffer_has_alpha: true }`), альфа обязана остаться 1, иначе
-//! композитор просветит окно. Заливка фона здесь пишет альфу 1 при любой непрозрачной цели, а
+//! Альфа цели. Окно всегда непрозрачное (скругление углов удалено, решение 57 плана
+//! gles2-renderer). Если у буфера кадра есть канал альфы (`FramebufferAlpha::Present`), альфа
+//! обязана остаться 1, иначе композитор просветит окно. Заливка фона здесь пишет альфу 1 всегда, а
 //! смешивание egui по альфе (`ONE_MINUS_DST_ALPHA, ONE`) единицу не меняет. Слои обязаны рисовать
 //! непрозрачно (видео так и рисует) — это их контракт.
 
@@ -27,16 +26,12 @@ use epaint::{ClippedPrimitive, TextureId};
 use thiserror::Error;
 
 use crate::context::{GlAccessError, Gles2Context};
-use crate::corner_mask::{
-    CornerAlphaEncoding, CornerMaskError, CornerMaskOutcome, CornerMaskRenderer, CornerRadius,
-};
 use crate::error::Gles2Error;
 use crate::frame::{ActiveFrame, FrameSkipReason, FrameStart, Gles2FrameTimings};
 use crate::painter::{
     EguiPainter, EguiPainterOptions, PainterError, RetainedUiUnavailable, TextureApplyReport,
     TextureFreeOutcome, UiPaintWork, UiPrepareWork, UiScreen, UiTextureUpload,
 };
-use crate::presentation::WindowAlphaMode;
 
 /// Содержимое UI кадра (аналог `render_shell_api::EguiFrameContent`).
 pub enum UiContent {
@@ -55,7 +50,7 @@ pub enum UiContent {
 /// Сборщик вызывает их в фиксированном порядке; контекст текущий, цель привязана.
 ///
 /// Контракт: оставить VAO отвязанным, текстурный блок 0 и программу — как угодно (художник и
-/// маска задают своё явно). На непрозрачной цели рисовать непрозрачно (альфа 1).
+/// и слои задают своё явно). На непрозрачной цели рисовать непрозрачно (альфа 1).
 pub trait FrameLayers {
     /// Подложка поверх заливки фона (видео). По умолчанию — ничего.
     fn draw_underlay(&mut self, frame: &ActiveFrame<'_>) -> Result<(), FrameLayerError> {
@@ -123,8 +118,6 @@ pub struct UiFrameRequest<'layers> {
     pub background: [f32; 4],
     /// Слои под и над видео.
     pub layers: &'layers mut dyn FrameLayers,
-    /// Скругление углов окна.
-    pub corner_radius: CornerRadius,
 }
 
 /// Почему кадр отброшен до рисования (аналоги `render_shell_api::RenderFrameDropReason`).
@@ -157,8 +150,6 @@ pub struct UiFrameTimings {
     pub subtitle_overlay: Duration,
     /// Проход egui.
     pub egui_render: Duration,
-    /// Маска углов.
-    pub window_corner_mask: Duration,
     /// Показ.
     pub surface_present: Duration,
 }
@@ -174,8 +165,6 @@ pub struct UiFrameWork {
     pub background: BackgroundFillOutcome,
     /// Рисование egui.
     pub paint: UiPaintWork,
-    /// Маска.
-    pub corner_mask: CornerMaskOutcome,
     /// `free` кадра.
     pub texture_free: TextureFreeOutcome,
 }
@@ -214,19 +203,15 @@ pub enum UiFrameError {
     /// Художник.
     #[error(transparent)]
     Painter(#[from] PainterError),
-    /// Маска.
-    #[error(transparent)]
-    CornerMask(#[from] CornerMaskError),
     /// Слой.
     #[error(transparent)]
     Layer(#[from] FrameLayerError),
 }
 
-/// Сборщик кадра: художник egui + маска углов поверх контекста.
+/// Сборщик кадра: художник egui поверх контекста.
 #[derive(Debug)]
 pub struct FrameCompositor {
     painter: EguiPainter,
-    corner_mask: CornerMaskRenderer,
 }
 
 /// Проверенное содержимое UI, готовое к рисованию.
@@ -240,32 +225,15 @@ enum PendingUi {
 }
 
 impl FrameCompositor {
-    /// Художник и маска в этом контексте.
+    /// Художник в этом контексте.
     pub fn new(context: &Gles2Context, options: EguiPainterOptions) -> Result<Self, UiFrameError> {
         let painter = EguiPainter::new(context, options)?;
-        let corner_mask = match CornerMaskRenderer::new(context) {
-            Ok(corner_mask) => corner_mask,
-            Err(error) => {
-                if let Err(destroy_error) = painter.destroy(context) {
-                    log::warn!("frame compositor: painter cleanup failed: {destroy_error}");
-                }
-                return Err(error.into());
-            }
-        };
-        Ok(Self {
-            painter,
-            corner_mask,
-        })
+        Ok(Self { painter })
     }
 
     /// Художник (счётчики, `max_texture_side`, проверка повтора).
     pub fn painter(&self) -> &EguiPainter {
         &self.painter
-    }
-
-    /// Маска (счётчики).
-    pub fn corner_mask(&self) -> &CornerMaskRenderer {
-        &self.corner_mask
     }
 
     /// Можно ли повторить прошлый UI на этом экране (решение «полный проход или повтор» —
@@ -285,14 +253,12 @@ impl FrameCompositor {
             content,
             background,
             layers,
-            corner_radius,
         } = request;
         let mut timings = UiFrameTimings::default();
         let pending = match self.accept_content(context, content, screen, &mut timings)? {
             Ok(pending) => pending,
             Err(drop_reason) => return Ok(UiFrameOutcome::Dropped(drop_reason)),
         };
-        let alpha = context.presentation().alpha;
         let frame = match context.begin_frame() {
             Ok(FrameStart::Ready(frame)) => frame,
             Ok(FrameStart::Skipped(reason)) => {
@@ -315,8 +281,6 @@ impl FrameCompositor {
                 screen,
                 background,
                 layers,
-                corner_radius,
-                alpha,
             },
             pending,
             &mut timings,
@@ -327,7 +291,6 @@ impl FrameCompositor {
             prepare,
             textures_delta,
             paint,
-            corner_mask,
         } = match drawn {
             Ok(drawn) => drawn,
             Err(failed) => {
@@ -356,7 +319,6 @@ impl FrameCompositor {
                 prepare,
                 background,
                 paint,
-                corner_mask,
                 texture_free,
             },
         }))
@@ -399,10 +361,7 @@ impl FrameCompositor {
 
     /// Разрушить GL-объекты (контекст жив) или забыть их (контекст потерян).
     pub fn destroy(self, context: &Gles2Context) -> Result<(), UiFrameError> {
-        let painter = self.painter.destroy(context);
-        let corner_mask = self.corner_mask.destroy(context);
-        painter?;
-        corner_mask?;
+        self.painter.destroy(context)?;
         Ok(())
     }
 
@@ -454,7 +413,7 @@ impl FrameCompositor {
         }
     }
 
-    /// Шаги 4–8 внутри начатого кадра. При ошибке возвращает `TexturesDelta`, чтобы `free`
+    /// Шаги 4–7 внутри начатого кадра. При ошибке возвращает `TexturesDelta`, чтобы `free`
     /// всё равно выполнился.
     fn draw_frame(
         &mut self,
@@ -501,28 +460,13 @@ impl FrameCompositor {
             Ok(paint) => paint,
             Err(error) => return Err(failed(error.into(), textures_delta)),
         };
-        let started = Instant::now();
-        let corner_mask = match corner_alpha_encoding(plan.alpha) {
-            Some(encoding) => self.corner_mask.draw(
-                frame,
-                plan.corner_radius,
-                plan.screen.pixels_per_point,
-                encoding,
-            ),
-            None => Ok(CornerMaskOutcome::SkippedSquare),
-        };
-        timings.window_corner_mask = started.elapsed();
-        match corner_mask {
-            Ok(corner_mask) => Ok(DrawnFrame {
-                background,
-                textures,
-                prepare,
-                textures_delta,
-                paint,
-                corner_mask,
-            }),
-            Err(error) => Err(failed(error.into(), textures_delta)),
-        }
+        Ok(DrawnFrame {
+            background,
+            textures,
+            prepare,
+            textures_delta,
+            paint,
+        })
     }
 
     /// Шаги 5–6: заливка (если подложка не закрывает цель сама), подложка, оверлеи.
@@ -537,7 +481,7 @@ impl FrameCompositor {
                 BackgroundFillOutcome::SkippedUnderlayCoversTarget
             }
             UnderlayCoverage::LeavesTargetPartlyUntouched => {
-                frame.clear(background_for_target(plan.background, plan.alpha));
+                frame.clear(opaque_background(plan.background));
                 BackgroundFillOutcome::Cleared
             }
         };
@@ -595,7 +539,6 @@ struct DrawnFrame {
     /// `free` выполняется после показа.
     textures_delta: Option<TexturesDelta>,
     paint: UiPaintWork,
-    corner_mask: CornerMaskOutcome,
 }
 
 /// Отказ внутри кадра: ошибка и `TexturesDelta`, чей `free` всё равно нужно выполнить.
@@ -609,22 +552,10 @@ struct DrawPlan<'layers> {
     screen: UiScreen,
     background: [f32; 4],
     layers: &'layers mut dyn FrameLayers,
-    corner_radius: CornerRadius,
-    alpha: WindowAlphaMode,
 }
 
-/// Заливка с учётом цели: непрозрачная цель получает альфу 1 (см. документацию модуля).
-fn background_for_target(background: [f32; 4], alpha: WindowAlphaMode) -> [f32; 4] {
-    match alpha {
-        WindowAlphaMode::PremultipliedTransparent => background,
-        WindowAlphaMode::Opaque { .. } => [background[0], background[1], background[2], 1.0],
-    }
-}
-
-/// Маска только у прозрачной цели; EGL-окно с альфой композитор смешивает как premultiplied.
-fn corner_alpha_encoding(alpha: WindowAlphaMode) -> Option<CornerAlphaEncoding> {
-    match alpha {
-        WindowAlphaMode::PremultipliedTransparent => Some(CornerAlphaEncoding::Premultiplied),
-        WindowAlphaMode::Opaque { .. } => None,
-    }
+/// Заливка фона всегда с альфой 1: окно непрозрачное, а у буфера кадра канал альфы может быть
+/// (другого EGL-конфига драйвер не дал) — тогда альфа < 1 просветила бы окно у композитора.
+fn opaque_background(background: [f32; 4]) -> [f32; 4] {
+    [background[0], background[1], background[2], 1.0]
 }

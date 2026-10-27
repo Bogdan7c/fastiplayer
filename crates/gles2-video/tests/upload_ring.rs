@@ -15,8 +15,8 @@ use std::os::fd::AsFd;
 
 use egui::{Color32, Context, Rect, pos2};
 use gles2_egui::{
-    CornerRadius, EguiPainterOptions, FrameCompositor, FrameStart, UiContent, UiFrameOutcome,
-    UiFrameRequest, UiScreen,
+    EguiPainterOptions, FrameCompositor, FrameStart, UiContent, UiFrameOutcome, UiFrameRequest,
+    UiScreen,
 };
 use gles2_video::{
     BusyReason, ChromaSubsampling, ColorAdjustment, DmaBufPlane, FrameLayoutError, PlaneRole,
@@ -363,7 +363,6 @@ fn video_underlay_sits_under_egui_in_the_frame_compositor() {
                 },
                 background: [1.0, 0.0, 0.0, 1.0],
                 layers: &mut underlay,
-                corner_radius: CornerRadius::square(),
             },
         )
         .unwrap();

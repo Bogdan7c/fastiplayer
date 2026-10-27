@@ -519,7 +519,7 @@ hdr_selection = "{stable_id}"
             .to_pretty_toml()
             .expect("HDR selection config serializes");
         assert!(generated.contains(&format!("hdr_selection = \"{stable_id}\"")));
-        assert!(generated.contains("schema_version = 25"));
+        assert!(generated.contains("schema_version = 26"));
     }
 }
 

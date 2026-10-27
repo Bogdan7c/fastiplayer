@@ -4,8 +4,7 @@
 use render_shell_api::{
     PresentationDetachOutcome, PresentationReattachOutcome, PresentationReconfigureError,
     PresentationReconfigured, RenderFrameDropReason, RenderFrameOutcome, RenderShell,
-    RenderSurfaceSize, ShellPresentMode, SurfaceAlphaPreference, SurfaceFrameAcquire,
-    SurfacePresentSettings,
+    RenderSurfaceSize, ShellPresentMode, SurfaceFrameAcquire, SurfacePresentSettings,
 };
 
 use super::{
@@ -137,20 +136,6 @@ fn reconfiguration_reports_substitution_repeat_and_refusals_without_changing_sta
     assert_eq!(
         renderer.reconfigure_presentation(deeper),
         Ok(PresentationReconfigured::AlreadyActive)
-    );
-
-    let flipped = SurfacePresentSettings {
-        alpha_preference: SurfaceAlphaPreference::TransparentPreferred,
-        ..deeper
-    };
-    assert_eq!(
-        renderer.reconfigure_presentation(flipped),
-        Err(PresentationReconfigureError::AlphaPreferenceChangeUnsupported)
-    );
-    assert_eq!(
-        renderer.reconfigure_presentation(deeper),
-        Ok(PresentationReconfigured::AlreadyActive),
-        "a refused change leaves the settings in effect"
     );
 
     assert_eq!(

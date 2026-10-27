@@ -369,11 +369,6 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
-        "corner_radius_px = 12",
-        "# Радиус прозрачного контура окна; 0 отключает скругление, диапазон 0..24 px.",
-    );
-    insert_default_config_comment(
-        toml_text,
         "fullscreen_autohide_delay_ms = 2500",
         "# Через сколько мс бездействия прятать панели и курсор в фуллскрине; 0 — не прятать.",
     );

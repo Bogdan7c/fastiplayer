@@ -24,9 +24,6 @@ impl Gles2Context {
         if self.presentation.detached {
             return Err(PresentationError::Detached);
         }
-        if settings.alpha != self.presentation.settings.alpha {
-            return Err(PresentationError::AlphaChangeRequiresRecreation);
-        }
         if settings == self.presentation.settings {
             return Ok(PresentationReconfigured::AlreadyActive);
         }

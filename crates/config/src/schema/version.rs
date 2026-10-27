@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 25;
+pub const CURRENT_SCHEMA_VERSION: u32 = 26;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -132,14 +132,21 @@ pub(crate) const LEGACY_SCHEMA_VERSION_23: u32 = 23;
 /// файл битым (переименовали бы в `.bak`), а с ним видят схему новее своей и не трогают файл.
 pub(crate) const LEGACY_SCHEMA_VERSION_24: u32 = 24;
 
+/// Последняя схема с `ui.window.corner_radius_px` (скругление углов окна).
+///
+/// Решение владельца (gles2-renderer, решение 57): скругление окна удалено из обоих рендереров,
+/// окно всегда непрозрачное. Ключ больше не существует в схеме, а строгий парсер отвергает
+/// неизвестные ключи, поэтому миграция v25 -> v26 молча удаляет его из файла.
+pub(crate) const LEGACY_SCHEMA_VERSION_25: u32 = 25;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v25 и полная цепочка поддерживаемых legacy-версий v2..v24.
+    /// Текущая схема v26 и полная цепочка поддерживаемых legacy-версий v2..v25.
     #[test]
-    fn schema_v25_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 25);
+    fn schema_v26_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 26);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -165,9 +172,11 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_22,
                 LEGACY_SCHEMA_VERSION_23,
                 LEGACY_SCHEMA_VERSION_24,
+                LEGACY_SCHEMA_VERSION_25,
             ],
             [
-                2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24
+                2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+                25
             ]
         );
     }

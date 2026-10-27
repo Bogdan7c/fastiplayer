@@ -1,14 +1,11 @@
-//! wgpu-сторона паритета: настоящие `EguiCompositor` и `WindowCornerMaskRenderer` шелла на
-//! offscreen-текстуре `Rgba8Unorm` (тот же порядок, что `record_and_present_frame`: «видео»
-//! (очистка) → egui → маска → submit → `free`).
+//! wgpu-сторона паритета: настоящий `EguiCompositor` шелла на offscreen-текстуре
+//! `Rgba8Unorm` (тот же порядок, что `record_and_present_frame`: «видео» (очистка) → egui →
+//! submit → `free`).
 
 use std::sync::mpsc;
 use std::time::Duration;
 
-use render_shell_api::WindowCornerMask;
-
 use crate::egui_compositor::{EguiCompositor, UiTextureUpload};
-use crate::window_corner_mask::{SurfaceAlphaEncoding, WindowCornerMaskRenderer};
 
 use super::scenes::ParityFrame;
 
@@ -38,7 +35,7 @@ pub(super) fn parity_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     Some(device_and_queue)
 }
 
-/// Headless wgpu + цель + художник и маска шелла.
+/// Headless wgpu + цель + художник шелла.
 pub(super) struct WgpuParityTarget {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -46,7 +43,6 @@ pub(super) struct WgpuParityTarget {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     compositor: EguiCompositor,
-    corner_mask: WindowCornerMaskRenderer,
 }
 
 impl WgpuParityTarget {
@@ -69,11 +65,6 @@ impl WgpuParityTarget {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let compositor = EguiCompositor::new(&device, TARGET_FORMAT);
-        let corner_mask = WindowCornerMaskRenderer::new(
-            &device,
-            TARGET_FORMAT,
-            SurfaceAlphaEncoding::Premultiplied,
-        );
         Some(Self {
             device,
             queue,
@@ -81,7 +72,6 @@ impl WgpuParityTarget {
             texture,
             view,
             compositor,
-            corner_mask,
         })
     }
 
@@ -124,14 +114,6 @@ impl WgpuParityTarget {
         };
         self.compositor
             .render_retained_overlay(&mut encoder, &self.view);
-        self.corner_mask.render(
-            &self.queue,
-            &mut encoder,
-            &self.view,
-            self.size,
-            frame.pixels_per_point,
-            WindowCornerMask::rounded_in_points(frame.corner_radius_points),
-        );
         let pixels = self.read_back(encoder);
         // `free` — после submit кадра, как у шелла.
         if let Some(textures_delta) = retired_textures {

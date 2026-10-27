@@ -36,7 +36,6 @@ pub fn render_frame_stage_timings(timings: &UiFrameTimings) -> RenderFrameStageT
         video_render: timings.video_render,
         subtitle_overlay: timings.subtitle_overlay,
         egui_render: timings.egui_render,
-        window_corner_mask: timings.window_corner_mask,
         surface_present: timings.surface_present,
         // У GLES2 этих стадий нет: команды уходят драйверу прямо в вызовах GL, кадр показывает
         // `eglSwapBuffers` (он — `surface_present`).

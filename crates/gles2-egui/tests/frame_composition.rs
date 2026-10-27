@@ -12,9 +12,9 @@ mod support;
 
 use egui::{Color32, Context, Rect, TextureId, pos2};
 use gles2_egui::{
-    ActiveFrame, BackgroundFillOutcome, CornerRadius, EguiPainterOptions, FrameCompositor,
-    FrameLayerError, FrameLayerStack, FrameLayers, FrameSkipReason, NoFrameLayers, OffscreenAlpha,
-    PixelExtent, UiContent, UiFrameError, UiFrameOutcome, UiFrameRequest, UnderlayCoverage,
+    ActiveFrame, BackgroundFillOutcome, EguiPainterOptions, FrameCompositor, FrameLayerError,
+    FrameLayerStack, FrameLayers, FrameSkipReason, NoFrameLayers, PixelExtent, UiContent,
+    UiFrameError, UiFrameOutcome, UiFrameRequest, UnderlayCoverage,
 };
 use glow::HasContext;
 use support::{egui_frame, offscreen_or_skip, pixel, read, screen_for, size, solid_texture};
@@ -70,11 +70,9 @@ impl FrameLayers for RecordingLayers {
 /// Порядок как у wgpu: фон → подложка (видео) → оверлеи (субтитры) → egui.
 #[test]
 fn layers_are_drawn_in_wgpu_order_under_egui() {
-    let Some(mut context) = offscreen_or_skip(
-        "layers_are_drawn_in_wgpu_order_under_egui",
-        size(48, 32),
-        OffscreenAlpha::Opaque,
-    ) else {
+    let Some(mut context) =
+        offscreen_or_skip("layers_are_drawn_in_wgpu_order_under_egui", size(48, 32))
+    else {
         return;
     };
     let mut compositor = FrameCompositor::new(&context, EguiPainterOptions::default()).unwrap();
@@ -99,7 +97,6 @@ fn layers_are_drawn_in_wgpu_order_under_egui() {
                 },
                 background: [0.0, 0.0, 0.0, 1.0],
                 layers: &mut layers,
-                corner_radius: CornerRadius::square(),
             },
         )
         .unwrap();
@@ -133,7 +130,6 @@ fn failed_layer_is_reported_and_texture_changes_still_settle() {
     let Some(mut context) = offscreen_or_skip(
         "failed_layer_is_reported_and_texture_changes_still_settle",
         size(16, 16),
-        OffscreenAlpha::Opaque,
     ) else {
         return;
     };
@@ -154,7 +150,6 @@ fn failed_layer_is_reported_and_texture_changes_still_settle() {
                 },
                 background: [0.0, 0.0, 0.0, 1.0],
                 layers: &mut layers,
-                corner_radius: CornerRadius::square(),
             },
         )
         .unwrap_err();
@@ -183,7 +178,6 @@ fn failed_layer_is_reported_and_texture_changes_still_settle() {
                 },
                 background: [0.0, 0.0, 0.0, 1.0],
                 layers: &mut layers,
-                corner_radius: CornerRadius::square(),
             },
         )
         .unwrap_err();
@@ -202,7 +196,6 @@ fn skipped_frame_applies_texture_changes_and_frees() {
     let Some(mut context) = offscreen_or_skip(
         "skipped_frame_applies_texture_changes_and_frees",
         size(16, 16),
-        OffscreenAlpha::Opaque,
     ) else {
         return;
     };
@@ -226,7 +219,6 @@ fn skipped_frame_applies_texture_changes_and_frees() {
                     },
                     background: [0.0, 0.0, 0.0, 1.0],
                     layers: &mut gles2_egui::NoFrameLayers,
-                    corner_radius: CornerRadius::square(),
                 },
             )
             .unwrap()
@@ -252,16 +244,13 @@ fn skipped_frame_applies_texture_changes_and_frees() {
     compositor.destroy(&context).unwrap();
 }
 
-/// Непрозрачная цель: альфа кадра 1 даже при прозрачной заливке (иначе композитор просветит
-/// окно с альфа-каналом); прозрачная цель сохраняет прозрачность.
+/// Окно непрозрачное: альфа кадра 1 даже при прозрачной заливке (иначе композитор просветит
+/// окно с альфа-каналом).
 #[test]
 fn opaque_target_always_gets_alpha_one() {
-    for (alpha, expected_alpha) in [
-        (OffscreenAlpha::Opaque, 255),
-        (OffscreenAlpha::PremultipliedLayer, 0),
-    ] {
+    {
         let Some(mut context) =
-            offscreen_or_skip("opaque_target_always_gets_alpha_one", size(16, 16), alpha)
+            offscreen_or_skip("opaque_target_always_gets_alpha_one", size(16, 16))
         else {
             return;
         };
@@ -286,22 +275,13 @@ fn opaque_target_always_gets_alpha_one() {
                     },
                     background: [0.0, 0.0, 0.0, 0.0],
                     layers: &mut gles2_egui::NoFrameLayers,
-                    corner_radius: CornerRadius::square(),
                 },
             )
             .unwrap();
         let pixels = read(&context);
-        assert_eq!(
-            pixel(&pixels, 12, 12)[3],
-            expected_alpha,
-            "{alpha:?} background alpha"
-        );
+        assert_eq!(pixel(&pixels, 12, 12)[3], 255, "background alpha");
         // Полупрозрачный egui над непрозрачным фоном альфу не опускает.
-        if alpha == OffscreenAlpha::Opaque {
-            assert_eq!(pixel(&pixels, 4, 4)[3], 255);
-        } else {
-            assert_eq!(pixel(&pixels, 4, 4)[3], 128);
-        }
+        assert_eq!(pixel(&pixels, 4, 4)[3], 255);
         compositor.destroy(&context).unwrap();
     }
 }
@@ -312,7 +292,6 @@ fn layer_stack_takes_the_underlay_from_one_layer_and_overlays_from_another() {
     let Some(mut context) = offscreen_or_skip(
         "layer_stack_takes_the_underlay_from_one_layer",
         size(48, 32),
-        OffscreenAlpha::Opaque,
     ) else {
         return;
     };
@@ -334,7 +313,6 @@ fn layer_stack_takes_the_underlay_from_one_layer_and_overlays_from_another() {
                 },
                 background: [0.0, 0.0, 0.0, 1.0],
                 layers: &mut stack,
-                corner_radius: CornerRadius::square(),
             },
         )
         .unwrap();
@@ -394,7 +372,6 @@ fn present_empty_frame(
                 },
                 background,
                 layers,
-                corner_radius: CornerRadius::square(),
             },
         )
         .unwrap();
@@ -412,7 +389,6 @@ fn background_is_not_cleared_when_the_underlay_covers_the_target() {
     let Some(mut context) = offscreen_or_skip(
         "background_is_not_cleared_when_the_underlay_covers_the_target",
         size(24, 16),
-        OffscreenAlpha::Opaque,
     ) else {
         return;
     };
@@ -478,7 +454,6 @@ fn settling_content_without_a_frame_applies_textures_and_keeps_the_target() {
     let Some(mut context) = offscreen_or_skip(
         "settling_content_without_a_frame_applies_textures_and_keeps_the_target",
         size(16, 16),
-        OffscreenAlpha::Opaque,
     ) else {
         return;
     };

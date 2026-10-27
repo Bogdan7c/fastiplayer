@@ -10,7 +10,7 @@ use render_core::RenderViewport;
 use render_shell_api::{
     EguiFrameContent, RenderFrameDropReason, RenderFrameInput, RenderFrameOutcome,
     RenderScreenDescriptor, RenderShell, SurfaceFrameAcquire, UiTextureFullSetReason,
-    UiTextureSync, WindowCornerMask,
+    UiTextureSync,
 };
 
 use crate::Renderer;
@@ -102,7 +102,6 @@ fn present_ui(
         screen,
         video_viewport: RenderViewport::full_surface(UI_TARGET_SIZE[0], UI_TARGET_SIZE[1]),
         video_exclusion_rects: Vec::new(),
-        window_corner_mask: WindowCornerMask::square(),
         subtitle_overlay: None,
     })
 }

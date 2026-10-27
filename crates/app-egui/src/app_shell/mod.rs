@@ -15,6 +15,7 @@ mod event_loop;
 mod external_drop;
 mod hotkeys;
 mod instance_forwarding;
+mod main_window_attributes;
 mod relaunch_request;
 mod renderer_startup_marker;
 mod resolved_url_collection;

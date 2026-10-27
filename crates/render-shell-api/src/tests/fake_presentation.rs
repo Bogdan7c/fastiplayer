@@ -76,9 +76,6 @@ impl FakePresentation {
         if self.attachment == FakeWindowAttachment::Detached {
             return Err(PresentationReconfigureError::PresentationDetached);
         }
-        if settings.alpha_preference != self.requested.alpha_preference {
-            return Err(PresentationReconfigureError::AlphaPreferenceChangeUnsupported);
-        }
         let next = effective_for(settings);
         self.requested = settings;
         if next == self.effective && !never_no_op {

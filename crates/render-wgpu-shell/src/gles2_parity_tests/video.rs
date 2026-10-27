@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use codec_core::{ColorRange, MatrixCoefficients, VideoColorMetadata, VideoDisplayOrientation};
-use gles2_egui::{FrameStart, OffscreenAlpha};
+use gles2_egui::FrameStart;
 use gles2_video::{RowLengthPreference, UploadOutcome, VideoLayerOptions, VideoLayerRenderer};
 use render_core::{
     ColorAdjustment, ColorPipelineSettings, HdrToSdrSettings, RenderLiveSettings, RenderViewport,
@@ -277,7 +277,7 @@ pub(super) fn render_wgpu(scene: &VideoScene, size: [u32; 2]) -> Option<Vec<u8>>
 
 /// GLES2-сторона: адаптер плеера и видеослой.
 pub(super) fn render_gles2(scene: &VideoScene, size: [u32; 2]) -> Option<Vec<u8>> {
-    let mut context = gles2_or_skip(scene.name, size, OffscreenAlpha::Opaque)?;
+    let mut context = gles2_or_skip(scene.name, size)?;
     let (frame, descriptor) = decoded_scene_frame(scene, FrameResourceHandle(1));
     let descriptor = FrameResourceDescriptor::HostPlanar(descriptor);
     let mut video = VideoLayerRenderer::new(

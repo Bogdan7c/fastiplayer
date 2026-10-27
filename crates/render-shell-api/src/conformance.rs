@@ -59,7 +59,6 @@ use crate::{
     FrameMaterializationOutcome, RenderFrameDropReason, RenderFrameFailureKind, RenderFrameInput,
     RenderFrameOutcome, RenderScreenDescriptor, RenderShell, RendererCreateError,
     RendererGpuDrainError, SurfaceFrameAcquire, SurfacePresentSettings, VideoImportPlan,
-    WindowCornerMask,
 };
 
 /// Сколько проверка ждёт завершения работы GPU (как bounded drain пересоздания рендера).
@@ -642,7 +641,6 @@ fn frame_input<'frame>(
         screen,
         video_viewport: render_core::RenderViewport::full_surface(width, height),
         video_exclusion_rects: Vec::new(),
-        window_corner_mask: WindowCornerMask::square(),
         subtitle_overlay: None,
     }
 }
