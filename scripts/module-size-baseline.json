@@ -32,7 +32,7 @@
     "crates/render-wgpu-video/src/video/host_yuv420_renderer.rs": 1325,
     "crates/render-wgpu-video/src/video/mod.rs": 1104,
     "crates/render-wgpu-video/src/video/p010_renderer.rs": 1410,
-    "crates/fastiplayer-settings/src/routing.rs": 1957,
+    "crates/fastiplayer-settings/src/routing.rs": 1320,
     "crates/settings-core/src/controller.rs": 1311,
     "crates/settings-core/src/metadata.rs": 929,
     "crates/source-core/src/ftp_session.rs": 824,
