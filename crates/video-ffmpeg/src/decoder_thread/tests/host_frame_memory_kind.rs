@@ -13,6 +13,24 @@ const RED_VP9_PACKET: &[u8] = &[
     247, 29, 175, 255, 255, 255, 95, 223, 255, 255, 255, 242, 42, 192, 0,
 ];
 
+/// Ждёт, пока decoder thread обработает `expected` packets (как player-core перед drain).
+fn wait_for_completed_packets(decoder: &FfmpegVideoDecoderThread, expected: usize) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut completed = 0usize;
+    while completed < expected {
+        completed += decoder.drain_completed_packet_count();
+        assert!(
+            decoder.try_recv_error().is_none(),
+            "decoder reported an error while waiting for packet completion"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "packet not completed in 5 s"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// Декодирует один VP9-кадр потоком с заданным видом памяти; возвращает `sealed_memfd().is_some()`
 /// у блока кадра (или `None`, если у кадра нет импортируемого блока вовсе).
 fn decoded_frame_block_is_memfd(memory: HostFrameMemoryKind) -> Option<bool> {
@@ -26,6 +44,10 @@ fn decoded_frame_block_is_memfd(memory: HostFrameMemoryKind) -> Option<bool> {
     let mut packet = decode_packet_with_pts(1, 0, Duration::ZERO);
     packet.encoded_bytes = Bytes::from_static(RED_VP9_PACKET);
     decoder.send_packet(packet).expect("send VP9 packet");
+    // Контракт EOF-drain: drain просят только когда worker уже обработал все отправленные
+    // packets (так делает player-core: блокер `VideoDecodeInFlight`). packet и control идут
+    // по РАЗНЫМ каналам, и select! worker-а вправе взять drain раньше packet-а.
+    wait_for_completed_packets(&decoder, 1);
     // Один пакет VP9 выходит из декодера только после дренажа конца потока.
     decoder.begin_end_of_stream_drain(1);
 
@@ -71,4 +93,17 @@ fn default_config_decodes_real_frame_into_anonymous_block() {
         decoded_frame_block_is_memfd(HostFrameMemoryKind::Anonymous),
         Some(false)
     );
+}
+
+/// Регресс: сценарий «packet, затем drain» после ожидания completion стабильно даёт кадр,
+/// а не `avcodec_send_packet returned EOF` (раньше падало ~1 из 7 запусков).
+#[test]
+fn drain_after_completed_packet_is_stable_over_many_runs() {
+    for run in 0..100 {
+        assert_eq!(
+            decoded_frame_block_is_memfd(HostFrameMemoryKind::Anonymous),
+            Some(false),
+            "run {run}"
+        );
+    }
 }

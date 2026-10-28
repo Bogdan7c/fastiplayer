@@ -67,6 +67,11 @@ pub trait VideoDecoderThreadHandle: Send + Sync {
     }
 
     /// Запускает explicit EOF/DPB drain отдельно от seek `flush`.
+    ///
+    /// Предусловие: все отправленные packets уже обработаны decoder-ом (счётчик
+    /// завершённых packets догнал число отправленных). Packets и эта команда идут
+    /// разными каналами без общего порядка: drain, обогнавший packet, переведёт decoder
+    /// в EOF раньше последнего packet-а. Player-core это соблюдает блокером старта drain.
     fn begin_end_of_stream_drain(&self, generation: u64) -> VideoDecoderEndOfStreamDrainResult {
         VideoDecoderEndOfStreamDrainResult::Started(VideoDecoderEndOfStreamDrainState::Drained {
             generation,
