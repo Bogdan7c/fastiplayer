@@ -431,15 +431,28 @@ pub(super) fn decode_point_before_retry_timestamp_for_issue(
     match issue {
         DecodePointBeforeVerificationIssue::FirstVideoAfterTarget { packet } => {
             if backend_timestamp < requested_timestamp {
-                // Если backend уже искал раньше requested, но первый video packet всё равно
-                // оказался после target, маленький отступ на величину packet overshoot-а
-                // обычно остаётся внутри того же cue/cluster. Расширяем pre-roll окно, чтобы
-                // действительно перейти к предыдущей decode-точке.
-                Some(decode_point_before_expanding_retry_timestamp(
+                // Backend уже искал раньше requested, но первый video packet всё равно
+                // оказался после target. Для MP4 с B-frames это штатная ситуация:
+                // isomp4 ищет sync-sample по DTS, а PTS keyframe-а больше его DTS на
+                // величину reorder-задержки (у `-bf 2` 30 fps это ~67 мс). Цель в
+                // окне [DTS, PTS) keyframe-а даёт keyframe, который показывается ПОСЛЕ
+                // target. Поэтому сначала отступаем ровно до наблюдённого packet-а
+                // (его PTS заведомо не меньше его DTS) плюс 1 мс, и backend выбирает
+                // предыдущий GOP, а не прыгает на целый `preroll` (5 c) назад.
+                // Ограничиваем сверху прежним расширяющимся окном: для WebM/VP9, где
+                // первый keyframe может быть на секунды позже backend-цели (тот же
+                // cue/cluster), шаг не станет больше прежнего поведения.
+                let observed_distance = packet
+                    .pts
+                    .saturating_sub(backend_timestamp)
+                    .saturating_add(DECODE_POINT_BEFORE_RETRY_MARGIN);
+                let precise_retry = backend_timestamp.saturating_sub(observed_distance);
+                let expanding_retry = decode_point_before_expanding_retry_timestamp(
                     backend_timestamp,
                     retry_index,
                     preroll,
-                ))
+                );
+                Some(precise_retry.max(expanding_retry))
             } else {
                 decode_point_before_retry_timestamp(
                     backend_timestamp,
