@@ -603,7 +603,22 @@ impl PlayerSession {
     }
 
     /// Возвращает state, от которого cancel-first команды должны продолжать route.
+    ///
+    /// Публичный `Scrubbing` не говорит, играл плеер или стоял: он же держится всё время
+    /// SeekLanding-а после EndScrub. Поэтому, если нового жеста ещё нет, а прежний
+    /// seek/commit ещё в полёте, новый жест наследует его resume intent (Play -> Playing,
+    /// Pause -> Paused). Иначе второй быстрый drag записал бы «был на паузе» и после
+    /// commit-а плеер остался бы на паузе, хотя пользователь смотрел видео.
+    /// Если seek-а в полёте нет, `Scrubbing` честно сводится к `Paused`.
     fn playback_state_for_new_simple_scrub(&self) -> PlaybackState {
+        if !self.seek_runtime.simple_scrub_active()
+            && let Some(resume_intent) = self.in_flight_seek_resume_intent()
+        {
+            return match resume_intent {
+                PlaybackResumeIntent::Play => PlaybackState::Playing,
+                PlaybackResumeIntent::Pause => PlaybackState::Paused,
+            };
+        }
         match self.playback_state() {
             PlaybackState::Scrubbing => PlaybackState::Paused,
             playback_state => playback_state,

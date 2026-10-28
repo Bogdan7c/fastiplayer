@@ -383,3 +383,76 @@ fn pause_before_worker_receipt_lands_paused_at_target_frame() {
     assert_eq!(harness.session.playback_state(), PlaybackState::Paused);
     assert_eq!(harness.session.snapshot().current_position, SEEK_TARGET);
 }
+
+/// Один drag по timeline: begin -> preview в цель -> release с commit-ом последней цели.
+fn drag_timeline_to(harness: &mut SeekRegressionHarness, target: Duration) {
+    let session = &mut harness.session;
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .expect("BeginScrub must reach the session");
+    session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
+            MediaTime::from_duration(target),
+        )))
+        .expect("PreviewScrub must reach the session");
+    session
+        .dispatch_command(PlayerCommand::end_scrub(
+            crate::ScrubCommitPolicy::CommitLatestTarget,
+        ))
+        .expect("EndScrub must reach the session");
+}
+
+/// Resume intent финального commit-а второго drag-а, пока его landing ещё в полёте.
+fn in_flight_intent_after_double_drag(mut harness: SeekRegressionHarness) -> PlaybackResumeIntent {
+    drag_timeline_to(&mut harness, SEEK_TARGET - Duration::from_secs(4));
+    assert!(
+        harness.session.in_flight_seek_resume_intent().is_some(),
+        "the first drag commit must still be in flight (slow decoder)"
+    );
+    // Второй drag стартует, пока commit первого не сел.
+    drag_timeline_to(&mut harness, SEEK_TARGET);
+    harness
+        .session
+        .in_flight_seek_resume_intent()
+        .expect("the second drag commit must be in flight")
+}
+
+#[test]
+fn second_drag_over_in_flight_commit_while_playing_keeps_play_intent() {
+    let harness = playing_video_only_harness_at(media_instance_id(40), OLD_POSITION);
+    assert_eq!(
+        in_flight_intent_after_double_drag(harness),
+        PlaybackResumeIntent::Play,
+        "второй drag обязан унаследовать Play от commit-а первого"
+    );
+}
+
+#[test]
+fn second_drag_over_in_flight_commit_while_paused_stays_paused() {
+    let harness = paused_video_only_harness_at(media_instance_id(41), OLD_POSITION);
+    assert_eq!(
+        in_flight_intent_after_double_drag(harness),
+        PlaybackResumeIntent::Pause
+    );
+}
+
+#[test]
+fn single_drag_while_playing_commits_with_play_intent_and_resumes_playing() {
+    let mut harness = playing_video_only_harness_at(media_instance_id(42), OLD_POSITION);
+    drag_timeline_to(&mut harness, SEEK_TARGET);
+    assert_eq!(
+        harness.session.in_flight_seek_resume_intent(),
+        Some(PlaybackResumeIntent::Play)
+    );
+    land_video_seek_from(&mut harness, SEEK_TARGET);
+    assert_committed_at_target(&harness, PlaybackState::Playing);
+}
+
+#[test]
+fn double_drag_while_playing_lands_playing_after_commit() {
+    let mut harness = playing_video_only_harness_at(media_instance_id(43), OLD_POSITION);
+    drag_timeline_to(&mut harness, SEEK_TARGET - Duration::from_secs(4));
+    drag_timeline_to(&mut harness, SEEK_TARGET);
+    land_video_seek_from(&mut harness, SEEK_TARGET);
+    assert_committed_at_target(&harness, PlaybackState::Playing);
+}
