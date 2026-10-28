@@ -12,6 +12,10 @@
 - EndScrub policy, visible-vs-latest resolution, worker receipt, audio readiness, flush/generation/release ownership и cold backward/far-forward route не изменены.
 - Размер старого decoder I/O уменьшён 865→836 строк; module-size snapshot ratcheted вниз. Coverage policy/baseline/исключения не менялись.
 
+## Уточнения 12b gles2-renderer (2026-10-28)
+- Продление live-scrub прохода вперёд (`seek_start.rs::try_extend_active_live_scrub_landing_forward`, кап `LIVE_SCRUB_FORWARD_EXTENSION_MAX` 3 с) меряет дистанцию от прогресса decoder-а (`PlaybackPipeline::latest_video_decoder_output_pts`, PTS последнего выданного кадра эпохи), а не от прошлой цели указателя; без кадров в проходе — от прошлой цели. Раньше цепочка шагов < 3 с тянула HW-проход от старого keyframe бесконечно (T410: превью 44 с при курсоре 58,5 с, отпускание садило на 49 с). Тесты `scrub.rs::live_scrub_slow_decoder_far_from_pointer_takes_cold_route`, `live_scrub_fast_decoder_keeping_up_extends_without_second_demux_seek`.
+- Новый scrub-жест, пока seek прошлого жеста ещё садится (публичное `Scrubbing`), наследует его resume intent (`scrub_orchestration.rs::playback_state_for_new_simple_scrub` → `in_flight_seek_resume_intent()`); раньше `Scrubbing` → «был на паузе», и два drag/клика подряд ставили видео на паузу. Тесты в `session/tests/seek_resume_intent.rs`.
+
 ## Регрессии и аппаратное evidence
 
 `session/tests/scrub_hold.rs` проходит public commands → scripted demux packets → fake decode-on-send → actual present frame: десятисекундное удержание и bounded send/release/resume; 200 tiny forward updates с ближайшим frame и неизменной generation, затем backward cold route; audio readiness удерживает release до реального output.play и дальнейшего video presentation. Все три теста воспроизводят failure со старым production code (видимый кадр ~27.84 s вместо 8 s) и проходят с исправлением. Existing scrub, seek, worker-receipt, decoder error/resource regressions сохраняются.

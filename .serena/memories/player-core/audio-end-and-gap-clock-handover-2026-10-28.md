@@ -15,6 +15,11 @@
 - Сброс передачи: `begin_seek_generation`, `reanchor_audio_clock_media_mapping` (и всё, что через него), install/clear/reset audio clock, `reset_media_slots`, повтор после EOF.
 - `queued_video_frames_unreachable_after_audio_end` оставлен: кадры с PTS ≥ duration не держат drain.
 
+## Уточнение 12b (2026-10-28): насыщение demux — доказательство только «за концом звука»
+- Живой дефект T410: HW H.264 на 2×/4×, видео отстаёт → очередь 240 video packets лежала ДО конца записанного звука, `DemuxSaturatedWithoutAudio` ложно отдавал часы monotonic clock, звук обрезался и не возвращался до seek.
+- Теперь `audio_gap.rs::demux_read_video_far_past_written_audio`: насыщение доказывает отсутствие звука, только если `PlaybackPipeline::furthest_pending_video_packet_start` (максимальный PTS очереди выбранного трека/поколения, B-frames) > опора + `MIN_AUDIO_GAP`; опора = `written_audio_end`, а после seek (конец звука сброшен) — `snapshot.current_position` (иначе seek в область без звука снова вечно блокируется).
+- Тесты: `lagging_video_decoder_with_continuous_audio_never_hands_the_clock_over`, `seek_into_region_without_audio_hands_the_clock_over_when_demux_saturates`, `seek_at_4x_into_audio_region_with_lagging_decoder_keeps_audio_clock`; юнит `furthest_pending_video_packet_start_reports_demux_frontier_of_selected_track`.
+
 ## Тесты
 `session/tests/eof_audio_ends_before_video.rs` (7), `session/tests/audio_gap_clock_handover.rs` (4, вкл. «редкие audio packets → нет ложной передачи»), `pipeline/tests/presentation_clock_handover.rs` (10). Мутации описаны в отчёте.
 
