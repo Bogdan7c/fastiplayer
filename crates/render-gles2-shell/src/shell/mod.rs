@@ -180,5 +180,13 @@ impl Drop for Gles2Renderer {
                 report.waiter_still_holds_fence
             );
         }
+        // Итог жизни рендера для живых прогонов (сессия 12b): после отвязки освобождения, чтобы
+        // в счётчики попали и кадры, возвращённые при закрытии. Сходимость возврата по fence
+        // проверяется по `pending_now == 0` и нулевым `fence_wait_failures`/`frame_fence_failures`.
+        log::info!(
+            "GLES2 renderer lifetime summary: {:?}; {:?}",
+            self.counters,
+            self.release.binding().stats()
+        );
     }
 }
