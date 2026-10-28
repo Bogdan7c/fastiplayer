@@ -25,6 +25,8 @@ Same-lineage staged install now inserts a player-owned strict position phase bef
 
 Reopen у хвоста/конца (2026-10-17, #21): anchor PTS > target допустим (decode-forward floor = target), redundant `SelectVideoTrack` — no-op, prefetch чистится на worker receipt, intent «играть» в started-playback drain не делает replay, target клампится к duration, seek в самый конец доходит до `Ended` — `mem:player-core/same-lineage-reopen-tail-21`.
 
+Время показа после конца/разрыва звука (2026-10-28, gles2 13b, решение 92): источник времени выбирает `PlaybackPipeline::presentation_clock_source()` (`AudioOutput` / `MonotonicAfterAudioEnd` / `MonotonicWithoutAudio`); все потребители (position clock, stall, decode-ahead, demux catch-up, pause) спрашивают `audio_clock_drives_presentation()`, а не `has_audio_clock()`. Передача — явными шагами владельца из EOF-drain (хвост видео) и `session/audio_gap.rs` (разрыв в Playing, только по доказательству), сброс на seek generation/reanchor/install/reset. Подробности — `mem:player-core/audio-end-and-gap-clock-handover-2026-10-28`.
+
 ## S42 acceptance facts (2026-07-25)
 
 - S42 does not change player-core API or ownership. `scripts/final-acceptance.sh` completed automated `PASS`; manual playback matrix and real VA-API rerun remain `NOT RUN`.

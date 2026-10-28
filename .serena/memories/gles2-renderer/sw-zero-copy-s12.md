@@ -30,5 +30,9 @@ FFmpeg (`get_buffer2` 08b) пишет кадр в блок ЗАПЕЧАТАНН�
 ## Сессия 13 (2026-10-28)
 AV1 тоже без копии: патч закреплённого FFmpeg даёт libdav1d DR1 (`mem:video-ffmpeg/build-tooling`). Шелл не менялся. Тест-каталог `tests/ffmpeg_decoder_to_shell/{main,harness,vp9,av1}.rs` (общие помощники `assert_frames_reach_screen_through_the_copy_path` / `assert_frames_reach_screen_without_cpu_copy` / `assert_zero_copy_matches_copy_path`, `FixtureStream::{vp9_8bit, vp9_10bit, av1_8bit, av1_10bit, av1_film_grain}`). Учёт памяти: импортированные udmabuf-блоки видны в fdinfo как `drm-shared-gtt` и одновременно в `Pss_Shmem` процесса — рост `drm-memory-gtt` у GLES2 SW-пути = двойной учёт, не новая память (4K AV1: shared 209 МБ = Shmem 209 МБ).
 
+## Сессия 13b (2026-10-28): повтор текущего кадра
+Инвариант: сброс кэша CPU и `frames_without_cpu_copy` — ровно один раз на НОВЫЙ кадр. `show_block` сначала зовёт `show_cached_planar_dma_buf_frame`; `AlreadyCurrent` → внутренний `BlockShow::AlreadyCurrent` (без сброса, без счёта), иначе сброс по политике + импорт при `NotCached` → `BlockShow::NewFrame(CacheFlushed)`. Граница `try_show → ZeroCopyShow::Shown` не менялась. Раньше повтор (перерисовка UI, отставание декодера) сбрасывал кэш заново: T410 1080p30 главный поток 14,1 → 13,4 %, счётчик пути теперь = числу новых кадров (как у копии/wgpu). Тест `host_block_import::tests::a_repeated_show_of_the_current_frame_neither_flushes_nor_counts` (мутация ловится).
+Живьём T480s (Kaby Lake, LLC): самопроверка → `CPU cache flush: not needed`.
+
 ## Ограничения / дальше (12a)
 Linux x86_64 + доступный udmabuf; 8 бит (10/12 и AV1 — копия); `CLFLUSH` в главном потоке — кандидат 12a; seek/пауза/смена файла и счётчик `dma_bufs_created` при ёмкости 24 — в переквалификации 12a.
