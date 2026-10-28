@@ -93,7 +93,7 @@ sudo pacman -S --needed base-devel git clang pkgconf curl meson nasm alsa-lib li
 ```bash
 sudo apt-get update
 sudo apt-get install build-essential git clang libclang-dev pkg-config \
-  curl meson nasm ninja-build \
+  curl meson nasm ninja-build patch \
   libasound2-dev libdrm-dev libgbm-dev libva-dev \
   libvulkan1 mesa-vulkan-drivers
 ```
@@ -102,7 +102,7 @@ sudo apt-get install build-essential git clang libclang-dev pkg-config \
 
 ```bash
 sudo dnf install gcc gcc-c++ make git clang clang-devel pkgconf-pkg-config \
-  curl meson nasm ninja-build \
+  curl meson nasm ninja-build patch \
   alsa-lib-devel libdrm-devel mesa-libgbm-devel libva-devel \
   vulkan-loader mesa-vulkan-drivers rustup
 rustup-init   # Fedora ships rustup as a package; this installs the toolchain manager

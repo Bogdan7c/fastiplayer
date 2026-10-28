@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""Проверяет обслуживаемость десяти standalone dependency patches."""
+"""Проверяет обслуживаемость десяти standalone dependency patches и патчей исходников
+закреплённого FFmpeg (`[[source_patch]]`, crate `ffmpeg-vendor`)."""
 
+# hashlib считает SHA-256 файла патча для сверки с inventory.
+import hashlib
 # pathlib даёт типизированные пути без зависимости от текущего каталога.
 from pathlib import Path
+# re вытаскивает закреплённую версию FFmpeg из `sources.rs` без сборки Rust.
+import re
 # sys нужен только для явного ненулевого exit status при policy failure.
 import sys
 # tomllib читает Cargo manifests и inventory стандартной библиотекой Python 3.11+.
@@ -19,12 +24,108 @@ REQUIRED_FIELDS = (
     "manual_media_matrix", "removal_gate",
 )
 
+# Обязательные поля патча исходников: без них запись не объясняет миграцию на новый FFmpeg.
+SOURCE_PATCH_REQUIRED_FIELDS = (
+    "name", "file", "target_library", "target_version", "sha256", "reason",
+    "owned_diff_areas", "focused_automated_tests", "manual_media_matrix",
+    "removal_gate", "migration_checklist",
+)
+# Каталог патчей исходников внутри crate-а, который их накладывает.
+SOURCE_PATCHES_DIRECTORY = REPO_ROOT / "crates/ffmpeg-vendor/patches"
+# Политика патчей (список и порядок наложения) живёт в этом Rust-модуле.
+SOURCE_PATCH_POLICY_PATH = REPO_ROOT / "crates/ffmpeg-vendor/src/source_patches.rs"
+# Закреплённые версии исходников живут здесь.
+PINNED_SOURCES_PATH = REPO_ROOT / "crates/ffmpeg-vendor/src/sources.rs"
+
 # Функция читает TOML и сохраняет понятный контекст ошибки файла.
 def read_toml(path: Path) -> dict:
     # Бинарный режим является контрактом tomllib.load.
     with path.open("rb") as toml_file:
         # Парсер возвращает обычную вложенную структуру Python.
         return tomllib.load(toml_file)
+
+# Закреплённая версия библиотеки по `library_name` из `sources.rs` (None — не найдена).
+def pinned_version(library_name: str) -> str | None:
+    # Текст модуля читается целиком: он маленький и меняется редко.
+    sources_text = PINNED_SOURCES_PATH.read_text(encoding="utf-8")
+    # Ищем блок PinnedSource с нужным именем и его поле version.
+    match = re.search(
+        r'library_name:\s*"' + re.escape(library_name) + r'",\s*slug:\s*"[^"]*",\s*version:\s*"([^"]+)"',
+        sources_text,
+    )
+    # Отсутствие совпадения — отдельная ошибка вызывающего кода.
+    return match.group(1) if match else None
+
+# SHA-256 файла в нижнем регистре.
+def file_sha256(path: Path) -> str:
+    # Патч маленький, читаем целиком.
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+# Проверка патчей исходников: файл, сумма, версия цели, регистрация и отсутствие сирот.
+def validate_source_patches(inventory: dict) -> list[str]:
+    # Отдельный список: ошибки патчей исходников не смешиваются с crate-патчами.
+    errors: list[str] = []
+    # Записи патчей исходников (их может и не быть).
+    source_patches = inventory.get("source_patch", [])
+    # Текст политики Rust нужен для проверки регистрации каждого файла.
+    policy_text = SOURCE_PATCH_POLICY_PATH.read_text(encoding="utf-8")
+    # Файлы, описанные в inventory, — для поиска сирот на диске.
+    inventoried_files: set[Path] = set()
+    # Каждая запись проверяется независимо ради полной диагностики.
+    for source_patch in source_patches:
+        # Имя используется во всех сообщениях.
+        name = source_patch.get("name", "<missing name>")
+        # Все обязательные поля должны быть непустыми.
+        for field in SOURCE_PATCH_REQUIRED_FIELDS:
+            # False ловит и пустую строку, и пустой список.
+            if not source_patch.get(field):
+                errors.append(f"source patch {name}: missing nonempty field {field}")
+        # Без пути к файлу дальнейшие проверки невозможны.
+        if not source_patch.get("file"):
+            continue
+        # Путь в inventory — относительно корня репозитория.
+        patch_file = REPO_ROOT / source_patch["file"]
+        # Запоминаем для поиска сирот.
+        inventoried_files.add(patch_file.resolve())
+        # Файл обязан существовать.
+        if not patch_file.is_file():
+            errors.append(f"source patch {name}: file {source_patch['file']} does not exist")
+            continue
+        # Сумма в inventory — подпись проверенного содержимого: правка патча требует её обновить.
+        if file_sha256(patch_file) != source_patch.get("sha256", "").lower():
+            errors.append(
+                f"source patch {name}: sha256 does not match {source_patch['file']} "
+                f"(actual {file_sha256(patch_file)})"
+            )
+        # Цель патча должна быть ровно закреплённой версией библиотеки.
+        library = source_patch.get("target_library", "")
+        # Версия из sources.rs — источник истины для сборки.
+        pinned = pinned_version(library)
+        # Подняли FFmpeg, а патч не перенесли — это и есть ошибка миграции.
+        if pinned != source_patch.get("target_version"):
+            errors.append(
+                f"source patch {name}: targets {library} {source_patch.get('target_version')}, "
+                f"but sources.rs pins {pinned}; follow the migration checklist"
+            )
+        # Файл лежит в каталоге своей версии (`patches/ffmpeg-<версия>/`).
+        expected_directory = f"{library.lower()}-{source_patch.get('target_version')}"
+        # Сравниваем имя родительского каталога.
+        if patch_file.parent.name != expected_directory:
+            errors.append(f"source patch {name}: file must live in patches/{expected_directory}/")
+        # Build script накладывает только патчи из политики Rust.
+        if patch_file.name not in policy_text:
+            errors.append(f"source patch {name}: {patch_file.name} is not registered in source_patches.rs")
+    # Файл патча на диске без записи inventory — непроверенная правка исходников.
+    if SOURCE_PATCHES_DIRECTORY.is_dir():
+        # Рекурсивно: каталоги версий внутри patches/.
+        for patch_file in sorted(SOURCE_PATCHES_DIRECTORY.rglob("*.patch")):
+            # Сравниваем нормализованные пути.
+            if patch_file.resolve() not in inventoried_files:
+                errors.append(
+                    f"{patch_file.relative_to(REPO_ROOT)}: source patch file has no [[source_patch]] record"
+                )
+    # Полный список нарушений.
+    return errors
 
 # Главная проверка собирает все ошибки, чтобы один CI run показывал полный diff policy.
 def validate() -> list[str]:
@@ -102,6 +203,8 @@ def validate() -> list[str]:
     # Ровно десять записей защищают от удаления replace без обновления policy.
     if len(inventory.get("patch", [])) != 10:
         errors.append("docs/dependency-patches.toml: exactly ten patch records are expected")
+    # Патчи исходников проверяются своими правилами (они не crate-ы и не [replace]).
+    errors.extend(validate_source_patches(inventory))
     # Возвращаем полный набор нарушений вызывающему runner-у.
     return errors
 
@@ -117,7 +220,10 @@ def main() -> int:
     if errors:
         return 1
     # Короткое подтверждение показывает число проверенных forks.
-    print("Dependency patch inventory: 10 standalone patch crates checked")
+    print(
+        "Dependency patch inventory: 10 standalone patch crates and "
+        f"{len(read_toml(INVENTORY_PATH).get('source_patch', []))} source patch(es) checked"
+    )
     # Ноль означает полное соответствие inventory и manifests.
     return 0
 

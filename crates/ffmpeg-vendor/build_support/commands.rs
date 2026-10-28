@@ -25,11 +25,16 @@ pub struct RequiredTool {
 }
 
 /// Инструменты, которые нужны всегда (скачивание проверяется отдельно).
-pub const REQUIRED_BUILD_TOOLS: [RequiredTool; 6] = [
+pub const REQUIRED_BUILD_TOOLS: [RequiredTool; 7] = [
     RequiredTool {
         executable: "tar",
         version_argument: "--version",
         purpose: "unpacking source archives",
+    },
+    RequiredTool {
+        executable: "patch",
+        version_argument: "--version",
+        purpose: "applying Fastiplayer patches to FFmpeg sources (GNU patch)",
     },
     RequiredTool {
         executable: "meson",

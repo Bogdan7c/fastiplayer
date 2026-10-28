@@ -11,4 +11,5 @@
 pub mod build_options;
 pub mod checksum;
 pub mod soname;
+pub mod source_patches;
 pub mod sources;

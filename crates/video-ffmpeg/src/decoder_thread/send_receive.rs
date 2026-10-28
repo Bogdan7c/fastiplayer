@@ -102,7 +102,8 @@ impl RealFfmpegDecodeApi {
             request = request.with_extradata(extradata);
         }
         // Кадры в блоках, которые renderer импортирует в GPU без CPU-копии (cpu-parity 08b).
-        // Декодеры без `AV_CODEC_CAP_DR1` (libdav1d) остаются на выделении FFmpeg.
+        // Декодеры без `AV_CODEC_CAP_DR1` остаются на выделении FFmpeg: так у libdav1d
+        // системного FFmpeg; закреплённый получает DR1 патчем `ffmpeg-vendor` (сессия 13).
         request = request.with_frame_memory(SoftwareFrameMemory::ImportableBlocks {
             memory: host_frame_memory,
         });

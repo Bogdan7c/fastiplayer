@@ -25,7 +25,10 @@ FFmpeg (`get_buffer2` 08b) пишет кадр в блок ЗАПЕЧАТАНН�
 - Стенд: `gles2-egui/examples/udmabuf_zero_copy_probe.rs` (`--mode upload|import-cached|import-per-frame --verify --no-flush --flush-range --measure-reflush`).
 
 ## Сессия 12a
-10/12 бит тоже без копии: плоскости как DRM `GR88`, программа `BytePairChannels::RedGreen` (`mem:gles2-renderer/extreme-optimization-s12a`). AV1 по-прежнему копией (dav1d без DR1).
+10/12 бит тоже без копии: плоскости как DRM `GR88`, программа `BytePairChannels::RedGreen` (`mem:gles2-renderer/extreme-optimization-s12a`).
+
+## Сессия 13 (2026-10-28)
+AV1 тоже без копии: патч закреплённого FFmpeg даёт libdav1d DR1 (`mem:video-ffmpeg/build-tooling`). Шелл не менялся. Тест-каталог `tests/ffmpeg_decoder_to_shell/{main,harness,vp9,av1}.rs` (общие помощники `assert_frames_reach_screen_through_the_copy_path` / `assert_frames_reach_screen_without_cpu_copy` / `assert_zero_copy_matches_copy_path`, `FixtureStream::{vp9_8bit, vp9_10bit, av1_8bit, av1_10bit, av1_film_grain}`). Учёт памяти: импортированные udmabuf-блоки видны в fdinfo как `drm-shared-gtt` и одновременно в `Pss_Shmem` процесса — рост `drm-memory-gtt` у GLES2 SW-пути = двойной учёт, не новая память (4K AV1: shared 209 МБ = Shmem 209 МБ).
 
 ## Ограничения / дальше (12a)
 Linux x86_64 + доступный udmabuf; 8 бит (10/12 и AV1 — копия); `CLFLUSH` в главном потоке — кандидат 12a; seek/пауза/смена файла и счётчик `dma_bufs_created` при ёмкости 24 — в переквалификации 12a.

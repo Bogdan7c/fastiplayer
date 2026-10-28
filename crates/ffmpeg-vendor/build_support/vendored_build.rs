@@ -1,7 +1,8 @@
-//! Сценарий vendored-сборки: исходники → dav1d → FFmpeg → лицензии → штамп.
+//! Сценарий vendored-сборки: исходники → патчи → dav1d → FFmpeg → лицензии → штамп.
 //!
-//! Повторная сборка пропускается, пока «отпечаток» (версии, суммы, аргументы
-//! configure/meson) совпадает с записанным в штампе и библиотеки на месте.
+//! Повторная сборка пропускается, пока «отпечаток» (версии, суммы архивов и
+//! патчей, аргументы configure/meson) совпадает с записанным в штампе и
+//! библиотеки на месте.
 
 use std::env;
 use std::fs;
@@ -13,6 +14,8 @@ use crate::build_error::VendoredBuildError;
 use crate::build_options;
 use crate::commands;
 use crate::soname::is_soname_file_name;
+use crate::source_patches;
+use crate::source_patching;
 use crate::sources::{ALL_SOURCES, DAV1D_SOURCE, FFMPEG_SOURCE, PinnedSource};
 
 /// Имя файла-штампа успешной сборки внутри install prefix FFmpeg.
@@ -107,7 +110,7 @@ pub fn ensure_vendored_ffmpeg(
 ) -> Result<VendoredFfmpegInstall, VendoredBuildError> {
     reject_cross_compilation()?;
 
-    let fingerprint = build_fingerprint(layout);
+    let fingerprint = build_fingerprint(layout)?;
     if !is_build_current(layout, &fingerprint) {
         build_from_sources(layout)?;
         write_build_stamp(layout, &fingerprint)?;
@@ -133,7 +136,7 @@ fn reject_cross_compilation() -> Result<(), VendoredBuildError> {
     }
 }
 
-/// Полная сборка: проверка инструментов, исходники, dav1d, FFmpeg, лицензии.
+/// Полная сборка: проверка инструментов, исходники, патчи, dav1d, FFmpeg, лицензии.
 fn build_from_sources(layout: &VendoredLayout) -> Result<(), VendoredBuildError> {
     commands::ensure_tools_available(&commands::REQUIRED_BUILD_TOOLS)?;
 
@@ -141,6 +144,21 @@ fn build_from_sources(layout: &VendoredLayout) -> Result<(), VendoredBuildError>
     let ffmpeg_archive = archives::verified_archive(&FFMPEG_SOURCE, layout)?;
     let dav1d_sources = archives::unpack_archive(&DAV1D_SOURCE, &dav1d_archive, layout)?;
     let ffmpeg_sources = archives::unpack_archive(&FFMPEG_SOURCE, &ffmpeg_archive, layout)?;
+
+    // Патчи — на свежераспакованное дерево (unpack_archive всегда распаковывает
+    // заново, поэтому патч не может лечь дважды) и до configure.
+    let crate_root = crate_root()?;
+    for (source, source_directory) in [
+        (&DAV1D_SOURCE, &dav1d_sources),
+        (&FFMPEG_SOURCE, &ffmpeg_sources),
+    ] {
+        source_patching::apply_source_patches(
+            source,
+            source_directory,
+            &crate_root,
+            &layout.logs_directory,
+        )?;
+    }
 
     // Старые prefix-ы удаляем: в lib/ не должно остаться библиотек прошлой версии.
     remove_directory_if_present(&layout.dav1d_prefix)?;
@@ -150,6 +168,13 @@ fn build_from_sources(layout: &VendoredLayout) -> Result<(), VendoredBuildError>
     build_dav1d(layout, &dav1d_sources)?;
     build_ffmpeg(layout, &ffmpeg_sources)?;
     copy_license_files(layout, &dav1d_sources, &ffmpeg_sources)
+}
+
+/// Корень crate-а `ffmpeg-vendor`: от него лежат `patches/`.
+fn crate_root() -> Result<PathBuf, VendoredBuildError> {
+    env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .ok_or(VendoredBuildError::MissingCargoEnv("CARGO_MANIFEST_DIR"))
 }
 
 /// Собирает и устанавливает статическую dav1d в `dav1d_prefix`.
@@ -256,11 +281,21 @@ fn copy_license_files(
 }
 
 /// Отпечаток всех входов сборки: смена любого из них требует пересборки.
-fn build_fingerprint(layout: &VendoredLayout) -> String {
+///
+/// Сюда входит SHA-256 каждого патча исходников: правка патча обязана
+/// пересобрать FFmpeg, а не взять собранный без неё кэш.
+fn build_fingerprint(layout: &VendoredLayout) -> Result<String, VendoredBuildError> {
     let mut fingerprint_lines: Vec<String> = ALL_SOURCES
         .iter()
         .map(|source| format!("{} {} {}", source.slug, source.version, source.sha256))
         .collect();
+    fingerprint_lines.extend(
+        source_patches::patch_fingerprint_lines(&crate_root()?).map_err(|checksum_error| {
+            VendoredBuildError::SourcePatchUnreadable {
+                details: checksum_error.to_string(),
+            }
+        })?,
+    );
     fingerprint_lines
         .push(build_options::ffmpeg_configure_arguments(&layout.ffmpeg_prefix).join(" "));
     fingerprint_lines.push(
@@ -271,7 +306,7 @@ fn build_fingerprint(layout: &VendoredLayout) -> String {
         )
         .join(" "),
     );
-    fingerprint_lines.join("\n")
+    Ok(fingerprint_lines.join("\n"))
 }
 
 /// Сборка актуальна, если штамп совпадает и библиотеки на месте.

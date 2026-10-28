@@ -55,7 +55,8 @@ pub enum SoftwareFrameMemory {
     /// Свой `get_buffer2`: каждый кадр в одном блоке, выровненном по странице, со stride,
     /// кратным 256, — renderer может импортировать его в GPU без CPU-копии.
     /// Ставится только декодерам с `AV_CODEC_CAP_DR1`; остальные остаются на
-    /// `DecoderDefault` (например, libdav1d со своим пулом).
+    /// `DecoderDefault` (например, libdav1d системного FFmpeg со своим пулом; у
+    /// закреплённого FFmpeg DR1 даёт патч `ffmpeg-vendor`).
     ImportableBlocks {
         /// Какой памятью выделять блоки: анонимной (wgpu) или memfd (GLES2 dma-buf).
         memory: HostFrameMemoryKind,
@@ -304,8 +305,18 @@ impl CodecContext {
                 {
                     Some(HostFrameBlockPool::new(memory))
                 }
-                SoftwareFrameMemory::ImportableBlocks { .. }
-                | SoftwareFrameMemory::DecoderDefault => None,
+                SoftwareFrameMemory::ImportableBlocks { .. } => {
+                    // Fail-closed: путь «без копии» просили, но декодер не принимает
+                    // память приложения (например, libdav1d системного FFmpeg без патча
+                    // `ffmpeg-vendor`). Кадры честно идут копией; причина — в логе один
+                    // раз на открытие декодера, число копий — в счётчиках рендера.
+                    log::info!(
+                        "software decoder {selected_decoder_name} has no AV_CODEC_CAP_DR1: \
+                         frames stay in FFmpeg memory and are uploaded with a CPU copy"
+                    );
+                    None
+                }
+                SoftwareFrameMemory::DecoderDefault => None,
             };
             let mut context_owner = Self {
                 raw_context,

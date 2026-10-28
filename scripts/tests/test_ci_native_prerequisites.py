@@ -22,7 +22,8 @@ RUST_TOOLCHAIN_ACTION = (
     "dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88"
 )
 # Эти packages следуют из workspace manifests и build scripts. FFmpeg SDK не нужен:
-# crate ffmpeg-vendor собирает закреплённый FFmpeg + dav1d сам (meson/nasm/ninja).
+# crate ffmpeg-vendor собирает закреплённый FFmpeg + dav1d сам (meson/nasm/ninja) и
+# накладывает на исходники FFmpeg свои патчи строго через GNU patch (сессия 13 gles2-renderer).
 EXPECTED_WORKSPACE_NATIVE_PACKAGES = frozenset(
     {
         "clang",
@@ -34,6 +35,7 @@ EXPECTED_WORKSPACE_NATIVE_PACKAGES = frozenset(
         "meson",
         "nasm",
         "ninja-build",
+        "patch",
         "pkg-config",
     }
 )
@@ -56,6 +58,7 @@ EXPECTED_ALL_TARGET_NATIVE_PACKAGES = frozenset(
         "meson",
         "nasm",
         "ninja-build",
+        "patch",
         "pkg-config",
     }
 )

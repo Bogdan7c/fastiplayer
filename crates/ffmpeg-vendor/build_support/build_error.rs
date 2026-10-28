@@ -33,6 +33,22 @@ pub enum VendoredBuildError {
         log_path: PathBuf,
         log_tail: String,
     },
+    /// Файла патча исходников нет там, где его ждёт `src/source_patches.rs`.
+    SourcePatchMissing {
+        patch_name: &'static str,
+        patch_path: PathBuf,
+    },
+    /// Патч не лёг на закреплённую версию строго (без fuzz): его надо обновить.
+    SourcePatchDoesNotApply {
+        patch_name: &'static str,
+        patch_path: PathBuf,
+        library_name: &'static str,
+        library_version: &'static str,
+        log_path: PathBuf,
+        log_tail: String,
+    },
+    /// Файл патча не читается (нужен для отпечатка сборки).
+    SourcePatchUnreadable { details: String },
     /// Ошибка файловой системы.
     Io { action: String, source: io::Error },
     /// Нужная переменная окружения cargo отсутствует.
@@ -87,6 +103,33 @@ impl fmt::Display for VendoredBuildError {
                 "vendored FFmpeg step `{step_name}` failed; full log: {}\n--- log tail ---\n{log_tail}",
                 log_path.display()
             ),
+            Self::SourcePatchMissing {
+                patch_name,
+                patch_path,
+            } => write!(
+                formatter,
+                "Fastiplayer source patch `{patch_name}` is missing: expected {}",
+                patch_path.display()
+            ),
+            Self::SourcePatchDoesNotApply {
+                patch_name,
+                patch_path,
+                library_name,
+                library_version,
+                log_path,
+                log_tail,
+            } => write!(
+                formatter,
+                "Fastiplayer patch `{patch_name}` does not apply to {library_name} \
+                 {library_version} (strict mode, no fuzz). Update {} for this \
+                 {library_name} version and follow the migration checklist in \
+                 docs/dependency-patches.toml; full log: {}\n--- log tail ---\n{log_tail}",
+                patch_path.display(),
+                log_path.display()
+            ),
+            Self::SourcePatchUnreadable { details } => {
+                write!(formatter, "cannot read source patch: {details}")
+            }
             Self::Io { action, source } => write!(formatter, "cannot {action}: {source}"),
             Self::MissingCargoEnv(variable) => {
                 write!(

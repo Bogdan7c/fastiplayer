@@ -57,7 +57,7 @@ jobs:
       - name: Install workspace native prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libdrm-dev meson nasm ninja-build libgbm-dev libva-dev pkg-config
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libdrm-dev meson nasm ninja-build patch libgbm-dev libva-dev pkg-config
       # Явный +version не даёт runner подменить toolchain значением по умолчанию.
       - name: Check locked workspace
         run: cargo +${{ matrix.toolchain }} check --workspace --locked

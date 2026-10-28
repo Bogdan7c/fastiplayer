@@ -1,0 +1,296 @@
+Fastiplayer patch 0001 for FFmpeg 8.1.3: libdav1d direct rendering (AV_CODEC_CAP_DR1)
+
+Зачем
+  Обёртка dav1d (libavcodec/libdav1d.c) брала память кадров только из своего
+  внутреннего пула и не объявляла AV_CODEC_CAP_DR1. Поэтому get_buffer2()
+  приложения для AV1 не вызывался, и плеер не мог декодировать AV1 сразу в
+  память, которую видеокарта читает без копии (memfd → udmabuf у GLES2,
+  VK_EXT_external_memory_host у wgpu). AV1 оставался единственным программным
+  кодеком с копией кадра. Решения владельца 82–83, сессия 13 плана
+  user/gles2-renderer/.
+
+Что меняется
+  * Обёртка объявляет AV_CODEC_CAP_DR1.
+  * Если приложение поставило свой get_buffer2(), выделитель картинок dav1d
+    просит память у него (размеры дополнены до кратных 128, как требует dav1d).
+  * Ответ проверяется на контракт Dav1dPicAllocator: адреса и шаги плоскостей
+    кратны DAV1D_PICTURE_ALIGNMENT, у U и V один шаг, после каждой плоскости
+    запас DAV1D_PICTURE_ALIGNMENT байт внутри буфера. Не подошло — эта картинка
+    берётся из прежнего внутреннего пула, в лог одно предупреждение. Именно
+    отсутствие такой проверки было причиной, по которой upstream в 2019 году
+    не стал звать get_buffer2() (commit «avcodec/libdav1d: use a custom picture
+    allocator»).
+  * Со стандартным avcodec_default_get_buffer2() поведение прежнее: внутренний
+    пул.
+  * allocator_data картинки теперь AVFrame (со всеми буферами), выходной кадр
+    получает ссылки на все его буферы; cookie выделителя — AVCodecContext.
+  * Выходной кадр получает FrameDecodeData (ff_attach_decode_data), как того
+    требует libavcodec от каждого декодера с DR1 (av_assert0 в decode.c).
+
+Как проверить
+  cargo test -p ffmpeg-vendor --locked
+  cargo test -p video-ffmpeg --features vendored-ffmpeg --locked
+  (тесты direct_frame_buffers: AV1 8/10 бит и с зерном плёнки декодируются в
+  блоки приложения бит в бит как без колбэка; сквозные тесты GLES2/wgpu
+  показывают AV1 без CPU-копии.) Чек-лист миграции на новый FFmpeg —
+  docs/dependency-patches.toml, запись [[source_patch]].
+
+Upstream: кандидат на отправку в ffmpeg-devel (комментарии в коде уже на
+английском в стиле FFmpeg).
+
+--- a/libavcodec/libdav1d.c
++++ b/libavcodec/libdav1d.c
+@@ -48,6 +48,7 @@
+     AVBufferPool *pool;
+     DOVIContext dovi;
+     int pool_size;
++    int warned_unusable_get_buffer;
+ 
+     Dav1dData data;
+     int max_frame_delay;
+@@ -74,13 +75,108 @@
+     av_vlog(c, AV_LOG_ERROR, fmt, vl);
+ }
+ 
+-static int libdav1d_picture_allocator(Dav1dPicture *p, void *cookie)
++/* Checks that [start, start + size) lies inside one of the frame's buffers. */
++static int libdav1d_frame_buffer_holds(const AVFrame *f, const uint8_t *start,
++                                       size_t size)
+ {
+-    Libdav1dContext *dav1d = cookie;
+-    enum AVPixelFormat format = pix_fmt[p->p.layout][p->seq_hdr->hbd];
+-    int ret, linesize[4], h = FFALIGN(p->p.h, 128), w = FFALIGN(p->p.w, 128);
+-    uint8_t *aligned_ptr, *data[4];
++    uintptr_t begin = (uintptr_t)start;
++
++    for (int i = 0; i < FF_ARRAY_ELEMS(f->buf); i++) {
++        uintptr_t buf_begin, buf_end;
++
++        if (!f->buf[i])
++            continue;
++        buf_begin = (uintptr_t)f->buf[i]->data;
++        buf_end   = buf_begin + f->buf[i]->size;
++        if (begin >= buf_begin && begin < buf_end)
++            return size <= buf_end - begin;
++    }
++    return 0;
++}
++
++/*
++ * get_buffer2() gives no guarantee that the returned picture meets the
++ * libdav1d allocator contract (see Dav1dPicAllocator): every plane pointer and
++ * stride aligned to DAV1D_PICTURE_ALIGNMENT, chroma planes sharing one stride,
++ * and DAV1D_PICTURE_ALIGNMENT bytes of padding after each 128-aligned plane.
++ * Check all of it before handing the memory to libdav1d.
++ */
++static int libdav1d_frame_meets_dav1d_constraints(const AVFrame *f,
++                                                  enum AVPixelFormat format,
++                                                  int w, int h)
++{
++    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(format);
++    int planes = av_pix_fmt_count_planes(format);
++
++    if (!desc || planes <= 0 || planes > 3 || f->nb_extended_buf)
++        return 0;
++
++    for (int i = 0; i < planes; i++) {
++        int plane_h = i ? AV_CEIL_RSHIFT(h, desc->log2_chroma_h) : h;
++        // Check against the requested width, not f->width, which the callback could alter.
++        int min_linesize = av_image_get_linesize(format, w, i);
++
++        if (!f->data[i] || min_linesize <= 0 ||
++            f->linesize[i] < min_linesize ||
++            f->linesize[i] % DAV1D_PICTURE_ALIGNMENT ||
++            (uintptr_t)f->data[i] % DAV1D_PICTURE_ALIGNMENT)
++            return 0;
++        if (i == 2 && f->linesize[2] != f->linesize[1])
++            return 0;
++        if (!libdav1d_frame_buffer_holds(f, f->data[i],
++                                         (size_t)f->linesize[i] * plane_h +
++                                         DAV1D_PICTURE_ALIGNMENT))
++            return 0;
++    }
++    return 1;
++}
++
++/*
++ * Direct rendering: ask the caller's get_buffer2() for the picture memory.
++ * On success *out holds the frame, or stays NULL if the caller's picture does
++ * not meet the libdav1d constraints and the internal pool must be used.
++ */
++static int libdav1d_caller_frame(AVCodecContext *c, AVFrame **out,
++                                 enum AVPixelFormat format, int w, int h)
++{
++    Libdav1dContext *dav1d = c->priv_data;
++    AVFrame *f = av_frame_alloc();
++    int ret;
++
++    if (!f)
++        return AVERROR(ENOMEM);
++
++    f->format = format;
++    f->width  = w;
++    f->height = h;
++    ret = c->get_buffer2(c, f, AV_GET_BUFFER_FLAG_REF);
++    if (ret < 0) {
++        av_frame_free(&f);
++        return ret;
++    }
++
++    if (!libdav1d_frame_meets_dav1d_constraints(f, format, w, h)) {
++        if (!dav1d->warned_unusable_get_buffer) {
++            av_log(c, AV_LOG_WARNING, "get_buffer2() returned a picture that "
++                   "does not meet libdav1d alignment or padding requirements, "
++                   "falling back to the internal pool\n");
++            dav1d->warned_unusable_get_buffer = 1;
++        }
++        av_frame_free(&f);
++        return 0;
++    }
++
++    *out = f;
++    return 0;
++}
++
++static int libdav1d_pool_frame(Libdav1dContext *dav1d, AVFrame **out,
++                               enum AVPixelFormat format, int w, int h)
++{
++    int ret;
++    uint8_t *aligned_ptr;
+     AVBufferRef *buf;
++    AVFrame *f;
+ 
+     ret = av_image_get_buffer_size(format, w, h, DAV1D_PICTURE_ALIGNMENT);
+     if (ret < 0)
+@@ -100,33 +196,80 @@
+     if (!buf)
+         return AVERROR(ENOMEM);
+ 
++    f = av_frame_alloc();
++    if (!f) {
++        av_buffer_unref(&buf);
++        return AVERROR(ENOMEM);
++    }
++    f->buf[0] = buf;
++
+     // libdav1d requires DAV1D_PICTURE_ALIGNMENT aligned buffers, which av_malloc()
+     // doesn't guarantee for example when AVX is disabled at configure time.
+     // Use the extra DAV1D_PICTURE_ALIGNMENT padding bytes in the buffer to align it
+     // if required.
+     aligned_ptr = (uint8_t *)FFALIGN((uintptr_t)buf->data, DAV1D_PICTURE_ALIGNMENT);
+-    ret = av_image_fill_arrays(data, linesize, aligned_ptr, format, w, h,
++    ret = av_image_fill_arrays(f->data, f->linesize, aligned_ptr, format, w, h,
+                                DAV1D_PICTURE_ALIGNMENT);
+     if (ret < 0) {
+-        av_buffer_unref(&buf);
++        av_frame_free(&f);
+         return ret;
+     }
+ 
+-    p->data[0] = data[0];
+-    p->data[1] = data[1];
+-    p->data[2] = data[2];
+-    p->stride[0] = linesize[0];
+-    p->stride[1] = linesize[1];
+-    p->allocator_data = buf;
++    *out = f;
++    return 0;
++}
++
++static int libdav1d_picture_allocator(Dav1dPicture *p, void *cookie)
++{
++    AVCodecContext *c = cookie;
++    Libdav1dContext *dav1d = c->priv_data;
++    enum AVPixelFormat format = pix_fmt[p->p.layout][p->seq_hdr->hbd];
++    int ret, h = FFALIGN(p->p.h, 128), w = FFALIGN(p->p.w, 128);
++    AVFrame *f = NULL;
++
++    // The default get_buffer2() keeps the internal pool: it is equivalent and
++    // already satisfies the libdav1d constraints.
++    if (c->get_buffer2 != avcodec_default_get_buffer2) {
++        ret = libdav1d_caller_frame(c, &f, format, w, h);
++        if (ret < 0)
++            return ret;
++    }
++    if (!f) {
++        ret = libdav1d_pool_frame(dav1d, &f, format, w, h);
++        if (ret < 0)
++            return ret;
++    }
++
++    p->data[0] = f->data[0];
++    p->data[1] = f->data[1];
++    p->data[2] = f->data[2];
++    p->stride[0] = f->linesize[0];
++    p->stride[1] = f->linesize[1];
++    p->allocator_data = f;
+ 
+     return 0;
+ }
+ 
++// May be called from any libdav1d frame thread; av_frame_free() is thread-safe
++// for distinct frames and the buffers are reference counted.
+ static void libdav1d_picture_release(Dav1dPicture *p, void *cookie)
+ {
+-    AVBufferRef *buf = p->allocator_data;
++    AVFrame *f = p->allocator_data;
+ 
+-    av_buffer_unref(&buf);
++    av_frame_free(&f);
++}
++
++/* Gives the output frame its own references to the picture's buffers. */
++static int libdav1d_ref_picture_buffers(AVFrame *frame, const AVFrame *picture)
++{
++    for (int i = 0; i < FF_ARRAY_ELEMS(picture->buf); i++) {
++        if (!picture->buf[i])
++            continue;
++        frame->buf[i] = av_buffer_ref(picture->buf[i]);
++        if (!frame->buf[i])
++            return AVERROR(ENOMEM);
++    }
++    return 0;
+ }
+ 
+ static void libdav1d_init_params(AVCodecContext *c, const Dav1dSequenceHeader *seq)
+@@ -221,7 +364,7 @@
+     dav1d_default_settings(&s);
+     s.logger.cookie = c;
+     s.logger.callback = libdav1d_log_callback;
+-    s.allocator.cookie = dav1d;
++    s.allocator.cookie = c;
+     s.allocator.alloc_picture_callback = libdav1d_picture_allocator;
+     s.allocator.release_picture_callback = libdav1d_picture_release;
+     s.frame_size_limit = c->max_pixels;
+@@ -453,11 +596,16 @@
+     av_assert0(p->data[0] && p->allocator_data);
+ 
+     // This requires the custom allocator above
+-    frame->buf[0] = av_buffer_ref(p->allocator_data);
+-    if (!frame->buf[0]) {
+-        dav1d_picture_unref(p);
+-        return AVERROR(ENOMEM);
+-    }
++    res = libdav1d_ref_picture_buffers(frame, p->allocator_data);
++    if (res < 0)
++        goto fail;
++
++    // Every output frame of a DR1 decoder must carry decode data (see the
++    // av_assert0() in decode_receive_frame_internal()); ff_get_buffer() would
++    // attach it, but libdav1d pictures are allocated through Dav1dPicAllocator.
++    res = ff_attach_decode_data(frame);
++    if (res < 0)
++        goto fail;
+ 
+     frame->data[0] = p->data[0];
+     frame->data[1] = p->data[1];
+@@ -672,7 +820,8 @@
+     .close          = libdav1d_close,
+     .flush          = libdav1d_flush,
+     FF_CODEC_RECEIVE_FRAME_CB(libdav1d_receive_frame),
+-    .p.capabilities = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_OTHER_THREADS,
++    .p.capabilities = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_OTHER_THREADS |
++                      AV_CODEC_CAP_DR1,
+     .caps_internal  = FF_CODEC_CAP_SETS_FRAME_PROPS |
+                       FF_CODEC_CAP_AUTO_THREADS,
+     .p.priv_class   = &libdav1d_class,

@@ -353,8 +353,9 @@ impl HostPlanarFrameOwner for AvFrameHostPlanarOwner {
     /// пул (`SoftwareFrameMemory::ImportableBlocks`, cpu-parity 08b).
     ///
     /// Offset plane-ы — расстояние от начала блока до `AVFrame.data[i]`; что все видимые
-    /// строки лежат внутри блока, проверяет descriptor. Кадр без блока (AV1/dav1d,
-    /// fallback `get_buffer2`) или plane вне блока — `None`, renderer идёт через staging.
+    /// строки лежат внутри блока, проверяет descriptor. Кадр без блока (fallback
+    /// `get_buffer2`, декодер без `DR1` — например AV1 при системном FFmpeg без патча
+    /// `ffmpeg-vendor`) или plane вне блока — `None`, renderer идёт через staging.
     fn importable_memory(
         &self,
         planes: &[HostPlaneDescriptor],

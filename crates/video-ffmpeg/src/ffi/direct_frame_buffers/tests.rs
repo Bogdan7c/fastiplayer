@@ -4,6 +4,16 @@
 //! обычным выделением FFmpeg и в наши блоки, видимые plane-ы каждого кадра должны
 //! совпасть. Плюс проверка того, ради чего всё делается: кадр лежит в одном блоке,
 //! выровненном по странице, со stride, кратным 256, а блоки переиспользуются.
+//!
+//! AV1 (libdav1d) получил `AV_CODEC_CAP_DR1` патчем FFmpeg (сессия 13 плана gles2-renderer):
+//! те же проверки для 8 и 10 бит и для кадров с зерном плёнки, а проверку контракта dav1d
+//! внутри патча закрепляет `dav1d_constraints`.
+
+// DR1 у libdav1d есть только у закреплённого FFmpeg с патчем `ffmpeg-vendor`.
+#[cfg(feature = "vendored-ffmpeg")]
+mod av1_lifecycle;
+#[cfg(feature = "vendored-ffmpeg")]
+mod dav1d_constraints;
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -19,7 +29,7 @@ use crate::ffi::codec_context::{CodecContext, FfmpegCodecContextRequest, Softwar
 use crate::ffi::error::FfmpegErrorKind;
 use crate::ffi::frame::OwnedAvFrame;
 use crate::ffi::packet::OwnedAvPacket;
-use crate::ffi::pixel_format::SoftwarePixelFormatSet;
+use crate::ffi::pixel_format::{SoftwarePixelFormat, SoftwarePixelFormatSet};
 
 /// Размер кадра фикстур (`tests/fixtures/direct-frame-buffers/generate.sh`).
 const FIXTURE_WIDTH: usize = 176;
@@ -27,7 +37,7 @@ const FIXTURE_HEIGHT: usize = 100;
 /// Кадров в каждой фикстуре.
 const FIXTURE_FRAME_COUNT: usize = 12;
 
-/// Видимые plane-ы одного кадра 4:2:0 8-bit, построчно без padding-а.
+/// Видимые plane-ы одного кадра 4:2:0 (8 или 10 бит), построчно без padding-а.
 #[derive(Debug, PartialEq, Eq)]
 struct VisibleFramePlanes {
     planes: [Vec<u8>; 3],
@@ -122,11 +132,27 @@ fn open_decoder(decoder_id: FfmpegDecoderId, frame_memory: SoftwareFrameMemory) 
     CodecContext::open(&request).unwrap_or_else(|error| panic!("open {decoder_id:?}: {error}"))
 }
 
+/// Байт на отсчёт у формата кадра фикстуры: все фикстуры — 4:2:0 8 или 10 бит.
+fn fixture_bytes_per_sample(frame: &OwnedAvFrame) -> usize {
+    match SoftwarePixelFormat::from_av_format_code(frame.raw_format_code()) {
+        Some(SoftwarePixelFormat::Yuv420Planar8) => 1,
+        Some(SoftwarePixelFormat::Yuv420Planar10Le) => 2,
+        other => panic!("fixtures are 4:2:0 8/10-bit, got {other:?}"),
+    }
+}
+
 fn visible_planes(frame: &OwnedAvFrame) -> VisibleFramePlanes {
+    let bytes_per_sample = fixture_bytes_per_sample(frame);
     let plane_sizes = [
-        (FIXTURE_WIDTH, FIXTURE_HEIGHT),
-        (FIXTURE_WIDTH.div_ceil(2), FIXTURE_HEIGHT.div_ceil(2)),
-        (FIXTURE_WIDTH.div_ceil(2), FIXTURE_HEIGHT.div_ceil(2)),
+        (FIXTURE_WIDTH * bytes_per_sample, FIXTURE_HEIGHT),
+        (
+            FIXTURE_WIDTH.div_ceil(2) * bytes_per_sample,
+            FIXTURE_HEIGHT.div_ceil(2),
+        ),
+        (
+            FIXTURE_WIDTH.div_ceil(2) * bytes_per_sample,
+            FIXTURE_HEIGHT.div_ceil(2),
+        ),
     ];
     let planes = plane_sizes.map(|_| Vec::new());
     let mut planes = planes;
@@ -363,10 +389,13 @@ fn frames_keep_their_block_after_decoder_is_closed() {
     assert_eq!(visible_planes(&kept_frame), pixels_before_close);
 }
 
+/// Системный FFmpeg (`system-ffmpeg`) патча не получает: libdav1d без DR1, наш get_buffer2 ему
+/// не ставится, и AV1 честно остаётся на выделении FFmpeg (кадры идут копией). Если этот тест
+/// упал, upstream дал libdav1d DR1 — пора проверить removal gate патча в
+/// `docs/dependency-patches.toml`.
 #[test]
-fn decoder_without_dr1_keeps_ffmpeg_allocation() {
-    // libdav1d (AV1) не объявляет `AV_CODEC_CAP_DR1`: наш get_buffer2 ему не ставится,
-    // и запрос ImportableBlocks молча остаётся на выделении FFmpeg (без пула).
+#[cfg(not(feature = "vendored-ffmpeg"))]
+fn av1_with_system_ffmpeg_keeps_ffmpeg_allocation() {
     let context = open_decoder(
         FfmpegDecoderId::Av1,
         SoftwareFrameMemory::ImportableBlocks {
@@ -375,6 +404,47 @@ fn decoder_without_dr1_keeps_ffmpeg_allocation() {
     );
 
     assert!(context.frame_block_pool_stats().is_none());
+}
+
+#[test]
+#[cfg(feature = "vendored-ffmpeg")]
+fn av1_frames_decoded_into_importable_blocks_match_ffmpeg_default() {
+    // Без патча FFmpeg libdav1d не объявляет DR1: пула нет, и здесь падает
+    // `unreachable!("ImportableBlocks context has a pool")` (мутация «обёртка снова
+    // со своим выделителем»).
+    let packets = ivf_packets(&fixture_bytes("av1-176x100-12frames.ivf"));
+
+    assert_direct_buffers_match_default(FfmpegDecoderId::Av1, &packets);
+}
+
+#[test]
+#[cfg(feature = "vendored-ffmpeg")]
+fn av1_10bit_frames_decoded_into_importable_blocks_match_ffmpeg_default() {
+    let packets = ivf_packets(&fixture_bytes("av1-10bit-176x100-12frames.ivf"));
+
+    assert_direct_buffers_match_default(FfmpegDecoderId::Av1, &packets);
+}
+
+#[test]
+#[cfg(feature = "vendored-ffmpeg")]
+fn av1_film_grain_frames_decoded_into_importable_blocks_match_ffmpeg_default() {
+    // dav1d накладывает зерно во вторую картинку — она тоже обязана прийти из нашего
+    // get_buffer2 и совпасть побайтно (зерно детерминировано: seed в заголовке кадра).
+    let packets = ivf_packets(&fixture_bytes("av1-filmgrain-176x100-12frames.ivf"));
+
+    assert_direct_buffers_match_default(FfmpegDecoderId::Av1, &packets);
+}
+
+#[test]
+#[cfg(feature = "vendored-ffmpeg")]
+fn av1_frames_decoded_into_memfd_blocks_match_ffmpeg_default() {
+    let packets = ivf_packets(&fixture_bytes("av1-176x100-12frames.ivf"));
+
+    assert_blocks_match_default(
+        FfmpegDecoderId::Av1,
+        &packets,
+        HostFrameMemoryKind::SealedMemfd,
+    );
 }
 
 #[test]

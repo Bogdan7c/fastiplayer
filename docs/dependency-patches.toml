@@ -146,3 +146,27 @@ dependent_crates = ["egui-winit", "app-egui"]
 focused_automated_tests = ["cargo test --manifest-path crates/smithay-clipboard-patch/Cargo.toml --locked", "cargo check --workspace --all-targets --locked"]
 manual_media_matrix = ["тесты tests/ запускаются в живой Wayland-сессии (без WAYLAND_DISPLAY пропускаются): до патча worker_wakeups ловит ~200 пробуждений на 200 событий чужой очереди", "wl-copy -> Ctrl+V в поле Add URL fastiplayer на KDE Wayland, в том числе первая вставка после запуска", "Ctrl+C в текстовом поле fastiplayer -> wl-paste и вставка в другое приложение", "вставка в fastiplayer собственного скопированного текста", "поток smithay-clipboa при воспроизведении: ~1 пробуждение/с вместо ~100"]
 removal_gate = "Удалить, когда upstream smithay-clipboard (или egui-winit) перестанет опрашивать общий сокет в отдельном потоке без своих событий; проверка — тест worker_wakeups на upstream-версии и живой замер потока при воспроизведении."
+
+# Патчи исходников закреплённого FFmpeg (не crate-ы и не [replace]): unified diff в
+# crates/ffmpeg-vendor/patches/<версия>/, накладывается GNU patch строго (без fuzz, сначала
+# --dry-run) сразу после распаковки, до configure; SHA-256 патча входит в штамп сборки.
+# Решения владельца 82–83, сессия 13 плана user/gles2-renderer/.
+[[source_patch]]
+name = "0001-libdav1d-direct-rendering"
+file = "crates/ffmpeg-vendor/patches/ffmpeg-8.1.3/0001-libdav1d-direct-rendering.patch"
+target_library = "FFmpeg"
+target_version = "8.1.3"
+# Сумма проверенного содержимого: правка патча требует обновить её здесь (checker сверяет).
+sha256 = "c940c9b50180980ed060d0f25e1c72c0d950ba0b30f8214f2b5a2352d1d3e5a3"
+reason = "Обёртка libdav1d брала память кадров только из своего пула и не объявляла AV_CODEC_CAP_DR1, поэтому get_buffer2 плеера для AV1 не вызывался и программный AV1 был единственным кодеком с CPU-копией кадра (GLES2: memfd → udmabuf, wgpu: VK_EXT_external_memory_host). Патч: DR1; при своём get_buffer2 приложения выделитель картинок dav1d берёт память у него (размеры до кратных 128), проверяет контракт Dav1dPicAllocator (адреса и шаги кратны 64, общий шаг U/V, запас 64 байта) и при несоответствии берёт внутренний пул; со стандартным get_buffer2 — прежний пул; выходной кадр ссылается на все буферы картинки и получает FrameDecodeData (ff_attach_decode_data)."
+owned_diff_areas = ["libavcodec/libdav1d.c"]
+focused_automated_tests = ["cargo test -p ffmpeg-vendor --locked", "cargo test -p video-ffmpeg --features vendored-ffmpeg --locked --lib direct_frame_buffers", "cargo test -p video-ffmpeg --features vendored-ffmpeg --locked --test direct_frame_upload_wgpu -- --include-ignored", "cargo test -p render-gles2-shell --locked --test ffmpeg_decoder_to_shell"]
+manual_media_matrix = ["AV1 1080p60 и 4K60 8 бит, video.preferred_backend = software, рендер GLES2 (профиль opengles): кадры без CPU-копии (сводка software zero-copy в логе)", "те же файлы на wgpu (Auto): frames_without_cpu_copy растёт, frames_through_staging не растёт", "AV1 10 бит HDR 4K: без копии на обоих рендерах, картинка как раньше", "seek-шторм, смена файла и выход во время AV1 без утечек и падений"]
+removal_gate = "Удалить, когда upstream FFmpeg научит libdav1d звать get_buffer2 приложения с проверкой контракта dav1d (или эквивалентный DR1), и тесты direct_frame_buffers/ffmpeg_decoder_to_shell/direct_frame_upload_wgpu проходят на чистом upstream."
+migration_checklist = [
+    "Перенести файл в crates/ffmpeg-vendor/patches/ffmpeg-<новая версия>/ (git mv) и обновить target_version здесь; FFMPEG_SOURCE в src/sources.rs уже указывает новую версию.",
+    "Наложить на чистый исходник: patch -p1 --fuzz=0 --forward --dry-run -d ffmpeg-<версия> -i <патч>; конфликты разрешить руками в libavcodec/libdav1d.c и пересоздать diff (diff -u a/… b/…), заголовок патча сохранить.",
+    "Сверить с новой версией: изменился ли контракт Dav1dPicAllocator (DAV1D_PICTURE_ALIGNMENT, запас, общий шаг U/V) и правило «каждый кадр DR1-декодера несёт FrameDecodeData» (av_assert0 в decode.c); не появился ли DR1 у libdav1d в upstream (тогда патч удалить по removal_gate).",
+    "Обновить sha256 этой записи (scripts/check-dependency-patches.py сверяет) и прогнать focused_automated_tests.",
+    "Прогнать manual_media_matrix на основной машине в обоих рендерах.",
+]

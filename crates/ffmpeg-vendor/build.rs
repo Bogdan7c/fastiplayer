@@ -3,10 +3,11 @@
 //! Этот crate существует ради своего build script-а. Он:
 //! 1. берёт архивы dav1d и FFmpeg (локально по env или скачивает) и
 //!    обязательно сверяет их SHA-256;
-//! 2. собирает dav1d статически с PIC, а FFmpeg — минимальным LGPL-набором
+//! 2. накладывает наши патчи исходников (`patches/`, строго, GNU `patch`);
+//! 3. собирает dav1d статически с PIC, а FFmpeg — минимальным LGPL-набором
 //!    в `libavcodec_fastiplayer.so` и `libavutil_fastiplayer.so` (уникальные
 //!    имена не путаются с системным FFmpeg; dav1d оказывается внутри libavcodec);
-//! 3. отдаёт прямым зависимым (`links = "fastiplayer_ffmpeg_vendor"`)
+//! 4. отдаёт прямым зависимым (`links = "fastiplayer_ffmpeg_vendor"`)
 //!    метаданные: `prefix`, `link_libraries`, `runtime_lib_dir`,
 //!    `runtime_libraries`, `license_dir`.
 //!
@@ -20,6 +21,8 @@ mod build_options;
 mod checksum;
 #[path = "src/soname.rs"]
 mod soname;
+#[path = "src/source_patches.rs"]
+mod source_patches;
 #[path = "src/sources.rs"]
 mod sources;
 
@@ -30,6 +33,8 @@ mod archives;
 mod build_error;
 #[path = "build_support/commands.rs"]
 mod commands;
+#[path = "build_support/source_patching.rs"]
+mod source_patching;
 #[path = "build_support/vendored_build.rs"]
 mod vendored_build;
 
@@ -44,7 +49,16 @@ use vendored_build::{VendoredFfmpegInstall, VendoredLayout};
 const METADATA_LIST_SEPARATOR: &str = ";";
 
 fn main() {
-    // Пересборка нужна только при смене пути к локальному архиву.
+    // Любая директива `rerun-if-*` выключает «перезапуск при изменении любого
+    // файла crate-а» (Cargo Book, Build Scripts → Change Detection). Поэтому
+    // каталог патчей называем явно: правка патча обязана разбудить build
+    // script, а нужна ли пересборка FFmpeg, решает отпечаток (там SHA-256
+    // каждого патча). Сам build script и его модули cargo пересобирает сам.
+    println!(
+        "cargo::rerun-if-changed={}",
+        source_patches::PATCHES_DIRECTORY
+    );
+    // Пересборка нужна также при смене пути к локальному архиву.
     for source in sources::ALL_SOURCES {
         println!("cargo::rerun-if-env-changed={}", source.local_archive_env);
     }

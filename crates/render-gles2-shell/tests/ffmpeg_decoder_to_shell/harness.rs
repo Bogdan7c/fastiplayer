@@ -1,29 +1,3 @@
-//! Видео из НАСТОЯЩЕГО FFmpeg-декодера доходит до показа в GLES2-рендере (сессия 09 плана
-//! gles2-renderer): production-цепочка плеера целиком, кроме окна и приложения.
-//!
-//! FFmpeg decoder thread (VP9, кадры в блоках нашего `get_buffer2`, stride больше видимой
-//! ширины) → `prepare_video_import` (обёртка освобождения по fence) → `install_video_import` →
-//! аренда кадра → `materialize` → `acquire_surface_frame` → `render_frame` → `Presented` с
-//! ожидаемым pts и пикселями. Каждый пиксель каждого кадра сверяется с CPU-формулой цвета по
-//! байтам того же дескриптора; все кадры возвращаются декодеру ровно по одному разу по fence.
-//!
-//! Фикстура — закоммиченный маленький синтетический IVF из `crates/video-ffmpeg` (генерация —
-//! `tests/fixtures/direct-frame-buffers/generate.sh` там же, источник `testsrc2`).
-//!
-//! Без EGL тест пропускается с причиной; `GLES2_EGUI_REQUIRE_EGL=1` превращает пропуск в
-//! падение. Аппаратный VA-API путь здесь не гоняется (нужна видеокарта и файл владельца): его
-//! покрывают `dma_buf_frame_to_screen` (настоящие буферы ядра `udmabuf`) и стенд
-//! `video-vaapi/examples/gles2_dmabuf_bench.rs`, а живую приёмку делает главный агент.
-
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "integration test: panics are test assertions; pixel math on tiny frames"
-)]
-
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -34,8 +8,8 @@ use gles2_video::{VideoColorConversion, YuvColorEncoding, YuvMatrix, YuvRange};
 use media_core::{TimeBase, TrackId, TrackTimestamp};
 use render_core::{RenderLiveSettings, RenderViewport};
 use render_gles2_shell::{
-    Gles2Renderer, SoftwareZeroCopyDisabled, SoftwareZeroCopyState, VideoDrawPlan, VideoPlacement,
-    renderable_frame,
+    Gles2Renderer, SoftwareZeroCopyDisabled, SoftwareZeroCopyState, SoftwareZeroCopyStats,
+    VideoDrawPlan, VideoPlacement, renderable_frame,
 };
 use render_shell_api::{
     DecoderSurfacePoolSlots, EguiFrameContent, FrameMaterializationOutcome, RenderFrameInput,
@@ -55,14 +29,12 @@ use video_present_core::{
     VideoFrameReleaseSink,
 };
 
-const VP9_FIXTURE: &str =
-    "../video-ffmpeg/tests/fixtures/direct-frame-buffers/vp9-176x100-12frames.ivf";
-/// 10-битный VP9 profile 2 (yuv420p10le): те же источник, размер и число кадров.
-const VP9_10BIT_FIXTURE: &str =
-    "../video-ffmpeg/tests/fixtures/direct-frame-buffers/vp9-10bit-176x100-12frames.ivf";
-const FIXTURE_FRAME_COUNT: usize = 12;
+/// Каталог фикстур `crates/video-ffmpeg` (генерация — `generate.sh` там же, источник
+/// `testsrc2`): все потоки 176×100, 12 кадров по 5 в секунду, IVF.
+const FIXTURE_DIRECTORY: &str = "../video-ffmpeg/tests/fixtures/direct-frame-buffers";
+pub(crate) const FIXTURE_FRAME_COUNT: usize = 12;
 const FIXTURE_FRAME_INTERVAL: Duration = Duration::from_millis(200);
-const VP9_TRACK_ID: TrackId = TrackId::new(1);
+const FIXTURE_TRACK_ID: TrackId = TrackId::new(1);
 const FRAME_SIZE: [u32; 2] = [176, 100];
 const REQUIRE_EGL_VARIABLE: &str = "GLES2_EGUI_REQUIRE_EGL";
 const DECODER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -76,10 +48,13 @@ enum PixelCheck {
     LeftToCaller,
 }
 
-/// Описание потока фикстуры: файл, контракт кадра хоста и способ сверки пикселей.
+/// Описание потока фикстуры: кодек, файл, контракт кадра хоста и способ сверки пикселей.
 #[derive(Clone)]
-struct FixtureStream {
-    ivf_path: &'static str,
+pub(crate) struct FixtureStream {
+    codec: VideoCodec,
+    /// Код кодека в заголовке IVF (`VP90`, `AV01`): защищает от перепутанного файла.
+    ivf_fourcc: [u8; 4],
+    ivf_file_name: &'static str,
     contract: VideoFrameContract,
     pixel_check: PixelCheck,
     /// Цвет, который приложение определяет по контейнеру; 10-битному плану рисования он обязателен
@@ -88,41 +63,78 @@ struct FixtureStream {
 }
 
 impl FixtureStream {
-    fn vp9_8bit() -> Self {
+    /// 8 бит 4:2:0: каждый пиксель сверяется с CPU-формулой цвета.
+    fn eight_bit(codec: VideoCodec, ivf_fourcc: [u8; 4], ivf_file_name: &'static str) -> Self {
         Self {
-            ivf_path: VP9_FIXTURE,
+            codec,
+            ivf_fourcc,
+            ivf_file_name,
             contract: VideoFrameContract::host_yuv420_planar8(),
             pixel_check: PixelCheck::Cpu8BitReference,
             resolved_color: None,
         }
     }
 
-    fn vp9_10bit() -> Self {
+    /// 10 бит 4:2:0: эталонной формулы нет, кадры сверяются путь «копия» против «без копии».
+    fn ten_bit(codec: VideoCodec, ivf_fourcc: [u8; 4], ivf_file_name: &'static str) -> Self {
         Self {
-            ivf_path: VP9_10BIT_FIXTURE,
+            codec,
+            ivf_fourcc,
+            ivf_file_name,
             contract: VideoFrameContract::host_yuv420_planar10le(),
             pixel_check: PixelCheck::LeftToCaller,
             resolved_color: Some(VideoColorMetadata::sdr_bt709_limited()),
         }
     }
+
+    pub(crate) fn vp9_8bit() -> Self {
+        Self::eight_bit(VideoCodec::Vp9, *b"VP90", "vp9-176x100-12frames.ivf")
+    }
+
+    /// VP9 profile 2 (yuv420p10le).
+    pub(crate) fn vp9_10bit() -> Self {
+        Self::ten_bit(VideoCodec::Vp9, *b"VP90", "vp9-10bit-176x100-12frames.ivf")
+    }
+
+    pub(crate) fn av1_8bit() -> Self {
+        Self::eight_bit(VideoCodec::Av1, *b"AV01", "av1-176x100-12frames.ivf")
+    }
+
+    pub(crate) fn av1_10bit() -> Self {
+        Self::ten_bit(VideoCodec::Av1, *b"AV01", "av1-10bit-176x100-12frames.ivf")
+    }
+
+    /// 8 бит с зерном плёнки: dav1d накладывает зерно во вторую картинку, и CPU-эталон
+    /// считается по байтам именно её (байты дескриптора показанного кадра).
+    pub(crate) fn av1_film_grain() -> Self {
+        Self::eight_bit(
+            VideoCodec::Av1,
+            *b"AV01",
+            "av1-filmgrain-176x100-12frames.ivf",
+        )
+    }
 }
 
 /// Показанный кадр: pts и RGBA-пиксели экрана после чтения обратно.
-struct PresentedImage {
-    pts: Duration,
-    rgba: Vec<u8>,
+pub(crate) struct PresentedImage {
+    pub(crate) pts: Duration,
+    pub(crate) rgba: Vec<u8>,
 }
 
 /// Режет IVF на пакеты-кадры (32-байтный заголовок файла, 12-байтный заголовок кадра).
-fn read_vp9_ivf_packets(ivf_path: &str) -> Vec<Bytes> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(ivf_path);
-    let file_bytes = std::fs::read(&path).unwrap_or_else(|error| {
-        panic!(
-            "VP9 IVF fixture {} is not readable: {error}",
-            path.display()
-        )
-    });
-    assert_eq!(&file_bytes[8..12], b"VP90", "IVF fourcc must be VP9");
+/// У AV1 кадр IVF — ровно один temporal unit, как пакет от демуксера.
+fn read_ivf_packets(stream: &FixtureStream) -> Vec<Bytes> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(FIXTURE_DIRECTORY)
+        .join(stream.ivf_file_name);
+    let file_bytes = std::fs::read(&path)
+        .unwrap_or_else(|error| panic!("IVF fixture {} is not readable: {error}", path.display()));
+    assert_eq!(
+        &file_bytes[8..12],
+        &stream.ivf_fourcc,
+        "IVF fourcc of {}",
+        stream.ivf_file_name
+    );
     let mut packets = Vec::new();
     let mut offset = 32;
     while offset + 12 <= file_bytes.len() {
@@ -275,7 +287,7 @@ fn drain_tail(decoder: &VideoBackendDecoderThreadHandle, mut on_frame: impl FnMu
         if drained {
             return;
         }
-        assert!(Instant::now() < deadline, "VP9 EOF drain timeout");
+        assert!(Instant::now() < deadline, "EOF drain timeout");
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -373,7 +385,7 @@ fn show_and_verify(
     let pixels = renderer.read_offscreen_pixels().expect("readback");
     if matches!(pixel_check, PixelCheck::Cpu8BitReference) {
         let VideoColorConversion::Sdr { encoding, .. } = color else {
-            panic!("8-bit VP9 is drawn through the SDR conversion");
+            panic!("8-bit frames are drawn through the SDR conversion");
         };
         for y in 0..FRAME_SIZE[1] {
             for x in 0..FRAME_SIZE[0] {
@@ -397,62 +409,6 @@ fn show_and_verify(
     drop(lease);
 }
 
-/// Настоящий декодер → контракт рендера → экран, кадр за кадром, с возвратом кадров декодеру.
-#[test]
-fn ffmpeg_vp9_frames_are_presented_by_the_gles2_renderer_and_returned_to_the_decoder() {
-    let Some((renderer, _images)) = present_fixture_through_renderer(
-        "ffmpeg_vp9_frames_are_presented_by_the_gles2_renderer_and_returned_to_the_decoder",
-        HostFrameMemoryKind::Anonymous,
-        FixtureStream::vp9_8bit(),
-    ) else {
-        return;
-    };
-    // Обычная память декодера (заказ wgpu): каждый кадр — одна копия, путь без копии не берётся.
-    let software = renderer.software_zero_copy_stats();
-    assert_eq!(
-        software.frames_through_upload, FIXTURE_FRAME_COUNT as u64,
-        "{software:?}"
-    );
-    assert_eq!(software.frames_without_cpu_copy, 0, "{software:?}");
-}
-
-/// То же, но декодер пишет кадры в запечатанные memfd-блоки (заказ GLES2, сессия 12): каждый
-/// кадр доходит до экрана БЕЗ CPU-копии (udmabuf → EGLImage), с теми же пикселями (сверка
-/// `show_and_verify` с CPU-формулой цвета), и возвращается декодеру по fence.
-#[test]
-fn ffmpeg_vp9_frames_in_memfd_blocks_reach_the_screen_without_a_cpu_copy() {
-    let Some((renderer, _images)) = present_fixture_through_renderer(
-        "ffmpeg_vp9_frames_in_memfd_blocks_reach_the_screen_without_a_cpu_copy",
-        HostFrameMemoryKind::SealedMemfd,
-        FixtureStream::vp9_8bit(),
-    ) else {
-        return;
-    };
-    let software = renderer.software_zero_copy_stats();
-    if let SoftwareZeroCopyState::Disabled(
-        reason @ (SoftwareZeroCopyDisabled::UdmabufUnavailable
-        | SoftwareZeroCopyDisabled::DriverCannotImportDmaBuf),
-    ) = software.state
-    {
-        eprintln!("skip zero-copy assertions: the path is unavailable here: {reason:?}");
-        assert_eq!(software.frames_through_upload, FIXTURE_FRAME_COUNT as u64);
-        return;
-    }
-    assert!(
-        matches!(software.state, SoftwareZeroCopyState::Enabled(_)),
-        "{software:?}"
-    );
-    assert_eq!(
-        software.frames_without_cpu_copy, FIXTURE_FRAME_COUNT as u64,
-        "{software:?}"
-    );
-    assert_eq!(software.frames_through_upload, 0, "{software:?}");
-    assert!(
-        (1..=FIXTURE_FRAME_COUNT as u64).contains(&software.dma_bufs_created),
-        "one dma-buf per decoder block: {software:?}"
-    );
-}
-
 /// Допуск сравнения путей копии и без копии: ±1 на канал (округление шейдера).
 const PATH_PARITY_TOLERANCE: u8 = 1;
 
@@ -466,101 +422,6 @@ fn lit_pixel_count(rgba: &[u8]) -> usize {
         .iter()
         .filter(|pixel| pixel[..3].iter().any(|&channel| channel > 32))
         .count()
-}
-
-/// 10-битный VP9 из настоящего FFmpeg доходит до экрана GLES2 БЕЗ CPU-копии (memfd → udmabuf →
-/// EGLImage `GR88`) и показывает те же пиксели, что путь копии: два прогона одной фикстуры —
-/// с обычной памятью декодера (каждый кадр через загрузку) и с запечатанным memfd (каждый кадр
-/// без копии) — дают одинаковые картинки по pts (допуск ±1 на канал), картинка не пустая и
-/// меняется от кадра к кадру. Счётчики путей строго делят кадры: копия — всё через загрузку,
-/// memfd — всё без копии.
-#[test]
-fn ffmpeg_vp9_10bit_frames_in_memfd_blocks_reach_the_screen_without_a_cpu_copy_and_match_the_copy_path()
- {
-    let Some((copy_renderer, copy_images)) = present_fixture_through_renderer(
-        "ffmpeg_vp9_10bit_copy_path",
-        HostFrameMemoryKind::Anonymous,
-        FixtureStream::vp9_10bit(),
-    ) else {
-        return;
-    };
-    let copy_stats = copy_renderer.software_zero_copy_stats();
-    assert_eq!(
-        copy_stats.frames_through_upload, FIXTURE_FRAME_COUNT as u64,
-        "{copy_stats:?}"
-    );
-    assert_eq!(copy_stats.frames_without_cpu_copy, 0, "{copy_stats:?}");
-    drop(copy_renderer);
-
-    let Some((memfd_renderer, memfd_images)) = present_fixture_through_renderer(
-        "ffmpeg_vp9_10bit_memfd_path",
-        HostFrameMemoryKind::SealedMemfd,
-        FixtureStream::vp9_10bit(),
-    ) else {
-        return;
-    };
-    let memfd_stats = memfd_renderer.software_zero_copy_stats();
-    if let SoftwareZeroCopyState::Disabled(
-        reason @ (SoftwareZeroCopyDisabled::UdmabufUnavailable
-        | SoftwareZeroCopyDisabled::DriverCannotImportDmaBuf),
-    ) = memfd_stats.state
-    {
-        eprintln!("skip 10-bit zero-copy assertions: the path is unavailable here: {reason:?}");
-        assert_eq!(
-            memfd_stats.frames_through_upload,
-            FIXTURE_FRAME_COUNT as u64
-        );
-        return;
-    }
-    assert!(
-        matches!(memfd_stats.state, SoftwareZeroCopyState::Enabled(_)),
-        "{memfd_stats:?}"
-    );
-    assert_eq!(
-        memfd_stats.frames_without_cpu_copy, FIXTURE_FRAME_COUNT as u64,
-        "{memfd_stats:?}"
-    );
-    assert_eq!(memfd_stats.frames_through_upload, 0, "{memfd_stats:?}");
-
-    // Сверка по pts: порядок показа может отличаться между прогонами (потоки декодера).
-    let by_pts = |images: Vec<PresentedImage>| {
-        let mut sorted = images;
-        sorted.sort_by_key(|image| image.pts);
-        sorted
-    };
-    let copy_images = by_pts(copy_images);
-    let memfd_images = by_pts(memfd_images);
-    let pixel_count = (FRAME_SIZE[0] * FRAME_SIZE[1]) as usize;
-    for (copy, memfd) in copy_images.iter().zip(&memfd_images) {
-        assert_eq!(copy.pts, memfd.pts, "both runs present the same frames");
-        assert_eq!(copy.rgba.len(), memfd.rgba.len());
-        let worst_difference = copy
-            .rgba
-            .iter()
-            .zip(&memfd.rgba)
-            .map(|(left, right)| left.abs_diff(*right))
-            .max()
-            .unwrap();
-        assert!(
-            worst_difference <= PATH_PARITY_TOLERANCE,
-            "frame {:?}: the zero-copy picture differs from the copy path by {worst_difference}",
-            copy.pts
-        );
-        let lit = lit_pixel_count(&memfd.rgba);
-        assert!(
-            lit as f64 >= pixel_count as f64 * MIN_LIT_PIXEL_SHARE,
-            "frame {:?} looks empty: {lit} of {pixel_count} pixels are lit",
-            memfd.pts
-        );
-    }
-    let distinct: std::collections::HashSet<&[u8]> = memfd_images
-        .iter()
-        .map(|image| image.rgba.as_slice())
-        .collect();
-    assert!(
-        distinct.len() > FIXTURE_FRAME_COUNT / 2,
-        "the zero-copy picture changes from frame to frame"
-    );
 }
 
 /// Прогон фикстуры `stream` через рендер с памятью декодера `memory`; все общие проверки — здесь.
@@ -592,26 +453,23 @@ fn present_fixture_through_renderer(
     let decoder = prepared.backend.into_decoder_thread();
     assert_eq!(
         decoder.configure_stream(VideoStreamDecodeConfig::from_requirement(
-            VP9_TRACK_ID,
-            &VideoDecodeRequirement::new(VideoCodec::Vp9),
+            FIXTURE_TRACK_ID,
+            &VideoDecodeRequirement::new(stream.codec),
             stream.contract,
         )),
         VideoStreamConfigResult::Configured
     );
 
     let mut images = Vec::new();
-    for (index, payload) in read_vp9_ivf_packets(stream.ivf_path)
-        .into_iter()
-        .enumerate()
-    {
+    for (index, payload) in read_ivf_packets(&stream).into_iter().enumerate() {
         // Метки времени в базе дорожки (5 кадров в секунду): декодер выдаёт pts кадров из них.
         let track_time = TrackTimestamp::new(
-            VP9_TRACK_ID,
+            FIXTURE_TRACK_ID,
             i64::try_from(index).unwrap(),
             TimeBase::new(1, 5).expect("non-zero denominator"),
         );
         let packet = DecodePacket {
-            track_id: VP9_TRACK_ID,
+            track_id: FIXTURE_TRACK_ID,
             pts: FIXTURE_FRAME_INTERVAL * u32::try_from(index).unwrap(),
             dts: None,
             track_pts: Some(track_time),
@@ -685,4 +543,147 @@ fn present_fixture_through_renderer(
         FIXTURE_FRAME_COUNT as u64
     );
     Some((renderer, images))
+}
+
+/// Обычная (анонимная) память декодера — заказ wgpu: каждый кадр доходит до экрана одной
+/// копией (загрузкой), путь без копии не берётся.
+pub(crate) fn assert_frames_reach_screen_through_the_copy_path(
+    test_name: &str,
+    stream: FixtureStream,
+) {
+    let Some((renderer, _images)) =
+        present_fixture_through_renderer(test_name, HostFrameMemoryKind::Anonymous, stream)
+    else {
+        return;
+    };
+    let software = renderer.software_zero_copy_stats();
+    assert_eq!(
+        software.frames_through_upload, FIXTURE_FRAME_COUNT as u64,
+        "{software:?}"
+    );
+    assert_eq!(software.frames_without_cpu_copy, 0, "{software:?}");
+}
+
+/// Путь без копии на этой машине недоступен по причине окружения (нет `/dev/udmabuf`, драйвер
+/// не импортирует dma-buf): тогда кадры обязаны честно уйти копией, а проверки «без копии»
+/// пропускаются с причиной в выводе.
+fn zero_copy_unavailable_here(software: &SoftwareZeroCopyStats, test_name: &str) -> bool {
+    if let SoftwareZeroCopyState::Disabled(
+        reason @ (SoftwareZeroCopyDisabled::UdmabufUnavailable
+        | SoftwareZeroCopyDisabled::DriverCannotImportDmaBuf),
+    ) = software.state
+    {
+        eprintln!(
+            "skip {test_name} zero-copy assertions: the path is unavailable here: {reason:?}"
+        );
+        assert_eq!(software.frames_through_upload, FIXTURE_FRAME_COUNT as u64);
+        return true;
+    }
+    false
+}
+
+/// Счётчики пути «без копии» строго делят кадры: все без копии, ни одной загрузки.
+fn assert_every_frame_skipped_the_cpu_copy(software: &SoftwareZeroCopyStats) {
+    assert!(
+        matches!(software.state, SoftwareZeroCopyState::Enabled(_)),
+        "{software:?}"
+    );
+    assert_eq!(
+        software.frames_without_cpu_copy, FIXTURE_FRAME_COUNT as u64,
+        "{software:?}"
+    );
+    assert_eq!(software.frames_through_upload, 0, "{software:?}");
+}
+
+/// Декодер пишет кадры в запечатанные memfd-блоки (заказ GLES2, сессия 12): каждый кадр доходит
+/// до экрана БЕЗ CPU-копии (udmabuf → EGLImage), с теми же пикселями (у 8-битных потоков —
+/// сверка `show_and_verify` с CPU-формулой цвета), и возвращается декодеру по fence.
+pub(crate) fn assert_frames_reach_screen_without_cpu_copy(test_name: &str, stream: FixtureStream) {
+    let Some((renderer, _images)) =
+        present_fixture_through_renderer(test_name, HostFrameMemoryKind::SealedMemfd, stream)
+    else {
+        return;
+    };
+    let software = renderer.software_zero_copy_stats();
+    if zero_copy_unavailable_here(&software, test_name) {
+        return;
+    }
+    assert_every_frame_skipped_the_cpu_copy(&software);
+    assert!(
+        (1..=FIXTURE_FRAME_COUNT as u64).contains(&software.dma_bufs_created),
+        "one dma-buf per decoder block: {software:?}"
+    );
+}
+
+/// Два прогона одной фикстуры — с обычной памятью декодера (каждый кадр через загрузку) и с
+/// запечатанным memfd (каждый кадр без копии) — дают одинаковые картинки по pts (допуск ±1 на
+/// канал), картинка не пустая и меняется от кадра к кадру.
+pub(crate) fn assert_zero_copy_matches_copy_path(test_name: &str, stream: FixtureStream) {
+    let Some((copy_renderer, copy_images)) = present_fixture_through_renderer(
+        &format!("{test_name} (copy path)"),
+        HostFrameMemoryKind::Anonymous,
+        stream.clone(),
+    ) else {
+        return;
+    };
+    let copy_stats = copy_renderer.software_zero_copy_stats();
+    assert_eq!(
+        copy_stats.frames_through_upload, FIXTURE_FRAME_COUNT as u64,
+        "{copy_stats:?}"
+    );
+    assert_eq!(copy_stats.frames_without_cpu_copy, 0, "{copy_stats:?}");
+    drop(copy_renderer);
+
+    let Some((memfd_renderer, memfd_images)) = present_fixture_through_renderer(
+        &format!("{test_name} (memfd path)"),
+        HostFrameMemoryKind::SealedMemfd,
+        stream,
+    ) else {
+        return;
+    };
+    let memfd_stats = memfd_renderer.software_zero_copy_stats();
+    if zero_copy_unavailable_here(&memfd_stats, test_name) {
+        return;
+    }
+    assert_every_frame_skipped_the_cpu_copy(&memfd_stats);
+
+    // Сверка по pts: порядок показа может отличаться между прогонами (потоки декодера).
+    let by_pts = |images: Vec<PresentedImage>| {
+        let mut sorted = images;
+        sorted.sort_by_key(|image| image.pts);
+        sorted
+    };
+    let copy_images = by_pts(copy_images);
+    let memfd_images = by_pts(memfd_images);
+    let pixel_count = (FRAME_SIZE[0] * FRAME_SIZE[1]) as usize;
+    for (copy, memfd) in copy_images.iter().zip(&memfd_images) {
+        assert_eq!(copy.pts, memfd.pts, "both runs present the same frames");
+        assert_eq!(copy.rgba.len(), memfd.rgba.len());
+        let worst_difference = copy
+            .rgba
+            .iter()
+            .zip(&memfd.rgba)
+            .map(|(left, right)| left.abs_diff(*right))
+            .max()
+            .unwrap();
+        assert!(
+            worst_difference <= PATH_PARITY_TOLERANCE,
+            "frame {:?}: the zero-copy picture differs from the copy path by {worst_difference}",
+            copy.pts
+        );
+        let lit = lit_pixel_count(&memfd.rgba);
+        assert!(
+            lit as f64 >= pixel_count as f64 * MIN_LIT_PIXEL_SHARE,
+            "frame {:?} looks empty: {lit} of {pixel_count} pixels are lit",
+            memfd.pts
+        );
+    }
+    let distinct: std::collections::HashSet<&[u8]> = memfd_images
+        .iter()
+        .map(|image| image.rgba.as_slice())
+        .collect();
+    assert!(
+        distinct.len() > FIXTURE_FRAME_COUNT / 2,
+        "the zero-copy picture changes from frame to frame"
+    );
 }
