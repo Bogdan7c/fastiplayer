@@ -43,6 +43,7 @@ use crate::{RendererFamily, RendererInstanceId};
 pub use materialization::{
     FrameImportCacheSnapshot, FrameImportError, FrameImportStats, FrameImportUnsupportedReason,
     FrameMaterialization, FrameMaterializationOutcome, HardwareFrameRefusal, RenderableFrameKey,
+    SoftwareFrameUploadStats,
 };
 
 /// Склад кадров рендера. Получается через `RenderShell::video_frames()`.
@@ -79,6 +80,13 @@ pub trait VideoFrameImport {
 
     /// Счётчики импорта для трассы кадра; `None` — у активного импорта нет кэша.
     fn import_stats(&self) -> Option<FrameImportStats>;
+
+    /// Счётчики пути программного кадра (без CPU-копии / копией) для трассы кадра.
+    ///
+    /// `Some` — только когда активный импорт программный (`SoftwareHostUpload`);
+    /// без декодера и у аппаратного импорта — `None`. Не блокирует горячий путь надолго:
+    /// рендер отдаёт уже посчитанные числа.
+    fn software_upload_stats(&self) -> Option<SoftwareFrameUploadStats>;
 
     /// Отдаёт состояние активного импорта для пересоздания рендера того же семейства.
     ///

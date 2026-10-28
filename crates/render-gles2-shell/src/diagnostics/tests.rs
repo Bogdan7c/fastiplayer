@@ -11,6 +11,7 @@ use super::*;
 use crate::draw_plan::VideoPlacement;
 use crate::frame_metadata::renderable_frame;
 use crate::test_support::{high_bit_host_frame, host_frame};
+use crate::{CpuCacheFlushPolicy, SoftwareZeroCopyState};
 
 fn ms(value: u64) -> Duration {
     Duration::from_millis(value)
@@ -179,6 +180,26 @@ fn import_stats_carry_every_cache_counter_under_trace_names() {
                 evicted_format_change: 4,
                 evicted_capacity: 6,
             },
+        }
+    );
+}
+
+#[test]
+fn software_upload_stats_split_frames_by_cpu_copy() {
+    let stats = SoftwareZeroCopyStats {
+        state: SoftwareZeroCopyState::Enabled(CpuCacheFlushPolicy::NotNeeded),
+        frames_without_cpu_copy: 40,
+        frames_through_upload: 3,
+        dma_bufs_created: 8,
+        cpu_cache_flushes: 0,
+    };
+
+    // Кадры без копии и кадры копией — разные поля; служебные счётчики пути не смешиваются.
+    assert_eq!(
+        software_upload_stats(stats),
+        SoftwareFrameUploadStats {
+            frames_without_cpu_copy: 40,
+            frames_with_cpu_copy: 3,
         }
     );
 }

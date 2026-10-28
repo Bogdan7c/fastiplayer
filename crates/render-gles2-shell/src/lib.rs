@@ -52,7 +52,8 @@ pub use capabilities::{
     gles2_render_capabilities_for,
 };
 pub use diagnostics::{
-    frame_import_stats, render_frame_stage_timings, render_frame_timing, video_pass_diagnostics,
+    frame_import_stats, render_frame_stage_timings, render_frame_timing, software_upload_stats,
+    video_pass_diagnostics,
 };
 pub use dma_buf_frame::{
     DmaBufMaterialization, DmaBufMaterializeOutcome, DmaBufShownFrom, DmaBufUnsupportedReason,

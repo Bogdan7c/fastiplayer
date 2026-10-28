@@ -40,9 +40,9 @@ use crate::{
     RenderFrameFailure, RenderFrameInput, RenderFrameOutcome, RenderFrameStageTimings,
     RenderFrameTiming, RenderHotPathStats, RenderScreenDescriptor, RenderShell, RenderSurfaceSize,
     RenderableFrameKey, RendererFamily, RendererGpuDrainError, RendererInstanceId,
-    SurfaceFrameAcquire, VideoFrameImport, VideoImportHandoff, VideoImportInstallError,
-    VideoImportPath, VideoImportPlan, VideoImportPrepareError, VideoImportPreparer,
-    VideoImportReleaseError,
+    SoftwareFrameUploadStats, SurfaceFrameAcquire, VideoFrameImport, VideoImportHandoff,
+    VideoImportInstallError, VideoImportPath, VideoImportPlan, VideoImportPrepareError,
+    VideoImportPreparer, VideoImportReleaseError,
 };
 use crate::{
     PresentationDetachOutcome, PresentationReattachError, PresentationReattachOutcome,
@@ -80,6 +80,8 @@ pub(super) enum FakeDefect {
     SilentPresentPassSignal,
     /// Звонит в сигнал показа на каждый вызов `render_frame`, даже если кадр отклонён.
     SignalsPresentPassForRejectedFrames,
+    /// Отдаёт счётчики программного кадра и без программного импорта (нули вместо `None`).
+    ReportsSoftwareStatsWithoutSoftwareImport,
 }
 
 /// Fake-«GPU»: кадры, ждущие завершения работы.
@@ -312,6 +314,8 @@ pub(super) struct FakeRenderShell {
     presentation: FakePresentation,
     ui_textures: FakeUiTextures,
     present_pass_signal: video_core::PresentPassSignal,
+    /// Программные кадры fake всегда «копирует»: памяти декодера для импорта у него нет.
+    software_frames_copied: u64,
 }
 
 impl FakeRenderShell {
@@ -332,6 +336,7 @@ impl FakeRenderShell {
             presentation: FakePresentation::new(SurfacePresentSettings::default()),
             ui_textures: FakeUiTextures::default(),
             present_pass_signal: video_core::PresentPassSignal::new(),
+            software_frames_copied: 0,
         }
     }
 
@@ -536,6 +541,9 @@ impl RenderShell for FakeRenderShell {
         }
         if let Some(handle) = video_handle {
             self.presented_video.push(handle);
+            if self.active_video_import_path() == Some(VideoImportPath::SoftwareHostUpload) {
+                self.software_frames_copied += 1;
+            }
         }
         if let (FakeDefect::RetainsKeys, Some(key)) = (self.defect, video_frame) {
             self.retained_keys.push(key.clone());
@@ -698,6 +706,17 @@ impl VideoFrameImport for FakeRenderShell {
 
     fn import_stats(&self) -> Option<FrameImportStats> {
         None
+    }
+
+    fn software_upload_stats(&self) -> Option<SoftwareFrameUploadStats> {
+        let stats = SoftwareFrameUploadStats {
+            frames_without_cpu_copy: 0,
+            frames_with_cpu_copy: self.software_frames_copied,
+        };
+        if self.defect == FakeDefect::ReportsSoftwareStatsWithoutSoftwareImport {
+            return Some(stats);
+        }
+        (self.active_video_import_path()? == VideoImportPath::SoftwareHostUpload).then_some(stats)
     }
 
     fn export_video_import_for_recreation(&self) -> Option<VideoImportHandoff> {

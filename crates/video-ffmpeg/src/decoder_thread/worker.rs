@@ -4,7 +4,6 @@
 //! spawn/lifecycle construction. Этот приватный модуль владеет только owner-loop:
 //! control/configure/flush/EOF-drain, публикацией кадров и completion accounting.
 
-use codec_core::VideoColorMetadata;
 use crossbeam_channel::{Receiver, TryRecvError, TrySendError};
 use video_backend_api::PresentFrameResourceProvider;
 use video_core::{
@@ -13,6 +12,7 @@ use video_core::{
     VideoStreamDecodeConfig,
 };
 
+use super::color_metadata::color_or_sdr_bt709_fallback;
 use super::host_resources::invalid_avframe_resource;
 use super::send_receive::{
     DecodedFrameRecord, RealFfmpegDecodeApi, SendPacketOutcome, SendReceiveDecodeLoop,
@@ -398,9 +398,7 @@ impl FfmpegDecoderWorker {
                     reason: "FFmpeg receive loop produced metadata without an AVFrame reference"
                         .to_owned(),
                 })?;
-        let color = frame_record
-            .color
-            .unwrap_or_else(VideoColorMetadata::sdr_bt709_limited);
+        let color = color_or_sdr_bt709_fallback(frame_record.color);
         let publication = self.resource_provider.insert_frame(
             frame_record.generation,
             frame_ref,

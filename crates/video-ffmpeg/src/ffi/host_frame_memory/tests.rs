@@ -184,6 +184,36 @@ fn unknown_address_return_is_ignored() {
     drop(block);
 }
 
+#[test]
+fn only_first_fallback_of_pool_asks_for_a_log_line() {
+    let pool = HostFrameBlockPool::new(HostFrameMemoryKind::Anonymous);
+
+    let first = pool.record_fallback();
+    let second = pool.record_fallback();
+    let third = pool.record_fallback();
+
+    assert_eq!(first, HostFrameFallbackRecord::FirstForPool);
+    assert_eq!(second, HostFrameFallbackRecord::Repeated);
+    assert_eq!(third, HostFrameFallbackRecord::Repeated);
+    assert_eq!(pool.stats().fallbacks, 3, "every fallback is counted");
+    // Откат — учёт пула, а не его блоки: выдача и свободный список не тронуты.
+    assert_eq!((pool.stats().allocated, pool.stats().checked_out), (0, 0));
+}
+
+#[test]
+fn fallback_record_belongs_to_its_pool() {
+    let first_pool = HostFrameBlockPool::new(HostFrameMemoryKind::Anonymous);
+    let second_pool = HostFrameBlockPool::new(HostFrameMemoryKind::Anonymous);
+
+    let _ = first_pool.record_fallback();
+
+    // Новый декодер (новый пул) снова пишет причину: лог не глушится навсегда.
+    assert_eq!(
+        second_pool.record_fallback(),
+        HostFrameFallbackRecord::FirstForPool
+    );
+}
+
 #[cfg(target_os = "linux")]
 mod memfd_pool {
     use std::os::fd::AsRawFd;

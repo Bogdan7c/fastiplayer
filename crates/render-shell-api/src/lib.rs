@@ -72,9 +72,9 @@ pub use video_import::{
     DecoderSurfacePoolSlots, FrameImportCacheSnapshot, FrameImportError, FrameImportStats,
     FrameImportUnsupportedReason, FrameMaterialization, FrameMaterializationOutcome,
     HardwareFrameRefusal, PendingVideoImport, PreparedVideoImport, ReleasedFrameCount,
-    RenderableFrameKey, VideoFrameImport, VideoImportHandoff, VideoImportInstallError,
-    VideoImportPath, VideoImportPlan, VideoImportPrepareError, VideoImportPreparer,
-    VideoImportReleaseError,
+    RenderableFrameKey, SoftwareFrameUploadStats, VideoFrameImport, VideoImportHandoff,
+    VideoImportInstallError, VideoImportPath, VideoImportPlan, VideoImportPrepareError,
+    VideoImportPreparer, VideoImportReleaseError,
 };
 
 #[cfg(test)]

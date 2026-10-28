@@ -24,15 +24,17 @@ use render_core::RenderCapabilities;
 use render_shell_api::{
     FrameImportCacheSnapshot, FrameImportError, FrameImportStats, FrameImportUnsupportedReason,
     FrameMaterialization, FrameMaterializationOutcome, PendingVideoImport, PreparedVideoImport,
-    ReleasedFrameCount, RenderableFrameKey, RendererFamily, RendererInstanceId, VideoFrameImport,
-    VideoImportHandoff, VideoImportInstallError, VideoImportPath, VideoImportPlan,
-    VideoImportPrepareError, VideoImportPreparer, VideoImportReleaseError,
+    ReleasedFrameCount, RenderableFrameKey, RendererFamily, RendererInstanceId,
+    SoftwareFrameUploadStats, VideoFrameImport, VideoImportHandoff, VideoImportInstallError,
+    VideoImportPath, VideoImportPlan, VideoImportPrepareError, VideoImportPreparer,
+    VideoImportReleaseError,
 };
 use render_wgpu_video::{
     DmaBufImportCacheCapacity, DmaBufImportStats, DmaBufWgpuFrameMaterializer,
-    HostPlanarWgpuFrameMaterializer, WgpuFrameMaterializationUnsupportedReason,
-    WgpuFrameTextureViewLookup, WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
-    WgpuSubmissionQueueBinding, wrap_video_backend_for_wgpu_submission,
+    HostPlanarUploadPathStats, HostPlanarWgpuFrameMaterializer,
+    WgpuFrameMaterializationUnsupportedReason, WgpuFrameTextureViewLookup,
+    WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews, WgpuSubmissionQueueBinding,
+    wrap_video_backend_for_wgpu_submission,
 };
 use video_backend_api::{PresentFrameResourceProviderHandle, StartedVideoBackend};
 use video_present_core::VideoFrameLease;
@@ -237,6 +239,17 @@ impl VideoFrameImport for WgpuVideoFrameImport {
             .map(neutral_import_stats)
     }
 
+    fn software_upload_stats(&self) -> Option<SoftwareFrameUploadStats> {
+        let active = self.active.as_ref()?;
+        if active.plan.path != VideoImportPath::SoftwareHostUpload {
+            return None;
+        }
+        active
+            .materializer
+            .host_planar_upload_path_stats()
+            .map(neutral_software_upload_stats)
+    }
+
     fn export_video_import_for_recreation(&self) -> Option<VideoImportHandoff> {
         self.active.as_ref().map(|active| {
             VideoImportHandoff::new(
@@ -402,6 +415,19 @@ const fn neutral_import_stats(stats: DmaBufImportStats) -> FrameImportStats {
             evicted_format_change: stats.cache.evicted_format_change,
             evicted_capacity: stats.cache.evicted_capacity,
         },
+    }
+}
+
+/// Переводит счётчики пути программной загрузки в нейтральную форму.
+///
+/// «Копией» считается кадр через staging: его плоскости копировал CPU. Отказы импорта и
+/// «блок не подошёл» уже входят в `frames_through_staging` (такой кадр идёт копией).
+const fn neutral_software_upload_stats(
+    stats: HostPlanarUploadPathStats,
+) -> SoftwareFrameUploadStats {
+    SoftwareFrameUploadStats {
+        frames_without_cpu_copy: stats.frames_without_cpu_copy,
+        frames_with_cpu_copy: stats.frames_through_staging,
     }
 }
 

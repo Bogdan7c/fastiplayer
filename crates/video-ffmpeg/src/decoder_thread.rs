@@ -59,7 +59,7 @@ use video_frame_contract::{VideoFramePixelLayout, VideoFrameTransferPath};
 #[cfg(all(test, feature = "ffmpeg"))]
 use crate::ffi::pixel_format::SoftwarePixelFormat;
 #[cfg(test)]
-use color_metadata::merge_frame_color_with_context_color;
+use color_metadata::{color_or_sdr_bt709_fallback, merge_frame_color_with_context_color};
 pub use config::FfmpegDecoderThreadConfig;
 #[cfg(feature = "ffmpeg")]
 use host_resources::FfmpegHostResourceProvider;

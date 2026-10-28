@@ -281,6 +281,12 @@ pub trait WgpuFrameTextureViewMaterializer: Send + Sync {
     fn dma_buf_import_stats(&self) -> Option<DmaBufImportStats> {
         None
     }
+
+    /// Сколько программных кадров загружено без CPU-копии и копией через staging;
+    /// `None` у materializer-ов без программной загрузки (DMA-BUF).
+    fn host_planar_upload_path_stats(&self) -> Option<HostPlanarUploadPathStats> {
+        None
+    }
 }
 
 /// GPU context одного video render pass-а.

@@ -88,6 +88,10 @@ fn each_contract_defect_is_caught_by_its_own_check() {
             FakeDefect::SignalsPresentPassForRejectedFrames,
             vec![ConformanceCheck::PresentPassSignalFollowsPresentedFrames],
         ),
+        (
+            FakeDefect::ReportsSoftwareStatsWithoutSoftwareImport,
+            vec![ConformanceCheck::SoftwareUploadStatsCountShownFrames],
+        ),
     ];
 
     for (defect, expected_checks) in cases {

@@ -11,9 +11,9 @@ use std::time::Duration;
 use render_shell_api::{
     FrameImportError, FrameImportStats, FrameImportUnsupportedReason, FrameMaterialization,
     FrameMaterializationOutcome, PendingVideoImport, PreparedVideoImport, ReleasedFrameCount,
-    RenderFrameFailure, RenderableFrameKey, VideoFrameImport, VideoImportHandoff,
-    VideoImportInstallError, VideoImportPath, VideoImportPlan, VideoImportPrepareError,
-    VideoImportReleaseError,
+    RenderFrameFailure, RenderableFrameKey, SoftwareFrameUploadStats, VideoFrameImport,
+    VideoImportHandoff, VideoImportInstallError, VideoImportPath, VideoImportPlan,
+    VideoImportPrepareError, VideoImportReleaseError,
 };
 use video_backend_api::StartedVideoBackend;
 use video_present_core::VideoFrameLease;
@@ -26,7 +26,9 @@ use crate::video_import::{
     ActiveImport, GLES2_FAMILY, Gles2ImportHandoff, Gles2PreparedFrame, ImportEnvironment,
     LayerShow, LayerShowOutcome, PendingGles2Import, PendingOrigin, show_frame_on_layer,
 };
-use crate::{dma_buf_import_capacity_for, frame_import_stats, renderable_frame};
+use crate::{
+    dma_buf_import_capacity_for, frame_import_stats, renderable_frame, software_upload_stats,
+};
 
 /// Сколько ждём fence работы с кольцом слотов, если для возврата картинки ключа не нашлось
 /// свободного слота: загрузки между кадрами показа ещё не закрыты fence-ом.
@@ -257,6 +259,14 @@ impl VideoFrameImport for Gles2Renderer {
             outcome,
             resource_pool_lock_wait: show.resource_pool_lock_wait,
         }
+    }
+
+    fn software_upload_stats(&self) -> Option<SoftwareFrameUploadStats> {
+        // Счётчики живут весь срок рендера (владелец — `HostBlockZeroCopy`); трасса берёт
+        // их разность за окно, поэтому смена файла их не обнуляет — так задумано контрактом.
+        let active = self.active_import.as_ref()?;
+        (active.plan().path == VideoImportPath::SoftwareHostUpload)
+            .then(|| software_upload_stats(self.software_zero_copy_stats()))
     }
 
     fn import_stats(&self) -> Option<FrameImportStats> {

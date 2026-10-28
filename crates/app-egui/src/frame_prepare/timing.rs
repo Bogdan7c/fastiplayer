@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use player_core::{LatencyCounterSnapshot, PlayerSnapshot};
 use render_shell_api::RenderFrameTiming;
-use render_shell_api::{FrameImportStats, RenderHotPathStats};
+use render_shell_api::{FrameImportStats, RenderHotPathStats, SoftwareFrameUploadStats};
 use tracing::{debug, trace};
 
 use super::input_snapshot::AppFrameInputTimings;
@@ -78,6 +78,10 @@ pub(super) struct AppRenderFrameTimings {
 
     /// Кэш импорта DMA-BUF активного импорта рендера; `None` для host-upload backend-а.
     pub(super) dma_buf_import_stats: Option<FrameImportStats>,
+
+    /// Путь программного кадра (gles2-renderer 13a): сколько кадров рендер взял из памяти
+    /// декодера без CPU-копии и сколько скопировал; `None` без программного импорта.
+    pub(super) software_upload_stats: Option<SoftwareFrameUploadStats>,
 
     /// Накопленные счётчики привязок ресурсов/uniform видео-прохода (сессия 05): в
     /// установившемся показе `resource_bindings_created` и `uniform_writes` не растут.
@@ -166,6 +170,7 @@ pub(super) fn log_render_frame_timings(
     let decoder_event_drain = latencies.decoder_event_drain;
     let dma_buf_import = latencies.dma_buf_import;
     let dma_buf_import_stats = app_timings.dma_buf_import_stats;
+    let software_upload_stats = app_timings.software_upload_stats;
 
     trace!(
         target: RENDER_FRAME_TIMING_TARGET,
@@ -213,6 +218,13 @@ pub(super) fn log_render_frame_timings(
         video_bind_groups_reused = app_timings.video_hot_path.resource_bindings_reused,
         video_uniform_writes = app_timings.video_hot_path.uniform_writes,
         video_uniform_writes_skipped = app_timings.video_hot_path.uniform_writes_skipped,
+        // Доказательство пути «без CPU-копии» в живом прогоне: замер берёт разность за окно.
+        sw_frames_without_cpu_copy = software_upload_stats
+            .map(|stats| stats.frames_without_cpu_copy)
+            .unwrap_or_default(),
+        sw_frames_cpu_copied = software_upload_stats
+            .map(|stats| stats.frames_with_cpu_copy)
+            .unwrap_or_default(),
         "render frame stage timings"
     );
 

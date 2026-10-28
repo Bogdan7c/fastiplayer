@@ -9,8 +9,8 @@
 //! - Исход `RenderFrameOutcome::Presented` строится только из `UiFrameOutcome::Presented`, а его
 //!   `FrameCompositor` возвращает только после успешного показа (`eglSwapBuffers`): по нему
 //!   приложение пишет `fastiplayer::video_render_acceptance`.
-//! - Диагностика видеопрохода ([`video_pass_diagnostics`]) и счётчики импорта
-//!   ([`frame_import_stats`]).
+//! - Диагностика видеопрохода ([`video_pass_diagnostics`]), счётчики импорта
+//!   ([`frame_import_stats`]) и пути программного кадра ([`software_upload_stats`], 13a).
 
 use std::time::Duration;
 
@@ -22,8 +22,10 @@ use render_core::{
 };
 use render_shell_api::{
     FrameImportCacheSnapshot, FrameImportStats, RenderFrameStageTimings, RenderFrameTiming,
+    SoftwareFrameUploadStats,
 };
 
+use crate::SoftwareZeroCopyStats;
 use crate::draw_plan::VideoDrawPlan;
 
 /// Стадии кадра GLES2 под именами `RenderFrameStageTimings`.
@@ -110,6 +112,18 @@ pub fn frame_import_stats(snapshot: &DmaBufImportCacheSnapshot) -> FrameImportSt
             evicted_format_change: snapshot.evicted_format_change,
             evicted_capacity: snapshot.evicted_capacity,
         },
+    }
+}
+
+/// Счётчики пути программного кадра под нейтральными именами трассы
+/// (`sw_frames_without_cpu_copy` / `sw_frames_cpu_copied`, общие с wgpu).
+///
+/// «Копией» считается кадр, загруженный `glTexSubImage2D`: его плоскости копировал CPU.
+#[must_use]
+pub const fn software_upload_stats(stats: SoftwareZeroCopyStats) -> SoftwareFrameUploadStats {
+    SoftwareFrameUploadStats {
+        frames_without_cpu_copy: stats.frames_without_cpu_copy,
+        frames_with_cpu_copy: stats.frames_through_upload,
     }
 }
 

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use crate::ffi::direct_frame_buffers::allocate_frame_in_pool;
-use crate::ffi::host_frame_memory::HostFrameBlockPool;
+use crate::ffi::host_frame_memory::{HostFrameBlockPool, HostFrameFallbackRecord};
 use crate::ffi::pixel_format::{SoftwarePixelFormatSet, av_pixel_format_is_software};
 
 /// Состояние callback-ов FFmpeg, на которое указывает `AVCodecContext.opaque`.
@@ -113,7 +113,16 @@ pub(super) unsafe extern "C" fn get_importable_frame_buffer(
         // SAFETY: context/frame переданы FFmpeg в `get_buffer2` и живы на время вызова.
         match unsafe { allocate_frame_in_pool(context, frame, pool) } {
             Ok(()) => return 0,
-            Err(_fallback) => pool.record_fallback(),
+            Err(fallback) => {
+                // Кадр уйдёт в память FFmpeg и покажется копией: причина — в лог,
+                // один раз на декодер, иначе путь «без копии» молча не работал бы.
+                if pool.record_fallback() == HostFrameFallbackRecord::FirstForPool {
+                    log::warn!(
+                        "software decoder frame does not fit an importable block ({fallback:?}): \
+                         this and later such frames stay in FFmpeg memory and are uploaded with a CPU copy"
+                    );
+                }
+            }
         }
     }
     // SAFETY: тот же context/frame/flags, что FFmpeg передал нам; documented fallback.

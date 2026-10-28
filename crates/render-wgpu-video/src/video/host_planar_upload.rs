@@ -68,7 +68,8 @@ impl HostPlanarWgpuFrameMaterializer {
 
     /// Сколько кадров загружено без CPU-копии и через staging (cpu-parity 08b).
     ///
-    /// Ждёт lock пула текстур: вызывать вне горячего пути (тесты, диагностика).
+    /// Ждёт lock пула текстур. Его берёт только поток рендера (поиск кадра — `try_lock`),
+    /// поэтому чтение раз в кадр для трассы (gles2-renderer 13a) с ним не соревнуется.
     #[must_use]
     pub fn upload_path_stats(&self) -> HostPlanarUploadPathStats {
         self.inner
@@ -98,6 +99,10 @@ impl WgpuFrameTextureViewMaterializer for HostPlanarWgpuFrameMaterializer {
             queue,
             self.inner.resource_provider.clone(),
         ))
+    }
+
+    fn host_planar_upload_path_stats(&self) -> Option<HostPlanarUploadPathStats> {
+        Some(self.upload_path_stats())
     }
 }
 

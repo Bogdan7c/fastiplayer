@@ -265,6 +265,29 @@ pub enum FrameImportError {
     },
 }
 
+/// Сколько программных кадров рендер довёл до GPU каждым путём (сессия 13a gles2-renderer).
+///
+/// Это доказательство пути «без CPU-копии» в живом прогоне: трасса кадра пишет оба числа,
+/// а замер сравнивает их разность за окно. Счётчики только растут; начинаются с нуля вместе
+/// с импортом или рендером (у разных рендеров по-разному), поэтому смысл имеет только
+/// разность внутри одного прогона, а не абсолютное значение.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SoftwareFrameUploadStats {
+    /// Кадров, которые GPU взял прямо из памяти декодера: CPU их не копировал.
+    pub frames_without_cpu_copy: u64,
+
+    /// Кадров, которые CPU скопировал (staging у wgpu, `glTexSubImage2D` у GLES2).
+    pub frames_with_cpu_copy: u64,
+}
+
+impl SoftwareFrameUploadStats {
+    /// Сколько программных кадров учтено всего (обоими путями).
+    #[must_use]
+    pub const fn frames_total(self) -> u64 {
+        self.frames_without_cpu_copy + self.frames_with_cpu_copy
+    }
+}
+
 /// Нейтральные счётчики импорта кадров для трассы `render_frame_timing`.
 ///
 /// Поля повторяют прежний wgpu-снимок `DmaBufImportStats`, чтобы трасса не меняла имена.

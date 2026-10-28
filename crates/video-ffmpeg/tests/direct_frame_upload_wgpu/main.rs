@@ -11,9 +11,10 @@
 //! Пиксели на экране обязаны совпасть кадр в кадр: прямая GPU-копия из памяти декодера
 //! даёт ту же картинку, что и копия через staging.
 //!
-//! Потоки: VP9 (cpu-parity 08b) и AV1 8/10 бит и с зерном плёнки — libdav1d получил `DR1`
-//! патчем `ffmpeg-vendor` (сессия 13 плана gles2-renderer). Без патча кадры AV1 лежат в
-//! пуле FFmpeg, и `frames_without_cpu_copy` остаётся 0.
+//! Потоки — вся матрица «кодек × битность × subsampling», которую играет программный путь
+//! плеера (сессия 13a плана gles2-renderer): H.264, HEVC (Main/Main10/Main12, 4:2:2 10/12,
+//! 4:4:4 8/10), VP8, VP9 (профили 0–3), AV1 Main и High (libdav1d получил `DR1` патчем
+//! `ffmpeg-vendor`, сессия 13). Каталог клеток — `fixtures.rs`.
 
 // Интеграционный тест целиком является тестовым кодом: unwrap/expect/panic
 // здесь работают как assertions. Production-политика паник сюда не относится.
@@ -25,13 +26,15 @@
 )]
 #![cfg(feature = "vendored-ffmpeg")]
 
+#[path = "../support/mod.rs"]
 mod support;
 
-use std::path::PathBuf;
+mod fixtures;
+
 use std::time::Duration;
 
-use bytes::Bytes;
-use codec_core::{VideoCodec, VideoColorMetadata, VideoDecodeRequirement};
+use codec_core::VideoDecodeRequirement;
+use fixtures::FixtureStream;
 use media_core::TrackId;
 use render_wgpu_video::{HostPlanarUploadPathStats, HostPlanarWgpuFrameMaterializer};
 use support::wgpu_acceptance::{
@@ -42,90 +45,11 @@ use video_core::{
     DecodePacket, VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState,
     VideoStreamDecodeConfig,
 };
-use video_frame_contract::VideoFrameContract;
 
-/// Фикстуры `tests/fixtures/direct-frame-buffers/generate.sh`: 176x100, 12 кадров, 5 fps.
-const FIXTURE_DIRECTORY: &str = "tests/fixtures/direct-frame-buffers";
+/// У каждой фикстуры (`tests/fixtures/direct-frame-buffers/generate.sh`) 12 кадров, 5 fps.
 const FIXTURE_FRAME_COUNT: usize = 12;
 const FIXTURE_FRAME_INTERVAL: Duration = Duration::from_millis(200);
 const FIXTURE_TRACK_ID: TrackId = TrackId::new(1);
-
-/// Поток фикстуры: кодек, файл IVF и контракт кадра хоста.
-struct FixtureStream {
-    codec: VideoCodec,
-    /// Код кодека в заголовке IVF (`VP90`, `AV01`).
-    ivf_fourcc: [u8; 4],
-    ivf_file_name: &'static str,
-    contract: VideoFrameContract,
-    /// 10-битному плану рисования цвет обязателен (в сыром IVF его нет).
-    resolved_color: Option<VideoColorMetadata>,
-}
-
-impl FixtureStream {
-    fn eight_bit(codec: VideoCodec, ivf_fourcc: [u8; 4], ivf_file_name: &'static str) -> Self {
-        Self {
-            codec,
-            ivf_fourcc,
-            ivf_file_name,
-            contract: VideoFrameContract::host_yuv420_planar8(),
-            resolved_color: None,
-        }
-    }
-
-    fn vp9() -> Self {
-        Self::eight_bit(VideoCodec::Vp9, *b"VP90", "vp9-176x100-12frames.ivf")
-    }
-
-    fn av1() -> Self {
-        Self::eight_bit(VideoCodec::Av1, *b"AV01", "av1-176x100-12frames.ivf")
-    }
-
-    fn av1_film_grain() -> Self {
-        Self::eight_bit(
-            VideoCodec::Av1,
-            *b"AV01",
-            "av1-filmgrain-176x100-12frames.ivf",
-        )
-    }
-
-    fn av1_10bit() -> Self {
-        Self {
-            codec: VideoCodec::Av1,
-            ivf_fourcc: *b"AV01",
-            ivf_file_name: "av1-10bit-176x100-12frames.ivf",
-            contract: VideoFrameContract::host_yuv420_planar10le(),
-            resolved_color: Some(VideoColorMetadata::sdr_bt709_limited()),
-        }
-    }
-}
-
-/// Режет IVF на пакеты-кадры (32-байтный заголовок файла, 12-байтный заголовок кадра).
-fn read_ivf_packets(stream: &FixtureStream) -> Vec<Bytes> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(FIXTURE_DIRECTORY)
-        .join(stream.ivf_file_name);
-    let file_bytes = std::fs::read(&path).expect("read IVF fixture");
-    assert_eq!(&file_bytes[0..4], b"DKIF", "IVF signature");
-    assert_eq!(
-        &file_bytes[8..12],
-        &stream.ivf_fourcc,
-        "IVF fourcc of {}",
-        stream.ivf_file_name
-    );
-    let mut packets = Vec::new();
-    let mut offset = 32;
-    while offset + 12 <= file_bytes.len() {
-        let frame_len =
-            u32::from_le_bytes(file_bytes[offset..offset + 4].try_into().expect("4 bytes"))
-                as usize;
-        let payload_start = offset + 12;
-        packets.push(Bytes::copy_from_slice(
-            &file_bytes[payload_start..payload_start + frame_len],
-        ));
-        offset = payload_start + frame_len;
-    }
-    packets
-}
 
 fn stream_config(stream: &FixtureStream) -> VideoStreamDecodeConfig {
     VideoStreamDecodeConfig::from_requirement(
@@ -141,7 +65,7 @@ fn render_every_frame(
     stream: &FixtureStream,
     device_kind: OffscreenDeviceKind,
 ) -> (Vec<u64>, HostPlanarUploadPathStats) {
-    let packets = read_ivf_packets(stream);
+    let packets = stream.read_packets();
     let mut harness = OffscreenWgpuHarness::with_device(device_kind);
     let (decoder, renderer_provider) = open_wrapped_decoder(stream_config(stream), &harness.queue);
     let materializer = HostPlanarWgpuFrameMaterializer::new(
@@ -158,7 +82,7 @@ fn render_every_frame(
             assert!(
                 evidence.contains_visible_video,
                 "{} frame at {:?} drawn",
-                stream.ivf_file_name, evidence.pts
+                stream.file_name, evidence.pts
             );
             checksums_by_pts.push((evidence.pts, evidence.visible_pixels_checksum));
         }
@@ -221,7 +145,7 @@ fn assert_frames_reach_screen_from_decoder_memory(stream: &FixtureStream) {
         render_every_frame(stream, OffscreenDeviceKind::ProductionVideo);
     let (staged_checksums, staged_stats) =
         render_every_frame(stream, OffscreenDeviceKind::PlainWgpu);
-    let name = stream.ivf_file_name;
+    let name = stream.file_name;
 
     assert_eq!(
         direct_checksums.len(),
@@ -261,6 +185,105 @@ fn assert_frames_reach_screen_from_decoder_memory(stream: &FixtureStream) {
     );
 }
 
+/// 10-битный поток без цветовых тегов (ни в контейнере, ни в битстриме) рисуется как
+/// SDR BT.709 limited — ровно так же, как тот же поток с явным BT.709. Раньше такой кадр
+/// шёл с цветом «Unknown», и рендер 10/12 бит падал фатальной ошибкой (сессия 13a).
+fn assert_untagged_high_bit_stream_draws_like_bt709(tagged: FixtureStream) {
+    let name = tagged.file_name;
+    let untagged = tagged.same_cell().without_packet_color();
+    let (tagged_checksums, _) = render_every_frame(&tagged, OffscreenDeviceKind::ProductionVideo);
+    let (untagged_checksums, untagged_stats) =
+        render_every_frame(&untagged, OffscreenDeviceKind::ProductionVideo);
+
+    assert_eq!(
+        untagged_checksums.len(),
+        FIXTURE_FRAME_COUNT,
+        "{name}: every untagged frame reaches the screen"
+    );
+    assert_eq!(
+        untagged_stats.frames_without_cpu_copy, FIXTURE_FRAME_COUNT as u64,
+        "{name}: {untagged_stats:?}"
+    );
+    assert_eq!(
+        untagged_checksums, tagged_checksums,
+        "{name}: untagged 10-bit must look exactly like BT.709 limited"
+    );
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn vp9_10bit_without_color_tags_draws_like_bt709() {
+    assert_untagged_high_bit_stream_draws_like_bt709(FixtureStream::vp9_10bit());
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn av1_10bit_without_color_tags_draws_like_bt709() {
+    assert_untagged_high_bit_stream_draws_like_bt709(FixtureStream::av1_10bit());
+}
+
+// H.264: любой профиль плеер играет как 8 бит 4:2:0.
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn h264_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::h264());
+}
+
+// HEVC: Main, Main10, Main12, Main 4:2:2 10/12, Main 4:4:4 8/10.
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn hevc_main_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::hevc_main());
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn hevc_main10_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::hevc_main10());
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn hevc_main12_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::hevc_main12());
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn hevc_422_10bit_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::hevc_422_10bit());
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn hevc_422_12bit_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::hevc_422_12bit());
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn hevc_444_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::hevc_444());
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn hevc_444_10bit_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::hevc_444_10bit());
+}
+
+// VP8: 8 бит 4:2:0.
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn vp8_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::vp8());
+}
+
+// VP9: профили 0–3 (4:4:4 12 бит плеер не играет).
+
 #[test]
 #[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
 fn vp9_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
@@ -269,8 +292,58 @@ fn vp9_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
 
 #[test]
 #[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn vp9_422_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::vp9_422());
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn vp9_444_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::vp9_444());
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn vp9_10bit_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::vp9_10bit());
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn vp9_12bit_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::vp9_12bit());
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn vp9_422_10bit_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::vp9_422_10bit());
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn vp9_422_12bit_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::vp9_422_12bit());
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn vp9_444_10bit_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::vp9_444_10bit());
+}
+
+// AV1: Main (4:2:0 8/10 бит, с зерном плёнки) и High (4:4:4 8/10 бит).
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
 fn av1_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
     assert_frames_reach_screen_from_decoder_memory(&FixtureStream::av1());
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn av1_film_grain_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::av1_film_grain());
 }
 
 #[test]
@@ -281,6 +354,12 @@ fn av1_10bit_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
 
 #[test]
 #[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
-fn av1_film_grain_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
-    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::av1_film_grain());
+fn av1_444_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::av1_444());
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with VK_EXT_external_memory_host"]
+fn av1_444_10bit_frames_reach_screen_from_decoder_memory_without_cpu_copy() {
+    assert_frames_reach_screen_from_decoder_memory(&FixtureStream::av1_444_10bit());
 }

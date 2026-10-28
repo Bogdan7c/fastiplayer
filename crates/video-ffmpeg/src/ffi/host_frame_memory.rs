@@ -312,6 +312,16 @@ pub(crate) struct HostFrameBlockPoolStats {
     pub(crate) fallbacks: u64,
 }
 
+/// Какой по счёту откат на выделение FFmpeg записал пул.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "первый откат пула надо записать в лог с причиной"]
+pub(crate) enum HostFrameFallbackRecord {
+    /// Первый откат этого пула: caller пишет причину в лог.
+    FirstForPool,
+    /// Откат уже был и попал в лог; этот только посчитан.
+    Repeated,
+}
+
 /// Пул блоков одного декодера (одного `AVCodecContext`).
 ///
 /// Потокобезопасен: FFmpeg вызывает `get_buffer2` из потоков декодирования, а
@@ -420,10 +430,18 @@ impl HostFrameBlockPool {
 
     /// Отмечает кадр, который `get_buffer2` отдал обычному выделению FFmpeg.
     ///
-    /// Это не ошибка: такой кадр renderer загрузит через staging, как раньше. Счётчик
-    /// показывает в тестах и диагностике, что путь без CPU-копии не сработал.
-    pub(crate) fn record_fallback(&self) {
-        self.lock_state().fallbacks += 1;
+    /// Это не ошибка: такой кадр renderer загрузит копией, как раньше. Счётчик
+    /// показывает в тестах, что путь без CPU-копии не сработал, а ответ говорит caller-у,
+    /// первый ли это откат пула: причину отката знает caller, и в лог он пишет её
+    /// один раз на пул (на каждый кадр лог бы утонул).
+    pub(crate) fn record_fallback(&self) -> HostFrameFallbackRecord {
+        let mut state = self.lock_state();
+        state.fallbacks += 1;
+        if state.fallbacks == 1 {
+            HostFrameFallbackRecord::FirstForPool
+        } else {
+            HostFrameFallbackRecord::Repeated
+        }
     }
 
     /// Закрывает пул вместе с декодером: свободные блоки освобождаются, возвращаемые

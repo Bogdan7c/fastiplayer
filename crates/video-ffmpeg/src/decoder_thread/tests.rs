@@ -438,6 +438,86 @@ fn frame_hdr_side_data_merges_with_packet_core_colorimetry() {
     assert!(merged_color.requires_hdr_processing());
 }
 
+/// Цвет кадра FFmpeg у потока без тегов: все основные поля «unspecified».
+fn untagged_frame_color() -> VideoColorMetadata {
+    VideoColorMetadata::bitstream(
+        ColorRange::Unknown,
+        MatrixCoefficients::Unknown,
+        ColorPrimaries::Unknown,
+        TransferFunction::Unknown,
+    )
+}
+
+#[test]
+fn untagged_frame_gets_sdr_bt709_fallback() {
+    // Поток без тегов: цвет кадра «всё unspecified» — запасной SDR BT.709 limited, как у кадра
+    // совсем без цвета (иначе 10/12 бит рендер отвергал кадр фатальной ошибкой).
+    assert_eq!(
+        color_or_sdr_bt709_fallback(Some(untagged_frame_color())),
+        VideoColorMetadata::sdr_bt709_limited()
+    );
+    assert_eq!(
+        color_or_sdr_bt709_fallback(None),
+        VideoColorMetadata::sdr_bt709_limited()
+    );
+}
+
+#[test]
+fn untagged_frame_keeps_its_known_range() {
+    // VP9/AV1 без тегов несут диапазон в битстриме: full-range остаётся full.
+    let mut full_range = untagged_frame_color();
+    full_range.range = ColorRange::Full;
+
+    let color = color_or_sdr_bt709_fallback(Some(full_range));
+
+    assert_eq!(color.range, ColorRange::Full);
+    assert_eq!(color.matrix, MatrixCoefficients::Bt709);
+    assert_eq!(color.primaries, ColorPrimaries::Bt709);
+    assert_eq!(color.transfer, TransferFunction::Bt709);
+}
+
+#[test]
+fn known_or_hdr_frame_color_is_not_replaced_by_fallback() {
+    // Хотя бы одно поле колориметрии известно — это цвет кадра, его не подменяем.
+    let mut partial = untagged_frame_color();
+    partial.matrix = MatrixCoefficients::Bt601;
+    assert_eq!(color_or_sdr_bt709_fallback(Some(partial.clone())), partial);
+
+    // HDR-данные без основных полей — неполный HDR: рендер отвергает его сознательно,
+    // запасной SDR сюда не подставляется.
+    let mut incomplete_hdr = untagged_frame_color();
+    incomplete_hdr.hdr_metadata = Some(HdrMetadata {
+        color_primaries: ColorPrimaries::Unknown,
+        transfer_function: TransferFunction::Unknown,
+        max_luminance_nits: Some(1_000.0),
+        min_luminance_nits: Some(0.005),
+        max_content_light_level_nits: None,
+        max_frame_average_light_level_nits: None,
+    });
+    assert_eq!(
+        color_or_sdr_bt709_fallback(Some(incomplete_hdr.clone())),
+        incomplete_hdr
+    );
+}
+
+#[test]
+fn packet_color_still_wins_over_untagged_frame_color() {
+    let context_color = VideoColorMetadata::container(
+        ColorRange::Full,
+        MatrixCoefficients::Bt601,
+        ColorPrimaries::Smpte170m,
+        TransferFunction::Bt709,
+        None,
+    );
+    let merged = merge_frame_color_with_context_color(
+        Some(untagged_frame_color()),
+        &Some(context_color.clone()),
+    );
+
+    // Цвет пакета/контейнера приходит раньше запасного и не заменяется им.
+    assert_eq!(color_or_sdr_bt709_fallback(merged), context_color);
+}
+
 #[test]
 fn flush_and_eof_drain_have_distinct_lifecycle_effects() {
     let mut decode_loop = fake_loop([FakeSendResult::Accepted], [FakeReceiveResult::Again]);
