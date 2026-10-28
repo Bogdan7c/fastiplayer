@@ -357,6 +357,56 @@ fn the_flush_policy_flushes_every_new_frame() {
     assert_eq!(stand.software_frames.stats().cpu_cache_flushes, 2);
 }
 
+/// Повтор показа текущего кадра (перерисовка интерфейса, отставание декодера — сессия 13b):
+/// кадр остаётся на экране, но ни сброса кэша, ни нового кадра в счётчике пути. Раньше каждый
+/// повтор сбрасывал кэш заново (T410: ~1,5 мс главного потока на 1080p) и завышал счётчик.
+#[test]
+fn a_repeated_show_of_the_current_frame_neither_flushes_nor_counts() {
+    let Some(mut stand) =
+        stand_or_skip("a_repeated_show_of_the_current_frame_neither_flushes_nor_counts")
+    else {
+        return;
+    };
+    stand
+        .software_frames
+        .enable_for_tests(CpuCacheFlushPolicy::FlushVisibleRows)
+        .unwrap();
+    let mut block = MemfdBlock::new();
+    let samples = [40, 100, 200];
+    block.write_picture(samples);
+    let (frame, descriptor) = memfd_frame(&block, 1);
+    for _ in 0..3 {
+        let shown =
+            stand
+                .software_frames
+                .try_show(&mut stand.video, &stand.context, &frame, &descriptor);
+        assert_eq!(shown, ZeroCopyShow::Shown);
+    }
+    let stats = stand.software_frames.stats();
+    assert_eq!(stats.frames_without_cpu_copy, 1);
+    assert_eq!(stats.cpu_cache_flushes, 1);
+    assert_eq!(stats.dma_bufs_created, 1);
+    let repeated_pixels = draw_and_read(&mut stand.context, &mut stand.video, &frame);
+    // Декодер переписывает блок только после того, как плеер отпустил прошлый кадр.
+    drop((frame, descriptor));
+
+    // Новый кадр в том же блоке — снова работа: сброс и счёт.
+    let next_samples = [220, 160, 60];
+    block.write_picture(next_samples);
+    let (next, next_descriptor) = memfd_frame(&block, 2);
+    let shown =
+        stand
+            .software_frames
+            .try_show(&mut stand.video, &stand.context, &next, &next_descriptor);
+    assert_eq!(shown, ZeroCopyShow::Shown);
+    let stats = stand.software_frames.stats();
+    assert_eq!(stats.frames_without_cpu_copy, 2);
+    assert_eq!(stats.cpu_cache_flushes, 2);
+    let next_pixels = draw_and_read(&mut stand.context, &mut stand.video, &next);
+    assert_eq!(repeated_pixels, uploaded_reference(&mut stand, samples));
+    assert_eq!(next_pixels, uploaded_reference(&mut stand, next_samples));
+}
+
 /// Кадр не в memfd-блоке (обычная память: wgpu-заказ, AV1) и кадр 10 бит идут копией; путь их
 /// даже не проверяет (самопроверка не запускается, состояние не меняется).
 #[test]

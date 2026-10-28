@@ -251,13 +251,15 @@ impl HostBlockZeroCopy {
             Err(error) => Err(ZeroCopyFailure::Udmabuf(error)),
         };
         match attempt {
-            Ok(flushed) => {
+            Ok(BlockShow::NewFrame(flushed)) => {
                 self.stats.frames_without_cpu_copy += 1;
                 if flushed == CacheFlushed::Yes {
                     self.stats.cpu_cache_flushes += 1;
                 }
                 ZeroCopyShow::Shown
             }
+            // Повтор текущего кадра: показан, но новым кадром пути не считается.
+            Ok(BlockShow::AlreadyCurrent) => ZeroCopyShow::Shown,
             Err(ZeroCopyFailure::LayoutNotRepresentable) => ZeroCopyShow::UseUpload,
             Err(failure) => {
                 log::warn!(
@@ -378,6 +380,15 @@ enum CacheFlushed {
     No,
 }
 
+/// Что сделал показ блока на видеослое.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockShow {
+    /// Новый кадр стал текущим (из кэша импорта или новым импортом); сброс кэша — по политике.
+    NewFrame(CacheFlushed),
+    /// Этот кадр уже текущий: работы нет, счётчики пути не меняются.
+    AlreadyCurrent,
+}
+
 /// Почему кадр не показан без копии.
 #[derive(Debug, thiserror::Error)]
 enum ZeroCopyFailure {
@@ -392,18 +403,26 @@ enum ZeroCopyFailure {
     Import(gles2_video::VideoImportError),
 }
 
-/// Сбросить кэш (если нужно) и сделать кадр текущим из кэша импорта или новым импортом.
+/// Сделать кадр текущим из кэша импорта или новым импортом; для нового кадра — сбросить кэш
+/// (если нужно). Повтор уже текущего кадра — [`BlockShow::AlreadyCurrent`] без работы.
 fn show_block(
     video: &mut VideoLayerRenderer,
     context: &Gles2Context,
     eligible: &EligibleFrame<'_>,
     dma_buf: &block_dma_bufs::BlockDmaBuf,
     flush: CpuCacheFlushPolicy,
-) -> Result<CacheFlushed, ZeroCopyFailure> {
+) -> Result<BlockShow, ZeroCopyFailure> {
     let identity = planar_identity(eligible, dma_buf.object())?;
     let key = eligible.upload.key;
-    // Сброс ДО того, как GPU получит команды, читающие блок (импорт сам данные не читает, их
-    // читает рисование кадра). На каждый новый кадр: блок переписан декодером.
+    let cached = video.show_cached_planar_dma_buf_frame(&identity, key);
+    // Тот же кадр уже на видеослое (повтор показа: перерисовка интерфейса, отставание
+    // декодера). Блок с прошлого показа не менялся — кадр держит аренда, — поэтому ни сброса
+    // кэша, ни счёта нового кадра. Так же копия отвечает `UploadOutcome::AlreadyCurrent`.
+    if cached == CachedDmaBufFrame::AlreadyCurrent {
+        return Ok(BlockShow::AlreadyCurrent);
+    }
+    // Сброс ДО того, как GPU получит команды, читающие блок (ни переключение кэша, ни импорт
+    // данные не читают, их читает рисование кадра). Только новый кадр: блок переписан декодером.
     let flushed = match flush {
         CpuCacheFlushPolicy::NotNeeded => CacheFlushed::No,
         CpuCacheFlushPolicy::FlushVisibleRows => {
@@ -411,17 +430,14 @@ fn show_block(
             CacheFlushed::Yes
         }
     };
-    match video.show_cached_planar_dma_buf_frame(&identity, key) {
-        CachedDmaBufFrame::Shown | CachedDmaBufFrame::AlreadyCurrent => Ok(flushed),
-        CachedDmaBufFrame::NotCached => {
-            let frame = DmaBufPlanarFrame::new(key, &identity, dma_buf.fd())
-                .map_err(ZeroCopyFailure::Frame)?;
-            video
-                .import_planar_dma_buf_frame(context, &frame)
-                .map_err(ZeroCopyFailure::Import)?;
-            Ok(flushed)
-        }
+    if cached == CachedDmaBufFrame::NotCached {
+        let frame =
+            DmaBufPlanarFrame::new(key, &identity, dma_buf.fd()).map_err(ZeroCopyFailure::Frame)?;
+        video
+            .import_planar_dma_buf_frame(context, &frame)
+            .map_err(ZeroCopyFailure::Import)?;
     }
+    Ok(BlockShow::NewFrame(flushed))
 }
 
 /// Паспорт кадра для кэша импорта: блок (его номер — ресурс), объект dma-buf, раскладка и
