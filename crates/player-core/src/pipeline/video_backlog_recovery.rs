@@ -192,6 +192,23 @@ impl PlaybackPipeline {
         self.pending_video_packets.len()
     }
 
+    /// PTS самого дальнего по времени pending video packet-а выбранного трека текущего поколения.
+    ///
+    /// Это граница, до которой demux уже прочитал видео в порядке файла. `max`, а не последний
+    /// packet очереди: при B-frames PTS внутри очереди не монотонен. Чужие и устаревшие
+    /// packets не считаются. `None` — подходящих packets в очереди нет.
+    #[must_use]
+    pub(crate) fn furthest_pending_video_packet_start(&self) -> Option<Duration> {
+        self.pending_video_packets
+            .iter()
+            .filter(|packet| {
+                self.video_packet_belongs_to_selected_track(packet.track_id)
+                    && self.packet_generation_is_current(packet.generation)
+            })
+            .map(|packet| packet.pts)
+            .max()
+    }
+
     /// Возвращает bounded staging size для diagnostics/focused tests.
     #[must_use]
     pub(crate) fn video_backlog_recovery_staged_packet_len(&self) -> usize {

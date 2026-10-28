@@ -210,3 +210,39 @@ fn demux_track_list_update_invalidates_decoder_dependent_state() {
     assert!(!pipeline.video_decoder_needs_keyframe());
     assert_eq!(pipeline.video_decode_in_flight_packets(), 0);
 }
+
+#[test]
+fn furthest_pending_video_packet_start_reports_demux_frontier_of_selected_track() {
+    let mut pipeline = PlaybackPipeline::default();
+    let video_track = TrackId::new(1);
+    let foreign_track = TrackId::new(9);
+    pipeline.select_video_track(video_track, VideoDecodeRequirement::new(VideoCodec::Vp9));
+    assert_eq!(pipeline.furthest_pending_video_packet_start(), None);
+
+    let enqueue = |pipeline: &mut PlaybackPipeline, track, pts_ms: u64| {
+        let generation = pipeline.seek_generation();
+        pipeline.enqueue_pending_video_packet(PendingVideoPacket::new(
+            track,
+            Duration::from_millis(pts_ms),
+            generation,
+            Bytes::from_static(b"video"),
+            true,
+        ));
+    };
+    // B-frames: PTS в очереди не монотонен, дальний не обязан быть последним.
+    enqueue(&mut pipeline, video_track, 1_000);
+    enqueue(&mut pipeline, video_track, 1_200);
+    enqueue(&mut pipeline, video_track, 1_100);
+    // Чужой трек дальше по времени не считается.
+    enqueue(&mut pipeline, foreign_track, 9_000);
+
+    assert_eq!(
+        pipeline.furthest_pending_video_packet_start(),
+        Some(Duration::from_millis(1_200))
+    );
+    assert_eq!(
+        pipeline.pending_video_packet_len(),
+        4,
+        "the query must not drain the queue"
+    );
+}

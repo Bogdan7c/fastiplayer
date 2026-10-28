@@ -15,6 +15,7 @@ use audio_core::{
 
 use super::test_support::*;
 use super::*;
+use crate::PlaybackRate;
 use crate::pipeline::PresentationClockSource;
 
 /// Частота PCM тестового звука.
@@ -27,7 +28,7 @@ const AUDIO_PACKET: Duration = Duration::from_millis(100);
 const TICK_STEP: Duration = Duration::from_millis(25);
 
 /// Предел симуляции: 20 с файла при шаге 25 мс плюс запас; дальше — зависание.
-const MAX_TICKS: u32 = 1_200;
+const MAX_TICKS: u32 = 2_000;
 
 /// Переводит длительность в число PCM frames тестовой частоты.
 fn frames_for(duration: Duration) -> u64 {
@@ -218,6 +219,10 @@ struct MediaLayout {
     /// Интервал кадров видео.
     video_frame_interval: Duration,
 
+    /// PTS первого кадра видео. Не ноль — demux уже переставлен seek-ом: файл «читается»
+    /// с этой позиции (fake demuxer не умеет репозиционироваться сам).
+    video_start: Duration,
+
     /// Конец видео (PTS последнего кадра < этого значения).
     video_end: Duration,
 
@@ -235,13 +240,21 @@ struct MediaLayout {
 
     /// Сколько packets demux читает за один tick.
     demux_packets_per_tick: usize,
+
+    /// Сколько первых video packets decoder принимает. `None` — принимает всё; `Some(n)` —
+    /// после n-го packet-а его очередь навсегда полна (HW не тянет 4x): очередь pending
+    /// video packets растёт до лимита audio-priority demux-а.
+    video_decoder_frame_limit: Option<usize>,
+
+    /// Скорость воспроизведения сценария.
+    playback_rate: PlaybackRate,
 }
 
 impl MediaLayout {
     /// PTS всех кадров видео.
     fn video_pts(&self) -> Vec<Duration> {
         let mut video_pts = Vec::new();
-        let mut pts = Duration::ZERO;
+        let mut pts = self.video_start;
         while pts < self.video_end {
             video_pts.push(pts);
             pts += self.video_frame_interval;
@@ -322,8 +335,8 @@ impl GapScenario {
         packets.sort_by_key(|(pts, kind_order, _)| (*pts, *kind_order));
         let demuxer = scripted_seek_demuxer(
             vec![video_track.clone(), audio_track.clone()],
-            Duration::ZERO,
-            Duration::ZERO,
+            layout.video_start,
+            layout.video_start,
             packets.into_iter().map(|(_, _, packet)| packet).collect(),
         );
         let mut harness = SeekRegressionHarness::new(vec![video_track, audio_track], demuxer);
@@ -332,6 +345,23 @@ impl GapScenario {
             .set_snapshot_duration(Some(layout.video_end));
         for (handle, pts) in (10_000_u64..).zip(&video_pts) {
             harness.decoder.decode_next_packet_as_frame(*pts, handle);
+        }
+
+        if let Some(accepted_packets) = layout.video_decoder_frame_limit {
+            // Decoder принимает первые packets, затем его очередь навсегда полна.
+            for _ in 0..accepted_packets {
+                harness.decoder.push_send_result(Ok(()));
+            }
+            for _ in 0..MAX_TICKS * 64 {
+                harness
+                    .decoder
+                    .push_send_result(Err(DecodeSendError::Backpressure(
+                        DecodeBackpressureReason::PacketQueueFull {
+                            queued_packets: 4,
+                            capacity: 4,
+                        },
+                    )));
+            }
         }
 
         let device = PacedAudioDevice::default();
@@ -355,6 +385,12 @@ impl GapScenario {
             .session
             .dispatch_command(PlayerCommand::Play)
             .expect("Play must reach the session");
+        if layout.playback_rate != PlaybackRate::NORMAL {
+            harness
+                .session
+                .dispatch_command(PlayerCommand::SetPlaybackRate(layout.playback_rate))
+                .expect("SetPlaybackRate must reach the session");
+        }
         let _start_events = harness.session.take_events();
 
         Self {
@@ -446,6 +482,18 @@ impl GapScenario {
         }
     }
 
+    /// Seek в `target`, где звука нет: дальше seek завершается обычными tick-ами.
+    ///
+    /// Fake demuxer читает пакеты только с `target` (см. `MediaLayout::video_start`),
+    /// как реальный demux после seek-а; конец записанного звука сбрасывается seek-ом.
+    fn start_seek_into_region_without_audio(&mut self, target: Duration) {
+        self.session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                MediaTime::from_duration(target),
+            )))
+            .expect("Seek must reach the session");
+    }
+
     /// Играет до `Ended`.
     fn play_until_ended(
         &mut self,
@@ -525,6 +573,7 @@ fn assert_ended_event_published(session: &mut PlayerSession) {
 /// Файл из живого случая: звук только первые 5 с, видео 20 с.
 fn audio_ends_at_five_seconds_layout() -> MediaLayout {
     MediaLayout {
+        video_start: Duration::ZERO,
         video_frame_interval: Duration::from_millis(100),
         video_end: Duration::from_secs(20),
         audio_ranges: vec![(Duration::ZERO, Duration::from_secs(5))],
@@ -533,12 +582,15 @@ fn audio_ends_at_five_seconds_layout() -> MediaLayout {
         audio_catchup_video_packet_limit: 40,
         audio_file_order_lag: Duration::ZERO,
         demux_packets_per_tick: PlayerTickConfig::default().max_demux_packets_per_tick,
+        video_decoder_frame_limit: None,
+        playback_rate: PlaybackRate::NORMAL,
     }
 }
 
 /// Файл с разрывом звука посреди: звук 0–5 с и 12–20 с.
 fn mid_file_audio_gap_layout() -> MediaLayout {
     MediaLayout {
+        video_start: Duration::ZERO,
         video_frame_interval: Duration::from_millis(100),
         video_end: Duration::from_secs(20),
         audio_ranges: vec![
@@ -550,6 +602,8 @@ fn mid_file_audio_gap_layout() -> MediaLayout {
         audio_catchup_video_packet_limit: 240,
         audio_file_order_lag: Duration::ZERO,
         demux_packets_per_tick: PlayerTickConfig::default().max_demux_packets_per_tick,
+        video_decoder_frame_limit: None,
+        playback_rate: PlaybackRate::NORMAL,
     }
 }
 
@@ -652,6 +706,7 @@ fn sparse_interleaved_audio_never_hands_over_the_clock() {
     // demux (3 packets за tick) дочитывает до следующего звука. Звук редкий и запаздывает
     // в файле, но непрерывен — разрыва нет, и часы отдавать нельзя.
     let layout = MediaLayout {
+        video_start: Duration::ZERO,
         video_frame_interval: Duration::from_millis(33),
         video_end: Duration::from_secs(10),
         audio_ranges: vec![(Duration::ZERO, Duration::from_secs(10))],
@@ -659,6 +714,8 @@ fn sparse_interleaved_audio_never_hands_over_the_clock() {
         audio_catchup_video_packet_limit: 240,
         audio_file_order_lag: Duration::from_secs(2),
         demux_packets_per_tick: 3,
+        video_decoder_frame_limit: None,
+        playback_rate: PlaybackRate::NORMAL,
     };
     let mut scenario = GapScenario::start(&layout);
     let mut observations = PlaybackObservations::default();
@@ -678,6 +735,126 @@ fn sparse_interleaved_audio_never_hands_over_the_clock() {
         PresentationClockSource::AudioOutput
     );
     assert_ended_event_published(&mut scenario.session);
+}
+
+#[test]
+fn lagging_video_decoder_with_continuous_audio_never_hands_the_clock_over() {
+    // Живой T410: звук непрерывный, HW decoder не тянет 4x. Decoder «захлебнулся» после
+    // 30 кадров, очередь pending video packets забита до лимита видео, которое лежит ДО
+    // конца записанного звука, а следующий audio packet стоит сразу за ним в файле.
+    // Насыщение demux-а здесь ничего не доказывает: часы звуку отнимать нельзя.
+    let layout = MediaLayout {
+        video_start: Duration::ZERO,
+        video_frame_interval: Duration::from_millis(33),
+        video_end: Duration::from_secs(20),
+        audio_ranges: vec![(Duration::ZERO, Duration::from_secs(20))],
+        audio_packet_duration: AUDIO_PACKET,
+        audio_catchup_video_packet_limit: 240,
+        audio_file_order_lag: Duration::ZERO,
+        demux_packets_per_tick: PlayerTickConfig::default().max_demux_packets_per_tick,
+        video_decoder_frame_limit: Some(30),
+        playback_rate: PlaybackRate::new(4.0).expect("4x must be a valid playback rate"),
+    };
+    let mut scenario = GapScenario::start(&layout);
+    let mut observations = PlaybackObservations::default();
+    let started_at = Instant::now();
+
+    // Ждём насыщения: очередь video packets дошла до лимита audio-priority demux-а.
+    let saturated_at = scenario.play_until(
+        started_at,
+        &mut observations,
+        "pending video queue saturated",
+        |scenario, _| scenario.session.pipeline.pending_video_packet_len() >= 240,
+    );
+    // И даём ещё несколько секунд: ложное доказательство сработало бы на ближайших tick-ах.
+    let _end = scenario.play_until(
+        saturated_at,
+        &mut observations,
+        "several seconds after saturation",
+        |_, observations| observations.positions.len() > 400,
+    );
+
+    assert!(
+        !observations.handed_over,
+        "saturated demux behind a lagging decoder must not prove audio absence"
+    );
+    assert_eq!(
+        scenario.clock_source(),
+        PresentationClockSource::AudioOutput
+    );
+}
+
+#[test]
+fn seek_into_region_without_audio_hands_the_clock_over_when_demux_saturates() {
+    // Файл 13b: видео 0–20 с, звук только 0–5 с. Seek на 10 с при Playing: после seek-а
+    // звук не пишется вовсе (конец записанного звука сброшен), decoder не успевает,
+    // audio-priority demux упирается в лимит video packets. Это насыщение обязано
+    // доказать отсутствие звука относительно позиции seek-а, иначе Playing стоит вечно.
+    let seek_target = Duration::from_secs(10);
+    let layout = MediaLayout {
+        video_start: seek_target,
+        video_end: Duration::from_secs(40),
+        audio_ranges: Vec::new(),
+        video_decoder_frame_limit: Some(20),
+        ..audio_ends_at_five_seconds_layout()
+    };
+    let mut scenario = GapScenario::start(&layout);
+    let mut observations = PlaybackObservations::default();
+    scenario.start_seek_into_region_without_audio(seek_target);
+
+    let handed_over_at = scenario.play_until(
+        Instant::now(),
+        &mut observations,
+        "clock handed over after the seek into the silent region",
+        |scenario, _| scenario.clock_source() == PresentationClockSource::MonotonicAfterAudioEnd,
+    );
+
+    assert!(
+        scenario.session.pipeline.pending_video_packet_len() >= 40,
+        "the handover must come from demux saturation, not from EOF"
+    );
+    assert_eq!(
+        scenario
+            .session
+            .presentation_clock_position_at(handed_over_at),
+        seek_target,
+        "the monotonic clock starts at the seek position"
+    );
+}
+
+#[test]
+fn seek_at_4x_into_audio_region_with_lagging_decoder_keeps_audio_clock() {
+    // Симметричный негатив: после seek-а звук есть (непрерывный), но 4x HW decoder
+    // отстаёт и очередь video packets забита до лимита. Звук ещё не прочитан demux-ом
+    // и не записан; насыщение не доказывает его отсутствия только если видео в очереди
+    // не ушло дальше позиции seek-а на MIN_AUDIO_GAP.
+    let seek_target = Duration::from_secs(10);
+    let layout = MediaLayout {
+        video_start: seek_target,
+        video_end: Duration::from_secs(40),
+        video_frame_interval: Duration::from_millis(33),
+        audio_ranges: vec![(Duration::from_millis(9_900), Duration::from_secs(40))],
+        audio_file_order_lag: Duration::from_secs(2),
+        audio_catchup_video_packet_limit: 10,
+        video_decoder_frame_limit: Some(5),
+        playback_rate: PlaybackRate::new(4.0).expect("4x must be a valid playback rate"),
+        ..audio_ends_at_five_seconds_layout()
+    };
+    let mut scenario = GapScenario::start(&layout);
+    let mut observations = PlaybackObservations::default();
+    scenario.start_seek_into_region_without_audio(seek_target);
+
+    let _end = scenario.play_until(
+        Instant::now(),
+        &mut observations,
+        "several seconds after the seek",
+        |_, observations| observations.positions.len() > 200,
+    );
+
+    assert!(
+        !observations.handed_over,
+        "audio exists right after the seek: the clock must stay with the audio output"
+    );
 }
 
 #[test]

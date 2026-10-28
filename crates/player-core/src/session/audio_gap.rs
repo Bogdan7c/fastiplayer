@@ -17,6 +17,10 @@
 //! - **demux упёрся без звука**: audio-priority demux дочитал лимит video packets, ни
 //!   одного audio packet-а в очереди нет, а output доиграл весь звук. Demux читает файл
 //!   по порядку, поэтому звука в этом отрезке нет; без передачи это вечная блокировка.
+//!   Но только если прочитанное видео ушло дальше конца записанного звука больше чем на
+//!   [`MIN_AUDIO_GAP`]. Если video decoder отстаёт (HW на 4x), эти video packets лежат
+//!   ДО конца звука, а следующий audio packet сразу за ними в файле: насыщение demux-а
+//!   тогда ничего не доказывает, звук надо ждать, а не отрезать.
 //!
 //! В обоих случаях pipeline дополнительно требует, чтобы output доиграл записанный звук,
 //! поэтому до разрыва звук и часы остаются прежними.
@@ -218,6 +222,35 @@ impl PlayerSession {
         let demux_saturated = demux_audio_wait == DemuxAudioPriorityWait::SaturatedWithoutAudio
             && self.playback_state() == PlaybackState::Playing
             && self.pipeline.pending_audio_packet_is_empty();
-        demux_saturated.then_some(AudioGapEvidence::DemuxSaturatedWithoutAudio)
+        if !demux_saturated || !self.demux_read_video_far_past_written_audio() {
+            return None;
+        }
+        Some(AudioGapEvidence::DemuxSaturatedWithoutAudio)
+    }
+
+    /// Прочитал ли demux видео дальше последнего слышанного звука больше чем на `MIN_AUDIO_GAP`.
+    ///
+    /// Demux отдаёт packets в порядке файла. Если самый дальний прочитанный video packet
+    /// позже опорной точки на полсекунды и больше, а audio packet-а между ними не
+    /// встретилось, то звука в этом отрезке файла действительно нет. Если же video packets
+    /// лежат до конца звука (decoder отстаёт, очередь забита «старым» видео), следующий
+    /// audio packet ещё не прочитан и может идти сразу за ними: доказательства нет.
+    ///
+    /// Опорная точка: конец записанного звука. После seek/reset он сброшен (звук нового
+    /// отрезка ещё не писался, например seek в область файла без звука), и тогда опора —
+    /// текущая позиция показа: после seek-а demux начал читать ровно с неё, значит всё
+    /// прочитанное видео правее позиции прошло без audio packet-ов (pending audio пуст,
+    /// записанного звука нет — это проверяет вызывающий код).
+    fn demux_read_video_far_past_written_audio(&self) -> bool {
+        let Some(video_frontier) = self.pipeline.furthest_pending_video_packet_start() else {
+            return false;
+        };
+        let reference_point = self
+            .pipeline
+            .written_audio_end()
+            .unwrap_or(self.snapshot.current_position);
+        reference_point
+            .checked_add(MIN_AUDIO_GAP)
+            .is_some_and(|gap_threshold| video_frontier > gap_threshold)
     }
 }
