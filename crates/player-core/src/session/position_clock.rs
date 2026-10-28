@@ -36,7 +36,7 @@ impl PlayerSession {
     /// Явно перепривязывает только no-audio clock на lifecycle boundary.
     pub(super) fn reanchor_no_audio_clock(&mut self, position: Duration, observed_at: Instant) {
         if self.snapshot.playback_state == PlaybackState::Playing
-            && !self.pipeline.has_audio_clock()
+            && !self.audio_clock_drives_presentation()
         {
             self.pipeline.start_monotonic_media_clock(
                 position,
@@ -48,11 +48,12 @@ impl PlayerSession {
 
     /// Возвращает media clock position на monotonic момент `now`.
     ///
-    /// Audio clock остаётся главным источником времени. Если audio clock отсутствует,
-    /// Playing/EOF-drain без audio используют внутренний monotonic anchor, а не частоту worker tick-а.
+    /// Audio clock остаётся главным источником времени. Если audio clock отсутствует
+    /// или уже передал время хвосту видео после конца звука, Playing/EOF-drain используют
+    /// внутренний monotonic anchor, а не частоту worker tick-а.
     #[must_use]
     pub(crate) fn presentation_clock_position_at(&self, now: Instant) -> Duration {
-        if self.pipeline.has_audio_clock() {
+        if self.audio_clock_drives_presentation() {
             return self.audio_media_clock_position();
         }
 
@@ -76,7 +77,7 @@ impl PlayerSession {
         now: Instant,
         wall_delay: Duration,
     ) -> Duration {
-        if self.pipeline.has_audio_clock() {
+        if self.audio_clock_drives_presentation() {
             return self
                 .pipeline
                 .media_position_after_audio_output_delay(wall_delay);
@@ -108,7 +109,7 @@ impl PlayerSession {
         now: Instant,
         media_deadline: Duration,
     ) -> Duration {
-        if self.pipeline.has_audio_clock() {
+        if self.audio_clock_drives_presentation() {
             return self
                 .pipeline
                 .audio_output_delay_until_media_deadline(media_deadline);
@@ -130,6 +131,32 @@ impl PlayerSession {
             .scale_media_delta_to_wall_delay(media_delta)
     }
 
+    /// Проверяет, ведёт ли сейчас время показа audio output clock.
+    ///
+    /// `false` и без audio clock (video-only), и после передачи времени хвосту видео:
+    /// в обоих случаях позицию двигает monotonic media clock.
+    #[must_use]
+    pub(crate) fn audio_clock_drives_presentation(&self) -> bool {
+        self.pipeline.presentation_clock_source().is_audio_output()
+    }
+
+    /// Выбирает media-позицию, на которой Pause/buffering замораживают presentation clock.
+    ///
+    /// Snapshot audio output-а точнее (снят под mutex callback-а), но только пока audio
+    /// clock ведёт время. После конца звука он стоит на конце audio, а хвост видео уже
+    /// ушёл дальше по monotonic clock — тогда замораживаем именно его позицию.
+    #[must_use]
+    pub(super) fn presentation_position_to_freeze(
+        &self,
+        captured_audio_position: Duration,
+        now: Instant,
+    ) -> Duration {
+        if self.audio_clock_drives_presentation() {
+            return captured_audio_position;
+        }
+        self.presentation_clock_position_at(now)
+    }
+
     /// Проверяет, может ли no-audio monotonic clock сейчас двигать user-visible position.
     pub(super) fn monotonic_media_clock_drives_position(&self) -> bool {
         self.snapshot.playback_state == PlaybackState::Playing || self.eof_drain_needs_progress()
@@ -137,7 +164,7 @@ impl PlayerSession {
 
     /// Синхронизирует snapshot position с monotonic fallback clock без изменения playback state.
     pub(super) fn sync_monotonic_media_clock_position(&mut self, now: Instant) {
-        if self.pipeline.has_audio_clock() {
+        if self.audio_clock_drives_presentation() {
             return;
         }
 
@@ -145,9 +172,11 @@ impl PlayerSession {
         self.publish_clock_sample(position);
     }
 
-    /// Запускает или перезапускает no-audio media clock от текущей snapshot position.
+    /// Запускает или перезапускает monotonic media clock от текущей snapshot position.
+    ///
+    /// Нужен и без audio clock, и для хвоста видео после конца звука (resume после Pause).
     pub(super) fn anchor_monotonic_media_clock_if_needed(&mut self, now: Instant) {
-        if self.pipeline.has_audio_clock() {
+        if self.audio_clock_drives_presentation() {
             self.pipeline.clear_monotonic_media_clock();
             return;
         }

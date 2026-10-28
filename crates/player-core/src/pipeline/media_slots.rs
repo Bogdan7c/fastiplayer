@@ -145,6 +145,9 @@ impl PlaybackPipeline {
         // Новая generation является настоящим lifecycle discontinuity. Старый
         // recovery scan больше не может принять keyframe из нового segment-а.
         self.cancel_video_backlog_recovery_scan_for_discontinuity();
+        // Передача времени хвосту видео и конец звука принадлежали старому отрезку timeline-а.
+        self.cancel_audio_end_clock_handover();
+        self.forget_written_audio_end();
         self.seek_generation = self.seek_generation.saturating_add(1);
         self.seek_generation
     }
@@ -451,6 +454,8 @@ impl PlaybackPipeline {
         self.seek_preroll_fallback_video_frame = None;
         self.reanchor_audio_clock_media_mapping(Duration::ZERO, PlaybackRate::NORMAL);
         self.clear_monotonic_media_clock();
+        self.cancel_audio_end_clock_handover();
+        self.forget_written_audio_end();
         self.seek_generation = 0;
         self.mark_audio_buffer_clear_ack(0);
         self.reset_video_frame_timing_estimator();

@@ -384,21 +384,8 @@ impl PlaybackPipeline {
             return AudioEofDrainState::PendingPackets { queued_packets };
         }
 
-        let Some(output) = self.audio_output.as_ref() else {
+        let Some(buffer_level_ms) = self.audio_output_unplayed_tail_ms() else {
             return AudioEofDrainState::NoOutput;
-        };
-
-        let ring_buffer_level_ms = output.buffer_level_ms();
-        let submitted_tail_ms = output
-            .clock()
-            .output_timing()
-            .submitted_output_tail()
-            .as_secs_f64()
-            * 1_000.0;
-        let buffer_level_ms = if ring_buffer_level_ms.is_finite() {
-            ring_buffer_level_ms.max(submitted_tail_ms)
-        } else {
-            submitted_tail_ms
         };
         if buffer_level_ms > 0.0 {
             return AudioEofDrainState::DrainingOutput {
@@ -410,6 +397,26 @@ impl PlaybackPipeline {
         AudioEofDrainState::DrainedOutput {
             playback_requested: self.audio_output_play_requested,
         }
+    }
+
+    /// Возвращает ещё не слышимый хвост output-а (ring buffer или уже отданный в DAC PCM).
+    ///
+    /// `None` — output не создан. Ноль означает, что весь записанный звук уже прозвучал.
+    #[must_use]
+    pub(super) fn audio_output_unplayed_tail_ms(&self) -> Option<f64> {
+        let output = self.audio_output.as_ref()?;
+        let ring_buffer_level_ms = output.buffer_level_ms();
+        let submitted_tail_ms = output
+            .clock()
+            .output_timing()
+            .submitted_output_tail()
+            .as_secs_f64()
+            * 1_000.0;
+        Some(if ring_buffer_level_ms.is_finite() {
+            ring_buffer_level_ms.max(submitted_tail_ms)
+        } else {
+            submitted_tail_ms
+        })
     }
 
     /// Возвращает clock handle output-а без раскрытия самого output slot-а.
@@ -435,11 +442,14 @@ impl PlaybackPipeline {
             playback_rate,
         );
         self.clear_monotonic_media_clock();
+        // Новый audio clock снова ведёт время: прежняя передача хвосту видео недействительна.
+        self.cancel_audio_end_clock_handover();
     }
 
     /// Удаляет audio clock handle без изменения decoder/output slots.
     pub(crate) fn clear_audio_clock(&mut self) {
         self.audio_clock = None;
+        self.cancel_audio_end_clock_handover();
     }
 
     /// Сбрасывает установленный audio clock; absent clock остаётся явным no-op.
@@ -450,6 +460,7 @@ impl PlaybackPipeline {
 
         let playback_rate = self.audio_clock_media_mapping.open_playback_rate();
         clock.reset();
+        self.cancel_audio_end_clock_handover();
         self.audio_clock_media_mapping.reset_anchor(
             Duration::ZERO,
             self.media_clock_base,
@@ -538,6 +549,11 @@ impl PlaybackPipeline {
         playback_rate: PlaybackRate,
     ) {
         self.media_clock_base = media_position;
+        // Перепривязка к новой media-позиции (seek commit, смена дорожки, install) —
+        // разрыв времени: audio clock снова главный до следующего конца звука, а
+        // непрерывность звука отсчитывается заново от первого нового PCM.
+        self.cancel_audio_end_clock_handover();
+        self.forget_written_audio_end();
         let output_clock_position = self.audio_output_clock_timing().audible_output_position();
         self.audio_clock_media_mapping.reset_anchor(
             output_clock_position,

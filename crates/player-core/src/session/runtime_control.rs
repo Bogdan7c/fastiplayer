@@ -240,7 +240,8 @@ impl PlayerSession {
     pub(super) fn freeze_playback_for_demux_buffering(&mut self) -> PlayerResult<()> {
         let audio_pause_result = self.pipeline.pause_audio_output_and_capture_clock();
         let frozen_media_position = match audio_pause_result {
-            Some(Ok(captured_clock)) => captured_clock.media_position(),
+            Some(Ok(captured_clock)) => self
+                .presentation_position_to_freeze(captured_clock.media_position(), Instant::now()),
             Some(Err(error)) => {
                 warn!(error = %error, "Failed to freeze audio for demux buffering");
                 return Err(PlayerError::new(
@@ -280,7 +281,8 @@ impl PlayerSession {
         // Для video-only тот же lifecycle фиксируется по monotonic anchor-у.
         let audio_pause_result = self.pipeline.pause_audio_output_and_capture_clock();
         let paused_media_position = match audio_pause_result {
-            Some(Ok(captured_clock)) => captured_clock.media_position(),
+            Some(Ok(captured_clock)) => self
+                .presentation_position_to_freeze(captured_clock.media_position(), Instant::now()),
             Some(Err(error)) => {
                 warn!(error = %error, "It was not possible to stop the audio.");
                 return Err(PlayerError::new(

@@ -10,6 +10,7 @@ use super::PlayerSession;
 use crate::{PipelinePauseReason, PlaybackState};
 
 mod audio_fallback_wakeup;
+mod audio_gap_evidence;
 mod audio_read_ahead;
 mod audio_refill_cadence;
 mod demux_admission;
@@ -74,12 +75,21 @@ impl PlayerSession {
         }
 
         if self.is_demuxing_active() || self.is_eof_draining() {
+            // Конец разрыва звука: звук забирает часы до записи нового PCM.
+            self.resume_audio_after_gap_if_due(tick_context.now);
             self.process_pending_audio_packets_with_buffer_limit(audio_read_ahead_limit_ms(
                 self,
                 &tick_context.config,
             ));
             self.start_eof_audio_tail_if_needed();
         }
+        // Звука впереди нет (доказано): видео дальше идёт по monotonic clock.
+        let demux_audio_wait =
+            audio_gap_evidence::demux_audio_priority_wait(self, &tick_context.config);
+        self.hand_over_presentation_clock_for_audio_gap_if_proven(
+            tick_context.now,
+            demux_audio_wait,
+        );
 
         self.diagnose_audio_output_starvation(tick_context.now);
         // Пропавшее устройство: поток мог сломаться между tick-ами — восстанавливаем звук

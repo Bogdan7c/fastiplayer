@@ -44,7 +44,10 @@ impl PlayerSession {
 
         let observed_at = Instant::now();
         let captured_audio_clock = self.pipeline.capture_audio_clock_mapping();
+        // После конца звука (хвост видео) audio snapshot стоит на конце audio, а время
+        // ведёт monotonic clock: позицию берём из presentation clock-а.
         let current_media_position = captured_audio_clock
+            .filter(|_| self.audio_clock_drives_presentation())
             .map(CapturedAudioClockMapping::media_position)
             .unwrap_or_else(|| self.presentation_clock_position_at(observed_at));
         if let Err(reject) = self.commit_prepared_audio_clock_mapping(
@@ -61,7 +64,7 @@ impl PlayerSession {
         self.reconcile_video_backlog_recovery_after_rate_change(playback_rate);
         self.publish_clock_sample(current_media_position);
 
-        if !self.pipeline.has_audio_clock() {
+        if !self.audio_clock_drives_presentation() {
             self.pipeline.start_monotonic_media_clock(
                 current_media_position,
                 observed_at,

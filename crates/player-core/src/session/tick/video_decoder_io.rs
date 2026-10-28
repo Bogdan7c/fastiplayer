@@ -199,7 +199,7 @@ pub(super) fn can_send_video_packet_to_decoder(
         return true;
     }
 
-    if !session.pipeline.has_selected_audio_track() || !session.pipeline.has_audio_clock() {
+    if !session.pipeline.has_selected_audio_track() || !session.audio_clock_drives_presentation() {
         return true;
     }
 

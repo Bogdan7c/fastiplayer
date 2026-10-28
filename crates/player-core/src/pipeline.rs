@@ -40,6 +40,7 @@ mod audio_track_switch;
 mod media_slots;
 mod overlapped_audio_output;
 mod passthrough_audio_history;
+mod presentation_clock_handover;
 mod render_resources;
 mod retired_video_decoders;
 #[cfg(test)]
@@ -54,6 +55,9 @@ pub(crate) use audio_output_spec_change::{
 };
 pub(crate) use audio_packet_window::PendingAudioPacket;
 use passthrough_audio_history::PassthroughAudioHistory;
+use presentation_clock_handover::AudioEndClockHandover;
+pub(crate) use presentation_clock_handover::PresentationClockSource;
+pub(crate) use presentation_clock_handover::{AudioEndClockHandoverOutcome, AudioGapResumeOutcome};
 use video_backlog_recovery::VideoBacklogRecoveryState;
 pub(crate) use video_backlog_recovery::{
     VideoBacklogRecoveryRouteOutcome, VideoBacklogRecoveryScanLimit,
@@ -647,6 +651,12 @@ pub(crate) struct PlaybackPipeline {
     /// Внутренний monotonic clock для playback без доступного audio clock.
     monotonic_media_clock_anchor: Option<MonotonicMediaClockAnchor>,
 
+    /// Передано ли время показа monotonic-часам после конца звука (хвост видео).
+    audio_end_clock_handover: AudioEndClockHandover,
+
+    /// Media-конец последнего записанного звука (для доказательства разрыва звука).
+    written_audio_end: Option<Duration>,
+
     /// Поколение packets после последнего seek transaction.
     seek_generation: u64,
 
@@ -753,6 +763,8 @@ impl Default for PlaybackPipeline {
                 PlaybackRate::NORMAL,
             ),
             monotonic_media_clock_anchor: None,
+            audio_end_clock_handover: AudioEndClockHandover::NotHandedOver,
+            written_audio_end: None,
             seek_generation: 0,
             audio_buffer_clear_generation: 0,
             last_audio_clock: Duration::ZERO,

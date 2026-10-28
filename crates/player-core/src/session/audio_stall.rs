@@ -32,6 +32,12 @@ impl PlayerSession {
         now: Instant,
         tick_config: &PlayerTickConfig,
     ) -> AudioClockStall {
+        // Остановка audio clock что-то значит, только пока он ведёт время показа. После
+        // конца звука он стоит штатно, а хвост видео идёт по monotonic clock.
+        if !self.audio_clock_drives_presentation() {
+            return AudioClockStall::Running;
+        }
+
         let stalled_for = self.pipeline.audio_clock_stalled_for(now);
         let is_stalled = self.audio_clock_now() >= tick_config.audio_stall_min_position
             && stalled_for >= tick_config.audio_stall_timeout;

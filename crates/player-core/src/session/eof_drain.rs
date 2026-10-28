@@ -96,6 +96,22 @@ enum EofDrainBlocker {
     DecoderEndOfStreamDrain,
 }
 
+impl EofDrainBlocker {
+    /// Возвращает `true`, если drain ждёт ещё не показанный хвост видео.
+    ///
+    /// Только такие blocker-ы могут потребовать передачи времени после конца звука:
+    /// seek-blocker-ы владеет seek pipeline, а audio-blocker-ы означают, что звук ещё играет.
+    const fn waits_for_video_tail(self) -> bool {
+        matches!(
+            self,
+            Self::PendingVideoPackets { .. }
+                | Self::VideoPresentQueue { .. }
+                | Self::VideoDecodeInFlight { .. }
+                | Self::DecoderEndOfStreamDrain
+        )
+    }
+}
+
 impl PlayerSession {
     /// Возвращает `true`, если session дожимает накопленные хвосты после EOF.
     #[must_use]
@@ -224,8 +240,12 @@ impl PlayerSession {
             return false;
         }
 
-        if !self.eof_drain_ready_to_end(now, audio_stall_timeout) {
-            let blocker = self.eof_drain_blocker(now, audio_stall_timeout);
+        if let Some(blocker) = self.eof_drain_blocker(now, audio_stall_timeout) {
+            if blocker.waits_for_video_tail() {
+                // Звук мог уже доиграть раньше видео: тогда хвост видео дальше идёт по
+                // monotonic clock, иначе его кадры никогда не станут due (`Draining` навсегда).
+                self.hand_over_presentation_clock_for_video_tail(now);
+            }
             trace!(
                 blocker = ?blocker,
                 playback_state = ?self.playback_state(),
@@ -244,6 +264,7 @@ impl PlayerSession {
                 audio_clock_now_ms = self.audio_clock_now().as_secs_f64() * 1000.0,
                 audio_clock_stalled_for_ms =
                     self.pipeline.audio_clock_stalled_for(now).as_secs_f64() * 1000.0,
+                presentation_clock_source = ?self.pipeline.presentation_clock_source(),
                 "EOF drain waiting"
             );
             return false;
@@ -274,8 +295,8 @@ impl PlayerSession {
     /// атомарно, а `Play`/seek после `Ended` возобновляют вывод обычным resume-путём
     /// (флаг play-request сброшен).
     ///
-    /// Вызывается строго после `eof_drain_ready_to_end`: хвост (включая submitted DAC tail)
-    /// уже доигран, поэтому пауза его не обрезает. Ошибка паузы не фатальна: звука
+    /// Вызывается строго после того, как `eof_drain_blocker` вернул `None`: хвост
+    /// (включая submitted DAC tail) уже доигран, поэтому пауза его не обрезает. Ошибка паузы не фатальна: звука
     /// больше не будет, а fatal-ошибка на корректном конце файла была бы хуже
     /// лишних callback-ов; причина остаётся в логе.
     fn park_audio_output_after_eof(&mut self) {
@@ -415,11 +436,6 @@ impl PlayerSession {
         )
     }
 
-    /// Проверяет только условия завершения drain; сам state меняет `finish_eof_drain_if_ready`.
-    fn eof_drain_ready_to_end(&self, now: Instant, audio_stall_timeout: Duration) -> bool {
-        self.eof_drain_blocker(now, audio_stall_timeout).is_none()
-    }
-
     /// Возвращает первый blocker EOF-drain в порядке ownership/lifecycle зависимостей.
     fn eof_drain_blocker(
         &self,
@@ -497,10 +513,11 @@ impl PlayerSession {
 
     /// Звук доигран до конца, а очередь держит только кадры за концом static media.
     ///
-    /// Presentation ведёт audio clock; после `DrainedOutput` он больше не сдвинется, и
-    /// кадр с PTS за duration (H.264 с B-кадрами: последний кадр 20.04 с у 20 с ролика)
-    /// никогда не станет due. Без этого seek/reopen ровно на конец ролика навсегда
-    /// оставался в `Draining` и не доходил до `Ended`.
+    /// Кадр с PTS за duration (H.264 с B-кадрами: последний кадр 20.04 с у 20 с ролика)
+    /// лежит вне публичной timeline. С передачей времени после конца звука он стал бы due
+    /// по monotonic clock, но ждать его незачем: позиция и так клампится к duration, а
+    /// битый PTS далеко за концом задержал бы `Ended` на произвольное время. Поэтому такие
+    /// кадры не держат drain, и seek/reopen ровно на конец ролика сразу доходит до `Ended`.
     fn queued_video_frames_unreachable_after_audio_end(&self) -> bool {
         let audio_finished = matches!(
             self.pipeline.audio_eof_drain_state(),

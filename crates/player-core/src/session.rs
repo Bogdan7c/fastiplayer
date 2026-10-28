@@ -37,6 +37,7 @@ use crate::{PlayerCommandOutcome, PlayerResult};
 
 #[cfg(test)]
 mod audio_drain_test_support;
+mod audio_gap;
 mod audio_output_handover;
 mod audio_output_recovery;
 mod audio_packet_window;
@@ -89,6 +90,7 @@ mod tick;
 mod timeline_seek;
 mod video_packet_framing;
 mod video_requirement_error;
+mod video_tail_clock_handover;
 
 #[cfg(test)]
 use self::audio_runtime::{

@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use media_core::{MediaTime, PacketPresentationWindow, TrackInfo, TrackKind};
 use tracing::{info, warn};
 
+use super::audio_gap::PendingAudioOutputAdmission;
 use crate::pipeline::{AudioSeekRuntimeState, DecodedAudioPacket};
 use crate::seek_state::{PlaybackResumeIntent, SeekCommitState};
 use crate::{
@@ -248,6 +249,13 @@ impl PlayerSession {
                         // После успешного rate commit PCM уже мог попасть в output;
                         // rollback невозможен, поэтому запрещён video-only fallback.
                         self.mark_fatal_error(error);
+                    } else {
+                        // Конец звука в media-времени: от него меряется разрыв (`audio_gap.rs`).
+                        self.pipeline.note_audio_packet_written(
+                            packet_pts,
+                            decoded_samples.len(),
+                            output_spec,
+                        );
                     }
                 }
                 Ok(DecodedAudioPacket::Empty) => {}
@@ -487,7 +495,10 @@ impl PlayerSession {
             return;
         }
 
-        while let Some(packet) = self.pipeline.pop_pending_audio_packet_front() {
+        // Звук после доказанного разрыва ждёт своего времени (см. `audio_gap.rs`).
+        while self.pending_audio_output_admission() == PendingAudioOutputAdmission::Admit
+            && let Some(packet) = self.pipeline.pop_pending_audio_packet_front()
+        {
             if self.audio_buffer_level_ms().unwrap_or(0.0) > high_water_mark_ms {
                 self.pipeline.push_pending_audio_packet_front(packet);
                 break;

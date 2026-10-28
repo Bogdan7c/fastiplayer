@@ -9,6 +9,8 @@ use std::time::Instant;
 use media_core::{DemuxReadEvent, TrackKind, TrackTimestamp};
 use tracing::{debug, trace, warn};
 
+use crate::pipeline::PresentationClockSource;
+
 use super::{
     PlayerTickConfig, PlayerTickResult,
     audio_read_ahead::audio_read_ahead_limit_ms,
@@ -190,6 +192,12 @@ pub(super) fn audio_demux_catchup_needed(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
 ) -> bool {
+    // На время отсутствия звука (часы у monotonic clock) ждать его в demux бессмысленно.
+    if session.pipeline.presentation_clock_source()
+        == PresentationClockSource::MonotonicAfterAudioEnd
+    {
+        return false;
+    }
     audio_demux_catchup_needed_for_level(
         session.pipeline.has_selected_audio_track(),
         session.audio_buffer_level_ms(),

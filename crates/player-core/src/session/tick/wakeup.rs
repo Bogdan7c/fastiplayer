@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use audio_core::AudioOutputCallbackCadence;
 
+use crate::session::audio_gap::PendingAudioOutputAdmission;
+
 use super::{
     PlayerTickConfig,
     audio_fallback_wakeup::coarse_progress_interval_for_audio_runway,
@@ -518,6 +520,11 @@ pub(super) fn pending_audio_work_available(
     audio_buffer_level: PlannedAudioBufferLevel,
 ) -> bool {
     if session.pipeline.pending_audio_packet_is_empty() {
+        return false;
+    }
+
+    // Звук после разрыва ждёт PTS: будить worker раньше видео бессмысленно (иначе spin).
+    if session.pending_audio_output_admission() == PendingAudioOutputAdmission::HoldForAudioGap {
         return false;
     }
 

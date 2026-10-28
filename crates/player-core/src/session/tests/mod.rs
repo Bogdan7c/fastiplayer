@@ -45,6 +45,7 @@ use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 mod test_support;
 mod tracing_capture;
 
+mod audio_gap_clock_handover;
 mod audio_output_handover;
 mod audio_output_recovery;
 mod audio_packet_window;
@@ -57,6 +58,7 @@ mod decoder_boundary;
 mod demux_retry;
 mod diagnostics_sink;
 mod dynamic_timeline;
+mod eof_audio_ends_before_video;
 mod eof_audio_park;
 mod eof_drain;
 mod eof_drain_past_end_frame;
