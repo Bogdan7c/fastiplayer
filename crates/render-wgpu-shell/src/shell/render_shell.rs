@@ -116,6 +116,12 @@ impl RenderShell for Renderer {
     fn video_import_preparer(&self) -> Box<dyn VideoImportPreparer> {
         self.video_import.video_import_preparer()
     }
+
+    /// wgpu сигнала не даёт: на GPU с Vulkan декод идёт своей очередью, и такт декодера
+    /// по показу не нужен (решение владельца 77 — поведение wgpu-пути не меняется).
+    fn present_pass_signal(&self) -> Option<video_core::PresentPassSignal> {
+        None
+    }
 }
 
 #[cfg(test)]

@@ -43,9 +43,11 @@ use video_present_core::{
     VideoFrameReleaseSink,
 };
 
+mod present_pass;
 mod presentation;
 mod ui_textures;
 
+pub use present_pass::check_present_pass_signal_follows_presented_frames;
 pub use presentation::{
     check_detached_presentation_gives_no_frames, check_presentation_reconfigure_distinguishes_no_op,
 };
@@ -163,6 +165,8 @@ pub enum ConformanceCheck {
     PartialEditOfUnknownUiTextureIsReported,
     /// Изменения текстур интерфейса применяются и в отклонённом кадре.
     UiTexturesApplyOnRejectedFrames,
+    /// Сигнал «проход показа отправлен» звонит после показанного кадра и молчит при отказе.
+    PresentPassSignalFollowsPresentedFrames,
 }
 
 /// Нарушение контракта с объяснением.
@@ -196,7 +200,7 @@ impl std::error::Error for ConformanceViolation {}
 pub fn run_render_shell_conformance(
     harness: &mut dyn RenderShellConformanceHarness,
 ) -> Vec<ConformanceViolation> {
-    let checks: [ConformanceCheckFn; 11] = [
+    let checks: [ConformanceCheckFn; 12] = [
         check_foreign_surface_frame_is_rejected,
         check_reuse_previous_requires_retained_ui,
         check_unsupported_contract_is_not_error,
@@ -208,6 +212,7 @@ pub fn run_render_shell_conformance(
         check_presentation_reconfigure_distinguishes_no_op,
         check_partial_edit_of_unknown_ui_texture_is_reported,
         check_ui_textures_apply_on_rejected_frames,
+        check_present_pass_signal_follows_presented_frames,
     ];
     checks
         .into_iter()

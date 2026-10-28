@@ -324,7 +324,10 @@ impl Gles2Renderer {
         renderer_elapsed: Duration,
     ) -> RenderFrameOutcome {
         match self.retire_submitted_frame_work() {
-            FrameWorkRetirement::FencePublished | FrameWorkRetirement::FinishedSynchronously => {}
+            FrameWorkRetirement::FencePublished | FrameWorkRetirement::FinishedSynchronously => {
+                // Проход показа уже в очереди GPU: теперь аппаратный декодер может встать за ним.
+                self.signal_present_pass_submitted();
+            }
             FrameWorkRetirement::ContextLost => {
                 return RenderFrameOutcome::Failed(RenderFrameFailure::new(
                     "GLES2 frame fence failed: context lost",

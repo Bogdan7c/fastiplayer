@@ -88,6 +88,18 @@ impl super::VaapiVideoDecoder {
         !self.gpu_pending_frames.is_empty()
     }
 
+    /// Сколько кадров декодер держит впереди показа: выданные и ещё не возвращённые
+    /// (зарегистрированы в пуле импорта) плюс кадры «в полёте» на GPU.
+    ///
+    /// Тот же учёт, что видит плеер в `decoder_resource_snapshot`; по нему такт показа
+    /// (`decoder_thread::present_pacing`) решает, есть ли у декодера запас, чтобы ждать.
+    pub(crate) fn decoded_frames_ahead(&self) -> Result<crate::decoder_thread::DecodedFramesAhead> {
+        let (_, registered_frames) = self.resource_pool_stats()?;
+        Ok(crate::decoder_thread::DecodedFramesAhead(
+            registered_frames.saturating_add(self.gpu_pending_frames.depth()),
+        ))
+    }
+
     /// Поток декодера собирается ждать: сначала отдаёт все кадры очереди.
     ///
     /// Без этого кадр, ожидающий следующего packet-а, застрял бы на паузе/в конце

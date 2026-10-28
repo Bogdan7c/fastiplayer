@@ -3,7 +3,10 @@ use video_backend_api::{
     PresentFrameResourceProvider, PresentFrameResourceProviderHandle,
     PresentFrameResourceProviderLookup, StartedVideoBackend, VideoBackendFactory,
 };
-use video_core::{VideoDecoderActivitySnapshot, VideoDecoderThreadHandle};
+use video_core::{
+    PresentPassSignal, PresentPassSubscription, VideoDecoderActivitySnapshot,
+    VideoDecoderThreadHandle,
+};
 
 use crate::import_target::ZeroCopyImportTarget;
 use crate::{
@@ -24,6 +27,10 @@ pub struct VaapiVideoBackendFactory {
 
     /// В какой API рендер импортирует DMA-BUF кадры (по умолчанию Vulkan, как у wgpu).
     zero_copy_import_target: ZeroCopyImportTarget,
+
+    /// Сигнал рендера «проход показа отправлен» (12a.2). `None` — рендер его не даёт
+    /// (wgpu), и декодер работает без такта, как до 12a.2.
+    present_pass_signal: Option<PresentPassSignal>,
 }
 
 impl VaapiVideoBackendFactory {
@@ -41,6 +48,7 @@ impl VaapiVideoBackendFactory {
         Self {
             decoder_thread_config: decoder_thread_config.into(),
             zero_copy_import_target: ZeroCopyImportTarget::default(),
+            present_pass_signal: None,
         }
     }
 
@@ -49,6 +57,21 @@ impl VaapiVideoBackendFactory {
     pub const fn with_zero_copy_import_target(mut self, target: ZeroCopyImportTarget) -> Self {
         self.zero_copy_import_target = target;
         self
+    }
+
+    /// Включает такт декодера по проходам показа рендера (`decoder_thread::present_pacing`).
+    ///
+    /// Каждый запущенный decoder thread получает свою подписку на этот сигнал.
+    #[must_use]
+    pub fn with_present_pass_signal(mut self, signal: PresentPassSignal) -> Self {
+        self.present_pass_signal = Some(signal);
+        self
+    }
+
+    /// Будут ли запущенные decoder thread-ы подавать картинки в такт проходам показа.
+    #[must_use]
+    pub fn paces_by_present_pass(&self) -> bool {
+        self.present_pass_signal.is_some()
     }
 
     /// Цель импорта кадров, с которой фабрика запустит decoder thread.
@@ -67,13 +90,34 @@ impl VaapiVideoBackendFactory {
 
     /// Стартует VA-API backend и возвращает playback-facing artifact.
     pub fn start_for_composition(&self) -> anyhow::Result<StartedVideoBackend> {
-        let decoder_thread = VideoDecodeThread::new_with_config(self.decode_thread_config())?;
+        let decoder_thread = match self.present_pass_subscription() {
+            Some(subscription) => VideoDecodeThread::new_with_present_pass_pacing(
+                self.decode_thread_config(),
+                subscription,
+            )?,
+            None => VideoDecodeThread::new_with_config(self.decode_thread_config())?,
+        };
         let player_backend = StartedVideoBackend::from_decoder_thread(
             VAAPI_BACKEND_ID,
             VaapiVideoDecoderThreadHandle::new(decoder_thread),
         );
 
         Ok(player_backend)
+    }
+
+    /// Подписка нового decoder thread-а на сигнал показа; `None` — запуск без такта.
+    ///
+    /// Отравленный сигнал не валит запуск декодера: такт — оптимизация, поэтому декодер
+    /// стартует без него, а причина пишется в лог.
+    fn present_pass_subscription(&self) -> Option<PresentPassSubscription> {
+        let signal = self.present_pass_signal.as_ref()?;
+        match signal.subscribe() {
+            Ok(subscription) => Some(subscription),
+            Err(error) => {
+                tracing::warn!(%error, "VA-API decoder starts without present pacing");
+                None
+            }
+        }
     }
 
     /// Compatibility helper для callers, которым не нужен composition-specific setup.
@@ -473,6 +517,35 @@ mod tests {
             ZeroCopyImportTarget::EglDmaBuf
         );
         assert_eq!(egl_config.zero_copy_surface_pool_slots, 7);
+    }
+
+    /// Без сигнала рендера (wgpu) фабрика запускает декодер без такта — как до 12a.2.
+    #[test]
+    fn factory_without_present_pass_signal_starts_unpaced_decoder() {
+        let factory = VaapiVideoBackendFactory::new();
+
+        assert!(factory.present_pass_subscription().is_none());
+    }
+
+    /// С сигналом каждый запуск получает свою подписку, и показ рендера доходит до неё.
+    #[test]
+    fn factory_with_present_pass_signal_subscribes_every_started_decoder() {
+        let signal = PresentPassSignal::new();
+        let factory = VaapiVideoBackendFactory::new().with_present_pass_signal(signal.clone());
+
+        let first = factory
+            .present_pass_subscription()
+            .expect("first subscription");
+        let second = factory
+            .present_pass_subscription()
+            .expect("second subscription");
+        assert_eq!(
+            signal.notify_present_pass_submitted(),
+            video_core::PresentPassNotifyOutcome::Delivered { subscribers: 2 }
+        );
+
+        assert_eq!(first.pulse_receiver().try_recv(), Ok(()));
+        assert_eq!(second.pulse_receiver().try_recv(), Ok(()));
     }
 
     /// Проверяет, что neutral defaults совпадают с текущими VA-API production defaults.

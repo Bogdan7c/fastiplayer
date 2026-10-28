@@ -76,6 +76,10 @@ pub(super) enum FakeDefect {
     AcceptsPartialEditOfUnknownUiTexture,
     /// Применяет текстуры интерфейса только в кадре, который рисуется (теряет их при отказе).
     AppliesUiTexturesOnlyWhenDrawing,
+    /// Отдаёт сигнал «проход показа отправлен», но никогда в него не звонит.
+    SilentPresentPassSignal,
+    /// Звонит в сигнал показа на каждый вызов `render_frame`, даже если кадр отклонён.
+    SignalsPresentPassForRejectedFrames,
 }
 
 /// Fake-«GPU»: кадры, ждущие завершения работы.
@@ -307,6 +311,7 @@ pub(super) struct FakeRenderShell {
     retained_keys: Vec<RenderableFrameKey>,
     presentation: FakePresentation,
     ui_textures: FakeUiTextures,
+    present_pass_signal: video_core::PresentPassSignal,
 }
 
 impl FakeRenderShell {
@@ -326,6 +331,7 @@ impl FakeRenderShell {
             retained_keys: Vec::new(),
             presentation: FakePresentation::new(SurfacePresentSettings::default()),
             ui_textures: FakeUiTextures::default(),
+            present_pass_signal: video_core::PresentPassSignal::new(),
         }
     }
 
@@ -483,6 +489,9 @@ impl RenderShell for FakeRenderShell {
     }
 
     fn render_frame(&mut self, input: RenderFrameInput<'_>) -> RenderFrameOutcome {
+        if self.defect == FakeDefect::SignalsPresentPassForRejectedFrames {
+            self.present_pass_signal.notify_present_pass_submitted();
+        }
         let RenderFrameInput {
             surface,
             video_frame,
@@ -535,6 +544,10 @@ impl RenderShell for FakeRenderShell {
             surface_acquire: acquire_elapsed,
             ..RenderFrameStageTimings::default()
         };
+        // Честный рендер звонит в сигнал показа, только когда кадр действительно ушёл на «GPU».
+        if self.defect != FakeDefect::SilentPresentPassSignal {
+            self.present_pass_signal.notify_present_pass_submitted();
+        }
         RenderFrameOutcome::Presented(RenderFrameTiming::new(stages, acquire_elapsed))
     }
 
@@ -575,6 +588,9 @@ impl RenderShell for FakeRenderShell {
             owner,
             gpu: self.gpu.clone(),
         })
+    }
+    fn present_pass_signal(&self) -> Option<video_core::PresentPassSignal> {
+        Some(self.present_pass_signal.clone())
     }
 }
 

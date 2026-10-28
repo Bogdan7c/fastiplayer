@@ -163,6 +163,7 @@ impl Gles2Renderer {
             shown: ShownFrameTracker::default(),
             presented_layers: PresentedLayersTracker::default(),
             counters: Gles2FrameCounters::default(),
+            present_pass: video_core::PresentPassSignal::new(),
             software_frames: HostBlockZeroCopy::new(hardware),
             context,
         })

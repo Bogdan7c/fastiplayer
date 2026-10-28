@@ -80,6 +80,14 @@ fn each_contract_defect_is_caught_by_its_own_check() {
             FakeDefect::AppliesUiTexturesOnlyWhenDrawing,
             vec![ConformanceCheck::UiTexturesApplyOnRejectedFrames],
         ),
+        (
+            FakeDefect::SilentPresentPassSignal,
+            vec![ConformanceCheck::PresentPassSignalFollowsPresentedFrames],
+        ),
+        (
+            FakeDefect::SignalsPresentPassForRejectedFrames,
+            vec![ConformanceCheck::PresentPassSignalFollowsPresentedFrames],
+        ),
     ];
 
     for (defect, expected_checks) in cases {

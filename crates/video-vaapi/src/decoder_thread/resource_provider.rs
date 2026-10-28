@@ -10,6 +10,10 @@ use super::control::{
 };
 use super::{DecodeThreadError, DecoderThreadState};
 
+mod lock_budget;
+
+use lock_budget::{RESOURCE_LOOKUP_LOCK_BUDGET, lock_within_budget};
+
 /// Диагностика получения VAAPI resource pool lock-а на render hot path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoFrameResourceLockDiagnostics {
@@ -158,7 +162,8 @@ impl VideoFrameResourceProvider {
         resource_lookup_from_pool(self.resource_pool.as_ref(), handle)
     }
 
-    /// Пытается получить status без ожидания resource pool mutex-а.
+    /// Пытается получить status, ожидая занятый resource pool mutex не дольше
+    /// `RESOURCE_LOOKUP_LOCK_BUDGET` (12a.2); дольше — `Busy`.
     #[must_use]
     pub fn try_resource_lookup(
         &self,
@@ -167,7 +172,8 @@ impl VideoFrameResourceProvider {
         try_resource_lookup_from_pool(self.resource_pool.as_ref(), handle)
     }
 
-    /// Пытается получить duplicated descriptor без ожидания resource pool mutex-а.
+    /// Пытается получить duplicated descriptor, ожидая занятый resource pool mutex не дольше
+    /// `RESOURCE_LOOKUP_LOCK_BUDGET` (12a.2); дольше — `Busy`.
     #[must_use]
     pub fn try_resource_descriptor_lookup(
         &self,
@@ -176,8 +182,8 @@ impl VideoFrameResourceProvider {
         try_resource_descriptor_lookup_from_pool(self.resource_pool.as_ref(), handle)
     }
 
-    /// Пытается получить стабильную идентичность буфера без дублирования fd и без
-    /// ожидания resource pool mutex-а.
+    /// Пытается получить стабильную идентичность буфера без дублирования fd, ожидая занятый
+    /// resource pool mutex не дольше `RESOURCE_LOOKUP_LOCK_BUDGET` (12a.2); дольше — `Busy`.
     #[must_use]
     pub fn try_resource_identity_lookup(
         &self,
@@ -300,7 +306,8 @@ pub(super) fn resource_lookup_from_pool_started_at(
     }
 }
 
-/// Неблокирующе выполняет lookup и отдельно возвращает transient busy state.
+/// Выполняет lookup с коротким ожиданием замка (`lock_budget`) и отдельно возвращает
+/// transient busy state.
 pub(super) fn try_resource_lookup_from_pool(
     resource_pool: &Mutex<crate::resource_pool::FrameResourcePool>,
     handle: video_core::FrameResourceHandle,
@@ -308,13 +315,13 @@ pub(super) fn try_resource_lookup_from_pool(
     try_resource_lookup_from_pool_started_at(resource_pool, handle, Instant::now())
 }
 
-/// Выполняет non-blocking lookup от уже зафиксированного start time для unit-тестов.
+/// Выполняет lookup от уже зафиксированного start time (для unit-тестов).
 pub(super) fn try_resource_lookup_from_pool_started_at(
     resource_pool: &Mutex<crate::resource_pool::FrameResourcePool>,
     handle: video_core::FrameResourceHandle,
     lock_started_at: Instant,
 ) -> VideoFrameResourceLookup {
-    match resource_pool.try_lock() {
+    match lock_within_budget(resource_pool, RESOURCE_LOOKUP_LOCK_BUDGET) {
         Ok(resource_pool) => {
             let lock_diagnostics = VideoFrameResourceLockDiagnostics {
                 wait: lock_started_at.elapsed(),
@@ -350,14 +357,14 @@ fn resource_lookup_from_locked_pool(
     }
 }
 
-/// Неблокирующе читает идентичность буфера; `Busy`/`Fatal` различаются так же,
+/// Читает идентичность буфера с коротким ожиданием замка; `Busy`/`Fatal` различаются так же,
 /// как у descriptor lookup-а, но fd здесь не дублируются.
 pub(super) fn try_resource_identity_lookup_from_pool(
     resource_pool: &Mutex<crate::resource_pool::FrameResourcePool>,
     handle: video_core::FrameResourceHandle,
 ) -> VideoFrameResourceIdentityLookup {
     let lock_started_at = Instant::now();
-    match resource_pool.try_lock() {
+    match lock_within_budget(resource_pool, RESOURCE_LOOKUP_LOCK_BUDGET) {
         Ok(resource_pool) => {
             let lock_diagnostics = VideoFrameResourceLockDiagnostics {
                 wait: lock_started_at.elapsed(),
@@ -386,13 +393,13 @@ pub(super) fn try_resource_identity_lookup_from_pool(
     }
 }
 
-/// Неблокирующе дублирует descriptor и отдельно возвращает transient busy state.
+/// Дублирует descriptor с коротким ожиданием замка и отдельно возвращает transient busy state.
 pub(super) fn try_resource_descriptor_lookup_from_pool(
     resource_pool: &Mutex<crate::resource_pool::FrameResourcePool>,
     handle: video_core::FrameResourceHandle,
 ) -> VideoFrameResourceDescriptorLookup {
     let lock_started_at = Instant::now();
-    match resource_pool.try_lock() {
+    match lock_within_budget(resource_pool, RESOURCE_LOOKUP_LOCK_BUDGET) {
         Ok(resource_pool) => {
             let lock_diagnostics = VideoFrameResourceLockDiagnostics {
                 wait: lock_started_at.elapsed(),

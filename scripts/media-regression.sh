@@ -56,6 +56,7 @@ h264-mp4-vaapi-surface-pool    MP4 H.264 8-bit, ≥10s: bounded VA output surfac
 h264-mp4-vaapi-throughput      MP4 H.264 8-bit: whole file pipelined through VA-API, one frame per packet, bounded pool; prints fps.
 h264-mp4-vaapi-seek-storm      MP4 H.264 8-bit with duration: 80 VA-API seeks with frames in flight, floor set/clear, exact EOF tail.
 h264-mp4-vaapi-paused-frame    MP4 H.264 8-bit: packets one by one with pauses; the VA-API in-flight queue empties on every pause.
+h264-mp4-vaapi-present-pacing  MP4 H.264 8-bit, ≥40 packets: with frames held the VA-API decoder submits one picture per present pass.
 audio-decode-seek              Decodable audio with duration for a middle accurate seek.
 audio-eof-replay               Decodable audio short enough to drain to EOF.
 audio-unseekable-eof-seek      Decodable audio with an extension that can be opened as a stream.
@@ -153,6 +154,7 @@ scenario_test_command() {
         h264-mp4-vaapi-throughput) printf '%s\n' 'video-vaapi|decode_throughput|h264_vaapi_decodes_whole_file_pipelined_with_one_frame_per_packet' ;;
         h264-mp4-vaapi-seek-storm) printf '%s\n' 'video-vaapi|decode_seek_storm|h264_vaapi_survives_seek_storm_with_frames_in_flight' ;;
         h264-mp4-vaapi-paused-frame) printf '%s\n' 'video-vaapi|decode_seek_storm|h264_vaapi_publishes_in_flight_frames_while_no_packet_follows' ;;
+        h264-mp4-vaapi-present-pacing) printf '%s\n' 'video-vaapi|present_pacing_regression|h264_vaapi_submits_one_picture_per_present_pass_while_frames_are_held' ;;
         vp9-decode-point) printf '%s\n' 'symphonia-demux|vp9_fixtures|vp9_decode_point_before_seek_reaches_near_target_keyframe' ;;
         audio-decode-seek) printf '%s\n' 'symphonia-demux|audio_fixture_decode_seek|audio_decode_and_middle_seek_preserve_decodable_pcm' ;;
         audio-eof-replay) printf '%s\n' 'symphonia-demux|audio_fixture_decode_seek|audio_eof_replay_returns_first_selected_audio_packet' ;;

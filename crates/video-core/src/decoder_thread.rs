@@ -1,6 +1,7 @@
 mod activity;
 mod config;
 mod control;
+mod present_pass;
 mod protocol;
 
 pub use activity::{
@@ -12,6 +13,9 @@ pub use config::{SoftwareDecodeThreadBudget, VideoDecoderThreadConfig};
 pub use control::{
     DecoderResourceSnapshot, HostUploadBackpressureReason, HostUploadResourceSnapshot,
     HostUploadResourceSnapshotStatus, VideoDecoderControlChannelPressureSnapshot,
+};
+pub use present_pass::{
+    PresentPassNotifyOutcome, PresentPassSignal, PresentPassSignalPoisoned, PresentPassSubscription,
 };
 pub use protocol::{
     DecodeBackpressureReason, DecodePacket, DecodeSendError, DecodeThreadError,

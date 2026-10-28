@@ -7,6 +7,7 @@
 //! (давно сработавший) fence, и кадр декодера вернулся бы декодеру при живом чтении GPU.
 
 use std::sync::Arc;
+use video_core::PresentPassNotifyOutcome;
 
 use gles2_egui::{Gles2Error, UiFrameError};
 
@@ -35,6 +36,31 @@ pub(super) enum FrameWorkRetirement {
 }
 
 impl Gles2Renderer {
+    /// Сообщает подписчикам (такт аппаратного декодера, 12a.2), что проход показа отправлен
+    /// на GPU. Звать только для показанного кадра, после того как его работа ушла в очередь.
+    pub(super) fn signal_present_pass_submitted(&mut self) {
+        match self.present_pass.notify_present_pass_submitted() {
+            PresentPassNotifyOutcome::Delivered { .. }
+            | PresentPassNotifyOutcome::NoSubscribers => {
+                self.counters.present_pass_signals += 1;
+            }
+            PresentPassNotifyOutcome::SignalPoisoned => {
+                // Декодер не застрянет (у него предел ожидания), но такт потерян: громко один раз.
+                if self.counters.present_pass_signal_failures == 0 {
+                    log::error!(
+                        "GLES2: сигнал прохода показа отравлен; декодер останется без такта"
+                    );
+                }
+                self.counters.present_pass_signal_failures += 1;
+            }
+        }
+    }
+
+    /// Клон сигнала прохода показа для фабрики декодера (`RenderShell::present_pass_signal`).
+    pub(super) fn present_pass_signal_source(&self) -> video_core::PresentPassSignal {
+        self.present_pass.clone()
+    }
+
     /// Прикрывает всю отправленную работу контекста fence-ом: ставит один fence и отдаёт его и
     /// видеослою, и привязке освобождения (один `Arc` — кадр декодера вернётся по тому же fence,
     /// что освобождает слоты кольца). Без fence — `glFinish`; исход возвращается явно.

@@ -409,9 +409,8 @@ mod scenarios;
 fn decoder_import_target_follows_the_renderer_family() {
     let config = PlayerVideoDecoderThreadConfig::default();
 
-    let wgpu_factory =
-        resource_driver::vaapi_factory_for_renderer(config, RendererFamily::WgpuVulkan);
-    let gles2_factory = resource_driver::vaapi_factory_for_renderer(config, RendererFamily::Gles2);
+    let wgpu_factory = resource_driver::vaapi_factory_for_renderer(config, &wgpu_link());
+    let gles2_factory = resource_driver::vaapi_factory_for_renderer(config, &gles2_link());
 
     assert_eq!(
         video_vaapi::zero_copy_surface_pool::ZeroCopyImportReuseContract::for_import_target(
@@ -427,4 +426,33 @@ fn decoder_import_target_follows_the_renderer_family() {
         .backend_name,
         "VA-API EGL DMA-BUF"
     );
+}
+
+/// Связь с рендером wgpu: сигнала показа нет.
+fn wgpu_link() -> resource_driver::DecoderRendererLink {
+    resource_driver::DecoderRendererLink {
+        family: RendererFamily::WgpuVulkan,
+        present_pass_signal: None,
+    }
+}
+
+/// Связь с рендером GLES2: сигнал показа есть.
+fn gles2_link() -> resource_driver::DecoderRendererLink {
+    resource_driver::DecoderRendererLink {
+        family: RendererFamily::Gles2,
+        present_pass_signal: Some(video_core::PresentPassSignal::new()),
+    }
+}
+
+/// Решение владельца 77 (gles2-renderer 12a.2): такт декодера по показу включается только
+/// с сигналом рендера (GLES2); под wgpu фабрика VA-API запускает декодер как раньше.
+#[test]
+fn decoder_present_pacing_follows_the_renderer_signal() {
+    let config = PlayerVideoDecoderThreadConfig::default();
+
+    let wgpu_factory = resource_driver::vaapi_factory_for_renderer(config, &wgpu_link());
+    let gles2_factory = resource_driver::vaapi_factory_for_renderer(config, &gles2_link());
+
+    assert!(!wgpu_factory.paces_by_present_pass());
+    assert!(gles2_factory.paces_by_present_pass());
 }

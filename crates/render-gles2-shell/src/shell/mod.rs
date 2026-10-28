@@ -74,6 +74,10 @@ pub struct Gles2FrameCounters {
     /// Сколько раз не удалось ни fence, ни `glFinish` (контекст жив): кадры декодера, читаемые
     /// этой работой, могут вернуться раньше времени. Должно быть 0.
     pub frame_fence_failures: u64,
+    /// Звонков в сигнал «проход показа отправлен» (12a.2): ровно один на показанный кадр.
+    pub present_pass_signals: u64,
+    /// Звонков, не дошедших до подписчиков (сигнал отравлен паникой). Должно быть 0.
+    pub present_pass_signal_failures: u64,
 }
 
 /// GLES2-рендер окна приложения. Реализует `RenderShell`; живёт и используется в одном потоке
@@ -105,6 +109,8 @@ pub struct Gles2Renderer {
     presented_layers: PresentedLayersTracker,
     /// Счётчики кадров.
     counters: Gles2FrameCounters,
+    /// Сигнал «проход показа отправлен» для такта аппаратного декодера (12a.2).
+    present_pass: video_core::PresentPassSignal,
     /// Программный кадр без CPU-копии (udmabuf): доступность, dma-buf блоков, счётчики.
     software_frames: HostBlockZeroCopy,
     /// Контекст EGL: объявлен последним и уничтожается после явной очистки в `Drop`.

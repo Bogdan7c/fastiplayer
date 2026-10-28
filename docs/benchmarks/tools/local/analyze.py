@@ -18,6 +18,7 @@ from pathlib import Path
 import statistics
 
 from host import PROTOCOL_VERSION, gpu_memory_summary, render_engine_busy_percent, write_json
+from cadence import cadence_summary
 import ladder
 from players import player_kind, subject_name, window_mode
 
@@ -126,9 +127,11 @@ def attempt_quality(attempt):
             return {'status': 'NOT TESTED', 'reason': 'handoff identities or window missing'}
         expected = fps * window
         ratio = quality['unique_identities'] / expected
+        # Каденс (12a.2) — описательная колонка: на статус quality-gate не влияет.
         return {'status': 'PASS' if ratio >= QUALITY_UNIQUE_FRAME_RATIO else 'FAIL',
                 'metric': 'unique_frame_identities', 'unique': quality['unique_identities'],
-                'handoffs': quality.get('handoffs'), 'expected': round(expected, 1), 'ratio': ratio}
+                'handoffs': quality.get('handoffs'), 'expected': round(expected, 1), 'ratio': ratio,
+                'cadence': cadence_summary(quality.get('events', []), fps)}
     deltas = quality.get('deltas', {})
     if kind == 'mpv':
         # mpv считает потери в VO и в декодере отдельно; quality-gate требует ноль в обоих.

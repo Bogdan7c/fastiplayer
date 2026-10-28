@@ -2,7 +2,7 @@ use codec_core::VideoDecodeRequirement;
 use fastiplayer_config::VideoBackendPreference;
 
 use super::*;
-use crate::video_pipeline_candidate::start_decoder_backend;
+use crate::video_pipeline_candidate::{DecoderRendererLink, start_decoder_backend};
 
 /// Typed failure controlled video-pipeline rebuild-а.
 #[derive(Debug)]
@@ -48,8 +48,8 @@ impl std::fmt::Display for VideoPipelineRebuildError {
 /// С сессии 02 плана `user/gles2-renderer/` пересборке пайплайна не нужны GPU-объекты: рендер
 /// сам оборачивает decoder и создаёт материализатор (`VideoFrameImport`).
 pub(crate) struct RendererVideoImportTarget<'renderer> {
-    /// Семейство рендера (диагностическая метка плана).
-    pub(crate) renderer_family: render_shell_api::RendererFamily,
+    /// Связь декодера с рендером: семейство (метка плана, цель импорта) и сигнал показа.
+    pub(crate) renderer_link: DecoderRendererLink,
     /// Склад кадров активного рендера.
     pub(crate) video_frames: &'renderer mut dyn render_shell_api::VideoFrameImport,
 }
@@ -58,7 +58,7 @@ impl<'renderer> RendererVideoImportTarget<'renderer> {
     /// Цель импорта активного рендера.
     pub(crate) fn for_renderer(renderer: &'renderer mut dyn render_shell_api::RenderShell) -> Self {
         Self {
-            renderer_family: renderer.family(),
+            renderer_link: DecoderRendererLink::for_renderer(renderer),
             video_frames: renderer.video_frames(),
         }
     }
@@ -172,12 +172,12 @@ impl AppState {
         install_intent: player_core::PlayerVideoBackendInstallIntent,
         import_target: RendererVideoImportTarget<'_>,
     ) -> Result<(), VideoPipelineRebuildError> {
-        let plan_label = plan.diagnostic_label(import_target.renderer_family);
+        let plan_label = plan.diagnostic_label(import_target.renderer_link.family);
         let plan_backend_kind = plan.backend_kind();
         let decoder_thread_config = plan.decoder_thread_config();
 
         let started_backend =
-            start_decoder_backend(plan, import_target.renderer_family).map_err(|message| {
+            start_decoder_backend(plan, &import_target.renderer_link).map_err(|message| {
                 VideoPipelineRebuildError::BackendStartup {
                     plan_label,
                     message,

@@ -4,6 +4,7 @@ use codec_core::VideoColorMetadata;
 use video_core::FrameResourceHandle;
 use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
+mod present_pacing;
 mod publish_wait;
 
 /// Создаёт decoded frame без реальных GPU resources для channel-level тестов.

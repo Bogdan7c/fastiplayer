@@ -11,6 +11,7 @@ mod hdr_follow_up;
 mod key_identity;
 mod lifecycle;
 mod partial_present;
+mod present_pass_signal;
 mod release_and_loss;
 mod subtitle_support;
 mod video_extras;

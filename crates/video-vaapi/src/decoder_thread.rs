@@ -30,8 +30,10 @@ mod config;
 mod control;
 mod frame_room;
 mod in_flight_snapshot;
+mod present_pacing;
 mod resource_provider;
 mod runtime_loop;
+mod start;
 
 use config::{
     DECODER_DIAGNOSTIC_CHANNEL_CAPACITY, DECODER_OUTPUT_BACKPRESSURE_RETRY_MS, DecodePacketAck,
@@ -49,6 +51,8 @@ use control::{
     record_decoder_control_send_failure, wait_for_configure_stream_ack,
     wait_for_end_of_stream_drain_ack, wait_for_flush_ack, wait_for_preroll_output_floor_ack,
 };
+pub(crate) use present_pacing::DecodedFramesAhead;
+use present_pacing::PresentPacing;
 pub use resource_provider::{
     VideoFrameResourceDescriptorLookup, VideoFrameResourceIdentityLookup,
     VideoFrameResourceLockDiagnostics, VideoFrameResourceLookup, VideoFrameResourceProvider,
@@ -113,8 +117,8 @@ impl VideoDecodeThread {
         Self::new_with_config(VideoDecodeThreadConfig::from_env())
     }
 
-    /// Создаёт decoder thread с явно заданными bounded queue/runtime limits.
-    pub fn new_with_config(config: VideoDecodeThreadConfig) -> anyhow::Result<Self> {
+    /// Запускает decoder thread с лимитами `config` и тактом показа `present_pacing` (`start.rs`).
+    fn spawn(config: VideoDecodeThreadConfig, pacing: PresentPacing) -> anyhow::Result<Self> {
         let config = config.normalized();
         let resource_pool = Arc::new(Mutex::new(
             crate::resource_pool::FrameResourcePool::new_with_import_target(
@@ -194,6 +198,7 @@ impl VideoDecodeThread {
                         diagnostic_tx: thread_diagnostic_tx,
                         activity_notifier,
                         end_of_stream_drain_state: end_of_stream_drain_state_for_thread,
+                        present_pacing: pacing,
                     },
                 );
                 info!("Decoder thread exiting");

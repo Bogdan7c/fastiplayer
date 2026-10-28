@@ -12,6 +12,9 @@ use gpu_pending_wait::complete_gpu_pending_frames_before_waiting;
 
 use super::control::ThreadControlMsg;
 use super::frame_room::{FrameRoomWaiter, PublishBlockedWake, wait_for_frame_room_or_control};
+use super::present_pacing::{
+    PacingStep, PresentPacing, await_present_pass_permit, log_present_pacing_summary,
+};
 use super::{
     DECODER_OUTPUT_BACKPRESSURE_RETRY_MS, DecodePacketAck, DecodeThreadError,
     DecoderDiagnosticSender, QueuedDecodePacket,
@@ -65,6 +68,9 @@ pub(super) struct DecoderThreadChannels {
 
     /// Shared EOF/DPB drain state, читаемый handle-ом с player thread-а.
     pub(super) end_of_stream_drain_state: Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
+
+    /// Такт по проходам показа рендера (12a.2); без подписки — выключен.
+    pub(super) present_pacing: PresentPacing,
 }
 
 /// Borrowed context для control-message handlers внутри одного decoder-loop шага.
@@ -120,6 +126,7 @@ pub(super) fn decoder_thread_loop(
         diagnostic_tx,
         activity_notifier,
         end_of_stream_drain_state,
+        mut present_pacing,
     } = channels;
     let mut pending_publish: Option<PendingFramePublish> = None;
     let mut output_backpressured_packet: Option<QueuedDecodePacket> = None;
@@ -295,6 +302,36 @@ pub(super) fn decoder_thread_loop(
             continue;
         }
 
+        // Такт показа (12a.2): при запасе кадров следующий пакет ждёт прохода показа
+        // рендера, чтобы картинка декода встала в очередь GPU после него.
+        match await_present_pass_permit(&decoder, &mut present_pacing, &control_rx) {
+            PacingStep::Proceed => {}
+            PacingStep::Control(control_message) => {
+                let mut control_context = DecoderControlContext {
+                    packet_rx: &packet_rx,
+                    error_tx: &error_tx,
+                    pending_publish: &mut pending_publish,
+                    output_backpressured_packet: &mut output_backpressured_packet,
+                    end_of_stream_drain_state: &end_of_stream_drain_state,
+                    activity_notifier: &activity_notifier,
+                };
+                if !handle_decoder_control_message(
+                    &mut decoder,
+                    control_message,
+                    &mut control_context,
+                ) {
+                    break;
+                }
+                continue;
+            }
+            PacingStep::ControlDisconnected => break,
+            PacingStep::Fatal(error) => {
+                let message = format!("Video decoder stopped during present pacing: {error:#}");
+                send_decoder_thread_error(&error_tx, message, &activity_notifier);
+                break;
+            }
+        }
+
         select! {
             recv(control_rx) -> control_result => {
                 match control_result {
@@ -321,6 +358,7 @@ pub(super) fn decoder_thread_loop(
             recv(packet_rx) -> packet_result => {
                 match packet_result {
                     Ok(queued_packet) => {
+                        present_pacing.note_packet_submitted();
                         match decode_queued_packet(
                             &mut decoder,
                             queued_packet,
@@ -348,6 +386,7 @@ pub(super) fn decoder_thread_loop(
         }
     }
 
+    log_present_pacing_summary(&present_pacing);
     release_pending_publish_frame(&mut decoder, pending_publish);
 }
 

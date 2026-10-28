@@ -129,4 +129,7 @@ impl RenderShell for Gles2Renderer {
     fn video_import_preparer(&self) -> Box<dyn VideoImportPreparer> {
         Box::new(Gles2VideoImportPreparer::new(self.import_environment()))
     }
+    fn present_pass_signal(&self) -> Option<video_core::PresentPassSignal> {
+        Some(self.present_pass_signal_source())
+    }
 }

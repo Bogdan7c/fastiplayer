@@ -35,8 +35,8 @@ use protocol::{StagedVideoPipelineCandidate, StagedVideoPipelineCandidateState};
 
 use resource_driver::{CandidateVideoPipelineDescriptor, CandidateVideoPipelineResourceDriver};
 pub(crate) use resource_driver::{
-    RendererCandidateVideoPipelineResourceDriver, hardware_surface_pool_default_or_wgpu,
-    start_decoder_backend,
+    DecoderRendererLink, RendererCandidateVideoPipelineResourceDriver,
+    hardware_surface_pool_default_or_wgpu, start_decoder_backend,
 };
 
 /// App-owned shared handle exact candidate slot-а; player видит только neutral port.

@@ -142,18 +142,20 @@ class MatrixGeneratorTests(unittest.TestCase):
 
     def test_t410_preset_covers_plan_scenes_with_unique_files(self):
         t410 = make_matrix.PRESETS['t410']
-        # Обычные сцены, стресс-лесенка и MPEG-2 из файла сессии 00 плана gles2-renderer.
+        # Обычные сцены, стресс-лесенка и MPEG-2 из файла сессии 00 плана gles2-renderer;
+        # ступенька HEVC 1080p60 25 Мбит/с — решение владельца 68 (сессия 12a).
         self.assertEqual({v.scenario for v in t410}, {
             'h264-720p30', 'h264-720p60', 'h264-1080p30', 'h264-1080p60', 'h264-stress-1080p60',
-            'hevc-720p30', 'hevc-1080p30', 'hevc-1080p60', 'vp9-720p30', 'vp9-720p60', 'vp9-1080p30',
+            'hevc-stress-1080p60', 'hevc-720p30', 'hevc-1080p30', 'hevc-1080p60', 'vp9-720p30', 'vp9-720p60', 'vp9-1080p30',
             'vp9-1080p60', 'av1-720p30', 'av1-1080p30', 'av1-1080p60', 'mpeg2-576i25', 'mpeg2-1080i30'})
         self.assertEqual(len({v.relative_path for v in t410}), len(t410))
         normal, stress = (next(v for v in t410 if v.scenario == name) for name in ('h264-1080p60',
                                                                                   'h264-stress-1080p60'))
         self.assertLess(normal.video_mbps, stress.video_mbps)
-        (hdr,) = make_matrix.PRESETS['t410-hdr']
-        self.assertEqual((hdr.scenario, hdr.profile, hdr.pixel_format), ('hevc10-hdr-1080p30', 'main10',
-                                                                          'yuv420p10le'))
+        # HDR: обычная сцена и проба выше потолка T410 (решение владельца 68, сессия 12a).
+        self.assertEqual({(v.scenario, v.profile, v.pixel_format) for v in make_matrix.PRESETS['t410-hdr']},
+                         {('hevc10-hdr-1080p30', 'main10', 'yuv420p10le'),
+                          ('hevc10-hdr-1080p60', 'main10', 'yuv420p10le')})
 
 
 if __name__ == '__main__':

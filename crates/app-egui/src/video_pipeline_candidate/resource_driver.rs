@@ -11,7 +11,7 @@ use render_shell_api::{
     PendingVideoImport, RenderShell, RendererFamily, VideoImportPrepareError, VideoImportPreparer,
 };
 use video_backend_api::{DetachedVideoBackend, DetachedVideoBackendResourceError};
-use video_core::HostFrameMemoryKind;
+use video_core::{HostFrameMemoryKind, PresentPassSignal};
 use video_ffmpeg::FfmpegSoftwareVideoBackendFactory;
 use video_vaapi::{VaapiVideoBackendFactory, ZeroCopyImportTarget};
 
@@ -158,13 +158,38 @@ pub(crate) trait CandidateVideoPipelineResourceDriver {
     >;
 }
 
+/// Что декодеру нужно знать о рендере, который будет показывать его кадры.
+///
+/// Берётся у активного рендера в потоке окна и переносится туда, где запускается декодер
+/// (у кандидата нового файла — поток плеера).
+#[derive(Clone, Debug)]
+pub(crate) struct DecoderRendererLink {
+    /// Семейство рендера: цель zero-copy импорта VA-API и вид памяти программных кадров.
+    pub(crate) family: RendererFamily,
+
+    /// Сигнал рендера «проход показа отправлен» — такт аппаратного декодера (gles2-renderer
+    /// 12a.2). `None` — рендер сигнала не даёт (wgpu), декодер работает без такта.
+    pub(crate) present_pass_signal: Option<PresentPassSignal>,
+}
+
+impl DecoderRendererLink {
+    /// Связь с активным рендером.
+    #[must_use]
+    pub(crate) fn for_renderer(renderer: &dyn RenderShell) -> Self {
+        Self {
+            family: renderer.family(),
+            present_pass_signal: renderer.present_pass_signal(),
+        }
+    }
+}
+
 /// Production driver: concrete decoder factory + подготовщик импорта активного рендера.
 pub(crate) struct RendererCandidateVideoPipelineResourceDriver {
     /// Подготовщик импорта exact renderer instance-а (импорт чужого рендера не установится).
     preparer: Box<dyn VideoImportPreparer>,
 
-    /// Семейство рендера для диагностической метки плана.
-    renderer_family: RendererFamily,
+    /// Связь декодера с рендером: семейство (и метка плана) и сигнал показа.
+    renderer_link: DecoderRendererLink,
 }
 
 impl RendererCandidateVideoPipelineResourceDriver {
@@ -173,7 +198,7 @@ impl RendererCandidateVideoPipelineResourceDriver {
     pub(crate) fn new(renderer: &mut dyn RenderShell) -> Self {
         Self {
             preparer: renderer.video_import_preparer(),
-            renderer_family: renderer.family(),
+            renderer_link: DecoderRendererLink::for_renderer(renderer),
         }
     }
 }
@@ -182,7 +207,7 @@ impl CandidateVideoPipelineResourceDriver for RendererCandidateVideoPipelineReso
     type RendererImport = PendingVideoImport;
 
     fn renderer_family(&self) -> RendererFamily {
-        self.renderer_family
+        self.renderer_link.family
     }
 
     fn prepare_candidate_resources(
@@ -193,7 +218,7 @@ impl CandidateVideoPipelineResourceDriver for RendererCandidateVideoPipelineReso
         CandidateVideoPipelinePreparationError,
     > {
         let started_backend =
-            start_decoder_backend(plan, self.renderer_family).map_err(|message| {
+            start_decoder_backend(plan, &self.renderer_link).map_err(|message| {
                 CandidateVideoPipelinePreparationError::at_stage(
                     CandidateVideoPipelinePreparationStage::BackendStartup,
                     message,
@@ -221,25 +246,26 @@ impl CandidateVideoPipelineResourceDriver for RendererCandidateVideoPipelineReso
 /// Запускает decoder backend маршрута декода плана (VA-API или FFmpeg).
 ///
 /// Общий для кандидатов strong open и прямого пути `AppState::install_video_pipeline_plan`;
-/// ошибка — текст factory без потери категории (её задаёт вызывающий). `renderer_family` —
-/// семейство рендера, который будет импортировать кадры: от него зависит цель zero-copy
-/// импорта VA-API (имя контракта в логе, по которому evidence доказывает аппаратный путь).
+/// ошибка — текст factory без потери категории (её задаёт вызывающий). `renderer` — рендер,
+/// который будет импортировать кадры: от его семейства зависит цель zero-copy импорта VA-API
+/// (имя контракта в логе, по которому evidence доказывает аппаратный путь), от его сигнала
+/// показа — такт аппаратного декодера.
 pub(crate) fn start_decoder_backend(
     plan: VideoPipelinePlan,
-    renderer_family: RendererFamily,
+    renderer: &DecoderRendererLink,
 ) -> Result<video_backend_api::StartedVideoBackend, String> {
     let decoder_thread_config = plan.decoder_thread_config();
     // Exhaustive match гарантирует, что каждый маршрут запускает свой decoder.
     match plan {
         // VA-API factory создаёт отдельный decoder thread/resource owner.
         VideoPipelinePlan::VaapiDmaBuf { .. } => {
-            vaapi_factory_for_renderer(decoder_thread_config, renderer_family)
+            vaapi_factory_for_renderer(decoder_thread_config, renderer)
                 .start_for_composition()
                 .map_err(|error| error.to_string())
         }
         // FFmpeg factory создаёт отдельный software decoder thread/resource owner.
         VideoPipelinePlan::FfmpegHostUpload { .. } => {
-            ffmpeg_factory_for_renderer(decoder_thread_config, renderer_family)
+            ffmpeg_factory_for_renderer(decoder_thread_config, renderer.family)
                 .start_for_composition()
                 .map_err(|error| error.to_string())
         }
@@ -255,13 +281,18 @@ pub(crate) const fn zero_copy_import_target_for(family: RendererFamily) -> ZeroC
     }
 }
 
-/// VA-API factory с целью импорта под рендер `renderer_family`.
+/// VA-API factory под рендер `renderer`: цель импорта по семейству и такт по сигналу показа.
 pub(crate) fn vaapi_factory_for_renderer(
     decoder_thread_config: player_core::PlayerVideoDecoderThreadConfig,
-    renderer_family: RendererFamily,
+    renderer: &DecoderRendererLink,
 ) -> VaapiVideoBackendFactory {
-    VaapiVideoBackendFactory::new_with_decoder_config(decoder_thread_config)
-        .with_zero_copy_import_target(zero_copy_import_target_for(renderer_family))
+    let factory = VaapiVideoBackendFactory::new_with_decoder_config(decoder_thread_config)
+        .with_zero_copy_import_target(zero_copy_import_target_for(renderer.family));
+    // Рендер без сигнала (wgpu) — декодер без такта, ровно как до gles2-renderer 12a.2.
+    match &renderer.present_pass_signal {
+        Some(signal) => factory.with_present_pass_signal(signal.clone()),
+        None => factory,
+    }
 }
 
 /// Вид памяти блоков кадров программного декодера для семейства рендера (exhaustive).
