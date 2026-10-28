@@ -479,7 +479,16 @@ impl PlayerSession {
         if new_target < current_target {
             return false;
         }
-        if new_target.saturating_sub(current_target) > LIVE_SCRUB_FORWARD_EXTENSION_MAX {
+        // Дистанцию меряем от фактического прогресса decoder-а в этом проходе, а не от
+        // прошлой цели указателя: иначе цепочка мелких шагов (< капа каждый) тянет один
+        // проход от старого keyframe бесконечно, и медленный (HW) decoder отстаёт от
+        // указателя на секунды. Кап «докатить дешевле cold seek» верен, только пока цель
+        // близко к decoder-у. Кадров в проходе ещё нет — берём прошлую цель, как раньше.
+        let decode_progress = self
+            .pipeline
+            .latest_video_decoder_output_pts()
+            .unwrap_or(current_target);
+        if new_target.saturating_sub(decode_progress) > LIVE_SCRUB_FORWARD_EXTENSION_MAX {
             return false;
         }
 

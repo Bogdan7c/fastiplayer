@@ -1831,3 +1831,109 @@ fn live_scrub_backward_or_far_forward_target_takes_cold_route() {
         3
     );
 }
+
+/// Собирает harness с live scrub, первый preview которого стартует с keyframe `actual`.
+///
+/// Пакеты нужны только чтобы демуксер не упирался в EOF; сами кадры тест подаёт декодеру
+/// вручную, имитируя скорость decoder-а.
+fn live_scrub_harness_started_at_keyframe(
+    first_target: Duration,
+    actual: Duration,
+) -> SeekRegressionHarness {
+    let video_track = fake_track(1, TrackKind::Video);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        first_target,
+        actual,
+        vec![
+            fake_video_packet_with_keyframe(video_track.id, actual, PacketKeyframe::Keyframe),
+            fake_video_packet_with_keyframe(
+                video_track.id,
+                first_target,
+                PacketKeyframe::NotKeyframe,
+            ),
+        ],
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+    harness
+        .session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    harness
+        .session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
+            MediaTime::from_duration(first_target),
+        )))
+        .unwrap();
+    harness
+}
+
+/// Отправляет live preview к absolute цели через public command boundary.
+fn preview_live_scrub(harness: &mut SeekRegressionHarness, target: Duration) {
+    harness
+        .session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
+            MediaTime::from_duration(target),
+        )))
+        .unwrap();
+}
+
+/// Медленный decoder: цепочка мелких шагов (< капа каждый) не должна бесконечно
+/// тянуть один проход от старого keyframe. Как только цель дальше капа от
+/// фактического прогресса decoder-а, нужен cold seek на новом generation.
+#[test]
+fn live_scrub_slow_decoder_far_from_pointer_takes_cold_route() {
+    let first_target = Duration::from_secs(8);
+    let keyframe = Duration::from_millis(7_800);
+    let mut harness = live_scrub_harness_started_at_keyframe(first_target, keyframe);
+    let first_generation = harness.aligned_seek_commit().generation;
+    let _ = harness.tick_once_fast_preroll();
+
+    // Decoder выдал только keyframe прохода и дальше не продвинулся.
+    harness.push_decoded_frame(keyframe, 70, 1);
+    let _ = harness.tick_once_fast_preroll();
+
+    // +1.8 с от прошлой цели, 2.0 с от прогресса decoder-а: ещё продолжаем проход.
+    preview_live_scrub(&mut harness, Duration::from_millis(9_800));
+    assert_eq!(harness.seek_requests().len(), 1);
+    assert_eq!(harness.aligned_seek_commit().generation, first_generation);
+
+    // Ещё +1.8 с: от прошлой цели близко, но от прогресса decoder-а уже 3.8 с > капа.
+    let far_target = Duration::from_millis(11_600);
+    preview_live_scrub(&mut harness, far_target);
+    assert_eq!(
+        harness.seek_requests().len(),
+        2,
+        "цель дальше капа от прогресса decoder-а обязана идти cold route"
+    );
+    let cold_commit = harness.aligned_seek_commit();
+    assert_ne!(cold_commit.generation, first_generation);
+    assert_eq!(
+        cold_commit.target_position,
+        MediaTime::from_duration(far_target)
+    );
+}
+
+/// Быстрый decoder, который держится за указателем, продолжает расширять проход
+/// без второго demux seek (защита от лишних cold seek-ов).
+#[test]
+fn live_scrub_fast_decoder_keeping_up_extends_without_second_demux_seek() {
+    let first_target = Duration::from_secs(8);
+    let keyframe = Duration::from_millis(7_800);
+    let mut harness = live_scrub_harness_started_at_keyframe(first_target, keyframe);
+    let first_generation = harness.aligned_seek_commit().generation;
+    let _ = harness.tick_once_fast_preroll();
+
+    for (handle, target_ms) in (70_u64..).zip([9_600_u64, 11_400, 13_200]) {
+        let target = Duration::from_millis(target_ms);
+        // Decoder догнал прошлую цель, поэтому новая всегда в пределах капа от прогресса.
+        harness.push_decoded_frame(target - Duration::from_millis(1_800), handle, 1);
+        let _ = harness.tick_once_fast_preroll();
+        preview_live_scrub(&mut harness, target);
+    }
+
+    assert_eq!(harness.seek_requests().len(), 1);
+    let commit = harness.aligned_seek_commit();
+    assert_eq!(commit.generation, first_generation);
+    assert_eq!(commit.target_position, MediaTime::from_millis(13_200));
+}

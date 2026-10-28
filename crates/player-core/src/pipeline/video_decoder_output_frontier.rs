@@ -116,6 +116,15 @@ impl PlaybackPipeline {
         self.video_decoder_output_frontier.note_output_frame(pts);
     }
 
+    /// PTS последнего кадра, который decoder выдал в текущей эпохе (с момента последнего
+    /// seek/flush). Это фактический прогресс декодирования, а не желаемая цель.
+    ///
+    /// `None` — в текущей эпохе decoder-а кадров ещё не было.
+    #[must_use]
+    pub(crate) fn latest_video_decoder_output_pts(&self) -> Option<Duration> {
+        self.video_decoder_output_frontier.latest_output_pts
+    }
+
     /// Прогноз PTS следующего кадра на выходе decoder-а, если отправить ещё один packet.
     ///
     /// `None` — в текущей эпохе decoder-а кадров ещё не было.
