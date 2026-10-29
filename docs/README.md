@@ -40,6 +40,7 @@ Start with the English [project overview and build instructions](../README.md) a
 | [N15 performance aggregates](native-web-ingress-n15-performance.json) | JSON | Thirty-run cohorts and comparison limits; not raw samples |
 | [Benchmark policy](benchmarks/README.md) | EN | Publication rules and N15 methodology guide |
 | [ThinkPad T480s](benchmarks/thinkpad-t480s.md) | EN | Measured S08 hardware/software playback, raw samples, runtime capture and comparison limits |
+| [ThinkPad T410, OpenGL ES 2.0](benchmarks/t410-gles2-2026-10-29.md) | EN | Final qualification of the GLES2 renderer against mpv and VLC 3 on 2010 hardware |
 | [Hardware evidence context](hardware/README.md) | RU | Why capability dumps are not playback acceptance |
 
 ## Media profiles and behavior
@@ -49,6 +50,7 @@ Start with the English [project overview and build instructions](../README.md) a
 | [Web-media compatibility matrix](web-media-compatibility-matrix.md) | RU | Accepted protocols, containers/codecs and exclusions |
 | [Subtitle compatibility matrix](subtitles/compatibility.md) | EN | Subtitle formats × sources × features, evidence and known limits (issue #1) |
 | [Subtitle user guide](subtitles/user-guide.md) | EN | CC button, menus, hotkeys, edit mode, files next to the video, settings |
+| [OpenGL ES 2.0 renderer compatibility](render/gles2-compatibility.md) | EN | Renderer choice, driver levels, verified GPUs, copies per frame, limits and how to send a hardware report (issue #6) |
 | [Operational errors](web-media-operational-errors.md) | EN/RU | Typed failures and safe recovery actions |
 | [Progressive/web S27](progressive-web-s27.md) | RU | Historical ownership/hardening evidence; newer native ingress is covered by N15 |
 | [Classic ISO BMFF S28A1](iso-bmff-s28a1.md) | RU | MP4/M4A/MOV/3GP scope and proof |

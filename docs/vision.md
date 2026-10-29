@@ -47,11 +47,11 @@ The [ordered roadmap](../README.md#roadmap-to-10) and [GitHub milestone](https:/
 3. Cohesive application redesign, including settings.
 4. Configurable application colors and appearance.
 5. Localization infrastructure and initial translations.
-6. An OpenGL ES 2.0 renderer for older Linux hardware.
+6. An OpenGL ES 2.0 renderer for older Linux hardware — done; see the [GLES2 compatibility notes](render/gles2-compatibility.md).
 7. Drag-and-drop for local files and URLs — done in `v0.2.0`.
 8. Native Windows application support.
 
-Items not marked done are planned capabilities. They do not imply that browser integration or Windows support already ship. Subtitles and drag-and-drop ship since `v0.2.0`.
+Items not marked done are planned capabilities. They do not imply that browser integration or Windows support already ship. Subtitles and drag-and-drop ship since `v0.2.0`; the OpenGL ES 2.0 renderer is in the development tree (`main`) and not yet in a tagged release.
 
 ## Beyond the current roadmap
 

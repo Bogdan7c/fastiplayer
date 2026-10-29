@@ -24,6 +24,10 @@ thiserror.workspace = true
 egui.workspace = true
 # `memfd_create`/`udmabuf`/`fstat` в тестах импорта DMA-BUF: настоящий буфер ядра без видеокарты.
 libc.workspace = true
+# Только пример `egui_video_window` (минимальное egui-приложение на этих crate-ах): окно и ввод
+# egui. Guardrail ограничивает обычные зависимости, dev-зависимости в библиотеку не попадают.
+winit.workspace = true
+egui-winit.workspace = true
 
 [lints]
 workspace = true

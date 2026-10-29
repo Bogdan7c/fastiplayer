@@ -42,6 +42,8 @@
 
 **Light enough for a 2018 laptop.** VA-API decoding on supported GPUs, Vulkan rendering through WGPU, and GPU HDR-to-SDR tone mapping. On a ThinkPad T480s, Fastiplayer played 4K60 HEVC and AV1 without losing a frame, while mpv dropped 37–56 % of them; it used less CPU, a fraction of the GPU render time and up to 3× less process memory ([details](#performance)).
 
+**A second life for old laptops.** No Vulkan? Fastiplayer switches to its own OpenGL ES 2.0 renderer by itself. A 2010 ThinkPad T410 plays 1080p60 with every frame and less CPU than mpv and VLC ([details](#old-hardware-a-2010-laptop-plays-1080p60)).
+
 **Plays what you throw at it.** Drop files, folders, playlists, or links into the window. Local media, HTTP(S)/FTP(S), HLS and DASH (VOD, live, and DVR), internet radio, and — with optional `yt-dlp` — web pages.
 
 **Subtitles that just work, and look right.** Fastiplayer has its own subtitle engine, written from scratch in Rust and drawn on the GPU.
@@ -68,7 +70,7 @@ Fastiplayer remembers your choice for every video.
 </p>
 
 - **Playback:** local video and audio, seeking, audio/video stream selection, pitch-preserving speed, live scrubbing.
-- **Hardware decoding:** VA-API where the GPU and driver support it, FFmpeg software decoding otherwise; WGPU/Vulkan rendering; HDR-to-SDR tone mapping, including AV1 10-bit.
+- **Hardware decoding:** VA-API where the GPU and driver support it, FFmpeg software decoding otherwise; WGPU/Vulkan rendering, or the player's own OpenGL ES 2.0 renderer on older GPUs; HDR-to-SDR tone mapping, including AV1 10-bit.
 - **Network:** progressive HTTP(S)/FTP(S), HLS and DASH VOD/live/DVR, audio-only HLS radio, static Smooth Streaming and HDS; web pages through optional system `yt-dlp`.
 - **Subtitles:** a native Rust engine with its own GPU pass. It plays SRT, WebVTT, ASS/SSA (libass-parity rendering, fonts attached to MKV), PGS and MP4 `mov_text`, YouTube manual and automatic captions, and HLS/DASH text tracks. Files next to the video are found automatically, and you can drop a file onto the window. A CC button, hotkeys and on-video appearance editing are included, and track and delay choices are remembered per video. See the [subtitle matrix](docs/subtitles/compatibility.md) and [user guide](docs/subtitles/user-guide.md).
 - **Drag-and-drop and "Open with":** drop on the panel to append to the queue, drop on the video to start a new queue; opening a file while the player runs hands it to the existing window.
@@ -80,7 +82,7 @@ Exact supported containers, codecs, and protocols are listed in the [compatibili
 
 ## Try it
 
-You need Linux x86_64, a GPU with a working Vulkan driver, and [rustup](https://rustup.rs) — the repository pins Rust **1.99.0** in [rust-toolchain.toml](rust-toolchain.toml).
+You need Linux x86_64, a GPU with a working Vulkan driver **or** any OpenGL ES 2.0 driver (Mesa covers GPUs back to about 2008), and [rustup](https://rustup.rs) — the repository pins Rust **1.99.0** in [rust-toolchain.toml](rust-toolchain.toml).
 
 **Arch Linux / CachyOS / Manjaro**
 
@@ -136,7 +138,7 @@ Also install the Vulkan and VA-API drivers for your GPU (for example `vulkan-rad
 ## Good to know
 
 - **Linux only for now.** Windows is on the roadmap before 1.0; macOS may come later, without a promise.
-- **Vulkan is required**, even for software decoding. Hardware decoding depends on your GPU, driver, and codec.
+- **Vulkan or OpenGL ES 2.0.** Without a hardware Vulkan driver Fastiplayer switches to its own OpenGL ES 2.0 renderer; the [GLES2 compatibility notes](docs/render/gles2-compatibility.md) list what it needs and its limits. Hardware decoding depends on your GPU, driver, and codec.
 - **Subtitles ship since `v0.2.0`.** Some formats are not supported, among them VobSub, DVB and `.sup` files; the [subtitle matrix](docs/subtitles/compatibility.md#known-limitations-summary) lists the limits.
 - **Native HDR output is not implemented;** HDR is tone-mapped to SDR.
 - **The interface is unfinished** and partly in Russian. A full redesign and translations are planned.
@@ -153,11 +155,39 @@ The order is fixed in [milestone 1.0](https://github.com/Bogdan7c/fastiplayer/mi
 3. [Cohesive application redesign](https://github.com/Bogdan7c/fastiplayer/issues/3), including new settings.
 4. [Fully configurable colors and appearance](https://github.com/Bogdan7c/fastiplayer/issues/4).
 5. [Localization and first translations](https://github.com/Bogdan7c/fastiplayer/issues/5).
-6. [OpenGL ES 2.0 renderer for older Linux hardware](https://github.com/Bogdan7c/fastiplayer/issues/6).
+6. ~~[OpenGL ES 2.0 renderer for older Linux hardware](https://github.com/Bogdan7c/fastiplayer/issues/6)~~ — **done**; see [old hardware](#old-hardware-a-2010-laptop-plays-1080p60) and the [compatibility notes](docs/render/gles2-compatibility.md).
 7. ~~[Drag-and-drop for local files and URLs](https://github.com/Bogdan7c/fastiplayer/issues/7)~~ — **done** in `v0.2.0`.
 8. [Native Windows support](https://github.com/Bogdan7c/fastiplayer/issues/8).
 
 NVDEC, native HDR output, and macOS are possible later directions without dates. See the [vision](docs/vision.md) for where the project is heading.
+
+## Old hardware: a 2010 laptop plays 1080p60
+
+Software should respect the hardware it runs on. Many laptops that still work fine never got a Vulkan driver, and modern players either refuse to start there or drop frames. For them Fastiplayer has its own renderer on OpenGL ES 2.0: the interface, video, color controls, HDR-to-SDR tone mapping and subtitles look the same as on the Vulkan renderer. Hardware-decoded video is shown without copying a single frame, and software-decoded video without a CPU copy where the system allows it.
+
+<p align="center">
+  <img src="docs/assets/fastiplayer-t410-gles2-1080p60.png" alt="Fastiplayer on a 2010 ThinkPad T410 playing Big Buck Bunny 1080p60: the big white rabbit in a green meadow under a pink sky, with the timeline and playback controls below" width="720"><br>
+  <sub>Big Buck Bunny 1080p60 on a 2010 ThinkPad T410 (Intel Ironlake, no Vulkan), OpenGL ES 2.0 renderer chosen automatically. Film: <i>Big Buck Bunny</i> © 2008 Blender Foundation, CC BY 3.0 · <a href="docs/assets/README.md#2026-10-28-thinkpad-t410-screenshot">capture details</a></sub>
+</p>
+
+On **2026-10-29** the T410 (Core i5 M560, Intel HD Graphics Ironlake, 2 cores / 4 threads) played the same files in Fastiplayer, mpv 0.41 and VLC 3.0, each in its best working mode, fullscreen, in alternating runs with 20-second windows. Fastiplayer used the recommended *Dynamic* decoding mode.
+
+| Workload on the T410 | Frames lost in 20 s | CPU (100% = one core) |
+| --- | --- | --- |
+| H.264 1080p60, software decoding for all | **0** · mpv 0 · VLC 0 | **115%** · mpv 127% · VLC 129% |
+| HEVC 1080p60 at 25 Mbit/s, software for all | **0** · mpv 0–9 · VLC 0–2 | **224%** · mpv 243% · VLC 253% |
+| H.264 720p60, hardware decoding for all | **0** · mpv 0 · VLC 0 | 23% · mpv 20% · VLC 18% |
+| H.264 1080p30, hardware decoding for all | **0** · mpv 0 · VLC 0 | 12–17% · mpv 12% · VLC 12–13% |
+
+<sub>CPU is native Wayland; where XWayland differs, the cell gives the range of both window modes. Fastiplayer's lost frames count the unique frames shown against the 20-second window, so ±1 is the window edge.</sub>
+
+- **1080p60 is where it shows.** Both heavy rows are statistically confirmed CPU wins against both players under native Wayland. On the 25 Mbit/s HEVC file mpv started dropping frames; Fastiplayer did not.
+- **Hardware decoding is a tie, with one honest exception.** Under XWayland Fastiplayer is level with mpv and VLC. Under native Wayland, hardware video at 30 fps costs it about 4–5 points more, and some 1080p30 frames came one refresh late (none were lost). The report shows this is not a regression of the published code; the cause is still being investigated.
+- **No GPU can do everything.** This GPU decodes 1080p H.264 at about 39 frames per second at best, for any player. *Dynamic* starts on hardware decoding and moves such files to software decoding within seven seconds, so 1080p60 plays smoothly.
+
+**How it is chosen.** *Automatic* (the default) uses Vulkan on a GPU with a hardware Vulkan driver and OpenGL ES 2.0 everywhere else, including machines with only a software Vulkan. You can pick *Vulkan* or *OpenGL ES* yourself in the settings (it applies after a restart; a **Restart now** button is right there), or set `profile = "opengles"` under `[render]` in `~/.config/fastiplayer/config.toml`. On old hardware also choose the *Dynamic* video decoding mode; the settings suggest it when OpenGL ES is active.
+
+The [T410 report](docs/benchmarks/t410-gles2-2026-10-29.md) has every scene, both window modes, memory and the method. The [compatibility notes](docs/render/gles2-compatibility.md) list what the renderer needs from the driver, the GPUs it was verified on, its limits, and the commands to [send a report from your own old machine](docs/render/gles2-compatibility.md#send-a-report-from-your-machine) — reports from real old hardware help most. Building an egui application of your own? The renderer comes as two reusable crates, [`gles2-egui`](crates/gles2-egui/README.md) and [`gles2-video`](crates/gles2-video/README.md).
 
 ## Performance
 

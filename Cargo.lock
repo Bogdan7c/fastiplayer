@@ -2113,11 +2113,13 @@ name = "gles2-video"
 version = "0.2.0"
 dependencies = [
  "egui",
+ "egui-winit",
  "gles2-egui",
  "glow",
  "libc",
  "log",
  "thiserror 2.0.18",
+ "winit 0.30.13 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]

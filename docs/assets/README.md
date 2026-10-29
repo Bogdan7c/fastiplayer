@@ -14,6 +14,7 @@ Build: `cargo build -p app-egui --release --locked`, default features, Rust **1.
 - `fastiplayer-subtitles.png`: fullscreen Sintel with an English subtitle in the default style above the playback controls (2026-10-19 capture, see below).
 - `fastiplayer-t480s-av1-4k60.png`: Big Buck Bunny AV1 4K60 playing on the ThinkPad T480s of the October CPU-parity report (2026-10-23 capture, see below).
 - `fastiplayer-settings.png`: video color settings during playback, with saturation deliberately raised to 2.45 to show its effect.
+- `fastiplayer-t410-gles2-1080p60.png`: Big Buck Bunny 1080p60 playing through the OpenGL ES 2.0 renderer on a 2010 ThinkPad T410 (2026-10-28 capture, see below).
 
 Screenshots are **1920×1080 PNG** frames extracted from the real OBS recordings, with the recorded cursor included. The cover is extracted from the finished trailer. The player UI and movie frames are not retouched. The [demo page](../demo.md) supplies timecodes and distinguishes the demonstrated interactions from future features.
 
@@ -36,6 +37,15 @@ Screenshots are **1920×1080 PNG** frames extracted from the real OBS recordings
 - **Player state:** native Wayland window at its default size, playing at 00:41 of the Big Buck Bunny AV1 4K60 file from the report. Software AV1 decoding, frames imported into Vulkan without a CPU copy (confirmed by the runtime log), volume 0.
 - **Capture:** spectacle active-window capture, 1280×720 logical pixels, without the cursor. The UI and the movie frame are not retouched.
 - **Media:** *Big Buck Bunny* © 2008 Blender Foundation / www.bigbuckbunny.org, CC BY 3.0.
+
+### 2026-10-28 ThinkPad T410 screenshot
+
+`fastiplayer-t410-gles2-1080p60.png` was captured on **2026-10-28** during the publication session of the OpenGL ES 2.0 renderer (issue #6), on the laptop of the [T410 report](../benchmarks/t410-gles2-2026-10-29.md). Hardware: ThinkPad T410 (2010), Intel Core i5 M560, Intel HD Graphics (Ironlake), no Vulkan device. Software: Linux **7.2.7-1-cachyos**, Mesa **26.2.4** (crocus), KDE Plasma **6.8.1** Wayland, 1440×900 panel.
+- **Build:** source revision `4189ea33` (code identical to `eacd5dbb`), `cargo build -p app-egui --release --locked` (Rust **1.99.0**), the binary of the report, with a separate temporary profile: renderer *Automatic*, decoding *Dynamic*, volume 0.
+- **Player state:** native Wayland window at its default size, 00:18 into the clip. The log shows the automatic choice (`Renderer selected renderer="gles2" why=OpenGL ES 2.0 — Auto: no hardware Vulkan adapter`); the file started on VA-API hardware decoding, and after 6 s *Dynamic* moved it to software decoding with frames shown without a CPU copy (the GPU cannot decode 1080p60 H.264 in real time).
+- **Media:** a 30-second cut from 01:30 of the official *Big Buck Bunny* 4K60 release, re-encoded to H.264 High 1920×1080 60 fps, 12 Mbit/s, AAC stereo (SHA-256 `f9660d8d…b2d7c`). The clip is kept outside Git.
+- **Capture:** spectacle active-window capture, 1280×720, without the cursor, saved as opaque RGB. The UI and the movie frame are not retouched.
+- **Media license:** *Big Buck Bunny* © 2008 Blender Foundation / www.bigbuckbunny.org, CC BY 3.0.
 
 Video is hosted on YouTube. Large recordings, film media, the DNxHR master, and the Resolve `.drp` project are kept outside Git. The previous silent 39-second MP4 is superseded by this trailer; its historical bytes remain in Git history. Existing releases and tags are unchanged.
 

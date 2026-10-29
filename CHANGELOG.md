@@ -4,7 +4,31 @@ Notable project changes are recorded here in a Keep a Changelog-like structure. 
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- Fastiplayer's own OpenGL ES 2.0 renderer for GPUs without Vulkan (roadmap item 6, [issue #6](https://github.com/Bogdan7c/fastiplayer/issues/6)). A 2010 ThinkPad T410 (Intel Ironlake, no Vulkan) now plays 1080p60. Details, verified hardware and limits are in the [GLES2 compatibility notes](docs/render/gles2-compatibility.md); measurements against mpv and VLC 3 are in the [T410 report](docs/benchmarks/t410-gles2-2026-10-29.md).
+  - Same picture as the Vulkan renderer: color conversion and adjustment, HDR-to-SDR tone mapping, rotation, letterbox, both subtitle layers. Pixel tests compare the two renderers.
+  - Hardware H.264 through VA-API without copying frames; software-decoded frames without a CPU copy where `/dev/udmabuf` is available.
+  - A new **Renderer** setting (*Automatic*, *Vulkan*, *OpenGL ES*), applied after a restart with a **Restart now** button. *Automatic* uses Vulkan on a hardware Vulkan adapter and OpenGL ES 2.0 otherwise, including machines with only a software Vulkan. A renderer that crashed during startup is skipped on the next start with a notification, and an explicit Vulkan choice that cannot work starts on OpenGL ES 2.0 for that run instead of refusing to start.
+- A **Dynamic** video decoding mode: starts on hardware decoding and moves the current file to software decoding once if the hardware decoder falls behind. Recommended on old hardware; the settings suggest it on the OpenGL ES 2.0 renderer.
+- Reusable crates [`gles2-egui`](crates/gles2-egui/README.md) (an egui renderer on EGL/OpenGL ES 2.0) and [`gles2-video`](crates/gles2-video/README.md) (a YUV video layer) for other egui applications, with a runnable example built in CI.
+- Software decoding hands frames to the Vulkan renderer without a CPU copy for every layout the player plays, and AV1 joins them through a small patch of the bundled FFmpeg's dav1d wrapper. Building the bundled FFmpeg now needs GNU `patch`.
+
+### Changed
+
+- The default renderer setting is *Automatic*; existing configs move from `vulkan` to `auto` once.
+- Windows are always opaque and no longer have rounded corners (`ui.window.corner_radius_px` is removed). On old GPUs a transparent window made the compositor copy every frame.
+- The VA-API decoder keeps the GPU busy instead of waiting after every picture: up to 1.5× faster hardware decoding on the T410 and a Radeon 780M. It keeps at most two pictures queued on the GPU, and on the OpenGL ES 2.0 renderer it submits the next picture right after a frame is presented, so decoding no longer delays presentation on GPUs where both share one queue.
+- On machines with four or fewer logical CPUs, HEVC uses more decoding threads and AV1 up to 1080p fewer frames in flight.
+
+### Fixed
+
+- A file whose audio ends before its video (or loses audio in the middle) no longer freezes on the last picture, and seeking past the last frame no longer stops the player; the file ends and the queue moves on.
+- Two drags on the timeline in a row no longer leave playback paused; slow drags with hardware decoding follow the cursor; 2× and 4× no longer stop the audio with a false "no audio" state; seeking in MP4 with B-frames no longer lands about 6 s before the target.
+- 10-bit video without color tags is shown as SDR BT.709 instead of failing.
+- Applying Vulkan presentation settings no longer crashes the player on Wayland.
+- After the queue moved to a file with a different codec, the player no longer keeps the previous file's decoder requirements.
+- The Vulkan renderer recreates its swapchain after the compositor reports it as suboptimal (for example when fullscreen enables direct scanout).
 
 ## [0.2.0] - 2026-10-20
 
