@@ -76,6 +76,20 @@ quote_dbus_exec_argument() {
     printf "'%s'" "${raw_path}"
 }
 
+# Просит сессионную шину перечитать каталоги служб. dbus-broker (большинство
+# systemd-столов) новый `.service` сам не видит и до этого отвечает ServiceUnknown
+# (проверено вживую в сессии 02 моста); dbus-daemon следит за каталогами сам,
+# и лишнее перечитывание ему не вредит. Нет busctl или шины — предупреждение:
+# файл на месте, шина увидит его после перезапуска сеанса.
+reload_session_bus_services() {
+    if ! command -v busctl >/dev/null 2>&1; then
+        echo "warning: busctl not found; log out and back in so the session bus sees ${BROWSER_SESSION_BUS_NAME}" >&2
+        return
+    fi
+    busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig >/dev/null \
+        || echo "warning: the session bus did not reload its services; log out and back in" >&2
+}
+
 # Обновляет кэши рабочего стола. Отсутствие утилиты — не ошибка: значит, это
 # окружение её не использует. Сбой утилиты — предупреждение, файлы уже на месте.
 refresh_desktop_caches() {
@@ -132,6 +146,7 @@ install_browser_session_service_file() {
 uninstall() {
     rm -f "${TARGET_DESKTOP_FILE}"
     rm -f "${TARGET_BROWSER_SESSION_SERVICE_FILE}"
+    reload_session_bus_services
     find "${TARGET_ICON_THEME_DIR}" -type f -name "${APPLICATION_ID}.png" -delete 2>/dev/null || true
     refresh_desktop_caches
     echo "Removed ${APPLICATION_ID} desktop entry, icons and browser session service from ${USER_DATA_DIR}"
@@ -175,6 +190,7 @@ main() {
     install_icons
     install_desktop_file "${binary_path}"
     install_browser_session_service_file "${binary_path}"
+    reload_session_bus_services
     refresh_desktop_caches
     echo "Installed ${TARGET_DESKTOP_FILE}"
     echo "Installed ${TARGET_BROWSER_SESSION_SERVICE_FILE}"

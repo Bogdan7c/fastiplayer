@@ -18,6 +18,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = REPOSITORY_ROOT / "scripts" / "install-desktop-entry.sh"
 SERVICE_NAME = "io.github.Bogdan7c.Fastiplayer.BrowserSession"
 DESKTOP_CACHE_UTILITIES = ("kbuildsycoca6", "update-desktop-database", "gtk-update-icon-cache")
+# Заглушка busctl записывает свои аргументы: так тест видит просьбу перечитать
+# службы, не трогая настоящую шину пользователя.
+BUSCTL_RECORDER = '#!/bin/sh\nprintf "%s\\n" "$*" >> "$BUSCTL_LOG"\nexit 0\n'
+RELOAD_CALL = "--user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig"
 
 
 class InstallDesktopEntryTests(unittest.TestCase):
@@ -29,6 +33,8 @@ class InstallDesktopEntryTests(unittest.TestCase):
         self.stub_bin.mkdir()
         for utility in DESKTOP_CACHE_UTILITIES:
             self._write_executable(self.stub_bin / utility, "#!/bin/sh\nexit 0\n")
+        self._write_executable(self.stub_bin / "busctl", BUSCTL_RECORDER)
+        self.busctl_log = self.root / "busctl.log"
 
     def tearDown(self) -> None:
         self._temporary.cleanup()
@@ -42,6 +48,7 @@ class InstallDesktopEntryTests(unittest.TestCase):
         environment = dict(os.environ)
         environment["XDG_DATA_HOME"] = str(self.data_home)
         environment["PATH"] = f"{self.stub_bin}{os.pathsep}{environment['PATH']}"
+        environment["BUSCTL_LOG"] = str(self.busctl_log)
         return subprocess.run(
             ["bash", str(INSTALLER), *arguments],
             env=environment,
@@ -66,6 +73,8 @@ class InstallDesktopEntryTests(unittest.TestCase):
             f"Name={SERVICE_NAME}\n"
             f"Exec='{binary.resolve()}' --browser-session\n",
         )
+        # dbus-broker без перечитывания не видит новый файл (сессия 02 моста).
+        self.assertEqual(self.busctl_log.read_text().splitlines(), [RELOAD_CALL])
 
     def test_refuses_binary_path_that_dbus_cannot_quote(self) -> None:
         binary = self.root / "it's here" / "fastiplayer"
@@ -87,6 +96,7 @@ class InstallDesktopEntryTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertFalse(self._service_file().exists())
+        self.assertEqual(self.busctl_log.read_text().splitlines(), [RELOAD_CALL, RELOAD_CALL])
 
 
 if __name__ == "__main__":

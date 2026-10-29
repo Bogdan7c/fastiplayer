@@ -52,7 +52,7 @@
 
 - `.service`-файл D-Bus activation собирает `desktop_integration::browser_session_activation_service_file(путь)`. Путь пишется в одинарных кавычках. Пути с апострофом, обратной косой чертой или управляющими символами отвергаются: dbus-daemon и dbus-broker толкуют их по-разному, а файл с `'\''` dbus-daemon молча пропускает. Установщик показывает человеку понятную причину.
 - `scripts/install-desktop-entry.sh` уже ставит этот файл в `~/.local/share/dbus-1/services/`; `--uninstall` его убирает. Кнопка «Connect to browsers» делает то же из плеера.
-- **Не проверено в 02:** подхватывает ли dbus-broker новый `.service` сам или только после `ReloadConfig` на `org.freedesktop.DBus` (dbus-daemon следит за каталогами сам). Проверить на KDE, GNOME и Xfce; при нужде установщик вызывает `ReloadConfig` сам.
+- **Проверено вживую в 02 (dbus-broker, KDE):** новый `.service` dbus-broker сам НЕ подхватывает — звонок отвечает `ServiceUnknown`. После `ReloadConfig` на `org.freedesktop.DBus` активация работает. Установщик обязан вызвать `ReloadConfig` сам — `scripts/install-desktop-entry.sh` уже так делает (через `busctl`), кнопка «Connect to browsers» делает то же через zbus. На GNOME и Xfce проверить заново; путь с пробелом на dbus-broker тоже.
 - Живая проверка активации на настоящей шине — ручной тест `live_session_bus_wakes_the_installed_browser_session` (`crates/app-egui/tests/browser_session_process.rs`, `--ignored`).
 
 ## Критерий выхода
