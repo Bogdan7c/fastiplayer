@@ -8,6 +8,13 @@
 //! этом не стартует (ждёт кадр), буфер не расходуется, demux не читает — вечный
 //! `Buffering`. Поэтому на время голодного preroll-а предел временно поднимается до
 //! ограниченного стартового потолка; после первого кадра снова действует обычный.
+//!
+//! Тот же потолок действует, пока EOF drain принадлежит первому просмотру (короткий
+//! файл кончился раньше старта, 2026-10-29, решение 93 плана моста). Звуковой хвост
+//! запускается только когда все считанные audio packets обработаны, а обработка
+//! ждала, пока буфер опустится ниже high-water — без запущенного звука он не
+//! опускается никогда. После EOF нового demux-ввода нет, поэтому поднятый предел
+//! влияет только на декод уже считанных пакетов и не растит read-ahead.
 
 use super::PlayerTickConfig;
 use crate::session::{PlayerSession, audio_runtime::sanitize_audio_high_water_mark};
@@ -35,6 +42,13 @@ pub(super) enum AudioReadAheadAllowance {
         /// Санитизированный стартовый потолок, мс (не ниже high-water mark).
         cap_ms: f64,
     },
+
+    /// Старт первого просмотра идёт внутри EOF drain: тот же стартовый потолок,
+    /// чтобы уже считанный звук дошёл до output и хвост смог запуститься.
+    StartupEofDrain {
+        /// Санитизированный стартовый потолок, мс (не ниже high-water mark).
+        cap_ms: f64,
+    },
 }
 
 impl AudioReadAheadAllowance {
@@ -43,15 +57,16 @@ impl AudioReadAheadAllowance {
     pub(super) const fn limit_ms(self) -> f64 {
         match self {
             Self::Normal { high_water_mark_ms } => high_water_mark_ms,
-            Self::VideoPrerollStarved { cap_ms } => cap_ms,
+            Self::VideoPrerollStarved { cap_ms } | Self::StartupEofDrain { cap_ms } => cap_ms,
         }
     }
 }
 
 /// Выбирает действующий предел audio read-ahead по состоянию session.
 ///
-/// Решение о «голодном» preroll-е принадлежит session
-/// (`video_preroll_is_starved`); здесь только применяется policy из tick config.
+/// Решения о «голодном» preroll-е и о старте внутри EOF drain принадлежат session
+/// (`video_preroll_is_starved`, `eof_drain_belongs_to_startup_playthrough`); здесь
+/// только применяется policy из tick config.
 #[must_use]
 pub(super) fn audio_read_ahead_allowance(
     session: &PlayerSession,
@@ -59,12 +74,19 @@ pub(super) fn audio_read_ahead_allowance(
 ) -> AudioReadAheadAllowance {
     let high_water_mark_ms =
         sanitize_audio_high_water_mark(tick_config.audio_buffer_high_water_mark_ms);
+    let startup_cap_ms = || {
+        sanitize_startup_read_ahead_cap_ms(
+            tick_config.audio_startup_read_ahead_cap_ms,
+            high_water_mark_ms,
+        )
+    };
     if session.video_preroll_is_starved() {
         AudioReadAheadAllowance::VideoPrerollStarved {
-            cap_ms: sanitize_startup_read_ahead_cap_ms(
-                tick_config.audio_startup_read_ahead_cap_ms,
-                high_water_mark_ms,
-            ),
+            cap_ms: startup_cap_ms(),
+        }
+    } else if session.eof_drain_belongs_to_startup_playthrough() {
+        AudioReadAheadAllowance::StartupEofDrain {
+            cap_ms: startup_cap_ms(),
         }
     } else {
         AudioReadAheadAllowance::Normal { high_water_mark_ms }

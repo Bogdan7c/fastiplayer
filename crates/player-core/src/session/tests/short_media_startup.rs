@@ -33,6 +33,13 @@ const FIXTURE_LENGTH: Duration = Duration::from_secs(3);
 /// Обычное окно demux-а на tick: файл читается постепенно, как при реальной игре.
 const GRADUAL_DEMUX_PACKETS_PER_TICK: usize = 6;
 
+/// Уровень output-а по умолчанию: не ниже порога готовности preroll и ниже high-water.
+const OUTPUT_LEVEL_BELOW_HIGH_WATER_MS: f64 = 50.0;
+
+/// Уровень output-а выше high-water (200 мс): так стоит настоящая звуковая карта, в
+/// которую стартовый read-ahead уже записал звук, а play ещё не вызван.
+const OUTPUT_LEVEL_ABOVE_HIGH_WATER_MS: f64 = 380.0;
+
 /// Окно, в которое весь короткий файл влезает за один tick (EOF в первом же tick-е).
 const WHOLE_FILE_DEMUX_PACKETS_PER_TICK: usize = 10_000;
 
@@ -80,6 +87,20 @@ impl ShortMediaHarness {
             Box::new(open_fixture(fixture_name)),
             first_frame_policy,
             GRADUAL_DEMUX_PACKETS_PER_TICK,
+            OUTPUT_LEVEL_BELOW_HIGH_WATER_MS,
+        )
+    }
+
+    /// Тот же стенд, но output уже заполнен выше high-water до запуска звука.
+    fn with_output_filled_above_high_water(
+        fixture_name: &str,
+        first_frame_policy: FirstFramePolicy,
+    ) -> Self {
+        Self::with_demuxer(
+            Box::new(open_fixture(fixture_name)),
+            first_frame_policy,
+            GRADUAL_DEMUX_PACKETS_PER_TICK,
+            OUTPUT_LEVEL_ABOVE_HIGH_WATER_MS,
         )
     }
 
@@ -89,6 +110,7 @@ impl ShortMediaHarness {
             Box::new(AudioOnlyDemuxer::new(open_fixture(AUDIO_VIDEO_FIXTURE))),
             FirstFramePolicy::AfterFirstPacket,
             WHOLE_FILE_DEMUX_PACKETS_PER_TICK,
+            OUTPUT_LEVEL_BELOW_HIGH_WATER_MS,
         )
     }
 
@@ -96,10 +118,10 @@ impl ShortMediaHarness {
         demuxer: Box<dyn Demuxer + Send>,
         first_frame_policy: FirstFramePolicy,
         demux_packets_per_tick: usize,
+        output_level_ms: f64,
     ) -> Self {
-        // Уровень 50 мс: не ниже порога готовности preroll и ниже high-water.
         let (output_factory, output_factory_handle) =
-            ScriptedAudioOutputFactory::success(50.0, None);
+            ScriptedAudioOutputFactory::success(output_level_ms, None);
         let mut session = PlayerSession::with_audio_factories(
             Arc::new(audio::decoder::ProductionAudioDecoderFactory::default()),
             output_factory,
@@ -344,6 +366,37 @@ fn short_audio_video_media_starts_audio_once_when_eof_arrives_before_first_frame
             PlaybackState::Draining,
             PlaybackState::Ended,
         ]
+    );
+}
+
+/// Решение 93 плана моста (2026-10-29): старт в EOF drain при output-е выше high-water.
+///
+/// Стартовый read-ahead уже записал в output больше high-water (200 мс), а звук ещё не
+/// запущен. Хвост запускается, только когда все считанные audio packets обработаны, а
+/// обработка ждала, пока уровень опустится ниже high-water. Без запущенного звука он не
+/// опускается: раньше session навсегда оставалась в `Draining`, звук не начинался.
+#[test]
+fn short_media_with_output_above_high_water_still_starts_audio_in_eof_drain() {
+    let mut harness = ShortMediaHarness::with_output_filled_above_high_water(
+        AUDIO_VIDEO_FIXTURE,
+        FirstFramePolicy::AfterEofDrainEntered,
+    );
+    harness.reach_eof_drain_before_first_frame();
+    harness.deliver_start_playing_intent();
+
+    harness.play_until_ended();
+    let output = harness.output().expect("audio output exists");
+    assert_eq!(output.play_count(), 1, "audio stream starts exactly once");
+    assert_eq!(harness.audio_resumed_count(), 1);
+    assert!(
+        harness.frames_presented > 0,
+        "first frame must be presented"
+    );
+    assert_eq!(
+        harness.observed_states.last(),
+        Some(&PlaybackState::Ended),
+        "states: {:?}",
+        harness.observed_states
     );
 }
 

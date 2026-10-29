@@ -22,3 +22,9 @@
 ## Audio-aware demux starvation recovery (2026-08-27)
 
 Temporary installed-demux starvation with selected audio now proactively freezes output when usable runway cannot cover remaining retry wait plus the canonically sanitized audio low-water scheduler/callback margin, independently of queued video. Remaining wait uses a fresh post-demux decision timestamp. Any exact current pending retry, including chained TUA after a recovered packet, blocks resume until the next matching accepted source event clears the source-wait fence; then the existing audio+video preroll gate is authoritative. Buffering resume publishes `Playing`/`AudioPlaybackResumed` only after successful output play and clock anchoring; recoverable play failure remains Buffering and is retried by the ordinary preroll lifecycle. Full invariants and tests: `mem:player-core/audio-starvation-buffering-resume-2026-08-27`.
+
+## Старт в EOF drain при output-е выше high-water (2026-10-29, решение 93 плана моста)
+
+- Дефект (найден безоконной обвязкой `pushed-media-source` с настоящими декодерами): короткое A/V (EOF раньше первого кадра), стартовый read-ahead уже записал в output > 200 мс. `start_eof_audio_tail_if_needed` ждёт `DrainingOutput` (нет pending audio packets), а `process_pending_audio_packets_with_buffer_limit` не декодирует их выше high-water; без play уровень не падает → вечный `Draining`. Стенд `short_media_startup` держал уровень 50 мс и не видел этого.
+- Фикс: `session/tick/audio_read_ahead.rs` — новый `AudioReadAheadAllowance::StartupEofDrain{cap_ms}` (тот же стартовый потолок `audio.startup_read_ahead_cap_ms`), пока `eof_drain_belongs_to_startup_playthrough()`. После EOF demux-ввода нет — потолок влияет только на декод уже считанного.
+- Тест `session/tests/short_media_startup.rs::short_media_with_output_above_high_water_still_starts_audio_in_eof_drain` (уровень 380 мс, падает без фикса).
