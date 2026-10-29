@@ -42,6 +42,14 @@
 - Проверено в 00 одним тестовым экстеншеном в Chromium 156, Chrome 156 (Flatpak) и Firefox 158.
 - Контент-скрипт MAIN-мира: `run_at: document_start`, `all_frames`, `match_about_blank`, `match_origin_as_fallback` — в 00 опередил скрипты страницы во всех фреймах обоих браузеров.
 
+## Поправки по итогам 00c (29.10.2026, решения 81–84)
+
+- **Firefox MV3:** `ws://127.0.0.1` из background работает только с явным `content_security_policy.extension_pages` в манифесте.
+- **Chromium:** сообщения контент-скрипт → background идут через JSON. Байты кодировать в base64 в контент-скрипте, декодировать в background перед WebSocket. Firefox передаёт `ArrayBuffer` как есть.
+- WebSocket открывать **только из background**: из страницы и контент-скрипта loopback упирается в запрос Local Network Access (оба браузера) и CSP страницы (Firefox).
+- Обёртка `Worker` — только при `MediaSource.canConstructInDedicatedWorker === true`. В Firefox она ломает Twitch.
+- `typeof browser` не признак Firefox: в Chrome 156 глобал есть. Признак — `runtime.getBrowserInfo`.
+
 ## Критерий выхода
 
 - `results/07.md`: раскладка, список зависимостей с обоснованием, размер собранного экстеншена, зелёный CI.
