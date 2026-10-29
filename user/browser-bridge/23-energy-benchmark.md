@@ -26,3 +26,12 @@
 - Memories: `mem:browser-bridge/core`.
 
 Memories: `mem:cpu-parity/core`, `mem:cpu-parity/hw-qualification-s06-2026-10-21`, auto-memory владельца «measurement duration».
+
+## Поправки по итогам 00b (29.10.2026)
+
+- **Мощность от батареи слишком шумная** для сравнения плееров: в GNOME на T480s Fastiplayer экономнее на ~3 Вт, в KDE — нет. Нужны RAPL (root) или длинные окна с повторами ABBA.
+- **Ironlake (T410):** в fdinfo нет счётчиков движков — GPU только глобально через `intel_gpu_top` (NOPASSWD есть).
+- **Fastiplayer на T410 — режим `dynamic`:** «только аппаратный» не играет VP9 и отстаёт на H.264 1080p30 (GPU 99,9 %).
+- **Бинарь не самодостаточен:** рядом нужен `lib/` со своими сборками FFmpeg (`RUNPATH=$ORIGIN/lib`).
+- **Первые цифры (00b):** на T410 оба браузера декодируют программно (~2 ядра, Chromium теряет кадры), Fastiplayer в `dynamic` — ~1 ядро; на T480s аппаратно у всех, Fastiplayer 14 % ядра против 24 % (Chromium) и 51–63 % (Firefox).
+- Пропуски кадров у Fastiplayer считать трассой, а не только отсутствием строк «отстаёт» в логе.
