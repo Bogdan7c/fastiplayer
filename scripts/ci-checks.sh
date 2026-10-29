@@ -32,6 +32,7 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/codec-core
     crates/config
     crates/desktop-integration
+    crates/browser-bridge-protocol
     crates/frame-server-core
     crates/source-core
     crates/media-prefetch

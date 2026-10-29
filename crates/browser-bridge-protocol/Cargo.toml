@@ -1,0 +1,20 @@
+[package]
+name = "browser-bridge-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Нейтральный протокол моста «браузер качает — мы играем» (issue #2): только типы,
+# разбор и проверка. Никакого I/O, D-Bus, сокетов и зависимостей от crate-ов плеера —
+# это проверяет scripts/check-refactor-guardrails.py.
+
+[dependencies]
+# Строгий разбор и запись JSON-сообщений (неизвестные поля — ошибка).
+serde.workspace = true
+serde_json.workspace = true
+# Типизированные ошибки разбора и проверки.
+thiserror.workspace = true
+
+[lints]
+workspace = true

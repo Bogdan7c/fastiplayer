@@ -10,6 +10,7 @@ members = [
     "crates/codec-core",
     "crates/config",
     "crates/desktop-integration",
+    "crates/browser-bridge-protocol",
     "crates/frame-server-core",
     "crates/source-core",
     "crates/media-prefetch",
@@ -248,6 +249,7 @@ player-core = { version = "0.2.0", path = "crates/player-core" }
 bounded-work-executor = { version = "0.2.0", path = "crates/bounded-work-executor" }
 atomic-file-store = { version = "0.2.0", path = "crates/atomic-file-store" }
 natural-sort-key = { version = "0.2.0", path = "crates/natural-sort-key" }
+browser-bridge-protocol = { version = "0.2.0", path = "crates/browser-bridge-protocol" }
 playlist-core = { version = "0.2.0", path = "crates/playlist-core" }
 playlist-io = { version = "0.2.0", path = "crates/playlist-io" }
 subtitle-core = { version = "0.2.0", path = "crates/subtitle-core" }

@@ -1,0 +1,82 @@
+{
+  "steps": [
+    {
+      "text": "001.json"
+    },
+    {
+      "text": "002.json"
+    },
+    {
+      "binary": "003.bin"
+    },
+    {
+      "binary": "004.bin"
+    },
+    {
+      "text": "005.json"
+    },
+    {
+      "text": "006.json"
+    },
+    {
+      "text": "007.json"
+    },
+    {
+      "binary": "008.bin"
+    },
+    {
+      "text": "009.json"
+    },
+    {
+      "binary": "010.bin"
+    },
+    {
+      "binary": "011.bin"
+    },
+    {
+      "text": "012.json"
+    },
+    {
+      "binary": "013.bin"
+    }
+  ],
+  "expect": {
+    "admitted": [
+      {
+        "generation": 1,
+        "source_buffer": 0,
+        "media": "video.mp4",
+        "ranges": [
+          [
+            0,
+            3000
+          ]
+        ]
+      },
+      {
+        "generation": 2,
+        "source_buffer": 0,
+        "media": "video.mp4",
+        "ranges": [
+          [
+            0,
+            10093
+          ]
+        ]
+      },
+      {
+        "generation": 2,
+        "source_buffer": 1,
+        "media": "audio.mp4",
+        "ranges": [
+          [
+            0,
+            2722
+          ]
+        ]
+      }
+    ],
+    "dropped_frames": 1,
+    "dropped_messages": 1
+  }
+}

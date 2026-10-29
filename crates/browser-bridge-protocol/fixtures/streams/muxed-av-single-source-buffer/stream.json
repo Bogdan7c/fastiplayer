@@ -1,0 +1,52 @@
+{
+  "steps": [
+    {
+      "text": "001.json"
+    },
+    {
+      "text": "002.json"
+    },
+    {
+      "binary": "003.bin"
+    },
+    {
+      "binary": "004.bin"
+    },
+    {
+      "binary": "005.bin"
+    },
+    {
+      "text": "006.json"
+    },
+    {
+      "text": "007.json"
+    },
+    {
+      "binary": "008.bin"
+    },
+    {
+      "binary": "009.bin"
+    }
+  ],
+  "expect": {
+    "admitted": [
+      {
+        "generation": 1,
+        "source_buffer": 0,
+        "media": "muxed.webm",
+        "ranges": [
+          [
+            0,
+            3000
+          ],
+          [
+            0,
+            7804
+          ]
+        ]
+      }
+    ],
+    "dropped_frames": 0,
+    "dropped_messages": 0
+  }
+}

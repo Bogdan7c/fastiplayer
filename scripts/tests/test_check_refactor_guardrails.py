@@ -818,6 +818,40 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             },
         )
 
+    def test_browser_bridge_protocol_allows_only_serialization_dependencies(self) -> None:
+        """Протокол моста остаётся типами и разбором без транспорта и плеера."""
+
+        packages = complete_workspace_packages()
+        packages["browser-bridge-protocol"] = package_with_dependencies(
+            "browser-bridge-protocol",
+            (("serde", None), ("serde_json", None), ("thiserror", None)),
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "browser-bridge-protocol"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        for forbidden in ("zbus", "player-core", "desktop-integration", "tokio"):
+            packages["browser-bridge-protocol"] = package_with_dependencies(
+                "browser-bridge-protocol", (("serde", None), (forbidden, None))
+            )
+            failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+                packages, frozenset()
+            )
+            self.assertTrue(
+                any(
+                    violation.owner == "browser-bridge-protocol"
+                    and violation.dependency == forbidden
+                    for violation in failing_result.dependency_violations
+                ),
+                forbidden,
+            )
+
     def test_natural_sort_key_rejects_every_normal_dependency(self) -> None:
         """Общий prepared comparator остаётся строго std-only."""
 

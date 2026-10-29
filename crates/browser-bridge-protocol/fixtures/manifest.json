@@ -1,0 +1,721 @@
+{
+  "cases": [
+    {
+      "file": "control/valid/hello-extension.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "control/valid/hello-extension-major-2.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "control/valid/open-session-window.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "control/valid/open-session-pip-live-rtl.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "control/valid/open-session-in-page-untitled.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "control/invalid/unknown-type.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_type"
+      }
+    },
+    {
+      "file": "control/invalid/unknown-field.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
+      "file": "control/invalid/missing-field.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
+      }
+    },
+    {
+      "file": "control/invalid/duplicate-field.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "duplicate_field"
+      }
+    },
+    {
+      "file": "control/invalid/duplicate-type.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "duplicate_field"
+      }
+    },
+    {
+      "file": "control/invalid/missing-type.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "missing_type"
+      }
+    },
+    {
+      "file": "control/invalid/not-an-object.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "not_an_object"
+      }
+    },
+    {
+      "file": "control/invalid/type-not-a-string.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/truncated.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "syntax"
+      }
+    },
+    {
+      "file": "control/invalid/trailing-garbage.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "syntax"
+      }
+    },
+    {
+      "file": "control/invalid/not-utf8.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "not_utf8"
+      }
+    },
+    {
+      "file": "control/invalid/unknown-intent.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "control/invalid/request-id-as-string.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/fractional-duration.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/negative-position.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "control/invalid/position-beyond-js-safe-integer.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "control/invalid/field-in-unit-variant.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
+      "file": "control/invalid/title-with-bidi-override.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "text_forbidden_character"
+      }
+    },
+    {
+      "file": "control/invalid/title-with-nul.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "text_forbidden_character"
+      }
+    },
+    {
+      "file": "control/invalid/title-too-long.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "text_too_long"
+      }
+    },
+    {
+      "file": "control/invalid/domain-with-path.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "text_forbidden_character"
+      }
+    },
+    {
+      "file": "control/invalid/empty-session-key.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "text_empty"
+      }
+    },
+    {
+      "file": "control/invalid/duplicate-capability.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "duplicate_id"
+      }
+    },
+    {
+      "file": "control/valid/hello-accepted.json",
+      "schema": "player_control",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "control/valid/session-granted.json",
+      "schema": "player_control",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "control/valid/refused-incompatible-version.json",
+      "schema": "player_control",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "control/valid/refused-malformed.json",
+      "schema": "player_control",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "control/valid/refused-protected-content.json",
+      "schema": "player_control",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "control/invalid/port-zero.json",
+      "schema": "player_control",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "control/invalid/token-too-short.json",
+      "schema": "player_control",
+      "expect": {
+        "result": "error",
+        "kind": "text_too_short"
+      }
+    },
+    {
+      "file": "session/valid/page-attach.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-generation-started.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-source-buffer-added.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-source-buffer-type-changed.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-timestamp-offset-negative.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-source-buffer-removed-range.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-source-buffer-removed-to-end.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-source-buffer-aborted.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-seek-started-by-player.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-seek-started-by-page.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-duration-changed.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-end-of-stream.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-page-playback-set-rate.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-page-playback-pause.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-variant-menu-changed.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-range-fetch-completed.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-range-fetch-failed.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-tab-gone.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/invalid/page-seek-epoch-started-is-not-a-message.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-source-buffer-index-8.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-generation-zero.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-empty-removal-range.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "empty_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-menu-two-selected.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "conflicting_selection"
+      }
+    },
+    {
+      "file": "session/invalid/page-menu-duplicate-id.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "duplicate_id"
+      }
+    },
+    {
+      "file": "session/invalid/page-menu-label-with-line-break.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_forbidden_character"
+      }
+    },
+    {
+      "file": "session/invalid/page-rate-zero.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-rate-above-16x.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/valid/player-attached.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-clock-playing.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-clock-waiting.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-buffer-state-full.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-play.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-pause.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-seek.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-set-rate.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-return-to-page.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-select-variant.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-next-episode.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-fetch-range.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-stream-rejected.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/invalid/player-field-from-a-future-minor.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
+      "file": "session/invalid/player-field-in-unit-message.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
+      "file": "session/invalid/player-fetch-range-zero-length.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/player-unknown-clock-state.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "data/valid/source-buffer-first-frame.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "ok",
+        "frame": {
+          "kind": "source_buffer_bytes",
+          "generation": 1,
+          "source_buffer": 0,
+          "sequence": 0,
+          "payload_len": 12
+        }
+      }
+    },
+    {
+      "file": "data/valid/source-buffer-max-fields.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "ok",
+        "frame": {
+          "kind": "source_buffer_bytes",
+          "generation": 4294967295,
+          "source_buffer": 7,
+          "sequence": "18446744073709551615",
+          "payload_len": 1
+        }
+      }
+    },
+    {
+      "file": "data/valid/range-bytes-max-offset.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "ok",
+        "frame": {
+          "kind": "range_bytes",
+          "request_id": 9,
+          "offset": 9007199254740991,
+          "payload_len": 3
+        }
+      }
+    },
+    {
+      "file": "data/invalid/shorter-than-header.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "error",
+        "kind": "frame_too_short"
+      }
+    },
+    {
+      "file": "data/invalid/header-without-payload.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "error",
+        "kind": "payload_empty"
+      }
+    },
+    {
+      "file": "data/invalid/unknown-kind-3.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_frame_kind"
+      }
+    },
+    {
+      "file": "data/invalid/kind-zero.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_frame_kind"
+      }
+    },
+    {
+      "file": "data/invalid/flags-set.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "error",
+        "kind": "reserved_bits_set"
+      }
+    },
+    {
+      "file": "data/invalid/source-buffer-reserved-set.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "error",
+        "kind": "reserved_bits_set"
+      }
+    },
+    {
+      "file": "data/invalid/range-reserved-set.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "error",
+        "kind": "reserved_bits_set"
+      }
+    },
+    {
+      "file": "data/invalid/generation-zero.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "data/invalid/source-buffer-8.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "data/invalid/offset-beyond-js-safe-integer.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    }
+  ],
+  "streams": [
+    "two-source-buffers-mid-box-cuts",
+    "generation-switch-drops-stale",
+    "muxed-av-single-source-buffer"
+  ]
+}

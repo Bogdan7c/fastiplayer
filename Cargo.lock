@@ -705,6 +705,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "browser-bridge-protocol"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -32,6 +32,7 @@ METADATA_COMMAND = (
 CONTRACT_CRATES = frozenset(
     {
         "atomic-file-store",
+        "browser-bridge-protocol",
         "audio-core",
         "bounded-xml-reader",
         "dash-mpd-core",
@@ -67,6 +68,7 @@ CONTRACT_CRATES = frozenset(
 REQUIRED_ROLE_CRATES = frozenset(
     {
         "ac3-decoder",
+        "browser-bridge-protocol",
         "ac3-elementary-demux",
         "ac3-syncframe",
         "animation-core",
@@ -284,6 +286,12 @@ NATURAL_SORT_KEY_ALLOWED_DEPENDENCIES = frozenset()
 
 # Atomic file store владеет только std filesystem durability protocol.
 ATOMIC_FILE_STORE_ALLOWED_DEPENDENCIES = frozenset()
+
+# Протокол моста в браузер — только типы и разбор: без I/O, D-Bus, сокетов и
+# crate-ов плеера. Его же читают посредник (05) и браузерный режим (02–04).
+BROWSER_BRIDGE_PROTOCOL_ALLOWED_DEPENDENCIES = frozenset(
+    {"serde", "serde_json", "thiserror"}
+)
 
 # Hardened XML boundary не должен получить filesystem/network/domain dependencies.
 BOUNDED_XML_READER_ALLOWED_DEPENDENCIES = frozenset({"quick-xml", "thiserror"})
@@ -1458,6 +1466,14 @@ def find_dependency_violations(
             frozenset({"atomic-file-store"}),
             ATOMIC_FILE_STORE_ALLOWED_DEPENDENCIES,
             "atomic-file-store remains std-only neutral durability boundary",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"browser-bridge-protocol"}),
+            BROWSER_BRIDGE_PROTOCOL_ALLOWED_DEPENDENCIES,
+            "browser-bridge-protocol is a neutral types-only bridge protocol without I/O, transport or player deps",
         )
     )
     violations.extend(
