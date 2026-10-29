@@ -1,0 +1,52 @@
+[package]
+name = "pushed-media-source"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Источник медиа «сегменты извне» (мост «браузер качает — мы играем», issue #2,
+# сессия 03a): куски SourceBuffer → целые сегменты → существующие демуксеры →
+# один Demuxer для player-core. Нейтрален к браузеру; допустимые зависимости
+# проверяет scripts/check-refactor-guardrails.py.
+
+[dependencies]
+# Ошибки демуксеров (`Demuxer::next_event`).
+anyhow.workspace = true
+# Сегменты без лишних копий.
+bytes.workspace = true
+# Реестр демуксеров, фоновый демуксер эпизода, сборка «видео + звук».
+demux-api.workspace = true
+# Границы `Demuxer`, пакеты, дорожки.
+media-core.workspace = true
+# Демуксер MPEG-TS.
+mpeg-ts-demux.workspace = true
+# Отмена фоновых демуксеров.
+source-core.workspace = true
+# Демуксеры fMP4 и WebM.
+symphonia-demux.workspace = true
+# Типизированные ошибки.
+thiserror.workspace = true
+# Предупреждения о выброшенных байтах (без содержимого).
+tracing.workspace = true
+
+[dev-dependencies]
+# Настоящий декодер звука для тестов «до кадра».
+audio.workspace = true
+# Отчёт о возможностях для безоконной сессии (как у приложения).
+capability-core.workspace = true
+render-core.workspace = true
+video-frame-contract.workspace = true
+# Записанные потоки протокола моста и его сторож поколений.
+browser-bridge-protocol.workspace = true
+# Безоконная сессия плеера.
+player-core.workspace = true
+# Манифесты записанных потоков.
+serde_json.workspace = true
+# Настройки потока декодера (фиксированное число потоков в тестах).
+video-core.workspace = true
+# Настоящий программный декодер видео (собранный FFmpeg проекта).
+video-ffmpeg = { workspace = true, features = ["vendored-ffmpeg"] }
+
+[lints]
+workspace = true

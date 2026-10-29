@@ -69,6 +69,7 @@ CONTRACT_CRATES = frozenset(
 REQUIRED_ROLE_CRATES = frozenset(
     {
         "ac3-decoder",
+        "pushed-media-source",
         "browser-bridge-protocol",
         "browser-bridge-session",
         "ac3-elementary-demux",
@@ -299,6 +300,22 @@ BROWSER_BRIDGE_PROTOCOL_ALLOWED_DEPENDENCIES = frozenset(
 # случайные байты ОС для пропусков, ошибки и журнал. Без D-Bus, UI и crate-ов плеера.
 BROWSER_BRIDGE_SESSION_ALLOWED_DEPENDENCIES = frozenset(
     {"browser-bridge-protocol", "getrandom", "thiserror", "tracing", "tungstenite"}
+)
+
+# Источник «сегменты извне» (сессия 03a моста): нейтрален к браузеру — знает только
+# границы демуксеров и сами демуксеры, без протокола моста, сокетов, плеера и UI.
+PUSHED_MEDIA_SOURCE_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "anyhow",
+        "bytes",
+        "demux-api",
+        "media-core",
+        "mpeg-ts-demux",
+        "source-core",
+        "symphonia-demux",
+        "thiserror",
+        "tracing",
+    }
 )
 
 # Hardened XML boundary не должен получить filesystem/network/domain dependencies.
@@ -1490,6 +1507,14 @@ def find_dependency_violations(
             frozenset({"browser-bridge-session"}),
             BROWSER_BRIDGE_SESSION_ALLOWED_DEPENDENCIES,
             "browser-bridge-session is a neutral bridge session server without UI, D-Bus, tokio or player deps",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"pushed-media-source"}),
+            PUSHED_MEDIA_SOURCE_ALLOWED_DEPENDENCIES,
+            "pushed-media-source is a browser-neutral pushed segment source over existing demuxers",
         )
     )
     violations.extend(

@@ -3987,6 +3987,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "pushed-media-source"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "audio",
+ "browser-bridge-protocol",
+ "bytes",
+ "capability-core",
+ "demux-api",
+ "media-core",
+ "mpeg-ts-demux",
+ "player-core",
+ "render-core",
+ "serde_json",
+ "source-core",
+ "symphonia-demux",
+ "thiserror 2.0.18",
+ "tracing",
+ "video-core",
+ "video-ffmpeg",
+ "video-frame-contract",
+]
+
+[[package]]
 name = "pxfm"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"

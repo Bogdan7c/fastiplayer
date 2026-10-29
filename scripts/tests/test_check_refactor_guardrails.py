@@ -852,6 +852,51 @@ class DependencyGraphPolicyTests(unittest.TestCase):
                 forbidden,
             )
 
+    def test_pushed_media_source_stays_browser_neutral(self) -> None:
+        """Источник «сегменты извне» знает только демуксеры: без протокола моста и плеера."""
+
+        packages = complete_workspace_packages()
+        packages["pushed-media-source"] = package_with_dependencies(
+            "pushed-media-source",
+            (
+                ("anyhow", None),
+                ("bytes", None),
+                ("demux-api", None),
+                ("media-core", None),
+                ("mpeg-ts-demux", None),
+                ("source-core", None),
+                ("symphonia-demux", None),
+                ("thiserror", None),
+                ("tracing", None),
+            ),
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "pushed-media-source"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        for forbidden in ("browser-bridge-protocol", "tungstenite", "player-core", "app-egui"):
+            packages["pushed-media-source"] = package_with_dependencies(
+                "pushed-media-source",
+                (("demux-api", None), (forbidden, None)),
+            )
+            failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+                packages, frozenset()
+            )
+            self.assertTrue(
+                any(
+                    violation.owner == "pushed-media-source"
+                    and violation.dependency == forbidden
+                    for violation in failing_result.dependency_violations
+                ),
+                forbidden,
+            )
+
     def test_browser_bridge_session_allows_only_server_side_dependencies(self) -> None:
         """Сервер сеанса моста остаётся без D-Bus, UI, tokio и crate-ов плеера."""
 
