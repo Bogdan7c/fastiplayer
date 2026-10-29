@@ -2,7 +2,7 @@
 
 Приложи этот файл и скопируй абзац ниже в сообщение.
 
-> Выполни сессию 22 плана `user/browser-bridge/`: полная живая приёмка — 3 машины (основная, T480s, T410) × 4 стола (KDE Wayland, KDE X11, GNOME Wayland временно на T480s, Xfce X11 временно на T410) × браузеры (Google Chrome из Flatpak, Firefox, Chromium) × эталонные сайты × режимы 1, 2, 3 и PiP. После — удаление временных столов и проверка KDE. Сначала прочитай `user/browser-bridge/README.md`, `results/00b.md` (как ставили и удаляли столы), `results/21c.md`.
+> Выполни сессию 22 плана `user/browser-bridge/`: полная живая приёмка — 3 машины (основная, T480s, T410) × 3 стола + Xwayland (KDE Wayland; KDE Wayland с браузером через Xwayland вместо KDE X11 — решение 73; GNOME Wayland временно на T480s, Xfce X11 временно на T410) × браузеры (Google Chrome из Flatpak, Firefox, Chromium) × эталонные сайты × режимы 1, 2, 3 и PiP. После — удаление временных столов и проверка KDE. Сначала прочитай `user/browser-bridge/README.md`, `results/00b.md` (как ставили и удаляли столы), `results/21c.md`.
 
 ## Зачем
 
