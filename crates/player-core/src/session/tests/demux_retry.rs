@@ -219,6 +219,52 @@ fn video_only_retry_keeps_playing_while_present_queue_has_runway() {
     assert_eq!(session.pipeline.video_present_queue_len(), 1);
 }
 
+/// Решение 93 плана моста (2026-10-29): поток только с видео ждёт данных на старте.
+///
+/// Очередь показа полна, часы в `Buffering` стоят, и resume ждёт только снятия retry
+/// fence. Раньше admission отказывала в read-е из-за полной очереди, fence не снимался,
+/// а очередь не освобождалась — session навсегда оставалась в `Buffering`.
+#[test]
+fn buffering_with_full_present_queue_still_probes_the_source_and_resumes() {
+    let mut session = PlayerSession::new();
+    let video_track_id = TrackId::new(2);
+    install_scripted_retry_media(
+        &mut session,
+        vec![fake_track(2, TrackKind::Video)],
+        [
+            DemuxReadEvent::TemporarilyUnavailable(retry_hint()),
+            DemuxReadEvent::Packet(fake_video_packet(video_track_id, Duration::from_secs(1))),
+        ],
+    );
+    let tick_config = retry_tick_config();
+    session
+        .begin_autoplay_preroll()
+        .expect("startup preroll enters Buffering");
+
+    // Первый tick: источник сказал «данных пока нет», первого кадра ещё нет.
+    tick_session(&mut session, tick_config);
+    assert_eq!(session.playback_state(), PlaybackState::Buffering);
+    assert!(session.installed_demux_retry_blocks_buffering_resume());
+
+    // Декодер выдал кадры и заполнил очередь показа до предела.
+    for index in 0..tick_config.max_video_present_queue {
+        let frame = decoded_frame_for_current_seek_generation(
+            &session,
+            Duration::from_millis(40) * u32::try_from(index).expect("small queue"),
+            u64::try_from(index).expect("small queue") + 1,
+        );
+        session.pipeline.enqueue_queued_video_frame(frame);
+    }
+    wait_for_retry_deadline();
+    tick_session(&mut session, tick_config);
+
+    assert!(
+        !session.installed_demux_retry_blocks_buffering_resume(),
+        "the probe read must deliver the source packet and clear the retry fence"
+    );
+    assert_eq!(session.playback_state(), PlaybackState::Playing);
+}
+
 /// Малый ненулевой runway сравнивается с remaining retry wait до фактической тишины.
 #[test]
 fn selected_audio_runway_freezes_before_retry_deadline_can_exhaust_it() {

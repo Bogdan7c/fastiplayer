@@ -623,6 +623,11 @@ pub(super) fn demux_work_available(
     if session.installed_demux_read_is_blocked(now) {
         return false;
     }
+    // Срок повтора истёк, а resume из Buffering ждёт только источник: tick выполнит
+    // пробный read в обход backpressure, поэтому worker обязан проснуться к нему.
+    if session.buffering_resume_awaits_source_probe(now) {
+        return true;
+    }
 
     let seek_fast_preroll = seek_fast_preroll_active(session, tick_config);
     let prioritize_audio_catchup =

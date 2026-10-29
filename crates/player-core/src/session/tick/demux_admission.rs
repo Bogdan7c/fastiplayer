@@ -304,11 +304,20 @@ pub(super) fn read_demux_packets(
 
         try_begin_video_backlog_recovery_scan(session, tick_config, prioritize_audio_catchup);
 
-        if !can_read_next_demux_packet_with_audio_priority(
+        let downstream_admits_read = can_read_next_demux_packet_with_audio_priority(
             session,
             tick_config,
             prioritize_audio_catchup,
-        ) {
+        );
+        // Пробный read: в Buffering downstream не освобождается, а resume ждёт только
+        // источник (`buffering_resume_awaits_source_probe`). Не больше одного за tick.
+        let source_probe_read = !downstream_admits_read
+            && packets_read == 0
+            && session.buffering_resume_awaits_source_probe(Instant::now());
+        if source_probe_read {
+            trace!("Demux probe read: buffering resume waits only for the source");
+        }
+        if !downstream_admits_read && !source_probe_read {
             tick_result.demux_backpressured = true;
             let pause_reason =
                 demux_backpressure_reason(session, tick_config, prioritize_audio_catchup)

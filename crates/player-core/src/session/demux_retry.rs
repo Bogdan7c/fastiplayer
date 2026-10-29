@@ -172,6 +172,25 @@ impl PlayerSession {
             .is_some_and(|pending| pending.fence == current_fence)
     }
 
+    /// Нужен ли пробный read источника в обход downstream backpressure.
+    ///
+    /// В `Buffering` часы стоят: очередь показа, слоты выгрузки кадров и texture-ресурсы
+    /// не освобождаются, пока playback не продолжится. Если resume при этом ждёт только
+    /// снятия retry fence, а снять его может лишь принятый event источника, обычная
+    /// admission не разрешает read никогда — взаимная блокировка. Её нашла сессия 03a
+    /// плана моста (решение 93): поток только с видео и паузой в данных на старте
+    /// навсегда оставался в `Buffering`. Один пробный read на срок повтора её разрывает:
+    /// принятый packet снимает fence (дальше — обычный preroll gate), а повторное
+    /// `TemporarilyUnavailable` ставит новый срок.
+    #[must_use]
+    pub(super) fn buffering_resume_awaits_source_probe(&self, now: Instant) -> bool {
+        // Перемотка ведёт admission сама (свои правила preroll-а) — её не трогаем.
+        self.snapshot.playback_state == PlaybackState::Buffering
+            && !self.has_active_seek_commit()
+            && self.installed_demux_retry_blocks_buffering_resume()
+            && !self.installed_demux_read_is_blocked(now)
+    }
+
     /// Отмечает успешное продолжение source-а, не объявляя playback готовым.
     ///
     /// Первый принятый packet доказывает только восстановление demux source-а.
