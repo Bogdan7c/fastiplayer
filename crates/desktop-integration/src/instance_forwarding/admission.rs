@@ -10,6 +10,7 @@
 use thiserror::Error;
 
 use super::{ForwardedInstanceAction, ForwardedUri};
+use crate::peer_admission::{PeerAdmissionDenial, admit_peer_uid};
 
 /// Сколько URI можно передать одним запросом. С запасом покрывает «выделить всё»
 /// в большой папке; что делать с таким количеством, решают лимиты очереди приложения.
@@ -141,16 +142,21 @@ pub(super) fn is_valid_activation_token(raw_token: &str) -> bool {
 
 /// Политика доступа: принимаются только запросы от процессов того же пользователя.
 ///
-/// `peer_uid = None` — шина не сообщила uid отправителя; такой запрос отклоняется,
-/// потому что без uid проверку пройти нельзя.
+/// Правило общее для всех D-Bus-служб crate-а ([`admit_peer_uid`]); здесь вердикт
+/// лишь переводится в отказ пересылки, тексты которого не меняются.
 pub(super) fn admit_peer(
     peer_uid: Option<u32>,
     own_uid: u32,
 ) -> Result<(), ForwardedRequestRejection> {
-    match peer_uid {
-        Some(peer_uid) if peer_uid == own_uid => Ok(()),
-        Some(peer_uid) => Err(ForwardedRequestRejection::ForeignUser { peer_uid }),
-        None => Err(ForwardedRequestRejection::UnidentifiedPeer),
+    admit_peer_uid(peer_uid, own_uid).map_err(ForwardedRequestRejection::from)
+}
+
+impl From<PeerAdmissionDenial> for ForwardedRequestRejection {
+    fn from(denial: PeerAdmissionDenial) -> Self {
+        match denial {
+            PeerAdmissionDenial::ForeignUser { peer_uid } => Self::ForeignUser { peer_uid },
+            PeerAdmissionDenial::UnidentifiedPeer => Self::UnidentifiedPeer,
+        }
     }
 }
 

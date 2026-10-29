@@ -852,6 +852,47 @@ class DependencyGraphPolicyTests(unittest.TestCase):
                 forbidden,
             )
 
+    def test_browser_bridge_session_allows_only_server_side_dependencies(self) -> None:
+        """Сервер сеанса моста остаётся без D-Bus, UI, tokio и crate-ов плеера."""
+
+        packages = complete_workspace_packages()
+        packages["browser-bridge-session"] = package_with_dependencies(
+            "browser-bridge-session",
+            (
+                ("browser-bridge-protocol", None),
+                ("getrandom", None),
+                ("thiserror", None),
+                ("tracing", None),
+                ("tungstenite", None),
+            ),
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "browser-bridge-session"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        for forbidden in ("zbus", "tokio", "player-core", "desktop-integration"):
+            packages["browser-bridge-session"] = package_with_dependencies(
+                "browser-bridge-session",
+                (("tungstenite", None), (forbidden, None)),
+            )
+            failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+                packages, frozenset()
+            )
+            self.assertTrue(
+                any(
+                    violation.owner == "browser-bridge-session"
+                    and violation.dependency == forbidden
+                    for violation in failing_result.dependency_violations
+                ),
+                forbidden,
+            )
+
     def test_natural_sort_key_rejects_every_normal_dependency(self) -> None:
         """Общий prepared comparator остаётся строго std-only."""
 

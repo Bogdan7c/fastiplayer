@@ -7,16 +7,32 @@
 
 #![forbid(unsafe_code)]
 
+mod browser_session_entry;
 mod command;
 mod error;
 mod event;
 mod instance_forwarding;
+#[cfg(target_os = "linux")]
+mod mpris_names;
 mod notification;
+mod peer_admission;
 mod platform;
+mod player_pause;
 mod runtime;
 mod shutdown;
 mod snapshot;
+#[cfg(test)]
+mod test_support;
 
+pub use browser_session_entry::{
+    ActivationServiceFileError, BROWSER_SESSION_ARGUMENT, BROWSER_SESSION_BUS_NAME,
+    BROWSER_SESSION_INTERFACE, BROWSER_SESSION_OBJECT_PATH, BrowserEntryBus, BrowserEntryCallError,
+    BrowserEntryCaller, BrowserEntryClient, BrowserEntryClientConfig, BrowserEntryDelivery,
+    BrowserEntryReply, BrowserEntryRequest, BrowserEntryService, BrowserEntryServiceConfig,
+    BrowserEntryServiceError, BrowserEntrySink, BrowserEntrySinkError,
+    MAX_BROWSER_ENTRY_MESSAGE_BYTES, browser_session_activation_service_file,
+    start_browser_entry_service,
+};
 pub use command::{
     DesktopCommand, DesktopCommandRequestId, DesktopCommandSink, DesktopLoopStatus,
     DesktopTimelineSeekOutcome, DesktopTrackKey, DesktopTransportAction, EffectiveVolume,
@@ -36,6 +52,9 @@ pub use instance_forwarding::{
 };
 pub use notification::{
     CriticalDesktopNotification, DesktopNotificationError, send_critical_desktop_notification,
+};
+pub use player_pause::{
+    PlayerPauseConfig, PlayerPauseError, PlayerPauseOutcome, pause_running_player,
 };
 pub use runtime::{
     DesktopIntegration, DesktopPositionOutcome, LatestSnapshotHandle, LatestSnapshotSource,

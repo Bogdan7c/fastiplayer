@@ -35,6 +35,7 @@ use crate::instance_forwarding::{
     ForwardedRequestSinkError, FullscreenIntent, InstanceForwardingServiceConfig,
     InstanceForwardingServiceError, WindowActivationToken,
 };
+use crate::peer_admission::{blocking_unix_user, query_peer_unix_user};
 
 /// Ошибки, которые служба возвращает отправителю по шине.
 ///
@@ -205,24 +206,6 @@ async fn wait_for_acknowledgement(
     acknowledged.or(expired).await
 }
 
-/// Спрашивает у шины uid владельца соединения. `None` — шина не ответила.
-async fn query_peer_unix_user(connection: &zbus::Connection, peer: BusName<'_>) -> Option<u32> {
-    let bus = match zbus::fdo::DBusProxy::new(connection).await {
-        Ok(bus) => bus,
-        Err(error) => {
-            warn!(%error, "Failed to create a proxy bus to verify the sender");
-            return None;
-        }
-    };
-    match bus.get_connection_unix_user(peer).await {
-        Ok(peer_uid) => Some(peer_uid),
-        Err(error) => {
-            warn!(%error, "Bus did not report the sender UID");
-            None
-        }
-    }
-}
-
 /// Достаёт билет активации из `platform_data`. Непригодное значение игнорируется
 /// (окно тогда только попросит внимания), запрос из-за него не отклоняется.
 fn activation_token_from_platform_data(
@@ -352,9 +335,8 @@ fn own_unix_user(connection: &Connection) -> Result<u32, InstanceForwardingServi
     let unique_name = connection.unique_name().ok_or_else(|| {
         InstanceForwardingServiceError::Transport("The compound has no unique name.".to_owned())
     })?;
-    let bus = zbus::blocking::fdo::DBusProxy::new(connection).map_err(transport_error)?;
-    bus.get_connection_unix_user(BusName::from(unique_name.as_ref()))
-        .map_err(|error| transport_error(error.into()))
+    blocking_unix_user(connection, unique_name.as_str())
+        .map_err(|error| InstanceForwardingServiceError::Transport(error.to_string()))
 }
 
 fn transport_error(error: zbus::Error) -> InstanceForwardingServiceError {

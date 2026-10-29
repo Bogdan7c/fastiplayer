@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Ставит (или убирает) .desktop-файл и иконки Fastiplayer для текущего пользователя.
+# Ставит (или убирает) .desktop-файл, иконки и файл D-Bus activation браузерного
+# режима Fastiplayer для текущего пользователя.
 #
 # Зачем: на Wayland панель задач берёт иконку окна только из .desktop-файла,
 # имя которого совпадает с app_id окна (`io.github.Bogdan7c.Fastiplayer`).
 # Без этого файла KDE/GNOME показывают стандартный значок Wayland.
+# Файл `dbus-1/services/…BrowserSession.service` позволяет посреднику экстеншена
+# Fastiplayer Bridge разбудить `fastiplayer --browser-session` по звонку на шину
+# (мост в браузер, сессия 02). Позже его же поставит кнопка «Connect to browsers» (06).
 #
 # Использование:
 #   scripts/install-desktop-entry.sh                     # бинарь из target/release
@@ -33,9 +37,16 @@ readonly TARGET_APPLICATIONS_DIR="${USER_DATA_DIR}/applications"
 readonly TARGET_ICON_THEME_DIR="${USER_DATA_DIR}/icons/hicolor"
 readonly TARGET_DESKTOP_FILE="${TARGET_APPLICATIONS_DIR}/${APPLICATION_ID}.desktop"
 
+# Имя службы браузерного режима и ключ процесса: те же, что
+# `desktop_integration::{BROWSER_SESSION_BUS_NAME, BROWSER_SESSION_ARGUMENT}`.
+readonly BROWSER_SESSION_BUS_NAME="${APPLICATION_ID}.BrowserSession"
+readonly BROWSER_SESSION_ARGUMENT="--browser-session"
+readonly TARGET_DBUS_SERVICES_DIR="${USER_DATA_DIR}/dbus-1/services"
+readonly TARGET_BROWSER_SESSION_SERVICE_FILE="${TARGET_DBUS_SERVICES_DIR}/${BROWSER_SESSION_BUS_NAME}.service"
+
 # Печатает подсказку по аргументам.
 print_usage() {
-    sed -n '8,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '12,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # Сообщает об ошибке в stderr и завершает скрипт.
@@ -51,6 +62,18 @@ quote_desktop_exec_argument() {
     local escaped_path
     escaped_path="$(printf '%s' "${raw_path}" | sed -e 's/[\\"`$]/\\&/g')"
     printf '"%s"' "${escaped_path}"
+}
+
+# Пишет путь для ключа Exec файла D-Bus activation — по тем же правилам, что
+# `desktop_integration::browser_session_activation_service_file` (там обоснование):
+# путь в одинарных кавычках; апостроф, обратная черта и управляющие символы
+# запрещены, потому что dbus-daemon и dbus-broker толкуют их по-разному.
+quote_dbus_exec_argument() {
+    local raw_path="$1"
+    if [[ "${raw_path}" == *"'"* || "${raw_path}" == *"\\"* || "${raw_path}" =~ [[:cntrl:]] ]]; then
+        fail "binary path contains an apostrophe, a backslash or a control character, which D-Bus activation cannot start: ${raw_path}"
+    fi
+    printf "'%s'" "${raw_path}"
 }
 
 # Обновляет кэши рабочего стола. Отсутствие утилиты — не ошибка: значит, это
@@ -94,12 +117,24 @@ install_desktop_file() {
     chmod 644 "${TARGET_DESKTOP_FILE}"
 }
 
-# Удаляет ранее поставленные .desktop и иконки.
+# Ставит файл D-Bus activation браузерного режима (абсолютный путь к бинарю).
+install_browser_session_service_file() {
+    local binary_path="$1"
+    local exec_value
+    exec_value="$(quote_dbus_exec_argument "${binary_path}") ${BROWSER_SESSION_ARGUMENT}"
+    mkdir -p "${TARGET_DBUS_SERVICES_DIR}"
+    printf '[D-BUS Service]\nName=%s\nExec=%s\n' \
+        "${BROWSER_SESSION_BUS_NAME}" "${exec_value}" >"${TARGET_BROWSER_SESSION_SERVICE_FILE}"
+    chmod 644 "${TARGET_BROWSER_SESSION_SERVICE_FILE}"
+}
+
+# Удаляет ранее поставленные .desktop, иконки и файл D-Bus activation.
 uninstall() {
     rm -f "${TARGET_DESKTOP_FILE}"
+    rm -f "${TARGET_BROWSER_SESSION_SERVICE_FILE}"
     find "${TARGET_ICON_THEME_DIR}" -type f -name "${APPLICATION_ID}.png" -delete 2>/dev/null || true
     refresh_desktop_caches
-    echo "Removed ${APPLICATION_ID} desktop entry and icons from ${USER_DATA_DIR}"
+    echo "Removed ${APPLICATION_ID} desktop entry, icons and browser session service from ${USER_DATA_DIR}"
 }
 
 main() {
@@ -139,8 +174,10 @@ main() {
 
     install_icons
     install_desktop_file "${binary_path}"
+    install_browser_session_service_file "${binary_path}"
     refresh_desktop_caches
     echo "Installed ${TARGET_DESKTOP_FILE}"
+    echo "Installed ${TARGET_BROWSER_SESSION_SERVICE_FILE}"
     echo "Exec: ${binary_path}"
 }
 

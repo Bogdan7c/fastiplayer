@@ -27,6 +27,9 @@ system-ffmpeg = ["ffmpeg"]
 
 [dependencies]
 animation-core.workspace = true
+# Мост в браузер: процесс браузерного режима (`--browser-session`, сессия 02).
+browser-bridge-protocol.workspace = true
+browser-bridge-session.workspace = true
 winit.workspace = true
 egui.workspace = true
 ui-artwork-egui.workspace = true
@@ -111,6 +114,10 @@ subtitle-sidecar.workspace = true
 
 [dev-dependencies]
 base64 = "0.22"
+# Клиент WebSocket в сквозном тесте процесса браузерного режима (вместо экстеншена).
+tungstenite.workspace = true
+# Чтение манифестов записанных потоков фикстур протокола в том же тесте.
+serde_json.workspace = true
 # Тестовые конструкторы media-source-open нужны только тестам app-egui.
 media-source-open = { workspace = true, features = ["test-fixtures"] }
 codec-core.workspace = true

@@ -62,6 +62,13 @@
   - битое сообщение — `refused{in_reply_to: unparsed_message, reason: malformed_message{error}}`.
 - Сквозной тест «кадры до рендера»: посредник выдаёт пропуск, байты идут по WebSocket. Fuzz рамок native messaging остаётся.
 
+## Поправки по итогам 02 (29.10.2026, решения 87–89)
+
+- Плеер-сторона «двери» готова: `desktop_integration::BrowserEntryClient::connect(BrowserEntryBus::Session, …)`, затем `call(json)`. Клиент будит службу (`StartServiceByName`), сверяет uid владельца имени и держит **одно соединение** на все звонки.
+- **`hello` помнится по звонящему, то есть по соединению на шине.** Посредник делает `hello` и `open_session` через одного и того же клиента. Если плеер умер между звонками, шина поднимет новый процесс, и он ответит `refused{hello_required}`: нужно повторить `hello`.
+- Ошибки клиента переводятся в `refused` так: `NotInstalled` / `ActivationFailed` → `player_unavailable`, `NotResponding` → `player_not_responding`, `ShuttingDown` → `player_shutting_down`. `ForeignOwner` — отказ без отправки сообщения.
+- Посреднику нужен только `zbus` и этот клиент. Если тащить `desktop-integration` во Flatpak-сборку посредника тяжело, клиент выносится в отдельный маленький crate — решить в 05.
+
 ## Критерий выхода
 
 - `results/05.md`, вживую: прототип экстеншена из 00c, установленный вручную, гонит YouTube через настоящий посредник → плеер играет.

@@ -33,6 +33,7 @@ CONTRACT_CRATES = frozenset(
     {
         "atomic-file-store",
         "browser-bridge-protocol",
+        "browser-bridge-session",
         "audio-core",
         "bounded-xml-reader",
         "dash-mpd-core",
@@ -69,6 +70,7 @@ REQUIRED_ROLE_CRATES = frozenset(
     {
         "ac3-decoder",
         "browser-bridge-protocol",
+        "browser-bridge-session",
         "ac3-elementary-demux",
         "ac3-syncframe",
         "animation-core",
@@ -291,6 +293,12 @@ ATOMIC_FILE_STORE_ALLOWED_DEPENDENCIES = frozenset()
 # crate-ов плеера. Его же читают посредник (05) и браузерный режим (02–04).
 BROWSER_BRIDGE_PROTOCOL_ALLOWED_DEPENDENCIES = frozenset(
     {"serde", "serde_json", "thiserror"}
+)
+
+# Серверная часть сеанса моста (сессия 02): протокол, сокеты WebSocket без tokio,
+# случайные байты ОС для пропусков, ошибки и журнал. Без D-Bus, UI и crate-ов плеера.
+BROWSER_BRIDGE_SESSION_ALLOWED_DEPENDENCIES = frozenset(
+    {"browser-bridge-protocol", "getrandom", "thiserror", "tracing", "tungstenite"}
 )
 
 # Hardened XML boundary не должен получить filesystem/network/domain dependencies.
@@ -1474,6 +1482,14 @@ def find_dependency_violations(
             frozenset({"browser-bridge-protocol"}),
             BROWSER_BRIDGE_PROTOCOL_ALLOWED_DEPENDENCIES,
             "browser-bridge-protocol is a neutral types-only bridge protocol without I/O, transport or player deps",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"browser-bridge-session"}),
+            BROWSER_BRIDGE_SESSION_ALLOWED_DEPENDENCIES,
+            "browser-bridge-session is a neutral bridge session server without UI, D-Bus, tokio or player deps",
         )
     )
     violations.extend(

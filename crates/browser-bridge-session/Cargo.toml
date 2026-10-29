@@ -1,0 +1,30 @@
+[package]
+name = "browser-bridge-session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Нейтральная серверная часть сеанса моста «браузер качает — мы играем» (issue #2,
+# сессия 02): пропуска, таблица сеансов, «стойка входа», WebSocket-сервер на
+# loopback, приёмник-заглушка и машина «когда процессу выходить». Без UI, D-Bus и
+# tokio; допустимые зависимости проверяет scripts/check-refactor-guardrails.py.
+
+[dependencies]
+# Типы, разбор и чистые правила протокола (сторож потока, идемпотентность open_session).
+browser-bridge-protocol.workspace = true
+# Случайные байты ОС для одноразовых пропусков.
+getrandom.workspace = true
+# Типизированные ошибки.
+thiserror.workspace = true
+# Журнал событий сеанса (без секретов).
+tracing.workspace = true
+# Синхронный WebSocket: сервер на std::net без tokio.
+tungstenite.workspace = true
+
+[dev-dependencies]
+# Чтение манифестов записанных потоков (fixtures/streams/*/stream.json) в тестах «до кадра».
+serde_json.workspace = true
+
+[lints]
+workspace = true

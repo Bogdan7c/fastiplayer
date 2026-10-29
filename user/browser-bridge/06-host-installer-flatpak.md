@@ -48,6 +48,13 @@
 - **Firefox Flatpak / Snap:** Firefox 157+ умеет `xdg-native-messaging-proxy` (Snap включает автоопределение), Flatpak-сборка Firefox — ещё нет (bug 2078349). Проверить на выпуске к моменту сессии.
 - Распознавание Snap: `/proc/<pid>/cgroup` содержит `snap.<имя>.<app>-….scope`.
 
+## Поправки по итогам 02 (29.10.2026, решения 87–89)
+
+- `.service`-файл D-Bus activation собирает `desktop_integration::browser_session_activation_service_file(путь)`. Путь пишется в одинарных кавычках. Пути с апострофом, обратной косой чертой или управляющими символами отвергаются: dbus-daemon и dbus-broker толкуют их по-разному, а файл с `'\''` dbus-daemon молча пропускает. Установщик показывает человеку понятную причину.
+- `scripts/install-desktop-entry.sh` уже ставит этот файл в `~/.local/share/dbus-1/services/`; `--uninstall` его убирает. Кнопка «Connect to browsers» делает то же из плеера.
+- **Не проверено в 02:** подхватывает ли dbus-broker новый `.service` сам или только после `ReloadConfig` на `org.freedesktop.DBus` (dbus-daemon следит за каталогами сам). Проверить на KDE, GNOME и Xfce; при нужде установщик вызывает `ReloadConfig` сам.
+- Живая проверка активации на настоящей шине — ручной тест `live_session_bus_wakes_the_installed_browser_session` (`crates/app-egui/tests/browser_session_process.rs`, `--ignored`).
+
 ## Критерий выхода
 
 - `results/06.md`, вживую на основной машине: кнопка в настройках подключает Firefox (пакет) и Chrome (Flatpak, по инструкции Flatseal). Временный экстеншен из 00 в обоих доходит до плеера.

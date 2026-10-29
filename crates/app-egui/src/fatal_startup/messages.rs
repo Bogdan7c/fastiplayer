@@ -126,6 +126,8 @@ fn invalid_arguments_message(arguments_error: ProcessArgsError) -> String {
     match arguments_error {
         ProcessArgsError::UnknownOption => "The player was started with an unknown option. The only supported option is --fullscreen.\n\nIf the file name starts with '-', put '--' before it, for example: fastiplayer -- -video.mkv"
             .to_owned(),
+        ProcessArgsError::BrowserSessionWithOtherArguments => "The player was started with --browser-session together with other arguments. This option is used only by Fastiplayer Bridge and must be the only argument."
+            .to_owned(),
     }
 }
 

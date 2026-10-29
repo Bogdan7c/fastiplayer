@@ -4,16 +4,14 @@
 //! трогает рабочий стол пользователя и не может автозапустить настоящий плеер.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use zbus::DBusError;
-use zbus::blocking::{Connection, connection};
+
 use zbus::zvariant::Value;
+
+use crate::test_support::PrivateSessionBus;
 
 use super::client::forward_with;
 use super::service::{ForwardingServiceFailure, ServiceBackend, start_with};
@@ -27,75 +25,6 @@ use crate::instance_forwarding::{
     InstanceForwardingClientConfig, InstanceForwardingError, InstanceForwardingServiceConfig,
     InstanceForwardingServiceError, MAX_FORWARDED_URIS, WindowActivationToken,
 };
-
-/// Политика как у системного `session.conf`, но без `servicedir`.
-const ISOLATED_BUS_CONFIG: &str = r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
- "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-<busconfig>
-  <type>session</type>
-  <listen>unix:tmpdir=/tmp</listen>
-  <auth>EXTERNAL</auth>
-  <policy context="default">
-    <allow send_destination="*" eavesdrop="true"/>
-    <allow eavesdrop="true"/>
-    <allow own="*"/>
-  </policy>
-</busconfig>
-"#;
-
-static NEXT_BUS_NUMBER: AtomicUsize = AtomicUsize::new(0);
-
-struct PrivateSessionBus {
-    address: String,
-    child: Child,
-    config_file: PathBuf,
-}
-
-impl PrivateSessionBus {
-    fn spawn() -> Self {
-        let config_file = std::env::temp_dir().join(format!(
-            "fastiplayer-forwarding-test-{}-{}.conf",
-            std::process::id(),
-            NEXT_BUS_NUMBER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::write(&config_file, ISOLATED_BUS_CONFIG).expect("bus config");
-        let mut child = Command::new("dbus-daemon")
-            .arg(format!("--config-file={}", config_file.display()))
-            .args(["--nofork", "--print-address=1"])
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("hermetic dbus-daemon must start");
-        let stdout = child.stdout.take().expect("dbus address pipe");
-        let address = BufReader::new(stdout)
-            .lines()
-            .next()
-            .expect("dbus address line")
-            .expect("valid dbus address");
-        Self {
-            address,
-            child,
-            config_file,
-        }
-    }
-
-    fn connect(&self) -> zbus::Result<Connection> {
-        connection::Builder::address(self.address.as_str())?.build()
-    }
-
-    fn connect_with_timeout(&self, timeout: Duration) -> zbus::Result<Connection> {
-        connection::Builder::address(self.address.as_str())?
-            .method_timeout(timeout)
-            .build()
-    }
-}
-
-impl Drop for PrivateSessionBus {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.config_file);
-    }
-}
 
 /// Как приёмник обращается с подтверждением.
 #[derive(Clone, Copy)]

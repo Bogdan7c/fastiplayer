@@ -22,17 +22,13 @@ use crate::{
 };
 
 use super::{BackendControlCommand, BackendHandle};
+use crate::mpris_names::{MPRIS_BUS_NAME, MPRIS_OBJECT_PATH, MPRIS_PLAYER_INTERFACE};
 
 mod snapshot_properties;
 mod track_identity;
 
 use snapshot_properties::{full_dynamic_player_properties, mpris_metadata_values};
 use track_identity::{encode_track_key, media_time_to_mpris_microseconds};
-
-/// Единственное process base name: fallback suffix и late retry запрещены D78.
-const MPRIS_BUS_NAME: &str = "org.mpris.MediaPlayer2.fastiplayer";
-const MPRIS_OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
-const MPRIS_PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
 
 /// Запускает thread и синхронно подтверждает первоначальный non-queued bus claim.
 pub(crate) fn spawn(

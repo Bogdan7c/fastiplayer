@@ -10,9 +10,9 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use crate::peer_admission::{BusQueryError, blocking_name_has_owner, blocking_unix_user};
 use tracing::{debug, info, warn};
 use zbus::blocking::{Connection, connection};
-use zbus::names::BusName;
 use zbus::zvariant::Value;
 
 use super::{
@@ -58,12 +58,9 @@ pub(super) fn forward_with(
 ) -> Result<(), InstanceForwardingError> {
     let connection = connect()
         .map_err(|error| InstanceForwardingError::SessionBusUnavailable(error.to_string()))?;
-    let bus = zbus::blocking::fdo::DBusProxy::new(&connection).map_err(transport_error)?;
-    let application_name =
-        BusName::try_from(FASTIPLAYER_APPLICATION_ID).map_err(transport_error)?;
 
-    wait_for_listener(&bus, &application_name, config)?;
-    ensure_listener_belongs_to_same_user(&bus, &connection, &application_name)?;
+    wait_for_listener(&connection, config)?;
+    ensure_listener_belongs_to_same_user(&connection)?;
 
     let platform_data = platform_data_for(request);
 
@@ -105,15 +102,14 @@ fn call_application(
 
 /// Ждёт появления владельца имени не дольше `config.listener_wait`.
 fn wait_for_listener(
-    bus: &zbus::blocking::fdo::DBusProxy<'_>,
-    application_name: &BusName<'_>,
+    connection: &Connection,
     config: InstanceForwardingClientConfig,
 ) -> Result<(), InstanceForwardingError> {
     let started_at = Instant::now();
     loop {
-        if bus
-            .name_has_owner(application_name.clone())
-            .map_err(transport_error)?
+        // Низкоуровневый запрос: соблюдает `method_timeout` (proxy его игнорирует).
+        if blocking_name_has_owner(connection, FASTIPLAYER_APPLICATION_ID)
+            .map_err(bus_query_error)?
         {
             return Ok(());
         }
@@ -128,23 +124,18 @@ fn wait_for_listener(
 
 /// Отказывается слать пути процессу другого пользователя.
 fn ensure_listener_belongs_to_same_user(
-    bus: &zbus::blocking::fdo::DBusProxy<'_>,
     connection: &Connection,
-    application_name: &BusName<'_>,
 ) -> Result<(), InstanceForwardingError> {
     let own_unique_name = connection.unique_name().ok_or_else(|| {
         InstanceForwardingError::Transport("The compound has no unique name.".to_owned())
     })?;
-    let own_uid = bus
-        .get_connection_unix_user(BusName::from(own_unique_name.as_ref()))
-        .map_err(transport_error)?;
-    let listener_uid = match bus.get_connection_unix_user(application_name.clone()) {
+    let own_uid =
+        blocking_unix_user(connection, own_unique_name.as_str()).map_err(bus_query_error)?;
+    let listener_uid = match blocking_unix_user(connection, FASTIPLAYER_APPLICATION_ID) {
         Ok(listener_uid) => listener_uid,
         // Владелец успел исчезнуть между проверками: экземпляр завершился.
-        Err(zbus::fdo::Error::NameHasNoOwner(_)) => {
-            return Err(InstanceForwardingError::InstanceNotListening);
-        }
-        Err(error) => return Err(transport_error(error)),
+        Err(BusQueryError::NoOwner) => return Err(InstanceForwardingError::InstanceNotListening),
+        Err(error) => return Err(bus_query_error(error)),
     };
     if listener_uid == own_uid {
         Ok(())
@@ -154,6 +145,14 @@ fn ensure_listener_belongs_to_same_user(
             "The name of the application on the bus belongs to another user."
         );
         Err(InstanceForwardingError::ForeignInstanceOwner)
+    }
+}
+
+/// Таймаут запроса к шине — «экземпляр не отвечает», остальное — транспорт.
+fn bus_query_error(error: BusQueryError) -> InstanceForwardingError {
+    match error {
+        BusQueryError::TimedOut => InstanceForwardingError::InstanceNotResponding,
+        other => InstanceForwardingError::Transport(other.to_string()),
     }
 }
 

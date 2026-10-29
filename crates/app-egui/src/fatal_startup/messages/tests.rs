@@ -29,6 +29,7 @@ fn every_reason() -> Vec<FatalStartupReason> {
     ];
     let mut reasons = vec![
         FatalStartupReason::InvalidArguments(ProcessArgsError::UnknownOption),
+        FatalStartupReason::InvalidArguments(ProcessArgsError::BrowserSessionWithOtherArguments),
         FatalStartupReason::ConfigLocationUnknown,
         FatalStartupReason::AlreadyRunning,
         FatalStartupReason::RunningInstanceNotResponding,

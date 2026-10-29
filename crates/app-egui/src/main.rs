@@ -13,6 +13,7 @@ mod app_instance;
 mod app_shell;
 mod app_wake;
 mod audio_output_message;
+mod browser_session;
 mod config_startup_notice;
 mod dma_buf_runtime_fallback;
 mod external_open;
@@ -90,8 +91,25 @@ fn main() -> ExitCode {
         outcome = ?mesa_commit_timing,
         "Mesa Wayland commit timing disabled for this process (video freeze after pause)"
     );
-    let run_outcome = run_application(process_started_at);
-    conclude_process(run_outcome, &SystemFatalStartupPresenter).exit_code()
+    match run_application(process_started_at) {
+        // Процесс браузерного режима окон ошибок не показывает: его запускает шина,
+        // а не человек (см. `browser_session`).
+        Ok(ApplicationRun::BrowserSession(outcome)) => outcome.exit_code(),
+        Ok(ApplicationRun::Player) => {
+            conclude_process(Ok(()), &SystemFatalStartupPresenter).exit_code()
+        }
+        Err(fatal_error) => {
+            conclude_process(Err(fatal_error), &SystemFatalStartupPresenter).exit_code()
+        }
+    }
+}
+
+/// Каким процессом отработал запуск.
+enum ApplicationRun {
+    /// Обычный плеер (или пересылка в уже запущенный).
+    Player,
+    /// Процесс браузерного режима (`--browser-session`).
+    BrowserSession(browser_session::BrowserSessionProcessOutcome),
 }
 
 /// Инициализирует tracing до bootstrap: ошибки аргументов, lease и config
@@ -108,7 +126,9 @@ fn init_tracing() {
 }
 
 /// Запускает приложение до закрытия окна или до первой фатальной ошибки запуска.
-fn run_application(process_started_at: std::time::Instant) -> Result<(), FatalStartupError> {
+fn run_application(
+    process_started_at: std::time::Instant,
+) -> Result<ApplicationRun, FatalStartupError> {
     let process_start =
         bootstrap_process().map_err(|error| FatalStartupError::from_bootstrap_error(&error))?;
     let ProcessBootstrap {
@@ -120,7 +140,12 @@ fn run_application(process_started_at: std::time::Instant) -> Result<(), FatalSt
         ProcessStart::Primary(bootstrap) => *bootstrap,
         // Плеер уже запущен и принял файлы/активацию: этому процессу делать нечего,
         // окно не создаётся, код выхода 0.
-        ProcessStart::ForwardedToRunningInstance => return Ok(()),
+        ProcessStart::ForwardedToRunningInstance => return Ok(ApplicationRun::Player),
+        ProcessStart::BrowserSession => {
+            return Ok(ApplicationRun::BrowserSession(
+                browser_session::run_browser_session_process(),
+            ));
+        }
     };
 
     info!(
@@ -199,5 +224,5 @@ fn run_application(process_started_at: std::time::Instant) -> Result<(), FatalSt
     relaunch_outcome.report();
 
     info!("Application exited");
-    Ok(())
+    Ok(ApplicationRun::Player)
 }

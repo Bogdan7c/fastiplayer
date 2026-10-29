@@ -17,7 +17,10 @@ use crate::startup_media::{InitialMedia, resolve_initial_media_arguments};
 mod forwarding;
 #[cfg(target_os = "linux")]
 mod linux;
+mod process_mode;
 mod relaunch;
+
+use process_mode::{ProcessMode, select_process_mode};
 
 pub(crate) use forwarding::{
     ForwardedPayload, RunningInstanceForwardingError, RunningInstanceForwardingFailure,
@@ -111,6 +114,9 @@ pub(crate) enum ProcessArgsError {
     /// До `--` встретилась неизвестная option-подобная строка.
     #[error("unknown option; pass local paths starting with '-' after '--'")]
     UnknownOption,
+    /// Служебный ключ браузерного режима передан вместе с другими аргументами.
+    #[error("--browser-session must be the only argument")]
+    BrowserSessionWithOtherArguments,
 }
 
 /// Проверяет первый native code unit без преобразования всего пути в UTF-8.
@@ -285,13 +291,22 @@ pub(crate) enum ProcessStart {
     Primary(Box<ProcessBootstrap>),
     /// Плеер уже запущен, и он принял запрос этого процесса: штатный выход с кодом 0.
     ForwardedToRunningInstance,
+    /// Запуск с `--browser-session`: процесс браузерного режима. Ни путей, ни lease,
+    /// ни config обычного плеера он не трогает (решения 41, 60 моста в браузер).
+    BrowserSession,
 }
 
 /// Выполняет обязательный bootstrap order над реальными process dependencies.
 pub(crate) fn bootstrap_process() -> Result<ProcessStart, ProcessBootstrapError> {
+    let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
+    // Режим выбирается раньше lease: браузерный процесс не должен ни занимать замок
+    // обычного плеера, ни пересылать себя в него как «второй запуск».
+    if select_process_mode(&arguments)? == ProcessMode::BrowserSession {
+        return Ok(ProcessStart::BrowserSession);
+    }
     let platform = NativeAppInstanceLeasePlatform;
     let outcome = bootstrap_with(
-        std::env::args_os().skip(1),
+        arguments,
         ConfigPaths::discover,
         &platform,
         // Под уже взятым lease: восстановление переименовывает битый config и убирает

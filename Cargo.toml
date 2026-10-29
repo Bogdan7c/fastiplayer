@@ -11,6 +11,7 @@ members = [
     "crates/config",
     "crates/desktop-integration",
     "crates/browser-bridge-protocol",
+    "crates/browser-bridge-session",
     "crates/frame-server-core",
     "crates/source-core",
     "crates/media-prefetch",
@@ -215,6 +216,10 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 libc = "0.2"
+# Случайные байты ОС для одноразовых пропусков моста (crate browser-bridge-session).
+getrandom = "0.3"
+# WebSocket сервер/клиент без tokio; handshake нужен серверу (accept) и тестам (client).
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 log = "0.4.29"
 thiserror = "2.0"
 toml = "0.9"
@@ -250,6 +255,7 @@ bounded-work-executor = { version = "0.2.0", path = "crates/bounded-work-executo
 atomic-file-store = { version = "0.2.0", path = "crates/atomic-file-store" }
 natural-sort-key = { version = "0.2.0", path = "crates/natural-sort-key" }
 browser-bridge-protocol = { version = "0.2.0", path = "crates/browser-bridge-protocol" }
+browser-bridge-session = { version = "0.2.0", path = "crates/browser-bridge-session" }
 playlist-core = { version = "0.2.0", path = "crates/playlist-core" }
 playlist-io = { version = "0.2.0", path = "crates/playlist-io" }
 subtitle-core = { version = "0.2.0", path = "crates/subtitle-core" }

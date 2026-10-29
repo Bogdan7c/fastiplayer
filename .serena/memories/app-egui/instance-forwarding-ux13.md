@@ -32,5 +32,11 @@
 - `.desktop` + иконки hicolor (белое лого с тёмным контуром, 16–512) лежат в `packaging/linux/` (2026-10-19), ставятся `scripts/install-desktop-entry.sh` в `~/.local/share` (Exec = абсолютный путь бинаря, `--uninstall`). Окно получает app_id/`WM_CLASS` = app ID и X11-иконку в `app-egui/src/app_shell/window_identity.rs` (копия 256px в `crates/app-egui/assets/`, тест сверяет с packaging). На Wayland winit 0.30 иконку не передаёт — только через `.desktop`. MPRIS `DesktopEntry` = app ID (было `fastiplayer`). `DBusActivatable` нет; MPRIS `Raise` по-прежнему заглушка.
 - Пересылка во время открытия файла → «Файл ещё открывается» (правило броска).
 
+## Мост в браузер, сессия 02 (2026-10-29)
+- Допуск по uid вынесен в общий `desktop-integration/src/peer_admission.rs` (`admit_peer_uid` → `PeerAdmissionDenial`, `From` в `ForwardedRequestRejection` — варианты и тексты D-Bus прежние); им пользуются пересылка и служба «входа» браузерного режима (`browser_session_entry/`, `mem:browser-bridge/core` «Транспорт»).
+- Клиент пересылки: `wait_for_listener` и сверка uid теперь через `call_method` (`blocking_name_has_owner`/`blocking_unix_user`, `BusQueryError::{NoOwner,TimedOut,Failed}`); таймаут → `InstanceNotResponding`. Прокси `DBusProxy` остался только в async-обработчиках служб.
+- Частная шина для тестов — одна общая `desktop-integration/src/test_support.rs::PrivateSessionBus` (`spawn` без servicedir, `spawn_with_servicedir(dir, env)` для активации, `freeze()` = SIGSTOP демона). Копии в `platform/linux/tests.rs` и `notification/linux/tests.rs` пока дублируются.
+- D-Bus activation теперь есть для имени браузерного режима (`.service` ставит `scripts/install-desktop-entry.sh`); у самого `io.github.Bogdan7c.Fastiplayer` по-прежнему нет `.service` и `DBusActivatable`.
+
 ## Тесты
 `desktop-integration/src/instance_forwarding/{admission/tests.rs, linux/tests.rs}` (частный dbus-daemon без servicedir: Open/Activate доходят, зависший UI, зависший процесс целиком, ShuttingDown, Full, нет приёмника, поздний старт первого, release имени, занятое имя, мусор/лимиты/сигнатура/ActivateAction, билеты), `app-egui/src/app_instance/{tests.rs, forwarding/tests.rs}`, `instance_forwarding/tests.rs` (ящик, порядок, Full/Closed, сквозной «второй запуск → первый» через настоящий диспетчер), `external_open/uri/tests.rs` (round-trip).
