@@ -429,16 +429,20 @@ impl CompositeAvDemuxer {
     /// владельцы replacement/seek-контрактов (например, HLS публикует ровно одно
     /// событие после committed A/V replacement).
     ///
-    /// Отличается только судьба уже сохранённых packet-ов. Если список идентичен
-    /// опубликованному (`publication_unchanged`) и источник события — «свежий»
-    /// component, который ещё не отдал ни одного packet-а (`is_fresh_replay`),
-    /// то это стартовый replay `[TracksChanged, Packet(anchor)]`, который native
-    /// DASH component выдаёт после `prime_decode_anchor`. Такой replay от второго
-    /// component-а НЕ должен стирать pending packet первого: раньше audio-replay
-    /// выбрасывал первый keyframe видео, декодер до следующего keyframe отбрасывал
-    /// delta-кадры, и при длинном GOP поток навсегда застревал в Buffering.
-    /// Любое реальное изменение, а также `TracksChanged` после начала выдачи
-    /// packet-ов (например, discontinuity MPEG-TS) сбрасывают состояние как раньше.
+    /// Уже прочитанный pending packet ДРУГОГО component-а не выбрасывается никогда:
+    /// его описание не менялось, и inner demuxer его второй раз не отдаст. Раньше
+    /// любая смена у одной стороны стирала packet соседа: audio-replay выбрасывал
+    /// первый keyframe видео (при длинном GOP поток застревал в Buffering), а смена
+    /// качества видео — один packet звука (дыра в звуке). С 03d моста player
+    /// меняет декодер на границе показа, а не сбрасывает всё, поэтому такая потеря
+    /// стала бы видна. Pending packet самого источника события здесь всегда пуст:
+    /// component читается, только когда его слот свободен.
+    ///
+    /// Стартовый replay `[TracksChanged, Packet(anchor)]` (список идентичен
+    /// опубликованному, источник ещё не отдал ни одного packet-а, `is_fresh_replay`)
+    /// не трогает и accounting источника. Любая другая смена сбрасывает lead
+    /// accounting только источника: его новые метки времени могут начать новую
+    /// шкалу (discontinuity), а прогресс соседа остаётся верным.
     fn refresh_tracks_after_inner_reset(
         &mut self,
         source_component: CompositeComponent,
@@ -472,16 +476,11 @@ impl CompositeAvDemuxer {
         // длительность, параметры аудио/видео, метки) и длительность.
         let publication_unchanged =
             refreshed_tracks == self.tracks && refreshed_duration == self.duration;
-        let keeps_peer_pending_packets =
-            publication_unchanged && self.is_fresh_replay(source_component);
+        let is_start_replay = publication_unchanged && self.is_fresh_replay(source_component);
         self.duration = refreshed_duration;
         self.tracks = refreshed_tracks;
-        if !keeps_peer_pending_packets {
-            self.pending_video_packet = None;
-            self.pending_audio_packet = None;
-            self.post_seek_audio_bootstrap = PostSeekAudioBootstrap::Inactive;
-            self.video_lead_progress = ComponentLeadProgress::default();
-            self.audio_lead_progress = ComponentLeadProgress::default();
+        if !is_start_replay {
+            self.reset_lead_accounting_after_track_change(source_component);
         }
         Ok(PendingFillOutcome::TracksChanged(
             DemuxTrackListUpdate::new(self.tracks.clone(), self.duration),

@@ -69,6 +69,26 @@ impl CompositeAvDemuxer {
         !progress.has_received_packet
     }
 
+    /// Сбрасывает lead accounting component-а, чей список дорожек сменился посреди потока.
+    ///
+    /// Трогает только источник смены: pending packet и прогресс соседа остаются,
+    /// потому что его описание не менялось. Post-seek audio bootstrap снимается как
+    /// раньше: после смены описания «первый audio packet после seek-а» уже не тот.
+    pub(super) fn reset_lead_accounting_after_track_change(
+        &mut self,
+        source_component: CompositeComponent,
+    ) {
+        self.post_seek_audio_bootstrap = PostSeekAudioBootstrap::Inactive;
+        match source_component {
+            CompositeComponent::Video => {
+                self.video_lead_progress = ComponentLeadProgress::default();
+            }
+            CompositeComponent::Audio => {
+                self.audio_lead_progress = ComponentLeadProgress::default();
+            }
+        }
+    }
+
     /// Проверяет, может ли ready side продвинуться без required lagging peer-а.
     pub(super) fn can_emit_while_peer_unavailable(
         &self,

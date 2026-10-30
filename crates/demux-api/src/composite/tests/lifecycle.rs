@@ -283,9 +283,9 @@ fn identical_start_replays_keep_first_video_keyframe() {
     );
 }
 
-/// Контроль: реальная смена списка у audio-replay по-прежнему сбрасывает pending и публикуется.
+/// Реальная смена описания звука публикуется, но не стирает уже прочитанный keyframe видео.
 #[test]
-fn real_audio_track_change_still_resets_pending_video_and_publishes_event() {
+fn real_audio_track_change_publishes_event_and_keeps_pending_video_keyframe() {
     let video_tracks = vec![track(11, TrackKind::Video, "V_H264", 10_000)];
     let audio_tracks = vec![track(22, TrackKind::Audio, "A_AAC", 10_000)];
     let changed_audio = vec![track(22, TrackKind::Audio, "A_OPUS", 10_000)];
@@ -307,8 +307,9 @@ fn real_audio_track_change_still_resets_pending_video_and_publishes_event() {
         SeekBehavior::Success(MediaTime::ZERO),
     );
 
-    // Первым публикуется идентичный video replay, затем реальная смена audio: она стирает
-    // pending video keyframe как раньше (в отличие от идентичного replay).
+    // Первым публикуется идентичный video replay, затем реальная смена audio. Описание
+    // видео не менялось, поэтому его keyframe pts 0 доходит до consumer-а: раньше он
+    // стирался, и декодер ждал следующий keyframe.
     let identical = composite
         .next_event()
         .expect("identical video replay event");
@@ -321,13 +322,14 @@ fn real_audio_track_change_still_resets_pending_video_and_publishes_event() {
     assert_eq!(update.tracks[1].codec_id, "A_OPUS");
     assert_eq!(
         drain_trace(&mut composite),
-        ["Audio@20:opus", "Video@40:delta"]
+        ["Video@0:key", "Audio@20:opus", "Video@40:delta"]
     );
 }
 
-/// Контроль: идентичный TracksChanged ПОСЛЕ packet-ов (discontinuity) всё ещё сбрасывает декодер.
+/// Идентичный TracksChanged ПОСЛЕ packet-ов (discontinuity) публикуется, а packet звука,
+/// уже прочитанный до него, не теряется: описание звука не менялось.
 #[test]
-fn identical_mid_stream_tracks_changed_is_still_published_and_resets_pending() {
+fn identical_mid_stream_tracks_changed_is_published_and_keeps_peer_pending_packet() {
     let video_tracks = vec![track(11, TrackKind::Video, "V_H264", 10_000)];
     let audio_tracks = vec![track(22, TrackKind::Audio, "A_AAC", 10_000)];
     let video_events = VecDeque::from([
@@ -353,12 +355,14 @@ fn identical_mid_stream_tracks_changed_is_still_published_and_resets_pending() {
         SeekBehavior::Success(MediaTime::ZERO),
     );
 
-    // Прежняя семантика сохранена: сброс стирает и pending audio (Audio@20 пропадает).
+    // Событие стоит ровно на месте смены в потоке видео, Audio@20 доходит до consumer-а
+    // (раньше сброс его стирал — дыра в звуке на каждой смене качества).
     assert_eq!(
         drain_trace(&mut composite),
         [
             "Video@0:key",
             "tracks:V_H264",
+            "Audio@20:aac",
             "Video@40:after-discontinuity"
         ]
     );
