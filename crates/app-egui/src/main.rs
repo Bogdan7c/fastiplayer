@@ -23,6 +23,7 @@ mod fullscreen_chrome;
 mod instance_forwarding;
 mod local_file_open;
 mod local_open_message;
+mod log_writer;
 mod media_open;
 mod mesa_wsi_workaround;
 mod player_error_message;
@@ -120,7 +121,8 @@ fn init_tracing() {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
-        .with_writer(std::io::stderr)
+        // Закрытая труба stderr — не повод падать (см. `log_writer`).
+        .with_writer(log_writer::closed_pipe_tolerant_stderr)
         .with_target(false)
         .init();
 }
