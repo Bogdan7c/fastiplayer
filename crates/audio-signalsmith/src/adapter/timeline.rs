@@ -85,6 +85,35 @@ impl SegmentFrames {
     }
 }
 
+/// Голова очередей, которая относится к DSP latency и не выходит наружу.
+///
+/// Первые `output_latency + input_latency / ratio` output frames Signalsmith —
+/// не новое media: у свежего processor-а это тишина нарастания, после
+/// `seek`-прайминга — fade-in повтор уже сыгранной истории. Сессия же считает,
+/// что первый output frame звучит в media time первого нового input frame
+/// (точка привязки часов после seek/старта/прайминга). Поэтому adapter выбрасывает
+/// этот prefix и не учитывает его ни в produced, ни в pending (D5).
+///
+/// Prefix всегда стоит строго в начале FIFO-очередей: его latency frames кладутся
+/// до первого реального input. Поэтому хватает двух счётчиков, а точное число
+/// выброшенных output frames получается тем же планировщиком с тем же переносом
+/// дробной части, что и реальные `Stretch::process` вызовы.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct DiscardedLatencyPrefix {
+    /// Input frames в голове `processing_input_queue`, ещё не обработанные DSP.
+    input_frames: u64,
+    /// Output frames в голове `output_delay_queue`, ещё не выданные DSP.
+    output_frames: u64,
+}
+
+/// Output frames, которые реально вынуты из output delay queue одним вызовом.
+pub(super) struct DrainedOutput {
+    /// Сколько первых frames этого вызова — latency prefix, их нужно выбросить.
+    pub(super) discarded_latency_frames: u64,
+    /// Ordered spans output-а, который действительно уходит caller-у.
+    pub(super) emitted_spans: AudioTempoOutputSegmentSpans,
+}
+
 /// Reusable timeline state: input-ahead queue, output-behind queue и remainders.
 #[derive(Debug, Default)]
 pub(super) struct SignalsmithTimelineState {
@@ -92,6 +121,8 @@ pub(super) struct SignalsmithTimelineState {
     pub(super) output_delay_queue: VecDeque<SegmentFrames>,
     /// Глобальный дробный output frame переносится и между packet-ами, и между segment-ами.
     output_frame_remainder: f64,
+    /// Ещё не выброшенная часть DSP latency prefix-а.
+    latency_prefix: DiscardedLatencyPrefix,
     pub(super) latency_primed: bool,
     pub(super) has_decoded_media: bool,
 }
@@ -106,6 +137,7 @@ impl SignalsmithTimelineState {
         self.output_delay_queue
             .extend(source.output_delay_queue.iter().copied());
         self.output_frame_remainder = source.output_frame_remainder;
+        self.latency_prefix = source.latency_prefix;
         self.latency_primed = source.latency_primed;
         self.has_decoded_media = source.has_decoded_media;
     }
@@ -115,11 +147,16 @@ impl SignalsmithTimelineState {
         self.processing_input_queue.clear();
         self.output_delay_queue.clear();
         self.output_frame_remainder = 0.0;
+        self.latency_prefix = DiscardedLatencyPrefix::default();
         self.latency_primed = false;
         self.has_decoded_media = false;
     }
 
     /// При первом реальном input создаёт обе половины DSP latency.
+    ///
+    /// Обе половины сразу помечаются как выбрасываемый prefix. Это происходит один
+    /// раз на lifecycle: смена скорости у уже работающего processor-а сюда не
+    /// попадает и нового выброса не создаёт.
     pub(super) fn prime_latency(
         &mut self,
         segment: AudioTempoSegment,
@@ -130,6 +167,12 @@ impl SignalsmithTimelineState {
             return Ok(());
         }
 
+        // Output-половина известна сразу; input-половина станет output frames
+        // только когда планировщик реально её обработает (с переносом дроби).
+        self.latency_prefix = DiscardedLatencyPrefix {
+            input_frames: input_latency_frames,
+            output_frames: output_latency_frames,
+        };
         push_segment_frames(
             &mut self.processing_input_queue,
             SegmentFrames::new(segment, input_latency_frames),
@@ -162,6 +205,85 @@ impl SignalsmithTimelineState {
             push_public_span(&mut scheduled_spans, segment, due_output_frames, pcm_format);
         }
         Ok((process_chunks, scheduled_spans))
+    }
+
+    /// Продвигает processing time на `input_frames` из головы input queue.
+    ///
+    /// Возвращает backend calls и сколько output frames они произведут. Если в
+    /// голове ещё лежит latency prefix, он планируется отдельным куском: так его
+    /// точная доля output (с переносом дробной части) попадает в prefix output
+    /// queue и потом выбрасывается ровно по своей границе.
+    pub(super) fn advance_processing_time(
+        &mut self,
+        input_frames: u64,
+        pcm_format: AudioTempoPcmFormat,
+    ) -> anyhow::Result<(SignalsmithProcessChunks, u64)> {
+        let prefix_input_frames = self.latency_prefix.input_frames.min(input_frames);
+        let mut process_chunks = SignalsmithProcessChunks::default();
+
+        let prefix_output_frames =
+            self.schedule_and_enqueue(prefix_input_frames, &mut process_chunks, pcm_format)?;
+        self.latency_prefix.input_frames -= prefix_input_frames;
+        self.latency_prefix.output_frames = self
+            .latency_prefix
+            .output_frames
+            .checked_add(prefix_output_frames)
+            .ok_or_else(|| backend_failure("latency prefix output frame count overflow"))?;
+
+        let media_output_frames = self.schedule_and_enqueue(
+            input_frames - prefix_input_frames,
+            &mut process_chunks,
+            pcm_format,
+        )?;
+        let scheduled_output_frames = prefix_output_frames
+            .checked_add(media_output_frames)
+            .ok_or_else(|| backend_failure("scheduled output frame count overflow"))?;
+        Ok((process_chunks, scheduled_output_frames))
+    }
+
+    /// Планирует `input_frames` из головы input queue и ставит их output в delay queue.
+    fn schedule_and_enqueue(
+        &mut self,
+        input_frames: u64,
+        process_chunks: &mut SignalsmithProcessChunks,
+        pcm_format: AudioTempoPcmFormat,
+    ) -> anyhow::Result<u64> {
+        let processing_spans =
+            drain_segment_frames(&mut self.processing_input_queue, input_frames, pcm_format)?;
+        let (span_chunks, scheduled_spans) =
+            self.schedule_processing_spans(&processing_spans, pcm_format)?;
+        for chunk in span_chunks.as_slice() {
+            process_chunks.push(*chunk);
+        }
+        append_public_spans_to_queue(&mut self.output_delay_queue, &scheduled_spans)?;
+        sum_public_span_frames(&scheduled_spans)
+    }
+
+    /// Вынимает `output_frames`, которые DSP выдаёт сейчас, отделяя latency prefix.
+    ///
+    /// Prefix стоит строго в начале output queue, поэтому выброшенные frames всегда
+    /// идут первыми в буфере вызова, а caller получает только новый media output.
+    pub(super) fn drain_produced_output(
+        &mut self,
+        output_frames: u64,
+        pcm_format: AudioTempoPcmFormat,
+    ) -> anyhow::Result<DrainedOutput> {
+        let discarded_latency_frames = self.latency_prefix.output_frames.min(output_frames);
+        drain_segment_frames(
+            &mut self.output_delay_queue,
+            discarded_latency_frames,
+            pcm_format,
+        )?;
+        self.latency_prefix.output_frames -= discarded_latency_frames;
+        let emitted_spans = drain_segment_frames(
+            &mut self.output_delay_queue,
+            output_frames - discarded_latency_frames,
+            pcm_format,
+        )?;
+        Ok(DrainedOutput {
+            discarded_latency_frames,
+            emitted_spans,
+        })
     }
 }
 
@@ -284,6 +406,9 @@ pub(super) fn sum_queue_frames(queue: &VecDeque<SegmentFrames>) -> anyhow::Resul
 }
 
 /// Проецирует полный actual pending tail: output delay + input-ahead backlog.
+///
+/// Ещё не выброшенный latency prefix в pending не входит: caller его никогда не
+/// получит, а сессия строит по pending spans media-time будущего output-а.
 pub(super) fn project_pending_output_spans(
     state: &SignalsmithTimelineState,
     projection_output_queue: &mut VecDeque<SegmentFrames>,
@@ -292,21 +417,43 @@ pub(super) fn project_pending_output_spans(
     let mut projected_remainder = state.output_frame_remainder;
     projection_output_queue.clear();
     projection_output_queue.extend(state.output_delay_queue.iter().copied());
+    let mut prefix_input_frames_left = state.latency_prefix.input_frames;
+    let mut prefix_output_frames = state.latency_prefix.output_frames;
 
     for pending_input_span in &state.processing_input_queue {
-        let projected_output_frames = schedule_output_frames(
+        // Prefix и media планируются раздельно — так же, как `advance_processing_time`.
+        let segment = pending_input_span.segment;
+        let span_prefix_input_frames = prefix_input_frames_left.min(pending_input_span.frame_count);
+        prefix_input_frames_left -= span_prefix_input_frames;
+
+        let projected_prefix_frames =
+            schedule_output_frames(&mut projected_remainder, segment, span_prefix_input_frames)?;
+        prefix_output_frames = prefix_output_frames
+            .checked_add(projected_prefix_frames)
+            .ok_or_else(|| backend_failure("projected latency prefix frame count overflow"))?;
+        push_segment_frames(
+            projection_output_queue,
+            SegmentFrames::new(segment, projected_prefix_frames),
+        )?;
+
+        let projected_media_frames = schedule_output_frames(
             &mut projected_remainder,
-            pending_input_span.segment,
-            pending_input_span.frame_count,
+            segment,
+            pending_input_span.frame_count - span_prefix_input_frames,
         )?;
         push_segment_frames(
             projection_output_queue,
-            SegmentFrames::new(pending_input_span.segment, projected_output_frames),
+            SegmentFrames::new(segment, projected_media_frames),
         )?;
     }
 
     let pending_frames = sum_queue_frames(projection_output_queue)?;
-    drain_segment_frames(projection_output_queue, pending_frames, pcm_format)
+    drain_segment_frames(projection_output_queue, prefix_output_frames, pcm_format)?;
+    drain_segment_frames(
+        projection_output_queue,
+        pending_frames - prefix_output_frames,
+        pcm_format,
+    )
 }
 
 /// Склеивает process+flush spans в один ordered EOF result.

@@ -48,6 +48,18 @@ fn normalized_waveform_error(actual: &[f32], reference: &[f32]) -> f64 {
     (difference_energy / reference_energy.max(f64::EPSILON)).sqrt()
 }
 
+/// Сколько DSP latency prefix-а processor-а, созданного на 1x, ещё не выброшено.
+///
+/// Adapter выбрасывает первые `output_latency + input_latency / 1.0` raw frames
+/// (D5), а raw reference ниже их содержит; сравнивать можно только хвосты.
+fn remaining_latency_prefix_at_1x(
+    input_latency: usize,
+    output_latency: usize,
+    raw_frames_already_produced: usize,
+) -> usize {
+    (input_latency + output_latency).saturating_sub(raw_frames_already_produced)
+}
+
 /// Подготавливает raw reference теми же single-segment calls до mixed boundary.
 fn prepare_rapid_transition_reference(stretch: &mut Stretch, input_latency: usize) -> usize {
     let quarter_latency = input_latency / 4;
@@ -183,6 +195,7 @@ fn prime_then_finish_resets_lifecycle_and_reuse_matches_fresh_processor() {
 fn rapid_rate_change_waveform_matches_ordered_calls_not_weighted_average() {
     let mut processor = processor_at_rate(1.0);
     let input_latency = processor.input_latency_frames.get() as usize;
+    let output_latency = processor.output_latency_frames.get() as usize;
     assert_eq!(
         input_latency % 4,
         0,
@@ -234,7 +247,7 @@ fn rapid_rate_change_waveform_matches_ordered_calls_not_weighted_average() {
     ];
     let mut ordered_reference_backend = Stretch::preset_default(1, 48_000);
     prepare_rapid_transition_reference(&mut ordered_reference_backend, input_latency);
-    let mut ordered_reference = Vec::new();
+    let mut ordered_reference: Vec<f32> = Vec::new();
     let mut input_offset = 0usize;
     for (&input_frames, &output_frames) in input_chunks.iter().zip(&output_chunks) {
         let next_input_offset = input_offset + input_frames;
@@ -246,15 +259,24 @@ fn rapid_rate_change_waveform_matches_ordered_calls_not_weighted_average() {
         input_offset = next_input_offset;
     }
 
+    // Input queue отстаёт на input_latency: до mixed packet-а DSP обработал только
+    // latency prefix и 1x media (initial, fast и slow packets продвинули его на 1x).
+    let raw_frames_before_mixed = input_latency + quarter_latency * 2;
+    let discarded_prefix =
+        remaining_latency_prefix_at_1x(input_latency, output_latency, raw_frames_before_mixed);
+    let mixed_raw_frames = output_chunks.iter().sum::<usize>();
+    let ordered_reference = ordered_reference.split_off(discarded_prefix);
+
     let mut weighted_backend = Stretch::preset_default(1, 48_000);
     prepare_rapid_transition_reference(&mut weighted_backend, input_latency);
-    let weighted_reference = raw_process(&mut weighted_backend, &mixed_packet, actual.len());
+    let weighted_reference = raw_process(&mut weighted_backend, &mixed_packet, mixed_raw_frames)
+        .split_off(discarded_prefix);
     let ordered_error = normalized_waveform_error(&actual, &ordered_reference);
     let weighted_error = normalized_waveform_error(&actual, &weighted_reference);
 
     assert_eq!(
         report.produced_stretched_output().frame_count().get() as usize,
-        output_chunks.iter().sum::<usize>()
+        mixed_raw_frames - discarded_prefix
     );
     assert!(
         ordered_error < weighted_error * 0.65,
@@ -319,6 +341,12 @@ fn eof_mixed_tail_waveform_uses_ordered_silence_calls_before_flush() {
     let mut ordered_flush = vec![0.0f32; output_latency];
     ordered_reference_backend.flush(&mut ordered_flush);
     ordered_reference.extend(ordered_flush);
+    // Input queue отстаёт на input_latency: до EOF DSP обработал только latency
+    // prefix и 1x media (initial, fast и slow packets продвинули его на 1x).
+    let raw_frames_before_eof = input_latency + quarter_latency * 2;
+    let discarded_prefix =
+        remaining_latency_prefix_at_1x(input_latency, output_latency, raw_frames_before_eof);
+    let ordered_reference = ordered_reference.split_off(discarded_prefix);
 
     let mut weighted_backend = Stretch::preset_default(1, 48_000);
     prepare_rapid_transition_reference(&mut weighted_backend, input_latency);
@@ -328,6 +356,7 @@ fn eof_mixed_tail_waveform_uses_ordered_silence_calls_before_flush() {
     let mut weighted_flush = vec![0.0f32; output_latency];
     weighted_backend.flush(&mut weighted_flush);
     weighted_reference.extend(weighted_flush);
+    let weighted_reference = weighted_reference.split_off(discarded_prefix);
     let ordered_error = normalized_waveform_error(&actual, &ordered_reference);
     let weighted_error = normalized_waveform_error(&actual, &weighted_reference);
 

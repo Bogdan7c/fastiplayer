@@ -6,6 +6,8 @@ use super::*;
 
 #[path = "tests/content.rs"]
 mod content;
+#[path = "tests/priming_alignment.rs"]
+mod priming_alignment;
 
 /// Общий mono format делает анализ EOF samples однозначным.
 fn mono_48k_format() -> AudioTempoPcmFormat {
@@ -48,14 +50,32 @@ fn boundary_rates_keep_fractional_output_accounting_bounded() {
         let packet = vec![0.25f32; 997];
         let mut output_buffer = Vec::new();
         let mut produced_frames = 0u64;
-        for _ in 0..113 {
+        for packet_index in 1..=113u64 {
             let (_, report) = process_packet(&mut processor, &packet, &mut output_buffer);
             produced_frames += report.produced_stretched_output().frame_count().get();
+            // Выданное + pending = ровно новый media на этой скорости: latency prefix
+            // не выдаётся и не копится (D5), дробная часть не дрейфует.
+            let pending_frames = report.pending_processor_output().frame_count().get();
+            let consumed_output_frames = (997 * packet_index) as f64 / rate;
+            assert!(
+                ((produced_frames + pending_frames) as f64 - consumed_output_frames).abs() <= 1.0,
+                "rate={rate} packet={packet_index}: {produced_frames} + {pending_frames} vs {consumed_output_frames}"
+            );
         }
 
-        let consumed_frames = 997u64 * 113;
-        let expected_frames = (consumed_frames as f64 / rate).floor() as u64;
-        assert_eq!(produced_frames, expected_frames, "rate={rate}");
+        let finish = processor
+            .finish_stream_into(&mut output_buffer)
+            .expect("finish should succeed");
+        produced_frames += finish
+            .report()
+            .produced_stretched_output()
+            .frame_count()
+            .get();
+        let consumed_output_frames = (997u64 * 113) as f64 / rate;
+        assert!(
+            (produced_frames as f64 - consumed_output_frames).abs() <= 1.0,
+            "rate={rate}: EOF total {produced_frames} vs {consumed_output_frames}"
+        );
     }
 }
 
@@ -132,19 +152,22 @@ fn history_seek_primes_dsp_without_output_or_pending_accounting() {
         first_report.consumed_decoded_media().frame_count().get(),
         960
     );
+    // DSP выдал 480 frames, но все они — fade-in повтор истории (D5): наружу ничего,
+    // а pending — ровно новый media этого пакета, без latency повтора.
     assert_eq!(
         first_report.produced_stretched_output().frame_count().get(),
-        480
+        0,
+        "warmup history replay must not be emitted as first real output"
     );
-    assert_eq!(
+    assert!(
         first_report
             .output_progress_mapping()
             .produced_output_segments()
-            .iter()
-            .map(|span| span.stretched_output().frame_count().get())
-            .sum::<u64>(),
-        480,
-        "warmup history must not be counted as first real output"
+            .is_empty()
+    );
+    assert_eq!(
+        first_report.pending_processor_output().frame_count().get(),
+        480
     );
 }
 

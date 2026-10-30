@@ -10,9 +10,9 @@ use audio_core::{
 use signalsmith_stretch::Stretch;
 
 use self::timeline::{
-    SegmentFrames, SignalsmithProcessChunks, SignalsmithTimelineState,
-    append_public_spans_to_queue, backend_failure, concatenate_public_spans, drain_segment_frames,
-    project_pending_output_spans, push_segment_frames, sum_public_span_frames, sum_queue_frames,
+    SegmentFrames, SignalsmithProcessChunks, SignalsmithTimelineState, backend_failure,
+    concatenate_public_spans, project_pending_output_spans, push_segment_frames,
+    sum_public_span_frames, sum_queue_frames,
 };
 
 mod timeline;
@@ -31,11 +31,17 @@ impl AudioTempoProcessorFactory for SignalsmithTempoProcessorFactory {
 }
 
 /// Полностью подготовленная operation до мутации backend/caller buffer-а.
+///
+/// `process_output_frames`/`total_output_frames` — сколько frames реально
+/// выдаёт DSP; первые `discarded_latency_frames` из них — DSP latency prefix
+/// (тишина нарастания или повтор истории прайминга), caller их не получает и
+/// report их не учитывает.
 struct SignalsmithOperationPlan {
     report: AudioTempoProcessReport,
     process_chunks: SignalsmithProcessChunks,
     process_output_frames: AudioTempoFrameCount,
     total_output_frames: AudioTempoFrameCount,
+    discarded_latency_frames: AudioTempoFrameCount,
 }
 
 /// Concrete owner Signalsmith DSP и его latency-aware timeline model.
@@ -104,6 +110,8 @@ impl SignalsmithTempoProcessor {
         consumed_decoded_frames: AudioTempoFrameCount,
     ) -> anyhow::Result<SignalsmithOperationPlan> {
         self.scratch_timeline_state.copy_from(&self.timeline_state);
+        // Latency prefix (тишина свежего DSP или повтор истории после прайминга)
+        // помечается к выбросу: output начинается с первого нового media frame (D5).
         self.scratch_timeline_state.prime_latency(
             self.active_segment,
             self.input_latency_frames.get(),
@@ -114,24 +122,13 @@ impl SignalsmithTempoProcessor {
             SegmentFrames::new(self.active_segment, consumed_decoded_frames.get()),
         )?;
 
-        let processing_spans = drain_segment_frames(
-            &mut self.scratch_timeline_state.processing_input_queue,
-            consumed_decoded_frames.get(),
-            self.pcm_format,
-        )?;
-        let (process_chunks, scheduled_output_spans) = self
+        let (process_chunks, process_output_frames) = self
             .scratch_timeline_state
-            .schedule_processing_spans(&processing_spans, self.pcm_format)?;
-        let process_output_frames = sum_public_span_frames(&scheduled_output_spans)?;
-        append_public_spans_to_queue(
-            &mut self.scratch_timeline_state.output_delay_queue,
-            &scheduled_output_spans,
-        )?;
-        let produced_output_spans = drain_segment_frames(
-            &mut self.scratch_timeline_state.output_delay_queue,
-            process_output_frames,
-            self.pcm_format,
-        )?;
+            .advance_processing_time(consumed_decoded_frames.get(), self.pcm_format)?;
+        let drained_output = self
+            .scratch_timeline_state
+            .drain_produced_output(process_output_frames, self.pcm_format)?;
+        let emitted_output_frames = sum_public_span_frames(&drained_output.emitted_spans)?;
 
         self.scratch_timeline_state.has_decoded_media = true;
         let pending_output_spans = project_pending_output_spans(
@@ -143,9 +140,9 @@ impl SignalsmithTempoProcessor {
         let report = self.build_report(
             self.active_segment,
             consumed_decoded_frames,
-            AudioTempoFrameCount::new(process_output_frames),
+            AudioTempoFrameCount::new(emitted_output_frames),
             AudioTempoFrameCount::new(pending_output_frames),
-            produced_output_spans,
+            drained_output.emitted_spans,
             pending_output_spans,
         )?;
 
@@ -154,32 +151,24 @@ impl SignalsmithTempoProcessor {
             process_chunks,
             process_output_frames: AudioTempoFrameCount::new(process_output_frames),
             total_output_frames: AudioTempoFrameCount::new(process_output_frames),
+            discarded_latency_frames: AudioTempoFrameCount::new(
+                drained_output.discarded_latency_frames,
+            ),
         })
     }
 
     /// Готовит единый EOF result: input-latency silence process + output flush.
     fn prepare_finish_plan(&mut self) -> anyhow::Result<SignalsmithOperationPlan> {
         self.scratch_timeline_state.copy_from(&self.timeline_state);
-        let processing_spans = drain_segment_frames(
-            &mut self.scratch_timeline_state.processing_input_queue,
-            self.input_latency_frames.get(),
-            self.pcm_format,
-        )?;
-        let (process_chunks, scheduled_output_spans) = self
+        let (process_chunks, process_output_frames) = self
             .scratch_timeline_state
-            .schedule_processing_spans(&processing_spans, self.pcm_format)?;
-        let process_output_frames = sum_public_span_frames(&scheduled_output_spans)?;
-        append_public_spans_to_queue(
-            &mut self.scratch_timeline_state.output_delay_queue,
-            &scheduled_output_spans,
-        )?;
+            .advance_processing_time(self.input_latency_frames.get(), self.pcm_format)?;
 
         // Process silence сначала выдаёт начало pending queue, flush — весь остаток.
-        let process_output_spans = drain_segment_frames(
-            &mut self.scratch_timeline_state.output_delay_queue,
-            process_output_frames,
-            self.pcm_format,
-        )?;
+        // Если поток кончился раньше latency prefix-а, его хвост выбрасывается и здесь.
+        let process_output = self
+            .scratch_timeline_state
+            .drain_produced_output(process_output_frames, self.pcm_format)?;
         let flush_output_frames =
             sum_queue_frames(&self.scratch_timeline_state.output_delay_queue)?;
         if flush_output_frames != self.output_latency_frames.get() {
@@ -189,13 +178,19 @@ impl SignalsmithTempoProcessor {
             ))
             .into());
         }
-        let flush_output_spans = drain_segment_frames(
-            &mut self.scratch_timeline_state.output_delay_queue,
-            flush_output_frames,
+        let flush_output = self
+            .scratch_timeline_state
+            .drain_produced_output(flush_output_frames, self.pcm_format)?;
+        let discarded_latency_frames = process_output
+            .discarded_latency_frames
+            .checked_add(flush_output.discarded_latency_frames)
+            .ok_or_else(|| backend_failure("EOF latency prefix frame count overflow"))?;
+        let produced_output_spans = concatenate_public_spans(
+            process_output.emitted_spans,
+            flush_output.emitted_spans,
             self.pcm_format,
         )?;
-        let produced_output_spans =
-            concatenate_public_spans(process_output_spans, flush_output_spans, self.pcm_format)?;
+        let emitted_output_frames = sum_public_span_frames(&produced_output_spans)?;
         let total_output_frames = process_output_frames
             .checked_add(flush_output_frames)
             .ok_or_else(|| backend_failure("EOF output frame count overflow"))?;
@@ -203,7 +198,7 @@ impl SignalsmithTempoProcessor {
         let report = self.build_report(
             self.active_segment,
             AudioTempoFrameCount::ZERO,
-            AudioTempoFrameCount::new(total_output_frames),
+            AudioTempoFrameCount::new(emitted_output_frames),
             AudioTempoFrameCount::ZERO,
             produced_output_spans,
             AudioTempoOutputSegmentSpans::default(),
@@ -214,6 +209,7 @@ impl SignalsmithTempoProcessor {
             process_chunks,
             process_output_frames: AudioTempoFrameCount::new(process_output_frames),
             total_output_frames: AudioTempoFrameCount::new(total_output_frames),
+            discarded_latency_frames: AudioTempoFrameCount::new(discarded_latency_frames),
         })
     }
 
@@ -347,6 +343,11 @@ impl AudioTempoProcessor for SignalsmithTempoProcessor {
             &plan.process_chunks,
             self.pcm_format.channel_count(),
         )?;
+        discard_latency_prefix(
+            output_buffer,
+            plan.discarded_latency_frames,
+            self.pcm_format.channel_count(),
+        )?;
         self.commit_scratch_timeline();
         AudioTempoStretchedOutput::new(output_buffer, plan.report, self.pcm_format)
     }
@@ -400,6 +401,7 @@ impl AudioTempoProcessor for SignalsmithTempoProcessor {
             channel_count,
         )?;
         self.stretch.flush(flush_output);
+        discard_latency_prefix(output_buffer, plan.discarded_latency_frames, channel_count)?;
         self.timeline_state.reset();
         self.scratch_timeline_state.reset();
         self.history_primed = false;
@@ -470,6 +472,29 @@ fn process_ordered_chunks(
         input_sample_offset = next_input_sample_offset;
         output_sample_offset = next_output_sample_offset;
     }
+    Ok(())
+}
+
+/// Убирает из начала caller buffer-а DSP latency prefix, который не является новым media.
+///
+/// Signalsmith не умеет выдать output без этого prefix-а (`outputSeek` в Rust
+/// binding 0.1.3 нет), поэтому DSP честно производит все frames, а adapter
+/// отрезает начало. Сдвиг памяти идёт только в первых пакетах lifecycle-а;
+/// buffer сохраняет свою allocation.
+fn discard_latency_prefix(
+    output_samples: &mut Vec<f32>,
+    discarded_latency_frames: AudioTempoFrameCount,
+    channel_count: AudioTempoChannelCount,
+) -> anyhow::Result<()> {
+    let discarded_sample_count = discarded_latency_frames.interleaved_sample_len(channel_count)?;
+    if discarded_sample_count > output_samples.len() {
+        return Err(backend_failure(format!(
+            "latency prefix of {discarded_sample_count} samples exceeds DSP output of {} samples",
+            output_samples.len()
+        ))
+        .into());
+    }
+    output_samples.drain(..discarded_sample_count);
     Ok(())
 }
 
