@@ -45,6 +45,11 @@
 
 Текущая реализация и конкретные sidebar-инварианты: `mem:app-egui/sidebar-controller`.
 
+## Профиль вида окна (browser-bridge 04a, 2026-10-31)
+
+- `crate::window_view_profile::WindowViewProfile::{Standard, BrowserSession}` — типизированный параметр экземпляра окна; регионы спрашивают намерения (`offers_media_opening`, `offers_queue_navigation`, `sidebar_sections`, `allows_live_scrub`, `idle_center_hint`), а не `if browser`. Host сайдбара остаётся один, профиль меняет только НАБОР сущностей; кнопки заголовка (`titlebar_icon_area::show(.., sections)`) раскладываются по слотам подряд без дыр (обычное окно — слот = ось секции, без изменений). Нижняя панель: `BottomControlsInput.view_profile`, места скрытых кнопок в раскладке сохраняются.
+- Будущее: у «Наклейки» (решение 121) тем же профилем уберутся кнопки окна и ресайз — новым вариантом, без новых `if` по регионам. Тесты: `ui/player_controls/view_profile_tests.rs` (AccessKit), `titlebar_icon_area`, `center_overlay_tests`.
+
 ## Видимость chrome в фуллскрине (UX 14, 2026-10-08)
 
 - Единственный владелец видимости titlebar/нижней панели/курсора — `crate::fullscreen_chrome::FullscreenChromeController` (поле `AppState`). Панели НЕ знают об автоскрытии: их сдвигает генерик `ui::edge_slide` (дочерний `Ui` + «распорка»-Panel на видимую часть), обёртки — `ui::fullscreen_chrome_panels`. Новые элементы chrome, которые должны прятаться вместе с панелями, подключаются через `edge_slide`, а не собственным таймером; новая причина «не прятать» — новый вариант `ChromeHoldReason`.

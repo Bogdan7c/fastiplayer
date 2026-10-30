@@ -22,6 +22,15 @@ Visibility policy for this split: no new `pub(crate)`/`pub` boundary beyond pres
 
 Focused checks used for this split: `cargo test -p app-egui state`, `cargo test -p app-egui`, `cargo fmt --all --check`.
 
+## Browser-bridge 04a (2026-10-31): AppState как плеер окна браузерного режима
+
+- `state/window_mode.rs` — `WindowMode` (профиль вида `crate::window_view_profile::WindowViewProfile` + маршрут транспорта): `AppState::send_transport_command` — единственная точка, где действия зрителя становятся командами плееру; в браузерном окне они уходят ящиком намерений `ViewerTransportIntent` в сеанс. Задаётся `AppStateStartupContext::for_browser_session_window()`.
+- `state/center_overlay.rs` — вынесенный `render_center_overlay` (текст пустого центра по профилю).
+- `state/player_event_tap.rs` — `PlayerEventTap`: ограниченный (1024) отвод копий событий плеера из `drain_worker_events` (события по-прежнему читает только AppState); `take_tapped_player_events`. `AppStateStartupContext::{with_player_event_tap, with_audio_output_factory}` — швы без изменения обычного окна.
+- `state/strong_media_open/start_position.rs` — `PreparedOpenStartPosition::{Startup, PreparedBySource}` / `PendingStartPositionPlan` (поле `start_position` в pending): «позицию выставил владелец источника» → после установки только `AdoptPreparedInitialPosition`; контракт очереди (`MissingRestoreTarget`) не ослаблен.
+- `ActiveMediaSource::BrowserStream` (`media_open/types.rs`): без памяти дорожек, субтитры `NotLocal`, не переоткрывается. `state/track_memory/startup.rs` `start_track_memory_in_memory_only`; `playlist_runtime/memory_only.rs` `PlaylistRuntime::new_memory_only`.
+- Подробно: `mem:browser-bridge/core` раздел 04a.
+
 ## Public launch S02 follow-up (2026-09-04)
 
 - `AppStateStartupContext`, приватный `PlayerTimelineWakeBridge` и wake factory перенесены из `state.rs` в `state/startup_context.rs`; `AppState` остаётся application-state owner-ом, а прежний `crate::state::AppStateStartupContext` сохранён internal re-export-ом.
