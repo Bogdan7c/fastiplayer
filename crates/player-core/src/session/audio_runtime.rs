@@ -24,6 +24,10 @@ use super::{
 
 /// Тишина перед первым PCM отрезка, начавшегося позже базы часов.
 pub(super) mod leading_silence;
+/// Тишина в дыре звука посреди отрезка (короче порога передачи часов разрыва).
+pub(super) mod mid_stream_gap;
+/// Влезет ли тишина, растянутая скоростью, в свободное место вывода.
+pub(super) mod silence_output_room;
 
 /// Чистый план выбора audio track-а без decoder/output side effects.
 #[derive(Debug, Clone, PartialEq, Eq)]

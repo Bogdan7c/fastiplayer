@@ -30,10 +30,16 @@
 //! - разрыв неправдоподобен (звук за концом media или дальше часа от базы — битые метки
 //!   времени) — прежнее поведение (звук в базу) с предупреждением в лог.
 //!
-//! Применяется только к ПЕРВОМУ PCM отрезка (см. `pipeline/audio_segment_start.rs`):
-//! разрывы посреди отрезка ведёт `audio_gap.rs` (≥ 500 мс), а мелкие (20–500 мс) пока
-//! склеиваются — для них отдельная задача может переиспользовать [`plan_leading_silence`]
-//! с конца записанного звука вместо базы.
+//! Тишина, растянутая скоростью, должна влезть в свободное место вывода
+//! (`silence_output_room.rs`): при 0,25× секунда тишины — это 4 с вывода, а ring держит
+//! ~2 с. Не влезающий разрыв `audio_gap/scheduled_audio_start.rs` держит до PTS так же,
+//! как разрыв больше потолка; дошедший всё-таки (live) — без тишины, с предупреждением,
+//! а не фатальной частичной записью.
+//!
+//! Стартовая политика — только для ПЕРВОГО PCM отрезка (см.
+//! `pipeline/audio_segment_start.rs`). Дальше та же единственная точка ведёт дыры посреди
+//! отрезка: меньше 500 мс — тишина от курсора отрезка (`mid_stream_gap.rs`, D3), больше —
+//! передача часов `audio_gap.rs`.
 
 use std::time::Duration;
 
@@ -43,7 +49,10 @@ use crate::{AudioOutputSpec, PlayerError, PlayerErrorKind, PlayerResult};
 
 use super::super::PlayerSession;
 use super::super::audio_gap::AudioStartGapPlausibility;
+use super::super::audio_gap::MIN_AUDIO_GAP;
 use super::super::audio_packet_window::DecodedPcmPacketClipOutcome;
+use super::mid_stream_gap::MidStreamGapPlan;
+use super::silence_output_room::SilenceOutputRoom;
 
 /// Наносекунд в секунде (перевод длительности в PCM frames).
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
@@ -69,6 +78,16 @@ impl LeadingSilencePolicy {
     pub(in crate::session) const SEGMENT_START: Self = Self {
         on_time_tolerance: Duration::from_millis(20),
         max_silence: Duration::from_millis(1_000),
+    };
+
+    /// Политика дыры посреди отрезка (`mid_stream_gap.rs`).
+    ///
+    /// Допуск тот же 20 мс: пропавший AAC-кадр (21–23 мс) — уже дыра. Потолок — порог
+    /// передачи часов разрыва [`MIN_AUDIO_GAP`]: больше него звук ждёт своего PTS
+    /// (`audio_gap.rs`), поэтому диапазоны стыкуются без щели и без перекрытия.
+    pub(in crate::session) const MID_STREAM: Self = Self {
+        on_time_tolerance: Duration::from_millis(20),
+        max_silence: MIN_AUDIO_GAP,
     };
 }
 
@@ -129,8 +148,11 @@ pub(in crate::session) fn plan_leading_silence(
 /// Что делать с первым PCM packet-а относительно начала отрезка звука.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::session) enum AudioSegmentStartPlan {
-    /// PCM продолжает уже начатый отрезок: стартовая политика не применяется.
+    /// PCM продолжает уже начатый отрезок вплотную (или курсор неизвестен, live).
     ContinuesSegment,
+
+    /// PCM продолжает отрезок после дыры (`mid_stream_gap.rs`).
+    MidStreamGap(MidStreamGapPlan),
 
     /// Первый PCM отрезка звучит вовремя.
     OnTime,
@@ -142,6 +164,16 @@ pub(in crate::session) enum AudioSegmentStartPlan {
 
         /// Разрыв между базой часов и первым sample-ом.
         gap: Duration,
+    },
+
+    /// Есть видео, тишина по длине в потолке, но растянутая скоростью не влезает в вывод,
+    /// а удержание до PTS здесь не действовало (live-timeline): тишина не пишется.
+    SilenceExceedsOutputRoom {
+        /// Разрыв между базой часов и первым sample-ом.
+        gap: Duration,
+
+        /// Насколько не хватает места.
+        room: SilenceOutputRoom,
     },
 
     /// Есть видео, разрыв больше потолка и правдоподобен, но удержание звука до его PTS
@@ -203,6 +235,19 @@ impl PlayerSession {
             .plan_audio_segment_first_sample(first_sample_time.max(clock_base));
         match plan {
             AudioSegmentStartPlan::ContinuesSegment | AudioSegmentStartPlan::OnTime => Ok(()),
+            AudioSegmentStartPlan::MidStreamGap(mid_stream_plan) => {
+                self.apply_mid_stream_audio_gap(mid_stream_plan, output_spec)
+            }
+            AudioSegmentStartPlan::SilenceExceedsOutputRoom { gap, room } => {
+                warn!(
+                    gap_ms = gap.as_millis(),
+                    room = ?room,
+                    clock_base_ms = clock_base.as_millis(),
+                    "Leading audio silence does not fit the audio output and the audio was \
+                     not held until its PTS; it is written at the clock base"
+                );
+                Ok(())
+            }
             AudioSegmentStartPlan::PadWithSilence {
                 silence_frames,
                 gap,
@@ -275,7 +320,7 @@ impl PlayerSession {
         sample_rate: u32,
     ) -> AudioSegmentStartPlan {
         if !self.pipeline.audio_segment_awaits_first_pcm() {
-            return AudioSegmentStartPlan::ContinuesSegment;
+            return self.plan_mid_stream_audio_gap(first_sample_time, sample_rate);
         }
 
         // Без тишины первый PCM пустого output-а звучит ровно в базе часов; той же
@@ -293,9 +338,14 @@ impl PlayerSession {
                 LeadingSilence::Pad {
                     silence_frames,
                     gap,
-                } => AudioSegmentStartPlan::PadWithSilence {
-                    silence_frames,
-                    gap,
+                } => match self.silence_output_room(gap) {
+                    SilenceOutputRoom::Fits => AudioSegmentStartPlan::PadWithSilence {
+                        silence_frames,
+                        gap,
+                    },
+                    room @ SilenceOutputRoom::Exceeds { .. } => {
+                        AudioSegmentStartPlan::SilenceExceedsOutputRoom { gap, room }
+                    }
                 },
                 LeadingSilence::TooLarge { gap } => {
                     match self.audio_start_gap_plausibility(clock_base, first_sample_time) {
@@ -331,7 +381,9 @@ impl PlayerSession {
     }
 
     /// Пишет тишину тем же путём, что и decoded PCM (с tempo processor-ом при rate ≠ 1).
-    fn write_leading_silence(
+    ///
+    /// Вызывающий код заранее проверил, что тишина влезает в вывод (`silence_output_room`).
+    pub(in crate::session) fn write_leading_silence(
         &mut self,
         silence_frames: usize,
         output_spec: AudioOutputSpec,
@@ -519,6 +571,46 @@ mod tests {
         let plan = plan_leading_silence(Duration::from_millis(400), Duration::ZERO, 0, POLICY);
 
         assert_eq!(plan, LeadingSilence::None);
+    }
+
+    #[test]
+    fn mid_stream_policy_pads_from_just_above_20_ms_up_to_the_gap_threshold() {
+        let expected_next = Duration::from_secs(15);
+        let mid_stream = LeadingSilencePolicy::MID_STREAM;
+        let plan = |gap: Duration| {
+            plan_leading_silence(expected_next + gap, expected_next, RATE_48K, mid_stream)
+        };
+
+        assert_eq!(plan(Duration::from_millis(20)), LeadingSilence::None);
+        assert_eq!(
+            plan(Duration::from_millis(21)),
+            LeadingSilence::Pad {
+                silence_frames: 1_008,
+                gap: Duration::from_millis(21),
+            }
+        );
+        // Один пропавший AAC-кадр (1024 sample при 48 кГц = 21,33 мс) — уже дыра.
+        assert!(matches!(
+            plan(Duration::from_nanos(21_333_333)),
+            LeadingSilence::Pad {
+                silence_frames: 1_024,
+                ..
+            }
+        ));
+        assert_eq!(
+            plan(MIN_AUDIO_GAP),
+            LeadingSilence::Pad {
+                silence_frames: 24_000,
+                gap: MIN_AUDIO_GAP,
+            }
+        );
+        // Больше порога — дело передачи часов разрыва (`audio_gap.rs`), не тишины.
+        assert_eq!(
+            plan(MIN_AUDIO_GAP + Duration::from_millis(1)),
+            LeadingSilence::TooLarge {
+                gap: MIN_AUDIO_GAP + Duration::from_millis(1),
+            }
+        );
     }
 
     #[test]

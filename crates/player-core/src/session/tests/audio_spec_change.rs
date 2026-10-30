@@ -142,6 +142,18 @@ fn feed_packet(session: &mut PlayerSession, payload: &'static [u8], pts: Duratio
     session.process_pending_audio_packets_with_buffer_limit(200.0);
 }
 
+/// Учитывает, что output уже принял звук файла до media-времени `written_until`.
+///
+/// Тесты подают packet в 2 кадра вместо секунд звука, а время output-а задают руками.
+/// Без учёта курсор отрезка стоял бы на конце 2 кадров, и packet следующего «стыка»
+/// выглядел бы дырой посреди звука — её закрыла бы тишина (`mid_stream_gap.rs`, D3).
+/// Учёт держит media-время сценария непрерывным, как у настоящего потока.
+fn account_audio_written_until(session: &mut PlayerSession, written_until: Duration) {
+    session
+        .pipeline
+        .note_audio_packet_written(written_until, 0, stereo_spec());
+}
+
 /// Играющая session со stereo output-ом, у которого 200 мс PCM ещё не проиграно.
 fn playing_stereo_session_with_tail() -> (
     PlayerSession,
@@ -153,6 +165,7 @@ fn playing_stereo_session_with_tail() -> (
     feed_packet(&mut session, STEREO_PACKET, Duration::ZERO);
     let first_output = factory_handle.last_output_handle().expect("first output");
     first_output.set_underlying_output_timing(HANDOVER_AUDIBLE, HANDOVER_AUDIBLE + UNPLAYED_TAIL);
+    account_audio_written_until(&mut session, HANDOVER_AUDIBLE + UNPLAYED_TAIL);
     let _ = session.take_events();
     (session, factory_handle, first_output)
 }
@@ -246,6 +259,7 @@ fn stereo_to_surround_and_back_rebuilds_output_and_keeps_clock_continuous() {
         Duration::from_millis(500) + UNPLAYED_TAIL,
     );
     let second_handover = HANDOVER_AUDIBLE + Duration::from_millis(500);
+    account_audio_written_until(&mut session, second_handover + UNPLAYED_TAIL);
     feed_packet(&mut session, STEREO_PACKET, second_handover + UNPLAYED_TAIL);
 
     let stereo_output = factory_handle.last_output_handle().expect("stereo output");

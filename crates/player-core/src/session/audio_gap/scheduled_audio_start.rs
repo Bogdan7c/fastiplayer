@@ -108,7 +108,8 @@ pub(in crate::session) enum SegmentStartAudioSchedule {
     /// Первый звук не дальше потолка тишины: его выровняет `leading_silence.rs`.
     WithinSilenceCap,
 
-    /// Первый звук дальше потолка тишины: он ждёт своего PTS, часы идут без него.
+    /// Первый звук дальше потолка тишины (или её не вместить в вывод при текущей
+    /// скорости): он ждёт своего PTS, часы идут без него.
     ScheduledLater {
         /// База часов, к которой привязан отрезок.
         clock_base: Duration,
@@ -238,7 +239,12 @@ impl PlayerSession {
 
         let clock_base = self.pipeline.media_clock_base();
         let gap = audio_start.saturating_sub(clock_base);
-        if gap <= LeadingSilencePolicy::SEGMENT_START.max_silence {
+        // Тишина закрывает разрыв, только если и по длине в потолке, и растянутая
+        // скоростью влезает в вывод (0,25×: 0,5 с тишины — 2 с вывода, ring — ~2 с).
+        // Иначе звук ждёт своего PTS тем же путём, что и разрыв больше потолка.
+        if gap <= LeadingSilencePolicy::SEGMENT_START.max_silence
+            && self.silence_output_room(gap).fits()
+        {
             return SegmentStartAudioSchedule::WithinSilenceCap;
         }
         let plausibility = self.audio_start_gap_plausibility(clock_base, audio_start);

@@ -26,6 +26,15 @@
 //! если звук цели начинается позже неё, позиция должна показывать время звучащего звука
 //! (`session/seek_completion.rs`), а не цель.
 //!
+//! Курсор отрезка. После первого PCM отрезок помнит media-время, в которое прозвучит
+//! СЛЕДУЮЩИЙ sample: конец уже записанного звука по PTS packet-а и числу декодированных
+//! frames (не по длительности из контейнера: у дыры в MP4 последний sample перед ней
+//! «длится» до звука после неё, а декодер отдаёт обычный кадр). Session сравнивает с ним
+//! PTS следующего packet-а и закрывает тишиной дыру посреди отрезка
+//! (`session/audio_runtime/mid_stream_gap.rs`, дефект D3). Курсор живёт столько же,
+//! сколько отрезок: перепривязки часов его не трогают, сбрасывает только новый отрезок.
+//! Вставленная тишина курсор не двигает — он меряет только звук самого файла.
+//!
 //! Владелец — [`PlaybackPipeline`]: он же владеет output-ом и маршрутизацией PCM в него.
 
 use std::time::Duration;
@@ -46,6 +55,12 @@ pub(super) enum AudioSegmentStart {
     FirstPcmWritten {
         /// Media-время первого прозвучавшего sample-а отрезка, если session его сообщила.
         first_sample: Option<Duration>,
+
+        /// Media-время, в которое прозвучит следующий sample (курсор отрезка, см. модуль).
+        ///
+        /// `None` — в output ушла только тишина начала отрезка, а сам packet ещё не учтён
+        /// (или запись packet-а не удалась): сравнивать следующий packet не с чем.
+        expected_next_sample: Option<Duration>,
     },
 }
 
@@ -133,7 +148,44 @@ impl PlaybackPipeline {
     pub(crate) fn audio_segment_first_sample(&self) -> Option<Duration> {
         match self.audio_segment_start {
             AudioSegmentStart::AwaitingFirstPcm { .. } => None,
-            AudioSegmentStart::FirstPcmWritten { first_sample } => first_sample,
+            AudioSegmentStart::FirstPcmWritten { first_sample, .. } => first_sample,
+        }
+    }
+
+    /// Media-время, в которое прозвучит следующий записанный sample текущего отрезка.
+    ///
+    /// Это конец уже записанного звука файла (вставленная тишина не в счёт). `None` —
+    /// отрезок ещё ждёт первый PCM (тогда следующий sample звучит в `media_clock_base`)
+    /// или его packet ещё не учтён. Перепривязки часов (seek commit, скорость, новый
+    /// output) значение не забывают — в отличие от `written_audio_end`.
+    #[must_use]
+    pub(crate) fn expected_next_audio_sample_time(&self) -> Option<Duration> {
+        match self.audio_segment_start {
+            AudioSegmentStart::AwaitingFirstPcm { .. } => None,
+            AudioSegmentStart::FirstPcmWritten {
+                expected_next_sample,
+                ..
+            } => expected_next_sample,
+        }
+    }
+
+    /// Двигает курсор отрезка к media-концу только что записанного packet-а.
+    ///
+    /// Зовётся после успешной записи PCM packet-а (`note_audio_packet_written`). Курсор
+    /// не отступает назад: перекрывающиеся packets (priming, повтор) его не сдвигают.
+    /// Пока отрезок ждёт первый PCM, это no-op: записи не было, а следующий PCM всё
+    /// равно ляжет в точку привязки часов.
+    pub(super) fn advance_audio_segment_cursor(&mut self, written_pcm_end: Duration) {
+        if let AudioSegmentStart::FirstPcmWritten {
+            expected_next_sample,
+            ..
+        } = &mut self.audio_segment_start
+        {
+            *expected_next_sample = Some(
+                expected_next_sample.map_or(written_pcm_end, |previous_end| {
+                    previous_end.max(written_pcm_end)
+                }),
+            );
         }
     }
 
@@ -163,6 +215,9 @@ impl PlaybackPipeline {
         {
             self.audio_segment_start = AudioSegmentStart::FirstPcmWritten {
                 first_sample: planned_first_sample,
+                // Конец звука учтёт `advance_audio_segment_cursor` после записи packet-а:
+                // здесь мог пройти только кусок тишины начала отрезка.
+                expected_next_sample: None,
             };
         }
     }

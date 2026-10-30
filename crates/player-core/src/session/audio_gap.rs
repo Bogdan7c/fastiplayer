@@ -22,6 +22,14 @@
 //!   ДО конца звука, а следующий audio packet сразу за ними в файле: насыщение demux-а
 //!   тогда ничего не доказывает, звук надо ждать, а не отрезать.
 //!
+//! Packet после разрыва меряется и от курсора отрезка звука (конец записанного звука,
+//! который, в отличие от `written_audio_end`, переживает перепривязки часов — seek
+//! commit, скорость, новый output). От того же курсора `audio_runtime/mid_stream_gap.rs`
+//! закрывает тишиной дыры меньше [`MIN_AUDIO_GAP`]; сюда, кроме больших дыр, попадает
+//! и мелкая дыра, тишина которой при текущей скорости не влезает в вывод (0,25×: 0,4 с
+//! дыры — 1,6 с вывода). Её packet ждёт, пока вывод освободится (тогда — тишина) или
+//! пока время показа не дойдёт до его PTS (передача часов).
+//!
 //! В обоих случаях pipeline дополнительно требует, чтобы output доиграл записанный звук,
 //! поэтому до разрыва звук и часы остаются прежними.
 //!
@@ -44,6 +52,8 @@ use super::PlayerSession;
 
 pub(in crate::session) use scheduled_audio_start::AudioStartGapPlausibility;
 use scheduled_audio_start::{ScheduledAudioJoinOutcome, SegmentStartAudioSchedule};
+
+use super::audio_runtime::mid_stream_gap::MidStreamGapClosure;
 
 /// Минимальный разрыв между концом записанного звука и следующим audio packet-ом,
 /// который считается настоящим отсутствием звука, а не джиттером timestamps.
@@ -90,6 +100,19 @@ enum AudioGapEvidence {
 
         /// PTS следующего audio packet-а.
         next_audio_start: Duration,
+    },
+
+    /// Следующий audio packet начинается позже курсора отрезка, а тишиной разрыв не
+    /// закрыть: он не меньше [`MIN_AUDIO_GAP`] или тишина не влезает в вывод.
+    SilenceCannotCloseGap {
+        /// Курсор отрезка: где прозвучал бы следующий sample.
+        expected_next: Duration,
+
+        /// PTS следующего audio packet-а.
+        next_audio_start: Duration,
+
+        /// Почему тишина не подходит.
+        closure: MidStreamGapClosure,
     },
 
     /// Demux дочитал лимит video packets, не встретив ни одного audio packet-а.
@@ -260,11 +283,21 @@ impl PlayerSession {
             return None;
         }
         let next_audio_start = self.pipeline.front_pending_audio_packet_start()?;
-        let audio_end = self.pipeline.written_audio_end()?;
-        let gap_threshold = audio_end.checked_add(MIN_AUDIO_GAP)?;
-        (next_audio_start > gap_threshold).then_some(AudioGapEvidence::NextAudioStartsAfterGap {
-            audio_end,
-            next_audio_start,
+        if let Some(audio_end) = self.pipeline.written_audio_end()
+            && audio_end
+                .checked_add(MIN_AUDIO_GAP)
+                .is_some_and(|gap_threshold| next_audio_start > gap_threshold)
+        {
+            return Some(AudioGapEvidence::NextAudioStartsAfterGap {
+                audio_end,
+                next_audio_start,
+            });
+        }
+        let gap_ahead = self.pending_audio_gap_too_large_for_silence()?;
+        Some(AudioGapEvidence::SilenceCannotCloseGap {
+            expected_next: gap_ahead.expected_next,
+            next_audio_start: gap_ahead.next_audio_start,
+            closure: gap_ahead.closure,
         })
     }
 

@@ -208,7 +208,9 @@ impl PlaybackPipeline {
     ///
     /// Это timestamps самого контейнера (PTS packet-а + длительность декодированного
     /// PCM), а не оценка по часам: следующий packet, начинающийся заметно позже этой
-    /// точки, доказывает разрыв звука.
+    /// точки, доказывает разрыв звука. Тот же конец двигает курсор отрезка звука
+    /// (`audio_segment_start.rs`): в отличие от `written_audio_end`, курсор переживает
+    /// перепривязки часов, и по нему session закрывает тишиной мелкие дыры.
     pub(crate) fn note_audio_packet_written(
         &mut self,
         packet_start: Duration,
@@ -229,6 +231,7 @@ impl PlaybackPipeline {
             self.written_audio_end
                 .map_or(packet_end, |previous_end| previous_end.max(packet_end)),
         );
+        self.advance_audio_segment_cursor(packet_end);
     }
 
     /// Media-конец последнего записанного звука текущего непрерывного отрезка.

@@ -175,20 +175,25 @@ fn leading_silence_does_not_touch_video_or_the_clock_base() {
 }
 
 #[test]
-fn following_packets_of_the_segment_are_never_padded() {
+fn following_packets_of_the_segment_are_measured_from_the_segment_cursor() {
     let (mut session, output_factory_handle) = session_with_audio(SelectedVideo::Selected);
     let audio_start = Duration::from_millis(400);
 
     feed_audio_packet(&mut session, audio_start);
     feed_audio_packet(&mut session, audio_start + PACKET_DURATION);
-    // Разрыв посреди отрезка — не дело стартовой политики (`audio_gap.rs`, отдельная задача).
+    // Дыра посреди отрезка меряется не от базы часов, а от конца записанного звука
+    // (курсор отрезка, `mid_stream_gap.rs`): 700 − 440 = 260 мс тишины, не 700.
     feed_audio_packet(&mut session, Duration::from_millis(700));
 
     let pcm = written_pcm(&output_factory_handle);
-    assert_eq!(silent_frames(&pcm), frames_in(audio_start));
+    let hole = Duration::from_millis(700) - (audio_start + 2 * PACKET_DURATION);
+    assert_eq!(
+        silent_frames(&pcm),
+        frames_in(audio_start) + frames_in(hole)
+    );
     assert_eq!(
         written_frames(&pcm),
-        frames_in(audio_start) + 3 * PACKET_FRAMES
+        frames_in(audio_start) + frames_in(hole) + 3 * PACKET_FRAMES
     );
 }
 
