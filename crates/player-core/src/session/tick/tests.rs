@@ -39,6 +39,7 @@ mod decoder_pace_backend_swap;
 mod decoder_packet_channel_wakeup;
 mod frame_threaded_decode_ahead;
 mod output_clamped_wakeup;
+mod scheduled_audio_demux;
 mod startup_audio_backlog;
 mod video_decode_ahead;
 

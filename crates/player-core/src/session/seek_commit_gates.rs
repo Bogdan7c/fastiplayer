@@ -37,9 +37,10 @@ impl PlayerSession {
             return SeekCommitGateDecision::Waiting;
         }
 
-        if self
-            .seek_audio_gate_status(seek_commit, resume_audio_min_buffer_ms)
-            .is_ready()
+        let audio_gate = self.seek_audio_gate_status(seek_commit, resume_audio_min_buffer_ms);
+        // Звук цели начнётся позже потолка тишины: буфер до commit-а не наберётся, звук
+        // войдёт в свой PTS уже после commit-а (`audio_gap/scheduled_audio_start.rs`).
+        if audio_gate.is_ready() || self.scheduled_audio_start_releases_seek_audio_gate(audio_gate)
         {
             return SeekCommitGateDecision::Ready;
         }

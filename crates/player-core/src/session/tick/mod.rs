@@ -15,6 +15,7 @@ mod audio_read_ahead;
 mod audio_refill_cadence;
 mod demux_admission;
 mod demux_read_failure;
+mod held_audio_wakeup;
 mod presentation_scheduler;
 mod result_merge;
 mod types;

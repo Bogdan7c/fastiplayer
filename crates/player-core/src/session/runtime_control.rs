@@ -11,6 +11,7 @@ use crate::{
 };
 
 use super::PlayerSession;
+use super::audio_gap::scheduled_audio_start::EarliestContentStart;
 use super::seek_resume_intent::{OneShotSeekPlaybackCommand, PlaybackCommandSeekRoute};
 
 impl PlayerSession {
@@ -152,6 +153,18 @@ impl PlayerSession {
         audio_preroll_target_ms: f64,
     ) -> PlayerResult<bool> {
         self.ensure_not_shutdown()?;
+        // Запись начинается позже шкалы целиком (MPEG-TS с 1,4 с): старт — с содержимого.
+        if let EarliestContentStart::Rebased {
+            previous_base,
+            content_start,
+        } = self.start_at_earliest_content_if_late()
+        {
+            info!(
+                previous_base_ms = previous_base.as_millis(),
+                content_start_ms = content_start.as_millis(),
+                "Media content starts after the timeline start; playback starts at the content"
+            );
+        }
         if self.startup_autoplay_pending_during_eof_drain() {
             return Ok(
                 self.complete_startup_autoplay_during_eof_drain_if_ready(audio_preroll_target_ms)
@@ -206,9 +219,8 @@ impl PlayerSession {
 
     /// Проверяет минимальный readiness для перехода из `Buffering` в `Playing`.
     fn autoplay_preroll_ready(&self, audio_preroll_target_ms: f64) -> bool {
-        let audio_ready = self
-            .autoplay_audio_readiness(audio_preroll_target_ms)
-            .is_ready();
+        // Звук, назначенный позже потолка тишины, старт не держит: видео идёт первым.
+        let audio_ready = self.preroll_audio_gate(audio_preroll_target_ms).is_ready();
         let video_ready = self.autoplay_video_preroll_ready();
 
         audio_ready && video_ready

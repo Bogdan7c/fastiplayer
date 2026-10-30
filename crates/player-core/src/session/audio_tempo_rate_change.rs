@@ -46,6 +46,12 @@ impl PlayerSession {
             return Ok(PreparedAudioTempoRateChange::no_processor_change());
         }
 
+        // Звук удержан до своего PTS и output-а ещё нет: tempo processor по текущей
+        // скорости создаст первый PCM (`ensure_audio_tempo_processor_for_decoded_spec`),
+        // а до него время ведёт monotonic clock, которому новая скорость и применяется.
+        if !self.pipeline.has_audio_output() && self.segment_start_audio_schedule().holds_audio() {
+            return Ok(PreparedAudioTempoRateChange::no_processor_change());
+        }
         if !self.pipeline.has_audio_output() || !self.pipeline.has_audio_clock() {
             return Err(audio_output_unavailable_reject());
         }

@@ -377,7 +377,7 @@ impl PlayerSession {
         self.remember_audio_output_placement(&output_route);
         self.publish_audio_output_route(output_route);
 
-        if self.playback_state() == PlaybackState::Playing {
+        if self.lazily_created_audio_output_joins_running_presentation() {
             if let Some(Err(error)) = self.play_audio_output_with_resume_event() {
                 return Err(PlayerError::new(
                     PlayerErrorKind::AudioDeviceUnavailable,

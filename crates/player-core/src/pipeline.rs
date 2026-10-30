@@ -785,7 +785,7 @@ impl Default for PlaybackPipeline {
             monotonic_media_clock_anchor: None,
             audio_end_clock_handover: AudioEndClockHandover::NotHandedOver,
             written_audio_end: None,
-            audio_segment_start: audio_segment_start::AudioSegmentStart::AwaitingFirstPcm,
+            audio_segment_start: audio_segment_start::AudioSegmentStart::default(),
             seek_generation: 0,
             audio_buffer_clear_generation: 0,
             last_audio_clock: Duration::ZERO,

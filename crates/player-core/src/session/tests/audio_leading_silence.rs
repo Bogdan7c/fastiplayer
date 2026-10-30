@@ -204,6 +204,8 @@ fn gap_within_tolerance_writes_audio_immediately() {
 }
 
 #[test]
+/// Packet, отданный прямо в decode (минуя очередь, где его удержал бы
+/// `audio_gap/scheduled_audio_start.rs`): прежнее поведение — ветка для live-timeline.
 fn gap_above_the_silence_cap_keeps_writing_at_the_clock_base() {
     let (mut session, output_factory_handle) = session_with_audio(SelectedVideo::Selected);
     let audio_start = Duration::from_secs(2);
@@ -368,7 +370,8 @@ fn audio_only_seek_leaves_the_clock_base_to_the_seek_commit() {
         harness
             .session
             .plan_audio_segment_start(audio_start, SAMPLE_RATE),
-        AudioSegmentStartPlan::AudioOnlySeekKeepsClockBase {
+        AudioSegmentStartPlan::AudioOnlySeekLandsAtFirstSample {
+            first_sample_time: audio_start,
             gap: Duration::from_millis(300)
         }
     );

@@ -24,6 +24,11 @@
 //!
 //! В обоих случаях pipeline дополнительно требует, чтобы output доиграл записанный звук,
 //! поэтому до разрыва звук и часы остаются прежними.
+//!
+//! Тот же путь у начала отрезка (старт, seek), когда первый звук лежит дальше базы часов
+//! больше потолка тишины: см. `audio_gap/scheduled_audio_start.rs`.
+
+pub(in crate::session) mod scheduled_audio_start;
 
 use std::time::{Duration, Instant};
 
@@ -36,6 +41,9 @@ use crate::pipeline::{
 };
 
 use super::PlayerSession;
+
+pub(in crate::session) use scheduled_audio_start::AudioStartGapPlausibility;
+use scheduled_audio_start::{ScheduledAudioJoinOutcome, SegmentStartAudioSchedule};
 
 /// Минимальный разрыв между концом записанного звука и следующим audio packet-ом,
 /// который считается настоящим отсутствием звука, а не джиттером timestamps.
@@ -52,6 +60,10 @@ pub(crate) enum PendingAudioOutputAdmission {
 
     /// Packet лежит после разрыва звука и ждёт, пока до него дойдёт время показа.
     HoldForAudioGap,
+
+    /// Первый звук отрезка (старт, seek) лежит дальше базы часов больше потолка тишины
+    /// и ждёт своего PTS (`audio_gap/scheduled_audio_start.rs`).
+    HoldUntilScheduledAudioStart,
 }
 
 /// Состояние demux audio-priority ожидания на этом tick-е (вычисляет `tick`).
@@ -78,6 +90,15 @@ enum AudioGapEvidence {
 
     /// Demux дочитал лимит video packets, не встретив ни одного audio packet-а.
     DemuxSaturatedWithoutAudio,
+
+    /// Первый звук нового отрезка (seek) лежит дальше базы больше потолка тишины.
+    SegmentAudioStartsLater {
+        /// База часов отрезка (цель seek-а).
+        clock_base: Duration,
+
+        /// PTS первого pending audio packet-а.
+        audio_start: Duration,
+    },
 }
 
 impl PlayerSession {
@@ -87,6 +108,10 @@ impl PlayerSession {
     /// склеил бы его с предыдущим звуком и сдвинул весь A/V sync на длину разрыва.
     #[must_use]
     pub(crate) fn pending_audio_output_admission(&self) -> PendingAudioOutputAdmission {
+        // Начало отрезка: звук без удержания создал бы output и прозвучал в базе часов.
+        if self.segment_start_audio_schedule().holds_audio() {
+            return PendingAudioOutputAdmission::HoldUntilScheduledAudioStart;
+        }
         match self.pipeline.presentation_clock_source() {
             // Пока время ведёт monotonic clock, звук возвращается только через
             // `resume_audio_after_gap_if_due` — он перепривязывает часы до записи PCM.
@@ -103,6 +128,13 @@ impl PlayerSession {
             PresentationClockSource::AudioOutput
             | PresentationClockSource::MonotonicWithoutAudio => PendingAudioOutputAdmission::Admit,
         }
+    }
+
+    /// `true`, если front pending audio packet удержан до своего PTS (любым удержанием).
+    #[must_use]
+    pub(crate) fn pending_audio_is_held_until_its_pts(&self) -> bool {
+        !self.pipeline.pending_audio_packet_is_empty()
+            && self.pending_audio_output_admission() != PendingAudioOutputAdmission::Admit
     }
 
     /// Передаёт часы monotonic clock-у, если отсутствие звука впереди доказано.
@@ -147,6 +179,13 @@ impl PlayerSession {
     /// Часы перепривязываются к текущей monotonic-позиции, а PCM раньше неё обрезается
     /// обычной trim-логикой: позиция не прыгает назад, звук совпадает с видео.
     pub(crate) fn resume_audio_after_gap_if_due(&mut self, now: Instant) {
+        // Звук, назначенный на потом, без output-а входит сам; с output-ом — ниже, как разрыв.
+        if let ScheduledAudioJoinOutcome::Joined { .. }
+        | ScheduledAudioJoinOutcome::KeptUpWithPresentation { .. } =
+            self.join_scheduled_audio_start_if_due(now)
+        {
+            return;
+        }
         if self.pipeline.presentation_clock_source()
             != PresentationClockSource::MonotonicAfterAudioEnd
             || !self.audio_gap_policy_applies()
@@ -215,6 +254,18 @@ impl PlayerSession {
     ) -> Option<AudioGapEvidence> {
         if let Some(evidence) = self.audio_gap_ahead() {
             return Some(evidence);
+        }
+        // Seek посреди игры: output очищен, а звук цели ждёт своего PTS — без передачи
+        // часы стояли бы на базе (пустой output не двигает audio clock).
+        if let SegmentStartAudioSchedule::ScheduledLater {
+            clock_base,
+            audio_start,
+        } = self.segment_start_audio_schedule()
+        {
+            return Some(AudioGapEvidence::SegmentAudioStartsLater {
+                clock_base,
+                audio_start,
+            });
         }
 
         // Блокировка demux-а доказывает отсутствие звука только при обычном чтении файла:

@@ -19,6 +19,7 @@ use super::{
         audio_demux_catchup_needed, can_read_next_demux_packet_with_audio_priority,
         selected_audio_bootstrap_needs_demux,
     },
+    held_audio_wakeup::prefer_earlier_held_audio_start,
     presentation_scheduler::{
         front_frame_ready_for_scheduler, front_frame_scheduler_delay, front_frame_timing,
         host_upload_ready_queue_capacity, normal_present_queue_blocks_video_admission,
@@ -317,6 +318,7 @@ fn prefer_earlier_staged_preflight(
     now: Instant,
     existing_plan: PlayerWorkerWakeupPlan,
 ) -> PlayerWorkerWakeupPlan {
+    let existing_plan = prefer_earlier_held_audio_start(session, now, existing_plan);
     let Some(staged_delay) = session.staged_preflight_wakeup_delay(now) else {
         return existing_plan;
     };
@@ -523,8 +525,9 @@ pub(super) fn pending_audio_work_available(
         return false;
     }
 
-    // Звук после разрыва ждёт PTS: будить worker раньше видео бессмысленно (иначе spin).
-    if session.pending_audio_output_admission() == PendingAudioOutputAdmission::HoldForAudioGap {
+    // Звук после разрыва (или звук начала отрезка) ждёт PTS: будить worker раньше видео
+    // бессмысленно (иначе spin).
+    if session.pending_audio_output_admission() != PendingAudioOutputAdmission::Admit {
         return false;
     }
 

@@ -26,6 +26,14 @@
 //! исчерпан, session стартует со звуком первым (`session/video_preroll_wait.rs`).
 //! Предел запаса мягкий: проверка идёт перед каждым read-ом, поэтому превышение не
 //! больше read-ов одного tick-а (на практике — один packet).
+//!
+//! Тот же запас ограничивает звук, удержанный до своего PTS (начало отрезка позже базы
+//! или разрыв посреди файла, `session/audio_gap.rs`): удержанный звук не декодируется,
+//! output его не ограничивает, и без предела файл, где весь звук лежит раньше видео,
+//! вылил бы его целиком в очередь. Исчерпан — demux ждёт; дедлока нет, потому что
+//! время показа при удержании ведут monotonic-часы и звук войдёт в свой PTS сам
+//! (а голодный старт откроют защёлкой «звук первым»). Seek preroll предел не трогает:
+//! у него свои пределы, а блок demux-а мог бы не дать кадр цели.
 
 use super::PlayerTickConfig;
 use crate::pipeline::PendingAudioBacklog;
@@ -143,15 +151,56 @@ pub(super) fn startup_audio_backlog_room(
         return StartupAudioBacklogRoom::NotWaitingForVideo;
     }
     let audio_backlog = session.pipeline.pending_audio_backlog();
-    let span_exhausted =
-        audio_backlog.media_span >= tick_config.startup_video_wait_max_audio_backlog;
-    let bytes_exhausted =
-        audio_backlog.encoded_bytes >= tick_config.startup_video_wait_max_audio_backlog_bytes;
-    if audio_backlog.packets > 0 && (span_exhausted || bytes_exhausted) {
+    if audio_backlog_limit_reached(audio_backlog, tick_config) {
         StartupAudioBacklogRoom::Exhausted(audio_backlog)
     } else {
         StartupAudioBacklogRoom::Available
     }
+}
+
+/// Хватает ли запаса для звука, удержанного до своего PTS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HeldAudioBacklogRoom {
+    /// Звук не удержан (или идёт seek preroll): предел не действует.
+    NotHeld,
+
+    /// Удержанный звук ещё помещается в запас.
+    Available,
+
+    /// Запас удержанного звука исчерпан: demux ждёт, пока звук войдёт в свой PTS.
+    Exhausted(PendingAudioBacklog),
+}
+
+/// Оценивает запас сжатого звука, удержанного до своего PTS (те же пределы и тот же
+/// владелец объёма очереди, что у голодного старта).
+#[must_use]
+pub(super) fn held_audio_backlog_room(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+) -> HeldAudioBacklogRoom {
+    if session.has_active_seek_commit() || !session.pending_audio_is_held_until_its_pts() {
+        return HeldAudioBacklogRoom::NotHeld;
+    }
+    let audio_backlog = session.pipeline.pending_audio_backlog();
+    if audio_backlog_limit_reached(audio_backlog, tick_config) {
+        HeldAudioBacklogRoom::Exhausted(audio_backlog)
+    } else {
+        HeldAudioBacklogRoom::Available
+    }
+}
+
+/// Достиг ли запас отложенного сжатого звука предела по длительности или байтам.
+///
+/// Пустая очередь предела не достигает никогда (нулевой предел — «без запаса»).
+fn audio_backlog_limit_reached(
+    audio_backlog: PendingAudioBacklog,
+    tick_config: &PlayerTickConfig,
+) -> bool {
+    let span_exhausted =
+        audio_backlog.media_span >= tick_config.startup_video_wait_max_audio_backlog;
+    let bytes_exhausted =
+        audio_backlog.encoded_bytes >= tick_config.startup_video_wait_max_audio_backlog_bytes;
+    audio_backlog.packets > 0 && (span_exhausted || bytes_exhausted)
 }
 
 /// `true`, если уровень output-а не должен останавливать demux: preroll ждёт первый

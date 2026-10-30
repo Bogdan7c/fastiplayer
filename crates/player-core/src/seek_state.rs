@@ -626,6 +626,9 @@ pub(crate) enum FinalSeekCommitPosition {
 
     /// Near-EOF fallback коммитит PTS реально показанного fallback frame-а.
     EofFallbackFrame { position: Duration },
+
+    /// Audio-only: звук цели начинается позже неё — коммитится время первого sample-а.
+    FirstAudioSample { position: Duration },
 }
 
 impl FinalSeekCommitPosition {
@@ -636,7 +639,8 @@ impl FinalSeekCommitPosition {
             Self::Target { position }
             | Self::AuthoritativeActual { position }
             | Self::PresentedFrame { position }
-            | Self::EofFallbackFrame { position } => position,
+            | Self::EofFallbackFrame { position }
+            | Self::FirstAudioSample { position } => position,
         }
     }
 
@@ -648,6 +652,7 @@ impl FinalSeekCommitPosition {
             Self::AuthoritativeActual { .. } => "authoritative-actual",
             Self::PresentedFrame { .. } => "presented-frame",
             Self::EofFallbackFrame { .. } => "eof-fallback-frame",
+            Self::FirstAudioSample { .. } => "first-audio-sample",
         }
     }
 }

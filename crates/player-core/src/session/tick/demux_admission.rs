@@ -13,7 +13,10 @@ use crate::pipeline::PresentationClockSource;
 
 use super::{
     PlayerTickConfig, PlayerTickResult,
-    audio_read_ahead::{audio_read_ahead_limit_ms, starved_preroll_reads_past_audio_limit},
+    audio_read_ahead::{
+        HeldAudioBacklogRoom, audio_read_ahead_limit_ms, held_audio_backlog_room,
+        starved_preroll_reads_past_audio_limit,
+    },
     presentation_scheduler::{
         available_video_present_slots, host_upload_ready_queue_capacity, seek_admission_active,
         video_decoder_texture_limits,
@@ -238,6 +241,10 @@ pub(super) fn audio_read_ahead_blocks_demux(
     if !session.pipeline.has_selected_audio_track() {
         return false;
     }
+    // Звук, удержанный до своего PTS, output не ограничивает: его предел — запас.
+    if let HeldAudioBacklogRoom::Exhausted(_) = held_audio_backlog_room(session, tick_config) {
+        return true;
+    }
 
     match session.audio_buffer_level_ms() {
         Some(audio_buffer_level_ms) => {
@@ -246,7 +253,12 @@ pub(super) fn audio_read_ahead_blocks_demux(
                     // Голодный preroll читает дальше, пока есть запас сжатого звука.
                     && !starved_preroll_reads_past_audio_limit(session, tick_config))
         }
-        None => !session.pipeline.pending_audio_packet_is_empty(),
+        // Нет output-а: pending packet нужен для его создания — кроме звука, который ждёт
+        // своего PTS (иначе он остановил бы и чтение видео, идущего до него).
+        None => {
+            !session.pipeline.pending_audio_packet_is_empty()
+                && !session.segment_start_audio_schedule().holds_audio()
+        }
     }
 }
 

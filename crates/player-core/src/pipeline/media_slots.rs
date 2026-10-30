@@ -409,6 +409,18 @@ impl PlaybackPipeline {
             .any(|frame| frame.generation == generation && frame.pts >= target)
     }
 
+    /// Самый ранний PTS уже декодированного кадра текущего поколения (на экране или в
+    /// очереди показа); `None` — готовых кадров нет.
+    #[must_use]
+    pub(crate) fn earliest_ready_video_frame_pts(&self) -> Option<Duration> {
+        self.present_video_frame
+            .iter()
+            .chain(self.video_frame_queue.iter())
+            .filter(|frame| self.packet_generation_is_current(frame.generation))
+            .map(|frame| frame.pts)
+            .min()
+    }
+
     /// Возвращает глубину presentation queue без раскрытия поля очереди.
     #[must_use]
     pub(crate) fn video_present_queue_len(&self) -> usize {

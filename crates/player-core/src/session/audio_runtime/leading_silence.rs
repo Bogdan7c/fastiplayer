@@ -19,12 +19,16 @@
 //! - разрыв до [`LeadingSilencePolicy::SEGMENT_START`] `on_time_tolerance` (20 мс) —
 //!   шум таймстемпов и priming кодека, звук пишется как есть;
 //! - разрыв до `max_silence` (1 с) — тишина;
-//! - разрыв больше — пока прежнее поведение (звук сразу в базу), но явной ветвью
-//!   с логом. Следующий шаг (отдельная задача): звук ждёт своего времени, часы идут;
+//! - разрыв больше — сюда звук обычно не доходит: он ждёт своего PTS в очереди
+//!   (`session/audio_gap/scheduled_audio_start.rs`) и входит, когда часы дошли до него.
+//!   Дошёл всё-таки (live-timeline, где удержание не действует) — прежнее поведение
+//!   (звук в базу) явной ветвью с логом;
 //! - audio-only (видео не выбрано) — тишина не пишется: смотреть нечего, поэтому
 //!   воспроизведение начинается с первого sample-а, а часы перепривязываются к его PTS,
-//!   чтобы позиция на шкале совпадала со временем звука. Тот же потолок 1 с: дальше
-//!   (эпоха эфира, битые метки времени) часы не переносятся — прежнее поведение.
+//!   чтобы позиция на шкале совпадала со временем звука (как mpv/ffplay). Во время seek-а
+//!   базу задаёт commit: он коммитит позицию первого sample-а (`seek_completion.rs`);
+//! - разрыв неправдоподобен (звук за концом media или дальше часа от базы — битые метки
+//!   времени) — прежнее поведение (звук в базу) с предупреждением в лог.
 //!
 //! Применяется только к ПЕРВОМУ PCM отрезка (см. `pipeline/audio_segment_start.rs`):
 //! разрывы посреди отрезка ведёт `audio_gap.rs` (≥ 500 мс), а мелкие (20–500 мс) пока
@@ -33,11 +37,12 @@
 
 use std::time::Duration;
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::{AudioOutputSpec, PlayerError, PlayerErrorKind, PlayerResult};
 
 use super::super::PlayerSession;
+use super::super::audio_gap::AudioStartGapPlausibility;
 use super::super::audio_packet_window::DecodedPcmPacketClipOutcome;
 
 /// Наносекунд в секунде (перевод длительности в PCM frames).
@@ -139,16 +144,24 @@ pub(in crate::session) enum AudioSegmentStartPlan {
         gap: Duration,
     },
 
-    /// Разрыв больше потолка: прежнее поведение — PCM пишется сразу в базу. С видео
-    /// звук играет раньше видео на `gap` (следующая задача: звук ждёт своего времени);
-    /// audio-only — часы не переносятся: PTS за потолком (эпоха эфира, битые метки
-    /// времени) увёл бы позицию за шкалу.
+    /// Есть видео, разрыв больше потолка и правдоподобен, но удержание звука до его PTS
+    /// здесь не действует (live-timeline): прежнее поведение — PCM пишется сразу в базу.
     GapAboveSilenceCap {
         /// Разрыв между базой часов и первым sample-ом.
         gap: Duration,
     },
 
-    /// Audio-only, разрыв не больше потолка: тишина не пишется, часы начинают с PTS
+    /// Разрыв неправдоподобен (битые метки времени): PCM пишется в базу, часы не
+    /// переносятся — ждать такой звук значило бы не услышать его вовсе.
+    ImplausibleGap {
+        /// Разрыв между базой часов и первым sample-ом.
+        gap: Duration,
+
+        /// Почему разрыв отвергнут.
+        plausibility: AudioStartGapPlausibility,
+    },
+
+    /// Audio-only, разрыв правдоподобен: тишина не пишется, часы начинают с PTS
     /// первого sample-а.
     StartClockAtFirstSample {
         /// Media-время первого sample-а — новая база часов.
@@ -158,9 +171,12 @@ pub(in crate::session) enum AudioSegmentStartPlan {
         gap: Duration,
     },
 
-    /// Audio-only во время seek-а: базу часов задаёт seek commit (цель seek-а),
-    /// поэтому здесь она не трогается — прежнее поведение.
-    AudioOnlySeekKeepsClockBase {
+    /// Audio-only во время seek-а: базу часов задаёт seek commit, поэтому здесь она не
+    /// трогается; commit возьмёт позицию первого sample-а (её запоминает pipeline).
+    AudioOnlySeekLandsAtFirstSample {
+        /// Media-время первого sample-а — будущая позиция commit-а.
+        first_sample_time: Duration,
+
         /// Разрыв между целью seek-а и первым sample-ом.
         gap: Duration,
     },
@@ -181,6 +197,10 @@ impl PlayerSession {
             first_retained_sample_time(packet_pts, packet_clip, output_spec.sample_rate);
         let plan = self.plan_audio_segment_start(first_sample_time, output_spec.sample_rate);
         let clock_base = self.pipeline.media_clock_base();
+        // Звук раньше базы обрезается до неё: первый прозвучавший sample — не раньше базы.
+        // Запоминается только для первого PCM отрезка (иначе no-op в pipeline).
+        self.pipeline
+            .plan_audio_segment_first_sample(first_sample_time.max(clock_base));
         match plan {
             AudioSegmentStartPlan::ContinuesSegment | AudioSegmentStartPlan::OnTime => Ok(()),
             AudioSegmentStartPlan::PadWithSilence {
@@ -200,9 +220,20 @@ impl PlayerSession {
                     gap_ms = gap.as_millis(),
                     max_silence_ms = LeadingSilencePolicy::SEGMENT_START.max_silence.as_millis(),
                     clock_base_ms = clock_base.as_millis(),
+                    "Audio starts too far after the clock base and was not held until its PTS \
+                     (live timeline); it is written at the clock base ahead of video"
+                );
+                Ok(())
+            }
+            AudioSegmentStartPlan::ImplausibleGap { gap, plausibility } => {
+                warn!(
+                    gap_ms = gap.as_millis(),
+                    first_sample_ms = first_sample_time.as_millis(),
+                    clock_base_ms = clock_base.as_millis(),
+                    plausibility = ?plausibility,
                     has_video = self.pipeline.has_selected_video_track(),
-                    "Audio starts too far after the clock base to align it; \
-                     it is written at the clock base (ahead of video, or position offset)"
+                    "Audio start is implausibly far from the clock base (broken timestamps?); \
+                     it is written at the clock base"
                 );
                 Ok(())
             }
@@ -222,10 +253,14 @@ impl PlayerSession {
                 );
                 Ok(())
             }
-            AudioSegmentStartPlan::AudioOnlySeekKeepsClockBase { gap } => {
+            AudioSegmentStartPlan::AudioOnlySeekLandsAtFirstSample {
+                first_sample_time,
+                gap,
+            } => {
                 debug!(
                     gap_ms = gap.as_millis(),
-                    "Audio-only seek: audio starts after the target, clock base stays at the target"
+                    first_sample_ms = first_sample_time.as_millis(),
+                    "Audio-only seek: audio starts after the target; commit lands at its first sample"
                 );
                 Ok(())
             }
@@ -245,9 +280,10 @@ impl PlayerSession {
 
         // Без тишины первый PCM пустого output-а звучит ровно в базе часов; той же
         // базой `audio_playback_bounds` обрезает звук, начавшийся раньше неё.
+        let clock_base = self.pipeline.media_clock_base();
         let leading_silence = plan_leading_silence(
             first_sample_time,
-            self.pipeline.media_clock_base(),
+            clock_base,
             sample_rate,
             LeadingSilencePolicy::SEGMENT_START,
         );
@@ -262,21 +298,31 @@ impl PlayerSession {
                     gap,
                 },
                 LeadingSilence::TooLarge { gap } => {
-                    AudioSegmentStartPlan::GapAboveSilenceCap { gap }
+                    match self.audio_start_gap_plausibility(clock_base, first_sample_time) {
+                        AudioStartGapPlausibility::Plausible => {
+                            AudioSegmentStartPlan::GapAboveSilenceCap { gap }
+                        }
+                        plausibility => AudioSegmentStartPlan::ImplausibleGap { gap, plausibility },
+                    }
                 }
             };
         }
 
-        // Audio-only: тишина не пишется вовсе, а потолок ограничивает перенос часов.
+        // Audio-only: тишина не пишется вовсе; перенос часов ограничивает только
+        // правдоподобие разрыва (потолок тишины к audio-only не относится).
         let gap = match leading_silence {
             LeadingSilence::None => return AudioSegmentStartPlan::OnTime,
-            LeadingSilence::TooLarge { gap } => {
-                return AudioSegmentStartPlan::GapAboveSilenceCap { gap };
-            }
-            LeadingSilence::Pad { gap, .. } => gap,
+            LeadingSilence::Pad { gap, .. } | LeadingSilence::TooLarge { gap } => gap,
         };
+        let plausibility = self.audio_start_gap_plausibility(clock_base, first_sample_time);
+        if !plausibility.is_plausible() {
+            return AudioSegmentStartPlan::ImplausibleGap { gap, plausibility };
+        }
         if self.has_active_seek_commit() {
-            return AudioSegmentStartPlan::AudioOnlySeekKeepsClockBase { gap };
+            return AudioSegmentStartPlan::AudioOnlySeekLandsAtFirstSample {
+                first_sample_time,
+                gap,
+            };
         }
         AudioSegmentStartPlan::StartClockAtFirstSample {
             first_sample_time,

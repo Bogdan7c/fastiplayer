@@ -80,6 +80,7 @@ mod prepared_initial_position;
 mod progressive_scrub_preview;
 mod redundant_video_track_selection;
 mod restored_user_volume;
+mod scheduled_audio_start;
 mod scrub;
 mod scrub_driver;
 mod scrub_hold;

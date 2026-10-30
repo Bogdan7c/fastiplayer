@@ -10,6 +10,7 @@ use crate::{
 };
 
 use super::PlayerSession;
+use super::audio_runtime::leading_silence::LeadingSilencePolicy;
 
 impl PlayerSession {
     /// Успешно закрывает seek transaction и применяет сохранённый resume intent.
@@ -33,9 +34,35 @@ impl PlayerSession {
             };
         }
 
+        if let Some(position) = self.final_seek_audio_only_landing_position(seek_commit) {
+            return FinalSeekCommitPosition::FirstAudioSample { position };
+        }
+
         FinalSeekCommitPosition::Target {
             position: seek_commit.target_position.as_duration(),
         }
+    }
+
+    /// Audio-only seek: позиция первого записанного sample-а, если звук цели начался позже.
+    ///
+    /// Первый PCM после очистки output-а звучит в базе часов (цели), поэтому без этой
+    /// поправки позиция отставала бы от слышимого звука на весь разрыв. Разрыв в пределах
+    /// допуска тишины — шум меток, а неправдоподобный (битые метки) позицию не уводит.
+    fn final_seek_audio_only_landing_position(
+        &self,
+        seek_commit: SeekCommitState,
+    ) -> Option<Duration> {
+        if self.pipeline.has_selected_video_track() || !self.pipeline.has_selected_audio_track() {
+            return None;
+        }
+        let first_sample = self.pipeline.audio_segment_first_sample()?;
+        let clock_base = seek_commit.runtime_clock_base();
+        let gap = first_sample.checked_sub(clock_base)?;
+        let lands_later = gap > LeadingSilencePolicy::SEGMENT_START.on_time_tolerance
+            && self
+                .audio_start_gap_plausibility(clock_base, first_sample)
+                .is_plausible();
+        lands_later.then_some(first_sample)
     }
 
     /// Explicit keyframe-before seek фиксирует реально показанный frame от demux actual.
@@ -211,7 +238,10 @@ impl PlayerSession {
         seek_commit: SeekCommitState,
         playback_position: Duration,
     ) -> Result<(), PlayerError> {
-        if !self.pipeline.has_selected_audio_track() {
+        if !self.pipeline.has_selected_audio_track()
+            || self.seek_commit_defers_audio_output_to_scheduled_start()
+        {
+            // Звук цели назначен на потом: output создаст его первый PCM в свой PTS.
             return Ok(());
         }
 

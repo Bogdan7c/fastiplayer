@@ -196,10 +196,7 @@ impl PlayerSession {
     /// ждать нечего. Поэтому gate готов, когда обычный audio gate готов, ЛИБО все уже
     /// считанные audio packets обработаны (нет pending packets): что есть — то и играем.
     fn startup_audio_ready_during_eof_drain(&self, audio_preroll_target_ms: f64) -> bool {
-        if self
-            .autoplay_audio_readiness(audio_preroll_target_ms)
-            .is_ready()
-        {
+        if self.preroll_audio_gate(audio_preroll_target_ms).is_ready() {
             return true;
         }
         !matches!(

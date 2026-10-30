@@ -926,3 +926,68 @@ fn seek_back_from_audio_gap_returns_presentation_to_audio_clock() {
     );
     assert_ne!(scenario.session.playback_state(), PlaybackState::Ended);
 }
+
+#[test]
+fn seek_into_region_where_audio_starts_later_joins_audio_at_its_pts() {
+    // 03e: seek на 10 с, звук цели начинается только с 12 с (дальше потолка тишины 1 с).
+    // Раньше звук 12 с писался в пустой output сразу на commit-е и звучал в 10 с — на
+    // 2 с раньше видео (часы звука доходили до конца звука уже на 18 с). Теперь время
+    // с цели ведёт monotonic clock, звук ждёт своего PTS и забирает часы ровно там.
+    // Кадры здесь не сверяются: fake decoder этой обвязки после seek-а отдаёт кадры по
+    // сценарию, а не по позиции; кадры «до кадра» проверяет e2e
+    // `pushed-media-source/tests/audio_large_gap_to_frame.rs`.
+    let seek_target = Duration::from_secs(10);
+    let audio_start = Duration::from_secs(12);
+    let layout = MediaLayout {
+        video_start: seek_target,
+        audio_ranges: vec![(audio_start, Duration::from_secs(20))],
+        ..audio_ends_at_five_seconds_layout()
+    };
+    let mut scenario = GapScenario::start(&layout);
+    let mut observations = PlaybackObservations::default();
+    scenario.start_seek_into_region_without_audio(seek_target);
+    let submitted_at_seek = scenario.device.submitted_frames();
+
+    let _ended_at = scenario.play_until_ended(Instant::now(), &mut observations);
+
+    assert!(
+        observations.handed_over,
+        "video runs on the monotonic clock"
+    );
+    let (resumed_at, submitted_before_resume) = observations
+        .audio_resume
+        .expect("the audio of the target region must take the clock at its PTS");
+    assert!(
+        resumed_at >= audio_start && resumed_at < audio_start + TICK_STEP * 2,
+        "audio must join when presentation reaches its PTS, joined at {resumed_at:?}"
+    );
+    assert_eq!(
+        submitted_before_resume, submitted_at_seek,
+        "no audio may be written at the seek target before its PTS"
+    );
+    // Позиция до звука шла по настоящему (виртуальному) времени: 2 с — 80 tick-ов.
+    let ticks_until_resume = observations
+        .positions
+        .iter()
+        .position(|position| *position >= resumed_at)
+        .expect("position reached the join");
+    let held_wall_time = TICK_STEP * u32::try_from(ticks_until_resume).expect("tick count");
+    assert!(
+        held_wall_time >= Duration::from_millis(1_950)
+            && held_wall_time <= Duration::from_millis(2_100),
+        "2 s from the target to the audio must take 2 s, took {held_wall_time:?}"
+    );
+    let audio_after_resume = duration_for(
+        scenario
+            .device
+            .submitted_frames()
+            .saturating_sub(submitted_before_resume),
+    );
+    let expected_audio_after_resume = Duration::from_secs(20) - resumed_at;
+    assert!(
+        audio_after_resume.abs_diff(expected_audio_after_resume) <= Duration::from_millis(5),
+        "audio after the join starts at the presentation position: \
+         written {audio_after_resume:?}, expected {expected_audio_after_resume:?}"
+    );
+    assert_position_never_jumps_back(&observations);
+}
