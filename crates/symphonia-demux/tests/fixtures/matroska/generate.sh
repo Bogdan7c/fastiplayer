@@ -46,3 +46,13 @@ ffmpeg -hide_banner -loglevel error -y \
   -filter_complex "aevalsrc=exprs=${beeps}:s=48000:d=12:n=960,atrim=start=2[a]" -map "[a]" \
   -c:a libopus -b:a 16k -ac 1 \
   "$here/opus-audio-only-beeps-late2.mka"
+
+# Видео начинается на 2-й секунде, звук — с нуля (как vl2-фикстура живой приёмки) для
+# tests/matroska_late_video_start_seek.rs. trim в filter_complex сохраняет pts, поэтому
+# первый кадр H.264 (keyframe, GOP 5 при 10 к/с) лежит на 2.0 с, а звук AAC — с 0.
+ffmpeg -hide_banner -loglevel error -y \
+  -filter_complex "testsrc=size=64x64:rate=10:duration=6,trim=start=2[v];sine=frequency=440:sample_rate=48000:duration=6[a]" \
+  -map "[v]" -map "[a]" \
+  -c:v libx264 -preset veryfast -g 5 -keyint_min 5 -sc_threshold 0 -bf 0 -pix_fmt yuv420p \
+  -c:a aac -b:a 32k -ac 1 \
+  "$here/h264-video-starts-at-2s.mkv"

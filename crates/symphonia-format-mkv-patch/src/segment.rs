@@ -304,10 +304,14 @@ impl SignedTrackTicks {
         self.0.checked_add_unsigned(other.0).map(SignedTrackTicks)
     }
 
-    /// Subtract the provided track ticks to `self`, returning `None` if an overflow occurred.
+    /// Subtract the provided track ticks from `self`, returning `None` if an overflow occurred.
+    ///
+    /// Fastiplayer: upstream здесь по ошибке вызывал `checked_add_unsigned`, и CodecDelay
+    /// (Opus pre-skip, задержка AC-3) не вычитался из pts блока, а прибавлялся: pts MKV/WebM
+    /// оказывались на +2·CodecDelay позже ffmpeg (13 мс у Opus) — звук отставал от картинки.
     #[inline]
     pub fn checked_sub_unsigned(self, other: TrackTicks) -> Option<Self> {
-        self.0.checked_add_unsigned(other.0).map(SignedTrackTicks)
+        self.0.checked_sub_unsigned(other.0).map(SignedTrackTicks)
     }
 }
 

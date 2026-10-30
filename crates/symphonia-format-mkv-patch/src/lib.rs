@@ -29,6 +29,8 @@ mod track_names;
 mod cue_seek_tests;
 #[cfg(test)]
 mod reader_tests;
+#[cfg(test)]
+mod segment_ticks_tests;
 
 pub use crate::attachment_limits::{
     AttachmentReadLimits, SkippedAttachment, SkippedAttachmentReason, with_attachment_read_limits,

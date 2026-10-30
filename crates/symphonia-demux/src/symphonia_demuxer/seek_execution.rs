@@ -15,12 +15,12 @@ use crate::symphonia_api::{SeekErrorKind, SeekedTo, SymphoniaError, SymphoniaSee
 use super::SymphoniaDemuxer;
 use super::decode_point_before::{
     DECODE_POINT_BEFORE_INITIAL_SEEK_MARGIN, DECODE_POINT_BEFORE_MAX_RETRIES,
-    decode_point_before_after_target_error, decode_point_before_initial_timestamp,
-    decode_point_before_retry_timestamp, decode_point_before_retry_timestamp_for_issue,
-    decode_point_before_verification_error, log_decode_point_before_uncertainty,
-    matroska_decode_point_before_retry_timestamp, prepend_retained_lifecycle_events,
-    retain_tracks_changed_events_from_failed_verification, seek_result_with_verified_video_packet,
-    selected_video_track_id,
+    DecodePointBeforeVerificationIssue, decode_point_before_after_target_error,
+    decode_point_before_initial_timestamp, decode_point_before_retry_timestamp,
+    decode_point_before_retry_timestamp_for_issue, decode_point_before_verification_error,
+    log_decode_point_before_uncertainty, matroska_decode_point_before_retry_timestamp,
+    prepend_retained_lifecycle_events, retain_tracks_changed_events_from_failed_verification,
+    seek_result_with_verified_video_packet, selected_video_track_id,
 };
 
 /// Первый шаг назад для поиска рабочей позиции, когда Symphonia считает in-range цель концом stream-а.
@@ -365,25 +365,36 @@ impl SymphoniaDemuxer {
                                 self.options.decode_point_before_max_accepted_preroll(),
                             )
                         };
-                    let Some(retry_timestamp) = retry_timestamp else {
-                        return Err(decode_point_before_verification_error(
-                            requested_timestamp,
-                            issue,
-                            verification.packets_checked,
-                            retry_index,
-                        ));
+                    let retry_timestamp = match retry_timestamp {
+                        Some(retry_timestamp)
+                            if retry_index < DECODE_POINT_BEFORE_MAX_RETRIES
+                                && retry_timestamp != backend_timestamp =>
+                        {
+                            retry_timestamp
+                        }
+                        // Retry исчерпан. Перед ошибкой проверяем единственный законный случай
+                        // «первый кадр после цели»: видеодорожка начинается позже цели.
+                        _ => {
+                            if matches!(
+                                issue,
+                                DecodePointBeforeVerificationIssue::FirstVideoAfterTarget { .. }
+                            ) && let Some(late_video_result) = self
+                                .accept_decode_point_before_late_video_start(
+                                    requested_timestamp,
+                                    video_track_id,
+                                    std::mem::take(&mut retained_lifecycle_events),
+                                )?
+                            {
+                                return Ok(late_video_result);
+                            }
+                            return Err(decode_point_before_verification_error(
+                                requested_timestamp,
+                                issue,
+                                verification.packets_checked,
+                                retry_index,
+                            ));
+                        }
                     };
-
-                    if retry_index == DECODE_POINT_BEFORE_MAX_RETRIES
-                        || retry_timestamp == backend_timestamp
-                    {
-                        return Err(decode_point_before_verification_error(
-                            requested_timestamp,
-                            issue,
-                            verification.packets_checked,
-                            retry_index,
-                        ));
-                    }
 
                     let retry_uses_matroska_cue = matroska_cue_retry_timestamp.is_some();
                     debug!(

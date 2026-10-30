@@ -14,9 +14,11 @@ use source_core::ByteSource;
 use tracing::{info, trace};
 
 mod decode_point_before;
+mod late_video_start;
 mod matroska_source_probe;
 pub(crate) mod metadata;
 mod seek_execution;
+mod source_restart;
 mod track_state;
 
 use crate::attachments::media_attachments_from_reader;
@@ -47,6 +49,7 @@ use self::matroska_source_probe::{
 };
 
 use self::metadata::{ReaderMetadataLogProgress, summarize_symphonia_format_metadata};
+use self::source_restart::SourceRestart;
 use self::track_state::{track_layout_snapshot, track_state_from_format_reader};
 
 #[cfg(test)]
@@ -72,6 +75,8 @@ pub struct SymphoniaDemuxer {
     matroska_video_tracks_by_track: HashMap<TrackId, MatroskaVideoTrack>,
     matroska_cue_index: MatroskaCueIndex,
     seekability: DemuxSeekability,
+    /// Можно ли пересоздать reader с физического начала источника (reprobe).
+    source_restart: SourceRestart,
     options: DemuxerOptions,
     pending_events: VecDeque<DemuxReadEvent>,
     media_metadata: media_core::MediaMetadata,
@@ -380,7 +385,7 @@ impl SymphoniaDemuxer {
         seekability: DemuxSeekability,
         options: DemuxerOptions,
     ) -> Result<Self, DemuxError> {
-        Self::from_format_reader_with_probe_context(
+        let mut demuxer = Self::from_format_reader_with_probe_context(
             format,
             FormatReaderProbeContext {
                 probe_hint: Hint::default(),
@@ -392,7 +397,11 @@ impl SymphoniaDemuxer {
                 skipped_attachments: Vec::new(),
             },
             options,
-        )
+        )?;
+        // Голый reader без известного источника нельзя пересоздать с начала: тестовые
+        // fake reader-ы seek-ают, но не отдают MediaSourceStream для reprobe.
+        demuxer.source_restart = SourceRestart::Unavailable;
+        Ok(demuxer)
     }
 
     /// Собирает metadata и track map, сохраняя context для будущего controlled reprobe.
@@ -451,6 +460,7 @@ impl SymphoniaDemuxer {
             matroska_video_tracks_by_track,
             matroska_cue_index,
             seekability,
+            source_restart: SourceRestart::FromSourceStart,
             options,
             pending_events: VecDeque::new(),
             media_metadata,
@@ -492,9 +502,11 @@ impl SymphoniaDemuxer {
             .ok_or(DemuxError::ReaderUnavailable { operation })
     }
 
-    /// Источник можно re-probe только если source/container stack честно объявлен seekable.
+    /// Источник можно re-probe только если source/container stack честно объявлен seekable
+    /// и reader действительно построен поверх источника, который можно перечитать.
     fn can_reprobe_current_source(&self) -> bool {
         matches!(self.seekability, DemuxSeekability::Seekable)
+            && self.source_restart == SourceRestart::FromSourceStart
     }
 
     /// Забирает только lifecycle pending events, очищая packet prebuffer после нового seek-а.

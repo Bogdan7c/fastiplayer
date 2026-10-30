@@ -7,7 +7,12 @@
 | `chapters-without-edition-uid.mkv` | VP8 64×64, 10 кадров/с, 2 с (20 кадров); две главы («Intro» 0–1 с, «Main» 1–2 с) в edition **без** `EditionUID` — так пишет ffmpeg, поле необязательно по RFC 9559 |
 | `opus-audio-only-beeps.mka` | Opus моно 48 кГц, 16 кбит/с, 12 с, только звук: тон 440 Гц + писк 60 мс в начале каждой секунды k частотой 1000 + 250·(k mod 8) Гц. Кластеры ffmpeg по ~5 с (0 / 4.981 / 9.981 с), Cues с `CueRelativePosition` |
 | `opus-audio-only-beeps-late2.mka` | Тот же сигнал, но дорожка начинается на 2-й секунде (первый кластер и первая cue — 2.001 с) |
+| `h264-video-starts-at-2s.mkv` | H.264 64×64, 10 к/с, GOP 5 (keyframe-ы каждые 0.5 с), видео с 2-й по 6-ю секунду; AAC моно 440 Гц с 0 с. Видео начинается позже звука, как `vl2` живой приёмки |
 
 Проверяется `tests/matroska_chapters.rs`: файл открывается, видео читается до конца.
 
 `tests/matroska_audio_only_seek.rs`: seek в audio-only Opus MKV приземляется на кадр, покрывающий цель (вперёд, назад, у конца, до начала поздней дорожки), а настоящий Opus-декодер после seek-а слышит писк именно той секунды, которую обещает pts.
+
+`tests/matroska_late_video_start_seek.rs`: `DecodePointBefore` к цели раньше первого кадра видео приземляется на начало медиа (звук с 0, видео со своего первого keyframe-а), а цель внутри видео — на ближайший keyframe.
+
+`tests/matroska_codec_delay.rs`: `CodecDelay` вычитается из pts (первый блок Opus — −6 мс, AC-3 из `../ac3/` — −5 мс; ffprobe −0.007/−0.005 с).

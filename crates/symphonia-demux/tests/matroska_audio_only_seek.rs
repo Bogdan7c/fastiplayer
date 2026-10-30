@@ -40,9 +40,10 @@ const FREQUENCY_WINDOW_OFFSET_SAMPLES: usize = 240;
 const FREQUENCY_WINDOW_SAMPLES: usize = 1_440;
 /// Сколько звука декодировать в поиске писка: больше секунды гарантирует попадание на писк.
 const BEEP_SEARCH_LIMIT: Duration = Duration::from_millis(1_300);
-/// Допуск времени начала писка: Opus pre-skip/CodecDelay и прогрев декодера после seek-а
-/// сдвигают фронт на единицы миллисекунд; ошибка дефекта — секунды.
-const BEEP_ONSET_TOLERANCE: Duration = Duration::from_millis(30);
+/// Допуск времени начала писка: окно поиска 5 мс + округление CodecDelay до тика 1 мс +
+/// прогрев декодера. Меньше 13 мс, поэтому ловит и прежнее прибавление CodecDelay к pts
+/// (звук на 2·6.5 мс позже своего pts), не только промах seek-а на секунды.
+const BEEP_ONSET_TOLERANCE: Duration = Duration::from_millis(8);
 /// Защитный предел событий демуксера в одном поиске.
 const MAX_EVENTS_PER_SEARCH: usize = 1_000;
 
@@ -326,6 +327,12 @@ fn audio_only_opus_mkv_seek_near_end_keeps_remaining_audio() {
 #[test]
 fn late_start_opus_mkv_seek_before_track_start_and_inside_clusters() {
     let mut fixture = AudioFixture::open("opus-audio-only-beeps-late2.mka");
+    // Первый кадр дорожки, как его отдаёт чтение с начала файла: блок 2.001 с минус CodecDelay
+    // 6.5 мс (ffprobe: 1.994 с). Точку приземления сравниваем с ним, а не с «круглыми» 2 с.
+    let track_first_frame_pts = fixture
+        .next_audio_packet()
+        .expect("late track has audio")
+        .pts;
 
     // Уходим вперёд, затем seek раньше начала дорожки.
     let forward = fixture.seek(secs(7.3));
@@ -339,10 +346,9 @@ fn late_start_opus_mkv_seek_before_track_start_and_inside_clusters() {
         before_start.reported, before_start.first_packet.pts,
         "landing before track start must report the first delivered packet"
     );
-    assert!(
-        before_start.reported >= secs(2.0) && before_start.reported < secs(2.03),
-        "seek before track start must land on its first frame, got {:?}",
-        before_start.reported
+    assert_eq!(
+        before_start.reported, track_first_frame_pts,
+        "seek before track start must land on its first frame"
     );
     fixture
         .first_beep_after(&before_start)
