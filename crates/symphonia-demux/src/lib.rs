@@ -1,5 +1,6 @@
 mod attachments;
 mod byte_source;
+mod container_timestamp_shift;
 pub mod demuxer;
 pub mod dual_stream_demuxer;
 pub mod error;
@@ -36,7 +37,8 @@ pub use local_probe::{
 pub use media_core::{MediaMetadata, Packet, TimeBase, TrackId, TrackInfo, TrackKind};
 pub use options::{
     DEFAULT_DECODE_POINT_BEFORE_PREROLL, DEFAULT_DECODE_POINT_BEFORE_VERIFICATION_PACKET_LIMIT,
-    DEFAULT_MAX_CONSECUTIVE_CORRUPTED_PACKETS, DemuxerOptions,
+    DEFAULT_LATE_VIDEO_START_PROOF_PACKET_LIMIT, DEFAULT_MAX_CONSECUTIVE_CORRUPTED_PACKETS,
+    DemuxerOptions,
 };
 pub use ordered_segments::OrderedSegmentLifecycleError;
 pub use presentation_window_ordered::{

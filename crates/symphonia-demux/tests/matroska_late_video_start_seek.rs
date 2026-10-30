@@ -14,22 +14,38 @@
 //! Теперь demux доказывает поздний старт видео чтением с начала и приземляется на начало
 //! медиа (`actual_position` = 0 ≤ цели): звук идёт с начала (player-core обрезает его до цели),
 //! видео — со своего первого keyframe-а. Seek после начала видео идёт прежним путём.
+//!
+//! Вторая фикстура (видео с 30 с, ~1500 пакетов звука до него) ловила предел доказательства:
+//! оно шло общим циклом проверки с лимитом 1024 пакета и копило весь звуковой prefix в памяти.
+//! Теперь доказательство только считает пакеты (свой бюджет в `DemuxerOptions`) и после него
+//! перечитывает источник с начала заново.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use media_core::{DemuxReadEvent, DemuxSeekRequest, Demuxer, Packet, PacketKeyframe, TrackKind};
-use symphonia_demux::SymphoniaDemuxer;
+use symphonia_demux::{DemuxerOptions, SymphoniaDemuxer};
 
 /// Первый кадр видео в фикстуре (см. `fixtures/matroska/README.md`).
 const VIDEO_START: Duration = Duration::from_secs(2);
-/// Защитный предел чтения после seek-а.
-const MAX_EVENTS_AFTER_SEEK: usize = 1_000;
+/// Первый кадр видео в фикстуре с далёким поздним стартом.
+const FAR_VIDEO_START: Duration = Duration::from_secs(30);
+/// Фикстура: видео с 2 с.
+const NEAR_LATE_VIDEO_FIXTURE: &str = "h264-video-starts-at-2s.mkv";
+/// Фикстура: видео с 30 с, до него ~1500 пакетов Opus по 20 мс (больше прежнего лимита 1024).
+const FAR_LATE_VIDEO_FIXTURE: &str = "h264-video-starts-at-30s.mkv";
+/// Защитный предел чтения после seek-а (покрывает 30 с звука до первого кадра).
+const MAX_EVENTS_AFTER_SEEK: usize = 4_000;
+
+fn fixture_path(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/matroska")
+        .join(name)
+}
 
 fn open_fixture() -> SymphoniaDemuxer {
-    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/matroska/h264-video-starts-at-2s.mkv");
-    SymphoniaDemuxer::from_file(&path).expect("late-video fixture opens")
+    SymphoniaDemuxer::from_file(&fixture_path(NEAR_LATE_VIDEO_FIXTURE))
+        .expect("late-video fixture opens")
 }
 
 /// Что отдал demuxer после seek-а: первый video packet и звук до него.
@@ -84,31 +100,101 @@ fn decode_point_before_target_earlier_than_video_start_lands_at_media_start() {
             "late video start must land at media start (not after target)"
         );
 
-        let delivered = read_until_first_video(&mut demuxer);
-        assert_eq!(delivered.first_video.pts, VIDEO_START);
-        assert_ne!(delivered.first_video.keyframe, PacketKeyframe::NotKeyframe);
+        read_until_first_video(&mut demuxer).assert_media_start_up_to_video(target, VIDEO_START);
+    }
+}
 
-        // Звук идёт с начала медиа и доходит до видео: цель покрыта, ничего не выброшено.
-        let first_audio = delivered
+impl DeliveredAfterSeek {
+    /// Звук идёт с начала медиа и без пропусков доходит до первого кадра видео (keyframe-а).
+    fn assert_media_start_up_to_video(&self, target: Duration, video_start: Duration) {
+        assert_eq!(self.first_video.pts, video_start);
+        assert_ne!(self.first_video.keyframe, PacketKeyframe::NotKeyframe);
+
+        let first_audio = self
             .audio_before_first_video
             .first()
             .expect("audio before the video start");
         assert_eq!(first_audio.pts, Duration::ZERO);
-        let audio_covers_target = delivered.audio_before_first_video.iter().any(|packet| {
-            let end = packet.pts + packet.duration.expect("aac packet duration");
+        let audio_covers_target = self.audio_before_first_video.iter().any(|packet| {
+            let end = packet.pts + packet.duration.expect("audio packet duration");
             packet.pts <= target && target < end
         });
         assert!(
             audio_covers_target,
             "audio packet covering {target:?} was skipped"
         );
-        let last_audio = delivered.audio_before_first_video.last().unwrap();
+        // Звук подряд: каждый пакет начинается там, где кончился предыдущий (±2 мс: pts и
+        // длительность пакета в MKV округлены до тика 1 мс каждая).
+        // Сравниваем signed pts: первый пакет из-за CodecDelay лежит чуть раньше нуля.
+        for pair in self.audio_before_first_video.windows(2) {
+            let previous_end = signed_pts_seconds(&pair[0])
+                + pair[0]
+                    .duration
+                    .expect("audio packet duration")
+                    .as_secs_f64();
+            assert!(
+                (signed_pts_seconds(&pair[1]) - previous_end).abs() <= 0.002,
+                "audio gap between {:?} and {:?}",
+                pair[0].pts,
+                pair[1].pts
+            );
+        }
+        let last_audio = self.audio_before_first_video.last().unwrap();
         assert!(
-            VIDEO_START.saturating_sub(last_audio.pts) < Duration::from_millis(100),
+            video_start.saturating_sub(last_audio.pts) < Duration::from_millis(100),
             "audio before the first video frame stops at {:?}",
             last_audio.pts
         );
     }
+}
+
+/// Signed pts packet-а в секундах (public `Packet::pts` клампится в 0).
+fn signed_pts_seconds(packet: &Packet) -> f64 {
+    let track_pts = packet.track_pts.expect("matroska packet keeps signed pts");
+    track_pts.units.get() as f64 * f64::from(track_pts.time_base.numer)
+        / f64::from(track_pts.time_base.denom)
+}
+
+/// Видео начинается через 30 с после звука (больше 1024 пакетов звука до первого кадра):
+/// seek к цели до начала видео всё равно доказывает поздний старт и приземляется в начало
+/// медиа, а звук отдаётся целиком с начала.
+#[test]
+fn decode_point_before_far_before_late_video_start_lands_at_media_start() {
+    let mut demuxer = SymphoniaDemuxer::from_file(&fixture_path(FAR_LATE_VIDEO_FIXTURE))
+        .expect("far late-video fixture opens");
+
+    for target in [Duration::from_secs(5), Duration::from_millis(25_500)] {
+        let seek_result = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(target))
+            .unwrap_or_else(|error| panic!("DecodePointBefore({target:?}) failed: {error:#}"));
+
+        assert_eq!(seek_result.actual_position.as_duration(), Duration::ZERO);
+        read_until_first_video(&mut demuxer)
+            .assert_media_start_up_to_video(target, FAR_VIDEO_START);
+    }
+}
+
+/// Доказательство ограничено своим бюджетом пакетов: при бюджете меньше звукового prefix-а
+/// demux не сканирует дальше, а честно возвращает прежнюю ошибку `DecodePointBefore`.
+#[test]
+fn late_video_start_proof_stops_at_its_packet_budget() {
+    let options = DemuxerOptions::default()
+        .with_late_video_start_proof_packet_limit(500)
+        .expect("non-zero proof budget");
+    let mut demuxer =
+        SymphoniaDemuxer::from_file_with_options(&fixture_path(FAR_LATE_VIDEO_FIXTURE), options)
+            .expect("far late-video fixture opens");
+
+    let error = demuxer
+        .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::from_secs(
+            5,
+        )))
+        .expect_err("proof budget is shorter than the audio prefix");
+
+    assert!(
+        format!("{error:#}").contains("first_video_after_target"),
+        "unexpected error: {error:#}"
+    );
 }
 
 /// Цель после начала видео идёт прежним путём: ближайший keyframe ≤ цели, а не начало медиа.

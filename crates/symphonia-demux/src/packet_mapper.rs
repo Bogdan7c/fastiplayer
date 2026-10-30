@@ -70,10 +70,14 @@ pub(crate) fn convert_packet_with_source_offset(
         });
     };
     let track_id = TrackId::new(packet_track_id);
-    let track_pts = packet_track_timestamp(track_id, track_entry.time_base, packet.pts);
-    let track_dts = packet_track_timestamp(track_id, track_entry.time_base, packet.dts);
-    let pts = packet_presentation_timestamp(track_entry.time_base, packet.pts);
-    let dts = packet_decode_timestamp(track_entry.time_base, packet.pts, packet.dts);
+    // Дальше всё считается в медиа-времени дорожки: контейнер может отдавать время со сдвигом
+    // (Ogg Opus: гранула без вычета `pre_skip`), и этот сдвиг снимается до любых конверсий.
+    let packet_pts = track_entry.timestamp_shift.container_to_media(packet.pts);
+    let packet_dts = track_entry.timestamp_shift.container_to_media(packet.dts);
+    let track_pts = packet_track_timestamp(track_id, track_entry.time_base, packet_pts);
+    let track_dts = packet_track_timestamp(track_id, track_entry.time_base, packet_dts);
+    let pts = packet_presentation_timestamp(track_entry.time_base, packet_pts);
+    let dts = packet_decode_timestamp(track_entry.time_base, packet_pts, packet_dts);
     // Субтитр с нулевой длительностью означает «контейнер длительность не указал» (например,
     // SimpleBlock в MKV), а не реплику нулевой длины: потребитель сам подберёт конец показа.
     let has_unknown_subtitle_duration = track_kind == TrackKind::Subtitle && packet.dur.get() == 0;
@@ -208,6 +212,7 @@ mod tests {
     use symphonia::core::units::{Duration as SymphoniaDuration, TimeBase, Timestamp};
 
     use super::{PacketConvertError, convert_packet, convert_packet_with_source_offset};
+    use crate::container_timestamp_shift::ContainerTimestampShift;
     use crate::track_mapper::{TrackEntry, TrackEntryKind, UnsupportedTrackKind};
 
     fn track_entry(kind: TrackKind, codec_id: &str) -> TrackEntry {
@@ -218,6 +223,7 @@ mod tests {
             time_base: Some(TimeBase::try_new(1, 48_000).expect("valid time base")),
             sample_rate: None,
             channels: None,
+            timestamp_shift: ContainerTimestampShift::NONE,
         }
     }
 
@@ -233,6 +239,7 @@ mod tests {
             time_base: Some(TimeBase::try_new(1, 48_000).expect("valid time base")),
             sample_rate: None,
             channels: None,
+            timestamp_shift: ContainerTimestampShift::NONE,
         }
     }
 
@@ -244,6 +251,7 @@ mod tests {
             time_base: None,
             sample_rate: None,
             channels: None,
+            timestamp_shift: ContainerTimestampShift::NONE,
         }
     }
 
@@ -255,6 +263,7 @@ mod tests {
             time_base: Some(TimeBase::try_new(1, 48_000).expect("valid time base")),
             sample_rate: None,
             channels: None,
+            timestamp_shift: ContainerTimestampShift::NONE,
         }
     }
 

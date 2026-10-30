@@ -30,12 +30,23 @@ pub(crate) fn symphonia_seek_mode(mode: DemuxSeekMode) -> SymphoniaSeekMode {
 }
 
 /// Создаёт Symphonia time seek target из neutral request.
+///
+/// Цель запроса — медиа-время; reader ищет во времени контейнера, поэтому сдвиг seek-дорожки
+/// (Ogg Opus `pre_skip`) прибавляется здесь, симметрично вычитанию в packet/seek-результате.
 pub(crate) fn symphonia_seek_target(
     request: DemuxSeekRequest,
     seek_track_id: Option<TrackId>,
+    track_map: &HashMap<u32, TrackEntry>,
 ) -> SeekTo {
+    let container_time = seek_track_id
+        .and_then(|track_id| track_map.get(&track_id.get()))
+        .map_or(request.timestamp, |track_entry| {
+            track_entry
+                .timestamp_shift
+                .media_seek_time_to_container(request.timestamp, track_entry.time_base)
+        });
     SeekTo::Time {
-        time: duration_to_symphonia_time(request.timestamp),
+        time: duration_to_symphonia_time(container_time),
         track_id: seek_track_id.map(TrackId::get),
     }
 }
@@ -47,16 +58,20 @@ pub(crate) fn seeked_to_timeline_result(
     track_map: &HashMap<u32, TrackEntry>,
 ) -> DemuxSeekResult {
     let actual_track_id = TrackId::new(seeked_to.track_id);
-    let actual_track_timestamp = track_map
-        .get(&seeked_to.track_id)
-        .and_then(|track_entry| {
-            track_entry
-                .time_base
-                .and_then(media_time_base_from_symphonia)
-        })
-        .map(|time_base| {
-            TrackTimestamp::new(actual_track_id, seeked_to.actual_ts.get(), time_base)
-        });
+    let actual_track_timestamp = track_map.get(&seeked_to.track_id).and_then(|track_entry| {
+        let time_base = track_entry
+            .time_base
+            .and_then(media_time_base_from_symphonia)?;
+        // Reader сообщает приземление во времени контейнера; наружу — медиа-время, как у packet-ов.
+        let media_timestamp = track_entry
+            .timestamp_shift
+            .container_to_media(seeked_to.actual_ts);
+        Some(TrackTimestamp::new(
+            actual_track_id,
+            media_timestamp.get(),
+            time_base,
+        ))
+    });
     let actual_position = actual_track_timestamp
         .map(TrackTimestamp::to_media_time)
         .unwrap_or_else(|| MediaTime::from_duration(requested_position));
@@ -99,6 +114,7 @@ mod tests {
         preferred_seek_track_id, seeked_to_timeline_result, symphonia_seek_error_to_demux_error,
         symphonia_seek_mode, symphonia_seek_target,
     };
+    use crate::container_timestamp_shift::ContainerTimestampShift;
     use crate::track_mapper::{TrackEntry, TrackEntryKind};
 
     fn track_info(track_id: u32, kind: TrackKind) -> TrackInfo {
@@ -124,6 +140,7 @@ mod tests {
             time_base: Some(TimeBase::try_new(1, 1_000).expect("valid time base")),
             sample_rate: None,
             channels: None,
+            timestamp_shift: ContainerTimestampShift::NONE,
         }
     }
 
@@ -165,6 +182,7 @@ mod tests {
         let seek_target = symphonia_seek_target(
             DemuxSeekRequest::preview(Duration::from_millis(420)),
             Some(TrackId::new(9)),
+            &HashMap::new(),
         );
 
         match seek_target {
@@ -230,6 +248,50 @@ mod tests {
 
         assert_eq!(actual_track_timestamp.units.get(), -25);
         assert_eq!(result.actual_position, media_core::MediaTime::ZERO);
+    }
+
+    /// Сдвиг контейнера (Ogg Opus `pre_skip`) применяется симметрично: цель уходит в reader
+    /// позже на сдвиг, а приземление возвращается в медиа-время. Иначе отчёт о seek-е
+    /// расходился бы с pts packet-ов, уже переведённых в медиа-время.
+    #[test]
+    fn seek_target_and_result_apply_container_shift_symmetrically() {
+        let mut shifted_audio = track_entry(TrackKind::Audio);
+        shifted_audio.time_base = Some(TimeBase::try_new(1, 48_000).expect("valid time base"));
+        shifted_audio.timestamp_shift = ContainerTimestampShift::from_leading_ticks(312);
+        let track_map = HashMap::from([(3, shifted_audio)]);
+
+        let seek_target = symphonia_seek_target(
+            DemuxSeekRequest::accurate(Duration::from_secs(1)),
+            Some(TrackId::new(3)),
+            &track_map,
+        );
+        let SeekTo::Time { time, .. } = seek_target else {
+            panic!("seek mapper builds time-based seek target");
+        };
+        assert_eq!(time.as_nanos(), 1_006_500_000);
+
+        let result = seeked_to_timeline_result(
+            Duration::from_secs(1),
+            SeekedTo {
+                track_id: 3,
+                required_ts: Timestamp::new(48_312),
+                actual_ts: Timestamp::new(48_312),
+            },
+            &track_map,
+        );
+        assert_eq!(
+            result.actual_position,
+            media_core::MediaTime::from_secs(1),
+            "container landing 48312 is media time 1 s"
+        );
+        assert_eq!(
+            result
+                .actual_track_timestamp
+                .expect("track timestamp")
+                .units
+                .get(),
+            48_000
+        );
     }
 
     #[test]

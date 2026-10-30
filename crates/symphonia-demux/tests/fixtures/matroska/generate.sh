@@ -56,3 +56,13 @@ ffmpeg -hide_banner -loglevel error -y \
   -c:v libx264 -preset veryfast -g 5 -keyint_min 5 -sc_threshold 0 -bf 0 -pix_fmt yuv420p \
   -c:a aac -b:a 32k -ac 1 \
   "$here/h264-video-starts-at-2s.mkv"
+
+# Видео начинается на 30-й секунде, звук — с нуля: до первого кадра ~1500 пакетов Opus по 20 мс,
+# больше прежнего лимита доказательства (1024 пакета) в tests/matroska_late_video_start_seek.rs.
+# Opus 6 кбит/с и видео 32×32 по 5 к/с держат файл маленьким (~33 КБ).
+ffmpeg -hide_banner -loglevel error -y \
+  -filter_complex "testsrc=size=32x32:rate=5:duration=32,trim=start=30[v];sine=frequency=440:sample_rate=48000:duration=32[a]" \
+  -map "[v]" -map "[a]" \
+  -c:v libx264 -preset veryfast -g 5 -keyint_min 5 -sc_threshold 0 -bf 0 -pix_fmt yuv420p \
+  -c:a libopus -b:a 6k -ac 1 \
+  "$here/h264-video-starts-at-30s.mkv"

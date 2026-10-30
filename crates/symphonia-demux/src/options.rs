@@ -24,6 +24,14 @@ pub const DEFAULT_DECODE_POINT_BEFORE_MAX_ACCEPTED_PREROLL: Duration = Duration:
 /// иначе verification не доходит до ближайшего keyframe и откатывается к слишком раннему GOP.
 pub const DEFAULT_DECODE_POINT_BEFORE_VERIFICATION_PACKET_LIMIT: usize = 1024;
 
+/// Сколько packet-ов с начала источника можно прочитать, доказывая, что видео начинается
+/// позже цели seek-а (`DecodePointBefore` раньше первого кадра видео).
+///
+/// Доказательство только считает packet-ы и не держит их в памяти, поэтому лимит ограничивает
+/// время, а не память: 65 536 packet-ов — около 23 минут AAC 48 кГц (21,3 мс на packet) или
+/// 21 минуты Opus (20 мс) до первого кадра видео. Дальше seek честно отказывает, как раньше.
+pub const DEFAULT_LATE_VIDEO_START_PROOF_PACKET_LIMIT: usize = 65_536;
+
 /// Runtime-настройки demuxer-а, независимые от TOML schema приложения.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DemuxerOptions {
@@ -43,6 +51,9 @@ pub struct DemuxerOptions {
     /// Сколько packets после seek можно prebuffer-нуть для проверки selected video track.
     decode_point_before_verification_packet_limit: usize,
 
+    /// Сколько packet-ов с начала источника можно просчитать, доказывая поздний старт видео.
+    late_video_start_proof_packet_limit: usize,
+
     /// Лимиты чтения вложений контейнера (шрифты MKV) в память.
     attachment_read_limits: AttachmentReadLimits,
 }
@@ -58,6 +69,7 @@ impl DemuxerOptions {
                 DEFAULT_DECODE_POINT_BEFORE_MAX_ACCEPTED_PREROLL,
             decode_point_before_verification_packet_limit:
                 DEFAULT_DECODE_POINT_BEFORE_VERIFICATION_PACKET_LIMIT,
+            late_video_start_proof_packet_limit: DEFAULT_LATE_VIDEO_START_PROOF_PACKET_LIMIT,
             attachment_read_limits: AttachmentReadLimits::DEFAULT,
         }
     }
@@ -93,6 +105,12 @@ impl DemuxerOptions {
     #[must_use]
     pub const fn decode_point_before_verification_packet_limit(self) -> usize {
         self.decode_point_before_verification_packet_limit
+    }
+
+    /// Возвращает бюджет packet-ов для доказательства позднего старта видео.
+    #[must_use]
+    pub const fn late_video_start_proof_packet_limit(self) -> usize {
+        self.late_video_start_proof_packet_limit
     }
 
     /// Возвращает лимиты чтения вложений контейнера.
@@ -144,6 +162,21 @@ impl DemuxerOptions {
         self.decode_point_before_verification_packet_limit = packet_limit;
         Some(self)
     }
+
+    /// Задаёт бюджет packet-ов доказательства позднего старта видео; `None` для нуля, потому что
+    /// нулевой бюджет молча выключил бы seek до начала видео.
+    #[must_use]
+    pub const fn with_late_video_start_proof_packet_limit(
+        mut self,
+        packet_limit: usize,
+    ) -> Option<Self> {
+        if packet_limit == 0 {
+            return None;
+        }
+
+        self.late_video_start_proof_packet_limit = packet_limit;
+        Some(self)
+    }
 }
 
 impl Default for DemuxerOptions {
@@ -159,6 +192,7 @@ impl Default for DemuxerOptions {
                 DEFAULT_DECODE_POINT_BEFORE_MAX_ACCEPTED_PREROLL,
             decode_point_before_verification_packet_limit:
                 DEFAULT_DECODE_POINT_BEFORE_VERIFICATION_PACKET_LIMIT,
+            late_video_start_proof_packet_limit: DEFAULT_LATE_VIDEO_START_PROOF_PACKET_LIMIT,
             attachment_read_limits: AttachmentReadLimits::default(),
         }
     }

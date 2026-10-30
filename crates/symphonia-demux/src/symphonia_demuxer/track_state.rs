@@ -12,6 +12,7 @@ use super::metadata::{
     display_orientations_from_metadata, video_color_metadata_from_metadata,
     video_packet_framings_from_metadata,
 };
+use crate::container_timestamp_shift::ContainerTimestampShift;
 use crate::matroska_metadata::MatroskaVideoTrack;
 use crate::symphonia_api::{self, FormatReaderBox};
 use crate::track_mapper::{TrackEntry, map_tracks_with_video_metadata};
@@ -50,7 +51,7 @@ pub(super) fn track_state_from_format_reader(
     let display_orientations_by_track = display_orientations_from_metadata(format);
     let color_metadata_by_track = video_color_metadata_from_metadata(format);
     let packet_framings_by_track = video_packet_framings_from_metadata(format);
-    let track_mapping = map_tracks_with_video_metadata(
+    let mut track_mapping = map_tracks_with_video_metadata(
         format.tracks(),
         &mut video_tracks_for_mapping,
         &display_orientations_by_track,
@@ -58,6 +59,7 @@ pub(super) fn track_state_from_format_reader(
         &packet_framings_by_track,
         track_titles_by_track,
     );
+    apply_container_timestamp_shifts(format, &mut track_mapping.track_map);
     let media_info_duration = media_info_duration(format.media_info());
     let duration = track_mapping.duration.or(media_info_duration);
 
@@ -67,6 +69,23 @@ pub(super) fn track_state_from_format_reader(
         track_map: track_mapping.track_map,
         track_duration: track_mapping.duration,
         media_info_duration,
+    }
+}
+
+/// Запоминает у каждой дорожки, как её container timestamp-ы перевести в медиа-время.
+///
+/// Решение зависит от пары «контейнер + дорожка» (Ogg Opus `pre_skip`), поэтому принимается
+/// здесь, где известен reader, а не в контейнеро-независимом `track_mapper`.
+fn apply_container_timestamp_shifts(
+    format: &FormatReaderBox<'static>,
+    track_map: &mut HashMap<u32, TrackEntry>,
+) {
+    let container_format = format.format_info().format;
+    for track in format.tracks() {
+        if let Some(track_entry) = track_map.get_mut(&track.id) {
+            track_entry.timestamp_shift =
+                ContainerTimestampShift::for_container_track(container_format, track);
+        }
     }
 }
 

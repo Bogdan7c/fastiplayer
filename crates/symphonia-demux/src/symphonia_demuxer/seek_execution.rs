@@ -137,7 +137,7 @@ impl SymphoniaDemuxer {
         seek_track_id: Option<TrackId>,
         operation: &'static str,
     ) -> Result<std::result::Result<SeekedTo, SymphoniaError>> {
-        let seek_target = symphonia_seek_target(backend_request, seek_track_id);
+        let seek_target = symphonia_seek_target(backend_request, seek_track_id, &self.track_map);
         Ok(self.format_mut(operation)?.seek(seek_mode, seek_target))
     }
 

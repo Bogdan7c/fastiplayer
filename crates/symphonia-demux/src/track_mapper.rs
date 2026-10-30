@@ -25,6 +25,7 @@ use tracing::{debug, warn};
 mod subtitle_codecs;
 
 use self::subtitle_codecs::codec_id_from_symphonia_subtitle_codec;
+use crate::container_timestamp_shift::ContainerTimestampShift;
 use crate::matroska_metadata::MatroskaVideoTrack;
 use crate::symphonia_api::{media_time_base_from_symphonia, symphonia_duration_to_duration};
 use crate::track_labels::labels_from_track;
@@ -47,6 +48,8 @@ pub(crate) struct TrackEntry {
     pub(crate) time_base: Option<SymphoniaTimeBase>,
     pub(crate) sample_rate: Option<u32>,
     pub(crate) channels: Option<u32>,
+    /// Перевод container timestamp-ов дорожки в медиа-время (Ogg Opus `pre_skip`).
+    pub(crate) timestamp_shift: ContainerTimestampShift,
 }
 
 impl TrackEntry {
@@ -324,6 +327,8 @@ pub(crate) fn build_track_entry(
         time_base: track.time_base,
         sample_rate,
         channels,
+        // Сдвиг зависит от контейнера, а не только от track-а: его выставляет track_state.
+        timestamp_shift: ContainerTimestampShift::NONE,
     }
 }
 
