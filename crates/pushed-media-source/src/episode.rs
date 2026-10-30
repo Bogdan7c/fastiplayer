@@ -11,14 +11,13 @@
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use bytes::Bytes;
 use demux_api::{DemuxInput, DemuxRegistry, ProgressiveDemuxer};
 use media_core::{Demuxer, TrackInfo};
 use source_core::CancellationToken;
 
 use crate::container::PushedContainer;
-use crate::intake::{IntakeLedger, IntakeLimitExceeded};
-use crate::pipe::{EpisodePipeAbandon, EpisodePipeWriter, PipeWrite, episode_pipe};
+use crate::intake::ChargedSegment;
+use crate::pipe::{EpisodePipeAbandon, EpisodePipeWriter, episode_pipe};
 use crate::policy::PushedSourcePolicy;
 use crate::time::TimestampOffset;
 
@@ -27,60 +26,42 @@ use crate::time::TimestampOffset;
 pub(crate) struct EpisodeFactory {
     /// Реестр демуксеров (общий на поток).
     registry: Arc<DemuxRegistry>,
-    /// Общий учёт удерживаемых байтов.
-    ledger: Arc<IntakeLedger>,
     /// Пределы.
     policy: PushedSourcePolicy,
 }
 
-/// Почему эпизод не стартовал.
+/// Демуксер эпизода не запустился (причина — для диагностики).
+///
+/// Байты эпизода к этому моменту уже зачтены при приёме, поэтому потолка учёта
+/// здесь нет: старт либо удался, либо не открылся демуксер.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum EpisodeStartError {
-    /// Потолок удерживаемых байтов превышен.
-    IntakeLimitExceeded(IntakeLimitExceeded),
-    /// Демуксер не запустился.
-    Demuxer(String),
-}
+pub(crate) struct EpisodeStartError(pub(crate) String);
 
 /// Что получает эпизод при старте.
 pub(crate) struct EpisodeRecipe<'a> {
     /// Контейнер полосы.
     pub(crate) container: PushedContainer,
-    /// Текущий init-сегмент (у MPEG-TS его нет).
-    pub(crate) initialization: Option<&'a Bytes>,
+    /// Init-сегмент эпизода (у MPEG-TS его нет).
+    pub(crate) initialization: Option<&'a ChargedSegment>,
     /// Первый медиасегмент эпизода.
-    pub(crate) first_media: Bytes,
+    pub(crate) first_media: ChargedSegment,
     /// Смещение времени эпизода.
     pub(crate) offset: TimestampOffset,
 }
 
 impl std::fmt::Debug for EpisodeFactory {
-    /// Реестр демуксеров не печатается: в диагностике достаточно учёта байтов.
+    /// Реестр демуксеров не печатается.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("EpisodeFactory")
-            .field("held_bytes", &self.ledger.held_bytes())
             .finish_non_exhaustive()
     }
 }
 
 impl EpisodeFactory {
     /// Фабрика эпизодов потока.
-    pub(crate) fn new(
-        registry: Arc<DemuxRegistry>,
-        ledger: Arc<IntakeLedger>,
-        policy: PushedSourcePolicy,
-    ) -> Self {
-        Self {
-            registry,
-            ledger,
-            policy,
-        }
-    }
-
-    /// Общий учёт удерживаемых байтов.
-    pub(crate) fn ledger(&self) -> &IntakeLedger {
-        &self.ledger
+    pub(crate) fn new(registry: Arc<DemuxRegistry>, policy: PushedSourcePolicy) -> Self {
+        Self { registry, policy }
     }
 
     /// Запускает эпизод: труба получает init и первый медиасегмент, демуксер
@@ -89,7 +70,7 @@ impl EpisodeFactory {
         &self,
         recipe: EpisodeRecipe<'_>,
     ) -> Result<(EpisodePipeWriter, EpisodeHandle), EpisodeStartError> {
-        let (writer, reader) = episode_pipe(Arc::clone(&self.ledger));
+        let (writer, reader) = episode_pipe();
         let abandon = reader.abandon_handle();
         let mut opening_bytes = 0;
         for segment in recipe
@@ -99,23 +80,23 @@ impl EpisodeFactory {
             .chain([recipe.first_media])
         {
             opening_bytes += segment.len();
-            self.push(&writer, segment)
-                .map_err(EpisodeStartError::IntakeLimitExceeded)?;
+            // Свежая труба ещё не выброшена: сегмент встанет в очередь.
+            writer.push(segment);
         }
         let available = NonZeroUsize::new(opening_bytes)
-            .ok_or_else(|| EpisodeStartError::Demuxer("an episode needs bytes".to_owned()))?;
+            .ok_or_else(|| EpisodeStartError("an episode needs bytes".to_owned()))?;
         let open_budget = self
             .policy
             .episode_open_budget(available)
-            .map_err(|error| EpisodeStartError::Demuxer(error.to_string()))?;
+            .map_err(|error| EpisodeStartError(error.to_string()))?;
         let container_id = recipe
             .container
             .demux_container_id()
-            .map_err(|error| EpisodeStartError::Demuxer(error.to_string()))?;
+            .map_err(|error| EpisodeStartError(error.to_string()))?;
         let hints = recipe
             .container
             .demux_hints()
-            .map_err(|error| EpisodeStartError::Demuxer(error.to_string()))?;
+            .map_err(|error| EpisodeStartError(error.to_string()))?;
 
         let cancellation = CancellationToken::new();
         let registry = Arc::clone(&self.registry);
@@ -137,7 +118,7 @@ impl EpisodeFactory {
             self.policy.episode_demux_limits(),
             self.policy.retry_hint(),
         )
-        .map_err(|error| EpisodeStartError::Demuxer(error.to_string()))?;
+        .map_err(|error| EpisodeStartError(error.to_string()))?;
         Ok((
             writer,
             EpisodeHandle {
@@ -148,22 +129,12 @@ impl EpisodeFactory {
             },
         ))
     }
-
-    /// Ставит сегмент в трубу эпизода, зачтя его в общий учёт.
-    pub(crate) fn push(
-        &self,
-        writer: &EpisodePipeWriter,
-        segment: Bytes,
-    ) -> Result<PipeWrite, IntakeLimitExceeded> {
-        self.ledger.try_reserve(segment.len())?;
-        Ok(writer.push_reserved(segment))
-    }
 }
 
 /// Читающая сторона эпизода: у демуксера полосы на стороне плеера.
 ///
 /// Уничтожение ручки выбрасывает эпизод: поток демуксера просыпается и выходит,
-/// непрочитанные байты уходят из общего учёта.
+/// непрочитанные сегменты трубы отпускаются.
 pub(crate) struct EpisodeHandle {
     /// Фоновый демуксер эпизода.
     demuxer: ProgressiveDemuxer,

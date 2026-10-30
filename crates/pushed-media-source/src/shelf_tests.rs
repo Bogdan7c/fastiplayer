@@ -1,0 +1,408 @@
+//! Тесты полки без потоков: место во времени, наложение, выбор следующего,
+//! выброс старого и непрерывный кусок вокруг позиции.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use bytes::Bytes;
+
+use super::{Delivery, IncomingMedia, LaneShelf, ShelfEntry, ShelfRules};
+use crate::buffer_window::BufferWindow;
+use crate::container::PushedContainer;
+use crate::feed::{EpisodeContinuity, EpisodeKey, FeedCursor};
+use crate::framing::{MediaTime, MediaTimeSpan, SegmentEnd, TimedSpan};
+use crate::intake::{ChargedSegment, IntakeLedger};
+use crate::time::TimestampOffset;
+
+/// Миллисекунда в микросекундах.
+const MS: i64 = 1_000;
+
+/// Правила по умолчанию: допуск 10 мс, дыра 100 мс, окно 120/30 с, открытый хвост 2 с.
+fn rules() -> ShelfRules {
+    ShelfRules::new(
+        BufferWindow {
+            ahead: Duration::from_secs(120),
+            behind: Duration::from_secs(30),
+        },
+        Duration::from_millis(10),
+        Duration::from_millis(100),
+        Duration::from_secs(2),
+    )
+}
+
+fn span(start_ms: i64, end_ms: i64) -> MediaTimeSpan {
+    MediaTimeSpan::new(
+        MediaTime::from_micros(start_ms * MS),
+        MediaTime::from_micros(end_ms * MS),
+    )
+    .expect("ordered span")
+}
+
+fn at(ms: i64) -> MediaTime {
+    MediaTime::from_micros(ms * MS)
+}
+
+/// Курсор точного конца на `ms`.
+fn cursor(ms: i64) -> Option<FeedCursor> {
+    Some(FeedCursor::exact(at(ms)))
+}
+
+/// Полка с учётом: сегменты кладутся так же, как их кладёт буфер потока.
+struct Shelf {
+    shelf: LaneShelf,
+    ledger: Arc<IntakeLedger>,
+    key: EpisodeKey,
+}
+
+impl Shelf {
+    fn new() -> Self {
+        let ledger = Arc::new(IntakeLedger::new(1 << 20));
+        let init = ChargedSegment::charge(&ledger, Bytes::from_static(b"init")).expect("room");
+        Self {
+            shelf: LaneShelf::default(),
+            key: EpisodeKey::new(
+                PushedContainer::FragmentedMp4,
+                Some(init),
+                TimestampOffset::ZERO,
+            ),
+            ledger,
+        }
+    }
+
+    /// Снимает накрытое и кладёт сегмент из `size` байтов; возвращает число снятых.
+    fn put(&mut self, start_ms: i64, end_ms: i64, size: usize) -> usize {
+        self.put_timed(TimedSpan::exact(span(start_ms, end_ms)), size)
+    }
+
+    /// Как `put`, но с точностью конца из разметки.
+    fn put_timed(&mut self, timing: TimedSpan, size: usize) -> usize {
+        let replaced = self.shelf.take_overlapped_by(timing, &rules()).len();
+        let media = ChargedSegment::charge(&self.ledger, Bytes::from(vec![0; size])).expect("room");
+        self.shelf
+            .insert(ShelfEntry::waiting(timing, media, self.key.clone()));
+        replaced
+    }
+
+    fn starts_ms(&self) -> Vec<i64> {
+        self.shelf
+            .layout()
+            .iter()
+            .map(|(start, _, _)| start / MS)
+            .collect()
+    }
+
+    /// Учёт без init (4 байта ключа).
+    fn media_bytes(&self) -> usize {
+        self.ledger.held_bytes() - 4
+    }
+}
+
+#[test]
+fn segments_lie_in_time_order_not_arrival_order() {
+    let mut shelf = Shelf::new();
+    shelf.put(400, 600, 1);
+    shelf.put(0, 200, 1);
+    shelf.put(200, 400, 1);
+    assert_eq!(shelf.starts_ms(), [0, 200, 400]);
+}
+
+#[test]
+fn overlapping_segment_replaces_the_old_one_and_frees_its_bytes() {
+    let mut shelf = Shelf::new();
+    shelf.put(0, 200, 100);
+    shelf.put(200, 400, 30);
+    assert_eq!(shelf.media_bytes(), 130);
+    // Повтор того же времени другой нарезкой (50 байтов) заменяет старый сегмент.
+    assert_eq!(shelf.put(0, 200, 50), 1);
+    assert_eq!(shelf.starts_ms(), [0, 200]);
+    // На полке новые 50 байтов вместо старых 100 — учёт точный.
+    assert_eq!(shelf.media_bytes(), 80);
+    // Один длинный сегмент накрывает оба.
+    assert_eq!(shelf.put(0, 400, 7), 2);
+    assert_eq!(shelf.media_bytes(), 7);
+}
+
+#[test]
+fn adjacent_and_rounding_overlaps_are_not_replacements() {
+    let mut shelf = Shelf::new();
+    shelf.put(0, 200, 1);
+    // Точно соседний (fMP4) и наложение округления 5 мс (WebM Opus) — не повтор.
+    assert_eq!(shelf.put(200, 400, 1), 0);
+    assert_eq!(shelf.put(395, 600, 1), 0);
+    assert_eq!(shelf.starts_ms(), [0, 200, 395]);
+    // Наложение 50 мс — уже повтор.
+    assert_eq!(shelf.put(550, 800, 1), 1);
+    // Короткий сегмент целиком внутри другого — повтор при любой длине.
+    assert_eq!(shelf.put(100, 105, 1), 1);
+    assert_eq!(shelf.starts_ms(), [100, 200, 550]);
+}
+
+#[test]
+fn next_to_feed_continues_the_cursor_and_skips_past_and_gaps() {
+    let mut shelf = Shelf::new();
+    let rules = rules();
+    shelf.put(400, 600, 1);
+    // Курсора ещё нет — первый ждущий задаёт его.
+    let first = shelf.shelf.next_to_feed(None, &rules).expect("first");
+    let fed = shelf.shelf.take_for_feeding(first, &rules).expect("fed");
+    assert_eq!(fed.span, span(400, 600));
+    assert_eq!(fed.continuity, EpisodeContinuity::MayContinue);
+    // Поданный второй раз не выбирается.
+    assert_eq!(shelf.shelf.next_to_feed(cursor(600), &rules), None);
+
+    // Из прошлого (кончился до курсора) и за дырой 200 мс — ждут.
+    shelf.put(0, 200, 1);
+    shelf.put(800, 1_000, 1);
+    assert_eq!(shelf.shelf.next_to_feed(cursor(600), &rules), None);
+    // Дыра 50 мс — ещё продолжение.
+    shelf.put(650, 800, 1);
+    let next = shelf
+        .shelf
+        .next_to_feed(cursor(600), &rules)
+        .expect("continuation");
+    let fed = shelf.shelf.take_for_feeding(next, &rules).expect("fed");
+    assert_eq!(fed.span, span(650, 800));
+    assert_eq!(
+        shelf.shelf.layout(),
+        [
+            (0, 200 * MS, Delivery::Waiting),
+            (400 * MS, 600 * MS, Delivery::Fed),
+            (650 * MS, 800 * MS, Delivery::Fed),
+            (800 * MS, 1_000 * MS, Delivery::Waiting),
+        ]
+    );
+}
+
+#[test]
+fn segment_straddling_the_cursor_is_fed_in_a_new_episode() {
+    let mut shelf = Shelf::new();
+    shelf.put(300, 700, 1);
+    // Курсор 500: сегмент начался раньше, а кончается заметно позже.
+    let choice = shelf
+        .shelf
+        .next_to_feed(cursor(500), &rules())
+        .expect("straddling");
+    let fed = shelf.shelf.take_for_feeding(choice, &rules()).expect("fed");
+    assert_eq!(fed.continuity, EpisodeContinuity::MustRestart);
+    // Подаётся весь сегмент (300–700), курсор уходит к его концу. Что плеер при
+    // этом НЕ получит повтор 300–500, проверяет демуксер полосы («шов»):
+    // `stream_buffer::limits_tests::straddling_replacement_never_sends_time_backwards`.
+    assert_eq!(fed.span, span(300, 700));
+    assert_eq!(fed.fed_to, FeedCursor::exact(at(700)));
+    // Сегмент из прошлого (кончился до курсора) — не «перешагивание».
+    shelf.put(100, 290, 1);
+    assert_eq!(shelf.shelf.next_to_feed(cursor(500), &rules()), None);
+}
+
+#[test]
+fn eviction_drops_only_segments_ended_by_the_limit_and_frees_them() {
+    let mut shelf = Shelf::new();
+    shelf.put(0, 200, 10);
+    shelf.put(200, 400, 20);
+    shelf.put(400, 600, 40);
+    assert_eq!(
+        shelf.shelf.oldest_unshared_ended_by(at(400)),
+        Some((0, at(200)))
+    );
+    assert_eq!(shelf.shelf.evict_ended_by(at(399)), 1);
+    assert_eq!(shelf.starts_ms(), [200, 400]);
+    assert_eq!(shelf.media_bytes(), 60);
+    assert_eq!(shelf.shelf.evict_ended_by(at(600)), 2);
+    assert_eq!(shelf.media_bytes(), 0);
+    assert_eq!(shelf.shelf.oldest_unshared_ended_by(at(600)), None);
+}
+
+#[test]
+fn covered_run_bridges_small_gaps_only() {
+    let mut shelf = Shelf::new();
+    let rules = rules();
+    shelf.put(0, 200, 1);
+    shelf.put(200, 400, 1);
+    // Дыра 50 мс внутри куска; дыра 400 мс разделяет куски.
+    shelf.put(450, 600, 1);
+    shelf.put(1_000, 1_200, 1);
+    assert_eq!(shelf.shelf.covered_run_end(at(100), &rules), Some(at(600)));
+    assert_eq!(shelf.shelf.covered_run_end(at(420), &rules), Some(at(600)));
+    // Позиция в дыре 600–1000 не покрыта.
+    assert_eq!(shelf.shelf.covered_run_end(at(700), &rules), None);
+    // В пределах наибольшей дыры перед куском — покрыта (плеер её перешагнёт).
+    assert_eq!(
+        shelf.shelf.covered_run_end(at(950), &rules),
+        Some(at(1_200))
+    );
+    assert_eq!(shelf.shelf.covered_run_end(at(1_200), &rules), None);
+    assert_eq!(LaneShelf::default().covered_run_end(at(0), &rules), None);
+}
+
+#[test]
+fn seek_restart_is_the_segment_holding_the_target_or_just_after_a_small_gap() {
+    let mut shelf = Shelf::new();
+    shelf.put(0, 200, 1);
+    shelf.put(250, 400, 1);
+    shelf.put(800, 1_000, 1);
+    // Внутри сегмента, на его начале и в маленькой дыре (≤ 100 мс) перед ним.
+    for target in [300, 250, 210] {
+        assert!(
+            shelf
+                .shelf
+                .holds(at(target), &rules(), IncomingMedia::MayArrive),
+            "{target}"
+        );
+    }
+    // В большой дыре и после конца полки цели нет.
+    for target in [500, 1_000] {
+        assert!(
+            !shelf
+                .shelf
+                .holds(at(target), &rules(), IncomingMedia::MayArrive),
+            "{target}"
+        );
+    }
+}
+
+#[test]
+fn seek_restart_makes_the_target_segment_and_everything_after_it_wait_again() {
+    let mut shelf = Shelf::new();
+    for start in [0, 200, 400] {
+        shelf.put(start, start + 200, 1);
+    }
+    // Всё подано (без курсора полка отдаёт первый ждущий).
+    while let Some(choice) = shelf.shelf.next_to_feed(None, &rules()) {
+        shelf.shelf.take_for_feeding(choice, &rules()).expect("fed");
+    }
+    assert!(
+        shelf
+            .shelf
+            .prepare_restart(at(1_000), &rules(), IncomingMedia::MayArrive)
+            .is_none()
+    );
+    let choice = shelf
+        .shelf
+        .prepare_restart(at(300), &rules(), IncomingMedia::MayArrive)
+        .expect("on shelf");
+    let fed = shelf
+        .shelf
+        .take_for_feeding(choice, &rules())
+        .expect("restart segment");
+    // С начала сегмента с целью и обязательно новым эпизодом.
+    assert_eq!(fed.span, span(200, 400));
+    assert_eq!(fed.continuity, EpisodeContinuity::MustRestart);
+    let deliveries: Vec<Delivery> = shelf
+        .shelf
+        .layout()
+        .iter()
+        .map(|(_, _, delivery)| *delivery)
+        .collect();
+    assert_eq!(
+        deliveries,
+        [Delivery::Fed, Delivery::Fed, Delivery::Waiting]
+    );
+}
+
+/// Отрезок с оценённым концом: точно известно до `certain_ms`.
+fn estimated(start_ms: i64, certain_ms: i64, end_ms: i64) -> TimedSpan {
+    TimedSpan::new(
+        span(start_ms, end_ms),
+        SegmentEnd::Estimated {
+            certain_end: at(certain_ms),
+        },
+    )
+}
+
+/// Отрезок с открытым концом: известно только до `certain_ms`.
+fn open(start_ms: i64, certain_ms: i64) -> TimedSpan {
+    TimedSpan::new(
+        span(start_ms, certain_ms),
+        SegmentEnd::Open {
+            certain_end: at(certain_ms),
+        },
+    )
+}
+
+#[test]
+fn estimated_end_continues_into_the_next_cluster_and_never_replaces_it() {
+    let mut shelf = Shelf::new();
+    let rules = rules();
+    // Кластер 4 к/с: кадры 0–750 мс, конец оценён в 1000 мс.
+    shelf.put_timed(estimated(0, 750, 1_000), 1);
+    // Следующий начался на 980 мс (переменная частота кадров): оценка накрывает
+    // его на 20 мс, но точно известное — нет, поэтому это не повтор.
+    assert_eq!(shelf.put(980, 1_500, 1), 0);
+    assert_eq!(shelf.starts_ms(), [0, 980]);
+    let first = shelf.shelf.next_to_feed(None, &rules).expect("first");
+    let fed = shelf.shelf.take_for_feeding(first, &rules).expect("fed");
+    assert_eq!(fed.fed_to, FeedCursor::new(at(750), at(1_000)));
+    let next = shelf
+        .shelf
+        .next_to_feed(Some(fed.fed_to), &rules)
+        .expect("the next cluster continues the estimated end");
+    assert_eq!(next.continuity(), EpisodeContinuity::MayContinue);
+    // Цель в последнем кадре кластера (875 мс) лежит на полке.
+    assert!(shelf.shelf.holds(at(875), &rules, IncomingMedia::MayArrive));
+    assert_eq!(shelf.shelf.covered_run_end(at(0), &rules), Some(at(1_500)));
+}
+
+#[test]
+fn open_end_reaches_the_next_segment_for_feeding_and_seeking() {
+    let mut shelf = Shelf::new();
+    let rules = rules();
+    // Один кадр в 0 мс без длительности, следующий сегмент — через секунду.
+    shelf.put_timed(open(0, 0), 1);
+    shelf.put(1_000, 2_000, 1);
+    let first = shelf.shelf.next_to_feed(None, &rules).expect("first");
+    let fed = shelf.shelf.take_for_feeding(first, &rules).expect("fed");
+    // Открытый хвост тянется на 2 с за начало кадра.
+    assert_eq!(fed.fed_to, FeedCursor::new(at(0), at(2_000)));
+    assert!(shelf.shelf.next_to_feed(Some(fed.fed_to), &rules).is_some());
+    // Цель внутри открытого кадра (до начала следующего сегмента) — на полке.
+    assert!(shelf.shelf.holds(at(500), &rules, IncomingMedia::MayArrive));
+    // Повтор того же одиночного кадра — замена, а не второй сегмент.
+    assert_eq!(shelf.put_timed(open(0, 0), 1), 1);
+    assert_eq!(shelf.starts_ms(), [0, 1_000]);
+}
+
+#[test]
+fn after_the_end_of_input_a_target_past_the_shelf_lands_on_the_last_segment() {
+    let mut shelf = Shelf::new();
+    let rules = rules();
+    shelf.put(0, 200, 1);
+    shelf.put(200, 400, 1);
+    // Вход ещё открыт: за концом полки — просить страницу.
+    assert!(!shelf.shelf.holds(at(400), &rules, IncomingMedia::MayArrive));
+    // Вход окончен: на длительность и дальше — последний сегмент.
+    for target in [400, 450, 10_000] {
+        assert!(
+            shelf.shelf.holds(at(target), &rules, IncomingMedia::Ended),
+            "{target}"
+        );
+    }
+    let choice = shelf
+        .shelf
+        .prepare_restart(at(400), &rules, IncomingMedia::Ended)
+        .expect("lands");
+    let fed = shelf.shelf.take_for_feeding(choice, &rules).expect("fed");
+    assert_eq!(fed.span, span(200, 400));
+    // Большая дыра посреди полки — не «за концом»: там цели нет и после конца.
+    shelf.put(1_000, 1_200, 1);
+    assert!(!shelf.shelf.holds(at(700), &rules, IncomingMedia::Ended));
+}
+
+#[test]
+fn ceiling_candidates_skip_segments_still_held_by_a_pipe() {
+    let mut shelf = Shelf::new();
+    let rules = rules();
+    shelf.put(0, 200, 10);
+    shelf.put(200, 400, 20);
+    let first = shelf.shelf.next_to_feed(None, &rules).expect("first");
+    // Копия первого сегмента «в трубе»: демуксер её ещё не прочитал.
+    let in_pipe = shelf.shelf.take_for_feeding(first, &rules).expect("fed");
+    assert_eq!(
+        shelf.shelf.oldest_unshared_ended_by(at(600)),
+        Some((1, at(400)))
+    );
+    drop(in_pipe);
+    assert_eq!(
+        shelf.shelf.oldest_unshared_ended_by(at(600)),
+        Some((0, at(200)))
+    );
+}

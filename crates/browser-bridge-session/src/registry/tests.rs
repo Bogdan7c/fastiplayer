@@ -284,6 +284,29 @@ fn end_active_returns_key_and_connection() {
 }
 
 #[test]
+fn end_instance_ends_only_the_matching_active_instance() {
+    let now = Instant::now();
+    let mut tokens = CountingTokens::new();
+    let mut registry = registry_with_attached(now, &mut tokens);
+    // Чужой экземпляр того же ключа и чужой ключ того же номера — мимо, реестр цел.
+    assert_eq!(registry.end_instance(&sref("a", 2)), None);
+    assert_eq!(registry.end_instance(&sref("b", 1)), None);
+    assert_eq!(registry.active_key(), Some(&key("a")));
+    assert_eq!(registry.attached_connection(), Some(CONN_1));
+    // Свой экземпляр — закрыт, вместе с соединением.
+    assert_eq!(
+        registry.end_instance(&sref("a", 1)),
+        Some(EndedSession {
+            session: sref("a", 1),
+            connection: Some(CONN_1)
+        })
+    );
+    assert_eq!(registry.active_key(), None);
+    // Повтор — уже не активен.
+    assert_eq!(registry.end_instance(&sref("a", 1)), None);
+}
+
+#[test]
 fn rejection_close_reasons_use_protocol_codes() {
     assert_eq!(
         AttachRejection::UnknownSession.close_reason().close_code(),

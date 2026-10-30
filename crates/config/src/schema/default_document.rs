@@ -403,6 +403,21 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
         "sidebar_slide_duration_ms = 500",
         "# Длительность выезда settings sidebar и сжатия видео, мс; 0 отключает анимацию.",
     );
+    insert_default_config_comment(
+        toml_text,
+        "[browser_session]",
+        "# Браузерный режим: окно буфера медиа, полученного от страницы (секции нет в окне настроек).",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "buffer_ahead_s = 120",
+        "# Запас вперёд от позиции, с (10..=600): при нём источник «полон» и не берёт новые байты.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "buffer_behind_s = 30",
+        "# Сколько секунд сыгранного держать позади позиции (0..=300) для перемотки назад без страницы.",
+    );
     subtitles::document_subtitles_defaults(toml_text);
 }
 

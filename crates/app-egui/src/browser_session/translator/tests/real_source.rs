@@ -1,0 +1,148 @@
+//! Переходник с настоящим источником `pushed-media-source`: записанные потоки
+//! протокола и зашифрованный init.
+
+use super::*;
+
+fn protocol_fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../browser-bridge-protocol/fixtures")
+}
+
+/// Записанный поток протокола → входы очереди сеанса 1 (как их сложил бы сервер).
+fn recorded_inputs(name: &str) -> Vec<SessionInput> {
+    let directory = protocol_fixtures().join("streams").join(name);
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(directory.join("stream.json")).expect("manifest"))
+            .expect("manifest JSON");
+    let read = |file: &serde_json::Value| {
+        std::fs::read(directory.join(file.as_str().expect("file name"))).expect("step file")
+    };
+    manifest["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .map(|step| match (step.get("text"), step.get("binary")) {
+            (Some(file), None) => message(1, decode_message(&read(file)).expect("message")),
+            (None, Some(file)) => {
+                let frame_bytes = read(file);
+                let frame = decode_data_frame(&frame_bytes).expect("frame");
+                let DataFrameHeader::SourceBufferBytes(header) = frame.header else {
+                    panic!("recorded streams carry source buffer bytes");
+                };
+                SessionInput::Bytes(
+                    session(1),
+                    OwnedChunk {
+                        generation: header.generation,
+                        source_buffer: header.source_buffer,
+                        sequence: header.sequence,
+                        payload: frame.payload.to_vec(),
+                    },
+                )
+            }
+            _ => panic!("a step is either text or binary"),
+        })
+        .collect()
+}
+
+fn real_translator() -> ProtocolTranslator<PushedStreamFactory> {
+    let policy = PushedSourcePolicy::recommended().expect("policy");
+    ProtocolTranslator::new(PushedStreamFactory::new(policy))
+}
+
+/// Открывает поток так, как это сделает сторона подготовки (неблокирующие шаги).
+fn open_demuxer(opener: &mut PushedStreamOpener) -> Box<dyn Demuxer> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        match opener.poll_open().expect("the stream opens") {
+            OpenProgress::Ready(opened) => return Box::new(opened.demuxer),
+            OpenProgress::Waiting(hint) => {
+                assert!(Instant::now() < deadline, "the stream did not open in time");
+                std::thread::sleep(hint.retry_after());
+            }
+        }
+    }
+}
+
+#[test]
+fn recorded_two_buffer_stream_through_the_translator_opens_with_both_tracks() {
+    let mut translator = real_translator();
+    let notices = run(
+        &mut translator,
+        recorded_inputs("two-source-buffers-mid-box-cuts"),
+    );
+    let mut handoffs: Vec<Box<GenerationHandoff>> = notices
+        .into_iter()
+        .filter_map(|notice| match notice {
+            IntakeNotice::NewGeneration(handoff) => Some(handoff),
+            IntakeNotice::Reject { reason, .. } => panic!("unexpected rejection {reason:?}"),
+            IntakeNotice::CloseSession { reason, .. } => panic!("unexpected close {reason:?}"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(handoffs.len(), 1);
+    let handoff = &mut handoffs[0];
+    assert_eq!(handoff.generation, generation(1));
+
+    let demuxer = open_demuxer(&mut handoff.opener);
+    let mut kinds: Vec<TrackKind> = demuxer.tracks().iter().map(|track| track.kind).collect();
+    kinds.sort_by_key(|kind| format!("{kind:?}"));
+    assert_eq!(kinds, vec![TrackKind::Audio, TrackKind::Video]);
+    assert_eq!(demuxer.duration(), Some(Duration::from_millis(400)));
+    // Монитор смотрит на тот же поток: принятые сегменты он видит.
+    assert!(handoff.monitor.held_segment_bytes() > 0);
+}
+
+/// fMP4 фикстуры протокола с `avc1` в описании образца, переименованным в `encv`
+/// (так выглядит зашифрованное видео для источника).
+fn protected_video_mp4() -> Vec<u8> {
+    let mut file = std::fs::read(protocol_fixtures().join("media/video.mp4")).expect("video.mp4");
+    let moov = file
+        .windows(4)
+        .position(|window| window == b"moov")
+        .expect("moov box");
+    let entry = file[moov..]
+        .windows(4)
+        .position(|window| window == b"avc1")
+        .expect("avc1 sample entry")
+        + moov;
+    file[entry..entry + 4].copy_from_slice(b"encv");
+    file
+}
+
+#[test]
+fn protected_initialization_is_rejected_once_and_later_bytes_are_dropped() {
+    let mut translator = real_translator();
+    let protected = protected_video_mp4();
+    let (head, tail) = protected.split_at(protected.len() / 2);
+    let notices = run(
+        &mut translator,
+        [
+            started(1, 1),
+            added(1, 1, 0, "video/mp4; codecs=\"avc1.42c00a\""),
+            bytes(1, 1, 0, head),
+            bytes(1, 1, 0, tail),
+            message(
+                1,
+                PageSessionMessage::EndOfStream {
+                    generation: generation(1),
+                },
+            ),
+        ],
+    );
+
+    let seen = seen(&notices);
+    let rejections: Vec<&Seen> = seen
+        .iter()
+        .filter(|notice| matches!(notice, Seen::Reject(..)))
+        .collect();
+    assert_eq!(
+        rejections,
+        vec![&Seen::Reject(1, 1, StreamRejection::ProtectedContent)]
+    );
+    assert!(
+        !seen.iter().any(|notice| matches!(notice, Seen::Close(..))),
+        "DRM is a rejection of the generation, not a protocol violation"
+    );
+    // init целиком в первой половине: отказ на ней, а вторая половина и конец
+    // потока выброшены со счётом.
+    assert_eq!(translator.counters().rejected_generation_inputs, 2);
+}

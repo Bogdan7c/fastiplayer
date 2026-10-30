@@ -4,20 +4,38 @@
 //! со смещением полосы, `TracksChanged` только при настоящей смене описания и
 //! `TemporarilyUnavailable`, пока страница не прислала байты. `next_event`
 //! никогда не блокируется: всё ожидание — в потоках демуксеров эпизодов.
+//!
+//! Перемотка: буфер потока уже начал подачу полосы заново
+//! ([`crate::stream_buffer::StreamBuffer::seek`] — это делает
+//! [`crate::PushedStreamDemuxer`] ДО перемотки полос), а демуксер полосы
+//! выбрасывает своё «старое время» — текущий эпизод и отложенный пакет — и ждёт
+//! ключевой кадр видео: новый эпизод начинается с начала сегмента, а не обязан
+//! начинаться с ключевого кадра.
+//!
+//! Смена эпизода без перемотки — «шов» ([`crate::episode_seam`]): пакеты нового
+//! эпизода, повторяющие уже выданное время, плееру не уходят.
+//!
+//! Недоподанное: если подача полосы стояла на полном ящике, демуксер, забрав
+//! эпизод (или найдя ящик пустым), просит буфер продолжить подачу — без
+//! ожидания замка буфера (`StreamBuffer::try_catch_up_feeding`).
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use media_core::{
-    DemuxReadEvent, DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate, Demuxer,
-    MediaDemuxError, Packet, TimelineNotSeekableReason, TrackInfo, TrackTimestamp,
+    DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate,
+    Demuxer, MediaDemuxError, MediaTime, Packet, TimelineNotSeekableReason, TrackInfo, TrackKind,
+    TrackTimestamp,
 };
 
 use crate::episode::EpisodeHandle;
+use crate::episode_seam::{EpisodeSeam, SeamDecision};
 use crate::error::PushedStreamError;
+use crate::framing::MediaTime as ShelfTime;
 use crate::lane::{LaneId, LaneMailbox, MailboxTake};
 use crate::random_access::{RandomAccessDecision, RandomAccessGate};
+use crate::stream_buffer::StreamBuffer;
 use crate::stream_state::StreamState;
 use crate::track_identity::{TrackIdentity, TrackListChange};
 
@@ -61,13 +79,22 @@ pub(crate) struct LaneDemuxer {
     /// Пакет, прочитанный при подготовке раньше `TracksChanged` (на случай,
     /// если демуксер эпизода опубликовал дорожки без события).
     held_packet: Option<Packet>,
-    /// Дорожки видео, ждущие ключевой кадр после выброшенного.
+    /// Дорожки видео, ждущие ключевой кадр после выброшенного или после перемотки.
     random_access: RandomAccessGate,
+    /// Буфер потока: куда перемотка поставила полосу; продолжение подачи.
+    buffer: Arc<StreamBuffer>,
+    /// Шов между эпизодами: пол выданного времени.
+    seam: EpisodeSeam,
 }
 
 impl LaneDemuxer {
     /// Демуксер полосы поверх её ящика.
-    pub(crate) fn new(lane: LaneId, mailbox: Arc<LaneMailbox>, stream: Arc<StreamState>) -> Self {
+    pub(crate) fn new(
+        lane: LaneId,
+        mailbox: Arc<LaneMailbox>,
+        stream: Arc<StreamState>,
+        buffer: Arc<StreamBuffer>,
+    ) -> Self {
         Self {
             lane,
             mailbox,
@@ -76,6 +103,8 @@ impl LaneDemuxer {
             identity: TrackIdentity::default(),
             held_packet: None,
             random_access: RandomAccessGate::default(),
+            buffer,
+            seam: EpisodeSeam::default(),
         }
     }
 
@@ -124,8 +153,14 @@ impl LaneDemuxer {
     fn next_episode_event(&mut self) -> Result<EpisodeEvent, PushedStreamError> {
         self.ensure_stream_healthy()?;
         if self.current.is_none() {
-            match self.mailbox.take_next() {
-                MailboxTake::Episode(episode) => self.current = Some(*episode),
+            let take = self.mailbox.take_next();
+            self.resume_deferred_feeding()?;
+            match take {
+                MailboxTake::Episode(episode) => {
+                    // Следующий эпизод без перемотки: его повтор выданного — за швом.
+                    self.seam.arm();
+                    self.current = Some(*episode);
+                }
                 MailboxTake::Waiting => return Ok(EpisodeEvent::Waiting),
                 MailboxTake::InputEnded => return Ok(EpisodeEvent::InputEnded),
             }
@@ -137,6 +172,17 @@ impl LaneDemuxer {
             Ok(event) => Ok(EpisodeEvent::Event(event)),
             Err(error) => Err(self.record_demux_failure(&error)),
         }
+    }
+
+    /// Подача полосы стояла на полном ящике: место освободилось (или ящик пуст) —
+    /// попросить буфер продолжить. Замок буфера не ждём (см. описание модуля).
+    fn resume_deferred_feeding(&self) -> Result<(), PushedStreamError> {
+        if !self.mailbox.has_feed_backlog() {
+            return Ok(());
+        }
+        self.buffer
+            .try_catch_up_feeding(self.lane)
+            .map_err(|error| self.stream.record_failure(error))
     }
 
     /// Первая ошибка потока — ошибка и этой полосы.
@@ -189,6 +235,14 @@ impl LaneDemuxer {
         {
             return Ok(None);
         }
+        if self
+            .seam
+            .admit(public_id, packet.kind, pts, packet.keyframe)
+            == SeamDecision::Drop
+        {
+            return Ok(None);
+        }
+        self.seam.note_emitted(public_id, pts);
         packet.track_pts = shift_track(packet.track_pts);
         packet.track_dts = shift_track(packet.track_dts);
         packet.track_id = public_id;
@@ -197,6 +251,21 @@ impl LaneDemuxer {
         // без DTS декодер опирается на порядок пакетов.
         packet.dts = packet.dts.and_then(|dts| episode_offset.apply(dts));
         Ok(Some(packet))
+    }
+
+    /// После перемотки: всё прочитанное относится к старому времени.
+    ///
+    /// Текущий эпизод выбрасывается (его `Drop` только будит поток демуксера, без
+    /// ожидания), отложенный пакет тоже; видео ждёт ключевой кадр.
+    fn forget_old_position(&mut self) {
+        self.current = None;
+        self.held_packet = None;
+        self.seam.reset();
+        for track in self.identity.published() {
+            if track.kind == TrackKind::Video {
+                self.random_access.require_keyframe(track.id);
+            }
+        }
     }
 
     /// Публичный `TracksChanged`, если описание действительно сменилось.
@@ -221,9 +290,14 @@ impl Demuxer for LaneDemuxer {
     }
 
     fn seekability(&self) -> DemuxSeekability {
-        // Перемотка — сессия 03b (порт перемотки по квитанциям).
-        DemuxSeekability::NotSeekable {
-            reason: TimelineNotSeekableReason::SourceNotSeekable,
+        // Полоса перематывается по полке, если размечает время; длительность и
+        // эфир решает поток целиком (`PushedStreamDemuxer::seekability`).
+        if self.buffer.all_lanes_timed() {
+            DemuxSeekability::Seekable
+        } else {
+            DemuxSeekability::NotSeekable {
+                reason: TimelineNotSeekableReason::SourceNotSeekable,
+            }
         }
     }
 
@@ -262,11 +336,27 @@ impl Demuxer for LaneDemuxer {
         }
     }
 
-    fn seek(&mut self, _timestamp: Duration) -> Result<DemuxSeekResult> {
-        Err(MediaDemuxError::SeekUnavailable {
-            reason: "pushed media lanes do not seek yet".to_owned(),
-        }
-        .into())
+    fn seek(&mut self, timestamp: Duration) -> Result<DemuxSeekResult> {
+        self.seek_with_request(DemuxSeekRequest::accurate(timestamp))
+    }
+
+    /// Любой режим перемотки отвечает одинаково: подача начата с начала сегмента
+    /// с целью — это и точка безопасного старта декодера, и самое точное место
+    /// не позже цели, которое есть у источника из целых сегментов.
+    fn seek_with_request(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
+        self.ensure_stream_healthy()?;
+        let target = ShelfTime::from_player_position(request.timestamp);
+        let landing = self.buffer.lane_landing(self.lane).ok_or_else(|| {
+            MediaDemuxError::SeekUnavailable {
+                reason: "the pushed stream buffer was not repositioned before its lane".to_owned(),
+            }
+        })?;
+        self.forget_old_position();
+        Ok(DemuxSeekResult {
+            requested_position: MediaTime::from_duration(request.timestamp),
+            actual_position: landing.decode_start(target).to_player_time(),
+            actual_track_timestamp: None,
+        })
     }
 }
 

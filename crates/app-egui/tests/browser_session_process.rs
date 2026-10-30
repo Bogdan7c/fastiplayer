@@ -1,4 +1,4 @@
-//! Сквозной тест процесса браузерного режима (мост в браузер, сессия 02).
+//! Сквозной тест процесса браузерного режима (мост в браузер, сессии 02 и 03b).
 //!
 //! Настоящий бинарь `fastiplayer` будит частная шина D-Bus по `.service`-файлу —
 //! так же, как его разбудит посредник экстеншена. Тест играет роль посредника и
@@ -7,12 +7,18 @@
 //! 2. `hello` → `hello_accepted`, `open_session` → порт и пропуск;
 //! 3. WebSocket на 127.0.0.1: `attach` → `attached`;
 //! 4. записанный поток из фикстур протокола (fMP4, два SourceBuffer, разрезы посреди
-//!    боксов) → `tab_gone` → код закрытия 4002;
-//! 5. процесс выходит сам и пишет, сколько байт дошло до приёмника — ровно размер
-//!    исходных медиафайлов.
+//!    боксов, `end_of_stream`) играет НАСТОЯЩИЙ плеер без окна: страница получает
+//!    часы до состояния `ended` и состояние буфера, журнал — каждый кадр и звук;
+//! 5. `tab_gone` → код закрытия 4002, процесс выходит сам и пишет итог плеера и
+//!    сколько байт дошло — ровно размер исходных медиафайлов.
+//!
+//! Второй тест — отказ: защищённое видео (`encv`) → странице `stream_rejected`,
+//! процесс живёт дальше до `tab_gone`.
 //!
 //! Требует `dbus-daemon` (как и прочие тесты шины в проекте). Настоящий рабочий стол
-//! не трогается: у частной шины свой каталог служб, свой адрес и нет других служб.
+//! не трогается: у частной шины свой каталог служб, свой адрес и нет других служб;
+//! каталоги XDG процесса — временные (config не читается из домашнего), звук идёт в
+//! тихую карту-симулятор (`FASTIPLAYER_TEST_BROWSER_AUDIO=simulated`).
 
 #![allow(
     clippy::unwrap_used,
@@ -29,8 +35,11 @@ use std::time::{Duration, Instant};
 
 use std::net::TcpStream;
 
+use browser_bridge_protocol::session::player::{ClockState, StreamRejection};
 use browser_bridge_protocol::{
-    PlayerControlMessage, SessionCloseReason, SessionGrant, decode_message,
+    AppendSequence, DataFrameHeader, PlayerControlMessage, PlayerSessionMessage,
+    SessionCloseReason, SessionGrant, SourceBufferBytesHeader, SourceBufferIndex, StreamGeneration,
+    decode_message, encode_data_frame,
 };
 use desktop_integration::{
     BrowserEntryBus, BrowserEntryClient, BrowserEntryClientConfig,
@@ -61,9 +70,10 @@ struct PrivateBusWithBrowserSession {
 }
 
 impl PrivateBusWithBrowserSession {
-    fn start() -> Self {
+    /// `name` различает каталоги тестов одного процесса (тесты идут параллельно).
+    fn start(name: &str) -> Self {
         let directory = std::env::temp_dir().join(format!(
-            "fastiplayer-browser-session-e2e-{}",
+            "fastiplayer-browser-session-e2e-{}-{name}",
             std::process::id()
         ));
         let services = directory.join("services");
@@ -82,12 +92,25 @@ impl PrivateBusWithBrowserSession {
         let config = directory.join("bus.conf");
         std::fs::write(&config, bus_config(&address, &services)).expect("bus config");
 
+        // Свои каталоги XDG: процесс не прочтёт config.toml разработчика (и не
+        // напишет ничего вне временного каталога).
+        let xdg = |kind: &str| {
+            let path = directory.join("xdg").join(kind);
+            std::fs::create_dir_all(&path).expect("XDG directory");
+            path
+        };
         let mut daemon = Command::new("dbus-daemon")
             .arg(format!("--config-file={}", config.display()))
             .args(["--nofork", "--print-address=1"])
             // Запущенный шиной процесс наследует окружение демона: и он, и его
             // клиент паузы обычного плеера пойдут на эту частную шину.
             .env("DBUS_SESSION_BUS_ADDRESS", &address)
+            .env("XDG_CONFIG_HOME", xdg("config"))
+            .env("XDG_DATA_HOME", xdg("data"))
+            .env("XDG_STATE_HOME", xdg("state"))
+            .env("XDG_CACHE_HOME", xdg("cache"))
+            // Звук — в тихую карту с настоящим временем: на CI звуковой карты нет.
+            .env("FASTIPLAYER_TEST_BROWSER_AUDIO", "simulated")
             .env("RUST_LOG", "info")
             // Без цветовых escape-кодов: тест ищет в логе текст `received_bytes=N`.
             .env("NO_COLOR", "1")
@@ -208,6 +231,89 @@ fn entry_call(client: &BrowserEntryClient, message: &str) -> PlayerControlMessag
     decode_message(reply.as_bytes()).expect("reply is a player control message")
 }
 
+/// Будит процесс, открывает сеанс и подключается к нему, как экстеншен.
+fn open_attached_session(
+    bus: &PrivateBusWithBrowserSession,
+) -> WebSocket<MaybeTlsStream<TcpStream>> {
+    // Звонок будит незапущенный процесс; одно соединение = один звонящий.
+    let client = BrowserEntryClient::connect(
+        BrowserEntryBus::Address(bus.address.clone()),
+        BrowserEntryClientConfig::default(),
+    )
+    .expect("D-Bus activation starts fastiplayer --browser-session");
+    assert!(matches!(
+        entry_call(&client, HELLO),
+        PlayerControlMessage::HelloAccepted(_)
+    ));
+    let PlayerControlMessage::SessionGranted(grant) = entry_call(&client, OPEN_SESSION) else {
+        panic!("open_session must be granted");
+    };
+    bus.wait_for_log_line("Browser session opened");
+    // Посредник может умереть посреди сеанса: дальше он не нужен (решение 85).
+    drop(client);
+    let socket = attach(&grant);
+    // Чтение не должно висеть вечно, если процесс замолчал.
+    if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
+        stream
+            .set_read_timeout(Some(WAIT))
+            .expect("read timeout is set");
+    }
+    socket
+}
+
+/// Читает сообщения плеера странице, пока `stop` не скажет «хватит»; возвращает всё
+/// прочитанное (включая последнее).
+fn read_player_messages_until(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    what: &str,
+    mut stop: impl FnMut(&PlayerSessionMessage) -> bool,
+) -> Vec<PlayerSessionMessage> {
+    let deadline = Instant::now() + WAIT;
+    let mut messages = Vec::new();
+    loop {
+        assert!(Instant::now() < deadline, "the page never received {what}");
+        match socket.read() {
+            Ok(Message::Text(text)) => {
+                let message: PlayerSessionMessage =
+                    decode_message(text.as_bytes()).expect("player session message");
+                let done = stop(&message);
+                messages.push(message);
+                if done {
+                    return messages;
+                }
+            }
+            Ok(_) => continue,
+            Err(error) => panic!("waiting for {what}: {error}"),
+        }
+    }
+}
+
+/// Число после `field=` в строке журнала.
+fn log_number(line: &str, field: &str) -> u64 {
+    let needle = format!(" {field}=");
+    let start = line
+        .find(&needle)
+        .unwrap_or_else(|| panic!("no {field} in: {line}"))
+        + needle.len();
+    line[start..]
+        .split(|character: char| !character.is_ascii_digit())
+        .next()
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or_else(|| panic!("{field} is not a number in: {line}"))
+}
+
+fn send_tab_gone_and_expect_close(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) {
+    socket
+        .send(Message::text(
+            r#"{"type":"tab_gone","reason":"navigated_away"}"#,
+        ))
+        .expect("tab_gone is sent");
+    assert_eq!(
+        read_close_code(socket),
+        CloseCode::from(SessionCloseReason::TabGone.close_code())
+    );
+}
+
 /// Подключается к процессу браузерного режима и предъявляет пропуск.
 fn attach(grant: &SessionGrant) -> WebSocket<MaybeTlsStream<TcpStream>> {
     let (mut socket, _response) =
@@ -240,32 +346,16 @@ fn read_close_code<Stream: std::io::Read + std::io::Write>(
     }
 }
 
+/// Кадров в записанном ролике фикстуры (25 к/с, 0–360 мс; так же считает тест
+/// «до кадра» `pushed-media-source/tests/recorded_streams_to_frame.rs`).
+const FIXTURE_VIDEO_FRAMES: u64 = 10;
+
 #[test]
-fn bus_wakes_the_real_binary_and_recorded_bytes_reach_its_receiver() {
-    let bus = PrivateBusWithBrowserSession::start();
+fn bus_wakes_the_real_binary_which_plays_the_recorded_stream_to_the_end() {
+    let bus = PrivateBusWithBrowserSession::start("plays");
+    let mut socket = open_attached_session(&bus);
 
-    // 1–2. Звонок будит незапущенный процесс; одно соединение = один звонящий.
-    let client = BrowserEntryClient::connect(
-        BrowserEntryBus::Address(bus.address.clone()),
-        BrowserEntryClientConfig::default(),
-    )
-    .expect("D-Bus activation starts fastiplayer --browser-session");
-    assert!(matches!(
-        entry_call(&client, HELLO),
-        PlayerControlMessage::HelloAccepted(_)
-    ));
-    let PlayerControlMessage::SessionGranted(grant) = entry_call(&client, OPEN_SESSION) else {
-        panic!("open_session must be granted");
-    };
-    bus.wait_for_log_line("Browser session opened");
-
-    // Посредник может умереть посреди сеанса: дальше он не нужен (решение 85).
-    drop(client);
-
-    // 3. WebSocket напрямую в процесс браузерного режима.
-    let mut socket = attach(&grant);
-
-    // 4. Записанный поток и уход вкладки.
+    // 4. Записанный поток целиком (включая `end_of_stream`).
     let (steps, expected_bytes) = recorded_stream("two-source-buffers-mid-box-cuts");
     for step in steps {
         let message = match step {
@@ -274,22 +364,109 @@ fn bus_wakes_the_real_binary_and_recorded_bytes_reach_its_receiver() {
         };
         socket.send(message).expect("stream step is sent");
     }
-    socket
-        .send(Message::text(
-            r#"{"type":"tab_gone","reason":"navigated_away"}"#,
-        ))
-        .expect("tab_gone is sent");
-    assert_eq!(
-        read_close_code(&mut socket),
-        CloseCode::from(SessionCloseReason::TabGone.close_code())
-    );
 
-    // 5. Процесс сам выходит и отчитывается о принятых байтах.
+    // Страница видит часы плеера до конца ролика и состояние буфера.
+    let messages = read_player_messages_until(&mut socket, "the clock state ended", |message| {
+        matches!(
+            message,
+            PlayerSessionMessage::Clock {
+                state: ClockState::Ended,
+                ..
+            }
+        )
+    });
+    let clock_positions: Vec<u64> = messages
+        .iter()
+        .filter_map(|message| match message {
+            PlayerSessionMessage::Clock { position_us, .. } => Some(position_us.as_micros()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        clock_positions.windows(2).all(|pair| pair[0] <= pair[1]),
+        "clock went backwards: {clock_positions:?}"
+    );
+    assert!(
+        clock_positions.last().is_some_and(|last| *last >= 360_000),
+        "the clock never reached the last frame: {clock_positions:?}"
+    );
+    let buffer_states = messages
+        .iter()
+        .filter(|message| matches!(message, PlayerSessionMessage::BufferState { .. }))
+        .count();
+    assert!(buffer_states >= 1, "no buffer_state in {messages:?}");
+    bus.wait_for_log_line("Browser playback ended");
+
+    // 5. Вкладка ушла: сеанс закрыт, процесс подводит итог и выходит.
+    send_tab_gone_and_expect_close(&mut socket);
+    let summary = bus.wait_for_log_line("Browser playback summary kind=final");
+    assert_eq!(
+        log_number(&summary, "presented_frames"),
+        FIXTURE_VIDEO_FRAMES,
+        "{summary}"
+    );
+    assert_eq!(log_number(&summary, "position_regressions"), 0, "{summary}");
+    assert!(log_number(&summary, "audio_played_ms") > 0, "{summary}");
     let totals = bus.wait_for_log_line("Browser session stopped");
     assert!(
         totals.contains(&format!("received_bytes={expected_bytes}")),
         "expected {expected_bytes} bytes in: {totals}"
     );
+    bus.wait_for_log_line("Browser session process finished");
+}
+
+/// fMP4 фикстуры протокола с `avc1` в описании образца, переименованным в `encv`
+/// (так выглядит зашифрованное видео: Vimeo, `results/00c.md`).
+fn protected_video_mp4() -> Vec<u8> {
+    let mut file = std::fs::read(Path::new(FIXTURES).join("media/video.mp4")).expect("video.mp4");
+    let moov = file
+        .windows(4)
+        .position(|window| window == b"moov")
+        .expect("moov box");
+    let entry = file[moov..]
+        .windows(4)
+        .position(|window| window == b"avc1")
+        .expect("avc1 sample entry")
+        + moov;
+    file[entry..entry + 4].copy_from_slice(b"encv");
+    file
+}
+
+#[test]
+fn protected_stream_is_rejected_to_the_page_and_the_process_keeps_the_session() {
+    let bus = PrivateBusWithBrowserSession::start("rejects");
+    let mut socket = open_attached_session(&bus);
+
+    for text in [
+        r#"{"type":"generation_started","generation":1}"#,
+        r#"{"type":"source_buffer_added","generation":1,"source_buffer":0,"mime_type":"video/mp4; codecs=\"avc1.42c00a\""}"#,
+    ] {
+        socket.send(Message::text(text)).expect("message is sent");
+    }
+    let header = DataFrameHeader::SourceBufferBytes(SourceBufferBytesHeader {
+        generation: StreamGeneration::FIRST,
+        source_buffer: SourceBufferIndex::new(0).expect("source buffer"),
+        sequence: AppendSequence(0),
+    });
+    let frame = encode_data_frame(&header, &protected_video_mp4()).expect("data frame");
+    socket.send(Message::binary(frame)).expect("bytes are sent");
+
+    let messages = read_player_messages_until(&mut socket, "stream_rejected", |message| {
+        matches!(message, PlayerSessionMessage::StreamRejected { .. })
+    });
+    assert_eq!(
+        messages.last(),
+        Some(&PlayerSessionMessage::StreamRejected {
+            generation: StreamGeneration::FIRST,
+            reason: StreamRejection::ProtectedContent,
+        })
+    );
+    // Отказ от поколения — не конец сеанса (следующее поколение может оказаться
+    // играбельным): процесс жив и отвечает на `tab_gone` своим кодом 4002, а не
+    // закрытием 4003 (нарушение) или 4006 (выключение).
+    send_tab_gone_and_expect_close(&mut socket);
+    let totals = bus.wait_for_log_line("Browser session stopped");
+    assert!(totals.contains("received_frames=1"), "{totals}");
     bus.wait_for_log_line("Browser session process finished");
 }
 
@@ -315,13 +492,5 @@ fn live_session_bus_wakes_the_installed_browser_session() {
         panic!("open_session must be granted");
     };
     let mut socket = attach(&grant);
-    socket
-        .send(Message::text(
-            r#"{"type":"tab_gone","reason":"navigated_away"}"#,
-        ))
-        .expect("tab_gone is sent");
-    assert_eq!(
-        read_close_code(&mut socket),
-        CloseCode::from(SessionCloseReason::TabGone.close_code())
-    );
+    send_tab_gone_and_expect_close(&mut socket);
 }

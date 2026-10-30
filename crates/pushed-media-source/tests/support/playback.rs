@@ -9,8 +9,13 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use player_core::{PlaybackState, PlayerEvent, PlayerSession, PlayerTickContext, PreparedMedia};
-use pushed_media_source::{OpenProgress, PushedStreamDemuxer, PushedStreamOpener};
+use player_core::{
+    PlaybackState, PlayerCommand, PlayerEvent, PlayerSession, PlayerTickContext, PreparedMedia,
+    SeekRequest,
+};
+use pushed_media_source::{
+    OpenProgress, OpenedPushedStream, PushedStreamDemuxer, PushedStreamOpener,
+};
 
 use super::simulated_audio::SimulatedAudioDevice;
 
@@ -36,6 +41,8 @@ pub struct PresentedFrame {
     pub height: u32,
     /// Позиция плеера (часы звука) в момент показа.
     pub position: Duration,
+    /// Шаг, на котором кадр впервые оказался на экране.
+    pub tick: usize,
 }
 
 /// Что увидел и услышал «зритель».
@@ -55,6 +62,13 @@ pub struct PlaybackReport {
     pub buffered_after_start: bool,
     /// Ошибки плеера.
     pub errors: Vec<String>,
+    /// Команды перемотки: (шаг, цель).
+    pub seeks: Vec<(usize, Duration)>,
+    /// Состояние на каждом шаге: (шаг, состояние, идёт ли перемотка).
+    pub state_trace: Vec<(usize, PlaybackState, bool)>,
+    /// Шагов, на которых плеер ждал (крутилка): перемотка видео идёт состоянием
+    /// `Scrubbing`, только звука — `Seeking`, нехватка данных при игре — `Buffering`.
+    pub waiting_ticks: usize,
 }
 
 impl PlaybackReport {
@@ -92,10 +106,15 @@ impl PlaybackReport {
 
 /// Ждёт открытия потока (подготовка — вне потока плеера, ждать здесь можно).
 pub fn open(opener: &mut PushedStreamOpener) -> PushedStreamDemuxer {
+    open_stream(opener).demuxer
+}
+
+/// Как [`open`], но целиком: демуксер и порт живой шкалы.
+pub fn open_stream(opener: &mut PushedStreamOpener) -> OpenedPushedStream {
     let deadline = Instant::now() + OPEN_TIMEOUT;
     loop {
         match opener.poll_open().expect("stream opens") {
-            OpenProgress::Ready(demuxer) => return demuxer,
+            OpenProgress::Ready(opened) => return opened,
             OpenProgress::Waiting(hint) => {
                 assert!(Instant::now() < deadline, "stream did not open in time");
                 thread::sleep(hint.retry_after());
@@ -138,6 +157,15 @@ fn start_software_video_decoder() -> player_core::StartedVideoBackend {
     .expect("software FFmpeg decoder")
 }
 
+/// Что тест видит между шагами плеера.
+#[derive(Debug, Clone, Copy)]
+pub struct TickObservation {
+    /// Номер шага.
+    pub tick: usize,
+    /// Позиция плеера после шага — её приложение сообщает монитору источника.
+    pub position: Duration,
+}
+
 /// Играет поток до конца в безоконной сессии и собирает отчёт.
 ///
 /// `between_ticks` вызывается после каждого шага: так тест подкладывает байты
@@ -146,21 +174,96 @@ pub fn play(
     demuxer: impl media_core::Demuxer + 'static,
     mut between_ticks: impl FnMut(usize),
 ) -> PlaybackReport {
+    play_observed(demuxer, |observation| between_ticks(observation.tick))
+}
+
+/// Как [`play`], но между шагами тест видит и позицию плеера (обратное давление:
+/// приложение сообщает её монитору источника). На шаге, где плеер закончил,
+/// обратный вызов не зовётся.
+pub fn play_observed(
+    demuxer: impl media_core::Demuxer + 'static,
+    mut between_ticks: impl FnMut(TickObservation),
+) -> PlaybackReport {
+    let prepared = PreparedMedia::from_external_label("pushed media test", Box::new(demuxer));
+    play_controlled(prepared, |control| {
+        if !control.finished() {
+            between_ticks(control.observation());
+        }
+    })
+}
+
+/// Пульт теста между шагами плеера: как кнопки приложения.
+pub struct PlayerControl<'session> {
+    /// Сессия.
+    session: &'session mut PlayerSession,
+    /// Номер шага.
+    tick: usize,
+    /// Позиция после шага.
+    position: Duration,
+    /// Состояние после шага.
+    state: PlaybackState,
+    /// Команды перемотки отчёта.
+    seeks: &'session mut Vec<(usize, Duration)>,
+}
+
+impl PlayerControl<'_> {
+    /// Номер шага и позиция.
+    pub fn observation(&self) -> TickObservation {
+        TickObservation {
+            tick: self.tick,
+            position: self.position,
+        }
+    }
+
+    /// Состояние плеера после шага.
+    pub fn state(&self) -> PlaybackState {
+        self.state
+    }
+
+    /// Плеер закончил (конец или отказ).
+    pub fn finished(&self) -> bool {
+        matches!(self.state, PlaybackState::Ended | PlaybackState::Failed)
+    }
+
+    /// Команда «перемотать на `target`» (как ползунок приложения).
+    pub fn seek(&mut self, target: Duration) {
+        self.session
+            .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+                media_core::MediaTime::from_duration(target),
+            )))
+            .expect("seek command accepted");
+        self.seeks.push((self.tick, target));
+        self.state = self.session.playback_state();
+    }
+
+    /// Команда «играть».
+    pub fn play(&mut self) {
+        self.session
+            .dispatch_command(PlayerCommand::Play)
+            .expect("play command accepted");
+        self.state = self.session.playback_state();
+    }
+}
+
+/// Играет подготовленное медиа в безоконной сессии; между шагами тест жмёт
+/// кнопки через [`PlayerControl`]. Прогон кончается, когда плеер закончил и
+/// тест на этом шаге ничего не скомандовал (или по пределу шагов).
+pub fn play_controlled(
+    prepared: PreparedMedia,
+    mut between_ticks: impl FnMut(&mut PlayerControl<'_>),
+) -> PlaybackReport {
     let device = SimulatedAudioDevice::default();
     let mut session = PlayerSession::with_audio_factories(
         Arc::new(audio::ProductionAudioDecoderFactory::default()),
         device.factory(),
     );
     session.set_system_capabilities(software_only_capabilities());
-    session.load_prepared_media_with_autoplay(
-        PreparedMedia::from_external_label("pushed media test", Box::new(demuxer)),
-        true,
-    );
+    session.load_prepared_media_with_autoplay(prepared, true);
 
     let mut errors = Vec::new();
     // Как приложение: плеер ещё при открытии просит декодер под дорожку видео, и
-    // декодер встаёт до первых пакетов. Поздняя замена декодера перематывает на
-    // текущую позицию, а перемотки у потока пока нет (03b).
+    // декодер встаёт до первых пакетов (поздняя замена декодера перематывает на
+    // текущую позицию).
     for event in session.take_events() {
         if let PlayerEvent::VideoBackendSelectionRequested(_) = event {
             session.set_video_backend(start_software_video_decoder());
@@ -171,6 +274,9 @@ pub fn play(
     let mut presented_count = 0;
     let mut final_state = PlaybackState::Idle;
     let mut buffered_after_start = false;
+    let mut seeks = Vec::new();
+    let mut waiting_ticks = 0;
+    let mut state_trace = Vec::new();
     for tick in 0..MAX_TICKS {
         let now = Instant::now();
         device.advance(now.duration_since(previous_tick));
@@ -186,6 +292,7 @@ pub fn play(
                 width: frame.width,
                 height: frame.height,
                 position: snapshot.current_position,
+                tick,
             });
         }
         for event in session.take_events() {
@@ -203,10 +310,26 @@ pub fn play(
         }
         final_state = snapshot.playback_state;
         buffered_after_start |= !frames.is_empty() && final_state == PlaybackState::Buffering;
-        if matches!(final_state, PlaybackState::Ended | PlaybackState::Failed) {
+        state_trace.push((tick, final_state, snapshot.timeline.seeking));
+        if snapshot.timeline.seeking
+            || matches!(
+                final_state,
+                PlaybackState::Buffering | PlaybackState::Seeking | PlaybackState::Scrubbing
+            )
+        {
+            waiting_ticks += 1;
+        }
+        let mut control = PlayerControl {
+            session: &mut session,
+            tick,
+            position: snapshot.current_position,
+            state: final_state,
+            seeks: &mut seeks,
+        };
+        between_ticks(&mut control);
+        if control.finished() {
             break;
         }
-        between_ticks(tick);
         thread::sleep(TICK);
     }
     PlaybackReport {
@@ -217,5 +340,8 @@ pub fn play(
         final_state,
         buffered_after_start,
         errors,
+        seeks,
+        state_trace,
+        waiting_ticks,
     }
 }

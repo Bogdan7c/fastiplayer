@@ -199,6 +199,7 @@ dependencies = [
  "playlist-state",
  "png",
  "pollster",
+ "pushed-media-source",
  "render-core",
  "render-gles2-shell",
  "render-shell-api",

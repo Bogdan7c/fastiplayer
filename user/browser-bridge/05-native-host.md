@@ -75,3 +75,7 @@
 - Memories: `mem:browser-bridge/core` (раздел «Посредник»), `mem:suggested_commands` (сборка хоста).
 
 Memories: `mem:app-egui/instance-forwarding-ux13`, `mem:panic-invariant-policy`, `mem:tech_stack`.
+
+## Поправки по итогам 03b (30.10.2026)
+
+- **`hello` и `open_session` — по одному соединению D-Bus.** Стойка входа помнит приветствие по звонящему (соединению на шине). `gdbus`/`busctl` открывают новое соединение на каждый звонок — `open_session` получает `refused{hello_required}`. Стенд 03b держит одно соединение Gio на оба звонка.

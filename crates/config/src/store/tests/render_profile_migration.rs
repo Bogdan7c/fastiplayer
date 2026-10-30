@@ -34,7 +34,7 @@ fn schema_v23_vulkan_migrates_to_auto_and_drops_opengles_table() {
 
     let migrated = load_from_path(&config_path).expect("schema v23 config migrates");
     assert_eq!(migrated.config.schema_version, CURRENT_SCHEMA_VERSION);
-    assert_eq!(migrated.config.schema_version, 27);
+    assert_eq!(migrated.config.schema_version, 28);
     assert_eq!(migrated.config.render.profile, RenderProfile::Auto);
 
     // Всё остальное, что настроил пользователь, уцелело: сравниваем с эталоном, где
@@ -47,7 +47,7 @@ fn schema_v23_vulkan_migrates_to_auto_and_drops_opengles_table() {
 
     save_validated_atomic_at(&config_path, &migrated.config).expect("migrated v24 config saves");
     let saved_text = fs::read_to_string(&config_path).expect("saved v24 TOML readable");
-    assert!(saved_text.contains("schema_version = 27"));
+    assert!(saved_text.contains("schema_version = 28"));
     assert!(saved_text.contains("profile = \"auto\""));
     assert!(!saved_text.contains("opengles"));
     assert!(!saved_text.contains("profile = \"vulkan\""));
@@ -98,7 +98,7 @@ fn schema_v24_vulkan_is_kept_as_explicit_user_choice() {
     let config_path = temp_dir.path().join("config.toml");
     fs::write(
         &config_path,
-        "schema_version = 27\n\n[render]\nprofile = \"vulkan\"\n",
+        "schema_version = 28\n\n[render]\nprofile = \"vulkan\"\n",
     )
     .expect("v24 fixture written");
 
@@ -114,7 +114,7 @@ fn schema_v24_rejects_removed_opengles_table() {
     let config_path = temp_dir.path().join("config.toml");
     fs::write(
         &config_path,
-        "schema_version = 27\n\n[render.opengles]\nenabled = false\nsimple_ui = true\n",
+        "schema_version = 28\n\n[render.opengles]\nenabled = false\nsimple_ui = true\n",
     )
     .expect("v24 fixture written");
 

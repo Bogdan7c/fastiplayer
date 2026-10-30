@@ -24,6 +24,7 @@ use tungstenite::{Message, WebSocket};
 
 use super::*;
 use crate::browser_session::inbox::{InboxCapacity, ParkingWake};
+use crate::browser_session::intake_notice::IntakeNotice;
 use crate::browser_session::player_hello::player_hello;
 
 /// Потолок ожидания событий из потоков сервера.
@@ -55,9 +56,42 @@ impl NormalPlayerPause for CountingPause {
     fn finish(&mut self) {}
 }
 
+/// Медиа-часть-подделка: запоминает, что ей сообщил цикл, и просит проснуться к
+/// заданному сроку.
+#[derive(Default)]
+struct RecordingMedia {
+    opened: Vec<SessionRef>,
+    ended: Vec<SessionRef>,
+    notices: Vec<IntakeNotice>,
+    bytes_appended: Vec<SessionRef>,
+    drives: usize,
+    wake_at: Option<Instant>,
+}
+
+impl SessionMediaPort for RecordingMedia {
+    fn on_session_opened(&mut self, session: &SessionRef) {
+        self.opened.push(session.clone());
+    }
+
+    fn on_session_ended(&mut self, session: &SessionRef) {
+        self.ended.push(session.clone());
+    }
+
+    fn on_intake(&mut self, notices: Vec<IntakeNotice>, bytes_appended: Option<SessionRef>) {
+        self.notices.extend(notices);
+        self.bytes_appended.extend(bytes_appended);
+    }
+
+    fn drive(&mut self, _now: Instant) -> Option<Instant> {
+        self.drives += 1;
+        self.wake_at
+    }
+}
+
 /// Цикл с настоящими сервером и стойкой; сервер живёт до конца теста.
 struct Harness {
     runtime: BrowserSessionRuntime,
+    media: RecordingMedia,
     inbox: Arc<BrowserSessionInbox>,
     wake: Arc<ParkingWake>,
     server: BrowserSessionServer,
@@ -88,6 +122,7 @@ impl Harness {
         let runtime = BrowserSessionRuntime::new(desk, &policy, inbox.clone(), Box::new(pause));
         Self {
             runtime,
+            media: RecordingMedia::default(),
             inbox,
             wake,
             server,
@@ -98,7 +133,7 @@ impl Harness {
     /// Звонок посредника: кладёт сообщение в ящик, проходит шаг цикла, возвращает ответ.
     fn call(&mut self, message: &str) -> PlayerControlMessage {
         let reply_receiver = self.deliver(message);
-        let verdict = self.runtime.step(Instant::now());
+        let verdict = self.runtime.step(Instant::now(), &mut self.media);
         assert!(matches!(verdict, LifecycleVerdict::KeepRunning { .. }));
         decode_reply(&reply_receiver)
     }
@@ -134,7 +169,7 @@ impl Harness {
     fn run_until_exit(&mut self) -> ExitCause {
         let deadline = Instant::now() + WAIT;
         loop {
-            match self.runtime.step(Instant::now()) {
+            match self.runtime.step(Instant::now(), &mut self.media) {
                 LifecycleVerdict::Exit(cause) => return cause,
                 LifecycleVerdict::KeepRunning { wake_at } => {
                     assert!(
@@ -289,8 +324,10 @@ fn process_exits_when_nobody_opens_a_session_in_time() {
     assert_eq!(harness.pause_requests(), 0);
 }
 
+/// Сообщение страницы перед `tab_gone` не мешает циклу закончить сеанс по
+/// `tab_gone`: ящик принимает его как обычное сообщение и не путает с событием жизни.
 #[test]
-fn page_messages_are_counted_until_the_byte_source_arrives() {
+fn page_message_before_tab_gone_still_ends_the_session_by_tab_gone() {
     let mut harness = Harness::start(BrowserSessionPolicy::default());
     harness.call(HELLO);
     let grant = harness.open(1, "tab-1-video-1");
@@ -302,12 +339,12 @@ fn page_messages_are_counted_until_the_byte_source_arrives() {
     socket
         .send(Message::text(TAB_GONE.trim_end()))
         .expect("tab_gone is sent");
-    harness.run_until_exit();
 
-    let finish = harness.runtime.finish(ExitCause::IdleWithoutSession);
     assert_eq!(
-        finish.page_messages_received, 2,
-        "page_playback and tab_gone"
+        harness.run_until_exit(),
+        ExitCause::SessionEnded(SessionEndReason::ClosedByPlayer(
+            SessionCloseReason::TabGone
+        ))
     );
 }
 
@@ -335,7 +372,7 @@ fn end_of_an_older_session_instance_with_the_same_key_does_not_stop_the_process(
             reason: SessionEndReason::ReconnectGraceExpired,
         });
 
-    let verdict = harness.runtime.step(Instant::now());
+    let verdict = harness.runtime.step(Instant::now(), &mut harness.media);
 
     assert!(
         matches!(verdict, LifecycleVerdict::KeepRunning { .. }),
@@ -346,4 +383,74 @@ fn end_of_an_older_session_instance_with_the_same_key_does_not_stop_the_process(
         PlayerControlMessage::SessionGranted(_)
     ));
     assert_eq!(harness.pause_requests(), 1);
+    // Медиа-часть узнаёт о конце экземпляра (забыть отложенное его странице) и
+    // сама сверяет, тот ли это экземпляр.
+    let ended: Vec<u64> = harness
+        .media
+        .ended
+        .iter()
+        .map(|session| session.instance.0)
+        .collect();
+    assert_eq!(ended, vec![u64::MAX]);
+}
+
+#[test]
+fn opened_sessions_and_stream_notices_reach_the_media_part_in_order() {
+    let mut harness = Harness::start(BrowserSessionPolicy::default());
+    harness.call(HELLO);
+    let first = harness.open(1, "tab-1-video-1");
+    let second = harness.open(2, "tab-2-video-1");
+    // Повтор того же сеанса — то же видео, но медиа-часть тоже узнаёт о нём
+    // (она сама решает, что экземпляр тот же).
+    harness.open(3, "tab-2-video-1");
+    assert_eq!(
+        harness
+            .media
+            .opened
+            .iter()
+            .map(|session| session.key.as_str().to_owned())
+            .collect::<Vec<_>>(),
+        vec![
+            first.session_key.as_str(),
+            second.session_key.as_str(),
+            second.session_key.as_str()
+        ]
+    );
+    assert_ne!(harness.media.opened[0], harness.media.opened[1]);
+    assert_eq!(harness.media.opened[1], harness.media.opened[2]);
+
+    let session = harness.media.opened[1].clone();
+    harness.inbox.post_intake_notices([
+        IntakeNotice::BytesAppended {
+            session: session.clone(),
+        },
+        IntakeNotice::CloseSession {
+            session: session.clone(),
+            reason: SessionCloseReason::ProtocolViolation,
+        },
+    ]);
+    let drives_before = harness.media.drives;
+    harness.runtime.step(Instant::now(), &mut harness.media);
+    assert_eq!(harness.media.drives, drives_before + 1);
+    assert_eq!(harness.media.bytes_appended, vec![session.clone()]);
+    assert!(matches!(
+        harness.media.notices.as_slice(),
+        [IntakeNotice::CloseSession { session: closed, reason: SessionCloseReason::ProtocolViolation }]
+            if *closed == session
+    ));
+}
+
+#[test]
+fn the_loop_wakes_for_the_media_part_when_its_deadline_is_the_earliest() {
+    let mut harness = Harness::start(BrowserSessionPolicy::default());
+    let media_deadline = Instant::now() + Duration::from_millis(250);
+    harness.media.wake_at = Some(media_deadline);
+    let verdict = harness.runtime.step(Instant::now(), &mut harness.media);
+    // Срок «никто не открыл сеанс» — секунды; медиа просит раньше и побеждает.
+    assert_eq!(
+        verdict,
+        LifecycleVerdict::KeepRunning {
+            wake_at: Some(media_deadline)
+        }
+    );
 }

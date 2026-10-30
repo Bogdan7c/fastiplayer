@@ -12,6 +12,7 @@ pub(crate) mod ebml;
 mod iso_bmff;
 mod matroska;
 mod mpeg_ts;
+mod timing;
 
 use bytes::Bytes;
 
@@ -19,6 +20,10 @@ use crate::container::PushedContainer;
 
 pub(crate) use ebml::{EbmlElementSize, read_element_header};
 pub(crate) use iso_bmff::read_box_header;
+pub use timing::SegmentTimingError;
+pub(crate) use timing::{
+    MediaTime, MediaTimeSpan, SegmentEnd, SegmentTiming, SegmentTimingContext, TimedSpan,
+};
 
 use self::iso_bmff::IsoBmffFramer;
 use self::matroska::MatroskaFramer;
@@ -100,6 +105,10 @@ pub enum FramingError {
     /// Поток MPEG-TS потерял синхробайт пакета.
     #[error("an MPEG-TS packet does not start with the sync byte")]
     TransportStreamSyncLost,
+    /// Время целого сегмента прочитать нельзя (испорченные `tfdt`/`trun`,
+    /// `Cluster/Timecode`, дорожка не из init …).
+    #[error("segment timing: {0}")]
+    Timing(#[from] SegmentTimingError),
 }
 
 /// Сканер одной полосы; выбирается по контейнеру.

@@ -20,6 +20,10 @@
 //!   без участия входа; посредник и D-Bus могут исчезнуть;
 //! - **6 (поколения)**: байты старого поколения выбрасывает `StreamGate` и
 //!   считает; нарушение порядка закрывает сеанс.
+//! - **порядок данных**: сообщения страницы и байты одного соединения приёмники
+//!   получают из одного потока, без перекрытия вызовов, в порядке кадров на
+//!   проводе (по обоим трейтам вместе); события жизни и `session_ended` — из
+//!   других потоков. Подробно — [`sink`], раздел «Порядок данных одного соединения».
 //!
 //! Модули: [`policy`] (сроки), [`token`] (пропуска), [`registry`] (таблица
 //! сеансов, чистая), [`entry_desk`] (стойка входа), [`server`] (WebSocket),
@@ -41,8 +45,8 @@ pub use lifecycle::{ExitCause, LifecycleVerdict, ProcessLifecycle};
 pub use policy::BrowserSessionPolicy;
 pub use registry::{ConnectionId, SessionInstance, SessionRef};
 pub use server::{
-    BrowserSessionServer, OpenSessionError, OpenedSession, SendToPageError, ServerShutdownReport,
-    ServerStartError, SessionControl,
+    BrowserSessionServer, CloseOutcome, OpenSessionError, OpenedSession, SendToPageError,
+    ServerShutdownReport, ServerStartError, SessionControl,
 };
 pub use sink::{
     ChunkSource, CountingByteSink, CountingSnapshot, EventSinkFull, RangeChunk, SessionByteSink,

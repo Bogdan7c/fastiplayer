@@ -13,7 +13,12 @@
 //!   `Full` (звонящий получит «не отвечает»), а не тихая потеря;
 //! - сообщения страницы ограничены; переполнение возвращает `EventSinkFull`, сервер
 //!   его считает и пишет в отчёт;
-//! - события жизни сеанса не теряются никогда (их единицы на сеанс).
+//! - события жизни сеанса не теряются никогда (их единицы на сеанс);
+//! - уведомления потока приёма байтов ([`IntakeNotice`], сессия 03b) не теряются,
+//!   кроме подсказок при переполнении (намерения «играть/пауза/скорость» и квитанции
+//!   перемотки плеера); перемотка страницей при переполнении вытесняет прежнюю
+//!   перемотку того же сеанса ([`IntakeNotice::overflow_rule`]); «легли новые байты»
+//!   сливаются в один флаг (это подсказка «опроси поток», а не событие).
 //!
 //! После [`BrowserSessionInbox::close`] новые звонки получают `Closed`
 //! (звонящий — `ShuttingDown`), а недоставленные слоты ответа уничтожаются, и их
@@ -27,6 +32,8 @@ use browser_bridge_protocol::PageSessionMessage;
 use browser_bridge_session::{EventSinkFull, SessionEventSink, SessionLifecycleEvent, SessionRef};
 use desktop_integration::{BrowserEntryDelivery, BrowserEntrySink, BrowserEntrySinkError};
 use tracing::warn;
+
+use super::intake_notice::{IntakeNotice, OverflowRule};
 
 /// Разбудить главный цикл: в ящике что-то появилось.
 ///
@@ -47,6 +54,11 @@ pub(crate) struct InboxCapacity {
     /// Сообщений страницы, ждущих цикла. Страница шлёт их единицами в секунду
     /// (события MSE, перемотка, меню); 256 — это минуты зависшего цикла.
     pub(crate) page_messages: usize,
+    /// Уведомлений потока приёма байтов, ждущих цикла, сверх которых теряются
+    /// только намерения страницы (остальные уведомления единичны и важны).
+    /// Поток приёма шлёт их не чаще сообщений страницы; 1024 — запас на минуты
+    /// зависшего цикла при самой болтливой странице.
+    pub(crate) intake_notices: usize,
 }
 
 impl Default for InboxCapacity {
@@ -54,6 +66,7 @@ impl Default for InboxCapacity {
         Self {
             entry_deliveries: 8,
             page_messages: 256,
+            intake_notices: 1024,
         }
     }
 }
@@ -73,6 +86,10 @@ pub(crate) struct InboxBatch {
     pub(crate) entry_deliveries: Vec<BrowserEntryDelivery>,
     pub(crate) lifecycle_events: Vec<SessionLifecycleEvent>,
     pub(crate) page_messages: Vec<PageMessageEnvelope>,
+    /// Уведомления потока приёма байтов в порядке выдачи.
+    pub(crate) intake_notices: Vec<IntakeNotice>,
+    /// Слитое «легли новые байты»: последний сеанс, о котором сообщили.
+    pub(crate) bytes_appended: Option<SessionRef>,
 }
 
 impl InboxBatch {
@@ -81,7 +98,23 @@ impl InboxBatch {
         self.entry_deliveries.is_empty()
             && self.lifecycle_events.is_empty()
             && self.page_messages.is_empty()
+            && self.intake_notices.is_empty()
+            && self.bytes_appended.is_none()
     }
+}
+
+/// Что стало с пачкой уведомлений потока приёма.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct NoticeDelivery {
+    /// Поставлено в очередь (слитые «легли байты» тоже считаются здесь).
+    pub(crate) queued: usize,
+    /// Потеряно подсказок (намерений страницы и квитанций перемотки): ящик был полон.
+    pub(crate) dropped_hints: usize,
+    /// Перемоток страницей, вытесненных более новой перемоткой того же сеанса:
+    /// ящик был полон.
+    pub(crate) superseded_page_seeks: usize,
+    /// Выброшено: ящик уже закрыт, процесс выходит.
+    pub(crate) dropped_after_close: usize,
 }
 
 #[derive(Debug, Default)]
@@ -89,6 +122,8 @@ struct InboxState {
     entry_deliveries: VecDeque<BrowserEntryDelivery>,
     lifecycle_events: Vec<SessionLifecycleEvent>,
     page_messages: VecDeque<PageMessageEnvelope>,
+    intake_notices: Vec<IntakeNotice>,
+    bytes_appended: Option<SessionRef>,
     closed: bool,
 }
 
@@ -115,20 +150,85 @@ impl BrowserSessionInbox {
             entry_deliveries: state.entry_deliveries.drain(..).collect(),
             lifecycle_events: std::mem::take(&mut state.lifecycle_events),
             page_messages: state.page_messages.drain(..).collect(),
+            intake_notices: std::mem::take(&mut state.intake_notices),
+            bytes_appended: state.bytes_appended.take(),
         }
+    }
+
+    /// Кладёт уведомления потока приёма байтов одной пачкой и будит цикл один раз.
+    ///
+    /// Порядок уведомлений сохраняется. `BytesAppended` сливаются в один флаг.
+    /// При полном ящике — по [`IntakeNotice::overflow_rule`]: подсказки теряются (с
+    /// записью в журнал), перемотка страницей вытесняет прежнюю перемотку того же
+    /// сеанса, остальные ложатся всегда (их единицы на поколение, и без них сеанс
+    /// зависнет).
+    pub(crate) fn post_intake_notices(
+        &self,
+        notices: impl IntoIterator<Item = IntakeNotice>,
+    ) -> NoticeDelivery {
+        let mut delivery = NoticeDelivery::default();
+        {
+            let mut state = self.lock_state();
+            for notice in notices {
+                if state.closed {
+                    delivery.dropped_after_close += 1;
+                    continue;
+                }
+                if let IntakeNotice::BytesAppended { session } = notice {
+                    state.bytes_appended = Some(session);
+                    delivery.queued += 1;
+                    continue;
+                }
+                let full = state.intake_notices.len() >= self.capacity.intake_notices;
+                if full {
+                    match notice.overflow_rule() {
+                        OverflowRule::Keep => {}
+                        OverflowRule::Droppable => {
+                            delivery.dropped_hints += 1;
+                            continue;
+                        }
+                        OverflowRule::ReplacePendingPageSeek => {
+                            if remove_last_page_seek_of(&mut state.intake_notices, notice.session())
+                            {
+                                delivery.superseded_page_seeks += 1;
+                            }
+                        }
+                    }
+                }
+                state.intake_notices.push(notice);
+                delivery.queued += 1;
+            }
+        }
+        if delivery.dropped_hints > 0 || delivery.superseded_page_seeks > 0 {
+            warn!(
+                dropped = delivery.dropped_hints,
+                superseded_page_seeks = delivery.superseded_page_seeks,
+                "Browser session inbox is full; page hints were dropped"
+            );
+        }
+        if delivery.queued > 0 {
+            self.wake.wake();
+        }
+        delivery
     }
 
     /// Закрывает ящик: дальше звонки получают `Closed`, а ждущие слоты ответа
     /// уничтожаются (их звонящие получают `ShuttingDown` от транспорта).
     pub(crate) fn close(&self) {
-        let abandoned = {
+        let (abandoned, abandoned_notices) = {
             let mut state = self.lock_state();
             state.closed = true;
             state.page_messages.clear();
-            std::mem::take(&mut state.entry_deliveries)
+            state.bytes_appended = None;
+            (
+                std::mem::take(&mut state.entry_deliveries),
+                std::mem::take(&mut state.intake_notices),
+            )
         };
         // Слоты уничтожаются вне замка: их Drop будит асинхронный обработчик D-Bus.
+        // Уведомления тоже: в них стороны открытия потоков с демуксерами внутри.
         drop(abandoned);
+        drop(abandoned_notices);
     }
 
     /// Отравленный замок означает панику в другом потоке посреди короткой правки
@@ -192,6 +292,20 @@ impl SessionEventSink for BrowserSessionInbox {
         }
         self.wake.wake();
     }
+}
+
+/// Убирает последнюю неисполненную перемотку страницей сеанса `session`;
+/// `true` — такая была. Вызывается только при полном ящике (обход очереди).
+fn remove_last_page_seek_of(notices: &mut Vec<IntakeNotice>, session: &SessionRef) -> bool {
+    let Some(index) = notices
+        .iter()
+        .rposition(|queued| queued.is_page_seek_of(session))
+    else {
+        return false;
+    };
+    // Порядок остальных уведомлений сохраняется: новая перемотка ляжет в конец.
+    let _superseded = notices.remove(index);
+    true
 }
 
 /// Пробуждение безоконного цикла: флаг под замком и условная переменная.

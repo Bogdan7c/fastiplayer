@@ -16,3 +16,4 @@ mod lifecycle_events;
 mod protocol_errors;
 mod stream_replay;
 mod support;
+mod wire_order;

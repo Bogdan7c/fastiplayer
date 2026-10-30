@@ -7,7 +7,7 @@ use crate::{
     LEGACY_SCHEMA_VERSION_16, LEGACY_SCHEMA_VERSION_17, LEGACY_SCHEMA_VERSION_18,
     LEGACY_SCHEMA_VERSION_19, LEGACY_SCHEMA_VERSION_20, LEGACY_SCHEMA_VERSION_21,
     LEGACY_SCHEMA_VERSION_22, LEGACY_SCHEMA_VERSION_23, LEGACY_SCHEMA_VERSION_24,
-    LEGACY_SCHEMA_VERSION_25, LEGACY_SCHEMA_VERSION_26,
+    LEGACY_SCHEMA_VERSION_25, LEGACY_SCHEMA_VERSION_26, LEGACY_SCHEMA_VERSION_27,
 };
 
 pub(super) const REMOVED_HARDWARE_DECODE_ONLY_KEY: &str = "hardware_decode_only";
@@ -67,7 +67,7 @@ pub(super) fn normalize_document(toml_document: &mut toml::Value) {
     }
 }
 
-/// Поднимает поддерживаемые v2-v26 структуры до текущей in-memory версии.
+/// Поднимает поддерживаемые v2-v27 структуры до текущей in-memory версии.
 pub(super) fn upgrade_config(config: &mut AppConfig) {
     if matches!(
         config.schema_version,
@@ -104,6 +104,9 @@ pub(super) fn upgrade_config(config: &mut AppConfig) {
             // v26 -> v27: сохранённое 24 в двух ключах пулов поверхностей стало 0 = «авто»
             // (`migrate_explicit_default_surface_pools_to_automatic`).
             | LEGACY_SCHEMA_VERSION_26
+            // v27 -> v28: добавлена секция `[browser_session]`; старый файл без неё получает
+            // defaults через `serde(default)`, переписывать нечего.
+            | LEGACY_SCHEMA_VERSION_27
     ) {
         config.schema_version = CURRENT_SCHEMA_VERSION;
     }

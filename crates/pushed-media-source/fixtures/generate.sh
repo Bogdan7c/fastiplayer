@@ -12,7 +12,18 @@
 # - video-h264-64.mp4 + video-h264-96.mp4 — смена качества (разрешение 64 → 96);
 # - video-h264-64.mp4 + video-vp9-96.mp4 — changeType (H.264 → VP9);
 # - audio-aac.mp4 — звук на всю длину (0,8 с, синус 440 Гц);
-# - muxed-h264-aac.ts — MPEG-TS со звуком и видео (0,4 с).
+# - muxed-h264-aac.ts — MPEG-TS со звуком и видео (0,4 с);
+# - video-h264-64-4s.mp4 — длинный ролик для полки и обратного давления (сессия
+#   03b): 4 с, ключевой кадр каждые 10 кадров, десять фрагментов по 0,4 с;
+# - audio-aac-4s.mp4 — звук к нему (4 с, фрагменты ~0,4 с): со звуком старт ведёт
+#   звук, и поток с обратным давлением не упирается в «забор» старта только-видео.
+# - video-h264-64-midgop.mp4 — перемотка (пакет F 03b): 0,8 с, ключевой кадр каждые
+#   10 кадров, а фрагменты по 0,2 с — фрагменты 1 и 3 начинаются НЕ с ключевого
+#   кадра (так бывает у страниц, которые режут по времени, а не по GOP).
+# - video-vp9-64-4fps.webm — открытый конец кластера (пакет G 03b): WebM VP9 4 к/с,
+#   4 с, кластер на каждый ключевой кадр (раз в секунду, 4 блока по 250 мс).
+#   ffmpeg пишет `DefaultDuration`; тест заменяет его на `Void` того же размера —
+#   так выглядят WebM плееров страниц без длительностей кадров.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -40,3 +51,22 @@ ffmpeg "${common[@]}" -f lavfi -i "testsrc2=size=64x64:rate=25:duration=0.4" \
     -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=0.4" \
     -c:v libx264 -preset ultrafast -profile:v baseline -bf 0 "${gop[@]}" \
     -c:a aac -b:a 32k -ac 1 -fflags +bitexact -map_metadata -1 -f mpegts "$here/muxed-h264-aac.ts"
+
+ffmpeg "${common[@]}" -f lavfi -i "testsrc2=size=64x64:rate=25:duration=4" \
+    -c:v libx264 -preset ultrafast -profile:v baseline -bf 0 \
+    -g 10 -keyint_min 10 -sc_threshold 0 -pix_fmt yuv420p \
+    "${fmp4[@]}" "$here/video-h264-64-4s.mp4"
+
+ffmpeg "${common[@]}" -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=4" \
+    -ac 1 -c:a aac -b:a 32k -frag_duration 400000 "${fmp4[@]}" "$here/audio-aac-4s.mp4"
+
+ffmpeg "${common[@]}" -f lavfi -i "testsrc2=size=64x64:rate=25:duration=0.8" \
+    -c:v libx264 -preset ultrafast -profile:v baseline -bf 0 \
+    -g 10 -keyint_min 10 -sc_threshold 0 -pix_fmt yuv420p \
+    -fflags +bitexact -map_metadata -1 -frag_duration 200000 \
+    -movflags empty_moov+default_base_moof+skip_trailer "$here/video-h264-64-midgop.mp4"
+
+ffmpeg "${common[@]}" -f lavfi -i "testsrc2=size=64x64:rate=4:duration=4" \
+    -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 50k \
+    -g 4 -keyint_min 4 -pix_fmt yuv420p -fflags +bitexact -map_metadata -1 \
+    -cluster_time_limit 900 -f webm "$here/video-vp9-64-4fps.webm"

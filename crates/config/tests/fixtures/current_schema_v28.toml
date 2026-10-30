@@ -1,4 +1,4 @@
-schema_version = 27
+schema_version = 28
 
 [player]
 start_paused = false
@@ -200,6 +200,13 @@ single_item_stdout_limit_bytes = 67108864
 single_item_stderr_limit_bytes = 8388608
 # Максимальное число JSON values до построения metadata DOM.
 single_item_json_node_limit = 1000000
+
+# Браузерный режим: окно буфера медиа, полученного от страницы (секции нет в окне настроек).
+[browser_session]
+# Запас вперёд от позиции, с (10..=600): при нём источник «полон» и не берёт новые байты.
+buffer_ahead_s = 120
+# Сколько секунд сыгранного держать позади позиции (0..=300) для перемотки назад без страницы.
+buffer_behind_s = 30
 
 [ui]
 show_telemetry = false

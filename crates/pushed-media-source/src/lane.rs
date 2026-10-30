@@ -2,24 +2,29 @@
 //!
 //! Две стороны полосы живут в разных потоках:
 //! - `LaneIntake` — у того, кто приносит байты (поток соединения): сканирует куски,
-//!   решает, когда начинать новый эпизод, и пишет в трубу текущего эпизода;
+//!   размечает целые сегменты по времени и отдаёт их буферу потока
+//!   (`stream_buffer`: полка, подача в эпизоды, учёт);
 //! - `LaneDemuxer` (модуль `lane_demuxer`) — у плеера: забирает эпизоды по порядку.
 //!
-//! Между ними — `LaneMailbox`: очередь запущенных эпизодов и флаги «вход окончен»
+//! Между ними — `LaneMailbox` (модуль `mailbox`): очередь запущенных эпизодов и флаги «вход окончен»
 //! и «плеер закрыл поток».
 
-use std::collections::VecDeque;
 use std::fmt;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Arc;
 
 use bytes::Bytes;
 
 use crate::container::PushedContainer;
-use crate::episode::{EpisodeFactory, EpisodeHandle, EpisodeRecipe, EpisodeStartError};
 use crate::error::PushedStreamError;
-use crate::framing::{ContainerFramer, FramedUnit, FramingLimits};
-use crate::pipe::{EpisodePipeWriter, PipeWrite};
+use crate::feed::EpisodeKey;
+use crate::framing::{
+    ContainerFramer, FramedUnit, FramingError, FramingLimits, SegmentTiming, SegmentTimingContext,
+    SegmentTimingError,
+};
+use crate::intake::ChargedSegment;
+pub(crate) use crate::mailbox::{LaneMailbox, MailboxTake};
 use crate::protection::{ProtectionVerdict, scan_initialization};
+use crate::stream_buffer::{StreamBuffer, TimedSegment};
 use crate::time::TimestampOffset;
 
 /// Номер полосы внутри потока (у браузера — индекс SourceBuffer).
@@ -49,97 +54,23 @@ impl fmt::Display for LaneId {
 /// Что произошло с принятым куском.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppendOutcome {
-    /// Байты приняты (целые сегменты ушли демуксеру, хвост ждёт продолжения).
+    /// Байты приняты (целые сегменты легли на полку или ушли демуксеру, хвост
+    /// ждёт продолжения).
     Accepted,
     /// Плеер уже закрыл поток: байты никому не нужны и выброшены.
     DiscardedConsumerClosed,
 }
 
-/// Очередь эпизодов между приёмом и плеером.
-#[derive(Debug, Default)]
-pub(crate) struct LaneMailbox {
-    /// Состояние под замком.
-    state: Mutex<MailboxState>,
-}
-
-/// Состояние почтового ящика.
-#[derive(Debug, Default)]
-struct MailboxState {
-    /// Запущенные, но ещё не забранные плеером эпизоды.
-    episodes: VecDeque<EpisodeHandle>,
-    /// Новых эпизодов не будет.
-    input_ended: bool,
-    /// Плеер закрыл поток.
-    consumer_closed: bool,
-}
-
-/// Что лежит в ящике для плеера.
+/// Текущий init полосы и разметка времени, прочитанная из него.
 #[derive(Debug)]
-pub(crate) enum MailboxTake {
-    /// Следующий эпизод (в куче: ручка эпизода крупная, а ящик отдаёт её редко).
-    Episode(Box<EpisodeHandle>),
-    /// Пока пусто, вход продолжается.
-    Waiting,
-    /// Пусто, и новых эпизодов не будет.
-    InputEnded,
+struct CurrentInitialization {
+    /// Init (зачтён в учёт, пока его держит полоса или сегменты полки).
+    segment: ChargedSegment,
+    /// Как читать время медиасегментов этого init.
+    timing: SegmentTimingContext,
 }
 
-impl LaneMailbox {
-    /// Кладёт эпизод. `false` — плеер уже закрыл поток, эпизод выброшен.
-    fn post(&self, episode: EpisodeHandle) -> bool {
-        let mut state = self.lock();
-        if state.consumer_closed {
-            return false;
-        }
-        state.episodes.push_back(episode);
-        true
-    }
-
-    /// Сколько эпизодов ждут плеер.
-    fn pending_episodes(&self) -> usize {
-        self.lock().episodes.len()
-    }
-
-    /// Новых эпизодов не будет.
-    fn end_input(&self) {
-        self.lock().input_ended = true;
-    }
-
-    /// Закрыл ли плеер поток.
-    fn consumer_closed(&self) -> bool {
-        self.lock().consumer_closed
-    }
-
-    /// Следующий эпизод для плеера.
-    pub(crate) fn take_next(&self) -> MailboxTake {
-        let mut state = self.lock();
-        match state.episodes.pop_front() {
-            Some(episode) => MailboxTake::Episode(Box::new(episode)),
-            None if state.input_ended => MailboxTake::InputEnded,
-            None => MailboxTake::Waiting,
-        }
-    }
-
-    /// Плеер закрыл поток: ждущие эпизоды выбрасываются, новые не принимаются.
-    pub(crate) fn close_consumer(&self) {
-        let abandoned = {
-            let mut state = self.lock();
-            state.consumer_closed = true;
-            std::mem::take(&mut state.episodes)
-        };
-        // Эпизоды уничтожаются вне замка: их Drop будит потоки демуксеров.
-        drop(abandoned);
-    }
-
-    /// Захватывает состояние; отравленный mutex не мешает закрытию.
-    fn lock(&self) -> MutexGuard<'_, MailboxState> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-
-/// Приёмная сторона полосы.
+/// Приёмная сторона полосы: куски → целые сегменты → буфер потока.
 #[derive(Debug)]
 pub(crate) struct LaneIntake {
     /// Номер полосы.
@@ -150,26 +81,24 @@ pub(crate) struct LaneIntake {
     framer: ContainerFramer,
     /// Пределы сканера (нужны при смене контейнера).
     framing_limits: FramingLimits,
-    /// Текущий init-сегмент — с него начинается каждый новый эпизод.
-    initialization: Option<Bytes>,
+    /// Текущий init-сегмент — к нему относятся следующие медиасегменты.
+    initialization: Option<CurrentInitialization>,
     /// Смещение времени для следующих медиасегментов.
     offset: TimestampOffset,
-    /// Труба текущего эпизода; `None` — следующий медиасегмент начнёт новый эпизод.
-    running_episode: Option<EpisodePipeWriter>,
-    /// Ящик эпизодов для плеера.
-    mailbox: std::sync::Arc<LaneMailbox>,
-    /// Потолок ждущих эпизодов.
-    max_pending_episodes: usize,
+    /// Ящик эпизодов: только чтобы узнать, не закрыл ли плеер поток.
+    mailbox: Arc<LaneMailbox>,
+    /// Буфер потока: полки, подача, учёт.
+    buffer: Arc<StreamBuffer>,
 }
 
 impl LaneIntake {
-    /// Новая полоса без байтов.
+    /// Новая полоса без байтов (полоса уже заведена в буфере).
     pub(crate) fn new(
         lane: LaneId,
         container: PushedContainer,
         framing_limits: FramingLimits,
-        max_pending_episodes: usize,
-        mailbox: std::sync::Arc<LaneMailbox>,
+        mailbox: Arc<LaneMailbox>,
+        buffer: Arc<StreamBuffer>,
     ) -> Self {
         Self {
             lane,
@@ -178,30 +107,25 @@ impl LaneIntake {
             framing_limits,
             initialization: None,
             offset: TimestampOffset::ZERO,
-            running_episode: None,
             mailbox,
-            max_pending_episodes,
+            buffer,
         }
     }
 
     /// Принимает кусок байтов полосы.
-    pub(crate) fn append(
-        &mut self,
-        chunk: &[u8],
-        episodes: &EpisodeFactory,
-    ) -> Result<AppendOutcome, PushedStreamError> {
+    pub(crate) fn append(&mut self, chunk: &[u8]) -> Result<AppendOutcome, PushedStreamError> {
         if self.mailbox.consumer_closed() {
+            // Плееру ничего не нужно: полка и текущий init отпускаются сразу.
+            self.initialization = None;
+            self.buffer.discard_lane(self.lane)?;
             return Ok(AppendOutcome::DiscardedConsumerClosed);
         }
         let mut completed = Vec::new();
         self.framer
             .push(chunk, &mut completed)
-            .map_err(|source| PushedStreamError::Framing {
-                lane: self.lane,
-                source,
-            })?;
+            .map_err(|source| self.framing_error(source))?;
         for unit in completed {
-            self.accept_unit(unit, episodes)?;
+            self.accept_unit(unit)?;
         }
         Ok(AppendOutcome::Accepted)
     }
@@ -217,11 +141,14 @@ impl LaneIntake {
     }
 
     /// `changeType()`: другой контейнер или кодек. Следующим обязан прийти новый init.
-    pub(crate) fn change_container(&mut self, container: PushedContainer) {
+    pub(crate) fn change_container(
+        &mut self,
+        container: PushedContainer,
+    ) -> Result<(), PushedStreamError> {
         self.container = container;
         self.framer = ContainerFramer::new(container, self.framing_limits);
         self.initialization = None;
-        self.finish_running_episode();
+        self.buffer.change_lane_container(self.lane, container)
     }
 
     /// Новое смещение времени действует с ближайшего медиасегмента — в новом эпизоде.
@@ -239,40 +166,36 @@ impl LaneIntake {
             return Err(PushedStreamError::TimestampOffsetUnsupported { lane: self.lane });
         }
         self.offset = offset;
-        self.finish_running_episode();
-        Ok(())
+        self.buffer.finish_running_episode(self.lane)
     }
 
     /// Конец входа полосы: недособранное выбрасывается (возвращается объём).
-    pub(crate) fn end_input(
-        &mut self,
-        episodes: &EpisodeFactory,
-    ) -> Result<usize, PushedStreamError> {
+    pub(crate) fn end_input(&mut self) -> Result<usize, PushedStreamError> {
         let mut completed = Vec::new();
         let dropped_bytes = self.framer.finish(&mut completed);
         for unit in completed {
-            self.accept_unit(unit, episodes)?;
+            self.accept_unit(unit)?;
         }
-        self.finish_running_episode();
-        self.mailbox.end_input();
+        self.buffer.end_lane_input(self.lane)?;
         Ok(dropped_bytes)
     }
 
+    /// Вход снова открыт (байты после `endOfStream`).
+    pub(crate) fn reopen_input(&mut self) -> Result<(), PushedStreamError> {
+        self.buffer.reopen_lane_input(self.lane)
+    }
+
     /// Раскладывает целый сегмент.
-    fn accept_unit(
-        &mut self,
-        unit: FramedUnit,
-        episodes: &EpisodeFactory,
-    ) -> Result<(), PushedStreamError> {
+    fn accept_unit(&mut self, unit: FramedUnit) -> Result<(), PushedStreamError> {
         match unit {
             FramedUnit::Initialization(initialization) => {
                 self.accept_initialization(initialization)
             }
-            FramedUnit::Media(media) => self.accept_media(media, episodes),
+            FramedUnit::Media(media) => self.accept_media(media),
         }
     }
 
-    /// Новый init: проверка защиты; другие байты — новый эпизод с ближайшего медиасегмента.
+    /// Новый init: проверка защиты и разметки времени; другие байты — новый эпизод.
     fn accept_initialization(&mut self, initialization: Bytes) -> Result<(), PushedStreamError> {
         match scan_initialization(self.container, &initialization) {
             Ok(ProtectionVerdict::Clear) => {}
@@ -285,79 +208,58 @@ impl LaneIntake {
         }
         // Плееры страниц часто повторяют тот же init (перед перемоткой, на всякий
         // случай). Тот же init не повод пересоздавать декодер.
-        if self.initialization.as_ref() == Some(&initialization) {
+        if self
+            .initialization
+            .as_ref()
+            .is_some_and(|current| current.segment.bytes() == &initialization)
+        {
             return Ok(());
         }
-        self.initialization = Some(initialization);
-        self.finish_running_episode();
-        Ok(())
+        let timing = SegmentTimingContext::from_initialization(self.container, &initialization)
+            .map_err(|error| self.framing_error(FramingError::Timing(error)))?;
+        let segment = self.buffer.charge(initialization)?;
+        self.initialization = Some(CurrentInitialization { segment, timing });
+        self.buffer.finish_running_episode(self.lane)
     }
 
-    /// Медиасегмент: в текущий эпизод или первым в новый.
-    fn accept_media(
-        &mut self,
-        media: Bytes,
-        episodes: &EpisodeFactory,
-    ) -> Result<(), PushedStreamError> {
-        if self.container.has_initialization_segment() && self.initialization.is_none() {
-            return Err(PushedStreamError::MediaBeforeInitialization { lane: self.lane });
-        }
-        let Some(running) = &self.running_episode else {
-            return self.start_episode(media, episodes);
-        };
-        match episodes.push(running, media) {
-            Ok(PipeWrite::Queued) => Ok(()),
-            // Эпизод выброшен плеером (поток закрыт): байты никому не нужны.
-            Ok(PipeWrite::EpisodeAbandoned) => {
-                self.running_episode = None;
-                Ok(())
+    /// Медиасегмент: размечается по времени и уходит в буфер потока.
+    fn accept_media(&mut self, media: Bytes) -> Result<(), PushedStreamError> {
+        let current = match &self.initialization {
+            Some(current) => Some(current),
+            None if self.container.has_initialization_segment() => {
+                return Err(PushedStreamError::MediaBeforeInitialization { lane: self.lane });
             }
-            Err(exceeded) => Err(PushedStreamError::IntakeLimitExceeded {
-                limit: exceeded.limit,
-            }),
-        }
-    }
-
-    /// Запускает новый эпизод с текущим init и этим медиасегментом.
-    fn start_episode(
-        &mut self,
-        first_media: Bytes,
-        episodes: &EpisodeFactory,
-    ) -> Result<(), PushedStreamError> {
-        // Проверяем до запуска: у эпизода свой поток и свои очереди.
-        if self.mailbox.pending_episodes() >= self.max_pending_episodes {
-            return Err(PushedStreamError::TooManyPendingEpisodes {
-                lane: self.lane,
-                limit: self.max_pending_episodes,
-            });
-        }
-        let recipe = EpisodeRecipe {
-            container: self.container,
-            initialization: self.initialization.as_ref(),
-            first_media,
-            offset: self.offset,
+            None => None,
         };
-        let (writer, handle) = episodes.start(recipe).map_err(|error| match error {
-            EpisodeStartError::IntakeLimitExceeded(exceeded) => {
-                PushedStreamError::IntakeLimitExceeded {
-                    limit: exceeded.limit,
-                }
+        let timing = match current {
+            Some(current) => current
+                .timing
+                .media_segment_timing(&media)
+                .map_err(|error| self.framing_error(FramingError::Timing(error)))?,
+            None => SegmentTiming::Untimed,
+        };
+        let key = EpisodeKey::new(
+            self.container,
+            current.map(|current| current.segment.clone()),
+            self.offset,
+        );
+        match timing {
+            SegmentTiming::Timed(raw_timing) => {
+                let timing = raw_timing.shifted_by(self.offset).ok_or_else(|| {
+                    self.framing_error(FramingError::Timing(SegmentTimingError::TimeOutOfRange))
+                })?;
+                self.buffer
+                    .accept_timed(self.lane, TimedSegment { timing, media, key })
             }
-            EpisodeStartError::Demuxer(reason) => PushedStreamError::EpisodeStart {
-                lane: self.lane,
-                reason,
-            },
-        })?;
-        if self.mailbox.post(handle) {
-            self.running_episode = Some(writer);
+            SegmentTiming::Untimed => self.buffer.accept_untimed(self.lane, media, &key),
         }
-        Ok(())
     }
 
-    /// Текущий эпизод больше не получает байтов: его демуксер дочитает и закончит.
-    fn finish_running_episode(&mut self) {
-        if let Some(running) = self.running_episode.take() {
-            running.finish_input();
+    /// Ошибка разбора байтов этой полосы.
+    const fn framing_error(&self, source: FramingError) -> PushedStreamError {
+        PushedStreamError::Framing {
+            lane: self.lane,
+            source,
         }
     }
 }

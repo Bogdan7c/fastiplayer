@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 27;
+pub const CURRENT_SCHEMA_VERSION: u32 = 28;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -148,14 +148,23 @@ pub(crate) const LEGACY_SCHEMA_VERSION_25: u32 = 25;
 /// (тот же компромисс, что у v23 -> v24). Любые другие значения не трогаются.
 pub(crate) const LEGACY_SCHEMA_VERSION_26: u32 = 26;
 
+/// Последняя схема до секции `[browser_session]` (окно буфера источника браузерного режима).
+///
+/// Решение владельца (browser-bridge, сессия 03b): запас вперёд и позади позиции — настройки
+/// config-а со значениями по умолчанию 120 с и 30 с. Переписывать пользовательские значения
+/// нечего, поэтому миграция v27 -> v28 только поднимает версию (старый файл без секции грузится
+/// с defaults). Bump нужен ради старых бинарей: строгий парсер v27 счёл бы незнакомую секцию
+/// битым файлом, а с bump-ом видит «схема новее» и файл не трогает.
+pub(crate) const LEGACY_SCHEMA_VERSION_27: u32 = 27;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v27 и полная цепочка поддерживаемых legacy-версий v2..v26.
+    /// Текущая схема v28 и полная цепочка поддерживаемых legacy-версий v2..v27.
     #[test]
-    fn schema_v27_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 27);
+    fn schema_v28_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 28);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -183,10 +192,11 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_24,
                 LEGACY_SCHEMA_VERSION_25,
                 LEGACY_SCHEMA_VERSION_26,
+                LEGACY_SCHEMA_VERSION_27,
             ],
             [
                 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-                25, 26
+                25, 26, 27
             ]
         );
     }

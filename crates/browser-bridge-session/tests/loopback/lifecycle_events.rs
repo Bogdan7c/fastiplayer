@@ -236,3 +236,69 @@ fn send_text_pair(socket: &mut tungstenite::WebSocket<std::net::TcpStream>) {
         r#"{"type":"source_buffer_added","generation":1,"source_buffer":0,"mime_type":"video/mp4"}"#,
     );
 }
+
+#[test]
+fn closing_a_session_by_its_instance_sends_the_given_code_and_ends_it() {
+    let env = Env::start();
+    let opened = env.open("a");
+    let mut socket = attach(env.port(), "a", &opened.token);
+    let outcome = env.control.close_session(
+        &crate::support::session("a", opened.instance.0),
+        SessionCloseReason::ProtocolViolation,
+    );
+    assert_eq!(outcome, browser_bridge_session::CloseOutcome::Closed);
+    assert_eq!(
+        read_close_code(&mut socket),
+        SessionCloseReason::ProtocolViolation.close_code()
+    );
+    env.wait_lifecycle(
+        "закрыто плеером по экземпляру",
+        ended(
+            "a",
+            SessionEndReason::ClosedByPlayer(SessionCloseReason::ProtocolViolation),
+        ),
+    );
+    // Повтор про тот же экземпляр — честное «уже не активен».
+    assert_eq!(
+        env.control.close_session(
+            &crate::support::session("a", opened.instance.0),
+            SessionCloseReason::ProtocolViolation,
+        ),
+        browser_bridge_session::CloseOutcome::NotActive
+    );
+}
+
+#[test]
+fn closing_a_stale_instance_after_replacement_leaves_the_new_session_open() {
+    let env = Env::start();
+    let old = env.open("a");
+    let _old_socket = attach(env.port(), "a", &old.token);
+    // Другая вкладка вытеснила сеанс «a» (тот закрыт кодом 4001).
+    let new = env.open("b");
+    assert_ne!(new.instance, old.instance);
+    let mut new_socket = attach(env.port(), "b", &new.token);
+    env.wait_lifecycle("Attached нового сеанса", |event| {
+        event
+            == &SessionLifecycleEvent::Attached {
+                session: crate::support::session("b", new.instance.0),
+            }
+    });
+    // Опоздавшая просьба закрыть старый экземпляр нового не трогает.
+    let outcome = env.control.close_session(
+        &crate::support::session("a", old.instance.0),
+        SessionCloseReason::ProtocolViolation,
+    );
+    assert_eq!(outcome, browser_bridge_session::CloseOutcome::NotActive);
+    env.control
+        .send_to_page(&browser_bridge_protocol::PlayerSessionMessage::Play {})
+        .expect("новый сеанс по-прежнему подключён");
+    assert_eq!(
+        crate::support::read_text(&mut new_socket),
+        r#"{"type":"play"}"#
+    );
+    let ended_new = env.events.seen.get().lifecycle.into_iter().any(|event| {
+        matches!(event, SessionLifecycleEvent::Ended { session, .. }
+            if session == crate::support::session("b", new.instance.0))
+    });
+    assert!(!ended_new, "новый сеанс не заканчивался");
+}

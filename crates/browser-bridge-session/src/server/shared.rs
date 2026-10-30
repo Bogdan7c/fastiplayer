@@ -23,7 +23,7 @@ use browser_bridge_protocol::{
     SessionToken, encode_message,
 };
 
-use super::control::{OpenSessionError, OpenedSession, SendToPageError};
+use super::control::{CloseOutcome, OpenSessionError, OpenedSession, SendToPageError};
 use super::report::ServerShutdownReport;
 use crate::policy::BrowserSessionPolicy;
 use crate::registry::{
@@ -422,6 +422,32 @@ impl Shared {
             TrySendError::Full(_) => SendToPageError::QueueFull,
             TrySendError::Disconnected(_) => SendToPageError::NoAttachedSession,
         })
+    }
+
+    /// Закрывает сеанс, только если активен именно этот экземпляр. Проверка и
+    /// закрытие — под одним замком: между ними никто не успеет заменить сеанс.
+    pub(super) fn close_session(
+        &self,
+        session: &SessionRef,
+        reason: SessionCloseReason,
+    ) -> CloseOutcome {
+        let mut state = self.lock_state();
+        let Some(ended) = state.registry.end_instance(session) else {
+            return CloseOutcome::NotActive;
+        };
+        if let Some(slot) = ended
+            .connection
+            .and_then(|connection| state.connections.get(&connection))
+        {
+            slot.close.request(reason);
+        }
+        self.announce_end(
+            &state,
+            ended.connection,
+            ended.session,
+            SessionEndReason::ClosedByPlayer(reason),
+        );
+        CloseOutcome::Closed
     }
 
     pub(super) fn close_active_session(&self, reason: SessionCloseReason) {

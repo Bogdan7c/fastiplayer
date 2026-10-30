@@ -86,15 +86,13 @@ pub enum PushedStreamError {
         /// Полоса.
         lane: LaneId,
     },
-    /// Принято больше, чем демуксеры успевают прочитать.
-    #[error("the stream holds more than {limit} unread bytes")]
+    /// Поток держит больше байтов, чем позволяет потолок, и выбросить уже
+    /// показанное нечего: страница шлёт, не слушая «полон».
+    #[error("the stream would hold more than {limit} bytes")]
     IntakeLimitExceeded {
         /// Потолок.
         limit: usize,
     },
-    /// Байты после конца потока.
-    #[error("input arrived after the end of the stream")]
-    InputAfterEnd,
     /// Плеер не успевает забирать эпизоды: страница меняет init или смещение слишком часто.
     #[error("lane {lane} has more than {limit} episodes waiting for the player")]
     TooManyPendingEpisodes {
@@ -156,7 +154,6 @@ impl PushedStreamError {
             | Self::LayoutFrozen { .. }
             | Self::MediaBeforeInitialization { .. }
             | Self::IntakeLimitExceeded { .. }
-            | Self::InputAfterEnd
             | Self::TooManyPendingEpisodes { .. }
             | Self::AlreadyOpened => PushedStreamFailureClass::InputMisuse,
         }

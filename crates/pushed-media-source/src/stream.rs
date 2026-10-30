@@ -2,9 +2,12 @@
 //!
 //! `pushed_stream` создаёт две стороны:
 //! - [`PushedStreamWriter`] — у того, кто приносит байты: полосы, куски, `abort`,
-//!   `changeType`, смещение времени, длительность, конец потока;
+//!   `changeType`, смещение времени, длительность, конец потока; от него же —
+//!   [`PushedStreamMonitor`] (позиция плеера, «буферизовано» и «полон»);
 //! - [`PushedStreamOpener`] — у того, кто готовит воспроизведение: ждёт, пока у
-//!   каждой полосы откроется первый эпизод, и отдаёт плееру один [`PushedStreamDemuxer`].
+//!   каждой полосы откроется первый эпизод, и отдаёт плееру один
+//!   [`PushedStreamDemuxer`] (у живого эфира — ещё и порт живой шкалы,
+//!   [`OpenedPushedStream`]). Перемотка — модуль `stream_seek`.
 //!
 //! Новое поколение — новый поток целиком: старый просто уничтожается.
 
@@ -15,8 +18,8 @@ use std::time::Duration;
 use anyhow::Result;
 use demux_api::{CompositeAvDemuxer, CompositeAvTrackSelection, DemuxRegistry};
 use media_core::{
-    DemuxReadEvent, DemuxRetryHint, DemuxSeekResult, DemuxSeekability, Demuxer, MediaDemuxError,
-    TimelineNotSeekableReason, TrackInfo, TrackKind,
+    DemuxReadEvent, DemuxRetryHint, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer,
+    DynamicMediaTimelinePort, TrackInfo, TrackKind,
 };
 use mpeg_ts_demux::{MpegTsDemuxFactory, MpegTsDemuxOptions};
 use symphonia_demux::{DemuxerOptions, SymphoniaDemuxFactory};
@@ -27,7 +30,10 @@ use crate::error::{LaneLayoutProblem, PushedStreamError};
 use crate::intake::IntakeLedger;
 use crate::lane::{AppendOutcome, LaneId, LaneIntake, LaneMailbox};
 use crate::lane_demuxer::{LaneDemuxer, LanePreparation};
+use crate::monitor::PushedStreamMonitor;
 use crate::policy::PushedSourcePolicy;
+use crate::stream_buffer::StreamBuffer;
+use crate::stream_seek::{seek_stream, stream_seekability};
 use crate::stream_state::StreamState;
 use crate::time::{PushedDuration, TimestampOffset};
 
@@ -47,10 +53,16 @@ pub fn pushed_stream(
     let state = Arc::new(StreamState::new(policy.retry_hint()));
     let roster = Arc::new(LaneRoster::default());
     let ledger = Arc::new(IntakeLedger::new(policy.max_held_stream_bytes()));
+    // Буфер потока — общий для писателя, монитора и стороны плеера (перемотка).
+    let buffer = Arc::new(StreamBuffer::new(
+        ledger,
+        EpisodeFactory::new(registry, policy),
+        policy.stream_buffer_rules(),
+    ));
     let writer = PushedStreamWriter {
         state: Arc::clone(&state),
         roster: Arc::clone(&roster),
-        episodes: EpisodeFactory::new(registry, ledger, policy),
+        buffer: Arc::clone(&buffer),
         policy,
         lanes: BTreeMap::new(),
         input_ended: false,
@@ -58,6 +70,7 @@ pub fn pushed_stream(
     let opener = PushedStreamOpener {
         state,
         roster,
+        buffer,
         lanes: Vec::new(),
         policy,
         opened: false,
@@ -122,13 +135,13 @@ pub struct PushedStreamWriter {
     state: Arc<StreamState>,
     /// Объявленные полосы.
     roster: Arc<LaneRoster>,
-    /// Запуск эпизодов.
-    episodes: EpisodeFactory,
+    /// Полки, подача в эпизоды, позиция и учёт байтов.
+    buffer: Arc<StreamBuffer>,
     /// Пределы.
     policy: PushedSourcePolicy,
     /// Приёмные стороны полос.
     lanes: BTreeMap<LaneId, LaneIntake>,
-    /// Был ли конец потока.
+    /// Действует ли `endOfStream` (до следующего `append`).
     input_ended: bool,
 }
 
@@ -156,12 +169,18 @@ impl PushedStreamWriter {
                 }
                 roster.declared.push((lane, Arc::clone(&mailbox)));
             }
+            writer.buffer.add_lane(
+                lane,
+                container,
+                Arc::clone(&mailbox),
+                writer.policy.max_pending_episodes_per_lane(),
+            );
             let intake = LaneIntake::new(
                 lane,
                 container,
                 writer.policy.framing_limits(),
-                writer.policy.max_pending_episodes_per_lane(),
                 mailbox,
+                Arc::clone(&writer.buffer),
             );
             writer.lanes.insert(lane, intake);
             Ok(())
@@ -169,16 +188,27 @@ impl PushedStreamWriter {
     }
 
     /// Принимает кусок байтов полосы (`appendBuffer`).
+    ///
+    /// После [`Self::end_of_stream`] кусок снова открывает вход всего потока, как
+    /// `appendBuffer` после `endOfStream` в MSE (перемотка назад после конца):
+    /// сегменты ложатся на полку, а продолжение у курсора начинает новый эпизод.
     pub fn append(
         &mut self,
         lane: LaneId,
         chunk: &[u8],
     ) -> Result<AppendOutcome, PushedStreamError> {
         self.guarded(|writer| {
-            writer.ensure_input_open()?;
-            let episodes = writer.episodes.clone();
-            writer.lane_mut(lane)?.append(chunk, &episodes)
+            // Сначала проверяем полосу: неизвестная полоса не открывает вход.
+            writer.lane_mut(lane)?;
+            writer.reopen_input_if_ended()?;
+            writer.lane_mut(lane)?.append(chunk)
         })
+    }
+
+    /// Монитор буфера для другого потока (приложение: позиция плеера, «полон»).
+    #[must_use]
+    pub fn monitor(&self) -> PushedStreamMonitor {
+        PushedStreamMonitor::new(Arc::clone(&self.buffer))
     }
 
     /// Выбрасывает недособранный сегмент полосы (`abort`).
@@ -195,10 +225,7 @@ impl PushedStreamWriter {
         lane: LaneId,
         container: PushedContainer,
     ) -> Result<(), PushedStreamError> {
-        self.guarded(|writer| {
-            writer.lane_mut(lane)?.change_container(container);
-            Ok(())
-        })
+        self.guarded(|writer| writer.lane_mut(lane)?.change_container(container))
     }
 
     /// Новое смещение времени полосы (`timestampOffset`).
@@ -210,19 +237,30 @@ impl PushedStreamWriter {
         self.guarded(|writer| writer.lane_mut(lane)?.set_timestamp_offset(offset))
     }
 
+    /// Страница сама начала перемотку к `target` (`seek_started{page_seek}`: её
+    /// кнопки, смена озвучки). Вызывать в порядке прихода вместе с байтами и
+    /// ДО команды плееру перемотаться туда же: тогда перемотка плеера к этой цели
+    /// (с допуском [`PushedSourcePolicy::page_seek_match_tolerance`]) не шлёт
+    /// странице запрос — страница уже идёт туда. Незабранный запрос источника
+    /// при этом отменяется: страница ушла к своей цели.
+    pub fn note_page_seek(&self, target: Duration) {
+        self.buffer.note_page_seek(target);
+    }
+
     /// Новая длительность потока (`duration`).
     pub fn set_duration(&self, duration: PushedDuration) {
         self.state.set_duration(duration);
     }
 
-    /// Конец потока (`endOfStream`): демуксеры дочитывают принятое, плеер получит EOF.
+    /// Конец потока (`endOfStream`): демуксеры дочитывают поданное, плеер получит
+    /// EOF. Сегменты на полке за дырой так и не подаются. Следующий `append`
+    /// снова открывает вход.
     pub fn end_of_stream(&mut self) -> Result<EndOfStreamReport, PushedStreamError> {
         self.guarded(|writer| {
             writer.input_ended = true;
-            let episodes = writer.episodes.clone();
             let mut dropped_incomplete_bytes = 0;
             for intake in writer.lanes.values_mut() {
-                dropped_incomplete_bytes += intake.end_input(&episodes)?;
+                dropped_incomplete_bytes += intake.end_input()?;
             }
             if dropped_incomplete_bytes > 0 {
                 tracing::warn!(
@@ -243,7 +281,8 @@ impl PushedStreamWriter {
     }
 
     /// Сколько принятых байтов поток держит в памяти: недособранные сегменты
-    /// сканеров плюс целые сегменты, которые демуксеры ещё не прочитали.
+    /// сканеров плюс целые сегменты (полки, трубы эпизодов, init) — см.
+    /// [`PushedStreamMonitor::held_segment_bytes`].
     #[must_use]
     pub fn held_bytes(&self) -> usize {
         let partial_segments: usize = self
@@ -251,7 +290,7 @@ impl PushedStreamWriter {
             .values()
             .map(LaneIntake::partial_segment_bytes)
             .sum();
-        partial_segments + self.episodes.ledger().held_bytes()
+        partial_segments + self.buffer.held_segment_bytes()
     }
 
     /// Мёртвый поток отвечает первой ошибкой; новая ошибка запоминается как первая.
@@ -265,13 +304,17 @@ impl PushedStreamWriter {
         operation(self).map_err(|error| self.state.record_failure(error))
     }
 
-    /// После конца потока байты не принимаются.
-    fn ensure_input_open(&self) -> Result<(), PushedStreamError> {
-        if self.input_ended {
-            Err(PushedStreamError::InputAfterEnd)
-        } else {
-            Ok(())
+    /// Байты после `endOfStream` снова открывают вход всех полос (как MSE
+    /// открывает весь `MediaSource`): плеер снова ждёт продолжения.
+    fn reopen_input_if_ended(&mut self) -> Result<(), PushedStreamError> {
+        if !self.input_ended {
+            return Ok(());
         }
+        self.input_ended = false;
+        for intake in self.lanes.values_mut() {
+            intake.reopen_input()?;
+        }
+        Ok(())
     }
 
     /// Приёмная сторона объявленной полосы.
@@ -301,7 +344,18 @@ pub enum OpenProgress {
     /// Первые эпизоды ещё не открылись: спросить снова через подсказку.
     Waiting(DemuxRetryHint),
     /// Демуксер для плеера готов, дорожки известны.
-    Ready(PushedStreamDemuxer),
+    Ready(OpenedPushedStream),
+}
+
+/// Открытый поток: всё, из чего приложение собирает `PreparedMedia`.
+pub struct OpenedPushedStream {
+    /// Демуксер для плеера.
+    pub demuxer: PushedStreamDemuxer,
+    /// Порт живой шкалы — только если на момент открытия длительность была
+    /// [`PushedDuration::Live`] (тогда `demuxer.duration()` — `None`).
+    /// Приложение отдаёт его плееру: `PreparedMedia::with_dynamic_timeline(port)`.
+    /// Эфир или ролик — решается один раз при открытии.
+    pub live_timeline: Option<DynamicMediaTimelinePort>,
 }
 
 /// Сторона открытия.
@@ -310,6 +364,8 @@ pub struct PushedStreamOpener {
     state: Arc<StreamState>,
     /// Объявленные полосы.
     roster: Arc<LaneRoster>,
+    /// Буфер потока (перемотка, живая шкала).
+    buffer: Arc<StreamBuffer>,
     /// Демуксеры полос, известных на прошлом шаге.
     lanes: Vec<LaneDemuxer>,
     /// Пределы.
@@ -356,9 +412,15 @@ impl PushedStreamOpener {
             .assemble(media_lanes)
             .map_err(|error| self.state.record_failure(error))?;
         self.opened = true;
-        Ok(OpenProgress::Ready(PushedStreamDemuxer {
-            inner: demuxer,
-            state: Arc::clone(&self.state),
+        let live_timeline = (self.state.duration() == PushedDuration::Live)
+            .then(|| self.buffer.open_live_timeline());
+        Ok(OpenProgress::Ready(OpenedPushedStream {
+            demuxer: PushedStreamDemuxer {
+                inner: demuxer,
+                state: Arc::clone(&self.state),
+                buffer: Arc::clone(&self.buffer),
+            },
+            live_timeline,
         }))
     }
 
@@ -370,6 +432,7 @@ impl PushedStreamOpener {
                 *lane,
                 Arc::clone(mailbox),
                 Arc::clone(&self.state),
+                Arc::clone(&self.buffer),
             ));
         }
     }
@@ -452,6 +515,8 @@ pub struct PushedStreamDemuxer {
     inner: Box<dyn Demuxer + Send>,
     /// Общее состояние потока.
     state: Arc<StreamState>,
+    /// Буфер потока: перемотка по полке.
+    buffer: Arc<StreamBuffer>,
 }
 
 impl Demuxer for PushedStreamDemuxer {
@@ -464,10 +529,7 @@ impl Demuxer for PushedStreamDemuxer {
     }
 
     fn seekability(&self) -> DemuxSeekability {
-        // Перемотка — сессия 03b (порт перемотки по квитанциям).
-        DemuxSeekability::NotSeekable {
-            reason: TimelineNotSeekableReason::SourceNotSeekable,
-        }
+        stream_seekability(&self.buffer, &self.state)
     }
 
     fn next_event(&mut self) -> Result<DemuxReadEvent> {
@@ -477,11 +539,12 @@ impl Demuxer for PushedStreamDemuxer {
         self.inner.next_event()
     }
 
-    fn seek(&mut self, _timestamp: Duration) -> Result<DemuxSeekResult> {
-        Err(MediaDemuxError::SeekUnavailable {
-            reason: "pushed media streams do not seek yet".to_owned(),
-        }
-        .into())
+    fn seek(&mut self, timestamp: Duration) -> Result<DemuxSeekResult> {
+        self.seek_with_request(DemuxSeekRequest::accurate(timestamp))
+    }
+
+    fn seek_with_request(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
+        seek_stream(&self.buffer, &self.state, self.inner.as_mut(), request)
     }
 }
 

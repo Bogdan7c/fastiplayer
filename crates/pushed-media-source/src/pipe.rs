@@ -1,32 +1,33 @@
 //! Труба эпизода: целые сегменты от приёма → блокирующее чтение демуксера.
 //!
-//! Пишет поток приёма (соединение с браузером): он никогда не ждёт. Читает фоновый
-//! поток демуксера (`ProgressiveDemuxer`): он ждёт байтов, сколько нужно, и плеер
-//! этого не чувствует — для плеера ожидание выглядит как `TemporarilyUnavailable`.
+//! Пишет поток приёма (соединение с браузером) или полка: они никогда не ждут.
+//! Читает фоновый поток демуксера (`ProgressiveDemuxer`): он ждёт байтов, сколько
+//! нужно, и плеер этого не чувствует — для плеера ожидание выглядит как
+//! `TemporarilyUnavailable`.
 //!
 //! Труба кончается двумя путями, и они различаются:
 //! - пишущий сказал «больше не будет» (новый init, смена кодека, конец потока) —
 //!   читатель дочитывает остаток и получает чистый EOF;
 //! - эпизод выброшен (плеер закрыл поток) — читатель сразу получает ошибку,
-//!   а неизрасходованные байты возвращаются в общий учёт потока.
+//!   а неизрасходованные сегменты отпускаются.
+//!
+//! Учёт байтов труба не ведёт сама: каждый сегмент — [`ChargedSegment`], уже
+//! зачтённый при приёме. Дочитанный или выброшенный сегмент труба отпускает, и
+//! учёт освобождается, когда отпустила последняя копия (полка может держать ту же).
 
 use std::collections::VecDeque;
 use std::io::{self, Read};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
-use bytes::{Buf, Bytes};
+use crate::intake::ChargedSegment;
 
-use crate::intake::IntakeLedger;
-
-/// Создаёт пустую трубу, байты которой учитываются в общем учёте потока.
-pub(crate) fn episode_pipe(ledger: Arc<IntakeLedger>) -> (EpisodePipeWriter, EpisodePipeReader) {
+/// Создаёт пустую трубу.
+pub(crate) fn episode_pipe() -> (EpisodePipeWriter, EpisodePipeReader) {
     let shared = Arc::new(PipeShared {
         state: Mutex::new(PipeState {
             queued: VecDeque::new(),
-            queued_bytes: 0,
             input_finished: false,
             abandoned: false,
-            ledger,
         }),
         data_or_end: Condvar::new(),
     });
@@ -47,26 +48,24 @@ struct PipeShared {
     data_or_end: Condvar,
 }
 
+/// Сегмент в очереди и сколько его байтов уже прочитано.
+#[derive(Debug)]
+struct QueuedSegment {
+    /// Сегмент (общая с полкой память).
+    segment: ChargedSegment,
+    /// Прочитано байтов с начала сегмента.
+    consumed: usize,
+}
+
 /// Очередь сегментов и флаги жизни трубы.
 #[derive(Debug)]
 struct PipeState {
-    /// Ещё не прочитанные сегменты (первый может быть прочитан частично).
-    queued: VecDeque<Bytes>,
-    /// Сколько байтов в `queued` — то же число лежит в общем учёте.
-    queued_bytes: usize,
+    /// Ещё не дочитанные сегменты (первый может быть прочитан частично).
+    queued: VecDeque<QueuedSegment>,
     /// Пишущий сказал «больше не будет».
     input_finished: bool,
     /// Эпизод выброшен: читать больше нечего и незачем.
     abandoned: bool,
-    /// Общий учёт удерживаемых байтов потока.
-    ledger: Arc<IntakeLedger>,
-}
-
-impl Drop for PipeState {
-    /// Байты, которые так и не прочитали, перестают занимать общий учёт.
-    fn drop(&mut self) {
-        self.ledger.release(self.queued_bytes);
-    }
 }
 
 impl PipeShared {
@@ -95,15 +94,17 @@ pub(crate) enum PipeWrite {
 }
 
 impl EpisodePipeWriter {
-    /// Ставит целый сегмент в очередь. Байты уже зачтены в общий учёт вызывающим.
-    pub(crate) fn push_reserved(&self, segment: Bytes) -> PipeWrite {
+    /// Ставит целый сегмент в очередь (байты уже зачтены при приёме).
+    pub(crate) fn push(&self, segment: ChargedSegment) -> PipeWrite {
         let mut state = self.shared.lock();
         if state.abandoned {
-            state.ledger.release(segment.len());
+            // Сегмент отпускается вне замка — вместе с `segment` в конце функции.
             return PipeWrite::EpisodeAbandoned;
         }
-        state.queued_bytes += segment.len();
-        state.queued.push_back(segment);
+        state.queued.push_back(QueuedSegment {
+            segment,
+            consumed: 0,
+        });
         drop(state);
         self.shared.data_or_end.notify_all();
         PipeWrite::Queued
@@ -156,14 +157,21 @@ impl Read for EpisodePipeReader {
                 ));
             }
             if let Some(front) = state.queued.front_mut() {
-                let copied = front.len().min(buffer.len());
-                buffer[..copied].copy_from_slice(&front[..copied]);
-                front.advance(copied);
-                if front.is_empty() {
-                    state.queued.pop_front();
+                let unread = front
+                    .segment
+                    .bytes()
+                    .get(front.consumed..)
+                    .unwrap_or_default();
+                let copied = unread.len().min(buffer.len());
+                buffer[..copied].copy_from_slice(&unread[..copied]);
+                front.consumed += copied;
+                if front.consumed >= front.segment.len() {
+                    // Дочитанный сегмент труба отпускает: если полка его уже не
+                    // держит, учёт освобождается здесь.
+                    let finished = state.queued.pop_front();
+                    drop(state);
+                    drop(finished);
                 }
-                state.queued_bytes -= copied;
-                state.ledger.release(copied);
                 return Ok(copied);
             }
             if state.input_finished {
@@ -186,14 +194,13 @@ pub(crate) struct EpisodePipeAbandon {
 }
 
 impl EpisodePipeAbandon {
-    /// Выбрасывает трубу: читатель просыпается с ошибкой, байты уходят из учёта.
+    /// Выбрасывает трубу: читатель просыпается с ошибкой, сегменты отпускаются.
     pub(crate) fn abandon(&self) {
         let mut state = self.shared.lock();
         state.abandoned = true;
-        state.ledger.release(state.queued_bytes);
-        state.queued_bytes = 0;
-        state.queued.clear();
+        let released = std::mem::take(&mut state.queued);
         drop(state);
+        drop(released);
         self.shared.data_or_end.notify_all();
     }
 }

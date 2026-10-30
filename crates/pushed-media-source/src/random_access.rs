@@ -34,6 +34,12 @@ impl RandomAccessGate {
         }
     }
 
+    /// Перемотка: дорожка видео ждёт ключевой кадр — новый эпизод начинается с
+    /// начала сегмента, и не каждый сегмент обязан начинаться с ключевого кадра.
+    pub(crate) fn require_keyframe(&mut self, track: TrackId) {
+        self.awaiting_keyframe.insert(track);
+    }
+
     /// Решение по пакету, который прошёл проверку времени.
     pub(crate) fn admit(
         &mut self,

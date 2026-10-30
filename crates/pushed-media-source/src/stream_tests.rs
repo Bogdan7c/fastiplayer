@@ -34,7 +34,7 @@ fn open_within_deadline(
     let deadline = Instant::now() + WAIT;
     loop {
         match opener.poll_open()? {
-            OpenProgress::Ready(demuxer) => return Ok(demuxer),
+            OpenProgress::Ready(opened) => return Ok(opened.demuxer),
             OpenProgress::Waiting(hint) => {
                 assert!(Instant::now() < deadline, "stream did not open");
                 thread::sleep(hint.retry_after());
@@ -83,13 +83,15 @@ fn separate_video_and_audio_lanes_open_as_one_demuxer_with_both_tracks() {
     let kinds: Vec<TrackKind> = demuxer.tracks().iter().map(|track| track.kind).collect();
     assert_eq!(kinds, [TrackKind::Video, TrackKind::Audio]);
     assert_eq!(demuxer.duration(), Some(Duration::from_millis(400)));
-    assert!(!matches!(
+    // Полосы с метками времени и конечная длительность — перематывается по полке.
+    assert_eq!(
         demuxer.seekability(),
         media_core::DemuxSeekability::Seekable
-    ));
+    );
     assert_eq!(drain(&mut demuxer), (10, 20, Ok(())));
-    // Всё прочитано — поток ничего не держит в памяти.
-    assert_eq!(writer.held_bytes(), 0);
+    // Всё прочитано, но окно «назад» (30 с) держит уже показанное на полке для
+    // перемотки: ровно принятые байты, каждый один раз (полка и труба делят память).
+    assert_eq!(writer.held_bytes(), VIDEO_MP4.len() + AUDIO_MP4.len());
 }
 
 #[test]
@@ -125,26 +127,29 @@ fn garbage_inside_a_fragment_is_a_stream_error_not_a_panic() {
         .add_lane(VIDEO, PushedContainer::FragmentedMp4)
         .expect("video");
     // Структура боксов цела, но содержимое `moof` испорчено: сканер его пропустит,
-    // а демуксер обязан отказать — ошибкой потока, без паники процесса.
+    // а разметка времени полки обязана отказать — ошибкой потока ещё при приёме,
+    // без паники процесса и до того, как мусор дойдёт до демуксера.
     let mut broken = VIDEO_MP4.to_vec();
     for byte in &mut broken[VIDEO_INIT_END + 8..VIDEO_INIT_END + 120] {
         *byte = 0xFF;
     }
-    writer
-        .append(VIDEO, &broken)
-        .expect("framing accepts whole boxes");
-    writer.end_of_stream().expect("end");
-
-    let outcome = open_within_deadline(&mut opener).map(|mut demuxer| drain(&mut demuxer));
-    let failure = writer.failure().expect("stream failed");
+    let error = writer.append(VIDEO, &broken).expect_err("broken fragment");
+    assert!(
+        matches!(
+            error,
+            PushedStreamError::Framing {
+                lane: VIDEO,
+                source: crate::framing::FramingError::Timing(_)
+            }
+        ),
+        "{error:?}"
+    );
     assert_eq!(
-        failure.failure_class(),
+        error.failure_class(),
         PushedStreamFailureClass::UnparsableMedia
     );
-    match outcome {
-        Err(error) => assert_eq!(error, failure),
-        Ok((_, _, result)) => assert!(result.is_err(), "demuxer must report the broken fragment"),
-    }
+    assert_eq!(writer.failure(), Some(error.clone()));
+    assert_eq!(open_within_deadline(&mut opener).err(), Some(error));
 }
 
 #[test]
@@ -235,14 +240,17 @@ fn call_order_violations_are_typed_and_first_failure_wins() {
         Err(PushedStreamError::TimestampOffsetUnsupported { lane: VIDEO })
     );
 
+    // Байты после `endOfStream` — не ошибка (MSE снова открывает поток), а байты
+    // неизвестной полосы после конца — та же ошибка, что и до него.
     let (mut writer, _opener) = pushed_stream(policy()).expect("stream");
     writer
         .add_lane(VIDEO, PushedContainer::FragmentedMp4)
         .expect("video");
     writer.end_of_stream().expect("end");
+    assert_eq!(writer.append(VIDEO, VIDEO_MP4), Ok(AppendOutcome::Accepted));
     assert_eq!(
-        writer.append(VIDEO, VIDEO_MP4),
-        Err(PushedStreamError::InputAfterEnd)
+        writer.append(AUDIO, VIDEO_MP4),
+        Err(PushedStreamError::UnknownLane { lane: AUDIO })
     );
 }
 
@@ -414,8 +422,8 @@ fn frames_depending_on_a_frame_dropped_below_zero_wait_for_the_next_keyframe() {
 }
 
 #[test]
-fn page_flooding_new_episodes_hits_the_pending_episode_limit() {
-    let (mut writer, _opener) = pushed_stream(policy()).expect("stream");
+fn page_flooding_new_episodes_defers_feeding_instead_of_starting_threads() {
+    let (mut writer, mut opener) = pushed_stream(policy()).expect("stream");
     writer
         .add_lane(VIDEO, PushedContainer::FragmentedMp4)
         .expect("video");
@@ -423,34 +431,39 @@ fn page_flooding_new_episodes_hits_the_pending_episode_limit() {
         .append(VIDEO, &VIDEO_MP4[..VIDEO_FIRST_FRAGMENT_END])
         .expect("first episode");
     // Каждая смена смещения + медиасегмент — новый эпизод; плеер их не забирает.
-    let fragments = [
-        &VIDEO_MP4[VIDEO_FIRST_FRAGMENT_END..],
-        &VIDEO_MP4[VIDEO_INIT_END..VIDEO_FIRST_FRAGMENT_END],
-    ];
-    for episode in 1..4_i64 {
+    // Первый фрагмент раз за разом сдвигается ровно к курсору подачи, поэтому
+    // каждый повтор продолжает поток, а не ложится на полку за дырой.
+    let first_fragment = &VIDEO_MP4[VIDEO_INIT_END..VIDEO_FIRST_FRAGMENT_END];
+    for episode in 1..8_i64 {
         writer
-            .set_timestamp_offset(VIDEO, TimestampOffset::from_micros(episode * 1_000_000))
+            .set_timestamp_offset(VIDEO, TimestampOffset::from_micros(episode * 200_000))
             .expect("offset");
         writer
-            .append(
-                VIDEO,
-                fragments[usize::try_from(episode).expect("small") % 2],
-            )
-            .expect("episode within the limit");
+            .append(VIDEO, first_fragment)
+            .expect("episodes over the limit wait on the shelf");
     }
+    assert_eq!(writer.failure(), None);
+    writer.end_of_stream().expect("end");
+    // Плеер забирает эпизоды — подача продолжается, всё доигрывается.
+    let (video, _, outcome) = drain(&mut open_within_deadline(&mut opener).expect("opens"));
+    assert_eq!(outcome, Ok(()));
+    assert_eq!(video, 8 * frames_in_first_fragment());
+}
+
+/// Кадров видео в первом фрагменте `VIDEO_MP4` (один эпизод до конца).
+fn frames_in_first_fragment() -> usize {
+    let (mut writer, mut opener) = pushed_stream(policy()).expect("stream");
     writer
-        .set_timestamp_offset(VIDEO, TimestampOffset::from_micros(9_000_000))
-        .expect("offset");
-    let error = writer
-        .append(VIDEO, fragments[0])
-        .expect_err("fifth episode");
-    assert_eq!(
-        error,
-        PushedStreamError::TooManyPendingEpisodes {
-            lane: VIDEO,
-            limit: 4
-        }
-    );
+        .add_lane(VIDEO, PushedContainer::FragmentedMp4)
+        .expect("video");
+    writer
+        .append(VIDEO, &VIDEO_MP4[..VIDEO_FIRST_FRAGMENT_END])
+        .expect("one episode");
+    writer.end_of_stream().expect("end");
+    let (video, _, outcome) = drain(&mut open_within_deadline(&mut opener).expect("opens"));
+    assert_eq!(outcome, Ok(()));
+    assert!(video > 0);
+    video
 }
 
 #[test]

@@ -1,4 +1,4 @@
-//! Главный цикл процесса браузерного режима (без окна, сессия 02).
+//! Главный цикл процесса браузерного режима (без окна, сессии 02 и 03b).
 //!
 //! Цикл владеет тремя вещами и ничем больше:
 //! - стойкой входа [`EntryDesk`]: каждый звонок посредника получает ровно один ответ;
@@ -6,7 +6,17 @@
 //! - просьбой «пауза» обычному плееру при старте и замене сеанса (решения 41, 48).
 //!
 //! Сеанс, сервер WebSocket и байты живут в `browser-bridge-session`; сюда приходят
-//! только события через ящик.
+//! только события через ящик. Медиа (поток страницы → плеер → ответы странице) —
+//! забота [`SessionMediaPort`] (`super::session_media`): цикл только сообщает ему об
+//! открытом сеансе, отдаёт уведомления потока приёма и спрашивает, когда проснуться.
+//!
+//! Один проход ([`BrowserSessionRuntime::step`]):
+//! ```text
+//!  ящик ─► звонки входа ─► события жизни ─► уведомления потока приёма ─► media.drive(now)
+//!                                                                          │
+//!  сон до ближайшего: срок машины жизни │ повтор открытия │ тик часов │ повтор отправки
+//!  (или раньше — пробуждение: звонок, событие, байты, новый кадр плеера)
+//! ```
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -20,15 +30,50 @@ use desktop_integration::BrowserEntryDelivery;
 use tracing::{debug, error, info};
 
 use super::inbox::{BrowserSessionInbox, InboxBatch, ParkingWake};
+use super::intake_notice::IntakeNotice;
 use super::normal_player_pause::NormalPlayerPause;
+use super::session_media::SessionMedia;
+
+/// Медиа-часть так, как её видит главный цикл. Настоящая — [`SessionMedia`];
+/// тесты цикла подставляют подделку без плеера.
+pub(super) trait SessionMediaPort {
+    /// Открыт сеанс (новый, заменивший или повтор того же экземпляра).
+    fn on_session_opened(&mut self, session: &SessionRef);
+    /// Экземпляр сеанса закончился (сервер сообщил `Ended`).
+    fn on_session_ended(&mut self, session: &SessionRef);
+    /// Уведомления потока приёма за проход и слитое «легли новые байты».
+    fn on_intake(&mut self, notices: Vec<IntakeNotice>, bytes_appended: Option<SessionRef>);
+    /// Шаг медиа; возвращает, когда проснуться без внешнего повода.
+    fn drive(&mut self, now: Instant) -> Option<Instant>;
+}
+
+impl SessionMediaPort for SessionMedia {
+    fn on_session_opened(&mut self, session: &SessionRef) {
+        Self::on_session_opened(self, session);
+    }
+
+    fn on_session_ended(&mut self, session: &SessionRef) {
+        Self::on_session_ended(self, session);
+    }
+
+    fn on_intake(&mut self, notices: Vec<IntakeNotice>, bytes_appended: Option<SessionRef>) {
+        Self::on_intake(self, notices, bytes_appended);
+    }
+
+    fn drive(&mut self, now: Instant) -> Option<Instant> {
+        Self::drive(self, now)
+    }
+}
 
 /// Чем закончилась работа цикла (в лог и в код выхода).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RuntimeFinish {
     /// Почему процесс выходит.
+    ///
+    /// Сколько сообщений страницы пришло, здесь не считается: с 03b они идут через
+    /// единую очередь в поток приёма, и их счёт — в отчёте потока приёма
+    /// (`intake_report` финальной строки процесса).
     pub(crate) cause: ExitCause,
-    /// Сколько сообщений страницы цикл получил (в 02 они только считаются).
-    pub(crate) page_messages_received: u64,
 }
 
 /// Главный цикл процесса браузерного режима.
@@ -37,7 +82,6 @@ pub(super) struct BrowserSessionRuntime {
     lifecycle: ProcessLifecycle,
     inbox: Arc<BrowserSessionInbox>,
     normal_player: Box<dyn NormalPlayerPause>,
-    page_messages_received: u64,
 }
 
 impl BrowserSessionRuntime {
@@ -54,59 +98,85 @@ impl BrowserSessionRuntime {
             lifecycle: ProcessLifecycle::new(Instant::now(), policy.idle_exit_after_start),
             inbox,
             normal_player,
-            page_messages_received: 0,
         }
     }
 
     /// Крутится, пока машина «когда выходить» не скажет «выходим».
-    pub(super) fn run_until_exit(mut self, wake: &ParkingWake) -> RuntimeFinish {
+    ///
+    /// Медиа-часть остаётся у вызывающего: её итог (финальная строка журнала плеера)
+    /// пишется после остановки сервера и потока приёма.
+    pub(super) fn run_until_exit(
+        mut self,
+        wake: &ParkingWake,
+        media: &mut dyn SessionMediaPort,
+    ) -> RuntimeFinish {
         loop {
-            match self.step(Instant::now()) {
+            match self.step(Instant::now(), media) {
                 LifecycleVerdict::Exit(cause) => return self.finish(cause),
                 LifecycleVerdict::KeepRunning { wake_at } => wake.wait(wake_at),
             }
         }
     }
 
-    /// Один проход: забрать ящик, обработать, спросить машину.
+    /// Один проход: забрать ящик, обработать, шаг медиа, спросить машину.
     ///
-    /// Вынесен отдельно, чтобы тесты шли по шагам без потоков и сна.
-    pub(super) fn step(&mut self, now: Instant) -> LifecycleVerdict {
+    /// Вынесен отдельно, чтобы тесты шли по шагам без потоков и сна. Срок
+    /// пробуждения — ближайший из срока машины жизни и срока медиа.
+    pub(super) fn step(
+        &mut self,
+        now: Instant,
+        media: &mut dyn SessionMediaPort,
+    ) -> LifecycleVerdict {
         let batch = self.inbox.take_batch();
-        self.process_batch(batch, now);
-        self.lifecycle.verdict(now)
+        self.process_batch(batch, now, media);
+        let media_wake_at = media.drive(now);
+        match self.lifecycle.verdict(now) {
+            LifecycleVerdict::KeepRunning { wake_at } => LifecycleVerdict::KeepRunning {
+                wake_at: earliest(wake_at, media_wake_at),
+            },
+            exit @ LifecycleVerdict::Exit(_) => exit,
+        }
     }
 
     /// Дожидается начатых просьб «пауза» и отдаёт итог.
     pub(super) fn finish(mut self, cause: ExitCause) -> RuntimeFinish {
         self.normal_player.finish();
-        RuntimeFinish {
-            cause,
-            page_messages_received: self.page_messages_received,
-        }
+        RuntimeFinish { cause }
     }
 
     /// Порядок важен: звонки входа раньше событий сеанса. Событие сеанса (например,
     /// `Attached`) возможно только после ответа с пропуском, а ответ уходит здесь же,
     /// поэтому машина всегда узнаёт об открытии сеанса раньше, чем о его жизни.
-    fn process_batch(&mut self, batch: InboxBatch, now: Instant) {
+    ///
+    /// Уведомления потока приёма идут после событий жизни: открытие сеанса медиа-часть
+    /// узнаёт раньше его данных (данные возможны только после пропуска).
+    fn process_batch(&mut self, batch: InboxBatch, now: Instant, media: &mut dyn SessionMediaPort) {
         for delivery in batch.entry_deliveries {
-            self.answer_entry_call(delivery, now);
+            self.answer_entry_call(delivery, now, media);
         }
         for event in &batch.lifecycle_events {
             log_lifecycle_event(event);
             self.lifecycle.on_lifecycle_event(event);
+            if let SessionLifecycleEvent::Ended { session, .. } = event {
+                media.on_session_ended(session);
+            }
         }
-        // Источник байтов и окно появятся в 03–04; пока сообщения только считаются.
+        // С 03b сообщения страницы идут через единую очередь в поток приёма; сюда
+        // они попадают, только если ящик сам стоит приёмником сервера (тесты цикла).
         // Содержимое в лог не идёт: в нём бывают названия серий и озвучек (инвариант 7).
-        let received = batch.page_messages.len() as u64;
+        let received = batch.page_messages.len();
         if received > 0 {
-            self.page_messages_received += received;
-            debug!(received, "Page session messages received");
+            debug!(received, "Page session messages received by the inbox");
         }
+        media.on_intake(batch.intake_notices, batch.bytes_appended);
     }
 
-    fn answer_entry_call(&mut self, delivery: BrowserEntryDelivery, now: Instant) {
+    fn answer_entry_call(
+        &mut self,
+        delivery: BrowserEntryDelivery,
+        now: Instant,
+        media: &mut dyn SessionMediaPort,
+    ) {
         let (request, reply) = delivery.into_parts();
         let caller = match EntryCaller::new(request.caller.as_str()) {
             Ok(caller) => caller,
@@ -132,8 +202,9 @@ impl BrowserSessionRuntime {
         {
             // Машина сверяет сеанс по паре «ключ + экземпляр»: конец прежнего
             // экземпляра с тем же ключом (истёк срок возврата) не закроет новый.
-            self.lifecycle
-                .on_session_opened(&SessionRef { key, instance });
+            let session = SessionRef { key, instance };
+            self.lifecycle.on_session_opened(&session);
+            media.on_session_opened(&session);
             // Домен и заголовок страницы в лог НЕ пишутся: журнал systemd лежит на
             // диске, а браузерный режим ничего не хранит о просмотре (инвариант 7,
             // инкогнито — решение 41). Они нужны только окну (04).
@@ -152,6 +223,14 @@ fn needs_normal_player_pause(grant: GrantOutcome) -> bool {
     match grant {
         GrantOutcome::Started | GrantOutcome::ReplacedPrevious => true,
         GrantOutcome::ReusedExisting => false,
+    }
+}
+
+/// Ближайший из двух сроков (`None` — срока нет).
+fn earliest(first: Option<Instant>, second: Option<Instant>) -> Option<Instant> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(first.min(second)),
+        (first, second) => first.or(second),
     }
 }
 

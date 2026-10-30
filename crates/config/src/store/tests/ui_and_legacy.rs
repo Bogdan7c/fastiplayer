@@ -57,7 +57,7 @@ fn schema_v26_rejects_removed_window_corner_radius() {
     let config_path = temp_dir.path().join("config.toml");
     fs::write(
         &config_path,
-        "schema_version = 27\n\n[ui.window]\ncorner_radius_px = 12\n",
+        "schema_version = 28\n\n[ui.window]\ncorner_radius_px = 12\n",
     )
     .expect("v26 fixture written");
 
@@ -91,7 +91,7 @@ fn fullscreen_autohide_delay_validation_accepts_zero_and_rejects_above_max() {
 fn current_schema_without_fullscreen_autohide_delay_loads_default() {
     let temp_dir = tempfile::tempdir().expect("temp dir created");
     let config_path = temp_dir.path().join("config.toml");
-    let legacy_document = include_str!("../../../tests/fixtures/current_schema_v27.toml")
+    let legacy_document = include_str!("../../../tests/fixtures/current_schema_v28.toml")
         .replace(
             "# Через сколько мс бездействия прятать панели и курсор в фуллскрине; 0 — не прятать.\nfullscreen_autohide_delay_ms = 2500\n",
             "",

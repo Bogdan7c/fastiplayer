@@ -377,6 +377,24 @@ impl SessionRegistry {
         })
     }
 
+    /// Завершает активный сеанс по просьбе плеера, только если активен именно этот
+    /// экземпляр (`SessionControl::close_session`).
+    ///
+    /// Проверяется пара «ключ + экземпляр»: просьба, посланная про старый
+    /// экземпляр, не должна закрыть сеанс, который успел его заменить (тот же ключ
+    /// после истечения или другая вкладка). `None` — этот экземпляр уже не активен,
+    /// реестр не меняется.
+    pub fn end_instance(&mut self, session: &SessionRef) -> Option<EndedSession> {
+        let is_this_instance = self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.instance == session.instance && active.key == session.key);
+        if !is_this_instance {
+            return None;
+        }
+        self.end_active()
+    }
+
     /// Применяет истёкшие сроки: возвращает завершённый сеанс и причину.
     pub fn expire(&mut self, now: Instant) -> Option<(SessionRef, SessionEndReason)> {
         let reason = match self.active.as_ref()?.phase {

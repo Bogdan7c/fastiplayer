@@ -6,6 +6,7 @@ use crate::{
     VideoCodec, VideoSchedulerConfig,
 };
 
+mod browser_session;
 mod media_services;
 mod playlist_drop;
 mod subtitles;
@@ -14,6 +15,7 @@ mod subtitles_prerender;
 mod subtitles_stream;
 mod ui;
 
+use browser_session::validate_browser_session_section;
 pub(crate) use media_services::{
     MAX_NETWORK_MEMORY_CACHE_MB, MAX_NETWORK_PREFETCH_INITIAL_CHUNK_KB, MAX_NETWORK_READ_AHEAD_MB,
     MAX_NETWORK_RECONNECT_WAIT_MS, MAX_WEB_MEDIA_VOD_RECOVERY_ATTEMPTS,
@@ -220,6 +222,7 @@ pub(crate) fn validate_app_config(config: &AppConfig) -> ConfigResult<()> {
     validate_network_section(config)?;
     validate_web_media_config(&config.web_media)?;
     validate_yt_dlp_config(&config.yt_dlp)?;
+    validate_browser_session_section(&config.browser_session)?;
     validate_render_section(config)?;
     validate_ui_section(config)?;
     validate_frame_server_section(config)?;

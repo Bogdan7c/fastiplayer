@@ -60,6 +60,16 @@ pub enum SendToPageError {
     Unencodable(MessageErrorKind),
 }
 
+/// Итог [`SessionControl::close_session`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseOutcome {
+    /// Этот экземпляр был активен: сеанс закончен, соединению отправлен код.
+    Closed,
+    /// Этот экземпляр уже не активен (закончился, заменён, сервер выключается):
+    /// ничего не сделано, активный сеанс (если есть) не тронут.
+    NotActive,
+}
+
 /// Ручка управления сервером.
 #[derive(Clone)]
 pub struct SessionControl {
@@ -101,5 +111,18 @@ impl SessionControl {
     /// Нет сеанса — ничего не происходит.
     pub fn close_active_session(&self, reason: SessionCloseReason) {
         self.shared.close_active_session(reason);
+    }
+
+    /// Закрывает сеанс этим кодом, только если активен именно этот экземпляр
+    /// (ключ + номер экземпляра).
+    ///
+    /// Нужен тем, кто решает закрыть сеанс по его данным не сразу (переходник
+    /// протокола заметил нарушение в своём потоке, главный цикл исполняет позже):
+    /// за это время сеанс мог смениться, и [`Self::close_active_session`] закрыл бы
+    /// уже НОВЫЙ сеанс. Здесь старый `SessionRef` даёт честный
+    /// [`CloseOutcome::NotActive`], а новый сеанс живёт дальше.
+    #[must_use = "NotActive means the session was not closed"]
+    pub fn close_session(&self, session: &SessionRef, reason: SessionCloseReason) -> CloseOutcome {
+        self.shared.close_session(session, reason)
     }
 }

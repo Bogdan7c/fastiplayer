@@ -30,6 +30,8 @@ animation-core.workspace = true
 # Мост в браузер: процесс браузерного режима (`--browser-session`, сессия 02).
 browser-bridge-protocol.workspace = true
 browser-bridge-session.workspace = true
+# Источник «сегменты извне» (сессия 03b): переходник протокола кормит его байтами MSE.
+pushed-media-source.workspace = true
 winit.workspace = true
 egui.workspace = true
 ui-artwork-egui.workspace = true

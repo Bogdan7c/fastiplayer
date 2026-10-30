@@ -25,7 +25,7 @@ use std::time::Instant;
 use browser_bridge_protocol::LoopbackPort;
 use browser_bridge_protocol::error::ValueViolation;
 
-pub use control::{OpenSessionError, OpenedSession, SendToPageError, SessionControl};
+pub use control::{CloseOutcome, OpenSessionError, OpenedSession, SendToPageError, SessionControl};
 pub use report::ServerShutdownReport;
 
 use self::shared::Shared;

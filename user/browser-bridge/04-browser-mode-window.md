@@ -43,3 +43,14 @@
 - Memories: `mem:browser-bridge/core`, `mem:app-egui/state-split`, `mem:app-egui/reusable-ui-regions`.
 
 Memories: `mem:app-egui/reusable-ui-regions`, `mem:app-egui/state-split`, `mem:app-egui/fullscreen-chrome-autohide-ux14`, `mem:app-egui/notifications`.
+
+## Поправки по итогам 03b (30.10.2026, решения 95–99)
+
+- **Композиция готова, окно подставляет рендер:** `app-egui/src/browser_session/playback/` — `BrowserPlayback` (рабочий поток плеера, `load`/`play`/`pause`/`seek`/`set_rate`/`pump`) и trait `BrowserVideoOutput` (`capabilities`, `start_backend`, `present`). Сейчас стоит `HeadlessVideoOutput` (программный FFmpeg, только 8 бит 4:2:0). Окно реализует `BrowserVideoOutput` своим рендером (VA-API, 10 бит) и передаёт семейство рендера в `automatic_surface_pool()` (сейчас `None`).
+- **Главный цикл** — `runtime.rs` + `session_media.rs` (`SessionMediaPort`); `ParkingWake` заменяется на пробуждение цикла окна. Байты разбираются в своём потоке приёма — окно их не касается.
+- **Состояния для спиннера:** ожидание байтов после перемотки вне полки — `Scrubbing`/`Seeking`, а не `Buffering`; спиннер должен их показывать. Через 10 с без байтов — `SeekTimeout`.
+- **Перемотка после Ended** садится на паузу — `session_media` уже шлёт Play/Pause по состоянию страницы; при перемотке пользователем из окна — то же.
+- **Смена скорости** вступает через ~1,25 с (доигрывается набранный звук) — для «скорость со страницы» решить, приемлемо ли.
+- **`[browser_session]` в настройках** (решение 96) в окне не показывается — при доводке UI добавить.
+- **Загрузка медиа** идёт через `PlayerWorker::load_prepared_media` (совместимый путь «убрать позже»): решить поэтапную установку для браузерного процесса до удаления этого пути.
+- **Журнал** (`journal.rs`) остаётся: строки `Browser playback summary` — опора автотестов 08.
