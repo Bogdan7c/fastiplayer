@@ -39,6 +39,10 @@ pub(super) fn fill_from_ring<T>(
 where
     T: Sample + FromSample<f32>,
 {
+    // Размер любого callback-а (и удержанного тишиной) — оценка ёмкости очереди устройства:
+    // без неё часы не знают, когда записанный звук станет слышен (`clock/device_queue.rs`).
+    clock.observe_output_callback_size(data.len() as u64);
+
     // Logical pause нужен даже для backend-ов без CPAL pause: callback выдаёт silence,
     // но не расходует ring PCM и clock. Тем же гейтом output удерживается сразу после
     // создания, пока владелец не вызвал `play()`.
@@ -110,6 +114,29 @@ mod tests {
 
         assert_eq!(fill, CallbackFill::Held);
         assert_eq!(data, [0.0; 8]);
+    }
+
+    #[test]
+    fn held_callback_still_teaches_the_device_queue_size() {
+        // Удержанный тишиной callback тоже занимает очередь устройства: если он был первым
+        // и полным, последующий PCM прозвучит только после него (`clock/device_queue.rs`).
+        let clock = AudioClock::with_device_queue_model(
+            48_000,
+            2,
+            crate::clock::device_queue::DeviceQueueModel::CallbackFillsFreeSpace,
+        );
+        let _initial_timing = clock.freeze_output_timing();
+        let (_producer, mut consumer) = ring_with(64, &[]);
+        let mut full_queue = vec![1.0_f32; 9_600];
+
+        let fill = fill_from_ring(&mut full_queue, &mut consumer, &clock, 2);
+
+        assert_eq!(fill, CallbackFill::Held);
+        // Обычный callback 1536 кадров ждёт (4800 − 1536) кадров = 68 мс.
+        assert_eq!(
+            clock.playback_delay(std::time::Duration::ZERO, 3_072),
+            std::time::Duration::from_millis(68)
+        );
     }
 
     #[test]

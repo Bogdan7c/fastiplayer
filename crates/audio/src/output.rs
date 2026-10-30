@@ -189,7 +189,7 @@ impl AudioOutput {
         let (producer, consumer) = rb.split();
         let consumer = Arc::new(Mutex::new(consumer));
 
-        let clock = Arc::new(AudioClock::new(stream_rate, stream_channels as u32));
+        let clock = AudioClock::shared_for_output_host(&host, stream_rate, stream_channels as u32);
         // Callback не должен ничего считать до первого `play()`: см. `hold_new_stream`.
         let _initial_timing = clock.freeze_output_timing();
         let stream_failure = StreamFailureSignal::default();
@@ -484,7 +484,7 @@ impl AudioOutput {
                 clock.record_output_callback(
                     played_samples,
                     silence_samples,
-                    callback_info,
+                    crate::clock::device_queue::reported_playback_delay(callback_info),
                     callback_observed_at,
                 );
                 (played_samples, silence_samples)
@@ -498,7 +498,7 @@ impl AudioOutput {
                 clock.record_output_callback(
                     0,
                     silence_samples,
-                    callback_info,
+                    crate::clock::device_queue::reported_playback_delay(callback_info),
                     callback_observed_at,
                 );
                 (0, silence_samples)

@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 mod callback_cadence;
+pub(crate) mod device_queue;
 mod lifecycle;
 
 /// Clock для audio playback.
@@ -94,6 +95,8 @@ pub struct AudioClock {
 
     /// Ритм играющих callback-ов для планировщика подпитки (`clock/callback_cadence.rs`).
     callback_cadence: callback_cadence::OutputCallbackCadenceRecorder,
+    /// Ёмкость очереди устройства для задержки звука (`clock/device_queue.rs`); `reset` не трогает.
+    device_queue: device_queue::DeviceQueueCapacity,
 }
 
 impl AudioClock {
@@ -125,6 +128,7 @@ impl AudioClock {
             underrun_callbacks: AtomicU64::new(0),
             underrun_samples: AtomicU64::new(0),
             callback_cadence: callback_cadence::OutputCallbackCadenceRecorder::new(),
+            device_queue: device_queue::DeviceQueueCapacity::backend_reported_only(),
         }
     }
 
@@ -247,14 +251,14 @@ impl AudioClock {
 
     /// Записывает результат одного CPAL output callback вместе с playback timestamp.
     ///
-    /// CPAL сообщает два времени: когда callback вызван и когда записанные сэмплы
-    /// предположительно дойдут до DAC. Мы используем эту пару как anchor, чтобы
-    /// render thread видел плавный audio clock внутри callback interval, а не ступеньки.
+    /// Задержка до DAC — сообщённая backend-ом или оценка очереди устройства, что больше
+    /// (`clock/device_queue.rs`). Anchor «callback + задержка» даёт render thread-у
+    /// плавный audio clock внутри callback interval, а не ступеньки.
     pub fn record_output_callback(
         &self,
         played_samples: u64,
         silence_samples: u64,
-        callback_info: &cpal::OutputCallbackInfo,
+        reported_playback_delay: Duration,
         callback_observed_at: Instant,
     ) {
         let callback_output_samples = played_samples.saturating_add(silence_samples);
@@ -277,11 +281,7 @@ impl AudioClock {
             return;
         }
 
-        let timestamp = callback_info.timestamp();
-        let playback_delay = timestamp
-            .playback
-            .duration_since(&timestamp.callback)
-            .unwrap_or(Duration::ZERO);
+        let playback_delay = self.playback_delay(reported_playback_delay, callback_output_samples);
         let playback_at = callback_observed_at
             .checked_add(playback_delay)
             .unwrap_or(callback_observed_at);
