@@ -20,7 +20,7 @@
 //! - Отказ запуска (бинарь удалён или заменён, ошибка spawn) никогда не молчит:
 //!   [`RelaunchOutcome::report`] пишет `error!` в лог и строку в stderr.
 
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -213,7 +213,13 @@ impl RelaunchOutcome {
             }
             Self::Failed(relaunch_error) => {
                 error!(%relaunch_error, "Could not restart the application");
-                eprintln!("fastiplayer: could not restart the application: {relaunch_error}");
+                // Строка для человека в терминале — помимо журнала. Не `eprintln!`: на
+                // закрытом stderr он паникует (терминал закрыт — читать некому, итог
+                // записи неважен; журнал выше уже получил ошибку).
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "fastiplayer: could not restart the application: {relaunch_error}"
+                );
             }
         }
     }
