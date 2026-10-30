@@ -658,6 +658,15 @@ pub trait Atom: Sized {
     fn read<R: ReadAtom>(it: &mut AtomIterator<R>, header: &AtomHeader) -> Result<Self>;
 }
 
+/// Что делать с хвостом родительского атома короче заголовка (< 8 байт).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ShortTailPolicy {
+    /// Любой такой хвост — обрыв структуры (`UnexpectedEndOfAtom`).
+    Reject,
+    /// Хвост из одних нулей — QuickTime-терминатор, итерация молча заканчивается.
+    AllowZeroTerminator,
+}
+
 /// An ISO Base Media File Format (ISOBMFF) Atom iterator supporting hierarchical traversal.
 pub struct AtomIterator<R: ReadAtom> {
     /// The inner reader.
@@ -701,6 +710,21 @@ impl<R: ReadAtom> AtomIterator<R> {
     ///
     /// Discards any unread data from the previous atom.
     pub(crate) fn next_header(&mut self) -> Result<Option<&AtomHeader>> {
+        self.next_header_with(ShortTailPolicy::Reject)
+    }
+
+    /// Как `next_header`, но для детей sample entry (`stsd`): хвост родителя короче заголовка,
+    /// целиком состоящий из нулей, — это QuickTime-терминатор списка расширений sample
+    /// description (у Apple это 4 нулевых байта, ffmpeg их пропускает). Такой хвост
+    /// съедается, итерация заканчивается как на чистой границе. Ненулевой хвост остаётся
+    /// ошибкой обрыва. Правило намеренно не включено в общий `next_header`, чтобы в
+    /// остальных контейнерах короткий хвост по-прежнему ловил настоящее усечение файла.
+    pub(crate) fn next_sample_entry_child_header(&mut self) -> Result<Option<&AtomHeader>> {
+        self.next_header_with(ShortTailPolicy::AllowZeroTerminator)
+    }
+
+    /// Общая реализация чтения заголовка; `short_tail` решает судьбу хвоста < 8 байт.
+    fn next_header_with(&mut self, short_tail: ShortTailPolicy) -> Result<Option<&AtomHeader>> {
         // If there is a pending atom, or it wasn't fully consumed, skip over it now.
         match self.skip_atom() {
             Ok(()) | Err(AtomError::NoPendingAtom) => {}
@@ -724,7 +748,13 @@ impl<R: ReadAtom> AtomIterator<R> {
                 log::warn!("overran atom by {} bytes", pos - parent_end);
                 return Err(AtomError::Overrun);
             } else if parent_end - pos < u64::from(AtomHeader::HEADER_SIZE) {
-                // Ненулевой хвост короче header-а означает обрыв объявленной структуры.
+                // Хвост короче header-а: обрыв объявленной структуры, если только политика
+                // не разрешает QuickTime-терминатор и весь хвост — нули.
+                if short_tail == ShortTailPolicy::AllowZeroTerminator
+                    && self.consume_zero_tail(parent_end - pos)?
+                {
+                    return Ok(None);
+                }
                 return Err(AtomError::UnexpectedEndOfAtom);
             }
         }
@@ -777,6 +807,21 @@ impl<R: ReadAtom> AtomIterator<R> {
 
         self.pending = Some(atom);
         Ok(self.pending.as_ref())
+    }
+
+    /// Читает `tail_len` байт до конца родителя. Если все они нулевые — оставляет курсор в
+    /// конце родителя и возвращает `true`. Иначе возвращает `false` (курсор сдвинут, но
+    /// вызывающий сразу отдаёт ошибку обрыва, так что позиция уже не важна).
+    fn consume_zero_tail(&mut self, tail_len: u64) -> Result<bool> {
+        let mut tail = [0u8; AtomHeader::HEADER_SIZE as usize];
+        // tail_len < HEADER_SIZE гарантирует вызывающий код.
+        let tail = &mut tail[..tail_len as usize];
+        match self.reader.read_buf_exact(tail) {
+            Ok(()) => Ok(tail.iter().all(|byte| *byte == 0)),
+            // Файл кончился раньше объявленного конца родителя — это настоящий обрыв.
+            Err(err) if err.kind() == ErrorKind::UnexpectedEof => Ok(false),
+            Err(err) => Err(AtomError::from(err)),
+        }
     }
 
     /// If an atom is pending to be read, or its body was partially read, skip over it.

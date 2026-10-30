@@ -308,7 +308,7 @@ impl Atom for AudioSampleEntry {
             }
         };
 
-        while let Some(entry_header) = it.next_header()? {
+        while let Some(entry_header) = it.next_sample_entry_child_header()? {
             match entry_header.atom_type {
                 AtomType::Esds => {
                     let atom = it.read_atom::<EsdsAtom>()?;
@@ -679,7 +679,7 @@ impl Atom for VisualSampleEntry {
         // Reserved.
         it.read_u16()?;
 
-        while let Some(entry_header) = it.next_header()? {
+        while let Some(entry_header) = it.next_sample_entry_child_header()? {
             match entry_header.atom_type {
                 AtomType::Esds => {
                     let atom = it.read_atom::<EsdsAtom>()?;
@@ -807,7 +807,7 @@ impl Atom for SubtitleSampleEntry {
         let mut btrt = None;
         let mut txtc = None;
 
-        while let Some(entry_header) = it.next_header()? {
+        while let Some(entry_header) = it.next_sample_entry_child_header()? {
             match entry_header.atom_type {
                 AtomType::BitRate => {
                     btrt = Some(it.read_atom::<BtrtAtom>()?);

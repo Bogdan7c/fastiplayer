@@ -14,7 +14,7 @@ use symphonia_core::errors::Error;
 /// Размер SEI-строки настроек, как у реального x265 (`hvcC` ≈ 2,5 КиБ).
 const X265_LIKE_SEI_BYTES: usize = 2_400;
 
-fn atom_bytes(atom_type: [u8; 4], payload: &[u8]) -> Vec<u8> {
+pub(super) fn atom_bytes(atom_type: [u8; 4], payload: &[u8]) -> Vec<u8> {
     let size = u32::try_from(payload.len() + 8).expect("test atom size fits u32");
     let mut bytes = size.to_be_bytes().to_vec();
     bytes.extend_from_slice(&atom_type);
@@ -23,7 +23,7 @@ fn atom_bytes(atom_type: [u8; 4], payload: &[u8]) -> Vec<u8> {
 }
 
 /// VisualSampleEntry (ISO/IEC 14496-12 §12.1.3) 64×64 с заданными дочерними атомами.
-fn visual_sample_entry(child_atoms: &[u8]) -> Vec<u8> {
+pub(super) fn visual_sample_entry(child_atoms: &[u8]) -> Vec<u8> {
     let mut payload = vec![0; 6];
     payload.extend_from_slice(&1_u16.to_be_bytes());
     payload.extend_from_slice(&[0; 16]);
@@ -42,7 +42,7 @@ fn visual_sample_entry(child_atoms: &[u8]) -> Vec<u8> {
 
 /// HEVCDecoderConfigurationRecord (ISO/IEC 14496-15 §8.3.3.1): Main, level 4.1 и один
 /// массив prefix-SEI (NAL type 39) с длинным payload — так x265 пишет строку настроек.
-fn hevc_record_with_sei(sei_bytes: usize) -> Vec<u8> {
+pub(super) fn hevc_record_with_sei(sei_bytes: usize) -> Vec<u8> {
     let mut record = vec![
         0x01, // configurationVersion
         0x01, // profile_space 0, tier 0, general_profile_idc 1 (Main)
@@ -65,7 +65,7 @@ fn hevc_record_with_sei(sei_bytes: usize) -> Vec<u8> {
     record
 }
 
-fn read_stsd(
+pub(super) fn read_stsd(
     sample_entry_type: [u8; 4],
     configuration_atom: [u8; 4],
     record: &[u8],
@@ -88,7 +88,7 @@ fn read_stsd(
 }
 
 /// Разворачивает результат без `Debug` у `AtomError`: печатаем только symphonia-ошибку.
-fn parsed(result: super::Result<StsdAtom>) -> StsdAtom {
+pub(super) fn parsed(result: super::Result<StsdAtom>) -> StsdAtom {
     match result {
         Ok(stsd) => stsd,
         Err(AtomError::Other(error)) => panic!("stsd must parse: {error}"),
