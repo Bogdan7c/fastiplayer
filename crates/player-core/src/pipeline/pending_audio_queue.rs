@@ -83,6 +83,29 @@ impl PendingAudioPacketQueue {
         self.packets.len()
     }
 
+    /// Убирает из начала очереди packets, которые целиком лежат до `target`.
+    ///
+    /// Конец packet-а надёжно известен только после декода, поэтому «целиком до цели»
+    /// доказывает следующий packet: если он начинается не позже цели, текущий кончился
+    /// до неё. Packet, внутри которого лежит цель, остаётся (его PCM обрежется по базе
+    /// часов). Packets не по порядку (битые PTS) останавливают удаление: доказательства нет.
+    /// Возвращает число удалённых packets.
+    pub(crate) fn discard_front_packets_ending_before(&mut self, target: Duration) -> usize {
+        let mut discarded_packets = 0;
+        while let Some(next_packet) = self.packets.get(1) {
+            let front_start = self.packets.front().map(PendingAudioPacket::pts);
+            let next_start = next_packet.pts();
+            let front_ends_before_target =
+                next_start <= target && front_start.is_some_and(|start| start <= next_start);
+            if !front_ends_before_target {
+                break;
+            }
+            let _ = self.pop_front();
+            discarded_packets += 1;
+        }
+        discarded_packets
+    }
+
     /// Очищает очередь вместе со счётчиком объёма.
     pub(crate) fn clear(&mut self) {
         self.packets.clear();

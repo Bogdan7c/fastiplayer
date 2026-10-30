@@ -64,6 +64,10 @@ pub(crate) enum PendingAudioOutputAdmission {
     /// Первый звук отрезка (старт, seek) лежит дальше базы часов больше потолка тишины
     /// и ждёт своего PTS (`audio_gap/scheduled_audio_start.rs`).
     HoldUntilScheduledAudioStart,
+
+    /// Идёт drag по таймлайну: цель живого прохода ещё может уехать вперёд, поэтому
+    /// звук ждёт сжатым до отпускания мыши (`pending_audio_waits_for_live_scrub_commit`).
+    HoldUntilLiveScrubCommit,
 }
 
 /// Состояние demux audio-priority ожидания на этом tick-е (вычисляет `tick`).
@@ -108,6 +112,9 @@ impl PlayerSession {
     /// склеил бы его с предыдущим звуком и сдвинул весь A/V sync на длину разрыва.
     #[must_use]
     pub(crate) fn pending_audio_output_admission(&self) -> PendingAudioOutputAdmission {
+        if self.pending_audio_waits_for_live_scrub_commit() {
+            return PendingAudioOutputAdmission::HoldUntilLiveScrubCommit;
+        }
         // Начало отрезка: звук без удержания создал бы output и прозвучал в базе часов.
         if self.segment_start_audio_schedule().holds_audio() {
             return PendingAudioOutputAdmission::HoldUntilScheduledAudioStart;
@@ -128,6 +135,20 @@ impl PlayerSession {
             PresentationClockSource::AudioOutput
             | PresentationClockSource::MonotonicWithoutAudio => PendingAudioOutputAdmission::Admit,
         }
+    }
+
+    /// `true`, пока звук живого прохода drag-а должен ждать commit сжатым.
+    ///
+    /// Корень дефекта D2: forward extension живого прохода (`seek_start`) сдвигает цель
+    /// вперёд без нового demux seek-а и очищает output. Если звук уже декодирован под
+    /// прежнюю цель, очистка выбрасывает PCM новой цели, а demux его повторно не прочитает:
+    /// после отпускания мыши звук начинался с дырой (или раньше картинки). Пока мышь не
+    /// отпущена, звук всё равно не звучит, поэтому он не декодируется вовсе: сжатые packets
+    /// остаются в очереди, extension их не трогает, а после commit-а они декодируются
+    /// с обрезкой по новой цели. Demux такой звук не останавливает (см. `demux_admission`).
+    #[must_use]
+    pub(crate) fn pending_audio_waits_for_live_scrub_commit(&self) -> bool {
+        self.seek_runtime.live_scrub_target_may_still_move()
     }
 
     /// `true`, если front pending audio packet удержан до своего PTS (любым удержанием).

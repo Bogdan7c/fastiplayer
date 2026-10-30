@@ -161,7 +161,7 @@ pub(super) fn startup_audio_backlog_room(
 /// Хватает ли запаса для звука, удержанного до своего PTS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum HeldAudioBacklogRoom {
-    /// Звук не удержан (или идёт seek preroll): предел не действует.
+    /// Звук не удержан (или идёт seek preroll вне drag-а): предел не действует.
     NotHeld,
 
     /// Удержанный звук ещё помещается в запас.
@@ -178,7 +178,12 @@ pub(super) fn held_audio_backlog_room(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
 ) -> HeldAudioBacklogRoom {
-    if session.has_active_seek_commit() || !session.pending_audio_is_held_until_its_pts() {
+    // Звук живого drag-а ждёт commit при активном seek-е и тоже ограничен запасом: при
+    // редком видео (обложка, слайд-шоу) demux иначе дочитал бы весь звук файла.
+    let held_for_live_scrub = session.pending_audio_waits_for_live_scrub_commit();
+    if !held_for_live_scrub
+        && (session.has_active_seek_commit() || !session.pending_audio_is_held_until_its_pts())
+    {
         return HeldAudioBacklogRoom::NotHeld;
     }
     let audio_backlog = session.pipeline.pending_audio_backlog();

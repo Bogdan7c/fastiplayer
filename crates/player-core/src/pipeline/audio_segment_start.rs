@@ -58,7 +58,49 @@ impl Default for AudioSegmentStart {
     }
 }
 
+/// Докуда в media-времени дошёл PCM, уже записанный в текущий отрезок звука.
+///
+/// Вопрос задаёт session перед тем, как начать отрезок заново в новой цели без нового
+/// demux seek-а (forward extension живого скраба): записанный PCM при этом выбрасывается,
+/// а demux его повторно не прочитает. Ветки не схлопнуты в `bool`: «звука нет», «PCM ещё
+/// не записан» и «конец неизвестен» вызывающий код обрабатывает по-разному.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AudioSegmentWrittenReach {
+    /// Аудиодорожка не выбрана: терять нечего.
+    NoSelectedAudio,
+
+    /// В текущий отрезок ещё не записан ни один PCM: очистка ничего не выбросит.
+    NoPcmWritten,
+
+    /// PCM отрезка записан; его media-конец — не раньше этой точки.
+    ///
+    /// Значение может быть завышено (конец прежнего отрезка не забывается очисткой
+    /// под seek), но не занижено: для решения «не потерять звук» это безопасная сторона.
+    EndsAt(Duration),
+
+    /// PCM записан, но его конец забыт перепривязкой часов (seek commit, смена скорости,
+    /// новый output): сколько звука лежит в output-е, неизвестно.
+    EndUnknown,
+}
+
 impl PlaybackPipeline {
+    /// Сообщает, докуда дошёл PCM текущего отрезка звука (см. [`AudioSegmentWrittenReach`]).
+    ///
+    /// Только чтение: ни отрезок, ни учёт записанного звука не меняются.
+    #[must_use]
+    pub(crate) fn audio_segment_written_reach(&self) -> AudioSegmentWrittenReach {
+        if !self.has_selected_audio_track() {
+            return AudioSegmentWrittenReach::NoSelectedAudio;
+        }
+        if self.audio_segment_awaits_first_pcm() {
+            return AudioSegmentWrittenReach::NoPcmWritten;
+        }
+        match self.written_audio_end() {
+            Some(written_end) => AudioSegmentWrittenReach::EndsAt(written_end),
+            None => AudioSegmentWrittenReach::EndUnknown,
+        }
+    }
+
     /// `true`, пока в текущий отрезок звука не записан ни один PCM.
     ///
     /// Только в этом состоянии следующий PCM прозвучит в `media_clock_base`, поэтому

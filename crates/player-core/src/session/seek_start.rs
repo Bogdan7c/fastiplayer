@@ -1,15 +1,14 @@
 use std::time::{Duration, Instant};
 
 use frame_server_core::{
-    CancelScrubReason, FinishScrubPolicy, LiveScrubDiagnostics, ScrubExactnessPolicy,
-    ScrubGeneration, ScrubTarget, ScrubTargetUpdate, ScrubTrackSelection,
+    CancelScrubReason, FinishScrubPolicy, ScrubExactnessPolicy, ScrubGeneration, ScrubTarget,
+    ScrubTargetUpdate, ScrubTrackSelection,
 };
 use media_core::{MediaTime, TimelinePreviewState};
 use tracing::{debug, info, warn};
 
 use crate::seek_state::{
-    PlaybackResumeIntent, SeekCommitState, SeekLandingRoute, SeekTargetRetention,
-    demux_seek_request_for_transaction,
+    PlaybackResumeIntent, SeekLandingRoute, SeekTargetRetention, demux_seek_request_for_transaction,
 };
 use crate::{
     PlaybackState, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, SeekMode, SeekRequest,
@@ -28,13 +27,13 @@ use super::scrub_driver::{
     PlayerScrubTransactionDriver, default_scrub_execution_policy, scrub_update_guards_for_owner,
 };
 use super::scrub_orchestration::{
-    LIVE_SCRUB_FORWARD_EXTENSION_MAX, ReusedDecoderScrubLandingRequest,
-    initial_scrub_generation_before_target,
+    ReusedDecoderScrubLandingRequest, initial_scrub_generation_before_target,
 };
 use super::scrub_preview_policy::generic_landing_start_failure_is_user_visible;
 use super::seek_admission::SeekTimelineAdmission;
 
 mod error_mapping;
+mod live_scrub_forward_extension;
 
 use error_mapping::{
     player_error_from_decoder_flush_error, player_error_from_demux_seek_error,
@@ -431,102 +430,6 @@ impl PlayerSession {
             ));
         }
         Ok(())
-    }
-
-    /// Продолжает активный live scrub проход к более поздней цели без нового cold seek.
-    ///
-    /// Реюз позиции декодера: движение вперёд в пределах капа не делает flush
-    /// декодера и demux seek на keyframe-before — уже идущий decode-проход просто
-    /// доезжает до новой цели, а прокат показывает кадры по пути. Generation,
-    /// pending video packets и очередь кадров остаются валидными. Audio runtime
-    /// сбрасывается под новый target: уже декодированный PCM от старой цели
-    /// очищается, clock base перепривязывается, и trace начинается заново, чтобы
-    /// landing новой цели снова опубликовал `SeekTargetFramePresented`.
-    ///
-    /// Возвращает `true`, если расширение применено и cold route не нужен.
-    fn try_extend_active_live_scrub_landing_forward(
-        &mut self,
-        target_position: MediaTime,
-        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
-    ) -> bool {
-        let Some(seek_commit) = self.seek_runtime.active_commit() else {
-            return false;
-        };
-
-        // Расширять можно только активный live scrub decode-проход до EndScrub:
-        // после запрошенного commit-а целью владеет release-логика.
-        if !self.seek_runtime.active_seek_landing_is_live_scrub()
-            || !self.seek_runtime.seek_landing_decode_active()
-            || self.seek_runtime.active_seek_landing_commit_allowed()
-        {
-            return false;
-        }
-
-        // Accurate-политика проката обязана быть активной, иначе окажемся в
-        // расширении неподдерживаемого маршрута.
-        if !seek_commit.drops_decode_preroll_before_target() {
-            return false;
-        }
-
-        // EOF drain: demuxer уже не читает — новая цель обязана пройти cold route,
-        // который заново seek-ает demuxer и выходит из drain-а.
-        if self.is_eof_draining() {
-            return false;
-        }
-
-        let current_target = seek_commit.target_position.as_duration();
-        let new_target = target_position.as_duration();
-        if new_target < current_target {
-            return false;
-        }
-        // Дистанцию меряем от фактического прогресса decoder-а в этом проходе, а не от
-        // прошлой цели указателя: иначе цепочка мелких шагов (< капа каждый) тянет один
-        // проход от старого keyframe бесконечно, и медленный (HW) decoder отстаёт от
-        // указателя на секунды. Кап «докатить дешевле cold seek» верен, только пока цель
-        // близко к decoder-у. Кадров в проходе ещё нет — берём прошлую цель, как раньше.
-        let decode_progress = self
-            .pipeline
-            .latest_video_decoder_output_pts()
-            .unwrap_or(current_target);
-        if new_target.saturating_sub(decode_progress) > LIVE_SCRUB_FORWARD_EXTENSION_MAX {
-            return false;
-        }
-
-        // Audio под новый target: буфер от старой цели очищается, decoder
-        // сбрасывается, clock base перепривязывается. Video decoder не трогаем.
-        self.reset_audio_runtime_for_seek_landing(seek_commit.generation);
-        self.pipeline.reset_clocks_for_seek(new_target);
-
-        self.seek_runtime.set_active_commit(SeekCommitState {
-            target_position,
-            started_at: Instant::now(),
-            ..seek_commit
-        });
-
-        // Trace заново: landing новой цели снова должен эмитить
-        // `SeekTargetFramePresented`, иначе UI completion-gate ждёт fallback budget.
-        self.seek_runtime.clear_trace();
-        self.seek_runtime.begin_trace(seek_commit.generation);
-        self.seek_runtime
-            .update_active_live_scrub_diagnostics(live_scrub_diagnostics);
-
-        self.enter_seek_landing_public_scrubbing(target_position);
-
-        // Generation не менялся: уже показанный target-or-after кадр остаётся
-        // landing для маленького сдвига внутри его интервала. Повторяем evidence
-        // для новой цели, иначе каждый drag event принудительно съедает ещё кадр.
-        if let Some(frame_pts) = self.pipeline.present_video_frame().map(|frame| frame.pts) {
-            self.note_presented_frame_for_seek(frame_pts);
-        }
-
-        debug!(
-            kind = "seek",
-            old_target_ms = current_target.as_millis(),
-            new_target_ms = new_target.as_millis(),
-            generation = seek_commit.generation,
-            "Live scrub: target extended forward without a new cold seek"
-        );
-        true
     }
 
     /// Переводит только public state/snapshot в pending SeekLanding.

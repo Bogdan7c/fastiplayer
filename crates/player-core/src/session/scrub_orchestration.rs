@@ -275,7 +275,9 @@ impl PlayerSession {
                 .active_commit()
                 .is_some_and(|seek_commit| {
                     seek_commit.target_position == target && seek_commit.seek_mode == request.mode
-                });
+                })
+            // Страховка D2: проход, чей звук уже начат позже цели, потерял звук цели.
+            && self.reused_live_scrub_audio_starts_at_target(target.as_duration());
 
         if active_live_target_matches {
             self.seek_runtime

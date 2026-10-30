@@ -14,6 +14,7 @@ use media_core::{MediaTime, TrackKind};
 mod audio_boundaries;
 mod audio_output_spec_change;
 mod audio_packet_window;
+mod audio_segment_written_reach;
 mod backlog_recovery;
 mod clock_mapping;
 mod demux_timing;

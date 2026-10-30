@@ -36,7 +36,7 @@ mod audio_clock_mapping;
 mod audio_output_health;
 mod audio_output_spec_change;
 mod audio_packet_window;
-mod audio_segment_start;
+pub(crate) mod audio_segment_start;
 mod audio_track_switch;
 mod media_slots;
 mod overlapped_audio_output;

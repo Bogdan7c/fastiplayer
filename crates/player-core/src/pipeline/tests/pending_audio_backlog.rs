@@ -100,3 +100,91 @@ fn media_reset_clears_backlog_accounting() {
         PendingAudioBacklog::default()
     );
 }
+
+/// Пустая очередь: удалять нечего, учёт не меняется.
+#[test]
+fn discarding_superseded_audio_from_an_empty_queue_is_a_no_op() {
+    let mut pipeline = PlaybackPipeline::default();
+
+    assert_eq!(
+        pipeline.discard_pending_audio_superseded_by_target(Duration::from_secs(8)),
+        0
+    );
+    assert_eq!(
+        pipeline.pending_audio_backlog(),
+        PendingAudioBacklog::default()
+    );
+}
+
+/// Packets целиком до цели удаляются вместе с учётом байт; packet с целью внутри — нет.
+#[test]
+fn discarding_superseded_audio_keeps_the_packet_that_contains_the_target() {
+    let mut pipeline = PlaybackPipeline::default();
+    pipeline.select_audio_track(TrackId::new(2));
+    for pts_ms in [8_000, 8_020, 8_040, 8_060, 8_080] {
+        pipeline.enqueue_pending_audio_packet(audio_packet(pts_ms, 10));
+    }
+
+    // Цель 8,05 с лежит внутри packet-а 8,04 с.
+    let discarded =
+        pipeline.discard_pending_audio_superseded_by_target(Duration::from_millis(8_050));
+
+    assert_eq!(discarded, 2);
+    assert_eq!(
+        pipeline.front_pending_audio_packet_start(),
+        Some(Duration::from_millis(8_040))
+    );
+    assert_eq!(
+        pipeline.pending_audio_backlog(),
+        PendingAudioBacklog {
+            packets: 3,
+            encoded_bytes: 30,
+            media_span: Duration::from_millis(40),
+        }
+    );
+}
+
+/// Последний packet очереди никогда не удаляется: его конец ещё не доказан.
+#[test]
+fn discarding_superseded_audio_never_removes_the_last_packet() {
+    let mut pipeline = PlaybackPipeline::default();
+    pipeline.enqueue_pending_audio_packet(audio_packet(8_000, 10));
+    pipeline.enqueue_pending_audio_packet(audio_packet(8_020, 10));
+
+    let discarded = pipeline.discard_pending_audio_superseded_by_target(Duration::from_secs(60));
+
+    assert_eq!(discarded, 1);
+    assert_eq!(pipeline.pending_audio_backlog().packets, 1);
+}
+
+/// Битые PTS (packet не по порядку) — доказательства конца нет, ничего не удаляется.
+#[test]
+fn discarding_superseded_audio_stops_at_out_of_order_timestamps() {
+    let mut pipeline = PlaybackPipeline::default();
+    pipeline.enqueue_pending_audio_packet(audio_packet(9_000, 10));
+    pipeline.enqueue_pending_audio_packet(audio_packet(8_000, 10));
+
+    let discarded =
+        pipeline.discard_pending_audio_superseded_by_target(Duration::from_millis(8_500));
+
+    assert_eq!(discarded, 0);
+    assert_eq!(pipeline.pending_audio_backlog().packets, 2);
+    assert_eq!(pipeline.pending_audio_backlog().encoded_bytes, 20);
+}
+
+/// Удаление сжатого звука не трогает видео, output и поколение.
+#[test]
+fn discarding_superseded_audio_does_not_touch_other_pipeline_state() {
+    let mut pipeline = PlaybackPipeline::default();
+    pipeline.enqueue_pending_audio_packet(audio_packet(8_000, 10));
+    pipeline.enqueue_pending_audio_packet(audio_packet(8_020, 10));
+    let generation_before = pipeline.seek_generation();
+    let base_before = pipeline.media_clock_base();
+
+    let _ = pipeline.discard_pending_audio_superseded_by_target(Duration::from_millis(8_030));
+
+    assert_eq!(pipeline.seek_generation(), generation_before);
+    assert_eq!(pipeline.media_clock_base(), base_before);
+    assert_eq!(pipeline.pending_video_packet_len(), 0);
+    assert!(!pipeline.has_audio_output());
+}

@@ -82,6 +82,7 @@ mod redundant_video_track_selection;
 mod restored_user_volume;
 mod scheduled_audio_start;
 mod scrub;
+mod scrub_audio_continuity;
 mod scrub_driver;
 mod scrub_hold;
 mod scrub_track_list_marker;

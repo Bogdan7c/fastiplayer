@@ -255,9 +255,11 @@ pub(super) fn audio_read_ahead_blocks_demux(
         }
         // Нет output-а: pending packet нужен для его создания — кроме звука, который ждёт
         // своего PTS (иначе он остановил бы и чтение видео, идущего до него).
+        // Звук живого drag-а тоже ждёт сжатым (commit), output под него не создаётся.
         None => {
             !session.pipeline.pending_audio_packet_is_empty()
                 && !session.segment_start_audio_schedule().holds_audio()
+                && !session.pending_audio_waits_for_live_scrub_commit()
         }
     }
 }

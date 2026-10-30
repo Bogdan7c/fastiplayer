@@ -353,6 +353,17 @@ impl PlaybackPipeline {
         self.pending_audio_packets.backlog()
     }
 
+    /// Убирает сжатый звук, который целиком лежит до новой цели того же отрезка.
+    ///
+    /// Для forward extension живого скраба: цель уехала вперёд без demux seek-а, и звук
+    /// между прежней и новой целью больше не прозвучит. Без этого очередь копила бы весь
+    /// звук длинного drag-а и декодировала его разом после отпускания мыши. Packet, внутри
+    /// которого лежит цель, сохраняется. Возвращает число удалённых packets.
+    pub(crate) fn discard_pending_audio_superseded_by_target(&mut self, target: Duration) -> usize {
+        self.pending_audio_packets
+            .discard_front_packets_ending_before(target)
+    }
+
     /// Очищает очередь pending audio packets через единый pipeline boundary.
     pub(crate) fn clear_pending_audio_packets(&mut self) {
         self.pending_audio_packets.clear();

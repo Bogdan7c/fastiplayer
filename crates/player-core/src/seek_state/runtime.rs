@@ -550,6 +550,18 @@ impl SeekRuntimeState {
         }
     }
 
+    /// `true`, пока активный live scrub проход ещё не получил commit (мышь не отпущена).
+    ///
+    /// Цель такого прохода может уехать вперёд без нового demux seek-а (forward
+    /// extension), поэтому всё, что готовится «под цель» (декодированный звук), до
+    /// commit-а ещё может оказаться не той целью.
+    #[must_use]
+    pub(crate) const fn live_scrub_target_may_still_move(&self) -> bool {
+        self.commit.is_some()
+            && self.active_seek_landing_is_live_scrub()
+            && !self.active_seek_landing_commit_allowed()
+    }
+
     /// Переводит active live scrub route в release/commit phase.
     pub(crate) fn request_live_scrub_commit(&mut self, release_started_at: Instant) {
         let Some(active) = self.active_seek_landing.as_mut() else {
