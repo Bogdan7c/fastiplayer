@@ -344,6 +344,15 @@ impl PlaybackPipeline {
         self.pending_audio_packets.len()
     }
 
+    /// Сколько сжатого звука ждёт декодирования (packets, байты, media-длительность).
+    ///
+    /// Intent-метод для стартового ожидания первого кадра: session ограничивает этот
+    /// запас, не зная, как устроена очередь.
+    #[must_use]
+    pub(crate) fn pending_audio_backlog(&self) -> super::PendingAudioBacklog {
+        self.pending_audio_packets.backlog()
+    }
+
     /// Очищает очередь pending audio packets через единый pipeline boundary.
     pub(crate) fn clear_pending_audio_packets(&mut self) {
         self.pending_audio_packets.clear();

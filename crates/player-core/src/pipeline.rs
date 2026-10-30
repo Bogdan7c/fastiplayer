@@ -40,6 +40,7 @@ mod audio_track_switch;
 mod media_slots;
 mod overlapped_audio_output;
 mod passthrough_audio_history;
+mod pending_audio_queue;
 mod presentation_clock_handover;
 mod read_ahead_tail;
 mod render_resources;
@@ -57,6 +58,8 @@ pub(crate) use audio_output_spec_change::{
 };
 pub(crate) use audio_packet_window::PendingAudioPacket;
 use passthrough_audio_history::PassthroughAudioHistory;
+pub(crate) use pending_audio_queue::PendingAudioBacklog;
+use pending_audio_queue::PendingAudioPacketQueue;
 use presentation_clock_handover::AudioEndClockHandover;
 pub(crate) use presentation_clock_handover::PresentationClockSource;
 pub(crate) use presentation_clock_handover::{AudioEndClockHandoverOutcome, AudioGapResumeOutcome};
@@ -587,7 +590,7 @@ pub(crate) struct PlaybackPipeline {
     audio_track_id: Option<TrackId>,
 
     /// Очередь сырых audio packets для throttle.
-    pending_audio_packets: VecDeque<PendingAudioPacket>,
+    pending_audio_packets: PendingAudioPacketQueue,
 
     /// Video decoder thread: backend decode в отдельном потоке за узким session contract.
     video_decoder_thread: Option<Box<PlayerVideoDecoderThreadHandle>>,
@@ -751,7 +754,7 @@ impl Default for PlaybackPipeline {
             video_proven_keyframe_observed_for_track: None,
             audio_output_play_requested: false,
             audio_track_id: None,
-            pending_audio_packets: VecDeque::new(),
+            pending_audio_packets: PendingAudioPacketQueue::default(),
             video_decoder_thread: None,
             video_decoder_needs_keyframe: true,
             video_decode_in_flight_packets: 0,

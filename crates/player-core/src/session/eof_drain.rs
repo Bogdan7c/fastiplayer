@@ -162,6 +162,10 @@ impl PlayerSession {
             audio_eof_drain_state = ?self.pipeline.audio_eof_drain_state(),
             "Entering EOF drain"
         );
+        // `Buffering` уже начатого playback (не первый старт) заморозил часы и ждал
+        // источник. После EOF ждать больше нечего: время обязано пойти снова.
+        let resumes_frozen_playback =
+            previous_state == PlaybackState::Buffering && !self.startup_autoplay_preroll_pending();
         self.eof_drain.record_drain_origin(previous_state);
         self.set_playback_state(PlaybackState::Draining);
         self.start_video_decoder_eof_drain_if_ready();
@@ -171,6 +175,12 @@ impl PlayerSession {
             PlaybackState::Playing | PlaybackState::Buffering
         ) {
             self.start_eof_audio_tail_if_needed();
+        }
+        if resumes_frozen_playback {
+            // Звук размораживает хвост сам (`start_eof_audio_tail_if_needed`); без звука
+            // время ведёт monotonic clock, а freeze его снял — без нового якоря кадры
+            // хвоста не стали бы due никогда (вечный `Draining`, сессия 03e моста).
+            self.anchor_monotonic_media_clock_if_needed(Instant::now());
         }
     }
 

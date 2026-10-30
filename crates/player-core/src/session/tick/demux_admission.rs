@@ -13,7 +13,7 @@ use crate::pipeline::PresentationClockSource;
 
 use super::{
     PlayerTickConfig, PlayerTickResult,
-    audio_read_ahead::audio_read_ahead_limit_ms,
+    audio_read_ahead::{audio_read_ahead_limit_ms, starved_preroll_reads_past_audio_limit},
     presentation_scheduler::{
         available_video_present_slots, host_upload_ready_queue_capacity, seek_admission_active,
         video_decoder_texture_limits,
@@ -242,7 +242,9 @@ pub(super) fn audio_read_ahead_blocks_demux(
     match session.audio_buffer_level_ms() {
         Some(audio_buffer_level_ms) => {
             !audio_buffer_level_ms.is_finite()
-                || audio_buffer_level_ms > audio_read_ahead_limit_ms(session, tick_config)
+                || (audio_buffer_level_ms > audio_read_ahead_limit_ms(session, tick_config)
+                    // Голодный preroll читает дальше, пока есть запас сжатого звука.
+                    && !starved_preroll_reads_past_audio_limit(session, tick_config))
         }
         None => !session.pipeline.pending_audio_packet_is_empty(),
     }

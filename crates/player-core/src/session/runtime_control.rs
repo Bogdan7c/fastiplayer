@@ -133,6 +133,8 @@ impl PlayerSession {
         self.media_lifecycle.clear_pending_autoplay();
         self.set_playback_state(PlaybackState::Buffering);
         self.mark_startup_autoplay_preroll_pending();
+        // Новый preroll снова ждёт первый кадр, даже если state уже был `Buffering`.
+        self.reset_video_preroll_wait();
         let observed_at = Instant::now();
         let audio_now = self.audio_clock_now();
         self.pipeline
@@ -165,8 +167,9 @@ impl PlayerSession {
         }
 
         // Накопленный PCM сам по себе не доказывает recovery source-а. После
-        // demux-owned freeze matching packet/event сначала обязан снять retry fence.
-        if self.installed_demux_retry_blocks_buffering_resume() {
+        // demux-owned freeze matching packet/event сначала обязан снять retry fence
+        // (первый старт freeze-а не переживал — см. сам intent-метод).
+        if self.installed_demux_retry_blocks_preroll_finish() {
             return Ok(false);
         }
 
@@ -225,8 +228,11 @@ impl PlayerSession {
     }
 
     /// Проверяет video gate autoplay-preroll без раскрытия очередей pipeline.
+    ///
+    /// Ворота открыты и без кадра, если preroll уже отказался его ждать: запас
+    /// отложенного звука исчерпан (`video_preroll_wait`), звук стартует первым.
     pub(super) fn autoplay_video_preroll_ready(&self) -> bool {
-        if !self.pipeline.has_selected_video_track() {
+        if !self.pipeline.has_selected_video_track() || self.video_preroll_starts_audio_first() {
             return true;
         }
 
@@ -472,6 +478,7 @@ impl PlayerSession {
         let previous_state = self.playback_state();
         self.eof_drain.sync_from_playback_state(playback_state);
         self.sync_startup_autoplay_from_playback_state(playback_state);
+        self.sync_video_preroll_wait_from_playback_state(playback_state);
         self.snapshot.playback_state = playback_state;
 
         if previous_state == playback_state {

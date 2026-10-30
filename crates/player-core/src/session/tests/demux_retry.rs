@@ -265,6 +265,145 @@ fn buffering_with_full_present_queue_still_probes_the_source_and_resumes() {
     assert_eq!(session.playback_state(), PlaybackState::Playing);
 }
 
+/// Первый старт: источник «пересох» (всё доступное прочитано) раньше первого кадра, а
+/// новые байты придут только после старта часов (страница браузера). Готовые звук и
+/// кадр обязаны запустить playback без нового event-а источника (сессия 03e моста:
+/// раньше fence ждал байтов, страница ждала часов — вечный `Buffering`).
+#[test]
+fn startup_preroll_starts_when_source_is_dry_but_audio_and_frame_are_ready() {
+    let mut session = PlayerSession::new();
+    let audio_track = fake_track(1, TrackKind::Audio);
+    let video_track = fake_track(2, TrackKind::Video);
+    // Источник отвечает «данных пока нет» на каждый read: новых байтов до старта не будет.
+    install_scripted_retry_media(
+        &mut session,
+        vec![audio_track, video_track],
+        std::iter::repeat_with(|| DemuxReadEvent::TemporarilyUnavailable(retry_hint())).take(64),
+    );
+    let reset_count = Arc::new(AtomicUsize::new(0));
+    session
+        .pipeline
+        .install_audio_decoder(counting_audio_decoder_handle(reset_count));
+    let (audio_output, output_handle) = ScriptedAudioOutput::new(500.0, None).into_parts();
+    session
+        .pipeline
+        .install_audio_output_for_tests(audio_output);
+    session.pipeline.install_audio_clock(output_handle.clock());
+    session
+        .begin_autoplay_preroll()
+        .expect("startup preroll enters Buffering");
+    let tick_config = retry_tick_config();
+
+    // Источник пересох, кадра ещё нет: ждём, fence повтора записан.
+    tick_session(&mut session, tick_config);
+    assert_eq!(session.playback_state(), PlaybackState::Buffering);
+    assert!(session.installed_demux_retry_blocks_buffering_resume());
+    assert_eq!(output_handle.play_count(), 0);
+
+    // Decoder отдал первый кадр уже после «пересыхания» источника.
+    let first_frame = decoded_frame_for_current_seek_generation(&session, Duration::ZERO, 7);
+    session.pipeline.enqueue_queued_video_frame(first_frame);
+    wait_for_retry_deadline();
+    tick_session(&mut session, tick_config);
+
+    assert_eq!(
+        session.playback_state(),
+        PlaybackState::Playing,
+        "ready audio and first frame must start playback while the source is still dry"
+    );
+    assert_eq!(output_handle.play_count(), 1, "audio stream started once");
+    assert!(
+        session.installed_demux_retry_blocks_buffering_resume(),
+        "the source is still dry: the retry itself stays scheduled"
+    );
+}
+
+/// Защёлка «звук первым» уже стоит, а `play()` устройства вернул recoverable ошибку:
+/// session остаётся в `Buffering` с защёлкой и повторяет старт на следующем tick-е,
+/// а не зависает (ревью 03e).
+#[test]
+fn audio_first_start_retries_after_recoverable_play_error() {
+    let mut session = PlayerSession::new();
+    let audio_track_id = TrackId::new(1);
+    install_scripted_retry_media(
+        &mut session,
+        vec![
+            fake_track(1, TrackKind::Audio),
+            fake_track(2, TrackKind::Video),
+        ],
+        std::iter::repeat_with(|| DemuxReadEvent::TemporarilyUnavailable(retry_hint())).take(64),
+    );
+    let reset_count = Arc::new(AtomicUsize::new(0));
+    session
+        .pipeline
+        .install_audio_decoder(counting_audio_decoder_handle(reset_count));
+    // Уровень выше стартового потолка: декод стоит, звук готов к старту.
+    let (audio_output, output_handle) =
+        ScriptedAudioOutput::new(1_600.0, Some("device busy")).into_parts();
+    session
+        .pipeline
+        .install_audio_output_for_tests(audio_output);
+    session.pipeline.install_audio_clock(output_handle.clock());
+    session
+        .begin_autoplay_preroll()
+        .expect("startup preroll enters Buffering");
+    let generation = session.pipeline.seek_generation();
+    for pts_ms in [0, 200] {
+        session
+            .pipeline
+            .enqueue_pending_audio_packet(crate::PendingAudioPacket::new_unbounded(
+                audio_track_id,
+                Duration::from_millis(pts_ms),
+                None,
+                None,
+                generation,
+                bytes::Bytes::from_static(b"compressed audio"),
+            ));
+    }
+    let tick_config = PlayerTickConfig {
+        startup_video_wait_max_audio_backlog: Duration::from_millis(100),
+        ..retry_tick_config()
+    };
+
+    // Запас исчерпан, кадра нет: защёлка встаёт, но play() падает.
+    tick_session(&mut session, tick_config);
+    assert!(session.video_preroll_starts_audio_first());
+    assert_eq!(session.playback_state(), PlaybackState::Buffering);
+    assert_eq!(output_handle.play_count(), 1, "one failed play attempt");
+
+    // Устройство ожило: следующий tick стартует со звуком первым.
+    output_handle.set_play_error(None);
+    tick_session(&mut session, tick_config);
+    assert_eq!(session.playback_state(), PlaybackState::Playing);
+    assert_eq!(
+        output_handle.play_count(),
+        2,
+        "the start is retried once more"
+    );
+}
+
+/// Fence повтора не держит первый старт, но держит resume после demux-owned freeze.
+#[test]
+fn retry_fence_blocks_preroll_finish_only_after_startup() {
+    let mut session = PlayerSession::new();
+    install_scripted_retry_media(
+        &mut session,
+        vec![fake_track(2, TrackKind::Video)],
+        [DemuxReadEvent::TemporarilyUnavailable(retry_hint())],
+    );
+    session
+        .begin_autoplay_preroll()
+        .expect("startup preroll enters Buffering");
+    tick_session(&mut session, retry_tick_config());
+    assert!(session.installed_demux_retry_blocks_buffering_resume());
+    assert!(!session.installed_demux_retry_blocks_preroll_finish());
+
+    // Тот же fence вне первого старта (старт уже был, затем снова Buffering) — держит.
+    session.set_playback_state(PlaybackState::Playing);
+    session.set_playback_state(PlaybackState::Buffering);
+    assert!(session.installed_demux_retry_blocks_preroll_finish());
+}
+
 /// Малый ненулевой runway сравнивается с remaining retry wait до фактической тишины.
 #[test]
 fn selected_audio_runway_freezes_before_retry_deadline_can_exhaust_it() {
@@ -674,6 +813,50 @@ fn eof_after_retry_does_not_resume_buffered_audio() {
     assert_ne!(session.playback_state(), PlaybackState::Playing);
     assert_eq!(output_handle.pause_count(), 1);
     assert_eq!(output_handle.play_count(), 1);
+}
+
+/// Video-only: demux-owned `Buffering` заморозил часы, затем источник кончился (EOF).
+/// Ждать больше нечего — время хвоста обязано пойти, иначе кадры хвоста никогда не
+/// станут due и session навсегда останется в `Draining` (сессия 03e моста).
+#[test]
+fn video_only_eof_after_demux_buffering_resumes_the_clock() {
+    let mut session = PlayerSession::new();
+    install_scripted_retry_media(
+        &mut session,
+        vec![fake_track(2, TrackKind::Video)],
+        [
+            DemuxReadEvent::TemporarilyUnavailable(retry_hint()),
+            DemuxReadEvent::EndOfStream,
+        ],
+    );
+    session
+        .dispatch_command(PlayerCommand::Play)
+        .expect("video-only fixture enters Playing");
+    let tick_config = retry_tick_config();
+
+    // Источник пуст, downstream пуст: demux-owned freeze.
+    tick_session(&mut session, tick_config);
+    assert_eq!(session.playback_state(), PlaybackState::Buffering);
+    let frozen_position = session.snapshot().current_position;
+    // Хвост: кадр, который decoder отдал уже во время ожидания источника.
+    let tail_frame = decoded_frame_for_current_seek_generation(
+        &session,
+        frozen_position + Duration::from_secs(1),
+        93,
+    );
+    session.pipeline.enqueue_queued_video_frame(tail_frame);
+
+    wait_for_retry_deadline();
+    tick_session(&mut session, tick_config);
+    assert_eq!(session.playback_state(), PlaybackState::Draining);
+
+    std::thread::sleep(Duration::from_millis(30));
+    tick_session(&mut session, tick_config);
+    assert!(
+        session.snapshot().current_position > frozen_position,
+        "the tail clock must run after EOF: {:?} stayed at {frozen_position:?}",
+        session.snapshot().current_position
+    );
 }
 
 /// Playback-window rejected packet не доказывает source recovery и не снимает retry fence.

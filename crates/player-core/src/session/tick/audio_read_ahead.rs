@@ -15,8 +15,20 @@
 //! ждала, пока буфер опустится ниже high-water — без запущенного звука он не
 //! опускается никогда. После EOF нового demux-ввода нет, поэтому поднятый предел
 //! влияет только на декод уже считанных пакетов и не растит read-ahead.
+//!
+//! Потолок ограничивает только декодированный звук в output. Чтение demux-а, пока
+//! голодный preroll ждёт первый кадр, ограничивает не он, а запас отложенного сжатого
+//! звука (сессия 03e моста, решение владельца). Если видео начинается позже звука
+//! больше чем на потолок, первый видеопакет лежит в потоке за этим звуком: блокировка
+//! по уровню output-а (звук до старта не играет и не убывает) означала вечный
+//! `Buffering`. Инвариант: пока preroll ждёт первый кадр, уровень output-а не
+//! запрещает чтение; его ограничивает только запас сжатого звука, а когда запас
+//! исчерпан, session стартует со звуком первым (`session/video_preroll_wait.rs`).
+//! Предел запаса мягкий: проверка идёт перед каждым read-ом, поэтому превышение не
+//! больше read-ов одного tick-а (на практике — один packet).
 
 use super::PlayerTickConfig;
+use crate::pipeline::PendingAudioBacklog;
 use crate::session::{PlayerSession, audio_runtime::sanitize_audio_high_water_mark};
 
 /// Жёсткий верхний предел стартового потолка, мс.
@@ -100,6 +112,59 @@ pub(super) fn audio_read_ahead_limit_ms(
     tick_config: &PlayerTickConfig,
 ) -> f64 {
     audio_read_ahead_allowance(session, tick_config).limit_ms()
+}
+
+/// Хватает ли ещё запаса отложенного сжатого звука, пока preroll ждёт первый кадр.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StartupAudioBacklogRoom {
+    /// Preroll не голоден по видео: запас не действует, работает обычный предел.
+    NotWaitingForVideo,
+
+    /// Можно читать дальше и откладывать сжатый звук.
+    Available,
+
+    /// Запас исчерпан (по media-длительности или байтам), кадра всё нет.
+    Exhausted(PendingAudioBacklog),
+}
+
+/// Оценивает запас отложенного сжатого звука для голодного preroll-а.
+///
+/// Решение «голоден ли preroll» принадлежит session (`video_preroll_is_starved`);
+/// объём очереди — pipeline (`pending_audio_backlog`); здесь только сравнение с
+/// пределами из tick config. Пустая очередь запас не исчерпывает никогда: сжатый звук
+/// копится только когда output уже дошёл до потолка и декод остановлен. Поэтому
+/// нулевой предел значит «без запаса»: старт со звуком первым сразу на потолке.
+#[must_use]
+pub(super) fn startup_audio_backlog_room(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+) -> StartupAudioBacklogRoom {
+    if !session.video_preroll_is_starved() {
+        return StartupAudioBacklogRoom::NotWaitingForVideo;
+    }
+    let audio_backlog = session.pipeline.pending_audio_backlog();
+    let span_exhausted =
+        audio_backlog.media_span >= tick_config.startup_video_wait_max_audio_backlog;
+    let bytes_exhausted =
+        audio_backlog.encoded_bytes >= tick_config.startup_video_wait_max_audio_backlog_bytes;
+    if audio_backlog.packets > 0 && (span_exhausted || bytes_exhausted) {
+        StartupAudioBacklogRoom::Exhausted(audio_backlog)
+    } else {
+        StartupAudioBacklogRoom::Available
+    }
+}
+
+/// `true`, если уровень output-а не должен останавливать demux: preroll ждёт первый
+/// кадр, а запас отложенного сжатого звука ещё есть.
+///
+/// Decode throttle при этом не меняется (`audio_read_ahead_limit_ms`): звук сверх
+/// потолка не декодируется, а лежит в очереди сжатым, поэтому output не переполняется.
+#[must_use]
+pub(super) fn starved_preroll_reads_past_audio_limit(
+    session: &PlayerSession,
+    tick_config: &PlayerTickConfig,
+) -> bool {
+    startup_audio_backlog_room(session, tick_config) == StartupAudioBacklogRoom::Available
 }
 
 /// Приводит стартовый потолок к безопасному диапазону.

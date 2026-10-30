@@ -248,6 +248,7 @@ impl PlayerSession {
         self.clear_pending_video_backend_reselection();
         self.media_lifecycle.clear_pending_autoplay();
         self.clear_startup_autoplay_preroll();
+        self.reset_video_preroll_wait();
         self.seek_runtime.clear_active_commit();
         self.prepared_demux_seek.reset();
         self.installed_staged_position = None;

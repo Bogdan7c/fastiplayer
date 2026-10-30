@@ -91,6 +91,7 @@ mod tick;
 mod timeline_seek;
 mod track_transition;
 mod video_packet_framing;
+mod video_preroll_wait;
 mod video_requirement_error;
 mod video_tail_clock_handover;
 
@@ -119,6 +120,7 @@ pub use self::tick::{
 pub(crate) use self::tick::{
     PlayerWorkerWakeupPlan, SchedulerTimingDiagnosticsSnapshot, scheduler_timing_diagnostics,
 };
+use self::video_preroll_wait::VideoPrerollWait;
 #[cfg(test)]
 use crate::pipeline::AudioSeekRuntimeState;
 #[cfg(test)]
@@ -197,6 +199,9 @@ pub struct PlayerSession {
 
     /// Ждёт ли текущий media первого autoplay-старта (см. `startup_autoplay`).
     startup_autoplay: StartupAutoplayPreroll,
+
+    /// Ждёт ли preroll первый кадр или уже стартует со звуком (`video_preroll_wait`).
+    video_preroll_wait: VideoPrerollWait,
 
     /// Последний системный capability report, полученный от shell/backend layer.
     capabilities: Option<SystemCapabilities>,
@@ -765,6 +770,7 @@ impl Default for PlayerSession {
             shutdown_requested: false,
             eof_drain: EofDrainRuntime::default(),
             startup_autoplay: StartupAutoplayPreroll::default(),
+            video_preroll_wait: VideoPrerollWait::default(),
             capabilities: None,
             active_video_backend_id: None,
             frame_server_config: frame_server_core::FrameServerConfig::default()

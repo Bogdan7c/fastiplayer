@@ -1,4 +1,5 @@
 //! Политика audio read-ahead: временный стартовый потолок, пока видео ждёт первый кадр.
+//! Запас сжатого звука сверх потолка подробно — `startup_audio_backlog.rs`.
 //!
 //! Проверяем решения, которые наблюдает demux admission: блокирует ли уровень audio buffer-а
 //! чтение, какой предел действует и какая причина backpressure сообщается.
@@ -60,21 +61,45 @@ fn starved_preroll_relaxes_audio_gate_beyond_normal_high_water() {
     assert_eq!(demux_backpressure_reason(&session, &config, false), None);
 }
 
-/// На потолке demux снова блокируется с причиной `DemuxBackpressure`.
+/// Выше потолка output-а голодный preroll блокирует demux только по исчерпанному
+/// запасу сжатого звука (сессия 03e моста). Раньше блокировал сам уровень output-а, и
+/// видео, начинающееся позже звука больше чем на потолок, не читалось никогда.
 #[test]
-fn starved_preroll_blocks_demux_again_above_startup_cap() {
-    let config = read_ahead_config();
+fn starved_preroll_above_startup_cap_blocks_demux_only_on_exhausted_backlog() {
+    let config = PlayerTickConfig {
+        startup_video_wait_max_audio_backlog: Duration::from_millis(100),
+        ..read_ahead_config()
+    };
 
     let at_cap = buffering_session_without_first_frame(STARTUP_CAP_MS);
     assert!(!audio_read_ahead_blocks_demux(&at_cap, &config));
 
     let above_cap = buffering_session_without_first_frame(STARTUP_CAP_MS + 1.0);
-    assert!(audio_read_ahead_blocks_demux(&above_cap, &config));
+    assert!(
+        !audio_read_ahead_blocks_demux(&above_cap, &config),
+        "an empty compressed backlog must not stop reading toward the first video packet"
+    );
+
+    let mut exhausted = buffering_session_without_first_frame(STARTUP_CAP_MS + 1.0);
+    let generation = exhausted.pipeline.seek_generation();
+    for pts_ms in [0, 100] {
+        exhausted
+            .pipeline
+            .enqueue_pending_audio_packet(PendingAudioPacket::new_unbounded(
+                TrackId::new(2),
+                Duration::from_millis(pts_ms),
+                None,
+                None,
+                generation,
+                Bytes::from_static(b"audio"),
+            ));
+    }
+    assert!(audio_read_ahead_blocks_demux(&exhausted, &config));
     assert!(!can_read_next_demux_packet_with_audio_priority(
-        &above_cap, &config, false
+        &exhausted, &config, false
     ));
     assert_eq!(
-        demux_backpressure_reason(&above_cap, &config, false),
+        demux_backpressure_reason(&exhausted, &config, false),
         Some(PipelinePauseReason::DemuxBackpressure)
     );
 }

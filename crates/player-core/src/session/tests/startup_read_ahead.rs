@@ -173,6 +173,11 @@ impl StartupHarness {
 
     /// Один tick с дефолтным config-ом; decoder «созревает» после N принятых packets.
     pub(super) fn tick(&mut self) {
+        self.tick_with_config(PlayerTickConfig::default());
+    }
+
+    /// Один tick с явным config-ом (для пределов запаса сжатого звука).
+    pub(super) fn tick_with_config(&mut self, tick_config: PlayerTickConfig) {
         // Decoder принимает (ack-ает) каждый packet сразу, как реальный: пакеты оседают
         // в его DPB, а кадр появляется позже, поэтому in-flight лимит не душит отправку.
         let sent_packets = self.video_decoder.sent_packets().len();
@@ -186,10 +191,9 @@ impl StartupHarness {
                 .push_decoded_frame(decoded_frame_for_tests(Duration::ZERO, 1));
             self.first_frame_published = true;
         }
-        let result = self.session.tick(PlayerTickContext::with_config(
-            Instant::now(),
-            PlayerTickConfig::default(),
-        ));
+        let result = self
+            .session
+            .tick(PlayerTickContext::with_config(Instant::now(), tick_config));
         self.frames_presented += result.video_frames_presented;
         // Звуковая карта «играет» только после запуска stream-а: часы идут от play.
         if let Some(output) = self.output()
@@ -238,30 +242,124 @@ fn startup_with_slow_first_video_frame_reaches_playing_with_audio_and_video() {
     );
 }
 
-/// Пока кадра нет вообще, чтение вперёд идёт заметно дальше обычных 200 мс, но упирается
-/// в стартовый потолок (память ограничена, demux снова блокируется).
+/// Кадр не приходит никогда (decoder принимает packets, но молчит): декодированный звук
+/// по-прежнему упирается в стартовый потолок, сжатый — в запас, и память ограничена.
+///
+/// Раньше demux вставал на потолке, и тест закреплял вечный `Buffering` как норму. Теперь
+/// чтение идёт дальше в пределах запаса (10 с), а фикстура короче (3 с): файл кончается
+/// раньше, чем запас исчерпан, и старт ждёт кадр уже внутри EOF drain.
 #[test]
-fn read_ahead_is_bounded_by_startup_cap_when_first_frame_never_comes() {
+fn read_ahead_memory_stays_bounded_when_first_frame_never_comes() {
     let mut harness = StartupHarness::new();
-    // Decoder «зависает»: первый кадр не придёт никогда, нужен только потолок.
+    // Decoder «зависает»: первый кадр не придёт никогда.
     harness.first_frame_published = true;
 
     for _ in 0..TICK_BUDGET {
         harness.tick();
     }
 
-    let cap_ms = PlayerTickConfig::default().audio_startup_read_ahead_cap_ms;
+    let config = PlayerTickConfig::default();
     let level_ms = harness
         .output()
         .expect("audio output created")
         .buffer_level_ms();
     assert!(
-        level_ms >= cap_ms - 500.0,
+        level_ms >= config.audio_startup_read_ahead_cap_ms - 500.0,
         "read-ahead must go far beyond the normal high-water while starved: {level_ms}"
     );
     assert!(
-        level_ms <= cap_ms + 200.0,
-        "read-ahead must stay bounded by the startup cap ({cap_ms}): {level_ms}"
+        level_ms <= config.audio_startup_read_ahead_cap_ms + 200.0,
+        "decoded audio must stay bounded by the startup cap: {level_ms}"
     );
-    assert_eq!(harness.session.playback_state(), PlaybackState::Buffering);
+    let audio_backlog = harness.session.pipeline.pending_audio_backlog();
+    assert!(
+        audio_backlog.media_span < config.startup_video_wait_max_audio_backlog,
+        "compressed backlog must stay within its limit: {audio_backlog:?}"
+    );
+    assert!(
+        audio_backlog.encoded_bytes < config.startup_video_wait_max_audio_backlog_bytes,
+        "compressed backlog must stay within its byte limit: {audio_backlog:?}"
+    );
+    assert!(
+        matches!(
+            harness.session.playback_state(),
+            PlaybackState::Buffering | PlaybackState::Draining
+        ),
+        "without a frame and with backlog room the start keeps waiting: {:?}",
+        harness.session.playback_state()
+    );
+    assert_eq!(harness.frames_presented, 0);
+}
+
+/// Кадра нет, а запас сжатого звука исчерпан: ждать картинку дальше нельзя — звук
+/// стартует первым (решение владельца, сессия 03e моста). Память при этом ограничена.
+#[test]
+fn first_frame_that_never_comes_starts_audio_first_after_backlog_limit() {
+    let backlog_span_limit = Duration::from_millis(300);
+    let config = PlayerTickConfig {
+        startup_video_wait_max_audio_backlog: backlog_span_limit,
+        ..PlayerTickConfig::default()
+    };
+    let mut harness = StartupHarness::new();
+    // Decoder «зависает»: первый кадр не придёт никогда.
+    harness.first_frame_published = true;
+
+    for _ in 0..TICK_BUDGET {
+        harness.tick_with_config(config);
+        if harness.session.playback_state() == PlaybackState::Playing {
+            break;
+        }
+    }
+
+    assert_eq!(
+        harness.session.playback_state(),
+        PlaybackState::Playing,
+        "exhausted backlog must start playback without a frame, not hang in Buffering"
+    );
+    let output = harness.output().expect("audio output created");
+    assert!(output.play_count() > 0, "audio stream must be started");
+    assert!(
+        !output.written_samples().is_empty(),
+        "decoded audio must reach the output"
+    );
+    assert_eq!(harness.frames_presented, 0, "there is no frame to show");
+    assert!(
+        output.buffer_level_ms() <= config.audio_startup_read_ahead_cap_ms + 200.0,
+        "decoded audio must stay bounded by the startup cap: {}",
+        output.buffer_level_ms()
+    );
+    // Предел меряется между началами packets: сверх него — не больше одного packet-а.
+    let audio_backlog = harness.session.pipeline.pending_audio_backlog();
+    assert!(
+        audio_backlog.media_span < backlog_span_limit + Duration::from_millis(100),
+        "compressed backlog must stop at its limit: {audio_backlog:?}"
+    );
+    assert!(
+        audio_backlog.media_span >= backlog_span_limit,
+        "audio-first start must happen only after the backlog limit: {audio_backlog:?}"
+    );
+}
+
+/// Ветка «звук выбран, output-а ещё нет, а сжатый packet ждёт» блокирует чтение только
+/// внутри одного tick-а: тот же tick декодирует packet и лениво создаёт output, поэтому
+/// к концу tick-а такого состояния не бывает — вечной блокировки нет (ревью 03e).
+#[test]
+fn absent_output_never_keeps_compressed_audio_across_a_tick() {
+    let mut harness = StartupHarness::new();
+    // Кадр не придёт: весь прогон — голодный preroll.
+    harness.first_frame_published = true;
+
+    for tick in 0..TICK_BUDGET {
+        harness.tick();
+        let output_absent = harness.session.audio_buffer_level_ms().is_none();
+        let pending_audio = harness.session.pipeline.pending_audio_packet_len();
+        assert!(
+            !(output_absent && pending_audio > 0),
+            "tick {tick}: {pending_audio} compressed packets wait without an output"
+        );
+    }
+    assert!(
+        harness.output().is_some(),
+        "the first decoded packet must create the output"
+    );
 }

@@ -34,7 +34,9 @@ pub use types::{
 };
 pub(crate) use wakeup::PlayerWorkerWakeupPlan;
 
-use audio_read_ahead::audio_read_ahead_limit_ms;
+use audio_read_ahead::{
+    StartupAudioBacklogRoom, audio_read_ahead_limit_ms, startup_audio_backlog_room,
+};
 use demux_admission::{
     demux_catch_up_deadline_for_tick, demux_packet_budget_for_tick, read_demux_packets,
 };
@@ -114,6 +116,13 @@ impl PlayerSession {
             self.mark_fatal_error(error);
         }
         self.finish_seek_commit_if_ready(tick_context.now, &tick_context.config);
+        // Запас отложенного звука исчерпан, а кадра нет: ждать картинку дальше нельзя,
+        // preroll стартует со звуком первым (`session/video_preroll_wait.rs`).
+        if let StartupAudioBacklogRoom::Exhausted(audio_backlog) =
+            startup_audio_backlog_room(self, &tick_context.config)
+        {
+            self.start_audio_first_after_audio_backlog_exhausted(audio_backlog);
+        }
         if let Err(error) =
             self.finish_autoplay_preroll_if_ready(tick_context.config.audio_preroll_target_ms)
         {

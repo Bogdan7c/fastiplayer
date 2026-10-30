@@ -124,6 +124,21 @@ pub struct PlayerTickConfig {
     /// глубину; после первого кадра снова действует `audio_buffer_high_water_mark_ms`.
     pub audio_startup_read_ahead_cap_ms: f64,
 
+    /// Сколько сжатого звука (по media-времени) можно отложить сверх стартового потолка,
+    /// пока preroll ждёт первый видеокадр.
+    ///
+    /// Звук в файле лежит раньше позднего видео: без этого запаса чтение demux-а
+    /// упиралось в потолок и первый видеопакет не читался никогда (вечный `Buffering`).
+    /// Когда запас исчерпан, а кадра всё нет, старт идёт со звуком первым.
+    ///
+    /// Предел мягкий: он проверяется перед каждым demux read-ом, поэтому может быть
+    /// превышен не больше чем на read-ы одного tick-а (на практике — на один packet).
+    pub startup_video_wait_max_audio_backlog: Duration,
+
+    /// Тот же запас в байтах сжатого payload-а: страховка от битых PTS, при которых
+    /// media-длительность запаса не растёт. Тоже мягкий, как и предел по времени.
+    pub startup_video_wait_max_audio_backlog_bytes: usize,
+
     /// Уровень audio buffer, ниже которого demux может читать сквозь video backpressure.
     pub audio_demux_low_water_mark_ms: f64,
 
@@ -192,6 +207,12 @@ impl Default for PlayerTickConfig {
             audio_buffer_high_water_mark_ms: 200.0,
             audio_startup_read_ahead_cap_ms:
                 fastiplayer_config::DEFAULT_AUDIO_STARTUP_READ_AHEAD_CAP_MS as f64,
+            // Решение владельца (сессия 03e моста): 10 с покрывает отложенную видеодорожку
+            // и вход в живой поток с длинным GOP; 8 MiB вмещают 10 с даже несжатого
+            // 16-битного 5.1 PCM (≈5,8 МБ), а AAC/Opus за 10 с — сотни килобайт.
+            // Ключа в config нет (решение владельца): это страховка, а не настройка.
+            startup_video_wait_max_audio_backlog: Duration::from_secs(10),
+            startup_video_wait_max_audio_backlog_bytes: 8 * 1024 * 1024,
             audio_demux_low_water_mark_ms: 100.0,
             audio_preroll_target_ms: 50.0,
             seek_commit_timeout: Duration::from_millis(10_000),

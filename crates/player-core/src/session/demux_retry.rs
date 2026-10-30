@@ -172,6 +172,22 @@ impl PlayerSession {
             .is_some_and(|pending| pending.fence == current_fence)
     }
 
+    /// Запрещает ли retry fence завершить текущий preroll (`Buffering` → `Playing`).
+    ///
+    /// Fence доказывает восстановление источника после demux-owned freeze: накопленный
+    /// звук сам по себе не значит, что источник ожил. У первого старта freeze-а не было
+    /// (он бывает только из `Playing`): «данных пока нет» на старте значит лишь, что всё
+    /// доступное уже прочитано. Если при этом звук и первый кадр готовы, старт обязан
+    /// состояться: живой источник (страница браузера) шлёт новые байты только когда часы
+    /// плеера пошли, и ожидание байтов до старта стало бы вечным `Buffering`
+    /// (сессия 03e моста). Дальше нехватку данных в `Playing` ловит обычный runway-check
+    /// `enter_buffering_for_demux_underrun_if_needed`.
+    #[must_use]
+    pub(super) fn installed_demux_retry_blocks_preroll_finish(&self) -> bool {
+        !self.startup_autoplay_preroll_pending()
+            && self.installed_demux_retry_blocks_buffering_resume()
+    }
+
     /// Нужен ли пробный read источника в обход downstream backpressure.
     ///
     /// В `Buffering` часы стоят: очередь показа, слоты выгрузки кадров и texture-ресурсы
