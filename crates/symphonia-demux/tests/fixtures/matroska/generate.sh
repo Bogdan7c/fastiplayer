@@ -30,3 +30,19 @@ ffmpeg -hide_banner -loglevel error -y \
   -map 0:v -map_metadata 1 -map_chapters 1 \
   -c:v libvpx -b:v 40k \
   "$here/chapters-without-edition-uid.mkv"
+
+# Audio-only Opus в Matroska для tests/matroska_audio_only_seek.rs.
+# Тон 440 Гц + писк 60 мс в начале каждой секунды k частотой 1000 + 250·(k mod 8) Гц:
+# по частоте писка тест восстанавливает, какую медиа-секунду он реально слышит после seek-а.
+# ffmpeg для audio-only режет кластеры по 5 с и пишет Cues с CueRelativePosition — ровно
+# раскладка, на которой seek раньше перепрыгивал целый кластер.
+beeps="0.12*sin(2*PI*440*t)+0.5*lt(mod(t\,1)\,0.06)*sin(2*PI*(1000+250*mod(floor(t)\,8))*t)"
+ffmpeg -hide_banner -loglevel error -y \
+  -filter_complex "aevalsrc=exprs=${beeps}:s=48000:d=12:n=960[a]" -map "[a]" \
+  -c:a libopus -b:a 16k -ac 1 \
+  "$here/opus-audio-only-beeps.mka"
+# Тот же сигнал, но дорожка начинается на 2-й секунде (atrim сохраняет pts, первая cue = 2.001 с).
+ffmpeg -hide_banner -loglevel error -y \
+  -filter_complex "aevalsrc=exprs=${beeps}:s=48000:d=12:n=960,atrim=start=2[a]" -map "[a]" \
+  -c:a libopus -b:a 16k -ac 1 \
+  "$here/opus-audio-only-beeps-late2.mka"

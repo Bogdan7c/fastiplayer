@@ -27,6 +27,7 @@ use crate::attachment_limits::{
 };
 use crate::codecs::{apply_codec_state, make_track_codec_params};
 use crate::ebml::{EbmlElementInfo, EbmlError, EbmlIterator, EbmlSchema, ReadEbml};
+use crate::cue_seek::select_seek_cue_point;
 use crate::lacing::{Frame, block_track_num, extract_frames};
 use crate::schema::{MkvElement, MkvSchema};
 use crate::track_names::track_names_revision;
@@ -412,17 +413,12 @@ impl<'s> MkvReader<'s> {
         Ok(SeekedTo { track_id, required_ts: ts, actual_ts })
     }
 
-    fn seek_track_by_ts_atomic(
-        &mut self,
-        id: u32,
-        tb: TimeBase,
-        ts: Timestamp,
-    ) -> Result<SeekedTo> {
+    fn seek_track_by_ts_atomic(&mut self, id: u32, ts: Timestamp) -> Result<SeekedTo> {
         // Save the iterator and cluster states to restore in-case of and error.
         let iter_state = self.iter.save_state();
         let cluster_state = self.current_cluster;
 
-        match self.seek_track_by_ts(id, tb, ts) {
+        match self.seek_track_by_ts(id, ts) {
             Err(err) => {
                 // Restore saved iterator and cluster states.
                 self.iter.restore_state(iter_state)?;
@@ -433,30 +429,26 @@ impl<'s> MkvReader<'s> {
         }
     }
 
-    fn seek_track_by_ts(&mut self, id: u32, tb: TimeBase, ts: Timestamp) -> Result<SeekedTo> {
+    fn seek_track_by_ts(&mut self, id: u32, ts: Timestamp) -> Result<SeekedTo> {
         log::debug!("seeking track_id={id} to ts={ts}");
 
         // If cues exist, seek to the nearest cue point.
         if let Some(cues) = &self.cues {
-            let mut target_cue_point = None;
-
-            // Cue points store timestamps in Matroska ticks while the timestamp being seeked to is
-            // in signed Track ticks. Convert to unsigned Matroska ticks for iterating the cue
-            // points. If the timestamp is negative, then this is an error because cue points only
-            // contain unsigned Matroska ticks.
-            let ts = SignedTrackTicks::from(ts)
-                .try_into_matroska_ticks(tb)
-                .ok_or(Error::SeekError(SeekErrorKind::OutOfRange))?;
-
-            for cue_point in &cues.points {
-                if cue_point.time > ts {
-                    break;
-                }
-                target_cue_point = Some(cue_point);
-            }
-
-            let target_cue_point =
-                target_cue_point.ok_or(Error::SeekError(SeekErrorKind::OutOfRange))?;
+            // Fastiplayer: CueTime — в Segment ticks (как `Cluster/Timestamp`), цель — в signed
+            // Track ticks. Сравниваем в шкале дорожки той же конверсией, что даёт pts блоков.
+            // Цель раньше первой cue-точки (дорожка стартует позже нуля) приземляется на первую
+            // cue-точку, а не превращается в `OutOfRange`.
+            let track_timestamp_scale = self
+                .track_states
+                .get(&id)
+                .map(|track_state| track_state.track_timestamp_scale)
+                .ok_or(Error::SeekError(SeekErrorKind::InvalidTrack))?;
+            let target_cue_point = select_seek_cue_point(
+                &cues.points,
+                SignedTrackTicks::from(ts),
+                track_timestamp_scale,
+            )
+            .ok_or(Error::SeekError(SeekErrorKind::OutOfRange))?;
 
             log::debug!(
                 "found cue point: track_id={}, ts={}, seg_pos={}",
@@ -480,24 +472,26 @@ impl<'s> MkvReader<'s> {
                 _ => return seek_error(SeekErrorKind::Unseekable),
             };
 
-            // Convert the cue point's timestamp (Matroska ticks) into Segment ticks for the cluster
-            // state.
-            // UNWRAP: The media information timestamp is always populated.
-            let timestamp =
-                target_cue_point.time.into_segment_ticks(self.media_info.time_base.unwrap());
+            // Fastiplayer: timestamp кластера берётся только из его собственного элемента
+            // `Cluster/Timestamp`, который `next_element` прочитает первым. CueTime — время
+            // опорного БЛОКА, а не кластера (ffmpeg кладёт видео-keyframe 0.5 с в кластер 0.48 с),
+            // и в Segment ticks, а не в наносекундах. Upstream подставлял CueTime, ещё раз делённый
+            // на TimestampScale (≈ 0), и все кадры кластера получали pts «от нуля»: чтение вперёд
+            // пропускало кластер целиком и садилось на следующий (audio-only MKV: в 2–5 с от цели).
+            self.current_cluster = Some(ClusterState { timestamp: None, start: cluster.pos() });
 
-            // Update the current cluster metadata.
-            self.current_cluster =
-                Some(ClusterState { timestamp: Some(timestamp), start: cluster.pos() });
+            // Fastiplayer: кадры, разобранные до перехода (остаток laced-блока со старой позиции),
+            // к новой позиции не относятся. Иначе чтение вперёд приняло бы старый кадр с pts ≥ цели
+            // за точку приземления, а `next_packet` отдал бы его первым после seek-а.
+            self.frames.clear();
 
             // Descend into the cluster element.
             self.iter.push_element()?;
 
-            // If a cluster relative position is available, seek to the exact simple block or
-            // block group element.
-            if let Some(cluster_rel_pos) = target_cue_point.positions.cluster_rel_pos {
-                self.iter.seek_to_child(cluster_rel_pos)?;
-            }
+            // Fastiplayer: `CueRelativePosition` намеренно не используется. Прыжок сразу к блоку
+            // перепрыгнул бы `Cluster/Timestamp`, а без него pts блоков не вычислить. Чтение от
+            // начала кластера стоит не больше одного кластера, а `seek_track_by_ts_forward`
+            // всё равно дочитывает вперёд до кадра, покрывающего цель.
         }
 
         // Seek to exact block.
@@ -674,15 +668,13 @@ impl FormatReader for MkvReader<'_> {
                     }
                 };
                 let track_id = track.id;
-                self.seek_track_by_ts_atomic(track_id, tb, ts)
+                self.seek_track_by_ts_atomic(track_id, ts)
             }
             SeekTo::Timestamp { ts, track_id } => {
                 match self.tracks.iter().find(|t| t.id == track_id) {
-                    Some(track) => {
-                        // UNWRAP: Track will always have a timebase.
-                        let tb = track.time_base.unwrap();
-                        self.seek_track_by_ts_atomic(track_id, tb, ts)
-                    }
+                    // Fastiplayer: time base здесь не нужен — цель уже в ticks дорожки, а cue-точки
+                    // сравниваются через `select_seek_cue_point`.
+                    Some(_) => self.seek_track_by_ts_atomic(track_id, ts),
                     None => seek_error(SeekErrorKind::InvalidTrack),
                 }
             }

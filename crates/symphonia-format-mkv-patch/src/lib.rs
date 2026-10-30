@@ -16,6 +16,7 @@
 
 mod attachment_limits;
 mod codecs;
+mod cue_seek;
 mod demuxer;
 mod ebml;
 mod lacing;
@@ -24,6 +25,8 @@ mod segment;
 mod tags;
 mod track_names;
 
+#[cfg(test)]
+mod cue_seek_tests;
 #[cfg(test)]
 mod reader_tests;
 

@@ -117,18 +117,6 @@ impl MatroskaTicks {
         self.0
     }
 
-    /// Convert `self` into Segment ticks using the segment timebase.
-    ///
-    /// The Segment timebase is the media timebase.
-    #[inline]
-    pub fn into_segment_ticks(self, segment_time_base: TimeBase) -> SegmentTicks {
-        // The timebase may have been reduced so it is not possible to assume a 1_000_000_000
-        // denominator.
-        let factor = (1_000_000_000 * u64::from(segment_time_base.numer.get()))
-            / u64::from(segment_time_base.denom.get());
-        SegmentTicks(self.0 / factor)
-    }
-
     /// Convert `self` into Track ticks using the track timebase.
     #[inline]
     pub fn into_track_ticks(self, track_time_base: TimeBase) -> TrackTicks {
@@ -320,15 +308,6 @@ impl SignedTrackTicks {
     #[inline]
     pub fn checked_sub_unsigned(self, other: TrackTicks) -> Option<Self> {
         self.0.checked_add_unsigned(other.0).map(SignedTrackTicks)
-    }
-
-    /// Try to convert Segment ticks to Matroska ticks using the track timebase.
-    #[inline]
-    pub fn try_into_matroska_ticks(self, track_time_base: TimeBase) -> Option<MatroskaTicks> {
-        if self.0.is_negative() {
-            return None;
-        }
-        (self.0 as u64).checked_mul(u64::from(track_time_base.numer.get())).map(MatroskaTicks)
     }
 }
 
@@ -1084,7 +1063,12 @@ impl EbmlElement<MkvSchema> for CuesElement {
 #[derive(Debug)]
 pub(crate) struct CuePointElement {
     /// Time in segment ticks.
-    pub(crate) time: MatroskaTicks,
+    ///
+    /// Fastiplayer: `CueTime` хранится в тех же единицах `TimestampScale`, что и `Cluster/Timestamp`
+    /// (так пишут ffmpeg и mkvmerge, так читают их демуксеры). Upstream складывал его в
+    /// `MatroskaTicks` (наносекунды) и при seek делил ещё раз на `TimestampScale`, из-за чего
+    /// кластер после cue-перехода получал timestamp ≈ 0 и seek «проскакивал» целый кластер.
+    pub(crate) time: SegmentTicks,
     pub(crate) positions: CueTrackPositionsElement,
 }
 
@@ -1099,7 +1083,7 @@ impl EbmlElement<MkvSchema> for CuePointElement {
             match child.element_type() {
                 MkvElement::CueTime => {
                     // Mandatory element. No schema-defined default.
-                    time = Some(MatroskaTicks(it.read_u64_no_default()?));
+                    time = Some(SegmentTicks(it.read_u64_no_default()?));
                 }
                 MkvElement::CueTrackPositions => {
                     // Mandatory element.

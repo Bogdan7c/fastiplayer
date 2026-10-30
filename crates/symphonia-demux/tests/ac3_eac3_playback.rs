@@ -32,6 +32,8 @@ const SAMPLE_RATE: u32 = 48_000;
 const SAMPLES_PER_PACKET: usize = 1_536;
 /// Пакетов звука в каждой фикстуре (1 с ≈ 31.25 кадра → ffmpeg пишет 32).
 const FIXTURE_PACKETS: usize = 32;
+/// Длительность каждой фикстуры (см. README фикстур).
+const FIXTURE_DURATION: Duration = Duration::from_secs(1);
 /// Тон каждого канала 5.1(side) — см. README фикстур.
 const SURROUND_TONES: [(AudioChannelPosition, f32); 6] = [
     (AudioChannelPosition::FrontLeft, 300.0),
@@ -187,13 +189,36 @@ fn assert_middle_seek_playback(name: &str) {
         "{name}: audio landed at {first_pts:?} for target {MIDDLE_SEEK_TARGET:?}"
     );
     assert!(
-        packets.len() < FIXTURE_PACKETS / 2,
+        packets.len() <= FIXTURE_PACKETS / 2,
         "{name}: seek must skip the first half, got {} packets",
         packets.len()
     );
+    assert_audio_continues_to_the_end(name, &packets);
     let (pcm, positions) = decode(&track, &packets);
     assert_eq!(pcm.len(), packets.len() * SAMPLES_PER_PACKET * 6);
     assert_surround_tones(&pcm, &positions);
+}
+
+/// После seek-а звук идёт без дыр до конца файла. Раньше MKV-патч после cue-перехода давал
+/// кластеру timestamp ≈ 0, и из второй половины файла доходили лишь 3 пакета — подсчёт
+/// «меньше половины» этого не видел.
+fn assert_audio_continues_to_the_end(name: &str, packets: &[Packet]) {
+    let packet_spacing =
+        Duration::from_secs_f64(SAMPLES_PER_PACKET as f64 / f64::from(SAMPLE_RATE));
+    for pair in packets.windows(2) {
+        let spacing = pair[1].pts.saturating_sub(pair[0].pts);
+        assert!(
+            spacing.abs_diff(packet_spacing) <= Duration::from_millis(1),
+            "{name}: audio gap after seek between {:?} and {:?}",
+            pair[0].pts,
+            pair[1].pts
+        );
+    }
+    let last_pts = packets.last().expect("audio after seek").pts;
+    assert!(
+        last_pts + packet_spacing * 2 >= FIXTURE_DURATION,
+        "{name}: audio after seek stops at {last_pts:?}, before the end of the file"
+    );
 }
 
 fn assert_has_video(name: &str) {
