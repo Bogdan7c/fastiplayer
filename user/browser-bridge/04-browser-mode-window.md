@@ -54,3 +54,9 @@ Memories: `mem:app-egui/reusable-ui-regions`, `mem:app-egui/state-split`, `mem:a
 - **`[browser_session]` в настройках** (решение 96) в окне не показывается — при доводке UI добавить.
 - **Загрузка медиа** идёт через `PlayerWorker::load_prepared_media` (совместимый путь «убрать позже»): решить поэтапную установку для браузерного процесса до удаления этого пути.
 - **Журнал** (`journal.rs`) остаётся: строки `Browser playback summary` — опора автотестов 08.
+
+## Поправки по итогам 03c (30.10.2026, решения 100–104)
+
+- **Доигрывание уже есть без окна.** После `tab_gone` (и `ReconnectGraceExpired`) машина `ProcessLifecycle` стоит в `AwaitPlaybackDrain`. Медиа-часть отвечает `DrainEnd`: `PlayedToEnd`, `PlayerFault`, `NothingToPlay`, `PagePaused`, `Stalled` (застой 15 с, `DrainPolicy`).
+- **Окно меняет правило паузы** (решение 103): на паузе ждём человека, а не выходим. Строка «Source tab closed» берётся по варианту `DrainEnd`. Закрытие окна человеком = «доиграно» (`on_playback_drained`).
+- `<video src>` ждёт байтов в состоянии плеера `Buffering`/`Seeking` — спиннер окна. Страница, которая молчит, ограничена только уходом вкладки.

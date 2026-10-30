@@ -36,6 +36,10 @@
 //! плееру не уходит (модуль `episode_seam`); конец кластера WebM без длительности
 //! кадра оценивается (`framing::SegmentEnd`).
 //!
+//! Файл по запросам байтов (сессия 03c): обычный MP4 или WebM, который мы не качаем,
+//! — каждый диапазон просим у внешней стороны ([`pushed_file`]), для плеера это
+//! обычный файл с перемоткой, как progressive HTTP.
+//!
 //! Страница — враг: размеры сегментов ограничены, шифрование отвергается, любая
 //! ошибка — ошибка одного потока, а не процесса.
 
@@ -57,6 +61,7 @@ mod pipe;
 mod policy;
 mod protection;
 mod random_access;
+mod range_file;
 mod shelf;
 mod stream;
 mod stream_buffer;
@@ -75,6 +80,13 @@ pub use lane::{AppendOutcome, LaneId};
 pub use monitor::PushedStreamMonitor;
 pub use page_seek::PageSeekRequest;
 pub use policy::{PushedSourcePolicy, PushedSourcePolicyError};
+pub use range_file::{
+    FileOpenProgress, FileSeekability, MAX_RANGE_REQUEST_BYTES, OpenedPushedFile, PushedFileError,
+    PushedFileFailureClass, PushedFileOpener, PushedFilePolicy, PushedFilePolicyError,
+    PushedFileRequests, PushedFileWriter, RangeBytesVerdict, RangeFailure, RangeIdStanding,
+    RangeOutcome, RangeRequest, RangeRequestId, RangeRequestIds, RangeRequestNotifier,
+    RangeRetryPolicy, ResourceSizeReport, UnsupportedFileLayout, pushed_file,
+};
 pub use stream::{
     EndOfStreamReport, OpenProgress, OpenedPushedStream, PushedStreamDemuxer, PushedStreamOpener,
     PushedStreamStartError, PushedStreamWriter, pushed_stream,

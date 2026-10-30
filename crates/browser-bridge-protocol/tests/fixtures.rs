@@ -394,7 +394,7 @@ fn replay(directory: &Path, steps: &[StreamStep]) -> ReplayOutcome {
 #[test]
 fn recorded_streams_reassemble_source_buffer_bytes_exactly_and_drop_only_stale_ones() {
     let manifest = load_manifest();
-    assert_eq!(manifest.streams.len(), 3);
+    assert_eq!(manifest.streams.len(), 4);
     for name in &manifest.streams {
         let directory = fixtures_root().join("streams").join(name);
         let recorded: RecordedStream =

@@ -281,15 +281,95 @@ fn received_totals_match_the_old_counting_sink_including_range_bytes() {
         (frames, bytes)
     );
     assert_eq!((frames, bytes), (3, 19));
-    // Байты `<video src>` до 03c только считаются: в очередь они не попали.
-    assert_eq!(counters.dropped_range_frames, 1);
+    // Байты `<video src>` идут в очередь в порядке провода, между байтами SourceBuffer.
+    assert_eq!(counters.queued_range_frames, 1);
     assert_eq!(
         take(&queue),
         vec![
             SessionInput::Bytes(page.clone(), owned(0, &[1; 5])),
-            SessionInput::Bytes(page, owned(1, &[2; 3])),
+            SessionInput::Bytes(page.clone(), owned(1, &[2; 3])),
+            SessionInput::RangeBytes(page, owned_range(7, 0, &[9; 11])),
         ]
     );
+}
+
+fn owned_range(request_id: u32, offset: u64, payload: &[u8]) -> OwnedRangeChunk {
+    OwnedRangeChunk {
+        request_id: RangeRequestId(request_id),
+        offset,
+        payload: payload.to_vec(),
+    }
+}
+
+fn accept_range(
+    sink: &dyn SessionByteSink,
+    session: &SessionRef,
+    request_id: u32,
+    offset: u64,
+    payload: &[u8],
+) {
+    sink.accept(SessionChunk {
+        session,
+        source: ChunkSource::Range(RangeChunk {
+            request_id: RangeRequestId(request_id),
+            offset,
+            payload,
+        }),
+    });
+}
+
+/// Рамки файла и сообщения страницы лежат в одной очереди строго в порядке прихода:
+/// итог запроса (`range_fetch_finished`) не может обогнать байты, которые он закрывает.
+#[test]
+fn range_frames_keep_wire_order_with_page_messages() {
+    let (queue, _inbox) = queue_with(QueueLimits::default());
+    let page = session("K1", 1);
+    let finished = PageSessionMessage::TabGone {
+        reason: browser_bridge_protocol::session::page::TabGoneReason::Closed,
+    };
+
+    accept_range(&queue, &page, 1, 0, &[1; 4]);
+    queue
+        .publish_page_message(&page, finished.clone())
+        .expect("queue never refuses");
+    accept_range(&queue, &page, 1, 4, &[2; 4]);
+
+    assert_eq!(
+        take(&queue),
+        vec![
+            SessionInput::RangeBytes(page.clone(), owned_range(1, 0, &[1; 4])),
+            SessionInput::Message(page.clone(), finished),
+            SessionInput::RangeBytes(page, owned_range(1, 4, &[2; 4])),
+        ]
+    );
+}
+
+/// Рамки файла заряжаются своим размером под тот же потолок, что байты SourceBuffer:
+/// страница, засыпающая процесс рамками файла, закрывает свой сеанс, а не память.
+#[test]
+fn range_frames_are_charged_against_the_payload_ceiling() {
+    let (queue, inbox) = queue_with(QueueLimits {
+        max_payload_bytes: 10,
+        max_items: 100,
+    });
+    let page = session("K1", 1);
+
+    accept_range(&queue, &page, 1, 0, &[0; 6]);
+    assert_eq!(queue.held_bytes_for_tests(), 6);
+    accept_range(&queue, &page, 1, 6, &[0; 6]);
+
+    let counters = queue.counters();
+    assert_eq!(counters.overflow_closes, 1, "the second frame overflows");
+    assert_eq!(counters.queued_range_frames, 1, "only the first was queued");
+    assert!(queue.is_empty_for_tests(), "the closing instance is purged");
+    let batch = inbox.take_batch();
+    assert!(matches!(
+        batch.intake_notices.as_slice(),
+        [IntakeNotice::CloseSession {
+            reason: SessionCloseReason::ProtocolViolation,
+            ..
+        }]
+    ));
 }
 
 #[test]

@@ -15,7 +15,8 @@
 //!   трогает (инвариант 7), lease обычного плеера не берёт (выбор режима — до bootstrap);
 //! - 48 — при старте сеанса обычный плеер ставится на паузу (строго его MPRIS, MPRIS
 //!   браузеров не трогаем — решение владельца сессии 02) и остаётся на паузе;
-//! - 56 — после конца сеанса процесс выходит сразу;
+//! - 56 — после конца сеанса процесс выходит сразу, КРОМЕ `tab_gone` и пропажи экстеншена:
+//!   тогда (решение 42, сессия 03c) он доигрывает полученное и выходит по «доиграно»;
 //! - 85 — D-Bus несёт только «вход», всё живое идёт по WebSocket.
 //!
 //! Окна нет (решения 88/92): главный цикл без winit, ящик будит его через
@@ -35,7 +36,23 @@
 //!                                                               SessionMedia → BrowserPlayback
 //! ```
 //!
-//! Настройки (`[browser_session]`, видео, звук) читаются один раз при старте и только
+//! С сессии 03c страница может объявить поколение «файл» (`<video src>`): плеер читает
+//! его как обычную progressive-ссылку, а «диском» служит экстеншен:
+//!
+//! ```text
+//!  страница ══ file_source_added, рамки вида 2, range_fetch_finished ══► единая очередь
+//!                                                        │ поток browser-stream
+//!                                                        ▼
+//!   ProtocolTranslator ─► PushedFileWriter ─► (файл: окно предзагрузки, демуксер) ─► плеер
+//!                                                        │ запрос байтов + пробуждение цикла
+//!   главный цикл (SessionMedia) ◄── PushedFileRequests ──┘
+//!        │ PageOutbound::request_range  (надёжно, не сливается)
+//!        ▼
+//!   fetch_range ═► страница ═► байты рамками вида 2 ═► ...
+//! ```
+//!
+//! Настройки (`[browser_session]`, видео, звук, окно предзагрузки и повторы файла из
+//! `[network]`) читаются один раз при старте и только
 //! на чтение: config пишет обычный плеер.
 
 mod inbox;
@@ -45,6 +62,7 @@ mod normal_player_pause;
 mod outbound;
 mod playback;
 mod player_hello;
+mod range_wake;
 mod rejection;
 mod runtime;
 mod session_config;
@@ -76,12 +94,14 @@ use self::playback::video_output::HeadlessVideoOutput;
 use self::playback::{
     BrowserPlayback, BrowserPlaybackStartError, decoder_thread_config_from_settings,
 };
+use self::range_wake::RangeRequestWake;
 use self::runtime::{BrowserSessionRuntime, RuntimeFinish};
-use self::session_config::BrowserSessionSettings;
+use self::session_config::{BrowserSessionSettings, FileSourceSettingsError};
 use self::session_media::SessionMedia;
 use self::stream_intake::StreamIntake;
 use self::stream_queue::{OrderedSessionQueue, QueueLimits};
 use self::translator::ProtocolTranslator;
+use self::translator::file_port::PushedFileFactory;
 use self::translator::stream_port::PushedStreamFactory;
 
 /// Сколько ждать поток приёма при выходе. Разбор одной пачки — миллисекунды;
@@ -126,6 +146,9 @@ enum BrowserSessionStartFailure {
     /// Пределы источника не собрались (окно буфера из config или ошибка сборки).
     #[error("the browser stream source policy is not valid: {0}")]
     SourcePolicy(#[from] PushedSourcePolicyError),
+    /// Настройки файла `<video src>` из `[network]` не собрались.
+    #[error("the browser file source settings are not valid: {0}")]
+    FileSource(#[from] FileSourceSettingsError),
     /// Плеер не поднялся.
     #[error("the browser session player did not start: {0}")]
     Playback(#[from] BrowserPlaybackStartError),
@@ -160,6 +183,16 @@ fn start_and_run(
     let settings = BrowserSessionSettings::load_read_only();
     info!(origin = ?settings.origin(), "Browser session settings loaded (read-only)");
     let source_policy = pushed_source_policy(&settings)?;
+    // Окно предзагрузки и повторы файла `<video src>` — из тех же `[network]`, что у ссылок.
+    let file_source = settings.file_source()?;
+    let file_policy = file_source.policy()?;
+    info!(
+        window_bytes = file_source.prefetch().window_bytes(),
+        chunk_bytes = file_source.prefetch().chunk_bytes(),
+        reconnect_budget_ms =
+            u64::try_from(file_source.reconnect_budget().as_millis()).unwrap_or(u64::MAX),
+        "Browser file source settings"
+    );
     let wake = Arc::new(ParkingWake::default());
     let playback = BrowserPlayback::start(
         &settings,
@@ -182,7 +215,14 @@ fn start_and_run(
     let intake = StreamIntake::start(
         queue.clone(),
         inbox.clone(),
-        ProtocolTranslator::new(PushedStreamFactory::new(source_policy)),
+        ProtocolTranslator::new(
+            PushedStreamFactory::new(source_policy),
+            // Запрос байтов будит главный цикл сразу, а не по тику часов.
+            Box::new(PushedFileFactory::new(
+                file_policy,
+                Arc::new(RangeRequestWake::new(wake.clone())),
+            )),
+        ),
     )
     .map_err(BrowserSessionStartFailure::IntakeThread)?;
     let server = match BrowserSessionServer::start(

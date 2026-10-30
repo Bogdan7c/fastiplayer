@@ -99,7 +99,7 @@ impl StreamWriterPort for PushedStreamWriter {
 }
 
 /// Только что созданный поток: писатель остаётся у переходника, остальное уходит
-/// главному циклу в [`GenerationHandoff`].
+/// главному циклу в [`GenerationHandoff`](crate::browser_session::intake_notice::GenerationHandoff).
 pub(crate) struct StartedStream {
     /// Сторона приёма.
     pub(crate) writer: Box<dyn StreamWriterPort>,

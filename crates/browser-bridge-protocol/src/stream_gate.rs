@@ -12,6 +12,11 @@
 //!   (реклама YouTube дописывает хвост, когда фильм уже начался);
 //! - всё, что про ещё не объявленное поколение, — нарушение: так не бывает
 //!   при правильном экстеншене;
+//! - содержимое поколения выбирается один раз: либо MSE (`source_buffer_added`),
+//!   либо файл `<video src>` (`file_source_added`), и смешивать их нельзя;
+//!   в поколении-файле нет ничего MSE-шного (SourceBuffer, байты рамок вида 1,
+//!   `duration_changed`, `end_of_stream`): длительность и конец плеер знает
+//!   из самого файла;
 //! - SourceBuffer объявляют (`source_buffer_added`) до его байтов и только раз;
 //! - порядковые номера рамок SourceBuffer идут подряд с 0: пропуск значит
 //!   потерю куска, и склеивать байты дальше нельзя.
@@ -46,6 +51,19 @@ pub enum StreamViolation {
     /// SourceBuffer объявлен второй раз в том же поколении.
     #[error("source buffer was already announced")]
     SourceBufferAlreadyAnnounced,
+    /// `file_source_added` повторён в том же поколении.
+    #[error("file source was already announced")]
+    FileSourceAlreadyAnnounced,
+    /// `file_source_added` пришёл в поколении, где уже есть SourceBuffer.
+    #[error("file source announced in a generation that already has source buffers")]
+    FileSourceAfterSourceBuffer,
+    /// `source_buffer_added` пришёл в поколении, объявленном файлом.
+    #[error("source buffer announced in a file generation")]
+    SourceBufferInFileGeneration,
+    /// Сообщение или рамка, имеющие смысл только для MSE (SourceBuffer,
+    /// байты рамок вида 1, длительность, конец потока), пришли в поколении-файле.
+    #[error("media source message in a file generation")]
+    MediaSourceMessageInFileGeneration,
     /// Порядковый номер рамки не тот, что ожидался: кусок потерян или повторён.
     #[error("data frame sequence has a gap")]
     SequenceGap {
@@ -62,10 +80,22 @@ struct SourceBufferProgress {
     next_sequence: AppendSequence,
 }
 
+/// Чем оказалось содержимое поколения.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GenerationContent {
+    /// Ещё не решено: после `generation_started` ничего не объявляли.
+    Undecided,
+    /// MSE: объявлен хотя бы один SourceBuffer.
+    MediaSource,
+    /// Файл `<video src>`: объявлен `file_source_added`.
+    File,
+}
+
 /// Состояние текущего поколения.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GenerationState {
     generation: StreamGeneration,
+    content: GenerationContent,
     /// Объявленные SourceBuffer по индексу; `None` — не объявлен.
     source_buffers: [Option<SourceBufferProgress>; MAX_SOURCE_BUFFERS_PER_GENERATION as usize],
 }
@@ -74,6 +104,7 @@ impl GenerationState {
     fn new(generation: StreamGeneration) -> Self {
         Self {
             generation,
+            content: GenerationContent::Undecided,
             source_buffers: [None; MAX_SOURCE_BUFFERS_PER_GENERATION as usize],
         }
     }
@@ -138,6 +169,9 @@ impl StreamGate {
                 source_buffer,
                 ..
             } => self.announce_source_buffer(*generation, *source_buffer),
+            PageSessionMessage::FileSourceAdded { generation } => {
+                self.announce_file_source(*generation)
+            }
             other => self.check_scope(other.stream_scope()),
         }
     }
@@ -159,6 +193,9 @@ impl StreamGate {
                 return Err(StreamViolation::GenerationNotAnnounced);
             }
             GenerationRelation::Current => {}
+        }
+        if self.is_file_generation() {
+            return Err(StreamViolation::MediaSourceMessageInFileGeneration);
         }
         let slot = self
             .current
@@ -211,6 +248,9 @@ impl StreamGate {
             }
             GenerationRelation::Current => {}
         }
+        if self.is_file_generation() {
+            return Err(StreamViolation::SourceBufferInFileGeneration);
+        }
         let slot = self
             .current
             .as_mut()
@@ -222,7 +262,39 @@ impl StreamGate {
         *slot = Some(SourceBufferProgress {
             next_sequence: AppendSequence(0),
         });
+        if let Some(state) = self.current.as_mut() {
+            state.content = GenerationContent::MediaSource;
+        }
         Ok(GateDecision::Accept)
+    }
+
+    /// Объявление «в этом поколении файл» (`file_source_added`).
+    ///
+    /// Состояние меняется только при успехе: отвергнутое сообщение сеанс
+    /// всё равно закрывает, но сторож не должен получать полупринятый вид.
+    fn announce_file_source(
+        &mut self,
+        generation: StreamGeneration,
+    ) -> Result<GateDecision, StreamViolation> {
+        match self.relation_to(generation) {
+            GenerationRelation::Stale => return Ok(GateDecision::DropStale),
+            GenerationRelation::NotAnnounced => {
+                return Err(StreamViolation::GenerationNotAnnounced);
+            }
+            GenerationRelation::Current => {}
+        }
+        let state = self
+            .current
+            .as_mut()
+            .ok_or(StreamViolation::GenerationNotAnnounced)?;
+        match state.content {
+            GenerationContent::Undecided => {
+                state.content = GenerationContent::File;
+                Ok(GateDecision::Accept)
+            }
+            GenerationContent::File => Err(StreamViolation::FileSourceAlreadyAnnounced),
+            GenerationContent::MediaSource => Err(StreamViolation::FileSourceAfterSourceBuffer),
+        }
     }
 
     /// Проверка остальных сообщений по их области.
@@ -235,6 +307,12 @@ impl StreamGate {
         match self.relation_to(generation) {
             GenerationRelation::Stale => Ok(GateDecision::DropStale),
             GenerationRelation::NotAnnounced => Err(StreamViolation::GenerationNotAnnounced),
+            // Все сообщения областей «поколение» и «SourceBuffer», доходящие сюда, —
+            // про MSE (длительность, конец потока, правки SourceBuffer); в
+            // поколении-файле их быть не может.
+            GenerationRelation::Current if self.is_file_generation() => {
+                Err(StreamViolation::MediaSourceMessageInFileGeneration)
+            }
             GenerationRelation::Current => match source_buffer {
                 Some(index) if !self.is_announced(index) => {
                     Err(StreamViolation::SourceBufferNotAnnounced)
@@ -242,6 +320,13 @@ impl StreamGate {
                 _ => Ok(GateDecision::Accept),
             },
         }
+    }
+
+    /// Текущее поколение объявлено файлом.
+    fn is_file_generation(&self) -> bool {
+        self.current
+            .as_ref()
+            .is_some_and(|state| state.content == GenerationContent::File)
     }
 
     fn is_announced(&self, index: SourceBufferIndex) -> bool {

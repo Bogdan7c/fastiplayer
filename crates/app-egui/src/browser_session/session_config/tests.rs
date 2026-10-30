@@ -149,3 +149,55 @@ fn directory_instead_of_file_is_reported_as_unreadable() {
         BrowserSettingsOrigin::DefaultsAfterBrokenConfig(BrokenConfigReason::Unreadable)
     );
 }
+
+/// Настройки файла берутся из `[network]` пользователя: окно предзагрузки и бюджет
+/// повторов доходят до пределов источника без второго перевода настроек.
+#[test]
+fn file_source_follows_the_network_section() {
+    let directory = config_directory();
+    let config_file = directory.path().join("config.toml");
+    let mut config = AppConfig::default();
+    config.network.read_ahead_mb = 64;
+    config.network.prefetch_chunk_mb = 4;
+    config.network.prefetch_initial_chunk_kb = 256;
+    config.network.reconnect_wait_ms = 7_000;
+    let text = config.to_pretty_toml().expect("serialize config");
+    fs::write(&config_file, text.as_bytes()).expect("write config");
+
+    let settings = BrowserSessionSettings::load_read_only_from(&config_file);
+    let file_source = settings.file_source().expect("file source settings");
+    let policy = file_source.policy().expect("file source policy");
+
+    assert_eq!(file_source.prefetch().window_bytes(), 64 * 1024 * 1024);
+    assert_eq!(file_source.prefetch().chunk_bytes(), 4 * 1024 * 1024);
+    assert_eq!(file_source.prefetch().initial_chunk_bytes(), 256 * 1024);
+    assert_eq!(file_source.reconnect_budget(), Duration::from_secs(7));
+    assert_eq!(policy.prefetch(), file_source.prefetch());
+    assert_eq!(policy.retry().budget(), Duration::from_secs(7));
+    assert_eq!(
+        policy.max_request_bytes().get(),
+        4 * 1024 * 1024,
+        "one range request is one prefetch chunk"
+    );
+}
+
+/// Без config-а файл читается по умолчаниям `[network]` (как обычная ссылка), а
+/// `reconnect_wait_ms = 0` честно выключает повторы.
+#[test]
+fn file_source_defaults_and_disabled_retries() {
+    let defaults = BrowserSessionSettings::defaults()
+        .file_source()
+        .expect("default file source settings");
+    assert_eq!(defaults.reconnect_budget(), Duration::from_secs(60));
+    assert_eq!(defaults.prefetch().chunk_bytes(), 8 * 1024 * 1024);
+
+    let mut config = AppConfig::default();
+    config.network.reconnect_wait_ms = 0;
+    let no_retries = BrowserSessionSettings::from_app_config_for_test(config)
+        .file_source()
+        .expect("settings without retries");
+    assert_eq!(
+        no_retries.policy().expect("policy").retry().budget(),
+        Duration::ZERO
+    );
+}

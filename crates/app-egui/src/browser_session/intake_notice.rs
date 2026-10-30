@@ -17,31 +17,63 @@ use browser_bridge_protocol::{
     MediaTime, PlaybackRate, SeekId, SessionCloseReason, StreamGeneration,
 };
 use browser_bridge_session::SessionRef;
-use pushed_media_source::{PushedStreamMonitor, PushedStreamOpener};
+use media_prefetch::PrefetchConfig;
+use pushed_media_source::{
+    PushedFileOpener, PushedFileRequests, PushedStreamMonitor, PushedStreamOpener,
+};
 
-/// Новое поколение (новый `MediaSource` страницы) — новый поток для плеера.
+/// Откуда плеер возьмёт содержимое поколения.
 ///
-/// Писатель потока остаётся на потоке приёма; главному циклу достаются сторона
-/// открытия (её опрашивают на стороне подготовки, `poll_open` не блокирует) и
-/// монитор буфера (позиция плеера → «буферизовано до» и «полон» для страницы).
+/// Писатель в обоих случаях остаётся на потоке приёма; главному циклу достаётся
+/// сторона открытия (`poll_open` не блокирует) и то, что нужно его работе с этим видом
+/// содержимого.
+pub(crate) enum GenerationSource {
+    /// Сегменты MSE: монитор буфера (позиция плеера → «буферизовано до» и «полон» для
+    /// страницы, просьбы перемотаться).
+    Segments {
+        /// Сторона открытия потока для плеера.
+        opener: PushedStreamOpener,
+        /// Монитор буфера потока (клонируется, работает с любого потока).
+        monitor: PushedStreamMonitor,
+    },
+    /// Файл `<video src>` по запросам байтов: страница ничего не качает сама, поэтому
+    /// монитора буфера нет, зато есть очередь запросов `fetch_range`.
+    File {
+        /// Сторона открытия файла для плеера.
+        opener: PushedFileOpener,
+        /// Запросы байтов, которые главный цикл отправляет странице.
+        requests: PushedFileRequests,
+        /// Окно предзагрузки файла (из его политики, то есть из `[network]`).
+        prefetch: PrefetchConfig,
+    },
+}
+
+impl GenerationSource {
+    /// Это файл `<video src>` (а не сегменты MSE).
+    pub(crate) const fn is_file(&self) -> bool {
+        matches!(self, Self::File { .. })
+    }
+}
+
+/// Новое поколение (новый `MediaSource` страницы или файл `<video src>`) — новый
+/// источник для плеера.
 pub(crate) struct GenerationHandoff {
     /// Сеанс, которому принадлежит поколение.
     pub(crate) session: SessionRef,
     /// Номер поколения из `generation_started`.
     pub(crate) generation: StreamGeneration,
-    /// Сторона открытия потока для плеера.
-    pub(crate) opener: PushedStreamOpener,
-    /// Монитор буфера потока (клонируется, работает с любого потока).
-    pub(crate) monitor: PushedStreamMonitor,
+    /// Откуда плеер возьмёт содержимое.
+    pub(crate) source: GenerationSource,
 }
 
 impl fmt::Debug for GenerationHandoff {
-    /// Сторона открытия не печатается: внутри неё демуксеры, а не данные для журнала.
+    /// Источник не печатается: внутри демуксеры, а не данные для журнала; только вид.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("GenerationHandoff")
             .field("session", &self.session)
             .field("generation", &self.generation)
+            .field("is_file", &self.source.is_file())
             .finish_non_exhaustive()
     }
 }
@@ -98,6 +130,16 @@ pub(crate) enum IntakeNotice {
         /// Причина для страницы.
         reason: StreamRejection,
     },
+    /// Поток приёма разобрал ВСЁ, что экземпляр успел прислать, и запечатал его поток
+    /// (`seal` файла / `end_of_stream` сегментов): больше от этого экземпляра ничего не
+    /// придёт. Уведомление идёт в том же порядке, что и данные, поэтому ему предшествуют
+    /// все `NewGeneration` и намерения страницы экземпляра. Событие конца сеанса от
+    /// сервера (`SessionLifecycleEvent::Ended`) идёт в ящик напрямую и может обогнать
+    /// данные; доигрывание ждёт именно это уведомление.
+    InstanceSealed {
+        /// Сеанс.
+        session: SessionRef,
+    },
     /// Сеанс надо закрыть этим кодом (`SessionControl::close_session` — только
     /// этот экземпляр, не тот, что успел его заменить).
     CloseSession {
@@ -116,6 +158,7 @@ impl IntakeNotice {
             Self::BytesAppended { session }
             | Self::PageIntent { session, .. }
             | Self::PlayerSeekAcknowledged { session, .. }
+            | Self::InstanceSealed { session }
             | Self::Reject { session, .. }
             | Self::CloseSession { session, .. } => session,
         }
@@ -147,6 +190,7 @@ impl IntakeNotice {
             }
             Self::NewGeneration(_)
             | Self::BytesAppended { .. }
+            | Self::InstanceSealed { .. }
             | Self::Reject { .. }
             | Self::CloseSession { .. } => OverflowRule::Keep,
         }

@@ -16,7 +16,12 @@
 //! - ошибки источника — по [`super::rejection`]: отказ от поколения
 //!   (`stream_rejected`) не больше одного раза на поколение, после него вход этого
 //!   поколения выбрасывается со счётом; нарушение порядка — просьба закрыть сеанс
-//!   кодом 4003, после неё весь вход экземпляра выбрасывается до его конца.
+//!   кодом 4003, после неё весь вход экземпляра выбрасывается до его конца;
+//! - поколение бывает «сегменты MSE» (`source_buffer_added`) или «файл `<video src>`»
+//!   (`file_source_added`, логика — [`file_generation`]); рамки байтов вида 2 идут
+//!   писателю текущего файла, сверку с выданными запросами делает источник;
+//! - конец экземпляра запечатывает текущий поток: файл — `seal`, MSE — `end_of_stream`
+//!   (принятое доигрывается до конца даже у страницы, не успевшей сама закончить поток).
 
 use browser_bridge_protocol::session::page::{PagePlaybackRequest, SeekCause};
 use browser_bridge_protocol::session::player::StreamRejection;
@@ -25,19 +30,23 @@ use browser_bridge_protocol::{
     StreamGeneration,
 };
 use browser_bridge_session::SessionRef;
+use pushed_media_source::RangeRequestIds;
 use pushed_media_source::{
     AppendOutcome, LaneId, PushedContainer, PushedDuration, PushedStreamError, TimestampOffset,
 };
 use tracing::{debug, error, info, warn};
 
-use super::intake_notice::{GenerationHandoff, IntakeNotice, PageIntent};
+use super::intake_notice::{GenerationHandoff, GenerationSource, IntakeNotice, PageIntent};
 use super::rejection::{
     FailureResponse, response_to_stream_failure, response_to_unsupported_media_type,
 };
 use super::stream_queue::{OwnedChunk, SessionInput};
 
+mod file_generation;
+pub(crate) mod file_port;
 pub(crate) mod stream_port;
 
+use self::file_port::{FileFactory, FileWriterPort};
 use self::stream_port::{StreamFactory, StreamWriterPort};
 
 /// Счётчики переходника (для журнала и тестов).
@@ -49,9 +58,22 @@ pub(crate) struct TranslatorCounters {
     pub(crate) rejected_generation_inputs: u64,
     /// Вход экземпляра, который уже просили закрыть.
     pub(crate) closing_instance_inputs: u64,
-    /// Сообщения, которые переходник пока не исполняет (меню вариантов, конец
-    /// запроса диапазона, `tab_gone`, `remove()` страницы).
+    /// Сообщения, которые переходник не исполняет (меню вариантов, `remove()` страницы).
     pub(crate) ignored_messages: u64,
+    /// `tab_gone` страницы: переходник его только отмечает — сеанс закрывает сервер
+    /// (4002), а доигрывание полученного ведёт главный цикл.
+    pub(crate) tab_gone_messages: u64,
+    /// Рамки файла `<video src>`, принятые источником.
+    pub(crate) range_frames_accepted: u64,
+    /// Байты в принятых рамках файла.
+    pub(crate) range_bytes_accepted: u64,
+    /// Рамки файла, не нужные больше: запрос отменён перемоткой или заменён повтором,
+    /// рамка прежнего файла (источник отбросил их молча) либо пришла, когда файла нет,
+    /// но номера в этом сеансе уже выдавались.
+    pub(crate) range_frames_stale: u64,
+    /// Рамки файла, отвергнутые без нарушения: поколение уже отвергнуто либо файл
+    /// запечатан (сеанс кончился).
+    pub(crate) range_frames_rejected: u64,
     /// Куски, выброшенные источником: плеер уже закрыл поток.
     pub(crate) discarded_after_consumer_closed: u64,
     /// Разбор входа упал с паникой (дефект): экземпляр закрыт.
@@ -60,8 +82,10 @@ pub(crate) struct TranslatorCounters {
 
 /// Поток одного поколения.
 enum GenerationStream {
-    /// Поток жив: вход идёт в писатель.
+    /// Поток сегментов MSE жив: вход идёт в писатель.
     Live(Box<dyn StreamWriterPort>),
+    /// Файл `<video src>` жив: рамки байтов и итоги запросов идут его писателю.
+    File(Box<dyn FileWriterPort>),
     /// От поколения отказались: вход выбрасывается.
     Rejected,
 }
@@ -88,12 +112,27 @@ struct InstanceState {
     session: SessionRef,
     /// Фаза.
     phase: InstancePhase,
+    /// Номера запросов файла этого сеанса (общие для всех его поколений-файлов).
+    files: file_generation::SessionFiles,
+}
+
+impl InstanceState {
+    /// Экземпляр в фазе `phase` с чистыми номерами запросов.
+    fn new(session: SessionRef, phase: InstancePhase) -> Self {
+        Self {
+            session,
+            phase,
+            files: file_generation::SessionFiles::new(RangeRequestIds::new()),
+        }
+    }
 }
 
 /// Переходник протокола.
 pub(crate) struct ProtocolTranslator<F: StreamFactory> {
-    /// Откуда брать потоки.
+    /// Откуда брать потоки сегментов.
     factory: F,
+    /// Откуда брать файлы `<video src>`.
+    file_factory: Box<dyn FileFactory>,
     /// Активный экземпляр.
     instance: Option<InstanceState>,
     /// Счётчики.
@@ -104,6 +143,8 @@ pub(crate) struct ProtocolTranslator<F: StreamFactory> {
 enum GenerationRoute<'state> {
     /// Отдать писателю живого поколения.
     Live(&'state mut Box<dyn StreamWriterPort>),
+    /// Поколение — файл: вход MSE ему не адресован (сторож сервера такого не пускает).
+    NotSegments,
     /// Поколение отвергнуто — выбросить.
     Rejected,
     /// Вход старого поколения — выбросить.
@@ -114,18 +155,12 @@ enum GenerationRoute<'state> {
 
 impl<F: StreamFactory> ProtocolTranslator<F> {
     /// Переходник без активного сеанса.
-    pub(crate) const fn new(factory: F) -> Self {
+    pub(crate) fn new(factory: F, file_factory: Box<dyn FileFactory>) -> Self {
         Self {
             factory,
+            file_factory,
             instance: None,
-            counters: TranslatorCounters {
-                stale_inputs: 0,
-                rejected_generation_inputs: 0,
-                closing_instance_inputs: 0,
-                ignored_messages: 0,
-                discarded_after_consumer_closed: 0,
-                internal_failures: 0,
-            },
+            counters: TranslatorCounters::default(),
         }
     }
 
@@ -137,7 +172,7 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
     /// Применяет один вход в порядке очереди; уведомления — в `out`.
     pub(crate) fn apply(&mut self, input: SessionInput, out: &mut Vec<IntakeNotice>) {
         match input {
-            SessionInput::Ended(session) => self.end_instance(&session),
+            SessionInput::Ended(session) => self.end_instance(&session, out),
             SessionInput::Message(session, message) => {
                 if self.admit_instance(&session) {
                     self.apply_message(message, out);
@@ -146,6 +181,11 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             SessionInput::Bytes(session, chunk) => {
                 if self.admit_instance(&session) {
                     self.apply_bytes(&chunk, out);
+                }
+            }
+            SessionInput::RangeBytes(session, chunk) => {
+                if self.admit_instance(&session) {
+                    self.apply_range_bytes(&session, &chunk, out);
                 }
             }
         }
@@ -173,10 +213,7 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
         if newer_instance_active {
             return;
         }
-        self.instance = Some(InstanceState {
-            session: session.clone(),
-            phase: InstancePhase::Closing,
-        });
+        self.instance = Some(InstanceState::new(session.clone(), InstancePhase::Closing));
         out.push(IntakeNotice::CloseSession {
             session: session.clone(),
             reason: SessionCloseReason::ProtocolViolation,
@@ -211,10 +248,10 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
                         "Browser stream input of a newer session instance arrived before the end of the previous one"
                     );
                 }
-                self.instance = Some(InstanceState {
-                    session: session.clone(),
-                    phase: InstancePhase::Open(None),
-                });
+                self.instance = Some(InstanceState::new(
+                    session.clone(),
+                    InstancePhase::Open(None),
+                ));
                 true
             }
             InstanceVerdict::Closing => {
@@ -228,13 +265,15 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
         }
     }
 
-    /// Экземпляр закончился: его писатель бросается (плеер доигрывает принятое).
-    fn end_instance(&mut self, session: &SessionRef) {
+    /// Экземпляр закончился: текущий поток запечатывается (плеер доигрывает принятое),
+    /// писатель бросается.
+    fn end_instance(&mut self, session: &SessionRef, out: &mut Vec<IntakeNotice>) {
         if self
             .instance
             .as_ref()
             .is_some_and(|active| active.session == *session)
         {
+            self.seal_current_stream();
             info!(
                 session = session.key.as_str(),
                 instance = session.instance.0,
@@ -242,6 +281,12 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             );
             self.instance = None;
         }
+        // Всегда, даже для экземпляра, от которого переходник ничего не видел: главный
+        // цикл ждёт это уведомление, прежде чем решать, что доигрывать нечего. Оно идёт
+        // следом за уведомлениями данных этого экземпляра, в порядке очереди.
+        out.push(IntakeNotice::InstanceSealed {
+            session: session.clone(),
+        });
     }
 
     /// Активный сеанс (вызывается только после `admit_instance`).
@@ -330,17 +375,23 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
                     intent: page_intent(request),
                 });
             }
-            PageSessionMessage::TabGone { reason } => {
-                // Сервер сам закрывает сеанс кодом 4002; доигрывание скачанного —
-                // сессия 03c.
-                debug!(?reason, "tab_gone is handled by the session server");
-                self.counters.ignored_messages += 1;
+            PageSessionMessage::FileSourceAdded { generation } => {
+                self.start_file_generation(&session, generation, out);
             }
-            PageSessionMessage::VariantMenuChanged { .. }
-            | PageSessionMessage::RangeFetchFinished { .. }
-            | PageSessionMessage::Attach { .. } => {
-                // Меню вариантов и `<video src>` — следующие сессии; `attach` до
-                // приёмников не доходит (его съедает сервер).
+            PageSessionMessage::RangeFetchFinished {
+                request_id,
+                outcome,
+            } => self.finish_range_request(&session, request_id, outcome, out),
+            PageSessionMessage::TabGone { reason } => {
+                // Сеанс закрывает сервер (4002) СРАЗУ после этого сообщения: за ним в
+                // очередь придёт `Ended`, и он запечатает поток. Здесь tab_gone только
+                // отмечается; доигрывание полученного ведёт главный цикл.
+                debug!(?reason, "tab_gone is handled by the session server");
+                self.counters.tab_gone_messages += 1;
+            }
+            PageSessionMessage::VariantMenuChanged { .. } | PageSessionMessage::Attach { .. } => {
+                // Меню вариантов — следующие сессии; `attach` до приёмников не
+                // доходит (его съедает сервер).
                 debug!("Page message is not consumed by the stream translator yet");
                 self.counters.ignored_messages += 1;
             }
@@ -425,8 +476,10 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
                 out.push(IntakeNotice::NewGeneration(Box::new(GenerationHandoff {
                     session: session.clone(),
                     generation,
-                    opener: started.opener,
-                    monitor: started.monitor,
+                    source: GenerationSource::Segments {
+                        opener: started.opener,
+                        monitor: started.monitor,
+                    },
                 })));
             }
             Err(start_error) => {
@@ -464,6 +517,10 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
                 ..
             }) => GenerationRoute::Rejected,
             Some(GenerationState {
+                stream: GenerationStream::File(_),
+                ..
+            }) => GenerationRoute::NotSegments,
+            Some(GenerationState {
                 stream: GenerationStream::Live(writer),
                 ..
             }) => GenerationRoute::Live(writer),
@@ -491,6 +548,14 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             }
             GenerationRoute::Stale => {
                 self.counters.stale_inputs += 1;
+                return WriterOutcome::Skipped;
+            }
+            GenerationRoute::NotSegments => {
+                warn!(
+                    generation = generation.get(),
+                    "Media source input for a file generation"
+                );
+                self.request_close(session, SessionCloseReason::ProtocolViolation, out);
                 return WriterOutcome::Skipped;
             }
             GenerationRoute::Violation => {
@@ -544,12 +609,18 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
         // Подсказка только о живом потоке: после отказа опрашивать нечего.
         let appended = writer_outcome == WriterOutcome::Applied
             && append_outcome == Some(AppendOutcome::Accepted);
-        // Подсказка «опроси поток» — одна на серию подряд идущих кусков.
+        if appended {
+            Self::hint_bytes_appended(session, out);
+        }
+    }
+
+    /// Подсказка «опроси поток» — одна на серию подряд идущих кусков.
+    fn hint_bytes_appended(session: SessionRef, out: &mut Vec<IntakeNotice>) {
         let last_is_same_hint = matches!(
             out.last(),
             Some(IntakeNotice::BytesAppended { session: hinted }) if *hinted == session
         );
-        if appended && !last_is_same_hint {
+        if !last_is_same_hint {
             out.push(IntakeNotice::BytesAppended { session });
         }
     }
@@ -568,7 +639,7 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             GenerationRoute::Live(_) => self.apply_response(session, generation, response, out),
             GenerationRoute::Rejected => self.counters.rejected_generation_inputs += 1,
             GenerationRoute::Stale => self.counters.stale_inputs += 1,
-            GenerationRoute::Violation => {
+            GenerationRoute::Violation | GenerationRoute::NotSegments => {
                 self.request_close(session, SessionCloseReason::ProtocolViolation, out);
             }
         }
@@ -589,7 +660,7 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
                     ..
                 }) = self.instance.as_mut()
                     && state.number == generation
-                    && matches!(state.stream, GenerationStream::Live(_))
+                    && !matches!(state.stream, GenerationStream::Rejected)
                 {
                     // Писатель бросается: мёртвый поток ничего больше не примет.
                     state.stream = GenerationStream::Rejected;

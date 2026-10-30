@@ -68,3 +68,7 @@
 - Memories: `mem:browser-bridge/core` (раздел «Экстеншен»), `mem:ci/github-actions`, `mem:suggested_commands`.
 
 Memories: `mem:ci/github-actions`, `mem:browser-bridge/core`.
+
+## Поправки по итогам 03c (30.10.2026, решения 100–104)
+
+- **Протокол 1.0 дописан** (решение 101): `file_source_added { generation }` и `stream_rejected{file_unavailable}`. Фикстуры и договор для TS — `crates/browser-bridge-protocol/fixtures/README.md`, раздел «Файл `<video src>` и правила сторожа».

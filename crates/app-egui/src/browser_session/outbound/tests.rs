@@ -419,3 +419,184 @@ fn a_new_session_forgets_messages_meant_for_the_old_page_but_never_reuses_ids() 
     outbound.flush(start);
     assert_eq!(page.take_sent().len(), 2);
 }
+
+// ---- запросы байтов файла ----------------------------------------------------------
+
+fn range_request(id: u32, offset: u64, length: u32) -> RangeRequest {
+    RangeRequest {
+        id: pushed_media_source::RangeRequestId::new(id),
+        offset,
+        length: std::num::NonZeroU32::new(length).expect("non-zero length"),
+    }
+}
+
+fn fetch_range(id: u32, offset: u64, length: u64) -> PlayerSessionMessage {
+    PlayerSessionMessage::FetchRange {
+        request_id: PageRangeRequestId(id),
+        offset: ByteOffset::new(offset).expect("offset"),
+        length: RangeFetchLength::new(length).expect("length"),
+    }
+}
+
+/// `fetch_range` уходит странице с теми же номером, смещением и длиной, а в
+/// счётчики попадает по факту отправки.
+#[test]
+fn a_range_request_goes_out_in_protocol_units_and_is_counted_when_sent() {
+    let (mut outbound, page) = outbound();
+    let now = Instant::now();
+
+    assert_eq!(
+        outbound.request_range(range_request(7, 4_096, 65_536)),
+        RangeQueueOutcome::Queued
+    );
+    assert_eq!(outbound.range_counters().sent, 0, "queued is not sent yet");
+    outbound.flush(now);
+
+    assert_eq!(page.take_sent(), vec![fetch_range(7, 4_096, 65_536)]);
+    let counters = outbound.range_counters();
+    assert_eq!((counters.sent, counters.bytes_requested), (1, 65_536));
+}
+
+/// Запрос не теряется при полной очереди и пока страница переподключается, а
+/// запросы не сливаются: уходят все и в порядке выдачи.
+#[test]
+fn range_requests_survive_a_full_queue_and_a_reconnecting_page_without_merging() {
+    let (mut outbound, page) = outbound();
+    let now = Instant::now();
+    assert_eq!(
+        outbound.request_range(range_request(1, 0, 1_000)),
+        RangeQueueOutcome::Queued
+    );
+    assert_eq!(
+        outbound.request_range(range_request(2, 1_000, 2_000)),
+        RangeQueueOutcome::Queued
+    );
+    assert_eq!(
+        outbound.request_range(range_request(3, 9_000, 3_000)),
+        RangeQueueOutcome::Queued
+    );
+
+    page.refuse_next(SendToPageError::QueueFull);
+    outbound.flush(now);
+    assert!(page.take_sent().is_empty());
+    assert!(outbound.has_pending(), "the loop must wake up to retry");
+
+    page.refuse_next(SendToPageError::NoAttachedSession);
+    outbound.flush(now + PENDING_RETRY_INTERVAL);
+    assert!(page.take_sent().is_empty());
+    assert!(outbound.has_pending());
+
+    outbound.flush(now + PENDING_RETRY_INTERVAL * 2);
+
+    assert_eq!(
+        page.take_sent(),
+        vec![
+            fetch_range(1, 0, 1_000),
+            fetch_range(2, 1_000, 2_000),
+            fetch_range(3, 9_000, 3_000),
+        ]
+    );
+    assert!(!outbound.has_pending());
+    assert_eq!(outbound.range_counters().sent, 3);
+}
+
+/// Запросы идут в одной очереди с `seek` и отказами и не мешают их правилам:
+/// новая просьба перемотки заменяет старую, а `fetch_range` остаются все.
+#[test]
+fn range_requests_do_not_disturb_the_replace_rules_of_other_events() {
+    let (mut outbound, page) = outbound();
+    assert_eq!(
+        outbound.request_range(range_request(1, 0, 100)),
+        RangeQueueOutcome::Queued
+    );
+    outbound.request_page_seek(PageSeekRequest {
+        target: Duration::from_secs(1),
+    });
+    assert_eq!(
+        outbound.request_range(range_request(2, 100, 100)),
+        RangeQueueOutcome::Queued
+    );
+    outbound.request_page_seek(PageSeekRequest {
+        target: Duration::from_secs(2),
+    });
+
+    outbound.flush(Instant::now());
+
+    let sent = page.take_sent();
+    let kinds: Vec<&str> = sent.iter().map(message_kind).collect();
+    assert_eq!(kinds, vec!["fetch_range", "fetch_range", "seek"]);
+}
+
+/// Очередь запросов ограничена, но предел НЕ теряет запросы молча: сверх него запрос
+/// отвергается явно (владелец закроет сеанс), а уже стоящие остаются нетронутыми и
+/// уходят все и по порядку.
+#[test]
+fn the_range_queue_refuses_explicitly_at_the_bound_and_keeps_what_it_holds() {
+    let (mut outbound, page) = outbound();
+    let bound = u32::try_from(MAX_PENDING_RANGE_REQUESTS).expect("small");
+    for id in 1..=bound {
+        assert_eq!(
+            outbound.request_range(range_request(id, u64::from(id) * 10, 10)),
+            RangeQueueOutcome::Queued
+        );
+    }
+
+    let refused = outbound.request_range(range_request(bound + 1, 9_999, 10));
+
+    assert_eq!(refused, RangeQueueOutcome::QueueFull);
+    assert_eq!(outbound.range_counters().refused_queue_full, 1);
+    outbound.flush(Instant::now());
+    let ids: Vec<u32> = page
+        .take_sent()
+        .iter()
+        .filter_map(|message| match message {
+            PlayerSessionMessage::FetchRange { request_id, .. } => Some(request_id.0),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, (1..=bound).collect::<Vec<_>>());
+    // Разгребли очередь — снова принимает.
+    assert_eq!(
+        outbound.request_range(range_request(bound + 2, 0, 10)),
+        RangeQueueOutcome::Queued
+    );
+}
+
+/// Запрос, который протокол записать не может (смещение больше 2⁵³), не уходит и
+/// считается — а не портит очередь.
+#[test]
+fn a_range_request_the_protocol_cannot_encode_is_counted_not_sent() {
+    let (mut outbound, page) = outbound();
+
+    assert_eq!(
+        outbound.request_range(range_request(1, u64::MAX, 10)),
+        RangeQueueOutcome::NotEncodable
+    );
+    outbound.flush(Instant::now());
+
+    assert!(page.take_sent().is_empty());
+    assert!(!outbound.has_pending());
+    assert_eq!(outbound.range_counters().unencodable, 1);
+}
+
+/// Конец сеанса и новый сеанс забывают неотправленные запросы: страницы, которой они
+/// адресованы, больше нет.
+#[test]
+fn range_requests_for_a_gone_page_are_forgotten() {
+    let (mut outbound, page) = outbound();
+    assert_eq!(
+        outbound.request_range(range_request(1, 0, 100)),
+        RangeQueueOutcome::Queued
+    );
+    outbound.forget_pending_of_ended_session();
+    assert_eq!(
+        outbound.request_range(range_request(2, 0, 100)),
+        RangeQueueOutcome::Queued
+    );
+    outbound.reset_for_new_session();
+
+    outbound.flush(Instant::now());
+
+    assert!(page.take_sent().is_empty());
+    assert!(!outbound.has_pending());
+}

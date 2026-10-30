@@ -13,8 +13,11 @@
 //!   оказывается после всех его байтов;
 //! - события жизни сеанса уходят в ящик главного цикла без изменений
 //!   (`ProcessLifecycle` работает как в сессии 02);
-//! - байты `<video src>` (ответы на `fetch_range`) пока считаются и выбрасываются
-//!   (источник для них — сессия 03c).
+//! - байты `<video src>` (ответы на `fetch_range`, рамки вида 2) идут в ту же очередь
+//!   в порядке провода ([`SessionInput::RangeBytes`]) и заряжаются своим размером под
+//!   тот же потолок, что байты SourceBuffer: честная страница не упрётся (источник
+//!   держит не больше одного запроса ≤ 16 МиБ), а страница-враг закроет свой сеанс.
+//!   Сверку рамок с выданными запросами делает источник файла, не очередь.
 //!
 //! # Переполнение (решение владельца, сессия 03b)
 //!
@@ -35,8 +38,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use browser_bridge_protocol::limits::MAX_JSON_MESSAGE_BYTES;
 use browser_bridge_protocol::{
-    AppendSequence, PageSessionMessage, SessionCloseReason, SourceBufferIndex, StreamGeneration,
-    encode_message,
+    AppendSequence, PageSessionMessage, RangeRequestId, SessionCloseReason, SourceBufferIndex,
+    StreamGeneration, encode_message,
 };
 use browser_bridge_session::{
     ChunkSource, EventSinkFull, SessionByteSink, SessionChunk, SessionEventSink, SessionInstance,
@@ -90,6 +93,20 @@ pub(crate) struct OwnedChunk {
     pub(crate) payload: Vec<u8>,
 }
 
+/// Рамка байтов файла `<video src>`, скопированная из кадра.
+///
+/// Номер запроса и смещение — как на проводе: сервер их не проверяет (запросы знает
+/// только источник файла).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OwnedRangeChunk {
+    /// Номер запроса `fetch_range`, на который отвечает рамка.
+    pub(crate) request_id: RangeRequestId,
+    /// Смещение первого байта рамки в файле.
+    pub(crate) offset: u64,
+    /// Байты файла.
+    pub(crate) payload: Vec<u8>,
+}
+
 /// Элемент единой очереди — в порядке кадров на проводе.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum SessionInput {
@@ -97,6 +114,8 @@ pub(crate) enum SessionInput {
     Message(SessionRef, PageSessionMessage),
     /// Байты SourceBuffer.
     Bytes(SessionRef, OwnedChunk),
+    /// Байты файла `<video src>` (ответ на `fetch_range`).
+    RangeBytes(SessionRef, OwnedRangeChunk),
     /// Экземпляр сеанса закончился: данных от него больше не будет.
     Ended(SessionRef),
 }
@@ -105,13 +124,16 @@ impl SessionInput {
     /// Сеанс элемента.
     pub(crate) fn session(&self) -> &SessionRef {
         match self {
-            Self::Message(session, _) | Self::Bytes(session, _) | Self::Ended(session) => session,
+            Self::Message(session, _)
+            | Self::Bytes(session, _)
+            | Self::RangeBytes(session, _)
+            | Self::Ended(session) => session,
         }
     }
 
     /// Сколько байтов элемент списывает с потолка [`QueueLimits::max_payload_bytes`].
     ///
-    /// - байты SourceBuffer — их длина (основной вес очереди);
+    /// - байты SourceBuffer и файла — их длина (основной вес очереди);
     /// - сообщение страницы — длина его компактного JSON. Выбор: точный размер рамки
     ///   до разбора приёмнику не виден, а повторная запись дешёвая (сообщения — единицы
     ///   в секунду, сотни байтов, меню — до 128 КиБ) и честно отражает строки, которые
@@ -122,6 +144,7 @@ impl SessionInput {
     fn charged_bytes(&self) -> usize {
         match self {
             Self::Bytes(_, chunk) => chunk.payload.len(),
+            Self::RangeBytes(_, chunk) => chunk.payload.len(),
             Self::Message(_, message) => {
                 encode_message(message).map_or(MAX_JSON_MESSAGE_BYTES, |json| json.len())
             }
@@ -148,8 +171,10 @@ pub(crate) struct QueueCounters {
     pub(crate) received_frames: u64,
     /// Байтов груза в этих рамках.
     pub(crate) received_bytes: u64,
-    /// Рамок `<video src>`, выброшенных до сессии 03c.
-    pub(crate) dropped_range_frames: u64,
+    /// Рамок файла `<video src>`, поставленных в очередь (дальше их судьба — в
+    /// счётчиках переходника: принято / устарело / отвергнуто). Выброшенные из-за
+    /// переполнения считает `dropped_overflow_items`.
+    pub(crate) queued_range_frames: u64,
     /// Элементов, выброшенных из-за переполнения (из очереди и после него).
     pub(crate) dropped_overflow_items: u64,
     /// Элементов, пришедших после остановки очереди.
@@ -313,6 +338,10 @@ impl OrderedSessionQueue {
             return Admission::Overflowed;
         }
         state.payload_bytes = would_hold_bytes;
+        if matches!(queued.input, SessionInput::RangeBytes(..)) {
+            state.counters.queued_range_frames =
+                state.counters.queued_range_frames.saturating_add(1);
+        }
         state.items.push_back(queued);
         Admission::Queued
     }
@@ -362,16 +391,6 @@ impl OrderedSessionQueue {
             .saturating_add(u64::try_from(payload_len).unwrap_or(u64::MAX));
     }
 
-    /// Байты `<video src>` пока некому разбирать (сессия 03c): считаем и выбрасываем.
-    fn drop_range_chunk(&self, request_id: u32, offset: u64) {
-        let mut state = self.lock_state();
-        state.counters.dropped_range_frames = state.counters.dropped_range_frames.saturating_add(1);
-        debug!(
-            request_id,
-            offset, "Range bytes are not consumed before session 03c; dropped"
-        );
-    }
-
     /// Отравленный замок означает панику в другом потоке посреди короткой правки
     /// очереди; сама очередь при этом цела, поэтому продолжаем с ней.
     fn lock_state(&self) -> MutexGuard<'_, QueueState> {
@@ -396,7 +415,14 @@ impl SessionByteSink for OrderedSessionQueue {
                     payload: buffer.payload.to_vec(),
                 },
             )),
-            ChunkSource::Range(range) => self.drop_range_chunk(range.request_id.0, range.offset),
+            ChunkSource::Range(range) => self.admit(SessionInput::RangeBytes(
+                chunk.session.clone(),
+                OwnedRangeChunk {
+                    request_id: range.request_id,
+                    offset: range.offset,
+                    payload: range.payload.to_vec(),
+                },
+            )),
         }
     }
 

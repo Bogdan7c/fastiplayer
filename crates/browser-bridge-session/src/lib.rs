@@ -41,7 +41,9 @@ pub mod token;
 mod test_support;
 
 pub use entry_desk::{EntryCaller, EntryCallerError, EntryDesk, EntryEvent, EntryOutcome};
-pub use lifecycle::{ExitCause, LifecycleVerdict, ProcessLifecycle};
+pub use lifecycle::{
+    ExitCause, LifecycleVerdict, PlaybackDrainOutcome, ProcessLifecycle, ends_with_playback_drain,
+};
 pub use policy::BrowserSessionPolicy;
 pub use registry::{ConnectionId, SessionInstance, SessionRef};
 pub use server::{

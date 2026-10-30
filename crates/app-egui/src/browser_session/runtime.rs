@@ -14,9 +14,16 @@
 //! ```text
 //!  ящик ─► звонки входа ─► события жизни ─► уведомления потока приёма ─► media.drive(now)
 //!                                                                          │
+//!  машина выхода: «доигрываем» ─► media.playback_drain(now) ─► «доиграно» ─► выход
+//!                                                                          │
 //!  сон до ближайшего: срок машины жизни │ повтор открытия │ тик часов │ повтор отправки
-//!  (или раньше — пробуждение: звонок, событие, байты, новый кадр плеера)
+//!  (или раньше — пробуждение: звонок, событие, байты, запрос байтов, новый кадр плеера)
 //! ```
+//!
+//! «Доигрываем» (решение 42, 03c): после `tab_gone` и пропажи экстеншена машина не
+//! выходит, а ждёт ответа медиа-части [`SessionMediaPort::playback_drain`]. Наружу из
+//! [`BrowserSessionRuntime::step`] состояние «доигрываем» не выходит: пока доигрываем,
+//! это `KeepRunning` со сроком медиа-части, а когда доиграно — `Exit`.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -32,7 +39,11 @@ use tracing::{debug, error, info};
 use super::inbox::{BrowserSessionInbox, InboxBatch, ParkingWake};
 use super::intake_notice::IntakeNotice;
 use super::normal_player_pause::NormalPlayerPause;
-use super::session_media::SessionMedia;
+use super::session_media::{DrainProgress, SessionMedia};
+
+/// Через сколько просыпаться, если машина выхода вдруг вернёт «доигрываем» мимо
+/// [`BrowserSessionRuntime::step`] (так не бывает; страховка от зависания цикла).
+const DRAIN_FALLBACK_WAKE: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Медиа-часть так, как её видит главный цикл. Настоящая — [`SessionMedia`];
 /// тесты цикла подставляют подделку без плеера.
@@ -45,6 +56,9 @@ pub(super) trait SessionMediaPort {
     fn on_intake(&mut self, notices: Vec<IntakeNotice>, bytes_appended: Option<SessionRef>);
     /// Шаг медиа; возвращает, когда проснуться без внешнего повода.
     fn drive(&mut self, now: Instant) -> Option<Instant>;
+    /// Доиграно ли полученное после конца сеанса (зовётся, только пока машина выхода
+    /// в состоянии «доигрываем»).
+    fn playback_drain(&mut self, now: Instant) -> DrainProgress;
 }
 
 impl SessionMediaPort for SessionMedia {
@@ -62,6 +76,10 @@ impl SessionMediaPort for SessionMedia {
 
     fn drive(&mut self, now: Instant) -> Option<Instant> {
         Self::drive(self, now)
+    }
+
+    fn playback_drain(&mut self, now: Instant) -> DrainProgress {
+        Self::playback_drain(self, now)
     }
 }
 
@@ -114,6 +132,11 @@ impl BrowserSessionRuntime {
             match self.step(Instant::now(), media) {
                 LifecycleVerdict::Exit(cause) => return self.finish(cause),
                 LifecycleVerdict::KeepRunning { wake_at } => wake.wait(wake_at),
+                // `step` это состояние не отдаёт (см. `settle_playback_drain`); если
+                // оно когда-нибудь выйдет, цикл не должен ни виснуть, ни крутиться.
+                LifecycleVerdict::AwaitPlaybackDrain => {
+                    wake.wait(Some(Instant::now() + DRAIN_FALLBACK_WAKE));
+                }
             }
         }
     }
@@ -130,11 +153,36 @@ impl BrowserSessionRuntime {
         let batch = self.inbox.take_batch();
         self.process_batch(batch, now, media);
         let media_wake_at = media.drive(now);
-        match self.lifecycle.verdict(now) {
+        let verdict = match self.lifecycle.verdict(now) {
+            LifecycleVerdict::AwaitPlaybackDrain => self.settle_playback_drain(now, media),
+            other => other,
+        };
+        match verdict {
             LifecycleVerdict::KeepRunning { wake_at } => LifecycleVerdict::KeepRunning {
                 wake_at: earliest(wake_at, media_wake_at),
             },
-            exit @ LifecycleVerdict::Exit(_) => exit,
+            LifecycleVerdict::Exit(_) | LifecycleVerdict::AwaitPlaybackDrain => verdict,
+        }
+    }
+
+    /// Машина ждёт «доиграно»: спрашиваем медиа-часть. Доиграно — сообщаем машине и
+    /// берём её решение «выход»; ещё играем — просыпаться к сроку медиа-части.
+    fn settle_playback_drain(
+        &mut self,
+        now: Instant,
+        media: &mut dyn SessionMediaPort,
+    ) -> LifecycleVerdict {
+        match media.playback_drain(now) {
+            DrainProgress::Draining { wake_at } => LifecycleVerdict::KeepRunning {
+                wake_at: Some(wake_at),
+            },
+            DrainProgress::Drained(end) => {
+                // Одна строка без приватных данных: по ней видно, чем кончилось.
+                info!(class = %end.log_label(), "Playback drain finished");
+                let outcome = self.lifecycle.on_playback_drained();
+                debug!(?outcome, "Process lifecycle told the playback drained");
+                self.lifecycle.verdict(now)
+            }
         }
     }
 

@@ -285,6 +285,13 @@
       }
     },
     {
+      "file": "session/valid/page-file-source-added.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
       "file": "session/valid/page-source-buffer-added.json",
       "schema": "page_session",
       "expect": {
@@ -421,6 +428,22 @@
       }
     },
     {
+      "file": "session/invalid/page-file-source-added-generation-zero.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-file-source-added-unknown-field.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
       "file": "session/invalid/page-empty-removal-range.json",
       "schema": "page_session",
       "expect": {
@@ -554,6 +577,13 @@
     },
     {
       "file": "session/valid/player-stream-rejected.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-stream-rejected-file-unavailable.json",
       "schema": "player_session",
       "expect": {
         "result": "ok"
@@ -716,6 +746,7 @@
   "streams": [
     "two-source-buffers-mid-box-cuts",
     "generation-switch-drops-stale",
-    "muxed-av-single-source-buffer"
+    "muxed-av-single-source-buffer",
+    "file-source-generation"
   ]
 }

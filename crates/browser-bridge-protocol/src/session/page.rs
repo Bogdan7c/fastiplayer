@@ -137,6 +137,16 @@ pub enum PageSessionMessage {
         /// Номер нового поколения.
         generation: StreamGeneration,
     },
+    /// В этом поколении вместо `MediaSource` у элемента файл `<video src>`.
+    ///
+    /// Байты файла плеер сам запросит командой `fetch_range`. Ни MIME, ни
+    /// размера, ни адреса здесь нет: адресов у плеера нет вовсе, а размер
+    /// придёт в `range_fetch_finished`. Взаимоисключимо с `source_buffer_added`
+    /// в том же поколении (правила — в `crate::stream_gate`).
+    FileSourceAdded {
+        /// Поколение, чьё содержимое — файл.
+        generation: StreamGeneration,
+    },
     /// `addSourceBuffer(mime)`.
     SourceBufferAdded {
         /// Поколение.
@@ -240,6 +250,7 @@ impl PageSessionMessage {
             | Self::TabGone { .. }
             | Self::SeekStarted { .. } => StreamScope::Unbound,
             Self::GenerationStarted { generation }
+            | Self::FileSourceAdded { generation }
             | Self::DurationChanged { generation, .. }
             | Self::EndOfStream { generation } => StreamScope::Generation(*generation),
             Self::SourceBufferAdded {
@@ -274,6 +285,7 @@ impl ProtocolMessage for PageSessionMessage {
     const KNOWN_TYPES: &'static [&'static str] = &[
         "attach",
         "generation_started",
+        "file_source_added",
         "source_buffer_added",
         "source_buffer_type_changed",
         "timestamp_offset_changed",

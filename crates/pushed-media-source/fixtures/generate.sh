@@ -70,3 +70,34 @@ ffmpeg "${common[@]}" -f lavfi -i "testsrc2=size=64x64:rate=4:duration=4" \
     -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 50k \
     -g 4 -keyint_min 4 -pix_fmt yuv420p -fflags +bitexact -map_metadata -1 \
     -cluster_time_limit 900 -f webm "$here/video-vp9-64-4fps.webm"
+
+# --- Файл по запросам байтов (сессия 03c моста): обычные, НЕ фрагментированные файлы.
+# - file-h264-aac-moov-end.mp4 — оглавление `moov` в конце файла (так пишет ffmpeg по
+#   умолчанию; так лежат многие `<video src>`): 4 с, 25 к/с, ключевой кадр раз в 10
+#   кадров (0,4 с), звук AAC;
+# - file-h264-aac-faststart.mp4 — тот же ролик, `moov` в начале (+faststart);
+# - file-vp9-opus.webm — WebM VP9 + Opus (те же 4 с, ключевой раз в 10 кадров);
+# - file-h264-cenc.mp4 — тот же ролик, зашифрованный CENC (для отказа «защищённое»).
+plain=(-fflags +bitexact -map_metadata -1)
+file_video=(-f lavfi -i "testsrc2=size=64x64:rate=25:duration=4")
+file_audio=(-f lavfi -i "sine=frequency=440:sample_rate=48000:duration=4")
+h264_file=(-c:v libx264 -preset ultrafast -profile:v baseline -bf 0 -g 10 -keyint_min 10
+    -sc_threshold 0 -pix_fmt yuv420p -c:a aac -b:a 32k -ac 1)
+
+ffmpeg "${common[@]}" "${file_video[@]}" "${file_audio[@]}" "${h264_file[@]}" \
+    "${plain[@]}" "$here/file-h264-aac-moov-end.mp4"
+
+ffmpeg "${common[@]}" "${file_video[@]}" "${file_audio[@]}" "${h264_file[@]}" \
+    "${plain[@]}" -movflags +faststart "$here/file-h264-aac-faststart.mp4"
+
+ffmpeg "${common[@]}" "${file_video[@]}" "${file_audio[@]}" \
+    -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 80k -g 10 -keyint_min 10 \
+    -pix_fmt yuv420p -c:a libopus -b:a 24k -ac 1 "${plain[@]}" -f webm \
+    "$here/file-vp9-opus.webm"
+
+# Ключ и идентификатор — любые 16 байт: ролик только проверяет отказ, не расшифровку.
+ffmpeg "${common[@]}" "${file_video[@]}" "${file_audio[@]}" "${h264_file[@]}" \
+    "${plain[@]}" -encryption_scheme cenc-aes-ctr \
+    -encryption_key 00112233445566778899aabbccddeeff \
+    -encryption_kid 112233445566778899aabbccddeeff00 \
+    -movflags +faststart "$here/file-h264-cenc.mp4"

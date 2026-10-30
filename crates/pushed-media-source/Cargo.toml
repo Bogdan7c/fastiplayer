@@ -19,6 +19,8 @@ bytes.workspace = true
 demux-api.workspace = true
 # Границы `Demuxer`, пакеты, дорожки.
 media-core.workspace = true
+# Окно предзагрузки файла по запросам байтов (как у progressive HTTP).
+media-prefetch.workspace = true
 # Демуксер MPEG-TS.
 mpeg-ts-demux.workspace = true
 # Отмена фоновых демуксеров.

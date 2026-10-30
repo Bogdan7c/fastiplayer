@@ -863,6 +863,7 @@ class DependencyGraphPolicyTests(unittest.TestCase):
                 ("bytes", None),
                 ("demux-api", None),
                 ("media-core", None),
+                ("media-prefetch", None),
                 ("mpeg-ts-demux", None),
                 ("source-core", None),
                 ("symphonia-demux", None),

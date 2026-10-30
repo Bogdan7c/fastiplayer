@@ -1,0 +1,27 @@
+{
+  "steps": [
+    {
+      "text": "001.json"
+    },
+    {
+      "text": "002.json"
+    },
+    {
+      "text": "003.json"
+    },
+    {
+      "text": "004.json"
+    },
+    {
+      "text": "005.json"
+    },
+    {
+      "text": "006.json"
+    }
+  ],
+  "expect": {
+    "admitted": [],
+    "dropped_frames": 0,
+    "dropped_messages": 0
+  }
+}

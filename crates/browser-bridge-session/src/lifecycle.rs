@@ -8,7 +8,14 @@
 //! Правила:
 //! - сеанс не открыли за `idle_exit_after_start` после старта — выход
 //!   ([`ExitCause::IdleWithoutSession`]);
-//! - активный сеанс закончился — выход ([`ExitCause::SessionEnded`]);
+//! - активный сеанс закончился — выход ([`ExitCause::SessionEnded`]), КРОМЕ концов,
+//!   после которых зритель ещё смотрит скачанное: уход вкладки (`tab_gone`) и
+//!   пропажа экстеншена без возврата ([`ends_with_playback_drain`], решение 42).
+//!   Тогда машина переходит в «доигрываем» ([`LifecycleVerdict::AwaitPlaybackDrain`]) и
+//!   выходит только по [`ProcessLifecycle::on_playback_drained`]; сроков доигрывания
+//!   машина не знает и по времени не будит — их знает медиа-часть приложения;
+//! - новый сеанс во время доигрывания (решение 40) заменяет доигрываемый: доигрывание
+//!   старого забывается, дальше всё как для обычного активного сеанса;
 //! - события считаются по ЭКЗЕМПЛЯРУ сеанса, а не по ключу: ключ может повториться
 //!   (сеанс K закончился по сроку, экстеншен открыл K заново), и запоздавший
 //!   `Ended(K, старый экземпляр)` не должен убить новый сеанс;
@@ -35,6 +42,25 @@ pub enum ExitCause {
     SessionEnded(SessionEndReason),
 }
 
+/// Заканчивается ли сеанс по этой причине доигрыванием, а не немедленным выходом.
+///
+/// Единственное место правила (решение 42): доигрываем, когда у зрителя на экране
+/// уже есть полученное, а сеанс оборвался не по его воле:
+/// - `tab_gone` — вкладку закрыли или ушли, браузер закрывается;
+/// - [`SessionEndReason::ReconnectGraceExpired`] — экстеншен пропал и не вернулся
+///   (браузер упал).
+///
+/// Остальные концы (окно плеера закрыто, нарушение протокола, закрытие страницей,
+/// завершение плеера, не пришедший `attach`) — выход сразу.
+#[must_use]
+pub const fn ends_with_playback_drain(reason: SessionEndReason) -> bool {
+    matches!(
+        reason,
+        SessionEndReason::ClosedByPlayer(SessionCloseReason::TabGone)
+            | SessionEndReason::ReconnectGraceExpired
+    )
+}
+
 /// Решение машины.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleVerdict {
@@ -44,8 +70,21 @@ pub enum LifecycleVerdict {
         /// Когда истекает ближайший срок машины.
         wake_at: Option<Instant>,
     },
+    /// Сеанс закончился, но зритель досматривает полученное: процесс работает, пока
+    /// приложение не сообщит, что плеер доиграл ([`ProcessLifecycle::on_playback_drained`]).
+    /// По времени машина в этом состоянии не будит.
+    AwaitPlaybackDrain,
     /// Выходим по этой причине.
     Exit(ExitCause),
+}
+
+/// Итог [`ProcessLifecycle::on_playback_drained`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackDrainOutcome {
+    /// Доигрывание шло — теперь решение «выход» принято (см. `verdict`).
+    ExitDecided,
+    /// Машина не доигрывала (сеанс активен, не открыт или выход уже решён): ничего не изменилось.
+    NotDraining,
 }
 
 /// Что известно машине о сеансах.
@@ -55,6 +94,13 @@ enum Tracking {
     NothingOpenedYet,
     /// Идёт сеанс с этим ключом.
     Active(SessionRef),
+    /// Сеанс закончился концом, который доигрывается; ждём «доиграно».
+    Draining {
+        /// Закончившийся экземпляр: новый сеанс должен быть новее него.
+        session: SessionRef,
+        /// Причина конца — станет причиной выхода.
+        reason: SessionEndReason,
+    },
     /// Решение принято, оно окончательное.
     Finished(ExitCause),
 }
@@ -91,10 +137,12 @@ impl ProcessLifecycle {
             Tracking::Active(active) if active.instance > session.instance => {
                 // Запоздавшее открытие старого экземпляра: новый уже известен.
             }
-            Tracking::NothingOpenedYet | Tracking::Active(_) => {
+            // Доигрываемый экземпляр (или старее) заново не открывается: игнор.
+            Tracking::Draining { session: ended, .. } if ended.instance >= session.instance => {}
+            Tracking::NothingOpenedYet | Tracking::Active(_) | Tracking::Draining { .. } => {
                 // Конец этого экземпляра мог прийти раньше, чем мы узнали об открытии.
                 self.tracking = match self.early_ends.remove(&session.instance) {
-                    Some(reason) => Tracking::Finished(ExitCause::SessionEnded(reason)),
+                    Some(reason) => Self::tracking_after_end(session, reason),
                     None => Tracking::Active(session.clone()),
                 };
             }
@@ -114,15 +162,46 @@ impl ProcessLifecycle {
         }
         match &self.tracking {
             Tracking::Active(active) if active == session => {
-                self.tracking = Tracking::Finished(ExitCause::SessionEnded(*reason));
+                self.tracking = Self::tracking_after_end(session, *reason);
             }
             // Конец экземпляра НОВЕЕ известного (или до первого открытия): запомнить.
             Tracking::NothingOpenedYet => self.remember_early_end(session.instance, *reason),
-            Tracking::Active(active) if session.instance > active.instance => {
+            Tracking::Active(SessionRef { instance, .. })
+            | Tracking::Draining {
+                session: SessionRef { instance, .. },
+                ..
+            } if session.instance > *instance => {
                 self.remember_early_end(session.instance, *reason);
             }
-            // Чужой/старый экземпляр или решение уже принято: игнорируем.
-            Tracking::Active(_) | Tracking::Finished(_) => {}
+            // Чужой/старый/повторный экземпляр или решение уже принято: игнорируем.
+            Tracking::Active(_) | Tracking::Draining { .. } | Tracking::Finished(_) => {}
+        }
+    }
+
+    /// Состояние после конца сеанса: доигрываем или сразу выходим (см. [`ends_with_playback_drain`]).
+    fn tracking_after_end(session: &SessionRef, reason: SessionEndReason) -> Tracking {
+        if ends_with_playback_drain(reason) {
+            Tracking::Draining {
+                session: session.clone(),
+                reason,
+            }
+        } else {
+            Tracking::Finished(ExitCause::SessionEnded(reason))
+        }
+    }
+
+    /// Плеер доиграл полученное (или зритель закрыл окно): в состоянии «доигрываем»
+    /// принимает решение «выход» с запомненной причиной конца. В любом другом
+    /// состоянии ничего не меняет — результат различает эти случаи.
+    pub fn on_playback_drained(&mut self) -> PlaybackDrainOutcome {
+        match self.tracking {
+            Tracking::Draining { reason, .. } => {
+                self.tracking = Tracking::Finished(ExitCause::SessionEnded(reason));
+                PlaybackDrainOutcome::ExitDecided
+            }
+            Tracking::NothingOpenedYet | Tracking::Active(_) | Tracking::Finished(_) => {
+                PlaybackDrainOutcome::NotDraining
+            }
         }
     }
 
@@ -139,6 +218,7 @@ impl ProcessLifecycle {
         match &self.tracking {
             Tracking::Finished(cause) => LifecycleVerdict::Exit(*cause),
             Tracking::Active(_) => LifecycleVerdict::KeepRunning { wake_at: None },
+            Tracking::Draining { .. } => LifecycleVerdict::AwaitPlaybackDrain,
             Tracking::NothingOpenedYet if now >= self.idle_deadline => {
                 self.tracking = Tracking::Finished(ExitCause::IdleWithoutSession);
                 LifecycleVerdict::Exit(ExitCause::IdleWithoutSession)

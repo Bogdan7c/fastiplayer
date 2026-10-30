@@ -8,13 +8,14 @@ use std::rc::Rc;
 
 use browser_bridge_protocol::session::player::ClockState;
 use browser_bridge_protocol::{MediaTime, PlayerSessionMessage, SessionKey};
-use browser_bridge_session::{SendToPageError, SessionInstance};
+use browser_bridge_session::{CloseOutcome, SendToPageError, SessionInstance};
 use player_core::PlaybackState;
 use pushed_media_source::{
     LaneId, PushedContainer, PushedSourcePolicy, PushedStreamWriter, pushed_stream,
 };
 
 use super::*;
+use crate::browser_session::intake_notice::GenerationSource;
 use crate::browser_session::outbound::PageSender;
 use crate::browser_session::playback::{LoadFault, MediaLoadTicketIssuer};
 
@@ -34,6 +35,14 @@ enum PlayerCall {
     Seek(Duration),
 }
 
+/// Что плеер-подделка узнал о загруженном медиа (то, что снимает player-core).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LoadedMediaInfo {
+    duration: Option<Duration>,
+    seekability: media_core::DemuxSeekability,
+    track_count: usize,
+}
+
 /// Плеер-подделка: записывает команды, на шаг отвечает заданным наблюдением.
 /// Загрузка выдаёт настоящую квитанцию; «установку» тест изображает сам —
 /// [`FakePlayback::show_load`].
@@ -43,6 +52,10 @@ struct FakePlayback {
     observation: Rc<RefCell<PlaybackObservation>>,
     tickets: Rc<RefCell<MediaLoadTicketIssuer>>,
     loaded_tickets: Rc<RefCell<Vec<MediaLoadTicket>>>,
+    loaded_media: Rc<RefCell<Vec<LoadedMediaInfo>>>,
+    /// Загруженные медиа остаются живыми: у файла за демуксером стоит рабочий поток,
+    /// который продолжает читать (и просить байты), пока медиа не уничтожено.
+    kept_media: Rc<RefCell<Vec<PreparedMedia>>>,
 }
 
 impl FakePlayback {
@@ -61,6 +74,8 @@ impl FakePlayback {
             })),
             tickets: Rc::default(),
             loaded_tickets: Rc::default(),
+            loaded_media: Rc::default(),
+            kept_media: Rc::default(),
         }
     }
 
@@ -94,6 +109,12 @@ impl MediaPlayback for FakePlayback {
         start: LoadStart,
     ) -> Result<MediaLoadTicket, BrowserPlaybackCommandError> {
         self.record(PlayerCall::Load(prepared.source_label(), start))?;
+        self.loaded_media.borrow_mut().push(LoadedMediaInfo {
+            duration: prepared.duration(),
+            seekability: prepared.seekability(),
+            track_count: prepared.tracks().len(),
+        });
+        self.kept_media.borrow_mut().push(prepared);
         let ticket = self.tickets.borrow_mut().issue();
         self.loaded_tickets.borrow_mut().push(ticket);
         Ok(ticket)
@@ -247,8 +268,10 @@ fn stream_generation(
     let notice = IntakeNotice::NewGeneration(Box::new(GenerationHandoff {
         session: session.clone(),
         generation: generation(number),
-        monitor: writer.monitor(),
-        opener,
+        source: GenerationSource::Segments {
+            monitor: writer.monitor(),
+            opener,
+        },
     }));
     (writer, notice)
 }
@@ -609,4 +632,6 @@ fn without_a_session_the_media_part_does_not_ask_to_wake() {
     assert!(harness.page.take_sent().is_empty());
 }
 
+mod drain;
+mod file_generation;
 mod generation_switch;

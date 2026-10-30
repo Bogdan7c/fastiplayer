@@ -21,6 +21,10 @@ use std::path::Path;
 use fastiplayer_config::{AppConfig, BrowserSessionBufferWindow, ConfigError, ConfigPaths};
 use tracing::warn;
 
+mod file_source;
+
+pub(crate) use self::file_source::{FileSourceSettings, FileSourceSettingsError};
+
 /// Откуда взялись настройки этого запуска.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BrowserSettingsOrigin {
@@ -147,6 +151,14 @@ impl BrowserSessionSettings {
     /// Окно буфера источника «байты от страницы»: сколько держать вперёд и позади.
     pub(crate) fn buffer_window(&self) -> BrowserSessionBufferWindow {
         self.app_config.browser_session.buffer_window()
+    }
+
+    /// Настройки файла `<video src>`: окно предзагрузки и повторы из `[network]`.
+    ///
+    /// # Errors
+    /// Окно предзагрузки из config-а не собралось.
+    pub(crate) fn file_source(&self) -> Result<FileSourceSettings, FileSourceSettingsError> {
+        FileSourceSettings::from_network(&self.app_config.network)
     }
 
     /// Устройство вывода звука, выбранное пользователем в обычном плеере.

@@ -7,10 +7,18 @@
 //! - нарушение порядка вызовов (`InputMisuse`: неизвестный SourceBuffer, медиа до
 //!   init, переполнение, …) — ошибка того, кто приносит байты: сеанс закрывается
 //!   кодом 4003 (`ProtocolViolation`).
+//!
+//! У файла `<video src>` (03c) то же правило плюс один класс: файл, который окончательно
+//! недоступен (сеть не вернулась, файл сменился на сервере, диапазон отвергнут), —
+//! тоже свойство поколения: `stream_rejected{file_unavailable}`, видео возвращается
+//! странице, сеанс живёт.
 
 use browser_bridge_protocol::SessionCloseReason;
 use browser_bridge_protocol::session::player::StreamRejection;
-use pushed_media_source::{PushedStreamError, PushedStreamFailureClass, UnsupportedMediaType};
+use pushed_media_source::{
+    PushedFileError, PushedFileFailureClass, PushedStreamError, PushedStreamFailureClass,
+    UnsupportedMediaType,
+};
 
 /// Чем ответить на ошибку потока.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +47,27 @@ pub(crate) const fn response_to_stream_failure(error: &PushedStreamError) -> Fai
     }
 }
 
+/// Ответ на ошибку файла по её грубому классу.
+pub(crate) const fn response_to_file_failure(error: &PushedFileError) -> FailureResponse {
+    match error.failure_class() {
+        PushedFileFailureClass::ProtectedContent => {
+            FailureResponse::RejectGeneration(StreamRejection::ProtectedContent)
+        }
+        PushedFileFailureClass::UnsupportedMedia => {
+            FailureResponse::RejectGeneration(StreamRejection::UnsupportedCodec)
+        }
+        PushedFileFailureClass::UnparsableMedia => {
+            FailureResponse::RejectGeneration(StreamRejection::UnparsableMedia)
+        }
+        PushedFileFailureClass::SourceUnavailable => {
+            FailureResponse::RejectGeneration(StreamRejection::FileUnavailable)
+        }
+        PushedFileFailureClass::InputMisuse => {
+            FailureResponse::CloseSession(SessionCloseReason::ProtocolViolation)
+        }
+    }
+}
+
 /// Ответ на MIME, который источник не умеет (`addSourceBuffer`/`changeType`):
 /// формат плееру не по силам — отказ от поколения, а не нарушение протокола.
 pub(crate) const fn response_to_unsupported_media_type(
@@ -49,7 +78,7 @@ pub(crate) const fn response_to_unsupported_media_type(
 
 #[cfg(test)]
 mod tests {
-    use pushed_media_source::{LaneId, LaneLayoutProblem, PushedContainer};
+    use pushed_media_source::{LaneId, LaneLayoutProblem, PushedContainer, UnsupportedFileLayout};
 
     use super::*;
 
@@ -86,6 +115,55 @@ mod tests {
         ];
         for (error, expected) in cases {
             assert_eq!(response_to_stream_failure(&error), expected, "{error}");
+        }
+    }
+
+    #[test]
+    fn each_file_failure_class_maps_to_its_page_answer() {
+        let cases = [
+            (
+                PushedFileError::ProtectedContent,
+                FailureResponse::RejectGeneration(StreamRejection::ProtectedContent),
+            ),
+            (
+                PushedFileError::UnsupportedLayout {
+                    layout: UnsupportedFileLayout::MovieAtEndWithoutKnownSize,
+                },
+                FailureResponse::RejectGeneration(StreamRejection::UnsupportedCodec),
+            ),
+            (
+                PushedFileError::UnparsableMedia {
+                    reason: "broken".to_owned(),
+                },
+                FailureResponse::RejectGeneration(StreamRejection::UnparsableMedia),
+            ),
+            (
+                PushedFileError::RetryBudgetExhausted { attempts: 3 },
+                FailureResponse::RejectGeneration(StreamRejection::FileUnavailable),
+            ),
+            (
+                PushedFileError::ResourceChanged,
+                FailureResponse::RejectGeneration(StreamRejection::FileUnavailable),
+            ),
+            (
+                PushedFileError::SealedBeforeOpen,
+                FailureResponse::RejectGeneration(StreamRejection::FileUnavailable),
+            ),
+            (
+                PushedFileError::UnissuedRequest { id: 9 },
+                FailureResponse::CloseSession(SessionCloseReason::ProtocolViolation),
+            ),
+            (
+                PushedFileError::NonContiguousBytes {
+                    id: 1,
+                    expected: 0,
+                    actual: 5,
+                },
+                FailureResponse::CloseSession(SessionCloseReason::ProtocolViolation),
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(response_to_file_failure(&error), expected, "{error}");
         }
     }
 

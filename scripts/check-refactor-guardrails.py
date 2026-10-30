@@ -310,6 +310,7 @@ PUSHED_MEDIA_SOURCE_ALLOWED_DEPENDENCIES = frozenset(
         "bytes",
         "demux-api",
         "media-core",
+        "media-prefetch",
         "mpeg-ts-demux",
         "source-core",
         "symphonia-demux",

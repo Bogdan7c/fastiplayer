@@ -45,7 +45,10 @@ fn recorded_inputs(name: &str) -> Vec<SessionInput> {
 
 fn real_translator() -> ProtocolTranslator<PushedStreamFactory> {
     let policy = PushedSourcePolicy::recommended().expect("policy");
-    ProtocolTranslator::new(PushedStreamFactory::new(policy))
+    ProtocolTranslator::new(
+        PushedStreamFactory::new(policy),
+        super::super::file_port::unused_file_factory(),
+    )
 }
 
 /// Открывает поток так, как это сделает сторона подготовки (неблокирующие шаги).
@@ -82,13 +85,16 @@ fn recorded_two_buffer_stream_through_the_translator_opens_with_both_tracks() {
     let handoff = &mut handoffs[0];
     assert_eq!(handoff.generation, generation(1));
 
-    let demuxer = open_demuxer(&mut handoff.opener);
+    let GenerationSource::Segments { opener, monitor } = &mut handoff.source else {
+        panic!("a source buffer generation must hand over segments");
+    };
+    let demuxer = open_demuxer(opener);
     let mut kinds: Vec<TrackKind> = demuxer.tracks().iter().map(|track| track.kind).collect();
     kinds.sort_by_key(|kind| format!("{kind:?}"));
     assert_eq!(kinds, vec![TrackKind::Audio, TrackKind::Video]);
     assert_eq!(demuxer.duration(), Some(Duration::from_millis(400)));
     // Монитор смотрит на тот же поток: принятые сегменты он видит.
-    assert!(handoff.monitor.held_segment_bytes() > 0);
+    assert!(monitor.held_segment_bytes() > 0);
 }
 
 /// fMP4 фикстуры протокола с `avc1` в описании образца, переименованным в `encv`

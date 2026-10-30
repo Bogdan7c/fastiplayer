@@ -167,7 +167,11 @@ fn fake_translator() -> (ProtocolTranslator<FakeFactory>, CallLog, AsyncFailure)
     let factory = FakeFactory::default();
     let log = factory.log.clone();
     let failure = factory.failure.clone();
-    (ProtocolTranslator::new(factory), log, failure)
+    (
+        ProtocolTranslator::new(factory, file_port::unused_file_factory()),
+        log,
+        failure,
+    )
 }
 
 // ---- входы ------------------------------------------------------------------
@@ -239,17 +243,22 @@ fn run<F: StreamFactory>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Seen {
     NewGeneration(u64, u32),
+    NewFileGeneration(u64, u32),
     BytesAppended(u64),
     Intent(u64, PageIntent),
     SeekAcknowledged(u64, SeekId, u64),
     Reject(u64, u32, StreamRejection),
     Close(u64, SessionCloseReason),
+    Sealed(u64),
 }
 
 fn seen(notices: &[IntakeNotice]) -> Vec<Seen> {
     notices
         .iter()
         .map(|notice| match notice {
+            IntakeNotice::NewGeneration(handoff) if handoff.source.is_file() => {
+                Seen::NewFileGeneration(handoff.session.instance.0, handoff.generation.get())
+            }
             IntakeNotice::NewGeneration(handoff) => {
                 Seen::NewGeneration(handoff.session.instance.0, handoff.generation.get())
             }
@@ -270,6 +279,7 @@ fn seen(notices: &[IntakeNotice]) -> Vec<Seen> {
             IntakeNotice::CloseSession { session, reason } => {
                 Seen::Close(session.instance.0, *reason)
             }
+            IntakeNotice::InstanceSealed { session } => Seen::Sealed(session.instance.0),
         })
         .collect()
 }
@@ -421,7 +431,8 @@ fn seeks_and_page_playback_become_notices_and_removals_are_ignored() {
         log.calls(),
         vec![(1, WriterCall::NotePageSeek(Duration::from_secs(42)))]
     );
-    assert_eq!(translator.counters().ignored_messages, 2);
+    assert_eq!(translator.counters().ignored_messages, 1, "only remove()");
+    assert_eq!(translator.counters().tab_gone_messages, 1);
 }
 
 #[test]
@@ -643,15 +654,50 @@ fn a_new_instance_starts_from_scratch_and_the_old_one_is_stale() {
         seen(&notices),
         vec![
             Seen::NewGeneration(1, 1),
+            Seen::Sealed(1),
             Seen::Close(2, SessionCloseReason::ProtocolViolation),
         ]
     );
+    // Конец экземпляра запечатал его поток: полка доигрывается до конца.
     assert_eq!(
         log.calls(),
-        vec![(1, WriterCall::AddLane(0, PushedContainer::FragmentedMp4))]
+        vec![
+            (1, WriterCall::AddLane(0, PushedContainer::FragmentedMp4)),
+            (1, WriterCall::EndOfStream),
+        ]
     );
     assert_eq!(translator.counters().stale_inputs, 1);
 }
 
+/// Конец экземпляра выдаёт уведомление «вход запечатан» строго ПОСЛЕ уведомлений его
+/// данных (порядок очереди): по нему главный цикл знает, что всё разобрано. Для
+/// экземпляра, от которого ничего не приходило, оно тоже выдаётся.
+#[test]
+fn the_end_of_an_instance_is_announced_after_its_data_notices() {
+    let (mut translator, _log, _failure) = fake_translator();
+
+    let notices = run(
+        &mut translator,
+        [
+            started(1, 1),
+            added(1, 1, 0, "video/mp4"),
+            bytes(1, 1, 0, b"init"),
+            SessionInput::Ended(session(1)),
+            SessionInput::Ended(session(5)),
+        ],
+    );
+
+    assert_eq!(
+        seen(&notices),
+        vec![
+            Seen::NewGeneration(1, 1),
+            Seen::BytesAppended(1),
+            Seen::Sealed(1),
+            Seen::Sealed(5),
+        ]
+    );
+}
+
+mod file_source;
 mod log_privacy;
 mod real_source;

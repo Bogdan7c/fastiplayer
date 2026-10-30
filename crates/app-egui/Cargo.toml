@@ -60,6 +60,8 @@ web-media-hls.workspace = true
 web-media-smooth.workspace = true
 web-media-playback-plan.workspace = true
 web-media-transport-api.workspace = true
+# Окно предзагрузки файла `<video src>` (03c): тип `PrefetchConfig` из настроек `[network]`.
+media-prefetch.workspace = true
 playlist-core.workspace = true
 playlist-io.workspace = true
 playlist-discovery.workspace = true

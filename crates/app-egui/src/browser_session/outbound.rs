@@ -23,6 +23,13 @@
 //!   (старое поколение страницу уже не интересует), `seek` — только последняя
 //!   просьба (цель новее заменяет старую). Так ожидание не растёт, сколько бы ни
 //!   длилось переподключение;
+//! - `fetch_range` (запрос байтов файла `<video src>`) — НАДЁЖНОЕ сообщение: при
+//!   полной очереди и пока страница переподключается он остаётся и уходит позже, а с
+//!   другими `fetch_range` не сливается (у каждого свой номер, и страница отвечает на
+//!   каждый). Граница — [`MAX_PENDING_RANGE_REQUESTS`], и она недостижима при честной
+//!   работе (доказательство у константы). Если всё же достигнута, запрос НЕ теряется
+//!   молча: [`PageOutbound::request_range`] отказывает явно
+//!   ([`RangeQueueOutcome::QueueFull`]), а владелец закрывает сеанс;
 //! - сеанс закончился или начался новый — отложенное забывается
 //!   ([`PageOutbound::forget_pending_of_ended_session`],
 //!   [`PageOutbound::reset_for_new_session`]); сервер выключается — сообщение
@@ -41,11 +48,12 @@ use browser_bridge_protocol::session::player::{
     BufferIntake as PageBufferIntake, ClockSequence, ClockState, StreamRejection,
 };
 use browser_bridge_protocol::{
-    MediaTime, PlaybackRate as PagePlaybackRate, PlayerSessionMessage, SeekId, StreamGeneration,
+    ByteOffset, MediaTime, PlaybackRate as PagePlaybackRate, PlayerSessionMessage,
+    RangeFetchLength, RangeRequestId as PageRangeRequestId, SeekId, StreamGeneration,
 };
 use browser_bridge_session::{SendToPageError, SessionControl};
 use player_core::{PlaybackRate as PlayerPlaybackRate, PlaybackState};
-use pushed_media_source::{BufferIntake, BufferStatus, PageSeekRequest};
+use pushed_media_source::{BufferIntake, BufferStatus, PageSeekRequest, RangeRequest};
 use tracing::{debug, error};
 
 use super::playback::PlaybackObservation;
@@ -66,6 +74,25 @@ pub(crate) const BUFFER_AHEAD_REPORT_STEP: Duration = Duration::from_secs(1);
 /// позже чем через 2 с; при 4 тиках часов в секунду это один `buffer_state` на 8
 /// тиков — на канал не влияет.
 pub(crate) const BUFFER_HEARTBEAT: Duration = Duration::from_secs(2);
+
+/// Сколько неотправленных `fetch_range` держим в очереди.
+///
+/// Почему при честной работе это число недостижимо:
+/// - `PushedFileRequests::take_requests` отдаёт только ЖИВЫЕ запросы, а у файла живой
+///   запрос один: следующий появляется после итога предыдущего от страницы либо вместо
+///   запроса, отменённого перемоткой плеера или повтором после сбоя сети (это тоже
+///   требует ответа страницы);
+/// - главный цикл берёт запросы не больше чем у двух файлов: ждущего и загруженного
+///   (старшее поколение вытесняет младшее, вытесненный файл больше не опрашивается);
+/// - итоги страницы приходят, только пока она подключена, и тогда очередь к ней
+///   разгребается за миллисекунды; без страницы новых итогов нет, а перемотки плеера
+///   по запросу самой страницы (`seek_started{page_seek}`) приходят тоже только от неё.
+///
+/// Остаётся страница, которая шлёт десятки перемоток подряд и отваливается, пока
+/// очередь не разгребли, — это не честная работа. Тогда запрос не теряется молча и не
+/// выбрасывается "самый старый": `request_range` отказывает явно, и владелец закрывает
+/// сеанс как нарушение протокола.
+pub(crate) const MAX_PENDING_RANGE_REQUESTS: usize = 32;
 
 /// Через сколько повторить отложенные сообщения, если очередь к странице была
 /// полна. Очередь сервера разгребается потоком соединения за миллисекунды;
@@ -224,6 +251,31 @@ const fn page_intake(intake: BufferIntake) -> PageBufferIntake {
 
 // ---- очередь и отправка --------------------------------------------------------
 
+/// Что вышло с запросами байтов (для итоговой строки журнала: только числа).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RangeRequestCounters {
+    /// Запросов `fetch_range`, ушедших странице.
+    pub(crate) sent: u64,
+    /// Сколько байтов просили этими запросами.
+    pub(crate) bytes_requested: u64,
+    /// Запросов, в которых очередь отказала из-за переполнения [`MAX_PENDING_RANGE_REQUESTS`].
+    pub(crate) refused_queue_full: u64,
+    /// Запросов, которые нельзя записать в протоколе (смещение больше 2⁵³): дефект источника.
+    pub(crate) unencodable: u64,
+}
+
+/// Что вышло с запросом байтов, поставленным в очередь к странице.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "a refused request must be handled: the file would wait for bytes nobody asked for"]
+pub(crate) enum RangeQueueOutcome {
+    /// Поставлен: уйдёт странице, как только она сможет принять.
+    Queued,
+    /// Не поставлен: очередь неотправленных запросов переполнена (внутренняя ошибка).
+    QueueFull,
+    /// Не поставлен: смещение или длина не записываются протоколом (дефект источника).
+    NotEncodable,
+}
+
 /// Состояние буфера, ждущее отправки.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PendingBuffer {
@@ -253,6 +305,8 @@ pub(crate) struct PageOutbound {
     /// Последнее поколение, от которого уже отказались (поколения растут: отказ
     /// от того же или более старого — повтор, его не шлём).
     last_rejected: Option<StreamGeneration>,
+    /// Счётчики запросов байтов.
+    range_counters: RangeRequestCounters,
 }
 
 impl PageOutbound {
@@ -267,7 +321,13 @@ impl PageOutbound {
             pending_buffer: None,
             pending_events: VecDeque::new(),
             last_rejected: None,
+            range_counters: RangeRequestCounters::default(),
         }
+    }
+
+    /// Счётчики запросов байтов за жизнь процесса.
+    pub(crate) const fn range_counters(&self) -> RangeRequestCounters {
+        self.range_counters
     }
 
     /// Сеанс закончился: отложенное адресовано странице, которой больше не будет.
@@ -365,6 +425,40 @@ impl PageOutbound {
         true
     }
 
+    /// Источнику файла нужны байты: ставит `fetch_range` в отправку.
+    ///
+    /// Надёжно: не теряется при полной очереди и переподключении, с другими запросами
+    /// не сливается (см. документацию модуля). Отказ — явный
+    /// ([`RangeQueueOutcome`]), никогда не молчаливая потеря: владелец обязан его
+    /// обработать, иначе файл ждал бы байтов, о которых страница не знает.
+    pub(crate) fn request_range(&mut self, request: RangeRequest) -> RangeQueueOutcome {
+        let (Ok(offset), Ok(length)) = (
+            ByteOffset::new(request.offset),
+            RangeFetchLength::new(u64::from(request.length.get())),
+        ) else {
+            // Источник просит больше, чем умеет записать протокол: просить нечем.
+            self.range_counters.unencodable = self.range_counters.unencodable.saturating_add(1);
+            return RangeQueueOutcome::NotEncodable;
+        };
+        let pending_ranges = self
+            .pending_events
+            .iter()
+            .filter(|pending| matches!(pending, PlayerSessionMessage::FetchRange { .. }))
+            .count();
+        if pending_ranges >= MAX_PENDING_RANGE_REQUESTS {
+            self.range_counters.refused_queue_full =
+                self.range_counters.refused_queue_full.saturating_add(1);
+            return RangeQueueOutcome::QueueFull;
+        }
+        self.pending_events
+            .push_back(PlayerSessionMessage::FetchRange {
+                request_id: PageRangeRequestId(request.id.get()),
+                offset,
+                length,
+            });
+        RangeQueueOutcome::Queued
+    }
+
     /// Ставит событие в отправку, выбрасывая неотправленное событие того же вида:
     /// отложенных событий не больше, чем их видов (`seek`, `stream_rejected`).
     fn queue_event_replacing_same_kind(&mut self, message: PlayerSessionMessage) {
@@ -385,8 +479,12 @@ impl PageOutbound {
         while let Some(message) = self.pending_events.front() {
             match self.deliver(message) {
                 Delivery::QueueFull | Delivery::PageDetached => return,
-                Delivery::Sent | Delivery::Discarded => {
-                    self.pending_events.pop_front();
+                delivery @ (Delivery::Sent | Delivery::Discarded) => {
+                    if let Some(sent) = self.pending_events.pop_front()
+                        && delivery == Delivery::Sent
+                    {
+                        self.count_sent_range_request(&sent);
+                    }
                 }
             }
         }
@@ -406,6 +504,17 @@ impl PageOutbound {
                 self.pending_buffer = None;
             }
             Delivery::Discarded => self.pending_buffer = None,
+        }
+    }
+
+    /// Запрос байтов ушёл странице: в счётчики (остальные сообщения не считаются).
+    fn count_sent_range_request(&mut self, sent: &PlayerSessionMessage) {
+        if let PlayerSessionMessage::FetchRange { length, .. } = sent {
+            self.range_counters.sent = self.range_counters.sent.saturating_add(1);
+            self.range_counters.bytes_requested = self
+                .range_counters
+                .bytes_requested
+                .saturating_add(length.as_bytes());
         }
     }
 

@@ -12,6 +12,7 @@ use super::*;
 use crate::browser_session::inbox::{InboxCapacity, ParkingWake};
 use crate::browser_session::intake_notice::{IntakeNotice, PageIntent};
 use crate::browser_session::stream_queue::QueueLimits;
+use crate::browser_session::translator::file_port::unused_file_factory;
 use crate::browser_session::translator::stream_port::{PushedStreamFactory, StartedStream};
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -43,9 +44,10 @@ fn rig() -> Rig {
 }
 
 fn real_translator() -> ProtocolTranslator<PushedStreamFactory> {
-    ProtocolTranslator::new(PushedStreamFactory::new(
-        PushedSourcePolicy::recommended().expect("policy"),
-    ))
+    ProtocolTranslator::new(
+        PushedStreamFactory::new(PushedSourcePolicy::recommended().expect("policy")),
+        unused_file_factory(),
+    )
 }
 
 /// Ждёт, как главный цикл: спит на пробуждении и забирает ящик, пока не наберёт `count`.
@@ -151,7 +153,7 @@ fn a_stuck_intake_thread_is_detached_instead_of_hanging_the_shutdown() {
     let intake = StreamIntake::start(
         Arc::clone(&rig.queue),
         Arc::clone(&rig.inbox),
-        ProtocolTranslator::new(StuckFactory { release: released }),
+        ProtocolTranslator::new(StuckFactory { release: released }, unused_file_factory()),
     )
     .expect("intake thread");
     rig.queue
@@ -214,7 +216,10 @@ fn a_panic_while_translating_closes_that_session_and_the_thread_keeps_working() 
     let intake = StreamIntake::start(
         Arc::clone(&rig.queue),
         Arc::clone(&rig.inbox),
-        ProtocolTranslator::new(PanickingOnceFactory { panicked: false }),
+        ProtocolTranslator::new(
+            PanickingOnceFactory { panicked: false },
+            unused_file_factory(),
+        ),
     )
     .expect("intake thread");
     let started = || PageSessionMessage::GenerationStarted {

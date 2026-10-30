@@ -386,6 +386,7 @@ def write_page_session(manifest: Manifest) -> None:
     for name, message in [
         ("attach", page_message("attach", session_key="tab-12-video-3", token=FIXTURE_TOKEN)),
         ("generation-started", page_message("generation_started", generation=1)),
+        ("file-source-added", page_message("file_source_added", generation=1)),
         (
             "source-buffer-added",
             page_message("source_buffer_added", generation=1, source_buffer=0, mime_type=VIDEO_MIME),
@@ -474,6 +475,18 @@ def write_page_session(manifest: Manifest) -> None:
         schema,
         compact_json(page_message("generation_started", generation=0)),
         "number_out_of_range",
+    )
+    manifest.invalid(
+        f"{invalid}file-source-added-generation-zero.json",
+        schema,
+        compact_json(page_message("file_source_added", generation=0)),
+        "number_out_of_range",
+    )
+    manifest.invalid(
+        f"{invalid}file-source-added-unknown-field.json",
+        schema,
+        compact_json(page_message("file_source_added", generation=1, mime_type=VIDEO_MIME)),
+        "unknown_field",
     )
     manifest.invalid(
         f"{invalid}empty-removal-range.json",
@@ -571,6 +584,10 @@ def write_player_session(manifest: Manifest) -> None:
         ("next-episode", {"type": "next_episode"}),
         ("fetch-range", {"type": "fetch_range", "request_id": 7, "offset": 0, "length": 1_048_576}),
         ("stream-rejected", {"type": "stream_rejected", "generation": 1, "reason": "protected_content"}),
+        (
+            "stream-rejected-file-unavailable",
+            {"type": "stream_rejected", "generation": 2, "reason": "file_unavailable"},
+        ),
     ]:
         manifest.valid(f"{valid}{name}.json", schema, message)
 
@@ -771,6 +788,23 @@ def write_streams(manifest: Manifest) -> None:
             "dropped_messages": 0,
         },
     )
+
+    # 4. Файл `<video src>`: поколение без SourceBuffer; перемотка, пауза, итог запроса
+    #    байтов и уход вкладки проходят, байтов рамок вида 1 нет.
+    stream = StreamWriter("file-source-generation")
+    stream.text(page_message("generation_started", generation=1))
+    stream.text(page_message("file_source_added", generation=1))
+    stream.text(page_message("page_playback", request={"kind": "pause"}))
+    stream.text(page_message("seek_started", target_us=30_000_000, cause={"kind": "page_seek"}))
+    stream.text(
+        page_message(
+            "range_fetch_finished",
+            request_id=1,
+            outcome={"kind": "completed", "resource_size": {"kind": "known", "size_bytes": 48_211_005}},
+        )
+    )
+    stream.text(page_message("tab_gone", reason="closed"))
+    stream.finish(manifest, {"admitted": [], "dropped_frames": 0, "dropped_messages": 0})
 
 
 def main() -> None:

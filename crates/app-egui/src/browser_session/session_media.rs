@@ -50,113 +50,32 @@ use browser_bridge_protocol::session::player::StreamRejection;
 use browser_bridge_protocol::{
     PlaybackRate as PagePlaybackRate, SessionCloseReason, StreamGeneration,
 };
-use browser_bridge_session::{CloseOutcome, SessionControl, SessionRef};
-use player_core::{
-    PlaybackRate as PlayerPlaybackRate, PlaybackState, PreparedMedia,
-    PreparedMediaTimelineModeError,
-};
-use pushed_media_source::{
-    OpenProgress, OpenedPushedStream, PushedStreamMonitor, PushedStreamOpener,
-};
+use browser_bridge_session::SessionRef;
+use player_core::{PlaybackRate as PlayerPlaybackRate, PlaybackState, PreparedMedia};
 use tracing::{debug, error, info, warn};
 
+use self::drain::{DrainPolicy, DrainWatch};
+use self::generation_feed::{FeedReport, LoadedFeed, OpenStep, PendingFeed, in_issue_order};
 use super::intake_notice::{GenerationHandoff, IntakeNotice, PageIntent};
-use super::outbound::{PENDING_RETRY_INTERVAL, PageOutbound};
+use super::outbound::{PENDING_RETRY_INTERVAL, PageOutbound, RangeQueueOutcome};
 use super::playback::{
-    BrowserPlayback, BrowserPlaybackCommandError, BrowserPlaybackFault, LoadStart, MediaLoadTicket,
+    BrowserPlaybackCommandError, BrowserPlaybackFault, LoadStart, MediaLoadTicket,
     PlaybackObservation,
 };
-use super::rejection::{FailureResponse, response_to_stream_failure};
+use super::rejection::FailureResponse;
+use pushed_media_source::RangeRequest;
+
+mod drain;
+mod generation_feed;
+mod seams;
+
+use self::drain::{DrainContent, DrainSnapshot, IntakeStance, PageStance};
+pub(crate) use self::drain::{DrainEnd, DrainProgress};
+pub(crate) use self::seams::{MediaPlayback, SessionCloser};
 
 /// Метка источника для плеера. Нейтральная: ни заголовка, ни домена страницы —
 /// метка может попасть в журнал плеера (инвариант 7).
 pub(crate) const BROWSER_STREAM_LABEL: &str = "browser stream";
-
-// ---- швы -----------------------------------------------------------------------
-
-/// Плеер так, как его видит медиа-часть. Настоящий — [`BrowserPlayback`].
-pub(crate) trait MediaPlayback {
-    /// Загрузить новое медиа: играть сразу или встать на паузу — по `start`.
-    /// Квитанция связывает загрузку с наблюдениями, когда плеер её установит.
-    ///
-    /// # Errors
-    /// Команда не дошла до плеера.
-    fn load(
-        &mut self,
-        prepared: PreparedMedia,
-        start: LoadStart,
-    ) -> Result<MediaLoadTicket, BrowserPlaybackCommandError>;
-    /// Играть.
-    ///
-    /// # Errors
-    /// Команда не дошла до плеера.
-    fn play(&mut self) -> Result<(), BrowserPlaybackCommandError>;
-    /// Пауза.
-    ///
-    /// # Errors
-    /// Команда не дошла до плеера.
-    fn pause(&mut self) -> Result<(), BrowserPlaybackCommandError>;
-    /// Скорость.
-    ///
-    /// # Errors
-    /// Команда не дошла до плеера.
-    fn set_rate(&mut self, rate: PlayerPlaybackRate) -> Result<(), BrowserPlaybackCommandError>;
-    /// Точная перемотка.
-    ///
-    /// # Errors
-    /// Команда не дошла до плеера.
-    fn seek(&mut self, target: Duration) -> Result<(), BrowserPlaybackCommandError>;
-    /// Шаг плеера: события, кадры, звук, журнал.
-    fn pump(&mut self, now: Instant) -> PlaybackObservation;
-    /// Итоговая строка журнала и остановка плеера.
-    fn finish(self: Box<Self>);
-}
-
-impl MediaPlayback for BrowserPlayback {
-    fn load(
-        &mut self,
-        prepared: PreparedMedia,
-        start: LoadStart,
-    ) -> Result<MediaLoadTicket, BrowserPlaybackCommandError> {
-        Self::load(self, prepared, start)
-    }
-
-    fn play(&mut self) -> Result<(), BrowserPlaybackCommandError> {
-        Self::play(self)
-    }
-
-    fn pause(&mut self) -> Result<(), BrowserPlaybackCommandError> {
-        Self::pause(self)
-    }
-
-    fn set_rate(&mut self, rate: PlayerPlaybackRate) -> Result<(), BrowserPlaybackCommandError> {
-        Self::set_rate(self, rate)
-    }
-
-    fn seek(&mut self, target: Duration) -> Result<(), BrowserPlaybackCommandError> {
-        Self::seek(self, target)
-    }
-
-    fn pump(&mut self, now: Instant) -> PlaybackObservation {
-        Self::pump(self, now)
-    }
-
-    fn finish(self: Box<Self>) {
-        let _summary = Self::finish(*self);
-    }
-}
-
-/// Кто закрывает сеанс по просьбе потока приёма. Настоящий — `SessionControl`.
-pub(crate) trait SessionCloser {
-    /// Закрывает ровно этот экземпляр (не тот, что успел его заменить).
-    fn close_session(&self, session: &SessionRef, reason: SessionCloseReason) -> CloseOutcome;
-}
-
-impl SessionCloser for SessionControl {
-    fn close_session(&self, session: &SessionRef, reason: SessionCloseReason) -> CloseOutcome {
-        Self::close_session(self, session, reason)
-    }
-}
 
 // ---- состояние -----------------------------------------------------------------
 
@@ -166,10 +85,9 @@ struct PendingGeneration {
     session: SessionRef,
     /// Номер.
     generation: StreamGeneration,
-    /// Сторона открытия.
-    opener: PushedStreamOpener,
-    /// Монитор (переходит к загруженному поколению).
-    monitor: PushedStreamMonitor,
+    /// Откуда плеер возьмёт содержимое: сегменты или файл (сторона открытия и то, что
+    /// переходит к загруженному поколению).
+    feed: PendingFeed,
     /// Когда спросить снова (`None` — при первой возможности).
     retry_at: Option<Instant>,
 }
@@ -180,8 +98,8 @@ struct LoadedGeneration {
     generation: StreamGeneration,
     /// Квитанция загрузки этого поколения в плеер.
     load_ticket: MediaLoadTicket,
-    /// Монитор буфера потока.
-    monitor: PushedStreamMonitor,
+    /// Содержимое загруженного поколения: монитор буфера (сегменты) или запросы байтов (файл).
+    feed: LoadedFeed,
     /// Об отказе плеера уже сообщено (один раз на поколение).
     fault_reported: bool,
     /// После установки плеер уже приведён к скорости и «играть/пауза» страницы.
@@ -215,6 +133,17 @@ pub(crate) struct SessionMedia {
     page_rate: PlayerPlaybackRate,
     /// Поток приёма сообщил о новых байтах: открыть стоит попробовать сразу.
     bytes_arrived: bool,
+    /// Сроки доигрывания.
+    drain_policy: DrainPolicy,
+    /// Доигрывание идёт: сеанс закончился концом, после которого зритель досматривает
+    /// полученное. Страницы больше нет — ей не шлём ни часов, ни запросов.
+    drain: Option<DrainWatch>,
+    /// Экземпляр, чей вход поток приёма уже разобрал и запечатал (`InstanceSealed`).
+    /// Событие конца сеанса может обогнать данные, поэтому доигрывание решает только
+    /// после этого уведомления.
+    sealed_instance: Option<SessionRef>,
+    /// Последнее наблюдение плеера (ответ на «доиграно?» опирается на него).
+    last_observation: Option<PlaybackObservation>,
 }
 
 impl SessionMedia {
@@ -234,6 +163,10 @@ impl SessionMedia {
             page_wants_play: true,
             page_rate: PlayerPlaybackRate::NORMAL,
             bytes_arrived: false,
+            drain_policy: DrainPolicy::recommended(),
+            drain: None,
+            sealed_instance: None,
+            last_observation: None,
         }
     }
 
@@ -248,6 +181,8 @@ impl SessionMedia {
         self.current_session = Some(session.clone());
         self.pending = None;
         self.bytes_arrived = false;
+        // Новый сеанс во время доигрывания заменяет доигрываемый: доигрывание забыто.
+        self.drain = None;
         self.page_wants_play = true;
         self.page_rate = PlayerPlaybackRate::NORMAL;
         self.outbound.reset_for_new_session();
@@ -256,12 +191,66 @@ impl SessionMedia {
         }
     }
 
-    /// Сеанс закончился: отложенные сообщения его странице больше некому слать.
+    /// Сеанс закончился: отложенные сообщения его странице больше некому слать, а
+    /// всё полученное доигрывается (см. [`Self::playback_drain`]).
     ///
     /// Конец чужого (уже заменённого) экземпляра ничего не трогает.
     pub(crate) fn on_session_ended(&mut self, session: &SessionRef) {
         if self.is_current(session) {
             self.outbound.forget_pending_of_ended_session();
+            self.drain = Some(DrainWatch::begin(self.drain_policy));
+        }
+    }
+
+    /// Доиграно ли полученное после конца сеанса (зовёт главный цикл, пока машина
+    /// выхода в состоянии «доигрываем»).
+    ///
+    /// Без `on_session_ended` у текущего экземпляра доигрывать нечего — процесс
+    /// выходит сразу.
+    pub(crate) fn playback_drain(&mut self, now: Instant) -> DrainProgress {
+        let intake =
+            if self.current_session.is_some() && self.sealed_instance == self.current_session {
+                IntakeStance::Sealed
+            } else {
+                IntakeStance::Open
+            };
+        let snapshot = DrainSnapshot {
+            intake,
+            content: self.drain_content(),
+            page: if self.page_wants_play {
+                PageStance::WantsPlay
+            } else {
+                PageStance::WantsPause
+            },
+        };
+        match self.drain.as_mut() {
+            Some(watch) => watch.evaluate(snapshot, now),
+            None => DrainProgress::Drained(DrainEnd::NothingToPlay),
+        }
+    }
+
+    /// Что держит медиа-часть для вопроса «доиграно?».
+    fn drain_content(&self) -> DrainContent {
+        // Ждущее поколение новее загруженного и заменит его: пока оно не открылось,
+        // конец, отказ или позиция прежнего видео ничего не решают.
+        if self.pending.is_some() {
+            return DrainContent::Opening;
+        }
+        let Some(loaded) = self.loaded.as_ref() else {
+            return DrainContent::Nothing;
+        };
+        let shown = self
+            .last_observation
+            .as_ref()
+            .filter(|observation| loaded.is_shown_by(observation));
+        DrainContent::Loaded {
+            position: shown.map(|observation| observation.position),
+            ended: shown.is_some_and(|observation| observation.ended),
+            faulted: self
+                .last_observation
+                .as_ref()
+                .and_then(|observation| observation.fault_of(loaded.load_ticket))
+                .is_some(),
         }
     }
 
@@ -287,12 +276,26 @@ impl SessionMedia {
         self.poll_pending(now);
         let observation = self.playback.pump(now);
         self.report_to_page(&observation, now);
-        self.outbound.flush(now);
+        // Доигрываем: страницы нет, ей ничего не шлём (ни запросов байтов, ни часов).
+        if self.drain.is_none() {
+            self.send_range_requests();
+            self.outbound.flush(now);
+        }
+        self.last_observation = Some(observation);
         self.next_wake_at(now)
     }
 
-    /// Конец процесса: итог плеера в журнал и остановка плеера.
+    /// Конец процесса: итог запросов байтов и плеера в журнал, остановка плеера.
     pub(crate) fn finish(self) {
+        // Только числа: сколько запросов ушло странице и сколько байтов просили.
+        let ranges = self.outbound.range_counters();
+        info!(
+            range_requests_sent = ranges.sent,
+            range_bytes_requested = ranges.bytes_requested,
+            range_requests_refused = ranges.refused_queue_full,
+            range_requests_unencodable = ranges.unencodable,
+            "Browser file range requests"
+        );
         self.playback.finish();
     }
 
@@ -315,6 +318,7 @@ impl SessionMedia {
         match notice {
             IntakeNotice::NewGeneration(handoff) => self.adopt_generation(*handoff),
             IntakeNotice::BytesAppended { .. } => self.bytes_arrived = true,
+            IntakeNotice::InstanceSealed { session } => self.sealed_instance = Some(session),
             IntakeNotice::PageIntent { intent, .. } => self.follow_page(intent),
             IntakeNotice::PlayerSeekAcknowledged {
                 seek_id, target, ..
@@ -342,7 +346,20 @@ impl SessionMedia {
             .into_iter()
             .chain(self.loaded.as_ref().map(|loaded| loaded.generation))
             .max();
-        if newest_known.is_some_and(|newest| handoff.generation <= newest) {
+        // Файл заменяет ждущий поток сегментов ТОГО ЖЕ поколения: `generation_started`
+        // сразу создаёт поток сегментов (MSE-сообщения вроде `duration_changed` могут
+        // прийти до первого SourceBuffer), а `file_source_added` приходит следом и
+        // делает поколение файлом. Загруженное поколение так не заменяется: до плеера
+        // поток сегментов доходит только с SourceBuffer, а сторож поколений протокола
+        // (`FileSourceAfterSourceBuffer`) закрывает сеанс на `file_source_added` после
+        // него — до приёмников (сквозной тест `a_file_announced_after_a_source_buffer_is_closed_by_the_gate`).
+        let upgrades_pending_to_file = handoff.source.is_file()
+            && self.pending.as_ref().is_some_and(|pending| {
+                pending.generation == handoff.generation && !pending.feed.is_file()
+            });
+        if !upgrades_pending_to_file
+            && newest_known.is_some_and(|newest| handoff.generation <= newest)
+        {
             debug!(
                 generation = handoff.generation.get(),
                 "Stream generation older than the one already known dropped"
@@ -358,8 +375,7 @@ impl SessionMedia {
         self.pending = Some(PendingGeneration {
             session: handoff.session,
             generation: handoff.generation,
-            opener: handoff.opener,
-            monitor: handoff.monitor,
+            feed: PendingFeed::from_source(handoff.source),
             retry_at: None,
         });
     }
@@ -427,6 +443,15 @@ impl SessionMedia {
         {
             self.pending = None;
         }
+        if self.drain.is_some() {
+            // Сеанс кончился: сказать отказ некому (отложенное повторялось бы вечно).
+            info!(
+                generation = generation.get(),
+                ?reason,
+                "Stream generation rejected after the session ended"
+            );
+            return;
+        }
         if self.outbound.reject_generation(generation, reason) {
             info!(
                 generation = generation.get(),
@@ -457,24 +482,24 @@ impl SessionMedia {
         if !due {
             return;
         }
-        match pending.opener.poll_open() {
-            Ok(OpenProgress::Waiting(hint)) => {
-                pending.retry_at = Some(now + hint.retry_after());
+        match pending.feed.poll_open() {
+            OpenStep::Waiting(retry_after) => {
+                pending.retry_at = Some(now + retry_after);
             }
-            Ok(OpenProgress::Ready(opened)) => {
+            OpenStep::Ready { prepared, feed } => {
                 if let Some(pending) = self.pending.take() {
-                    self.load(pending, opened);
+                    self.load(&pending, *prepared, feed);
                 }
             }
-            Err(open_error) => {
+            OpenStep::Failed { class, response } => {
                 if let Some(pending) = self.pending.take() {
                     // Только класс ошибки: текст несёт подробности байтов страницы.
                     warn!(
-                        failure_class = ?open_error.failure_class(),
+                        failure_class = class,
                         generation = pending.generation.get(),
                         "Stream generation did not open"
                     );
-                    match response_to_stream_failure(&open_error) {
+                    match response {
                         FailureResponse::RejectGeneration(reason) => {
                             self.reject(pending.generation, reason);
                         }
@@ -484,24 +509,17 @@ impl SessionMedia {
                     }
                 }
             }
+            OpenStep::Unplayable => {
+                // Дефект сборки, а не данных страницы; видео — обратно странице.
+                if let Some(pending) = self.pending.take() {
+                    self.reject(pending.generation, StreamRejection::UnsupportedCodec);
+                }
+            }
         }
     }
 
-    /// Готовый поток → `PreparedMedia` → плеер.
-    fn load(&mut self, pending: PendingGeneration, opened: OpenedPushedStream) {
-        let prepared = match prepared_media(opened) {
-            Ok(prepared) => prepared,
-            Err(timeline_error) => {
-                // Источник отдаёт живую шкалу только потоку без длительности, так что
-                // это дефект договора, а не данных страницы; видео — обратно странице.
-                error!(
-                    ?timeline_error,
-                    "Live timeline does not fit the browser stream"
-                );
-                self.reject(pending.generation, StreamRejection::UnsupportedCodec);
-                return;
-            }
-        };
+    /// Готовое медиа → плеер.
+    fn load(&mut self, pending: &PendingGeneration, prepared: PreparedMedia, feed: LoadedFeed) {
         // Страница на паузе — загрузка сразу на паузе: «играть, потом пауза» дало бы
         // мелькнуть звуку. Страница играет — старт сразу (решение 99).
         let start = if self.page_wants_play {
@@ -526,10 +544,51 @@ impl SessionMedia {
         self.loaded = Some(LoadedGeneration {
             generation: pending.generation,
             load_ticket,
-            monitor: pending.monitor,
+            feed,
             fault_reported: false,
             page_state_reconciled: false,
         });
+    }
+
+    /// Запросы байтов файла → странице (`fetch_range`), сразу по пробуждению.
+    ///
+    /// Забираются у ждущего файла (первый запрос открытия выдаёт первый `poll_open`) и
+    /// у загруженного (чтение, перемотка, повтор после сбоя сети).
+    fn send_range_requests(&mut self) {
+        let pending_requests = self
+            .pending
+            .as_ref()
+            .map(|pending| pending.feed.take_range_requests())
+            .unwrap_or_default();
+        let loaded_requests = self
+            .loaded
+            .as_ref()
+            .map(|loaded| loaded.feed.take_range_requests())
+            .unwrap_or_default();
+        // Странице запросы уходят в порядке выдачи: номера сквозные на сеанс, а ждущий
+        // файл мог выдать запрос раньше, чем загруженный — свой последний.
+        let all_requests = in_issue_order(pending_requests.into_iter().chain(loaded_requests));
+        for request in all_requests {
+            self.queue_range_request(request);
+        }
+    }
+
+    /// Один запрос байтов — в очередь к странице. Отказ очереди (недостижимый при честной
+    /// работе, см. `MAX_PENDING_RANGE_REQUESTS`) — внутренняя ошибка: файл ждал бы байтов,
+    /// о которых страница не знает, поэтому сеанс закрывается как нарушение протокола, а
+    /// в журнал идёт причина.
+    fn queue_range_request(&mut self, request: RangeRequest) {
+        let outcome = self.outbound.request_range(request);
+        if outcome == RangeQueueOutcome::Queued {
+            return;
+        }
+        error!(
+            ?outcome,
+            "A range request could not be queued for the page; closing the session"
+        );
+        if let Some(session) = self.current_session.clone() {
+            self.close(&session, SessionCloseReason::ProtocolViolation);
+        }
     }
 
     // ---- ответы странице ---------------------------------------------------------
@@ -541,9 +600,9 @@ impl SessionMedia {
         // Позиция прежнего медиа не принадлежит ставящемуся поколению: монитор по ней
         // выбросил бы полку и посчитал запас не от того места.
         let media_installed = loaded.is_shown_by(observation);
-        if media_installed {
-            loaded.monitor.note_playback_position(observation.position);
-        }
+        let report = loaded
+            .feed
+            .report(media_installed.then_some(observation.position));
         let reconcile_now = media_installed && !loaded.page_state_reconciled;
         if reconcile_now {
             loaded.page_state_reconciled = true;
@@ -558,8 +617,6 @@ impl SessionMedia {
             }
             _ => None,
         };
-        let seek_request = loaded.monitor.take_page_seek_request();
-        let buffer = loaded.monitor.buffer_status();
 
         if reconcile_now {
             self.reconcile_with_page(observation);
@@ -567,15 +624,27 @@ impl SessionMedia {
         if let Some(fault) = fault {
             self.report_fault(generation, &fault);
         }
-        if let Some(request) = seek_request {
-            let seek_id = self.outbound.request_page_seek(request);
-            debug!(
-                seek_id = seek_id.0,
-                "Asking the page to seek: the target is not on the shelf"
-            );
+        // Страницы нет (доигрываем) — ей ничего не говорим; монитор позицию уже получил.
+        if self.drain.is_some() {
+            return;
         }
-        // Буфер — всегда: без позиции источник считает от первого поданного сегмента.
-        self.outbound.note_buffer(generation, buffer, now);
+        // Буфер и просьбы перемотки есть только у сегментов; у файла страница ничего не
+        // качает сама, и позицию никуда не репортим.
+        if let FeedReport::Segments {
+            seek_request,
+            buffer,
+        } = report
+        {
+            if let Some(request) = seek_request {
+                let seek_id = self.outbound.request_page_seek(request);
+                debug!(
+                    seek_id = seek_id.0,
+                    "Asking the page to seek: the target is not on the shelf"
+                );
+            }
+            // Буфер — всегда: без позиции источник считает от первого поданного сегмента.
+            self.outbound.note_buffer(generation, buffer, now);
+        }
         if media_installed {
             self.outbound.tick_clock(observation, now);
         } else {
@@ -637,10 +706,12 @@ impl SessionMedia {
             .pending
             .as_ref()
             .map(|pending| pending.retry_at.unwrap_or(now));
+        // Часы идут странице; пока доигрываем, её нет, и цикл будит `playback_drain`.
         let clock = self
             .loaded
             .as_ref()
-            .and(Some(self.outbound.next_clock_at().unwrap_or(now)));
+            .filter(|_| self.drain.is_none())
+            .map(|_| self.outbound.next_clock_at().unwrap_or(now));
         let outbound_retry = self
             .outbound
             .has_pending()
@@ -660,18 +731,6 @@ impl SessionMedia {
         if let Err(command_error) = send(self.playback.as_mut()) {
             warn!(%command_error, command = what, "Browser session player command failed");
         }
-    }
-}
-
-/// Готовый поток → медиа для плеера (с живой шкалой, если это эфир).
-fn prepared_media(
-    opened: OpenedPushedStream,
-) -> Result<PreparedMedia, PreparedMediaTimelineModeError> {
-    let prepared =
-        PreparedMedia::from_external_label(BROWSER_STREAM_LABEL, Box::new(opened.demuxer));
-    match opened.live_timeline {
-        Some(timeline) => prepared.with_dynamic_timeline(timeline),
-        None => Ok(prepared),
     }
 }
 

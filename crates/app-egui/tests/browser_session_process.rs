@@ -72,6 +72,12 @@ struct PrivateBusWithBrowserSession {
 impl PrivateBusWithBrowserSession {
     /// `name` различает каталоги тестов одного процесса (тесты идут параллельно).
     fn start(name: &str) -> Self {
+        Self::start_with_config(name, None)
+    }
+
+    /// То же, но с `config.toml` пользователя в каталоге XDG процесса (процесс его
+    /// только читает).
+    fn start_with_config(name: &str, config_toml: Option<&str>) -> Self {
         let directory = std::env::temp_dir().join(format!(
             "fastiplayer-browser-session-e2e-{}-{name}",
             std::process::id()
@@ -99,6 +105,12 @@ impl PrivateBusWithBrowserSession {
             std::fs::create_dir_all(&path).expect("XDG directory");
             path
         };
+        if let Some(config_toml) = config_toml {
+            // Каталог приложения в XDG config — `fastiplayer` (константа слоя config).
+            let app_directory = xdg("config").join("fastiplayer");
+            std::fs::create_dir_all(&app_directory).expect("config directory");
+            std::fs::write(app_directory.join("config.toml"), config_toml).expect("config.toml");
+        }
         let mut daemon = Command::new("dbus-daemon")
             .arg(format!("--config-file={}", config.display()))
             .args(["--nofork", "--print-address=1"])
@@ -494,3 +506,8 @@ fn live_session_bus_wakes_the_installed_browser_session() {
     let mut socket = attach(&grant);
     send_tab_gone_and_expect_close(&mut socket);
 }
+
+// Сквозные тесты 03c (файл `<video src>` и доигрывание) — отдельным модулем, чтобы этот
+// файл не рос.
+#[path = "browser_session_process/file_and_drain.rs"]
+mod file_and_drain;

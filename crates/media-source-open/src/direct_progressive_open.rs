@@ -256,7 +256,15 @@ fn build_direct_component_identity() -> Result<MediaComponentIdentity> {
 }
 
 /// Строит existing prefetch policy без второго cache/read-ahead config-а.
-fn prefetch_config(network_config: &NetworkConfig) -> Result<media_prefetch::PrefetchConfig> {
+///
+/// Публична, чтобы другие входы «файла» (браузерный `<video src>` по запросам байтов,
+/// сессия 03c моста) брали окно предзагрузки из тех же `[network]`-настроек, что и
+/// обычные ссылки, а не заводили второй перевод настроек в `PrefetchConfig`.
+///
+/// # Errors
+/// Переполнение при переводе КиБ/МиБ в байты или значения вне допустимых пределов
+/// `PrefetchConfig`.
+pub fn prefetch_config(network_config: &NetworkConfig) -> Result<media_prefetch::PrefetchConfig> {
     let initial_chunk_bytes = network_config
         .prefetch_initial_chunk_kb
         .checked_mul(KIB_BYTES)

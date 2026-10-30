@@ -26,6 +26,7 @@ use super::*;
 use crate::browser_session::inbox::{InboxCapacity, ParkingWake};
 use crate::browser_session::intake_notice::IntakeNotice;
 use crate::browser_session::player_hello::player_hello;
+use crate::browser_session::session_media::DrainEnd;
 
 /// Потолок ожидания событий из потоков сервера.
 const WAIT: Duration = Duration::from_secs(20);
@@ -66,6 +67,10 @@ struct RecordingMedia {
     bytes_appended: Vec<SessionRef>,
     drives: usize,
     wake_at: Option<Instant>,
+    /// Сколько раз цикл спросил «доиграно?».
+    drain_questions: usize,
+    /// Что отвечать на «доиграно?» (`None` — «ещё играем»).
+    drain_answer: Option<DrainProgress>,
 }
 
 impl SessionMediaPort for RecordingMedia {
@@ -85,6 +90,13 @@ impl SessionMediaPort for RecordingMedia {
     fn drive(&mut self, _now: Instant) -> Option<Instant> {
         self.drives += 1;
         self.wake_at
+    }
+
+    fn playback_drain(&mut self, now: Instant) -> DrainProgress {
+        self.drain_questions += 1;
+        self.drain_answer.unwrap_or(DrainProgress::Draining {
+            wake_at: now + Duration::from_millis(250),
+        })
     }
 }
 
@@ -165,12 +177,30 @@ impl Harness {
         self.pause_requests.load(Ordering::SeqCst)
     }
 
+    /// Крутит цикл, пока `done` не станет истиной (или до потолка ожидания); возвращает
+    /// последнее решение машины.
+    fn step_until(&mut self, mut done: impl FnMut(&Self) -> bool) -> LifecycleVerdict {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let verdict = self.runtime.step(Instant::now(), &mut self.media);
+            if done(self) || matches!(verdict, LifecycleVerdict::Exit(_)) {
+                return verdict;
+            }
+            assert!(Instant::now() < deadline, "the awaited state never came");
+            self.wake
+                .wait(Some(Instant::now() + Duration::from_millis(20)));
+        }
+    }
+
     /// Крутит цикл, пока машина не скажет «выходим» (или до потолка ожидания).
     fn run_until_exit(&mut self) -> ExitCause {
         let deadline = Instant::now() + WAIT;
         loop {
             match self.runtime.step(Instant::now(), &mut self.media) {
                 LifecycleVerdict::Exit(cause) => return cause,
+                LifecycleVerdict::AwaitPlaybackDrain => {
+                    panic!("`step` must not hand the draining state to its caller")
+                }
                 LifecycleVerdict::KeepRunning { wake_at } => {
                     assert!(
                         Instant::now() < deadline,
@@ -281,8 +311,10 @@ fn open_session_without_hello_is_refused_and_leaves_the_normal_player_alone() {
 }
 
 #[test]
-fn process_exits_right_after_the_attached_session_ends() {
+fn process_exits_after_tab_gone_once_the_media_has_nothing_left_to_play() {
     let mut harness = Harness::start(BrowserSessionPolicy::default());
+    // Медиа-часть отвечает «доиграно» сразу (ничего не загружено).
+    harness.media.drain_answer = Some(DrainProgress::Drained(DrainEnd::NothingToPlay));
     harness.call(HELLO);
     let grant = harness.open(1, "tab-1-video-1");
     let mut socket = attach(&grant);
@@ -311,6 +343,114 @@ fn process_exits_right_after_the_attached_session_ends() {
     );
 }
 
+/// `tab_gone` не выключает процесс: пока медиа-часть отвечает «ещё играем», цикл жив
+/// и спрашивает её снова; как только «доиграно» — выход по причине `tab_gone`.
+#[test]
+fn tab_gone_keeps_the_process_alive_while_playing_and_exits_after_the_media_drained() {
+    let mut harness = Harness::start(BrowserSessionPolicy::default());
+    harness.call(HELLO);
+    let grant = harness.open(1, "tab-1-video-1");
+    let mut socket = attach(&grant);
+    socket
+        .send(Message::text(TAB_GONE.trim_end()))
+        .expect("tab_gone is sent");
+
+    // Сеанс закончился, но плеер ещё играет: цикл спрашивает «доиграно?» и живёт.
+    let verdict = harness.step_until(|harness| harness.media.drain_questions >= 3);
+    assert!(
+        matches!(verdict, LifecycleVerdict::KeepRunning { wake_at: Some(_) }),
+        "the process must keep running while the media is draining: {verdict:?}"
+    );
+    assert_eq!(harness.media.ended.len(), 1, "the media learned of the end");
+
+    // Плеер доиграл — следующий же проход выходит, причина прежняя.
+    harness.media.drain_answer = Some(DrainProgress::Drained(DrainEnd::PlayedToEnd));
+    assert_eq!(
+        harness.run_until_exit(),
+        ExitCause::SessionEnded(SessionEndReason::ClosedByPlayer(
+            SessionCloseReason::TabGone
+        ))
+    );
+}
+
+/// Пока доигрываем, срок пробуждения цикла — срок медиа-части (часов странице нет).
+#[test]
+fn draining_wakes_the_loop_at_the_media_deadline() {
+    let mut harness = Harness::start(BrowserSessionPolicy::default());
+    harness.call(HELLO);
+    let grant = harness.open(1, "tab-1-video-1");
+    let mut socket = attach(&grant);
+    socket
+        .send(Message::text(TAB_GONE.trim_end()))
+        .expect("tab_gone is sent");
+    harness.step_until(|harness| harness.media.drain_questions >= 1);
+    let asked_at = Instant::now();
+    harness.media.drain_answer = Some(DrainProgress::Draining {
+        wake_at: asked_at + Duration::from_secs(3),
+    });
+
+    let verdict = harness.runtime.step(asked_at, &mut harness.media);
+
+    assert_eq!(
+        verdict,
+        LifecycleVerdict::KeepRunning {
+            wake_at: Some(asked_at + Duration::from_secs(3))
+        }
+    );
+}
+
+/// Новый сеанс во время доигрывания заменяет доигрываемый: цикл перестаёт спрашивать
+/// «доиграно?» и живёт дальше как с обычным активным сеансом.
+#[test]
+fn a_new_session_during_the_drain_forgets_the_drain() {
+    let mut harness = Harness::start(BrowserSessionPolicy::default());
+    harness.call(HELLO);
+    let grant = harness.open(1, "tab-1-video-1");
+    let mut socket = attach(&grant);
+    socket
+        .send(Message::text(TAB_GONE.trim_end()))
+        .expect("tab_gone is sent");
+    harness.step_until(|harness| harness.media.drain_questions >= 1);
+
+    harness.open(2, "tab-2-video-1");
+    let questions_after_open = harness.media.drain_questions;
+    // Даже если бы медиа-часть сказала «доиграно», новый сеанс уже не доигрывается.
+    harness.media.drain_answer = Some(DrainProgress::Drained(DrainEnd::PlayedToEnd));
+    for _ in 0..3 {
+        let verdict = harness.runtime.step(Instant::now(), &mut harness.media);
+        assert!(
+            matches!(verdict, LifecycleVerdict::KeepRunning { .. }),
+            "the new session keeps the process alive: {verdict:?}"
+        );
+    }
+    assert_eq!(harness.media.drain_questions, questions_after_open);
+    assert_eq!(harness.media.opened.len(), 2);
+}
+
+/// Экстеншен пропал и не вернулся за срок возврата — тоже доигрываем.
+#[test]
+fn a_vanished_extension_drains_the_playback_before_the_process_exits() {
+    let policy = BrowserSessionPolicy {
+        reconnect_grace: Duration::from_millis(100),
+        ..BrowserSessionPolicy::default()
+    };
+    let mut harness = Harness::start(policy);
+    harness.call(HELLO);
+    let grant = harness.open(1, "tab-1-video-1");
+    let socket = attach(&grant);
+    // Обрыв без кадра закрытия и без `tab_gone`.
+    drop(socket);
+
+    let verdict = harness.step_until(|harness| harness.media.drain_questions >= 2);
+    assert!(matches!(verdict, LifecycleVerdict::KeepRunning { .. }));
+
+    harness.media.drain_answer = Some(DrainProgress::Drained(DrainEnd::PlayedToEnd));
+    assert_eq!(
+        harness.run_until_exit(),
+        ExitCause::SessionEnded(SessionEndReason::ReconnectGraceExpired)
+    );
+}
+
 #[test]
 fn process_exits_when_nobody_opens_a_session_in_time() {
     let policy = BrowserSessionPolicy {
@@ -329,6 +469,7 @@ fn process_exits_when_nobody_opens_a_session_in_time() {
 #[test]
 fn page_message_before_tab_gone_still_ends_the_session_by_tab_gone() {
     let mut harness = Harness::start(BrowserSessionPolicy::default());
+    harness.media.drain_answer = Some(DrainProgress::Drained(DrainEnd::NothingToPlay));
     harness.call(HELLO);
     let grant = harness.open(1, "tab-1-video-1");
     let mut socket = attach(&grant);
