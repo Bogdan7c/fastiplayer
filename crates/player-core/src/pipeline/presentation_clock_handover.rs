@@ -200,6 +200,7 @@ impl PlaybackPipeline {
         self.clear_monotonic_media_clock();
         // Новый непрерывный отрезок звука: старый конец (до разрыва) больше не сравниваем.
         self.forget_written_audio_end();
+        self.begin_audio_segment();
         AudioGapResumeOutcome::Resumed { resumed_at }
     }
 

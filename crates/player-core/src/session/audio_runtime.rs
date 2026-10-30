@@ -22,6 +22,9 @@ use super::{
     tick::PlayerTickConfig,
 };
 
+/// Тишина перед первым PCM отрезка, начавшегося позже базы часов.
+pub(super) mod leading_silence;
+
 /// Чистый план выбора audio track-а без decoder/output side effects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct AudioDecoderInitSpec {
@@ -239,6 +242,15 @@ impl PlayerSession {
                         }
                     };
                     if samples.is_empty() {
+                        return;
+                    }
+
+                    // Первый PCM нового отрезка звучит в свой PTS, а не в базе часов.
+                    if let Err(error) =
+                        self.align_audio_segment_start(packet_pts, packet_clip, output_spec)
+                    {
+                        warn!(error = %error, "Leading audio silence could not be written");
+                        self.mark_fatal_error(error);
                         return;
                     }
 

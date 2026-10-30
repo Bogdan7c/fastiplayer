@@ -36,6 +36,7 @@ mod audio_clock_mapping;
 mod audio_output_health;
 mod audio_output_spec_change;
 mod audio_packet_window;
+mod audio_segment_start;
 mod audio_track_switch;
 mod media_slots;
 mod overlapped_audio_output;
@@ -672,6 +673,9 @@ pub(crate) struct PlaybackPipeline {
     /// Media-конец последнего записанного звука (для доказательства разрыва звука).
     written_audio_end: Option<Duration>,
 
+    /// Записан ли уже первый PCM текущего отрезка звука (выравнивание старта по PTS).
+    audio_segment_start: audio_segment_start::AudioSegmentStart,
+
     /// Поколение packets после последнего seek transaction.
     seek_generation: u64,
 
@@ -781,6 +785,7 @@ impl Default for PlaybackPipeline {
             monotonic_media_clock_anchor: None,
             audio_end_clock_handover: AudioEndClockHandover::NotHandedOver,
             written_audio_end: None,
+            audio_segment_start: audio_segment_start::AudioSegmentStart::AwaitingFirstPcm,
             seek_generation: 0,
             audio_buffer_clear_generation: 0,
             last_audio_clock: Duration::ZERO,

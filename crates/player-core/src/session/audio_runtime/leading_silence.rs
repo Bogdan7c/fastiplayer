@@ -1,0 +1,530 @@
+//! Звук начинается позже часов: тишина перед первым PCM нового отрезка звука.
+//!
+//! Дефект (сессия 03e моста). Часы показа на старте ведёт audio output: позиция =
+//! `media_clock_base` + сколько output уже проиграл. Первый PCM, записанный в пустой
+//! output, поэтому звучит ровно в базе (старт воспроизведения, цель seek-а, позиция
+//! смены дорожки). Если данные звука в контейнере начинаются позже базы (видео с 0 с,
+//! звук с 0,4 с — отложенная дорожка, вход в живой поток, seek в место, где звук
+//! начинается чуть позже цели), звук без выравнивания играет раньше видео ровно на этот
+//! разрыв, и так до конца файла. Обрезку «звук раньше базы» делает
+//! `audio_playback_bounds.rs`; здесь — зеркальный случай «звук позже базы».
+//!
+//! Решение как у mpv/ffplay: перед первым PCM отрезка пишется тишина длиной в разрыв,
+//! и первый настоящий sample звучит в свой PTS. Тишина идёт тем же путём, что и звук
+//! (до tempo processor-а), поэтому при скорости ≠ 1 растягивается вместе с ним.
+//! В учёт записанного звука (`note_audio_packet_written`) тишина не входит: конец
+//! звука по-прежнему меряется по PTS packet-а.
+//!
+//! Ветви политики (решения владельца, сессия 03e):
+//! - разрыв до [`LeadingSilencePolicy::SEGMENT_START`] `on_time_tolerance` (20 мс) —
+//!   шум таймстемпов и priming кодека, звук пишется как есть;
+//! - разрыв до `max_silence` (1 с) — тишина;
+//! - разрыв больше — пока прежнее поведение (звук сразу в базу), но явной ветвью
+//!   с логом. Следующий шаг (отдельная задача): звук ждёт своего времени, часы идут;
+//! - audio-only (видео не выбрано) — тишина не пишется: смотреть нечего, поэтому
+//!   воспроизведение начинается с первого sample-а, а часы перепривязываются к его PTS,
+//!   чтобы позиция на шкале совпадала со временем звука. Тот же потолок 1 с: дальше
+//!   (эпоха эфира, битые метки времени) часы не переносятся — прежнее поведение.
+//!
+//! Применяется только к ПЕРВОМУ PCM отрезка (см. `pipeline/audio_segment_start.rs`):
+//! разрывы посреди отрезка ведёт `audio_gap.rs` (≥ 500 мс), а мелкие (20–500 мс) пока
+//! склеиваются — для них отдельная задача может переиспользовать [`plan_leading_silence`]
+//! с конца записанного звука вместо базы.
+
+use std::time::Duration;
+
+use tracing::{debug, info};
+
+use crate::{AudioOutputSpec, PlayerError, PlayerErrorKind, PlayerResult};
+
+use super::super::PlayerSession;
+use super::super::audio_packet_window::DecodedPcmPacketClipOutcome;
+
+/// Наносекунд в секунде (перевод длительности в PCM frames).
+const NANOS_PER_SECOND: u128 = 1_000_000_000;
+
+/// Пороги выравнивания первого PCM по его PTS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::session) struct LeadingSilencePolicy {
+    /// Разрыв не больше этого считается «вовремя»: тишина не пишется.
+    pub(in crate::session) on_time_tolerance: Duration,
+
+    /// Самая длинная тишина, которую можно записать одним куском.
+    pub(in crate::session) max_silence: Duration,
+}
+
+impl LeadingSilencePolicy {
+    /// Политика начала отрезка звука: старт, seek, смена дорожки.
+    ///
+    /// Допуск 20 мс: меньше одного AAC-кадра (21–23 мс) и заметно ниже порога, на
+    /// котором зритель видит рассинхрон губ; ниже него разрыв — это шум таймстемпов
+    /// контейнера и priming кодека. Потолок 1 с: тишина пишется в output одним
+    /// куском вместе с первым packet-ом, а ring buffer вывода держит 2 с; запись,
+    /// не влезшая в свободное место, — фатальная частичная запись.
+    pub(in crate::session) const SEGMENT_START: Self = Self {
+        on_time_tolerance: Duration::from_millis(20),
+        max_silence: Duration::from_millis(1_000),
+    };
+}
+
+/// Сколько тишины нужно перед первым PCM, чтобы он прозвучал в свой PTS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::session) enum LeadingSilence {
+    /// Первый sample звучит вовремя (раньше ожидаемого или в пределах допуска).
+    None,
+
+    /// Перед первым sample-ом нужна тишина.
+    Pad {
+        /// Длина тишины в PCM frames decoded-частоты (до tempo processor-а).
+        silence_frames: usize,
+
+        /// Разрыв между ожидаемым стартом и первым sample-ом.
+        gap: Duration,
+    },
+
+    /// Разрыв больше потолка тишины: одной записью его не закрыть.
+    TooLarge {
+        /// Разрыв между ожидаемым стартом и первым sample-ом.
+        gap: Duration,
+    },
+}
+
+/// Чистый расчёт тишины перед первым sample-ом.
+///
+/// `first_sample_time` — media-время первого sample-а, который будет записан;
+/// `expected_start` — media-время, в которое этот sample прозвучит без тишины.
+/// Длина тишины округляется до ближайшего PCM frame-а.
+#[must_use]
+pub(in crate::session) fn plan_leading_silence(
+    first_sample_time: Duration,
+    expected_start: Duration,
+    sample_rate: u32,
+    policy: LeadingSilencePolicy,
+) -> LeadingSilence {
+    let gap = first_sample_time.saturating_sub(expected_start);
+    if gap <= policy.on_time_tolerance {
+        return LeadingSilence::None;
+    }
+    if gap > policy.max_silence {
+        return LeadingSilence::TooLarge { gap };
+    }
+
+    let silence_frames = duration_to_nearest_frames(gap, sample_rate);
+    if silence_frames == 0 {
+        // Только при нулевой частоте: такой spec до записи не доходит, но тишина
+        // из нуля frames всё равно ничего не меняет.
+        return LeadingSilence::None;
+    }
+    LeadingSilence::Pad {
+        silence_frames,
+        gap,
+    }
+}
+
+/// Что делать с первым PCM packet-а относительно начала отрезка звука.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::session) enum AudioSegmentStartPlan {
+    /// PCM продолжает уже начатый отрезок: стартовая политика не применяется.
+    ContinuesSegment,
+
+    /// Первый PCM отрезка звучит вовремя.
+    OnTime,
+
+    /// Есть видео: перед первым PCM пишется тишина.
+    PadWithSilence {
+        /// Длина тишины в PCM frames decoded-частоты.
+        silence_frames: usize,
+
+        /// Разрыв между базой часов и первым sample-ом.
+        gap: Duration,
+    },
+
+    /// Разрыв больше потолка: прежнее поведение — PCM пишется сразу в базу. С видео
+    /// звук играет раньше видео на `gap` (следующая задача: звук ждёт своего времени);
+    /// audio-only — часы не переносятся: PTS за потолком (эпоха эфира, битые метки
+    /// времени) увёл бы позицию за шкалу.
+    GapAboveSilenceCap {
+        /// Разрыв между базой часов и первым sample-ом.
+        gap: Duration,
+    },
+
+    /// Audio-only, разрыв не больше потолка: тишина не пишется, часы начинают с PTS
+    /// первого sample-а.
+    StartClockAtFirstSample {
+        /// Media-время первого sample-а — новая база часов.
+        first_sample_time: Duration,
+
+        /// Разрыв между прежней базой и первым sample-ом.
+        gap: Duration,
+    },
+
+    /// Audio-only во время seek-а: базу часов задаёт seek commit (цель seek-а),
+    /// поэтому здесь она не трогается — прежнее поведение.
+    AudioOnlySeekKeepsClockBase {
+        /// Разрыв между целью seek-а и первым sample-ом.
+        gap: Duration,
+    },
+}
+
+impl PlayerSession {
+    /// Выравнивает первый PCM нового отрезка звука по его PTS (см. модуль).
+    ///
+    /// Вызывается между обрезкой decoded PCM и его записью. Ошибка — это ошибка записи
+    /// тишины в output: она фатальна так же, как ошибка записи самого звука.
+    pub(in crate::session) fn align_audio_segment_start(
+        &mut self,
+        packet_pts: Duration,
+        packet_clip: DecodedPcmPacketClipOutcome,
+        output_spec: AudioOutputSpec,
+    ) -> PlayerResult<()> {
+        let first_sample_time =
+            first_retained_sample_time(packet_pts, packet_clip, output_spec.sample_rate);
+        let plan = self.plan_audio_segment_start(first_sample_time, output_spec.sample_rate);
+        let clock_base = self.pipeline.media_clock_base();
+        match plan {
+            AudioSegmentStartPlan::ContinuesSegment | AudioSegmentStartPlan::OnTime => Ok(()),
+            AudioSegmentStartPlan::PadWithSilence {
+                silence_frames,
+                gap,
+            } => {
+                debug!(
+                    gap_ms = gap.as_millis(),
+                    silence_frames,
+                    clock_base_ms = clock_base.as_millis(),
+                    "Audio starts after the clock base; leading silence keeps A/V in sync"
+                );
+                self.write_leading_silence(silence_frames, output_spec)
+            }
+            AudioSegmentStartPlan::GapAboveSilenceCap { gap } => {
+                info!(
+                    gap_ms = gap.as_millis(),
+                    max_silence_ms = LeadingSilencePolicy::SEGMENT_START.max_silence.as_millis(),
+                    clock_base_ms = clock_base.as_millis(),
+                    has_video = self.pipeline.has_selected_video_track(),
+                    "Audio starts too far after the clock base to align it; \
+                     it is written at the clock base (ahead of video, or position offset)"
+                );
+                Ok(())
+            }
+            AudioSegmentStartPlan::StartClockAtFirstSample {
+                first_sample_time,
+                gap,
+            } => {
+                // Output ещё пуст в этом отрезке, поэтому перепривязка ставит его
+                // текущую позицию ровно на PTS первого sample-а; позиция на шкале
+                // сразу показывает, откуда начнётся звук.
+                self.pipeline.set_media_clock_base(first_sample_time);
+                self.publish_clock_sample(first_sample_time);
+                debug!(
+                    gap_ms = gap.as_millis(),
+                    first_sample_ms = first_sample_time.as_millis(),
+                    "Audio-only playback starts at the first audio sample"
+                );
+                Ok(())
+            }
+            AudioSegmentStartPlan::AudioOnlySeekKeepsClockBase { gap } => {
+                debug!(
+                    gap_ms = gap.as_millis(),
+                    "Audio-only seek: audio starts after the target, clock base stays at the target"
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// Решает, как выровнять PCM, первый sample которого звучит в `first_sample_time`.
+    #[must_use]
+    pub(in crate::session) fn plan_audio_segment_start(
+        &self,
+        first_sample_time: Duration,
+        sample_rate: u32,
+    ) -> AudioSegmentStartPlan {
+        if !self.pipeline.audio_segment_awaits_first_pcm() {
+            return AudioSegmentStartPlan::ContinuesSegment;
+        }
+
+        // Без тишины первый PCM пустого output-а звучит ровно в базе часов; той же
+        // базой `audio_playback_bounds` обрезает звук, начавшийся раньше неё.
+        let leading_silence = plan_leading_silence(
+            first_sample_time,
+            self.pipeline.media_clock_base(),
+            sample_rate,
+            LeadingSilencePolicy::SEGMENT_START,
+        );
+        if self.pipeline.has_selected_video_track() {
+            return match leading_silence {
+                LeadingSilence::None => AudioSegmentStartPlan::OnTime,
+                LeadingSilence::Pad {
+                    silence_frames,
+                    gap,
+                } => AudioSegmentStartPlan::PadWithSilence {
+                    silence_frames,
+                    gap,
+                },
+                LeadingSilence::TooLarge { gap } => {
+                    AudioSegmentStartPlan::GapAboveSilenceCap { gap }
+                }
+            };
+        }
+
+        // Audio-only: тишина не пишется вовсе, а потолок ограничивает перенос часов.
+        let gap = match leading_silence {
+            LeadingSilence::None => return AudioSegmentStartPlan::OnTime,
+            LeadingSilence::TooLarge { gap } => {
+                return AudioSegmentStartPlan::GapAboveSilenceCap { gap };
+            }
+            LeadingSilence::Pad { gap, .. } => gap,
+        };
+        if self.has_active_seek_commit() {
+            return AudioSegmentStartPlan::AudioOnlySeekKeepsClockBase { gap };
+        }
+        AudioSegmentStartPlan::StartClockAtFirstSample {
+            first_sample_time,
+            gap,
+        }
+    }
+
+    /// Пишет тишину тем же путём, что и decoded PCM (с tempo processor-ом при rate ≠ 1).
+    fn write_leading_silence(
+        &mut self,
+        silence_frames: usize,
+        output_spec: AudioOutputSpec,
+    ) -> PlayerResult<()> {
+        let channel_count = usize::try_from(output_spec.channels())
+            .map_err(|_| leading_silence_size_error(silence_frames, output_spec.channels()))?;
+        let silence_sample_count = silence_frames
+            .checked_mul(channel_count)
+            .ok_or_else(|| leading_silence_size_error(silence_frames, output_spec.channels()))?;
+        let silence = vec![0.0_f32; silence_sample_count];
+        self.write_decoded_audio_samples_at_current_rate(&silence, output_spec)
+    }
+}
+
+/// Media-время первого sample-а, который останется после exact clip-а packet-а.
+///
+/// Обрезка по базе часов здесь не учитывается намеренно: она срабатывает только для
+/// звука раньше базы, а такой звук и так начинается вовремя (разрыв ноль).
+fn first_retained_sample_time(
+    packet_pts: Duration,
+    packet_clip: DecodedPcmPacketClipOutcome,
+    sample_rate: u32,
+) -> Duration {
+    let clipped_leading_frames = match packet_clip {
+        DecodedPcmPacketClipOutcome::Retained(retained_frames) => retained_frames.first_frame(),
+        DecodedPcmPacketClipOutcome::Unbounded | DecodedPcmPacketClipOutcome::FullyDropped => 0,
+    };
+    packet_pts.saturating_add(frames_to_duration(clipped_leading_frames, sample_rate))
+}
+
+/// Переводит длительность в ближайшее целое число PCM frames.
+fn duration_to_nearest_frames(duration: Duration, sample_rate: u32) -> usize {
+    let scaled = duration.as_nanos().saturating_mul(u128::from(sample_rate));
+    let frames = scaled.saturating_add(NANOS_PER_SECOND / 2) / NANOS_PER_SECOND;
+    usize::try_from(frames).unwrap_or(usize::MAX)
+}
+
+/// Переводит число PCM frames в длительность (с округлением вниз).
+fn frames_to_duration(frames: usize, sample_rate: u32) -> Duration {
+    if sample_rate == 0 {
+        return Duration::ZERO;
+    }
+    let nanos = (frames as u128).saturating_mul(NANOS_PER_SECOND) / u128::from(sample_rate);
+    Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+}
+
+/// Ошибка размера тишины: число samples не помещается в адресное пространство.
+fn leading_silence_size_error(silence_frames: usize, channels: u32) -> PlayerError {
+    PlayerError::new(
+        PlayerErrorKind::RuntimeError,
+        format!(
+            "Leading audio silence of {silence_frames} frames x {channels} channels does not fit in memory"
+        ),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Частота, на которой считаем основные границы.
+    const RATE_48K: u32 = 48_000;
+
+    /// Политика начала отрезка.
+    const POLICY: LeadingSilencePolicy = LeadingSilencePolicy::SEGMENT_START;
+
+    #[test]
+    fn gap_within_tolerance_needs_no_silence() {
+        let base = Duration::from_secs(5);
+
+        for first_sample in [
+            base,
+            base + Duration::from_millis(10),
+            base + POLICY.on_time_tolerance,
+        ] {
+            assert_eq!(
+                plan_leading_silence(first_sample, base, RATE_48K, POLICY),
+                LeadingSilence::None,
+                "first sample at {first_sample:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_before_the_base_needs_no_silence() {
+        // Звук раньше базы обрезается, а не выравнивается тишиной.
+        let plan = plan_leading_silence(
+            Duration::from_millis(4_900),
+            Duration::from_secs(5),
+            RATE_48K,
+            POLICY,
+        );
+
+        assert_eq!(plan, LeadingSilence::None);
+    }
+
+    #[test]
+    fn gap_just_above_tolerance_and_up_to_cap_is_padded_exactly() {
+        let base = Duration::from_secs(2);
+
+        let just_above =
+            plan_leading_silence(base + Duration::from_millis(21), base, RATE_48K, POLICY);
+        let typical =
+            plan_leading_silence(base + Duration::from_millis(400), base, RATE_48K, POLICY);
+        let at_cap = plan_leading_silence(base + POLICY.max_silence, base, RATE_48K, POLICY);
+
+        assert_eq!(
+            just_above,
+            LeadingSilence::Pad {
+                silence_frames: 1_008,
+                gap: Duration::from_millis(21),
+            }
+        );
+        assert_eq!(
+            typical,
+            LeadingSilence::Pad {
+                silence_frames: 19_200,
+                gap: Duration::from_millis(400),
+            }
+        );
+        assert_eq!(
+            at_cap,
+            LeadingSilence::Pad {
+                silence_frames: 48_000,
+                gap: POLICY.max_silence,
+            }
+        );
+    }
+
+    #[test]
+    fn gap_above_cap_is_too_large_for_silence() {
+        let base = Duration::from_secs(1);
+        let gap = POLICY.max_silence + Duration::from_millis(1);
+
+        let plan = plan_leading_silence(base + gap, base, RATE_48K, POLICY);
+
+        assert_eq!(plan, LeadingSilence::TooLarge { gap });
+    }
+
+    #[test]
+    fn silence_length_rounds_to_the_nearest_frame_at_any_sample_rate() {
+        // 30,02 мс при 44,1 кГц = 1323,88 frame-а: ближайший — 1324, а не 1323.
+        let rounded_up = plan_leading_silence(
+            Duration::from_micros(30_020),
+            Duration::ZERO,
+            44_100,
+            POLICY,
+        );
+        // 30,01 мс при 44,1 кГц = 1323,44 frame-а: ближайший — 1323.
+        let rounded_down = plan_leading_silence(
+            Duration::from_micros(30_010),
+            Duration::ZERO,
+            44_100,
+            POLICY,
+        );
+        // 0,4 с при 22,05 кГц — ровно 8820 frames.
+        let exact =
+            plan_leading_silence(Duration::from_millis(400), Duration::ZERO, 22_050, POLICY);
+
+        assert!(matches!(
+            rounded_up,
+            LeadingSilence::Pad {
+                silence_frames: 1_324,
+                ..
+            }
+        ));
+        assert!(matches!(
+            rounded_down,
+            LeadingSilence::Pad {
+                silence_frames: 1_323,
+                ..
+            }
+        ));
+        assert!(matches!(
+            exact,
+            LeadingSilence::Pad {
+                silence_frames: 8_820,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn zero_sample_rate_never_writes_silence() {
+        let plan = plan_leading_silence(Duration::from_millis(400), Duration::ZERO, 0, POLICY);
+
+        assert_eq!(plan, LeadingSilence::None);
+    }
+
+    #[test]
+    fn custom_policy_moves_both_thresholds() {
+        // Будущая политика (например, мелкие разрывы посреди отрезка) задаёт свои пороги.
+        let mid_stream = LeadingSilencePolicy {
+            on_time_tolerance: Duration::from_millis(5),
+            max_silence: Duration::from_millis(500),
+        };
+
+        assert!(matches!(
+            plan_leading_silence(
+                Duration::from_millis(10),
+                Duration::ZERO,
+                RATE_48K,
+                mid_stream
+            ),
+            LeadingSilence::Pad {
+                silence_frames: 480,
+                ..
+            }
+        ));
+        assert_eq!(
+            plan_leading_silence(
+                Duration::from_millis(600),
+                Duration::ZERO,
+                RATE_48K,
+                mid_stream
+            ),
+            LeadingSilence::TooLarge {
+                gap: Duration::from_millis(600)
+            }
+        );
+    }
+
+    #[test]
+    fn first_sample_time_includes_exact_packet_clip() {
+        use super::super::super::audio_packet_window::DecodedPcmFrameRange;
+
+        // Окно packet-а отрезало первые 4 frame-а при 4 Гц: звук начинается на 1 с позже PTS.
+        let clipped = first_retained_sample_time(
+            Duration::from_secs(2),
+            DecodedPcmPacketClipOutcome::Retained(DecodedPcmFrameRange::ordered_or_empty(4, 8)),
+            4,
+        );
+        let unbounded = first_retained_sample_time(
+            Duration::from_secs(2),
+            DecodedPcmPacketClipOutcome::Unbounded,
+            4,
+        );
+
+        assert_eq!(clipped, Duration::from_secs(3));
+        assert_eq!(unbounded, Duration::from_secs(2));
+    }
+}

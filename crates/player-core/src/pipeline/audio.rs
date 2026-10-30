@@ -117,6 +117,8 @@ impl PlaybackPipeline {
         self.clear_audio_tempo_processor();
         self.clear_audio_clock();
         self.audio_output_play_requested = false;
+        // Следующий output создаётся пустым: его первый PCM звучит в точке привязки часов.
+        self.begin_audio_segment();
     }
 
     /// Проверяет наличие audio output-а без доступа к concrete CPAL handle.
@@ -131,7 +133,9 @@ impl PlaybackPipeline {
         samples: &[f32],
         intent: audio_core::AudioOutputWriteIntent,
     ) -> AudioOutputRoutingStatus {
-        route_audio_output_samples(&mut self.audio_output, samples, intent)
+        let write_status = route_audio_output_samples(&mut self.audio_output, samples, intent);
+        self.note_audio_segment_pcm_routed(&write_status);
+        write_status
     }
 
     /// Устанавливает tempo processor, которым pipeline владеет между decoder и output.
@@ -219,6 +223,7 @@ impl PlaybackPipeline {
             stretched_output.interleaved_samples(),
             audio_core::AudioOutputWriteIntent::TempoProcessed,
         );
+        self.note_audio_segment_pcm_routed(&write_status);
 
         Some(Ok(RoutedAudioTempoOutput {
             report,
@@ -351,6 +356,11 @@ impl PlaybackPipeline {
             .as_mut()
             .map(|output| output.clear_buffer_for_seek(generation));
         self.clear_audio_tempo_processor();
+        // Буфер пуст (или output-а нет): первый PCM после seek-а ляжет в точку привязки
+        // часов. Ошибка очистки оставляет старый звук в ring-е — отрезок не начинается.
+        if !matches!(clear_result, Some(Err(_))) {
+            self.begin_audio_segment();
+        }
         clear_result
     }
 

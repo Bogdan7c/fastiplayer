@@ -57,6 +57,12 @@ impl DecodedPcmFrameRange {
         Self::ordered_or_empty(start, end_exclusive)
     }
 
+    /// Номер первого retained frame-а в исходном decoded block-е.
+    #[must_use]
+    pub(super) const fn first_frame(self) -> usize {
+        self.start
+    }
+
     /// Проверяет отсутствие retained frames.
     #[must_use]
     pub(super) const fn is_empty(self) -> bool {

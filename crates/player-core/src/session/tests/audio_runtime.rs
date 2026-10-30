@@ -47,7 +47,7 @@ fn starvation_diagnostics_keep_low_buffer_as_risk_only() {
 }
 
 #[derive(Clone)]
-struct FakeTempoFactoryHandle {
+pub(super) struct FakeTempoFactoryHandle {
     created_segments: Arc<Mutex<Vec<AudioTempoSegmentId>>>,
     set_segments: Arc<Mutex<Vec<AudioTempoSegmentId>>>,
     primed_inputs: Arc<Mutex<Vec<Vec<f32>>>>,
@@ -81,7 +81,7 @@ impl FakeTempoFactoryHandle {
             .clone()
     }
 
-    fn processed_inputs(&self) -> Vec<Vec<f32>> {
+    pub(super) fn processed_inputs(&self) -> Vec<Vec<f32>> {
         self.processed_inputs
             .lock()
             .expect("processed inputs mutex should not be poisoned")
@@ -124,12 +124,12 @@ impl FakeTempoFactoryHandle {
     }
 }
 
-struct FakeTempoFactory {
+pub(super) struct FakeTempoFactory {
     handle: FakeTempoFactoryHandle,
 }
 
 impl FakeTempoFactory {
-    fn new() -> (Arc<Self>, FakeTempoFactoryHandle) {
+    pub(super) fn new() -> (Arc<Self>, FakeTempoFactoryHandle) {
         let handle = FakeTempoFactoryHandle::new();
         (
             Arc::new(Self {

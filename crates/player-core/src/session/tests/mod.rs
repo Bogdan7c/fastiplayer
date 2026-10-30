@@ -46,6 +46,7 @@ mod test_support;
 mod tracing_capture;
 
 mod audio_gap_clock_handover;
+mod audio_leading_silence;
 mod audio_output_handover;
 mod audio_output_recovery;
 mod audio_packet_window;
