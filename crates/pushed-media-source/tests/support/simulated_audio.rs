@@ -28,8 +28,10 @@ struct DeviceState {
     played_frames: u64,
     /// Идёт ли воспроизведение.
     playing: bool,
-    /// Заморожены ли часы паузой.
-    frozen: Option<AudioOutputClockTiming>,
+    /// Позиция слышимого звука, на которой часы заморожены паузой. Конец записанного
+    /// при этом не замораживается: он всегда считается по живому буферу (иначе после
+    /// очистки на паузе уровень остался бы старым).
+    frozen_audible: Option<Duration>,
     /// Кадров записано за всё время (не сбрасывается перемоткой и часами).
     written_frames_total: u64,
     /// Начинала ли «карта» играть хоть раз.
@@ -157,9 +159,6 @@ impl SimulatedAudioDevice {
 
     fn timing(&self) -> AudioOutputClockTiming {
         let state = self.lock();
-        if let Some(frozen) = state.frozen {
-            return frozen;
-        }
         let Some((sample_rate, _)) = state.format else {
             return AudioOutputClockTiming::new(Duration::ZERO, Duration::ZERO);
         };
@@ -170,7 +169,9 @@ impl SimulatedAudioDevice {
             )
         };
         AudioOutputClockTiming::new(
-            to_time(state.played_frames),
+            state
+                .frozen_audible
+                .unwrap_or_else(|| to_time(state.played_frames)),
             to_time(state.submitted_frames),
         )
     }
@@ -254,7 +255,7 @@ impl PlayerAudioOutput for SimulatedOutput {
         let mut state = self.device.lock();
         state.playing = true;
         state.started = true;
-        state.frozen = None;
+        state.frozen_audible = None;
         Ok(())
     }
 
@@ -262,7 +263,7 @@ impl PlayerAudioOutput for SimulatedOutput {
         let timing = self.device.timing();
         let mut state = self.device.lock();
         state.playing = false;
-        state.frozen = Some(timing);
+        state.frozen_audible = Some(timing.audible_output_position());
         Ok(timing)
     }
 
@@ -312,10 +313,59 @@ impl PlayerAudioClock for SimulatedClock {
         let mut state = self.device.lock();
         state.played_frames = 0;
         state.submitted_frames = 0;
-        state.frozen = None;
+        state.frozen_audible = None;
     }
 
     fn underrun_callbacks(&self) -> u64 {
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Открывает выход симулятора: 1000 Гц, моно (1 кадр = 1 мс).
+    fn open_output(device: &SimulatedAudioDevice) -> Box<dyn PlayerAudioOutput> {
+        let spec = AudioOutputSpec::new(1000, player_core::AudioChannelLayout::mono());
+        device
+            .factory()
+            .create_output(spec, AudioOutputDeviceRequest::SystemDefault)
+            .expect("выход симулятора")
+            .output
+    }
+
+    /// Пишет `frames` кадров звука.
+    fn write(output: &mut dyn PlayerAudioOutput, frames: usize) {
+        output
+            .write_samples(&vec![0.5; frames], AudioOutputWriteIntent::DirectDecodedPcm)
+            .expect("запись");
+    }
+
+    #[test]
+    fn clear_on_pause_empties_level_and_playback_spends_new_audio() {
+        let device = SimulatedAudioDevice::default();
+        let mut output = open_output(&device);
+        output.play().unwrap();
+        write(output.as_mut(), 500);
+        device.advance(Duration::from_millis(100));
+        output.pause_and_freeze_clock().unwrap();
+        assert!((output.buffer_level_ms() - 400.0).abs() < 1.0);
+
+        output.clear_buffer_for_seek(1).unwrap();
+        assert_eq!(
+            output.buffer_level_ms(),
+            0.0,
+            "после clear на паузе буфер пуст"
+        );
+
+        write(output.as_mut(), 300);
+        assert!((output.buffer_level_ms() - 300.0).abs() < 1.0);
+        output.play().unwrap();
+        device.advance(Duration::from_millis(200));
+        assert!(
+            (output.buffer_level_ms() - 100.0).abs() < 1.0,
+            "звук тратится как прежде"
+        );
     }
 }

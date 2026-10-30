@@ -32,10 +32,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use player_core::{
-    AudioOutputClockTiming, AudioOutputDeviceRequest, AudioOutputFactory, AudioOutputSpec,
-    AudioOutputWriteError, AudioOutputWriteIntent, AudioOutputWriteReport, CreatedAudioOutput,
-    PlaybackState, PlayerAudioClock, PlayerAudioOutput, PlayerCommand, PlayerEvent, PlayerSession,
-    PlayerTickContext, PreparedMedia, ScrubCommitPolicy, SeekRequest,
+    PlaybackState, PlayerCommand, PlayerEvent, PlayerSession, PlayerTickContext, PreparedMedia,
+    ScrubCommitPolicy, SeekRequest,
 };
 use pushed_media_source::{
     LaneId, PushedContainer, PushedDuration, PushedSourcePolicy, PushedStreamDemuxer, pushed_stream,
@@ -120,100 +118,6 @@ fn start_software_video_decoder() -> player_core::StartedVideoBackend {
     .expect("software FFmpeg decoder")
 }
 
-/// Выход симулятора с уровнем буфера, как у настоящего выхода после очистки на паузе.
-///
-/// Симулятор обвязки на паузе считает уровень по замороженным часам и после очистки
-/// под seek продолжает сообщать старый уровень — плеер тогда не декодирует звук во
-/// время drag-а, и дефект D2 не воспроизводится. Настоящий выход (`audio/src/output.rs`)
-/// после очистки сообщает пустой буфер. Обёртка исправляет только это: на паузе после
-/// очистки уровень — PCM, записанный с момента очистки; остальное делает симулятор.
-struct ClearAwareOutput {
-    /// Выход симулятора.
-    inner: Box<dyn PlayerAudioOutput>,
-    /// Частота выхода.
-    sample_rate: u32,
-    /// Каналов выхода.
-    channels: usize,
-    /// Выход на паузе (часы симулятора заморожены).
-    paused: bool,
-    /// PCM-кадров, записанных после очистки на паузе (`None` — очистки на паузе не было).
-    frames_written_since_paused_clear: Option<u64>,
-}
-
-impl PlayerAudioOutput for ClearAwareOutput {
-    fn write_samples(
-        &mut self,
-        samples: &[f32],
-        intent: AudioOutputWriteIntent,
-    ) -> Result<AudioOutputWriteReport, AudioOutputWriteError> {
-        let report = self.inner.write_samples(samples, intent)?;
-        if let Some(frames) = self.frames_written_since_paused_clear.as_mut() {
-            *frames += (samples.len() / self.channels) as u64;
-        }
-        Ok(report)
-    }
-
-    fn play(&mut self) -> anyhow::Result<()> {
-        self.inner.play()?;
-        self.paused = false;
-        self.frames_written_since_paused_clear = None;
-        Ok(())
-    }
-
-    fn pause_and_freeze_clock(&mut self) -> anyhow::Result<AudioOutputClockTiming> {
-        let timing = self.inner.pause_and_freeze_clock()?;
-        self.paused = true;
-        Ok(timing)
-    }
-
-    fn clear_buffer_for_seek(&mut self, generation: u64) -> anyhow::Result<u64> {
-        let acknowledged = self.inner.clear_buffer_for_seek(generation)?;
-        if self.paused {
-            self.frames_written_since_paused_clear = Some(0);
-        }
-        Ok(acknowledged)
-    }
-
-    fn set_volume(&mut self, volume: f32) {
-        self.inner.set_volume(volume);
-    }
-
-    fn buffer_level_ms(&self) -> f64 {
-        match self.frames_written_since_paused_clear {
-            Some(frames) => frames as f64 * 1000.0 / f64::from(self.sample_rate),
-            None => self.inner.buffer_level_ms(),
-        }
-    }
-
-    fn clock(&self) -> Arc<dyn PlayerAudioClock> {
-        self.inner.clock()
-    }
-}
-
-/// Фабрика: выходы симулятора в обёртке [`ClearAwareOutput`].
-struct ClearAwareOutputFactory {
-    /// Фабрика симулятора.
-    simulator: Arc<dyn AudioOutputFactory>,
-}
-
-impl AudioOutputFactory for ClearAwareOutputFactory {
-    fn create_output(
-        &self,
-        spec: AudioOutputSpec,
-        device_request: AudioOutputDeviceRequest,
-    ) -> anyhow::Result<CreatedAudioOutput> {
-        let created = self.simulator.create_output(spec, device_request)?;
-        let output = ClearAwareOutput {
-            inner: created.output,
-            sample_rate: spec.sample_rate,
-            channels: spec.channels() as usize,
-            paused: false,
-            frames_written_since_paused_clear: None,
-        };
-        Ok(CreatedAudioOutput::new(Box::new(output), created.route))
-    }
-}
-
 /// Безоконный плеер: сессия, «звуковая карта» и шаги по настоящему времени.
 struct Player {
     /// Сессия с настоящими декодерами.
@@ -232,9 +136,7 @@ impl Player {
         let device = SimulatedAudioDevice::default();
         let mut session = PlayerSession::with_audio_factories(
             Arc::new(audio::ProductionAudioDecoderFactory::default()),
-            Arc::new(ClearAwareOutputFactory {
-                simulator: device.factory(),
-            }),
+            device.factory(),
         );
         session.set_system_capabilities(software_only_capabilities());
         let prepared =
