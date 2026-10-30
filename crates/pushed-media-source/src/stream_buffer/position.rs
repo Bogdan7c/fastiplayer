@@ -94,6 +94,22 @@ impl StreamBuffer {
         state.stale_position_gate = Some(StalePositionGate::new(target, Instant::now()));
     }
 
+    /// Первый момент, с которого данные есть на полке у КАЖДОЙ полосы с метками
+    /// времени: самое позднее из начал полос.
+    ///
+    /// `None` — у какой-то полосы с метками полка пуста или таких полос нет (TS без
+    /// времени коробок: «где начало» источник не знает).
+    pub(crate) fn earliest_common_start(&self) -> Option<MediaTime> {
+        let mut state = self.lock();
+        let mut common_start: Option<MediaTime> = None;
+        for lane in state.timed_lanes_mut() {
+            // Одна пустая полоса — общего начала ещё нет: плеер ждал бы её данных.
+            let lane_start = lane.shelf.earliest_start()?;
+            common_start = Some(common_start.map_or(lane_start, |start| start.max(lane_start)));
+        }
+        common_start
+    }
+
     /// Запас вперёд и «полон» (правило — в описании модуля и в
     /// [`BufferStatus::buffered_ahead`]).
     pub(crate) fn buffer_status(&self) -> BufferStatus {

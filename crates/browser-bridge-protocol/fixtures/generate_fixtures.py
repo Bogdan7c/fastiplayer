@@ -695,11 +695,63 @@ class StreamWriter:
         (self.directory / file_name).write_bytes(source_buffer_frame(generation, source_buffer, sequence, payload))
         self.steps.append({"binary": file_name})
 
+    def await_clock(self, position_us: int) -> None:
+        """Пауза записи: страница ждала, пока часы плеера дойдут до `position_us`.
+
+        Не сообщение и не рамка, а темп воспроизведения записи: смена качества
+        случилась посреди просмотра. Проигрыватель записи (тест) ждёт `clock` плеера
+        с позицией не меньше этой; сторож протокола такие шаги пропускает.
+        """
+        self.steps.append({"await_clock_us": position_us})
+
     def finish(self, manifest: Manifest, expect: dict[str, Any]) -> None:
         (self.directory / "stream.json").write_bytes(
             json.dumps({"steps": self.steps, "expect": expect}, ensure_ascii=False, indent=2).encode() + b"\n"
         )
         manifest.streams.append(self.name)
+
+
+@dataclass
+class Fragment:
+    """Фрагмент fMP4 (`moof` + `mdat`): время начала и место в файле."""
+
+    start_us: int
+    offset: int
+    end: int
+
+
+def split_fragments(mp4: bytes) -> tuple[int, list[Fragment]]:
+    """Конец init-сегмента и фрагменты fMP4 с временем начала (`tfdt` / `mdhd`).
+
+    Независимый от Rust разбор: только верхние боксы и два поля времени.
+    """
+    offset, init_end, timescale = 0, 0, 0
+    fragments: list[Fragment] = []
+    while offset < len(mp4):
+        size, box_type = struct.unpack_from(">I4s", mp4, offset)
+        box = mp4[offset : offset + size]
+        if box_type == b"moov":
+            mdhd = box.find(b"mdhd")
+            version = box[mdhd + 4]
+            timescale_at = mdhd + (16 if version == 0 else 24)
+            timescale = struct.unpack_from(">I", box, timescale_at)[0]
+            init_end = offset + size
+        elif box_type == b"moof":
+            tfdt = box.find(b"tfdt")
+            version = box[tfdt + 4]
+            decode_time = struct.unpack_from(">I" if version == 0 else ">Q", box, tfdt + 8)[0]
+            fragments.append(Fragment(decode_time * 1_000_000 // timescale, offset, offset + size))
+        elif box_type == b"mdat" and fragments:
+            fragments[-1].end = offset + size
+        offset += size
+    return init_end, fragments
+
+
+def fragments_from(fragments: list[Fragment], start_us: int, end_us: int) -> list[Fragment]:
+    """Фрагменты, нужные странице для показа [start_us, end_us): с последнего,
+    начатого не позже `start_us` (страница кладёт коробку, содержащую её позицию)."""
+    first = max(index for index, fragment in enumerate(fragments) if fragment.start_us <= start_us)
+    return [fragment for fragment in fragments[first:] if fragment.start_us < end_us]
 
 
 def write_streams(manifest: Manifest) -> None:
@@ -805,6 +857,80 @@ def write_streams(manifest: Manifest) -> None:
     )
     stream.text(page_message("tab_gone", reason="closed"))
     stream.finish(manifest, {"admitted": [], "dropped_frames": 0, "dropped_messages": 0})
+
+    write_quality_switch_stream(manifest)
+
+
+def write_quality_switch_stream(manifest: Manifest) -> None:
+    """5. Смена качества новым MediaSource три раза подряд (сессия 03e).
+
+    Образец — живая запись YouTube (results/03e.md): каждая смена — новое поколение;
+    страница объявляет поколение и SourceBuffer, кладёт init-сегменты, ставит
+    `currentTime` на позицию зрителя (`seek_started{page_seek}`) и только потом кладёт
+    коробки — видео с ключевого кадра до позиции, звук с ещё более раннего фрагмента.
+    Позиция зрителя чуть впереди часов плеера на момент смены: старт на позиции
+    страницы не отбрасывает плеер назад.
+    """
+    qualities = {
+        64: (MEDIA_ROOT / "video-64-6s.mp4").read_bytes(),
+        96: (MEDIA_ROOT / "video-96-6s.mp4").read_bytes(),
+    }
+    audio = (MEDIA_ROOT / "audio-6s.mp4").read_bytes()
+    audio_init_end, audio_fragments = split_fragments(audio)
+    duration_us = 6_000_000
+    # (поколение, качество, ждать часов, позиция страницы, конец того, что кладём)
+    # Ключевые кадры видео — каждые 1,2 с, поэтому коробки нового поколения начинаются
+    # почти на секунду раньше позиции страницы: старт «с первой коробки» вместо позиции
+    # отбросил бы часы назад заметно больше задержки установки поколения.
+    switches = [
+        (1, 64, None, 0, 2_400_000),
+        (2, 96, 1_800_000, 2_200_000, 3_600_000),
+        (3, 64, 3_200_000, 3_500_000, 4_800_000),
+        (4, 96, 4_400_000, 4_700_000, duration_us),
+    ]
+    stream = StreamWriter("quality-switch-new-media-source")
+    admitted: list[dict[str, Any]] = []
+    for generation, quality, await_us, page_position_us, end_us in switches:
+        video = qualities[quality]
+        video_init_end, video_fragments = split_fragments(video)
+        if await_us is not None:
+            stream.await_clock(await_us)
+        stream.text(page_message("generation_started", generation=generation))
+        stream.text(
+            page_message("duration_changed", generation=generation, duration={"kind": "finite", "duration_us": duration_us})
+        )
+        stream.text(page_message("source_buffer_added", generation=generation, source_buffer=0, mime_type=AUDIO_MIME))
+        stream.text(page_message("source_buffer_added", generation=generation, source_buffer=1, mime_type=VIDEO_MIME))
+        stream.frame(generation, 0, audio[:audio_init_end])
+        stream.frame(generation, 1, video[:video_init_end])
+        if generation > 1:
+            stream.text(page_message("seek_started", target_us=page_position_us, cause={"kind": "page_seek"}))
+        # Звук — с фрагмента на целый шаг раньше ключевого кадра видео (как YouTube).
+        video_part = fragments_from(video_fragments, page_position_us, end_us)
+        audio_part = fragments_from(audio_fragments, video_part[0].start_us, end_us)
+        for fragment in audio_part:
+            stream.frame(generation, 0, audio[fragment.offset : fragment.end])
+        for fragment in video_part:
+            stream.frame(generation, 1, video[fragment.offset : fragment.end])
+        if end_us == duration_us:
+            stream.text(page_message("end_of_stream", generation=generation))
+        admitted.append(
+            {
+                "generation": generation,
+                "source_buffer": 0,
+                "media": "audio-6s.mp4",
+                "ranges": [[0, audio_init_end], [audio_part[0].offset, audio_part[-1].end]],
+            }
+        )
+        admitted.append(
+            {
+                "generation": generation,
+                "source_buffer": 1,
+                "media": f"video-{quality}-6s.mp4",
+                "ranges": [[0, video_init_end], [video_part[0].offset, video_part[-1].end]],
+            }
+        )
+    stream.finish(manifest, {"admitted": admitted, "dropped_frames": 0, "dropped_messages": 0})
 
 
 def main() -> None:

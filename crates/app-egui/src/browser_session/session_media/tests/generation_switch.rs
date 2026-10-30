@@ -87,6 +87,41 @@ fn a_page_seek_while_a_newer_generation_opens_does_not_move_the_old_video() {
     );
 }
 
+/// Перемотка страницы ПОСЛЕ загрузки нового поколения, но ДО его показа: команда
+/// сейчас досталась бы прежнему медиа (плеер ставит новое асинхронно). Старое видео
+/// не двигается; новое перематывается ровно один раз — когда плеер его показал.
+#[test]
+fn a_page_seek_while_the_next_generation_installs_reaches_it_once_it_is_shown() {
+    let (mut harness, current, _writers) = second_generation_installing();
+    let target = Duration::from_millis(300);
+    let page_target = MediaTime::from_micros(300_000).expect("time");
+    harness.media.on_intake(
+        vec![intent(&current, PageIntent::FollowPageSeek(page_target))],
+        None,
+    );
+    let start = Instant::now();
+    harness.media.drive(start);
+    let calls = harness.player.take_calls();
+    assert!(
+        !calls.iter().any(|call| matches!(call, PlayerCall::Seek(_))),
+        "the old video was moved: {calls:?}"
+    );
+
+    let second_load = harness.player.load_ticket(1);
+    harness
+        .player
+        .show_load(second_load, Duration::ZERO, PlaybackState::Playing);
+    harness.media.drive(start + Duration::from_millis(10));
+    harness.media.drive(start + Duration::from_millis(20));
+    let seeks: Vec<PlayerCall> = harness
+        .player
+        .take_calls()
+        .into_iter()
+        .filter(|call| matches!(call, PlayerCall::Seek(_)))
+        .collect();
+    assert_eq!(seeks, vec![PlayerCall::Seek(target)]);
+}
+
 /// Плеер сбрасывает скорость при каждой загрузке: скорость страницы
 /// восстанавливается, как только плеер поставил новое поколение, — один раз.
 #[test]

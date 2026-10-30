@@ -20,7 +20,7 @@ use media_source_open::prepared_web_media::{
     PreparedWebMediaAttachments, PreparedWebMediaSeekAttachment, compose_prepared_web_media,
 };
 use media_source_open::progressive_player_demux::into_player_demuxer;
-use player_core::{PreparedMedia, PreparedMediaTimelineModeError};
+use player_core::{PreparedInitialPositionError, PreparedMedia, PreparedMediaTimelineModeError};
 use pushed_media_source::{
     BufferStatus, FileOpenProgress, FileSeekability, OpenProgress, OpenedPushedFile,
     OpenedPushedStream, PageSeekRequest, PushedFileOpener, PushedFileRequests, PushedStreamMonitor,
@@ -30,6 +30,7 @@ use tracing::error;
 use web_media_transport_api::TransportSeekability;
 
 use super::BROWSER_STREAM_LABEL;
+use super::generation_start::{AfterLoad, GenerationStart, position_segments_demuxer};
 use crate::browser_session::intake_notice::GenerationSource;
 use crate::browser_session::rejection::{
     FailureResponse, response_to_file_failure, response_to_stream_failure,
@@ -82,10 +83,12 @@ pub(super) enum OpenStep {
     Waiting(Duration),
     /// Открылось: медиа для плеера и содержимое загруженного поколения.
     Ready {
-        /// Что отдать плееру.
+        /// Что отдать плееру (у сегментов — уже на стартовой позиции поколения).
         prepared: Box<PreparedMedia>,
         /// Что медиа-часть держит, пока поколение играет.
         feed: LoadedFeed,
+        /// Что сделать сразу после загрузки, чтобы поколение стартовало где нужно.
+        after_load: AfterLoad,
     },
     /// Не открылось: ответ странице по классу ошибки (только класс — в журнал).
     Failed {
@@ -120,28 +123,28 @@ impl PendingFeed {
         matches!(self, Self::File { .. })
     }
 
-    /// Двигает открытие, не блокируя.
-    pub(super) fn poll_open(&mut self) -> OpenStep {
+    /// Двигает открытие, не блокируя. `start` — откуда поколение начнёт показ, если
+    /// откроется на этом опросе (см. [`GenerationStart`]).
+    pub(super) fn poll_open(&mut self, start: GenerationStart) -> OpenStep {
         match self {
             Self::Segments { opener, monitor } => match opener.poll_open() {
                 Ok(OpenProgress::Waiting(hint)) => OpenStep::Waiting(hint.retry_after()),
-                Ok(OpenProgress::Ready(opened)) => match prepared_segments(opened) {
-                    Ok(prepared) => OpenStep::Ready {
-                        prepared: Box::new(prepared),
-                        feed: LoadedFeed::Segments {
-                            monitor: monitor.clone(),
+                Ok(OpenProgress::Ready(opened)) => {
+                    match prepared_segments(opened, start, monitor) {
+                        Ok(prepared) => OpenStep::Ready {
+                            prepared: Box::new(prepared),
+                            feed: LoadedFeed::Segments {
+                                monitor: monitor.clone(),
+                            },
+                            // Позиция уже внутри `PreparedMedia`.
+                            after_load: AfterLoad::Nothing,
                         },
-                    },
-                    Err(timeline_error) => {
-                        // Источник отдаёт живую шкалу только потоку без длительности, так
-                        // что это дефект договора, а не данных страницы.
-                        error!(
-                            ?timeline_error,
-                            "Live timeline does not fit the browser stream"
-                        );
-                        OpenStep::Unplayable
+                        Err(prepare_error) => {
+                            error!(%prepare_error, "The opened browser stream could not be prepared for the player");
+                            OpenStep::Unplayable
+                        }
                     }
-                },
+                }
                 Err(open_error) => OpenStep::Failed {
                     class: stream_class_label(&open_error),
                     response: response_to_stream_failure(&open_error),
@@ -159,6 +162,7 @@ impl PendingFeed {
                         feed: LoadedFeed::File {
                             requests: requests.clone(),
                         },
+                        after_load: start.after_file_load(),
                     },
                     Err(prepare_error) => {
                         error!(%prepare_error, "The opened browser file could not be prepared for the player");
@@ -240,16 +244,37 @@ pub(super) fn in_issue_order(
     ordered
 }
 
-/// Готовый поток сегментов → медиа для плеера (с живой шкалой, если это эфир).
+/// Готовый поток сегментов → медиа для плеера: на стартовой позиции поколения и с
+/// живой шкалой, если это эфир.
 fn prepared_segments(
     opened: OpenedPushedStream,
-) -> Result<PreparedMedia, PreparedMediaTimelineModeError> {
-    let prepared =
-        PreparedMedia::from_external_label(BROWSER_STREAM_LABEL, Box::new(opened.demuxer));
-    match opened.live_timeline {
-        Some(timeline) => prepared.with_dynamic_timeline(timeline),
+    start: GenerationStart,
+    monitor: &PushedStreamMonitor,
+) -> Result<PreparedMedia, SegmentsPrepareError> {
+    let OpenedPushedStream {
+        mut demuxer,
+        live_timeline,
+    } = opened;
+    let initial_position =
+        position_segments_demuxer(start, monitor, &mut demuxer, live_timeline.is_some());
+    let prepared = PreparedMedia::from_external_label(BROWSER_STREAM_LABEL, Box::new(demuxer))
+        .with_prepared_initial_position(initial_position)?;
+    match live_timeline {
+        Some(timeline) => Ok(prepared.with_dynamic_timeline(timeline)?),
         None => Ok(prepared),
     }
+}
+
+/// Почему готовый поток сегментов не стал медиа для плеера. Оба случая — дефект
+/// договора с источником, а не данных страницы.
+#[derive(Debug, thiserror::Error)]
+enum SegmentsPrepareError {
+    /// Источник отдаёт живую шкалу только потоку без длительности.
+    #[error("live timeline does not fit the browser stream: {0}")]
+    LiveTimeline(#[from] PreparedMediaTimelineModeError),
+    /// Итог перемотки источника противоречит стартовой позиции.
+    #[error("start position does not fit the browser stream: {0}")]
+    StartPosition(#[from] PreparedInitialPositionError),
 }
 
 /// Почему открытый файл не стал медиа для плеера.

@@ -315,6 +315,57 @@ fn a_file_of_unknown_size_is_loaded_without_seeking() {
     );
 }
 
+/// Страница назвала позицию, пока файл открывался (03e): файл перематывается туда,
+/// но только когда плеер его показал — до показа команда досталась бы прежнему медиа.
+#[test]
+fn a_page_seek_while_a_file_opens_seeks_the_file_once_the_player_shows_it() {
+    let mut harness = Harness::new();
+    let current = session(1);
+    harness.media.on_session_opened(&current);
+    let (mut page, notice) = file_generation(
+        &current,
+        1,
+        FASTSTART,
+        SizeReport::Known,
+        Arc::new(CountingNotifier::default()),
+    );
+    let target = Duration::from_secs(2);
+    let page_target = MediaTime::from_micros(2_000_000).expect("time");
+    harness.media.on_intake(
+        vec![
+            notice,
+            intent(&current, PageIntent::FollowPageSeek(page_target)),
+        ],
+        None,
+    );
+    harness.drive_with_page(&mut page, |harness, _| harness.player_loaded());
+    let calls = harness.player.take_calls();
+    assert!(
+        !calls.iter().any(|call| matches!(call, PlayerCall::Seek(_))),
+        "seek before the player shows the file: {calls:?}"
+    );
+
+    let load = harness.player.load_ticket(0);
+    harness
+        .player
+        .show_load(load, Duration::ZERO, PlaybackState::Playing);
+    harness.drive_with_page(&mut page, |harness, _| {
+        harness
+            .player
+            .calls
+            .borrow()
+            .iter()
+            .any(|call| matches!(call, PlayerCall::Seek(_)))
+    });
+    let seeks: Vec<PlayerCall> = harness
+        .player
+        .take_calls()
+        .into_iter()
+        .filter(|call| matches!(call, PlayerCall::Seek(_)))
+        .collect();
+    assert_eq!(seeks, vec![PlayerCall::Seek(target)]);
+}
+
 /// Оглавление MP4 в конце без известного размера — честный отказ странице
 /// (`unsupported_codec`), а не вечное ожидание.
 #[test]

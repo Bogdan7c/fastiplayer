@@ -11,7 +11,7 @@ use browser_bridge_protocol::{MediaTime, PlayerSessionMessage, SessionKey};
 use browser_bridge_session::{CloseOutcome, SendToPageError, SessionInstance};
 use player_core::PlaybackState;
 use pushed_media_source::{
-    LaneId, PushedContainer, PushedSourcePolicy, PushedStreamWriter, pushed_stream,
+    LaneId, PushedContainer, PushedDuration, PushedSourcePolicy, PushedStreamWriter, pushed_stream,
 };
 
 use super::*;
@@ -41,6 +41,8 @@ struct LoadedMediaInfo {
     duration: Option<Duration>,
     seekability: media_core::DemuxSeekability,
     track_count: usize,
+    /// Где медиа уже стоит при загрузке (03e: стартовая позиция поколения).
+    initial_position: player_core::PreparedInitialPosition,
 }
 
 /// Плеер-подделка: записывает команды, на шаг отвечает заданным наблюдением.
@@ -113,6 +115,7 @@ impl MediaPlayback for FakePlayback {
             duration: prepared.duration(),
             seekability: prepared.seekability(),
             track_count: prepared.tracks().len(),
+            initial_position: prepared.prepared_initial_position(),
         });
         self.kept_media.borrow_mut().push(prepared);
         let ticket = self.tickets.borrow_mut().issue();
@@ -239,6 +242,9 @@ fn generation(number: u32) -> StreamGeneration {
     StreamGeneration::new(number).expect("generation")
 }
 
+/// Длина ролика фикстуры протокола (`video.mp4` / `audio.mp4`).
+const FIXTURE_CLIP: Duration = Duration::from_millis(400);
+
 fn fixture_media(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../browser-bridge-protocol/fixtures/media")
@@ -263,6 +269,9 @@ fn stream_generation(
                 .expect("lane");
             writer.append(lane, &fixture_media(file)).expect("append");
         }
+        // Как YouTube: длительность известна до первых байтов (иначе поток
+        // неперематываемый — см. `generation_start`).
+        writer.set_duration(PushedDuration::Finite(FIXTURE_CLIP));
         writer.end_of_stream().expect("end of stream");
     }
     let notice = IntakeNotice::NewGeneration(Box::new(GenerationHandoff {
@@ -306,6 +315,10 @@ fn loaded_harness() -> (Harness, SessionRef, PushedStreamWriter) {
     harness
         .player
         .show_load(first_load, Duration::ZERO, PlaybackState::Opening);
+    // Один проход после показа: медиа-часть видит установку и согласует плеер со
+    // страницей (дальше команды страницы идут показанному поколению напрямую).
+    harness.media.drive(Instant::now());
+    harness.player.take_calls();
     harness.page.take_sent();
     (harness, current, writer)
 }
@@ -634,4 +647,5 @@ fn without_a_session_the_media_part_does_not_ask_to_wake() {
 
 mod drain;
 mod file_generation;
+mod generation_start;
 mod generation_switch;

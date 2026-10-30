@@ -35,8 +35,11 @@
 //!   приводится к скорости и «играть/пауза» страницы;
 //! - правилом «перемотка страницы — самому новому поколению»: пока новое поколение
 //!   открывается, перемотка страницы относится к нему (источник уже знает о ней), а
-//!   не к видео прежнего поколения в плеере — плееру её не передаём, новое поколение
-//!   начнётся там, где начинаются его байты.
+//!   не к видео прежнего поколения в плеере. Видео прежнего поколения она не двигает:
+//!   она становится стартовой позицией нового (03e, [`generation_start`]) — новый
+//!   `MediaSource` сбрасывает время страницы в начало, и страница сразу говорит, где
+//!   зритель был. Не назвала — поколение начнётся там, где у него есть данные всех
+//!   полос.
 //!
 //! Ограничение (записано в отчёте 03b): длительность и «можно ли перематывать»
 //! плеер запоминает при сборке `PreparedMedia`, то есть в момент готовности потока.
@@ -51,11 +54,12 @@ use browser_bridge_protocol::{
     PlaybackRate as PagePlaybackRate, SessionCloseReason, StreamGeneration,
 };
 use browser_bridge_session::SessionRef;
-use player_core::{PlaybackRate as PlayerPlaybackRate, PlaybackState, PreparedMedia};
+use player_core::{PlaybackRate as PlayerPlaybackRate, PreparedMedia};
 use tracing::{debug, error, info, warn};
 
 use self::drain::{DrainPolicy, DrainWatch};
 use self::generation_feed::{FeedReport, LoadedFeed, OpenStep, PendingFeed, in_issue_order};
+use self::generation_start::{AfterLoad, GenerationStart};
 use super::intake_notice::{GenerationHandoff, IntakeNotice, PageIntent};
 use super::outbound::{PENDING_RETRY_INTERVAL, PageOutbound, RangeQueueOutcome};
 use super::playback::{
@@ -67,6 +71,8 @@ use pushed_media_source::RangeRequest;
 
 mod drain;
 mod generation_feed;
+mod generation_start;
+mod install_reconcile;
 mod seams;
 
 use self::drain::{DrainContent, DrainSnapshot, IntakeStance, PageStance};
@@ -88,6 +94,9 @@ struct PendingGeneration {
     /// Откуда плеер возьмёт содержимое: сегменты или файл (сторона открытия и то, что
     /// переходит к загруженному поколению).
     feed: PendingFeed,
+    /// Откуда поколение начнёт показ: перемотка страницы, пришедшая, пока оно
+    /// открывалось, — его стартовая позиция.
+    start: GenerationStart,
     /// Когда спросить снова (`None` — при первой возможности).
     retry_at: Option<Instant>,
 }
@@ -104,6 +113,10 @@ struct LoadedGeneration {
     fault_reported: bool,
     /// После установки плеер уже приведён к скорости и «играть/пауза» страницы.
     page_state_reconciled: bool,
+    /// Перемотка, которую исполнить, когда плеер ПОКАЖЕТ это поколение: команды,
+    /// отданные во время установки, достаются прежнему медиа (перемотка страницы
+    /// после загрузки, но до показа; старт файла с позиции страницы).
+    seek_when_shown: Option<Duration>,
 }
 
 impl LoadedGeneration {
@@ -366,6 +379,12 @@ impl SessionMedia {
             );
             return;
         }
+        // Файл, заменивший поток сегментов того же поколения, — то же поколение:
+        // перемотка страницы, уже записанная за ним, остаётся его стартом.
+        let start = match &self.pending {
+            Some(pending) if upgrades_pending_to_file => pending.start,
+            _ => GenerationStart::FirstCommonData,
+        };
         if let Some(superseded) = &self.pending {
             debug!(
                 generation = superseded.generation.get(),
@@ -376,6 +395,7 @@ impl SessionMedia {
             session: handoff.session,
             generation: handoff.generation,
             feed: PendingFeed::from_source(handoff.source),
+            start,
             retry_at: None,
         });
     }
@@ -386,22 +406,33 @@ impl SessionMedia {
             PageIntent::FollowPageSeek(target) => {
                 // Источник уже знает о перемотке (переходник сообщил ему в порядке
                 // кадров), поэтому просьбы «перемотай страницу» к этой цели не будет.
-                if self.pending.is_some() {
+                if let Some(pending) = self.pending.as_mut() {
                     // Переходник сообщил перемотку источнику САМОГО НОВОГО поколения —
                     // того, что ещё открывается; видео прежнего поколения она не
-                    // касается. Новое поколение начнётся там, где начинаются его байты.
+                    // касается. Это стартовая позиция нового поколения (последняя
+                    // побеждает): плеер поставит его сразу туда.
+                    let start = Duration::from_micros(target.as_micros());
+                    pending.start = GenerationStart::PageSeekedTo(start);
                     debug!(
-                        "Page seek belongs to the generation that is still opening; the loaded video is not moved"
-                    );
-                    return;
-                }
-                if self.loaded.is_none() {
-                    debug!(
-                        "Page seek before the stream opened; the player starts where the bytes start"
+                        generation = pending.generation.get(),
+                        target_us = target.as_micros(),
+                        "Page seek is the start position of the generation that is still opening; the loaded video is not moved"
                     );
                     return;
                 }
                 let target = Duration::from_micros(target.as_micros());
+                let Some(loaded) = self.loaded.as_mut() else {
+                    debug!(
+                        "Page seek before the stream opened; the player starts where the bytes start"
+                    );
+                    return;
+                };
+                if !loaded.page_state_reconciled {
+                    // Плеер ещё ставит поколение: команда сейчас досталась бы прежнему
+                    // медиа. Исполнится при показе (последняя побеждает).
+                    loaded.seek_when_shown = Some(target);
+                    return;
+                }
                 self.command("seek", |playback| playback.seek(target));
                 self.apply_page_play_state();
             }
@@ -482,13 +513,17 @@ impl SessionMedia {
         if !due {
             return;
         }
-        match pending.feed.poll_open() {
+        match pending.feed.poll_open(pending.start) {
             OpenStep::Waiting(retry_after) => {
                 pending.retry_at = Some(now + retry_after);
             }
-            OpenStep::Ready { prepared, feed } => {
+            OpenStep::Ready {
+                prepared,
+                feed,
+                after_load,
+            } => {
                 if let Some(pending) = self.pending.take() {
-                    self.load(&pending, *prepared, feed);
+                    self.load(&pending, *prepared, feed, after_load);
                 }
             }
             OpenStep::Failed { class, response } => {
@@ -518,8 +553,14 @@ impl SessionMedia {
         }
     }
 
-    /// Готовое медиа → плеер.
-    fn load(&mut self, pending: &PendingGeneration, prepared: PreparedMedia, feed: LoadedFeed) {
+    /// Готовое медиа → плеер; затем то, что нужно для старта с нужного места.
+    fn load(
+        &mut self,
+        pending: &PendingGeneration,
+        prepared: PreparedMedia,
+        feed: LoadedFeed,
+        after_load: AfterLoad,
+    ) {
         // Страница на паузе — загрузка сразу на паузе: «играть, потом пауза» дало бы
         // мелькнуть звуку. Страница играет — старт сразу (решение 99).
         let start = if self.page_wants_play {
@@ -547,6 +588,12 @@ impl SessionMedia {
             feed,
             fault_reported: false,
             page_state_reconciled: false,
+            // Файл перематывается, когда плеер его покажет: до установки команда
+            // досталась бы прежнему медиа.
+            seek_when_shown: match after_load {
+                AfterLoad::Nothing => None,
+                AfterLoad::SeekTo(target) => Some(target),
+            },
         });
     }
 
@@ -604,9 +651,12 @@ impl SessionMedia {
             .feed
             .report(media_installed.then_some(observation.position));
         let reconcile_now = media_installed && !loaded.page_state_reconciled;
-        if reconcile_now {
+        let seek_when_shown = if reconcile_now {
             loaded.page_state_reconciled = true;
-        }
+            loaded.seek_when_shown.take()
+        } else {
+            None
+        };
         let generation = loaded.generation;
         // Только отказ загрузки ЭТОГО поколения: отказ прежнего медиа (его `Failed`
         // ещё виден, пока новое ставится) новое поколение не отвергает.
@@ -619,7 +669,7 @@ impl SessionMedia {
         };
 
         if reconcile_now {
-            self.reconcile_with_page(observation);
+            self.reconcile_with_page(observation, seek_when_shown);
         }
         if let Some(fault) = fault {
             self.report_fault(generation, &fault);
@@ -650,30 +700,6 @@ impl SessionMedia {
         } else {
             self.outbound
                 .tick_clock(&observation.while_media_installs(), now);
-        }
-    }
-
-    /// Плеер только что поставил медиа поколения: привести его к странице.
-    ///
-    /// Установка сбрасывает скорость на 1× и берёт «играть/пауза» из загрузки, а
-    /// команды страницы, пришедшие во время установки, достались прежнему медиа.
-    /// Команда уходит, только если наблюдение расходится с намерением страницы.
-    fn reconcile_with_page(&mut self, observation: &PlaybackObservation) {
-        if observation.rate != self.page_rate {
-            let rate = self.page_rate;
-            self.command("restore the page rate", |playback| playback.set_rate(rate));
-        }
-        let player_plays = matches!(
-            observation.state,
-            PlaybackState::Playing
-                | PlaybackState::Draining
-                | PlaybackState::Opening
-                | PlaybackState::Buffering
-        );
-        if self.page_wants_play && observation.state == PlaybackState::Paused {
-            self.command("play after install", |playback| playback.play());
-        } else if !self.page_wants_play && player_plays {
-            self.command("pause after install", |playback| playback.pause());
         }
     }
 

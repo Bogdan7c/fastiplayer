@@ -747,6 +747,7 @@
     "two-source-buffers-mid-box-cuts",
     "generation-switch-drops-stale",
     "muxed-av-single-source-buffer",
-    "file-source-generation"
+    "file-source-generation",
+    "quality-switch-new-media-source"
   ]
 }

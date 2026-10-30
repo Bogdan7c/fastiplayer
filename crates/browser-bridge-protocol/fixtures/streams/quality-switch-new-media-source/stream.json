@@ -1,0 +1,283 @@
+{
+  "steps": [
+    {
+      "text": "001.json"
+    },
+    {
+      "text": "002.json"
+    },
+    {
+      "text": "003.json"
+    },
+    {
+      "text": "004.json"
+    },
+    {
+      "binary": "005.bin"
+    },
+    {
+      "binary": "006.bin"
+    },
+    {
+      "binary": "007.bin"
+    },
+    {
+      "binary": "008.bin"
+    },
+    {
+      "binary": "009.bin"
+    },
+    {
+      "binary": "010.bin"
+    },
+    {
+      "binary": "011.bin"
+    },
+    {
+      "await_clock_us": 1800000
+    },
+    {
+      "text": "013.json"
+    },
+    {
+      "text": "014.json"
+    },
+    {
+      "text": "015.json"
+    },
+    {
+      "text": "016.json"
+    },
+    {
+      "binary": "017.bin"
+    },
+    {
+      "binary": "018.bin"
+    },
+    {
+      "text": "019.json"
+    },
+    {
+      "binary": "020.bin"
+    },
+    {
+      "binary": "021.bin"
+    },
+    {
+      "binary": "022.bin"
+    },
+    {
+      "binary": "023.bin"
+    },
+    {
+      "binary": "024.bin"
+    },
+    {
+      "await_clock_us": 3200000
+    },
+    {
+      "text": "026.json"
+    },
+    {
+      "text": "027.json"
+    },
+    {
+      "text": "028.json"
+    },
+    {
+      "text": "029.json"
+    },
+    {
+      "binary": "030.bin"
+    },
+    {
+      "binary": "031.bin"
+    },
+    {
+      "text": "032.json"
+    },
+    {
+      "binary": "033.bin"
+    },
+    {
+      "binary": "034.bin"
+    },
+    {
+      "binary": "035.bin"
+    },
+    {
+      "binary": "036.bin"
+    },
+    {
+      "binary": "037.bin"
+    },
+    {
+      "await_clock_us": 4400000
+    },
+    {
+      "text": "039.json"
+    },
+    {
+      "text": "040.json"
+    },
+    {
+      "text": "041.json"
+    },
+    {
+      "text": "042.json"
+    },
+    {
+      "binary": "043.bin"
+    },
+    {
+      "binary": "044.bin"
+    },
+    {
+      "text": "045.json"
+    },
+    {
+      "binary": "046.bin"
+    },
+    {
+      "binary": "047.bin"
+    },
+    {
+      "binary": "048.bin"
+    },
+    {
+      "binary": "049.bin"
+    },
+    {
+      "binary": "050.bin"
+    },
+    {
+      "text": "051.json"
+    }
+  ],
+  "expect": {
+    "admitted": [
+      {
+        "generation": 1,
+        "source_buffer": 0,
+        "media": "audio-6s.mp4",
+        "ranges": [
+          [
+            0,
+            692
+          ],
+          [
+            692,
+            10535
+          ]
+        ]
+      },
+      {
+        "generation": 1,
+        "source_buffer": 1,
+        "media": "video-64-6s.mp4",
+        "ranges": [
+          [
+            0,
+            734
+          ],
+          [
+            734,
+            13398
+          ]
+        ]
+      },
+      {
+        "generation": 2,
+        "source_buffer": 0,
+        "media": "audio-6s.mp4",
+        "ranges": [
+          [
+            0,
+            692
+          ],
+          [
+            3859,
+            13868
+          ]
+        ]
+      },
+      {
+        "generation": 2,
+        "source_buffer": 1,
+        "media": "video-96-6s.mp4",
+        "ranges": [
+          [
+            0,
+            734
+          ],
+          [
+            10394,
+            29542
+          ]
+        ]
+      },
+      {
+        "generation": 3,
+        "source_buffer": 0,
+        "media": "audio-6s.mp4",
+        "ranges": [
+          [
+            0,
+            692
+          ],
+          [
+            7191,
+            17205
+          ]
+        ]
+      },
+      {
+        "generation": 3,
+        "source_buffer": 1,
+        "media": "video-64-6s.mp4",
+        "ranges": [
+          [
+            0,
+            734
+          ],
+          [
+            13398,
+            24583
+          ]
+        ]
+      },
+      {
+        "generation": 4,
+        "source_buffer": 0,
+        "media": "audio-6s.mp4",
+        "ranges": [
+          [
+            0,
+            692
+          ],
+          [
+            10535,
+            20565
+          ]
+        ]
+      },
+      {
+        "generation": 4,
+        "source_buffer": 1,
+        "media": "video-96-6s.mp4",
+        "ranges": [
+          [
+            0,
+            734
+          ],
+          [
+            29542,
+            51350
+          ]
+        ]
+      }
+    ],
+    "dropped_frames": 0,
+    "dropped_messages": 0
+  }
+}

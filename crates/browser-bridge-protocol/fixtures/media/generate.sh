@@ -32,3 +32,17 @@ ffmpeg "${common[@]}" -f lavfi -i "testsrc2=size=64x64:rate=25:duration=0.4" \
     -f lavfi -i "sine=frequency=660:sample_rate=48000:duration=0.4" \
     -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 50k -g 5 -pix_fmt yuv420p \
     -c:a libopus -b:a 24k -ac 1 -fflags +bitexact -map_metadata -1 -f webm "$here/muxed.webm"
+
+# Смена качества новым MediaSource (сессия 03e, поток streams/quality-switch-new-media-source):
+# один и тот же 6-секундный ролик в двух качествах (64 и 96 px) и звук к нему. Ключевой
+# кадр каждые 1,2 с (длинный GOP, как у YouTube) → фрагмент moof на каждый (5 фрагментов),
+# звук — фрагменты по ~1 с.
+# Так страница после смены качества кладёт коробки с ближайшего ключевого кадра ДО своей
+# позиции, а звук — с ещё более раннего фрагмента (как YouTube, results/03e.md).
+for size in 64 96; do
+    ffmpeg "${common[@]}" -f lavfi -i "testsrc2=size=${size}x${size}:rate=25:duration=6" \
+        -c:v libx264 -preset ultrafast -profile:v baseline -bf 0 -g 30 -keyint_min 30 \
+        -sc_threshold 0 -crf 40 -pix_fmt yuv420p "${fmp4[@]}" "$here/video-${size}-6s.mp4"
+done
+ffmpeg "${common[@]}" -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=6" \
+    -ac 1 -c:a aac -b:a 24k -frag_duration 1000000 "${fmp4[@]}" "$here/audio-6s.mp4"

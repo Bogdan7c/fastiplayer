@@ -197,10 +197,12 @@ fn bus_config(address: &str, services: &Path) -> String {
     )
 }
 
-/// Шаг записанного потока: текстовое сообщение или двоичная рамка.
+/// Шаг записанного потока: текстовое сообщение, двоичная рамка или пауза записи.
 enum StreamStep {
     Text(String),
     Binary(Vec<u8>),
+    /// Страница ждала, пока часы плеера дойдут до этой позиции (мкс).
+    AwaitClock(u64),
 }
 
 /// Читает шаги и ожидаемое число принятых байт записанного потока фикстур.
@@ -215,7 +217,9 @@ fn recorded_stream(name: &str) -> (Vec<StreamStep>, u64) {
         .expect("steps array")
         .iter()
         .map(|step| {
-            if let Some(file) = step["text"].as_str() {
+            if let Some(position_us) = step["await_clock_us"].as_u64() {
+                StreamStep::AwaitClock(position_us)
+            } else if let Some(file) = step["text"].as_str() {
                 let text = std::fs::read_to_string(directory.join(file)).expect("text step");
                 StreamStep::Text(text.trim_end().to_owned())
             } else {
@@ -373,6 +377,7 @@ fn bus_wakes_the_real_binary_which_plays_the_recorded_stream_to_the_end() {
         let message = match step {
             StreamStep::Text(text) => Message::text(text),
             StreamStep::Binary(bytes) => Message::binary(bytes),
+            StreamStep::AwaitClock(_) => panic!("this recording has no pauses"),
         };
         socket.send(message).expect("stream step is sent");
     }
@@ -511,3 +516,7 @@ fn live_session_bus_wakes_the_installed_browser_session() {
 // файл не рос.
 #[path = "browser_session_process/file_and_drain.rs"]
 mod file_and_drain;
+
+// Смена качества новым MediaSource (03e): три смены поколения подряд.
+#[path = "browser_session_process/generation_switch.rs"]
+mod generation_switch;

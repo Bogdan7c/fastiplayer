@@ -229,7 +229,7 @@ fn recorded_stream_without_end_of_stream() -> Vec<StreamStep> {
         .into_iter()
         .filter(|step| match step {
             StreamStep::Text(text) => !text.contains("end_of_stream"),
-            StreamStep::Binary(_) => true,
+            StreamStep::Binary(_) | StreamStep::AwaitClock(_) => true,
         })
         .collect()
 }
@@ -239,6 +239,7 @@ fn send_steps(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, steps: Vec<Stre
         let message = match step {
             StreamStep::Text(text) => Message::text(text),
             StreamStep::Binary(bytes) => Message::binary(bytes),
+            StreamStep::AwaitClock(_) => panic!("this recording has no pauses"),
         };
         socket.send(message).expect("stream step is sent");
     }

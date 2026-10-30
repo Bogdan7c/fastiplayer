@@ -481,6 +481,12 @@ impl LaneShelf {
         std::mem::take(&mut self.entries)
     }
 
+    /// Начало самого раннего сегмента на полке (`None` — полка пуста).
+    pub(crate) fn earliest_start(&self) -> Option<MediaTime> {
+        // Сегменты лежат по возрастанию начала: первый и есть самый ранний.
+        self.entries.first().map(|entry| entry.span().start())
+    }
+
     /// Конец непрерывного куска полки, покрывающего `position`.
     pub(crate) fn covered_run_end(
         &self,

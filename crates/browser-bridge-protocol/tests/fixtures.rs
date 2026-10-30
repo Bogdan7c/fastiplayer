@@ -326,6 +326,8 @@ struct RecordedStream {
 enum StreamStep {
     Text(String),
     Binary(String),
+    /// Темп записи: страница ждала часов плеера (сторож его не видит).
+    AwaitClockUs(u64),
 }
 
 #[derive(Debug, Deserialize)]
@@ -351,6 +353,8 @@ struct ReplayOutcome {
     admitted: BTreeMap<(u32, u16), Vec<u8>>,
     dropped_frames: usize,
     dropped_messages: usize,
+    /// Позиция часов, которую ждала последняя пауза записи.
+    last_awaited_clock_us: Option<u64>,
 }
 
 fn replay(directory: &Path, steps: &[StreamStep]) -> ReplayOutcome {
@@ -386,6 +390,15 @@ fn replay(directory: &Path, steps: &[StreamStep]) -> ReplayOutcome {
                     GateDecision::DropStale => outcome.dropped_frames += 1,
                 }
             }
+            // Не провод: только пауза проигрывателя записи. Часы плеера не идут назад,
+            // поэтому каждая пауза записи ждёт позицию дальше прежней.
+            StreamStep::AwaitClockUs(position_us) => {
+                assert!(
+                    outcome.last_awaited_clock_us < Some(*position_us),
+                    "recording pauses must wait for a later clock: {position_us}"
+                );
+                outcome.last_awaited_clock_us = Some(*position_us);
+            }
         }
     }
     outcome
@@ -394,7 +407,7 @@ fn replay(directory: &Path, steps: &[StreamStep]) -> ReplayOutcome {
 #[test]
 fn recorded_streams_reassemble_source_buffer_bytes_exactly_and_drop_only_stale_ones() {
     let manifest = load_manifest();
-    assert_eq!(manifest.streams.len(), 4);
+    assert_eq!(manifest.streams.len(), 5);
     for name in &manifest.streams {
         let directory = fixtures_root().join("streams").join(name);
         let recorded: RecordedStream =
