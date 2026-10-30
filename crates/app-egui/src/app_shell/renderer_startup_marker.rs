@@ -93,6 +93,45 @@ impl MarkerFile {
     }
 }
 
+/// Метка глазами окна браузерного режима: читает, но никогда не пишет и не снимает.
+///
+/// Файл метки общий с обычным плеером (один `ConfigPaths`). Окно браузерного режима
+/// уважает чужую метку (обычный плеер упал на этом семействе — не повторяем), но своей
+/// не ставит: два процесса гонялись бы за одним файлом, а снятие чужой метки отключило
+/// бы защиту обычного плеера. Цена — сбой драйвера в окне браузерного режима защитой не
+/// запоминается (известное ограничение 04a).
+pub(crate) struct ReadOnlyRendererStartupMarker {
+    marker: RendererStartupMarker,
+}
+
+impl ReadOnlyRendererStartupMarker {
+    /// Читает метку по пути из `ConfigPaths::renderer_startup_marker_file`.
+    pub(crate) fn read_from(marker_path: PathBuf) -> Self {
+        Self {
+            marker: MarkerFile { path: marker_path }.read(),
+        }
+    }
+
+    /// Без файла: метки нет (каталог config-а не найден).
+    pub(crate) const fn absent() -> Self {
+        Self {
+            marker: RendererStartupMarker::NoUnfinishedStartup,
+        }
+    }
+}
+
+impl crate::render_backend::UnfinishedStartupTracker for ReadOnlyRendererStartupMarker {
+    fn unfinished_startup(&self) -> RendererStartupMarker {
+        self.marker
+    }
+
+    fn probe_starting(&mut self, _family: RendererFamily) {}
+
+    fn creation_starting(&mut self, _family: RendererFamily) {}
+
+    fn creation_failed(&mut self, _family: RendererFamily) {}
+}
+
 /// Фаза метки внутри процесса.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MarkerPhase {

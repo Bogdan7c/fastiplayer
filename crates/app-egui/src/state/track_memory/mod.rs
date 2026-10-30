@@ -40,4 +40,7 @@ pub(crate) use identity::video_key_for_source;
 pub(crate) use owner::TrackMemoryShutdownOutcome;
 #[cfg(test)]
 pub(crate) use owner::{RecordOutcome, TRACK_MEMORY_SAVE_DEBOUNCE};
-pub(crate) use startup::{TrackMemoryHandle, TrackMemoryStartOutcome, start_track_memory};
+pub(crate) use startup::{
+    TrackMemoryHandle, TrackMemoryStartOutcome, start_track_memory,
+    start_track_memory_in_memory_only,
+};

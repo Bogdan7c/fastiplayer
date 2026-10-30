@@ -23,7 +23,7 @@ use crate::playlist_runtime::{
     TransportActionOrigin,
 };
 use crate::startup_media::StartupMediaController;
-use crate::state::AppState;
+use crate::state::{AppState, PageLedTransportAction};
 use crate::ui::player_controls::TransportControlAction;
 
 mod guarded;
@@ -135,6 +135,11 @@ pub(crate) fn apply_transport_action(
     player_snapshot: &PlayerSnapshot,
     action: TransportControlAction,
 ) {
+    // Окно, где транспорт ведёт страница (браузерный режим): play/pause уходят медиа-части
+    // сеанса намерением зрителя, навигации по очереди там нет. Обычное окно — как всегда.
+    if app_state.route_page_led_transport_action(action) != PageLedTransportAction::NotPageLed {
+        return;
+    }
     match action {
         TransportControlAction::Previous => request_navigation(
             app_state,

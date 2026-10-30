@@ -279,6 +279,7 @@ fn bottom_panel_shows_the_audio_button_only_for_two_or_more_tracks() {
                         playlist_transport: &transport,
                         subtitle_menu: &subtitle_menu,
                         audio_menu: view,
+                        view_profile: crate::window_view_profile::WindowViewProfile::Standard,
                     },
                 );
             });

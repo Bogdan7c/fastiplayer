@@ -8,7 +8,7 @@
 use winit::window::{Window, WindowAttributes};
 
 /// Собирает атрибуты главного окна: рамки нет (titlebar рисует egui), поверхность непрозрачная.
-pub(super) fn main_window_attributes() -> WindowAttributes {
+pub(crate) fn main_window_attributes() -> WindowAttributes {
     // App ID и иконка: по ним панель задач показывает лого Fastiplayer, см. `window_identity`.
     super::window_identity::with_window_identity(Window::default_attributes())
         .with_title("Fastiplayer")

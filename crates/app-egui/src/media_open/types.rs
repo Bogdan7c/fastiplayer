@@ -52,6 +52,11 @@ pub(crate) enum ActiveMediaSource {
     LocalFile(PathBuf),
     /// Единый reconstructible web intent независимо от ingress adapter-а.
     Web(super::web::WebMediaSourceIntent),
+    /// Поток страницы браузера (окно браузерного режима, мост 04a): байты присылает
+    /// экстеншен, открыть его заново плеер не может — у него нет ни адреса, ни файла.
+    /// Домена и заголовка страницы здесь нет намеренно (инвариант 7: в журнал и на
+    /// диск они не попадают); у такого источника нет ключа памяти дорожек и сайдкаров.
+    BrowserStream,
 
     /// Source плюс neutral semantic identity ограниченного playback window.
     ///
@@ -68,7 +73,7 @@ impl ActiveMediaSource {
     pub(crate) fn web_intent(&self) -> Option<&super::web::WebMediaSourceIntent> {
         match self.physical_source() {
             Self::Web(intent) => Some(intent),
-            Self::LocalFile(_) => None,
+            Self::LocalFile(_) | Self::BrowserStream => None,
             Self::PlaybackWindow { .. } => {
                 unreachable!("physical_source removes playback-window wrappers")
             }
@@ -98,7 +103,7 @@ impl ActiveMediaSource {
             Self::PlaybackWindow {
                 semantic_identity, ..
             } => Some(*semantic_identity),
-            Self::LocalFile(_) | Self::Web(_) => None,
+            Self::LocalFile(_) | Self::Web(_) | Self::BrowserStream => None,
         }
     }
 
@@ -141,6 +146,7 @@ impl fmt::Debug for ActiveMediaSource {
         match self {
             Self::LocalFile(_) => formatter.write_str("LocalFile(<redacted-path>)"),
             Self::Web(intent) => formatter.debug_tuple("Web").field(intent).finish(),
+            Self::BrowserStream => formatter.write_str("BrowserStream"),
             Self::PlaybackWindow {
                 source,
                 semantic_identity,

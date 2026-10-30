@@ -10,14 +10,18 @@ use ui_artwork_egui::{
 use crate::ui::assets::IconId;
 use crate::ui::skin::{ControlsStyle, PlayerSkin, SkinId};
 use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
+use crate::window_view_profile::WindowViewProfile;
 
 mod audio_track_control;
+mod open_file_button;
 #[cfg(test)]
 pub(crate) mod playback_button_test_harness;
 mod playback_rate;
 mod queue_mode_controls;
 mod subtitle_control;
 mod transport;
+#[cfg(test)]
+mod view_profile_tests;
 pub use audio_track_control::AudioTrackControlAction;
 pub(crate) use playback_rate::PLAYBACK_RATE_STEP_X;
 pub use subtitle_control::SubtitleControlAction;
@@ -86,6 +90,8 @@ pub(crate) struct BottomControlsInput<'a, S: PlayerSkin> {
     pub(crate) subtitle_menu: &'a crate::state::SubtitleMenuView,
     /// Снимок аудиодорожек для кнопки «♪» и меню.
     pub(crate) audio_menu: &'a crate::state::AudioTrackMenuView,
+    /// Вид окна: есть ли кнопка Open и навигация по очереди (Previous/Next/Shuffle/Repeat).
+    pub(crate) view_profile: WindowViewProfile,
 }
 
 /// Рисует нижнюю player controls панель и возвращает действия пользователя.
@@ -105,6 +111,7 @@ pub fn render_bottom_controls<S: PlayerSkin>(
         playlist_transport,
         subtitle_menu,
         audio_menu,
+        view_profile,
     } = input;
     let mut actions = Vec::new();
     let panel_id = bottom_panel_id(skin.id());
@@ -143,6 +150,7 @@ pub fn render_bottom_controls<S: PlayerSkin>(
                 playlist_transport,
                 subtitle_menu,
                 audio_menu,
+                view_profile,
                 &mut actions,
             );
         });
@@ -164,9 +172,13 @@ fn render_button_row(
     playlist_transport: &crate::playlist_runtime::PlaylistTransportUiModel,
     subtitle_menu: &crate::state::SubtitleMenuView,
     audio_menu: &crate::state::AudioTrackMenuView,
+    view_profile: WindowViewProfile,
     actions: &mut Vec<ControlAction>,
 ) {
     let controls_style = skin.controls_style();
+    // Вид окна убирает кнопки, но не их места: раскладка соседей та же, что в обычном окне.
+    let offers_opening = view_profile.offers_media_opening();
+    let offers_queue_navigation = view_profile.offers_queue_navigation();
     let play_icon = playback_toggle_icon(player_snapshot.playback_state);
 
     let row_width = ui.available_width();
@@ -218,28 +230,31 @@ fn render_button_row(
         volume_to_playback_gap,
     );
 
-    if render_open_file_button_at(ui, open_file_button_rect, skin).clicked() {
+    if offers_opening
+        && open_file_button::render_open_file_button_at(ui, open_file_button_rect, skin).clicked()
+    {
         actions.push(ControlAction::OpenFile);
     }
 
     render_volume_controls(ui, player_snapshot, controls_style, volume_zone, actions);
 
-    transport::render_previous_button(
-        ui,
-        previous_button_rect,
-        playlist_transport.previous,
-        controls_style,
-        actions,
-    );
-
-    queue_mode_controls::render(
-        ui,
-        queue_mode_layout,
-        playlist_transport,
-        controls_style,
-        reduced_motion,
-        actions,
-    );
+    if offers_queue_navigation {
+        transport::render_previous_button(
+            ui,
+            previous_button_rect,
+            playlist_transport.previous,
+            controls_style,
+            actions,
+        );
+        queue_mode_controls::render(
+            ui,
+            queue_mode_layout,
+            playlist_transport,
+            controls_style,
+            reduced_motion,
+            actions,
+        );
+    }
 
     let playback_button_response =
         render_playback_toggle_button_at(ui, playback_button_rect, play_icon, skin);
@@ -260,13 +275,15 @@ fn render_button_row(
         actions,
     );
 
-    transport::render_next_button(
-        ui,
-        playback_rate_layout.next_button_rect,
-        playlist_transport.next,
-        controls_style,
-        actions,
-    );
+    if offers_queue_navigation {
+        transport::render_next_button(
+            ui,
+            playback_rate_layout.next_button_rect,
+            playlist_transport.next,
+            controls_style,
+            actions,
+        );
+    }
 
     if render_fullscreen_toggle_button_at(ui, fullscreen_button_rect, is_window_fullscreen, skin)
         .clicked()
@@ -566,24 +583,6 @@ fn paint_volume_slider(
     );
 }
 
-/// Рисует open-file кнопку в заранее рассчитанном anchored rect.
-fn render_open_file_button_at(
-    ui: &mut Ui,
-    button_rect: Rect,
-    skin: &impl PlayerSkin,
-) -> egui::Response {
-    let accessible_label = "Open file";
-    let button_response = ui.allocate_rect(button_rect, Sense::click());
-    let button_response = button_response.on_hover_text(accessible_label);
-
-    button_response
-        .widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), accessible_label));
-
-    paint_open_file_button(ui, button_rect, skin, &button_response);
-
-    button_response
-}
-
 /// Рисует центральную play/pause-кнопку в уже рассчитанном anchored rect.
 fn render_playback_toggle_button_at(
     ui: &mut Ui,
@@ -689,21 +688,6 @@ fn paint_fullscreen_toggle_button(
             stroke: Stroke::new(style.playback_button_stroke_width, style.text_color),
             hover_fill: style.playback_button_hover_fill,
         },
-    );
-}
-
-fn paint_open_file_button(
-    ui: &Ui,
-    button_rect: Rect,
-    skin: &impl PlayerSkin,
-    button_response: &egui::Response,
-) {
-    let style = skin.controls_style();
-    ArtworkPainter::new(ui.painter()).open_media_button(
-        button_rect,
-        button_visual_state(button_response.hovered()),
-        Stroke::new(style.playback_button_stroke_width, style.text_color),
-        style.playback_button_hover_fill,
     );
 }
 

@@ -414,7 +414,7 @@ impl PlaylistRuntime {
         )
     }
 
-    fn complete_new_lineage(
+    pub(super) fn complete_new_lineage(
         &mut self,
         persistence: PlaylistLineagePersistence,
         warning: Option<PlaylistStartupWarning>,

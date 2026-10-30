@@ -299,6 +299,10 @@ impl AppState {
                     .ok_or(ResumeCheckpointError::PreparationFailed)?;
                 MediaOpenSourceRequest::Web(request)
             }
+            // Поток страницы заново открыть нельзя: байты присылает экстеншен.
+            ActiveMediaSource::BrowserStream => {
+                return Err(ResumeCheckpointError::MissingReopenableSource);
+            }
             ActiveMediaSource::PlaybackWindow { .. } => {
                 unreachable!("physical_source removes playback-window wrappers")
             }

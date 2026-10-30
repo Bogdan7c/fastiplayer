@@ -11,7 +11,8 @@ use crate::browser_session::playback::{
     BrowserPlayback, BrowserPlaybackCommandError, LoadStart, MediaLoadTicket, PlaybackObservation,
 };
 
-/// Плеер так, как его видит медиа-часть. Настоящий — [`BrowserPlayback`].
+/// Плеер так, как его видит медиа-часть. Настоящие — безоконный [`BrowserPlayback`]
+/// (тесты) и «пульт» окна браузерного режима (`window::remote::WindowRemote`, 04a).
 pub(crate) trait MediaPlayback {
     /// Загрузить новое медиа: играть сразу или встать на паузу — по `start`.
     /// Квитанция связывает загрузку с наблюдениями, когда плеер её установит.

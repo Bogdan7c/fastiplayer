@@ -2,7 +2,6 @@ use super::telemetry_panel::TelemetryPanelState;
 use super::*;
 use crate::fullscreen_chrome::ChromeHoldObservation;
 use crate::state::subtitles::BottomControlsObstruction;
-use crate::ui::buffering_indicator::render_buffering_indicator;
 use crate::ui::subtitle_appearance_edit::SubtitleAppearanceEditInput;
 use crate::ui::video_area_input::{self, VideoAreaMode};
 use crate::ui::{control_action_coalescing, fullscreen_chrome_panels, global_hotkeys};
@@ -275,6 +274,7 @@ impl AppState {
         let video_exclusion_rects = Vec::new();
 
         let egui_run_started_at = Instant::now();
+        let view_profile = self.view_profile();
         let full_output = self.egui_ctx.run_ui(egui_input, |ui| {
             video_viewport_rect = ui.max_rect();
 
@@ -298,6 +298,7 @@ impl AppState {
                     style: WindowChromeStyle::from_controls_style(controls_style),
                     edge_alignment: window_chrome_edge_alignment,
                     active_sidebar_section: self.sidebar_controller.target(),
+                    sidebar_sections: view_profile.sidebar_sections(),
                 },
             );
             let window_chrome_output = titlebar.inner;
@@ -326,7 +327,9 @@ impl AppState {
                     timeline_inline_status,
                     skin: &selected_skin,
                     is_window_fullscreen: window_is_fullscreen,
-                    live_scrub_enabled: self.committed_config_snapshot.live_scrub_enabled(),
+                    live_scrub_enabled: self.committed_config_snapshot.live_scrub_enabled()
+                        && view_profile.allows_live_scrub(),
+                    view_profile,
                     reduced_motion: self.committed_config_snapshot.reduced_motion(),
                     playlist_transport: playlist_models.transport,
                     subtitle_menu: &subtitle_menu,
@@ -427,6 +430,7 @@ impl AppState {
             playlist_confirmation_action = Self::render_center_overlay(
                 ui,
                 player_snapshot.playback_state,
+                view_profile.idle_center_hint(),
                 &notifications_frame,
                 &mut notification_output,
                 playlist_models.import_preview,
@@ -510,6 +514,8 @@ impl AppState {
         for action in control_action_coalescing::coalesce_consecutive_volume(actions) {
             match action {
                 ControlAction::Transport(action) => transport_actions.push(action),
+                // Открытие своего медиа есть не в каждом виде окна (браузерное — без него).
+                ControlAction::OpenFile if !self.view_profile().offers_media_opening() => {}
                 ControlAction::OpenFile => self.open_file(window),
                 ControlAction::SetVolume(requested_volume) => {
                     if let Err(error) = self
@@ -544,7 +550,7 @@ impl AppState {
                         continue;
                     };
 
-                    if let Err(error) = self.player_worker.try_send_command(command) {
+                    if let Err(error) = self.send_transport_command(command) {
                         warn!(error = %error, "Unable to change playback speed from UI");
                     } else {
                         self.mark_pending_worker_redraw();
@@ -692,7 +698,7 @@ impl AppState {
     ) {
         let command_for_diagnostics = command.clone();
 
-        if let Err(error) = self.player_worker.try_send_command(command) {
+        if let Err(error) = self.send_transport_command(command) {
             warn!(error = %error, "Could not send the timeline command");
             return;
         }
@@ -740,9 +746,8 @@ impl AppState {
             snapshot.current_position.saturating_sub(step)
         };
 
-        if let Err(error) = self
-            .player_worker
-            .try_send_command(PlayerCommand::Seek(SeekRequest::absolute(target.into())))
+        if let Err(error) =
+            self.send_transport_command(PlayerCommand::Seek(SeekRequest::absolute(target.into())))
         {
             warn!(error = %error, "Could not send the configured hotkey seek");
         } else {
@@ -829,49 +834,6 @@ impl AppState {
                 self.set_startup_error(format!("Opening the media file error: {error}"));
             }
         }
-    }
-    /// Стартовая подсказка принадлежит только Idle: пауза, seek и EOF сохраняют media.
-    /// Спиннер ожидания данных — самое неважное сообщение центра после подсказки Idle.
-    /// Toast-ы уведомлений рисуются в углу центральной области всегда, поверх видео.
-    fn render_center_overlay(
-        ui: &mut egui::Ui,
-        playback_state: PlaybackState,
-        notifications: &super::NotificationsFrame,
-        notification_output: &mut crate::ui::notifications::NotificationUiOutput,
-        playlist_import_preview: Option<&crate::playlist_runtime::PlaylistImportPreview>,
-        playlist_confirmation: Option<&crate::playlist_runtime::PendingPlaylistConfirmation>,
-        playlist_output: &mut crate::ui::playlist::PlaylistUiOutput,
-    ) -> Option<crate::playlist_runtime::PlaylistConfirmationAction> {
-        let mut confirmation_action = None;
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| {
-                if let Some(model) = playlist_confirmation {
-                    confirmation_action =
-                        crate::ui::queue_replacement_confirmation::render(ui, model);
-                } else if let Some(preview) = playlist_import_preview {
-                    if let Some(action) = crate::ui::playlist::import_preview::render(ui, preview) {
-                        playlist_output.push_action(action);
-                    }
-                } else if let Some(notice) = notifications.center.as_ref() {
-                    crate::ui::notifications::render_center_notice(ui, notice, notification_output);
-                } else if notifications.shows_buffering_indicator() {
-                    render_buffering_indicator(ui, notifications.motion);
-                } else if playback_state == PlaybackState::Idle {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(40.0);
-                        ui.heading("Open a file or URL to start");
-                    });
-                }
-                let toast_area_rect = ui.max_rect();
-                crate::ui::notifications::render_toast_stack(
-                    ui,
-                    toast_area_rect,
-                    notifications,
-                    notification_output,
-                );
-            });
-        confirmation_action
     }
     /// Собирает frame counters из текущей телеметрии.
     pub(super) fn frame_counters_snapshot(&self) -> FrameCounters {

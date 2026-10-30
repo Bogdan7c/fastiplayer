@@ -140,7 +140,9 @@ impl UrlSidebarController {
         fallback_notice: bool,
     ) -> UrlSidebarModel {
         let source = match active_source.map(ActiveMediaSource::physical_source) {
-            None | Some(ActiveMediaSource::LocalFile(_)) => UrlSidebarSourceProjection::Inactive,
+            None | Some(ActiveMediaSource::LocalFile(_) | ActiveMediaSource::BrowserStream) => {
+                UrlSidebarSourceProjection::Inactive
+            }
             Some(ActiveMediaSource::Web(intent)) => {
                 let projection = intent.read_only_projection();
                 UrlSidebarSourceProjection::WebMedia {

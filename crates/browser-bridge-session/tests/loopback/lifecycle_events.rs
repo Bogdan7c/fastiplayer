@@ -146,6 +146,50 @@ fn player_closing_the_active_session_sends_4000_and_publishes_the_end() {
     );
 }
 
+/// Окно браузерного режима, закрытое зрителем (04a), сначала закрывает сеанс кодом
+/// «плеер закрыт», а сразу следом выключает сервер (выход процесса). Страница обязана
+/// получить 4000, а не 4006 «выключаюсь»: в 04b по закрытию плеером она возвращает
+/// видео себе («на T, пауза»). Первая просьба о закрытии соединения не перетирается
+/// выключением.
+#[test]
+fn player_close_followed_by_an_immediate_shutdown_still_sends_4000() {
+    let env = Env::start();
+    let token = env.open("a").token;
+    let mut socket = attach(env.port(), "a", &token);
+    let Env {
+        server,
+        control,
+        events,
+        ..
+    } = env;
+    // Порядок окна: закрыть сеанс зрителем → сразу выход процесса (сервер — 4006 всем).
+    control.close_active_session(SessionCloseReason::PlayerClosed);
+    let report = server.shutdown();
+    assert_eq!(report.detached_threads, 0);
+    assert_eq!(
+        read_close_code(&mut socket),
+        SessionCloseReason::PlayerClosed.close_code()
+    );
+    let closed_by_player = ended(
+        "a",
+        SessionEndReason::ClosedByPlayer(SessionCloseReason::PlayerClosed),
+    );
+    events.seen.wait_for(
+        "закрыто плеером, а не выключением",
+        |seen| seen.lifecycle.iter().any(&closed_by_player),
+    );
+    assert!(
+        !events.seen.get().lifecycle.iter().any(|event| matches!(
+            event,
+            SessionLifecycleEvent::Ended {
+                reason: SessionEndReason::ClosedByPlayer(SessionCloseReason::PlayerShuttingDown),
+                ..
+            }
+        )),
+        "the session must not also end as 'shutting down'"
+    );
+}
+
 #[test]
 fn queued_player_messages_reach_the_page_in_order() {
     let env = Env::start();

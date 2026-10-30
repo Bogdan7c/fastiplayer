@@ -19,6 +19,8 @@ pub(crate) enum VideoIdentityError {
     UnsupportedPathEncoding,
     /// Исходная ссылка пуста.
     EmptyUrl,
+    /// У источника нет устойчивого имени (поток страницы браузера).
+    NoStableIdentity,
 }
 
 /// Ключ видео для источника, как его открыл пользователь.
@@ -33,6 +35,8 @@ pub(crate) fn video_key_for_source(
             SecretUrlLocator::from_reopenable_url(intent.original_url_for_track_memory())
                 .map_err(|_| VideoIdentityError::EmptyUrl)?,
         ),
+        // Поток страницы не запоминается вовсе (инвариант 7 моста): ключа у него нет.
+        ActiveMediaSource::BrowserStream => return Err(VideoIdentityError::NoStableIdentity),
         ActiveMediaSource::PlaybackWindow { .. } => {
             // `physical_source` снимает обёртки окна: сюда попасть нельзя. Не паникуем,
             // а честно сообщаем, что идентичность недоступна.

@@ -54,11 +54,13 @@ mod user_audio_level;
 mod video_backend_constraint;
 mod video_pipeline_candidate;
 mod video_pipeline_selector;
+mod viewer_transport;
 mod web_media_catalog;
 mod web_media_open;
 mod web_media_stream_model;
 mod web_open_message;
 mod window_fullscreen;
+mod window_view_profile;
 
 // Архитектурные сторожа provider DTO yt-dlp по исходникам app-egui.
 #[cfg(test)]

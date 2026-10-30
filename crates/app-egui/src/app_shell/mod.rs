@@ -13,6 +13,7 @@ mod dropped_collection_walk;
 mod escape_dismissal;
 mod event_loop;
 mod external_drop;
+mod hotkey_dispatch;
 mod hotkeys;
 mod instance_forwarding;
 mod main_window_attributes;
@@ -25,6 +26,11 @@ mod shutdown;
 mod track_memory_flush;
 mod window_identity;
 mod window_limits;
+
+// Детали обычного окна, которые переиспользует окно браузерного режима (мост 04a).
+pub(crate) use hotkey_dispatch::{ShellKeyOutcome, handle_shell_key_event};
+pub(crate) use main_window_attributes::main_window_attributes;
+pub(crate) use renderer_startup_marker::ReadOnlyRendererStartupMarker;
 
 #[cfg(test)]
 mod tests;

@@ -96,6 +96,20 @@ pub(crate) fn start_track_memory(
     )
 }
 
+/// Память выбора «только в оперативке»: файл не читается и не пишется вовсе.
+///
+/// Для процесса браузерного режима (инвариант 7 моста: о просмотре на диск ничего не
+/// пишется): выбор дорожек работает, пока живёт окно, и исчезает вместе с ним. Потока
+/// записи нет, поэтому и сбрасывать при выходе нечего.
+pub(crate) fn start_track_memory_in_memory_only(
+    capacity: TrackMemoryCapacity,
+) -> TrackMemoryHandle {
+    TrackMemoryHandle::new(TrackMemoryOwner::new(
+        TrackMemory::new(capacity),
+        Persistence::InMemoryOnly,
+    ))
+}
+
 /// Читает файл и при необходимости убирает повреждённый в карантин.
 /// Возвращает память, разрешена ли запись и исход.
 fn inspect_and_recover(

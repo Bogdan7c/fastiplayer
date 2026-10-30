@@ -156,3 +156,35 @@ fn saved_choices_survive_a_restart_and_a_missing_file_starts_empty() {
     assert_eq!(remembered.subtitles, Some(RememberedSubtitleChoice::Off));
     assert_eq!(remembered.sync_offset.millis(), 500);
 }
+
+/// Браузерный режим (инвариант 7 моста): выбор помнится, пока жив процесс, но на диск
+/// не попадает ни при изменении, ни при сбросе, ни при выходе.
+#[test]
+fn in_memory_only_memory_remembers_choices_without_touching_the_disk() {
+    let handle = super::super::start_track_memory_in_memory_only(capacity(10));
+    let key = key_of("browser-stream.mp4");
+    let hint = audio_hint("eng", "Original", "A_OPUS", 1);
+    {
+        let mut owner = handle.lock();
+        let now = Instant::now();
+        owner.begin_video(instance(1), Some(key), now);
+        owner.remember_audio(instance(1), hint.clone(), now);
+        assert!(!owner.is_writing_to_disk(), "no writer at all");
+        assert_eq!(
+            owner.next_wake_deadline(),
+            None,
+            "nothing is scheduled for saving"
+        );
+        owner.poll(now + Duration::from_secs(60));
+        owner.flush_unsaved_changes();
+        assert!(
+            matches!(
+                owner.shutdown(Duration::from_secs(1)),
+                TrackMemoryShutdownOutcome::NothingToFlush
+            ),
+            "the exit has nothing to write"
+        );
+    }
+    // Выбор работает в оперативке: тот же ключ видео вспоминает дорожку.
+    assert_eq!(handle.lock().remembered_for_key(&key).audio, Some(hint));
+}

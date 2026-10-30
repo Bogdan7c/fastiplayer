@@ -81,13 +81,35 @@ fn play_recording(
     received
 }
 
+/// Строки журнала, означающие, что поколение не поставилось, а прежнее играет дальше
+/// (так окно 04a молча отвергало поколение с позицией страницы).
+const INSTALL_REFUSALS: [&str; 3] = [
+    "could not start installing",
+    "refused to install",
+    "media install failed",
+];
+
 /// Главное: после каждой смены `MediaSource` видео играет дальше с позиции, которую
 /// назвала страница, — время у страницы не идёт назад, ролик доигрывается до конца,
 /// кадры и звук доходят до зрителя.
 #[test]
 fn three_media_source_switches_in_a_row_keep_playing_from_the_page_position() {
-    let bus = PrivateBusWithBrowserSession::start("quality-switch");
-    let mut socket = open_attached_session(&bus);
+    three_switches_keep_playing_from_the_page_position(VideoMode::Headless);
+}
+
+/// То же в окне браузерного режима: поколение идёт путём открытия `AppState`, и
+/// позиция, подготовленная потоком, обязана быть принята (04a: отвергалась).
+#[test]
+fn three_media_source_switches_in_a_window_keep_playing_from_the_page_position() {
+    three_switches_keep_playing_from_the_page_position(VideoMode::Window);
+}
+
+fn three_switches_keep_playing_from_the_page_position(mode: VideoMode) {
+    let Some(process) = SessionProcessUnderTest::start("quality-switch", mode) else {
+        return;
+    };
+    let bus = &process.bus;
+    let mut socket = process.open_attached_session();
     let (steps, expected_bytes) = recorded_stream(RECORDING);
 
     let mut messages = play_recording(&mut socket, steps);
@@ -137,12 +159,13 @@ fn three_media_source_switches_in_a_row_keep_playing_from_the_page_position() {
         ended_at.is_some_and(|position| position + FRAME_US >= CLIP_US),
         "the clip did not play to its end: {ended_at:?}"
     );
-    bus.wait_for_log_line("Browser playback ended");
+    bus.wait_for_log_line_without("Browser playback ended", &INSTALL_REFUSALS);
 
     // 4. Зритель видел и слышал: кадров — почти весь ролик (пропущено только то, что
     //    страница перешагнула на сменах, ≤ 0,5 с на смену), звук не вставал.
     send_tab_gone_and_expect_close(&mut socket);
-    let summary = bus.wait_for_log_line("Browser playback summary kind=final");
+    let summary =
+        bus.wait_for_log_line_without("Browser playback summary kind=final", &INSTALL_REFUSALS);
     let presented = log_number(&summary, "presented_frames");
     let clip_frames = CLIP_US / FRAME_US;
     assert!(
@@ -150,15 +173,16 @@ fn three_media_source_switches_in_a_row_keep_playing_from_the_page_position() {
         "presented frames out of range: {summary}"
     );
     assert_eq!(log_number(&summary, "position_regressions"), 0, "{summary}");
+    // 5. Все четыре поколения поставлены — ни одно не отвергнуто молча.
     assert_eq!(log_number(&summary, "loads"), 4, "{summary}");
     assert!(
         log_number(&summary, "audio_played_ms") >= 4_000,
         "{summary}"
     );
-    let totals = bus.wait_for_log_line("Browser session stopped");
+    let totals = bus.wait_for_log_line_without("Browser session stopped", &INSTALL_REFUSALS);
     assert!(
         totals.contains(&format!("received_bytes={expected_bytes}")),
         "expected {expected_bytes} bytes in: {totals}"
     );
-    bus.wait_for_log_line("Browser session process finished");
+    bus.wait_for_log_line_without("Browser session process finished", &INSTALL_REFUSALS);
 }

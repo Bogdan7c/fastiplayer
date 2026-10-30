@@ -22,8 +22,9 @@
 //! `EventLoopProxy` окна в 04), — после нового кадра или события плеера. Цикл обязан
 //! звать [`BrowserPlayback::pump`] и по таймеру (часы звука и сводки журнала идут сами).
 //!
-//! Шов для окна (04): окно передаёт свой [`video_output::BrowserVideoOutput`] с рендером
-//! вместо [`video_output::HeadlessVideoOutput`] — остальная композиция не меняется.
+//! С 04a это безоконный (тестовый) плеер: окно браузерного режима играет поток своим
+//! `AppState` (`super::window`), а не через [`video_output::BrowserVideoOutput`]. Общий
+//! с окном учёт «чья загрузка и чей отказ» — [`load_ledger::LoadLedger`].
 //!
 //! Решение владельца (99): новое медиа сразу играет, если страница играет; дальше плеер
 //! следует за play/pause страницы (команды приходят через `play()`/`pause()`). Как
@@ -36,6 +37,7 @@
 //! если их экземпляр медиа (`MediaInstanceId`) — установленный экземпляр ТЕКУЩЕЙ
 //! загрузки. Отказ прежнего медиа новой загрузке не достаётся никогда.
 
+pub(crate) mod load_ledger;
 mod media_identity;
 pub(crate) mod metered_audio;
 mod simulated_audio;
@@ -46,15 +48,15 @@ use std::time::{Duration, Instant};
 
 use player_core::{
     AutomaticSurfacePool, CorrelatedPlayerEvent, MediaInstallCompletion, MediaInstallReceipt,
-    MediaInstanceId, PlaybackRate, PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind,
-    PlayerEvent, PlayerRuntimeApplyError, PlayerVideoBackendInstallIntent,
-    PlayerVideoDecoderThreadConfig, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
-    PlayerWorkerPresentationWake, PlayerWorkerSendError, PlayerWorkerShutdownDeadline,
-    PlayerWorkerShutdownOutcome, PreparedMedia, SeekRequest, VideoDecodeRequirement,
+    PlaybackRate, PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent,
+    PlayerRuntimeApplyError, PlayerVideoBackendInstallIntent, PlayerVideoDecoderThreadConfig,
+    PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent, PlayerWorkerPresentationWake,
+    PlayerWorkerSendError, PlayerWorkerShutdownDeadline, PlayerWorkerShutdownOutcome,
+    PreparedMedia, SeekRequest, VideoDecodeRequirement,
 };
 use tracing::{debug, warn};
 
-use self::media_identity::ShownMediaTracker;
+use self::load_ledger::{CancelledInstall, LoadLedger};
 pub(crate) use self::media_identity::{MediaLoadTicket, MediaLoadTicketIssuer};
 use self::metered_audio::{AudioMeter, BrowserAudioOutputChoice};
 use self::video_output::{
@@ -76,8 +78,9 @@ const WORKER_SHUTDOWN_BUDGET: Duration = Duration::from_secs(2);
 
 /// Пул поверхностей «авто» для конфигурации декодера.
 ///
-/// Без окна рендера нет; значение важно только аппаратному декоду, которого в 03b нет.
-/// Окно 04 передаст сюда семейство своего рендера.
+/// Без окна рендера нет; значение важно только аппаратному декоду, которого без окна
+/// нет. Окно браузерного режима (04a) берёт пул по семейству своего рендера сам —
+/// в `AppState::new`, как обычное окно.
 fn automatic_surface_pool() -> AutomaticSurfacePool {
     crate::video_pipeline_candidate::hardware_surface_pool_default_or_wgpu(None)
 }
@@ -101,6 +104,10 @@ pub(crate) enum BrowserPlaybackFault {
     VideoDecoderStartFailed,
     /// Плеер остановился с ошибкой другого рода.
     PlaybackFailed(PlayerErrorKind),
+    /// Установку медиа отменили, хотя более новая загрузка её не заменяла (остановка,
+    /// структурная отмена до барьера установки, установка пропала без итога): медиа
+    /// так и не поставлено.
+    InstallAborted,
 }
 
 /// Как начинается только что загруженное медиа.
@@ -217,8 +224,15 @@ pub(crate) enum BrowserPlaybackStartError {
 
 /// Команда не дошла до плеера.
 #[derive(Debug, thiserror::Error)]
-#[error("the player did not accept the command: {0}")]
-pub(crate) struct BrowserPlaybackCommandError(#[from] PlayerWorkerSendError);
+pub(crate) enum BrowserPlaybackCommandError {
+    /// Очередь команд плеера отказала (переполнена или поток плеера завершился).
+    #[error("the player did not accept the command: {0}")]
+    Player(#[from] PlayerWorkerSendError),
+    /// Окно браузерного режима не приняло команду: его очередь команд полна (окно не
+    /// исполняет их — зависло) или окно уже закрыто.
+    #[error("the browser window did not accept the command: {0}")]
+    Window(#[from] super::window::WindowCommandRefusal),
+}
 
 /// Мост «плеер показал кадр/событие» → пробуждение главного цикла.
 struct PresentationWakeBridge {
@@ -241,16 +255,12 @@ pub(crate) struct BrowserPlayback {
     audio_meter: AudioMeter,
     /// Журнал прогона.
     journal: PlaybackJournal,
-    /// Отказ текущей загрузки (отказ прежних забывается при новой загрузке).
-    fault: Option<LoadFault>,
-    /// Последняя выданная квитанция загрузки: только ей приписываются отказы.
-    current_load: Option<MediaLoadTicket>,
+    /// Чья загрузка показана и чей отказ (общий учёт с окном браузерного режима).
+    ledger: LoadLedger,
     /// Последняя загрузка, итог установки которой ещё не забран.
     pending_install: Option<PendingInstall>,
     /// Выдача квитанций загрузок.
     load_tickets: MediaLoadTicketIssuer,
-    /// Какая установленная загрузка сейчас в снимке плеера.
-    shown_media: ShownMediaTracker,
 }
 
 /// Загрузка, ждущая итога установки.
@@ -303,11 +313,9 @@ impl BrowserPlayback {
             video_output,
             audio_meter,
             journal: PlaybackJournal::new(now, BROWSER_PLAYBACK_SUMMARY_INTERVAL),
-            fault: None,
-            current_load: None,
+            ledger: LoadLedger::default(),
             pending_install: None,
             load_tickets: MediaLoadTicketIssuer::default(),
-            shown_media: ShownMediaTracker::default(),
         })
     }
 
@@ -329,10 +337,9 @@ impl BrowserPlayback {
         let receipt = self
             .worker
             .load_prepared_media(prepared, start.autoplay())?;
-        self.fault = None;
         self.journal.note_media_load();
         let ticket = self.load_tickets.issue();
-        self.current_load = Some(ticket);
+        self.ledger.begin_load(ticket);
         // Итог прежней незавершённой установки больше не нужен: плеер её отменит
         // новой загрузкой, а отказ прежнего медиа уже забыт.
         self.pending_install = Some(PendingInstall { ticket, receipt });
@@ -385,21 +392,8 @@ impl BrowserPlayback {
 
         let snapshot = self.worker.latest_snapshot();
         // `Failed` прежнего медиа (снимок ещё про него, пока новое ставится) — не
-        // отказ текущей загрузки: только снимок её собственного экземпляра.
-        let snapshot_load = self.current_load_of_instance(snapshot.media_instance_id);
-        if snapshot.playback_state == PlaybackState::Failed
-            && let Some(load) = snapshot_load
-            && self.fault.is_none()
-        {
-            let kind = snapshot
-                .last_error
-                .as_ref()
-                .map_or(PlayerErrorKind::RuntimeError, |error| error.kind.clone());
-            self.fault = Some(LoadFault {
-                load,
-                fault: fault_for_error_kind(kind),
-            });
-        }
+        // отказ текущей загрузки: учёт берёт только снимок её собственного экземпляра.
+        self.ledger.note_snapshot(&snapshot);
         let notice = self.journal.note_snapshot(
             snapshot.media_instance_id,
             snapshot.current_position,
@@ -412,16 +406,7 @@ impl BrowserPlayback {
             log_playback_summary(SummaryKind::Periodic, &summary);
         }
 
-        PlaybackObservation {
-            position: snapshot.current_position,
-            duration: snapshot.duration,
-            state: snapshot.playback_state,
-            rate: snapshot.playback_rate,
-            buffering: snapshot.playback_state == PlaybackState::Buffering,
-            ended: snapshot.playback_state == PlaybackState::Ended,
-            fault: self.fault.clone(),
-            shown_load: self.shown_media.shown_load(snapshot.media_instance_id),
-        }
+        self.ledger.observation(&snapshot)
     }
 
     /// Сводка журнала на текущий момент (без записи в журнал).
@@ -447,25 +432,6 @@ impl BrowserPlayback {
         summary
     }
 
-    /// Загрузка, которой принадлежит экземпляр медиа плеера, — если это ТЕКУЩАЯ
-    /// загрузка и плеер уже сообщил, что поставил её медиа. Иначе `None`: экземпляр
-    /// прежнего медиа (или неизвестный) текущей загрузке не принадлежит.
-    fn current_load_of_instance(
-        &self,
-        instance: Option<MediaInstanceId>,
-    ) -> Option<MediaLoadTicket> {
-        self.shown_media
-            .shown_load(instance)
-            .filter(|load| Some(*load) == self.current_load)
-    }
-
-    /// Приписывает отказ загрузке (только текущей; прежние уже забыты).
-    fn note_fault(&mut self, load: MediaLoadTicket, fault: BrowserPlaybackFault) {
-        if Some(load) == self.current_load {
-            self.fault = Some(LoadFault { load, fault });
-        }
-    }
-
     /// Реакция на одно событие плеера.
     fn handle_player_event(&mut self, correlated: &CorrelatedPlayerEvent) {
         let event = &correlated.event;
@@ -481,11 +447,8 @@ impl BrowserPlayback {
                 warn!(kind = ?error.kind, "Browser session player reported an error");
                 // Ошибка прежнего медиа, пришедшая после новой загрузки, текущей не
                 // приписывается: её экземпляр — не экземпляр текущей загрузки.
-                if is_unsupported_video(&error.kind)
-                    && let Some(load) = self.current_load_of_instance(correlated.media_instance_id)
-                {
-                    self.note_fault(load, BrowserPlaybackFault::UnsupportedVideo);
-                }
+                self.ledger
+                    .note_player_error(correlated.media_instance_id, &error.kind);
             }
             _ => {}
         }
@@ -536,9 +499,7 @@ impl BrowserPlayback {
             }
         };
         let (fault, reason) = rejection;
-        if let Some(load) = self.current_load {
-            self.note_fault(load, fault);
-        }
+        self.ledger.note_current_load_fault(fault);
         if let Err(error) = self.worker.reject_pending_video_backend(reason.to_string()) {
             warn!(error = %error, "The player did not receive the video decoder rejection");
         }
@@ -568,40 +529,25 @@ impl BrowserPlayback {
                     stage = ?failure.stage,
                     "Browser session media did not install"
                 );
-                self.note_fault(ticket, fault_for_error_kind(failure.error.kind));
+                self.ledger.note_install_failed(ticket, failure.error.kind);
             }
             MediaInstallCompletion::Installed {
                 media_instance_id, ..
             } => {
                 debug!(completion = ?completion, "Browser session media installed");
-                self.shown_media.note_installed(ticket, media_instance_id);
+                self.ledger.note_installed(ticket, media_instance_id);
             }
             MediaInstallCompletion::Cancelled { .. } => {
-                debug!(completion = ?completion, "Browser session media install cancelled");
+                match self.ledger.note_install_cancelled(ticket) {
+                    CancelledInstall::ReplacedByNewerLoad => {
+                        debug!(completion = ?completion, "Browser session media install cancelled");
+                    }
+                    CancelledInstall::CurrentLoadAborted => {
+                        warn!(completion = ?completion, "Browser session media install was aborted");
+                    }
+                }
             }
         }
-    }
-}
-
-/// Ошибки «видео этой дорожки нам не по силам».
-const fn is_unsupported_video(kind: &PlayerErrorKind) -> bool {
-    matches!(
-        kind,
-        PlayerErrorKind::UnsupportedVideoCodec
-            | PlayerErrorKind::UnsupportedVideoProfile
-            | PlayerErrorKind::UnsupportedVideoBitDepth
-            | PlayerErrorKind::UnsupportedVideoChroma
-            | PlayerErrorKind::UnsupportedHdrMode
-            | PlayerErrorKind::UnsupportedRenderFormat
-    )
-}
-
-/// Отказ по виду ошибки, с которой плеер остановился.
-fn fault_for_error_kind(kind: PlayerErrorKind) -> BrowserPlaybackFault {
-    if is_unsupported_video(&kind) {
-        BrowserPlaybackFault::UnsupportedVideo
-    } else {
-        BrowserPlaybackFault::PlaybackFailed(kind)
     }
 }
 

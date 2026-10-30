@@ -182,6 +182,14 @@ impl FrameSettingsRuntimeAdapter<'_> {
                     }
                 }
             }
+            // Поток страницы браузера заново не открыть (байты присылает экстеншен):
+            // новые настройки декодера достанутся следующему поколению потока.
+            ActiveMediaSource::BrowserStream => {
+                tracing::info!(
+                    "Browser stream media is not rebuilt; new settings apply to the next stream generation"
+                );
+                return MediaRebuildProgress::Finished(AppRouteApplyResult::Applied);
+            }
             ActiveMediaSource::PlaybackWindow { .. } => {
                 unreachable!("into_physical_source removes playback-window wrappers")
             }

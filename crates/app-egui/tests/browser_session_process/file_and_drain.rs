@@ -85,13 +85,67 @@ impl FilePage {
         let text = encode_message(&finished).expect("range_fetch_finished");
         socket.send(Message::text(text)).expect("range result");
     }
+
+    /// Отвечает на запросы байтов, пока плеер не доиграет файл; возвращает всё, что
+    /// страница получила по дороге.
+    fn serve_until_ended(
+        &mut self,
+        socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    ) -> Vec<PlayerSessionMessage> {
+        let mut messages = Vec::new();
+        let deadline = Instant::now() + WAIT;
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "the file never played to the end"
+            );
+            let batch = read_player_messages_until(socket, "the next player message", |_| true);
+            for message in batch {
+                self.answer(socket, &message);
+                let ended = matches!(
+                    message,
+                    PlayerSessionMessage::Clock {
+                        state: ClockState::Ended,
+                        ..
+                    }
+                );
+                messages.push(message);
+                if ended {
+                    break;
+                }
+            }
+            if matches!(
+                messages.last(),
+                Some(PlayerSessionMessage::Clock {
+                    state: ClockState::Ended,
+                    ..
+                })
+            ) {
+                break;
+            }
+        }
+        messages
+    }
 }
 
 /// Файл целиком: страница отвечает на запросы, плеер играет до конца ролика.
 #[test]
 fn a_file_generation_is_fetched_by_ranges_and_played_to_the_end() {
-    let bus = PrivateBusWithBrowserSession::start("file-plays");
-    let mut socket = open_attached_session(&bus);
+    file_generation_is_fetched_by_ranges_and_played_to_the_end(VideoMode::Headless);
+}
+
+/// То же в окне: поколение-файл идёт путём открытия `AppState` окна.
+#[test]
+fn a_file_generation_is_fetched_by_ranges_and_played_to_the_end_in_a_window() {
+    file_generation_is_fetched_by_ranges_and_played_to_the_end(VideoMode::Window);
+}
+
+fn file_generation_is_fetched_by_ranges_and_played_to_the_end(mode: VideoMode) {
+    let Some(process) = SessionProcessUnderTest::start("file-plays", mode) else {
+        return;
+    };
+    let bus = &process.bus;
+    let mut socket = process.open_attached_session();
     for text in [
         r#"{"type":"generation_started","generation":1}"#,
         r#"{"type":"file_source_added","generation":1}"#,
@@ -99,39 +153,7 @@ fn a_file_generation_is_fetched_by_ranges_and_played_to_the_end() {
         socket.send(Message::text(text)).expect("message is sent");
     }
     let mut page = FilePage::new();
-
-    let mut messages = Vec::new();
-    let deadline = Instant::now() + WAIT;
-    loop {
-        assert!(
-            Instant::now() < deadline,
-            "the file never played to the end"
-        );
-        let batch = read_player_messages_until(&mut socket, "the next player message", |_| true);
-        for message in batch {
-            page.answer(&mut socket, &message);
-            let ended = matches!(
-                message,
-                PlayerSessionMessage::Clock {
-                    state: ClockState::Ended,
-                    ..
-                }
-            );
-            messages.push(message);
-            if ended {
-                break;
-            }
-        }
-        if matches!(
-            messages.last(),
-            Some(PlayerSessionMessage::Clock {
-                state: ClockState::Ended,
-                ..
-            })
-        ) {
-            break;
-        }
-    }
+    let messages = page.serve_until_ended(&mut socket);
 
     // Страница получила запросы: первый — начало файла, и был запрос за оглавлением в
     // конце (смещение дальше первых килобайт).
@@ -179,6 +201,79 @@ fn a_file_generation_is_fetched_by_ranges_and_played_to_the_end() {
     );
     assert_eq!(log_number(&summary, "position_regressions"), 0, "{summary}");
     assert!(log_number(&summary, "audio_played_ms") > 0, "{summary}");
+    bus.wait_for_log_line("Browser session process finished");
+}
+
+/// Позиция, которую страница называет, пока поколение-файл открывается (как при
+/// переключении на `<video src>` посреди просмотра).
+const FILE_PAGE_POSITION_US: u64 = 2_000_000;
+
+/// Поколение-файл стартует с позиции страницы: демуксер файла фоновый и синхронно не
+/// перематывается, поэтому плеер перематывается командой при первом показе
+/// (`AfterLoad::SeekTo`, 03e). Без неё файл играл бы с нуля — все 100 кадров.
+#[test]
+fn a_file_generation_starts_at_the_page_position() {
+    file_generation_starts_at_the_page_position(VideoMode::Headless);
+}
+
+/// То же в окне: перемотка при первом показе идёт через пульт плеера окна.
+#[test]
+fn a_file_generation_starts_at_the_page_position_in_a_window() {
+    file_generation_starts_at_the_page_position(VideoMode::Window);
+}
+
+fn file_generation_starts_at_the_page_position(mode: VideoMode) {
+    let Some(process) = SessionProcessUnderTest::start("file-page-position", mode) else {
+        return;
+    };
+    let bus = &process.bus;
+    let mut socket = process.open_attached_session();
+    let page_seek = format!(
+        r#"{{"type":"seek_started","target_us":{FILE_PAGE_POSITION_US},"cause":{{"kind":"page_seek"}}}}"#
+    );
+    for text in [
+        r#"{"type":"generation_started","generation":1}"#,
+        r#"{"type":"file_source_added","generation":1}"#,
+        page_seek.as_str(),
+    ] {
+        socket.send(Message::text(text)).expect("message is sent");
+    }
+    let messages = FilePage::new().serve_until_ended(&mut socket);
+
+    // Часы «играет» начинаются с позиции страницы и ниже неё не бывают: страница не
+    // видит отката к началу файла (шаг часов 250 мс — окно с запасом).
+    let playing: Vec<u64> = messages
+        .iter()
+        .filter_map(|message| match message {
+            PlayerSessionMessage::Clock {
+                position_us,
+                state: ClockState::Playing,
+                ..
+            } => Some(position_us.as_micros()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        playing.first().is_some_and(|&first| {
+            (FILE_PAGE_POSITION_US..FILE_PAGE_POSITION_US + 400_000).contains(&first)
+        }),
+        "the first playing clock is not right after the page position: {playing:?}"
+    );
+    assert!(
+        playing
+            .iter()
+            .all(|&position| position + 100_000 >= FILE_PAGE_POSITION_US),
+        "a playing clock before the page position: {playing:?}"
+    );
+    send_tab_gone_and_expect_close(&mut socket);
+    let summary = bus.wait_for_log_line("Browser playback summary kind=final");
+    // Показано примерно то, что после позиции страницы (2 с из 4 — 50 кадров); с нуля
+    // было бы все 100. Запас — кадры до перемотки при первом показе.
+    let presented = log_number(&summary, "presented_frames");
+    assert!(
+        (40..=65).contains(&presented),
+        "expected about half of {FILE_FRAMES} frames: {summary}"
+    );
     bus.wait_for_log_line("Browser session process finished");
 }
 
@@ -249,8 +344,21 @@ fn send_steps(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, steps: Vec<Stre
 /// вкладки (все 10), и только потом — выход по «доиграно».
 #[test]
 fn the_process_plays_what_it_got_after_the_tab_is_gone_and_then_exits() {
-    let bus = PrivateBusWithBrowserSession::start("tab-gone-drain");
-    let mut socket = open_attached_session(&bus);
+    plays_what_it_got_after_the_tab_is_gone_and_then_exits(VideoMode::Headless);
+}
+
+/// То же в окне: доигрывание читает плеер окна, а не безоконный.
+#[test]
+fn the_window_plays_what_it_got_after_the_tab_is_gone_and_then_exits() {
+    plays_what_it_got_after_the_tab_is_gone_and_then_exits(VideoMode::Window);
+}
+
+fn plays_what_it_got_after_the_tab_is_gone_and_then_exits(mode: VideoMode) {
+    let Some(process) = SessionProcessUnderTest::start("tab-gone-drain", mode) else {
+        return;
+    };
+    let bus = &process.bus;
+    let mut socket = process.open_attached_session();
     send_steps(&mut socket, recorded_stream_without_end_of_stream());
 
     // Ждём, когда плеер реально начал (первые часы), и убеждаемся, что он ещё не кончил.

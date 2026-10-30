@@ -90,11 +90,26 @@ impl BrowserAudioOutputChoice {
         self,
         device_id: &str,
     ) -> (Arc<dyn AudioOutputFactory>, AudioMeter) {
+        let meter = AudioMeter::default();
+        let factory = self.metered_factory_for(
+            audio::AudioOutputDeviceController::new(device_id),
+            meter.clone(),
+        );
+        (factory, meter)
+    }
+
+    /// Фабрика выхода со счётчиком `meter` над устройством `device_controller`.
+    ///
+    /// Окно браузерного режима (04a) передаёт сюда контроллер устройства своих настроек:
+    /// выбор устройства в окне настроек доходит до звука так же, как в обычном окне.
+    pub(crate) fn metered_factory_for(
+        self,
+        device_controller: audio::AudioOutputDeviceController,
+        meter: AudioMeter,
+    ) -> Arc<dyn AudioOutputFactory> {
         let (inner, opened_status): (Arc<dyn AudioOutputFactory>, AudioOutputStatus) = match self {
             Self::SystemDevice => (
-                Arc::new(audio::CpalAudioOutputFactory::new(
-                    audio::AudioOutputDeviceController::new(device_id),
-                )),
+                Arc::new(audio::CpalAudioOutputFactory::new(device_controller)),
                 AudioOutputStatus::Ok,
             ),
             Self::SimulatedRealTime => (
@@ -102,13 +117,11 @@ impl BrowserAudioOutputChoice {
                 AudioOutputStatus::Simulated,
             ),
         };
-        let meter = AudioMeter::default();
-        let factory = MeteredAudioOutputFactory {
+        Arc::new(MeteredAudioOutputFactory {
             inner,
-            meter: meter.clone(),
+            meter,
             opened_status,
-        };
-        (Arc::new(factory), meter)
+        })
     }
 }
 

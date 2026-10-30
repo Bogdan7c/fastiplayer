@@ -116,8 +116,13 @@ pub(crate) use strong_media_open::{
 };
 mod dynamic_decode;
 pub(crate) use dynamic_decode::{RejectedSwitchImpact, classify_rejected_switch};
+mod center_overlay;
+mod player_event_tap;
 mod telemetry_panel;
+mod window_mode;
+pub(crate) use window_mode::PageLedTransportAction;
 mod timeline_inline_status;
+pub(crate) use player_event_tap::TappedPlayerEvents;
 mod track_memory;
 mod ui_runtime;
 mod ui_textures;
@@ -151,6 +156,7 @@ pub(crate) use subtitles::{
 };
 pub(crate) use track_memory::{
     TrackMemoryHandle, TrackMemoryShutdownOutcome, TrackMemoryStartOutcome, start_track_memory,
+    start_track_memory_in_memory_only,
 };
 pub(crate) use video_backend::{
     BackendSwapVideoCheckpoint, BackendSwapVideoPhase, RendererVideoImportTarget,
@@ -294,6 +300,11 @@ pub struct AppState {
     /// Память выбора дорожек «для каждого видео» (`state/track_memory`): общая для процесса.
     track_memory: TrackMemoryHandle,
 
+    /// Отвод копий событий плеера для окна браузерного режима (`state/player_event_tap.rs`).
+    player_event_tap: Option<player_event_tap::PlayerEventTap>,
+    /// Вид окна и маршрут команд транспорта (`state/window_mode.rs`).
+    window_mode: window_mode::WindowMode,
+
     /// Диалог «Load file…» для субтитров (`subtitle_file_open.rs`): один диалог за раз.
     subtitle_file_picker: crate::subtitle_file_open::SubtitleFilePicker,
 
@@ -372,6 +383,8 @@ impl AppState {
             audio::AudioDecodeCapabilityProvider::audio_decode_capability_snapshot(
                 audio_decoder_factory.as_ref(),
             );
+        let player_event_tap = startup_context.player_event_tap();
+        let window_mode = startup_context.window_mode();
         let redraw = redraw_runtime::RedrawRuntime::new(&egui_ctx, &player_timeline_wake_port);
         let timeline_activity_wake = player_timeline_wake_bridge(player_timeline_wake_port);
         let worker_config = PlayerWorkerConfig::from_app_config(
@@ -385,9 +398,9 @@ impl AppState {
             ),
         )
         .with_audio_decoder_factory(audio_decoder_factory)
-        .with_audio_output_factory(Arc::new(audio::CpalAudioOutputFactory::new(
-            audio_output_device_controller,
-        )))
+        .with_audio_output_factory(
+            startup_context.audio_output_factory(audio_output_device_controller),
+        )
         .with_audio_tempo_processor_factory(Arc::new(
             audio_signalsmith::SignalsmithTempoProcessorFactory,
         ))
@@ -465,6 +478,8 @@ impl AppState {
                 subtitles_network_wait,
             ),
             track_memory: startup_context.track_memory.clone(),
+            player_event_tap,
+            window_mode,
             timeline_ui_state: TimelineUiState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
             renderer_report: startup_context.renderer_report.clone(),

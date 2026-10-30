@@ -40,6 +40,9 @@
 //!   `MediaSource` сбрасывает время страницы в начало, и страница сразу говорит, где
 //!   зритель был. Не назвала — поколение начнётся там, где у него есть данные всех
 //!   полос.
+//! - транспортом зрителя окна (04a, [`viewer_transport`]): действие человека ведёт
+//!   плеер и страницу, воля зрителя становится волей страницы, эхо страницы не дёргает
+//!   плеер второй раз.
 //!
 //! Ограничение (записано в отчёте 03b): длительность и «можно ли перематывать»
 //! плеер запоминает при сборке `PreparedMedia`, то есть в момент готовности потока.
@@ -74,10 +77,12 @@ mod generation_feed;
 mod generation_start;
 mod install_reconcile;
 mod seams;
+mod viewer_transport;
 
 use self::drain::{DrainContent, DrainSnapshot, IntakeStance, PageStance};
 pub(crate) use self::drain::{DrainEnd, DrainProgress};
 pub(crate) use self::seams::{MediaPlayback, SessionCloser};
+use self::viewer_transport::{LoadedSeek, PlayWill, ViewerWill};
 
 /// Метка источника для плеера. Нейтральная: ни заголовка, ни домена страницы —
 /// метка может попасть в журнал плеера (инвариант 7).
@@ -157,6 +162,8 @@ pub(crate) struct SessionMedia {
     sealed_instance: Option<SessionRef>,
     /// Последнее наблюдение плеера (ответ на «доиграно?» опирается на него).
     last_observation: Option<PlaybackObservation>,
+    /// Воля зрителя, которую страница ещё не подтвердила (правило эха, 04a).
+    viewer_will: ViewerWill,
 }
 
 impl SessionMedia {
@@ -180,6 +187,7 @@ impl SessionMedia {
             drain: None,
             sealed_instance: None,
             last_observation: None,
+            viewer_will: ViewerWill::default(),
         }
     }
 
@@ -198,6 +206,7 @@ impl SessionMedia {
         self.drain = None;
         self.page_wants_play = true;
         self.page_rate = PlayerPlaybackRate::NORMAL;
+        self.viewer_will.forget();
         self.outbound.reset_for_new_session();
         if self.loaded.take().is_some() {
             self.command("pause for a new session", |playback| playback.pause());
@@ -286,6 +295,7 @@ impl SessionMedia {
     /// Возвращает, когда проснуться без внешнего повода (повтор открытия, тик часов,
     /// повтор отложенных сообщений); `None` — ждать только пробуждений.
     pub(crate) fn drive(&mut self, now: Instant) -> Option<Instant> {
+        self.viewer_will.expire(now);
         self.poll_pending(now);
         let observation = self.playback.pump(now);
         self.report_to_page(&observation, now);
@@ -421,34 +431,17 @@ impl SessionMedia {
                     return;
                 }
                 let target = Duration::from_micros(target.as_micros());
-                let Some(loaded) = self.loaded.as_mut() else {
+                // Плеер ещё ставит поколение — перемотка ждёт показа (последняя побеждает).
+                if self.seek_loaded_generation(target) == LoadedSeek::NothingLoaded {
                     debug!(
                         "Page seek before the stream opened; the player starts where the bytes start"
                     );
-                    return;
-                };
-                if !loaded.page_state_reconciled {
-                    // Плеер ещё ставит поколение: команда сейчас досталась бы прежнему
-                    // медиа. Исполнится при показе (последняя побеждает).
-                    loaded.seek_when_shown = Some(target);
-                    return;
                 }
-                self.command("seek", |playback| playback.seek(target));
-                self.apply_page_play_state();
             }
-            PageIntent::Play => {
-                self.page_wants_play = true;
-                self.apply_page_play_state();
-            }
-            PageIntent::Pause => {
-                self.page_wants_play = false;
-                self.apply_page_play_state();
-            }
-            PageIntent::SetRate(rate) => {
-                let rate = player_rate(rate);
-                self.page_rate = rate;
-                self.command("set rate", |playback| playback.set_rate(rate));
-            }
+            // play/pause/скорость страницы проходят правило эха воли зрителя.
+            PageIntent::Play => self.follow_page_play(PlayWill::Play),
+            PageIntent::Pause => self.follow_page_play(PlayWill::Pause),
+            PageIntent::SetRate(rate) => self.follow_page_rate(rate),
         }
     }
 
@@ -709,7 +702,8 @@ impl SessionMedia {
                 self.reject(generation, StreamRejection::UnsupportedCodec);
             }
             BrowserPlaybackFault::VideoDecoderStartFailed
-            | BrowserPlaybackFault::PlaybackFailed(_) => {
+            | BrowserPlaybackFault::PlaybackFailed(_)
+            | BrowserPlaybackFault::InstallAborted => {
                 warn!(
                     ?fault,
                     generation = generation.get(),

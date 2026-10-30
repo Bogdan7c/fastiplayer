@@ -39,6 +39,7 @@ pub(crate) use lifecycle_checkpoint::LifecycleTimelineCheckpointPosition;
 pub(crate) use local_files_replacement::LocalFilesReplacementOutcome;
 pub(crate) use resolved_url_collection::{DroppedWebUrlReplacementStart, ResolvedUrlCollection};
 mod media_reset;
+mod memory_only;
 mod open_retry;
 mod operational_open;
 mod persistence;

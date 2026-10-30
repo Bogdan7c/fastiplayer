@@ -11,6 +11,9 @@ use crate::ui::notifications::NotificationUiOutput;
 use crate::ui::playlist::PlaylistUiOutput;
 
 const START_HINT: &str = "Open a file or URL to start";
+/// Подсказка пустого окна, которую рисует текущий тест (по умолчанию — обычного окна).
+const STANDARD_HINT: crate::window_view_profile::WindowViewProfile =
+    crate::window_view_profile::WindowViewProfile::Standard;
 
 fn collect_painted_text(shape: &egui::Shape, text: &mut Vec<String>) {
     match shape {
@@ -51,6 +54,22 @@ fn render_overlay_with_notifications(
     preview: Option<&PlaylistImportPreview>,
     confirmation: Option<&PendingPlaylistConfirmation>,
 ) -> Vec<String> {
+    render_overlay_for_view(
+        STANDARD_HINT,
+        snapshot,
+        notifications,
+        preview,
+        confirmation,
+    )
+}
+
+fn render_overlay_for_view(
+    view: crate::window_view_profile::WindowViewProfile,
+    snapshot: &PlayerSnapshot,
+    notifications: &NotificationsFrame,
+    preview: Option<&PlaylistImportPreview>,
+    confirmation: Option<&PendingPlaylistConfirmation>,
+) -> Vec<String> {
     let context = egui::Context::default();
     let mut painted_text = Vec::new();
     // Настоящие кадры egui проверяют initial layout, измерение toast-области и повторную
@@ -72,6 +91,7 @@ fn render_overlay_with_notifications(
                     AppState::render_center_overlay(
                         ui,
                         snapshot.playback_state,
+                        view.idle_center_hint(),
                         notifications,
                         &mut notification_output,
                         preview,
@@ -90,6 +110,24 @@ fn render_overlay_with_notifications(
         }
     }
     painted_text
+}
+
+/// Окно браузерного режима до первого кадра не предлагает «открыть файл»: оно ждёт
+/// страницу; обычное окно в том же состоянии — по-прежнему предлагает.
+#[test]
+fn the_browser_window_waits_for_the_page_instead_of_offering_to_open_a_file() {
+    let idle = PlayerSnapshot::default();
+    let notifications = notifications_frame(None, None);
+    let browser = render_overlay_for_view(
+        crate::window_view_profile::WindowViewProfile::BrowserSession,
+        &idle,
+        &notifications,
+        None,
+        None,
+    );
+    assert_eq!(browser, ["Waiting for the video from the page…"]);
+    let standard = render_overlay_with_notifications(&idle, &notifications, None, None);
+    assert_eq!(standard, [START_HINT]);
 }
 
 #[test]
@@ -319,6 +357,7 @@ fn paint_overlay_frame(
             AppState::render_center_overlay(
                 ui,
                 snapshot.playback_state,
+                STANDARD_HINT.idle_center_hint(),
                 &notifications,
                 &mut notification_output,
                 None,

@@ -10,7 +10,6 @@ use compensation::PostInstalledCompensationPoll;
 mod resume;
 mod resume_policy;
 use resume::InstalledResumeCommit;
-#[cfg(test)]
 pub(crate) use resume::{
     PostInstalledStartupPositionFacts, PostInstalledStartupPositionPlan,
     plan_post_installed_startup_position,
@@ -103,8 +102,8 @@ pub(crate) struct PendingStrongMediaOpen {
     source: Option<ActiveMediaSource>,
     intent: PlaybackIntent,
     intent_revision: PlaybackIntentRevision,
-    startup_position: crate::playlist_runtime::StartupPosition,
-    position_restore_strategy: super::PreparedPositionRestoreStrategy,
+    /// Что сделать с позицией после установки (решено при приёме открытия).
+    start_position_plan: super::PendingStartPositionPlan,
     lineage_commit: PendingStrongLineageCommit,
     pre_barrier_failure: Option<StrongMediaOpenError>,
     phase: PendingStrongMediaOpenPhase,

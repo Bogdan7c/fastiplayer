@@ -76,7 +76,7 @@ impl AppState {
         self.url_sidebar_controller.record_installed_source();
         self.current_local_file = match source.physical_source() {
             ActiveMediaSource::LocalFile(path) => Some(path.clone()),
-            ActiveMediaSource::Web(_) => None,
+            ActiveMediaSource::Web(_) | ActiveMediaSource::BrowserStream => None,
             ActiveMediaSource::PlaybackWindow { .. } => {
                 unreachable!("physical_source removes playback-window wrappers")
             }

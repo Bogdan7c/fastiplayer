@@ -78,6 +78,11 @@ impl PrivateBusWithBrowserSession {
     /// То же, но с `config.toml` пользователя в каталоге XDG процесса (процесс его
     /// только читает).
     fn start_with_config(name: &str, config_toml: Option<&str>) -> Self {
+        Self::start_with(name, config_toml, &TestVideo::Headless)
+    }
+
+    /// Общий подъём: каталоги, шина и как процесс показывает видео.
+    fn start_with(name: &str, config_toml: Option<&str>, video: &TestVideo) -> Self {
         let directory = std::env::temp_dir().join(format!(
             "fastiplayer-browser-session-e2e-{}-{name}",
             std::process::id()
@@ -111,7 +116,23 @@ impl PrivateBusWithBrowserSession {
             std::fs::create_dir_all(&app_directory).expect("config directory");
             std::fs::write(app_directory.join("config.toml"), config_toml).expect("config.toml");
         }
-        let mut daemon = Command::new("dbus-daemon")
+        let home = directory.join("home");
+        std::fs::create_dir_all(&home).expect("HOME directory");
+        let mut daemon_command = Command::new("dbus-daemon");
+        match video {
+            // Без окна: на CI нет дисплея; окно проверяет `window.rs` этого набора.
+            TestVideo::Headless => {
+                daemon_command.env("FASTIPLAYER_TEST_BROWSER_VIDEO", "headless");
+            }
+            // Окно на частном виртуальном дисплее: настоящий рабочий стол не трогается.
+            TestVideo::Window(display) => {
+                daemon_command
+                    .env("WAYLAND_DISPLAY", display.socket_name())
+                    .env("XDG_RUNTIME_DIR", display.runtime_dir())
+                    .env_remove("DISPLAY");
+            }
+        }
+        let mut daemon = daemon_command
             .arg(format!("--config-file={}", config.display()))
             .args(["--nofork", "--print-address=1"])
             // Запущенный шиной процесс наследует окружение демона: и он, и его
@@ -123,7 +144,13 @@ impl PrivateBusWithBrowserSession {
             .env("XDG_CACHE_HOME", xdg("cache"))
             // Звук — в тихую карту с настоящим временем: на CI звуковой карты нет.
             .env("FASTIPLAYER_TEST_BROWSER_AUDIO", "simulated")
-            .env("RUST_LOG", "info")
+            .env("HOME", &home)
+            // Ручная отладка: `FASTIPLAYER_TEST_PROCESS_RUST_LOG` заменяет фильтр журнала.
+            .env(
+                "RUST_LOG",
+                std::env::var("FASTIPLAYER_TEST_PROCESS_RUST_LOG")
+                    .unwrap_or_else(|_| "info".into()),
+            )
             // Без цветовых escape-кодов: тест ищет в логе текст `received_bytes=N`.
             .env("NO_COLOR", "1")
             .stdout(Stdio::piped())
@@ -140,8 +167,14 @@ impl PrivateBusWithBrowserSession {
 
         let stderr = daemon.stderr.take().expect("log pipe");
         let (line_sender, log_lines) = mpsc::channel();
+        // Ручная проверка: `FASTIPLAYER_TEST_ECHO_PROCESS_LOG=1 … -- --nocapture` печатает
+        // журнал процесса целиком (например, для отчёта живого прогона окна).
+        let echo = std::env::var_os("FASTIPLAYER_TEST_ECHO_PROCESS_LOG").is_some();
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if echo {
+                    eprintln!("[process] {line}");
+                }
                 if line_sender.send(line).is_err() {
                     break;
                 }
@@ -157,12 +190,23 @@ impl PrivateBusWithBrowserSession {
 
     /// Ждёт строку лога с `needle` и возвращает её.
     fn wait_for_log_line(&self, needle: &str) -> String {
+        self.wait_for_log_line_without(needle, &[])
+    }
+
+    /// То же, но строки, прочитанные по дороге, не должны содержать ни одной из
+    /// `forbidden`: так тест видит, что процесс ни разу не отказал молча (отказ виден
+    /// только в журнале, а старое медиа при этом продолжает играть).
+    fn wait_for_log_line_without(&self, needle: &str, forbidden: &[&str]) -> String {
         let deadline = Instant::now() + WAIT;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.log_lines.recv_timeout(left) {
                 Ok(line) if line.contains(needle) => return line,
-                Ok(_) => continue,
+                Ok(line) => {
+                    if let Some(found) = forbidden.iter().find(|text| line.contains(**text)) {
+                        panic!("forbidden log line ({found:?}) before {needle:?}: {line}");
+                    }
+                }
                 Err(error) => panic!("no log line with {needle:?}: {error}"),
             }
         }
@@ -174,6 +218,62 @@ impl Drop for PrivateBusWithBrowserSession {
         let _ = self.daemon.kill();
         let _ = self.daemon.wait();
         let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+/// Как процесс браузерного режима показывает видео в тесте.
+enum TestVideo {
+    /// Без окна (тестовая переменная `FASTIPLAYER_TEST_BROWSER_VIDEO=headless`).
+    Headless,
+    /// Окно на частном виртуальном дисплее.
+    Window(window::VirtualWaylandDisplay),
+}
+
+/// Режим показа — параметр сквозных тестов, которые обязаны проходить и без окна, и в
+/// окне. Пути загрузки у режимов разные (безоконный плеер против пути открытия
+/// `AppState` окна): смена поколения 03e проходила без окна и отвергалась в окне (04a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VideoMode {
+    Headless,
+    Window,
+}
+
+/// Процесс браузерного режима под тестом вместе с тем, на чём он показывает видео.
+///
+/// Порядок полей — порядок уничтожения: шина (и процесс) уходят раньше дисплея.
+struct SessionProcessUnderTest {
+    bus: PrivateBusWithBrowserSession,
+    _video: TestVideo,
+    mode: VideoMode,
+}
+
+impl SessionProcessUnderTest {
+    /// Поднимает шину (и дисплей для окна). `None` — окна не будет: `kwin_wayland`
+    /// нет, тест пропускается с сообщением (как `window.rs`).
+    fn start(name: &str, mode: VideoMode) -> Option<Self> {
+        let video = match mode {
+            VideoMode::Headless => TestVideo::Headless,
+            VideoMode::Window => TestVideo::Window(window::VirtualWaylandDisplay::start(name)?),
+        };
+        let bus_name = match mode {
+            VideoMode::Headless => format!("{name}-headless"),
+            VideoMode::Window => format!("{name}-window"),
+        };
+        let bus = PrivateBusWithBrowserSession::start_with(&bus_name, None, &video);
+        Some(Self {
+            bus,
+            _video: video,
+            mode,
+        })
+    }
+
+    /// Открывает сеанс, как экстеншен; в режиме окна ещё ждёт, пока окно поднимется.
+    fn open_attached_session(&self) -> WebSocket<MaybeTlsStream<TcpStream>> {
+        let socket = open_attached_session(&self.bus);
+        if self.mode == VideoMode::Window {
+            self.bus.wait_for_log_line("Browser window ready");
+        }
+        socket
     }
 }
 
@@ -520,3 +620,7 @@ mod file_and_drain;
 // Смена качества новым MediaSource (03e): три смены поколения подряд.
 #[path = "browser_session_process/generation_switch.rs"]
 mod generation_switch;
+
+// Окно браузерного режима (04a): то же, но с окном на виртуальном дисплее kwin.
+#[path = "browser_session_process/window.rs"]
+mod window;

@@ -102,6 +102,7 @@ mod tests {
                         playlist_transport: &transport,
                         subtitle_menu: &subtitle_menu,
                         audio_menu: &audio_menu,
+                        view_profile: crate::window_view_profile::WindowViewProfile::Standard,
                     },
                 );
                 remaining_height = ui.available_height();

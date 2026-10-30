@@ -297,11 +297,9 @@ impl AppState {
         }
         // Новое открытие (не переоткрытие внутри линии): запомненный язык дубляжа.
         self.schedule_remembered_web_audio_language(&installed.source);
-        let position_plan = plan_post_installed_startup_position(
-            pending.startup_position,
-            pending.position_restore_strategy,
-            PostInstalledStartupPositionFacts::from_snapshot(&snapshot),
-        );
+        let position_plan = pending
+            .start_position_plan
+            .post_installed_plan(PostInstalledStartupPositionFacts::from_snapshot(&snapshot));
         match position_plan {
             PostInstalledStartupPositionPlan::Continue { warning } => {
                 // Позиции для восстановления нет: запомненный звук выбирается командой

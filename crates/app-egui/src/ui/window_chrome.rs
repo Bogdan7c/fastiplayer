@@ -44,6 +44,9 @@ pub(crate) struct WindowChromeInput<'title> {
 
     /// Секция, для которой titlebar показывает постоянную active-заливку.
     pub(crate) active_sidebar_section: Option<SidebarSection>,
+
+    /// Секции сайдбара, которые предлагает вид окна (`WindowViewProfile`), по порядку.
+    pub(crate) sidebar_sections: &'static [SidebarSection],
 }
 
 /// Визуальный стиль кастомного titlebar.
@@ -195,6 +198,7 @@ pub(crate) fn show(ui: &mut Ui, input: WindowChromeInput<'_>) -> WindowChromeOut
                     button_hover_fill: input.style.button_hover_fill,
                 },
                 input.active_sidebar_section,
+                input.sidebar_sections,
             );
             let layout = WindowChromeLayout::new(
                 chrome_rect,
@@ -544,6 +548,8 @@ mod tests {
                         style: test_style(),
                         edge_alignment: test_edge_alignment(),
                         active_sidebar_section: None,
+                        sidebar_sections: crate::window_view_profile::WindowViewProfile::Standard
+                            .sidebar_sections(),
                     },
                 );
                 window_actions.extend(output.window_actions);

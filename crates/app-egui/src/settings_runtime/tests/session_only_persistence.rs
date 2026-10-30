@@ -111,3 +111,69 @@ fn apply_with_writable_config_does_not_report_session_only() {
     assert!(path.exists(), "routine Apply writer TOML");
     remove_file_if_exists(&path);
 }
+
+/// Окно браузерного режима (мост 04a, решение 122): config только на чтение. Громкость,
+/// ширина сайдбара и стиль субтитров меняются в окне, но файл не появляется вовсе.
+#[test]
+fn browser_session_window_changes_settings_without_writing_the_config_file() {
+    use settings_core::{RuntimeSettingCommitRequest, SettingValue};
+
+    use crate::user_audio_level::PlayerAudioObservation;
+
+    let path = temp_config_path("browser-session-read-only");
+    remove_file_if_exists(&path);
+    let mut runtime = SettingsRuntime::from_loaded_config(LoadedConfig {
+        config: AppConfig::default(),
+        path: path.clone(),
+        origin: ConfigLoadOrigin::LoadedExisting,
+        save_policy: ConfigSavePolicy::SessionOnly(
+            fastiplayer_config::ConfigSessionOnlyReason::BrowserSessionReadOnly,
+        ),
+    })
+    .expect("settings runtime should build");
+    let mut adapter = RecordingRuntimeAdapter::from_config(&AppConfig::default())
+        .expect("The adapter should start.");
+    let now = Instant::now();
+
+    // Ширина сайдбара: изменение принято и действует, но не записано.
+    assert!(runtime.record_sidebar_width_change(
+        SidebarWidthChange {
+            width_points: SidebarWidthPoints::from_committed(480),
+        },
+        now,
+    ));
+    let sidebar_due = runtime
+        .next_sidebar_resize_deadline()
+        .expect("resize is scheduled");
+    runtime
+        .flush_due_sidebar_resize(sidebar_due, &mut adapter)
+        .expect("session-only flush succeeds");
+    assert_eq!(runtime.committed_config().ui.sidebar.width_points, 480);
+
+    // Громкость: плеер подтвердил уровень, человек сделал тише, выход сбрасывает.
+    let restored = runtime.begin_player_audio_level_restore(now);
+    let _confirmed = runtime.record_player_audio_observation(
+        PlayerAudioObservation::new(restored.audible_volume().as_player_ratio(), false),
+        now,
+    );
+    runtime.record_player_audio_observation(PlayerAudioObservation::new(0.3, false), now);
+    runtime
+        .flush_pending_user_audio_level(&mut adapter)
+        .expect("session-only flush succeeds");
+    assert_eq!(runtime.committed_config().audio.volume, 0.3);
+
+    // Стиль субтитров: одна транзакция, тоже без записи.
+    let _style = runtime.commit_subtitle_style(
+        vec![RuntimeSettingCommitRequest::new(
+            "subtitles.text_size_percent",
+            SettingValue::Integer(180),
+        )],
+        &mut adapter,
+    );
+    assert_eq!(runtime.committed_config().subtitles.text_size_percent, 180);
+
+    assert!(
+        !path.exists(),
+        "the browser session window must never create or change config.toml"
+    );
+}

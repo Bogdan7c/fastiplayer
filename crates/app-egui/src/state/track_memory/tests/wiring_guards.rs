@@ -95,7 +95,7 @@ fn language_restore_is_scheduled_on_fresh_opens_only_and_the_choice_is_recorded_
         .find("schedule_remembered_web_audio_language(&installed.source)")
         .expect("the language restore hook");
     let position_plan = strong
-        .find("let position_plan = plan_post_installed_startup_position")
+        .find("let position_plan = pending\n            .start_position_plan\n            .post_installed_plan(")
         .expect("fresh-open position plan");
     assert!(
         same_lineage_end < schedule && schedule < position_plan,

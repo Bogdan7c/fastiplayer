@@ -19,8 +19,11 @@
 //!   тогда (решение 42, сессия 03c) он доигрывает полученное и выходит по «доиграно»;
 //! - 85 — D-Bus несёт только «вход», всё живое идёт по WebSocket.
 //!
-//! Окна нет (решения 88/92): главный цикл без winit, ящик будит его через
-//! [`inbox::BrowserSessionWake`]. Окно (04) подключится к тому же ящику.
+//! В 02–03 окна не было (решения 88/92): главный цикл без winit, ящик будил его через
+//! [`inbox::BrowserSessionWake`]. С 04a видео рисует окно браузерного режима
+//! ([`window`]): тот же ящик будит цикл winit, а медиа играет `AppState` окна. Безоконный
+//! путь остался только для тестов ([`video_mode`]). Общее ядро обоих —
+//! [`process_core::BrowserSessionCore`].
 //!
 //! С сессии 03b процесс играет поток страницы настоящим плеером:
 //!
@@ -52,8 +55,8 @@
 //! ```
 //!
 //! Настройки (`[browser_session]`, видео, звук, окно предзагрузки и повторы файла из
-//! `[network]`) читаются один раз при старте и только
-//! на чтение: config пишет обычный плеер.
+//! `[network]`) читаются один раз при старте и только на чтение: config пишет обычный
+//! плеер. Окно браузерного режима меняет их «только на сеанс» (решение 122, 04a).
 
 mod inbox;
 mod intake_notice;
@@ -62,6 +65,7 @@ mod normal_player_pause;
 mod outbound;
 mod playback;
 mod player_hello;
+mod process_core;
 mod range_wake;
 mod rejection;
 mod runtime;
@@ -72,42 +76,28 @@ mod stream_queue;
 #[cfg(test)]
 mod test_log_capture;
 mod translator;
+mod video_mode;
+mod window;
 
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use browser_bridge_session::{
-    BrowserSessionPolicy, BrowserSessionServer, EntryDesk, OsRandomTokenSource,
-};
-use desktop_integration::{
-    BrowserEntryServiceConfig, BrowserEntryServiceError, start_browser_entry_service,
-};
-use pushed_media_source::{BufferWindow, PushedSourcePolicy, PushedSourcePolicyError};
+use browser_bridge_session::{BrowserSessionPolicy, LifecycleVerdict};
+use desktop_integration::BrowserEntryServiceError;
+use pushed_media_source::PushedSourcePolicyError;
 use tracing::{error, info};
 
-use self::inbox::{BrowserSessionInbox, InboxCapacity, ParkingWake};
-use self::normal_player_pause::SystemNormalPlayerPause;
-use self::outbound::PageOutbound;
+use self::inbox::ParkingWake;
 use self::playback::metered_audio::BrowserAudioOutputChoice;
 use self::playback::video_output::HeadlessVideoOutput;
 use self::playback::{
     BrowserPlayback, BrowserPlaybackStartError, decoder_thread_config_from_settings,
 };
-use self::range_wake::RangeRequestWake;
-use self::runtime::{BrowserSessionRuntime, RuntimeFinish};
+use self::process_core::BrowserSessionCore;
+use self::runtime::{DRAIN_FALLBACK_WAKE, RuntimeFinish};
 use self::session_config::{BrowserSessionSettings, FileSourceSettingsError};
-use self::session_media::SessionMedia;
-use self::stream_intake::StreamIntake;
-use self::stream_queue::{OrderedSessionQueue, QueueLimits};
-use self::translator::ProtocolTranslator;
-use self::translator::file_port::PushedFileFactory;
-use self::translator::stream_port::PushedStreamFactory;
-
-/// Сколько ждать поток приёма при выходе. Разбор одной пачки — миллисекунды;
-/// 2 с — с запасом на занятую машину, но выход процесса не висит на зависшем
-/// разборе (браузер через ~2–3 с после закрытия порта всё равно убивает посредника).
-const INTAKE_SHUTDOWN_BUDGET: Duration = Duration::from_secs(2);
+use self::video_mode::BrowserVideoMode;
 
 /// Итог процесса браузерного режима (для кода выхода). Подробности уже в логе.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,12 +145,22 @@ enum BrowserSessionStartFailure {
     /// ОС не дала создать поток приёма байтов.
     #[error("the browser stream intake thread did not start: {0}")]
     IntakeThread(std::io::Error),
+    /// Окно браузерного режима не поднялось (нет графического сеанса, рендера и т. п.).
+    #[error("the browser session window did not start: {0}")]
+    Window(#[from] window::BrowserWindowStartError),
 }
 
 /// Запускает процесс браузерного режима и ждёт его конца.
 pub(crate) fn run_browser_session_process() -> BrowserSessionProcessOutcome {
     info!("=== fastiplayer browser session ===");
-    match start_and_run(BrowserSessionPolicy::default()) {
+    let policy = BrowserSessionPolicy::default();
+    let settings = BrowserSessionSettings::load_read_only();
+    info!(origin = ?settings.origin(), "Browser session settings loaded (read-only)");
+    let result = match BrowserVideoMode::from_environment() {
+        BrowserVideoMode::Window => window::run_windowed_browser_session(policy, settings),
+        BrowserVideoMode::HeadlessForTests => run_headless(policy, &settings),
+    };
+    match result {
         Ok(finish) => {
             info!(?finish, "Browser session process finished");
             BrowserSessionProcessOutcome::Completed
@@ -172,126 +172,32 @@ pub(crate) fn run_browser_session_process() -> BrowserSessionProcessOutcome {
     }
 }
 
-/// Порядок подъёма важен: плеер, очередь и поток приёма готовы до сервера, а сервер
-/// и стойка — ДО того, как имя появится на шине. Иначе первый звонок посредника
-/// (ради которого шина нас и разбудила) пришёл бы в ящик раньше, чем есть кому
-/// отвечать, а первые байты страницы — раньше, чем есть кому их разбирать.
-fn start_and_run(
+/// Безоконный процесс (тесты): плеер со счётчиком кадров, цикл спит на `ParkingWake`.
+fn run_headless(
     policy: BrowserSessionPolicy,
+    settings: &BrowserSessionSettings,
 ) -> Result<RuntimeFinish, BrowserSessionStartFailure> {
-    let player_hello = player_hello::player_hello()?;
-    let settings = BrowserSessionSettings::load_read_only();
-    info!(origin = ?settings.origin(), "Browser session settings loaded (read-only)");
-    let source_policy = pushed_source_policy(&settings)?;
-    // Окно предзагрузки и повторы файла `<video src>` — из тех же `[network]`, что у ссылок.
-    let file_source = settings.file_source()?;
-    let file_policy = file_source.policy()?;
-    info!(
-        window_bytes = file_source.prefetch().window_bytes(),
-        chunk_bytes = file_source.prefetch().chunk_bytes(),
-        reconnect_budget_ms =
-            u64::try_from(file_source.reconnect_budget().as_millis()).unwrap_or(u64::MAX),
-        "Browser file source settings"
-    );
     let wake = Arc::new(ParkingWake::default());
     let playback = BrowserPlayback::start(
-        &settings,
+        settings,
         Box::new(HeadlessVideoOutput::new(
-            decoder_thread_config_from_settings(&settings),
+            decoder_thread_config_from_settings(settings),
         )),
         BrowserAudioOutputChoice::from_environment(),
         wake.clone(),
         Instant::now(),
     )?;
-    let inbox = Arc::new(BrowserSessionInbox::new(
-        InboxCapacity::default(),
-        wake.clone(),
-    ));
-    // Одна очередь — оба приёмника сервера: сообщения MSE и байты в порядке кадров.
-    let queue = Arc::new(OrderedSessionQueue::new(
-        QueueLimits::default(),
-        inbox.clone(),
-    ));
-    let intake = StreamIntake::start(
-        queue.clone(),
-        inbox.clone(),
-        ProtocolTranslator::new(
-            PushedStreamFactory::new(source_policy),
-            // Запрос байтов будит главный цикл сразу, а не по тику часов.
-            Box::new(PushedFileFactory::new(
-                file_policy,
-                Arc::new(RangeRequestWake::new(wake.clone())),
-            )),
-        ),
-    )
-    .map_err(BrowserSessionStartFailure::IntakeThread)?;
-    let server = match BrowserSessionServer::start(
-        policy,
-        Box::new(OsRandomTokenSource),
-        queue.clone(),
-        queue.clone(),
-    ) {
-        Ok(server) => server,
-        Err(server_error) => {
-            intake.shut_down(INTAKE_SHUTDOWN_BUDGET);
-            return Err(server_error.into());
-        }
-    };
-    let control = server.control();
-    let desk = EntryDesk::new(player_hello, control.clone(), &policy);
-    let entry_service =
-        match start_browser_entry_service(BrowserEntryServiceConfig::default(), inbox.clone()) {
-            Ok(entry_service) => entry_service,
-            Err(entry_error) => {
-                server.shutdown();
-                intake.shut_down(INTAKE_SHUTDOWN_BUDGET);
-                return Err(entry_error.into());
+    let mut core = BrowserSessionCore::start(policy, settings, wake.clone(), Box::new(playback))?;
+    loop {
+        match core.step(Instant::now()).verdict {
+            // Безоконный плеер принадлежит медиа-части: его итог уже в `media.finish()`.
+            LifecycleVerdict::Exit(cause) => return Ok(core.shut_down(cause, || {})),
+            LifecycleVerdict::KeepRunning { wake_at } => wake.wait(wake_at),
+            // `step` это состояние не отдаёт (см. `BrowserSessionRuntime::step`); если
+            // оно когда-нибудь выйдет, цикл не должен ни виснуть, ни крутиться.
+            LifecycleVerdict::AwaitPlaybackDrain => {
+                wake.wait(Some(Instant::now() + DRAIN_FALLBACK_WAKE));
             }
-        };
-    info!(port = server.port().get(), "Browser session is listening");
-
-    let mut media = SessionMedia::new(
-        Box::new(playback),
-        Box::new(control.clone()),
-        PageOutbound::new(Box::new(control)),
-    );
-    let runtime = BrowserSessionRuntime::new(
-        desk,
-        &policy,
-        inbox.clone(),
-        Box::new(SystemNormalPlayerPause::default()),
-    );
-    let finish = runtime.run_until_exit(wake.as_ref(), &mut media);
-
-    // Сначала уходим с шины: новый звонок разбудит уже новый процесс, а не попадёт
-    // в закрывающийся. Затем закрываем ящик (недоставленные звонки получат
-    // `ShuttingDown`), сервер (оставшиеся соединения — код 4006), поток приёма (с
-    // потолком ожидания) и только потом плеер — его итоговая строка журнала.
-    entry_service.shutdown();
-    inbox.close();
-    let server_report = server.shutdown();
-    let intake_report = intake.shut_down(INTAKE_SHUTDOWN_BUDGET);
-    media.finish();
-    // Строка с этими числами — наблюдаемый итог «байты дошли до процесса»: по ней
-    // сквозной тест сверяет настоящий процесс с записанным потоком.
-    let received = queue.counters();
-    info!(
-        ?server_report,
-        ?intake_report,
-        received_frames = received.received_frames,
-        received_bytes = received.received_bytes,
-        "Browser session stopped"
-    );
-    Ok(finish)
-}
-
-/// Пределы источника с окном буфера пользователя (`[browser_session]` config-а).
-fn pushed_source_policy(
-    settings: &BrowserSessionSettings,
-) -> Result<PushedSourcePolicy, PushedSourcePolicyError> {
-    let window = settings.buffer_window();
-    PushedSourcePolicy::recommended()?.with_buffer_window(BufferWindow {
-        ahead: window.ahead(),
-        behind: window.behind(),
-    })
+        }
+    }
 }

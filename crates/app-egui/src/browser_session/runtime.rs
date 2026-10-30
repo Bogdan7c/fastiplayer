@@ -36,14 +36,15 @@ use browser_bridge_session::{
 use desktop_integration::BrowserEntryDelivery;
 use tracing::{debug, error, info};
 
-use super::inbox::{BrowserSessionInbox, InboxBatch, ParkingWake};
+use super::inbox::{BrowserSessionInbox, InboxBatch};
 use super::intake_notice::IntakeNotice;
 use super::normal_player_pause::NormalPlayerPause;
 use super::session_media::{DrainProgress, SessionMedia};
 
 /// Через сколько просыпаться, если машина выхода вдруг вернёт «доигрываем» мимо
 /// [`BrowserSessionRuntime::step`] (так не бывает; страховка от зависания цикла).
-const DRAIN_FALLBACK_WAKE: std::time::Duration = std::time::Duration::from_millis(250);
+/// Нужна любому циклу, который гоняет шаги: безоконному и окну.
+pub(super) const DRAIN_FALLBACK_WAKE: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Медиа-часть так, как её видит главный цикл. Настоящая — [`SessionMedia`];
 /// тесты цикла подставляют подделку без плеера.
@@ -116,28 +117,6 @@ impl BrowserSessionRuntime {
             lifecycle: ProcessLifecycle::new(Instant::now(), policy.idle_exit_after_start),
             inbox,
             normal_player,
-        }
-    }
-
-    /// Крутится, пока машина «когда выходить» не скажет «выходим».
-    ///
-    /// Медиа-часть остаётся у вызывающего: её итог (финальная строка журнала плеера)
-    /// пишется после остановки сервера и потока приёма.
-    pub(super) fn run_until_exit(
-        mut self,
-        wake: &ParkingWake,
-        media: &mut dyn SessionMediaPort,
-    ) -> RuntimeFinish {
-        loop {
-            match self.step(Instant::now(), media) {
-                LifecycleVerdict::Exit(cause) => return self.finish(cause),
-                LifecycleVerdict::KeepRunning { wake_at } => wake.wait(wake_at),
-                // `step` это состояние не отдаёт (см. `settle_playback_drain`); если
-                // оно когда-нибудь выйдет, цикл не должен ни виснуть, ни крутиться.
-                LifecycleVerdict::AwaitPlaybackDrain => {
-                    wake.wait(Some(Instant::now() + DRAIN_FALLBACK_WAKE));
-                }
-            }
         }
     }
 

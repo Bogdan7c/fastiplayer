@@ -5,7 +5,9 @@
 
 mod candidate_commit;
 mod compensation;
+mod start_position;
 mod user_failure_reason;
+use start_position::{PendingStartPositionPlan, PreparedOpenStartPosition};
 pub(crate) use user_failure_reason::StrongMediaOpenUserOutcome;
 pub(super) mod pending;
 pub(super) use pending::{
@@ -48,7 +50,8 @@ pub(crate) struct PreparedSingleMediaOpen {
     safe_label: SafeMediaLabel,
     descriptor: Option<PreparedMediaDescriptor>,
     playlist_target: Option<PreparedPlaylistTarget>,
-    startup_position: crate::playlist_runtime::StartupPosition,
+    /// Кто решает место старта: приложение (очередь) или владелец источника.
+    start_position: PreparedOpenStartPosition,
 }
 
 /// Выбирает, должен ли post-install path отправить новый demux seek или принять уже доказанный.
@@ -138,7 +141,9 @@ impl PreparedSingleMediaOpen {
             safe_label,
             descriptor: None,
             playlist_target: None,
-            startup_position: crate::playlist_runtime::StartupPosition::KeepStart,
+            start_position: PreparedOpenStartPosition::Startup(
+                crate::playlist_runtime::StartupPosition::KeepStart,
+            ),
         }
     }
 
@@ -161,7 +166,9 @@ impl PreparedSingleMediaOpen {
             playlist_target: Some(PreparedPlaylistTarget::QueueReplacement(Box::new(
                 target_draft,
             ))),
-            startup_position: crate::playlist_runtime::StartupPosition::KeepStart,
+            start_position: PreparedOpenStartPosition::Startup(
+                crate::playlist_runtime::StartupPosition::KeepStart,
+            ),
         }
     }
 
@@ -172,7 +179,7 @@ impl PreparedSingleMediaOpen {
         safe_label: SafeMediaLabel,
         target: crate::playlist_runtime::StartupRestoreTarget,
     ) -> Self {
-        let startup_position = target.position();
+        let start_position = PreparedOpenStartPosition::Startup(target.position());
         let source = match prepared_media.playback_window() {
             Some(window) => source.with_playback_window(window),
             None => source,
@@ -183,7 +190,7 @@ impl PreparedSingleMediaOpen {
             safe_label,
             descriptor: None,
             playlist_target: Some(PreparedPlaylistTarget::RestoredCurrent(target)),
-            startup_position,
+            start_position,
         }
     }
 

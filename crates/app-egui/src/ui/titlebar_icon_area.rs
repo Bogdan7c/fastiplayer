@@ -10,12 +10,15 @@ const BUTTON_HEIGHT: f32 = 32.0;
 const ACTIVE_FILL_ALPHA: u8 = 20;
 const ACTIVE_HOVER_FILL_ALPHA: u8 = 42;
 
-const BUTTONS: [(SidebarSection, &str); 4] = [
-    (SidebarSection::Playlist, "Playlist"),
-    (SidebarSection::Settings, "Settings"),
-    (SidebarSection::Url, "URL"),
-    (SidebarSection::Info, "Info"),
-];
+/// Подсказка и имя кнопки секции (то же имя читает доступность).
+const fn section_tooltip(section: SidebarSection) -> &'static str {
+    match section {
+        SidebarSection::Playlist => "Playlist",
+        SidebarSection::Settings => "Settings",
+        SidebarSection::Url => "URL",
+        SidebarSection::Info => "Info",
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TitlebarIconAreaAction {
@@ -48,10 +51,10 @@ impl TitlebarIconAreaAlignment {
         }
     }
 
-    /// Возвращает центр кнопки конкретной sidebar-секции.
+    /// Возвращает центр кнопки на месте `slot` (0 — первая слева).
     #[must_use]
-    fn button_center_x(self, section: SidebarSection) -> f32 {
-        self.first_button_center_x + self.button_center_step * section_axis_index(section) as f32
+    fn slot_center_x(self, slot: usize) -> f32 {
+        self.first_button_center_x + self.button_center_step * slot as f32
     }
 }
 
@@ -78,10 +81,15 @@ pub(crate) fn show(
     alignment: TitlebarIconAreaAlignment,
     style: TitlebarIconAreaStyle,
     active_section: Option<SidebarSection>,
+    sections: &[SidebarSection],
 ) -> TitlebarIconAreaOutput {
     let mut actions = Vec::new();
-    for (section, tooltip) in BUTTONS {
-        let button_rect = button_rect(titlebar_rect, alignment, section);
+    // Кнопки идут подряд в порядке секций вида окна: в окне без очереди и URL
+    // (браузерный режим) Settings и Info стоят на первых местах, без дыр. Обычное окно
+    // предлагает все секции, и место каждой совпадает с её осью (`section_axis_index`).
+    for (slot, &section) in sections.iter().enumerate() {
+        let tooltip = section_tooltip(section);
+        let button_rect = button_rect_at_slot(titlebar_rect, alignment, slot);
         let response = ui
             .interact(
                 button_rect,
@@ -119,8 +127,17 @@ pub(crate) fn button_rect(
     alignment: TitlebarIconAreaAlignment,
     section: SidebarSection,
 ) -> Rect {
+    button_rect_at_slot(titlebar_rect, alignment, section_axis_index(section))
+}
+
+/// Кнопка на месте `slot` общей оси titlebar-иконок.
+fn button_rect_at_slot(
+    titlebar_rect: Rect,
+    alignment: TitlebarIconAreaAlignment,
+    slot: usize,
+) -> Rect {
     let top = titlebar_rect.center().y - BUTTON_HEIGHT * 0.5;
-    let left = alignment.button_center_x(section) - BUTTON_WIDTH * 0.5;
+    let left = alignment.slot_center_x(slot) - BUTTON_WIDTH * 0.5;
     Rect::from_min_size(pos2(left, top), vec2(BUTTON_WIDTH, BUTTON_HEIGHT))
 }
 
@@ -210,7 +227,13 @@ mod tests {
         let titlebar = Rect::from_min_size(pos2(10.0, 5.0), vec2(900.0, 64.0));
         let first_button_center_x = titlebar.left() + 39.0;
         let alignment = TitlebarIconAreaAlignment::new(first_button_center_x, 40.0);
-        let rects = BUTTONS.map(|(section, _)| button_rect(titlebar, alignment, section));
+        let rects = [
+            SidebarSection::Playlist,
+            SidebarSection::Settings,
+            SidebarSection::Url,
+            SidebarSection::Info,
+        ]
+        .map(|section| button_rect(titlebar, alignment, section));
         assert_eq!(rects[0].center().x, first_button_center_x);
         assert!(rects.iter().all(|rect| rect.size() == vec2(36.0, 32.0)));
         assert!(
@@ -238,5 +261,66 @@ mod tests {
             button_group.right(),
             button_rect(titlebar, alignment, SidebarSection::Info).right()
         );
+    }
+
+    /// Кнопки, которые titlebar отдаёт доступности, и их центры по X.
+    fn rendered_buttons(sections: &[SidebarSection]) -> Vec<(String, f32)> {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let titlebar = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 40.0));
+        let alignment = TitlebarIconAreaAlignment::new(39.0, 40.0);
+        let style = TitlebarIconAreaStyle {
+            icon_stroke: Stroke::new(1.0, Color32::WHITE),
+            button_hover_fill: Color32::DARK_GRAY,
+        };
+        let output = crate::ui::test_frame::run_ui_frame(
+            &context,
+            crate::ui::test_frame::input_at(0.0, Vec::new()),
+            |ui| {
+                let _ = show(ui, titlebar, alignment, style, None, sections);
+            },
+        );
+        let update = output
+            .platform_output
+            .accesskit_update
+            .expect("AccessKit tree update");
+        let mut buttons: Vec<(String, f32)> = update
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == egui::accesskit::Role::Button)
+            .filter_map(|(_, node)| {
+                let bounds = node.bounds()?;
+                Some((
+                    node.label()?.to_owned(),
+                    ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                ))
+            })
+            .collect();
+        buttons.sort_by(|left, right| left.1.total_cmp(&right.1));
+        buttons
+    }
+
+    /// Обычное окно: все четыре секции на своих осях (вид не изменился).
+    #[test]
+    fn the_standard_window_offers_every_sidebar_section() {
+        let buttons = rendered_buttons(
+            crate::window_view_profile::WindowViewProfile::Standard.sidebar_sections(),
+        );
+        let labels: Vec<&str> = buttons.iter().map(|(label, _)| label.as_str()).collect();
+        assert_eq!(labels, ["Playlist", "Settings", "URL", "Info"]);
+        assert_eq!(buttons[0].1, 39.0);
+        assert_eq!(buttons[3].1, 39.0 + 3.0 * 40.0);
+    }
+
+    /// Окно браузерного режима: ни очереди, ни URL; Settings и Info — на первых местах.
+    #[test]
+    fn the_browser_window_offers_only_settings_and_info_without_gaps() {
+        let buttons = rendered_buttons(
+            crate::window_view_profile::WindowViewProfile::BrowserSession.sidebar_sections(),
+        );
+        let labels: Vec<&str> = buttons.iter().map(|(label, _)| label.as_str()).collect();
+        assert_eq!(labels, ["Settings", "Info"]);
+        assert_eq!(buttons[0].1, 39.0);
+        assert_eq!(buttons[1].1, 39.0 + 40.0);
     }
 }

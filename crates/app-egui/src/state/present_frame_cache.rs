@@ -679,9 +679,26 @@ impl AppState {
     }
 
     /// Забирает lifecycle-события worker-а.
+    ///
+    /// Читатель событий плеера один — `AppState`; если включён отвод (окно браузерного
+    /// режима), копии событий плеера остаются в нём для второго наблюдателя.
     #[must_use]
     pub fn drain_worker_events(&mut self) -> Vec<PlayerWorkerEvent> {
-        self.player_worker.drain_events()
+        let events = self.player_worker.drain_events();
+        if let Some(tap) = self.player_event_tap.as_mut() {
+            tap.copy_player_events(&events);
+        }
+        events
+    }
+
+    /// Копии событий плеера с прошлого забора (пусто, если отвод не включён).
+    pub(crate) fn take_tapped_player_events(
+        &mut self,
+    ) -> super::player_event_tap::TappedPlayerEvents {
+        self.player_event_tap
+            .as_mut()
+            .map(super::player_event_tap::PlayerEventTap::take)
+            .unwrap_or_default()
     }
 }
 

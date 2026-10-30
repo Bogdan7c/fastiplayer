@@ -689,7 +689,11 @@ fn subtitle_source_of(source: &ActiveMediaSource) -> SubtitleMediaSource {
     match source.physical_source() {
         ActiveMediaSource::LocalFile(path) => SubtitleMediaSource::LocalFile(path.clone()),
         ActiveMediaSource::Web(intent) => stream_track::subtitle_source_of_web_intent(intent),
-        ActiveMediaSource::PlaybackWindow { .. } => SubtitleMediaSource::NotLocal,
+        // У потока страницы нет ни папки с сайдкарами, ни адреса: встроенные дорожки
+        // приходят в самом потоке.
+        ActiveMediaSource::PlaybackWindow { .. } | ActiveMediaSource::BrowserStream => {
+            SubtitleMediaSource::NotLocal
+        }
     }
 }
 

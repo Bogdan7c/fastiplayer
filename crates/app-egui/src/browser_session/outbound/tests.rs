@@ -600,3 +600,81 @@ fn range_requests_for_a_gone_page_are_forgotten() {
     assert!(page.take_sent().is_empty());
     assert!(!outbound.has_pending());
 }
+
+// ---- команды транспорта зрителя (04a) ------------------------------------------------
+
+fn page_rate(permille: u32) -> PagePlaybackRate {
+    PagePlaybackRate::from_permille(permille).expect("rate")
+}
+
+/// Подключённая страница получает команды зрителя сразу и в порядке действий.
+#[test]
+fn viewer_transport_commands_reach_an_attached_page_in_order() {
+    let (mut outbound, page) = outbound();
+    outbound.request_page_pause();
+    outbound.request_page_rate(page_rate(1_500));
+    outbound.flush(Instant::now());
+    assert_eq!(
+        page.take_sent(),
+        vec![
+            PlayerSessionMessage::Pause {},
+            PlayerSessionMessage::SetRate {
+                rate: page_rate(1_500)
+            },
+        ]
+    );
+    assert!(!outbound.has_pending());
+}
+
+/// Страница переподключается: ждёт ПОСЛЕДНЯЯ воля зрителя («пауза» после «играть» —
+/// одна пауза; две скорости — последняя), просьба перемотаться не теряется, а после
+/// возвращения страницы всё уходит.
+#[test]
+fn only_the_latest_viewer_will_waits_for_a_reconnecting_page() {
+    let (mut outbound, page) = outbound();
+    let start = Instant::now();
+    outbound.request_page_play();
+    outbound.request_page_seek(PageSeekRequest {
+        target: Duration::from_secs(7),
+    });
+    outbound.request_page_rate(page_rate(2_000));
+    page.refuse_next(SendToPageError::NoAttachedSession);
+    outbound.flush(start);
+    assert!(page.take_sent().is_empty());
+
+    outbound.request_page_pause();
+    outbound.request_page_rate(page_rate(1_250));
+    assert_eq!(outbound.pending_events.len(), 3, "one per slot");
+
+    outbound.flush(start + PENDING_RETRY_INTERVAL);
+    assert_eq!(
+        page.take_sent(),
+        vec![
+            PlayerSessionMessage::Seek {
+                seek_id: SeekId(1),
+                target_us: micros(7_000_000),
+            },
+            PlayerSessionMessage::Pause {},
+            PlayerSessionMessage::SetRate {
+                rate: page_rate(1_250)
+            },
+        ]
+    );
+}
+
+/// Команды зрителя не вытесняют чужие места: отказ от поколения и перемотка остаются.
+#[test]
+fn viewer_commands_do_not_replace_other_kinds_of_pending_events() {
+    let (mut outbound, page) = outbound();
+    outbound.reject_generation(generation(2), StreamRejection::ProtectedContent);
+    outbound.request_page_seek(PageSeekRequest {
+        target: Duration::from_secs(1),
+    });
+    outbound.request_page_play();
+    outbound.request_page_rate(page_rate(1_000));
+    page.refuse_next(SendToPageError::QueueFull);
+    outbound.flush(Instant::now());
+    assert_eq!(outbound.pending_events.len(), 4);
+    outbound.flush(Instant::now());
+    assert_eq!(page.take_sent().len(), 4);
+}

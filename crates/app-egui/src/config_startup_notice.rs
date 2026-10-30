@@ -108,6 +108,9 @@ fn session_only_message(reason: &ConfigSessionOnlyReason) -> String {
             "Could not create the settings file ({}).",
             write_problem_text(*problem)
         ),
+        ConfigSessionOnlyReason::BrowserSessionReadOnly => {
+            "Browser mode does not save settings yet.".to_string()
+        }
     };
     format!("{cause} {CHANGES_WILL_NOT_BE_SAVED}")
 }

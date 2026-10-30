@@ -26,11 +26,9 @@ use crate::redraw_pacing::{
 use crate::state::AppState;
 
 use super::AppShell;
-use super::escape_dismissal;
-use super::hotkeys::{self, ShellHotkeyAction};
+use super::hotkey_dispatch::{self, ShellKeyOutcome};
 use super::shutdown::AppShellProcessLifecycle;
 use crate::app_instance::RelaunchRequest;
-use crate::ui::keyboard_focus::keyboard_focus_owner;
 
 /// Запрашивает redraw только после реально видимой UI mutation и только для живого окна.
 fn request_redraw_for_visible_wake(window: Option<&Window>, visible_mutation: bool) -> bool {
@@ -131,6 +129,8 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                 }
                 None => false,
             },
+            // Владелец процесса браузерного режима; обычное окно его портов не выдаёт.
+            AppWakeOwner::BrowserSession => false,
         };
 
         // Wake показа — не «видимая мутация интерфейса»: что рисовать (кадр, интерфейс или
@@ -255,40 +255,15 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
         if let WindowEvent::KeyboardInput {
             event: key_event, ..
         } = &event
+            && hotkey_dispatch::handle_shell_key_event(
+                &window,
+                key_event,
+                app_state,
+                &mut self.playlist_runtime,
+                renderer.as_mut(),
+            ) == ShellKeyOutcome::Handled
         {
-            // `egui_response.consumed` для клавиш здесь не используется: egui-winit
-            // ставит его по `egui_wants_keyboard_input()`, то есть при фокусе на
-            // любой кнопке, и хоткеи глохли бы после клика мышью. Какие клавиши
-            // отдать виджету, решает политика владельца клавиатуры.
-            let keyboard_owner = keyboard_focus_owner(&app_state.egui_ctx);
-            if let Some(action) = hotkeys::classify_key_event(key_event, keyboard_owner) {
-                match action {
-                    ShellHotkeyAction::DismissTopmost => {
-                        let _dismissed = escape_dismissal::dismiss_topmost(
-                            &window,
-                            app_state,
-                            &mut self.playlist_runtime,
-                            renderer.as_mut(),
-                        );
-                    }
-                    ShellHotkeyAction::Legacy(key_code) => {
-                        app_state.handle_hotkeys(&window, key_code, false);
-                    }
-                    ShellHotkeyAction::Transport(action) => {
-                        let snapshot = app_state.refresh_player_snapshot();
-                        self.playlist_runtime.publish_desktop_snapshot(&snapshot);
-                        crate::transport_runtime::apply_transport_action(
-                            app_state,
-                            &mut self.playlist_runtime,
-                            renderer.as_mut(),
-                            &snapshot,
-                            action,
-                        );
-                    }
-                }
-                window.request_redraw();
-                return;
-            }
+            return;
         }
 
         // Вне Linux файлы приходят устаревшими событиями winit (без позиции): собираем их в
