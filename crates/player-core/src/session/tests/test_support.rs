@@ -1689,6 +1689,12 @@ impl video_core::VideoDecoderThreadHandle for SharedFakeVideoDecoderThread {
             return Err(anyhow::anyhow!(error_message));
         }
 
+        // Договор `video-core`: сброшенный decoder больше не «выжат».
+        *self
+            .eof_drain_state
+            .lock()
+            .expect("fake decoder EOF drain state lock") =
+            video_core::VideoDecoderEndOfStreamDrainState::Idle;
         Ok(())
     }
 

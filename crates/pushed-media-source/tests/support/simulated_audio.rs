@@ -30,6 +30,26 @@ struct DeviceState {
     playing: bool,
     /// Заморожены ли часы паузой.
     frozen: Option<AudioOutputClockTiming>,
+    /// Кадров записано за всё время (не сбрасывается перемоткой и часами).
+    written_frames_total: u64,
+    /// Начинала ли «карта» играть хоть раз.
+    started: bool,
+    /// Отрезки тишины после старта: сколько кадров было записано к этому моменту и
+    /// сколько времени «карта» молчала (пауза выхода или пустой буфер).
+    silences: Vec<SilenceSlice>,
+    /// Номер последнего созданного выхода.
+    current_output: u64,
+    /// Кадров, записанных, но выброшенных вместе с уничтоженным выходом.
+    discarded_frames: u64,
+}
+
+/// Отрезок тишины, которую слышал бы зритель.
+#[derive(Debug, Clone, Copy)]
+struct SilenceSlice {
+    /// Кадров записано к началу отрезка.
+    written_frames_before: u64,
+    /// Длительность тишины.
+    silent_for: Duration,
 }
 
 /// Ручка теста к симулятору.
@@ -53,12 +73,60 @@ impl SimulatedAudioDevice {
         let Some((sample_rate, _)) = state.format else {
             return;
         };
+        if !state.started {
+            return;
+        }
+        let written_frames_before = state.written_frames_total;
         if !state.playing {
+            state.silences.push(SilenceSlice {
+                written_frames_before,
+                silent_for: elapsed,
+            });
             return;
         }
         let frames = u64::try_from(elapsed.as_nanos() * u128::from(sample_rate) / 1_000_000_000)
             .unwrap_or(u64::MAX);
-        state.played_frames = (state.played_frames + frames).min(state.submitted_frames);
+        let available = state.submitted_frames - state.played_frames;
+        let played = frames.min(available);
+        state.played_frames += played;
+        let starved_frames = frames - played;
+        if starved_frames > 0 {
+            state.silences.push(SilenceSlice {
+                written_frames_before,
+                silent_for: Duration::from_nanos(
+                    u64::try_from(
+                        u128::from(starved_frames) * 1_000_000_000 / u128::from(sample_rate),
+                    )
+                    .unwrap_or(u64::MAX),
+                ),
+            });
+        }
+    }
+
+    /// Сколько тишины зритель слышал посреди звука: после старта и до того, как
+    /// плеер записал последний сэмпл. Тишина после конца звука не считается.
+    pub fn mid_stream_silence(&self) -> Duration {
+        let state = self.lock();
+        state
+            .silences
+            .iter()
+            .filter(|silence| silence.written_frames_before < state.written_frames_total)
+            .map(|silence| silence.silent_for)
+            .sum()
+    }
+
+    /// Сколько записанного звука зритель не услышал: выход уничтожили вместе с буфером.
+    pub fn discarded_audio(&self) -> Duration {
+        let state = self.lock();
+        let Some((sample_rate, _)) = state.format else {
+            return Duration::ZERO;
+        };
+        Duration::from_nanos(
+            u64::try_from(
+                u128::from(state.discarded_frames) * 1_000_000_000 / u128::from(sample_rate),
+            )
+            .unwrap_or(u64::MAX),
+        )
     }
 
     /// Весь записанный PCM.
@@ -108,14 +176,17 @@ impl AudioOutputFactory for SimulatedOutputFactory {
         _device_request: AudioOutputDeviceRequest,
     ) -> anyhow::Result<CreatedAudioOutput> {
         let channels = usize::try_from(spec.channels()).expect("channel count");
-        {
+        let output_id = {
             let mut state = self.device.lock();
             state.format = Some((spec.sample_rate, channels));
-        }
+            state.current_output += 1;
+            state.current_output
+        };
         Ok(CreatedAudioOutput::new(
             Box::new(SimulatedOutput {
                 device: self.device.clone(),
                 channels,
+                output_id,
             }),
             AudioOutputDeviceRoute::SystemDefault,
         ))
@@ -126,6 +197,22 @@ impl AudioOutputFactory for SimulatedOutputFactory {
 struct SimulatedOutput {
     device: SimulatedAudioDevice,
     channels: usize,
+    /// Номер выхода: уничтожение заменённого выхода (хвост при смене формата)
+    /// не трогает буфер нового.
+    output_id: u64,
+}
+
+impl Drop for SimulatedOutput {
+    /// Как настоящий поток: уничтоженный текущий выход теряет недоигранный буфер.
+    fn drop(&mut self) {
+        let mut state = self.device.lock();
+        if state.current_output != self.output_id {
+            return;
+        }
+        let unplayed = state.submitted_frames - state.played_frames;
+        state.discarded_frames += unplayed;
+        state.submitted_frames = state.played_frames;
+    }
 }
 
 impl PlayerAudioOutput for SimulatedOutput {
@@ -144,6 +231,7 @@ impl PlayerAudioOutput for SimulatedOutput {
         let mut state = self.device.lock();
         state.written_samples.extend_from_slice(samples);
         state.submitted_frames += frames as u64;
+        state.written_frames_total += frames as u64;
         Ok(AudioOutputWriteReport::complete(
             AudioOutputInputFrameCount::new(frames),
             AudioOutputStreamFrameCount::new(frames),
@@ -153,6 +241,7 @@ impl PlayerAudioOutput for SimulatedOutput {
     fn play(&mut self) -> anyhow::Result<()> {
         let mut state = self.device.lock();
         state.playing = true;
+        state.started = true;
         state.frozen = None;
         Ok(())
     }

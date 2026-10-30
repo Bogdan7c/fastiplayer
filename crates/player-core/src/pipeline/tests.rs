@@ -72,6 +72,7 @@ fn source_slot_track(track_id: TrackId, kind: TrackKind, codec_id: &str) -> Trac
 
 mod queues_media_slots;
 mod seek_reset;
+mod track_descriptions;
 
 /// Создаёт decoded frame без реальных GPU resources для проверки pipeline storage.
 fn decoded_frame_for_tests(pts: Duration, resource_handle: u64) -> video_core::DecodedFrame {

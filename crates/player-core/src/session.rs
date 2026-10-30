@@ -89,6 +89,7 @@ mod subtitle_feed_bridge;
 mod subtitle_selection;
 mod tick;
 mod timeline_seek;
+mod track_transition;
 mod video_packet_framing;
 mod video_requirement_error;
 mod video_tail_clock_handover;

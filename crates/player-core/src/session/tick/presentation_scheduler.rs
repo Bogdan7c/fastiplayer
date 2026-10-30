@@ -595,6 +595,8 @@ pub(super) fn process_pending_video_packets(
         packet_send_budget,
         decode_ahead_budget,
     );
+    // Граница смены качества/кодека: decoder передаётся новому описанию до отправки.
+    super::video_track_handoff::advance_video_track_handoff(session);
     let decoder_io_progress = run_video_decoder_io(
         session,
         tick_result,

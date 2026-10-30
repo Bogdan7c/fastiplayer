@@ -14,6 +14,7 @@ use crate::{
 };
 
 use super::PlayerSession;
+use super::track_transition::TrackListUpdateHandling;
 
 /// Небольшой state media-opening lifecycle, который не должен становиться владельцем pipeline.
 #[derive(Debug, Default)]
@@ -120,6 +121,13 @@ impl PlayerSession {
     pub(crate) fn handle_demux_track_list_update(&mut self, track_update: DemuxTrackListUpdate) {
         let DemuxTrackListUpdate { tracks, duration } = track_update;
         let first_post_seek_track_update = self.seek_runtime.record_first_track_list_update();
+        // Смена качества или кодека без перемотки — эстафета на границе показа, не сброс.
+        match self.apply_track_list_update_without_reset(&tracks, duration) {
+            TrackListUpdateHandling::AppliedWithoutReset => return,
+            TrackListUpdateHandling::RequiresReset(reason) => {
+                debug!(reason = ?reason, "Track list update falls back to a full pipeline reset");
+            }
+        }
         // Первый TracksChanged после принятого demux seek-а с той же топологией дорожек -
         // маркер самого этого seek-а (HLS/fMP4 публикуют его при смене сегмента-якоря), а не
         // внешняя команда. Отмена live-scrub здесь бросила бы цель перемотки при уже

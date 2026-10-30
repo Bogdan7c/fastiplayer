@@ -537,7 +537,8 @@ pub(super) fn pending_video_work_available(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
 ) -> bool {
-    let Some(packet) = session.pipeline.front_pending_video_packet() else {
+    // Packet нового описания дорожки ждёт передачи decoder-а: будит decoder, не очередь.
+    let Some(packet) = session.pipeline.front_sendable_video_packet() else {
         return false;
     };
 

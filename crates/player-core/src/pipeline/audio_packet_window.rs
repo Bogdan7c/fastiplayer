@@ -22,6 +22,9 @@ pub(crate) struct PendingAudioPacket {
 
     /// Encoded audio bytes владеют shared payload-ом без копии между demuxer и player queue.
     encoded_bytes: Bytes,
+
+    /// Номер описания звука, по которому packet декодируется (`track_description`).
+    pub(super) track_description: super::TrackDescriptionEpoch,
 }
 
 impl PendingAudioPacket {
@@ -98,6 +101,7 @@ impl PendingAudioPacket {
             presentation_window,
             generation,
             encoded_bytes,
+            track_description: super::TrackDescriptionEpoch::INITIAL,
         }
     }
 
@@ -118,6 +122,7 @@ impl PendingAudioPacket {
             presentation_window,
             generation,
             encoded_bytes,
+            track_description: super::TrackDescriptionEpoch::INITIAL,
         }
     }
 }

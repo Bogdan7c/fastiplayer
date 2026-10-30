@@ -491,7 +491,7 @@ pub(super) fn send_pending_video_packets_to_decoder(
             break;
         }
 
-        let Some(packet) = session.pipeline.front_pending_video_packet() else {
+        let Some(packet) = session.pipeline.front_sendable_video_packet() else {
             break;
         };
         let packet_track_id = packet.track_id;

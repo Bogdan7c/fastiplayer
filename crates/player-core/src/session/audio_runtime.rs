@@ -504,6 +504,8 @@ impl PlayerSession {
                 break;
             }
 
+            // Новое описание звука (смена кодека посреди потока) — decoder меняется здесь.
+            self.apply_audio_track_description_for_packet(packet.track_description());
             self.process_audio_packet_with_timing(
                 packet.track_id(),
                 packet.pts(),
@@ -594,16 +596,9 @@ impl PlayerSession {
             "Audio track selected; decoder/output to be created lazily"
         );
 
-        let decoder_config = audio_core::AudioDecoderConfig::from_track_metadata(
-            init_spec.track_id.get(),
-            init_spec.codec_id.clone(),
-            init_spec.initial_sample_rate,
-            init_spec.initial_channels,
-        )
-        .with_codec_private(init_spec.codec_private.clone());
-
-        self.pipeline
-            .install_deferred_audio_decoder_config(decoder_config);
+        self.pipeline.install_deferred_audio_decoder_config(
+            super::track_transition::deferred_audio_decoder_config(&init_spec),
+        );
 
         self.pipeline.select_audio_track(init_spec.track_id);
         self.snapshot.selected_tracks.audio_track = Some(init_spec.track_id);

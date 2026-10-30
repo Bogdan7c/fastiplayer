@@ -20,6 +20,7 @@ mod result_merge;
 mod types;
 mod video_backlog_recovery_admission;
 mod video_decoder_io;
+mod video_track_handoff;
 mod wakeup;
 
 pub(super) use demux_admission::sanitize_audio_demux_low_water_mark;

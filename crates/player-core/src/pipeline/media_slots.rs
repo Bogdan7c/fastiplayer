@@ -444,6 +444,7 @@ impl PlaybackPipeline {
         self.clear_selected_tracks();
         self.clear_pending_audio_packets();
         self.clear_pending_video_packets();
+        self.reset_track_descriptions();
         self.rendered_video_texture_release_providers.clear();
         self.require_video_decoder_keyframe();
         self.reset_video_decode_in_flight();
@@ -507,6 +508,7 @@ impl PlaybackPipeline {
         self.file_path = file_path;
         self.source_label = source_label;
         self.tracks = tracks;
+        self.reset_track_descriptions();
         self.media_source_info = Some(source_info);
         self.media_metadata = media_metadata;
     }
@@ -543,6 +545,8 @@ impl PlaybackPipeline {
             .any(|track| track.kind == media_core::TrackKind::Video);
 
         self.tracks = tracks;
+        // Старый сброс: decoders пересоздаются под новый список целиком.
+        self.reset_track_descriptions();
         self.clear_audio_decoder();
         self.clear_deferred_audio_decoder_config();
         self.clear_audio_output();

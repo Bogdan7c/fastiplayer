@@ -528,7 +528,8 @@ pub(super) fn route_demuxed_packet(
                 presentation_window,
                 generation,
                 packet.data,
-            );
+            )
+            .with_track_description(session.pipeline.admitted_audio_track_description());
             session
                 .pipeline
                 .enqueue_pending_audio_packet(pending_packet);
@@ -551,7 +552,8 @@ pub(super) fn route_demuxed_packet(
                 generation,
                 packet.data,
                 packet.keyframe,
-            );
+            )
+            .with_track_description(session.pipeline.admitted_video_track_description());
             match session
                 .pipeline
                 .route_pending_video_packet_for_backlog_recovery(pending_packet)

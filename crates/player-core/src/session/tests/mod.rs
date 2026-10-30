@@ -98,3 +98,4 @@ mod startup_read_ahead;
 mod subtitle_feed;
 mod subtitle_selection;
 mod timeline_seek;
+mod track_transition;

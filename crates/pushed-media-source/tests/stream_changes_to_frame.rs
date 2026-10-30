@@ -48,44 +48,62 @@ fn new_stream() -> (PushedStreamWriter, pushed_media_source::PushedStreamOpener)
     pushed_stream(PushedSourcePolicy::recommended().expect("policy")).expect("stream")
 }
 
+/// Сколько тишины посреди звука допускается: шаг «карты» и плеера — 5 мс, на
+/// старте выход может разок опустеть на шаг. Прежний сброс по `TracksChanged`
+/// ставил выход на паузу и пересоздавал его — это десятки миллисекунд тишины.
+const AUDIO_SILENCE_TOLERANCE: Duration = Duration::from_millis(10);
+
 /// Проверка смены init-сегмента посреди воспроизведения (качество или кодек).
 ///
-/// Сегодня плеер при `TracksChanged` сбрасывает декодер сразу, в момент разбора, и
-/// кадры старого эпизода, уже декодированные впрок, не показываются (решение 94:
-/// плавная смена — сессия 03d). Поэтому проверяется честное нынешнее поведение:
-/// - старый эпизод показан с начала, по порядку, в старом размере;
-/// - новый эпизод показан целиком, по порядку, в новом размере;
-/// - ошибок нет, поток доигран до конца.
-///
-/// После 03d проверка станет строгой: все 20 кадров подряд.
+/// Смена — эстафета на границе показа (сессия 03d): старый decoder доигрывает
+/// кадры до границы, новый начинает с первого кадра нового эпизода. Поэтому:
+/// - показаны все 20 кадров подряд, каждый ровно раз;
+/// - кадры до 0,4 с — в старом размере, начиная ровно с 0,4 с — в новом;
+/// - звук идёт без пауз, ошибок нет, поток доигран до конца.
 fn assert_switch_without_stopping(
     report: &PlaybackReport,
     old_size: (u32, u32),
     new_size: (u32, u32),
 ) {
     assert_clean_end(report);
-    let switch_at = FRAME * 10;
-    let (old_frames, new_frames): (Vec<&support::playback::PresentedFrame>, Vec<_>) = report
-        .frames
-        .iter()
-        .partition(|frame| frame.pts < switch_at);
-    let old_times: Vec<Duration> = old_frames.iter().map(|frame| frame.pts).collect();
-    assert!(old_times.len() >= 5, "old episode shown {old_times:?}");
     assert_eq!(
-        old_times,
-        frame_times(0..u32::try_from(old_times.len()).expect("small"))
+        presented_times(report),
+        frame_times(0..20),
+        "every frame once, in order"
+    );
+    let switch_at = FRAME * 10;
+    for frame in &report.frames {
+        let expected_size = if frame.pts < switch_at {
+            old_size
+        } else {
+            new_size
+        };
+        assert_eq!(
+            (frame.width, frame.height),
+            expected_size,
+            "frame at {:?} has the size of the wrong episode",
+            frame.pts
+        );
+    }
+    assert_audio_without_pauses(report);
+}
+
+/// Звук целиком, без тишины посреди и без выброшенного буфера выхода.
+fn assert_audio_without_pauses(report: &PlaybackReport) {
+    assert_eq!(
+        report.discarded_audio,
+        Duration::ZERO,
+        "audio output was destroyed with unplayed sound"
     );
     assert!(
-        old_frames
-            .iter()
-            .all(|frame| (frame.width, frame.height) == old_size)
+        report.audio_duration() >= Duration::from_millis(780),
+        "audio {:?}",
+        report.audio_duration()
     );
-    let new_times: Vec<Duration> = new_frames.iter().map(|frame| frame.pts).collect();
-    assert_eq!(new_times, frame_times(10..20));
     assert!(
-        new_frames
-            .iter()
-            .all(|frame| (frame.width, frame.height) == new_size)
+        report.mid_stream_audio_silence <= AUDIO_SILENCE_TOLERANCE,
+        "audio paused mid-stream for {:?}",
+        report.mid_stream_audio_silence
     );
 }
 
@@ -128,12 +146,50 @@ fn quality_switch_mid_stream_changes_resolution_without_stopping() {
     });
 
     assert_switch_without_stopping(&report, (64, 64), (96, 96));
-    assert!(report.audio_duration() >= Duration::from_millis(780));
     assert!(
         report.max_av_offset() <= FRAME,
         "A/V offset {:?}",
         report.max_av_offset()
     );
+}
+
+/// Звук разобран далеко вперёд видео (раздельные полосы YouTube допускают до 3 с).
+///
+/// Прежний сброс в момент разбора выбрасывал этот звук вместе с выходом: часы
+/// вставали, и плеер навсегда висел в доигрывании (находка 03a). Теперь звук не
+/// трогается, а поток доигрывается до `Ended`.
+#[test]
+fn quality_switch_with_audio_parsed_far_ahead_plays_to_the_end() {
+    let low = FragmentedMp4::split(&own_fixture("video-h264-64.mp4"));
+    let high = FragmentedMp4::split(&own_fixture("video-h264-96.mp4"));
+    let audio = FragmentedMp4::split(&own_fixture("audio-aac.mp4"));
+    let (mut writer, mut opener) = new_stream();
+    writer
+        .add_lane(VIDEO, PushedContainer::FragmentedMp4)
+        .expect("video lane");
+    writer
+        .add_lane(AUDIO, PushedContainer::FragmentedMp4)
+        .expect("audio lane");
+    writer.set_duration(PushedDuration::Finite(Duration::from_millis(800)));
+    feed(&mut writer, VIDEO, &low.stream_of(0..2));
+    // Весь звук (0,8 с) сразу: разрыв со звуком больше всей первой половины видео.
+    feed(
+        &mut writer,
+        AUDIO,
+        &audio.stream_of(0..audio.fragments.len()),
+    );
+
+    let mut second_half = Some(high.stream_of(2..4));
+    let report = play(open(&mut opener), |tick| {
+        if tick == 40
+            && let Some(video_bytes) = second_half.take()
+        {
+            feed(&mut writer, VIDEO, &video_bytes);
+            writer.end_of_stream().expect("end of stream");
+        }
+    });
+
+    assert_switch_without_stopping(&report, (64, 64), (96, 96));
 }
 
 #[test]

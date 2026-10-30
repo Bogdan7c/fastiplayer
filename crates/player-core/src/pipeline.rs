@@ -46,6 +46,7 @@ mod render_resources;
 mod retired_video_decoders;
 #[cfg(test)]
 mod tests;
+mod track_description;
 mod video_backlog_recovery;
 mod video_decoder;
 mod video_decoder_output_frontier;
@@ -59,6 +60,9 @@ use passthrough_audio_history::PassthroughAudioHistory;
 use presentation_clock_handover::AudioEndClockHandover;
 pub(crate) use presentation_clock_handover::PresentationClockSource;
 pub(crate) use presentation_clock_handover::{AudioEndClockHandoverOutcome, AudioGapResumeOutcome};
+pub(crate) use track_description::{
+    TrackDescriptionAdmission, TrackDescriptionEpoch, TrackDescriptionLedger,
+};
 use video_backlog_recovery::VideoBacklogRecoveryState;
 pub(crate) use video_backlog_recovery::{
     VideoBacklogRecoveryRouteOutcome, VideoBacklogRecoveryScanLimit,
@@ -462,6 +466,9 @@ pub(crate) struct PendingVideoPacket {
 
     /// Keyframe-классификация, полученная на demux boundary.
     pub(crate) keyframe: PacketKeyframe,
+
+    /// Номер описания дорожки, по которому packet декодируется (`track_description`).
+    pub(crate) track_description: TrackDescriptionEpoch,
 }
 
 impl PendingVideoPacket {
@@ -502,6 +509,7 @@ impl PendingVideoPacket {
             generation,
             encoded_bytes,
             keyframe: keyframe.into(),
+            track_description: TrackDescriptionEpoch::INITIAL,
         }
     }
 }
@@ -520,6 +528,9 @@ pub(crate) struct PlaybackPipeline {
 
     /// Tracks текущего media без доступа UI к demuxer handle.
     tracks: Vec<TrackInfo>,
+
+    /// Номера описаний дорожек для смены качества без сброса (`track_description`).
+    track_descriptions: TrackDescriptionLedger,
 
     /// User-facing label для streaming source без локального path.
     source_label: Option<String>,
@@ -722,6 +733,7 @@ impl Default for PlaybackPipeline {
             demuxer: None,
             file_path: None,
             tracks: Vec::new(),
+            track_descriptions: TrackDescriptionLedger::default(),
             source_label: None,
             media_source_info: None,
             media_metadata: None,

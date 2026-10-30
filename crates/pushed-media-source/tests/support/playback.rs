@@ -69,6 +69,10 @@ pub struct PlaybackReport {
     /// Шагов, на которых плеер ждал (крутилка): перемотка видео идёт состоянием
     /// `Scrubbing`, только звука — `Seeking`, нехватка данных при игре — `Buffering`.
     pub waiting_ticks: usize,
+    /// Тишина посреди звука (пауза выхода или пустой буфер до последнего сэмпла).
+    pub mid_stream_audio_silence: Duration,
+    /// Записанный звук, выброшенный вместе с уничтоженным выходом.
+    pub discarded_audio: Duration,
 }
 
 impl PlaybackReport {
@@ -343,5 +347,7 @@ pub fn play_controlled(
         seeks,
         state_trace,
         waiting_ticks,
+        mid_stream_audio_silence: device.mid_stream_silence(),
+        discarded_audio: device.discarded_audio(),
     }
 }

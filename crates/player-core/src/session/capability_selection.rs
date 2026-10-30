@@ -13,6 +13,7 @@ use crate::{PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, SeekRequest
 use super::{BackendReselectionResumeStrategy, PendingVideoBackendReselection, PlayerSession};
 
 mod requirement;
+mod track_reconfiguration;
 
 pub(super) use requirement::{
     can_try_next_video_track_after_error, fallback_frame_contract_for_unprobed_requirement,
@@ -23,6 +24,7 @@ use requirement::{
     player_result_from_stream_config_result,
     unsupported_requirement_can_be_refined_by_packet_probe, video_requirement_from_track,
 };
+pub(super) use track_reconfiguration::VideoTrackReconfiguration;
 
 /// Принятый video stream после capability validation.
 struct AcceptedVideoSelection {
@@ -31,6 +33,16 @@ struct AcceptedVideoSelection {
 
     /// Concrete backend output; отсутствует только в legacy test/no-capabilities path.
     matched_output: Option<SupportedVideoOutput>,
+}
+
+impl AcceptedVideoSelection {
+    /// Ожидаемый контракт кадра: от выбранного backend-а или запасной до probe.
+    fn frame_contract(&self) -> VideoFrameContract {
+        self.matched_output
+            .as_ref()
+            .map(|output| output.frame_contract)
+            .unwrap_or_else(|| fallback_frame_contract_for_unprobed_requirement(&self.requirement))
+    }
 }
 
 /// Итог выбора одного video-трека до мутации selection state.
@@ -153,6 +165,19 @@ impl PlayerSession {
             }
         }
         Ok(())
+    }
+
+    /// Примет ли текущий backend новое описание дорожки без смены backend-а.
+    ///
+    /// Чистая проверка без мутаций: эстафета смены качества (`track_transition`)
+    /// решает по ней, можно ли перенастроить decoder на месте. Нужен другой
+    /// backend или трек не играется — остаётся старый сброс со своими правилами.
+    pub(super) fn active_video_decoder_accepts_track(&self, track: &TrackInfo) -> bool {
+        self.pipeline.has_active_video_decoder()
+            && matches!(
+                self.accepted_video_selection_for_track(track),
+                Ok(VideoTrackSelectionOutcome::Accepted(_))
+            )
     }
 
     /// Строит requirement из container metadata и принимает его до mutation selection state.
@@ -432,22 +457,23 @@ impl PlayerSession {
         track: &TrackInfo,
         selection: AcceptedVideoSelection,
     ) -> PlayerResult<()> {
-        let frame_contract = selection
-            .matched_output
-            .as_ref()
-            .map(|output| output.frame_contract)
-            .unwrap_or_else(|| {
-                fallback_frame_contract_for_unprobed_requirement(&selection.requirement)
-            });
+        let frame_contract = selection.frame_contract();
         self.configure_decoder_stream_for_track(track, &selection.requirement, frame_contract)?;
-        self.pipeline.select_video_track_with_frame_contract(
-            track.id,
-            selection.requirement,
-            frame_contract,
-        );
+        self.select_configured_video_track(track, selection.requirement, frame_contract);
+        Ok(())
+    }
+
+    /// Выбирает трек, на который decoder уже настроен.
+    fn select_configured_video_track(
+        &mut self,
+        track: &TrackInfo,
+        requirement: VideoDecodeRequirement,
+        frame_contract: VideoFrameContract,
+    ) {
+        self.pipeline
+            .select_video_track_with_frame_contract(track.id, requirement, frame_contract);
         self.snapshot.selected_tracks.video_track = Some(track.id);
         log_selected_video_track_metadata(track, self.pipeline.active_video_requirement());
-        Ok(())
     }
 
     /// Передаёт selected stream config decoder boundary до mutation selected-track state.

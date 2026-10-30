@@ -541,11 +541,12 @@ impl PlayerSession {
         self.pipeline.present_video_frame_covers(target_position)
     }
 
-    /// Сбрасывает video decoder перед seek и делает flush явной fail-fast границей.
-    pub(super) fn reset_video_decoder_for_seek(&self) -> Result<(), PlayerError> {
+    /// Flush video decoder (fail-fast граница) и последнее описание дорожки (`track_transition`).
+    pub(super) fn reset_video_decoder_for_seek(&mut self) -> Result<(), PlayerError> {
         self.pipeline
             .flush_video_decoder_thread()
-            .map_err(player_error_from_decoder_flush_error)
+            .map_err(player_error_from_decoder_flush_error)?;
+        self.configure_video_decoder_for_latest_track_description()
     }
 
     /// Завершает seek transaction до demux seek, если decoder не подтвердил flush.
