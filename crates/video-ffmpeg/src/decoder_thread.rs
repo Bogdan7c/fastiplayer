@@ -454,9 +454,10 @@ impl VideoDecoderThreadHandle for FfmpegVideoDecoderThread {
     }
 
     fn end_of_stream_drain_state(&self) -> VideoDecoderEndOfStreamDrainState {
+        // Состояние читается раньше длины канала: worker публикует хвост до `Drained`.
         self.eof_drain_state
             .lock()
-            .map(|state| state.clone())
+            .map(|state| state.clone().visible_to_player(self.frame_rx.len()))
             .unwrap_or_else(|_| VideoDecoderEndOfStreamDrainState::Fatal {
                 generation: None,
                 error: DecodeThreadError::new("FFmpeg EOF drain state lock is poisoned"),

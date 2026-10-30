@@ -807,27 +807,6 @@ fn flush_ack_timeout_marks_thread_fatal_once() {
     assert!(thread_state.take_pending_error().is_none());
 }
 
-/// Проверяет, что player не видит EOF drain завершённым, пока frame channel несёт tail.
-#[test]
-fn eof_drain_state_stays_draining_while_decoded_tail_waits_in_channel() {
-    let visible_state = player_visible_eof_drain_state(
-        video_core::VideoDecoderEndOfStreamDrainState::Drained { generation: 7 },
-        1,
-    );
-
-    assert_eq!(
-        visible_state,
-        video_core::VideoDecoderEndOfStreamDrainState::Draining { generation: 7 }
-    );
-    assert_eq!(
-        player_visible_eof_drain_state(
-            video_core::VideoDecoderEndOfStreamDrainState::Drained { generation: 7 },
-            0,
-        ),
-        video_core::VideoDecoderEndOfStreamDrainState::Drained { generation: 7 }
-    );
-}
-
 /// Проверяет timeout explicit EOF drain отдельно от seek flush timeout-а.
 #[test]
 fn eof_drain_ack_timeout_marks_thread_fatal_once() {

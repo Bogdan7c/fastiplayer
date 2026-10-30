@@ -511,9 +511,7 @@ impl VideoDecodeThread {
     /// Возвращает текущее explicit EOF drain state без блокировки decoder thread loop-а.
     pub fn end_of_stream_drain_state(&self) -> video_core::VideoDecoderEndOfStreamDrainState {
         match self.end_of_stream_drain_state.lock() {
-            Ok(drain_state) => {
-                player_visible_eof_drain_state(drain_state.clone(), self.frame_rx.len())
-            }
+            Ok(drain_state) => drain_state.clone().visible_to_player(self.frame_rx.len()),
             Err(error) => {
                 let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(format!(
                     "VA-API EOF drain state mutex poisoned during read: {error}"
@@ -774,23 +772,6 @@ impl VideoDecodeThread {
             completed_packet_count = completed_packet_count.saturating_add(1);
         }
         completed_packet_count
-    }
-}
-
-/// Не показывает player-у `Drained`, пока decoded frame channel ещё несёт tail frames.
-fn player_visible_eof_drain_state(
-    state: video_core::VideoDecoderEndOfStreamDrainState,
-    pending_decoded_frames: usize,
-) -> video_core::VideoDecoderEndOfStreamDrainState {
-    if pending_decoded_frames == 0 {
-        return state;
-    }
-
-    match state {
-        video_core::VideoDecoderEndOfStreamDrainState::Drained { generation } => {
-            video_core::VideoDecoderEndOfStreamDrainState::Draining { generation }
-        }
-        other => other,
     }
 }
 

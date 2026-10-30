@@ -283,6 +283,16 @@ impl FfmpegDecoderWorker {
                     self.pending_eof_drain_generation = None;
                     VideoDecoderEndOfStreamDrainResult::Fatal(thread_error)
                 } else {
+                    // Хвост уже в канале: только теперь `Drained` честен для player-а.
+                    if let Err(error) = set_eof_drain_state(
+                        &self.eof_drain_state,
+                        progress_report.state.clone(),
+                        &self.activity_notifier,
+                    ) {
+                        return VideoDecoderEndOfStreamDrainResult::Fatal(
+                            decode_thread_error_from_ffmpeg(error),
+                        );
+                    }
                     self.pending_eof_drain_generation = matches!(
                         progress_report.state,
                         VideoDecoderEndOfStreamDrainState::Draining { .. }

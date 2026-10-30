@@ -368,3 +368,24 @@ fn host_upload_backpressure_distinguishes_ready_queue_and_upload_slots() {
         })
     );
 }
+
+/// Player не видит EOF drain завершённым, пока канал кадров несёт хвост.
+#[test]
+fn drained_state_stays_draining_while_decoded_tail_waits_in_channel() {
+    let drained = VideoDecoderEndOfStreamDrainState::Drained { generation: 7 };
+
+    assert_eq!(
+        drained.clone().visible_to_player(1),
+        VideoDecoderEndOfStreamDrainState::Draining { generation: 7 }
+    );
+    assert_eq!(drained.clone().visible_to_player(0), drained);
+    // Остальные состояния от длины канала не зависят.
+    assert_eq!(
+        VideoDecoderEndOfStreamDrainState::Idle.visible_to_player(3),
+        VideoDecoderEndOfStreamDrainState::Idle
+    );
+    assert_eq!(
+        VideoDecoderEndOfStreamDrainState::Draining { generation: 2 }.visible_to_player(3),
+        VideoDecoderEndOfStreamDrainState::Draining { generation: 2 }
+    );
+}

@@ -79,6 +79,10 @@ pub trait VideoDecoderThreadHandle: Send + Sync {
     }
 
     /// Возвращает текущее состояние explicit EOF/DPB drain.
+    ///
+    /// `Drained` означает: decoder отдал все tail frames И канал кадров пуст,
+    /// то есть каждый кадр уже забран player-ом
+    /// (`VideoDecoderEndOfStreamDrainState::visible_to_player`).
     fn end_of_stream_drain_state(&self) -> VideoDecoderEndOfStreamDrainState {
         VideoDecoderEndOfStreamDrainState::Idle
     }
@@ -96,6 +100,11 @@ pub trait VideoDecoderThreadHandle: Send + Sync {
     fn try_recv_error(&self) -> Option<DecodeThreadError>;
 
     /// Сбрасывает decoder state перед seek transaction.
+    ///
+    /// Успешный flush возвращает explicit EOF drain state в `Idle`: сброшенный
+    /// decoder снова принимает packets, и следующий drain с тем же generation
+    /// обязан выполниться заново, а не ответить «уже выжат». На этом держится
+    /// передача decoder-а новому описанию дорожки без смены seek generation.
     fn flush(&self) -> anyhow::Result<()>;
 
     /// Возвращает provider для renderer-side resource lookup/release path.

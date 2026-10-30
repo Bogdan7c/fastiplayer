@@ -348,6 +348,28 @@ pub enum VideoDecoderEndOfStreamDrainState {
     },
 }
 
+impl VideoDecoderEndOfStreamDrainState {
+    /// Состояние, которое видит player: `Drained` только когда все кадры уже у него.
+    ///
+    /// Backend ставит `Drained`, как только опубликовал последний tail frame в
+    /// канал кадров. Но player опирается на `Drained` как на «у декодера больше
+    /// ничего нет»: на нём держатся конец EOF drain и передача декодера новому
+    /// описанию дорожки (`TracksChanged` без сброса). Пока в канале лежат
+    /// неприёмные кадры, честный ответ — всё ещё `Draining`.
+    ///
+    /// Состояние нужно читать ДО длины канала: backend публикует кадры раньше,
+    /// чем ставит `Drained`, поэтому такой порядок не может пропустить хвост.
+    #[must_use]
+    pub fn visible_to_player(self, undelivered_decoded_frames: usize) -> Self {
+        match self {
+            Self::Drained { generation } if undelivered_decoded_frames > 0 => {
+                Self::Draining { generation }
+            }
+            other => other,
+        }
+    }
+}
+
 /// Результат запуска explicit decoder EOF/DPB drain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VideoDecoderEndOfStreamDrainResult {

@@ -17,6 +17,9 @@ mod shutdown_priority;
 #[cfg(feature = "ffmpeg")]
 mod eof_pool_continuation;
 
+#[cfg(feature = "ffmpeg")]
+mod drain_visibility;
+
 #[cfg(all(feature = "ffmpeg", target_os = "linux"))]
 mod host_frame_memory_kind;
 
@@ -305,9 +308,10 @@ fn eof_drain_with_budget_reports_draining_when_capped() {
         completion.state,
         VideoDecoderEndOfStreamDrainState::Drained { generation: 9 }
     );
+    // `Drained` в общее состояние пишет worker после публикации хвоста в канал.
     assert_eq!(
         decode_loop.end_of_stream_drain_state(),
-        VideoDecoderEndOfStreamDrainState::Drained { generation: 9 }
+        VideoDecoderEndOfStreamDrainState::Draining { generation: 9 }
     );
 }
 

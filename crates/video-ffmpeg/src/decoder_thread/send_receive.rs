@@ -411,7 +411,7 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
 
                     set_eof_drain_state(
                         &self.eof_drain_state,
-                        state.clone(),
+                        shared_state_before_publication(state.clone()),
                         &self.activity_notifier,
                     )?;
 
@@ -445,7 +445,7 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                     let drained = VideoDecoderEndOfStreamDrainState::Drained { generation };
                     set_eof_drain_state(
                         &self.eof_drain_state,
-                        drained.clone(),
+                        shared_state_before_publication(drained.clone()),
                         &self.activity_notifier,
                     )?;
                     return Ok(EofDrainProgressReport {
@@ -487,7 +487,7 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
         };
         set_eof_drain_state(
             &self.eof_drain_state,
-            state.clone(),
+            shared_state_before_publication(state.clone()),
             &self.activity_notifier,
         )?;
         Ok(EofDrainProgressReport {
@@ -544,13 +544,34 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                 }
                 Err(DecodeApiError::EndOfFile) => {
                     let drained = VideoDecoderEndOfStreamDrainState::Drained { generation };
-                    set_eof_drain_state(&self.eof_drain_state, drained, &self.activity_notifier)?;
+                    set_eof_drain_state(
+                        &self.eof_drain_state,
+                        shared_state_before_publication(drained),
+                        &self.activity_notifier,
+                    )?;
                     drain_report.stop_reason = ReceiveStopReason::EndOfFile;
                     return Ok(drain_report);
                 }
                 Err(DecodeApiError::Fatal(error)) => return Err(error),
             }
         }
+    }
+}
+
+/// Состояние для общего `eof_drain_state`, пока кадры отчёта ещё не в канале.
+///
+/// `Drained` обещает player-у, что каждый кадр уже у него (договор `video-core`):
+/// на этом держатся конец EOF drain и передача decoder-а новому описанию дорожки.
+/// Decode loop отдаёт хвост в отчёте, а в канал кадров его кладёт worker. Поэтому
+/// здесь `Drained` остаётся `Draining`, а `Drained` пишет worker после публикации.
+fn shared_state_before_publication(
+    state: VideoDecoderEndOfStreamDrainState,
+) -> VideoDecoderEndOfStreamDrainState {
+    match state {
+        VideoDecoderEndOfStreamDrainState::Drained { generation } => {
+            VideoDecoderEndOfStreamDrainState::Draining { generation }
+        }
+        other => other,
     }
 }
 
