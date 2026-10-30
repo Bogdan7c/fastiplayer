@@ -52,6 +52,7 @@ mod audio_track_switch;
 mod capability_selection;
 mod command_dispatch;
 mod decoder_pace;
+mod demux_failure_playout;
 mod demux_retry;
 mod diagnostics_sink;
 mod dynamic_timeline;
@@ -98,6 +99,7 @@ use self::audio_runtime::{
     classify_autoplay_audio_readiness, classify_seek_audio_gate,
 };
 pub use self::decoder_pace::{DecoderPaceEvidence, DecoderPaceThresholds};
+use self::demux_failure_playout::DemuxFailurePlayout;
 use self::demux_retry::DemuxRetryRuntime;
 use self::dynamic_timeline::DynamicTimelineRuntime;
 pub(crate) use self::dynamic_timeline::DynamicTimelineWaitSource;
@@ -179,6 +181,9 @@ pub struct PlayerSession {
 
     /// Retry state временно не готового demuxer-а для exact installed generation.
     demux_retry: DemuxRetryRuntime,
+
+    /// Отложенная ошибка умершего демуксера, пока доигрывается прочитанное (п. 24).
+    demux_failure_playout: DemuxFailurePlayout,
 
     /// Shared D52 linearization state между sender boundary и player owner turn-ом.
     playback_intent_control: Arc<PlaybackIntentControl>,
@@ -486,6 +491,8 @@ impl PlayerSession {
 
     /// Отмечает fatal error от media pipeline.
     pub fn mark_fatal_error(&mut self, error: PlayerError) {
+        // Опубликованная ошибка закрывает и отложенную: второго `FatalError` не будет.
+        self.demux_failure_playout.forget();
         self.fail_pending_seek_receipts(error.clone());
         self.snapshot.last_error = Some(error.clone());
         self.set_playback_state(PlaybackState::Failed);
@@ -752,6 +759,7 @@ impl Default for PlayerSession {
             staged_video_preflight_timeout: PlayerTickConfig::default()
                 .staged_video_preflight_timeout,
             demux_retry: DemuxRetryRuntime::default(),
+            demux_failure_playout: DemuxFailurePlayout::default(),
             playback_intent_control: Arc::new(PlaybackIntentControl::default()),
             shutdown_requested: false,
             eof_drain: EofDrainRuntime::default(),

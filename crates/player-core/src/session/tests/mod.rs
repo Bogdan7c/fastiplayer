@@ -55,6 +55,7 @@ mod audio_track_switch;
 mod capability_selection;
 mod cold_resume_av;
 mod decoder_boundary;
+mod demux_failure_playout;
 mod demux_retry;
 mod diagnostics_sink;
 mod dynamic_timeline;

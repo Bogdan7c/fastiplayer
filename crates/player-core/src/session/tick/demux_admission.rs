@@ -274,6 +274,10 @@ pub(super) fn read_demux_packets(
     if session.installed_demux_read_is_blocked(Instant::now()) {
         return 0;
     }
+    // Демуксер этого отрезка уже умер: читать его снова нельзя, хвост доигрывает drain.
+    if session.resume_playout_instead_of_reading_failed_demuxer() {
+        return 0;
+    }
 
     let mut packets_read = 0usize;
     let mut dropped_seek_audio_preroll_packets = 0usize;
@@ -464,7 +468,9 @@ pub(super) fn read_demux_packets(
                 session.clear_installed_demux_retry_after_terminal_event();
                 session.note_demux_error_for_seek_preroll_diagnostics();
                 tracing::warn!(error = %error, "The packet reading error");
-                session.mark_fatal_error(
+                // Если прочитанное ещё не сыграно, ошибка откладывается до его конца,
+                // иначе публикуется сразу; решает владелец — session (п. 24 бэклога).
+                session.handle_demux_read_failure(
                     super::demux_read_failure::player_error_for_demux_read_failure(&error),
                 );
                 break;

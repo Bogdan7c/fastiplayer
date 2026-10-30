@@ -45,6 +45,8 @@ browser-bridge-protocol.workspace = true
 player-core.workspace = true
 # Манифесты записанных потоков.
 serde_json.workspace = true
+# Обрезанный локальный файл на диске для тестов «до кадра».
+tempfile = "3"
 # Настройки потока декодера (фиксированное число потоков в тестах).
 video-core.workspace = true
 # Настоящий программный декодер видео (собранный FFmpeg проекта).

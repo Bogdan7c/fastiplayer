@@ -101,3 +101,14 @@ ffmpeg "${common[@]}" "${file_video[@]}" "${file_audio[@]}" "${h264_file[@]}" \
     -encryption_key 00112233445566778899aabbccddeeff \
     -encryption_kid 112233445566778899aabbccddeeff00 \
     -movflags +faststart "$here/file-h264-cenc.mp4"
+# --- Обрезанный файл (общий бэклог п. 24): форматы, которые открываются без индекса в
+# конце и потому ломаются посреди чтения, если файл обрезан (недокачан, запись прервана):
+# - file-h264-aac-fragmented.mp4 — тот же ролик, фрагментированный MP4 (фрагмент на
+#   каждый ключевой кадр, без `mfra`);
+# - file-vp9-opus-live.webm — тот же WebM, записанный «вживую» (`-live 1`: сегмент и
+#   кластеры неизвестного размера, без `Cues`), как пишут OBS и MediaRecorder.
+# Тесты режут их сами; обычные (не фрагментированные) MP4/WebM обрезанными не открываются.
+ffmpeg "${common[@]}" -i "$here/file-h264-aac-faststart.mp4" -c copy "${fmp4[@]}" \
+    "$here/file-h264-aac-fragmented.mp4"
+ffmpeg "${common[@]}" -i "$here/file-vp9-opus.webm" -c copy "${plain[@]}" -live 1 -f webm \
+    "$here/file-vp9-opus-live.webm"

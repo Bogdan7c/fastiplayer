@@ -41,6 +41,7 @@ mod media_slots;
 mod overlapped_audio_output;
 mod passthrough_audio_history;
 mod presentation_clock_handover;
+mod read_ahead_tail;
 mod render_resources;
 mod retired_video_decoders;
 #[cfg(test)]

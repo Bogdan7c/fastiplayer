@@ -270,6 +270,19 @@ impl PlayerSession {
             return false;
         }
 
+        // Хвост доиграл после смерти демуксера: вместо `Ended` публикуется отложенная
+        // ошибка. Позиция остаётся там, где кончились данные, а не прыгает к duration.
+        if let Some(source_failure) = self.take_demux_failure_after_playout() {
+            debug!(
+                position_ms = self.snapshot.current_position.as_secs_f64() * 1000.0,
+                error_kind = ?source_failure.kind,
+                "Read-ahead played out after a demuxer failure; reporting the error"
+            );
+            self.park_audio_output_after_eof();
+            self.mark_fatal_error(source_failure);
+            return true;
+        }
+
         let end_position = self
             .snapshot
             .duration

@@ -4006,6 +4006,7 @@ dependencies = [
  "serde_json",
  "source-core",
  "symphonia-demux",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
  "video-core",

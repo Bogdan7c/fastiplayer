@@ -259,6 +259,8 @@ impl PlayerSession {
     /// Полностью сбрасывает состояние текущего media.
     pub fn reset_media_state(&mut self) {
         self.set_playback_state(PlaybackState::Paused);
+        // Отложенная ошибка умершего демуксера принадлежала сбрасываемому media.
+        self.demux_failure_playout.forget();
         self.pipeline.clear_monotonic_media_clock();
         self.clear_video_frames();
         self.advance_render_generation();
