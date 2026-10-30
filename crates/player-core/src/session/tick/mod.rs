@@ -124,6 +124,9 @@ impl PlayerSession {
         {
             self.start_audio_first_after_audio_backlog_exhausted(audio_backlog);
         }
+        // Короткий файл кончился раньше первого кадра, а видео больше нечего отдать:
+        // картинки не будет, звук стартует один (иначе вечный `Draining`).
+        self.start_audio_first_when_video_ended_in_eof_drain();
         if let Err(error) =
             self.finish_autoplay_preroll_if_ready(tick_context.config.audio_preroll_target_ms)
         {

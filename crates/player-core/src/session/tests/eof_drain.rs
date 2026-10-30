@@ -229,6 +229,12 @@ fn audio_only_eof_after_buffered_samples_keeps_bounded_wakeup_until_drain() {
     session.begin_autoplay_preroll().unwrap();
 
     session.enter_eof_drain();
+    // Старт, отложенный в EOF drain, выполняют ворота старта (как в tick-е после EOF).
+    assert!(
+        session
+            .finish_autoplay_preroll_if_ready(50.0)
+            .expect("startup gate")
+    );
 
     let plan = session.worker_wakeup_plan(
         Instant::now(),
@@ -259,7 +265,16 @@ fn eof_during_buffering_starts_buffered_audio_tail_once() {
     assert_eq!(audio_output.play_count.load(Ordering::Relaxed), 0);
 
     session.enter_eof_drain();
+    // Хвост первого просмотра не стартует в обход ворот старта.
     session.start_eof_audio_tail_if_needed();
+    assert_eq!(audio_output.play_count.load(Ordering::Relaxed), 0);
+    // Ворота старта: весь звук уже в output-е (pending нет) — играем, что есть, один раз.
+    for _ in 0..2 {
+        let _started = session
+            .finish_autoplay_preroll_if_ready(50.0)
+            .expect("startup gate");
+        session.start_eof_audio_tail_if_needed();
+    }
 
     assert_eq!(session.playback_state(), PlaybackState::Draining);
     assert_eq!(audio_output.play_count.load(Ordering::Relaxed), 1);

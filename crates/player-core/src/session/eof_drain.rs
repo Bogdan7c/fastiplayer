@@ -192,24 +192,25 @@ impl PlayerSession {
 
     /// Запускает audio output для EOF tail-а, который был накоплен до завершения autoplay preroll.
     ///
-    /// Если EOF наступил раньше первого кадра стартового autoplay (короткий файл), звук
-    /// ждёт этот кадр: старт выполнит `complete_startup_autoplay_during_eof_drain_if_ready`
-    /// через этот же метод, чтобы звук не ушёл раньше картинки.
+    /// Если EOF наступил раньше первого старта (короткий файл), звук сам не стартует:
+    /// решают ворота старта (`complete_startup_autoplay_during_eof_drain_if_ready` —
+    /// первый кадр или отказ от него, звук до preroll target или ничего больше не
+    /// придёт), и они вызывают этот же метод уже после смены стадии старта. Так звук
+    /// не уходит раньше картинки и не стартует на тонком буфере в обход ворот.
+    ///
+    /// Хвост запускается, как только в output-е есть незапущенный звук, даже если в
+    /// очереди ещё лежит сжатый: этот остаток декодируется только когда уровень output-а
+    /// опустится ниже предела, а без `play` он не опускается никогда. Раньше здесь ждали
+    /// пустую очередь (`DrainingOutput`) — и получали вечный `Draining` после старта в
+    /// EOF drain с output-ом на потолке и после заморозки ожиданием источника.
     pub(crate) fn start_eof_audio_tail_if_needed(&mut self) {
         if !self.is_eof_draining()
             || self.has_active_seek_commit()
-            || self.startup_autoplay_waits_for_first_video_frame_in_eof_drain()
+            || self.startup_autoplay_pending_during_eof_drain()
+            || !self.pipeline.audio_output_has_unstarted_tail()
         {
             return;
         }
-
-        let AudioEofDrainState::DrainingOutput {
-            playback_requested: false,
-            ..
-        } = self.pipeline.audio_eof_drain_state()
-        else {
-            return;
-        };
 
         if let Some(play_result) = self.play_audio_output_with_resume_event() {
             if let Err(error) = play_result {
@@ -477,6 +478,44 @@ impl PlayerSession {
             return Some(EofDrainBlocker::SeekPrerollFallbackFrame);
         }
 
+        if let Some(video_tail_blocker) = self.eof_video_tail_blocker() {
+            return Some(video_tail_blocker);
+        }
+
+        match self.pipeline.audio_eof_drain_state() {
+            AudioEofDrainState::PendingPackets { queued_packets } => {
+                Some(EofDrainBlocker::PendingAudioPackets { queued_packets })
+            }
+            AudioEofDrainState::DrainingOutput {
+                buffer_level_ms,
+                playback_requested,
+            } if !self.eof_audio_output_stalled(now, audio_stall_timeout) => {
+                Some(EofDrainBlocker::DrainingAudioOutput {
+                    buffer_level_ms,
+                    playback_requested,
+                    stalled_for: self.pipeline.audio_clock_stalled_for(now),
+                    stall_timeout: audio_stall_timeout,
+                })
+            }
+            AudioEofDrainState::DrainingOutput { .. }
+            | AudioEofDrainState::NoSelectedAudio
+            | AudioEofDrainState::NoOutput
+            | AudioEofDrainState::DrainedOutput { .. } => None,
+        }
+    }
+
+    /// `true`, если в EOF drain уже считанное видео больше не может дать ни одного кадра.
+    ///
+    /// Те же условия, по которым EOF drain считает хвост видео доигранным: нет ни
+    /// ожидающих packets, ни кадров в очереди, ни decode in flight, а decoder дожал
+    /// DPB текущего поколения. Intent-метод для отказа от ожидания первого кадра
+    /// (`session/video_preroll_wait.rs`): после этого картинка уже не придёт.
+    pub(super) fn eof_video_tail_is_exhausted(&self) -> bool {
+        self.is_eof_draining() && self.eof_video_tail_blocker().is_none()
+    }
+
+    /// Первый blocker уже считанного видео: packets, кадры, decode in flight, DPB drain.
+    fn eof_video_tail_blocker(&self) -> Option<EofDrainBlocker> {
         let pending_video_packets = self.pipeline.pending_video_packet_len();
         if pending_video_packets > 0 {
             return Some(EofDrainBlocker::PendingVideoPackets {
@@ -512,26 +551,7 @@ impl PlayerSession {
             }
         }
 
-        match self.pipeline.audio_eof_drain_state() {
-            AudioEofDrainState::PendingPackets { queued_packets } => {
-                Some(EofDrainBlocker::PendingAudioPackets { queued_packets })
-            }
-            AudioEofDrainState::DrainingOutput {
-                buffer_level_ms,
-                playback_requested,
-            } if !self.eof_audio_output_stalled(now, audio_stall_timeout) => {
-                Some(EofDrainBlocker::DrainingAudioOutput {
-                    buffer_level_ms,
-                    playback_requested,
-                    stalled_for: self.pipeline.audio_clock_stalled_for(now),
-                    stall_timeout: audio_stall_timeout,
-                })
-            }
-            AudioEofDrainState::DrainingOutput { .. }
-            | AudioEofDrainState::NoSelectedAudio
-            | AudioEofDrainState::NoOutput
-            | AudioEofDrainState::DrainedOutput { .. } => None,
-        }
+        None
     }
 
     /// Звук доигран до конца, а очередь держит только кадры за концом static media.

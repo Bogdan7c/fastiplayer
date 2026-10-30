@@ -100,9 +100,9 @@ impl PlayerSession {
             && !self.has_active_seek_commit()
     }
 
-    /// `true`, пока EOF audio tail обязан ждать первый кадр отложенного старта.
+    /// `true`, пока старт, отложенный в EOF drain, ждёт первый кадр (или отказ от него).
     ///
-    /// Без выбранного видео ждать нечего: audio-only путь стартует EOF tail-ом как раньше.
+    /// Без выбранного видео ждать нечего: audio-only старт решает только audio gate.
     pub(super) fn startup_autoplay_waits_for_first_video_frame_in_eof_drain(&self) -> bool {
         self.startup_autoplay_pending_during_eof_drain() && !self.autoplay_video_preroll_ready()
     }

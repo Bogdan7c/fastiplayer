@@ -247,7 +247,8 @@ fn startup_with_slow_first_video_frame_reaches_playing_with_audio_and_video() {
 ///
 /// Раньше demux вставал на потолке, и тест закреплял вечный `Buffering` как норму. Теперь
 /// чтение идёт дальше в пределах запаса (10 с), а фикстура короче (3 с): файл кончается
-/// раньше, чем запас исчерпан, и старт ждёт кадр уже внутри EOF drain.
+/// раньше, чем запас исчерпан. В EOF drain decoder дожимает считанное без кадра, и звук
+/// стартует один (`eof_audio_tail_start.rs`); здесь проверяются только пределы памяти.
 #[test]
 fn read_ahead_memory_stays_bounded_when_first_frame_never_comes() {
     let mut harness = StartupHarness::new();
@@ -285,7 +286,7 @@ fn read_ahead_memory_stays_bounded_when_first_frame_never_comes() {
             harness.session.playback_state(),
             PlaybackState::Buffering | PlaybackState::Draining
         ),
-        "without a frame and with backlog room the start keeps waiting: {:?}",
+        "without a frame and with backlog room the media never plays past its EOF drain: {:?}",
         harness.session.playback_state()
     );
     assert_eq!(harness.frames_presented, 0);

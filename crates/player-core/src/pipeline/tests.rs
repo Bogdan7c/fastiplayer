@@ -15,6 +15,7 @@ mod audio_boundaries;
 mod audio_output_spec_change;
 mod audio_packet_window;
 mod audio_segment_written_reach;
+mod audio_unstarted_tail;
 mod backlog_recovery;
 mod clock_mapping;
 mod demux_timing;

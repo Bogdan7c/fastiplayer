@@ -409,6 +409,21 @@ impl PlaybackPipeline {
         }
     }
 
+    /// `true`, если в output-е выбранного звука лежит ещё не запущенный слышимый хвост.
+    ///
+    /// В отличие от `audio_eof_drain_state` не требует пустой очереди сжатого звука:
+    /// packets над пределом декода ждут, пока уровень output-а упадёт, а он падает
+    /// только после `play`. Пустой output хвостом не считается: запуск без звука
+    /// подменил бы часы (удержанный до своего PTS звук стартует своим путём).
+    #[must_use]
+    pub(crate) fn audio_output_has_unstarted_tail(&self) -> bool {
+        self.audio_track_id.is_some()
+            && !self.audio_output_play_requested
+            && self
+                .audio_output_unplayed_tail_ms()
+                .is_some_and(|unplayed_tail_ms| unplayed_tail_ms > 0.0)
+    }
+
     /// Возвращает ещё не слышимый хвост output-а (ring buffer или уже отданный в DAC PCM).
     ///
     /// `None` — output не создан. Ноль означает, что весь записанный звук уже прозвучал.
