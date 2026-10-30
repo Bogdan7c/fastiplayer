@@ -18,6 +18,25 @@
 //!    последний кадр с незаписанной длительностью) — полоса садится на последний
 //!    сегмент и доигрывает его до конца потока; вход не открывается заново и
 //!    страницу не просят: она уже сказала, что байтов больше нет.
+//! 5. **У полосы нет данных у цели, а у других полос есть** (звук начинается
+//!    позже видео; страница прислала звук только со своего сегмента после цели) —
+//!    полоса вступает со своего первого сегмента после цели, как на обычном
+//!    старте, если другие полосы непрерывно покрывают время от цели до него
+//!    ([`crate::shelf::LateJoinWindow`]). Плеер садится на цель по видео, а звук
+//!    подхватывается в своё время. Без этого правила полоса вечно ждала бы
+//!    сегмент с целью, которого в медиа нет. Опора — только полосы, у которых
+//!    цель есть: если цели нет ни у одной полосы, данные после неё могут быть
+//!    просто ещё не присланным временем, и полосы ждут страницу (правило 2).
+//!    Окно проверяется заново с каждым принятым сегментом любой полосы: звук,
+//!    пришедший раньше видео, вступает, когда видео покроет его начало. Данные
+//!    полосы внутри куска опор раньше точки вступления — это дыра посреди
+//!    полосы, а не позднее начало: вступления нет, просим страницу. Если цель
+//!    попросили у страницы, точкой вступления годится только сегмент, принятый
+//!    ПОСЛЕ перемотки (ответ страницы): лежавшее на полке позже цели — время
+//!    прежних мест (перемотка чуть назад от уже скачанного), и вступив с него,
+//!    полоса пропустила бы данные цели, которые страница ещё несёт.
+//!    Ограничение: если страница, у которой эти байты уже есть в её буфере, не
+//!    пришлёт их заново, такая полоса ждёт до срока перемотки плеера.
 //!
 //! После перемотки позиции, далёкие от цели, какое-то время не принимаются
 //! (модуль `position`): позиция старого места может прийти позже перемотки.
@@ -31,24 +50,33 @@ use std::time::Duration;
 use super::{BufferState, LaneTimeline, StreamBuffer};
 use crate::error::PushedStreamError;
 use crate::feed::FeedAdmission;
-use crate::framing::MediaTime;
+use crate::framing::{MediaTime, MediaTimeSpan};
 use crate::lane::LaneId;
 use crate::mailbox::{FeedBacklog, StaleEpisodes};
 use crate::page_seek::{PageSeekDecision, PageSeekNeed, PageSeekRequest};
+use crate::shelf::{LateJoinCandidates, LateJoinWindow, ShelfRules};
 
 /// Как полоса подаёт сегменты.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LaneSeekState {
     /// Обычная подача: всё, что продолжает курсор.
     Following,
-    /// После перемотки: ждём сегмент с целью, до него ничего не подаём.
-    AwaitingTarget(MediaTime),
+    /// После перемотки: ждём сегмент с целью (или точку позднего вступления,
+    /// правило 5), до него ничего не подаём.
+    AwaitingTarget {
+        /// Цель перемотки.
+        target: MediaTime,
+        /// Годятся ли для позднего вступления сегменты, лежавшие на полке до
+        /// перемотки: да, если полоса могла начать с полки уже при перемотке.
+        late_join: LateJoinCandidates,
+    },
 }
 
 /// Куда перемотка поставила полосу.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LaneLanding {
-    /// Подача началась с полки, с начала сегмента, внутри которого цель.
+    /// Подача началась с полки: с начала сегмента, внутри которого цель, или
+    /// (полоса вступает позже, правило 5) с первого сегмента после цели.
     FromShelf(MediaTime),
     /// Цели на полке нет: полоса ждёт байтов страницы с цели.
     AwaitingPage(MediaTime),
@@ -59,9 +87,11 @@ impl LaneLanding {
     ///
     /// С полки — начало сегмента (у честного фрагмента это ключевой кадр; если
     /// нет — демуксер полосы всё равно ждёт ключевой кадр). Если цель попала в
-    /// маленькую дыру перед сегментом, его начало чуть позже цели — тогда
-    /// отвечаем самой целью: ответ плееру всегда не позже цели. Без полки —
-    /// сама цель: плеер декодирует вперёд до цели и прячет всё, что раньше.
+    /// маленькую дыру перед сегментом или полоса вступает позже (правило 5), его
+    /// начало позже цели — тогда отвечаем самой целью: ответ плееру всегда не
+    /// позже цели (плеер садится на цель, звук, начинающийся позже, дополняет
+    /// тишиной). Без полки — сама цель: плеер декодирует вперёд до цели и прячет
+    /// всё, что раньше.
     pub(crate) fn decode_start(self, target: MediaTime) -> MediaTime {
         match self {
             Self::FromShelf(start) => start.min(target),
@@ -103,11 +133,10 @@ impl StreamBuffer {
         {
             return Err(StreamSeekError::UntimedLane { lane: *lane });
         }
-        let rules = self.rules;
         let need = if state
             .lanes
-            .values()
-            .all(|lane| lane.shelf.holds(target, &rules, lane.feed.incoming()))
+            .keys()
+            .all(|lane| can_land_from_shelf(&state, *lane, target, &self.rules))
         {
             PageSeekNeed::OnShelf
         } else {
@@ -160,14 +189,20 @@ impl StreamBuffer {
         lane: LaneId,
         target: MediaTime,
     ) -> Result<StaleEpisodes, StreamSeekError> {
+        let lands_from_shelf = can_land_from_shelf(state, lane, target, &self.rules);
         let buffered = state.lane_mut(lane).map_err(StreamSeekError::Stream)?;
         let stale = buffered.feed.restart_for_seek();
-        buffered.seek = LaneSeekState::AwaitingTarget(target);
+        buffered.shelf.note_seek();
+        // Полоса, которая не может начать с полки сейчас, ждёт страницу: позднее
+        // вступление — только сегментом из её ответа (правило 5).
+        let late_join = if lands_from_shelf {
+            LateJoinCandidates::AnyOnShelf
+        } else {
+            LateJoinCandidates::ArrivedSinceSeek
+        };
+        buffered.seek = LaneSeekState::AwaitingTarget { target, late_join };
         buffered.landing = Some(LaneLanding::AwaitingPage(target));
-        if !buffered
-            .shelf
-            .holds(target, &self.rules, buffered.feed.incoming())
-        {
+        if !lands_from_shelf {
             // Байты с цели придут от страницы, даже если она уже сказала
             // `endOfStream` (перемотка назад после конца): до них плеер ждёт, а не
             // получает конец потока.
@@ -178,20 +213,54 @@ impl StreamBuffer {
         Ok(stale)
     }
 
+    /// Каждая полоса, ждущая цель перемотки, начинает подачу, если может.
+    ///
+    /// Зовётся с каждым принятым сегментом: сегмент одной полосы может открыть
+    /// позднее вступление ДРУГОЙ (правило 5 — видео покрыло начало звука).
+    pub(super) fn resume_lanes_awaiting_target(
+        &self,
+        state: &mut BufferState,
+    ) -> Result<(), PushedStreamError> {
+        let awaiting: Vec<LaneId> = state
+            .lanes
+            .iter()
+            .filter(|(_, lane)| {
+                lane.timeline == LaneTimeline::Timed
+                    && matches!(lane.seek, LaneSeekState::AwaitingTarget { .. })
+            })
+            .map(|(lane, _)| *lane)
+            .collect();
+        for lane in awaiting {
+            self.resume_if_target_arrived(state, lane)?;
+        }
+        Ok(())
+    }
+
     /// Полоса ждёт цель перемотки: если сегмент с целью уже на полке, подача
-    /// начинается с него в новом эпизоде, и дальше — всё непрерывное.
+    /// начинается с него в новом эпизоде, и дальше — всё непрерывное; если цели у
+    /// полосы нет, а другие полосы её покрывают — с первого сегмента после цели
+    /// (правило 5).
     pub(super) fn resume_if_target_arrived(
         &self,
         state: &mut BufferState,
         lane: LaneId,
     ) -> Result<(), PushedStreamError> {
         let rules = self.rules;
-        let buffered = state.lane_mut(lane)?;
-        let LaneSeekState::AwaitingTarget(target) = buffered.seek else {
+        let LaneSeekState::AwaitingTarget { target, late_join } = state.lane_mut(lane)?.seek else {
             return Ok(());
         };
+        // Окно считается до изменений полосы: оно зависит только от полок других полос.
+        let late_join_window = late_join_window(state, lane, target, &rules);
+        let buffered = state.lane_mut(lane)?;
         let incoming = buffered.feed.incoming();
-        let Some(choice) = buffered.shelf.prepare_restart(target, &rules, incoming) else {
+        let choice = buffered
+            .shelf
+            .prepare_restart(target, &rules, incoming)
+            .or_else(|| {
+                late_join_window
+                    .and_then(|window| buffered.shelf.prepare_late_join(window, late_join))
+            });
+        let Some(choice) = choice else {
             return Ok(());
         };
         // Перемотка уже выгребла ящик, так что место под новый эпизод почти
@@ -217,4 +286,53 @@ impl StreamBuffer {
         // дочитывается до конца (это делает сама подача).
         self.feed_contiguous(state, lane)
     }
+}
+
+/// Может ли полоса после перемотки к `target` начать подачу с того, что уже
+/// лежит на полке: цель у неё есть (правила 1–4) или она вступает позже по
+/// другим полосам (правило 5). Иначе её байты должна прислать страница.
+fn can_land_from_shelf(
+    state: &BufferState,
+    lane: LaneId,
+    target: MediaTime,
+    rules: &ShelfRules,
+) -> bool {
+    let Some(buffered) = state.lanes.get(&lane) else {
+        return false;
+    };
+    buffered
+        .shelf
+        .holds(target, rules, buffered.feed.incoming())
+        || late_join_window(state, lane, target, rules).is_some_and(|window| {
+            buffered
+                .shelf
+                .can_join_late(window, LateJoinCandidates::AnyOnShelf)
+        })
+}
+
+/// Окно позднего вступления полосы `lane` (правило 5): непрерывные данные
+/// ДРУГИХ полос, покрывающие цель; у нескольких опор — их общая часть (вступать
+/// можно только туда, где данные есть у всех опор).
+///
+/// `None` — ни одна другая полоса цель не покрывает: опоры нет, и данные полосы
+/// после цели могут быть просто ещё не присланным временем.
+fn late_join_window(
+    state: &BufferState,
+    lane: LaneId,
+    target: MediaTime,
+    rules: &ShelfRules,
+) -> Option<LateJoinWindow> {
+    let covered = state
+        .lanes
+        .iter()
+        .filter(|(other, buffered)| **other != lane && buffered.timeline == LaneTimeline::Timed)
+        .filter_map(|(_, buffered)| buffered.shelf.covered_run(target, rules))
+        .reduce(|common, run| {
+            // Пересечение кусков опор (каждый покрывает цель, так что оно не пусто
+            // по смыслу; пустое — значит общего времени нет, `new` откажет).
+            let start = common.start().max(run.start());
+            let end = common.end().min(run.end());
+            MediaTimeSpan::new(start, end).unwrap_or_else(|| MediaTimeSpan::empty_at(start))
+        })?;
+    LateJoinWindow::new(target, covered)
 }

@@ -39,7 +39,7 @@ impl StreamBuffer {
                         lane.shelf.evict_ended_by(limit);
                     }
                 }
-                LaneSeekState::AwaitingTarget(target) => {
+                LaneSeekState::AwaitingTarget { target, .. } => {
                     lane.shelf.evict_ended_by(rules.behind_limit(target));
                     lane.shelf
                         .evict_started_after(rules.ahead_limit_from(target));
@@ -100,7 +100,7 @@ fn oldest_played(state: &BufferState, position: MediaTime) -> Option<(LaneId, us
         .filter_map(|(lane_id, lane)| {
             let limit = match lane.seek {
                 LaneSeekState::Following => position.min(lane.feed.cursor()?.certain_end()),
-                LaneSeekState::AwaitingTarget(target) => target,
+                LaneSeekState::AwaitingTarget { target, .. } => target,
             };
             lane.shelf
                 .oldest_unshared_ended_by(limit)
@@ -118,7 +118,7 @@ fn farthest_ahead(state: &BufferState, rules: &ShelfRules) -> Option<(LaneId, us
         .filter(|(_, lane)| lane.timeline == LaneTimeline::Timed)
         .filter_map(|(lane_id, lane)| match lane.seek {
             LaneSeekState::Following => None,
-            LaneSeekState::AwaitingTarget(target) => lane
+            LaneSeekState::AwaitingTarget { target, .. } => lane
                 .shelf
                 .latest_unshared_started_after(rules.ahead_limit_from(target))
                 .map(|(index, start)| (*lane_id, index, start)),

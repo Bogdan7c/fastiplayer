@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 
-use super::{Delivery, IncomingMedia, LaneShelf, ShelfEntry, ShelfRules};
+use super::{
+    Delivery, IncomingMedia, LaneShelf, LateJoinCandidates, LateJoinWindow, ShelfEntry, ShelfRules,
+};
 use crate::buffer_window::BufferWindow;
 use crate::container::PushedContainer;
 use crate::feed::{EpisodeContinuity, EpisodeKey, FeedCursor};
@@ -297,6 +299,152 @@ fn seek_restart_makes_the_target_segment_and_everything_after_it_wait_again() {
         deliveries,
         [Delivery::Fed, Delivery::Fed, Delivery::Waiting]
     );
+}
+
+/// Позднее вступление с любым сегментом полки (перемотка по полке).
+const ANY: LateJoinCandidates = LateJoinCandidates::AnyOnShelf;
+
+/// Окно позднего вступления: цель `target_ms`, другие полосы непрерывно
+/// покрывают `[from_ms, until_ms)`.
+fn late_window(target_ms: i64, from_ms: i64, until_ms: i64) -> LateJoinWindow {
+    LateJoinWindow::new(at(target_ms), span(from_ms, until_ms)).expect("covered after the target")
+}
+
+#[test]
+fn late_join_window_needs_other_lanes_covering_time_after_the_target() {
+    // Другие полосы кончаются у цели или раньше — вступать некуда.
+    assert_eq!(LateJoinWindow::new(at(200), span(0, 200)), None);
+    assert_eq!(LateJoinWindow::new(at(200), span(0, 100)), None);
+    assert!(LateJoinWindow::new(at(200), span(0, 201)).is_some());
+}
+
+#[test]
+fn late_join_starts_at_the_first_segment_after_the_target_inside_the_window() {
+    let mut shelf = Shelf::new();
+    // Звук: до цели (кончился раньше), затем с 405 мс, дальше подряд.
+    shelf.put(0, 100, 1);
+    for start in [405, 810, 1_215] {
+        shelf.put(start, start + 405, 1);
+    }
+    // Всё уже подано — позднее вступление снова сделает ждущими только сегменты
+    // с точки вступления.
+    while let Some(choice) = shelf.shelf.next_to_feed(None, &rules()) {
+        shelf.shelf.take_for_feeding(choice, &rules()).expect("fed");
+    }
+    // Начало первого сегмента после цели (405) — за окном (другие полосы
+    // покрывают только до 405): вступать рано, ничего не меняется.
+    assert!(!shelf.shelf.can_join_late(late_window(200, 150, 405), ANY));
+    assert!(
+        shelf
+            .shelf
+            .prepare_late_join(late_window(200, 150, 405), ANY)
+            .is_none()
+    );
+    // Цель внутри сегмента 405–810: данные у цели есть, это не позднее
+    // вступление (следующий сегмент, 810, не точка вступления).
+    assert!(!shelf.shelf.can_join_late(late_window(500, 150, 4_000), ANY));
+
+    // Другие полосы непрерывны с 150 (звук 0–100 лежит вне их куска).
+    let window = late_window(200, 150, 4_000);
+    assert!(shelf.shelf.can_join_late(window, ANY));
+    let choice = shelf
+        .shelf
+        .prepare_late_join(window, ANY)
+        .expect("joins at its first segment after the target");
+    let fed = shelf
+        .shelf
+        .take_for_feeding(choice, &rules())
+        .expect("join segment");
+    assert_eq!(fed.span, span(405, 810));
+    assert_eq!(fed.continuity, EpisodeContinuity::MustRestart);
+    let deliveries: Vec<Delivery> = shelf
+        .shelf
+        .layout()
+        .iter()
+        .map(|(_, _, delivery)| *delivery)
+        .collect();
+    // Сегмент до цели не тронут, точка вступления подана, дальнейшие снова ждут.
+    assert_eq!(
+        deliveries,
+        [
+            Delivery::Fed,
+            Delivery::Fed,
+            Delivery::Waiting,
+            Delivery::Waiting
+        ]
+    );
+    // Пустая полка или полка только до цели вступать не может.
+    assert!(!Shelf::new().shelf.can_join_late(window, ANY));
+    let mut past_only = Shelf::new();
+    past_only.put(0, 150, 1);
+    assert!(!past_only.shelf.can_join_late(window, ANY));
+}
+
+#[test]
+fn data_of_the_lane_inside_the_window_before_the_join_point_is_a_hole_not_a_late_start() {
+    // Звук 0–400 и с 1 200: дыра 400–1 200 посреди полосы, а другие полосы
+    // покрывают 0–4 000 подряд. Цель 800 в дыре — это не позднее начало звука, а
+    // недокачанное: вступать с 1 200 нельзя (байты с цели пришлёт страница).
+    let mut shelf = Shelf::new();
+    shelf.put(0, 400, 1);
+    shelf.put(1_200, 1_600, 1);
+    assert!(!shelf.shelf.can_join_late(late_window(800, 0, 4_000), ANY));
+    assert!(
+        shelf
+            .shelf
+            .prepare_late_join(late_window(800, 0, 4_000), ANY)
+            .is_none()
+    );
+    assert_eq!(
+        shelf
+            .shelf
+            .layout()
+            .iter()
+            .map(|(_, _, delivery)| *delivery)
+            .collect::<Vec<_>>(),
+        [Delivery::Waiting, Delivery::Waiting],
+        "a refused join changes nothing"
+    );
+    // Те же данные, но другие полосы непрерывны только с 600: данные звука до
+    // 400 лежат вне их куска — это начало звука внутри куска, вступление можно.
+    assert!(shelf.shelf.can_join_late(late_window(800, 600, 4_000), ANY));
+}
+
+#[test]
+fn after_an_off_shelf_seek_only_segments_arrived_since_the_seek_can_be_join_points() {
+    // Звук с 405 лежал на полке до перемотки (время прежнего места). Цель
+    // попросили у страницы: вступать с лежавшего нельзя — страница ещё несёт
+    // данные цели; сегмент, пришедший после перемотки, — можно.
+    let since_seek = LateJoinCandidates::ArrivedSinceSeek;
+    let window = late_window(200, 150, 4_000);
+    let mut shelf = Shelf::new();
+    shelf.put(405, 810, 1);
+    assert!(
+        shelf.shelf.can_join_late(window, since_seek),
+        "accepted before any seek: counts as arrived since the last seek"
+    );
+    shelf.shelf.note_seek();
+    assert!(!shelf.shelf.can_join_late(window, since_seek));
+    assert!(shelf.shelf.prepare_late_join(window, since_seek).is_none());
+    assert!(
+        shelf.shelf.can_join_late(window, ANY),
+        "by the shelf it is a join point"
+    );
+    // Страница прислала тот же сегмент заново (замена) — он из её ответа.
+    assert_eq!(
+        shelf.put(405, 810, 1),
+        1,
+        "the resent segment replaces the old one"
+    );
+    let choice = shelf
+        .shelf
+        .prepare_late_join(window, since_seek)
+        .expect("the page's own segment is a join point");
+    let fed = shelf
+        .shelf
+        .take_for_feeding(choice, &rules())
+        .expect("join segment");
+    assert_eq!(fed.span, span(405, 810));
 }
 
 /// Отрезок с оценённым концом: точно известно до `certain_ms`.

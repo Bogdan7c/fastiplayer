@@ -551,3 +551,7 @@ impl Demuxer for PushedStreamDemuxer {
 #[cfg(test)]
 #[path = "stream_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "stream_late_join_tests.rs"]
+mod late_join_tests;

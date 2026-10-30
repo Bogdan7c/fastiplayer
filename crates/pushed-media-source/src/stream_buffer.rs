@@ -293,9 +293,10 @@ impl StreamBuffer {
             .lane_mut(lane)?
             .shelf
             .insert(ShelfEntry::waiting(segment.timing, media, segment.key));
-        // Полоса после перемотки ждёт сегмент с целью; иначе — подача по курсору.
-        // Заодно догоняются полосы, у которых подача стояла на полном ящике.
-        self.resume_if_target_arrived(&mut state, lane)?;
+        // Полосы после перемотки ждут сегмент с целью (сегмент этой полосы может
+        // открыть позднее вступление другой); иначе — подача по курсору. Заодно
+        // догоняются полосы, у которых подача стояла на полном ящике.
+        self.resume_lanes_awaiting_target(&mut state)?;
         self.feed_contiguous(&mut state, lane)?;
         self.catch_up_backlogged_lanes(&mut state)?;
         self.evict_behind_window(&mut state);

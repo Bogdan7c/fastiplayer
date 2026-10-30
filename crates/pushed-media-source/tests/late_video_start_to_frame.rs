@@ -304,7 +304,8 @@ fn play_with_tick_config(
     let mut previous_tick = Instant::now();
     for _ in 0..MAX_TICKS {
         let now = Instant::now();
-        device.advance(now.duration_since(previous_tick));
+        // Часы звука не быстрее шага за шаг (см. `support::playback::AUDIO_ADVANCE_PER_TICK_CAP`).
+        device.advance(now.duration_since(previous_tick).min(TICK));
         previous_tick = now;
         let _tick_result = session.tick(PlayerTickContext::with_config(now, tick_config));
         let snapshot = session.compose_snapshot();

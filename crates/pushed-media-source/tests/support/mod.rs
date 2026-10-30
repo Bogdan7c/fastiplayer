@@ -7,6 +7,7 @@
 
 pub mod media;
 pub mod playback;
+pub mod presentation_log;
 pub mod progressive_file;
 pub mod range_page;
 pub mod recorded;

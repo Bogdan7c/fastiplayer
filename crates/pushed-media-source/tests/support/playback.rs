@@ -10,46 +10,52 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use player_core::{
-    PlaybackState, PlayerCommand, PlayerEvent, PlayerSession, PlayerTickContext, PreparedMedia,
-    SeekRequest,
+    PlaybackState, PlayerCommand, PlayerEvent, PlayerSession, PlayerTickContext,
+    PlayerVideoDropReason, PreparedMedia, SeekRequest,
 };
 use pushed_media_source::{
     OpenProgress, OpenedPushedStream, PushedStreamDemuxer, PushedStreamOpener,
 };
 
+use super::presentation_log::PresentationLog;
+pub use super::presentation_log::PresentedFrame;
 use super::simulated_audio::SimulatedAudioDevice;
 
 /// Пауза между шагами плеера (настоящее время).
 ///
 /// Время настоящее, а не виртуальное: часы видео без звука якорятся по
 /// `Instant::now()`, и виртуальное время, бегущее быстрее реального, сдвигало бы
-/// их относительно кадров. Звуковая карта-симулятор идёт по тем же часам.
-const TICK: Duration = Duration::from_millis(5);
+/// их относительно кадров. Звуковая карта-симулятор идёт по тем же часам, но не
+/// быстрее [`AUDIO_ADVANCE_PER_TICK_CAP`] за шаг.
+pub const TICK: Duration = Duration::from_millis(5);
+/// Сколько «звуковая карта» проигрывает за один шаг, как бы долго шаг ни шёл.
+///
+/// Под нагрузкой поток теста может стоять десятки миллисекунд между шагами. Карта
+/// по настоящему времени проиграла бы за это время несколько кадров видео сразу,
+/// и плеер законно выбросил бы опоздавшие кадры — тест увидел бы «потерю кадров»,
+/// которой у продукта нет. Поэтому часы звука идут не быстрее одного шага за шаг:
+/// задержка обвязки замедляет часы, а не перескакивает их. Сценарии тестов
+/// написаны в шагах («байты на шаге 40» = ~0,2 с звука) — с таким пределом это
+/// верно при любой нагрузке. Без нагрузки шаг чуть дольше `TICK` (сама работа
+/// шага), и часы звука идут чуть медленнее настоящих — плееру это безразлично:
+/// звук и есть его часы. Настоящие задержки шагов видны в
+/// [`PlaybackReport::max_tick_gap`].
+pub const AUDIO_ADVANCE_PER_TICK_CAP: Duration = TICK;
 /// Предел шагов: ~10 с на ролик меньше секунды.
 const MAX_TICKS: usize = 2_000;
 /// Сколько ждать открытия потока.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Показанный кадр.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PresentedFrame {
-    /// Время кадра.
-    pub pts: Duration,
-    /// Размер кадра.
-    pub width: u32,
-    /// Размер кадра.
-    pub height: u32,
-    /// Позиция плеера (часы звука) в момент показа.
-    pub position: Duration,
-    /// Шаг, на котором кадр впервые оказался на экране.
-    pub tick: usize,
-}
-
 /// Что увидел и услышал «зритель».
 #[derive(Debug)]
 pub struct PlaybackReport {
-    /// Показанные кадры по порядку (каждый — один раз).
+    /// Показанные кадры по порядку показа: каждый показ плеера — одна запись,
+    /// включая кадр, вытесненный следующим внутри того же шага
+    /// ([`super::presentation_log::FrameSighting::SupersededWithinTick`]).
     pub frames: Vec<PresentedFrame>,
+    /// Показы, которым обвязка не смогла назвать время (должно быть 0; иначе
+    /// `frames` неполон по вине обвязки, а не плеера).
+    pub unattributed_presentations: u64,
     /// Сумма `video_frames_presented` всех шагов.
     pub presented_count: u64,
     /// PCM, записанный в выход.
@@ -73,6 +79,16 @@ pub struct PlaybackReport {
     pub mid_stream_audio_silence: Duration,
     /// Записанный звук, выброшенный вместе с уничтоженным выходом.
     pub discarded_audio: Duration,
+    /// Номер PCM-кадра (frame, не sample) в `audio_samples`, с которого начался
+    /// звук после каждой очистки выхода перемоткой: всё записанное дальше звучит
+    /// от цели перемотки.
+    pub audio_frames_at_seek_clears: Vec<usize>,
+    /// Кадры, выброшенные плеером (время, причина, шаг): опоздавшие, разгон
+    /// перемотки и т. п. — чтобы отличить законный выброс от потери в обвязке.
+    pub dropped_frames: Vec<(Duration, PlayerVideoDropReason, usize)>,
+    /// Самая долгая пауза между шагами по настоящему времени: большая — задержка
+    /// обвязки (поток теста стоял), а не дефект плеера.
+    pub max_tick_gap: Duration,
 }
 
 impl PlaybackReport {
@@ -208,6 +224,8 @@ pub struct PlayerControl<'session> {
     state: PlaybackState,
     /// Команды перемотки отчёта.
     seeks: &'session mut Vec<(usize, Duration)>,
+    /// Журнал показов (перемотка забывает прочитанное старой позиции).
+    presentations: &'session mut PresentationLog,
 }
 
 impl PlayerControl<'_> {
@@ -236,6 +254,7 @@ impl PlayerControl<'_> {
                 media_core::MediaTime::from_duration(target),
             )))
             .expect("seek command accepted");
+        self.presentations.forget_pending_for_seek();
         self.seeks.push((self.tick, target));
         self.state = self.session.playback_state();
     }
@@ -274,7 +293,9 @@ pub fn play_controlled(
         }
     }
     let mut previous_tick = Instant::now();
-    let mut frames: Vec<PresentedFrame> = Vec::new();
+    let mut max_tick_gap = Duration::ZERO;
+    let mut presentations = PresentationLog::default();
+    let mut dropped_frames = Vec::new();
     let mut presented_count = 0;
     let mut final_state = PlaybackState::Idle;
     let mut buffered_after_start = false;
@@ -283,22 +304,21 @@ pub fn play_controlled(
     let mut state_trace = Vec::new();
     for tick in 0..MAX_TICKS {
         let now = Instant::now();
-        device.advance(now.duration_since(previous_tick));
+        let tick_gap = now.duration_since(previous_tick);
+        max_tick_gap = max_tick_gap.max(tick_gap);
+        device.advance(tick_gap.min(AUDIO_ADVANCE_PER_TICK_CAP));
         previous_tick = now;
         let result = session.tick(PlayerTickContext::new(now));
         presented_count += result.video_frames_presented;
         let snapshot = session.compose_snapshot();
-        if let Some(frame) = &snapshot.current_video_frame
-            && frames.last().is_none_or(|last| last.pts != frame.pts)
-        {
-            frames.push(PresentedFrame {
-                pts: frame.pts,
-                width: frame.width,
-                height: frame.height,
-                position: snapshot.current_position,
-                tick,
-            });
-        }
+        presentations.observe_tick(tick, &result, &snapshot);
+        dropped_frames.extend(
+            result
+                .dropped_video_frames
+                .iter()
+                .map(|dropped| (dropped.pts, dropped.reason, tick)),
+        );
+        let started_showing = presentations.has_frames();
         for event in session.take_events() {
             match event {
                 PlayerEvent::VideoBackendSelectionRequested(request)
@@ -313,7 +333,7 @@ pub fn play_controlled(
             }
         }
         final_state = snapshot.playback_state;
-        buffered_after_start |= !frames.is_empty() && final_state == PlaybackState::Buffering;
+        buffered_after_start |= started_showing && final_state == PlaybackState::Buffering;
         state_trace.push((tick, final_state, snapshot.timeline.seeking));
         if snapshot.timeline.seeking
             || matches!(
@@ -329,6 +349,7 @@ pub fn play_controlled(
             position: snapshot.current_position,
             state: final_state,
             seeks: &mut seeks,
+            presentations: &mut presentations,
         };
         between_ticks(&mut control);
         if control.finished() {
@@ -336,8 +357,10 @@ pub fn play_controlled(
         }
         thread::sleep(TICK);
     }
+    let (frames, unattributed_presentations) = presentations.finish();
     PlaybackReport {
         frames,
+        unattributed_presentations,
         presented_count,
         audio_samples: device.written_samples(),
         audio_format: device.format(),
@@ -349,5 +372,8 @@ pub fn play_controlled(
         waiting_ticks,
         mid_stream_audio_silence: device.mid_stream_silence(),
         discarded_audio: device.discarded_audio(),
+        audio_frames_at_seek_clears: device.written_frames_at_seek_clears(),
+        dropped_frames,
+        max_tick_gap,
     }
 }

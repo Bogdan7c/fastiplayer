@@ -27,6 +27,11 @@ use crate::feed::{EpisodeContinuity, EpisodeKey, FeedCursor};
 use crate::framing::{MediaTime, MediaTimeSpan, SegmentEnd, TimedSpan};
 use crate::intake::ChargedSegment;
 
+#[path = "shelf_late_join.rs"]
+mod late_join;
+
+pub(crate) use late_join::{LateJoinCandidates, LateJoinWindow};
+
 /// Микросекунды длительности со знаком (насыщение — для гигантских настроек).
 fn signed_micros(duration: Duration) -> i64 {
     i64::try_from(duration.as_micros()).unwrap_or(i64::MAX)
@@ -129,6 +134,16 @@ pub(crate) enum IncomingMedia {
     Ended,
 }
 
+/// Пришёл ли сегмент после последней перемотки (правило позднего вступления,
+/// модуль `late_join`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Arrival {
+    /// Лежал на полке до последней перемотки.
+    BeforeLastSeek,
+    /// Принят после неё (у перемотки вне полки — ответ страницы).
+    SinceLastSeek,
+}
+
 /// Сегмент на полке.
 #[derive(Debug)]
 pub(crate) struct ShelfEntry {
@@ -140,6 +155,8 @@ pub(crate) struct ShelfEntry {
     key: EpisodeKey,
     /// Отдан ли демуксеру.
     delivery: Delivery,
+    /// Пришёл ли после последней перемотки.
+    arrival: Arrival,
 }
 
 impl ShelfEntry {
@@ -150,6 +167,7 @@ impl ShelfEntry {
             media,
             key,
             delivery: Delivery::Waiting,
+            arrival: Arrival::SinceLastSeek,
         }
     }
 
@@ -400,13 +418,19 @@ impl LaneShelf {
         incoming: IncomingMedia,
     ) -> Option<FeedChoice> {
         let index = self.restart_index(target, rules, incoming)?;
+        Some(self.restart_feeding_from(index))
+    }
+
+    /// Сегмент на месте `index` и всё после него снова ждут подачи; сам сегмент
+    /// подаётся первым и обязательно в НОВОМ эпизоде.
+    fn restart_feeding_from(&mut self, index: usize) -> FeedChoice {
         for entry in &mut self.entries[index..] {
             entry.delivery = Delivery::Waiting;
         }
-        Some(FeedChoice {
+        FeedChoice {
             index,
             continuity: EpisodeContinuity::MustRestart,
-        })
+        }
     }
 
     /// Отмечает выбранный сегмент поданным и отдаёт то, что нужно трубе.

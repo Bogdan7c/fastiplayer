@@ -41,6 +41,8 @@ struct DeviceState {
     current_output: u64,
     /// Кадров, записанных, но выброшенных вместе с уничтоженным выходом.
     discarded_frames: u64,
+    /// Сколько кадров было записано к каждой очистке выхода перемоткой.
+    written_frames_at_seek_clears: Vec<u64>,
 }
 
 /// Отрезок тишины, которую слышал бы зритель.
@@ -127,6 +129,16 @@ impl SimulatedAudioDevice {
             )
             .unwrap_or(u64::MAX),
         )
+    }
+
+    /// Номер PCM-кадра в [`Self::written_samples`], с которого пошёл звук после
+    /// каждой очистки выхода перемоткой (недоигранное до неё выброшено и не звучало).
+    pub fn written_frames_at_seek_clears(&self) -> Vec<usize> {
+        self.lock()
+            .written_frames_at_seek_clears
+            .iter()
+            .map(|frames| usize::try_from(*frames).expect("PCM frame index"))
+            .collect()
     }
 
     /// Весь записанный PCM.
@@ -257,6 +269,10 @@ impl PlayerAudioOutput for SimulatedOutput {
     fn clear_buffer_for_seek(&mut self, generation: u64) -> anyhow::Result<u64> {
         let mut state = self.device.lock();
         state.submitted_frames = state.played_frames;
+        let written_frames_total = state.written_frames_total;
+        state
+            .written_frames_at_seek_clears
+            .push(written_frames_total);
         Ok(generation)
     }
 

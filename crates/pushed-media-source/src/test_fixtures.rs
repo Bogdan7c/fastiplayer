@@ -45,3 +45,7 @@ pub(crate) const VIDEO_H264_64_MIDGOP: &[u8] =
 pub(crate) const VIDEO_H264_64_4S: &[u8] = include_bytes!("../fixtures/video-h264-64-4s.mp4");
 /// AAC моно 48 кГц, 0,8 с: init + фрагменты по ~0,2 с.
 pub(crate) const AUDIO_AAC: &[u8] = include_bytes!("../fixtures/audio-aac.mp4");
+
+/// AAC моно 48 кГц, 4 с (синус): init + 10 фрагментов по 19 AAC-кадров
+/// (19 × 1024 sample = 405,33 мс) — звук фрагмента N начинается в N × 405,33 мс.
+pub(crate) const AUDIO_AAC_4S: &[u8] = include_bytes!("../fixtures/audio-aac-4s.mp4");

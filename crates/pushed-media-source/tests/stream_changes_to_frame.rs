@@ -21,6 +21,7 @@ use pushed_media_source::{
 };
 use support::media::{FragmentedMp4, own_fixture};
 use support::playback::{PlaybackReport, open, play};
+use support::presentation_log::FrameSighting;
 
 /// Длительность кадра фикстур (25 к/с).
 const FRAME: Duration = Duration::from_millis(40);
@@ -69,10 +70,23 @@ fn assert_switch_without_stopping(
     assert_eq!(
         presented_times(report),
         frame_times(0..20),
-        "every frame once, in order"
+        "every frame once, in order; dropped by the player {:?}; longest pause between \
+         ticks {:?} (a long pause is a harness stall, not a product defect)",
+        report.dropped_frames,
+        report.max_tick_gap
+    );
+    assert_eq!(
+        report.unattributed_presentations, 0,
+        "the harness could not name a presented frame"
     );
     let switch_at = FRAME * 10;
-    for frame in &report.frames {
+    // Размер виден только у кадра, стоявшего на экране в конце шага: у кадра,
+    // вытесненного внутри шага, обвязка знает время, но не размер.
+    for frame in report
+        .frames
+        .iter()
+        .filter(|frame| frame.sighting == FrameSighting::OnScreen)
+    {
         let expected_size = if frame.pts < switch_at {
             old_size
         } else {
