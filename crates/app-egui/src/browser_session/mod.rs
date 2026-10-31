@@ -58,6 +58,7 @@
 //! `[network]`) читаются один раз при старте и только на чтение: config пишет обычный
 //! плеер. Окно браузерного режима меняет их «только на сеанс» (решение 122, 04a).
 
+mod drain_override;
 mod inbox;
 mod intake_notice;
 mod journal;
@@ -70,6 +71,7 @@ mod range_wake;
 mod rejection;
 mod runtime;
 mod session_config;
+mod session_end;
 mod session_media;
 mod stream_intake;
 mod stream_queue;
@@ -97,6 +99,7 @@ use self::playback::{
 use self::process_core::BrowserSessionCore;
 use self::runtime::{DRAIN_FALLBACK_WAKE, RuntimeFinish};
 use self::session_config::{BrowserSessionSettings, FileSourceSettingsError};
+use self::session_media::PausedDrain;
 use self::video_mode::BrowserVideoMode;
 
 /// Итог процесса браузерного режима (для кода выхода). Подробности уже в логе.
@@ -187,7 +190,15 @@ fn run_headless(
         wake.clone(),
         Instant::now(),
     )?;
-    let mut core = BrowserSessionCore::start(policy, settings, wake.clone(), Box::new(playback))?;
+    // Без окна нажать «играть» некому: пауза в момент ухода вкладки — выход сразу
+    // (правило 103; окно ждёт зрителя — `PausedDrain::WaitForViewer`).
+    let mut core = BrowserSessionCore::start(
+        policy,
+        settings,
+        wake.clone(),
+        Box::new(playback),
+        PausedDrain::ExitAtOnce,
+    )?;
     loop {
         match core.step(Instant::now()).verdict {
             // Безоконный плеер принадлежит медиа-части: его итог уже в `media.finish()`.

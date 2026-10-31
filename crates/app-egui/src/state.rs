@@ -66,7 +66,8 @@ mod notifications;
 mod settings_media_rebuild;
 pub(crate) use media_jobs::playback_intent_from_snapshot;
 pub(crate) use notifications::{
-    CenterNotice, NotificationId, NotificationsFrame, RetryOffer, ToastKind, ToastView,
+    CenterNotice, CenterStatusUpdate, NotificationId, NotificationsFrame, RetryOffer, ToastKind,
+    ToastView,
 };
 pub(crate) use settings_media_rebuild::{
     RebuildPrepareRequest, RebuildSourceInput, SettingsMediaRebuildStart,

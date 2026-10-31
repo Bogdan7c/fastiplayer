@@ -9,19 +9,22 @@ use crate::browser_session::playback::LoadFault;
 const SHORT_POLICY: DrainPolicy = DrainPolicy {
     stall_timeout: Duration::from_millis(400),
     poll_interval: Duration::from_millis(250),
+    paused: PausedDrain::ExitAtOnce,
 };
 
 fn drained(progress: DrainProgress) -> DrainEnd {
     match progress {
         DrainProgress::Drained(end) => end,
-        other @ DrainProgress::Draining { .. } => panic!("still draining: {other:?}"),
+        other @ (DrainProgress::Draining { .. } | DrainProgress::AwaitingViewer) => {
+            panic!("still draining: {other:?}")
+        }
     }
 }
 
 /// Конец сеанса, как его видит главный цикл: событие конца и затем уведомление потока
 /// приёма «вход разобран и запечатан» (идёт в порядке данных, после них).
 fn end_session(harness: &mut Harness, session: &SessionRef) {
-    harness.media.on_session_ended(session);
+    harness.media.on_session_ended(session, TAB_GONE_END);
     harness.media.on_intake(
         vec![IntakeNotice::InstanceSealed {
             session: session.clone(),
@@ -244,7 +247,7 @@ fn a_rejection_while_draining_is_not_queued_for_a_page_that_is_gone() {
 #[test]
 fn a_new_session_ends_the_drain_and_the_page_gets_its_messages_again() {
     let (mut harness, old_session, _writer) = loaded_harness();
-    harness.media.on_session_ended(&old_session);
+    harness.media.on_session_ended(&old_session, TAB_GONE_END);
     assert!(harness.media.drain.is_some());
 
     let new_session = session(2);
@@ -272,7 +275,7 @@ fn the_end_of_a_replaced_instance_does_not_start_a_drain() {
     let (mut harness, old_session, _writer) = loaded_harness();
     harness.media.on_session_opened(&session(2));
 
-    harness.media.on_session_ended(&old_session);
+    harness.media.on_session_ended(&old_session, TAB_GONE_END);
 
     assert!(harness.media.drain.is_none());
 }
@@ -289,7 +292,7 @@ fn an_end_that_overtakes_the_generation_does_not_cancel_the_video() {
     harness.media.on_session_opened(&current);
 
     // Конец обогнал данные: поток приёма ещё не отдал ни поколения, ни запечатывания.
-    harness.media.on_session_ended(&current);
+    harness.media.on_session_ended(&current, TAB_GONE_END);
     assert!(
         matches!(
             harness.media.playback_drain(Instant::now()),
@@ -342,7 +345,7 @@ fn a_pause_in_the_burst_is_seen_before_the_drain_decides() {
     let mut harness = Harness::new();
     let current = session(1);
     harness.media.on_session_opened(&current);
-    harness.media.on_session_ended(&current);
+    harness.media.on_session_ended(&current, TAB_GONE_END);
     assert!(matches!(
         harness.media.playback_drain(Instant::now()),
         DrainProgress::Draining { .. }
@@ -372,7 +375,7 @@ fn the_sealing_of_another_instance_does_not_open_the_verdict() {
     let mut harness = Harness::new();
     let current = session(2);
     harness.media.on_session_opened(&current);
-    harness.media.on_session_ended(&current);
+    harness.media.on_session_ended(&current, TAB_GONE_END);
     harness.media.on_intake(
         vec![IntakeNotice::InstanceSealed {
             session: session(1),
@@ -393,7 +396,7 @@ fn a_missing_seal_is_bounded_by_the_stall_timeout() {
     harness.media.drain_policy = SHORT_POLICY;
     let current = session(1);
     harness.media.on_session_opened(&current);
-    harness.media.on_session_ended(&current);
+    harness.media.on_session_ended(&current, TAB_GONE_END);
     let start = Instant::now();
 
     assert!(matches!(

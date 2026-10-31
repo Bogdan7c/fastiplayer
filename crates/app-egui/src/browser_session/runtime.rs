@@ -31,7 +31,7 @@ use std::time::Instant;
 use browser_bridge_protocol::GrantOutcome;
 use browser_bridge_session::{
     BrowserSessionPolicy, EntryCaller, EntryDesk, EntryEvent, ExitCause, LifecycleVerdict,
-    ProcessLifecycle, SessionLifecycleEvent, SessionRef,
+    ProcessLifecycle, SessionEndReason, SessionLifecycleEvent, SessionRef,
 };
 use desktop_integration::BrowserEntryDelivery;
 use tracing::{debug, error, info};
@@ -49,10 +49,14 @@ pub(super) const DRAIN_FALLBACK_WAKE: std::time::Duration = std::time::Duration:
 /// Медиа-часть так, как её видит главный цикл. Настоящая — [`SessionMedia`];
 /// тесты цикла подставляют подделку без плеера.
 pub(super) trait SessionMediaPort {
+    /// Новая вкладка вытеснила `replaced` (решения 40, 127): последнее сообщение старой
+    /// вкладке. Цикл зовёт это в том же шаге и ДО [`Self::on_session_opened`] нового
+    /// сеанса — открытие ставит видео на паузу и забывает позицию старой вкладки.
+    fn bid_farewell_to_replaced(&mut self, replaced: &SessionRef);
     /// Открыт сеанс (новый, заменивший или повтор того же экземпляра).
     fn on_session_opened(&mut self, session: &SessionRef);
-    /// Экземпляр сеанса закончился (сервер сообщил `Ended`).
-    fn on_session_ended(&mut self, session: &SessionRef);
+    /// Экземпляр сеанса закончился (сервер сообщил `Ended` с причиной).
+    fn on_session_ended(&mut self, session: &SessionRef, reason: SessionEndReason);
     /// Уведомления потока приёма за проход и слитое «легли новые байты».
     fn on_intake(&mut self, notices: Vec<IntakeNotice>, bytes_appended: Option<SessionRef>);
     /// Шаг медиа; возвращает, когда проснуться без внешнего повода.
@@ -63,12 +67,16 @@ pub(super) trait SessionMediaPort {
 }
 
 impl SessionMediaPort for SessionMedia {
+    fn bid_farewell_to_replaced(&mut self, replaced: &SessionRef) {
+        Self::bid_farewell_to_replaced(self, replaced);
+    }
+
     fn on_session_opened(&mut self, session: &SessionRef) {
         Self::on_session_opened(self, session);
     }
 
-    fn on_session_ended(&mut self, session: &SessionRef) {
-        Self::on_session_ended(self, session);
+    fn on_session_ended(&mut self, session: &SessionRef, reason: SessionEndReason) {
+        Self::on_session_ended(self, session, reason);
     }
 
     fn on_intake(&mut self, notices: Vec<IntakeNotice>, bytes_appended: Option<SessionRef>) {
@@ -155,6 +163,9 @@ impl BrowserSessionRuntime {
             DrainProgress::Draining { wake_at } => LifecycleVerdict::KeepRunning {
                 wake_at: Some(wake_at),
             },
+            // Окно на паузе ждёт человека: будить по времени незачем, его действие само
+            // разбудит цикл окна (событие winit).
+            DrainProgress::AwaitingViewer => LifecycleVerdict::KeepRunning { wake_at: None },
             DrainProgress::Drained(end) => {
                 // Одна строка без приватных данных: по ней видно, чем кончилось.
                 info!(class = %end.log_label(), "Playback drain finished");
@@ -163,6 +174,16 @@ impl BrowserSessionRuntime {
                 self.lifecycle.verdict(now)
             }
         }
+    }
+
+    /// Зритель закрыл окно, пока сеанс доигрывается (страницы уже нет): закрытие окна
+    /// = «доиграно» по воле зрителя (04b). Возвращает решение машины — при доигрывании
+    /// это выход с причиной конца сеанса; если машина не доигрывала, её решение не
+    /// меняется (итог виден в журнале).
+    pub(super) fn finish_drain_for_viewer(&mut self, now: Instant) -> LifecycleVerdict {
+        let outcome = self.lifecycle.on_playback_drained();
+        info!(class = %"viewer_closed", ?outcome, "Playback drain finished");
+        self.lifecycle.verdict(now)
     }
 
     /// Дожидается начатых просьб «пауза» и отдаёт итог.
@@ -184,8 +205,8 @@ impl BrowserSessionRuntime {
         for event in &batch.lifecycle_events {
             log_lifecycle_event(event);
             self.lifecycle.on_lifecycle_event(event);
-            if let SessionLifecycleEvent::Ended { session, .. } = event {
-                media.on_session_ended(session);
+            if let SessionLifecycleEvent::Ended { session, reason } = event {
+                media.on_session_ended(session, *reason);
             }
         }
         // С 03b сообщения страницы идут через единую очередь в поток приёма; сюда
@@ -224,9 +245,16 @@ impl BrowserSessionRuntime {
             instance,
             intent,
             outcome: grant,
+            replaced,
             ..
         }) = outcome.event
         {
+            // Прощание старой вкладке — раньше открытия нового сеанса в медиа-части:
+            // открытие ставит видео на паузу и забывает загруженное поколение, а T —
+            // позиция именно этого видео (решение 127).
+            if let Some(replaced) = replaced.as_ref() {
+                media.bid_farewell_to_replaced(replaced);
+            }
             // Машина сверяет сеанс по паре «ключ + экземпляр»: конец прежнего
             // экземпляра с тем же ключом (истёк срок возврата) не закроет новый.
             let session = SessionRef { key, instance };

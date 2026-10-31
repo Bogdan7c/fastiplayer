@@ -230,10 +230,10 @@ fn the_end_of_the_current_session_stops_retries_to_its_page() {
     );
 
     // Конец чужого экземпляра ничего не трогает.
-    harness.media.on_session_ended(&session(0));
+    harness.media.on_session_ended(&session(0), TAB_GONE_END);
     assert!(harness.media.drive(start).is_some());
 
-    harness.media.on_session_ended(&current);
+    harness.media.on_session_ended(&current, TAB_GONE_END);
     assert_eq!(harness.media.drive(start), None);
     assert!(harness.page.take_sent().is_empty());
 }

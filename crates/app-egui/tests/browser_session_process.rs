@@ -83,6 +83,17 @@ impl PrivateBusWithBrowserSession {
 
     /// Общий подъём: каталоги, шина и как процесс показывает видео.
     fn start_with(name: &str, config_toml: Option<&str>, video: &TestVideo) -> Self {
+        Self::start_with_env(name, config_toml, video, &[])
+    }
+
+    /// То же с тестовыми переменными процесса (например, короткий срок застоя
+    /// доигрывания `FASTIPLAYER_TEST_BROWSER_DRAIN_STALL_MS`).
+    fn start_with_env(
+        name: &str,
+        config_toml: Option<&str>,
+        video: &TestVideo,
+        process_env: &[(&str, &str)],
+    ) -> Self {
         let directory = std::env::temp_dir().join(format!(
             "fastiplayer-browser-session-e2e-{}-{name}",
             std::process::id()
@@ -131,6 +142,9 @@ impl PrivateBusWithBrowserSession {
                     .env("XDG_RUNTIME_DIR", display.runtime_dir())
                     .env_remove("DISPLAY");
             }
+        }
+        for (variable, value) in process_env {
+            daemon_command.env(variable, value);
         }
         let mut daemon = daemon_command
             .arg(format!("--config-file={}", config.display()))
@@ -193,6 +207,29 @@ impl PrivateBusWithBrowserSession {
         self.wait_for_log_line_without(needle, &[])
     }
 
+    /// Читает журнал `period` и падает, если за это время появилась строка с любой из
+    /// `forbidden` (процесс жив и ничего такого не решил).
+    fn expect_no_log_line_for(&self, period: Duration, forbidden: &[&str]) {
+        let deadline = Instant::now() + period;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            match self.log_lines.recv_timeout(left) {
+                Ok(line) => {
+                    if let Some(found) = forbidden.iter().find(|text| line.contains(**text)) {
+                        panic!("unexpected log line ({found:?}) within {period:?}: {line}");
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => return,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("the process log ended within {period:?}: the process is gone")
+                }
+            }
+        }
+    }
+
     /// То же, но строки, прочитанные по дороге, не должны содержать ни одной из
     /// `forbidden`: так тест видит, что процесс ни разу не отказал молча (отказ виден
     /// только в журнале, а старое медиа при этом продолжает играть).
@@ -251,6 +288,11 @@ impl SessionProcessUnderTest {
     /// Поднимает шину (и дисплей для окна). `None` — окна не будет: `kwin_wayland`
     /// нет, тест пропускается с сообщением (как `window.rs`).
     fn start(name: &str, mode: VideoMode) -> Option<Self> {
+        Self::start_with_env(name, mode, &[])
+    }
+
+    /// То же с тестовыми переменными процесса.
+    fn start_with_env(name: &str, mode: VideoMode, process_env: &[(&str, &str)]) -> Option<Self> {
         let video = match mode {
             VideoMode::Headless => TestVideo::Headless,
             VideoMode::Window => TestVideo::Window(window::VirtualWaylandDisplay::start(name)?),
@@ -259,12 +301,21 @@ impl SessionProcessUnderTest {
             VideoMode::Headless => format!("{name}-headless"),
             VideoMode::Window => format!("{name}-window"),
         };
-        let bus = PrivateBusWithBrowserSession::start_with(&bus_name, None, &video);
+        let bus =
+            PrivateBusWithBrowserSession::start_with_env(&bus_name, None, &video, process_env);
         Some(Self {
             bus,
             _video: video,
             mode,
         })
+    }
+
+    /// Виртуальный дисплей окна (`None` — безоконный режим).
+    fn display(&self) -> Option<&window::VirtualWaylandDisplay> {
+        match &self._video {
+            TestVideo::Window(display) => Some(display),
+            TestVideo::Headless => None,
+        }
     }
 
     /// Открывает сеанс, как экстеншен; в режиме окна ещё ждёт, пока окно поднимется.
@@ -351,6 +402,14 @@ fn entry_call(client: &BrowserEntryClient, message: &str) -> PlayerControlMessag
 fn open_attached_session(
     bus: &PrivateBusWithBrowserSession,
 ) -> WebSocket<MaybeTlsStream<TcpStream>> {
+    open_attached_session_with(bus, OPEN_SESSION)
+}
+
+/// То же с этим `open_session` (другой ключ — другая вкладка: замена сеанса).
+fn open_attached_session_with(
+    bus: &PrivateBusWithBrowserSession,
+    open_session: &str,
+) -> WebSocket<MaybeTlsStream<TcpStream>> {
     // Звонок будит незапущенный процесс; одно соединение = один звонящий.
     let client = BrowserEntryClient::connect(
         BrowserEntryBus::Address(bus.address.clone()),
@@ -361,7 +420,7 @@ fn open_attached_session(
         entry_call(&client, HELLO),
         PlayerControlMessage::HelloAccepted(_)
     ));
-    let PlayerControlMessage::SessionGranted(grant) = entry_call(&client, OPEN_SESSION) else {
+    let PlayerControlMessage::SessionGranted(grant) = entry_call(&client, open_session) else {
         panic!("open_session must be granted");
     };
     bus.wait_for_log_line("Browser session opened");
@@ -616,6 +675,10 @@ fn live_session_bus_wakes_the_installed_browser_session() {
 // файл не рос.
 #[path = "browser_session_process/file_and_drain.rs"]
 mod file_and_drain;
+
+// Концы сеанса (04b): прощание при замене и закрытии окна, «вкладка ушла» в окне.
+#[path = "browser_session_process/session_ends.rs"]
+mod session_ends;
 
 // Смена качества новым MediaSource (03e): три смены поколения подряд.
 #[path = "browser_session_process/generation_switch.rs"]

@@ -17,10 +17,17 @@
 //! Правила по порядку, когда экземпляр запечатан (каждое — свой [`DrainEnd`], в журнал
 //! одной строкой):
 //! 1. ничего не загружено и не открывается → сразу ([`DrainEnd::NothingToPlay`]);
-//! 2. страница хотела паузу → сразу ([`DrainEnd::PagePaused`]); окна, в котором зритель
-//!    мог бы нажать «играть», в 03c нет — оно появится в 04 вместе с окном плеера, и
-//!    правило поменяется там. Намерение читается в момент вопроса, уже после
-//!    запечатывания: все намерения страницы к тому времени разобраны;
+//! 2. страница (или зритель окна) хочет паузу — по политике [`PausedDrain`]:
+//!    - [`PausedDrain::ExitAtOnce`] (безоконный процесс, правило 103) → сразу
+//!      ([`DrainEnd::PagePaused`]): нажать «играть» некому;
+//!    - [`PausedDrain::WaitForViewer`] (окно, 04b) → [`DrainProgress::AwaitingViewer`]:
+//!      человек мог просто отойти, окно ждёт его с последним кадром. Срок застоя на
+//!      паузе НЕ идёт (позиция на паузе и должна стоять); «играть» зрителя продолжает
+//!      доигрывание с новым отсчётом срока. В этой политике конец и отказ (правила 3–4)
+//!      важнее паузы: смотреть дальше нечего.
+//!
+//!    Намерение читается в момент вопроса, уже после запечатывания: все намерения
+//!    страницы к тому времени разобраны;
 //! 3. плеер дошёл до конца → [`DrainEnd::PlayedToEnd`];
 //! 4. плеер отказал по загруженному поколению → сразу ([`DrainEnd::PlayerFault`]);
 //! 5. поколение ещё открывается → ждём: запечатанный файл или поток откроется или
@@ -40,10 +47,25 @@ pub(crate) struct DrainPolicy {
     /// их тик цикл не будит: без периодического пробуждения конец воспроизведения,
     /// не принесший кадра, заметили бы поздно.
     pub(crate) poll_interval: Duration,
+    /// Что делать, если в момент вопроса страница (или зритель) хочет паузу.
+    pub(crate) paused: PausedDrain,
+}
+
+/// Пауза во время доигрывания: выйти сразу или ждать человека.
+///
+/// Различие процессов выражено типом, а не флагом: безоконному процессу некому нажать
+/// «играть» (правило 103), окно показывает последний кадр и ждёт зрителя (04b, замена
+/// правила 103 для окна).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PausedDrain {
+    /// Пауза = конец доигрывания ([`DrainEnd::PagePaused`]).
+    ExitAtOnce,
+    /// Пауза = ждать зрителя ([`DrainProgress::AwaitingViewer`]), срок застоя стоит.
+    WaitForViewer,
 }
 
 impl DrainPolicy {
-    /// Умолчания для настоящего процесса.
+    /// Умолчания для настоящего процесса с данным правилом паузы.
     ///
     /// - `stall_timeout` 15 с: дольше `SeekTimeout` плеера (10 с) и любой разумной
     ///   паузы декодера или диска. После запечатывания новых байтов не придёт, так что
@@ -51,10 +73,20 @@ impl DrainPolicy {
     ///   между «зритель смотрит в пустой экран» и «процесс висит вечно».
     /// - `poll_interval` 250 мс: тот же шаг, что тик часов (`CLOCK_INTERVAL`), — конец
     ///   видео замечаем в пределах четверти секунды.
-    pub(crate) const fn recommended() -> Self {
+    pub(crate) const fn recommended(paused: PausedDrain) -> Self {
         Self {
             stall_timeout: Duration::from_secs(15),
             poll_interval: Duration::from_millis(250),
+            paused,
+        }
+    }
+
+    /// Та же политика с другим сроком застоя (тестовая переменная процесса,
+    /// `super::super::drain_override`).
+    pub(crate) const fn with_stall_timeout(self, stall_timeout: Duration) -> Self {
+        Self {
+            stall_timeout,
+            ..self
         }
     }
 }
@@ -95,6 +127,9 @@ pub(crate) enum DrainProgress {
         /// Когда проснуться.
         wake_at: Instant,
     },
+    /// Окно на паузе ждёт зрителя ([`PausedDrain::WaitForViewer`]): по времени будить
+    /// незачем — продолжит действие человека (оно само будит цикл окна).
+    AwaitingViewer,
     /// Закончили: процессу можно выходить.
     Drained(DrainEnd),
 }
@@ -177,9 +212,17 @@ impl DrainWatch {
     /// Ответ на «доиграно?» в момент `now`.
     pub(crate) fn evaluate(&mut self, snapshot: DrainSnapshot, now: Instant) -> DrainProgress {
         if snapshot.intake == IntakeStance::Sealed
-            && let Some(end) = Self::immediate_end(snapshot)
+            && let Some(end) = Self::immediate_end(snapshot, self.policy.paused)
         {
             return DrainProgress::Drained(end);
+        }
+        if snapshot.page == PageStance::WantsPause
+            && self.policy.paused == PausedDrain::WaitForViewer
+        {
+            // Пауза — не застой: отметка сбрасывается, и после «играть» срок застоя
+            // отсчитывается заново, с момента, когда позиция снова должна двигаться.
+            self.progress = None;
+            return DrainProgress::AwaitingViewer;
         }
         let position = match snapshot.content {
             DrainContent::Loaded { position, .. } => position,
@@ -193,12 +236,14 @@ impl DrainWatch {
         }
     }
 
-    /// Правила 1–4: конец, не требующий времени.
-    fn immediate_end(snapshot: DrainSnapshot) -> Option<DrainEnd> {
+    /// Правила 1–4: конец, не требующий времени. Пауза — конец только при
+    /// [`PausedDrain::ExitAtOnce`]; при [`PausedDrain::WaitForViewer`] её решает
+    /// [`Self::evaluate`] уже после конца и отказа.
+    fn immediate_end(snapshot: DrainSnapshot, paused: PausedDrain) -> Option<DrainEnd> {
         if snapshot.content == DrainContent::Nothing {
             return Some(DrainEnd::NothingToPlay);
         }
-        if snapshot.page == PageStance::WantsPause {
+        if snapshot.page == PageStance::WantsPause && paused == PausedDrain::ExitAtOnce {
             return Some(DrainEnd::PagePaused);
         }
         match snapshot.content {
@@ -231,6 +276,13 @@ mod tests {
     const POLICY: DrainPolicy = DrainPolicy {
         stall_timeout: Duration::from_secs(10),
         poll_interval: Duration::from_millis(250),
+        paused: PausedDrain::ExitAtOnce,
+    };
+
+    /// Политика окна: пауза ждёт зрителя.
+    const WINDOW_POLICY: DrainPolicy = DrainPolicy {
+        paused: PausedDrain::WaitForViewer,
+        ..POLICY
     };
 
     fn wants_play(content: DrainContent) -> DrainSnapshot {
@@ -252,7 +304,25 @@ mod tests {
     fn drained(progress: DrainProgress) -> DrainEnd {
         match progress {
             DrainProgress::Drained(end) => end,
-            other @ DrainProgress::Draining { .. } => panic!("still draining: {other:?}"),
+            other @ (DrainProgress::Draining { .. } | DrainProgress::AwaitingViewer) => {
+                panic!("still draining: {other:?}")
+            }
+        }
+    }
+
+    fn paused(content: DrainContent) -> DrainSnapshot {
+        DrainSnapshot {
+            intake: IntakeStance::Sealed,
+            content,
+            page: PageStance::WantsPause,
+        }
+    }
+
+    fn loaded_at(position_s: u64) -> DrainContent {
+        DrainContent::Loaded {
+            position: Some(Duration::from_secs(position_s)),
+            ended: false,
+            faulted: false,
         }
     }
 
@@ -444,5 +514,136 @@ mod tests {
         for (end, label) in labels {
             assert_eq!(end.log_label(), label);
         }
+    }
+
+    // ---- окно: пауза ждёт зрителя (04b) ------------------------------------------
+
+    #[test]
+    fn in_the_window_a_paused_video_waits_for_the_viewer_instead_of_ending() {
+        let mut watch = DrainWatch::begin(WINDOW_POLICY);
+        let start = Instant::now();
+        assert_eq!(
+            watch.evaluate(paused(loaded_at(3)), start),
+            DrainProgress::AwaitingViewer
+        );
+        // Открывающееся поколение на паузе тоже ждёт человека, а не выходит.
+        assert_eq!(
+            watch.evaluate(paused(DrainContent::Opening), start),
+            DrainProgress::AwaitingViewer
+        );
+    }
+
+    /// Пауза дольше срока застоя — не застой: позиция на паузе и должна стоять.
+    #[test]
+    fn the_stall_deadline_does_not_run_while_the_window_waits_on_pause() {
+        let mut watch = DrainWatch::begin(WINDOW_POLICY);
+        let start = Instant::now();
+        for elapsed_s in [0, 5, 11, 60, 3_600] {
+            assert_eq!(
+                watch.evaluate(paused(loaded_at(3)), start + Duration::from_secs(elapsed_s)),
+                DrainProgress::AwaitingViewer,
+                "after {elapsed_s} s on pause"
+            );
+        }
+    }
+
+    /// «Играть» зрителя после долгой паузы: срок застоя считается с момента «играть»,
+    /// а не с момента, когда позиция встала на паузе.
+    #[test]
+    fn play_after_a_long_pause_restarts_the_stall_clock() {
+        let mut watch = DrainWatch::begin(WINDOW_POLICY);
+        let start = Instant::now();
+        assert!(matches!(
+            watch.evaluate(playing(3), start),
+            DrainProgress::Draining { .. }
+        ));
+        let resumed_at = start + Duration::from_secs(60);
+        assert_eq!(
+            watch.evaluate(paused(loaded_at(3)), start + Duration::from_secs(1)),
+            DrainProgress::AwaitingViewer
+        );
+        assert!(matches!(
+            watch.evaluate(playing(3), resumed_at),
+            DrainProgress::Draining { .. }
+        ));
+        assert!(matches!(
+            watch.evaluate(
+                playing(3),
+                resumed_at + POLICY.stall_timeout - Duration::from_millis(1)
+            ),
+            DrainProgress::Draining { .. }
+        ));
+        assert_eq!(
+            drained(watch.evaluate(playing(3), resumed_at + POLICY.stall_timeout)),
+            DrainEnd::Stalled
+        );
+    }
+
+    /// В окне конец и отказ важнее паузы: смотреть дальше нечего — сообщение и закрытие.
+    #[test]
+    fn in_the_window_the_end_and_a_fault_win_over_the_pause() {
+        let mut watch = DrainWatch::begin(WINDOW_POLICY);
+        let now = Instant::now();
+        let ended = DrainContent::Loaded {
+            position: Some(Duration::from_secs(6)),
+            ended: true,
+            faulted: false,
+        };
+        assert_eq!(
+            drained(watch.evaluate(paused(ended), now)),
+            DrainEnd::PlayedToEnd
+        );
+        let faulted = DrainContent::Loaded {
+            position: Some(Duration::ZERO),
+            ended: false,
+            faulted: true,
+        };
+        assert_eq!(
+            drained(watch.evaluate(paused(faulted), now)),
+            DrainEnd::PlayerFault
+        );
+        assert_eq!(
+            drained(watch.evaluate(paused(DrainContent::Nothing), now)),
+            DrainEnd::NothingToPlay
+        );
+    }
+
+    /// Пока вход не запечатан, окно на паузе тоже ждёт зрителя (а не срок): данные ещё
+    /// могут прийти, а человек — нажать «играть».
+    #[test]
+    fn before_the_seal_a_paused_window_waits_without_a_deadline() {
+        let mut watch = DrainWatch::begin(WINDOW_POLICY);
+        let start = Instant::now();
+        let open_paused = DrainSnapshot {
+            intake: IntakeStance::Open,
+            content: DrainContent::Nothing,
+            page: PageStance::WantsPause,
+        };
+        assert_eq!(
+            watch.evaluate(open_paused, start + POLICY.stall_timeout * 3),
+            DrainProgress::AwaitingViewer
+        );
+    }
+
+    /// Безоконная политика не изменилась: пауза — конец сразу (правило 103).
+    #[test]
+    fn without_a_window_the_pause_still_ends_the_drain_at_once() {
+        let mut watch = DrainWatch::begin(POLICY);
+        assert_eq!(
+            drained(watch.evaluate(paused(loaded_at(3)), Instant::now())),
+            DrainEnd::PagePaused
+        );
+    }
+
+    #[test]
+    fn a_test_stall_override_changes_only_the_stall_timeout() {
+        let shortened = DrainPolicy::recommended(PausedDrain::WaitForViewer)
+            .with_stall_timeout(Duration::from_millis(700));
+        assert_eq!(shortened.stall_timeout, Duration::from_millis(700));
+        assert_eq!(
+            shortened.poll_interval,
+            DrainPolicy::recommended(PausedDrain::WaitForViewer).poll_interval
+        );
+        assert_eq!(shortened.paused, PausedDrain::WaitForViewer);
     }
 }

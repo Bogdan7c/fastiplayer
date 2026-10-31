@@ -18,22 +18,33 @@
 //! Выход — порядок ядра (`BrowserSessionCore::shut_down`): шина, ящик, сервер, поток
 //! приёма, итог медиа-части, затем итог журнала окна и остановка плеера окна, потом
 //! само окно и цикл.
+//!
+//! Концы сеанса (04b):
+//! - зритель закрыл окно → ядро прощается со страницей (`return_to_page{T, paused}` →
+//!   4000) или, если страницы уже нет, считает доигрывание оконченным — и выход сразу;
+//! - доигрывание после ухода вкладки кончилось → ядро закрывается сразу (имя уходит с
+//!   шины: новый звонок разбудит новый процесс), а окно ещё
+//!   [`END_NOTICE_PERIOD`](super::end_notice::END_NOTICE_PERIOD)
+//!   показывает последний кадр и сообщение (`end_notice`), потом закрывается;
+//! - окно на паузе ждёт человека → постоянное сообщение в центре, процесс жив.
 
 use std::time::{Duration, Instant};
 
-use browser_bridge_protocol::SessionCloseReason;
-use browser_bridge_session::{ExitCause, LifecycleVerdict, SessionEndReason};
+use browser_bridge_session::{ExitCause, LifecycleVerdict};
 use fastiplayer_config::LoadedConfig;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::WindowId;
 
 use super::super::playback::metered_audio::BrowserAudioOutputChoice;
-use super::super::process_core::{BrowserSessionCore, SessionOpenedDuringStep};
+use super::super::process_core::{
+    BrowserSessionCore, SessionOpenedDuringStep, player_closed_cause,
+};
 use super::super::runtime::{DRAIN_FALLBACK_WAKE, RuntimeFinish};
 use super::driver::WindowPlaybackDriver;
+use super::end_notice::{ShownEndNotice, WindowExit, exit_plan};
 use super::instance::{
     BrowserWindowInstance, BrowserWindowStartError, InstanceAudio, InstanceSignal,
     InstanceWakePorts, apply_redraw_action,
@@ -59,10 +70,23 @@ pub(super) enum WindowRunResult {
 /// Что выбрал человек или окно, чтобы процесс вышел сам, не дожидаясь машины.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ForcedExit {
-    /// Окно закрыто человеком (04b заменит это возвратом странице).
-    ClosedByViewer,
+    /// Окно закрыто человеком: ядро уже простилось со страницей (или закончило
+    /// доигрывание) и назвало причину выхода.
+    ClosedByViewer {
+        /// Причина выхода процесса.
+        cause: ExitCause,
+    },
     /// Окно не собралось.
     WindowFailed,
+}
+
+/// Что делать с окном, когда ядро закрывается.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowAfterCore {
+    /// Закрыть вместе с ядром.
+    CloseNow,
+    /// Оставить показывать сообщение о конце сеанса (закроется по сроку).
+    KeepForNotice,
 }
 
 /// Процесс браузерного режима с окном.
@@ -80,6 +104,10 @@ pub(super) struct BrowserWindowApp {
     forced_exit: Option<ForcedExit>,
     window_failure: Option<BrowserWindowStartError>,
     finish: Option<RuntimeFinish>,
+    /// Сообщение о конце сеанса, которое окно показывает сейчас.
+    end_notice: ShownEndNotice,
+    /// Ядро уже закрыто, окно показывает сообщение о конце сеанса до этого момента.
+    closing_after_notice: Option<Instant>,
 }
 
 impl BrowserWindowApp {
@@ -106,6 +134,8 @@ impl BrowserWindowApp {
             forced_exit: None,
             window_failure: None,
             finish: None,
+            end_notice: ShownEndNotice::default(),
+            closing_after_notice: None,
         }
     }
 
@@ -115,6 +145,7 @@ impl BrowserWindowApp {
         if self.core.is_some() {
             self.shut_down(player_closed_cause());
         }
+        self.close_window_after_notice();
         match (self.window_failure, self.finish) {
             (Some(failure), _) => WindowRunResult::WindowFailed(failure),
             (None, Some(finish)) => WindowRunResult::Finished(finish),
@@ -128,6 +159,7 @@ impl BrowserWindowApp {
     /// Один проход: водитель → шаг ядра → окно на первом сеансе → команды → сон.
     fn run_pass(&mut self, event_loop: &ActiveEventLoop) {
         let Some(core) = self.core.as_mut() else {
+            self.run_notice_pass(event_loop);
             return;
         };
         let now = Instant::now();
@@ -146,6 +178,12 @@ impl BrowserWindowApp {
         if step.session_opened == SessionOpenedDuringStep::Yes && self.instance.is_none() {
             self.open_window(event_loop);
         }
+        // Сообщение о конце сеанса — каждый проход (ставится и снимается только при смене).
+        if let Some(change) = self.end_notice.update(step.session_end)
+            && let Some(instance) = self.instance.as_mut()
+        {
+            instance.apply_center_status(change);
+        }
         if let Some(instance) = self.instance.as_mut() {
             {
                 let mut player = instance.player();
@@ -156,19 +194,37 @@ impl BrowserWindowApp {
         }
         if let Some(forced) = self.forced_exit {
             // Код закрытия странице уже выбран: `window_event` (или `open_window`) закрыл
-            // сеанс кодом «плеер закрыт» (4000) ДО этого выхода, а просьба о закрытии
-            // соединения у сервера — «первая побеждает», поэтому 4006 выключения сервера
-            // её не перетирает (тест `browser-bridge-session`
-            // `player_close_followed_by_an_immediate_shutdown_still_sends_4000`).
+            // сеанс кодом «плеер закрыт» (4000, с прощанием `return_to_page` — 04b) ДО
+            // этого выхода, а сервер дописывает прощание и кадр закрытия даже при
+            // немедленном выключении («первая просьба побеждает», 4006 её не перетирает:
+            // тесты `browser-bridge-session` `player_close_followed_by_an_immediate_shutdown_still_sends_4000`
+            // и прощания при выключении).
             info!(?forced, "Browser window process exits");
-            self.shut_down(player_closed_cause());
+            let cause = match forced {
+                ForcedExit::ClosedByViewer { cause } => cause,
+                ForcedExit::WindowFailed => player_closed_cause(),
+            };
+            self.shut_down(cause);
             event_loop.exit();
             return;
         }
         self.core_wake_at = match step.verdict {
             LifecycleVerdict::Exit(cause) => {
-                self.shut_down(cause);
-                event_loop.exit();
+                match exit_plan(step.session_end, now) {
+                    WindowExit::AfterNotice { close_at } if self.instance.is_some() => {
+                        // Доигрывание кончилось: ядро закрывается сразу, окно ещё
+                        // показывает последний кадр и сообщение.
+                        info!("Browser window shows the end notice before closing");
+                        self.shut_down_core(cause, WindowAfterCore::KeepForNotice);
+                        self.closing_after_notice = Some(close_at);
+                        self.core_wake_at = Some(close_at);
+                        self.schedule_next_wake(event_loop);
+                    }
+                    WindowExit::AfterNotice { .. } | WindowExit::Now => {
+                        self.shut_down(cause);
+                        event_loop.exit();
+                    }
+                }
                 return;
             }
             LifecycleVerdict::KeepRunning { wake_at } => wake_at,
@@ -197,7 +253,7 @@ impl BrowserWindowApp {
             Err(failure) => {
                 error!(%failure, "The browser window did not start; closing the session");
                 if let Some(core) = self.core.as_ref() {
-                    core.close_active_session_for_viewer();
+                    core.close_active_session_without_window();
                 }
                 self.desk.close_window();
                 self.window_failure = Some(failure);
@@ -222,6 +278,15 @@ impl BrowserWindowApp {
     /// Выход в порядке ядра; итог журнала и остановка плеера окна — сразу после итога
     /// медиа-части, затем окно.
     fn shut_down(&mut self, cause: ExitCause) {
+        self.shut_down_core(cause, WindowAfterCore::CloseNow);
+    }
+
+    /// Закрывает ядро; окно — сразу или после сообщения о конце сеанса.
+    ///
+    /// Итог журнала окна и стол пульта закрываются вместе с ядром всегда: после выхода
+    /// ядра плееру окна больше никто не командует. Если окно остаётся, его `AppState`
+    /// живёт до срока сообщения — кадр остаётся на экране.
+    fn shut_down_core(&mut self, cause: ExitCause, window: WindowAfterCore) {
         let Some(core) = self.core.take() else {
             return;
         };
@@ -231,11 +296,50 @@ impl BrowserWindowApp {
         let finish = core.shut_down(cause, || {
             let _summary = driver.finish();
             desk.close_window();
-            if let Some(instance) = instance.take() {
+            if window == WindowAfterCore::CloseNow
+                && let Some(instance) = instance.take()
+            {
                 instance.shut_down(ShutdownDeadline::after(WINDOW_SHUTDOWN_BUDGET));
             }
         });
         self.finish = Some(finish);
+    }
+
+    /// Проход, когда ядро уже закрыто, а окно показывает сообщение о конце сеанса:
+    /// окно рисуется до срока, потом закрывается вместе с циклом (раньше — если человек
+    /// закрыл его сам).
+    fn run_notice_pass(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(close_at) = self.closing_after_notice else {
+            return;
+        };
+        let now = Instant::now();
+        if self.forced_exit.is_some() || now >= close_at {
+            self.close_window_after_notice();
+            event_loop.exit();
+            return;
+        }
+        if let Some(instance) = self.instance.as_mut() {
+            instance.drain_queue_each_pass();
+            // Сеанса больше нет: кнопкам зрителя некому передать волю.
+            let ignored = instance.take_viewer_transport_intents();
+            if !ignored.is_empty() {
+                debug!(
+                    ignored = ignored.len(),
+                    "Viewer transport ignored: the session has already ended"
+                );
+            }
+        }
+        self.core_wake_at = Some(close_at);
+        self.schedule_next_wake(event_loop);
+    }
+
+    /// Закрывает окно, оставленное ради сообщения о конце сеанса (если оно есть).
+    fn close_window_after_notice(&mut self) {
+        self.closing_after_notice = None;
+        if let Some(instance) = self.instance.take() {
+            instance.shut_down(ShutdownDeadline::after(WINDOW_SHUTDOWN_BUDGET));
+            info!("Browser window closed after the end notice");
+        }
     }
 }
 
@@ -267,12 +371,14 @@ impl ApplicationHandler<AppWakeEvent> for BrowserWindowApp {
         if instance.on_window_event(event_loop, event) == InstanceSignal::CloseRequested
             && self.forced_exit.is_none()
         {
-            // 04a: закрытие окна закрывает сеанс («плеер закрыт») и процесс. Возврат
-            // странице «на T, пауза» — сессия 04b.
-            if let Some(core) = self.core.as_ref() {
-                core.close_active_session_for_viewer();
-            }
-            self.forced_exit = Some(ForcedExit::ClosedByViewer);
+            // 04b: сеанс шёл — прощание `return_to_page{T, paused}` и 4000; страница уже
+            // ушла (доигрываем или ждём зрителя) — «доиграно». Ядро уже закрыто (окно
+            // показывает сообщение о конце) — просто закрыть окно.
+            let cause = match self.core.as_mut() {
+                Some(core) => core.close_for_viewer(Instant::now()),
+                None => player_closed_cause(),
+            };
+            self.forced_exit = Some(ForcedExit::ClosedByViewer { cause });
         }
     }
 
@@ -285,14 +391,8 @@ impl ApplicationHandler<AppWakeEvent> for BrowserWindowApp {
         if self.core.is_some() {
             self.shut_down(player_closed_cause());
         }
+        self.close_window_after_notice();
     }
-}
-
-/// Причина выхода, когда процесс закрывает сеанс сам (окно закрыто, ошибка цикла).
-fn player_closed_cause() -> ExitCause {
-    ExitCause::SessionEnded(SessionEndReason::ClosedByPlayer(
-        SessionCloseReason::PlayerClosed,
-    ))
 }
 
 /// Режим ожидания winit, не позже срока ядра.

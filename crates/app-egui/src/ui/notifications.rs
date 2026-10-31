@@ -78,7 +78,8 @@ impl NotificationUiOutput {
     }
 }
 
-/// Рисует сообщение центра: прогресс голубым текстом, фатальную ошибку — плашкой с ×.
+/// Рисует сообщение центра: прогресс голубым текстом, фатальную ошибку — плашкой с ×,
+/// состояние окна — плашкой без кнопок.
 pub(crate) fn render_center_notice(
     ui: &mut egui::Ui,
     notice: &CenterNotice,
@@ -89,6 +90,14 @@ pub(crate) fn render_center_notice(
         match notice {
             CenterNotice::Progress(message) => {
                 ui.colored_label(PROGRESS_TEXT_COLOR, message.as_ref());
+            }
+            CenterNotice::Status(message) => {
+                // Состояние окна (браузерный режим): плашка без кнопок обычным цветом —
+                // это не ошибка, а объяснение, что окно сделает дальше.
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_max_width(ui.available_width().min(CENTER_NOTICE_MAX_WIDTH));
+                    ui.label(message.as_ref());
+                });
             }
             CenterNotice::MediaFailure(failure) => {
                 let error_color = ui.visuals().error_fg_color;

@@ -22,6 +22,11 @@
 //! Спиннер ожидания данных (сессия 15) — тоже сообщение центра, поэтому живёт здесь же
 //! (`buffering`): он самый неважный и уступает и ошибке, и прогрессу открытия.
 //!
+//! **Состояние окна** (мост, 04b, `center_status`) — сообщение центра без кнопок, которое
+//! ставит и снимает владелец состояния окна (окно браузерного режима: «вкладка закрыта»).
+//! Оно важнее ошибки media (объясняет, что будет дальше: окно ждёт или закроется), но
+//! уступает прогрессу открытия.
+//!
 //! Инварианты:
 //! - модуль только показывает: он не меняет состояние player-а, очереди и не отдаёт команд;
 //! - время не читается из системных часов внутри модуля — `now` передаёт вызывающий кадр,
@@ -36,12 +41,14 @@ use crate::state::media_retry::{MediaRetryTarget, RetryPlan};
 use crate::ui::animation::UiMotion;
 
 mod buffering;
+mod center_status;
 mod player_feed;
 mod replacing;
 
 #[cfg(test)]
 pub(crate) use buffering::BUFFERING_INDICATOR_APPEAR_DELAY;
 pub(crate) use buffering::BufferingIndicator;
+pub(crate) use center_status::CenterStatusUpdate;
 pub(crate) use replacing::TransientReplaceKey;
 
 #[cfg(test)]
@@ -191,6 +198,8 @@ pub(crate) enum CenterNotice {
     Progress(Arc<str>),
     /// Фатальная ошибка текущего media с кнопкой ×.
     MediaFailure(MediaFailureView),
+    /// Состояние окна без кнопок (браузерный режим: «вкладка закрыта»).
+    Status(Arc<str>),
 }
 
 /// Неизменяемая проекция уведомлений для одного кадра UI.
@@ -267,6 +276,8 @@ pub(crate) struct NotificationCenter {
     next_id: u64,
     /// Как долго player непрерывно ждёт данные (спиннер в центре).
     playback_waiting: buffering::PlaybackWaitingWatch,
+    /// Сообщение состояния окна в центре (`center_status`); ставит и снимает его владелец.
+    center_status: Option<Arc<str>>,
 }
 
 impl NotificationCenter {
@@ -412,6 +423,10 @@ impl NotificationCenter {
         self.expire(now);
         let center = match progress {
             OpenProgress::InProgress(message) => Some(CenterNotice::Progress(Arc::from(message))),
+            OpenProgress::Idle if self.center_status.is_some() => self
+                .center_status
+                .as_ref()
+                .map(|status| CenterNotice::Status(Arc::clone(status))),
             OpenProgress::Idle => self.media_failure.as_ref().map(|failure| {
                 CenterNotice::MediaFailure(MediaFailureView {
                     id: failure.id,

@@ -29,12 +29,14 @@
 //! - [`instance`] — экземпляр окна (решение 121: один источник, не одиночка);
 //! - [`remote`] — пульт и стол (схема владения `AppState` без делёжки);
 //! - [`driver`] — исполнение команд, «новее заменяет», наблюдение, журнал;
+//! - [`end_notice`] — конец сеанса в окне: сообщение и закрытие после него (04b);
 //! - [`player_port`] — настоящий плеер окна: путь открытия `AppState`;
 //! - [`settings`] — config «только на сеанс» (решение 122);
 //! - [`wake`] — пробуждение цикла ящиком сеанса.
 
 mod app;
 mod driver;
+mod end_notice;
 mod instance;
 mod player_port;
 mod remote;
@@ -60,6 +62,7 @@ use super::playback::metered_audio::{AudioMeter, BrowserAudioOutputChoice};
 use super::process_core::BrowserSessionCore;
 use super::runtime::RuntimeFinish;
 use super::session_config::BrowserSessionSettings;
+use super::session_media::PausedDrain;
 use crate::app_wake::{AppWakeEvent, AppWakeOwner, AppWakeProxy};
 
 /// Процесс браузерного режима с окном: цикл winit, окно на первом сеансе.
@@ -84,6 +87,8 @@ pub(super) fn run_windowed_browser_session(
         &settings,
         Arc::new(EventLoopSessionWake::new(session_wake_port.clone())),
         Box::new(WindowRemote::new(desk.clone())),
+        // Окно на паузе ждёт человека, а не закрывается (04b, замена правила 103).
+        PausedDrain::WaitForViewer,
     )?;
     let mut app = BrowserWindowApp::new(
         core,

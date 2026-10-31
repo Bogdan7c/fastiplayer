@@ -8,7 +8,10 @@ use std::rc::Rc;
 
 use browser_bridge_protocol::session::player::ClockState;
 use browser_bridge_protocol::{MediaTime, PlayerSessionMessage, SessionKey};
-use browser_bridge_session::{CloseOutcome, SendToPageError, SessionInstance};
+use browser_bridge_session::{
+    ActiveFarewellOutcome, CloseOutcome, FarewellError, ReplacedFarewellOutcome, SendToPageError,
+    SessionEndReason, SessionInstance,
+};
 use player_core::PlaybackState;
 use pushed_media_source::{
     LaneId, PushedContainer, PushedDuration, PushedSourcePolicy, PushedStreamWriter, pushed_stream,
@@ -181,16 +184,73 @@ impl PageSender for FakePage {
     }
 }
 
-/// Закрытие-подделка: запоминает, какой экземпляр просили закрыть.
+/// Конец сеанса, который доигрывается (вкладка ушла).
+const TAB_GONE_END: SessionEndReason =
+    SessionEndReason::ClosedByPlayer(SessionCloseReason::TabGone);
+
+/// Прощание, которое медиа-часть отдала закрытию-подделке.
+#[derive(Debug, Clone, PartialEq)]
+enum FarewellCall {
+    /// Закрытие активного экземпляра с прощанием (зритель закрыл окно).
+    CloseWithFarewell(SessionRef, PlayerSessionMessage, SessionCloseReason),
+    /// Прощание заменённой вкладке.
+    ToReplaced(SessionRef, PlayerSessionMessage),
+}
+
+/// Закрытие-подделка: запоминает, какой экземпляр просили закрыть и с чем простились.
 #[derive(Clone, Default)]
 struct FakeCloser {
     closed: Rc<RefCell<Vec<(SessionRef, SessionCloseReason)>>>,
+    farewells: Rc<RefCell<Vec<FarewellCall>>>,
+    /// Отвечать на прощание ошибкой «не по протоколу» (проверка пути ошибки).
+    refuse_farewells: Rc<RefCell<bool>>,
+}
+
+impl FakeCloser {
+    fn farewell_result(&self) -> Result<(), FarewellError> {
+        if *self.refuse_farewells.borrow() {
+            Err(FarewellError::Unencodable(
+                browser_bridge_protocol::MessageErrorKind::TooLarge,
+            ))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl SessionCloser for FakeCloser {
     fn close_session(&self, session: &SessionRef, reason: SessionCloseReason) -> CloseOutcome {
         self.closed.borrow_mut().push((session.clone(), reason));
         CloseOutcome::Closed
+    }
+
+    fn close_session_with_farewell(
+        &self,
+        session: &SessionRef,
+        farewell: &PlayerSessionMessage,
+        reason: SessionCloseReason,
+    ) -> Result<ActiveFarewellOutcome, FarewellError> {
+        self.farewell_result()?;
+        self.farewells
+            .borrow_mut()
+            .push(FarewellCall::CloseWithFarewell(
+                session.clone(),
+                farewell.clone(),
+                reason,
+            ));
+        Ok(ActiveFarewellOutcome::FarewellQueued)
+    }
+
+    fn bid_farewell_to_replaced(
+        &self,
+        replaced: &SessionRef,
+        farewell: &PlayerSessionMessage,
+    ) -> Result<ReplacedFarewellOutcome, FarewellError> {
+        self.farewell_result()?;
+        self.farewells
+            .borrow_mut()
+            .push(FarewellCall::ToReplaced(replaced.clone(), farewell.clone()));
+        Ok(ReplacedFarewellOutcome::FarewellQueued)
     }
 }
 
@@ -659,9 +719,11 @@ fn without_a_session_the_media_part_does_not_ask_to_wake() {
 
 mod downloaded_range;
 mod drain;
+mod farewell;
 mod file_generation;
 mod generation_start;
 mod generation_switch;
 mod live_scrub_real_player;
 mod viewer_transport;
 mod viewer_transport_real_player;
+mod window_drain;

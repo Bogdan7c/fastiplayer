@@ -13,6 +13,8 @@
 //! - [`AppState::notify_open_still_in_progress`] — повторный Open во время открытия;
 //! - [`AppState::show_playlist_queue_notices`] — итоги автоматических пропусков в очереди.
 //! - [`AppState::show_playlist_import_notices`] — как прочитан импортированный плейлист.
+//! - [`AppState::show_center_status`] / [`AppState::clear_center_status`] — состояние окна в
+//!   центре без кнопок (окно браузерного режима, 04b: «вкладка закрыта»).
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,8 +25,8 @@ use tracing::debug;
 use super::AppState;
 use super::media_retry::{MediaRetryTarget, RetryPlan};
 use super::notifications::{
-    MediaFailureOrigin, NotificationsFrame, OPEN_STILL_IN_PROGRESS_MESSAGE, OpenProgress,
-    RetryRequestOutcome,
+    CenterStatusUpdate, MediaFailureOrigin, NotificationsFrame, OPEN_STILL_IN_PROGRESS_MESSAGE,
+    OpenProgress, RetryRequestOutcome,
 };
 use crate::playlist_runtime::{AutomaticQueueNotice, PlaylistImportNotice};
 use crate::playlist_skip_message::{PlaylistQueueNoticeDelivery, playlist_queue_notice_delivery};
@@ -64,6 +66,25 @@ impl AppState {
             retry,
         );
         self.mark_pending_worker_redraw();
+    }
+
+    /// Ставит (или заменяет) сообщение состояния окна в центре; висит до
+    /// [`Self::clear_center_status`]. Перерисовка — только если текст изменился.
+    pub(crate) fn show_center_status(&mut self, message: &str) -> CenterStatusUpdate {
+        let update = self.notifications.show_center_status(message);
+        if update == CenterStatusUpdate::Changed {
+            self.mark_pending_worker_redraw();
+        }
+        update
+    }
+
+    /// Снимает сообщение состояния окна (его не было — ничего не меняется).
+    pub(crate) fn clear_center_status(&mut self) -> CenterStatusUpdate {
+        let update = self.notifications.clear_center_status();
+        if update == CenterStatusUpdate::Changed {
+            self.mark_pending_worker_redraw();
+        }
+        update
     }
 
     /// Показывает итоги цепочек автоматических пропусков битых файлов очереди (сессия 07).

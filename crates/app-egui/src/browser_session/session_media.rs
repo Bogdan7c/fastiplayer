@@ -60,7 +60,7 @@ use browser_bridge_session::SessionRef;
 use player_core::{PlaybackRate as PlayerPlaybackRate, PreparedMedia};
 use tracing::{debug, error, info, warn};
 
-use self::drain::{DrainPolicy, DrainWatch};
+use self::ending::ActiveDrain;
 use self::generation_feed::{FeedReport, LoadedFeed, OpenStep, PendingFeed, in_issue_order};
 use self::generation_start::{AfterLoad, GenerationStart};
 use super::intake_notice::{GenerationHandoff, IntakeNotice, PageIntent};
@@ -73,6 +73,8 @@ use super::rejection::FailureResponse;
 use pushed_media_source::RangeRequest;
 
 mod drain;
+mod ending;
+mod farewell;
 mod generation_feed;
 mod generation_start;
 mod install_reconcile;
@@ -80,8 +82,8 @@ mod scrub_range;
 mod seams;
 mod viewer_transport;
 
-use self::drain::{DrainContent, DrainSnapshot, IntakeStance, PageStance};
-pub(crate) use self::drain::{DrainEnd, DrainProgress};
+pub(crate) use self::drain::{DrainEnd, DrainPolicy, DrainProgress, PausedDrain};
+pub(crate) use self::farewell::ViewerCloseStep;
 pub(crate) use self::seams::{MediaPlayback, SessionCloser};
 use self::viewer_transport::{LoadedSeek, PlayWill, ViewerWill};
 
@@ -156,7 +158,7 @@ pub(crate) struct SessionMedia {
     drain_policy: DrainPolicy,
     /// Доигрывание идёт: сеанс закончился концом, после которого зритель досматривает
     /// полученное. Страницы больше нет — ей не шлём ни часов, ни запросов.
-    drain: Option<DrainWatch>,
+    drain: Option<ActiveDrain>,
     /// Экземпляр, чей вход поток приёма уже разобрал и запечатал (`InstanceSealed`).
     /// Событие конца сеанса может обогнать данные, поэтому доигрывание решает только
     /// после этого уведомления.
@@ -184,7 +186,7 @@ impl SessionMedia {
             page_wants_play: true,
             page_rate: PlayerPlaybackRate::NORMAL,
             bytes_arrived: false,
-            drain_policy: DrainPolicy::recommended(),
+            drain_policy: DrainPolicy::recommended(PausedDrain::ExitAtOnce),
             drain: None,
             sealed_instance: None,
             last_observation: None,
@@ -195,7 +197,8 @@ impl SessionMedia {
     /// Открыт сеанс. Повтор того же экземпляра ничего не меняет; новый экземпляр
     /// (другая вкладка или новое открытие) — новая страница: ждущее поколение
     /// выбрасывается, прежнее видео встаёт на паузу, исходящие старой странице
-    /// забываются.
+    /// забываются. Прощание старой вкладке (`bid_farewell_to_replaced`, 04b) обязано
+    /// прозвучать ДО этого вызова: после него позиции её видео уже нет.
     pub(crate) fn on_session_opened(&mut self, session: &SessionRef) {
         if self.current_session.as_ref() == Some(session) {
             return;
@@ -211,69 +214,6 @@ impl SessionMedia {
         self.outbound.reset_for_new_session();
         if self.loaded.take().is_some() {
             self.command("pause for a new session", |playback| playback.pause());
-        }
-    }
-
-    /// Сеанс закончился: отложенные сообщения его странице больше некому слать, а
-    /// всё полученное доигрывается (см. [`Self::playback_drain`]).
-    ///
-    /// Конец чужого (уже заменённого) экземпляра ничего не трогает.
-    pub(crate) fn on_session_ended(&mut self, session: &SessionRef) {
-        if self.is_current(session) {
-            self.outbound.forget_pending_of_ended_session();
-            self.drain = Some(DrainWatch::begin(self.drain_policy));
-        }
-    }
-
-    /// Доиграно ли полученное после конца сеанса (зовёт главный цикл, пока машина
-    /// выхода в состоянии «доигрываем»).
-    ///
-    /// Без `on_session_ended` у текущего экземпляра доигрывать нечего — процесс
-    /// выходит сразу.
-    pub(crate) fn playback_drain(&mut self, now: Instant) -> DrainProgress {
-        let intake =
-            if self.current_session.is_some() && self.sealed_instance == self.current_session {
-                IntakeStance::Sealed
-            } else {
-                IntakeStance::Open
-            };
-        let snapshot = DrainSnapshot {
-            intake,
-            content: self.drain_content(),
-            page: if self.page_wants_play {
-                PageStance::WantsPlay
-            } else {
-                PageStance::WantsPause
-            },
-        };
-        match self.drain.as_mut() {
-            Some(watch) => watch.evaluate(snapshot, now),
-            None => DrainProgress::Drained(DrainEnd::NothingToPlay),
-        }
-    }
-
-    /// Что держит медиа-часть для вопроса «доиграно?».
-    fn drain_content(&self) -> DrainContent {
-        // Ждущее поколение новее загруженного и заменит его: пока оно не открылось,
-        // конец, отказ или позиция прежнего видео ничего не решают.
-        if self.pending.is_some() {
-            return DrainContent::Opening;
-        }
-        let Some(loaded) = self.loaded.as_ref() else {
-            return DrainContent::Nothing;
-        };
-        let shown = self
-            .last_observation
-            .as_ref()
-            .filter(|observation| loaded.is_shown_by(observation));
-        DrainContent::Loaded {
-            position: shown.map(|observation| observation.position),
-            ended: shown.is_some_and(|observation| observation.ended),
-            faulted: self
-                .last_observation
-                .as_ref()
-                .and_then(|observation| observation.fault_of(loaded.load_ticket))
-                .is_some(),
         }
     }
 

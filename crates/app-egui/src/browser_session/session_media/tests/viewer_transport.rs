@@ -262,7 +262,7 @@ fn a_viewer_command_waits_for_a_reconnecting_page() {
 #[test]
 fn after_the_page_left_the_viewer_still_controls_the_player_only() {
     let (mut harness, current, _writer) = loaded_harness();
-    harness.media.on_session_ended(&current);
+    harness.media.on_session_ended(&current, TAB_GONE_END);
     let now = Instant::now();
     harness
         .media

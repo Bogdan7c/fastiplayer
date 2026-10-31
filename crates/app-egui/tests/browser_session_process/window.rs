@@ -7,6 +7,11 @@
 //! страница получила часы до конца ролика, в журнале каждый кадр ролика отдан на показ
 //! рендеру окна, процесс вышел штатно.
 //!
+//! Закрытие окна человеком (04b) изображает НАСТОЯЩИЙ композитор: у частного kwin своя
+//! частная шина D-Bus, тест загружает в него KWin-скрипт `closeWindow()` (интерфейс
+//! `org.kde.kwin.Scripting`), и kwin шлёт окну обычный `xdg_toplevel.close` — тот же путь,
+//! что крестик или Alt+F4. Нужен `busctl` (systemd), как и `dbus-daemon`.
+//!
 //! Нужен `kwin_wayland`; без него тест честно пропускается с сообщением. Запуск:
 //! `cargo test -p app-egui --test browser_session_process window -- --nocapture`
 //! (`FASTIPLAYER_TEST_ECHO_PROCESS_LOG=1` — весь журнал процесса в вывод).
@@ -23,6 +28,11 @@ const DISPLAY_START_WAIT: Duration = Duration::from_secs(15);
 /// Частный виртуальный дисплей Wayland (`kwin_wayland --virtual`).
 pub(super) struct VirtualWaylandDisplay {
     compositor: Child,
+    /// Частная шина композитора: через неё тест закрывает окна скриптом KWin.
+    compositor_bus: Child,
+    compositor_bus_address: String,
+    /// Номер следующего скрипта: KWin молча не запускает повторно загруженное имя.
+    next_script: std::cell::Cell<u32>,
     /// Каталог сеанса: короткий путь в `/tmp` — путь сокета Wayland ограничен 108 байтами.
     runtime_dir: PathBuf,
     /// Дом и XDG композитора: он тоже ничего не пишет в домашний каталог.
@@ -40,6 +50,8 @@ impl VirtualWaylandDisplay {
         std::fs::create_dir_all(&state_dir).expect("compositor state dir");
         restrict_to_owner(&runtime_dir);
         let socket_name = "wl-fp04a".to_owned();
+        let (compositor_bus, compositor_bus_address) =
+            start_compositor_bus(&runtime_dir, &state_dir);
         let spawned = Command::new("kwin_wayland")
             .args([
                 "--virtual",
@@ -58,6 +70,7 @@ impl VirtualWaylandDisplay {
             .env("XDG_DATA_HOME", state_dir.join("data"))
             .env("XDG_CACHE_HOME", state_dir.join("cache"))
             .env("XDG_STATE_HOME", state_dir.join("state"))
+            .env("DBUS_SESSION_BUS_ADDRESS", &compositor_bus_address)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn();
@@ -65,6 +78,9 @@ impl VirtualWaylandDisplay {
             Ok(child) => child,
             Err(error) => {
                 eprintln!("SKIPPED: kwin_wayland is not available ({error})");
+                let mut compositor_bus = compositor_bus;
+                let _ = compositor_bus.kill();
+                let _ = compositor_bus.wait();
                 let _ = std::fs::remove_dir_all(&runtime_dir);
                 let _ = std::fs::remove_dir_all(&state_dir);
                 return None;
@@ -72,6 +88,9 @@ impl VirtualWaylandDisplay {
         };
         let display = Self {
             compositor,
+            compositor_bus,
+            compositor_bus_address,
+            next_script: std::cell::Cell::new(0),
             runtime_dir,
             state_dir,
             socket_name,
@@ -95,12 +114,100 @@ impl VirtualWaylandDisplay {
     pub(super) fn runtime_dir(&self) -> &Path {
         &self.runtime_dir
     }
+
+    /// Человек закрыл окно Fastiplayer: композитор шлёт окну `xdg_toplevel.close`.
+    ///
+    /// Настоящий путь kwin (`closeWindow()` скрипта KWin), а не тестовый шов в процессе.
+    /// Окно ищется по классу (app id `io.github.Bogdan7c.Fastiplayer`); других клиентов на
+    /// частном дисплее нет.
+    pub(super) fn close_fastiplayer_window(&self) {
+        let number = self.next_script.get();
+        self.next_script.set(number + 1);
+        let script = self.state_dir.join(format!("close-window-{number}.js"));
+        std::fs::write(
+            &script,
+            r#"const windows = workspace.windowList();
+for (let index = 0; index < windows.length; index++) {
+    if (String(windows[index].resourceClass).toLowerCase().indexOf("fastiplayer") >= 0) {
+        windows[index].closeWindow();
+    }
+}
+"#,
+        )
+        .expect("KWin script is written");
+        let script_path = script.to_str().expect("UTF-8 script path");
+        let plugin = format!("fastiplayer-test-close-{number}");
+        self.kwin_scripting(&["loadScript", "ss", script_path, &plugin]);
+        // `start` запускает загруженные, но ещё не запущенные скрипты.
+        self.kwin_scripting(&["start"]);
+    }
+
+    fn kwin_scripting(&self, call: &[&str]) {
+        let output = Command::new("busctl")
+            .arg(format!("--address={}", self.compositor_bus_address))
+            .args([
+                "call",
+                "org.kde.KWin",
+                "/Scripting",
+                "org.kde.kwin.Scripting",
+            ])
+            .args(call)
+            .output()
+            .expect("busctl must be installed for the window close test");
+        assert!(
+            output.status.success(),
+            "KWin scripting call {call:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+/// Частная шина D-Bus композитора (без каталогов служб): kwin регистрирует на ней
+/// `org.kde.KWin`, и только тест может к ней обратиться.
+fn start_compositor_bus(runtime_dir: &Path, state_dir: &Path) -> (Child, String) {
+    let address = format!("unix:path={}", runtime_dir.join("kwin-bus").display());
+    let config = state_dir.join("kwin-bus.conf");
+    std::fs::write(
+        &config,
+        format!(
+            r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>{address}</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+"#
+        ),
+    )
+    .expect("compositor bus config");
+    let mut daemon = Command::new("dbus-daemon")
+        .arg(format!("--config-file={}", config.display()))
+        .args(["--nofork", "--print-address=1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("dbus-daemon must be installed for this test");
+    let stdout = daemon.stdout.take().expect("address pipe");
+    let printed = std::io::BufRead::lines(std::io::BufReader::new(stdout))
+        .next()
+        .expect("dbus-daemon prints its address")
+        .expect("readable address");
+    assert!(printed.starts_with("unix:"), "{printed}");
+    (daemon, printed)
 }
 
 impl Drop for VirtualWaylandDisplay {
     fn drop(&mut self) {
         let _ = self.compositor.kill();
         let _ = self.compositor.wait();
+        let _ = self.compositor_bus.kill();
+        let _ = self.compositor_bus.wait();
         let _ = std::fs::remove_dir_all(&self.runtime_dir);
         let _ = std::fs::remove_dir_all(&self.state_dir);
     }

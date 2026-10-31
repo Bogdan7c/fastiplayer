@@ -3,8 +3,11 @@
 
 use std::time::{Duration, Instant};
 
-use browser_bridge_protocol::SessionCloseReason;
-use browser_bridge_session::{CloseOutcome, SessionControl, SessionRef};
+use browser_bridge_protocol::{PlayerSessionMessage, SessionCloseReason};
+use browser_bridge_session::{
+    ActiveFarewellOutcome, CloseOutcome, FarewellError, ReplacedFarewellOutcome, SessionControl,
+    SessionRef,
+};
 use player_core::{PlaybackRate as PlayerPlaybackRate, PreparedMedia};
 
 use crate::browser_session::playback::{
@@ -91,14 +94,52 @@ impl MediaPlayback for BrowserPlayback {
     }
 }
 
-/// Кто закрывает сеанс по просьбе потока приёма. Настоящий — `SessionControl`.
+/// Кто закрывает сеанс: по просьбе потока приёма, при закрытии окна и при замене
+/// вкладки (прощание, решение 127). Настоящий — `SessionControl`.
 pub(crate) trait SessionCloser {
     /// Закрывает ровно этот экземпляр (не тот, что успел его заменить).
     fn close_session(&self, session: &SessionRef, reason: SessionCloseReason) -> CloseOutcome;
+    /// Закрывает активный экземпляр, отдав странице последнее сообщение перед кадром
+    /// закрытия (зритель закрыл окно: `return_to_page` → 4000).
+    ///
+    /// # Errors
+    /// Сообщение не по протоколу — сеанс при этом НЕ закрыт.
+    fn close_session_with_farewell(
+        &self,
+        session: &SessionRef,
+        farewell: &PlayerSessionMessage,
+        reason: SessionCloseReason,
+    ) -> Result<ActiveFarewellOutcome, FarewellError>;
+    /// Последнее сообщение заменённой вкладке, пока она в «коридоре прощания».
+    ///
+    /// # Errors
+    /// Сообщение не по протоколу — коридор закроется по своему сроку.
+    fn bid_farewell_to_replaced(
+        &self,
+        replaced: &SessionRef,
+        farewell: &PlayerSessionMessage,
+    ) -> Result<ReplacedFarewellOutcome, FarewellError>;
 }
 
 impl SessionCloser for SessionControl {
     fn close_session(&self, session: &SessionRef, reason: SessionCloseReason) -> CloseOutcome {
         Self::close_session(self, session, reason)
+    }
+
+    fn close_session_with_farewell(
+        &self,
+        session: &SessionRef,
+        farewell: &PlayerSessionMessage,
+        reason: SessionCloseReason,
+    ) -> Result<ActiveFarewellOutcome, FarewellError> {
+        Self::close_session_with_farewell(self, session, farewell, reason)
+    }
+
+    fn bid_farewell_to_replaced(
+        &self,
+        replaced: &SessionRef,
+        farewell: &PlayerSessionMessage,
+    ) -> Result<ReplacedFarewellOutcome, FarewellError> {
+        Self::bid_farewell_to_replaced(self, replaced, farewell)
     }
 }

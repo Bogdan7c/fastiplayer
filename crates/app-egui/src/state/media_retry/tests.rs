@@ -34,7 +34,7 @@ fn center_view(center: &mut NotificationCenter) -> Option<(NotificationId, Retry
         .center
     {
         Some(CenterNotice::MediaFailure(view)) => Some((view.id, view.retry)),
-        Some(CenterNotice::Progress(_)) | None => None,
+        Some(CenterNotice::Progress(_) | CenterNotice::Status(_)) | None => None,
     }
 }
 

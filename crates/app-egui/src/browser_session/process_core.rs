@@ -18,14 +18,14 @@ use std::time::{Duration, Instant};
 
 use browser_bridge_protocol::SessionCloseReason;
 use browser_bridge_session::{
-    BrowserSessionPolicy, BrowserSessionServer, EntryDesk, LifecycleVerdict, OsRandomTokenSource,
-    SessionControl, SessionRef,
+    BrowserSessionPolicy, BrowserSessionServer, EntryDesk, ExitCause, LifecycleVerdict,
+    OsRandomTokenSource, SessionControl, SessionEndReason, SessionRef,
 };
 use desktop_integration::{
     BrowserEntryService, BrowserEntryServiceConfig, start_browser_entry_service,
 };
 use pushed_media_source::{BufferWindow, PushedSourcePolicy, PushedSourcePolicyError};
-use tracing::info;
+use tracing::{debug, info};
 
 use super::BrowserSessionStartFailure;
 use super::inbox::{BrowserSessionInbox, BrowserSessionWake, InboxCapacity};
@@ -35,7 +35,10 @@ use super::outbound::PageOutbound;
 use super::range_wake::RangeRequestWake;
 use super::runtime::{BrowserSessionRuntime, RuntimeFinish, SessionMediaPort};
 use super::session_config::BrowserSessionSettings;
-use super::session_media::{DrainProgress, MediaPlayback, SessionMedia};
+use super::session_end::SessionEndView;
+use super::session_media::{
+    DrainProgress, MediaPlayback, PausedDrain, SessionMedia, ViewerCloseStep,
+};
 use super::stream_intake::StreamIntake;
 use super::stream_queue::{OrderedSessionQueue, QueueLimits};
 use super::translator::ProtocolTranslator;
@@ -55,6 +58,9 @@ pub(super) struct CoreStep {
     pub(super) verdict: LifecycleVerdict,
     /// За шаг открыт сеанс (новый, заменивший или повтор): окну пора появиться.
     pub(super) session_opened: SessionOpenedDuringStep,
+    /// Что сказать зрителю о конце сеанса (04b): окно показывает сообщение, безоконный
+    /// процесс его не читает.
+    pub(super) session_end: SessionEndView,
 }
 
 /// Открывался ли за шаг сеанс.
@@ -90,6 +96,7 @@ impl BrowserSessionCore {
         settings: &BrowserSessionSettings,
         wake: Arc<dyn BrowserSessionWake>,
         playback: Box<dyn MediaPlayback>,
+        paused_drain: PausedDrain,
     ) -> Result<Self, BrowserSessionStartFailure> {
         let player_hello = super::player_hello::player_hello()?;
         let source_policy = pushed_source_policy(settings)?;
@@ -152,11 +159,16 @@ impl BrowserSessionCore {
         };
         info!(port = server.port().get(), "Browser session is listening");
 
+        // Правило паузы при доигрывании — от вида процесса: окно ждёт зрителя,
+        // безоконный выходит сразу (`PausedDrain`).
         let media = SessionMedia::new(
             playback,
             Box::new(control.clone()),
             PageOutbound::new(Box::new(control.clone())),
-        );
+        )
+        .with_drain_policy(super::drain_override::drain_policy_from_environment(
+            paused_drain,
+        ));
         let runtime = BrowserSessionRuntime::new(
             desk,
             &policy,
@@ -185,6 +197,7 @@ impl BrowserSessionCore {
         CoreStep {
             verdict,
             session_opened: observed.opened,
+            session_end: self.media.session_end_view(),
         }
     }
 
@@ -201,11 +214,43 @@ impl BrowserSessionCore {
         }
     }
 
-    /// Человек закрыл окно плеера: активный сеанс закрывается кодом «плеер закрыт»,
-    /// дальше машина выхода получит его конец обычным путём и решит выйти.
-    pub(super) fn close_active_session_for_viewer(&self) {
+    /// Окно не собралось: активный сеанс закрывается кодом «плеер закрыт» без прощания
+    /// (зритель видео не видел, позиции нет), процесс выходит.
+    pub(super) fn close_active_session_without_window(&self) {
         self.control
             .close_active_session(SessionCloseReason::PlayerClosed);
+    }
+
+    /// Человек закрыл окно (04b). Возвращает причину выхода процесса:
+    /// - сеанс шёл → странице прощание `return_to_page{T, paused}` и код 4000
+    ///   (`SessionMedia::close_for_viewer`), причина — «плеер закрыт»;
+    /// - страница уже ушла (доигрываем, в том числе окно на паузе ждёт человека) →
+    ///   прощаться не с кем, закрытие = «доиграно» (`on_playback_drained`), причина —
+    ///   конец сеанса, который доигрывался.
+    pub(super) fn close_for_viewer(&mut self, now: Instant) -> ExitCause {
+        match self.media.close_for_viewer() {
+            ViewerCloseStep::SessionClosed => player_closed_cause(),
+            ViewerCloseStep::NoSession => {
+                // Страховка: окно без сеанса не открывается, но если вдруг — закрыть
+                // активный, если он есть, как до 04b.
+                self.close_active_session_without_window();
+                player_closed_cause()
+            }
+            ViewerCloseStep::DrainFinishedByViewer => {
+                match self.runtime.finish_drain_for_viewer(now) {
+                    LifecycleVerdict::Exit(cause) => cause,
+                    other => {
+                        // Медиа-часть доигрывала, а машина — нет (сеанс кончился концом
+                        // без доигрывания): выход всё равно решён закрытием окна.
+                        debug!(
+                            ?other,
+                            "Viewer closed the window outside of a playback drain"
+                        );
+                        player_closed_cause()
+                    }
+                }
+            }
+        }
     }
 
     /// Выход в правильном порядке; медиа-часть пишет итог последней.
@@ -220,7 +265,7 @@ impl BrowserSessionCore {
     /// порядок строк журнала был тем же, что у безоконного процесса.
     pub(super) fn shut_down(
         self,
-        cause: browser_bridge_session::ExitCause,
+        cause: ExitCause,
         after_media_finish: impl FnOnce(),
     ) -> RuntimeFinish {
         let finish = self.runtime.finish(cause);
@@ -244,6 +289,13 @@ impl BrowserSessionCore {
     }
 }
 
+/// Причина выхода, когда процесс закрывает сеанс сам (окно закрыто, ошибка цикла).
+pub(super) fn player_closed_cause() -> ExitCause {
+    ExitCause::SessionEnded(SessionEndReason::ClosedByPlayer(
+        SessionCloseReason::PlayerClosed,
+    ))
+}
+
 /// Медиа-часть глазами цикла + отметка «за шаг открыт сеанс» (окно появляется на
 /// первом сеансе, а не при старте процесса: шина будит процесс раньше сеанса).
 struct SessionOpenObserver<'media> {
@@ -252,13 +304,17 @@ struct SessionOpenObserver<'media> {
 }
 
 impl SessionMediaPort for SessionOpenObserver<'_> {
+    fn bid_farewell_to_replaced(&mut self, replaced: &SessionRef) {
+        self.media.bid_farewell_to_replaced(replaced);
+    }
+
     fn on_session_opened(&mut self, session: &SessionRef) {
         self.opened = SessionOpenedDuringStep::Yes;
         self.media.on_session_opened(session);
     }
 
-    fn on_session_ended(&mut self, session: &SessionRef) {
-        self.media.on_session_ended(session);
+    fn on_session_ended(&mut self, session: &SessionRef, reason: SessionEndReason) {
+        self.media.on_session_ended(session, reason);
     }
 
     fn on_intake(&mut self, notices: Vec<IntakeNotice>, bytes_appended: Option<SessionRef>) {

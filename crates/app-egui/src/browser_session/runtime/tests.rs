@@ -63,6 +63,9 @@ impl NormalPlayerPause for CountingPause {
 struct RecordingMedia {
     opened: Vec<SessionRef>,
     ended: Vec<SessionRef>,
+    /// Что цикл сообщил медиа-части об открытии сеансов — по порядку (прощание
+    /// заменённому обязано прийти раньше открытия нового).
+    opening_calls: Vec<OpeningCall>,
     notices: Vec<IntakeNotice>,
     bytes_appended: Vec<SessionRef>,
     drives: usize,
@@ -73,12 +76,26 @@ struct RecordingMedia {
     drain_answer: Option<DrainProgress>,
 }
 
+/// Вызов медиа-части вокруг открытия сеанса.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OpeningCall {
+    FarewellToReplaced(SessionRef),
+    Opened(SessionRef),
+}
+
 impl SessionMediaPort for RecordingMedia {
-    fn on_session_opened(&mut self, session: &SessionRef) {
-        self.opened.push(session.clone());
+    fn bid_farewell_to_replaced(&mut self, replaced: &SessionRef) {
+        self.opening_calls
+            .push(OpeningCall::FarewellToReplaced(replaced.clone()));
     }
 
-    fn on_session_ended(&mut self, session: &SessionRef) {
+    fn on_session_opened(&mut self, session: &SessionRef) {
+        self.opened.push(session.clone());
+        self.opening_calls
+            .push(OpeningCall::Opened(session.clone()));
+    }
+
+    fn on_session_ended(&mut self, session: &SessionRef, _reason: SessionEndReason) {
         self.ended.push(session.clone());
     }
 
@@ -595,3 +612,5 @@ fn the_loop_wakes_for_the_media_part_when_its_deadline_is_the_earliest() {
         }
     );
 }
+
+mod viewer_end;

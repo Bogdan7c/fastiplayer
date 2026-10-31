@@ -26,12 +26,19 @@
 //! зрителя главнее, пока страница её не подтвердила или не прошёл срок
 //! [`VIEWER_WILL_CONFIRMATION_WINDOW`]. После подтверждения или срока страница снова
 //! ведёт сама (реклама на паузе, автопереход и т. п.).
+//!
+//! **Без страницы** (доигрывание после ухода вкладки, 04b): плеером зритель управляет
+//! как раньше, странице не уходит ничего. Перемотка — только по скачанному: просить
+//! страницу о байтах некому, и перемотка вне полки ждала бы их вечно (плеер стоял бы в
+//! «перемотке»). Поэтому цель вне скачанного (и любая цель у файла `<video src>` и эфира,
+//! где скачанное не известно — `DownloadedRange::Unknown`) отклоняется: кадр остаётся,
+//! где был.
 
 use std::time::{Duration, Instant};
 
 use browser_bridge_protocol::PlaybackRate as PagePlaybackRate;
 use pushed_media_source::PageSeekRequest;
-use tracing::debug;
+use tracing::{debug, info};
 
 use super::SessionMedia;
 use super::generation_start::GenerationStart;
@@ -164,6 +171,13 @@ impl SessionMedia {
                 } else {
                     PlayWill::Pause
                 };
+                if will == PlayWill::Play && self.is_draining() {
+                    // Решение 130 («магия возврата вкладки», сессия 11): здесь зритель
+                    // нажал «играть» после ухода вкладки. В 04b — запасной путь:
+                    // доигрываем скачанное, потом сообщение и закрытие окна. В 11 здесь
+                    // же экстеншен откроет страницу заново на T.
+                    debug!("Viewer resumed the playback after the tab was gone");
+                }
                 self.page_wants_play = will.wants_play();
                 self.viewer_will.note_play(will, now);
                 // Нет загруженного — воля всё равно запомнена: загрузка начнётся так.
@@ -209,9 +223,21 @@ impl SessionMedia {
             }
             return;
         }
+        if self.is_draining() && !self.loaded_generation_holds(target) {
+            // Страницы нет: байтов вне скачанного не будет (правило — в описании модуля).
+            info!("Viewer seek outside of what was downloaded ignored: the page is gone");
+            return;
+        }
         if self.seek_loaded_generation(target) == LoadedSeek::NothingLoaded {
             debug!("Viewer seek before the stream opened; nothing to move");
         }
+    }
+
+    /// Скачано ли у загруженного поколения то, что нужно для перемотки к `target`.
+    fn loaded_generation_holds(&self, target: Duration) -> bool {
+        self.loaded
+            .as_ref()
+            .is_some_and(|loaded| loaded.feed.downloaded_range().covers(target))
     }
 
     /// Перемотка загруженного поколения — общая для перемотки страницей и зрителем.

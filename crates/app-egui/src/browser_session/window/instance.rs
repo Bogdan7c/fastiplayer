@@ -28,6 +28,7 @@ use winit::window::Window;
 
 use super::super::playback::metered_audio::{AudioMeter, BrowserAudioOutputChoice};
 use super::driver::WindowPlaybackDriver;
+use super::end_notice::CenterStatusChange;
 use super::player_port::AppStateWindowPlayer;
 use crate::app_shell::{
     ReadOnlyRendererStartupMarker, ShellKeyOutcome, handle_shell_key_event, main_window_attributes,
@@ -44,7 +45,8 @@ use crate::render_backend::{StartedRenderer, create_startup_renderer};
 use crate::renderer_recreation::RendererLifecycleCoordinator;
 use crate::settings_runtime::{HardwareDecodeAvailability, SettingsRuntime};
 use crate::state::{
-    AppState, AppStateStartupContext, RendererVideoImportTarget, start_track_memory_in_memory_only,
+    AppState, AppStateStartupContext, CenterStatusUpdate, RendererVideoImportTarget,
+    start_track_memory_in_memory_only,
 };
 use crate::system_capabilities::probe_system_capabilities;
 use crate::telemetry::Telemetry;
@@ -280,6 +282,19 @@ impl BrowserWindowInstance {
     /// для медиа-части сеанса: она ведёт и плеер, и страницу.
     pub(super) fn take_viewer_transport_intents(&mut self) -> Vec<ViewerTransportIntent> {
         self.app_state.take_viewer_transport_intents()
+    }
+
+    /// Сообщение состояния окна в центре (конец сеанса, 04b): поставить или снять.
+    /// Окно перерисовывается сразу — на паузе кадры сами не рисуются.
+    pub(super) fn apply_center_status(&mut self, change: CenterStatusChange) {
+        let update = match change {
+            CenterStatusChange::Show(message) => self.app_state.show_center_status(message),
+            CenterStatusChange::Clear => self.app_state.clear_center_status(),
+        };
+        if update == CenterStatusUpdate::Changed {
+            self.app_state.note_visible_mutation_for_redraw();
+            self.window.request_redraw();
+        }
     }
 
     /// Плеер окна для водителя на время одного прохода.
