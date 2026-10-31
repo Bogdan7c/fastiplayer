@@ -3,7 +3,7 @@
 use std::fs;
 use std::time::Duration;
 
-use fastiplayer_config::AppConfig;
+use fastiplayer_config::{AppConfig, ConfigSavePolicy, ConfigSessionOnlyReason};
 
 use super::*;
 
@@ -200,4 +200,49 @@ fn file_source_defaults_and_disabled_retries() {
         no_retries.policy().expect("policy").retry().budget(),
         Duration::ZERO
     );
+}
+
+/// Файл новее схемы: defaults, метка «новее» с версией из файла и запрет записи; байты целы.
+#[test]
+fn newer_schema_config_gives_defaults_and_a_read_only_session() {
+    let directory = config_directory();
+    let config_file = directory.path().join("config.toml");
+    let newer_bytes = b"schema_version = 999\nfuture_key = 1\n".to_vec();
+    fs::write(&config_file, &newer_bytes).expect("write newer config");
+
+    let settings = BrowserSessionSettings::load_read_only_from(&config_file);
+
+    assert_eq!(
+        settings.origin(),
+        BrowserSettingsOrigin::DefaultsAfterNewerConfig { found: 999 }
+    );
+    assert_eq!(
+        settings.save_policy(),
+        ConfigSavePolicy::SessionOnly(ConfigSessionOnlyReason::NewerSchemaVersion { found: 999 })
+    );
+    assert_eq!(fs::read(&config_file).expect("read back"), newer_bytes);
+}
+
+/// Нормальный файл и отсутствие файла разрешают запись, битый — нет.
+#[test]
+fn only_a_usable_or_missing_file_allows_writes() {
+    let directory = config_directory();
+    let config_file = directory.path().join("config.toml");
+    assert_eq!(
+        BrowserSessionSettings::load_read_only_from(&config_file).save_policy(),
+        ConfigSavePolicy::WriteToFile
+    );
+
+    let text = AppConfig::default().to_pretty_toml().expect("serialize");
+    fs::write(&config_file, text).expect("write config");
+    assert_eq!(
+        BrowserSessionSettings::load_read_only_from(&config_file).save_policy(),
+        ConfigSavePolicy::WriteToFile
+    );
+
+    fs::write(&config_file, b"[audio\n").expect("write broken config");
+    assert!(matches!(
+        BrowserSessionSettings::load_read_only_from(&config_file).save_policy(),
+        ConfigSavePolicy::SessionOnly(ConfigSessionOnlyReason::BrokenConfigLeftToRegularPlayer(_))
+    ));
 }

@@ -599,7 +599,7 @@ fn transaction_preflight_busy_preserves_draft_and_retries_only_on_explicit_apply
 
 /// Проверяет persistence failure после runtime commit и compensating rollback.
 #[test]
-fn transaction_persistence_failure_rolls_runtime_back() {
+fn transaction_with_unwritable_settings_file_keeps_change_in_memory() {
     let config = custom_config_for_test();
     let path = temp_config_path("transaction-persist-failure");
     remove_file_if_exists(&path);
@@ -627,20 +627,31 @@ fn transaction_persistence_failure_rolls_runtime_back() {
 
     let report = runtime
         .latest_apply_report()
-        .expect("Continued failure report should be maintained");
-    assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
-    assert_eq!(report.rollback.len(), 1);
-    assert_eq!(adapter.media_updates, 2);
-    assert!(adapter.committed_snapshots.is_empty());
-    assert_eq!(adapter.finalize_calls, 0);
-    assert!(adapter.snapshot_synced_after_finalize.is_empty());
-    assert_eq!(runtime.committed_config().network, config.network);
+        .expect("apply report should be maintained");
+    // Решение 135: файл записать нельзя (по пути config — каталог), но изменение
+    // применено и живёт в памяти — без отката, файл не тронут.
+    assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
+    assert!(report.rollback.is_empty());
+    assert!(matches!(
+        report
+            .persistence
+            .as_ref()
+            .map(fastiplayer_settings::settings_file_persist_outcome),
+        Some(fastiplayer_settings::SettingsFilePersistOutcome::NotSavedYet { .. })
+    ));
+    assert_eq!(adapter.media_updates, 1);
+    assert_eq!(
+        runtime.committed_config().network.read_ahead_mb,
+        config.network.read_ahead_mb + 1
+    );
+    assert!(path.is_dir());
     fs::remove_dir_all(&path).expect("Test target directory should be removed");
 }
 
-/// Проверяет exact compensating rollback playlist owner-а при отказе atomic persistence.
+/// Файл настроек записать нельзя: playlist owner получает новую policy один раз и без
+/// отката, изменение живёт в памяти (решение 135).
 #[test]
-fn next_item_preload_persistence_failure_rolls_back_once_without_finalize() {
+fn next_item_preload_with_unwritable_settings_file_applies_once_without_rollback() {
     let config = custom_config_for_test();
     let path = temp_config_path("next-item-preload-persist-failure");
     remove_file_if_exists(&path);
@@ -671,9 +682,16 @@ fn next_item_preload_persistence_failure_rolls_back_once_without_finalize() {
 
     let report = runtime
         .latest_apply_report()
-        .expect("playlist persistence failure report should continue");
-    assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
-    assert_eq!(report.rollback.len(), 1);
+        .expect("playlist apply report should continue");
+    assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
+    assert!(report.rollback.is_empty());
+    assert!(matches!(
+        report
+            .persistence
+            .as_ref()
+            .map(fastiplayer_settings::settings_file_persist_outcome),
+        Some(fastiplayer_settings::SettingsFilePersistOutcome::NotSavedYet { .. })
+    ));
     assert_eq!(adapter.playlist_updates.len(), 1);
     assert_eq!(
         adapter.playlist_updates[0]
@@ -681,25 +699,26 @@ fn next_item_preload_persistence_failure_rolls_back_once_without_finalize() {
             .next_item_preload_budget_mb,
         requested_budget_mb
     );
-    assert_eq!(adapter.playlist_rollback_calls, 1);
-    assert_eq!(adapter.finalize_calls, 0);
-    assert!(adapter.committed_snapshots.is_empty());
-    assert!(adapter.persistence_visible_at_finalize.is_empty());
-    assert_eq!(
-        adapter.transaction_events,
-        vec![
-            SettingsTransactionEvent::PlaylistApply,
-            SettingsTransactionEvent::PlaylistRollback,
-        ]
+    assert_eq!(adapter.playlist_rollback_calls, 0);
+    assert!(
+        !adapter
+            .transaction_events
+            .contains(&SettingsTransactionEvent::PlaylistRollback)
     );
-    assert_eq!(runtime.committed_config().playlist, config.playlist);
+    assert_eq!(
+        runtime
+            .committed_config()
+            .playlist
+            .next_item_preload_budget_mb,
+        requested_budget_mb
+    );
     fs::remove_dir_all(&path).expect("Test target directory should be removed");
 }
 
-/// Combined backend + URL quality transaction передаёт каждому route exact destination,
-/// а compensating rollback использует previous policy ещё до обратного Player route-а.
+/// Combined backend + URL quality transaction передаёт каждому route exact destination;
+/// неудачная запись файла (решение 135) отката не вызывает.
 #[test]
-fn combined_backend_and_quality_persist_failure_threads_exact_route_targets() {
+fn combined_backend_and_quality_with_unwritable_file_threads_exact_route_targets() {
     assert_combined_persist_failure_threads_targets(
         "software",
         VideoBackendPreference::Software,
@@ -707,10 +726,10 @@ fn combined_backend_and_quality_persist_failure_threads_exact_route_targets() {
     );
 }
 
-/// То же для нового режима Dynamic: он доходит до Player/Media маршрутов как есть
-/// (не схлопывается в Auto), а откат возвращает прежний Hardware.
+/// То же для режима Dynamic: он доходит до Player/Media маршрутов как есть
+/// (не схлопывается в Auto) и остаётся в памяти.
 #[test]
-fn dynamic_backend_persist_failure_threads_exact_route_targets() {
+fn dynamic_backend_with_unwritable_file_threads_exact_route_targets() {
     assert_combined_persist_failure_threads_targets(
         "dynamic",
         VideoBackendPreference::Dynamic,
@@ -718,8 +737,8 @@ fn dynamic_backend_persist_failure_threads_exact_route_targets() {
     );
 }
 
-/// Общая проверка: применяем `applied_id` вместе с URL quality при сломанной записью config и
-/// ждём, что оба route-а увидели `applied_preference`, а затем откат к Hardware.
+/// Общая проверка: применяем `applied_id` вместе с URL quality при файле, который нельзя
+/// записать, и ждём, что оба route-а увидели `applied_preference` ровно один раз, без отката.
 fn assert_combined_persist_failure_threads_targets(
     applied_id: &str,
     applied_preference: VideoBackendPreference,
@@ -757,22 +776,28 @@ fn assert_combined_persist_failure_threads_targets(
 
     let report = runtime
         .latest_apply_report()
-        .expect("Continued failure report should be maintained");
-    assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
-    assert_eq!(report.rollback.len(), 2);
+        .expect("apply report should be maintained");
+    assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
+    assert!(report.rollback.is_empty());
+    assert!(matches!(
+        report
+            .persistence
+            .as_ref()
+            .map(fastiplayer_settings::settings_file_persist_outcome),
+        Some(fastiplayer_settings::SettingsFilePersistOutcome::NotSavedYet { .. })
+    ));
     assert_eq!(
         adapter.player_target_backend_preferences,
-        vec![applied_preference, VideoBackendPreference::Hardware,]
+        vec![applied_preference]
     );
     assert_eq!(
         adapter.media_target_backend_preferences,
-        vec![applied_preference, VideoBackendPreference::Hardware,]
+        vec![applied_preference]
     );
     assert_eq!(
         runtime.committed_config().video.preferred_backend,
-        VideoBackendPreference::Hardware
+        applied_preference
     );
-    assert!(adapter.committed_snapshots.is_empty());
     fs::remove_dir_all(&path).expect("Test target directory should be removed");
 }
 

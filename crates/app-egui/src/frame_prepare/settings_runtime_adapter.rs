@@ -2,6 +2,8 @@
 
 #[path = "settings_runtime_adapter/reconfigure_projection.rs"]
 mod reconfigure_projection;
+#[path = "settings_runtime_adapter/settings_file_notice.rs"]
+mod settings_file_notice;
 
 use super::*;
 use crate::settings_runtime::{

@@ -35,11 +35,17 @@ impl SettingsValidator<AppConfig> for AppConfigValidator {
 /// Право записи решает config-хранилище при загрузке: если в этот запуск запись
 /// запрещена (файл от новой версии, файл не читается), store не пишет диск и сообщает
 /// `PersistOutcome::SkippedSessionOnly` — изменения действуют до выхода без отката.
+///
+/// Если запись разрешена, но сейчас не удалась (файл занят, битый, новее…), транзакция
+/// тоже не откатывается: store помнит id несохранённых настроек и дописывает их при
+/// следующей успешной записи. Как прочитать такой отчёт — [`settings_file_persist_outcome`].
 #[derive(Debug, Clone)]
 pub struct AppConfigStore {
     save_target: ConfigSaveTarget,
-    /// Сколько ждать замок записи config-а до ошибки «файл занят».
+    /// Сколько ждать замок записи config-а до отказа «файл занят».
     lock_wait: Duration,
+    /// Изменения, применённые в памяти, но ещё не записанные в файл.
+    unsaved: UnsavedSettingChanges,
 }
 
 impl AppConfigStore {
@@ -55,6 +61,7 @@ impl AppConfigStore {
         Self {
             save_target,
             lock_wait: SETTINGS_FILE_LOCK_WAIT,
+            unsaved: UnsavedSettingChanges::default(),
         }
     }
 
@@ -70,14 +77,46 @@ impl AppConfigStore {
     pub fn path(&self) -> &Path {
         self.save_target.path()
     }
+
+    /// Есть ли применённые изменения, которые ещё не записаны в файл.
+    #[must_use]
+    pub fn has_unsaved_changes(&self) -> bool {
+        !self.unsaved.is_empty()
+    }
+
+    /// Id несохранённых настроек (для текста и диагностики, без значений).
+    #[must_use]
+    pub fn unsaved_setting_ids(&self) -> Vec<SettingId> {
+        self.unsaved.setting_ids()
+    }
+
+    /// Дописывает несохранённые изменения в файл, значения берёт из `current`.
+    ///
+    /// Звать, когда файл снова можно записать (слежение увидело исправный файл, после
+    /// принятия значений соседа). `current` — committed документ этой копии. Значение,
+    /// которое после нашей неудачи записала другая копия, не затирается (правило в
+    /// `shared_persist/unsaved.rs`).
+    pub fn save_unsaved_changes(&mut self, current: &AppConfig) -> UnsavedChangesSave {
+        save_unsaved_settings(
+            &self.save_target,
+            self.lock_wait,
+            &mut self.unsaved,
+            current,
+        )
+    }
 }
 
 impl SettingsPersister<AppConfig> for AppConfigStore {
     fn persist(&mut self, request: PersistRequest<'_, AppConfig>) -> SettingsResult<PersistReport> {
         // Важный invariant: этот метод не делает partial write сам; замок, перечитывание,
         // durability и решение «можно ли писать» остаются внутри `fastiplayer-config`,
-        // а здесь только «какие ключи вписать» (изменённые транзакцией).
-        persist_changed_settings(&self.save_target, self.lock_wait, request)
+        // а здесь только «какие ключи вписать» (изменённые транзакцией и несохранённые).
+        persist_changed_settings(
+            &self.save_target,
+            self.lock_wait,
+            &mut self.unsaved,
+            request,
+        )
     }
 }
 

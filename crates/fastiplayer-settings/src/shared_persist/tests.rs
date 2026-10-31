@@ -237,9 +237,22 @@ fn persist_creates_missing_file_from_defaults_plus_change() {
     fs::remove_dir_all(&directory).expect("test directory removed");
 }
 
-/// Замок держит сосед дольше срока → понятная ошибка «занят», файл байт-в-байт прежний.
+/// Сохраняет изменения и требует исход «не сохранено сейчас»; возвращает сообщение.
+fn persist_expecting_not_saved_yet(
+    store: &mut AppConfigStore,
+    changes: &[(&str, SettingValue)],
+) -> String {
+    let report = persist_changes(store, changes).expect("failed write is not a transaction error");
+    match settings_file_persist_outcome(&report) {
+        SettingsFilePersistOutcome::NotSavedYet { notice } => notice.to_string(),
+        other => panic!("expected NotSavedYet, got {other:?}"),
+    }
+}
+
+/// Замок держит сосед дольше срока → «не сохранено сейчас» с причиной «занят», без
+/// ошибки транзакции; файл байт-в-байт прежний, id запомнен.
 #[test]
-fn busy_lock_is_a_clear_error_and_file_is_untouched() {
+fn busy_lock_defers_save_and_file_is_untouched() {
     let directory = unique_test_directory("busy");
     let config_path = directory.join("config.toml");
     save_validated_atomic_at(&config_path, &AppConfig::default()).expect("defaults written");
@@ -247,37 +260,40 @@ fn busy_lock_is_a_clear_error_and_file_is_untouched() {
     let neighbor_lock = hold_write_lock(&config_path);
     let mut store = AppConfigStore::new(&config_path).with_lock_wait(Duration::from_millis(50));
 
-    let error = persist_changes(
+    let notice = persist_expecting_not_saved_yet(
         &mut store,
         &[("ui.sidebar.width_points", SettingValue::Integer(480))],
-    )
-    .expect_err("busy lock refuses");
+    );
 
-    let message = error.to_string();
-    assert!(message.contains("Settings were not saved"), "{message}");
-    assert!(message.contains("busy"), "{message}");
+    assert!(notice.contains("busy"), "{notice}");
+    assert!(
+        notice.contains("will be saved with the next change"),
+        "{notice}"
+    );
     assert_eq!(fs::read(&config_path).expect("file"), original_bytes);
+    assert!(store.has_unsaved_changes());
+    assert_eq!(
+        store.unsaved_setting_ids(),
+        vec![SettingId::from("ui.sidebar.width_points")]
+    );
     drop(neighbor_lock);
     fs::remove_dir_all(&directory).expect("test directory removed");
 }
 
-/// Битый файл → ошибка, файл не изменён, `.bak` этим путём не создан.
+/// Битый файл → «не сохранено сейчас» с причиной, файл не изменён, `.bak` не создан.
 #[test]
-fn broken_file_is_a_clear_error_without_backup() {
+fn broken_file_defers_save_without_backup() {
     let directory = unique_test_directory("broken");
     let config_path = directory.join("config.toml");
     fs::write(&config_path, "schema_version = 29\n[[[").expect("broken file written");
     let mut store = AppConfigStore::new(&config_path);
 
-    let error = persist_changes(
+    let notice = persist_expecting_not_saved_yet(
         &mut store,
         &[("ui.sidebar.width_points", SettingValue::Integer(480))],
-    )
-    .expect_err("broken file refuses");
+    );
 
-    let message = error.to_string();
-    assert!(message.contains("syntax error"), "{message}");
-    assert!(message.contains("left unchanged"), "{message}");
+    assert!(notice.contains("corrupted"), "{notice}");
     assert_eq!(
         fs::read_to_string(&config_path).expect("file"),
         "schema_version = 29\n[[["
@@ -286,9 +302,9 @@ fn broken_file_is_a_clear_error_without_backup() {
     fs::remove_dir_all(&directory).expect("test directory removed");
 }
 
-/// Файл новее схемы → ошибка, файл не изменён.
+/// Файл новее схемы → «не сохранено сейчас», файл не изменён.
 #[test]
-fn newer_schema_file_is_a_clear_error_and_untouched() {
+fn newer_schema_file_defers_save_and_is_untouched() {
     let directory = unique_test_directory("newer");
     let config_path = directory.join("config.toml");
     let newer_text = AppConfig::default()
@@ -298,15 +314,230 @@ fn newer_schema_file_is_a_clear_error_and_untouched() {
     fs::write(&config_path, &newer_text).expect("newer file written");
     let mut store = AppConfigStore::new(&config_path);
 
-    let error = persist_changes(
+    let notice = persist_expecting_not_saved_yet(
         &mut store,
         &[("ui.sidebar.width_points", SettingValue::Integer(480))],
-    )
-    .expect_err("newer file refuses");
+    );
 
-    assert!(error.to_string().contains("newer version"), "{error}");
+    assert!(notice.contains("newer version"), "{notice}");
     assert_eq!(fs::read_to_string(&config_path).expect("file"), newer_text);
     fs::remove_dir_all(&directory).expect("test directory removed");
+}
+
+/// Изменение не записалось (файл битый), потом файл исправили: следующая запись другого
+/// ключа дописывает и старое несохранённое, и новое.
+#[test]
+fn next_successful_persist_writes_unsaved_and_new_changes() {
+    let directory = unique_test_directory("unsaved-then-new");
+    let config_path = directory.join("config.toml");
+    fs::write(&config_path, "[[[").expect("broken file written");
+    let mut store = AppConfigStore::new(&config_path);
+    persist_expecting_not_saved_yet(
+        &mut store,
+        &[("ui.sidebar.width_points", SettingValue::Integer(480))],
+    );
+    // Пользователь (или восстановление) починил файл.
+    save_validated_atomic_at(&config_path, &AppConfig::default()).expect("file repaired");
+
+    // Документ в памяти содержит и прежнее несохранённое, и новое изменение.
+    let registry = app_config_registry().expect("registry builds");
+    let mut previous = AppConfig::default();
+    previous.ui.sidebar.width_points = 480;
+    let mut current = previous.clone();
+    current.ui.language = "en".into();
+    let changed_settings = registry.diff(&previous, &current).expect("diff builds");
+    let report = store
+        .persist(PersistRequest {
+            document: &current,
+            changed_settings: &changed_settings,
+        })
+        .expect("persist succeeds");
+
+    assert_eq!(
+        settings_file_persist_outcome(&report),
+        SettingsFilePersistOutcome::Saved
+    );
+    let on_disk = load_from_path(&config_path).expect("file loads").config;
+    assert_eq!(on_disk.ui.sidebar.width_points, 480);
+    assert_eq!(on_disk.ui.language, "en");
+    assert!(!store.has_unsaved_changes());
+    fs::remove_dir_all(&directory).expect("test directory removed");
+}
+
+/// Несохранённый id, изменённый в памяти ещё раз, дописывается последним значением.
+#[test]
+fn unsaved_setting_is_written_with_its_latest_value() {
+    let directory = unique_test_directory("unsaved-latest");
+    let config_path = directory.join("config.toml");
+    fs::write(&config_path, "[[[").expect("broken file written");
+    let mut store = AppConfigStore::new(&config_path);
+    let registry = app_config_registry().expect("registry builds");
+    let defaults = AppConfig::default();
+    let mut first = defaults.clone();
+    first.ui.sidebar.width_points = 480;
+    let mut second = first.clone();
+    second.ui.sidebar.width_points = 500;
+    for (previous, current) in [(&defaults, &first), (&first, &second)] {
+        let changed_settings = registry.diff(previous, current).expect("diff builds");
+        store
+            .persist(PersistRequest {
+                document: current,
+                changed_settings: &changed_settings,
+            })
+            .expect("deferred, not failed");
+    }
+    save_validated_atomic_at(&config_path, &defaults).expect("file repaired");
+
+    let outcome = store.save_unsaved_changes(&second);
+
+    assert!(
+        matches!(&outcome, UnsavedChangesSave::Saved { written, .. }
+            if written == &vec![SettingId::from("ui.sidebar.width_points")]),
+        "{outcome:?}"
+    );
+    let on_disk = load_from_path(&config_path).expect("file loads").config;
+    assert_eq!(on_disk.ui.sidebar.width_points, 500);
+    fs::remove_dir_all(&directory).expect("test directory removed");
+}
+
+/// После нашей неудачи сосед записал тот же ключ: дописывание не затирает его старым
+/// значением из памяти (последний победил), а несохранённое забывается.
+#[test]
+fn unsaved_setting_does_not_overwrite_later_neighbor_value() {
+    let directory = unique_test_directory("unsaved-neighbor");
+    let config_path = directory.join("config.toml");
+    fs::write(&config_path, "[[[").expect("broken file written");
+    let mut store = AppConfigStore::new(&config_path);
+    let (memory, _diff) = diff_with(&[("ui.sidebar.width_points", SettingValue::Integer(480))]);
+    persist_expecting_not_saved_yet(
+        &mut store,
+        &[("ui.sidebar.width_points", SettingValue::Integer(480))],
+    );
+    let mut neighbor = AppConfig::default();
+    neighbor.ui.sidebar.width_points = 550;
+    save_validated_atomic_at(&config_path, &neighbor).expect("neighbor wrote later");
+
+    let outcome = store.save_unsaved_changes(&memory);
+
+    assert!(
+        matches!(&outcome, UnsavedChangesSave::Saved { written, kept_from_disk, .. }
+            if written.is_empty()
+                && kept_from_disk == &vec![SettingId::from("ui.sidebar.width_points")]),
+        "{outcome:?}"
+    );
+    let on_disk = load_from_path(&config_path).expect("file loads").config;
+    assert_eq!(on_disk.ui.sidebar.width_points, 550);
+    assert!(!store.has_unsaved_changes());
+    fs::remove_dir_all(&directory).expect("test directory removed");
+}
+
+/// Значение соседа уже принято в память (адопция): на диске то же, что в памяти —
+/// дописывать нечего, файл не меняется по этому ключу.
+#[test]
+fn adopted_neighbor_value_counts_as_already_saved() {
+    let directory = unique_test_directory("unsaved-adopted");
+    let config_path = directory.join("config.toml");
+    fs::write(&config_path, "[[[").expect("broken file written");
+    let mut store = AppConfigStore::new(&config_path);
+    persist_expecting_not_saved_yet(
+        &mut store,
+        &[("ui.sidebar.width_points", SettingValue::Integer(480))],
+    );
+    let mut neighbor = AppConfig::default();
+    neighbor.ui.sidebar.width_points = 550;
+    save_validated_atomic_at(&config_path, &neighbor).expect("neighbor wrote later");
+
+    // Слежение приняло значение соседа: в памяти теперь тоже 550.
+    let outcome = store.save_unsaved_changes(&neighbor);
+
+    assert!(
+        matches!(&outcome, UnsavedChangesSave::Saved { already_on_disk, .. }
+            if already_on_disk == &vec![SettingId::from("ui.sidebar.width_points")]),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        load_from_path(&config_path)
+            .expect("file loads")
+            .config
+            .ui
+            .sidebar
+            .width_points,
+        550
+    );
+    fs::remove_dir_all(&directory).expect("test directory removed");
+}
+
+/// `save_unsaved_changes`: нечего сохранять — файл не трогаем; файл всё ещё занят —
+/// «по-прежнему не сохранено», несохранённое не забыто.
+#[test]
+fn save_unsaved_changes_reports_nothing_and_still_unsaved() {
+    let directory = unique_test_directory("unsaved-states");
+    let config_path = directory.join("config.toml");
+    let mut store = AppConfigStore::new(&config_path).with_lock_wait(Duration::from_millis(30));
+
+    assert_eq!(
+        store.save_unsaved_changes(&AppConfig::default()),
+        UnsavedChangesSave::NothingToSave
+    );
+    assert!(!config_path.exists());
+
+    let neighbor_lock = hold_write_lock(&config_path);
+    let (memory, _diff) = diff_with(&[("ui.sidebar.width_points", SettingValue::Integer(480))]);
+    persist_expecting_not_saved_yet(
+        &mut store,
+        &[("ui.sidebar.width_points", SettingValue::Integer(480))],
+    );
+    let outcome = store.save_unsaved_changes(&memory);
+    drop(neighbor_lock);
+
+    assert!(
+        matches!(
+            outcome,
+            UnsavedChangesSave::StillUnsaved(SettingsFileSaveDeferral::FileBusy { .. })
+        ),
+        "{outcome:?}"
+    );
+    assert!(store.has_unsaved_changes());
+    assert!(!config_path.exists());
+    fs::remove_dir_all(&directory).expect("test directory removed");
+}
+
+/// Прочтение отчёта сохранения различает все исходы.
+#[test]
+fn persist_report_outcome_distinguishes_every_case() {
+    assert_eq!(
+        settings_file_persist_outcome(&PersistReport::persisted()),
+        SettingsFilePersistOutcome::Saved
+    );
+    assert_eq!(
+        settings_file_persist_outcome(
+            &PersistReport::persisted().with_durability_warning("dir sync")
+        ),
+        SettingsFilePersistOutcome::SavedDurabilityUnconfirmed {
+            warning: "dir sync"
+        }
+    );
+    assert_eq!(
+        settings_file_persist_outcome(&PersistReport::kept_for_session_only()),
+        SettingsFilePersistOutcome::SessionOnly
+    );
+    let deferral = SettingsFileSaveDeferral::FileFromNewerVersion { found: 99 };
+    let deferred = deferral_report_for_test(&deferral);
+    assert_eq!(
+        settings_file_persist_outcome(&deferred),
+        SettingsFilePersistOutcome::NotSavedYet {
+            notice: &deferral.user_message()
+        }
+    );
+    assert_eq!(
+        settings_file_persist_outcome(&PersistReport::skipped_no_changes()),
+        SettingsFilePersistOutcome::NothingToSave
+    );
+}
+
+/// Отчёт отложенной записи так, как его строит store.
+fn deferral_report_for_test(deferral: &SettingsFileSaveDeferral) -> PersistReport {
+    super::deferral::deferred_report(deferral)
 }
 
 /// Ключи `[browser_session]` и `[browser_session.window]` пишутся по id реестра.
@@ -407,10 +638,10 @@ impl CommittedSettingsApplier<AppConfig> for ProbeDelegate {
     fn finalize_committed(&mut self, _request: CommittedFinalizeRequest<'_, AppConfig>) {}
 }
 
-/// Битый файл на диске при Apply: сохранение отказывает, рантайм откатан, committed
-/// прежний, а черновик с изменением жив — изменение не потеряно молча.
+/// Битый файл на диске при Apply (решение 135): транзакция не откатывается — значение
+/// применено и в committed, файл не тронут, store помнит несохранённое.
 #[test]
-fn apply_with_broken_disk_file_rolls_back_runtime_and_keeps_draft() {
+fn apply_with_broken_disk_file_keeps_change_in_memory_without_rollback() {
     let directory = unique_test_directory("apply-broken");
     let config_path = directory.join("config.toml");
     fs::write(&config_path, "[[[").expect("broken file written");
@@ -433,16 +664,15 @@ fn apply_with_broken_disk_file_rolls_back_runtime_and_keeps_draft() {
         .apply(&mut delegate)
         .expect("apply returns report");
 
-    assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
-    assert_eq!(delegate.rollback_count, 1);
-    assert!(
-        report
-            .errors
-            .iter()
-            .any(|error| error.to_string().contains("Settings were not saved"))
-    );
-    assert_eq!(controller.committed().ui.sidebar.width_points, 420);
-    assert_eq!(controller.draft().ui.sidebar.width_points, 480);
+    assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
+    assert_eq!(delegate.rollback_count, 0);
+    let persistence = report.persistence.expect("persistence report present");
+    assert!(matches!(
+        settings_file_persist_outcome(&persistence),
+        SettingsFilePersistOutcome::NotSavedYet { .. }
+    ));
+    assert_eq!(controller.committed().ui.sidebar.width_points, 480);
+    assert!(delegate.store.has_unsaved_changes());
     assert_eq!(fs::read_to_string(&config_path).expect("file"), "[[[");
     fs::remove_dir_all(&directory).expect("test directory removed");
 }

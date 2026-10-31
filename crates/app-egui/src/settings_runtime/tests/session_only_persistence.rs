@@ -112,10 +112,11 @@ fn apply_with_writable_config_does_not_report_session_only() {
     remove_file_if_exists(&path);
 }
 
-/// Окно браузерного режима (мост 04a, решение 122): config только на чтение. Громкость,
-/// ширина сайдбара и стиль субтитров меняются в окне, но файл не появляется вовсе.
+/// Окно браузерного режима при битом config (мост 04c, решение 135): файл браузерный
+/// процесс не чинит. Громкость, ширина сайдбара и стиль субтитров меняются в окне, но
+/// файл не появляется вовсе.
 #[test]
-fn browser_session_window_changes_settings_without_writing_the_config_file() {
+fn browser_session_window_over_a_broken_config_changes_settings_without_writing_the_file() {
     use settings_core::{RuntimeSettingCommitRequest, SettingValue};
 
     use crate::user_audio_level::PlayerAudioObservation;
@@ -127,7 +128,9 @@ fn browser_session_window_changes_settings_without_writing_the_config_file() {
         path: path.clone(),
         origin: ConfigLoadOrigin::LoadedExisting,
         save_policy: ConfigSavePolicy::SessionOnly(
-            fastiplayer_config::ConfigSessionOnlyReason::BrowserSessionReadOnly,
+            fastiplayer_config::ConfigSessionOnlyReason::BrokenConfigLeftToRegularPlayer(
+                fastiplayer_config::BrokenConfigProblem::InvalidTomlSyntax,
+            ),
         ),
     })
     .expect("settings runtime should build");

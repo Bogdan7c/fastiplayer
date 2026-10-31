@@ -5,6 +5,8 @@
 //! (renderer, player, media services) в панель не попадают — они пишутся в `tracing`.
 //! Каждый вид результата перечислен явно (`match` без `_`).
 
+use fastiplayer_settings::{SettingsFilePersistOutcome, settings_file_persist_outcome};
+
 use super::setting_labels::SettingLabels;
 use super::settings_error_message::settings_error_text;
 use super::*;
@@ -134,15 +136,24 @@ pub(super) fn status_from_apply_report(
         );
     }
 
-    let kept_for_session_only = report
+    let summary = match report
         .persistence
         .as_ref()
-        .is_some_and(|persistence| persistence.outcome == PersistOutcome::SkippedSessionOnly);
-    let summary = if kept_for_session_only {
-        // «Сохранены» было бы неправдой: файл сознательно не записан.
-        crate::config_startup_notice::SETTINGS_KEPT_FOR_SESSION_ONLY_MESSAGE
-    } else {
-        apply_final_state_text(report.final_state)
+        .map(settings_file_persist_outcome)
+    {
+        // «Сохранены» было бы неправдой: файл сознательно не записан на весь запуск.
+        Some(SettingsFilePersistOutcome::SessionOnly) => {
+            crate::config_startup_notice::SETTINGS_KEPT_FOR_SESSION_ONLY_MESSAGE
+        }
+        // Файл сейчас записать нельзя (занят, повреждён, новее…): изменения действуют,
+        // причина и «сохраним позже» — в строке деталей (решение 135).
+        Some(SettingsFilePersistOutcome::NotSavedYet { .. }) => SETTINGS_APPLIED_NOT_SAVED_YET,
+        Some(
+            SettingsFilePersistOutcome::Saved
+            | SettingsFilePersistOutcome::SavedDurabilityUnconfirmed { .. }
+            | SettingsFilePersistOutcome::NothingToSave,
+        )
+        | None => apply_final_state_text(report.final_state),
     };
     SettingsUiStatus {
         summary: Some(summary.to_string()),
@@ -167,21 +178,28 @@ fn apply_final_state_text(final_state: ApplyFinalState) -> &'static str {
     }
 }
 
+/// Резюме, когда изменения применены, но файл настроек сейчас записать нельзя.
+const SETTINGS_APPLIED_NOT_SAVED_YET: &str = "Settings applied but not saved yet";
+
 /// Форматирует persistence outcome для status details.
+///
+/// Отчёт читается только через `settings_file_persist_outcome`: «не сохранено сейчас» и
+/// «запись запрещена на весь запуск» различает `fastiplayer-settings`, а не эта функция.
 fn persist_report_text(report: &PersistReport) -> String {
-    let outcome = match report.outcome {
-        PersistOutcome::Persisted => "Settings file saved",
-        PersistOutcome::SkippedNoChanges => "Settings file unchanged: nothing to save",
-        PersistOutcome::SkippedSessionOnly => {
-            "The settings file cannot be modified during this session"
-        }
-    };
-    match &report.durability_warning {
-        Some(warning) => {
+    match settings_file_persist_outcome(report) {
+        SettingsFilePersistOutcome::Saved => "Settings file saved".to_string(),
+        SettingsFilePersistOutcome::SavedDurabilityUnconfirmed { warning } => {
             tracing::warn!(%warning, "Settings written, but durable storage could not be confirmed");
-            format!("{outcome}, but the system did not confirm durable storage")
+            "Settings file saved, but the system did not confirm durable storage".to_string()
         }
-        None => outcome.to_string(),
+        // Сообщение уже английское и для пользователя: причина и что будет с изменениями.
+        SettingsFilePersistOutcome::NotSavedYet { notice } => notice.to_string(),
+        SettingsFilePersistOutcome::SessionOnly => {
+            "The settings file cannot be modified during this session".to_string()
+        }
+        SettingsFilePersistOutcome::NothingToSave => {
+            "Settings file unchanged: nothing to save".to_string()
+        }
     }
 }
 
@@ -312,5 +330,76 @@ pub(super) fn group_result(
             AppRouteApplyResult::AppliesAfterRestart
         }
         _ => route_result.clone(),
+    }
+}
+
+#[cfg(test)]
+mod deferred_save_tests {
+    //! Файл настроек сейчас записать нельзя (решение 135): статус окна настроек называет
+    //! причину по-английски и говорит, что изменения действуют и будут сохранены позже.
+
+    use settings_core::{PersistRequest, SettingsDiff, SettingsPersister};
+
+    use super::*;
+
+    /// Отчёт сохранения от настоящего store при битом файле на диске.
+    fn persist_report_with_broken_file() -> PersistReport {
+        let config_path = std::env::temp_dir().join(format!(
+            "fastiplayer-status-deferred-save-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&config_path, "[[[").expect("broken settings file written");
+        let registry = fastiplayer_settings::app_config_registry().expect("registry builds");
+        let mut document = AppConfig::default();
+        document.ui.sidebar.width_points = 480;
+        let changed_settings = registry
+            .diff(&AppConfig::default(), &document)
+            .expect("diff builds");
+        let report = fastiplayer_settings::AppConfigStore::new(&config_path)
+            .persist(PersistRequest {
+                document: &document,
+                changed_settings: &changed_settings,
+            })
+            .expect("a failed write is not a transaction error");
+        assert_eq!(
+            std::fs::read_to_string(&config_path).expect("file still there"),
+            "[[["
+        );
+        std::fs::remove_file(&config_path).expect("test file removed");
+        report
+    }
+
+    #[test]
+    fn status_names_the_reason_and_promises_a_later_save() {
+        let registry = fastiplayer_settings::app_config_registry().expect("registry builds");
+        let labels = SettingLabels::new(&registry);
+        let report = ApplyReport {
+            validation: None,
+            persistence: Some(persist_report_with_broken_file()),
+            routes: Vec::new(),
+            rollback: Vec::new(),
+            changed_settings: SettingsDiff::new(),
+            final_state: ApplyFinalState::FullyApplied,
+            conflicts: Vec::new(),
+            errors: Vec::new(),
+        };
+
+        let status = status_from_apply_report(&labels, &report);
+
+        assert_eq!(
+            status.summary.as_deref(),
+            Some(SETTINGS_APPLIED_NOT_SAVED_YET)
+        );
+        let details = status.details.join("\n");
+        assert!(details.contains("settings file is corrupted"), "{details}");
+        assert!(
+            details.contains("in effect until you close Fastiplayer"),
+            "{details}"
+        );
+        assert!(
+            details.contains("will be saved with the next change"),
+            "{details}"
+        );
+        assert!(!details.contains("Could not read or write"), "{details}");
     }
 }

@@ -42,13 +42,18 @@ use settings_core::{
     SettingsValidator, ValidationReport, ValidationRequest,
 };
 
+mod peer_adoption;
 mod routing;
 #[cfg(test)]
 mod routing_audio_muted_tests;
 mod shared_persist;
 mod transaction;
 
+pub use peer_adoption::{PeerCopyAdoption, adoptable_peer_changes, peer_copy_adoption};
 pub use routing::*;
-pub use shared_persist::SETTINGS_FILE_LOCK_WAIT;
-use shared_persist::persist_changed_settings;
+pub use shared_persist::{
+    SETTINGS_FILE_LOCK_WAIT, SettingsFileDurability, SettingsFilePersistOutcome,
+    SettingsFileSaveDeferral, UnsavedChangesSave, settings_file_persist_outcome,
+};
+use shared_persist::{UnsavedSettingChanges, persist_changed_settings, save_unsaved_settings};
 pub use transaction::*;

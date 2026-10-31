@@ -10,16 +10,16 @@ use super::*;
 use crate::settings_runtime::{MediaRebuildProgress, PlayerApplyStart, PlayerMediaContinuation};
 
 /// Fake host с управляемой пересборкой; остальное делегирует записывающему адаптеру.
-struct StepwiseTestAdapter {
-    inner: RecordingRuntimeAdapter,
+pub(super) struct StepwiseTestAdapter {
+    pub(super) inner: RecordingRuntimeAdapter,
     /// Ответы `poll_media_rebuild` по порядку; после исчерпания — `Pending`.
     poll_script: VecDeque<MediaRebuildProgress>,
     /// Сколько раз runtime запускал пересборку без блокировки.
-    begin_calls: usize,
+    pub(super) begin_calls: usize,
     /// Сколько раз runtime опрашивал пересборку.
-    poll_calls: usize,
+    pub(super) poll_calls: usize,
     /// Сколько раз пересборку прервали на lifecycle-границе.
-    cancel_calls: usize,
+    pub(super) cancel_calls: usize,
     /// Итоги пересборки, пришедшие в продолжение player route.
     player_finish_results: Vec<AppRouteApplyResult>,
     /// Запускать ли пересборку player route (иначе её запускает media-service route).
@@ -27,7 +27,7 @@ struct StepwiseTestAdapter {
 }
 
 impl StepwiseTestAdapter {
-    fn new(config: &AppConfig, poll_script: Vec<MediaRebuildProgress>) -> Self {
+    pub(super) fn new(config: &AppConfig, poll_script: Vec<MediaRebuildProgress>) -> Self {
         Self {
             inner: RecordingRuntimeAdapter::from_config(config).expect("The adapter should start."),
             poll_script: poll_script.into(),

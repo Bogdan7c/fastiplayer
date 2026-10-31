@@ -4,11 +4,15 @@
 
 use std::time::Duration;
 
+use tracing::warn;
+
 use pushed_media_source::{
     AppendOutcome, EndOfStreamReport, LaneId, PageRemovalOutcome, PageRemovedRange,
     PushedContainer, PushedDuration, PushedSourcePolicy, PushedStreamError, PushedStreamMonitor,
     PushedStreamOpener, PushedStreamStartError, PushedStreamWriter, TimestampOffset, pushed_stream,
 };
+
+use crate::browser_session::buffer_policy::LiveBufferWindow;
 
 /// Сторона приёма потока так, как её видит переходник. Настоящая —
 /// [`PushedStreamWriter`]; тесты подставляют запись вызовов.
@@ -135,26 +139,134 @@ pub(crate) trait StreamFactory: Send {
 
 /// Настоящая фабрика: `pushed_stream(policy)` с готовой политикой (окно буфера уже
 /// подставлено из настроек `[browser_session]` вызывающим — переходник конфиг не читает).
+///
+/// Окно буфера можно сделать «живым» ([`Self::following`]): тогда каждый НОВЫЙ поток
+/// стартует с окном, которое пользователь выставил в окне настроек к этому моменту.
+/// Идущий поток свою копию окна не меняет (решения 96/124).
 pub(crate) struct PushedStreamFactory {
-    /// Политика каждого нового потока.
+    /// Политика каждого нового потока (окно буфера — по умолчанию).
     policy: PushedSourcePolicy,
+    /// Живое окно буфера: если задано, перекрывает окно `policy` при старте потока.
+    live_window: Option<LiveBufferWindow>,
+    /// С каким окном стартовал последний поток (проверка тестов: «текущему не меняли»).
+    #[cfg(test)]
+    last_started_window: Option<pushed_media_source::BufferWindow>,
 }
 
 impl PushedStreamFactory {
-    /// Фабрика с политикой `policy`.
+    /// Фабрика с политикой `policy` и неизменным окном буфера (безоконные тесты).
+    #[cfg(test)]
     pub(crate) const fn new(policy: PushedSourcePolicy) -> Self {
-        Self { policy }
+        Self {
+            policy,
+            live_window: None,
+            #[cfg(test)]
+            last_started_window: None,
+        }
+    }
+
+    /// Фабрика, берущая окно буфера нового потока у `live_window` в момент старта.
+    pub(crate) const fn following(
+        policy: PushedSourcePolicy,
+        live_window: LiveBufferWindow,
+    ) -> Self {
+        Self {
+            policy,
+            live_window: Some(live_window),
+            #[cfg(test)]
+            last_started_window: None,
+        }
+    }
+
+    /// Политика для потока, который стартует сейчас.
+    fn policy_for_new_stream(&self) -> PushedSourcePolicy {
+        let Some(live_window) = &self.live_window else {
+            return self.policy;
+        };
+        match self
+            .policy
+            .with_buffer_window(live_window.window_for_next_stream())
+        {
+            Ok(policy) => policy,
+            // Окно из config-а уже проверено (запас вперёд > 0); сюда попасть нельзя, но
+            // тихо проглотить нельзя тоже: играем с окном, с которым процесс стартовал.
+            Err(error) => {
+                warn!(%error, "The live buffer window was refused; using the startup window");
+                self.policy
+            }
+        }
     }
 }
 
 impl StreamFactory for PushedStreamFactory {
     fn start_stream(&mut self) -> Result<StartedStream, PushedStreamStartError> {
-        let (writer, opener) = pushed_stream(self.policy)?;
+        let policy = self.policy_for_new_stream();
+        #[cfg(test)]
+        {
+            self.last_started_window = Some(policy.buffer_window());
+        }
+        let (writer, opener) = pushed_stream(policy)?;
         let monitor = writer.monitor();
         Ok(StartedStream {
             writer: Box::new(writer),
             opener,
             monitor,
         })
+    }
+}
+
+#[cfg(test)]
+mod live_window_tests {
+    use std::time::Duration;
+
+    use fastiplayer_config::AppConfig;
+
+    use super::*;
+    use crate::settings_runtime::BrowserBufferWindowOwner;
+
+    fn config_window(
+        ahead_s: u16,
+        behind_s: u16,
+    ) -> fastiplayer_config::BrowserSessionBufferWindow {
+        let mut config = AppConfig::default();
+        config.browser_session.buffer_ahead_s = ahead_s;
+        config.browser_session.buffer_behind_s = behind_s;
+        config.browser_session.buffer_window()
+    }
+
+    /// Первое видео стартует со старым окном, после усыновления нового окна следующее
+    /// видео — с новым; окно уже идущего потока (его монитор жив) остаётся прежним.
+    #[test]
+    fn the_next_stream_starts_with_the_adopted_window_and_the_running_one_keeps_its_own() {
+        let live = LiveBufferWindow::new(config_window(120, 30));
+        let mut factory = PushedStreamFactory::following(
+            PushedSourcePolicy::recommended().expect("policy"),
+            live.clone(),
+        );
+
+        let running = factory.start_stream().expect("first stream");
+        let first_window = factory.last_started_window.expect("first window");
+        live.adopt_buffer_window_for_next_stream(config_window(45, 10));
+        let second = factory.start_stream().expect("second stream");
+        let second_window = factory.last_started_window.expect("second window");
+
+        assert_eq!(first_window.ahead, Duration::from_secs(120));
+        assert_eq!(second_window.ahead, Duration::from_secs(45));
+        assert_eq!(second_window.behind, Duration::from_secs(10));
+        // Идущий поток жив; окно, с которым он стартовал, зафиксировано в `first_window`
+        // и усыновление нового окна его не меняет.
+        assert_eq!(first_window.ahead, Duration::from_secs(120));
+        drop((running, second));
+    }
+
+    /// Фабрика без живого окна (безоконный процесс, тесты) всегда берёт окно политики.
+    #[test]
+    fn a_factory_without_a_live_window_keeps_the_policy_window() {
+        let policy = PushedSourcePolicy::recommended().expect("policy");
+        let mut factory = PushedStreamFactory::new(policy);
+
+        factory.start_stream().expect("stream");
+
+        assert_eq!(factory.last_started_window, Some(policy.buffer_window()));
     }
 }

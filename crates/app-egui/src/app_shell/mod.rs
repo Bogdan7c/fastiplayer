@@ -182,8 +182,10 @@ impl AppShell {
         // Сначала строятся все fallible process owners. Inspection запускается
         // последней: после неё constructor уже не может вернуть ошибку и detach-нуть thread.
         let pending_config_warning = config_startup_warning(&loaded_config);
-        let settings_runtime =
+        let mut settings_runtime =
             SettingsRuntime::from_loaded_config_with_wake_port(loaded_config, settings_wake_port)?;
+        // Общая доска (04c): изменения настроек из окон браузерного режима — на лету.
+        settings_runtime.start_watching_config_file(wake_proxy.port(AppWakeOwner::ConfigFile));
         let mut playlist_runtime = PlaylistRuntime::new_with_resume_policy(
             playlist_wake_port,
             settings_runtime.committed_config().playlist,

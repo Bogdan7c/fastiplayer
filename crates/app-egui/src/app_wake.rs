@@ -33,6 +33,9 @@ pub(crate) enum AppWakeOwner {
     /// Процесс браузерного режима с окном (мост, 04a): в ящике сеанса есть работа
     /// (звонок двери, событие сеанса, уведомление потока приёма, запрос байтов).
     BrowserSession,
+    /// Слежение за каталогом config-а (общая доска настроек, 04c): файл мог измениться.
+    /// Payload — флаг в `config_file_watch::ConfigFileChangeReceiver` у `SettingsRuntime`.
+    ConfigFile,
 }
 
 /// Лёгкое typed событие winit: payload остаётся в owner mailbox-е.

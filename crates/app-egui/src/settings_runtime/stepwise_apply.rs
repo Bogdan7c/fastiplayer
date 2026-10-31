@@ -193,6 +193,18 @@ fn apply_in_progress_status() -> SettingsUiStatus {
     }
 }
 
+/// Текст статуса, пока Apply пользователя ждёт конца принятия настроек соседнего окна.
+fn apply_waits_for_other_window_status() -> SettingsUiStatus {
+    SettingsUiStatus {
+        summary: Some("Applying settings…".to_string()),
+        details: vec![
+            "Settings changed in another Fastiplayer window are being applied first; yours \
+             will follow."
+                .to_string(),
+        ],
+    }
+}
+
 impl SettingsRuntime {
     /// Стартует запланированный Apply или продвигает уже идущий; `true` — UI нужно перерисовать.
     pub(super) fn advance_pending_apply<A>(
@@ -213,10 +225,12 @@ impl SettingsRuntime {
                     BeginApply::Completed(report) => (Some(report), audio_level_before_apply),
                     BeginApply::Pending => (None, audio_level_before_apply),
                     BeginApply::Busy => {
-                        // Невозможно при одном владельце `pending_apply`; сообщаем, а не молчим.
-                        tracing::error!("Controller is busy with another settings transaction");
-                        self.report_apply_still_running();
-                        (None, audio_level_before_apply)
+                        // Контроллер занят принятием изменений соседней копии (общая доска):
+                        // Apply пользователя не теряется, а остаётся запланированным и
+                        // начнётся на первом кадре после конца принятия.
+                        self.pending_apply = Some(pending);
+                        self.status = apply_waits_for_other_window_status();
+                        return Ok(false);
                     }
                 }
             }
@@ -272,10 +286,12 @@ impl SettingsRuntime {
         self.invalidate_ui_model();
     }
 
-    /// Идёт ли многокадровая транзакция (планировщик event loop и lifecycle-границы).
+    /// Идёт ли многокадровая работа настроек, ради которой циклу нужно просыпаться
+    /// (планировщик event loop и lifecycle-границы): свой Apply (запланирован или ждёт
+    /// маршрут) либо принятие изменений соседней копии (в полёте или ждёт своей очереди).
     #[must_use]
     pub(crate) fn has_pending_apply(&self) -> bool {
-        self.pending_apply.is_some()
+        self.pending_apply.is_some() || self.has_shared_board_work()
     }
 
     /// Идёт ли именно фаза ожидания маршрута: runtime-commit-ы в это время запрещены.
@@ -302,6 +318,7 @@ impl SettingsRuntime {
                 applied_route_count: 0,
                 automatic_surface_pool,
                 route_sequence: &mut self.route_sequence,
+                save_notices: self.shared_board.save_notices_mut(),
             };
             self.controller.begin_apply(&mut delegate)?
         };
@@ -329,6 +346,7 @@ impl SettingsRuntime {
                 applied_route_count: 0,
                 automatic_surface_pool,
                 route_sequence: &mut self.route_sequence,
+                save_notices: self.shared_board.save_notices_mut(),
             };
             self.controller.poll_apply(&mut delegate)?
         };
@@ -356,6 +374,7 @@ impl SettingsRuntime {
                 applied_route_count: 0,
                 automatic_surface_pool,
                 route_sequence: &mut self.route_sequence,
+                save_notices: self.shared_board.save_notices_mut(),
             };
             self.controller.cancel_pending_apply(&mut delegate)
         };

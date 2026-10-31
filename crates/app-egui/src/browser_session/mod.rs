@@ -58,6 +58,7 @@
 //! `[network]`) читаются один раз при старте и только на чтение: config пишет обычный
 //! плеер. Окно браузерного режима меняет их «только на сеанс» (решение 122, 04a).
 
+mod buffer_policy;
 mod drain_override;
 mod inbox;
 mod intake_notice;

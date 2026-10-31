@@ -3,6 +3,11 @@
 //! Три независимых источника: ширина sidebar (drag мышью), громкость пользователя
 //! (UX-11: слайдер, M, MPRIS) и выбор «субтитры включены» (CC, клавиша C). Все только запоминают изменение и пишут config после
 //! паузы через `SettingsRuntime`; сам frame pipeline не знает про debounce.
+//!
+//! Здесь же — шаг «общей доски» (04c): принятие настроек, которые записала соседняя копия
+//! плеера. Он идёт последним: сначала своё отложенное пишется в файл (под замком, с
+//! перечитыванием), потом копия смотрит, что на диске нового от соседей. Пока принятие
+//! ждёт маршрут, отложенные записи выше сами ждут его конца (как во время Apply).
 
 use std::time::Instant;
 
@@ -56,5 +61,34 @@ pub(super) fn persist_due_runtime_originated_settings(
                 true
             }
         };
-    resize_requested_repaint || audio_requested_repaint || subtitles_requested_repaint
+    let board_requested_repaint =
+        adopt_settings_from_other_windows(settings_runtime, runtime_adapter, now);
+    resize_requested_repaint
+        || audio_requested_repaint
+        || subtitles_requested_repaint
+        || board_requested_repaint
+}
+
+/// Шаг «общей доски»: опрос принятия в полёте или разбор нового сигнала слежения.
+///
+/// Уведомление (битый файл, отказ принятия) показывается в центре уведомлений этого окна.
+fn adopt_settings_from_other_windows(
+    settings_runtime: &mut SettingsRuntime,
+    runtime_adapter: &mut FrameSettingsRuntimeAdapter<'_>,
+    now: Instant,
+) -> bool {
+    let board_frame = settings_runtime.advance_shared_settings_board(runtime_adapter, now);
+    if let Some(notice) = board_frame.notice {
+        runtime_adapter.show_settings_file_notice(notice);
+    }
+    // «Применено, но в файл пока не записано» — от любой записи этого кадра или прошлого
+    // (Apply, громкость, сайдбар, дописывание): одно уведомление на причину.
+    let save_notice_shown = match settings_runtime.take_settings_save_notice() {
+        Some(save_notice) => {
+            runtime_adapter.show_settings_save_notice(save_notice);
+            true
+        }
+        None => false,
+    };
+    board_frame.needs_redraw || save_notice_shown
 }

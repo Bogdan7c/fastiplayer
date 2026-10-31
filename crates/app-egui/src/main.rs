@@ -14,6 +14,7 @@ mod app_shell;
 mod app_wake;
 mod audio_output_message;
 mod browser_session;
+mod config_file_watch;
 mod config_startup_notice;
 mod dma_buf_runtime_fallback;
 mod downloaded_range;

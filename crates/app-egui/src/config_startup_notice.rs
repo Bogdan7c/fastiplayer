@@ -108,8 +108,12 @@ fn session_only_message(reason: &ConfigSessionOnlyReason) -> String {
             "Could not create the settings file ({}).",
             write_problem_text(*problem)
         ),
-        ConfigSessionOnlyReason::BrowserSessionReadOnly => {
-            "Browser mode does not save settings yet.".to_string()
+        ConfigSessionOnlyReason::BrokenConfigLeftToRegularPlayer(problem) => format!(
+            "The settings file is corrupted ({}); browser mode does not repair it. Start the regular Fastiplayer window to repair it.",
+            broken_problem_text(problem)
+        ),
+        ConfigSessionOnlyReason::ConfigDirectoryUnknown => {
+            "The settings folder of this user could not be determined.".to_string()
         }
         // Замок записи config-а при старте не взят, а файла нет или он битый: без замка
         // каталог не трогаем (решение 135 моста, `fastiplayer-config::store::recovery`).

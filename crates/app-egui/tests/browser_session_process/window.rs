@@ -52,6 +52,9 @@ impl VirtualWaylandDisplay {
         let socket_name = "wl-fp04a".to_owned();
         let (compositor_bus, compositor_bus_address) =
             start_compositor_bus(&runtime_dir, &state_dir);
+        let compositor_log = Stdio::from(
+            std::fs::File::create(state_dir.join("kwin.log")).expect("compositor log file"),
+        );
         let spawned = Command::new("kwin_wayland")
             .args([
                 "--virtual",
@@ -71,8 +74,13 @@ impl VirtualWaylandDisplay {
             .env("XDG_CACHE_HOME", state_dir.join("cache"))
             .env("XDG_STATE_HOME", state_dir.join("state"))
             .env("DBUS_SESSION_BUS_ADDRESS", &compositor_bus_address)
+            // `print()` скриптов KWin — отладочное сообщение категории `kwin_scripting`.
+            .env("QT_LOGGING_RULES", "kwin_scripting.debug=true")
+            .env("QT_FORCE_STDERR_LOGGING", "1")
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            // Журнал композитора нужен тесту: `print()` KWin-скриптов (геометрия окон) идёт
+            // сюда (`window_geometry_report`).
+            .stderr(compositor_log)
             .spawn();
         let compositor = match spawned {
             Ok(child) => child,
@@ -159,6 +167,95 @@ for (let index = 0; index < windows.length; index++) {{
         self.kwin_scripting(&["start"]);
     }
 
+    /// Что композитор знает об окне Fastiplayer: размер внутренней области и полноэкранность.
+    ///
+    /// Читается настоящим KWin-скриптом (`clientGeometry`, `fullScreen`), который печатает
+    /// отчёт в журнал композитора; ждёт отчёт до [`WAIT`]. Окон Fastiplayer нет — `None`.
+    pub(super) fn window_geometry_report(&self) -> Option<WindowGeometryReport> {
+        let number = self.next_script.get();
+        self.next_script.set(number + 1);
+        let marker = format!("FPGEOM{number}");
+        self.run_kwin_script(
+            &format!("report-{number}"),
+            &format!(
+                r#"const windows = workspace.windowList();
+let found = false;
+for (let index = 0; index < windows.length; index++) {{
+    const window = windows[index];
+    if (String(window.resourceClass).toLowerCase().indexOf("fastiplayer") >= 0) {{
+        found = true;
+        print("{marker} " + window.clientGeometry.width + "x" + window.clientGeometry.height
+            + " fullscreen=" + window.fullScreen);
+    }}
+}}
+if (!found) {{ print("{marker} none"); }}
+"#
+            ),
+        );
+        let log_path = self.state_dir.join("kwin.log");
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+            if let Some(line) = log.lines().find(|line| line.contains(&marker)) {
+                let report = line.split(&marker).nth(1).unwrap_or_default().trim();
+                return WindowGeometryReport::parse(report);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "KWin never printed {marker}; kwin.log:\n{log}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Человек тянет край окна: композитор меняет размер окна Fastiplayer (интерфейс KWin
+    /// `frameGeometry`) и шлёт ему обычный `configure`, как при перетаскивании рамки.
+    pub(super) fn resize_fastiplayer_window(&self, width: u32, height: u32) {
+        let number = self.next_script.get();
+        self.next_script.set(number + 1);
+        self.run_kwin_script(
+            &format!("resize-{number}"),
+            &format!(
+                r#"const windows = workspace.windowList();
+for (let index = 0; index < windows.length; index++) {{
+    const window = windows[index];
+    if (String(window.resourceClass).toLowerCase().indexOf("fastiplayer") >= 0) {{
+        const frame = window.frameGeometry;
+        window.frameGeometry = {{ x: frame.x, y: frame.y, width: {width}, height: {height} }};
+    }}
+}}
+"#
+            ),
+        );
+    }
+
+    /// Человек выходит из полноэкранного режима (например, меню окна): `fullScreen = false`.
+    pub(super) fn leave_fastiplayer_fullscreen(&self) {
+        let number = self.next_script.get();
+        self.next_script.set(number + 1);
+        self.run_kwin_script(
+            &format!("leave-fullscreen-{number}"),
+            r#"const windows = workspace.windowList();
+for (let index = 0; index < windows.length; index++) {
+    const window = windows[index];
+    if (String(window.resourceClass).toLowerCase().indexOf("fastiplayer") >= 0) {
+        window.fullScreen = false;
+    }
+}
+"#,
+        );
+    }
+
+    /// Загружает и запускает скрипт KWin с текстом `source` под уникальным именем.
+    fn run_kwin_script(&self, name: &str, source: &str) {
+        let script = self.state_dir.join(format!("{name}.js"));
+        std::fs::write(&script, source).expect("KWin script is written");
+        let script_path = script.to_str().expect("UTF-8 script path");
+        let plugin = format!("fastiplayer-test-{name}");
+        self.kwin_scripting(&["loadScript", "ss", script_path, &plugin]);
+        self.kwin_scripting(&["start"]);
+    }
+
     fn kwin_scripting(&self, call: &[&str]) {
         let output = Command::new("busctl")
             .arg(format!("--address={}", self.compositor_bus_address))
@@ -176,6 +273,33 @@ for (let index = 0; index < windows.length; index++) {{
             "KWin scripting call {call:?} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+}
+
+/// Отчёт композитора об окне Fastiplayer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct WindowGeometryReport {
+    /// Внутренняя ширина (`clientGeometry`), пикселей (масштаб частного дисплея — 1).
+    pub(super) width: u32,
+    /// Внутренняя высота.
+    pub(super) height: u32,
+    /// Окно во весь экран.
+    pub(super) fullscreen: bool,
+}
+
+impl WindowGeometryReport {
+    /// Разбирает «WxH fullscreen=true|false»; `none` — окон нет.
+    fn parse(text: &str) -> Option<Self> {
+        if text == "none" {
+            return None;
+        }
+        let (size, fullscreen) = text.split_once(" fullscreen=")?;
+        let (width, height) = size.split_once('x')?;
+        Some(Self {
+            width: width.parse().ok()?,
+            height: height.parse().ok()?,
+            fullscreen: fullscreen == "true",
+        })
     }
 }
 

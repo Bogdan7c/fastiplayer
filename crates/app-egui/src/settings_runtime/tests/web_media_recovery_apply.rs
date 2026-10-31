@@ -147,7 +147,7 @@ fn recovery_policy_success_applies_exact_target_then_persists_finalizes_and_sync
 }
 
 #[test]
-fn recovery_policy_persistence_failure_rolls_owner_back_without_finalize_or_sync() {
+fn recovery_policy_with_unwritable_settings_file_stays_applied_without_rollback() {
     let config = custom_config_for_test();
     let requested_web_media = requested_recovery_policy(&config.web_media);
     let path = temp_config_path("vod-recovery-policy-persist-failure");
@@ -169,28 +169,25 @@ fn recovery_policy_persistence_failure_rolls_owner_back_without_finalize_or_sync
 
     let report = runtime
         .latest_apply_report()
-        .expect("Recovery Persistent Failure Report should continue");
-    assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
+        .expect("recovery apply report should continue");
+    // Решение 135: файл записать нельзя, но policy применена один раз и живёт в памяти.
+    assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
     assert_eq!(report.routes[0].mechanism, ApplyMechanism::InPlace);
-    assert_eq!(report.rollback.len(), 1);
-    assert_eq!(adapter.media_route_updates.len(), 2);
+    assert!(report.rollback.is_empty());
+    assert!(matches!(
+        report
+            .persistence
+            .as_ref()
+            .map(fastiplayer_settings::settings_file_persist_outcome),
+        Some(fastiplayer_settings::SettingsFilePersistOutcome::NotSavedYet { .. })
+    ));
+    assert_eq!(adapter.media_route_updates.len(), 1);
     assert_eq!(
         adapter.media_route_updates[0].0.web_media,
         requested_web_media
     );
     assert_eq!(adapter.media_route_updates[0].1, recovery_setting_ids());
-    assert_eq!(adapter.media_route_updates[1].0.web_media, config.web_media);
-    assert_eq!(adapter.media_route_updates[1].1, recovery_setting_ids());
-    assert_eq!(
-        adapter.transaction_events,
-        vec![
-            SettingsTransactionEvent::MediaServiceApply,
-            SettingsTransactionEvent::MediaServiceApply,
-        ]
-    );
-    assert_eq!(adapter.finalize_calls, 0);
-    assert!(adapter.committed_snapshots.is_empty());
-    assert_eq!(runtime.committed_config().web_media, config.web_media);
+    assert_eq!(runtime.committed_config().web_media, requested_web_media);
     fs::remove_dir_all(&path).expect("Test target directory should be removed");
 }
 

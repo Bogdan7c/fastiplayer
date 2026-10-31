@@ -1,5 +1,6 @@
 use super::*;
 
+mod browser_session;
 mod mechanism;
 mod render_restart;
 mod snapshots;
@@ -8,6 +9,9 @@ mod stepwise;
 mod tests;
 
 pub(super) use stepwise::{PendingRoute, RouteApplyStart};
+
+pub(crate) use browser_session::BrowserBufferWindowOwner;
+use browser_session::BrowserSessionRouteApplier;
 
 use mechanism::media_service_apply_mechanism;
 use render_restart::render_committed_outcome;
@@ -315,6 +319,8 @@ pub(super) struct SettingsRuntimeRouteAppliers {
 
     /// Последний committed Frame Server snapshot после успешного live policy apply.
     pub(super) frame_server: fastiplayer_config::FrameServerConfig,
+    /// Маршрут `browser_session` (окно буфера следующего видео; владелец — только в браузерном окне).
+    pub(super) browser_session: BrowserSessionRouteApplier,
 }
 
 impl SettingsRuntimeRouteAppliers {
@@ -330,6 +336,7 @@ impl SettingsRuntimeRouteAppliers {
             ),
             media_service: MediaServiceRuntimeSnapshot::from_config(config),
             frame_server: config.frame_server.clone(),
+            browser_session: BrowserSessionRouteApplier::default(),
         })
     }
 
@@ -497,17 +504,15 @@ impl SettingsRuntimeRouteAppliers {
                 let result = reconfigure_host.apply_playlist_runtime_settings(&update);
                 Ok(Self::route_report(route, result, ApplyMechanism::InPlace))
             }
-            RuntimeCommittedUpdate::Subtitles(_) | RuntimeCommittedUpdate::BrowserSession(_) => {
-                // Настройки субтитров применяет `AppState::sync_committed_config_snapshot`
-                // (-> `SubtitleOwner::apply_config`) ТОЛЬКО после успешной транзакции, поэтому
-                // откат настроек не оставит новый стиль в плеере. Здесь применять нечего.
-                // Браузерный режим: буфер — для следующего видео со страницы, окно живьём не
-                // применяется (решение 137); значения читает владелец из committed config.
-                Ok(Self::route_report(
-                    route,
-                    AppRouteApplyResult::Applied,
-                    ApplyMechanism::InPlace,
-                ))
+            RuntimeCommittedUpdate::Subtitles(_) => {
+                // Стиль субтитров применяет `AppState::sync_committed_config_snapshot` ТОЛЬКО
+                // после успешной транзакции (откат не оставит новый стиль). Здесь нечего.
+                let applied = AppRouteApplyResult::Applied;
+                Ok(Self::route_report(route, applied, ApplyMechanism::InPlace))
+            }
+            RuntimeCommittedUpdate::BrowserSession(update) => {
+                let result = self.browser_session.apply(&update, &route.groups);
+                Ok(Self::route_report(route, result, ApplyMechanism::InPlace))
             }
             RuntimeCommittedUpdate::RenderPreview(_update) => unreachable!(
                 "render preview committed route requires render adapter promotion path"

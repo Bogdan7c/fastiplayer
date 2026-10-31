@@ -26,6 +26,7 @@
 //!
 //! Модули:
 //! - [`app`] — цикл winit: проход «водитель → ядро → окно → команды → сон», выход;
+//! - [`geometry`] — размер и фуллскрин окна: открыться запомненными, сообщить об изменении (04c);
 //! - [`instance`] — экземпляр окна (решение 121: один источник, не одиночка);
 //! - [`remote`] — пульт и стол (схема владения `AppState` без делёжки);
 //! - [`desktop_transport`] — MPRIS окна `…fastiplayer.browser` (04c): команды виджета →
@@ -33,13 +34,14 @@
 //! - [`driver`] — исполнение команд, «новее заменяет», наблюдение, журнал;
 //! - [`end_notice`] — конец сеанса в окне: сообщение и закрытие после него (04b);
 //! - [`player_port`] — настоящий плеер окна: путь открытия `AppState`;
-//! - [`settings`] — config «только на сеанс» (решение 122);
+//! - [`settings`] — config окна: общая доска с правом записи по вердикту о файле (135);
 //! - [`wake`] — пробуждение цикла ящиком сеанса.
 
 mod app;
 mod desktop_transport;
 mod driver;
 mod end_notice;
+mod geometry;
 mod instance;
 mod player_port;
 mod remote;
@@ -99,7 +101,7 @@ pub(super) fn run_windowed_browser_session(
         desk,
         proxy,
         session_wake_port,
-        settings::session_only_loaded_config(&settings),
+        settings::browser_window_loaded_config(&settings),
         BrowserAudioOutputChoice::from_environment(),
     );
     if let Err(error) = event_loop.run_app(&mut app) {

@@ -1,9 +1,14 @@
-//! Настройки процесса браузерного режима: config.toml только на чтение.
+//! Настройки процесса браузерного режима: чтение config.toml при старте и право записи.
 //!
-//! Браузерный режим делит config с обычным плеером (решение 46), но сам ничего на диск
-//! не пишет (инвариант 7): ни default-файла при первом запуске, ни `.bak` битого файла,
-//! ни миграции. Поэтому здесь нет `load_or_create`/`load_or_recover_at` — только
-//! [`fastiplayer_config::load_from_path`], который файл лишь читает.
+//! Браузерный режим делит config с обычным плеером (решение 46). С 04c окно пишет в него
+//! только запоминаемое и настроенное пользователем (решение 135) — общим путём под замком
+//! «только тронутые ключи», но ничего не чинит: ни default-файла при старте, ни `.bak`
+//! битого файла, ни миграции на диске. Поэтому здесь нет `load_or_create`/
+//! `load_or_recover_at` — только [`fastiplayer_config::read_shared_config_at`], который
+//! файл лишь читает и классифицирует. Заодно этот же вердикт решает право записи:
+//! - файл прочитан или его нет → [`ConfigSavePolicy::WriteToFile`] (файл создаст первая запись);
+//! - файл битый → `SessionOnly(BrokenConfigLeftToRegularPlayer)` (чинит обычный плеер);
+//! - файл новее схемы → `SessionOnly(NewerSchemaVersion)`; не читается → `SessionOnly(..)`.
 //!
 //! Решение владельца сессии 03b: битый config не мешает смотреть — берутся значения по
 //! умолчанию и пишется одно предупреждение в журнал. Путь к файлу в журнал не пишется:
@@ -18,7 +23,10 @@
 use std::io;
 use std::path::Path;
 
-use fastiplayer_config::{AppConfig, BrowserSessionBufferWindow, ConfigError, ConfigPaths};
+use fastiplayer_config::{
+    AppConfig, BrokenConfigProblem, BrowserSessionBufferWindow, ConfigPaths, ConfigSavePolicy,
+    ConfigSessionOnlyReason, SharedConfigProblem, SharedConfigRead,
+};
 use tracing::warn;
 
 mod file_source;
@@ -34,6 +42,11 @@ pub(crate) enum BrowserSettingsOrigin {
     DefaultsWithoutFile,
     /// Файл есть, но им пользоваться нельзя — defaults и предупреждение.
     DefaultsAfterBrokenConfig(BrokenConfigReason),
+    /// Файл записан более новой версией плеера — его не трогаем, живём на defaults.
+    DefaultsAfterNewerConfig {
+        /// Версия схемы, найденная в файле.
+        found: i64,
+    },
 }
 
 /// Почему config.toml не годится (метка для журнала, без пути и содержимого файла).
@@ -60,22 +73,20 @@ impl BrokenConfigReason {
         }
     }
 
-    /// Переводит ошибку чтения config-а в метку. `None` — файла просто нет (не поломка).
-    fn classify(error: &ConfigError) -> Option<Self> {
-        match error {
-            ConfigError::ReadConfigFile { source, .. }
-                if source.kind() == io::ErrorKind::NotFound =>
-            {
-                None
+    /// Переводит проблему файла в метку для журнала.
+    fn classify(problem: &SharedConfigProblem) -> Self {
+        match problem {
+            SharedConfigProblem::Broken(
+                BrokenConfigProblem::InvalidTomlSyntax | BrokenConfigProblem::SchemaMismatch,
+            ) => Self::NotMatchingSchema,
+            SharedConfigProblem::Broken(BrokenConfigProblem::InvalidValue { .. }) => {
+                Self::InvalidValue
             }
-            ConfigError::ProjectDirsUnavailable => Some(Self::ConfigDirectoryUnknown),
-            ConfigError::ParseConfigFile { .. } => Some(Self::NotMatchingSchema),
-            ConfigError::ValidateConfigFile { .. } | ConfigError::InvalidValue { .. } => {
-                Some(Self::InvalidValue)
-            }
-            // Остальные варианты относятся к записи/генерации config-а и при чтении не
-            // возникают; если появятся — честнее считать файл нечитаемым, чем молчать.
-            _ => Some(Self::Unreadable),
+            // Каталог вместо файла, ошибка ввода-вывода, непредвиденный разбор — файл
+            // нельзя прочитать; честнее назвать это так, чем молчать.
+            SharedConfigProblem::NotRegularFile
+            | SharedConfigProblem::ReadFailed { .. }
+            | SharedConfigProblem::UnclassifiedParseFailure => Self::Unreadable,
         }
     }
 }
@@ -91,12 +102,17 @@ pub(crate) struct BrowserSessionSettings {
     app_config: AppConfig,
     /// Откуда он взялся.
     origin: BrowserSettingsOrigin,
+    /// Можно ли окну писать config (решается вердиктом о файле при чтении).
+    save_policy: ConfigSavePolicy,
 }
 
 impl BrowserSessionSettings {
-    /// Значения по умолчанию без чтения диска.
+    /// Значения по умолчанию без чтения диска (как «файла нет»: запись создаст его).
     pub(crate) fn defaults() -> Self {
-        Self::from_defaults(BrowserSettingsOrigin::DefaultsWithoutFile)
+        Self::from_defaults(
+            BrowserSettingsOrigin::DefaultsWithoutFile,
+            ConfigSavePolicy::WriteToFile,
+        )
     }
 
     /// Настройки из готового config-а (тесты воспроизведения задают лимиты декодера).
@@ -105,6 +121,7 @@ impl BrowserSessionSettings {
         Self {
             app_config,
             origin: BrowserSettingsOrigin::ConfigFile,
+            save_policy: ConfigSavePolicy::WriteToFile,
         }
     }
 
@@ -114,33 +131,63 @@ impl BrowserSessionSettings {
     pub(crate) fn load_read_only() -> Self {
         let settings = match ConfigPaths::discover() {
             Ok(paths) => Self::load_read_only_from(&paths.config_file),
-            Err(error) => Self::from_load_error(&error),
+            Err(_directory_unknown) => Self::from_defaults(
+                BrowserSettingsOrigin::DefaultsAfterBrokenConfig(
+                    BrokenConfigReason::ConfigDirectoryUnknown,
+                ),
+                ConfigSavePolicy::SessionOnly(ConfigSessionOnlyReason::ConfigDirectoryUnknown),
+            ),
         };
-        if let BrowserSettingsOrigin::DefaultsAfterBrokenConfig(reason) = settings.origin {
-            warn!(
+        match settings.origin {
+            BrowserSettingsOrigin::DefaultsAfterBrokenConfig(reason) => warn!(
                 reason = reason.log_label(),
                 "Browser session config is not usable; using default settings"
-            );
+            ),
+            BrowserSettingsOrigin::DefaultsAfterNewerConfig { found } => warn!(
+                found_schema_version = found,
+                "Browser session config was written by a newer Fastiplayer; using default settings"
+            ),
+            BrowserSettingsOrigin::ConfigFile | BrowserSettingsOrigin::DefaultsWithoutFile => {}
         }
         settings
     }
 
-    /// Читает конкретный файл только на чтение и решает, что делать при ошибке.
+    /// Читает конкретный файл только на чтение и решает, что делать с ним и с записью.
     ///
     /// Журнал не пишет: предупреждение возвращается в [`Self::origin`].
     pub(crate) fn load_read_only_from(config_file: &Path) -> Self {
-        match fastiplayer_config::load_from_path(config_file) {
-            Ok(loaded) => Self {
-                app_config: loaded.config,
+        match fastiplayer_config::read_shared_config_at(config_file) {
+            SharedConfigRead::Parsed(app_config) => Self {
+                app_config: *app_config,
                 origin: BrowserSettingsOrigin::ConfigFile,
+                save_policy: ConfigSavePolicy::WriteToFile,
             },
-            Err(error) => Self::from_load_error(&error),
+            // Файла нет — обычная ситуация до первого запуска обычного плеера; первая
+            // запись окна создаст файл (под замком, из defaults + свои ключи).
+            SharedConfigRead::Missing => Self::defaults(),
+            SharedConfigRead::Newer { found } => Self::from_defaults(
+                BrowserSettingsOrigin::DefaultsAfterNewerConfig { found },
+                ConfigSavePolicy::SessionOnly(ConfigSessionOnlyReason::NewerSchemaVersion {
+                    found,
+                }),
+            ),
+            SharedConfigRead::Unreadable { problem } => Self::from_defaults(
+                BrowserSettingsOrigin::DefaultsAfterBrokenConfig(BrokenConfigReason::classify(
+                    &problem,
+                )),
+                ConfigSavePolicy::SessionOnly(session_only_reason_for(problem)),
+            ),
         }
     }
 
     /// Откуда взялись настройки (для журнала старта и тестов).
     pub(crate) const fn origin(&self) -> BrowserSettingsOrigin {
         self.origin
+    }
+
+    /// Право окна писать config: решено вердиктом о файле при чтении.
+    pub(crate) fn save_policy(&self) -> ConfigSavePolicy {
+        self.save_policy.clone()
     }
 
     /// Проверенный config для сборки production-конфигурации плеера.
@@ -166,21 +213,31 @@ impl BrowserSessionSettings {
         &self.app_config.audio.output_device
     }
 
-    /// Defaults после ошибки чтения: «нет файла» молча, всё остальное — с причиной.
-    fn from_load_error(error: &ConfigError) -> Self {
-        match BrokenConfigReason::classify(error) {
-            None => Self::defaults(),
-            Some(reason) => {
-                Self::from_defaults(BrowserSettingsOrigin::DefaultsAfterBrokenConfig(reason))
-            }
-        }
-    }
-
-    /// Собирает настройки из значений по умолчанию с указанным происхождением.
-    fn from_defaults(origin: BrowserSettingsOrigin) -> Self {
+    /// Собирает настройки из значений по умолчанию с указанным происхождением и правом записи.
+    fn from_defaults(origin: BrowserSettingsOrigin, save_policy: ConfigSavePolicy) -> Self {
         Self {
             app_config: AppConfig::default(),
             origin,
+            save_policy,
+        }
+    }
+}
+
+/// Причина «только на сеанс» для файла, который нельзя взять за основу записи.
+fn session_only_reason_for(problem: SharedConfigProblem) -> ConfigSessionOnlyReason {
+    match problem {
+        SharedConfigProblem::Broken(broken) => {
+            ConfigSessionOnlyReason::BrokenConfigLeftToRegularPlayer(broken)
+        }
+        SharedConfigProblem::NotRegularFile => ConfigSessionOnlyReason::ConfigPathIsNotFile,
+        SharedConfigProblem::ReadFailed { error_kind } => {
+            ConfigSessionOnlyReason::ConfigFileUnreadable { error_kind }
+        }
+        // Разбор упал не из-за содержимого: файл не трогаем, класс ошибки неизвестен.
+        SharedConfigProblem::UnclassifiedParseFailure => {
+            ConfigSessionOnlyReason::ConfigFileUnreadable {
+                error_kind: io::ErrorKind::Other,
+            }
         }
     }
 }

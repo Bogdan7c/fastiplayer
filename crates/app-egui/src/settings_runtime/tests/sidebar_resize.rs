@@ -138,14 +138,14 @@ fn sidebar_resize_order_preserves_draft_and_last_direct_action_wins() {
     remove_file_if_exists(&path);
 }
 
-/// Persistence failure сохраняет committed/draft, компенсирует runtime route и явно
-/// возвращает live host к последней сохранённой ширине.
+/// Файл настроек записать нельзя (решение 135): ширина применена и остаётся в памяти,
+/// соседний черновик не тронут, отчёт сохранения — «сохраним позже».
 #[test]
-fn sidebar_resize_persistence_failure_rolls_back_live_width_and_preserves_draft() {
+fn sidebar_resize_with_unwritable_settings_file_keeps_width_in_memory() {
     let config = custom_config_for_test();
     let path = temp_config_path("sidebar-resize-persist-failure");
     remove_file_if_exists(&path);
-    fs::create_dir_all(&path).expect("target directory creates deterministic rename failure");
+    fs::create_dir_all(&path).expect("target directory makes the settings file unwritable");
     let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
         config.clone(),
         path.clone(),
@@ -169,32 +169,29 @@ fn sidebar_resize_persistence_failure_rolls_back_live_width_and_preserves_draft(
     assert_eq!(
         runtime
             .flush_pending_sidebar_resize(&mut adapter)
-            .expect("typed persistence failure should stay in apply report"),
-        super::super::SidebarResizeFlushOutcome::Failed
+            .expect("deferred save stays in the apply report"),
+        super::super::SidebarResizeFlushOutcome::Succeeded
     );
     assert_eq!(
         runtime
             .latest_apply_report()
-            .expect("failure report should be retained")
+            .expect("report should be retained")
             .final_state,
-        ApplyFinalState::PersistFailed
+        ApplyFinalState::FullyApplied
     );
-    assert_eq!(runtime.committed_config().ui.sidebar.width_points, 420);
-    assert_eq!(runtime.controller.draft().ui.sidebar.width_points, 420);
+    assert_eq!(runtime.committed_config().ui.sidebar.width_points, 500);
     assert_eq!(runtime.controller.draft().ui.language, "en");
-    assert!(adapter.committed_snapshots.is_empty());
-    assert_eq!(
-        adapter.restored_sidebar_widths,
-        vec![SidebarWidthPoints::from_committed(420)]
-    );
-    assert!(
+    assert!(adapter.restored_sidebar_widths.is_empty());
+    // Отчёт сохранения — «не сохранено сейчас» (дописать при следующей записи); как это
+    // показать пользователю при runtime-коммите, решает владелец уведомлений.
+    assert!(matches!(
         runtime
-            .ui_model()
-            .status
-            .summary
-            .as_deref()
-            .is_some_and(|summary| summary.contains("save"))
-    );
+            .latest_apply_report()
+            .and_then(|report| report.persistence.as_ref())
+            .map(fastiplayer_settings::settings_file_persist_outcome),
+        Some(fastiplayer_settings::SettingsFilePersistOutcome::NotSavedYet { .. })
+    ));
+    assert!(path.is_dir());
     fs::remove_dir_all(&path).expect("test target directory should be removed");
 }
 

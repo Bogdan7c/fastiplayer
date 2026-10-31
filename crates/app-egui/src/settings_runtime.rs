@@ -38,15 +38,15 @@ use render_shell_api::RendererFamily;
 use settings_core::{
     ApplyFinalState, ApplyMechanism, ApplyReport, ApplyRouteReport, ApplyRouteResult, CancelReport,
     CommittedApplyRequest, CommittedFinalizeRequest, CommittedRollbackRequest,
-    CommittedSettingsApplier, OptionProviderId, PersistOutcome, PersistReport, PersistRequest,
-    PreviewApplyReport, PreviewApplyRequest, PreviewApplyResult, PreviewRollbackRequest,
-    PreviewRollbacker, PreviewSettingsApplier, ResetReport, RollbackReport, RollbackResult,
-    RuntimeCommitOutcome, RuntimeSettingCommitRequest, SelectDescriptor, SettingEditor,
-    SettingGroupId, SettingId, SettingOption, SettingOptionCurrentValue, SettingOptionId,
-    SettingOptionProvider, SettingOptions, SettingOptionsError, SettingOptionsRequest,
-    SettingOptionsStatus, SettingRouteId, SettingText, SettingValue, SettingsController,
-    SettingsError, SettingsPersister, SettingsRegistry, SettingsResult, SettingsSurfaceId,
-    SettingsValidator, ValidationReport, ValidationRequest,
+    CommittedSettingsApplier, OptionProviderId, PersistReport, PersistRequest, PreviewApplyReport,
+    PreviewApplyRequest, PreviewApplyResult, PreviewRollbackRequest, PreviewRollbacker,
+    PreviewSettingsApplier, ResetReport, RollbackReport, RollbackResult, RuntimeCommitOutcome,
+    RuntimeSettingCommitRequest, SelectDescriptor, SettingEditor, SettingGroupId, SettingId,
+    SettingOption, SettingOptionCurrentValue, SettingOptionId, SettingOptionProvider,
+    SettingOptions, SettingOptionsError, SettingOptionsRequest, SettingOptionsStatus,
+    SettingRouteId, SettingText, SettingValue, SettingsController, SettingsError,
+    SettingsPersister, SettingsRegistry, SettingsResult, SettingsSurfaceId, SettingsValidator,
+    ValidationReport, ValidationRequest,
 };
 
 use crate::app_instance::RelaunchRequest;
@@ -68,6 +68,7 @@ struct PendingSettingsApply {
     phase: stepwise_apply::PendingApplyPhase,
 }
 
+mod browser_window_geometry;
 mod committed_snapshot;
 mod dynamic_options;
 mod hardware_decode_hint;
@@ -76,6 +77,7 @@ mod render_profile_restart;
 mod route_apply;
 mod setting_labels;
 mod settings_error_message;
+mod shared_board;
 mod sidebar_resize;
 mod status_text;
 mod stepwise_apply;
@@ -87,6 +89,7 @@ mod tests;
 mod transaction;
 mod user_audio_level_persistence;
 
+pub(crate) use browser_window_geometry::{BrowserWindowObservation, WindowedSizePoints};
 pub(crate) use committed_snapshot::CommittedConfigSnapshot;
 #[allow(unused_imports)]
 pub(crate) use committed_snapshot::InitialRenderSettings;
@@ -97,8 +100,8 @@ pub(crate) use hardware_decode_hint::HardwareDecodeAvailability;
 pub(crate) use preview::SettingsPreviewTick;
 #[cfg(test)]
 use route_apply::RenderOnlySettingsRuntimeAdapter;
-pub(crate) use route_apply::SettingsRuntimeReconfigureHost;
 use route_apply::SettingsRuntimeRouteAppliers;
+pub(crate) use route_apply::{BrowserBufferWindowOwner, SettingsRuntimeReconfigureHost};
 pub(crate) use route_apply::{
     MediaRebuildProgress, PlayerApplyStart, PlayerMediaContinuation,
     SettingsRuntimePreflightFailure,
@@ -107,6 +110,7 @@ pub(crate) use route_apply::{
 use route_apply::{MediaServiceRuntimeSnapshot, simulated_player_runtime_report};
 use setting_labels::SettingLabels;
 use settings_error_message::{setting_value_error_text, settings_error_text};
+pub(crate) use shared_board::SettingsFileNotice;
 #[cfg(test)]
 pub(crate) use sidebar_resize::SidebarResizeFlushOutcome;
 use status_text::{
@@ -151,11 +155,17 @@ pub(crate) struct SettingsRuntime {
     /// Latest-only drag resize, ожидающий quiet-period перед atomic persistence.
     pending_sidebar_resize: Option<sidebar_resize::PendingSidebarResize>,
 
+    /// Latest-only геометрия окна браузерного режима, ждущая тишины перед записью.
+    pending_browser_window_geometry: Option<browser_window_geometry::PendingBrowserWindowGeometry>,
+
     /// Громкость и mute пользователя: наблюдение за плеером и отложенная запись (UX-11).
     user_audio_level: user_audio_level_persistence::UserAudioLevelPersistence,
 
     /// Отложенное решение пользователя «субтитры включены/выключены».
     pending_subtitle_enabled: Option<subtitle_enabled_persistence::PendingSubtitleEnabled>,
+
+    /// «Общая доска»: слежение за config-ом и принятие изменений соседних копий (04c).
+    shared_board: shared_board::SharedSettingsBoard,
 
     /// Открыто ли visual settings window; draft transaction начинается при `Open`.
     settings_window_open: bool,
@@ -235,6 +245,8 @@ impl SettingsRuntime {
     ) -> SettingsResult<Self> {
         // Право записи решено config-хранилищем при загрузке; store его только исполняет.
         let store = AppConfigStore::from_save_target(loaded_config.save_target());
+        let shared_board =
+            shared_board::SharedSettingsBoard::from_save_policy(&loaded_config.save_policy);
         let LoadedConfig { config, path, .. } = loaded_config;
         let controller_registry = app_config_registry()?;
         let registry = app_config_registry()?;
@@ -260,8 +272,10 @@ impl SettingsRuntime {
             pending_apply: None,
             route_sequence: None,
             pending_sidebar_resize: None,
+            pending_browser_window_geometry: None,
             user_audio_level,
             pending_subtitle_enabled: None,
+            shared_board,
             settings_window_open: false,
             field_validation_errors: BTreeMap::new(),
             status: SettingsUiStatus::default(),
@@ -513,6 +527,13 @@ impl SettingsRuntime {
             .collect::<BTreeSet<_>>();
         self.registry()
             .descriptors()
+            // «Запоминаемое состояние», которое программа пишет сама (окно браузерного
+            // режима, решение 137), в окне настроек не показывается. `audio.volume` и
+            // `ui.sidebar.width_points` живут на поверхности окна настроек и видны осознанно.
+            .filter(|descriptor| {
+                descriptor.placement.preferred_surface.as_str()
+                    != fastiplayer_config::REMEMBERED_STATE_SURFACE_ID
+            })
             .map(|descriptor| {
                 let draft_value = self
                     .registry()

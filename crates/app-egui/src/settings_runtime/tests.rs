@@ -45,13 +45,17 @@ use crate::render_settings::{
 use crate::settings_ui::SettingsUiAction;
 use crate::ui::sidebar::{SidebarWidthChange, SidebarWidthPoints};
 
+mod browser_window_geometry;
 mod dynamic_options;
 mod english_texts;
 mod hardware_decode_hint;
 mod preview;
+mod remembered_state_fields;
 mod render_keeps_draft;
 mod render_profile_restart;
 mod session_only_persistence;
+mod shared_board;
+mod shared_board_queue;
 mod sidebar_resize;
 mod snapshot_routes;
 mod status_text_user_facing;

@@ -131,6 +131,8 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
             },
             // Владелец процесса браузерного режима; обычное окно его портов не выдаёт.
             AppWakeOwner::BrowserSession => false,
+            // Соседняя копия могла записать config: кадр сам перечитает и примет разницу.
+            AppWakeOwner::ConfigFile => self.settings_runtime.has_config_file_change_signal(),
         };
 
         // Wake показа — не «видимая мутация интерфейса»: что рисовать (кадр, интерфейс или

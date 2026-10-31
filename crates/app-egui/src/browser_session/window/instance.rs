@@ -32,12 +32,11 @@ use super::super::playback::metered_audio::{AudioMeter, BrowserAudioOutputChoice
 use super::desktop_transport::{DesktopWindowPort, TransportObservation};
 use super::driver::WindowPlaybackDriver;
 use super::end_notice::CenterStatusChange;
+use super::geometry::{apply_remembered_fullscreen, browser_window_attributes, observe_window};
 use super::player_port::AppStateWindowPlayer;
-use crate::app_shell::{
-    ReadOnlyRendererStartupMarker, ShellKeyOutcome, handle_shell_key_event, main_window_attributes,
-};
+use crate::app_shell::{ReadOnlyRendererStartupMarker, ShellKeyOutcome, handle_shell_key_event};
 use crate::app_wake::{AppWakeOwner, AppWakePort, AppWakeProxy};
-use crate::frame_prepare::render_frame;
+use crate::frame_prepare::{render_frame, with_lifecycle_settings_adapter};
 use crate::instance_forwarding::window_activation::raise_window;
 use crate::playlist_runtime::PlaylistRuntime;
 use crate::process_shutdown::ShutdownDeadline;
@@ -47,7 +46,9 @@ use crate::redraw_pacing::{
 };
 use crate::render_backend::{StartedRenderer, create_startup_renderer};
 use crate::renderer_recreation::RendererLifecycleCoordinator;
-use crate::settings_runtime::{HardwareDecodeAvailability, SettingsRuntime};
+use crate::settings_runtime::{
+    BrowserBufferWindowOwner, HardwareDecodeAvailability, SettingsRuntime,
+};
 use crate::state::{
     AppState, AppStateStartupContext, CenterStatusUpdate, RendererVideoImportTarget,
     start_track_memory_in_memory_only,
@@ -141,13 +142,23 @@ impl BrowserWindowInstance {
         loaded_config: fastiplayer_config::LoadedConfig,
         ports: InstanceWakePorts,
         audio: InstanceAudio,
+        buffer_window_owner: std::sync::Arc<dyn BrowserBufferWindowOwner>,
     ) -> Result<Self, BrowserWindowStartError> {
         let started_at = Instant::now();
+        // Запомненные размер и фуллскрин окна (решение 138); обычное окно их не читает.
+        let remembered_window = loaded_config.config.browser_session.window;
+        let config_file_wake_port = ports
+            .settings_dynamic_options
+            .sibling_for_owner(AppWakeOwner::ConfigFile);
         let mut settings_runtime = SettingsRuntime::from_loaded_config_with_wake_port(
             loaded_config,
             ports.settings_dynamic_options,
         )
         .map_err(|error| BrowserWindowStartError::Settings(error.to_string()))?;
+        // Общая доска (04c): настройки из соседних окон применяются на лету.
+        settings_runtime.start_watching_config_file(config_file_wake_port);
+        // Новое окно буфера из окна настроек действует на следующее видео со страницы.
+        settings_runtime.attach_browser_buffer_window_owner(buffer_window_owner);
         let playlist_runtime = PlaylistRuntime::new_memory_only(
             ports.playlist_runtime,
             settings_runtime.committed_config().playlist,
@@ -155,9 +166,16 @@ impl BrowserWindowInstance {
         .map_err(|error| BrowserWindowStartError::Playlist(format!("{error:?}")))?;
 
         let window = event_loop
-            .create_window(main_window_attributes())
+            .create_window(browser_window_attributes(remembered_window))
             .map(Arc::new)
             .map_err(|error| BrowserWindowStartError::Window(error.to_string()))?;
+        // Запомнен фуллскрин — входим в него тем же входом, что кнопка и `--fullscreen`.
+        if let Some(entry) = apply_remembered_fullscreen(window.as_ref(), remembered_window) {
+            info!(
+                ?entry,
+                "Browser window fullscreen restored from the settings file"
+            );
+        }
         // Перед человеком окно выводит `apply_page` на первом сеансе (после сборки).
 
         let initial_render_settings = settings_runtime
@@ -376,6 +394,8 @@ impl BrowserWindowInstance {
                 .app_state
                 .poll_local_file_open_job(&mut self.playlist_runtime, self.renderer.as_mut()),
             AppWakeOwner::PlaylistRuntime => self.drain_queue_owners(),
+            // Соседняя копия могла записать config: кадр сам перечитает и примет разницу.
+            AppWakeOwner::ConfigFile => self.settings_runtime.has_config_file_change_signal(),
             // Эти владельцы принадлежат обычному окну или ядру процесса.
             AppWakeOwner::StartupMedia
             | AppWakeOwner::InstanceForwarding
@@ -431,6 +451,8 @@ impl BrowserWindowInstance {
                 debug!(width, height, "Browser window resized");
                 self.renderer_lifecycle
                     .resize_renderer(self.renderer.as_mut(), width, height);
+                // Размер/фуллскрин меняются только пользователем: помним (с паузой записи).
+                self.remember_window_geometry();
             }
             WindowEvent::RedrawRequested => return self.render(event_loop),
             _ => {}
@@ -460,9 +482,12 @@ impl BrowserWindowInstance {
         &self.window
     }
 
-    /// Закрывает экземпляр: плеер, очередь, фоновые задачи настроек — в пределах срока.
-    /// Config не сбрасывается: окно его не пишет (решение 122).
+    /// Закрывает экземпляр: ждущие записи config, плеер, очередь, фоновые задачи настроек —
+    /// в пределах срока.
     pub(super) fn shut_down(mut self, deadline: ShutdownDeadline) {
+        // С 04c окно пишет config (решение 135): отложенные значения дописываются, пока
+        // `AppState` и рендер ещё живы.
+        self.flush_runtime_settings_before_close();
         let player = self.app_state.shutdown_player_until(deadline);
         let queue = self.playlist_runtime.shutdown_until(deadline);
         let options = self
@@ -476,6 +501,107 @@ impl BrowserWindowInstance {
         self.subtitle_wake_port.acknowledge_abandoned_mailbox();
         self.player_timeline_wake_port
             .acknowledge_abandoned_mailbox();
+    }
+
+    /// Запоминает размер/фуллскрин окна после изменения (запись — после паузы тишины).
+    fn remember_window_geometry(&mut self) {
+        if let Some(observation) = observe_window(&self.window) {
+            let _pending_changed = self
+                .settings_runtime
+                .record_browser_window_observation(observation, Instant::now());
+        }
+    }
+
+    /// Срок, к которому цикл должен проснуться ради записи геометрии окна.
+    pub(super) fn window_geometry_persist_deadline(&self) -> Option<Instant> {
+        self.settings_runtime
+            .next_browser_window_geometry_deadline()
+    }
+
+    /// Каждый проход цикла: пишет геометрию окна, если пауза тишины уже прошла.
+    pub(super) fn persist_window_geometry_if_due(&mut self, now: Instant) {
+        let settings_runtime = &mut self.settings_runtime;
+        let result = with_lifecycle_settings_adapter(
+            &self.window,
+            &mut self.renderer,
+            &mut self.app_state,
+            &mut self.playlist_runtime,
+            &mut self.renderer_lifecycle,
+            |runtime_adapter| {
+                settings_runtime.flush_due_browser_window_geometry(now, runtime_adapter)
+            },
+        );
+        match result {
+            Ok(outcome) => {
+                if outcome.needs_redraw() {
+                    self.window.request_redraw();
+                }
+            }
+            Err(error) => {
+                self.settings_runtime
+                    .report_runtime_error("Could not save the browser window size", error);
+                self.window.request_redraw();
+            }
+        }
+    }
+
+    /// Дописывает все ждущие записи config перед закрытием окна: геометрия, ширина
+    /// сайдбара, громкость, выбор субтитров (как `flush_runtime_settings_for_lifecycle_boundary`
+    /// обычного окна). Ошибки не глотаются: статус настроек и журнал.
+    fn flush_runtime_settings_before_close(&mut self) {
+        let final_audio_observation =
+            crate::user_audio_level::PlayerAudioObservation::from_player_snapshot(
+                &self.app_state.refresh_player_snapshot(),
+            );
+        let _level_changed = self
+            .settings_runtime
+            .record_player_audio_observation(final_audio_observation, Instant::now());
+        let _subtitles_choice_changed = self.settings_runtime.record_subtitle_enabled_change(
+            self.app_state.take_subtitle_enabled_preference_change(),
+            Instant::now(),
+        );
+        // Последнее наблюдение окна могло не дойти до записи (закрыли сразу после ресайза).
+        self.remember_window_geometry();
+
+        let settings_runtime = &mut self.settings_runtime;
+        let (geometry, sidebar, audio, subtitles) = with_lifecycle_settings_adapter(
+            &self.window,
+            &mut self.renderer,
+            &mut self.app_state,
+            &mut self.playlist_runtime,
+            &mut self.renderer_lifecycle,
+            |runtime_adapter| {
+                // Незавершённое применение отменяется первым: оно не должно писать config.
+                settings_runtime.cancel_pending_apply(runtime_adapter);
+                // Приём изменений соседней копии тоже отменяется: иначе он держит слот
+                // транзакции, и дописывание ниже упрётся в «занято» (порядок как в обычном окне).
+                settings_runtime.cancel_external_adoption(runtime_adapter);
+                (
+                    settings_runtime.flush_pending_browser_window_geometry(runtime_adapter),
+                    settings_runtime.flush_pending_sidebar_resize(runtime_adapter),
+                    settings_runtime.flush_pending_user_audio_level(runtime_adapter),
+                    settings_runtime.flush_pending_subtitle_enabled(runtime_adapter),
+                )
+            },
+        );
+        if let Err(error) = geometry {
+            self.settings_runtime.report_runtime_error(
+                "Could not save the browser window size before closing",
+                error,
+            );
+        }
+        if let Err(error) = sidebar {
+            self.settings_runtime
+                .report_runtime_error("Could not save sidebar width before closing", error);
+        }
+        if let Err(error) = audio {
+            self.settings_runtime
+                .report_runtime_error("Could not save volume before closing", error);
+        }
+        if let Err(error) = subtitles {
+            self.settings_runtime
+                .report_runtime_error("Could not save subtitles choice before closing", error);
+        }
     }
 
     /// Кадр: тот же `render_frame`, что у обычного окна.
@@ -499,7 +625,10 @@ impl BrowserWindowInstance {
         let action = self.scheduler.after_render_with_deadline(
             frame.pacing,
             has_pending,
-            frame.next_ui_wake_deadline,
+            earliest_deadline(
+                frame.next_ui_wake_deadline,
+                self.window_geometry_persist_deadline(),
+            ),
             Instant::now(),
         );
         self.note_scheduled_cause(action);
@@ -538,6 +667,14 @@ impl BrowserWindowInstance {
         };
         let discovery_changed = self.playlist_runtime.drain_playlist_discovery();
         mailbox_changed || persistence_changed || discovery_changed
+    }
+}
+
+/// Более ранний из двух необязательных сроков.
+fn earliest_deadline(first: Option<Instant>, second: Option<Instant>) -> Option<Instant> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(first.min(second)),
+        (only, None) | (None, only) => only,
     }
 }
 

@@ -70,6 +70,9 @@ impl AppShell {
                     // Незавершённое применение настроек отменяется первым: оно не должно ни
                     // записать config, ни мешать runtime-commit-ам ниже (C2).
                     settings_runtime.cancel_pending_apply(runtime_adapter);
+                    // Принятие настроек соседнего окна (общая доска) тоже прерывается: оно
+                    // повторится после возврата, файл соседа никуда не делся.
+                    settings_runtime.cancel_external_adoption(runtime_adapter);
                     // Ошибка sidebar не должна мешать сохранить громкость, и наоборот.
                     let sidebar_result =
                         settings_runtime.flush_pending_sidebar_resize(runtime_adapter);

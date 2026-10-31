@@ -206,6 +206,15 @@ impl PrivateBusWithBrowserSession {
         }
     }
 
+    /// Путь `config.toml` пользователя процесса (каталог XDG теста).
+    fn user_config_path(&self) -> PathBuf {
+        self.directory
+            .join("xdg")
+            .join("config")
+            .join("fastiplayer")
+            .join("config.toml")
+    }
+
     /// С этого момента любая прочитанная строка журнала с одним из `texts` роняет тест.
     fn forbid_in_log(&self, texts: &[&str]) {
         self.forbidden_in_log
@@ -335,6 +344,22 @@ impl SessionProcessUnderTest {
             bus,
             _video: video,
             mode,
+        })
+    }
+
+    /// Окно на частном дисплее с `config.toml` пользователя (04c: запомненный размер и
+    /// фуллскрин). `None` — `kwin_wayland` нет, тест пропускается.
+    fn start_window_with_config(name: &str, config_toml: &str) -> Option<Self> {
+        let video = TestVideo::Window(window::VirtualWaylandDisplay::start(name)?);
+        let bus = PrivateBusWithBrowserSession::start_with(
+            &format!("{name}-window"),
+            Some(config_toml),
+            &video,
+        );
+        Some(Self {
+            bus,
+            _video: video,
+            mode: VideoMode::Window,
         })
     }
 
@@ -719,6 +744,10 @@ mod seek_back_on_shelf;
 // Окно браузерного режима (04a): то же, но с окном на виртуальном дисплее kwin.
 #[path = "browser_session_process/window.rs"]
 mod window;
+
+// Окно помнит размер и фуллскрин, пишет config (04c, решения 135, 138).
+#[path = "browser_session_process/window_geometry.rs"]
+mod window_geometry;
 
 // Домен и заголовок страницы в окне, MPRIS `…fastiplayer.browser` (04c).
 #[path = "browser_session_process/page_and_mpris.rs"]

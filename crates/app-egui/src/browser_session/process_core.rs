@@ -24,10 +24,11 @@ use browser_bridge_session::{
 use desktop_integration::{
     BrowserEntryService, BrowserEntryServiceConfig, start_browser_entry_service,
 };
-use pushed_media_source::{BufferWindow, PushedSourcePolicy, PushedSourcePolicyError};
+use pushed_media_source::{PushedSourcePolicy, PushedSourcePolicyError};
 use tracing::{debug, info};
 
 use super::BrowserSessionStartFailure;
+use super::buffer_policy::{LiveBufferWindow, source_window};
 use super::inbox::{BrowserSessionInbox, BrowserSessionWake, InboxCapacity};
 use super::intake_notice::IntakeNotice;
 use super::normal_player_pause::SystemNormalPlayerPause;
@@ -46,6 +47,7 @@ use super::stream_queue::{OrderedSessionQueue, QueueLimits};
 use super::translator::ProtocolTranslator;
 use super::translator::file_port::PushedFileFactory;
 use super::translator::stream_port::PushedStreamFactory;
+use crate::settings_runtime::BrowserBufferWindowOwner;
 use crate::viewer_transport::ViewerTransportIntent;
 
 /// Сколько ждать поток приёма при выходе. Разбор одной пачки — миллисекунды;
@@ -90,6 +92,8 @@ pub(super) struct BrowserSessionCore {
     /// Страница, открытая за последний шаг, пока окно её не забрало
     /// ([`Self::take_opened_page`]). Только в памяти (инвариант 7).
     opened_page: Option<OpenedPage>,
+    /// Окно буфера для следующего видео (его обновляет маршрут настроек окна).
+    live_buffer_window: LiveBufferWindow,
 }
 
 impl BrowserSessionCore {
@@ -108,6 +112,9 @@ impl BrowserSessionCore {
     ) -> Result<Self, BrowserSessionStartFailure> {
         let player_hello = super::player_hello::player_hello()?;
         let source_policy = pushed_source_policy(settings)?;
+        // Окно буфера для СЛЕДУЮЩЕГО видео: маршрут настроек обновляет его, фабрика
+        // потоков читает при старте каждого нового потока.
+        let live_buffer_window = LiveBufferWindow::new(settings.buffer_window());
         // Окно предзагрузки и повторы файла `<video src>` — из тех же `[network]`, что у ссылок.
         let file_source = settings.file_source()?;
         let file_policy = file_source.policy()?;
@@ -131,7 +138,7 @@ impl BrowserSessionCore {
             queue.clone(),
             inbox.clone(),
             ProtocolTranslator::new(
-                PushedStreamFactory::new(source_policy),
+                PushedStreamFactory::following(source_policy, live_buffer_window.clone()),
                 // Запрос байтов будит главный цикл сразу, а не по тику часов.
                 Box::new(PushedFileFactory::new(
                     file_policy,
@@ -193,7 +200,13 @@ impl BrowserSessionCore {
             entry_service,
             control,
             opened_page: None,
+            live_buffer_window,
         })
+    }
+
+    /// Ручка, которой настройки окна меняют окно буфера для следующего видео.
+    pub(super) fn buffer_window_owner(&self) -> Arc<dyn BrowserBufferWindowOwner> {
+        Arc::new(self.live_buffer_window.clone())
     }
 
     /// Один шаг главного цикла (не блокирует): звонки, события, медиа, вердикт.
@@ -361,9 +374,5 @@ impl SessionMediaPort for SessionOpenObserver<'_> {
 fn pushed_source_policy(
     settings: &BrowserSessionSettings,
 ) -> Result<PushedSourcePolicy, PushedSourcePolicyError> {
-    let window = settings.buffer_window();
-    PushedSourcePolicy::recommended()?.with_buffer_window(BufferWindow {
-        ahead: window.ahead(),
-        behind: window.behind(),
-    })
+    PushedSourcePolicy::recommended()?.with_buffer_window(source_window(settings.buffer_window()))
 }

@@ -37,6 +37,8 @@ use std::time::{Duration, Instant};
 
 use browser_bridge_session::{ExitCause, LifecycleVerdict};
 use fastiplayer_config::LoadedConfig;
+use std::sync::Arc;
+
 use tracing::{debug, error, info};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -61,6 +63,7 @@ use super::instance::{
 use super::remote::PlaybackDesk;
 use crate::app_wake::{AppWakeEvent, AppWakeOwner, AppWakePort, AppWakeProxy};
 use crate::process_shutdown::ShutdownDeadline;
+use crate::settings_runtime::BrowserBufferWindowOwner;
 
 /// Сколько ждать плеер, очередь и фоновые задачи окна при выходе.
 ///
@@ -110,6 +113,8 @@ pub(super) struct BrowserWindowApp {
     session_wake_port: AppWakePort,
     loaded_config: LoadedConfig,
     audio_choice: BrowserAudioOutputChoice,
+    /// Куда настройки окна передают окно буфера для следующего видео со страницы.
+    buffer_window_owner: Arc<dyn BrowserBufferWindowOwner>,
     /// Когда разбудить цикл ради ядра (без внешнего повода).
     core_wake_at: Option<Instant>,
     forced_exit: Option<ForcedExit>,
@@ -132,6 +137,8 @@ impl BrowserWindowApp {
         loaded_config: LoadedConfig,
         audio_choice: BrowserAudioOutputChoice,
     ) -> Self {
+        // Окно буфера следующего видео принадлежит ядру; настройки окна получают ручку к нему.
+        let buffer_window_owner = core.buffer_window_owner();
         Self {
             core: Some(core),
             driver,
@@ -142,6 +149,7 @@ impl BrowserWindowApp {
             session_wake_port,
             loaded_config,
             audio_choice,
+            buffer_window_owner,
             core_wake_at: None,
             forced_exit: None,
             window_failure: None,
@@ -235,6 +243,8 @@ impl BrowserWindowApp {
                 self.driver.drive_loads(&mut player);
             }
             instance.drain_queue_each_pass();
+            // Размер/фуллскрин окна пишутся после паузы тишины (решение 138).
+            instance.persist_window_geometry_if_due(now);
             if let Some(desktop) = self.desktop.as_mut() {
                 let observation = instance.transport_observation();
                 desktop.publish(&observation, now);
@@ -292,6 +302,7 @@ impl BrowserWindowApp {
                 choice: self.audio_choice,
                 meter: self.driver.audio_meter(),
             },
+            self.buffer_window_owner.clone(),
         );
         match created {
             Ok(mut instance) => {
@@ -318,14 +329,21 @@ impl BrowserWindowApp {
 
     /// Сон: решение планировщика кадров окна, но не позже срока ядра.
     fn schedule_next_wake(&mut self, event_loop: &ActiveEventLoop) {
+        let mut geometry_deadline = None;
         match self.instance.as_mut() {
             Some(instance) => {
                 let action = instance.before_idle_wait(&self.driver);
                 apply_redraw_action(event_loop, instance.window(), action);
+                geometry_deadline = instance.window_geometry_persist_deadline();
             }
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
-        let merged = merge_wake_deadline(event_loop.control_flow(), self.core_wake_at);
+        // Проснуться надо к ближайшему сроку: ядро или запись геометрии окна.
+        let wake_deadline = match (self.core_wake_at, geometry_deadline) {
+            (Some(core), Some(geometry)) => Some(core.min(geometry)),
+            (only, None) | (None, only) => only,
+        };
+        let merged = merge_wake_deadline(event_loop.control_flow(), wake_deadline);
         event_loop.set_control_flow(merged);
     }
 

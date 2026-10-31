@@ -1,5 +1,6 @@
 //! End-to-end settings transaction coordinator for app-owned runtime routes.
 
+use super::shared_board::{PersistNoticeRoute, SaveDeferralNotices};
 use super::stepwise_apply::StepwiseRouteSequence;
 use super::*;
 
@@ -19,6 +20,8 @@ pub(super) struct SettingsRuntimeApplyDelegate<'runtime, A> {
     pub(super) automatic_surface_pool: player_core::AutomaticSurfacePool,
     /// Многокадровая очередь маршрутов (C2); синхронные пути передают пустой слот.
     pub(super) route_sequence: &'runtime mut Option<StepwiseRouteSequence>,
+    /// Учёт уведомлений «применено, но в файл пока не записано» (общая доска, 04c).
+    pub(super) save_notices: &'runtime mut SaveDeferralNotices,
 }
 
 impl<A> SettingsValidator<AppConfig> for SettingsRuntimeApplyDelegate<'_, A> {
@@ -39,9 +42,14 @@ where
             document: request.document,
             changed_settings: request.changed_settings,
         })?;
-        if report.outcome == PersistOutcome::SkippedSessionOnly {
-            // Изменение применено без записи на диск — пользователь должен это знать.
-            self.runtime_adapter.report_settings_kept_for_session_only();
+        // Изменение применено без записи на диск — пользователь должен это знать. Запрет
+        // записи на весь запуск — прежняя плашка; «пока не записано» (файл занят, битый…) —
+        // своё уведомление с причиной, одно на причину, а не на каждый runtime-коммит.
+        match self.save_notices.record_persist_report(&report) {
+            PersistNoticeRoute::SessionOnlyBanner => {
+                self.runtime_adapter.report_settings_kept_for_session_only();
+            }
+            PersistNoticeRoute::Quiet => {}
         }
         Ok(report)
     }
@@ -206,6 +214,7 @@ impl SettingsRuntime {
                 applied_route_count: 0,
                 automatic_surface_pool,
                 route_sequence: &mut unused_route_sequence,
+                save_notices: self.shared_board.save_notices_mut(),
             };
             self.controller
                 .commit_runtime_settings(requests, &mut delegate)?
@@ -255,6 +264,7 @@ impl SettingsRuntime {
                 applied_route_count: 0,
                 automatic_surface_pool,
                 route_sequence: &mut unused_route_sequence,
+                save_notices: self.shared_board.save_notices_mut(),
             };
             self.controller.apply(&mut delegate)?
         };
