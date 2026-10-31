@@ -378,6 +378,8 @@ fn random_player_message(generator: &mut Generator) -> PlayerSessionMessage {
                 StreamRejection::ProtectedContent,
                 StreamRejection::UnsupportedCodec,
                 StreamRejection::UnparsableMedia,
+                StreamRejection::FileUnavailable,
+                StreamRejection::PlaybackFailed,
             ]),
         },
     }

@@ -590,6 +590,13 @@
       }
     },
     {
+      "file": "session/valid/player-stream-rejected-playback-failed.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
       "file": "session/invalid/player-field-from-a-future-minor.json",
       "schema": "player_session",
       "expect": {

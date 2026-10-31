@@ -21,6 +21,7 @@ use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 
 use browser_bridge_protocol::limits::{MAX_JSON_MESSAGE_BYTES, MAX_JSON_SAFE_INTEGER};
+use browser_bridge_protocol::session::StreamRejection;
 use browser_bridge_protocol::{
     BridgeSoftware, CURRENT_PROTOCOL_VERSION, DataFrame, DataFrameHeader, ExtensionControlMessage,
     GateDecision, IncompatibleVersion, MessageErrorKind, PageSessionMessage, PeerCapabilities,
@@ -445,4 +446,26 @@ fn recorded_streams_reassemble_source_buffer_bytes_exactly_and_drop_only_stale_o
             "{name}: сообщения"
         );
     }
+}
+
+/// Причина `playback_failed` (решение 128): фикстура разбирается ровно в этот
+/// вариант, кодирование возвращает те же байты, а выдуманная причина по-прежнему
+/// отвергается.
+#[test]
+fn playback_failed_rejection_parses_encodes_exactly_and_unknown_reasons_stay_rejected() {
+    let path = fixtures_root().join("session/valid/player-stream-rejected-playback-failed.json");
+    let bytes = std::fs::read(path).unwrap();
+
+    let message: PlayerSessionMessage = decode_message(&bytes).unwrap();
+    let PlayerSessionMessage::StreamRejected { reason, .. } = &message else {
+        panic!("фикстура должна быть stream_rejected, а не {message:?}");
+    };
+    assert_eq!(*reason, StreamRejection::PlaybackFailed);
+    assert_eq!(
+        encode_message(&message).unwrap(),
+        r#"{"type":"stream_rejected","generation":3,"reason":"playback_failed"}"#
+    );
+
+    let invented = br#"{"type":"stream_rejected","generation":3,"reason":"decoder_exploded"}"#;
+    assert!(decode_message::<PlayerSessionMessage>(invented).is_err());
 }

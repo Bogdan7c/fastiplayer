@@ -588,6 +588,10 @@ def write_player_session(manifest: Manifest) -> None:
             "stream-rejected-file-unavailable",
             {"type": "stream_rejected", "generation": 2, "reason": "file_unavailable"},
         ),
+        (
+            "stream-rejected-playback-failed",
+            {"type": "stream_rejected", "generation": 3, "reason": "playback_failed"},
+        ),
     ]:
         manifest.valid(f"{valid}{name}.json", schema, message)
 
