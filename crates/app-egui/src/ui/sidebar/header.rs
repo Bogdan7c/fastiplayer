@@ -389,6 +389,7 @@ mod tests {
                 model: &settings_model,
                 settings_host: crate::settings_ui::section_extras::SettingsHostFacts::default(),
                 snapshot: &snapshot,
+                page: None,
                 url_model: &url_model,
                 playlist_model: None,
                 playlist_row_style: skin.playlist_row_style(),

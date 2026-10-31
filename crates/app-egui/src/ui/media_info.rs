@@ -3,12 +3,48 @@
 use egui::{RichText, Ui};
 use player_core::PlayerSnapshot;
 
-pub(crate) fn show(ui: &mut Ui, snapshot: &PlayerSnapshot) {
+use crate::page_label::PageLabel;
+
+/// Что показывать вместо заголовка у страницы без `<title>`.
+const NO_TITLE_LABEL: &str = "(none)";
+
+/// Строки блока `Page`: сайт и заголовок страницы-источника (04c).
+fn page_rows(page: &PageLabel) -> [(&'static str, &str); 2] {
+    let title = if page.title().trim().is_empty() {
+        NO_TITLE_LABEL
+    } else {
+        page.title()
+    };
+    [("Site", page.domain()), ("Title", title)]
+}
+
+/// Блок `Page` в том же стиле, что заголовки секций дорожек. Домен и заголовок
+/// живут только в памяти окна (инвариант 7).
+fn show_page_block(ui: &mut Ui, page: &PageLabel) {
+    ui.label(RichText::new("Page").strong());
+    for (name, value) in page_rows(page) {
+        row(ui, name, value);
+    }
+}
+
+/// Рисует Info. `page` есть только у окна браузерного режима: блок `Page` идёт первым
+/// и виден даже пока медиа ещё не открыто.
+pub(crate) fn show(ui: &mut Ui, snapshot: &PlayerSnapshot, page: Option<&PageLabel>) {
+    let has_page = page.is_some();
+    if let Some(page) = page {
+        show_page_block(ui, page);
+    }
     let Some(info) = snapshot.media_info.as_ref() else {
+        if has_page {
+            ui.separator();
+        }
         ui.label("No media file is open");
         return;
     };
 
+    if has_page {
+        ui.separator();
+    }
     row(ui, "Source", &info.source.display_location);
     if let Some(size_bytes) = info.source.size_bytes {
         row(
@@ -125,6 +161,56 @@ fn format_iec_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Плоский текст всех подписей, которые Info нарисовало за кадр.
+    fn painted_texts(page: Option<&PageLabel>) -> Vec<String> {
+        let snapshot = PlayerSnapshot::empty();
+        let context = egui::Context::default();
+        let output = crate::ui::test_frame::run_ui_frame(
+            &context,
+            crate::ui::test_frame::input_at(0.0, Vec::new()),
+            |ui| show(ui, &snapshot, page),
+        );
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Браузерное окно без медиа: Page первым, с доменом и заголовком, затем заглушка.
+    #[test]
+    fn page_block_leads_info_and_is_visible_without_media() {
+        let texts = painted_texts(Some(&PageLabel::new("Cats", "video.example")));
+        let position = |needle: &str| {
+            texts
+                .iter()
+                .position(|text| text == needle)
+                .unwrap_or_else(|| panic!("no `{needle}` in {texts:?}"))
+        };
+        assert_eq!(position("Page"), 0);
+        assert!(position("Site:") < position("video.example"));
+        assert!(position("video.example") < position("Title:"));
+        assert!(position("Title:") < position("Cats"));
+        assert!(position("Cats") < position("No media file is open"));
+    }
+
+    /// Страница без заголовка — понятная пометка.
+    #[test]
+    fn page_without_title_says_none() {
+        let texts = painted_texts(Some(&PageLabel::new("  ", "video.example")));
+        assert!(texts.contains(&"(none)".to_owned()), "{texts:?}");
+    }
+
+    /// Обычное окно: блока Page нет, остаётся только заглушка.
+    #[test]
+    fn standard_window_has_no_page_block() {
+        assert_eq!(painted_texts(None), vec!["No media file is open"]);
+    }
+
     #[test]
     fn iec_size_is_stable() {
         assert_eq!(format_iec_size(1_048_576), "1.0 MiB");

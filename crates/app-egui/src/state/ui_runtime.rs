@@ -181,7 +181,6 @@ impl AppState {
                     render_diagnostics,
                     timeline_ui_state: &timeline_ui_state,
                     renderer_report: self.renderer_report.as_ref(),
-                    page: self.window_mode.page_label(),
                     start_time,
                     frame_duration_estimate_ms,
                 },
@@ -204,6 +203,8 @@ impl AppState {
 
         let egui_run_started_at = Instant::now();
         let view_profile = self.view_profile();
+        // Текст шапки берём до замыкания кадра: оно заимствует `self` изменяемо.
+        let window_chrome_title = self.window_chrome_title().into_owned();
         let live_scrub_enabled = self.live_scrub_gesture_enabled();
         let full_output = self.egui_ctx.run_ui(egui_input, |ui| {
             video_viewport_rect = ui.max_rect();
@@ -221,7 +222,7 @@ impl AppState {
                 ui,
                 chrome_presentation.hidden_fraction,
                 WindowChromeInput {
-                    title: "Fastiplayer",
+                    title: &window_chrome_title,
                     height_points: titlebar_height_points,
                     is_maximized: window_is_maximized,
                     is_fullscreen: window_is_fullscreen,
@@ -285,6 +286,7 @@ impl AppState {
                     model: settings_ui_model,
                     settings_host: settings_host_facts,
                     snapshot: player_snapshot,
+                    page: self.window_mode.page_label(),
                     url_model: &url_sidebar_model,
                     playlist_model: playlist_view_model.as_ref(),
                     playlist_interaction: playlist_models.interaction,

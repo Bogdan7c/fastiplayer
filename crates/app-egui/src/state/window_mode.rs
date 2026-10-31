@@ -16,6 +16,7 @@
 //! браузерном окне она превращает команду в намерение зрителя и кладёт его в ящик; окно
 //! забирает ящик каждый проход цикла и отдаёт медиа-части сеанса.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use player_core::{PlaybackState, PlayerCommand, PlayerWorkerSendError};
@@ -28,6 +29,9 @@ use crate::viewer_transport::{
     TransportRoute, ViewerTransportIntent, ViewerTransportOutbox, viewer_intent_for_command,
 };
 use crate::window_view_profile::WindowViewProfile;
+
+/// Название приложения в шапке окна, когда страницы-источника нет.
+const APP_CHROME_TITLE: &str = "Fastiplayer";
 
 /// Режим окна (см. описание модуля).
 #[derive(Debug, Default)]
@@ -61,6 +65,14 @@ impl WindowMode {
     fn note_downloaded_range(&mut self, range: DownloadedRange) {
         if self.is_page_led() {
             self.downloaded_range = range;
+        }
+    }
+
+    /// Текст шапки окна (см. `AppState::window_chrome_title`).
+    fn chrome_title(&self) -> Cow<'_, str> {
+        match self.page_label() {
+            Some(page) => Cow::Owned(page.window_title()),
+            None => Cow::Borrowed(APP_CHROME_TITLE),
         }
     }
 
@@ -205,6 +217,14 @@ impl AppState {
         self.window_mode.note_page(page);
     }
 
+    /// Текст в нарисованной шапке окна: в браузерном окне — «<заголовок> — <домен>»
+    /// страницы-источника, пока подписи нет и в обычном окне — название приложения.
+    /// Тот же текст, что `set_title` отдаёт системе, чтобы шапка и панель задач не
+    /// расходились.
+    pub(crate) fn window_chrome_title(&self) -> Cow<'_, str> {
+        self.window_mode.chrome_title()
+    }
+
     /// Забирает намерения зрителя для медиа-части сеанса (обычное окно — всегда пусто).
     pub(crate) fn take_viewer_transport_intents(&mut self) -> Vec<ViewerTransportIntent> {
         match &mut self.window_mode.transport {
@@ -221,6 +241,20 @@ mod tests {
     use super::*;
 
     const POSITION: Duration = Duration::from_secs(20);
+
+    /// Заголовок шапки: браузерное окно с подписью показывает страницу, без подписи и
+    /// обычное окно (даже если ему назвали страницу) — название приложения.
+    #[test]
+    fn the_chrome_title_follows_the_page_only_in_the_browser_window() {
+        let mut browser = WindowMode::browser_session();
+        assert_eq!(browser.chrome_title(), "Fastiplayer");
+        browser.note_page(PageLabel::new("Cats", "video.example"));
+        assert_eq!(browser.chrome_title(), "Cats — video.example");
+
+        let mut standard = WindowMode::standard();
+        standard.note_page(PageLabel::new("Cats", "video.example"));
+        assert_eq!(standard.chrome_title(), "Fastiplayer");
+    }
 
     fn routed_to_player(route: CommandRoute) -> PlayerCommand {
         match route {

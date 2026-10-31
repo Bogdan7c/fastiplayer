@@ -1,6 +1,5 @@
 use super::*;
 mod backend_rows;
-mod page_rows;
 use frame_server_core::{
     CountSummary, DurationSummary, LiveScrubDecodeMode, ScrubDiagnosticsSnapshot,
 };
@@ -33,8 +32,6 @@ pub(super) struct TelemetryPanelState<'panel> {
 
     /// Отчёт выбора рендера при старте (строка `Renderer:`); `None` — выбор неизвестен.
     pub(super) renderer_report: Option<&'panel crate::render_backend::RendererStartupReport>,
-    /// Страница-источник (окно браузерного режима); в обычном окне `None`.
-    pub(super) page: Option<&'panel crate::page_label::PageLabel>,
 
     /// Время запуска приложения.
     pub(super) start_time: std::time::Instant,
@@ -237,7 +234,6 @@ impl AppState {
     ) -> Arc<[TelemetryPanelRow]> {
         let mut panel_rows = Vec::with_capacity(TELEMETRY_PANEL_ROW_CAPACITY);
 
-        Self::append_page_rows(&mut panel_rows, &panel_state);
         Self::append_telemetry_summary_rows(&mut panel_rows, &panel_state);
         Self::append_media_info_rows(&mut panel_rows, &panel_state);
         Self::append_frame_server_rows(&mut panel_rows, &panel_state);

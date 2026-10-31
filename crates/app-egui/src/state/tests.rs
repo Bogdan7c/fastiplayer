@@ -109,7 +109,6 @@ fn telemetry_panel_state_for_tests<'state>(
         render_diagnostics,
         timeline_ui_state,
         renderer_report: None,
-        page: None,
         start_time,
         frame_duration_estimate_ms: 16.67,
     }

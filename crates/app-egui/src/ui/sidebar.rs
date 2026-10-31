@@ -109,6 +109,8 @@ pub(crate) struct SidebarRenderContext<'a> {
     /// Факты приложения для дополнительных строк секций настроек (например, есть ли видео).
     pub(crate) settings_host: crate::settings_ui::section_extras::SettingsHostFacts,
     pub(crate) snapshot: &'a player_core::PlayerSnapshot,
+    /// Страница-источник (окно браузерного режима): блок `Page` в начале Info.
+    pub(crate) page: Option<&'a crate::page_label::PageLabel>,
     pub(crate) url_model: &'a crate::web_media_stream_model::UrlSidebarModel,
     pub(crate) playlist_model: Option<&'a crate::playlist_runtime::PlaylistViewModel>,
     pub(crate) playlist_row_style: PlaylistRowStyle,
@@ -360,7 +362,7 @@ fn render_section(ui: &mut Ui, section: SidebarSection, context: &mut SidebarRen
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.set_min_width(0.0);
-                        media_info::show(ui, context.snapshot);
+                        media_info::show(ui, context.snapshot, context.page);
                     });
             }
         }

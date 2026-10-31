@@ -73,7 +73,6 @@ mod tests {
             render_diagnostics: &render_diagnostics,
             timeline_ui_state: &timeline_ui_state,
             renderer_report,
-            page: None,
             start_time: Instant::now(),
             frame_duration_estimate_ms: 16.67,
         });
