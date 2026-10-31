@@ -28,6 +28,12 @@ pub use controller::{
     SettingsPersister, SettingsValidator, StepwiseCommittedApplier, ValidationReport,
     ValidationRequest,
 };
+// Принятие изменений, уже записанных другой копией: живёт рядом со stepwise-транзакцией, потому
+// что делит с ней единственный слот транзакции в полёте.
+pub use controller::pending_apply::{
+    BeginExternalAdoption, ExternalAdoptionOutcome, ExternalAdoptionReport, ExternalDraftMerge,
+    ExternalSettingChange, PollExternalAdoption,
+};
 pub use diff::{SettingChange, SettingsDiff};
 pub use error::{
     ListLengthLimitKind, SettingValueError, SettingsError, SettingsResult, TextLengthLimitKind,

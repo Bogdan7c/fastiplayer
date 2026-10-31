@@ -16,6 +16,10 @@
 //! - пока транзакция в полёте, committed документ и generation не меняются;
 //! - транзакция одна: повторный `begin_apply` возвращает [`BeginApply::Busy`], первая цела;
 //! - порядок маршрутов, откат завершённого префикса и отчёты те же, что у синхронного пути.
+//!
+//! Слот транзакции в полёте общий и для принятия изменений, уже записанных другой копией
+//! (`external_adoption.rs`): у неё свой begin/poll/cancel и свой тип отчёта, но транзакция на
+//! контроллер по-прежнему одна.
 
 use super::PersistReport;
 use super::{
@@ -25,7 +29,13 @@ use super::{
     SettingsController, SettingsPersister, SettingsValidator, ValidationReport, ValidationRequest,
 };
 use crate::diff::SettingsDiff;
-use crate::error::SettingsResult;
+use crate::error::{SettingsError, SettingsResult};
+
+mod external_adoption;
+pub use external_adoption::{
+    BeginExternalAdoption, ExternalAdoptionOutcome, ExternalAdoptionReport, ExternalDraftMerge,
+    ExternalSettingChange, PollExternalAdoption,
+};
 
 /// Промежуточный итог одного шага применения маршрутов у stepwise-владельца.
 #[derive(Debug, Clone, PartialEq)]
@@ -75,7 +85,9 @@ pub enum BeginApply {
 /// Итог [`SettingsController::poll_apply`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum PollApply {
-    /// Транзакции в полёте нет (не начиналась, уже завершена или отменена).
+    /// Пользовательской транзакции в полёте нет (не начиналась, уже завершена или отменена).
+    /// Принятие чужих изменений этим опросом не продвигается: у него свой
+    /// [`SettingsController::poll_external_adoption`].
     Idle,
     /// Маршрут всё ещё ждёт результата.
     Pending,
@@ -95,6 +107,17 @@ pub(super) struct ApplyPlan {
 pub(super) struct PendingApply<D> {
     plan: ApplyPlan,
     requested: D,
+    origin: TransactionOrigin,
+}
+
+/// Кто начал транзакцию в полёте: от этого зависят хвост (с записью config-а или без) и тип
+/// отчёта. Опрос и отмена одного вида не трогают транзакцию другого вида.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransactionOrigin {
+    /// Пользовательский Apply: хвост `finish_apply` с persist.
+    UserApply,
+    /// Принятие значений, уже записанных другой копией: хвост без persist.
+    ExternalAdoption,
 }
 
 /// Результат одного шага: транзакция либо ждёт, либо завершена.
@@ -107,7 +130,8 @@ impl<D> SettingsController<D>
 where
     D: Clone + Default,
 {
-    /// Есть ли транзакция, которая ждёт маршрут.
+    /// Есть ли транзакция (любого вида: свой Apply или принятие чужих изменений), которая
+    /// ждёт маршрут. Пока она есть, новая транзакция не начинается.
     #[must_use]
     pub fn has_pending_apply(&self) -> bool {
         self.pending_apply.is_some()
@@ -135,7 +159,15 @@ where
             changed_settings: &plan.changed_settings,
         });
         Ok(
-            match self.settle(delegate, PendingApply { plan, requested }, progress) {
+            match self.settle(
+                delegate,
+                PendingApply {
+                    plan,
+                    requested,
+                    origin: TransactionOrigin::UserApply,
+                },
+                progress,
+            ) {
                 Settled::Pending => BeginApply::Pending,
                 Settled::Completed(report) => BeginApply::Completed(report),
             },
@@ -147,7 +179,7 @@ where
     where
         A: SettingsValidator<D> + SettingsPersister<D> + StepwiseCommittedApplier<D>,
     {
-        let Some(pending) = self.pending_apply.take() else {
+        let Some(pending) = self.take_pending(TransactionOrigin::UserApply) else {
             return Ok(PollApply::Idle);
         };
         let progress = delegate.poll_apply_committed(CommittedApplyRequest {
@@ -165,12 +197,29 @@ where
     /// Отменяет транзакцию в полёте (shutdown/suspend): без persist и без finalize.
     ///
     /// Маршрут в полёте прерывается, завершённые маршруты откатываются; committed документ
-    /// остаётся прежним. Возвращает `None`, если отменять нечего.
+    /// остаётся прежним. Возвращает `None`, если отменять нечего. Принятие чужих изменений
+    /// здесь не отменяется: его отменяет [`Self::cancel_external_adoption`].
     pub fn cancel_pending_apply<A>(&mut self, delegate: &mut A) -> Option<ApplyReport>
     where
         A: StepwiseCommittedApplier<D>,
     {
-        let pending = self.pending_apply.take()?;
+        let pending = self.take_pending(TransactionOrigin::UserApply)?;
+        Some(self.cancel_transaction(delegate, pending))
+    }
+
+    /// Забирает транзакцию в полёте, только если её начал `origin`; чужую оставляет в слоте.
+    fn take_pending(&mut self, origin: TransactionOrigin) -> Option<PendingApply<D>> {
+        if self.pending_apply.as_ref()?.origin != origin {
+            return None;
+        }
+        self.pending_apply.take()
+    }
+
+    /// Прерывает маршрут в полёте и откатывает завершённые: общий путь отмены обоих видов.
+    fn cancel_transaction<A>(&self, delegate: &mut A, pending: PendingApply<D>) -> ApplyReport
+    where
+        A: StepwiseCommittedApplier<D>,
+    {
         let mut errors = Vec::new();
         let rollback = match delegate.cancel_apply_committed(CommittedRollbackRequest {
             previous_committed: &self.committed,
@@ -189,7 +238,7 @@ where
                 .iter()
                 .any(|report| matches!(report.result, RollbackResult::Failed { .. }));
         let PendingApply { plan, .. } = pending;
-        Some(ApplyReport {
+        ApplyReport {
             validation: Some(plan.validation),
             persistence: None,
             routes: Vec::new(),
@@ -202,7 +251,7 @@ where
             },
             conflicts: Vec::new(),
             errors,
-        })
+        }
     }
 
     /// Общая развилка шага: ждать дальше или завершить транзакцию общим хвостом.
@@ -223,7 +272,9 @@ where
             Ok(CommittedApplyProgress::Finished(routes)) => Ok(routes),
             Err(error) => Err(error),
         };
-        let PendingApply { plan, requested } = pending;
+        let PendingApply {
+            plan, requested, ..
+        } = pending;
         // Коммитится ровно примененный документ (см. инвариант `PendingApply`).
         self.draft = requested;
         Settled::Completed(self.finish_apply(delegate, plan, apply_result))
@@ -359,55 +410,27 @@ where
             validation,
         } = plan;
         let mut errors = Vec::new();
-        let routes = match apply_result {
-            Ok(routes) => routes,
-            Err(error) => {
-                let message = error.to_string();
-                errors.push(error);
-                route_updates
-                    .iter()
-                    .map(|update| {
-                        ApplyRouteReport::failed(
-                            update.route.clone(),
-                            update.affected_settings.clone(),
-                            message.clone(),
-                        )
-                    })
-                    .collect()
-            }
-        };
+        let routes = route_reports_or_failures(&route_updates, apply_result, &mut errors);
 
-        let runtime_commit_succeeded =
-            !routes.is_empty() && routes.iter().all(|report| report.result.is_full_success());
-        if !runtime_commit_succeeded {
-            let (rollback, rollback_delegate_failed) =
-                match delegate.rollback_committed(CommittedRollbackRequest {
+        if !all_routes_fully_succeeded(&routes) {
+            let (rollback, final_state) = compensate_runtime_apply(
+                delegate,
+                CommittedRollbackRequest {
                     previous_committed: &self.committed,
                     attempted: &self.draft,
                     route_updates: &route_updates,
                     changed_settings: &changed_settings,
-                }) {
-                    Ok(reports) => (reports, false),
-                    Err(error) => {
-                        errors.push(error);
-                        (Vec::new(), true)
-                    }
-                };
-            let rollback_failed = rollback_delegate_failed
-                || rollback
-                    .iter()
-                    .any(|report| matches!(report.result, RollbackResult::Failed { .. }));
+                },
+                ApplyFinalState::RuntimeApplyFailed,
+                &mut errors,
+            );
             return ApplyReport {
                 validation: Some(validation),
                 persistence: None,
                 routes,
                 rollback,
                 changed_settings,
-                final_state: if rollback_failed {
-                    ApplyFinalState::RollbackFailed
-                } else {
-                    ApplyFinalState::RuntimeApplyFailed
-                },
+                final_state,
                 conflicts: Vec::new(),
                 errors,
             };
@@ -420,34 +443,24 @@ where
             Ok(report) => report,
             Err(persist_error) => {
                 errors.push(persist_error);
-                let (rollback, rollback_delegate_failed) =
-                    match delegate.rollback_committed(CommittedRollbackRequest {
+                let (rollback, final_state) = compensate_runtime_apply(
+                    delegate,
+                    CommittedRollbackRequest {
                         previous_committed: &self.committed,
                         attempted: &self.draft,
                         route_updates: &route_updates,
                         changed_settings: &changed_settings,
-                    }) {
-                        Ok(reports) => (reports, false),
-                        Err(rollback_error) => {
-                            errors.push(rollback_error);
-                            (Vec::new(), true)
-                        }
-                    };
-                let rollback_failed = rollback_delegate_failed
-                    || rollback
-                        .iter()
-                        .any(|report| matches!(report.result, RollbackResult::Failed { .. }));
+                    },
+                    ApplyFinalState::PersistFailed,
+                    &mut errors,
+                );
                 return ApplyReport {
                     validation: Some(validation),
                     persistence: None,
                     routes,
                     rollback,
                     changed_settings,
-                    final_state: if rollback_failed {
-                        ApplyFinalState::RollbackFailed
-                    } else {
-                        ApplyFinalState::PersistFailed
-                    },
+                    final_state,
                     conflicts: Vec::new(),
                     errors,
                 };
@@ -473,4 +486,67 @@ where
             errors,
         }
     }
+}
+
+/// Отчёты маршрутов после применения. Ошибка делегата целиком означает «ни одна маршрута не
+/// подтвердила успех»: каждая получает отчёт `Failed` с текстом ошибки, сама ошибка — в `errors`.
+fn route_reports_or_failures(
+    route_updates: &[RouteApplyUpdate],
+    apply_result: SettingsResult<Vec<ApplyRouteReport>>,
+    errors: &mut Vec<SettingsError>,
+) -> Vec<ApplyRouteReport> {
+    match apply_result {
+        Ok(routes) => routes,
+        Err(error) => {
+            let message = error.to_string();
+            errors.push(error);
+            route_updates
+                .iter()
+                .map(|update| {
+                    ApplyRouteReport::failed(
+                        update.route.clone(),
+                        update.affected_settings.clone(),
+                        message.clone(),
+                    )
+                })
+                .collect()
+        }
+    }
+}
+
+/// Все ли маршруты подтвердили полный успех (пустой набор успехом не считается).
+fn all_routes_fully_succeeded(routes: &[ApplyRouteReport]) -> bool {
+    !routes.is_empty() && routes.iter().all(|report| report.result.is_full_success())
+}
+
+/// Компенсирующий откат завершённого префикса маршрутов.
+///
+/// Возвращает отчёты отката и итоговое состояние транзакции: `compensated_state`, если откат
+/// удался, иначе [`ApplyFinalState::RollbackFailed`] (исходная ошибка остаётся в отчётах маршрутов).
+fn compensate_runtime_apply<D, A>(
+    delegate: &mut A,
+    request: CommittedRollbackRequest<'_, D>,
+    compensated_state: ApplyFinalState,
+    errors: &mut Vec<SettingsError>,
+) -> (Vec<RollbackReport>, ApplyFinalState)
+where
+    A: CommittedSettingsApplier<D>,
+{
+    let (rollback, rollback_delegate_failed) = match delegate.rollback_committed(request) {
+        Ok(reports) => (reports, false),
+        Err(error) => {
+            errors.push(error);
+            (Vec::new(), true)
+        }
+    };
+    let rollback_failed = rollback_delegate_failed
+        || rollback
+            .iter()
+            .any(|report| matches!(report.result, RollbackResult::Failed { .. }));
+    let final_state = if rollback_failed {
+        ApplyFinalState::RollbackFailed
+    } else {
+        compensated_state
+    };
+    (rollback, final_state)
 }

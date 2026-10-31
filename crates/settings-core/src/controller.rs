@@ -9,7 +9,7 @@ use crate::metadata::{
 use crate::registry::SettingsRegistry;
 
 mod apply_mechanism;
-mod pending_apply;
+pub(crate) mod pending_apply;
 mod runtime_commit;
 pub use apply_mechanism::ApplyMechanism;
 pub use pending_apply::{BeginApply, CommittedApplyProgress, PollApply, StepwiseCommittedApplier};

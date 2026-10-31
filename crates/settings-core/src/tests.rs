@@ -1509,6 +1509,8 @@ fn codec_order_descriptor() -> SettingDescriptor {
     }
 }
 
+#[path = "controller/pending_apply/external_adoption/tests.rs"]
+mod external_adoption_tests;
 #[path = "controller/pending_apply/tests.rs"]
 mod pending_apply_tests;
 #[path = "controller/runtime_commit_tests.rs"]

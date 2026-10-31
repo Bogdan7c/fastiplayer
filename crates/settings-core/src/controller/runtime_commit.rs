@@ -49,11 +49,14 @@ struct SavedTransactionState<D> {
 }
 
 /// Маршрут, затронутый батчем, с данными для перебазирования generation.
-struct AffectedRoute {
-    route: SettingRouteId,
-    generation_before_commit: RouteGeneration,
+///
+/// Общий с принятием чужих изменений (`pending_apply/external_adoption.rs`): там коммит тоже
+/// приходит не из draft, и соседние правки draft перебазируются тем же правилом.
+pub(super) struct AffectedRoute {
+    pub(super) route: SettingRouteId,
+    pub(super) generation_before_commit: RouteGeneration,
     /// После коммита в draft остались изменения этой маршрута (соседние поля).
-    still_has_draft_changes: bool,
+    pub(super) still_has_draft_changes: bool,
 }
 
 impl<D> SettingsController<D>
@@ -206,7 +209,7 @@ where
     /// Коммит увеличил generation маршрута. Если соседнее draft-поле той же маршрута всё ещё
     /// изменено, оно должно сравниваться с новым поколением, а не давать ложный conflict. Уже
     /// stale baseline не перебазируется: runtime intent не вправе скрывать настоящий conflict.
-    fn rebase_after_runtime_commit(&mut self, affected: &AffectedRoute) {
+    pub(super) fn rebase_after_runtime_commit(&mut self, affected: &AffectedRoute) {
         let current_generation = self.route_generation(&affected.route);
         if affected.still_has_draft_changes {
             match self
