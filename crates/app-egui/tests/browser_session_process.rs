@@ -757,3 +757,7 @@ mod page_and_mpris;
 // следующее поколение играет; `SeekTimeout` доходит до уведомлений окна.
 #[path = "browser_session_process/viewer_notices.rs"]
 mod viewer_notices;
+
+// Следов просмотра в HOME/XDG нет: ни файлов, ни данных страницы (инвариант 7, 04c).
+#[path = "browser_session_process/home_stays_clean.rs"]
+mod home_stays_clean;
