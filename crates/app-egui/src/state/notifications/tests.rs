@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use media_core::MediaTime;
 use player_core::{
-    PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind, PlayerSession, PlayerSnapshot,
-    SeekRequest,
+    PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSession,
+    PlayerSnapshot, SeekRequest,
 };
 
 use super::*;
@@ -630,5 +630,29 @@ fn renderer_selection_notice_appears_only_for_failures_and_stays_until_closed() 
     assert_eq!(
         toast_messages(&idle_frame(&mut center, hour_later)),
         vec![expected]
+    );
+}
+
+/// `SeekTimeout` плеера (перемотка, на которую данные так и не пришли — например, в окне
+/// браузерного режима страница не прислала байты с цели) — временный тост с подсказкой,
+/// а не ошибка в центре: картинка не стоит молча (мост, 04b, решение 129).
+#[test]
+fn a_seek_timeout_of_the_player_becomes_a_transient_toast() {
+    let now = Instant::now();
+    let mut center = NotificationCenter::default();
+    center.record_player_event(
+        &PlayerEvent::RecoverableError(PlayerError::new(
+            PlayerErrorKind::SeekTimeout,
+            "Seek commit timeout after target=5000 ms",
+        )),
+        now,
+    );
+    let frame = center.frame(OpenProgress::Idle, UiMotion::Standard, now);
+    assert_eq!(frame.center, None);
+    assert_eq!(frame.toasts.len(), 1, "{:?}", frame.toasts);
+    assert_eq!(frame.toasts[0].kind, ToastKind::Transient);
+    assert_eq!(
+        frame.toasts[0].message.as_ref(),
+        "Seeking timed out; try again"
     );
 }

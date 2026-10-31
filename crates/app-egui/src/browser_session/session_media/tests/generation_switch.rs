@@ -36,6 +36,7 @@ fn a_fault_of_the_previous_media_never_rejects_the_next_generation() {
     harness.player.observation.borrow_mut().fault = Some(LoadFault {
         load: first_load,
         fault: BrowserPlaybackFault::UnsupportedVideo,
+        announcement: FaultAnnouncement::AnnouncedByPlayer,
     });
     let start = Instant::now();
     harness.media.drive(start);
@@ -54,6 +55,7 @@ fn a_fault_of_the_previous_media_never_rejects_the_next_generation() {
     harness.player.observation.borrow_mut().fault = Some(LoadFault {
         load: second_load,
         fault: BrowserPlaybackFault::UnsupportedVideo,
+        announcement: FaultAnnouncement::AnnouncedByPlayer,
     });
     harness.media.drive(start + Duration::from_secs(2));
     harness.media.drive(start + Duration::from_secs(3));

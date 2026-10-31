@@ -69,6 +69,7 @@ mod player_hello;
 mod process_core;
 mod range_wake;
 mod rejection;
+mod rejection_notice;
 mod runtime;
 mod session_config;
 mod session_end;

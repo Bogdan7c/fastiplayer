@@ -126,6 +126,23 @@ impl LoadStart {
     }
 }
 
+/// Сообщил ли плеер об отказе сам — то есть видел ли его уже зритель окна.
+///
+/// Окно браузерного режима показывает зрителю короткое сообщение при отказе поколения
+/// (решение 129). Но часть отказов плеер публикует сам — событием ошибки
+/// (`PlayerEvent::RecoverableError`/`FatalError`) или состоянием `Failed` в снимке, — и
+/// `AppState` окна уже показал их обычным путём (тост ошибки плеера или ошибка в центре,
+/// `state/notifications/player_feed.rs`). Второе сообщение на то же событие не нужно.
+/// Отказ установки (итог установки, отмена, отказ начать) плеер ошибкой не публикует —
+/// о нём зритель без нашего сообщения ничего не узнает.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FaultAnnouncement {
+    /// Плеер сам сообщил об ошибке (событие ошибки или `Failed` в снимке).
+    AnnouncedByPlayer,
+    /// Отказ установки: плеер его ошибкой не публиковал.
+    NotAnnounced,
+}
+
 /// Отказ, приписанный конкретной загрузке.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LoadFault {
@@ -133,6 +150,8 @@ pub(crate) struct LoadFault {
     pub(crate) load: MediaLoadTicket,
     /// Что случилось.
     pub(crate) fault: BrowserPlaybackFault,
+    /// Сообщил ли о нём плеер сам (см. [`FaultAnnouncement`]).
+    pub(crate) announcement: FaultAnnouncement,
 }
 
 /// Что главный цикл узнал за один [`BrowserPlayback::pump`].
@@ -174,10 +193,15 @@ impl PlaybackObservation {
     /// Отказ установки приходит до того, как медиа показано (`shows` ещё ложь), — он
     /// всё равно принадлежит этой загрузке; отказ прежнего медиа — нет.
     pub(crate) fn fault_of(&self, ticket: MediaLoadTicket) -> Option<&BrowserPlaybackFault> {
+        self.load_fault_of(ticket)
+            .map(|load_fault| &load_fault.fault)
+    }
+
+    /// То же, что [`Self::fault_of`], но целиком: с тем, сообщил ли о нём плеер сам.
+    pub(crate) fn load_fault_of(&self, ticket: MediaLoadTicket) -> Option<&LoadFault> {
         self.fault
             .as_ref()
             .filter(|load_fault| load_fault.load == ticket)
-            .map(|load_fault| &load_fault.fault)
     }
 
     /// То, что увидит страница, пока плеер ставит новое медиа: «жду данных» в

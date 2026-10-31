@@ -28,7 +28,9 @@ use std::collections::VecDeque;
 use player_core::{MediaInstanceId, PlaybackState, PlayerErrorKind, PlayerSnapshot};
 
 use super::media_identity::ShownMediaTracker;
-use super::{BrowserPlaybackFault, LoadFault, MediaLoadTicket, PlaybackObservation};
+use super::{
+    BrowserPlaybackFault, FaultAnnouncement, LoadFault, MediaLoadTicket, PlaybackObservation,
+};
 
 /// Учёт загрузок одного плеера.
 #[derive(Debug, Default)]
@@ -75,7 +77,12 @@ impl LoadLedger {
             return;
         }
         if self.unclaimed_video_errors.claim(instance) {
-            self.note_fault(ticket, BrowserPlaybackFault::UnsupportedVideo);
+            // Ошибку плеер прислал событием раньше итога установки: он сообщил её сам.
+            self.record_fault(
+                ticket,
+                BrowserPlaybackFault::UnsupportedVideo,
+                FaultAnnouncement::AnnouncedByPlayer,
+            );
         }
         // Экземпляр текущей загрузки известен: остальным запомненным ждать некого.
         self.unclaimed_video_errors.forget_all();
@@ -97,12 +104,26 @@ impl LoadLedger {
         self.note_fault(ticket, fault_for_error_kind(kind));
     }
 
-    /// Приписывает отказ загрузке (только текущей; прежние уже забыты).
+    /// Приписывает загрузке отказ её установки (только текущей; прежние уже забыты).
+    ///
+    /// Для отказов, которые плеер ошибкой не публиковал (итог установки, отказ начать,
+    /// отмена): зритель окна о них сам не узнал ([`FaultAnnouncement::NotAnnounced`]).
     pub(crate) fn note_fault(&mut self, ticket: MediaLoadTicket, fault: BrowserPlaybackFault) {
+        self.record_fault(ticket, fault, FaultAnnouncement::NotAnnounced);
+    }
+
+    /// Записывает отказ текущей загрузки вместе с тем, сообщил ли о нём плеер сам.
+    fn record_fault(
+        &mut self,
+        ticket: MediaLoadTicket,
+        fault: BrowserPlaybackFault,
+        announcement: FaultAnnouncement,
+    ) {
         if Some(ticket) == self.current_load {
             self.fault = Some(LoadFault {
                 load: ticket,
                 fault,
+                announcement,
             });
         }
     }
@@ -135,7 +156,11 @@ impl LoadLedger {
         };
         match self.shown_media.shown_load(Some(instance)) {
             Some(load) if Some(load) == self.current_load => {
-                self.note_fault(load, BrowserPlaybackFault::UnsupportedVideo);
+                self.record_fault(
+                    load,
+                    BrowserPlaybackFault::UnsupportedVideo,
+                    FaultAnnouncement::AnnouncedByPlayer,
+                );
             }
             // Установленный экземпляр заменённой загрузки: прежнее медиа, не наше.
             Some(_) => {}
@@ -158,9 +183,11 @@ impl LoadLedger {
                 .last_error
                 .as_ref()
                 .map_or(PlayerErrorKind::RuntimeError, |error| error.kind.clone());
+            // `Failed` в снимке окно уже показало ошибкой в центре (`player_feed`).
             self.fault = Some(LoadFault {
                 load,
                 fault: fault_for_error_kind(kind),
+                announcement: FaultAnnouncement::AnnouncedByPlayer,
             });
         }
     }

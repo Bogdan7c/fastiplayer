@@ -187,3 +187,70 @@ fn the_unclaimed_memory_is_bounded_and_forgets_the_oldest() {
         "the newest unclaimed instance is still remembered"
     );
 }
+
+/// Сообщил ли плеер об отказе сам — по нему окно решает, нужен ли зрителю наш тост
+/// (04b, решение 129): ошибку плеера `AppState` окна уже показал.
+fn announcement_of(ledger: &LoadLedger, ticket: MediaLoadTicket) -> Option<FaultAnnouncement> {
+    ledger
+        .observation(&PlayerSnapshot::default())
+        .load_fault_of(ticket)
+        .map(|load_fault| load_fault.announcement)
+}
+
+#[test]
+fn install_faults_are_not_announced_and_player_errors_are() {
+    let mut tickets = MediaLoadTicketIssuer::default();
+
+    // Отказ установки — итог установки, а не ошибка плеера: зритель его не видел.
+    let mut ledger = LoadLedger::default();
+    let load = tickets.issue();
+    ledger.begin_load(load);
+    ledger.note_install_failed(load, PlayerErrorKind::UnsupportedAudioCodec);
+    assert_eq!(
+        announcement_of(&ledger, load),
+        Some(FaultAnnouncement::NotAnnounced)
+    );
+
+    // Отмена текущей установки — тоже.
+    let mut ledger = LoadLedger::default();
+    let load = tickets.issue();
+    ledger.begin_load(load);
+    ledger.note_install_cancelled(load);
+    assert_eq!(
+        announcement_of(&ledger, load),
+        Some(FaultAnnouncement::NotAnnounced)
+    );
+
+    // «Видео не по силам» событием плеера — плеер сообщил сам.
+    let mut ledger = LoadLedger::default();
+    let load = tickets.issue();
+    ledger.begin_load(load);
+    ledger.note_installed(load, instance(3));
+    ledger.note_player_error(Some(instance(3)), &PlayerErrorKind::UnsupportedVideoCodec);
+    assert_eq!(
+        announcement_of(&ledger, load),
+        Some(FaultAnnouncement::AnnouncedByPlayer)
+    );
+
+    // То же, когда событие обогнало итог установки.
+    let mut ledger = LoadLedger::default();
+    let load = tickets.issue();
+    ledger.begin_load(load);
+    ledger.note_player_error(Some(instance(4)), &PlayerErrorKind::UnsupportedVideoChroma);
+    ledger.note_installed(load, instance(4));
+    assert_eq!(
+        announcement_of(&ledger, load),
+        Some(FaultAnnouncement::AnnouncedByPlayer)
+    );
+
+    // `Failed` в снимке — плеер сообщил сам (окно показало ошибку в центре).
+    let mut ledger = LoadLedger::default();
+    let load = tickets.issue();
+    ledger.begin_load(load);
+    ledger.note_installed(load, instance(5));
+    ledger.note_snapshot(&showing(5, PlaybackState::Failed));
+    assert_eq!(
+        announcement_of(&ledger, load),
+        Some(FaultAnnouncement::AnnouncedByPlayer)
+    );
+}

@@ -41,6 +41,15 @@ impl TimelineUiState {
         self.live_scrub_gesture_active
     }
 
+    /// Держит ли зритель таймлайн прямо сейчас: тянет бегунок обычным перетаскиванием
+    /// или ведёт живой скраб (нажал и ещё не отпустил). Нужно правилу спиннера ожидания
+    /// (`state::notifications::buffering`): пока жест идёт, `Scrubbing` плеера — кадры
+    /// превью, а не ожидание данных.
+    #[must_use]
+    pub const fn is_held_by_viewer(&self) -> bool {
+        self.has_active_drag() || self.has_active_live_scrub_gesture()
+    }
+
     pub fn clear_transient_drag(&mut self) {
         self.transient_drag_position = None;
     }
@@ -355,6 +364,56 @@ mod tests {
                 MediaTime::from_secs(90)
             )]
         );
+    }
+
+    #[test]
+    fn the_viewer_holds_the_timeline_only_between_press_and_release() {
+        let at = |fraction| TimelinePointerInput {
+            pointer_fraction: Some(fraction),
+            ..Default::default()
+        };
+        // Обычное перетаскивание (без живого скраба): держит с начала до отпускания.
+        let mut state = TimelineUiState::default();
+        assert!(!state.is_held_by_viewer());
+        frame(
+            &mut state,
+            TimelinePointerInput {
+                drag_started: true,
+                ..at(0.2)
+            },
+            false,
+        );
+        assert!(state.is_held_by_viewer());
+        frame(
+            &mut state,
+            TimelinePointerInput {
+                drag_stopped: true,
+                ..at(0.7)
+            },
+            false,
+        );
+        assert!(!state.is_held_by_viewer());
+
+        // Живой скраб: держит с нажатия; отпускание (и клик) отпускает в том же кадре.
+        let mut state = TimelineUiState::default();
+        frame(
+            &mut state,
+            TimelinePointerInput {
+                pointer_down_on_timeline: true,
+                ..at(0.2)
+            },
+            true,
+        );
+        assert!(state.is_held_by_viewer());
+        frame(
+            &mut state,
+            TimelinePointerInput {
+                clicked: true,
+                ..at(0.2)
+            },
+            true,
+        );
+        assert!(!state.is_held_by_viewer());
     }
 
     #[test]

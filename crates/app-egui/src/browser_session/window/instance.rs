@@ -297,6 +297,13 @@ impl BrowserWindowInstance {
         }
     }
 
+    /// Короткое сообщение зрителю тостом (уходит само, как тосты ошибок плеера).
+    pub(super) fn notify_viewer(&mut self, message: &'static str) {
+        self.app_state.notify_transient(message);
+        self.app_state.note_visible_mutation_for_redraw();
+        self.window.request_redraw();
+    }
+
     /// Плеер окна для водителя на время одного прохода.
     pub(super) fn player(&mut self) -> AppStateWindowPlayer<'_> {
         AppStateWindowPlayer {

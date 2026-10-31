@@ -62,20 +62,22 @@ use tracing::{debug, error, info, warn};
 
 use self::ending::ActiveDrain;
 use self::generation_feed::{FeedReport, LoadedFeed, OpenStep, PendingFeed, in_issue_order};
+use self::generation_rejection::ViewerAwareness;
 use self::generation_start::{AfterLoad, GenerationStart};
 use super::intake_notice::{GenerationHandoff, IntakeNotice, PageIntent};
 use super::outbound::{PENDING_RETRY_INTERVAL, PageOutbound, RangeQueueOutcome};
 use super::playback::{
-    BrowserPlaybackCommandError, BrowserPlaybackFault, LoadStart, MediaLoadTicket,
-    PlaybackObservation,
+    BrowserPlaybackCommandError, LoadStart, MediaLoadTicket, PlaybackObservation,
 };
 use super::rejection::FailureResponse;
+use super::rejection_notice::GenerationRejectionNotice;
 use pushed_media_source::RangeRequest;
 
 mod drain;
 mod ending;
 mod farewell;
 mod generation_feed;
+mod generation_rejection;
 mod generation_start;
 mod install_reconcile;
 mod scrub_range;
@@ -167,6 +169,8 @@ pub(crate) struct SessionMedia {
     last_observation: Option<PlaybackObservation>,
     /// Воля зрителя, которую страница ещё не подтвердила (правило эха, 04a).
     viewer_will: ViewerWill,
+    /// Отказ поколения, о котором окно ещё не сказало зрителю (04b, решение 129).
+    rejection_notice: GenerationRejectionNotice,
 }
 
 impl SessionMedia {
@@ -191,6 +195,7 @@ impl SessionMedia {
             sealed_instance: None,
             last_observation: None,
             viewer_will: ViewerWill::default(),
+            rejection_notice: GenerationRejectionNotice::Nothing,
         }
     }
 
@@ -296,7 +301,7 @@ impl SessionMedia {
             }
             IntakeNotice::Reject {
                 generation, reason, ..
-            } => self.reject(generation, reason),
+            } => self.reject(generation, reason, ViewerAwareness::Unaware),
             // Исполнена выше, до проверки «текущий ли экземпляр».
             IntakeNotice::CloseSession { .. } => {}
         }
@@ -399,34 +404,6 @@ impl SessionMedia {
         }
     }
 
-    /// Отказ от поколения: странице `stream_rejected`; ждущее открытие этого
-    /// поколения больше не нужно.
-    fn reject(&mut self, generation: StreamGeneration, reason: StreamRejection) {
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.generation == generation)
-        {
-            self.pending = None;
-        }
-        if self.drain.is_some() {
-            // Сеанс кончился: сказать отказ некому (отложенное повторялось бы вечно).
-            info!(
-                generation = generation.get(),
-                ?reason,
-                "Stream generation rejected after the session ended"
-            );
-            return;
-        }
-        if self.outbound.reject_generation(generation, reason) {
-            info!(
-                generation = generation.get(),
-                ?reason,
-                "Stream generation rejected"
-            );
-        }
-    }
-
     fn close(&self, session: &SessionRef, reason: SessionCloseReason) {
         let outcome = self.closer.close_session(session, reason);
         info!(
@@ -471,7 +448,7 @@ impl SessionMedia {
                     );
                     match response {
                         FailureResponse::RejectGeneration(reason) => {
-                            self.reject(pending.generation, reason);
+                            self.reject(pending.generation, reason, ViewerAwareness::Unaware);
                         }
                         FailureResponse::CloseSession(reason) => {
                             self.close(&pending.session, reason);
@@ -482,7 +459,11 @@ impl SessionMedia {
             OpenStep::Unplayable => {
                 // Дефект сборки, а не данных страницы; видео — обратно странице.
                 if let Some(pending) = self.pending.take() {
-                    self.reject(pending.generation, StreamRejection::UnsupportedCodec);
+                    self.reject(
+                        pending.generation,
+                        StreamRejection::UnsupportedCodec,
+                        ViewerAwareness::Unaware,
+                    );
                 }
             }
         }
@@ -509,7 +490,11 @@ impl SessionMedia {
                 // Плеер не взял команду (поток плеера встал): честнее вернуть видео
                 // странице, чем показывать ей вечное ожидание.
                 error!(%load_error, "The player did not accept the browser stream");
-                self.reject(pending.generation, StreamRejection::UnsupportedCodec);
+                self.reject(
+                    pending.generation,
+                    StreamRejection::UnsupportedCodec,
+                    ViewerAwareness::Unaware,
+                );
                 return;
             }
         };
@@ -595,10 +580,10 @@ impl SessionMedia {
         let generation = loaded.generation;
         // Только отказ загрузки ЭТОГО поколения: отказ прежнего медиа (его `Failed`
         // ещё виден, пока новое ставится) новое поколение не отвергает.
-        let fault = match observation.fault_of(loaded.load_ticket) {
-            Some(fault) if !loaded.fault_reported => {
+        let fault = match observation.load_fault_of(loaded.load_ticket) {
+            Some(load_fault) if !loaded.fault_reported => {
                 loaded.fault_reported = true;
-                Some(fault.clone())
+                Some(load_fault.clone())
             }
             _ => None,
         };
@@ -635,23 +620,6 @@ impl SessionMedia {
         } else {
             self.outbound
                 .tick_clock(&observation.while_media_installs(), now);
-        }
-    }
-
-    fn report_fault(&mut self, generation: StreamGeneration, fault: &BrowserPlaybackFault) {
-        match fault {
-            BrowserPlaybackFault::UnsupportedVideo => {
-                self.reject(generation, StreamRejection::UnsupportedCodec);
-            }
-            BrowserPlaybackFault::VideoDecoderStartFailed
-            | BrowserPlaybackFault::PlaybackFailed(_)
-            | BrowserPlaybackFault::InstallAborted => {
-                warn!(
-                    ?fault,
-                    generation = generation.get(),
-                    "Browser stream playback failed"
-                );
-            }
         }
     }
 

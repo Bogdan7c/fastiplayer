@@ -159,6 +159,16 @@ fn three_switches_keep_playing_from_the_page_position(mode: VideoMode) {
         ended_at.is_some_and(|position| position + FRAME_US >= CLIP_US),
         "the clip did not play to its end: {ended_at:?}"
     );
+    // 3а. Намеренная замена поколения — не отказ: прежнее поколение, чью установку
+    //     отменила более новая, странице `stream_rejected` не получает (04b, решение 128).
+    let rejected: Vec<&PlayerSessionMessage> = messages
+        .iter()
+        .filter(|message| matches!(message, PlayerSessionMessage::StreamRejected { .. }))
+        .collect();
+    assert!(
+        rejected.is_empty(),
+        "a replaced generation was rejected: {rejected:?}"
+    );
     bus.wait_for_log_line_without("Browser playback ended", &INSTALL_REFUSALS);
 
     // 4. Зритель видел и слышал: кадров — почти весь ролик (пропущено только то, что

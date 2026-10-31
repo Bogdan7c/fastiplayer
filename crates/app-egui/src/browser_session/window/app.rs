@@ -27,6 +27,11 @@
 //!   [`END_NOTICE_PERIOD`](super::end_notice::END_NOTICE_PERIOD)
 //!   показывает последний кадр и сообщение (`end_notice`), потом закрывается;
 //! - окно на паузе ждёт человека → постоянное сообщение в центре, процесс жив.
+//!
+//! Отказ поколения (04b, решение 129): странице ушёл `stream_rejected`, а зритель о нём
+//! ещё не знает (`CoreStep::generation_rejection`) → короткий тост
+//! (`browser_session::rejection_notice`). Тост, а не центр: центр держит сообщение о
+//! конце сеанса. Отказ, о котором плеер сообщил сам, `AppState` уже показал — повтора нет.
 
 use std::time::{Duration, Instant};
 
@@ -41,6 +46,9 @@ use winit::window::WindowId;
 use super::super::playback::metered_audio::BrowserAudioOutputChoice;
 use super::super::process_core::{
     BrowserSessionCore, SessionOpenedDuringStep, player_closed_cause,
+};
+use super::super::rejection_notice::{
+    GenerationRejectionNotice, rejection_log_label, rejection_viewer_message,
 };
 use super::super::runtime::{DRAIN_FALLBACK_WAKE, RuntimeFinish};
 use super::driver::WindowPlaybackDriver;
@@ -183,6 +191,11 @@ impl BrowserWindowApp {
             && let Some(instance) = self.instance.as_mut()
         {
             instance.apply_center_status(change);
+        }
+        // Отказ поколения (04b, решение 129): странице ушёл `stream_rejected` — зрителю
+        // тост вместо молча застывшей картинки. Не центр: его держит сообщение о конце.
+        if let Some(instance) = self.instance.as_mut() {
+            show_generation_rejection(instance, step.generation_rejection);
         }
         if let Some(instance) = self.instance.as_mut() {
             {
@@ -393,6 +406,22 @@ impl ApplicationHandler<AppWakeEvent> for BrowserWindowApp {
         }
         self.close_window_after_notice();
     }
+}
+
+/// Показывает зрителю отказ поколения (если за шаг он был) и пишет одну строку журнала
+/// без данных страницы — её читают сквозные тесты.
+fn show_generation_rejection(
+    instance: &mut BrowserWindowInstance,
+    notice: GenerationRejectionNotice,
+) {
+    let GenerationRejectionNotice::Rejected(reason) = notice else {
+        return;
+    };
+    info!(
+        reason = %rejection_log_label(reason),
+        "Browser window shows the stream rejection notice"
+    );
+    instance.notify_viewer(rejection_viewer_message(reason));
 }
 
 /// Режим ожидания winit, не позже срока ядра.

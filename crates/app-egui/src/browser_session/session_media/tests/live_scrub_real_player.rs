@@ -40,17 +40,17 @@ use crate::ui::timeline::{
 use crate::viewer_transport::ViewerTransportIntent;
 
 /// Объявленная длина потока: данных только 400 мс, остальное «у страницы».
-const DECLARED_DURATION: Duration = Duration::from_secs(10);
+pub(super) const DECLARED_DURATION: Duration = Duration::from_secs(10);
 /// Шаг главного цикла теста.
-const STEP: Duration = Duration::from_millis(5);
+pub(super) const STEP: Duration = Duration::from_millis(5);
 /// Потолок ожидания одного шага сценария.
-const SCENARIO_DEADLINE: Duration = Duration::from_secs(20);
+pub(super) const SCENARIO_DEADLINE: Duration = Duration::from_secs(20);
 /// Насколько кадр/позиция может отстоять от цели (кадры фикстуры — по 40 мс).
-const POSITION_TOLERANCE: Duration = Duration::from_millis(60);
+pub(super) const POSITION_TOLERANCE: Duration = Duration::from_millis(60);
 /// Цели на скачанном (0–400 мс) и вне его.
-const ON_SHELF_FIRST: Duration = Duration::from_millis(100);
+pub(super) const ON_SHELF_FIRST: Duration = Duration::from_millis(100);
 const ON_SHELF_RELEASE: Duration = Duration::from_millis(300);
-const OFF_SHELF: Duration = Duration::from_secs(5);
+pub(super) const OFF_SHELF: Duration = Duration::from_secs(5);
 
 /// Будильник без цикла: тест крутит медиа-часть сам.
 struct NoWake;
@@ -103,15 +103,15 @@ impl MediaPlayback for SharedPlayback {
 }
 
 /// Медиа-часть на настоящем плеере + «окно», которое шлёт плееру команды скраба.
-struct ScrubChain {
-    media: SessionMedia,
+pub(super) struct ScrubChain {
+    pub(super) media: SessionMedia,
     page: FakePage,
     player: Rc<RefCell<BrowserPlayback>>,
     offered: Rc<RefCell<DownloadedRange>>,
     /// Диспетчер жеста окна: даёт диагностику для команд скраба.
     timeline: TimelineUiState,
     /// Всё, что получила страница, по порядку.
-    seen: Vec<PlayerSessionMessage>,
+    pub(super) seen: Vec<PlayerSessionMessage>,
 }
 
 impl ScrubChain {
@@ -151,12 +151,12 @@ impl ScrubChain {
         }
     }
 
-    fn pass(&mut self) {
+    pub(super) fn pass(&mut self) {
         self.media.drive(Instant::now());
         self.seen.extend(self.page.take_sent());
     }
 
-    fn summary(&self) -> PlaybackSummary {
+    pub(super) fn summary(&self) -> PlaybackSummary {
         self.player.borrow().summary()
     }
 
@@ -180,12 +180,12 @@ impl ScrubChain {
     }
 
     /// Время показа кадра на экране плеера.
-    fn shown_frame_pts(&self) -> Option<Duration> {
+    pub(super) fn shown_frame_pts(&self) -> Option<Duration> {
         self.player.borrow_mut().shown_frame_pts_for_test()
     }
 
     /// Крутит цикл, пока на экране не окажется кадр у цели.
-    fn drive_until_frame_near(&mut self, what: &str, target: Duration) {
+    pub(super) fn drive_until_frame_near(&mut self, what: &str, target: Duration) {
         let deadline = Instant::now() + SCENARIO_DEADLINE;
         loop {
             self.pass();
@@ -221,7 +221,7 @@ impl ScrubChain {
     }
 
     /// «Начать» и первая цель — как шаг `BeginLiveScrub` окна.
-    fn begin_scrub_at(&mut self, target: Duration) -> LiveScrubDiagnostics {
+    pub(super) fn begin_scrub_at(&mut self, target: Duration) -> LiveScrubDiagnostics {
         let diagnostics = self.timeline.begin_live_scrub_dispatch(
             TimelineLiveScrubSettingsSnapshot {
                 decode_mode: TimelineLiveScrubDecodeMode::EveryDragEvent,
@@ -242,7 +242,7 @@ impl ScrubChain {
         ));
     }
 
-    fn end_scrub(&self, policy: ScrubCommitPolicy, diagnostics: LiveScrubDiagnostics) {
+    pub(super) fn end_scrub(&self, policy: ScrubCommitPolicy, diagnostics: LiveScrubDiagnostics) {
         self.send_to_player(PlayerCommand::end_live_scrub(policy, diagnostics));
     }
 }
@@ -271,7 +271,7 @@ fn partially_delivered_generation(session: &SessionRef) -> (PushedStreamWriter, 
 }
 
 /// Страница «отвечает» на перемотку: тот же ролик, уложенный с `at`.
-fn page_delivers_media_at(writer: &mut PushedStreamWriter, at: Duration) {
+pub(super) fn page_delivers_media_at(writer: &mut PushedStreamWriter, at: Duration) {
     let offset_us = i64::try_from(at.as_micros()).expect("small offset");
     for (lane, file) in [(0, "video.mp4"), (1, "audio.mp4")] {
         let lane = LaneId::new(lane);
@@ -298,7 +298,7 @@ fn transport_commands(messages: &[PlayerSessionMessage]) -> Vec<&PlayerSessionMe
         .collect()
 }
 
-fn seek_targets(messages: &[PlayerSessionMessage]) -> Vec<u64> {
+pub(super) fn seek_targets(messages: &[PlayerSessionMessage]) -> Vec<u64> {
     messages
         .iter()
         .filter_map(|message| match message {
@@ -308,12 +308,12 @@ fn seek_targets(messages: &[PlayerSessionMessage]) -> Vec<u64> {
         .collect()
 }
 
-fn near(position: Duration, target: Duration) -> bool {
+pub(super) fn near(position: Duration, target: Duration) -> bool {
     position.abs_diff(target) <= POSITION_TOLERANCE
 }
 
 /// Сеанс открыт, поколение доиграло скачанное и ждёт байтов страницы у 400 мс.
-fn chain_at_the_end_of_the_downloaded_media() -> (ScrubChain, PushedStreamWriter) {
+pub(super) fn chain_at_the_end_of_the_downloaded_media() -> (ScrubChain, PushedStreamWriter) {
     let mut chain = ScrubChain::start();
     let current = session(1);
     chain.media.on_session_opened(&current);

@@ -33,6 +33,7 @@ use super::intake_notice::IntakeNotice;
 use super::normal_player_pause::SystemNormalPlayerPause;
 use super::outbound::PageOutbound;
 use super::range_wake::RangeRequestWake;
+use super::rejection_notice::GenerationRejectionNotice;
 use super::runtime::{BrowserSessionRuntime, RuntimeFinish, SessionMediaPort};
 use super::session_config::BrowserSessionSettings;
 use super::session_end::SessionEndView;
@@ -61,6 +62,9 @@ pub(super) struct CoreStep {
     /// Что сказать зрителю о конце сеанса (04b): окно показывает сообщение, безоконный
     /// процесс его не читает.
     pub(super) session_end: SessionEndView,
+    /// Отказ поколения за шаг, о котором зритель ещё не знает (04b, решение 129): окно
+    /// показывает короткое сообщение, безоконный процесс только пишет отказ в журнал.
+    pub(super) generation_rejection: GenerationRejectionNotice,
 }
 
 /// Открывался ли за шаг сеанс.
@@ -198,6 +202,7 @@ impl BrowserSessionCore {
             verdict,
             session_opened: observed.opened,
             session_end: self.media.session_end_view(),
+            generation_rejection: self.media.take_generation_rejection_notice(),
         }
     }
 

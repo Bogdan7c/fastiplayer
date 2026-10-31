@@ -20,7 +20,9 @@ use pushed_media_source::{
 use super::*;
 use crate::browser_session::intake_notice::GenerationSource;
 use crate::browser_session::outbound::PageSender;
-use crate::browser_session::playback::{LoadFault, MediaLoadTicketIssuer};
+use crate::browser_session::playback::{
+    BrowserPlaybackFault, FaultAnnouncement, LoadFault, MediaLoadTicketIssuer,
+};
 
 /// Потолок ожидания открытия настоящего потока.
 const WAIT: Duration = Duration::from_secs(20);
@@ -603,6 +605,7 @@ fn unsupported_video_in_the_player_rejects_the_loaded_generation_once() {
     harness.player.observation.borrow_mut().fault = Some(LoadFault {
         load: first_load,
         fault: BrowserPlaybackFault::UnsupportedVideo,
+        announcement: FaultAnnouncement::AnnouncedByPlayer,
     });
     let start = Instant::now();
     harness.media.drive(start);
@@ -721,9 +724,11 @@ mod downloaded_range;
 mod drain;
 mod farewell;
 mod file_generation;
+mod generation_rejection;
 mod generation_start;
 mod generation_switch;
 mod live_scrub_real_player;
 mod viewer_transport;
 mod viewer_transport_real_player;
+mod waiting_spinner_real_player;
 mod window_drain;

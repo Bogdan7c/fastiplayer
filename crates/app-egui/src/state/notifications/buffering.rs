@@ -12,6 +12,17 @@
 //! - задержка появления [`BUFFERING_INDICATOR_APPEAR_DELAY`] — обычный старт локального файла
 //!   и быстрая перемотка укладываются в неё, поэтому индикатор не мигает.
 //!
+//! Уточнение (мост, сессия 04b, решение 129): `Scrubbing` — не только «кадры превью под
+//! пальцем». player-core ведёт и ОБЫЧНУЮ перемотку медиа с видео через посадку SeekLanding
+//! (`start_reused_decoder_scrub_landing_transaction`) и всё это время публикует `Scrubbing`;
+//! так же после отпускания жеста, пока посадка не закончилась. Проверено на настоящем плеере
+//! (`browser_session/session_media/tests/waiting_spinner_real_player.rs`): клик по таймлайну
+//! и отпускание перетаскивания вне скачанного ждут байтов именно в `Scrubbing`, а не в
+//! `Seeking`, — и спиннер не загорался (зритель окна браузерного режима видел застывшую
+//! картинку до `SeekTimeout`). Поэтому `Scrubbing` разделён по тому, держит ли зритель
+//! таймлайн ([`TimelineGrip`]): держит — кадры превью идут за пальцем, спиннера нет; отпустил,
+//! а плеер всё ещё в `Scrubbing` — это посадка перемотки, т. е. ожидание данных.
+//!
 //! Инварианты:
 //! - вход — только `PlaybackState` из snapshot-а; player-core не меняется и не получает команд;
 //! - выход из ожидания прячет индикатор в том же кадре (без задержки исчезновения);
@@ -43,6 +54,18 @@ pub(crate) enum BufferingIndicator {
     Visible,
 }
 
+/// Держит ли зритель таймлайн в этом кадре.
+///
+/// Нужно, чтобы различить два смысла `PlaybackState::Scrubbing` (см. описание модуля):
+/// кадры превью под пальцем и посадку перемотки после клика или отпускания.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TimelineGrip {
+    /// Идёт жест: зритель нажал на таймлайн и ещё не отпустил (тянет бегунок).
+    HeldByViewer,
+    /// Жеста нет: таймлайн отпущен (или его не трогали).
+    Released,
+}
+
 /// Наблюдение за непрерывным ожиданием данных (поле [`NotificationCenter`]).
 #[derive(Debug, Default)]
 pub(super) struct PlaybackWaitingWatch {
@@ -64,9 +87,9 @@ struct WaitingEpisode {
 }
 
 impl PlaybackWaitingWatch {
-    /// Учитывает состояние player-а текущего кадра.
-    fn observe(&mut self, playback_state: PlaybackState, now: Instant) {
-        if !waits_for_media_data(playback_state) {
+    /// Учитывает состояние player-а и жест таймлайна текущего кадра.
+    fn observe(&mut self, playback_state: PlaybackState, grip: TimelineGrip, now: Instant) {
+        if !waits_for_media_data(playback_state, grip) {
             self.episode = None;
             return;
         }
@@ -103,16 +126,20 @@ impl PlaybackWaitingWatch {
 
 /// Ждёт ли player данные в этом состоянии (решение владельца, см. модуль).
 ///
+/// `Scrubbing` — ожидание, только когда таймлайн отпущен: это посадка перемотки (клик,
+/// отпускание жеста). Пока зритель тянет бегунок, `Scrubbing` — кадры превью, и спиннер
+/// поверх них только мешал бы (живой скраб по полке окна браузерного режима — тоже).
+///
 /// Перечисление полное намеренно: новое состояние player-а не должно молча попасть
 /// в одну из групп — компилятор заставит решить, показывать ли для него спиннер.
-fn waits_for_media_data(playback_state: PlaybackState) -> bool {
+fn waits_for_media_data(playback_state: PlaybackState, grip: TimelineGrip) -> bool {
     match playback_state {
         PlaybackState::Buffering | PlaybackState::Seeking => true,
+        PlaybackState::Scrubbing => grip == TimelineGrip::Released,
         PlaybackState::Idle
         | PlaybackState::Opening
         | PlaybackState::Paused
         | PlaybackState::Playing
-        | PlaybackState::Scrubbing
         | PlaybackState::Draining
         | PlaybackState::Ended
         | PlaybackState::Stopped
@@ -121,11 +148,17 @@ fn waits_for_media_data(playback_state: PlaybackState) -> bool {
 }
 
 impl NotificationCenter {
-    /// Учитывает состояние player-а текущего кадра для индикатора ожидания.
+    /// Учитывает состояние player-а и жест таймлайна текущего кадра для индикатора
+    /// ожидания.
     ///
     /// Вызывается каждый кадр до [`NotificationCenter::frame`] того же кадра, поэтому
     /// выход из ожидания прячет спиннер сразу.
-    pub(crate) fn observe_playback_waiting(&mut self, playback_state: PlaybackState, now: Instant) {
-        self.playback_waiting.observe(playback_state, now);
+    pub(crate) fn observe_playback_waiting(
+        &mut self,
+        playback_state: PlaybackState,
+        grip: TimelineGrip,
+        now: Instant,
+    ) {
+        self.playback_waiting.observe(playback_state, grip, now);
     }
 }

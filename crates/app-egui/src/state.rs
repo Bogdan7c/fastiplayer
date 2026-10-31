@@ -69,6 +69,9 @@ pub(crate) use notifications::{
     CenterNotice, CenterStatusUpdate, NotificationId, NotificationsFrame, RetryOffer, ToastKind,
     ToastView,
 };
+// Только тестам: правило спиннера на настоящем плеере (`browser_session` без окна).
+#[cfg(test)]
+pub(crate) use notifications::{NotificationCenter, OpenProgress, TimelineGrip};
 pub(crate) use settings_media_rebuild::{
     RebuildPrepareRequest, RebuildSourceInput, SettingsMediaRebuildStart,
     media_reconfigure_install_failure, prepare_rebuild_source,

@@ -5,7 +5,9 @@ use crate::playlist_runtime::{
     PlaylistImportIntent, PlaylistImportPreview, PlaylistImportPreviewUiAcceptedFixture,
     PlaylistImportPreviewUiFixture, PlaylistRuntime, UrlAppendActionOutcome,
 };
-use crate::state::notifications::{MediaFailureOrigin, NotificationCenter, OpenProgress};
+use crate::state::notifications::{
+    MediaFailureOrigin, NotificationCenter, OpenProgress, TimelineGrip,
+};
 use crate::ui::animation::UiMotion;
 use crate::ui::notifications::NotificationUiOutput;
 use crate::ui::playlist::PlaylistUiOutput;
@@ -339,7 +341,7 @@ fn paint_overlay_frame(
         ..Default::default()
     };
     center.observe_player_snapshot(&snapshot);
-    center.observe_playback_waiting(snapshot.playback_state, now);
+    center.observe_playback_waiting(snapshot.playback_state, TimelineGrip::Released, now);
     let notifications = center.frame(OpenProgress::Idle, motion, now);
     let mut playlist_output = PlaylistUiOutput::default();
     let mut notification_output = NotificationUiOutput::default();

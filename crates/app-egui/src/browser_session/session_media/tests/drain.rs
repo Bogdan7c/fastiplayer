@@ -113,6 +113,7 @@ fn a_player_fault_of_the_loaded_generation_ends_the_drain_at_once() {
     harness.player.observation.borrow_mut().fault = Some(LoadFault {
         load: ticket,
         fault: BrowserPlaybackFault::PlaybackFailed(player_core::PlayerErrorKind::RuntimeError),
+        announcement: FaultAnnouncement::AnnouncedByPlayer,
     });
     harness.media.drive(Instant::now());
     end_session(&mut harness, &current);
@@ -233,6 +234,7 @@ fn a_rejection_while_draining_is_not_queued_for_a_page_that_is_gone() {
     harness.player.observation.borrow_mut().fault = Some(LoadFault {
         load: ticket,
         fault: BrowserPlaybackFault::UnsupportedVideo,
+        announcement: FaultAnnouncement::AnnouncedByPlayer,
     });
 
     let wake_at = harness.media.drive(Instant::now());

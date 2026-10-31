@@ -7,7 +7,7 @@ use player_core::{PlaybackState, PlayerError, PlayerErrorKind, PlayerSnapshot};
 
 use super::super::{
     BUFFERING_INDICATOR_APPEAR_DELAY, BufferingIndicator, CenterNotice, MediaFailureOrigin,
-    NotificationCenter, NotificationsFrame, OpenProgress,
+    NotificationCenter, NotificationsFrame, OpenProgress, TimelineGrip,
 };
 use crate::ui::animation::UiMotion;
 
@@ -25,14 +25,24 @@ const ALL_PLAYBACK_STATES: [PlaybackState; 11] = [
     PlaybackState::Failed,
 ];
 
-/// Один кадр приложения: наблюдение состояния player-а и проекция без идущего открытия
-/// (тот же порядок, что в `AppState::notifications_frame`).
+/// Один кадр приложения без жеста на таймлайне: наблюдение состояния player-а и проекция
+/// без идущего открытия (тот же порядок, что в `AppState::notifications_frame`).
 fn frame_at(
     center: &mut NotificationCenter,
     playback_state: PlaybackState,
     now: Instant,
 ) -> NotificationsFrame {
-    center.observe_playback_waiting(playback_state, now);
+    frame_with_grip(center, playback_state, TimelineGrip::Released, now)
+}
+
+/// То же, но с явным жестом таймлайна.
+fn frame_with_grip(
+    center: &mut NotificationCenter,
+    playback_state: PlaybackState,
+    grip: TimelineGrip,
+    now: Instant,
+) -> NotificationsFrame {
+    center.observe_playback_waiting(playback_state, grip, now);
     center.frame(OpenProgress::Idle, UiMotion::Standard, now)
 }
 
@@ -144,20 +154,73 @@ fn seeking_then_buffering_is_one_wait_and_a_new_wait_restarts_the_delay() {
 }
 
 #[test]
-fn only_buffering_and_seeking_count_as_waiting_for_data() {
+fn buffering_seeking_and_a_released_seek_landing_count_as_waiting_for_data() {
     let started_at = Instant::now();
     let long_after = started_at + Duration::from_secs(30);
-    for state in ALL_PLAYBACK_STATES {
-        let mut center = NotificationCenter::default();
-        frame_at(&mut center, state, started_at);
-        let frame = frame_at(&mut center, state, long_after);
-        let expected = if matches!(state, PlaybackState::Buffering | PlaybackState::Seeking) {
-            BufferingIndicator::Visible
-        } else {
-            BufferingIndicator::Hidden
-        };
-        assert_eq!(frame.buffering, expected, "{state:?}");
+    for grip in [TimelineGrip::Released, TimelineGrip::HeldByViewer] {
+        for state in ALL_PLAYBACK_STATES {
+            let mut center = NotificationCenter::default();
+            frame_with_grip(&mut center, state, grip, started_at);
+            let frame = frame_with_grip(&mut center, state, grip, long_after);
+            // `Scrubbing` без жеста — посадка перемотки (клик, отпускание): ждём данных.
+            // С жестом — кадры превью под пальцем: спиннера нет.
+            let waits = match state {
+                PlaybackState::Buffering | PlaybackState::Seeking => true,
+                PlaybackState::Scrubbing => grip == TimelineGrip::Released,
+                _ => false,
+            };
+            let expected = if waits {
+                BufferingIndicator::Visible
+            } else {
+                BufferingIndicator::Hidden
+            };
+            assert_eq!(frame.buffering, expected, "{state:?} {grip:?}");
+        }
     }
+}
+
+#[test]
+fn releasing_the_timeline_during_a_scrub_starts_the_wait_at_the_release() {
+    let started_at = Instant::now();
+    let mut center = NotificationCenter::default();
+    // Зритель держит бегунок долго: кадры превью, спиннера нет даже после задержки.
+    for step_ms in [0, 400, 800, 2_000] {
+        let frame = frame_with_grip(
+            &mut center,
+            PlaybackState::Scrubbing,
+            TimelineGrip::HeldByViewer,
+            started_at + Duration::from_millis(step_ms),
+        );
+        assert_eq!(frame.buffering, BufferingIndicator::Hidden, "{step_ms} ms");
+    }
+    assert_eq!(
+        center.next_wake_deadline(),
+        None,
+        "nothing to wake for while held"
+    );
+
+    // Отпустил вне скачанного: плеер садится (`Scrubbing`), отсчёт — от отпускания.
+    let released_at = started_at + Duration::from_secs(3);
+    let just_released = frame_at(&mut center, PlaybackState::Scrubbing, released_at);
+    assert_eq!(just_released.buffering, BufferingIndicator::Hidden);
+    assert_eq!(
+        center.next_wake_deadline(),
+        Some(released_at + BUFFERING_INDICATOR_APPEAR_DELAY)
+    );
+    let landing = frame_at(
+        &mut center,
+        PlaybackState::Scrubbing,
+        released_at + BUFFERING_INDICATOR_APPEAR_DELAY,
+    );
+    assert_eq!(landing.buffering, BufferingIndicator::Visible);
+
+    // Посадка кончилась (данные пришли): спиннер гаснет в том же кадре.
+    let landed = frame_at(
+        &mut center,
+        PlaybackState::Playing,
+        released_at + BUFFERING_INDICATOR_APPEAR_DELAY,
+    );
+    assert_eq!(landed.buffering, BufferingIndicator::Hidden);
 }
 
 #[test]
@@ -176,8 +239,8 @@ fn center_error_or_open_progress_wins_over_spinner() {
 
     // Идёт новое открытие: прогресс в центре, спиннер не рисуется.
     let mut center = NotificationCenter::default();
-    center.observe_playback_waiting(PlaybackState::Seeking, started_at);
-    center.observe_playback_waiting(PlaybackState::Seeking, long_after);
+    center.observe_playback_waiting(PlaybackState::Seeking, TimelineGrip::Released, started_at);
+    center.observe_playback_waiting(PlaybackState::Seeking, TimelineGrip::Released, long_after);
     let opening = center.frame(
         OpenProgress::InProgress("Открываем…"),
         UiMotion::Standard,
@@ -276,7 +339,11 @@ fn waiting_observation_does_not_touch_messages_it_does_not_own() {
         (700, PlaybackState::Seeking),
         (900, PlaybackState::Playing),
     ] {
-        center.observe_playback_waiting(state, started_at + Duration::from_millis(offset_ms));
+        center.observe_playback_waiting(
+            state,
+            TimelineGrip::Released,
+            started_at + Duration::from_millis(offset_ms),
+        );
     }
     let after = center.frame(OpenProgress::Idle, UiMotion::Standard, started_at);
     assert_eq!(after.center, before.center);

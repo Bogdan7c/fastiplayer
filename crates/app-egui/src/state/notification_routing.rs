@@ -26,7 +26,7 @@ use super::AppState;
 use super::media_retry::{MediaRetryTarget, RetryPlan};
 use super::notifications::{
     CenterStatusUpdate, MediaFailureOrigin, NotificationsFrame, OPEN_STILL_IN_PROGRESS_MESSAGE,
-    OpenProgress, RetryRequestOutcome,
+    OpenProgress, RetryRequestOutcome, TimelineGrip,
 };
 use crate::playlist_runtime::{AutomaticQueueNotice, PlaylistImportNotice};
 use crate::playlist_skip_message::{PlaylistQueueNoticeDelivery, playlist_queue_notice_delivery};
@@ -140,8 +140,15 @@ impl AppState {
         now: Instant,
     ) -> NotificationsFrame {
         self.notifications.observe_player_snapshot(player_snapshot);
+        // `Scrubbing` без жеста — посадка перемотки (ожидание данных), с жестом — кадры
+        // превью: правило спиннера различает их по тому, держит ли зритель таймлайн.
+        let grip = if self.timeline_ui_state.is_held_by_viewer() {
+            TimelineGrip::HeldByViewer
+        } else {
+            TimelineGrip::Released
+        };
         self.notifications
-            .observe_playback_waiting(player_snapshot.playback_state, now);
+            .observe_playback_waiting(player_snapshot.playback_state, grip, now);
         let progress = self
             .startup_pending
             .as_deref()

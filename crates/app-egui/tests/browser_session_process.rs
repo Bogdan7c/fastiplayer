@@ -691,3 +691,8 @@ mod seek_back_on_shelf;
 // Окно браузерного режима (04a): то же, но с окном на виртуальном дисплее kwin.
 #[path = "browser_session_process/window.rs"]
 mod window;
+
+// Ожидание и отказ видны зрителю (04b, решение 129): отказ поколения странице и окну,
+// следующее поколение играет; `SeekTimeout` доходит до уведомлений окна.
+#[path = "browser_session_process/viewer_notices.rs"]
+mod viewer_notices;
