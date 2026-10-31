@@ -32,6 +32,10 @@ Focused checks used for this split: `cargo test -p app-egui state`, `cargo test 
 - 04a-fix (2026-10-31): отправка действий таймлайна вынесена из `ui_runtime.rs` (был у предела) в `state/timeline_dispatch.rs` (исполнение шагов, `timeline_step_commands`, `has_live_scrub_dispatch`; `begin_live_scrub_dispatch` возвращает диагностику — без `expect`); правила — чистая `state/timeline_scrub_plan.rs` `plan_timeline_action(action, TimelinePlanContext{scope, standing, downloaded})` → `TimelineStep::{ExactSeek, BeginLiveScrub, PreviewLiveScrub, EndLiveScrub{policy, release}}`; `timeline_command_from_action` удалён. `AppState::note_downloaded_range` (хранит `WindowMode`). Тесты `timeline_dispatch_tests.rs`, `timeline_scrub_plan_tests.rs`; источник сторожей `state/tests.rs` включает `timeline_dispatch.rs`.
 - Подробно: `mem:browser-bridge/core` раздел 04a.
 
+## Browser-bridge 04c (2026-10-31)
+- `WindowMode` хранит `PageLabel` браузерного окна (`AppState::note_page_label`, `window_chrome_title()`); Info получает подпись через `SidebarRenderContext.page`. `playback_state_label_for_telemetry` переехал в `telemetry_panel/backend_rows.rs`; baseline `telemetry_panel.rs` = 861.
+- `settings_runtime.rs` 795 строк, `settings_runtime/route_apply.rs` 800 — новое только в подмодули (`shared_board*`, `browser_window_geometry.rs`, `route_apply/browser_session.rs`). Доска настроек — `mem:settings-ui/shared-board-04c`.
+
 ## Public launch S02 follow-up (2026-09-04)
 
 - `AppStateStartupContext`, приватный `PlayerTimelineWakeBridge` и wake factory перенесены из `state.rs` в `state/startup_context.rs`; `AppState` остаётся application-state owner-ом, а прежний `crate::state::AppStateStartupContext` сохранён internal re-export-ом.
