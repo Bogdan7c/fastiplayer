@@ -35,7 +35,7 @@ const SIX_SECOND_VIDEO_FRAMES: u64 = 150;
 
 /// Ролик 6 с одним куском на полосу (звук и видео), без `end_of_stream`: «скачано 6 с»,
 /// а конец потока поставит сам процесс, когда вкладка уйдёт.
-fn six_seconds_downloaded() -> Vec<Message> {
+pub(super) fn six_seconds_downloaded() -> Vec<Message> {
     let stream = Path::new(FIXTURES).join("streams/quality-switch-new-media-source");
     let mut messages: Vec<Message> = ["001.json", "002.json", "003.json", "004.json"]
         .iter()
@@ -59,14 +59,14 @@ fn six_seconds_downloaded() -> Vec<Message> {
     messages
 }
 
-fn send_all(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, messages: Vec<Message>) {
+pub(super) fn send_all(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, messages: Vec<Message>) {
     for message in messages {
         socket.send(message).expect("stream message is sent");
     }
 }
 
 /// Ждёт часов «играю» дальше `position_us`; возвращает их позицию.
-fn wait_until_playing_past(
+pub(super) fn wait_until_playing_past(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     position_us: u64,
 ) -> u64 {
@@ -94,7 +94,7 @@ fn last_clock_us(messages: &[PlayerSessionMessage]) -> Option<u64> {
 /// позиция прощания, код закрытия). `clock_seen_us` — последние часы, уже прочитанные
 /// тестом раньше. Прощание обязано прийти РАНЬШЕ кадра закрытия, и после него страница
 /// не получает ничего.
-fn read_farewell_then_close(
+pub(super) fn read_farewell_then_close(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     clock_seen_us: u64,
 ) -> (u64, u64, CloseCode) {

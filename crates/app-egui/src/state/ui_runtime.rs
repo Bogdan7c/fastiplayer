@@ -181,6 +181,7 @@ impl AppState {
                     render_diagnostics,
                     timeline_ui_state: &timeline_ui_state,
                     renderer_report: self.renderer_report.as_ref(),
+                    page: self.window_mode.page_label(),
                     start_time,
                     frame_duration_estimate_ms,
                 },

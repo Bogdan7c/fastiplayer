@@ -62,6 +62,8 @@ impl NormalPlayerPause for CountingPause {
 #[derive(Default)]
 struct RecordingMedia {
     opened: Vec<SessionRef>,
+    /// Какие страницы названы медиа-части (по порядку открытий).
+    pages: Vec<OpenedPage>,
     ended: Vec<SessionRef>,
     /// Что цикл сообщил медиа-части об открытии сеансов — по порядку (прощание
     /// заменённому обязано прийти раньше открытия нового).
@@ -93,6 +95,10 @@ impl SessionMediaPort for RecordingMedia {
         self.opened.push(session.clone());
         self.opening_calls
             .push(OpeningCall::Opened(session.clone()));
+    }
+
+    fn on_page_identified(&mut self, page: OpenedPage) {
+        self.pages.push(page);
     }
 
     fn on_session_ended(&mut self, session: &SessionRef, _reason: SessionEndReason) {
@@ -312,6 +318,43 @@ fn video_from_another_tab_replaces_the_session_and_pauses_the_normal_player_agai
     assert_eq!(replacement.outcome, GrantOutcome::ReplacedPrevious);
     assert!(!replacement.token.matches(&first.token));
     assert_eq!(harness.pause_requests(), 2);
+}
+
+#[test]
+fn every_opened_session_hands_its_page_to_the_window_side_and_a_replacement_renames_it() {
+    let mut harness = Harness::start(BrowserSessionPolicy::default());
+    harness.call(HELLO);
+    harness.open(1, "tab-1-video-1");
+    harness.open(2, "tab-2-video-1");
+
+    let label = PageLabel::new("Episode 3", "example.org");
+    let page = |arrival| OpenedPage {
+        label: label.clone(),
+        arrival,
+    };
+    assert_eq!(
+        harness.media.pages,
+        vec![page(PageArrival::NewVideo), page(PageArrival::NewVideo)]
+    );
+}
+
+#[test]
+fn a_repeated_open_of_the_same_session_is_not_a_new_video_for_the_window() {
+    let mut harness = Harness::start(BrowserSessionPolicy::default());
+    harness.call(HELLO);
+    harness.open(1, "tab-1-video-1");
+    harness.open(2, "tab-1-video-1");
+
+    let arrivals: Vec<PageArrival> = harness
+        .media
+        .pages
+        .iter()
+        .map(|page| page.arrival)
+        .collect();
+    assert_eq!(
+        arrivals,
+        vec![PageArrival::NewVideo, PageArrival::SameSessionAgain]
+    );
 }
 
 #[test]

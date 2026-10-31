@@ -12,7 +12,6 @@ mod command;
 mod error;
 mod event;
 mod instance_forwarding;
-#[cfg(target_os = "linux")]
 mod mpris_names;
 mod notification;
 mod peer_admission;
@@ -39,7 +38,9 @@ pub use command::{
     EffectiveVolumeError, TimelineSeekRequestId,
 };
 pub use error::{DesktopIntegrationError, DesktopIntegrationResult};
-pub use event::{DesktopBackendKind, DesktopIntegrationEvent};
+pub use event::{
+    DesktopBackendKind, DesktopIntegrationEvent, DesktopWindowRequest, DesktopWindowRequestSink,
+};
 pub use instance_forwarding::{
     FASTIPLAYER_APPLICATION_ID, ForwardedInstanceAction, ForwardedInstanceRequest,
     ForwardedInstanceRequestParts, ForwardedRequestAcknowledgement, ForwardedRequestDelivery,
@@ -50,6 +51,7 @@ pub use instance_forwarding::{
     MAX_TOTAL_FORWARDED_URI_BYTES, WindowActivationToken, forward_to_running_instance,
     start_instance_forwarding_service,
 };
+pub use mpris_names::MprisIdentity;
 pub use notification::{
     CriticalDesktopNotification, DesktopNotificationError, send_critical_desktop_notification,
 };

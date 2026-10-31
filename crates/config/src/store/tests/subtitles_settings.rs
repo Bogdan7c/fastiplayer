@@ -62,14 +62,14 @@ fn schema_v12_without_subtitles_loads_defaults_and_roundtrips() {
     fs::write(&config_path, SCHEMA_V12_WITHOUT_SUBTITLES).expect("v12 fixture written");
 
     let migrated = load_from_path(&config_path).expect("v12 config loads");
-    assert_eq!(migrated.config.schema_version, 28);
+    assert_eq!(migrated.config.schema_version, 29);
     assert_eq!(migrated.config.subtitles, SubtitlesConfig::default());
     assert!(!migrated.config.playlist.load_siblings);
     assert!((migrated.config.audio.volume - 0.4).abs() < f64::EPSILON);
 
     save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
     let saved_text = fs::read_to_string(&config_path).expect("saved TOML readable");
-    assert!(saved_text.contains("schema_version = 28"));
+    assert!(saved_text.contains("schema_version = 29"));
     assert!(saved_text.contains("[subtitles]"));
     assert!(saved_text.contains("max_file_size_mb = 8"));
     assert!(saved_text.contains("decoration = \"box\""));
@@ -86,7 +86,7 @@ fn schema_v13_without_position_keys_loads_defaults_and_roundtrips() {
     fs::write(&config_path, SCHEMA_V13_WITHOUT_POSITION).expect("v13 fixture written");
 
     let migrated = load_from_path(&config_path).expect("v13 config loads");
-    assert_eq!(migrated.config.schema_version, 28);
+    assert_eq!(migrated.config.schema_version, 29);
     assert_eq!(migrated.config.subtitles.position_horizontal_percent, 50);
     assert_eq!(migrated.config.subtitles.position_vertical_percent, 6);
     assert!(!migrated.config.subtitles.ass_force_user_style);
@@ -95,7 +95,7 @@ fn schema_v13_without_position_keys_loads_defaults_and_roundtrips() {
 
     save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
     let saved_text = fs::read_to_string(&config_path).expect("saved TOML readable");
-    assert!(saved_text.contains("schema_version = 28"));
+    assert!(saved_text.contains("schema_version = 29"));
     assert!(saved_text.contains("position_horizontal_percent = 50"));
     assert!(saved_text.contains("position_vertical_percent = 6"));
     assert!(saved_text.contains("ass_force_user_style = false"));
@@ -112,7 +112,7 @@ fn schema_v14_without_embedded_limits_loads_defaults_and_roundtrips() {
     fs::write(&config_path, SCHEMA_V14_WITHOUT_EMBEDDED_LIMITS).expect("v14 fixture written");
 
     let migrated = load_from_path(&config_path).expect("v14 config loads");
-    assert_eq!(migrated.config.schema_version, 28);
+    assert_eq!(migrated.config.schema_version, 29);
     let subtitles = &migrated.config.subtitles;
     assert_eq!(subtitles.max_attached_font_mb, 20);
     assert_eq!(subtitles.max_attached_fonts_total_mb, 100);
@@ -124,7 +124,7 @@ fn schema_v14_without_embedded_limits_loads_defaults_and_roundtrips() {
 
     save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
     let saved_text = fs::read_to_string(&config_path).expect("saved TOML readable");
-    assert!(saved_text.contains("schema_version = 28"));
+    assert!(saved_text.contains("schema_version = 29"));
     assert!(saved_text.contains("max_attached_font_mb = 20"));
     assert!(saved_text.contains("max_attached_fonts_total_mb = 100"));
     assert!(saved_text.contains("embedded_feed_capacity = 4096"));

@@ -8,15 +8,23 @@ use crate::{AppConfig, ConfigError, ConfigPaths, ConfigResult};
 
 mod atomic;
 mod backup_name;
+mod disk_read;
 mod migrations;
 mod outcome;
 mod recovery;
+mod shared_file;
 
 pub use outcome::{
     BrokenConfigProblem, BrokenConfigRecovery, ConfigLoadOrigin, ConfigSaveOutcome,
     ConfigSavePolicy, ConfigSaveTarget, ConfigSessionOnlyReason, ConfigWriteProblem,
+    SharedConfigSave,
 };
 pub use recovery::load_or_recover_at;
+pub use shared_file::{
+    ConfigLockFailure, DEFAULT_SHARED_CONFIG_LOCK_WAIT, SharedConfigLockProblem,
+    SharedConfigLockStage, SharedConfigProblem, SharedConfigRead, SharedConfigUpdate,
+    read_shared_config_at, update_shared_config_at,
+};
 
 #[cfg(test)]
 mod tests;
@@ -74,7 +82,10 @@ pub fn load_from_path(path: impl AsRef<Path>) -> ConfigResult<LoadedConfig> {
     load_existing_config(path)
 }
 
-/// Валидирует config и атомарно заменяет TOML-файл сгенерированным pretty TOML.
+/// Валидирует config и атомарно заменяет TOML-файл сгенерированным pretty TOML **целиком**.
+///
+/// Без замка записи и без перечитывания файла: только для одного писателя (утилиты,
+/// тесты). Копии плеера сохраняют настройки через [`update_shared_config_at`].
 pub fn save_validated_atomic_at(path: impl AsRef<Path>, config: &AppConfig) -> ConfigResult<()> {
     atomic::save_validated(path.as_ref(), config)
 }

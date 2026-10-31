@@ -286,13 +286,24 @@ impl Drop for BackendHandle {
 
 /// Запускает backend, выбранный compile-time platform cfg.
 pub(crate) fn spawn_backend(
+    identity: crate::MprisIdentity,
+    window_sink: Option<Arc<dyn crate::DesktopWindowRequestSink>>,
     command_sink: Arc<dyn DesktopCommandSink>,
     snapshot_source: LatestSnapshotHandle,
 ) -> DesktopIntegrationResult<(BackendHandle, Receiver<DesktopIntegrationEvent>)> {
     let (event_tx, event_rx) = unbounded();
+    // Личность различает только Linux MPRIS; остальные платформы пока без сервера.
+    #[cfg(not(target_os = "linux"))]
+    let _ = (identity, &window_sink);
 
     #[cfg(target_os = "linux")]
-    let backend_handle = linux::spawn(command_sink, snapshot_source, event_tx)?;
+    let backend_handle = linux::spawn(
+        identity,
+        window_sink,
+        command_sink,
+        snapshot_source,
+        event_tx,
+    )?;
 
     #[cfg(target_os = "macos")]
     let backend_handle = macos::spawn(command_sink, snapshot_source, event_tx)?;

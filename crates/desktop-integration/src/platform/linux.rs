@@ -22,7 +22,8 @@ use crate::{
 };
 
 use super::{BackendControlCommand, BackendHandle};
-use crate::mpris_names::{MPRIS_BUS_NAME, MPRIS_OBJECT_PATH, MPRIS_PLAYER_INTERFACE};
+use crate::mpris_names::{MPRIS_OBJECT_PATH, MPRIS_PLAYER_INTERFACE};
+use crate::{DesktopWindowRequest, DesktopWindowRequestSink, MprisIdentity};
 
 mod snapshot_properties;
 mod track_identity;
@@ -32,6 +33,8 @@ use track_identity::{encode_track_key, media_time_to_mpris_microseconds};
 
 /// Запускает thread и синхронно подтверждает первоначальный non-queued bus claim.
 pub(crate) fn spawn(
+    identity: MprisIdentity,
+    window_sink: Option<Arc<dyn DesktopWindowRequestSink>>,
     command_sink: Arc<dyn DesktopCommandSink>,
     snapshot_source: LatestSnapshotHandle,
     event_tx: Sender<DesktopIntegrationEvent>,
@@ -43,6 +46,8 @@ pub(crate) fn spawn(
         .name("desktop-mpris".to_string())
         .spawn(move || {
             run_mpris_thread(
+                identity,
+                window_sink,
                 thread_sink,
                 snapshot_source,
                 event_tx,
@@ -70,6 +75,8 @@ pub(crate) fn spawn(
 }
 
 fn run_mpris_thread(
+    identity: MprisIdentity,
+    window_sink: Option<Arc<dyn DesktopWindowRequestSink>>,
     command_sink: Arc<dyn DesktopCommandSink>,
     snapshot_source: LatestSnapshotHandle,
     event_tx: Sender<DesktopIntegrationEvent>,
@@ -77,7 +84,13 @@ fn run_mpris_thread(
     startup_tx: Sender<DesktopIntegrationResult<()>>,
 ) {
     let backend = DesktopBackendKind::LinuxMpris;
-    let runtime = match MprisRuntime::new(command_sink, snapshot_source, event_tx.clone()) {
+    let runtime = match MprisRuntime::new(
+        identity,
+        window_sink,
+        command_sink,
+        snapshot_source,
+        event_tx.clone(),
+    ) {
         Ok(runtime) => runtime,
         Err(error) => {
             let _ = startup_tx.send(Err(error.clone()));
@@ -114,13 +127,17 @@ struct MprisRuntime {
 
 impl MprisRuntime {
     fn new(
+        identity: MprisIdentity,
+        window_sink: Option<Arc<dyn DesktopWindowRequestSink>>,
         command_sink: Arc<dyn DesktopCommandSink>,
         snapshot_source: LatestSnapshotHandle,
         event_tx: Sender<DesktopIntegrationEvent>,
     ) -> DesktopIntegrationResult<Self> {
         let player_interface = MprisPlayerInterface::new(command_sink, snapshot_source.clone());
+        let root_interface = MprisRootInterface::new(identity, window_sink);
         let builder = connection::Builder::session().map_err(map_zbus_error)?;
-        let connection = build_mpris_connection(builder, player_interface)?;
+        let connection =
+            build_mpris_connection(builder, identity, root_interface, player_interface)?;
         Ok(Self {
             connection,
             snapshot_source,
@@ -206,15 +223,17 @@ impl MprisRuntime {
 
 fn build_mpris_connection(
     builder: connection::Builder<'_>,
+    identity: MprisIdentity,
+    root_interface: MprisRootInterface,
     player_interface: MprisPlayerInterface,
 ) -> DesktopIntegrationResult<Connection> {
     builder
-        .name(MPRIS_BUS_NAME)
+        .name(identity.bus_name())
         .map_err(map_zbus_error)?
         // zbus 5.15 defaults both flags to true; D78 requires an explicit non-replacing claim.
         .allow_name_replacements(false)
         .replace_existing_names(false)
-        .serve_at(MPRIS_OBJECT_PATH, MprisRootInterface)
+        .serve_at(MPRIS_OBJECT_PATH, root_interface)
         .map_err(map_zbus_error)?
         .serve_at(MPRIS_OBJECT_PATH, player_interface)
         .map_err(map_zbus_error)?
@@ -223,15 +242,48 @@ fn build_mpris_connection(
 }
 
 /// Корневой MPRIS interface не владеет transport state.
-struct MprisRootInterface;
+///
+/// `Raise`/`Quit` исполняются только у личности `BrowserSession` (04c): у обычного плеера
+/// это по-прежнему no-op и `CanRaise`/`CanQuit` = false. Исполняет не интерфейс, а
+/// окно: интерфейс отдаёт просьбу приёмнику `DesktopWindowRequestSink`.
+struct MprisRootInterface {
+    identity: MprisIdentity,
+    window_sink: Option<Arc<dyn DesktopWindowRequestSink>>,
+}
+
+impl MprisRootInterface {
+    fn new(
+        identity: MprisIdentity,
+        window_sink: Option<Arc<dyn DesktopWindowRequestSink>>,
+    ) -> Self {
+        Self {
+            identity,
+            window_sink,
+        }
+    }
+
+    /// Просьба окну; личность без права на просьбы (или без приёмника) её отбрасывает.
+    fn request_window(&self, request: DesktopWindowRequest) {
+        if !self.identity.accepts_window_requests() {
+            return;
+        }
+        if let Some(window_sink) = &self.window_sink {
+            window_sink.request_window(request);
+        }
+    }
+}
 
 #[interface(name = "org.mpris.MediaPlayer2")]
 impl MprisRootInterface {
-    fn raise(&self) {}
-    fn quit(&self) {}
+    fn raise(&self) {
+        self.request_window(DesktopWindowRequest::Raise);
+    }
+    fn quit(&self) {
+        self.request_window(DesktopWindowRequest::Quit);
+    }
     #[zbus(property)]
     fn can_quit(&self) -> bool {
-        false
+        self.identity.accepts_window_requests()
     }
     #[zbus(property)]
     fn fullscreen(&self) -> bool {
@@ -245,7 +297,7 @@ impl MprisRootInterface {
     }
     #[zbus(property)]
     fn can_raise(&self) -> bool {
-        false
+        self.identity.accepts_window_requests()
     }
     #[zbus(property)]
     fn has_track_list(&self) -> bool {
@@ -253,7 +305,7 @@ impl MprisRootInterface {
     }
     #[zbus(property)]
     fn identity(&self) -> &str {
-        "Fastiplayer"
+        self.identity.display_name()
     }
     #[zbus(property)]
     fn desktop_entry(&self) -> &str {

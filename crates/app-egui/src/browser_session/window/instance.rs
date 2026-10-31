@@ -19,6 +19,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use player_core::PlayerCommand;
 use render_shell_api::RenderShell;
 use tracing::{debug, info, warn};
 use winit::dpi::PhysicalSize;
@@ -26,7 +27,9 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
+use super::super::opened_page::{OpenedPage, PageArrival};
 use super::super::playback::metered_audio::{AudioMeter, BrowserAudioOutputChoice};
+use super::desktop_transport::{DesktopWindowPort, TransportObservation};
 use super::driver::WindowPlaybackDriver;
 use super::end_notice::CenterStatusChange;
 use super::player_port::AppStateWindowPlayer;
@@ -35,6 +38,7 @@ use crate::app_shell::{
 };
 use crate::app_wake::{AppWakeOwner, AppWakePort, AppWakeProxy};
 use crate::frame_prepare::render_frame;
+use crate::instance_forwarding::window_activation::raise_window;
 use crate::playlist_runtime::PlaylistRuntime;
 use crate::process_shutdown::ShutdownDeadline;
 use crate::redraw_pacing::{
@@ -154,8 +158,7 @@ impl BrowserWindowInstance {
             .create_window(main_window_attributes())
             .map(Arc::new)
             .map_err(|error| BrowserWindowStartError::Window(error.to_string()))?;
-        // Окно появляется по просьбе страницы — оно должно оказаться перед человеком.
-        window.focus_window();
+        // Перед человеком окно выводит `apply_page` на первом сеансе (после сборки).
 
         let initial_render_settings = settings_runtime
             .initial_render_settings()
@@ -297,11 +300,47 @@ impl BrowserWindowInstance {
         }
     }
 
+    /// Страница сеанса названа (04c): заголовок окна «<заголовок> — <домен>», блок `Page`
+    /// в Info. Для нового видео (старт сеанса или замена вкладки) окно ещё и выходит
+    /// вперёд тем же запасным путём, что второй запуск без билета (решение 139): билета
+    /// активации у процесса нет, композитор вправе отказать — тогда подсветится значок.
+    pub(super) fn apply_page(&mut self, page: OpenedPage) {
+        self.window.set_title(&page.label.window_title());
+        self.app_state.note_page_label(page.label);
+        self.app_state.note_visible_mutation_for_redraw();
+        self.window.request_redraw();
+        if page.arrival == PageArrival::NewVideo {
+            self.raise_to_front();
+        }
+    }
+
+    /// Просит рабочий стол вывести окно вперёд (без билета активации, решение 139).
+    pub(super) fn raise_to_front(&self) {
+        let request = raise_window(&self.window, None);
+        debug!(?request, "Browser window asked the desktop to come forward");
+    }
+
     /// Короткое сообщение зрителю тостом (уходит само, как тосты ошибок плеера).
     pub(super) fn notify_viewer(&mut self, message: &'static str) {
         self.app_state.notify_transient(message);
         self.app_state.note_visible_mutation_for_redraw();
         self.window.request_redraw();
+    }
+
+    /// Снимок транспорта окна для MPRIS (см. `desktop_transport`).
+    pub(super) fn transport_observation(&mut self) -> TransportObservation {
+        let snapshot = self.app_state.refresh_player_snapshot();
+        let timeline = &snapshot.timeline;
+        TransportObservation {
+            playback_state: snapshot.playback_state,
+            position: timeline.current_position,
+            // У эфира длительности для MPRIS нет, как у обычного плеера.
+            duration: (timeline.mode != media_core::TimelineMode::Live)
+                .then_some(timeline.duration)
+                .flatten(),
+            seekable: timeline.seekable,
+            volume: snapshot.volume,
+        }
     }
 
     /// Плеер окна для водителя на время одного прохода.
@@ -540,5 +579,18 @@ fn queue_outcome_label(
         Outcome::AlreadyCompleted => "already_completed",
         Outcome::ExitRequired(_) => "exit_required",
         Outcome::Failed(_) => "failed",
+    }
+}
+
+/// Окно для MPRIS: команды виджета идут той же точкой, что кнопки окна.
+impl DesktopWindowPort for BrowserWindowInstance {
+    fn observe_transport(&mut self) -> TransportObservation {
+        self.transport_observation()
+    }
+
+    fn send_transport_command(&mut self, command: PlayerCommand) -> Result<(), String> {
+        self.app_state
+            .send_transport_command(command)
+            .map_err(|error| error.to_string())
     }
 }

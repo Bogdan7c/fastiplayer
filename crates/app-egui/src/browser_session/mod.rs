@@ -63,6 +63,7 @@ mod inbox;
 mod intake_notice;
 mod journal;
 mod normal_player_pause;
+mod opened_page;
 mod outbound;
 mod playback;
 mod player_hello;

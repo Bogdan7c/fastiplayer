@@ -36,6 +36,18 @@ fn config_dir_with(config_bytes: &[u8]) -> (tempfile::TempDir, PathBuf) {
     (temp_dir, config_path)
 }
 
+/// Сколько записей в каталоге, не считая файла-замка записи `config.toml.lock`.
+///
+/// Замок создаётся при старте и никогда не удаляется (иначе ломается взаимное
+/// исключение писателей), поэтому проверки «в каталоге ничего лишнего» его не считают.
+fn entries_besides_write_lock(directory: &std::path::Path) -> usize {
+    fs::read_dir(directory)
+        .expect("catalogue")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name() != "config.toml.lock")
+        .count()
+}
+
 /// Общая проверка восстановления: копия с исходными байтами, новый файл = defaults.
 fn assert_recovered_from_broken(original_bytes: &[u8], expected_problem: BrokenConfigProblem) {
     let (temp_dir, config_path) = config_dir_with(original_bytes);
@@ -116,7 +128,7 @@ fn out_of_range_value_is_backed_up_with_field_name() {
 /// Слишком старая версия схемы (без миграции) считается повреждённой.
 #[test]
 fn unsupported_old_schema_version_is_backed_up() {
-    let broken_text = default_config_text().replace("schema_version = 28", "schema_version = 1");
+    let broken_text = default_config_text().replace("schema_version = 29", "schema_version = 1");
 
     assert_recovered_from_broken(
         broken_text.as_bytes(),
@@ -130,7 +142,7 @@ fn unsupported_old_schema_version_is_backed_up() {
 #[test]
 fn newer_schema_version_keeps_file_untouched_and_session_only() {
     // Реалистичный файл новой версии: другая версия и незнакомый нам ключ.
-    let newer_text = default_config_text().replace("schema_version = 28", "schema_version = 99")
+    let newer_text = default_config_text().replace("schema_version = 29", "schema_version = 99")
         + "\nfeature_from_the_future = true\n";
     let (temp_dir, config_path) = config_dir_with(newer_text.as_bytes());
 
@@ -157,13 +169,13 @@ fn newer_schema_version_keeps_file_untouched_and_session_only() {
     );
     assert_eq!(fs::read_to_string(&config_path).expect("file"), newer_text);
     // Резервной копии нет: файл исправен, просто не для этой версии.
-    assert_eq!(fs::read_dir(temp_dir.path()).expect("catalogue").count(), 1);
+    assert_eq!(entries_besides_write_lock(temp_dir.path()), 1);
 }
 
 /// В режиме без записи некорректный документ по-прежнему отклоняется проверкой.
 #[test]
 fn session_only_save_still_rejects_invalid_document() {
-    let newer_text = default_config_text().replace("schema_version = 28", "schema_version = 99");
+    let newer_text = default_config_text().replace("schema_version = 29", "schema_version = 99");
     let (_temp_dir, config_path) = config_dir_with(newer_text.as_bytes());
     let loaded = load_or_recover_at(&config_path, recovery_moment()).expect("launch does not fall");
 
@@ -192,7 +204,7 @@ fn directory_at_config_path_is_left_untouched() {
         ConfigSavePolicy::SessionOnly(ConfigSessionOnlyReason::ConfigPathIsNotFile)
     );
     assert!(config_path.is_dir());
-    assert_eq!(fs::read_dir(temp_dir.path()).expect("catalogue").count(), 1);
+    assert_eq!(entries_besides_write_lock(temp_dir.path()), 1);
 }
 
 /// Файл без права чтения: без резервной копии, работа без записи, файл не тронут.
@@ -224,7 +236,7 @@ fn unreadable_file_is_left_untouched_without_backup() {
         fs::read_to_string(&config_path).expect("file"),
         original_text
     );
-    assert_eq!(fs::read_dir(temp_dir.path()).expect("catalogue").count(), 1);
+    assert_eq!(entries_besides_write_lock(temp_dir.path()), 1);
 }
 
 /// Каталог только для чтения: копию сделать нельзя → файл не тронут, запись запрещена.
@@ -251,7 +263,7 @@ fn backup_failure_keeps_broken_file_and_disables_saving() {
         })
     );
     assert_eq!(fs::read(&config_path).expect("file"), b"[[[");
-    assert_eq!(fs::read_dir(temp_dir.path()).expect("catalogue").count(), 1);
+    assert_eq!(entries_besides_write_lock(temp_dir.path()), 1);
 }
 
 /// Имя резервной копии уже занято: старая копия не перезаписывается, берётся `-2`.
@@ -382,7 +394,7 @@ fn first_write_into_read_only_directory_leaves_nothing_behind() {
             ConfigWriteProblem::Write(_)
         ))
     ));
-    assert_eq!(fs::read_dir(temp_dir.path()).expect("catalogue").count(), 0);
+    assert_eq!(entries_besides_write_lock(temp_dir.path()), 0);
 }
 
 /// Похожие на temp, но чужие файлы при старте не удаляются.
@@ -427,7 +439,7 @@ fn valid_config_loads_unchanged() {
     assert_eq!(loaded.save_policy, ConfigSavePolicy::WriteToFile);
     assert_eq!(loaded.config, custom_config);
     assert_eq!(fs::read_to_string(&config_path).expect("file"), custom_text);
-    assert_eq!(fs::read_dir(temp_dir.path()).expect("catalogue").count(), 1);
+    assert_eq!(entries_besides_write_lock(temp_dir.path()), 1);
 
     // Сохранение в обычном режиме реально пишет файл.
     custom_config.ui.sidebar.width_points = 450;

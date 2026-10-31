@@ -164,7 +164,7 @@ macro_rules! checked_text {
 
 checked_text!(
     /// Заголовок вкладки для подписи окна. Может быть пустым (страница без `<title>`).
-    #[derive(Debug)]
+    /// Это данные пользователя: в отладочный вывод не попадает (инвариант 7).
     PageTitle,
     TextRule {
         emptiness: Emptiness::Allowed,
@@ -176,8 +176,8 @@ checked_text!(
 
 checked_text!(
     /// Домен страницы (`www.youtube.com`) — единственное, что плеер знает об адресе
-    /// (инвариант 2: ни путей, ни параметров, ни кук).
-    #[derive(Debug)]
+    /// (инвариант 2: ни путей, ни параметров, ни кук). Данные пользователя: в
+    /// отладочный вывод не попадает (инвариант 7).
     SiteDomain,
     TextRule {
         emptiness: Emptiness::Forbidden,
@@ -282,6 +282,21 @@ impl fmt::Debug for SessionToken {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Токен — секрет сеанса: даже в журнале отладки только факт наличия.
         formatter.write_str("SessionToken(<redacted>)")
+    }
+}
+
+impl fmt::Debug for PageTitle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Заголовок вкладки говорит, что человек смотрит: журнал его не получает,
+        // даже если кто-то напишет `?title` (браузерный режим ничего не хранит о просмотре).
+        formatter.write_str("PageTitle(<hidden>)")
+    }
+}
+
+impl fmt::Debug for SiteDomain {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Домен — тоже след просмотра: только факт наличия.
+        formatter.write_str("SiteDomain(<hidden>)")
     }
 }
 

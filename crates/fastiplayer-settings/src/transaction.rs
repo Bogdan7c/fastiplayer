@@ -28,12 +28,18 @@ impl SettingsValidator<AppConfig> for AppConfigValidator {
 
 /// Atomic TOML persister backed by `fastiplayer-config::ConfigSaveTarget`.
 ///
+/// Config — «общая доска» нескольких копий плеера (решение 135): сохранение под замком
+/// перечитывает файл и вписывает только изменённые транзакцией настройки
+/// (`shared_persist.rs`), поэтому соседняя копия не теряет свои ключи.
+///
 /// Право записи решает config-хранилище при загрузке: если в этот запуск запись
 /// запрещена (файл от новой версии, файл не читается), store не пишет диск и сообщает
 /// `PersistOutcome::SkippedSessionOnly` — изменения действуют до выхода без отката.
 #[derive(Debug, Clone)]
 pub struct AppConfigStore {
     save_target: ConfigSaveTarget,
+    /// Сколько ждать замок записи config-а до ошибки «файл занят».
+    lock_wait: Duration,
 }
 
 impl AppConfigStore {
@@ -46,7 +52,17 @@ impl AppConfigStore {
     /// Creates a store that respects the write policy decided when config was loaded.
     #[must_use]
     pub fn from_save_target(save_target: ConfigSaveTarget) -> Self {
-        Self { save_target }
+        Self {
+            save_target,
+            lock_wait: SETTINGS_FILE_LOCK_WAIT,
+        }
+    }
+
+    /// Задаёт срок ожидания замка записи (по умолчанию [`SETTINGS_FILE_LOCK_WAIT`]).
+    #[must_use]
+    pub fn with_lock_wait(mut self, lock_wait: Duration) -> Self {
+        self.lock_wait = lock_wait;
+        self
     }
 
     /// Returns the target TOML path used by this store.
@@ -58,17 +74,10 @@ impl AppConfigStore {
 
 impl SettingsPersister<AppConfig> for AppConfigStore {
     fn persist(&mut self, request: PersistRequest<'_, AppConfig>) -> SettingsResult<PersistReport> {
-        // Важный invariant: этот метод не делает partial write сам; вся durability
-        // политика и решение «можно ли писать» остаются внутри `fastiplayer-config`.
-        let save_outcome = self
-            .save_target
-            .save(request.document)
-            .map_err(settings_error_from_display)?;
-
-        Ok(match save_outcome {
-            ConfigSaveOutcome::Saved => PersistReport::persisted(),
-            ConfigSaveOutcome::KeptInMemoryOnly(_reason) => PersistReport::kept_for_session_only(),
-        })
+        // Важный invariant: этот метод не делает partial write сам; замок, перечитывание,
+        // durability и решение «можно ли писать» остаются внутри `fastiplayer-config`,
+        // а здесь только «какие ключи вписать» (изменённые транзакцией).
+        persist_changed_settings(&self.save_target, self.lock_wait, request)
     }
 }
 
@@ -329,7 +338,7 @@ mod tests {
         let newer_text = AppConfig::default()
             .to_pretty_toml()
             .expect("defaults serialize")
-            .replace("schema_version = 28", "schema_version = 99");
+            .replace("schema_version = 29", "schema_version = 99");
         fs::write(&config_path, &newer_text).expect("newer config written");
         let loaded = load_or_recover_at(&config_path, SystemTime::now()).expect("startup loads");
         assert_eq!(
@@ -374,7 +383,7 @@ mod tests {
         fs::remove_dir_all(&directory).expect("test directory removed");
     }
 
-    /// Обычный store по-прежнему пишет файл.
+    /// Обычный store по-прежнему пишет файл: изменённая настройка попадает на диск.
     #[test]
     fn writable_store_persists_document() {
         let directory = unique_test_directory();
@@ -382,11 +391,15 @@ mod tests {
         let mut store = AppConfigStore::new(&config_path);
         let mut document = AppConfig::default();
         document.ui.language = "en".into();
+        let changed_settings = app_config_registry()
+            .expect("registry builds")
+            .diff(&AppConfig::default(), &document)
+            .expect("diff builds");
 
         let report = store
             .persist(PersistRequest {
                 document: &document,
-                changed_settings: &settings_core::SettingsDiff::default(),
+                changed_settings: &changed_settings,
             })
             .expect("persist succeeds");
 

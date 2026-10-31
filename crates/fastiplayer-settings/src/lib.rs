@@ -17,11 +17,12 @@ pub use application_contract::{
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use fastiplayer_config::{
-    AppConfig, ConfigSaveOutcome, ConfigSaveTarget, FrameServerConfig, HdrToSdrOperatorConfig,
-    NetworkConfig, PlayerDemuxConfig, PlaylistConfig, ToneMappingMode as ConfigToneMappingMode,
-    UiConfig, VideoBackendPreference, VideoCodec as ConfigVideoCodec, VulkanConfig, WebMediaConfig,
+    AppConfig, ConfigSaveTarget, FrameServerConfig, HdrToSdrOperatorConfig, NetworkConfig,
+    PlayerDemuxConfig, PlaylistConfig, ToneMappingMode as ConfigToneMappingMode, UiConfig,
+    VideoBackendPreference, VideoCodec as ConfigVideoCodec, VulkanConfig, WebMediaConfig,
     YtDlpConfig,
 };
 use player_core::{
@@ -44,7 +45,10 @@ use settings_core::{
 mod routing;
 #[cfg(test)]
 mod routing_audio_muted_tests;
+mod shared_persist;
 mod transaction;
 
 pub use routing::*;
+pub use shared_persist::SETTINGS_FILE_LOCK_WAIT;
+use shared_persist::persist_changed_settings;
 pub use transaction::*;

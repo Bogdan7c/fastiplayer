@@ -121,18 +121,35 @@ impl VirtualWaylandDisplay {
     /// Окно ищется по классу (app id `io.github.Bogdan7c.Fastiplayer`); других клиентов на
     /// частном дисплее нет.
     pub(super) fn close_fastiplayer_window(&self) {
+        self.close_fastiplayer_window_matching("true");
+    }
+
+    /// Закрывает окно Fastiplayer, только если его заголовок (`caption` у KWin) РОВНО
+    /// `caption`: так тест видит заголовок окна глазами композитора. Не совпал — окно цело.
+    pub(super) fn close_fastiplayer_window_titled(&self, caption: &str) {
+        self.close_fastiplayer_window_matching(&format!(
+            "String(windows[index].caption) === {caption:?}"
+        ));
+    }
+
+    /// Общий путь закрытия: скрипт KWin закрывает окна класса Fastiplayer, для которых
+    /// JS-условие `condition` (над `windows[index]`) истинно.
+    fn close_fastiplayer_window_matching(&self, condition: &str) {
         let number = self.next_script.get();
         self.next_script.set(number + 1);
         let script = self.state_dir.join(format!("close-window-{number}.js"));
         std::fs::write(
             &script,
-            r#"const windows = workspace.windowList();
-for (let index = 0; index < windows.length; index++) {
-    if (String(windows[index].resourceClass).toLowerCase().indexOf("fastiplayer") >= 0) {
+            format!(
+                r#"const windows = workspace.windowList();
+for (let index = 0; index < windows.length; index++) {{
+    if (String(windows[index].resourceClass).toLowerCase().indexOf("fastiplayer") >= 0
+        && ({condition})) {{
         windows[index].closeWindow();
-    }
-}
-"#,
+    }}
+}}
+"#
+            ),
         )
         .expect("KWin script is written");
         let script_path = script.to_str().expect("UTF-8 script path");

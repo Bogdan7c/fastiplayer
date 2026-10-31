@@ -8,6 +8,7 @@ use crate::platform::{BackendControlCommand, BackendHandle};
 use crate::{
     DesktopCommandSink, DesktopIntegrationError, DesktopIntegrationEvent, DesktopIntegrationResult,
     DesktopIntegrationShutdownOutcome, DesktopSnapshotChange, DesktopSnapshotView,
+    DesktopWindowRequestSink, MprisIdentity,
 };
 
 /// Read-only источник latest committed transport snapshot-а.
@@ -104,10 +105,44 @@ impl DesktopIntegration {
         command_sink: impl DesktopCommandSink,
         initial_snapshot: DesktopSnapshotView,
     ) -> DesktopIntegrationResult<Self> {
+        Self::spawn_with_identity(
+            MprisIdentity::StandardPlayer,
+            None,
+            command_sink,
+            initial_snapshot,
+        )
+    }
+
+    /// Сервер MPRIS окна браузерного режима (04c): имя `…fastiplayer.browser`, `Identity`
+    /// «Fastiplayer (browser)», `CanRaise`/`CanQuit` = true — просьбы `Raise`/`Quit`
+    /// уходят в `window_sink`. Обычный плеер этим именем не пользуется.
+    pub fn spawn_browser_window(
+        command_sink: impl DesktopCommandSink,
+        window_sink: Arc<dyn DesktopWindowRequestSink>,
+        initial_snapshot: DesktopSnapshotView,
+    ) -> DesktopIntegrationResult<Self> {
+        Self::spawn_with_identity(
+            MprisIdentity::BrowserSession,
+            Some(window_sink),
+            command_sink,
+            initial_snapshot,
+        )
+    }
+
+    fn spawn_with_identity(
+        identity: MprisIdentity,
+        window_sink: Option<Arc<dyn DesktopWindowRequestSink>>,
+        command_sink: impl DesktopCommandSink,
+        initial_snapshot: DesktopSnapshotView,
+    ) -> DesktopIntegrationResult<Self> {
         let snapshot_handle = LatestSnapshotHandle::new(initial_snapshot);
         let command_sink: Arc<dyn DesktopCommandSink> = Arc::new(command_sink);
-        let (backend_handle, event_rx) =
-            crate::platform::spawn_backend(command_sink, snapshot_handle.clone())?;
+        let (backend_handle, event_rx) = crate::platform::spawn_backend(
+            identity,
+            window_sink,
+            command_sink,
+            snapshot_handle.clone(),
+        )?;
         Ok(Self {
             snapshot_handle,
             backend_handle,

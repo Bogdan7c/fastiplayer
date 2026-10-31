@@ -17,20 +17,31 @@
 //!
 //! Строгие `load_or_create_at` / `load_from_path` не меняются: восстановление — это
 //! отдельный слой над тем же разбором.
+//!
+//! Config пишут несколько копий плеера (решение 135 моста), поэтому всё, что меняет
+//! каталог config-а — уборка брошенных temp, создание defaults, перенос битого файла в
+//! `.bak`, — идёт под замком записи `config.toml.lock`. Если замок взять не удалось
+//! (сосед держит его дольше срока или замок подменён), каталог не трогаем: корректный
+//! файл загружается как обычно, а вместо создания и переноса — defaults в памяти без
+//! записи ([`ConfigSessionOnlyReason::ConfigLockUnavailable`]).
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::{AppConfig, CURRENT_SCHEMA_VERSION, ConfigError, ConfigResult};
+use crate::{AppConfig, ConfigResult, config_write_lock_path_for};
 
 use super::LoadedConfig;
 use super::atomic;
 use super::backup_name::BrokenConfigBackupName;
+use super::disk_read::{DiskConfigState, read_disk_config};
 use super::outcome::{
     BrokenConfigProblem, BrokenConfigRecovery, ConfigLoadOrigin, ConfigSavePolicy,
     ConfigSessionOnlyReason, ConfigWriteProblem,
+};
+use super::shared_file::{
+    ConfigLockFailure, DEFAULT_SHARED_CONFIG_LOCK_WAIT, acquire_config_write_lock,
 };
 
 /// Сколько вариантов имени резервной копии пробуем, если имя с этой секундой уже занято.
@@ -38,122 +49,80 @@ const MAX_BACKUP_NAME_ATTEMPTS: u32 = 100;
 
 /// Загружает config для запуска приложения, восстанавливаясь после плохого файла.
 ///
-/// Вызывать только под lease единственного экземпляра: функция убирает брошенные
-/// temp-файлы и переименовывает повреждённый config, что безопасно лишь тогда, когда
-/// параллельно никто не пишет в тот же каталог. `now` нужен для имени резервной копии
-/// и передаётся снаружи, чтобы тесты управляли временем.
+/// Уборка брошенных temp-файлов, создание defaults и переименование повреждённого
+/// config-а выполняются под замком записи config-а (ждём не дольше
+/// [`DEFAULT_SHARED_CONFIG_LOCK_WAIT`]): только так соседняя копия плеера не потеряет
+/// temp посреди записи и не получит свой свежий файл переименованным в `.bak`.
+/// `now` нужен для имени резервной копии и передаётся снаружи, чтобы тесты управляли
+/// временем.
 ///
 /// Ошибкой остаются только сбои подготовки defaults (ошибка программы, а не файла).
 pub fn load_or_recover_at(path: impl AsRef<Path>, now: SystemTime) -> ConfigResult<LoadedConfig> {
     let path = path.as_ref().to_path_buf();
+    let lock_path = config_write_lock_path_for(&path);
+    // Замок держится до конца загрузки: проверка и изменение каталога — под ним.
+    let _write_guard = match acquire_config_write_lock(&lock_path, DEFAULT_SHARED_CONFIG_LOCK_WAIT)
+    {
+        Ok(write_guard) => write_guard,
+        Err(lock_failure) => return load_without_write_lock(path, lock_failure),
+    };
     atomic::remove_stale_save_temp_files(&path);
 
-    match read_config_bytes(&path) {
-        ConfigFileRead::Missing => {
+    match read_disk_config(&path)? {
+        DiskConfigState::Missing => {
             create_default_config_file(path, ConfigLoadOrigin::CreatedDefault)
         }
-        ConfigFileRead::Unusable(reason) => defaults_in_memory(path, reason),
-        ConfigFileRead::Bytes(config_bytes) => match inspect_config_bytes(&path, &config_bytes)? {
-            ConfigInspection::Valid(config) => Ok(LoadedConfig {
-                config: *config,
-                path,
-                origin: ConfigLoadOrigin::LoadedExisting,
-                save_policy: ConfigSavePolicy::WriteToFile,
-            }),
-            ConfigInspection::NewerSchema { found } => {
-                defaults_in_memory(path, ConfigSessionOnlyReason::NewerSchemaVersion { found })
-            }
-            ConfigInspection::Broken(problem) => recover_broken_config(path, problem, now),
-        },
-    }
-}
-
-/// Что удалось прочитать по пути config-а.
-enum ConfigFileRead {
-    /// Файла нет.
-    Missing,
-    /// Файл есть, но использовать его нельзя; трогать его тоже нельзя.
-    Unusable(ConfigSessionOnlyReason),
-    /// Содержимое файла.
-    Bytes(Vec<u8>),
-}
-
-/// Читает config-файл байтами: битый UTF-8 — тоже «повреждён», а не «не читается».
-fn read_config_bytes(path: &Path) -> ConfigFileRead {
-    match fs::metadata(path) {
-        Ok(metadata) if !metadata.is_file() => {
-            return ConfigFileRead::Unusable(ConfigSessionOnlyReason::ConfigPathIsNotFile);
+        DiskConfigState::Valid(config) => Ok(loaded_existing(path, *config)),
+        DiskConfigState::Broken(problem) => recover_broken_config(path, problem, now),
+        DiskConfigState::NewerSchema { found } => {
+            defaults_in_memory(path, ConfigSessionOnlyReason::NewerSchemaVersion { found })
         }
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return ConfigFileRead::Missing,
-        Err(error) => return unreadable(&error),
-    }
-    match fs::read(path) {
-        Ok(config_bytes) => ConfigFileRead::Bytes(config_bytes),
-        // Файл исчез между проверкой и чтением — ведём себя как при первом запуске.
-        Err(error) if error.kind() == io::ErrorKind::NotFound => ConfigFileRead::Missing,
-        Err(error) => unreadable(&error),
+        DiskConfigState::NotRegularFile => {
+            defaults_in_memory(path, ConfigSessionOnlyReason::ConfigPathIsNotFile)
+        }
+        DiskConfigState::ReadFailed { error_kind } => defaults_in_memory(
+            path,
+            ConfigSessionOnlyReason::ConfigFileUnreadable { error_kind },
+        ),
     }
 }
 
-/// Файл есть, но прочитать его нельзя.
-fn unreadable(error: &io::Error) -> ConfigFileRead {
-    ConfigFileRead::Unusable(ConfigSessionOnlyReason::ConfigFileUnreadable {
-        error_kind: error.kind(),
-    })
-}
-
-/// Вердикт по содержимому config-файла.
-enum ConfigInspection {
-    /// Корректный config (в куче: он намного больше остальных вариантов).
-    Valid(Box<AppConfig>),
-    /// Файл от более новой версии плеера.
-    NewerSchema { found: i64 },
-    /// Файл повреждён.
-    Broken(BrokenConfigProblem),
-}
-
-/// Разбирает содержимое и классифицирует проблему.
+/// Загрузка без замка записи: каталог config-а не трогаем ни в каком случае.
 ///
-/// Версию схемы читаем из «сырого» TOML **до** строгой проверки: файл новой версии
-/// почти наверняка содержит незнакомые нам ключи, и строгий разбор назвал бы его
-/// повреждённым, хотя он исправен — просто не для нас.
-fn inspect_config_bytes(path: &Path, config_bytes: &[u8]) -> ConfigResult<ConfigInspection> {
-    let Ok(toml_text) = std::str::from_utf8(config_bytes) else {
-        return Ok(ConfigInspection::Broken(
-            BrokenConfigProblem::InvalidTomlSyntax,
-        ));
-    };
-    let Ok(raw_document) = toml::from_str::<toml::Table>(toml_text) else {
-        return Ok(ConfigInspection::Broken(
-            BrokenConfigProblem::InvalidTomlSyntax,
-        ));
-    };
-    if let Some(toml::Value::Integer(found)) = raw_document.get("schema_version")
-        && *found > i64::from(CURRENT_SCHEMA_VERSION)
-    {
-        return Ok(ConfigInspection::NewerSchema { found: *found });
-    }
-    match super::parse_config_text(path, toml_text) {
-        Ok(config) => Ok(ConfigInspection::Valid(Box::new(config))),
-        Err(error) => classify_parse_error(error).map(ConfigInspection::Broken),
+/// Корректный файл загружается с правом записи: каждая следующая запись сама берёт
+/// замок и при неудаче сообщит понятную ошибку. Нет файла или файл битый — defaults в
+/// памяти без записи: создать файл или перенести битый в `.bak` без замка небезопасно.
+fn load_without_write_lock(
+    path: PathBuf,
+    lock_failure: ConfigLockFailure,
+) -> ConfigResult<LoadedConfig> {
+    match read_disk_config(&path)? {
+        DiskConfigState::Valid(config) => Ok(loaded_existing(path, *config)),
+        DiskConfigState::Missing | DiskConfigState::Broken(_) => defaults_in_memory(
+            path,
+            ConfigSessionOnlyReason::ConfigLockUnavailable(lock_failure),
+        ),
+        // Эти случаи и под замком решаются без изменения каталога — причина та же.
+        DiskConfigState::NewerSchema { found } => {
+            defaults_in_memory(path, ConfigSessionOnlyReason::NewerSchemaVersion { found })
+        }
+        DiskConfigState::NotRegularFile => {
+            defaults_in_memory(path, ConfigSessionOnlyReason::ConfigPathIsNotFile)
+        }
+        DiskConfigState::ReadFailed { error_kind } => defaults_in_memory(
+            path,
+            ConfigSessionOnlyReason::ConfigFileUnreadable { error_kind },
+        ),
     }
 }
 
-/// Переводит ошибку строгого разбора в проблему файла.
-///
-/// Неожиданная ошибка (не о содержимом файла) не маскируется под «повреждён»:
-/// она пробрасывается как есть, чтобы не переименовать исправный файл.
-fn classify_parse_error(error: ConfigError) -> ConfigResult<BrokenConfigProblem> {
-    match error {
-        ConfigError::ParseConfigFile { .. } => Ok(BrokenConfigProblem::SchemaMismatch),
-        ConfigError::ValidateConfigFile { source, .. } => match *source {
-            ConfigError::InvalidValue { field, .. } => {
-                Ok(BrokenConfigProblem::InvalidValue { field })
-            }
-            other => Err(other),
-        },
-        other => Err(other),
+/// Существующий корректный файл: обычный режим с записью.
+fn loaded_existing(path: PathBuf, config: AppConfig) -> LoadedConfig {
+    LoadedConfig {
+        config,
+        path,
+        origin: ConfigLoadOrigin::LoadedExisting,
+        save_policy: ConfigSavePolicy::WriteToFile,
     }
 }
 
@@ -183,7 +152,7 @@ fn recover_broken_config(
 /// Rename сохраняет файл целиком (тот же inode, те же байты), поэтому исходные данные
 /// пользователя никогда не существуют «наполовину». Занятое имя не перезаписывается:
 /// пробуем следующий вариант с суффиксом. Проверка «имя свободно» и rename не атомарны
-/// вместе, но гонки нет: каталог config-а меняет только процесс, удерживающий lease.
+/// вместе, но гонки нет: каталог config-а меняет только писатель, держащий замок записи.
 fn move_to_backup(path: &Path, now: SystemTime) -> Result<String, io::ErrorKind> {
     let Some(directory) = path.parent() else {
         return Err(io::ErrorKind::InvalidInput);

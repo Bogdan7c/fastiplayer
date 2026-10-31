@@ -2,12 +2,14 @@
 
 use super::*;
 
+mod browser_session;
 mod media_service;
 mod render;
 #[cfg(test)]
 mod render_restart_tests;
 mod subtitles;
 
+pub use browser_session::{BROWSER_SESSION_ROUTE_ID, BrowserSessionRuntimeSettingsUpdate};
 pub use media_service::WEB_MEDIA_ROUTE_ID;
 pub use render::RenderCommittedSettingsUpdate;
 use render::render_committed_route;
@@ -69,6 +71,9 @@ pub enum AppRuntimeRoute {
 
     /// Subtitle settings route; stored snapshot read by the subtitle owner on next use.
     Subtitles,
+
+    /// Browser mode route: buffer window for the next page video and remembered window state.
+    BrowserSession,
 }
 
 /// Owner-defined atomic group inside a runtime route.
@@ -127,6 +132,12 @@ pub enum AppRuntimeRouteGroup {
 
     /// Subtitle appearance, language and resource-limit settings.
     SubtitlePolicy,
+
+    /// Browser mode source buffer window; takes effect with the next page video.
+    BrowserSessionBuffer,
+
+    /// Remembered browser mode window size/fullscreen; never applied to a live window.
+    BrowserSessionWindow,
 }
 
 /// Affected settings belonging to one owner-defined atomic group.
@@ -220,6 +231,9 @@ pub enum RuntimeCommittedUpdate {
 
     /// Subtitle settings snapshot for the subtitle owner.
     Subtitles(SubtitlesRuntimeSettingsUpdate),
+
+    /// Browser mode section snapshot for the browser mode window owner.
+    BrowserSession(BrowserSessionRuntimeSettingsUpdate),
 }
 
 /// Полный typed snapshot playlist policy для atomic owner apply.
@@ -594,6 +608,9 @@ pub fn runtime_route_plan_from_diff(
             AppRuntimeRoute::Subtitles => plan
                 .committed_routes
                 .push(subtitles::committed_route(current, input)),
+            AppRuntimeRoute::BrowserSession => plan
+                .committed_routes
+                .push(browser_session::committed_route(current, input)),
         }
     }
 
@@ -636,6 +653,7 @@ pub fn committed_routes_from_update(
             AppRuntimeRoute::FrameServer => frame_server_committed_route(current, input),
             AppRuntimeRoute::Playlist => playlist_committed_route(current, input),
             AppRuntimeRoute::Subtitles => subtitles::committed_route(current, input),
+            AppRuntimeRoute::BrowserSession => browser_session::committed_route(current, input),
         };
         routes.push(route);
     }
@@ -1066,6 +1084,9 @@ fn runtime_route_from_metadata(
         }
         (PLAYLIST_ROUTE_ID, SettingApplyMode::CommittedApply) => Ok(AppRuntimeRoute::Playlist),
         (SUBTITLES_ROUTE_ID, SettingApplyMode::CommittedApply) => Ok(AppRuntimeRoute::Subtitles),
+        (BROWSER_SESSION_ROUTE_ID, SettingApplyMode::CommittedApply) => {
+            Ok(AppRuntimeRoute::BrowserSession)
+        }
         (other, _) => Err(SettingsError::access_failed(format!(
             "unknown AppConfig settings route `{other}` for setting `{setting_id}`"
         ))),
@@ -1082,6 +1103,7 @@ fn route_id_for_runtime_route(route: AppRuntimeRoute) -> SettingRouteId {
         AppRuntimeRoute::FrameServer => SettingRouteId::from(FRAME_SERVER_ROUTE_ID),
         AppRuntimeRoute::Playlist => SettingRouteId::from(PLAYLIST_ROUTE_ID),
         AppRuntimeRoute::Subtitles => SettingRouteId::from(SUBTITLES_ROUTE_ID),
+        AppRuntimeRoute::BrowserSession => SettingRouteId::from(BROWSER_SESSION_ROUTE_ID),
     }
 }
 
@@ -1146,6 +1168,7 @@ fn group_for_setting(route: AppRuntimeRoute, setting_id: &str) -> AppRuntimeRout
         AppRuntimeRoute::FrameServer => AppRuntimeRouteGroup::FrameServerSettings,
         AppRuntimeRoute::Playlist => AppRuntimeRouteGroup::PlaylistPolicy,
         AppRuntimeRoute::Subtitles => AppRuntimeRouteGroup::SubtitlePolicy,
+        AppRuntimeRoute::BrowserSession => browser_session::group_for_setting(setting_id),
     }
 }
 

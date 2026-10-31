@@ -155,3 +155,16 @@ fn deserialization_applies_the_same_rules_as_the_constructor() {
         Some("example.com".to_owned())
     );
 }
+
+#[test]
+fn page_title_and_domain_never_show_their_text_in_debug_output() {
+    let (Ok(title), Ok(domain)) = (
+        PageTitle::new("Секретный фильм unique-title"),
+        SiteDomain::new("unique-site.example"),
+    ) else {
+        panic!("тестовые значения должны проходить проверку");
+    };
+    let printed = format!("{title:?} {domain:?}");
+    assert_eq!(printed, "PageTitle(<hidden>) SiteDomain(<hidden>)");
+    assert!(!printed.contains("unique"));
+}

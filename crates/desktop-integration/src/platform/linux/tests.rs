@@ -85,10 +85,85 @@ impl Drop for PrivateSessionBus {
 }
 
 fn claim_on_private_bus(address: &str) -> DesktopIntegrationResult<Connection> {
+    claim_identity_on_private_bus(address, MprisIdentity::StandardPlayer)
+        .map(|(connection, _events)| connection)
+}
+
+/// Запоминает просьбы рабочего стола к окну.
+#[derive(Default)]
+struct RecordingWindowSink {
+    requests: Mutex<Vec<DesktopWindowRequest>>,
+}
+
+impl DesktopWindowRequestSink for RecordingWindowSink {
+    fn request_window(&self, request: DesktopWindowRequest) {
+        self.requests
+            .lock()
+            .expect("window request log")
+            .push(request);
+    }
+}
+
+impl RecordingWindowSink {
+    fn taken(&self) -> Vec<DesktopWindowRequest> {
+        std::mem::take(&mut *self.requests.lock().expect("window request log"))
+    }
+}
+
+/// Сервер заданной личности на частной шине + канал событий, куда он кладёт просьбы окну.
+fn claim_identity_on_private_bus(
+    address: &str,
+    identity: MprisIdentity,
+) -> DesktopIntegrationResult<(Connection, Arc<RecordingWindowSink>)> {
     let sink = Arc::new(RecordingSink::default());
     let player = interface(view(), sink);
+    let window_requests = Arc::new(RecordingWindowSink::default());
+    let root = MprisRootInterface::new(identity, Some(window_requests.clone()));
     let builder = connection::Builder::address(address).map_err(map_zbus_error)?;
-    build_mpris_connection(builder, player)
+    build_mpris_connection(builder, identity, root, player)
+        .map(|connection| (connection, window_requests))
+}
+
+/// Вызов метода корневого интерфейса MPRIS чужим клиентом шины.
+fn call_root_method(address: &str, bus_name: &str, method: &str) {
+    let client = connection::Builder::address(address)
+        .expect("client builder")
+        .build()
+        .expect("client connection");
+    client
+        .call_method(
+            Some(bus_name),
+            MPRIS_OBJECT_PATH,
+            Some("org.mpris.MediaPlayer2"),
+            method,
+            &(),
+        )
+        .expect("root method call");
+}
+
+/// Свойство корневого интерфейса MPRIS как строка/булево глазами чужого клиента шины.
+fn read_root_property<T>(address: &str, bus_name: &str, property: &str) -> T
+where
+    T: TryFrom<OwnedValue>,
+    T::Error: Into<zbus::zvariant::Error>,
+{
+    let client = connection::Builder::address(address)
+        .expect("client builder")
+        .build()
+        .expect("client connection");
+    let reply = client
+        .call_method(
+            Some(bus_name),
+            MPRIS_OBJECT_PATH,
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &("org.mpris.MediaPlayer2", property),
+        )
+        .expect("property get");
+    let value: OwnedValue = reply.body().deserialize().expect("variant body");
+    T::try_from(value)
+        .map_err(Into::into)
+        .expect("property type")
 }
 
 #[test]
@@ -281,8 +356,11 @@ fn occupied_bus_name_is_typed_separately_from_backend_failure() {
 #[test]
 fn bus_claim_uses_fixed_base_name_without_replacement_or_fallback() {
     let source = include_str!("../linux.rs");
-    assert_eq!(MPRIS_BUS_NAME, "org.mpris.MediaPlayer2.fastiplayer");
-    assert!(source.contains(".name(MPRIS_BUS_NAME)"));
+    assert_eq!(
+        MprisIdentity::StandardPlayer.bus_name(),
+        "org.mpris.MediaPlayer2.fastiplayer"
+    );
+    assert!(source.contains(".name(identity.bus_name())"));
     assert!(source.contains(".allow_name_replacements(false)"));
     assert!(source.contains(".replace_existing_names(false)"));
 }
@@ -322,15 +400,94 @@ fn occupied_private_bus_claim_is_nonqueued_and_never_acquires_after_release() {
 fn mpris_desktop_entry_names_the_packaged_desktop_file() {
     // Plasma ищет `<DesktopEntry>.desktop`; иначе у медиа-виджета нет иконки плеера.
     assert_eq!(
-        MprisRootInterface.desktop_entry(),
+        root_for_standard_player().desktop_entry(),
         crate::FASTIPLAYER_APPLICATION_ID
     );
     let packaged_entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../packaging/linux")
-        .join(format!("{}.desktop", MprisRootInterface.desktop_entry()));
+        .join(format!(
+            "{}.desktop",
+            root_for_standard_player().desktop_entry()
+        ));
     assert!(
         packaged_entry.is_file(),
         "missing {}",
         packaged_entry.display()
     );
+}
+
+fn root_for_standard_player() -> MprisRootInterface {
+    MprisRootInterface::new(MprisIdentity::StandardPlayer, None)
+}
+
+#[test]
+fn browser_session_claims_its_own_name_next_to_the_standard_player() {
+    let bus = PrivateSessionBus::spawn();
+    let (_standard, _standard_requests) =
+        claim_identity_on_private_bus(&bus.address, MprisIdentity::StandardPlayer)
+            .expect("standard player name is free");
+    let (_browser, _browser_requests) =
+        claim_identity_on_private_bus(&bus.address, MprisIdentity::BrowserSession)
+            .expect("the browser name does not collide with the standard one");
+
+    assert_eq!(
+        MprisIdentity::BrowserSession.bus_name(),
+        "org.mpris.MediaPlayer2.fastiplayer.browser"
+    );
+    assert_eq!(
+        read_root_property::<String>(
+            &bus.address,
+            "org.mpris.MediaPlayer2.fastiplayer.browser",
+            "Identity"
+        ),
+        "Fastiplayer (browser)"
+    );
+    assert_eq!(
+        read_root_property::<String>(
+            &bus.address,
+            "org.mpris.MediaPlayer2.fastiplayer",
+            "Identity"
+        ),
+        "Fastiplayer"
+    );
+}
+
+#[test]
+fn browser_session_raise_and_quit_reach_the_window_but_the_standard_player_ignores_them() {
+    let bus = PrivateSessionBus::spawn();
+    let (_standard, standard_requests) =
+        claim_identity_on_private_bus(&bus.address, MprisIdentity::StandardPlayer)
+            .expect("standard claim");
+    let (_browser, browser_requests) =
+        claim_identity_on_private_bus(&bus.address, MprisIdentity::BrowserSession)
+            .expect("browser claim");
+
+    call_root_method(
+        &bus.address,
+        "org.mpris.MediaPlayer2.fastiplayer.browser",
+        "Raise",
+    );
+    call_root_method(
+        &bus.address,
+        "org.mpris.MediaPlayer2.fastiplayer.browser",
+        "Quit",
+    );
+    call_root_method(&bus.address, "org.mpris.MediaPlayer2.fastiplayer", "Raise");
+    call_root_method(&bus.address, "org.mpris.MediaPlayer2.fastiplayer", "Quit");
+
+    assert_eq!(
+        browser_requests.taken(),
+        vec![DesktopWindowRequest::Raise, DesktopWindowRequest::Quit]
+    );
+    assert!(standard_requests.taken().is_empty());
+    assert!(read_root_property::<bool>(
+        &bus.address,
+        "org.mpris.MediaPlayer2.fastiplayer.browser",
+        "CanRaise"
+    ));
+    assert!(!read_root_property::<bool>(
+        &bus.address,
+        "org.mpris.MediaPlayer2.fastiplayer",
+        "CanQuit"
+    ));
 }

@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 28;
+pub const CURRENT_SCHEMA_VERSION: u32 = 29;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -157,14 +157,24 @@ pub(crate) const LEGACY_SCHEMA_VERSION_26: u32 = 26;
 /// битым файлом, а с bump-ом видит «схема новее» и файл не трогает.
 pub(crate) const LEGACY_SCHEMA_VERSION_27: u32 = 27;
 
+/// Последняя схема до таблицы `[browser_session.window]` (запоминаемое окно браузерного
+/// режима) и до показа `[browser_session]` в окне настроек.
+///
+/// Решения владельца 137–138 (browser-bridge, сессия 04c): размер и полноэкранность окна
+/// браузерного режима запоминаются своими ключами. Переписывать пользовательские значения
+/// нечего, миграция v28 -> v29 только поднимает версию (старый файл без таблицы получает
+/// defaults). Bump нужен ради старых бинарей: строгий парсер v28 счёл бы незнакомую таблицу
+/// битым файлом и переименовал бы его в `.bak`, а с bump-ом видит «схема новее».
+pub(crate) const LEGACY_SCHEMA_VERSION_28: u32 = 28;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v28 и полная цепочка поддерживаемых legacy-версий v2..v27.
+    /// Текущая схема v29 и полная цепочка поддерживаемых legacy-версий v2..v28.
     #[test]
-    fn schema_v28_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 28);
+    fn schema_v29_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 29);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -193,10 +203,11 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_25,
                 LEGACY_SCHEMA_VERSION_26,
                 LEGACY_SCHEMA_VERSION_27,
+                LEGACY_SCHEMA_VERSION_28,
             ],
             [
                 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-                25, 26, 27
+                25, 26, 27, 28
             ]
         );
     }

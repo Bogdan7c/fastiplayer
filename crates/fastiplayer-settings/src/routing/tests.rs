@@ -28,6 +28,7 @@ use settings_core::{
 };
 
 use super::*;
+mod browser_session_route;
 mod subtitles_route;
 mod surface_pool_automatic;
 mod vod_endpoint_recovery;

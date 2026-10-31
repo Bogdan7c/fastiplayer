@@ -8,6 +8,7 @@ use crate::{
     LEGACY_SCHEMA_VERSION_19, LEGACY_SCHEMA_VERSION_20, LEGACY_SCHEMA_VERSION_21,
     LEGACY_SCHEMA_VERSION_22, LEGACY_SCHEMA_VERSION_23, LEGACY_SCHEMA_VERSION_24,
     LEGACY_SCHEMA_VERSION_25, LEGACY_SCHEMA_VERSION_26, LEGACY_SCHEMA_VERSION_27,
+    LEGACY_SCHEMA_VERSION_28,
 };
 
 pub(super) const REMOVED_HARDWARE_DECODE_ONLY_KEY: &str = "hardware_decode_only";
@@ -107,6 +108,9 @@ pub(super) fn upgrade_config(config: &mut AppConfig) {
             // v27 -> v28: добавлена секция `[browser_session]`; старый файл без неё получает
             // defaults через `serde(default)`, переписывать нечего.
             | LEGACY_SCHEMA_VERSION_27
+            // v28 -> v29: добавлена таблица `[browser_session.window]` (запоминаемое окно
+            // браузерного режима); старый файл без неё получает defaults, переписывать нечего.
+            | LEGACY_SCHEMA_VERSION_28
     ) {
         config.schema_version = CURRENT_SCHEMA_VERSION;
     }

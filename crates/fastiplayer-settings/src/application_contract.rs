@@ -7,6 +7,8 @@ use settings_core::{RouteGeneration, SettingId};
 
 use crate::AppRuntimeRoute;
 
+mod browser_session;
+
 /// Владелец активного runtime state для одного setting-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SettingStateOwner {
@@ -36,6 +38,10 @@ pub enum SettingStateOwner {
 
     /// Subtitle policy owner: показ, язык, стиль и лимиты ресурсов субтитров.
     SubtitlePolicy,
+    /// Политика источника следующего видео со страницы (окно буфера браузерного режима).
+    BrowserSessionSourcePolicy,
+    /// Запоминаемое окно браузерного режима; пишет само окно, живьём не применяется.
+    BrowserWindowRememberedState,
 }
 
 /// Intent-механизм, которым setting должен попасть в активный runtime.
@@ -62,6 +68,9 @@ pub enum SettingApplyMechanism {
     AppliesAfterRestart,
     /// Уже активный preview становится committed runtime state.
     PreviewPromotion,
+    /// Значение только запоминается: живой runtime не меняется ни здесь, ни у соседей,
+    /// следующий владелец (новое окно браузерного режима) читает его при открытии.
+    RememberedStateOnly,
 }
 
 /// Focused scenario, который должен закреплять конкретный application contract.
@@ -597,7 +606,7 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
             SettingApplyMechanism::PolicyUpdateInPlace,
             POLICY_TESTS,
         ),
-        _ => return None,
+        _ => return browser_session::browser_session_contract(setting_name),
     };
 
     Some(contract)

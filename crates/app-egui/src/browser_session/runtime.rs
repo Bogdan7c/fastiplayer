@@ -39,7 +39,9 @@ use tracing::{debug, error, info};
 use super::inbox::{BrowserSessionInbox, InboxBatch};
 use super::intake_notice::IntakeNotice;
 use super::normal_player_pause::NormalPlayerPause;
+use super::opened_page::{OpenedPage, PageArrival};
 use super::session_media::{DrainProgress, SessionMedia};
+use crate::page_label::PageLabel;
 
 /// Через сколько просыпаться, если машина выхода вдруг вернёт «доигрываем» мимо
 /// [`BrowserSessionRuntime::step`] (так не бывает; страховка от зависания цикла).
@@ -55,6 +57,10 @@ pub(super) trait SessionMediaPort {
     fn bid_farewell_to_replaced(&mut self, replaced: &SessionRef);
     /// Открыт сеанс (новый, заменивший или повтор того же экземпляра).
     fn on_session_opened(&mut self, session: &SessionRef);
+    /// Страница открытого сеанса названа (зовётся сразу после [`Self::on_session_opened`],
+    /// в том числе при замене вкладки и повторе). Медиа-части подпись не нужна, поэтому
+    /// по умолчанию её никто не берёт; оконный наблюдатель ядра её сохраняет.
+    fn on_page_identified(&mut self, _page: OpenedPage) {}
     /// Экземпляр сеанса закончился (сервер сообщил `Ended` с причиной).
     fn on_session_ended(&mut self, session: &SessionRef, reason: SessionEndReason);
     /// Уведомления потока приёма за проход и слитое «легли новые байты».
@@ -246,6 +252,7 @@ impl BrowserSessionRuntime {
             intent,
             outcome: grant,
             replaced,
+            page,
             ..
         }) = outcome.event
         {
@@ -262,7 +269,12 @@ impl BrowserSessionRuntime {
             media.on_session_opened(&session);
             // Домен и заголовок страницы в лог НЕ пишутся: журнал systemd лежит на
             // диске, а браузерный режим ничего не хранит о просмотре (инвариант 7,
-            // инкогнито — решение 41). Они нужны только окну (04).
+            // инкогнито — решение 41). Они нужны только окну: идут туда в памяти, в
+            // типе со скрытым `Debug` (`PageLabel`, 04c).
+            media.on_page_identified(OpenedPage {
+                label: PageLabel::new(page.title.as_str(), page.domain.as_str()),
+                arrival: PageArrival::from_grant(grant),
+            });
             info!(?intent, ?grant, "Browser session opened");
             if needs_normal_player_pause(grant) {
                 self.normal_player.request_pause();

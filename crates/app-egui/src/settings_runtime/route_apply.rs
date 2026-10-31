@@ -497,10 +497,12 @@ impl SettingsRuntimeRouteAppliers {
                 let result = reconfigure_host.apply_playlist_runtime_settings(&update);
                 Ok(Self::route_report(route, result, ApplyMechanism::InPlace))
             }
-            RuntimeCommittedUpdate::Subtitles(_) => {
+            RuntimeCommittedUpdate::Subtitles(_) | RuntimeCommittedUpdate::BrowserSession(_) => {
                 // Настройки субтитров применяет `AppState::sync_committed_config_snapshot`
                 // (-> `SubtitleOwner::apply_config`) ТОЛЬКО после успешной транзакции, поэтому
                 // откат настроек не оставит новый стиль в плеере. Здесь применять нечего.
+                // Браузерный режим: буфер — для следующего видео со страницы, окно живьём не
+                // применяется (решение 137); значения читает владелец из committed config.
                 Ok(Self::route_report(
                     route,
                     AppRouteApplyResult::Applied,

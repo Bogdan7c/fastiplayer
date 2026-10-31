@@ -94,6 +94,11 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "yt_dlp.single_item_stdout_limit_bytes",
     "yt_dlp.single_item_stderr_limit_bytes",
     "yt_dlp.single_item_json_node_limit",
+    "browser_session.buffer_ahead_s",
+    "browser_session.buffer_behind_s",
+    "browser_session.window.inner_width_points",
+    "browser_session.window.inner_height_points",
+    "browser_session.window.fullscreen",
     "web_media.vod_endpoint_recovery_enabled",
     "web_media.vod_endpoint_recovery_max_consecutive_attempts",
     "web_media.vod_endpoint_recovery_initial_backoff_ms",
@@ -166,6 +171,50 @@ fn app_config_registry_covers_all_current_leaf_fields() {
     assert_eq!(actual_ids, expected_ids);
 }
 
+/// Каждый лист `AppConfig` (ключ сгенерированного TOML) достижим по пути реестра.
+///
+/// «Общая доска» (решение 135) вписывает в перечитанный файл только изменённые настройки
+/// по id реестра; поле без регистрации нельзя было бы записать ни одной транзакцией. Тест
+/// строит список листьев из настоящего TOML defaults, а не из ручного списка.
+/// Поле-`Option` со значением `None` в TOML не попадает; единственное такое поле
+/// (`web_media.preferred_video_height`) проверяет `app_config_registry_covers_all_current_leaf_fields`.
+#[test]
+fn every_config_leaf_is_reachable_by_setting_id() {
+    let registry = registry();
+    let default_document = toml::Value::try_from(AppConfig::default()).expect("defaults to TOML");
+    let mut leaf_paths = BTreeSet::new();
+    collect_toml_leaf_paths(&default_document, "", &mut leaf_paths);
+    let registered_paths = registry
+        .descriptors()
+        .map(|descriptor| descriptor.path.as_str().to_owned())
+        .collect::<BTreeSet<_>>();
+
+    let unregistered = leaf_paths
+        .difference(&registered_paths)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        unregistered.is_empty(),
+        "config leaves without a setting id: {unregistered:?}"
+    );
+}
+
+/// Собирает пути листьев TOML (таблицы раскрываются, массивы — один лист).
+fn collect_toml_leaf_paths(value: &toml::Value, prefix: &str, leaf_paths: &mut BTreeSet<String>) {
+    let toml::Value::Table(table) = value else {
+        leaf_paths.insert(prefix.to_owned());
+        return;
+    };
+    for (key, child) in table {
+        let child_path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        collect_toml_leaf_paths(child, &child_path, leaf_paths);
+    }
+}
+
 #[test]
 fn schema_version_is_read_only_system_setting() {
     let registry = registry();
@@ -234,10 +283,56 @@ fn user_visible_metadata_has_text_and_placement() {
             "{} group must be present",
             descriptor.id,
         );
+        // Запоминаемое окно браузерного режима пишет само окно (решение 137): его ключи
+        // живут на отдельной поверхности, всё остальное — на поверхности окна настроек.
+        let expected_surface = if descriptor
+            .id
+            .as_str()
+            .starts_with("browser_session.window.")
+        {
+            crate::REMEMBERED_STATE_SURFACE_ID
+        } else {
+            "main-settings-window"
+        };
         assert_eq!(
             descriptor.placement.preferred_surface.as_str(),
+            expected_surface,
+            "{} surface",
+            descriptor.id,
+        );
+    }
+}
+
+/// Ключи окна браузерного режима — на поверхности «запоминаемое состояние», окно буфера —
+/// в окне настроек; обе группы идут маршрутом `browser_session.apply`.
+#[test]
+fn browser_window_keys_live_on_remembered_state_surface() {
+    let registry = registry();
+
+    for id in [
+        "browser_session.window.inner_width_points",
+        "browser_session.window.inner_height_points",
+        "browser_session.window.fullscreen",
+    ] {
+        let window_descriptor = descriptor(&registry, id);
+        assert_eq!(
+            window_descriptor.placement.preferred_surface.as_str(),
+            crate::REMEMBERED_STATE_SURFACE_ID
+        );
+        assert_eq!(window_descriptor.route.as_str(), "browser_session");
+        assert_eq!(window_descriptor.access, SettingAccess::ReadWrite);
+    }
+    for id in [
+        "browser_session.buffer_ahead_s",
+        "browser_session.buffer_behind_s",
+    ] {
+        let buffer_descriptor = descriptor(&registry, id);
+        assert_eq!(
+            buffer_descriptor.placement.preferred_surface.as_str(),
             "main-settings-window"
         );
+        assert_eq!(buffer_descriptor.placement.section.as_str(), "browser_mode");
+        assert_eq!(buffer_descriptor.route.as_str(), "browser_session");
     }
 }
 
@@ -321,6 +416,31 @@ fn rgb_fields_are_fixed_length_three_vectors() {
 #[test]
 fn metadata_ranges_match_validation_constants() {
     let registry = registry();
+
+    assert_integer_range(
+        &registry,
+        "browser_session.buffer_ahead_s",
+        u64::from(crate::MIN_BROWSER_BUFFER_AHEAD_S),
+        u64::from(crate::MAX_BROWSER_BUFFER_AHEAD_S),
+    );
+    assert_integer_range(
+        &registry,
+        "browser_session.buffer_behind_s",
+        u64::from(crate::MIN_BROWSER_BUFFER_BEHIND_S),
+        u64::from(crate::MAX_BROWSER_BUFFER_BEHIND_S),
+    );
+    assert_integer_range(
+        &registry,
+        "browser_session.window.inner_width_points",
+        u64::from(crate::MIN_BROWSER_WINDOW_WIDTH_POINTS),
+        u64::from(crate::MAX_BROWSER_WINDOW_WIDTH_POINTS),
+    );
+    assert_integer_range(
+        &registry,
+        "browser_session.window.inner_height_points",
+        u64::from(crate::MIN_BROWSER_WINDOW_HEIGHT_POINTS),
+        u64::from(crate::MAX_BROWSER_WINDOW_HEIGHT_POINTS),
+    );
 
     assert_integer_range(
         &registry,

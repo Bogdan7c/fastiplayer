@@ -17,6 +17,7 @@ mod playlist_error_behavior_migration;
 mod recovery;
 mod render_profile_migration;
 mod render_validation;
+mod shared_file;
 mod startup_read_ahead_settings;
 mod subtitles_ass_settings;
 mod subtitles_blur_settings;

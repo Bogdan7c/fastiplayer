@@ -4,7 +4,10 @@
 //! validation и чтение/создание файла на платформенном config-пути.
 //! Playback и UI намеренно не живут здесь.
 
-#![forbid(unsafe_code)]
+// `deny`, а не `forbid`: единственное исключение — чтение действующего uid процесса для
+// проверки владельца файла-замка записи (`store/shared_file/lock.rs`); безопасного
+// способа в стандартной библиотеке нет. Любой другой `unsafe` в crate запрещён.
+#![deny(unsafe_code)]
 
 mod error;
 mod frame_server;
@@ -14,9 +17,10 @@ mod store;
 mod validation;
 pub use validation::MIN_AUTOMATIC_SURFACE_POOL_FRAMES;
 
+pub use atomic_file_store::DirectorySyncError;
 pub use error::{ConfigError, ConfigResult, ConfigWriteFailure};
 pub use frame_server::{FrameServerConfig, FrameServerLiveScrubDecodeModeConfig};
-pub use paths::{CONFIG_FILE_NAME, ConfigPaths};
+pub use paths::{CONFIG_FILE_NAME, ConfigPaths, config_write_lock_path_for};
 pub use schema::{
     AppConfig, AudioConfig, CURRENT_SCHEMA_VERSION, DEFAULT_AUDIO_STARTUP_READ_AHEAD_CAP_MS,
     DEFAULT_DROPPED_FOLDER_MAX_DEPTH, DEFAULT_DROPPED_FOLDER_MAX_FILES,
@@ -50,6 +54,11 @@ pub use schema::{
     BrowserSessionBufferWindow, BrowserSessionConfig, DEFAULT_BROWSER_BUFFER_AHEAD_S,
     DEFAULT_BROWSER_BUFFER_BEHIND_S, MAX_BROWSER_BUFFER_AHEAD_S, MAX_BROWSER_BUFFER_BEHIND_S,
     MIN_BROWSER_BUFFER_AHEAD_S, MIN_BROWSER_BUFFER_BEHIND_S,
+};
+pub use schema::{
+    BrowserWindowConfig, DEFAULT_BROWSER_WINDOW_HEIGHT_POINTS, DEFAULT_BROWSER_WINDOW_WIDTH_POINTS,
+    MAX_BROWSER_WINDOW_HEIGHT_POINTS, MAX_BROWSER_WINDOW_WIDTH_POINTS,
+    MIN_BROWSER_WINDOW_HEIGHT_POINTS, MIN_BROWSER_WINDOW_WIDTH_POINTS, REMEMBERED_STATE_SURFACE_ID,
 };
 pub use schema::{
     DEFAULT_BACKGROUND_COLOR, DEFAULT_BACKGROUND_OPACITY_PERCENT, DEFAULT_FONT_LOOKUP_CACHE_CHARS,
@@ -103,11 +112,13 @@ pub(crate) use schema::{
     LEGACY_SCHEMA_VERSION_17, LEGACY_SCHEMA_VERSION_18, LEGACY_SCHEMA_VERSION_19,
     LEGACY_SCHEMA_VERSION_20, LEGACY_SCHEMA_VERSION_21, LEGACY_SCHEMA_VERSION_22,
     LEGACY_SCHEMA_VERSION_23, LEGACY_SCHEMA_VERSION_24, LEGACY_SCHEMA_VERSION_25,
-    LEGACY_SCHEMA_VERSION_26, LEGACY_SCHEMA_VERSION_27,
+    LEGACY_SCHEMA_VERSION_26, LEGACY_SCHEMA_VERSION_27, LEGACY_SCHEMA_VERSION_28,
 };
 pub use store::{
-    BrokenConfigProblem, BrokenConfigRecovery, ConfigLoadOrigin, ConfigSaveOutcome,
-    ConfigSavePolicy, ConfigSaveTarget, ConfigSessionOnlyReason, ConfigWriteProblem, LoadedConfig,
-    load_from_path, load_or_create, load_or_create_at, load_or_recover_at,
-    save_validated_atomic_at,
+    BrokenConfigProblem, BrokenConfigRecovery, ConfigLoadOrigin, ConfigLockFailure,
+    ConfigSaveOutcome, ConfigSavePolicy, ConfigSaveTarget, ConfigSessionOnlyReason,
+    ConfigWriteProblem, DEFAULT_SHARED_CONFIG_LOCK_WAIT, LoadedConfig, SharedConfigLockProblem,
+    SharedConfigLockStage, SharedConfigProblem, SharedConfigRead, SharedConfigSave,
+    SharedConfigUpdate, load_from_path, load_or_create, load_or_create_at, load_or_recover_at,
+    read_shared_config_at, save_validated_atomic_at, update_shared_config_at,
 };

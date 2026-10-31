@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::{ConfigResult, frame_server::FrameServerConfig, validation};
 
 mod browser_session;
+mod browser_session_window;
 mod default_document;
 mod player;
 mod playlist;
@@ -25,6 +26,7 @@ mod yt_dlp_settings;
 mod metadata_tests;
 
 pub use browser_session::*;
+pub use browser_session_window::*;
 pub use player::*;
 pub use playlist::*;
 pub use render::*;
@@ -47,7 +49,7 @@ pub(crate) use version::{
     LEGACY_SCHEMA_VERSION_17, LEGACY_SCHEMA_VERSION_18, LEGACY_SCHEMA_VERSION_19,
     LEGACY_SCHEMA_VERSION_20, LEGACY_SCHEMA_VERSION_21, LEGACY_SCHEMA_VERSION_22,
     LEGACY_SCHEMA_VERSION_23, LEGACY_SCHEMA_VERSION_24, LEGACY_SCHEMA_VERSION_25,
-    LEGACY_SCHEMA_VERSION_26, LEGACY_SCHEMA_VERSION_27,
+    LEGACY_SCHEMA_VERSION_26, LEGACY_SCHEMA_VERSION_27, LEGACY_SCHEMA_VERSION_28,
 };
 pub use video::*;
 
@@ -119,7 +121,7 @@ pub struct AppConfig {
     #[setting(nested)]
     pub yt_dlp: YtDlpConfig,
 
-    /// Браузерный режим: окно буфера источника «байты от страницы» (только файл, без UI).
+    /// Браузерный режим: окно буфера источника «байты от страницы» и запоминаемое окно.
     #[serde(default)]
     #[setting(nested)]
     pub browser_session: BrowserSessionConfig,

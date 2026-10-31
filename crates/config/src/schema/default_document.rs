@@ -406,7 +406,7 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,
         "[browser_session]",
-        "# Браузерный режим: окно буфера медиа, полученного от страницы (секции нет в окне настроек).",
+        "# Браузерный режим: окно буфера медиа, полученного от страницы (секция browser_mode окна настроек).",
     );
     insert_default_config_comment(
         toml_text,
@@ -417,6 +417,26 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
         toml_text,
         "buffer_behind_s = 30",
         "# Сколько секунд сыгранного держать позади позиции даже при нехватке памяти (0..=300); остальное прошлое хранится, пока его хранит страница.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "[browser_session.window]",
+        "# Запоминаемое окно браузерного режима: окно само пишет размер и полноэкранность (в окне настроек нет).",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "inner_width_points = 1280",
+        "# Внутренняя ширина окна в логических точках (400..=7680).",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "inner_height_points = 720",
+        "# Внутренняя высота окна в логических точках (232..=4320).",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "fullscreen = false",
+        "# Окно было оставлено во весь экран: следующее откроется так же.",
     );
     subtitles::document_subtitles_defaults(toml_text);
 }

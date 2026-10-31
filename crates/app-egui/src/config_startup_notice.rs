@@ -11,8 +11,8 @@
 use std::io;
 
 use fastiplayer_config::{
-    BrokenConfigProblem, BrokenConfigRecovery, ConfigLoadOrigin, ConfigSavePolicy,
-    ConfigSessionOnlyReason, ConfigWriteProblem, LoadedConfig,
+    BrokenConfigProblem, BrokenConfigRecovery, ConfigLoadOrigin, ConfigLockFailure,
+    ConfigSavePolicy, ConfigSessionOnlyReason, ConfigWriteProblem, LoadedConfig,
 };
 use tracing::{info, warn};
 
@@ -110,6 +110,16 @@ fn session_only_message(reason: &ConfigSessionOnlyReason) -> String {
         ),
         ConfigSessionOnlyReason::BrowserSessionReadOnly => {
             "Browser mode does not save settings yet.".to_string()
+        }
+        // Замок записи config-а при старте не взят, а файла нет или он битый: без замка
+        // каталог не трогаем (решение 135 моста, `fastiplayer-config::store::recovery`).
+        ConfigSessionOnlyReason::ConfigLockUnavailable(ConfigLockFailure::Busy { .. }) => {
+            "Another Fastiplayer window kept the settings file busy during startup; the file was left unchanged."
+                .to_string()
+        }
+        ConfigSessionOnlyReason::ConfigLockUnavailable(ConfigLockFailure::Unavailable(_)) => {
+            "The settings lock file next to config.toml cannot be used; the settings file was left unchanged."
+                .to_string()
         }
     };
     format!("{cause} {CHANGES_WILL_NOT_BE_SAVED}")

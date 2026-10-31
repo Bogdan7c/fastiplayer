@@ -10,6 +10,25 @@ use super::*;
 const NO_ACTIVE_BACKEND_LABEL: &str = "Synthetic (test)";
 
 impl AppState {
+    /// Маппит public playback state в стабильный telemetry label.
+    pub(super) fn playback_state_label_for_telemetry(
+        playback_state: PlaybackState,
+    ) -> &'static str {
+        match playback_state {
+            PlaybackState::Idle => "Idle",
+            PlaybackState::Opening => "Opening",
+            PlaybackState::Paused => "Paused",
+            PlaybackState::Playing => "Playing",
+            PlaybackState::Buffering => "Buffering",
+            PlaybackState::Seeking => "Seeking",
+            PlaybackState::Scrubbing => "Scrubbing",
+            PlaybackState::Draining => "Draining",
+            PlaybackState::Ended => "Ended",
+            PlaybackState::Stopped => "Stopped",
+            PlaybackState::Failed => "Failed",
+        }
+    }
+
     /// Добавляет `Backend: …` и, если отчёт выбора известен, `Renderer: <семейство> — <причина>`.
     pub(super) fn append_backend_rows(
         panel_rows: &mut Vec<TelemetryPanelRow>,
@@ -54,6 +73,7 @@ mod tests {
             render_diagnostics: &render_diagnostics,
             timeline_ui_state: &timeline_ui_state,
             renderer_report,
+            page: None,
             start_time: Instant::now(),
             frame_duration_estimate_ms: 16.67,
         });

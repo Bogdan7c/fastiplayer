@@ -51,6 +51,7 @@ use super::super::rejection_notice::{
     GenerationRejectionNotice, rejection_log_label, rejection_viewer_message,
 };
 use super::super::runtime::{DRAIN_FALLBACK_WAKE, RuntimeFinish};
+use super::desktop_transport::WindowDesktopTransport;
 use super::driver::WindowPlaybackDriver;
 use super::end_notice::{ShownEndNotice, WindowExit, exit_plan};
 use super::instance::{
@@ -103,6 +104,8 @@ pub(super) struct BrowserWindowApp {
     driver: WindowPlaybackDriver,
     desk: PlaybackDesk,
     instance: Option<BrowserWindowInstance>,
+    /// MPRIS окна (04c): живёт, пока открыто окно и идёт сеанс.
+    desktop: Option<WindowDesktopTransport>,
     proxy: AppWakeProxy,
     session_wake_port: AppWakePort,
     loaded_config: LoadedConfig,
@@ -134,6 +137,7 @@ impl BrowserWindowApp {
             driver,
             desk,
             instance: None,
+            desktop: None,
             proxy,
             session_wake_port,
             loaded_config,
@@ -178,13 +182,40 @@ impl BrowserWindowApp {
             let mut player = instance.player();
             self.driver.drive_loads(&mut player);
             self.driver.observe(&mut player, now);
+            // Команды медиа-виджета (04c) — тем же путём, что кнопки: в ящик намерений
+            // зрителя. Забираем их ДО ящика, чтобы команда с шины ушла странице на этом же
+            // проходе (иначе она ждала бы следующего пробуждения).
+            let desktop_requests = self
+                .desktop
+                .as_mut()
+                .map(|desktop| desktop.pump(instance))
+                .unwrap_or_default();
             // Действия зрителя — до шага ядра: команды странице уходят на этом же шаге, а
             // команды плееру водитель исполнит сразу после него.
             core.on_viewer_transport(instance.take_viewer_transport_intents(), now);
+            if desktop_requests.raise {
+                instance.raise_to_front();
+            }
+            // `Quit` с шины = человек закрыл окно: то же прощание и тот же выход.
+            if desktop_requests.quit && self.forced_exit.is_none() {
+                let cause = core.close_for_viewer(now);
+                self.forced_exit = Some(ForcedExit::ClosedByViewer { cause });
+            }
         }
         let step = core.step(now);
+        let opened_page = core.take_opened_page();
         if step.session_opened == SessionOpenedDuringStep::Yes && self.instance.is_none() {
             self.open_window(event_loop);
+        }
+        // Страница сеанса (04c): подпись окна и Info; для нового видео — выход вперёд
+        // (и на первом сеансе, и при замене вкладки в том же окне).
+        if let Some(page) = opened_page
+            && let Some(instance) = self.instance.as_mut()
+        {
+            if let Some(desktop) = self.desktop.as_mut() {
+                desktop.note_page(page.label.clone(), page.arrival);
+            }
+            instance.apply_page(page);
         }
         // Сообщение о конце сеанса — каждый проход (ставится и снимается только при смене).
         if let Some(change) = self.end_notice.update(step.session_end)
@@ -204,6 +235,10 @@ impl BrowserWindowApp {
                 self.driver.drive_loads(&mut player);
             }
             instance.drain_queue_each_pass();
+            if let Some(desktop) = self.desktop.as_mut() {
+                let observation = instance.transport_observation();
+                desktop.publish(&observation, now);
+            }
         }
         if let Some(forced) = self.forced_exit {
             // Код закрытия странице уже выбран: `window_event` (или `open_window`) закрыл
@@ -259,8 +294,14 @@ impl BrowserWindowApp {
             },
         );
         match created {
-            Ok(instance) => {
+            Ok(mut instance) => {
                 self.driver.attach_window();
+                // MPRIS появляется вместе с окном (страницу ему назовут в этом же проходе).
+                let observation = instance.transport_observation();
+                self.desktop = Some(WindowDesktopTransport::start(
+                    self.session_wake_port.clone(),
+                    &observation,
+                ));
                 self.instance = Some(instance);
             }
             Err(failure) => {
@@ -303,6 +344,7 @@ impl BrowserWindowApp {
         let Some(core) = self.core.take() else {
             return;
         };
+        self.stop_desktop_transport();
         let driver = &self.driver;
         let desk = &self.desk;
         let instance = &mut self.instance;
@@ -346,9 +388,17 @@ impl BrowserWindowApp {
         self.schedule_next_wake(event_loop);
     }
 
+    /// Останавливает MPRIS окна и освобождает его имя на шине (если он ещё идёт).
+    fn stop_desktop_transport(&mut self) {
+        if let Some(desktop) = self.desktop.take() {
+            desktop.shut_down(ShutdownDeadline::after(WINDOW_SHUTDOWN_BUDGET));
+        }
+    }
+
     /// Закрывает окно, оставленное ради сообщения о конце сеанса (если оно есть).
     fn close_window_after_notice(&mut self) {
         self.closing_after_notice = None;
+        self.stop_desktop_transport();
         if let Some(instance) = self.instance.take() {
             instance.shut_down(ShutdownDeadline::after(WINDOW_SHUTDOWN_BUDGET));
             info!("Browser window closed after the end notice");

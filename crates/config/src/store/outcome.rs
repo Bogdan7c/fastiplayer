@@ -8,11 +8,13 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::error::ConfigWriteFailure;
 use crate::{AppConfig, ConfigError, ConfigResult};
 
 use super::atomic;
+use super::shared_file::{ConfigLockFailure, SharedConfigUpdate, update_shared_config_at};
 
 /// Откуда взялась конфигурация текущего запуска.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +89,10 @@ pub enum ConfigSessionOnlyReason {
     /// записью с обычным плеером не займётся сессия 04c моста (решение 122). Решает
     /// не загрузка файла, а процесс, поэтому значение собирает приложение.
     BrowserSessionReadOnly,
+    /// При старте не удалось взять замок записи config-а (сосед держит его дольше срока
+    /// или замок подменён), а файла нет или он битый: создавать файл или переносить
+    /// битый в `.bak` без замка небезопасно, поэтому файл не трогаем.
+    ConfigLockUnavailable(ConfigLockFailure),
 }
 
 /// Почему не удалось записать файл с настройками по умолчанию.
@@ -163,7 +169,11 @@ impl ConfigSaveTarget {
         &self.policy
     }
 
-    /// Проверяет настройки и записывает их, если запись в этот запуск разрешена.
+    /// Проверяет настройки и записывает документ **целиком**, если запись разрешена.
+    ///
+    /// Без замка и без перечитывания: годится только там, где у файла один писатель
+    /// (утилиты, тесты). Настройки приложения сохраняются через
+    /// [`ConfigSaveTarget::update_shared_file`] — иначе копии плеера затрут друг друга.
     ///
     /// Проверка выполняется в обоих режимах: некорректный документ отклоняется
     /// одинаково, независимо от того, пишем мы файл или нет.
@@ -184,4 +194,35 @@ impl ConfigSaveTarget {
             }
         }
     }
+
+    /// Вписывает изменения в общий config-файл под замком, если запись разрешена.
+    ///
+    /// Запись разрешена — [`update_shared_config_at`]: перечитать файл, применить `merge`
+    /// к документу с диска, проверить и записать. Запрещена в этот запуск — файл не
+    /// читается и не пишется, `merge` не вызывается; проверку документа в памяти делает
+    /// вызывающий код, у которого этот документ есть.
+    pub fn update_shared_file<E>(
+        &self,
+        lock_wait: Duration,
+        merge: impl FnOnce(&mut AppConfig) -> Result<(), E>,
+    ) -> SharedConfigSave<E> {
+        match &self.policy {
+            ConfigSavePolicy::WriteToFile => {
+                SharedConfigSave::Attempted(update_shared_config_at(&self.path, lock_wait, merge))
+            }
+            ConfigSavePolicy::SessionOnly(reason) => {
+                SharedConfigSave::KeptInMemoryOnly(reason.clone())
+            }
+        }
+    }
+}
+
+/// Итог [`ConfigSaveTarget::update_shared_file`]: была ли попытка записи и чем кончилась.
+#[derive(Debug)]
+#[must_use = "the outcome tells whether the change reached the settings file"]
+pub enum SharedConfigSave<E> {
+    /// Запись разрешена: итог перечитывания, слияния и записи под замком.
+    Attempted(SharedConfigUpdate<E>),
+    /// В этот запуск запись запрещена: файл не читался и не писался.
+    KeptInMemoryOnly(ConfigSessionOnlyReason),
 }

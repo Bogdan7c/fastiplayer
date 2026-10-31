@@ -1778,6 +1778,7 @@ version = "0.2.0"
 dependencies = [
  "atomic-file-store",
  "etcetera",
+ "libc",
  "serde",
  "settings-core",
  "settings-derive",

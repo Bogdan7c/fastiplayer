@@ -8,25 +8,51 @@
 //! Инвариант: и первое создание defaults, и обычный save идут через один протокол,
 //! поэтому прерванная запись никогда не оставляет обрезанный `config.toml` — в худшем
 //! случае рядом остаётся брошенный temp, который уберёт [`remove_stale_save_temp_files`].
+//!
+//! Config пишут несколько копий плеера (обычное окно и окна браузерного режима, решение
+//! 135 моста). Взаимное исключение писателей принадлежит не этому модулю, а замку записи
+//! `store/shared_file/lock.rs`: здесь только «как записать один готовый документ».
 
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::Path;
 
-use atomic_file_store::{AtomicFileWriteOutcome, remove_stale_temp_files, replace_file_atomically};
+use atomic_file_store::{
+    AtomicFileWriteOutcome, DirectorySyncError, remove_stale_temp_files, replace_file_atomically,
+};
 use tracing::{info, warn};
 
 use crate::error::ConfigWriteFailure;
 use crate::{AppConfig, ConfigError, ConfigResult};
 
+/// Насколько надёжно записан config после успешной замены файла.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ConfigWriteDurability {
+    /// Файл заменён, и каталог подтвердил запись (переживёт выключение питания).
+    Durable,
+    /// Файл заменён и читается, но sync каталога не подтверждён.
+    DurabilityUnconfirmed(DirectorySyncError),
+}
+
 /// Валидирует конфигурацию и атомарно заменяет целевой TOML-файл.
+///
+/// Неподтверждённый sync каталога здесь только пишется в лог; кому различие важно
+/// (сохранение общей доски), зовёт [`save_validated_reporting_durability`].
 pub(super) fn save_validated(path: &Path, config: &AppConfig) -> ConfigResult<()> {
+    save_validated_reporting_durability(path, config).map(|_durability| ())
+}
+
+/// Валидирует конфигурацию, атомарно заменяет TOML-файл и сообщает надёжность записи.
+pub(super) fn save_validated_reporting_durability(
+    path: &Path,
+    config: &AppConfig,
+) -> ConfigResult<ConfigWriteDurability> {
     let toml_text = prepare_validated_toml_for_save(path, config)?;
     create_parent_dir_if_needed(path)?;
-    replace_config_file(path, &toml_text)?;
+    let durability = replace_config_file(path, &toml_text)?;
     info!(path = %path.display(), "Fastiplayer configuration saved through atomic rename");
-    Ok(())
+    Ok(durability)
 }
 
 /// Создаёт parent directory для нового или заменяемого config-файла.
@@ -48,17 +74,19 @@ pub(super) fn create_parent_dir_if_needed(path: &Path) -> ConfigResult<()> {
 /// Раньше файл создавался сразу под настоящим именем без fsync: сбой посреди записи
 /// оставлял обрезанный TOML, и плеер падал при каждом следующем запуске. Теперь
 /// используется тот же протокол temp + fsync + rename, что и у обычного save.
-/// Защита от параллельного создания тем же процессом не нужна: config пишет только
-/// процесс, удерживающий lease единственного экземпляра.
+/// От соседних писателей защищает вызывающий код: восстановление при старте создаёт
+/// defaults под замком записи config-а (`store/recovery.rs`).
 pub(super) fn write_initial_config(path: &Path, toml_text: &str) -> ConfigResult<()> {
     create_parent_dir_if_needed(path)?;
-    replace_config_file(path, toml_text)
+    replace_config_file(path, toml_text).map(|_durability| ())
 }
 
 /// Удаляет temp-файлы config-а, брошенные прошлыми прерванными записями.
 ///
-/// Вызывать только при старте под lease единственного экземпляра: тогда ни одна живая
-/// запись в этот config идти не может. Убираются два точных шаблона:
+/// Вызывать только под замком записи config-а (`store/shared_file/lock.rs`): каждый
+/// писатель держит этот замок от создания своего temp до rename, поэтому под замком ни
+/// одна живая запись в этот config идти не может и чужой temp «посреди записи» не
+/// удаляется. Убираются два точных шаблона:
 /// текущий шаблон `atomic-file-store` и прежний собственный шаблон config-а
 /// `.config.toml.<pid>.<попытка>.tmp` (его могли оставить версии до этой правки).
 /// Ошибки уборки не мешают запуску: они только пишутся в лог.
@@ -83,14 +111,14 @@ pub(super) fn remove_stale_save_temp_files(path: &Path) {
 }
 
 /// Записывает готовый TOML через единый протокол `atomic-file-store`.
-fn replace_config_file(path: &Path, toml_text: &str) -> ConfigResult<()> {
+fn replace_config_file(path: &Path, toml_text: &str) -> ConfigResult<ConfigWriteDurability> {
     match replace_file_atomically(path, toml_text.as_bytes()) {
-        AtomicFileWriteOutcome::Durable => Ok(()),
+        AtomicFileWriteOutcome::Durable => Ok(ConfigWriteDurability::Durable),
         // Файл уже заменён и читается; не подтверждена только устойчивость записи
         // каталога к выключению питания. Это предупреждение, а не провал save.
         AtomicFileWriteOutcome::ReplacedDurabilityUnconfirmed(sync_error) => {
             warn!(path = %path.display(), error = ?sync_error, "Config recorded, but directory sync not confirmed");
-            Ok(())
+            Ok(ConfigWriteDurability::DurabilityUnconfirmed(sync_error))
         }
         AtomicFileWriteOutcome::NotReplaced(failure) => Err(ConfigError::ReplaceConfigFile {
             path: path.to_path_buf(),
@@ -188,7 +216,7 @@ mod tests {
 
     #[test]
     fn current_schema_toml_roundtrip_is_textually_stable() {
-        let expected_current_toml = include_str!("../../tests/fixtures/current_schema_v28.toml");
+        let expected_current_toml = include_str!("../../tests/fixtures/current_schema_v29.toml");
         let generated_current_toml = AppConfig::default()
             .to_pretty_toml()
             .expect("serialize current defaults");

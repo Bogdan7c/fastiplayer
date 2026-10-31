@@ -22,6 +22,7 @@ use player_core::{PlaybackState, PlayerCommand, PlayerWorkerSendError};
 
 use super::AppState;
 use crate::downloaded_range::DownloadedRange;
+use crate::page_label::PageLabel;
 use crate::ui::player_controls::TransportControlAction;
 use crate::viewer_transport::{
     TransportRoute, ViewerTransportIntent, ViewerTransportOutbox, viewer_intent_for_command,
@@ -35,6 +36,8 @@ pub(crate) struct WindowMode {
     transport: TransportRoute,
     /// Что скачано у показанного медиа (см. описание модуля).
     downloaded_range: DownloadedRange,
+    /// Страница-источник (только окно браузерного режима; только в памяти, 04c).
+    page: Option<PageLabel>,
 }
 
 impl WindowMode {
@@ -50,6 +53,7 @@ impl WindowMode {
             view: WindowViewProfile::BrowserSession,
             transport: TransportRoute::PageLed(ViewerTransportOutbox::default()),
             downloaded_range: DownloadedRange::Unknown,
+            page: None,
         }
     }
 
@@ -57,6 +61,18 @@ impl WindowMode {
     fn note_downloaded_range(&mut self, range: DownloadedRange) {
         if self.is_page_led() {
             self.downloaded_range = range;
+        }
+    }
+
+    /// Страница-источник (обычное окно — `None`).
+    pub(super) const fn page_label(&self) -> Option<&PageLabel> {
+        self.page.as_ref()
+    }
+
+    /// Название страницы от того, кто ведёт транспорт; обычное окно его не берёт.
+    fn note_page(&mut self, page: PageLabel) {
+        if self.is_page_led() {
+            self.page = Some(page);
         }
     }
 
@@ -183,6 +199,12 @@ impl AppState {
         &self.window_mode.downloaded_range
     }
 
+    /// Окно браузерного режима узнало страницу (новый сеанс или замена вкладки).
+    /// Обычному окну страницы не называют: подпись игнорируется.
+    pub(crate) fn note_page_label(&mut self, page: PageLabel) {
+        self.window_mode.note_page(page);
+    }
+
     /// Забирает намерения зрителя для медиа-части сеанса (обычное окно — всегда пусто).
     pub(crate) fn take_viewer_transport_intents(&mut self) -> Vec<ViewerTransportIntent> {
         match &mut self.window_mode.transport {
@@ -205,6 +227,21 @@ mod tests {
             CommandRoute::ToPlayer(command) => command,
             CommandRoute::ToSession => panic!("expected the command to reach the player"),
         }
+    }
+
+    /// Страница называется только в окне браузерного режима, а замена вкладки
+    /// переименовывает её.
+    #[test]
+    fn only_the_browser_window_keeps_the_page_and_a_new_page_replaces_it() {
+        let mut standard = WindowMode::standard();
+        standard.note_page(PageLabel::new("T", "a.example"));
+        assert_eq!(standard.page, None);
+
+        let mut browser = WindowMode::browser_session();
+        assert_eq!(browser.page, None);
+        browser.note_page(PageLabel::new("First", "a.example"));
+        browser.note_page(PageLabel::new("Second", "b.example"));
+        assert_eq!(browser.page, Some(PageLabel::new("Second", "b.example")));
     }
 
     /// Обычное окно: транспорт по-прежнему командует плееру, ящик пуст.

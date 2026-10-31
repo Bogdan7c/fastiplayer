@@ -31,6 +31,7 @@ use super::BrowserSessionStartFailure;
 use super::inbox::{BrowserSessionInbox, BrowserSessionWake, InboxCapacity};
 use super::intake_notice::IntakeNotice;
 use super::normal_player_pause::SystemNormalPlayerPause;
+use super::opened_page::OpenedPage;
 use super::outbound::PageOutbound;
 use super::range_wake::RangeRequestWake;
 use super::rejection_notice::GenerationRejectionNotice;
@@ -86,6 +87,9 @@ pub(super) struct BrowserSessionCore {
     server: BrowserSessionServer,
     entry_service: BrowserEntryService,
     control: SessionControl,
+    /// Страница, открытая за последний шаг, пока окно её не забрало
+    /// ([`Self::take_opened_page`]). Только в памяти (инвариант 7).
+    opened_page: Option<OpenedPage>,
 }
 
 impl BrowserSessionCore {
@@ -188,6 +192,7 @@ impl BrowserSessionCore {
             server,
             entry_service,
             control,
+            opened_page: None,
         })
     }
 
@@ -196,14 +201,25 @@ impl BrowserSessionCore {
         let mut observed = SessionOpenObserver {
             media: &mut self.media,
             opened: SessionOpenedDuringStep::No,
+            page: None,
         };
         let verdict = self.runtime.step(now, &mut observed);
+        // Свежая подпись вытесняет невостребованную: новая страница важнее старой.
+        if let Some(page) = observed.page.take() {
+            self.opened_page = Some(page);
+        }
         CoreStep {
             verdict,
             session_opened: observed.opened,
             session_end: self.media.session_end_view(),
             generation_rejection: self.media.take_generation_rejection_notice(),
         }
+    }
+
+    /// Страница, открытая с прошлого вызова (новый сеанс, замена вкладки, повтор),
+    /// либо `None`. Забирает: окно применяет её один раз (заголовок, Info, подъём окна).
+    pub(super) fn take_opened_page(&mut self) -> Option<OpenedPage> {
+        self.opened_page.take()
     }
 
     /// Действия зрителя в окне (транспорт): медиа-часть исполняет их на плеере и
@@ -306,6 +322,8 @@ pub(super) fn player_closed_cause() -> ExitCause {
 struct SessionOpenObserver<'media> {
     media: &'media mut SessionMedia,
     opened: SessionOpenedDuringStep,
+    /// Страница, названная за шаг (последняя, если их было несколько).
+    page: Option<OpenedPage>,
 }
 
 impl SessionMediaPort for SessionOpenObserver<'_> {
@@ -316,6 +334,10 @@ impl SessionMediaPort for SessionOpenObserver<'_> {
     fn on_session_opened(&mut self, session: &SessionRef) {
         self.opened = SessionOpenedDuringStep::Yes;
         self.media.on_session_opened(session);
+    }
+
+    fn on_page_identified(&mut self, page: OpenedPage) {
+        self.page = Some(page);
     }
 
     fn on_session_ended(&mut self, session: &SessionRef, reason: SessionEndReason) {

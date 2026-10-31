@@ -67,6 +67,9 @@ struct PrivateBusWithBrowserSession {
     /// Строки stderr шины: туда же пишут запущенные ею службы (наш процесс).
     log_lines: mpsc::Receiver<String>,
     directory: PathBuf,
+    /// Тексты, которых в журнале процесса не должно быть НИ В ОДНОЙ прочитанной строке
+    /// (данные страницы, инвариант 7); проверяются при каждом чтении журнала.
+    forbidden_in_log: std::cell::RefCell<Vec<String>>,
 }
 
 impl PrivateBusWithBrowserSession {
@@ -199,6 +202,26 @@ impl PrivateBusWithBrowserSession {
             daemon,
             log_lines,
             directory,
+            forbidden_in_log: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// С этого момента любая прочитанная строка журнала с одним из `texts` роняет тест.
+    fn forbid_in_log(&self, texts: &[&str]) {
+        self.forbidden_in_log
+            .borrow_mut()
+            .extend(texts.iter().map(|text| (*text).to_owned()));
+    }
+
+    /// Падает, если строка содержит запрещённый (`forbid_in_log`) текст.
+    fn assert_line_is_allowed(&self, line: &str) {
+        if let Some(found) = self
+            .forbidden_in_log
+            .borrow()
+            .iter()
+            .find(|text| line.contains(text.as_str()))
+        {
+            panic!("the process log leaks {found:?}: {line}");
         }
     }
 
@@ -218,6 +241,7 @@ impl PrivateBusWithBrowserSession {
             }
             match self.log_lines.recv_timeout(left) {
                 Ok(line) => {
+                    self.assert_line_is_allowed(&line);
                     if let Some(found) = forbidden.iter().find(|text| line.contains(**text)) {
                         panic!("unexpected log line ({found:?}) within {period:?}: {line}");
                     }
@@ -238,8 +262,12 @@ impl PrivateBusWithBrowserSession {
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.log_lines.recv_timeout(left) {
-                Ok(line) if line.contains(needle) => return line,
+                Ok(line) if line.contains(needle) => {
+                    self.assert_line_is_allowed(&line);
+                    return line;
+                }
                 Ok(line) => {
+                    self.assert_line_is_allowed(&line);
                     if let Some(found) = forbidden.iter().find(|text| line.contains(**text)) {
                         panic!("forbidden log line ({found:?}) before {needle:?}: {line}");
                     }
@@ -691,6 +719,10 @@ mod seek_back_on_shelf;
 // Окно браузерного режима (04a): то же, но с окном на виртуальном дисплее kwin.
 #[path = "browser_session_process/window.rs"]
 mod window;
+
+// Домен и заголовок страницы в окне, MPRIS `…fastiplayer.browser` (04c).
+#[path = "browser_session_process/page_and_mpris.rs"]
+mod page_and_mpris;
 
 // Ожидание и отказ видны зрителю (04b, решение 129): отказ поколения странице и окну,
 // следующее поколение играет; `SeekTimeout` доходит до уведомлений окна.
