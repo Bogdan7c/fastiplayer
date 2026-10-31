@@ -12,6 +12,8 @@
     reason = "integration-тест: падение с понятным сообщением и есть результат"
 )]
 
+mod close_order;
+mod farewell;
 mod lifecycle_events;
 mod protocol_errors;
 mod stream_replay;

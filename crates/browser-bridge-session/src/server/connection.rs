@@ -1,10 +1,20 @@
 //! Поток одного WebSocket-соединения: рукопожатие, `attach`, потом приём
 //! сообщений и байтов страницы и отправка команд плеера.
 //!
-//! Поток владеет сокетом целиком; снаружи на него влияют только две вещи
+//! Поток владеет сокетом целиком; снаружи на него влияют только три вещи
 //! (инвариант «модуль владеет своими данными»): [`CloseRequest`] — «закрой
-//! этим кодом» и очередь исходящих сообщений. Читает сокет с короткой паузой
-//! (`connection_poll_interval`), поэтому просьбу замечает за один опрос.
+//! этим кодом», очередь исходящих сообщений и [`FarewellSlot`] — прощание.
+//! Читает сокет с короткой паузой (`connection_poll_interval`), поэтому
+//! просьбу замечает за один опрос.
+//!
+//! Любое закрытие нашим кадром идёт одним путём и в одном порядке (решение 127):
+//! всё, что уже стоит в очереди исходящих → прощание (если положено) → кадр
+//! закрытия. Раньше просьба закрыть проверялась до сброса очереди, и уже
+//! поставленные сообщения молча терялись.
+//!
+//! «Коридор прощания»: сеанс соединения уже кончился (калитка доставки закрыта),
+//! а закрыть его ещё не просили — соединение заменённой вкладки ждёт прощания.
+//! Всё входящее в это время читается и выбрасывается.
 //!
 //! Что соединение делает с входящим:
 //! - первое сообщение — текстовый `attach`, иначе 4003 (или 4007 по таймауту);
@@ -29,6 +39,7 @@ use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tungstenite::{HandshakeError, Message, WebSocket, accept_with_config};
 
+use super::farewell::FarewellSlot;
 use super::shared::{CloseRequest, ConnectionHandle, DeliveryGate, Shared};
 use crate::policy::BrowserSessionPolicy;
 use crate::registry::{ConnectionId, SessionRef};
@@ -73,6 +84,7 @@ fn serve(shared: &Arc<Shared>, stream: TcpStream, handle: ConnectionHandle) {
         close: handle.close,
         delivery: handle.delivery,
         outgoing: handle.outgoing,
+        farewell: handle.farewell,
         socket,
     };
     if let Some(session) = link.await_attach(accepted_at) {
@@ -172,6 +184,8 @@ struct Link<'shared> {
     /// Калитка доставки: закрывается концом сеанса (см. `DeliveryGate`).
     delivery: Arc<DeliveryGate>,
     outgoing: std::sync::mpsc::Receiver<String>,
+    /// Прощание: пишется после очереди исходящих, прямо перед кадром закрытия.
+    farewell: Arc<FarewellSlot>,
     socket: WebSocket<TcpStream>,
 }
 
@@ -290,7 +304,7 @@ impl Link<'_> {
     }
 
     fn on_text(&mut self, session: &SessionRef, gate: &mut StreamGate, bytes: &[u8]) -> Flow {
-        if self.close.requested().is_some() {
+        if self.session_is_over() {
             return Flow::Continue; // сеанс уже закончен снаружи, данные не нужны
         }
         let message = match decode_message::<PageSessionMessage>(bytes) {
@@ -323,7 +337,7 @@ impl Link<'_> {
     }
 
     fn on_binary(&mut self, session: &SessionRef, gate: &mut StreamGate, bytes: &[u8]) -> Flow {
-        if self.close.requested().is_some() {
+        if self.session_is_over() {
             return Flow::Continue;
         }
         let frame = match decode_data_frame(bytes) {
@@ -370,6 +384,14 @@ impl Link<'_> {
             self.shared.count_delivered_chunk();
         }
         Flow::Continue
+    }
+
+    /// Сеанс соединения кончился снаружи: закрыть уже просили или соединение в
+    /// коридоре прощания (калитка закрыта, закрыть ещё не просили). В обоих
+    /// случаях входящее не разбираем: ни нарушение, ни `tab_gone` старой вкладки
+    /// не должны закрыть соединение раньше прощания.
+    fn session_is_over(&self) -> bool {
+        self.close.requested().is_some() || self.delivery.is_closed()
     }
 
     /// `tab_gone`: сообщение приёмнику, затем закрытие кодом 4002.
@@ -448,7 +470,7 @@ impl Link<'_> {
     /// ждёт ответный кадр не дольше `close_linger`, чтобы получатель точно
     /// увидел код (иначе RST при закрытии TCP может съесть кадр).
     fn close_socket(&mut self, reason: SessionCloseReason) {
-        if !self.send_close_frame(reason) {
+        if !self.finish_writes_and_send_close_frame(reason) {
             return;
         }
         let deadline = Instant::now() + self.shared.policy.close_linger;
@@ -468,7 +490,7 @@ impl Link<'_> {
     /// Вычитывание нужно, чтобы закрытие сокета с непрочитанными данными не
     /// превратилось в RST, который съест наш кадр у собеседника.
     fn close_after_read_error(&mut self, reason: SessionCloseReason) {
-        if !self.send_close_frame(reason) {
+        if !self.finish_writes_and_send_close_frame(reason) {
             return;
         }
         let deadline = Instant::now() + self.shared.policy.close_linger;
@@ -485,6 +507,26 @@ impl Link<'_> {
                 Err(_) => return,
             }
         }
+    }
+
+    /// Дописывает всё, что плеер успел передать, и ставит кадр закрытия:
+    /// очередь исходящих → прощание → кадр. `false` — запись не удалась
+    /// (соединение мертво), кадр закрытия не отправлен.
+    ///
+    /// Очередь ограничена (`outgoing_queue_capacity`), а каждая запись — своим
+    /// `write_timeout`, поэтому сброс конечен даже при зависшем получателе.
+    /// Новых сообщений в очередь после просьбы закрыть не прибывает: сервер
+    /// шлёт только активному подключённому сеансу, а этот уже не активен.
+    fn finish_writes_and_send_close_frame(&mut self, reason: SessionCloseReason) -> bool {
+        if self.flush_outgoing().is_err() {
+            return false;
+        }
+        if let Some(farewell_json) = self.farewell.take()
+            && self.send_json(farewell_json).is_err()
+        {
+            return false;
+        }
+        self.send_close_frame(reason)
     }
 
     /// Ставит в сокет кадр закрытия; `false` — доставить не удалось.

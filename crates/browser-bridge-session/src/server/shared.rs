@@ -10,6 +10,11 @@
 //! - отравление замка снимаем (`PoisonError::into_inner`): критические секции
 //!   только переключают поля и зовут приёмники ПОСЛЕ переключения, так что
 //!   паника приёмника не оставляет реестр наполовину изменённым.
+//!
+//! Закрытие соединения (любое: команда плеера, замена, выключение) — это только
+//! ПРОСЬБА (`CloseRequest`). Исполняет её поток соединения в строгом порядке:
+//! очередь исходящих → прощание (`FarewellSlot`, если положено) → кадр закрытия
+//! (решение 127). Прощание кладётся под замком ДО просьбы закрыть.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
@@ -23,7 +28,11 @@ use browser_bridge_protocol::{
     SessionToken, encode_message,
 };
 
-use super::control::{CloseOutcome, OpenSessionError, OpenedSession, SendToPageError};
+use super::control::{
+    ActiveFarewellOutcome, CloseOutcome, FarewellError, OpenSessionError, OpenedSession,
+    ReplacedFarewellOutcome, SendToPageError,
+};
+use super::farewell::{CorridorClaim, FarewellCorridors, FarewellSlot};
 use super::report::ServerShutdownReport;
 use crate::policy::BrowserSessionPolicy;
 use crate::registry::{
@@ -85,6 +94,12 @@ impl DeliveryGate {
         *open
     }
 
+    /// Сеанс этого соединения уже закончен (калитка закрыта). Так поток соединения
+    /// узнаёт «коридор прощания»: сеанс кончился, а закрыть соединение ещё не просили.
+    pub(super) fn is_closed(&self) -> bool {
+        !*self.open.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn close(&self) {
         *self.open.lock().unwrap_or_else(PoisonError::into_inner) = false;
     }
@@ -95,6 +110,8 @@ struct ConnectionSlot {
     close: Arc<CloseRequest>,
     delivery: Arc<DeliveryGate>,
     outgoing: SyncSender<String>,
+    /// Место для прощального сообщения (пишется после очереди, перед закрытием).
+    farewell: Arc<FarewellSlot>,
     /// `attach` удался: соединение больше не считается «неподключённым».
     attached: bool,
 }
@@ -111,7 +128,18 @@ struct ServerState {
     registry: SessionRegistry,
     tokens: Box<dyn SessionTokenSource>,
     connections: HashMap<ConnectionId, ConnectionSlot>,
+    /// Недавно заменённые экземпляры и их коридоры прощания.
+    corridors: FarewellCorridors,
     phase: ServerPhase,
+}
+
+impl ServerState {
+    /// Просит закрыть соединение, если его запись ещё есть (поток мог уже уйти).
+    fn request_close(&self, connection: ConnectionId, reason: SessionCloseReason) {
+        if let Some(slot) = self.connections.get(&connection) {
+            slot.close.request(reason);
+        }
+    }
 }
 
 /// Ручка потока соединения: что ему выдал сервер при приёме.
@@ -120,6 +148,7 @@ pub(super) struct ConnectionHandle {
     pub(super) close: Arc<CloseRequest>,
     pub(super) delivery: Arc<DeliveryGate>,
     pub(super) outgoing: Receiver<String>,
+    pub(super) farewell: Arc<FarewellSlot>,
 }
 
 /// Почему соединение не принято.
@@ -167,6 +196,7 @@ impl Shared {
                 registry: SessionRegistry::new(RegistryTimings::from(&policy)),
                 tokens,
                 connections: HashMap::new(),
+                corridors: FarewellCorridors::new(&policy),
                 phase: ServerPhase::Running,
             }),
             byte_sink,
@@ -244,6 +274,7 @@ impl Shared {
         let id = ConnectionId(self.next_connection.fetch_add(1, Ordering::Relaxed));
         let close = Arc::new(CloseRequest::default());
         let delivery = Arc::new(DeliveryGate::new());
+        let farewell = Arc::new(FarewellSlot::default());
         let (outgoing_tx, outgoing_rx) = sync_channel(self.policy.outgoing_queue_capacity);
         state.connections.insert(
             id,
@@ -251,6 +282,7 @@ impl Shared {
                 close: Arc::clone(&close),
                 delivery: Arc::clone(&delivery),
                 outgoing: outgoing_tx,
+                farewell: Arc::clone(&farewell),
                 attached: false,
             },
         );
@@ -259,12 +291,16 @@ impl Shared {
             close,
             delivery,
             outgoing: outgoing_rx,
+            farewell,
         })
     }
 
-    /// Убирает запись о соединении, когда его поток завершается.
+    /// Убирает запись о соединении, когда его поток завершается. Если соединение
+    /// было в коридоре прощания, коридор закрыт: прощаться больше не с кем.
     pub(super) fn release_connection(&self, connection: ConnectionId) {
-        self.lock_state().connections.remove(&connection);
+        let mut state = self.lock_state();
+        state.connections.remove(&connection);
+        state.corridors.connection_released(connection);
     }
 
     // ---- события потока соединения ---------------------------------------
@@ -362,6 +398,11 @@ impl Shared {
         if let Some((session, reason)) = state.registry.expire(now) {
             self.announce_end(&state, None, session, reason);
         }
+        // Плеер не попрощался за `farewell_grace`: закрываем 4001, как до 04b.
+        // Конец сеанса уже объявлен при замене, здесь — только сокет.
+        for connection in state.corridors.expire(now) {
+            state.request_close(connection, SessionCloseReason::ReplacedByAnotherTab);
+        }
     }
 
     // ---- команды SessionControl ------------------------------------------
@@ -380,21 +421,34 @@ impl Shared {
             .registry
             .open(&request.session_key, now, &mut *state.tokens)
             .map_err(OpenSessionError::TokenSource)?;
-        let replaced = grant.replaced.map(|replaced| {
-            if let Some(slot) = replaced
-                .connection
-                .and_then(|connection| state.connections.get(&connection))
-            {
-                slot.close.request(SessionCloseReason::ReplacedByAnotherTab);
+        let replaced = match grant.replaced {
+            Some(replaced) => {
+                // Сеанс кончается сразу (калитка, `session_ended`, событие), а
+                // соединение НЕ закрываем: оно входит в коридор прощания и ждёт
+                // `bid_farewell_to_replaced` или срока (решение 127). Поток
+                // соединения мог уже уйти — тогда и коридора нет.
+                let live_connection = replaced
+                    .connection
+                    .filter(|connection| state.connections.contains_key(connection));
+                let evicted = state.corridors.remember_replaced(
+                    replaced.session.clone(),
+                    live_connection,
+                    now,
+                );
+                if let Some(evicted) = evicted {
+                    tracing::warn!("too many farewell corridors; closing the oldest one");
+                    state.request_close(evicted, SessionCloseReason::ReplacedByAnotherTab);
+                }
+                self.announce_end(
+                    state,
+                    replaced.connection,
+                    replaced.session.clone(),
+                    SessionEndReason::ClosedByPlayer(SessionCloseReason::ReplacedByAnotherTab),
+                );
+                Some(replaced.session)
             }
-            self.announce_end(
-                state,
-                replaced.connection,
-                replaced.session.clone(),
-                SessionEndReason::ClosedByPlayer(SessionCloseReason::ReplacedByAnotherTab),
-            );
-            replaced.session
-        });
+            None => None,
+        };
         Ok(OpenedSession {
             token: grant.token,
             outcome: grant.outcome,
@@ -450,6 +504,70 @@ impl Shared {
         CloseOutcome::Closed
     }
 
+    /// Как `close_session`, но соединению сперва уходит прощание. Прощание
+    /// кладётся в слот соединения РАНЬШЕ просьбы закрыть (оба — под замком), так
+    /// что поток, заметив просьбу, его уже видит.
+    pub(super) fn close_session_with_farewell(
+        &self,
+        session: &SessionRef,
+        farewell: &PlayerSessionMessage,
+        reason: SessionCloseReason,
+    ) -> Result<ActiveFarewellOutcome, FarewellError> {
+        // Кодируем до замка: ошибка ничего не меняет.
+        let farewell_json =
+            encode_message(farewell).map_err(|error| FarewellError::Unencodable(error.kind()))?;
+        let mut state = self.lock_state();
+        let Some(ended) = state.registry.end_instance(session) else {
+            return Ok(ActiveFarewellOutcome::NotActive);
+        };
+        let outcome = match ended
+            .connection
+            .and_then(|connection| state.connections.get(&connection))
+        {
+            Some(slot) => {
+                slot.farewell.leave(farewell_json);
+                slot.close.request(reason);
+                ActiveFarewellOutcome::FarewellQueued
+            }
+            None => ActiveFarewellOutcome::ClosedWithoutConnection,
+        };
+        self.announce_end(
+            &state,
+            ended.connection,
+            ended.session,
+            SessionEndReason::ClosedByPlayer(reason),
+        );
+        Ok(outcome)
+    }
+
+    /// Прощание заменённому экземпляру в его коридоре. Активный сеанс в таблице
+    /// коридоров не бывает никогда, поэтому его этот путь не тронет.
+    pub(super) fn bid_farewell_to_replaced(
+        &self,
+        replaced: &SessionRef,
+        farewell: &PlayerSessionMessage,
+    ) -> Result<ReplacedFarewellOutcome, FarewellError> {
+        let farewell_json =
+            encode_message(farewell).map_err(|error| FarewellError::Unencodable(error.kind()))?;
+        let mut guard = self.lock_state();
+        let state = &mut *guard;
+        let outcome = match state.corridors.claim(replaced) {
+            CorridorClaim::Claimed(connection) => match state.connections.get(&connection) {
+                // Закрыть уже просили (запись живёт до выхода потока) — опоздали.
+                Some(slot) if slot.close.requested().is_none() => {
+                    slot.farewell.leave(farewell_json);
+                    slot.close.request(SessionCloseReason::ReplacedByAnotherTab);
+                    ReplacedFarewellOutcome::FarewellQueued
+                }
+                Some(_) | None => ReplacedFarewellOutcome::CorridorClosed,
+            },
+            CorridorClaim::AlreadyClosed => ReplacedFarewellOutcome::CorridorClosed,
+            CorridorClaim::NoConnection => ReplacedFarewellOutcome::NoConnection,
+            CorridorClaim::Unknown => ReplacedFarewellOutcome::NotReplaced,
+        };
+        Ok(outcome)
+    }
+
     pub(super) fn close_active_session(&self, reason: SessionCloseReason) {
         let mut state = self.lock_state();
         if let Some(ended) = state.registry.end_active() {
@@ -471,6 +589,11 @@ impl Shared {
     // ---- выключение ------------------------------------------------------
 
     /// Начинает выключение: больше никого не принимаем, всем соединениям — 4006.
+    ///
+    /// Соединения в коридоре прощания получают 4001, а не 4006: их сеанс уже
+    /// закончился ЗАМЕНОЙ (так и опубликовано в `Ended`), и странице честнее
+    /// узнать именно это. Уже принятое прощание всё равно пишется первым:
+    /// просьба закрыть «кто первый, тот и прав», а прощание лежит в слоте.
     pub(super) fn begin_shutdown(&self) {
         let mut state = self.lock_state();
         if state.phase == ServerPhase::Running {
@@ -482,6 +605,9 @@ impl Shared {
                     ended.session,
                     SessionEndReason::ClosedByPlayer(SessionCloseReason::PlayerShuttingDown),
                 );
+            }
+            for connection in state.corridors.close_all() {
+                state.request_close(connection, SessionCloseReason::ReplacedByAnotherTab);
             }
             for slot in state.connections.values() {
                 slot.close.request(SessionCloseReason::PlayerShuttingDown);

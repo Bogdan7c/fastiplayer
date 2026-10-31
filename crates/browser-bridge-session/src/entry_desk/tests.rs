@@ -282,3 +282,33 @@ fn opened_event_carries_the_registry_instance_and_reuse_keeps_it() {
     let repeat = instance_of(desk.handle(&who, OPEN_WINDOW.as_bytes(), Instant::now()));
     assert_eq!(first, repeat);
 }
+
+/// Приложение узнаёт вытесненный экземпляр прямо из события открытия: по нему
+/// оно прощается со старой вкладкой (`bid_farewell_to_replaced`, решение 127).
+#[test]
+fn opened_event_names_the_instance_it_replaced() {
+    let server = start_server(Box::new(SequenceTokens::new()));
+    let mut desk = desk_for(&server, &BrowserSessionPolicy::default());
+    let who = caller(":1.7");
+    desk.handle(&who, HELLO_EXTENSION.as_bytes(), Instant::now());
+    let opened_of = |outcome: EntryOutcome| match outcome.event {
+        Some(EntryEvent::SessionOpened {
+            key,
+            instance,
+            replaced,
+            ..
+        }) => (SessionRef { key, instance }, replaced),
+        None => panic!("нет события"),
+    };
+    let (first, first_replaced) =
+        opened_of(desk.handle(&who, OPEN_WINDOW.as_bytes(), Instant::now()));
+    assert_eq!(first_replaced, None, "первое открытие никого не вытесняет");
+    let (_repeat, repeat_replaced) =
+        opened_of(desk.handle(&who, OPEN_WINDOW.as_bytes(), Instant::now()));
+    assert_eq!(repeat_replaced, None, "повтор того же сеанса — не замена");
+    let other_tab = OPEN_WINDOW.replace("tab-12-video-3", "tab-13-video-1");
+    let (second, second_replaced) =
+        opened_of(desk.handle(&who, other_tab.as_bytes(), Instant::now()));
+    assert_ne!(second, first);
+    assert_eq!(second_replaced, Some(first));
+}

@@ -28,7 +28,10 @@ pub struct OpenedSession {
     pub outcome: GrantOutcome,
     /// Экземпляр выданного сеанса (повтор того же сеанса сохраняет экземпляр).
     pub instance: SessionInstance,
-    /// Вытесненный сеанс (его соединение закрывается кодом 4001).
+    /// Вытесненный этим открытием сеанс. Его соединение (если было) уже ничего
+    /// не передаёт приёмникам, но ещё ждёт прощания в «коридоре»
+    /// ([`SessionControl::bid_farewell_to_replaced`]) не дольше `farewell_grace`,
+    /// потом закрывается кодом 4001.
     pub replaced: Option<SessionRef>,
 }
 
@@ -68,6 +71,43 @@ pub enum CloseOutcome {
     /// Этот экземпляр уже не активен (закончился, заменён, сервер выключается):
     /// ничего не сделано, активный сеанс (если есть) не тронут.
     NotActive,
+}
+
+/// Почему прощание не принято (состояние сеансов не изменилось).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum FarewellError {
+    /// Сообщение не прошло проверку протокола (баг отправителя).
+    #[error("farewell message violates the protocol: {0:?}")]
+    Unencodable(MessageErrorKind),
+}
+
+/// Итог [`SessionControl::close_session_with_farewell`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActiveFarewellOutcome {
+    /// Экземпляр был активен и подключён: сеанс закончен, соединение допишет
+    /// очередь исходящих, затем прощание, затем кадр закрытия с кодом.
+    FarewellQueued,
+    /// Экземпляр был активен, но без подключённого соединения (ждал `attach`
+    /// или возврата после обрыва): сеанс закончен, прощание отдать некому.
+    ClosedWithoutConnection,
+    /// Этот экземпляр уже не активен (закончился, заменён, сервер выключается):
+    /// ничего не сделано, активный сеанс (если есть) не тронут.
+    NotActive,
+}
+
+/// Итог [`SessionControl::bid_farewell_to_replaced`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplacedFarewellOutcome {
+    /// Коридор был открыт: соединение допишет очередь, прощание и закроется 4001.
+    FarewellQueued,
+    /// Коридор уже закрыт: истёк срок, прощание уже было, страница ушла сама или
+    /// сервер выключается. Ничего не отправлено.
+    CorridorClosed,
+    /// В момент замены у экземпляра не было подключённого соединения.
+    NoConnection,
+    /// Это не недавно заменённый экземпляр (неизвестный, слишком давний или
+    /// АКТИВНЫЙ): ничего не сделано, активный сеанс не тронут.
+    NotReplaced,
 }
 
 /// Ручка управления сервером.
@@ -124,5 +164,47 @@ impl SessionControl {
     #[must_use = "NotActive means the session was not closed"]
     pub fn close_session(&self, session: &SessionRef, reason: SessionCloseReason) -> CloseOutcome {
         self.shared.close_session(session, reason)
+    }
+
+    /// Закрывает АКТИВНЫЙ экземпляр (как [`Self::close_session`]: реестр, калитка
+    /// доставки, `session_ended`, событие `Ended{ClosedByPlayer(reason)}`), но
+    /// перед кадром закрытия странице уходит `farewell`.
+    ///
+    /// Порядок на проводе гарантирован: всё, что уже стояло в очереди
+    /// исходящих → `farewell` → кадр закрытия `reason`. Прощание лежит в своём
+    /// месте соединения, а не в ограниченной очереди, поэтому «очередь полна»
+    /// здесь не бывает. Пример: зритель закрыл окно — `return_to_page{T, paused}`
+    /// и код 4000 (решение 127).
+    ///
+    /// # Errors
+    /// [`FarewellError::Unencodable`] — сообщение не прошло проверку протокола;
+    /// сеанс при этом НЕ закрыт.
+    pub fn close_session_with_farewell(
+        &self,
+        session: &SessionRef,
+        farewell: &PlayerSessionMessage,
+        reason: SessionCloseReason,
+    ) -> Result<ActiveFarewellOutcome, FarewellError> {
+        self.shared
+            .close_session_with_farewell(session, farewell, reason)
+    }
+
+    /// Последнее сообщение ЗАМЕНЁННОМУ экземпляру, пока он в «коридоре прощания»
+    /// (решение 127): соединение старой вкладки допишет очередь исходящих, затем
+    /// `farewell`, затем закроется кодом 4001.
+    ///
+    /// `replaced` — это [`OpenedSession::replaced`] (или
+    /// `EntryEvent::SessionOpened::replaced`). Активный сеанс этот метод не трогает
+    /// никогда: для него — [`Self::close_session_with_farewell`].
+    ///
+    /// # Errors
+    /// [`FarewellError::Unencodable`] — сообщение не прошло проверку протокола;
+    /// коридор при этом остаётся открытым до своего срока.
+    pub fn bid_farewell_to_replaced(
+        &self,
+        replaced: &SessionRef,
+        farewell: &PlayerSessionMessage,
+    ) -> Result<ReplacedFarewellOutcome, FarewellError> {
+        self.shared.bid_farewell_to_replaced(replaced, farewell)
     }
 }

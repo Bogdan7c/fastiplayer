@@ -29,7 +29,7 @@ use browser_bridge_protocol::{
 };
 
 use crate::policy::BrowserSessionPolicy;
-use crate::registry::SessionInstance;
+use crate::registry::{SessionInstance, SessionRef};
 use crate::server::{OpenSessionError, SessionControl};
 
 /// Самое длинное имя звонящего: предел D-Bus для уникальных и известных имён.
@@ -103,6 +103,11 @@ pub enum EntryEvent {
         hints: PlaybackHints,
         /// Что произошло с сеансом.
         outcome: GrantOutcome,
+        /// Экземпляр, который это открытие вытеснило (`outcome = Replaced`).
+        /// Его вкладка ещё в «коридоре прощания»: приложение может отдать ей
+        /// последнее сообщение через `SessionControl::bid_farewell_to_replaced`
+        /// (решение 127), иначе сервер закроет её 4001 сам по сроку.
+        replaced: Option<SessionRef>,
     },
 }
 
@@ -115,6 +120,7 @@ impl fmt::Debug for EntryEvent {
                 instance,
                 intent,
                 outcome,
+                replaced,
                 page: _,
                 hints: _,
             } => formatter
@@ -123,6 +129,7 @@ impl fmt::Debug for EntryEvent {
                 .field("instance", instance)
                 .field("intent", intent)
                 .field("outcome", outcome)
+                .field("replaced", replaced)
                 .field("page", &"<redacted>")
                 .finish_non_exhaustive(),
         }
@@ -250,6 +257,7 @@ impl EntryDesk {
                     intent: request.intent,
                     hints: request.hints,
                     outcome: opened.outcome,
+                    replaced: opened.replaced,
                 });
                 outcome
             }

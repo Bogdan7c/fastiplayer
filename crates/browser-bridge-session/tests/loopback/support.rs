@@ -312,3 +312,67 @@ pub fn data_frame_for(generation: u32, source_buffer: u16) -> Vec<u8> {
     frame[8..10].copy_from_slice(&source_buffer.to_le_bytes());
     frame
 }
+
+/// Читает всё текстовое до кадра закрытия: (тексты по порядку, код закрытия).
+/// Так тест видит ПОРЯДОК «сообщения → закрытие» целиком.
+pub fn read_texts_until_close(socket: &mut WebSocket<TcpStream>) -> (Vec<String>, u16) {
+    let mut texts = Vec::new();
+    loop {
+        match socket.read() {
+            Ok(Message::Text(text)) => texts.push(text.as_str().to_owned()),
+            Ok(Message::Close(Some(frame))) => {
+                // Как браузер: сразу отвечаем кадром закрытия.
+                let _ = socket.flush();
+                return (texts, u16::from(frame.code));
+            }
+            Ok(Message::Close(None)) => panic!("закрытие без кода"),
+            Ok(_) => {}
+            Err(error) => panic!("ожидали тексты и кадр закрытия, получили ошибку: {error}"),
+        }
+    }
+}
+
+/// Шлёт ping и ждёт pong с тем же грузом. Сервер отвечает на ping, только когда
+/// прочитал его, а читает он по порядку: после pong всё, что клиент послал до
+/// ping, сервером уже прочитано и обработано.
+pub fn round_trip_ping(socket: &mut WebSocket<TcpStream>, marker: &[u8]) {
+    socket.send(Message::Ping(marker.to_vec().into())).unwrap();
+    loop {
+        match socket.read().expect("соединение оборвалось, ожидали pong")
+        {
+            Message::Pong(payload) if payload.as_ref() == marker => return,
+            Message::Close(frame) => panic!("ожидали pong, пришло закрытие {frame:?}"),
+            _ => {}
+        }
+    }
+}
+
+/// Политика, при которой поток соединения подолгу «стоит» в чтении сокета.
+/// Нужна, чтобы тест надёжно ставил сообщения в очередь и просил закрыть, пока
+/// поток спит: старый код (закрытие раньше сброса очереди) при этом стабильно
+/// терял очередь. Новому коду пауза безразлична.
+pub fn parked_reader_policy() -> BrowserSessionPolicy {
+    BrowserSessionPolicy {
+        connection_poll_interval: Duration::from_millis(200),
+        ..test_policy()
+    }
+}
+
+/// Даёт потоку соединения уснуть в чтении (см. `parked_reader_policy`). Это не
+/// условие правильности, а способ воспроизвести старую гонку детерминированно.
+pub fn let_the_connection_thread_park() {
+    std::thread::sleep(Duration::from_millis(40));
+}
+
+/// Ожидаемый JSON прощания — фикстура протокола.
+pub const RETURN_TO_PAGE_JSON: &str = include_str!(
+    "../../../browser-bridge-protocol/fixtures/session/valid/player-return-to-page.json"
+);
+
+/// Прощание «вернись на 1029 с, пауза» — ровно фикстура `player-return-to-page`.
+pub fn return_to_page() -> browser_bridge_protocol::PlayerSessionMessage {
+    browser_bridge_protocol::PlayerSessionMessage::ReturnToPage {
+        position_us: browser_bridge_protocol::MediaTime::from_micros(1_029_000_000).unwrap(),
+        resume: browser_bridge_protocol::session::ResumeState::Paused,
+    }
+}

@@ -14,6 +14,7 @@
 mod accept;
 mod connection;
 mod control;
+mod farewell;
 mod report;
 mod shared;
 
@@ -25,7 +26,10 @@ use std::time::Instant;
 use browser_bridge_protocol::LoopbackPort;
 use browser_bridge_protocol::error::ValueViolation;
 
-pub use control::{CloseOutcome, OpenSessionError, OpenedSession, SendToPageError, SessionControl};
+pub use control::{
+    ActiveFarewellOutcome, CloseOutcome, FarewellError, OpenSessionError, OpenedSession,
+    ReplacedFarewellOutcome, SendToPageError, SessionControl,
+};
 pub use report::ServerShutdownReport;
 
 use self::shared::Shared;
@@ -103,7 +107,8 @@ impl BrowserSessionServer {
         SessionControl::new(Arc::clone(&self.shared))
     }
 
-    /// Останавливает сервер: всем соединениям код 4006, приём закрыт, потоки
+    /// Останавливает сервер: всем соединениям код 4006 (соединениям в коридоре
+    /// прощания — 4001, см. `begin_shutdown`), приём закрыт, потоки
     /// собраны в пределах `shutdown_join_timeout`. Не виснет.
     pub fn shutdown(mut self) -> ServerShutdownReport {
         self.stop_and_join()

@@ -47,8 +47,9 @@ pub use lifecycle::{
 pub use policy::BrowserSessionPolicy;
 pub use registry::{ConnectionId, SessionInstance, SessionRef};
 pub use server::{
-    BrowserSessionServer, CloseOutcome, OpenSessionError, OpenedSession, SendToPageError,
-    ServerShutdownReport, ServerStartError, SessionControl,
+    ActiveFarewellOutcome, BrowserSessionServer, CloseOutcome, FarewellError, OpenSessionError,
+    OpenedSession, ReplacedFarewellOutcome, SendToPageError, ServerShutdownReport,
+    ServerStartError, SessionControl,
 };
 pub use sink::{
     ChunkSource, CountingByteSink, CountingSnapshot, EventSinkFull, RangeChunk, SessionByteSink,
