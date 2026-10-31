@@ -29,6 +29,7 @@
     - инфо-панель с доменом и заголовком, заголовок окна;
     - MPRIS `org.mpris.MediaPlayer2.fastiplayer.browser`;
     - тесты 4–5 из списка ниже.
+- Файлы подсессий: [04b](04b-session-ends.md), [04c](04c-settings-board-and-traces.md); итоги 04a — `results/04a.md`.
 
 ## Зачем
 
