@@ -78,6 +78,10 @@ fn adopt_settings_from_other_windows(
     now: Instant,
 ) -> bool {
     let board_frame = settings_runtime.advance_shared_settings_board(runtime_adapter, now);
+    if board_frame.session_only_lifted {
+        // Файл снова нормальный: «изменения не сохранятся» больше неправда.
+        runtime_adapter.withdraw_settings_file_write_notices();
+    }
     if let Some(notice) = board_frame.notice {
         runtime_adapter.show_settings_file_notice(notice);
     }

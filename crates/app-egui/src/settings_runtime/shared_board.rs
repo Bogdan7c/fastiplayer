@@ -14,9 +14,13 @@
 //!        Missing    ── тихо
 //!        Unreadable ── одно уведомление на новую проблему, ничего не применяем и не пишем
 //!        Newer      ── то же своим текстом
-//!        Parsed     ── дописать несохранённое (A2) → диф без «запоминаемого состояния»
+//!        Parsed     ── store: «видели этот документ» (база несохранённого; снять
+//!                      восстановимый запрет «только на сеанс» — плашки снимаются)
+//!                      → дописать несохранённое (A2) → диф без «запоминаемого состояния»
+//!                      и без уже отказанных пар (id, значение)
 //!                      → begin_adopt (Pending — опрос каждый кадр, Busy — ждём своего)
-//!                      → Adopted: snapshot потребителям; отказ/откат: уведомление + отпечаток
+//!                      → Adopted: snapshot потребителям; отказ/откат: уведомление +
+//!                      отказанные пары (`refused.rs`) + отпечаток
 //! ```
 //!
 //! Инварианты:
@@ -26,17 +30,22 @@
 //! - принятие не пишет файл, не показывает «Settings saved» и не зовёт хуки после записи
 //!   (громкость UX-11 и т. п.);
 //! - во время своего Apply чужое ждёт его конца; во время принятия свой Apply ждёт в
-//!   `Scheduled` (`stepwise_apply.rs`), отложенные runtime-коммиты — как во время Apply.
+//!   `Scheduled` (`stepwise_apply.rs`), отложенные runtime-коммиты — как во время Apply;
+//! - отказ принятия одного и того же значения показывается один раз: несвязанная запись
+//!   соседа не перезапускает тост (`refused.rs`);
+//! - настройка «применится после перезапуска» (`render.profile`) принимается как своё
+//!   Apply: committed меняется, у поля появляются «Applies after restart» и «Restart now».
 
 use std::time::{Duration, Instant};
 
 use fastiplayer_config::{
-    ConfigSavePolicy, ConfigSessionOnlyReason, SharedConfigProblem, SharedConfigRead,
-    read_shared_config_at,
+    ConfigSavePolicy, ConfigSessionOnlyReason, ConfigWriteResumption, SharedConfigProblem,
+    SharedConfigRead, read_shared_config_at,
 };
 use fastiplayer_settings::{UnsavedChangesSave, adoptable_peer_changes};
 use settings_core::{
-    BeginExternalAdoption, ExternalAdoptionOutcome, ExternalAdoptionReport, PollExternalAdoption,
+    BeginExternalAdoption, ExternalAdoptionOutcome, ExternalAdoptionReport, ExternalSettingChange,
+    PollExternalAdoption,
 };
 
 use super::transaction::SettingsRuntimeApplyDelegate;
@@ -47,10 +56,12 @@ use crate::config_file_watch::{
 
 mod fingerprint;
 mod notice;
+mod refused;
 mod save_notice;
 
 use fingerprint::ConfigFileFingerprint;
 pub(crate) use notice::SettingsFileNotice;
+use refused::RefusedPeerValues;
 pub(super) use save_notice::{PersistNoticeRoute, SaveDeferralNotices};
 
 /// Через сколько повторить принятие, если плеер был занят (перемотка, скраб, пересборка).
@@ -109,12 +120,22 @@ struct AwaitingTurn {
 }
 
 /// Принятие, которое ждёт маршрут (например, пересборку источника).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 struct AdoptionAttempt {
     /// Отпечаток файла, из которого взяты значения.
     fingerprint: Option<ConfigFileFingerprint>,
-    /// Принимаемые id (для журнала; id — не данные просмотра).
-    setting_ids: Vec<SettingId>,
+    /// Принимаемые значения (при отказе запоминаются как отказанные пары).
+    changes: Vec<ExternalSettingChange>,
+}
+
+impl AdoptionAttempt {
+    /// Принимаемые id (для журнала; id — не данные просмотра, значения в журнал не идут).
+    fn setting_ids(&self) -> Vec<&SettingId> {
+        self.changes
+            .iter()
+            .map(|change| &change.setting_id)
+            .collect()
+    }
 }
 
 /// Состояние доски внутри [`SettingsRuntime`].
@@ -133,6 +154,8 @@ pub(super) struct SharedSettingsBoard {
     announced_problem: Option<SettingsFileProblem>,
     /// «Применено, но в файл пока не записано»: одно уведомление на причину.
     save_notices: SaveDeferralNotices,
+    /// Значения соседа, принять которые не удалось (одно уведомление на значение).
+    refused: RefusedPeerValues,
 }
 
 impl SharedSettingsBoard {
@@ -146,6 +169,7 @@ impl SharedSettingsBoard {
             settled_fingerprint: None,
             announced_problem: SettingsFileProblem::announced_at_startup(save_policy),
             save_notices: SaveDeferralNotices::default(),
+            refused: RefusedPeerValues::default(),
         }
     }
 
@@ -163,6 +187,9 @@ pub(crate) struct SharedBoardFrame {
     pub(crate) needs_redraw: bool,
     /// Уведомление для человека (центр уведомлений окна).
     pub(crate) notice: Option<SettingsFileNotice>,
+    /// Запрет записи «только на сеанс» снят (файл снова нормальный): плашки окна о том, что
+    /// настройки не будут сохранены, больше неправда — их нужно снять.
+    pub(crate) session_only_lifted: bool,
 }
 
 impl SharedBoardFrame {
@@ -170,6 +197,7 @@ impl SharedBoardFrame {
         Self {
             needs_redraw: false,
             notice: None,
+            session_only_lifted: false,
         }
     }
 
@@ -177,6 +205,7 @@ impl SharedBoardFrame {
         Self {
             needs_redraw: true,
             notice: None,
+            session_only_lifted: false,
         }
     }
 
@@ -184,8 +213,30 @@ impl SharedBoardFrame {
         Self {
             needs_redraw: true,
             notice: Some(notice),
+            session_only_lifted: false,
         }
     }
+
+    /// Отмечает, что в этом шаге снят запрет «только на сеанс».
+    const fn after_session_only_lift(self, lift: SessionOnlyLift) -> Self {
+        match lift {
+            SessionOnlyLift::Lifted => Self {
+                needs_redraw: true,
+                session_only_lifted: true,
+                ..self
+            },
+            SessionOnlyLift::Unchanged => self,
+        }
+    }
+}
+
+/// Снят ли при этом чтении файла запрет записи «только на сеанс».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionOnlyLift {
+    /// Запрет снят: копия снова пишет config.
+    Lifted,
+    /// Ничего не изменилось (запись и так разрешена или запрет остаётся).
+    Unchanged,
 }
 
 impl SettingsRuntime {
@@ -321,13 +372,47 @@ impl SettingsRuntime {
             SharedConfigRead::Parsed(disk) => {
                 self.shared_board.settled_fingerprint = None;
                 self.shared_board.announced_problem = None;
-                match self.write_unsaved_settings_before_adoption(*disk) {
+                let lift = self.note_usable_settings_file(&disk);
+                let frame = match self.write_unsaved_settings_before_adoption(*disk) {
                     Some(disk) => {
                         self.begin_adopting_disk_config(&disk, fingerprint, runtime_adapter, now)
                     }
                     // Своя дозапись изменила файл: её событие слежения придёт следом.
                     None => SharedBoardFrame::idle(),
-                }
+                };
+                frame.after_session_only_lift(lift)
+            }
+        }
+    }
+
+    /// Файл прочитан нормально: store запоминает его как «виденный» (база несохранённого,
+    /// снятие восстановимого запрета записи), доска забывает отказанные пары, которых на
+    /// диске больше нет.
+    fn note_usable_settings_file(&mut self, disk: &AppConfig) -> SessionOnlyLift {
+        if let Err(error) = self
+            .shared_board
+            .refused
+            .forget_values_no_longer_on_disk(&self.registry, disk)
+        {
+            tracing::error!(%error, "Could not compare refused settings with the settings file");
+        }
+        match self.store.note_disk_config_seen(disk) {
+            Ok(ConfigWriteResumption::Resumed { lifted_reason }) => {
+                // Короткого уведомления не нужно: человеку достаточно, что плашка «только
+                // на сеанс» исчезла, а изменения теперь сохраняются (журнал — для разбора).
+                tracing::info!(
+                    ?lifted_reason,
+                    "Settings file is usable again; settings changes are saved to it from now on"
+                );
+                self.invalidate_ui_model();
+                SessionOnlyLift::Lifted
+            }
+            Ok(
+                ConfigWriteResumption::AlreadyWritable | ConfigWriteResumption::StillSessionOnly(_),
+            ) => SessionOnlyLift::Unchanged,
+            Err(error) => {
+                tracing::error!(%error, "Settings store could not take the settings file into account");
+                SessionOnlyLift::Unchanged
             }
         }
     }
@@ -376,7 +461,12 @@ impl SettingsRuntime {
                     "Unsaved settings were written once the settings file became usable"
                 );
                 match read_shared_config_at(&self.config_path) {
-                    SharedConfigRead::Parsed(fresh) => Some(*fresh),
+                    SharedConfigRead::Parsed(fresh) => {
+                        // Свежее чтение — тоже «виденный» документ (между записью и чтением
+                        // мог успеть записать сосед). Запрет уже снят, итог не нужен.
+                        let _lift = self.note_usable_settings_file(&fresh);
+                        Some(*fresh)
+                    }
                     _ => None,
                 }
             }
@@ -414,7 +504,9 @@ impl SettingsRuntime {
             disk,
             &unsaved_setting_ids,
         ) {
-            Ok(changes) => changes,
+            // Уже отказанные значения не повторяем: иначе любая несвязанная запись соседа
+            // снова уронила бы всю пачку и снова показала бы тост.
+            Ok(changes) => self.shared_board.refused.without_refused(changes),
             Err(error) => {
                 tracing::error!(%error, "Could not compare the settings file with current settings");
                 self.shared_board.settled_fingerprint = fingerprint;
@@ -427,10 +519,7 @@ impl SettingsRuntime {
         }
         let attempt = AdoptionAttempt {
             fingerprint,
-            setting_ids: changes
-                .iter()
-                .map(|change| change.setting_id.clone())
-                .collect(),
+            changes: changes.clone(),
         };
         let begin = self.with_apply_delegate(runtime_adapter, |controller, delegate| {
             controller.begin_adopt_external_settings(changes, delegate)
@@ -453,7 +542,10 @@ impl SettingsRuntime {
                 self.conclude_external_adoption(*report, attempt, runtime_adapter, now)
             }
             Err(error) => {
-                tracing::error!(%error, settings = ?attempt.setting_ids, "Settings from another Fastiplayer window were rejected");
+                tracing::error!(%error, settings = ?attempt.setting_ids(), "Settings from another Fastiplayer window were rejected");
+                self.shared_board
+                    .refused
+                    .remember_refused(&attempt.changes, None);
                 self.shared_board.settled_fingerprint = attempt.fingerprint;
                 SharedBoardFrame::with_notice(SettingsFileNotice::AdoptionFailed)
             }
@@ -507,7 +599,7 @@ impl SettingsRuntime {
                     CommittedConfigSnapshot::from_config(self.controller.committed()),
                 );
                 tracing::info!(
-                    settings = ?attempt.setting_ids,
+                    settings = ?attempt.setting_ids(),
                     kept_user_edits = ?report.draft_merge.kept_user_edits,
                     "Applied settings saved by another Fastiplayer window"
                 );
@@ -516,7 +608,7 @@ impl SettingsRuntime {
             ExternalAdoptionOutcome::Refused if final_state == ApplyFinalState::RuntimeBlocked => {
                 // Плеер занят перемоткой/скрабом/пересборкой — не ошибка: повторим позже.
                 tracing::debug!(
-                    settings = ?attempt.setting_ids,
+                    settings = ?attempt.setting_ids(),
                     "Player is busy; settings from another Fastiplayer window will be applied shortly"
                 );
                 self.shared_board.awaiting_turn = Some(AwaitingTurn {
@@ -526,19 +618,25 @@ impl SettingsRuntime {
             }
             ExternalAdoptionOutcome::Refused | ExternalAdoptionOutcome::RolledBack => {
                 tracing::warn!(
-                    settings = ?attempt.setting_ids,
+                    settings = ?attempt.setting_ids(),
                     ?final_state,
                     "Settings from another Fastiplayer window could not be applied; keeping current settings"
                 );
+                self.shared_board
+                    .refused
+                    .remember_refused(&attempt.changes, Some(&report.transaction));
                 self.shared_board.settled_fingerprint = attempt.fingerprint;
                 SharedBoardFrame::with_notice(SettingsFileNotice::AdoptionFailed)
             }
             ExternalAdoptionOutcome::RollbackFailed => {
                 tracing::error!(
-                    settings = ?attempt.setting_ids,
+                    settings = ?attempt.setting_ids(),
                     ?final_state,
                     "Settings from another Fastiplayer window failed and the rollback failed too"
                 );
+                self.shared_board
+                    .refused
+                    .remember_refused(&attempt.changes, Some(&report.transaction));
                 self.shared_board.settled_fingerprint = attempt.fingerprint;
                 SharedBoardFrame::with_notice(SettingsFileNotice::AdoptionRollbackFailed)
             }

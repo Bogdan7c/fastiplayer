@@ -56,6 +56,7 @@ mod render_profile_restart;
 mod session_only_persistence;
 mod shared_board;
 mod shared_board_queue;
+mod shared_board_recovery;
 mod sidebar_resize;
 mod snapshot_routes;
 mod status_text_user_facing;

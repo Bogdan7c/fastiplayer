@@ -117,8 +117,9 @@ pub(crate) use schema::{
 pub use store::{
     BrokenConfigProblem, BrokenConfigRecovery, ConfigLoadOrigin, ConfigLockFailure,
     ConfigSaveOutcome, ConfigSavePolicy, ConfigSaveTarget, ConfigSessionOnlyReason,
-    ConfigWriteProblem, DEFAULT_SHARED_CONFIG_LOCK_WAIT, LoadedConfig, SharedConfigLockProblem,
-    SharedConfigLockStage, SharedConfigProblem, SharedConfigRead, SharedConfigSave,
-    SharedConfigUpdate, load_from_path, load_or_create, load_or_create_at, load_or_recover_at,
-    read_shared_config_at, save_validated_atomic_at, update_shared_config_at,
+    ConfigWriteProblem, ConfigWriteResumption, DEFAULT_SHARED_CONFIG_LOCK_WAIT, LoadedConfig,
+    MissingConfigFileSeed, SharedConfigLockProblem, SharedConfigLockStage, SharedConfigProblem,
+    SharedConfigRead, SharedConfigSave, SharedConfigUpdate, load_from_path, load_or_create,
+    load_or_create_at, load_or_recover_at, read_shared_config_at, save_validated_atomic_at,
+    update_shared_config_at,
 };

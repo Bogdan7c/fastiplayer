@@ -20,10 +20,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use fastiplayer_config::{
-    AppConfig, ConfigSaveTarget, FrameServerConfig, HdrToSdrOperatorConfig, NetworkConfig,
-    PlayerDemuxConfig, PlaylistConfig, ToneMappingMode as ConfigToneMappingMode, UiConfig,
-    VideoBackendPreference, VideoCodec as ConfigVideoCodec, VulkanConfig, WebMediaConfig,
-    YtDlpConfig,
+    AppConfig, ConfigSavePolicy, ConfigSaveTarget, ConfigWriteResumption, FrameServerConfig,
+    HdrToSdrOperatorConfig, LoadedConfig, NetworkConfig, PlayerDemuxConfig, PlaylistConfig,
+    ToneMappingMode as ConfigToneMappingMode, UiConfig, VideoBackendPreference,
+    VideoCodec as ConfigVideoCodec, VulkanConfig, WebMediaConfig, YtDlpConfig,
 };
 use player_core::{
     AutomaticSurfacePool, PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate,
@@ -55,5 +55,7 @@ pub use shared_persist::{
     SETTINGS_FILE_LOCK_WAIT, SettingsFileDurability, SettingsFilePersistOutcome,
     SettingsFileSaveDeferral, UnsavedChangesSave, settings_file_persist_outcome,
 };
-use shared_persist::{UnsavedSettingChanges, persist_changed_settings, save_unsaved_settings};
+use shared_persist::{
+    SharedFileKnowledge, note_disk_config_seen, persist_changed_settings, save_unsaved_settings,
+};
 pub use transaction::*;

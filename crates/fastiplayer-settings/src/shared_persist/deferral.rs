@@ -87,10 +87,15 @@ impl SettingsFileSaveDeferral {
 /// Итог одной попытки записи с точки зрения транзакции настроек.
 pub(super) enum SaveAttempt {
     /// Записано; `durability_warning` — если каталог не подтвердил запись.
-    Saved { durability_warning: Option<String> },
+    Saved {
+        /// Документ, который теперь лежит в файле.
+        written: Box<AppConfig>,
+        durability_warning: Option<String>,
+    },
     /// Не записано, файл не тронут, изменение живёт в памяти.
     Deferred(SettingsFileSaveDeferral),
-    /// Слияние отказалось (ошибка реестра) — настоящая ошибка транзакции.
+    /// Ошибка программы (реестр отказался вписать значение, слитый документ не
+    /// сериализуется) — настоящая ошибка транзакции с откатом.
     Rejected(SettingsError),
 }
 
@@ -100,13 +105,18 @@ pub(super) fn classify_update(
     update: SharedConfigUpdate<SettingsError>,
 ) -> SaveAttempt {
     let deferral = match update {
-        SharedConfigUpdate::Written { .. } => {
+        SharedConfigUpdate::Written { written } => {
             return SaveAttempt::Saved {
+                written,
                 durability_warning: None,
             };
         }
-        SharedConfigUpdate::WrittenDurabilityUnconfirmed { sync_error, .. } => {
+        SharedConfigUpdate::WrittenDurabilityUnconfirmed {
+            written,
+            sync_error,
+        } => {
             return SaveAttempt::Saved {
+                written,
                 durability_warning: Some(format!(
                     "the settings folder did not confirm the write ({sync_error:?})"
                 )),
@@ -114,6 +124,13 @@ pub(super) fn classify_update(
         }
         SharedConfigUpdate::MergeRejected(registry_error) => {
             return SaveAttempt::Rejected(registry_error);
+        }
+        // Значения те же записались бы и без соседа — это не «конфликт с другим окном»,
+        // а ошибка программы: транзакция откатывается, как до 04c.
+        SharedConfigUpdate::MergedConfigNotSerializable(serialization_error) => {
+            return SaveAttempt::Rejected(SettingsError::access_failed(format!(
+                "the settings could not be prepared for the settings file: {serialization_error}"
+            )));
         }
         SharedConfigUpdate::LockBusy { waited } => SettingsFileSaveDeferral::FileBusy { waited },
         SharedConfigUpdate::LockUnavailable(problem) => {
@@ -125,7 +142,8 @@ pub(super) fn classify_update(
         SharedConfigUpdate::DiskConfigNewer { found } => {
             SettingsFileSaveDeferral::FileFromNewerVersion { found }
         }
-        SharedConfigUpdate::MergedConfigRejected(error) => {
+        // Своё значение вместе с тем, что уже лежит в файле, не проходит проверку значений.
+        SharedConfigUpdate::MergedConfigInvalid(error) => {
             SettingsFileSaveDeferral::ConflictsWithSavedSettings {
                 setting_label: invalid_setting_label(registry, &error),
             }

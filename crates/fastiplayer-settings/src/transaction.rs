@@ -39,29 +39,50 @@ impl SettingsValidator<AppConfig> for AppConfigValidator {
 /// Если запись разрешена, но сейчас не удалась (файл занят, битый, новее…), транзакция
 /// тоже не откатывается: store помнит id несохранённых настроек и дописывает их при
 /// следующей успешной записи. Как прочитать такой отчёт — [`settings_file_persist_outcome`].
+///
+/// Store владеет знанием об общем файле: какой документ диска эта копия видела последним
+/// (старт, своя запись, чтение «общей доски» — [`AppConfigStore::note_disk_config_seen`]).
+/// От него считается, кто записал ключ позже — мы или сосед (`shared_persist/unsaved.rs`).
 #[derive(Debug, Clone)]
 pub struct AppConfigStore {
     save_target: ConfigSaveTarget,
     /// Сколько ждать замок записи config-а до отказа «файл занят».
     lock_wait: Duration,
-    /// Изменения, применённые в памяти, но ещё не записанные в файл.
-    unsaved: UnsavedSettingChanges,
+    /// Последний виденный документ диска и изменения, ещё не записанные в файл.
+    knowledge: SharedFileKnowledge,
 }
 
 impl AppConfigStore {
     /// Creates a writable store for one concrete user config path.
+    ///
+    /// Store не видел документа диска: первый увиденный документ станет базой для
+    /// несохранённых изменений (см. `shared_persist/unsaved.rs`).
     #[must_use]
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self::from_save_target(ConfigSaveTarget::writable(path))
     }
 
     /// Creates a store that respects the write policy decided when config was loaded.
+    ///
+    /// Без знания о том, что лежит на диске; приложение создаёт store через
+    /// [`AppConfigStore::from_loaded_config`].
     #[must_use]
     pub fn from_save_target(save_target: ConfigSaveTarget) -> Self {
         Self {
             save_target,
             lock_wait: SETTINGS_FILE_LOCK_WAIT,
-            unsaved: UnsavedSettingChanges::default(),
+            knowledge: SharedFileKnowledge::starting_from(None),
+        }
+    }
+
+    /// Store по итогу загрузки: право записи и документ, который лежит на диске (если он
+    /// известен — `LoadedConfig::config_seen_on_disk`).
+    #[must_use]
+    pub fn from_loaded_config(loaded_config: &LoadedConfig) -> Self {
+        Self {
+            save_target: loaded_config.save_target(),
+            lock_wait: SETTINGS_FILE_LOCK_WAIT,
+            knowledge: SharedFileKnowledge::starting_from(loaded_config.config_seen_on_disk()),
         }
     }
 
@@ -78,29 +99,54 @@ impl AppConfigStore {
         self.save_target.path()
     }
 
+    /// Право записи в этот запуск (может смениться на запись после
+    /// [`AppConfigStore::note_disk_config_seen`]).
+    #[must_use]
+    pub fn save_policy(&self) -> &ConfigSavePolicy {
+        self.save_target.policy()
+    }
+
     /// Есть ли применённые изменения, которые ещё не записаны в файл.
     #[must_use]
     pub fn has_unsaved_changes(&self) -> bool {
-        !self.unsaved.is_empty()
+        self.knowledge.has_unsaved()
     }
 
     /// Id несохранённых настроек (для текста и диагностики, без значений).
     #[must_use]
     pub fn unsaved_setting_ids(&self) -> Vec<SettingId> {
-        self.unsaved.setting_ids()
+        self.knowledge.unsaved_setting_ids()
+    }
+
+    /// Копия прочитала config-файл, и он нормальный (`SharedConfigRead::Parsed`).
+    ///
+    /// Звать после **каждого** успешного чтения файла «общей доской» (до дописывания
+    /// несохранённого и до принятия значений соседа):
+    /// - документ становится «последним виденным» — от него считаются базы следующих
+    ///   несохранённых изменений;
+    /// - если запись была запрещена восстановимой причиной (битый файл, недоступный замок
+    ///   при старте…), запрет снимается: итог [`ConfigWriteResumption::Resumed`]. После
+    ///   этого несохранённое пора дописать ([`AppConfigStore::save_unsaved_changes`]).
+    ///
+    /// Ошибка — только отказ реестра (ошибка программы); тогда store ничего не меняет.
+    pub fn note_disk_config_seen(
+        &mut self,
+        disk_document: &AppConfig,
+    ) -> SettingsResult<ConfigWriteResumption> {
+        note_disk_config_seen(&mut self.save_target, &mut self.knowledge, disk_document)
     }
 
     /// Дописывает несохранённые изменения в файл, значения берёт из `current`.
     ///
     /// Звать, когда файл снова можно записать (слежение увидело исправный файл, после
     /// принятия значений соседа). `current` — committed документ этой копии. Значение,
-    /// которое после нашей неудачи записала другая копия, не затирается (правило в
+    /// которое после нашего изменения записала другая копия, не затирается (правило в
     /// `shared_persist/unsaved.rs`).
     pub fn save_unsaved_changes(&mut self, current: &AppConfig) -> UnsavedChangesSave {
         save_unsaved_settings(
             &self.save_target,
             self.lock_wait,
-            &mut self.unsaved,
+            &mut self.knowledge,
             current,
         )
     }
@@ -114,7 +160,7 @@ impl SettingsPersister<AppConfig> for AppConfigStore {
         persist_changed_settings(
             &self.save_target,
             self.lock_wait,
-            &mut self.unsaved,
+            &mut self.knowledge,
             request,
         )
     }

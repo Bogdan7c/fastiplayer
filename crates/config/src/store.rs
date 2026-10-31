@@ -17,13 +17,13 @@ mod shared_file;
 pub use outcome::{
     BrokenConfigProblem, BrokenConfigRecovery, ConfigLoadOrigin, ConfigSaveOutcome,
     ConfigSavePolicy, ConfigSaveTarget, ConfigSessionOnlyReason, ConfigWriteProblem,
-    SharedConfigSave,
+    ConfigWriteResumption, SharedConfigSave,
 };
 pub use recovery::load_or_recover_at;
 pub use shared_file::{
-    ConfigLockFailure, DEFAULT_SHARED_CONFIG_LOCK_WAIT, SharedConfigLockProblem,
-    SharedConfigLockStage, SharedConfigProblem, SharedConfigRead, SharedConfigUpdate,
-    read_shared_config_at, update_shared_config_at,
+    ConfigLockFailure, DEFAULT_SHARED_CONFIG_LOCK_WAIT, MissingConfigFileSeed,
+    SharedConfigLockProblem, SharedConfigLockStage, SharedConfigProblem, SharedConfigRead,
+    SharedConfigUpdate, read_shared_config_at, update_shared_config_at,
 };
 
 #[cfg(test)]
@@ -55,6 +55,27 @@ impl LoadedConfig {
                 ConfigSaveTarget::session_only(self.path.clone(), reason.clone())
             }
         }
+    }
+
+    /// Документ, который по итогу загрузки лежит в файле на диске, если это известно.
+    ///
+    /// Нужен «общей доске» как первое «что эта копия видела на диске»: от него считается,
+    /// кто записал ключ позже — мы или сосед (`fastiplayer-settings::shared_persist`).
+    /// - файл прочитан (`LoadedExisting`) — в файле ровно этот документ (с учётом миграций,
+    ///   которые при чтении применяются одинаково);
+    /// - файл создан из defaults (`CreatedDefault`, `RecoveredFromBroken` с записью) —
+    ///   в файле defaults, они же в памяти;
+    /// - работаем на defaults только в памяти (`DefaultsInMemory`) или запись запрещена —
+    ///   что лежит на диске, копия не знает: `None`.
+    #[must_use]
+    pub fn config_seen_on_disk(&self) -> Option<&AppConfig> {
+        let file_holds_this_config = matches!(
+            self.origin,
+            ConfigLoadOrigin::LoadedExisting
+                | ConfigLoadOrigin::CreatedDefault
+                | ConfigLoadOrigin::RecoveredFromBroken(_)
+        ) && self.save_policy == ConfigSavePolicy::WriteToFile;
+        file_holds_this_config.then_some(&self.config)
     }
 }
 

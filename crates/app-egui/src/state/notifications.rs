@@ -44,6 +44,7 @@ mod buffering;
 mod center_status;
 mod player_feed;
 mod replacing;
+mod settings_file_writes;
 
 #[cfg(test)]
 pub(crate) use buffering::BUFFERING_INDICATOR_APPEAR_DELAY;
@@ -279,6 +280,9 @@ pub(crate) struct NotificationCenter {
     playback_waiting: buffering::PlaybackWaitingWatch,
     /// Сообщение состояния окна в центре (`center_status`); ставит и снимает его владелец.
     center_status: Option<Arc<str>>,
+    /// Плашки «настройки не пишутся в файл» (стартовое предупреждение config-а и «только
+    /// на сеанс»): снимаются, когда запись снова разрешена (`settings_file_writes.rs`).
+    settings_file_write_notices: Vec<NotificationId>,
 }
 
 impl NotificationCenter {
@@ -296,7 +300,7 @@ impl NotificationCenter {
             center.show_media_failure(message, MediaFailureOrigin::MediaOpen);
         }
         if let Some(message) = config_warning {
-            center.notify_until_dismissed(message, now);
+            center.notify_config_startup_warning(message, now);
         }
         center
     }

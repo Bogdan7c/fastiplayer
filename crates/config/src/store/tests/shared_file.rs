@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 use super::*;
 use crate::store::shared_file::{ConfigWriteGuard, acquire_config_write_lock};
 use crate::{
-    BrokenConfigProblem, ConfigLockFailure, SharedConfigLockProblem, SharedConfigProblem,
-    SharedConfigRead, SharedConfigUpdate, config_write_lock_path_for, read_shared_config_at,
-    update_shared_config_at,
+    BrokenConfigProblem, ConfigLockFailure, MissingConfigFileSeed, SharedConfigLockProblem,
+    SharedConfigProblem, SharedConfigRead, SharedConfigUpdate, config_write_lock_path_for,
+    read_shared_config_at, update_shared_config_at,
 };
 
 /// Короткий срок ожидания замка для тестов «занят»: тест не должен ждать секунды.
@@ -65,7 +65,12 @@ fn extra_entries(directory: &std::path::Path) -> Vec<String> {
 fn missing_file_is_created_from_defaults_plus_changed_key() {
     let (_temp_dir, config_path) = empty_config_dir();
 
-    let outcome = update_shared_config_at(&config_path, GENEROUS_LOCK_WAIT, set_volume_quarter);
+    let outcome = update_shared_config_at(
+        &config_path,
+        GENEROUS_LOCK_WAIT,
+        MissingConfigFileSeed::Defaults,
+        set_volume_quarter,
+    );
 
     let SharedConfigUpdate::Written { written } = outcome else {
         panic!("missing file must be created: {outcome:?}");
@@ -77,6 +82,59 @@ fn missing_file_is_created_from_defaults_plus_changed_key() {
     assert_eq!(on_disk.config, expected);
 }
 
+/// Файл удалили во время работы: копия создаёт его из своего документа, а не из defaults,
+/// поэтому её прочие настройки переживают перезапуск вместе с новым ключом.
+#[test]
+fn missing_file_is_created_from_the_writer_document_when_asked() {
+    let (_temp_dir, config_path) = empty_config_dir();
+    let mut writer_document = AppConfig::default();
+    writer_document.ui.sidebar.width_points = 510;
+    writer_document.ui.language = "en".to_string();
+
+    let outcome = update_shared_config_at(
+        &config_path,
+        GENEROUS_LOCK_WAIT,
+        MissingConfigFileSeed::WriterDocument(&writer_document),
+        set_volume_quarter,
+    );
+
+    assert!(
+        matches!(outcome, SharedConfigUpdate::Written { .. }),
+        "{outcome:?}"
+    );
+    let on_disk = load_from_path(&config_path)
+        .expect("created file loads")
+        .config;
+    assert!((on_disk.audio.volume - 0.25).abs() < f64::EPSILON);
+    assert_eq!(on_disk.ui.sidebar.width_points, 510);
+    assert_eq!(on_disk.ui.language, "en");
+}
+
+/// Файл есть: основа — диск, документ копии на месте файла не используется.
+#[test]
+fn writer_document_is_ignored_when_the_file_exists() {
+    let mut neighbor_config = AppConfig::default();
+    neighbor_config.ui.language = "uk".to_string();
+    let (_temp_dir, config_path) = empty_config_dir();
+    save_validated_atomic_at(&config_path, &neighbor_config).expect("neighbor wrote the file");
+    let mut writer_document = AppConfig::default();
+    writer_document.ui.language = "en".to_string();
+
+    let outcome = update_shared_config_at(
+        &config_path,
+        GENEROUS_LOCK_WAIT,
+        MissingConfigFileSeed::WriterDocument(&writer_document),
+        set_volume_quarter,
+    );
+
+    assert!(
+        matches!(outcome, SharedConfigUpdate::Written { .. }),
+        "{outcome:?}"
+    );
+    let on_disk = load_from_path(&config_path).expect("file loads").config;
+    assert_eq!(on_disk.ui.language, "uk", "the neighbour's key stays");
+}
+
 /// Сосед поменял X на диске, мы пишем Y: X сохранился, Y записан.
 #[test]
 fn merge_keeps_keys_written_by_neighbor() {
@@ -85,7 +143,12 @@ fn merge_keeps_keys_written_by_neighbor() {
     let (_temp_dir, config_path) = empty_config_dir();
     save_validated_atomic_at(&config_path, &neighbor_config).expect("neighbor wrote X");
 
-    let outcome = update_shared_config_at(&config_path, GENEROUS_LOCK_WAIT, set_volume_quarter);
+    let outcome = update_shared_config_at(
+        &config_path,
+        GENEROUS_LOCK_WAIT,
+        MissingConfigFileSeed::Defaults,
+        set_volume_quarter,
+    );
 
     assert!(matches!(outcome, SharedConfigUpdate::Written { .. }));
     let on_disk = load_from_path(&config_path).expect("merged file loads");
@@ -100,10 +163,15 @@ fn broken_file_is_refused_without_backup_or_change() {
     let (temp_dir, config_path) = config_dir_with(broken_text);
     let mut merge_called = false;
 
-    let outcome = update_shared_config_at(&config_path, GENEROUS_LOCK_WAIT, |config| {
-        merge_called = true;
-        set_volume_quarter(config)
-    });
+    let outcome = update_shared_config_at(
+        &config_path,
+        GENEROUS_LOCK_WAIT,
+        MissingConfigFileSeed::Defaults,
+        |config| {
+            merge_called = true;
+            set_volume_quarter(config)
+        },
+    );
 
     assert!(matches!(
         outcome,
@@ -122,7 +190,12 @@ fn out_of_range_value_on_disk_is_refused_without_change() {
     let broken_text = "schema_version = 29\n\n[ui.sidebar]\nwidth_points = 5\n";
     let (temp_dir, config_path) = config_dir_with(broken_text);
 
-    let outcome = update_shared_config_at(&config_path, GENEROUS_LOCK_WAIT, set_volume_quarter);
+    let outcome = update_shared_config_at(
+        &config_path,
+        GENEROUS_LOCK_WAIT,
+        MissingConfigFileSeed::Defaults,
+        set_volume_quarter,
+    );
 
     assert!(matches!(
         outcome,
@@ -145,7 +218,12 @@ fn newer_schema_file_is_refused_without_change() {
         .replace("schema_version = 29", "schema_version = 99");
     let (temp_dir, config_path) = config_dir_with(&newer_text);
 
-    let outcome = update_shared_config_at(&config_path, GENEROUS_LOCK_WAIT, set_volume_quarter);
+    let outcome = update_shared_config_at(
+        &config_path,
+        GENEROUS_LOCK_WAIT,
+        MissingConfigFileSeed::Defaults,
+        set_volume_quarter,
+    );
 
     assert!(matches!(
         outcome,
@@ -165,7 +243,12 @@ fn busy_lock_is_reported_after_wait_and_file_is_untouched() {
     let neighbor_guard = hold_lock_as_neighbor(&config_path);
     let started_at = Instant::now();
 
-    let outcome = update_shared_config_at(&config_path, SHORT_LOCK_WAIT, set_volume_quarter);
+    let outcome = update_shared_config_at(
+        &config_path,
+        SHORT_LOCK_WAIT,
+        MissingConfigFileSeed::Defaults,
+        set_volume_quarter,
+    );
 
     let SharedConfigUpdate::LockBusy { waited } = outcome else {
         panic!("held lock must report busy: {outcome:?}");
@@ -190,7 +273,12 @@ fn lock_released_within_wait_lets_update_through() {
         drop(neighbor_guard);
     });
 
-    let outcome = update_shared_config_at(&config_path, GENEROUS_LOCK_WAIT, set_volume_quarter);
+    let outcome = update_shared_config_at(
+        &config_path,
+        GENEROUS_LOCK_WAIT,
+        MissingConfigFileSeed::Defaults,
+        set_volume_quarter,
+    );
 
     release_thread.join().expect("release thread finished");
     assert!(matches!(outcome, SharedConfigUpdate::Written { .. }));
@@ -206,9 +294,12 @@ fn merge_rejection_writes_nothing() {
         .expect("defaults serialize");
     let (_temp_dir, config_path) = config_dir_with(&original_text);
 
-    let outcome = update_shared_config_at(&config_path, GENEROUS_LOCK_WAIT, |_config| {
-        Err("registry refused")
-    });
+    let outcome = update_shared_config_at(
+        &config_path,
+        GENEROUS_LOCK_WAIT,
+        MissingConfigFileSeed::Defaults,
+        |_config| Err("registry refused"),
+    );
 
     assert!(matches!(
         outcome,
@@ -228,12 +319,17 @@ fn invalid_merged_document_writes_nothing() {
         .expect("defaults serialize");
     let (_temp_dir, config_path) = config_dir_with(&original_text);
 
-    let outcome = update_shared_config_at(&config_path, GENEROUS_LOCK_WAIT, |config| {
-        config.ui.sidebar.width_points = 5;
-        Ok::<(), ()>(())
-    });
+    let outcome = update_shared_config_at(
+        &config_path,
+        GENEROUS_LOCK_WAIT,
+        MissingConfigFileSeed::Defaults,
+        |config| {
+            config.ui.sidebar.width_points = 5;
+            Ok::<(), ()>(())
+        },
+    );
 
-    let SharedConfigUpdate::MergedConfigRejected(error) = outcome else {
+    let SharedConfigUpdate::MergedConfigInvalid(error) = outcome else {
         panic!("invalid merged document must be rejected: {outcome:?}");
     };
     assert!(error.to_string().contains("ui.sidebar.width_points"));
@@ -249,7 +345,12 @@ fn update_migrates_older_file_and_keeps_user_values() {
     let (_temp_dir, config_path) =
         config_dir_with("schema_version = 28\n\n[ui.sidebar]\nwidth_points = 480\n");
 
-    let outcome = update_shared_config_at(&config_path, GENEROUS_LOCK_WAIT, set_volume_quarter);
+    let outcome = update_shared_config_at(
+        &config_path,
+        GENEROUS_LOCK_WAIT,
+        MissingConfigFileSeed::Defaults,
+        set_volume_quarter,
+    );
 
     assert!(matches!(outcome, SharedConfigUpdate::Written { .. }));
     let saved_text = fs::read_to_string(&config_path).expect("file");
@@ -268,7 +369,12 @@ fn lock_file_is_private_and_never_removed() {
     let (_temp_dir, config_path) = empty_config_dir();
     let lock_path = config_write_lock_path_for(&config_path);
 
-    let first = update_shared_config_at(&config_path, GENEROUS_LOCK_WAIT, set_volume_quarter);
+    let first = update_shared_config_at(
+        &config_path,
+        GENEROUS_LOCK_WAIT,
+        MissingConfigFileSeed::Defaults,
+        set_volume_quarter,
+    );
     assert!(matches!(first, SharedConfigUpdate::Written { .. }));
     let lock_mode = fs::metadata(&lock_path)
         .expect("lock kept")
@@ -277,7 +383,12 @@ fn lock_file_is_private_and_never_removed() {
     assert_eq!(lock_mode & 0o777, 0o600);
 
     fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o666)).expect("widen lock");
-    let second = update_shared_config_at(&config_path, GENEROUS_LOCK_WAIT, set_volume_quarter);
+    let second = update_shared_config_at(
+        &config_path,
+        GENEROUS_LOCK_WAIT,
+        MissingConfigFileSeed::Defaults,
+        set_volume_quarter,
+    );
     assert!(matches!(second, SharedConfigUpdate::Written { .. }));
     let lock_mode = fs::metadata(&lock_path)
         .expect("lock kept")
@@ -296,7 +407,12 @@ fn symlinked_lock_is_refused() {
     std::os::unix::fs::symlink(&link_target, config_write_lock_path_for(&config_path))
         .expect("symlink planted");
 
-    let outcome = update_shared_config_at(&config_path, GENEROUS_LOCK_WAIT, set_volume_quarter);
+    let outcome = update_shared_config_at(
+        &config_path,
+        GENEROUS_LOCK_WAIT,
+        MissingConfigFileSeed::Defaults,
+        set_volume_quarter,
+    );
 
     assert!(matches!(
         outcome,
@@ -312,7 +428,12 @@ fn directory_at_lock_path_is_refused() {
     let (_temp_dir, config_path) = empty_config_dir();
     fs::create_dir(config_write_lock_path_for(&config_path)).expect("directory planted");
 
-    let outcome = update_shared_config_at(&config_path, GENEROUS_LOCK_WAIT, set_volume_quarter);
+    let outcome = update_shared_config_at(
+        &config_path,
+        GENEROUS_LOCK_WAIT,
+        MissingConfigFileSeed::Defaults,
+        set_volume_quarter,
+    );
 
     assert!(matches!(
         outcome,
@@ -338,7 +459,12 @@ fn read_only_directory_reports_write_failure_without_change() {
         return;
     }
 
-    let outcome = update_shared_config_at(&config_path, GENEROUS_LOCK_WAIT, set_volume_quarter);
+    let outcome = update_shared_config_at(
+        &config_path,
+        GENEROUS_LOCK_WAIT,
+        MissingConfigFileSeed::Defaults,
+        set_volume_quarter,
+    );
     fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o700)).expect("rights back");
 
     assert!(matches!(outcome, SharedConfigUpdate::WriteFailed(_)));

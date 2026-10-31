@@ -243,8 +243,8 @@ impl SettingsRuntime {
         loaded_config: LoadedConfig,
         dynamic_options_wake_port: AppWakePort,
     ) -> SettingsResult<Self> {
-        // Право записи решено config-хранилищем при загрузке; store его только исполняет.
-        let store = AppConfigStore::from_save_target(loaded_config.save_target());
+        // Право записи и «что лежит на диске» решены config-хранилищем при загрузке.
+        let store = AppConfigStore::from_loaded_config(&loaded_config);
         let shared_board =
             shared_board::SharedSettingsBoard::from_save_policy(&loaded_config.save_policy);
         let LoadedConfig { config, path, .. } = loaded_config;

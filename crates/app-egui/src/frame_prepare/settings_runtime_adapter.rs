@@ -376,8 +376,7 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
 
     fn report_settings_kept_for_session_only(&mut self) {
         // Повтор (например, серия изменений ширины sidebar) продлевает ту же плашку.
-        self.app_state
-            .notify_transient(crate::config_startup_notice::SETTINGS_KEPT_FOR_SESSION_ONLY_MESSAGE);
+        self.app_state.notify_settings_kept_for_session_only();
     }
 
     fn apply_user_audio_level_to_playback(

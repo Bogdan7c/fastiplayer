@@ -402,12 +402,17 @@ fn unsaved_setting_is_written_with_its_latest_value() {
 
 /// После нашей неудачи сосед записал тот же ключ: дописывание не затирает его старым
 /// значением из памяти (последний победил), а несохранённое забывается.
+///
+/// Копия видела файл с defaults (база — 420), потом файл сломался, и запись не удалась.
 #[test]
 fn unsaved_setting_does_not_overwrite_later_neighbor_value() {
     let directory = unique_test_directory("unsaved-neighbor");
     let config_path = directory.join("config.toml");
-    fs::write(&config_path, "[[[").expect("broken file written");
     let mut store = AppConfigStore::new(&config_path);
+    store
+        .note_disk_config_seen(&AppConfig::default())
+        .expect("the store saw the defaults file");
+    fs::write(&config_path, "[[[").expect("broken file written");
     let (memory, _diff) = diff_with(&[("ui.sidebar.width_points", SettingValue::Integer(480))]);
     persist_expecting_not_saved_yet(
         &mut store,
@@ -676,3 +681,5 @@ fn apply_with_broken_disk_file_keeps_change_in_memory_without_rollback() {
     assert_eq!(fs::read_to_string(&config_path).expect("file"), "[[[");
     fs::remove_dir_all(&directory).expect("test directory removed");
 }
+
+mod disk_knowledge;

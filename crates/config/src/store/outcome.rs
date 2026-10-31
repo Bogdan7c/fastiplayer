@@ -14,7 +14,9 @@ use crate::error::ConfigWriteFailure;
 use crate::{AppConfig, ConfigError, ConfigResult};
 
 use super::atomic;
-use super::shared_file::{ConfigLockFailure, SharedConfigUpdate, update_shared_config_at};
+use super::shared_file::{
+    ConfigLockFailure, MissingConfigFileSeed, SharedConfigUpdate, update_shared_config_at,
+};
 
 /// Откуда взялась конфигурация текущего запуска.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +100,55 @@ pub enum ConfigSessionOnlyReason {
     ConfigLockUnavailable(ConfigLockFailure),
 }
 
+impl ConfigSessionOnlyReason {
+    /// Снимается ли запрет записи, когда файл на диске снова читается как нормальный config.
+    ///
+    /// Запрет «только на сеанс» решён при загрузке по состоянию файла в тот момент. Если
+    /// потом слежение прочитало файл нормально (`SharedConfigRead::Parsed`), часть причин
+    /// уже неправда, и держать запрет до конца запуска — значит терять выбор пользователя:
+    /// - битый файл (`BrokenConfigLeftToRegularPlayer`), неудачная копия `.bak`
+    ///   (`BackupFailed`), незаписанные defaults (`DefaultConfigNotWritten`) — файл уже
+    ///   нормальный, значит его починили;
+    /// - замок при старте недоступен (`ConfigLockUnavailable`) — нормальный файл появился,
+    ///   а сама запись всё равно идёт под замком и при занятом замке честно отложится;
+    /// - файл не читался (`ConfigFileUnreadable`) или по пути был не файл
+    ///   (`ConfigPathIsNotFile`) — нормальный разбор доказывает, что теперь там обычный
+    ///   читаемый файл.
+    ///
+    /// Не снимается:
+    /// - `NewerSchemaVersion` — файл принадлежит более новой версии плеера; она может
+    ///   работать прямо сейчас и снова записать свою схему, а наша запись потеряла бы её
+    ///   настройки (решение UX-05: такой файл в этот запуск не трогаем);
+    /// - `ConfigDirectoryUnknown` — каталога config-а нет, следить и писать некуда.
+    #[must_use]
+    pub fn lifts_when_file_becomes_usable(&self) -> bool {
+        match self {
+            Self::BrokenConfigLeftToRegularPlayer(_)
+            | Self::BackupFailed { .. }
+            | Self::DefaultConfigNotWritten(_)
+            | Self::ConfigLockUnavailable(_)
+            | Self::ConfigFileUnreadable { .. }
+            | Self::ConfigPathIsNotFile => true,
+            Self::NewerSchemaVersion { .. } | Self::ConfigDirectoryUnknown => false,
+        }
+    }
+}
+
+/// Итог [`ConfigSaveTarget::resume_writing_after_usable_file`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigWriteResumption {
+    /// Запись и так была разрешена — ничего не изменилось.
+    AlreadyWritable,
+    /// Запрет «только на сеанс» снят: дальше изменения пишутся в файл.
+    Resumed {
+        /// Причина запрета, которая перестала действовать.
+        lifted_reason: ConfigSessionOnlyReason,
+    },
+    /// Причина запрета от состояния файла не зависит (например, файл новой версии) —
+    /// запрет остаётся до конца запуска.
+    StillSessionOnly(ConfigSessionOnlyReason),
+}
+
 /// Почему не удалось записать файл с настройками по умолчанию.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigWriteProblem {
@@ -172,6 +223,24 @@ impl ConfigSaveTarget {
         &self.policy
     }
 
+    /// Файл на диске только что прочитан как нормальный config — снять запрет записи,
+    /// если его причина от этого перестала быть правдой.
+    ///
+    /// Звать только после успешного разбора файла (`SharedConfigRead::Parsed`): метод сам
+    /// диск не читает. Какие причины снимаются — решает
+    /// [`ConfigSessionOnlyReason::lifts_when_file_becomes_usable`].
+    pub fn resume_writing_after_usable_file(&mut self) -> ConfigWriteResumption {
+        let ConfigSavePolicy::SessionOnly(reason) = &self.policy else {
+            return ConfigWriteResumption::AlreadyWritable;
+        };
+        if !reason.lifts_when_file_becomes_usable() {
+            return ConfigWriteResumption::StillSessionOnly(reason.clone());
+        }
+        let lifted_reason = reason.clone();
+        self.policy = ConfigSavePolicy::WriteToFile;
+        ConfigWriteResumption::Resumed { lifted_reason }
+    }
+
     /// Проверяет настройки и записывает документ **целиком**, если запись разрешена.
     ///
     /// Без замка и без перечитывания: годится только там, где у файла один писатель
@@ -201,18 +270,23 @@ impl ConfigSaveTarget {
     /// Вписывает изменения в общий config-файл под замком, если запись разрешена.
     ///
     /// Запись разрешена — [`update_shared_config_at`]: перечитать файл, применить `merge`
-    /// к документу с диска, проверить и записать. Запрещена в этот запуск — файл не
-    /// читается и не пишется, `merge` не вызывается; проверку документа в памяти делает
-    /// вызывающий код, у которого этот документ есть.
+    /// к документу с диска, проверить и записать (`missing_file` — из чего создать файл,
+    /// если его нет). Запрещена в этот запуск — файл не читается и не пишется, `merge` не
+    /// вызывается; проверку документа в памяти делает вызывающий код, у которого этот
+    /// документ есть.
     pub fn update_shared_file<E>(
         &self,
         lock_wait: Duration,
+        missing_file: MissingConfigFileSeed<'_>,
         merge: impl FnOnce(&mut AppConfig) -> Result<(), E>,
     ) -> SharedConfigSave<E> {
         match &self.policy {
-            ConfigSavePolicy::WriteToFile => {
-                SharedConfigSave::Attempted(update_shared_config_at(&self.path, lock_wait, merge))
-            }
+            ConfigSavePolicy::WriteToFile => SharedConfigSave::Attempted(update_shared_config_at(
+                &self.path,
+                lock_wait,
+                missing_file,
+                merge,
+            )),
             ConfigSavePolicy::SessionOnly(reason) => {
                 SharedConfigSave::KeptInMemoryOnly(reason.clone())
             }

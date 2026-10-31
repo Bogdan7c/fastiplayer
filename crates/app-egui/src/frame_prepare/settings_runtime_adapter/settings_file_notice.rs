@@ -23,4 +23,9 @@ impl FrameSettingsRuntimeAdapter<'_> {
     ) {
         self.app_state.notify_info(notice);
     }
+
+    /// Снимает плашки «только на сеанс»: запись в файл снова разрешена.
+    pub(in crate::frame_prepare) fn withdraw_settings_file_write_notices(&mut self) {
+        self.app_state.withdraw_settings_file_write_notices();
+    }
 }

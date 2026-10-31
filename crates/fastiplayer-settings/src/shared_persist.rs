@@ -13,14 +13,24 @@
 //! в `fastiplayer-config` следит, чтобы таких полей не было.
 //!
 //! Неудачная запись (замок занят или подменён, файл на диске битый или от новой версии,
-//! конфликт со значениями соседа, ошибка записи) — **не** ошибка транзакции: изменения
-//! уже применены и остаются в памяти, файл не тронут, id запоминаются и дописываются при
-//! следующей успешной записи (`deferral.rs`, `unsaved.rs`). Ошибкой (с откатом) остаётся
-//! только отказ реестра вписать значение.
+//! конфликт значений со значениями соседа, ошибка записи) — **не** ошибка транзакции:
+//! изменения уже применены и остаются в памяти, файл не тронут, id запоминаются и
+//! дописываются при следующей успешной записи (`deferral.rs`, `unsaved.rs`). Так же
+//! запоминаются изменения, сделанные в восстановимом режиме «только на сеанс» (битый файл,
+//! недоступный замок при старте…): когда «общая доска» прочитает нормальный файл, запрет
+//! снимается (`note_disk_config_seen`) и они дописываются. Ошибкой (с откатом) остаются
+//! отказ реестра вписать значение и сбой сериализации слитого документа (ошибки программы).
+//!
+//! Если файла на момент записи нет (удалили во время работы), он создаётся из документа
+//! этой копии с наложенными изменениями, а не из defaults: иначе после перезапуска
+//! пропали бы все остальные настройки пользователя
+//! (`MissingConfigFileSeed::WriterDocument`).
 
 use std::time::Duration;
 
-use fastiplayer_config::{AppConfig, ConfigSaveTarget, SharedConfigSave};
+use fastiplayer_config::{
+    AppConfig, ConfigSaveTarget, ConfigWriteResumption, MissingConfigFileSeed, SharedConfigSave,
+};
 use settings_core::{
     PersistReport, PersistRequest, SettingId, SettingsDiff, SettingsError, SettingsResult,
 };
@@ -34,7 +44,7 @@ use deferral::{SaveAttempt, classify_update, deferred_report};
 pub use deferral::{
     SettingsFilePersistOutcome, SettingsFileSaveDeferral, settings_file_persist_outcome,
 };
-pub(crate) use unsaved::UnsavedSettingChanges;
+pub(crate) use unsaved::SharedFileKnowledge;
 use unsaved::overlay_changes;
 
 /// Сколько ждать замок записи config-а при сохранении настроек — 2 секунды.
@@ -56,7 +66,8 @@ pub enum SettingsFileDurability {
 /// Итог [`crate::AppConfigStore::save_unsaved_changes`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnsavedChangesSave {
-    /// Несохранённых изменений нет (или запись запрещена на весь запуск) — файл не трогали.
+    /// Несохранённых изменений нет или запись сейчас запрещена режимом «только на сеанс»
+    /// (снимается [`crate::AppConfigStore::note_disk_config_seen`]) — файл не трогали.
     NothingToSave,
     /// Несохранённые изменения разобраны под замком, файл записан.
     Saved {
@@ -71,7 +82,8 @@ pub enum UnsavedChangesSave {
     },
     /// Снова не записано; изменения по-прежнему действуют в памяти и ждут следующей записи.
     StillUnsaved(SettingsFileSaveDeferral),
-    /// Реестр отказался вписать значение (ошибка программы); несохранённое не забыто.
+    /// Реестр отказался вписать значение или слитый документ не сериализуется (ошибки
+    /// программы); несохранённое не забыто.
     Rejected(SettingsError),
 }
 
@@ -79,37 +91,51 @@ pub enum UnsavedChangesSave {
 pub(crate) fn persist_changed_settings(
     save_target: &ConfigSaveTarget,
     lock_wait: Duration,
-    unsaved: &mut UnsavedSettingChanges,
+    knowledge: &mut SharedFileKnowledge,
     request: PersistRequest<'_, AppConfig>,
 ) -> SettingsResult<PersistReport> {
     let registry = app_config_registry()?;
-    let save = save_target.update_shared_file(lock_wait, |disk_config| {
-        // Как разрешились несохранённые id, транзакции знать не нужно: после успешной
-        // записи все они записаны или уступили более позднему значению соседа.
-        overlay_changes(
-            &registry,
-            disk_config,
-            request.changed_settings,
-            unsaved,
-            request.document,
-        )
-        .map(|_overlay| ())
-    });
+    let save = save_target.update_shared_file(
+        lock_wait,
+        // Файл удалили во время работы — создаём его из своего документа, а не из defaults.
+        MissingConfigFileSeed::WriterDocument(request.document),
+        |disk_config| {
+            // Как разрешились несохранённые id, транзакции знать не нужно: после успешной
+            // записи все они записаны или уступили более позднему значению соседа.
+            overlay_changes(
+                &registry,
+                disk_config,
+                request.changed_settings,
+                knowledge,
+                request.document,
+            )
+            .map(|_overlay| ())
+        },
+    );
     let update = match save {
         SharedConfigSave::Attempted(update) => update,
         // Запись в этот запуск запрещена решением загрузки: документ всё равно
-        // проверяется, а изменения живут до выхода без отката транзакции.
-        SharedConfigSave::KeptInMemoryOnly(_reason) => {
+        // проверяется, а изменения живут без отката транзакции.
+        SharedConfigSave::KeptInMemoryOnly(reason) => {
             request
                 .document
                 .validate()
                 .map_err(|error| SettingsError::access_failed(error.to_string()))?;
+            // Запрет снимется, когда файл снова станет нормальным: тогда эти изменения
+            // нужно дописать, поэтому id запоминаются как несохранённые. Запрет навсегда
+            // (файл новой версии) — запоминать незачем, записи в этот запуск не будет.
+            if reason.lifts_when_file_becomes_usable() {
+                knowledge.remember_unwritten(&registry, request.changed_settings)?;
+            }
             return Ok(PersistReport::kept_for_session_only());
         }
     };
     match classify_update(&registry, update) {
-        SaveAttempt::Saved { durability_warning } => {
-            unsaved.forget_all();
+        SaveAttempt::Saved {
+            written,
+            durability_warning,
+        } => {
+            knowledge.note_written(written);
             let report = PersistReport::persisted();
             Ok(match durability_warning {
                 Some(warning) => report.with_durability_warning(warning),
@@ -118,10 +144,10 @@ pub(crate) fn persist_changed_settings(
         }
         SaveAttempt::Deferred(deferral) => {
             // Изменения уже применены и остаются в памяти; файл не тронут.
-            unsaved.remember_failed_write(request.changed_settings);
+            knowledge.remember_unwritten(&registry, request.changed_settings)?;
             Ok(deferred_report(&deferral))
         }
-        SaveAttempt::Rejected(registry_error) => Err(registry_error),
+        SaveAttempt::Rejected(program_error) => Err(program_error),
     }
 }
 
@@ -129,10 +155,10 @@ pub(crate) fn persist_changed_settings(
 pub(crate) fn save_unsaved_settings(
     save_target: &ConfigSaveTarget,
     lock_wait: Duration,
-    unsaved: &mut UnsavedSettingChanges,
+    knowledge: &mut SharedFileKnowledge,
     current: &AppConfig,
 ) -> UnsavedChangesSave {
-    if unsaved.is_empty() {
+    if !knowledge.has_unsaved() {
         return UnsavedChangesSave::NothingToSave;
     }
     let registry = match app_config_registry() {
@@ -141,23 +167,30 @@ pub(crate) fn save_unsaved_settings(
     };
     let no_new_changes = SettingsDiff::new();
     let mut overlay_result = None;
-    let save = save_target.update_shared_file(lock_wait, |disk_config| {
-        overlay_result = Some(overlay_changes(
-            &registry,
-            disk_config,
-            &no_new_changes,
-            unsaved,
-            current,
-        )?);
-        Ok(())
-    });
+    let save = save_target.update_shared_file(
+        lock_wait,
+        MissingConfigFileSeed::WriterDocument(current),
+        |disk_config| {
+            overlay_result = Some(overlay_changes(
+                &registry,
+                disk_config,
+                &no_new_changes,
+                knowledge,
+                current,
+            )?);
+            Ok(())
+        },
+    );
     let update = match save {
         SharedConfigSave::Attempted(update) => update,
         SharedConfigSave::KeptInMemoryOnly(_reason) => return UnsavedChangesSave::NothingToSave,
     };
     match classify_update(&registry, update) {
-        SaveAttempt::Saved { durability_warning } => {
-            unsaved.forget_all();
+        SaveAttempt::Saved {
+            written,
+            durability_warning,
+        } => {
+            knowledge.note_written(written);
             let overlay = overlay_result.unwrap_or_default();
             UnsavedChangesSave::Saved {
                 written: overlay.written,
@@ -171,8 +204,20 @@ pub(crate) fn save_unsaved_settings(
             }
         }
         SaveAttempt::Deferred(deferral) => UnsavedChangesSave::StillUnsaved(deferral),
-        SaveAttempt::Rejected(registry_error) => UnsavedChangesSave::Rejected(registry_error),
+        SaveAttempt::Rejected(program_error) => UnsavedChangesSave::Rejected(program_error),
     }
+}
+
+/// Копия прочитала нормальный документ диска: запомнить его как «виденный» и снять
+/// восстановимый запрет записи «только на сеанс».
+pub(crate) fn note_disk_config_seen(
+    save_target: &mut ConfigSaveTarget,
+    knowledge: &mut SharedFileKnowledge,
+    disk_document: &AppConfig,
+) -> SettingsResult<ConfigWriteResumption> {
+    let registry = app_config_registry()?;
+    knowledge.note_disk_config_seen(&registry, disk_document)?;
+    Ok(save_target.resume_writing_after_usable_file())
 }
 
 #[cfg(test)]

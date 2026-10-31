@@ -47,6 +47,21 @@ impl AppState {
         self.mark_pending_worker_redraw();
     }
 
+    /// «Настройка применена только на этот сеанс» (исчезнет сама; снимается и раньше, если
+    /// запись в файл снова разрешена — [`Self::withdraw_settings_file_write_notices`]).
+    pub(crate) fn notify_settings_kept_for_session_only(&mut self) {
+        self.notifications
+            .notify_settings_kept_for_session_only(Instant::now());
+        self.mark_pending_worker_redraw();
+    }
+
+    /// Снимает плашки «настройки не пишутся в файл»: файл снова нормальный, запись идёт.
+    pub(crate) fn withdraw_settings_file_write_notices(&mut self) {
+        if self.notifications.withdraw_settings_file_write_notices() > 0 {
+            self.mark_pending_worker_redraw();
+        }
+    }
+
     /// Сообщает пользователю, что повторный Open отклонён, пока идёт прошлое открытие.
     pub(crate) fn notify_open_still_in_progress(&mut self) {
         debug!("Opening media is already underway, re-request rejected with notification");

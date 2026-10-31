@@ -194,7 +194,8 @@ fn neighbour_volume_is_not_adopted_live_and_survives_the_next_write() {
         board_frame,
         SharedBoardFrame {
             needs_redraw: false,
-            notice: None
+            notice: None,
+            session_only_lifted: false,
         }
     );
     assert_eq!(second.committed_config().audio.volume, config.audio.volume);
@@ -348,7 +349,8 @@ fn newer_file_has_its_own_notice_and_missing_file_is_quiet() {
         missing,
         SharedBoardFrame {
             needs_redraw: false,
-            notice: None
+            notice: None,
+            session_only_lifted: false,
         }
     );
     assert!(!path.exists(), "the adopting copy does not create the file");

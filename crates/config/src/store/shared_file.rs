@@ -17,7 +17,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::{AppConfig, ConfigWriteProblem, config_write_lock_path_for};
+use crate::{AppConfig, ConfigError, ConfigWriteProblem, config_write_lock_path_for};
 
 use super::atomic::{self, ConfigWriteDurability};
 use super::disk_read::{DiskConfigState, read_disk_config};
@@ -29,8 +29,8 @@ mod outcome;
 pub(super) use lock::ConfigWriteGuard;
 pub(super) use lock::acquire_config_write_lock;
 pub use outcome::{
-    ConfigLockFailure, SharedConfigLockProblem, SharedConfigLockStage, SharedConfigProblem,
-    SharedConfigRead, SharedConfigUpdate,
+    ConfigLockFailure, MissingConfigFileSeed, SharedConfigLockProblem, SharedConfigLockStage,
+    SharedConfigProblem, SharedConfigRead, SharedConfigUpdate,
 };
 
 /// Срок ожидания замка записи по умолчанию — 2 секунды.
@@ -42,15 +42,17 @@ pub const DEFAULT_SHARED_CONFIG_LOCK_WAIT: Duration = Duration::from_secs(2);
 
 /// Перечитывает config под замком, вписывает изменения через `merge` и записывает.
 ///
-/// - Файла нет → основа — `AppConfig::default()`, файл создаётся.
+/// - Файла нет → основу задаёт `missing_file` ([`MissingConfigFileSeed`]), файл создаётся.
 /// - Файл битый, не файл, не читается или от новой версии → ошибка без записи.
 /// - `merge` получает документ с диска и меняет в нём только свои ключи; ошибка `merge`
 ///   возвращается как [`SharedConfigUpdate::MergeRejected`] без записи.
 /// - Документ после слияния проверяется целиком (`AppConfig::validate` + контроль
-///   сериализации) и только потом атомарно записывается.
+///   сериализации) и только потом атомарно записывается. Отказ проверки значений и сбой
+///   сериализации — разные варианты итога (содержимое файла против ошибки программы).
 pub fn update_shared_config_at<E>(
     path: impl AsRef<Path>,
     lock_wait: Duration,
+    missing_file: MissingConfigFileSeed<'_>,
     merge: impl FnOnce(&mut AppConfig) -> Result<(), E>,
 ) -> SharedConfigUpdate<E> {
     let path = path.as_ref();
@@ -64,7 +66,7 @@ pub fn update_shared_config_at<E>(
         }
     };
 
-    let mut disk_config = match base_document_for_update(path) {
+    let mut disk_config = match base_document_for_update(path, missing_file) {
         Ok(disk_config) => disk_config,
         Err(refusal) => return refusal,
     };
@@ -85,13 +87,16 @@ pub fn read_shared_config_at(path: impl AsRef<Path>) -> SharedConfigRead {
     }
 }
 
-/// Документ, поверх которого вписываются изменения: файл с диска или defaults.
-fn base_document_for_update<E>(path: &Path) -> Result<AppConfig, SharedConfigUpdate<E>> {
+/// Документ, поверх которого вписываются изменения: файл с диска или основа для нового.
+fn base_document_for_update<E>(
+    path: &Path,
+    missing_file: MissingConfigFileSeed<'_>,
+) -> Result<AppConfig, SharedConfigUpdate<E>> {
     match SharedDiskView::read(path) {
         SharedDiskView::Usable(config) => Ok(*config),
-        // Файла нет (первый запуск, пользователь удалил файл) — начинаем с defaults:
-        // чужих ключей, которые можно потерять, на диске просто нет.
-        SharedDiskView::Missing => Ok(AppConfig::default()),
+        // Файла нет (первый запуск или файл удалили во время работы): чужих ключей на
+        // диске нет, а из чего создавать новый файл — решает вызывающий код.
+        SharedDiskView::Missing => Ok(missing_file.base_document()),
         SharedDiskView::Newer { found } => Err(SharedConfigUpdate::DiskConfigNewer { found }),
         SharedDiskView::Unusable(problem) => Err(SharedConfigUpdate::DiskConfigUnusable(problem)),
     }
@@ -147,10 +152,77 @@ fn write_merged_document<E>(path: &Path, merged_config: AppConfig) -> SharedConf
                 sync_error,
             }
         }
-        Err(error) => match ConfigWriteProblem::from_write_error(&error) {
-            Some(write_problem) => SharedConfigUpdate::WriteFailed(write_problem),
-            // Не ошибка записи файла, а отказ проверки/сериализации документа.
-            None => SharedConfigUpdate::MergedConfigRejected(error),
-        },
+        Err(error) => classify_merged_document_failure(error),
+    }
+}
+
+/// Разводит отказ записи слитого документа по владельцам причины.
+///
+/// - ошибка файловой системы (каталог, атомарная замена) — [`SharedConfigUpdate::WriteFailed`];
+/// - отказ проверки значений (`ConfigError::ValidateConfigFile`) — содержимое: своё
+///   значение несовместимо с тем, что уже лежит в файле, — [`SharedConfigUpdate::MergedConfigInvalid`];
+/// - всё остальное (сериализация в TOML, разбор сгенерированного текста, несовпадение
+///   roundtrip) — ошибка программы, а не файла — [`SharedConfigUpdate::MergedConfigNotSerializable`].
+fn classify_merged_document_failure<E>(error: ConfigError) -> SharedConfigUpdate<E> {
+    if let Some(write_problem) = ConfigWriteProblem::from_write_error(&error) {
+        return SharedConfigUpdate::WriteFailed(write_problem);
+    }
+    match error {
+        ConfigError::ValidateConfigFile { .. } => SharedConfigUpdate::MergedConfigInvalid(error),
+        _ => SharedConfigUpdate::MergedConfigNotSerializable(error),
+    }
+}
+
+#[cfg(test)]
+mod failure_classification_tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn config_path() -> PathBuf {
+        PathBuf::from("config.toml")
+    }
+
+    /// Отказ проверки значений — «содержимое несовместимо», а не ошибка программы.
+    #[test]
+    fn validation_failure_is_an_invalid_merged_document() {
+        let validation_error = ConfigError::ValidateConfigFile {
+            path: config_path(),
+            source: Box::new(ConfigError::InvalidValue {
+                field: "audio.volume",
+                message: "out of range".to_string(),
+            }),
+        };
+
+        let outcome = classify_merged_document_failure::<()>(validation_error);
+
+        assert!(
+            matches!(outcome, SharedConfigUpdate::MergedConfigInvalid(_)),
+            "{outcome:?}"
+        );
+    }
+
+    /// Сбой roundtrip и разбора сгенерированного TOML — ошибка программы, не конфликт.
+    #[test]
+    fn serialization_failures_are_not_reported_as_invalid_content() {
+        let parse_error = toml::from_str::<AppConfig>("[[[").expect_err("broken TOML");
+        let failures = [
+            ConfigError::SerializedConfigRoundtripMismatch {
+                path: config_path(),
+            },
+            ConfigError::ParseSerializedConfig {
+                path: config_path(),
+                source: parse_error,
+            },
+        ];
+
+        for failure in failures {
+            let outcome = classify_merged_document_failure::<()>(failure);
+
+            assert!(
+                matches!(outcome, SharedConfigUpdate::MergedConfigNotSerializable(_)),
+                "{outcome:?}"
+            );
+        }
     }
 }
