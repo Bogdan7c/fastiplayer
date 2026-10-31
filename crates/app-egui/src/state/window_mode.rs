@@ -6,6 +6,11 @@
 //! - вид ([`WindowViewProfile`]): какие регионы интерфейса есть;
 //! - маршрут транспорта ([`TransportRoute`]): кто исполняет play/pause/перемотку/скорость.
 //!
+//! И одно сведение, которое приносит тот, кто ведёт транспорт (медиа-часть сеанса,
+//! каждый проход окна): что у показанного медиа уже скачано ([`DownloadedRange`]) —
+//! по нему таймлайн решает, куда живое перетаскивание может вести плеер без просьбы
+//! странице (`LiveScrubScope::DownloadedRangeOnly`). Обычное окно его не получает.
+//!
 //! Здесь же — ЕДИНСТВЕННАЯ точка, где команды транспорта интерфейса (кнопки, таймлайн,
 //! хоткеи оболочки и кадра) уходят плееру: [`AppState::send_transport_command`]. В
 //! браузерном окне она превращает команду в намерение зрителя и кладёт его в ящик; окно
@@ -16,6 +21,7 @@ use std::time::Duration;
 use player_core::{PlaybackState, PlayerCommand, PlayerWorkerSendError};
 
 use super::AppState;
+use crate::downloaded_range::DownloadedRange;
 use crate::ui::player_controls::TransportControlAction;
 use crate::viewer_transport::{
     TransportRoute, ViewerTransportIntent, ViewerTransportOutbox, viewer_intent_for_command,
@@ -27,6 +33,8 @@ use crate::window_view_profile::WindowViewProfile;
 pub(crate) struct WindowMode {
     view: WindowViewProfile,
     transport: TransportRoute,
+    /// Что скачано у показанного медиа (см. описание модуля).
+    downloaded_range: DownloadedRange,
 }
 
 impl WindowMode {
@@ -41,6 +49,14 @@ impl WindowMode {
         Self {
             view: WindowViewProfile::BrowserSession,
             transport: TransportRoute::PageLed(ViewerTransportOutbox::default()),
+            downloaded_range: DownloadedRange::Unknown,
+        }
+    }
+
+    /// Сведение о скачанном от того, кто ведёт транспорт; обычное окно его не берёт.
+    fn note_downloaded_range(&mut self, range: DownloadedRange) {
+        if self.is_page_led() {
+            self.downloaded_range = range;
         }
     }
 
@@ -155,6 +171,18 @@ impl AppState {
         }
     }
 
+    /// Медиа-часть сеанса сообщила, что скачано у показанного медиа (каждый проход
+    /// окна; `Unknown` — нет показанного поколения потока, файл, эфир или открывается
+    /// новое). Обычному окну сведение не нужно: его плеер достаёт байты сам.
+    pub(crate) fn note_downloaded_range(&mut self, range: DownloadedRange) {
+        self.window_mode.note_downloaded_range(range);
+    }
+
+    /// Что скачано у показанного медиа (обычное окно — всегда `Unknown`).
+    pub(super) const fn downloaded_range(&self) -> &DownloadedRange {
+        &self.window_mode.downloaded_range
+    }
+
     /// Забирает намерения зрителя для медиа-части сеанса (обычное окно — всегда пусто).
     pub(crate) fn take_viewer_transport_intents(&mut self) -> Vec<ViewerTransportIntent> {
         match &mut self.window_mode.transport {
@@ -226,5 +254,24 @@ mod tests {
                 ViewerTransportIntent::SetRate(rate),
             ]
         );
+    }
+
+    /// Сведение о скачанном берёт только окно, которое ведёт страница: у обычного окна
+    /// перетаскивание не зависит от скачанного, и чужое сведение его не меняет.
+    #[test]
+    fn only_the_page_led_window_keeps_the_downloaded_range() {
+        let (_spans, range) =
+            crate::downloaded_range::test_support::FakeDownloadedSpans::range(vec![
+                Duration::ZERO..POSITION,
+            ]);
+        let mut standard = WindowMode::standard();
+        standard.note_downloaded_range(range.clone());
+        assert!(!standard.downloaded_range.is_known());
+
+        let mut browser = WindowMode::browser_session();
+        browser.note_downloaded_range(range);
+        assert!(browser.downloaded_range.covers(Duration::from_secs(1)));
+        browser.note_downloaded_range(DownloadedRange::Unknown);
+        assert!(!browser.downloaded_range.is_known());
     }
 }

@@ -11,7 +11,7 @@ use media_core::MediaTime;
 use player_core::{
     FrameCounters, MediaOpenRequest, MediaSource, MediaSummary, PlaybackRate, PlaybackResumeIntent,
     PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSnapshot,
-    ScrubCommitPolicy, SeekCommitInfo, SeekRequest,
+    ScrubCommitPolicy, SeekCommitInfo,
 };
 use render_core::{
     ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
@@ -30,10 +30,11 @@ use super::present_frame_cache::{
 use super::telemetry_panel::{
     TELEMETRY_PANEL_REFRESH_INTERVAL, TelemetryPanelCache, TelemetryPanelRow, TelemetryPanelState,
 };
-use super::ui_runtime::{
-    live_scrub_release_policy_from_action, playback_rate_command_from_action,
-    timeline_command_from_action,
+use super::timeline_dispatch::live_scrub_release_policy_from_action;
+use super::timeline_scrub_plan::{
+    PlayerScrubStanding, TimelinePlanContext, TimelineStep, plan_timeline_action,
 };
+use super::ui_runtime::playback_rate_command_from_action;
 use super::{AppFrameContext, AppState};
 use crate::telemetry::Telemetry;
 use crate::ui::player_controls::ControlAction;
@@ -48,6 +49,7 @@ fn state_source_for_architecture_tests() -> String {
         include_str!("present_frame_cache.rs"),
         include_str!("startup_context.rs"),
         include_str!("telemetry_panel.rs"),
+        include_str!("timeline_dispatch.rs"),
         include_str!("ui_runtime.rs"),
         include_str!("video_backend.rs"),
     ]
@@ -119,18 +121,37 @@ fn telemetry_rows_contain(panel_rows: &[TelemetryPanelRow], expected_text: &str)
         .any(|panel_row| panel_row.text() == expected_text)
 }
 
+/// План действия таймлайна обычного окна (живой скраб везде, скраб у плеера не начат).
+fn standard_window_plan(action: TimelineAction) -> Vec<TimelineStep> {
+    let downloaded = crate::downloaded_range::DownloadedRange::Unknown;
+    plan_timeline_action(
+        action,
+        &TimelinePlanContext {
+            scope: crate::window_view_profile::LiveScrubScope::Anywhere,
+            standing: PlayerScrubStanding::NotStarted,
+            downloaded: &downloaded,
+        },
+    )
+}
+
+/// Единственная точная перемотка плана (цель и маршрут) или `None`.
+fn only_exact_seek(steps: &[TimelineStep]) -> Option<(MediaTime, &'static str)> {
+    match steps {
+        [TimelineStep::ExactSeek { target, route }] => Some((*target, route.as_str())),
+        _ => None,
+    }
+}
+
 /// Проверяет, что click-to-seek уходит в exact seek route без scrub policy.
 #[test]
 fn timeline_click_seek_maps_to_exact_player_seek_route() {
     let target_position = MediaTime::from_secs(42);
 
-    let (command, route) = timeline_command_from_action(TimelineAction::ClickSeek(target_position))
-        .expect("click seek must map to a player command");
+    let steps = standard_window_plan(TimelineAction::ClickSeek(target_position));
 
-    assert_eq!(route.as_str(), "click-seek");
     assert_eq!(
-        command,
-        PlayerCommand::Seek(SeekRequest::absolute(target_position))
+        only_exact_seek(&steps),
+        Some((target_position, "click-seek"))
     );
 }
 
@@ -139,18 +160,15 @@ fn timeline_click_seek_maps_to_exact_player_seek_route() {
 fn timeline_drag_release_maps_to_exact_player_seek_route() {
     let target_position = MediaTime::from_secs(64);
 
-    let (command, route) =
-        timeline_command_from_action(TimelineAction::CommitDragSeek(target_position))
-            .expect("drag seek must map to a player command");
+    let steps = standard_window_plan(TimelineAction::CommitDragSeek(target_position));
 
-    assert_eq!(route.as_str(), "drag-seek");
     assert_eq!(
-        command,
-        PlayerCommand::Seek(SeekRequest::absolute(target_position))
+        only_exact_seek(&steps),
+        Some((target_position, "drag-seek"))
     );
 }
 
-/// Live scrub actions не должны случайно пройти legacy helper как ordinary Seek.
+/// Live scrub actions обычного окна не должны случайно стать ordinary Seek.
 #[test]
 fn timeline_live_scrub_actions_do_not_map_to_exact_seek_route() {
     let target_position = MediaTime::from_secs(12);
@@ -162,7 +180,14 @@ fn timeline_live_scrub_actions_do_not_map_to_exact_seek_route() {
         TimelineAction::EndLiveScrubAtVisiblePreview(target_position),
         TimelineAction::CancelLiveScrub,
     ] {
-        assert_eq!(timeline_command_from_action(action), None);
+        let steps = standard_window_plan(action);
+        assert!(
+            !steps
+                .iter()
+                .any(|step| matches!(step, TimelineStep::ExactSeek { .. })),
+            "{action:?} -> {steps:?}"
+        );
+        assert_eq!(steps.len(), 1, "{action:?} -> {steps:?}");
     }
 }
 

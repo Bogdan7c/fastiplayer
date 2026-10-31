@@ -47,7 +47,7 @@
 
 ## Профиль вида окна (browser-bridge 04a, 2026-10-31)
 
-- `crate::window_view_profile::WindowViewProfile::{Standard, BrowserSession}` — типизированный параметр экземпляра окна; регионы спрашивают намерения (`offers_media_opening`, `offers_queue_navigation`, `sidebar_sections`, `allows_live_scrub`, `idle_center_hint`), а не `if browser`. Host сайдбара остаётся один, профиль меняет только НАБОР сущностей; кнопки заголовка (`titlebar_icon_area::show(.., sections)`) раскладываются по слотам подряд без дыр (обычное окно — слот = ось секции, без изменений). Нижняя панель: `BottomControlsInput.view_profile`, места скрытых кнопок в раскладке сохраняются.
+- `crate::window_view_profile::WindowViewProfile::{Standard, BrowserSession}` — типизированный параметр экземпляра окна; регионы спрашивают намерения (`offers_media_opening`, `offers_queue_navigation`, `sidebar_sections`, `live_scrub_scope` → `LiveScrubScope::{Anywhere, DownloadedRangeOnly}` (04a-fix: браузерное окно скрабит вживую только по скачанному, план — `state/timeline_scrub_plan.rs`), `idle_center_hint`), а не `if browser`. Host сайдбара остаётся один, профиль меняет только НАБОР сущностей; кнопки заголовка (`titlebar_icon_area::show(.., sections)`) раскладываются по слотам подряд без дыр (обычное окно — слот = ось секции, без изменений). Нижняя панель: `BottomControlsInput.view_profile`, места скрытых кнопок в раскладке сохраняются.
 - Будущее: у «Наклейки» (решение 121) тем же профилем уберутся кнопки окна и ресайз — новым вариантом, без новых `if` по регионам. Тесты: `ui/player_controls/view_profile_tests.rs` (AccessKit), `titlebar_icon_area`, `center_overlay_tests`.
 
 ## Видимость chrome в фуллскрине (UX 14, 2026-10-08)

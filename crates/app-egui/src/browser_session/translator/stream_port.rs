@@ -5,9 +5,9 @@
 use std::time::Duration;
 
 use pushed_media_source::{
-    AppendOutcome, EndOfStreamReport, LaneId, PushedContainer, PushedDuration, PushedSourcePolicy,
-    PushedStreamError, PushedStreamMonitor, PushedStreamOpener, PushedStreamStartError,
-    PushedStreamWriter, TimestampOffset, pushed_stream,
+    AppendOutcome, EndOfStreamReport, LaneId, PageRemovalOutcome, PageRemovedRange,
+    PushedContainer, PushedDuration, PushedSourcePolicy, PushedStreamError, PushedStreamMonitor,
+    PushedStreamOpener, PushedStreamStartError, PushedStreamWriter, TimestampOffset, pushed_stream,
 };
 
 /// Сторона приёма потока так, как её видит переходник. Настоящая —
@@ -35,6 +35,13 @@ pub(crate) trait StreamWriterPort: Send {
         lane: LaneId,
         offset: TimestampOffset,
     ) -> Result<(), PushedStreamError>;
+    /// `remove(start, end)`: страница стёрла у себя кусок времени полосы. Звать в
+    /// порядке кадров на проводе (стирание и повтор того же времени идут подряд).
+    fn note_page_removed(
+        &mut self,
+        lane: LaneId,
+        range: PageRemovedRange,
+    ) -> Result<PageRemovalOutcome, PushedStreamError>;
     /// `duration = …`.
     fn set_duration(&mut self, duration: PushedDuration);
     /// `endOfStream()`.
@@ -79,6 +86,14 @@ impl StreamWriterPort for PushedStreamWriter {
         offset: TimestampOffset,
     ) -> Result<(), PushedStreamError> {
         Self::set_timestamp_offset(self, lane, offset)
+    }
+
+    fn note_page_removed(
+        &mut self,
+        lane: LaneId,
+        range: PageRemovedRange,
+    ) -> Result<PageRemovalOutcome, PushedStreamError> {
+        Self::note_page_removed(self, lane, range)
     }
 
     fn set_duration(&mut self, duration: PushedDuration) {

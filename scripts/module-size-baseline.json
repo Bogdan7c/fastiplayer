@@ -5,7 +5,6 @@
     "crates/app-egui/src/playlist_runtime/persistence.rs": 889,
     "crates/app-egui/src/playlist_runtime/ui_interaction.rs": 828,
     "crates/app-egui/src/state/telemetry_panel.rs": 878,
-    "crates/app-egui/src/state/ui_runtime.rs": 849,
     "crates/app-egui/src/ui/player_controls.rs": 1087,
     "crates/app-egui/src/ui/playlist/active_accent.rs": 889,
     "crates/app-egui/src/ui/playlist/toolbar/icon_bar.rs": 1085,

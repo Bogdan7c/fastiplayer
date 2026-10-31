@@ -31,6 +31,7 @@ use super::super::playback::load_ledger::{CancelledInstall, LoadLedger};
 use super::super::playback::metered_audio::AudioMeter;
 use super::super::playback::{BrowserPlaybackFault, LoadStart, MediaLoadTicket};
 use super::remote::{LoadOrder, PlaybackDesk, RemoteCommand};
+use crate::downloaded_range::DownloadedRange;
 use crate::state::TappedPlayerEvents;
 
 /// Чем кончилась попытка начать загрузку.
@@ -73,6 +74,9 @@ pub(super) trait WindowPlayer {
     fn send(&mut self, command: PlayerCommand) -> Result<(), PlayerWorkerSendError>;
     /// Свежий снимок плеера.
     fn snapshot(&mut self) -> std::sync::Arc<PlayerSnapshot>;
+    /// Что скачано у показанного медиа (по нему таймлайн окна решает, куда живое
+    /// перетаскивание ведёт плеер без просьбы странице).
+    fn offer_downloaded_range(&mut self, range: DownloadedRange);
     /// Копии событий плеера с прошлого раза (`AppState` — единственный их читатель).
     fn take_player_events(&mut self) -> TappedPlayerEvents;
     /// Сколько кадров видео плеер отдал на показ за всё время (накопительно).
@@ -152,6 +156,9 @@ impl WindowPlaybackDriver {
                 warn!(command = label, %error, "The browser window player did not accept a command");
             }
         }
+        // Сведение о скачанном — после команд прохода: если в нём была загрузка нового
+        // поколения, медиа-часть на этом же шаге уже сказала «неизвестно».
+        player.offer_downloaded_range(self.desk.downloaded_range());
     }
 
     /// Продвигает установку и, когда прежняя кончилась, начинает ждущую.

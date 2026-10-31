@@ -10,8 +10,8 @@ use browser_bridge_protocol::{
 use browser_bridge_session::SessionInstance;
 use media_core::{Demuxer, TrackKind};
 use pushed_media_source::{
-    EndOfStreamReport, OpenProgress, PushedSourcePolicy, PushedStreamOpener,
-    PushedStreamStartError, pushed_stream,
+    EndOfStreamReport, OpenProgress, PageRemovalOutcome, PageRemovalReport, PushedSourcePolicy,
+    PushedStreamOpener, PushedStreamStartError, pushed_stream,
 };
 
 use super::stream_port::{PushedStreamFactory, StartedStream};
@@ -30,6 +30,7 @@ enum WriterCall {
     SetDuration(PushedDuration),
     EndOfStream,
     NotePageSeek(Duration),
+    NotePageRemoved(u16, PageRemovedRange),
 }
 
 /// Общий журнал вызовов: (номер потока с 1, вызов).
@@ -113,6 +114,16 @@ impl StreamWriterPort for FakeWriter {
             offset.as_micros(),
         ));
         Ok(())
+    }
+
+    fn note_page_removed(
+        &mut self,
+        lane: LaneId,
+        range: PageRemovedRange,
+    ) -> Result<PageRemovalOutcome, PushedStreamError> {
+        self.declared(lane)?;
+        self.record(WriterCall::NotePageRemoved(lane.index(), range));
+        Ok(PageRemovalOutcome::Applied(PageRemovalReport::default()))
     }
 
     fn set_duration(&mut self, duration: PushedDuration) {
@@ -363,7 +374,7 @@ fn each_mse_message_becomes_its_writer_call_in_wire_order() {
 }
 
 #[test]
-fn seeks_and_page_playback_become_notices_and_removals_are_ignored() {
+fn seeks_and_page_playback_become_notices_and_removals_reach_the_source() {
     let (mut translator, log, _failure) = fake_translator();
     let target = MediaTime::from_micros(42_000_000).expect("time");
     let rate = PlaybackRate::from_permille(1500).expect("rate");
@@ -371,6 +382,7 @@ fn seeks_and_page_playback_become_notices_and_removals_are_ignored() {
         &mut translator,
         [
             started(1, 1),
+            added(1, 1, 0, "video/mp4"),
             message(
                 1,
                 PageSessionMessage::SeekStarted {
@@ -425,13 +437,24 @@ fn seeks_and_page_playback_become_notices_and_removals_are_ignored() {
             Seen::Intent(1, PageIntent::SetRate(rate)),
         ]
     );
-    // Источник узнал только о перемотке страницей; `remove()` страницы и `tab_gone`
-    // он не видит (решение D6, 03c), перемотку по нашей команде — тоже (она его же).
+    // Источник узнал о перемотке страницей и о её `remove()` (решение 31.10.2026
+    // «помним, пока помнит страница» отменило D6); `tab_gone` он не видит (03c),
+    // перемотку по нашей команде — тоже (она его же).
     assert_eq!(
         log.calls(),
-        vec![(1, WriterCall::NotePageSeek(Duration::from_secs(42)))]
+        vec![
+            (1, WriterCall::AddLane(0, PushedContainer::FragmentedMp4)),
+            (1, WriterCall::NotePageSeek(Duration::from_secs(42))),
+            (
+                1,
+                WriterCall::NotePageRemoved(
+                    0,
+                    PageRemovedRange::new(Duration::ZERO, PageRemovedRangeEnd::EndOfTimeline)
+                )
+            ),
+        ]
     );
-    assert_eq!(translator.counters().ignored_messages, 1, "only remove()");
+    assert_eq!(translator.counters().ignored_messages, 0);
     assert_eq!(translator.counters().tab_gone_messages, 1);
 }
 
@@ -700,4 +723,5 @@ fn the_end_of_an_instance_is_announced_after_its_data_notices() {
 
 mod file_source;
 mod log_privacy;
+mod page_removal;
 mod real_source;

@@ -621,6 +621,10 @@ mod file_and_drain;
 #[path = "browser_session_process/generation_switch.rs"]
 mod generation_switch;
 
+// «Помним, пока помнит страница» (04a): перемотка назад дальше окна «назад» — с полки.
+#[path = "browser_session_process/seek_back_on_shelf.rs"]
+mod seek_back_on_shelf;
+
 // Окно браузерного режима (04a): то же, но с окном на виртуальном дисплее kwin.
 #[path = "browser_session_process/window.rs"]
 mod window;

@@ -191,7 +191,7 @@ fn resent_past_segment_is_shelved_not_played_twice() {
 }
 
 #[test]
-fn played_segments_behind_the_window_are_evicted_with_exact_accounting() {
+fn played_segments_beyond_the_behind_window_stay_while_the_page_holds_them() {
     let media = fixture();
     let window = BufferWindow {
         ahead: Duration::from_secs(1),
@@ -209,13 +209,12 @@ fn played_segments_behind_the_window_are_evicted_with_exact_accounting() {
     assert_eq!(read_to_end(&mut open(&mut opener)).len(), 20);
     let all = media.init.len() + media.fragments.iter().map(Vec::len).sum::<usize>();
     assert_eq!(monitor.held_segment_bytes(), all);
-    // Позиция 500 мс, окно назад 200 мс: выбрасывается только 0–200 мс.
+    // «Помним, пока помнит страница»: окно «назад» (200 мс) — не окно выселения.
+    // Памяти хватает, страница ничего не стирала — полка держит всё сыгранное.
     monitor.note_playback_position(ms(500));
-    assert_eq!(monitor.held_segment_bytes(), all - media.fragments[0].len());
-    // Позиция в конце: на полке ничего не нужно, держится только init полосы.
     monitor.note_playback_position(ms(1_000));
-    assert_eq!(monitor.held_segment_bytes(), media.init.len());
-    assert_eq!(writer.held_bytes(), media.init.len());
+    assert_eq!(monitor.held_segment_bytes(), all);
+    assert_eq!(writer.held_bytes(), all);
 }
 
 #[test]

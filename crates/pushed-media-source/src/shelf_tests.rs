@@ -1,5 +1,5 @@
 //! Тесты полки без потоков: место во времени, наложение, выбор следующего,
-//! выброс старого и непрерывный кусок вокруг позиции.
+//! стирание страницей и непрерывный кусок вокруг позиции.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,13 +7,15 @@ use std::time::Duration;
 use bytes::Bytes;
 
 use super::{
-    Delivery, IncomingMedia, LaneShelf, LateJoinCandidates, LateJoinWindow, ShelfEntry, ShelfRules,
+    Delivery, IncomingMedia, LaneShelf, LateJoinCandidates, LateJoinWindow, PlayedSoFar,
+    ShelfEntry, ShelfRemoval, ShelfRules,
 };
 use crate::buffer_window::BufferWindow;
 use crate::container::PushedContainer;
 use crate::feed::{EpisodeContinuity, EpisodeKey, FeedCursor};
 use crate::framing::{MediaTime, MediaTimeSpan, SegmentEnd, TimedSpan};
 use crate::intake::{ChargedSegment, IntakeLedger};
+use crate::page_removal::{PageRemovalReport, PageRemovedRange, PageRemovedRangeEnd};
 use crate::time::TimestampOffset;
 
 /// Миллисекунда в микросекундах.
@@ -197,7 +199,7 @@ fn segment_straddling_the_cursor_is_fed_in_a_new_episode() {
 }
 
 #[test]
-fn eviction_drops_only_segments_ended_by_the_limit_and_frees_them() {
+fn oldest_unshared_segment_is_found_by_its_end_and_removal_frees_it() {
     let mut shelf = Shelf::new();
     shelf.put(0, 200, 10);
     shelf.put(200, 400, 20);
@@ -206,12 +208,119 @@ fn eviction_drops_only_segments_ended_by_the_limit_and_frees_them() {
         shelf.shelf.oldest_unshared_ended_by(at(400)),
         Some((0, at(200)))
     );
-    assert_eq!(shelf.shelf.evict_ended_by(at(399)), 1);
+    assert_eq!(shelf.shelf.oldest_unshared_ended_by(at(199)), None);
+    let removed = shelf.shelf.remove(0).expect("first segment");
+    assert_eq!(removed.media_len(), 10);
+    drop(removed);
     assert_eq!(shelf.starts_ms(), [200, 400]);
     assert_eq!(shelf.media_bytes(), 60);
-    assert_eq!(shelf.shelf.evict_ended_by(at(600)), 2);
-    assert_eq!(shelf.media_bytes(), 0);
-    assert_eq!(shelf.shelf.oldest_unshared_ended_by(at(600)), None);
+    assert!(shelf.shelf.remove(2).is_none(), "no such place");
+}
+
+/// Стирание страницей `[start_ms, end)` при «сыграно до `played_ms`».
+fn page_removal(
+    shelf: &mut Shelf,
+    start_ms: u64,
+    end: PageRemovedRangeEnd,
+    played: PlayedSoFar,
+) -> PageRemovalReport {
+    let range = PageRemovedRange::new(Duration::from_millis(start_ms), end);
+    let result =
+        shelf
+            .shelf
+            .release_removed_by_page(ShelfRemoval::from_page(range), played, &rules());
+    // Отчёт сходится с тем, что действительно снято.
+    assert_eq!(result.released.len(), result.report.released_segments);
+    result.report
+}
+
+fn until_ms(value: u64) -> PageRemovedRangeEnd {
+    PageRemovedRangeEnd::At(Duration::from_millis(value))
+}
+
+#[test]
+fn page_removal_releases_only_played_segments_entirely_inside_the_range() {
+    let mut shelf = Shelf::new();
+    shelf.put(0, 200, 10);
+    shelf.put(200, 400, 20);
+    shelf.put(400, 600, 40);
+    shelf.put(600, 800, 80);
+    let played = PlayedSoFar::Until(at(500));
+    // [0, 700): 0–200 и 200–400 сыграны и целиком внутри; 400–600 внутри, но не
+    // сыгран (позиция 500); 600–800 задет лишь частично.
+    let report = page_removal(&mut shelf, 0, until_ms(700), played);
+    assert_eq!(
+        report,
+        PageRemovalReport {
+            released_segments: 2,
+            released_bytes: 30,
+            kept_not_played: 1,
+            kept_in_pipe: 0,
+            kept_partially_removed: 1,
+        }
+    );
+    assert_eq!(shelf.starts_ms(), [400, 600]);
+    assert_eq!(
+        shelf.media_bytes(),
+        120,
+        "the ledger dropped exactly 30 bytes"
+    );
+    // До конца шкалы, но ничего не сыграно: ничего не уходит.
+    let report = page_removal(
+        &mut shelf,
+        0,
+        PageRemovedRangeEnd::EndOfTimeline,
+        PlayedSoFar::Nothing,
+    );
+    assert_eq!(report.released_segments, 0);
+    assert_eq!(report.kept_not_played, 2);
+    assert_eq!(shelf.media_bytes(), 120);
+}
+
+#[test]
+fn page_removal_tolerates_rounding_of_the_range_edges_only() {
+    let mut shelf = Shelf::new();
+    shelf.put(0, 200, 10);
+    shelf.put(200, 400, 20);
+    let played = PlayedSoFar::Until(at(400));
+    // Края диапазона страницы разошлись с краями сегментов на 5 мс округления:
+    // сегмент 0–200 считается стёртым целиком.
+    let report = page_removal(&mut shelf, 5, until_ms(195), played);
+    assert_eq!(report.released_segments, 1);
+    // 20 мс — уже не округление: часть сегмента 200–400 у страницы осталась.
+    let report = page_removal(&mut shelf, 220, PageRemovedRangeEnd::EndOfTimeline, played);
+    assert_eq!(
+        (report.released_segments, report.kept_partially_removed),
+        (0, 1)
+    );
+    // Пустой и перевёрнутый диапазоны ничего не трогают.
+    assert_eq!(
+        page_removal(&mut shelf, 300, until_ms(300), played),
+        PageRemovalReport::default()
+    );
+    assert_eq!(
+        page_removal(&mut shelf, 400, until_ms(200), played),
+        PageRemovalReport::default()
+    );
+    assert_eq!(shelf.starts_ms(), [200]);
+}
+
+#[test]
+fn page_removal_keeps_a_played_segment_whose_bytes_a_pipe_still_holds() {
+    let mut shelf = Shelf::new();
+    shelf.put(0, 200, 10);
+    shelf.put(200, 400, 20);
+    // Сегмент 0–200 отдан в трубу эпизода, демуксер его ещё не дочитал.
+    let choice = shelf.shelf.next_to_feed(None, &rules()).expect("first");
+    let in_pipe = shelf.shelf.take_for_feeding(choice, &rules()).expect("fed");
+    let report = page_removal(&mut shelf, 0, until_ms(400), PlayedSoFar::Until(at(400)));
+    assert_eq!(
+        (report.released_segments, report.kept_in_pipe),
+        (1, 1),
+        "only the segment without a pipe copy is released"
+    );
+    assert_eq!(shelf.starts_ms(), [0]);
+    drop(in_pipe);
 }
 
 #[test]

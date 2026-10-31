@@ -110,3 +110,32 @@ fn a_closed_window_and_a_full_queue_refuse_commands_instead_of_losing_them() {
         ))
     ));
 }
+
+#[test]
+fn the_desk_keeps_the_latest_downloaded_range_until_the_window_closes() {
+    let desk = PlaybackDesk::new();
+    let mut remote = WindowRemote::new(desk.clone());
+    assert!(
+        !desk.downloaded_range().is_known(),
+        "nothing is known at first"
+    );
+
+    let (_spans, range) = crate::downloaded_range::test_support::FakeDownloadedSpans::range(vec![
+        Duration::ZERO..Duration::from_secs(2),
+    ]);
+    remote.offer_downloaded_range(range);
+    assert!(desk.downloaded_range().covers(Duration::from_secs(1)));
+    // Сведение — не команда: в очередь окна оно не попадает.
+    assert!(desk.take_commands().is_empty());
+
+    desk.close_window();
+    assert!(!desk.downloaded_range().is_known());
+    let (_spans, later) = crate::downloaded_range::test_support::FakeDownloadedSpans::range(vec![
+        Duration::ZERO..Duration::from_secs(2),
+    ]);
+    remote.offer_downloaded_range(later);
+    assert!(
+        !desk.downloaded_range().is_known(),
+        "a closed window keeps nothing"
+    );
+}

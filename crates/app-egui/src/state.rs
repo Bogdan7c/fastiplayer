@@ -14,8 +14,8 @@ use player_core::{
     FrameCounters, MediaInstanceId, PlaybackRate, PlaybackState, PlayerCommand, PlayerEvent,
     PlayerRenderError, PlayerRuntimeApplyResult, PlayerRuntimeSettingsUpdate, PlayerSnapshot,
     PlayerVideoDecoderThreadConfig, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
-    PlayerWorkerShutdownDeadline, PlayerWorkerShutdownOutcome, QualitySelection, ScrubCommitPolicy,
-    SeekRequest, VideoBackendSelectionRequest,
+    PlayerWorkerShutdownDeadline, PlayerWorkerShutdownOutcome, QualitySelection, SeekRequest,
+    VideoBackendSelectionRequest,
 };
 use render_core::RenderDiagnostics;
 use render_shell_api::RenderableFrameKey;
@@ -41,8 +41,7 @@ use crate::ui::player_controls::{self, ControlAction};
 use crate::ui::sidebar::{self, SidebarHostState, SidebarRenderContext, SidebarWidthPoints};
 use crate::ui::skin::{self, PlayerSkin};
 use crate::ui::timeline::{
-    self, TimelineAction, TimelineLiveScrubDecodeMode, TimelineLiveScrubSettingsSnapshot,
-    TimelineUiState,
+    self, TimelineLiveScrubDecodeMode, TimelineLiveScrubSettingsSnapshot, TimelineUiState,
 };
 use crate::ui::titlebar_icon_area::TitlebarIconAreaAction;
 use crate::ui::window_chrome::{self, WindowChromeInput, WindowChromeStyle};
@@ -123,6 +122,8 @@ mod window_mode;
 pub(crate) use window_mode::PageLedTransportAction;
 mod timeline_inline_status;
 pub(crate) use player_event_tap::TappedPlayerEvents;
+mod timeline_dispatch;
+mod timeline_scrub_plan;
 mod track_memory;
 mod ui_runtime;
 mod ui_textures;

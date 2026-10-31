@@ -19,7 +19,9 @@
 //! размечаются по времени и ложатся на полку полосы по месту во времени, как
 //! `buffered` в MSE. Демуксеру подаётся только то, что продолжает уже поданное
 //! (курсор подачи); пришедшее раньше времени ждёт дыру, повтор прошлого не
-//! играется дважды. Окно полки ([`BufferWindow`]) и монитор
+//! играется дважды. Полка помнит прошлое, пока его помнит страница: уходит оно,
+//! когда страница сама стёрла его ([`PushedStreamWriter::note_page_removed`]), или
+//! под предохранителем памяти у порога «полон». Окно ([`BufferWindow`]) и монитор
 //! ([`PushedStreamMonitor`]) дают странице «буферизовано» и «полон». MPEG-TS
 //! время не размечает и играет по-старому, в порядке прихода.
 //!
@@ -56,6 +58,7 @@ mod lane_demuxer;
 mod live_timeline;
 mod mailbox;
 mod monitor;
+mod page_removal;
 mod page_seek;
 mod pipe;
 mod policy;
@@ -77,7 +80,10 @@ pub use container::{PushedContainer, UnsupportedMediaType};
 pub use error::{LaneLayoutProblem, PushedStreamError, PushedStreamFailureClass};
 pub use framing::{FramingError, SegmentKind};
 pub use lane::{AppendOutcome, LaneId};
-pub use monitor::PushedStreamMonitor;
+pub use monitor::{PushedStreamMonitor, ShelfSeekOutlook};
+pub use page_removal::{
+    PageRemovalOutcome, PageRemovalReport, PageRemovedRange, PageRemovedRangeEnd,
+};
 pub use page_seek::PageSeekRequest;
 pub use policy::{PushedSourcePolicy, PushedSourcePolicyError};
 pub use range_file::{

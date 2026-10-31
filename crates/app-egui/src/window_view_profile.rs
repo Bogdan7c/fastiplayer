@@ -38,6 +38,23 @@ pub(crate) enum WindowViewProfile {
     BrowserSession,
 }
 
+/// Где живое перетаскивание по таймлайну показывает кадры на лету.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LiveScrubScope {
+    /// Везде: плеер сам достаёт байты любой цели (файл, сеть).
+    Anywhere,
+    /// Только по уже скачанному (окно браузерного режима, решение владельца
+    /// 31.10.2026 «кадры бегут по полке»). Байты качает страница: промежуточная цель
+    /// вне скачанного стала бы просьбой странице перемотаться, и одно движение мыши
+    /// превратилось бы в десятки перемоток страницы. Поэтому пока зритель тянет,
+    /// кадры бегут только по скачанному (странице — ничего), вне его кадр стоит, а
+    /// бегунок едет; на отпускании вне скачанного — одна обычная перемотка зрителя.
+    /// Пока о скачанном ничего не известно (файл `<video src>`, эфир, поколение
+    /// открывается) — перетаскивание как без живого скраба: одна перемотка на
+    /// отпускании.
+    DownloadedRangeOnly,
+}
+
 impl WindowViewProfile {
     /// Может ли человек открыть в этом окне своё медиа: кнопка Open, Ctrl+O, бросок
     /// файлов и ссылок, импорт плейлиста. В браузерном окне источник задаёт страница —
@@ -69,16 +86,14 @@ impl WindowViewProfile {
         }
     }
 
-    /// Можно ли «живое» перетаскивание по таймлайну (кадры на лету во время drag).
+    /// Где по таймлайну можно «живое» перетаскивание (кадры на лету во время drag).
     ///
-    /// В браузерном окне — нет: каждая промежуточная цель drag вне полки источника
-    /// просила бы страницу перемотаться (`seek` по мосту), и одно движение мыши
-    /// превращалось бы в десятки перемоток страницы. Там drag коммитит одну точную
-    /// перемотку на отпускании — одно действие зрителя = одна перемотка.
-    pub(crate) const fn allows_live_scrub(self) -> bool {
+    /// Пользовательская настройка `[frame_server] live_scrub_enabled` главнее: этот
+    /// ответ только сужает её для вида окна.
+    pub(crate) const fn live_scrub_scope(self) -> LiveScrubScope {
         match self {
-            Self::Standard => true,
-            Self::BrowserSession => false,
+            Self::Standard => LiveScrubScope::Anywhere,
+            Self::BrowserSession => LiveScrubScope::DownloadedRangeOnly,
         }
     }
 
@@ -104,7 +119,7 @@ mod tests {
         assert_eq!(profile, WindowViewProfile::Standard);
         assert!(profile.offers_media_opening());
         assert!(profile.offers_queue_navigation());
-        assert!(profile.allows_live_scrub());
+        assert_eq!(profile.live_scrub_scope(), LiveScrubScope::Anywhere);
         assert_eq!(profile.sidebar_sections(), STANDARD_SIDEBAR_SECTIONS);
         assert_eq!(profile.idle_center_hint(), "Open a file or URL to start");
     }
@@ -114,7 +129,10 @@ mod tests {
         let profile = WindowViewProfile::BrowserSession;
         assert!(!profile.offers_media_opening());
         assert!(!profile.offers_queue_navigation());
-        assert!(!profile.allows_live_scrub());
+        assert_eq!(
+            profile.live_scrub_scope(),
+            LiveScrubScope::DownloadedRangeOnly
+        );
         assert_eq!(
             profile.sidebar_sections(),
             [SidebarSection::Settings, SidebarSection::Info]

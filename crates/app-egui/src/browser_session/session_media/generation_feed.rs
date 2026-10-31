@@ -31,10 +31,12 @@ use web_media_transport_api::TransportSeekability;
 
 use super::BROWSER_STREAM_LABEL;
 use super::generation_start::{AfterLoad, GenerationStart, position_segments_demuxer};
+use super::scrub_range::{SegmentsTimeline, segments_downloaded_range};
 use crate::browser_session::intake_notice::GenerationSource;
 use crate::browser_session::rejection::{
     FailureResponse, response_to_file_failure, response_to_stream_failure,
 };
+use crate::downloaded_range::DownloadedRange;
 
 /// Как часто спрашивать открывающийся файл. Открытие идёт в своём потоке источника и
 /// главный цикл о его конце не уведомляет (уведомляет только о новых запросах), а
@@ -69,6 +71,8 @@ pub(super) enum LoadedFeed {
     Segments {
         /// Монитор буфера потока.
         monitor: PushedStreamMonitor,
+        /// Что скачано (вопрос к полке; у эфира — неизвестно), для живого скраба окна.
+        downloaded_range: DownloadedRange,
     },
     /// Файл: запросы байтов, которые источник продолжает выдавать (чтение, перемотка).
     File {
@@ -130,11 +134,17 @@ impl PendingFeed {
             Self::Segments { opener, monitor } => match opener.poll_open() {
                 Ok(OpenProgress::Waiting(hint)) => OpenStep::Waiting(hint.retry_after()),
                 Ok(OpenProgress::Ready(opened)) => {
+                    let timeline = if opened.live_timeline.is_some() {
+                        SegmentsTimeline::Live
+                    } else {
+                        SegmentsTimeline::OnDemand
+                    };
                     match prepared_segments(opened, start, monitor) {
                         Ok(prepared) => OpenStep::Ready {
                             prepared: Box::new(prepared),
                             feed: LoadedFeed::Segments {
                                 monitor: monitor.clone(),
+                                downloaded_range: segments_downloaded_range(monitor, timeline),
                             },
                             // Позиция уже внутри `PreparedMedia`.
                             after_load: AfterLoad::Nothing,
@@ -198,6 +208,17 @@ impl LoadedFeed {
         }
     }
 
+    /// Что скачано у поколения — для живого скраба окна. У файла — неизвестно: полки
+    /// нет, байты идут по запросам странице.
+    pub(super) fn downloaded_range(&self) -> DownloadedRange {
+        match self {
+            Self::Segments {
+                downloaded_range, ..
+            } => downloaded_range.clone(),
+            Self::File { .. } => DownloadedRange::Unknown,
+        }
+    }
+
     /// Что поколение говорит монитору и странице в этом проходе.
     ///
     /// `position` — позиция плеера, если наблюдение показывает именно это поколение.
@@ -205,7 +226,7 @@ impl LoadedFeed {
     /// сообщаем и `buffer_state` не шлём.
     pub(super) fn report(&self, position: Option<Duration>) -> FeedReport {
         match self {
-            Self::Segments { monitor } => {
+            Self::Segments { monitor, .. } => {
                 if let Some(position) = position {
                     monitor.note_playback_position(position);
                 }

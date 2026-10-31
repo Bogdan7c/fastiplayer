@@ -41,6 +41,8 @@ struct ScriptedPlayer {
     events: Vec<CorrelatedPlayerEvent>,
     /// Накопительно отданные на показ кадры.
     presented: u64,
+    /// Что водитель передал о скачанном последним.
+    downloaded_range: crate::downloaded_range::DownloadedRange,
 }
 
 impl WindowPlayer for ScriptedPlayer {
@@ -79,6 +81,10 @@ impl WindowPlayer for ScriptedPlayer {
 
     fn snapshot(&mut self) -> Arc<PlayerSnapshot> {
         Arc::new(self.snapshot.clone())
+    }
+
+    fn offer_downloaded_range(&mut self, range: crate::downloaded_range::DownloadedRange) {
+        self.downloaded_range = range;
     }
 
     fn take_player_events(&mut self) -> TappedPlayerEvents {
@@ -434,4 +440,35 @@ fn an_unsupported_video_error_that_overtakes_the_install_result_fails_the_load()
         observation.fault_of(ticket),
         Some(&BrowserPlaybackFault::UnsupportedVideo)
     );
+}
+
+#[test]
+fn the_downloaded_range_from_the_session_reaches_the_window_player() {
+    let mut harness = Harness::new();
+    let (_spans, range) = crate::downloaded_range::test_support::FakeDownloadedSpans::range(vec![
+        Duration::ZERO..Duration::from_secs(4),
+    ]);
+
+    // Медиа-часть сказала, что скачано: таймлайн окна узнаёт это на этом же проходе.
+    harness.remote.offer_downloaded_range(range);
+    harness.pass();
+    assert!(
+        harness
+            .player
+            .downloaded_range
+            .covers(Duration::from_secs(1))
+    );
+    assert!(
+        !harness
+            .player
+            .downloaded_range
+            .covers(Duration::from_secs(5))
+    );
+
+    // Следующее слово — «неизвестно» (открывается новое поколение): оно заменяет прежнее.
+    harness
+        .remote
+        .offer_downloaded_range(crate::downloaded_range::DownloadedRange::Unknown);
+    harness.pass();
+    assert!(!harness.player.downloaded_range.is_known());
 }

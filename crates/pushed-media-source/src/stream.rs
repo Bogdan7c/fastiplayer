@@ -31,6 +31,7 @@ use crate::intake::IntakeLedger;
 use crate::lane::{AppendOutcome, LaneId, LaneIntake, LaneMailbox};
 use crate::lane_demuxer::{LaneDemuxer, LanePreparation};
 use crate::monitor::PushedStreamMonitor;
+use crate::page_removal::{PageRemovalOutcome, PageRemovedRange};
 use crate::policy::PushedSourcePolicy;
 use crate::stream_buffer::StreamBuffer;
 use crate::stream_seek::{seek_stream, stream_seekability};
@@ -247,6 +248,30 @@ impl PushedStreamWriter {
         self.buffer.note_page_seek(target);
     }
 
+    /// Страница сама стёрла у себя кусок времени полосы (`SourceBuffer.remove`).
+    ///
+    /// Полка держит прошлое, пока его держит страница («помним, пока помнит
+    /// страница»): с полки уходят только уже сыгранные сегменты, целиком лежащие
+    /// в `range`; стирание впереди позиции, частично задетые сегменты и сегменты,
+    /// чьи байты ещё в трубе эпизода, остаются (итог — в отчёте). Время `range` —
+    /// шкала показа ПОСЛЕ `timestampOffset` полосы, как у MSE `remove()`. Звать в
+    /// порядке прихода вместе с байтами.
+    ///
+    /// # Errors
+    /// Неизвестная полоса ([`PushedStreamError::UnknownLane`]) или поток уже мёртв
+    /// (первая ошибка потока).
+    pub fn note_page_removed(
+        &mut self,
+        lane: LaneId,
+        range: PageRemovedRange,
+    ) -> Result<PageRemovalOutcome, PushedStreamError> {
+        self.guarded(|writer| {
+            // Сначала полоса писателя: неизвестная полоса — ошибка, как у `abort`.
+            writer.lane_mut(lane)?;
+            writer.buffer.note_page_removed(lane, range)
+        })
+    }
+
     /// Новая длительность потока (`duration`).
     pub fn set_duration(&self, duration: PushedDuration) {
         self.state.set_duration(duration);
@@ -291,6 +316,12 @@ impl PushedStreamWriter {
             .map(LaneIntake::partial_segment_bytes)
             .sum();
         partial_segments + self.buffer.held_segment_bytes()
+    }
+
+    /// Счёт предохранителя памяти буфера — для тестов.
+    #[cfg(test)]
+    pub(crate) fn memory_guard_tally(&self) -> crate::stream_buffer::MemoryGuardTally {
+        self.buffer.memory_guard_tally()
     }
 
     /// Мёртвый поток отвечает первой ошибкой; новая ошибка запоминается как первая.

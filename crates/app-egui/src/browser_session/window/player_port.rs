@@ -23,6 +23,7 @@ use tracing::warn;
 
 use super::super::playback::BrowserPlaybackFault;
 use super::driver::{BeginLoad, LoadPoll, WindowPlayer};
+use crate::downloaded_range::DownloadedRange;
 use crate::media_open::{MediaOpenTerminalOutcome, PlayerInstallFailureReason};
 use crate::playlist_runtime::PlaylistRuntime;
 use crate::state::{
@@ -71,6 +72,10 @@ impl WindowPlayer for AppStateWindowPlayer<'_> {
                 ))
             }
         }
+    }
+
+    fn offer_downloaded_range(&mut self, range: DownloadedRange) {
+        self.app_state.note_downloaded_range(range);
     }
 
     fn supersede_pending_load(&mut self) {

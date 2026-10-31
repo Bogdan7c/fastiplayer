@@ -152,7 +152,7 @@ impl StreamBuffer {
         for lane in lanes {
             stale.absorb(self.restart_lane(&mut state, lane, target)?);
         }
-        self.evict_behind_window(&mut state);
+        self.relieve_memory_pressure(&mut state);
         self.publish_live_timeline(&mut state);
         Ok(StreamSeek { stale, page })
     }
@@ -291,7 +291,7 @@ impl StreamBuffer {
 /// Может ли полоса после перемотки к `target` начать подачу с того, что уже
 /// лежит на полке: цель у неё есть (правила 1–4) или она вступает позже по
 /// другим полосам (правило 5). Иначе её байты должна прислать страница.
-fn can_land_from_shelf(
+pub(super) fn can_land_from_shelf(
     state: &BufferState,
     lane: LaneId,
     target: MediaTime,

@@ -58,6 +58,8 @@ struct FakePlayback {
     /// Загруженные медиа остаются живыми: у файла за демуксером стоит рабочий поток,
     /// который продолжает читать (и просить байты), пока медиа не уничтожено.
     kept_media: Rc<RefCell<Vec<PreparedMedia>>>,
+    /// Что медиа-часть сказала о скачанном последним (живой скраб окна).
+    offered_range: Rc<RefCell<crate::downloaded_range::DownloadedRange>>,
 }
 
 impl FakePlayback {
@@ -78,7 +80,13 @@ impl FakePlayback {
             loaded_tickets: Rc::default(),
             loaded_media: Rc::default(),
             kept_media: Rc::default(),
+            offered_range: Rc::default(),
         }
+    }
+
+    /// Что медиа-часть сказала о скачанном последним.
+    fn offered_range(&self) -> crate::downloaded_range::DownloadedRange {
+        self.offered_range.borrow().clone()
     }
 
     /// Квитанция `index`-й загрузки (с нуля).
@@ -137,6 +145,10 @@ impl MediaPlayback for FakePlayback {
 
     fn seek(&mut self, target: Duration) -> Result<(), BrowserPlaybackCommandError> {
         self.record(PlayerCall::Seek(target))
+    }
+
+    fn offer_downloaded_range(&mut self, range: crate::downloaded_range::DownloadedRange) {
+        *self.offered_range.borrow_mut() = range;
     }
 
     fn pump(&mut self, _now: Instant) -> PlaybackObservation {
@@ -645,9 +657,11 @@ fn without_a_session_the_media_part_does_not_ask_to_wake() {
     assert!(harness.page.take_sent().is_empty());
 }
 
+mod downloaded_range;
 mod drain;
 mod file_generation;
 mod generation_start;
 mod generation_switch;
+mod live_scrub_real_player;
 mod viewer_transport;
 mod viewer_transport_real_player;

@@ -29,8 +29,11 @@ use crate::intake::ChargedSegment;
 
 #[path = "shelf_late_join.rs"]
 mod late_join;
+#[path = "shelf_removal.rs"]
+mod removal;
 
 pub(crate) use late_join::{LateJoinCandidates, LateJoinWindow};
+pub(crate) use removal::{PlayedSoFar, ShelfRemoval};
 
 /// Микросекунды длительности со знаком (насыщение — для гигантских настроек).
 fn signed_micros(duration: Duration) -> i64 {
@@ -76,8 +79,8 @@ impl ShelfRules {
         }
     }
 
-    /// Граница «слишком далеко впереди»: сегменты, начавшиеся позже, полосе,
-    /// которая ждёт цель перемотки, не нужны (окно вперёд от цели).
+    /// Граница «далеко впереди»: сегменты, начавшиеся позже (и не продолжающие
+    /// кусок у позиции), предохранитель памяти снимает после старого прошлого.
     pub(crate) fn ahead_limit_from(&self, position: MediaTime) -> MediaTime {
         later(position, signed_micros(self.window.ahead))
     }
@@ -87,7 +90,8 @@ impl ShelfRules {
         self.window.ahead
     }
 
-    /// Граница «давно показанного»: сегменты, кончившиеся не позже, выбрасываются.
+    /// Граница гарантированного прошлого: сегменты, кончившиеся позже, держатся
+    /// даже под предохранителем памяти (решение «помним, пока помнит страница»).
     pub(crate) fn behind_limit(&self, position: MediaTime) -> MediaTime {
         earlier(position, signed_micros(self.window.behind))
     }
@@ -169,6 +173,11 @@ impl ShelfEntry {
             delivery: Delivery::Waiting,
             arrival: Arrival::SinceLastSeek,
         }
+    }
+
+    /// Сколько байтов держит сегмент (столько отпустит учёт, если копия последняя).
+    pub(crate) fn media_len(&self) -> usize {
+        self.media.len()
     }
 
     /// Отрезок (конец — лучший известный).
@@ -448,20 +457,6 @@ impl LaneShelf {
             fed_to: entry.fed_to(rules),
             continuity: choice.continuity,
         })
-    }
-
-    /// Выбрасывает сегменты, кончившиеся не позже `limit`; возвращает их число.
-    pub(crate) fn evict_ended_by(&mut self, limit: MediaTime) -> usize {
-        let before = self.entries.len();
-        self.entries.retain(|entry| entry.span().end() > limit);
-        before - self.entries.len()
-    }
-
-    /// Выбрасывает сегменты, начавшиеся позже `limit`; возвращает их число.
-    pub(crate) fn evict_started_after(&mut self, limit: MediaTime) -> usize {
-        let before = self.entries.len();
-        self.entries.retain(|entry| entry.span().start() <= limit);
-        before - self.entries.len()
     }
 
     /// Самый давний сегмент, кончившийся не позже `limit`, чьи байты держит

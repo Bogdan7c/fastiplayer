@@ -53,14 +53,23 @@ impl TimelineUiState {
         self.live_scrub_dispatch = None;
     }
 
+    /// Начинает диспетчер жеста и отдаёт его диагностику для команд «начать» и
+    /// первой цели.
     pub fn begin_live_scrub_dispatch(
         &mut self,
         settings: LiveScrubSettingsSnapshot,
         now: Instant,
         initial_target: MediaTime,
-    ) {
-        self.live_scrub_dispatch =
-            Some(LiveScrubDispatchState::begin(settings, now, initial_target));
+    ) -> LiveScrubDiagnostics {
+        let dispatch = LiveScrubDispatchState::begin(settings, now, initial_target);
+        self.live_scrub_dispatch = Some(dispatch);
+        dispatch.diagnostics()
+    }
+
+    /// Ведёт ли диспетчер живой скраб этого жеста: «начать» уже ушло плееру.
+    #[must_use]
+    pub const fn has_live_scrub_dispatch(&self) -> bool {
+        self.live_scrub_dispatch.is_some()
     }
 
     pub fn note_live_scrub_landing_presented(&mut self, presented_target: MediaTime) {

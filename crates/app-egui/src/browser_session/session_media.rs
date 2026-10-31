@@ -76,6 +76,7 @@ mod drain;
 mod generation_feed;
 mod generation_start;
 mod install_reconcile;
+mod scrub_range;
 mod seams;
 mod viewer_transport;
 
@@ -299,6 +300,7 @@ impl SessionMedia {
         self.poll_pending(now);
         let observation = self.playback.pump(now);
         self.report_to_page(&observation, now);
+        self.offer_downloaded_range(&observation);
         // Доигрываем: страницы нет, ей ничего не шлём (ни запросов байтов, ни часов).
         if self.drain.is_none() {
             self.send_range_requests();

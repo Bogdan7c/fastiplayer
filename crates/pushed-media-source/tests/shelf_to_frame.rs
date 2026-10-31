@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use player_core::PlaybackState;
 use pushed_media_source::{
-    BufferIntake, BufferWindow, LaneId, PushedContainer, PushedSourcePolicy, PushedStreamMonitor,
-    PushedStreamOpener, PushedStreamWriter, pushed_stream,
+    BufferIntake, BufferWindow, LaneId, PageRemovedRange, PageRemovedRangeEnd, PushedContainer,
+    PushedSourcePolicy, PushedStreamMonitor, PushedStreamOpener, PushedStreamWriter, pushed_stream,
 };
 use support::media::{FragmentedMp4, own_fixture};
 use support::playback::{PlaybackReport, TickObservation, open, play, play_observed};
@@ -143,8 +143,20 @@ impl PolitePage {
         self.max_held = self.max_held.max(self.monitor.held_segment_bytes());
     }
 
+    /// Страница чистит свой буфер сама, как YouTube (`remove(0, позиция − keep)`):
+    /// полка помнит прошлое, пока его помнит страница, и отпускает его вслед.
+    fn remove_own_past(&mut self, position: Duration, keep: Duration) {
+        let end = PageRemovedRangeEnd::At(position.saturating_sub(keep));
+        for lane in [VIDEO, AUDIO] {
+            self.writer
+                .note_page_removed(lane, PageRemovedRange::new(Duration::ZERO, end))
+                .expect("removal");
+        }
+    }
+
     fn observe(&mut self, observation: TickObservation, window: BufferWindow) {
         self.monitor.note_playback_position(observation.position);
+        self.remove_own_past(observation.position, window.behind);
         let status = self.monitor.buffer_status();
         // Запас вперёд не убегает дальше отправленного и окна (+ один фрагмент,
         // отправленный, пока запас был чуть меньше окна).
@@ -198,17 +210,25 @@ fn backpressure_keeps_the_shelf_within_the_window_while_playing() {
     assert_clean_end(&report);
     assert_eq!(presented_times(&report), frame_times(0..100));
     assert!(page.ended, "the page sent everything");
-    // Полка — это окно, а не весь ролик: позади ≤ 0,4 с + фрагмент, впереди
-    // < 1 с + фрагмент, т. е. не больше 7 фрагментов из 10.
+    // Полка повторяет буфер страницы, а не весь ролик: страница держит позади
+    // 0,4 с (+ фрагмент), впереди < 1 с + фрагмент, т. е. не больше 7 фрагментов из 10.
     assert!(
         page.max_held <= initializations + 7 * largest && page.max_held < initializations + total,
         "held {} of {} bytes",
         page.max_held,
         initializations + total
     );
-    // Позиция далеко за концом: всё поданное позади окна выброшено, учёт
-    // возвращается ровно к init-сегментам полос (их держат сами полосы).
+    // Позиция далеко за концом, страница стёрла у себя всё: учёт возвращается
+    // ровно к init-сегментам полос (их держат сами полосы).
     monitor.note_playback_position(Duration::from_secs(10));
+    for lane in [VIDEO, AUDIO] {
+        page.writer
+            .note_page_removed(
+                lane,
+                PageRemovedRange::new(Duration::ZERO, PageRemovedRangeEnd::EndOfTimeline),
+            )
+            .expect("removal");
+    }
     assert_eq!(monitor.held_segment_bytes(), initializations);
 }
 

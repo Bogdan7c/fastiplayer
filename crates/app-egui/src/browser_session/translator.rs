@@ -23,7 +23,7 @@
 //! - конец экземпляра запечатывает текущий поток: файл — `seal`, MSE — `end_of_stream`
 //!   (принятое доигрывается до конца даже у страницы, не успевшей сама закончить поток).
 
-use browser_bridge_protocol::session::page::{PagePlaybackRequest, SeekCause};
+use browser_bridge_protocol::session::page::{PagePlaybackRequest, RemovalEnd, SeekCause};
 use browser_bridge_protocol::session::player::StreamRejection;
 use browser_bridge_protocol::{
     MediaDuration, MediaTime, PageSessionMessage, SessionCloseReason, SourceBufferIndex,
@@ -32,7 +32,8 @@ use browser_bridge_protocol::{
 use browser_bridge_session::SessionRef;
 use pushed_media_source::RangeRequestIds;
 use pushed_media_source::{
-    AppendOutcome, LaneId, PushedContainer, PushedDuration, PushedStreamError, TimestampOffset,
+    AppendOutcome, LaneId, PageRemovedRange, PageRemovedRangeEnd, PushedContainer, PushedDuration,
+    PushedStreamError, TimestampOffset,
 };
 use tracing::{debug, error, info, warn};
 
@@ -58,7 +59,7 @@ pub(crate) struct TranslatorCounters {
     pub(crate) rejected_generation_inputs: u64,
     /// Вход экземпляра, который уже просили закрыть.
     pub(crate) closing_instance_inputs: u64,
-    /// Сообщения, которые переходник не исполняет (меню вариантов, `remove()` страницы).
+    /// Сообщения, которые переходник не исполняет (меню вариантов).
     pub(crate) ignored_messages: u64,
     /// `tab_gone` страницы: переходник его только отмечает — сеанс закрывает сервер
     /// (4002), а доигрывание полученного ведёт главный цикл.
@@ -361,10 +362,22 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
                     writer.end_of_stream().map(|_report| ())
                 });
             }
-            PageSessionMessage::SourceBufferRemoved { .. } => {
-                // Решение владельца D6: `remove()` страницы не исполняем — что
-                // выбрасывать с полки, решает окно буфера источника.
-                self.counters.ignored_messages += 1;
+            PageSessionMessage::SourceBufferRemoved {
+                generation,
+                source_buffer,
+                start_us,
+                end,
+            } => {
+                // Решение владельца 31.10.2026 (отменяет D6): полка помнит прошлое,
+                // пока его помнит страница, поэтому её `remove()` исполняем в порядке
+                // провода — иначе стёртое у страницы прошлое висело бы у нас до
+                // предохранителя памяти. Что именно отпустить, решает источник.
+                let range = page_removed_range(start_us, end);
+                self.apply_to_writer(&session, generation, out, |writer| {
+                    writer
+                        .note_page_removed(lane_of(source_buffer), range)
+                        .map(|_outcome| ())
+                });
             }
             PageSessionMessage::SeekStarted { target_us, cause } => {
                 self.apply_seek_started(&session, target_us, cause, out);
@@ -725,6 +738,16 @@ const fn lane_of(source_buffer: SourceBufferIndex) -> LaneId {
 /// Время протокола (целые мкс) → время источника.
 const fn media_time_as_duration(time: MediaTime) -> std::time::Duration {
     std::time::Duration::from_micros(time.as_micros())
+}
+
+/// Стёртый диапазон `remove(start, end)` протокола → диапазон источника. Время
+/// протокола — уже время показа после `timestampOffset`, как у полки источника.
+const fn page_removed_range(start: MediaTime, end: RemovalEnd) -> PageRemovedRange {
+    let end = match end {
+        RemovalEnd::At { time_us } => PageRemovedRangeEnd::At(media_time_as_duration(time_us)),
+        RemovalEnd::EndOfTimeline {} => PageRemovedRangeEnd::EndOfTimeline,
+    };
+    PageRemovedRange::new(media_time_as_duration(start), end)
 }
 
 /// Длительность протокола → длительность источника.

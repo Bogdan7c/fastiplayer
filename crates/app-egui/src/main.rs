@@ -16,6 +16,7 @@ mod audio_output_message;
 mod browser_session;
 mod config_startup_notice;
 mod dma_buf_runtime_fallback;
+mod downloaded_range;
 mod external_open;
 mod fatal_startup;
 mod frame_prepare;

@@ -49,9 +49,12 @@ use crate::shelf::{LaneShelf, ShelfEntry, ShelfRules};
 
 mod eviction;
 mod live;
+mod page_removal;
 mod position;
 mod seek;
+mod seek_outlook;
 
+pub(crate) use eviction::MemoryGuardTally;
 use position::StalePositionGate;
 use seek::LaneSeekState;
 pub(crate) use seek::{LaneLanding, StreamSeekError};
@@ -107,6 +110,8 @@ struct BufferState {
     live_timeline: Option<LiveTimelineFeed>,
     /// После перемотки: позиции старого места ещё могут прийти от приложения.
     stale_position_gate: Option<StalePositionGate>,
+    /// Счёт выселений предохранителем памяти.
+    memory_guard: MemoryGuardTally,
 }
 
 impl BufferState {
@@ -119,6 +124,7 @@ impl BufferState {
             page_seek,
             live_timeline: None,
             stale_position_gate: None,
+            memory_guard: MemoryGuardTally::default(),
         }
     }
 
@@ -299,7 +305,7 @@ impl StreamBuffer {
         self.resume_lanes_awaiting_target(&mut state)?;
         self.feed_contiguous(&mut state, lane)?;
         self.catch_up_backlogged_lanes(&mut state)?;
-        self.evict_behind_window(&mut state);
+        self.relieve_memory_pressure(&mut state);
         self.publish_live_timeline(&mut state);
         Ok(())
     }
@@ -457,3 +463,7 @@ mod tests;
 #[cfg(test)]
 #[path = "stream_buffer_limits_tests.rs"]
 mod limits_tests;
+
+#[cfg(test)]
+#[path = "stream_buffer_removal_tests.rs"]
+mod removal_tests;

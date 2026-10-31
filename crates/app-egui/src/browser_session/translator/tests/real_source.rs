@@ -152,3 +152,65 @@ fn protected_initialization_is_rejected_once_and_later_bytes_are_dropped() {
     // потока выброшены со счётом.
     assert_eq!(translator.counters().rejected_generation_inputs, 2);
 }
+
+#[test]
+fn page_removal_through_the_translator_releases_played_bytes_of_the_real_source() {
+    let mut translator = real_translator();
+    let notices = run(
+        &mut translator,
+        recorded_inputs("two-source-buffers-mid-box-cuts"),
+    );
+    let mut handoff = notices
+        .into_iter()
+        .find_map(|notice| match notice {
+            IntakeNotice::NewGeneration(handoff) => Some(handoff),
+            _ => None,
+        })
+        .expect("a generation");
+    let GenerationSource::Segments { opener, monitor } = &mut handoff.source else {
+        panic!("a source buffer generation must hand over segments");
+    };
+    let monitor = monitor.clone();
+    // Плеер сыграл всё: дочитываем демуксер до конца и сообщаем позицию за концом.
+    let mut demuxer = open_demuxer(opener);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        assert!(Instant::now() < deadline, "the stream did not end");
+        match demuxer.next_event().expect("readable") {
+            media_core::DemuxReadEvent::EndOfStream => break,
+            media_core::DemuxReadEvent::TemporarilyUnavailable(hint) => {
+                std::thread::sleep(hint.retry_after());
+            }
+            _ => {}
+        }
+    }
+    monitor.note_playback_position(Duration::from_secs(10));
+    let held_before = monitor.held_segment_bytes();
+    // Страница стёрла у себя всё на обоих SourceBuffer.
+    let removals: Vec<SessionInput> = (0..2)
+        .map(|index| {
+            message(
+                1,
+                PageSessionMessage::SourceBufferRemoved {
+                    generation: generation(1),
+                    source_buffer: buffer(index),
+                    start_us: MediaTime::ZERO,
+                    end: RemovalEnd::EndOfTimeline {},
+                },
+            )
+        })
+        .collect();
+    let notices = run(&mut translator, removals);
+    assert!(seen(&notices).is_empty(), "no rejection or close");
+    // Потоки эпизодов отпускают свои копии чуть позже чтения: ждём итог.
+    while monitor.held_segment_bytes() >= held_before && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let held_after = monitor.held_segment_bytes();
+    assert!(
+        held_after < held_before,
+        "played segments were released: {held_before} -> {held_after}"
+    );
+    // Остаются только init-сегменты полос.
+    assert!(held_after > 0);
+}

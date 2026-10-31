@@ -10,6 +10,7 @@ use player_core::{PlaybackRate as PlayerPlaybackRate, PreparedMedia};
 use crate::browser_session::playback::{
     BrowserPlayback, BrowserPlaybackCommandError, LoadStart, MediaLoadTicket, PlaybackObservation,
 };
+use crate::downloaded_range::DownloadedRange;
 
 /// Плеер так, как его видит медиа-часть. Настоящие — безоконный [`BrowserPlayback`]
 /// (тесты) и «пульт» окна браузерного режима (`window::remote::WindowRemote`, 04a).
@@ -44,6 +45,9 @@ pub(crate) trait MediaPlayback {
     /// # Errors
     /// Команда не дошла до плеера.
     fn seek(&mut self, target: Duration) -> Result<(), BrowserPlaybackCommandError>;
+    /// Что скачано у показанного медиа — для живого перетаскивания по таймлайну окна
+    /// (зовётся каждый проход; `Unknown` — ничего не известно).
+    fn offer_downloaded_range(&mut self, range: DownloadedRange);
     /// Шаг плеера: события, кадры, звук, журнал.
     fn pump(&mut self, now: Instant) -> PlaybackObservation;
     /// Итоговая строка журнала и остановка плеера.
@@ -74,6 +78,9 @@ impl MediaPlayback for BrowserPlayback {
     fn seek(&mut self, target: Duration) -> Result<(), BrowserPlaybackCommandError> {
         Self::seek(self, target)
     }
+
+    /// У безоконного плеера нет таймлайна: о скачанном спрашивать некому.
+    fn offer_downloaded_range(&mut self, _range: DownloadedRange) {}
 
     fn pump(&mut self, now: Instant) -> PlaybackObservation {
         Self::pump(self, now)

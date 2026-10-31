@@ -416,7 +416,7 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,
         "buffer_behind_s = 30",
-        "# Сколько секунд сыгранного держать позади позиции (0..=300) для перемотки назад без страницы.",
+        "# Сколько секунд сыгранного держать позади позиции даже при нехватке памяти (0..=300); остальное прошлое хранится, пока его хранит страница.",
     );
     subtitles::document_subtitles_defaults(toml_text);
 }

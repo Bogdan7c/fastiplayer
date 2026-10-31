@@ -409,6 +409,27 @@ impl BrowserPlayback {
         self.ledger.observation(&snapshot)
     }
 
+    /// Любая команда плееру напрямую — тестам живого скраба окна: в окне команды
+    /// скраба идут плееру `AppState` мимо медиа-части, а здесь плеер безоконный.
+    #[cfg(test)]
+    pub(crate) fn send_command_for_test(
+        &self,
+        command: PlayerCommand,
+    ) -> Result<(), BrowserPlaybackCommandError> {
+        Ok(self.worker.try_send_command(command)?)
+    }
+
+    /// Время показа кадра, который плеер сейчас показывает (тестам живого скраба:
+    /// во время скраба позиция плеера стоит, а кадр меняется).
+    #[cfg(test)]
+    pub(crate) fn shown_frame_pts_for_test(&mut self) -> Option<Duration> {
+        self.worker
+            .latest_snapshot()
+            .current_video_frame
+            .as_ref()
+            .map(|frame| frame.pts)
+    }
+
     /// Сводка журнала на текущий момент (без записи в журнал).
     #[cfg(test)]
     pub(crate) fn summary(&self) -> PlaybackSummary {

@@ -36,6 +36,7 @@ use super::super::playback::{
     PlaybackObservation,
 };
 use super::super::session_media::MediaPlayback;
+use crate::downloaded_range::DownloadedRange;
 
 /// Сколько команд ждёт окна, прежде чем пульт начнёт отказывать.
 ///
@@ -96,6 +97,8 @@ impl RemoteCommand {
 struct DeskState {
     commands: VecDeque<RemoteCommand>,
     observation: PlaybackObservation,
+    /// Что скачано у показанного медиа (последнее слово медиа-части, не очередь).
+    downloaded_range: DownloadedRange,
     window_closed: bool,
 }
 
@@ -112,6 +115,7 @@ impl PlaybackDesk {
             state: Rc::new(RefCell::new(DeskState {
                 commands: VecDeque::new(),
                 observation: LoadLedger::default().observation(&PlayerSnapshot::default()),
+                downloaded_range: DownloadedRange::Unknown,
                 window_closed: false,
             })),
         }
@@ -155,6 +159,20 @@ impl PlaybackDesk {
         self.state.borrow_mut().commands.drain(..).collect()
     }
 
+    /// Медиа-часть говорит, что скачано у показанного медиа (последнее побеждает).
+    /// Окна уже нет — сведение некому показывать, стол остаётся «неизвестно».
+    fn offer_downloaded_range(&self, range: DownloadedRange) {
+        let mut state = self.state.borrow_mut();
+        if !state.window_closed {
+            state.downloaded_range = range;
+        }
+    }
+
+    /// Что скачано у показанного медиа — окно передаёт это своему `AppState`.
+    pub(super) fn downloaded_range(&self) -> DownloadedRange {
+        self.state.borrow().downloaded_range.clone()
+    }
+
     /// Окно публикует свежее наблюдение.
     pub(super) fn publish(&self, observation: PlaybackObservation) {
         self.state.borrow_mut().observation = observation;
@@ -170,6 +188,7 @@ impl PlaybackDesk {
         let mut state = self.state.borrow_mut();
         state.window_closed = true;
         state.commands.clear();
+        state.downloaded_range = DownloadedRange::Unknown;
     }
 }
 
@@ -218,6 +237,10 @@ impl MediaPlayback for WindowRemote {
 
     fn seek(&mut self, target: Duration) -> Result<(), BrowserPlaybackCommandError> {
         Ok(self.desk.submit(RemoteCommand::Seek(target))?)
+    }
+
+    fn offer_downloaded_range(&mut self, range: DownloadedRange) {
+        self.desk.offer_downloaded_range(range);
     }
 
     fn pump(&mut self, _now: Instant) -> PlaybackObservation {
