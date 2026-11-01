@@ -25,6 +25,8 @@ use support::playback::{PlaybackReport, TickObservation, open, play, play_observ
 const FRAME: Duration = Duration::from_millis(40);
 const VIDEO: LaneId = LaneId::new(0);
 const AUDIO: LaneId = LaneId::new(1);
+/// Сколько прошлого у позиции страница-имитация оставляет у себя (как YouTube).
+const PAGE_KEEPS_PAST: Duration = Duration::from_millis(400);
 
 fn frame_times(range: std::ops::Range<u32>) -> Vec<Duration> {
     range.map(|index| FRAME * index).collect()
@@ -156,7 +158,7 @@ impl PolitePage {
 
     fn observe(&mut self, observation: TickObservation, window: BufferWindow) {
         self.monitor.note_playback_position(observation.position);
-        self.remove_own_past(observation.position, window.behind);
+        self.remove_own_past(observation.position, PAGE_KEEPS_PAST);
         let status = self.monitor.buffer_status();
         // Запас вперёд не убегает дальше отправленного и окна (+ один фрагмент,
         // отправленный, пока запас был чуть меньше окна).
@@ -181,7 +183,6 @@ fn backpressure_keeps_the_shelf_within_the_window_while_playing() {
     assert_eq!(audio.fragments.len(), 10);
     let window = BufferWindow {
         ahead: Duration::from_secs(1),
-        behind: Duration::from_millis(400),
     };
     let (writer, mut opener) = av_stream(recommended().with_buffer_window(window).expect("window"));
     let monitor = writer.monitor();

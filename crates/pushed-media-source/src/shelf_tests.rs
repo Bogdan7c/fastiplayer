@@ -26,7 +26,6 @@ fn rules() -> ShelfRules {
     ShelfRules::new(
         BufferWindow {
             ahead: Duration::from_secs(120),
-            behind: Duration::from_secs(30),
         },
         Duration::from_millis(10),
         Duration::from_millis(100),
@@ -209,12 +208,12 @@ fn oldest_unshared_segment_is_found_by_its_end_and_removal_frees_it() {
         Some((0, at(200)))
     );
     assert_eq!(shelf.shelf.oldest_unshared_ended_by(at(199)), None);
-    let removed = shelf.shelf.remove(0).expect("first segment");
+    let removed = shelf.shelf.evict(0).expect("first segment");
     assert_eq!(removed.media_len(), 10);
     drop(removed);
     assert_eq!(shelf.starts_ms(), [200, 400]);
     assert_eq!(shelf.media_bytes(), 60);
-    assert!(shelf.shelf.remove(2).is_none(), "no such place");
+    assert!(shelf.shelf.evict(2).is_none(), "no such place");
 }
 
 /// Стирание страницей `[start_ms, end)` при «сыграно до `played_ms`».

@@ -28,7 +28,10 @@ use std::collections::BTreeMap;
 use crate::framing::{EbmlElementSize, read_element_header};
 
 use super::byte_cursor::ByteCursor;
-use super::{MediaTime, MediaTimeSpan, SegmentEnd, SegmentTimingError, TimedSpan, TimingStructure};
+use super::{
+    LaneContent, MediaTime, MediaTimeSpan, SegmentEnd, SegmentTimingError, TimedSpan,
+    TimingStructure, TrackMedia,
+};
 
 // ID элементов вместе с битом-маркером, как в спецификации. Сканер `matroska.rs`
 // держит часть из них приватными; здесь — свой словарь только для времени.
@@ -46,6 +49,10 @@ const TRACKS_ID: u32 = 0x1654_AE6B;
 const TRACK_ENTRY_ID: u32 = 0xAE;
 /// `TrackEntry/TrackNumber`.
 const TRACK_NUMBER_ID: u32 = 0xD7;
+/// `TrackEntry/TrackType` (1 — видео, 2 — звук, 17 — субтитры…).
+const TRACK_TYPE_ID: u32 = 0x83;
+/// Значение `TrackType` у видеодорожки.
+const TRACK_TYPE_VIDEO: u64 = 1;
 /// `TrackEntry/DefaultDuration`.
 const DEFAULT_DURATION_ID: u32 = 0x23_E383;
 /// `Cluster`.
@@ -79,6 +86,8 @@ pub(crate) struct MatroskaTimingContext {
     timecode_scale_ns: u64,
     /// `TrackNumber` → `DefaultDuration` в наносекундах (если указана).
     default_durations_ns: BTreeMap<u64, Option<u64>>,
+    /// Есть ли среди дорожек видео (по `TrackType`).
+    content: LaneContent,
 }
 
 impl MatroskaTimingContext {
@@ -86,7 +95,7 @@ impl MatroskaTimingContext {
     pub(super) fn parse(initialization: &[u8]) -> Result<Self, SegmentTimingError> {
         let segment = find_segment_body(initialization)?;
         let mut timecode_scale_ns: Option<u64> = None;
-        let mut default_durations_ns: Option<BTreeMap<u64, Option<u64>>> = None;
+        let mut parsed_tracks: Option<ParsedTracks> = None;
         for child in element_children(segment, TimingStructure::MatroskaSegment) {
             let child = child?;
             if child.id == CLUSTER_ID {
@@ -104,22 +113,29 @@ impl MatroskaTimingContext {
                     timecode_scale_ns = Some(parse_timecode_scale(child.body)?);
                 }
                 TRACKS_ID => {
-                    if default_durations_ns.is_some() {
+                    if parsed_tracks.is_some() {
                         return Err(SegmentTimingError::Duplicate {
                             structure: TimingStructure::MatroskaTracks,
                         });
                     }
-                    default_durations_ns = Some(parse_tracks(child.body)?);
+                    parsed_tracks = Some(parse_tracks(child.body)?);
                 }
                 _ => {}
             }
         }
+        let tracks = parsed_tracks.ok_or(SegmentTimingError::Missing {
+            structure: TimingStructure::MatroskaTracks,
+        })?;
         Ok(Self {
             timecode_scale_ns: timecode_scale_ns.unwrap_or(DEFAULT_TIMECODE_SCALE_NS),
-            default_durations_ns: default_durations_ns.ok_or(SegmentTimingError::Missing {
-                structure: TimingStructure::MatroskaTracks,
-            })?,
+            default_durations_ns: tracks.default_durations_ns,
+            content: LaneContent::of_tracks(tracks.media),
         })
+    }
+
+    /// Есть ли в init видеодорожка.
+    pub(super) const fn content(&self) -> LaneContent {
+        self.content
     }
 
     /// Отрезок времени одного `Cluster`.
@@ -501,9 +517,18 @@ fn parse_timecode_scale(info: &[u8]) -> Result<u64, SegmentTimingError> {
     Ok(scale)
 }
 
-/// `Tracks`: номер каждой дорожки и её `DefaultDuration`.
-fn parse_tracks(tracks: &[u8]) -> Result<BTreeMap<u64, Option<u64>>, SegmentTimingError> {
+/// Что прочитано из `Tracks`.
+struct ParsedTracks {
+    /// `TrackNumber` → `DefaultDuration` в наносекундах (если указана).
+    default_durations_ns: BTreeMap<u64, Option<u64>>,
+    /// Тип каждой дорожки (по `TrackType`).
+    media: Vec<TrackMedia>,
+}
+
+/// `Tracks`: номер каждой дорожки, её `DefaultDuration` и тип.
+fn parse_tracks(tracks: &[u8]) -> Result<ParsedTracks, SegmentTimingError> {
     let mut default_durations_ns = BTreeMap::new();
+    let mut media = Vec::new();
     for entry in element_children(tracks, TimingStructure::MatroskaTracks) {
         let entry = entry?;
         entry.require_known_size(TimingStructure::MatroskaTracks)?;
@@ -512,11 +537,13 @@ fn parse_tracks(tracks: &[u8]) -> Result<BTreeMap<u64, Option<u64>>, SegmentTimi
         }
         let mut track_number: Option<u64> = None;
         let mut default_duration_ns: Option<u64> = None;
+        let mut track_type: Option<u64> = None;
         for field in element_children(entry.body, TimingStructure::MatroskaTracks) {
             let field = field?;
             field.require_known_size(TimingStructure::MatroskaTracks)?;
             match field.id {
                 TRACK_NUMBER_ID => track_number = Some(read_unsigned_integer(field.body)?),
+                TRACK_TYPE_ID => track_type = Some(read_unsigned_integer(field.body)?),
                 DEFAULT_DURATION_ID => {
                     default_duration_ns = Some(read_unsigned_integer(field.body)?);
                 }
@@ -534,8 +561,16 @@ fn parse_tracks(tracks: &[u8]) -> Result<BTreeMap<u64, Option<u64>>, SegmentTimi
                 track: track_number,
             });
         }
+        media.push(match track_type {
+            Some(TRACK_TYPE_VIDEO) => TrackMedia::Video,
+            Some(_) => TrackMedia::NotVideo,
+            None => TrackMedia::Unknown,
+        });
     }
-    Ok(default_durations_ns)
+    Ok(ParsedTracks {
+        default_durations_ns,
+        media,
+    })
 }
 
 /// Беззнаковое целое EBML: 0–8 байтов big-endian (пустое тело = 0).

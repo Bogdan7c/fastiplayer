@@ -36,16 +36,19 @@
 //!    прежних мест (перемотка чуть назад от уже скачанного), и вступив с него,
 //!    полоса пропустила бы данные цели, которые страница ещё несёт.
 //!    Ограничение: если страница, у которой эти байты уже есть в её буфере, не
-//!    пришлёт их заново, такая полоса ждёт до срока перемотки плеера.
+//!    пришлёт их заново, такая полоса ждёт, пока страница жива (решение 150: срок
+//!    перемотки плеера честное ожидание живой страницы не засчитывает).
 //!
-//! После перемотки позиции, далёкие от цели, какое-то время не принимаются
-//! (модуль `position`): позиция старого места может прийти позже перемотки.
+//! После перемотки позиции, далёкие от цели, не принимаются, пока плеер не сообщит
+//! цель, но не дольше окна успокоения от момента посадки (модуль `position`):
+//! позиция старого места может прийти позже перемотки, а плеер стоит на старом
+//! месте до своего коммита.
 //!
 //! Перемотка вызывается с хода владельца сессии плеера и не блокируется: замок
 //! буфера, запуск эпизода (создание потока) и ничего больше. Выгребенные эпизоды
 //! возвращаются вызывающему ([`StreamSeek::stale`]) и уничтожаются вне замка.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{BufferState, LaneTimeline, StreamBuffer};
 use crate::error::PushedStreamError;
@@ -152,6 +155,8 @@ impl StreamBuffer {
         for lane in lanes {
             stale.absorb(self.restart_lane(&mut state, lane, target)?);
         }
+        // Все полосы сели с полки сразу — окно успокоения считается отсюда.
+        Self::note_seek_landing_if_landed(&mut state, Instant::now());
         self.relieve_memory_pressure(&mut state);
         self.publish_live_timeline(&mut state);
         Ok(StreamSeek { stale, page })
@@ -175,6 +180,12 @@ impl StreamBuffer {
         self.lock()
             .page_seek
             .note_page_seek(MediaTime::from_player_position(target));
+    }
+
+    /// Одна ли это перемотка: цели совпадают в пределах допуска совпадения цели
+    /// плеера с целью страницы (то же правило, что у журнала разговора со страницей).
+    pub(crate) fn is_same_seek_target(&self, first: Duration, second: Duration) -> bool {
+        first.abs_diff(second) <= self.seek_match_tolerance
     }
 
     /// Забирает запрос странице «перемотай на T» (последний; не более раза).
@@ -282,6 +293,9 @@ impl StreamBuffer {
             .feed
             .deliver(fed.media, &fed.key, fed.continuity, &self.episodes)?;
         buffered.feed.advance_cursor(fed.fed_to);
+        // Полоса дождалась цели: если она последняя, с этого момента считается окно
+        // успокоения позиций (модуль `position`).
+        Self::note_seek_landing_if_landed(state, Instant::now());
         // Дальше — всё непрерывное; после `endOfStream` эпизод в конце
         // дочитывается до конца (это делает сама подача).
         self.feed_contiguous(state, lane)

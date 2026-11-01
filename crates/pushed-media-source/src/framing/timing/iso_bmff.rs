@@ -21,7 +21,9 @@ use std::collections::BTreeMap;
 use crate::framing::read_box_header;
 
 use super::byte_cursor::{ByteCursor, FullBoxHeader};
-use super::{MediaTime, MediaTimeSpan, SegmentTimingError, TimingStructure};
+use super::{
+    LaneContent, MediaTime, MediaTimeSpan, SegmentTimingError, TimingStructure, TrackMedia,
+};
 
 /// `tfhd`: есть 64-битный `base_data_offset`.
 const TFHD_BASE_DATA_OFFSET: u32 = 0x00_0001;
@@ -64,6 +66,8 @@ struct IsoTrackTiming {
 pub(crate) struct IsoBmffTimingContext {
     /// Дорожки init-сегмента.
     tracks: BTreeMap<u32, IsoTrackTiming>,
+    /// Есть ли среди дорожек видео (по `hdlr`).
+    content: LaneContent,
 }
 
 impl IsoBmffTimingContext {
@@ -80,12 +84,14 @@ impl IsoBmffTimingContext {
         })?;
 
         let mut tracks = BTreeMap::new();
+        let mut track_media = Vec::new();
         let mut extends_defaults = Vec::new();
         for child in box_children(movie, TimingStructure::IsoMovie) {
             let child = child?;
             match &child.box_type {
                 b"trak" => {
                     let (track_id, timescale) = parse_track(child.body)?;
+                    track_media.push(track_media_of(child.body));
                     let timing = IsoTrackTiming {
                         timescale,
                         extends_default_sample_duration: None,
@@ -114,7 +120,15 @@ impl IsoBmffTimingContext {
                 structure: TimingStructure::IsoTrack,
             });
         }
-        Ok(Self { tracks })
+        Ok(Self {
+            tracks,
+            content: LaneContent::of_tracks(track_media),
+        })
+    }
+
+    /// Есть ли в init видеодорожка.
+    pub(super) const fn content(&self) -> LaneContent {
+        self.content
     }
 
     /// Отрезок времени показа медиасегмента `moof` + `mdat`.
@@ -483,6 +497,36 @@ fn parse_track(track: &[u8]) -> Result<(u32, u32), SegmentTimingError> {
         return Err(SegmentTimingError::ZeroTimescale { track: track_id });
     }
     Ok((track_id, timescale))
+}
+
+/// Тип дорожки по `trak/mdia/hdlr`: за заголовком полного бокса (4 байта) и
+/// `pre_defined` (4 байта) идёт `handler_type`. Нет бокса или он обрезан —
+/// `Unknown`: время дорожки этим не портится, а полоса считается тяжёлой.
+fn track_media_of(track: &[u8]) -> TrackMedia {
+    let handler_type = unique_child(
+        track,
+        *b"mdia",
+        TimingStructure::IsoTrack,
+        TimingStructure::IsoTrack,
+    )
+    .ok()
+    .flatten()
+    .and_then(|media| {
+        unique_child(
+            media,
+            *b"hdlr",
+            TimingStructure::IsoTrack,
+            TimingStructure::IsoTrack,
+        )
+        .ok()
+        .flatten()
+    })
+    .and_then(|handler| handler.get(8..12));
+    match handler_type {
+        Some(b"vide") => TrackMedia::Video,
+        Some(_) => TrackMedia::NotVideo,
+        None => TrackMedia::Unknown,
+    }
 }
 
 /// У `tkhd` и `mdhd` за временами создания/изменения (32 или 64 бита по версии)

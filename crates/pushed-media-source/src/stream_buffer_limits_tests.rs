@@ -1,6 +1,7 @@
 //! Пределы буфера потока на границе с настоящими демуксерами: «полон» по байтам,
 //! выброс после перемотки вне полки и у потолка, `changeType` в MPEG-TS, предел
-//! ждущих эпизодов, шов между эпизодами и устаревшие позиции после перемотки.
+//! ждущих эпизодов, шов между эпизодами (устаревшие позиции после перемотки —
+//! `stream_buffer_settle_tests.rs`).
 //!
 //! Фикстуры: `video-h264-64.mp4` / `-96.mp4` (4 фрагмента по 0,2 с, 5 кадров по
 //! 40 мс, каждый с ключевого), `video-h264-64-4s.mp4` (10 фрагментов по 0,4 с),
@@ -137,7 +138,6 @@ fn respectful_page_that_stops_on_full_never_hits_the_byte_ceiling() {
     let ceiling = media.init.len() + 4 * largest_fragment(&media);
     let window = BufferWindow {
         ahead: Duration::from_secs(120),
-        behind: ms(400),
     };
     let small = policy()
         .with_buffer_window(window)
@@ -372,7 +372,6 @@ fn position_reported_before_a_seek_is_ignored_until_one_near_the_target() {
     let media = split_mp4(VIDEO_H264_64);
     let window = BufferWindow {
         ahead: Duration::from_secs(120),
-        behind: ms(100),
     };
     let (mut writer, mut opener) = stream(policy().with_buffer_window(window).expect("window"));
     let monitor = writer.monitor();
@@ -391,32 +390,6 @@ fn position_reported_before_a_seek_is_ignored_until_one_near_the_target() {
     // Позиция у цели принимается: запас считается от неё.
     monitor.note_playback_position(ms(300));
     assert_eq!(monitor.buffer_status().buffered_ahead, ms(500));
-}
-
-#[test]
-fn stale_position_distrust_lasts_only_the_stale_window() {
-    let policy = policy();
-    let factory = EpisodeFactory::new(Arc::new(pushed_demux_registry().expect("registry")), policy);
-    let buffer = StreamBuffer::new(
-        Arc::new(IntakeLedger::new(1 << 20)),
-        factory,
-        policy.stream_buffer_rules(),
-    );
-    buffer.add_lane(
-        LANE,
-        PushedContainer::FragmentedMp4,
-        Arc::new(LaneMailbox::default()),
-        4,
-    );
-    let seek = buffer.seek(Duration::from_secs(10)).expect("seek");
-    drop(seek.stale);
-    let reported = || buffer.lock().reported_position;
-    let now = Instant::now();
-    buffer.note_playback_position_at(Duration::from_secs(100), now);
-    assert_eq!(reported(), Some(MediaTime::from_micros(10_000_000)));
-    // Приложение сообщает позицию редко: через окно недоверия верим снова.
-    buffer.note_playback_position_at(Duration::from_secs(100), now + Duration::from_secs(2));
-    assert_eq!(reported(), Some(MediaTime::from_micros(100_000_000)));
 }
 
 #[test]

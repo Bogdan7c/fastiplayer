@@ -13,6 +13,12 @@
 //! записало факт «чтение оборвано seal»**. Любая другая ошибка (битый файл без
 //! `seal`, повреждение посреди `mdat`) проходит без изменений.
 //!
+//! Тот же факт отвечает плееру на вопрос «каким был конец данных»
+//! ([`Demuxer::data_end`]): чтение, обрезанное `seal` раньше настоящего конца файла, —
+//! [`DemuxDataEnd::CutShort`], и позиция на `Ended` остаётся там, где встал показ, а
+//! не прыгает в длительность (решение 133). Отсечки по дорожкам файлу не нужно:
+//! дорожки файла перемежаются в одном потоке байтов и кончаются вместе.
+//!
 //! Граница honest-ности: если `seal` уже случился и в полученных байтах есть
 //! настоящее повреждение, оно тоже станет концом потока — отличить его от обрыва
 //! по тексту ошибки нельзя, а играть до повреждения безопаснее, чем падать.
@@ -21,9 +27,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use media_core::{
-    DemuxActiveReadInterruptionCapability, DemuxReadEvent, DemuxSeekCancellationToken,
-    DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaAttachments, MediaMetadata,
-    TrackInfo,
+    DemuxActiveReadInterruptionCapability, DemuxDataEnd, DemuxDataWait, DemuxDataWaitProbe,
+    DemuxReadEvent, DemuxSeekCancellationToken, DemuxSeekRequest, DemuxSeekResult,
+    DemuxSeekability, Demuxer, MediaAttachments, MediaMetadata, TrackInfo,
 };
 
 use super::core::FileCore;
@@ -66,6 +72,31 @@ impl Demuxer for SealAwareDemuxer {
 
     fn active_read_interruption(&self) -> DemuxActiveReadInterruptionCapability {
         self.inner.active_read_interruption()
+    }
+
+    /// Чтение обрезано `seal` раньше настоящего конца — данные обрезаны; иначе
+    /// ответ настоящего демуксера.
+    fn data_end(&self) -> DemuxDataEnd {
+        if self.core.read_cut_by_seal() {
+            // Где во времени кончились байты, источник файла не знает: позицию
+            // поставят часы показа плеера.
+            DemuxDataEnd::CutShort { playable_end: None }
+        } else {
+            self.inner.data_end()
+        }
+    }
+
+    /// Файл ждёт байтов живой страницы, пока запрос к ней в пути (решение 150 для
+    /// `<video src>`): ответ ядра файла, а не настоящего демуксера.
+    fn data_wait(&self) -> DemuxDataWait {
+        self.core.data_wait()
+    }
+
+    /// Тот же ответ для обёртки, которая унесёт демуксер в фоновый поток
+    /// (`ProgressiveDemuxer`): ядро файла общее и потокобезопасное.
+    fn data_wait_probe(&self) -> Option<DemuxDataWaitProbe> {
+        let core = Arc::clone(&self.core);
+        Some(DemuxDataWaitProbe::new(move || core.data_wait()))
     }
 
     fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
@@ -119,7 +150,7 @@ impl Demuxer for SealAwareDemuxer {
 mod tests {
     use std::time::Duration;
 
-    use media_core::{DemuxReadEvent, DemuxSeekResult, Demuxer, TrackInfo};
+    use media_core::{DemuxDataEnd, DemuxReadEvent, DemuxSeekResult, Demuxer, TrackInfo};
     use source_core::CancellationToken;
 
     use super::SealAwareDemuxer;
@@ -163,13 +194,19 @@ mod tests {
     fn errors_pass_through_unless_a_read_was_cut_by_seal() {
         let (core, mut writer) = setup();
         let mut demuxer = SealAwareDemuxer::new(Box::new(AlwaysFailing), Arc::clone(&core));
-        // Без seal ошибка демуксера — настоящая.
+        // Без seal ошибка демуксера — настоящая, конец данных — настоящий.
         assert!(demuxer.next_event().is_err());
+        assert_eq!(demuxer.data_end(), DemuxDataEnd::Complete);
         // Сам по себе seal ещё ничего не значит: чтение им не оборвано.
         writer.seal();
         assert!(
             demuxer.next_event().is_err(),
             "seal alone does not mask errors"
+        );
+        assert_eq!(
+            demuxer.data_end(),
+            DemuxDataEnd::Complete,
+            "seal alone does not cut the data short"
         );
         // Чтение за пределами полученного после seal оборвано — теперь это конец потока.
         let mut buffer = [0_u8; 8];
@@ -179,6 +216,11 @@ mod tests {
             demuxer.next_event(),
             Ok(DemuxReadEvent::EndOfStream)
         ));
+        // Плеер узнает, что конец обрезан: позиция не прыгнет в длительность.
+        assert_eq!(
+            demuxer.data_end(),
+            DemuxDataEnd::CutShort { playable_end: None }
+        );
         // Перемотка проходит как была: ошибка перемотки не маскируется.
         assert!(demuxer.seek(Duration::ZERO).is_err());
     }

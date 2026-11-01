@@ -18,13 +18,14 @@ use std::time::Duration;
 use anyhow::Result;
 use demux_api::{CompositeAvDemuxer, CompositeAvTrackSelection, DemuxRegistry};
 use media_core::{
-    DemuxReadEvent, DemuxRetryHint, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer,
-    DynamicMediaTimelinePort, TrackInfo, TrackKind,
+    DemuxDataEnd, DemuxDataWait, DemuxReadEvent, DemuxRetryHint, DemuxSeekRequest, DemuxSeekResult,
+    DemuxSeekability, Demuxer, DynamicMediaTimelinePort, TrackInfo, TrackKind,
 };
 use mpeg_ts_demux::{MpegTsDemuxFactory, MpegTsDemuxOptions};
 use symphonia_demux::{DemuxerOptions, SymphoniaDemuxFactory};
 
 use crate::container::PushedContainer;
+use crate::download_cut::{DownloadCutOutcome, DownloadCutReport};
 use crate::episode::EpisodeFactory;
 use crate::error::{LaneLayoutProblem, PushedStreamError};
 use crate::intake::IntakeLedger;
@@ -33,6 +34,7 @@ use crate::lane_demuxer::{LaneDemuxer, LanePreparation};
 use crate::monitor::PushedStreamMonitor;
 use crate::page_removal::{PageRemovalOutcome, PageRemovedRange};
 use crate::policy::PushedSourcePolicy;
+use crate::producer_wait::stream_data_wait;
 use crate::stream_buffer::StreamBuffer;
 use crate::stream_seek::{seek_stream, stream_seekability};
 use crate::stream_state::StreamState;
@@ -282,20 +284,49 @@ impl PushedStreamWriter {
     /// снова открывает вход.
     pub fn end_of_stream(&mut self) -> Result<EndOfStreamReport, PushedStreamError> {
         self.guarded(|writer| {
-            writer.input_ended = true;
-            let mut dropped_incomplete_bytes = 0;
-            for intake in writer.lanes.values_mut() {
-                dropped_incomplete_bytes += intake.end_input()?;
-            }
-            if dropped_incomplete_bytes > 0 {
-                tracing::warn!(
-                    dropped_incomplete_bytes,
-                    "Pushed media stream ended with incomplete segments; they were dropped"
-                );
-            }
+            let dropped_incomplete_bytes = writer.end_all_lane_inputs()?;
             Ok(EndOfStreamReport {
                 dropped_incomplete_bytes,
             })
+        })
+    }
+
+    /// Вход кончился, потому что страница ушла посреди скачивания (вкладку
+    /// закрыли, пропал экстеншен), — а не потому, что медиа кончилось.
+    ///
+    /// Отличие от [`Self::end_of_stream`]: дорожки скачаны на разную глубину, и
+    /// плеер доиграет только то, что есть у всех сразу, — до отсечки
+    /// ([`crate::PlayableEnd`], правило — модуль `download_cut`); картинка и звук встанут
+    /// вместе. Плеер узнает, что конец данных обрезан, и где отсечка
+    /// ([`media_core::DemuxDataEnd::CutShort`]): звук, прочитанный впрок до обрыва, он
+    /// сам не играет дальше отсечки и не ставит позицию в длительность.
+    /// Перемотка внутри скачанного во время досмотра переставляет отсечку от новой
+    /// позиции.
+    ///
+    /// Если вход уже закончен честно (`end_of_stream`, и байтов после него не
+    /// было), обрывать нечего: [`DownloadCutOutcome::AlreadyComplete`], поток
+    /// доигрывается целиком. Следующий `append` снова открывает вход и снимает обрыв.
+    ///
+    /// # Errors
+    /// Поток уже мёртв (первая ошибка потока) или вход полосы не закрылся.
+    pub fn end_download_cut_short(&mut self) -> Result<DownloadCutOutcome, PushedStreamError> {
+        self.guarded(|writer| {
+            if writer.input_ended {
+                return Ok(DownloadCutOutcome::AlreadyComplete);
+            }
+            // Сначала отсечка, потом конец входа: иначе полоса, кончившая вход,
+            // успела бы выдать плееру пакеты за отсечкой до её появления.
+            let playable_end = writer.buffer.playable_end();
+            writer.state.cut_download(playable_end);
+            let dropped_incomplete_bytes = writer.end_all_lane_inputs()?;
+            tracing::info!(
+                ?playable_end,
+                "Pushed media download was cut short; playback ends where every lane has data"
+            );
+            Ok(DownloadCutOutcome::CutShort(DownloadCutReport {
+                playable_end,
+                dropped_incomplete_bytes,
+            }))
         })
     }
 
@@ -324,6 +355,23 @@ impl PushedStreamWriter {
         self.buffer.memory_guard_tally()
     }
 
+    /// Закрывает вход всех полос: демуксеры дочитают поданное, плеер получит EOF.
+    /// Возвращает байты недособранных сегментов, выброшенные при этом.
+    fn end_all_lane_inputs(&mut self) -> Result<usize, PushedStreamError> {
+        self.input_ended = true;
+        let mut dropped_incomplete_bytes = 0;
+        for intake in self.lanes.values_mut() {
+            dropped_incomplete_bytes += intake.end_input()?;
+        }
+        if dropped_incomplete_bytes > 0 {
+            tracing::warn!(
+                dropped_incomplete_bytes,
+                "Pushed media stream ended with incomplete segments; they were dropped"
+            );
+        }
+        Ok(dropped_incomplete_bytes)
+    }
+
     /// Мёртвый поток отвечает первой ошибкой; новая ошибка запоминается как первая.
     fn guarded<T>(
         &mut self,
@@ -342,6 +390,8 @@ impl PushedStreamWriter {
             return Ok(());
         }
         self.input_ended = false;
+        // Байты снова идут: обрыв (если был) снят, отсечки больше нет.
+        self.state.resume_download();
         for intake in self.lanes.values_mut() {
             intake.reopen_input()?;
         }
@@ -361,6 +411,8 @@ impl Drop for PushedStreamWriter {
     /// плеер доигрывает принятое и получает обычный конец потока, а не вечное
     /// ожидание. У мёртвого потока плеер и так получит его первую ошибку.
     fn drop(&mut self) {
+        // Поставщика больше нет при любом исходе: ожидание его байтов уже не честное.
+        self.state.note_producer_gone();
         if self.input_ended || self.state.failure().is_some() {
             return;
         }
@@ -561,6 +613,17 @@ impl Demuxer for PushedStreamDemuxer {
 
     fn seekability(&self) -> DemuxSeekability {
         stream_seekability(&self.buffer, &self.state)
+    }
+
+    /// Обрыв скачивания (`end_download_cut_short`) — данные обрезаны; иначе
+    /// конец настоящий.
+    fn data_end(&self) -> DemuxDataEnd {
+        self.state.download_cut().data_end()
+    }
+
+    /// Ждём ли мы байтов живой страницы (правило — [`crate::producer_wait`]).
+    fn data_wait(&self) -> DemuxDataWait {
+        stream_data_wait(&self.buffer, &self.state)
     }
 
     fn next_event(&mut self) -> Result<DemuxReadEvent> {

@@ -4,12 +4,28 @@
 //! потока, а перемотка идёт на ходе плеера: позиция, снятая ДО перемотки, может
 //! прийти ПОСЛЕ неё (например, 100 с после перемотки на 10 с). Поверив ей, буфер
 //! отпустил бы с полки как «сыгранное» (стирание страницей, предохранитель
-//! памяти) то, что плееру сейчас нужно, и считал бы запас от чужого места. Поэтому после перемотки позиция, далёкая от
-//! цели (дальше допуска совпадения перемоток), не принимается, пока не придёт
-//! позиция у цели — после перемотки плеер стоит ровно на цели. Чтобы редкие
-//! сообщения приложения не заморозили буфер навсегда, недоверие длится не
-//! дольше окна устаревания ([`crate::PushedSourcePolicy`]): устаревшая позиция
-//! приходит за миллисекунды, а не за секунду.
+//! памяти) то, что плееру сейчас нужно, и считал бы запас от чужого места. Поэтому
+//! после перемотки позиция, далёкая от цели (дальше допуска совпадения перемоток),
+//! не принимается, пока плеер не сообщит позицию у цели: после своего коммита
+//! перемотки плеер стоит ровно на цели, и первая такая позиция снимает недоверие.
+//!
+//! **Пока перемотка ждёт данных у цели, недоверие не кончается по времени.**
+//! Плеер в это время ещё показывает старое место и сообщает его позицию.
+//! Поверив ей, буфер считал бы запас вперёд от старого места — «есть 11 с» при
+//! дыре у цели (живой показ 04b, решение 134), — а «сыгранное» для стирания
+//! страницей тоже мерил бы чужим местом. Пока хоть одна полоса ждёт цель,
+//! позицией остаётся цель (её ставит сама перемотка).
+//!
+//! **После посадки — окно от МОМЕНТА ПОСАДКИ, а не от перемотки** (пакет F 04d).
+//! Данные цели пришли, но плеер ещё декодирует до цели и набирает звук и до своего
+//! коммита сообщает старое место. Раньше окно считалось от самой перемотки: если
+//! страница несла данные дольше окна, сразу после посадки старая позиция снова
+//! принималась, и «буферизовано» считалось от старого места (стенд 04e: 6,27 с =
+//! 9023,13 − 9016,86 при цели 4000 с). Теперь после посадки недоверие длится до
+//! позиции у цели, но не дольше окна успокоения от момента посадки
+//! ([`crate::PushedSourcePolicy`], 10 с = срок перемотки плеера на этой стадии): за
+//! него плеер либо садится и сообщает цель, либо сдаётся и остаётся на старом месте —
+//! тогда старая позиция снова настоящая, и буфер не замерзает навсегда.
 //!
 //! **«Полон».** Странице говорят «полон», когда запас вперёд достиг окна ИЛИ
 //! удерживаемые байты достигли доли жёсткого потолка: у потока с большим
@@ -27,29 +43,64 @@ use crate::framing::MediaTime;
 pub(super) struct StalePositionGate {
     /// Цель перемотки.
     target: MediaTime,
-    /// Когда перемотка случилась.
-    armed_at: Instant,
+    /// Когда все полосы сели (`None` — ещё не сели или посадку ещё не видели).
+    landed_at: Option<Instant>,
 }
 
 impl StalePositionGate {
-    /// Недоверие с момента перемотки `armed_at`.
-    pub(super) const fn new(target: MediaTime, armed_at: Instant) -> Self {
-        Self { target, armed_at }
+    /// Недоверие с момента перемотки: полосы ещё не сели.
+    pub(super) const fn new(target: MediaTime) -> Self {
+        Self {
+            target,
+            landed_at: None,
+        }
     }
 
-    /// Устаревшая ли позиция: далеко от цели, а окно недоверия ещё не прошло.
+    /// Сверяет гейт с состоянием перемотки: пока хоть одна полоса ждёт цель, посадки
+    /// нет (даже если раньше все полосы на миг считались севшими — например, посреди
+    /// самой перемотки, когда часть полос ещё не переставлена); когда все сели,
+    /// запоминается ПЕРВЫЙ момент нынешней посадки.
+    pub(super) fn note_seek_wait(&mut self, seek_wait: SeekWait, now: Instant) {
+        match seek_wait {
+            SeekWait::AwaitingTarget => self.landed_at = None,
+            SeekWait::Landed => {
+                self.landed_at.get_or_insert(now);
+            }
+        }
+    }
+
+    /// Устаревшая ли позиция: далеко от цели, а перемотка ещё ждёт данных или окно
+    /// успокоения после посадки ещё не прошло.
+    ///
+    /// Посадку, которую никто не отметил (полоса пропала, пока ждала цель), гейт
+    /// отмечает сам при первом взгляде — окно тогда считается с этого момента.
+    /// Все `SeekWait` здесь — нынешнее состояние полос.
     fn rejects(
-        self,
+        &mut self,
         position: MediaTime,
         tolerance: Duration,
-        window: Duration,
+        settle_window: Duration,
+        seek_wait: SeekWait,
         now: Instant,
     ) -> bool {
         let distance = position.as_micros().abs_diff(self.target.as_micros());
         let near_target = u128::from(distance) <= tolerance.as_micros();
-        let window_open = now.saturating_duration_since(self.armed_at) < window;
-        !near_target && window_open
+        self.note_seek_wait(seek_wait, now);
+        let distrusted = match self.landed_at {
+            None => true,
+            Some(landed_at) => now.saturating_duration_since(landed_at) < settle_window,
+        };
+        !near_target && distrusted
     }
+}
+
+/// Ждёт ли перемотка данных у цели.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SeekWait {
+    /// Хоть одна полоса ещё ждёт сегмент с целью: плеер стоит на старом месте.
+    AwaitingTarget,
+    /// Все полосы сели (или перемотки не было).
+    Landed,
 }
 
 impl StreamBuffer {
@@ -63,22 +114,34 @@ impl StreamBuffer {
     pub(crate) fn note_playback_position_at(&self, position: Duration, now: Instant) {
         let position = MediaTime::from_player_position(position);
         let mut state = self.lock();
-        if let Some(gate) = state.stale_position_gate {
-            if gate.rejects(
+        let seek_wait = state.seek_wait();
+        let rejected = state.stale_position_gate.as_mut().is_some_and(|gate| {
+            gate.rejects(
                 position,
                 self.seek_match_tolerance,
-                self.stale_position_window,
+                self.seek_settle_window,
+                seek_wait,
                 now,
-            ) {
-                tracing::debug!(
-                    position_us = position.as_micros(),
-                    "Pushed media buffer ignored a position reported before the last seek"
-                );
-                return;
-            }
-            state.stale_position_gate = None;
+            )
+        });
+        if rejected {
+            tracing::debug!(
+                position_us = position.as_micros(),
+                "Pushed media buffer ignored a position reported before the last seek"
+            );
         }
-        state.reported_position = Some(position);
+        let believed = !rejected;
+        if believed {
+            state.stale_position_gate = None;
+            state.reported_position = Some(position);
+        }
+        // Предохранитель и догоняющая подача — и на отвергнутой позиции: отчёты
+        // приложения — единственный частый повод пройти их без байтов страницы. После
+        // перемотки старое место может держать труба старого эпизода (предохранитель в
+        // самой перемотке его не трогает), а отпускает она его позже, когда поток эпизода
+        // выйдет. Без этого прохода поток оставался бы «полон» всё ожидание цели, честная
+        // страница молчала бы, и перемотка сдалась бы (находка ревью пакета F). Места
+        // плеера отвергнутая позиция не меняет: считается от цели.
         self.relieve_memory_pressure(&mut state);
         // Подача, стоявшая на полном ящике, догоняет: позицию сообщает поток
         // приложения, а не плеер.
@@ -92,7 +155,17 @@ impl StreamBuffer {
 
     /// Перемотка: позиции далеко от цели какое-то время не принимаются.
     pub(super) fn arm_stale_position_gate(state: &mut BufferState, target: MediaTime) {
-        state.stale_position_gate = Some(StalePositionGate::new(target, Instant::now()));
+        state.stale_position_gate = Some(StalePositionGate::new(target));
+    }
+
+    /// Сверяет гейт с состоянием перемотки на момент `now`: если все полосы сели,
+    /// отсюда считается окно успокоения (описание модуля). Зовёт перемотка (в конце,
+    /// когда переставлены все полосы) и подача (полоса дождалась цели).
+    pub(super) fn note_seek_landing_if_landed(state: &mut BufferState, now: Instant) {
+        let seek_wait = state.seek_wait();
+        if let Some(gate) = state.stale_position_gate.as_mut() {
+            gate.note_seek_wait(seek_wait, now);
+        }
     }
 
     /// Первый момент, с которого данные есть на полке у КАЖДОЙ полосы с метками

@@ -34,6 +34,8 @@ struct DeviceState {
     frozen_audible: Option<Duration>,
     /// Кадров записано за всё время (не сбрасывается перемоткой и часами).
     written_frames_total: u64,
+    /// Кадров «прозвучало» за всё время (не сбрасывается новым выходом и перемоткой).
+    played_frames_total: u64,
     /// Начинала ли «карта» играть хоть раз.
     started: bool,
     /// Отрезки тишины после старта: сколько кадров было записано к этому моменту и
@@ -93,6 +95,7 @@ impl SimulatedAudioDevice {
         let available = state.submitted_frames - state.played_frames;
         let played = frames.min(available);
         state.played_frames += played;
+        state.played_frames_total += played;
         let starved_frames = frames - played;
         if starved_frames > 0 {
             state.silences.push(SilenceSlice {
@@ -117,6 +120,21 @@ impl SimulatedAudioDevice {
             .filter(|silence| silence.written_frames_before < state.written_frames_total)
             .map(|silence| silence.silent_for)
             .sum()
+    }
+
+    /// Сколько звука зритель услышал за всё время: записанное впрок, но не проигранное
+    /// (выход встал на паузу), сюда не входит.
+    pub fn heard_audio(&self) -> Duration {
+        let state = self.lock();
+        let Some((sample_rate, _)) = state.format else {
+            return Duration::ZERO;
+        };
+        Duration::from_nanos(
+            u64::try_from(
+                u128::from(state.played_frames_total) * 1_000_000_000 / u128::from(sample_rate),
+            )
+            .unwrap_or(u64::MAX),
+        )
     }
 
     /// Сколько записанного звука зритель не услышал: выход уничтожили вместе с буфером.

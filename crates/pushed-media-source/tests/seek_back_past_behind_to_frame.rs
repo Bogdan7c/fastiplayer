@@ -83,7 +83,6 @@ fn assert_landed_and_played_through(report: &PlaybackReport, target: Duration) {
 fn seek_back_further_than_behind_lands_from_the_shelf_when_the_page_never_resends() {
     let window = BufferWindow {
         ahead: Duration::from_secs(120),
-        behind: Duration::from_millis(400),
     };
     let policy = PushedSourcePolicy::recommended()
         .expect("policy")

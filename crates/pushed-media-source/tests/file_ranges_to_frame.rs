@@ -21,14 +21,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use media_prefetch::PrefetchConfig;
-use player_core::PlaybackState;
+use player_core::{PlaybackState, PlayerTickConfig};
 use pushed_media_source::{
     FileOpenProgress, FileSeekability, OpenedPushedFile, PushedFileError, PushedFileFailureClass,
     PushedFileOpener, PushedFilePolicy, RangeBytesVerdict, RangeFailure, RangeRequestIds,
     RangeRetryPolicy, UnsupportedFileLayout,
 };
 use support::media::own_fixture;
-use support::playback::{PlaybackReport, PresentedFrame, play_controlled};
+use support::playback::{
+    PlaybackReport, PresentedFrame, TICK, play_controlled, play_controlled_with_config,
+};
 use support::progressive_file::prepare_file;
 use support::range_page::{FakePage, PageFault, PageScript, SizeMode};
 
@@ -258,6 +260,56 @@ fn seek_to_the_middle_asks_the_page_for_bytes_near_the_target_not_from_the_start
     }
 }
 
+/// Решение 150 для `<video src>`: страница отвечает на запрос байтов у цели дольше
+/// срока перемотки (встала посреди ответа). Перемотка ждёт её — без «Seeking timed
+/// out» — и, когда байты пришли, садится на цель и играет до конца.
+///
+/// Файл перематывается квитанцией фонового демуксера: срок перемотки плеера идёт с
+/// квитанции, а чтение у цели до неё сроком не ограничено. Поэтому этот сквозной тест
+/// закрепляет итог для зрителя; ответ «ждём живую страницу» на всём пути (ядро файла →
+/// обёртка `seal` → фоновый демуксер) закрепляют `range_file::core_tests` и
+/// `demux-api` `progressive::data_wait`.
+#[test]
+fn a_seek_waits_for_a_range_answer_slower_than_the_commit_timeout() {
+    let commit_timeout = Duration::from_millis(300);
+    let target = Duration::from_millis(2400);
+    let policy = policy(quick_retry(Duration::from_secs(5)));
+    let (page, mut opener) = FakePage::start(own_fixture(FASTSTART), PageScript::default(), policy);
+    let opened = open(&mut opener).expect("opens");
+    let tick_config = PlayerTickConfig {
+        seek_commit_timeout: commit_timeout,
+        ..PlayerTickConfig::default()
+    };
+    let mut seeked = false;
+    let mut stalled_since = None;
+    let report =
+        play_controlled_with_config(prepare_file(opened, &policy), tick_config, |control| {
+            if !seeked && control.observation().position > Duration::from_millis(200) {
+                // Следующий ответ страницы (байты у цели) встанет после первой рамки.
+                page.arm(PageFault::StallMidway);
+                seeked = true;
+                control.seek(target);
+            }
+            if stalled_since.is_none() && page.is_stalled() {
+                stalled_since = Some(Instant::now());
+            }
+            // Страница молчит втрое дольше срока перемотки, потом досылает ответ.
+            if stalled_since.is_some_and(|since| since.elapsed() > commit_timeout * 3) {
+                page.release_stalled();
+                stalled_since = Some(Instant::now() + Duration::from_secs(3_600));
+            }
+        });
+    assert!(stalled_since.is_some(), "the page answer never stalled");
+    // Шаг плеера — не меньше `TICK`: ожидание шло дольше двух сроков перемотки.
+    assert!(
+        TICK * u32::try_from(report.waiting_ticks).expect("ticks") > commit_timeout * 2,
+        "the seek did wait for the page: {} ticks",
+        report.waiting_ticks
+    );
+    assert_landed_and_played_through(&report, target);
+    assert!(page.failure().is_none());
+}
+
 #[test]
 fn late_bytes_of_a_request_cancelled_by_a_seek_are_dropped_and_playback_goes_on() {
     // Перемотка назад: цель далеко за окном предзагрузки, значит читать надо заново.
@@ -423,6 +475,14 @@ fn leaving_the_tab_mid_file_plays_everything_that_arrived_and_ends_cleanly() {
         assert!(
             report.frames.len() < CLIP_FRAMES,
             "{name}: the missing part cannot be shown"
+        );
+        // Позиция на `Ended` — там, где встал показ, а не длительность файла (решение
+        // 133): обрезанное `seal` чтение источник отмечает `CutShort`, а фоновый
+        // демуксер приложения пробрасывает это плееру.
+        let position = report.final_position;
+        assert!(
+            position < CLIP && position.abs_diff(last) <= SEAL_SHOWN_MARGIN,
+            "{name}: the position must stay where playback stopped ({last:?}), not jump to {CLIP:?}: {position:?}"
         );
         eprintln!(
             "SEAL {name}: {} frames, last {last:?}, received until {received_until:?}",

@@ -31,6 +31,8 @@ mod iso_bmff;
 mod matroska;
 
 #[cfg(test)]
+mod content_tests;
+#[cfg(test)]
 mod iso_bmff_tests;
 #[cfg(test)]
 mod matroska_tests;
@@ -151,13 +153,6 @@ impl MediaTimeSpan {
 
     /// Нет ни одной микросекунды внутри.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "полка считает пустые отрезки арифметикой наложения; проверка — для тестов разметки"
-        )
-    )]
     pub(crate) fn is_empty(self) -> bool {
         self.start == self.end
     }
@@ -421,6 +416,45 @@ pub enum SegmentTimingError {
     TimeOutOfRange,
 }
 
+/// Есть ли в полосе видео — по дорожкам её init-сегмента.
+///
+/// Нужно предохранителю памяти полки (решение владельца 1.11.2026, «зеркало
+/// браузера»): браузер держит буфер каждой дорожки отдельно — видео до ~150 МиБ,
+/// звук только 12–20 МиБ, — и полка держит по каждой полосе не меньше. Узнаём из
+/// самих байтов init, а не из MIME страницы: страница — враг (инвариант 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LaneContent {
+    /// Есть видеодорожка (или тип дорожки не указан — считаем тяжёлой полосой).
+    CarriesVideo,
+    /// Все дорожки указаны и среди них нет видео (звук, субтитры).
+    WithoutVideo,
+}
+
+impl LaneContent {
+    /// Итог по дорожкам init: хоть одна видео или без типа — `CarriesVideo`.
+    pub(crate) fn of_tracks(tracks: impl IntoIterator<Item = TrackMedia>) -> Self {
+        let carries_video = tracks
+            .into_iter()
+            .any(|track| matches!(track, TrackMedia::Video | TrackMedia::Unknown));
+        if carries_video {
+            Self::CarriesVideo
+        } else {
+            Self::WithoutVideo
+        }
+    }
+}
+
+/// Что за дорожка, по её заголовку в init-сегменте.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TrackMedia {
+    /// Видео (`hdlr` = `vide`, WebM `TrackType` = 1).
+    Video,
+    /// Любой другой указанный тип (звук, субтитры, метаданные).
+    NotVideo,
+    /// Тип не указан или заголовок обрезан.
+    Unknown,
+}
+
 /// Контекст времени одного init-сегмента.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SegmentTimingContext {
@@ -448,6 +482,16 @@ impl SegmentTimingContext {
                 MatroskaTimingContext::parse(initialization).map(Self::Matroska)
             }
             PushedContainer::MpegTs => Ok(Self::Untimed),
+        }
+    }
+
+    /// Есть ли в полосе видео. У MPEG-TS init нет — считаем тяжёлой полосой
+    /// (полки у TS всё равно нет).
+    pub(crate) fn content(&self) -> LaneContent {
+        match self {
+            Self::IsoBmff(context) => context.content(),
+            Self::Matroska(context) => context.content(),
+            Self::Untimed => LaneContent::CarriesVideo,
         }
     }
 

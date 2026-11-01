@@ -1,9 +1,11 @@
-//! Общее состояние потока, которое видят обе стороны: длительность и первая ошибка.
+//! Общее состояние потока, которое видят обе стороны: длительность, первая ошибка
+//! и обрыв скачивания (отсечка, модуль [`crate::download_cut`]).
 
 use std::sync::{Mutex, MutexGuard};
 
 use media_core::DemuxRetryHint;
 
+use crate::download_cut::{DownloadCut, PlayableEnd};
 use crate::error::PushedStreamError;
 use crate::time::PushedDuration;
 
@@ -14,8 +16,21 @@ pub(crate) struct StreamState {
     duration: Mutex<PushedDuration>,
     /// Первая ошибка потока: после неё поток мёртв для обеих сторон.
     failure: Mutex<Option<PushedStreamError>>,
+    /// Оборван ли вход уходом страницы и где отсечка.
+    download_cut: Mutex<DownloadCut>,
     /// Подсказка повтора для плеера.
     retry_hint: DemuxRetryHint,
+    /// На связи ли тот, кто приносит байты (писатель потока жив).
+    producer: Mutex<ProducerLink>,
+}
+
+/// На связи ли поставщик байтов потока (страница через писателя).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProducerLink {
+    /// Писатель жив: новые байты ещё могут прийти.
+    Connected,
+    /// Писатель уничтожен (вкладка закрылась, канал оборвался): новых байтов не будет.
+    Gone,
 }
 
 impl StreamState {
@@ -24,8 +39,20 @@ impl StreamState {
         Self {
             duration: Mutex::new(PushedDuration::Unknown),
             failure: Mutex::new(None),
+            download_cut: Mutex::new(DownloadCut::NotCut),
             retry_hint,
+            producer: Mutex::new(ProducerLink::Connected),
         }
+    }
+
+    /// На связи ли поставщик байтов.
+    pub(crate) fn producer_link(&self) -> ProducerLink {
+        *lock(&self.producer)
+    }
+
+    /// Писатель ушёл: новых байтов не будет никогда (обратного перехода нет).
+    pub(crate) fn note_producer_gone(&self) {
+        *lock(&self.producer) = ProducerLink::Gone;
     }
 
     /// Текущая длительность.
@@ -48,6 +75,22 @@ impl StreamState {
     /// Первая ошибка — причина; всё, что сломалось после неё, — следствие.
     pub(crate) fn record_failure(&self, error: PushedStreamError) -> PushedStreamError {
         lock(&self.failure).get_or_insert(error).clone()
+    }
+
+    /// Оборван ли вход и где отсечка (полосы спрашивают на каждом пакете).
+    pub(crate) fn download_cut(&self) -> DownloadCut {
+        *lock(&self.download_cut)
+    }
+
+    /// Вход оборван уходом страницы: дальше `playable_end` пакеты не выдаются.
+    /// Повторный вызов (перемотка во время досмотра) переставляет отсечку.
+    pub(crate) fn cut_download(&self, playable_end: PlayableEnd) {
+        *lock(&self.download_cut) = DownloadCut::CutShort(playable_end);
+    }
+
+    /// Байты пришли снова (вход открыт заново): обрыва больше нет.
+    pub(crate) fn resume_download(&self) {
+        *lock(&self.download_cut) = DownloadCut::NotCut;
     }
 
     /// Подсказка повтора для плеера.

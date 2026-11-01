@@ -8,35 +8,43 @@
 //! стёрла его у себя (модуль `page_removal`). Держать больше, чем страница,
 //! безопасно (браузер чистит свой буфер и молча, без `remove()`), меньше — нельзя.
 //!
-//! **Предохранитель памяти** — страховка, а не обычный путь. Когда удерживаемые
-//! байты достигают порога «полон» (доля жёсткого потолка), выбрасывается по
-//! одному сегменту, пока байты не станут ниже порога:
-//! 1. самое старое СЫГРАННОЕ прошлое, но не ближе окна «назад» к позиции
-//!    ([`crate::BufferWindow::behind`] — гарантированный минимум прошлого): у
-//!    полосы по курсору — кончившееся не позже `min(позиция − назад, курсор)`, у
-//!    полосы, ждущей цель перемотки T, — не позже `T − назад`;
-//! 2. затем самое далёкое БУДУЩЕЕ — сегменты, начавшиеся позже окна «вперёд» от
-//!    позиции (у ждущей полосы — от цели) и не продолжающие непрерывный кусок у
-//!    неё: это время прежних мест (перемотка назад далеко от уже скачанного).
+//! **Предохранитель памяти — «зеркало браузера»** (решение владельца 1.11.2026,
+//! по замеру родного YouTube 4K60). Браузер при нехватке памяти выкидывает
+//! данные КАЖДОЙ дорожки отдельно, по её лимиту, и в одном порядке: сначала
+//! прошлое (с самого раннего, кроме куска у позиции), потом самое далёкое
+//! будущее. Звук лёгкий и лежит у него минутами, видео 4K — меньше минуты. Если
+//! полка держит по каждой полосе не меньше браузера и выкидывает в том же
+//! порядке, то у неё есть всё, что есть у браузера, — и перемотка в любое
+//! пройденное место доезжает: чего нет у нас, того нет и у браузера, и страница
+//! это перекачает.
 //!
-//! Без предохранителя удерживаемое прошлое объявило бы поток «полным» по байтам
-//! (`position::buffer_status`), и честная страница остановилась бы при пустом
-//! запасе вперёд — плеер встал бы навсегда. Шаг 2 нужен по той же причине:
-//! старое будущее после перемотки назад тоже держит байты, а «полон» при пустом
-//! запасе у цели перемотки — это ожидание до срока перемотки. Каждое такое
-//! выселение считается, а предупреждение в журнал пишется один раз на поток
-//! (только числа): при постоянной нехватке оно повторялось бы на каждом сегменте.
+//! Когда удерживаемые байты достигают порога «полон», выбрасывается по одному
+//! сегменту, пока байты не станут ниже порога:
+//! - только у полосы, перевалившей свою норму ([`lane_norm`](super::lane_norm):
+//!   полоса без видео — резерв, полосам с видео — остальное); среди таких — у
+//!   той, что перевалила сильнее;
+//! - в полосе — порядок браузера: самое раннее СЫГРАННОЕ (у полосы по курсору —
+//!   кончившееся не позже `min(позиция, курсор)`, у полосы, ждущей цель
+//!   перемотки T, — не позже T), затем самое далёкое будущее после непрерывного
+//!   куска у места плеера (позиция или цель). Сам этот кусок — то, что сейчас
+//!   играет, — не выбрасывается никогда.
 //!
-//! **Жёсткий потолок** (приём сегмента не помещается) — выбрасывается по одному
-//! самое ненужное, даже внутри окна «назад»: сначала давно показанное (у полосы,
-//! ждущей цель, — всё, что кончилось до цели), затем будущее за окном вперёд от
-//! цели у ждущих полос. Не помогло — страница игнорирует «полон», это ошибка.
+//! Выкинуть честно нечего (все полосы в своих нормах или у них остался только
+//! играющий кусок) — ничего не теряем: поток остаётся «полным»
+//! (`position::buffer_status`), и честная страница ждёт.
+//!
+//! **Жёсткий потолок** (приём сегмента не помещается) — тот же порядок, но уже
+//! у любой полосы, начиная с самой перевалившей норму. Не помогло — страница
+//! игнорирует «полон», это ошибка потока.
 //!
 //! Сегмент, копия которого ещё в трубе эпизода, не снимается никогда: памяти это
-//! не освободит, а полка потеряла бы его для перемотки назад.
+//! не освободит, а полка потеряла бы его для перемотки назад. Каждое выселение
+//! предохранителем считается, а предупреждение в журнал пишется один раз на
+//! поток (только числа).
 
 use bytes::Bytes;
 
+use super::lane_norm::LaneNorms;
 use super::seek::LaneSeekState;
 use super::{BufferState, BufferedLane, LaneTimeline, StreamBuffer};
 use crate::error::PushedStreamError;
@@ -77,10 +85,19 @@ impl MemoryGuardTally {
                 held_bytes,
                 full_at_bytes,
                 segment_bytes,
-                "Pushed media buffer reached its memory threshold; it now evicts old segments the page may still hold"
+                "Pushed media buffer reached its memory threshold; it now evicts like the browser does, lane by lane"
             );
         }
     }
+}
+
+/// Насколько остро нужна память.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryPressure {
+    /// Порог «полон»: выкидываем только у полос сверх нормы.
+    AtThreshold,
+    /// Сегмент не помещается в жёсткий потолок: выкидываем у любой полосы.
+    AtHardCeiling,
 }
 
 impl BufferedLane {
@@ -100,53 +117,48 @@ impl BufferedLane {
         limit.map_or(PlayedSoFar::Nothing, PlayedSoFar::Until)
     }
 
-    /// Докуда предохранитель памяти может выселять прошлое: то же «сыграно», но
-    /// не ближе окна «назад» к позиции (у ждущей полосы — к цели).
-    fn guard_releasable_until(&self, position: MediaTime, rules: &ShelfRules) -> PlayedSoFar {
-        let limit = match self.seek {
-            LaneSeekState::Following => self
-                .feed
-                .cursor()
-                .map(|cursor| rules.behind_limit(position).min(cursor.certain_end())),
-            LaneSeekState::AwaitingTarget { target, .. } => Some(rules.behind_limit(target)),
-        };
-        limit.map_or(PlayedSoFar::Nothing, PlayedSoFar::Until)
-    }
-
-    /// Начиная с какого момента будущее полосы — «далёкое» для предохранителя:
-    /// позже окна «вперёд» от места плеера (позиция или цель перемотки) и позже
-    /// конца непрерывного куска у этого места (его продолжение ещё подаётся).
-    fn far_future_after(&self, position: MediaTime, rules: &ShelfRules) -> MediaTime {
-        let anchor = match self.seek {
+    /// Место плеера для этой полосы: позиция или цель перемотки, которую полоса ждёт.
+    const fn player_place(&self, position: MediaTime) -> MediaTime {
+        match self.seek {
             LaneSeekState::Following => position,
             LaneSeekState::AwaitingTarget { target, .. } => target,
-        };
-        let window_end = rules.ahead_limit_from(anchor);
+        }
+    }
+
+    /// Какой сегмент полосы выкинуть первым — в порядке браузера: самое раннее
+    /// сыгранное, затем самое далёкое будущее после играющего куска. `None` —
+    /// осталось только играющее (или то, что ещё дочитывает труба).
+    fn first_to_evict(&self, position: MediaTime, rules: &ShelfRules) -> Option<usize> {
+        if let PlayedSoFar::Until(limit) = self.played_so_far(position)
+            && let Some((index, _)) = self.shelf.oldest_unshared_ended_by(limit)
+        {
+            return Some(index);
+        }
+        let place = self.player_place(position);
+        let playing_until = self
+            .shelf
+            .covered_run_end(place, rules)
+            .map_or(place, |run_end| run_end.max(place));
         self.shelf
-            .covered_run_end(anchor, rules)
-            .map_or(window_end, |run_end| run_end.max(window_end))
+            .latest_unshared_started_after(playing_until)
+            .map(|(index, _)| index)
     }
 }
 
 impl StreamBuffer {
     /// Предохранитель памяти (правило — в описании модуля): у порога «полон»
-    /// выселяет старое прошлое за окном «назад», затем далёкое будущее, пока
-    /// удерживаемые байты не станут ниже порога или выселять станет нечего.
+    /// выселяет у полос сверх нормы в порядке браузера, пока удерживаемые байты
+    /// не станут ниже порога или честно выселять станет нечего.
     pub(super) fn relieve_memory_pressure(&self, state: &mut BufferState) {
-        let rules = self.rules;
         while self.ledger.held_bytes() >= self.full_at_held_bytes {
-            let Some(position) = state.position() else {
-                return;
-            };
-            let candidate = oldest_played_beyond_behind(state, position, &rules)
-                .or_else(|| farthest_future(state, position, &rules));
-            let Some((lane_id, index)) = candidate else {
+            let Some((lane_id, index)) = self.choose_eviction(state, MemoryPressure::AtThreshold)
+            else {
                 return;
             };
             let Some(evicted) = state
                 .lanes
                 .get_mut(&lane_id)
-                .and_then(|lane| lane.shelf.remove(index))
+                .and_then(|lane| lane.shelf.evict(index))
             else {
                 return;
             };
@@ -174,7 +186,12 @@ impl StreamBuffer {
                 Err(exceeded) => {
                     // Нечего выбросить — страница игнорирует «полон»: это ошибка.
                     // Каждый шаг снимает сегмент с полки, поэтому цикл конечен.
-                    if !evict_one_unneeded(state, &self.rules) {
+                    let removed = self
+                        .choose_eviction(state, MemoryPressure::AtHardCeiling)
+                        .and_then(|(lane_id, index)| {
+                            state.lanes.get_mut(&lane_id)?.shelf.evict(index)
+                        });
+                    if removed.is_none() {
                         return Err(PushedStreamError::IntakeLimitExceeded {
                             limit: exceeded.limit,
                         });
@@ -184,102 +201,45 @@ impl StreamBuffer {
         }
     }
 
+    /// Какой сегмент выкинуть: полосы по убыванию превышения нормы (у порога —
+    /// только сверх нормы), в полосе — первый в порядке браузера.
+    fn choose_eviction(
+        &self,
+        state: &BufferState,
+        pressure: MemoryPressure,
+    ) -> Option<(LaneId, usize)> {
+        let position = state.position()?;
+        let norms = LaneNorms::compute(
+            state
+                .lanes
+                .iter()
+                .filter(|(_, lane)| lane.timeline == LaneTimeline::Timed)
+                .map(|(lane_id, lane)| (*lane_id, lane.content)),
+            self.full_at_held_bytes,
+            self.lane_without_video_reserve_bytes,
+        );
+        let mut candidates: Vec<(LaneId, &BufferedLane, i128)> = state
+            .lanes
+            .iter()
+            .filter(|(_, lane)| lane.timeline == LaneTimeline::Timed)
+            .map(|(lane_id, lane)| {
+                let excess = norms.excess_of(*lane_id, lane.shelf.held_media_bytes());
+                (*lane_id, lane, excess)
+            })
+            .filter(|(_, _, excess)| pressure == MemoryPressure::AtHardCeiling || *excess > 0)
+            .collect();
+        // Сильнее перевалившая норму — первой; при равенстве — по номеру полосы
+        // (детерминированно).
+        candidates.sort_by(|left, right| right.2.cmp(&left.2).then(left.0.cmp(&right.0)));
+        candidates.into_iter().find_map(|(lane_id, lane, _)| {
+            lane.first_to_evict(position, &self.rules)
+                .map(|index| (lane_id, index))
+        })
+    }
+
     /// Счёт предохранителя памяти — для тестов.
     #[cfg(test)]
     pub(crate) fn memory_guard_tally(&self) -> MemoryGuardTally {
         self.lock().memory_guard
     }
-}
-
-/// Самый давний сыгранный сегмент за окном «назад» среди полос (шаг 1
-/// предохранителя), чьи байты держит только полка.
-fn oldest_played_beyond_behind(
-    state: &BufferState,
-    position: MediaTime,
-    rules: &ShelfRules,
-) -> Option<(LaneId, usize)> {
-    oldest_unshared_among(state, |lane| lane.guard_releasable_until(position, rules))
-}
-
-/// Самый далёкий сегмент будущего среди полос (шаг 2 предохранителя).
-fn farthest_future(
-    state: &BufferState,
-    position: MediaTime,
-    rules: &ShelfRules,
-) -> Option<(LaneId, usize)> {
-    state
-        .lanes
-        .iter()
-        .filter(|(_, lane)| lane.timeline == LaneTimeline::Timed)
-        .filter_map(|(lane_id, lane)| {
-            lane.shelf
-                .latest_unshared_started_after(lane.far_future_after(position, rules))
-                .map(|(index, start)| (*lane_id, index, start))
-        })
-        .max_by_key(|(_, _, start)| *start)
-        .map(|(lane_id, index, _)| (lane_id, index))
-}
-
-/// Снимает с полок один самый ненужный сегмент у жёсткого потолка; `false` —
-/// таких нет.
-fn evict_one_unneeded(state: &mut BufferState, rules: &ShelfRules) -> bool {
-    let Some(position) = state.position() else {
-        return false;
-    };
-    let candidate = oldest_played(state, position).or_else(|| farthest_ahead(state, rules));
-    let Some((lane_id, index)) = candidate else {
-        return false;
-    };
-    state
-        .lanes
-        .get_mut(&lane_id)
-        .and_then(|lane| lane.shelf.remove(index))
-        .is_some()
-}
-
-/// Самый давний показанный сегмент среди полос (только полка держит его байты).
-///
-/// Показанный — кончился не позже позиции плеера и курсора подачи своей полосы;
-/// у полосы, ждущей цель перемотки, — не позже цели.
-fn oldest_played(state: &BufferState, position: MediaTime) -> Option<(LaneId, usize)> {
-    oldest_unshared_among(state, |lane| lane.played_so_far(position))
-}
-
-/// Самый давний сегмент среди полос с временем, кончившийся не позже своей
-/// границы `limit_of(полоса)`, чьи байты держит только полка.
-fn oldest_unshared_among(
-    state: &BufferState,
-    limit_of: impl Fn(&BufferedLane) -> PlayedSoFar,
-) -> Option<(LaneId, usize)> {
-    state
-        .lanes
-        .iter()
-        .filter(|(_, lane)| lane.timeline == LaneTimeline::Timed)
-        .filter_map(|(lane_id, lane)| {
-            let PlayedSoFar::Until(limit) = limit_of(lane) else {
-                return None;
-            };
-            lane.shelf
-                .oldest_unshared_ended_by(limit)
-                .map(|(index, end)| (*lane_id, index, end))
-        })
-        .min_by_key(|(_, _, end)| *end)
-        .map(|(lane_id, index, _)| (lane_id, index))
-}
-
-/// Самый далёкий сегмент за окном вперёд от цели у полос, ждущих цель перемотки.
-fn farthest_ahead(state: &BufferState, rules: &ShelfRules) -> Option<(LaneId, usize)> {
-    state
-        .lanes
-        .iter()
-        .filter(|(_, lane)| lane.timeline == LaneTimeline::Timed)
-        .filter_map(|(lane_id, lane)| match lane.seek {
-            LaneSeekState::Following => None,
-            LaneSeekState::AwaitingTarget { target, .. } => lane
-                .shelf
-                .latest_unshared_started_after(rules.ahead_limit_from(target))
-                .map(|(index, start)| (*lane_id, index, start)),
-        })
-        .max_by_key(|(_, _, start)| *start)
-        .map(|(lane_id, index, _)| (lane_id, index))
 }

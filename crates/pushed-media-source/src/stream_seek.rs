@@ -9,7 +9,10 @@
 //! эпизодов (их `Drop` только будит поток — `ProgressiveDemuxer::drop` не делает
 //! `join`). Байтов перемотка не ждёт: если цели нет на полке, демуксер отвечает
 //! `TemporarilyUnavailable`, пока страница не пришлёт сегменты с цели, а плеер
-//! всё это время стоит в «перемотке» (крутилка) с обычным сроком перемотки.
+//! всё это время стоит в «перемотке» (крутилка). Пока страница жива, поток говорит
+//! плееру, что ждёт живого поставщика (`Demuxer::data_wait`, модуль
+//! [`crate::producer_wait`]), и срок перемотки плеера это ожидание не засчитывает
+//! (решение 150).
 //!
 //! **Порядок.** Сначала буфер потока перематывает все полосы разом (одно решение
 //! «на полке / просить страницу» на поток — иначе запрос ушёл бы от каждой
@@ -25,6 +28,7 @@ use media_core::{
     TimelineNotSeekableReason,
 };
 
+use crate::download_cut::DownloadCut;
 use crate::stream_buffer::{StreamBuffer, StreamSeekError};
 use crate::stream_state::StreamState;
 use crate::time::PushedDuration;
@@ -89,11 +93,29 @@ pub(crate) fn seek_stream(
     );
     // Эпизоды старой позиции уничтожаются здесь, уже вне замка буфера.
     drop(repositioned.stale);
+    recut_download_after_seek(buffer, state);
     let landed = inner.seek_with_request(request)?;
     Ok(DemuxSeekResult {
         requested_position: requested_position(request.timestamp),
         ..landed
     })
+}
+
+/// Перемотка во время досмотра оборванного скачивания: отсечка считается заново
+/// от новой позиции (её уже поставил буфер — позиция после перемотки = цель).
+///
+/// Вызывается ДО перемотки полос: полоса, вставшая на новое место, сразу видит
+/// новую отсечку. Без обрыва ничего не делает.
+fn recut_download_after_seek(buffer: &StreamBuffer, state: &StreamState) {
+    if let DownloadCut::CutShort(previous) = state.download_cut() {
+        let playable_end = buffer.playable_end();
+        tracing::debug!(
+            ?previous,
+            ?playable_end,
+            "Pushed media download cut moved after a seek within the downloaded media"
+        );
+        state.cut_download(playable_end);
+    }
 }
 
 /// Цель запроса на шкале плеера.

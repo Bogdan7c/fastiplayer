@@ -191,11 +191,10 @@ fn resent_past_segment_is_shelved_not_played_twice() {
 }
 
 #[test]
-fn played_segments_beyond_the_behind_window_stay_while_the_page_holds_them() {
+fn played_segments_stay_while_the_page_holds_them() {
     let media = fixture();
     let window = BufferWindow {
         ahead: Duration::from_secs(1),
-        behind: ms(200),
     };
     let (mut writer, mut opener) =
         video_stream(policy().with_buffer_window(window).expect("window"));
@@ -258,10 +257,7 @@ fn ceiling_first_evicts_played_segments_then_refuses() {
 #[test]
 fn buffer_status_reports_exact_ahead_minimum_over_lanes_and_full() {
     let media = fixture();
-    let window = BufferWindow {
-        ahead: ms(400),
-        behind: Duration::ZERO,
-    };
+    let window = BufferWindow { ahead: ms(400) };
     let (mut writer, _opener) =
         pushed_stream(policy().with_buffer_window(window).expect("window")).expect("stream");
     let monitor = writer.monitor();
@@ -326,17 +322,13 @@ fn bytes_after_end_of_stream_reopen_input_and_play_in_a_new_episode() {
 fn zero_ahead_window_is_refused_and_monitor_crosses_threads() {
     let zero = BufferWindow {
         ahead: Duration::ZERO,
-        behind: Duration::from_secs(1),
     };
     assert_eq!(
         policy().with_buffer_window(zero).err(),
         Some(PushedSourcePolicyError::ZeroBufferAhead)
     );
     let defaults = policy().buffer_window();
-    assert_eq!(
-        (defaults.ahead, defaults.behind),
-        (Duration::from_secs(120), Duration::from_secs(30))
-    );
+    assert_eq!(defaults.ahead, Duration::from_secs(120));
     fn assert_send_sync<T: Send + Sync + Clone>() {}
     assert_send_sync::<PushedStreamMonitor>();
 }

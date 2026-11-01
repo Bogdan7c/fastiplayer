@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use player_core::{
-    PlaybackState, PlayerCommand, PlayerEvent, PlayerSession, PlayerTickContext,
+    PlaybackState, PlayerCommand, PlayerEvent, PlayerSession, PlayerTickConfig, PlayerTickContext,
     PlayerVideoDropReason, PreparedMedia, SeekRequest,
 };
 use pushed_media_source::{
@@ -60,10 +60,14 @@ pub struct PlaybackReport {
     pub presented_count: u64,
     /// PCM, записанный в выход.
     pub audio_samples: Vec<f32>,
+    /// Сколько звука прозвучало (записанное впрок за паузой выхода не в счёт).
+    pub heard_audio: Duration,
     /// Частота и каналы выхода.
     pub audio_format: Option<(u32, usize)>,
     /// Состояние в конце.
     pub final_state: PlaybackState,
+    /// Позиция плеера в конце (на `Ended` — где плеер поставил ползунок).
+    pub final_position: Duration,
     /// Ждал ли плеер данных (Buffering) после начала показа.
     pub buffered_after_start: bool,
     /// Ошибки плеера.
@@ -273,6 +277,17 @@ impl PlayerControl<'_> {
 /// тест на этом шаге ничего не скомандовал (или по пределу шагов).
 pub fn play_controlled(
     prepared: PreparedMedia,
+    between_ticks: impl FnMut(&mut PlayerControl<'_>),
+) -> PlaybackReport {
+    play_controlled_with_config(prepared, PlayerTickConfig::default(), between_ticks)
+}
+
+/// Как [`play_controlled`], но с заданными настройками шага плеера (например,
+/// коротким сроком перемотки `seek_commit_timeout`, чтобы «дольше срока» шло доли
+/// секунды).
+pub fn play_controlled_with_config(
+    prepared: PreparedMedia,
+    tick_config: PlayerTickConfig,
     mut between_ticks: impl FnMut(&mut PlayerControl<'_>),
 ) -> PlaybackReport {
     let device = SimulatedAudioDevice::default();
@@ -298,6 +313,7 @@ pub fn play_controlled(
     let mut dropped_frames = Vec::new();
     let mut presented_count = 0;
     let mut final_state = PlaybackState::Idle;
+    let mut final_position = Duration::ZERO;
     let mut buffered_after_start = false;
     let mut seeks = Vec::new();
     let mut waiting_ticks = 0;
@@ -308,7 +324,7 @@ pub fn play_controlled(
         max_tick_gap = max_tick_gap.max(tick_gap);
         device.advance(tick_gap.min(AUDIO_ADVANCE_PER_TICK_CAP));
         previous_tick = now;
-        let result = session.tick(PlayerTickContext::new(now));
+        let result = session.tick(PlayerTickContext::with_config(now, tick_config));
         presented_count += result.video_frames_presented;
         let snapshot = session.compose_snapshot();
         presentations.observe_tick(tick, &result, &snapshot);
@@ -333,6 +349,7 @@ pub fn play_controlled(
             }
         }
         final_state = snapshot.playback_state;
+        final_position = snapshot.current_position;
         buffered_after_start |= started_showing && final_state == PlaybackState::Buffering;
         state_trace.push((tick, final_state, snapshot.timeline.seeking));
         if snapshot.timeline.seeking
@@ -363,8 +380,10 @@ pub fn play_controlled(
         unattributed_presentations,
         presented_count,
         audio_samples: device.written_samples(),
+        heard_audio: device.heard_audio(),
         audio_format: device.format(),
         final_state,
+        final_position,
         buffered_after_start,
         errors,
         seeks,

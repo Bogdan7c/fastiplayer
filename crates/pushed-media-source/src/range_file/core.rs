@@ -262,6 +262,11 @@ impl FileCore {
 }
 
 impl FileCore {
+    /// Ждёт ли файл байтов живой страницы (правило — `FileState::data_wait`).
+    pub(super) fn data_wait(&self) -> media_core::DemuxDataWait {
+        self.lock().data_wait()
+    }
+
     /// Было ли чтение оборвано `seal` раньше настоящего конца файла.
     pub(super) fn read_cut_by_seal(&self) -> bool {
         self.lock().read_cut_by_seal()

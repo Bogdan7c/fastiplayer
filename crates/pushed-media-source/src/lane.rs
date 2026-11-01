@@ -120,6 +120,9 @@ impl LaneIntake {
             self.buffer.discard_lane(self.lane)?;
             return Ok(AppendOutcome::DiscardedConsumerClosed);
         }
+        // Счётчик «принесено для ожидаемого» (решение 151) — до сборки сегмента: у
+        // медленной страницы большой сегмент идёт кусками секундами.
+        self.buffer.note_incoming_bytes(self.lane, chunk.len());
         let mut completed = Vec::new();
         self.framer
             .push(chunk, &mut completed)
@@ -218,6 +221,7 @@ impl LaneIntake {
         let timing = SegmentTimingContext::from_initialization(self.container, &initialization)
             .map_err(|error| self.framing_error(FramingError::Timing(error)))?;
         let segment = self.buffer.charge(initialization)?;
+        self.buffer.note_lane_content(self.lane, timing.content())?;
         self.initialization = Some(CurrentInitialization { segment, timing });
         self.buffer.finish_running_episode(self.lane)
     }

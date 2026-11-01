@@ -22,7 +22,8 @@ pub(crate) use ebml::{EbmlElementSize, read_element_header};
 pub(crate) use iso_bmff::read_box_header;
 pub use timing::SegmentTimingError;
 pub(crate) use timing::{
-    MediaTime, MediaTimeSpan, SegmentEnd, SegmentTiming, SegmentTimingContext, TimedSpan,
+    LaneContent, MediaTime, MediaTimeSpan, SegmentEnd, SegmentTiming, SegmentTimingContext,
+    TimedSpan,
 };
 
 use self::iso_bmff::IsoBmffFramer;

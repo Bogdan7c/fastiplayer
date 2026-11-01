@@ -39,7 +39,7 @@ use crate::container::PushedContainer;
 use crate::episode::EpisodeFactory;
 use crate::error::PushedStreamError;
 use crate::feed::{EpisodeContinuity, EpisodeKey, FeedAdmission, LaneFeed};
-use crate::framing::{MediaTime, TimedSpan};
+use crate::framing::{LaneContent, MediaTime, TimedSpan};
 use crate::intake::{ChargedSegment, IntakeLedger};
 use crate::lane::{LaneId, LaneMailbox};
 use crate::live_timeline::LiveTimelineFeed;
@@ -47,15 +47,18 @@ use crate::mailbox::FeedBacklog;
 use crate::page_seek::PageSeekBook;
 use crate::shelf::{LaneShelf, ShelfEntry, ShelfRules};
 
+mod delivery_progress;
 mod eviction;
+mod lane_norm;
 mod live;
 mod page_removal;
+mod playable_end;
 mod position;
 mod seek;
 mod seek_outlook;
 
 pub(crate) use eviction::MemoryGuardTally;
-use position::StalePositionGate;
+use position::{SeekWait, StalePositionGate};
 use seek::LaneSeekState;
 pub(crate) use seek::{LaneLanding, StreamSeekError};
 
@@ -93,6 +96,9 @@ struct BufferedLane {
     seek: LaneSeekState,
     /// Куда полосу поставила последняя перемотка (для ответа плееру).
     landing: Option<LaneLanding>,
+    /// Есть ли в полосе видео (по последнему init) — от этого её норма памяти
+    /// у предохранителя (модуль `eviction`). До первого init — тяжёлая полоса.
+    content: LaneContent,
 }
 
 /// Состояние под замком.
@@ -112,6 +118,9 @@ struct BufferState {
     stale_position_gate: Option<StalePositionGate>,
     /// Счёт выселений предохранителем памяти.
     memory_guard: MemoryGuardTally,
+    /// Сколько байтов страница принесла полосам, которым плееру нечего больше подать
+    /// (модуль `delivery_progress`, решение 151).
+    awaited_delivery_bytes: u64,
 }
 
 impl BufferState {
@@ -125,12 +134,26 @@ impl BufferState {
             live_timeline: None,
             stale_position_gate: None,
             memory_guard: MemoryGuardTally::default(),
+            awaited_delivery_bytes: 0,
         }
     }
 
     /// Позиция плеера (или начало первого поданного, пока он молчит).
     fn position(&self) -> Option<MediaTime> {
         self.reported_position.or(self.first_fed_start)
+    }
+
+    /// Ждёт ли хоть одна полоса цель перемотки.
+    fn seek_wait(&self) -> SeekWait {
+        let awaiting = self
+            .lanes
+            .values()
+            .any(|lane| matches!(lane.seek, LaneSeekState::AwaitingTarget { .. }));
+        if awaiting {
+            SeekWait::AwaitingTarget
+        } else {
+            SeekWait::Landed
+        }
     }
 
     /// Полоса буфера.
@@ -172,10 +195,12 @@ pub(crate) struct StreamBuffer {
     rules: ShelfRules,
     /// Удерживаемые байты, с которых источник говорит «полон».
     full_at_held_bytes: usize,
+    /// Резерв памяти полосы без видео у предохранителя (модуль `lane_norm`).
+    lane_without_video_reserve_bytes: usize,
     /// Допуск совпадения цели перемотки с позицией (и с целью страницы).
     seek_match_tolerance: Duration,
-    /// Сколько после перемотки не верить позициям далеко от цели.
-    stale_position_window: Duration,
+    /// Сколько после посадки перемотки не верить позициям далеко от цели.
+    seek_settle_window: Duration,
 }
 
 /// Настройки буфера потока (из [`crate::PushedSourcePolicy`]).
@@ -188,8 +213,10 @@ pub(crate) struct StreamBufferRules {
     /// Удерживаемые байты, с которых источник говорит «полон» (меньше жёсткого
     /// потолка: честная страница останавливается раньше, чем поток умрёт).
     pub(crate) full_at_held_bytes: usize,
-    /// Сколько после перемотки не верить позициям далеко от цели.
-    pub(crate) stale_position_window: Duration,
+    /// Резерв памяти полосы без видео у предохранителя («зеркало браузера»).
+    pub(crate) lane_without_video_reserve_bytes: usize,
+    /// Сколько после посадки перемотки не верить позициям далеко от цели.
+    pub(crate) seek_settle_window: Duration,
 }
 
 impl StreamBuffer {
@@ -207,8 +234,9 @@ impl StreamBuffer {
             episodes,
             rules: rules.shelf,
             full_at_held_bytes: rules.full_at_held_bytes,
+            lane_without_video_reserve_bytes: rules.lane_without_video_reserve_bytes,
             seek_match_tolerance: rules.page_seek_match_tolerance,
-            stale_position_window: rules.stale_position_window,
+            seek_settle_window: rules.seek_settle_window,
         }
     }
 
@@ -226,8 +254,19 @@ impl StreamBuffer {
             feed: LaneFeed::new(lane, mailbox, max_pending_episodes),
             seek: LaneSeekState::Following,
             landing: None,
+            content: LaneContent::CarriesVideo,
         };
         self.lock().lanes.insert(lane, buffered);
+    }
+
+    /// Новый init полосы сказал, есть ли в ней видео.
+    pub(crate) fn note_lane_content(
+        &self,
+        lane: LaneId,
+        content: LaneContent,
+    ) -> Result<(), PushedStreamError> {
+        self.lock().lane_mut(lane)?.content = content;
+        Ok(())
     }
 
     /// `changeType`: другой контейнер — текущий эпизод полосы закончен.
@@ -448,6 +487,14 @@ impl StreamBuffer {
         Ok(())
     }
 
+    /// Ждёт ли хоть одна полоса байтов страницы: её вход открыт.
+    pub(crate) fn any_lane_input_open(&self) -> bool {
+        self.lock()
+            .lanes
+            .values()
+            .any(|lane| lane.feed.input_open())
+    }
+
     /// Захватывает состояние; отравленный mutex не мешает работе.
     fn lock(&self) -> MutexGuard<'_, BufferState> {
         self.state
@@ -467,3 +514,11 @@ mod limits_tests;
 #[cfg(test)]
 #[path = "stream_buffer_removal_tests.rs"]
 mod removal_tests;
+
+#[cfg(test)]
+#[path = "stream_buffer_mirror_tests.rs"]
+mod mirror_tests;
+
+#[cfg(test)]
+#[path = "stream_buffer_settle_tests.rs"]
+mod settle_tests;

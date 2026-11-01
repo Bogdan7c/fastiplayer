@@ -27,11 +27,14 @@ use crate::feed::{EpisodeContinuity, EpisodeKey, FeedCursor};
 use crate::framing::{MediaTime, MediaTimeSpan, SegmentEnd, TimedSpan};
 use crate::intake::ChargedSegment;
 
+#[path = "shelf_forgotten.rs"]
+mod forgotten;
 #[path = "shelf_late_join.rs"]
 mod late_join;
 #[path = "shelf_removal.rs"]
 mod removal;
 
+use forgotten::ForgottenSpans;
 pub(crate) use late_join::{LateJoinCandidates, LateJoinWindow};
 pub(crate) use removal::{PlayedSoFar, ShelfRemoval};
 
@@ -79,21 +82,9 @@ impl ShelfRules {
         }
     }
 
-    /// Граница «далеко впереди»: сегменты, начавшиеся позже (и не продолжающие
-    /// кусок у позиции), предохранитель памяти снимает после старого прошлого.
-    pub(crate) fn ahead_limit_from(&self, position: MediaTime) -> MediaTime {
-        later(position, signed_micros(self.window.ahead))
-    }
-
     /// Запас вперёд, при котором источник «полон».
     pub(crate) const fn ahead_limit(&self) -> Duration {
         self.window.ahead
-    }
-
-    /// Граница гарантированного прошлого: сегменты, кончившиеся позже, держатся
-    /// даже под предохранителем памяти (решение «помним, пока помнит страница»).
-    pub(crate) fn behind_limit(&self, position: MediaTime) -> MediaTime {
-        earlier(position, signed_micros(self.window.behind))
     }
 
     /// Накрывают ли отрезки друг друга настолько, что новый заменяет старый.
@@ -261,6 +252,9 @@ pub(crate) struct FedSegment {
 pub(crate) struct LaneShelf {
     /// Сегменты по возрастанию `span.start`; при равных — в порядке прихода.
     entries: Vec<ShelfEntry>,
+    /// Время, которое полоса забыла сама (выселение, стирание страницей): для
+    /// позднего вступления это дыра, а не позднее начало полосы.
+    forgotten: ForgottenSpans,
 }
 
 impl LaneShelf {
@@ -488,9 +482,21 @@ impl LaneShelf {
             .max_by_key(|(_, start)| *start)
     }
 
-    /// Снимает сегмент с полки.
-    pub(crate) fn remove(&mut self, index: usize) -> Option<ShelfEntry> {
-        (index < self.entries.len()).then(|| self.entries.remove(index))
+    /// Сколько байтов медиасегментов лежит на полке (включая поданные, чью
+    /// копию ещё дочитывает труба): мера полосы для предохранителя памяти.
+    pub(crate) fn held_media_bytes(&self) -> usize {
+        self.entries
+            .iter()
+            .map(ShelfEntry::media_len)
+            .fold(0, usize::saturating_add)
+    }
+
+    /// Выселяет сегмент с полки (предохранитель памяти) и запоминает его время
+    /// как забытое.
+    pub(crate) fn evict(&mut self, index: usize) -> Option<ShelfEntry> {
+        let evicted = (index < self.entries.len()).then(|| self.entries.remove(index))?;
+        self.forgotten.note(evicted.span());
+        Some(evicted)
     }
 
     /// Снимает с полки всё, что ещё не подано (полоса стала полосой без времени:

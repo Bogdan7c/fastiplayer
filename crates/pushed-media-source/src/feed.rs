@@ -274,6 +274,12 @@ impl LaneFeed {
         }
     }
 
+    /// Открыт ли вход полосы: страница ещё может прислать байты (не было
+    /// `endOfStream` или вход открыт заново).
+    pub(crate) const fn input_open(&self) -> bool {
+        !self.input_ended
+    }
+
     /// Конец входа полосы: эпизод дочитывается, плеер получит конец потока.
     pub(crate) fn end_input(&mut self) {
         self.input_ended = true;

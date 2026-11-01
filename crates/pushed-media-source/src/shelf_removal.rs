@@ -111,6 +111,7 @@ impl LaneShelf {
             } else {
                 report.released_segments += 1;
                 report.released_bytes += entry.media.len();
+                self.forgotten.note(span);
                 released.push(entry);
             }
         }

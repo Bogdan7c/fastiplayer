@@ -217,7 +217,7 @@ fn page_removal_of_an_mpeg_ts_lane_is_a_no_op() {
 }
 
 #[test]
-fn memory_guard_evicts_old_played_past_below_the_full_threshold_and_keeps_the_behind_window() {
+fn memory_guard_evicts_old_played_past_below_the_full_threshold_and_keeps_the_recent_past() {
     let media = split_mp4(VIDEO_H264_64_4S);
     let largest = media
         .fragments
@@ -230,7 +230,6 @@ fn memory_guard_evicts_old_played_past_below_the_full_threshold_and_keeps_the_be
     let ceiling = media.init.len() + 8 * largest;
     let window = BufferWindow {
         ahead: Duration::from_secs(120),
-        behind: ms(800),
     };
     let small = policy()
         .with_buffer_window(window)
@@ -285,10 +284,7 @@ fn memory_guard_after_a_far_seek_back_evicts_the_old_future_so_the_target_is_not
     let ceiling = threshold.div_ceil(75) * 100;
     // Окно вперёд — 0,8 с: всё, что дальше 0,8 с от цели и не продолжает кусок у
     // неё, — «далёкое будущее».
-    let window = BufferWindow {
-        ahead: ms(800),
-        behind: ms(400),
-    };
+    let window = BufferWindow { ahead: ms(800) };
     let small = policy()
         .with_buffer_window(window)
         .expect("window")

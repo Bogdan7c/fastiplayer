@@ -18,6 +18,8 @@
 
 use std::time::{Duration, Instant};
 
+use media_core::{DemuxDataWait, LiveProducerProgress};
+
 use super::error::PushedFileError;
 use super::ids::{RangeRequest, RangeRequestId, RangeRequestIds};
 use super::retry::{RangeRetryPolicy, RetryDecision, RetrySchedule};
@@ -144,6 +146,9 @@ pub(super) struct FileState {
     /// не там, где кончается на самом деле» — по этому факту демуксер, споткнувшийся
     /// об обрыв, считает его концом потока ([`super::sealed_end`]).
     read_cut_by_seal: bool,
+    /// Сколько байтов страница принесла по запросам этого файла (счётчик для решения
+    /// 151: пока растёт, перемотка ждёт страницу без предела).
+    delivered_bytes: u64,
 }
 
 impl FileState {
@@ -162,6 +167,30 @@ impl FileState {
             reader_closed: false,
             failure: None,
             read_cut_by_seal: false,
+            delivered_bytes: 0,
+        }
+    }
+
+    /// Ждёт ли файл байтов живой страницы (решение 150): запрос странице в пути
+    /// (страница шлёт байты или повтор после сбоя сети ещё впереди), файл не запечатан,
+    /// не сломан и читатель жив. Ответ с законченным запросом — «не уточняю»: байты уже
+    /// лежат у читателя, ждать страницу незачем.
+    pub(super) fn data_wait(&self) -> DemuxDataWait {
+        let awaiting_page = self.failure.is_none()
+            && !self.sealed
+            && !self.reader_closed
+            && self.active.as_ref().is_some_and(|active| {
+                matches!(
+                    active.phase,
+                    ReadPhase::Receiving | ReadPhase::WaitingToRetry { .. }
+                )
+            });
+        if awaiting_page {
+            DemuxDataWait::LiveProducer {
+                progress: LiveProducerProgress::from_delivered_bytes(self.delivered_bytes),
+            }
+        } else {
+            DemuxDataWait::Unattributed
         }
     }
 
@@ -378,6 +407,8 @@ impl FileState {
         active.buffer.extend_from_slice(payload);
         if !payload.is_empty() {
             self.retry.record_progress();
+            let delivered = u64::try_from(payload.len()).unwrap_or(u64::MAX);
+            self.delivered_bytes = self.delivered_bytes.saturating_add(delivered);
         }
         Ok(RangeBytesVerdict::Accepted)
     }

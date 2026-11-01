@@ -47,6 +47,7 @@
 
 mod buffer_window;
 mod container;
+mod download_cut;
 mod episode;
 mod episode_seam;
 mod error;
@@ -62,6 +63,7 @@ mod page_removal;
 mod page_seek;
 mod pipe;
 mod policy;
+mod producer_wait;
 mod protection;
 mod random_access;
 mod range_file;
@@ -77,6 +79,7 @@ mod track_identity;
 
 pub use buffer_window::{BufferIntake, BufferStatus, BufferWindow};
 pub use container::{PushedContainer, UnsupportedMediaType};
+pub use download_cut::{DownloadCutOutcome, DownloadCutReport, PlayableEnd};
 pub use error::{LaneLayoutProblem, PushedStreamError, PushedStreamFailureClass};
 pub use framing::{FramingError, SegmentKind};
 pub use lane::{AppendOutcome, LaneId};

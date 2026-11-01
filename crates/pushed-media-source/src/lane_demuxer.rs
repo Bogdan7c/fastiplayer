@@ -15,6 +15,10 @@
 //! Смена эпизода без перемотки — «шов» ([`crate::episode_seam`]): пакеты нового
 //! эпизода, повторяющие уже выданное время, плееру не уходят.
 //!
+//! Обрыв скачивания ([`crate::download_cut`]): первый пакет на отсечке или за ней
+//! кончает полосу — дальше она отвечает концом потока, пока перемотка не поставит
+//! её на новое место (там отсечку уже переставил поток).
+//!
 //! Недоподанное: если подача полосы стояла на полном ящике, демуксер, забрав
 //! эпизод (или найдя ящик пустым), просит буфер продолжить подачу — без
 //! ожидания замка буфера (`StreamBuffer::try_catch_up_feeding`).
@@ -29,6 +33,7 @@ use media_core::{
     TrackTimestamp,
 };
 
+use crate::download_cut::{CutAdmission, LaneCutProgress};
 use crate::episode::EpisodeHandle;
 use crate::episode_seam::{EpisodeSeam, SeamDecision};
 use crate::error::PushedStreamError;
@@ -85,6 +90,8 @@ pub(crate) struct LaneDemuxer {
     buffer: Arc<StreamBuffer>,
     /// Шов между эпизодами: пол выданного времени.
     seam: EpisodeSeam,
+    /// Дошла ли полоса до отсечки обрыва скачивания.
+    cut_progress: LaneCutProgress,
 }
 
 impl LaneDemuxer {
@@ -105,6 +112,7 @@ impl LaneDemuxer {
             random_access: RandomAccessGate::default(),
             buffer,
             seam: EpisodeSeam::default(),
+            cut_progress: LaneCutProgress::Delivering,
         }
     }
 
@@ -261,9 +269,28 @@ impl LaneDemuxer {
         self.current = None;
         self.held_packet = None;
         self.seam.reset();
+        // Новое место — новая отсечка (её переставил поток до перемотки полос).
+        self.cut_progress = LaneCutProgress::Delivering;
         for track in self.identity.published() {
             if track.kind == TrackKind::Video {
                 self.random_access.require_keyframe(track.id);
+            }
+        }
+    }
+
+    /// Готовый пакет полосы → событие плееру с учётом отсечки обрыва: пакет на
+    /// отсечке или за ней кончает полосу (и сам не выдаётся).
+    fn deliver_before_cut(&mut self, packet: Packet) -> DemuxReadEvent {
+        match self.stream.download_cut().admit_packet(packet.pts) {
+            CutAdmission::Deliver => DemuxReadEvent::Packet(packet),
+            CutAdmission::EndLaneAtCut => {
+                tracing::debug!(
+                    lane = %self.lane,
+                    pts_us = packet.pts.as_micros(),
+                    "Pushed lane reached the cut of a download cut short; the lane ends here"
+                );
+                self.cut_progress = LaneCutProgress::EndedAtCut;
+                DemuxReadEvent::EndOfStream
             }
         }
     }
@@ -302,10 +329,13 @@ impl Demuxer for LaneDemuxer {
     }
 
     fn next_event(&mut self) -> Result<DemuxReadEvent> {
+        if self.cut_progress == LaneCutProgress::EndedAtCut {
+            return Ok(DemuxReadEvent::EndOfStream);
+        }
         if let Some(packet) = self.held_packet.take()
             && let Some(packet) = self.publish_packet(packet)?
         {
-            return Ok(DemuxReadEvent::Packet(packet));
+            return Ok(self.deliver_before_cut(packet));
         }
         loop {
             let event = match self.next_episode_event()? {
@@ -320,7 +350,7 @@ impl Demuxer for LaneDemuxer {
             match event {
                 DemuxReadEvent::Packet(packet) => {
                     if let Some(packet) = self.publish_packet(packet)? {
-                        return Ok(DemuxReadEvent::Packet(packet));
+                        return Ok(self.deliver_before_cut(packet));
                     }
                 }
                 DemuxReadEvent::TracksChanged(update) => {

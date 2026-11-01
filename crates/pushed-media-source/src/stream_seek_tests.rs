@@ -217,6 +217,42 @@ fn off_shelf_seek_asks_the_page_and_feeds_only_from_the_target_segment() {
     assert_eq!(times(&read_to_end(&mut demuxer)), frames_from(600));
 }
 
+/// 04d, путь C: приложение само попросило страницу перемотаться (клик зрителя, пока
+/// поколение не отдано плееру). Перемотка плеера к той же цели (в допуске) вторую
+/// просьбу не ставит; отметка расходуется, и перемотка в другое место снова просит.
+#[test]
+fn a_seek_the_application_already_asked_the_page_for_is_not_asked_again() {
+    let media = split_mp4(VIDEO_H264_64);
+    let (mut writer, mut opener) = video_stream();
+    let monitor = writer.monitor();
+    writer.append(VIDEO, &media.init).expect("init");
+    writer.append(VIDEO, &media.fragments[0]).expect("0");
+    let mut demuxer = open(&mut opener);
+
+    monitor.note_page_seek_requested(ms(600));
+    // В пределах допуска совпадения (250 мс): это та же перемотка.
+    demuxer.seek(ms(650)).expect("seek to the requested target");
+    assert_eq!(monitor.take_page_seek_request(), None);
+
+    demuxer.seek(ms(300)).expect("seek elsewhere");
+    assert_eq!(
+        monitor.take_page_seek_request(),
+        Some(PageSeekRequest { target: ms(300) })
+    );
+}
+
+/// Две цели — одна перемотка, если различаются не больше допуска совпадения
+/// перемотки страницы (250 мс по умолчанию), в любом порядке.
+#[test]
+fn seek_targets_within_the_page_seek_tolerance_are_the_same_seek() {
+    let (writer, _opener) = video_stream();
+    let monitor = writer.monitor();
+    let tolerance = policy().page_seek_match_tolerance();
+    assert!(monitor.is_same_seek_target(ms(1_000), ms(1_000) + tolerance));
+    assert!(monitor.is_same_seek_target(ms(1_000) + tolerance, ms(1_000)));
+    assert!(!monitor.is_same_seek_target(ms(1_000), ms(1_001) + tolerance));
+}
+
 #[test]
 fn video_waits_for_a_keyframe_after_a_seek_into_a_fragment_without_one() {
     let media = split_mp4(VIDEO_H264_64_MIDGOP);
@@ -351,4 +387,57 @@ fn stale_episodes_are_handed_to_the_caller_outside_the_buffer_lock() {
     // В ящике — только эпизод новой эпохи, начатый с сегмента с целью.
     assert_eq!(mailbox.pending_episodes(), 1);
     drop(repositioned);
+}
+
+/// Буфер одной видеополосы со своим приёмом — как в тесте выше.
+fn bare_video_buffer() -> (Arc<StreamBuffer>, LaneIntake) {
+    let policy = policy();
+    let mailbox = Arc::new(LaneMailbox::default());
+    let buffer = Arc::new(StreamBuffer::new(
+        Arc::new(IntakeLedger::new(1 << 22)),
+        EpisodeFactory::new(Arc::new(pushed_demux_registry().expect("registry")), policy),
+        policy.stream_buffer_rules(),
+    ));
+    buffer.add_lane(
+        VIDEO,
+        PushedContainer::FragmentedMp4,
+        Arc::clone(&mailbox),
+        policy.max_pending_episodes_per_lane(),
+    );
+    let intake = LaneIntake::new(
+        VIDEO,
+        PushedContainer::FragmentedMp4,
+        policy.framing_limits(),
+        mailbox,
+        Arc::clone(&buffer),
+    );
+    (buffer, intake)
+}
+
+#[test]
+fn ahead_is_counted_from_the_target_while_an_off_shelf_seek_waits() {
+    let (buffer, mut intake) = bare_video_buffer();
+    let media = split_mp4(VIDEO_H264_64);
+    intake.append(&media.init).expect("init");
+    intake.append(&media.fragments[0]).expect("0");
+    intake.append(&media.fragments[1]).expect("1");
+    buffer.note_playback_position(ms(100));
+    // До перемотки: 0–400 мс на полке, позиция 100 мс → запас 300 мс.
+    assert_eq!(buffer.buffer_status().buffered_ahead, ms(300));
+
+    // Перемотка на 650 мс: её нет на полке, страница должна прислать.
+    let seek = buffer.seek(ms(650)).expect("seek");
+    assert_eq!(seek.page, crate::page_seek::PageSeekDecision::RequestQueued);
+    drop(seek);
+    // Плеер ещё стоит на старом месте и сообщает его позицию уже после окна
+    // недоверия (через 2 с): буфер ей поверит, но запас — от цели, а у цели пусто.
+    let held_before = buffer.held_segment_bytes();
+    buffer.note_playback_position_at(ms(100), Instant::now() + Duration::from_secs(2));
+    assert_eq!(buffer.buffer_status().buffered_ahead, Duration::ZERO);
+    // Вопрос о запасе ничего не меняет на полке.
+    assert_eq!(buffer.held_segment_bytes(), held_before);
+
+    // Страница прислала фрагмент с целью (600–800 мс): запас — от цели до его конца.
+    intake.append(&media.fragments[3]).expect("3");
+    assert_eq!(buffer.buffer_status().buffered_ahead, ms(150));
 }

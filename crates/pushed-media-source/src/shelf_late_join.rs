@@ -21,8 +21,10 @@ use crate::framing::{MediaTime, MediaTimeSpan};
 /// цель по другим полосам, а эта полоса подхватывает со своего времени.
 ///
 /// Если у полосы есть данные внутри этого куска РАНЬШЕ точки вступления — это
-/// дыра посреди полосы (недокачанное или выселенное), а не её позднее начало:
-/// вступать нельзя, байты с цели должна прислать страница.
+/// дыра посреди полосы (недокачанное), а не её позднее начало: вступать нельзя,
+/// байты с цели должна прислать страница. То же, если полоса сама забыла время
+/// перед точкой вступления (выселила предохранителем или отпустила по стиранию
+/// страницей): начало полосы там было (`shelf_forgotten`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LateJoinWindow {
     /// Цель перемотки: вступать можно только сегментом, начавшимся позже.
@@ -83,12 +85,18 @@ impl LaneShelf {
             .iter()
             .any(|entry| entry.span().end() > window.covered.start());
         let candidate = &self.entries[first_after_target];
+        // Время перед кандидатом, которое полоса сама забыла (выселила или
+        // отпустила по стиранию страницей), — тоже дыра, а не позднее начало.
+        let forgotten_earlier_inside_window = self
+            .forgotten
+            .any_between(window.covered.start(), candidate.span().start());
         let candidate_eligible = match candidates {
             LateJoinCandidates::AnyOnShelf => true,
             LateJoinCandidates::ArrivedSinceSeek => candidate.arrival == Arrival::SinceLastSeek,
         };
         (candidate_eligible
             && !data_earlier_inside_window
+            && !forgotten_earlier_inside_window
             && window.admits(candidate.span().start()))
         .then_some(first_after_target)
     }

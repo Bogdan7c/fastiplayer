@@ -341,3 +341,56 @@ fn the_source_reports_size_seekability_and_refuses_outside_seeks_without_a_size(
     ));
     assert_eq!(unknown.position(), 0, "a refused seek moves nothing");
 }
+
+/// Решение 150 для `<video src>`: пока запрос к странице в пути, файл «ждёт живую
+/// страницу», и счётчик принесённого растёт с каждой рамкой (решение 151); законченный
+/// запрос и `seal` — уже не ожидание страницы.
+#[test]
+fn an_outstanding_range_request_is_a_live_page_wait_with_growing_progress() {
+    use media_core::{DemuxDataWait, LiveProducerProgress};
+
+    let (core, mut writer, notifier) = setup(RangeRetryPolicy::disabled());
+    assert_eq!(
+        core.data_wait(),
+        DemuxDataWait::Unattributed,
+        "nothing requested yet"
+    );
+    let reader = spawn_reader(&core, Some(1000), CancellationToken::new());
+    let request = notifier.wait_for(1)[0];
+    let live = |bytes| DemuxDataWait::LiveProducer {
+        progress: LiveProducerProgress::from_delivered_bytes(bytes),
+    };
+    assert_eq!(core.data_wait(), live(0));
+    let length = u64::from(request.length.get());
+    writer
+        .accept_range_bytes(request.id, request.offset, &[7_u8; 5])
+        .expect("frame");
+    assert_eq!(core.data_wait(), live(5));
+    let rest = vec![7_u8; usize::try_from(length - 5).expect("length")];
+    writer
+        .accept_range_bytes(request.id, request.offset + 5, &rest)
+        .expect("the rest of the answer");
+    assert_eq!(core.data_wait(), live(length));
+    writer
+        .finish_request(
+            request.id,
+            RangeOutcome::Completed {
+                resource_size: ResourceSizeReport::Known(1000),
+            },
+        )
+        .expect("finish");
+    // Читатель забрал байты и попросил продолжение — снова ждём страницу.
+    let next = notifier.wait_for(2)[1];
+    assert_eq!(core.data_wait(), live(length));
+    writer
+        .accept_range_bytes(next.id, next.offset, &[7_u8; 3])
+        .expect("frame");
+    assert_eq!(core.data_wait(), live(length + 3));
+    writer.seal();
+    assert_eq!(
+        core.data_wait(),
+        DemuxDataWait::Unattributed,
+        "the tab is gone"
+    );
+    drop(join_promptly(reader));
+}
