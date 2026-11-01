@@ -84,15 +84,74 @@ impl SelectedAudioRunwayBudget {
     }
 }
 
+/// Когда источник последний раз ответил «данных пока нет — их несёт живой поставщик»
+/// ([`media_core::DemuxDataWait::LiveProducer`]) во время перемотки и когда его счётчик
+/// принесённого последний раз рос (решение 151).
+///
+/// Отметка привязана только к экземпляру media, а не к seek generation: смена
+/// описания дорожек посреди ожидания меняет generation, но не отменяет того, что
+/// источник честно ждал страницу. Принадлежность текущей перемотке проверяет
+/// потребитель (`seek_completion::live_source_wait`): моменты раньше начала этой
+/// перемотки он не засчитывает.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LiveProducerWaitMark {
+    /// Экземпляр media, чей источник это ответил.
+    media_instance_id: MediaInstanceId,
+
+    /// Когда пришёл последний такой ответ.
+    observed_at: Instant,
+
+    /// Счётчик принесённого в последнем ответе.
+    progress: media_core::LiveProducerProgress,
+
+    /// Когда счётчик последний раз изменился (или впервые увиден у этого media).
+    progressed_at: Instant,
+}
+
+impl LiveProducerWaitMark {
+    /// Новый ответ «живой поставщик» с `progress` в `observed_at` после отметки
+    /// `previous`: момент роста переносится, только если счётчик тот же у того же media.
+    fn after(
+        previous: Option<Self>,
+        media_instance_id: MediaInstanceId,
+        observed_at: Instant,
+        progress: media_core::LiveProducerProgress,
+    ) -> Self {
+        let progressed_at = previous
+            .filter(|mark| mark.media_instance_id == media_instance_id && mark.progress == progress)
+            .map_or(observed_at, |mark| mark.progressed_at);
+        Self {
+            media_instance_id,
+            observed_at,
+            progress,
+            progressed_at,
+        }
+    }
+}
+
+/// Что известно о честном ожидании живого поставщика (для срока перемотки).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct LiveProducerWait {
+    /// Последний ответ «данных нет, их несёт живой поставщик».
+    pub(super) last_wait_at: Instant,
+    /// Последний рост счётчика принесённого.
+    pub(super) last_progress_at: Instant,
+}
+
 /// Session-owned runtime temporary demux readiness.
 #[derive(Debug, Default)]
 pub(super) struct DemuxRetryRuntime {
     /// Одновременно допустим только один deadline для exact installed generation.
     pending: Option<InstalledDemuxRetry>,
+
+    /// Последний ответ «ждём живого поставщика» во время перемотки. Переживает
+    /// terminal events (EOF, смена дорожек): он не про ожидание повтора, а про то,
+    /// сколько перемотка ждала источник.
+    live_producer_wait: Option<LiveProducerWaitMark>,
 }
 
 impl DemuxRetryRuntime {
-    /// Полностью забывает ожидание на явной lifecycle discontinuity.
+    /// Забывает ожидание повтора (отметку живого поставщика не трогает).
     fn clear(&mut self) {
         self.pending = None;
     }
@@ -139,6 +198,44 @@ impl PlayerSession {
             resume_intent,
             entered_buffering,
         });
+        self.note_live_producer_wait_if_seeking(fence.media_instance_id, observed_at);
+    }
+
+    /// Пока перемотка ждёт, спрашивает источник, чего он ждёт: ответ «живой
+    /// поставщик» запоминается (по нему срок перемотки не идёт). Вне перемотки
+    /// источник не спрашиваем — ответ нужен только сроку перемотки.
+    fn note_live_producer_wait_if_seeking(
+        &mut self,
+        media_instance_id: MediaInstanceId,
+        observed_at: Instant,
+    ) {
+        if !self.has_active_seek_commit() {
+            return;
+        }
+        if let Some(media_core::DemuxDataWait::LiveProducer { progress }) =
+            self.pipeline.demux_data_wait()
+        {
+            self.demux_retry.live_producer_wait = Some(LiveProducerWaitMark::after(
+                self.demux_retry.live_producer_wait,
+                media_instance_id,
+                observed_at,
+                progress,
+            ));
+        }
+    }
+
+    /// Честное ожидание живого поставщика у текущего media: последний ответ и
+    /// последний рост принесённого (`None` — источник так не отвечал или media другое).
+    #[must_use]
+    pub(super) fn live_producer_wait(&self) -> Option<LiveProducerWait> {
+        let current_instance = self.snapshot.media_instance_id?;
+        self.demux_retry
+            .live_producer_wait
+            .filter(|mark| mark.media_instance_id == current_instance)
+            .map(|mark| LiveProducerWait {
+                last_wait_at: mark.observed_at,
+                last_progress_at: mark.progressed_at,
+            })
     }
 
     /// Проверяет, запрещён ли новый demux read до exact-generation deadline-а.
@@ -326,6 +423,7 @@ impl PlayerSession {
     /// Явно инвалидирует deadline при install/stop/shutdown boundary.
     pub(super) fn clear_installed_demux_retry(&mut self) {
         self.demux_retry.clear();
+        self.demux_retry.live_producer_wait = None;
     }
 }
 

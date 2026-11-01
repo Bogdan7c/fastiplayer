@@ -371,6 +371,36 @@ pub trait Demuxer: Send {
         DemuxActiveReadInterruptionCapability::Unsupported
     }
 
+    /// Каким был конец данных на `EndOfStream`: конец медиа или конец полученного.
+    ///
+    /// Плеер спрашивает по ходу показа и в конце: при [`crate::DemuxDataEnd::CutShort`]
+    /// показ встаёт на конце доступного (если источник его знает), позиция остаётся
+    /// там, где встал показ, а не прыгает в длительность. Default —
+    /// «конец настоящий»: обычные файлы и сетевые источники ничего не меняют. Обёртка,
+    /// которая держит другой demuxer, должна передавать ответ внутреннего.
+    fn data_end(&self) -> crate::DemuxDataEnd {
+        crate::DemuxDataEnd::Complete
+    }
+
+    /// Почему сейчас нет данных, если demuxer отвечает `TemporarilyUnavailable`
+    /// (подробно — [`crate::DemuxDataWait`]).
+    ///
+    /// Плеер спрашивает, пока перемотка ждёт данных: при
+    /// [`crate::DemuxDataWait::LiveProducer`] время ожидания не засчитывается в срок
+    /// перемотки. Default — «не уточняю»: обычные файлы и сетевые источники ничего
+    /// не меняют. Обёртка, которая держит другой demuxer, должна передавать ответ
+    /// внутреннего.
+    fn data_wait(&self) -> crate::DemuxDataWait {
+        crate::DemuxDataWait::Unattributed
+    }
+
+    /// Тот же вопрос, но потокобезопасный: для обёртки, которая унесёт этот demuxer в
+    /// фоновый поток и спросить его напрямую не сможет. Default — вопроса нет
+    /// (обёртка отвечает «не уточняю»).
+    fn data_wait_probe(&self) -> Option<crate::DemuxDataWaitProbe> {
+        None
+    }
+
     /// Возвращает следующий packet-level, lifecycle или readiness event.
     ///
     /// Это единственный generic read method: finite packet-only реализации явно
@@ -548,6 +578,33 @@ mod tests {
             .next_event()
             .expect("EOF legacy should be read event");
         assert_eq!(second_event, DemuxReadEvent::EndOfStream);
+    }
+
+    /// Demuxer, который шов не переопределил, сообщает «конец настоящий» — даже
+    /// дочитав до конца: у обычных источников позиция на `Ended` не меняется.
+    #[test]
+    fn data_end_defaults_to_complete_media_even_after_end_of_stream() {
+        let mut demuxer = PacketThenEofDemuxer::new(test_packet());
+        assert_eq!(demuxer.data_end(), crate::DemuxDataEnd::Complete);
+        while !matches!(
+            demuxer.next_event().expect("finite demuxer reads"),
+            DemuxReadEvent::EndOfStream
+        ) {}
+        assert_eq!(demuxer.data_end(), crate::DemuxDataEnd::Complete);
+    }
+
+    /// Demuxer, который шов не переопределил, своё ожидание не уточняет: у обычных
+    /// источников срок перемотки плеера стережёт любое ожидание, как раньше.
+    #[test]
+    fn data_wait_defaults_to_unattributed_for_ordinary_sources() {
+        let mut demuxer = PacketThenEofDemuxer::new(test_packet());
+        assert_eq!(demuxer.data_wait(), crate::DemuxDataWait::Unattributed);
+        assert!(demuxer.data_wait_probe().is_none());
+        while !matches!(
+            demuxer.next_event().expect("finite demuxer reads"),
+            DemuxReadEvent::EndOfStream
+        ) {}
+        assert_eq!(demuxer.data_wait(), crate::DemuxDataWait::Unattributed);
     }
 
     #[test]

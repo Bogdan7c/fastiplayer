@@ -42,6 +42,7 @@ fn playing_final_seek_harness_with_actual_position(
 }
 
 mod commit_gates;
+mod live_source_wait;
 mod output_floor_freeze;
 mod preroll_backpressure;
 mod wakeup_resume;

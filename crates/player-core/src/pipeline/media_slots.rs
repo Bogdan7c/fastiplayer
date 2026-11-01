@@ -619,6 +619,23 @@ impl PlaybackPipeline {
         self.tracks.len()
     }
 
+    /// Каким был конец данных текущего demuxer-а (конец медиа или конец полученного).
+    ///
+    /// `None` — demuxer-а нет: отсутствие источника не сливается с «конец настоящий».
+    #[must_use]
+    pub(crate) fn demux_data_end(&self) -> Option<media_core::DemuxDataEnd> {
+        self.demuxer.as_ref().map(|demuxer| demuxer.data_end())
+    }
+
+    /// Чего ждёт текущий demuxer, когда отвечает «данных пока нет»
+    /// ([`media_core::DemuxDataWait`]).
+    ///
+    /// `None` — demuxer-а нет: отсутствие источника не сливается с «живой поставщик».
+    #[must_use]
+    pub(crate) fn demux_data_wait(&self) -> Option<media_core::DemuxDataWait> {
+        self.demuxer.as_ref().map(|demuxer| demuxer.data_wait())
+    }
+
     /// Читает следующий demux event, сохраняя absent-demuxer как no-op.
     pub(crate) fn demux_next_event(&mut self) -> Option<anyhow::Result<DemuxReadEvent>> {
         self.demuxer.as_mut().map(|demuxer| demuxer.next_event())

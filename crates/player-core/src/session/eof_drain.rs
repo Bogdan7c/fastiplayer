@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use media_core::{MediaTime, TimelineNotSeekableReason};
+use media_core::{DemuxDataEnd, MediaTime, TimelineNotSeekableReason};
 use tracing::{debug, trace, warn};
 
 use crate::pipeline::AudioEofDrainState;
@@ -9,6 +9,9 @@ use crate::{PlaybackState, PlayerError, PlayerErrorKind, PlayerResult};
 
 use super::PlayerSession;
 use super::seek_admission::SeekTimelineAdmission;
+
+// Остановка показа на конце доступного у обрезанных данных (решение 133).
+mod cut_short_stop;
 
 /// Runtime EOF-drain состояния, которым владеет только `PlayerSession`.
 #[derive(Debug, Default, Clone, Copy)]
@@ -294,13 +297,12 @@ impl PlayerSession {
             return true;
         }
 
-        let end_position = self
-            .snapshot
-            .duration
-            .unwrap_or_else(|| self.presentation_clock_position_at(now));
+        let data_end = self.pipeline.demux_data_end();
+        let end_position = self.position_at_ended(now, data_end);
         debug!(
             end_position_ms = end_position.as_secs_f64() * 1000.0,
             previous_position_ms = self.snapshot.current_position.as_secs_f64() * 1000.0,
+            ?data_end,
             audio_eof_drain_state = ?self.pipeline.audio_eof_drain_state(),
             "EOF drain finished; entering Ended"
         );
@@ -308,6 +310,31 @@ impl PlayerSession {
         self.park_audio_output_after_eof();
         self.set_playback_state(PlaybackState::Ended);
         true
+    }
+
+    /// Где встаёт позиция на `Ended`.
+    ///
+    /// - конец данных настоящий (обычный файл, честный конец потока) или demuxer-а
+    ///   уже нет — позиция в длительности, как всегда: последний кадр может кончаться
+    ///   чуть раньше заявленной длительности, а ползунок должен дойти до конца;
+    ///   без длительности — там, где встали часы показа;
+    /// - источник обрезал данные раньше конца медиа (вкладка браузера ушла) — позиция
+    ///   там, где встали часы показа: досмотрено только полученное, и прыжок ползунка
+    ///   в длительность фильма соврал бы зрителю (решение владельца 133). Известный
+    ///   конец доступного и длительность — верхние границы: дальше них показ не шёл
+    ///   (обычно до конца доступного показ останавливает `cut_short_stop`, сюда
+    ///   доходит хвост, кончившийся чуть раньше него).
+    fn position_at_ended(&self, now: Instant, data_end: Option<DemuxDataEnd>) -> Duration {
+        let stopped_presentation = self.presentation_clock_position_at(now);
+        match data_end {
+            Some(DemuxDataEnd::CutShort { playable_end }) => [playable_end, self.snapshot.duration]
+                .into_iter()
+                .flatten()
+                .fold(stopped_presentation, Duration::min),
+            Some(DemuxDataEnd::Complete) | None => {
+                self.snapshot.duration.unwrap_or(stopped_presentation)
+            }
+        }
     }
 
     /// Ставит audio output на backend-паузу, когда хвост звука уже доигран до конца.

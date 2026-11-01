@@ -148,6 +148,12 @@ pub struct PlayerTickConfig {
     /// Максимальное время ожидания seek commit gates.
     pub seek_commit_timeout: Duration,
 
+    /// Сколько перемотка ждёт живого поставщика данных, не принёсшего за это время ни
+    /// одного нового байта для ожидаемого места (решение 151,
+    /// `player.seek.live_source_stall_timeout_ms`; правило —
+    /// `session::seek_completion::live_source_wait`).
+    pub seek_live_source_stall_timeout: Duration,
+
     /// Общий wall-clock budget resumable staged video preflight-а.
     pub staged_video_preflight_timeout: Duration,
 
@@ -216,6 +222,7 @@ impl Default for PlayerTickConfig {
             audio_demux_low_water_mark_ms: 100.0,
             audio_preroll_target_ms: 50.0,
             seek_commit_timeout: Duration::from_millis(10_000),
+            seek_live_source_stall_timeout: Duration::from_millis(60_000),
             staged_video_preflight_timeout: Duration::from_millis(15_000),
             seek_resume_audio_min_buffer_ms: 50.0,
             seek_resume_audio_gate_timeout: Duration::from_millis(250),
@@ -276,6 +283,9 @@ impl From<&AppConfig> for PlayerTickConfig {
                 .max(config.player.seek.resume_audio_min_buffer_ms as f64),
             audio_preroll_target_ms: config.player.seek.resume_audio_min_buffer_ms as f64,
             seek_commit_timeout: Duration::from_millis(config.player.seek.commit_timeout_ms),
+            seek_live_source_stall_timeout: Duration::from_millis(
+                config.player.seek.live_source_stall_timeout_ms,
+            ),
             seek_resume_audio_min_buffer_ms: config.player.seek.resume_audio_min_buffer_ms as f64,
             seek_resume_audio_gate_timeout: Duration::from_millis(
                 config.player.seek.resume_audio_gate_timeout_ms,

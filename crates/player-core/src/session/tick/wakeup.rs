@@ -15,6 +15,7 @@ use super::{
     audio_fallback_wakeup::coarse_progress_interval_for_audio_runway,
     audio_read_ahead::audio_read_ahead_limit_ms,
     audio_refill_cadence::audio_refill_delay_above_high_water,
+    cut_short_wakeup::prefer_earlier_cut_short_end,
     demux_admission::{
         audio_demux_catchup_needed, can_read_next_demux_packet_with_audio_priority,
         selected_audio_bootstrap_needs_demux,
@@ -319,6 +320,7 @@ fn prefer_earlier_staged_preflight(
     existing_plan: PlayerWorkerWakeupPlan,
 ) -> PlayerWorkerWakeupPlan {
     let existing_plan = prefer_earlier_held_audio_start(session, now, existing_plan);
+    let existing_plan = prefer_earlier_cut_short_end(session, now, existing_plan);
     let Some(staged_delay) = session.staged_preflight_wakeup_delay(now) else {
         return existing_plan;
     };

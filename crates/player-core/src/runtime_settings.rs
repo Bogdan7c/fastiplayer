@@ -48,6 +48,9 @@ pub enum PlayerRuntimeSettingId {
     /// `player.seek.commit_timeout_ms`.
     PlayerSeekCommitTimeoutMs,
 
+    /// `player.seek.live_source_stall_timeout_ms`.
+    PlayerSeekLiveSourceStallTimeoutMs,
+
     /// `player.seek.resume_audio_min_buffer_ms`.
     PlayerSeekResumeAudioMinBufferMs,
 
@@ -155,6 +158,7 @@ impl PlayerRuntimeSettingId {
                 "player.demux.max_consecutive_corrupted_packets"
             }
             Self::PlayerSeekCommitTimeoutMs => "player.seek.commit_timeout_ms",
+            Self::PlayerSeekLiveSourceStallTimeoutMs => "player.seek.live_source_stall_timeout_ms",
             Self::PlayerSeekResumeAudioMinBufferMs => "player.seek.resume_audio_min_buffer_ms",
             Self::PlayerSeekResumeAudioGateTimeoutMs => "player.seek.resume_audio_gate_timeout_ms",
             Self::PlayerSeekResumeVideoMinReadyFrames => {
@@ -949,6 +953,10 @@ pub(crate) fn validate_runtime_tick_config(tick_config: &PlayerTickConfig) -> Re
     ensure_positive_duration(
         tick_config.seek_commit_timeout,
         PlayerRuntimeSettingId::PlayerSeekCommitTimeoutMs,
+    )?;
+    ensure_positive_duration(
+        tick_config.seek_live_source_stall_timeout,
+        PlayerRuntimeSettingId::PlayerSeekLiveSourceStallTimeoutMs,
     )?;
     ensure_non_negative_finite(
         tick_config.seek_resume_audio_min_buffer_ms,

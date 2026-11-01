@@ -13,6 +13,7 @@ mod audio_fallback_wakeup;
 mod audio_gap_evidence;
 mod audio_read_ahead;
 mod audio_refill_cadence;
+mod cut_short_wakeup;
 mod demux_admission;
 mod demux_read_failure;
 mod held_audio_wakeup;
@@ -55,6 +56,9 @@ impl PlayerSession {
 
         self.service_pending_staged_preflight(tick_context.now);
         self.update_position_for_tick(tick_context.now);
+        // Обрезанные данные: часы дошли до конца доступного — показ кончается здесь, а
+        // прочитанное впрок дальше не играется (`eof_drain/cut_short_stop.rs`).
+        self.stop_at_cut_short_playable_end_if_reached(tick_context.now);
         self.service_staged_position_preparation();
         self.service_prepared_demux_seek_receipts();
 

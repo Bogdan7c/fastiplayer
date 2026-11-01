@@ -12,13 +12,15 @@ use std::time::Duration;
 
 use anyhow::Result;
 use media_core::{
-    DemuxReadEvent, DemuxRetryHint, DemuxSeekCancellationToken, DemuxSeekRequest, DemuxSeekResult,
-    DemuxSeekability, DemuxTrackListUpdate, Demuxer, MediaDemuxError, MediaMetadata,
-    TimelineNotSeekableReason, TrackInfo,
+    DemuxDataEnd, DemuxReadEvent, DemuxRetryHint, DemuxSeekCancellationToken, DemuxSeekRequest,
+    DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate, Demuxer, MediaDemuxError,
+    MediaMetadata, TimelineNotSeekableReason, TrackInfo,
 };
 use source_core::CancellationToken;
 
 mod async_seek;
+mod data_end;
+mod data_wait;
 mod readiness;
 mod worker;
 
@@ -230,6 +232,7 @@ impl ProgressiveDemuxer {
         let visible_duration = inner.duration();
         let visible_metadata = inner.media_metadata();
         let shared = Arc::new(ProgressiveSharedState::new(limits));
+        shared.install_inner_data_wait_probe(inner.data_wait_probe());
         let worker_shared = Arc::clone(&shared);
         let worker_cancellation = cancellation.clone();
         thread::Builder::new()
@@ -280,6 +283,7 @@ impl ProgressiveDemuxer {
             async_limits,
         ));
         shared.install_active_read_interruption(active_read_interruption);
+        shared.install_inner_data_wait_probe(inner.data_wait_probe());
         let worker_shared = Arc::clone(&shared);
         let worker_cancellation = cancellation.clone();
         thread::Builder::new()
@@ -658,6 +662,17 @@ impl Demuxer for ProgressiveDemuxer {
     /// Сохраняет исходную typed non-seekable причину.
     fn seekability(&self) -> DemuxSeekability {
         self.visible_seekability
+    }
+
+    /// Конец данных inner-а, снятый фоновым потоком на его `EndOfStream`
+    /// (обрезанный файл → `CutShort`): без проброса плеер ставил бы позицию в длительность.
+    fn data_end(&self) -> DemuxDataEnd {
+        self.shared.inner_data_end()
+    }
+
+    /// Чего ждёт inner (модуль `data_wait`): иначе файл браузера сдавался бы по сроку.
+    fn data_wait(&self) -> media_core::DemuxDataWait {
+        self.shared.inner_data_wait()
     }
 
     /// Никогда не ждёт blocking inner demuxer на player owner-е.

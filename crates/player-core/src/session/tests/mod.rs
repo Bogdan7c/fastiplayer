@@ -64,6 +64,7 @@ mod dynamic_timeline;
 mod eof_audio_ends_before_video;
 mod eof_audio_park;
 mod eof_audio_tail_start;
+mod eof_cut_short_end;
 mod eof_drain;
 mod eof_drain_past_end_frame;
 mod exact_media_transport;

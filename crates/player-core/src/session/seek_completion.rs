@@ -12,6 +12,8 @@ use crate::{
 use super::PlayerSession;
 use super::audio_runtime::leading_silence::LeadingSilencePolicy;
 
+pub(super) mod live_source_wait;
+
 impl PlayerSession {
     /// Успешно закрывает seek transaction и применяет сохранённый resume intent.
     pub(super) fn complete_seek_commit(&mut self, seek_commit: SeekCommitState) {

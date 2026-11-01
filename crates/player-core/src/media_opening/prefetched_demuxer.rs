@@ -4,8 +4,8 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use media_core::{
-    DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaMetadata,
-    TrackInfo,
+    DemuxDataEnd, DemuxDataWait, DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult,
+    DemuxSeekability, Demuxer, MediaMetadata, TrackInfo,
 };
 
 /// Сохраняет наблюдаемый demux order после чтения candidate header-а до commit-а.
@@ -102,6 +102,23 @@ impl Demuxer for PrefetchedDemuxer {
         self.visible_seekability
     }
 
+    /// Конец данных не зависит от позиции replay: это свойство источника, его
+    /// знает только реальный demuxer (обрезанный ли конец у полученного).
+    fn data_end(&self) -> DemuxDataEnd {
+        self.inner.data_end()
+    }
+
+    /// Чего ждёт источник, тоже знает только реальный demuxer (живой ли поставщик
+    /// несёт недостающие данные): обёртка replay его не прячет.
+    fn data_wait(&self) -> DemuxDataWait {
+        self.inner.data_wait()
+    }
+
+    /// Потокобезопасный вопрос тоже принадлежит реальному demuxer-у.
+    fn data_wait_probe(&self) -> Option<media_core::DemuxDataWaitProbe> {
+        self.inner.data_wait_probe()
+    }
+
     /// Сначала возвращает prefetched events, затем продолжает реальный demuxer.
     fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
         let event = match self.replay_events.pop_front() {
@@ -194,6 +211,98 @@ mod tests {
                 .next_event()
                 .expect("After the replay wrapper, the inner source should continue."),
             DemuxReadEvent::EndOfStream
+        );
+    }
+
+    /// Источник с обрезанным концом полученного (как поток браузера после ухода вкладки).
+    struct CutShortInnerDemuxer;
+
+    impl Demuxer for CutShortInnerDemuxer {
+        fn tracks(&self) -> &[TrackInfo] {
+            &[]
+        }
+
+        fn duration(&self) -> Option<Duration> {
+            Some(Duration::from_secs(99))
+        }
+
+        fn data_end(&self) -> DemuxDataEnd {
+            DemuxDataEnd::CutShort {
+                playable_end: Some(Duration::from_secs(12)),
+            }
+        }
+
+        fn data_wait(&self) -> DemuxDataWait {
+            DemuxDataWait::LiveProducer {
+                progress: media_core::LiveProducerProgress::from_delivered_bytes(7),
+            }
+        }
+
+        fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+            Ok(DemuxReadEvent::EndOfStream)
+        }
+
+        fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+            Ok(DemuxSeekResult {
+                requested_position: MediaTime::from_duration(timestamp),
+                actual_position: MediaTime::from_duration(timestamp),
+                actual_track_timestamp: None,
+            })
+        }
+    }
+
+    /// Обёртка preflight не прячет «конец обрезан»: иначе плеер поставил бы позицию
+    /// в длительность. Обычный источник через ту же обёртку остаётся «настоящим».
+    #[test]
+    fn replay_wrapper_reports_the_data_end_of_the_real_demuxer() {
+        let wrap = |inner: Box<dyn Demuxer + Send>| {
+            PrefetchedDemuxer::new(
+                inner,
+                Vec::new(),
+                Some(Duration::from_secs(99)),
+                DemuxSeekability::Seekable,
+                None,
+                VecDeque::new(),
+            )
+        };
+        assert_eq!(
+            wrap(Box::new(CutShortInnerDemuxer)).data_end(),
+            DemuxDataEnd::CutShort {
+                playable_end: Some(Duration::from_secs(12))
+            }
+        );
+        let complete = FiniteInnerDemuxer {
+            events: VecDeque::new(),
+        };
+        assert_eq!(wrap(Box::new(complete)).data_end(), DemuxDataEnd::Complete);
+    }
+
+    /// Обёртка preflight не прячет «данные несёт живой поставщик»: иначе перемотка
+    /// потока браузера снова сдавалась бы по сроку, пока страница несёт данные.
+    #[test]
+    fn replay_wrapper_reports_the_data_wait_of_the_real_demuxer() {
+        let wrap = |inner: Box<dyn Demuxer + Send>| {
+            PrefetchedDemuxer::new(
+                inner,
+                Vec::new(),
+                None,
+                DemuxSeekability::Seekable,
+                None,
+                VecDeque::new(),
+            )
+        };
+        assert_eq!(
+            wrap(Box::new(CutShortInnerDemuxer)).data_wait(),
+            DemuxDataWait::LiveProducer {
+                progress: media_core::LiveProducerProgress::from_delivered_bytes(7),
+            }
+        );
+        let ordinary = FiniteInnerDemuxer {
+            events: VecDeque::new(),
+        };
+        assert_eq!(
+            wrap(Box::new(ordinary)).data_wait(),
+            DemuxDataWait::Unattributed
         );
     }
 }

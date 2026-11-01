@@ -8,6 +8,8 @@
 
 mod attachment;
 mod demux;
+mod demux_data_end;
+mod demux_data_wait;
 mod dynamic_timeline;
 mod metadata;
 mod packet;
@@ -28,6 +30,8 @@ pub use demux::{
     DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate,
     Demuxer, MediaDemuxError, finite_packet_read_event,
 };
+pub use demux_data_end::DemuxDataEnd;
+pub use demux_data_wait::{DemuxDataWait, DemuxDataWaitProbe, LiveProducerProgress};
 pub use dynamic_timeline::{
     DynamicMediaTimelineEpoch, DynamicMediaTimelineInitial, DynamicMediaTimelineObservation,
     DynamicMediaTimelinePort, DynamicMediaTimelinePortGeneration, DynamicMediaTimelinePublishError,

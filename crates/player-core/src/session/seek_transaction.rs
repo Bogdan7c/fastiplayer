@@ -12,6 +12,7 @@ use crate::{
     VideoPrerollOutputFloor, VideoPrerollOutputFloorClear, VideoPrerollOutputFloorResult,
 };
 
+use super::seek_completion::live_source_wait::SeekCommitBudget;
 use super::{PlayerSession, PlayerTickConfig};
 
 /// Максимальный шаг вперёд, при котором live scrub продолжает текущий decode-проход
@@ -686,7 +687,17 @@ impl PlayerSession {
             return;
         }
 
-        if now.saturating_duration_since(seek_commit.started_at) < tick_config.seek_commit_timeout {
+        // Срок идёт от начала перемотки или от последнего честного ожидания живого
+        // поставщика, но не дольше предела его молчания (`seek_completion::live_source_wait`,
+        // решения 150–151).
+        let deadline = self.seek_commit_deadline(
+            seek_commit,
+            SeekCommitBudget {
+                commit_timeout: tick_config.seek_commit_timeout,
+                live_source_stall_timeout: tick_config.seek_live_source_stall_timeout,
+            },
+        );
+        if deadline.is_none_or(|deadline| now < deadline) {
             return;
         }
 

@@ -6,8 +6,8 @@ use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
 
 use media_core::{
-    DemuxActiveReadInterruptionCapability, DemuxReadEvent, DemuxSeekCancellationToken,
-    DemuxSeekRequest, DemuxSeekResult, Demuxer,
+    DemuxActiveReadInterruptionCapability, DemuxDataEnd, DemuxReadEvent,
+    DemuxSeekCancellationToken, DemuxSeekRequest, DemuxSeekResult, Demuxer,
 };
 use source_core::CancellationToken;
 
@@ -151,6 +151,10 @@ pub(super) struct ProgressiveQueueState {
     pub(super) active_read_interruption: DemuxActiveReadInterruptionCapability,
     /// Optional receipt capability; legacy constructors оставляют её absent.
     pub(super) async_seek: Option<ProgressiveAsyncSeekState>,
+    /// Конец данных inner-а на его последнем `EndOfStream` (модуль `data_end`).
+    pub(super) inner_data_end: DemuxDataEnd,
+    /// Потокобезопасный вопрос inner-а «чего ждёшь» (модуль `data_wait`).
+    pub(super) inner_data_wait_probe: Option<media_core::DemuxDataWaitProbe>,
 }
 
 /// Shared queue + backpressure coordination.
@@ -231,6 +235,8 @@ impl ProgressiveSharedState {
                 active_seek_cancellation: None,
                 active_read_interruption: DemuxActiveReadInterruptionCapability::Unsupported,
                 async_seek,
+                inner_data_end: DemuxDataEnd::Complete,
+                inner_data_wait_probe: None,
             }),
             capacity_available: Condvar::new(),
             message_available: Condvar::new(),
@@ -296,6 +302,9 @@ pub(super) fn run_progressive_worker(
             }
             Ok(event) => {
                 let terminal = matches!(event, DemuxReadEvent::EndOfStream);
+                if terminal {
+                    shared.note_inner_data_end(inner.data_end());
+                }
                 if !matches!(
                     push_progressive_message(
                         &shared,
@@ -465,6 +474,9 @@ pub(super) fn run_seekable_progressive_worker(
             }
             Ok(event) => {
                 reached_end = matches!(event, DemuxReadEvent::EndOfStream);
+                if reached_end {
+                    shared.note_inner_data_end(inner.data_end());
+                }
                 match push_progressive_message(
                     &shared,
                     &cancellation,
