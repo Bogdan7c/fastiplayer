@@ -10,8 +10,9 @@ use browser_bridge_protocol::{
 use browser_bridge_session::SessionInstance;
 use media_core::{Demuxer, TrackKind};
 use pushed_media_source::{
-    EndOfStreamReport, OpenProgress, PageRemovalOutcome, PageRemovalReport, PushedSourcePolicy,
-    PushedStreamOpener, PushedStreamStartError, pushed_stream,
+    DownloadCutOutcome, DownloadCutReport, EndOfStreamReport, OpenProgress, PageRemovalOutcome,
+    PageRemovalReport, PlayableEnd, PushedSourcePolicy, PushedStreamOpener, PushedStreamStartError,
+    pushed_stream,
 };
 
 use super::stream_port::{PushedStreamFactory, StartedStream};
@@ -29,6 +30,7 @@ enum WriterCall {
     SetTimestampOffset(u16, i64),
     SetDuration(PushedDuration),
     EndOfStream,
+    EndDownloadCutShort,
     NotePageSeek(Duration),
     NotePageRemoved(u16, PageRemovedRange),
 }
@@ -135,6 +137,14 @@ impl StreamWriterPort for FakeWriter {
         Ok(EndOfStreamReport {
             dropped_incomplete_bytes: 0,
         })
+    }
+
+    fn end_download_cut_short(&mut self) -> Result<DownloadCutOutcome, PushedStreamError> {
+        self.record(WriterCall::EndDownloadCutShort);
+        Ok(DownloadCutOutcome::CutShort(DownloadCutReport {
+            playable_end: PlayableEnd::Unknown,
+            dropped_incomplete_bytes: 0,
+        }))
     }
 
     fn note_page_seek(&mut self, target: Duration) {
@@ -642,6 +652,8 @@ fn old_generation_input_does_not_touch_the_new_generation() {
         log.calls(),
         vec![
             (1, WriterCall::AddLane(0, PushedContainer::FragmentedMp4)),
+            // Заменённое поколение кончается обрывом (04d), а не честным концом.
+            (1, WriterCall::EndDownloadCutShort),
             (2, WriterCall::AddLane(0, PushedContainer::WebM)),
             (2, WriterCall::Append(0, b"fresh".to_vec())),
         ]
@@ -681,12 +693,14 @@ fn a_new_instance_starts_from_scratch_and_the_old_one_is_stale() {
             Seen::Close(2, SessionCloseReason::ProtocolViolation),
         ]
     );
-    // Конец экземпляра запечатал его поток: полка доигрывается до конца.
+    // Конец экземпляра запечатал его поток как оборванное скачивание: полка
+    // доигрывается до конца самой короткой дорожки (решение 133), а не как честный
+    // `endOfStream` страницы.
     assert_eq!(
         log.calls(),
         vec![
             (1, WriterCall::AddLane(0, PushedContainer::FragmentedMp4)),
-            (1, WriterCall::EndOfStream),
+            (1, WriterCall::EndDownloadCutShort),
         ]
     );
     assert_eq!(translator.counters().stale_inputs, 1);

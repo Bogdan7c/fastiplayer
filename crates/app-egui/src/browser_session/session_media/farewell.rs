@@ -52,6 +52,24 @@ pub(crate) enum ViewerCloseStep {
     NoSession,
 }
 
+/// Чем вызвано закрытие с прощанием (только метка журнала, поведение одно).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FarewellOccasion {
+    /// Зритель закрыл окно.
+    ViewerClosedWindow,
+    /// Плеер сам оборвал поток ошибкой (4003).
+    StreamError,
+}
+
+impl FarewellOccasion {
+    const fn log_label(self) -> &'static str {
+        match self {
+            Self::ViewerClosedWindow => "viewer_closed_window",
+            Self::StreamError => "stream_error",
+        }
+    }
+}
+
 /// Прощание: «продолжай с T, на паузе» (решение 51).
 fn return_paused_at(position_us: MediaTime) -> PlayerSessionMessage {
     PlayerSessionMessage::ReturnToPage {
@@ -122,36 +140,83 @@ impl SessionMedia {
         let Some(session) = self.current_session.clone() else {
             return ViewerCloseStep::NoSession;
         };
-        let reason = SessionCloseReason::PlayerClosed;
+        self.close_bidding_farewell(
+            &session,
+            SessionCloseReason::PlayerClosed,
+            FarewellOccasion::ViewerClosedWindow,
+        );
+        ViewerCloseStep::SessionClosed
+    }
+
+    /// Закрытие ошибкой потока, которое решил сам плеер (переполнение очереди или
+    /// полки, запросов диапазонов, неверное обращение с вводом — код 4003, решение 132).
+    ///
+    /// Видео возвращается странице: если сеанс текущий и страница ещё с нами —
+    /// прощание `return_to_page{T, paused}` и только потом кадр закрытия. Для чужого
+    /// (уже заменённого) экземпляра и для доигрывания страница не получает ничего
+    /// лишнего: чужому — обычное закрытие по адресу (оно безвредно при `NotActive`),
+    /// ушедшей странице — тоже обычное закрытие, прощаться не с кем.
+    pub(super) fn close_with_stream_error(&self, session: &SessionRef) {
+        let reason = SessionCloseReason::ProtocolViolation;
+        if self.is_current(session) && !self.is_draining() {
+            self.close_bidding_farewell(session, reason, FarewellOccasion::StreamError);
+        } else {
+            let outcome = self.closer.close_session(session, reason);
+            info!(
+                ?reason,
+                ?outcome,
+                "Session not being played closed by the player without a farewell"
+            );
+        }
+    }
+
+    /// Общее тело «попрощаться и закрыть» (зритель закрыл окно, плеер оборвал поток).
+    ///
+    /// - позиция известна → одно действие сервера «прощание + кадр закрытия»;
+    /// - позиции нет → обычное закрытие, прощания нет (правило — в описании модуля);
+    /// - прощание отклонено как «не по протоколу» (дефект) → откат на обычное закрытие,
+    ///   сеанс закрывается всё равно, причина — в журнале.
+    ///
+    /// Порядок на проводе гарантирует сервер: очередь исходящих → прощание → кадр закрытия.
+    fn close_bidding_farewell(
+        &self,
+        session: &SessionRef,
+        reason: SessionCloseReason,
+        occasion: FarewellOccasion,
+    ) {
+        let occasion = occasion.log_label();
         match self.farewell_position() {
             FarewellPosition::Shown(position_us) => {
                 let farewell = return_paused_at(position_us);
                 match self
                     .closer
-                    .close_session_with_farewell(&session, &farewell, reason)
+                    .close_session_with_farewell(session, &farewell, reason)
                 {
                     Ok(outcome) => {
-                        info!(?outcome, "Viewer closed the window: farewell to the page")
+                        info!(
+                            ?outcome,
+                            occasion, "Session closed with a farewell to the page"
+                        )
                     }
                     Err(farewell_error) => {
-                        // Прощание не по протоколу — дефект; сеанс всё равно закрывается.
-                        let outcome = self.closer.close_session(&session, reason);
+                        let outcome = self.closer.close_session(session, reason);
                         error!(
                             %farewell_error,
                             ?outcome,
+                            occasion,
                             "Farewell to the page was refused; the session is closed without it"
                         );
                     }
                 }
             }
             FarewellPosition::Unknown => {
-                let outcome = self.closer.close_session(&session, reason);
+                let outcome = self.closer.close_session(session, reason);
                 info!(
                     ?outcome,
-                    "Viewer closed the window before the player showed the video; no farewell"
+                    occasion,
+                    "Player showed no video position; the session is closed without a farewell"
                 );
             }
         }
-        ViewerCloseStep::SessionClosed
     }
 }

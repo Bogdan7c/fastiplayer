@@ -10,8 +10,8 @@
 //! - один активный экземпляр сеанса (ключ + номер); вход нового экземпляра
 //!   начинает состояние с нуля, вход старого — выбрасывается со счётом;
 //! - в экземпляре — одно активное поколение (новый `MediaSource` страницы) и его
-//!   писатель. Новое поколение бросает старый писатель (плеер доигрывает
-//!   принятое) и открывает новый поток: главный цикл получает
+//!   писатель. Новое поколение обрывает старый поток (плеер доигрывает принятое
+//!   до конца самой короткой дорожки, 04d) и открывает новый: главный цикл получает
 //!   [`IntakeNotice::NewGeneration`] со стороной открытия и монитором;
 //! - ошибки источника — по [`super::rejection`]: отказ от поколения
 //!   (`stream_rejected`) не больше одного раза на поколение, после него вход этого
@@ -20,8 +20,10 @@
 //! - поколение бывает «сегменты MSE» (`source_buffer_added`) или «файл `<video src>`»
 //!   (`file_source_added`, логика — [`file_generation`]); рамки байтов вида 2 идут
 //!   писателю текущего файла, сверку с выданными запросами делает источник;
-//! - конец экземпляра запечатывает текущий поток: файл — `seal`, MSE — `end_of_stream`
-//!   (принятое доигрывается до конца даже у страницы, не успевшей сама закончить поток).
+//! - конец экземпляра запечатывает текущий поток: файл — `seal`, MSE — «скачивание
+//!   оборвано» (`end_download_cut_short`): принятое доигрывается даже у страницы, не
+//!   успевшей сама закончить поток, но только до конца самой короткой дорожки
+//!   (решение 133); честный `endOfStream` страницы — по-прежнему `end_of_stream`.
 
 use browser_bridge_protocol::session::page::{PagePlaybackRequest, RemovalEnd, SeekCause};
 use browser_bridge_protocol::session::player::StreamRejection;
@@ -44,6 +46,8 @@ use super::rejection::{
 use super::stream_queue::{OwnedChunk, SessionInput};
 
 mod file_generation;
+
+use self::file_generation::SealOccasion;
 pub(crate) mod file_port;
 pub(crate) mod stream_port;
 
@@ -274,7 +278,7 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             .as_ref()
             .is_some_and(|active| active.session == *session)
         {
-            self.seal_current_stream();
+            self.seal_current_stream(SealOccasion::SessionEnded);
             info!(
                 session = session.key.as_str(),
                 instance = session.instance.0,
@@ -470,6 +474,10 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
         generation: StreamGeneration,
         out: &mut Vec<IntakeNotice>,
     ) {
+        // Заменённый поток доигрывает принятое, но кончается ОБРЫВОМ, а не честным
+        // концом (04d, путь C): медиа не кончилось, его сменил новый `MediaSource`, и
+        // позиция на конце не должна прыгнуть в длительность.
+        self.seal_current_stream(SealOccasion::ReplacedByNewGeneration);
         let Some(InstanceState {
             phase: InstancePhase::Open(current),
             ..
@@ -477,8 +485,6 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
         else {
             return;
         };
-        // Старый поток доигрывает принятое: `Drop` писателя без `end_of_stream`
-        // заканчивает вход у демуксеров.
         *current = None;
         match self.factory.start_stream() {
             Ok(started) => {

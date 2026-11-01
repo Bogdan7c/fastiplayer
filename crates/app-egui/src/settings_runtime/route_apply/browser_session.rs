@@ -1,7 +1,7 @@
 //! Применение маршрута `browser_session` (`[browser_session]` и запоминаемое окно).
 //!
 //! Две группы маршрута (контракт — `fastiplayer_settings::routing::browser_session`):
-//! - `BrowserSessionBuffer` (`buffer_ahead_s/behind_s`) — окно буфера источника «байты от
+//! - `BrowserSessionBuffer` (`buffer_ahead_s`, потолок памяти `max_held_mb`) — окно буфера источника «байты от
 //!   страницы». Действует на СЛЕДУЮЩЕЕ видео со страницы (решения 96/124): здесь новое
 //!   окно отдаётся владельцу [`BrowserBufferWindowOwner`], идущий поток не перестраивается.
 //!   Владелец есть только в окне браузерного режима. В обычном плеере владельца нет, и
@@ -73,7 +73,7 @@ mod tests {
     /// Запись усыновлённых окон.
     #[derive(Default)]
     struct RecordingOwner {
-        adopted: Mutex<Vec<(Duration, Duration)>>,
+        adopted: Mutex<Vec<(Duration, usize)>>,
     }
 
     impl BrowserBufferWindowOwner for RecordingOwner {
@@ -81,15 +81,15 @@ mod tests {
             self.adopted
                 .lock()
                 .expect("adopted windows")
-                .push((window.ahead(), window.behind()));
+                .push((window.ahead(), window.max_held_bytes()));
         }
     }
 
-    fn update_with_buffer(ahead_s: u16, behind_s: u16) -> BrowserSessionRuntimeSettingsUpdate {
+    fn update_with_buffer(ahead_s: u16, max_held_mb: u16) -> BrowserSessionRuntimeSettingsUpdate {
         BrowserSessionRuntimeSettingsUpdate {
             browser_session: BrowserSessionConfig {
                 buffer_ahead_s: ahead_s,
-                buffer_behind_s: behind_s,
+                max_held_mb,
                 ..BrowserSessionConfig::default()
             },
         }
@@ -110,14 +110,14 @@ mod tests {
         applier.attach_buffer_window_owner(owner.clone());
 
         let result = applier.apply(
-            &update_with_buffer(45, 10),
+            &update_with_buffer(45, 512),
             &[group(AppRuntimeRouteGroup::BrowserSessionBuffer)],
         );
 
         assert_eq!(result, AppRouteApplyResult::Applied);
         assert_eq!(
             *owner.adopted.lock().expect("adopted windows"),
-            vec![(Duration::from_secs(45), Duration::from_secs(10))]
+            vec![(Duration::from_secs(45), 512 * 1024 * 1024)]
         );
     }
 
@@ -129,7 +129,7 @@ mod tests {
         applier.attach_buffer_window_owner(owner.clone());
 
         let result = applier.apply(
-            &update_with_buffer(45, 10),
+            &update_with_buffer(45, 512),
             &[group(AppRuntimeRouteGroup::BrowserSessionWindow)],
         );
 
@@ -143,7 +143,7 @@ mod tests {
         let applier = BrowserSessionRouteApplier::default();
 
         let result = applier.apply(
-            &update_with_buffer(45, 10),
+            &update_with_buffer(45, 512),
             &[group(AppRuntimeRouteGroup::BrowserSessionBuffer)],
         );
 

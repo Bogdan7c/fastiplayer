@@ -7,9 +7,10 @@ use std::time::Duration;
 use tracing::warn;
 
 use pushed_media_source::{
-    AppendOutcome, EndOfStreamReport, LaneId, PageRemovalOutcome, PageRemovedRange,
-    PushedContainer, PushedDuration, PushedSourcePolicy, PushedStreamError, PushedStreamMonitor,
-    PushedStreamOpener, PushedStreamStartError, PushedStreamWriter, TimestampOffset, pushed_stream,
+    AppendOutcome, DownloadCutOutcome, EndOfStreamReport, LaneId, PageRemovalOutcome,
+    PageRemovedRange, PushedContainer, PushedDuration, PushedSourcePolicy, PushedStreamError,
+    PushedStreamMonitor, PushedStreamOpener, PushedStreamStartError, PushedStreamWriter,
+    TimestampOffset, pushed_stream,
 };
 
 use crate::browser_session::buffer_policy::LiveBufferWindow;
@@ -50,6 +51,11 @@ pub(crate) trait StreamWriterPort: Send {
     fn set_duration(&mut self, duration: PushedDuration);
     /// `endOfStream()`.
     fn end_of_stream(&mut self) -> Result<EndOfStreamReport, PushedStreamError>;
+    /// Вход кончился, потому что ушла страница (конец экземпляра сеанса), а не
+    /// потому, что кончилось медиа: плеер доиграет только то, что скачано у всех
+    /// дорожек сразу, и не прыгнет позицией в длительность (решение 133). Уже честно
+    /// законченный вход (`endOfStream` страницы) не трогается.
+    fn end_download_cut_short(&mut self) -> Result<DownloadCutOutcome, PushedStreamError>;
     /// Страница сама начала перемотку к `target` (`seek_started{page_seek}`).
     /// Звать в порядке кадров на проводе — до байтов новой точки и до команды
     /// плееру перемотаться туда же.
@@ -106,6 +112,10 @@ impl StreamWriterPort for PushedStreamWriter {
 
     fn end_of_stream(&mut self) -> Result<EndOfStreamReport, PushedStreamError> {
         Self::end_of_stream(self)
+    }
+
+    fn end_download_cut_short(&mut self) -> Result<DownloadCutOutcome, PushedStreamError> {
+        Self::end_download_cut_short(self)
     }
 
     fn note_page_seek(&mut self, target: Duration) {
@@ -183,10 +193,7 @@ impl PushedStreamFactory {
         let Some(live_window) = &self.live_window else {
             return self.policy;
         };
-        match self
-            .policy
-            .with_buffer_window(live_window.window_for_next_stream())
-        {
+        match live_window.policy_for_next_stream(self.policy) {
             Ok(policy) => policy,
             // Окно из config-а уже проверено (запас вперёд > 0); сюда попасть нельзя, но
             // тихо проглотить нельзя тоже: играем с окном, с которым процесс стартовал.
@@ -226,11 +233,11 @@ mod live_window_tests {
 
     fn config_window(
         ahead_s: u16,
-        behind_s: u16,
+        max_held_mb: u16,
     ) -> fastiplayer_config::BrowserSessionBufferWindow {
         let mut config = AppConfig::default();
         config.browser_session.buffer_ahead_s = ahead_s;
-        config.browser_session.buffer_behind_s = behind_s;
+        config.browser_session.max_held_mb = max_held_mb;
         config.browser_session.buffer_window()
     }
 
@@ -238,7 +245,7 @@ mod live_window_tests {
     /// видео — с новым; окно уже идущего потока (его монитор жив) остаётся прежним.
     #[test]
     fn the_next_stream_starts_with_the_adopted_window_and_the_running_one_keeps_its_own() {
-        let live = LiveBufferWindow::new(config_window(120, 30));
+        let live = LiveBufferWindow::new(config_window(120, 320), None);
         let mut factory = PushedStreamFactory::following(
             PushedSourcePolicy::recommended().expect("policy"),
             live.clone(),
@@ -246,13 +253,12 @@ mod live_window_tests {
 
         let running = factory.start_stream().expect("first stream");
         let first_window = factory.last_started_window.expect("first window");
-        live.adopt_buffer_window_for_next_stream(config_window(45, 10));
+        live.adopt_buffer_window_for_next_stream(config_window(45, 512));
         let second = factory.start_stream().expect("second stream");
         let second_window = factory.last_started_window.expect("second window");
 
         assert_eq!(first_window.ahead, Duration::from_secs(120));
         assert_eq!(second_window.ahead, Duration::from_secs(45));
-        assert_eq!(second_window.behind, Duration::from_secs(10));
         // Идущий поток жив; окно, с которым он стартовал, зафиксировано в `first_window`
         // и усыновление нового окна его не меняет.
         assert_eq!(first_window.ahead, Duration::from_secs(120));

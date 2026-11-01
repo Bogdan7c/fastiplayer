@@ -39,7 +39,8 @@
 //!   она становится стартовой позицией нового (03e, [`generation_start`]) — новый
 //!   `MediaSource` сбрасывает время страницы в начало, и страница сразу говорит, где
 //!   зритель был. Не назвала — поколение начнётся там, где у него есть данные всех
-//!   полос.
+//!   полос. С 04d поколение с названной позицией уходит плееру только когда у него
+//!   есть данные там (ворота [`generation_placement`], путь C).
 //! - транспортом зрителя окна (04a, [`viewer_transport`]): действие человека ведёт
 //!   плеер и страницу, воля зрителя становится волей страницы, эхо страницы не дёргает
 //!   плеер второй раз.
@@ -62,8 +63,9 @@ use tracing::{debug, error, info, warn};
 
 use self::ending::ActiveDrain;
 use self::generation_feed::{FeedReport, LoadedFeed, OpenStep, PendingFeed, in_issue_order};
+use self::generation_placement::{GenerationPlacement, PageAvailability};
 use self::generation_rejection::ViewerAwareness;
-use self::generation_start::{AfterLoad, GenerationStart};
+use self::generation_start::AfterLoad;
 use super::intake_notice::{GenerationHandoff, IntakeNotice, PageIntent};
 use super::outbound::{PENDING_RETRY_INTERVAL, PageOutbound, RangeQueueOutcome};
 use super::playback::{
@@ -77,17 +79,20 @@ mod drain;
 mod ending;
 mod farewell;
 mod generation_feed;
+mod generation_placement;
 mod generation_rejection;
 mod generation_start;
 mod install_reconcile;
 mod scrub_range;
 mod seams;
+mod viewer_click_claim;
 mod viewer_transport;
 
 pub(crate) use self::drain::{DrainEnd, DrainPolicy, DrainProgress, PausedDrain};
 pub(crate) use self::farewell::ViewerCloseStep;
+pub(crate) use self::generation_placement::{GenerationPlacementPolicy, GenerationWait};
 pub(crate) use self::seams::{MediaPlayback, SessionCloser};
-use self::viewer_transport::{LoadedSeek, PlayWill, ViewerWill};
+use self::viewer_transport::{PlayWill, ViewerWill};
 
 /// Метка источника для плеера. Нейтральная: ни заголовка, ни домена страницы —
 /// метка может попасть в журнал плеера (инвариант 7).
@@ -104,9 +109,9 @@ struct PendingGeneration {
     /// Откуда плеер возьмёт содержимое: сегменты или файл (сторона открытия и то, что
     /// переходит к загруженному поколению).
     feed: PendingFeed,
-    /// Откуда поколение начнёт показ: перемотка страницы, пришедшая, пока оно
-    /// открывалось, — его стартовая позиция.
-    start: GenerationStart,
+    /// Куда и когда отдать поколение плееру: цель зрителя или страницы, пришедшая,
+    /// пока оно не отдано, и ожидание данных у неё (04d, путь C).
+    placement: GenerationPlacement,
     /// Когда спросить снова (`None` — при первой возможности).
     retry_at: Option<Instant>,
 }
@@ -171,6 +176,8 @@ pub(crate) struct SessionMedia {
     viewer_will: ViewerWill,
     /// Отказ поколения, о котором окно ещё не сказало зрителю (04b, решение 129).
     rejection_notice: GenerationRejectionNotice,
+    /// Сроки ворот нового поколения (04d).
+    placement_policy: GenerationPlacementPolicy,
 }
 
 impl SessionMedia {
@@ -196,6 +203,7 @@ impl SessionMedia {
             last_observation: None,
             viewer_will: ViewerWill::default(),
             rejection_notice: GenerationRejectionNotice::Nothing,
+            placement_policy: GenerationPlacementPolicy::recommended(),
         }
     }
 
@@ -336,12 +344,10 @@ impl SessionMedia {
             );
             return;
         }
-        // Файл, заменивший поток сегментов того же поколения, — то же поколение:
-        // перемотка страницы, уже записанная за ним, остаётся его стартом.
-        let start = match &self.pending {
-            Some(pending) if upgrades_pending_to_file => pending.start,
-            _ => GenerationStart::FirstCommonData,
-        };
+        // Цель, записанная за ждущим поколением, переходит к файлу того же поколения и
+        // (цель зрителя) к поколению, сменившему ждущее (04d).
+        let placement =
+            self.placement_for_new_generation(upgrades_pending_to_file, &handoff.source);
         if let Some(superseded) = &self.pending {
             debug!(
                 generation = superseded.generation.get(),
@@ -352,7 +358,7 @@ impl SessionMedia {
             session: handoff.session,
             generation: handoff.generation,
             feed: PendingFeed::from_source(handoff.source),
-            start,
+            placement,
             retry_at: None,
         });
     }
@@ -360,30 +366,10 @@ impl SessionMedia {
     /// Намерение страницы → плеер.
     fn follow_page(&mut self, intent: PageIntent) {
         match intent {
+            // Источник уже знает о перемотке (переходник сообщил ему в порядке кадров),
+            // поэтому просьбы «перемотай страницу» к этой цели не будет.
             PageIntent::FollowPageSeek(target) => {
-                // Источник уже знает о перемотке (переходник сообщил ему в порядке
-                // кадров), поэтому просьбы «перемотай страницу» к этой цели не будет.
-                if let Some(pending) = self.pending.as_mut() {
-                    // Переходник сообщил перемотку источнику САМОГО НОВОГО поколения —
-                    // того, что ещё открывается; видео прежнего поколения она не
-                    // касается. Это стартовая позиция нового поколения (последняя
-                    // побеждает): плеер поставит его сразу туда.
-                    let start = Duration::from_micros(target.as_micros());
-                    pending.start = GenerationStart::PageSeekedTo(start);
-                    debug!(
-                        generation = pending.generation.get(),
-                        target_us = target.as_micros(),
-                        "Page seek is the start position of the generation that is still opening; the loaded video is not moved"
-                    );
-                    return;
-                }
-                let target = Duration::from_micros(target.as_micros());
-                // Плеер ещё ставит поколение — перемотка ждёт показа (последняя побеждает).
-                if self.seek_loaded_generation(target) == LoadedSeek::NothingLoaded {
-                    debug!(
-                        "Page seek before the stream opened; the player starts where the bytes start"
-                    );
-                }
+                self.follow_page_seek(Duration::from_micros(target.as_micros()));
             }
             // play/pause/скорость страницы проходят правило эха воли зрителя.
             PageIntent::Play => self.follow_page_play(PlayWill::Play),
@@ -405,6 +391,12 @@ impl SessionMedia {
     }
 
     fn close(&self, session: &SessionRef, reason: SessionCloseReason) {
+        // Обрыв по ошибке (4003) не молчаливый: сначала прощание, видео возвращается
+        // странице (решение 132). Остальные причины закрывают как раньше.
+        if reason == SessionCloseReason::ProtocolViolation {
+            self.close_with_stream_error(session);
+            return;
+        }
         let outcome = self.closer.close_session(session, reason);
         info!(
             ?reason,
@@ -418,14 +410,21 @@ impl SessionMedia {
     /// Спрашивает ждущее поколение, если пора (срок подсказки или пришли байты).
     fn poll_pending(&mut self, now: Instant) {
         let bytes_arrived = std::mem::take(&mut self.bytes_arrived);
+        // Страница ушла (доигрываем) — байтов у цели больше не будет (ворота 04d).
+        let page = if self.drain.is_some() {
+            PageAvailability::Gone
+        } else {
+            PageAvailability::Listening
+        };
         let Some(pending) = self.pending.as_mut() else {
             return;
         };
+        pending.placement.arm(now);
         let due = bytes_arrived || pending.retry_at.is_none_or(|retry_at| retry_at <= now);
         if !due {
             return;
         }
-        match pending.feed.poll_open(pending.start) {
+        match pending.feed.poll_open(&mut pending.placement, now, page) {
             OpenStep::Waiting(retry_after) => {
                 pending.retry_at = Some(now + retry_after);
             }
@@ -561,6 +560,7 @@ impl SessionMedia {
     // ---- ответы странице ---------------------------------------------------------
 
     fn report_to_page(&mut self, observation: &PlaybackObservation, now: Instant) {
+        let awaited_target = self.awaited_generation_target();
         let Some(loaded) = self.loaded.as_mut() else {
             return;
         };
@@ -589,6 +589,7 @@ impl SessionMedia {
         };
 
         if reconcile_now {
+            let seek_when_shown = self.seek_after_show_with_viewer_click(seek_when_shown, now);
             self.reconcile_with_page(observation, seek_when_shown);
         }
         if let Some(fault) = fault {
@@ -615,7 +616,11 @@ impl SessionMedia {
             // Буфер — всегда: без позиции источник считает от первого поданного сегмента.
             self.outbound.note_buffer(generation, buffer, now);
         }
-        if media_installed {
+        if let Some(target) = awaited_target {
+            // Новое поколение ждёт данных у цели: элемент страницы уже там (04d).
+            let awaiting = generation_placement::clock_while_generation_awaits(observation, target);
+            self.outbound.tick_clock(&awaiting, now);
+        } else if media_installed {
             self.outbound.tick_clock(observation, now);
         } else {
             self.outbound

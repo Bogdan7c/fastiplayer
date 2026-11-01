@@ -29,6 +29,7 @@ use winit::window::Window;
 
 use super::super::opened_page::{OpenedPage, PageArrival};
 use super::super::playback::metered_audio::{AudioMeter, BrowserAudioOutputChoice};
+use super::super::session_media::GenerationWait;
 use super::desktop_transport::{DesktopWindowPort, TransportObservation};
 use super::driver::WindowPlaybackDriver;
 use super::end_notice::CenterStatusChange;
@@ -50,8 +51,8 @@ use crate::settings_runtime::{
     BrowserBufferWindowOwner, HardwareDecodeAvailability, SettingsRuntime,
 };
 use crate::state::{
-    AppState, AppStateStartupContext, CenterStatusUpdate, RendererVideoImportTarget,
-    start_track_memory_in_memory_only,
+    AppState, AppStateStartupContext, CenterStatusUpdate, HostMediaWait, HostMediaWaitUpdate,
+    RendererVideoImportTarget, start_track_memory_in_memory_only,
 };
 use crate::system_capabilities::probe_system_capabilities;
 use crate::telemetry::Telemetry;
@@ -313,6 +314,19 @@ impl BrowserWindowInstance {
             CenterStatusChange::Clear => self.app_state.clear_center_status(),
         };
         if update == CenterStatusUpdate::Changed {
+            self.app_state.note_visible_mutation_for_redraw();
+            self.window.request_redraw();
+        }
+    }
+
+    /// Новое поколение ждёт данных у цели клика (04d, решение 146): спиннер ожидания,
+    /// хотя плеер ещё доигрывает прежнее видео и сам ожидания не видит.
+    pub(super) fn apply_generation_wait(&mut self, wait: GenerationWait) {
+        let host_wait = match wait {
+            GenerationWait::Idle => HostMediaWait::NotWaiting,
+            GenerationWait::AwaitingDataAtTarget => HostMediaWait::AwaitingData,
+        };
+        if self.app_state.set_host_media_wait(host_wait) == HostMediaWaitUpdate::Changed {
             self.app_state.note_visible_mutation_for_redraw();
             self.window.request_redraw();
         }

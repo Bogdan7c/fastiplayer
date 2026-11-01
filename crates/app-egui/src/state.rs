@@ -66,8 +66,8 @@ mod notifications;
 mod settings_media_rebuild;
 pub(crate) use media_jobs::playback_intent_from_snapshot;
 pub(crate) use notifications::{
-    CenterNotice, CenterStatusUpdate, NotificationId, NotificationsFrame, RetryOffer, ToastKind,
-    ToastView,
+    CenterNotice, CenterStatusUpdate, HostMediaWait, HostMediaWaitUpdate, NotificationId,
+    NotificationsFrame, RetryOffer, ToastKind, ToastView,
 };
 // Только тестам: правило спиннера на настоящем плеере (`browser_session` без окна).
 #[cfg(test)]

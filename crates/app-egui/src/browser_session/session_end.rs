@@ -69,6 +69,24 @@ pub(crate) enum SessionEndView {
     WaitingForViewer(DrainCause),
     /// Доигрывание кончилось: сообщение и закрытие окна.
     Finished(DrainFinish),
+    /// Связь оборвана по ошибке потока (код 4003, решение 132): видео возвращено странице
+    /// (если плеер сам рвал связь — с прощанием `return_to_page`), доигрывать нечего.
+    /// Сообщение держится так же, как у конца доигрывания, потом окно закрывается.
+    /// Не через [`DrainCause`]: правило «сообщение ⇔ доигрывание» остаётся нетронутым.
+    StreamError,
+}
+
+impl SessionEndView {
+    /// Представление конца сеанса, который не доигрывается, но не молчит (сейчас —
+    /// только обрыв по ошибке потока; `None` — конец молчаливый).
+    pub(crate) const fn of_undrained_end(reason: SessionEndReason) -> Option<Self> {
+        match reason {
+            SessionEndReason::ClosedByPlayer(SessionCloseReason::ProtocolViolation) => {
+                Some(Self::StreamError)
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Тексты. Короткие: окно маленькое, а читать их некогда — через пару секунд оно закроется.
@@ -76,6 +94,7 @@ const TAB_CLOSED: &str = "Source tab closed";
 const TAB_CLOSED_STALLED: &str = "Source tab closed — playback stalled";
 const TAB_CLOSED_FAILED: &str = "Source tab closed — playback failed";
 const TAB_CLOSED_WAITING: &str = "Source tab closed — you can still watch what was downloaded";
+const STREAM_ERROR: &str = "Stream error — video returned to the page";
 const BROWSER_LOST: &str = "Lost connection to the browser";
 const BROWSER_LOST_STALLED: &str = "Lost connection to the browser — playback stalled";
 const BROWSER_LOST_FAILED: &str = "Lost connection to the browser — playback failed";
@@ -90,6 +109,7 @@ impl SessionEndView {
             Self::WaitingForViewer(DrainCause::TabClosed) => Some(TAB_CLOSED_WAITING),
             Self::WaitingForViewer(DrainCause::BrowserConnectionLost) => Some(BROWSER_LOST_WAITING),
             Self::Finished(finish) => Some(finished_message(finish)),
+            Self::StreamError => Some(STREAM_ERROR),
         }
     }
 
@@ -111,6 +131,11 @@ impl SessionEndView {
                 cause: finish.cause.log_label(),
                 end: finish.end.log_label(),
             },
+            Self::StreamError => SessionEndLogLabels {
+                notice: "stream_error",
+                cause: "protocol_violation",
+                end: "none",
+            },
         }
     }
 }
@@ -118,7 +143,7 @@ impl SessionEndView {
 /// Метки журнала одного сообщения (без данных страницы).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SessionEndLogLabels {
-    /// `silent` / `waiting_for_viewer` / `finished`.
+    /// `silent` / `waiting_for_viewer` / `finished` / `stream_error`.
     pub(crate) notice: &'static str,
     /// Метка [`DrainCause`] или `none`.
     pub(crate) cause: &'static str,
@@ -225,6 +250,33 @@ mod tests {
             Some("Lost connection to the browser — you can still watch what was downloaded")
         );
         assert_eq!(SessionEndView::Silent.center_message(), None);
+    }
+
+    #[test]
+    fn only_a_protocol_violation_by_the_player_is_a_stream_error_and_it_never_drains() {
+        for reason in every_end_reason() {
+            let view = SessionEndView::of_undrained_end(reason);
+            let is_violation =
+                reason == SessionEndReason::ClosedByPlayer(SessionCloseReason::ProtocolViolation);
+            assert_eq!(view.is_some(), is_violation, "{reason:?}");
+            // Сообщение об ошибке и сообщение доигрывания не пересекаются.
+            assert!(
+                !(view.is_some() && DrainCause::of(reason).is_some()),
+                "{reason:?}"
+            );
+        }
+        assert_eq!(
+            SessionEndView::StreamError.center_message(),
+            Some("Stream error — video returned to the page")
+        );
+        assert_eq!(
+            SessionEndView::StreamError.log_labels(),
+            SessionEndLogLabels {
+                notice: "stream_error",
+                cause: "protocol_violation",
+                end: "none",
+            }
+        );
     }
 
     #[test]

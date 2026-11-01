@@ -149,15 +149,15 @@ fn a_new_session_while_the_window_waits_replaces_the_wait() {
     );
 }
 
-/// Конец, который не доигрывается (например, нарушение протокола), окно не объясняет
-/// словами «вкладка закрыта».
+/// Конец, который не доигрывается (например, замена вкладки), окно не объясняет словами
+/// «вкладка закрыта». Обрыв по ошибке потока (4003) говорит своё — см. `farewell.rs`.
 #[test]
 fn an_end_that_is_not_drained_has_no_window_message() {
     let (mut harness, current, _writer) = window_harness(Duration::from_millis(100));
     end_session(
         &mut harness,
         &current,
-        SessionEndReason::ClosedByPlayer(SessionCloseReason::ProtocolViolation),
+        SessionEndReason::ClosedByPlayer(SessionCloseReason::ReplacedByAnotherTab),
     );
     harness.media.playback_drain(Instant::now());
 

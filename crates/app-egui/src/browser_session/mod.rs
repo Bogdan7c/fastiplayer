@@ -60,6 +60,7 @@
 
 mod buffer_policy;
 mod drain_override;
+mod held_bytes_override;
 mod inbox;
 mod intake_notice;
 mod journal;

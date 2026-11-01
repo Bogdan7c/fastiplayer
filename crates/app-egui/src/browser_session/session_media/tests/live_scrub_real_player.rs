@@ -115,7 +115,7 @@ pub(super) struct ScrubChain {
 }
 
 impl ScrubChain {
-    fn start() -> Self {
+    pub(super) fn start() -> Self {
         let mut config = fastiplayer_config::AppConfig::default();
         // Как у тестов плеера: фиксированные потоки FFmpeg, одинаково на любой машине.
         config.video.sw_decode_threads = 2;
@@ -201,7 +201,7 @@ impl ScrubChain {
         }
     }
 
-    fn drive_for(&mut self, duration: Duration) {
+    pub(super) fn drive_for(&mut self, duration: Duration) {
         let until = Instant::now() + duration;
         while Instant::now() < until {
             self.pass();

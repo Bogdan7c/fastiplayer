@@ -13,7 +13,7 @@
 //! плеере), а не флагами: `SessionMedia` спрашивает у них «открылось?», «какие запросы
 //! байтов?», «что сказать монитору?» и не знает, что внутри.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use media_prefetch::PrefetchConfig;
 use media_source_open::prepared_web_media::{
@@ -30,7 +30,12 @@ use tracing::error;
 use web_media_transport_api::TransportSeekability;
 
 use super::BROWSER_STREAM_LABEL;
-use super::generation_start::{AfterLoad, GenerationStart, position_segments_demuxer};
+use super::generation_placement::{
+    GenerationPlacement, PageAvailability, PendingOpenState, PlacementVerdict,
+};
+use super::generation_start::{
+    AfterLoad, GenerationStart, is_positionable, position_segments_demuxer,
+};
 use super::scrub_range::{SegmentsTimeline, segments_downloaded_range};
 use crate::browser_session::intake_notice::GenerationSource;
 use crate::browser_session::rejection::{
@@ -53,6 +58,10 @@ pub(super) enum PendingFeed {
         opener: PushedStreamOpener,
         /// Монитор буфера (переходит к загруженному поколению).
         monitor: PushedStreamMonitor,
+        /// Поток уже открыт, но ворота поколения его ещё держат: у цели нет данных
+        /// (04d, путь C — [`super::generation_placement`]). Открыть поток второй раз
+        /// нельзя, поэтому открытый ждёт здесь.
+        opened: Option<OpenedPushedStream>,
     },
     /// Файл `<video src>`.
     File {
@@ -109,7 +118,11 @@ impl PendingFeed {
     /// Ждущее поколение из передачи потока приёма.
     pub(super) fn from_source(source: GenerationSource) -> Self {
         match source {
-            GenerationSource::Segments { opener, monitor } => Self::Segments { opener, monitor },
+            GenerationSource::Segments { opener, monitor } => Self::Segments {
+                opener,
+                monitor,
+                opened: None,
+            },
             GenerationSource::File {
                 opener,
                 requests,
@@ -127,39 +140,103 @@ impl PendingFeed {
         matches!(self, Self::File { .. })
     }
 
-    /// Двигает открытие, не блокируя. `start` — откуда поколение начнёт показ, если
-    /// откроется на этом опросе (см. [`GenerationStart`]).
-    pub(super) fn poll_open(&mut self, start: GenerationStart) -> OpenStep {
+    /// Монитор буфера, если это сегменты (у файла монитора нет).
+    pub(super) const fn segments_monitor(&self) -> Option<&PushedStreamMonitor> {
         match self {
-            Self::Segments { opener, monitor } => match opener.poll_open() {
-                Ok(OpenProgress::Waiting(hint)) => OpenStep::Waiting(hint.retry_after()),
-                Ok(OpenProgress::Ready(opened)) => {
-                    let timeline = if opened.live_timeline.is_some() {
-                        SegmentsTimeline::Live
-                    } else {
-                        SegmentsTimeline::OnDemand
-                    };
-                    match prepared_segments(opened, start, monitor) {
-                        Ok(prepared) => OpenStep::Ready {
-                            prepared: Box::new(prepared),
-                            feed: LoadedFeed::Segments {
-                                monitor: monitor.clone(),
-                                downloaded_range: segments_downloaded_range(monitor, timeline),
-                            },
-                            // Позиция уже внутри `PreparedMedia`.
-                            after_load: AfterLoad::Nothing,
-                        },
-                        Err(prepare_error) => {
-                            error!(%prepare_error, "The opened browser stream could not be prepared for the player");
-                            OpenStep::Unplayable
+            Self::Segments { monitor, .. } => Some(monitor),
+            Self::File { .. } => None,
+        }
+    }
+
+    /// Что ждущее поколение делает с потоком: не открыт, удержан воротами или это файл.
+    pub(super) const fn open_state(&self) -> PendingOpenState {
+        match self {
+            Self::Segments { opened: None, .. } => PendingOpenState::NotOpenedYet,
+            Self::Segments {
+                opened: Some(_), ..
+            } => PendingOpenState::HeldByGate,
+            Self::File { .. } => PendingOpenState::NotSegments,
+        }
+    }
+
+    /// Двигает открытие, не блокируя.
+    ///
+    /// `placement` решает, когда открытое поколение-сегменты отдать плееру и с какого
+    /// места (ворота 04d: с целью — только когда полка её держит); `page` — жива ли
+    /// страница, которая может прислать байты у цели. Файл ворот не имеет: его старт
+    /// с цели — перемотка после показа.
+    pub(super) fn poll_open(
+        &mut self,
+        placement: &mut GenerationPlacement,
+        now: Instant,
+        page: PageAvailability,
+    ) -> OpenStep {
+        match self {
+            Self::Segments {
+                opener,
+                monitor,
+                opened,
+            } => {
+                let stream = match opened.take() {
+                    Some(stream) => stream,
+                    None => match opener.poll_open() {
+                        Ok(OpenProgress::Waiting(hint)) => {
+                            return OpenStep::Waiting(hint.retry_after());
+                        }
+                        Ok(OpenProgress::Ready(stream)) => stream,
+                        Err(open_error) => {
+                            return OpenStep::Failed {
+                                class: stream_class_label(&open_error),
+                                response: response_to_stream_failure(&open_error),
+                            };
+                        }
+                    },
+                };
+                let is_live = stream.live_timeline.is_some();
+                let start = if is_positionable(&stream.demuxer, is_live) {
+                    match placement.decide(monitor, now, page) {
+                        PlacementVerdict::HandOver(start) => start,
+                        PlacementVerdict::Wait { recheck_at } => {
+                            // Поток открыт, но у цели данных нет: ждёт здесь.
+                            *opened = Some(stream);
+                            return OpenStep::Waiting(recheck_at.saturating_duration_since(now));
                         }
                     }
+                } else {
+                    // Эфир и поток без длительности не позиционируются (03e): ждать
+                    // данных у цели им незачем — старт там, где лежат байты страницы.
+                    placement.named_start()
+                };
+                // Клик зрителя в эфире исполняется перемоткой после показа (04d). Поток
+                // без длительности неперематываем (03b): плеер отверг бы перемотку, и
+                // клик, как до 04d, не исполняется — страница к нему уже ушла сама.
+                let after_load = if is_live {
+                    placement.after_live_load()
+                } else {
+                    AfterLoad::Nothing
+                };
+                let timeline = if is_live {
+                    SegmentsTimeline::Live
+                } else {
+                    SegmentsTimeline::OnDemand
+                };
+                match prepared_segments(stream, start, monitor) {
+                    Ok(prepared) => OpenStep::Ready {
+                        prepared: Box::new(prepared),
+                        feed: LoadedFeed::Segments {
+                            monitor: monitor.clone(),
+                            downloaded_range: segments_downloaded_range(monitor, timeline),
+                        },
+                        // Позиция ролика уже внутри `PreparedMedia`; эфиру — перемотка
+                        // к клику зрителя после показа.
+                        after_load,
+                    },
+                    Err(prepare_error) => {
+                        error!(%prepare_error, "The opened browser stream could not be prepared for the player");
+                        OpenStep::Unplayable
+                    }
                 }
-                Err(open_error) => OpenStep::Failed {
-                    class: stream_class_label(&open_error),
-                    response: response_to_stream_failure(&open_error),
-                },
-            },
+            }
             Self::File {
                 opener,
                 requests,
@@ -172,7 +249,7 @@ impl PendingFeed {
                         feed: LoadedFeed::File {
                             requests: requests.clone(),
                         },
-                        after_load: start.after_file_load(),
+                        after_load: placement.named_start().after_file_load(),
                     },
                     Err(prepare_error) => {
                         error!(%prepare_error, "The opened browser file could not be prepared for the player");

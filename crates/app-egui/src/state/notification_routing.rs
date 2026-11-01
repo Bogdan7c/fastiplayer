@@ -25,8 +25,8 @@ use tracing::debug;
 use super::AppState;
 use super::media_retry::{MediaRetryTarget, RetryPlan};
 use super::notifications::{
-    CenterStatusUpdate, MediaFailureOrigin, NotificationsFrame, OPEN_STILL_IN_PROGRESS_MESSAGE,
-    OpenProgress, RetryRequestOutcome, TimelineGrip,
+    CenterStatusUpdate, HostMediaWait, HostMediaWaitUpdate, MediaFailureOrigin, NotificationsFrame,
+    OPEN_STILL_IN_PROGRESS_MESSAGE, OpenProgress, RetryRequestOutcome, TimelineGrip,
 };
 use crate::playlist_runtime::{AutomaticQueueNotice, PlaylistImportNotice};
 use crate::playlist_skip_message::{PlaylistQueueNoticeDelivery, playlist_queue_notice_delivery};
@@ -97,6 +97,16 @@ impl AppState {
     pub(crate) fn clear_center_status(&mut self) -> CenterStatusUpdate {
         let update = self.notifications.clear_center_status();
         if update == CenterStatusUpdate::Changed {
+            self.mark_pending_worker_redraw();
+        }
+        update
+    }
+
+    /// Хозяин окна сам ждёт данных, которых плеер ещё не видит (мост, 04d): спиннер
+    /// ожидания показывается, даже пока плеер доигрывает прежнее видео.
+    pub(crate) fn set_host_media_wait(&mut self, wait: HostMediaWait) -> HostMediaWaitUpdate {
+        let update = self.notifications.set_host_media_wait(wait);
+        if update == HostMediaWaitUpdate::Changed {
             self.mark_pending_worker_redraw();
         }
         update

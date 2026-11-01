@@ -1,12 +1,12 @@
 //! Сквозной тест «помним, пока помнит страница» (04a, живая находка): страница отдаёт
 //! байты один раз и повторно их не шлёт (у её настоящего MSE `SourceBuffer` они ещё
-//! лежат), а зритель/страница перематывается назад дальше окна `buffer_behind_s`.
+//! лежат), а зритель/страница перематывается назад.
 //!
-//! До решения 31.10.2026 полка держала прошлое только `buffer_behind_s`: перемотка
-//! назад уходила к странице, страница перематывалась и не присылала ни байта — картинка
-//! висела до срока перемотки плеера. Здесь окно «назад» — 0 с (config пользователя), а
-//! страница перематывается на 0,2 с после 1,8 с просмотра: при старом правиле этого
-//! времени на полке уже не было бы.
+//! До решения 31.10.2026 полка держала прошлое только короткое время: перемотка назад
+//! уходила к странице, страница перематывалась и не присылала ни байта — картинка
+//! висела до срока перемотки плеера. Теперь прошлое держится, пока его держит страница
+//! (окна «назад» в config больше нет), и перемотка на 0,2 с после 1,8 с просмотра
+//! садится с полки.
 //!
 //! Запись — первое поколение `quality-switch-new-media-source` (звук + видео H.264
 //! 25 к/с, ключевые кадры раз в 1,2 с), без последующих смен качества.
@@ -24,21 +24,18 @@ const LANDING_WINDOW_US: u64 = 400_000;
 const PLAYED_ON_FROM_SHELF_US: u64 = 1_000_000;
 
 #[test]
-fn a_seek_back_past_the_behind_window_plays_from_the_shelf_without_the_page_resending() {
+fn a_seek_back_plays_from_the_shelf_without_the_page_resending() {
     seek_back_plays_from_the_shelf(VideoMode::Headless);
 }
 
 /// То же в окне браузерного режима (путь открытия `AppState`).
 #[test]
-fn a_seek_back_past_the_behind_window_plays_from_the_shelf_in_a_window() {
+fn a_seek_back_plays_from_the_shelf_in_a_window() {
     seek_back_plays_from_the_shelf(VideoMode::Window);
 }
 
-/// Поднимает процесс с `config.toml`, где окно «назад» — 0 с.
-fn start_with_zero_behind(mode: VideoMode) -> Option<SessionProcessUnderTest> {
-    let mut config = fastiplayer_config::AppConfig::default();
-    config.browser_session.buffer_behind_s = 0;
-    let config_toml = config.to_pretty_toml().expect("config text");
+/// Поднимает процесс с настройками по умолчанию.
+fn start_with_defaults(mode: VideoMode) -> Option<SessionProcessUnderTest> {
     let name = "seek-back-on-shelf";
     let video = match mode {
         VideoMode::Headless => TestVideo::Headless,
@@ -48,7 +45,7 @@ fn start_with_zero_behind(mode: VideoMode) -> Option<SessionProcessUnderTest> {
         VideoMode::Headless => format!("{name}-headless"),
         VideoMode::Window => format!("{name}-window"),
     };
-    let bus = PrivateBusWithBrowserSession::start_with(&bus_name, Some(&config_toml), &video);
+    let bus = PrivateBusWithBrowserSession::start_with(&bus_name, None, &video);
     Some(SessionProcessUnderTest {
         bus,
         _video: video,
@@ -72,7 +69,7 @@ fn playing_positions(messages: &[PlayerSessionMessage]) -> Vec<u64> {
 }
 
 fn seek_back_plays_from_the_shelf(mode: VideoMode) {
-    let Some(process) = start_with_zero_behind(mode) else {
+    let Some(process) = start_with_defaults(mode) else {
         return;
     };
     let mut socket = process.open_attached_session();

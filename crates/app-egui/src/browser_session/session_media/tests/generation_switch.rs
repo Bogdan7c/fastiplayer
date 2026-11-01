@@ -92,9 +92,20 @@ fn a_page_seek_while_a_newer_generation_opens_does_not_move_the_old_video() {
 /// Перемотка страницы ПОСЛЕ загрузки нового поколения, но ДО его показа: команда
 /// сейчас досталась бы прежнему медиа (плеер ставит новое асинхронно). Старое видео
 /// не двигается; новое перематывается ровно один раз — когда плеер его показал.
+///
+/// С 04d (путь C) этот путь безопасен: поколение отдаётся плееру только с данными у
+/// своего старта, поэтому показ наступает, и отложенная перемотка не ждёт вечно (живая
+/// находка: поколение, поставленное на клик без данных, не показывалось никогда, и
+/// перемотка страницы ждала его до `VideoPreflightTimeout`). Отданное поколение уже не
+/// держится воротами: перемотка во время установки — обычная перемотка, не новая цель.
 #[test]
 fn a_page_seek_while_the_next_generation_installs_reaches_it_once_it_is_shown() {
     let (mut harness, current, _writers) = second_generation_installing();
+    // Отдано с данными у старта (с начала: данные поколения лежат с нуля).
+    assert_eq!(
+        harness.player.loaded_media.borrow()[1].initial_position,
+        player_core::PreparedInitialPosition::Beginning
+    );
     let target = Duration::from_millis(300);
     let page_target = MediaTime::from_micros(300_000).expect("time");
     harness.media.on_intake(
@@ -107,6 +118,11 @@ fn a_page_seek_while_the_next_generation_installs_reaches_it_once_it_is_shown() 
     assert!(
         !calls.iter().any(|call| matches!(call, PlayerCall::Seek(_))),
         "the old video was moved: {calls:?}"
+    );
+    assert_eq!(
+        harness.media.generation_wait(),
+        super::super::GenerationWait::Idle,
+        "a handed-over generation is never held again"
     );
 
     let second_load = harness.player.load_ticket(1);

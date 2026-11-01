@@ -203,6 +203,10 @@ impl LoadLedger {
             ended: snapshot.playback_state == PlaybackState::Ended,
             fault: self.fault.clone(),
             shown_load: self.shown_media.shown_load(snapshot.media_instance_id),
+            seek_target: snapshot
+                .timeline
+                .target_position
+                .map(|target| target.as_duration()),
         }
     }
 

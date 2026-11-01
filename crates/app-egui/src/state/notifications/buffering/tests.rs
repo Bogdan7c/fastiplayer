@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 use player_core::{PlaybackState, PlayerError, PlayerErrorKind, PlayerSnapshot};
 
 use super::super::{
-    BUFFERING_INDICATOR_APPEAR_DELAY, BufferingIndicator, CenterNotice, MediaFailureOrigin,
-    NotificationCenter, NotificationsFrame, OpenProgress, TimelineGrip,
+    BUFFERING_INDICATOR_APPEAR_DELAY, BufferingIndicator, CenterNotice, HostMediaWait,
+    HostMediaWaitUpdate, MediaFailureOrigin, NotificationCenter, NotificationsFrame, OpenProgress,
+    TimelineGrip,
 };
 use crate::ui::animation::UiMotion;
 
@@ -348,4 +349,51 @@ fn waiting_observation_does_not_touch_messages_it_does_not_own() {
     let after = center.frame(OpenProgress::Idle, UiMotion::Standard, started_at);
     assert_eq!(after.center, before.center);
     assert_eq!(after.toasts, before.toasts);
+}
+
+/// Мост, 04d (решение 146): окно браузерного режима ждёт данных для нового поколения, а
+/// плеер ещё доигрывает прежнее видео (`Playing`). Ожидание хозяина показывает спиннер с
+/// той же задержкой; снятое — прячет его в том же кадре. Повтор того же значения ничего
+/// не меняет (перерисовка не нужна).
+#[test]
+fn a_host_wait_shows_the_spinner_while_the_player_still_plays() {
+    let started_at = Instant::now();
+    let mut center = NotificationCenter::default();
+    assert_eq!(
+        center.set_host_media_wait(HostMediaWait::AwaitingData),
+        HostMediaWaitUpdate::Changed
+    );
+    assert_eq!(
+        center.set_host_media_wait(HostMediaWait::AwaitingData),
+        HostMediaWaitUpdate::Unchanged
+    );
+
+    let early = frame_at(&mut center, PlaybackState::Playing, started_at);
+    assert_eq!(
+        early.buffering,
+        BufferingIndicator::Hidden,
+        "the appear delay holds"
+    );
+    assert_eq!(
+        center.next_wake_deadline(),
+        Some(started_at + BUFFERING_INDICATOR_APPEAR_DELAY),
+        "the window is woken to show the spinner on time"
+    );
+    let shown = frame_at(
+        &mut center,
+        PlaybackState::Playing,
+        started_at + BUFFERING_INDICATOR_APPEAR_DELAY,
+    );
+    assert_eq!(shown.buffering, BufferingIndicator::Visible);
+
+    assert_eq!(
+        center.set_host_media_wait(HostMediaWait::NotWaiting),
+        HostMediaWaitUpdate::Changed
+    );
+    let hidden = frame_at(
+        &mut center,
+        PlaybackState::Playing,
+        started_at + BUFFERING_INDICATOR_APPEAR_DELAY + Duration::from_millis(16),
+    );
+    assert_eq!(hidden.buffering, BufferingIndicator::Hidden);
 }

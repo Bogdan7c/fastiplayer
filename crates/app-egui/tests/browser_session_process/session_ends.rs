@@ -28,7 +28,7 @@ const PASS_SLACK_US: u64 = 100_000;
 
 /// Срок сообщения о конце сеанса в окне (`END_NOTICE_PERIOD` процесса) минус допуск на
 /// чтение журнала тестом (строки читаются из трубы с небольшой задержкой).
-const END_NOTICE_PERIOD_AT_LEAST: Duration = Duration::from_millis(2_400);
+pub(super) const END_NOTICE_PERIOD_AT_LEAST: Duration = Duration::from_millis(2_400);
 
 /// Кадров в 6-секундном ролике фикстуры (`video-64-6s.mp4`, 25 к/с).
 const SIX_SECOND_VIDEO_FRAMES: u64 = 150;
@@ -139,7 +139,7 @@ pub(super) fn read_farewell_then_close(
 }
 
 /// T прощания — позиция наших часов: не раньше последних часов и не дальше одного тика.
-fn assert_farewell_within_a_clock_tick(last_clock_us: u64, farewell_us: u64) {
+pub(super) fn assert_farewell_within_a_clock_tick(last_clock_us: u64, farewell_us: u64) {
     assert!(
         farewell_us >= last_clock_us,
         "the farewell position {farewell_us} µs is behind the last clock {last_clock_us} µs"
@@ -238,7 +238,7 @@ fn closing_the_window_returns_the_page_to_our_clock_and_exits() {
         CloseCode::from(SessionCloseReason::PlayerClosed.close_code())
     );
     assert_farewell_within_a_clock_tick(last_clock, farewell);
-    let farewell_log = bus.wait_for_log_line("Viewer closed the window: farewell to the page");
+    let farewell_log = bus.wait_for_log_line("Session closed with a farewell to the page");
     assert!(farewell_log.contains("FarewellQueued"), "{farewell_log}");
     bus.wait_for_log_line("Browser window process exits");
     // Штатный конец (код выхода 0 — `Completed`), а не падение.

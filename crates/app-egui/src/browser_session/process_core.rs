@@ -13,6 +13,7 @@
 //! Ядро не знает ни winit, ни `ParkingWake`: его гоняют снаружи по шагу
 //! ([`BrowserSessionCore::step`]), а когда проснуться, решает вызывающий цикл.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -40,7 +41,8 @@ use super::runtime::{BrowserSessionRuntime, RuntimeFinish, SessionMediaPort};
 use super::session_config::BrowserSessionSettings;
 use super::session_end::SessionEndView;
 use super::session_media::{
-    DrainProgress, MediaPlayback, PausedDrain, SessionMedia, ViewerCloseStep,
+    DrainProgress, GenerationPlacementPolicy, GenerationWait, MediaPlayback, PausedDrain,
+    SessionMedia, ViewerCloseStep,
 };
 use super::stream_intake::StreamIntake;
 use super::stream_queue::{OrderedSessionQueue, QueueLimits};
@@ -68,6 +70,9 @@ pub(super) struct CoreStep {
     /// Отказ поколения за шаг, о котором зритель ещё не знает (04b, решение 129): окно
     /// показывает короткое сообщение, безоконный процесс только пишет отказ в журнал.
     pub(super) generation_rejection: GenerationRejectionNotice,
+    /// Новое поколение ждёт данных у цели клика (04d, путь C): окно показывает спиннер,
+    /// хотя прежнее видео ещё играет. Безоконный процесс его не читает.
+    pub(super) generation_wait: GenerationWait,
 }
 
 /// Открывался ли за шаг сеанс.
@@ -114,7 +119,10 @@ impl BrowserSessionCore {
         let source_policy = pushed_source_policy(settings)?;
         // Окно буфера для СЛЕДУЮЩЕГО видео: маршрут настроек обновляет его, фабрика
         // потоков читает при старте каждого нового потока.
-        let live_buffer_window = LiveBufferWindow::new(settings.buffer_window());
+        let live_buffer_window = LiveBufferWindow::new(
+            settings.buffer_window(),
+            super::held_bytes_override::held_bytes_override_from_environment(),
+        );
         // Окно предзагрузки и повторы файла `<video src>` — из тех же `[network]`, что у ссылок.
         let file_source = settings.file_source()?;
         let file_policy = file_source.policy()?;
@@ -183,6 +191,10 @@ impl BrowserSessionCore {
         )
         .with_drain_policy(super::drain_override::drain_policy_from_environment(
             paused_drain,
+        ))
+        // Ожидание данных у цели клика — тот же срок, что у перемотки плеера.
+        .with_placement_policy(GenerationPlacementPolicy::from_seek_config(
+            &settings.app_config().player.seek,
         ));
         let runtime = BrowserSessionRuntime::new(
             desk,
@@ -226,6 +238,7 @@ impl BrowserSessionCore {
             session_opened: observed.opened,
             session_end: self.media.session_end_view(),
             generation_rejection: self.media.take_generation_rejection_notice(),
+            generation_wait: self.media.generation_wait(),
         }
     }
 
@@ -370,9 +383,50 @@ impl SessionMediaPort for SessionOpenObserver<'_> {
     }
 }
 
-/// Пределы источника с окном буфера пользователя (`[browser_session]` config-а).
+/// Пределы источника с окном буфера и потолком памяти пользователя (`[browser_session]`
+/// config-а). Следующие потоки берут то же из `LiveBufferWindow` (смена на лету).
 fn pushed_source_policy(
     settings: &BrowserSessionSettings,
 ) -> Result<PushedSourcePolicy, PushedSourcePolicyError> {
-    PushedSourcePolicy::recommended()?.with_buffer_window(source_window(settings.buffer_window()))
+    let window = settings.buffer_window();
+    let policy = PushedSourcePolicy::recommended()?.with_buffer_window(source_window(window))?;
+    // Потолок из config-а; нулю взяться неоткуда (схема: не меньше 64 МиБ), но при нуле
+    // остаётся потолок политики по умолчанию.
+    let policy = match NonZeroUsize::new(window.max_held_bytes()) {
+        Some(ceiling) => policy.with_max_held_stream_bytes(ceiling),
+        None => policy,
+    };
+    // Тестовый потолок полки (без переменной — настоящий) перекрывает config.
+    Ok(super::held_bytes_override::policy_with_held_bytes_from_environment(policy))
+}
+
+#[cfg(test)]
+mod source_policy_tests {
+    use fastiplayer_config::AppConfig;
+
+    use super::*;
+
+    const MIB: usize = 1024 * 1024;
+
+    /// Настройки из настоящего файла config.toml с заданным потолком памяти.
+    fn settings_with_max_held_mb(max_held_mb: u16) -> BrowserSessionSettings {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let config_file = directory.path().join("config.toml");
+        let mut config = AppConfig::default();
+        config.browser_session.max_held_mb = max_held_mb;
+        let text = config.to_pretty_toml().expect("serialize config");
+        std::fs::write(&config_file, text).expect("write config");
+        BrowserSessionSettings::load_read_only_from(&config_file)
+    }
+
+    /// Потолок из config-а доходит до политики потока (порог «полон» — 75 % потолка), а
+    /// без файла действует умолчание 320 МиБ.
+    #[test]
+    fn the_configured_ceiling_reaches_the_stream_policy() {
+        let configured = pushed_source_policy(&settings_with_max_held_mb(512)).expect("policy");
+        let default = pushed_source_policy(&BrowserSessionSettings::defaults()).expect("policy");
+
+        assert_eq!(configured.buffer_full_at_held_bytes(), 512 * MIB / 100 * 75);
+        assert_eq!(default.buffer_full_at_held_bytes(), 320 * MIB / 100 * 75);
+    }
 }

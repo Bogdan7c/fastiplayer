@@ -50,6 +50,7 @@ mod settings_file_writes;
 pub(crate) use buffering::BUFFERING_INDICATOR_APPEAR_DELAY;
 pub(crate) use buffering::BufferingIndicator;
 pub(crate) use buffering::TimelineGrip;
+pub(crate) use buffering::{HostMediaWait, HostMediaWaitUpdate};
 pub(crate) use center_status::CenterStatusUpdate;
 pub(crate) use replacing::TransientReplaceKey;
 

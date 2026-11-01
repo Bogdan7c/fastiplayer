@@ -235,6 +235,9 @@ impl BrowserWindowApp {
         // тост вместо молча застывшей картинки. Не центр: его держит сообщение о конце.
         if let Some(instance) = self.instance.as_mut() {
             show_generation_rejection(instance, step.generation_rejection);
+            // Новое поколение ждёт данных у цели клика (04d): спиннер поверх ещё
+            // играющего прежнего видео — каждый проход, меняется только при смене.
+            instance.apply_generation_wait(step.generation_wait);
         }
         if let Some(instance) = self.instance.as_mut() {
             {

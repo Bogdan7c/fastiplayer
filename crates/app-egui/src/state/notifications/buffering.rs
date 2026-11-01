@@ -29,6 +29,13 @@
 //! - переход `Seeking` → `Buffering` — одно непрерывное ожидание, таймер не перезапускается;
 //! - индикатор не рисуется поверх сообщения в центре (ошибка, прогресс открытия) — это
 //!   решает [`NotificationCenter::frame`], а не отрисовка.
+//!
+//! Ожидание хозяина окна (мост, сессия 04d, решение 146): окно браузерного режима может
+//! ждать данных, которых плеер ещё не видит, — новое поколение потока страницы ждёт байтов
+//! у цели клика, а плеер тем временем доигрывает прежнее видео (`Playing`). Такое ожидание
+//! хозяин сообщает сам ([`HostMediaWait`], [`NotificationCenter::set_host_media_wait`]);
+//! для спиннера оно равно ожиданию плеера (та же задержка появления, тот же эпизод).
+//! Обычный плеер его никогда не ставит.
 
 use std::time::{Duration, Instant};
 
@@ -66,11 +73,32 @@ pub(crate) enum TimelineGrip {
     Released,
 }
 
+/// Ждёт ли данных хозяин окна сам, помимо плеера (см. описание модуля).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum HostMediaWait {
+    /// Хозяин ничего не ждёт: спиннер решает только состояние плеера.
+    #[default]
+    NotWaiting,
+    /// Хозяин ждёт данных для медиа, которое плеер ещё не показывает.
+    AwaitingData,
+}
+
+/// Изменило ли ожидание хозяина что-нибудь (перерисовка нужна только при изменении).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HostMediaWaitUpdate {
+    /// Ожидание хозяина сменилось.
+    Changed,
+    /// То же, что было.
+    Unchanged,
+}
+
 /// Наблюдение за непрерывным ожиданием данных (поле [`NotificationCenter`]).
 #[derive(Debug, Default)]
 pub(super) struct PlaybackWaitingWatch {
     /// Текущий эпизод ожидания; `None` — player сейчас не ждёт данные.
     episode: Option<WaitingEpisode>,
+    /// Ожидание хозяина окна (по умолчанию — нет).
+    host_wait: HostMediaWait,
 }
 
 /// Один непрерывный эпизод ожидания.
@@ -89,7 +117,8 @@ struct WaitingEpisode {
 impl PlaybackWaitingWatch {
     /// Учитывает состояние player-а и жест таймлайна текущего кадра.
     fn observe(&mut self, playback_state: PlaybackState, grip: TimelineGrip, now: Instant) {
-        if !waits_for_media_data(playback_state, grip) {
+        let host_waits = self.host_wait == HostMediaWait::AwaitingData;
+        if !waits_for_media_data(playback_state, grip) && !host_waits {
             self.episode = None;
             return;
         }
@@ -160,5 +189,15 @@ impl NotificationCenter {
         now: Instant,
     ) {
         self.playback_waiting.observe(playback_state, grip, now);
+    }
+
+    /// Хозяин окна сообщает, ждёт ли он данных сам (см. описание модуля). Вступает в
+    /// силу со следующим [`Self::observe_playback_waiting`].
+    pub(crate) fn set_host_media_wait(&mut self, wait: HostMediaWait) -> HostMediaWaitUpdate {
+        if self.playback_waiting.host_wait == wait {
+            return HostMediaWaitUpdate::Unchanged;
+        }
+        self.playback_waiting.host_wait = wait;
+        HostMediaWaitUpdate::Changed
     }
 }

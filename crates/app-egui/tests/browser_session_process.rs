@@ -754,10 +754,29 @@ mod window_geometry;
 mod page_and_mpris;
 
 // Ожидание и отказ видны зрителю (04b, решение 129): отказ поколения странице и окну,
-// следующее поколение играет; `SeekTimeout` доходит до уведомлений окна.
+// следующее поколение играет; перемотка ждёт живую страницу без `SeekTimeout` (150).
 #[path = "browser_session_process/viewer_notices.rs"]
 mod viewer_notices;
 
 // Следов просмотра в HOME/XDG нет: ни файлов, ни данных страницы (инвариант 7, 04c).
 #[path = "browser_session_process/home_stays_clean.rs"]
 mod home_stays_clean;
+
+// Обрыв по ошибке потока не молчаливый (04d, решение 132): прощание, 4003, сообщение окна.
+#[path = "browser_session_process/stream_error.rs"]
+mod stream_error;
+
+// Досмотр кончается на конце первой кончившейся дорожки (04d, решение 133): звук и
+// позиция встают с короткой картинкой после `tab_gone`.
+#[path = "browser_session_process/drain_cut.rs"]
+mod drain_cut;
+
+// Клики зрителя во время смены поколения (04d, путь C, решения 146–147): поколение ждёт
+// данных у цели, страница может перемотаться сама, заменённое кончается обрывом.
+#[path = "browser_session_process/generation_switch_clicks.rs"]
+mod generation_switch_clicks;
+
+// Перемотка ждёт медленную страницу дольше срока перемотки (решение 150, пакет F 04d):
+// спиннер, без «Seeking timed out», кадры цели на показе, позиция не возвращается назад.
+#[path = "browser_session_process/seek_waits_for_page.rs"]
+mod seek_waits_for_page;

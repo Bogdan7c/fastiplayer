@@ -46,6 +46,7 @@ fn observation(position: Duration, state: PlaybackState, rate: f32) -> PlaybackO
         ended: state == PlaybackState::Ended,
         fault: None,
         shown_load: None,
+        seek_target: None,
     }
 }
 
@@ -119,6 +120,44 @@ fn clock_ticks_four_times_a_second_with_position_state_and_rate_in_protocol_unit
     assert_eq!(
         page.take_sent(),
         vec![clock(1, 2_000_000, ClockState::Waiting, 1000)]
+    );
+}
+
+/// Пока плеер исполняет перемотку, часы говорят «жду данных» В ЦЕЛИ, а не на старом
+/// месте, где плеер стоит до коммита (пакет F 04d): иначе страница, перемотка которой
+/// ждёт её данных, видела бы «плеер вернулся назад» всё ожидание.
+#[test]
+fn clock_waits_at_the_seek_target_while_the_player_seeks() {
+    let (mut outbound, page) = outbound();
+    let start = Instant::now();
+    let old_place = Duration::from_secs(9_016);
+    let target = Duration::from_secs(4_000);
+    let seeking = PlaybackObservation {
+        seek_target: Some(target),
+        ..observation(old_place, PlaybackState::Scrubbing, 1.0)
+    };
+    outbound.tick_clock(&seeking, start);
+    assert_eq!(
+        page.take_sent(),
+        vec![clock(0, 4_000_000_000, ClockState::Waiting, 1000)]
+    );
+
+    // После коммита цели нет — снова позиция плеера.
+    let landed = observation(target, PlaybackState::Playing, 1.0);
+    outbound.tick_clock(&landed, start + CLOCK_INTERVAL);
+    assert_eq!(
+        page.take_sent(),
+        vec![clock(1, 4_000_000_000, ClockState::Playing, 1000)]
+    );
+    // Цель без перемотки (пауза) часы не трогает.
+    let paused = PlaybackObservation {
+        seek_target: Some(target),
+        ..observation(old_place, PlaybackState::Paused, 1.0)
+    };
+    outbound.tick_clock(&paused, start + CLOCK_INTERVAL * 2);
+    assert_eq!(
+        page.take_sent(),
+        vec![clock(2, 9_016_000_000, ClockState::Paused, 1000)]
     );
 }
 

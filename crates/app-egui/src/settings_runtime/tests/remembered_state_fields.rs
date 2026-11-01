@@ -35,7 +35,7 @@ fn remembered_browser_window_keys_are_hidden_but_buffer_keys_are_shown() {
     }
     for shown in [
         "browser_session.buffer_ahead_s",
-        "browser_session.buffer_behind_s",
+        "browser_session.max_held_mb",
         // Видны осознанно (UX11 и сайдбар): их не скрываем.
         "audio.volume",
         "ui.sidebar.width_points",

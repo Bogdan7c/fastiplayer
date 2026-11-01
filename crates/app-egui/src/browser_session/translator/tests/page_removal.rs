@@ -111,6 +111,8 @@ fn removal_of_an_old_generation_does_not_touch_the_new_one() {
         log.calls(),
         vec![
             (1, WriterCall::AddLane(0, PushedContainer::FragmentedMp4)),
+            // Заменённое поколение кончается обрывом (04d); стирание к нему не доходит.
+            (1, WriterCall::EndDownloadCutShort),
             (2, WriterCall::AddLane(0, PushedContainer::WebM)),
         ]
     );

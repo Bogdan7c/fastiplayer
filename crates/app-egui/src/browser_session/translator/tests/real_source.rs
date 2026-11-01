@@ -214,3 +214,106 @@ fn page_removal_through_the_translator_releases_played_bytes_of_the_real_source(
     // Остаются только init-сегменты полос.
     assert!(held_after > 0);
 }
+
+/// Демуксер поколения из уведомлений переходника (первое поколение).
+fn opened_generation_demuxer(notices: Vec<IntakeNotice>) -> Box<dyn Demuxer> {
+    let mut handoff = notices
+        .into_iter()
+        .find_map(|notice| match notice {
+            IntakeNotice::NewGeneration(handoff) => Some(handoff),
+            _ => None,
+        })
+        .expect("a generation");
+    let GenerationSource::Segments { opener, .. } = &mut handoff.source else {
+        panic!("a source buffer generation must hand over segments");
+    };
+    open_demuxer(opener)
+}
+
+/// Страница ушла посреди потока (без своего `endOfStream`): конец экземпляра — это
+/// оборванное скачивание, и плеер узнаёт, что конец данных обрезан (позиция на
+/// `Ended` не прыгнет в длительность, решение 133).
+#[test]
+fn a_session_ending_mid_stream_cuts_the_download_short_for_the_player() {
+    let mut translator = real_translator();
+    let mut inputs: Vec<SessionInput> = recorded_inputs("two-source-buffers-mid-box-cuts")
+        .into_iter()
+        .filter(|input| {
+            !matches!(
+                input,
+                SessionInput::Message(_, PageSessionMessage::EndOfStream { .. })
+            )
+        })
+        .collect();
+    inputs.push(SessionInput::Ended(session(1)));
+
+    let demuxer = opened_generation_demuxer(run(&mut translator, inputs));
+
+    assert!(matches!(
+        demuxer.data_end(),
+        media_core::DemuxDataEnd::CutShort {
+            playable_end: Some(_)
+        }
+    ));
+}
+
+/// Страница честно закончила поток, а потом ушла: скачанное — всё медиа, конец
+/// экземпляра его не обрывает, и плеер доигрывает его как файл.
+#[test]
+fn a_session_ending_after_an_honest_end_of_stream_keeps_the_complete_end() {
+    let mut translator = real_translator();
+    let mut inputs = recorded_inputs("two-source-buffers-mid-box-cuts");
+    assert!(
+        inputs.iter().any(|input| matches!(
+            input,
+            SessionInput::Message(_, PageSessionMessage::EndOfStream { .. })
+        )),
+        "the recorded stream ends honestly"
+    );
+    inputs.push(SessionInput::Ended(session(1)));
+
+    let demuxer = opened_generation_demuxer(run(&mut translator, inputs));
+
+    assert_eq!(demuxer.data_end(), media_core::DemuxDataEnd::Complete);
+}
+
+/// 04d, путь C: страница открыла новое поколение (`MediaSource`) посреди потока —
+/// заменённое поколение кончается ОБРЫВОМ, а не честным концом: плеер доиграет общее у
+/// всех дорожек и не поставит позицию в длительность (живая находка: после смены
+/// качества во время клика зритель видел конец фильма).
+#[test]
+fn a_generation_replaced_mid_stream_ends_cut_short_for_the_player() {
+    let mut translator = real_translator();
+    let mut inputs: Vec<SessionInput> = recorded_inputs("two-source-buffers-mid-box-cuts")
+        .into_iter()
+        .filter(|input| {
+            !matches!(
+                input,
+                SessionInput::Message(_, PageSessionMessage::EndOfStream { .. })
+            )
+        })
+        .collect();
+    inputs.push(started(1, 2));
+
+    let demuxer = opened_generation_demuxer(run(&mut translator, inputs));
+
+    assert!(matches!(
+        demuxer.data_end(),
+        media_core::DemuxDataEnd::CutShort {
+            playable_end: Some(_)
+        }
+    ));
+}
+
+/// Поколение, которое страница честно закончила (`endOfStream`) до замены, замена не
+/// обрывает: его медиа действительно кончилось.
+#[test]
+fn a_generation_ended_honestly_before_its_replacement_keeps_the_complete_end() {
+    let mut translator = real_translator();
+    let mut inputs = recorded_inputs("two-source-buffers-mid-box-cuts");
+    inputs.push(started(1, 2));
+
+    let demuxer = opened_generation_demuxer(run(&mut translator, inputs));
+
+    assert_eq!(demuxer.data_end(), media_core::DemuxDataEnd::Complete);
+}

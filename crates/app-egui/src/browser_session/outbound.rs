@@ -358,7 +358,7 @@ impl PageOutbound {
         }
         let message = PlayerSessionMessage::Clock {
             seq: ClockSequence(self.next_clock_sequence),
-            position_us: clock_position(observation.position),
+            position_us: clock_position(observation.page_clock_position()),
             state: clock_state_for(observation.state),
             rate: clock_rate(observation.rate),
         };

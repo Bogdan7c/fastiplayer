@@ -366,6 +366,61 @@ fn a_page_seek_while_a_file_opens_seeks_the_file_once_the_player_shows_it() {
     assert_eq!(seeks, vec![PlayerCall::Seek(target)]);
 }
 
+/// 04d: клик зрителя, пока файл открывается, — у файла ворот нет (байты идут по
+/// `fetch_range`): файл грузится, как раньше, и перематывается один раз, когда плеер его
+/// показал; странице `seek` не уходит.
+#[test]
+fn a_viewer_click_while_a_file_opens_seeks_the_file_once_shown_without_a_page_seek() {
+    let mut harness = Harness::new();
+    let current = session(1);
+    harness.media.on_session_opened(&current);
+    let (mut page, notice) = file_generation(
+        &current,
+        1,
+        FASTSTART,
+        SizeReport::Known,
+        Arc::new(CountingNotifier::default()),
+    );
+    harness.media.on_intake(vec![notice], None);
+    let target = Duration::from_secs(2);
+    harness.media.on_viewer_transport(
+        crate::viewer_transport::ViewerTransportIntent::Seek(target),
+        Instant::now(),
+    );
+    let mut sent = harness.drive_with_page(&mut page, |harness, _| harness.player_loaded());
+    assert_eq!(
+        harness.media.generation_wait(),
+        super::super::GenerationWait::Idle,
+        "a file is never held"
+    );
+
+    let load = harness.player.load_ticket(0);
+    harness
+        .player
+        .show_load(load, Duration::ZERO, PlaybackState::Playing);
+    sent.extend(harness.drive_with_page(&mut page, |harness, _| {
+        harness
+            .player
+            .calls
+            .borrow()
+            .iter()
+            .any(|call| matches!(call, PlayerCall::Seek(_)))
+    }));
+    let seeks: Vec<PlayerCall> = harness
+        .player
+        .take_calls()
+        .into_iter()
+        .filter(|call| matches!(call, PlayerCall::Seek(_)))
+        .collect();
+    assert_eq!(seeks, vec![PlayerCall::Seek(target)]);
+    assert!(
+        !sent
+            .iter()
+            .any(|message| matches!(message, PlayerSessionMessage::Seek { .. })),
+        "a file gets its bytes by fetch_range, not by a page seek"
+    );
+}
+
 /// Оглавление MP4 в конце без известного размера — честный отказ странице
 /// (`unsupported_codec`), а не вечное ожидание.
 #[test]

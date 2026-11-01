@@ -236,3 +236,121 @@ fn closing_the_window_without_a_session_reports_it() {
     assert_eq!(harness.media.close_for_viewer(), ViewerCloseStep::NoSession);
     assert!(harness.closer.closed.borrow().is_empty());
 }
+
+// ---- плеер сам оборвал поток ошибкой (4003, решение 132) ---------------------------
+
+/// Просьба закрыть сеанс ошибкой потока от приёма (переполнение и т. п.).
+fn stream_error_notice(session: &SessionRef) -> IntakeNotice {
+    IntakeNotice::CloseSession {
+        session: session.clone(),
+        reason: SessionCloseReason::ProtocolViolation,
+    }
+}
+
+#[test]
+fn a_stream_error_says_farewell_on_pause_before_the_closing_frame() {
+    let (mut harness, current, _writer) = loaded_harness();
+    show_playing_at(&mut harness, Duration::from_millis(1_750));
+    let clock_us = last_clock_us(&harness);
+
+    harness
+        .media
+        .on_intake(vec![stream_error_notice(&current)], None);
+
+    // Одно действие сервера «прощание + кадр 4003»: порядок на проводе — его забота.
+    assert_eq!(
+        *harness.closer.farewells.borrow(),
+        vec![FarewellCall::CloseWithFarewell(
+            current,
+            return_paused_at(Duration::from_micros(clock_us)),
+            SessionCloseReason::ProtocolViolation
+        )]
+    );
+    assert!(harness.closer.closed.borrow().is_empty());
+}
+
+#[test]
+fn a_stream_error_before_the_video_is_shown_closes_without_a_farewell() {
+    let mut harness = Harness::new();
+    let current = session(1);
+    harness.media.on_session_opened(&current);
+
+    harness
+        .media
+        .on_intake(vec![stream_error_notice(&current)], None);
+
+    assert!(harness.closer.farewells.borrow().is_empty());
+    assert_eq!(
+        *harness.closer.closed.borrow(),
+        vec![(current, SessionCloseReason::ProtocolViolation)]
+    );
+}
+
+#[test]
+fn a_stream_error_of_another_session_gets_no_farewell() {
+    let (mut harness, _current, _writer) = loaded_harness();
+    show_playing_at(&mut harness, Duration::from_secs(1));
+    let other = session(9);
+
+    harness
+        .media
+        .on_intake(vec![stream_error_notice(&other)], None);
+
+    assert!(harness.closer.farewells.borrow().is_empty());
+    assert_eq!(
+        *harness.closer.closed.borrow(),
+        vec![(other, SessionCloseReason::ProtocolViolation)]
+    );
+}
+
+#[test]
+fn a_stream_error_while_draining_gets_no_farewell() {
+    let (mut harness, current, _writer) = loaded_harness();
+    show_playing_at(&mut harness, Duration::from_secs(1));
+    harness.media.on_session_ended(&current, TAB_GONE_END);
+
+    harness
+        .media
+        .on_intake(vec![stream_error_notice(&current)], None);
+
+    assert!(harness.closer.farewells.borrow().is_empty());
+}
+
+#[test]
+fn a_refused_farewell_on_a_stream_error_still_closes_with_4003() {
+    let (mut harness, current, _writer) = loaded_harness();
+    show_playing_at(&mut harness, Duration::from_secs(1));
+    *harness.closer.refuse_farewells.borrow_mut() = true;
+
+    harness
+        .media
+        .on_intake(vec![stream_error_notice(&current)], None);
+
+    assert_eq!(
+        *harness.closer.closed.borrow(),
+        vec![(current, SessionCloseReason::ProtocolViolation)]
+    );
+}
+
+/// Окно говорит про ошибку и когда связь оборвал плеер, и когда сервер; доигрывания
+/// при этом нет (сообщение не пересекается с правилом доигрывания).
+#[test]
+fn the_window_sees_a_stream_error_end_but_other_silent_ends_stay_silent() {
+    use crate::browser_session::session_end::SessionEndView;
+    let (mut harness, current, _writer) = loaded_harness();
+    harness.media.on_session_ended(
+        &current,
+        SessionEndReason::ClosedByPlayer(SessionCloseReason::ProtocolViolation),
+    );
+    assert_eq!(
+        harness.media.session_end_view(),
+        SessionEndView::StreamError
+    );
+
+    let (mut harness, current, _writer) = loaded_harness();
+    harness.media.on_session_ended(
+        &current,
+        SessionEndReason::ClosedByPlayer(SessionCloseReason::PlayerClosed),
+    );
+    assert_eq!(harness.media.session_end_view(), SessionEndView::Silent);
+}

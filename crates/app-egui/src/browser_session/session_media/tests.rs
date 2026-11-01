@@ -80,6 +80,7 @@ impl FakePlayback {
                 ended: false,
                 fault: None,
                 shown_load: None,
+                seek_target: None,
             })),
             tickets: Rc::default(),
             loaded_tickets: Rc::default(),
@@ -724,10 +725,14 @@ mod downloaded_range;
 mod drain;
 mod farewell;
 mod file_generation;
+mod generation_carry_live;
+mod generation_placement;
 mod generation_rejection;
 mod generation_start;
 mod generation_switch;
+mod live_click_real_player;
 mod live_scrub_real_player;
+mod viewer_click_claim;
 mod viewer_transport;
 mod viewer_transport_real_player;
 mod waiting_spinner_real_player;

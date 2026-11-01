@@ -227,8 +227,12 @@ fn a_viewer_seek_while_a_new_generation_opens_starts_it_there_and_asks_the_page_
         "the old video stays"
     );
     assert_eq!(
-        harness.media.pending.as_ref().map(|pending| pending.start),
-        Some(GenerationStart::PageSeekedTo(Duration::from_secs(5)))
+        harness
+            .media
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.placement.awaited_target()),
+        Some(Duration::from_secs(5))
     );
     harness.media.drive(now);
     harness.media.drive(now + PENDING_RETRY_INTERVAL);

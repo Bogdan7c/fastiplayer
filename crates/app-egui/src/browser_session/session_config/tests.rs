@@ -91,7 +91,7 @@ fn valid_config_values_are_read() {
     let config_file = directory.path().join("config.toml");
     let mut config = AppConfig::default();
     config.browser_session.buffer_ahead_s = 90;
-    config.browser_session.buffer_behind_s = 15;
+    config.browser_session.max_held_mb = 512;
     config.audio.output_device = "usb-headset".to_string();
     config.video.sw_decode_threads = 3;
     let text = config.to_pretty_toml().expect("serialize config");
@@ -101,19 +101,19 @@ fn valid_config_values_are_read() {
 
     assert_eq!(settings.origin(), BrowserSettingsOrigin::ConfigFile);
     assert_eq!(settings.buffer_window().ahead(), Duration::from_secs(90));
-    assert_eq!(settings.buffer_window().behind(), Duration::from_secs(15));
+    assert_eq!(settings.buffer_window().max_held_bytes(), 512 * 1024 * 1024);
     assert_eq!(settings.audio_output_device_id(), "usb-headset");
     assert_eq!(settings.app_config().video.sw_decode_threads, 3);
     assert_eq!(fs::read(&config_file).expect("read back"), text.as_bytes());
 }
 
-/// Значения по умолчанию совпадают с решением владельца: 120 с вперёд, 30 с назад.
+/// Значения по умолчанию совпадают с решением владельца: 120 с вперёд, потолок 320 МиБ.
 #[test]
 fn defaults_hold_the_owner_buffer_window() {
     let settings = BrowserSessionSettings::defaults();
 
     assert_eq!(settings.buffer_window().ahead(), Duration::from_secs(120));
-    assert_eq!(settings.buffer_window().behind(), Duration::from_secs(30));
+    assert_eq!(settings.buffer_window().max_held_bytes(), 320 * 1024 * 1024);
     assert_eq!(settings.audio_output_device_id(), "default");
 }
 

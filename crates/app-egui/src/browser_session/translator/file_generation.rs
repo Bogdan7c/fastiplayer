@@ -27,10 +27,10 @@ use browser_bridge_protocol::{
 };
 use browser_bridge_session::SessionRef;
 use pushed_media_source::{
-    PushedFileError, RangeBytesVerdict, RangeFailure, RangeIdStanding, RangeOutcome,
-    RangeRequestId, RangeRequestIds, ResourceSizeReport,
+    DownloadCutOutcome, PushedFileError, RangeBytesVerdict, RangeFailure, RangeIdStanding,
+    RangeOutcome, RangeRequestId, RangeRequestIds, ResourceSizeReport,
 };
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::file_port::FileWriterPort;
 use super::{
@@ -40,6 +40,16 @@ use super::{
 use crate::browser_session::intake_notice::{GenerationHandoff, GenerationSource, IntakeNotice};
 use crate::browser_session::rejection::response_to_file_failure;
 use crate::browser_session::stream_queue::OwnedRangeChunk;
+
+/// Почему текущий поток запечатывается (для журнала; правило одно — см.
+/// `ProtocolTranslator::seal_current_stream`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SealOccasion {
+    /// Экземпляр сеанса кончился (страница ушла).
+    SessionEnded,
+    /// Страница открыла новое поколение (`MediaSource`), прежнее заменено.
+    ReplacedByNewGeneration,
+}
 
 /// Номера запросов файла одного экземпляра сеанса.
 pub(super) struct SessionFiles {
@@ -268,10 +278,24 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
     /// Конец экземпляра: текущий поток запечатывается, чтобы полученное доигралось.
     ///
     /// - файл: `seal` — ждущие чтения не висят, чтение за полученным — конец файла;
-    /// - сегменты: `end_of_stream` — иначе страница, ушедшая посреди потока, оставила
-    ///   бы полку «открытой», и плеер ждал бы следующих байтов, которых не будет. Ошибка
-    ///   тут не ответ странице (её уже нет): в журнал идёт только её класс.
-    pub(super) fn seal_current_stream(&mut self) {
+    ///   обрезанное чтение источник сам отмечает «конец данных обрезан»;
+    /// - сегменты: «скачивание оборвано» (`end_download_cut_short`) — иначе страница,
+    ///   ушедшая посреди потока, оставила бы полку «открытой», и плеер ждал бы байтов,
+    ///   которых не будет. Это не честный `endOfStream`: дорожки скачаны на разную
+    ///   глубину (YouTube качает звук дальше картинки), и плеер играет только общее
+    ///   у всех дорожек — картинка и звук встают вместе, позиция не прыгает в
+    ///   длительность (решение 133). Честный `endOfStream`, пришедший раньше конца
+    ///   экземпляра, источник не трогает — такое медиа доигрывается целиком.
+    ///
+    /// Причину конца экземпляра переходник не видит (её знает главный цикл), и она
+    /// здесь не нужна: доигрывание бывает только после ухода страницы (`tab_gone`,
+    /// пропажа экстеншена), а после остальных концов процесс не играет вовсе. Ошибка
+    /// тут не ответ странице (её уже нет): в журнал идёт только её класс.
+    ///
+    /// Замена поколения новым `MediaSource` (04d, [`SealOccasion::ReplacedByNewGeneration`])
+    /// запечатывает так же: заменённое медиа не кончилось, его сменили, — честный конец
+    /// (`Drop` писателя → `end_of_stream`) поставил бы позицию плеера в длительность.
+    pub(super) fn seal_current_stream(&mut self, occasion: SealOccasion) {
         let Some(InstanceState {
             phase: InstancePhase::Open(Some(state)),
             ..
@@ -280,15 +304,28 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             return;
         };
         match &mut state.stream {
-            GenerationStream::File(writer) => writer.seal(),
-            GenerationStream::Live(writer) => {
-                if let Err(error) = writer.end_of_stream() {
-                    warn!(
-                        failure_class = ?error.failure_class(),
-                        "The stream could not be finished at the end of the session"
-                    );
+            GenerationStream::File(writer) => match occasion {
+                SealOccasion::SessionEnded => writer.seal(),
+                // Заменённый файл запечатывает его `Drop` (как до 04d): обрыв полосы
+                // нужен только сегментам, у файла «скачанное» и так кончается там, где
+                // кончились полученные байты.
+                SealOccasion::ReplacedByNewGeneration => {}
+            },
+            GenerationStream::Live(writer) => match writer.end_download_cut_short() {
+                Ok(DownloadCutOutcome::CutShort(report)) => debug!(
+                    playable_end = ?report.playable_end,
+                    ?occasion,
+                    "The stream download was cut short"
+                ),
+                Ok(DownloadCutOutcome::AlreadyComplete) => {
+                    debug!(?occasion, "The stream had already ended honestly")
                 }
-            }
+                Err(error) => warn!(
+                    failure_class = ?error.failure_class(),
+                    ?occasion,
+                    "The stream could not be finished"
+                ),
+            },
             GenerationStream::Rejected => {}
         }
     }

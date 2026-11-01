@@ -8,6 +8,7 @@
 //!  Ended{reason} текущего экземпляра ─► ActiveDrain { правила, причина, последний ответ }
 //!  главный цикл: «доиграно?» ─► DrainWatch::evaluate ─► Draining / AwaitingViewer / Drained
 //!  окно: session_end_view() ─► Silent / WaitingForViewer / Finished (по последнему ответу)
+//!                             или StreamError (обрыв 4003: не доигрывается, но не молчит)
 //! ```
 
 use std::time::Instant;
@@ -97,7 +98,9 @@ impl SessionMedia {
             return SessionEndView::Silent;
         };
         let Some(cause) = DrainCause::of(active.ended_because) else {
-            return SessionEndView::Silent;
+            // Обрыв по ошибке потока не доигрывается, но окно о нём говорит (решение 132).
+            return SessionEndView::of_undrained_end(active.ended_because)
+                .unwrap_or(SessionEndView::Silent);
         };
         match active.last_progress {
             Some(DrainProgress::AwaitingViewer) => SessionEndView::WaitingForViewer(cause),

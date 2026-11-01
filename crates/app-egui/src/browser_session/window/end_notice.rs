@@ -40,7 +40,8 @@ pub(super) enum WindowExit {
 /// открыл сеанс…) — сразу.
 pub(super) fn exit_plan(view: SessionEndView, now: Instant) -> WindowExit {
     match view {
-        SessionEndView::Finished(_) => WindowExit::AfterNotice {
+        // Обрыв по ошибке потока (решение 132): сообщение держится столько же.
+        SessionEndView::Finished(_) | SessionEndView::StreamError => WindowExit::AfterNotice {
             close_at: now + END_NOTICE_PERIOD,
         },
         SessionEndView::Silent | SessionEndView::WaitingForViewer(_) => WindowExit::Now,
@@ -127,6 +128,17 @@ mod tests {
                 "{end:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_stream_error_holds_the_notice_like_a_finished_drain() {
+        let now = Instant::now();
+        assert_eq!(
+            exit_plan(SessionEndView::StreamError, now),
+            WindowExit::AfterNotice {
+                close_at: now + END_NOTICE_PERIOD
+            }
+        );
     }
 
     #[test]

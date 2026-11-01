@@ -78,6 +78,9 @@ impl SessionMedia {
             .is_some_and(|pending| pending.generation == generation)
         {
             self.pending = None;
+            // Клик зрителя относился к этому поколению: повторять его после показа
+            // какого-то следующего поколения было бы чужой волей (решение 149).
+            self.viewer_will.click_claim().forget();
         }
         if self.drain.is_some() {
             // Сеанс кончился: сказать отказ некому (отложенное повторялось бы вечно).

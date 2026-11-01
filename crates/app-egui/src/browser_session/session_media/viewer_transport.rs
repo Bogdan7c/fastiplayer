@@ -16,8 +16,12 @@
 //! источник сам решает, нужна ли странице перемотка (цель на полке — нет; вне полки —
 //! просьба `seek{seek_id}` через тот же `request_page_seek`, страница подтвердит
 //! `seek_started{player_seek}`). Так одно действие = не больше одного `seek` странице.
-//! Исключение — поколение, которое ещё открывается: его демуксер встанет сразу на цель
-//! (правило 03e), а страница о цели не знает, поэтому просьба уходит отсюда.
+//! Исключение — поколение, которое ещё не отдано плееру: цель становится его стартом
+//! (ворота 04d, [`super::generation_placement`]), а страница о цели не знает, поэтому
+//! просьба уходит оттуда — тоже одна и только если полка цели не держит; источник
+//! помечает цель, и установка поколения вторую просьбу не ставит. Если страница потом
+//! сама вернулась в другое место, клик повторяется ей один раз после показа нового
+//! поколения ([`super::viewer_click_claim`], решение 149) — тогда на клик два `seek`.
 //!
 //! **Правило эха** ([`ViewerWill`]): страница, исполнив нашу команду, присылает
 //! `page_playback{play|pause|set_rate}`. Это подтверждение, а не новая воля: плеер уже
@@ -37,11 +41,11 @@
 use std::time::{Duration, Instant};
 
 use browser_bridge_protocol::PlaybackRate as PagePlaybackRate;
-use pushed_media_source::PageSeekRequest;
 use tracing::{debug, info};
 
 use super::SessionMedia;
-use super::generation_start::GenerationStart;
+use super::generation_placement::PendingAim;
+use super::viewer_click_claim::ViewerClickClaim;
 use crate::browser_session::outbound::clock_rate;
 use crate::viewer_transport::ViewerTransportIntent;
 
@@ -92,6 +96,8 @@ struct Unconfirmed<T> {
 pub(super) struct ViewerWill {
     play: Option<Unconfirmed<PlayWill>>,
     rate: Option<Unconfirmed<PagePlaybackRate>>,
+    /// Клик во время смены поколения против самовольного возврата страницы (149).
+    click: ViewerClickClaim,
 }
 
 impl ViewerWill {
@@ -120,8 +126,15 @@ impl ViewerWill {
         judge(&mut self.rate, page)
     }
 
+    /// Претензия клика зрителя во время смены поколения
+    /// ([`super::viewer_click_claim`]).
+    pub(super) fn click_claim(&mut self) -> &mut ViewerClickClaim {
+        &mut self.click
+    }
+
     /// Срок вышел — страница снова ведёт. Зовётся каждый проход медиа-части.
     pub(super) fn expire(&mut self, now: Instant) {
+        self.click.expire(now);
         if self.play.is_some_and(|will| will.until <= now) {
             self.play = None;
         }
@@ -204,23 +217,12 @@ impl SessionMedia {
 
     /// Перемотка зрителя (см. описание модуля: странице — не больше одного `seek`).
     fn viewer_seek(&mut self, target: Duration, page_listens: bool) {
-        if let Some(pending) = self.pending.as_mut() {
-            // Открывающееся поколение заменит видео в плеере: цель — его старт (03e),
-            // прежнее видео не двигаем. Страница о цели не знает — сегменты с цели она
-            // пришлёт только по просьбе; файлу просьба не нужна (байты по `fetch_range`).
-            pending.start = GenerationStart::PageSeekedTo(target);
-            let asks_page = page_listens && !pending.feed.is_file();
-            debug!(
-                generation = pending.generation.get(),
-                "Viewer seek is the start position of the generation that is still opening"
-            );
-            if asks_page {
-                let seek_id = self.outbound.request_page_seek(PageSeekRequest { target });
-                debug!(
-                    seek_id = seek_id.0,
-                    "Asking the page to seek for the viewer"
-                );
-            }
+        // Новое поколение ещё не отдано плееру: цель — его старт (ворота 04d), прежнее
+        // видео не двигаем; странице — не больше одной просьбы.
+        let aim = self.aim_pending_for_viewer(target, page_listens);
+        // Клик во время смены поколения главнее самовольного возврата страницы (149).
+        self.note_viewer_click(target, aim);
+        if aim == PendingAim::AimedPending {
             return;
         }
         if self.is_draining() && !self.loaded_generation_holds(target) {

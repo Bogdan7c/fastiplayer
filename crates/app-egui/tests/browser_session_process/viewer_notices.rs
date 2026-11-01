@@ -5,10 +5,10 @@
 //!   странице ровно один `stream_rejected{unsupported_codec}`: байты целы, кодек нам не по
 //!   силам. Сеанс жив: следующее поколение играет до кадров на показе и до конца. В окне
 //!   зритель видит сообщение об отказе (строка журнала окна), без окна его нет.
-//! - Перемотка вне скачанного, на которую страница байтов так и не прислала: плеер через
-//!   10 с сдаётся (`SeekTimeout`), и это событие доходит до уведомлений `AppState` окна —
-//!   там его превращает в тост «Seeking timed out; try again» общий путь ошибок плеера
-//!   (`state/notifications/player_feed.rs`, текст закреплён его тестом).
+//! - Перемотка вне скачанного, на которую живая страница байтов пока не прислала: плеер
+//!   ждёт её дольше срока перемотки, без «Seeking timed out» (решение 150, пакет F 04d —
+//!   раньше здесь закреплялся `SeekTimeout` в уведомлениях окна; тост для настоящих
+//!   отказов перемотки по-прежнему закреплён тестом `state/notifications/player_feed.rs`).
 //!
 //! Оконные тесты идут под частным `kwin_wayland --virtual` и печатают SKIPPED без него.
 
@@ -175,13 +175,18 @@ fn unplayable_generation_is_rejected_and_the_next_one_plays(mode: VideoMode) {
     bus.wait_for_log_line("Browser session process finished");
 }
 
-/// Перемотка страницей вне скачанного, байтов с цели нет: `SeekTimeout` доходит до
-/// уведомлений окна (событие плеера читает только `AppState`; сеанс получает копию —
-/// строка журнала окна ниже пишется по копии, которую отвод снимает в той же точке,
-/// где `AppState` отдаёт событие владельцу уведомлений).
+/// Перемотка страницей вне скачанного, байтов с цели нет, а страница жива: перемотка ждёт
+/// её сколько угодно (решение 150 — отменяет прежнее «`SeekTimeout` в уведомления окна»
+/// для браузерного режима: зритель видел бы ложную ошибку). Дольше срока перемотки в
+/// config-е — ни ошибки плеера, ни отказа; часы странице ждут в цели.
 #[test]
-fn a_seek_the_page_never_feeds_times_out_into_the_window_notifications() {
-    let Some(process) = SessionProcessUnderTest::start("seek-timeout", VideoMode::Window) else {
+fn a_seek_the_page_never_feeds_keeps_waiting_without_a_seek_timeout() {
+    let mut config = fastiplayer_config::AppConfig::default();
+    config.player.seek.commit_timeout_ms = 1_000;
+    let config_text = config.to_pretty_toml().expect("config text");
+    let Some(process) =
+        SessionProcessUnderTest::start_window_with_config("seek-wait", &config_text)
+    else {
         return;
     };
     let bus = &process.bus;
@@ -212,8 +217,24 @@ fn a_seek_the_page_never_feeds_times_out_into_the_window_notifications() {
         ))
         .expect("seek_started is sent");
 
-    let timeout = bus.wait_for_log_line("Browser window player reported an error");
-    assert!(timeout.contains("kind=SeekTimeout"), "{timeout}");
+    // Втрое дольше срока перемотки — никакой ошибки: плеер ждёт страницу.
+    bus.expect_no_log_line_for(
+        Duration::from_secs(3),
+        &[
+            "Browser window player reported an error",
+            "Final seek commit stopped on timeout",
+        ],
+    );
+    read_player_messages_until(&mut socket, "a clock waiting at the target", |message| {
+        matches!(
+            message,
+            PlayerSessionMessage::Clock {
+                position_us,
+                state: ClockState::Waiting,
+                ..
+            } if position_us.as_micros() == 5_000_000
+        )
+    });
     // Процесс пережил несостоявшуюся перемотку: зритель закрывает окно — странице
     // прощание и код «плеер закрыт», процесс выходит штатно.
     process

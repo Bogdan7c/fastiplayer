@@ -177,6 +177,10 @@ pub(crate) struct PlaybackObservation {
     /// не загружали, или плеер ещё показывает прежнее, пока ставит новое.
     /// Сравнивать — только через [`PlaybackObservation::shows`].
     pub(crate) shown_load: Option<MediaLoadTicket>,
+    /// Цель перемотки, которую плеер сейчас исполняет (`None` — перемотки нет). Позиция
+    /// плеера до коммита перемотки — ещё старое место; часы странице показывают цель
+    /// ([`PlaybackObservation::page_clock_position`]).
+    pub(crate) seek_target: Option<Duration>,
 }
 
 impl PlaybackObservation {
@@ -222,6 +226,23 @@ impl PlaybackObservation {
             ended: false,
             fault: self.fault.clone(),
             shown_load: None,
+            seek_target: None,
+        }
+    }
+
+    /// Какую позицию сказать странице в часах (пакет F 04d, решение 150).
+    ///
+    /// Пока плеер исполняет перемотку (`Seeking`/`Scrubbing` — часы говорят `waiting`),
+    /// позиция — ЦЕЛЬ перемотки, как `currentTime` у элемента HTML: он встаёт на новое
+    /// место сразу, а `seeking` и `waiting` говорят, что данных там ещё нет. Позиция
+    /// плеера в это время — старое место (ядро меняет её только на коммите); увидев её,
+    /// страница решила бы, что плеер вернулся назад, и перемоталась бы туда сама. Перемотка
+    /// браузерного режима теперь ждёт страницу сколько угодно, так что «старое место в
+    /// часах» висело бы всё ожидание. В остальных состояниях — позиция плеера.
+    pub(crate) fn page_clock_position(&self) -> Duration {
+        match (self.state, self.seek_target) {
+            (PlaybackState::Seeking | PlaybackState::Scrubbing, Some(target)) => target,
+            _ => self.position,
         }
     }
 }
