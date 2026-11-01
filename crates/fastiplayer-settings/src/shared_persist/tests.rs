@@ -285,7 +285,7 @@ fn busy_lock_defers_save_and_file_is_untouched() {
 fn broken_file_defers_save_without_backup() {
     let directory = unique_test_directory("broken");
     let config_path = directory.join("config.toml");
-    fs::write(&config_path, "schema_version = 29\n[[[").expect("broken file written");
+    fs::write(&config_path, "schema_version = 30\n[[[").expect("broken file written");
     let mut store = AppConfigStore::new(&config_path);
 
     let notice = persist_expecting_not_saved_yet(
@@ -296,7 +296,7 @@ fn broken_file_defers_save_without_backup() {
     assert!(notice.contains("corrupted"), "{notice}");
     assert_eq!(
         fs::read_to_string(&config_path).expect("file"),
-        "schema_version = 29\n[[["
+        "schema_version = 30\n[[["
     );
     assert!(extra_entries(&directory).is_empty());
     fs::remove_dir_all(&directory).expect("test directory removed");
@@ -310,7 +310,7 @@ fn newer_schema_file_defers_save_and_is_untouched() {
     let newer_text = AppConfig::default()
         .to_pretty_toml()
         .expect("defaults serialize")
-        .replace("schema_version = 29", "schema_version = 99");
+        .replace("schema_version = 30", "schema_version = 99");
     fs::write(&config_path, &newer_text).expect("newer file written");
     let mut store = AppConfigStore::new(&config_path);
 

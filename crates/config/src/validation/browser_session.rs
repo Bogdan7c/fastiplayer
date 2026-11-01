@@ -7,14 +7,14 @@
 
 use crate::{
     BrowserSessionConfig, BrowserWindowConfig, ConfigResult, MAX_BROWSER_BUFFER_AHEAD_S,
-    MAX_BROWSER_BUFFER_BEHIND_S, MAX_BROWSER_WINDOW_HEIGHT_POINTS, MAX_BROWSER_WINDOW_WIDTH_POINTS,
-    MIN_BROWSER_BUFFER_AHEAD_S, MIN_BROWSER_BUFFER_BEHIND_S, MIN_BROWSER_WINDOW_HEIGHT_POINTS,
+    MAX_BROWSER_MAX_HELD_MB, MAX_BROWSER_WINDOW_HEIGHT_POINTS, MAX_BROWSER_WINDOW_WIDTH_POINTS,
+    MIN_BROWSER_BUFFER_AHEAD_S, MIN_BROWSER_MAX_HELD_MB, MIN_BROWSER_WINDOW_HEIGHT_POINTS,
     MIN_BROWSER_WINDOW_WIDTH_POINTS,
 };
 
 use super::validate_u16_range;
 
-/// Проверяет запас вперёд и окно позади позиции.
+/// Проверяет запас вперёд и потолок памяти потока.
 pub(super) fn validate_browser_session_section(
     browser_session: &BrowserSessionConfig,
 ) -> ConfigResult<()> {
@@ -25,10 +25,10 @@ pub(super) fn validate_browser_session_section(
         MAX_BROWSER_BUFFER_AHEAD_S,
     )?;
     validate_u16_range(
-        "browser_session.buffer_behind_s",
-        browser_session.buffer_behind_s,
-        MIN_BROWSER_BUFFER_BEHIND_S,
-        MAX_BROWSER_BUFFER_BEHIND_S,
+        "browser_session.max_held_mb",
+        browser_session.max_held_mb,
+        MIN_BROWSER_MAX_HELD_MB,
+        MAX_BROWSER_MAX_HELD_MB,
     )?;
     validate_browser_window(&browser_session.window)
 }

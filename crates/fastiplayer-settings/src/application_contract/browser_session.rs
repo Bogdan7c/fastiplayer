@@ -24,7 +24,7 @@ const REMEMBERED_STATE_TESTS: &[SettingApplyTestScenario] = &[
 /// Строка матрицы для ключа браузерного режима; `None` — ключ не из этой секции.
 pub(super) fn browser_session_contract(setting_name: &str) -> Option<SettingApplicationContract> {
     let contract = match setting_name {
-        "browser_session.buffer_ahead_s" | "browser_session.buffer_behind_s" => {
+        "browser_session.buffer_ahead_s" | "browser_session.max_held_mb" => {
             SettingApplicationContract::new(
                 setting_name,
                 AppRuntimeRoute::BrowserSession,
@@ -59,7 +59,7 @@ mod tests {
     fn buffer_keys_are_next_page_video_policy() {
         for setting_id in [
             "browser_session.buffer_ahead_s",
-            "browser_session.buffer_behind_s",
+            "browser_session.max_held_mb",
         ] {
             let contract = setting_application_contract(&SettingId::from(setting_id))
                 .expect("buffer contract exists");

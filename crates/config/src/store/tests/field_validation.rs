@@ -263,6 +263,57 @@ commit_timeout_ms = 0
     assert!(error.to_string().contains("player.seek.commit_timeout_ms"));
 }
 
+/// Срок ожидания живой страницы (решение 151) тоже обязан быть положительным: ноль
+/// значил бы «не ждать страницу вовсе» молча.
+#[test]
+fn invalid_seek_live_source_stall_timeout_fails_validation() {
+    let temp_dir = tempfile::tempdir().expect("temp dir created");
+    let config_path = temp_dir.path().join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+schema_version = 2
+
+[player.seek]
+live_source_stall_timeout_ms = 0
+"#,
+    )
+    .expect("invalid config written");
+
+    let error = load_from_path(&config_path).expect_err("invalid stall timeout rejected");
+
+    assert!(
+        error
+            .to_string()
+            .contains("player.seek.live_source_stall_timeout_ms")
+    );
+}
+
+/// Файл v30, записанный до решения 151 (без ключа), читается: ключ получает умолчание
+/// 60 с — схема v30 расширена аддитивно (прецедент `audio.muted`), без нового номера.
+#[test]
+fn a_v30_file_without_the_live_source_stall_timeout_gets_the_default() {
+    let temp_dir = tempfile::tempdir().expect("temp dir created");
+    let config_path = temp_dir.path().join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+schema_version = 30
+
+[player.seek]
+commit_timeout_ms = 10000
+"#,
+    )
+    .expect("config written");
+
+    let config = load_from_path(&config_path).expect("a v30 file without the key loads");
+
+    assert_eq!(
+        config.config.player.seek.live_source_stall_timeout_ms,
+        60_000
+    );
+}
+
 /// Проверяет положительность soft timeout-а audio gate перед seek resume.
 #[test]
 fn invalid_seek_audio_gate_timeout_fails_validation() {

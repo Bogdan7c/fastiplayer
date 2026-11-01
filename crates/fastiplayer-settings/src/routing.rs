@@ -1178,6 +1178,7 @@ fn player_tick_setting(setting_id: &str) -> bool {
         "audio.buffer_target_ms"
             | "audio.startup_read_ahead_cap_ms"
             | "player.seek.commit_timeout_ms"
+            | "player.seek.live_source_stall_timeout_ms"
             | "player.seek.resume_audio_min_buffer_ms"
             | "player.seek.resume_audio_gate_timeout_ms"
             | "player.seek.resume_video_min_ready_frames"
@@ -1231,6 +1232,9 @@ fn player_runtime_setting_id(setting_id: &str) -> Option<PlayerRuntimeSettingId>
             PlayerRuntimeSettingId::PlayerPreferredVideoCodecOrder
         }
         "player.seek.commit_timeout_ms" => PlayerRuntimeSettingId::PlayerSeekCommitTimeoutMs,
+        "player.seek.live_source_stall_timeout_ms" => {
+            PlayerRuntimeSettingId::PlayerSeekLiveSourceStallTimeoutMs
+        }
         "player.seek.resume_audio_min_buffer_ms" => {
             PlayerRuntimeSettingId::PlayerSeekResumeAudioMinBufferMs
         }

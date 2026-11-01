@@ -1,5 +1,5 @@
-//! Настройки браузерного режима `[browser_session]` (схема v28, окно — v29): сколько медиа
-//! источник «байты от страницы» держит вперёд и позади позиции воспроизведения, и
+//! Настройки браузерного режима `[browser_session]` (схема v28, окно — v29, потолок памяти — v30): сколько
+//! медиа источник «байты от страницы» держит вперёд, потолок его памяти и
 //! запоминаемое окно браузерного режима `[browser_session.window]`.
 //!
 //! Браузерный режим делит config с обычным плеером (решение 46); с 04c обе копии пишут
@@ -7,8 +7,8 @@
 //! когда запас вперёд достигает `buffer_ahead_s`, источник считается «полным» и просит
 //! страницу не слать больше. Прошлое источник хранит, пока его хранит сама страница (она
 //! не пришлёт повторно то, что лежит в её буфере): уходит оно, когда страница стёрла его у
-//! себя, или при нехватке памяти — и тогда `buffer_behind_s` прошлого у позиции остаётся
-//! всё равно, чтобы короткая перемотка назад не уходила к странице.
+//! себя, или когда не хватает памяти (`max_held_mb`) — тогда выкидывается, как в браузере.
+//! Отдельного окна «назад» нет (до схемы v30 был `buffer_behind_s`, миграция его удаляет).
 //!
 //! С 04c моста (решение 96) окно буфера — обычные настройки окна настроек: секция
 //! «browser_mode», маршрут `browser_session.apply`. Новое значение действует на следующее
@@ -30,18 +30,20 @@ pub const MIN_BROWSER_BUFFER_AHEAD_S: u16 = 10;
 /// Максимум запаса вперёд: 10 минут. Больше — лишняя память без пользы для перемотки.
 pub const MAX_BROWSER_BUFFER_AHEAD_S: u16 = 600;
 
-/// Сколько секунд прошлого держать позади позиции даже при нехватке памяти, по умолчанию
-/// (решение владельца).
-pub const DEFAULT_BROWSER_BUFFER_BEHIND_S: u16 = 30;
-/// Минимум: 0 — при нехватке памяти сыгранное может уйти сразу (без нехватки прошлое всё
-/// равно хранится, пока его хранит страница).
-pub const MIN_BROWSER_BUFFER_BEHIND_S: u16 = 0;
-/// Максимум: 5 минут.
-pub const MAX_BROWSER_BUFFER_BEHIND_S: u16 = 300;
+/// Потолок памяти одного потока моста, МиБ, по умолчанию. Источник — «зеркало браузера»:
+/// браузер держит до 150 МиБ видео и 12–20 МиБ звука на дорожку; 320 МиБ дают видео
+/// 216 МиБ (запас 44 %, замер YouTube 4K60 1.11.2026).
+pub const DEFAULT_BROWSER_MAX_HELD_MB: u16 = 320;
+/// Минимум потолка: 64 МиБ — меньше не вмещает даже один сегмент 4K.
+pub const MIN_BROWSER_MAX_HELD_MB: u16 = 64;
+/// Максимум потолка: 2 ГиБ.
+pub const MAX_BROWSER_MAX_HELD_MB: u16 = 2048;
+/// Байт в мебибайте (перевод `max_held_mb` в байты).
+const BYTES_PER_MIB: usize = 1024 * 1024;
 
 /// Секция `[browser_session]`: окно буфера источника браузерного режима.
 ///
-/// Поля хранятся в секундах, как соседние окна `subtitles.stream.ahead_s/behind_s`.
+/// Запас вперёд хранится в секундах, как у соседнего окна `subtitles.stream.ahead_s`.
 /// Потребителям следует брать типизированное окно через [`BrowserSessionConfig::buffer_window`],
 /// а не читать числа напрямую.
 #[derive(
@@ -72,28 +74,30 @@ pub struct BrowserSessionConfig {
     )]
     pub buffer_ahead_s: u16,
 
-    /// Сколько секунд уже сыгранного медиа источник хранит позади позиции даже при нехватке
-    /// памяти (гарантированный минимум, а не окно выселения).
+    /// Жёсткий потолок памяти одного потока моста, МиБ. Порог «полон» и нормы по дорожкам
+    /// считаются от него (75 %). Когда памяти не хватает, источник выкидывает сыгранное,
+    /// как браузер. Смена значения действует только на НОВЫЕ потоки (следующее видео со
+    /// страницы); идущий поток своего потолка не меняет.
     #[setting(
-        id = "browser_session.buffer_behind_s",
-        path = "browser_session.buffer_behind_s",
+        id = "browser_session.max_held_mb",
+        path = "browser_session.max_held_mb",
         section = "browser_mode",
         group = "buffer",
         surface = "main-settings-window",
-        label_id = "settings.browser_session.buffer_behind_s.label",
-        label_ru = "Keep behind",
-        description_id = "settings.browser_session.buffer_behind_s.description",
-        description_ru = "How much of the past to keep even when memory is low, so a short rewind plays at once. Takes effect with the next video from the page.",
-        help_id = "settings.browser_session.buffer_behind_s.help",
-        help_ru = "Otherwise the past is kept as long as the page keeps it.",
+        label_id = "settings.browser_session.max_held_mb.label",
+        label_ru = "Memory limit",
+        description_id = "settings.browser_session.max_held_mb.description",
+        description_ru = "Hard memory limit for one video from a web page. When it runs low, Fastiplayer drops the already played part, like a browser does. Takes effect with the next video from the page.",
+        help_id = "settings.browser_session.max_held_mb.help",
+        help_ru = "Raise it only if 4K videos from a page stutter.",
         editor = "integer",
-        min = crate::MIN_BROWSER_BUFFER_BEHIND_S,
-        max = crate::MAX_BROWSER_BUFFER_BEHIND_S,
-        step = 5,
-        unit = "s",
+        min = crate::MIN_BROWSER_MAX_HELD_MB,
+        max = crate::MAX_BROWSER_MAX_HELD_MB,
+        step = 32,
+        unit = "MiB",
         apply = "browser_session.apply"
     )]
-    pub buffer_behind_s: u16,
+    pub max_held_mb: u16,
 
     /// Запоминаемое окно браузерного режима (схема v29): размер и полноэкранность.
     #[serde(default)]
@@ -109,32 +113,32 @@ impl BrowserSessionConfig {
     pub fn buffer_window(&self) -> BrowserSessionBufferWindow {
         BrowserSessionBufferWindow {
             ahead: Duration::from_secs(u64::from(self.buffer_ahead_s)),
-            behind: Duration::from_secs(u64::from(self.buffer_behind_s)),
+            max_held_bytes: usize::from(self.max_held_mb) * BYTES_PER_MIB,
         }
     }
 }
 
 impl Default for BrowserSessionConfig {
-    /// Значения по умолчанию — константы выше (120 с вперёд, 30 с назад) и окно 1280×720.
+    /// Значения по умолчанию — константы выше (120 с вперёд, 320 МиБ потолок) и окно 1280×720.
     fn default() -> Self {
         Self {
             buffer_ahead_s: DEFAULT_BROWSER_BUFFER_AHEAD_S,
-            buffer_behind_s: DEFAULT_BROWSER_BUFFER_BEHIND_S,
+            max_held_mb: DEFAULT_BROWSER_MAX_HELD_MB,
             window: BrowserWindowConfig::default(),
         }
     }
 }
 
-/// Окно буфера источника браузерного режима: сколько держать вперёд и позади позиции.
+/// Окно буфера источника браузерного режима: сколько держать вперёд и потолок памяти потока.
 ///
 /// Значимый тип вместо пары чисел, чтобы на месте вызова нельзя было перепутать
-/// «вперёд» и «назад» или единицы измерения.
+/// секунды и байты.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BrowserSessionBufferWindow {
     /// Порог «полон» вперёд от позиции.
     ahead: Duration,
-    /// Сколько прошлого хранить позади позиции даже при нехватке памяти.
-    behind: Duration,
+    /// Жёсткий потолок памяти одного потока, байт.
+    max_held_bytes: usize,
 }
 
 impl BrowserSessionBufferWindow {
@@ -143,9 +147,9 @@ impl BrowserSessionBufferWindow {
         self.ahead
     }
 
-    /// Сколько уже сыгранного медиа хранить позади позиции воспроизведения даже при нехватке
-    /// памяти (остальное прошлое источник хранит, пока его хранит страница).
-    pub fn behind(&self) -> Duration {
-        self.behind
+    /// Жёсткий потолок памяти одного потока, байт (`max_held_mb` × МиБ). Для config,
+    /// прошедшего `AppConfig::validate`, больше нуля.
+    pub fn max_held_bytes(&self) -> usize {
+        self.max_held_bytes
     }
 }

@@ -90,7 +90,7 @@ fn window_only_change_touches_only_window_group() {
 #[test]
 fn browser_session_route_is_isolated_from_regular_player_routes() {
     let mut browser_only = AppConfig::default();
-    browser_only.browser_session.buffer_behind_s = 60;
+    browser_only.browser_session.max_held_mb = 512;
     let browser_routes = committed_routes_for(&browser_only);
     assert!(
         browser_routes
@@ -116,7 +116,7 @@ fn registry_rejects_out_of_range_browser_values_without_mutation() {
 
     for (setting_id, value) in [
         ("browser_session.buffer_ahead_s", 5),
-        ("browser_session.buffer_behind_s", 301),
+        ("browser_session.max_held_mb", 63),
         ("browser_session.window.inner_width_points", 399),
         ("browser_session.window.inner_height_points", 4321),
     ] {

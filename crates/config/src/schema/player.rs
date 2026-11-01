@@ -160,6 +160,29 @@ pub struct PlayerSeekConfig {
     )]
     pub commit_timeout_ms: u64,
 
+    /// Сколько перемотка ждёт живого поставщика данных (страница браузера), если от
+    /// него за всё это время не пришло ни одного нового байта для ожидаемого места
+    /// (решение 151). Пока байты идут, перемотка ждёт без предела (решение 150);
+    /// обычные файлы этот ключ не трогает — у них `commit_timeout_ms`.
+    #[setting(
+        id = "player.seek.live_source_stall_timeout_ms",
+        path = "player.seek.live_source_stall_timeout_ms",
+        section = "player",
+        group = "seek",
+        surface = "main-settings-window",
+        label_id = "settings.player.seek.live_source_stall_timeout_ms.label",
+        label_ru = "Live source stall timeout",
+        description_id = "settings.player.seek.live_source_stall_timeout_ms.description",
+        description_ru = "How long a seek waits for a browser page that sends no new data for the target.",
+        editor = "integer",
+        min = crate::validation::MIN_POSITIVE_U64_SETTING_VALUE,
+        max = crate::validation::MAX_POSITIVE_U64_SETTING_VALUE,
+        step = 1000,
+        unit = "ms",
+        apply = "player.apply"
+    )]
+    pub live_source_stall_timeout_ms: u64,
+
     /// Минимальный audio buffer перед resume после commit-а.
     #[setting(
         id = "player.seek.resume_audio_min_buffer_ms",
@@ -325,6 +348,9 @@ impl Default for PlayerSeekConfig {
     fn default() -> Self {
         Self {
             commit_timeout_ms: 10_000,
+            // Решение 151: минута без единого нового байта для цели — страница не несёт
+            // данные (уже держит их у себя или проигнорировала перемотку); честный отказ.
+            live_source_stall_timeout_ms: 60_000,
             resume_audio_min_buffer_ms: 50,
             resume_audio_gate_timeout_ms: 250,
             resume_video_min_ready_frames: 3,

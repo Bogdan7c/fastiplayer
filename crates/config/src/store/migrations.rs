@@ -8,7 +8,7 @@ use crate::{
     LEGACY_SCHEMA_VERSION_19, LEGACY_SCHEMA_VERSION_20, LEGACY_SCHEMA_VERSION_21,
     LEGACY_SCHEMA_VERSION_22, LEGACY_SCHEMA_VERSION_23, LEGACY_SCHEMA_VERSION_24,
     LEGACY_SCHEMA_VERSION_25, LEGACY_SCHEMA_VERSION_26, LEGACY_SCHEMA_VERSION_27,
-    LEGACY_SCHEMA_VERSION_28,
+    LEGACY_SCHEMA_VERSION_28, LEGACY_SCHEMA_VERSION_29,
 };
 
 pub(super) const REMOVED_HARDWARE_DECODE_ONLY_KEY: &str = "hardware_decode_only";
@@ -66,9 +66,12 @@ pub(super) fn normalize_document(toml_document: &mut toml::Value) {
     if schema_at_most(root_table, LEGACY_SCHEMA_VERSION_26) {
         migrate_explicit_default_surface_pools_to_automatic(root_table);
     }
+    if schema_at_most(root_table, LEGACY_SCHEMA_VERSION_29) {
+        remove_removed_browser_buffer_behind(root_table);
+    }
 }
 
-/// Поднимает поддерживаемые v2-v27 структуры до текущей in-memory версии.
+/// Поднимает поддерживаемые v2-v29 структуры до текущей in-memory версии.
 pub(super) fn upgrade_config(config: &mut AppConfig) {
     if matches!(
         config.schema_version,
@@ -111,9 +114,25 @@ pub(super) fn upgrade_config(config: &mut AppConfig) {
             // v28 -> v29: добавлена таблица `[browser_session.window]` (запоминаемое окно
             // браузерного режима); старый файл без неё получает defaults, переписывать нечего.
             | LEGACY_SCHEMA_VERSION_28
+            // v29 -> v30: ключ `browser_session.buffer_behind_s` удалён миграцией документа
+            // (`remove_removed_browser_buffer_behind`), добавлен `browser_session.max_held_mb`
+            // (старый файл без него получает default 320).
+            | LEGACY_SCHEMA_VERSION_29
     ) {
         config.schema_version = CURRENT_SCHEMA_VERSION;
     }
+}
+
+/// v29 → v30: удаляет `browser_session.buffer_behind_s` — окно «назад» убрано из продукта.
+///
+/// Решение владельца 1.11.2026 (browser-bridge 04d): прошлым управляет только зеркало браузера.
+/// Остальные ключи `[browser_session]` не трогаются; отсутствие таблицы или ключа — no-op.
+fn remove_removed_browser_buffer_behind(root_table: &mut toml::Table) {
+    let Some(toml::Value::Table(browser_session_table)) = root_table.get_mut("browser_session")
+    else {
+        return;
+    };
+    browser_session_table.remove("buffer_behind_s");
 }
 
 /// Значения `playlist.error_behavior` в TOML (serde `snake_case` у `PlaylistErrorBehavior`).

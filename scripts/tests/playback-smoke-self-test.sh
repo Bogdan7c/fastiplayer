@@ -225,7 +225,7 @@ current_config_path="${temporary_directory}/current-config.toml"
 cargo run --quiet --locked -p fastiplayer-config --example smoke_config -- \
     generate-current "${current_config_path}" software
 # Ключи доказывают current schema v11, playback overrides и provider-neutral web-media policy.
-grep -Fqx 'schema_version = 29' "${current_config_path}"
+grep -Fqx 'schema_version = 30' "${current_config_path}"
 grep -Fqx 'start_paused = false' "${current_config_path}"
 grep -Fqx 'preferred_backend = "software"' "${current_config_path}"
 grep -Fqx '[web_media]' "${current_config_path}"

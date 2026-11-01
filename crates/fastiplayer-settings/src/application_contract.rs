@@ -415,6 +415,7 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
             POLICY_TESTS,
         ),
         "player.seek.commit_timeout_ms"
+        | "player.seek.live_source_stall_timeout_ms"
         | "player.seek.resume_audio_min_buffer_ms"
         | "player.seek.resume_audio_gate_timeout_ms"
         | "player.seek.resume_video_min_ready_frames"

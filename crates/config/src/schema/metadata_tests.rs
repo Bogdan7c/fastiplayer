@@ -14,6 +14,7 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "player.start_paused",
     "player.resume_last_position",
     "player.seek.commit_timeout_ms",
+    "player.seek.live_source_stall_timeout_ms",
     "player.seek.resume_audio_min_buffer_ms",
     "player.seek.resume_audio_gate_timeout_ms",
     "player.seek.resume_video_min_ready_frames",
@@ -95,7 +96,7 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "yt_dlp.single_item_stderr_limit_bytes",
     "yt_dlp.single_item_json_node_limit",
     "browser_session.buffer_ahead_s",
-    "browser_session.buffer_behind_s",
+    "browser_session.max_held_mb",
     "browser_session.window.inner_width_points",
     "browser_session.window.inner_height_points",
     "browser_session.window.fullscreen",
@@ -324,7 +325,7 @@ fn browser_window_keys_live_on_remembered_state_surface() {
     }
     for id in [
         "browser_session.buffer_ahead_s",
-        "browser_session.buffer_behind_s",
+        "browser_session.max_held_mb",
     ] {
         let buffer_descriptor = descriptor(&registry, id);
         assert_eq!(
@@ -425,9 +426,9 @@ fn metadata_ranges_match_validation_constants() {
     );
     assert_integer_range(
         &registry,
-        "browser_session.buffer_behind_s",
-        u64::from(crate::MIN_BROWSER_BUFFER_BEHIND_S),
-        u64::from(crate::MAX_BROWSER_BUFFER_BEHIND_S),
+        "browser_session.max_held_mb",
+        u64::from(crate::MIN_BROWSER_MAX_HELD_MB),
+        u64::from(crate::MAX_BROWSER_MAX_HELD_MB),
     );
     assert_integer_range(
         &registry,
@@ -710,6 +711,12 @@ fn metadata_ranges_match_validation_constants() {
     assert_integer_range(
         &registry,
         "player.seek.resume_audio_min_buffer_ms",
+        validation::MIN_POSITIVE_U64_SETTING_VALUE,
+        validation::MAX_POSITIVE_U64_SETTING_VALUE,
+    );
+    assert_integer_range(
+        &registry,
+        "player.seek.live_source_stall_timeout_ms",
         validation::MIN_POSITIVE_U64_SETTING_VALUE,
         validation::MAX_POSITIVE_U64_SETTING_VALUE,
     );

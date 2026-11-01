@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn current_schema_toml_roundtrip_is_textually_stable() {
-        let expected_current_toml = include_str!("../../tests/fixtures/current_schema_v29.toml");
+        let expected_current_toml = include_str!("../../tests/fixtures/current_schema_v30.toml");
         let generated_current_toml = AppConfig::default()
             .to_pretty_toml()
             .expect("serialize current defaults");

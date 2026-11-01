@@ -99,6 +99,11 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "live_source_stall_timeout_ms = 60000",
+        "# Сколько перемотка ждёт страницу браузера, не приславшую ни байта для цели.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "resume_audio_min_buffer_ms = 50",
         "# Минимальный audio buffer перед resume после commit-а.",
     );
@@ -415,8 +420,8 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
-        "buffer_behind_s = 30",
-        "# Сколько секунд сыгранного держать позади позиции даже при нехватке памяти (0..=300); остальное прошлое хранится, пока его хранит страница.",
+        "max_held_mb = 320",
+        "# Жёсткий потолок памяти одного потока, МиБ (64..=2048); не хватает памяти — сыгранное выкидывается, как в браузере. Действует на следующее видео со страницы.",
     );
     insert_default_config_comment(
         toml_text,

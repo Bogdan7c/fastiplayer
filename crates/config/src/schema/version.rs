@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 29;
+pub const CURRENT_SCHEMA_VERSION: u32 = 30;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -167,14 +167,24 @@ pub(crate) const LEGACY_SCHEMA_VERSION_27: u32 = 27;
 /// битым файлом и переименовал бы его в `.bak`, а с bump-ом видит «схема новее».
 pub(crate) const LEGACY_SCHEMA_VERSION_28: u32 = 28;
 
+/// Последняя схема с ключом `browser_session.buffer_behind_s` и без `browser_session.max_held_mb`.
+///
+/// Решение владельца 1.11.2026 (browser-bridge 04d, «зеркало браузера»): прошлым управляет
+/// только страница (стёрла — отпускаем) и нехватка памяти (выкидываем, как браузер), поэтому
+/// ключ `buffer_behind_s` удалён (миграция документа v29 -> v30 снимает его), а потолок памяти
+/// потока стал ключом `max_held_mb` (по умолчанию 320 МиБ; старый файл без него грузится с
+/// defaults). Bump нужен ради старых бинарей: строгий парсер v29 счёл бы незнакомый ключ
+/// битым файлом, а с bump-ом видит «схема новее» и файл не трогает.
+pub(crate) const LEGACY_SCHEMA_VERSION_29: u32 = 29;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v29 и полная цепочка поддерживаемых legacy-версий v2..v28.
+    /// Текущая схема v30 и полная цепочка поддерживаемых legacy-версий v2..v29.
     #[test]
-    fn schema_v29_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 29);
+    fn schema_v30_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 30);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -204,10 +214,11 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_26,
                 LEGACY_SCHEMA_VERSION_27,
                 LEGACY_SCHEMA_VERSION_28,
+                LEGACY_SCHEMA_VERSION_29,
             ],
             [
                 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-                25, 26, 27, 28
+                25, 26, 27, 28, 29
             ]
         );
     }

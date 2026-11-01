@@ -6,9 +6,9 @@ use std::time::{Duration, UNIX_EPOCH};
 use super::*;
 use crate::{
     BrokenConfigProblem, BrowserSessionConfig, BrowserWindowConfig, ConfigLoadOrigin,
-    DEFAULT_BROWSER_BUFFER_AHEAD_S, DEFAULT_BROWSER_BUFFER_BEHIND_S, MAX_BROWSER_BUFFER_AHEAD_S,
-    MAX_BROWSER_BUFFER_BEHIND_S, MAX_BROWSER_WINDOW_HEIGHT_POINTS, MAX_BROWSER_WINDOW_WIDTH_POINTS,
-    MIN_BROWSER_BUFFER_AHEAD_S, MIN_BROWSER_BUFFER_BEHIND_S, MIN_BROWSER_WINDOW_HEIGHT_POINTS,
+    DEFAULT_BROWSER_BUFFER_AHEAD_S, DEFAULT_BROWSER_MAX_HELD_MB, MAX_BROWSER_BUFFER_AHEAD_S,
+    MAX_BROWSER_MAX_HELD_MB, MAX_BROWSER_WINDOW_HEIGHT_POINTS, MAX_BROWSER_WINDOW_WIDTH_POINTS,
+    MIN_BROWSER_BUFFER_AHEAD_S, MIN_BROWSER_MAX_HELD_MB, MIN_BROWSER_WINDOW_HEIGHT_POINTS,
     MIN_BROWSER_WINDOW_WIDTH_POINTS, load_or_recover_at,
 };
 
@@ -33,13 +33,13 @@ fn config_file_with(config_text: &str) -> (tempfile::TempDir, std::path::PathBuf
 
 /// Defaults решения владельца: 120 с вперёд и 30 с позади, в типизированном окне.
 #[test]
-fn default_buffer_window_is_120_seconds_ahead_and_30_behind() {
+fn default_buffer_window_is_120_seconds_ahead_and_320_mib_ceiling() {
     let window = AppConfig::default().browser_session.buffer_window();
 
     assert_eq!(window.ahead(), Duration::from_secs(120));
-    assert_eq!(window.behind(), Duration::from_secs(30));
+    assert_eq!(window.max_held_bytes(), 320 * 1024 * 1024);
     assert_eq!(DEFAULT_BROWSER_BUFFER_AHEAD_S, 120);
-    assert_eq!(DEFAULT_BROWSER_BUFFER_BEHIND_S, 30);
+    assert_eq!(DEFAULT_BROWSER_MAX_HELD_MB, 320);
 }
 
 /// Файл v27 поднимается до текущей схемы без переписывания значений: новая таблица получает defaults,
@@ -51,7 +51,7 @@ fn schema_v27_without_browser_session_loads_defaults_and_keeps_user_values() {
 
     let migrated = load_from_path(&config_path).expect("v27 config loads");
 
-    assert_eq!(migrated.config.schema_version, 29);
+    assert_eq!(migrated.config.schema_version, 30);
     assert_eq!(
         migrated.config.browser_session,
         BrowserSessionConfig::default()
@@ -62,10 +62,11 @@ fn schema_v27_without_browser_session_loads_defaults_and_keeps_user_values() {
 
     save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
     let saved_text = fs::read_to_string(&config_path).expect("saved TOML readable");
-    assert!(saved_text.contains("schema_version = 29"));
+    assert!(saved_text.contains("schema_version = 30"));
     assert!(saved_text.contains("[browser_session]"));
     assert!(saved_text.contains("buffer_ahead_s = 120"));
-    assert!(saved_text.contains("buffer_behind_s = 30"));
+    assert!(saved_text.contains("max_held_mb = 320"));
+    assert!(!saved_text.contains("buffer_behind_s"));
     let reloaded = load_from_path(&config_path).expect("saved config reloads");
     assert_eq!(reloaded.config, migrated.config);
 }
@@ -73,7 +74,7 @@ fn schema_v27_without_browser_session_loads_defaults_and_keeps_user_values() {
 /// Файл текущей схемы без таблицы (пользователь удалил её руками) читается с defaults.
 #[test]
 fn current_schema_without_browser_session_table_uses_defaults() {
-    let (_temp_dir, config_path) = config_file_with("schema_version = 29\n");
+    let (_temp_dir, config_path) = config_file_with("schema_version = 30\n");
 
     let loaded = load_from_path(&config_path).expect("config without table loads");
 
@@ -87,15 +88,15 @@ fn current_schema_without_browser_session_table_uses_defaults() {
 #[test]
 fn partial_browser_session_table_keeps_given_key_and_defaults_for_the_rest() {
     let (_temp_dir, config_path) =
-        config_file_with("schema_version = 29\n\n[browser_session]\nbuffer_ahead_s = 45\n");
+        config_file_with("schema_version = 30\n\n[browser_session]\nbuffer_ahead_s = 45\n");
 
     let loaded = load_from_path(&config_path).expect("partial table loads");
     let window = loaded.config.browser_session.buffer_window();
 
     assert_eq!(window.ahead(), Duration::from_secs(45));
     assert_eq!(
-        window.behind(),
-        Duration::from_secs(u64::from(DEFAULT_BROWSER_BUFFER_BEHIND_S))
+        window.max_held_bytes(),
+        usize::from(DEFAULT_BROWSER_MAX_HELD_MB) * 1024 * 1024
     );
 }
 
@@ -103,7 +104,7 @@ fn partial_browser_session_table_keeps_given_key_and_defaults_for_the_rest() {
 #[test]
 fn unknown_browser_session_key_is_a_parse_error() {
     let (_temp_dir, config_path) =
-        config_file_with("schema_version = 29\n\n[browser_session]\nbuffer_ahead_ms = 1\n");
+        config_file_with("schema_version = 30\n\n[browser_session]\nbuffer_ahead_ms = 1\n");
 
     assert!(load_from_path(&config_path).is_err());
 }
@@ -113,7 +114,7 @@ fn unknown_browser_session_key_is_a_parse_error() {
 fn browser_session_boundary_values_roundtrip_through_file() {
     let low = BrowserSessionConfig {
         buffer_ahead_s: MIN_BROWSER_BUFFER_AHEAD_S,
-        buffer_behind_s: MIN_BROWSER_BUFFER_BEHIND_S,
+        max_held_mb: MIN_BROWSER_MAX_HELD_MB,
         window: BrowserWindowConfig {
             inner_width_points: MIN_BROWSER_WINDOW_WIDTH_POINTS,
             inner_height_points: MIN_BROWSER_WINDOW_HEIGHT_POINTS,
@@ -122,7 +123,7 @@ fn browser_session_boundary_values_roundtrip_through_file() {
     };
     let high = BrowserSessionConfig {
         buffer_ahead_s: MAX_BROWSER_BUFFER_AHEAD_S,
-        buffer_behind_s: MAX_BROWSER_BUFFER_BEHIND_S,
+        max_held_mb: MAX_BROWSER_MAX_HELD_MB,
         window: BrowserWindowConfig {
             inner_width_points: MAX_BROWSER_WINDOW_WIDTH_POINTS,
             inner_height_points: MAX_BROWSER_WINDOW_HEIGHT_POINTS,
@@ -146,8 +147,8 @@ fn browser_session_boundary_values_roundtrip_through_file() {
             Duration::from_secs(u64::from(browser_session.buffer_ahead_s))
         );
         assert_eq!(
-            window.behind(),
-            Duration::from_secs(u64::from(browser_session.buffer_behind_s))
+            window.max_held_bytes(),
+            usize::from(browser_session.max_held_mb) * 1024 * 1024
         );
     }
 }
@@ -156,15 +157,18 @@ fn browser_session_boundary_values_roundtrip_through_file() {
 #[test]
 fn browser_session_values_out_of_range_are_rejected_with_the_field_path() {
     type Mutation = fn(&mut BrowserSessionConfig);
-    let cases: [(&str, Mutation); 7] = [
+    let cases: [(&str, Mutation); 8] = [
         ("browser_session.buffer_ahead_s", |section| {
             section.buffer_ahead_s = MIN_BROWSER_BUFFER_AHEAD_S - 1;
         }),
         ("browser_session.buffer_ahead_s", |section| {
             section.buffer_ahead_s = MAX_BROWSER_BUFFER_AHEAD_S + 1;
         }),
-        ("browser_session.buffer_behind_s", |section| {
-            section.buffer_behind_s = MAX_BROWSER_BUFFER_BEHIND_S + 1;
+        ("browser_session.max_held_mb", |section| {
+            section.max_held_mb = MIN_BROWSER_MAX_HELD_MB - 1;
+        }),
+        ("browser_session.max_held_mb", |section| {
+            section.max_held_mb = MAX_BROWSER_MAX_HELD_MB + 1;
         }),
         ("browser_session.window.inner_width_points", |section| {
             section.window.inner_width_points = MIN_BROWSER_WINDOW_WIDTH_POINTS - 1;
@@ -196,7 +200,7 @@ fn browser_session_values_out_of_range_are_rejected_with_the_field_path() {
 /// переименован в `.bak`, приложение работает на defaults, причина называет поле.
 #[test]
 fn out_of_range_buffer_at_startup_recovers_through_backup_policy() {
-    let broken_text = "schema_version = 29\n\n[browser_session]\nbuffer_ahead_s = 5\n";
+    let broken_text = "schema_version = 30\n\n[browser_session]\nbuffer_ahead_s = 5\n";
     let (temp_dir, config_path) = config_file_with(broken_text);
     let moment = UNIX_EPOCH + Duration::from_secs(1_791_210_612);
 
@@ -230,7 +234,7 @@ fn schema_v28_without_window_table_gets_default_window() {
 
     let migrated = load_from_path(&config_path).expect("v28 config loads");
 
-    assert_eq!(migrated.config.schema_version, 29);
+    assert_eq!(migrated.config.schema_version, 30);
     assert_eq!(migrated.config.browser_session.buffer_ahead_s, 45);
     assert_eq!(
         migrated.config.browser_session.window,
@@ -259,9 +263,74 @@ fn schema_v28_without_window_table_gets_default_window() {
 #[test]
 fn unknown_key_in_window_table_is_rejected() {
     let (_temp_dir, config_path) =
-        config_file_with("schema_version = 29\n\n[browser_session.window]\nmaximized = true\n");
+        config_file_with("schema_version = 30\n\n[browser_session.window]\nmaximized = true\n");
 
     let error = load_from_path(&config_path).expect_err("unknown window key rejected");
 
     assert!(error.to_string().contains("maximized"));
+}
+
+/// Документ v29 со старым окном «назад»: свои значения буфера и окна у пользователя.
+const SCHEMA_V29_WITH_BEHIND: &str = r#"
+schema_version = 29
+
+[audio]
+volume = 0.4
+
+[browser_session]
+buffer_ahead_s = 45
+buffer_behind_s = 15
+
+[browser_session.window]
+inner_width_points = 900
+inner_height_points = 500
+fullscreen = true
+"#;
+
+/// Миграция v29 -> v30: `buffer_behind_s` исчезает (и в памяти, и в сохранённом файле),
+/// `max_held_mb` получает 320, остальное (в том числе чужие секции) не тронуто.
+#[test]
+fn schema_v29_drops_buffer_behind_adds_max_held_and_keeps_everything_else() {
+    let (_temp_dir, config_path) = config_file_with(SCHEMA_V29_WITH_BEHIND);
+
+    let migrated = load_from_path(&config_path).expect("v29 config loads");
+
+    assert_eq!(migrated.config.schema_version, 30);
+    let section = migrated.config.browser_session;
+    assert_eq!(section.max_held_mb, 320);
+    assert_eq!(section.buffer_ahead_s, 45);
+    assert_eq!(section.window.inner_width_points, 900);
+    assert_eq!(section.window.inner_height_points, 500);
+    assert!(section.window.fullscreen);
+    assert!((migrated.config.audio.volume - 0.4).abs() < f64::EPSILON);
+
+    // Сохранённый файл уже не содержит старый ключ и снова читается строгим разбором.
+    save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
+    let saved_text = fs::read_to_string(&config_path).expect("saved text");
+    assert!(!saved_text.contains("buffer_behind_s"));
+    assert!(saved_text.contains("max_held_mb = 320"));
+    let reloaded = load_from_path(&config_path).expect("saved config reloads");
+    assert_eq!(reloaded.config.browser_session, section);
+}
+
+/// Пользовательский `max_held_mb` в файле v30 переживает чтение как есть (не затирается
+/// default-ом), а лишний `buffer_behind_s` в текущей схеме отвергается строгим разбором.
+#[test]
+fn current_schema_keeps_user_max_held_and_rejects_the_removed_key() {
+    let (_temp_dir, config_path) =
+        config_file_with("schema_version = 30\n\n[browser_session]\nmax_held_mb = 512\n");
+    let loaded = load_from_path(&config_path).expect("v30 config loads");
+    assert_eq!(loaded.config.browser_session.max_held_mb, 512);
+    assert_eq!(
+        loaded
+            .config
+            .browser_session
+            .buffer_window()
+            .max_held_bytes(),
+        512 * 1024 * 1024
+    );
+
+    let (_temp_dir, config_path) =
+        config_file_with("schema_version = 30\n\n[browser_session]\nbuffer_behind_s = 15\n");
+    assert!(load_from_path(&config_path).is_err());
 }

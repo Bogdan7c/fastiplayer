@@ -1,4 +1,4 @@
-schema_version = 29
+schema_version = 30
 
 [player]
 start_paused = false
@@ -15,6 +15,8 @@ preferred_video_codec_order = [
 [player.seek]
 # Timeout финального seek/scrub commit-а.
 commit_timeout_ms = 10000
+# Сколько перемотка ждёт страницу браузера, не приславшую ни байта для цели.
+live_source_stall_timeout_ms = 60000
 # Минимальный audio buffer перед resume после commit-а.
 resume_audio_min_buffer_ms = 50
 # Soft timeout audio gate-а после показанного target video frame.
@@ -205,8 +207,8 @@ single_item_json_node_limit = 1000000
 [browser_session]
 # Запас вперёд от позиции, с (10..=600): при нём источник «полон» и не берёт новые байты.
 buffer_ahead_s = 120
-# Сколько секунд сыгранного держать позади позиции даже при нехватке памяти (0..=300); остальное прошлое хранится, пока его хранит страница.
-buffer_behind_s = 30
+# Жёсткий потолок памяти одного потока, МиБ (64..=2048); не хватает памяти — сыгранное выкидывается, как в браузере. Действует на следующее видео со страницы.
+max_held_mb = 320
 
 # Запоминаемое окно браузерного режима: окно само пишет размер и полноэкранность (в окне настроек нет).
 [browser_session.window]

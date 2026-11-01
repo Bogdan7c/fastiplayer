@@ -159,7 +159,7 @@ fn merge_keeps_keys_written_by_neighbor() {
 /// Битый файл → ошибка, файл байт-в-байт прежний, `.bak` не создан, слияние не вызвано.
 #[test]
 fn broken_file_is_refused_without_backup_or_change() {
-    let broken_text = "schema_version = 29\n[[[";
+    let broken_text = "schema_version = 30\n[[[";
     let (temp_dir, config_path) = config_dir_with(broken_text);
     let mut merge_called = false;
 
@@ -187,7 +187,7 @@ fn broken_file_is_refused_without_backup_or_change() {
 /// Значение вне диапазона на диске — тоже битый файл: не перезаписываем defaults-ами.
 #[test]
 fn out_of_range_value_on_disk_is_refused_without_change() {
-    let broken_text = "schema_version = 29\n\n[ui.sidebar]\nwidth_points = 5\n";
+    let broken_text = "schema_version = 30\n\n[ui.sidebar]\nwidth_points = 5\n";
     let (temp_dir, config_path) = config_dir_with(broken_text);
 
     let outcome = update_shared_config_at(
@@ -215,7 +215,7 @@ fn newer_schema_file_is_refused_without_change() {
     let newer_text = AppConfig::default()
         .to_pretty_toml()
         .expect("defaults serialize")
-        .replace("schema_version = 29", "schema_version = 99");
+        .replace("schema_version = 30", "schema_version = 99");
     let (temp_dir, config_path) = config_dir_with(&newer_text);
 
     let outcome = update_shared_config_at(
@@ -354,7 +354,7 @@ fn update_migrates_older_file_and_keeps_user_values() {
 
     assert!(matches!(outcome, SharedConfigUpdate::Written { .. }));
     let saved_text = fs::read_to_string(&config_path).expect("file");
-    assert!(saved_text.contains("schema_version = 29"));
+    assert!(saved_text.contains("schema_version = 30"));
     assert!(saved_text.contains("[browser_session.window]"));
     assert!(saved_text.contains("width_points = 480"));
 }

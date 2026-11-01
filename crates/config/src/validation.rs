@@ -329,6 +329,10 @@ fn validate_player_section(config: &AppConfig) -> ConfigResult<()> {
 fn validate_player_seek_config(seek: &PlayerSeekConfig) -> ConfigResult<()> {
     validate_positive_u64("player.seek.commit_timeout_ms", seek.commit_timeout_ms)?;
     validate_positive_u64(
+        "player.seek.live_source_stall_timeout_ms",
+        seek.live_source_stall_timeout_ms,
+    )?;
+    validate_positive_u64(
         "player.seek.resume_audio_min_buffer_ms",
         seek.resume_audio_min_buffer_ms,
     )?;
