@@ -443,6 +443,16 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
         "fullscreen = false",
         "# Окно было оставлено во весь экран: следующее откроется так же.",
     );
+    insert_default_config_comment(
+        toml_text,
+        "[browser_bridge]",
+        "# Мост с браузерами: предложение подключить найденные браузеры (секция browser_integration окна настроек).",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "offer_on_startup = true",
+        "# Предложить при запуске подключить браузеры; читается только при старте, после ответа на предложение плеер сам ставит false.",
+    );
     subtitles::document_subtitles_defaults(toml_text);
 }
 

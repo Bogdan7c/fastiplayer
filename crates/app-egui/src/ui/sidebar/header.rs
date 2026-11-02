@@ -388,6 +388,7 @@ mod tests {
             let mut render_context = SidebarRenderContext {
                 model: &settings_model,
                 settings_host: crate::settings_ui::section_extras::SettingsHostFacts::default(),
+                browser_panel: &crate::settings_ui::browser_panel::BrowserPanelView::default(),
                 snapshot: &snapshot,
                 page: None,
                 url_model: &url_model,

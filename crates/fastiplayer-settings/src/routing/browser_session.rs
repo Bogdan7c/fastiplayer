@@ -11,6 +11,10 @@
 //!   само, а живое окно по маршруту **не** меняется — ни своё, ни соседнее. Следующее
 //!   окно браузерного режима откроется с [`BrowserSessionRuntimeSettingsUpdate::remembered_window`].
 //!
+//! - группа [`AppRuntimeRouteGroup::BrowserBridgeStartupOffer`] — `browser_bridge.offer_on_startup`.
+//!   Значение читается только при запуске приложения; живого эффекта нет (ни у владельца
+//!   браузерного режима, ни у соседей), группа существует ради честного учёта в контракте;
+//!
 //! Обычному плееру маршрут ничего не меняет: браузерного источника и окна у него нет.
 //! Маршрут не трогает player, renderer и источники обычного плеера, поэтому preflight
 //! не нужен.
@@ -26,6 +30,9 @@ use super::{
 
 /// Route id, который metadata выводит из `apply = "browser_session.apply"`.
 pub const BROWSER_SESSION_ROUTE_ID: &str = "browser_session";
+
+/// Префикс id ключей секции `[browser_bridge]` (предложение подключить браузеры).
+const BROWSER_BRIDGE_SETTING_PREFIX: &str = "browser_bridge.";
 
 /// Префикс id ключей запоминаемого окна браузерного режима.
 const BROWSER_WINDOW_SETTING_PREFIX: &str = "browser_session.window.";
@@ -53,7 +60,9 @@ impl BrowserSessionRuntimeSettingsUpdate {
 
 /// Группа владельца для одного ключа секции: окно буфера или запоминаемое окно.
 pub(super) fn group_for_setting(setting_id: &str) -> AppRuntimeRouteGroup {
-    if setting_id.starts_with(BROWSER_WINDOW_SETTING_PREFIX) {
+    if setting_id.starts_with(BROWSER_BRIDGE_SETTING_PREFIX) {
+        AppRuntimeRouteGroup::BrowserBridgeStartupOffer
+    } else if setting_id.starts_with(BROWSER_WINDOW_SETTING_PREFIX) {
         AppRuntimeRouteGroup::BrowserSessionWindow
     } else {
         AppRuntimeRouteGroup::BrowserSessionBuffer

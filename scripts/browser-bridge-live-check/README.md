@@ -60,8 +60,47 @@ DISPLAY_TARGET=real scripts/browser-bridge-live-check/run-firefox.sh
 - `orphan hosts after browser close: 0`;
 - у скрипта код возврата 0 и `final-stats.json` с `"phase":"done"`.
 
-## Чего пока нет
+## Режим `MANIFEST_SOURCE=player` (проверка того, что поставил плеер)
 
-Flatpak Chrome не покрыт (сессия 06). Для него понадобится: переопределение talk-name для
-D-Bus (песочница иначе не достучится до сессионной шины), настоящий бинарь хоста внутри
-папки песочницы и загрузка расширения через CDP `Extensions.loadUnpacked`.
+По умолчанию `run-chromium.sh` и `run-firefox.sh` сами пишут файл подключения (с обёрткой
+хоста, которая ведёт `host.log`) и поднимают частную шину. С `MANIFEST_SOURCE=player` они
+**ничего не устанавливают**: берут файл подключения, посредника и D-Bus службу, которые поставила
+кнопка Connect в плеере (Settings > Browser integration), и ходят по настоящей шине сессии
+(будится настоящий `fastiplayer --browser-session`). Только `DISPLAY_TARGET=real`; без
+установленных плеером файлов скрипт останавливается с понятным сообщением. Журнала `host.log` в
+этом режиме нет (хост запущен без обёртки).
+
+```
+MANIFEST_SOURCE=player DISPLAY_TARGET=real scripts/browser-bridge-live-check/run-chromium.sh
+MANIFEST_SOURCE=player DISPLAY_TARGET=real scripts/browser-bridge-live-check/run-firefox.sh
+```
+
+## Google Chrome из Flatpak: `run-chrome-flatpak.sh`
+
+```
+scripts/browser-bridge-live-check/run-chrome-flatpak.sh     # на вашем экране, звук настоящий
+```
+
+Условие: **файлы ставит плеер, не скрипт.** Перед запуском в плеере нажмите Connect для строки
+Google Chrome (Flatpak) и, если там есть Allow, нажмите его (это
+`flatpak override --user --talk-name='io.github.Bogdan7c.Fastiplayer.*' com.google.Chrome`).
+Скрипт проверяет и останавливается, если чего-то нет: файл подключения
+`~/.var/app/com.google.Chrome/config/google-chrome/NativeMessagingHosts/<имя хоста>.json` (с
+разрешённым ID расширения и исполняемым посредником по пути из него), D-Bus службу в
+`~/.local/share/dbus-1/services/`, право песочницы (`flatpak info --show-permissions`: полная
+шина или `talk-name` с маской `.*`), а также что Chrome из Flatpak сейчас не запущен.
+
+Что делает: временный профиль и копию мини-расширения кладёт внутрь `~/.var/app/com.google.Chrome/cache/fplive-<pid>/`
+(только это песочница видит), даёт профилю ссылку на файл подключения плеера (с нестандартным
+`--user-data-dir` Chrome ищет файл в профиле, поэтому проверяется содержимое файла, а не его
+расположение), запускает `flatpak run com.google.Chrome --user-data-dir=... --remote-debugging-port=N
+--enable-unsafe-extension-debugging`, грузит расширение CDP-командой `Extensions.loadUnpacked`
+(`load-chrome-extension.mjs`, проверяет ID), ждёт `final-stats.json`. При выходе (trap)
+вызывает `flatpak kill com.google.Chrome` и удаляет временную папку. Только `DISPLAY_TARGET=real`
+(песочница не видит частный экран и частную шину). Chrome остаётся открытым, пока вы его не
+закроете (`AUTO_CLOSE=1` закрывает сам).
+
+PASS: `final-stats.json` с `"phase":"done"`, окно плеера доиграло ролик до конца
+(`presented_frames=500` в журнале плеера из шины сессии), `orphan hosts after browser close: 0`,
+код возврата 0. Журнал плеера и хоста здесь не собирается скриптом (запуск идёт через настоящую
+шину): смотрите `journalctl --user` или запустите плеер сами.

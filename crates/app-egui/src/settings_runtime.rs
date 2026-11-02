@@ -68,6 +68,7 @@ struct PendingSettingsApply {
     phase: stepwise_apply::PendingApplyPhase,
 }
 
+mod browser_offer_dismissal;
 mod browser_window_geometry;
 mod committed_snapshot;
 mod dynamic_options;
@@ -601,6 +602,7 @@ impl SettingsRuntime {
                 );
                 Ok(false)
             }
+            SettingsUiAction::BrowserIntegration { .. } => Ok(false),
             SettingsUiAction::RestartNow => self.handle_restart_now(),
             SettingsUiAction::SetValue { setting_id, value } => {
                 if setting_id.as_str() == sidebar_resize::SIDEBAR_WIDTH_SETTING_ID {

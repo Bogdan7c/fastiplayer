@@ -8,6 +8,7 @@ use crate::{
     PreferredVideoHeight, VideoBackendPreference, WebMediaHdrSelection, validation,
 };
 
+mod browser_bridge_settings;
 mod browser_session_settings;
 mod field_validation;
 mod frame_server;

@@ -138,6 +138,9 @@ pub enum AppRuntimeRouteGroup {
 
     /// Remembered browser mode window size/fullscreen; never applied to a live window.
     BrowserSessionWindow,
+
+    /// Предложение подключить браузеры при запуске; значение читает только старт приложения.
+    BrowserBridgeStartupOffer,
 }
 
 /// Affected settings belonging to one owner-defined atomic group.

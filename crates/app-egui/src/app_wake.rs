@@ -30,6 +30,9 @@ pub(crate) enum AppWakeOwner {
     /// Запросы следующих запусков плеера (сессия 13): payload в ящике
     /// `instance_forwarding::InstanceForwardingInbox`.
     InstanceForwarding,
+    /// Фоновая операция браузерной интеграции (обзор, подключение, отключение): результат
+    /// лежит в ящике `browser_integration::BrowserIntegration`.
+    BrowserIntegration,
     /// Процесс браузерного режима с окном (мост, 04a): в ящике сеанса есть работа
     /// (звонок двери, событие сеанса, уведомление потока приёма, запрос байтов).
     BrowserSession,

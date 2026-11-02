@@ -42,6 +42,25 @@ pub(super) fn browser_session_contract(setting_name: &str) -> Option<SettingAppl
             SettingApplyMechanism::RememberedStateOnly,
             REMEMBERED_STATE_TESTS,
         ),
+        // Выбор строки (P2 сессии 06): `offer_on_startup` читается ТОЛЬКО при запуске
+        // приложения, живой runtime не меняется ни у кого. Это ровно смысл существующего
+        // механизма `AppliesAfterRestart` (значение сохраняется, эффект при следующем
+        // старте), поэтому нового механизма не заводим. Маршрут — существующий
+        // `browser_session` (apply-id ключа тот же; отдельный маршрут ради флага без
+        // эффекта — лишние owner и executor, группа `BrowserBridgeStartupOffer` у
+        // маршрута ничего не делает). От `RememberedStateOnly` строка отличается осознанно:
+        // это ВИДИМАЯ настройка окна настроек, а не запоминаемое состояние окна. Поэтому
+        // соседние копии принимают её на лету (`peer_adoption`: любой механизм, кроме
+        // `RememberedStateOnly`, — `AdoptLive`): принятие безвредно (эффекта нет), зато
+        // committed-документ соседа не расходится с файлом и его окно настроек не
+        // показывает устаревший переключатель.
+        "browser_bridge.offer_on_startup" => SettingApplicationContract::new(
+            setting_name,
+            AppRuntimeRoute::BrowserSession,
+            SettingStateOwner::BrowserIntegrationStartupOffer,
+            SettingApplyMechanism::AppliesAfterRestart,
+            REMEMBERED_STATE_TESTS,
+        ),
         _ => return None,
     };
     Some(contract)
@@ -107,5 +126,24 @@ mod tests {
             );
         }
         assert!(browser_session_contract("browser_session.window.maximized").is_none());
+    }
+
+    /// Предложение «подключить браузеры» — читается только при старте, без живого эффекта.
+    #[test]
+    fn offer_on_startup_applies_at_next_start_only() {
+        let contract =
+            setting_application_contract(&SettingId::from("browser_bridge.offer_on_startup"))
+                .expect("offer contract exists");
+
+        assert_eq!(contract.route, AppRuntimeRoute::BrowserSession);
+        assert_eq!(
+            contract.state_owner,
+            SettingStateOwner::BrowserIntegrationStartupOffer
+        );
+        assert_eq!(
+            contract.mechanism,
+            SettingApplyMechanism::AppliesAfterRestart
+        );
+        assert!(browser_session_contract("browser_bridge.other").is_none());
     }
 }

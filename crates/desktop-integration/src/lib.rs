@@ -18,6 +18,7 @@ mod peer_admission;
 mod platform;
 mod player_pause;
 mod runtime;
+mod session_bus_reload;
 mod shutdown;
 mod snapshot;
 #[cfg(test)]
@@ -61,6 +62,7 @@ pub use player_pause::{
 pub use runtime::{
     DesktopIntegration, DesktopPositionOutcome, LatestSnapshotHandle, LatestSnapshotSource,
 };
+pub use session_bus_reload::{SessionBusReloadError, reload_session_bus_services};
 pub use shutdown::{DesktopIntegrationShutdownOutcome, DesktopIntegrationShutdownTransportFailure};
 pub use snapshot::{
     DesktopCapabilities, DesktopControlRevision, DesktopMetadata, DesktopPlaybackStatus,

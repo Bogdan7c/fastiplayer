@@ -50,6 +50,8 @@ Start with the English [project overview and build instructions](../README.md) a
 | [Web-media compatibility matrix](web-media-compatibility-matrix.md) | RU | Accepted protocols, containers/codecs and exclusions |
 | [Subtitle compatibility matrix](subtitles/compatibility.md) | EN | Subtitle formats × sources × features, evidence and known limits (issue #1) |
 | [Subtitle user guide](subtitles/user-guide.md) | EN | CC button, menus, hotkeys, edit mode, files next to the video, settings |
+| [Connecting browsers](browser-bridge/README.md) | EN | Settings > Browser integration: statuses, supported browsers, where files go, Snap, removing by hand |
+| [Flatpak browsers](browser-bridge/flatpak.md) | EN | Allowing a Flatpak browser to reach Fastiplayer: Flatseal, one command, why `.*`, revoking |
 | [OpenGL ES 2.0 renderer compatibility](render/gles2-compatibility.md) | EN | Renderer choice, driver levels, verified GPUs, copies per frame, limits and how to send a hardware report (issue #6) |
 | [Operational errors](web-media-operational-errors.md) | EN/RU | Typed failures and safe recovery actions |
 | [Progressive/web S27](progressive-web-s27.md) | RU | Historical ownership/hardening evidence; newer native ingress is covered by N15 |

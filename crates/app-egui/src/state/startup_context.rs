@@ -21,6 +21,9 @@ pub(crate) struct AppStateStartupContext {
     /// Память выбора дорожек: общая для всех `AppState` процесса, чтобы пересоздание после
     /// suspend не теряло выбор и не перечитывало файл.
     pub(super) track_memory: super::track_memory::TrackMemoryHandle,
+    /// Порт браузерной интеграции: задан только обычной оболочкой. Нет порта — владельца
+    /// интеграции нет вовсе (окно браузерного режима, тесты).
+    pub(super) browser_integration_wake_port: Option<AppWakePort>,
     /// Отчёт выбора рендера: строка телеметрии и уведомление о сбое выбора (сессия 09).
     pub(super) renderer_report: Option<crate::render_backend::RendererStartupReport>,
     /// Куда идёт звук плеера, если не на устройство из настроек (окно браузерного режима:
@@ -65,6 +68,7 @@ impl AppStateStartupContext {
             config_warning,
             subtitle_wake_port,
             track_memory,
+            browser_integration_wake_port: None,
             renderer_report: None,
             audio_output_override: None,
             player_event_tap: PlayerEventTapRequest::NotNeeded,
@@ -85,6 +89,30 @@ impl AppStateStartupContext {
             WindowKind::Standard => super::window_mode::WindowMode::standard(),
             WindowKind::BrowserSession => super::window_mode::WindowMode::browser_session(),
         }
+    }
+
+    /// Создаёт владельца браузерной интеграции, если оболочка выдала порт (обычное окно).
+    pub(super) fn browser_integration(
+        &self,
+        committed_config: &super::CommittedConfigSnapshot,
+    ) -> Option<crate::browser_integration::BrowserIntegration> {
+        let wake_port = self.browser_integration_wake_port.clone()?;
+        let offer_setting = crate::browser_integration::OfferSetting::from_config_value(
+            committed_config.as_config().browser_bridge.offer_on_startup,
+        );
+        Some(
+            crate::browser_integration::BrowserIntegration::start_production(
+                wake_port,
+                offer_setting,
+            ),
+        )
+    }
+
+    /// Включает браузерную интеграцию окна: порт пробуждения выдаёт обычная оболочка.
+    #[must_use]
+    pub(crate) fn with_browser_integration(mut self, wake_port: AppWakePort) -> Self {
+        self.browser_integration_wake_port = Some(wake_port);
+        self
     }
 
     /// Включает отвод копий событий плеера (`AppState::take_tapped_player_events`).

@@ -49,6 +49,9 @@
 - `CenterNotice::Status` — постоянное сообщение без кнопок (`state/notifications/center_status.rs`: `NotificationCenter::show_center_status` / `clear_center_status`, маршрут через `AppState`). Приоритет центра: progress > status > media failure. Слот принадлежит окну браузерного режима (`browser_session/window/end_notice.rs::ShownEndNotice` — «Source tab closed…»), очищается при каждой смене вида конца сеанса → другим фичам брать тосты или свой слот.
 - Отказ поколения в окне браузерного режима — `notify_transient` (тексты `browser_session/rejection_notice.rs`), только если плеер сам не показал ошибку (`FaultAnnouncement::NotAnnounced`) — без дублей с `player_feed`.
 
+## Тост с кнопками действия (мост 06, 2026-11-02)
+- `ToastKind::BrowserOffer` (`state/notifications/browser_offer.rs`): не истекает, кнопки «Set up…» / «Not now» + ×; `NotificationAction::{BrowserOfferSetUp(id), BrowserOfferNotNow(id)}`; `apply_notification_actions` гасит тост и передаёт ответ владельцу `BrowserIntegration` (× на этом тосте тоже ответ). Образец для будущих тостов с действием: свой вид, свои варианты `NotificationAction`, исполнение — у владельца фичи, не в центре уведомлений. Тесты: `state/notifications/browser_offer_tests.rs` (настоящие клики egui).
+
 ## Перерисовка (важно)
 - В этом приложении `ctx.request_repaint_after(d)` делает `has_requested_repaint()` истинным, и окно перерисовывается **немедленно**: задержка игнорируется (`frame_prepare/ui_prepare.rs`). Для таймеров используйте `AppRenderFrameResult.next_ui_wake_deadline` (`earliest_ui_wake_deadline([..])` в `frame_prepare.rs`), куда добавлен `next_notification_wake_deadline()`. `ctx.request_repaint()` — только пока идёт анимация.
 

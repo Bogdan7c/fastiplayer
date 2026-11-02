@@ -32,16 +32,16 @@ pub enum SettingStateOwner {
     MediaSourceLifecycle,
     /// Player-owned Frame Server policy.
     FrameServerPolicy,
-
     /// Process-lifetime playlist policy owner.
     PlaylistPolicy,
-
     /// Subtitle policy owner: показ, язык, стиль и лимиты ресурсов субтитров.
     SubtitlePolicy,
     /// Политика источника следующего видео со страницы (окно буфера браузерного режима).
     BrowserSessionSourcePolicy,
     /// Запоминаемое окно браузерного режима; пишет само окно, живьём не применяется.
     BrowserWindowRememberedState,
+    /// Предложение «подключить браузеры» при запуске; значение читает только старт.
+    BrowserIntegrationStartupOffer,
 }
 
 /// Intent-механизм, которым setting должен попасть в активный runtime.

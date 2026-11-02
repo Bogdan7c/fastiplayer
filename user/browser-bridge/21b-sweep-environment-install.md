@@ -41,3 +41,8 @@
 - Справка `docs/browser-bridge/` пополнена разделом «Если не работает» по найденному.
 
 Memories: `mem:browser-bridge/core`, `mem:window-placement/core`, `mem:config/schema-store-decomposition-s23`.
+
+## Поправки по итогам 06 (2.11.2026)
+
+- Правило двух сборок уже реализовано: файлами владеет копия, последней нажавшая «Connect». Другая видит «Connected to another Fastiplayer copy» и «Reconnect to this copy». В шмоне проверить вживую dev и установленную сборку на одной машине.
+- Не проверено в 06: посредник внутри песочницы на рантайме Flatpak со старой glibc (нужна 2.39), Firefox из Flatpak (bug 2078349), Brave/Vivaldi/Edge/LibreWolf/Waterfox, GNOME и Xfce (dbus-daemon вместо dbus-broker — `ReloadConfig` и путь с пробелом).

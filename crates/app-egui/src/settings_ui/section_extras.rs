@@ -11,10 +11,14 @@
 use egui::Ui;
 use settings_core::SettingSectionId;
 
+use super::browser_panel::{self, BrowserPanelView};
 use super::{SettingsUiAction, SettingsUiCommandState};
 
 /// Id секции субтитров в descriptor-метаданных (`subtitles.*`).
 const SUBTITLES_SECTION_ID: &str = "subtitles";
+
+/// Id секции браузерной интеграции в descriptor-метаданных (`browser_bridge.*`).
+pub const BROWSER_INTEGRATION_SECTION_ID: &str = "browser_integration";
 
 /// Подпись кнопки входа в правку внешнего вида на видео.
 const EDIT_APPEARANCE_LABEL: &str = "Edit appearance on video…";
@@ -33,11 +37,26 @@ pub enum InstalledMediaAvailability {
     Absent,
 }
 
+/// Просьба приложения открыть окно настроек на конкретной секции.
+///
+/// `serial` отличает новую просьбу от уже выполненной: layout запоминает последний
+/// выполненный номер в своей памяти и повторно секцию не переключает, поэтому ручной выбор
+/// вкладки пользователем после этого не перебивается.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SectionRequest {
+    /// Stable id секции.
+    pub section: &'static str,
+    /// Номер просьбы; растёт с каждой новой.
+    pub serial: u64,
+}
+
 /// Факты о приложении, нужные дополнительным строкам; собирает владелец окна настроек.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SettingsHostFacts {
     /// Установлено ли видео.
     pub installed_media: InstalledMediaAvailability,
+    /// Какую секцию приложение просит показать (например, после «Set up…» в уведомлении).
+    pub section_request: Option<SectionRequest>,
 }
 
 /// Состояние кнопки входа в правку на видео.
@@ -83,8 +102,12 @@ pub(super) fn show_extras_for_section(
     section: &SettingSectionId,
     host: SettingsHostFacts,
     command_state: SettingsUiCommandState,
+    browser_panel: &BrowserPanelView,
     actions: &mut Vec<SettingsUiAction>,
 ) {
+    if section.as_str() == BROWSER_INTEGRATION_SECTION_ID {
+        browser_panel::show_browser_panel(ui, browser_panel, actions);
+    }
     if section.as_str() == SUBTITLES_SECTION_ID {
         show_subtitle_appearance_entry(
             ui,

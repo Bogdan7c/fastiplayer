@@ -133,6 +133,9 @@ mod tests {
             "ui.language",
             "browser_session.buffer_ahead_s",
             "playlist.load_siblings",
+            // Читается только при старте, но это видимая настройка: безвредно принимается
+            // на лету, зато committed соседа не расходится с файлом.
+            "browser_bridge.offer_on_startup",
         ] {
             assert_eq!(
                 peer_copy_adoption(&SettingId::from(live)),

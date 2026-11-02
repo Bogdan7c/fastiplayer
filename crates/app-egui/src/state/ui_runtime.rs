@@ -7,6 +7,8 @@ use crate::ui::video_area_input::{self, VideoAreaMode};
 use crate::ui::{control_action_coalescing, fullscreen_chrome_panels, global_hotkeys};
 use tracing::warn;
 
+mod browser_integration;
+
 /// Возвращает player command для playback-rate UI intent-а или `None` для silent skip/no-op.
 pub(super) fn playback_rate_command_from_action(
     player_snapshot: &PlayerSnapshot,
@@ -152,6 +154,7 @@ impl AppState {
         let subtitle_edit_view = self.subtitle_appearance_edit_view();
         let subtitle_edit_style = selected_skin.subtitle_appearance_edit_style();
         let settings_host_facts = self.settings_host_facts();
+        let browser_panel_view = self.browser_panel_view();
         let mut subtitle_edit_actions = Vec::new();
         let mut sidebar_width_change = None;
         let mut sidebar_close_requested = false;
@@ -285,6 +288,7 @@ impl AppState {
                 SidebarRenderContext {
                     model: settings_ui_model,
                     settings_host: settings_host_facts,
+                    browser_panel: &browser_panel_view,
                     snapshot: player_snapshot,
                     page: self.window_mode.page_label(),
                     url_model: &url_sidebar_model,
@@ -392,6 +396,7 @@ impl AppState {
         self.apply_subtitle_appearance_edit_actions(subtitle_edit_actions);
         self.route_subtitle_appearance_edit_settings_actions(&mut settings_actions);
         self.apply_notification_actions(notification_output);
+        self.route_browser_integration_settings_actions(&mut settings_actions);
         let egui_run_elapsed = egui_run_started_at.elapsed();
 
         if self.sidebar_controller.is_animating() || self.fullscreen_chrome.is_animating() {

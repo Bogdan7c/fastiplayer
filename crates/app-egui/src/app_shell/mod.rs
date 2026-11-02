@@ -112,6 +112,8 @@ pub(crate) struct AppShell {
 
     /// Port фоновой загрузки субтитров; копируется в каждый renderer-bound AppState.
     subtitle_wake_port: crate::app_wake::AppWakePort,
+    /// Порт фоновых операций браузерной интеграции (живёт дольше `AppState`).
+    browser_integration_wake_port: crate::app_wake::AppWakePort,
 
     /// Приём файлов от следующих запусков (сессия 13); process-lifetime, как lease.
     instance_forwarding: crate::instance_forwarding::InstanceForwardingInbox,
@@ -178,6 +180,7 @@ impl AppShell {
         let playlist_wake_port = wake_proxy.port(AppWakeOwner::PlaylistRuntime);
         let player_timeline_wake_port = wake_proxy.port(AppWakeOwner::PlayerTimeline);
         let subtitle_wake_port = wake_proxy.port(AppWakeOwner::Subtitles);
+        let browser_integration_wake_port = wake_proxy.port(AppWakeOwner::BrowserIntegration);
         let instance_forwarding_wake_port = wake_proxy.port(AppWakeOwner::InstanceForwarding);
         // Сначала строятся все fallible process owners. Inspection запускается
         // последней: после неё constructor уже не может вернуть ошибку и detach-нуть thread.
@@ -234,6 +237,7 @@ impl AppShell {
             local_file_open_wake_port: local_file_wake_port,
             player_timeline_wake_port,
             subtitle_wake_port,
+            browser_integration_wake_port,
             instance_forwarding,
             startup_fullscreen: command_line.fullscreen,
             suspended_local_file_open_job: None,
@@ -320,6 +324,7 @@ impl AppShell {
                 self.subtitle_wake_port.clone(),
                 self.track_memory.clone(),
             )
+            .with_browser_integration(self.browser_integration_wake_port.clone())
             .with_renderer_report(renderer_report),
             self.telemetry.clone(),
             self.settings_runtime.committed_snapshot(),

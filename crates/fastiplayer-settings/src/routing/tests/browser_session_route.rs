@@ -151,3 +151,28 @@ fn registry_rejects_out_of_range_browser_values_without_mutation() {
         SettingValue::Bool(true)
     );
 }
+
+/// `offer_on_startup` идёт маршрутом браузерного режима своей группой «предложение при
+/// запуске», с полным snapshot секции; запоминаемое окно и буфер в плане не появляются.
+#[test]
+fn offer_on_startup_change_forms_its_own_group_on_the_browser_session_route() {
+    let mut current = AppConfig::default();
+    current.browser_bridge.offer_on_startup = false;
+
+    let routes = committed_routes_for(&current);
+
+    assert_eq!(routes.len(), 1);
+    let route = &routes[0];
+    assert_eq!(route.route, AppRuntimeRoute::BrowserSession);
+    assert_eq!(
+        route.groups,
+        vec![AppRuntimeRouteGroupUpdate {
+            group: AppRuntimeRouteGroup::BrowserBridgeStartupOffer,
+            affected_settings: vec![SettingId::from("browser_bridge.offer_on_startup")],
+        }]
+    );
+    let RuntimeCommittedUpdate::BrowserSession(update) = &route.update else {
+        panic!("browser session update expected");
+    };
+    assert_eq!(update.browser_session, current.browser_session);
+}

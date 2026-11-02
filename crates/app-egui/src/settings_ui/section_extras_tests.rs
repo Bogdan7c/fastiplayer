@@ -20,6 +20,7 @@ const ENTRY_LABEL: &str = "Edit appearance on video…";
 fn present() -> SettingsHostFacts {
     SettingsHostFacts {
         installed_media: InstalledMediaAvailability::Present,
+        ..SettingsHostFacts::default()
     }
 }
 

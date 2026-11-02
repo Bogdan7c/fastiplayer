@@ -108,6 +108,8 @@ pub(crate) struct SidebarRenderContext<'a> {
     pub(crate) model: &'a SettingsUiModel,
     /// Факты приложения для дополнительных строк секций настроек (например, есть ли видео).
     pub(crate) settings_host: crate::settings_ui::section_extras::SettingsHostFacts,
+    /// Готовая модель панели «Browser integration».
+    pub(crate) browser_panel: &'a crate::settings_ui::browser_panel::BrowserPanelView,
     pub(crate) snapshot: &'a player_core::PlayerSnapshot,
     /// Страница-источник (окно браузерного режима): блок `Page` в начале Info.
     pub(crate) page: Option<&'a crate::page_label::PageLabel>,
@@ -346,10 +348,11 @@ fn render_section(ui: &mut Ui, section: SidebarSection, context: &mut SidebarRen
                 );
             }
             SidebarSection::Settings => {
-                layout::show_with_host_facts(
+                layout::show_with_host_view(
                     ui,
                     context.model,
                     context.settings_host,
+                    context.browser_panel,
                     context.settings_actions,
                 );
             }

@@ -89,3 +89,9 @@ Memories: `mem:ci/github-actions`, `mem:browser-bridge/core`.
 - Ответы посредника: `hello_accepted`, `session_granted` или `refused`. Свои отказы посредника — `player_unavailable`, `player_not_responding`, `player_shutting_down`, `malformed_message` с `in_reply_to: unparsed_message`. На `refused{hello_required}` (плеер перезапустился между звонками) экстеншен сам повторяет `hello` и `open_session` через тот же порт: посредник `hello` не повторяет.
 - Посредник выходит, когда порт закрыт, и сеанс от этого не страдает. Экстеншен может закрывать порт сразу после выдачи пропуска или держать его — это решает 07 (открытый порт держит service worker живым, разведка 00).
 - Firefox MV3: `background.scripts` перечисляет все файлы фона по порядку, а не только главный. Иначе после `session_granted` код второго файла не найден (поймано на стенде 05).
+
+## Поправки по итогам 06 (2.11.2026, решения 157–161)
+
+- Посредника и файлы подключения ставит плеер: Settings → «Browser integration» → «Connect» (crate `browser-bridge-install`). Попап «Fastiplayer is not connected» ведёт человека туда, а для Flatpak-браузера — к кнопке «Allow» и `docs/browser-bridge/flatpak.md`.
+- Если плеер удалён или перенесён, посредник отвечает `refused{player_unavailable}` сразу (тест 06: 2 мс). Экстеншен показывает «not connected» и не ждёт.
+- Сразу после 07 идёт 07a: плеер сам ставит экстеншен. Раскладку сборки (`dist/chrome/`, `dist/firefox/`) делать так, чтобы её можно было упаковать в `.crx` / `.xpi` из плеера.

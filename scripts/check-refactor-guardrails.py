@@ -73,6 +73,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "browser-bridge-protocol",
         "browser-bridge-session",
         "browser-bridge-host",
+        "browser-bridge-install",
         "ac3-elementary-demux",
         "ac3-syncframe",
         "animation-core",
@@ -309,6 +310,19 @@ BROWSER_BRIDGE_SESSION_ALLOWED_DEPENDENCIES = frozenset(
 # Flatpak-браузера и должен оставаться крошечным.
 BROWSER_BRIDGE_HOST_ALLOWED_DEPENDENCIES = frozenset(
     {"browser-bridge-protocol", "desktop-integration", "thiserror"}
+)
+
+# Установщик моста (сессия 06): ищет браузеры и пишет файлы подключения. Без UI, tokio,
+# сервера сеанса и crate-ов плеера; всё общение с шиной — через desktop-integration.
+BROWSER_BRIDGE_INSTALL_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "atomic-file-store",
+        "browser-bridge-protocol",
+        "desktop-integration",
+        "serde_json",
+        "thiserror",
+        "tracing",
+    }
 )
 
 # Источник «сегменты извне» (сессия 03a моста): нейтрален к браузеру — знает только
@@ -1525,6 +1539,14 @@ def find_dependency_violations(
             frozenset({"browser-bridge-host"}),
             BROWSER_BRIDGE_HOST_ALLOWED_DEPENDENCIES,
             "browser-bridge-host is a tiny native-messaging doorbell without async runtime, UI, session server or player deps",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"browser-bridge-install"}),
+            BROWSER_BRIDGE_INSTALL_ALLOWED_DEPENDENCIES,
+            "browser-bridge-install is a UI-free browser integration installer without async runtime, session server or player deps",
         )
     )
     violations.extend(

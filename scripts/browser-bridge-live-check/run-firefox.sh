@@ -6,11 +6,19 @@
 # убирает его при выходе (trap). Если файл уже есть и он не наш — скрипт отказывается работать.
 source "$(dirname "$(readlink -f "$0")")/common.sh"
 MANIFEST="$HOME/.mozilla/native-messaging-hosts/$HOST_NAME.json"
-if [ -e "$MANIFEST" ] && ! grep -q "live check" "$MANIFEST"; then lv_log "refusing to overwrite foreign $MANIFEST"; exit 5; fi
+lv_check_manifest_source
+if [ "$MANIFEST_SOURCE" = player ]; then
+  # Режим player: файл подключения ставила кнопка Connect, мы его не пишем и не удаляем.
+  lv_require_player_install "$MANIFEST"
+elif [ -e "$MANIFEST" ] && ! grep -q "live check" "$MANIFEST"; then lv_log "refusing to overwrite foreign $MANIFEST"; exit 5; fi
 lv_setup firefox
-LV_EXTRA_CLEANUP='[ "$DISPLAY_TARGET" = real ] && { rm -f "$MANIFEST"; rmdir --ignore-fail-on-non-empty "$HOME/.mozilla/native-messaging-hosts" 2>/dev/null; }'
+[ "$MANIFEST_SOURCE" = player ] || LV_EXTRA_CLEANUP='[ "$DISPLAY_TARGET" = real ] && { rm -f "$MANIFEST"; rmdir --ignore-fail-on-non-empty "$HOME/.mozilla/native-messaging-hosts" 2>/dev/null; }'
 lv_start_display
-lv_start_bus
+if [ "$MANIFEST_SOURCE" = player ]; then
+  BUS_ADDR="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}"   # настоящая шина сессии
+else
+  lv_start_bus
+fi
 
 MANIFEST_BODY=$(cat <<M
 {
@@ -22,7 +30,9 @@ MANIFEST_BODY=$(cat <<M
 }
 M
 )
-if [ "$DISPLAY_TARGET" = real ]; then   # настоящий браузер ищет файл в настоящем ~
+if [ "$MANIFEST_SOURCE" = player ]; then
+  :   # файл подключения уже на месте (поставлен плеером)
+elif [ "$DISPLAY_TARGET" = real ]; then   # настоящий браузер ищет файл в настоящем ~
   mkdir -p "$HOME/.mozilla/native-messaging-hosts"; echo "$MANIFEST_BODY" > "$MANIFEST"
 fi
 PROFILE="$WORK/firefox-profile"; mkdir -p "$PROFILE"
@@ -43,7 +53,7 @@ BROWSER_ENV=("${DISPLAY_ENV[@]}")
 [ "$DISPLAY_TARGET" = virtual ] && BROWSER_ENV+=(HOME="$WORK/home" XDG_CONFIG_HOME="$WORK/xdg/bconfig" XDG_CACHE_HOME="$WORK/xdg/bcache" MOZ_ENABLE_WAYLAND=1 MOZ_DISABLE_RDD_SANDBOX=0)
 lv_log "starting firefox (BiDi port $BIDI_PORT)"
 # virtual: у браузера свой HOME ($WORK/home) — манифест кладём туда, настоящий ~ не трогаем.
-if [ "$DISPLAY_TARGET" = virtual ]; then
+if [ "$MANIFEST_SOURCE" != player ] && [ "$DISPLAY_TARGET" = virtual ]; then
   BROWSER_HOME="$WORK/home"
   mkdir -p "$BROWSER_HOME/.mozilla/native-messaging-hosts"; echo "$MANIFEST_BODY" > "$BROWSER_HOME/.mozilla/native-messaging-hosts/$HOST_NAME.json"
 fi

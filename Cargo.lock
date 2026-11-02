@@ -173,6 +173,7 @@ dependencies = [
  "base64",
  "bounded-work-executor",
  "bounded-xml-reader",
+ "browser-bridge-install",
  "browser-bridge-protocol",
  "browser-bridge-session",
  "bytes",
@@ -717,6 +718,19 @@ dependencies = [
  "browser-bridge-protocol",
  "desktop-integration",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "browser-bridge-install"
+version = "0.2.0"
+dependencies = [
+ "atomic-file-store",
+ "browser-bridge-protocol",
+ "desktop-integration",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]

@@ -55,9 +55,18 @@ pub(crate) fn reset_surface_action(surface: &SettingsSurfaceId) -> SettingsUiAct
 /// Делает label section-а из stable id и dirty-счётчика.
 #[must_use]
 pub(crate) fn section_label(section: &SettingsUiSection) -> String {
+    let name = section_display_name(section.section.as_str());
     if section.dirty_fields == 0 {
-        section.section.as_str().to_string()
+        name.to_string()
     } else {
-        format!("{} ({})", section.section.as_str(), section.dirty_fields)
+        format!("{name} ({})", section.dirty_fields)
+    }
+}
+
+/// Человеческое имя секции; для остальных пока показывается stable id.
+fn section_display_name(section_id: &str) -> &str {
+    match section_id {
+        super::section_extras::BROWSER_INTEGRATION_SECTION_ID => "Browser integration",
+        other => other,
     }
 }

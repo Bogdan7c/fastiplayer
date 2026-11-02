@@ -4,7 +4,8 @@ use egui::collapsing_header::CollapsingState;
 use egui::{Button, Layout, RichText, Ui};
 use settings_core::{SettingGroupId, SettingSectionId};
 
-use super::section_extras::{self, SettingsHostFacts};
+use super::browser_panel::BrowserPanelView;
+use super::section_extras::{self, SectionRequest, SettingsHostFacts};
 use super::{
     SettingsUiAction, SettingsUiCommandState, SettingsUiField, SettingsUiModel, field_widget,
     section_list,
@@ -26,6 +27,17 @@ pub fn show_with_host_facts(
     ui: &mut Ui,
     model: &SettingsUiModel,
     host: SettingsHostFacts,
+    actions: &mut Vec<SettingsUiAction>,
+) {
+    show_with_host_view(ui, model, host, &BrowserPanelView::default(), actions);
+}
+
+/// То же, что [`show_with_host_facts`], плюс готовая модель панели «Browser integration».
+pub fn show_with_host_view(
+    ui: &mut Ui,
+    model: &SettingsUiModel,
+    host: SettingsHostFacts,
+    browser_panel: &BrowserPanelView,
     actions: &mut Vec<SettingsUiAction>,
 ) {
     let status_height = status_reserved_height(ui);
@@ -54,7 +66,8 @@ pub fn show_with_host_facts(
                 ui.label("Settings unavailable");
                 return;
             }
-            let selected_section = &sections[render_section_tabs(ui, &sections)];
+            let selected_section =
+                &sections[render_section_tabs(ui, &sections, host.section_request)];
             ui.separator();
 
             let section_fields: Vec<&SettingsUiField> = model
@@ -74,6 +87,7 @@ pub fn show_with_host_facts(
                         SectionContext {
                             host,
                             command_state: model.command_state,
+                            browser_panel,
                         },
                         actions,
                     );
@@ -84,9 +98,10 @@ pub fn show_with_host_facts(
 
 /// Факты, нужные секции кроме её полей: состояние приложения и командных кнопок.
 #[derive(Clone, Copy)]
-struct SectionContext {
+struct SectionContext<'a> {
     host: SettingsHostFacts,
     command_state: SettingsUiCommandState,
+    browser_panel: &'a BrowserPanelView,
 }
 
 /// Строки, резервируемые под status snapshot между списком и footer-ом.
@@ -101,9 +116,26 @@ fn status_reserved_height(ui: &Ui) -> f32 {
 /// Рисует ряд табов секций и возвращает индекс выбранной.
 ///
 /// Выбор — чистое view state, поэтому живёт в egui temp memory, а не в runtime.
-fn render_section_tabs(ui: &mut Ui, sections: &[section_list::SettingsUiSection]) -> usize {
+///
+/// `request` — просьба приложения показать секцию; выполняется один раз на номер просьбы.
+fn render_section_tabs(
+    ui: &mut Ui,
+    sections: &[section_list::SettingsUiSection],
+    request: Option<SectionRequest>,
+) -> usize {
     let selection_id = ui.make_persistent_id("settings_section_tab");
-    let stored_section: Option<String> = ui.data_mut(|data| data.get_temp(selection_id));
+    let applied_serial_id = ui.make_persistent_id("settings_section_request_serial");
+    let mut stored_section: Option<String> = ui.data_mut(|data| data.get_temp(selection_id));
+    if let Some(request) = request {
+        let applied_serial: Option<u64> = ui.data_mut(|data| data.get_temp(applied_serial_id));
+        let section_is_listed = sections
+            .iter()
+            .any(|section| section.section.as_str() == request.section);
+        if section_is_listed && applied_serial != Some(request.serial) {
+            stored_section = Some(request.section.to_owned());
+            ui.data_mut(|data| data.insert_temp(applied_serial_id, request.serial));
+        }
+    }
     let mut selected_index = stored_section
         .and_then(|stored| {
             sections
@@ -152,7 +184,7 @@ fn render_section(
     ui: &mut Ui,
     fields: &[&SettingsUiField],
     section: &section_list::SettingsUiSection,
-    context: SectionContext,
+    context: SectionContext<'_>,
     actions: &mut Vec<SettingsUiAction>,
 ) {
     render_section_header(ui, section, actions);
@@ -161,6 +193,7 @@ fn render_section(
         &section.section,
         context.host,
         context.command_state,
+        context.browser_panel,
         actions,
     );
 

@@ -129,6 +129,14 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                 }
                 None => false,
             },
+            AppWakeOwner::BrowserIntegration => match self.app_state.as_mut() {
+                Some(app_state) => app_state.poll_browser_integration(),
+                None => {
+                    self.browser_integration_wake_port
+                        .acknowledge_abandoned_mailbox();
+                    false
+                }
+            },
             // Владелец процесса браузерного режима; обычное окно его портов не выдаёт.
             AppWakeOwner::BrowserSession => false,
             // Соседняя копия могла записать config: кадр сам перечитает и примет разницу.

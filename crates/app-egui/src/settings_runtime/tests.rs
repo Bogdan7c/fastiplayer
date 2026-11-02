@@ -45,6 +45,7 @@ use crate::render_settings::{
 use crate::settings_ui::SettingsUiAction;
 use crate::ui::sidebar::{SidebarWidthChange, SidebarWidthPoints};
 
+mod browser_offer_dismissal;
 mod browser_window_geometry;
 mod dynamic_options;
 mod english_texts;

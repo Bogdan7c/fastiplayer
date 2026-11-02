@@ -886,6 +886,8 @@ pub(crate) fn render_frame(
     app_state.tick_track_memory();
     // Стиль, сохранённый кнопкой «Готово» (или неявным выходом), пишется сразу, одной транзакцией.
     let subtitle_style_commit = app_state.take_subtitle_style_commit();
+    // Ответ на предложение подключить браузеры: любое действие гасит его навсегда.
+    let browser_offer_answer = app_state.take_browser_offer_answer();
     let mut subtitle_style_outcome = None;
     let settings_action_requested_repaint = {
         let surface_event_pending = window_chrome_actions.iter().any(|action| {
@@ -914,6 +916,12 @@ pub(crate) fn render_frame(
         if let Some(requests) = subtitle_style_commit {
             subtitle_style_outcome =
                 Some(settings_runtime.commit_subtitle_style(requests, &mut runtime_adapter));
+        }
+        if browser_offer_answer.is_some()
+            && let Err(error) =
+                settings_runtime.dismiss_browser_connection_offer(&mut runtime_adapter)
+        {
+            tracing::warn!(%error, "Could not record the browser connection offer answer");
         }
         let actions_requested_repaint = match settings_runtime
             .handle_ui_actions_with_runtime_adapter(settings_actions, &mut runtime_adapter)

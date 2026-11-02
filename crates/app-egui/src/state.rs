@@ -256,8 +256,7 @@ pub struct AppState {
     /// какой именно кодек/профиль сейчас играет, а не выбирала backend вслепую.
     active_video_stream_requirement: video_stream_requirement::ActiveVideoStreamRequirement,
 
-    /// Замороженный кадр прошлого backend-а на время живой смены backend/materializer:
-    /// держится, пока worker не переключится и не выдаст первый кадр нового backend-а.
+    /// Замороженный кадр прошлого backend-а на время живой смены: держится до первого кадра нового.
     backend_swap_frozen_frame: Option<CachedRenderablePresentFrame>,
 
     /// render generation на момент свапа; пока snapshot его не превысил, worker ещё не
@@ -298,8 +297,7 @@ pub struct AppState {
     /// Process-lifetime owner wake port для каждого нового local-file job-а.
     local_file_open_wake_port: AppWakePort,
 
-    /// Владелец субтитров текущего media (`state/subtitles.rs`): фоновая загрузка,
-    /// активная дорожка и решение «что рисовать на этом кадре».
+    /// Владелец субтитров текущего media (`state/subtitles.rs`): загрузка, дорожка, что рисовать.
     subtitles: subtitles::SubtitleOwner,
 
     /// Память выбора дорожек «для каждого видео» (`state/track_memory`): общая для процесса.
@@ -310,6 +308,8 @@ pub struct AppState {
     /// Вид окна и маршрут команд транспорта (`state/window_mode.rs`).
     window_mode: window_mode::WindowMode,
 
+    /// Браузерная интеграция (`browser_integration`); `None` в окне браузерного режима.
+    browser_integration: Option<crate::browser_integration::BrowserIntegration>,
     /// Диалог «Load file…» для субтитров (`subtitle_file_open.rs`): один диалог за раз.
     subtitle_file_picker: crate::subtitle_file_open::SubtitleFilePicker,
 
@@ -426,6 +426,7 @@ impl AppState {
         let subtitles_network_wait =
             subtitles::network_reconnect_wait_of(committed_config_snapshot.as_config());
 
+        let browser_integration = startup_context.browser_integration(&committed_config_snapshot);
         let mut app_state = Self {
             egui_ctx,
             egui_winit_state,
@@ -485,6 +486,7 @@ impl AppState {
             track_memory: startup_context.track_memory.clone(),
             player_event_tap,
             window_mode,
+            browser_integration,
             timeline_ui_state: TimelineUiState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
             renderer_report: startup_context.renderer_report.clone(),

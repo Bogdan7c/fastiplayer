@@ -40,12 +40,15 @@ use std::time::{Duration, Instant};
 use crate::state::media_retry::{MediaRetryTarget, RetryPlan};
 use crate::ui::animation::UiMotion;
 
+mod browser_offer;
 mod buffering;
 mod center_status;
 mod player_feed;
 mod replacing;
 mod settings_file_writes;
 
+#[cfg(test)]
+pub(crate) use browser_offer::BROWSER_OFFER_MESSAGE;
 #[cfg(test)]
 pub(crate) use buffering::BUFFERING_INDICATOR_APPEAR_DELAY;
 pub(crate) use buffering::BufferingIndicator;
@@ -56,6 +59,8 @@ pub(crate) use replacing::TransientReplaceKey;
 
 #[cfg(test)]
 mod audio_device_tests;
+#[cfg(test)]
+mod browser_offer_tests;
 #[cfg(test)]
 mod render_tests;
 #[cfg(test)]
@@ -104,6 +109,8 @@ pub(crate) enum ToastKind {
     Info,
     /// Важное предупреждение: висит, пока пользователь не закроет его ×.
     Warning,
+    /// Предложение подключить браузеры: висит до ответа, с кнопками «Set up…» и «Not now».
+    BrowserOffer,
 }
 
 impl ToastKind {
@@ -112,7 +119,7 @@ impl ToastKind {
         match self {
             Self::Transient => Some(TRANSIENT_NOTIFICATION_LIFETIME),
             Self::Info => Some(INFO_NOTIFICATION_LIFETIME),
-            Self::Warning => None,
+            Self::Warning | Self::BrowserOffer => None,
         }
     }
 }

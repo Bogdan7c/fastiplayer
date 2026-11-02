@@ -97,20 +97,50 @@ impl PrivateBusWithBrowserSession {
         video: &TestVideo,
         process_env: &[(&str, &str)],
     ) -> Self {
+        Self::start_with_services(
+            name,
+            config_toml,
+            video,
+            process_env,
+            &ServiceFiles::Written,
+        )
+    }
+
+    /// Самый общий подъём: `services` решает, откуда шина берёт `.service` процесса.
+    fn start_with_services(
+        name: &str,
+        config_toml: Option<&str>,
+        video: &TestVideo,
+        process_env: &[(&str, &str)],
+        service_files: &ServiceFiles,
+    ) -> Self {
         let directory = std::env::temp_dir().join(format!(
             "fastiplayer-browser-session-e2e-{}-{name}",
             std::process::id()
         ));
-        let services = directory.join("services");
-        std::fs::create_dir_all(&services).expect("service directory");
-        let service_file =
-            browser_session_activation_service_file(Path::new(env!("CARGO_BIN_EXE_fastiplayer")))
+        let services = match service_files {
+            ServiceFiles::Written => {
+                let services = directory.join("services");
+                std::fs::create_dir_all(&services).expect("service directory");
+                let service_file = browser_session_activation_service_file(Path::new(env!(
+                    "CARGO_BIN_EXE_fastiplayer"
+                )))
                 .expect("binary path is quotable");
-        std::fs::write(
-            services.join("io.github.Bogdan7c.Fastiplayer.BrowserSession.service"),
-            service_file,
-        )
-        .expect("service file");
+                std::fs::write(
+                    services.join("io.github.Bogdan7c.Fastiplayer.BrowserSession.service"),
+                    service_file,
+                )
+                .expect("service file");
+                services
+            }
+            // Каталог служб чужой (установщика): шина только смотрит в него.
+            ServiceFiles::DirectoryOf(services) => {
+                std::fs::create_dir_all(services).expect("service directory");
+                // Каталог самой шины (сокет, конфиг) отдельно от чужого каталога служб.
+                std::fs::create_dir_all(&directory).expect("bus directory");
+                services.clone()
+            }
+        };
 
         let socket = directory.join("bus");
         let address = format!("unix:path={}", socket.display());
@@ -293,6 +323,15 @@ impl Drop for PrivateBusWithBrowserSession {
         let _ = self.daemon.wait();
         let _ = std::fs::remove_dir_all(&self.directory);
     }
+}
+
+/// Откуда частная шина берёт `.service`-файл процесса браузерного режима.
+enum ServiceFiles {
+    /// Тест сам пишет файл для бинаря `fastiplayer` из сборки (почти все тесты).
+    Written,
+    /// Шина смотрит в этот каталог и ничего в него не пишет: файл положит кто-то
+    /// другой (установщик моста в тесте установленного посредника).
+    DirectoryOf(PathBuf),
 }
 
 /// Как процесс браузерного режима показывает видео в тесте.
@@ -784,3 +823,7 @@ mod seek_waits_for_page;
 // Посредник native messaging «звонок в дверь» (05): настоящий бинарь против настоящего плеера.
 #[path = "browser_session_process/native_host.rs"]
 mod native_host;
+
+// Установленный посредник (06): установщик пишет файлы, браузер запускает по ним (P4).
+#[path = "browser_session_process/installed_host.rs"]
+mod installed_host;

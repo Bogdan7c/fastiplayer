@@ -13,6 +13,7 @@ members = [
     "crates/browser-bridge-protocol",
     "crates/browser-bridge-session",
     "crates/browser-bridge-host",
+    "crates/browser-bridge-install",
     "crates/pushed-media-source",
     "crates/frame-server-core",
     "crates/source-core",
@@ -258,6 +259,7 @@ atomic-file-store = { version = "0.2.0", path = "crates/atomic-file-store" }
 natural-sort-key = { version = "0.2.0", path = "crates/natural-sort-key" }
 browser-bridge-protocol = { version = "0.2.0", path = "crates/browser-bridge-protocol" }
 browser-bridge-session = { version = "0.2.0", path = "crates/browser-bridge-session" }
+browser-bridge-install = { version = "0.2.0", path = "crates/browser-bridge-install" }
 pushed-media-source = { version = "0.2.0", path = "crates/pushed-media-source" }
 playlist-core = { version = "0.2.0", path = "crates/playlist-core" }
 playlist-io = { version = "0.2.0", path = "crates/playlist-io" }

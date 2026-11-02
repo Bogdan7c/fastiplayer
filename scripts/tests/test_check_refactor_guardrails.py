@@ -937,6 +937,48 @@ class DependencyGraphPolicyTests(unittest.TestCase):
                 forbidden,
             )
 
+    def test_browser_bridge_install_allows_only_installer_dependencies(self) -> None:
+        """Установщик моста остаётся без UI, tokio, сервера сеанса и crate-ов плеера."""
+
+        packages = complete_workspace_packages()
+        packages["browser-bridge-install"] = package_with_dependencies(
+            "browser-bridge-install",
+            (
+                ("atomic-file-store", None),
+                ("browser-bridge-protocol", None),
+                ("desktop-integration", None),
+                ("serde_json", None),
+                ("thiserror", None),
+                ("tracing", None),
+            ),
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "browser-bridge-install"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        for forbidden in ("tokio", "browser-bridge-session", "player-core", "app-egui", "egui"):
+            packages["browser-bridge-install"] = package_with_dependencies(
+                "browser-bridge-install",
+                (("desktop-integration", None), (forbidden, None)),
+            )
+            failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+                packages, frozenset()
+            )
+            self.assertTrue(
+                any(
+                    violation.owner == "browser-bridge-install"
+                    and violation.dependency == forbidden
+                    for violation in failing_result.dependency_violations
+                ),
+                forbidden,
+            )
+
     def test_browser_bridge_session_allows_only_server_side_dependencies(self) -> None:
         """Сервер сеанса моста остаётся без D-Bus, UI, tokio и crate-ов плеера."""
 

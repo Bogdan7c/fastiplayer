@@ -4,6 +4,9 @@
 //! draft-значениями, статусами и cached option snapshots. Runtime owner
 //! применяет эти действия отдельно.
 
+pub mod browser_panel;
+#[cfg(test)]
+mod browser_panel_tests;
 pub mod field_widget;
 pub mod layout;
 #[cfg(test)]
@@ -76,6 +79,17 @@ pub enum SettingsUiAction {
     /// Окно настроек этим действием закрывается (черновик в этот момент чист, кнопка иначе
     /// выключена), а владелец приложения открывает режим правки на видео.
     EditSubtitleAppearanceOnVideo,
+
+    /// Пользователь нажал кнопку в панели «Browser integration».
+    ///
+    /// Окно настроек остаётся открытым: действие целиком принадлежит приложению (владелец
+    /// браузерной интеграции перехватывает его до `SettingsRuntime`).
+    BrowserIntegration {
+        /// ID цели из модели панели (непрозрачная строка).
+        target_id: String,
+        /// Что сделать с целью.
+        command: browser_panel::BrowserCommand,
+    },
 
     /// Пользователь нажал «Restart now» рядом с настройкой, которая действует после
     /// перезапуска. Приложение закрывается штатным путём и запускается снова.

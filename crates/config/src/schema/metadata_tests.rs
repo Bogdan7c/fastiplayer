@@ -95,6 +95,7 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "yt_dlp.single_item_stdout_limit_bytes",
     "yt_dlp.single_item_stderr_limit_bytes",
     "yt_dlp.single_item_json_node_limit",
+    "browser_bridge.offer_on_startup",
     "browser_session.buffer_ahead_s",
     "browser_session.max_held_mb",
     "browser_session.window.inner_width_points",
@@ -1497,4 +1498,26 @@ fn assert_english_fallback(text: &str, id: &str) {
 
 fn option_ids(options: &[settings_core::SettingOption]) -> Vec<&str> {
     options.iter().map(|option| option.id.as_str()).collect()
+}
+
+/// Ключ предложения «подключить браузеры» виден в окне настроек отдельным разделом
+/// `browser_integration`, идёт обычным маршрутом `browser_session.apply` (живого эффекта
+/// нет) и по умолчанию включён.
+#[test]
+fn browser_bridge_offer_key_is_a_visible_toggle_in_its_own_section() {
+    let registry = registry();
+    let offer = descriptor(&registry, "browser_bridge.offer_on_startup");
+
+    assert_eq!(offer.placement.section.as_str(), "browser_integration");
+    assert_eq!(
+        offer.placement.preferred_surface.as_str(),
+        "main-settings-window"
+    );
+    assert_eq!(offer.route.as_str(), "browser_session");
+    assert_eq!(offer.access, SettingAccess::ReadWrite);
+    assert_eq!(
+        offer.text.label.fallback_ru,
+        "Suggest connecting browsers at startup"
+    );
+    assert!(crate::AppConfig::default().browser_bridge.offer_on_startup);
 }

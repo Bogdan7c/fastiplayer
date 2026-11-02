@@ -413,6 +413,7 @@ impl BrowserWindowInstance {
             // Эти владельцы принадлежат обычному окну или ядру процесса.
             AppWakeOwner::StartupMedia
             | AppWakeOwner::InstanceForwarding
+            | AppWakeOwner::BrowserIntegration
             | AppWakeOwner::BrowserSession => false,
         };
         if visible_mutation {

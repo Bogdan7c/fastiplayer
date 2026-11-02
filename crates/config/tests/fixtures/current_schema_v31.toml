@@ -1,4 +1,4 @@
-schema_version = 30
+schema_version = 31
 
 [player]
 start_paused = false
@@ -218,6 +218,11 @@ inner_width_points = 1280
 inner_height_points = 720
 # Окно было оставлено во весь экран: следующее откроется так же.
 fullscreen = false
+
+# Мост с браузерами: предложение подключить найденные браузеры (секция browser_integration окна настроек).
+[browser_bridge]
+# Предложить при запуске подключить браузеры; читается только при старте, после ответа на предложение плеер сам ставит false.
+offer_on_startup = true
 
 [ui]
 show_telemetry = false

@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 30;
+pub const CURRENT_SCHEMA_VERSION: u32 = 31;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -177,14 +177,24 @@ pub(crate) const LEGACY_SCHEMA_VERSION_28: u32 = 28;
 /// битым файлом, а с bump-ом видит «схема новее» и файл не трогает.
 pub(crate) const LEGACY_SCHEMA_VERSION_29: u32 = 29;
 
+/// Последняя схема до таблицы `[browser_bridge]` (предложение подключить браузеры при запуске).
+///
+/// Решение владельца (browser-bridge, сессия 06): ключ `browser_bridge.offer_on_startup`
+/// (по умолчанию `true`) решает, показывать ли при старте одноразовое предложение. Переписывать
+/// пользовательские значения нечего, миграция v30 -> v31 только поднимает версию (старый файл
+/// без таблицы получает defaults). Bump нужен ради старых бинарей: строгий парсер v30 счёл бы
+/// незнакомую таблицу битым файлом и переименовал бы его в `.bak`, а с bump-ом видит «схема
+/// новее» и файл не трогает.
+pub(crate) const LEGACY_SCHEMA_VERSION_30: u32 = 30;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v30 и полная цепочка поддерживаемых legacy-версий v2..v29.
+    /// Текущая схема v31 и полная цепочка поддерживаемых legacy-версий v2..v30.
     #[test]
-    fn schema_v30_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 30);
+    fn schema_v31_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 31);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -215,10 +225,11 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_27,
                 LEGACY_SCHEMA_VERSION_28,
                 LEGACY_SCHEMA_VERSION_29,
+                LEGACY_SCHEMA_VERSION_30,
             ],
             [
                 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-                25, 26, 27, 28, 29
+                25, 26, 27, 28, 29, 30
             ]
         );
     }

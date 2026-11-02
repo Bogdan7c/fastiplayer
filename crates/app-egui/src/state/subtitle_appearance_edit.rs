@@ -98,6 +98,7 @@ impl AppState {
             } else {
                 InstalledMediaAvailability::Absent
             },
+            section_request: self.browser_section_request(),
         }
     }
 

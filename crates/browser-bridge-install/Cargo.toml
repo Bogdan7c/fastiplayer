@@ -1,0 +1,37 @@
+[package]
+name = "browser-bridge-install"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Установщик моста «браузер качает — мы играем» (issue #2, сессия 06): находит браузеры
+# пользователя (пакеты и Flatpak), по кнопке «Connect» кладёт посредника
+# `fastiplayer-browser-host`, файл подключения (native messaging manifest) и `.service`
+# D-Bus activation, а по «Disconnect» убирает только своё. Без UI: приложение само
+# вызывает фасад `BrowserBridgeInstaller` из фонового потока. Допустимые зависимости
+# проверяет scripts/check-refactor-guardrails.py.
+
+[lib]
+name = "browser_bridge_install"
+path = "src/lib.rs"
+
+[dependencies]
+# Имя посредника и «наши» ID экстеншенов для файла подключения (своих констант нет).
+browser-bridge-protocol.workspace = true
+# Генератор `.service`, имя службы на шине и просьба «перечитай службы» (ReloadConfig).
+desktop-integration.workspace = true
+# Атомарная запись всех файлов установки.
+atomic-file-store.workspace = true
+# Сборка и разбор файла подключения.
+serde_json.workspace = true
+# Типизированные ошибки установки.
+thiserror.workspace = true
+# Журнал шагов установки (без путей к личным данным в сообщениях об ошибках).
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -28,6 +28,7 @@ use super::notifications::{
     CenterStatusUpdate, HostMediaWait, HostMediaWaitUpdate, MediaFailureOrigin, NotificationsFrame,
     OPEN_STILL_IN_PROGRESS_MESSAGE, OpenProgress, RetryRequestOutcome, TimelineGrip,
 };
+use crate::browser_integration::OfferAnswer;
 use crate::playlist_runtime::{AutomaticQueueNotice, PlaylistImportNotice};
 use crate::playlist_skip_message::{PlaylistQueueNoticeDelivery, playlist_queue_notice_delivery};
 use crate::startup_readiness::StartupReadinessAbortReason;
@@ -199,6 +200,18 @@ impl AppState {
                     // «Уже нет» — штатный no-op: плашка могла истечь в том же кадре.
                     let outcome = self.notifications.dismiss(id);
                     debug!(?outcome, "Notification closed by the user");
+                    // × на предложении подключить браузеры тоже ответ: оно больше не вернётся.
+                    self.answer_browser_offer(id, OfferAnswer::Closed);
+                    self.mark_pending_worker_redraw();
+                }
+                NotificationAction::BrowserOfferSetUp(id) => {
+                    self.notifications.dismiss(id);
+                    self.answer_browser_offer(id, OfferAnswer::SetUp);
+                    self.mark_pending_worker_redraw();
+                }
+                NotificationAction::BrowserOfferNotNow(id) => {
+                    self.notifications.dismiss(id);
+                    self.answer_browser_offer(id, OfferAnswer::NotNow);
                     self.mark_pending_worker_redraw();
                 }
             }

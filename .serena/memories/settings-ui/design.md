@@ -41,3 +41,9 @@
 ## Reduced motion (2026-07-18)
 
 Публичный toggle `ui.animations.reduced_motion` применён live через `ui.apply`; default `true`, без schema bump. Он мгновенно завершает sidebar и playback-rate layout transitions, но оставляет короткие color/opacity transitions persistent toggles и отключает scale/pulse. Подробный контракт и тесты: `mem:settings-ui/reduced-motion-2026-07-18`.
+
+## Раздел «Browser integration» и программное открытие раздела (мост 06, 2026-11-02)
+
+- Раздел `browser_integration` виден благодаря настоящему полю `browser_bridge.offer_on_startup` (config v31); подпись — `section_list::section_label`. Под заголовком `section_extras` рисует чистую панель `settings_ui/browser_panel.rs` (модель `BrowserPanelView` готовит владелец `app-egui/src/browser_integration/`; `settings_ui` типов установщика не знает).
+- Кнопки-действия (Connect/Disconnect/Allow) — `SettingsUiAction::BrowserIntegration { target_id, command }`; перехватываются `AppState::route_browser_integration_settings_actions` до `SettingsRuntime`, окно не закрывают (образец — «Edit appearance on video…»).
+- Открыть настройки на нужном разделе из кода: `SettingsHostFacts.section_request: Option<SectionRequest { section, serial }>` (layout применяет каждый serial один раз, свой выбор вкладки пользователя потом не перебивается) + ПОКАЗ панели через `SidebarController::show(SidebarSection::Settings)` (никогда не закрывает, в отличие от `select`). Одного `SettingsUiAction::Open` мало: он только начинает правку черновика (найдено живой проверкой 06).

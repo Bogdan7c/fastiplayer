@@ -46,7 +46,7 @@ const NO_WAKE_OBSERVATION: Duration = Duration::from_secs(1);
 /// не зависает) и берёт путь из `compiler-artifact` в JSON-выводе — не угадывая
 /// каталог `target`. Профиль берётся тот же, что у бинаря плеера: его каталог
 /// (`debug`, `release` или имя своего профиля) — родитель `CARGO_BIN_EXE_fastiplayer`.
-fn native_host_binary() -> &'static Path {
+pub(super) fn native_host_binary() -> &'static Path {
     static BINARY: OnceLock<PathBuf> = OnceLock::new();
     BINARY.get_or_init(|| {
         let player_binary = Path::new(env!("CARGO_BIN_EXE_fastiplayer"));
@@ -94,7 +94,7 @@ fn native_host_binary() -> &'static Path {
 // ---- посредник под тестом, как его видит браузер ----------------------------------
 
 /// Аргумент Chromium: `chrome-extension://<ID>/`.
-fn chromium_argument() -> Vec<String> {
+pub(super) fn chromium_argument() -> Vec<String> {
     vec![format!(
         "chrome-extension://{CHROMIUM_DEVELOPMENT_EXTENSION_ID}/"
     )]
@@ -109,7 +109,7 @@ fn firefox_arguments() -> Vec<String> {
 }
 
 /// Запущенный посредник: вход, читатель ответов и сборщик stderr.
-struct NativeHost {
+pub(super) struct NativeHost {
     child: Child,
     stdin: Option<ChildStdin>,
     /// Целые рамки ответов; канал закрывается, когда stdout посредника закрыт.
@@ -119,10 +119,17 @@ struct NativeHost {
 
 impl NativeHost {
     /// Запускает посредника так, как это делает браузер, на частной шине `bus`.
-    fn spawn(bus: &PrivateBusWithBrowserSession, arguments: &[String]) -> Self {
-        let mut child = Command::new(native_host_binary())
-            .args(arguments)
-            .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
+    pub(super) fn spawn(bus: &PrivateBusWithBrowserSession, arguments: &[String]) -> Self {
+        let mut command = Command::new(native_host_binary());
+        command.args(arguments);
+        Self::spawn_command(command, &bus.address)
+    }
+
+    /// Запускает уже собранную команду (программа, аргументы, каталог) как посредника на
+    /// шине `bus_address`: общий путь `spawn` и запуска «по файлу подключения».
+    pub(super) fn spawn_command(mut command: Command, bus_address: &str) -> Self {
+        let mut child = command
+            .env("DBUS_SESSION_BUS_ADDRESS", bus_address)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -148,7 +155,7 @@ impl NativeHost {
     }
 
     /// Пишет рамку: 4 байта длины в порядке байт машины и JSON.
-    fn send_frame(&mut self, json: &str) -> std::io::Result<()> {
+    pub(super) fn send_frame(&mut self, json: &str) -> std::io::Result<()> {
         let length = u32::try_from(json.len()).expect("test message fits u32");
         let mut frame = length.to_ne_bytes().to_vec();
         frame.extend_from_slice(json.as_bytes());
@@ -158,7 +165,7 @@ impl NativeHost {
     }
 
     /// Читает следующую рамку ответа и разбирает её как ответ плеера.
-    fn read_reply(&self) -> PlayerControlMessage {
+    pub(super) fn read_reply(&self) -> PlayerControlMessage {
         let frame = self
             .replies
             .recv_timeout(WAIT)
@@ -167,13 +174,13 @@ impl NativeHost {
     }
 
     /// Одно сообщение браузера → один ответ.
-    fn ask(&mut self, json: &str) -> PlayerControlMessage {
+    pub(super) fn ask(&mut self, json: &str) -> PlayerControlMessage {
         self.send_frame(json).expect("the host takes the frame");
         self.read_reply()
     }
 
     /// `hello`, на который обязан прийти `hello_accepted`.
-    fn say_hello(&mut self) {
+    pub(super) fn say_hello(&mut self) {
         assert!(
             matches!(self.ask(HELLO), PlayerControlMessage::HelloAccepted(_)),
             "hello must be accepted"
@@ -181,7 +188,7 @@ impl NativeHost {
     }
 
     /// `open_session`, на который обязан прийти пропуск.
-    fn open_session(&mut self, request_id: u32, session_key: &str) -> SessionGrant {
+    pub(super) fn open_session(&mut self, request_id: u32, session_key: &str) -> SessionGrant {
         match self.ask(&open_session_json(request_id, session_key)) {
             PlayerControlMessage::SessionGranted(grant) => grant,
             other => panic!("open_session must be granted, got {other:?}"),
@@ -197,13 +204,13 @@ impl NativeHost {
     }
 
     /// Браузер закрывает порт: вход посредника закрыт, ждём выхода.
-    fn close_input_and_wait(&mut self) -> ExitStatus {
+    pub(super) fn close_input_and_wait(&mut self) -> ExitStatus {
         self.stdin = None;
         self.wait_for_exit()
     }
 
     /// Ждёт завершения процесса посредника.
-    fn wait_for_exit(&mut self) -> ExitStatus {
+    pub(super) fn wait_for_exit(&mut self) -> ExitStatus {
         let deadline = Instant::now() + HOST_EXIT_WAIT;
         loop {
             if let Some(status) = self.child.try_wait().expect("host state") {
@@ -218,7 +225,7 @@ impl NativeHost {
     }
 
     /// Журнал stderr посредника целиком; вызывать после выхода процесса.
-    fn stderr_after_exit(&mut self) -> String {
+    pub(super) fn stderr_after_exit(&mut self) -> String {
         self.stderr_reader
             .take()
             .expect("stderr is read once")
@@ -251,14 +258,14 @@ fn read_reply_frames(mut stdout: ChildStdout, sender: &mpsc::Sender<Vec<u8>>) {
 }
 
 /// `open_session` вкладки с этим номером запроса и ключом сеанса.
-fn open_session_json(request_id: u32, session_key: &str) -> String {
+pub(super) fn open_session_json(request_id: u32, session_key: &str) -> String {
     format!(
         r#"{{"type":"open_session","request_id":{request_id},"session_key":"{session_key}","page":{{"title":"Episode {request_id}","domain":"example.org"}},"intent":"window","hints":{{"duration":{{"kind":"unknown"}},"position":{{"kind":"unknown"}}}}}}"#
     )
 }
 
 /// Подключается к сеансу по пропуску; чтение не висит вечно, если процесс замолчал.
-fn attach_with_timeout(grant: &SessionGrant) -> WebSocket<MaybeTlsStream<TcpStream>> {
+pub(super) fn attach_with_timeout(grant: &SessionGrant) -> WebSocket<MaybeTlsStream<TcpStream>> {
     let socket = attach(grant);
     if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
         stream
@@ -268,7 +275,7 @@ fn attach_with_timeout(grant: &SessionGrant) -> WebSocket<MaybeTlsStream<TcpStre
     socket
 }
 
-fn send_step(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, step: StreamStep) {
+pub(super) fn send_step(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, step: StreamStep) {
     let message = match step {
         StreamStep::Text(text) => Message::text(text),
         StreamStep::Binary(bytes) => Message::binary(bytes),
@@ -279,7 +286,7 @@ fn send_step(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, step: StreamStep
 
 /// Страница досмотрела поток: часы дошли до `ended`, вкладка ушла, итог процесса —
 /// все кадры дошли до показа, позиция не откатывалась, процесс вышел сам.
-fn finish_playback_and_check_it_reached_render(
+pub(super) fn finish_playback_and_check_it_reached_render(
     bus: &PrivateBusWithBrowserSession,
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
 ) {

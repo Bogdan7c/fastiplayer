@@ -71,6 +71,20 @@ impl SidebarController {
             self.open_slide.set_target_open(false);
         }
     }
+    /// Показывает секцию по просьбе программы (например, «Set up…» на уведомлении).
+    ///
+    /// В отличие от клика по иконке (`select`), никогда не закрывает: если секция уже
+    /// открыта или открывается, ничего не меняется.
+    pub(crate) fn show(&mut self, requested: SidebarSection) -> SidebarSelectionOutcome {
+        if self.target == Some(requested) && self.queued.is_none() {
+            return SidebarSelectionOutcome::Opened(requested);
+        }
+        if self.queued == Some(requested) {
+            return SidebarSelectionOutcome::Queued(requested);
+        }
+        self.select(requested)
+    }
+
     pub(crate) fn select(&mut self, requested: SidebarSection) -> SidebarSelectionOutcome {
         if self.queued == Some(requested) {
             self.queued = None;
@@ -173,6 +187,27 @@ impl SidebarController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn show_opens_a_hidden_section_and_never_closes_an_open_one() {
+        let mut controller = SidebarController::default();
+        // Скрытый сайдбар: программная просьба открывает секцию.
+        assert_eq!(
+            controller.show(SidebarSection::Settings),
+            SidebarSelectionOutcome::Opened(SidebarSection::Settings)
+        );
+        assert_eq!(controller.target(), Some(SidebarSection::Settings));
+        controller.advance(1.0, 1.0);
+        // Повторная просьба, в отличие от клика по иконке, не закрывает.
+        controller.show(SidebarSection::Settings);
+        assert_eq!(controller.target(), Some(SidebarSection::Settings));
+        // Открыт другой раздел: просьба переключает на настройки.
+        let mut switching = SidebarController::default();
+        switching.select(SidebarSection::Playlist);
+        switching.advance(1.0, 1.0);
+        switching.show(SidebarSection::Settings);
+        assert_eq!(switching.target(), Some(SidebarSection::Settings));
+    }
 
     #[test]
     fn content_duration_is_half_of_open_duration() {

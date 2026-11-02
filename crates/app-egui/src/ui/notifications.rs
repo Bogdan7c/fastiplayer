@@ -58,6 +58,10 @@ pub(crate) enum NotificationAction {
     Dismiss(NotificationId),
     /// Нажата «Повторить» у ошибки открытия с этим id (B9).
     Retry(NotificationId),
+    /// Нажата «Set up…» у предложения подключить браузеры.
+    BrowserOfferSetUp(NotificationId),
+    /// Нажата «Not now» у предложения подключить браузеры.
+    BrowserOfferNotNow(NotificationId),
 }
 
 /// Действия, собранные за кадр; применяются владельцем после egui pass-а.
@@ -177,6 +181,7 @@ fn render_toast(
         ToastKind::Info => ui.visuals().text_color(),
         // Важное предупреждение выделено цветом ошибки: оно о потере настроек.
         ToastKind::Warning => ui.visuals().error_fg_color,
+        ToastKind::BrowserOffer => ui.visuals().text_color(),
     };
     ui.scope(|ui| {
         ui.multiply_opacity(opacity);
@@ -190,7 +195,30 @@ fn render_toast(
                     output.push(NotificationAction::Dismiss(toast.id));
                 }
             });
+            if toast.kind == ToastKind::BrowserOffer {
+                render_browser_offer_buttons(ui, toast.id, output);
+            }
         });
+    });
+}
+
+/// Подписи кнопок предложения подключить браузеры.
+pub(crate) const BROWSER_OFFER_SET_UP_LABEL: &str = "Set up…";
+pub(crate) const BROWSER_OFFER_NOT_NOW_LABEL: &str = "Not now";
+
+/// Кнопки «Set up…» и «Not now» под текстом предложения.
+fn render_browser_offer_buttons(
+    ui: &mut egui::Ui,
+    id: NotificationId,
+    output: &mut NotificationUiOutput,
+) {
+    ui.horizontal(|ui| {
+        if ui.button(BROWSER_OFFER_SET_UP_LABEL).clicked() {
+            output.push(NotificationAction::BrowserOfferSetUp(id));
+        }
+        if ui.button(BROWSER_OFFER_NOT_NOW_LABEL).clicked() {
+            output.push(NotificationAction::BrowserOfferNotNow(id));
+        }
     });
 }
 

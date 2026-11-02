@@ -8,10 +8,17 @@
 source "$(dirname "$(readlink -f "$0")")/common.sh"
 lv_setup chromium
 lv_start_display
-lv_start_bus
+if [ "$MANIFEST_SOURCE" = player ]; then
+  # Файлы поставила кнопка Connect в плеере; шина - настоящая шина сессии.
+  PLAYER_MANIFEST="${XDG_CONFIG_HOME:-$HOME/.config}/chromium/NativeMessagingHosts/$HOST_NAME.json"
+  lv_require_player_install "$PLAYER_MANIFEST"
+  BUS_ADDR="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}"
+else
+  lv_start_bus
+fi
 
-PROFILE="$WORK/chromium-profile"
-mkdir -p "$PROFILE/NativeMessagingHosts"
+# Файл подключения для режима по умолчанию: хост - обёртка с журналом (heredoc без отступов).
+write_live_check_manifest() {
 cat > "$PROFILE/NativeMessagingHosts/$HOST_NAME.json" <<M
 {
   "name": "$HOST_NAME",
@@ -21,6 +28,17 @@ cat > "$PROFILE/NativeMessagingHosts/$HOST_NAME.json" <<M
   "allowed_origins": ["chrome-extension://$CHROMIUM_ID/"]
 }
 M
+}
+
+PROFILE="$WORK/chromium-profile"
+mkdir -p "$PROFILE/NativeMessagingHosts"
+if [ "$MANIFEST_SOURCE" = player ]; then
+  # С нестандартным --user-data-dir Chromium ищет файл подключения в профиле, а не в ~/.config:
+  # даём ссылку на файл, поставленный плеером (проверяется его содержимое, не расположение).
+  ln -s "$PLAYER_MANIFEST" "$PROFILE/NativeMessagingHosts/$HOST_NAME.json"
+else
+  write_live_check_manifest
+fi
 BROWSER_ENV=("${DISPLAY_ENV[@]}")
 [ "$DISPLAY_TARGET" = virtual ] && BROWSER_ENV+=(HOME="$WORK/home" XDG_CONFIG_HOME="$WORK/xdg/bconfig" XDG_CACHE_HOME="$WORK/xdg/bcache")
 FLAGS=(--user-data-dir="$PROFILE" --load-extension="$WORK/ext" --no-first-run --no-default-browser-check)

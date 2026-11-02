@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ConfigResult, frame_server::FrameServerConfig, validation};
 
+mod browser_bridge;
 mod browser_session;
 mod browser_session_window;
 mod default_document;
@@ -25,6 +26,7 @@ mod yt_dlp_settings;
 #[cfg(test)]
 mod metadata_tests;
 
+pub use browser_bridge::*;
 pub use browser_session::*;
 pub use browser_session_window::*;
 pub use player::*;
@@ -50,7 +52,7 @@ pub(crate) use version::{
     LEGACY_SCHEMA_VERSION_20, LEGACY_SCHEMA_VERSION_21, LEGACY_SCHEMA_VERSION_22,
     LEGACY_SCHEMA_VERSION_23, LEGACY_SCHEMA_VERSION_24, LEGACY_SCHEMA_VERSION_25,
     LEGACY_SCHEMA_VERSION_26, LEGACY_SCHEMA_VERSION_27, LEGACY_SCHEMA_VERSION_28,
-    LEGACY_SCHEMA_VERSION_29,
+    LEGACY_SCHEMA_VERSION_29, LEGACY_SCHEMA_VERSION_30,
 };
 pub use video::*;
 
@@ -127,6 +129,11 @@ pub struct AppConfig {
     #[setting(nested)]
     pub browser_session: BrowserSessionConfig,
 
+    /// Мост с браузерами: показывать ли при запуске предложение подключить браузеры.
+    #[serde(default)]
+    #[setting(nested)]
+    pub browser_bridge: BrowserBridgeConfig,
+
     /// Настройки shell UI.
     #[serde(default)]
     #[setting(nested)]
@@ -173,6 +180,7 @@ impl Default for AppConfig {
             web_media: WebMediaConfig::default(),
             yt_dlp: YtDlpConfig::default(),
             browser_session: BrowserSessionConfig::default(),
+            browser_bridge: BrowserBridgeConfig::default(),
             ui: UiConfig::default(),
             subtitles: SubtitlesConfig::default(),
         }

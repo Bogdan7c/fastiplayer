@@ -14,7 +14,7 @@ const SCREEN_SIZE: egui::Vec2 = egui::vec2(1280.0, 720.0);
 
 /// Нарисованный текст и его прямоугольник на экране.
 #[derive(Debug, Clone)]
-struct PaintedText {
+pub(super) struct PaintedText {
     text: String,
     rect: egui::Rect,
 }
@@ -36,9 +36,9 @@ fn collect_painted_text(shape: &egui::Shape, painted: &mut Vec<PaintedText>) {
 }
 
 /// Результат одного кадра.
-struct RenderedFrame {
-    painted: Vec<PaintedText>,
-    actions: Vec<NotificationAction>,
+pub(super) struct RenderedFrame {
+    pub(super) painted: Vec<PaintedText>,
+    pub(super) actions: Vec<NotificationAction>,
     repaint_delay: Duration,
     /// Подписи кнопок в дереве accesskit (пусто, если accesskit в контексте не включён).
     accesskit_button_labels: Vec<String>,
@@ -46,12 +46,12 @@ struct RenderedFrame {
 
 impl RenderedFrame {
     /// Нарисован ли такой текст.
-    fn shows(&self, text: &str) -> bool {
+    pub(super) fn shows(&self, text: &str) -> bool {
         self.painted.iter().any(|painted| painted.text == text)
     }
 
     /// Центр нарисованного текста (для клика).
-    fn center_of(&self, text: &str) -> egui::Pos2 {
+    pub(super) fn center_of(&self, text: &str) -> egui::Pos2 {
         self.painted
             .iter()
             .find(|painted| painted.text == text)
@@ -116,7 +116,7 @@ fn render_frame(
 }
 
 /// Прогоняет несколько кадров без ввода: новая egui `Area` первый кадр только измеряется.
-fn settle(egui_ctx: &egui::Context, frame: &NotificationsFrame) -> RenderedFrame {
+pub(super) fn settle(egui_ctx: &egui::Context, frame: &NotificationsFrame) -> RenderedFrame {
     let mut rendered = render_frame(egui_ctx, frame, Vec::new());
     for _ in 0..2 {
         rendered = render_frame(egui_ctx, frame, Vec::new());
@@ -125,7 +125,7 @@ fn settle(egui_ctx: &egui::Context, frame: &NotificationsFrame) -> RenderedFrame
 }
 
 /// Настоящий клик мышью: наведение, нажатие и отпускание в отдельных кадрах.
-fn click(
+pub(super) fn click(
     egui_ctx: &egui::Context,
     frame: &NotificationsFrame,
     position: egui::Pos2,
@@ -457,7 +457,7 @@ struct TelemetryLayoutFrame {
     central_rect: egui::Rect,
     /// Нарисованный текст с прямоугольниками и clip-областью, в которой он виден.
     painted: Vec<(PaintedText, egui::Rect)>,
-    actions: Vec<NotificationAction>,
+    pub(super) actions: Vec<NotificationAction>,
 }
 
 /// Рисует кадр так же, как кадр приложения: панель телеметрии, затем центральная область.

@@ -12,6 +12,12 @@
 #   LIVE_NO_SNAPSHOT=1            не копировать бинари в папку прогона
 #   AUTO_CLOSE=1|0                закрывать браузер после конца проверки (virtual: 1, real: 0)
 #   TIMEOUT_S=120                 потолок ожидания конца проверки
+#   MANIFEST_SOURCE=live-check|player
+#                                 live-check (по умолчанию): скрипт сам пишет файл подключения
+#                                 с обёрткой хоста (журнал host.log) и поднимает частную шину.
+#                                 player: скрипт НИЧЕГО не устанавливает - берёт файл подключения,
+#                                 посредника и D-Bus службу, которые поставила кнопка Connect
+#                                 в плеере; шина - настоящая шина сессии. Только DISPLAY_TARGET=real.
 LIVE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Корень репозитория выводим из положения скрипта (scripts/browser-bridge-live-check/ -> ../..).
 REPO="$(cd "$LIVE_DIR/../.." && pwd)"
@@ -35,11 +41,37 @@ PY
 [ -n "$HOST_NAME" ] && [ -n "$CHROMIUM_ID" ] && [ -n "$GECKO_ID" ] || { echo "[live] empty identity fields in $IDENTITY_FIXTURE" >&2; exit 2; }
 DISPLAY_TARGET="${DISPLAY_TARGET:-virtual}"
 TIMEOUT_S="${TIMEOUT_S:-120}"
+MANIFEST_SOURCE="${MANIFEST_SOURCE:-live-check}"
+# Имя D-Bus службы приёма сессий браузера (то же, что в lv_start_bus и в плеере).
+BROWSER_SESSION_BUS_NAME="io.github.Bogdan7c.Fastiplayer.BrowserSession"
 LV_PIDS=()
 LV_EXTRA_CLEANUP=""
 EXT_BUILD="$LIVE_ROOT/extension-build"   # готовое расширение: исходники + сгенерированные manifest, plan, media
 
 lv_log() { echo "[live] $*" >&2; }
+
+# Проверяет режим MANIFEST_SOURCE; в режиме player требует настоящий экран (иначе браузер
+# не увидит настоящую шину сессии и настоящий ~, где лежат файлы плеера).
+lv_check_manifest_source() {
+  case "$MANIFEST_SOURCE" in
+    live-check) ;;
+    player)
+      [ "$DISPLAY_TARGET" = real ] || { lv_log "MANIFEST_SOURCE=player needs DISPLAY_TARGET=real (it uses your real session bus and files)"; exit 2; } ;;
+    *) lv_log "unknown MANIFEST_SOURCE=$MANIFEST_SOURCE (use live-check or player)"; exit 2 ;;
+  esac
+}
+
+# Режим player: проверяет, что кнопка Connect уже поставила службу D-Bus.
+# $1 = путь к файлу подключения, который должен лежать (его ставил плеер).
+lv_require_player_install() {
+  local manifest_path="$1"
+  local service_file="${XDG_DATA_HOME:-$HOME/.local/share}/dbus-1/services/$BROWSER_SESSION_BUS_NAME.service"
+  [ -f "$manifest_path" ] || { lv_log "no native messaging manifest at $manifest_path - press Connect for this browser in Fastiplayer (Settings > Browser integration) first"; exit 2; }
+  [ -f "$service_file" ] || { lv_log "no D-Bus service file at $service_file - press Connect in Fastiplayer first"; exit 2; }
+  grep -q "$CHROMIUM_ID" "$manifest_path" || grep -q "$GECKO_ID" "$manifest_path" \
+    || { lv_log "$manifest_path does not allow our extension id (not written by Fastiplayer Connect?)"; exit 2; }
+  lv_log "using the player-installed files: $manifest_path and $service_file"
+}
 
 # Готовит $EXT_BUILD: ролик и план создаются при первом запуске (в git их нет), manifest.json
 # собирается из шаблона и фикстуры протокола каждый раз (ключ и gecko id не дублируются в репозитории).
@@ -64,16 +96,20 @@ lv_prepare() {
 
 lv_setup() { # $1 = имя прогона
   RUN_NAME="$1"
+  lv_check_manifest_source
   lv_prepare
   WORK="$LIVE_ROOT/run-$RUN_NAME"
   RT="/tmp/fplive-$RUN_NAME-$$"          # короткий путь: сокеты Unix ограничены 108 байтами
   rm -rf "$WORK"; mkdir -p "$WORK/xdg/config" "$WORK/xdg/data" "$WORK/xdg/state" "$WORK/xdg/cache" "$WORK/services" "$WORK/home"
   mkdir -m 700 "$RT"
-  [ -x "$HOST_BIN" ] && [ -x "$PLAYER_BIN" ] || { lv_log "build first: cargo build -p browser-bridge-host -p app-egui (looked in $BIN_DIR)"; exit 2; }
+  # В режиме player бинари не нужны: всё поставлено плеером.
+  if [ "$MANIFEST_SOURCE" != player ]; then
+    [ -x "$HOST_BIN" ] && [ -x "$PLAYER_BIN" ] || { lv_log "build first: cargo build -p browser-bridge-host -p app-egui (looked in $BIN_DIR)"; exit 2; }
+  fi
   trap lv_cleanup EXIT INT TERM
   # Снимок бинарей: параллельная пересборка cargo не подменит их посреди прогона.
   # LIVE_NO_SNAPSHOT=1 — использовать target/debug как есть.
-  if [ -z "$LIVE_NO_SNAPSHOT" ]; then
+  if [ "$MANIFEST_SOURCE" != player ] && [ -z "$LIVE_NO_SNAPSHOT" ]; then
     mkdir -p "$WORK/bin"; cp "$HOST_BIN" "$WORK/bin/"; cp "$PLAYER_BIN" "$WORK/bin/"; cp -r "$(dirname "$PLAYER_BIN")/lib" "$WORK/bin/lib"
     HOST_BIN="$WORK/bin/fastiplayer-browser-host"; PLAYER_BIN="$WORK/bin/fastiplayer"
   fi
