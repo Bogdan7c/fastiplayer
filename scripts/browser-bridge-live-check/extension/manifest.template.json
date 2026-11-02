@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Fastiplayer live check (throwaway)",
+  "version": "0.0.1",
+  "description": "Throwaway extension for a live check of the native-messaging host.",
+  "key": "@MANIFEST_KEY@",
+  "permissions": ["nativeMessaging"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": ["config.js", "runner.js", "background.js"]
+  },
+  "action": { "default_title": "Run Fastiplayer bridge live check" },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:*"
+  },
+  "browser_specific_settings": { "gecko": { "id": "@GECKO_ID@" } }
+}

@@ -68,4 +68,4 @@ Memories: `mem:settings-ui/application-contract-s08`, `mem:config/schema-store-d
 - Бинарь посредника — `fastiplayer-browser-host` (crate `browser-bridge-host`). Релизный — 4 МБ, только `libc` и `libgcc_s`, требует GLIBC 2.39 (рантайм Chrome 156 — 2.42). Для Flatpak-браузера сборку проверить под glibc рантайма.
 - Во Flatpak в `path` файла подключения должен стоять сам бинарь внутри папки песочницы: скрипт-обёртка стенда 05 там не работает.
 - Если Flatpak-сборка посредника упрётся в размер или библиотеки, клиент двери выносится из `desktop-integration` в свой crate (решение 155).
-- Живая проверка Flatpak-Chrome — здесь: `talk-name=io.github.Bogdan7c.Fastiplayer.*`, экстеншен через CDP `Extensions.loadUnpacked`. Мини-экстеншен 05 для этого годится, но он вне репозитория — при необходимости собирается заново по описанию в `results/05.md`.
+- Живая проверка Flatpak-Chrome — здесь: `talk-name=io.github.Bogdan7c.Fastiplayer.*`, экстеншен через CDP `Extensions.loadUnpacked`. Для этого годится мини-экстеншен 05: `scripts/browser-bridge-live-check/` (README там же), к нему нужен скрипт запуска Flatpak-Chrome.

@@ -56,3 +56,12 @@
 - Memories: `mem:browser-bridge/core` (раздел «Стенд»), `mem:testing/playback-smoke`, `mem:suggested_commands`.
 
 Memories: `mem:testing/media-fixtures`, `mem:testing/playback-smoke`, `mem:testing/sandbox_policy`, auto-memory владельца «local test media».
+
+## Поправки по итогам 05 (2.11.2026, решения 153–156)
+
+- Есть одноразовый стенд живой проверки `scripts/browser-bridge-live-check/`. Он делает так:
+  - мини-экстеншен через настоящего посредника открывает сеанс и гонит записанный ролик в настоящий плеер;
+  - Chromium и Firefox запускаются на невидимом `kwin_wayland --virtual` или на экране владельца;
+  - ролик и манифест генерируются при запуске.
+
+  Стенд 08 может вырасти из него: запуск браузеров с изолированными профилями, частная шина, файл подключения в профиле Chromium, временная установка в Firefox через BiDi, счётчики плеера как критерий.
