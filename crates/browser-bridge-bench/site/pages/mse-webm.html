@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mse-webm</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>mse-webm</h1>
+
+<script type="module">
+import { runScenario, UnsupportedError } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+
+await runScenario('mse-webm', (ctx) => playAssetScenario(ctx, 'vp9-opus', ({ player }) => {
+  ctx.check('two-source-buffers', sourceBufferCount(player) === 2, `sourceBuffers=${sourceBufferCount(player)}`);
+}));
+</script>
+</body>
+</html>

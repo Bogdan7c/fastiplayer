@@ -48,3 +48,11 @@ Memories: `mem:browser-bridge/core`.
 - Запрос сеанса уже есть: `HostLink.openSession(request)` в `extensions/browser/src/background/host-link/`. Он возвращает `granted` / `refused` / `no_reply` / `not_connected` / `invalid_request`, на `hello_required` один раз сам повторяет `hello`.
 - Передача видео — это «нужда» (`acquireDemand`): пока она держится, фон держит связь и повторяет попытки. Сняли — порт закроется после 30 с простоя.
 - Попап показывает статус по порту `bridge-status`. Список найденных видео (решение 8) и входы добавляются в него же.
+
+## Поправки по итогам 08 (2.11.2026, решения 169–172)
+
+- **Стенд:** `scripts/browser-bridge-bench.sh`, страницы `crates/browser-bridge-bench/site/pages/`.
+  - Для входов режима 1 уже есть страницы: iframe с чужого origin, shadow DOM, `<video src>`, MSE fMP4 и WebM.
+  - Нет страницы со ссылкой на видео (правый клик по ссылке → фоновая вкладка) — добавить в 10.
+- **Робот не нажимает кнопку панели и пункты контекстного меню:** ни CDP, ни Marionette этого не умеют. Нужен тестовый вход в фон экстеншена или клики через `/dev/uinput` на `--display real` (как в 00c). Решить в 10 с владельцем.
+- Chrome из Flatpak на вехе M1 — руками (решение 172): `scripts/browser-bridge-live-check/run-chrome-flatpak.sh`.

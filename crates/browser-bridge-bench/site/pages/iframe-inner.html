@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>iframe-inner</title>
+<style>body{font:14px system-ui,sans-serif;margin:8px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<!-- Внутренний плеер для iframe-cross-origin: грузится с ЧУЖОГО origin, отчёт отдаёт родителю. -->
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying } from '../lib/bench-checks.js';
+import { startAsset } from '../lib/scenario-kit.js';
+
+await runScenario('iframe-inner', async (ctx) => {
+  ctx.check('inner-origin', window !== window.parent, `inner origin=${location.origin}`);
+  const { video, player } = await startAsset(ctx, 'h264-aac');
+  await checkPlaying(ctx, video, 'playing-in-frame');
+  await player.destroy();
+}, { reportToParent: true });
+</script>
+</body>
+</html>

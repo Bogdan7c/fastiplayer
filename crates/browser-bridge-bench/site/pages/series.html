@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>series</title>
+<style>body{font:14px system-ui,sans-serif;margin:16px}video{background:#000;max-width:100%}button{margin:2px}</style>
+</head>
+<body>
+<h1>series</h1>
+<video id="v" controls playsinline width="480"></video>
+<div id="episodes"></div>
+<div id="controls"></div>
+<script type="module">
+import { runScenario, UnsupportedError } from '../lib/bench-report.js';
+import { checkPlaying, waitFor } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
+import { requireMimeSupport } from '../lib/scenario-kit.js';
+
+/** Серии «сериала»: разные ассеты, чтобы смена серии была заметной сменой потока. */
+const EPISODES = [
+  { title: 'Episode 1', assetId: 'h264-aac' },
+  { title: 'Episode 2', assetId: 'muxed-h264-aac' },
+  { title: 'Episode 3', assetId: 'vp9-opus' },
+];
+/** За сколько секунд до конца серии перематываем, чтобы дождаться ended. */
+const SECONDS_BEFORE_END = 3;
+
+function button(parent, label, onClick) {
+  const element = Object.assign(document.createElement('button'), { textContent: label });
+  element.addEventListener('click', onClick);
+  parent.append(element);
+  return element;
+}
+
+await runScenario('series', async (ctx) => {
+  const catalog = await loadCatalog();
+  const video = document.getElementById('v');
+  const player = new BenchPlayer(video, catalog, { log: (line) => ctx.log(line) });
+  const state = { episode: 0, dub: null, videoTrackId: 'video-360' };
+
+  // Рефы текущей серии с учётом озвучки и качества (качество — только у h264-aac).
+  function currentRefs() {
+    const { assetId } = EPISODES[state.episode];
+    const quality = assetId === 'h264-aac' ? state.videoTrackId : null;
+    return state.dub && assetId === 'h264-aac'
+      ? refsWithDub(catalog, assetId, state.dub, quality)
+      : standardRefs(catalog, assetId, quality);
+  }
+  async function openEpisode(index, positionS = 0) {
+    state.episode = index;
+    const refs = currentRefs();
+    requireMimeSupport(catalog, refs);
+    // autoplay: после ended элемент на паузе, но серия должна идти сама.
+    await player.newGeneration({ refs, positionS, autoplay: true });
+  }
+  // Автопереход по ended — как в настоящих сериальных плеерах.
+  video.addEventListener('ended', () => {
+    if (state.episode + 1 < EPISODES.length) openEpisode(state.episode + 1);
+  });
+
+  const episodes = document.getElementById('episodes');
+  EPISODES.forEach((episode, index) => button(episodes, episode.title, () => openEpisode(index)));
+  const controls = document.getElementById('controls');
+  const dubA = button(controls, 'Dub A', () => { state.dub = 'dub-a'; openEpisode(state.episode); });
+  const dubB = button(controls, 'Dub B', () => { state.dub = 'dub-b'; openEpisode(state.episode); });
+  const q720 = button(controls, '720p', () => { state.videoTrackId = 'video-720'; openEpisode(state.episode, video.currentTime); });
+  const subtitles = [];
+  function addSubtitleTrack(assetId, label, language) {
+    const element = Object.assign(document.createElement('track'), {
+      kind: 'subtitles', label, srclang: language, src: `/media/${catalog.assets[assetId].url}`,
+    });
+    video.append(element);
+    element.track.mode = 'hidden'; // hidden — дорожка грузится, но не рисуется
+    subtitles.push(element);
+    return element;
+  }
+  const loadUk = button(controls, 'Load UK subtitles', () => addSubtitleTrack('subtitles-uk', 'Українська', 'uk'));
+
+  // 1. Серия 1 играет, подключены родные субтитры.
+  await player.start({ refs: currentRefs() });
+  addSubtitleTrack('subtitles-en', 'English', 'en');
+  await checkPlaying(ctx, video, 'episode-1-playing');
+  const enLoaded = await waitFor(() => (subtitles[0].track.cues?.length ?? 0) > 0, 4000);
+  ctx.check('subtitle-en-cues', enLoaded, `cues=${subtitles[0].track.cues?.length ?? 0}`);
+  // 2. Подгружаемый по кнопке второй .vtt.
+  loadUk.click();
+  const ukLoaded = await waitFor(() => (subtitles[1]?.track.cues?.length ?? 0) > 0, 4000);
+  ctx.check('subtitle-uk-loaded-on-demand', ukLoaded && video.textTracks.length >= 2, `cues=${subtitles[1]?.track.cues?.length ?? 0}, textTracks=${video.textTracks.length}`);
+  // 3. Смена озвучки: новый MediaSource, позиция сбрасывается в 0.
+  const generationBeforeDub = player.generations;
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  const positionBeforeDub = video.currentTime;
+  dubB.click();
+  await waitFor(() => player.generations > generationBeforeDub, 3000);
+  ctx.check('dub-new-media-source-position-reset', player.generations === generationBeforeDub + 1 && video.currentTime < positionBeforeDub,
+    `generations ${generationBeforeDub} -> ${player.generations}, position ${positionBeforeDub.toFixed(2)} -> ${video.currentTime.toFixed(2)}, audio=${player.refs[1].assetId}`);
+  await checkPlaying(ctx, video, 'playing-after-dub');
+  // 4. Меню качества.
+  q720.click();
+  const heightChanged = await waitFor(() => video.videoHeight === 720, 8000);
+  ctx.check('quality-menu-720', heightChanged, `videoHeight=${video.videoHeight}`);
+  await checkPlaying(ctx, video, 'playing-after-quality');
+  // 5. Автопереход: перематываем к концу серии, ждём ended и новую серию.
+  const duration = catalog.assets[EPISODES[0].assetId].duration_s;
+  await player.seek(duration - SECONDS_BEFORE_END);
+  const advanced = await waitFor(() => state.episode === 1, SECONDS_BEFORE_END * 1000 + 5000);
+  ctx.check('auto-next-episode', advanced, `episode index=${state.episode}, generations=${player.generations}`);
+  await checkPlaying(ctx, video, 'episode-2-playing');
+  await player.destroy();
+}, { budgetMs: 40000 });
+</script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>iframe-cross-origin</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>iframe-cross-origin</h1>
+
+<script type="module">
+import { runScenario, UnsupportedError } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+
+await runScenario('iframe-cross-origin', async (ctx) => {
+  const { otherOrigin, run, handoff, reportOrigin } = ctx.params;
+  if (!otherOrigin) throw new Error('other_origin parameter is required');
+  ctx.check('origins-differ', new URL(otherOrigin).origin !== location.origin, `main=${location.origin}, inner=${new URL(otherOrigin).origin}`);
+  const innerReport = new Promise((resolve) => {
+    window.addEventListener('message', (event) => {
+      if (event.origin === new URL(otherOrigin).origin && event.data?.benchInnerReport) resolve(event.data.benchInnerReport);
+    });
+  });
+  const frame = document.createElement('iframe');
+  const query = new URLSearchParams({ run, report_origin: reportOrigin });
+  if (handoff) query.set('handoff', '1');
+  frame.src = `${otherOrigin}/site/pages/iframe-inner.html?${query}`;
+  frame.width = 520;
+  frame.height = 320;
+  document.body.append(frame);
+  const timeout = new Promise((resolve) => setTimeout(() => resolve(null), 18000));
+  const inner = await Promise.race([innerReport, timeout]);
+  if (!inner) {
+    ctx.check('inner-player-reported', false, 'no report from inner frame within 18000 ms');
+    return;
+  }
+  ctx.check('inner-player-reported', true, `inner status=${inner.status}, ua-origin=${new URL(otherOrigin).host}`);
+  const origin = inner.checks.find((entry) => entry.name === 'inner-origin');
+  ctx.check('inner-ran-on-other-origin', Boolean(origin?.detail.includes(new URL(otherOrigin).origin)), origin?.detail ?? 'no inner-origin check');
+  for (const entry of inner.checks) ctx.check(`inner:${entry.name}`, entry.ok, entry.detail);
+});
+</script>
+</body>
+</html>

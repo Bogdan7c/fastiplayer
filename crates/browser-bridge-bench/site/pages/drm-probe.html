@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>drm-probe</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>drm-probe</h1>
+
+<script type="module">
+import { runScenario, UnsupportedError } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+
+/** Системы, которые «злые» плееры опрашивают до старта (мы НЕ играем DRM). */
+const KEY_SYSTEMS = ['com.widevine.alpha', 'com.microsoft.playready', 'com.apple.fps.1_0', 'org.w3.clearkey'];
+const PROBE_TIMEOUT_MS = 2500;
+const CONFIG = [{ initDataTypes: ['cenc'], videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.64001e"' }] }];
+
+async function probe(keySystem) {
+  const timeout = new Promise((resolve) => setTimeout(() => resolve('timeout'), PROBE_TIMEOUT_MS));
+  const attempt = navigator.requestMediaKeySystemAccess(keySystem, CONFIG).then(() => 'available', (error) => `rejected(${error.name})`);
+  return Promise.race([attempt, timeout]);
+}
+
+await runScenario('drm-probe', async (ctx) => {
+  if (!navigator.requestMediaKeySystemAccess) throw new UnsupportedError('navigator.requestMediaKeySystemAccess is absent');
+  const outcomes = [];
+  for (const keySystem of KEY_SYSTEMS) outcomes.push(`${keySystem}=${await probe(keySystem)}`);
+  ctx.check('probe-settled', !outcomes.some((o) => o.endsWith('timeout')), outcomes.join('; '));
+  const { video, player } = await startAsset(ctx, 'h264-aac');
+  await checkPlaying(ctx, video, 'playing-after-probe');
+  await player.destroy();
+});
+</script>
+</body>
+</html>

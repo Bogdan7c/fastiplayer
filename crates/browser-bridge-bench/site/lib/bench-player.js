@@ -1,0 +1,270 @@
+// Мини-плеер стенда: ведёт себя как «злые» настоящие MSE-плееры (см. mse-engine.js).
+//
+// API (всё, что нужно сценариям):
+//   const catalog = await loadCatalog();
+//   const player = new BenchPlayer(video, catalog, { bufferAheadS, mediaBase, credentials,
+//                                                    stallSeconds, hangAt, worker, log });
+//   await player.start({ refs: standardRefs(catalog, 'h264-aac'), positionS: 0 });
+//   await player.seek(20);                       // abort/remove + запросы с нового места
+//   player.switchTrack({assetId, trackId});      // ABR: init другой дорожки в тот же SourceBuffer
+//   await player.newGeneration({ refs, positionS }); // новый MediaSource на ТОМ ЖЕ <video>
+//   player.generations                           // сколько MediaSource создано на элементе
+//   player.requests                              // журнал сегментных запросов по всем поколениям
+//   await player.destroy();
+// Сторож зависания включается параметром stallSeconds: нет прироста currentTime при !paused —
+// пересоздаём MediaSource на том же элементе с текущей позиции.
+
+import { DEFAULT_BUFFER_AHEAD_S, MseEngine } from './mse-engine.js';
+import { fetchJson } from './bench-checks.js';
+
+/** Префикс медиа по умолчанию (для /cdn/ сценарий передаёт свой). */
+const DEFAULT_MEDIA_PATH = '/media/';
+/** Период проверки сторожа, мс. */
+const WATCHDOG_PERIOD_MS = 500;
+/** Минимальный сдвиг currentTime, считающийся прогрессом, с. */
+const PROGRESS_EPS_S = 0.05;
+/** Период пересылки часов воркеру, мс. */
+const WORKER_CLOCK_PERIOD_MS = 100;
+/** Сколько ждём sourceopen / handle от воркера, мс. */
+const OPEN_TIMEOUT_MS = 5000;
+
+export async function loadCatalog(origin = location.origin) {
+  return fetchJson(`${origin}/media/catalog.json`);
+}
+
+/** Дорожки обычного сегментированного ролика: видео (выбранное или первое) + звук, либо muxed. */
+export function standardRefs(catalog, assetId, videoTrackId = null) {
+  const asset = catalog.assets[assetId];
+  if (!asset?.tracks) throw new Error(`asset ${assetId} has no tracks`);
+  const muxed = asset.tracks.find((track) => track.id === 'muxed');
+  if (muxed) return [{ assetId, trackId: 'muxed' }];
+  const video = videoTrackId
+    ? asset.tracks.find((track) => track.id === videoTrackId)
+    : asset.tracks.find((track) => track.kind === 'video');
+  const audio = asset.tracks.find((track) => track.kind === 'audio');
+  const refs = [{ assetId, trackId: video.id }];
+  if (audio) refs.push({ assetId, trackId: audio.id });
+  return refs;
+}
+
+/** Звук из другого ассета (озвучка) вместо родного. */
+export function refsWithDub(catalog, assetId, dubAssetId, videoTrackId = null) {
+  const videoOnly = standardRefs(catalog, assetId, videoTrackId).filter(
+    (ref) => ref.trackId !== 'audio',
+  );
+  const dubTrack = catalog.assets[dubAssetId].tracks.find((track) => track.kind === 'audio');
+  return [...videoOnly, { assetId: dubAssetId, trackId: dubTrack.id }];
+}
+
+export function resolveRef(catalog, ref) {
+  return catalog.assets[ref.assetId].tracks.find((track) => track.id === ref.trackId);
+}
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export class BenchPlayer {
+  constructor(video, catalog, options = {}) {
+    this.video = video;
+    this.catalog = catalog;
+    this.bufferAheadS = options.bufferAheadS ?? DEFAULT_BUFFER_AHEAD_S;
+    this.mediaBase = new URL(options.mediaBase ?? DEFAULT_MEDIA_PATH, location.href).href;
+    this.credentials = options.credentials ?? 'same-origin';
+    this.stallSeconds = options.stallSeconds ?? null;
+    this.hangAt = options.hangAt ?? null;
+    this.useWorker = options.worker ?? false;
+    this.logLine = options.log ?? (() => {});
+    this.generations = 0;
+    this.mediaSources = [];
+    this.refs = [];
+    this.engine = null;
+    this.worker = null;
+    this.workerSegments = 0;
+    this.workerInfo = null;
+    this.retiredRequests = [];
+    this.objectUrl = null;
+    this.clockTimer = null;
+    this.watchdogTimer = null;
+    this.recreating = false;
+    this.lastProgress = { at: performance.now(), time: 0 };
+    this.onGeneration = options.onGeneration ?? (() => {});
+  }
+
+  /** Журнал сегментных запросов за всё время (завершённые поколения + текущее). */
+  get requests() {
+    return [...this.retiredRequests, ...(this.engine?.requests ?? [])];
+  }
+
+  /** Число сегментных запросов (в режиме воркера — со слов воркера). */
+  get segmentRequestCount() {
+    if (this.useWorker) return this.workerSegments;
+    return this.requests.filter((request) => request.kind === 'segment').length;
+  }
+
+  async start({ refs, positionS = 0, autoplay = true }) {
+    this.refs = refs;
+    await (this.useWorker ? this.#attachInWorker(positionS) : this.#attachInPage(positionS));
+    if (autoplay) await this.play();
+    if (this.stallSeconds !== null && !this.watchdogTimer) {
+      this.watchdogTimer = setInterval(() => this.#watchdogTick(), WATCHDOG_PERIOD_MS);
+    }
+  }
+
+  /** Новое поколение: новый MediaSource на том же <video> (реклама, серия, озвучка, сторож). */
+  async newGeneration({ refs = this.refs, positionS = 0, autoplay = !this.video.paused } = {}) {
+    if (this.useWorker) throw new Error('newGeneration is not supported in worker mode');
+    await this.#detachEngine();
+    this.hangAt = null; // «зависание» — одноразовый сбой первого поколения
+    this.refs = refs;
+    await this.#attachInPage(positionS);
+    if (autoplay) await this.play();
+  }
+
+  async seek(positionS) {
+    this.video.currentTime = positionS;
+    if (this.useWorker) {
+      this.worker.postMessage({ type: 'seek', positionS });
+    } else {
+      await this.engine.seek(positionS);
+    }
+  }
+
+  /** ABR: переключиться на другую дорожку той же полосы. */
+  switchTrack(ref) {
+    const track = resolveRef(this.catalog, ref);
+    this.engine.switchTrack(track);
+    this.refs = this.refs.map((current) =>
+      resolveRef(this.catalog, current).kind === track.kind ? ref : current,
+    );
+  }
+
+  async play() {
+    try {
+      await this.video.play();
+    } catch (error) {
+      if (error?.name !== 'NotAllowedError') throw error;
+      this.logLine(`autoplay blocked (${error.name}), retrying muted`);
+      this.video.muted = true;
+      await this.video.play();
+    }
+  }
+
+  pause() {
+    this.video.pause();
+  }
+
+  async destroy() {
+    clearInterval(this.watchdogTimer);
+    clearInterval(this.clockTimer);
+    this.watchdogTimer = null;
+    await this.#detachEngine();
+    this.worker?.terminate();
+    this.worker = null;
+  }
+
+  // ---- внутренности -------------------------------------------------------------------
+
+  #clock() {
+    return { currentTime: this.video.currentTime, paused: this.video.paused };
+  }
+
+  #durationS() {
+    return this.catalog.assets[this.refs[0].assetId].duration_s;
+  }
+
+  async #detachEngine() {
+    if (this.engine) {
+      await this.engine.stop();
+      this.retiredRequests.push(...this.engine.requests);
+      this.engine = null;
+    }
+  }
+
+  /** Создаёт MediaSource, привязывает к элементу и запускает движок. */
+  async #attachInPage(positionS) {
+    const mediaSource = new MediaSource();
+    const previousUrl = this.objectUrl;
+    this.objectUrl = URL.createObjectURL(mediaSource);
+    this.video.src = this.objectUrl;
+    if (previousUrl) URL.revokeObjectURL(previousUrl);
+    this.mediaSources.push(mediaSource);
+    this.generations += 1;
+    await this.#waitSourceOpen(mediaSource);
+    if (positionS > 0) this.video.currentTime = positionS;
+    this.engine = new MseEngine({
+      mediaSource,
+      tracks: this.refs.map((ref) => resolveRef(this.catalog, ref)),
+      durationS: this.#durationS(),
+      mediaBase: this.mediaBase,
+      clock: () => this.#clock(),
+      credentials: this.credentials,
+      bufferAheadS: this.bufferAheadS,
+      hangAt: this.hangAt,
+      log: this.logLine,
+    });
+    this.engine.start(positionS);
+    this.logLine(`generation ${this.generations} started at ${positionS.toFixed(2)} s`);
+    this.onGeneration(this.generations);
+  }
+
+  #waitSourceOpen(mediaSource) {
+    return new Promise((resolve, reject) => {
+      if (mediaSource.readyState === 'open') return resolve();
+      const timer = setTimeout(() => reject(new Error('sourceopen timeout')), OPEN_TIMEOUT_MS);
+      mediaSource.addEventListener('sourceopen', () => { clearTimeout(timer); resolve(); }, { once: true });
+    });
+  }
+
+  /** MSE в Dedicated Worker: воркер владеет MediaSource, на элемент уходит MediaSourceHandle. */
+  async #attachInWorker(positionS) {
+    if (!MediaSource.canConstructInDedicatedWorker) {
+      throw new Error('MediaSource in Dedicated Worker is not available');
+    }
+    this.worker = new Worker(new URL('./bench-worker.js', import.meta.url), { type: 'module' });
+    const handlePromise = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('worker handle timeout')), OPEN_TIMEOUT_MS);
+      this.worker.addEventListener('message', (event) => {
+        const message = event.data;
+        if (message.type === 'handle') { clearTimeout(timer); resolve(message.handle); }
+        if (message.type === 'progress') this.workerSegments = message.segments;
+        if (message.type === 'info') this.workerInfo = message;
+        if (message.type === 'log') this.logLine(`worker: ${message.line}`);
+      });
+      this.worker.addEventListener('error', (event) => reject(new Error(`worker error: ${event.message}`)));
+    });
+    this.worker.postMessage({
+      type: 'init',
+      tracks: this.refs.map((ref) => resolveRef(this.catalog, ref)),
+      durationS: this.#durationS(),
+      mediaBase: this.mediaBase,
+      credentials: this.credentials,
+      bufferAheadS: this.bufferAheadS,
+      positionS,
+    });
+    this.video.srcObject = await handlePromise;
+    this.generations += 1;
+    this.clockTimer = setInterval(() => {
+      this.worker?.postMessage({ type: 'clock', ...this.#clock() });
+    }, WORKER_CLOCK_PERIOD_MS);
+    this.worker.postMessage({ type: 'clock', ...this.#clock() });
+    await delay(0);
+  }
+
+  #watchdogTick() {
+    const { video } = this;
+    const now = performance.now();
+    const idle = video.paused || video.ended || video.seeking;
+    if (idle || Math.abs(video.currentTime - this.lastProgress.time) > PROGRESS_EPS_S) {
+      this.lastProgress = { at: now, time: video.currentTime };
+      return;
+    }
+    if (now - this.lastProgress.at < this.stallSeconds * 1000 || this.recreating) return;
+    this.recreating = true;
+    this.logLine(`stall at ${video.currentTime.toFixed(2)} s, recreating MediaSource`);
+    this.newGeneration({ positionS: video.currentTime })
+      .catch((error) => this.logLine(`recreate failed: ${error}`))
+      .finally(() => {
+        this.recreating = false;
+        this.lastProgress = { at: performance.now(), time: video.currentTime };
+      });
+  }
+}

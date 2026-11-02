@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mse-stall-reload</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>mse-stall-reload</h1>
+
+<script type="module">
+import { runScenario, UnsupportedError } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+
+/** Сегмент, на котором видеодорожка «зависает» (индекс), даёт паузу в буфере на 4 с. */
+const HANG_SEGMENT_INDEX = 2;
+/** Сколько без прогресса считается зависанием, с. */
+const STALL_SECONDS = 2.5;
+const HANG_POSITION_S = 4;
+
+await runScenario('mse-stall-reload', async (ctx) => {
+  const { video, player } = await startAsset(ctx, 'h264-aac', {
+    stallSeconds: STALL_SECONDS,
+    hangAt: { kind: 'video', index: HANG_SEGMENT_INDEX },
+  });
+  const recreated = await waitFor(() => player.generations >= 2, 15000);
+  ctx.check('watchdog-recreated-media-source', recreated, `MediaSource count=${player.mediaSources.length}, generations=${player.generations}`);
+  const beyond = await waitFor(() => video.currentTime > HANG_POSITION_S + 1, 8000);
+  ctx.check('played-past-hang', beyond, `currentTime=${video.currentTime.toFixed(2)} (hang at ${HANG_POSITION_S} s)`);
+  await checkPlaying(ctx, video, 'playing-after-reload');
+  await player.destroy();
+});
+</script>
+</body>
+</html>

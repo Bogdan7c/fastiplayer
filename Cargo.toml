@@ -14,6 +14,7 @@ members = [
     "crates/browser-bridge-session",
     "crates/browser-bridge-host",
     "crates/browser-bridge-install",
+    "crates/browser-bridge-bench",
     "crates/pushed-media-source",
     "crates/frame-server-core",
     "crates/source-core",

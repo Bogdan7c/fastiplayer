@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>shadow-dom</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>shadow-dom</h1>
+
+<script type="module">
+import { runScenario, UnsupportedError } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+
+await runScenario('shadow-dom', async (ctx) => {
+  // closed shadow root: из страницы <video> не достать через document.querySelector.
+  class BenchCard extends HTMLElement {
+    #root = this.attachShadow({ mode: 'closed' });
+    constructor() {
+      super();
+      this.video = document.createElement('video');
+      this.video.controls = true;
+      this.video.width = 480;
+      this.#root.append(this.video);
+    }
+  }
+  customElements.define('bench-card', BenchCard);
+  const card = document.createElement('bench-card');
+  document.body.append(card);
+  ctx.check('video-hidden-from-light-dom', document.querySelector('video') === null && card.video.getRootNode() instanceof ShadowRoot,
+    `document.querySelector('video')=${document.querySelector('video')}, rootNode=${card.video.getRootNode().constructor.name}`);
+  const { player } = await startAsset(ctx, 'h264-aac', { video: card.video });
+  await checkPlaying(ctx, card.video, 'playing-inside-shadow');
+  await player.destroy();
+});
+</script>
+</body>
+</html>

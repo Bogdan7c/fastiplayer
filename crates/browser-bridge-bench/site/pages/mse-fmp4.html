@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mse-fmp4</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>mse-fmp4</h1>
+
+<script type="module">
+import { runScenario, UnsupportedError } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+
+/** Сколько ждём на паузе без запросов, мс. */
+const PAUSE_OBSERVE_MS = 3000;
+/** Перемотка, с. */
+const SEEK_TARGET_S = 20;
+
+await runScenario('mse-fmp4', async (ctx) => {
+  const { video, player } = await startAsset(ctx, 'h264-aac');
+  await checkPlaying(ctx, video, 'playing');
+  ctx.check('two-source-buffers', sourceBufferCount(player) === 2, `sourceBuffers=${sourceBufferCount(player)}`);
+
+  // Пауза: после оседания буфера новых запросов сегментов быть не должно.
+  player.pause();
+  await sleep(700);
+  const before = player.segmentRequestCount;
+  await sleep(PAUSE_OBSERVE_MS);
+  const during = player.segmentRequestCount - before;
+  ctx.check('no-fetch-while-paused', during === 0, `segment requests during ${PAUSE_OBSERVE_MS} ms pause: ${during}`);
+
+  // Перемотка: новые сегменты запрашиваются около цели, а не с начала.
+  await player.play();
+  const mark = player.requests.length;
+  await player.seek(SEEK_TARGET_S);
+  await waitFor(() => player.requests.slice(mark).some((r) => r.kind === 'segment' && r.startS >= SEEK_TARGET_S - 2), 4000);
+  const fresh = player.requests.slice(mark).filter((r) => r.kind === 'segment');
+  const starts = fresh.map((r) => r.startS);
+  const nearTarget = starts.length > 0 && Math.min(...starts) >= SEEK_TARGET_S - 2.5;
+  ctx.check('seek-fetches-near-target', nearTarget, `segment starts after seek: ${starts.slice(0, 6).join(',')}`);
+  await checkPlaying(ctx, video, 'playing-after-seek');
+  ctx.check('position-after-seek', video.currentTime >= SEEK_TARGET_S, `currentTime=${video.currentTime.toFixed(2)}`);
+  await player.destroy();
+});
+</script>
+</body>
+</html>

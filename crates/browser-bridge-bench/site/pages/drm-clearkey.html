@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>drm-clearkey</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>drm-clearkey</h1>
+
+<script type="module">
+import { runScenario, UnsupportedError } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+
+function base64Url(hex) {
+  const bytes = Uint8Array.from(hex.match(/../g).map((pair) => parseInt(pair, 16)));
+  return btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+}
+
+await runScenario('drm-clearkey', async (ctx) => {
+  const catalog = await loadCatalog();
+  const asset = catalog.assets['clearkey-h264'];
+  const refs = [{ assetId: 'clearkey-h264', trackId: asset.tracks[0].id }];
+  requireMimeSupport(catalog, refs);
+  const license = JSON.stringify({ keys: [{ kty: 'oct', kid: base64Url(asset.key_id_hex), k: base64Url(asset.key_hex) }], type: 'temporary' });
+  const video = mountVideo();
+  // Реальные DRM-сайты получают `encrypted` от pssh в init-сегменте: ключ запрашиваем ТОЛЬКО по нему,
+  // с initData из события (никакого запроса по KID из каталога в обход события).
+  const encryptedEvents = [];
+  const sessions = [];
+  video.addEventListener('encrypted', (event) => {
+    encryptedEvents.push({ initDataType: event.initDataType, bytes: event.initData?.byteLength ?? 0 });
+    ctx.log(`encrypted event initDataType=${event.initDataType} bytes=${event.initData?.byteLength}`);
+    if (sessions.length > 0) return;
+    const session = video.mediaKeys.createSession('temporary');
+    sessions.push(session);
+    // Ответ на запрос лицензии — JWK из каталога.
+    session.addEventListener('message', () => session.update(new TextEncoder().encode(license)));
+    session.generateRequest(event.initDataType, event.initData).catch((error) => {
+      ctx.check('generate-request', false, `${error.name}: ${error.message}`);
+    });
+  });
+  for (const name of ['loadedmetadata', 'waitingforkey', 'waiting', 'error', 'canplay']) {
+    video.addEventListener(name, () => ctx.log(`video event ${name} readyState=${video.readyState} error=${video.error?.message ?? ''}`));
+  }
+  const access = await navigator.requestMediaKeySystemAccess('org.w3.clearkey', [{
+    initDataTypes: ['cenc', 'keyids', 'webm'],
+    videoCapabilities: [{ contentType: asset.tracks[0].mime }],
+  }]);
+  await video.setMediaKeys(await access.createMediaKeys());
+  const player = new BenchPlayer(video, catalog, { log: (line) => ctx.log(line) });
+  await player.start({ refs });
+  await checkPlaying(ctx, video, 'playing-encrypted');
+  const cencEvents = encryptedEvents.filter((event) => event.initDataType === 'cenc');
+  ctx.check('encrypted-cenc-fired', cencEvents.length > 0, `encrypted events=${JSON.stringify(encryptedEvents)}`);
+  // Статус ключа приходит асинхронно после update(): ждём, а не проверяем мгновенно.
+  const countUsable = () => sessions.reduce((count, s) => count + [...s.keyStatuses.values()].filter((v) => v === 'usable').length, 0);
+  await waitFor(() => countUsable() > 0, 5000);
+  ctx.check('key-status-usable', countUsable() > 0, `usable keys=${countUsable()}, sessions=${sessions.length}`);
+  await player.destroy();
+});
+</script>
+</body>
+</html>

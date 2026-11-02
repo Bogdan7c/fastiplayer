@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>video-src</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>video-src</h1>
+
+<script type="module">
+import { runScenario, UnsupportedError } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+
+await runScenario('video-src', async (ctx) => {
+  const catalog = await loadCatalog();
+  const asset = catalog.assets['progressive-h264-aac'];
+  // Серверу нужен Range: именно так браузер качает обычный <video src>.
+  const probe = await fetch(`/media/${asset.url}`, { headers: { range: 'bytes=0-99' } });
+  ctx.check('server-range-206', probe.status === 206 && probe.headers.get('content-range') !== null,
+    `status=${probe.status}, content-range=${probe.headers.get('content-range')}`);
+  const video = mountVideo();
+  video.src = `/media/${asset.url}`;
+  await video.play().catch(async () => { video.muted = true; await video.play(); });
+  await checkPlaying(ctx, video, 'playing');
+  video.currentTime = 8;
+  const seeked = await waitFor(() => video.currentTime >= 8 && !video.seeking, 4000);
+  ctx.check('seek-completed', seeked, `currentTime=${video.currentTime.toFixed(2)}`);
+  await checkPlaying(ctx, video, 'playing-after-seek');
+});
+</script>
+</body>
+</html>

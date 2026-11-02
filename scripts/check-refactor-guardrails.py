@@ -74,6 +74,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "browser-bridge-session",
         "browser-bridge-host",
         "browser-bridge-install",
+        "browser-bridge-bench",
         "ac3-elementary-demux",
         "ac3-syncframe",
         "animation-core",
@@ -322,6 +323,26 @@ BROWSER_BRIDGE_INSTALL_ALLOWED_DEPENDENCIES = frozenset(
         "serde_json",
         "thiserror",
         "tracing",
+    }
+)
+
+# Тестовый стенд моста (сессия 08): локальный сайт, изолированное окружение и робот
+# браузеров. Ставит посредника настоящим установщиком, пишет config плеера штатным кодом
+# и говорит с браузерами по CDP (WebSocket без tokio). Без UI, async-рантайма и ядра
+# плеера: стенд наблюдает плеер только через его журнал.
+BROWSER_BRIDGE_BENCH_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "browser-bridge-install",
+        "browser-bridge-protocol",
+        "desktop-integration",
+        "fastiplayer-config",
+        "libc",
+        "serde",
+        "serde_json",
+        "sha2",
+        "tempfile",
+        "thiserror",
+        "tungstenite",
     }
 )
 
@@ -1547,6 +1568,14 @@ def find_dependency_violations(
             frozenset({"browser-bridge-install"}),
             BROWSER_BRIDGE_INSTALL_ALLOWED_DEPENDENCIES,
             "browser-bridge-install is a UI-free browser integration installer without async runtime, session server or player deps",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"browser-bridge-bench"}),
+            BROWSER_BRIDGE_BENCH_ALLOWED_DEPENDENCIES,
+            "browser-bridge-bench is a local test bench that observes the player only through its log",
         )
     )
     violations.extend(

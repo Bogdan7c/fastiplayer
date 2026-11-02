@@ -712,6 +712,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "browser-bridge-bench"
+version = "0.2.0"
+dependencies = [
+ "browser-bridge-install",
+ "browser-bridge-protocol",
+ "desktop-integration",
+ "fastiplayer-config",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tungstenite",
+]
+
+[[package]]
 name = "browser-bridge-host"
 version = "0.2.0"
 dependencies = [

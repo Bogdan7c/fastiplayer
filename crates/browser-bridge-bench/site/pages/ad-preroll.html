@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ad-preroll</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>ad-preroll</h1>
+
+<script type="module">
+import { runScenario, UnsupportedError } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+
+await runScenario('ad-preroll', async (ctx) => {
+  const catalog = await loadCatalog();
+  const adAsset = catalog.assets['ad-preroll'];
+  const ad = mountVideo(document.body, 'ad');
+  ad.src = `/media/${adAsset.url}`;
+  await ad.play().catch(async () => { ad.muted = true; await ad.play(); });
+  await checkPlaying(ctx, ad, 'ad-playing');
+  const ended = await waitFor(() => ad.ended, 8000);
+  ctx.check('ad-ended', ended, `ad currentTime=${ad.currentTime.toFixed(2)} of ${adAsset.duration_s} s`);
+  ad.remove();
+  ctx.check('ad-element-removed', document.getElementById('ad') === null && document.querySelectorAll('video').length === 0,
+    `videos in document=${document.querySelectorAll('video').length}`);
+  // Основной плеер стартует в ДРУГОМ элементе.
+  const main = mountVideo(document.body, 'main');
+  const { player } = await startAsset(ctx, 'h264-aac', { video: main });
+  await checkPlaying(ctx, main, 'main-playing');
+  await player.destroy();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>native-hls</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>native-hls</h1>
+
+<script type="module">
+import { runScenario, UnsupportedError } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+
+await runScenario('native-hls', async (ctx) => {
+  const probe = document.createElement('video');
+  const support = probe.canPlayType('application/vnd.apple.mpegurl');
+  if (!support) throw new UnsupportedError('canPlayType(application/vnd.apple.mpegurl) is empty');
+  const catalog = await loadCatalog();
+  const video = mountVideo();
+  video.src = `/media/${catalog.assets['hls-h264-aac'].url}`;
+  ctx.check('has-no-media-source', video.srcObject === null, `canPlayType=${support}, src=${video.src}`);
+  await video.play().catch(async () => { video.muted = true; await video.play(); });
+  await checkPlaying(ctx, video, 'playing');
+});
+</script>
+</body>
+</html>

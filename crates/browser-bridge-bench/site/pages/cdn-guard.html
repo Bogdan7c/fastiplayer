@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cdn-guard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>cdn-guard</h1>
+
+<script type="module">
+import { runScenario, UnsupportedError } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+
+await runScenario('cdn-guard', async (ctx) => {
+  const login = await fetch('/cdn/login', { credentials: 'same-origin' });
+  ctx.check('login-204', login.status === 204, `status=${login.status}`);
+  const catalog = await loadCatalog();
+  const probePath = catalog.assets['h264-aac'].tracks[0].init;
+  // Контроль без куки: сервер обязан отказать (иначе защита CDN ничего не проверяет).
+  const denied = await fetch(`/cdn/media/${probePath}`, { credentials: 'omit' });
+  ctx.check('no-cookie-is-403', denied.status === 403, `credentials=omit status=${denied.status}`);
+  const allowed = await fetch(`/cdn/media/${probePath}`, { credentials: 'include' });
+  ctx.check('cookie-is-200', allowed.status === 200, `credentials=include status=${allowed.status}`);
+  const { video, player } = await startAsset(ctx, 'h264-aac', { mediaBase: '/cdn/media/', credentials: 'include' });
+  await checkPlaying(ctx, video, 'playing-from-cdn');
+  ctx.check('segments-from-cdn', player.requests.every((r) => r.url.includes('/cdn/media/')) && player.segmentRequestCount > 0,
+    `segment requests=${player.segmentRequestCount}`);
+  await player.destroy();
+});
+</script>
+</body>
+</html>

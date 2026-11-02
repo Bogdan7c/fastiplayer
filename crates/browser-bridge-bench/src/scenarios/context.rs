@@ -1,0 +1,166 @@
+//! Общее для всех сценариев: настройки прогона, запущенный сайт стенда, создание окружения
+//! и запуск браузера.
+
+use std::path::{Path, PathBuf};
+
+use super::outcome::Verdict;
+use crate::browsers::{
+    BrowserError, BrowserKind, BrowserUnderTest, ExtensionSource, LaunchOptions, launch,
+    launch_with_executable,
+};
+use crate::environment::{
+    BenchEnvironment, DisplayTarget, EnvironmentError, EnvironmentOptions, PlayerConfigProfile,
+};
+use crate::media::{MediaError, ensure_media};
+use crate::observe::ObserveError;
+use crate::site::{SiteError, StandSite, StandSiteConfig};
+
+use super::stand_extension::StandExtensionError;
+
+/// Фильтр журнала плеера внутри стенда: `info` содержит сводки воспроизведения.
+const PLAYER_RUST_LOG: &str = "info";
+
+/// Ошибка сценария: любая ошибка модулей стенда, приведённая к одному типу.
+#[derive(Debug, thiserror::Error)]
+pub enum ScenarioError {
+    #[error("media: {0}")]
+    Media(#[from] MediaError),
+    #[error("site: {0}")]
+    Site(#[from] SiteError),
+    #[error("environment: {0}")]
+    Environment(#[from] EnvironmentError),
+    #[error("browser: {0}")]
+    Browser(#[from] BrowserError),
+    #[error("log: {0}")]
+    Observe(#[from] ObserveError),
+    #[error("stand extension: {0}")]
+    StandExtension(#[from] StandExtensionError),
+    /// Не собран настоящий экстеншен: стенд не собирает его сам.
+    #[error(
+        "the real extension build is missing at {path}: run `npm run build` in extensions/browser"
+    )]
+    RealExtensionNotBuilt { path: PathBuf },
+}
+
+/// Явные пути к исполняемым файлам браузеров (`None` — искать в `PATH`).
+#[derive(Debug, Clone, Default)]
+pub struct BrowserExecutables {
+    pub chromium: Option<PathBuf>,
+    pub firefox: Option<PathBuf>,
+}
+
+impl BrowserExecutables {
+    fn for_kind(&self, kind: BrowserKind) -> Option<&Path> {
+        match kind {
+            BrowserKind::Chromium => self.chromium.as_deref(),
+            BrowserKind::Firefox => self.firefox.as_deref(),
+        }
+    }
+}
+
+/// Всё, что задаёт пользователь командной строки и что не зависит от сценария.
+#[derive(Debug, Clone)]
+pub struct RunSettings {
+    /// Корень репозитория (там `extensions/browser/dist`).
+    pub repo_root: PathBuf,
+    /// Куда складывать временные каталоги прогонов.
+    pub work_root: PathBuf,
+    /// Кэш сгенерированных роликов.
+    pub media_cache: PathBuf,
+    /// Каталог со сборкой плеера и посредника.
+    pub player_bin_dir: PathBuf,
+    /// Экран.
+    pub display: DisplayTarget,
+    /// Настройки плеера.
+    pub player_config: PlayerConfigProfile,
+    /// Дополнительные экстеншены в КАЖДОМ запуске браузера (механизм блокировщика рекламы).
+    pub extra_extensions: Vec<PathBuf>,
+    /// Не удалять каталоги прогонов и после успеха.
+    pub keep_work: bool,
+    /// Явные пути к браузерам.
+    pub browser_executables: BrowserExecutables,
+}
+
+/// Работающий сайт стенда + настройки. Один на весь запуск CLI, чтобы ролики и порты
+/// готовились один раз.
+pub struct Stand {
+    pub settings: RunSettings,
+    pub site: StandSite,
+}
+
+impl Stand {
+    /// Готовит ролики (из кэша или ffmpeg-ом) и поднимает сайт на двух origin.
+    pub fn start(settings: RunSettings) -> Result<Self, ScenarioError> {
+        let media = ensure_media(&settings.media_cache)?;
+        let site = StandSite::start(StandSiteConfig {
+            site_root: Path::new(env!("CARGO_MANIFEST_DIR")).join("site"),
+            media,
+        })?;
+        Ok(Self { settings, site })
+    }
+
+    /// Создаёт изолированное окружение прогона (экран, шина, временный HOME).
+    pub(crate) fn create_environment(&self) -> Result<BenchEnvironment, ScenarioError> {
+        let mut environment = BenchEnvironment::create(EnvironmentOptions {
+            display: self.settings.display,
+            player_bin_dir: self.settings.player_bin_dir.clone(),
+            player_config: self.settings.player_config,
+            player_rust_log: PLAYER_RUST_LOG.to_owned(),
+            work_root: self.settings.work_root.clone(),
+        })?;
+        if self.settings.keep_work {
+            environment.keep_work_dir();
+        }
+        Ok(environment)
+    }
+
+    /// Запускает браузер: сначала экстеншены сценария, затем дополнительные из командной строки.
+    pub(crate) fn launch_browser(
+        &self,
+        kind: BrowserKind,
+        environment: &BenchEnvironment,
+        scenario_extensions: Vec<ExtensionSource>,
+    ) -> Result<Box<dyn BrowserUnderTest>, ScenarioError> {
+        let mut extensions = scenario_extensions;
+        extensions.extend(self.settings.extra_extensions.iter().map(|path| {
+            if path.is_dir() {
+                ExtensionSource::UnpackedDir(path.clone())
+            } else {
+                ExtensionSource::PackedFile(path.clone())
+            }
+        }));
+        let options = LaunchOptions {
+            extensions,
+            autoplay_without_gesture: true,
+        };
+        let browser = match self.settings.browser_executables.for_kind(kind) {
+            Some(executable) => launch_with_executable(kind, environment, options, executable)?,
+            None => launch(kind, environment, options)?,
+        };
+        Ok(browser)
+    }
+
+    /// Запускает `body` в свежем окружении и сводит любую ошибку к вердикту `Fail`.
+    ///
+    /// Если вердикт `Fail`, каталог прогона сохраняется для разбора и его путь дописывается
+    /// в подробности — иначе после выхода из функции журналы исчезли бы.
+    pub(crate) fn with_environment<F>(&self, body: F) -> Verdict
+    where
+        F: FnOnce(&BenchEnvironment) -> Result<Verdict, ScenarioError>,
+    {
+        let mut environment = match self.create_environment() {
+            Ok(environment) => environment,
+            Err(error) => return Verdict::fail(error.to_string()),
+        };
+        let mut verdict =
+            body(&environment).unwrap_or_else(|error| Verdict::fail(error.to_string()));
+        if verdict.outcome == super::outcome::Outcome::Fail {
+            environment.keep_work_dir();
+            verdict.detail.push_str(&format!(
+                "\nrun directory kept for inspection: {}",
+                environment.work_dir().display()
+            ));
+        }
+        verdict
+    }
+}

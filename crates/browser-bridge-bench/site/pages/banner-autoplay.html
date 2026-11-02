@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>banner-autoplay</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>banner-autoplay</h1>
+
+<script type="module">
+import { runScenario, UnsupportedError } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+
+await runScenario('banner-autoplay', async (ctx) => {
+  const catalog = await loadCatalog();
+  const src = `/media/${catalog.assets['progressive-h264-aac'].url}`;
+  // Беззвучный баннер: muted + autoplay + loop, маленький.
+  const banner = document.createElement('video');
+  Object.assign(banner, { muted: true, autoplay: true, loop: true, playsInline: true, width: 160, height: 90, src });
+  banner.id = 'banner';
+  document.body.append(banner);
+  await checkPlaying(ctx, banner, 'banner-playing');
+  ctx.check('banner-muted', banner.muted === true, `muted=${banner.muted}, size=${banner.width}x${banner.height}`);
+  // Превью по наведению: mouseenter запускает muted-воспроизведение.
+  const preview = document.createElement('video');
+  Object.assign(preview, { muted: true, loop: true, playsInline: true, width: 160, height: 90 });
+  preview.id = 'preview';
+  document.body.append(preview);
+  preview.addEventListener('mouseenter', () => { preview.src = src; preview.play(); });
+  ctx.check('preview-idle-before-hover', preview.paused, `paused=${preview.paused}`);
+  preview.dispatchEvent(new MouseEvent('mouseenter'));
+  await checkPlaying(ctx, preview, 'preview-playing-on-hover');
+  ctx.check('preview-muted', preview.muted === true, `muted=${preview.muted}`);
+});
+</script>
+</body>
+</html>

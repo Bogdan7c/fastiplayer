@@ -1,0 +1,48 @@
+[package]
+name = "browser-bridge-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# Тестовый стенд моста «браузер качает — мы играем» (issue #2, сессия 08): локальный сайт
+# со «злыми» MSE-страницами, изолированное окружение (временный HOME, своя шина D-Bus,
+# невидимый экран), автоматический запуск Chromium и Firefox с экстеншеном и посредником
+# и наблюдение «кадр дошёл до рендера» по журналу плеера. В продукт не входит.
+# Допустимые зависимости проверяет scripts/check-refactor-guardrails.py.
+
+[lib]
+name = "browser_bridge_bench"
+path = "src/lib.rs"
+
+[[bin]]
+name = "browser-bridge-bench"
+path = "src/main.rs"
+
+[dependencies]
+# Настоящий установщик посредника (кнопка «Connect» плеера) — ставит посредника во временный HOME.
+browser-bridge-install.workspace = true
+# Имя посредника, ID «наших» экстеншенов и ключ манифеста Chrome.
+browser-bridge-protocol.workspace = true
+# Имя службы браузерного режима на шине и просьба «перечитай службы» для частной шины.
+desktop-integration.workspace = true
+# Полный config плеера текущей схемы для профилей прогона (вместо ручного TOML с номером схемы).
+fastiplayer-config.workspace = true
+# Каталог медиа, отчёты страниц, сообщения CDP и Marionette.
+serde.workspace = true
+serde_json.workspace = true
+# Отпечаток скрипта генерации медиа: кэш пересобирается только при его изменении.
+sha2.workspace = true
+# Аварийная уборка по SIGINT/SIGTERM/SIGHUP: `sigaction` и `killpg` (иначе при Ctrl-C
+# kwin, шина, плеер и браузер остаются сиротами, ведь каждый из них лидер своей группы).
+libc.workspace = true
+# Временный HOME и профили браузеров, удаляемые после прогона.
+tempfile = "3"
+# Типизированные ошибки стенда.
+thiserror.workspace = true
+# Клиент WebSocket для Chrome DevTools Protocol (без tokio).
+tungstenite.workspace = true
+
+[lints]
+workspace = true

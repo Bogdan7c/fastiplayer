@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>spa-navigation</title>
+<style>body{font:14px system-ui,sans-serif;margin:16px}video{background:#000;max-width:100%}nav a{margin-right:12px}</style>
+</head>
+<body>
+<h1>spa-navigation</h1>
+<nav id="nav"></nav>
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs } from '../lib/bench-player.js';
+import { mountVideo, requireMimeSupport } from '../lib/scenario-kit.js';
+
+/** «Ролики» одностраничника: параметр v → ассет каталога. */
+const CLIPS = { 1: 'h264-aac', 2: 'vp9-opus' };
+
+await runScenario('spa-navigation', async (ctx) => {
+  const catalog = await loadCatalog();
+  const video = mountVideo();
+  const player = new BenchPlayer(video, catalog, { log: (line) => ctx.log(line) });
+  // Метка переживает только то, что страница НЕ перезагружали.
+  window.__spaMarker = Math.random();
+  const marker = window.__spaMarker;
+  let started = false;
+
+  async function showClip(clipId) {
+    const refs = standardRefs(catalog, CLIPS[clipId]);
+    requireMimeSupport(catalog, refs);
+    if (!started) { started = true; await player.start({ refs }); }
+    else await player.newGeneration({ refs, positionS: 0 });
+    ctx.log(`clip ${clipId} shown, generation ${player.generations}`);
+  }
+  // Ссылки навигации перехватываются: pushState вместо перехода.
+  const nav = document.getElementById('nav');
+  for (const clipId of Object.keys(CLIPS)) {
+    const link = Object.assign(document.createElement('a'), { href: `?${new URLSearchParams(location.search).toString()}&v=${clipId}`, textContent: `clip ${clipId}` });
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      history.pushState({ clipId }, '', link.href);
+      showClip(clipId);
+    });
+    nav.append(link);
+  }
+  window.addEventListener('popstate', () => showClip(new URLSearchParams(location.search).get('v') ?? '1'));
+
+  await showClip('1');
+  await checkPlaying(ctx, video, 'clip-1-playing');
+  nav.querySelectorAll('a')[1].click();
+  ctx.check('url-changed-without-reload', location.search.includes('v=2') && window.__spaMarker === marker && performance.getEntriesByType('navigation').length === 1,
+    `search=${location.search}, markerKept=${window.__spaMarker === marker}`);
+  await checkPlaying(ctx, video, 'clip-2-playing');
+  history.back();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await checkPlaying(ctx, video, 'clip-1-again-after-back');
+  ctx.check('new-media-source-per-navigation', player.generations === 3 && player.mediaSources.length === 3,
+    `generations=${player.generations}, markerKept=${window.__spaMarker === marker}, search=${location.search}`);
+  await player.destroy();
+});
+</script>
+</body>
+</html>

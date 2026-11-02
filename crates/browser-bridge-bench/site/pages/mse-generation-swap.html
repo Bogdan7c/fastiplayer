@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mse-generation-swap</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>mse-generation-swap</h1>
+
+<script type="module">
+import { runScenario, UnsupportedError } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+
+/** Сколько секунд «рекламного» потока играем до замены, с. */
+const AD_SECONDS = 5;
+
+await runScenario('mse-generation-swap', async (ctx) => {
+  const catalog = await loadCatalog();
+  const adRefs = standardRefs(catalog, 'vp9-opus');
+  const movieRefs = standardRefs(catalog, 'h264-aac', 'video-360');
+  requireMimeSupport(catalog, adRefs);
+  const video = mountVideo();
+  const player = new BenchPlayer(video, catalog, { log: (line) => ctx.log(line) });
+  await player.start({ refs: adRefs });
+  await checkPlaying(ctx, video, 'ad-stream-playing');
+  await waitFor(() => video.currentTime >= AD_SECONDS, 8000);
+  const adEnd = video.currentTime;
+  await player.newGeneration({ refs: movieRefs, positionS: 0 });
+  ctx.check('second-media-source-same-element', player.generations === 2 && player.mediaSources.length === 2,
+    `generations=${player.generations}, ad stopped at ${adEnd.toFixed(2)} s, element reused=${document.querySelectorAll('video').length === 1}`);
+  await checkPlaying(ctx, video, 'movie-playing-after-swap');
+  ctx.check('movie-restarted-from-zero', video.currentTime < adEnd + 1 && video.currentTime > 0, `currentTime=${video.currentTime.toFixed(2)}`);
+  await player.destroy();
+});
+</script>
+</body>
+</html>

@@ -1,5 +1,7 @@
 # Runtime Playback Smoke Acceptance
 
+- Мост в браузер имеет свой автоматический стенд «браузер → посредник → плеер → кадр в рендере»: `scripts/browser-bridge-bench.sh` (crate `browser-bridge-bench`, сессия 08), критерий — `presented_frames` в сводке журнала браузерного режима. Детали — `mem:browser-bridge/core` (раздел «Стенд»).
+
 - Optional local acceptance runner remains `scripts/playback-smoke.sh`; it is not itself a hosted-CI playback gate. `scripts/runtime-acceptance.sh` is the executable manifest for four suites: `hermetic-ci`, `runtime-software`, `vaapi-hardware`, and `playback-matrix`. Human inventory and exact commands live in `docs/runtime-acceptance-manifest.md`.
 - Outcome contract is explicit: `PASS` only after real execution; selected suite with a missing fixture/runtime/hardware prerequisite prints `SKIP: <reason>; acceptance not satisfied` and exits 3; no selection or dry-run prints `NOT RUN: <reason>; acceptance not satisfied`. Hermetic acceptance reports the reasons for runtime tests that remain outside that suite.
 - Current playback modes: `full` runs FFmpeg probes, release build, software regressions and the host-specific VA-API matrix; `software-only` retains H.264 and VP9 FFmpeg scenarios; `hardware-only` runs positive VP9 plus positive AV1 Main SDR/HDR without FFmpeg probes; `probe-only` runs fake/unit probes plus only the exact ignored `ffmpeg_runtime_probe` integration test (`--test ffmpeg_runtime_probe -- --ignored --exact installed_ffmpeg_runtime_probe_reports_available_runtime`); `legacy-migration` is separate.

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fastiplayer bridge bench</title>
+<style>body{font:15px system-ui,sans-serif;margin:24px;max-width:720px}li{margin:4px 0}code{background:#eee;padding:1px 4px}</style>
+</head>
+<body>
+<h1>Fastiplayer bridge bench</h1>
+<p>Scenario pages. Each page autostarts, checks itself and posts one report. Add <code>?run=my-run</code>;
+<code>iframe-cross-origin</code> also needs <code>&amp;other_origin=http://localhost:PORT</code>.</p>
+<ul id="list"></ul>
+<script type="module">
+const SCENARIOS = [
+  'mse-fmp4', 'mse-webm', 'mse-av1', 'mse-muxed', 'mse-worker', 'mse-abr', 'mse-stall-reload',
+  'mse-generation-swap', 'video-src', 'native-hls', 'shadow-dom', 'iframe-cross-origin', 'cdn-guard',
+  'ad-preroll', 'banner-autoplay', 'drm-probe', 'drm-clearkey', 'series', 'spa-navigation', 'pip',
+];
+const list = document.getElementById('list');
+const carried = new URLSearchParams(location.search);
+for (const scenario of SCENARIOS) {
+  const query = new URLSearchParams(carried);
+  if (!query.has('run')) query.set('run', `manual-${scenario}`);
+  const link = Object.assign(document.createElement('a'), { href: `/site/pages/${scenario}.html?${query}`, textContent: scenario });
+  const item = document.createElement('li');
+  item.append(link);
+  list.append(item);
+}
+</script>
+</body>
+</html>
