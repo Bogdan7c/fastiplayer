@@ -1,7 +1,8 @@
 //! Браузерная интеграция в обычном окне плеера (мост «браузер качает — мы играем», сессия 06).
 //!
 //! # Архитектура
-//! - [`BrowserIntegration`] владеет установщиком [`BrowserBridgeInstaller`], ОДНОЙ
+//! - [`BrowserIntegration`] владеет установщиками [`BrowserBridgeInstaller`] (подключение) и
+//!   [`ExtensionInstaller`] (сам экстеншен, сессия 07a), ОДНОЙ
 //!   выполняющейся операцией, последним обзором, итогом последней операции и жизненным
 //!   циклом предложения при первом запуске ([`offer`]).
 //! - Установщик блокирующий, поэтому каждая операция идёт в своём фоновом потоке; результат
@@ -19,6 +20,8 @@
 //!   делает лишь обзоры (чтение).
 //! - Ответ на предложение принимается один раз и только для того toast-а, который показали.
 
+mod extension_operations;
+mod extension_view;
 mod offer;
 mod operations;
 mod panel_view;
@@ -30,13 +33,16 @@ use std::sync::Arc;
 use std::thread;
 
 use browser_bridge_install::{
-    BrowserBridgeInstaller, BrowserTargetId, DesktopSessionBusReloader, InstallEnvironment,
-    InstallSource, RealFlatpakTool,
+    BrowserBridgeInstaller, BrowserTargetId, DesktopSessionBusReloader, ExtensionInstaller,
+    ExtensionListings, InstallEnvironment, InstallSource, RealBrowserLauncher, RealFlatpakTool,
 };
 use tracing::{debug, warn};
 
 pub(crate) use self::offer::{AnswerOutcome, OfferAnswer, OfferSetting, OfferVerdict};
-use self::operations::{BrowserOperation, OperationResult, SurveyResult, run_operation};
+use self::operations::{
+    BrowserOperation, ExtensionSurveyResult, Installers, OperationResult, SurveyResult,
+    run_operation,
+};
 use self::panel_view::{PanelInputs, build_panel_view};
 use crate::app_wake::{
     AppWakePort, CompletionPublishError, OwnerMailboxReceiver, WakeDelivery, owner_mailbox,
@@ -79,7 +85,7 @@ pub(crate) enum SettingsOpenRequest {
 
 /// Установщик или причина его отсутствия.
 enum Backend {
-    Ready(Arc<BrowserBridgeInstaller>),
+    Ready(Arc<Installers>),
     Unavailable(String),
 }
 
@@ -91,8 +97,10 @@ pub(crate) struct BrowserIntegration {
     running: Option<OwnerMailboxReceiver<(), OperationResult>>,
     /// Обзор запрошен во время другой операции.
     survey_queued: bool,
-    /// Последний обзор.
+    /// Последний обзор подключения.
     survey: Option<SurveyResult>,
+    /// Последний обзор экстеншена (независим от обзора подключения).
+    extension_survey: Option<ExtensionSurveyResult>,
     /// Итог последней операции записи (предупреждения/ошибка), пока не начнётся следующая.
     operation_notes: Vec<String>,
     /// Готовая модель вида (пересобирается при любом изменении состояния).
@@ -109,26 +117,35 @@ impl BrowserIntegration {
     /// шина. Сразу запускает стартовый обзор (для предложения и для первого открытия панели).
     pub(crate) fn start_production(wake_port: AppWakePort, offer_setting: OfferSetting) -> Self {
         let backend = match InstallEnvironment::from_process_env() {
-            Ok(environment) => Backend::Ready(Arc::new(BrowserBridgeInstaller::new(
-                environment,
-                InstallSource::from_current_exe(),
-                Box::new(RealFlatpakTool::new()),
-                Box::new(DesktopSessionBusReloader::new()),
-            ))),
+            Ok(environment) => Backend::Ready(Arc::new(Installers {
+                extension: ExtensionInstaller::new(
+                    environment.clone(),
+                    ExtensionListings::published(),
+                    Box::new(RealFlatpakTool::new()),
+                    Box::new(RealBrowserLauncher::new()),
+                ),
+                host: BrowserBridgeInstaller::new(
+                    environment,
+                    InstallSource::from_current_exe(),
+                    Box::new(RealFlatpakTool::new()),
+                    Box::new(DesktopSessionBusReloader::new()),
+                ),
+            })),
             Err(error) => Backend::Unavailable(error.to_string()),
         };
         Self::start_with_backend(backend, wake_port, offer_setting)
     }
 
-    /// Владелец с готовым установщиком (тесты подставляют фейки и временный HOME).
+    /// Владелец с готовыми установщиками (тесты подставляют фейки и временный HOME).
     #[cfg(test)]
-    pub(crate) fn start_with_installer(
-        installer: BrowserBridgeInstaller,
+    pub(crate) fn start_with_installers(
+        host: BrowserBridgeInstaller,
+        extension: ExtensionInstaller,
         wake_port: AppWakePort,
         offer_setting: OfferSetting,
     ) -> Self {
         Self::start_with_backend(
-            Backend::Ready(Arc::new(installer)),
+            Backend::Ready(Arc::new(Installers { host, extension })),
             wake_port,
             offer_setting,
         )
@@ -145,6 +162,7 @@ impl BrowserIntegration {
             running: None,
             survey_queued: false,
             survey: None,
+            extension_survey: None,
             operation_notes: Vec::new(),
             view: Arc::new(BrowserPanelView::default()),
             offer: offer::OfferLifecycle::awaiting_survey(offer_setting),
@@ -181,6 +199,20 @@ impl BrowserIntegration {
         target: &BrowserTargetId,
     ) -> RequestOutcome {
         self.start_change(BrowserOperation::AllowFlatpakBusAccess(target.clone()))
+    }
+
+    /// Просит поставить экстеншен в браузер (явный клик пользователя).
+    pub(crate) fn request_install_extension(&mut self, target: &BrowserTargetId) -> RequestOutcome {
+        self.start_change(BrowserOperation::InstallExtension(target.clone()))
+    }
+
+    /// Просит отменить ещё не случившуюся установку экстеншена: убрать нашу подсказку
+    /// (явный клик пользователя). Уже установленный экстеншен это не удаляет.
+    pub(crate) fn request_cancel_extension_install(
+        &mut self,
+        target: &BrowserTargetId,
+    ) -> RequestOutcome {
+        self.start_change(BrowserOperation::CancelExtensionInstall(target.clone()))
     }
 
     /// Неблокирующе забирает результат операции; при завершении запускает следующий обзор.
@@ -264,16 +296,16 @@ impl BrowserIntegration {
 
     /// Запускает операцию в фоновом потоке.
     fn start(&mut self, operation: BrowserOperation) -> RequestOutcome {
-        let Backend::Ready(installer) = &self.backend else {
+        let Backend::Ready(installers) = &self.backend else {
             return RequestOutcome::RefusedNoInstaller;
         };
-        let installer = Arc::clone(installer);
+        let installers = Arc::clone(installers);
         let (publisher, receiver) = owner_mailbox::<(), OperationResult>(self.wake_port.clone());
         let thread_operation = operation.clone();
         let spawn_result = thread::Builder::new()
             .name(OPERATION_THREAD_NAME.to_owned())
             .spawn(move || {
-                let result = run_operation(&installer, &thread_operation);
+                let result = run_operation(&installers, &thread_operation);
                 match publisher.publish_completion(result) {
                     Ok(WakeDelivery::EventLoopClosed) => {
                         debug!("Event loop closed; browser integration result is dropped");
@@ -305,9 +337,10 @@ impl BrowserIntegration {
     /// Принимает результат завершённой операции.
     fn apply_result(&mut self, result: OperationResult) {
         match result {
-            OperationResult::Survey(survey) => {
-                self.offer.observe_survey(&survey);
-                self.survey = Some(survey);
+            OperationResult::Survey(bundle) => {
+                self.offer.observe_survey(&bundle.host);
+                self.survey = Some(bundle.host);
+                self.extension_survey = Some(bundle.extension);
             }
             OperationResult::Change { notes } => {
                 self.operation_notes = notes;
@@ -334,6 +367,7 @@ impl BrowserIntegration {
         };
         self.view = Arc::new(build_panel_view(&PanelInputs {
             survey: self.survey.as_ref(),
+            extensions: self.extension_survey.as_ref(),
             installer_problem,
             activity,
             operation_notes: &self.operation_notes,

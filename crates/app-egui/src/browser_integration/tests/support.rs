@@ -7,8 +7,9 @@ pub(super) use std::sync::{Arc, Mutex};
 pub(super) use std::time::{Duration, Instant};
 
 pub(super) use browser_bridge_install::{
-    BrowserBridgeInstaller, BrowserBridgeStatus, BrowserReport, BrowserSurvey, BrowserTargetId,
-    FlatpakError, FlatpakTool, InstallEnvironment, InstallSource, PackagingKind,
+    BrowserBridgeInstaller, BrowserBridgeStatus, BrowserLaunchCommand, BrowserLauncher,
+    BrowserReport, BrowserSurvey, BrowserTargetId, ExtensionInstaller, ExtensionListings,
+    FlatpakError, FlatpakTool, InstallEnvironment, InstallSource, LaunchError, PackagingKind,
     SessionBusReloadError, SessionBusReloader, SourceProblem, SurveyError, UnavailableReason,
     Verification,
 };
@@ -91,6 +92,19 @@ impl SessionBusReloader for QuietReloader {
     }
 }
 
+/// Фейковый запуск браузера: записывает адреса, ничего не запускает.
+#[derive(Clone, Default)]
+pub(super) struct RecordingLauncher {
+    pub(super) opened: Arc<Mutex<Vec<String>>>,
+}
+
+impl BrowserLauncher for RecordingLauncher {
+    fn open_url(&self, _command: &BrowserLaunchCommand, url: &str) -> Result<(), LaunchError> {
+        self.opened.lock().expect("opened").push(url.to_owned());
+        Ok(())
+    }
+}
+
 /// Временный мир: HOME, PATH с «браузерами», каталог с «плеером» и «посредником».
 pub(super) struct World {
     pub(super) _root: TempDir,
@@ -149,13 +163,45 @@ impl World {
         )
     }
 
+    /// Установщик экстеншена: настоящий, фейки только у `flatpak` (пусто) и запуска браузера.
+    pub(super) fn extension_installer(
+        &self,
+        listings: ExtensionListings,
+        launcher: RecordingLauncher,
+    ) -> ExtensionInstaller {
+        ExtensionInstaller::new(
+            self.environment.clone(),
+            listings,
+            Box::new(FakeFlatpak::default()),
+            Box::new(launcher),
+        )
+    }
+
     pub(super) fn integration(
         &self,
         flatpak: FakeFlatpak,
         offer: OfferSetting,
     ) -> BrowserIntegration {
-        BrowserIntegration::start_with_installer(
+        self.integration_with_extension_installer(
+            flatpak,
+            self.extension_installer(
+                ExtensionListings::unpublished(),
+                RecordingLauncher::default(),
+            ),
+            offer,
+        )
+    }
+
+    /// Владелец с настоящим установщиком экстеншена над временным HOME.
+    pub(super) fn integration_with_extension_installer(
+        &self,
+        flatpak: FakeFlatpak,
+        extension: ExtensionInstaller,
+        offer: OfferSetting,
+    ) -> BrowserIntegration {
+        BrowserIntegration::start_with_installers(
             self.installer(flatpak),
+            extension,
             AppWakePort::disconnected(AppWakeOwner::BrowserIntegration),
             offer,
         )

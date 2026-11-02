@@ -111,6 +111,21 @@ This creates two folders: `dist/chrome` and `dist/firefox`.
 
 Then open Fastiplayer, go to **Settings > Browser integration** and press **Connect** (and **Allow** for a Flatpak browser).
 
+### Installing the extension from Fastiplayer
+
+Under each browser in **Settings > Browser integration** there is an **Extension** line. What its button does depends on the browser:
+
+- **Chromium, Brave, Vivaldi, Edge (packages and Flatpak):** **Install extension** puts a small hint file into the browser's own folder in your home directory. The browser installs the extension by itself the next time it starts, so the line then says "restart the browser to finish installing". No clicks inside the browser are needed.
+- **Google Chrome (package and Flatpak) and Firefox:** these browsers ignore such hint files. **Install in browser** opens the extension's store page inside that browser, and you press **Add** there.
+- If you removed the extension in the browser yourself, the line says so and the button becomes **Open store page**: the browser remembers your choice and will not reinstall it silently.
+- While the browser has not restarted yet, the line shows two buttons: **Install in browser** (opens the store page; use it if the browser ignored the hint, which can happen with browsers where silent install is not verified) and **Cancel**. **Cancel** only cancels an install that has not happened yet: it deletes the hint file Fastiplayer wrote, nothing else. A hint file left by another program is never touched or overwritten; the line only mentions it, and **Install in browser** opens the store page instead.
+- **Removing an installed extension is done in the browser**, on its extensions page. Fastiplayer cannot remove it: deleting the hint file does not uninstall an extension that is already installed (checked in Chromium), so there is no such button once the extension is installed.
+- If the extension is installed but turned off, turn it on on the browser's extensions page: Fastiplayer cannot do it for you.
+
+Fastiplayer only reads your browser's profile files to find out the state; it never writes to them, and it **never asks for an administrator password**.
+
+Until the extension is published in the stores, the line says **available after publication** and has no button. Use the development build instructions above in the meantime.
+
 ### What "Fastiplayer is not connected" means
 
 Click the extension's toolbar button. If it says **Fastiplayer is not connected** (the icon also shows a red `!`), the extension could not reach the player. The usual reasons:

@@ -68,6 +68,29 @@ pub const CHROMIUM_DEVELOPMENT_EXTENSION_ID: &str = "mcikhhmaenodlfkafgehbkikilm
 /// AMO (магазин принимает ID из манифеста и закрепляет его навсегда).
 pub const FIREFOX_EXTENSION_ID: &str = "fastiplayer-bridge@bogdan7c.github.io";
 
+/// Страница нашего экстеншена в магазине браузера: известна она или ещё нет.
+///
+/// Нужна установщику экстеншена (сессия 07a): пока страницы нет, плееру нечего
+/// ставить, и интерфейс честно пишет «Available after publication» вместо
+/// кнопки, которая ничего не может сделать.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreListing {
+    /// Экстеншен в магазине ещё не опубликован, ID/slug неизвестен.
+    NotPublished,
+    /// Опубликован: ID в Chrome Web Store (32 буквы `a`–`p`) или slug на AMO
+    /// (часть адреса `addons.mozilla.org/firefox/addon/<slug>/`).
+    Published(&'static str),
+}
+
+/// Страница в Chrome Web Store: сюда же ссылается файл «внешней установки»
+/// `External Extensions/<ID>.json`. Задаётся в сессии 24 вместе с
+/// [`ALLOWED_EXTENSIONS`] (ID, выданный магазином, попадает в оба места разом).
+pub const CHROME_WEB_STORE_LISTING: StoreListing = StoreListing::NotPublished;
+
+/// Страница на addons.mozilla.org. Задаётся в сессии 24 вместе с
+/// [`ALLOWED_EXTENSIONS`].
+pub const FIREFOX_ADD_ONS_LISTING: StoreListing = StoreListing::NotPublished;
+
 /// Все экстеншены, которым посредник откроет дверь.
 pub const ALLOWED_EXTENSIONS: &[AllowedExtension] = &[
     AllowedExtension {

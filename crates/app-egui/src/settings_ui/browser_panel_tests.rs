@@ -10,7 +10,7 @@ use settings_core::{
 
 use super::browser_panel::{
     BrowserButtonAvailability, BrowserCommand, BrowserHelpLink, BrowserPanelActivity,
-    BrowserPanelView, BrowserRowButton, BrowserRowView, BrowserScanState,
+    BrowserPanelView, BrowserRowButton, BrowserRowView, BrowserScanState, ExtensionRowView,
 };
 use super::layout::show_with_host_view;
 use super::section_extras::{BROWSER_INTEGRATION_SECTION_ID, SectionRequest, SettingsHostFacts};
@@ -71,6 +71,7 @@ fn panel(activity: BrowserPanelActivity, help_link: Option<BrowserHelpLink>) -> 
             status_text: "Not connected".to_owned(),
             buttons: vec![connect_button()],
             help_link,
+            extension: None,
         }],
         operation_notes: Vec::new(),
     }
@@ -212,4 +213,68 @@ fn help_link_opens_the_address_in_the_default_browser() {
         )),
         "{commands:?}"
     );
+}
+
+/// Панель с одной строкой экстеншена и заданными кнопками.
+fn extension_panel(buttons: Vec<BrowserRowButton>, notes: Vec<String>) -> BrowserPanelView {
+    let mut view = panel(BrowserPanelActivity::Idle, None);
+    view.rows[0].extension = Some(ExtensionRowView {
+        status_text: "Extension: not installed".to_owned(),
+        buttons,
+        notes,
+        help_link: None,
+    });
+    view
+}
+
+fn extension_button(label: &'static str, command: BrowserCommand) -> BrowserRowButton {
+    BrowserRowButton {
+        label,
+        command,
+        availability: BrowserButtonAvailability::Enabled,
+    }
+}
+
+#[test]
+fn extension_line_buttons_emit_their_own_commands_with_the_target_id() {
+    let buttons = || {
+        vec![
+            extension_button("Install extension", BrowserCommand::InstallExtension),
+            extension_button("Remove", BrowserCommand::CancelExtensionInstall),
+        ]
+    };
+    for (label, command) in [
+        ("Install extension", BrowserCommand::InstallExtension),
+        ("Remove", BrowserCommand::CancelExtensionInstall),
+    ] {
+        let (actions, shapes, _) = run(
+            browser_request(1),
+            &extension_panel(buttons(), vec!["Another program left a hint".to_owned()]),
+            Some(label),
+        );
+        assert_eq!(
+            actions,
+            [SettingsUiAction::BrowserIntegration {
+                target_id: "chromium".to_owned(),
+                command,
+            }],
+            "{label}"
+        );
+        assert!(label_rect(&shapes, "Extension: not installed").is_some());
+        assert!(label_rect(&shapes, "Another program left a hint").is_some());
+    }
+}
+
+#[test]
+fn extension_buttons_are_dead_while_an_operation_runs() {
+    let mut view = extension_panel(
+        vec![extension_button(
+            "Install in browser",
+            BrowserCommand::InstallExtension,
+        )],
+        Vec::new(),
+    );
+    view.activity = BrowserPanelActivity::Working;
+    let (actions, _, _) = run(browser_request(1), &view, Some("Install in browser"));
+    assert!(actions.is_empty(), "{actions:?}");
 }

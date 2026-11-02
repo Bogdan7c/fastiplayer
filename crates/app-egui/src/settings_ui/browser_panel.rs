@@ -19,6 +19,11 @@ pub enum BrowserCommand {
     Disconnect,
     /// Выдать Flatpak-браузеру доступ к имени моста на шине.
     AllowFlatpakBusAccess,
+    /// Поставить экстеншен в этот браузер (подсказка или страница магазина).
+    InstallExtension,
+    /// Отменить ещё не случившуюся установку экстеншена (убрать нашу подсказку).
+    /// Уже установленный экстеншен убирает человек в браузере.
+    CancelExtensionInstall,
 }
 
 /// Доступна ли кнопка строки.
@@ -50,6 +55,19 @@ pub struct BrowserHelpLink {
     pub url: &'static str,
 }
 
+/// Строка экстеншена внутри строки браузера (сессия 07a).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionRowView {
+    /// Статус человеческим языком («Extension: installed», ...).
+    pub status_text: String,
+    /// Кнопки по порядку: не более одной основной, затем «Cancel».
+    pub buttons: Vec<BrowserRowButton>,
+    /// Приглушённые пояснения под статусом.
+    pub notes: Vec<String>,
+    /// Справочная ссылка, если она нужна статусу.
+    pub help_link: Option<BrowserHelpLink>,
+}
+
 /// Одна строка: найденный браузер, его статус и доступные действия.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserRowView {
@@ -67,6 +85,8 @@ pub struct BrowserRowView {
     pub buttons: Vec<BrowserRowButton>,
     /// Справочная ссылка, если она нужна статусу.
     pub help_link: Option<BrowserHelpLink>,
+    /// Состояние экстеншена в этом браузере (`None` — обзор экстеншена не знает браузер).
+    pub extension: Option<ExtensionRowView>,
 }
 
 /// Идёт ли поиск браузеров.
@@ -174,22 +194,51 @@ fn show_row(
             }
         });
         ui.label(&row.status_text);
-        ui.horizontal(|ui| {
-            for button in &row.buttons {
-                let enabled = activity == BrowserPanelActivity::Idle
-                    && button.availability == BrowserButtonAvailability::Enabled;
-                if ui
-                    .add_enabled(enabled, egui::Button::new(button.label))
-                    .clicked()
-                    && enabled
-                {
-                    actions.push(BrowserPanelView::action_for(row, button));
-                }
+        show_buttons(ui, &row.buttons, row.help_link, row, activity, actions);
+        if let Some(extension) = &row.extension {
+            ui.label(&extension.status_text);
+            show_buttons(
+                ui,
+                &extension.buttons,
+                extension.help_link,
+                row,
+                activity,
+                actions,
+            );
+            for note in &extension.notes {
+                ui.weak(note);
             }
-            if let Some(link) = row.help_link {
-                ui.hyperlink_to(link.label, link.url);
-            }
-        });
+        }
         ui.add_space(6.0);
+    });
+}
+
+/// Рисует ряд кнопок и справочную ссылку; клики превращает в действия строки `row`.
+fn show_buttons(
+    ui: &mut Ui,
+    buttons: &[BrowserRowButton],
+    help_link: Option<BrowserHelpLink>,
+    row: &BrowserRowView,
+    activity: BrowserPanelActivity,
+    actions: &mut Vec<SettingsUiAction>,
+) {
+    if buttons.is_empty() && help_link.is_none() {
+        return;
+    }
+    ui.horizontal(|ui| {
+        for button in buttons {
+            let enabled = activity == BrowserPanelActivity::Idle
+                && button.availability == BrowserButtonAvailability::Enabled;
+            if ui
+                .add_enabled(enabled, egui::Button::new(button.label))
+                .clicked()
+                && enabled
+            {
+                actions.push(BrowserPanelView::action_for(row, button));
+            }
+        }
+        if let Some(link) = help_link {
+            ui.hyperlink_to(link.label, link.url);
+        }
     });
 }

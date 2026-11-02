@@ -3,13 +3,14 @@
 //! Чистые функции: обзор установщика и состояние операции на входе, модель для
 //! `settings_ui` на выходе. Все пользовательские тексты (английские) живут здесь.
 
-use browser_bridge_install::BrowserSurvey;
 use browser_bridge_install::{
     BrowserBridgeStatus, BrowserReport, PackagingKind, SourceProblem, UnavailableReason,
     Verification,
 };
+use browser_bridge_install::{BrowserSurvey, ExtensionSurvey};
 
-use super::operations::SurveyResult;
+use super::extension_view::extension_row_view;
+use super::operations::{ExtensionSurveyResult, SurveyResult};
 use crate::settings_ui::browser_panel::{
     BrowserButtonAvailability, BrowserCommand, BrowserHelpLink, BrowserPanelActivity,
     BrowserPanelView, BrowserRowButton, BrowserRowView, BrowserScanState,
@@ -22,10 +23,15 @@ const FLATPAK_HELP_URL: &str =
 const SNAP_HELP_URL: &str =
     "https://github.com/Bogdan7c/fastiplayer/blob/main/docs/browser-bridge/README.md#snap-browsers";
 
+/// Статус подключения у строки, найденной только обзором экстеншена.
+const CONNECTION_UNKNOWN_TEXT: &str = "Connection status unavailable";
+
 /// Всё, что нужно для сборки панели.
 pub(super) struct PanelInputs<'a> {
     /// Последний обзор (`None` — первый ещё не закончился).
     pub survey: Option<&'a SurveyResult>,
+    /// Последний обзор экстеншена (`None` — ещё не закончился). Независим от `survey`.
+    pub extensions: Option<&'a ExtensionSurveyResult>,
     /// Почему установщика нет вовсе (нет HOME), если так.
     pub installer_problem: Option<&'a str>,
     /// Выполняется ли операция.
@@ -49,20 +55,60 @@ pub(super) fn build_panel_view(inputs: &PanelInputs<'_>) -> BrowserPanelView {
             .push(format!("Browser integration is unavailable: {problem}"));
         return view;
     }
+    if inputs.survey.is_none() && inputs.extensions.is_none() {
+        return view;
+    }
+    view.scan = BrowserScanState::Finished;
+    // Сбой одного обзора не прячет результат другого: строки собираются из обоих.
     match inputs.survey {
         None => {}
-        Some(Err(error)) => {
-            view.scan = BrowserScanState::Finished;
-            view.global_notes.push(error.to_string());
-        }
+        Some(Err(error)) => view.global_notes.push(error.to_string()),
         Some(Ok(survey)) => fill_from_survey(&mut view, survey),
+    }
+    match inputs.extensions {
+        None => {}
+        Some(Err(error)) => view
+            .global_notes
+            .push(format!("Extension status is unavailable: {error}")),
+        Some(Ok(survey)) => attach_extensions(&mut view.rows, survey),
     }
     view
 }
 
+/// Привязывает строки экстеншена к строкам браузеров по id цели. Браузер, которого нет в
+/// обзоре подключения (например, тот обзор упал), получает строку только с экстеншеном.
+fn attach_extensions(rows: &mut Vec<BrowserRowView>, survey: &ExtensionSurvey) {
+    for report in &survey.browsers {
+        let extension = extension_row_view(report);
+        match rows
+            .iter_mut()
+            .find(|row| row.target_id == report.target.as_str())
+        {
+            Some(row) => row.extension = Some(extension),
+            None => rows.push(BrowserRowView {
+                target_id: report.target.as_str().to_owned(),
+                name: report.display_name.to_owned(),
+                packaging_label: packaging_label(report.packaging),
+                not_verified: false,
+                status_text: CONNECTION_UNKNOWN_TEXT.to_owned(),
+                buttons: Vec::new(),
+                help_link: None,
+                extension: Some(extension),
+            }),
+        }
+    }
+}
+
+/// Подпись упаковки.
+fn packaging_label(packaging: PackagingKind) -> &'static str {
+    match packaging {
+        PackagingKind::Package => "package",
+        PackagingKind::Flatpak => "Flatpak",
+    }
+}
+
 /// Переносит успешный обзор в модель.
 fn fill_from_survey(view: &mut BrowserPanelView, survey: &BrowserSurvey) {
-    view.scan = BrowserScanState::Finished;
     if let Err(problem) = &survey.source {
         view.global_notes.push(source_problem_note(problem));
     }
@@ -170,14 +216,12 @@ pub(super) fn row_view(
     BrowserRowView {
         target_id: report.target.as_str().to_owned(),
         name,
-        packaging_label: match report.packaging {
-            PackagingKind::Package => "package",
-            PackagingKind::Flatpak => "Flatpak",
-        },
+        packaging_label: packaging_label(report.packaging),
         not_verified: report.verification == Verification::NotVerified,
         status_text,
         buttons,
         help_link,
+        extension: None,
     }
 }
 

@@ -5,8 +5,9 @@
 //! `browser_bridge_protocol::extension_identity` — от него зависит формат файла
 //! (`allowed_origins` у Chromium, `allowed_extensions` у Firefox).
 //!
-//! Сессия 07a (тихая установка экстеншена) использует эту же таблицу: семейство,
-//! упаковка и app ID те же, добавится лишь второй установщик рядом.
+//! Установщик экстеншена (сессия 07a, модуль `extension`) использует эту же таблицу:
+//! семейство, упаковка и app ID те же, а поле [`BrowserTarget::extension`] говорит,
+//! где лежат профили браузера и каким способом экстеншен доставляется.
 
 use std::path::PathBuf;
 
@@ -16,6 +17,9 @@ use crate::environment::InstallEnvironment;
 
 // Короткие имена вариантов нужны только строкам таблицы ниже.
 use BrowserFamily::{Chromium, Firefox};
+use ChromiumDelivery::{ExternalHint, StorePage};
+use ExtensionSupport::{Chromium as ChromiumExtension, Firefox as FirefoxExtension, NotSupported};
+use ExtensionUnsupportedReason::{FlatpakFirefoxFamily, NoWebStore};
 use ManifestRoot::{FlatpakConfig, HomeDot, XdgConfig};
 use Verification::{NotVerified, Verified};
 
@@ -77,6 +81,72 @@ pub enum ManifestRoot {
     FlatpakConfig(&'static str),
 }
 
+impl ManifestRoot {
+    /// Абсолютный путь корня или `None`, если корень Flatpak, а цель — пакет
+    /// (`flatpak_app_id` пуст).
+    ///
+    /// Тот же каталог служит и корнем профилей браузера: у Chromium это
+    /// «user data dir», внутри которого лежит `NativeMessagingHosts`, у Firefox —
+    /// каталог с `profiles.ini`.
+    pub fn resolve(
+        &self,
+        environment: &InstallEnvironment,
+        flatpak_app_id: Option<&str>,
+    ) -> Option<PathBuf> {
+        match self {
+            Self::XdgConfig(name) => Some(environment.xdg_config_home.join(name)),
+            Self::HomeDot(name) => Some(environment.home.join(name)),
+            Self::FlatpakConfig(name) => flatpak_app_id.map(|app_id| {
+                environment
+                    .flatpak_app_dir(app_id)
+                    .join("config")
+                    .join(name)
+            }),
+        }
+    }
+}
+
+/// Как плеер доставляет экстеншен в Chromium-браузер.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChromiumDelivery {
+    /// Браузер читает пользовательскую папку `External Extensions/` (Chromium,
+    /// Brave, Vivaldi, Edge): плеер кладёт туда файл со ссылкой на магазин, и
+    /// браузер сам ставит экстеншен при следующем запуске, без вопросов.
+    ExternalHint,
+    /// Фирменный Google Chrome эту папку игнорирует (проверено вживую):
+    /// остаётся открыть страницу магазина в этом браузере, «Add» жмёт человек.
+    StorePage,
+}
+
+/// Почему экстеншен для этой цели ставить нельзя.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtensionUnsupportedReason {
+    /// Мост для Flatpak-Firefox не поддерживается (bug 2078349), экстеншен без
+    /// моста бесполезен.
+    FlatpakFirefoxFamily,
+    /// В браузере нет веб-магазина (ungoogled-chromium), ставить не откуда.
+    NoWebStore,
+}
+
+/// Что установщик экстеншена умеет делать с целью.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtensionSupport {
+    /// Chromium-семейство: профили лежат в `user_data`.
+    Chromium {
+        /// Корень профилей («user data dir»); тот же, где лежит `NativeMessagingHosts`.
+        user_data: ManifestRoot,
+        /// Как доставлять экстеншен.
+        delivery: ChromiumDelivery,
+    },
+    /// Firefox-семейство: профили перечислены в `profiles.ini` этих корней.
+    Firefox {
+        /// Каталоги, где может лежать `profiles.ini` (у Firefox их два).
+        profile_roots: &'static [ManifestRoot],
+    },
+    /// Ставить нельзя.
+    NotSupported(ExtensionUnsupportedReason),
+}
+
 /// Одна цель каталога.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BrowserTarget {
@@ -92,6 +162,8 @@ pub struct BrowserTarget {
     pub manifest_roots: &'static [ManifestRoot],
     /// Проверена ли вживую.
     pub verification: Verification,
+    /// Что умеет установщик экстеншена (сессия 07a).
+    pub extension: ExtensionSupport,
 }
 
 impl BrowserTarget {
@@ -120,18 +192,9 @@ impl BrowserTarget {
             BrowserFamily::Chromium => CHROMIUM_MANIFEST_SUBDIRECTORY,
             BrowserFamily::Firefox => FIREFOX_MANIFEST_SUBDIRECTORY,
         };
-        let flatpak_config = self
-            .flatpak_app_id()
-            .map(|app_id| environment.flatpak_app_dir(app_id).join("config"));
         self.manifest_roots
             .iter()
-            .filter_map(|root| match root {
-                ManifestRoot::XdgConfig(name) => Some(environment.xdg_config_home.join(name)),
-                ManifestRoot::HomeDot(name) => Some(environment.home.join(name)),
-                ManifestRoot::FlatpakConfig(name) => {
-                    flatpak_config.as_ref().map(|config| config.join(name))
-                }
-            })
+            .filter_map(|root| root.resolve(environment, self.flatpak_app_id()))
             .map(|root| root.join(subdirectory))
             .collect()
     }
@@ -145,6 +208,7 @@ const fn system(
     executables: &'static [&'static str],
     manifest_roots: &'static [ManifestRoot],
     verification: Verification,
+    extension: ExtensionSupport,
 ) -> BrowserTarget {
     BrowserTarget {
         id,
@@ -153,6 +217,7 @@ const fn system(
         packaging: Packaging::System { executables },
         manifest_roots,
         verification,
+        extension,
     }
 }
 
@@ -164,6 +229,7 @@ const fn flatpak(
     app_id: &'static str,
     manifest_roots: &'static [ManifestRoot],
     verification: Verification,
+    extension: ExtensionSupport,
 ) -> BrowserTarget {
     BrowserTarget {
         id,
@@ -172,8 +238,17 @@ const fn flatpak(
         packaging: Packaging::Flatpak { app_id },
         manifest_roots,
         verification,
+        extension,
     }
 }
+
+/// Корни профилей Firefox: главный `~/.mozilla/firefox` и XDG-путь новых версий.
+const FIREFOX_PROFILE_ROOTS: &[ManifestRoot] =
+    &[HomeDot(".mozilla/firefox"), XdgConfig("mozilla/firefox")];
+/// Корень профилей LibreWolf.
+const LIBREWOLF_PROFILE_ROOTS: &[ManifestRoot] = &[HomeDot(".librewolf")];
+/// Корень профилей Waterfox.
+const WATERFOX_PROFILE_ROOTS: &[ManifestRoot] = &[HomeDot(".waterfox")];
 
 /// Все цели. Порядок = порядок показа в интерфейсе.
 pub static TARGETS: &[BrowserTarget] = &[
@@ -186,6 +261,9 @@ pub static TARGETS: &[BrowserTarget] = &[
         &["firefox"],
         &[HomeDot(".mozilla"), XdgConfig("mozilla")],
         Verified,
+        FirefoxExtension {
+            profile_roots: FIREFOX_PROFILE_ROOTS,
+        },
     ),
     system(
         "chromium",
@@ -194,7 +272,12 @@ pub static TARGETS: &[BrowserTarget] = &[
         &["chromium"],
         &[XdgConfig("chromium")],
         Verified,
+        ChromiumExtension {
+            user_data: XdgConfig("chromium"),
+            delivery: ExternalHint,
+        },
     ),
+    // Фирменный Chrome папку `External Extensions` игнорирует (проверено вживую).
     system(
         "google-chrome",
         "Google Chrome",
@@ -202,6 +285,10 @@ pub static TARGETS: &[BrowserTarget] = &[
         &["google-chrome-stable", "google-chrome"],
         &[XdgConfig("google-chrome")],
         NotVerified,
+        ChromiumExtension {
+            user_data: XdgConfig("google-chrome"),
+            delivery: StorePage,
+        },
     ),
     system(
         "brave",
@@ -210,6 +297,10 @@ pub static TARGETS: &[BrowserTarget] = &[
         &["brave", "brave-browser"],
         &[XdgConfig("BraveSoftware/Brave-Browser")],
         NotVerified,
+        ChromiumExtension {
+            user_data: XdgConfig("BraveSoftware/Brave-Browser"),
+            delivery: ExternalHint,
+        },
     ),
     system(
         "vivaldi",
@@ -218,6 +309,10 @@ pub static TARGETS: &[BrowserTarget] = &[
         &["vivaldi", "vivaldi-stable"],
         &[XdgConfig("vivaldi")],
         NotVerified,
+        ChromiumExtension {
+            user_data: XdgConfig("vivaldi"),
+            delivery: ExternalHint,
+        },
     ),
     system(
         "microsoft-edge",
@@ -226,6 +321,10 @@ pub static TARGETS: &[BrowserTarget] = &[
         &["microsoft-edge-stable", "microsoft-edge"],
         &[XdgConfig("microsoft-edge")],
         NotVerified,
+        ChromiumExtension {
+            user_data: XdgConfig("microsoft-edge"),
+            delivery: ExternalHint,
+        },
     ),
     system(
         "librewolf",
@@ -234,6 +333,9 @@ pub static TARGETS: &[BrowserTarget] = &[
         &["librewolf"],
         &[HomeDot(".librewolf")],
         NotVerified,
+        FirefoxExtension {
+            profile_roots: LIBREWOLF_PROFILE_ROOTS,
+        },
     ),
     system(
         "waterfox",
@@ -242,6 +344,9 @@ pub static TARGETS: &[BrowserTarget] = &[
         &["waterfox"],
         &[HomeDot(".waterfox")],
         NotVerified,
+        FirefoxExtension {
+            profile_roots: WATERFOX_PROFILE_ROOTS,
+        },
     ),
     // Flatpak, Chromium-семейство: файл лежит в `~/.var/app/<id>/config/<имя>/`.
     flatpak(
@@ -251,6 +356,10 @@ pub static TARGETS: &[BrowserTarget] = &[
         "com.google.Chrome",
         &[FlatpakConfig("google-chrome")],
         Verified,
+        ChromiumExtension {
+            user_data: FlatpakConfig("google-chrome"),
+            delivery: StorePage,
+        },
     ),
     flatpak(
         "chromium-flatpak",
@@ -259,6 +368,10 @@ pub static TARGETS: &[BrowserTarget] = &[
         "org.chromium.Chromium",
         &[FlatpakConfig("chromium")],
         NotVerified,
+        ChromiumExtension {
+            user_data: FlatpakConfig("chromium"),
+            delivery: ExternalHint,
+        },
     ),
     flatpak(
         "ungoogled-chromium-flatpak",
@@ -267,6 +380,7 @@ pub static TARGETS: &[BrowserTarget] = &[
         "io.github.ungoogled_software.ungoogled_chromium",
         &[FlatpakConfig("chromium")],
         NotVerified,
+        NotSupported(NoWebStore),
     ),
     flatpak(
         "brave-flatpak",
@@ -275,6 +389,10 @@ pub static TARGETS: &[BrowserTarget] = &[
         "com.brave.Browser",
         &[FlatpakConfig("BraveSoftware/Brave-Browser")],
         NotVerified,
+        ChromiumExtension {
+            user_data: FlatpakConfig("BraveSoftware/Brave-Browser"),
+            delivery: ExternalHint,
+        },
     ),
     flatpak(
         "vivaldi-flatpak",
@@ -283,6 +401,10 @@ pub static TARGETS: &[BrowserTarget] = &[
         "com.vivaldi.Vivaldi",
         &[FlatpakConfig("vivaldi")],
         NotVerified,
+        ChromiumExtension {
+            user_data: FlatpakConfig("vivaldi"),
+            delivery: ExternalHint,
+        },
     ),
     flatpak(
         "microsoft-edge-flatpak",
@@ -291,6 +413,10 @@ pub static TARGETS: &[BrowserTarget] = &[
         "com.microsoft.Edge",
         &[FlatpakConfig("microsoft-edge")],
         NotVerified,
+        ChromiumExtension {
+            user_data: FlatpakConfig("microsoft-edge"),
+            delivery: ExternalHint,
+        },
     ),
     // Flatpak, Firefox-семейство: пока не поддерживается, файлов нет (manifest_roots пуст).
     flatpak(
@@ -300,6 +426,7 @@ pub static TARGETS: &[BrowserTarget] = &[
         "org.mozilla.firefox",
         &[],
         NotVerified,
+        NotSupported(FlatpakFirefoxFamily),
     ),
     flatpak(
         "librewolf-flatpak",
@@ -308,6 +435,7 @@ pub static TARGETS: &[BrowserTarget] = &[
         "io.gitlab.librewolf-community",
         &[],
         NotVerified,
+        NotSupported(FlatpakFirefoxFamily),
     ),
     flatpak(
         "waterfox-flatpak",
@@ -316,6 +444,7 @@ pub static TARGETS: &[BrowserTarget] = &[
         "net.waterfox.waterfox",
         &[],
         NotVerified,
+        NotSupported(FlatpakFirefoxFamily),
     ),
 ];
 

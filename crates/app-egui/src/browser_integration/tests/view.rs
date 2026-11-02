@@ -107,6 +107,7 @@ fn row_shows_packaging_and_not_verified_tag() {
 fn panel_for(survey: Option<&Result<BrowserSurvey, SurveyError>>) -> BrowserPanelView {
     build_panel_view(&PanelInputs {
         survey,
+        extensions: None,
         installer_problem: None,
         activity: BrowserPanelActivity::Idle,
         operation_notes: &[],
@@ -196,6 +197,7 @@ fn working_activity_and_operation_notes_reach_the_view() {
     let notes = vec!["Replaced a file that belonged to another program".to_owned()];
     let view = build_panel_view(&PanelInputs {
         survey: Some(&survey),
+        extensions: None,
         installer_problem: None,
         activity: BrowserPanelActivity::Working,
         operation_notes: &notes,

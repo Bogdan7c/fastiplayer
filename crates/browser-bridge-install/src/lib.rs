@@ -28,13 +28,15 @@
 //! - [`status`] — обзор [`BrowserSurvey`] и [`BrowserBridgeStatus`];
 //! - [`install`], [`disconnect`], [`allow`] — действия; [`error`] — их ошибки и
 //!   предупреждения; [`reloader`] — шов к шине;
-//! - [`facade`] — [`BrowserBridgeInstaller`], единственная точка входа приложения.
+//! - [`facade`] — [`BrowserBridgeInstaller`], единственная точка входа приложения;
+//! - [`extension`] — установщик самого экстеншена ([`ExtensionInstaller`], сессия 07a):
+//!   подсказка `External Extensions`, страница магазина в нужном браузере, статус
+//!   только чтением профилей.
 //!
 //! # Что здесь НЕ делается (решение 161)
 //!
-//! Тихая установка самого экстеншена — сессия 07a. Она добавит установщик экстеншена
-//! рядом, на том же каталоге: семейство, упаковка и app ID уже есть в [`catalog`].
-//! Windows: вместо файлов в `~/.config` там реестр; шов — [`facade`] и [`catalog`],
+//! Установка самого экстеншена живёт отдельно — в [`extension`] (сессия 07a), на том
+//! же каталоге. Windows: вместо файлов в `~/.config` там реестр; шов — [`facade`] и [`catalog`],
 //! а [`BrowserBridgeInstaller::survey`] пока отвечает «платформа не поддерживается».
 
 #![forbid(unsafe_code)]
@@ -46,6 +48,7 @@ pub mod disconnect;
 pub mod environment;
 pub mod error;
 pub mod expected;
+pub mod extension;
 pub mod facade;
 pub mod flatpak;
 mod fs_util;
@@ -59,11 +62,25 @@ pub mod source;
 pub mod status;
 
 pub use allow::AllowError;
-pub use catalog::{BrowserTarget, BrowserTargetId, Packaging, TARGETS, Verification, find_target};
+pub use catalog::{
+    BrowserTarget, BrowserTargetId, ChromiumDelivery, ExtensionSupport, ExtensionUnsupportedReason,
+    ManifestRoot, Packaging, TARGETS, Verification, find_target,
+};
 pub use desktop_integration::SessionBusReloadError;
 pub use disconnect::DisconnectWarning;
 pub use environment::{EnvironmentError, InstallEnvironment};
 pub use error::{InstallError, InstallErrorKind, InstallStep, InstallWarning, UnsupportedReason};
+pub use extension::error::{ExtensionInstallError, HintStep};
+pub use extension::hint::{DirectoryCleanup, HintState, RemoveHintOutcome};
+pub use extension::installer::{ExtensionInstallOutcome, ExtensionInstaller};
+pub use extension::launch::{
+    BrowserLaunchCommand, BrowserLauncher, LaunchError, RealBrowserLauncher,
+};
+pub use extension::listing::{ExtensionListings, Listing, ListingError};
+pub use extension::presence::UnreadableKind;
+pub use extension::state::{
+    ExtensionReport, ExtensionState, ExtensionSurvey, ExtensionUnsupported, InstallAction,
+};
 pub use facade::{AllowOutcome, BrowserBridgeInstaller, ConnectOutcome, DisconnectOutcome};
 pub use flatpak::{
     BRIDGE_TALK_NAME_MASK, FlatpakBusAccess, FlatpakError, FlatpakTool, RealFlatpakTool,

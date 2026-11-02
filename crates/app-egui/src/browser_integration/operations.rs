@@ -6,11 +6,34 @@
 
 use browser_bridge_install::{
     AllowError, BrowserBridgeInstaller, BrowserSurvey, BrowserTargetId, DisconnectWarning,
-    InstallError, InstallWarning, SurveyError, find_target,
+    ExtensionInstaller, ExtensionSurvey, InstallError, InstallWarning, SurveyError, find_target,
 };
 
-/// Результат обзора.
+use super::extension_operations::{cancel_extension_install_notes, install_extension_notes};
+
+/// Результат обзора мостового подключения (файлы подключения).
 pub(crate) type SurveyResult = Result<BrowserSurvey, SurveyError>;
+
+/// Результат обзора экстеншена. Хранится отдельно от [`SurveyResult`]: сбой одного обзора
+/// не должен прятать результат другого.
+pub(crate) type ExtensionSurveyResult = Result<ExtensionSurvey, SurveyError>;
+
+/// Оба установщика, которыми владеет браузерная интеграция.
+pub(crate) struct Installers {
+    /// Подключение браузера к плееру (файлы подключения, Flatpak-доступ).
+    pub host: BrowserBridgeInstaller,
+    /// Установка самого экстеншена.
+    pub extension: ExtensionInstaller,
+}
+
+/// Оба обзора, выполненные одним заданием; результаты независимы.
+#[derive(Debug)]
+pub(crate) struct SurveyBundle {
+    /// Обзор подключения.
+    pub host: SurveyResult,
+    /// Обзор экстеншена.
+    pub extension: ExtensionSurveyResult,
+}
 
 /// Одна операция над установщиком.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,13 +46,17 @@ pub(crate) enum BrowserOperation {
     Disconnect(BrowserTargetId),
     /// Выдать Flatpak-цели доступ к имени моста на шине.
     AllowFlatpakBusAccess(BrowserTargetId),
+    /// Поставить экстеншен в браузер цели (подсказка или страница магазина).
+    InstallExtension(BrowserTargetId),
+    /// Отменить ещё не случившуюся установку экстеншена (убрать нашу подсказку).
+    CancelExtensionInstall(BrowserTargetId),
 }
 
 /// Итог операции.
 #[derive(Debug)]
 pub(crate) enum OperationResult {
-    /// Обзор выполнен (или не может быть выполнен на этой платформе).
-    Survey(SurveyResult),
+    /// Оба обзора выполнены (каждый мог закончиться своей ошибкой).
+    Survey(SurveyBundle),
     /// Подключение, отключение или выдача доступа выполнены; `notes` — предупреждения или
     /// текст ошибки для показа под списком (пусто — всё прошло без замечаний).
     Change { notes: Vec<String> },
@@ -40,11 +67,21 @@ const BUS_RELOAD_FAILED_NOTE: &str = "Could not ask D-Bus to reload services —
 
 /// Выполняет операцию (блокирующе; вызывается из фонового потока).
 pub(crate) fn run_operation(
-    installer: &BrowserBridgeInstaller,
+    installers: &Installers,
     operation: &BrowserOperation,
 ) -> OperationResult {
+    let installer = &installers.host;
     match operation {
-        BrowserOperation::Survey => OperationResult::Survey(installer.survey()),
+        BrowserOperation::Survey => OperationResult::Survey(SurveyBundle {
+            host: installer.survey(),
+            extension: installers.extension.survey(),
+        }),
+        BrowserOperation::InstallExtension(target) => OperationResult::Change {
+            notes: install_extension_notes(&installers.extension, target),
+        },
+        BrowserOperation::CancelExtensionInstall(target) => OperationResult::Change {
+            notes: cancel_extension_install_notes(&installers.extension, target),
+        },
         BrowserOperation::Connect(target) => OperationResult::Change {
             notes: match installer.connect(target) {
                 Ok(outcome) => outcome.warnings.iter().map(connect_warning_note).collect(),
@@ -71,7 +108,7 @@ pub(crate) fn run_operation(
 }
 
 /// Имя браузера для сообщений (неизвестный id — сам id).
-fn browser_name(target: &BrowserTargetId) -> String {
+pub(super) fn browser_name(target: &BrowserTargetId) -> String {
     find_target(target).map_or_else(
         || target.as_str().to_owned(),
         |known| known.display_name.to_owned(),

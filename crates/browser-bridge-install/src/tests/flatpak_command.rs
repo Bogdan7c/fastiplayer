@@ -11,7 +11,7 @@ const GENEROUS_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Тесты процессов идут по одному. Иначе `fork` соседнего теста успевает унаследовать
 /// открытый на запись дескриптор свежего скрипта, и `exec` падает с `ETXTBSY`.
-static PROCESS_TESTS: Mutex<()> = Mutex::new(());
+pub(super) static PROCESS_TESTS: Mutex<()> = Mutex::new(());
 
 /// Скрипт-заглушка `flatpak` в отдельном каталоге; охранник держит очередь тестов.
 fn fake_flatpak(directory: &Path, body: &str) -> (MutexGuard<'static, ()>, PathBuf) {

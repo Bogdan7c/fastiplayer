@@ -1,7 +1,7 @@
 //! Маршрутизация действий окна настроек, относящихся к браузерной интеграции.
 //!
 //! Вызывается после прохода egui и ДО передачи действий в `SettingsRuntime`:
-//! - клики панели («Connect», «Disconnect», «Allow») забираются целиком, поэтому окно
+//! - клики панели («Connect», «Disconnect», «Allow», «Install extension», «Cancel») забираются целиком, поэтому окно
 //!   настроек их не видит и не закрывается;
 //! - открытие настроек (`Open`/`ToggleOpen`) просит свежий обзор;
 //! - ответ «Set up…» на предложение превращается в `Open` (раздел выбирает
@@ -56,6 +56,10 @@ pub(crate) fn route_settings_actions(
             BrowserCommand::Disconnect => owner.request_disconnect(&target),
             BrowserCommand::AllowFlatpakBusAccess => {
                 owner.request_allow_flatpak_bus_access(&target)
+            }
+            BrowserCommand::InstallExtension => owner.request_install_extension(&target),
+            BrowserCommand::CancelExtensionInstall => {
+                owner.request_cancel_extension_install(&target)
             }
         };
         tracing::debug!(?command, ?outcome, "Browser integration command routed");

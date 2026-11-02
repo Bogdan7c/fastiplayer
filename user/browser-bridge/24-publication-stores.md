@@ -27,3 +27,12 @@ Memories: `mem:public-launch/s12-public-channels-2026-09-05`, auto-memory вла
 ## Поправки по итогам 06 (2.11.2026, решение 161)
 
 - Владелец хочет, чтобы плеер ставил экстеншен сам, и готов отказаться от магазинов, если тихая установка будет работать хорошо. Объём этой сессии пересматривается по итогам 07a. Уже известно: Chrome на Windows и macOS ставит снаружи только экстеншены из Chrome Web Store, а Firefox требует подписи Mozilla (возможна «unlisted» без публичной страницы).
+
+## Поправки по итогам 07a (2.11.2026, решения 165–168)
+
+- **Объём сессии не уменьшается: публикуем в обоих магазинах** (решение 165). Без Chrome Web Store не обойтись: Chrome на Windows, Chrome из Flatpak, плашка «может быть опасен» у своего `.crx`. Таблица фактов — `results/07a.md`.
+- **Плеер уже умеет ставить экстеншен** (`browser-bridge-install::extension`, решение 168), но ждёт ID магазинов. В этой сессии:
+  - вписать ID из Chrome Web Store и адрес страницы AMO в `browser_bridge_protocol::extension_identity`: константы `CHROME_WEB_STORE_LISTING`, `FIREFOX_ADD_ONS_LISTING`, плюс ID CWS в `ALLOWED_EXTENSIONS`;
+  - проверить вживую: тихий путь в Chromium (подсказка → перезапуск браузера → экстеншен стоит) и «один клик» в Chrome из Flatpak и Firefox — уже на нашем экстеншене, а не на дублёре.
+- **ID Chrome Web Store.** ID задаётся ключом подписи. Если магазин выдаст свой ID, а не наш ключ разработки `mcikhhmaenodlfkafgehbkikilmpnpji`, обе записи живут рядом в `ALLOWED_EXTENSIONS`: разработка и магазин. Установщик и статус уже считают своими оба ID.
+- **Edge Add-ons** — по желанию владельца. Edge принимает и экстеншены из Chrome Web Store, публикация в Edge Add-ons бесплатна.
