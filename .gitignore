@@ -43,3 +43,7 @@ opencode.jsonc
 # Локально сгенерированные медиа и сырые прогоны бенчмарков (docs/benchmarks/tools)
 /benchmark-fixtures/
 /benchmark-output/
+
+# Экстеншен Fastiplayer Bridge: зависимости npm и собранные dist/ — только локально (сессия 07 плана browser-bridge).
+/extensions/browser/node_modules/
+/extensions/browser/dist/

@@ -89,3 +89,41 @@ flatpak override --user --no-talk-name='io.github.Bogdan7c.Fastiplayer.*' com.go
 ```
 
 `rm` complains about files that do not exist; that is fine. See the [Flatpak guide](flatpak.md) for taking the permission back.
+
+## The browser extension (Fastiplayer Bridge)
+
+The extension is the part that lives inside your browser. It sends the video of a web page to Fastiplayer. It is **not published in any store yet**; this section is for people who build it themselves.
+
+### Installing a development build
+
+Build it once (needs Node.js 26 or newer):
+
+```
+cd extensions/browser
+npm ci
+npm run build
+```
+
+This creates two folders: `dist/chrome` and `dist/firefox`.
+
+- **Chromium, Chrome, Brave, Vivaldi, Edge:** open `chrome://extensions`, turn on **Developer mode**, press **Load unpacked** and pick `extensions/browser/dist/chrome`. The extension gets the same ID every time, so the connection files written by **Connect** keep matching it.
+- **Firefox:** open `about:debugging#/runtime/this-firefox`, press **Load Temporary Add-on...** and pick `extensions/browser/dist/firefox/manifest.json`. A temporary add-on disappears when Firefox closes.
+
+Then open Fastiplayer, go to **Settings > Browser integration** and press **Connect** (and **Allow** for a Flatpak browser).
+
+### What "Fastiplayer is not connected" means
+
+Click the extension's toolbar button. If it says **Fastiplayer is not connected** (the icon also shows a red `!`), the extension could not reach the player. The usual reasons:
+
+| Reason | What to do |
+| --- | --- |
+| The connection files are not written for this browser. | In Fastiplayer press **Settings > Browser integration > Connect**. |
+| The browser is a Flatpak and the permission is missing. | Press **Allow** (see the [Flatpak guide](flatpak.md)) and restart the browser. |
+| Fastiplayer was moved or removed. | Start the copy you want and press **Reconnect to this copy**. |
+| Fastiplayer did not answer. | Restart Fastiplayer and open the popup again. |
+
+If the popup asks you to update the extension or Fastiplayer, the two are too far apart in version to talk to each other; update the one it names.
+
+### What the extension asks for
+
+Every permission and the reason for it is listed in [`extensions/browser/manifest/PERMISSIONS.md`](../../extensions/browser/manifest/PERMISSIONS.md). It does not read cookies and does not talk to the Internet.

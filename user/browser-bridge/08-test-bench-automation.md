@@ -70,3 +70,11 @@ Memories: `mem:testing/media-fixtures`, `mem:testing/playback-smoke`, `mem:testi
 
 - В стенде `scripts/browser-bridge-live-check/` есть режим `MANIFEST_SOURCE=player`: файлы подключения берутся у плеера (кнопка «Connect»), плеер будит настоящая шина сессии. Есть и `run-chrome-flatpak.sh` — профиль в `~/.var/app/com.google.Chrome/cache/`, экстеншен через CDP `Extensions.loadUnpacked`. В автопрогоне 08 установку делать через `browser-bridge-install` (фасад на временном HOME), а не руками.
 - Стенд 05 запускает плеер с чистым config, а настоящий пользователь — со своим (например, GLES2 + VA-API). Матрица автопрогона должна покрывать оба варианта. Именно так нашёлся общий бэклог п. 37.
+
+## Поправки по итогам 07 (2.11.2026, решения 162–164)
+
+- Живая проверка 07 (скрипты остались в scratchpad, в репозиторий не вошли) показала рабочую обвязку стенда:
+  - Chromium: `--load-extension=dist/chrome` + CDP; страница попапа — `chrome-extension://mcikhhmaenodlfkafgehbkikilmpnpji/popup.html`.
+  - Firefox: WebDriver BiDi **не пускает** на `moz-extension://` («not allowed in this context») и держит сессию после выхода скрипта. Сработал Marionette (`--marionette --remote-allow-system-access`): `Addon:Install`, вкладка через chrome-скрипт `gBrowser.addTab`, постоянный UUID — pref `extensions.webextensions.uuids`.
+- Статус моста экстеншен читает фоном. Для проверок удобно открыть порт `bridge-status` (то же делает попап) или прочитать значок `action.getBadgeText({})`.
+- При старте браузера экстеншен открывает посредника на пробу без сообщений (решение 162): в `host.log` стенда будет `caller accepted` → `input closed`, и это не ошибка.

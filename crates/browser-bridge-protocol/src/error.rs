@@ -8,8 +8,13 @@
 //! В ошибке нет текста из сообщения: всё, что пришло со страницы, — данные
 //! врага (инвариант 1), и в журналы по умолчанию оно не попадает.
 
+use crate::strict_shape::strict_label;
 use serde::{Deserialize, Serialize};
 use serde_json::error::Category;
+
+// Строгая форма JSON (`crate::strict_shape`): объекты и перечисления с меткой —
+// только объектом, метки — только строкой; чужая форма — `wrong_value_type`.
+strict_label!(MessageErrorKind);
 
 /// Вид нарушения в одном значении (строка, число, список).
 ///
@@ -81,7 +86,7 @@ impl ValueViolation {
 
 /// Вид отказа JSON-сообщения. Имена в snake_case — общий словарь для фикстур.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum MessageErrorKind {
     /// Сообщение длиннее [`crate::limits::MAX_JSON_MESSAGE_BYTES`].
     TooLarge,

@@ -10,12 +10,30 @@ use crate::codec::ProtocolMessage;
 use crate::error::ValueViolation;
 use crate::session::variants::VariantMenu;
 use crate::stream::{RangeRequestId, SeekId, SourceBufferIndex, StreamGeneration};
+use crate::strict_shape::{strict_label, strict_object};
 use crate::text::{MimeType, SessionKey, SessionToken};
 use crate::time::{ByteOffset, MediaDuration, MediaTime, MediaTimeOffset, PlaybackRate};
 
+// Строгая форма JSON (`crate::strict_shape`): объекты и перечисления с меткой —
+// только объектом, метки — только строкой; чужая форма — `wrong_value_type`.
+strict_object!(
+    RemovalEnd,
+    SeekCause,
+    PagePlaybackRequest,
+    ResourceSize,
+    RangeFetchOutcome,
+    PageSessionMessage
+);
+strict_label!(RangeFetchFailure, TabGoneReason);
+
 /// Где кончается удаляемый диапазон `SourceBuffer.remove(start, end)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "kind",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum RemovalEnd {
     /// Конец в этой точке (не включая её).
     At {
@@ -28,7 +46,12 @@ pub enum RemovalEnd {
 
 /// Кто начал перемотку.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "kind",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum SeekCause {
     /// Плеер попросил командой `seek` с этим номером.
     PlayerSeek {
@@ -41,7 +64,12 @@ pub enum SeekCause {
 
 /// Чего плеер страницы хочет от «элемента» (муляж передаёт это плееру).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "kind",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum PagePlaybackRequest {
     /// Страница вызвала `play()` (например, автопереход к следующему ролику).
     Play {},
@@ -56,7 +84,12 @@ pub enum PagePlaybackRequest {
 
 /// Размер файла `<video src>`, если сервер его сообщил.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "kind",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum ResourceSize {
     /// Размер известен (`Content-Range`).
     Known {
@@ -69,7 +102,7 @@ pub enum ResourceSize {
 
 /// Почему запрос байтов `<video src>` не выполнен.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum RangeFetchFailure {
     /// Сеть недоступна или соединение оборвалось.
     NetworkError,
@@ -83,7 +116,12 @@ pub enum RangeFetchFailure {
 
 /// Чем кончился запрос байтов `<video src>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "kind",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum RangeFetchOutcome {
     /// Все байты запроса отправлены рамками (последний кусок файла может быть короче).
     Completed {
@@ -99,7 +137,7 @@ pub enum RangeFetchOutcome {
 
 /// Почему вкладка больше не источник (решение 42).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum TabGoneReason {
     /// Вкладку закрыли.
     Closed,
@@ -123,7 +161,12 @@ pub enum StreamScope {
 
 /// Текстовое сообщение сеанса от экстеншена к плееру.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "type",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum PageSessionMessage {
     /// Первое сообщение соединения: предъявить пропуск.
     Attach {

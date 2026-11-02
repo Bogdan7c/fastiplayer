@@ -54,6 +54,15 @@
 
 Случай «сообщение длиннее 128 КиБ» в файлах не хранится (он весил бы 128 КиБ). Каждая сторона собирает его в тесте сама: валидное сообщение, добитое пробелами до лимита, принимается, а на байт длиннее — `too_large`.
 
+## Строгость формы (сессия 07)
+
+У каждого значения ровно одна форма JSON — та, что пишет отправитель. Знакомые данные в чужой форме отвергаются видом `wrong_value_type` (значение не того типа), где бы они ни стояли — в корне или в любом вложенном объекте:
+- структура (`protocol`, `page`, `hints`, `menu`, вариант меню, `player` в `hello_accepted`) — только объект; массив полей по порядку (`"protocol":[1,0]`) — `wrong_value_type`;
+- перечисление с меткой (`kind` у `duration`, `position`, `end`, `cause`, `request`, `outcome`, `resource_size`, `in_reply_to`, `reason`) — только объект, а метка — только строка. Массив (`"end":["at",5]`) и метка числом (`"kind":0`, `"kind":7`) — `wrong_value_type`; номер вне числа вариантов — тоже `wrong_value_type`, а не `number_out_of_range`;
+- перечисление-метка (`intent`, `outcome`, `update`, `error`, `state`, `intake`, `resume`, `reason`, `selection`, `failure`, `kind` меню и `select_variant`) — только строка; число (`"state":0`) и внешняя форма serde (`{"closed":null}`) — `wrong_value_type`.
+
+Сначала проверяется форма, потом содержимое: незнакомая метка-строка по-прежнему `unknown_value`, лишнее/повторное/недостающее поле внутри вложенного объекта — `unknown_field`/`duplicate_field`/`missing_field`. Случаи — файлы `control/invalid/shape-*`, `session/invalid/page-shape-*` и `session/invalid/player-shape-*`. В Rust это обеспечивает `src/strict_shape.rs`: производный разбор serde сам по себе принимает все три чужие формы.
+
 ## Как пересобрать
 
 ```sh

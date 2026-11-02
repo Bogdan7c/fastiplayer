@@ -619,6 +619,161 @@ def write_player_session(manifest: Manifest) -> None:
     )
 
 
+def write_shape_strictness(manifest: Manifest) -> None:
+    """Строгость формы (сессия 07): значение обязано иметь ровно ту форму JSON, что пишет отправитель.
+
+    serde умеет читать одни и те же данные в нескольких формах; протокол знает
+    только одну. Каждый случай здесь — «знакомые данные в чужой форме», и все
+    они отвергаются как `wrong_value_type` (не тот тип JSON-значения):
+    - метка варианта числом (`"intent":0`, `"kind":1`, `"kind":7`) — serde
+      понял бы его как номер варианта;
+    - объект-структура массивом (`"protocol":[1,0]`, `"end":["at",5]`) — serde
+      понял бы его как поля по порядку;
+    - метка-перечисление объектом (`{"closed":null}`) — внешняя форма serde.
+    """
+    wrong = "wrong_value_type"
+
+    control = "control/invalid/shape-"
+    extension_schema = "extension_control"
+    hints = open_session()["hints"]
+    for name, message in [
+        ("hello-protocol-as-array", {**extension_hello(), "protocol": [1, 0]}),
+        ("open-session-intent-as-index", open_session(intent=0)),
+        ("open-session-intent-as-map", open_session(intent={"window": None})),
+        ("open-session-page-as-array", open_session(page=["Шрек 2", "uaserials.com"])),
+        ("open-session-hints-as-array", open_session(hints=[{"kind": "unknown"}, {"kind": "unknown"}])),
+        (
+            "open-session-position-kind-as-index",
+            open_session(hints={**hints, "position": {"kind": 1, "position_us": 5_000_000}}),
+        ),
+        (
+            # Номер варианта вне предела — та же ошибка формы, а не «число вне диапазона».
+            "open-session-position-kind-index-out-of-range",
+            open_session(hints={**hints, "position": {"kind": 7}}),
+        ),
+        (
+            "open-session-duration-as-array",
+            open_session(hints={**hints, "duration": ["finite", 1_325_000_000]}),
+        ),
+    ]:
+        manifest.invalid(f"{control}{name}.json", extension_schema, compact_json(message), wrong)
+
+    player_control_schema = "player_control"
+    granted = {
+        "type": "session_granted",
+        "request_id": 1,
+        "session_key": "tab-12-video-3",
+        "port": 40213,
+        "token": FIXTURE_TOKEN,
+        "outcome": "started",
+    }
+    player_hello = {"protocol": version(1, 0), "software_version": "0.2.0", "capabilities": []}
+    for name, message in [
+        (
+            "hello-accepted-agreed-protocol-as-array",
+            {"type": "hello_accepted", "agreed_protocol": [1, 0], "player": player_hello},
+        ),
+        (
+            "hello-accepted-player-as-array",
+            {"type": "hello_accepted", "agreed_protocol": version(1, 0), "player": [[1, 0], "0.2.0", []]},
+        ),
+        ("session-granted-outcome-as-index", {**granted, "outcome": 0}),
+        ("session-granted-outcome-as-map", {**granted, "outcome": {"started": None}}),
+        (
+            "refused-in-reply-to-as-array",
+            {"type": "refused", "in_reply_to": ["open_session", 2], "reason": {"kind": "protected_content"}},
+        ),
+        (
+            "refused-reason-kind-as-index",
+            {"type": "refused", "in_reply_to": {"kind": "hello"}, "reason": {"kind": 4, "update": "extension"}},
+        ),
+        (
+            "refused-update-as-map",
+            {
+                "type": "refused",
+                "in_reply_to": {"kind": "hello"},
+                "reason": {"kind": "incompatible_version", "update": {"extension": None}},
+            },
+        ),
+        (
+            "refused-malformed-error-as-index",
+            {
+                "type": "refused",
+                "in_reply_to": {"kind": "unparsed_message"},
+                "reason": {"kind": "malformed_message", "error": 6},
+            },
+        ),
+    ]:
+        manifest.invalid(f"{control}{name}.json", player_control_schema, compact_json(message), wrong)
+
+    page = "session/invalid/page-shape-"
+    page_schema = "page_session"
+    removed = {"generation": 1, "source_buffer": 0, "start_us": 0}
+    menu_option = {"id": "voice-1", "label": "English", "selection": "available"}
+    for name, message in [
+        ("removed-end-as-array", page_message("source_buffer_removed", **removed, end=["at", 5_000_000])),
+        (
+            "removed-end-kind-as-index",
+            page_message("source_buffer_removed", **removed, end={"kind": 0, "time_us": 5_000_000}),
+        ),
+        ("seek-cause-kind-as-index", page_message("seek_started", target_us=0, cause={"kind": 1})),
+        ("duration-kind-as-index", page_message("duration_changed", generation=1, duration={"kind": 2})),
+        ("page-playback-request-as-array", page_message("page_playback", request=["pause"])),
+        ("tab-gone-reason-as-index", page_message("tab_gone", reason=0)),
+        ("tab-gone-reason-as-map", page_message("tab_gone", reason={"closed": None})),
+        # Незнакомый ключ в той же внешней форме — тоже ошибка формы, а не «незнакомое значение»:
+        # форма проверяется раньше значения (иначе Rust и TS могли бы разойтись в виде причины).
+        ("tab-gone-reason-unknown-key-as-map", page_message("tab_gone", reason={"teleported": None})),
+        ("menu-as-array", page_message("variant_menu_changed", menu=["audio", []])),
+        (
+            "menu-option-as-array",
+            page_message(
+                "variant_menu_changed",
+                menu={"kind": "audio", "options": [["voice-1", "English", "available"]]},
+            ),
+        ),
+        (
+            "menu-selection-as-map",
+            page_message(
+                "variant_menu_changed",
+                menu={"kind": "audio", "options": [{**menu_option, "selection": {"available": None}}]},
+            ),
+        ),
+        (
+            "range-fetch-failure-as-index",
+            page_message("range_fetch_finished", request_id=7, outcome={"kind": "failed", "failure": 0}),
+        ),
+        (
+            "range-fetch-resource-size-as-array",
+            page_message(
+                "range_fetch_finished",
+                request_id=7,
+                outcome={"kind": "completed", "resource_size": ["known", 1_048_576]},
+            ),
+        ),
+    ]:
+        manifest.invalid(f"{page}{name}.json", page_schema, compact_json(message), wrong)
+
+    player = "session/invalid/player-shape-"
+    player_schema = "player_session"
+    clock = {"type": "clock", "seq": 1, "position_us": 0, "rate": 1000}
+    for name, message in [
+        ("clock-state-as-index", {**clock, "state": 0}),
+        ("clock-state-as-map", {**clock, "state": {"playing": None}}),
+        ("buffer-intake-as-index", {"type": "buffer_state", "generation": 1, "ahead_us": 0, "intake": 1}),
+        (
+            "return-to-page-resume-as-map",
+            {"type": "return_to_page", "position_us": 0, "resume": {"paused": None}},
+        ),
+        ("select-variant-kind-as-index", {"type": "select_variant", "kind": 0, "variant_id": "voice-2"}),
+        (
+            "stream-rejected-reason-as-map",
+            {"type": "stream_rejected", "generation": 1, "reason": {"unsupported_codec": None}},
+        ),
+    ]:
+        manifest.invalid(f"{player}{name}.json", player_schema, compact_json(message), wrong)
+
+
 def write_data_frames(manifest: Manifest) -> None:
     schema = "data_frame"
     payload = b"\x00\x00\x00\x1cftypiso5"
@@ -946,6 +1101,7 @@ def main() -> None:
     write_page_session(manifest)
     write_player_session(manifest)
     write_data_frames(manifest)
+    write_shape_strictness(manifest)
     write_streams(manifest)
     (FIXTURES_ROOT / "manifest.json").write_bytes(
         json.dumps({"cases": manifest.cases, "streams": manifest.streams}, ensure_ascii=False, indent=2).encode()

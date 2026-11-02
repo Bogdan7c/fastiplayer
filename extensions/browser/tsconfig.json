@@ -1,0 +1,29 @@
+{
+  // Одна проверка типов на весь экстеншен: код, тесты и скрипт сборки.
+  // tsc здесь ничего не выпускает (noEmit) — сборку делает esbuild, тесты Node запускает .ts напрямую.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023", "dom", "dom.iterable", "webworker.importscripts"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    // Импорты пишутся с расширением .ts: так их понимают и Node (снятие типов), и esbuild.
+    "allowImportingTsExtensions": true,
+    // Только синтаксис, который можно «стереть» без перевода: никаких enum/namespace.
+    // Без этого Node не сможет запускать тесты из .ts напрямую.
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "types": ["chrome", "node"]
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"]
+}

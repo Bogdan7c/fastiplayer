@@ -748,6 +748,286 @@
         "result": "error",
         "kind": "number_out_of_range"
       }
+    },
+    {
+      "file": "control/invalid/shape-hello-protocol-as-array.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/shape-open-session-intent-as-index.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/shape-open-session-intent-as-map.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/shape-open-session-page-as-array.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/shape-open-session-hints-as-array.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/shape-open-session-position-kind-as-index.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/shape-open-session-position-kind-index-out-of-range.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/shape-open-session-duration-as-array.json",
+      "schema": "extension_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/shape-hello-accepted-agreed-protocol-as-array.json",
+      "schema": "player_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/shape-hello-accepted-player-as-array.json",
+      "schema": "player_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/shape-session-granted-outcome-as-index.json",
+      "schema": "player_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/shape-session-granted-outcome-as-map.json",
+      "schema": "player_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/shape-refused-in-reply-to-as-array.json",
+      "schema": "player_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/shape-refused-reason-kind-as-index.json",
+      "schema": "player_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/shape-refused-update-as-map.json",
+      "schema": "player_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "control/invalid/shape-refused-malformed-error-as-index.json",
+      "schema": "player_control",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-removed-end-as-array.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-removed-end-kind-as-index.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-seek-cause-kind-as-index.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-duration-kind-as-index.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-page-playback-request-as-array.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-tab-gone-reason-as-index.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-tab-gone-reason-as-map.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-tab-gone-reason-unknown-key-as-map.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-menu-as-array.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-menu-option-as-array.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-menu-selection-as-map.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-range-fetch-failure-as-index.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-range-fetch-resource-size-as-array.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/player-shape-clock-state-as-index.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/player-shape-clock-state-as-map.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/player-shape-buffer-intake-as-index.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/player-shape-return-to-page-resume-as-map.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/player-shape-select-variant-kind-as-index.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/player-shape-stream-rejected-reason-as-map.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
     }
   ],
   "streams": [

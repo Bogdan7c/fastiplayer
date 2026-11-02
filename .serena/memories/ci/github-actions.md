@@ -4,6 +4,9 @@
 
 # GitHub Actions CI
 
+## Browser extension (2026-11-02, browser-bridge сессия 07)
+- Job `browser-extension` / имя «Browser extension» в `ci.yml`: ubuntu-24.04, `actions/setup-node` Node 26 с кэшем npm по `extensions/browser/package-lock.json`, `npm ci` → `npm run typecheck` → `npm test` → `npm run build`, затем проверка `git ls-files` — `extensions/browser/dist` и `node_modules` не отслеживаются. Rust не ставит. Фикстуры протокола общие с Rust: изменение `crates/browser-bridge-protocol/fixtures/` ломает обе задачи.
+
 ## GLES2 headless (2026-10-24, gles2-renderer сессия 03)
 - Job `tests` дополнительно ставит `libegl1 libegl-mesa0 libgles2 libgl1-mesa-dri` (surfaceless GLES2 на llvmpipe для `crates/gles2-egui/tests/headless.rs`) и задаёт env `GLES2_EGUI_REQUIRE_EGL: "1"` — без EGL пиксельные тесты падают, а не пропускаются. Оба закреплены в `scripts/tests/test_ci_native_prerequisites.py` (`EXPECTED_ALL_TARGET_NATIVE_PACKAGES`, `EXPECTED_ALL_TARGET_REQUIRE_EGL`). Решение владельца 27 README плана `user/gles2-renderer/`.
 

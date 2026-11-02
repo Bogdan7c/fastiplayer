@@ -10,11 +10,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ValueViolation;
 use crate::limits::MAX_VARIANT_OPTIONS;
+use crate::strict_shape::{strict_label, strict_object};
 use crate::text::{VariantId, VariantLabel};
+
+// Строгая форма JSON (`crate::strict_shape`): объекты и перечисления с меткой —
+// только объектом, метки — только строкой; чужая форма — `wrong_value_type`.
+strict_object!(VariantOption, VariantMenu);
+strict_label!(VariantKind, VariantSelection);
 
 /// Какое меню.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum VariantKind {
     /// Озвучки и дорожки звука.
     Audio,
@@ -26,7 +32,7 @@ pub enum VariantKind {
 
 /// Отмечен ли вариант как текущий на странице.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum VariantSelection {
     /// Сейчас выбран на странице.
     Selected,
@@ -36,7 +42,7 @@ pub enum VariantSelection {
 
 /// Один вариант меню.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct VariantOption {
     /// Идентификатор, который вернётся в `select_variant`.
     pub id: VariantId,
@@ -48,7 +54,7 @@ pub struct VariantOption {
 
 /// Меню целиком. Новое меню того же вида заменяет прежнее.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct VariantMenu {
     /// Какое меню.
     pub kind: VariantKind,

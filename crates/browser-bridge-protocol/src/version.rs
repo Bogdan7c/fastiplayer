@@ -14,11 +14,17 @@
 //! Форма самого `Hello` и отказа по версии не меняется никогда, даже между
 //! `major`: иначе стороны не смогут договориться о том, что они разные.
 
+use crate::strict_shape::{strict_label, strict_object};
 use serde::{Deserialize, Serialize};
+
+// Строгая форма JSON (`crate::strict_shape`): объекты и перечисления с меткой —
+// только объектом, метки — только строкой; чужая форма — `wrong_value_type`.
+strict_object!(ProtocolVersion);
+strict_label!(BridgeSoftware);
 
 /// Версия протокола.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct ProtocolVersion {
     /// Несовместимые изменения.
     pub major: u16,
@@ -31,7 +37,7 @@ pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1
 
 /// Кто из участников моста.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum BridgeSoftware {
     /// Экстеншен Fastiplayer Bridge в браузере.
     Extension,

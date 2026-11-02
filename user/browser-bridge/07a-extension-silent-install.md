@@ -32,3 +32,9 @@
 - Поправки в 24 (публикация), если решение меняет её объём.
 
 Memories: `mem:browser-bridge/core`, `mem:settings-ui/design`.
+
+## Поправки по итогам 07 (2.11.2026, решения 162–164)
+
+- Собранный экстеншен: `extensions/browser/` → `npm ci && npm run build` → `dist/chrome/` и `dist/firefox/`. В корне каждого — `manifest.json` и только то, на что он ссылается, сборка детерминирована. Упаковка в `.crx`/`.xpi` — из этих каталогов.
+- `key` Chrome и gecko id сборка берёт из `crates/browser-bridge-protocol/fixtures/extension-identity.json`. Если 07a пересматривает решение 154 (свой ключ), меняется только фикстура, тест манифеста сверит обе стороны.
+- Минимальные версии: Chrome 116, Firefox 140 (`strict_min_version`). Версия экстеншена — из `extensions/browser/package.json`.

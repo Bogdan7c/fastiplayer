@@ -38,6 +38,7 @@ pub mod open_session;
 pub mod session;
 pub mod stream;
 pub mod stream_gate;
+mod strict_shape;
 pub mod text;
 pub mod time;
 pub mod version;

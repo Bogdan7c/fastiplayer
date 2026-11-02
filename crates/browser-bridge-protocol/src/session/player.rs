@@ -11,8 +11,14 @@ use crate::codec::ProtocolMessage;
 use crate::error::ValueViolation;
 use crate::session::variants::VariantKind;
 use crate::stream::{RangeRequestId, SeekId, StreamGeneration};
+use crate::strict_shape::{strict_label, strict_object};
 use crate::text::VariantId;
 use crate::time::{ByteOffset, MediaTime, PlaybackRate, RangeFetchLength};
+
+// Строгая форма JSON (`crate::strict_shape`): объекты и перечисления с меткой —
+// только объектом, метки — только строкой; чужая форма — `wrong_value_type`.
+strict_object!(PlayerSessionMessage);
+strict_label!(ClockState, BufferIntake, ResumeState, StreamRejection);
 
 /// Номер тика часов: страница по нему отбрасывает запоздавшие тики.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -21,7 +27,7 @@ pub struct ClockSequence(pub u32);
 
 /// Что сейчас делает плеер.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum ClockState {
     /// Играет.
     Playing,
@@ -35,7 +41,7 @@ pub enum ClockState {
 
 /// Принимает ли плеер байты дальше (обратное давление).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum BufferIntake {
     /// Места хватает.
     Accepting,
@@ -46,7 +52,7 @@ pub enum BufferIntake {
 
 /// В каком состоянии вернуть видео на страницу (решение 51).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum ResumeState {
     /// Страница играет дальше (кнопка «Return»).
     Playing,
@@ -56,7 +62,7 @@ pub enum ResumeState {
 
 /// Почему плеер не будет играть это поколение.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum StreamRejection {
     /// В init-сегменте шифрование (`encv`/`enca`/`tenc`): последняя линия
     /// против DRM, если признак на странице не пришёл (Vimeo, `results/00c.md`).
@@ -77,7 +83,12 @@ pub enum StreamRejection {
 
 /// Текстовое сообщение сеанса от плеера к экстеншену.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "type",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum PlayerSessionMessage {
     /// Пропуск принят, сеанс начался.
     Attached {},

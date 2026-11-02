@@ -32,7 +32,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::limits::{DATA_FRAME_HEADER_BYTES, MAX_DATA_FRAME_PAYLOAD_BYTES};
 use crate::stream::{AppendSequence, RangeRequestId, SourceBufferIndex, StreamGeneration};
+use crate::strict_shape::strict_label;
 use crate::time::ByteOffset;
+
+// Строгая форма JSON (`crate::strict_shape`): объекты и перечисления с меткой —
+// только объектом, метки — только строкой; чужая форма — `wrong_value_type`.
+strict_label!(DataFrameError);
 
 /// Код вида рамки «байты SourceBuffer».
 const SOURCE_BUFFER_BYTES_KIND: u8 = 1;
@@ -79,7 +84,7 @@ pub struct DataFrame<'frame> {
 
 /// Вид отказа двоичной рамки. Имена — общий словарь фикстур.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, thiserror::Error)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum DataFrameError {
     /// Короче заголовка.
     #[error("data frame is shorter than its header")]

@@ -374,3 +374,44 @@ jobs:
       # Repo runner содержит единственную реализацию MSRV compile команды.
       - name: Check workspace on MSRV
         run: scripts/ci-checks.sh msrv
+
+  # Экстеншен браузера (Fastiplayer Bridge): типы, тесты, сборка. Rust и системные пакеты не нужны.
+  browser-extension:
+    # Видимое имя status check.
+    name: Browser extension
+    # Ubuntu 24.04 фиксирует окружение вместо плавающего ubuntu-latest.
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: extensions/browser
+    steps:
+      # Checkout major закреплён, чтобы minor/security updates приходили автоматически.
+      - uses: actions/checkout@v4
+      # Node 26 запускает .ts напрямую (тесты); npm-кэш привязан к lock-файлу экстеншена.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: extensions/browser/package-lock.json
+      # npm ci ставит ровно версии из lock-файла и падает, если он не совпадает с package.json.
+      - name: Install extension dependencies
+        run: npm ci
+      # Строгая проверка типов (tsc --noEmit) по коду, тестам и скрипту сборки.
+      - name: Typecheck
+        run: npm run typecheck
+      # Тесты на встроенном node:test, включая фикстуры протокола и сборку dist.
+      - name: Test
+        run: npm test
+      # Реальная сборка dist/chrome и dist/firefox.
+      - name: Build
+        run: npm run build
+      # dist и node_modules не должны попадать в git.
+      - name: Assert build output is not tracked
+        working-directory: .
+        run: |
+          tracked="$(git ls-files extensions/browser/dist extensions/browser/node_modules)"
+          if [ -n "$tracked" ]; then
+            echo "Tracked build artifacts:" >&2
+            echo "$tracked" >&2
+            exit 1
+          fi

@@ -1,0 +1,43 @@
+// Причины закрытия WebSocket-сеанса и их коды. Зеркало SessionCloseReason (session/mod.rs).
+//
+// Закрывает соединение плеер (или экстеншен) прикладным кодом 4000-4999; по коду
+// экстеншен понимает, чинить ли связь, показывать ли сообщение или молча уйти.
+
+export type SessionCloseReason =
+  | "player_closed"
+  | "replaced_by_another_tab"
+  | "tab_gone"
+  | "protocol_violation"
+  | "invalid_token"
+  | "unknown_session"
+  | "player_shutting_down"
+  | "attach_timeout"
+  | "already_attached";
+
+/** Код закрытия каждой причины (стабильные значения протокола 1.x). */
+export const SESSION_CLOSE_CODES: Readonly<Record<SessionCloseReason, number>> = {
+  player_closed: 4000,
+  replaced_by_another_tab: 4001,
+  tab_gone: 4002,
+  protocol_violation: 4003,
+  invalid_token: 4004,
+  unknown_session: 4005,
+  player_shutting_down: 4006,
+  attach_timeout: 4007,
+  already_attached: 4008,
+};
+
+/** Код закрытия для причины. */
+export function closeCodeOf(reason: SessionCloseReason): number {
+  return SESSION_CLOSE_CODES[reason];
+}
+
+/** Причина по коду закрытия; `undefined` для чужих кодов (например 1006 «обрыв»). */
+export function closeReasonFromCode(code: number): SessionCloseReason | undefined {
+  for (const [reason, reasonCode] of Object.entries(SESSION_CLOSE_CODES)) {
+    if (reasonCode === code) {
+      return reason as SessionCloseReason;
+    }
+  }
+  return undefined;
+}

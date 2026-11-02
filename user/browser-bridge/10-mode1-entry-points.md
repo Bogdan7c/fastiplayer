@@ -42,3 +42,9 @@
 - Memories: `mem:browser-bridge/core`.
 
 Memories: `mem:browser-bridge/core`.
+
+## Поправки по итогам 07 (2.11.2026, решения 162–164)
+
+- Запрос сеанса уже есть: `HostLink.openSession(request)` в `extensions/browser/src/background/host-link/`. Он возвращает `granted` / `refused` / `no_reply` / `not_connected` / `invalid_request`, на `hello_required` один раз сам повторяет `hello`.
+- Передача видео — это «нужда» (`acquireDemand`): пока она держится, фон держит связь и повторяет попытки. Сняли — порт закроется после 30 с простоя.
+- Попап показывает статус по порту `bridge-status`. Список найденных видео (решение 8) и входы добавляются в него же.

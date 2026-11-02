@@ -15,6 +15,11 @@ use crate::limits::{
     MAX_JSON_SAFE_INTEGER, MAX_PLAYBACK_RATE_PERMILLE, MAX_RANGE_FETCH_BYTES,
     MIN_PLAYBACK_RATE_PERMILLE,
 };
+use crate::strict_shape::strict_object;
+
+// Строгая форма JSON (`crate::strict_shape`): объекты и перечисления с меткой —
+// только объектом, метки — только строкой; чужая форма — `wrong_value_type`.
+strict_object!(MediaDuration);
 
 /// Момент на шкале медиа, микросекунды от нуля, не больше 2⁵³ − 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -101,7 +106,12 @@ impl From<MediaTimeOffset> for i64 {
 /// Три честных состояния вместо «0 значит неизвестно» (решение 50: длина часто
 /// приходит позже, у live её нет вовсе).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "kind",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum MediaDuration {
     /// Плеер страницы длину ещё не сообщил (`NaN` в MSE).
     Unknown {},

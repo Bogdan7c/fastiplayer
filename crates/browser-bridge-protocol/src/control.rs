@@ -18,11 +18,30 @@ use serde::{Deserialize, Serialize};
 use crate::codec::ProtocolMessage;
 use crate::error::{MessageErrorKind, ValueViolation};
 use crate::limits::MAX_CAPABILITY_TOKENS;
+use crate::strict_shape::{strict_label, strict_object};
 use crate::text::{
     CapabilityToken, PageTitle, SessionKey, SessionToken, SiteDomain, SoftwareVersion,
 };
 use crate::time::{MediaDuration, MediaTime};
 use crate::version::{BridgeSoftware, ProtocolVersion};
+
+// Строгая форма JSON (`crate::strict_shape`): объекты и перечисления с меткой —
+// только объектом, метки — только строкой; чужая форма — `wrong_value_type`.
+strict_object!(
+    Hello,
+    PageIdentity,
+    PositionHint,
+    PlaybackHints,
+    OpenSessionRequest,
+    HelloAccepted,
+    SessionGrant,
+    ReplyTarget,
+    RefusalReason,
+    ControlRefusal,
+    ExtensionControlMessage,
+    PlayerControlMessage
+);
+strict_label!(SessionIntent, GrantOutcome);
 
 /// Номер запроса на участке «вход»: ответ несёт тот же номер.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -72,7 +91,7 @@ impl From<LoopbackPort> for u16 {
 
 /// Приветствие стороны. **Форма не меняется никогда** (`crate::version`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct Hello {
     /// Версия протокола, которую сторона реализует.
     pub protocol: ProtocolVersion,
@@ -98,7 +117,7 @@ impl Hello {
 
 /// Что видно о странице: домен и заголовок (инвариант 2 — без адреса и кук).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct PageIdentity {
     /// Заголовок вкладки.
     pub title: PageTitle,
@@ -108,7 +127,7 @@ pub struct PageIdentity {
 
 /// Как человек хочет смотреть.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum SessionIntent {
     /// Обычное окно браузерного режима (режимы 1 и 2).
     Window,
@@ -120,7 +139,12 @@ pub enum SessionIntent {
 
 /// Где сейчас позиция плеера страницы.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "kind",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum PositionHint {
     /// Позиция неизвестна (плеер страницы ещё не стартовал).
     Unknown {},
@@ -133,7 +157,7 @@ pub enum PositionHint {
 
 /// Подсказки для окна до прихода первых байтов.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct PlaybackHints {
     /// Длина ролика, как её знает плеер страницы.
     pub duration: MediaDuration,
@@ -143,7 +167,7 @@ pub struct PlaybackHints {
 
 /// Запрос «открой сеанс для этого видео».
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct OpenSessionRequest {
     /// Номер запроса.
     pub request_id: ControlRequestId,
@@ -159,7 +183,7 @@ pub struct OpenSessionRequest {
 
 /// Ответ плеера на `hello` экстеншена.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct HelloAccepted {
     /// Общая версия: на ней обе стороны говорят дальше.
     pub agreed_protocol: ProtocolVersion,
@@ -169,7 +193,7 @@ pub struct HelloAccepted {
 
 /// Чем стал запрос `open_session` (инвариант 6: повтор не создаёт второго окна).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum GrantOutcome {
     /// Сеансов не было — открыт новый.
     Started,
@@ -181,7 +205,7 @@ pub enum GrantOutcome {
 
 /// Пропуск в сеанс.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct SessionGrant {
     /// Номер запроса, на который это ответ.
     pub request_id: ControlRequestId,
@@ -197,7 +221,12 @@ pub struct SessionGrant {
 
 /// На что отказ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "kind",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum ReplyTarget {
     /// На `hello`.
     Hello {},
@@ -212,7 +241,12 @@ pub enum ReplyTarget {
 
 /// Причина отказа на участке «вход».
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "kind",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum RefusalReason {
     /// Плеер не установлен или не запускается (посредник не достучался).
     PlayerUnavailable {},
@@ -240,7 +274,7 @@ pub enum RefusalReason {
 
 /// Отказ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct ControlRefusal {
     /// На что отказ.
     pub in_reply_to: ReplyTarget,
@@ -250,7 +284,12 @@ pub struct ControlRefusal {
 
 /// Сообщения участка «вход» от экстеншена к плееру.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "type",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum ExtensionControlMessage {
     /// Приветствие экстеншена.
     Hello(Hello),
@@ -271,7 +310,12 @@ impl ProtocolMessage for ExtensionControlMessage {
 
 /// Сообщения участка «вход» от плеера (или посредника) к экстеншену.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "type",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum PlayerControlMessage {
     /// Приветствие принято.
     HelloAccepted(HelloAccepted),
