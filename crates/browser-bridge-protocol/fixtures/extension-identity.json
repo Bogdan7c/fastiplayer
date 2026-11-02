@@ -1,0 +1,10 @@
+{
+  "native_host_name": "io.github.bogdan7c.fastiplayer.bridge",
+  "chromium_development": {
+    "manifest_key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA33e9R7oEFHBCWSu+He66A6iXMOsnnVTv+UY9Ec2gErhJDRUM7ZrIVel7V074jnb6n8b1RVx4QLe6y24EzgdlDy44FZejZb4jetvUUHbPog21ywD8w9cmkiPWC47Q9xmuEp7b9Gc2oO3iL19VO2g1ePMEFEwh4QtkQ1I4s4E6DOLVNbiKO+dUYpOtg/S3rbBIRpuTqvvu3afCV7mH4Moei+mNElCpniE29v3N/Qm8+ziqHdykovQcO7flVIjocWppDewqx5e1Oo/HT8o1B8+uGOtck9/cAWCBk0fVCIPuaku/2Uhx1AnJFRU/OtqzuIsNmKOSrbeUqPFyPs+Akno/dQIDAQAB",
+    "extension_id": "mcikhhmaenodlfkafgehbkikilmpnpji"
+  },
+  "firefox": {
+    "gecko_id": "fastiplayer-bridge@bogdan7c.github.io"
+  }
+}

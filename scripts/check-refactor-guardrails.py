@@ -72,6 +72,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "pushed-media-source",
         "browser-bridge-protocol",
         "browser-bridge-session",
+        "browser-bridge-host",
         "ac3-elementary-demux",
         "ac3-syncframe",
         "animation-core",
@@ -300,6 +301,14 @@ BROWSER_BRIDGE_PROTOCOL_ALLOWED_DEPENDENCIES = frozenset(
 # случайные байты ОС для пропусков, ошибки и журнал. Без D-Bus, UI и crate-ов плеера.
 BROWSER_BRIDGE_SESSION_ALLOWED_DEPENDENCIES = frozenset(
     {"browser-bridge-protocol", "getrandom", "thiserror", "tracing", "tungstenite"}
+)
+
+# Посредник native messaging (сессия 05): «звонок в дверь» — протокол (строгий разбор
+# и список наших экстеншенов), клиент двери D-Bus из desktop-integration и ошибки.
+# Без async-рантайма, UI, сокетов сеанса и crate-ов плеера: бинарь едет в песочницу
+# Flatpak-браузера и должен оставаться крошечным.
+BROWSER_BRIDGE_HOST_ALLOWED_DEPENDENCIES = frozenset(
+    {"browser-bridge-protocol", "desktop-integration", "thiserror"}
 )
 
 # Источник «сегменты извне» (сессия 03a моста): нейтрален к браузеру — знает только
@@ -1508,6 +1517,14 @@ def find_dependency_violations(
             frozenset({"browser-bridge-session"}),
             BROWSER_BRIDGE_SESSION_ALLOWED_DEPENDENCIES,
             "browser-bridge-session is a neutral bridge session server without UI, D-Bus, tokio or player deps",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"browser-bridge-host"}),
+            BROWSER_BRIDGE_HOST_ALLOWED_DEPENDENCIES,
+            "browser-bridge-host is a tiny native-messaging doorbell without async runtime, UI, session server or player deps",
         )
     )
     violations.extend(

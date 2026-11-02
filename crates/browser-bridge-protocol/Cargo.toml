@@ -16,5 +16,9 @@ serde_json.workspace = true
 # Типизированные ошибки разбора и проверки.
 thiserror.workspace = true
 
+[dev-dependencies]
+# Только тест договора «кто наш экстеншен»: вывод ID Chrome из публичного ключа.
+sha2.workspace = true
+
 [lints]
 workspace = true

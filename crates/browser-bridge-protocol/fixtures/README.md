@@ -63,3 +63,11 @@ cargo test -p browser-bridge-protocol
 ```
 
 Медиа синтетические (`testsrc2` и синус через ffmpeg), чужого контента нет. Перегенерация на той же версии ffmpeg даёт те же байты.
+
+## Кто «наш» экстеншен (`extension-identity.json`, сессия 05)
+
+- `native_host_name` — имя посредника для `runtime.connectNative()` и имя файла подключения.
+- `chromium_development.manifest_key` — публичный ключ (DER SPKI в base64) для поля `key` манифеста экстеншена. С ним распакованный экстеншен в Chrome всегда получает `extension_id`: SHA-256 ключа, первые 16 байт, шестнадцатеричные цифры `0`–`f` записаны буквами `a`–`p`. Закрытый ключ не нужен (магазин подписывает сам) и не хранится.
+- `firefox.gecko_id` — значение `browser_specific_settings.gecko.id`.
+
+Rust-константы (`extension_identity.rs`) сверяет с этим файлом `tests/extension_identity.rs`, включая вывод ID Chrome из ключа. Посредник пускает только эти ID; ID из Chrome Web Store добавится в сессии 24.

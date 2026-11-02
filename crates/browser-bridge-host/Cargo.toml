@@ -1,0 +1,33 @@
+[package]
+name = "browser-bridge-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Посредник native messaging моста «браузер качает — мы играем» (issue #2, сессия 05):
+# «звонок в дверь». Браузер запускает его по `runtime.connectNative()`; посредник
+# проверяет, что позвал наш экстеншен, и передаёт `hello` / `open_session` в дверь
+# D-Bus браузерного режима, а ответ (порт и пропуск WebSocket) — обратно браузеру.
+# Медиа, команд и событий сеанса через него нет (решение 85). Бинарь крошечный и без
+# async-рантайма: он же поедет в песочницу Flatpak-браузера (сессия 06). Допустимые
+# зависимости проверяет scripts/check-refactor-guardrails.py.
+
+[lib]
+name = "browser_bridge_host"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fastiplayer-browser-host"
+path = "src/main.rs"
+
+[dependencies]
+# Строгий разбор участка «вход» и список «наших» экстеншенов.
+browser-bridge-protocol.workspace = true
+# Клиент двери D-Bus браузерного режима (одно соединение, активация, сверка uid).
+desktop-integration.workspace = true
+# Типизированные ошибки рамок и отказов.
+thiserror.workspace = true
+
+[lints]
+workspace = true

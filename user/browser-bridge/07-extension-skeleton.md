@@ -82,3 +82,10 @@ Memories: `mem:ci/github-actions`, `mem:browser-bridge/core`.
   кодирование вне страницы).
 - **Приёмка:** одни и те же 10 прыжков 4K — «чистый браузер» против «браузер с экстеншеном» (время от прыжка до игры
   `<video>` страницы); с экстеншеном не медленнее чистого больше чем на шум сети.
+
+## Поправки по итогам 05 (2.11.2026, решения 153–156)
+
+- ID экстеншена зафиксированы (решение 154): в манифест — `key` из `crates/browser-bridge-protocol/fixtures/extension-identity.json` (тогда Chrome даёт ID `mcikhhmaenodlfkafgehbkikilmpnpji`) и `browser_specific_settings.gecko.id` = `fastiplayer-bridge@bogdan7c.github.io`. `connectNative` — имя `io.github.bogdan7c.fastiplayer.bridge`. Тест экстеншена сверяет манифест с той же фикстурой.
+- Ответы посредника: `hello_accepted`, `session_granted` или `refused`. Свои отказы посредника — `player_unavailable`, `player_not_responding`, `player_shutting_down`, `malformed_message` с `in_reply_to: unparsed_message`. На `refused{hello_required}` (плеер перезапустился между звонками) экстеншен сам повторяет `hello` и `open_session` через тот же порт: посредник `hello` не повторяет.
+- Посредник выходит, когда порт закрыт, и сеанс от этого не страдает. Экстеншен может закрывать порт сразу после выдачи пропуска или держать его — это решает 07 (открытый порт держит service worker живым, разведка 00).
+- Firefox MV3: `background.scripts` перечисляет все файлы фона по порядку, а не только главный. Иначе после `session_granted` код второго файла не найден (поймано на стенде 05).

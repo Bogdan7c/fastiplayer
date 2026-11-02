@@ -32,6 +32,7 @@ pub mod codec;
 pub mod control;
 pub mod data_frame;
 pub mod error;
+pub mod extension_identity;
 pub mod limits;
 pub mod open_session;
 pub mod session;

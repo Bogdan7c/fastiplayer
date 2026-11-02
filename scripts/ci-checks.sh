@@ -34,6 +34,7 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/desktop-integration
     crates/browser-bridge-protocol
     crates/browser-bridge-session
+    crates/browser-bridge-host
     crates/pushed-media-source
     crates/frame-server-core
     crates/source-core

@@ -780,3 +780,7 @@ mod generation_switch_clicks;
 // спиннер, без «Seeking timed out», кадры цели на показе, позиция не возвращается назад.
 #[path = "browser_session_process/seek_waits_for_page.rs"]
 mod seek_waits_for_page;
+
+// Посредник native messaging «звонок в дверь» (05): настоящий бинарь против настоящего плеера.
+#[path = "browser_session_process/native_host.rs"]
+mod native_host;

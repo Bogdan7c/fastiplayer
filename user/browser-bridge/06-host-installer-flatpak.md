@@ -61,3 +61,11 @@
 - Memories: `mem:browser-bridge/core`, `mem:config/schema-store-decomposition-s23`, `mem:settings-ui/design`.
 
 Memories: `mem:settings-ui/application-contract-s08`, `mem:config/schema-store-decomposition-s23`, `mem:app-egui/notifications`.
+
+## Поправки по итогам 05 (2.11.2026, решения 153–156)
+
+- Имя посредника и файла подключения — `browser_bridge_protocol::extension_identity::NATIVE_HOST_NAME` (`io.github.bogdan7c.fastiplayer.bridge`, файл `<имя>.json`). Разрешённые ID — оттуда же (`ALLOWED_EXTENSIONS`): установщик пишет `allowed_origins` (`chrome-extension://<ID>/`) и `allowed_extensions` из того же списка, а не из своих констант.
+- Бинарь посредника — `fastiplayer-browser-host` (crate `browser-bridge-host`). Релизный — 4 МБ, только `libc` и `libgcc_s`, требует GLIBC 2.39 (рантайм Chrome 156 — 2.42). Для Flatpak-браузера сборку проверить под glibc рантайма.
+- Во Flatpak в `path` файла подключения должен стоять сам бинарь внутри папки песочницы: скрипт-обёртка стенда 05 там не работает.
+- Если Flatpak-сборка посредника упрётся в размер или библиотеки, клиент двери выносится из `desktop-integration` в свой crate (решение 155).
+- Живая проверка Flatpak-Chrome — здесь: `talk-name=io.github.Bogdan7c.Fastiplayer.*`, экстеншен через CDP `Extensions.loadUnpacked`. Мини-экстеншен 05 для этого годится, но он вне репозитория — при необходимости собирается заново по описанию в `results/05.md`.
