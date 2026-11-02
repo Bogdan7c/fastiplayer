@@ -621,7 +621,7 @@ impl Demuxer for PushedStreamDemuxer {
         self.state.download_cut().data_end()
     }
 
-    /// Ждём ли мы байтов живой страницы (правило — [`crate::producer_wait`]).
+    /// Ждём ли мы байтов живой страницы (правило — внутренний модуль `producer_wait`).
     fn data_wait(&self) -> DemuxDataWait {
         stream_data_wait(&self.buffer, &self.state)
     }

@@ -187,7 +187,7 @@ pub enum SettingsFilePersistOutcome<'report> {
     NothingToSave,
 }
 
-/// Читает отчёт сохранения `AppConfigStore` (см. [`deferred_report`]).
+/// Читает отчёт сохранения `AppConfigStore` (см. внутреннюю функцию `deferred_report`).
 #[must_use]
 pub fn settings_file_persist_outcome(report: &PersistReport) -> SettingsFilePersistOutcome<'_> {
     match (report.outcome, report.durability_warning.as_deref()) {
