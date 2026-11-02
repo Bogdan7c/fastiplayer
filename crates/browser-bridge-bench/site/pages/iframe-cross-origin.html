@@ -15,8 +15,11 @@ import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.j
 import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
 import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
 
+/** Сколько родитель ждёт отчёт iframe в режиме передачи, мс (меньше бюджета страницы). */
+const HANDOFF_INNER_WAIT_MS = 200000;
+
 await runScenario('iframe-cross-origin', async (ctx) => {
-  const { otherOrigin, run, handoff, reportOrigin } = ctx.params;
+  const { otherOrigin, run, handoff, mode, reportOrigin } = ctx.params;
   if (!otherOrigin) throw new Error('other_origin parameter is required');
   ctx.check('origins-differ', new URL(otherOrigin).origin !== location.origin, `main=${location.origin}, inner=${new URL(otherOrigin).origin}`);
   const innerReport = new Promise((resolve) => {
@@ -26,21 +29,25 @@ await runScenario('iframe-cross-origin', async (ctx) => {
   });
   const frame = document.createElement('iframe');
   const query = new URLSearchParams({ run, report_origin: reportOrigin });
-  if (handoff) query.set('handoff', '1');
+  // Режим передаётся внутрь: видео играет в iframe, и сам iframe общается с роботом стенда.
+  if (handoff) query.set('mode', mode);
   frame.src = `${otherOrigin}/site/pages/iframe-inner.html?${query}`;
   frame.width = 520;
   frame.height = 320;
   document.body.append(frame);
-  const timeout = new Promise((resolve) => setTimeout(() => resolve(null), 18000));
+  // В режиме передачи iframe ждёт команд робота, поэтому отчёт приходит намного позже.
+  const innerWaitMs = handoff ? HANDOFF_INNER_WAIT_MS : 18000;
+  const timeout = new Promise((resolve) => setTimeout(() => resolve(null), innerWaitMs));
   const inner = await Promise.race([innerReport, timeout]);
   if (!inner) {
-    ctx.check('inner-player-reported', false, 'no report from inner frame within 18000 ms');
+    ctx.check('inner-player-reported', false, `no report from inner frame within ${innerWaitMs} ms`);
     return;
   }
   ctx.check('inner-player-reported', true, `inner status=${inner.status}, ua-origin=${new URL(otherOrigin).host}`);
   const origin = inner.checks.find((entry) => entry.name === 'inner-origin');
   ctx.check('inner-ran-on-other-origin', Boolean(origin?.detail.includes(new URL(otherOrigin).origin)), origin?.detail ?? 'no inner-origin check');
   for (const entry of inner.checks) ctx.check(`inner:${entry.name}`, entry.ok, entry.detail);
+  for (const [name, value] of Object.entries(inner.metrics ?? {})) ctx.metric(name, value);
 });
 </script>
 </body>

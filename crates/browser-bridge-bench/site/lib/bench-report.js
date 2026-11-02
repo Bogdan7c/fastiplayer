@@ -2,10 +2,18 @@
 //
 // Контракт: страница шлёт РОВНО ОДИН отчёт `POST <report_origin>/bench/report`
 // со статусом pass | fail | unsupported и списком проверок с числами в `detail`.
-// Параметры URL: run (id прогона), report_origin (куда слать; по умолчанию свой origin).
+// Параметры URL: run (id прогона), report_origin (куда слать; по умолчанию свой origin),
+// mode=handoff (режим передачи: страницей командует робот стенда, см. handoff-mode.js).
 
 /** Общий бюджет страницы, мс (в брифе: вся страница ≤ ~25 с). */
 export const PAGE_BUDGET_MS = 25000;
+/**
+ * Бюджет страницы в режиме передачи: страницей командует робот (передача, команды плеера,
+ * ожидание сводок плеера раз в 10 с), поэтому 25 с мало. Робот сам ограничен таймаутами.
+ */
+export const HANDOFF_PAGE_BUDGET_MS = 240000;
+import { HANDOFF_MODE, createRealFrameProbe } from './handoff-mode.js';
+
 /** Идентификатор прогона, если страницу открыли руками. */
 const MANUAL_RUN_ID = 'manual';
 
@@ -17,7 +25,8 @@ export function pageParams() {
   return {
     run: params.get('run') || MANUAL_RUN_ID,
     reportOrigin: params.get('report_origin') || location.origin,
-    handoff: params.get('handoff') === '1',
+    mode: params.get('mode') || 'plain',
+    handoff: params.get('mode') === HANDOFF_MODE,
     otherOrigin: params.get('other_origin') || null,
     raw: params,
   };
@@ -43,6 +52,10 @@ class ScenarioContext {
     this.scenario = scenario;
     this.params = params;
     this.checks = [];
+    /** Именованные числа отчёта: сценарий стенда сравнивает их с порогами. */
+    this.metrics = {};
+    /** Настоящий счётчик кадров мимо тени (только в режиме передачи). */
+    this.realFrames = null;
     this.pageErrors = [];
     this.startedAt = performance.now();
   }
@@ -52,6 +65,16 @@ class ScenarioContext {
     this.checks.push({ name, ok: Boolean(ok), detail: String(detail) });
     this.log(`check ${ok ? 'ok' : 'FAIL'} ${name}: ${detail}`);
     return Boolean(ok);
+  }
+
+  /** Записывает число в отчёт (конечное; всё остальное — ошибка страницы, а не молчаливый 0). */
+  metric(name, value) {
+    if (!Number.isFinite(value)) {
+      this.check(`metric-${name}`, false, `not a finite number: ${value}`);
+      return;
+    }
+    this.metrics[name] = value;
+    this.log(`metric ${name}=${value}`);
   }
 
   /** Строка в журнал стенда (`POST /bench/log`, source=page). */
@@ -105,8 +128,11 @@ export async function runScenario(scenario, body, options = {}) {
   collectPageErrors(context);
   document.title = `RUN ${scenario}`;
   let unsupported = false;
+  const budgetMs = options.budgetMs ?? (params.handoff ? HANDOFF_PAGE_BUDGET_MS : PAGE_BUDGET_MS);
   try {
-    await withDeadline(body(context), options.budgetMs ?? PAGE_BUDGET_MS);
+    // Чистый счётчик кадров создаём ДО плеера страницы (в режиме передачи).
+    if (params.handoff) context.realFrames = await createRealFrameProbe();
+    await withDeadline(body(context), budgetMs);
   } catch (error) {
     if (error instanceof UnsupportedError) {
       unsupported = true;
@@ -129,6 +155,7 @@ export async function runScenario(scenario, body, options = {}) {
     checks: context.checks,
     user_agent: navigator.userAgent,
     elapsed_ms: context.elapsedMs(),
+    metrics: context.metrics,
   };
   document.title = `${report.status.toUpperCase()} ${scenario} (${report.elapsed_ms} ms)`;
   if (options.reportToParent) {

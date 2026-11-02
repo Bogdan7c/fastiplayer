@@ -13,17 +13,28 @@
 import { runScenario, UnsupportedError } from '../lib/bench-report.js';
 import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
 import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
-import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount, observeHandoff } from '../lib/scenario-kit.js';
 
 /** Сколько ждём на паузе без запросов, мс. */
 const PAUSE_OBSERVE_MS = 3000;
+/** Буфер наперёд в режиме передачи, с. */
+const HANDOFF_BUFFER_AHEAD_S = 4;
 /** Перемотка, с. */
 const SEEK_TARGET_S = 20;
 
 await runScenario('mse-fmp4', async (ctx) => {
-  const { video, player } = await startAsset(ctx, 'h264-aac');
+  // В режиме передачи буфер наперёд мал: роботу нужно место, куда перемотать ЗА его конец
+  // (ролик всего 30 с).
+  const session = await startAsset(ctx, 'h264-aac', ctx.params.handoff ? { bufferAheadS: HANDOFF_BUFFER_AHEAD_S } : {});
+  const { video, player } = session;
   await checkPlaying(ctx, video, 'playing');
   ctx.check('two-source-buffers', sourceBufferCount(player) === 2, `sourceBuffers=${sourceBufferCount(player)}`);
+  // Режим передачи: дальше страница под командой робота (пауза/перемотка проверяются плеером).
+  if (ctx.params.handoff) {
+    await observeHandoff(ctx, session);
+    await player.destroy();
+    return;
+  }
 
   // Пауза: после оседания буфера новых запросов сегментов быть не должно.
   player.pause();

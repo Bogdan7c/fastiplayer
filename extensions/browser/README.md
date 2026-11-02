@@ -41,7 +41,7 @@ tests/          *.test.ts
   `crates/browser-bridge-protocol/fixtures/extension-identity.json`.
 - В корне `dist/<браузер>/` лежат `manifest.json` и ровно то, на что он ссылается (тест это проверяет) — каталог готов к упаковке в `.crx`/`.xpi` (сессия 07a).
 - Сборка детерминирована: повторный запуск даёт те же байты.
-- Минимумы: Chrome 116 (WebSocket продлевает жизнь service worker), Firefox 140 (`data_collection_permissions`; `world: "MAIN"` есть с 128).
+- Минимумы: Chrome 148 (ключ манифеста `message_serialization: structured_clone` — байты видео идут в фон без base64; WebSocket продлевает жизнь service worker с 116), Firefox 140 (`data_collection_permissions`; `world: "MAIN"` есть с 128).
 
 ## Зависимости (только dev)
 

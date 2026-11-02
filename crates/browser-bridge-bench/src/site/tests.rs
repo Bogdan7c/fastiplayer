@@ -602,3 +602,105 @@ fn dropping_the_site_closes_both_ports() {
         );
     }
 }
+
+#[test]
+fn page_polls_robot_commands_in_order_and_sees_only_new_ones() {
+    let fixture = start_fixture();
+    let run = RunId::new("cmd-run-1").unwrap();
+    let other = RunId::new("cmd-run-2").unwrap();
+    let origin = fixture.site.main_origin();
+    let poll = |run: &RunId, seen: usize| -> Vec<String> {
+        let response = get(&origin, &format!("/bench/commands/{run}/{seen}"));
+        assert_eq!(response.status, 200);
+        assert_eq!(response.headers["access-control-allow-origin"], "*");
+        serde_json::from_slice(&response.body).expect("a JSON array of strings")
+    };
+
+    assert!(poll(&run, 0).is_empty(), "nothing was sent yet");
+    fixture.site.send_command(&run, "handed-off");
+    fixture.site.send_command(&run, "expect-paused");
+    fixture.site.send_command(&other, "finish");
+    assert_eq!(poll(&run, 0), vec!["handed-off", "expect-paused"]);
+    // Страница уже получила одну команду — повтора нет.
+    assert_eq!(poll(&run, 1), vec!["expect-paused"]);
+    assert!(poll(&run, 2).is_empty());
+    // Команды чужого прогона не просачиваются.
+    assert_eq!(poll(&other, 0), vec!["finish"]);
+}
+
+#[test]
+fn malformed_command_polls_are_refused() {
+    let fixture = start_fixture();
+    let origin = fixture.site.main_origin();
+    for path in [
+        "/bench/commands/",
+        "/bench/commands/run-1",
+        "/bench/commands/run-1/notanumber",
+        "/bench/commands/BAD_RUN/0",
+    ] {
+        assert_eq!(get(&origin, path).status, 400, "{path}");
+    }
+    let posted = send(&origin, "POST", "/bench/commands/run-1/0", &[], b"");
+    assert_eq!(posted.status, 405);
+}
+
+#[test]
+fn wait_log_line_finds_a_line_without_consuming_the_log() {
+    let fixture = start_fixture();
+    let run = RunId::new("log-wait-1").unwrap();
+    let origin = fixture.site.main_origin();
+    let payload = format!(r#"{{"source":"page","run":"{run}","line":"mse-fmp4: handoff-ready"}}"#);
+    let sender_origin = origin.clone();
+    let sender = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        send(
+            &sender_origin,
+            "POST",
+            "/bench/log",
+            &[],
+            payload.as_bytes(),
+        )
+        .status
+    });
+    let line = fixture
+        .site
+        .wait_log_line(&run, "handoff-ready", Duration::from_secs(5))
+        .expect("the line arrives");
+    assert_eq!(line, "mse-fmp4: handoff-ready");
+    assert_eq!(sender.join().unwrap(), 204);
+    // Ожидание не расходует журнал: строка остаётся для take_logs.
+    assert_eq!(fixture.site.take_logs(&run).len(), 1);
+
+    let error = fixture
+        .site
+        .wait_log_line(&run, "never-logged", Duration::from_millis(200))
+        .expect_err("no such line");
+    assert!(
+        matches!(error, SiteError::LogLineTimeout { ref needle, .. } if needle == "never-logged")
+    );
+}
+
+#[test]
+fn report_metrics_survive_the_round_trip_and_default_to_empty() {
+    let fixture = start_fixture();
+    let with_metrics = RunId::new("metrics-run").unwrap();
+    let without = RunId::new("no-metrics-run").unwrap();
+    let origin = fixture.site.main_origin();
+    let body = format!(
+        r#"{{"run":"{with_metrics}","scenario":"mse-fmp4","status":"pass","metrics":{{"real_frames":3,"window_s":9.5}}}}"#
+    );
+    send(&origin, "POST", "/bench/report", &[], body.as_bytes());
+    let plain = format!(r#"{{"run":"{without}","scenario":"mse-fmp4","status":"pass"}}"#);
+    send(&origin, "POST", "/bench/report", &[], plain.as_bytes());
+    let report = fixture
+        .site
+        .wait_report(&with_metrics, Duration::from_secs(2))
+        .unwrap();
+    assert_eq!(report.metrics["real_frames"], 3.0);
+    assert_eq!(report.metrics["window_s"], 9.5);
+    let plain_report = fixture
+        .site
+        .wait_report(&without, Duration::from_secs(2))
+        .unwrap();
+    assert!(plain_report.metrics.is_empty());
+}

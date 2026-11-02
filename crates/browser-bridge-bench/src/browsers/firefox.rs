@@ -8,14 +8,18 @@
 use std::ffi::OsString;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use browser_bridge_protocol::extension_identity::FIREFOX_EXTENSION_ID;
 use serde_json::{Value, json};
 
+use super::hand_off::{
+    HAND_OFF_EXTENSION_PAGE, HandOffError, HandOffOutcome, ROBOT_FUNCTION, parse_robot_output,
+};
 use super::marionette::Marionette;
 use super::support::{
-    GRACEFUL_EXIT_WAIT, GROUP_GONE_WAIT, TERMINATE_GRACE, settle_page_text, spawn_browser,
+    EXTENSION_PAGE_TIMEOUT, GRACEFUL_EXIT_WAIT, GROUP_GONE_WAIT, POLL_STEP, TERMINATE_GRACE,
+    settle_page_text, spawn_browser,
 };
 use super::{
     BrowserError, BrowserExit, BrowserKind, BrowserUnderTest, ExtensionPage, ExtensionSource,
@@ -28,6 +32,10 @@ use crate::environment::{BenchEnvironment, DisplayTarget};
 const EXTENSION_UUID: &str = "7f0c6e10-5a3b-4c1e-9d2f-0b6a8e4d1c33";
 /// Сколько ждать Marionette после старта Firefox (первый запуск профиля долгий).
 const MARIONETTE_WAIT: Duration = Duration::from_secs(60);
+
+/// Потолок асинхронного скрипта Marionette: фон отвечает на `hand_off_tab` только после
+/// того, как поднял связь с плеером.
+const HAND_OFF_SCRIPT_TIMEOUT_MS: u64 = 60_000;
 
 /// Запущенный Firefox.
 pub(crate) struct Firefox {
@@ -207,6 +215,53 @@ impl Firefox {
         Ok(handle)
     }
 
+    /// Выполняет скрипт робота в странице экстеншена (контекст content). API экстеншена в
+    /// такой странице лежит на самом окне; песочница Marionette видит его через
+    /// `wrappedJSObject`. Пока страница грузится, повторяем попытку.
+    fn run_robot(&mut self, page_url_prefix: &str) -> Result<HandOffOutcome, BrowserError> {
+        self.marionette.command(
+            "WebDriver:SetTimeouts",
+            json!({ "script": HAND_OFF_SCRIPT_TIMEOUT_MS }),
+        )?;
+        let script = format!(
+            "const done = arguments[arguments.length - 1];\n\
+             const raw = window.wrappedJSObject || window;\n\
+             const api = raw.browser || raw.chrome;\n\
+             ({ROBOT_FUNCTION})(api, arguments[0]).then(done, (error) => done(JSON.stringify({{ robot: \"no_reply\", error: String(error) }})));"
+        );
+        let deadline = Instant::now() + EXTENSION_PAGE_TIMEOUT;
+        loop {
+            let attempt = self
+                .marionette
+                .command(
+                    "WebDriver:ExecuteAsyncScript",
+                    json!({ "script": script, "args": [page_url_prefix] }),
+                )
+                .and_then(|reply| {
+                    reply
+                        .get("value")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .ok_or_else(|| {
+                            BrowserError::protocol(
+                                "Marionette",
+                                format!("ExecuteAsyncScript reply: {reply}"),
+                            )
+                        })
+                })
+                .and_then(|raw| Ok(parse_robot_output(&raw, page_url_prefix)?));
+            match attempt {
+                Err(BrowserError::HandOff(HandOffError::PageNotReady))
+                | Err(BrowserError::CommandFailed { .. })
+                    if Instant::now() < deadline =>
+                {
+                    std::thread::sleep(POLL_STEP);
+                }
+                other => return other,
+            }
+        }
+    }
+
     fn body_text(&mut self) -> Result<String, BrowserError> {
         let reply = self.marionette.command(
             "WebDriver:ExecuteScript",
@@ -259,6 +314,24 @@ impl BrowserUnderTest for Firefox {
         let text = text?;
         closed?;
         Ok(text)
+    }
+
+    fn hand_off_tab(
+        &mut self,
+        stand_tab: &TabHandle,
+        page_url_prefix: &str,
+    ) -> Result<HandOffOutcome, BrowserError> {
+        let url = format!("moz-extension://{EXTENSION_UUID}/{HAND_OFF_EXTENSION_PAGE}");
+        let handle = self.open(&url)?;
+        let outcome = self.run_robot(page_url_prefix);
+        // Служебную страницу закрываем в любом случае; затем возвращаемся на вкладку стенда
+        // (close_tab выбрал «первую оставшуюся», а нужна именно вкладка стенда).
+        let closed = self.close_tab(TabHandle::new(handle));
+        let returned = self.switch_to(stand_tab.as_str());
+        let outcome = outcome?;
+        closed?;
+        returned?;
+        Ok(outcome)
     }
 
     fn shutdown(mut self: Box<Self>) -> Result<BrowserExit, BrowserError> {

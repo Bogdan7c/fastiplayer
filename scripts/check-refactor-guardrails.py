@@ -1575,7 +1575,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"browser-bridge-bench"}),
             BROWSER_BRIDGE_BENCH_ALLOWED_DEPENDENCIES,
-            "browser-bridge-bench is a local test bench that observes the player only through its log",
+            "browser-bridge-bench is a local test bench that observes the player through its log and drives its window over MPRIS (busctl), without linking player crates",
         )
     )
     violations.extend(

@@ -7,15 +7,18 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use browser_bridge_protocol::extension_identity::CHROMIUM_DEVELOPMENT_EXTENSION_ID;
 use serde_json::Value;
 
 use super::devtools::{CdpConnection, http_json, http_request};
+use super::hand_off::{
+    HAND_OFF_EXTENSION_PAGE, HandOffError, HandOffOutcome, ROBOT_FUNCTION, parse_robot_output,
+};
 use super::support::{
-    GRACEFUL_EXIT_WAIT, GROUP_GONE_WAIT, TERMINATE_GRACE, settle_page_text, spawn_browser,
-    wait_until,
+    EXTENSION_PAGE_TIMEOUT, GRACEFUL_EXIT_WAIT, GROUP_GONE_WAIT, POLL_STEP, TERMINATE_GRACE,
+    settle_page_text, spawn_browser, wait_until,
 };
 use super::{
     BrowserError, BrowserExit, BrowserKind, BrowserUnderTest, ExtensionPage, ExtensionSource,
@@ -26,6 +29,9 @@ use crate::environment::process::ManagedProcess;
 
 /// Сколько ждать, пока Chromium запишет порт отладки.
 const DEVTOOLS_PORT_WAIT: Duration = Duration::from_secs(40);
+/// Сколько ждать ответ фона на `hand_off_tab`: он сначала поднимает связь с плеером
+/// (будит его через посредника), и только потом отвечает.
+const HAND_OFF_REPLY_WAIT: Duration = Duration::from_secs(60);
 /// Имя файла с портом отладки в каталоге профиля.
 const ACTIVE_PORT_FILE: &str = "DevToolsActivePort";
 
@@ -124,6 +130,40 @@ impl Chromium {
         )
     }
 
+    /// Выполняет скрипт робота в странице экстеншена; пока страница не получила API
+    /// экстеншена (грузится), повторяет попытку.
+    fn run_robot_in(
+        &self,
+        target: &Value,
+        page_url_prefix: &str,
+    ) -> Result<HandOffOutcome, BrowserError> {
+        let socket_url = target
+            .get("webSocketDebuggerUrl")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                BrowserError::protocol("DevTools", format!("no socket url: {target}"))
+            })?;
+        let mut connection = CdpConnection::connect(socket_url)?;
+        let prefix_literal = Value::String(page_url_prefix.to_owned()).to_string();
+        let expression = format!("({ROBOT_FUNCTION})(globalThis.chrome, {prefix_literal})");
+        let deadline = Instant::now() + EXTENSION_PAGE_TIMEOUT;
+        loop {
+            let attempt = connection
+                .evaluate_string_promise(&expression, HAND_OFF_REPLY_WAIT)
+                .and_then(|raw| Ok(parse_robot_output(&raw, page_url_prefix)?));
+            match attempt {
+                // Страница ещё грузится: выражение падает или API нет — пробуем снова.
+                Err(BrowserError::HandOff(HandOffError::PageNotReady))
+                | Err(BrowserError::CommandFailed { .. })
+                    if Instant::now() < deadline =>
+                {
+                    std::thread::sleep(POLL_STEP);
+                }
+                other => return other,
+            }
+        }
+    }
+
     fn close_target(&self, target_id: &str) -> Result<(), BrowserError> {
         http_request(self.port, "GET", &format!("/json/close/{target_id}")).map(|_| ())
     }
@@ -132,7 +172,7 @@ impl Chromium {
 /// Кодирует адрес для `PUT /json/new?<адрес>`.
 ///
 /// Chromium разбирает хвост как набор параметров запроса: незакодированный `&` обрезает
-/// адрес (`?run=x&handoff=1` терял `handoff=1`, и перехватчик стенда молча не включался).
+/// адрес (`?run=x&mode=handoff` терял `mode=handoff`, и страница молча оставалась в обычном режиме).
 /// Кодируем всё, кроме безопасных знаков; Chromium раскодирует адрес обратно.
 fn percent_encode_query(url: &str) -> String {
     let mut encoded = String::with_capacity(url.len());
@@ -189,6 +229,31 @@ impl BrowserUnderTest for Chromium {
         Ok(text)
     }
 
+    fn hand_off_tab(
+        &mut self,
+        stand_tab: &TabHandle,
+        page_url_prefix: &str,
+    ) -> Result<HandOffOutcome, BrowserError> {
+        let url = format!(
+            "chrome-extension://{CHROMIUM_DEVELOPMENT_EXTENSION_ID}/{HAND_OFF_EXTENSION_PAGE}"
+        );
+        let target = self.new_target(&url)?;
+        let id = target_id(&target)?;
+        let outcome = self.run_robot_in(&target, page_url_prefix);
+        // Служебную страницу закрываем в любом случае и возвращаем вкладке стенда фокус.
+        let closed = self.close_target(&id);
+        let activated = http_request(
+            self.port,
+            "GET",
+            &format!("/json/activate/{}", stand_tab.as_str()),
+        )
+        .map(|_| ());
+        let outcome = outcome?;
+        closed?;
+        activated?;
+        Ok(outcome)
+    }
+
     fn shutdown(mut self: Box<Self>) -> Result<BrowserExit, BrowserError> {
         // Просим браузер закрыться сам: `Browser.close` на браузерной цели.
         let asked = http_json(self.port, "GET", "/json/version")
@@ -224,8 +289,11 @@ mod tests {
 
     #[test]
     fn ampersands_and_equals_survive_the_devtools_query() {
-        let encoded = percent_encode_query("http://127.0.0.1:1/p.html?run=a&handoff=1");
-        assert_eq!(encoded, "http://127.0.0.1:1/p.html%3Frun%3Da%26handoff%3D1");
+        let encoded = percent_encode_query("http://127.0.0.1:1/p.html?run=a&mode=handoff");
+        assert_eq!(
+            encoded,
+            "http://127.0.0.1:1/p.html%3Frun%3Da%26mode%3Dhandoff"
+        );
         assert!(!encoded.contains('&'));
     }
 

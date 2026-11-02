@@ -13,7 +13,7 @@
 import { runScenario, UnsupportedError } from '../lib/bench-report.js';
 import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
 import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
-import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount, observeHandoff } from '../lib/scenario-kit.js';
 
 await runScenario('cdn-guard', async (ctx) => {
   const login = await fetch('/cdn/login', { credentials: 'same-origin' });
@@ -25,8 +25,11 @@ await runScenario('cdn-guard', async (ctx) => {
   ctx.check('no-cookie-is-403', denied.status === 403, `credentials=omit status=${denied.status}`);
   const allowed = await fetch(`/cdn/media/${probePath}`, { credentials: 'include' });
   ctx.check('cookie-is-200', allowed.status === 200, `credentials=include status=${allowed.status}`);
-  const { video, player } = await startAsset(ctx, 'h264-aac', { mediaBase: '/cdn/media/', credentials: 'include' });
+  const session = await startAsset(ctx, 'h264-aac', { mediaBase: '/cdn/media/', credentials: 'include' });
+  const { video, player } = session;
   await checkPlaying(ctx, video, 'playing-from-cdn');
+  // Под тенью страница качает сегменты прежним путём (с её куками): CDN видит тот же запрос.
+  if (ctx.params.handoff) await observeHandoff(ctx, session);
   ctx.check('segments-from-cdn', player.requests.every((r) => r.url.includes('/cdn/media/')) && player.segmentRequestCount > 0,
     `segment requests=${player.segmentRequestCount}`);
   await player.destroy();

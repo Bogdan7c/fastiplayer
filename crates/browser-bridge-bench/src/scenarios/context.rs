@@ -15,8 +15,6 @@ use crate::media::{MediaError, ensure_media};
 use crate::observe::ObserveError;
 use crate::site::{SiteError, StandSite, StandSiteConfig};
 
-use super::stand_extension::StandExtensionError;
-
 /// Фильтр журнала плеера внутри стенда: `info` содержит сводки воспроизведения.
 const PLAYER_RUST_LOG: &str = "info";
 
@@ -33,8 +31,8 @@ pub enum ScenarioError {
     Browser(#[from] BrowserError),
     #[error("log: {0}")]
     Observe(#[from] ObserveError),
-    #[error("stand extension: {0}")]
-    StandExtension(#[from] StandExtensionError),
+    #[error("player control: {0}")]
+    PlayerControl(#[from] crate::player_control::PlayerControlError),
     /// Не собран настоящий экстеншен: стенд не собирает его сам.
     #[error(
         "the real extension build is missing at {path}: run `npm run build` in extensions/browser"

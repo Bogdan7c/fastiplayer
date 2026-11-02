@@ -1,13 +1,13 @@
 //! `extension-status`: НАСТОЯЩИЙ экстеншен 07 видит плеер и сообщает об этом в попапе.
 //!
-//! Это не проверка воспроизведения (её делает `smoke` стендовым перехватчиком), а проверка,
+//! Это не проверка воспроизведения (её делают `smoke` и `capture`), а проверка,
 //! что собранный `extensions/browser/dist/<браузер>` разговаривает с настоящим посредником
 //! и плеером: попап показывает «Connected to Fastiplayer».
 
-use std::path::PathBuf;
 use std::time::Instant;
 
 use super::context::{ScenarioError, Stand};
+use super::handoff_run::real_extension_dir;
 use super::outcome::{StepResult, Verdict};
 use crate::browsers::{BrowserKind, ExtensionPage, ExtensionSource};
 use crate::observe::read_host_evidence;
@@ -15,23 +15,10 @@ use crate::observe::read_host_evidence;
 /// Текст попапа при живой связи (контракт интерфейса экстеншена 07).
 const CONNECTED_TEXT: &str = "Connected to Fastiplayer";
 
-/// Каталог сборки настоящего экстеншена для браузера.
-fn dist_dir(stand: &Stand, browser: BrowserKind) -> PathBuf {
-    let name = match browser {
-        BrowserKind::Chromium => "chrome",
-        BrowserKind::Firefox => "firefox",
-    };
-    stand
-        .settings
-        .repo_root
-        .join("extensions/browser/dist")
-        .join(name)
-}
-
 pub(super) fn run(stand: &Stand, browser: BrowserKind) -> StepResult {
     let started = Instant::now();
     let verdict = stand.with_environment(|environment| {
-        let dist = dist_dir(stand, browser);
+        let dist = real_extension_dir(stand, browser);
         if !dist.join("manifest.json").is_file() {
             return Err(ScenarioError::RealExtensionNotBuilt { path: dist });
         }

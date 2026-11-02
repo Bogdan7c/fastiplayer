@@ -27,6 +27,24 @@ pub struct FrameEvidence {
     pub summary_line: String,
 }
 
+/// Две сводки, между которыми показ кадров вырос на нужную величину.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameGrowth {
+    /// Сводка-точка отсчёта.
+    pub before: FrameEvidence,
+    /// Сводка, в которой кадров уже достаточно больше.
+    pub after: FrameEvidence,
+}
+
+impl FrameGrowth {
+    /// На сколько выросло число показанных кадров.
+    pub fn frames_gained(&self) -> u64 {
+        self.after
+            .presented_frames
+            .saturating_sub(self.before.presented_frames)
+    }
+}
+
 /// Читает файл журнала по мере роста; помнит, до какой строки уже «дочитал» ожидающий.
 pub struct PlayerLog {
     path: PathBuf,
@@ -129,6 +147,61 @@ impl PlayerLog {
                     what: format!("a playback summary with presented_frames >= {at_least}"),
                     waited: timeout,
                     last_seen: last_summary,
+                });
+            }
+            std::thread::sleep(POLL_STEP);
+        }
+    }
+
+    /// Забывает всё, что в журнале уже есть: следующие `wait_*` увидят только новые строки.
+    /// Нужно, когда один плеер переживает несколько страниц и старые сводки не должны
+    /// засчитываться новой.
+    pub fn skip_history(&mut self) -> Result<(), ObserveError> {
+        self.refresh()?;
+        self.cursor = self.lines.len();
+        Ok(())
+    }
+
+    /// Доказывает, что показ кадров ИДЁТ ПРЯМО СЕЙЧАС: берёт первую новую сводку как точку
+    /// отсчёта и ждёт следующую, в которой `presented_frames` выросло не меньше чем на
+    /// `at_least_more`. Одной сводки мало: она накопительная и могла вобрать кадры,
+    /// показанные до события, которое проверяем (перемотка, смена качества, смена поколения).
+    pub fn wait_for_frame_growth(
+        &mut self,
+        at_least_more: u64,
+        timeout: Duration,
+    ) -> Result<FrameGrowth, ObserveError> {
+        let deadline = Instant::now() + timeout;
+        let mut baseline: Option<FrameEvidence> = None;
+        loop {
+            self.refresh()?;
+            while self.cursor < self.lines.len() {
+                let line = &self.lines[self.cursor];
+                self.cursor += 1;
+                let Some(evidence) = parse_summary(line) else {
+                    continue;
+                };
+                match &baseline {
+                    None => baseline = Some(evidence),
+                    Some(first)
+                        if evidence.presented_frames
+                            >= first.presented_frames.saturating_add(at_least_more) =>
+                    {
+                        return Ok(FrameGrowth {
+                            before: first.clone(),
+                            after: evidence,
+                        });
+                    }
+                    Some(_) => {}
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(ObserveError::Timeout {
+                    what: format!(
+                        "presented_frames to grow by at least {at_least_more} between two summaries"
+                    ),
+                    waited: timeout,
+                    last_seen: baseline.map(|first| first.summary_line),
                 });
             }
             std::thread::sleep(POLL_STEP);
@@ -258,6 +331,54 @@ mod tests {
             last_seen
                 .expect("last summary")
                 .contains("presented_frames=7")
+        );
+    }
+
+    fn summary_with(frames: u64) -> String {
+        format!("{}\n", PERIODIC.replace("247", &frames.to_string()))
+    }
+
+    #[test]
+    fn frame_growth_needs_two_summaries_and_ignores_history() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("player.log");
+        // Старая сводка прошлой страницы: огромная, но к новому событию отношения не имеет.
+        append(&path, &summary_with(9000));
+        let mut log = PlayerLog::open(&path);
+        log.skip_history().expect("readable");
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            for frames in [100, 120, 260] {
+                std::thread::sleep(Duration::from_millis(250));
+                append(&writer_path, &summary_with(frames));
+            }
+        });
+        let growth = log
+            .wait_for_frame_growth(100, Duration::from_secs(5))
+            .expect("grows by 100 between 100 and 260");
+        writer.join().expect("writer thread");
+        assert_eq!(growth.before.presented_frames, 100);
+        assert_eq!(growth.after.presented_frames, 260);
+        assert_eq!(growth.frames_gained(), 160);
+    }
+
+    #[test]
+    fn frame_growth_times_out_when_the_player_froze() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("player.log");
+        append(&path, &summary_with(100));
+        append(&path, &summary_with(103));
+        let mut log = PlayerLog::open(&path);
+        let error = log
+            .wait_for_frame_growth(50, Duration::from_millis(400))
+            .expect_err("only 3 more frames were presented");
+        let ObserveError::Timeout { last_seen, .. } = error else {
+            panic!("expected a timeout, got {error:?}");
+        };
+        assert!(
+            last_seen
+                .expect("baseline")
+                .contains("presented_frames=100")
         );
     }
 

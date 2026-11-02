@@ -10,12 +10,14 @@ mod chromium;
 mod devtools;
 mod error;
 mod firefox;
+mod hand_off;
 mod marionette;
 mod support;
 
 use std::path::{Path, PathBuf};
 
 pub use error::BrowserError;
+pub use hand_off::{HandOffError, HandOffOutcome};
 
 use crate::environment::BenchEnvironment;
 
@@ -125,6 +127,15 @@ pub trait BrowserUnderTest {
     fn close_tab(&mut self, tab: TabHandle) -> Result<(), BrowserError>;
     /// Открывает страницу нашего экстеншена и возвращает её видимый текст.
     fn open_extension_page(&mut self, page: ExtensionPage) -> Result<String, BrowserError>;
+    /// Робот «отдать вкладку» (решение 175): открывает служебную страницу экстеншена, находит
+    /// вкладку, чей адрес начинается с `page_url_prefix`, шлёт фону `hand_off_tab` и разбирает
+    /// исход. `stand_tab` — вкладка стенда: после закрытия служебной страницы она снова
+    /// становится активной (неактивную вкладку браузер притормаживает).
+    fn hand_off_tab(
+        &mut self,
+        stand_tab: &TabHandle,
+        page_url_prefix: &str,
+    ) -> Result<HandOffOutcome, BrowserError>;
     /// Мягко закрывает браузер, ждёт выход, добивает остатки группы.
     fn shutdown(self: Box<Self>) -> Result<BrowserExit, BrowserError>;
 }

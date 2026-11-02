@@ -85,6 +85,7 @@ export class BenchPlayer {
     this.clockTimer = null;
     this.watchdogTimer = null;
     this.recreating = false;
+    this.pageSeeking = false;
     this.lastProgress = { at: performance.now(), time: 0 };
     this.onGeneration = options.onGeneration ?? (() => {});
   }
@@ -120,12 +121,30 @@ export class BenchPlayer {
   }
 
   async seek(positionS) {
+    this.pageSeeking = true;
     this.video.currentTime = positionS;
-    if (this.useWorker) {
-      this.worker.postMessage({ type: 'seek', positionS });
-    } else {
-      await this.engine.seek(positionS);
+    try {
+      if (this.useWorker) {
+        this.worker.postMessage({ type: 'seek', positionS });
+      } else {
+        await this.engine.seek(positionS);
+      }
+    } finally {
+      this.pageSeeking = false;
     }
+  }
+
+  /**
+   * Как настоящий плеер: на ЧУЖУЮ перемотку элемента (в режиме передачи её ставит тень по
+   * команде плеера) подкачать сегменты с нового места. Собственные перемотки страницы
+   * (`seek()`) обрабатываются там же и не удваиваются.
+   */
+  followPlayerSeeks() {
+    this.video.addEventListener('seeking', () => {
+      if (this.pageSeeking || this.useWorker || !this.engine) return;
+      this.engine.seek(this.video.currentTime)
+        .catch((error) => this.logLine(`follow seek failed: ${error}`));
+    });
   }
 
   /** ABR: переключиться на другую дорожку той же полосы. */

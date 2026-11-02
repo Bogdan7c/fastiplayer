@@ -8,6 +8,7 @@ use crate::media::safe_path::{join_inside, resolve_existing_file};
 use super::cdn_guard::{CdnGuard, CdnVerdict, login_cookie_header};
 use super::http::{Request, Response};
 use super::reports::{BrowserLogLine, PageReport, ReportStore};
+use super::run_id::RunId;
 use super::static_files::serve_file;
 
 /// Состояние, общее для обоих слушателей (один и тот же сайт на двух origin).
@@ -80,6 +81,13 @@ pub(super) fn route(context: &RouteContext, request: &Request) -> Response {
             method_not_allowed()
         };
     }
+    if let Some(rest) = path.strip_prefix("/bench/commands/") {
+        return if is_read {
+            with_cors(serve_commands(&context.shared.reports, rest))
+        } else {
+            method_not_allowed()
+        };
+    }
     match (request.method.as_str(), path) {
         ("POST", "/bench/report") => {
             with_cors(accept_report(&context.shared.reports, &request.body))
@@ -147,5 +155,24 @@ fn accept_log(store: &ReportStore, body: &[u8]) -> Response {
             Response::new(204)
         }
         Err(error) => Response::text(400, &format!("bad log line: {error}")),
+    }
+}
+
+/// `GET /bench/commands/<run>/<сколько страница уже получила>` → JSON-массив новых команд.
+///
+/// Страница опрашивает этот адрес сама (стенд не может толкнуть её извне), так робот
+/// передаёт странице «передача началась», «заверши и отчитайся» и т. п.
+fn serve_commands(store: &ReportStore, rest: &str) -> Response {
+    let parsed = rest.split_once('/').and_then(|(run, seen)| {
+        let run = RunId::new(run).ok()?;
+        let seen = seen.parse::<usize>().ok()?;
+        Some((run, seen))
+    });
+    let Some((run, seen)) = parsed else {
+        return Response::text(400, "expected /bench/commands/<run>/<seen>");
+    };
+    match serde_json::to_string(&store.commands_since(&run, seen)) {
+        Ok(body) => Response::text(200, &body),
+        Err(error) => Response::text(500, &format!("cannot encode commands: {error}")),
     }
 }

@@ -52,6 +52,9 @@ pub enum BrowserError {
     /// Такой вид расширения этот браузер не принимает.
     #[error("{0}")]
     UnsupportedExtension(String),
+    /// Робот «отдать вкладку» не получил исход от фона экстеншена.
+    #[error("hand off: {0}")]
+    HandOff(#[from] super::hand_off::HandOffError),
     /// Страница расширения так и не показала текст.
     #[error("extension page {url} stayed empty for {waited:?}")]
     ExtensionPageEmpty {

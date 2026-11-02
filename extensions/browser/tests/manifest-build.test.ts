@@ -73,7 +73,10 @@ describe("манифесты", () => {
     const firefox = await builtManifest("firefox");
     assert.equal(chrome["background"].service_worker, "background.js");
     assert.equal(chrome["background"].scripts, undefined);
-    assert.equal(chrome["minimum_chrome_version"], "116");
+    assert.equal(chrome["minimum_chrome_version"], "148");
+    // Байты видео идут контент-скрипт → фон структурным клонированием (Chrome 148+), не JSON.
+    assert.equal(chrome["message_serialization"], "structured_clone");
+    assert.equal(firefox["message_serialization"], undefined);
     assert.deepEqual(firefox["background"].scripts, ["background.js"]);
     assert.equal(firefox["background"].service_worker, undefined);
     assert.match(firefox["content_security_policy"].extension_pages, /connect-src [^;]*ws:\/\/127\.0\.0\.1:\*/);
@@ -134,6 +137,17 @@ describe("сборка dist", () => {
       const second = listFiles(join(outputRoot, target));
       assert.deepEqual([...second.keys()].sort(), [...first.keys()].sort());
       for (const [path, bytes] of first) assert.ok(bytes.equals(second.get(path)!), `${target}: ${path} изменился`);
+    }
+  });
+
+  it("фон и изолированный скрипт собраны в IIFE и знают порт передачи и функцию выбора видео", async () => {
+    for (const target of targets) {
+      for (const part of ["background.js", "content.js"]) {
+        const bundle = readFileSync(join(outputRoot, target, part), "utf8");
+        assert.match(bundle, /fastiplayer-handoff/, `${target}/${part}: нет имени порта передачи`);
+        assert.match(bundle, /fastiplayerBridgeDescribeVideoCandidates/, `${target}/${part}: нет функции выбора видео`);
+        assert.doesNotMatch(bundle, /^\s*(import|export)\s/m);
+      }
     }
   });
 

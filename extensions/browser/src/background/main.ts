@@ -1,16 +1,19 @@
 // Точка входа фона (service worker в Chrome, background script в Firefox).
-// Здесь только сборка частей: поставщик статуса, значок, маршрутизатор порта попапа.
+// Здесь только сборка частей: поставщик статуса, значок, маршрутизатор порта попапа,
+// передача вкладки плееру (src/background/handoff).
 import { applyBadge } from "./badge.ts";
 import { routeStatusPort } from "./status-port-router.ts";
 import { createHostLink } from "./host-link/host-link.ts";
 import { createChromeNativePortFactory, createRealScheduler } from "./host-link/native-port.ts";
 import type { BridgeStatusProvider } from "./status-provider.ts";
+import { installTabHandoffs } from "./handoff/browser-wiring.ts";
 import { NATIVE_HOST_NAME } from "../shared/host-name.ts";
 
 // Связь с посредником: единственный владелец порта native messaging (src/background/host-link).
+const scheduler = createRealScheduler();
 const hostLink = createHostLink({
   portFactory: createChromeNativePortFactory(),
-  scheduler: createRealScheduler(),
+  scheduler,
   hostName: NATIVE_HOST_NAME,
   extensionVersion: chrome.runtime.getManifest().version,
 });
@@ -30,3 +33,7 @@ statusProvider.subscribe(applyBadge);
 chrome.runtime.onConnect.addListener((port) => {
   routeStatusPort(port, statusProvider);
 });
+
+// Команда «отдать вкладку N» (решение 175) от страниц экстеншена; сеанс держит открытый WebSocket,
+// а он продлевает жизнь service worker (Chrome 116+). Состояние сеанса в 09a — в памяти фона.
+installTabHandoffs(hostLink, scheduler);

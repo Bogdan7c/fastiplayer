@@ -3,6 +3,7 @@
 import { BenchPlayer, loadCatalog, standardRefs } from './bench-player.js';
 import { checkPlaying } from './bench-checks.js';
 import { UnsupportedError } from './bench-report.js';
+import { runHandoffPhase } from './handoff-mode.js';
 
 /** Создаёт видеоэлемент на странице (без жеста: autoplay решает флаг/pref робота). */
 export function mountVideo(parent = document.body, id = 'v') {
@@ -36,11 +37,21 @@ export async function startAsset(context, assetId, playerOptions = {}, videoTrac
   return { video, catalog, player, refs };
 }
 
+/**
+ * Режим передачи: страница отыграла свои проверки, ждёт, пока робот «отдаст вкладку»
+ * плееру, и отчитывается фактами под тенью (см. handoff-mode.js).
+ */
+export async function observeHandoff(context, { video, player, refs, catalog }, hooks = {}, options = {}) {
+  const durationS = refs && catalog ? catalog.assets[refs[0].assetId].duration_s : null;
+  await runHandoffPhase(context, { video, player, hooks, durationS, ...options });
+}
+
 /** Сценарий «сыграть ассет и проверить, что играет» (webm, av1, muxed…). */
 export async function playAssetScenario(context, assetId, extraCheck = null) {
   const session = await startAsset(context, assetId);
   await checkPlaying(context, session.video, 'playing');
   if (extraCheck) await extraCheck(session);
+  if (context.params.handoff) await observeHandoff(context, session);
   await session.player.destroy();
 }
 

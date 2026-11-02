@@ -13,7 +13,7 @@
 import { runScenario, UnsupportedError } from '../lib/bench-report.js';
 import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
 import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
-import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount, observeHandoff } from '../lib/scenario-kit.js';
 
 /** Сегмент, на котором видеодорожка «зависает» (индекс), даёт паузу в буфере на 4 с. */
 const HANG_SEGMENT_INDEX = 2;
@@ -22,15 +22,18 @@ const STALL_SECONDS = 2.5;
 const HANG_POSITION_S = 4;
 
 await runScenario('mse-stall-reload', async (ctx) => {
-  const { video, player } = await startAsset(ctx, 'h264-aac', {
+  const session = await startAsset(ctx, 'h264-aac', {
     stallSeconds: STALL_SECONDS,
     hangAt: { kind: 'video', index: HANG_SEGMENT_INDEX },
   });
+  const { video, player } = session;
   const recreated = await waitFor(() => player.generations >= 2, 15000);
   ctx.check('watchdog-recreated-media-source', recreated, `MediaSource count=${player.mediaSources.length}, generations=${player.generations}`);
   const beyond = await waitFor(() => video.currentTime > HANG_POSITION_S + 1, 8000);
   ctx.check('played-past-hang', beyond, `currentTime=${video.currentTime.toFixed(2)} (hang at ${HANG_POSITION_S} s)`);
   await checkPlaying(ctx, video, 'playing-after-reload');
+  // Передача после перезагрузки: сторож под тенью не должен сработать ЕЩЁ раз.
+  if (ctx.params.handoff) await observeHandoff(ctx, session);
   await player.destroy();
 });
 </script>

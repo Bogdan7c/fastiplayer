@@ -13,15 +13,32 @@
 import { runScenario, UnsupportedError } from '../lib/bench-report.js';
 import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
 import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
-import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount, observeHandoff } from '../lib/scenario-kit.js';
 
 /** Малый запас, чтобы смена качества дошла до экрана быстро, с. */
 const ABR_BUFFER_AHEAD_S = 3;
 
 await runScenario('mse-abr', async (ctx) => {
-  const { video, player } = await startAsset(ctx, 'h264-aac', { bufferAheadS: ABR_BUFFER_AHEAD_S }, 'video-360');
+  const session = await startAsset(ctx, 'h264-aac', { bufferAheadS: ABR_BUFFER_AHEAD_S }, 'video-360');
+  const { video, player } = session;
   await checkPlaying(ctx, video, 'playing-360');
   ctx.check('starts-at-360', video.videoHeight === 360, `videoHeight=${video.videoHeight}`);
+  if (ctx.params.handoff) {
+    // Под тенью браузер не декодирует, высоту кадра он не покажет: проверяем, что смена
+    // качества не ломает ход часов, а кадры после неё считает плеер (робот).
+    await observeHandoff(ctx, session, {
+      'switch-quality': async (hookCtx) => {
+        const before = video.currentTime;
+        player.switchTrack({ assetId: 'h264-aac', trackId: 'video-720' });
+        const advanced = await waitFor(() => video.currentTime >= before + 1.5, 10000);
+        hookCtx.check('clock-runs-after-quality-switch', advanced,
+          `currentTime ${before.toFixed(2)} -> ${video.currentTime.toFixed(2)}`);
+        hookCtx.check('quality-switch-kept-one-media-source', player.generations === 1, `generations=${player.generations}`);
+      },
+    });
+    await player.destroy();
+    return;
+  }
   const switchedAt = performance.now();
   player.switchTrack({ assetId: 'h264-aac', trackId: 'video-720' });
   const changed = await waitFor(() => video.videoHeight === 720, 12000);

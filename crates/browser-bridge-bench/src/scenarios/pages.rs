@@ -151,6 +151,7 @@ mod tests {
             checks,
             user_agent: String::new(),
             elapsed_ms: 1,
+            metrics: Default::default(),
         }
     }
 

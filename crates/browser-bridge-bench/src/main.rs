@@ -1,4 +1,4 @@
-//! Точка входа стенда: `browser-bridge-bench [ОПЦИИ] <pages|smoke|extension-status|all>`.
+//! Точка входа стенда: `browser-bridge-bench [ОПЦИИ] <pages|smoke|capture|player-commands|extension-status|all>`.
 //!
 //! Здесь только ввод-вывод и код выхода: сценарии (`scenarios`) возвращают типизированные
 //! результаты, таблицу печатает `report`, аргументы разбирает `cli`.
@@ -61,6 +61,10 @@ fn run(invocation: Invocation) -> ExitCode {
             match steps {
                 Command::Pages => results.extend(scenarios::run_pages(&stand, browser)),
                 Command::Smoke => results.push(scenarios::run_smoke(&stand, browser)),
+                Command::Capture => results.extend(scenarios::run_capture(&stand, browser)),
+                Command::PlayerCommands => {
+                    results.push(scenarios::run_player_commands(&stand, browser));
+                }
                 Command::ExtensionStatus => {
                     results.push(scenarios::run_extension_status(&stand, browser));
                 }
@@ -79,10 +83,16 @@ fn run(invocation: Invocation) -> ExitCode {
     }
 }
 
-/// Какие шаги входят в команду (`all` = все три по очереди; страницы идут первыми).
+/// Какие шаги входят в команду (`all`: страницы первыми — если сами страницы плохи, мост
+/// проверять бессмысленно; `smoke` не входит, это подмножество `capture`).
 fn plan(command: Command) -> Vec<Command> {
     match command {
-        Command::All => vec![Command::Pages, Command::Smoke, Command::ExtensionStatus],
+        Command::All => vec![
+            Command::Pages,
+            Command::Capture,
+            Command::PlayerCommands,
+            Command::ExtensionStatus,
+        ],
         single => vec![single],
     }
 }
@@ -92,10 +102,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_runs_pages_first_then_smoke_then_extension_status() {
+    fn all_runs_pages_first_then_capture_commands_and_extension_status() {
         assert_eq!(
             plan(Command::All),
-            vec![Command::Pages, Command::Smoke, Command::ExtensionStatus]
+            vec![
+                Command::Pages,
+                Command::Capture,
+                Command::PlayerCommands,
+                Command::ExtensionStatus
+            ]
         );
         assert_eq!(plan(Command::Smoke), vec![Command::Smoke]);
     }

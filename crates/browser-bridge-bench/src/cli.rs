@@ -11,6 +11,8 @@ use browser_bridge_bench::scenarios::{BrowserExecutables, RunSettings};
 pub enum Command {
     Pages,
     Smoke,
+    Capture,
+    PlayerCommands,
     ExtensionStatus,
     All,
 }
@@ -45,9 +47,13 @@ Usage: browser-bridge-bench [OPTIONS] <COMMAND>
 
 Commands:
   pages             every stand page in a clean browser (no extension): pass/fail/unsupported
-  smoke             stand interceptor + real host + real player: frames reach the renderer
+  smoke             one page (mse-fmp4) through the real extension, host and player: the
+                    robot hands the tab off, the player presents frames
+  capture           every MSE page, same chain; the browser must NOT decode under the shadow
+  player-commands   pause / play / seek / close from the player window reach the page
   extension-status  the real extension (extensions/browser/dist) says \"Connected to Fastiplayer\"
-  all               pages, smoke and extension-status, one after another
+  all               pages, capture, player-commands and extension-status (smoke is a subset of
+                    capture), one after another
 
 Options:
   --browser <chromium|firefox|both>   browsers to test (default: both)
@@ -147,6 +153,8 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
     match name {
         "pages" => Ok(Command::Pages),
         "smoke" => Ok(Command::Smoke),
+        "capture" => Ok(Command::Capture),
+        "player-commands" => Ok(Command::PlayerCommands),
         "extension-status" => Ok(Command::ExtensionStatus),
         "all" => Ok(Command::All),
         other => Err(UsageError(format!("unknown command '{other}'"))),
@@ -242,6 +250,15 @@ mod tests {
             vec![PathBuf::from("/a"), PathBuf::from("/b")]
         );
         assert!(run.settings.keep_work);
+    }
+
+    #[test]
+    fn new_capture_commands_are_recognised() {
+        assert_eq!(invocation(&["capture"]).command, Command::Capture);
+        assert_eq!(
+            invocation(&["player-commands"]).command,
+            Command::PlayerCommands
+        );
     }
 
     #[test]

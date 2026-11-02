@@ -1,6 +1,6 @@
 //! Хранилище отчётов страниц и журнала из браузера. Владеет данными и синхронизацией ожидания.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -31,7 +31,7 @@ pub struct ReportCheck {
 }
 
 /// Отчёт страницы (`POST /bench/report`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PageReport {
     pub run: RunId,
     pub scenario: String,
@@ -42,6 +42,10 @@ pub struct PageReport {
     pub user_agent: String,
     #[serde(default)]
     pub elapsed_ms: u64,
+    /// Именованные числа, которые страница измерила (кадры, секунды, счётчики). Вердикт
+    /// сценария сравнивает их с порогами, а не разбирает текст `detail`.
+    #[serde(default)]
+    pub metrics: BTreeMap<String, f64>,
 }
 
 /// Кто прислал строку журнала.
@@ -65,20 +69,23 @@ struct StoreState {
     /// Последний присланный отчёт по прогону (повторная отправка страницей заменяет прежний).
     reports: HashMap<RunId, PageReport>,
     logs: HashMap<RunId, Vec<BrowserLogLine>>,
+    /// Команды робота странице по прогону, в порядке отправки (страница опрашивает их сама).
+    commands: HashMap<RunId, Vec<String>>,
 }
 
-/// Потокобезопасное хранилище. `Condvar` будит ожидающего в `wait_report` сразу при приходе отчёта.
+/// Потокобезопасное хранилище. `Condvar` будит ожидающих (`wait_report`, `wait_log_line`)
+/// сразу при приходе отчёта или строки журнала.
 #[derive(Default)]
 pub(super) struct ReportStore {
     state: Mutex<StoreState>,
-    report_arrived: Condvar,
+    changed: Condvar,
 }
 
 impl ReportStore {
     pub(super) fn put_report(&self, report: PageReport) {
         let mut state = self.lock();
         state.reports.insert(report.run.clone(), report);
-        self.report_arrived.notify_all();
+        self.changed.notify_all();
     }
 
     pub(super) fn put_log(&self, entry: BrowserLogLine) {
@@ -87,6 +94,7 @@ impl ReportStore {
         // Сверх предела строки молча не теряем: последняя строка предупреждает об обрезке.
         if lines.len() < MAX_LOG_LINES_PER_RUN {
             lines.push(entry);
+            self.changed.notify_all();
         } else if lines.len() == MAX_LOG_LINES_PER_RUN {
             let notice = BrowserLogLine {
                 line: format!("[bench] log truncated after {MAX_LOG_LINES_PER_RUN} lines"),
@@ -115,11 +123,62 @@ impl ReportStore {
                     waited: timeout,
                 });
             }
-            state = match self.report_arrived.wait_timeout(state, remaining) {
+            state = match self.changed.wait_timeout(state, remaining) {
                 Ok((guard, _)) => guard,
                 Err(poisoned) => poisoned.into_inner().0,
             };
         }
+    }
+
+    /// Ждёт строку журнала прогона, содержащую `needle`. Журнал не расходуется: строку
+    /// увидит и последующий `take_logs`. Возвращает найденную строку целиком.
+    pub(super) fn wait_log_line(
+        &self,
+        run: &RunId,
+        needle: &str,
+        timeout: Duration,
+    ) -> Result<String, SiteError> {
+        let deadline = Instant::now() + timeout;
+        let mut state = self.lock();
+        loop {
+            let found = state
+                .logs
+                .get(run)
+                .and_then(|lines| lines.iter().find(|entry| entry.line.contains(needle)));
+            if let Some(entry) = found {
+                return Ok(entry.line.clone());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(SiteError::LogLineTimeout {
+                    run: run.clone(),
+                    needle: needle.to_owned(),
+                    waited: timeout,
+                });
+            }
+            state = match self.changed.wait_timeout(state, remaining) {
+                Ok((guard, _)) => guard,
+                Err(poisoned) => poisoned.into_inner().0,
+            };
+        }
+    }
+
+    /// Кладёт команду робота странице прогона.
+    pub(super) fn push_command(&self, run: &RunId, command: &str) {
+        self.lock()
+            .commands
+            .entry(run.clone())
+            .or_default()
+            .push(command.to_owned());
+    }
+
+    /// Команды прогона, начиная с номера `seen` (сколько страница уже получила).
+    pub(super) fn commands_since(&self, run: &RunId, seen: usize) -> Vec<String> {
+        self.lock()
+            .commands
+            .get(run)
+            .map(|all| all.iter().skip(seen).cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Забирает (и удаляет) накопленный журнал прогона в порядке прихода.

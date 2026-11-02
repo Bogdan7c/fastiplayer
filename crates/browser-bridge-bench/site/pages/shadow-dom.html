@@ -13,7 +13,7 @@
 import { runScenario, UnsupportedError } from '../lib/bench-report.js';
 import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
 import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
-import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount, observeHandoff } from '../lib/scenario-kit.js';
 
 await runScenario('shadow-dom', async (ctx) => {
   // closed shadow root: из страницы <video> не достать через document.querySelector.
@@ -32,8 +32,10 @@ await runScenario('shadow-dom', async (ctx) => {
   document.body.append(card);
   ctx.check('video-hidden-from-light-dom', document.querySelector('video') === null && card.video.getRootNode() instanceof ShadowRoot,
     `document.querySelector('video')=${document.querySelector('video')}, rootNode=${card.video.getRootNode().constructor.name}`);
-  const { player } = await startAsset(ctx, 'h264-aac', { video: card.video });
+  const session = await startAsset(ctx, 'h264-aac', { video: card.video });
+  const { player } = session;
   await checkPlaying(ctx, card.video, 'playing-inside-shadow');
+  if (ctx.params.handoff) await observeHandoff(ctx, session);
   await player.destroy();
 });
 </script>

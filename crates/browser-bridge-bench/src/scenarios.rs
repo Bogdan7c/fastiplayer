@@ -1,4 +1,5 @@
-//! Сценарии прогона стенда: проверка страниц в чистом браузере, дымок «байты до рендера»,
+//! Сценарии прогона стенда: проверка страниц в чистом браузере, дымок и `capture`
+//! («отдать вкладку» → кадры в плеере, браузер не декодирует), команды плеера,
 //! статус настоящего экстеншена.
 //!
 //! Сценарии НИЧЕГО не печатают и не знают про командную строку: каждый возвращает
@@ -6,18 +7,19 @@
 //! Любая ошибка стенда внутри сценария превращается в `Fail` с текстом ошибки, поэтому
 //! сбой одного браузера не прерывает прогон остальных.
 
+mod capture;
 mod context;
+mod evidence;
 mod extension_status;
+mod handoff_run;
 mod outcome;
 mod page_catalog;
 mod pages;
-mod smoke;
-pub mod stand_extension;
+mod player_commands;
 
 pub use context::{BrowserExecutables, RunSettings, ScenarioError, Stand};
 pub use outcome::{Outcome, StepResult};
 pub use page_catalog::{PAGE_SCENARIOS, PageScenario};
-pub use stand_extension::{StandExtension, StandExtensionError};
 
 use crate::browsers::BrowserKind;
 
@@ -26,9 +28,19 @@ pub fn run_pages(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
     pages::run(stand, browser)
 }
 
-/// Дымок: стендовый перехватчик + настоящий посредник + настоящий плеер.
+/// Дымок: одна страница (`mse-fmp4`) путём `capture` — настоящий экстеншен, посредник, плеер.
 pub fn run_smoke(stand: &Stand, browser: BrowserKind) -> StepResult {
-    smoke::run(stand, browser)
+    capture::run_page(stand, browser, "smoke", capture::SMOKE_PAGE)
+}
+
+/// Все MSE-страницы стенда: «отдать вкладку» → кадры в плеере, браузер не декодирует.
+pub fn run_capture(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
+    capture::run_all(stand, browser)
+}
+
+/// Команды плеера (пауза, play, перемотка, закрытие окна) доходят до страницы под тенью.
+pub fn run_player_commands(stand: &Stand, browser: BrowserKind) -> StepResult {
+    player_commands::run(stand, browser)
 }
 
 /// Попап настоящего экстеншена показывает «Connected to Fastiplayer».

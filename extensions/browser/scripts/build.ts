@@ -8,11 +8,15 @@ import { join } from "node:path";
 import { buildManifest, extensionRoot, loadIdentity, type JsonObject, type TargetBrowser } from "./manifest.ts";
 
 // Минимальные версии браузеров:
-//  - Chrome 116: с этой версии активный WebSocket продлевает жизнь service worker (иначе соединение
-//    с плеером обрывалось бы через 30 с простоя).
+//  - Chrome 148: с этой версии ключ манифеста `message_serialization: "structured_clone"` переводит
+//    сообщения экстеншена (контент-скрипт ⇄ фон) со JSON на структурное клонирование
+//    (developer.chrome.com/blog/structured-clone-messaging). Без него `Uint8Array` с байтами видео
+//    приходит в фон объектом {"0":…} — разведка 09a на Chromium 156: 64 МиБ за 5,8 с и мусор вместо
+//    байтов, с ключом — целые байты за ~0,4 с; base64 больше не нужен (решения 82/152).
+//    Активный WebSocket продлевает жизнь service worker с 116 — 148 это тоже покрывает.
 //  - Firefox 140: `world: "MAIN"` в content_scripts и match_origin_as_fallback есть уже с 128, но
 //    `data_collection_permissions` (обязателен для новых экстеншенов AMO) распознаётся с 140 (ESR).
-const ESBUILD_TARGET: Record<TargetBrowser, string> = { chrome: "chrome116", firefox: "firefox140" };
+const ESBUILD_TARGET: Record<TargetBrowser, string> = { chrome: "chrome148", firefox: "firefox140" };
 
 // Части экстеншена: имя выходного файла -> точка входа. Каждая часть — отдельный IIFE-бандл.
 const ENTRY_POINTS: Record<string, string> = {

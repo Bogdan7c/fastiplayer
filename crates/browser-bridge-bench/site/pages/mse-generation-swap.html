@@ -13,7 +13,7 @@
 import { runScenario, UnsupportedError } from '../lib/bench-report.js';
 import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
 import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
-import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount, observeHandoff } from '../lib/scenario-kit.js';
 
 /** Сколько секунд «рекламного» потока играем до замены, с. */
 const AD_SECONDS = 5;
@@ -27,6 +27,20 @@ await runScenario('mse-generation-swap', async (ctx) => {
   const player = new BenchPlayer(video, catalog, { log: (line) => ctx.log(line) });
   await player.start({ refs: adRefs });
   await checkPlaying(ctx, video, 'ad-stream-playing');
+  if (ctx.params.handoff) {
+    // Реклама отдана плееру; смену MediaSource на том же элементе страница делает ПОД ТЕНЬЮ.
+    await observeHandoff(ctx, { video, player, refs: adRefs, catalog }, {
+      'swap-generation': async (hookCtx) => {
+        await player.newGeneration({ refs: movieRefs, positionS: 0 });
+        const advanced = await waitFor(() => video.currentTime > 1 && video.currentTime < 8, 10000);
+        hookCtx.check('second-media-source-under-shadow', player.generations === 2,
+          `generations=${player.generations}, currentTime=${video.currentTime.toFixed(2)}`);
+        hookCtx.check('movie-clock-runs-after-swap', advanced, `currentTime=${video.currentTime.toFixed(2)}`);
+      },
+    }, { expectedExtraGenerations: 1 });
+    await player.destroy();
+    return;
+  }
   await waitFor(() => video.currentTime >= AD_SECONDS, 8000);
   const adEnd = video.currentTime;
   await player.newGeneration({ refs: movieRefs, positionS: 0 });

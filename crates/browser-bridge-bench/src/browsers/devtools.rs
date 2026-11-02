@@ -175,6 +175,49 @@ impl CdpConnection {
         }
     }
 
+    /// Выполняет выражение, возвращающее промис строки, и ждёт его завершения до `wait`.
+    ///
+    /// Нужна роботу «отдать вкладку»: фон отвечает после того, как поднял связь с плеером,
+    /// а это дольше обычного потолка чтения сообщения CDP.
+    pub(crate) fn evaluate_string_promise(
+        &mut self,
+        expression: &str,
+        wait: Duration,
+    ) -> Result<String, BrowserError> {
+        self.socket
+            .get_ref()
+            .set_read_timeout(Some(wait))
+            .map_err(|source| BrowserError::io("extend the CDP read timeout", source))?;
+        let result = self.call(
+            "Runtime.evaluate",
+            json!({
+                "expression": expression,
+                "awaitPromise": true,
+                "returnByValue": true,
+            }),
+        );
+        // Обычный потолок возвращаем в любом случае: дальше соединение живёт как раньше.
+        let restored = self
+            .socket
+            .get_ref()
+            .set_read_timeout(Some(IO_TIMEOUT))
+            .map_err(|source| BrowserError::io("restore the CDP read timeout", source));
+        let result = result?;
+        restored?;
+        if let Some(exception) = result.get("exceptionDetails") {
+            return Err(BrowserError::CommandFailed {
+                protocol: PROTOCOL,
+                command: "Runtime.evaluate".to_owned(),
+                message: exception.to_string(),
+            });
+        }
+        result
+            .pointer("/result/value")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| BrowserError::protocol(PROTOCOL, format!("no string value in {result}")))
+    }
+
     /// Видимый текст страницы (`document.body.innerText`); пустая строка, если body ещё нет.
     pub(crate) fn body_text(&mut self) -> Result<String, BrowserError> {
         let result = self.call(

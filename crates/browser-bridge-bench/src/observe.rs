@@ -7,4 +7,4 @@ mod player_log;
 
 pub use error::ObserveError;
 pub use host_evidence::{HostLogEvidence, parse_host_evidence, read_host_evidence};
-pub use player_log::{FrameEvidence, PlayerLog, parse_summary};
+pub use player_log::{FrameEvidence, FrameGrowth, PlayerLog, parse_summary};

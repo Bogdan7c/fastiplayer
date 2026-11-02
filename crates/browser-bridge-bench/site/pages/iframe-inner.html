@@ -10,12 +10,14 @@
 <script type="module">
 import { runScenario } from '../lib/bench-report.js';
 import { checkPlaying } from '../lib/bench-checks.js';
-import { startAsset } from '../lib/scenario-kit.js';
+import { startAsset, observeHandoff } from '../lib/scenario-kit.js';
 
 await runScenario('iframe-inner', async (ctx) => {
   ctx.check('inner-origin', window !== window.parent, `inner origin=${location.origin}`);
-  const { video, player } = await startAsset(ctx, 'h264-aac');
+  const session = await startAsset(ctx, 'h264-aac');
+  const { video, player } = session;
   await checkPlaying(ctx, video, 'playing-in-frame');
+  if (ctx.params.handoff) await observeHandoff(ctx, session);
   await player.destroy();
 }, { reportToParent: true });
 </script>

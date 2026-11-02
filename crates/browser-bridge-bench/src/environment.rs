@@ -162,6 +162,11 @@ impl BenchEnvironment {
         &self.xdg_config_home
     }
 
+    /// Адрес частной шины прогона (для управления окном браузерного режима по MPRIS).
+    pub fn bus_address(&self) -> Result<&str, EnvironmentError> {
+        self.bus_ref().map(PrivateBus::address)
+    }
+
     /// Не удалять каталог прогона при `Drop` (для разбора после сбоя).
     pub fn keep_work_dir(&mut self) {
         self.keep = true;

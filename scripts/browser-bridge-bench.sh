@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Тестовый стенд моста «браузер качает — мы играем» (сессия 08): сборка и запуск одной командой.
-#   scripts/browser-bridge-bench.sh smoke --browser both
+#   scripts/browser-bridge-bench.sh capture --browser both
 #   scripts/browser-bridge-bench.sh all --display real
 # Все аргументы передаются как есть в target/debug/browser-bridge-bench (см. --help).
 # Только локально: в CI не запускается (нужны Chromium, Firefox, kwin_wayland, ffmpeg).

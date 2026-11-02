@@ -18,6 +18,9 @@ pub struct HostLogEvidence {
     pub hello_accepted: bool,
     /// Плеер выдал пропуск на сеанс (`reply=player:session_granted`).
     pub session_granted: bool,
+    /// Сколько раз плеер выдал пропуск. Нужен, когда один стенд проходит несколько
+    /// страниц подряд и «пропуск уже был» не должно засчитываться новой странице.
+    pub session_grants: u32,
 }
 
 /// Разбирает текст журнала.
@@ -29,7 +32,10 @@ pub fn parse_host_evidence(text: &str) -> HostLogEvidence {
     {
         evidence.caller_accepted |= line.contains("caller accepted");
         evidence.hello_accepted |= line.contains("reply=player:hello_accepted");
-        evidence.session_granted |= line.contains("reply=player:session_granted");
+        if line.contains("reply=player:session_granted") {
+            evidence.session_granted = true;
+            evidence.session_grants += 1;
+        }
     }
     evidence
 }
@@ -58,9 +64,19 @@ mod tests {
             HostLogEvidence {
                 caller_accepted: true,
                 hello_accepted: true,
-                session_granted: true
+                session_granted: true,
+                session_grants: 1
             }
         );
+    }
+
+    #[test]
+    fn grants_are_counted_per_session_line() {
+        let grant = "fastiplayer-browser-host: answered request=open_session bytes=240 reply=player:session_granted\n";
+        let evidence = parse_host_evidence(&format!("{grant}noise\n{grant}"));
+        assert_eq!(evidence.session_grants, 2);
+        assert!(evidence.session_granted);
+        assert_eq!(parse_host_evidence("noise\n").session_grants, 0);
     }
 
     #[test]

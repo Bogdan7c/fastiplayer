@@ -27,4 +27,11 @@ pub enum SiteError {
     /// Страница не прислала отчёт за отведённое время.
     #[error("no report for run '{run}' within {waited:?}")]
     ReportTimeout { run: RunId, waited: Duration },
+    /// Страница не написала ожидаемую строку журнала за отведённое время.
+    #[error("run '{run}' did not log a line containing '{needle}' within {waited:?}")]
+    LogLineTimeout {
+        run: RunId,
+        needle: String,
+        waited: Duration,
+    },
 }

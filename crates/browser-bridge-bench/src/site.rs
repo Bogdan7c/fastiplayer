@@ -98,6 +98,21 @@ impl StandSite {
         self.shared.reports.wait_report(run, timeout)
     }
 
+    /// Ждёт строку журнала страницы, содержащую `needle` (журнал при этом не расходуется).
+    pub fn wait_log_line(
+        &self,
+        run: &RunId,
+        needle: &str,
+        timeout: Duration,
+    ) -> Result<String, SiteError> {
+        self.shared.reports.wait_log_line(run, needle, timeout)
+    }
+
+    /// Отправляет странице команду; страница заберёт её при очередном опросе.
+    pub fn send_command(&self, run: &RunId, command: &str) {
+        self.shared.reports.push_command(run, command);
+    }
+
     /// Забирает накопленные строки журнала браузера для прогона (в порядке прихода).
     pub fn take_logs(&self, run: &RunId) -> Vec<BrowserLogLine> {
         self.shared.reports.take_logs(run)
