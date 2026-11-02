@@ -45,6 +45,12 @@
 - Проверка 2026-08-05: direct patch `90/90`, `cargo test -p symphonia-demux` `174/174`, all-target Clippy `-D warnings` — PASS.
 
 
+## Дополнение 2026-11-02 (мост 09a, D1) — многодорожечный фрагмент без перемотки
+- Читатель ISO патча отдаёт кадры по времени вперемешку, а упаковщики (ffmpeg) кладут в `mdat` сначала всё видео фрагмента, потом весь звук → входу без перемотки (`DemuxInput::byte_stream`, кольцо `MediaSourceStream` 64 КиБ) нужен возврат назад → `AtomError::SeekOutOfRange` («out-of-bounds seek for a non-seekable stream»). Ломало MSE с одним SB на звук+видео (PeerTube, Twitch live), HLS fMP4 muxed, фрагментированный MP4 по HTTP 200.
+- Фикс в патче `symphonia-format-isomp4-patch`: `src/atoms/buffered_media_data.rs`; `AtomIterator::buffer_pending_media_data` (МОЖНО: вход без перемотки, `mdat` известного размера ≤ 64 МиБ, буфер сбрасывается на следующем атоме/перемотке) + `IsoMp4Reader::buffer_media_data_of_interleaved_fragment` (НУЖНО: фрагмент с кадрами ≥ 2 дорожек). Перематываемые входы, однодорожечные фрагменты и обычный MP4 не меняются. Обрыв внутри `mdat` → пришедшие кадры, потом «unexpected end of atom». Больше 64 МиБ / без размера → старое поведение + warn. Запись в `docs/dependency-patches.toml`.
+- Тесты: `crates/symphonia-demux/src/factory/tests/muxed_fragmented_isomp4.rs` (поток без перемотки = файл; упорядоченные сегменты; обрыв), модульные в `buffered_media_data.rs`.
+- Ограничение: обычный (не фрагментированный) MP4 без перемотки с плохим чередованием не читается; копия `mdat` вне учёта потолка полки.
+
 ## Дополнение 2026-10-10 (A13/C1) — VP8/VP9 в MP4/fMP4
 
 - Локальный isomp4 patch раньше принимал sample entry `vp08`/`vp09`, но не назначал треку codec id (трек становился `unknown_video`). Следствие: `packet_keyframe` в `symphonia-demux` не запускал VP9-пробу, все video packets были `PacketKeyframe::Unknown`, `HlsSeekIndex` не находил `VideoRandomAccessPoint`, и HLS VOD падал на `prime_initial_seek_anchor` («HLS VOD завершился до доказанного initial seek anchor»). Live HLS при этом "открывался" (anchor не нужен), но без keyframe-проб. Так не открывались YouTube HLS-форматы VP9 (itag 602-604, 616 и др., fMP4, video-only).

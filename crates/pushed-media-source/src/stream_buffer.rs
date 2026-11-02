@@ -39,7 +39,7 @@ use crate::container::PushedContainer;
 use crate::episode::EpisodeFactory;
 use crate::error::PushedStreamError;
 use crate::feed::{EpisodeContinuity, EpisodeKey, FeedAdmission, LaneFeed};
-use crate::framing::{LaneContent, MediaTime, TimedSpan};
+use crate::framing::{LaneContent, MediaTime, TimedSpan, TrackSpans};
 use crate::intake::{ChargedSegment, IntakeLedger};
 use crate::lane::{LaneId, LaneMailbox};
 use crate::live_timeline::LiveTimelineFeed;
@@ -176,6 +176,8 @@ impl BufferState {
 pub(crate) struct TimedSegment {
     /// Время показа после смещения полосы и точность его конца.
     pub(crate) timing: TimedSpan,
+    /// Точно известное время каждой дорожки после смещения полосы.
+    pub(crate) tracks: TrackSpans,
     /// Байты (ещё не зачтённые).
     pub(crate) media: Bytes,
     /// С чем его играть.
@@ -328,16 +330,19 @@ impl StreamBuffer {
         let mut state = self.lock();
         // Сначала снимаем то, что новый сегмент заменит: его место освобождается
         // до проверки потолка (повтор того же времени не требует двойной памяти).
-        let replaced = state
-            .lane_mut(lane)?
-            .shelf
-            .take_overlapped_by(segment.timing, &self.rules);
+        let replaced = state.lane_mut(lane)?.shelf.take_overlapped_by(
+            segment.timing,
+            &segment.tracks,
+            &self.rules,
+        );
         drop(replaced);
         let media = self.charge_locked(&mut state, segment.media)?;
-        state
-            .lane_mut(lane)?
-            .shelf
-            .insert(ShelfEntry::waiting(segment.timing, media, segment.key));
+        state.lane_mut(lane)?.shelf.insert(ShelfEntry::waiting(
+            segment.timing,
+            segment.tracks,
+            media,
+            segment.key,
+        ));
         // Полосы после перемотки ждут сегмент с целью (сегмент этой полосы может
         // открыть позднее вступление другой); иначе — подача по курсору. Заодно
         // догоняются полосы, у которых подача стояла на полном ящике.

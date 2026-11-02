@@ -13,7 +13,7 @@ use super::{
 use crate::buffer_window::BufferWindow;
 use crate::container::PushedContainer;
 use crate::feed::{EpisodeContinuity, EpisodeKey, FeedCursor};
-use crate::framing::{MediaTime, MediaTimeSpan, SegmentEnd, TimedSpan};
+use crate::framing::{MediaTime, MediaTimeSpan, SegmentEnd, TimedSpan, TrackSpans};
 use crate::intake::{ChargedSegment, IntakeLedger};
 use crate::page_removal::{PageRemovalReport, PageRemovedRange, PageRemovedRangeEnd};
 use crate::time::TimestampOffset;
@@ -79,10 +79,18 @@ impl Shelf {
 
     /// Как `put`, но с точностью конца из разметки.
     fn put_timed(&mut self, timing: TimedSpan, size: usize) -> usize {
-        let replaced = self.shelf.take_overlapped_by(timing, &rules()).len();
+        self.put_with_tracks(timing, TrackSpans::default(), size)
+    }
+
+    /// Как `put_timed`, но с временем дорожек сегмента.
+    fn put_with_tracks(&mut self, timing: TimedSpan, tracks: TrackSpans, size: usize) -> usize {
+        let replaced = self
+            .shelf
+            .take_overlapped_by(timing, &tracks, &rules())
+            .len();
         let media = ChargedSegment::charge(&self.ledger, Bytes::from(vec![0; size])).expect("room");
         self.shelf
-            .insert(ShelfEntry::waiting(timing, media, self.key.clone()));
+            .insert(ShelfEntry::waiting(timing, tracks, media, self.key.clone()));
         replaced
     }
 
@@ -151,17 +159,17 @@ fn next_to_feed_continues_the_cursor_and_skips_past_and_gaps() {
     assert_eq!(fed.span, span(400, 600));
     assert_eq!(fed.continuity, EpisodeContinuity::MayContinue);
     // Поданный второй раз не выбирается.
-    assert_eq!(shelf.shelf.next_to_feed(cursor(600), &rules), None);
+    assert_eq!(shelf.shelf.next_to_feed(cursor(600).as_ref(), &rules), None);
 
     // Из прошлого (кончился до курсора) и за дырой 200 мс — ждут.
     shelf.put(0, 200, 1);
     shelf.put(800, 1_000, 1);
-    assert_eq!(shelf.shelf.next_to_feed(cursor(600), &rules), None);
+    assert_eq!(shelf.shelf.next_to_feed(cursor(600).as_ref(), &rules), None);
     // Дыра 50 мс — ещё продолжение.
     shelf.put(650, 800, 1);
     let next = shelf
         .shelf
-        .next_to_feed(cursor(600), &rules)
+        .next_to_feed(cursor(600).as_ref(), &rules)
         .expect("continuation");
     let fed = shelf.shelf.take_for_feeding(next, &rules).expect("fed");
     assert_eq!(fed.span, span(650, 800));
@@ -183,7 +191,7 @@ fn segment_straddling_the_cursor_is_fed_in_a_new_episode() {
     // Курсор 500: сегмент начался раньше, а кончается заметно позже.
     let choice = shelf
         .shelf
-        .next_to_feed(cursor(500), &rules())
+        .next_to_feed(cursor(500).as_ref(), &rules())
         .expect("straddling");
     let fed = shelf.shelf.take_for_feeding(choice, &rules()).expect("fed");
     assert_eq!(fed.continuity, EpisodeContinuity::MustRestart);
@@ -194,7 +202,10 @@ fn segment_straddling_the_cursor_is_fed_in_a_new_episode() {
     assert_eq!(fed.fed_to, FeedCursor::exact(at(700)));
     // Сегмент из прошлого (кончился до курсора) — не «перешагивание».
     shelf.put(100, 290, 1);
-    assert_eq!(shelf.shelf.next_to_feed(cursor(500), &rules()), None);
+    assert_eq!(
+        shelf.shelf.next_to_feed(cursor(500).as_ref(), &rules()),
+        None
+    );
 }
 
 #[test]
@@ -587,10 +598,13 @@ fn estimated_end_continues_into_the_next_cluster_and_never_replaces_it() {
     assert_eq!(shelf.starts_ms(), [0, 980]);
     let first = shelf.shelf.next_to_feed(None, &rules).expect("first");
     let fed = shelf.shelf.take_for_feeding(first, &rules).expect("fed");
-    assert_eq!(fed.fed_to, FeedCursor::new(at(750), at(1_000)));
+    assert_eq!(
+        fed.fed_to,
+        FeedCursor::new(at(750), at(1_000), TrackSpans::default())
+    );
     let next = shelf
         .shelf
-        .next_to_feed(Some(fed.fed_to), &rules)
+        .next_to_feed(Some(&fed.fed_to), &rules)
         .expect("the next cluster continues the estimated end");
     assert_eq!(next.continuity(), EpisodeContinuity::MayContinue);
     // Цель в последнем кадре кластера (875 мс) лежит на полке.
@@ -608,8 +622,16 @@ fn open_end_reaches_the_next_segment_for_feeding_and_seeking() {
     let first = shelf.shelf.next_to_feed(None, &rules).expect("first");
     let fed = shelf.shelf.take_for_feeding(first, &rules).expect("fed");
     // Открытый хвост тянется на 2 с за начало кадра.
-    assert_eq!(fed.fed_to, FeedCursor::new(at(0), at(2_000)));
-    assert!(shelf.shelf.next_to_feed(Some(fed.fed_to), &rules).is_some());
+    assert_eq!(
+        fed.fed_to,
+        FeedCursor::new(at(0), at(2_000), TrackSpans::default())
+    );
+    assert!(
+        shelf
+            .shelf
+            .next_to_feed(Some(&fed.fed_to), &rules)
+            .is_some()
+    );
     // Цель внутри открытого кадра (до начала следующего сегмента) — на полке.
     assert!(shelf.shelf.holds(at(500), &rules, IncomingMedia::MayArrive));
     // Повтор того же одиночного кадра — замена, а не второй сегмент.
@@ -662,3 +684,7 @@ fn ceiling_candidates_skip_segments_still_held_by_a_pipe() {
         Some((0, at(200)))
     );
 }
+
+/// Правила по дорожкам (полоса «видео + звук» в одном SourceBuffer).
+#[path = "shelf_tracks_tests.rs"]
+mod tracks;

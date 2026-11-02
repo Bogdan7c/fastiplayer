@@ -14,7 +14,8 @@
 //! поэтому смещения композиции учитываются почти бесплатно. Списки правок
 //! (`elst`) не применяются — так же их игнорирует расчёт `buffered` для
 //! фрагментов в браузерах; для полки с точностью «сегмент» это допустимо.
-//! Отрезок сегмента — объединение отрезков всех дорожек.
+//! Отрезок сегмента — объединение отрезков всех дорожек; отрезок каждой дорожки
+//! отдельно уходит в [`TrackSpans`] (по месту дорожки в полосе, `track_spans`).
 
 use std::collections::BTreeMap;
 
@@ -23,6 +24,7 @@ use crate::framing::read_box_header;
 use super::byte_cursor::{ByteCursor, FullBoxHeader};
 use super::{
     LaneContent, MediaTime, MediaTimeSpan, SegmentTimingError, TimingStructure, TrackMedia,
+    TrackSlot, TrackSlotAssigner, TrackSpans,
 };
 
 /// `tfhd`: есть 64-битный `base_data_offset`.
@@ -59,6 +61,8 @@ struct IsoTrackTiming {
     timescale: u32,
     /// Длительность кадра по умолчанию из `trex`, если `trex` для дорожки есть.
     extends_default_sample_duration: Option<u32>,
+    /// Место дорожки в полосе (тип и порядковый номер среди дорожек того же типа).
+    slot: TrackSlot,
 }
 
 /// Контекст времени init-сегмента fMP4: дорожки по `track_ID`.
@@ -85,16 +89,19 @@ impl IsoBmffTimingContext {
 
         let mut tracks = BTreeMap::new();
         let mut track_media = Vec::new();
+        let mut slots = TrackSlotAssigner::default();
         let mut extends_defaults = Vec::new();
         for child in box_children(movie, TimingStructure::IsoMovie) {
             let child = child?;
             match &child.box_type {
                 b"trak" => {
                     let (track_id, timescale) = parse_track(child.body)?;
-                    track_media.push(track_media_of(child.body));
+                    let media = track_media_of(child.body);
+                    track_media.push(media);
                     let timing = IsoTrackTiming {
                         timescale,
                         extends_default_sample_duration: None,
+                        slot: slots.next(media),
                     };
                     if tracks.insert(track_id, timing).is_some() {
                         return Err(SegmentTimingError::DuplicateTrack {
@@ -131,14 +138,18 @@ impl IsoBmffTimingContext {
         self.content
     }
 
-    /// Отрезок времени показа медиасегмента `moof` + `mdat`.
-    pub(super) fn segment_span(&self, segment: &[u8]) -> Result<MediaTimeSpan, SegmentTimingError> {
+    /// Отрезок времени показа медиасегмента `moof` + `mdat` и отрезки его дорожек.
+    pub(super) fn segment_spans(
+        &self,
+        segment: &[u8],
+    ) -> Result<(MediaTimeSpan, TrackSpans), SegmentTimingError> {
         let movie_fragment = first_child(segment, *b"moof", TimingStructure::IsoMediaSegment)?
             .ok_or(SegmentTimingError::Missing {
                 structure: TimingStructure::IsoMovieFragment,
             })?;
 
         let mut segment_span: Option<MediaTimeSpan> = None;
+        let mut track_spans = TrackSpans::default();
         // Если ни в одной дорожке нет кадров — пустой отрезок в самом раннем `tfdt`.
         let mut earliest_empty_start: Option<MediaTime> = None;
         for child in box_children(movie_fragment, TimingStructure::IsoMovieFragment) {
@@ -146,9 +157,11 @@ impl IsoBmffTimingContext {
             if &child.box_type != b"traf" {
                 continue;
             }
-            match self.track_fragment_span(child.body)? {
+            let (slot, fragment_span) = self.track_fragment_span(child.body)?;
+            match fragment_span {
                 TrackFragmentSpan::Samples(span) => {
                     segment_span = Some(segment_span.map_or(span, |known| known.union(span)));
+                    track_spans.include(slot, span);
                 }
                 TrackFragmentSpan::NoSamples(start) => {
                     earliest_empty_start =
@@ -156,18 +169,19 @@ impl IsoBmffTimingContext {
                 }
             }
         }
-        segment_span
+        let span = segment_span
             .or_else(|| earliest_empty_start.map(MediaTimeSpan::empty_at))
             .ok_or(SegmentTimingError::Missing {
                 structure: TimingStructure::IsoTrackFragment,
-            })
+            })?;
+        Ok((span, track_spans))
     }
 
-    /// Отрезок одного `traf`.
+    /// Отрезок одного `traf` и место его дорожки в полосе.
     fn track_fragment_span(
         &self,
         track_fragment: &[u8],
-    ) -> Result<TrackFragmentSpan, SegmentTimingError> {
+    ) -> Result<(TrackSlot, TrackFragmentSpan), SegmentTimingError> {
         let header_body = unique_child(
             track_fragment,
             *b"tfhd",
@@ -214,17 +228,18 @@ impl IsoBmffTimingContext {
         }
 
         let timescale = u64::from(track.timescale);
-        match runs.extent.bounds {
+        let fragment_span = match runs.extent.bounds {
             Some((earliest, latest_end)) => {
                 let start = MediaTime::from_ticks(earliest, timescale)?;
                 let end = MediaTime::from_ticks(latest_end, timescale)?;
                 MediaTimeSpan::new(start, end)
                     .map(TrackFragmentSpan::Samples)
-                    .ok_or(SegmentTimingError::TimeOutOfRange)
+                    .ok_or(SegmentTimingError::TimeOutOfRange)?
             }
             None => MediaTime::from_ticks(i128::from(base_decode_time), timescale)
-                .map(TrackFragmentSpan::NoSamples),
-        }
+                .map(TrackFragmentSpan::NoSamples)?,
+        };
+        Ok((track.slot, fragment_span))
     }
 }
 

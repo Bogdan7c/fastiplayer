@@ -17,7 +17,9 @@
 //! блока дорожки не записана, его конец оценивается по шагу между двумя
 //! последними блоками дорожки ([`SegmentEnd::Estimated`]), а у дорожки с одним
 //! блоком конец открыт ([`SegmentEnd::Open`]); кластер без блоков — пустой
-//! отрезок в его `Timecode`. `CodecDelay` (у Opus) не вычитается: это
+//! отрезок в его `Timecode`. Точно известный отрезок каждой дорожки отдельно
+//! (от первого блока до конца последнего с записанной длительностью) уходит в
+//! [`TrackSpans`]. `CodecDelay` (у Opus) не вычитается: это
 //! сдвиг на единицы миллисекунд, для полки с точностью «сегмент» он незначим.
 //!
 //! Вложенность разбирается явными циклами фиксированной глубины
@@ -30,7 +32,7 @@ use crate::framing::{EbmlElementSize, read_element_header};
 use super::byte_cursor::ByteCursor;
 use super::{
     LaneContent, MediaTime, MediaTimeSpan, SegmentEnd, SegmentTimingError, TimedSpan,
-    TimingStructure, TrackMedia,
+    TimingStructure, TrackMedia, TrackSlot, TrackSlotAssigner, TrackSpans,
 };
 
 // ID элементов вместе с битом-маркером, как в спецификации. Сканер `matroska.rs`
@@ -86,6 +88,8 @@ pub(crate) struct MatroskaTimingContext {
     timecode_scale_ns: u64,
     /// `TrackNumber` → `DefaultDuration` в наносекундах (если указана).
     default_durations_ns: BTreeMap<u64, Option<u64>>,
+    /// `TrackNumber` → место дорожки в полосе.
+    slots: BTreeMap<u64, TrackSlot>,
     /// Есть ли среди дорожек видео (по `TrackType`).
     content: LaneContent,
 }
@@ -129,6 +133,7 @@ impl MatroskaTimingContext {
         Ok(Self {
             timecode_scale_ns: timecode_scale_ns.unwrap_or(DEFAULT_TIMECODE_SCALE_NS),
             default_durations_ns: tracks.default_durations_ns,
+            slots: tracks.slots,
             content: LaneContent::of_tracks(tracks.media),
         })
     }
@@ -139,7 +144,10 @@ impl MatroskaTimingContext {
     }
 
     /// Отрезок времени одного `Cluster`.
-    pub(super) fn cluster_span(&self, segment: &[u8]) -> Result<TimedSpan, SegmentTimingError> {
+    pub(super) fn cluster_spans(
+        &self,
+        segment: &[u8],
+    ) -> Result<(TimedSpan, TrackSpans), SegmentTimingError> {
         let cluster = element_children(segment, TimingStructure::MatroskaCluster)
             .next()
             .transpose()?
@@ -178,7 +186,35 @@ impl MatroskaTimingContext {
         let cluster_timecode = cluster_timecode.ok_or(SegmentTimingError::Missing {
             structure: TimingStructure::MatroskaClusterTimecode,
         })?;
-        self.absolute_span(cluster_timecode, extent.finish()?)
+        let mut track_spans = TrackSpans::default();
+        for (track, (start, certain_end)) in extent.track_bounds() {
+            // Номер дорожки уже проверен по init при разборе блока.
+            let slot = *self
+                .slots
+                .get(&track)
+                .ok_or(SegmentTimingError::UnknownTrack { track })?;
+            let span = MediaTimeSpan::new(
+                self.absolute_time(cluster_timecode, start)?,
+                self.absolute_time(cluster_timecode, certain_end)?,
+            )
+            .ok_or(SegmentTimingError::TimeOutOfRange)?;
+            track_spans.include(slot, span);
+        }
+        let span = self.absolute_span(cluster_timecode, extent.finish()?)?;
+        Ok((span, track_spans))
+    }
+
+    /// Абсолютный момент из `Timecode` кластера и смещения относительно него, нс.
+    fn absolute_time(
+        &self,
+        cluster_timecode: u64,
+        relative_ns: i128,
+    ) -> Result<MediaTime, SegmentTimingError> {
+        i128::from(cluster_timecode)
+            .checked_mul(i128::from(self.timecode_scale_ns))
+            .and_then(|cluster_start_ns| cluster_start_ns.checked_add(relative_ns))
+            .ok_or(SegmentTimingError::TimeOutOfRange)
+            .and_then(|absolute_ns| MediaTime::from_ticks(absolute_ns, NANOS_PER_SECOND))
     }
 
     /// Начало блока и его длительность (если записана) в наносекундах
@@ -224,15 +260,7 @@ impl MatroskaTimingContext {
         cluster_timecode: u64,
         relative: RelativeSpan,
     ) -> Result<TimedSpan, SegmentTimingError> {
-        let cluster_start_ns = i128::from(cluster_timecode)
-            .checked_mul(i128::from(self.timecode_scale_ns))
-            .ok_or(SegmentTimingError::TimeOutOfRange)?;
-        let to_media_time = |relative_ns: i128| {
-            cluster_start_ns
-                .checked_add(relative_ns)
-                .ok_or(SegmentTimingError::TimeOutOfRange)
-                .and_then(|absolute_ns| MediaTime::from_ticks(absolute_ns, NANOS_PER_SECOND))
-        };
+        let to_media_time = |relative_ns: i128| self.absolute_time(cluster_timecode, relative_ns);
         let start = to_media_time(relative.start)?;
         let end = to_media_time(relative.end)?;
         let span = MediaTimeSpan::new(start, end).ok_or(SegmentTimingError::TimeOutOfRange)?;
@@ -263,6 +291,11 @@ struct BlockTiming {
 /// растёт с числом блоков, которое объявила страница.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TrackTail {
+    /// Начало самого раннего блока дорожки.
+    earliest_start: i128,
+    /// Самый поздний точно известный конец блока дорожки (у блока без
+    /// длительности — его начало).
+    certain_end: i128,
     /// Начало самого позднего блока дорожки.
     latest_start: i128,
     /// Его длительность, если записана.
@@ -272,9 +305,11 @@ struct TrackTail {
 }
 
 impl TrackTail {
-    /// Хвост из первого блока дорожки.
-    const fn first(block: BlockTiming) -> Self {
+    /// Хвост из первого блока дорожки (`certain_end` — точный конец этого блока).
+    const fn first(block: BlockTiming, certain_end: i128) -> Self {
         Self {
+            earliest_start: block.start,
+            certain_end,
             latest_start: block.start,
             latest_duration: block.duration,
             previous_start: None,
@@ -283,7 +318,9 @@ impl TrackTail {
 
     /// Учитывает ещё один блок дорожки (блоки идут в порядке декодирования,
     /// поэтому сравниваются начала, а не порядок прихода).
-    fn include(&mut self, block: BlockTiming) {
+    fn include(&mut self, block: BlockTiming, certain_end: i128) {
+        self.earliest_start = self.earliest_start.min(block.start);
+        self.certain_end = self.certain_end.max(certain_end);
         if block.start > self.latest_start {
             self.previous_start = Some(self.latest_start);
             self.latest_start = block.start;
@@ -373,9 +410,16 @@ impl ClusterExtent {
         });
         self.track_tails
             .entry(track)
-            .and_modify(|tail| tail.include(block))
-            .or_insert_with(|| TrackTail::first(block));
+            .and_modify(|tail| tail.include(block, certain_end))
+            .or_insert_with(|| TrackTail::first(block, certain_end));
         Ok(())
+    }
+
+    /// Точно известные границы каждой дорожки: `TrackNumber` → (начало, точный конец), нс.
+    fn track_bounds(&self) -> impl Iterator<Item = (u64, (i128, i128))> + '_ {
+        self.track_tails
+            .iter()
+            .map(|(track, tail)| (*track, (tail.earliest_start, tail.certain_end)))
     }
 
     /// Отрезок кластера. Кластер без блоков — пустой отрезок в его `Timecode`.
@@ -521,6 +565,8 @@ fn parse_timecode_scale(info: &[u8]) -> Result<u64, SegmentTimingError> {
 struct ParsedTracks {
     /// `TrackNumber` → `DefaultDuration` в наносекундах (если указана).
     default_durations_ns: BTreeMap<u64, Option<u64>>,
+    /// `TrackNumber` → место дорожки в полосе.
+    slots: BTreeMap<u64, TrackSlot>,
     /// Тип каждой дорожки (по `TrackType`).
     media: Vec<TrackMedia>,
 }
@@ -528,6 +574,8 @@ struct ParsedTracks {
 /// `Tracks`: номер каждой дорожки, её `DefaultDuration` и тип.
 fn parse_tracks(tracks: &[u8]) -> Result<ParsedTracks, SegmentTimingError> {
     let mut default_durations_ns = BTreeMap::new();
+    let mut slots = BTreeMap::new();
+    let mut slot_assigner = TrackSlotAssigner::default();
     let mut media = Vec::new();
     for entry in element_children(tracks, TimingStructure::MatroskaTracks) {
         let entry = entry?;
@@ -561,14 +609,17 @@ fn parse_tracks(tracks: &[u8]) -> Result<ParsedTracks, SegmentTimingError> {
                 track: track_number,
             });
         }
-        media.push(match track_type {
+        let track_media = match track_type {
             Some(TRACK_TYPE_VIDEO) => TrackMedia::Video,
             Some(_) => TrackMedia::NotVideo,
             None => TrackMedia::Unknown,
-        });
+        };
+        slots.insert(track_number, slot_assigner.next(track_media));
+        media.push(track_media);
     }
     Ok(ParsedTracks {
         default_durations_ns,
+        slots,
         media,
     })
 }

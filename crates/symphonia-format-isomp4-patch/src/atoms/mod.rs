@@ -12,6 +12,10 @@ use std::{
 
 use symphonia_core::io::{MediaSource, ReadBytes, SeekBuffered};
 
+use self::buffered_media_data::{
+    BufferedMediaData, BufferedSlice, FORWARD_ONLY_MEDIA_DATA_BUFFER_LIMIT,
+};
+
 /// Atom parsing limits.
 pub mod limits {
     /// The maximum depth the atom iterator may recurse.
@@ -35,6 +39,8 @@ pub mod limits {
 pub(crate) mod alac;
 pub(crate) mod av1c;
 pub(crate) mod avcc;
+// fastiplayer patch: `mdat` фрагмента в памяти у источника без перемотки.
+pub(crate) mod buffered_media_data;
 pub(crate) mod co64;
 pub(crate) mod ctts;
 pub(crate) mod dac3;
@@ -678,6 +684,25 @@ pub struct AtomIterator<R: ReadAtom> {
     pending: Option<AtomHeader>,
     /// The length of the container, if known.
     len: Option<u64>,
+    /// Fastiplayer: payload текущего `mdat`, прочитанный целиком у источника без перемотки
+    /// ([`Self::buffer_pending_media_data`]). Живёт до следующего атома или перемотки.
+    buffered_media_data: Option<BufferedMediaData>,
+}
+
+/// Fastiplayer: итог попытки прочитать `mdat` в память ([`AtomIterator::buffer_pending_media_data`]).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum MediaDataBuffering {
+    /// Payload в памяти: кадры этого `mdat` читаются из неё в любом порядке.
+    Buffered,
+    /// Источник перематывается — буфер не нужен, кадры читаются перемоткой.
+    SourceIsSeekable,
+    /// У `mdat` нет размера («до конца файла») — объём памяти заранее не ограничить.
+    UnknownSize,
+    /// `mdat` больше [`FORWARD_ONLY_MEDIA_DATA_BUFFER_LIMIT`] — читается по-старому.
+    TooLarge {
+        /// Объявленный размер payload-а.
+        declared_len: u64,
+    },
 }
 
 impl<R: ReadAtom> AtomIterator<R> {
@@ -689,6 +714,7 @@ impl<R: ReadAtom> AtomIterator<R> {
             stack,
             pending: None,
             len,
+            buffered_media_data: None,
         }
     }
 
@@ -725,6 +751,8 @@ impl<R: ReadAtom> AtomIterator<R> {
 
     /// Общая реализация чтения заголовка; `short_tail` решает судьбу хвоста < 8 байт.
     fn next_header_with(&mut self, short_tail: ShortTailPolicy) -> Result<Option<&AtomHeader>> {
+        // Fastiplayer: переход к следующему атому — кадры прошлого `mdat` больше не читаются.
+        self.buffered_media_data = None;
         // If there is a pending atom, or it wasn't fully consumed, skip over it now.
         match self.skip_atom() {
             Ok(()) | Err(AtomError::NoPendingAtom) => {}
@@ -892,6 +920,7 @@ impl<R: ReadAtom> AtomIterator<R> {
         R: MediaSource,
     {
         let atom = self.pending.take().ok_or(AtomError::NoPendingAtom)?;
+        self.buffered_media_data = None;
         self.seek_reader(atom.pos())?;
         Ok(())
     }
@@ -920,10 +949,47 @@ impl<R: ReadAtom> AtomIterator<R> {
     where
         R: MediaSource,
     {
+        self.buffered_media_data = None;
         self.seek_reader(pos)?;
         self.stack.clear();
         self.pending = None;
         Ok(())
+    }
+
+    /// Fastiplayer: читает payload ожидающего `mdat` в память, если источник не перематывается.
+    ///
+    /// Вызывающий (демуксер) решает, НУЖНО ли это: фрагмент с кадрами нескольких дорожек,
+    /// которые читатель отдаёт вперемешку по времени и потому ходит по `mdat` назад (см.
+    /// [`buffered_media_data`]). Здесь решается, МОЖНО ли: только `mdat` с известным
+    /// размером не больше лимита и только у источника без перемотки; иначе ничего не
+    /// читается и кадры идут прежним путём. Ожидающий атом остаётся `mdat` — по нему
+    /// итератор потом синхронизируется (`seek_atom_end`), читатель уже стоит на его конце.
+    pub(crate) fn buffer_pending_media_data(&mut self) -> Result<MediaDataBuffering>
+    where
+        R: MediaSource,
+    {
+        let atom = *self.pending.as_ref().ok_or(AtomError::NoPendingAtom)?;
+        if atom.atom_type() != AtomType::MediaData {
+            return decode_error("isomp4: only a pending mdat atom can be buffered");
+        }
+        if self.reader.is_seekable() {
+            return Ok(MediaDataBuffering::SourceIsSeekable);
+        }
+        let Some(declared_len) = atom.data_size() else {
+            return Ok(MediaDataBuffering::UnknownSize);
+        };
+        if declared_len > FORWARD_ONLY_MEDIA_DATA_BUFFER_LIMIT {
+            return Ok(MediaDataBuffering::TooLarge { declared_len });
+        }
+        // Заголовок `mdat` уже прочитан: читатель стоит на начале payload-а.
+        if self.reader.pos() != atom.data_pos() {
+            return Err(AtomError::UnexpectedPosition);
+        }
+        let buffered =
+            BufferedMediaData::read_payload(&mut self.reader, atom.data_pos(), declared_len)
+                .map_err(structural_io_error)?;
+        self.buffered_media_data = Some(buffered);
+        Ok(MediaDataBuffering::Buffered)
     }
 
     /// Seek the inner reader to the desired position.
@@ -989,6 +1055,16 @@ impl<R: ReadAtom> AtomIterator<R> {
     {
         // Must currently have a pending atom to allow resynchronizing to it.
         let _ = self.pending.as_ref().ok_or(AtomError::NoPendingAtom)?;
+
+        // Fastiplayer: кадр из `mdat`, прочитанного в память, — без перемотки источника.
+        if let Some(buffered) = &self.buffered_media_data {
+            match buffered.slice(pos, len) {
+                BufferedSlice::Available(data) => return Ok(data),
+                // Поток оборвался внутри `mdat`: та же ошибка, что дало бы чтение без буфера.
+                BufferedSlice::CutShort => return Err(AtomError::UnexpectedEndOfAtom),
+                BufferedSlice::Elsewhere => {}
+            }
+        }
 
         // Seek to the desired position. Doesn't seek if already in position.
         self.seek_reader(pos)?;

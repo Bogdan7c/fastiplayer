@@ -112,3 +112,19 @@ ffmpeg "${common[@]}" -i "$here/file-h264-aac-faststart.mp4" -c copy "${fmp4[@]}
     "$here/file-h264-aac-fragmented.mp4"
 ffmpeg "${common[@]}" -i "$here/file-vp9-opus.webm" -c copy "${plain[@]}" -live 1 -f webm \
     "$here/file-vp9-opus-live.webm"
+
+# --- Один SourceBuffer «видео + звук» с длинными прогонами дорожек (сессия 09a моста):
+# - muxed-h264-aac-long-runs.mp4 — fMP4 с ОБЕИМИ дорожками в каждом фрагменте, как
+#   страница `mse-muxed` (`video/mp4; codecs="avc1…, mp4a…"`): 1,92 с, 25 к/с, ключевой
+#   кадр раз в 16 кадров — три фрагмента по 0,64 с (= ровно 30 кадров AAC по 1024
+#   сэмпла при 48 кГц, поэтому границы фрагментов у звука и видео совпадают до долей
+#   миллисекунды). ffmpeg кладёт в `mdat` сначала все кадры видео фрагмента, потом
+#   весь его звук. Шум в картинке раздувает видео до ~80 КиБ на фрагмент — больше
+#   окна возврата назад у читателя без перемотки (64 КиБ кольца `MediaSourceStream`),
+#   как у настоящих роликов (сотни КиБ на фрагмент). Ролик с прогонами по паре КиБ
+#   эту поломку не ловит.
+ffmpeg "${common[@]}" -f lavfi -i "testsrc2=size=96x72:rate=25:duration=1.92,noise=alls=30:allf=t" \
+    -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=1.92" \
+    -c:v libx264 -preset ultrafast -profile:v baseline -bf 0 -g 16 -keyint_min 16 \
+    -sc_threshold 0 -pix_fmt yuv420p -qp 24 -threads 1 -c:a aac -b:a 32k -ac 1 \
+    "${fmp4[@]}" "$here/muxed-h264-aac-long-runs.mp4"

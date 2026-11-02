@@ -4,6 +4,9 @@
 //! - сегмент ложится на своё место во времени (по началу), а не в порядке прихода;
 //! - сегмент, который заметно накрывает уже лежащие, заменяет их (MSE «coded frame
 //!   removal», но целыми сегментами) — повтор того же времени не играется дважды;
+//!   у полосы с несколькими дорожками («видео + звук» в одном SourceBuffer)
+//!   пересечение считается ПО КАЖДОЙ дорожке, как буферы дорожек MSE
+//!   (модуль `shelf_tracks`);
 //! - каждый сегмент помнит, нужен ли он ещё демуксеру ([`Delivery`]) и с каким
 //!   init/смещением его играть ([`EpisodeKey`]).
 //!
@@ -24,7 +27,7 @@ use std::time::Duration;
 
 use crate::buffer_window::BufferWindow;
 use crate::feed::{EpisodeContinuity, EpisodeKey, FeedCursor};
-use crate::framing::{MediaTime, MediaTimeSpan, SegmentEnd, TimedSpan};
+use crate::framing::{MediaTime, MediaTimeSpan, SegmentEnd, TimedSpan, TrackSpans};
 use crate::intake::ChargedSegment;
 
 #[path = "shelf_forgotten.rs"]
@@ -33,6 +36,8 @@ mod forgotten;
 mod late_join;
 #[path = "shelf_removal.rs"]
 mod removal;
+#[path = "shelf_tracks.rs"]
+mod tracks;
 
 use forgotten::ForgottenSpans;
 pub(crate) use late_join::{LateJoinCandidates, LateJoinWindow};
@@ -144,6 +149,8 @@ enum Arrival {
 pub(crate) struct ShelfEntry {
     /// Время показа после смещения полосы и точность конца.
     timing: TimedSpan,
+    /// Точно известное время каждой дорожки (пусто — по дорожкам неизвестно).
+    tracks: TrackSpans,
     /// Байты (общие с трубой эпизода).
     media: ChargedSegment,
     /// С каким init, контейнером и смещением его играть.
@@ -156,9 +163,15 @@ pub(crate) struct ShelfEntry {
 
 impl ShelfEntry {
     /// Новый, ещё не поданный сегмент.
-    pub(crate) fn waiting(timing: TimedSpan, media: ChargedSegment, key: EpisodeKey) -> Self {
+    pub(crate) fn waiting(
+        timing: TimedSpan,
+        tracks: TrackSpans,
+        media: ChargedSegment,
+        key: EpisodeKey,
+    ) -> Self {
         Self {
             timing,
+            tracks,
             media,
             key,
             delivery: Delivery::Waiting,
@@ -190,7 +203,11 @@ impl ShelfEntry {
 
     /// Курсор подачи, который оставляет за собой этот сегмент.
     fn fed_to(&self, rules: &ShelfRules) -> FeedCursor {
-        FeedCursor::new(self.timing.certain_end(), self.reach(rules))
+        FeedCursor::new(
+            self.timing.certain_end(),
+            self.reach(rules),
+            self.tracks.clone(),
+        )
     }
 }
 
@@ -258,19 +275,21 @@ pub(crate) struct LaneShelf {
 }
 
 impl LaneShelf {
-    /// Снимает с полки сегменты, которые накрывает `span` (заменит новый).
+    /// Снимает с полки сегменты, которые накрывает новый (`timing`, по дорожкам —
+    /// `tracks`): его замена.
     ///
     /// Возвращает снятые: их байты освободятся, когда вызывающий их отпустит
     /// (и труба дочитает, если сегмент уже был подан).
     pub(crate) fn take_overlapped_by(
         &mut self,
         timing: TimedSpan,
+        tracks: &TrackSpans,
         rules: &ShelfRules,
     ) -> Vec<ShelfEntry> {
         let incoming = certain_extent_of(timing);
         let (overlapped, kept) = std::mem::take(&mut self.entries)
             .into_iter()
-            .partition(|entry| rules.overlaps(entry.certain_extent(), incoming));
+            .partition(|entry| rules.replaces(entry, incoming, tracks));
         self.entries = kept;
         overlapped
     }
@@ -286,17 +305,20 @@ impl LaneShelf {
     /// Какой сегмент продолжает поданное до курсора `cursor`.
     ///
     /// - курсора ещё нет — первый ждущий (первый сегмент полосы задаёт курсор);
-    /// - начало в пределах `[точный конец − допуск, досягаемость + наибольшая
-    ///   дыра]` — продолжение, текущий эпизод может его принять (у точного конца
-    ///   досягаемость равна ему самому — это прежнее правило «у курсора»);
-    /// - начало раньше точного конца, а конец заметно позже — сегмент
-    ///   «перешагивает» курсор (другая нарезка того же времени, например при
-    ///   смене качества): подаётся, но в новом эпизоде, чтобы демуксер не получил
-    ///   время назад (повтор уже выданного отсекает демуксер полосы — «шов»);
+    /// - ни одна дорожка не уходит назад от поданного (у каждой общей с курсором
+    ///   дорожки начало не раньше её поданного конца − допуск; без сведений о
+    ///   дорожках — начало сегмента не раньше точного конца курсора − допуск), а
+    ///   начало не дальше досягаемости + наибольшей дыры — продолжение, текущий
+    ///   эпизод может его принять (у точного конца досягаемость равна ему самому —
+    ///   это прежнее правило «у курсора»);
+    /// - время какой-то дорожки уходит назад, а конец сегмента заметно позже
+    ///   курсора — сегмент «перешагивает» курсор (другая нарезка того же времени,
+    ///   например при смене качества): подаётся, но в новом эпизоде, чтобы демуксер
+    ///   не получил время назад (повтор уже выданного отсекает демуксер полосы — «шов»);
     /// - иначе сегмент из прошлого (кончился до курсора) или за дырой — ждёт.
     pub(crate) fn next_to_feed(
         &self,
-        cursor: Option<FeedCursor>,
+        cursor: Option<&FeedCursor>,
         rules: &ShelfRules,
     ) -> Option<FeedChoice> {
         let waiting = self
@@ -312,18 +334,17 @@ impl LaneShelf {
                 })
                 .next();
         };
-        let earliest_continuation = earlier(cursor.certain_end(), rules.overlap_tolerance_micros);
         let latest_continuation = later(cursor.reach(), rules.max_contiguous_gap_micros);
         let straddle_end = later(cursor.certain_end(), rules.overlap_tolerance_micros);
         waiting
             .filter_map(|(index, entry)| {
-                let start = entry.span().start();
-                if start >= earliest_continuation && start <= latest_continuation {
+                let goes_back = rules.goes_back(cursor, entry);
+                if !goes_back && entry.span().start() <= latest_continuation {
                     Some(FeedChoice {
                         index,
                         continuity: EpisodeContinuity::MayContinue,
                     })
-                } else if start < earliest_continuation && entry.span().end() > straddle_end {
+                } else if goes_back && entry.span().end() > straddle_end {
                     Some(FeedChoice {
                         index,
                         continuity: EpisodeContinuity::MustRestart,

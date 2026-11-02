@@ -6,6 +6,7 @@
 )]
 
 pub mod media;
+pub mod muxed_page;
 pub mod playback;
 pub mod presentation_log;
 pub mod progressive_file;

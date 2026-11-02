@@ -17,7 +17,7 @@ use crate::container::PushedContainer;
 use crate::episode::EpisodeFactory;
 use crate::error::PushedStreamError;
 use crate::feed::{EpisodeKey, FeedCursor};
-use crate::framing::{LaneContent, MediaTime, MediaTimeSpan, TimedSpan};
+use crate::framing::{LaneContent, MediaTime, MediaTimeSpan, TimedSpan, TrackSpans};
 use crate::intake::{ChargedSegment, IntakeLedger};
 use crate::lane::{LaneId, LaneMailbox};
 use crate::policy::PushedSourcePolicy;
@@ -78,6 +78,7 @@ impl Bench {
             let span = MediaTimeSpan::new(at(start), at(start + length_ms)).expect("span");
             buffered.shelf.insert(ShelfEntry::waiting(
                 TimedSpan::exact(span),
+                TrackSpans::default(),
                 media,
                 key.clone(),
             ));
@@ -104,6 +105,7 @@ impl Bench {
             let span = MediaTimeSpan::new(at(start), at(start + length_ms)).expect("span");
             buffered.shelf.insert(ShelfEntry::waiting(
                 TimedSpan::exact(span),
+                TrackSpans::default(),
                 media,
                 key.clone(),
             ));

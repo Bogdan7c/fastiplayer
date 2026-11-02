@@ -35,7 +35,7 @@ use std::io::{Seek, SeekFrom};
 use std::num::NonZero;
 use std::sync::Arc;
 
-use crate::atoms::{AtomError, AtomIterator, AtomType, ReadAtom};
+use crate::atoms::{AtomError, AtomIterator, AtomType, MediaDataBuffering, ReadAtom};
 use crate::atoms::{FtypAtom, MetaAtom, MoofAtom, MoovAtom, SidxAtom, TrakAtom};
 use crate::edit_list::PresentationShift;
 use crate::stream::*;
@@ -1131,6 +1131,46 @@ impl<'s> IsoMp4Reader<'s> {
         Ok(packet_span)
     }
 
+    /// Fastiplayer: `mdat` фрагмента с кадрами нескольких дорожек читается в память, если
+    /// источник не перематывается (труба, HTTP 200, упорядоченные сегменты).
+    ///
+    /// Кадры отдаются по времени вперемешку между дорожками ([`Self::next_sample_info`]), а
+    /// в `mdat` дорожки лежат прогонами (ffmpeg: всё видео фрагмента, потом весь звук).
+    /// Без буфера возврат от звука к следующему кадру видео дальше окна `MediaSourceStream`
+    /// падал «out-of-bounds seek for a non-seekable stream». Фрагмент одной дорожки
+    /// читается по порядку и буфера не требует; перематываемый источник — тоже.
+    fn buffer_media_data_of_interleaved_fragment(&mut self) -> Result<()> {
+        // `segs[0]` — сегмент `moov`; фрагменты идут за ним. Обычный (не фрагментированный)
+        // файл не трогаем: его `mdat` — весь файл.
+        if !self.moov.is_fragmented() || self.segs.len() < 2 {
+            return Ok(());
+        }
+        let Some(fragment) = self.segs.last() else {
+            return Ok(());
+        };
+        let tracks_with_samples = self
+            .track_states
+            .iter()
+            .filter(|state| !fragment.track_sample_range(state.track_num).is_empty())
+            .count();
+        if tracks_with_samples < 2 {
+            return Ok(());
+        }
+        match self.iter.buffer_pending_media_data()? {
+            MediaDataBuffering::Buffered | MediaDataBuffering::SourceIsSeekable => {}
+            MediaDataBuffering::UnknownSize => {
+                warn!("isomp4: forward-only mdat of unknown size is read without a buffer");
+            }
+            MediaDataBuffering::TooLarge { declared_len } => {
+                warn!(
+                    "isomp4: forward-only mdat of {declared_len} bytes exceeds the buffer limit; \
+                     it is read without a buffer"
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn try_read_more_segments(&mut self) -> Result<bool> {
         // If all tracks ended in the last segment, then do not try to read anymore segments.
         //
@@ -1159,6 +1199,7 @@ impl<'s> IsoMp4Reader<'s> {
 
             match header.atom_type() {
                 AtomType::MediaData => {
+                    self.buffer_media_data_of_interleaved_fragment()?;
                     return Ok(true);
                 }
                 AtomType::MovieFragment => {

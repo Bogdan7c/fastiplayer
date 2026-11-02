@@ -205,6 +205,32 @@ fn custom_timecode_scale_negative_relative_time_and_block_duration() {
 }
 
 #[test]
+fn each_track_of_a_cluster_keeps_its_own_certain_span() {
+    // Видео (40 мс/кадр) 0–80 мс; звук без длительностей: блоки в 0 и 20 мс — точно
+    // известно время звука только до начала последнего блока.
+    let segment = cluster(
+        1_000,
+        &[
+            ebml_element(SIMPLE_BLOCK, &block_body(1, 0, KEYFRAME)),
+            ebml_element(SIMPLE_BLOCK, &block_body(2, 0, KEYFRAME)),
+            ebml_element(SIMPLE_BLOCK, &block_body(2, 20, KEYFRAME)),
+            ebml_element(SIMPLE_BLOCK, &block_body(1, 40, 0)),
+        ],
+    );
+
+    let measured = default_context()
+        .measure_media_segment(&segment)
+        .expect("timed");
+
+    let spans: Vec<_> = measured
+        .tracks
+        .shared_with(&measured.tracks)
+        .map(|(span, _)| (span.start().as_micros(), span.end().as_micros()))
+        .collect();
+    assert_eq!(spans, [(1_000_000, 1_080_000), (1_000_000, 1_020_000)]);
+}
+
+#[test]
 fn laced_block_lasts_default_duration_per_frame() {
     // Флаги 0x02 (Xiph-лейсинг), затем байт «кадров − 1» = 2 → 3 кадра × 40 мс.
     let mut laced = vec![0x81];

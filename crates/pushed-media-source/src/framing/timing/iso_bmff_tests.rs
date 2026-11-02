@@ -112,6 +112,34 @@ fn muxed_fragment_spans_the_union_of_its_tracks_and_falls_back_to_trex() {
 }
 
 #[test]
+fn muxed_fragment_keeps_the_span_of_each_track_separately() {
+    let context = synthetic_context(&[VIDEO_TRACK, AUDIO_TRACK]);
+    // Как стенд `mse-muxed`: звук кончается на 13 мс позже видео (кадр AAC — 21 мс).
+    let segment = iso_media_segment(&[
+        track_fragment(1, None, 2_560, &[track_run(0, 0, 5, &[])]),
+        track_fragment(2, None, 9_600, &[track_run(0, 0, 10, &[])]),
+    ]);
+
+    let measured = context.measure_media_segment(&segment).expect("timed");
+
+    let spans: Vec<_> = measured
+        .tracks
+        .shared_with(&measured.tracks)
+        .map(|(span, _)| span)
+        .collect();
+    let span = |start, end| {
+        MediaTimeSpan::new(MediaTime::from_micros(start), MediaTime::from_micros(end))
+            .expect("span")
+    };
+    assert_eq!(
+        spans,
+        [span(200_000, 400_000), span(200_000, 413_333)],
+        "video, then audio"
+    );
+    assert_eq!(measured.timing, timed(200_000, 413_333));
+}
+
+#[test]
 fn tfhd_default_duration_overrides_trex() {
     let context = synthetic_context(&[VIDEO_TRACK]);
     let segment = iso_media_segment(&[track_fragment(

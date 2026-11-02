@@ -246,3 +246,97 @@ fn trun_with_last_sample_extended(trun: &[u8], default_duration: u32, extra_tick
     new_trun.extend_from_slice(&body);
     new_trun
 }
+
+/// `trun`: флаг «есть `data_offset`».
+const TRUN_HAS_DATA_OFFSET: u32 = 0x1;
+
+/// Фрагмент muxed fMP4 (`moof` с `traf` на каждую дорожку, в `mdat` прогоны дорожек
+/// подряд в порядке `traf`, `default-base-is-moof`) → по фрагменту на каждую дорожку.
+///
+/// Так выглядит страница, которая кладёт видео и звук ОТДЕЛЬНЫМИ `appendBuffer` в один
+/// SourceBuffer «видео + звук»: init общий, а в каждом фрагменте одна дорожка.
+pub fn split_fragment_by_track(fragment: &[u8]) -> Vec<Vec<u8>> {
+    let read_u32 = |bytes: &[u8], at: usize| {
+        u32::from_be_bytes(bytes[at..at + 4].try_into().expect("u32 field"))
+    };
+    let moof_size = read_u32(fragment, 0) as usize;
+    assert_eq!(&fragment[4..8], b"moof", "fragment starts with moof");
+    let moof = &fragment[..moof_size];
+    let mut header_boxes = Vec::new();
+    // (traf, позиция поля data_offset внутри traf, data_offset).
+    let mut track_fragments = Vec::new();
+    let mut position = 8;
+    while position < moof.len() {
+        let child_size = read_u32(moof, position) as usize;
+        let child = &moof[position..position + child_size];
+        if &child[4..8] == b"traf" {
+            let (field, data_offset) = trun_data_offset_field(child);
+            track_fragments.push((child, field, data_offset as usize));
+        } else {
+            header_boxes.extend_from_slice(child);
+        }
+        position += child_size;
+    }
+    assert!(
+        track_fragments.windows(2).all(|pair| pair[0].2 < pair[1].2),
+        "track runs follow the traf order"
+    );
+    let run_ends: Vec<usize> = track_fragments
+        .iter()
+        .skip(1)
+        .map(|(_, _, offset)| *offset)
+        .chain([fragment.len()])
+        .collect();
+    track_fragments
+        .iter()
+        .zip(run_ends)
+        .map(|((traf, field, data_offset), run_end)| {
+            let new_moof_size = 8 + header_boxes.len() + traf.len();
+            let mut new_traf = traf.to_vec();
+            // Данные начнутся сразу за заголовком нового `mdat`.
+            new_traf[*field..*field + 4].copy_from_slice(
+                &u32::try_from(new_moof_size + 8)
+                    .expect("data offset")
+                    .to_be_bytes(),
+            );
+            let samples = &fragment[*data_offset..run_end];
+            let mut single = Vec::with_capacity(new_moof_size + 8 + samples.len());
+            single.extend_from_slice(&u32::try_from(new_moof_size).expect("moof").to_be_bytes());
+            single.extend_from_slice(b"moof");
+            single.extend_from_slice(&header_boxes);
+            single.extend_from_slice(&new_traf);
+            single.extend_from_slice(
+                &u32::try_from(8 + samples.len())
+                    .expect("mdat")
+                    .to_be_bytes(),
+            );
+            single.extend_from_slice(b"mdat");
+            single.extend_from_slice(samples);
+            single
+        })
+        .collect()
+}
+
+/// Позиция поля `data_offset` единственного `trun` внутри `traf` и его значение.
+fn trun_data_offset_field(traf: &[u8]) -> (usize, u32) {
+    let read_u32 = |bytes: &[u8], at: usize| {
+        u32::from_be_bytes(bytes[at..at + 4].try_into().expect("u32 field"))
+    };
+    let mut position = 8;
+    while position < traf.len() {
+        let child_size = read_u32(traf, position) as usize;
+        if &traf[position + 4..position + 8] == b"trun" {
+            let flags = read_u32(traf, position + 8) & 0x00ff_ffff;
+            assert_ne!(
+                flags & TRUN_HAS_DATA_OFFSET,
+                0,
+                "trun carries a data offset"
+            );
+            // Заголовок бокса (8) + версия/флаги (4) + число кадров (4).
+            let field = position + 16;
+            return (field, read_u32(traf, field));
+        }
+        position += child_size;
+    }
+    panic!("traf without trun");
+}

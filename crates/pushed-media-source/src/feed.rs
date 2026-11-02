@@ -6,7 +6,10 @@
 //!
 //! Курсор подачи ([`FeedCursor`]) — где кончается поданное (время показа).
 //! Сегмент продолжает поданное, только если начинается у курсора; дальнейшее
-//! правило — в [`crate::shelf::LaneShelf::next_to_feed`].
+//! правило — в [`crate::shelf::LaneShelf::next_to_feed`]. Курсор помнит и то, докуда
+//! подана КАЖДАЯ дорожка ([`TrackSpans`]): у полосы «видео + звук» границы дорожек
+//! соседних фрагментов расходятся на доли кадра звука, и продолжение решается по
+//! каждой дорожке отдельно.
 //!
 //! **Предел ждущих эпизодов.** Каждый эпизод — поток демуксера и его очереди,
 //! поэтому эпизодов, которые плеер ещё не забрал, на полосе не больше
@@ -21,7 +24,7 @@ use std::sync::Arc;
 use crate::container::PushedContainer;
 use crate::episode::{EpisodeFactory, EpisodeRecipe};
 use crate::error::PushedStreamError;
-use crate::framing::MediaTime;
+use crate::framing::{MediaTime, TrackSpans};
 use crate::intake::ChargedSegment;
 use crate::lane::LaneId;
 use crate::mailbox::{FeedBacklog, LaneMailbox, MailboxPost, SeekEpoch, StaleEpisodes};
@@ -36,37 +39,46 @@ use crate::time::TimestampOffset;
 /// наверняка (сегмент, начавшийся раньше, — уже повтор), `reach` — докуда оно
 /// может тянуться (сегмент, начавшийся до неё, — ещё продолжение). У точного
 /// конца обе границы совпадают.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FeedCursor {
     /// Докуда поданное известно наверняка.
     certain_end: MediaTime,
     /// Докуда поданное может тянуться; не раньше `certain_end`.
     reach: MediaTime,
+    /// Точно известное поданное время каждой дорожки (пусто — по дорожкам неизвестно).
+    tracks: TrackSpans,
 }
 
 impl FeedCursor {
-    /// Курсор из двух границ (досягаемость прижимается не раньше точного конца).
-    pub(crate) fn new(certain_end: MediaTime, reach: MediaTime) -> Self {
+    /// Курсор из двух границ (досягаемость прижимается не раньше точного конца) и
+    /// времени дорожек.
+    pub(crate) fn new(certain_end: MediaTime, reach: MediaTime, tracks: TrackSpans) -> Self {
         Self {
             certain_end,
             reach: reach.max(certain_end),
+            tracks,
         }
     }
 
-    /// Курсор точного конца.
+    /// Курсор точного конца без сведений о дорожках.
     #[cfg(test)]
     pub(crate) fn exact(end: MediaTime) -> Self {
-        Self::new(end, end)
+        Self::new(end, end, TrackSpans::default())
     }
 
     /// Докуда поданное известно наверняка.
-    pub(crate) const fn certain_end(self) -> MediaTime {
+    pub(crate) const fn certain_end(&self) -> MediaTime {
         self.certain_end
     }
 
     /// Докуда поданное может тянуться.
-    pub(crate) const fn reach(self) -> MediaTime {
+    pub(crate) const fn reach(&self) -> MediaTime {
         self.reach
+    }
+
+    /// Докуда подана каждая дорожка.
+    pub(crate) const fn tracks(&self) -> &TrackSpans {
+        &self.tracks
     }
 }
 
@@ -175,8 +187,8 @@ impl LaneFeed {
     }
 
     /// Курсор подачи.
-    pub(crate) const fn cursor(&self) -> Option<FeedCursor> {
-        self.cursor
+    pub(crate) const fn cursor(&self) -> Option<&FeedCursor> {
+        self.cursor.as_ref()
     }
 
     /// Сдвигает курсор к концу поданного сегмента (`fed_to` — курсор, который
@@ -185,14 +197,21 @@ impl LaneFeed {
     /// Назад курсор здесь не ходит: сегмент из прошлого (точный конец раньше
     /// курсора) курсор не меняет. Вернуть его назад может только перемотка
     /// ([`Self::restart_for_seek`] снимает курсор, и следующий поданный сегмент
-    /// задаёт его заново).
+    /// задаёт его заново). Время дорожек копится: у каждой — до конца самого
+    /// позднего поданного.
     pub(crate) fn advance_cursor(&mut self, fed_to: FeedCursor) {
-        self.cursor = Some(match self.cursor {
-            Some(cursor) if cursor.certain_end > fed_to.certain_end => cursor,
-            Some(cursor) if cursor.certain_end == fed_to.certain_end => {
-                FeedCursor::new(cursor.certain_end, cursor.reach.max(fed_to.reach))
+        self.cursor = Some(match self.cursor.take() {
+            Some(mut cursor) => {
+                if cursor.certain_end < fed_to.certain_end {
+                    cursor.certain_end = fed_to.certain_end;
+                    cursor.reach = fed_to.reach;
+                } else if cursor.certain_end == fed_to.certain_end {
+                    cursor.reach = cursor.reach.max(fed_to.reach);
+                }
+                cursor.tracks.absorb(&fed_to.tracks);
+                cursor
             }
-            _ => fed_to,
+            None => fed_to,
         });
     }
 
@@ -382,7 +401,7 @@ mod tests {
         feed.advance_cursor(FeedCursor::exact(MediaTime::from_micros(800_000)));
         // Подача сегмента из прошлого курсор назад не двигает.
         feed.advance_cursor(FeedCursor::exact(MediaTime::from_micros(400_000)));
-        assert_eq!(feed.cursor(), at_ms(800));
+        assert_eq!(feed.cursor().cloned(), at_ms(800));
 
         let epoch_before = mailbox.epoch();
         let stale = feed.restart_for_seek();
@@ -390,6 +409,6 @@ mod tests {
         assert_eq!(feed.cursor(), None, "a seek drops the cursor");
         assert_ne!(mailbox.epoch(), epoch_before, "a seek starts a new epoch");
         feed.advance_cursor(FeedCursor::exact(MediaTime::from_micros(400_000)));
-        assert_eq!(feed.cursor(), at_ms(400));
+        assert_eq!(feed.cursor().cloned(), at_ms(400));
     }
 }

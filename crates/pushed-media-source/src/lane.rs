@@ -19,7 +19,7 @@ use crate::error::PushedStreamError;
 use crate::feed::EpisodeKey;
 use crate::framing::{
     ContainerFramer, FramedUnit, FramingError, FramingLimits, SegmentTiming, SegmentTimingContext,
-    SegmentTimingError,
+    SegmentTimingError, TrackSpans,
 };
 use crate::intake::ChargedSegment;
 pub(crate) use crate::mailbox::{LaneMailbox, MailboxTake};
@@ -235,13 +235,19 @@ impl LaneIntake {
             }
             None => None,
         };
-        let timing = match current {
-            Some(current) => current
-                .timing
-                .media_segment_timing(&media)
-                .map_err(|error| self.framing_error(FramingError::Timing(error)))?,
-            None => SegmentTiming::Untimed,
+        let measured = match current {
+            Some(current) => Some(
+                current
+                    .timing
+                    .measure_media_segment(&media)
+                    .map_err(|error| self.framing_error(FramingError::Timing(error)))?,
+            ),
+            None => None,
         };
+        let (timing, tracks) = measured.map_or(
+            (SegmentTiming::Untimed, TrackSpans::default()),
+            |measured| (measured.timing, measured.tracks),
+        );
         let key = EpisodeKey::new(
             self.container,
             current.map(|current| current.segment.clone()),
@@ -249,11 +255,21 @@ impl LaneIntake {
         );
         match timing {
             SegmentTiming::Timed(raw_timing) => {
-                let timing = raw_timing.shifted_by(self.offset).ok_or_else(|| {
-                    self.framing_error(FramingError::Timing(SegmentTimingError::TimeOutOfRange))
-                })?;
-                self.buffer
-                    .accept_timed(self.lane, TimedSegment { timing, media, key })
+                let out_of_range =
+                    || self.framing_error(FramingError::Timing(SegmentTimingError::TimeOutOfRange));
+                let timing = raw_timing
+                    .shifted_by(self.offset)
+                    .ok_or_else(out_of_range)?;
+                let tracks = tracks.shifted_by(self.offset).ok_or_else(out_of_range)?;
+                self.buffer.accept_timed(
+                    self.lane,
+                    TimedSegment {
+                        timing,
+                        tracks,
+                        media,
+                        key,
+                    },
+                )
             }
             SegmentTiming::Untimed => self.buffer.accept_untimed(self.lane, media, &key),
         }

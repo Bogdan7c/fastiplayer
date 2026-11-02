@@ -23,8 +23,10 @@ pub(crate) use iso_bmff::read_box_header;
 pub use timing::SegmentTimingError;
 pub(crate) use timing::{
     LaneContent, MediaTime, MediaTimeSpan, SegmentEnd, SegmentTiming, SegmentTimingContext,
-    TimedSpan,
+    TimedSpan, TrackSpans,
 };
+#[cfg(test)]
+pub(crate) use timing::{TrackMedia, TrackSlotAssigner};
 
 use self::iso_bmff::IsoBmffFramer;
 use self::matroska::MatroskaFramer;

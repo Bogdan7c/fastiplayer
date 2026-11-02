@@ -19,6 +19,7 @@ mod audio_containers;
 mod audio_fixtures;
 mod fragmented_isomp4;
 mod matroska;
+mod muxed_fragmented_isomp4;
 mod ordered_segments;
 mod vp9_fragmented_isomp4;
 

@@ -10,8 +10,10 @@
 //! - [`SegmentTimingContext`] строится один раз на init-сегмент (fMP4 — шкалы
 //!   времени дорожек и значения по умолчанию из `trex`; WebM — `TimecodeScale` и
 //!   `DefaultDuration` дорожек; MPEG-TS — контекста нет);
-//! - [`SegmentTimingContext::media_segment_timing`] читает один целый медиасегмент
-//!   ровно в том виде, в каком его выдаёт сканер, и возвращает [`SegmentTiming`].
+//! - [`SegmentTimingContext::measure_media_segment`] читает один целый медиасегмент
+//!   ровно в том виде, в каком его выдаёт сканер, и возвращает [`SegmentTiming`]
+//!   (объединённый отрезок всех дорожек) и [`TrackSpans`] (отрезок каждой дорожки
+//!   отдельно — для правил полки «как буферы дорожек MSE», модуль `track_spans`).
 //!
 //! Время — «сырое» время контейнера, ДО `timestampOffset` MSE. Полка применяет
 //! смещение сама через [`MediaTimeSpan::shifted_by`]: смещение у полосы может
@@ -29,6 +31,7 @@
 mod byte_cursor;
 mod iso_bmff;
 mod matroska;
+mod track_spans;
 
 #[cfg(test)]
 mod content_tests;
@@ -46,6 +49,7 @@ use crate::time::TimestampOffset;
 
 use self::iso_bmff::IsoBmffTimingContext;
 use self::matroska::MatroskaTimingContext;
+pub(crate) use self::track_spans::{TrackSlot, TrackSlotAssigner, TrackSpans};
 
 /// Микросекунд в секунде: общая единица времени разборщика.
 const MICROS_PER_SECOND: i128 = 1_000_000;
@@ -496,16 +500,51 @@ impl SegmentTimingContext {
     }
 
     /// Отрезок сырого времени одного целого медиасегмента (`moof`+`mdat` или `Cluster`).
+    #[cfg(test)]
     pub(crate) fn media_segment_timing(
         &self,
         segment: &[u8],
     ) -> Result<SegmentTiming, SegmentTimingError> {
+        self.measure_media_segment(segment)
+            .map(|measured| measured.timing)
+    }
+
+    /// Время одного целого медиасегмента: объединённый отрезок и отрезки дорожек.
+    pub(crate) fn measure_media_segment(
+        &self,
+        segment: &[u8],
+    ) -> Result<MeasuredSegment, SegmentTimingError> {
         match self {
-            Self::IsoBmff(context) => context
-                .segment_span(segment)
-                .map(|span| SegmentTiming::Timed(TimedSpan::exact(span))),
-            Self::Matroska(context) => context.cluster_span(segment).map(SegmentTiming::Timed),
-            Self::Untimed => Ok(SegmentTiming::Untimed),
+            Self::IsoBmff(context) => {
+                context
+                    .segment_spans(segment)
+                    .map(|(span, tracks)| MeasuredSegment {
+                        timing: SegmentTiming::Timed(TimedSpan::exact(span)),
+                        tracks,
+                    })
+            }
+            Self::Matroska(context) => {
+                context
+                    .cluster_spans(segment)
+                    .map(|(timing, tracks)| MeasuredSegment {
+                        timing: SegmentTiming::Timed(timing),
+                        tracks,
+                    })
+            }
+            Self::Untimed => Ok(MeasuredSegment {
+                timing: SegmentTiming::Untimed,
+                tracks: TrackSpans::default(),
+            }),
         }
     }
+}
+
+/// Время одного медиасегмента целиком и по дорожкам.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MeasuredSegment {
+    /// Объединённый отрезок всех дорожек (или «без времени» у MPEG-TS).
+    pub(crate) timing: SegmentTiming,
+    /// Точно известный отрезок каждой дорожки с кадрами; пусто — без времени или
+    /// без кадров.
+    pub(crate) tracks: TrackSpans,
 }
