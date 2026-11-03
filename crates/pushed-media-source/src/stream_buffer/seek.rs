@@ -149,6 +149,7 @@ impl StreamBuffer {
         // Плеер встаёт на цель: от неё считается «буферизовано», и до первого
         // сообщения приложения позади неё ничего не выбрасывается раньше времени.
         state.reported_position = Some(target);
+        Self::note_live_player_seek(&mut state);
         Self::arm_stale_position_gate(&mut state, target);
         let mut stale = StaleEpisodes::default();
         let lanes: Vec<LaneId> = state.lanes.keys().copied().collect();
@@ -177,9 +178,12 @@ impl StreamBuffer {
 
     /// Страница сама начала перемотку к `target` (в порядке прихода с байтами).
     pub(crate) fn note_page_seek(&self, target: Duration) {
-        self.lock()
-            .page_seek
-            .note_page_seek(MediaTime::from_player_position(target));
+        let target = MediaTime::from_player_position(target);
+        let mut state = self.lock();
+        state.page_seek.note_page_seek(target);
+        // Эфир: цель страницы входит в окно перемотки ДО того, как плеер перемотается
+        // следом (иначе он отверг бы её как «вне DVR», `crate::live_timeline`).
+        self.note_live_page_seek(&mut state, target);
     }
 
     /// Одна ли это перемотка: цели совпадают в пределах допуска совпадения цели

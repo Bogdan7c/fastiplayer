@@ -17,8 +17,8 @@ use crate::{
     ExactTimelineSeekOutcome, ExactTimelineSeekRequest, PlaybackState, PlayerCommand,
     PlayerErrorKind, PlayerSession, PreparedDemuxSeekEnqueueError, PreparedDemuxSeekMode,
     PreparedDemuxSeekOutcome, PreparedDemuxSeekPort, PreparedDemuxSeekReceipt,
-    PreparedDemuxSeekRequestId, PreparedMedia, PreparedMediaTimelineModeError, TimelineSeekKind,
-    TimelineSeekRequestId,
+    PreparedDemuxSeekRequestId, PreparedMedia, PreparedMediaTimelineModeError, SeekRequest,
+    TimelineSeekKind, TimelineSeekRequestId,
 };
 
 /// Nonblocking fake доказывает, что live recovery использует prepared worker boundary.
@@ -518,4 +518,60 @@ fn disconnected_publisher_disables_activity_but_keeps_last_valid_snapshot() {
 
     assert!(session.dynamic_timeline_wait_source().is_none());
     assert_eq!(session.snapshot().timeline.seekable_range, retained_range);
+}
+
+/// Источник опубликовал новое окно раньше, чем пришла команда перемотки, а worker разбирает
+/// команды раньше будильника шкалы (`select_biased`): допуск цели сверяется с последним
+/// опубликованным окном. Живой случай — мост 09b2: страница перезапустила эфир с 0,
+/// источник включил её цель в окно, и сразу следом пришла перемотка плеера к 0.
+#[test]
+fn seek_into_a_window_published_before_the_command_is_admitted() {
+    let (prepared_media, publisher) = live_media(11, dvr_state(53, 57));
+    let mut session = PlayerSession::new();
+    session.load_prepared_media_with_autoplay(prepared_media, false);
+    publisher
+        .publish(DynamicMediaTimelineEpoch::new(2), dvr_state(0, 57))
+        .expect("window published before the command");
+
+    // Будильник шкалы ещё не обработан: refresh НЕ вызывается до команды.
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(MediaTime::ZERO)))
+        .expect("the target is inside the latest published window");
+    assert_eq!(
+        session.snapshot().timeline.target_position,
+        Some(MediaTime::ZERO)
+    );
+    assert!(session.snapshot().last_error.is_none());
+    // Допуск окно сессии не применяет: это делает refresh, и идущая перемотка его
+    // переживает (цель внутри нового окна).
+    assert_eq!(
+        session.snapshot().timeline.seekable_range,
+        TimelineRange::new(MediaTime::from_secs(53), MediaTime::from_secs(57))
+    );
+    assert!(session.refresh_dynamic_timeline());
+    assert_eq!(
+        session.snapshot().timeline.target_position,
+        Some(MediaTime::ZERO)
+    );
+    assert!(session.snapshot().last_error.is_none());
+}
+
+/// Цель вне и применённого, и последнего опубликованного окна — по-прежнему
+/// `SeekTargetExpired` (обычный эфир HLS/DASH не меняется).
+#[test]
+fn seek_outside_both_applied_and_latest_windows_is_still_expired() {
+    let (prepared_media, publisher) = live_media(12, dvr_state(53, 57));
+    let mut session = PlayerSession::new();
+    session.load_prepared_media_with_autoplay(prepared_media, false);
+    publisher
+        .publish(DynamicMediaTimelineEpoch::new(2), dvr_state(54, 58))
+        .expect("sliding publication");
+
+    let error = session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            MediaTime::from_secs(10),
+        )))
+        .expect_err("the target is outside every window");
+    assert_eq!(error.kind, PlayerErrorKind::SeekTargetExpired);
+    assert_eq!(session.snapshot().timeline.target_position, None);
 }

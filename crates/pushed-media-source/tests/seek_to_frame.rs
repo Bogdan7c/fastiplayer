@@ -495,3 +495,81 @@ fn live_stream_publishes_its_shelf_as_a_dynamic_timeline_and_seeks_inside_it() {
     assert_eq!(requests, [], "the target was inside the DVR range");
     assert_landed_and_played_through(&report, 0, target);
 }
+
+/// Страница перезапускает эфир с начала своей шкалы (сессия 09b2, решение 194; Twitch на
+/// паузе и play): плеер играет «позднюю» часть (2–2,8 с), страница перематывается на 0,
+/// которого на полке нет, кладёт байты с 0, и плеер перематывается следом. Раньше окно
+/// перемотки эфира считалось только по полке, и перемотка к 0 падала
+/// `SeekTargetExpired`; теперь цель страницы входит в окно, плеер садится на 0 и играет
+/// новую шкалу до конца.
+#[test]
+fn live_page_seek_outside_the_shelf_is_followed_to_frames() {
+    let (mut page, mut opener) = Page::new(PushedDuration::Live);
+    page.push(5..7);
+    let opened = open_stream(&mut opener);
+    let port = opened.live_timeline.expect("live timeline");
+    let prepared = prepared(opened.demuxer)
+        .with_dynamic_timeline(port)
+        .expect("live timeline accepted");
+    let monitor = page.monitor.clone();
+    let mut requests = Vec::new();
+    let mut seek_tick = None;
+    let report = play_controlled(prepared, |control| {
+        take_requests(&monitor, &mut requests);
+        monitor.note_playback_position(control.observation().position);
+        let tick = control.observation().tick;
+        match seek_tick {
+            None if control.observation().position >= fragment_start(5) + FRAME * 3 => {
+                seek_tick = Some(tick);
+                // Порядок моста: источник узнаёт о перемотке страницы раньше плеера.
+                page.writer.note_page_seek(Duration::ZERO);
+                control.seek(Duration::ZERO);
+            }
+            Some(at) if tick == at + 5 => {
+                // Новая шкала с 0; хвост за старой частью — до конца ролика.
+                page.push(0..5);
+                page.push_to_end(7..10);
+            }
+            _ => {}
+        }
+    });
+    assert_eq!(requests, [], "the page was already seeking to the target");
+    assert_landed_and_played_through(&report, 0, Duration::ZERO);
+}
+
+/// Окно эфира держит цель перемотки страницы только пока поток у плеера и до перемотки
+/// плеера следом. Перемотка страницы ДО открытия (Twitch ставит элемент на своё место ещё
+/// до первых байтов) окно не растягивает: эфир встаёт на вход, плеер за ней не пойдёт, и
+/// якорь навсегда держал бы окно у старого места.
+#[test]
+fn live_window_holds_only_page_seeks_the_player_will_follow() {
+    let (mut page, mut opener) = Page::new(PushedDuration::Live);
+    page.writer.note_page_seek(Duration::ZERO);
+    page.push(5..7);
+    let opened = open_stream(&mut opener);
+    let port = opened.live_timeline.expect("live timeline");
+    let window_ms = || {
+        let range = port
+            .observe()
+            .snapshot
+            .state
+            .seekable_range()
+            .expect("dvr range");
+        (
+            range.start.as_duration().as_millis(),
+            range.end.as_duration().as_millis(),
+        )
+    };
+    assert_eq!(window_ms(), (2_000, 2_800), "a page seek before the open");
+
+    // Поток у плеера: страница сама ушла на 0 — окно держит 0 сразу, до команды плеера.
+    page.writer.note_page_seek(Duration::ZERO);
+    assert_eq!(window_ms(), (0, 2_800));
+
+    // Плеер перемотался в другое место на полке — цель страницы больше не держится.
+    let mut demuxer = opened.demuxer;
+    media_core::Demuxer::seek(&mut demuxer, fragment_start(6)).expect("on-shelf seek");
+    page.push(7..8);
+    // Ровно общая полка дорожек (звук фикстуры начинается с 2,026 с).
+    assert_eq!(window_ms(), (2_026, 3_200));
+}

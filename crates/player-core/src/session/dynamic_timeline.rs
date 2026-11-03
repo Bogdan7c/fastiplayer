@@ -105,6 +105,38 @@ impl PlayerSession {
         true
     }
 
+    /// Окно перемотки эфира для допуска НОВОЙ цели.
+    ///
+    /// Обычно это окно, уже применённое сессией. Но источник мог опубликовать новое окно
+    /// раньше, чем пришла команда, а worker разбирает команды раньше будильника шкалы
+    /// (`select_biased`): тогда цель вне применённого окна сверяется с последним
+    /// опубликованным. Так мост (09b2) включает цель перемотки страницы в окно до того,
+    /// как плеер перемотается следом. Состояние сессии здесь не меняется: окно применит
+    /// ближайший refresh, и уже идущая перемотка проверится им как обычно. Цель вне обоих
+    /// окон — прежний отказ с применённым окном.
+    pub(super) fn live_seek_admission_range(&self, target: MediaTime) -> Option<TimelineRange> {
+        let applied = self.snapshot.timeline.seekable_range;
+        if applied.is_some_and(|range| range.contains(target)) {
+            return applied;
+        }
+        self.latest_published_seekable_range()
+            .filter(|range| range.contains(target))
+            .or(applied)
+    }
+
+    /// DVR range последней публикации port-а установленного media (ещё не применённой).
+    fn latest_published_seekable_range(&self) -> Option<TimelineRange> {
+        let binding = self.dynamic_timeline.binding.as_ref()?;
+        if self.snapshot.media_instance_id != Some(binding.media_instance_id) {
+            return None;
+        }
+        let latest = binding.port.observe().snapshot;
+        if latest.port_generation != binding.port.port_generation() {
+            return None;
+        }
+        latest.state.seekable_range()
+    }
+
     /// Возвращает safe live edge, если pause-position уже выпала из DVR window.
     ///
     /// Сам refresh намеренно не двигает paused playback: иначе sliding window

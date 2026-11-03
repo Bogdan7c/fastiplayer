@@ -222,12 +222,14 @@ impl PlayerSession {
             .resolve(self.snapshot.timeline.current_position);
 
         if self.snapshot.timeline.mode == media_core::TimelineMode::Live {
-            let range = self.snapshot.timeline.seekable_range.ok_or_else(|| {
-                PlayerError::new(
-                    PlayerErrorKind::SeekUnavailable,
-                    "Live source does not currently expose a DVR window",
-                )
-            })?;
+            let range = self
+                .live_seek_admission_range(relative_target)
+                .ok_or_else(|| {
+                    PlayerError::new(
+                        PlayerErrorKind::SeekUnavailable,
+                        "Live source does not currently expose a DVR window",
+                    )
+                })?;
             if !range.contains(relative_target) {
                 return Err(PlayerError::new(
                     PlayerErrorKind::SeekTargetExpired,

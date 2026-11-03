@@ -842,3 +842,8 @@ mod generation_clock_and_drain_seek;
 // в настоящем процессе; игнорируемый вариант берёт настоящую запись с сайта.
 #[path = "browser_session_process/replay_recording.rs"]
 mod replay_recording;
+
+// Сессия 09b2 (решение 194): страница перезапускает эфир в том же `MediaSource` — стирает
+// всё, перематывается на 0 и кладёт новую шкалу; плеер идёт за страницей без `SeekTargetExpired`.
+#[path = "browser_session_process/live_page_restart.rs"]
+mod live_page_restart;

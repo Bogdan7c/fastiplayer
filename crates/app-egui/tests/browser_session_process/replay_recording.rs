@@ -491,10 +491,11 @@ fn replay_real_recording_in_the_real_process() {
         Duration::from_millis(tail_ms),
         &process,
     );
-    for line in lines
-        .iter()
-        .filter(|line| line.contains("Browser playback summary"))
-    {
+    // Сводки и отказы плеера (их текст — коды ошибок и времена, без данных страницы):
+    // по ним видно, пошёл ли плеер за страницей (находка 09b2: `SeekTargetExpired`).
+    for line in lines.iter().filter(|line| {
+        line.contains("Browser playback summary") || line.contains("Player worker command failed")
+    }) {
         println!("{line}");
     }
     // Последняя сводка (с окном процесс на паузе может не выйти — итоговой тогда нет).
