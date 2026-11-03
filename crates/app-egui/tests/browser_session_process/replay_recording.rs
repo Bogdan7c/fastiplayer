@@ -16,6 +16,9 @@
 //! ```
 //! Необязательно: `FASTIPLAYER_REPLAY_FAST=1` — без пауз; `FASTIPLAYER_REPLAY_TAIL_MS` —
 //! сколько держать сеанс после последнего шага (по умолчанию 3000).
+//! `FASTIPLAYER_REPLAY_WINDOW=1` — окно на частном виртуальном дисплее (настоящий путь показа:
+//! аппаратный декодер и рендер), `FASTIPLAYER_REPLAY_CONFIG=<config.toml>` — настройки показа
+//! живого плеера. Без них кадры считает безоконный путь с программным декодером.
 
 use super::*;
 
@@ -178,13 +181,33 @@ fn log_lines_until(bus: &PrivateBusWithBrowserSession, needle: &str) -> Vec<Stri
 /// Играет запись в новом процессе до конца и возвращает строки журнала с итогом.
 ///
 /// `tail` — сколько держать сеанс после последнего шага, если сама запись его не закрыла.
+/// Сколько ждать выхода процесса с окном после конца повтора (на паузе он не выходит).
+const WINDOW_LOG_GRACE: Duration = Duration::from_secs(12);
+
+/// Как поднять процесс для повтора: без окна (тесты CI) или как у живого плеера —
+/// окно на частном виртуальном дисплее и `config.toml` разработчика (рендер, VA-API).
+struct ReplayProcess<'setup> {
+    video: &'setup TestVideo,
+    config_toml: Option<&'setup str>,
+}
+
+impl ReplayProcess<'static> {
+    /// Без окна и без config: процесс CI.
+    const HEADLESS: Self = Self {
+        video: &TestVideo::Headless,
+        config_toml: None,
+    };
+}
+
 fn replay_in_fresh_process(
     name: &str,
     recording: &Path,
     pacing: Pacing,
     tail: Duration,
+    process: &ReplayProcess<'_>,
 ) -> Vec<String> {
-    let bus = PrivateBusWithBrowserSession::start(name);
+    let bus =
+        PrivateBusWithBrowserSession::start_with_env(name, process.config_toml, process.video, &[]);
     let mut socket = open_attached_session(&bus);
     let outcome = replay_steps(&mut socket, load_recording(recording), pacing);
     if !outcome.closed_by_recording {
@@ -192,7 +215,36 @@ fn replay_in_fresh_process(
         wait_draining(&mut socket, tail, &mut received);
         send_tab_gone_and_expect_close(&mut socket);
     }
-    log_lines_until(&bus, "Browser session process finished")
+    match process.video {
+        TestVideo::Headless => log_lines_until(&bus, "Browser session process finished"),
+        // Окно на паузе ждёт человека: берём журнал за короткий срок после конца.
+        TestVideo::Window(_) => {
+            log_lines_until_or_deadline(&bus, "Browser session process finished", WINDOW_LOG_GRACE)
+        }
+    }
+}
+
+/// Журнал процесса до строки `needle` или до срока (что раньше). Для ручного повтора с
+/// окном: на паузе после ухода вкладки окно ждёт человека (решение 130) и процесс не
+/// выходит сам, а сводки за время повтора нужны всё равно.
+fn log_lines_until_or_deadline(
+    bus: &PrivateBusWithBrowserSession,
+    needle: &str,
+    wait: Duration,
+) -> Vec<String> {
+    let deadline = Instant::now() + wait;
+    let mut lines = Vec::new();
+    while let Ok(line) = bus
+        .log_lines
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+    {
+        let reached = line.contains(needle);
+        lines.push(line);
+        if reached {
+            break;
+        }
+    }
+    lines
 }
 
 /// Итоговая сводка плеера из строк журнала.
@@ -303,6 +355,7 @@ fn recorded_playthrough_equals_the_input_and_replays_to_the_renderer() {
         &session_directory,
         Pacing::Fast,
         Duration::from_secs(1),
+        &ReplayProcess::HEADLESS,
     );
     let summary = final_summary(&replay_lines);
     assert_eq!(
@@ -356,6 +409,7 @@ fn original_pacing_keeps_the_recorded_pauses() {
         directory.path(),
         Pacing::Original,
         Duration::from_secs(1),
+        &ReplayProcess::HEADLESS,
     );
     // Пауза записи соблюдена: повтор не короче неё, и кадры всё равно показаны.
     assert!(started.elapsed() >= Duration::from_millis(1_500));
@@ -413,11 +467,29 @@ fn replay_real_recording_in_the_real_process() {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(3_000);
+    // `FASTIPLAYER_REPLAY_WINDOW=1` — как у живого плеера: окно на частном виртуальном
+    // дисплее и настоящий путь показа (VA-API, GLES2 из config). Безоконный путь считает
+    // кадры программным декодером и прячет сбои аппаратного (находка 09b2).
+    let window_display = std::env::var_os("FASTIPLAYER_REPLAY_WINDOW").map(|_| {
+        window::VirtualWaylandDisplay::start("replay-real")
+            .expect("FASTIPLAYER_REPLAY_WINDOW needs kwin_wayland for a private display")
+    });
+    let video = window_display.map_or(TestVideo::Headless, TestVideo::Window);
+    // `FASTIPLAYER_REPLAY_CONFIG=<config.toml>` — настройки показа живого плеера.
+    let config_toml = std::env::var_os("FASTIPLAYER_REPLAY_CONFIG").map(|path| {
+        std::fs::read_to_string(&path)
+            .expect("FASTIPLAYER_REPLAY_CONFIG must name a readable config.toml")
+    });
+    let process = ReplayProcess {
+        video: &video,
+        config_toml: config_toml.as_deref(),
+    };
     let lines = replay_in_fresh_process(
         "replay-real",
         &directory,
         pacing,
         Duration::from_millis(tail_ms),
+        &process,
     );
     for line in lines
         .iter()
@@ -425,9 +497,19 @@ fn replay_real_recording_in_the_real_process() {
     {
         println!("{line}");
     }
-    let summary = final_summary(&lines);
+    // Последняя сводка (с окном процесс на паузе может не выйти — итоговой тогда нет).
+    let summary = lines
+        .iter()
+        .rev()
+        .find(|line| line.contains("Browser playback summary"))
+        .expect("the player printed no playback summary");
+    // Сбои декодера — главный след находки 09b2 (аппаратный H.264 на Twitch).
+    let decode_errors = lines
+        .iter()
+        .filter(|line| line.contains("Decode error"))
+        .count();
     println!(
-        "FINAL presented_frames={} {summary}",
+        "FINAL presented_frames={} decode_errors={decode_errors} {summary}",
         log_number(summary, "presented_frames")
     );
 }
