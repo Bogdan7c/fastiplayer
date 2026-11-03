@@ -15,9 +15,33 @@
 // страницей до передачи, у браузера не прочитать — их можно только запомнить в момент вызова, а
 // без них при возврате медиакнопки страницы перестали бы работать. Цена — наши обёртки видны
 // странице (`toString`), как и обёртки хука MSE.
+//
+// Медиаклавиша за браузер (решение 194): пока системные кнопки у плеера, play/pause зрителя из
+// окна плеера должны дойти до страницы так же, как дошла бы системная клавиша, — вызовом её
+// обработчика Media Session. Обработчики помнит только страж, поэтому и вызывает их он
+// (`invokePageAction`); что делать, если обработчика нет, решает тень (viewer-media-key.ts).
 
 import { applyOriginal, hasPrototype } from "./shadow/intrinsics.ts";
 import { shadowProblemReporter } from "./shadow/once-reporter.ts";
+
+/**
+ * Действия медиаклавиш, которые зритель шлёт странице из окна плеера (решение 194): только
+ * play и pause — перемотка по-прежнему идёт тенью, как раньше.
+ */
+export type MediaKeyAction = "play" | "pause";
+
+/**
+ * Чем кончилась попытка нажать «медиаклавишу» за страницу. Три исхода не сливаются в `bool`
+ * (правило 6 AGENTS): «обработчика нет» — обычный путь к элементу, а «обработчик упал» —
+ * странность, о которой надо сказать в отладку.
+ */
+export type PageActionOutcome =
+  /** Обработчик страницы вызван и вернулся без исключения. */
+  | { readonly kind: "invoked" }
+  /** Страница обработчик этого действия не ставила (или сняла его `null`). */
+  | { readonly kind: "no_handler" }
+  /** Обработчик бросил исключение; `problem` — то, что он бросил. */
+  | { readonly kind: "handler_failed"; readonly problem: unknown };
 
 /** Шов с тенью: на время передачи погасить mediaSession страницы, при возврате вернуть. */
 export interface MediaSessionGuard {
@@ -25,6 +49,12 @@ export interface MediaSessionGuard {
   suspend(): void;
   /** Вернуть браузеру то, что поставила страница. Без `suspend` — ничего. */
   restore(): void;
+  /**
+   * Нажать медиаклавишу за браузер: вызвать обработчик действия, который страница поставила
+   * последним (в том числе пока страж погашен), с `MediaSessionActionDetails` `{ action }` —
+   * так, как это делает браузер на системную клавишу. Состояние стража не меняется.
+   */
+  invokePageAction(action: MediaKeyAction): PageActionOutcome;
 }
 
 /** Значение `playbackState`, когда страница «ничего не говорит» о воспроизведении. */
@@ -59,7 +89,11 @@ interface PageMediaSessionState {
   positionState: unknown;
 }
 
-const NO_OP_GUARD: MediaSessionGuard = { suspend() {}, restore() {} };
+const NO_HANDLER: PageActionOutcome = { kind: "no_handler" };
+const INVOKED: PageActionOutcome = { kind: "invoked" };
+
+/** Без `navigator.mediaSession` страница и обработчиков ставить не могла: всегда «нет обработчика». */
+const NO_OP_GUARD: MediaSessionGuard = { suspend() {}, restore() {}, invokePageAction: () => NO_HANDLER };
 
 /** Поставить стража на document_start. Нет `navigator.mediaSession` — пустышка. */
 export function installMediaSessionGuard(win: Window): MediaSessionGuard {
@@ -90,7 +124,27 @@ export function installMediaSessionGuard(win: Window): MediaSessionGuard {
       suspended = false;
       restoreBrowserSession(mediaSession, originals, pageState);
     },
+    invokePageAction(action) {
+      return invokeRememberedHandler(pageState.actionHandlers.get(action), action);
+    },
   };
+}
+
+/**
+ * Вызов обработчика страницы так, как это делает браузер на медиаклавишу: `this` не задан
+ * (обратный вызов WebIDL), единственный аргумент — словарь `{ action }`. Объект создаётся
+ * здесь, в MAIN-мире, — это мир страницы, поэтому для неё он обычный объект её мира.
+ * Обещание асинхронного обработчика не ждём и не перехватываем: браузер тоже не ждёт, а
+ * отказ обещания должен дойти до страницы (`unhandledrejection`), как без нас.
+ */
+function invokeRememberedHandler(handler: unknown, action: MediaKeyAction): PageActionOutcome {
+  if (typeof handler !== "function") return NO_HANDLER;
+  try {
+    applyOriginal(handler as OriginalFunction, undefined, [{ action }]);
+    return INVOKED;
+  } catch (problem) {
+    return { kind: "handler_failed", problem };
+  }
 }
 
 function captureOriginals(prototype: object, win: Window): MediaSessionOriginals | undefined {

@@ -85,7 +85,7 @@ fn run(invocation: Invocation) -> ExitCode {
                     results.extend(scenarios::run_page_ends(&stand, browser, &pages));
                 }
                 Command::PlayerCommands => {
-                    results.extend(scenarios::run_player_commands(&stand, browser));
+                    results.extend(scenarios::run_player_commands(&stand, browser, &pages));
                 }
                 Command::ExtensionStatus => {
                     results.push(scenarios::run_extension_status(&stand, browser));

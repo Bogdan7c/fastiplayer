@@ -2,56 +2,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { installMediaSessionGuard } from "../../../src/page/media-session-guard.ts";
+import { createFakeMediaSessionWindow } from "./fake-media-session.ts";
 
-const KNOWN_ACTIONS = ["play", "pause", "seekto", "seekbackward", "seekforward", "nexttrack", "previoustrack", "stop"];
-
-/** Фейковый MediaSession: поля `system*` — то, что браузер отдал бы системе медиакнопок. */
-function createFakeWindow() {
-  class FakeMediaMetadata {
-    readonly title: string;
-    constructor(init: { title: string }) {
-      this.title = init.title;
-    }
-  }
-  class FakeMediaSession {
-    systemMetadata: unknown = null;
-    systemPlaybackState = "none";
-    readonly systemHandlers = new Map<string, unknown>();
-    systemPositionState: unknown = undefined;
-    /** Каждый вызов, дошедший до «браузера» (даже если тут же отменён). */
-    readonly systemPositionCalls: unknown[] = [];
-    get metadata(): unknown {
-      return this.systemMetadata;
-    }
-    set metadata(value: unknown) {
-      if (value !== null && !(value instanceof FakeMediaMetadata)) throw new TypeError("not MediaMetadata");
-      this.systemMetadata = value;
-    }
-    get playbackState(): string {
-      return this.systemPlaybackState;
-    }
-    set playbackState(value: string) {
-      if (["none", "paused", "playing"].includes(value)) this.systemPlaybackState = value;
-    }
-    setActionHandler(action: string, handler: unknown): void {
-      if (!KNOWN_ACTIONS.includes(action)) throw new TypeError(`unknown action ${action}`);
-      if (handler === null) this.systemHandlers.delete(action);
-      else this.systemHandlers.set(action, handler);
-    }
-    setPositionState(state?: { duration: number; position: number }): void {
-      this.systemPositionCalls.push(state);
-      if (state === undefined) {
-        this.systemPositionState = undefined;
-        return;
-      }
-      if (state.position > state.duration) throw new TypeError("position after duration");
-      this.systemPositionState = state;
-    }
-  }
-  const mediaSession = new FakeMediaSession();
-  const win = { navigator: { mediaSession }, MediaMetadata: FakeMediaMetadata, TypeError };
-  return { win: win as unknown as Window, mediaSession, FakeMediaMetadata };
-}
+const createFakeWindow = createFakeMediaSessionWindow;
 
 describe("страж mediaSession", () => {
   it("до передачи прозрачен: вызовы страницы доходят до системы", () => {
@@ -165,5 +118,78 @@ describe("страж mediaSession", () => {
     const guard = installMediaSessionGuard({ navigator: {} } as unknown as Window);
     guard.suspend();
     guard.restore();
+  });
+});
+
+describe("страж mediaSession: медиаклавиша за браузер (решение 194)", () => {
+  /** Обработчик, который запоминает каждый вызов: аргументы и `this`. */
+  function recordingHandler() {
+    const calls: { details: unknown; self: unknown }[] = [];
+    const handler = function (this: unknown, details: unknown): void {
+      calls.push({ details, self: this });
+    };
+    return { handler, calls };
+  }
+
+  it("поставленный обработчик вызывается с { action } и без this — как на системную клавишу", () => {
+    const { win, mediaSession } = createFakeWindow();
+    const guard = installMediaSessionGuard(win);
+    const onPlay = recordingHandler();
+    const onPause = recordingHandler();
+    mediaSession.setActionHandler("play", onPlay.handler);
+    mediaSession.setActionHandler("pause", onPause.handler);
+
+    assert.deepEqual(guard.invokePageAction("play"), { kind: "invoked" });
+    assert.deepEqual(onPlay.calls, [{ details: { action: "play" }, self: undefined }]);
+    assert.deepEqual(onPause.calls, [], "only the handler of the pressed key runs");
+    assert.deepEqual(guard.invokePageAction("pause"), { kind: "invoked" });
+    assert.deepEqual(onPause.calls, [{ details: { action: "pause" }, self: undefined }]);
+  });
+
+  it("обработчика нет или страница его сняла — no_handler, а не invoked", () => {
+    const { win, mediaSession } = createFakeWindow();
+    const guard = installMediaSessionGuard(win);
+    assert.deepEqual(guard.invokePageAction("play"), { kind: "no_handler" });
+    const onPlay = recordingHandler();
+    mediaSession.setActionHandler("play", onPlay.handler);
+    mediaSession.setActionHandler("play", null);
+    assert.deepEqual(guard.invokePageAction("play"), { kind: "no_handler" });
+    assert.deepEqual(onPlay.calls, []);
+  });
+
+  it("обработчик бросил — handler_failed с его ошибкой, исключение наружу не летит", () => {
+    const { win, mediaSession } = createFakeWindow();
+    const guard = installMediaSessionGuard(win);
+    const problem = new Error("player of the site is broken");
+    mediaSession.setActionHandler("pause", () => {
+      throw problem;
+    });
+    assert.deepEqual(guard.invokePageAction("pause"), { kind: "handler_failed", problem });
+  });
+
+  it("пока погашено: вызывается обработчик, поставленный и до, и во время передачи; состояние стража не меняется", () => {
+    const { win, mediaSession } = createFakeWindow();
+    const guard = installMediaSessionGuard(win);
+    const beforeHandoff = recordingHandler();
+    mediaSession.setActionHandler("pause", beforeHandoff.handler);
+    guard.suspend();
+    const duringHandoff = recordingHandler();
+    mediaSession.setActionHandler("play", duringHandoff.handler);
+
+    assert.deepEqual(guard.invokePageAction("pause"), { kind: "invoked" });
+    assert.deepEqual(guard.invokePageAction("play"), { kind: "invoked" });
+    assert.equal(beforeHandoff.calls.length, 1);
+    assert.equal(duringHandoff.calls.length, 1);
+    // Вызов ничего не вернул браузеру: медиаклавиши по-прежнему у плеера.
+    assert.equal(mediaSession.systemHandlers.size, 0);
+
+    guard.restore();
+    assert.equal(mediaSession.systemHandlers.get("pause"), beforeHandoff.handler);
+    assert.equal(mediaSession.systemHandlers.get("play"), duringHandoff.handler);
+  });
+
+  it("без navigator.mediaSession — всегда no_handler", () => {
+    const guard = installMediaSessionGuard({ navigator: {} } as unknown as Window);
+    assert.deepEqual(guard.invokePageAction("play"), { kind: "no_handler" });
   });
 });

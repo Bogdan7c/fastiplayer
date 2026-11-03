@@ -9,11 +9,13 @@
 // - Оригиналы — единственный способ трогать настоящий элемент (страница могла подменить прототипы).
 // - Тень файла (сессия 09b): всё, что она делает иначе, — `FileShadowLifecycle` (снимок файла,
 //   снятие и возврат источника); контроллер зовёт её одной строкой в своих точках.
+// - Play/pause зрителя (решение 194, «как медиаклавиша») — правило `viewer-media-key.ts`:
+//   обработчик Media Session страницы, если он есть, иначе прежняя доставка элементу.
 
 import type { HandoffEndCause, HandoffEndPosition, HandoffEndResume, PageEvent, ShadowCommand } from "../../shared/handoff-contract.ts";
 import { MAX_PLAYBACK_RATE_PERMILLE, MIN_PLAYBACK_RATE_PERMILLE } from "../../protocol/limits.ts";
 import type { MediaTimeMicros, PlaybackRatePermille } from "../../protocol/time.ts";
-import type { MediaSessionGuard } from "../media-session-guard.ts";
+import type { MediaKeyAction, MediaSessionGuard } from "../media-session-guard.ts";
 import type { ShadowSourceKind } from "../handoff-seam.ts";
 import type { TimeoutScheduler } from "./file-return.ts";
 import { FileShadowLifecycle, interruptFileReturn, type FileShadowHost, type ReturnPlan } from "./file-shadow-lifecycle.ts";
@@ -31,6 +33,7 @@ import { RealElementFollower } from "./real-element-follower.ts";
 import { ShadowPulse } from "./shadow-pulse.ts";
 import { ShadowTimeline, READY_STATE, type ReadyStateValue, type TimelineSignal } from "./shadow-timeline.ts";
 import { classifyElementSource, type MediaSourceObjectUrlCheck, type SourceVerdict } from "./source-reset-policy.ts";
+import { deliverViewerMediaKey, type ViewerMediaKeyPorts } from "./viewer-media-key.ts";
 
 /** Окружение тени (шов A1↔A2): всё внешнее подаётся снаружи, чтобы тесты шли на фейках. */
 export interface ShadowEnvironment {
@@ -237,10 +240,9 @@ class ShadowController implements ShadowBehavior {
           if (this.#pulse.onClockTick(nowMs)) this.#emit({ kind: "shadow_alive" });
           return;
         case "play":
-          this.#timeline.play("player", nowMs);
-          return;
         case "pause":
-          this.#timeline.pause(nowMs);
+          // Решение 194: зритель нажал play/pause — странице это приходит как медиаклавиша.
+          deliverViewerMediaKey(command.kind, this.#viewerMediaKeyPorts());
           return;
         case "set_rate":
           this.#timeline.setRateFromPlayer(command.rate, nowMs);
@@ -434,6 +436,23 @@ class ShadowController implements ShadowBehavior {
   // -------------------------------------------------------------------------------------------
   // Внутреннее.
   // -------------------------------------------------------------------------------------------
+
+  /** Шов доставки play/pause зрителя (viewer-media-key.ts): страж, прежний путь, жива ли тень. */
+  #viewerMediaKeyPorts(): ViewerMediaKeyPorts {
+    return {
+      invokePageAction: (action) => this.#env.mediaSession.invokePageAction(action),
+      deliverToElement: (action) => this.#showPlayerPlayState(action),
+      shadowActive: () => this.#active,
+      reportProblem: (context, problem) => shadowProblemReporter.report(`shadow: ${context}`, problem),
+    };
+  }
+
+  /** Прежняя доставка: тень сама показывает странице игру или паузу по команде плеера. */
+  #showPlayerPlayState(action: MediaKeyAction): void {
+    const nowMs = this.#env.now();
+    if (action === "play") this.#timeline.play("player", nowMs);
+    else this.#timeline.pause(nowMs);
+  }
 
   #pageSeek(seconds: number): void {
     this.#attempt("page seek", () => {

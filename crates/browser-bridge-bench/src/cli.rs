@@ -6,7 +6,7 @@ use browser_bridge_bench::browsers::BrowserKind;
 use browser_bridge_bench::environment::{DisplayTarget, PlayerConfigProfile};
 use browser_bridge_bench::scenarios::{
     BrowserExecutables, DEFAULT_MIN_FRAMES, PAGE_SCENARIOS, PageFilter, ReplayOptions, RunSettings,
-    capture_page_ids, end_page_ids,
+    capture_page_ids, end_page_ids, player_command_page_ids,
 };
 
 /// Что запускать.
@@ -59,7 +59,7 @@ impl Command {
     fn takes_page_filter(self) -> bool {
         matches!(
             self,
-            Self::Pages | Self::Capture | Self::PageEnds | Self::All
+            Self::Pages | Self::Capture | Self::PageEnds | Self::PlayerCommands | Self::All
         )
     }
 
@@ -71,6 +71,7 @@ impl Command {
             Self::Pages => filter.matches_any_of(pages()),
             Self::Capture => filter.matches_any_of(capture_page_ids()),
             Self::PageEnds => filter.matches_any_of(end_page_ids()),
+            Self::PlayerCommands => filter.matches_any_of(player_command_page_ids()),
             // `all` всегда начинается с `pages`, где есть любая известная страница.
             Self::All => filter.matches_any_of(pages()),
             _ => filter.selects_everything(),
@@ -117,7 +118,8 @@ Options:
   --player-config <clean|gles2-vaapi> player settings inside the bench (default: clean)
   --extra-extension <PATH>            extra extension (unpacked dir, .xpi or .zip) in every
                                       browser launch; repeatable (ad blocker mechanism)
-  --page <ID>                         only this page (pages, capture, page-ends, all);
+  --page <ID>                         only this page (pages, capture, page-ends,
+                                      player-commands, all);
                                       repeatable; ids are the names in site/pages
   --recording <FILE>                  replay: the .fprec file to replay
   --min-frames <N>                    replay: presented frames the player must reach (default: 50)
@@ -448,10 +450,14 @@ mod tests {
 
     #[test]
     fn page_flag_rejects_unknown_pages_foreign_pages_and_commands_without_pages() {
-        let cases: [(&[&str], &str); 5] = [
+        let cases: [(&[&str], &str); 6] = [
             (
                 &["capture", "--page", "no-such-page"],
                 "unknown page 'no-such-page'",
+            ),
+            (
+                &["player-commands", "--page", "page-freeze"],
+                "is a page of the PlayerCommands",
             ),
             (
                 &["capture", "--page", "page-freeze"],
@@ -471,6 +477,14 @@ mod tests {
             let error = parse_words(words).expect_err("must be rejected");
             assert!(error.to_string().contains(expected), "{words:?}: {error}");
         }
+    }
+
+    #[test]
+    fn player_commands_take_a_page_filter_for_the_live_stream_pages() {
+        let run = invocation(&["player-commands", "--page", "live-unload-worker"]);
+        assert_eq!(run.command, Command::PlayerCommands);
+        assert!(run.pages.admits("live-unload-worker") && !run.pages.admits("mse-fmp4"));
+        assert!(invocation(&["player-commands"]).pages.selects_everything());
     }
 
     #[test]

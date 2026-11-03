@@ -18,6 +18,9 @@
 //! доказательство — новый `fetch_range` у цели в журнале сервера, рост кадров и часы страницы
 //! у цели. Там же видно, что `<video>` страницы под тенью файл не качал, а после закрытия окна
 //! снова грузит свой файл.
+//!
+//! Страницы «живой эфир как Twitch» (решение 194) идут той же командой, их порядок —
+//! в [`super::live_unload`].
 
 use std::time::{Duration, Instant};
 
@@ -31,7 +34,9 @@ use super::evidence::{
     page_failures, unexpected_player_lines, wait_for_session_granted,
 };
 use super::handoff_run::{ACK_TIMEOUT, ExtensionMode, HandoffRun, PageReadiness};
+use super::live_unload::{self, LIVE_UNLOAD_PAGES};
 use super::outcome::{StepResult, Verdict};
+use super::page_filter::PageFilter;
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::BenchEnvironment;
 use crate::environment::PlayerConfigProfile;
@@ -42,9 +47,9 @@ use crate::site::{PageReport, SiteError, StandSite};
 /// Страницы, на которых проверяются команды плеера: MSE и файл `<video src>` (09b).
 const COMMANDS_PAGES: &[&str] = &["mse-fmp4", "video-src"];
 /// Сколько ждать, пока окно плеера опубликует управление по MPRIS.
-const CONTROLLABLE_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const CONTROLLABLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Сколько ждать первые кадры плеера до команд.
-const FRAMES_TIMEOUT: Duration = Duration::from_secs(60);
+pub(super) const FRAMES_TIMEOUT: Duration = Duration::from_secs(60);
 /// На сколько должны вырасти кадры плеера после перемотки между двумя сводками.
 const MIN_FRAMES_GAINED_AFTER_SEEK: u64 = 60;
 /// Сколько ждать две сводки плеера после перемотки.
@@ -65,7 +70,7 @@ const BEYOND_BUFFER_MARGIN_S: f64 = 4.0;
 /// Сколько секунд ролика должно остаться после цели, чтобы было что играть.
 const END_OF_MEDIA_MARGIN_S: f64 = 3.0;
 /// Сколько ждать первую сводку плеера после паузы (интервал сводок 10 с).
-const BASELINE_SUMMARY_TIMEOUT: Duration = Duration::from_secs(20);
+pub(super) const BASELINE_SUMMARY_TIMEOUT: Duration = Duration::from_secs(20);
 /// Дальше этой позиции окно перед закрытием отматывается назад (ролик стенда 30 с).
 const RETURN_MAX_POSITION_MICROS: i64 = 20_000_000;
 /// На сколько отматывается окно перед закрытием.
@@ -73,9 +78,19 @@ const RETURN_REWIND_MICROS: i64 = 12_000_000;
 /// Микросекунд в секунде (страница получает секунды).
 const MICROS_PER_SECOND: f64 = 1_000_000.0;
 
-pub(super) fn run(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
+/// Все страницы команды (для проверки `--page` в командной строке).
+pub(super) fn page_ids() -> Vec<&'static str> {
     COMMANDS_PAGES
         .iter()
+        .chain(LIVE_UNLOAD_PAGES)
+        .copied()
+        .collect()
+}
+
+pub(super) fn run(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> Vec<StepResult> {
+    let mut results: Vec<StepResult> = COMMANDS_PAGES
+        .iter()
+        .filter(|page| filter.admits(page))
         .map(|page| {
             let started = Instant::now();
             let body = |environment: &BenchEnvironment| drive(stand, environment, browser, page);
@@ -94,7 +109,9 @@ pub(super) fn run(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
                 started.elapsed(),
             )
         })
-        .collect()
+        .collect();
+    results.extend(live_unload::run(stand, browser, filter));
+    results
 }
 
 /// Результат одного шага сценария.
@@ -288,7 +305,7 @@ fn run_commands(
 }
 
 /// Команда странице и ожидание её подтверждения.
-fn tell_and_wait(run: &HandoffRun<'_>, command: &str) -> Result<(), String> {
+pub(super) fn tell_and_wait(run: &HandoffRun<'_>, command: &str) -> Result<(), String> {
     run.tell_page(command);
     run.wait_ack(command, ACK_TIMEOUT)
 }

@@ -4,7 +4,8 @@
 // Сообщения:
 //   page -> worker: init {tracks, durationS, mediaBase, credentials, bufferAheadS, positionS},
 //                   new_generation {то же, что init} — новый MediaSource вместо старого (реклама,
-//                   следующая серия), clock {currentTime, paused}, seek {positionS}
+//                   следующая серия), clock {currentTime, paused}, seek {positionS},
+//                   unload — «выгрузка» эфира, как у Twitch на паузе (буфер удалён, подкачка стоит)
 //   worker -> page: handle (transfer) — по одному на поколение, info {inWorker},
 //                   progress {segments} (все поколения), log {line}
 
@@ -72,6 +73,11 @@ export function createWorkerPlayer(scope) {
         .catch((error) => postLog(`${message.type} failed: ${error}`));
     } else if (message.type === 'clock') {
       latestClock = { currentTime: message.currentTime, paused: message.paused };
+    } else if (message.type === 'unload') {
+      // По очереди с поколениями: выгрузка не должна задеть MediaSource, который ещё создаётся.
+      generationChain = generationChain
+        .then(() => engine?.unload())
+        .catch((error) => postLog(`unload failed: ${error}`));
     } else if (message.type === 'seek') {
       engine?.seek(message.positionS).catch((error) => postLog(`seek failed: ${error}`));
     }

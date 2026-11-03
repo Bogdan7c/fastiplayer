@@ -17,6 +17,7 @@ mod context;
 mod evidence;
 mod extension_status;
 mod handoff_run;
+mod live_unload;
 mod outcome;
 mod page_catalog;
 mod page_ends;
@@ -61,9 +62,19 @@ pub fn capture_page_ids() -> Vec<&'static str> {
     capture::capture_page_ids()
 }
 
-/// Команды плеера (пауза, play, перемотка, закрытие окна) доходят до страницы под тенью.
-pub fn run_player_commands(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
-    player_commands::run(stand, browser)
+/// Команды плеера (пауза, play, перемотка, закрытие окна) доходят до страницы под тенью;
+/// страницы «живой эфир как Twitch» оживают после паузы и play зрителя (все или выбранные `--page`).
+pub fn run_player_commands(
+    stand: &Stand,
+    browser: BrowserKind,
+    filter: &PageFilter,
+) -> Vec<StepResult> {
+    player_commands::run(stand, browser, filter)
+}
+
+/// Идентификаторы страниц `player-commands` (для проверки `--page` в командной строке).
+pub fn player_command_page_ids() -> Vec<&'static str> {
+    player_commands::page_ids()
 }
 
 /// Попап настоящего экстеншена показывает «Connected to Fastiplayer».

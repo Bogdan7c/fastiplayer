@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>live-unload-new-ms</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>live-unload-new-ms</h1>
+
+<script type="module">
+// Живой эфир как Twitch: выгрузка на паузе, загрузка заново НОВЫМ MediaSource (главный поток, как Twitch в Firefox).
+// Решение 194: play/pause зрителя доходит до страницы как медиаклавиша (lib/live-unload-page.js).
+import { runLiveUnloadPage, LIVE_RELOAD } from '../lib/live-unload-page.js';
+
+await runLiveUnloadPage('live-unload-new-ms', { reload: LIVE_RELOAD.NEW_MEDIA_SOURCE, worker: false });
+</script>
+</body>
+</html>

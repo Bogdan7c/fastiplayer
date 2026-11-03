@@ -108,6 +108,29 @@ export class MseEngine {
     lane.desiredTrack = track;
   }
 
+  /**
+   * «Выгрузка» живого эфира, как у Twitch на паузе: подкачка стоит, весь буфер каждой полосы
+   * удалён (init остаётся в SourceBuffer — сам MediaSource жив). Дальше — `reload` или новый
+   * MediaSource.
+   */
+  async unload() {
+    await this.#stopLoops();
+    for (const lane of this.lanes) {
+      if (this.ms.readyState === 'open') {
+        try { lane.sourceBuffer.abort(); } catch (error) { this.log(`abort failed: ${error}`); }
+      }
+      await this.#removeAll(lane.sourceBuffer);
+      // Следующий запуск ставит полосу заново от своей позиции (а не продолжает старую).
+      lane.initialised = false;
+    }
+    this.endedStream = false;
+  }
+
+  /** Загрузить заново с `positionS` в том же MediaSource (после `unload`). */
+  reload(positionS) {
+    this.#launchLoops(positionS);
+  }
+
   /** Останавливает подкачку и ждёт завершения активных операций. */
   async stop() {
     await this.#stopLoops();

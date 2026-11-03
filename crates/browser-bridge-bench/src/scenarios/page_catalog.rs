@@ -77,6 +77,11 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("page-freeze"),
     // Д-9: кэшированные до передачи геттер currentTime и play (сценарий `capture`).
     page("cached-descriptors"),
+    // Решение 194: живой эфир как Twitch — выгрузка на паузе, загрузка только из обработчика
+    // Media Session `play` (сценарий `player-commands`). Воркер — как Twitch в Chromium.
+    page("live-unload"),
+    page("live-unload-new-ms"),
+    page_unsupported_in("live-unload-worker", &[BrowserKind::Firefox]),
 ];
 
 #[cfg(test)]

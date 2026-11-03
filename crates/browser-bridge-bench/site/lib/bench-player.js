@@ -13,6 +13,9 @@
 //                                                // releaseOldSource — как снять старый источник
 //                                                // (RELEASE_OLD_SOURCE), firstRequestDelayMs —
 //                                                // задержка первых данных нового поколения
+//   await player.unloadLive();                   // «выгрузка» эфира, как Twitch на паузе
+//   player.reloadLiveInPlace();                  // снова качать с 0 в том же MediaSource
+//   await player.reloadLiveWithNewSource();      // снова с 0, новым MediaSource
 //   player.generations                           // сколько MediaSource создано на элементе
 //   player.requests                              // журнал сегментных запросов по всем поколениям
 //   await player.destroy();
@@ -110,6 +113,8 @@ export class BenchPlayer {
     this.watchdogTimer = null;
     this.recreating = false;
     this.pageSeeking = false;
+    /** Эфир «выгружен» (`unloadLive`): чужие перемотки не качают, пока его не загрузят снова. */
+    this.liveUnloaded = false;
     this.lastProgress = { at: performance.now(), time: 0 };
     this.onGeneration = options.onGeneration ?? (() => {});
   }
@@ -179,7 +184,7 @@ export class BenchPlayer {
    */
   followPlayerSeeks() {
     this.video.addEventListener('seeking', () => {
-      if (this.pageSeeking) return;
+      if (this.pageSeeking || this.liveUnloaded) return;
       if (this.useWorker) {
         this.worker?.postMessage({ type: 'seek', positionS: this.video.currentTime });
         return;
@@ -188,6 +193,32 @@ export class BenchPlayer {
       this.engine.seek(this.video.currentTime)
         .catch((error) => this.logLine(`follow seek failed: ${error}`));
     });
+  }
+
+  /**
+   * «Выгрузка» живого эфира, как у Twitch на паузе: подкачка стоит, весь буфер удалён.
+   * В воркере выгрузку делает сам воркер (по очереди с поколениями); ответа страница не ждёт.
+   */
+  async unloadLive() {
+    this.liveUnloaded = true;
+    if (this.useWorker) {
+      this.worker?.postMessage({ type: 'unload' });
+      return;
+    }
+    await this.engine?.unload();
+  }
+
+  /** Снова качать эфир с начала в ТОМ ЖЕ MediaSource (только MSE в странице). */
+  reloadLiveInPlace() {
+    if (this.useWorker) throw new Error('reloadLiveInPlace: the worker variant reloads with a new MediaSource');
+    this.liveUnloaded = false;
+    this.engine.reload(0);
+  }
+
+  /** Снова качать эфир с начала НОВЫМ MediaSource на том же элементе (как Twitch после выгрузки). */
+  async reloadLiveWithNewSource() {
+    this.liveUnloaded = false;
+    await this.newGeneration({ positionS: 0, autoplay: false });
   }
 
   /** ABR: переключиться на другую дорожку той же полосы. */

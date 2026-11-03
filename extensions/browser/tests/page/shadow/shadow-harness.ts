@@ -21,12 +21,16 @@ export function createFakeClock(startMs = 1_000): FakeClock {
   };
 }
 
-/** Страж mediaSession, который только считает вызовы (сам страж проверяется отдельно). */
+/**
+ * Страж mediaSession, который только считает вызовы (сам страж проверяется отдельно). Страница
+ * обработчиков Media Session не ставила: play/pause зрителя идут прежним путём, элементу.
+ */
 export function createCountingGuard() {
   const calls: ("suspend" | "restore")[] = [];
   const guard: MediaSessionGuard = {
     suspend: () => void calls.push("suspend"),
     restore: () => void calls.push("restore"),
+    invokePageAction: () => ({ kind: "no_handler" }),
   };
   return { guard, calls };
 }
@@ -79,6 +83,8 @@ export const PLAYING_VIDEO_MEDIA_SOURCE_URL = "blob:https://site.example/ms-1";
 export interface ShadowHarnessOptions {
   /** Что успело случиться ДО нашего document_start (например, подмена прототипа другим экстеншеном). */
   readonly beforeDocumentStart?: (dom: FakeMediaDom) => void;
+  /** Настоящий страж на фейковом MediaSession вместо считающего (решение 194: медиаклавиши). */
+  readonly mediaSession?: MediaSessionGuard;
 }
 
 /**
@@ -102,7 +108,7 @@ export function createShadowHarness(options: ShadowHarnessOptions = {}): ShadowH
       {
         win: dom.window as unknown as Window,
         originals,
-        mediaSession: guard,
+        mediaSession: options.mediaSession ?? guard,
         now: () => clock.nowMs,
         isMediaSourceObjectUrl: (url) => mediaSourceUrls.has(url),
         scheduleTimeout: timers.schedule,
