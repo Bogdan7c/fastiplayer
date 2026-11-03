@@ -18,6 +18,7 @@ import { captureRandomFill, createDocumentTag, type RandomWindow } from "./docum
 import { ElementRegistry, type RegistryWindow } from "./element-registry.ts";
 import { HandoffController } from "./handoff-controller.ts";
 import type { ShadowStarter } from "./handoff-seam.ts";
+import type { HandoffTap } from "./handoff-tap.ts";
 import { DocumentMemoryBudget, DOCUMENT_MEMORY_BUDGET_BYTES } from "./journal/memory-budget.ts";
 import { captureMediaSourceReaders } from "./media-source-readers.ts";
 import { installMseHook, type MseWindow } from "./mse-hook.ts";
@@ -25,7 +26,7 @@ import { MseTracker } from "./mse-tracker.ts";
 import { createOddityReporter, type DebugSink } from "./oddity-reporter.ts";
 import { captureChannelOriginals, captureRendezvousOriginals, listenForPageChannel, type ChannelWindow, type RendezvousWindow } from "./page-channel.ts";
 import { VideoCandidates } from "./video-candidates.ts";
-import { installWorkerCapture, type WorkerCaptureWindow, type WorkerHookSource, type WorkerMediaSources } from "./worker-capture/index.ts";
+import { installWorkerCapture, type WorkerCaptureWindow, type WorkerChannelExtension, type WorkerHookSource, type WorkerMediaSources } from "./worker-capture/index.ts";
 
 /** Окно, против которого работает MAIN-мир. */
 export interface PageBridgeWindow extends MseWindow, DomWindow, RegistryWindow, ChannelWindow, BinaryWindow, RandomWindow, WorkerCaptureWindow {
@@ -43,6 +44,10 @@ export interface PageBridgeDependencies {
   readonly memoryBudgetBytes?: number;
   /** Хук выделенного воркера (бандл и политика кодеков); без него обёртка `Worker` не ставится. */
   readonly workerHook?: WorkerHookSource;
+  /** Подслушивание шагов передачи (только отладочная сборка записи потока страницы). */
+  readonly handoffTap?: HandoffTap;
+  /** Расширение каналов воркеров (только отладочная сборка записи потока страницы). */
+  readonly workerChannelExtension?: WorkerChannelExtension;
 }
 
 /** Что сборка отдаёт наружу (только для тестов: странице не видно ничего). */
@@ -75,10 +80,25 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
     reportOddity,
   });
   // Реестр воркеров — всегда (классификатор узнаёт по нему handle); обёртка — только в Chromium.
-  const workerCapture = installWorkerCapture(win, { hook: dependencies.workerHook ?? null, channel, binary, reportOddity });
+  const workerCapture = installWorkerCapture(win, {
+    hook: dependencies.workerHook ?? null,
+    channel,
+    binary,
+    reportOddity,
+    ...(dependencies.workerChannelExtension === undefined ? {} : { channelExtension: dependencies.workerChannelExtension }),
+  });
   const workerMediaSources = workerCapture.registry;
   const candidates = new VideoCandidates(registry, tracker, dom, mediaSources, documentTag, reportOddity, workerMediaSources);
-  const controller = new HandoffController({ registry, candidates, dom, binary, startShadow: dependencies.startShadow, workerMediaSources, reportOddity });
+  const controller = new HandoffController({
+    registry,
+    candidates,
+    dom,
+    binary,
+    startShadow: dependencies.startShadow,
+    workerMediaSources,
+    reportOddity,
+    ...(dependencies.handoffTap === undefined ? {} : { tap: dependencies.handoffTap }),
+  });
   tracker.setListener(controller);
   workerMediaSources.setListener(controller);
 

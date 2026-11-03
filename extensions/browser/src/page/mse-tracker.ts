@@ -108,6 +108,11 @@ export class MseTracker implements MseObserver {
     return this.#mediaSources.get(mediaSource) ?? null;
   }
 
+  /** Индекс отслеживаемого SourceBuffer в своём MediaSource (0..7); `null` — не отслеживается. */
+  sourceBufferIndexOf(sourceBuffer: object): number | null {
+    return this.#sourceBuffers.get(sourceBuffer)?.index ?? null;
+  }
+
   /** Сколько SourceBuffer отслеживается у MediaSource. */
   sourceBufferCountOf(record: MediaSourceRecord): number {
     return this.#sourceBufferCounts.get(record) ?? 0;

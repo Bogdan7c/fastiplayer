@@ -18,7 +18,7 @@ import { copyForTransfer, type BinaryIntrinsics } from "../binary-view.ts";
 import type { OddityReporter } from "../prototype-wrap.ts";
 import type { TimeoutScheduler } from "../shadow/file-return.ts";
 import type { StreamMessage } from "../stream-sender.ts";
-import { WorkerChannel, type WorkerChannelEnvironment, type WorkerChannelListener } from "./worker-channel.ts";
+import { WorkerChannel, type WorkerChannelEnvironment, type WorkerChannelExtension, type WorkerChannelListener } from "./worker-channel.ts";
 
 /**
  * Сколько ждём конца повтора журнала от воркера, мс. Повтор 64 МиБ — это копия и отправка
@@ -66,6 +66,8 @@ export interface WorkerMediaSourcesEnvironment {
   readonly binary: BinaryIntrinsics;
   readonly scheduleTimeout: TimeoutScheduler;
   readonly reportOddity: OddityReporter;
+  /** Расширение каналов воркеров (только отладочная сборка записи потока); без него — ничего. */
+  readonly channelExtension?: WorkerChannelExtension;
 }
 
 interface OpenStream {
@@ -98,8 +100,15 @@ export class WorkerMediaSources implements WorkerChannelListener {
 
   /** Новый канал обёрнутого воркера (номер — следующий по документу). */
   createChannel(environment: Omit<WorkerChannelEnvironment, "listener" | "isOwnBytes">): WorkerChannel {
-    const channel = new WorkerChannel(this.#channels.length + 1, { ...environment, listener: this, isOwnBytes: (value) => this.#isOwnBytes(value) });
+    const extension = this.#environment.channelExtension;
+    const channel = new WorkerChannel(this.#channels.length + 1, {
+      ...environment,
+      listener: this,
+      isOwnBytes: (value) => this.#isOwnBytes(value),
+      ...(extension === undefined ? {} : { extension }),
+    });
     this.#channels.push(channel);
+    extension?.channelCreated(channel);
     return channel;
   }
 

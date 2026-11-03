@@ -17,11 +17,13 @@ import { isObject, type OddityReporter } from "../prototype-wrap.ts";
 import type { TimeoutScheduler } from "../shadow/file-return.ts";
 import { BlobRevokeDeferral } from "./blob-revoke-deferral.ts";
 import type { HookScript } from "./script-composer.ts";
+import type { WorkerChannelExtension } from "./worker-channel.ts";
 import { WorkerMediaSources } from "./worker-media-sources.ts";
 import { installWorkerWrapper, type WorkerWrapperOriginals } from "./worker-wrapper.ts";
 
 export type { WorkerHandleResolution, WorkerMediaSourceListener, WorkerMediaSourceRef, WorkerStreamHandlers } from "./worker-media-sources.ts";
 export { WorkerMediaSources } from "./worker-media-sources.ts";
+export type { WorkerChannel, WorkerChannelExtension } from "./worker-channel.ts";
 
 /** Окно, против которого ставится захват (в тестах — фейк). Любого члена может не быть. */
 export interface WorkerCaptureWindow {
@@ -54,6 +56,8 @@ export interface WorkerCaptureDependencies {
   readonly channel: ChannelOriginals;
   readonly binary: BinaryIntrinsics;
   readonly reportOddity: OddityReporter;
+  /** Расширение каналов воркеров (только отладочная сборка записи потока). */
+  readonly channelExtension?: WorkerChannelExtension;
 }
 
 /** Итог сборки. */
@@ -71,6 +75,7 @@ export function installWorkerCapture(win: WorkerCaptureWindow, dependencies: Wor
     binary: dependencies.binary,
     scheduleTimeout: captureTimeoutScheduler(win),
     reportOddity,
+    ...(dependencies.channelExtension === undefined ? {} : { channelExtension: dependencies.channelExtension }),
   });
   const hook = dependencies.hook;
   if (hook === null || !canConstructMediaSourceInWorker(win)) return { registry, wrapped: false };

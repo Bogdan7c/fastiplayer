@@ -2,7 +2,7 @@
 // Выход: dist/chrome/ и dist/firefox/ — в корне manifest.json и всё, на что он ссылается, ничего лишнего
 // (так каталог можно упаковать в .crx / .xpi в сессии 07a). Сборка детерминирована: без меток времени,
 // без sourcemap в выпуске (они не ссылаются из манифеста и раздули бы пакет магазина).
-import { build as esbuildBuild } from "esbuild";
+import { build as esbuildBuild, type Plugin } from "esbuild";
 import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { allCarrierRefusalSets, carrierFileName, encodeRefusedFamilies } from "../src/shared/codec-policy.ts";
@@ -29,6 +29,46 @@ const ENTRY_POINTS: Record<string, string> = {
 };
 
 const TARGETS: readonly TargetBrowser[] = ["chrome", "firefox"];
+
+// Отладочная сборка записи потока страницы (сессия 09b2): `npm run build -- --stream-recorder`.
+// Код записи подключается подменой двух «швов» (src/page/recorder-seam.ts и
+// src/worker/recorder-seam.ts) на отладочные варианты — в обычной сборке эти модули в бандл не
+// попадают вовсе, поэтому в dist/* нет ни строки рекордера (проверяет tests/stream-recorder-build.test.ts).
+// Отладочная сборка идёт в отдельный каталог, чтобы не затереть продуктовый dist/.
+const STREAM_RECORDER_FLAG = "--stream-recorder";
+const STREAM_RECORDER_BROWSER_DEFINE = "__FASTIPLAYER_STREAM_RECORDER_BROWSER__";
+const STREAM_RECORDER_OUTPUT_DIR = "dist-stream-recorder";
+/** Швы: путь продуктового файла -> отладочная замена. */
+const STREAM_RECORDER_SEAMS: ReadonlyArray<{ readonly product: RegExp; readonly replacement: string }> = [
+  { product: /src[\\/]page[\\/]recorder-seam\.ts$/, replacement: "src/page/stream-recorder/page-seam-enabled.ts" },
+  { product: /src[\\/]worker[\\/]recorder-seam\.ts$/, replacement: "src/worker/recorder-seam-enabled.ts" },
+];
+
+/** Параметры сборки. По умолчанию — продуктовая, без рекордера. */
+export interface BuildOptions {
+  readonly streamRecorder?: boolean;
+}
+
+/**
+ * Настройки esbuild для рекордера: в отладочной сборке плагин подменяет швы, а `define` сообщает
+ * целевой браузер; в продуктовой — пусто (швы остаются продуктовыми заглушками).
+ */
+function streamRecorderBuildSettings(target: TargetBrowser, options: BuildOptions): { define: Record<string, string>; plugins: Plugin[] } {
+  if (options.streamRecorder !== true) return { define: {}, plugins: [] };
+  const plugin: Plugin = {
+    name: "stream-recorder-seams",
+    setup(build) {
+      // Подмена по пути разрешённого файла: сначала даём esbuild разрешить импорт как обычно.
+      build.onResolve({ filter: /recorder-seam\.ts$/ }, async (args) => {
+        if (args.pluginData === "stream-recorder-seam") return undefined;
+        const resolved = await build.resolve(args.path, { kind: args.kind, resolveDir: args.resolveDir, pluginData: "stream-recorder-seam" });
+        const seam = STREAM_RECORDER_SEAMS.find((candidate) => candidate.product.test(resolved.path));
+        return seam === undefined ? resolved : { path: join(extensionRoot, seam.replacement) };
+      });
+    },
+  };
+  return { define: { [STREAM_RECORDER_BROWSER_DEFINE]: JSON.stringify(target) }, plugins: [plugin] };
+}
 
 // Хук выделенного воркера (сессия 09b, решение 63): отдельный IIFE-бандл, который НЕ лежит в dist
 // файлом, а вшит строкой в page.js. Обёртка `Worker` MAIN-мира кладёт его в начало blob-скрипта
@@ -75,10 +115,11 @@ async function buildCodecCarriers(target: TargetBrowser, outputDir: string): Pro
  * Текст бандла хука воркера (в памяти, без файла). Детерминирован, как и вся сборка; тесты берут
  * его отсюда же, чтобы проверять ровно то, что поедет в воркер.
  */
-export async function buildWorkerHookSource(target: TargetBrowser): Promise<string> {
+export async function buildWorkerHookSource(target: TargetBrowser, options: BuildOptions = {}): Promise<string> {
   const result = await esbuildBuild({
     absWorkingDir: extensionRoot,
     entryPoints: [WORKER_HOOK_ENTRY_POINT],
+    ...streamRecorderBuildSettings(target, options),
     write: false,
     bundle: true,
     format: "iife",
@@ -101,22 +142,24 @@ export async function buildWorkerHookSource(target: TargetBrowser): Promise<stri
  * Firefox от лишнего разбора — это же удлиняло запуск page.js и раскрыло гонку рукопожатия
  * (находка 09b). Пустой текст MAIN-мир читает как «хука нет» (`src/page/main.ts`).
  */
-async function workerHookSourceFor(target: TargetBrowser): Promise<string> {
-  return target === "chrome" ? await buildWorkerHookSource(target) : "";
+async function workerHookSourceFor(target: TargetBrowser, options: BuildOptions): Promise<string> {
+  return target === "chrome" ? await buildWorkerHookSource(target, options) : "";
 }
 
-export async function buildTarget(target: TargetBrowser, outputRoot: string): Promise<string> {
+export async function buildTarget(target: TargetBrowser, outputRoot: string, options: BuildOptions = {}): Promise<string> {
   const outputDir = join(outputRoot, target);
   await rm(outputDir, { recursive: true, force: true });
   await mkdir(outputDir, { recursive: true });
 
-  const workerHookSource = await workerHookSourceFor(target);
+  const workerHookSource = await workerHookSourceFor(target, options);
+  const recorderSettings = streamRecorderBuildSettings(target, options);
   await esbuildBuild({
     absWorkingDir: extensionRoot,
     entryPoints: Object.fromEntries(Object.entries(ENTRY_POINTS).map(([name, path]) => [name, path])),
     outdir: outputDir,
     // Текст хука воркера — строковым литералом в page.js (в остальных частях имени нет).
-    define: { [WORKER_HOOK_SOURCE_DEFINE]: JSON.stringify(workerHookSource) },
+    define: { [WORKER_HOOK_SOURCE_DEFINE]: JSON.stringify(workerHookSource), ...recorderSettings.define },
+    plugins: recorderSettings.plugins,
     bundle: true,
     format: "iife",
     target: ESBUILD_TARGET[target],
@@ -137,9 +180,10 @@ export async function buildTarget(target: TargetBrowser, outputRoot: string): Pr
 }
 
 async function main(): Promise<void> {
-  const outputRoot = join(extensionRoot, "dist");
+  const streamRecorder = process.argv.includes(STREAM_RECORDER_FLAG);
+  const outputRoot = join(extensionRoot, streamRecorder ? STREAM_RECORDER_OUTPUT_DIR : "dist");
   for (const target of TARGETS) {
-    const outputDir = await buildTarget(target, outputRoot);
+    const outputDir = await buildTarget(target, outputRoot, { streamRecorder });
     console.log(`${target}: ${outputDir} (${await directorySize(outputDir)} bytes)`);
   }
 }

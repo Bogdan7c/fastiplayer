@@ -8,6 +8,7 @@ import { startPageBridge } from "./bridge.ts";
 import { installCodecPolicy } from "./codec-policy/index.ts";
 import { createOddityReporter, type DebugSink } from "./oddity-reporter.ts";
 import { captureShadowEnvironment, shadowStarterFor } from "./shadow-assembly.ts";
+import { createPageRecording } from "./recorder-seam.ts";
 
 /**
  * Текст бандла хука выделенного воркера (`src/worker/main.ts`). Подставляет сборка
@@ -23,14 +24,19 @@ function main(win: Window & typeof globalThis, debugSink: DebugSink): void {
   const codecPolicy = installCodecPolicy(win, createOddityReporter(debugSink));
   // Окружение тени — первым: его оригиналы снимаются до любых наших и чужих подмен прототипов.
   const shadowEnvironment = captureShadowEnvironment(win);
-  startPageBridge(win, {
+  // Запись потока страницы: в продуктовой сборке шов возвращает `null` (см. recorder-seam.ts).
+  const recording = createPageRecording(win, createOddityReporter(debugSink));
+  const bridge = startPageBridge(win, {
     startShadow: shadowStarterFor(shadowEnvironment),
     debugSink,
+    ...(recording === null ? {} : { handoffTap: recording.tap, workerChannelExtension: recording.channelExtension }),
     // Пустой текст — сборка без хука (Firefox): обёртка `Worker` не ставится вовсе.
     ...(__FASTIPLAYER_WORKER_HOOK_SOURCE__.length > 0
       ? { workerHook: { source: __FASTIPLAYER_WORKER_HOOK_SOURCE__, policy: codecPolicy.policy } }
       : {}),
   });
+  // Обёртки записи — после хука моста и теневых переопределений (они должны быть снаружи).
+  recording?.install(bridge.tracker);
 }
 
 // Консоль снимается первой, до всего, что может бросить: через неё же — след неудачного старта.

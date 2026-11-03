@@ -12,6 +12,7 @@
 import { createOddityReporter, type DebugSink } from "../page/oddity-reporter.ts";
 import { decodeWorkerHookConfig, WORKER_HOOK_SITE_LOADED_FIELD } from "../shared/worker-hook-config.ts";
 import { installWorkerHook, type WorkerHookScope } from "./worker-hook.ts";
+import { workerRecordingExtension } from "./recorder-seam.ts";
 
 declare const fastiplayerWorkerHookConfig: unknown;
 declare const fastiplayerWorkerHookLinks: unknown;
@@ -23,7 +24,7 @@ const debugSink: DebugSink = (line) => Reflect.apply(debugAtStart, consoleAtStar
 const reportOddity = createOddityReporter(debugSink);
 try {
   const configValue: unknown = typeof fastiplayerWorkerHookConfig === "undefined" ? "" : fastiplayerWorkerHookConfig;
-  const installation = installWorkerHook(self as unknown as WorkerHookScope, decodeWorkerHookConfig(configValue), reportOddity);
+  const installation = installWorkerHook(self as unknown as WorkerHookScope, decodeWorkerHookConfig(configValue), reportOddity, workerRecordingExtension);
   const links: unknown = typeof fastiplayerWorkerHookLinks === "undefined" ? undefined : fastiplayerWorkerHookLinks;
   // Объект-ссылку создаёт наш же текст blob-скрипта: в него кладём донесение «скрипт сайта загружен».
   if (typeof links === "object" && links !== null) {

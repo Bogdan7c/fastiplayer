@@ -1,0 +1,2 @@
+# Отладочная сборка записи потока страницы (npm run build -- --stream-recorder): только локально.
+/dist-stream-recorder/

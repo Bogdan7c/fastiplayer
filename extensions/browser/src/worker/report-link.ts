@@ -57,6 +57,16 @@ export class WorkerReportLink implements ReportSink {
     this.#pending.push(report);
   }
 
+  /**
+   * Донесение расширения (отладочная запись потока): мимо очереди «до порта», в обход договора
+   * `WorkerReport`. `false` — порта ещё нет, ничего не отправлено.
+   */
+  sendExtensionMessage(message: unknown, transfer: readonly Transferable[]): boolean {
+    if (this.#port === null) return false;
+    this.#originals.postToPort(this.#port, message, transfer);
+    return true;
+  }
+
   #post(report: WorkerReport, transfer: readonly Transferable[]): void {
     if (this.#port === null) return;
     this.#originals.postToPort(this.#port, report, transfer);

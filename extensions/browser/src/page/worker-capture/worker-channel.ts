@@ -33,6 +33,18 @@ export interface WorkerChannelListener {
   onStreamReport(channel: WorkerChannel, report: Extract<WorkerReport, { kind: "stream_item" | "stream_replayed" | "stream_unavailable" }>): void;
 }
 
+/**
+ * Расширение канала (нейтральный шов): видит каждый новый канал и может принять донесение, которого
+ * договор не знает. В продукте расширения нет; отладочная сборка записи потока страницы подставляет
+ * своё и получает так события воркера (`stream-recorder/`).
+ */
+export interface WorkerChannelExtension {
+  /** Появился канал нового воркера. */
+  channelCreated(channel: WorkerChannel): void;
+  /** Донесение не разобрано договором: `true` — расширение приняло его (иначе это мусор). */
+  acceptReport(channel: WorkerChannel, data: unknown): boolean;
+}
+
 /** Окружение канала. */
 export interface WorkerChannelEnvironment {
   readonly originals: ChannelOriginals;
@@ -42,6 +54,7 @@ export interface WorkerChannelEnvironment {
   /** Исходный скрипт сайта загружен: отложенный revoke его blob-адреса можно исполнить (решение 192). */
   readonly onSiteScriptLoaded: () => void;
   readonly listener: WorkerChannelListener;
+  readonly extension?: WorkerChannelExtension;
   readonly reportOddity: OddityReporter;
 }
 
@@ -110,6 +123,12 @@ export class WorkerChannel {
     this.#send({ kind: "close_streams" });
   }
 
+  /** Сообщение расширению хука воркера по тому же личному порту (договор — у расширения). */
+  sendToExtension(message: unknown): void {
+    if (this.#port === null) throw new Error("worker channel is not connected");
+    this.#environment.originals.postToPort(this.#port, message, []);
+  }
+
   #send(command: WorkerCommand): void {
     if (this.#port === null) throw new Error("worker channel is not connected");
     this.#environment.originals.postToPort(this.#port, command, []);
@@ -118,8 +137,10 @@ export class WorkerChannel {
   #onPortMessage(event: unknown): void {
     const { originals, isOwnBytes, reportOddity } = this.#environment;
     try {
-      const report = parseWorkerReport(originals.eventData(event), isOwnBytes);
+      const data = originals.eventData(event);
+      const report = parseWorkerReport(data, isOwnBytes);
       if (report === undefined) {
+        if (this.#environment.extension?.acceptReport(this, data) === true) return;
         reportOddity("worker report is malformed");
         return;
       }

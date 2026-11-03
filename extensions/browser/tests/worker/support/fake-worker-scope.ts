@@ -17,7 +17,7 @@ export function createFakeWorkerScope() {
   /** Чей это handle (для пары «воркер ⇄ страница»: подключить MediaSource по handle главного потока). */
   const mediaSourceOfHandle = new WeakMap<object, FakeMediaSource>();
 
-  class FakeSourceBuffer {
+  class FakeSourceBuffer extends EventTarget {
     readonly appended: Uint8Array[] = [];
     appendBuffer(source: ArrayBuffer | ArrayBufferView): void {
       const view = ArrayBuffer.isView(source) ? new Uint8Array(source.buffer, source.byteOffset, source.byteLength) : new Uint8Array(source);

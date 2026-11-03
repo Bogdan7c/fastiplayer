@@ -22,6 +22,7 @@ import type { BinaryIntrinsics } from "../page/binary-view.ts";
 import type { ReplayItem } from "../page/journal/media-journal.ts";
 import type { MediaSourceRecord, MseListener } from "../page/mse-tracker.ts";
 import type { OddityReporter } from "../page/prototype-wrap.ts";
+import { notifyTap, type ChunkTap, type StreamOrigin } from "../page/handoff-tap.ts";
 import { sendStreamItem } from "../page/stream-sender.ts";
 import type { HandleTransferObserver } from "./handle-transfers.ts";
 import type { ReportSink } from "./report-link.ts";
@@ -35,6 +36,8 @@ export interface WorkerStreamEnvironment {
   /** Подписаться на `sourceclose` MediaSource оригинальным `addEventListener`. */
   readonly onSourceClose: (mediaSource: object, listener: () => void) => void;
   readonly reportOddity: OddityReporter;
+  /** Подслушивание уходящих кусков (только отладочная сборка записи потока); без него — ничего. */
+  readonly tap?: ChunkTap;
 }
 
 /** Сколько записей копится до уборки умерших (MediaSource за жизнь воркера — единицы). */
@@ -76,7 +79,7 @@ export class WorkerStreamController implements MseListener, HandleTransferObserv
   onItem(record: MediaSourceRecord, item: ReplayItem): void {
     const stream = this.#streams.get(record.key);
     if (stream === undefined) return;
-    this.#sendOrClose(stream, record.key, [item]);
+    this.#sendOrClose(stream, record.key, [item], "live");
   }
 
   // ------------------------------------------------------------ handle (HandleTransferObserver)
@@ -116,17 +119,23 @@ export class WorkerStreamController implements MseListener, HandleTransferObserv
     }
     // Тот же MediaSource открывается заново (следующая передача) — старый номер забыт.
     this.#streams.set(key, stream);
-    if (!this.#sendOrClose(stream, key, record.journal.replay())) return;
+    if (!this.#sendOrClose(stream, key, record.journal.replay(), "replay")) return;
     this.#report({ kind: "stream_replayed", stream });
   }
 
   /** Отправить элементы потока; `false` — отправка сорвалась, поток закрыт честно. */
-  #sendOrClose(stream: WorkerStreamId, key: LocalMediaSourceKey, items: readonly ReplayItem[]): boolean {
+  #sendOrClose(stream: WorkerStreamId, key: LocalMediaSourceKey, items: readonly ReplayItem[], origin: StreamOrigin): boolean {
     try {
       for (const item of items) {
-        sendStreamItem(this.#environment.binary, key, item, (message, transfer) =>
-          this.#environment.link.send({ kind: "stream_item", stream, item: message }, transfer),
-        );
+        sendStreamItem(this.#environment.binary, key, item, (message, transfer) => {
+          // Подписчик видит кусок ДО отправки: transfer обнуляет буфер (см. handoff-tap.ts).
+          const { tap } = this.#environment;
+          if (message.kind === "bytes" && tap !== undefined) {
+            const chunk = { mediaSource: message.media_source, sourceBuffer: message.source_buffer, bytes: message.bytes, origin };
+            notifyTap(this.#environment.reportOddity, () => tap.chunkSent(chunk));
+          }
+          this.#environment.link.send({ kind: "stream_item", stream, item: message }, transfer);
+        });
       }
       return true;
     } catch {

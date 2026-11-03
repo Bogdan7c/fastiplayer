@@ -51,3 +51,22 @@ tests/          *.test.ts
 - `web-ext` — запуск и линт Firefox-сборки (`npx web-ext lint -s dist/firefox`, `web-ext run`).
 
 В выпускной код экстеншена зависимостей нет.
+
+## Отладочная сборка записи потока страницы (`--stream-recorder`)
+
+Только для разработки (сессия 09b2): пишет всё, что страница делает с MSE и видеоэлементом, и всё, что мост
+отправил плееру, в файл `*.fprec` (формат — `src/page/stream-recorder/format.ts`). В продуктовой сборке
+этого кода нет ни в каком виде; байты сайта попадают на диск только по явной выгрузке и в git не коммитятся.
+
+```sh
+npm run build -- --stream-recorder      # dist-stream-recorder/{chrome,firefox}; обычный dist/ не трогается
+```
+
+Из отладочного протокола (RDP evaluate в Firefox, CDP `Runtime.evaluate` в Chromium; для Chromium
+`awaitPromise: true`, `userGesture: true` и `Browser.setDownloadBehavior` с каталогом):
+
+```js
+JSON.stringify(window.__fastiplayerStreamRecorder.summary())      // идёт ли запись: events, appended_bytes, truncated, workers
+window.__fastiplayerStreamRecorder.exportRecording()              // Promise: скачивает *.fprec, возвращает {filename, size_bytes, events, truncated, ...}
+window.dispatchEvent(new CustomEvent("fastiplayer-stream-recorder-export"))   // то же без ожидания результата
+```

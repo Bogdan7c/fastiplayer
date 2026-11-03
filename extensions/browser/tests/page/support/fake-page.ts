@@ -39,7 +39,7 @@ export function createFakePage() {
     },
   };
 
-  class FakeSourceBuffer {
+  class FakeSourceBuffer extends EventTarget {
     readonly appended: AppendRecord[] = [];
     /** Следующий appendBuffer бросит эту ошибку (QuotaExceededError и т.п.). */
     failNextAppend: Error | null = null;
@@ -76,7 +76,7 @@ export function createFakePage() {
     }
   }
 
-  class FakeMediaSource {
+  class FakeMediaSource extends EventTarget {
     #readyState = "closed";
     #duration = Number.NaN;
     readonly sourceBuffers: FakeSourceBuffer[] = [];
@@ -105,14 +105,17 @@ export function createFakePage() {
       if (this.#readyState !== "open") throw new FakeDomException("InvalidStateError");
       this.#readyState = "ended";
       if (reason === undefined && this.testDurationOnEnd !== null) this.#duration = this.testDurationOnEnd;
+      this.dispatchEvent(new Event("sourceended"));
     }
     /** Тестовый помощник: элемент подключил MediaSource (sourceopen). */
     testOpen(): void {
       this.#readyState = "open";
+      this.dispatchEvent(new Event("sourceopen"));
     }
     /** Тестовый помощник: MediaSource отсоединён от элемента. */
     testClose(): void {
       this.#readyState = "closed";
+      this.dispatchEvent(new Event("sourceclose"));
     }
   }
 

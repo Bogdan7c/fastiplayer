@@ -32,6 +32,7 @@ import type { DomReaders } from "./dom-readers.ts";
 import type { ElementRegistry } from "./element-registry.ts";
 import type { ElementSource } from "./element-source.ts";
 import type { ShadowSessionHandle, ShadowSourceKind, ShadowStarter } from "./handoff-seam.ts";
+import { notifyTap, type HandoffTap, type StreamOrigin } from "./handoff-tap.ts";
 import type { ReplayItem } from "./journal/media-journal.ts";
 import type { MediaSourceRecord, MseListener } from "./mse-tracker.ts";
 import { positionMicros } from "./mse-values.ts";
@@ -51,6 +52,8 @@ export interface HandoffControllerEnvironment {
   readonly startShadow: ShadowStarter;
   readonly workerMediaSources: WorkerMediaSources;
   readonly reportOddity: OddityReporter;
+  /** Подслушивание шагов передачи (только отладочная сборка записи потока); без него — ничего. */
+  readonly tap?: HandoffTap;
 }
 
 /** Идущая передача одного элемента. */
@@ -89,6 +92,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
 
   /** Сообщение изолированного мира (форма уже проверена). */
   handle(message: IncomingPageMessage): void {
+    if (message.kind !== "describe_candidates") this.#tap((tap) => tap.commandReceived(message));
     switch (message.kind) {
       case "describe_candidates":
         this.#port?.send({ kind: "candidates", request_id: message.request_id, candidates: this.#environment.candidates.describe() });
@@ -119,7 +123,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     const active = this.#active;
     if (active === null || !active.liveMediaSources.has(record.key)) return;
     try {
-      this.#sendItem(record.key, item);
+      this.#sendItem(record.key, item, "live");
     } catch {
       this.#failLiveStream();
     }
@@ -157,6 +161,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     }
 
     port.send({ kind: "handoff_began", request_id: requestId, outcome: "started" });
+    this.#tap((tap) => tap.handoffBegan(element));
     const liveMediaSources = new Set<string>(source.kind === "media_source" ? [source.record.key] : []);
     const active: ActiveHandoff = { element, liveMediaSources, session: null };
     this.#active = active;
@@ -260,7 +265,8 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
   #openStream(port: PagePort, source: Extract<ElementSource, { kind: "media_source" | "file" }>): ShadowSourceKind {
     switch (source.kind) {
       case "media_source":
-        for (const item of source.record.journal.replay()) this.#sendItem(source.record.key, item);
+        for (const item of source.record.journal.replay()) this.#sendItem(source.record.key, item, "replay");
+        this.#tap((tap) => tap.replayFinished());
         return "media_source";
       case "file":
         port.send({ kind: "file_source", url: source.url });
@@ -306,6 +312,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
   #emitFromShadow(active: ActiveHandoff, event: PageEvent): void {
     if (this.#active !== active) return;
     const endsHandoff = event.kind === "handoff_ended";
+    if (event.kind === "handoff_ended") this.#tap((tap) => tap.handoffEnded(event.cause));
     // До отправки: тень после `handoff_ended` не шлёт ничего, и её запоздавшие события не наши.
     if (endsHandoff) this.#release();
     try {
@@ -320,6 +327,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
   #finishActive(active: ActiveHandoff): void {
     if (this.#active !== active) return;
     this.#release();
+    this.#tap((tap) => tap.handoffEnded("returned"));
     try {
       this.#port?.send({ kind: "handoff_ended", cause: "returned" });
     } catch {
@@ -334,9 +342,23 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     this.#environment.workerMediaSources.closeAllStreams();
   }
 
-  #sendItem(mediaSourceKey: string, item: ReplayItem): void {
+  #sendItem(mediaSourceKey: string, item: ReplayItem, origin: StreamOrigin): void {
     const port = this.#port;
     if (port === null) return;
-    sendStreamItem(this.#environment.binary, mediaSourceKey, item, (message: StreamMessage, transfer) => port.send(message, transfer));
+    sendStreamItem(this.#environment.binary, mediaSourceKey, item, (message: StreamMessage, transfer) => {
+      // Подписчик видит кусок ДО отправки: `send` передаёт буфер (transfer) и обнуляет его. Если
+      // отправка сорвётся, передача кончится (`#failLiveStream`), так что запись «ушло» не врёт надолго.
+      if (message.kind === "bytes") {
+        const chunk = { mediaSource: message.media_source, sourceBuffer: message.source_buffer, bytes: message.bytes, origin };
+        this.#tap((tap) => tap.chunkSent(chunk));
+      }
+      port.send(message, transfer);
+    });
+  }
+
+  /** Вызвать подписчика (если он есть), не давая его сбою попасть в передачу. */
+  #tap(notify: (tap: HandoffTap) => void): void {
+    const tap = this.#environment.tap;
+    if (tap !== undefined) notifyTap(this.#environment.reportOddity, () => notify(tap));
   }
 }

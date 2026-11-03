@@ -11,7 +11,8 @@
 //  4. сопоставление handle → MediaSource (геттер `handle` и `postMessage` воркера).
 // Глобалов не создаётся. Ни одно исключение не уходит в код сайта.
 
-import { captureBinaryIntrinsics, type BinaryWindow } from "../page/binary-view.ts";
+import { captureBinaryIntrinsics, type BinaryIntrinsics, type BinaryWindow } from "../page/binary-view.ts";
+import type { ChunkTap } from "../page/handoff-tap.ts";
 import { installCodecAnswerOverrides, type CodecAnswerWindow } from "../page/codec-policy/answer-overrides.ts";
 import { DocumentMemoryBudget, DOCUMENT_MEMORY_BUDGET_BYTES } from "../page/journal/memory-budget.ts";
 import { captureMediaSourceReaders, type MediaSourceWindow } from "../page/media-source-readers.ts";
@@ -43,11 +44,42 @@ export interface WorkerHookInstallation {
   readonly reportSiteScriptLoaded: () => void;
 }
 
-export function installWorkerHook(scope: WorkerHookScope, config: WorkerHookConfig, reportOddity: OddityReporter): WorkerHookInstallation {
+/**
+ * Расширение хука воркера (нейтральный шов): только отладочная сборка записи потока страницы
+ * подставляет его. Хук воркера собирает его фабрикой, когда учёт и канал уже есть.
+ */
+export interface WorkerHookExtension {
+  /** Подслушивание уходящих кусков байтов. */
+  readonly chunkTap: ChunkTap;
+  /** Команда MAIN-мира не распознана договором: `true` — расширение приняло её. */
+  acceptCommand(data: unknown): boolean;
+  /** Хук MSE встал: расширение ставит свои обёртки поверх (они снаружи хука и видят вызовы раньше). */
+  hookInstalled(): void;
+}
+
+/** Что фабрика расширения получает от хука воркера. */
+export interface WorkerHookExtensionContext {
+  readonly scope: WorkerHookScope;
+  readonly link: WorkerReportLink;
+  readonly binary: BinaryIntrinsics;
+  readonly tracker: MseTracker;
+  readonly reportOddity: OddityReporter;
+}
+
+export type WorkerHookExtensionFactory = (context: WorkerHookExtensionContext) => WorkerHookExtension;
+
+export function installWorkerHook(
+  scope: WorkerHookScope,
+  config: WorkerHookConfig,
+  reportOddity: OddityReporter,
+  createExtension?: WorkerHookExtensionFactory,
+): WorkerHookInstallation {
   const channel = captureChannelOriginals(scope);
   const link = new WorkerReportLink(channel, reportOddity);
   // Контроллер нужен порту раньше, чем он создан: команды приходят только после рукопожатия.
   let controller: WorkerStreamController | null = null;
+  // Расширение собирается позже (ему нужен учёт), а порт может ответить раньше — читаем через ссылку.
+  let extension: WorkerHookExtension | null = null;
   listenForWorkerChannel(
     scope,
     channel,
@@ -59,7 +91,7 @@ export function installWorkerHook(scope: WorkerHookScope, config: WorkerHookConf
           try {
             const command = parseWorkerCommand(channel.eventData(event));
             if (command !== undefined) controller?.handle(command);
-            else reportOddity("worker channel command is malformed");
+            else if (extension?.acceptCommand(channel.eventData(event)) !== true) reportOddity("worker channel command is malformed");
           } catch {
             reportOddity("worker channel command handling failed");
           }
@@ -88,16 +120,19 @@ export function installWorkerHook(scope: WorkerHookScope, config: WorkerHookConf
     objectUrlOf: () => null,
     reportOddity,
   });
+  extension = createExtension?.({ scope, link, binary, tracker, reportOddity }) ?? null;
   controller = new WorkerStreamController({
     link,
     binary,
     readyStateOf: (mediaSource) => mediaSources.readyStateOf(mediaSource),
     onSourceClose: (mediaSource, listener) => channel.addListener(mediaSource, "sourceclose", listener, false),
     reportOddity,
+    ...(extension === null ? {} : { tap: extension.chunkTap }),
   });
   tracker.setListener(controller);
   const hooked = scope.MediaSource !== undefined && installMseHook(scope, { observer: tracker, binary, reportOddity });
   if (hooked) installHandleTransferTracking(scope, controller, reportOddity);
+  if (hooked) extension?.hookInstalled();
   return { hooked, tracker, link, reportSiteScriptLoaded: siteScriptLoadedReporter(link, reportOddity) };
 }
 
