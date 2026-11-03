@@ -12,7 +12,9 @@ export type SessionCloseReason =
   | "unknown_session"
   | "player_shutting_down"
   | "attach_timeout"
-  | "already_attached";
+  | "already_attached"
+  /** Страница честно забрала видео, вкладка на месте (решение 179); закрывает экстеншен. */
+  | "page_took_video_back";
 
 /** Код закрытия каждой причины (стабильные значения протокола 1.x). */
 export const SESSION_CLOSE_CODES: Readonly<Record<SessionCloseReason, number>> = {
@@ -25,6 +27,7 @@ export const SESSION_CLOSE_CODES: Readonly<Record<SessionCloseReason, number>> =
   player_shutting_down: 4006,
   attach_timeout: 4007,
   already_attached: 4008,
+  page_took_video_back: 4009,
 };
 
 /** Код закрытия для причины. */

@@ -50,10 +50,21 @@ export const BACKWARD_JITTER_TOLERANCE_US = 250_000;
 export const PAGE_SEEK_CONFIRM_TOLERANCE_US = 1_000_000;
 
 /**
- * Если плеер встал не туда (живой эфир, обрезка окна DVR), восемь тиков (~2 с) без
- * подтверждения — и следующий тик принимается как есть: перемотка не висит вечно.
+ * Перемотка страницы: если плеер встал не туда (живой эфир, обрезка окна DVR), восемь тиков
+ * (~2 с) без подтверждения — и следующий тик принимается как есть: перемотка не висит вечно.
+ * Смену источника это правило НЕ касается (там чужие тики — часы старого поколения, Д-4).
  */
 export const MAX_UNCONFIRMED_TICKS = 8;
+
+/**
+ * Страховочный выход для смены источника (Д-4), когда плеер так и не признал новый источник
+ * (ни тика у цели, ни тика ожидания): через 15 с тень принимает позицию часов, но НИКОГДА — их
+ * `ended`. Меньше нельзя: плеер ещё показывает старое поколение, пока данные нового (рекламы)
+ * не пришли, и его часы несут позицию старого фильма; 15 с покрывают медленную загрузку первого
+ * куска рекламы. Выход нужен на случай плеера, который не шлёт «0 / waiting» (иначе тень стояла
+ * бы на 0 вечно).
+ */
+export const SOURCE_RESET_GIVE_UP_MS = 15_000;
 
 /** Медиасобытия, которые тень выпускает сама (синтетические, `isTrusted=false`). */
 export type ShadowMediaEventType =
@@ -94,7 +105,21 @@ interface PositionHold {
   readonly targetUs: MediaTimeMicros;
   /** Цель — конец ролика: после подтверждения тень переходит в `ended`. */
   readonly landsAtEnd: boolean;
+  /** Перемотки: сколько ещё чужих тиков стерпеть до принятия позиции часов. */
   unconfirmedTicksLeft: number;
+  /** Когда hold поставлен (страховочный выход смены источника считается от него). */
+  readonly startedAtMs: number;
+  /**
+   * Смена источника: плеер уже прислал тик ожидания («0 / waiting», пока новое поколение не
+   * показано) — значит, он признал новый источник, и следующий тик несёт уже его позицию.
+   */
+  playerAcknowledgedNewSource: boolean;
+}
+
+/** Часть тика, по которой решается судьба hold. */
+interface HoldTick {
+  readonly positionUs: MediaTimeMicros;
+  readonly state: ClockState;
 }
 
 export interface TimelineInit {
@@ -205,8 +230,8 @@ export class ShadowTimeline {
 
     const hold = this.#hold;
     if (hold !== undefined) {
-      if (!holdConfirmedBy(hold, tickPositionUs)) {
-        hold.unconfirmedTicksLeft -= 1;
+      if (!holdConfirmedBy(hold, { positionUs: tickPositionUs, state: tick.state }, nowMs)) {
+        noteUnconfirmedTick(hold, tick.state);
         return;
       }
       this.#finishHold(hold, tickPositionUs, nowMs);
@@ -288,7 +313,14 @@ export class ShadowTimeline {
     const clampedUs = this.#clampToTimeline(targetUs);
     const durationUs = this.#readDurationUs();
     this.#startHold(
-      { kind, targetUs: clampedUs, landsAtEnd: durationUs !== undefined && clampedUs >= durationUs, unconfirmedTicksLeft: MAX_UNCONFIRMED_TICKS },
+      {
+        kind,
+        targetUs: clampedUs,
+        landsAtEnd: durationUs !== undefined && clampedUs >= durationUs,
+        unconfirmedTicksLeft: MAX_UNCONFIRMED_TICKS,
+        startedAtMs: nowMs,
+        playerAcknowledgedNewSource: false,
+      },
       nowMs,
     );
     return clampedUs;
@@ -305,7 +337,16 @@ export class ShadowTimeline {
     this.#signal({ kind: "settle_play_promises", outcome: "reject" });
     this.#pagePaused = true;
     this.#ended = false;
-    this.#hold = { kind: "source_reset", targetUs: 0, landsAtEnd: false, unconfirmedTicksLeft: MAX_UNCONFIRMED_TICKS };
+    // Пока плеер не признал новый источник, его часы несут позицию СТАРОГО поколения (он
+    // показывает его до первых данных нового): тень держит 0 и не принимает их `ended` (Д-4).
+    this.#hold = {
+      kind: "source_reset",
+      targetUs: 0,
+      landsAtEnd: false,
+      unconfirmedTicksLeft: MAX_UNCONFIRMED_TICKS,
+      startedAtMs: nowMs,
+      playerAcknowledgedNewSource: false,
+    };
     this.#anchorUs = 0;
     this.#lastReportedUs = 0;
     this.#readyState = READY_STATE.HAVE_METADATA;
@@ -425,9 +466,27 @@ export class ShadowTimeline {
 }
 
 /** Подтверждает ли тик прыжок, которого ждёт тень. */
-function holdConfirmedBy(hold: PositionHold, tickPositionUs: MediaTimeMicros): boolean {
+function holdConfirmedBy(hold: PositionHold, tick: HoldTick, nowMs: number): boolean {
   // Команды плеера и его часы идут по одному каналу по порядку: тик после `seek` — уже новый.
   if (hold.kind === "player_seek") return true;
-  if (Math.abs(tickPositionUs - hold.targetUs) <= PAGE_SEEK_CONFIRM_TOLERANCE_US) return true;
+  if (Math.abs(tick.positionUs - hold.targetUs) <= PAGE_SEEK_CONFIRM_TOLERANCE_US) return true;
+  if (hold.kind === "source_reset") return sourceResetConfirmedBy(hold, tick, nowMs);
   return hold.unconfirmedTicksLeft <= 0;
+}
+
+/**
+ * Смена источника, тик далеко от 0: принять его, только если плеер уже признал новый источник
+ * (эфир, где новое поколение начинается не с 0), или по страховке времени — но чужой `ended`
+ * не принимается никогда: это конец СТАРОГО поколения (решение 146), а не нового ролика.
+ */
+function sourceResetConfirmedBy(hold: PositionHold, tick: HoldTick, nowMs: number): boolean {
+  if (hold.playerAcknowledgedNewSource) return true;
+  if (tick.state === "ended") return false;
+  return nowMs - hold.startedAtMs >= SOURCE_RESET_GIVE_UP_MS;
+}
+
+/** Учесть неподтвердивший тик: счётчик перемотки и признак «плеер признал новый источник». */
+function noteUnconfirmedTick(hold: PositionHold, state: ClockState): void {
+  hold.unconfirmedTicksLeft -= 1;
+  if (state === "waiting") hold.playerAcknowledgedNewSource = true;
 }

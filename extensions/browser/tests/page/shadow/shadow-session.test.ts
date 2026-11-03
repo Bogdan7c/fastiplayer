@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { flushMicrotasks, recordEvents } from "./fake-media-dom.ts";
-import { createCountingGuard, createShadowHarness, playingVideo } from "./shadow-harness.ts";
+import { createCountingGuard, createShadowHarness, emittedWithoutPulse, playingVideo } from "./shadow-harness.ts";
 import { startShadow } from "../../../src/page/shadow/index.ts";
 import { DETACHED_ELEMENT_GRACE_MS } from "../../../src/page/shadow/detached-element-watch.ts";
 
@@ -56,10 +56,15 @@ describe("тень: старт и гашение событий настояще
   });
 
   it("настоящий элемент, запущенный мимо тени, снова ставится на паузу", async () => {
-    const harness = createShadowHarness();
+    // Родной play() снят до наших переопределений (как оригинал из другого фрейма: его прототип
+    // переопределения этого документа не трогают).
+    let nativePlay: (this: unknown) => Promise<void> = () => Promise.resolve();
+    const harness = createShadowHarness({
+      beforeDocumentStart: (dom) => {
+        nativePlay = dom.classes.FakeHTMLMediaElement.prototype.play;
+      },
+    });
     const video = playingVideo(harness.dom);
-    // Родной play() снят до установки тени (как оригинал из другого фрейма).
-    const nativePlay = harness.dom.classes.FakeHTMLMediaElement.prototype.play;
     harness.start(video);
     await flushMicrotasks();
     nativePlay.call(video);
@@ -232,7 +237,7 @@ describe("тень: play/pause/скорость страницы", () => {
     video.pause();
     await assert.rejects(played, (problem: unknown) => problem instanceof DOMException && problem.name === "AbortError");
     assert.equal(video.paused, true);
-    assert.deepEqual(harness.emitted, [
+    assert.deepEqual(emittedWithoutPulse(harness), [
       { kind: "page_playback", request: { kind: "play" } },
       { kind: "page_playback", request: { kind: "pause" } },
     ]);
@@ -306,29 +311,34 @@ describe("тень: элемент не в тени", () => {
     assert.deepEqual(harness.emitted, []);
   });
 
-  it("чужая подмена, поставленная после document_start, работает для элементов вне тени", async () => {
-    const harness = createShadowHarness();
-    const prototype = harness.dom.classes.FakeHTMLMediaElement.prototype;
-    const nativePlay = prototype.play;
+  it("чужая подмена, поставленная ДО нашего document_start (другой экстеншен), работает для элементов вне тени", async () => {
     let foreignCalls = 0;
-    // «Блокировщик» подменил play() после нашего document_start, но до передачи.
-    prototype.play = function (this: unknown) {
-      foreignCalls += 1;
-      return nativePlay.call(this as never);
-    };
+    const harness = createShadowHarness({
+      beforeDocumentStart: (dom) => {
+        const prototype = dom.classes.FakeHTMLMediaElement.prototype;
+        const nativePlay = prototype.play;
+        prototype.play = function (this: unknown) {
+          foreignCalls += 1;
+          return nativePlay.call(this as never);
+        };
+      },
+    });
     const shadowed = playingVideo(harness.dom);
     const other = harness.dom.createVideo();
     harness.start(shadowed);
     await other.play();
-    assert.equal(foreignCalls, 1);
+    assert.equal(foreignCalls, 1, "чужой элемент: наше переопределение → чужая подмена → браузер");
+    assert.equal(other.real.paused, false);
     await shadowed.play();
-    assert.equal(foreignCalls, 1, "переданный элемент обслуживает тень");
+    assert.equal(foreignCalls, 1, "переданный элемент обслуживает тень, чужая подмена не зовётся");
+    assert.equal(shadowed.real.paused, true, "настоящий элемент под тенью не запущен");
   });
 
-  it("чужая подмена, поставленная после нашей установки, оборачивает тень", () => {
+  it("чужая подмена, поставленная после нашей установки, оборачивает тень", async () => {
     const harness = createShadowHarness();
     const shadowed = harness.dom.createVideo();
-    harness.start(shadowed);
+    const other = harness.dom.createVideo();
+    // «Блокировщик» подменил pause() после нашего document_start (до или после передачи — всё равно).
     const prototype = harness.dom.classes.FakeHTMLMediaElement.prototype;
     const ours = prototype.pause;
     let foreignCalls = 0;
@@ -336,21 +346,17 @@ describe("тень: элемент не в тени", () => {
       foreignCalls += 1;
       ours.call(this as never);
     };
+    harness.start(shadowed);
     void shadowed.play();
     shadowed.pause();
     assert.equal(foreignCalls, 1);
     assert.equal(shadowed.paused, true);
-    assert.deepEqual(harness.emitted.at(-1), { kind: "page_playback", request: { kind: "pause" } });
-  });
-
-  it("до первой передачи прототипы не тронуты", () => {
-    const harness = createShadowHarness();
-    const prototype = harness.dom.classes.FakeHTMLMediaElement.prototype;
-    const before = Object.getOwnPropertyDescriptor(prototype, "currentTime");
-    harness.dom.createVideo();
-    assert.equal(Object.getOwnPropertyDescriptor(prototype, "currentTime")?.get, before?.get);
-    harness.start(harness.dom.createVideo());
-    assert.notEqual(Object.getOwnPropertyDescriptor(prototype, "currentTime")?.get, before?.get);
+    assert.deepEqual(emittedWithoutPulse(harness).at(-1), { kind: "page_playback", request: { kind: "pause" } });
+    // Чужой элемент: подмена → наше прозрачное переопределение → браузер.
+    await other.play();
+    other.pause();
+    assert.equal(foreignCalls, 2);
+    assert.equal(other.real.paused, true);
   });
 });
 
@@ -488,28 +494,16 @@ describe("тень: снятие", () => {
 });
 
 describe("тень: смена источника страницей", () => {
-  it("removeAttribute(src)+load(): тень снимается с element_released, muted страницы восстановлен", async () => {
+  it("emptied мимо наших переопределений (setAttribute) с обычным файлом → element_released сразу", async () => {
     const harness = createShadowHarness();
     const video = playingVideo(harness.dom, 10);
     harness.start(video);
-    video.real.src = "";
-    video.load();
+    await flushMicrotasks();
+    // Атрибут ставится в обход сеттера `src`: тень узнаёт только по доверенному `emptied`.
+    video.setAttribute("src", "https://cdn.example/movie.mp4");
+    await flushMicrotasks();
     assert.deepEqual(harness.emitted.at(-1), { kind: "handoff_ended", cause: "element_released" });
     assert.equal(video.real.muted, false);
-    assert.deepEqual(harness.guardCalls, ["suspend", "restore"]);
-    const page = recordEvents(video, ["emptied"]);
-    await flushMicrotasks();
-    assert.deepEqual(page.seen, [{ type: "emptied", trusted: true }]);
-  });
-
-  it("emptied мимо наших переопределений (setAttribute) без источника → element_released", async () => {
-    const harness = createShadowHarness();
-    const video = playingVideo(harness.dom, 10);
-    harness.start(video);
-    await flushMicrotasks();
-    video.real.src = "";
-    video.dispatchEvent(harness.dom.trusted("emptied"));
-    assert.deepEqual(harness.emitted.at(-1), { kind: "handoff_ended", cause: "element_released" });
   });
 
   it("новый MediaSource на том же элементе: тень остаётся, позиция 0, пауза, play() страницы сразу после src= работает", async () => {

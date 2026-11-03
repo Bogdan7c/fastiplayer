@@ -2,7 +2,7 @@
 
 import type { PageEvent, ShadowCommand } from "../../../src/shared/handoff-contract.ts";
 import type { MediaSessionGuard } from "../../../src/page/media-session-guard.ts";
-import { captureElementOriginals, startShadow, type ElementOriginals, type ShadowSession } from "../../../src/page/shadow/index.ts";
+import { captureElementOriginals, installShadowOverrides, startShadow, type ElementOriginals, type ShadowSession } from "../../../src/page/shadow/index.ts";
 import { createFakeMediaDom, type FakeMediaDom, type FakeVideo } from "./fake-media-dom.ts";
 
 export interface FakeClock {
@@ -45,10 +45,20 @@ export interface ShadowHarness {
 /** Blob-адрес MediaSource, с которым фейковый DOM создаёт видео (fake-media-dom.ts). */
 export const PLAYING_VIDEO_MEDIA_SOURCE_URL = "blob:https://site.example/ms-1";
 
-/** Новый DOM, оригиналы сняты «на document_start» (до любых подмен теста). */
-export function createShadowHarness(): ShadowHarness {
+export interface ShadowHarnessOptions {
+  /** Что успело случиться ДО нашего document_start (например, подмена прототипа другим экстеншеном). */
+  readonly beforeDocumentStart?: (dom: FakeMediaDom) => void;
+}
+
+/**
+ * Новый DOM, «document_start» как в `page/main.ts`: оригиналы сняты и переопределения прототипов
+ * поставлены сразу (решение 181), до любых подмен теста.
+ */
+export function createShadowHarness(options: ShadowHarnessOptions = {}): ShadowHarness {
   const dom = createFakeMediaDom();
+  options.beforeDocumentStart?.(dom);
   const originals = captureElementOriginals(dom.window as unknown as Window);
+  installShadowOverrides(originals);
   const clock = createFakeClock();
   const emitted: PageEvent[] = [];
   const { guard, calls } = createCountingGuard();
@@ -74,6 +84,16 @@ export function createShadowHarness(): ShadowHarness {
       session.apply(command);
     },
   };
+}
+
+/** Сколько пульсов `shadow_alive` ушло наружу. */
+export function pulseCount(harness: ShadowHarness): number {
+  return harness.emitted.filter((event) => event.kind === "shadow_alive").length;
+}
+
+/** События наружу без пульса (для проверок «что ещё сказала тень»). */
+export function emittedWithoutPulse(harness: ShadowHarness): PageEvent[] {
+  return harness.emitted.filter((event) => event.kind !== "shadow_alive");
 }
 
 /** Видео, которое «играло» на странице до передачи. */

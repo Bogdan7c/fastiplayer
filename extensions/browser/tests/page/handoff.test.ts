@@ -9,14 +9,14 @@ import { test } from "node:test";
 import type { PageEvent } from "../../src/shared/handoff-contract.ts";
 import { HANDSHAKE_MARKER_FIELD } from "../../src/shared/page-channel-handshake.ts";
 import { MAX_PAGE_BYTES_EVENT_BYTES, MAX_VIDEO_CANDIDATES_PER_DOCUMENT, parseCandidatesReply, parsePageEvent } from "../../src/shared/page-message-validation.ts";
-import { handshake, startHarness, type BridgeHarness, type IsolatedSide } from "./support/bridge-harness.ts";
+import { handshake, startHarness, startRealShadowHarness, type BridgeHarness, type IsolatedSide } from "./support/bridge-harness.ts";
 import { AUDIO_MP4, VIDEO_MP4, concat } from "./support/media-samples.ts";
 
 const VIDEO_MIME = 'video/mp4; codecs="avc1.42E01E"';
 const AUDIO_MIME = 'audio/mp4; codecs="mp4a.40.2"';
 
 /** Страница с играющим видео: init и два фрагмента, звук целиком. */
-function playingPage(harness: BridgeHarness) {
+function playingPage(harness: Pick<BridgeHarness, "page">) {
   const { page } = harness;
   const video = page.addVideo();
   video.rect = { left: 0, top: 0, right: 640, bottom: 360 };
@@ -34,7 +34,7 @@ function playingPage(harness: BridgeHarness) {
   return { video, mediaSource, videoBuffer, audioBuffer, download };
 }
 
-async function withChannel(harness: BridgeHarness, body: (isolated: IsolatedSide) => Promise<void>): Promise<void> {
+async function withChannel(harness: Pick<BridgeHarness, "page">, body: (isolated: IsolatedSide) => Promise<void>): Promise<void> {
   const isolated = handshake(harness.page);
   try {
     await body(isolated);
@@ -435,6 +435,126 @@ test("a failed send in the live stream ends the handoff honestly instead of leav
     videoBuffer.appendBuffer(VIDEO_MP4.bytes().slice(5714));
     await isolated.settle();
     assert.equal(isolated.received.length, before, "nothing flows after the failed send");
+  } finally {
+    isolated.close();
+  }
+});
+
+test("a shadow event that cannot be sent ends the handoff honestly and leaves a trace; nothing flows afterwards", async () => {
+  const harness = startHarness();
+  const { page, shadow, bridge, debugLines } = harness;
+  playingPage(harness);
+  const isolated = handshake(page);
+  try {
+    await describeAndBegin(isolated);
+    await isolated.waitFor(9);
+    page.portFailure.error = new Error("DataCloneError: out of memory");
+    // Тень не должна получить исключение обратно: передача кончается у контроллера.
+    shadow.started[0]?.emit({ kind: "page_seek", target_us: 5_000_000 });
+    assert.equal(bridge.controller.isHandingOff, false);
+    assert.deepEqual(shadow.ended, [{ position: { kind: "shadow_position" }, resume: { kind: "as_shadow" } }], "the shadow was taken off");
+    assert.equal(debugLines.length, 1, "the failed send left a trace");
+    page.portFailure.error = null;
+    const before = isolated.received.length;
+    shadow.started[0]?.emit({ kind: "shadow_alive" });
+    await isolated.settle();
+    assert.equal(isolated.received.length, before, "no pulse after the handoff ended");
+  } finally {
+    isolated.close();
+  }
+});
+
+test("handoff_ended that cannot be sent: no exception into the shadow, a trace, and the shadow's later events are dropped", async () => {
+  const harness = startHarness();
+  const { page, shadow, bridge, debugLines } = harness;
+  playingPage(harness);
+  const isolated = handshake(page);
+  try {
+    await describeAndBegin(isolated);
+    await isolated.waitFor(9);
+    page.portFailure.error = new Error("port is broken");
+    shadow.started[0]?.emit({ kind: "handoff_ended", cause: "element_released" });
+    assert.equal(bridge.controller.isHandingOff, false);
+    assert.equal(debugLines.length, 1);
+    page.portFailure.error = null;
+    const before = isolated.received.length;
+    shadow.started[0]?.emit({ kind: "shadow_alive" });
+    await isolated.settle();
+    assert.equal(isolated.received.length, before, "the background learns from the silence of the pulse");
+  } finally {
+    isolated.close();
+  }
+});
+
+/** Тик часов плеера странице (через изолированный мир, как от фона). */
+function clockTick(isolated: IsolatedSide, positionUs: number): void {
+  isolated.send({ kind: "shadow", command: { kind: "clock", position_us: positionUs, state: "playing", rate: 1000 } });
+}
+
+test("real shadow, YouTube order on the handed element: the new MediaSource flows live as a new stream, no handoff_ended", async () => {
+  const harness = startRealShadowHarness();
+  const { page, bridge } = harness;
+  const { video } = playingPage(harness);
+  await withChannel(harness, async (isolated) => {
+    await describeAndBegin(isolated);
+    await isolated.waitFor(9);
+    await isolated.settle();
+    isolated.received.length = 0;
+
+    // YouTube перед рекламой: новый MediaSource → адрес → srcObject = null (src уже снят) → src = адрес.
+    const adSource = new page.FakeMediaSource();
+    const adUrl = page.FakeURL.createObjectURL(adSource);
+    video.removeAttribute("src");
+    video.srcObject = null;
+    video.src = adUrl;
+    video.testAttachedMediaSource = adSource;
+    adSource.testOpen(); // sourceopen
+    const adBuffer = adSource.addSourceBuffer(VIDEO_MIME);
+    adBuffer.appendBuffer(VIDEO_MP4.bytes().slice(0, 733));
+    await isolated.waitFor(2);
+    // Плеер продолжает слать часы: тень жива и отвечает пульсом.
+    clockTick(isolated, 2_953_000_000);
+    await isolated.waitFor(3);
+    await isolated.settle();
+    assert.deepEqual(
+      isolated.received.map((message) => (message.kind === "mse" ? message.event : message.kind === "bytes" ? [message.media_source, message.bytes.length] : message)),
+      [{ kind: "source_buffer_added", media_source: "ms-2", source_buffer: 0, mime_type: VIDEO_MIME }, ["ms-2", 733], { kind: "shadow_alive" }],
+    );
+    assert.equal(bridge.controller.isHandingOff, true);
+    assert.equal(video.currentTime, 0, "the page sees the new source from 0, not the player's old position");
+    assert.equal(video.paused, true);
+  });
+});
+
+test("real shadow: a pulse send that throws ends the handoff, returns the element and the pulse stops", async () => {
+  const harness = startRealShadowHarness();
+  const { page, bridge, debugLines } = harness;
+  const { video } = playingPage(harness);
+  const isolated = handshake(page);
+  try {
+    await describeAndBegin(isolated);
+    await isolated.waitFor(9);
+    clockTick(isolated, 250_000);
+    await isolated.waitFor(10);
+    assert.deepEqual(isolated.received.at(-1), { kind: "shadow_alive" });
+    assert.equal(video.muted, false, "the page sees its own muted state");
+
+    page.clock.advance(1_000);
+    page.portFailure.error = new Error("DataCloneError: out of memory");
+    clockTick(isolated, 1_250_000);
+    await isolated.settle();
+    assert.equal(bridge.controller.isHandingOff, false, "the handoff ended at the page");
+    assert.ok(debugLines.length >= 1, "the failed send left a trace");
+    assert.equal(video.paused, false, "the element went back to the page, playing as the shadow did");
+
+    page.portFailure.error = null;
+    const before = isolated.received.length;
+    for (let tick = 0; tick < 3; tick += 1) {
+      page.clock.advance(1_000);
+      clockTick(isolated, 2_250_000 + tick * 1_000_000);
+    }
+    await isolated.settle();
+    assert.equal(isolated.received.length, before, "no pulse after the end: the background learns within its silence limit");
   } finally {
     isolated.close();
   }

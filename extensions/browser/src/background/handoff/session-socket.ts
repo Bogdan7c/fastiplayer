@@ -16,6 +16,7 @@ import {
   decodePlayerSession,
   encodeDataFrame,
   encodePageSession,
+  type PageSessionMessage,
   type PlayerSessionMessage,
   type SessionCloseReason,
   type TabGoneReason,
@@ -36,6 +37,15 @@ const SOCKET_SEND_FAILED_CODE = 1005;
 
 /** Нормальное закрытие WebSocket (RFC 6455): сеанс закончен по договорённости. */
 export const NORMAL_CLOSE_CODE = 1000;
+
+/**
+ * Причины, с которыми экстеншен сам кончает живой сеанс, сперва дописав плееру очередь страницы
+ * (сессия 09a2): у плеера окно уже открыто, и молчаливое 1000 погасило бы его без объяснения.
+ * - `page_took_video_back` (4009, решение 179) — страница честно забрала видео, вкладка на месте;
+ * - `protocol_violation` (4003, как решение 132) — сбой на стороне страницы или тень замолчала:
+ *   плеер покажет «Stream error — video returned to the page».
+ */
+export type QueueDeliveringCloseReason = Extract<SessionCloseReason, "page_took_video_back" | "protocol_violation">;
 
 /** Та часть WebSocket, которой пользуется сеанс (в тестах — фейк). */
 export interface SessionWebSocket {
@@ -64,7 +74,7 @@ export type SocketEndCause =
   | { readonly kind: "queue_overflow" }
   /** Наше сообщение не прошло строгую запись протокола (баг или непроверенные данные страницы). */
   | { readonly kind: "page_message_rejected"; readonly detail: string }
-  /** Сеанс закрыл сам экстеншен (`close`/`sendTabGoneAndClose`). */
+  /** Сеанс закрыл сам экстеншен (`close`/`sendTabGoneAndClose`/`closeAfterDeliveringQueue`). */
   | { readonly kind: "closed_by_extension" };
 
 export interface SessionSocketCallbacks {
@@ -89,6 +99,11 @@ export interface SessionSocket {
   enqueue(item: OutgoingItem): void;
   /** Страница ушла: отдать что можно, `tab_gone{reason}` и закрыть кодом 4002. */
   sendTabGoneAndClose(reason: TabGoneReason): void;
+  /**
+   * Страница на месте, но передача кончилась по её стороне: отдать что можно и закрыть кодом
+   * причины, без `tab_gone` (иначе плеер решил бы, что вкладка ушла, и стал бы доигрывать).
+   */
+  closeAfterDeliveringQueue(reason: QueueDeliveringCloseReason): void;
   /** Закрыть без сообщения (код — причина протокола или нормальное закрытие). */
   close(code: number): void;
   /** Байт в своей очереди (ещё не отданы сокету) — для тестов и диагностики. */
@@ -253,24 +268,41 @@ export function openSessionSocket(parameters: SessionSocketParameters): SessionS
     pump();
   }
 
-  function sendTabGoneAndClose(reason: TabGoneReason): void {
+  /**
+   * Общий конец «со стороны страницы»: дописать очередь (порядок страницы), затем необязательное
+   * последнее сообщение и закрытие кодом. Всё, что страница успела прислать, плеер получает ДО
+   * конца — иначе показанное им расходилось бы с тем, что страница уже отдала.
+   */
+  function deliverQueueThenClose(lastMessage: PageSessionMessage | undefined, closeCode: number): void {
     if (phase === "ended") return;
     if (phase === "attached" && socket.readyState === WEB_SOCKET_OPEN) {
-      // Порядок страницы сохраняем: всё, что можно отдать, уходит ДО tab_gone. При «полон» рамки
-      // остаются невыданными — плееру они сейчас не нужны, а дыры в номерах не будет: новых рамок
-      // после tab_gone не бывает.
+      // При «полон» рамки остаются невыданными — плееру они сейчас не нужны, а дыры в номерах не
+      // будет: новых рамок после конца не бывает. Порог буфера сокета здесь не ждём: конец сейчас.
       if (!intakeIsFull) {
         for (const entry of queue.splice(0)) if (!sendNow(entry.payload)) return;
       }
-      const tabGone = encodePageSession({ type: "tab_gone", reason });
-      if (tabGone.ok) sendNow(tabGone.value);
+      if (lastMessage !== undefined) {
+        const encoded = encodePageSession(lastMessage);
+        // Своё постоянное сообщение не проходит запись только при баге кодека: закрытие кодом
+        // всё равно сообщает причину, поэтому сеанс не держим.
+        if (encoded.ok) sendNow(encoded.value);
+      }
     }
-    finish({ kind: "closed_by_extension" }, SESSION_CLOSE_CODES.tab_gone);
+    finish({ kind: "closed_by_extension" }, closeCode);
+  }
+
+  function sendTabGoneAndClose(reason: TabGoneReason): void {
+    deliverQueueThenClose({ type: "tab_gone", reason }, SESSION_CLOSE_CODES.tab_gone);
+  }
+
+  function closeAfterDeliveringQueue(reason: QueueDeliveringCloseReason): void {
+    deliverQueueThenClose(undefined, SESSION_CLOSE_CODES[reason]);
   }
 
   return {
     enqueue,
     sendTabGoneAndClose,
+    closeAfterDeliveringQueue,
     close: (code) => finish({ kind: "closed_by_extension" }, code),
     queuedBytes: () => queuedBytes,
   };

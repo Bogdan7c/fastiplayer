@@ -4,6 +4,7 @@
 import { HANDSHAKE_MESSAGE } from "../../../src/shared/page-channel-handshake.ts";
 import type { CandidatesReply, PageCommand, PageEvent, DescribeCandidatesQuery } from "../../../src/shared/handoff-contract.ts";
 import { startPageBridge, type PageBridge } from "../../../src/page/bridge.ts";
+import { captureShadowEnvironment, shadowStarterFor, type ShadowWindow } from "../../../src/page/shadow-assembly.ts";
 import { createFakePage, FakeShadow, type FakePage } from "./fake-page.ts";
 
 export interface BridgeHarness {
@@ -23,6 +24,25 @@ export function startHarness(options: { memoryBudgetBytes?: number; page?: FakeP
     ...(options.memoryBudgetBytes === undefined ? {} : { memoryBudgetBytes: options.memoryBudgetBytes }),
   });
   return { page, bridge, shadow, debugLines };
+}
+
+/** Сборка MAIN-мира с НАСТОЯЩЕЙ тенью, как в `page/main.ts`: окружение тени — первым. */
+export interface RealShadowHarness {
+  readonly page: FakePage;
+  readonly bridge: PageBridge;
+  readonly debugLines: string[];
+}
+
+export function startRealShadowHarness(): RealShadowHarness {
+  const page = createFakePage();
+  const debugLines: string[] = [];
+  const shadowEnvironment = captureShadowEnvironment(page.win as unknown as ShadowWindow);
+  if (shadowEnvironment === null) throw new Error("the fake page cannot host the real shadow");
+  const bridge = startPageBridge(page.win, {
+    startShadow: shadowStarterFor(shadowEnvironment),
+    debugSink: (line) => debugLines.push(line),
+  });
+  return { page, bridge, debugLines };
 }
 
 /** Порт изолированного мира: шлёт команды и копит всё, что пришло из MAIN-мира. */

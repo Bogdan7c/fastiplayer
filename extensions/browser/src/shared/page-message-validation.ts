@@ -262,6 +262,8 @@ export function parsePageEvent(value: unknown): PageEvent | undefined {
       const request = parsePlaybackRequest(value["request"]);
       return hasExactKeys(value, ["kind", "request"]) && request !== undefined ? { kind: "page_playback", request } : undefined;
     }
+    case "shadow_alive":
+      return hasExactKeys(value, ["kind"]) ? { kind: "shadow_alive" } : undefined;
     case "handoff_ended": {
       const cause = value["cause"];
       return hasExactKeys(value, ["kind", "cause"]) && isOneOf(cause, HANDOFF_END_CAUSES) ? { kind: "handoff_ended", cause } : undefined;

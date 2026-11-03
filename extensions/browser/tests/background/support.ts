@@ -170,8 +170,15 @@ export class FakeFramePort implements FramePort {
     this.frameId = frameId;
   }
 
+  /**
+   * Порт умер молча (onDisconnect не пришёл), но только для таких команд: `postMessage` на них
+   * бросает, как настоящий отсоединённый порт. По умолчанию — ни для каких.
+   */
+  failPostsWhere: (command: PageCommand) => boolean = () => false;
+
   postMessage(command: PageCommand): void {
     if (this.disconnectedByBackground) throw new Error("port is disconnected");
+    if (this.failPostsWhere(command)) throw new Error("Attempting to use a disconnected port object");
     this.posted.push(command);
   }
 
@@ -194,14 +201,18 @@ export interface FrameConnectorRecorder {
   readonly ports: FakeFramePort[];
   readonly connect: (tabId: number, frameId: number) => FakeFramePort;
   last(): FakeFramePort;
+  /** Какие команды будут бросать у портов, открытых ПОСЛЕ установки (порт мёртв с рождения). */
+  failPostsOfNewPortsWhere: (command: PageCommand) => boolean;
 }
 
 export function recordFramePorts(): FrameConnectorRecorder {
   const ports: FakeFramePort[] = [];
-  return {
+  const recorder: FrameConnectorRecorder = {
     ports,
+    failPostsOfNewPortsWhere: () => false,
     connect: (tabId, frameId) => {
       const port = new FakeFramePort(tabId, frameId);
+      port.failPostsWhere = recorder.failPostsOfNewPortsWhere;
       ports.push(port);
       return port;
     },
@@ -211,6 +222,7 @@ export function recordFramePorts(): FrameConnectorRecorder {
       return port;
     },
   };
+  return recorder;
 }
 
 // ------------------------------------------------------------------ дверь плеера (HostLink)

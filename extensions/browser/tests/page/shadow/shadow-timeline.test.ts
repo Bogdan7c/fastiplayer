@@ -5,6 +5,7 @@ import {
   MAX_EXTRAPOLATION_MS,
   MAX_UNCONFIRMED_TICKS,
   READY_STATE,
+  SOURCE_RESET_GIVE_UP_MS,
   ShadowTimeline,
   type TimelineSignal,
 } from "../../../src/page/shadow/shadow-timeline.ts";
@@ -189,5 +190,68 @@ describe("модель тени: перемотка", () => {
     assert.equal(result.unpaused, true);
     assert.equal(timeline.ended, false);
     assert.equal(timeline.positionUs(100), 0);
+  });
+});
+
+describe("модель тени: новый источник (Д-4)", () => {
+  /** Тики старого поколения: плеер ещё показывает прошлый фильм на 2953 с. */
+  const OLD_GENERATION_US = 2953 * SECOND_US;
+
+  it("после resetForNewSource 20 тиков старой позиции (играет, затем ended) не сдвигают тень и не дают ended", () => {
+    const { timeline, eventTypes, clear } = createTimeline({ durationUs: undefined });
+    timeline.onClock(clock(OLD_GENERATION_US, "playing"), 0);
+    timeline.resetForNewSource(1, 100);
+    // Страница сразу запускает новое видео (рекламу): ждёт его данных.
+    timeline.play("page", 100);
+    clear();
+    let nowMs = 100;
+    for (let tick = 0; tick < 20; tick += 1) {
+      nowMs += 250;
+      timeline.onClock(clock(OLD_GENERATION_US + tick * 250_000, "playing"), nowMs);
+    }
+    // Старое поколение доиграло до отсечки и отчиталось концом.
+    for (let tick = 0; tick < 20; tick += 1) {
+      nowMs += 250;
+      timeline.onClock(clock(OLD_GENERATION_US + 5 * SECOND_US, "ended"), nowMs);
+    }
+    assert.equal(timeline.positionUs(nowMs), 0);
+    assert.equal(timeline.ended, false);
+    assert.equal(timeline.paused, false, "play() страницы не отменён чужим концом");
+    assert.ok(!eventTypes().includes("ended"), JSON.stringify(eventTypes()));
+    assert.ok(!eventTypes().includes("pause"), JSON.stringify(eventTypes()));
+  });
+
+  it("плеер признал новый источник тиком waiting: следующий тик принят как есть (эфир с 3600 с)", () => {
+    const { timeline } = createTimeline({ durationUs: undefined });
+    timeline.onClock(clock(OLD_GENERATION_US, "playing"), 0);
+    timeline.resetForNewSource(1, 100);
+    timeline.onClock(clock(OLD_GENERATION_US, "playing"), 350);
+    assert.equal(timeline.positionUs(350), 0);
+    timeline.onClock(clock(3600 * SECOND_US, "waiting"), 600);
+    assert.equal(timeline.positionUs(600), 0, "сам тик ожидания далеко от цели не подтверждает");
+    timeline.onClock(clock(3600 * SECOND_US, "playing"), 850);
+    assert.equal(timeline.positionUs(850), 3600 * SECOND_US);
+  });
+
+  it("тик у цели (±1 с) подтверждает новый источник сразу", () => {
+    const { timeline } = createTimeline({ durationUs: undefined });
+    timeline.resetForNewSource(1, 0);
+    timeline.onClock(clock(OLD_GENERATION_US, "playing"), 250);
+    timeline.onClock(clock(300_000, "playing"), 500);
+    assert.equal(timeline.positionUs(500), 300_000);
+  });
+
+  it("страховка по времени: без признания плеера чужой тик принимается не раньше SOURCE_RESET_GIVE_UP_MS и никогда — ended", () => {
+    assert.ok(SOURCE_RESET_GIVE_UP_MS >= 10_000);
+    const { timeline, eventTypes } = createTimeline({ durationUs: undefined });
+    timeline.resetForNewSource(1, 0);
+    timeline.onClock(clock(OLD_GENERATION_US, "playing"), SOURCE_RESET_GIVE_UP_MS - 1);
+    assert.equal(timeline.positionUs(SOURCE_RESET_GIVE_UP_MS - 1), 0);
+    timeline.onClock(clock(OLD_GENERATION_US, "ended"), SOURCE_RESET_GIVE_UP_MS + 250);
+    assert.equal(timeline.positionUs(SOURCE_RESET_GIVE_UP_MS + 250), 0);
+    assert.equal(timeline.ended, false);
+    assert.ok(!eventTypes().includes("ended"));
+    timeline.onClock(clock(OLD_GENERATION_US, "paused"), SOURCE_RESET_GIVE_UP_MS + 500);
+    assert.equal(timeline.positionUs(SOURCE_RESET_GIVE_UP_MS + 500), OLD_GENERATION_US);
   });
 });

@@ -1,76 +1,14 @@
 // Передача вкладки целиком на фейках: опрос фреймов → выбор → open_session → WebSocket → attach →
 // begin_handoff → поток → команды плеера → конец (возврат, отказ поколения, обрыв, уход со страницы).
+// Честные концы со стороны страницы (09a2: 4009, 4003, мёртвый порт, пульс) — honest-ends.test.ts.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { HANDOFF_BEGIN_REPLY_TIMEOUT_MS, HANDOFF_END_REPLY_TIMEOUT_MS } from "../../src/background/handoff/constants.ts";
-import type { FrameInjectionResult } from "../../src/background/handoff/frame-survey.ts";
-import type { HandoffSessionEnd } from "../../src/background/handoff/handoff-session.ts";
 import { NORMAL_CLOSE_CODE } from "../../src/background/handoff/session-socket.ts";
-import { createTabHandoffs } from "../../src/background/handoff/tab-handoffs.ts";
-import type { HandOffTabOutcome, PageCommand, PageEvent, VideoCandidate } from "../../src/shared/handoff-contract.ts";
+import type { PageCommand } from "../../src/shared/handoff-contract.ts";
 import { SESSION_CLOSE_CODES } from "../../src/protocol/index.ts";
-import { createFakeClock, createFakeDoor, flushPromises, recordFramePorts, recordSockets, TEST_TOKEN } from "./support.ts";
-
-const TAB = 12;
-const MP4 = 'video/mp4; codecs="avc1.42c00a"';
-const PLAYING_VIDEO: VideoCandidate = { document: "doc-7f3a", element: 4, has_live_media: true, playing: true, visible_area_px: 200_000 };
-
-function setup(frames: readonly FrameInjectionResult[] = [{ frameId: 0, result: [PLAYING_VIDEO] }]) {
-  const clock = createFakeClock();
-  const door = createFakeDoor();
-  const sockets = recordSockets();
-  const framePorts = recordFramePorts();
-  const ended: HandoffSessionEnd[] = [];
-  let tabAlive = true;
-  let surveyCount = 0;
-  const handoffs = createTabHandoffs({
-    door,
-    scheduler: clock.scheduler,
-    createWebSocket: sockets.create,
-    connectFrame: framePorts.connect,
-    executeInAllFrames: () => {
-      surveyCount += 1;
-      return Promise.resolve(frames);
-    },
-    describeTab: () => Promise.resolve({ title: "Серія 3\nОзвучка", url: "https://www.example.com/watch?v=1" }),
-    tabExists: () => Promise.resolve(tabAlive),
-    sessionKeyFor: (tabId, attempt) => `t${tabId}-${attempt}-test`,
-    onSessionEnded: (_tabId, end) => void ended.push(end),
-  });
-  return {
-    clock,
-    door,
-    sockets,
-    framePorts,
-    ended,
-    handoffs,
-    surveys: () => surveyCount,
-    closeTab: () => void (tabAlive = false),
-  };
-}
-
-type World = ReturnType<typeof setup>;
-
-/** Довести передачу до «started»: плеер принял сеанс, страница начала тень. */
-async function startHandoff(world: World): Promise<HandOffTabOutcome> {
-  const outcome = world.handoffs.handOffTab(TAB);
-  await flushPromises();
-  const socket = world.sockets.last();
-  socket.open();
-  socket.receive({ type: "attached" });
-  const port = world.framePorts.last();
-  const begin = port.posted[0];
-  assert.ok(begin?.kind === "begin_handoff");
-  port.deliver({ kind: "handoff_began", request_id: begin.request_id, outcome: "started" } satisfies PageEvent);
-  return outcome;
-}
-
-/** Страница передала одно поколение: SourceBuffer и один кусок. */
-function deliverStream(world: World): void {
-  const port = world.framePorts.last();
-  port.deliver({ kind: "mse", event: { kind: "source_buffer_added", media_source: "ms-1", source_buffer: 0, mime_type: MP4 } });
-  port.deliver({ kind: "bytes", media_source: "ms-1", source_buffer: 0, bytes: new Uint8Array([1, 2, 3]) });
-}
+import { deliverStream, MP4, PLAYING_VIDEO, setup, startHandoff, TAB } from "./handoff-world.ts";
+import { flushPromises, TEST_TOKEN } from "./support.ts";
 
 describe("передача вкладки: старт", () => {
   it("сначала плеер, потом страница: open_session → attach → begin_handoff → started", async () => {
@@ -308,16 +246,15 @@ describe("передача вкладки: конец", () => {
     assert.equal(world.door.demandHeld(), 0);
   });
 
-  it("снятие тени не отправилось (порт мёртв, а onDisconnect нет) — сеанс всё равно кончается по пределу ожидания", async () => {
+  it("снятие тени не отправилось (порт мёртв, а onDisconnect нет) — сеанс кончается сразу, не ждёт предела (Д-7)", async () => {
     const world = setup();
     await startHandoff(world);
     world.framePorts.last().disconnectedByBackground = true; // отправка в порт теперь бросает
     world.sockets.last().receive({ type: "return_to_page", position_us: 1, resume: "paused" });
-    assert.deepEqual(world.ended, []);
-    world.clock.advance(HANDOFF_END_REPLY_TIMEOUT_MS);
-    assert.deepEqual(world.ended, [{ kind: "returned_to_page" }]);
+    await flushPromises(); // только вопрос «жива ли вкладка», часы стоят
+    assert.deepEqual(world.ended, [{ kind: "page_gone", reason: "navigated_away" }]);
     assert.equal(world.door.demandHeld(), 0);
-    assert.equal(world.sockets.last().closedWithCode, NORMAL_CLOSE_CODE);
+    assert.equal(world.clock.liveTimers(), 0, "предел ожидания снят вместе с сеансом");
   });
 
   it("stream_rejected текущего поколения снимает тень; старого — нет", async () => {
@@ -332,6 +269,19 @@ describe("передача вкладки: конец", () => {
     assert.deepEqual(port.posted.at(-1), { kind: "end_handoff", position: { kind: "shadow_position" }, resume: { kind: "as_shadow" } });
     port.deliver({ kind: "handoff_ended", cause: "returned" });
     assert.deepEqual(world.ended, [{ kind: "stream_rejected" }]);
+    // Решение владельца 09a2: окно не гаснет молча — плеер покажет «Stream error — video returned
+    // to the page» по коду сбоя 4003, а не по обычному 1000.
+    assert.equal(world.sockets.last().closedWithCode, 4003);
+  });
+
+  it("возврат по просьбе плеера закрывает сокет обычным 1000 (конец объяснил сам плеер)", async () => {
+    const world = setup();
+    await startHandoff(world);
+    const port = world.framePorts.last();
+    world.sockets.last().receive({ type: "return_to_page", position_us: 5_000_000, resume: "paused" });
+    port.deliver({ kind: "handoff_ended", cause: "returned" });
+    assert.deepEqual(world.ended, [{ kind: "returned_to_page" }]);
+    assert.equal(world.sockets.last().closedWithCode, 1000);
   });
 
   it("обрыв WebSocket посреди передачи снимает тень на позиции тени", async () => {
@@ -379,13 +329,5 @@ describe("передача вкладки: конец", () => {
     world.framePorts.last().drop();
     await flushPromises();
     assert.deepEqual(world.ended, [{ kind: "page_gone", reason: "closed" }]);
-  });
-
-  it("страница сама отпустила элемент — для плеера это уход со страницы", async () => {
-    const world = setup();
-    await startHandoff(world);
-    world.framePorts.last().deliver({ kind: "handoff_ended", cause: "element_released" });
-    assert.deepEqual(world.sockets.last().sentMessages().at(-1), { type: "tab_gone", reason: "navigated_away" });
-    assert.deepEqual(world.ended, [{ kind: "element_released" }]);
   });
 });

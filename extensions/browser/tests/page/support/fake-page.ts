@@ -1,5 +1,7 @@
 // Фейковая страница для тестов MAIN-мира: MediaSource/SourceBuffer, URL, DOM с shadow root,
-// окно с событиями и портами (порты — настоящие MessagePort из Node).
+// окно с событиями и портами (порты — настоящие MessagePort из Node). Медиаэлемент умеет ровно
+// столько, чтобы на нём жила НАСТОЯЩАЯ тень (`shadow-assembly.ts`): свойства, play/pause/load,
+// атрибут `src` и «алгоритм загрузки», события через EventTarget Node.
 //
 // Каждый вызов `createFakePage()` создаёт СВОИ классы: хуки меняют прототипы, и тесты не должны
 // делить подменённые прототипы между собой.
@@ -21,8 +23,21 @@ export class FakeDomException extends Error {
   }
 }
 
+/** Адрес документа фейка: геттер `src` отдаёт его для атрибута `src=""` (как браузер). */
+export const FAKE_PAGE_URL = "https://site.example/watch";
+
+/** `HTMLMediaElement.networkState` по стандарту. */
+const NETWORK_STATE = { EMPTY: 0, IDLE: 1, LOADING: 2, NO_SOURCE: 3 } as const;
+
 export function createFakePage() {
   let urlCounter = 0;
+  /** `performance.now` страницы — под управлением теста (тень работает на тиках, не на таймерах). */
+  const clock = {
+    nowMs: 1_000,
+    advance(ms: number): void {
+      this.nowMs += ms;
+    },
+  };
 
   class FakeSourceBuffer {
     readonly appended: AppendRecord[] = [];
@@ -109,10 +124,14 @@ export function createFakePage() {
     }
   }
 
-  class FakeNode {
+  class FakeNode extends EventTarget {
     connected = true;
     get isConnected(): boolean {
       return this.connected;
+    }
+    /** Дерево у фейка плоское: корень любого узла — документ. */
+    getRootNode(): unknown {
+      return fakeDocument;
     }
   }
 
@@ -148,23 +167,68 @@ export function createFakePage() {
     getBoundingClientRect(): { left: number; top: number; right: number; bottom: number } {
       return { ...this.rect };
     }
+    readonly #attributes = new Map<string, string>();
+    getAttribute(name: string): string | null {
+      return this.storedAttribute(String(name));
+    }
+    setAttribute(name: string, value: string): void {
+      this.storeAttribute(String(name), String(value));
+    }
+    removeAttribute(name: string): void {
+      this.storeAttribute(String(name), null);
+    }
+    protected storedAttribute(name: string): string | null {
+      return this.#attributes.get(name) ?? null;
+    }
+    protected storeAttribute(name: string, value: string | null): void {
+      if (value === null) this.#attributes.delete(name);
+      else this.#attributes.set(name, value);
+    }
   }
 
   class FakeMediaElement extends FakeElement {
     /** Подключённый MediaSource (держит его от сборщика мусора, как настоящий элемент). */
     testAttachedMediaSource: object | null = null;
-    #src = "";
+    /** Атрибут `src` (`null` — атрибута нет). */
+    #srcAttribute: string | null = null;
+    #srcObject: unknown = null;
     #paused = true;
     #ended = false;
     #currentTime = 0;
+    #playbackRate = 1;
+    #muted = false;
+    #volume = 1;
+    #readyState = 0;
+    #networkState: number = NETWORK_STATE.EMPTY;
+    /** Как отражение URL-атрибута: нет атрибута — "", пустой атрибут — адрес документа. */
     get src(): string {
-      return this.#src;
+      if (this.#srcAttribute === null) return "";
+      return this.#srcAttribute === "" ? FAKE_PAGE_URL : this.#srcAttribute;
     }
     set src(value: string) {
-      this.#src = value;
+      this.storeAttribute("src", String(value));
     }
     get currentSrc(): string {
-      return this.#src;
+      return this.#srcAttribute ?? "";
+    }
+    get srcObject(): unknown {
+      return this.#srcObject;
+    }
+    set srcObject(value: unknown) {
+      this.#srcObject = value;
+      this.#loadAlgorithm();
+    }
+    protected override storedAttribute(name: string): string | null {
+      return name === "src" ? this.#srcAttribute : super.storedAttribute(name);
+    }
+    protected override storeAttribute(name: string, value: string | null): void {
+      if (name !== "src") {
+        super.storeAttribute(name, value);
+        return;
+      }
+      this.#srcAttribute = value;
+      // Стандарт: установка атрибута `src` запускает алгоритм загрузки, удаление — нет.
+      if (value !== null) this.#loadAlgorithm();
     }
     get paused(): boolean {
       return this.#paused;
@@ -175,11 +239,62 @@ export function createFakePage() {
     get currentTime(): number {
       return this.#currentTime;
     }
+    set currentTime(value: number) {
+      this.#currentTime = Number(value);
+    }
+    get playbackRate(): number {
+      return this.#playbackRate;
+    }
+    set playbackRate(value: number) {
+      this.#playbackRate = Number(value);
+    }
+    get muted(): boolean {
+      return this.#muted;
+    }
+    set muted(value: boolean) {
+      this.#muted = Boolean(value);
+    }
+    get volume(): number {
+      return this.#volume;
+    }
+    set volume(value: number) {
+      this.#volume = Number(value);
+    }
+    get readyState(): number {
+      return this.#readyState;
+    }
+    get networkState(): number {
+      return this.#networkState;
+    }
+    get duration(): number {
+      return Number.NaN;
+    }
+    play(): Promise<void> {
+      this.#paused = false;
+      return Promise.resolve();
+    }
+    pause(): void {
+      this.#paused = true;
+    }
+    load(): void {
+      this.#loadAlgorithm();
+    }
+    /** «Алгоритм загрузки» стандарта в той части, что видна тени. */
+    #loadAlgorithm(): void {
+      if (this.#networkState !== NETWORK_STATE.EMPTY) queueMicrotask(() => this.dispatchEvent(trustedEvent("emptied")));
+      this.#paused = true;
+      this.#currentTime = 0;
+      this.#readyState = 0;
+      const hasSource = this.#srcObject !== null || (this.#srcAttribute !== null && this.#srcAttribute !== "");
+      if (hasSource) this.#networkState = NETWORK_STATE.LOADING;
+      else this.#networkState = this.#srcAttribute === "" ? NETWORK_STATE.NO_SOURCE : NETWORK_STATE.EMPTY;
+    }
     /** Тестовый помощник: настоящее состояние элемента. */
-    testSetState(state: { paused?: boolean; ended?: boolean; currentTime?: number }): void {
+    testSetState(state: { paused?: boolean; ended?: boolean; currentTime?: number; readyState?: number }): void {
       if (state.paused !== undefined) this.#paused = state.paused;
       if (state.ended !== undefined) this.#ended = state.ended;
       if (state.currentTime !== undefined) this.#currentTime = state.currentTime;
+      if (state.readyState !== undefined) this.#readyState = state.readyState;
     }
   }
 
@@ -194,6 +309,13 @@ export function createFakePage() {
   }
 
   class FakeDocument extends FakeDocumentFragment {}
+
+  /** Доверенное событие «от браузера» (`isTrusted` — собственное свойство, как у настоящего). */
+  function trustedEvent(type: string): Event {
+    const event = new Event(type);
+    Object.defineProperty(event, "isTrusted", { value: true });
+    return event;
+  }
 
   /** У окна событий свой `source`: MessageEvent Node принимает источником только порт. */
   class WindowMessageEvent extends MessageEvent<unknown> {
@@ -240,6 +362,12 @@ export function createFakePage() {
     innerHeight: 720,
     EventTarget,
     Event,
+    Promise,
+    DOMException,
+    TypeError,
+    queueMicrotask: (callback: () => void) => queueMicrotask(callback),
+    performance: { now: () => clock.nowMs },
+    navigator: {},
     MessageEvent: WindowMessageEvent,
     MessagePort: { prototype: spyPortPrototype },
     Uint8Array,
@@ -253,6 +381,7 @@ export function createFakePage() {
     document: fakeDocument,
     postedToPorts,
     portFailure,
+    clock,
     FakeMediaSource,
     FakeSourceBuffer,
     FakeURL,

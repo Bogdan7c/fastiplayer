@@ -39,7 +39,7 @@ export type TranslationResult =
   | { readonly ok: false; readonly problem: PageStreamProblem };
 
 /** События потока (начало и конец передачи разбирает владелец сеанса, не переводчик). */
-export type StreamPageEvent = Exclude<PageEvent, { kind: "handoff_began" } | { kind: "handoff_ended" }>;
+export type StreamPageEvent = Exclude<PageEvent, { kind: "handoff_began" } | { kind: "handoff_ended" } | { kind: "shadow_alive" }>;
 
 export interface DocumentTranslator {
   translate(event: StreamPageEvent): TranslationResult;

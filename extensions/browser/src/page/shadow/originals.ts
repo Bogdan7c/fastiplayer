@@ -23,6 +23,7 @@ export interface PageGlobals {
   readonly EventTarget: { readonly prototype: object };
   readonly Event: { readonly prototype: object; new (type: string, init?: EventInit): Event };
   readonly Node: { readonly prototype: object };
+  readonly Element?: { readonly prototype: object };
   readonly Promise: PromiseConstructor;
   readonly DOMException: { new (message?: string, name?: string): DOMException };
   readonly TypeError: TypeErrorConstructor;
@@ -75,7 +76,7 @@ export interface EventOriginals {
 
 /** Всё, что тень сняла с окна на document_start. Состав решает тень (шов A1↔A2). */
 export interface ElementOriginals {
-  /** Прототипы, на которые тень лениво ставит свои переопределения. */
+  /** Прототипы, на которые тень на document_start ставит свои переопределения (решение 181). */
   readonly mediaPrototype: object;
   readonly videoPrototype: object | undefined;
   readonly media: MediaElementOriginals;
@@ -83,6 +84,11 @@ export interface ElementOriginals {
   readonly events: EventOriginals;
   /** Геттер `Node.prototype.isConnected`: убран ли переданный элемент из документа (нет в очень старых браузерах). */
   readonly isConnected: OriginalAccessor | undefined;
+  /**
+   * `Element.prototype.getAttribute`: есть ли у элемента атрибут `src` и пуст ли он. Геттер `src`
+   * этого не скажет: для `src=""` он отдаёт адрес документа (URL-отражение атрибута).
+   */
+  readonly getAttribute: OriginalFunction | undefined;
   /** Конструкторы мира страницы: обещания `play()` и ошибки должны быть «её», а не наши. */
   readonly PromiseConstructor: PromiseConstructor;
   readonly DOMExceptionConstructor: PageGlobals["DOMException"];
@@ -159,6 +165,7 @@ export function captureElementOriginals(win: Window): ElementOriginals {
       EventConstructor: globals.Event,
     },
     isConnected: optionalAccessor(globals.Node.prototype, "isConnected"),
+    getAttribute: optionalMethod(globals.Element?.prototype, "getAttribute"),
     PromiseConstructor: globals.Promise,
     DOMExceptionConstructor: globals.DOMException,
     TypeErrorConstructor: globals.TypeError,

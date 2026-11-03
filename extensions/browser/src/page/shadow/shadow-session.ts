@@ -17,11 +17,13 @@ import { EventDispatchQueue } from "./event-dispatch-queue.ts";
 import { type FrameCallback, type FrameCountBaseline, ShadowFrameCallbacks, shadowTotalFrames } from "./frame-stats.ts";
 import { shadowProblemReporter } from "./once-reporter.ts";
 import { callOriginal, type ElementOriginals, readOriginal, writeOriginal } from "./originals.ts";
-import { ensureShadowOverrides, type ShadowBehavior, type ShadowRegistry, type SourceProperty } from "./prototype-overrides.ts";
+import { installShadowOverrides, type ShadowBehavior, type ShadowRegistry, type SourceProperty } from "./prototype-overrides.ts";
 import { DetachedElementWatch } from "./detached-element-watch.ts";
+import { EmptySourceWatch } from "./empty-source-watch.ts";
 import { RealElementFollower } from "./real-element-follower.ts";
+import { ShadowPulse } from "./shadow-pulse.ts";
 import { ShadowTimeline, READY_STATE, type ReadyStateValue, type TimelineSignal } from "./shadow-timeline.ts";
-import { classifySourceReset, type MediaSourceObjectUrlCheck } from "./source-reset-policy.ts";
+import { classifyElementSource, type MediaSourceObjectUrlCheck, type SourceVerdict } from "./source-reset-policy.ts";
 
 /** Окружение тени (шов A1↔A2): всё внешнее подаётся снаружи, чтобы тесты шли на фейках. */
 export interface ShadowEnvironment {
@@ -67,6 +69,13 @@ const SAME_POSITION_TOLERANCE_US = 1_000;
 
 const PLAY_INTERRUPTED_MESSAGE = "The play() request was interrupted.";
 
+/**
+ * Что «алгоритм загрузки» браузера сделал с настоящим элементом. Элемент в NETWORK_EMPTY браузер
+ * не сбрасывает (нет `emptied`, пауза и ожидающие `play()` не трогаются) — тень тоже не должна:
+ * она уже сбросилась, когда источник пропал.
+ */
+type LoadAlgorithmEffect = "element_reset" | "element_was_empty";
+
 /** Ожидающее обещание `play()` страницы. */
 interface PendingPlay {
   readonly resolve: () => void;
@@ -75,7 +84,7 @@ interface PendingPlay {
 
 /** Ставит элемент в тень. `emit` — события наружу (page_seek, player_seek_applied, page_playback, handoff_ended). */
 export function startShadow(element: HTMLMediaElement, emit: (event: PageEvent) => void, env: ShadowEnvironment): ShadowSession {
-  const registry = ensureShadowOverrides(env.originals);
+  const registry = installShadowOverrides(env.originals);
   if (registry.isShadowed(element)) throw new Error("shadow: element is already shadowed");
   const controller = new ShadowController(element, emit, env, registry);
   return {
@@ -98,6 +107,8 @@ class ShadowController implements ShadowBehavior {
   readonly #qualityPrototype: object;
   readonly #follower: RealElementFollower;
   readonly #detachedWatch = new DetachedElementWatch();
+  readonly #emptySourceWatch = new EmptySourceWatch();
+  readonly #pulse = new ShadowPulse();
   readonly #disposeGate: () => void;
   #pendingPlays: PendingPlay[] = [];
   /** `muted`, как его видит страница; настоящий элемент на время тени заглушен. */
@@ -175,12 +186,14 @@ class ShadowController implements ShadowBehavior {
       const nowMs = this.#env.now();
       switch (command.kind) {
         case "clock":
-          if (this.#elementLeftDocument(nowMs)) {
+          if (this.#pageTookElementBack(nowMs)) {
             this.#releaseToPage();
             return;
           }
           this.#timeline.onClock(command, nowMs);
           this.#follower.onClockTick(nowMs);
+          // Пульс — последним: если отправка оборвёт передачу, после него тень уже ничего не делает.
+          if (this.#pulse.onClockTick(nowMs)) this.#emit({ kind: "shadow_alive" });
           return;
         case "play":
           this.#timeline.play("player", nowMs);
@@ -431,7 +444,7 @@ class ShadowController implements ShadowBehavior {
         this.#expectedEmptiedEvents -= 1;
       } else {
         // Источник сменили мимо наших переопределений (`setAttribute("src")`, `<source>`).
-        this.#attempt("emptied", () => this.#handleSourceReset());
+        this.#attempt("emptied", () => this.#handleSourceReset("element_reset"));
       }
       return "pass";
     }
@@ -450,22 +463,44 @@ class ShadowController implements ShadowBehavior {
   /** «Алгоритм загрузки» уже прошёл в оригинале синхронно: тень повторяет его сразу. */
   #afterLoadAlgorithm(willFireEmptied: boolean): void {
     if (willFireEmptied) this.#expectedEmptiedEvents += 1;
-    this.#attempt("source reset", () => this.#handleSourceReset());
+    const effect: LoadAlgorithmEffect = willFireEmptied ? "element_reset" : "element_was_empty";
+    this.#attempt("source reset", () => this.#handleSourceReset(effect));
   }
 
-  #handleSourceReset(): void {
+  /**
+   * Страница запустила «алгоритм загрузки». Инвариант тени: элемент без источника — пауза решения
+   * страницы, а не конец (Д-1); конец — только чужой источник или пустота дольше допуска.
+   */
+  #handleSourceReset(effect: LoadAlgorithmEffect): void {
     if (!this.#active) return;
-    if (classifySourceReset(this.#element, this.#originals, this.#env.isMediaSourceObjectUrl) === "released") {
-      this.#releaseToPage();
-      return;
+    const nowMs = this.#env.now();
+    switch (this.#classifySource()) {
+      case "not_media_source":
+        this.#releaseToPage();
+        return;
+      case "no_source":
+        this.#emptySourceWatch.sourceRemoved(nowMs);
+        break;
+      case "media_source":
+        this.#emptySourceWatch.mediaSourceArrived();
+        break;
     }
+    this.#repeatLoadAlgorithm(effect, nowMs);
+  }
+
+  /** Тень повторяет то, что браузер сделал с настоящим элементом: сброс часов и скорость. */
+  #repeatLoadAlgorithm(effect: LoadAlgorithmEffect, nowMs: number): void {
     this.#realRepositionInFlight = false;
     // Скорость после загрузки = `defaultPlaybackRate`; её уже выставил браузер настоящему элементу.
     const realRate = Number(readOriginal(this.#originals.media.playbackRate, this.#element));
-    if (this.#timeline.resetForNewSource(realRate, this.#env.now())) {
-      const ratePermille = protocolRateOf(realRate);
-      if (ratePermille !== null) this.#emit({ kind: "page_playback", request: { kind: "set_rate", rate: ratePermille } });
-    }
+    const rateChanged = effect === "element_reset" ? this.#timeline.resetForNewSource(realRate, nowMs) : this.#timeline.setPageRate(realRate);
+    if (!rateChanged) return;
+    const ratePermille = protocolRateOf(realRate);
+    if (ratePermille !== null) this.#emit({ kind: "page_playback", request: { kind: "set_rate", rate: ratePermille } });
+  }
+
+  #classifySource(): SourceVerdict {
+    return classifyElementSource(this.#element, this.#originals, this.#env.isMediaSourceObjectUrl);
   }
 
   /**
@@ -478,6 +513,15 @@ class ShadowController implements ShadowBehavior {
     this.#settlePendingPlays("reject");
     this.#attempt("release: restore muted", () => writeOriginal(this.#originals.media.muted, this.#element, this.#pageMuted));
     this.#finish("element_released");
+  }
+
+  /**
+   * Тик часов: страница забрала элемент — вынула его из документа дольше допуска, оставила без
+   * источника дольше допуска или (пока ждали) поставила чужой источник мимо наших переопределений.
+   */
+  #pageTookElementBack(nowMs: number): boolean {
+    if (this.#elementLeftDocument(nowMs)) return true;
+    return this.#emptySourceWatch.onClockTick(() => this.#classifySource(), nowMs) === "release_to_page";
   }
 
   /** Элемент вне документа дольше допуска (проверка оригинальным `isConnected` на тике). */

@@ -33,13 +33,17 @@ export interface FakeMediaState {
   readyState: number;
   networkState: number;
   duration: number;
-  src: string;
+  /** Атрибут `src` (`null` — атрибута нет). Геттер `src` отражает его как URL. */
+  src: string | null;
   srcObject: unknown;
   videoWidth: number;
   videoHeight: number;
   totalFrames: number;
   droppedFrames: number;
 }
+
+/** Адрес документа фейка: геттер `src` отдаёт его для атрибута `src=""` (как браузер). */
+export const FAKE_DOCUMENT_URL = "https://site.example/watch";
 
 export function createFakeMediaDom() {
   class FakeEvent {
@@ -181,7 +185,26 @@ export function createFakeMediaDom() {
     }
   }
 
-  class FakeElement extends FakeNode {}
+  /** Элемент с атрибутами; медиаэлемент перехватывает атрибут `src` (он отражается свойством). */
+  class FakeElement extends FakeNode {
+    readonly #attributes = new Map<string, string>();
+    getAttribute(name: string): string | null {
+      return this.storedAttribute(String(name));
+    }
+    setAttribute(name: string, value: string): void {
+      this.storeAttribute(String(name), String(value));
+    }
+    removeAttribute(name: string): void {
+      this.storeAttribute(String(name), null);
+    }
+    protected storedAttribute(name: string): string | null {
+      return this.#attributes.get(name) ?? null;
+    }
+    protected storeAttribute(name: string, value: string | null): void {
+      if (value === null) this.#attributes.delete(name);
+      else this.#attributes.set(name, value);
+    }
+  }
 
   class FakeMediaSource {}
   class FakeMediaSourceHandle {}
@@ -293,12 +316,26 @@ export function createFakeMediaDom() {
     get duration(): number {
       return this.real.duration;
     }
+    /** Как отражение URL-атрибута: нет атрибута — "", пустой атрибут — адрес документа. */
     get src(): string {
-      return this.real.src;
+      if (this.real.src === null) return "";
+      return this.real.src === "" ? FAKE_DOCUMENT_URL : this.real.src;
     }
     set src(value: string) {
-      this.real.src = String(value);
-      this.#loadAlgorithm();
+      this.storeAttribute("src", String(value));
+    }
+    protected override storedAttribute(name: string): string | null {
+      return name === "src" ? this.real.src : super.storedAttribute(name);
+    }
+    protected override storeAttribute(name: string, value: string | null): void {
+      if (name !== "src") {
+        super.storeAttribute(name, value);
+        return;
+      }
+      this.realCalls.push({ kind: "set", property: "src", value });
+      this.real.src = value;
+      // Стандарт: установка или смена атрибута `src` запускает алгоритм загрузки, удаление — нет.
+      if (value !== null) this.#loadAlgorithm();
     }
     get srcObject(): unknown {
       return this.real.srcObject;
@@ -337,8 +374,9 @@ export function createFakeMediaDom() {
       this.real.currentTime = 0;
       this.real.readyState = 0;
       this.real.playbackRate = this.real.defaultPlaybackRate;
-      const hasSource = this.real.src !== "" || this.real.srcObject !== null;
-      this.real.networkState = hasSource ? 2 : 0;
+      // NETWORK_LOADING при источнике; пустой атрибут — «нет подходящего» (NO_SOURCE); иначе EMPTY.
+      if (this.real.srcObject !== null || (this.real.src !== null && this.real.src !== "")) this.real.networkState = 2;
+      else this.real.networkState = this.real.src === "" ? 3 : 0;
     }
   }
 
@@ -379,6 +417,7 @@ export function createFakeMediaDom() {
     readonly EventTarget = FakeEventTarget;
     readonly Event = FakeEvent;
     readonly Node = FakeNode;
+    readonly Element = FakeElement;
     readonly Promise = Promise;
     readonly DOMException = DOMException;
     readonly TypeError = TypeError;

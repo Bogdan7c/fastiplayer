@@ -1,44 +1,68 @@
-// Что значит `emptied` переданного элемента: смена поколения или страница бросила элемент.
+// Какой источник сейчас у переданного элемента — новое поколение, «пусто» или чужой поток.
 //
-// `emptied` браузер шлёт, когда страница запускает «алгоритм загрузки» элемента: `load()`,
-// новый `src`/`srcObject`, снятие источника. Это всегда намерение страницы, поэтому сам вызов
-// идёт в оригинал, а тень лишь решает, что делать с собой:
-// - новый источник — MediaSource (blob-адрес MediaSource по реестру A1 или `srcObject` =
-//   MediaSource/handle): это новое
-//   поколение на том же элементе (реклама YouTube → фильм, следующая серия Tortuga, сторож
-//   «зависло → пересоздать»). Тень остаётся и повторяет алгоритм загрузки (позиция 0, пауза).
-// - источника нет или он не MSE (обычный файл, HLS-адрес): 09a передаёт только MSE, тень
-//   снимается с `handoff_ended{element_released}` и элемент снова целиком принадлежит странице.
+// Тень спрашивает это в двух местах:
+// - сразу после «алгоритма загрузки» (`load()`, запись `src`/`srcObject` через наши
+//   переопределения, доверенное `emptied`) — это всегда намерение страницы, сам вызов уже ушёл
+//   в оригинал, а тень лишь решает, что делать с собой;
+// - на тиках часов, пока элемент без источника (сторож `empty-source-watch.ts`): атрибут `src`,
+//   поставленный через `setAttribute` элементу в NETWORK_EMPTY, не даёт `emptied`, и иначе новый
+//   источник прошёл бы мимо тени.
+//
+// Вердикты:
+// - `media_source` — MediaSource (blob-адрес MediaSource по реестру A1 или `srcObject` =
+//   MediaSource/handle): новое поколение на том же элементе (реклама YouTube → фильм, следующая
+//   серия, сторож плеера «зависло → пересоздать»). Тень остаётся.
+// - `no_source` — `srcObject` пуст И атрибута `src` нет или он пустой. Это ПЕРЕХОДНОЕ состояние
+//   (Д-1): YouTube перед новым MediaSource делает `srcObject = null`, hls.js/Shaka/dash.js —
+//   `removeAttribute("src"); load()`. Тень остаётся и ждёт допуск (решение владельца, 179).
+// - `not_media_source` — обычный файл, HLS-адрес, blob обычного `Blob`/`File`: 09a передаёт
+//   только MSE, страница честно забрала видео — тень снимается сразу (`element_released`).
 //
 // Точный ответ «этот blob-адрес — MediaSource» знает реестр MAIN-мира (A1: обёртка
 // `URL.createObjectURL` запоминает адреса, созданные для MediaSource). Тень спрашивает его через
-// окружение: blob-адрес обычного файла (`Blob`/`File`) — не MSE, тень снимается.
+// окружение.
+// Известное ограничение: источники из дочерних `<source>` (без атрибута `src`) здесь выглядят как
+// «пусто» и снимаются по допуску — передача `<source>` и `<video src>` — сессия 09b.
 
 import { hasPrototype } from "./intrinsics.ts";
-import { type ElementOriginals, readOriginal } from "./originals.ts";
+import { callOriginal, type ElementOriginals, readOriginal } from "./originals.ts";
 
-/** Чем стал элемент после `emptied`. */
-export type SourceResetKind = "new_media_source" | "released";
+/** Что сейчас стоит источником у элемента. */
+export type SourceVerdict = "media_source" | "no_source" | "not_media_source";
 
 /** Ответ реестра MAIN-мира: адрес создан `URL.createObjectURL` для MediaSource этого документа. */
 export type MediaSourceObjectUrlCheck = (url: string) => boolean;
 
-export function classifySourceReset(
+/** Имя атрибута-источника медиаэлемента. */
+const SOURCE_ATTRIBUTE = "src";
+
+export function classifyElementSource(
   element: HTMLMediaElement,
   originals: ElementOriginals,
   isMediaSourceObjectUrl: MediaSourceObjectUrlCheck,
-): SourceResetKind {
+): SourceVerdict {
   const srcObjectAccessor = originals.media.srcObject;
   if (srcObjectAccessor !== undefined) {
     const sourceObject = readOriginal(srcObjectAccessor, element);
     // `srcObject` главнее атрибута `src`: если он задан, решает только он.
     if (sourceObject !== null && sourceObject !== undefined) {
-      return isMediaSourceObject(sourceObject, originals) ? "new_media_source" : "released";
+      return isMediaSourceObject(sourceObject, originals) ? "media_source" : "not_media_source";
     }
   }
+  if (sourceAttributeIsEmpty(element, originals)) return "no_source";
   const sourceUrl = readOriginal(originals.media.src, element);
-  if (typeof sourceUrl === "string" && isMediaSourceObjectUrl(sourceUrl)) return "new_media_source";
-  return "released";
+  return typeof sourceUrl === "string" && isMediaSourceObjectUrl(sourceUrl) ? "media_source" : "not_media_source";
+}
+
+/** Атрибута `src` нет или он пустой (читается оригинальным `getAttribute`). */
+function sourceAttributeIsEmpty(element: HTMLMediaElement, originals: ElementOriginals): boolean {
+  if (originals.getAttribute === undefined) {
+    // Без `getAttribute` (не бывает в живых браузерах) остаётся геттер: "" — атрибута нет;
+    // пустой атрибут (адрес документа) тогда честно считается чужим источником.
+    return readOriginal(originals.media.src, element) === "";
+  }
+  const attribute = callOriginal(originals.getAttribute, element, [SOURCE_ATTRIBUTE]);
+  return attribute === null || attribute === "";
 }
 
 function isMediaSourceObject(sourceObject: unknown, originals: ElementOriginals): boolean {

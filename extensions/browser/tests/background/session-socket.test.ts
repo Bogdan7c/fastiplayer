@@ -173,6 +173,40 @@ describe("сокет сеанса: конец", () => {
     assert.deepEqual(socket.wireSummary(), ["attach", "tab_gone"]);
   });
 
+  it("закрытие с причиной после очереди (страница забрала видео): очередь, потом закрытие 4009, без tab_gone", () => {
+    const { socket, session, attach, ended } = setup();
+    attach();
+    socket.bufferedAmount = SOCKET_HIGH_WATER_BYTES + 1; // очередь стоит из-за буфера сокета
+    session.enqueue(frameItem(0n));
+    session.enqueue(pageSeek);
+    session.closeAfterDeliveringQueue("page_took_video_back");
+    assert.deepEqual(socket.wireSummary(), ["attach", "frame 1/0#0", "seek_started"]);
+    assert.equal(socket.closedWithCode, SESSION_CLOSE_CODES.page_took_video_back);
+    assert.deepEqual(ended, [{ kind: "closed_by_extension" }]);
+    session.enqueue(frameItem(1n));
+    assert.deepEqual(socket.wireSummary(), ["attach", "frame 1/0#0", "seek_started"], "после закрытия ничего не уходит");
+  });
+
+  it("закрытие с причиной при «полон»: придержанные рамки не шлются, код — причина (4003)", () => {
+    const { socket, session, attach } = setup();
+    attach();
+    socket.receive({ type: "buffer_state", generation: 1, ahead_us: 90_000_000, intake: "full" });
+    session.enqueue(frameItem(0n));
+    session.closeAfterDeliveringQueue("protocol_violation");
+    assert.deepEqual(socket.wireSummary(), ["attach"]);
+    assert.equal(socket.closedWithCode, SESSION_CLOSE_CODES.protocol_violation);
+  });
+
+  it("закрытие с причиной до attached — просто закрытие кодом причины", () => {
+    const { socket, session, ended } = setup();
+    socket.open();
+    session.enqueue(generationStarted);
+    session.closeAfterDeliveringQueue("page_took_video_back");
+    assert.deepEqual(socket.wireSummary(), ["attach"], "до attached очередь не уходит и при закрытии");
+    assert.equal(socket.closedWithCode, SESSION_CLOSE_CODES.page_took_video_back);
+    assert.deepEqual(ended, [{ kind: "closed_by_extension" }]);
+  });
+
   it("закрытие плеером сообщает причину по коду ровно один раз", () => {
     const { socket, attach, ended } = setup();
     attach();

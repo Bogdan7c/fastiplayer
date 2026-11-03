@@ -84,7 +84,7 @@ test("метки возможностей: запись и разбор обра
   assert.equal(decodeExtensionControl(hello).ok, true);
 });
 
-test("коды закрытия сеанса: уникальные 4000-4008, обратное соответствие, чужие коды неизвестны", () => {
+test("коды закрытия сеанса: уникальные 4000-4009, обратное соответствие, чужие коды неизвестны", () => {
   const codes = Object.values(SESSION_CLOSE_CODES);
   assert.equal(new Set(codes).size, codes.length);
   for (const [reason, code] of Object.entries(SESSION_CLOSE_CODES)) {
@@ -101,7 +101,7 @@ test("коды закрытия совпадают с Rust (SessionCloseReason::
   // Код читается прямо из исходника Rust: расхождение ловится без отдельной фикстуры.
   const rustSource = readFileSync(join(FIXTURES_ROOT, "..", "src", "session", "mod.rs"), "utf8");
   const pairs = [...rustSource.matchAll(/Self::(\w+) => (4\d{3}),/g)].map((match) => [match[1] ?? "", Number(match[2])] as const);
-  assert.equal(pairs.length, 9);
+  assert.equal(pairs.length, Object.keys(SESSION_CLOSE_CODES).length);
   const toSnake = (name: string): string => name.replace(/[A-Z]/g, (letter, index: number) => (index === 0 ? "" : "_") + letter.toLowerCase());
   for (const [rustName, code] of pairs) {
     assert.equal((SESSION_CLOSE_CODES as Record<string, number>)[toSnake(rustName)], code, rustName);

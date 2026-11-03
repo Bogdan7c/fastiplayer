@@ -9,8 +9,13 @@
 // - события страницы → переводчик (поколения, рамки) → очередь сокета;
 // - сообщения плеера → команды тени странице (`clock`/`play`/`pause`/`set_rate`/`seek`);
 // - конец: `return_to_page` и отказ текущего поколения снимают тень (`end_handoff`), обрыв сокета —
-//   тоже (позиция тени, «как тень»); уход со страницы (порт закрылся) и закрытие вкладки шлют
-//   плееру `tab_gone`; `handoff_ended{element_released}` от страницы = «ушли со страницы».
+//   тоже (позиция тени, «как тень»); уход со страницы (порт закрылся или команда в него не ушла —
+//   Д-7) и закрытие вкладки шлют плееру `tab_gone`.
+// Честные концы со стороны страницы, вкладка на месте (сессия 09a2) — без `tab_gone`, очередь
+// страницы сначала дописывается плееру:
+// - `handoff_ended{element_released}` — страница забрала видео → код 4009 (решение 179);
+// - `handoff_ended{returned}` без нашего `end_handoff` — сбой внутри страницы → 4003 (Д-6);
+// - тень молчит дольше предела пульса → снять «как тень» и 4003 (решение 180, Д-2).
 // Конец сообщается владельцу ровно один раз (`onFinished`), нужда связи освобождается ровно один раз.
 
 import type { HandOffTabOutcome, PageCommand, PageEvent } from "../../shared/handoff-contract.ts";
@@ -26,9 +31,17 @@ import type { Scheduler } from "../host-link/native-port.ts";
 import { createTimerSlot } from "../host-link/timer-slot.ts";
 import { HANDOFF_BEGIN_REPLY_TIMEOUT_MS, HANDOFF_END_REPLY_TIMEOUT_MS } from "./constants.ts";
 import type { FrameConnector, FramePort } from "./frame-port.ts";
-import { createDocumentTranslator, type DocumentTranslator, type PageStreamProblem } from "./page-event-translator.ts";
+import { createDocumentTranslator, type DocumentTranslator, type PageStreamProblem, type StreamPageEvent } from "./page-event-translator.ts";
 import { translatePlayerMessage } from "./player-message-translator.ts";
-import { NORMAL_CLOSE_CODE, openSessionSocket, type SessionSocket, type SocketEndCause, type WebSocketFactory } from "./session-socket.ts";
+import {
+  NORMAL_CLOSE_CODE,
+  openSessionSocket,
+  type QueueDeliveringCloseReason,
+  type SessionSocket,
+  type SocketEndCause,
+  type WebSocketFactory,
+} from "./session-socket.ts";
+import { createShadowSilenceWatch } from "./shadow-silence-watch.ts";
 import { createStreamNumbering, type StreamNumbering } from "./stream-numbering.ts";
 
 /** Что сеансу нужно от связи с посредником (HostLink). */
@@ -63,7 +76,12 @@ export interface HandoffTarget {
 export type HandoffSessionEnd =
   | { readonly kind: "start_failed"; readonly outcome: HandOffTabOutcome }
   | { readonly kind: "page_gone"; readonly reason: TabGoneReason }
-  | { readonly kind: "element_released" }
+  /** Страница сама забрала видео, вкладка на месте (`handoff_ended{element_released}`, 4009). */
+  | { readonly kind: "page_took_video_back" }
+  /** Страница сняла тень сама без нашей просьбы — сбой внутри страницы (4003, Д-6). */
+  | { readonly kind: "page_side_failure" }
+  /** Тень замолчала дольше предела пульса (4003, решение 180). */
+  | { readonly kind: "shadow_silent" }
   | { readonly kind: "returned_to_page" }
   | { readonly kind: "stream_rejected" }
   | { readonly kind: "player_ended"; readonly cause: SocketEndCause }
@@ -81,11 +99,14 @@ export interface HandoffSession {
  * - opening — ждём `open_session` и `attached`;
  * - abandoning — сеанс выдан, но страница пропала: ждём `attached`, чтобы честно послать `tab_gone`;
  * - beginning — порт к фрейму открыт, ждём `handoff_began`;
- * - active — тень стоит, поток идёт;
+ * - active — тень стоит, поток идёт, сторож тишины слушает пульс тени;
  * - ending — мы послали `end_handoff`, ждём `handoff_ended{returned}` (или таймаут);
  * - finished — всё освобождено.
  */
 type SessionPhase = "opening" | "abandoning" | "beginning" | "active" | "ending" | "finished";
+
+/** Ушла ли команда в порт страницы. */
+type PageDelivery = "delivered" | "port_dead";
 
 /** Подсказки для окна до первых байтов: в 09a длительность и позицию узнаём только из потока. */
 const UNKNOWN_HINTS: OpenSessionRequest["hints"] = { duration: { kind: "unknown" }, position: { kind: "unknown" } };
@@ -101,6 +122,8 @@ export function startHandoffSession(
   const beginTimer = createTimerSlot(dependencies.scheduler);
   const endTimer = createTimerSlot(dependencies.scheduler);
   const numbering: StreamNumbering = createStreamNumbering();
+  // Слушает пульс тени только в фазе `active`; в `ending` у нас свой предел ответа (endTimer).
+  const silenceWatch = createShadowSilenceWatch(dependencies.scheduler, () => endForSilentShadow());
   const releaseDemand = dependencies.door.acquireDemand(DEMAND_REASON);
   let phase: SessionPhase = "opening";
   let tabRemoved = false;
@@ -111,6 +134,9 @@ export function startHandoffSession(
   let pendingEnd: HandoffSessionEnd | undefined;
   // Плеер ответил `attached` на наш `attach`.
   let socketAttached = false;
+  // Порт страницы признан мёртвым, ждём ответа «жива ли вкладка»: повторные потери команд
+  // за это время (плеер шлёт часы каждые 250 мс) второй вопрос не задают.
+  let askingWhetherTabExists = false;
   // Сеанс выдан, но страница для него пропала: чем ответить и какой `tab_gone` послать после attach.
   let abandoned: { readonly outcome: HandOffTabOutcome; readonly reason: TabGoneReason } | undefined;
   let resolveOutcome: (outcome: HandOffTabOutcome) => void = () => {};
@@ -123,6 +149,7 @@ export function startHandoffSession(
     phase = "finished";
     beginTimer.cancel();
     endTimer.cancel();
+    silenceWatch.stop();
     if (framePort !== undefined) disconnectQuietly(framePort);
     releaseDemand();
     // Если старт не успел завершиться, исход объясняет, почему.
@@ -163,15 +190,52 @@ export function startHandoffSession(
     if (phase !== "active") return;
     phase = "ending";
     pendingEnd = end;
-    // Предел ожидания ставится ДО отправки: если порт уже мёртв (отправка не удалась) и его
-    // onDisconnect не придёт, сеанс всё равно закончится сам, а не повиснет в `ending`.
+    // Тень снимаем мы: дальше ждём только её подтверждения, пульс больше не нужен.
+    silenceWatch.stop();
+    // Предел ожидания ставится ДО отправки: страница, принявшая команду, может так и не ответить.
+    // Отправка, которая не ушла (порт мёртв), кончает сеанс сразу — путём ухода страницы (Д-7).
     endTimer.start(HANDOFF_END_REPLY_TIMEOUT_MS, () => completeEnding());
-    postToPage(command);
+    commandPage(command);
   }
 
+  /**
+   * Передача кончилась по стороне страницы, а вкладка на месте: плеер получает всё, что страница
+   * успела прислать, и закрытие с причиной — без `tab_gone` (он значил бы «вкладка ушла», и плеер
+   * стал бы доигрывать скачанное при живой странице).
+   */
+  function endOnPageSide(closeReason: QueueDeliveringCloseReason, end: HandoffSessionEnd): void {
+    socket?.closeAfterDeliveringQueue(closeReason);
+    finish(end);
+  }
+
+  /**
+   * Тень молчит дольше `SHADOW_SILENCE_LIMIT_MS` (решение 180): потерялся `handoff_ended`, страница
+   * зависла или сломан канал. Странице — снять тень «как тень» (best effort: если порт мёртв,
+   * его закрытие в `finish` снимет тень в изолированном мире само), плееру — 4003 «Stream error —
+   * video returned to the page».
+   */
+  function endForSilentShadow(): void {
+    if (phase !== "active") return;
+    // Результат отправки здесь намеренно не важен: сеанс кончается в любом случае, а путь «порт
+    // мёртв» (Д-7) лишь подменил бы честную причину «тень молчит» на «ушли со страницы».
+    tryPostToPage(END_WITHOUT_PLAYER);
+    endOnPageSide("protocol_violation", { kind: "shadow_silent" });
+  }
+
+  /**
+   * Тень снята по нашему `end_handoff` (или страница не ответила вовремя) — закрыть сокет.
+   * Возврат по просьбе плеера (`return_to_page`) — обычное 1000: конец решил и объяснил сам плеер.
+   * Отказ текущего поколения (плеер не смог играть, решение владельца 09a2) — 4003 «Stream error —
+   * video returned to the page»: иначе окно гасло бы молча, а видео уже играет страница.
+   */
   function completeEnding(): void {
-    socket?.close(NORMAL_CLOSE_CODE);
-    finish(pendingEnd ?? { kind: "returned_to_page" });
+    const end = pendingEnd ?? { kind: "returned_to_page" };
+    if (end.kind === "stream_rejected") {
+      socket?.closeAfterDeliveringQueue("protocol_violation");
+    } else {
+      socket?.close(NORMAL_CLOSE_CODE);
+    }
+    finish(end);
   }
 
   // ---------------------------------------------------------------- старт
@@ -227,7 +291,7 @@ export function startHandoffSession(
     beginTimer.start(HANDOFF_BEGIN_REPLY_TIMEOUT_MS, () =>
       abandonGrantedSession({ kind: "failed", reason: "page_did_not_answer" }, "navigated_away"),
     );
-    postToPage({ kind: "begin_handoff", request_id: target.beginRequestId, document: target.document, element: target.element });
+    commandPage({ kind: "begin_handoff", request_id: target.beginRequestId, document: target.document, element: target.element });
   }
 
   // ---------------------------------------------------------------- страница → плеер
@@ -244,6 +308,11 @@ export function startHandoffSession(
       case "handoff_ended":
         handleHandoffEnded(event.cause);
         return;
+      case "shadow_alive":
+        // Пульс тени (решение 180): только он сбрасывает сторожа тишины. Плееру не пересылается —
+        // это внутреннее дело экстеншена. Вне `active` сторож не слушает, пульс ничего не меняет.
+        silenceWatch.notePulse();
+        return;
       default:
         forwardStreamEvent(event);
     }
@@ -259,6 +328,7 @@ export function startHandoffSession(
       return;
     }
     phase = "active";
+    silenceWatch.start();
     resolveOutcome({ kind: "started" });
   }
 
@@ -269,16 +339,17 @@ export function startHandoffSession(
     }
     if (phase !== "active") return;
     if (cause === "element_released") {
-      // Страница сама убрала источник (новый src, load(), удаление) — для плеера это уход со страницы.
-      socket?.sendTabGoneAndClose("navigated_away");
-      finish({ kind: "element_released" });
+      // Страница честно забрала видео (не-MSE источник, пустой источник дольше допуска, элемент
+      // убран), вкладка на месте — решение 179: «The page took the video back», без доигрывания.
+      endOnPageSide("page_took_video_back", { kind: "page_took_video_back" });
       return;
     }
-    socket?.close(NORMAL_CLOSE_CODE);
-    finish({ kind: "returned_to_page" });
+    // `returned`, о котором мы не просили: тень снял сбой внутри страницы (отправка куска, старт
+    // тени — `#finishActive` контроллера). Видео уже у страницы → для плеера это ошибка потока.
+    endOnPageSide("protocol_violation", { kind: "page_side_failure" });
   }
 
-  function forwardStreamEvent(event: Exclude<PageEvent, { kind: "handoff_began" } | { kind: "handoff_ended" }>): void {
+  function forwardStreamEvent(event: StreamPageEvent): void {
     if ((phase !== "beginning" && phase !== "active") || translator === undefined || socket === undefined) return;
     const translated = translator.translate(event);
     if (!translated.ok) {
@@ -301,7 +372,7 @@ export function startHandoffSession(
     const action = translatePlayerMessage(message, numbering.latestGeneration());
     switch (action.kind) {
       case "shadow":
-        postToPage({ kind: "shadow", command: action.command });
+        commandPage({ kind: "shadow", command: action.command });
         return;
       case "end_handoff":
         endHandoff(
@@ -342,7 +413,16 @@ export function startHandoffSession(
   // ---------------------------------------------------------------- уход страницы
 
   function handleFrameGone(port: FramePort): void {
-    if (port !== framePort || phase === "finished") return;
+    if (port !== framePort) return;
+    endForLostFramePort();
+  }
+
+  /**
+   * Порт к странице мёртв: пришёл его `onDisconnect` или команда в него не ушла (Д-7 — тогда
+   * `onDisconnect` может и не прийти, а плеер ждал бы подтверждения перемотки до 60 с).
+   */
+  function endForLostFramePort(): void {
+    if (phase === "finished") return;
     if (phase === "beginning") {
       abandonGrantedSession({ kind: "failed", reason: "page_navigated_away" }, tabRemoved ? "closed" : "navigated_away");
       return;
@@ -352,6 +432,8 @@ export function startHandoffSession(
       return;
     }
     // Порт закрывается раньше, чем приходит tabs.onRemoved: живость вкладки спрашиваем у браузера.
+    if (askingWhetherTabExists) return;
+    askingWhetherTabExists = true;
     dependencies.tabExists(target.tabId).then(
       (exists) => leavePage(exists && !tabRemoved ? "navigated_away" : "closed"),
       () => leavePage("closed"),
@@ -378,15 +460,21 @@ export function startHandoffSession(
 
   // ---------------------------------------------------------------- помощники
 
-  /** Отправка странице; false — порт уже мёртв (его onDisconnect закончит сеанс). */
-  function postToPage(command: PageCommand): boolean {
-    if (framePort === undefined) return false;
+  /** Отправка странице без последствий; `port_dead` — порта нет или `postMessage` бросил. */
+  function tryPostToPage(command: PageCommand): PageDelivery {
+    if (framePort === undefined) return "port_dead";
     try {
       framePort.postMessage(command);
-      return true;
+      return "delivered";
     } catch {
-      return false;
+      // Отсоединённый порт бросает («disconnected port»): причина одна — порта больше нет.
+      return "port_dead";
     }
+  }
+
+  /** Команда, потеря которой рвёт согласие с тенью: не ушла — сеанс кончается сразу (Д-7). */
+  function commandPage(command: PageCommand): void {
+    if (tryPostToPage(command) === "port_dead") endForLostFramePort();
   }
 
   openPlayerSession().catch((error: unknown) => failStart({ kind: "failed", reason: `open_session_threw:${String(error)}` }));
