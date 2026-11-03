@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use browser_bridge_bench::browsers::BrowserKind;
 use browser_bridge_bench::environment::{DisplayTarget, PlayerConfigProfile};
 use browser_bridge_bench::scenarios::{
-    BrowserExecutables, PAGE_SCENARIOS, PageFilter, RunSettings, capture_page_ids, end_page_ids,
+    BrowserExecutables, DEFAULT_MIN_FRAMES, PAGE_SCENARIOS, PageFilter, ReplayOptions, RunSettings,
+    capture_page_ids, end_page_ids,
 };
 
 /// Что запускать.
@@ -18,6 +19,8 @@ pub enum Command {
     PlayerCommands,
     ExtensionStatus,
     Codecs,
+    Replay,
+    GenerateRecording,
     All,
 }
 
@@ -36,6 +39,19 @@ pub struct Invocation {
     /// Какие страницы гонять (`--page`); без флага — все страницы команды.
     pub pages: PageFilter,
     pub settings: RunSettings,
+    /// Параметры `replay` (есть только у этой команды).
+    pub replay: Option<ReplayOptions>,
+    /// Параметры `generate-recording` (есть только у этой команды).
+    pub generation: Option<GenerationOptions>,
+}
+
+/// Параметры `generate-recording`: синтетическая запись из ассета стенда.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GenerationOptions {
+    /// Куда записать `*.fprec`.
+    pub output: PathBuf,
+    /// Ассет каталога медиа (по умолчанию `h264-aac`).
+    pub asset: String,
 }
 
 impl Command {
@@ -86,6 +102,12 @@ Commands:
   extension-status  the real extension (extensions/browser/dist) says \"Connected to Fastiplayer\"
   codecs            the site player asks AV1, then VP9, then H.264: the extension answers for
                     the player (setting x player label, HLS always refused) and the pick plays
+  replay            replay a page-stream recording (--recording FILE.fprec) on the stand page
+                    replay-recording with real MSE calls at the original pace, hand the tab
+                    off at the recorded 'handoff_began' moment, print the player summaries
+                    (presented_frames, position_ms, state) and judge them (--min-frames)
+  generate-recording  write a synthetic recording (--output FILE.fprec [--asset ID]) from a
+                    stand fMP4 asset: add_source_buffer, paced appends, handoff_began
   all               pages, capture, page-ends, player-commands, extension-status and codecs (smoke is a
                     subset of capture), one after another; with --page only the page steps run
 
@@ -97,6 +119,10 @@ Options:
                                       browser launch; repeatable (ad blocker mechanism)
   --page <ID>                         only this page (pages, capture, page-ends, all);
                                       repeatable; ids are the names in site/pages
+  --recording <FILE>                  replay: the .fprec file to replay
+  --min-frames <N>                    replay: presented frames the player must reach (default: 50)
+  --output <FILE>                     generate-recording: where to write the .fprec file
+  --asset <ID>                        generate-recording: stand asset id (default: h264-aac)
   --keep-work                         keep the run directories after the run
   --work-root <DIR>                   run directories (default: target/browser-bridge-bench/work)
   --media-cache <DIR>                 generated media cache (default: target/browser-bridge-bench/media)
@@ -122,6 +148,10 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Parsed, Usag
     let mut player_bin_dir = repo.join("target/debug");
     let mut executables = BrowserExecutables::default();
     let mut command = None;
+    let mut recording: Option<PathBuf> = None;
+    let mut min_frames = DEFAULT_MIN_FRAMES;
+    let mut output: Option<PathBuf> = None;
+    let mut asset = "h264-aac".to_owned();
 
     let mut arguments = arguments.into_iter();
     while let Some(argument) = arguments.next() {
@@ -139,6 +169,10 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Parsed, Usag
             }
             "--extra-extension" => extra_extensions.push(absolute(value_of("--extra-extension")?)),
             "--page" => selected_pages.push(value_of("--page")?),
+            "--recording" => recording = Some(absolute(value_of("--recording")?)),
+            "--min-frames" => min_frames = parse_min_frames(&value_of("--min-frames")?)?,
+            "--output" => output = Some(absolute(value_of("--output")?)),
+            "--asset" => asset = value_of("--asset")?,
             "--keep-work" => keep_work = true,
             "--work-root" => work_root = absolute(value_of("--work-root")?),
             "--media-cache" => media_cache = absolute(value_of("--media-cache")?),
@@ -161,6 +195,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Parsed, Usag
     }
     let command = command.ok_or_else(|| UsageError("a command is required".to_owned()))?;
     let pages = validated_page_filter(command, selected_pages)?;
+    let (replay, generation) = command_options(command, recording, min_frames, output, asset)?;
     Ok(Parsed::Run(Box::new(Invocation {
         command,
         browsers,
@@ -176,7 +211,62 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Parsed, Usag
             keep_work,
             browser_executables: executables,
         },
+        replay,
+        generation,
     })))
+}
+
+/// Параметры, которые бывают только у `replay` и `generate-recording`: недостающий обязательный
+/// флаг и флаг не от своей команды — ошибки использования (иначе флаг молча ничего бы не делал).
+fn command_options(
+    command: Command,
+    recording: Option<PathBuf>,
+    min_frames: u64,
+    output: Option<PathBuf>,
+    asset: String,
+) -> Result<(Option<ReplayOptions>, Option<GenerationOptions>), UsageError> {
+    if recording.is_some() && command != Command::Replay {
+        return Err(UsageError(
+            "--recording applies only to the replay command".to_owned(),
+        ));
+    }
+    if output.is_some() && command != Command::GenerateRecording {
+        return Err(UsageError(
+            "--output applies only to the generate-recording command".to_owned(),
+        ));
+    }
+    match command {
+        Command::Replay => {
+            let recording = recording
+                .ok_or_else(|| UsageError("replay needs --recording <FILE.fprec>".to_owned()))?;
+            Ok((
+                Some(ReplayOptions {
+                    recording,
+                    min_frames,
+                }),
+                None,
+            ))
+        }
+        Command::GenerateRecording => {
+            let output = output.ok_or_else(|| {
+                UsageError("generate-recording needs --output <FILE.fprec>".to_owned())
+            })?;
+            Ok((None, Some(GenerationOptions { output, asset })))
+        }
+        _ => Ok((None, None)),
+    }
+}
+
+fn parse_min_frames(value: &str) -> Result<u64, UsageError> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|frames| *frames > 0)
+        .ok_or_else(|| {
+            UsageError(format!(
+                "--min-frames expects a positive integer, got '{value}'"
+            ))
+        })
 }
 
 /// Собирает фильтр страниц и отвергает то, что сделало бы прогон пустым или бессмысленным:
@@ -231,6 +321,8 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
         "player-commands" => Ok(Command::PlayerCommands),
         "extension-status" => Ok(Command::ExtensionStatus),
         "codecs" => Ok(Command::Codecs),
+        "replay" => Ok(Command::Replay),
+        "generate-recording" => Ok(Command::GenerateRecording),
         "all" => Ok(Command::All),
         other => Err(UsageError(format!("unknown command '{other}'"))),
     }
@@ -392,6 +484,62 @@ mod tests {
     #[test]
     fn page_ends_command_is_recognised() {
         assert_eq!(invocation(&["page-ends"]).command, Command::PageEnds);
+    }
+
+    #[test]
+    fn replay_needs_a_recording_and_reads_min_frames() {
+        let run = invocation(&[
+            "replay",
+            "--recording",
+            "/tmp/a.fprec",
+            "--browser",
+            "firefox",
+            "--min-frames",
+            "120",
+        ]);
+        assert_eq!(run.command, Command::Replay);
+        let replay = run.replay.expect("replay options");
+        assert_eq!(replay.recording, PathBuf::from("/tmp/a.fprec"));
+        assert_eq!(replay.min_frames, 120);
+        assert_eq!(
+            invocation(&["replay", "--recording", "/tmp/a.fprec"])
+                .replay
+                .map(|o| o.min_frames),
+            Some(DEFAULT_MIN_FRAMES)
+        );
+        let cases: [(&[&str], &str); 4] = [
+            (&["replay"], "replay needs --recording"),
+            (
+                &["smoke", "--recording", "/x"],
+                "--recording applies only to the replay",
+            ),
+            (
+                &["replay", "--recording", "/x", "--min-frames", "0"],
+                "positive integer",
+            ),
+            (
+                &["replay", "--recording", "/x", "--page", "mse-fmp4"],
+                "--page does not apply",
+            ),
+        ];
+        for (words, expected) in cases {
+            let error = parse_words(words).expect_err("must be rejected");
+            assert!(error.to_string().contains(expected), "{words:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn generate_recording_needs_an_output_and_defaults_the_asset() {
+        let run = invocation(&["generate-recording", "--output", "/tmp/s.fprec"]);
+        assert_eq!(
+            run.generation,
+            Some(GenerationOptions {
+                output: PathBuf::from("/tmp/s.fprec"),
+                asset: "h264-aac".into()
+            })
+        );
+        assert!(parse_words(&["generate-recording"]).is_err());
+        assert!(parse_words(&["smoke", "--output", "/x"]).is_err());
     }
 
     #[test]

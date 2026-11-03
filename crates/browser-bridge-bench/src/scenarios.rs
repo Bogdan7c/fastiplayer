@@ -23,12 +23,14 @@ mod page_ends;
 mod page_filter;
 mod pages;
 mod player_commands;
+mod replay;
 
 pub use context::{BrowserExecutables, RunSettings, ScenarioError, Stand};
 pub use outcome::{Outcome, StepResult};
 pub use page_catalog::{PAGE_SCENARIOS, PageScenario};
 pub use page_ends::end_page_ids;
 pub use page_filter::PageFilter;
+pub use replay::{DEFAULT_MIN_FRAMES, ReplayOptions};
 
 use crate::browsers::BrowserKind;
 
@@ -73,4 +75,9 @@ pub fn run_extension_status(stand: &Stand, browser: BrowserKind) -> StepResult {
 /// за плеер по настройке и метке плеера, выбранное играет.
 pub fn run_codecs(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
     codecs::run(stand, browser)
+}
+
+/// Повтор записи потока страницы (`*.fprec`) с передачей плееру в записанный момент.
+pub fn run_replay(stand: &Stand, browser: BrowserKind, options: &ReplayOptions) -> StepResult {
+    replay::run(stand, browser, options)
 }

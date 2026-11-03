@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>replay-recording</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>replay-recording</h1>
+<!-- Повтор записи потока страницы (*.fprec); запускает только команда стенда `replay`. -->
+<script type="module">
+import { runReplayPage } from '../lib/replay-recording.js';
+await runReplayPage();
+</script>
+</body>
+</html>

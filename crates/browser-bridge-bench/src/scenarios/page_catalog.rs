@@ -135,8 +135,9 @@ mod tests {
                 scenario.id
             );
         }
-        // Вспомогательные страницы (вложенные в другие), у них нет собственного отчёта.
-        const HELPER_PAGES: &[&str] = &["iframe-inner"];
+        // Страницы без самостоятельного прогона в `pages`: `iframe-inner` вложена в другие,
+        // `replay-recording` запускается только командой `replay` (ей нужен файл записи).
+        const HELPER_PAGES: &[&str] = &["iframe-inner", "replay-recording"];
         for file_id in &on_disk {
             assert!(
                 HELPER_PAGES.contains(&file_id.as_str())

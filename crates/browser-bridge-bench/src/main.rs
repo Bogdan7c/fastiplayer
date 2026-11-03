@@ -4,6 +4,7 @@
 //! результаты, таблицу печатает `report`, аргументы разбирает `cli`.
 
 mod cli;
+mod generate;
 mod report;
 
 use std::process::ExitCode;
@@ -46,7 +47,22 @@ fn run(invocation: Invocation) -> ExitCode {
         browsers,
         pages,
         settings,
+        replay,
+        generation,
     } = invocation;
+    // Генератору нужны только ролики: сайт, окружение и браузеры не поднимаются.
+    if let (Command::GenerateRecording, Some(options)) = (command, &generation) {
+        return match generate::generate_recording(&settings, options) {
+            Ok(summary) => {
+                println!("{summary}");
+                ExitCode::SUCCESS
+            }
+            Err(message) => {
+                eprintln!("error: {message}");
+                ExitCode::from(EXIT_FAILURE)
+            }
+        };
+    }
     let stand = match Stand::start(settings) {
         Ok(stand) => stand,
         Err(error) => {
@@ -75,6 +91,12 @@ fn run(invocation: Invocation) -> ExitCode {
                     results.push(scenarios::run_extension_status(&stand, browser));
                 }
                 Command::Codecs => results.extend(scenarios::run_codecs(&stand, browser)),
+                Command::Replay => {
+                    if let Some(options) = &replay {
+                        results.push(scenarios::run_replay(&stand, browser, options));
+                    }
+                }
+                Command::GenerateRecording => {}
                 Command::All => {}
             }
         }

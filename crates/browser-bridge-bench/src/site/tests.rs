@@ -750,3 +750,38 @@ fn report_metrics_survive_the_round_trip_and_default_to_empty() {
         .unwrap();
     assert!(plain_report.metrics.is_empty());
 }
+
+/// `/bench/recording` — 404, пока файл не выбран; после выбора отдаёт его байты как есть (и по Range).
+#[test]
+fn recording_is_served_only_after_it_is_selected_and_byte_for_byte() {
+    let fixture = start_fixture();
+    let origin = fixture.site.main_origin();
+    assert_eq!(get(&origin, "/bench/recording").status, 404);
+
+    let recording_path = fixture._dir.path().join("page.fprec");
+    fs::write(&recording_path, media_bytes()).unwrap();
+    fixture.site.serve_recording(recording_path);
+    let whole = get(&origin, "/bench/recording");
+    assert_eq!(whole.status, 200);
+    assert_eq!(whole.body, media_bytes());
+    assert_eq!(
+        whole
+            .headers
+            .get("access-control-allow-origin")
+            .map(String::as_str),
+        Some("*")
+    );
+    let slice = send(
+        &origin,
+        "GET",
+        "/bench/recording",
+        &[("Range", "bytes=10-19")],
+        &[],
+    );
+    assert_eq!(slice.status, 206);
+    assert_eq!(slice.body, media_bytes()[10..20]);
+    assert_eq!(
+        send(&origin, "POST", "/bench/recording", &[], b"x").status,
+        405
+    );
+}

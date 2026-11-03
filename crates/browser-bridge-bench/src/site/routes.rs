@@ -20,6 +20,8 @@ pub(super) struct SharedState {
     pub cdn: CdnGuard,
     /// Запросы медиа с заголовками (сессия 09b: кто качает `<video src>`).
     pub requests: RequestLog,
+    /// Запись потока страницы для `replay` (`/bench/recording`); `None`, пока команда не выбрала файл.
+    pub recording: std::sync::Mutex<Option<PathBuf>>,
 }
 
 /// Всё, что нужно обработчику запроса: общее состояние и origin именно ЭТОГО слушателя
@@ -98,6 +100,13 @@ fn route_request(context: &RouteContext, request: &Request) -> Response {
             method_not_allowed()
         };
     }
+    if path == "/bench/recording" {
+        return if is_read {
+            with_cors(serve_recording(&context.shared, range))
+        } else {
+            method_not_allowed()
+        };
+    }
     if let Some(rest) = path.strip_prefix("/bench/commands/") {
         return if is_read {
             with_cors(serve_commands(&context.shared.reports, rest))
@@ -131,6 +140,18 @@ fn serve_under(root: &std::path::Path, relative: &str, range: Option<&str>) -> R
     match resolve_existing_file(root, relative) {
         Some(path) => serve_file(&path, range),
         None => Response::text(404, "not found"),
+    }
+}
+
+/// Файл записи потока страницы, выбранный командой `replay` (404, пока файл не выбран).
+fn serve_recording(shared: &SharedState, range: Option<&str>) -> Response {
+    let selected = match shared.recording.lock() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    match selected {
+        Some(path) => serve_file(&path, range),
+        None => Response::text(404, "no recording selected"),
     }
 }
 

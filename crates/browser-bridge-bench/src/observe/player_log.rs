@@ -77,7 +77,7 @@ pub struct PlayerLog {
 }
 
 /// Достаёт `name=<число>` из строки журнала.
-fn number_field(line: &str, name: &str) -> Option<u64> {
+pub(super) fn number_field(line: &str, name: &str) -> Option<u64> {
     let pattern = format!("{name}=");
     // Граница слева: поле не должно быть хвостом другого имени (`taken_frames` ≠ `frames`).
     let (start, _) = line
@@ -103,7 +103,7 @@ pub fn parse_summary(line: &str) -> Option<FrameEvidence> {
 }
 
 /// Достаёт `name=<слово>` (до пробела) из строки журнала; левая граница — как у чисел.
-fn word_field(line: &str, name: &str) -> Option<String> {
+pub(super) fn word_field(line: &str, name: &str) -> Option<String> {
     let pattern = format!("{name}=");
     let (start, _) = line
         .match_indices(&pattern)
@@ -298,6 +298,18 @@ impl PlayerLog {
             .filter(|line| needles.iter().any(|needle| line.contains(needle)))
             .cloned()
             .collect()
+    }
+
+    /// Дочитывает файл до конца и возвращает все строки сводок воспроизведения за ВСЁ время
+    /// (не расходуя курсор ожидания): по ним отчёт показывает, как шло воспроизведение.
+    pub fn snapshot_summary_lines(&mut self) -> Result<Vec<String>, ObserveError> {
+        self.refresh()?;
+        Ok(self
+            .lines
+            .iter()
+            .filter(|line| line.contains(SUMMARY_MARKER))
+            .cloned()
+            .collect())
     }
 
     /// Дочитывает файл до конца и возвращает запрещённые строки за ВСЁ время.

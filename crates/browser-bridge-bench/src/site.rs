@@ -74,6 +74,7 @@ impl StandSite {
             reports: reports::ReportStore::default(),
             cdn: cdn_guard::CdnGuard::default(),
             requests: request_log::RequestLog::default(),
+            recording: std::sync::Mutex::new(None),
         });
         let main_listener = start_listener(main_socket, &shared, &main_origin)?;
         let other_listener = start_listener(other_socket, &shared, &other_origin)?;
@@ -129,6 +130,15 @@ impl StandSite {
     /// Запросы медиа (`/media/…`, `/cdn/media/…`) по порядку прихода, с заголовками.
     pub fn media_requests(&self) -> Vec<MediaRequest> {
         self.shared.requests.snapshot()
+    }
+
+    /// Выбирает файл записи потока страницы: его отдаёт `GET /bench/recording` (команда `replay`).
+    pub fn serve_recording(&self, path: PathBuf) {
+        let mut selected = match self.shared.recording.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *selected = Some(path);
     }
 
     /// Сколько запросов `/cdn/media/…` обслужено.

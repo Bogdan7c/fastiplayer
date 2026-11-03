@@ -84,6 +84,28 @@ impl<'a> HandoffRun<'a> {
         run_prefix: &str,
         extension: ExtensionMode,
     ) -> Result<Self, ScenarioError> {
+        Self::open_with_query(
+            stand,
+            environment,
+            browser_kind,
+            page_id,
+            run_prefix,
+            extension,
+            HANDOFF_MODE_QUERY,
+        )
+    }
+
+    /// То же, но с произвольным хвостом адреса (`&ключ=значение…`) вместо `mode=handoff`:
+    /// страницы, у которых нет режима передачи под командой робота (повтор записи `replay`).
+    pub(super) fn open_with_query(
+        stand: &'a Stand,
+        environment: &BenchEnvironment,
+        browser_kind: BrowserKind,
+        page_id: &'static str,
+        run_prefix: &str,
+        extension: ExtensionMode,
+        query_suffix: &str,
+    ) -> Result<Self, ScenarioError> {
         let extensions = match extension {
             ExtensionMode::Real => {
                 let dist = real_extension_dir(stand, browser_kind);
@@ -106,7 +128,7 @@ impl<'a> HandoffRun<'a> {
             page_id,
             &run,
         );
-        url.push_str(HANDOFF_MODE_QUERY);
+        url.push_str(query_suffix);
         let tab = browser.open_tab(&url)?;
         Ok(Self {
             stand,
@@ -121,7 +143,13 @@ impl<'a> HandoffRun<'a> {
 
     /// Ждёт, пока страница будет готова к передаче (или отчитается раньше).
     pub(super) fn wait_page_ready(&self) -> PageReadiness {
-        let deadline = Instant::now() + READY_TIMEOUT;
+        self.wait_page_marker(READY_MARKER, READY_TIMEOUT)
+    }
+
+    /// Ждёт отметку `marker` в журнале страницы; если страница раньше отчиталась — отчёт.
+    /// `Ready` здесь значит «отметка появилась» (для `wait_page_ready` это `handoff-ready`).
+    pub(super) fn wait_page_marker(&self, marker: &str, timeout: Duration) -> PageReadiness {
+        let deadline = Instant::now() + timeout;
         loop {
             if let Ok(report) = self.stand.site.wait_report(&self.run, Duration::ZERO) {
                 return PageReadiness::ReportedEarly(report);
@@ -129,7 +157,7 @@ impl<'a> HandoffRun<'a> {
             if self
                 .stand
                 .site
-                .wait_log_line(&self.run, READY_MARKER, READY_POLL)
+                .wait_log_line(&self.run, marker, READY_POLL)
                 .is_ok()
             {
                 return PageReadiness::Ready;
@@ -174,6 +202,11 @@ impl<'a> HandoffRun<'a> {
             .site
             .wait_log_line(&self.run, needle, timeout)
             .map_err(|error| error.to_string())
+    }
+
+    /// Ждёт итоговый отчёт страницы, которая отчитывается сама (без команды `finish`).
+    pub(super) fn wait_final_report(&self, timeout: Duration) -> Result<PageReport, SiteError> {
+        self.stand.site.wait_report(&self.run, timeout)
     }
 
     /// Просит страницу подвести итог и ждёт её отчёт.
