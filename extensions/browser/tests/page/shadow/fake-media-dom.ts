@@ -295,6 +295,12 @@ export function createFakeMediaDom() {
       droppedFrames: 3,
     };
     readonly realCalls: RealCall[] = [];
+    /**
+     * Адрес файла, который элемент получил каналом документа (видео-документ Firefox: прямая
+     * ссылка на `.mp4`, у `<video>` нет ни `src`, ни `<source>`). Любой новый «алгоритм загрузки»
+     * этот канал теряет — как у Firefox.
+     */
+    #documentChannelUrl: string | null = null;
     readonly frameCallbacks = new Map<number, unknown>();
     nextFrameHandle = 1;
 
@@ -390,7 +396,14 @@ export function createFakeMediaDom() {
     }
     /** `srcObject` главнее атрибута: с ним выбранного адреса нет. */
     get currentSrc(): string {
-      return this.real.srcObject !== null ? "" : this.src;
+      if (this.real.srcObject !== null) return "";
+      return this.src !== "" ? this.src : (this.#documentChannelUrl ?? "");
+    }
+    /** Как видео-документ Firefox: файл играет, но атрибута `src` и `<source>` у элемента нет. */
+    loadFromDocumentChannel(url: string): void {
+      this.real.src = null;
+      this.#documentChannelUrl = url;
+      this.real.networkState = 1;
     }
     get seekable(): FakeTimeRanges {
       return new FakeTimeRanges(this.real.seekableRanges);
@@ -438,6 +451,7 @@ export function createFakeMediaDom() {
     /** «Алгоритм загрузки» стандарта в той части, что видна тени. */
     #loadAlgorithm(): void {
       if (this.real.networkState !== 0) this.fireTrusted("emptied");
+      this.#documentChannelUrl = null;
       this.real.paused = true;
       this.real.currentTime = 0;
       this.real.readyState = 0;

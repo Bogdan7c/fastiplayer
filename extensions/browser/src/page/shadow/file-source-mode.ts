@@ -12,12 +12,18 @@
 // главнее атрибута `src` и `<source>`, поэтому DOM страницы не меняется (атрибуты на месте), а
 // браузер по «алгоритму загрузки» бросает загрузку файла (событие `abort`) и играть ему нечего.
 // Возврат — `srcObject = null` тем же сеттером: элемент снова загружает свой файл.
+// Файл, пришедший мимо разметки (видео-документ Firefox: прямая ссылка на `.mp4` грузится каналом
+// самого документа, у `<video>` нет ни `src`, ни `<source>`), после `srcObject = null` грузить
+// нечего — элемент остаётся пустым (дефект 4 живой проверки 09b). Такому элементу при возврате
+// адрес файла из снимка ставится атрибутом `src` (оригинальным сеттером): это единственный способ
+// снова дать ему тот же файл. При уходе по решению страницы так не делается — у неё свой источник.
 // Нет MediaStream в браузере или запись не удалась — источник остаётся (честный запасной путь:
 // настоящий элемент на паузе, как у MSE; браузер докачает своё окно предзагрузки и встанет), со
 // следом в отладке.
 
-import { callOriginal, type ElementOriginals, readOriginal, writeOriginal } from "./originals.ts";
+import { callOriginal, type ElementOriginals, type OriginalAccessor, readOriginal, writeOriginal } from "./originals.ts";
 import { shadowProblemReporter } from "./once-reporter.ts";
+import { hasSourceDeclaredInMarkup } from "./source-reset-policy.ts";
 import { captureWholeFileRanges, type TimeRangesShape } from "./whole-file-ranges.ts";
 
 /**
@@ -39,6 +45,23 @@ export interface ShadowSourceView {
 /** Удалось ли снять файл с настоящего элемента. */
 export type RealSourceStop = "stopped" | "kept_source";
 
+/**
+ * Откуда настоящий элемент взял файл (снимок до снятия источника):
+ * - `markup` — атрибут `src` или дочерний `<source>`: после `srcObject = null` браузер сам
+ *   выберет этот источник заново;
+ * - `outside_markup` — мимо DOM (канал видео-документа Firefox): вернуть файл можно только адресом.
+ */
+export type FileSourceDeclaration = "markup" | "outside_markup";
+
+/** Чем кончилась попытка вернуть файл настоящему элементу. */
+export type FileRestore =
+  /** Наш поток снят, элемент сам загрузит свой источник из разметки. */
+  | "restored"
+  /** Наш поток снят, элементу дан адрес файла из снимка (файл был мимо разметки). */
+  | "restored_with_address"
+  /** Нашего потока на элементе нет — возвращать нечего. */
+  | "nothing_to_restore";
+
 /** Чьё это доверенное `emptied`. */
 export type EmptiedOrigin = "own_write" | "page_source_change";
 
@@ -56,6 +79,7 @@ interface FileSnapshot {
   readonly videoWidth: number;
   readonly videoHeight: number;
   readonly currentSrc: string;
+  readonly declaration: FileSourceDeclaration;
   readonly ranges: () => TimeRangesShape;
   readonly ownEmptiedPending: number;
 }
@@ -67,6 +91,7 @@ export class FileSourceMode implements ShadowSourceView {
   readonly #videoWidth: number;
   readonly #videoHeight: number;
   readonly #currentSrc: string;
+  readonly #declaration: FileSourceDeclaration;
   readonly #ranges: () => TimeRangesShape;
   /** На настоящем элементе стоит наш пустой MediaStream. */
   #ownsRealSource = false;
@@ -83,6 +108,7 @@ export class FileSourceMode implements ShadowSourceView {
       videoWidth: video.videoWidth === undefined ? 0 : Number(readOriginal(video.videoWidth, element)),
       videoHeight: video.videoHeight === undefined ? 0 : Number(readOriginal(video.videoHeight, element)),
       currentSrc: media.currentSrc === undefined ? "" : String(readOriginal(media.currentSrc, element)),
+      declaration: hasSourceDeclaredInMarkup(element, originals) ? "markup" : "outside_markup",
       ranges: captureWholeFileRanges(element, originals, durationSeconds),
       ownEmptiedPending: 0,
     });
@@ -101,6 +127,7 @@ export class FileSourceMode implements ShadowSourceView {
       videoWidth: previous.#videoWidth,
       videoHeight: previous.#videoHeight,
       currentSrc: previous.#currentSrc,
+      declaration: previous.#declaration,
       ranges: previous.#ranges,
       ownEmptiedPending: previous.#ownEmptiedPending,
     });
@@ -113,6 +140,7 @@ export class FileSourceMode implements ShadowSourceView {
     this.#videoWidth = snapshot.videoWidth;
     this.#videoHeight = snapshot.videoHeight;
     this.#currentSrc = snapshot.currentSrc;
+    this.#declaration = snapshot.declaration;
     this.#ranges = snapshot.ranges;
     this.#ownEmptiedPending = snapshot.ownEmptiedPending;
   }
@@ -150,8 +178,9 @@ export class FileSourceMode implements ShadowSourceView {
   }
 
   /**
-   * Вернуть настоящему элементу его собственный источник (`srcObject = null`): он снова загрузит
-   * свой файл (атрибут `src` или `<source>` страницы). Если там уже не наш поток — ничего.
+   * Снять наш поток (`srcObject = null`), когда видео забирает страница: дальше работает её
+   * собственный источник. Адрес из снимка здесь НЕ ставится — страница уже решила, что играть.
+   * Если на элементе уже не наш поток — ничего.
    */
   restoreRealSource(): "restored" | "nothing_to_restore" {
     const accessor = this.#originals.media.srcObject;
@@ -159,6 +188,17 @@ export class FileSourceMode implements ShadowSourceView {
     this.#ownsRealSource = false;
     this.#writeOwnSource(accessor, null);
     return "restored";
+  }
+
+  /**
+   * Вернуть элементу ТОТ ЖЕ файл по команде плеера (возврат на T). Снимает наш поток; файлу из
+   * разметки этого достаточно, файлу мимо разметки (видео-документ) ставится адрес из снимка.
+   */
+  returnFileToElement(): FileRestore {
+    if (this.restoreRealSource() === "nothing_to_restore") return "nothing_to_restore";
+    if (this.#declaration === "markup" || this.#currentSrc === "") return "restored";
+    this.#writeOwnSource(this.#originals.media.src, this.#currentSrc);
+    return "restored_with_address";
   }
 
   /** Страница сама записала `srcObject` (оригиналом): наш поток заменён, возвращать нечего. */
@@ -213,7 +253,7 @@ export class FileSourceMode implements ShadowSourceView {
    * элемента был источник) и снимает «можно автозапуск» — иначе элемент с атрибутом `autoplay`
    * сам заиграл бы после загрузки (оригинальный `pause()` по стандарту сбрасывает этот флаг).
    */
-  #writeOwnSource(accessor: NonNullable<ElementOriginals["media"]["srcObject"]>, value: object | null): void {
+  #writeOwnSource(accessor: OriginalAccessor, value: object | string | null): void {
     const willFireEmptied = Number(readOriginal(this.#originals.media.networkState, this.#element)) !== NETWORK_EMPTY;
     writeOriginal(accessor, this.#element, value);
     if (willFireEmptied) this.#ownEmptiedPending += 1;

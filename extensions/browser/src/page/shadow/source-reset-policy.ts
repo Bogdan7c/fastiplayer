@@ -60,6 +60,16 @@ export function classifyElementSource(
   return typeof sourceUrl === "string" && isMediaSourceObjectUrl(sourceUrl) ? "media_source" : "not_media_source";
 }
 
+/**
+ * Объявлен ли источник элемента в разметке: непустой атрибут `src` или дочерний `<source>` с
+ * адресом. Нет — значит, файл элемент получил мимо DOM: видео-документ Firefox (прямая ссылка на
+ * `.mp4`) грузит файл каналом самого документа, и ни атрибута, ни `<source>` у его `<video>` нет
+ * (дефект 4 живой проверки 09b). `srcObject` здесь не смотрится — это не разметка.
+ */
+export function hasSourceDeclaredInMarkup(element: HTMLMediaElement, originals: ElementOriginals): boolean {
+  return !sourceAttributeIsEmpty(element, originals) || firstSourceChildUrl(element, originals) !== null;
+}
+
 /** Имя дочернего элемента-источника (`localName` HTML-элементов — строчными). */
 const SOURCE_CHILD_NAME = "source";
 

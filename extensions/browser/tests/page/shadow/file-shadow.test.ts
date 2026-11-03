@@ -355,6 +355,65 @@ describe("тень файла: края возврата (находки 3–6 �
   });
 });
 
+describe("тень файла: файл мимо разметки — видео-документ Firefox (дефект 4 живой проверки 09b)", () => {
+  /** Прямая ссылка на `.mp4` в Firefox: файл пришёл каналом документа, у `<video>` нет `src` и `<source>`. */
+  function videoDocumentFile(harness: ShadowHarness): FakeVideo {
+    const video = playingVideo(harness.dom, 10);
+    video.loadFromDocumentChannel(FILE_URL);
+    return video;
+  }
+
+  /** Браузер загрузил метаданные возвращённого файла. */
+  function browserLoadsMetadata(video: FakeVideo): void {
+    video.real.readyState = 1;
+    video.fireTrusted("loadedmetadata");
+  }
+
+  it("возврат даёт элементу тот же файл адресом из снимка: элемент встаёт на T, перезагрузку страница не видит", async () => {
+    const harness = createShadowHarness();
+    const video = videoDocumentFile(harness);
+    const session = harness.startFile(video);
+    await flushMicrotasks();
+    assert.equal(video.real.src, null, "под тенью атрибут не появляется");
+    const pageEvents = recordEvents(video, LOAD_EVENTS);
+    session.end({ kind: "at", position_us: 300_000_000 }, { kind: "exactly", resume: "paused" });
+    assert.equal(video.real.srcObject, null, "наш поток снят");
+    assert.equal(video.real.src, FILE_URL, "элементу возвращён тот же файл");
+    assert.equal(video.currentSrc, FILE_URL);
+    await flushMicrotasks();
+    browserLoadsMetadata(video);
+    await flushMicrotasks();
+    await flushMicrotasks();
+    assert.equal(pageRead(video, "currentTime"), 300, "элемент страницы на T");
+    assert.equal(pageRead(video, "paused"), true);
+    assert.deepEqual(pageEvents.types().filter((type) => LOAD_EVENTS.includes(type)), [], "перезагрузки страница не видела");
+    assert.deepEqual(emittedWithoutPulse(harness), [returned], "оба наших emptied — свои: страница видео не «забирала»");
+    assert.equal(harness.timers.pending(), 0, "возврат закончен по событиям, а не по страховке");
+  });
+
+  it("страница сама поставила свой файл — наш адрес поверх её выбора не пишется", async () => {
+    const harness = createShadowHarness();
+    const video = videoDocumentFile(harness);
+    harness.startFile(video);
+    await flushMicrotasks();
+    (video as unknown as { src: string }).src = "https://cdn.example/next.mp4";
+    assert.deepEqual(emittedWithoutPulse(harness), [released]);
+    assert.equal(video.real.src, "https://cdn.example/next.mp4", "источник страницы на месте");
+  });
+
+  it("файл из <source> (видео-документ Chromium): возврат не добавляет атрибут src — разметка страницы не меняется", async () => {
+    const harness = createShadowHarness();
+    const video = playingVideo(harness.dom, 10);
+    video.real.src = null;
+    video.appendSource(FILE_URL, "video/mp4");
+    const session = harness.startFile(video);
+    await flushMicrotasks();
+    session.end({ kind: "at", position_us: 30_000_000 }, { kind: "exactly", resume: "paused" });
+    assert.equal(video.real.srcObject, null);
+    assert.equal(video.real.src, null, "атрибута src как не было, так и нет");
+  });
+});
+
 describe("тень MSE: источник из дочерних <source> (ограничение 09a2 снято)", () => {
   it("removeAttribute(src) + <source> с файлом + load() — страница забрала видео сразу, без допуска", () => {
     const harness = createShadowHarness();

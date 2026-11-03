@@ -184,8 +184,8 @@ export class FileShadowLifecycle {
     host.stopCommands();
     this.#plan = plan;
     let restored = false;
-    host.attempt("end: restore the file source", () => {
-      restored = this.#mode.restoreRealSource() === "restored";
+    host.attempt("end: return the file to the element", () => {
+      restored = this.#mode.returnFileToElement() !== "nothing_to_restore";
     });
     if (restored) {
       returningFiles.set(host.element, this);
