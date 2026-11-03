@@ -43,3 +43,15 @@
 - Memories: `mem:subtitles/core`, `mem:browser-bridge/core`, `mem:gles2-renderer/core` (если возможности рендера расширены).
 
 Memories: `mem:subtitles/core`, `mem:subtitles/stream-feed-s13`, `mem:subtitles/dash-text-tracks-s13`, `mem:gles2-renderer/core`.
+
+## Поправки по итогам 09b (3.11.2026, решения 189–190)
+
+- **Уже сделано в 09b:**
+  - подмена ответов о кодеках на `document_start` во всех фреймах и в воркерах Chrome;
+  - модель «запрещены эти» (`transparent | refuse{av1, vp9, hevc, vp8}`; H.264 не запрещается никогда, HLS — всегда);
+  - пункты экстеншена Auto / Prefer VP9 / Always H.264 / Off;
+  - метка плеера в `hello` (`crates/app-egui/src/browser_session/codec_label.rs`): потолок по первому кодеку «Video codec priority» ∩ рендер (`OpenGles` → только H.264).
+- **Осталось здесь:**
+  - автоопределение по железу (решение 190): кодеки без аппаратного декода (проба VA-API `probe_vaapi_capabilities`, без декодера) запрещаются, H.264 разрешён всегда;
+  - профиль рендера `Auto`, который в рантайме выбрал GLES2, — метки пока не даёт;
+  - метка берётся из кэша последнего `hello`: самое первое подключение после установки идёт без политики.
