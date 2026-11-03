@@ -5,8 +5,9 @@
 //! - [`ShownEndNotice`] ставит и снимает сообщение в центре окна только при смене (и
 //!   пишет одну строку журнала без данных страницы — её читают сквозные тесты);
 //! - [`exit_plan`] — как выходить, когда машина выхода решила «выход»: доигрывание
-//!   кончилось → сообщение висит [`END_NOTICE_PERIOD`], окно рисует последний кадр, потом
-//!   закрывается; любой другой выход — сразу, как раньше.
+//!   кончилось (а также сбой потока или «страница забрала видео», 09a2) → сообщение висит
+//!   [`END_NOTICE_PERIOD`], окно рисует последний кадр, потом закрывается; любой другой
+//!   выход — сразу, как раньше.
 //!
 //! Безоконный процесс этим модулем не пользуется: у него выход сразу (правило 103).
 
@@ -35,13 +36,17 @@ pub(super) enum WindowExit {
     },
 }
 
-/// Выход по решению машины: после доигрывания — сообщение и закрытие через
-/// [`END_NOTICE_PERIOD`]; иначе (окно закрыто сеансом, нарушение протокола, никто не
+/// Выход по решению машины: после доигрывания, сбоя потока или «страница забрала видео»
+/// — сообщение и закрытие через [`END_NOTICE_PERIOD`]; иначе (окно закрыто сеансом, нарушение протокола, никто не
 /// открыл сеанс…) — сразу.
 pub(super) fn exit_plan(view: SessionEndView, now: Instant) -> WindowExit {
     match view {
-        // Обрыв по ошибке потока (решение 132): сообщение держится столько же.
-        SessionEndView::Finished(_) | SessionEndView::StreamError => WindowExit::AfterNotice {
+        // Обрыв по ошибке потока с любой стороны (решение 132) и «страница забрала видео»
+        // (решение 179, «2–3 с, потом закрыть»): сообщение держится столько же.
+        SessionEndView::Finished(_)
+        | SessionEndView::StreamError
+        | SessionEndView::PageStreamError
+        | SessionEndView::PageTookVideoBack => WindowExit::AfterNotice {
             close_at: now + END_NOTICE_PERIOD,
         },
         SessionEndView::Silent | SessionEndView::WaitingForViewer(_) => WindowExit::Now,
@@ -133,11 +138,32 @@ mod tests {
     #[test]
     fn a_stream_error_holds_the_notice_like_a_finished_drain() {
         let now = Instant::now();
+        // Сбой со стороны плеера и со стороны страницы держат сообщение одинаково.
+        for view in [SessionEndView::StreamError, SessionEndView::PageStreamError] {
+            assert_eq!(
+                exit_plan(view, now),
+                WindowExit::AfterNotice {
+                    close_at: now + END_NOTICE_PERIOD
+                },
+                "{view:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_page_taking_the_video_back_holds_the_notice_then_closes_the_window() {
+        let now = Instant::now();
         assert_eq!(
-            exit_plan(SessionEndView::StreamError, now),
+            exit_plan(SessionEndView::PageTookVideoBack, now),
             WindowExit::AfterNotice {
                 close_at: now + END_NOTICE_PERIOD
             }
+        );
+        // Пока окно открыто, в центре — текст решения 179.
+        let mut notice = ShownEndNotice::default();
+        assert_eq!(
+            notice.update(SessionEndView::PageTookVideoBack),
+            Some(CenterStatusChange::Show("The page took the video back"))
         );
     }
 

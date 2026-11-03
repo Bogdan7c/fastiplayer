@@ -14,6 +14,18 @@
 //! 2. плеер отвечает `attached` или закрывает соединение с кодом
 //!    [`SessionCloseReason`];
 //! 3. дальше обе стороны говорят свободно, пока одна не закроет соединение.
+//!
+//! Коды закрытия — [`SessionCloseReason`] (4000–4009). Почти все — слова плеера; страница
+//! (экстеншен) закрывает связь осмысленным кодом в двух случаях:
+//! - 4003 `protocol_violation` — сбой на её стороне (поток битый, тень не встала);
+//!   плеер показывает «Stream error — video returned to the page» (решение 132);
+//! - 4009 `page_took_video_back` — страница честно забрала видео, вкладка на месте;
+//!   плеер не доигрывает и показывает «The page took the video back» (решение 179).
+//!   Код добавлен внутри 1.0, как `stream_rejected{playback_failed}` (решение 128):
+//!   экстеншен ещё нигде не опубликован.
+//!
+//! Обычное 1000 от страницы и кадр без кода ничего не объясняют: плеер кончает сеанс
+//! молча.
 
 pub mod page;
 pub mod player;
@@ -53,11 +65,18 @@ pub enum SessionCloseReason {
     AttachTimeout,
     /// К сеансу уже подключено другое соединение.
     AlreadyAttached,
+    /// Страница честно забрала видео, а вкладка на месте (решение 179, сессия 09a2): поставила
+    /// элементу обычный файл или HLS-адрес вместо потока, оставила его без источника дольше
+    /// допуска тени или убрала элемент из документа. Закрывает экстеншен. Плеер не доигрывает
+    /// (страница уже играет сама — было бы два звука) и не пишет «Source tab closed»: короткое
+    /// «The page took the video back» и закрытие окна. Добавлен внутри 1.0, как
+    /// `stream_rejected{playback_failed}` (решение 128): экстеншен ещё нигде не опубликован.
+    PageTookVideoBack,
 }
 
 impl SessionCloseReason {
     /// Все причины — для обратного перевода кода.
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::PlayerClosed,
         Self::ReplacedByAnotherTab,
         Self::TabGone,
@@ -67,6 +86,7 @@ impl SessionCloseReason {
         Self::PlayerShuttingDown,
         Self::AttachTimeout,
         Self::AlreadyAttached,
+        Self::PageTookVideoBack,
     ];
 
     /// Код закрытия WebSocket.
@@ -82,6 +102,7 @@ impl SessionCloseReason {
             Self::PlayerShuttingDown => 4006,
             Self::AttachTimeout => 4007,
             Self::AlreadyAttached => 4008,
+            Self::PageTookVideoBack => 4009,
         }
     }
 
@@ -109,5 +130,16 @@ mod tests {
         }
         assert_eq!(SessionCloseReason::from_close_code(1006), None);
         assert_eq!(SessionCloseReason::from_close_code(4999), None);
+    }
+
+    #[test]
+    fn the_page_took_the_video_back_is_4009_both_ways() {
+        // Решение 179 (сессия 09a2): код закреплён числом — его же зеркалит экстеншен
+        // (`SESSION_CLOSE_CODES.page_took_video_back` в `close-reason.ts`).
+        assert_eq!(SessionCloseReason::PageTookVideoBack.close_code(), 4009);
+        assert_eq!(
+            SessionCloseReason::from_close_code(4009),
+            Some(SessionCloseReason::PageTookVideoBack)
+        );
     }
 }

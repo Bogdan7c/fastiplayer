@@ -100,3 +100,36 @@ fn counts_range_chunks_per_request_and_records_ended_sessions() {
     assert!(snapshot.source_buffers.is_empty());
     assert_eq!(snapshot.ended_sessions, vec![session]);
 }
+
+#[test]
+fn the_page_names_a_reason_only_with_one_of_our_codes() {
+    // Наши коды страницы переводятся в причину протокола (4009 — решение 179, 4003 — 132).
+    for reason in [
+        SessionCloseReason::PageTookVideoBack,
+        SessionCloseReason::ProtocolViolation,
+    ] {
+        assert_eq!(
+            SessionEndReason::ClosedByPage {
+                code: Some(reason.close_code())
+            }
+            .reason_named_by_page(),
+            Some(reason)
+        );
+    }
+    // Обычное закрытие, кадр без кода и чужой код ничего не называют.
+    for code in [Some(1000), None, Some(4999)] {
+        assert_eq!(
+            SessionEndReason::ClosedByPage { code }.reason_named_by_page(),
+            None,
+            "{code:?}"
+        );
+    }
+    // Тот же код, но связь закрыл плеер, — это не слово страницы.
+    for not_by_page in [
+        SessionEndReason::ClosedByPlayer(SessionCloseReason::ProtocolViolation),
+        SessionEndReason::ReconnectGraceExpired,
+        SessionEndReason::FirstAttachDeadlineExpired,
+    ] {
+        assert_eq!(not_by_page.reason_named_by_page(), None, "{not_by_page:?}");
+    }
+}

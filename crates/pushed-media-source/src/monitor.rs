@@ -97,6 +97,19 @@ impl PushedStreamMonitor {
         self.buffer.seek_outlook(target)
     }
 
+    /// Лежит ли `target` в СКАЧАННОМ у всех полос: внутри сегмента полки (или у
+    /// маленькой дыры перед ним), либо полоса вступает позже по другим полосам.
+    ///
+    /// Отличие от [`Self::seek_outlook`] одно: после конца входа (`endOfStream` или
+    /// обрыв скачивания, когда страница ушла) перемотка за конец полки садится на
+    /// последний сегмент — для перемотки это честно, но скачанным такое место не
+    /// является. Окно, которое пускает зрителя «только по скачанному», спрашивает
+    /// это. Поток без полос или с полосой без меток времени — `false`.
+    #[must_use]
+    pub fn holds_downloaded(&self, target: Duration) -> bool {
+        self.buffer.holds_downloaded(target)
+    }
+
     /// Запас вперёд и «полон» (правило — в [`BufferStatus::buffered_ahead`] и
     /// [`crate::BufferIntake::Full`]: окно в секундах или доля потолка байтов,
     /// [`crate::PushedSourcePolicy::buffer_full_at_held_bytes`]).

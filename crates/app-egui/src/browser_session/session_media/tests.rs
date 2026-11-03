@@ -723,9 +723,11 @@ fn without_a_session_the_media_part_does_not_ask_to_wake() {
 
 mod downloaded_range;
 mod drain;
+mod drain_seek_refusal;
 mod farewell;
 mod file_generation;
 mod generation_carry_live;
+mod generation_clock;
 mod generation_placement;
 mod generation_rejection;
 mod generation_start;

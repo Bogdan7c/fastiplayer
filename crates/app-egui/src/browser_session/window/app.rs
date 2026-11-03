@@ -53,6 +53,7 @@ use super::super::rejection_notice::{
     GenerationRejectionNotice, rejection_log_label, rejection_viewer_message,
 };
 use super::super::runtime::{DRAIN_FALLBACK_WAKE, RuntimeFinish};
+use super::super::session_media::ViewerSeekNotice;
 use super::desktop_transport::WindowDesktopTransport;
 use super::driver::WindowPlaybackDriver;
 use super::end_notice::{ShownEndNotice, WindowExit, exit_plan};
@@ -238,6 +239,9 @@ impl BrowserWindowApp {
             // Новое поколение ждёт данных у цели клика (04d): спиннер поверх ещё
             // играющего прежнего видео — каждый проход, меняется только при смене.
             instance.apply_generation_wait(step.generation_wait);
+            // Клик за скачанное во время досмотра отклонён (09a2, Д-5): бегунок остался у
+            // позиции — зрителю короткое «почему».
+            show_viewer_seek_notice(instance, step.viewer_seek_notice);
         }
         if let Some(instance) = self.instance.as_mut() {
             {
@@ -493,6 +497,24 @@ fn show_generation_rejection(
         "Browser window shows the stream rejection notice"
     );
     instance.notify_viewer(rejection_viewer_message(reason));
+}
+
+/// Текст отказа перемотки зрителя: короткий английский тост без данных страницы.
+const fn viewer_seek_notice_message(notice: ViewerSeekNotice) -> Option<&'static str> {
+    match notice {
+        ViewerSeekNotice::Nothing => None,
+        ViewerSeekNotice::OutsideDownloaded => Some("Only the downloaded part can be played"),
+    }
+}
+
+/// Показывает зрителю отказ его перемотки (если за шаг он был) и пишет одну строку
+/// журнала — её читают сквозные тесты.
+fn show_viewer_seek_notice(instance: &mut BrowserWindowInstance, notice: ViewerSeekNotice) {
+    let Some(message) = viewer_seek_notice_message(notice) else {
+        return;
+    };
+    info!("Browser window tells the viewer: only the downloaded part can be played");
+    instance.notify_viewer(message);
 }
 
 /// Режим ожидания winit, не позже срока ядра.

@@ -827,3 +827,13 @@ mod native_host;
 // Установленный посредник (06): установщик пишет файлы, браузер запускает по ним (P4).
 #[path = "browser_session_process/installed_host.rs"]
 mod installed_host;
+
+// Сессия 09a2 (Д-3, Д-6): честные концы, когда связь закрывает страница — «страница забрала
+// видео» (код 4009, решение 179) и сбой на стороне страницы (её 4003 → «Stream error»).
+#[path = "browser_session_process/page_ends.rs"]
+mod page_ends;
+
+// Сессия 09a2 (Д-4, Д-5): часы странице, пока новое поколение не показано, и клик зрителя за
+// скачанным во время доигрывания.
+#[path = "browser_session_process/generation_clock_and_drain_seek.rs"]
+mod generation_clock_and_drain_seek;

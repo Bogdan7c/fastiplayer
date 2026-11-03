@@ -230,6 +230,15 @@ fn other_ends_exit_immediately_without_draining() {
         SessionEndReason::ClosedByPlayer(SessionCloseReason::ProtocolViolation),
         SessionEndReason::ClosedByPlayer(SessionCloseReason::PlayerShuttingDown),
         SessionEndReason::ClosedByPage { code: Some(1000) },
+        // Страница забрала видео (решение 179): она уже играет сама, доигрывание дало бы
+        // два звука.
+        SessionEndReason::ClosedByPage {
+            code: Some(SessionCloseReason::PageTookVideoBack.close_code()),
+        },
+        // Сбой на стороне страницы (её 4003, решение 132): видео возвращено странице.
+        SessionEndReason::ClosedByPage {
+            code: Some(SessionCloseReason::ProtocolViolation.close_code()),
+        },
         SessionEndReason::FirstAttachDeadlineExpired,
     ] {
         let mut lifecycle = lifecycle_after_end(reason);
@@ -249,6 +258,13 @@ fn drain_rule_is_defined_in_one_place() {
     ));
     assert!(!ends_with_playback_drain(SessionEndReason::ClosedByPage {
         code: None
+    }));
+    // Честные концы страницы (сессия 09a2) не доигрываются.
+    assert!(!ends_with_playback_drain(SessionEndReason::ClosedByPage {
+        code: Some(SessionCloseReason::PageTookVideoBack.close_code())
+    }));
+    assert!(!ends_with_playback_drain(SessionEndReason::ClosedByPage {
+        code: Some(SessionCloseReason::ProtocolViolation.close_code())
     }));
 }
 

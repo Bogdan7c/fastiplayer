@@ -8,7 +8,9 @@
 //!  Ended{reason} текущего экземпляра ─► ActiveDrain { правила, причина, последний ответ }
 //!  главный цикл: «доиграно?» ─► DrainWatch::evaluate ─► Draining / AwaitingViewer / Drained
 //!  окно: session_end_view() ─► Silent / WaitingForViewer / Finished (по последнему ответу)
-//!                             или StreamError (обрыв 4003: не доигрывается, но не молчит)
+//!                             или StreamError / PageStreamError (обрыв 4003 плеером или
+//!                             страницей) / PageTookVideoBack (страница закрыла 4009, решение
+//!                             179): не доигрываются, но не молчат
 //! ```
 
 use std::time::Instant;

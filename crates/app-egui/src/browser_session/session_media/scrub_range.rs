@@ -2,9 +2,10 @@
 //!
 //! Решение владельца (31.10.2026, «кадры бегут по полке»): пока зритель тянет таймлайн
 //! по уже скачанному, кадры показываются вживую, а странице не уходит ничего. Что
-//! «скачано», знает только источник — полка `pushed-media-source`: перемотка к цели
-//! садится с полки, если её ответ [`ShelfSeekOutlook::FromShelf`] (то же правило, что
-//! у настоящей перемотки, включая позднее вступление полосы).
+//! «скачано», знает только источник — полка `pushed-media-source`
+//! ([`PushedStreamMonitor::holds_downloaded`]): цель внутри сегмента полки у всех полос
+//! или полоса вступает позже по другим (то же правило, что у настоящей перемотки), но
+//! БЕЗ посадки за концом законченного входа — такое место не скачано (09a2, Д-5).
 //!
 //! Медиа-часть каждый проход отдаёт плееру окна [`DownloadedRange`] ТОЛЬКО того
 //! поколения, которое плеер показывает и которое уже приведено к странице. Всё
@@ -22,7 +23,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use pushed_media_source::{PushedStreamMonitor, ShelfSeekOutlook};
+use pushed_media_source::PushedStreamMonitor;
 
 use super::SessionMedia;
 use crate::browser_session::playback::PlaybackObservation;
@@ -43,8 +44,12 @@ struct ShelfDownloadedRange {
 }
 
 impl DownloadedRangeProbe for ShelfDownloadedRange {
+    /// «Скачано» — а не «сядет ли перемотка» (09a2, Д-5): после конца входа (обрыв
+    /// скачивания, когда страница ушла) перемотка за конец полки «садится» на последний
+    /// сегмент, и клик за скачанное во время досмотра давал конец ролика вместо отказа.
+    /// Пока вход открыт, оба вопроса отвечают одинаково.
     fn holds(&self, position: Duration) -> bool {
-        self.monitor.seek_outlook(position) == ShelfSeekOutlook::FromShelf
+        self.monitor.holds_downloaded(position)
     }
 }
 

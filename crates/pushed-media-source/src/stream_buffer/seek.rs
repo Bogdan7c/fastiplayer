@@ -57,7 +57,7 @@ use crate::framing::{MediaTime, MediaTimeSpan};
 use crate::lane::LaneId;
 use crate::mailbox::{FeedBacklog, StaleEpisodes};
 use crate::page_seek::{PageSeekDecision, PageSeekNeed, PageSeekRequest};
-use crate::shelf::{LateJoinCandidates, LateJoinWindow, ShelfRules};
+use crate::shelf::{IncomingMedia, LateJoinCandidates, LateJoinWindow, ShelfRules};
 
 /// Как полоса подаёт сегменты.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,12 +311,54 @@ pub(super) fn can_land_from_shelf(
     target: MediaTime,
     rules: &ShelfRules,
 ) -> bool {
+    lane_reaches(state, lane, target, rules, ShelfQuestion::SeekLanding)
+}
+
+/// Лежит ли `target` в СКАЧАННОМ у полосы: цель на полке (правило 1) или полоса
+/// вступает позже по другим полосам (правило 5) — но без правила 4 («после конца
+/// входа цель за концом полки садится на последний сегмент»).
+///
+/// Правило 4 честно для перемотки: плеер не будет ждать байтов, которых не будет.
+/// Но «скачано ли это место» оно не отвечает: после обрыва скачивания (страница
+/// ушла) любая цель за концом полки «садилась» бы на последний сегмент, и зритель,
+/// кликнувший за скачанное, получил бы конец ролика вместо отказа (сессия 09a2, Д-5).
+pub(super) fn lane_holds_downloaded(
+    state: &BufferState,
+    lane: LaneId,
+    target: MediaTime,
+    rules: &ShelfRules,
+) -> bool {
+    lane_reaches(state, lane, target, rules, ShelfQuestion::DownloadedContent)
+}
+
+/// О чём спрашивают полку полосы.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShelfQuestion {
+    /// Сядет ли перемотка с полки (правила 1–5, с посадкой за концом входа).
+    SeekLanding,
+    /// Лежит ли цель в скачанном (без посадки за концом входа).
+    DownloadedContent,
+}
+
+/// Общее правило [`can_land_from_shelf`] и [`lane_holds_downloaded`]: одна функция,
+/// поэтому вопрос о скачанном и перемотка различаются ТОЛЬКО правилом 4.
+fn lane_reaches(
+    state: &BufferState,
+    lane: LaneId,
+    target: MediaTime,
+    rules: &ShelfRules,
+    question: ShelfQuestion,
+) -> bool {
     let Some(buffered) = state.lanes.get(&lane) else {
         return false;
     };
-    buffered
-        .shelf
-        .holds(target, rules, buffered.feed.incoming())
+    let incoming = match question {
+        ShelfQuestion::SeekLanding => buffered.feed.incoming(),
+        // «Вход ещё может прийти» выключает посадку за концом полки: остаются только
+        // сегменты, внутри которых (или у маленькой дыры перед которыми) лежит цель.
+        ShelfQuestion::DownloadedContent => IncomingMedia::MayArrive,
+    };
+    buffered.shelf.holds(target, rules, incoming)
         || late_join_window(state, lane, target, rules).is_some_and(|window| {
             buffered
                 .shelf

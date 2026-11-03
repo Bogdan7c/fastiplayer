@@ -223,3 +223,70 @@ fn asking_changes_nothing_in_the_buffer_or_in_the_page_conversation() {
     drop(stream.monitor.buffer.seek(ms(3_000)).expect("seek"));
     assert_eq!(stream.monitor.take_page_seek_request(), None);
 }
+
+// ---- «скачано ли это место» (`holds_downloaded`, сессия 09a2, Д-5) -------------------
+
+/// Пока вход открыт, «скачано» совпадает с «сядет с полки» по всей сетке целей: вопросы
+/// различаются только посадкой за концом законченного входа.
+#[test]
+fn while_the_input_is_open_downloaded_matches_the_seek_outlook() {
+    let mut stream = Stream::new();
+    // Видео с дырой 1,6–2,4 с, звук целиком: есть «да», «нет» и позднее вступление нет.
+    stream.push(VIDEO, 0..4);
+    stream.push(VIDEO, 6..10);
+    stream.push(AUDIO, 0..10);
+
+    for target_ms in (0..=GRID_END_MS).step_by(usize::try_from(GRID_STEP_MS).expect("step")) {
+        assert_eq!(
+            stream.monitor.holds_downloaded(ms(target_ms)),
+            stream.outlook(target_ms) == ShelfSeekOutlook::FromShelf,
+            "downloaded disagrees with the seek outlook at {target_ms} ms"
+        );
+    }
+}
+
+/// Скачивание оборвано (страница ушла): видео есть только до 1,6 с, звук — до 4 с.
+/// Перемотка за конец видео «садится» на его последний сегмент (правило 4), но
+/// скачанным это место не считается — зритель окна должен получить отказ, а не конец
+/// ролика.
+#[test]
+fn after_a_cut_download_a_target_past_the_shelf_lands_but_is_not_downloaded() {
+    let mut stream = Stream::new();
+    stream.push(VIDEO, 0..4);
+    stream.push(AUDIO, 0..10);
+    stream
+        .writer
+        .end_download_cut_short()
+        .expect("the download is cut short");
+
+    for target_ms in [2_000, 3_000, 3_900] {
+        assert_eq!(
+            stream.outlook(target_ms),
+            ShelfSeekOutlook::FromShelf,
+            "a seek past the shelf after the end of input lands on the last segment"
+        );
+        assert!(
+            !stream.monitor.holds_downloaded(ms(target_ms)),
+            "{target_ms} ms is past what was downloaded"
+        );
+    }
+    for target_ms in [0, 800, 1_550] {
+        assert!(
+            stream.monitor.holds_downloaded(ms(target_ms)),
+            "{target_ms} ms was downloaded"
+        );
+    }
+}
+
+/// Без полос и с полосой без меток времени о скачанном ничего не известно.
+#[test]
+fn nothing_is_downloaded_without_timed_lanes() {
+    let policy = PushedSourcePolicy::recommended().expect("policy");
+    let (mut writer, _opener) = pushed_stream(policy).expect("stream");
+    assert!(!writer.monitor().holds_downloaded(ms(0)));
+    writer
+        .add_lane(VIDEO, PushedContainer::MpegTs)
+        .expect("ts lane");
+    writer.append(VIDEO, MUXED_TS).expect("ts bytes");
+    assert!(!writer.monitor().holds_downloaded(ms(0)));
+}

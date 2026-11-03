@@ -8,6 +8,12 @@
 //! - доигрывание кончилось — короткое сообщение по причине и итогу
 //!   ([`SessionEndView::Finished`]), после которого окно закрывается само.
 //!
+//! Концы без доигрывания, о которых окно всё же говорит (тоже короткое сообщение и
+//! закрытие): обрыв по ошибке потока со стороны плеера ([`SessionEndView::StreamError`],
+//! решение 132) и честные концы со стороны страницы (сессия 09a2) — страница забрала
+//! видео ([`SessionEndView::PageTookVideoBack`], код 4009, решение 179) и сбой на стороне
+//! страницы ([`SessionEndView::PageStreamError`], её код 4003).
+//!
 //! Здесь только чистые правила «что показать» и стабильные метки журнала; когда
 //! показывать и сколько держать — забота окна (`window::end_notice`), а состояние
 //! доигрывания — медиа-части (`session_media::ending`). Тексты — только английские
@@ -73,18 +79,60 @@ pub(crate) enum SessionEndView {
     /// (если плеер сам рвал связь — с прощанием `return_to_page`), доигрывать нечего.
     /// Сообщение держится так же, как у конца доигрывания, потом окно закрывается.
     /// Не через [`DrainCause`]: правило «сообщение ⇔ доигрывание» остаётся нетронутым.
+    ///
+    /// Это сбой, замеченный ПЛЕЕРОМ (он сам закрыл связь кодом 4003). Сбой, замеченный
+    /// страницей, — [`Self::PageStreamError`]: текст тот же, причина в журнале другая.
     StreamError,
+    /// Страница закрыла связь кодом 4003 (сессия 09a2, Д-6): сбой на стороне страницы
+    /// (поток битый, тень не встала, кусок не отправился), экстеншен сам снял тень и вернул
+    /// видео странице. Зритель видит то же «Stream error — video returned to the page»;
+    /// прощания `return_to_page` нет и быть не может — сокет уже закрыт страницей.
+    PageStreamError,
+    /// Страница честно забрала видео, вкладка на месте (код 4009, решение 179): короткое
+    /// «The page took the video back» и закрытие окна. Без доигрывания (страница уже играет
+    /// сама — было бы два звука) и без `return_to_page` (видео и так у страницы).
+    PageTookVideoBack,
 }
 
 impl SessionEndView {
-    /// Представление конца сеанса, который не доигрывается, но не молчит (сейчас —
-    /// только обрыв по ошибке потока; `None` — конец молчаливый).
-    pub(crate) const fn of_undrained_end(reason: SessionEndReason) -> Option<Self> {
-        match reason {
-            SessionEndReason::ClosedByPlayer(SessionCloseReason::ProtocolViolation) => {
-                Some(Self::StreamError)
-            }
-            _ => None,
+    /// Представление конца сеанса, который не доигрывается, но не молчит; `None` — конец
+    /// молчаливый.
+    ///
+    /// Говорящие концы: обрыв по ошибке потока со стороны плеера (его 4003) и честные концы
+    /// страницы, названные нашим кодом протокола ([`Self::of_page_named_reason`]).
+    pub(crate) fn of_undrained_end(reason: SessionEndReason) -> Option<Self> {
+        if reason == SessionEndReason::ClosedByPlayer(SessionCloseReason::ProtocolViolation) {
+            return Some(Self::StreamError);
+        }
+        reason
+            .reason_named_by_page()
+            .and_then(Self::of_page_named_reason)
+    }
+
+    /// Что сказать о конце, который страница назвала кодом протокола.
+    ///
+    /// Говорят только два кода, у которых для зрителя есть смысл: 4009 (страница забрала
+    /// видео) и 4003 (сбой на стороне страницы). Остальные закрытия страницей молчат, как
+    /// раньше:
+    /// - обычное 1000 и кадр без кода (до этого метода не доходят — `None` у
+    ///   `reason_named_by_page`): экстеншен так завершает передачу, конец которой уже
+    ///   решён и объяснён в другом месте (ответ на наш `end_handoff`, неудачный старт до
+    ///   показа видео). Сбои страницы с 09a2 приходят кодом 4003, а не 1000;
+    /// - прочие наши коды (4000, 4001, 4002…) — это слова ПЛЕЕРА; страница ими связь не
+    ///   закрывает, а `tab_gone` приходит сообщением и закрывается плеером. Выдумывать
+    ///   для них текст — значит гадать.
+    const fn of_page_named_reason(named: SessionCloseReason) -> Option<Self> {
+        match named {
+            SessionCloseReason::PageTookVideoBack => Some(Self::PageTookVideoBack),
+            SessionCloseReason::ProtocolViolation => Some(Self::PageStreamError),
+            SessionCloseReason::PlayerClosed
+            | SessionCloseReason::ReplacedByAnotherTab
+            | SessionCloseReason::TabGone
+            | SessionCloseReason::InvalidToken
+            | SessionCloseReason::UnknownSession
+            | SessionCloseReason::PlayerShuttingDown
+            | SessionCloseReason::AttachTimeout
+            | SessionCloseReason::AlreadyAttached => None,
         }
     }
 }
@@ -95,6 +143,7 @@ const TAB_CLOSED_STALLED: &str = "Source tab closed — playback stalled";
 const TAB_CLOSED_FAILED: &str = "Source tab closed — playback failed";
 const TAB_CLOSED_WAITING: &str = "Source tab closed — you can still watch what was downloaded";
 const STREAM_ERROR: &str = "Stream error — video returned to the page";
+const PAGE_TOOK_VIDEO_BACK: &str = "The page took the video back";
 const BROWSER_LOST: &str = "Lost connection to the browser";
 const BROWSER_LOST_STALLED: &str = "Lost connection to the browser — playback stalled";
 const BROWSER_LOST_FAILED: &str = "Lost connection to the browser — playback failed";
@@ -109,7 +158,9 @@ impl SessionEndView {
             Self::WaitingForViewer(DrainCause::TabClosed) => Some(TAB_CLOSED_WAITING),
             Self::WaitingForViewer(DrainCause::BrowserConnectionLost) => Some(BROWSER_LOST_WAITING),
             Self::Finished(finish) => Some(finished_message(finish)),
-            Self::StreamError => Some(STREAM_ERROR),
+            // Сбой с любой стороны зритель видит одинаково: видео снова у страницы.
+            Self::StreamError | Self::PageStreamError => Some(STREAM_ERROR),
+            Self::PageTookVideoBack => Some(PAGE_TOOK_VIDEO_BACK),
         }
     }
 
@@ -131,9 +182,20 @@ impl SessionEndView {
                 cause: finish.cause.log_label(),
                 end: finish.end.log_label(),
             },
+            // Метки ниже — договор со стендом моста (сессия 09a2): не переименовывать.
             Self::StreamError => SessionEndLogLabels {
                 notice: "stream_error",
                 cause: "protocol_violation",
+                end: "none",
+            },
+            Self::PageStreamError => SessionEndLogLabels {
+                notice: "stream_error",
+                cause: "page_stream_error",
+                end: "none",
+            },
+            Self::PageTookVideoBack => SessionEndLogLabels {
+                notice: "page_took_video_back",
+                cause: "page_took_video_back",
                 end: "none",
             },
         }
@@ -143,9 +205,11 @@ impl SessionEndView {
 /// Метки журнала одного сообщения (без данных страницы).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SessionEndLogLabels {
-    /// `silent` / `waiting_for_viewer` / `finished` / `stream_error`.
+    /// `silent` / `waiting_for_viewer` / `finished` / `stream_error` /
+    /// `page_took_video_back`.
     pub(crate) notice: &'static str,
-    /// Метка [`DrainCause`] или `none`.
+    /// Метка [`DrainCause`], сторона сбоя потока (`protocol_violation` — плеер,
+    /// `page_stream_error` — страница), `page_took_video_back` или `none`.
     pub(crate) cause: &'static str,
     /// Метка [`DrainEnd`] или `none`.
     pub(crate) end: &'static str,
@@ -190,6 +254,7 @@ mod tests {
             SessionCloseReason::PlayerShuttingDown,
             SessionCloseReason::AttachTimeout,
             SessionCloseReason::AlreadyAttached,
+            SessionCloseReason::PageTookVideoBack,
         ]
         .into_iter()
         .map(SessionEndReason::ClosedByPlayer)
@@ -197,6 +262,17 @@ mod tests {
         reasons.extend([
             SessionEndReason::ClosedByPage { code: None },
             SessionEndReason::ClosedByPage { code: Some(1000) },
+            SessionEndReason::ClosedByPage {
+                code: Some(SessionCloseReason::PageTookVideoBack.close_code()),
+            },
+            SessionEndReason::ClosedByPage {
+                code: Some(SessionCloseReason::ProtocolViolation.close_code()),
+            },
+            SessionEndReason::ClosedByPage {
+                code: Some(SessionCloseReason::PlayerClosed.close_code()),
+            },
+            // Чужой прикладной код: не наш, ничего не значит.
+            SessionEndReason::ClosedByPage { code: Some(4999) },
             SessionEndReason::ReconnectGraceExpired,
             SessionEndReason::FirstAttachDeadlineExpired,
         ]);
@@ -252,13 +328,30 @@ mod tests {
         assert_eq!(SessionEndView::Silent.center_message(), None);
     }
 
+    /// Какой вид у конца без доигрывания должен быть (ожидание теста, выписанное руками).
+    fn expected_undrained_view(reason: SessionEndReason) -> Option<SessionEndView> {
+        let page_took_video_back = SessionEndReason::ClosedByPage {
+            code: Some(SessionCloseReason::PageTookVideoBack.close_code()),
+        };
+        let page_stream_error = SessionEndReason::ClosedByPage {
+            code: Some(SessionCloseReason::ProtocolViolation.close_code()),
+        };
+        if reason == SessionEndReason::ClosedByPlayer(SessionCloseReason::ProtocolViolation) {
+            Some(SessionEndView::StreamError)
+        } else if reason == page_took_video_back {
+            Some(SessionEndView::PageTookVideoBack)
+        } else if reason == page_stream_error {
+            Some(SessionEndView::PageStreamError)
+        } else {
+            None
+        }
+    }
+
     #[test]
-    fn only_a_protocol_violation_by_the_player_is_a_stream_error_and_it_never_drains() {
+    fn only_stream_errors_and_the_page_taking_the_video_back_speak_and_they_never_drain() {
         for reason in every_end_reason() {
             let view = SessionEndView::of_undrained_end(reason);
-            let is_violation =
-                reason == SessionEndReason::ClosedByPlayer(SessionCloseReason::ProtocolViolation);
-            assert_eq!(view.is_some(), is_violation, "{reason:?}");
+            assert_eq!(view, expected_undrained_view(reason), "{reason:?}");
             // Сообщение об ошибке и сообщение доигрывания не пересекаются.
             assert!(
                 !(view.is_some() && DrainCause::of(reason).is_some()),
@@ -274,6 +367,50 @@ mod tests {
             SessionEndLogLabels {
                 notice: "stream_error",
                 cause: "protocol_violation",
+                end: "none",
+            }
+        );
+    }
+
+    #[test]
+    fn the_page_taking_the_video_back_is_told_briefly_and_is_never_played_on() {
+        let reason = SessionEndReason::ClosedByPage {
+            code: Some(SessionCloseReason::PageTookVideoBack.close_code()),
+        };
+        // Правило сервера: страница уже играет сама — доигрывания нет (решение 179).
+        assert!(!ends_with_playback_drain(reason));
+        assert_eq!(DrainCause::of(reason), None);
+        let view = SessionEndView::of_undrained_end(reason).expect("the window speaks");
+        assert_eq!(view.center_message(), Some("The page took the video back"));
+        // Метки — договор со стендом (пакет E сессии 09a2).
+        assert_eq!(
+            view.log_labels(),
+            SessionEndLogLabels {
+                notice: "page_took_video_back",
+                cause: "page_took_video_back",
+                end: "none",
+            }
+        );
+    }
+
+    #[test]
+    fn a_stream_error_on_the_page_side_reads_like_ours_but_logs_its_side() {
+        let reason = SessionEndReason::ClosedByPage {
+            code: Some(SessionCloseReason::ProtocolViolation.close_code()),
+        };
+        assert!(!ends_with_playback_drain(reason));
+        let view = SessionEndView::of_undrained_end(reason).expect("the window speaks");
+        assert_eq!(view, SessionEndView::PageStreamError);
+        // Зритель видит тот же текст, что у сбоя со стороны плеера.
+        assert_eq!(
+            view.center_message(),
+            SessionEndView::StreamError.center_message()
+        );
+        assert_eq!(
+            view.log_labels(),
+            SessionEndLogLabels {
+                notice: "stream_error",
+                cause: "page_stream_error",
                 end: "none",
             }
         );

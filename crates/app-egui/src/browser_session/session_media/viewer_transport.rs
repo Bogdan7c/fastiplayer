@@ -35,13 +35,16 @@
 //! как раньше, странице не уходит ничего. Перемотка — только по скачанному: просить
 //! страницу о байтах некому, и перемотка вне полки ждала бы их вечно (плеер стоял бы в
 //! «перемотке»). Поэтому цель вне скачанного (и любая цель у файла `<video src>` и эфира,
-//! где скачанное не известно — `DownloadedRange::Unknown`) отклоняется: кадр остаётся,
-//! где был.
+//! где скачанное не известно — `DownloadedRange::Unknown`) отклоняется: кадр и бегунок
+//! остаются, где были, а окно говорит зрителю «Only the downloaded part can be played»
+//! ([`super::viewer_seek_notice`], 09a2). «Скачано» — место внутри полки, а не «перемотка
+//! сядет»: после обрыва скачивания перемотка за конец полки «садится» на последний
+//! сегмент, но скачанным это место не является (`PushedStreamMonitor::holds_downloaded`).
 
 use std::time::{Duration, Instant};
 
 use browser_bridge_protocol::PlaybackRate as PagePlaybackRate;
-use tracing::{debug, info};
+use tracing::debug;
 
 use super::SessionMedia;
 use super::generation_placement::PendingAim;
@@ -227,7 +230,8 @@ impl SessionMedia {
         }
         if self.is_draining() && !self.loaded_generation_holds(target) {
             // Страницы нет: байтов вне скачанного не будет (правило — в описании модуля).
-            info!("Viewer seek outside of what was downloaded ignored: the page is gone");
+            // Плееру ничего: бегунок остаётся у позиции; окну — сообщение зрителю.
+            self.refuse_viewer_seek_outside_downloaded();
             return;
         }
         if self.seek_loaded_generation(target) == LoadedSeek::NothingLoaded {

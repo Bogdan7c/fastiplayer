@@ -14,7 +14,10 @@
 //! - плеер ещё ставит новое поколение — показанная позиция принадлежит прежнему
 //!   `MediaSource`, а часы странице в это время честно говорят «жду» в 0
 //!   ([`PlaybackObservation::while_media_installs`]). Послать 0 значило бы отмотать
-//!   страницу в начало.
+//!   страницу в начало;
+//! - новый источник страницы без цели ещё не отдан плееру (09a2, Д-4, `page_clock`):
+//!   элемент страницы уже в нём, часы говорят «0 / жду», а позиция прежнего поколения
+//!   новому источнику чужая.
 //!
 //! Без прощания поведение — как до 04b: замененная вкладка закрывается сервером 4001
 //! по сроку коридора, окно — кодом 4000. Странице это не хуже: позиция у неё своя.
@@ -28,6 +31,7 @@ use browser_bridge_session::SessionRef;
 use tracing::{debug, error, info};
 
 use super::SessionMedia;
+use super::page_clock::NewSourceStance;
 use crate::browser_session::outbound::clock_position;
 
 /// Где странице продолжить, когда видео возвращается к ней.
@@ -83,6 +87,12 @@ impl SessionMedia {
     /// плеера: оно не старше одного прохода цикла, а часы странице уходили не чаще
     /// тика — поэтому T отличается от последних часов не больше чем на тик.
     pub(super) fn farewell_position(&self) -> FarewellPosition {
+        // Новый источник без цели ещё не показан (Д-4): элемент страницы уже в нём, в
+        // нуле, а наблюдение — про прежнее поколение. Часы говорят «0 / жду»; позиция
+        // фильма в прощании отмотала бы новый источник не туда.
+        if self.new_source_stance() == NewSourceStance::AwaitingDataWithoutTarget {
+            return FarewellPosition::Unknown;
+        }
         let (Some(loaded), Some(observation)) =
             (self.loaded.as_ref(), self.last_observation.as_ref())
         else {

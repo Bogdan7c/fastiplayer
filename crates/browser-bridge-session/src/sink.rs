@@ -137,6 +137,25 @@ pub enum SessionEndReason {
     FirstAttachDeadlineExpired,
 }
 
+impl SessionEndReason {
+    /// Причина протокола, которую назвала страница, закрыв связь сама (решения 132, 179).
+    ///
+    /// `None` — связь закрыла не страница, или её код не из наших прикладных 4000–4999
+    /// (обычное 1000, кадр без кода, чужой код): такой конец ничего не объясняет, и
+    /// угадывать по нему смысл нельзя. Перевод кода — только через
+    /// [`SessionCloseReason::from_close_code`], чтобы числа жили в одном месте протокола.
+    #[must_use]
+    pub fn reason_named_by_page(self) -> Option<SessionCloseReason> {
+        match self {
+            Self::ClosedByPage { code: Some(code) } => SessionCloseReason::from_close_code(code),
+            Self::ClosedByPage { code: None }
+            | Self::ClosedByPlayer(_)
+            | Self::ReconnectGraceExpired
+            | Self::FirstAttachDeadlineExpired => None,
+        }
+    }
+}
+
 /// События жизни сеанса. Ни одно не должно потеряться: их мало на сеанс.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionLifecycleEvent {

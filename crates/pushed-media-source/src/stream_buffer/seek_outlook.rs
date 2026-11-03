@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use super::seek::can_land_from_shelf;
+use super::seek::{can_land_from_shelf, lane_holds_downloaded};
 use super::{LaneTimeline, StreamBuffer};
 use crate::framing::MediaTime;
 use crate::monitor::ShelfSeekOutlook;
@@ -43,5 +43,23 @@ impl StreamBuffer {
         } else {
             ShelfSeekOutlook::AsksPage
         }
+    }
+
+    /// Лежит ли `target` в скачанном у всех полос (правило — `seek::lane_holds_downloaded`):
+    /// то же, что «сядет с полки», но без посадки за концом законченного входа.
+    /// Поток без полос или с полосой без меток времени — ничего не известно: `false`.
+    pub(crate) fn holds_downloaded(&self, target: Duration) -> bool {
+        let target = MediaTime::from_player_position(target);
+        let state = self.lock();
+        let timed = !state.lanes.is_empty()
+            && state
+                .lanes
+                .values()
+                .all(|lane| lane.timeline == LaneTimeline::Timed);
+        timed
+            && state
+                .lanes
+                .keys()
+                .all(|lane| lane_holds_downloaded(&state, *lane, target, &self.rules))
     }
 }

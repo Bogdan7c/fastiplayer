@@ -66,6 +66,7 @@ use self::generation_feed::{FeedReport, LoadedFeed, OpenStep, PendingFeed, in_is
 use self::generation_placement::{GenerationPlacement, PageAvailability};
 use self::generation_rejection::ViewerAwareness;
 use self::generation_start::AfterLoad;
+use self::page_clock::{LoadedMediaShown, PageClockSource};
 use super::intake_notice::{GenerationHandoff, IntakeNotice, PageIntent};
 use super::outbound::{PENDING_RETRY_INTERVAL, PageOutbound, RangeQueueOutcome};
 use super::playback::{
@@ -83,15 +84,18 @@ mod generation_placement;
 mod generation_rejection;
 mod generation_start;
 mod install_reconcile;
+mod page_clock;
 mod scrub_range;
 mod seams;
 mod viewer_click_claim;
+mod viewer_seek_notice;
 mod viewer_transport;
 
 pub(crate) use self::drain::{DrainEnd, DrainPolicy, DrainProgress, PausedDrain};
 pub(crate) use self::farewell::ViewerCloseStep;
 pub(crate) use self::generation_placement::{GenerationPlacementPolicy, GenerationWait};
 pub(crate) use self::seams::{MediaPlayback, SessionCloser};
+pub(crate) use self::viewer_seek_notice::ViewerSeekNotice;
 use self::viewer_transport::{PlayWill, ViewerWill};
 
 /// Метка источника для плеера. Нейтральная: ни заголовка, ни домена страницы —
@@ -178,6 +182,8 @@ pub(crate) struct SessionMedia {
     rejection_notice: GenerationRejectionNotice,
     /// Сроки ворот нового поколения (04d).
     placement_policy: GenerationPlacementPolicy,
+    /// Отказ перемотки зрителя, о котором окно ещё не сказало (09a2, Д-5).
+    viewer_seek_notice: ViewerSeekNotice,
 }
 
 impl SessionMedia {
@@ -204,6 +210,7 @@ impl SessionMedia {
             viewer_will: ViewerWill::default(),
             rejection_notice: GenerationRejectionNotice::Nothing,
             placement_policy: GenerationPlacementPolicy::recommended(),
+            viewer_seek_notice: ViewerSeekNotice::Nothing,
         }
     }
 
@@ -561,6 +568,7 @@ impl SessionMedia {
 
     fn report_to_page(&mut self, observation: &PlaybackObservation, now: Instant) {
         let awaited_target = self.awaited_generation_target();
+        let new_source = self.new_source_stance();
         let Some(loaded) = self.loaded.as_mut() else {
             return;
         };
@@ -616,16 +624,16 @@ impl SessionMedia {
             // Буфер — всегда: без позиции источник считает от первого поданного сегмента.
             self.outbound.note_buffer(generation, buffer, now);
         }
-        if let Some(target) = awaited_target {
-            // Новое поколение ждёт данных у цели: элемент страницы уже там (04d).
-            let awaiting = generation_placement::clock_while_generation_awaits(observation, target);
-            self.outbound.tick_clock(&awaiting, now);
-        } else if media_installed {
-            self.outbound.tick_clock(observation, now);
+        // Часы — только того источника, где сейчас стоит элемент страницы (Д-4,
+        // правила — `page_clock`): чужая позиция или чужой `ended` сбили бы страницу.
+        let loaded_shown = if media_installed {
+            LoadedMediaShown::Shown
         } else {
-            self.outbound
-                .tick_clock(&observation.while_media_installs(), now);
-        }
+            LoadedMediaShown::StillInstalling
+        };
+        let clock_source = PageClockSource::choose(awaited_target, new_source, loaded_shown);
+        self.outbound
+            .tick_clock(&clock_source.page_view_of(observation), now);
     }
 
     /// Когда проснуться без внешнего повода.

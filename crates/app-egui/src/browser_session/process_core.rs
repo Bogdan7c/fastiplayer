@@ -42,7 +42,7 @@ use super::session_config::BrowserSessionSettings;
 use super::session_end::SessionEndView;
 use super::session_media::{
     DrainProgress, GenerationPlacementPolicy, GenerationWait, MediaPlayback, PausedDrain,
-    SessionMedia, ViewerCloseStep,
+    SessionMedia, ViewerCloseStep, ViewerSeekNotice,
 };
 use super::stream_intake::StreamIntake;
 use super::stream_queue::{OrderedSessionQueue, QueueLimits};
@@ -73,6 +73,9 @@ pub(super) struct CoreStep {
     /// Новое поколение ждёт данных у цели клика (04d, путь C): окно показывает спиннер,
     /// хотя прежнее видео ещё играет. Безоконный процесс его не читает.
     pub(super) generation_wait: GenerationWait,
+    /// Перемотка зрителя за скачанное во время досмотра отклонена (09a2, Д-5): окно
+    /// показывает короткое сообщение. Безоконный процесс его не читает.
+    pub(super) viewer_seek_notice: ViewerSeekNotice,
 }
 
 /// Открывался ли за шаг сеанс.
@@ -239,6 +242,7 @@ impl BrowserSessionCore {
             session_end: self.media.session_end_view(),
             generation_rejection: self.media.take_generation_rejection_notice(),
             generation_wait: self.media.generation_wait(),
+            viewer_seek_notice: self.media.take_viewer_seek_notice(),
         }
     }
 
