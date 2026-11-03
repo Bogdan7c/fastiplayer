@@ -6,7 +6,8 @@
 //     crypto.getRandomValues) и выбрать метку документа;
 //  2. поставить хуки MSE, `URL.createObjectURL`, `attachShadow` и (Chromium, 09b-C) обёртку
 //     `Worker` — хук MSE внутри выделенных воркеров;
-//  3. поставить слушатель рукопожатия участка 1.
+//  3. поставить слушатель рукопожатия участка 1 и позвать порт событием встречи READY
+//     (договор page-channel-handshake.ts: порт приходит только к уже стоящему слушателю).
 // Нет `MediaSource` — хуки не ставятся вовсе; слушатель рукопожатия всё равно ставится, чтобы
 // рукопожатие не досталось странице, а на вопросы фона был ответ («живого видео нет»).
 // Глобалов не создаётся: всё живёт в замыканиях.
@@ -22,12 +23,15 @@ import { captureMediaSourceReaders } from "./media-source-readers.ts";
 import { installMseHook, type MseWindow } from "./mse-hook.ts";
 import { MseTracker } from "./mse-tracker.ts";
 import { createOddityReporter, type DebugSink } from "./oddity-reporter.ts";
-import { captureChannelOriginals, listenForPageChannel, type ChannelWindow } from "./page-channel.ts";
+import { captureChannelOriginals, captureRendezvousOriginals, listenForPageChannel, type ChannelWindow, type RendezvousWindow } from "./page-channel.ts";
 import { VideoCandidates } from "./video-candidates.ts";
 import { installWorkerCapture, type WorkerCaptureWindow, type WorkerHookSource, type WorkerMediaSources } from "./worker-capture/index.ts";
 
 /** Окно, против которого работает MAIN-мир. */
-export interface PageBridgeWindow extends MseWindow, DomWindow, RegistryWindow, ChannelWindow, BinaryWindow, RandomWindow, WorkerCaptureWindow {}
+export interface PageBridgeWindow extends MseWindow, DomWindow, RegistryWindow, ChannelWindow, BinaryWindow, RandomWindow, WorkerCaptureWindow {
+  /** Конструктор `Event` нужен встрече канала участка 1 (`RendezvousWindow`). */
+  readonly Event: RendezvousWindow["Event"];
+}
 
 /** Внешние зависимости сборки. */
 export interface PageBridgeDependencies {
@@ -59,6 +63,7 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
   const dom = captureDomReaders(win);
   const mediaSources = captureMediaSourceReaders(win);
   const channel = captureChannelOriginals(win);
+  const rendezvous = captureRendezvousOriginals(win);
   const documentTag = createDocumentTag(captureRandomFill(win));
 
   const budget = new DocumentMemoryBudget(dependencies.memoryBudgetBytes ?? DOCUMENT_MEMORY_BUDGET_BYTES);
@@ -83,6 +88,7 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
   listenForPageChannel(
     win,
     channel,
+    rendezvous,
     {
       onConnected: (port) => controller.connect(port),
       onMessage: (message) => controller.handle(message),

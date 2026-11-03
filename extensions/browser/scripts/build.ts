@@ -93,12 +93,24 @@ export async function buildWorkerHookSource(target: TargetBrowser): Promise<stri
   return output.text;
 }
 
+/**
+ * Что вшить в page.js как хук воркера для этого браузера.
+ *
+ * Firefox MSE в воркере не умеет, а обёртка `Worker` там ломает Twitch (решение 63, 00c), поэтому
+ * обёртка в Firefox не ставится никогда. Пустая строка вместо ~200 КБ хука избавляет каждый фрейм
+ * Firefox от лишнего разбора — это же удлиняло запуск page.js и раскрыло гонку рукопожатия
+ * (находка 09b). Пустой текст MAIN-мир читает как «хука нет» (`src/page/main.ts`).
+ */
+async function workerHookSourceFor(target: TargetBrowser): Promise<string> {
+  return target === "chrome" ? await buildWorkerHookSource(target) : "";
+}
+
 export async function buildTarget(target: TargetBrowser, outputRoot: string): Promise<string> {
   const outputDir = join(outputRoot, target);
   await rm(outputDir, { recursive: true, force: true });
   await mkdir(outputDir, { recursive: true });
 
-  const workerHookSource = await buildWorkerHookSource(target);
+  const workerHookSource = await workerHookSourceFor(target);
   await esbuildBuild({
     absWorkingDir: extensionRoot,
     entryPoints: Object.fromEntries(Object.entries(ENTRY_POINTS).map(([name, path]) => [name, path])),

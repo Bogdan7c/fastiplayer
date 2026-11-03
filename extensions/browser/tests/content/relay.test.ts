@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import { adoptPageValue, openPageChannel, type PageChannelPort } from "../../src/content/page-channel.ts";
 import { createContentRelay, DESCRIBE_CANDIDATES_TIMEOUT_MS, exactBytes, type BackgroundPort } from "../../src/content/relay.ts";
 import type { PageCommand } from "../../src/shared/handoff-contract.ts";
-import { HANDSHAKE_MARKER_FIELD, HANDSHAKE_VERSION } from "../../src/shared/page-channel-handshake.ts";
+import { HANDSHAKE_MARKER_FIELD, HANDSHAKE_VERSION, PAGE_CHANNEL_READY_EVENT } from "../../src/shared/page-channel-handshake.ts";
 import { parsePageEvent } from "../../src/shared/page-message-validation.ts";
 import { createFakeClock } from "../background/support.ts";
 
@@ -57,6 +57,7 @@ describe("рукопожатие участка 1", () => {
   it("настоящий MessageChannel: порт уходит MAIN-миру одним сообщением, обмен идёт по порту в обе стороны", async () => {
     const posted: { message: unknown; transfer: Transferable[] }[] = [];
     const fromPage: unknown[] = [];
+    const ownWindow = new EventTarget();
     const channel = openPageChannel(
       {
         createChannel: () => {
@@ -64,9 +65,13 @@ describe("рукопожатие участка 1", () => {
           return { port1: messageChannel.port1 as unknown as PageChannelPort, port2: messageChannel.port2 as unknown as Transferable };
         },
         postToOwnWindow: (message, transfer) => void posted.push({ message, transfer }),
+        rendezvous: ownWindow,
+        createCancelableEvent: (type) => new Event(type, { cancelable: true }),
       },
       (message) => fromPage.push(message),
     );
+    assert.equal(posted.length, 0, "MAIN-мир ещё не звал: порт не уходит в пустоту");
+    ownWindow.dispatchEvent(new Event(PAGE_CHANNEL_READY_EVENT));
     assert.equal(posted.length, 1);
     assert.deepEqual(posted[0]?.message, { [HANDSHAKE_MARKER_FIELD]: HANDSHAKE_VERSION });
     assert.equal(posted[0]?.transfer.length, 1, "ровно один порт");

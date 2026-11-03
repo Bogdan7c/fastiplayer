@@ -8,8 +8,18 @@
 //
 // Все вызовы — оригиналами, снятыми на document_start: страница позже может подменить
 // `MessagePort.prototype.postMessage` и подслушать наш поток, если бы мы звали его по имени.
+//
+// Встреча (договор page-channel-handshake.ts): сразу после слушателя `message` MAIN-мир слушает
+// OFFER изолированного мира и шлёт READY. Так порт приходит, только когда слушатель уже стоит, —
+// в каком бы порядке и с какой паузой браузер ни исполнил два наших скрипта (Firefox исполняет их
+// не в одном синхронном отрезке).
 
-import { HANDSHAKE_MARKER_FIELD, HANDSHAKE_VERSION } from "../shared/page-channel-handshake.ts";
+import {
+  HANDSHAKE_MARKER_FIELD,
+  HANDSHAKE_VERSION,
+  PAGE_CHANNEL_OFFER_EVENT,
+  PAGE_CHANNEL_READY_EVENT,
+} from "../shared/page-channel-handshake.ts";
 import type { CandidatesReply, PageEvent } from "../shared/handoff-contract.ts";
 import { parseIncomingPageMessage, type IncomingPageMessage } from "./page-command-guard.ts";
 import type { OddityReporter } from "./prototype-wrap.ts";
@@ -76,6 +86,34 @@ export function captureChannelOriginals(win: ChannelWindow): ChannelOriginals {
   };
 }
 
+/** Окно для событий встречи: нужен конструктор `Event` (в тестах — `Event` Node). */
+export interface RendezvousWindow {
+  readonly EventTarget: { readonly prototype: object };
+  readonly Event: { readonly prototype: object; new (type: string): object };
+}
+
+/** Оригиналы для событий встречи (снимаются на document_start, как и оригиналы канала). */
+export interface RendezvousOriginals {
+  /** Синхронно разослать событие слушателям цели (`EventTarget.prototype.dispatchEvent`). */
+  dispatch(target: object, event: object): void;
+  /** Отменить событие (`Event.prototype.preventDefault`): ответ «я слушаю» на OFFER. */
+  preventDefault(event: unknown): void;
+  /** Новое событие без данных (оригинальный конструктор `Event`). */
+  createEvent(type: string): object;
+}
+
+/** Снять оригиналы событий встречи. Зовётся один раз на document_start. */
+export function captureRendezvousOriginals(win: RendezvousWindow): RendezvousOriginals {
+  const dispatchEvent = findOwnOrInherited(win.EventTarget.prototype, "dispatchEvent", "value") as Function;
+  const preventDefault = findOwnOrInherited(win.Event.prototype, "preventDefault", "value") as Function;
+  const EventConstructor = win.Event;
+  return {
+    dispatch: (target, event) => void Reflect.apply(dispatchEvent, target, [event]),
+    preventDefault: (event) => Reflect.apply(preventDefault, event, []),
+    createEvent: (type) => Reflect.construct(EventConstructor, [type]),
+  };
+}
+
 /** Порт из события, если это наше рукопожатие; иначе `null`. */
 function handshakePortOf(win: object, originals: ChannelOriginals, event: unknown): object | null {
   if (originals.eventSource(event) !== win) return null;
@@ -99,10 +137,16 @@ export interface PageChannelHandlers {
 }
 
 /**
- * Поставить слушатель рукопожатия (синхронно, на document_start). Всё, что приходит по порту,
- * проверяется по форме; ни одно исключение не уходит странице.
+ * Поставить слушатель рукопожатия (синхронно, на document_start) и позвать порт событием READY.
+ * Всё, что приходит по порту, проверяется по форме; ни одно исключение не уходит странице.
  */
-export function listenForPageChannel(win: object, originals: ChannelOriginals, handlers: PageChannelHandlers, reportOddity: OddityReporter): void {
+export function listenForPageChannel(
+  win: object,
+  originals: ChannelOriginals,
+  rendezvous: RendezvousOriginals,
+  handlers: PageChannelHandlers,
+  reportOddity: OddityReporter,
+): void {
   const onPortMessage = (event: unknown): void => {
     try {
       const message = parseIncomingPageMessage(originals.eventData(event));
@@ -112,12 +156,25 @@ export function listenForPageChannel(win: object, originals: ChannelOriginals, h
     }
   };
 
+  // OFFER изолированного мира, стартовавшего ПОСЛЕ нас: отмена = «слушатель стоит, присылай порт».
+  // Слушатель живёт до рукопожатия: чужое OFFER до него безвредно (отмена ничего не отдаёт).
+  const onOffer = (event: unknown): void => {
+    try {
+      originals.stopImmediatePropagation(event);
+      rendezvous.preventDefault(event);
+    } catch {
+      reportOddity("page channel offer handling failed");
+    }
+  };
+
   const onWindowMessage = (event: unknown): void => {
     try {
       const port = handshakePortOf(win, originals, event);
       if (port === null) return; // не наше — странице как есть
       originals.stopImmediatePropagation(event);
       originals.removeListener(win, "message", onWindowMessage, true);
+      // Канал есть: встреча окончена, OFFER больше не отменяем (страница не узнает о нас по отмене).
+      originals.removeListener(win, PAGE_CHANNEL_OFFER_EVENT, onOffer, true);
       originals.addListener(port, "message", onPortMessage, false);
       originals.startPort(port);
       handlers.onConnected({ send: (message, transfer = []) => originals.postToPort(port, message, transfer) });
@@ -126,5 +183,14 @@ export function listenForPageChannel(win: object, originals: ChannelOriginals, h
     }
   };
 
+  // Порядок важен: сначала слушатель `message`, только потом зов порта — иначе порт мог бы прийти
+  // раньше слушателя (та самая гонка Firefox).
   originals.addListener(win, "message", onWindowMessage, true);
+  originals.addListener(win, PAGE_CHANNEL_OFFER_EVENT, onOffer, true);
+  try {
+    // Изолированный мир, стартовавший РАНЬШЕ нас, ждёт этого события и отвечает рукопожатием.
+    rendezvous.dispatch(win, rendezvous.createEvent(PAGE_CHANNEL_READY_EVENT));
+  } catch {
+    reportOddity("page channel ready signal failed");
+  }
 }

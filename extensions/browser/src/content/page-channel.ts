@@ -10,23 +10,31 @@
 // `structuredClone` в изолированном мире делает родную копию (~0,5 мс/МиБ) — её и проверяем.
 // В Chromium сообщение сразу родное, копия не нужна.
 //
-// Почему рукопожатие одно и без повторов. Оба скрипта (изолированный и MAIN) стоят на
-// document_start и исполняются браузером синхронно, один за другим, до любого скрипта страницы.
-// `window.postMessage` не доставляет сообщение сразу: событие `message` ставится отдельной задачей
-// в очередь цикла событий, а она запускается только после того, как оба наших скрипта отработали.
-// Поэтому слушатель MAIN-мира уже стоит к моменту доставки, даже если изолированный скрипт
-// исполнился первым (так и есть: в манифесте content.js идёт раньше page.js). Живая разведка 09a
-// проверяла ровно этот порядок (изолированный первым) — Chromium 156 и Firefox 158, ~15 запусков
-// на обычной странице: рукопожатие дошло каждый раз, случая «MAIN не успел» не было.
-// Повтор был бы вреден: второе сообщение с меткой увидели бы обработчики `message` страницы
-// (MAIN-мир принимает и прячет только первое).
+// Когда уходит порт (встреча, договор page-channel-handshake.ts). Прежде порт уходил слепо, на старте,
+// в расчёте на то, что оба document_start-скрипта исполняются в одном синхронном отрезке и задача
+// доставки `message` идёт уже после MAIN-скрипта. В Firefox это не так: он ждёт компиляцию КАЖДОГО
+// скрипта отдельно, и задача доставки успевала выполниться в паузе между нашими скриптами (стенд после
+// 09b: content.js отправил порт, page.js встал через ~5 мс, рукопожатие пропало — «no_video»).
+// Теперь порт уходит только к уже стоящему слушателю MAIN-мира:
+//   - на старте — отменяемое OFFER: MAIN-мир, если уже стоит, отменяет его → отправляем сразу;
+//   - иначе ждём READY от MAIN-мира (он шлёт его сразу после своего слушателя) → отправляем.
+// Отправка одна за жизнь документа: второе сообщение с меткой увидели бы обработчики `message`
+// страницы (MAIN-мир принимает и прячет только первое). Сообщения, отправленные по своему порту до
+// встречи, не теряются: порт копит их, пока второй конец не начнёт приём.
 
-import { HANDSHAKE_MESSAGE } from "../shared/page-channel-handshake.ts";
+import { HANDSHAKE_MESSAGE, PAGE_CHANNEL_OFFER_EVENT, PAGE_CHANNEL_READY_EVENT } from "../shared/page-channel-handshake.ts";
 
 /** Порт канала в той мере, в какой он нам нужен (MessagePort или фейк в тестах). */
 export interface PageChannelPort {
   postMessage(message: unknown): void;
   onmessage: ((event: { readonly data: unknown }) => void) | null;
+}
+
+/** Цель событий встречи — своё окно (в тестах — любой EventTarget). */
+export interface RendezvousTarget {
+  addEventListener(type: string, listener: (event: Event) => void, options: { readonly capture: boolean }): void;
+  removeEventListener(type: string, listener: (event: Event) => void, options: { readonly capture: boolean }): void;
+  dispatchEvent(event: Event): boolean;
 }
 
 /** Окружение изолированного мира (в продукте — настоящий window, в тестах — фейки). */
@@ -35,6 +43,10 @@ export interface PageChannelEnvironment {
   createChannel(): { readonly port1: PageChannelPort; readonly port2: Transferable };
   /** `window.postMessage(message, "*", transfer)` своего окна. */
   postToOwnWindow(message: unknown, transfer: Transferable[]): void;
+  /** Где встречаются миры: своё окно (оба мира видят одни и те же события DOM). */
+  readonly rendezvous: RendezvousTarget;
+  /** ОТМЕНЯЕМОЕ событие без данных (`cancelable: true`) — по отмене узнаём, что MAIN-мир слушает. */
+  createCancelableEvent(type: string): Event;
 }
 
 /** Отправка MAIN-миру по личному порту. */
@@ -57,15 +69,37 @@ export function adoptPageValue(raw: unknown): unknown {
 }
 
 /**
- * Открывает канал: создаёт порт, вешает приёмник и передаёт второй конец MAIN-миру.
+ * Открывает канал: создаёт порт, вешает приёмник и передаёт второй конец MAIN-миру — как только
+ * его слушатель точно стоит (встреча OFFER/READY, см. шапку файла).
  * `onPageMessage` получает каждое сообщение уже «усыновлённым» (`adoptPageValue`), но НЕ проверенным.
  */
 export function openPageChannel(environment: PageChannelEnvironment, onPageMessage: (message: unknown) => void): PageChannel {
   const channel = environment.createChannel();
   const ownPort = channel.port1;
-  // Присвоение onmessage само запускает порт (start()), ранние сообщения не теряются: до передачи
-  // порта MAIN-миру никто в него не пишет.
+  // Присвоение onmessage само запускает порт (start()). Ранние сообщения не теряются в обе стороны:
+  // MAIN-мир пишет только после рукопожатия, а наше `send` до встречи копится во втором конце, пока
+  // MAIN-мир не начнёт приём (`start()` в его рукопожатии).
   ownPort.onmessage = (event) => onPageMessage(adoptPageValue(event.data));
-  environment.postToOwnWindow(HANDSHAKE_MESSAGE, [channel.port2]);
+
+  const { rendezvous } = environment;
+  const listenerOptions = { capture: true } as const;
+  /**
+   * Отдать порт MAIN-миру. Ровно один раз: зовётся либо по отменённому OFFER (один раз, на старте),
+   * либо из слушателя READY, который здесь же снимается, — второго READY уже никто не услышит.
+   */
+  const handOverPort = (): void => {
+    rendezvous.removeEventListener(PAGE_CHANNEL_READY_EVENT, onMainReady, listenerOptions);
+    environment.postToOwnWindow(HANDSHAKE_MESSAGE, [channel.port2]);
+  };
+  /** READY: MAIN-мир встал позже нас, его слушатель `message` уже стоит. */
+  const onMainReady = (event: Event): void => {
+    event.stopImmediatePropagation();
+    handOverPort();
+  };
+
+  // Сначала слушатель READY, потом OFFER: если MAIN-мир стоит раньше нас, он отменит OFFER.
+  rendezvous.addEventListener(PAGE_CHANNEL_READY_EVENT, onMainReady, listenerOptions);
+  const offerAccepted = !rendezvous.dispatchEvent(environment.createCancelableEvent(PAGE_CHANNEL_OFFER_EVENT));
+  if (offerAccepted) handOverPort();
   return { send: (message) => ownPort.postMessage(message) };
 }

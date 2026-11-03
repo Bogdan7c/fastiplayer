@@ -172,12 +172,13 @@ describe("сборка dist", () => {
     }
   });
 
-  it("page.js несёт хук воркера строкой (тот самый бандл), подстановка не осталась именем, файла хука в dist нет", async () => {
+  it("page.js несёт хук воркера строкой (тот самый бандл, только Chrome; Firefox — пустая строка), подстановка не осталась именем, файла хука в dist нет", async () => {
     for (const target of targets) {
       await buildTarget(target, outputRoot);
       const page = readFileSync(join(outputRoot, target, "page.js"), "utf8");
       assert.doesNotMatch(page, /__FASTIPLAYER_WORKER_HOOK_SOURCE__/);
-      const hook = await buildWorkerHookSource(target);
+      // Firefox: MSE в воркере нет (решение 63) — хук не вшивается, page.js не разбирает лишние ~200 КБ.
+      const hook = target === "chrome" ? await buildWorkerHookSource(target) : "";
       // esbuild печатает строку своими кавычками: достаём литерал и вычисляем его как JavaScript.
       const literal = /workerHook: \{ source: ('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/s.exec(page)?.[1];
       assert.ok(literal !== undefined, `${target}/page.js: нет вшитого бандла хука воркера`);

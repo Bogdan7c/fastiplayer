@@ -12,6 +12,7 @@ import { captureShadowEnvironment, shadowStarterFor } from "./shadow-assembly.ts
 /**
  * Текст бандла хука выделенного воркера (`src/worker/main.ts`). Подставляет сборка
  * (scripts/build.ts, `define`): сначала собирается бандл воркера, затем его текст — строкой сюда.
+ * В сборке Firefox — пустая строка: там MSE в воркере нет, и обёртка не нужна (решение 63).
  */
 declare const __FASTIPLAYER_WORKER_HOOK_SOURCE__: string;
 
@@ -25,7 +26,10 @@ function main(win: Window & typeof globalThis, debugSink: DebugSink): void {
   startPageBridge(win, {
     startShadow: shadowStarterFor(shadowEnvironment),
     debugSink,
-    workerHook: { source: __FASTIPLAYER_WORKER_HOOK_SOURCE__, policy: codecPolicy.policy },
+    // Пустой текст — сборка без хука (Firefox): обёртка `Worker` не ставится вовсе.
+    ...(__FASTIPLAYER_WORKER_HOOK_SOURCE__.length > 0
+      ? { workerHook: { source: __FASTIPLAYER_WORKER_HOOK_SOURCE__, policy: codecPolicy.policy } }
+      : {}),
   });
 }
 

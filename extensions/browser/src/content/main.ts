@@ -34,6 +34,8 @@ const channel = openPageChannel(
       return { port1: messageChannel.port1 as PageChannelPort, port2: messageChannel.port2 };
     },
     postToOwnWindow: (message, transfer) => window.postMessage(message, "*", transfer),
+    rendezvous: window,
+    createCancelableEvent: (type) => new Event(type, { cancelable: true }),
   },
   (message) => relay.handlePageMessage(message),
 );
