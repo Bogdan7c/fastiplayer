@@ -162,11 +162,13 @@ impl BrowserSessionCore {
             ),
         )
         .map_err(BrowserSessionStartFailure::IntakeThread)?;
-        let server = match BrowserSessionServer::start(
+        let server = match BrowserSessionServer::start_with_wire_tap(
             policy,
             Box::new(OsRandomTokenSource),
             queue.clone(),
             queue.clone(),
+            // Отладочный «чёрный ящик»: `None`, пока владелец не задал переменную окружения.
+            super::debug_recording::wire_tap_from_environment(),
         ) {
             Ok(server) => server,
             Err(server_error) => {

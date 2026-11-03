@@ -36,12 +36,18 @@ pub struct ReplayedStream {
 
 /// Читает шаги записанного потока `fixtures/streams/<name>/stream.json`.
 fn load_steps(name: &str) -> Vec<Step> {
-    let directory = protocol_fixtures_dir().join("streams").join(name);
+    load_steps_from(&protocol_fixtures_dir().join("streams").join(name))
+}
+
+/// Читает шаги записи из каталога с `stream.json`: фикстура протокола или запись
+/// «чёрного ящика» плеера (09b2; у её шагов есть необязательное `at_ms`, повтор в
+/// источник идёт без пауз, поэтому время игнорируется).
+fn load_steps_from(directory: &Path) -> Vec<Step> {
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(directory.join("stream.json")).expect("manifest"))
             .expect("manifest JSON");
     let read = |file: &serde_json::Value| -> Vec<u8> {
-        std::fs::read(Path::new(&directory).join(file.as_str().expect("file name"))).expect("step")
+        std::fs::read(directory.join(file.as_str().expect("file name"))).expect("step")
     };
     manifest["steps"]
         .as_array()
@@ -57,9 +63,18 @@ fn load_steps(name: &str) -> Vec<Step> {
 
 /// Проигрывает записанный поток в источник; каждое новое поколение — новый поток.
 pub fn replay(name: &str) -> ReplayedStream {
+    replay_steps(load_steps(name))
+}
+
+/// То же для записи из произвольного каталога (запись «чёрного ящика» плеера).
+pub fn replay_directory(directory: &Path) -> ReplayedStream {
+    replay_steps(load_steps_from(directory))
+}
+
+fn replay_steps(steps: Vec<Step>) -> ReplayedStream {
     let mut gate = StreamGate::new();
     let mut current: Option<ReplayedStream> = None;
-    for step in load_steps(name) {
+    for step in steps {
         match step {
             Step::Text(json) => {
                 let message: PageSessionMessage = decode_message(&json).expect("valid message");
@@ -78,7 +93,8 @@ pub fn replay(name: &str) -> ReplayedStream {
             Step::Binary(frame) => {
                 let frame = decode_data_frame(&frame).expect("valid frame");
                 let DataFrameHeader::SourceBufferBytes(header) = frame.header else {
-                    panic!("recorded streams carry only source buffer bytes");
+                    // Рамки файла `<video src>` (диапазоны) к потоку MSE не относятся.
+                    continue;
                 };
                 if gate
                     .admit_source_buffer_bytes(&header)

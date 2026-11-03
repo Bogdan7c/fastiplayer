@@ -36,6 +36,7 @@ use self::shared::Shared;
 use crate::policy::BrowserSessionPolicy;
 use crate::sink::{SessionByteSink, SessionEventSink};
 use crate::token::SessionTokenSource;
+use crate::wire_tap::SessionWireTap;
 
 /// Почему сервер не запустился.
 #[derive(Debug, thiserror::Error)]
@@ -71,6 +72,21 @@ impl BrowserSessionServer {
         byte_sink: Arc<dyn SessionByteSink>,
         events: Arc<dyn SessionEventSink>,
     ) -> Result<Self, ServerStartError> {
+        Self::start_with_wire_tap(policy, token_source, byte_sink, events, None)
+    }
+
+    /// То же, но с отладочным отводом провода ([`SessionWireTap`]); `None` — как
+    /// [`Self::start`], без единого лишнего вызова.
+    ///
+    /// # Errors
+    /// [`ServerStartError`] — порт, сокет или поток не получены.
+    pub fn start_with_wire_tap(
+        policy: BrowserSessionPolicy,
+        token_source: Box<dyn SessionTokenSource>,
+        byte_sink: Arc<dyn SessionByteSink>,
+        events: Arc<dyn SessionEventSink>,
+        wire_tap: Option<Arc<dyn SessionWireTap>>,
+    ) -> Result<Self, ServerStartError> {
         // Только loopback и порт 0: ОС выбирает свободный, наружу сеть не торчит.
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .map_err(ServerStartError::Bind)?;
@@ -79,7 +95,14 @@ impl BrowserSessionServer {
             .map_err(ServerStartError::Configure)?;
         let local_addr = listener.local_addr().map_err(ServerStartError::Configure)?;
         let port = LoopbackPort::new(local_addr.port()).map_err(ServerStartError::UnusablePort)?;
-        let shared = Arc::new(Shared::new(policy, port, token_source, byte_sink, events));
+        let shared = Arc::new(Shared::new(
+            policy,
+            port,
+            token_source,
+            byte_sink,
+            events,
+            wire_tap,
+        ));
         let accept_shared = Arc::clone(&shared);
         let accept_thread = std::thread::Builder::new()
             .name("browser-session-accept".to_owned())

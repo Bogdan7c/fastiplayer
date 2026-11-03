@@ -85,10 +85,14 @@ fn serve(shared: &Arc<Shared>, stream: TcpStream, handle: ConnectionHandle) {
         delivery: handle.delivery,
         outgoing: handle.outgoing,
         farewell: handle.farewell,
+        attached: None,
         socket,
     };
     if let Some(session) = link.await_attach(accepted_at) {
+        // С этого момента отвод провода (если стоит) видит соединение.
+        link.attached = Some(session.clone());
         link.serve_attached(&session);
+        link.notify_wire_tap_closed();
     }
 }
 
@@ -186,6 +190,8 @@ struct Link<'shared> {
     outgoing: std::sync::mpsc::Receiver<String>,
     /// Прощание: пишется после очереди исходящих, прямо перед кадром закрытия.
     farewell: Arc<FarewellSlot>,
+    /// Сеанс после успешного `attach`: ключ для отвода провода (до `attach` — `None`).
+    attached: Option<SessionRef>,
     socket: WebSocket<TcpStream>,
 }
 
@@ -277,9 +283,18 @@ impl Link<'_> {
             }
             let flow = match self.socket.read() {
                 Ok(Message::Text(text)) => {
+                    // Отвод видит сообщение сырым: до разбора и сторожа поколений.
+                    if let Some(tap) = &self.shared.wire_tap {
+                        tap.page_text(session, text.as_str().as_bytes());
+                    }
                     self.on_text(session, &mut gate, text.as_str().as_bytes())
                 }
-                Ok(Message::Binary(bytes)) => self.on_binary(session, &mut gate, &bytes),
+                Ok(Message::Binary(bytes)) => {
+                    if let Some(tap) = &self.shared.wire_tap {
+                        tap.page_binary(session, &bytes);
+                    }
+                    self.on_binary(session, &mut gate, &bytes)
+                }
                 Ok(Message::Ping(_) | Message::Pong(_)) => Flow::Continue,
                 Ok(Message::Close(frame)) => {
                     let code = frame.map(|close| u16::from(close.code));
@@ -443,6 +458,13 @@ impl Link<'_> {
 
     // ---- запись и закрытие -----------------------------------------------
 
+    /// Сообщает отводу провода, что соединение подключённого сеанса закончилось.
+    fn notify_wire_tap_closed(&self) {
+        if let (Some(tap), Some(session)) = (&self.shared.wire_tap, &self.attached) {
+            tap.connection_closed(session);
+        }
+    }
+
     fn send_message(&mut self, message: &PlayerSessionMessage) -> Result<(), LinkBroken> {
         let json = encode_message(message).map_err(|error| {
             tracing::error!(%error, "player message does not pass protocol validation");
@@ -452,6 +474,10 @@ impl Link<'_> {
     }
 
     fn send_json(&mut self, json: String) -> Result<(), LinkBroken> {
+        // Отвод провода: записываем то, что собираемся отправить (после `attach`).
+        if let (Some(tap), Some(session)) = (&self.shared.wire_tap, &self.attached) {
+            tap.player_text(session, &json);
+        }
         self.socket.send(Message::text(json)).map_err(|error| {
             tracing::debug!(%error, "browser session write failed");
             LinkBroken

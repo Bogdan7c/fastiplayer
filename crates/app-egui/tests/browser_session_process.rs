@@ -837,3 +837,8 @@ mod page_ends;
 // скачанным во время доигрывания.
 #[path = "browser_session_process/generation_clock_and_drain_seek.rs"]
 mod generation_clock_and_drain_seek;
+
+// Сессия 09b2: «чёрный ящик» плеера (отладочная запись потока страницы) и повтор записи
+// в настоящем процессе; игнорируемый вариант берёт настоящую запись с сайта.
+#[path = "browser_session_process/replay_recording.rs"]
+mod replay_recording;

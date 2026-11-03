@@ -19,3 +19,4 @@ mod protocol_errors;
 mod stream_replay;
 mod support;
 mod wire_order;
+mod wire_tap;

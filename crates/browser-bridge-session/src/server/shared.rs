@@ -40,6 +40,7 @@ use crate::registry::{
 };
 use crate::sink::{SessionByteSink, SessionEndReason, SessionEventSink, SessionLifecycleEvent};
 use crate::token::SessionTokenSource;
+use crate::wire_tap::SessionWireTap;
 
 /// Просьба закрыть соединение: «кто первый, тот и прав». Код хранится числом
 /// (0 — просьбы нет), поэтому поток соединения читает её без замка.
@@ -174,6 +175,8 @@ pub(super) struct Shared {
     state: Mutex<ServerState>,
     pub(super) byte_sink: Arc<dyn SessionByteSink>,
     pub(super) events: Arc<dyn SessionEventSink>,
+    /// Отладочный отвод провода; `None` в продукте.
+    pub(super) wire_tap: Option<Arc<dyn SessionWireTap>>,
     counters: Counters,
     next_connection: AtomicU64,
     stopping: AtomicBool,
@@ -188,6 +191,7 @@ impl Shared {
         tokens: Box<dyn SessionTokenSource>,
         byte_sink: Arc<dyn SessionByteSink>,
         events: Arc<dyn SessionEventSink>,
+        wire_tap: Option<Arc<dyn SessionWireTap>>,
     ) -> Self {
         Self {
             policy,
@@ -201,6 +205,7 @@ impl Shared {
             }),
             byte_sink,
             events,
+            wire_tap,
             counters: Counters::default(),
             next_connection: AtomicU64::new(1),
             stopping: AtomicBool::new(false),

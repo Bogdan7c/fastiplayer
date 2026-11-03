@@ -60,6 +60,7 @@
 
 mod buffer_policy;
 mod codec_label;
+mod debug_recording;
 mod drain_override;
 mod held_bytes_override;
 mod inbox;

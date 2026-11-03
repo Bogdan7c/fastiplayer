@@ -36,6 +36,7 @@ pub mod registry;
 pub mod server;
 pub mod sink;
 pub mod token;
+pub mod wire_tap;
 
 #[cfg(test)]
 mod test_support;
@@ -57,3 +58,4 @@ pub use sink::{
     StreamCounters,
 };
 pub use token::{OsRandomTokenSource, SessionTokenSource, TokenSourceError};
+pub use wire_tap::SessionWireTap;
