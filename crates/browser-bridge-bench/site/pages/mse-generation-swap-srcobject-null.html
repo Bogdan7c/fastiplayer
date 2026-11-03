@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mse-generation-swap-srcobject-null</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>mse-generation-swap-srcobject-null</h1>
+
+<script type="module">
+// Смена поколения, как у YouTube перед рекламой: сначала srcObject = null, потом новый src.
+import { runGenerationSwapPage } from '../lib/generation-swap-page.js';
+import { RELEASE_OLD_SOURCE } from '../lib/bench-player.js';
+
+await runGenerationSwapPage('mse-generation-swap-srcobject-null', {
+  releaseOldSource: RELEASE_OLD_SOURCE.SRC_OBJECT_NULL,
+});
+</script>
+</body>
+</html>

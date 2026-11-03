@@ -7,7 +7,11 @@
 //   await player.start({ refs: standardRefs(catalog, 'h264-aac'), positionS: 0 });
 //   await player.seek(20);                       // abort/remove + запросы с нового места
 //   player.switchTrack({assetId, trackId});      // ABR: init другой дорожки в тот же SourceBuffer
-//   await player.newGeneration({ refs, positionS }); // новый MediaSource на ТОМ ЖЕ <video>
+//   await player.newGeneration({ refs, positionS, releaseOldSource, firstRequestDelayMs });
+//                                                // новый MediaSource на ТОМ ЖЕ <video>;
+//                                                // releaseOldSource — как снять старый источник
+//                                                // (RELEASE_OLD_SOURCE), firstRequestDelayMs —
+//                                                // задержка первых данных нового поколения
 //   player.generations                           // сколько MediaSource создано на элементе
 //   player.requests                              // журнал сегментных запросов по всем поколениям
 //   await player.destroy();
@@ -60,6 +64,18 @@ export function resolveRef(catalog, ref) {
   return catalog.assets[ref.assetId].tracks.find((track) => track.id === ref.trackId);
 }
 
+/**
+ * Как страница снимает старый источник перед новым MediaSource (так делают разные плееры):
+ *  * `src` — просто присваивает новый `src` (как было всегда);
+ *  * `srcObject-null` — сначала `srcObject = null` (YouTube перед рекламой), потом `src`;
+ *  * `remove-attr-load` — `removeAttribute('src'); load()`, потом `src`.
+ */
+export const RELEASE_OLD_SOURCE = Object.freeze({
+  SRC: 'src',
+  SRC_OBJECT_NULL: 'srcObject-null',
+  REMOVE_ATTR_LOAD: 'remove-attr-load',
+});
+
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export class BenchPlayer {
@@ -111,12 +127,20 @@ export class BenchPlayer {
   }
 
   /** Новое поколение: новый MediaSource на том же <video> (реклама, серия, озвучка, сторож). */
-  async newGeneration({ refs = this.refs, positionS = 0, autoplay = !this.video.paused } = {}) {
+  async newGeneration({
+    refs = this.refs,
+    positionS = 0,
+    // Вычисляется ДО снятия старого источника: `srcObject = null` и `load()` ставят элемент
+    // на паузу, и «играл ли он» после этого уже не узнать.
+    autoplay = !this.video.paused,
+    releaseOldSource = RELEASE_OLD_SOURCE.SRC,
+    firstRequestDelayMs = 0,
+  } = {}) {
     if (this.useWorker) throw new Error('newGeneration is not supported in worker mode');
     await this.#detachEngine();
     this.hangAt = null; // «зависание» — одноразовый сбой первого поколения
     this.refs = refs;
-    await this.#attachInPage(positionS);
+    await this.#attachInPage(positionS, { releaseOldSource, firstRequestDelayMs });
     if (autoplay) await this.play();
   }
 
@@ -199,10 +223,11 @@ export class BenchPlayer {
   }
 
   /** Создаёт MediaSource, привязывает к элементу и запускает движок. */
-  async #attachInPage(positionS) {
+  async #attachInPage(positionS, { releaseOldSource = RELEASE_OLD_SOURCE.SRC, firstRequestDelayMs = 0 } = {}) {
     const mediaSource = new MediaSource();
     const previousUrl = this.objectUrl;
     this.objectUrl = URL.createObjectURL(mediaSource);
+    this.#releaseOldSource(releaseOldSource);
     this.video.src = this.objectUrl;
     if (previousUrl) URL.revokeObjectURL(previousUrl);
     this.mediaSources.push(mediaSource);
@@ -218,11 +243,27 @@ export class BenchPlayer {
       credentials: this.credentials,
       bufferAheadS: this.bufferAheadS,
       hangAt: this.hangAt,
+      firstRequestDelayMs,
       log: this.logLine,
     });
     this.engine.start(positionS);
     this.logLine(`generation ${this.generations} started at ${positionS.toFixed(2)} s`);
     this.onGeneration(this.generations);
+  }
+
+  /** Снимает старый источник выбранным способом (см. `RELEASE_OLD_SOURCE`). */
+  #releaseOldSource(how) {
+    const { video } = this;
+    if (how === RELEASE_OLD_SOURCE.SRC) return;
+    if (how === RELEASE_OLD_SOURCE.SRC_OBJECT_NULL) {
+      video.srcObject = null;
+    } else if (how === RELEASE_OLD_SOURCE.REMOVE_ATTR_LOAD) {
+      video.removeAttribute('src');
+      video.load();
+    } else {
+      throw new Error(`unknown releaseOldSource '${how}'`);
+    }
+    this.logLine(`old source released: ${how}`);
   }
 
   #waitSourceOpen(mediaSource) {

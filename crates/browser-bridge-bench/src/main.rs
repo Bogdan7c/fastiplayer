@@ -1,4 +1,4 @@
-//! Точка входа стенда: `browser-bridge-bench [ОПЦИИ] <pages|smoke|capture|player-commands|extension-status|all>`.
+//! Точка входа стенда: `browser-bridge-bench [ОПЦИИ] <pages|smoke|capture|page-ends|player-commands|extension-status|all>`.
 //!
 //! Здесь только ввод-вывод и код выхода: сценарии (`scenarios`) возвращают типизированные
 //! результаты, таблицу печатает `report`, аргументы разбирает `cli`.
@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use browser_bridge_bench::environment::install_interrupt_cleanup;
-use browser_bridge_bench::scenarios::{self, Stand, StepResult};
+use browser_bridge_bench::scenarios::{self, PageFilter, Stand, StepResult};
 
 use cli::{Command, Invocation, Parsed};
 
@@ -44,6 +44,7 @@ fn run(invocation: Invocation) -> ExitCode {
     let Invocation {
         command,
         browsers,
+        pages,
         settings,
     } = invocation;
     let stand = match Stand::start(settings) {
@@ -55,13 +56,18 @@ fn run(invocation: Invocation) -> ExitCode {
     };
     let setup = started.elapsed();
     let mut results: Vec<StepResult> = Vec::new();
-    for steps in plan(command) {
+    for steps in plan(command, &pages) {
         for &browser in &browsers {
             eprintln!("running {steps:?} in {browser:?} ...");
             match steps {
-                Command::Pages => results.extend(scenarios::run_pages(&stand, browser)),
+                Command::Pages => results.extend(scenarios::run_pages(&stand, browser, &pages)),
                 Command::Smoke => results.push(scenarios::run_smoke(&stand, browser)),
-                Command::Capture => results.extend(scenarios::run_capture(&stand, browser)),
+                Command::Capture => {
+                    results.extend(scenarios::run_capture(&stand, browser, &pages));
+                }
+                Command::PageEnds => {
+                    results.extend(scenarios::run_page_ends(&stand, browser, &pages));
+                }
                 Command::PlayerCommands => {
                     results.push(scenarios::run_player_commands(&stand, browser));
                 }
@@ -84,15 +90,20 @@ fn run(invocation: Invocation) -> ExitCode {
 }
 
 /// Какие шаги входят в команду (`all`: страницы первыми — если сами страницы плохи, мост
-/// проверять бессмысленно; `smoke` не входит, это подмножество `capture`).
-fn plan(command: Command) -> Vec<Command> {
+/// проверять бессмысленно; `smoke` не входит, это подмножество `capture`). С `--page` в `all`
+/// остаются только шаги со страницами: `player-commands` и `extension-status` одну страницу
+/// не выбирают. Шаг без выбранных страниц просто ничего не запускает (`cli` не пускает прогон,
+/// в котором нет ни одной выбранной страницы).
+fn plan(command: Command, pages: &PageFilter) -> Vec<Command> {
     match command {
-        Command::All => vec![
+        Command::All if pages.selects_everything() => vec![
             Command::Pages,
             Command::Capture,
+            Command::PageEnds,
             Command::PlayerCommands,
             Command::ExtensionStatus,
         ],
+        Command::All => vec![Command::Pages, Command::Capture, Command::PageEnds],
         single => vec![single],
     }
 }
@@ -102,16 +113,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_runs_pages_first_then_capture_commands_and_extension_status() {
+    fn all_runs_pages_first_then_capture_page_ends_commands_and_extension_status() {
         assert_eq!(
-            plan(Command::All),
+            plan(Command::All, &PageFilter::all()),
             vec![
                 Command::Pages,
                 Command::Capture,
+                Command::PageEnds,
                 Command::PlayerCommands,
                 Command::ExtensionStatus
             ]
         );
-        assert_eq!(plan(Command::Smoke), vec![Command::Smoke]);
+        assert_eq!(
+            plan(Command::Smoke, &PageFilter::all()),
+            vec![Command::Smoke]
+        );
+    }
+
+    #[test]
+    fn all_with_a_page_filter_keeps_only_the_steps_that_have_pages() {
+        let one_page = PageFilter::only(["page-freeze".to_owned()]);
+        assert_eq!(
+            plan(Command::All, &one_page),
+            vec![Command::Pages, Command::Capture, Command::PageEnds]
+        );
     }
 }

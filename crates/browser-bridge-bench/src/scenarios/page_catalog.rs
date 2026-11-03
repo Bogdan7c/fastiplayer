@@ -57,6 +57,18 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("series"),
     page("spa-navigation"),
     page("pip"),
+    // Д-1: другие способы снять старый источник перед новым MediaSource (сессия 09a2).
+    page("mse-generation-swap-srcobject-null"),
+    page("mse-generation-swap-reload"),
+    // Д-4: данные нового поколения приходят через 5 с.
+    page("mse-generation-swap-delayed"),
+    // Д-3/Д-8: страница сама забирает видео (проверяет сценарий `page-ends`).
+    page("source-withdrawn"),
+    page("source-to-file"),
+    // Д-2: главный поток страницы замирает на 15 с под тенью (сценарий `page-ends`).
+    page("page-freeze"),
+    // Д-9: кэшированные до передачи геттер currentTime и play (сценарий `capture`).
+    page("cached-descriptors"),
 ];
 
 #[cfg(test)]

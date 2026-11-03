@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cached-descriptors</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+<script>
+// Обычный (не module) скрипт в <head>: выполняется раньше любого кода страницы и до передачи.
+window.__benchCachedMediaApi = {
+  currentTimeGetter: Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime').get,
+  play: HTMLMediaElement.prototype.play,
+};
+</script>
+</head>
+<body>
+<h1>cached-descriptors</h1>
+
+<script type="module">
+// Страница кэширует нативные API элемента ДО передачи (так делают плееры и защитные
+// скрипты): геттер currentTime и метод play. После передачи вызовы через кэш обязаны идти
+// через тень, а не мимо неё: геттер отдаёт часы плеера, play не запускает настоящее
+// воспроизведение (настоящий счётчик кадров под тенью не растёт — это судит capture).
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying, sleep } from '../lib/bench-checks.js';
+import { startAsset, observeHandoff } from '../lib/scenario-kit.js';
+
+/** Сколько вызываем кэшированные API, мс (по условию сценария — 5 с). */
+const CACHED_CALLS_WINDOW_MS = 5000;
+/** Период вызовов кэшированных API, мс. */
+const CACHED_CALL_PERIOD_MS = 250;
+/** Допустимое расхождение кэшированного геттера и обычного чтения часов, с. */
+const MAX_CLOCK_DISAGREEMENT_S = 1;
+/** Насколько часы обязаны уйти вперёд за окно вызовов, с (видео играет, окно 5 с). */
+const MIN_CLOCK_ADVANCE_S = 2;
+
+/** Раз в период зовёт СОХРАНЁННЫЕ play и геттер currentTime и сверяет их с обычным чтением. */
+async function exerciseCachedApi(check, log, video) {
+  const cached = window.__benchCachedMediaApi;
+  check('cached-api-captured-before-handoff',
+    typeof cached?.currentTimeGetter === 'function' && typeof cached?.play === 'function',
+    `getter=${typeof cached?.currentTimeGetter}, play=${typeof cached?.play}`);
+  const samples = [];
+  const playRejections = [];
+  const endAt = performance.now() + CACHED_CALLS_WINDOW_MS;
+  while (performance.now() < endAt) {
+    // Сохранённый play: пока видео играет, он обязан быть безвредным.
+    Reflect.apply(cached.play, video, []).catch((error) => playRejections.push(error?.name ?? String(error)));
+    samples.push({
+      cached: Reflect.apply(cached.currentTimeGetter, video, []),
+      page: video.currentTime,
+    });
+    await sleep(CACHED_CALL_PERIOD_MS);
+  }
+  const worst = samples.reduce((max, sample) => Math.max(max, Math.abs(sample.cached - sample.page)), 0);
+  const advance = samples.length > 0 ? samples[samples.length - 1].cached - samples[0].cached : 0;
+  check('cached-getter-matches-page-clock', samples.length > 0 && worst < MAX_CLOCK_DISAGREEMENT_S,
+    `${samples.length} samples, worst cached-vs-page disagreement ${worst.toFixed(2)} s`);
+  check('cached-getter-clock-advances', advance >= MIN_CLOCK_ADVANCE_S,
+    `cached clock ${samples[0]?.cached.toFixed(2)} -> ${samples[samples.length - 1]?.cached.toFixed(2)} (+${advance.toFixed(2)} s)`);
+  if (playRejections.length > 0) log(`cached play() rejected ${playRejections.length} time(s): ${[...new Set(playRejections)].join(',')}`);
+}
+
+await runScenario('cached-descriptors', async (ctx) => {
+  const session = await startAsset(ctx, 'h264-aac');
+  const { video } = session;
+  await checkPlaying(ctx, video, 'playing');
+  if (ctx.params.handoff) {
+    await observeHandoff(ctx, session, {
+      'call-cached-api': (hookCtx) => exerciseCachedApi(
+        (name, ok, detail) => hookCtx.check(name, ok, detail), (line) => hookCtx.log(line), video),
+    });
+    await session.player.destroy();
+    return;
+  }
+  await exerciseCachedApi((name, ok, detail) => ctx.check(name, ok, detail), (line) => ctx.log(line), video);
+  await session.player.destroy();
+});
+</script>
+</body>
+</html>

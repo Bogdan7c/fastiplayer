@@ -53,6 +53,9 @@ export class MseEngine {
    * @param {RequestCredentials} [options.credentials]
    * @param {number} [options.bufferAheadS]
    * @param {{kind:string, index:number}} [options.hangAt] перестать качать на сегменте
+   * @param {number} [options.firstRequestDelayMs] не делать НИ ОДНОГО запроса (ни init, ни
+   *   сегмента) первые N мс после `start()`: MediaSource открыт, SourceBuffer-ы добавлены, а
+   *   данных ещё нет (медленный CDN при смене поколения)
    * @param {(line:string) => void} [options.log]
    */
   constructor(options) {
@@ -63,6 +66,9 @@ export class MseEngine {
     this.credentials = options.credentials ?? 'same-origin';
     this.bufferAheadS = options.bufferAheadS ?? DEFAULT_BUFFER_AHEAD_S;
     this.hangAt = options.hangAt ?? null;
+    this.firstRequestDelayMs = options.firstRequestDelayMs ?? 0;
+    /** Момент (performance.now), раньше которого запросов нет; задаётся в `start()`. */
+    this.requestsAllowedAt = 0;
     this.log = options.log ?? (() => {});
     this.initialTracks = options.tracks;
     /** Журнал запросов: {kind:'init'|'segment', lane, url, startS, at}. */
@@ -77,6 +83,10 @@ export class MseEngine {
   /** Создаёт SourceBuffer-ы и запускает подкачку с позиции `positionS`. */
   start(positionS = 0) {
     this.ms.duration = this.durationS;
+    if (this.firstRequestDelayMs > 0) {
+      this.requestsAllowedAt = performance.now() + this.firstRequestDelayMs;
+      this.log(`delaying the first request by ${this.firstRequestDelayMs} ms`);
+    }
     this.lanes = this.initialTracks.map((track) => this.#createLane(track));
     this.#launchLoops(positionS);
   }
@@ -196,6 +206,8 @@ export class MseEngine {
 
   async #runLane(lane, epoch) {
     try {
+      // Задержка первых данных: до неё поток «открыт, но пуст». Смена эпохи её прерывает.
+      while (this.#alive(epoch) && performance.now() < this.requestsAllowedAt) await sleep(POLL_MS);
       while (this.#alive(epoch)) {
         if (lane.track !== lane.desiredTrack) await this.#switchLaneTrack(lane);
         if (lane.needInit) await this.#appendInit(lane, epoch);

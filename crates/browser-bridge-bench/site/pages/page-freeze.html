@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>page-freeze</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>page-freeze</h1>
+
+<script type="module">
+// Главный поток страницы замирает на 15 с после передачи: тень (в мире страницы) перестаёт
+// слать пульс «жива». Продукт обязан за ~10 с тишины честно кончить сеанс: страница получает
+// видео назад, плеер пишет «Stream error — video returned to the page» (причина — сбой на
+// стороне страницы). После разморозки страница снова владеет видео: настоящий счётчик кадров
+// растёт, когда она играет сама.
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep, startPlayback } from '../lib/bench-checks.js';
+import { startAsset, observeHandoff } from '../lib/scenario-kit.js';
+
+/** Сколько главный поток страницы стоит под тенью, мс (больше предела тишины пульса, 10 с). */
+const FREEZE_MS = 15000;
+/** Короткая заморозка в обычном режиме (проверка, что сама заморозка не ломает страницу), мс. */
+const PLAIN_FREEZE_MS = 1000;
+/** Допуск на неточность таймера: заморозка считается удавшейся, если длилась не меньше, мс. */
+const FREEZE_TOLERANCE_MS = 500;
+/** Сколько ждём после разморозки, пока сообщения продукта о конце сеанса дойдут до страницы, мс. */
+const MESSAGE_SETTLE_MS = 1500;
+/** Сколько настоящих кадров браузер должен насчитать, играя после возврата. */
+const MIN_REAL_FRAMES = 10;
+/** Сколько ждём возврата настоящего воспроизведения, мс. */
+const RETURN_WAIT_MS = 20000;
+/** Итоговые проверки окна под тенью, которые заморозка делает бессмысленными. */
+const SKIPPED_FINISH_CHECKS = [
+  'page-alive-under-shadow', 'page-clock-advances', 'page-buffer-keeps-filling', 'page-sees-playback-not-pause',
+];
+
+/** Занимает главный поток на `durationMs` (busy loop: ни таймеры, ни события не работают). */
+function blockMainThread(durationMs) {
+  const startedAt = performance.now();
+  while (performance.now() - startedAt < durationMs) { /* намеренно пусто: это и есть заморозка */ }
+  return performance.now() - startedAt;
+}
+
+await runScenario('page-freeze', async (ctx) => {
+  const session = await startAsset(ctx, 'h264-aac');
+  const { video, player } = session;
+  await checkPlaying(ctx, video, 'playing');
+  if (ctx.params.handoff) {
+    await observeHandoff(ctx, session, {
+      'freeze-main-thread': async (hookCtx, state) => {
+        const frozenMs = blockMainThread(FREEZE_MS);
+        hookCtx.check('main-thread-was-frozen', frozenMs >= FREEZE_MS - FREEZE_TOLERANCE_MS,
+          `blocked for ${Math.round(frozenMs)} ms`);
+        await sleep(MESSAGE_SETTLE_MS);
+        // Если связь кончилась, видео снова у страницы: она играет сама, как человек. Страница
+        // перематывает на свою позицию, чтобы её движок докачал данные, которых могло не хватить.
+        await startPlayback(hookCtx, video);
+        try {
+          await player.seek(video.currentTime);
+        } catch (error) {
+          hookCtx.log(`own seek after the freeze failed: ${error}`);
+        }
+        const framesBefore = state.probe.framesOf(video);
+        const decoding = await waitFor(() => state.probe.framesOf(video) >= framesBefore + MIN_REAL_FRAMES, RETURN_WAIT_MS);
+        hookCtx.check('page-gets-the-video-back-after-freeze', decoding,
+          `real frames ${framesBefore} -> ${state.probe.framesOf(video)}, paused=${video.paused}, currentTime=${video.currentTime.toFixed(2)}`);
+      },
+    }, { skipFinishChecks: SKIPPED_FINISH_CHECKS });
+    return;
+  }
+  const frozenMs = blockMainThread(PLAIN_FREEZE_MS);
+  ctx.check('main-thread-was-frozen', frozenMs >= PLAIN_FREEZE_MS - FREEZE_TOLERANCE_MS, `blocked for ${Math.round(frozenMs)} ms`);
+  await checkPlaying(ctx, video, 'plays-after-freeze');
+});
+</script>
+</body>
+</html>

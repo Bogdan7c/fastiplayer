@@ -19,6 +19,7 @@ use super::evidence::{
 use super::handoff_run::{ACK_TIMEOUT, ExtensionMode, HandoffRun, PageReadiness};
 use super::outcome::{StepResult, Verdict};
 use super::page_catalog::PAGE_SCENARIOS;
+use super::page_filter::PageFilter;
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::BenchEnvironment;
 use crate::observe::{FrameEvidence, FrameGrowth, HostLogEvidence, read_host_evidence};
@@ -27,7 +28,7 @@ use crate::site::{PageReport, PageStatus, SiteError};
 /// Сколько кадров должен показать плеер: 2 с видео при 25 к/с — «играет», а не «открылся».
 pub(super) const MIN_PRESENTED_FRAMES: u64 = 50;
 /// Сводки плеера приходят раз в 10 с, плюс запуск плеера и сеанса.
-const FRAMES_TIMEOUT: Duration = Duration::from_secs(60);
+pub(super) const FRAMES_TIMEOUT: Duration = Duration::from_secs(60);
 /// На сколько должны вырасти кадры плеера между двумя сводками ПОСЛЕ действия страницы
 /// (интервал сводок 10 с, 25 к/с: целый интервал даёт ~250; берём меньше четверти).
 const MIN_FRAMES_GAINED_AFTER_HOOK: u64 = 60;
@@ -98,6 +99,25 @@ pub(super) const CAPTURE_PAGES: &[CapturePage] = &[
         id: "mse-generation-swap",
         hook: Some("swap-generation"),
     },
+    // Д-1: тот же обмен, но старый источник снят иначе (так делает YouTube перед рекламой).
+    CapturePage {
+        id: "mse-generation-swap-srcobject-null",
+        hook: Some("swap-generation"),
+    },
+    CapturePage {
+        id: "mse-generation-swap-reload",
+        hook: Some("swap-generation"),
+    },
+    // Д-4: данные нового поколения приходят через 5 с; пока их нет, часы стоят у начала.
+    CapturePage {
+        id: "mse-generation-swap-delayed",
+        hook: Some("swap-generation"),
+    },
+    // Д-9: страница кэшировала геттер currentTime и play ДО передачи и зовёт их под тенью.
+    CapturePage {
+        id: "cached-descriptors",
+        hook: Some("call-cached-api"),
+    },
     CapturePage {
         id: "shadow-dom",
         hook: None,
@@ -114,17 +134,25 @@ pub(super) const CAPTURE_PAGES: &[CapturePage] = &[
 
 /// Все MSE-страницы одного браузера, каждая в свежем окружении (свой плеер и журналы).
 /// Первым идёт контроль линейки: браузер без экстеншена играет сам, и счётчик это видит.
-pub(super) fn run_all(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
+/// С фильтром `--page` идут только выбранные страницы (и их контроли, если выбраны).
+pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> Vec<StepResult> {
     let mut results: Vec<StepResult> = CONTROL_PAGES
         .iter()
+        .filter(|page| filter.admits(page.id))
         .map(|page| run_decoder_control(stand, browser, *page))
         .collect();
     results.extend(
         CAPTURE_PAGES
             .iter()
+            .filter(|page| filter.admits(page.id))
             .map(|page| run_page(stand, browser, "capture", *page)),
     );
     results
+}
+
+/// Идентификаторы страниц `capture` (контрольные страницы входят в тот же список).
+pub(super) fn capture_page_ids() -> Vec<&'static str> {
+    CAPTURE_PAGES.iter().map(|page| page.id).collect()
 }
 
 /// Сколько секунд контрольный прогон даёт браузеру играть самому, пока идёт «окно».
@@ -351,7 +379,11 @@ struct CaptureEvidence {
 }
 
 /// Страница отчиталась до передачи: `unsupported` честен только там, где таблица его разрешает.
-fn judge_early_report(page_id: &str, browser: BrowserKind, report: &PageReport) -> Verdict {
+pub(super) fn judge_early_report(
+    page_id: &str,
+    browser: BrowserKind,
+    report: &PageReport,
+) -> Verdict {
     let allowed = PAGE_SCENARIOS
         .iter()
         .find(|scenario| scenario.id == page_id)
@@ -718,6 +750,6 @@ mod tests {
             );
             assert!(seen.insert(page.id), "{} listed twice", page.id);
         }
-        assert_eq!(CAPTURE_PAGES.len(), 10);
+        assert_eq!(CAPTURE_PAGES.len(), 14);
     }
 }

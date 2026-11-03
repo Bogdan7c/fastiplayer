@@ -25,4 +25,12 @@ pub enum ObserveError {
         /// Последняя подходящая по теме строка (например, последняя сводка), если была.
         last_seen: Option<String>,
     },
+    /// Строка журнала с известным маркером, но не в ожидаемом формате (формат плеера изменился).
+    #[error("malformed {what} line in the player log: {line:?}")]
+    MalformedLine {
+        /// Какую строку разбирали.
+        what: &'static str,
+        /// Строка как есть.
+        line: String,
+    },
 }

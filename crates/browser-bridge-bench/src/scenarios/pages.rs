@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use super::context::{ScenarioError, Stand};
 use super::outcome::{Outcome, StepResult, Verdict};
 use super::page_catalog::{PAGE_SCENARIOS, PageScenario};
+use super::page_filter::PageFilter;
 use crate::browsers::{BrowserKind, BrowserUnderTest};
 use crate::site::{PageReport, PageStatus, RunId};
 
@@ -16,13 +17,16 @@ use crate::site::{PageReport, PageStatus, RunId};
 /// десятки секунд; больше минуты — значит страница зависла.
 const PAGE_REPORT_TIMEOUT: Duration = Duration::from_secs(60);
 
-pub(super) fn run(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
+pub(super) fn run(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> Vec<StepResult> {
     let mut results = Vec::new();
     let started = Instant::now();
     // Окружение и браузер общие для всех страниц браузера: запуск kwin и браузера дорогой.
     let session_verdict = stand.with_environment(|environment| {
         let mut browser_session = stand.launch_browser(browser, environment, Vec::new())?;
-        for scenario in PAGE_SCENARIOS {
+        for scenario in PAGE_SCENARIOS
+            .iter()
+            .filter(|scenario| filter.admits(scenario.id))
+        {
             results.push(check_page(
                 stand,
                 browser_session.as_mut(),

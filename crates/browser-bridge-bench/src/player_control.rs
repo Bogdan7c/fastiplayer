@@ -47,6 +47,9 @@ pub enum PlayerControlError {
     /// Окно не стало управляемым за отведённое время.
     #[error("the browser window MPRIS did not become controllable within {0:?}")]
     NotControllable(Duration),
+    /// Окно не закрылось (его имя осталось на шине) за отведённое время.
+    #[error("the browser window MPRIS is still on the bus after {0:?}")]
+    StillPresent(Duration),
 }
 
 /// Пульт окна браузерного режима на конкретной частной шине.
@@ -78,6 +81,15 @@ impl PlayerControl {
             }
             std::thread::sleep(POLL_STEP);
         }
+    }
+
+    /// Ждёт, пока окно уйдёт с шины (процесс плеера вышел): имя MPRIS освобождается вместе с
+    /// окном, и чтение свойства начинает падать. Звать только после того, как окно было
+    /// управляемым, иначе «ещё не появилось» неотличимо от «уже ушло».
+    pub fn wait_until_gone(&self, timeout: Duration) -> Result<(), PlayerControlError> {
+        wait_until_absent(timeout, || {
+            self.property(PLAYER_INTERFACE, "CanPause").is_ok()
+        })
     }
 
     /// `Pause`.
@@ -147,6 +159,23 @@ impl PlayerControl {
     }
 }
 
+/// Опрашивает `is_present`, пока она не вернёт `false` (успех) или не выйдет срок.
+fn wait_until_absent(
+    timeout: Duration,
+    mut is_present: impl FnMut() -> bool,
+) -> Result<(), PlayerControlError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !is_present() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(PlayerControlError::StillPresent(timeout));
+        }
+        std::thread::sleep(POLL_STEP);
+    }
+}
+
 /// Аргументы `busctl call`. Перед сигнатурой и значениями стоит `--`: иначе `busctl` примет
 /// отрицательное число (перемотка назад) за свою опцию («unrecognized option '-8'»).
 fn call_arguments<'a>(
@@ -192,6 +221,25 @@ mod tests {
         assert_eq!(arguments[0], "call");
         // Метод без аргументов обходится без разделителя.
         assert!(!call_arguments(PLAYER_INTERFACE, "Pause", &[]).contains(&"--"));
+    }
+
+    #[test]
+    fn a_bus_without_the_window_counts_as_a_window_that_is_gone() {
+        let control = PlayerControl::on_bus("unix:path=/nonexistent/fastiplayer-bench-bus");
+        assert!(control.wait_until_gone(Duration::from_millis(300)).is_ok());
+    }
+
+    #[test]
+    fn waiting_for_absence_succeeds_once_the_window_leaves_and_fails_if_it_stays() {
+        let mut polls = 0;
+        let left = wait_until_absent(Duration::from_secs(5), || {
+            polls += 1;
+            polls < 3
+        });
+        assert!(left.is_ok());
+        assert_eq!(polls, 3);
+        let stays = wait_until_absent(Duration::from_millis(300), || true);
+        assert!(matches!(stays, Err(PlayerControlError::StillPresent(_))));
     }
 
     #[test]

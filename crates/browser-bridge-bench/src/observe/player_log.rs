@@ -3,6 +3,9 @@
 //! Плеер раз в 10 с (и в конце) пишет строку
 //! `Browser playback summary kind=periodic|final presented_frames=N … position_regressions=N …`.
 //! `presented_frames` — кадры, дошедшие до показа в окне: критерий «видео реально играет».
+//!
+//! Конец сеанса окно пишет строкой `Browser session end notice shown notice=… cause=… end=…`
+//! ([`parse_end_notice`]): по ней стенд узнаёт, ЧТО плеер сказал зрителю и почему.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -13,6 +16,8 @@ use super::ObserveError;
 
 /// Начало строки сводки.
 const SUMMARY_MARKER: &str = "Browser playback summary";
+/// Начало строки «окно показало сообщение о конце сеанса» (полоса `cleared` — другая строка).
+const END_NOTICE_MARKER: &str = "Browser session end notice shown";
 /// Шаг опроса файла.
 const POLL_STEP: Duration = Duration::from_millis(200);
 
@@ -25,6 +30,19 @@ pub struct FrameEvidence {
     pub position_regressions: u64,
     /// Строка журнала целиком.
     pub summary_line: String,
+}
+
+/// Сообщение о конце сеанса, которое окно плеера показало зрителю (поля строки журнала).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndNotice {
+    /// Какое сообщение увидел зритель (`page_took_video_back`, `stream_error`…).
+    pub notice: String,
+    /// Причина конца сеанса (`page_took_video_back`, `page_stream_error`, `protocol_violation`…).
+    pub cause: String,
+    /// Чем кончилось доигрывание (`none`, если его не было).
+    pub end: String,
+    /// Строка журнала целиком.
+    pub line: String,
 }
 
 /// Две сводки, между которыми показ кадров вырос на нужную величину.
@@ -81,6 +99,33 @@ pub fn parse_summary(line: &str) -> Option<FrameEvidence> {
         presented_frames: number_field(line, "presented_frames")?,
         position_regressions: number_field(line, "position_regressions")?,
         summary_line: line.to_owned(),
+    })
+}
+
+/// Достаёт `name=<слово>` (до пробела) из строки журнала; левая граница — как у чисел.
+fn word_field(line: &str, name: &str) -> Option<String> {
+    let pattern = format!("{name}=");
+    let (start, _) = line
+        .match_indices(&pattern)
+        .find(|(index, _)| *index == 0 || line.as_bytes()[index - 1] == b' ')?;
+    let word: String = line[start + pattern.len()..]
+        .chars()
+        .take_while(|symbol| !symbol.is_whitespace())
+        .collect();
+    (!word.is_empty()).then_some(word)
+}
+
+/// Разбор строки `Browser session end notice shown notice=… cause=… end=…`; `None`, если
+/// строка не такая или в ней нет одного из трёх полей.
+pub fn parse_end_notice(line: &str) -> Option<EndNotice> {
+    if !line.contains(END_NOTICE_MARKER) {
+        return None;
+    }
+    Some(EndNotice {
+        notice: word_field(line, "notice")?,
+        cause: word_field(line, "cause")?,
+        end: word_field(line, "end")?,
+        line: line.to_owned(),
     })
 }
 
@@ -235,6 +280,16 @@ impl PlayerLog {
         }
     }
 
+    /// Ждёт среди ещё не потреблённых строк сообщение о конце сеанса и возвращает его поля.
+    /// Строка с маркером, но без полей — это уже не «не дождались», а сломанный формат журнала.
+    pub fn wait_for_end_notice(&mut self, timeout: Duration) -> Result<EndNotice, ObserveError> {
+        let line = self.wait_for_line(END_NOTICE_MARKER, timeout)?;
+        parse_end_notice(&line).ok_or(ObserveError::MalformedLine {
+            what: "session end notice",
+            line,
+        })
+    }
+
     /// Все прочитанные строки, содержащие любую из `needles` (паника, ERROR плеера).
     /// Читает только то, что уже подтянуто; перед проверкой вызовите `snapshot_forbidden`.
     pub fn forbidden_lines(&self, needles: &[&str]) -> Vec<String> {
@@ -256,6 +311,81 @@ impl PlayerLog {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    const PAGE_TOOK_BACK: &str = "2026-11-02T05:21:10.101Z  INFO fastiplayer: Browser session end notice shown notice=page_took_video_back cause=page_took_video_back end=none";
+
+    #[test]
+    fn end_notice_fields_are_parsed_exactly() {
+        let notice = parse_end_notice(PAGE_TOOK_BACK).expect("an end notice line");
+        assert_eq!(notice.notice, "page_took_video_back");
+        assert_eq!(notice.cause, "page_took_video_back");
+        assert_eq!(notice.end, "none");
+        let stream = parse_end_notice(
+            "INFO Browser session end notice shown notice=stream_error cause=page_stream_error end=none",
+        )
+        .expect("a stream error line");
+        assert_eq!(
+            (stream.notice.as_str(), stream.cause.as_str()),
+            ("stream_error", "page_stream_error")
+        );
+    }
+
+    #[test]
+    fn end_notice_ignores_other_lines_and_incomplete_ones() {
+        assert_eq!(
+            parse_end_notice("INFO Browser session end notice cleared"),
+            None
+        );
+        assert_eq!(parse_end_notice(PERIODIC_FOR_NOTICE_TESTS), None);
+        // Маркер есть, но поля cause нет: это не сообщение, а мусор.
+        assert_eq!(
+            parse_end_notice("Browser session end notice shown notice=stream_error end=none"),
+            None
+        );
+        // `end=` не должен находиться внутри другого слова (`weekend=`).
+        assert_eq!(
+            parse_end_notice("Browser session end notice shown notice=a cause=b weekend=x"),
+            None
+        );
+    }
+
+    const PERIODIC_FOR_NOTICE_TESTS: &str =
+        "INFO Browser playback summary kind=periodic presented_frames=1 position_regressions=0";
+
+    #[test]
+    fn waiting_for_the_end_notice_skips_older_lines_and_returns_the_fields() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("player.log");
+        append(&path, "INFO Browser session opened\n");
+        let mut log = PlayerLog::open(&path);
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            append(&writer_path, &format!("{PAGE_TOOK_BACK}\n"));
+        });
+        let notice = log
+            .wait_for_end_notice(Duration::from_secs(5))
+            .expect("the notice written later");
+        writer.join().expect("writer thread");
+        assert_eq!(notice.notice, "page_took_video_back");
+    }
+
+    #[test]
+    fn waiting_for_the_end_notice_times_out_without_one_and_flags_a_broken_line() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("player.log");
+        append(&path, "INFO Browser session opened\n");
+        let mut log = PlayerLog::open(&path);
+        assert!(matches!(
+            log.wait_for_end_notice(Duration::from_millis(400)),
+            Err(ObserveError::Timeout { .. })
+        ));
+        append(&path, "Browser session end notice shown notice=x\n");
+        assert!(matches!(
+            log.wait_for_end_notice(Duration::from_secs(2)),
+            Err(ObserveError::MalformedLine { .. })
+        ));
+    }
 
     const PERIODIC: &str = "2026-11-02T05:20:50.021506Z  INFO Browser playback summary kind=periodic presented_frames=247 taken_frames=250 audio_written_ms=10111 audio_played_ms=9900 audio_output=simulated position_regressions=2 loads=1 position_ms=9900 state=playing";
 

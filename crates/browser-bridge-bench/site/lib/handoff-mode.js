@@ -113,6 +113,35 @@ function bufferedEndAround(video) {
   return 0;
 }
 
+/**
+ * Сколько кадров браузер НА САМОМ ДЕЛЕ декодировал за окно — сумма приростов настоящего
+ * счётчика между тиками сэмплера. Разница «конец минус начало» врёт на смене поколения: счётчик
+ * браузера обнуляется вместе с новым источником, и кадры, декодированные после обнуления, тонули
+ * в отрицательной разнице (09a2: −27…−32 у страниц смены поколения). Упавшее значение значит
+ * «счётчик начался заново», и всё, что в нём уже есть, — новые декодированные кадры.
+ */
+class DecodedFrameTally {
+  constructor(probe, video) {
+    this.probe = probe;
+    this.video = video;
+    this.restart();
+  }
+
+  /** Начать счёт заново от текущего показания (момент передачи). */
+  restart() {
+    this.last = this.probe.available ? this.probe.framesOf(this.video) : 0;
+    this.total = 0;
+  }
+
+  /** Учесть показание счётчика сейчас. */
+  sample() {
+    if (!this.probe.available) return;
+    const current = this.probe.framesOf(this.video);
+    this.total += current >= this.last ? current - this.last : current;
+    this.last = current;
+  }
+}
+
 /** Снимок фактов, видимых странице, и настоящий счётчик мимо тени. */
 function snapshot({ video, player, probe }) {
   return {
@@ -131,16 +160,24 @@ function snapshot({ video, player, probe }) {
 /**
  * Фаза передачи: вызывается страницей ПОСЛЕ её собственных проверок «играет».
  * `hooks` — действия страницы по команде робота (`hook:<имя>`): смена качества, смена поколения.
- * `expectedExtraGenerations` — сколько новых MediaSource страница сделает сама за окно (хуки).
+ * `expectedExtraGenerations` — сколько новых MediaSource страница сама сделает за окно (хуки).
+ * `skipFinishChecks` — имена итоговых проверок, которые у этой страницы теряют смысл: она сама
+ * забирает у плеера видео (снимает источник, ставит файл) или замораживает свой главный поток,
+ * и «часы идут под тенью» там нечему доказывать. Пропуск явный и поимённый; метрики остаются.
  */
 export async function runHandoffPhase(context, {
   video, player = null, hooks = {}, durationS = null, expectedExtraGenerations = 0,
+  skipFinishChecks = [],
 }) {
   const probe = context.realFrames;
   const commands = new CommandChannel(context);
-  const state = { video, player, probe };
+  const decoded = new DecodedFrameTally(probe, video);
+  const state = { video, player, probe, decoded };
   const samples = [];
-  const sampler = setInterval(() => samples.push(performance.now()), SAMPLE_PERIOD_MS);
+  const sampler = setInterval(() => {
+    samples.push(performance.now());
+    decoded.sample();
+  }, SAMPLE_PERIOD_MS);
   if (player) player.followPlayerSeeks();
   let mark = null;
   // Счётчик обязан показывать кадры, пока браузер играет сам: ноль у играющего видео
@@ -155,8 +192,9 @@ export async function runHandoffPhase(context, {
       if (command === 'handed-off') {
         mark = snapshot(state);
         samples.length = 0;
+        decoded.restart();
       } else if (command === 'finish') {
-        finishPhase(context, state, mark, samples, { durationS, expectedExtraGenerations });
+        finishPhase(context, state, mark, samples, { durationS, expectedExtraGenerations, skipFinishChecks });
         context.log('ack finish');
         return;
       } else {
@@ -170,40 +208,49 @@ export async function runHandoffPhase(context, {
 }
 
 /** Итог окна под тенью: метрики для порогов стенда и проверки фактов страницы. */
-function finishPhase(context, state, mark, samples, { durationS, expectedExtraGenerations }) {
+function finishPhase(context, state, mark, samples, { durationS, expectedExtraGenerations, skipFinishChecks }) {
   const { probe } = state;
+  const skipped = new Set(skipFinishChecks);
+  const check = (name, ok, detail) => {
+    if (skipped.has(name)) {
+      context.log(`finish check '${name}' skipped by the page: ${detail}`);
+      return;
+    }
+    context.check(name, ok, detail);
+  };
   if (!mark) {
     context.check('handed-off-before-finish', false, 'the robot never sent handed-off');
     return;
   }
   const now = snapshot(state);
+  state.decoded.sample();
   const windowS = (now.at - mark.at) / 1000;
   const clockAdvance = now.currentTime - mark.currentTime;
   const bufferGain = now.bufferedEnd - mark.bufferedEnd;
   const maxGap = samples.reduce((worst, at, index) => (index === 0 ? worst : Math.max(worst, at - samples[index - 1])), 0);
   const extraGenerations = state.player ? now.generations - mark.generations : 0;
   context.metric('shadow_window_s', windowS);
-  context.metric('real_frames_in_window', now.realFrames - mark.realFrames);
+  context.metric('real_frames_in_window', state.decoded.total);
   context.metric('visible_frames_in_window', now.visibleFrames - mark.visibleFrames);
   context.metric('real_probe_available', probe.available ? 1 : 0);
   context.metric('clock_advance_s', clockAdvance);
   context.metric('sample_ticks', samples.length);
   context.metric('extra_generations', extraGenerations);
-  context.check('page-alive-under-shadow', samples.length >= windowS && maxGap <= MAX_SAMPLE_GAP_MS,
+  check('page-alive-under-shadow', samples.length >= windowS && maxGap <= MAX_SAMPLE_GAP_MS,
     `${samples.length} ticks in ${windowS.toFixed(1)} s, worst gap ${Math.round(maxGap)} ms`);
   // Новый MediaSource по команде робота начинает ролик с нуля: сравнение с отметкой до смены
   // тогда бессмысленно, а ход часов нового ролика проверил сам хук.
   const generationChanged = extraGenerations > 0;
   const clockOk = clockAdvance >= CLOCK_MIN_ADVANCE_S || generationChanged
     || (durationS !== null && now.currentTime >= durationS - END_OF_MEDIA_EPS_S);
-  context.check('page-clock-advances', clockOk,
+  check('page-clock-advances', clockOk,
     `currentTime ${mark.currentTime.toFixed(2)} -> ${now.currentTime.toFixed(2)} (+${clockAdvance.toFixed(2)} s)`);
   const nearEnd = durationS !== null && now.bufferedEnd >= durationS - END_OF_MEDIA_EPS_S;
-  context.check('page-buffer-keeps-filling', bufferGain > 0 || nearEnd || generationChanged,
+  check('page-buffer-keeps-filling', bufferGain > 0 || nearEnd || generationChanged,
     `bufferedEnd ${mark.bufferedEnd.toFixed(2)} -> ${now.bufferedEnd.toFixed(2)}`);
-  context.check('page-sees-playback-not-pause', !now.paused || now.ended || state.returned === true,
+  check('page-sees-playback-not-pause', !now.paused || now.ended || state.returned === true,
     `paused=${now.paused} ended=${now.ended}`);
-  context.check('no-unexpected-media-source-reload', extraGenerations === expectedExtraGenerations,
+  check('no-unexpected-media-source-reload', extraGenerations === expectedExtraGenerations,
     `generations ${mark.generations} -> ${now.generations}, expected +${expectedExtraGenerations}`);
 }
 

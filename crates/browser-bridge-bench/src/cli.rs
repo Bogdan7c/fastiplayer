@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use browser_bridge_bench::browsers::BrowserKind;
 use browser_bridge_bench::environment::{DisplayTarget, PlayerConfigProfile};
-use browser_bridge_bench::scenarios::{BrowserExecutables, RunSettings};
+use browser_bridge_bench::scenarios::{
+    BrowserExecutables, PAGE_SCENARIOS, PageFilter, RunSettings, capture_page_ids, end_page_ids,
+};
 
 /// Что запускать.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,6 +14,7 @@ pub enum Command {
     Pages,
     Smoke,
     Capture,
+    PageEnds,
     PlayerCommands,
     ExtensionStatus,
     All,
@@ -29,7 +32,33 @@ pub enum Parsed {
 pub struct Invocation {
     pub command: Command,
     pub browsers: Vec<BrowserKind>,
+    /// Какие страницы гонять (`--page`); без флага — все страницы команды.
+    pub pages: PageFilter,
     pub settings: RunSettings,
+}
+
+impl Command {
+    /// Команды, у которых есть список страниц и поэтому работает `--page`.
+    fn takes_page_filter(self) -> bool {
+        matches!(
+            self,
+            Self::Pages | Self::Capture | Self::PageEnds | Self::All
+        )
+    }
+
+    /// Находится ли среди страниц команды хоть одна из выбранных: иначе прогон был бы пустым
+    /// и «успешным» без единой проверки.
+    fn has_any_selected_page(self, filter: &PageFilter) -> bool {
+        let pages = || PAGE_SCENARIOS.iter().map(|scenario| scenario.id);
+        match self {
+            Self::Pages => filter.matches_any_of(pages()),
+            Self::Capture => filter.matches_any_of(capture_page_ids()),
+            Self::PageEnds => filter.matches_any_of(end_page_ids()),
+            // `all` всегда начинается с `pages`, где есть любая известная страница.
+            Self::All => filter.matches_any_of(pages()),
+            _ => filter.selects_everything(),
+        }
+    }
 }
 
 /// Ошибка использования (код выхода 2).
@@ -50,10 +79,12 @@ Commands:
   smoke             one page (mse-fmp4) through the real extension, host and player: the
                     robot hands the tab off, the player presents frames
   capture           every MSE page, same chain; the browser must NOT decode under the shadow
+  page-ends         pages that end the hand-off themselves (source withdrawn / replaced by a
+                    file / main thread frozen): the player must say so, in time, and close
   player-commands   pause / play / seek / close from the player window reach the page
   extension-status  the real extension (extensions/browser/dist) says \"Connected to Fastiplayer\"
-  all               pages, capture, player-commands and extension-status (smoke is a subset of
-                    capture), one after another
+  all               pages, capture, page-ends, player-commands and extension-status (smoke is a
+                    subset of capture), one after another; with --page only the page steps run
 
 Options:
   --browser <chromium|firefox|both>   browsers to test (default: both)
@@ -61,6 +92,8 @@ Options:
   --player-config <clean|gles2-vaapi> player settings inside the bench (default: clean)
   --extra-extension <PATH>            extra extension (unpacked dir, .xpi or .zip) in every
                                       browser launch; repeatable (ad blocker mechanism)
+  --page <ID>                         only this page (pages, capture, page-ends, all);
+                                      repeatable; ids are the names in site/pages
   --keep-work                         keep the run directories after the run
   --work-root <DIR>                   run directories (default: target/browser-bridge-bench/work)
   --media-cache <DIR>                 generated media cache (default: target/browser-bridge-bench/media)
@@ -79,6 +112,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Parsed, Usag
     let mut display = DisplayTarget::Virtual;
     let mut player_config = PlayerConfigProfile::Clean;
     let mut extra_extensions = Vec::new();
+    let mut selected_pages: Vec<String> = Vec::new();
     let mut keep_work = false;
     let mut work_root = repo.join("target/browser-bridge-bench/work");
     let mut media_cache = repo.join("target/browser-bridge-bench/media");
@@ -101,6 +135,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Parsed, Usag
                 player_config = parse_player_config(&value_of("--player-config")?)?
             }
             "--extra-extension" => extra_extensions.push(absolute(value_of("--extra-extension")?)),
+            "--page" => selected_pages.push(value_of("--page")?),
             "--keep-work" => keep_work = true,
             "--work-root" => work_root = absolute(value_of("--work-root")?),
             "--media-cache" => media_cache = absolute(value_of("--media-cache")?),
@@ -122,9 +157,11 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Parsed, Usag
         }
     }
     let command = command.ok_or_else(|| UsageError("a command is required".to_owned()))?;
+    let pages = validated_page_filter(command, selected_pages)?;
     Ok(Parsed::Run(Box::new(Invocation {
         command,
         browsers,
+        pages,
         settings: RunSettings {
             repo_root: repo,
             work_root,
@@ -137,6 +174,39 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Parsed, Usag
             browser_executables: executables,
         },
     })))
+}
+
+/// Собирает фильтр страниц и отвергает то, что сделало бы прогон пустым или бессмысленным:
+/// неизвестную страницу, `--page` у команды без страниц, выбор, которого нет среди страниц команды.
+fn validated_page_filter(
+    command: Command,
+    selected: Vec<String>,
+) -> Result<PageFilter, UsageError> {
+    if selected.is_empty() {
+        return Ok(PageFilter::all());
+    }
+    if !command.takes_page_filter() {
+        return Err(UsageError(format!(
+            "--page does not apply to the {command:?} command"
+        )));
+    }
+    if let Some(unknown) = selected.iter().find(|id| {
+        !PAGE_SCENARIOS
+            .iter()
+            .any(|scenario| scenario.id == id.as_str())
+    }) {
+        return Err(UsageError(format!(
+            "--page: unknown page '{unknown}' (see crates/browser-bridge-bench/site/pages)"
+        )));
+    }
+    let filter = PageFilter::only(selected);
+    if !command.has_any_selected_page(&filter) {
+        return Err(UsageError(format!(
+            "--page: none of {:?} is a page of the {command:?} command",
+            filter.ids()
+        )));
+    }
+    Ok(filter)
 }
 
 /// Относительные пути пользователя считаются от текущего каталога.
@@ -154,6 +224,7 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
         "pages" => Ok(Command::Pages),
         "smoke" => Ok(Command::Smoke),
         "capture" => Ok(Command::Capture),
+        "page-ends" => Ok(Command::PageEnds),
         "player-commands" => Ok(Command::PlayerCommands),
         "extension-status" => Ok(Command::ExtensionStatus),
         "all" => Ok(Command::All),
@@ -259,6 +330,64 @@ mod tests {
             invocation(&["player-commands"]).command,
             Command::PlayerCommands
         );
+    }
+
+    #[test]
+    fn page_flag_repeats_and_builds_a_filter() {
+        let run = invocation(&["capture", "--page", "page-freeze", "--page", "mse-fmp4"]);
+        // page-freeze не страница capture, но mse-fmp4 — да: выбор пересекается.
+        assert_eq!(run.pages.ids(), ["page-freeze", "mse-fmp4"]);
+        assert!(run.pages.admits("mse-fmp4") && !run.pages.admits("mse-webm"));
+        assert!(invocation(&["capture"]).pages.selects_everything());
+        let ends = invocation(&[
+            "page-ends",
+            "--page",
+            "source-withdrawn",
+            "--page",
+            "source-withdrawn",
+        ]);
+        assert_eq!(ends.command, Command::PageEnds);
+        assert_eq!(ends.pages.ids(), ["source-withdrawn"]);
+    }
+
+    #[test]
+    fn page_flag_rejects_unknown_pages_foreign_pages_and_commands_without_pages() {
+        let cases: [(&[&str], &str); 5] = [
+            (
+                &["capture", "--page", "no-such-page"],
+                "unknown page 'no-such-page'",
+            ),
+            (
+                &["capture", "--page", "page-freeze"],
+                "none of [\"page-freeze\"] is a page of the Capture",
+            ),
+            (
+                &["page-ends", "--page", "mse-fmp4"],
+                "is a page of the PageEnds",
+            ),
+            (
+                &["smoke", "--page", "mse-fmp4"],
+                "--page does not apply to the Smoke",
+            ),
+            (&["capture", "--page"], "--page needs a value"),
+        ];
+        for (words, expected) in cases {
+            let error = parse_words(words).expect_err("must be rejected");
+            assert!(error.to_string().contains(expected), "{words:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn page_flag_works_for_pages_and_all_with_any_known_page() {
+        assert_eq!(invocation(&["pages", "--page", "pip"]).pages.ids(), ["pip"]);
+        let all = invocation(&["all", "--page", "page-freeze"]);
+        assert_eq!(all.command, Command::All);
+        assert_eq!(all.pages.ids(), ["page-freeze"]);
+    }
+
+    #[test]
+    fn page_ends_command_is_recognised() {
+        assert_eq!(invocation(&["page-ends"]).command, Command::PageEnds);
     }
 
     #[test]

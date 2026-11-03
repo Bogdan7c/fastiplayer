@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>source-to-file</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>source-to-file</h1>
+
+<script type="module">
+// Страница заменяет MSE-источник ОБЫЧНЫМ mp4-файлом (<video src>) и играет его сама. Это не
+// MSE, который плеер умеет перехватывать, поэтому продукт сразу (без допуска на пустой
+// источник) отдаёт видео странице: плеер пишет «The page took the video back» и закрывает
+// окно (решение 179), а браузер САМ декодирует файл — настоящий счётчик кадров растёт.
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, startPlayback, totalFrames } from '../lib/bench-checks.js';
+import { loadCatalog } from '../lib/bench-player.js';
+import { startAsset, observeHandoff } from '../lib/scenario-kit.js';
+
+/** Файл, который страница ставит вместо MSE (тот же, что играет страница video-src). */
+const FILE_ASSET_ID = 'progressive-h264-aac';
+/** Сколько настоящих кадров браузер должен насчитать, играя файл сам. */
+const MIN_REAL_FRAMES = 10;
+/** Сколько ждём, пока браузер заиграет файл сам, мс. */
+const FILE_PLAY_WAIT_MS = 20000;
+/** Итоговые проверки окна под тенью, которые после замены источника теряют смысл. */
+const SKIPPED_FINISH_CHECKS = ['page-clock-advances', 'page-buffer-keeps-filling', 'page-sees-playback-not-pause'];
+
+await runScenario('source-to-file', async (ctx) => {
+  const catalog = await loadCatalog();
+  const fileUrl = `/media/${catalog.assets[FILE_ASSET_ID].url}`;
+  const session = await startAsset(ctx, 'h264-aac');
+  const { video, player } = session;
+  await checkPlaying(ctx, video, 'playing');
+
+  /** Меняет источник на файл и ждёт, пока браузер играет его сам (по счётчику кадров). */
+  const playFileByItself = async (hookCtx, framesOf) => {
+    await player.destroy();
+    video.src = fileUrl;
+    await startPlayback(hookCtx, video);
+    const framesBefore = framesOf(video);
+    const timeBefore = video.currentTime;
+    const decoding = await waitFor(
+      () => framesOf(video) >= framesBefore + MIN_REAL_FRAMES && video.currentTime >= timeBefore + 0.5,
+      FILE_PLAY_WAIT_MS,
+    );
+    hookCtx.check('page-plays-the-file-by-itself', decoding && !video.paused,
+      `frames ${framesBefore} -> ${framesOf(video)}, currentTime ${timeBefore.toFixed(2)} -> ${video.currentTime.toFixed(2)}, paused=${video.paused}`);
+  };
+
+  if (ctx.params.handoff) {
+    await observeHandoff(ctx, session, {
+      // Кадры считаем НАСТОЯЩИМ счётчиком мимо тени: пока тень стоит, он не растёт.
+      'switch-to-file': (hookCtx, state) => playFileByItself(hookCtx, (element) => state.probe.framesOf(element)),
+    }, { skipFinishChecks: SKIPPED_FINISH_CHECKS });
+    return;
+  }
+  await playFileByItself(ctx, totalFrames);
+});
+</script>
+</body>
+</html>

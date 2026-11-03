@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>source-withdrawn</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>source-withdrawn</h1>
+
+<script type="module">
+// Страница честно забирает видео у плеера: останавливает свой движок и снимает источник
+// (srcObject = null; removeAttribute('src'); load()) — и больше ничего не ставит. Продукт даёт
+// пустому источнику паузу на решение (5 с), потом честно кончает сеанс: плеер пишет
+// «The page took the video back» и закрывает окно (решение 179). Проверки тени после снятия
+// источника не имеют смысла и отключены поимённо.
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying, waitFor } from '../lib/bench-checks.js';
+import { startAsset, observeHandoff } from '../lib/scenario-kit.js';
+
+/** Итоговые проверки окна под тенью, которые без источника нечему доказывать. */
+const SKIPPED_FINISH_CHECKS = ['page-clock-advances', 'page-buffer-keeps-filling', 'page-sees-playback-not-pause'];
+
+/** Останавливает движок страницы и оставляет элемент БЕЗ источника. */
+async function withdrawSource(player, video) {
+  await player.destroy();
+  video.srcObject = null;
+  video.removeAttribute('src');
+  video.load();
+}
+
+await runScenario('source-withdrawn', async (ctx) => {
+  const session = await startAsset(ctx, 'h264-aac');
+  const { video, player } = session;
+  await checkPlaying(ctx, video, 'playing');
+  if (ctx.params.handoff) {
+    await observeHandoff(ctx, session, {
+      'withdraw-source': async (hookCtx) => {
+        await withdrawSource(player, video);
+        hookCtx.check('element-has-no-source', !video.hasAttribute('src') && video.srcObject === null,
+          `src attribute=${video.getAttribute('src')}, srcObject=${video.srcObject}`);
+      },
+    }, { skipFinishChecks: SKIPPED_FINISH_CHECKS });
+    return;
+  }
+  await withdrawSource(player, video);
+  // Без источника элемент пуст (NETWORK_EMPTY = 0) и ничего не играет. Алгоритм выбора
+  // ресурса заканчивает работу «в стабильном состоянии», поэтому даём ему мгновение.
+  await waitFor(() => video.networkState === 0, 2000);
+  ctx.check('element-is-empty-after-withdrawal', video.networkState === 0 && video.readyState === 0 && !video.hasAttribute('src'),
+    `networkState=${video.networkState}, readyState=${video.readyState}, srcObject=${video.srcObject}`);
+});
+</script>
+</body>
+</html>
