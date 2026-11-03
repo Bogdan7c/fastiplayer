@@ -18,6 +18,7 @@ pub(crate) mod process;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::browsers::BrowserKind;
@@ -58,7 +59,10 @@ pub struct BenchEnvironment {
     xdg_state_home: PathBuf,
     xdg_cache_home: PathBuf,
     player_log: PathBuf,
-    keep: bool,
+    /// Сохранить каталог прогона при `Drop`. Атомарный флаг, а не `bool`: решение «сохранить
+    /// для разбора» принимает сценарий, у которого есть только `&BenchEnvironment` (см.
+    /// [`Self::keep_work_dir`]); сам флаг только поднимается и читается в `Drop`.
+    keep: AtomicBool,
     // Порядок важен: Option, потому что `Drop` останавливает процессы раньше удаления каталогов.
     bus: Option<PrivateBus>,
     display: Option<VirtualDisplay>,
@@ -84,7 +88,7 @@ impl BenchEnvironment {
             run_dir,
             runtime_dir,
             runtime_dir_is_separate,
-            keep: false,
+            keep: AtomicBool::new(false),
             bus: None,
             display: None,
         };
@@ -168,8 +172,12 @@ impl BenchEnvironment {
     }
 
     /// Не удалять каталог прогона при `Drop` (для разбора после сбоя).
-    pub fn keep_work_dir(&mut self) {
-        self.keep = true;
+    ///
+    /// Берёт `&self`: сценарий, который гоняет много страниц в одном окружении (`pages`),
+    /// узнаёт о провале внутри замыкания с общей ссылкой и должен сохранить журналы браузера
+    /// именно этого окружения. Флаг только поднимается — «передумать» нельзя.
+    pub fn keep_work_dir(&self) {
+        self.keep.store(true, Ordering::Relaxed);
     }
 
     fn bus_ref(&self) -> Result<&PrivateBus, EnvironmentError> {
@@ -261,7 +269,7 @@ impl Drop for BenchEnvironment {
         if self.runtime_dir_is_separate {
             let _ = std::fs::remove_dir_all(&self.runtime_dir);
         }
-        if !self.keep {
+        if !self.keep.load(Ordering::Relaxed) {
             let _ = std::fs::remove_dir_all(&self.run_dir);
         }
     }

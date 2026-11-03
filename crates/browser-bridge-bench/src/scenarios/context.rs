@@ -104,7 +104,7 @@ impl Stand {
         &self,
         player_config: PlayerConfigProfile,
     ) -> Result<BenchEnvironment, ScenarioError> {
-        let mut environment = BenchEnvironment::create(EnvironmentOptions {
+        let environment = BenchEnvironment::create(EnvironmentOptions {
             display: self.settings.display,
             player_bin_dir: self.settings.player_bin_dir.clone(),
             player_config,
@@ -163,7 +163,7 @@ impl Stand {
     where
         F: FnOnce(&BenchEnvironment) -> Result<Verdict, ScenarioError>,
     {
-        let mut environment = match self.create_environment_with_player_config(player_config) {
+        let environment = match self.create_environment_with_player_config(player_config) {
             Ok(environment) => environment,
             Err(error) => return Verdict::fail(error.to_string()),
         };

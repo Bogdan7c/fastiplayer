@@ -44,6 +44,24 @@ pub(crate) struct Firefox {
     stderr_log: PathBuf,
 }
 
+/// Звук Firefox в стенде: «звукового устройства нет», явно и одинаково на любой машине.
+///
+/// Зачем. Стенд прячет звуковой сервер хозяина (частный `XDG_RUNTIME_DIR`, сокета
+/// PipeWire/PulseAudio не видно) — звук браузера стенд не проверяет. Без этой настройки
+/// cubeb Firefox, не достучавшись до PulseAudio, сам откатывается на ALSA, а «default» у ALSA
+/// ведёт в модуль PipeWire, которому подключаться некуда. Обычно открытие потока тут же
+/// падает, и страница играет видео по системным часам. Но изредка (≈ раз на 30–50 прогонов
+/// `pages`) открытие потока не возвращается, и звуковой сервер AudioIPC родительского
+/// процесса — он один на весь браузер — больше не отвечает никому. С этого момента ЛЮБОЙ
+/// элемент со звуком в этом Firefox стоит на нуле (`totalVideoFrames 0 -> 0`,
+/// `paused=false`), а страницы без звука (`drm-clearkey`, `banner-autoplay`) играют.
+///
+/// `media.cubeb.force_null_context` — штатный pref Firefox: каждый процесс сразу получает
+/// «контекста cubeb нет», ни один звуковой поток не открывается (ни через сервер AudioIPC,
+/// ни через ALSA), и видео играет по системным часам — ровно то, чем раньше заканчивался
+/// каждый удачный прогон, только без лотереи.
+const NO_AUDIO_DEVICE_PREF: &str = "user_pref(\"media.cubeb.force_null_context\", true);";
+
 /// Свободный локальный порт для Marionette (узкое окно гонки между закрытием и запуском).
 fn free_local_port() -> Result<u16, BrowserError> {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -84,6 +102,7 @@ pub(crate) fn user_js(marionette_port: u16, autoplay_without_gesture: bool) -> S
         // `dump()` в chrome-контексте пишет в stdout процесса (см. `FORWARD_HOST_STDERR_SCRIPT`).
         "user_pref(\"browser.dom.window.dump.enabled\", true);".to_owned(),
         "user_pref(\"devtools.console.stdout.content\", true);".to_owned(),
+        NO_AUDIO_DEVICE_PREF.to_owned(),
     ];
     if autoplay_without_gesture {
         // 0 = разрешить автовоспроизведение со звуком без жеста.
@@ -426,6 +445,20 @@ mod tests {
         );
         assert!(text.contains(&expected_map), "{text}");
         assert!(text.contains("media.autoplay.default\", 0"));
+    }
+
+    #[test]
+    fn user_js_gives_firefox_no_audio_device_in_every_profile() {
+        // Без этой строки Firefox сам выбирает звук хозяина (ALSA → PipeWire) и изредка
+        // навсегда вешает весь свой звук — см. `NO_AUDIO_DEVICE_PREF`.
+        for autoplay_without_gesture in [true, false] {
+            let text = user_js(1, autoplay_without_gesture);
+            assert!(
+                text.lines()
+                    .any(|line| line == "user_pref(\"media.cubeb.force_null_context\", true);"),
+                "{text}"
+            );
+        }
     }
 
     #[test]

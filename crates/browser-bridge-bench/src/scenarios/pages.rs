@@ -4,6 +4,7 @@
 //! собственные проверки проходят. Если страница плохая, дымок с перехватчиком ничего не
 //! докажет — поэтому `pages` идёт первым.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::context::{ScenarioError, Stand};
@@ -33,6 +34,12 @@ pub(super) fn run(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> V
                 browser,
                 scenario,
             ));
+        }
+        // Провал страницы — повод сохранить журналы браузера: без `firefox.stderr.log` причину
+        // не найти. Раньше `pages` удалял каталог даже при провалах, и каскад «0 кадров» в
+        // Firefox (сессия 09b) пришлось ловить повторами вслепую.
+        if mark_first_failure_with_kept_directory(&mut results, environment.work_dir()) {
+            environment.keep_work_dir();
         }
         browser_session.shutdown()?;
         Ok(Verdict::pass(String::new()))
@@ -89,6 +96,28 @@ fn drive_page(
             .push_str(&format!("\n(could not close the tab: {error})"));
     }
     Ok(verdict)
+}
+
+/// Дописывает к ПЕРВОЙ провалившейся странице, где лежит сохранённый каталог прогона.
+///
+/// Возвращает `true`, если провал есть (тогда вызывающий обязан сохранить каталог). Путь
+/// пишем только к первому провалу: все страницы делят один браузер, и следующие провалы
+/// часто лишь следствие первого — разбор начинается с него.
+fn mark_first_failure_with_kept_directory(
+    results: &mut [StepResult],
+    run_directory: &Path,
+) -> bool {
+    let Some(first_failure) = results
+        .iter_mut()
+        .find(|result| result.outcome == Outcome::Fail)
+    else {
+        return false;
+    };
+    first_failure.detail.push_str(&format!(
+        "\nrun directory kept for inspection: {}",
+        run_directory.display()
+    ));
+    true
 }
 
 /// Адрес страницы: главный origin принимает отчёты, чужой нужен страницам с iframe.
@@ -164,6 +193,46 @@ mod tests {
             .iter()
             .find(|s| s.id == id)
             .expect("known scenario")
+    }
+
+    fn step(subject: &str, verdict: Verdict) -> StepResult {
+        StepResult::new(
+            "pages",
+            BrowserKind::Firefox,
+            subject,
+            verdict,
+            Duration::from_secs(1),
+        )
+    }
+
+    #[test]
+    fn kept_directory_is_noted_on_the_first_failure_only() {
+        let mut results = vec![
+            step("mse-fmp4", Verdict::pass(String::new())),
+            step("drm-probe", Verdict::fail("playing-after-probe FAILED")),
+            step("series", Verdict::fail("episode-1-playing FAILED")),
+        ];
+        let keep = mark_first_failure_with_kept_directory(&mut results, Path::new("/w/run-1"));
+        assert!(keep, "a failed page must ask to keep the run directory");
+        assert_eq!(
+            results[1].detail,
+            "playing-after-probe FAILED\nrun directory kept for inspection: /w/run-1"
+        );
+        // Остальные строки не тронуты: проход без пути, следующий провал без дубля.
+        assert_eq!(results[0].detail, "");
+        assert_eq!(results[2].detail, "episode-1-playing FAILED");
+    }
+
+    #[test]
+    fn nothing_is_kept_when_every_page_passed_or_is_unsupported() {
+        let mut results = vec![
+            step("mse-fmp4", Verdict::pass(String::new())),
+            step("mse-worker", Verdict::unsupported("1 checks, none failed")),
+        ];
+        let before = results.clone();
+        let keep = mark_first_failure_with_kept_directory(&mut results, Path::new("/w/run-2"));
+        assert!(!keep);
+        assert_eq!(results, before);
     }
 
     #[test]
