@@ -118,7 +118,11 @@ impl BrowserSessionCore {
         playback: Box<dyn MediaPlayback>,
         paused_drain: PausedDrain,
     ) -> Result<Self, BrowserSessionStartFailure> {
-        let player_hello = super::player_hello::player_hello()?;
+        let player_hello =
+            super::player_hello::player_hello(super::codec_label::cheap_video_codecs(
+                settings.render_profile(),
+                settings.preferred_video_codec_order(),
+            ))?;
         let source_policy = pushed_source_policy(settings)?;
         // Окно буфера для СЛЕДУЮЩЕГО видео: маршрут настроек обновляет его, фабрика
         // потоков читает при старте каждого нового потока.

@@ -59,6 +59,7 @@
 //! плеер. Окно браузерного режима меняет их «только на сеанс» (решение 122, 04a).
 
 mod buffer_policy;
+mod codec_label;
 mod drain_override;
 mod held_bytes_override;
 mod inbox;

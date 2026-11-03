@@ -148,7 +148,7 @@ impl Harness {
         )
         .expect("loopback server starts");
         let desk = EntryDesk::new(
-            player_hello().expect("valid player hello"),
+            player_hello(Default::default()).expect("valid player hello"),
             server.control(),
             &policy,
         );

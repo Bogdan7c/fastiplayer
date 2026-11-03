@@ -25,7 +25,7 @@ use std::path::Path;
 
 use fastiplayer_config::{
     AppConfig, BrokenConfigProblem, BrowserSessionBufferWindow, ConfigPaths, ConfigSavePolicy,
-    ConfigSessionOnlyReason, SharedConfigProblem, SharedConfigRead,
+    ConfigSessionOnlyReason, RenderProfile, SharedConfigProblem, SharedConfigRead, VideoCodec,
 };
 use tracing::warn;
 
@@ -193,6 +193,18 @@ impl BrowserSessionSettings {
     /// Проверенный config для сборки production-конфигурации плеера.
     pub(crate) const fn app_config(&self) -> &AppConfig {
         &self.app_config
+    }
+
+    /// Профиль рендера из настроек процесса (явный выбор владельца, без пробы видеокарты):
+    /// по нему `hello` объявляет «дешёвые» кодеки (решение 43).
+    pub(crate) const fn render_profile(&self) -> RenderProfile {
+        self.app_config.render.profile
+    }
+
+    /// Приоритет видео-кодеков игрока (`player.preferred_video_codec_order`): из него `hello`
+    /// берёт потолок кодеков для сайтов (решение 189).
+    pub(crate) fn preferred_video_codec_order(&self) -> &[VideoCodec] {
+        &self.app_config.player.preferred_video_codec_order
     }
 
     /// Окно буфера источника «байты от страницы»: сколько держать вперёд и позади.
