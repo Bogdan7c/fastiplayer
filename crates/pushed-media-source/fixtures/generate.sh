@@ -128,3 +128,17 @@ ffmpeg "${common[@]}" -f lavfi -i "testsrc2=size=96x72:rate=25:duration=1.92,noi
     -c:v libx264 -preset ultrafast -profile:v baseline -bf 0 -g 16 -keyint_min 16 \
     -sc_threshold 0 -pix_fmt yuv420p -qp 24 -threads 1 -c:a aac -b:a 32k -ac 1 \
     "${fmp4[@]}" "$here/muxed-h264-aac-long-runs.mp4"
+
+# --- B-кадры в низкой задержке (сессия 09b2 моста, находка эфира Twitch):
+# - video-h264-64-bframes-per-frame.mp4 — H.264 Main с пирамидой B-кадров (опорный B и
+#   НЕопорные b: frame_num в порядке декодирования 0,1,2,3,3,3,…), закрытый GOP из 8
+#   кадров, 1,6 с при 25 к/с — и ОДИН кадр на фрагмент (`frag_every_frame`), как
+#   chunked CMAF эфира Twitch. Время показа кадров фрагментов идёт не по порядку
+#   декодирования (P раньше своих B), поэтому порядок подачи фрагментов по времени
+#   показа ломает цепочку опорных кадров декодера.
+ffmpeg "${common[@]}" -f lavfi -i "testsrc2=size=64x64:rate=25:duration=1.6" \
+    -c:v libx264 -preset medium -profile:v main -bf 3 -b-pyramid normal \
+    -x264-params "b-adapt=0:open-gop=0:scenecut=0" -g 8 -keyint_min 8 -sc_threshold 0 \
+    -pix_fmt yuv420p -threads 1 -fflags +bitexact -map_metadata -1 \
+    -movflags empty_moov+default_base_moof+frag_every_frame+skip_trailer \
+    "$here/video-h264-64-bframes-per-frame.mp4"

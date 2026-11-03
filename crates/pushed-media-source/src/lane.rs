@@ -18,8 +18,8 @@ use crate::container::PushedContainer;
 use crate::error::PushedStreamError;
 use crate::feed::EpisodeKey;
 use crate::framing::{
-    ContainerFramer, FramedUnit, FramingError, FramingLimits, SegmentTiming, SegmentTimingContext,
-    SegmentTimingError, TrackSpans,
+    ContainerFramer, DecodeOrder, FramedUnit, FramingError, FramingLimits, SegmentTiming,
+    SegmentTimingContext, SegmentTimingError, TrackSpans,
 };
 use crate::intake::ChargedSegment;
 pub(crate) use crate::mailbox::{LaneMailbox, MailboxTake};
@@ -244,9 +244,13 @@ impl LaneIntake {
             ),
             None => None,
         };
-        let (timing, tracks) = measured.map_or(
-            (SegmentTiming::Untimed, TrackSpans::default()),
-            |measured| (measured.timing, measured.tracks),
+        let (timing, tracks, decode_order) = measured.map_or(
+            (
+                SegmentTiming::Untimed,
+                TrackSpans::default(),
+                DecodeOrder::FollowsPresentation,
+            ),
+            |measured| (measured.timing, measured.tracks, measured.decode_order),
         );
         let key = EpisodeKey::new(
             self.container,
@@ -261,11 +265,15 @@ impl LaneIntake {
                     .shifted_by(self.offset)
                     .ok_or_else(out_of_range)?;
                 let tracks = tracks.shifted_by(self.offset).ok_or_else(out_of_range)?;
+                let decode = decode_order
+                    .shifted_timing(self.offset, timing, &tracks)
+                    .ok_or_else(out_of_range)?;
                 self.buffer.accept_timed(
                     self.lane,
                     TimedSegment {
                         timing,
                         tracks,
+                        decode,
                         media,
                         key,
                     },

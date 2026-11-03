@@ -13,7 +13,9 @@
 //! - [`SegmentTimingContext::measure_media_segment`] читает один целый медиасегмент
 //!   ровно в том виде, в каком его выдаёт сканер, и возвращает [`SegmentTiming`]
 //!   (объединённый отрезок всех дорожек) и [`TrackSpans`] (отрезок каждой дорожки
-//!   отдельно — для правил полки «как буферы дорожек MSE», модуль `track_spans`).
+//!   отдельно — для правил полки «как буферы дорожек MSE», модуль `track_spans`)
+//!   и [`DecodeOrder`] (время декодирования: в его порядке полка подаёт сегменты
+//!   демуксеру, модуль `decode_order`).
 //!
 //! Время — «сырое» время контейнера, ДО `timestampOffset` MSE. Полка применяет
 //! смещение сама через [`MediaTimeSpan::shifted_by`]: смещение у полосы может
@@ -29,6 +31,7 @@
 //! `timestampOffset` для TS и так отвергается).
 
 mod byte_cursor;
+mod decode_order;
 mod iso_bmff;
 mod matroska;
 mod track_spans;
@@ -47,6 +50,7 @@ mod test_support;
 use crate::container::PushedContainer;
 use crate::time::TimestampOffset;
 
+pub(crate) use self::decode_order::{DecodeOrder, DecodeTiming};
 use self::iso_bmff::IsoBmffTimingContext;
 use self::matroska::MatroskaTimingContext;
 pub(crate) use self::track_spans::{TrackSlot, TrackSlotAssigner, TrackSpans};
@@ -518,22 +522,27 @@ impl SegmentTimingContext {
             Self::IsoBmff(context) => {
                 context
                     .segment_spans(segment)
-                    .map(|(span, tracks)| MeasuredSegment {
+                    .map(|(span, tracks, decode_order)| MeasuredSegment {
                         timing: SegmentTiming::Timed(TimedSpan::exact(span)),
                         tracks,
+                        decode_order,
                     })
             }
+            // Блоки WebM лежат в порядке декодирования, а времени декодирования
+            // в контейнере нет: порядок подачи кластеров — порядок показа.
             Self::Matroska(context) => {
                 context
                     .cluster_spans(segment)
                     .map(|(timing, tracks)| MeasuredSegment {
                         timing: SegmentTiming::Timed(timing),
                         tracks,
+                        decode_order: DecodeOrder::FollowsPresentation,
                     })
             }
             Self::Untimed => Ok(MeasuredSegment {
                 timing: SegmentTiming::Untimed,
                 tracks: TrackSpans::default(),
+                decode_order: DecodeOrder::FollowsPresentation,
             }),
         }
     }
@@ -547,4 +556,7 @@ pub(crate) struct MeasuredSegment {
     /// Точно известный отрезок каждой дорожки с кадрами; пусто — без времени или
     /// без кадров.
     pub(crate) tracks: TrackSpans,
+    /// Время декодирования, если контейнер его записывает: по нему полка подаёт
+    /// сегменты демуксеру (модуль `decode_order`).
+    pub(crate) decode_order: DecodeOrder,
 }

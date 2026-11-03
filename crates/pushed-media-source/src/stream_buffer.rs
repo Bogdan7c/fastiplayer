@@ -39,7 +39,7 @@ use crate::container::PushedContainer;
 use crate::episode::EpisodeFactory;
 use crate::error::PushedStreamError;
 use crate::feed::{EpisodeContinuity, EpisodeKey, FeedAdmission, LaneFeed};
-use crate::framing::{LaneContent, MediaTime, TimedSpan, TrackSpans};
+use crate::framing::{DecodeTiming, LaneContent, MediaTime, TimedSpan, TrackSpans};
 use crate::intake::{ChargedSegment, IntakeLedger};
 use crate::lane::{LaneId, LaneMailbox};
 use crate::live_timeline::LiveTimelineFeed;
@@ -178,6 +178,8 @@ pub(crate) struct TimedSegment {
     pub(crate) timing: TimedSpan,
     /// Точно известное время каждой дорожки после смещения полосы.
     pub(crate) tracks: TrackSpans,
+    /// Время декодирования после смещения полосы: порядок подачи демуксеру.
+    pub(crate) decode: DecodeTiming,
     /// Байты (ещё не зачтённые).
     pub(crate) media: Bytes,
     /// С чем его играть.
@@ -340,6 +342,7 @@ impl StreamBuffer {
         state.lane_mut(lane)?.shelf.insert(ShelfEntry::waiting(
             segment.timing,
             segment.tracks,
+            segment.decode,
             media,
             segment.key,
         ));

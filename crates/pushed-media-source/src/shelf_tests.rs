@@ -13,7 +13,7 @@ use super::{
 use crate::buffer_window::BufferWindow;
 use crate::container::PushedContainer;
 use crate::feed::{EpisodeContinuity, EpisodeKey, FeedCursor};
-use crate::framing::{MediaTime, MediaTimeSpan, SegmentEnd, TimedSpan, TrackSpans};
+use crate::framing::{DecodeTiming, MediaTime, MediaTimeSpan, SegmentEnd, TimedSpan, TrackSpans};
 use crate::intake::{ChargedSegment, IntakeLedger};
 use crate::page_removal::{PageRemovalReport, PageRemovedRange, PageRemovedRangeEnd};
 use crate::time::TimestampOffset;
@@ -89,8 +89,14 @@ impl Shelf {
             .take_overlapped_by(timing, &tracks, &rules())
             .len();
         let media = ChargedSegment::charge(&self.ledger, Bytes::from(vec![0; size])).expect("room");
-        self.shelf
-            .insert(ShelfEntry::waiting(timing, tracks, media, self.key.clone()));
+        let decode = DecodeTiming::follows_presentation(timing, tracks.clone());
+        self.shelf.insert(ShelfEntry::waiting(
+            timing,
+            tracks,
+            decode,
+            media,
+            self.key.clone(),
+        ));
         replaced
     }
 

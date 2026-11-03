@@ -8,7 +8,12 @@
 //!   пересечение считается ПО КАЖДОЙ дорожке, как буферы дорожек MSE
 //!   (модуль `shelf_tracks`);
 //! - каждый сегмент помнит, нужен ли он ещё демуксеру ([`Delivery`]) и с каким
-//!   init/смещением его играть ([`EpisodeKey`]).
+//!   init/смещением его играть ([`EpisodeKey`]);
+//! - ПОДАЁТСЯ демуксеру сегмент в порядке времени ДЕКОДИРОВАНИЯ, и продолжение
+//!   поданного решается по нему же ([`DecodeTiming`], как буфер дорожки MSE с его
+//!   DTS). У сегментов из целых групп кадров порядок тот же, что по показу; у
+//!   однокадровых фрагментов с B-кадрами (низкая задержка Twitch, сессия 09b2) — нет:
+//!   P показывается после своих B, а декодироваться обязан раньше.
 //!
 //! Конец сегмента бывает известен неточно ([`SegmentEnd`]: у WebM без длительности
 //! последнего кадра). Поэтому у сегмента три границы конца:
@@ -27,7 +32,7 @@ use std::time::Duration;
 
 use crate::buffer_window::BufferWindow;
 use crate::feed::{EpisodeContinuity, EpisodeKey, FeedCursor};
-use crate::framing::{MediaTime, MediaTimeSpan, SegmentEnd, TimedSpan, TrackSpans};
+use crate::framing::{DecodeTiming, MediaTime, MediaTimeSpan, SegmentEnd, TimedSpan, TrackSpans};
 use crate::intake::ChargedSegment;
 
 #[path = "shelf_forgotten.rs"]
@@ -151,6 +156,8 @@ pub(crate) struct ShelfEntry {
     timing: TimedSpan,
     /// Точно известное время каждой дорожки (пусто — по дорожкам неизвестно).
     tracks: TrackSpans,
+    /// Время декодирования: порядок подачи и продолжение поданного.
+    decode: DecodeTiming,
     /// Байты (общие с трубой эпизода).
     media: ChargedSegment,
     /// С каким init, контейнером и смещением его играть.
@@ -166,12 +173,14 @@ impl ShelfEntry {
     pub(crate) fn waiting(
         timing: TimedSpan,
         tracks: TrackSpans,
+        decode: DecodeTiming,
         media: ChargedSegment,
         key: EpisodeKey,
     ) -> Self {
         Self {
             timing,
             tracks,
+            decode,
             media,
             key,
             delivery: Delivery::Waiting,
@@ -201,12 +210,18 @@ impl ShelfEntry {
         reach_of(self.timing, rules)
     }
 
-    /// Курсор подачи, который оставляет за собой этот сегмент.
+    /// Начало на оси подачи (декодирования): в этом порядке сегменты идут демуксеру.
+    fn decode_start(&self) -> MediaTime {
+        self.decode.timing().span().start()
+    }
+
+    /// Курсор подачи, который оставляет за собой этот сегмент (ось декодирования).
     fn fed_to(&self, rules: &ShelfRules) -> FeedCursor {
+        let decode = self.decode.timing();
         FeedCursor::new(
-            self.timing.certain_end(),
-            self.reach(rules),
-            self.tracks.clone(),
+            decode.certain_end(),
+            reach_of(decode, rules),
+            self.decode.tracks().clone(),
         )
     }
 }
@@ -304,7 +319,11 @@ impl LaneShelf {
 
     /// Какой сегмент продолжает поданное до курсора `cursor`.
     ///
-    /// - курсора ещё нет — первый ждущий (первый сегмент полосы задаёт курсор);
+    /// Всё время здесь — время ДЕКОДИРОВАНИЯ сегмента и курсора (см. описание модуля),
+    /// а из подходящих выбирается самый ранний по нему: опорный P однокадрового
+    /// фрагмента уходит раньше своих B, хотя лежит на полке после них.
+    ///
+    /// - курсора ещё нет — самый ранний ждущий (первый сегмент полосы задаёт курсор);
     /// - ни одна дорожка не уходит назад от поданного (у каждой общей с курсором
     ///   дорожки начало не раньше её поданного конца − допуск; без сведений о
     ///   дорожках — начало сегмента не раньше точного конца курсора − допуск), а
@@ -326,34 +345,33 @@ impl LaneShelf {
             .iter()
             .enumerate()
             .filter(|(_, entry)| entry.delivery == Delivery::Waiting);
+        // `min_by_key` отдаёт первый из равных — при равном начале декодирования
+        // остаётся порядок полки (по показу, при равенстве — по приходу).
         let Some(cursor) = cursor else {
             return waiting
+                .min_by_key(|(_, entry)| entry.decode_start())
                 .map(|(index, _)| FeedChoice {
                     index,
                     continuity: EpisodeContinuity::MayContinue,
-                })
-                .next();
+                });
         };
         let latest_continuation = later(cursor.reach(), rules.max_contiguous_gap_micros);
         let straddle_end = later(cursor.certain_end(), rules.overlap_tolerance_micros);
         waiting
             .filter_map(|(index, entry)| {
                 let goes_back = rules.goes_back(cursor, entry);
-                if !goes_back && entry.span().start() <= latest_continuation {
-                    Some(FeedChoice {
-                        index,
-                        continuity: EpisodeContinuity::MayContinue,
-                    })
-                } else if goes_back && entry.span().end() > straddle_end {
-                    Some(FeedChoice {
-                        index,
-                        continuity: EpisodeContinuity::MustRestart,
-                    })
+                let decode_span = entry.decode.timing().span();
+                let continuity = if !goes_back && decode_span.start() <= latest_continuation {
+                    EpisodeContinuity::MayContinue
+                } else if goes_back && decode_span.end() > straddle_end {
+                    EpisodeContinuity::MustRestart
                 } else {
-                    None
-                }
+                    return None;
+                };
+                Some((entry.decode_start(), FeedChoice { index, continuity }))
             })
-            .next()
+            .min_by_key(|(decode_start, _)| *decode_start)
+            .map(|(_, choice)| choice)
     }
 
     /// Ключ эпизода выбранного сегмента — чтобы до подачи решить, нужен ли новый
@@ -447,9 +465,16 @@ impl LaneShelf {
 
     /// Сегмент на месте `index` и всё после него снова ждут подачи; сам сегмент
     /// подаётся первым и обязательно в НОВОМ эпизоде.
+    ///
+    /// «После него» — и по месту на полке (показ), и по времени декодирования:
+    /// однокадровый B, показываемый раньше сегмента с целью, но декодируемый после
+    /// него, тоже снова ждёт — иначе подача после перемотки его пропустила бы.
     fn restart_feeding_from(&mut self, index: usize) -> FeedChoice {
-        for entry in &mut self.entries[index..] {
-            entry.delivery = Delivery::Waiting;
+        let restart_decode_start = self.entries[index].decode_start();
+        for (place, entry) in self.entries.iter_mut().enumerate() {
+            if place >= index || entry.decode_start() >= restart_decode_start {
+                entry.delivery = Delivery::Waiting;
+            }
         }
         FeedChoice {
             index,
@@ -625,3 +650,7 @@ impl CoveredRun {
 #[cfg(test)]
 #[path = "shelf_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "shelf_decode_order_tests.rs"]
+mod decode_order_tests;

@@ -41,18 +41,21 @@ impl ShelfRules {
     /// Уводит ли сегмент `entry` время назад от поданного до курсора: тогда текущий
     /// эпизод его принять не может.
     ///
+    /// Время — ДЕКОДИРОВАНИЯ (ось курсора подачи, см. описание `shelf`): B-кадр,
+    /// показываемый раньше уже поданного P, но декодируемый после него, — продолжение.
     /// По дорожкам — назад, если у какой-то общей дорожки начало раньше её поданного
     /// конца больше чем на допуск. Без сведений о дорожках — начало сегмента раньше
     /// точного конца курсора больше чем на допуск (прежнее правило).
     pub(super) fn goes_back(&self, cursor: &FeedCursor, entry: &ShelfEntry) -> bool {
-        if cursor.tracks().is_known() && entry.tracks.is_known() {
+        let decode_tracks = entry.decode.tracks();
+        if cursor.tracks().is_known() && decode_tracks.is_known() {
             return cursor
                 .tracks()
-                .shared_with(&entry.tracks)
+                .shared_with(decode_tracks)
                 .any(|(fed, next)| {
                     next.start() < earlier(fed.end(), self.overlap_tolerance_micros)
                 });
         }
-        entry.span().start() < earlier(cursor.certain_end(), self.overlap_tolerance_micros)
+        entry.decode_start() < earlier(cursor.certain_end(), self.overlap_tolerance_micros)
     }
 }

@@ -23,8 +23,8 @@ use crate::framing::read_box_header;
 
 use super::byte_cursor::{ByteCursor, FullBoxHeader};
 use super::{
-    LaneContent, MediaTime, MediaTimeSpan, SegmentTimingError, TimingStructure, TrackMedia,
-    TrackSlot, TrackSlotAssigner, TrackSpans,
+    DecodeOrder, LaneContent, MediaTime, MediaTimeSpan, SegmentTimingError, TimingStructure,
+    TrackMedia, TrackSlot, TrackSlotAssigner, TrackSpans,
 };
 
 /// `tfhd`: есть 64-битный `base_data_offset`.
@@ -138,11 +138,12 @@ impl IsoBmffTimingContext {
         self.content
     }
 
-    /// Отрезок времени показа медиасегмента `moof` + `mdat` и отрезки его дорожек.
+    /// Отрезок времени показа медиасегмента `moof` + `mdat`, отрезки его дорожек и
+    /// время декодирования (`tfdt` + длительности кадров).
     pub(super) fn segment_spans(
         &self,
         segment: &[u8],
-    ) -> Result<(MediaTimeSpan, TrackSpans), SegmentTimingError> {
+    ) -> Result<(MediaTimeSpan, TrackSpans, DecodeOrder), SegmentTimingError> {
         let movie_fragment = first_child(segment, *b"moof", TimingStructure::IsoMediaSegment)?
             .ok_or(SegmentTimingError::Missing {
                 structure: TimingStructure::IsoMovieFragment,
@@ -150,6 +151,9 @@ impl IsoBmffTimingContext {
 
         let mut segment_span: Option<MediaTimeSpan> = None;
         let mut track_spans = TrackSpans::default();
+        // Время декодирования — отдельно от показа: у B-кадров они расходятся.
+        let mut decode_span: Option<MediaTimeSpan> = None;
+        let mut decode_tracks = TrackSpans::default();
         // Если ни в одной дорожке нет кадров — пустой отрезок в самом раннем `tfdt`.
         let mut earliest_empty_start: Option<MediaTime> = None;
         for child in box_children(movie_fragment, TimingStructure::IsoMovieFragment) {
@@ -159,9 +163,15 @@ impl IsoBmffTimingContext {
             }
             let (slot, fragment_span) = self.track_fragment_span(child.body)?;
             match fragment_span {
-                TrackFragmentSpan::Samples(span) => {
-                    segment_span = Some(segment_span.map_or(span, |known| known.union(span)));
-                    track_spans.include(slot, span);
+                TrackFragmentSpan::Samples {
+                    presentation,
+                    decode,
+                } => {
+                    segment_span =
+                        Some(segment_span.map_or(presentation, |known| known.union(presentation)));
+                    track_spans.include(slot, presentation);
+                    decode_span = Some(decode_span.map_or(decode, |known| known.union(decode)));
+                    decode_tracks.include(slot, decode);
                 }
                 TrackFragmentSpan::NoSamples(start) => {
                     earliest_empty_start =
@@ -174,7 +184,14 @@ impl IsoBmffTimingContext {
             .ok_or(SegmentTimingError::Missing {
                 structure: TimingStructure::IsoTrackFragment,
             })?;
-        Ok((span, track_spans))
+        // Без кадров декодировать нечего: такой фрагмент подаётся по времени показа.
+        let decode_order = decode_span.map_or(DecodeOrder::FollowsPresentation, |span| {
+            DecodeOrder::Recorded {
+                span,
+                tracks: decode_tracks,
+            }
+        });
+        Ok((span, track_spans, decode_order))
     }
 
     /// Отрезок одного `traf` и место его дорожки в полосе.
@@ -232,9 +249,18 @@ impl IsoBmffTimingContext {
             Some((earliest, latest_end)) => {
                 let start = MediaTime::from_ticks(earliest, timescale)?;
                 let end = MediaTime::from_ticks(latest_end, timescale)?;
-                MediaTimeSpan::new(start, end)
-                    .map(TrackFragmentSpan::Samples)
-                    .ok_or(SegmentTimingError::TimeOutOfRange)?
+                let presentation =
+                    MediaTimeSpan::new(start, end).ok_or(SegmentTimingError::TimeOutOfRange)?;
+                // Кадры декодируются подряд от `tfdt` до конца последнего из них.
+                let decode = MediaTimeSpan::new(
+                    MediaTime::from_ticks(i128::from(base_decode_time), timescale)?,
+                    MediaTime::from_ticks(runs.next_decode_time, timescale)?,
+                )
+                .ok_or(SegmentTimingError::TimeOutOfRange)?;
+                TrackFragmentSpan::Samples {
+                    presentation,
+                    decode,
+                }
             }
             None => MediaTime::from_ticks(i128::from(base_decode_time), timescale)
                 .map(TrackFragmentSpan::NoSamples)?,
@@ -246,8 +272,13 @@ impl IsoBmffTimingContext {
 /// Итог одного `traf`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrackFragmentSpan {
-    /// Кадры есть: отрезок их времени показа.
-    Samples(MediaTimeSpan),
+    /// Кадры есть: отрезки их времени показа и декодирования.
+    Samples {
+        /// От самого раннего начала показа до самого позднего конца.
+        presentation: MediaTimeSpan,
+        /// От `tfdt` до конца декодирования последнего кадра.
+        decode: MediaTimeSpan,
+    },
     /// Кадров нет: только время начала из `tfdt`.
     NoSamples(MediaTime),
 }

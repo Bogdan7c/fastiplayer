@@ -21,7 +21,7 @@ use crate::container::PushedContainer;
 use crate::episode::EpisodeFactory;
 use crate::error::PushedStreamError;
 use crate::feed::{EpisodeKey, FeedCursor};
-use crate::framing::{MediaTime, MediaTimeSpan, TimedSpan, TrackSpans};
+use crate::framing::{DecodeTiming, MediaTime, MediaTimeSpan, TimedSpan, TrackSpans};
 use crate::intake::{ChargedSegment, IntakeLedger};
 use crate::lane::{LaneId, LaneMailbox};
 use crate::policy::PushedSourcePolicy;
@@ -227,6 +227,7 @@ fn ceiling_eviction_keeps_segments_whose_bytes_a_pipe_still_holds() {
             lane.shelf.insert(ShelfEntry::waiting(
                 TimedSpan::exact(span),
                 TrackSpans::default(),
+                DecodeTiming::follows_presentation(TimedSpan::exact(span), TrackSpans::default()),
                 media,
                 key.clone(),
             ));

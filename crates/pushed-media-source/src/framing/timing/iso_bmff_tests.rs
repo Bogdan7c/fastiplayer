@@ -12,7 +12,7 @@ use super::test_support::{
     timed, track_fragment, track_run,
 };
 use super::{
-    MediaTime, MediaTimeSpan, SegmentTiming, SegmentTimingContext, SegmentTimingError,
+    DecodeOrder, MediaTime, MediaTimeSpan, SegmentTiming, SegmentTimingContext, SegmentTimingError,
     TimingStructure,
 };
 
@@ -178,6 +178,46 @@ fn composition_offsets_give_presentation_time_not_decode_time() {
         context.media_segment_timing(&segment),
         Ok(timed(40_000, 160_000))
     );
+}
+
+#[test]
+fn decode_time_is_recorded_separately_from_presentation_time() {
+    let context = synthetic_context(&[VIDEO_TRACK]);
+    // Однокадровый фрагмент P низкой задержки: декодируется на 40 мс (tfdt 512),
+    // показывается на 120 мс (cto 1024) — после своих B-кадров.
+    let run = track_run(0, RUN_DURATIONS | RUN_COMPOSITION_OFFSETS, 1, &[512, 1_024]);
+    let segment = iso_media_segment(&[track_fragment(1, None, 512, &[run])]);
+
+    let measured = context.measure_media_segment(&segment).expect("timed");
+
+    let span = |start, end| {
+        MediaTimeSpan::new(MediaTime::from_micros(start), MediaTime::from_micros(end))
+            .expect("span")
+    };
+    assert_eq!(measured.timing, timed(120_000, 160_000));
+    let DecodeOrder::Recorded {
+        span: decode_span,
+        tracks: decode_tracks,
+    } = measured.decode_order
+    else {
+        panic!("fMP4 records decode time: {:?}", measured.decode_order);
+    };
+    assert_eq!(decode_span, span(40_000, 80_000));
+    let decode_track_spans: Vec<_> = decode_tracks
+        .shared_with(&decode_tracks)
+        .map(|(track_span, _)| track_span)
+        .collect();
+    assert_eq!(decode_track_spans, [span(40_000, 80_000)]);
+}
+
+#[test]
+fn a_fragment_without_samples_follows_presentation_order() {
+    let context = synthetic_context(&[VIDEO_TRACK]);
+    let segment = iso_media_segment(&[track_fragment(1, None, 512, &[])]);
+
+    let measured = context.measure_media_segment(&segment).expect("timed");
+
+    assert_eq!(measured.decode_order, DecodeOrder::FollowsPresentation);
 }
 
 #[test]
