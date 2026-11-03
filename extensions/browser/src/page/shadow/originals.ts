@@ -29,6 +29,9 @@ export interface PageGlobals {
   readonly TypeError: TypeErrorConstructor;
   readonly MediaSource?: { readonly prototype: object };
   readonly MediaSourceHandle?: { readonly prototype: object };
+  /** Пустой MediaStream снимает файл с настоящего элемента (решение 186); нет — источник остаётся. */
+  readonly MediaStream?: new () => object;
+  readonly TimeRanges?: { readonly prototype: object };
   readonly queueMicrotask: (callback: () => void) => void;
 }
 
@@ -44,6 +47,9 @@ export interface MediaElementOriginals {
   readonly src: OriginalAccessor;
   readonly srcObject: OriginalAccessor | undefined;
   readonly networkState: OriginalAccessor;
+  /** Нужны тени файла (сессия 09b): снимок перед снятием источника. */
+  readonly currentSrc: OriginalAccessor | undefined;
+  readonly seekable: OriginalAccessor | undefined;
   readonly play: OriginalFunction;
   readonly pause: OriginalFunction;
   readonly load: OriginalFunction;
@@ -89,6 +95,16 @@ export interface ElementOriginals {
    * этого не скажет: для `src=""` он отдаёт адрес документа (URL-отражение атрибута).
    */
   readonly getAttribute: OriginalFunction | undefined;
+  /**
+   * Дочерние элементы и их имя (`Element.prototype.children` / `localName`): источник из дочерних
+   * `<source>` виден только по ним (у элемента тогда нет атрибута `src`).
+   */
+  readonly elementChildren: OriginalAccessor | undefined;
+  readonly localName: OriginalAccessor | undefined;
+  /** Конструктор MediaStream мира страницы на document_start (`undefined` — браузер его не знает). */
+  readonly MediaStreamConstructor: (new () => object) | undefined;
+  /** Прототип TimeRanges: `buffered` тени файла проходит `instanceof TimeRanges`. */
+  readonly timeRangesPrototype: object | undefined;
   /** Конструкторы мира страницы: обещания `play()` и ошибки должны быть «её», а не наши. */
   readonly PromiseConstructor: PromiseConstructor;
   readonly DOMExceptionConstructor: PageGlobals["DOMException"];
@@ -142,6 +158,8 @@ export function captureElementOriginals(win: Window): ElementOriginals {
       src: requireAccessor(mediaPrototype, "src"),
       srcObject: optionalAccessor(mediaPrototype, "srcObject"),
       networkState: requireAccessor(mediaPrototype, "networkState"),
+      currentSrc: optionalAccessor(mediaPrototype, "currentSrc"),
+      seekable: optionalAccessor(mediaPrototype, "seekable"),
       play: requireMethod(mediaPrototype, "play"),
       pause: requireMethod(mediaPrototype, "pause"),
       load: requireMethod(mediaPrototype, "load"),
@@ -166,6 +184,10 @@ export function captureElementOriginals(win: Window): ElementOriginals {
     },
     isConnected: optionalAccessor(globals.Node.prototype, "isConnected"),
     getAttribute: optionalMethod(globals.Element?.prototype, "getAttribute"),
+    elementChildren: globals.Element === undefined ? undefined : optionalAccessor(globals.Element.prototype, "children"),
+    localName: globals.Element === undefined ? undefined : optionalAccessor(globals.Element.prototype, "localName"),
+    MediaStreamConstructor: globals.MediaStream,
+    timeRangesPrototype: globals.TimeRanges?.prototype,
     PromiseConstructor: globals.Promise,
     DOMExceptionConstructor: globals.DOMException,
     TypeErrorConstructor: globals.TypeError,

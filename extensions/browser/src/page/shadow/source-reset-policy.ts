@@ -21,8 +21,10 @@
 // Точный ответ «этот blob-адрес — MediaSource» знает реестр MAIN-мира (A1: обёртка
 // `URL.createObjectURL` запоминает адреса, созданные для MediaSource). Тень спрашивает его через
 // окружение.
-// Известное ограничение: источники из дочерних `<source>` (без атрибута `src`) здесь выглядят как
-// «пусто» и снимаются по допуску — передача `<source>` и `<video src>` — сессия 09b.
+// Источники из дочерних `<source>` (атрибута `src` у элемента нет, сессия 09b): решает первый
+// `<source>` с непустым `src` — blob-адрес MediaSource → `media_source`, иначе `not_media_source`.
+// Так браузер и выбирает (по порядку детей); проверку `type` браузер делает позже асинхронно, но
+// для «это всё ещё MSE или страница забрала видео» достаточно адреса.
 
 import { hasPrototype } from "./intrinsics.ts";
 import { callOriginal, type ElementOriginals, readOriginal } from "./originals.ts";
@@ -49,9 +51,35 @@ export function classifyElementSource(
       return isMediaSourceObject(sourceObject, originals) ? "media_source" : "not_media_source";
     }
   }
-  if (sourceAttributeIsEmpty(element, originals)) return "no_source";
+  if (sourceAttributeIsEmpty(element, originals)) {
+    const childUrl = firstSourceChildUrl(element, originals);
+    if (childUrl === null) return "no_source";
+    return isMediaSourceObjectUrl(childUrl) ? "media_source" : "not_media_source";
+  }
   const sourceUrl = readOriginal(originals.media.src, element);
   return typeof sourceUrl === "string" && isMediaSourceObjectUrl(sourceUrl) ? "media_source" : "not_media_source";
+}
+
+/** Имя дочернего элемента-источника (`localName` HTML-элементов — строчными). */
+const SOURCE_CHILD_NAME = "source";
+
+/**
+ * Атрибут `src` первого дочернего `<source>` с непустым адресом (`null` — таких нет или DOM без
+ * нужных оригиналов). Blob-адрес в атрибуте всегда абсолютный, поэтому сверка с реестром идёт по
+ * атрибуту как есть.
+ */
+function firstSourceChildUrl(element: HTMLMediaElement, originals: ElementOriginals): string | null {
+  const { elementChildren, localName, getAttribute } = originals;
+  if (elementChildren === undefined || localName === undefined || getAttribute === undefined) return null;
+  const children = readOriginal(elementChildren, element) as { readonly length: number; readonly [index: number]: unknown } | null;
+  if (children === null || typeof children !== "object") return null;
+  for (let index = 0; index < children.length; index += 1) {
+    const child = children[index];
+    if (readOriginal(localName, child) !== SOURCE_CHILD_NAME) continue;
+    const url = callOriginal(getAttribute, child, [SOURCE_ATTRIBUTE]);
+    if (typeof url === "string" && url !== "") return url;
+  }
+  return null;
 }
 
 /** Атрибута `src` нет или он пустой (читается оригинальным `getAttribute`). */

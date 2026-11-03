@@ -5,6 +5,8 @@
 // счётчики (доля выброшенных кадров для выбора качества, «видео идёт?» для сторожей зависания),
 // и замершие счётчики выглядели бы как поломка. Тень считает кадры от проигранного медиавремени.
 
+import { callOriginal, type ElementOriginals, readOriginal } from "./originals.ts";
+
 /**
  * Кадров в секунду для поддельных счётчиков. Настоящую частоту MAIN-мир не знает (её знает
  * разбор потока в плеере), а страницам важны рост счётчика и доля выброшенных (у тени — 0),
@@ -20,6 +22,38 @@ export const ASSUMED_FRAMES_PER_SECOND = 30;
 export const SHADOW_FRAME_CALLBACK_FIRST_HANDLE = 1_000_000_000;
 
 const MICROS_PER_SECOND = 1_000_000;
+
+/** Счётчики настоящего элемента и прототип его отчёта (поддельный отчёт тени проходит `instanceof`). */
+export interface RealFrameQuality {
+  readonly baseline: FrameCountBaseline;
+  readonly prototype: object;
+}
+
+/** Прочитать счётчики настоящего элемента оригиналами (на старте тени). */
+export function readRealFrameQuality(element: HTMLMediaElement, originals: ElementOriginals): RealFrameQuality {
+  const getQuality = originals.video.getVideoPlaybackQuality;
+  if (getQuality !== undefined) {
+    const quality = callOriginal(getQuality, element) as VideoPlaybackQuality;
+    return {
+      baseline: {
+        totalFrames: quality.totalVideoFrames,
+        droppedFrames: quality.droppedVideoFrames,
+        corruptedFrames: quality.corruptedVideoFrames,
+      },
+      prototype: Object.getPrototypeOf(quality) as object,
+    };
+  }
+  const decoded = originals.video.webkitDecodedFrameCount;
+  const dropped = originals.video.webkitDroppedFrameCount;
+  return {
+    baseline: {
+      totalFrames: decoded === undefined ? 0 : Number(readOriginal(decoded, element)),
+      droppedFrames: dropped === undefined ? 0 : Number(readOriginal(dropped, element)),
+      corruptedFrames: 0,
+    },
+    prototype: Object.prototype,
+  };
+}
 
 /** Счётчики настоящего элемента на момент передачи: тень продолжает их, а не начинает с нуля. */
 export interface FrameCountBaseline {

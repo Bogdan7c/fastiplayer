@@ -8,11 +8,13 @@
 // это дёшево, байты при этом не копируются.
 
 import type {
+  CandidateMedia,
   CandidatesReply,
   HandoffEndCause,
   HandoffStartOutcome,
   LocalMseEvent,
   PageEvent,
+  UnsupportedMediaForm,
   VideoCandidate,
 } from "./handoff-contract.ts";
 import {
@@ -48,10 +50,14 @@ export const MAX_VIDEO_CANDIDATES_PER_DOCUMENT = 256;
 const MAX_U32 = 0xffff_ffff;
 
 /**
- * Локальный ключ MediaSource: «ms-» и номер документа без ведущих нулей.
+ * Локальный ключ MediaSource: «ms-» и номер без ведущих нулей; у MediaSource выделенного воркера
+ * (сессия 09b) впереди ещё «w<номер воркера>/» — тоже без ведущих нулей, ровно один уровень.
  * 15 цифр — заведомо больше любого счётчика за жизнь документа и меньше 2^53.
  */
-const LOCAL_MEDIA_SOURCE_KEY_PATTERN = /^ms-[1-9][0-9]{0,14}$/;
+const LOCAL_MEDIA_SOURCE_KEY_PATTERN = /^(?:w[1-9][0-9]{0,14}\/)?ms-[1-9][0-9]{0,14}$/;
+
+/** Ключ, который выдаёт один учёт MSE (главного потока или одного воркера): только «ms-N». */
+const TRACKER_MEDIA_SOURCE_KEY_PATTERN = /^ms-[1-9][0-9]{0,14}$/;
 
 /**
  * Метка документа (`DocumentTag`): 1…64 символа base64url (сюда входит и hex). MAIN-мир выбирает её
@@ -62,7 +68,25 @@ const DOCUMENT_TAG_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 /** Печатный ASCII с пробелом — правило MIME-типа протокола (text.rs / text.ts). */
 const PRINTABLE_ASCII_PATTERN = /^[\x20-\x7e]+$/;
 
-const HANDOFF_START_OUTCOMES: readonly HandoffStartOutcome[] = ["started", "element_not_found", "no_live_media"];
+/**
+ * Наибольшая длина адреса файла в событии `file_source`, символов. Подписанные адреса CDN бывают
+ * в единицы КиБ; 16 Ки символов покрывают их с запасом и не дают странице раздуть память фона
+ * одним «адресом».
+ */
+export const MAX_FILE_SOURCE_URL_LENGTH = 16 * 1024;
+
+/** Схемы адреса файла, который фон умеет качать с `Range`. */
+const FILE_SOURCE_PROTOCOLS: readonly string[] = ["http:", "https:"];
+
+const HANDOFF_START_OUTCOMES: readonly HandoffStartOutcome[] = ["started", "element_not_found", "no_media"];
+const UNSUPPORTED_MEDIA_FORMS: readonly UnsupportedMediaForm[] = [
+  "native_hls",
+  "blob_file",
+  "data_url",
+  "media_stream",
+  "other_scheme",
+  "untracked_worker_media_source",
+];
 const HANDOFF_END_CAUSES: readonly HandoffEndCause[] = ["returned", "element_released"];
 
 type PlainRecord = Readonly<Record<string, unknown>>;
@@ -94,6 +118,14 @@ function isLocalMediaSourceKey(value: unknown): value is string {
   return typeof value === "string" && LOCAL_MEDIA_SOURCE_KEY_PATTERN.test(value);
 }
 
+/**
+ * Ключ одного учёта MSE без номера воркера («ms-N»). Так говорит хук внутри воркера по своему
+ * личному каналу: номер воркера ставит MAIN-мир (src/page/worker-capture).
+ */
+export function isTrackerMediaSourceKey(value: unknown): value is string {
+  return typeof value === "string" && TRACKER_MEDIA_SOURCE_KEY_PATTERN.test(value);
+}
+
 /** MIME-тип, который пройдёт строгую проверку протокола: 1…256 байт печатного ASCII. */
 function isProtocolMimeType(value: unknown): value is string {
   return typeof value === "string" && value.length <= MAX_MIME_TYPE_BYTES && PRINTABLE_ASCII_PATTERN.test(value);
@@ -111,6 +143,22 @@ function isPageBytes(value: unknown): value is Uint8Array {
     value.byteLength >= 1 &&
     value.byteLength <= MAX_PAGE_BYTES_EVENT_BYTES
   );
+}
+
+/**
+ * Адрес файла для фона: абсолютный http(s), без логина/пароля в адресе (`fetch` такой адрес
+ * отвергает), уже в каноническом виде (`href` совпадает со строкой — так его отдаёт `currentSrc`),
+ * не длиннее MAX_FILE_SOURCE_URL_LENGTH. Всё прочее — мусор страницы.
+ */
+export function isFileSourceUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > MAX_FILE_SOURCE_URL_LENGTH) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  return FILE_SOURCE_PROTOCOLS.includes(parsed.protocol) && parsed.username === "" && parsed.password === "" && parsed.href === value;
 }
 
 function isOneOf<T extends string>(value: unknown, allowed: readonly T[]): value is T {
@@ -262,6 +310,10 @@ export function parsePageEvent(value: unknown): PageEvent | undefined {
       const request = parsePlaybackRequest(value["request"]);
       return hasExactKeys(value, ["kind", "request"]) && request !== undefined ? { kind: "page_playback", request } : undefined;
     }
+    case "file_source": {
+      const url = value["url"];
+      return hasExactKeys(value, ["kind", "url"]) && isFileSourceUrl(url) ? { kind: "file_source", url } : undefined;
+    }
     case "shadow_alive":
       return hasExactKeys(value, ["kind"]) ? { kind: "shadow_alive" } : undefined;
     case "handoff_ended": {
@@ -280,18 +332,36 @@ export function isDocumentTag(value: unknown): value is string {
   return typeof value === "string" && DOCUMENT_TAG_PATTERN.test(value);
 }
 
+function parseCandidateMedia(value: unknown): CandidateMedia | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  switch (value["kind"]) {
+    case "media_source":
+      return hasExactKeys(value, ["kind"]) ? { kind: "media_source" } : undefined;
+    case "file":
+      return hasExactKeys(value, ["kind"]) ? { kind: "file" } : undefined;
+    case "none":
+      return hasExactKeys(value, ["kind"]) ? { kind: "none" } : undefined;
+    case "unsupported": {
+      const form = value["form"];
+      return hasExactKeys(value, ["kind", "form"]) && isOneOf(form, UNSUPPORTED_MEDIA_FORMS) ? { kind: "unsupported", form } : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
 function parseVideoCandidate(value: unknown): VideoCandidate | undefined {
-  const keys = ["document", "element", "has_live_media", "playing", "visible_area_px"];
+  const keys = ["document", "element", "media", "playing", "visible_area_px"];
   if (!isPlainRecord(value) || !hasExactKeys(value, keys)) return undefined;
   const document = value["document"];
   const element = value["element"];
-  const hasLiveMedia = value["has_live_media"];
+  const media = parseCandidateMedia(value["media"]);
   const playing = value["playing"];
   const visibleArea = value["visible_area_px"];
   const validArea = typeof visibleArea === "number" && Number.isFinite(visibleArea) && visibleArea >= 0;
   if (!isDocumentTag(document) || !isMediaTime(element)) return undefined;
-  if (typeof hasLiveMedia !== "boolean" || typeof playing !== "boolean" || !validArea) return undefined;
-  return { document, element, has_live_media: hasLiveMedia, playing, visible_area_px: visibleArea };
+  if (media === undefined || typeof playing !== "boolean" || !validArea) return undefined;
+  return { document, element, media, playing, visible_area_px: visibleArea };
 }
 
 /** Разбор списка кандидатов (не длиннее предела документа); один кривой элемент — отказ всего списка. */

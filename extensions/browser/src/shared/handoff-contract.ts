@@ -28,7 +28,14 @@ import type { PagePlaybackRequest, RemovalEnd } from "../protocol/session/page.t
 /** Имя порта участка 2: его открывает фон к выбранному фрейму (`tabs.connect`). */
 export const HANDOFF_PORT_NAME = "fastiplayer-handoff";
 
-/** Локальный ключ MediaSource внутри одного документа: «ms-1», «ms-2», … (счётчик документа). */
+/**
+ * Локальный ключ MediaSource внутри одного документа:
+ * - главный поток — «ms-1», «ms-2», … (счётчик документа);
+ * - выделенный воркер (сессия 09b) — «w<номер воркера>/ms-N»: у каждого воркера свой счётчик
+ *   «ms-N», а номер воркера документа (`w1`, `w2`, …) ставит MAIN-мир. Так ключи воркера никогда
+ *   не совпадают с ключами главного потока и других воркеров того же документа, а фон по-прежнему
+ *   нумерует поколения по паре «подключение + локальный ключ».
+ */
 export type LocalMediaSourceKey = string;
 
 /** Ключ видеоэлемента внутри одного документа (выдаёт MAIN-мир при описании кандидатов). */
@@ -47,12 +54,41 @@ export type ElementKey = number;
  */
 export type DocumentTag = string;
 
+/**
+ * Форма видео, которую экстеншен пока честно не передаёт (сессия 09b). Видео остаётся в браузере,
+ * попап (сессия 10) говорит «not supported yet» с этой формой.
+ * - `native_hls` — m3u8 прямо в `src`/`<source>`: браузер играет HLS сам (Chromium 156 умеет).
+ *   Своя сессия после вехи M1 (решение 185);
+ * - `blob_file` — blob-адрес обычного `Blob`/`File` (не MediaSource): байты живут только в
+ *   памяти страницы, фону их не скачать;
+ * - `data_url` — видео целиком в адресе `data:`;
+ * - `media_stream` — `srcObject` = MediaStream (камера, захват экрана, WebRTC): живой поток, не файл;
+ * - `other_scheme` — адрес не http(s) (например `file:`, `filesystem:`), фон его не качает;
+ * - `untracked_worker_media_source` — `srcObject` = MediaSourceHandle, но его MediaSource живёт в
+ *   воркере, куда наш хук не попал: обёртку не пустил CSP (`worker-src` без `blob:`) или Trusted
+ *   Types, handle пришёл из вложенного воркера или через чужой MessagePort (сессия 09b).
+ */
+export type UnsupportedMediaForm = "native_hls" | "blob_file" | "data_url" | "media_stream" | "other_scheme" | "untracked_worker_media_source";
+
+/**
+ * Что сейчас играет элемент — с точки зрения «можно ли его передать» (сессия 09b).
+ * - `media_source` — живой MediaSource (хотя бы один SourceBuffer, не `closed`);
+ * - `file` — обычный файл по абсолютному http(s)-адресу: байты качает фон по `fetch_range`;
+ * - `unsupported` — видео есть, но в форме, которую пока не передаём;
+ * - `none` — источника нет (или MediaSource ещё без SourceBuffer).
+ */
+export type CandidateMedia =
+  | { readonly kind: "media_source" }
+  | { readonly kind: "file" }
+  | { readonly kind: "unsupported"; readonly form: UnsupportedMediaForm }
+  | { readonly kind: "none" };
+
 /** Описание одного видеоэлемента документа для правила «какое видео отдать» (пункт 9 09a). */
 export interface VideoCandidate {
   readonly document: DocumentTag;
   readonly element: ElementKey;
-  /** К элементу подключён MediaSource, у которого есть хотя бы один SourceBuffer. */
-  readonly has_live_media: boolean;
+  /** Чем элемент играет: MSE, файл, неподдержанная форма или ничего. */
+  readonly media: CandidateMedia;
   /** Настоящий элемент играет (не на паузе и не кончился). */
   readonly playing: boolean;
   /** Видимая площадь элемента в CSS-пикселях (0 — не виден). */
@@ -116,8 +152,11 @@ export type HandoffStartOutcome =
   | "started"
   /** Элемент с таким ключом в документе больше не найден (или документ уже другой). */
   | "element_not_found"
-  /** У элемента нет живого MediaSource (09a передаёт только MSE). */
-  | "no_live_media";
+  /**
+   * У элемента к моменту команды нет того, что мы передаём: ни живого MediaSource, ни файла по
+   * http(s) (источник успели снять или сменить на неподдержанную форму между опросом и командой).
+   */
+  | "no_media";
 
 /** Почему тень снята по инициативе страницы, а не плеера. */
 export type HandoffEndCause =
@@ -153,6 +192,13 @@ export type PageEvent =
   | { readonly kind: "player_seek_applied"; readonly seek_id: number; readonly target_us: MediaTimeMicros }
   /** Страница сама позвала `play()` / `pause()` / сменила `playbackRate`. */
   | { readonly kind: "page_playback"; readonly request: PagePlaybackRequest }
+  /**
+   * Передаётся файл `<video src>` (сессия 09b): идёт сразу после `handoff_began{started}`, до
+   * `page_seek`. Адрес — абсолютный http(s) выбранного источника настоящего элемента (`currentSrc`).
+   * Он остаётся ВНУТРИ экстеншена: фон качает по нему диапазоны для `fetch_range`, а плееру уходит
+   * только `file_source_added{generation}` — протокол адресов не несёт.
+   */
+  | { readonly kind: "file_source"; readonly url: string }
   /**
    * Пульс «тень жива» (решение владельца 180, Д-2). Шлёт сама тень — владелец знания «элемент
    * под тенью» — не чаще раза в `SHADOW_PULSE_INTERVAL_MS`, на тиках часов плеера (не таймером:
@@ -231,8 +277,13 @@ export interface HandOffTabRequest {
 
 export type HandOffTabOutcome =
   | { readonly kind: "started" }
-  /** Во вкладке нет видео с живым MediaSource. */
+  /** Во вкладке нет видео, которое можно передать (ни живого MediaSource, ни файла). */
   | { readonly kind: "no_video" }
+  /**
+   * Видео есть, но в форме, которую экстеншен пока честно не передаёт (решение 185 для HLS):
+   * оно остаётся играть в браузере, сеанс с плеером даже не открывается.
+   */
+  | { readonly kind: "not_supported_yet"; readonly form: UnsupportedMediaForm }
   /** Связь с плеером не поднялась или плеер отказал (`reason` — для журнала и попапа 10). */
   | { readonly kind: "player_unavailable"; readonly reason: string }
   /** Внутренняя ошибка экстеншена (`reason` — для журнала). */

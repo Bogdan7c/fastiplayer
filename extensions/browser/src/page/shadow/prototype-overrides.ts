@@ -10,6 +10,7 @@
 // оборачивает наше переопределение и видит вызовы всех элементов, а переданный обслуживает тень.
 // Цена — заметность: `toString` переопределений не «[native code]» (принято владельцем).
 
+import type { ShadowSourceView } from "./file-source-mode.ts";
 import { applyOriginal, SealedWeakMap } from "./intrinsics.ts";
 import type { ElementOriginals } from "./originals.ts";
 
@@ -42,6 +43,11 @@ export interface ShadowBehavior {
   cancelVideoFrameCallback(handle: unknown): void;
   webkitDecodedFrameCount(): number;
   webkitDroppedFrameCount(): number;
+  /**
+   * Что показывать вместо настоящего источника (тень файла, сессия 09b: длительность, размер
+   * кадра, `buffered` = весь файл, …). `null` — источник настоящий (MSE), отвечает элемент.
+   */
+  sourceView(): ShadowSourceView | null;
 }
 
 /** Свойства, запись которых запускает «алгоритм загрузки» элемента. */
@@ -61,6 +67,11 @@ export interface ShadowRegistry {
 interface AccessorOverride {
   readonly name: string;
   readonly read?: (behavior: ShadowBehavior) => unknown;
+  /**
+   * Чтение из «вида источника» тени: есть вид — отвечает он, нет (`sourceView() === null`) — как
+   * без переопределения, настоящий элемент. Взаимоисключается с `read`.
+   */
+  readonly readView?: (view: ShadowSourceView) => unknown;
   readonly write?: (behavior: ShadowBehavior, value: unknown) => void;
 }
 
@@ -80,7 +91,13 @@ const MEDIA_ACCESSORS: readonly AccessorOverride[] = [
   { name: "muted", read: (b) => b.muted(), write: (b, v) => b.setMuted(v) },
   { name: "volume", read: (b) => b.volume(), write: (b, v) => b.setVolume(v) },
   { name: "src", write: (b, v) => b.setSource("src", v) },
-  { name: "srcObject", write: (b, v) => b.setSource("srcObject", v) },
+  { name: "srcObject", readView: (view) => view.srcObject(), write: (b, v) => b.setSource("srcObject", v) },
+  // Вид источника тени файла (сессия 09b); у тени MSE — настоящий элемент.
+  { name: "duration", readView: (view) => view.duration() },
+  { name: "buffered", readView: (view) => view.buffered() },
+  { name: "seekable", readView: (view) => view.seekable() },
+  { name: "networkState", readView: (view) => view.networkState() },
+  { name: "currentSrc", readView: (view) => view.currentSrc() },
 ];
 
 const MEDIA_METHODS: readonly MethodOverride[] = [
@@ -92,6 +109,8 @@ const MEDIA_METHODS: readonly MethodOverride[] = [
 ];
 
 const VIDEO_ACCESSORS: readonly AccessorOverride[] = [
+  { name: "videoWidth", readView: (view) => view.videoWidth() },
+  { name: "videoHeight", readView: (view) => view.videoHeight() },
   { name: "webkitDecodedFrameCount", read: (b) => b.webkitDecodedFrameCount() },
   { name: "webkitDroppedFrameCount", read: (b) => b.webkitDroppedFrameCount() },
 ];
@@ -139,12 +158,17 @@ function overrideAccessor(prototype: object, override: AccessorOverride, lookup:
   if (current?.get === undefined || current.configurable !== true) return;
   const passthroughGet = current.get;
   const passthroughSet = current.set;
-  const { read, write } = override;
+  const { read, readView, write } = override;
   // Объектный литерал даёт функциям «родные» имена (`get currentTime`), как у браузера.
   const replacement = {
     get [override.name](): unknown {
       const behavior = lookup(this);
-      return behavior === undefined || read === undefined ? applyOriginal(passthroughGet, this, []) : read(behavior);
+      if (behavior !== undefined) {
+        if (read !== undefined) return read(behavior);
+        const view = readView === undefined ? null : behavior.sourceView();
+        if (view !== null && readView !== undefined) return readView(view);
+      }
+      return applyOriginal(passthroughGet, this, []);
     },
     set [override.name](value: unknown) {
       const behavior = lookup(this);

@@ -6,16 +6,23 @@ import { routeStatusPort } from "./status-port-router.ts";
 import { createHostLink } from "./host-link/host-link.ts";
 import { createChromeNativePortFactory, createRealScheduler } from "./host-link/native-port.ts";
 import type { BridgeStatusProvider } from "./status-provider.ts";
+import { startCodecPolicy } from "./codec-policy/browser-wiring.ts";
 import { installTabHandoffs } from "./handoff/browser-wiring.ts";
 import { NATIVE_HOST_NAME } from "../shared/host-name.ts";
 
 // Связь с посредником: единственный владелец порта native messaging (src/background/host-link).
 const scheduler = createRealScheduler();
+
+// Политика видеокодеков для сайтов (решение 43): настройка + метка плеера -> регистрация курьера.
+const codecPolicy = startCodecPolicy();
+
 const hostLink = createHostLink({
   portFactory: createChromeNativePortFactory(),
   scheduler,
   hostName: NATIVE_HOST_NAME,
   extensionVersion: chrome.runtime.getManifest().version,
+  // Метка «дешёвых» кодеков плеера из каждого hello_accepted уходит в кэш политики.
+  onPlayerCheapVideoCodecs: (families) => void codecPolicy.reportPlayerCheapCodecs(families),
 });
 const statusProvider: BridgeStatusProvider = hostLink;
 

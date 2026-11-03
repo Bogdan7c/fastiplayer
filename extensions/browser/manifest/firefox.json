@@ -3,7 +3,7 @@
     "scripts": ["background.js"]
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:*"
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:* http: https:"
   },
   "browser_specific_settings": {
     "gecko": {

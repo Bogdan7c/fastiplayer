@@ -5,13 +5,28 @@
 // ВАЖНО: никаких глобалов и исключений в страницу — всё в замыкании и под try/catch.
 
 import { startPageBridge } from "./bridge.ts";
+import { installCodecPolicy } from "./codec-policy/index.ts";
 import { createOddityReporter, type DebugSink } from "./oddity-reporter.ts";
 import { captureShadowEnvironment, shadowStarterFor } from "./shadow-assembly.ts";
 
+/**
+ * Текст бандла хука выделенного воркера (`src/worker/main.ts`). Подставляет сборка
+ * (scripts/build.ts, `define`): сначала собирается бандл воркера, затем его текст — строкой сюда.
+ */
+declare const __FASTIPLAYER_WORKER_HOOK_SOURCE__: string;
+
 function main(win: Window & typeof globalThis, debugSink: DebugSink): void {
+  // Ответы про кодеки (решения 43/64) — самыми первыми: страничный плеер спрашивает их с первой строки.
+  // `codecPolicy.policy.current()` — синхронное чтение действующей политики: обёртка `Worker`
+  // запекает её в хук каждого нового воркера.
+  const codecPolicy = installCodecPolicy(win, createOddityReporter(debugSink));
   // Окружение тени — первым: его оригиналы снимаются до любых наших и чужих подмен прототипов.
   const shadowEnvironment = captureShadowEnvironment(win);
-  startPageBridge(win, { startShadow: shadowStarterFor(shadowEnvironment), debugSink });
+  startPageBridge(win, {
+    startShadow: shadowStarterFor(shadowEnvironment),
+    debugSink,
+    workerHook: { source: __FASTIPLAYER_WORKER_HOOK_SOURCE__, policy: codecPolicy.policy },
+  });
 }
 
 // Консоль снимается первой, до всего, что может бросить: через неё же — след неудачного старта.

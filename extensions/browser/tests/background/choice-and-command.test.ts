@@ -11,7 +11,12 @@ import { VIDEO_CANDIDATES_FUNCTION_NAME } from "../../src/shared/video-candidate
 import { flushPromises } from "./support.ts";
 
 function video(element: number, overrides: Partial<VideoCandidate> = {}): VideoCandidate {
-  return { document: "doc-top", element, has_live_media: true, playing: false, visible_area_px: 1000, ...overrides };
+  return { document: "doc-top", element, media: { kind: "media_source" }, playing: false, visible_area_px: 1000, ...overrides };
+}
+
+/** Итог «передать этот элемент». */
+function handOff(frameId: number, document: string, element: number) {
+  return { kind: "hand_off", video: { frameId, document, element } };
 }
 
 describe("выбор видео", () => {
@@ -20,7 +25,7 @@ describe("выбор видео", () => {
       { frameId: 0, candidates: [video(1, { visible_area_px: 900_000 })] },
       { frameId: 7, candidates: [video(2, { document: "doc-iframe", playing: true, visible_area_px: 50_000 })] },
     ]);
-    assert.deepEqual(choice, { frameId: 7, document: "doc-iframe", element: 2 }, "метка документа выбранного элемента запомнена");
+    assert.deepEqual(choice, handOff(7, "doc-iframe", 2), "метка документа выбранного элемента запомнена");
   });
 
   it("никто не играет — самый большой видимый живой", () => {
@@ -28,17 +33,70 @@ describe("выбор видео", () => {
       { frameId: 0, candidates: [video(1, { visible_area_px: 100 }), video(2, { visible_area_px: 5000 })] },
       { frameId: 4, candidates: [video(3, { visible_area_px: 4000 })] },
     ]);
-    assert.deepEqual(choice, { frameId: 0, document: "doc-top", element: 2 });
+    assert.deepEqual(choice, handOff(0, "doc-top", 2));
   });
 
-  it("играющее видео без MSE (`<video src>`) в 09a не выбирается", () => {
-    const choice = chooseVideo([{ frameId: 0, candidates: [video(1, { has_live_media: false, playing: true }), video(2)] }]);
-    assert.deepEqual(choice, { frameId: 0, document: "doc-top", element: 2 });
+  it("элемент без источника не выбирается, даже играющий", () => {
+    const choice = chooseVideo([{ frameId: 0, candidates: [video(1, { media: { kind: "none" }, playing: true }), video(2)] }]);
+    assert.deepEqual(choice, handOff(0, "doc-top", 2));
+  });
+
+  it("файл `<video src>` (09b) выбирается, когда живого MSE нет", () => {
+    const choice = chooseVideo([{ frameId: 0, candidates: [video(1, { media: { kind: "none" }, playing: true }), video(2, { media: { kind: "file" } })] }]);
+    assert.deepEqual(choice, handOff(0, "doc-top", 2));
+  });
+
+  it("решение 8: играющий файл побеждает видимый, но стоящий MSE (находка 9 ревью 09b)", () => {
+    const choice = chooseVideo([
+      { frameId: 0, candidates: [video(1, { visible_area_px: 900_000 }), video(2, { media: { kind: "file" }, playing: true, visible_area_px: 50_000 })] },
+    ]);
+    assert.deepEqual(choice, handOff(0, "doc-top", 2));
+  });
+
+  it("оба играют — MSE выше файла, даже меньший", () => {
+    const choice = chooseVideo([
+      { frameId: 0, candidates: [video(1, { media: { kind: "file" }, playing: true, visible_area_px: 900_000 }), video(2, { playing: true, visible_area_px: 10 })] },
+    ]);
+    assert.deepEqual(choice, handOff(0, "doc-top", 2));
+  });
+
+  it("никто не играет — MSE выше файла, даже меньший", () => {
+    const choice = chooseVideo([
+      { frameId: 0, candidates: [video(1, { media: { kind: "file" }, visible_area_px: 900_000 }), video(2, { visible_area_px: 10 })] },
+    ]);
+    assert.deepEqual(choice, handOff(0, "doc-top", 2));
+  });
+
+  it("MSE не играет и не виден — ярус пуст, решает файл", () => {
+    const choice = chooseVideo([
+      { frameId: 0, candidates: [video(1, { visible_area_px: 0 }), video(2, { media: { kind: "file" }, visible_area_px: 10 })] },
+    ]);
+    assert.deepEqual(choice, handOff(0, "doc-top", 2));
+  });
+
+  it("передать нечего, но играет нативный HLS — честное «not supported yet» с формой (решение 185)", () => {
+    const choice = chooseVideo([
+      { frameId: 0, candidates: [video(1, { media: { kind: "unsupported", form: "native_hls" }, playing: true })] },
+      { frameId: 2, candidates: [video(2, { media: { kind: "unsupported", form: "media_stream" }, visible_area_px: 5 })] },
+    ]);
+    assert.deepEqual(choice, { kind: "not_supported_yet", form: "native_hls" });
+  });
+
+  it("неподдержанная форма проигрывает любому передаваемому видео", () => {
+    const choice = chooseVideo([
+      { frameId: 0, candidates: [video(1, { media: { kind: "unsupported", form: "native_hls" }, playing: true }), video(2, { media: { kind: "file" } })] },
+    ]);
+    assert.deepEqual(choice, handOff(0, "doc-top", 2));
   });
 
   it("живые, но не играют и не видны — передавать нечего", () => {
-    assert.equal(chooseVideo([{ frameId: 0, candidates: [video(1, { visible_area_px: 0 })] }]), undefined);
-    assert.equal(chooseVideo([]), undefined);
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [video(1, { visible_area_px: 0 })] }]), { kind: "nothing" });
+    assert.deepEqual(
+      chooseVideo([{ frameId: 0, candidates: [video(1, { media: { kind: "unsupported", form: "data_url" }, visible_area_px: 0 })] }]),
+      { kind: "nothing" },
+      "неподдержанная форма, которую не видно и которая не играет, — не повод для «not supported yet»",
+    );
+    assert.deepEqual(chooseVideo([]), { kind: "nothing" });
   });
 
   it("при равенстве — верхний фрейм и порядок документа, независимо от порядка ответов", () => {
@@ -46,7 +104,7 @@ describe("выбор видео", () => {
       { frameId: 9, candidates: [video(5, { playing: true })] },
       { frameId: 0, candidates: [video(1, { playing: true }), video(2, { playing: true })] },
     ]);
-    assert.deepEqual(choice, { frameId: 0, document: "doc-top", element: 1 });
+    assert.deepEqual(choice, handOff(0, "doc-top", 1));
   });
 });
 
@@ -150,7 +208,7 @@ describe("страница для open_session и сообщения плеер�
     assert.equal(siteDomainOf("http://[::1]:8080/"), "[::1]");
   });
 
-  it("часы плеера теряют seq, return_to_page даёт точный возврат, fetch_range в 09a пропускается", () => {
+  it("часы плеера теряют seq, return_to_page даёт точный возврат, fetch_range уходит загрузчику (09b)", () => {
     assert.deepEqual(translatePlayerMessage({ type: "clock", seq: 3, position_us: 10, state: "waiting", rate: 500 }, 1), {
       kind: "shadow",
       command: { kind: "clock", position_us: 10, state: "waiting", rate: 500 },
@@ -161,7 +219,10 @@ describe("страница для open_session и сообщения плеер�
       resume: { kind: "exactly", resume: "paused" },
       cause: "returned_to_page",
     });
-    assert.deepEqual(translatePlayerMessage({ type: "fetch_range", request_id: 1, offset: 0, length: 10 }, 1), { kind: "ignore" });
+    assert.deepEqual(translatePlayerMessage({ type: "fetch_range", request_id: 1, offset: 0, length: 10 }, 1), {
+      kind: "fetch_range",
+      request: { request_id: 1, offset: 0, length: 10 },
+    });
     assert.deepEqual(translatePlayerMessage({ type: "stream_rejected", generation: 1, reason: "unsupported_codec" }, undefined), { kind: "ignore" });
   });
 });

@@ -8,6 +8,7 @@
 //   backoff     — связь упала, ждём паузу перед повтором (только пока есть нужда).
 // Инварианты: порт один; у каждого таймера свой слот (повтор, ответ, проба, простой);
 // повторы идут только пока есть нужда (acquireDemand), а нужда снята => таймер повтора отменён.
+import { parseCapabilityTokens, type VideoCodecFamily } from "../../protocol/capability.ts";
 import type { BridgeStatus } from "../../shared/bridge-status.ts";
 import type { BridgeStatusProvider } from "../status-provider.ts";
 import {
@@ -34,6 +35,9 @@ export interface HostLinkDeps {
   readonly hostName: string;
   // Версия экстеншена из манифеста (идёт в hello.software_version, только для диагностики).
   readonly extensionVersion: string;
+  // Плеер сообщил «дешёвые» видео-кодеки (метки `cheap_codec.*` из hello_accepted; решение 43).
+  // Зовётся на КАЖДЫЙ принятый hello, в том числе с пустым набором («метка снята»).
+  readonly onPlayerCheapVideoCodecs?: (families: ReadonlySet<VideoCodecFamily>) => void;
   // Диагностика без содержимого сообщений. По умолчанию — console.warn.
   readonly warn?: (message: string) => void;
 }
@@ -265,8 +269,18 @@ export function createHostLink(deps: HostLinkDeps): HostLink {
       playerVersion: message.player.software_version,
       agreedProtocol: { major: message.agreed_protocol.major, minor: message.agreed_protocol.minor },
     });
+    reportCheapCodecs(message.player.capabilities);
     for (const pending of requests.unsent()) sendRequest(pending);
     scheduleIdleCloseIfIdle();
+  }
+
+  // Метка плеера уходит наружу; сбой получателя не должен ломать сам hello.
+  function reportCheapCodecs(capabilityTokens: readonly string[]): void {
+    try {
+      deps.onPlayerCheapVideoCodecs?.(parseCapabilityTokens(capabilityTokens).capabilities.cheapVideoCodecs);
+    } catch (error) {
+      warn(`получатель метки кодеков бросил: ${String(error)}`);
+    }
   }
 
   function handleRefused(message: PlayerRefused): void {

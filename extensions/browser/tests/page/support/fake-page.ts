@@ -7,7 +7,7 @@
 // делить подменённые прототипы между собой.
 
 import type { HandoffEndPosition, HandoffEndResume, PageEvent, ShadowCommand } from "../../../src/shared/handoff-contract.ts";
-import type { ShadowSessionHandle, ShadowStarter } from "../../../src/page/handoff-seam.ts";
+import type { ShadowSessionHandle, ShadowSourceKind, ShadowStarter } from "../../../src/page/handoff-seam.ts";
 import type { PageBridgeWindow } from "../../../src/page/bridge.ts";
 
 /** Что сделал «браузер» на вызове appendBuffer (копия байтов, как в настоящем MSE). */
@@ -116,11 +116,22 @@ export function createFakePage() {
     }
   }
 
-  class FakeURL {
-    static createObjectURL(subject: unknown): string {
+  /** Что стоит за каждым blob-адресом (обёртка воркера кладёт туда свои скрипты). */
+  const objectUrlSubjects = new Map<string, unknown>();
+  /** Отпущенные blob-адреса. */
+  const revokedObjectUrls: string[] = [];
+
+  // Разбор адресов — настоящий `URL` Node (обёртка воркера разрешает адрес скрипта от базы документа).
+  class FakeURL extends URL {
+    static override createObjectURL(subject: unknown): string {
       if (typeof subject !== "object" || subject === null) throw new TypeError("not a blob");
       urlCounter += 1;
-      return `blob:https://site.example/${urlCounter}`;
+      const url = `blob:https://site.example/${urlCounter}`;
+      objectUrlSubjects.set(url, subject);
+      return url;
+    }
+    static override revokeObjectURL(url: string): void {
+      revokedObjectUrls.push(String(url));
     }
   }
 
@@ -128,6 +139,10 @@ export function createFakePage() {
     connected = true;
     get isConnected(): boolean {
       return this.connected;
+    }
+    /** Базовый адрес документа — адрес страницы. */
+    get baseURI(): string {
+      return FAKE_PAGE_URL;
     }
     /** Дерево у фейка плоское: корень любого узла — документ. */
     getRootNode(): unknown {
@@ -330,15 +345,18 @@ export function createFakePage() {
   }
 
   /** Всё, что ушло в порты (снимается до отправки: виден список transfer). */
-  const postedToPorts: { message: unknown; transfer: readonly Transferable[]; clonedBeforeSend: unknown }[] = [];
+  const postedToPorts: { port: MessagePort; message: unknown; transfer: readonly Transferable[]; clonedBeforeSend: unknown }[] = [];
   const realPostMessage = MessagePort.prototype.postMessage;
-  /** Если задано — отправка в порт бросает (сбой копирования/порта в браузере). */
-  const portFailure: { error: Error | null } = { error: null };
+  /**
+   * Если задано — отправка в порт бросает (сбой копирования/порта в браузере); `only` сужает сбой
+   * до сообщений, которые он принял (например, только команды каналу воркера).
+   */
+  const portFailure: { error: Error | null; only?: (message: unknown) => boolean } = { error: null };
   const spyPortPrototype = {
     postMessage(this: MessagePort, message: unknown, transfer: Transferable[]) {
-      if (portFailure.error !== null) throw portFailure.error;
+      if (portFailure.error !== null && (portFailure.only?.(message) ?? true)) throw portFailure.error;
       // Клон до отправки: после transfer буферы сообщения у отправителя отсоединены.
-      postedToPorts.push({ message, transfer, clonedBeforeSend: structuredClone(message) });
+      postedToPorts.push({ port: this, message, transfer, clonedBeforeSend: structuredClone(message) });
       Reflect.apply(realPostMessage, this, [message, transfer]);
     },
     start: MessagePort.prototype.start,
@@ -366,6 +384,9 @@ export function createFakePage() {
     DOMException,
     TypeError,
     queueMicrotask: (callback: () => void) => queueMicrotask(callback),
+    // Таймер окна (страховка возврата файла тенью): тесты моста сроков не ждут.
+    setTimeout: (callback: () => void, delayMs: number) => setTimeout(callback, delayMs),
+    clearTimeout: (handle: ReturnType<typeof setTimeout>) => clearTimeout(handle),
     performance: { now: () => clock.nowMs },
     navigator: {},
     MessageEvent: WindowMessageEvent,
@@ -385,6 +406,8 @@ export function createFakePage() {
     FakeMediaSource,
     FakeSourceBuffer,
     FakeURL,
+    objectUrlSubjects,
+    revokedObjectUrls,
     FakeElement,
     FakeVideoElement,
     WindowMessageEvent,
@@ -413,7 +436,12 @@ export type FakePage = ReturnType<typeof createFakePage>;
 
 /** Фейковая тень: записывает всё, что с ней делали; `end` шлёт handoff_ended, как настоящая. */
 export class FakeShadow {
-  readonly started: { element: unknown; emit: (event: PageEvent) => void; isMediaSourceObjectUrl: (url: string) => boolean }[] = [];
+  readonly started: {
+    element: unknown;
+    emit: (event: PageEvent) => void;
+    isMediaSourceObjectUrl: (url: string) => boolean;
+    source: ShadowSourceKind;
+  }[] = [];
   readonly applied: ShadowCommand[] = [];
   readonly ended: { position: HandoffEndPosition; resume: HandoffEndResume }[] = [];
   /** Если задано — startShadow бросит (проверка «тень не встала»). */
@@ -421,9 +449,9 @@ export class FakeShadow {
   /** Слать ли handoff_ended из end() (настоящая тень шлёт). */
   emitsEndEvent = true;
 
-  readonly starter: ShadowStarter = (element, emit, isMediaSourceObjectUrl) => {
+  readonly starter: ShadowStarter = (element, emit, options) => {
     if (this.failToStart !== null) throw this.failToStart;
-    this.started.push({ element, emit, isMediaSourceObjectUrl });
+    this.started.push({ element, emit, isMediaSourceObjectUrl: options.isMediaSourceObjectUrl, source: options.source });
     const handle: ShadowSessionHandle = {
       apply: (command) => {
         this.applied.push(command);

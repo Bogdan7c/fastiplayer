@@ -4,7 +4,8 @@
 // Порядок на document_start (всё синхронно, до скриптов страницы):
 //  1. снять оригиналы (двоичные геттеры, DOM, readyState, события и порты, console.debug,
 //     crypto.getRandomValues) и выбрать метку документа;
-//  2. поставить хуки MSE, `URL.createObjectURL`, `attachShadow`;
+//  2. поставить хуки MSE, `URL.createObjectURL`, `attachShadow` и (Chromium, 09b-C) обёртку
+//     `Worker` — хук MSE внутри выделенных воркеров;
 //  3. поставить слушатель рукопожатия участка 1.
 // Нет `MediaSource` — хуки не ставятся вовсе; слушатель рукопожатия всё равно ставится, чтобы
 // рукопожатие не досталось странице, а на вопросы фона был ответ («живого видео нет»).
@@ -23,9 +24,10 @@ import { MseTracker } from "./mse-tracker.ts";
 import { createOddityReporter, type DebugSink } from "./oddity-reporter.ts";
 import { captureChannelOriginals, listenForPageChannel, type ChannelWindow } from "./page-channel.ts";
 import { VideoCandidates } from "./video-candidates.ts";
+import { installWorkerCapture, type WorkerCaptureWindow, type WorkerHookSource, type WorkerMediaSources } from "./worker-capture/index.ts";
 
 /** Окно, против которого работает MAIN-мир. */
-export interface PageBridgeWindow extends MseWindow, DomWindow, RegistryWindow, ChannelWindow, BinaryWindow, RandomWindow {}
+export interface PageBridgeWindow extends MseWindow, DomWindow, RegistryWindow, ChannelWindow, BinaryWindow, RandomWindow, WorkerCaptureWindow {}
 
 /** Внешние зависимости сборки. */
 export interface PageBridgeDependencies {
@@ -35,6 +37,8 @@ export interface PageBridgeDependencies {
   readonly debugSink: DebugSink;
   /** Потолок памяти журнала на документ (по умолчанию — `DOCUMENT_MEMORY_BUDGET_BYTES`). */
   readonly memoryBudgetBytes?: number;
+  /** Хук выделенного воркера (бандл и политика кодеков); без него обёртка `Worker` не ставится. */
+  readonly workerHook?: WorkerHookSource;
 }
 
 /** Что сборка отдаёт наружу (только для тестов: странице не видно ничего). */
@@ -43,6 +47,9 @@ export interface PageBridge {
   readonly tracker: MseTracker;
   readonly controller: HandoffController;
   readonly registry: ElementRegistry;
+  readonly workerMediaSources: WorkerMediaSources;
+  /** Обёртка `Worker` стоит (Chromium с хуком воркера). */
+  readonly workersWrapped: boolean;
   readonly documentTag: string;
 }
 
@@ -62,9 +69,13 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
     objectUrlOf: (mediaSource) => registry.objectUrlOf(mediaSource),
     reportOddity,
   });
-  const candidates = new VideoCandidates(registry, tracker, dom, mediaSources, documentTag, reportOddity);
-  const controller = new HandoffController({ registry, candidates, dom, binary, startShadow: dependencies.startShadow, reportOddity });
+  // Реестр воркеров — всегда (классификатор узнаёт по нему handle); обёртка — только в Chromium.
+  const workerCapture = installWorkerCapture(win, { hook: dependencies.workerHook ?? null, channel, binary, reportOddity });
+  const workerMediaSources = workerCapture.registry;
+  const candidates = new VideoCandidates(registry, tracker, dom, mediaSources, documentTag, reportOddity, workerMediaSources);
+  const controller = new HandoffController({ registry, candidates, dom, binary, startShadow: dependencies.startShadow, workerMediaSources, reportOddity });
   tracker.setListener(controller);
+  workerMediaSources.setListener(controller);
 
   const hooked = win.MediaSource !== undefined && installMseHook(win, { observer: tracker, binary, reportOddity });
   if (hooked) registry.installHooks(win, reportOddity);
@@ -78,5 +89,5 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
     },
     reportOddity,
   );
-  return { hooked, tracker, controller, registry, documentTag };
+  return { hooked, tracker, controller, registry, workerMediaSources, workersWrapped: workerCapture.wrapped, documentTag };
 }

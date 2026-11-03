@@ -17,12 +17,24 @@ export interface ShadowSessionHandle {
 export type MediaSourceObjectUrlCheck = (url: string) => boolean;
 
 /**
- * Поставить элемент в тень. `emit` — события страницы (page_seek, page_playback, handoff_ended, …).
- * `isMediaSourceObjectUrl` — знание реестра (тень по нему отличает новое поколение на том же
- * элементе от blob-адреса обычного файла).
+ * Что передаётся под тенью (сессия 09b):
+ * - `media_source` — MSE: настоящий элемент остаётся со своим MediaSource (браузер раскладывает
+ *   куски, `buffered`/`duration` настоящие), только стоит на паузе;
+ * - `file` — файл `<video src>`: источник настоящего элемента снимается (решение 186), браузер файл
+ *   не качает и не декодирует, а тень показывает странице снимок файла (длительность, размер
+ *   кадра, `buffered` = весь файл — решение 187) и при возврате незаметно возвращает источник.
  */
-export type ShadowStarter = (
-  element: HTMLMediaElement,
-  emit: (event: PageEvent) => void,
-  isMediaSourceObjectUrl: MediaSourceObjectUrlCheck,
-) => ShadowSessionHandle;
+export type ShadowSourceKind = "media_source" | "file";
+
+/** Параметры запуска тени. */
+export interface ShadowStartOptions {
+  /**
+   * Знание реестра: адрес — blob-адрес MediaSource этого документа (тень по нему отличает новое
+   * поколение на том же элементе от blob-адреса обычного файла).
+   */
+  readonly isMediaSourceObjectUrl: MediaSourceObjectUrlCheck;
+  readonly source: ShadowSourceKind;
+}
+
+/** Поставить элемент в тень. `emit` — события страницы (page_seek, page_playback, handoff_ended, …). */
+export type ShadowStarter = (element: HTMLMediaElement, emit: (event: PageEvent) => void, options: ShadowStartOptions) => ShadowSessionHandle;

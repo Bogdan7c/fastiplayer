@@ -11,6 +11,7 @@
 
 import type { ShadowStarter } from "./handoff-seam.ts";
 import { installMediaSessionGuard } from "./media-session-guard.ts";
+import type { TimeoutScheduler } from "./shadow/file-return.ts";
 import { captureElementOriginals, installShadowOverrides, startShadow, type ShadowEnvironment } from "./shadow/index.ts";
 
 /** Окружение тени без ответа реестра: его подставляет контроллер при каждом запуске тени. */
@@ -33,16 +34,30 @@ export function captureShadowEnvironment(win: ShadowWindow): ShadowEnvironmentBa
       originals,
       mediaSession: installMediaSessionGuard(win),
       now: win.performance.now.bind(win.performance),
+      scheduleTimeout: captureTimeoutScheduler(win),
     };
   } catch {
     return null;
   }
 }
 
+/**
+ * Таймер окна, снятый на document_start: страница позже может подменить `setTimeout`. Нужен только
+ * страховке возврата файла (`FILE_RETURN_TIMEOUT_MS`), обычный путь идёт по событиям элемента.
+ */
+function captureTimeoutScheduler(win: ShadowWindow): TimeoutScheduler {
+  const setTimer = win.setTimeout.bind(win);
+  const clearTimer = win.clearTimeout.bind(win);
+  return (callback, delayMs) => {
+    const handle = setTimer(callback, delayMs);
+    return () => clearTimer(handle);
+  };
+}
+
 /** Шов для контроллера: запуск тени в снятом окружении (или честный отказ, если его нет). */
 export function shadowStarterFor(environment: ShadowEnvironmentBase | null): ShadowStarter {
-  return (element, emit, isMediaSourceObjectUrl) => {
+  return (element, emit, options) => {
     if (environment === null) throw new Error("shadow environment is unavailable in this document");
-    return startShadow(element, emit, { ...environment, isMediaSourceObjectUrl });
+    return startShadow(element, emit, { ...environment, isMediaSourceObjectUrl: options.isMediaSourceObjectUrl }, options.source);
   };
 }

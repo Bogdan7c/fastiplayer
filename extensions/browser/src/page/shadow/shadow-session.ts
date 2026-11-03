@@ -7,14 +7,21 @@
 // - Контроллер — настоящий элемент (пауза, заглушка, подтягивание, возврат), обещания `play()`,
 //   счётчики кадров, переводы «страница сделала X» в `PageEvent` наружу.
 // - Оригиналы — единственный способ трогать настоящий элемент (страница могла подменить прототипы).
+// - Тень файла (сессия 09b): всё, что она делает иначе, — `FileShadowLifecycle` (снимок файла,
+//   снятие и возврат источника); контроллер зовёт её одной строкой в своих точках.
 
 import type { HandoffEndCause, HandoffEndPosition, HandoffEndResume, PageEvent, ShadowCommand } from "../../shared/handoff-contract.ts";
 import { MAX_PLAYBACK_RATE_PERMILLE, MIN_PLAYBACK_RATE_PERMILLE } from "../../protocol/limits.ts";
 import type { MediaTimeMicros, PlaybackRatePermille } from "../../protocol/time.ts";
 import type { MediaSessionGuard } from "../media-session-guard.ts";
+import type { ShadowSourceKind } from "../handoff-seam.ts";
+import type { TimeoutScheduler } from "./file-return.ts";
+import { FileShadowLifecycle, interruptFileReturn, type FileShadowHost, type ReturnPlan } from "./file-shadow-lifecycle.ts";
+import { PageMutedState } from "./page-muted.ts";
+import { FileSourceMode, type ShadowSourceView } from "./file-source-mode.ts";
 import { type GateDecision, installEventGate, PLAYBACK_EVENT_TYPES, READINESS_EVENT_TYPES, SOURCE_RESET_EVENT_TYPE } from "./event-gate.ts";
 import { EventDispatchQueue } from "./event-dispatch-queue.ts";
-import { type FrameCallback, type FrameCountBaseline, ShadowFrameCallbacks, shadowTotalFrames } from "./frame-stats.ts";
+import { type FrameCallback, type FrameCountBaseline, readRealFrameQuality, ShadowFrameCallbacks, shadowTotalFrames } from "./frame-stats.ts";
 import { shadowProblemReporter } from "./once-reporter.ts";
 import { callOriginal, type ElementOriginals, readOriginal, writeOriginal } from "./originals.ts";
 import { installShadowOverrides, type ShadowBehavior, type ShadowRegistry, type SourceProperty } from "./prototype-overrides.ts";
@@ -40,6 +47,8 @@ export interface ShadowEnvironment {
    * чтобы отличить новое поколение на том же элементе от blob-адреса обычного файла.
    */
   readonly isMediaSourceObjectUrl: MediaSourceObjectUrlCheck;
+  /** Таймер окна — только страховка возврата файла (`FILE_RETURN_TIMEOUT_MS`). */
+  readonly scheduleTimeout: TimeoutScheduler;
 }
 
 /** Управление тенью для MAIN-мира. */
@@ -82,11 +91,21 @@ interface PendingPlay {
   readonly reject: (reason: unknown) => void;
 }
 
-/** Ставит элемент в тень. `emit` — события наружу (page_seek, player_seek_applied, page_playback, handoff_ended). */
-export function startShadow(element: HTMLMediaElement, emit: (event: PageEvent) => void, env: ShadowEnvironment): ShadowSession {
+/**
+ * Ставит элемент в тень. `emit` — события наружу (page_seek, player_seek_applied, page_playback,
+ * handoff_ended). `source` — что передаётся: MSE или файл `<video src>` (handoff-seam.ts).
+ */
+export function startShadow(
+  element: HTMLMediaElement,
+  emit: (event: PageEvent) => void,
+  env: ShadowEnvironment,
+  source: ShadowSourceKind,
+): ShadowSession {
   const registry = installShadowOverrides(env.originals);
+  // Прежняя тень файла ещё возвращает элемент (находка 6 ревью 09b): закончить её возврат сейчас.
+  const interruptedFile = interruptFileReturn(element);
   if (registry.isShadowed(element)) throw new Error("shadow: element is already shadowed");
-  const controller = new ShadowController(element, emit, env, registry);
+  const controller = new ShadowController(element, emit, env, registry, source, interruptedFile);
   return {
     apply: (command) => controller.apply(command),
     end: (position, resume) => controller.end(position, resume),
@@ -110,29 +129,41 @@ class ShadowController implements ShadowBehavior {
   readonly #emptySourceWatch = new EmptySourceWatch();
   readonly #pulse = new ShadowPulse();
   readonly #disposeGate: () => void;
+  /** Тень файла (`null` — тень MSE): снимок файла, снятый источник и возврат. */
+  readonly #file: FileShadowLifecycle | null;
   #pendingPlays: PendingPlay[] = [];
-  /** `muted`, как его видит страница; настоящий элемент на время тени заглушен. */
-  #pageMuted: boolean;
+  /** `muted`, как его видит страница; настоящий элемент на время тени заглушен (page-muted.ts). */
+  readonly #muted: PageMutedState;
   /** Сколько `emptied` уже обработано синхронно в `load()`/`src=` и ещё придёт от браузера. */
   #expectedEmptiedEvents = 0;
   /** Наша перестановка настоящего элемента ещё не «устоялась»: его `canplay*` — не для страницы. */
   #realRepositionInFlight = false;
   #active = true;
 
-  constructor(element: HTMLMediaElement, emit: (event: PageEvent) => void, env: ShadowEnvironment, registry: ShadowRegistry) {
+  constructor(
+    element: HTMLMediaElement,
+    emit: (event: PageEvent) => void,
+    env: ShadowEnvironment,
+    registry: ShadowRegistry,
+    source: ShadowSourceKind,
+    /** Снимок файла прежней тени, чей возврат прервала эта передача (`null` — не было). */
+    interruptedFile: FileSourceMode | null,
+  ) {
     this.#element = element;
     this.#emitOutward = emit;
     this.#env = env;
     this.#originals = env.originals;
     this.#registry = registry;
     this.#queue = new EventDispatchQueue(element, env.originals);
+    // Снимок файла — до любых наших действий с элементом (пауза, шлагбаум, снятие источника).
+    this.#file = source === "file" ? new FileShadowLifecycle(this.#fileSnapshot(interruptedFile), this.#fileHost()) : null;
 
     const media = this.#originals.media;
     const nowMs = env.now();
     const realPaused = readOriginal(media.paused, element) === true;
     const realReadyState = Number(readOriginal(media.readyState, element));
-    this.#pageMuted = readOriginal(media.muted, element) === true;
-    const baselineQuality = this.#readRealQuality();
+    this.#muted = new PageMutedState(element, env.originals);
+    const baselineQuality = readRealFrameQuality(element, this.#originals);
     this.#frameBaseline = baselineQuality.baseline;
     this.#qualityPrototype = baselineQuality.prototype;
     this.#timeline = new ShadowTimeline(
@@ -149,7 +180,9 @@ class ShadowController implements ShadowBehavior {
     );
     this.#follower = new RealElementFollower(
       {
-        canReposition: () => !this.#timeline.seeking && Number(readOriginal(media.readyState, element)) > READY_STATE.HAVE_NOTHING,
+        // У файла настоящий элемент без файла: переставлять нечего (и буфера, который чистится, нет).
+        canReposition: () =>
+          this.#file === null && !this.#timeline.seeking && Number(readOriginal(media.readyState, element)) > READY_STATE.HAVE_NOTHING,
         shadowPositionUs: () => this.#timeline.positionUs(env.now()),
         realPositionUs: () => secondsToMicros(Number(readOriginal(media.currentTime, element))),
         repositionReal: (positionUs) => this.#repositionReal(positionUs),
@@ -164,16 +197,24 @@ class ShadowController implements ShadowBehavior {
     // кончается у контроллера MAIN-мира.
     registry.attach(element, this);
     try {
-      this.#disposeGate = installEventGate(element, env.win, this.#originals, (type) => this.#onTrustedRealEvent(type));
+      this.#disposeGate = installEventGate(
+        element,
+        env.win,
+        this.#originals,
+        (type) => this.#onTrustedRealEvent(type),
+        this.#file === null ? "playback_events" : "all_media_events",
+      );
     } catch (problem) {
       registry.detach(element);
       throw problem;
     }
     this.#attempt("start: pause and mute real element", () => {
       if (!realPaused) callOriginal(media.pause, element);
-      writeOriginal(media.muted, element, true);
+      this.#muted.muteRealElement();
     });
     this.#attempt("start: suspend mediaSession", () => env.mediaSession.suspend());
+    // Решение 186: файл снимается, когда шлагбаум уже гасит события этой записи.
+    this.#file?.start();
   }
 
   // -------------------------------------------------------------------------------------------
@@ -219,6 +260,10 @@ class ShadowController implements ShadowBehavior {
     const targetUs = position.kind === "at" ? position.position_us : this.#timeline.positionUs(nowMs);
     const pageSawPlaying = !this.#timeline.paused;
     const resumePlaying = resume.kind === "exactly" ? resume.resume === "playing" : pageSawPlaying;
+    if (this.#file !== null) {
+      this.#file.end({ targetUs, resumePlaying, pageSawPlaying });
+      return;
+    }
     this.#detach();
     this.#attempt("end: restore real element", () => this.#returnRealElement(targetUs, resumePlaying, pageSawPlaying));
     this.#finish("returned");
@@ -273,20 +318,19 @@ class ShadowController implements ShadowBehavior {
   }
 
   readyState(): number {
+    // У файла настоящий элемент без файла: готовность — только модели тени.
+    if (this.#file !== null) return this.#timeline.readyState;
     // Нет метаданных у настоящего элемента — нет их и у тени: данные потока общие с браузером.
     const realReadyState = Number(readOriginal(this.#originals.media.readyState, this.#element));
     return realReadyState === READY_STATE.HAVE_NOTHING ? READY_STATE.HAVE_NOTHING : this.#timeline.readyState;
   }
 
   muted(): boolean {
-    return this.#pageMuted;
+    return this.#muted.pageMuted;
   }
 
   setMuted(value: unknown): void {
-    const muted = Boolean(value);
-    if (muted === this.#pageMuted) return;
-    this.#pageMuted = muted;
-    this.#queue.enqueueEvent("volumechange");
+    if (this.#muted.setFromPage(Boolean(value)) === "changed") this.#queue.enqueueEvent("volumechange");
   }
 
   volume(): number {
@@ -324,6 +368,10 @@ class ShadowController implements ShadowBehavior {
   }
 
   load(): void {
+    if (this.#file !== null) {
+      this.#file.pageWritesSource({ kind: "load" });
+      return;
+    }
     const willFireEmptied = this.#realNetworkState() !== NETWORK_EMPTY;
     callOriginal(this.#originals.media.load, this.#element);
     this.#afterLoadAlgorithm(willFireEmptied);
@@ -333,6 +381,10 @@ class ShadowController implements ShadowBehavior {
     const accessor = property === "src" ? this.#originals.media.src : this.#originals.media.srcObject;
     // Без `srcObject` в браузере переопределение для него и не ставится; на всякий — честный отказ.
     if (accessor === undefined) return;
+    if (this.#file !== null) {
+      this.#file.pageWritesSource({ kind: "set", property, value });
+      return;
+    }
     const willFireEmptied = this.#realNetworkState() !== NETWORK_EMPTY;
     writeOriginal(accessor, this.#element, value);
     this.#afterLoadAlgorithm(willFireEmptied);
@@ -373,6 +425,10 @@ class ShadowController implements ShadowBehavior {
 
   webkitDroppedFrameCount(): number {
     return this.#frameBaseline.droppedFrames;
+  }
+
+  sourceView(): ShadowSourceView | null {
+    return this.#file?.view ?? null;
   }
 
   // -------------------------------------------------------------------------------------------
@@ -422,8 +478,8 @@ class ShadowController implements ShadowBehavior {
       {
         presentationTime: nowMs,
         expectedDisplayTime: nowMs,
-        width: video.videoWidth === undefined ? 0 : Number(readOriginal(video.videoWidth, this.#element)),
-        height: video.videoHeight === undefined ? 0 : Number(readOriginal(video.videoHeight, this.#element)),
+        width: this.#file?.view.videoWidth() ?? (video.videoWidth === undefined ? 0 : Number(readOriginal(video.videoWidth, this.#element))),
+        height: this.#file?.view.videoHeight() ?? (video.videoHeight === undefined ? 0 : Number(readOriginal(video.videoHeight, this.#element))),
         mediaTime: this.#timeline.positionUs(nowMs) / MICROS_PER_SECOND,
         presentedFrames: this.#totalFrames(nowMs),
         processingDuration: 0,
@@ -438,6 +494,7 @@ class ShadowController implements ShadowBehavior {
 
   /** Доверенное событие настоящего элемента: гасить или пропустить странице. */
   #onTrustedRealEvent(type: string): GateDecision {
+    if (this.#file !== null) return this.#file.onTrustedEvent(type);
     if (type === SOURCE_RESET_EVENT_TYPE) {
       if (this.#expectedEmptiedEvents > 0) {
         // Уже обработано синхронно в `load()`/`src=`: это просто запоздавшее событие браузера.
@@ -509,9 +566,9 @@ class ShadowController implements ShadowBehavior {
    * `play()` — тень делает то же со своими обещаниями.
    */
   #releaseToPage(): void {
+    this.#file?.beforeRelease();
     this.#detach();
     this.#settlePendingPlays("reject");
-    this.#attempt("release: restore muted", () => writeOriginal(this.#originals.media.muted, this.#element, this.#pageMuted));
     this.#finish("element_released");
   }
 
@@ -531,19 +588,52 @@ class ShadowController implements ShadowBehavior {
     return this.#detachedWatch.onClockTick(readOriginal(accessor, this.#element) === true, nowMs);
   }
 
-  /** Убрать тень с элемента: переопределения и шлагбаум больше его не касаются. */
+  /** Снимок файла: с элемента или (новая передача посреди возврата) у прежней тени. */
+  #fileSnapshot(interruptedFile: FileSourceMode | null): FileSourceMode {
+    const originals = this.#originals;
+    return interruptedFile === null ? FileSourceMode.capture(this.#element, originals) : FileSourceMode.inheriting(this.#element, originals, interruptedFile);
+  }
+
+  /** Что жизни тени файла можно делать с контроллером (её шов, file-shadow-lifecycle.ts). */
+  #fileHost(): FileShadowHost {
+    return {
+      element: this.#element,
+      originals: this.#originals,
+      scheduleTimeout: this.#env.scheduleTimeout,
+      isActive: () => this.#active,
+      stopCommands: () => {
+        this.#active = false;
+      },
+      releaseToPage: () => this.#releaseToPage(),
+      detach: () => this.#detach(),
+      reportReturned: () => this.#finish("returned"),
+      returnRealElement: (plan: ReturnPlan) => this.#returnRealElement(plan.targetUs, plan.resumePlaying, plan.pageSawPlaying),
+      handOverWithoutPosition: () => {
+        this.#settlePendingPlays("reject");
+        this.#handOverFrameCallbacks();
+      },
+      attempt: (context, action) => this.#attempt(context, action),
+    };
+  }
+
+  /**
+   * Убрать тень с элемента: переопределения и шлагбаум больше его не касаются, а `muted` страницы
+   * возвращается настоящему элементу. Это единственная точка, через которую проходит любой выход
+   * тени, поэтому `muted` не останется нашим ни на одном пути (находка 3 ревью 09b).
+   */
   #detach(): void {
     this.#active = false;
     this.#registry.detach(this.#element);
     this.#disposeGate();
+    // Находка 00c (Ashdi): вернуть именно `muted` страницы, а не просто снять наш.
+    this.#attempt("detach: restore muted", () => this.#muted.restoreToPage());
   }
 
   /** Возврат: громкость, скорость, позиция, игра/пауза настоящего элемента. */
   #returnRealElement(targetUs: MediaTimeMicros, resumePlaying: boolean, pageSawPlaying: boolean): void {
     const media = this.#originals.media;
     const element = this.#element;
-    // Находка 00c (Ashdi): вернуть именно `muted` страницы, а не просто снять наш.
-    writeOriginal(media.muted, element, this.#pageMuted);
+    // `muted` страницы уже вернул `#detach` (он всегда раньше возврата позиции).
     if (Number(readOriginal(media.playbackRate, element)) !== this.#timeline.pageRate) {
       writeOriginal(media.playbackRate, element, this.#timeline.pageRate);
     }
@@ -604,36 +694,12 @@ class ShadowController implements ShadowBehavior {
     writeOriginal(this.#originals.media.currentTime, this.#element, positionUs / MICROS_PER_SECOND);
   }
 
-  #readRealQuality(): { readonly baseline: FrameCountBaseline; readonly prototype: object } {
-    const getQuality = this.#originals.video.getVideoPlaybackQuality;
-    if (getQuality !== undefined) {
-      const quality = callOriginal(getQuality, this.#element) as VideoPlaybackQuality;
-      return {
-        baseline: {
-          totalFrames: quality.totalVideoFrames,
-          droppedFrames: quality.droppedVideoFrames,
-          corruptedFrames: quality.corruptedVideoFrames,
-        },
-        prototype: Object.getPrototypeOf(quality) as object,
-      };
-    }
-    const decoded = this.#originals.video.webkitDecodedFrameCount;
-    const dropped = this.#originals.video.webkitDroppedFrameCount;
-    return {
-      baseline: {
-        totalFrames: decoded === undefined ? 0 : Number(readOriginal(decoded, this.#element)),
-        droppedFrames: dropped === undefined ? 0 : Number(readOriginal(dropped, this.#element)),
-        corruptedFrames: 0,
-      },
-      prototype: Object.prototype,
-    };
-  }
-
   #totalFrames(nowMs: number): number {
     return shadowTotalFrames(this.#frameBaseline, this.#timeline.playedUs(nowMs));
   }
 
   #durationUs(): MediaTimeMicros | undefined {
+    if (this.#file !== null) return this.#file.view.durationUs;
     const seconds = Number(readOriginal(this.#originals.media.duration, this.#element));
     return Number.isFinite(seconds) && seconds >= 0 ? Math.floor(seconds * MICROS_PER_SECOND) : undefined;
   }

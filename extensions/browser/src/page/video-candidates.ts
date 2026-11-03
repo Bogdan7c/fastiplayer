@@ -1,17 +1,26 @@
-// Описание видеоэлементов документа для правила «какое видео отдать» (пункт 9 задания 09a) и
-// поиск живого MediaSource элемента.
+// Описание видеоэлементов документа для правила «какое видео отдать» (пункт 9 задания 09a),
+// поиск живого MediaSource элемента и формы его источника (сессия 09b, `element-source.ts`).
 //
 // «Живой» MediaSource элемента: источник элемента (`src` или `currentSrc`, оригинальными
 // геттерами) — blob-адрес нашего отслеживаемого MediaSource, у которого есть хотя бы один
 // SourceBuffer и который не `closed` (то есть ещё подключён к элементу).
 
-import type { DocumentTag, VideoCandidate } from "../shared/handoff-contract.ts";
+import type { CandidateMedia, DocumentTag, VideoCandidate } from "../shared/handoff-contract.ts";
 import { MAX_VIDEO_CANDIDATES_PER_DOCUMENT } from "../shared/page-message-validation.ts";
 import type { DomReaders, ViewportRect } from "./dom-readers.ts";
 import type { ElementRegistry } from "./element-registry.ts";
+import { candidateMediaOf, elementSourceOf, type ElementSource } from "./element-source.ts";
 import type { MediaSourceReaders } from "./media-source-readers.ts";
 import type { MediaSourceRecord, MseTracker } from "./mse-tracker.ts";
 import type { OddityReporter } from "./prototype-wrap.ts";
+import type { WorkerMediaSources } from "./worker-capture/index.ts";
+
+/**
+ * Порядок форм при отборе кандидатов сверх предела документа: чем меньше, тем вероятнее его
+ * отдадут (как у выбора фона: MSE, затем файл; неподдержанные — чтобы фон мог честно сказать
+ * «not supported yet»).
+ */
+const MEDIA_RANK: Readonly<Record<CandidateMedia["kind"], number>> = { media_source: 0, file: 1, unsupported: 2, none: 3 };
 
 /** Видимая площадь: пересечение прямоугольника элемента с окном, в CSS-пикселях (целое). */
 export function visibleAreaPx(rect: ViewportRect, viewport: { readonly width: number; readonly height: number }): number {
@@ -27,6 +36,7 @@ export class VideoCandidates {
   readonly #dom: DomReaders;
   readonly #mediaSources: MediaSourceReaders;
   readonly #reportOddity: OddityReporter;
+  readonly #workerMediaSources: WorkerMediaSources;
   /** Метка этого документа (одна на всю его жизнь). */
   readonly documentTag: DocumentTag;
 
@@ -37,6 +47,7 @@ export class VideoCandidates {
     mediaSources: MediaSourceReaders,
     documentTag: DocumentTag,
     reportOddity: OddityReporter,
+    workerMediaSources: WorkerMediaSources,
   ) {
     this.documentTag = documentTag;
     this.#registry = registry;
@@ -44,6 +55,7 @@ export class VideoCandidates {
     this.#dom = dom;
     this.#mediaSources = mediaSources;
     this.#reportOddity = reportOddity;
+    this.#workerMediaSources = workerMediaSources;
   }
 
   /**
@@ -57,7 +69,7 @@ export class VideoCandidates {
     if (candidates.length <= MAX_VIDEO_CANDIDATES_PER_DOCUMENT) return candidates;
     const ranked = [...candidates].sort(
       (left, right) =>
-        Number(right.has_live_media) - Number(left.has_live_media) ||
+        MEDIA_RANK[left.media.kind] - MEDIA_RANK[right.media.kind] ||
         Number(right.playing) - Number(left.playing) ||
         right.visible_area_px - left.visible_area_px,
     );
@@ -71,7 +83,7 @@ export class VideoCandidates {
         candidates.push({
           document: this.documentTag,
           element: this.#registry.keyOf(element),
-          has_live_media: this.liveMediaSourceOf(element) !== null,
+          media: candidateMediaOf(this.sourceOf(element)),
           playing: !this.#dom.isPaused(element) && !this.#dom.isEnded(element),
           visible_area_px: visibleAreaPx(this.#dom.rectOf(element), this.#dom.viewportSize()),
         });
@@ -80,6 +92,16 @@ export class VideoCandidates {
       }
     }
     return candidates;
+  }
+
+  /** Форма источника элемента (чтения могут бросить — ловит вызывающий). */
+  sourceOf(element: Element): ElementSource {
+    return elementSourceOf(element, {
+      dom: this.#dom,
+      liveMediaSourceOf: (candidate) => this.liveMediaSourceOf(candidate),
+      isMediaSourceObjectUrl: (url) => this.#registry.isMediaSourceObjectUrl(url),
+      resolveWorkerHandle: (candidate) => this.#workerMediaSources.resolveHandle(candidate),
+    });
   }
 
   /** Живой MediaSource элемента (`null` — нет: не MSE, не наш, без SourceBuffer или closed). */

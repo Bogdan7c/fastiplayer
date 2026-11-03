@@ -65,7 +65,7 @@ async function describeAndBegin(isolated: IsolatedSide): Promise<number> {
   await isolated.waitFor(1);
   const reply = isolated.received[0];
   assert.ok(reply !== undefined && reply.kind === "candidates");
-  const live = reply.candidates.find((candidate) => candidate.has_live_media);
+  const live = reply.candidates.find((candidate) => candidate.media.kind === "media_source");
   assert.ok(live !== undefined, "a live candidate exists");
   isolated.received.length = 0;
   isolated.send({ kind: "begin_handoff", request_id: 2, document: live.document, element: live.element });
@@ -145,9 +145,9 @@ test("describe_candidates: keys, live media, playing and visible area, including
       kind: "candidates",
       request_id: 5,
       candidates: [
-        { document: harness.bridge.documentTag, element: 1, has_live_media: true, playing: true, visible_area_px: 640 * 360 },
-        { document: harness.bridge.documentTag, element: 2, has_live_media: false, playing: false, visible_area_px: 100 * 100 },
-        { document: harness.bridge.documentTag, element: 3, has_live_media: false, playing: false, visible_area_px: 50 * 50 },
+        { document: harness.bridge.documentTag, element: 1, media: { kind: "media_source" }, playing: true, visible_area_px: 640 * 360 },
+        { document: harness.bridge.documentTag, element: 2, media: { kind: "none" }, playing: false, visible_area_px: 100 * 100 },
+        { document: harness.bridge.documentTag, element: 3, media: { kind: "none" }, playing: false, visible_area_px: 50 * 50 },
       ],
     });
     // Ключи стабильны: повторный запрос даёт те же номера.
@@ -295,7 +295,7 @@ test("begin_handoff outcomes: unknown element, element without live media, shado
     isolated.send({ kind: "begin_handoff", request_id: 4, document: "0123456789abcdef0123456789abcdef", element: 1 });
     await isolated.waitFor(4);
     assert.deepEqual(isolated.received.slice(1), [
-      { kind: "handoff_began", request_id: 2, outcome: "no_live_media" },
+      { kind: "handoff_began", request_id: 2, outcome: "no_media" },
       { kind: "handoff_began", request_id: 3, outcome: "element_not_found" },
       { kind: "handoff_began", request_id: 4, outcome: "element_not_found" },
     ]);
@@ -407,7 +407,7 @@ test("more videos than the isolated world accepts: the reply is capped, the live
     const reply = isolated.received[0];
     assert.ok(reply?.kind === "candidates");
     assert.equal(reply.candidates.length, MAX_VIDEO_CANDIDATES_PER_DOCUMENT);
-    assert.deepEqual(reply.candidates[0], { document: harness.bridge.documentTag, element: harness.bridge.registry.keyOf(video as unknown as Element), has_live_media: true, playing: true, visible_area_px: 640 * 360 });
+    assert.deepEqual(reply.candidates[0], { document: harness.bridge.documentTag, element: harness.bridge.registry.keyOf(video as unknown as Element), media: { kind: "media_source" }, playing: true, visible_area_px: 640 * 360 });
   });
 });
 

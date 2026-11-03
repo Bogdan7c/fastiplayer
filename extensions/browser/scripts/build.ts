@@ -5,6 +5,7 @@
 import { build as esbuildBuild } from "esbuild";
 import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { allCarrierRefusalSets, carrierFileName, encodeRefusedFamilies } from "../src/shared/codec-policy.ts";
 import { buildManifest, extensionRoot, loadIdentity, type JsonObject, type TargetBrowser } from "./manifest.ts";
 
 // Минимальные версии браузеров:
@@ -29,6 +30,13 @@ const ENTRY_POINTS: Record<string, string> = {
 
 const TARGETS: readonly TargetBrowser[] = ["chrome", "firefox"];
 
+// Хук выделенного воркера (сессия 09b, решение 63): отдельный IIFE-бандл, который НЕ лежит в dist
+// файлом, а вшит строкой в page.js. Обёртка `Worker` MAIN-мира кладёт его в начало blob-скрипта
+// воркера (своего файла у экстеншена воркер страницы загрузить не может: адрес chrome-extension://
+// для `importScripts` страницы закрыт). Имя ниже — то, что подставляется в src/page/main.ts.
+const WORKER_HOOK_ENTRY_POINT = "src/worker/main.ts";
+const WORKER_HOOK_SOURCE_DEFINE = "__FASTIPLAYER_WORKER_HOOK_SOURCE__";
+
 async function readJson(relativePath: string): Promise<JsonObject> {
   return JSON.parse(await readFile(join(extensionRoot, relativePath), "utf8")) as JsonObject;
 }
@@ -41,15 +49,62 @@ async function directorySize(directory: string): Promise<number> {
   return total;
 }
 
+// Файлы-курьеры политики кодеков (решение 43): их нет в манифесте — фон регистрирует нужный динамически
+// (`scripting.registerContentScripts`), поэтому тест сборки сверяет их с `allCarrierRefusalSets()`.
+// Файл не принимает параметров, потому набор семейств «запекается» подстановкой при сборке: по файлу
+// на каждое непустое подмножество семейств (15), каждый — около килобайта.
+async function buildCodecCarriers(target: TargetBrowser, outputDir: string): Promise<void> {
+  for (const families of allCarrierRefusalSets()) {
+    await esbuildBuild({
+      absWorkingDir: extensionRoot,
+      entryPoints: ["src/content/codec-carrier-entry.ts"],
+      outfile: join(outputDir, carrierFileName(families)),
+      define: { __CARRIER_REFUSED_FAMILIES__: JSON.stringify(encodeRefusedFamilies(families)) },
+      bundle: true,
+      format: "iife",
+      target: ESBUILD_TARGET[target],
+      minify: false,
+      sourcemap: false,
+      legalComments: "none",
+      logLevel: "warning",
+    });
+  }
+}
+
+/**
+ * Текст бандла хука воркера (в памяти, без файла). Детерминирован, как и вся сборка; тесты берут
+ * его отсюда же, чтобы проверять ровно то, что поедет в воркер.
+ */
+export async function buildWorkerHookSource(target: TargetBrowser): Promise<string> {
+  const result = await esbuildBuild({
+    absWorkingDir: extensionRoot,
+    entryPoints: [WORKER_HOOK_ENTRY_POINT],
+    write: false,
+    bundle: true,
+    format: "iife",
+    target: ESBUILD_TARGET[target],
+    minify: false,
+    sourcemap: false,
+    legalComments: "none",
+    logLevel: "warning",
+  });
+  const output = result.outputFiles[0];
+  if (output === undefined || result.outputFiles.length !== 1) throw new Error("worker hook bundle: expected exactly one output file");
+  return output.text;
+}
+
 export async function buildTarget(target: TargetBrowser, outputRoot: string): Promise<string> {
   const outputDir = join(outputRoot, target);
   await rm(outputDir, { recursive: true, force: true });
   await mkdir(outputDir, { recursive: true });
 
+  const workerHookSource = await buildWorkerHookSource(target);
   await esbuildBuild({
     absWorkingDir: extensionRoot,
     entryPoints: Object.fromEntries(Object.entries(ENTRY_POINTS).map(([name, path]) => [name, path])),
     outdir: outputDir,
+    // Текст хука воркера — строковым литералом в page.js (в остальных частях имени нет).
+    define: { [WORKER_HOOK_SOURCE_DEFINE]: JSON.stringify(workerHookSource) },
     bundle: true,
     format: "iife",
     target: ESBUILD_TARGET[target],
@@ -58,6 +113,8 @@ export async function buildTarget(target: TargetBrowser, outputRoot: string): Pr
     legalComments: "none",
     logLevel: "warning",
   });
+
+  await buildCodecCarriers(target, outputDir);
 
   await cp(join(extensionRoot, "static"), outputDir, { recursive: true });
 

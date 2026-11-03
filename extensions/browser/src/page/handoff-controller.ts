@@ -1,39 +1,46 @@
 // Контроллер передачи в MAIN-мире: отвечает на команды участка 1 и ведёт живой поток MSE.
 //
 // `begin_handoff` по шагам (порядок — договор с фоном и плеером):
-//  1. найти элемент по ключу и его живой MediaSource → `handoff_began{outcome}`;
-//  2. повтор «памяти без копий» этого MediaSource (снимок + хвост журнала);
+//  1. найти элемент по ключу и форму его источника (`element-source.ts`) → `handoff_began{outcome}`;
+//  2. открыть поток источника:
+//     - MSE — повтор «памяти без копий» этого MediaSource (снимок + хвост журнала);
+//     - MSE выделенного воркера (09b-C) — тот же повтор, но его шлёт хук воркера по личному каналу:
+//       шаги 3–5 ждут его конца (`replayed`), срок — у реестра воркеров; не дождались — честный конец;
+//     - файл `<video src>` (09b) — `file_source{url}`: байты по запросам плеера качает фон;
 //  3. `page_seek{T0}` — настоящая позиция элемента (решение 111: перемотка во время открытия
 //     поколения = его старт);
 //  4. `page_playback{play}`, если элемент играл;
-//  5. `startShadow(...)` — элемент уходит в тень;
+//  5. `startShadow(...)` — элемент уходит в тень (у файла — с снятым источником, решение 186);
 //  6. дальше — живой поток событий и байтов MediaSource этого элемента (и новых MediaSource, которые
 //     страница подключит к нему же: «src элемента = blob-адрес MediaSource при его первом
-//     addSourceBuffer»).
+//     addSourceBuffer»; у воркера — «srcObject элемента = handle этого MediaSource», когда у него
+//     появился первый SourceBuffer).
 // `end_handoff` → тень снимается, живой поток останавливается. Событие `handoff_ended` от тени
 // (страница честно забрала видео: чужой источник, пусто дольше допуска, элемент убран) тоже
 // останавливает поток. Снятый на мгновение источник (YouTube: `srcObject = null` перед новым
 // MediaSource) передачу НЕ кончает — тень остаётся, и новый MediaSource идёт живым потоком (Д-1).
 // Пока тень жива, через контроллер идёт и её пульс `shadow_alive` (решение 180).
 //
-// Пока передачи нет, в порт не уходит НИЧЕГО, кроме ответов на запросы.
-// Байты: журнал держит виды без копий; копия делается только в момент отправки — плотная (ровно
-// кусок, а не весь буфер страницы) и передаётся порту через transfer (одна копия на кусок).
-// Кусок больше предела события (32 МиБ, договор с изолированным миром) режется на части.
+// Пока передачи нет, в порт не уходит НИЧЕГО, кроме ответов на запросы, а воркеры молчат: их
+// потоки закрываются вместе с передачей.
+// Байты: журнал держит виды без копий; копия делается только в момент отправки (`stream-sender.ts`).
+// Куски воркера уже приходят плотной копией с transfer и уходят дальше тем же буфером.
 
 import type { DocumentTag, ElementKey, HandoffEndPosition, HandoffEndResume, PageEvent, ShadowCommand } from "../shared/handoff-contract.ts";
-import { MAX_PAGE_BYTES_EVENT_BYTES } from "../shared/page-message-validation.ts";
-import { copyForTransfer, type BinaryIntrinsics } from "./binary-view.ts";
+import type { BinaryIntrinsics } from "./binary-view.ts";
 import type { DomReaders } from "./dom-readers.ts";
 import type { ElementRegistry } from "./element-registry.ts";
-import type { ShadowSessionHandle, ShadowStarter } from "./handoff-seam.ts";
+import type { ElementSource } from "./element-source.ts";
+import type { ShadowSessionHandle, ShadowSourceKind, ShadowStarter } from "./handoff-seam.ts";
 import type { ReplayItem } from "./journal/media-journal.ts";
 import type { MediaSourceRecord, MseListener } from "./mse-tracker.ts";
 import { positionMicros } from "./mse-values.ts";
 import type { IncomingPageMessage } from "./page-command-guard.ts";
 import type { PagePort } from "./page-channel.ts";
 import type { OddityReporter } from "./prototype-wrap.ts";
+import { sendStreamItem, type StreamMessage } from "./stream-sender.ts";
 import type { VideoCandidates } from "./video-candidates.ts";
+import type { WorkerMediaSourceListener, WorkerMediaSourceRef, WorkerMediaSources } from "./worker-capture/index.ts";
 
 /** Что нужно контроллеру снаружи. */
 export interface HandoffControllerEnvironment {
@@ -42,18 +49,26 @@ export interface HandoffControllerEnvironment {
   readonly dom: DomReaders;
   readonly binary: BinaryIntrinsics;
   readonly startShadow: ShadowStarter;
+  readonly workerMediaSources: WorkerMediaSources;
   readonly reportOddity: OddityReporter;
 }
 
 /** Идущая передача одного элемента. */
 interface ActiveHandoff {
   readonly element: Element;
-  /** Ключи MediaSource, чьи события и байты идут живым потоком. */
+  /** Ключи MediaSource (главного потока и «w<N>/ms-K» воркеров), чьи события и байты идут живым потоком. */
   readonly liveMediaSources: Set<string>;
   session: ShadowSessionHandle | null;
 }
 
-export class HandoffController implements MseListener {
+/** Зачем открывается поток MediaSource воркера. */
+type WorkerStreamRole =
+  /** Источник самой передачи: тень встаёт после конца повтора. */
+  | "handoff_source"
+  /** Новый MediaSource на уже переданном элементе (новое поколение): тень уже стоит. */
+  | "new_generation";
+
+export class HandoffController implements MseListener, WorkerMediaSourceListener {
   readonly #environment: HandoffControllerEnvironment;
   #port: PagePort | null = null;
   #active: ActiveHandoff | null = null;
@@ -106,10 +121,18 @@ export class HandoffController implements MseListener {
     try {
       this.#sendItem(record.key, item);
     } catch {
-      // Кусок не ушёл (копия не выделилась, порт отказал): дальше в потоке была бы дыра, и плеер
-      // показал бы мусор. Честнее кончить передачу: тень снимается, страница играет сама.
-      this.#environment.reportOddity("live stream send failed");
-      this.#endHandoff({ kind: "shadow_position" }, { kind: "as_shadow" });
+      this.#failLiveStream();
+    }
+  }
+
+  onWorkerMediaSourceStarted(mediaSource: WorkerMediaSourceRef): void {
+    const active = this.#active;
+    if (active === null || active.liveMediaSources.has(mediaSource.key)) return;
+    // Страница поставила переданному элементу handle нового MediaSource воркера (09a2: сначала
+    // `srcObject = null`, потом новый handle) — он идёт новым поколением, как в главном потоке.
+    const source = this.#sourceOf(active.element);
+    if (source.kind === "worker_media_source" && source.mediaSource.key === mediaSource.key) {
+      this.#openWorkerStream(active, mediaSource, "new_generation");
     }
   }
 
@@ -126,32 +149,122 @@ export class HandoffController implements MseListener {
       port.send({ kind: "handoff_began", request_id: requestId, outcome: "element_not_found" });
       return;
     }
-    const record = candidates.liveMediaSourceOf(element);
-    if (record === null) {
-      port.send({ kind: "handoff_began", request_id: requestId, outcome: "no_live_media" });
+    const source = this.#sourceOf(element);
+    if (source.kind === "unsupported" || source.kind === "none") {
+      // Источник сняли или сменили на неподдержанную форму между опросом фона и командой.
+      port.send({ kind: "handoff_began", request_id: requestId, outcome: "no_media" });
       return;
     }
-    // Состояние настоящего элемента читаем ДО тени: тень покажет странице уже время плеера.
-    const startPosition = positionMicros(dom.currentTimeSeconds(element)) ?? 0;
-    const wasPlaying = !dom.isPaused(element) && !dom.isEnded(element);
 
     port.send({ kind: "handoff_began", request_id: requestId, outcome: "started" });
-    const active: ActiveHandoff = { element, liveMediaSources: new Set([record.key]), session: null };
+    const liveMediaSources = new Set<string>(source.kind === "media_source" ? [source.record.key] : []);
+    const active: ActiveHandoff = { element, liveMediaSources, session: null };
     this.#active = active;
+    if (source.kind === "worker_media_source") {
+      // Повтор журнала идёт из воркера асинхронно: шаги 3–5 — по его концу.
+      this.#openWorkerStream(active, source.mediaSource, "handoff_source");
+      return;
+    }
     try {
-      for (const item of record.journal.replay()) this.#sendItem(record.key, item);
-      port.send({ kind: "page_seek", target_us: startPosition });
-      if (wasPlaying) port.send({ kind: "page_playback", request: { kind: "play" } });
-      active.session = this.#environment.startShadow(
-        element as HTMLMediaElement,
-        (event) => this.#emitFromShadow(active, event),
-        (url) => registry.isMediaSourceObjectUrl(url),
-      );
+      this.#startShadow(active, this.#openStream(port, source));
     } catch {
-      // Повтор или тень не удались: передача невозможна — честно сообщаем об окончании
-      // (фон закроет сеанс), а страница остаётся со своим настоящим элементом.
-      this.#environment.reportOddity("handoff failed to start");
-      this.#finishActive(active);
+      this.#failToStart(active);
+    }
+  }
+
+  /**
+   * Шаги 3–5: `page_seek{T0}`, `page_playback{play}` (если играл), тень. Состояние настоящего
+   * элемента читается здесь, ДО тени: тень покажет странице уже время плеера. Бросает — решает
+   * вызывающий (`#failToStart`).
+   */
+  #startShadow(active: ActiveHandoff, shadowSource: ShadowSourceKind): void {
+    const port = this.#port;
+    if (port === null) throw new Error("page port is gone");
+    const { dom, registry } = this.#environment;
+    const { element } = active;
+    const startPosition = positionMicros(dom.currentTimeSeconds(element)) ?? 0;
+    const wasPlaying = !dom.isPaused(element) && !dom.isEnded(element);
+    port.send({ kind: "page_seek", target_us: startPosition });
+    if (wasPlaying) port.send({ kind: "page_playback", request: { kind: "play" } });
+    active.session = this.#environment.startShadow(element as HTMLMediaElement, (event) => this.#emitFromShadow(active, event), {
+      isMediaSourceObjectUrl: (url) => registry.isMediaSourceObjectUrl(url),
+      source: shadowSource,
+    });
+  }
+
+  /**
+   * Повтор или тень не удались: передача невозможна — честно сообщаем об окончании (фон закроет
+   * сеанс), а страница остаётся со своим настоящим элементом.
+   */
+  #failToStart(active: ActiveHandoff): void {
+    this.#environment.reportOddity("handoff failed to start");
+    this.#finishActive(active);
+  }
+
+  /**
+   * Кусок не ушёл (копия не выделилась, порт отказал): дальше в потоке была бы дыра, и плеер
+   * показал бы мусор. Честнее кончить передачу: тень снимается, страница играет сама.
+   */
+  #failLiveStream(): void {
+    this.#environment.reportOddity("live stream send failed");
+    this.#endHandoff({ kind: "shadow_position" }, { kind: "as_shadow" });
+  }
+
+  /**
+   * Поток MediaSource воркера: повтор журнала из воркера, затем живые элементы (реестр уже
+   * поставил ключ договора «w<N>/ms-K»). Всё, что приходит после конца этой передачи, отброшено.
+   */
+  #openWorkerStream(active: ActiveHandoff, mediaSource: WorkerMediaSourceRef, role: WorkerStreamRole): void {
+    active.liveMediaSources.add(mediaSource.key);
+    this.#environment.workerMediaSources.openStream(mediaSource, {
+      deliver: (message, transfer) => {
+        if (this.#active !== active) return;
+        try {
+          this.#port?.send(message, transfer);
+        } catch {
+          this.#failLiveStream();
+        }
+      },
+      replayed: () => {
+        if (this.#active !== active || role !== "handoff_source") return;
+        try {
+          this.#startShadow(active, "media_source");
+        } catch {
+          this.#failToStart(active);
+        }
+      },
+      unavailable: () => {
+        if (this.#active !== active) return;
+        // Без повтора нечего показать, без живого потока плеер встанет: передача честно кончается.
+        this.#environment.reportOddity("worker media source stream is unavailable");
+        this.#endHandoff({ kind: "shadow_position" }, { kind: "as_shadow" });
+      },
+    });
+  }
+
+  /** Форма источника; сломанное чтение (чужой «бренд») — «нечего передавать», со следом. */
+  #sourceOf(element: Element): ElementSource {
+    try {
+      return this.#environment.candidates.sourceOf(element);
+    } catch {
+      this.#environment.reportOddity("could not read the source of a video element");
+      return { kind: "none" };
+    }
+  }
+
+  /**
+   * Открыть поток источника до `page_seek` (договор с фоном): MSE — повтор «памяти без копий»,
+   * файл — `file_source{url}` (поколение-файл; адрес дальше фона не уходит). Возвращает, в каком
+   * виде ставить тень.
+   */
+  #openStream(port: PagePort, source: Extract<ElementSource, { kind: "media_source" | "file" }>): ShadowSourceKind {
+    switch (source.kind) {
+      case "media_source":
+        for (const item of source.record.journal.replay()) this.#sendItem(source.record.key, item);
+        return "media_source";
+      case "file":
+        port.send({ kind: "file_source", url: source.url });
+        return "file";
     }
   }
 
@@ -194,7 +307,7 @@ export class HandoffController implements MseListener {
     if (this.#active !== active) return;
     const endsHandoff = event.kind === "handoff_ended";
     // До отправки: тень после `handoff_ended` не шлёт ничего, и её запоздавшие события не наши.
-    if (endsHandoff) this.#active = null;
+    if (endsHandoff) this.#release();
     try {
       this.#port?.send(event);
     } catch {
@@ -206,7 +319,7 @@ export class HandoffController implements MseListener {
   /** Закрыть передачу от своего имени: `handoff_ended{returned}`, живой поток остановлен. */
   #finishActive(active: ActiveHandoff): void {
     if (this.#active !== active) return;
-    this.#active = null;
+    this.#release();
     try {
       this.#port?.send({ kind: "handoff_ended", cause: "returned" });
     } catch {
@@ -215,19 +328,15 @@ export class HandoffController implements MseListener {
     }
   }
 
+  /** Передачи больше нет: живой поток главного потока и потоки воркеров остановлены. */
+  #release(): void {
+    this.#active = null;
+    this.#environment.workerMediaSources.closeAllStreams();
+  }
+
   #sendItem(mediaSourceKey: string, item: ReplayItem): void {
     const port = this.#port;
     if (port === null) return;
-    if (item.kind === "mse") {
-      port.send({ kind: "mse", event: item.event });
-      return;
-    }
-    // Изолированный мир принимает событие `bytes` не больше MAX_PAGE_BYTES_EVENT_BYTES: больший
-    // кусок уходит несколькими событиями подряд, каждое — точная копия своей части с transfer.
-    for (let offset = 0; offset < item.view.length; offset += MAX_PAGE_BYTES_EVENT_BYTES) {
-      const part = item.view.subarray(offset, offset + MAX_PAGE_BYTES_EVENT_BYTES);
-      const bytes = copyForTransfer(this.#environment.binary, part);
-      port.send({ kind: "bytes", media_source: mediaSourceKey, source_buffer: item.sourceBuffer, bytes }, [bytes.buffer as ArrayBuffer]);
-    }
+    sendStreamItem(this.#environment.binary, mediaSourceKey, item, (message: StreamMessage, transfer) => port.send(message, transfer));
   }
 }

@@ -6,6 +6,7 @@ import type { CandidatesReply, PageCommand, PageEvent, DescribeCandidatesQuery }
 import { startPageBridge, type PageBridge } from "../../../src/page/bridge.ts";
 import { captureShadowEnvironment, shadowStarterFor, type ShadowWindow } from "../../../src/page/shadow-assembly.ts";
 import { createFakePage, FakeShadow, type FakePage } from "./fake-page.ts";
+import type { WorkerHookSource } from "../../../src/page/worker-capture/index.ts";
 
 export interface BridgeHarness {
   readonly page: FakePage;
@@ -14,7 +15,7 @@ export interface BridgeHarness {
   readonly debugLines: string[];
 }
 
-export function startHarness(options: { memoryBudgetBytes?: number; page?: FakePage } = {}): BridgeHarness {
+export function startHarness(options: { memoryBudgetBytes?: number; page?: FakePage; workerHook?: WorkerHookSource } = {}): BridgeHarness {
   const page = options.page ?? createFakePage();
   const shadow = new FakeShadow();
   const debugLines: string[] = [];
@@ -22,6 +23,7 @@ export function startHarness(options: { memoryBudgetBytes?: number; page?: FakeP
     startShadow: shadow.starter,
     debugSink: (line) => debugLines.push(line),
     ...(options.memoryBudgetBytes === undefined ? {} : { memoryBudgetBytes: options.memoryBudgetBytes }),
+    ...(options.workerHook === undefined ? {} : { workerHook: options.workerHook }),
   });
   return { page, bridge, shadow, debugLines };
 }

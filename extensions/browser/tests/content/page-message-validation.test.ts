@@ -13,7 +13,7 @@ const MP4 = 'video/mp4; codecs="avc1.42c00a"';
 /** По одному договорному образцу на каждый вид события. */
 const VALID_EVENTS: readonly Record<string, unknown>[] = [
   { kind: "handoff_began", request_id: 4, outcome: "started" },
-  { kind: "handoff_began", request_id: 0, outcome: "no_live_media" },
+  { kind: "handoff_began", request_id: 0, outcome: "no_media" },
   { kind: "mse", event: { kind: "source_buffer_added", media_source: "ms-1", source_buffer: 0, mime_type: MP4 } },
   { kind: "mse", event: { kind: "source_buffer_type_changed", media_source: "ms-12", source_buffer: 7, mime_type: "audio/webm" } },
   { kind: "mse", event: { kind: "timestamp_offset_changed", media_source: "ms-1", source_buffer: 1, offset_us: -5_000_000 } },
@@ -25,6 +25,9 @@ const VALID_EVENTS: readonly Record<string, unknown>[] = [
   { kind: "mse", event: { kind: "duration_changed", media_source: "ms-1", duration: { kind: "unknown" } } },
   { kind: "mse", event: { kind: "end_of_stream", media_source: "ms-3" } },
   { kind: "bytes", media_source: "ms-1", source_buffer: 0, bytes: new Uint8Array([1, 2, 3]) },
+  // 09b: MediaSource выделенного воркера — «w<номер воркера>/ms-N».
+  { kind: "mse", event: { kind: "end_of_stream", media_source: "w1/ms-1" } },
+  { kind: "bytes", media_source: "w12/ms-3", source_buffer: 1, bytes: new Uint8Array([4]) },
   { kind: "page_seek", target_us: 12_000_000 },
   { kind: "player_seek_applied", seek_id: 0xffff_ffff, target_us: 0 },
   { kind: "page_playback", request: { kind: "play" } },
@@ -57,6 +60,11 @@ const INVALID_EVENTS: readonly [string, unknown][] = [
   ["mse лишнее поле", { kind: "mse", event: { kind: "end_of_stream", media_source: "ms-1" }, extra: 1 }],
   ["ключ MediaSource не по форме", { kind: "mse", event: { kind: "end_of_stream", media_source: "ms-0" } }],
   ["ключ MediaSource чужой", { kind: "mse", event: { kind: "end_of_stream", media_source: "__proto__" } }],
+  ["ключ воркера с нулём", { kind: "mse", event: { kind: "end_of_stream", media_source: "w0/ms-1" } }],
+  ["ключ воркера с ведущим нулём", { kind: "mse", event: { kind: "end_of_stream", media_source: "w01/ms-1" } }],
+  ["ключ воркера двух уровней", { kind: "mse", event: { kind: "end_of_stream", media_source: "w1/w2/ms-1" } }],
+  ["ключ воркера без номера", { kind: "mse", event: { kind: "end_of_stream", media_source: "w/ms-1" } }],
+  ["ключ воркера без MediaSource", { kind: "mse", event: { kind: "end_of_stream", media_source: "w1/" } }],
   ["индекс SB 8", { kind: "mse", event: { kind: "source_buffer_aborted", media_source: "ms-1", source_buffer: 8 } }],
   ["индекс SB отрицательный", { kind: "mse", event: { kind: "source_buffer_aborted", media_source: "ms-1", source_buffer: -1 } }],
   ["пустой MIME", { kind: "mse", event: { kind: "source_buffer_added", media_source: "ms-1", source_buffer: 0, mime_type: "" } }],
@@ -103,7 +111,7 @@ describe("форма событий страницы", () => {
 });
 
 describe("форма ответа candidates", () => {
-  const candidate = { document: "Qx7_-9aF", element: 3, has_live_media: true, playing: false, visible_area_px: 1280.5 * 720 };
+  const candidate = { document: "Qx7_-9aF", element: 3, media: { kind: "media_source" }, playing: false, visible_area_px: 1280.5 * 720 };
 
   it("договорный ответ проходит (метка документа ровно 64 символа — тоже)", () => {
     assert.ok(parseCandidatesReply({ kind: "candidates", request_id: 2, candidates: [{ ...candidate, document: "f".repeat(64) }] }) !== undefined);
@@ -113,7 +121,7 @@ describe("форма ответа candidates", () => {
   });
 
   for (const [description, reply] of [
-    ["нет метки документа", { kind: "candidates", request_id: 1, candidates: [{ element: 3, has_live_media: true, playing: false, visible_area_px: 1 }] }],
+    ["нет метки документа", { kind: "candidates", request_id: 1, candidates: [{ element: 3, media: { kind: "media_source" }, playing: false, visible_area_px: 1 }] }],
     ["пустая метка документа", { kind: "candidates", request_id: 1, candidates: [{ ...candidate, document: "" }] }],
     ["метка документа длиннее 64", { kind: "candidates", request_id: 1, candidates: [{ ...candidate, document: "a".repeat(65) }] }],
     ["метка документа с чужими символами", { kind: "candidates", request_id: 1, candidates: [{ ...candidate, document: "doc/1" }] }],

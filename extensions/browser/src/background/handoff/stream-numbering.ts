@@ -27,6 +27,11 @@ export type GenerationLookup =
 export interface DocumentNumbering {
   /** Поколение MediaSource документа; первый взгляд на ключ открывает новое поколение. */
   generationOf(mediaSource: LocalMediaSourceKey): GenerationLookup;
+  /**
+   * Новое поколение-файл (`<video src>`, сессия 09b): у файла нет локального ключа — каждое
+   * событие `file_source` открывает своё поколение по тем же правилам (растут на 1, не повторяются).
+   */
+  startFileGeneration(): Exclude<GenerationLookup, { kind: "existing" }>;
 }
 
 export interface StreamNumbering {
@@ -60,6 +65,10 @@ export function createStreamNumbering(): StreamNumbering {
           if (generation === undefined) return { kind: "exhausted" };
           generationsByKey.set(mediaSource, generation);
           return { kind: "started", generation };
+        },
+        startFileGeneration() {
+          const generation = openGeneration();
+          return generation === undefined ? { kind: "exhausted" } : { kind: "started", generation };
         },
       };
     },

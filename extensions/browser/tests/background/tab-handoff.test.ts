@@ -57,7 +57,7 @@ describe("передача вкладки: старт", () => {
   });
 
   it("нет видео с живым MediaSource — no_video без open_session", async () => {
-    const world = setup([{ frameId: 0, result: [{ ...PLAYING_VIDEO, has_live_media: false }] }, { frameId: 3, result: null }]);
+    const world = setup([{ frameId: 0, result: [{ ...PLAYING_VIDEO, media: { kind: "none" } }] }, { frameId: 3, result: null }]);
     assert.deepEqual(await world.handoffs.handOffTab(TAB), { kind: "no_video" });
     assert.equal(world.door.requests.length, 0);
     assert.equal(world.door.demandAcquired(), 0);

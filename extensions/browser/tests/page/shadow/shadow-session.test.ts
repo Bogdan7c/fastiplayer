@@ -586,7 +586,8 @@ describe("тень: элемент ушёл из документа и сбой 
         mediaSession: createCountingGuard().guard,
         now: () => harness.clock.nowMs,
         isMediaSourceObjectUrl: () => true,
-      }),
+        scheduleTimeout: harness.timers.schedule,
+      }, "media_source"),
     );
     // Переопределения прототипа больше не обслуживают элемент мёртвым контроллером.
     video.real.currentTime = 42;

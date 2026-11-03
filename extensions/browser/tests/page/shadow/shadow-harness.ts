@@ -3,6 +3,8 @@
 import type { PageEvent, ShadowCommand } from "../../../src/shared/handoff-contract.ts";
 import type { MediaSessionGuard } from "../../../src/page/media-session-guard.ts";
 import { captureElementOriginals, installShadowOverrides, startShadow, type ElementOriginals, type ShadowSession } from "../../../src/page/shadow/index.ts";
+import type { ShadowSourceKind } from "../../../src/page/handoff-seam.ts";
+import type { TimeoutScheduler } from "../../../src/page/shadow/file-return.ts";
 import { createFakeMediaDom, type FakeMediaDom, type FakeVideo } from "./fake-media-dom.ts";
 
 export interface FakeClock {
@@ -29,6 +31,32 @@ export function createCountingGuard() {
   return { guard, calls };
 }
 
+/** Таймеры окна под управлением теста (страховка возврата файла). */
+export interface FakeTimers {
+  readonly schedule: TimeoutScheduler;
+  /** Сколько отложенных вызовов ждут. */
+  pending(): number;
+  /** Исполнить все ждущие вызовы (как будто срок вышел). */
+  fireAll(): void;
+}
+
+export function createFakeTimers(): FakeTimers {
+  const waiting = new Set<() => void>();
+  return {
+    schedule: (callback) => {
+      const entry = (): void => callback();
+      waiting.add(entry);
+      return () => void waiting.delete(entry);
+    },
+    pending: () => waiting.size,
+    fireAll: () => {
+      const due = [...waiting];
+      waiting.clear();
+      for (const callback of due) callback();
+    },
+  };
+}
+
 export interface ShadowHarness {
   readonly dom: FakeMediaDom;
   readonly originals: ElementOriginals;
@@ -37,7 +65,10 @@ export interface ShadowHarness {
   readonly guardCalls: ("suspend" | "restore")[];
   /** Blob-адреса, которые «реестр MAIN-мира» знает как MediaSource (видео из playingVideo — ms-1). */
   readonly mediaSourceUrls: Set<string>;
+  readonly timers: FakeTimers;
   start(video: FakeVideo): ShadowSession;
+  /** Тень файла `<video src>` (сессия 09b). */
+  startFile(video: FakeVideo): ShadowSession;
   /** Тик часов плеера. */
   tick(session: ShadowSession, positionSeconds: number, state: "playing" | "paused" | "waiting" | "ended", ratePermille?: number): void;
 }
@@ -63,6 +94,21 @@ export function createShadowHarness(options: ShadowHarnessOptions = {}): ShadowH
   const emitted: PageEvent[] = [];
   const { guard, calls } = createCountingGuard();
   const mediaSourceUrls = new Set<string>([PLAYING_VIDEO_MEDIA_SOURCE_URL]);
+  const timers = createFakeTimers();
+  const startWith = (video: FakeVideo, source: ShadowSourceKind): ShadowSession =>
+    startShadow(
+      video as unknown as HTMLMediaElement,
+      (event) => void emitted.push(event),
+      {
+        win: dom.window as unknown as Window,
+        originals,
+        mediaSession: guard,
+        now: () => clock.nowMs,
+        isMediaSourceObjectUrl: (url) => mediaSourceUrls.has(url),
+        scheduleTimeout: timers.schedule,
+      },
+      source,
+    );
   return {
     dom,
     originals,
@@ -70,15 +116,9 @@ export function createShadowHarness(options: ShadowHarnessOptions = {}): ShadowH
     emitted,
     guardCalls: calls,
     mediaSourceUrls,
-    start(video) {
-      return startShadow(video as unknown as HTMLMediaElement, (event) => void emitted.push(event), {
-        win: dom.window as unknown as Window,
-        originals,
-        mediaSession: guard,
-        now: () => clock.nowMs,
-        isMediaSourceObjectUrl: (url) => mediaSourceUrls.has(url),
-      });
-    },
+    timers,
+    start: (video) => startWith(video, "media_source"),
+    startFile: (video) => startWith(video, "file"),
     tick(session, positionSeconds, state, ratePermille = 1000) {
       const command: ShadowCommand = { kind: "clock", position_us: Math.round(positionSeconds * 1_000_000), state, rate: ratePermille };
       session.apply(command);

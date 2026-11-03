@@ -63,8 +63,11 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
       // Служебная страница браузера, магазин расширений, закрытая вкладка: внедрение запрещено.
       return { kind: "failed", reason: `tab_not_scriptable:${String(error)}` };
     }
-    const chosen = chooseVideo(frames);
-    if (chosen === undefined) return { kind: "no_video" };
+    const choice = chooseVideo(frames);
+    if (choice.kind === "nothing") return { kind: "no_video" };
+    // Неподдержанная форма: честный отказ без сеанса — видео остаётся играть в браузере.
+    if (choice.kind === "not_supported_yet") return { kind: "not_supported_yet", form: choice.form };
+    const chosen = choice.video;
     const tab = await dependencies.describeTab(tabId);
     if (tab === undefined || entry.removed) return { kind: "failed", reason: "tab_closed" };
     attempt += 1;

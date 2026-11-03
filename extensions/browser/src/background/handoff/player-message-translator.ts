@@ -3,6 +3,7 @@
 
 import type { HandoffEndPosition, HandoffEndResume, ShadowCommand } from "../../shared/handoff-contract.ts";
 import type { BufferIntake, PlayerSessionMessage, StreamGeneration } from "../../protocol/index.ts";
+import type { RangeRequest } from "./range-fetcher.ts";
 
 export type PlayerAction =
   /** Плеер принял `attach`: можно отдавать очередь. */
@@ -18,7 +19,9 @@ export type PlayerAction =
       readonly resume: HandoffEndResume;
       readonly cause: "returned_to_page" | "stream_rejected";
     }
-  /** Не относится к 09a (варианты, следующая серия, байты файла) или к старому поколению — пропустить. */
+  /** Плеер просит байты файла `<video src>` (сессия 09b): их качает загрузчик диапазонов. */
+  | { readonly kind: "fetch_range"; readonly request: RangeRequest }
+  /** Не относится к передаче (варианты — 14, следующая серия — 15) или к старому поколению — пропустить. */
   | { readonly kind: "ignore" };
 
 /**
@@ -58,10 +61,11 @@ export function translatePlayerMessage(message: PlayerSessionMessage, latestGene
         resume: { kind: "as_shadow" },
         cause: "stream_rejected",
       };
+    case "fetch_range":
+      return { kind: "fetch_range", request: { request_id: message.request_id, offset: message.offset, length: message.length } };
     case "select_variant":
     case "next_episode":
-    case "fetch_range":
-      // Меню вариантов — 14, следующая серия — 15, байты `<video src>` — 09b: в 09a их не бывает.
+      // Меню вариантов — 14, следующая серия — 15: пока их не бывает.
       return { kind: "ignore" };
   }
 }

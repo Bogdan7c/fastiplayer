@@ -4,9 +4,11 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, it } from "node:test";
-import { buildTarget } from "../scripts/build.ts";
+import { buildTarget, buildWorkerHookSource } from "../scripts/build.ts";
 import { loadIdentity, mergeManifestParts, type TargetBrowser } from "../scripts/manifest.ts";
+import { allCarrierRefusalSets, carrierFileName, encodeRefusedFamilies } from "../src/shared/codec-policy.ts";
 import { NATIVE_HOST_NAME } from "../src/shared/host-name.ts";
 
 type Manifest = Record<string, any>;
@@ -80,6 +82,8 @@ describe("манифесты", () => {
     assert.deepEqual(firefox["background"].scripts, ["background.js"]);
     assert.equal(firefox["background"].service_worker, undefined);
     assert.match(firefox["content_security_policy"].extension_pages, /connect-src [^;]*ws:\/\/127\.0\.0\.1:\*/);
+    // Фон качает байты `<video src>` с сайта (сессия 09b): без http(s) в connect-src Firefox отверг бы fetch.
+    assert.match(firefox["content_security_policy"].extension_pages, /connect-src [^;]*\bhttp: https:/);
     assert.deepEqual(firefox["browser_specific_settings"].gecko.data_collection_permissions, { required: ["none"] });
   });
 
@@ -116,6 +120,9 @@ describe("сборка dist", () => {
       referenced.add(manifest["options_ui"].page);
       for (const file of Object.values<string>(manifest["icons"])) referenced.add(file);
       for (const file of Object.values<string>(manifest["action"].default_icon)) referenced.add(file);
+      // Файлы-курьеры политики кодеков в манифесте не перечислены: фон регистрирует их динамически
+      // (`scripting.registerContentScripts`), поэтому «на что ссылаются» — это ещё и все имена из кода.
+      for (const families of allCarrierRefusalSets()) referenced.add(carrierFileName(families));
       for (const file of referenced) assert.ok(existsSync(join(dir, file)), `${target}: нет файла ${file}`);
       // Скрипты, подключённые из html, тоже обязаны быть в dist.
       for (const page of ["popup", "options"]) {
@@ -148,6 +155,34 @@ describe("сборка dist", () => {
         assert.match(bundle, /fastiplayerBridgeDescribeVideoCandidates/, `${target}/${part}: нет функции выбора видео`);
         assert.doesNotMatch(bundle, /^\s*(import|export)\s/m);
       }
+    }
+  });
+
+  it("файлы-курьеры: по файлу на набор, у каждого запечён свой набор семейств, это IIFE без import/export", async () => {
+    for (const target of targets) {
+      await buildTarget(target, outputRoot);
+      const sets = allCarrierRefusalSets();
+      assert.equal(sets.length, 15);
+      for (const families of sets) {
+        const bundle = readFileSync(join(outputRoot, target, carrierFileName(families)), "utf8");
+        assert.ok(bundle.includes(JSON.stringify(encodeRefusedFamilies(families))), `${target}/${carrierFileName(families)}: нет запечённого набора`);
+        assert.doesNotMatch(bundle, /__CARRIER_REFUSED_FAMILIES__/);
+        assert.doesNotMatch(bundle, /^\s*(import|export)\s/m);
+      }
+    }
+  });
+
+  it("page.js несёт хук воркера строкой (тот самый бандл), подстановка не осталась именем, файла хука в dist нет", async () => {
+    for (const target of targets) {
+      await buildTarget(target, outputRoot);
+      const page = readFileSync(join(outputRoot, target, "page.js"), "utf8");
+      assert.doesNotMatch(page, /__FASTIPLAYER_WORKER_HOOK_SOURCE__/);
+      const hook = await buildWorkerHookSource(target);
+      // esbuild печатает строку своими кавычками: достаём литерал и вычисляем его как JavaScript.
+      const literal = /workerHook: \{ source: ('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/s.exec(page)?.[1];
+      assert.ok(literal !== undefined, `${target}/page.js: нет вшитого бандла хука воркера`);
+      assert.equal(runInNewContext(literal), hook, `${target}/page.js: вшит не тот бандл`);
+      assert.ok(!existsSync(join(outputRoot, target, "worker.js")), `${target}: хук воркера не должен лежать файлом`);
     }
   });
 

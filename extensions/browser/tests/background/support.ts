@@ -123,8 +123,9 @@ export class FakeWebSocket implements SessionWebSocket {
       const frame = decodeDataFrame(payload);
       assert.ok(frame.ok, "экстеншен послал невалидную рамку");
       const header = frame.value.header;
-      assert.equal(header.kind, "source_buffer_bytes");
-      return header.kind === "source_buffer_bytes" ? `frame ${header.generation}/${header.source_buffer}#${header.sequence}` : "range";
+      return header.kind === "source_buffer_bytes"
+        ? `frame ${header.generation}/${header.source_buffer}#${header.sequence}`
+        : `range ${header.request_id}@${header.offset}+${frame.value.payload.length}`;
     });
   }
 }

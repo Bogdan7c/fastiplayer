@@ -41,6 +41,32 @@ export const READINESS_EVENT_TYPES: readonly string[] = ["canplay", "canplaythro
 /** Событие смены источника: тень решает, снять ли себя, и всегда пропускает его странице. */
 export const SOURCE_RESET_EVENT_TYPE = "emptied";
 
+/**
+ * События ПОТОКА и загрузки. Тень MSE их не трогает (поток общий с браузером), а тень файла
+ * (сессия 09b) гасит: источник настоящего элемента снят нами, его загрузка, `durationchange`,
+ * `loadedmetadata`, `resize` и прочее — не то, что страница поставила, и при возврате элемент
+ * загружается заново незаметно для неё.
+ */
+export const SOURCE_STREAM_EVENT_TYPES: readonly string[] = [
+  "loadstart",
+  "abort",
+  "progress",
+  "suspend",
+  "stalled",
+  "durationchange",
+  "loadedmetadata",
+  "loadeddata",
+  "resize",
+  "error",
+];
+
+/**
+ * Какие доверенные события элемента видит шлагбаум:
+ * - `playback_events` — воспроизведение, готовность и `emptied` (тень MSE);
+ * - `all_media_events` — плюс события потока и загрузки (тень файла).
+ */
+export type GateCoverage = "playback_events" | "all_media_events";
+
 /** Решение по одному доверенному событию настоящего элемента. */
 export type GateDecision = "suppress" | "pass";
 
@@ -58,6 +84,7 @@ export function installEventGate(
   win: Window,
   originals: ElementOriginals,
   onTrustedEvent: TrustedEventHandler,
+  coverage: GateCoverage,
 ): GateDisposer {
   const events = originals.events;
   const listener = (event: Event): void => {
@@ -67,6 +94,7 @@ export function installEventGate(
     if (onTrustedEvent(event.type) === "suppress") callOriginal(events.stopImmediatePropagation, event);
   };
   const watchedTypes = [...PLAYBACK_EVENT_TYPES, ...READINESS_EVENT_TYPES, SOURCE_RESET_EVENT_TYPE];
+  if (coverage === "all_media_events") watchedTypes.push(...SOURCE_STREAM_EVENT_TYPES);
   const listenRoots = gateRoots(element, win, originals);
   const dispose = (): void => {
     for (const root of listenRoots) {

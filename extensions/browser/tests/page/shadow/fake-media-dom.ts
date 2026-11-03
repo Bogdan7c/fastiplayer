@@ -36,6 +36,8 @@ export interface FakeMediaState {
   /** Атрибут `src` (`null` — атрибута нет). Геттер `src` отражает его как URL. */
   src: string | null;
   srcObject: unknown;
+  /** Что браузер отдаёт в `seekable` (по умолчанию — весь файл). */
+  seekableRanges: [number, number][];
   videoWidth: number;
   videoHeight: number;
   totalFrames: number;
@@ -188,6 +190,27 @@ export function createFakeMediaDom() {
   /** Элемент с атрибутами; медиаэлемент перехватывает атрибут `src` (он отражается свойством). */
   class FakeElement extends FakeNode {
     readonly #attributes = new Map<string, string>();
+    readonly childElements: FakeElement[] = [];
+    #localName = "div";
+    /** Как у браузера — аксессор прототипа `Element` (тень читает его оригиналом). */
+    get localName(): string {
+      return this.#localName;
+    }
+    protected setLocalName(name: string): void {
+      this.#localName = name;
+    }
+    get children(): FakeElement[] {
+      return this.childElements;
+    }
+    /** Дочерний `<source src type>` (как в разметке страницы). */
+    appendSource(src: string, type?: string): FakeElement {
+      const source = this.appendChild(new FakeElement());
+      source.setLocalName("source");
+      source.setAttribute("src", src);
+      if (type !== undefined) source.setAttribute("type", type);
+      this.childElements.push(source);
+      return source;
+    }
     getAttribute(name: string): string | null {
       return this.storedAttribute(String(name));
     }
@@ -208,6 +231,28 @@ export function createFakeMediaDom() {
 
   class FakeMediaSource {}
   class FakeMediaSourceHandle {}
+  class FakeMediaStream {}
+
+  /** TimeRanges браузера: ошибки индекса — IndexSizeError. */
+  class FakeTimeRanges {
+    readonly #ranges: readonly [number, number][];
+    constructor(ranges: readonly [number, number][]) {
+      this.#ranges = ranges;
+    }
+    get length(): number {
+      return this.#ranges.length;
+    }
+    start(index: number): number {
+      const range = this.#ranges[index];
+      if (range === undefined) throw new DOMException("bad index", "IndexSizeError");
+      return range[0];
+    }
+    end(index: number): number {
+      const range = this.#ranges[index];
+      if (range === undefined) throw new DOMException("bad index", "IndexSizeError");
+      return range[1];
+    }
+  }
 
   class FakeVideoPlaybackQuality {
     readonly #total: number;
@@ -243,6 +288,7 @@ export function createFakeMediaDom() {
       duration: 100,
       src: "blob:https://site.example/ms-1",
       srcObject: null,
+      seekableRanges: [[0, 100]],
       videoWidth: 1280,
       videoHeight: 720,
       totalFrames: 500,
@@ -263,6 +309,8 @@ export function createFakeMediaDom() {
     set currentTime(value: number) {
       this.realCalls.push({ kind: "set", property: "currentTime", value });
       this.real.currentTime = value;
+      // Стандарт: без метаданных это лишь «позиция начала воспроизведения» — без перемотки и событий.
+      if (this.real.readyState === 0) return;
       this.fireTrusted("seeking");
       this.fireTrusted("timeupdate");
       this.fireTrusted("seeked");
@@ -340,6 +388,16 @@ export function createFakeMediaDom() {
     get srcObject(): unknown {
       return this.real.srcObject;
     }
+    /** `srcObject` главнее атрибута: с ним выбранного адреса нет. */
+    get currentSrc(): string {
+      return this.real.srcObject !== null ? "" : this.src;
+    }
+    get seekable(): FakeTimeRanges {
+      return new FakeTimeRanges(this.real.seekableRanges);
+    }
+    get buffered(): FakeTimeRanges {
+      return new FakeTimeRanges([]);
+    }
     set srcObject(value: unknown) {
       this.real.srcObject = value;
       this.#loadAlgorithm();
@@ -367,6 +425,16 @@ export function createFakeMediaDom() {
       this.realCalls.push({ kind: "load" });
       this.#loadAlgorithm();
     }
+    /**
+     * Как браузер при `preload="none"`: загрузка началась (`loadstart`), но файл не качается до
+     * просьбы пользователя — `networkState = NETWORK_IDLE`, `suspend`, метаданных нет.
+     */
+    browserDefersFetch(): void {
+      this.real.readyState = 0;
+      this.real.networkState = 1;
+      this.fireTrusted("loadstart");
+      this.fireTrusted("suspend");
+    }
     /** «Алгоритм загрузки» стандарта в той части, что видна тени. */
     #loadAlgorithm(): void {
       if (this.real.networkState !== 0) this.fireTrusted("emptied");
@@ -381,6 +449,10 @@ export function createFakeMediaDom() {
   }
 
   class FakeHTMLVideoElement extends FakeHTMLMediaElement {
+    constructor() {
+      super();
+      this.setLocalName("video");
+    }
     get videoWidth(): number {
       return this.real.videoWidth;
     }
@@ -423,6 +495,8 @@ export function createFakeMediaDom() {
     readonly TypeError = TypeError;
     readonly MediaSource = FakeMediaSource;
     readonly MediaSourceHandle = FakeMediaSourceHandle;
+    readonly MediaStream = FakeMediaStream;
+    readonly TimeRanges = FakeTimeRanges;
     readonly VideoPlaybackQuality = FakeVideoPlaybackQuality;
     readonly navigator: { mediaSession?: unknown } = {};
     queueMicrotask(callback: () => void): void {
@@ -452,7 +526,16 @@ export function createFakeMediaDom() {
     trusted,
     createVideo,
     createVideoInShadowRoot,
-    classes: { FakeHTMLMediaElement, FakeHTMLVideoElement, FakeEvent, FakeMediaSource, FakeVideoPlaybackQuality, FakeElement },
+    classes: {
+      FakeHTMLMediaElement,
+      FakeHTMLVideoElement,
+      FakeEvent,
+      FakeMediaSource,
+      FakeMediaStream,
+      FakeTimeRanges,
+      FakeVideoPlaybackQuality,
+      FakeElement,
+    },
   };
 }
 

@@ -1,6 +1,6 @@
 // Фейковый мир для тестов связи с посредником: фейковое время и фейковый порт.
 import assert from "node:assert/strict";
-import { createHostLink, type HostLink } from "../../src/background/host-link/host-link.ts";
+import { createHostLink, type HostLink, type HostLinkDeps } from "../../src/background/host-link/host-link.ts";
 import type {
   NativePort,
   NativePortFactory,
@@ -46,7 +46,7 @@ export interface FakeWorld {
   connectTimes(): number[];
 }
 
-export function createWorld(): FakeWorld {
+export function createWorld(extraDeps: Partial<Pick<HostLinkDeps, "onPlayerCheapVideoCodecs">> = {}): FakeWorld {
   let nowMs = 0;
   let nextTimerId = 1;
   const timers = new Map<number, TimerEntry>();
@@ -132,6 +132,7 @@ export function createWorld(): FakeWorld {
     hostName: TEST_HOST_NAME,
     extensionVersion: TEST_EXTENSION_VERSION,
     warn: () => {},
+    ...extraDeps,
   });
   (world as { link: HostLink }).link = link;
   link.subscribe((status) => statuses.push(status));

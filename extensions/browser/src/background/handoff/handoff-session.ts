@@ -31,7 +31,7 @@ import type { Scheduler } from "../host-link/native-port.ts";
 import { createTimerSlot } from "../host-link/timer-slot.ts";
 import { HANDOFF_BEGIN_REPLY_TIMEOUT_MS, HANDOFF_END_REPLY_TIMEOUT_MS } from "./constants.ts";
 import type { FrameConnector, FramePort } from "./frame-port.ts";
-import { createDocumentTranslator, type DocumentTranslator, type PageStreamProblem, type StreamPageEvent } from "./page-event-translator.ts";
+import { createDocumentTranslator, type DocumentTranslator, type OutgoingItem, type PageStreamProblem, type StreamPageEvent } from "./page-event-translator.ts";
 import { translatePlayerMessage } from "./player-message-translator.ts";
 import {
   NORMAL_CLOSE_CODE,
@@ -41,8 +41,14 @@ import {
   type SocketEndCause,
   type WebSocketFactory,
 } from "./session-socket.ts";
+import { createRangeFetcher, type RangeFetch, type RangeFetcher } from "./range-fetcher.ts";
 import { createShadowSilenceWatch } from "./shadow-silence-watch.ts";
 import { createStreamNumbering, type StreamNumbering } from "./stream-numbering.ts";
+
+/** Элемент очереди открывает новое поколение (`generation_started`). */
+function startsGeneration(item: OutgoingItem): boolean {
+  return item.kind === "message" && item.message.type === "generation_started";
+}
 
 /** Что сеансу нужно от связи с посредником (HostLink). */
 export interface SessionDoor {
@@ -57,6 +63,8 @@ export interface HandoffSessionDependencies {
   readonly connectFrame: FrameConnector;
   /** Жива ли вкладка (отличить «закрыли вкладку» от «ушли со страницы»). */
   readonly tabExists: (tabId: number) => Promise<boolean>;
+  /** Сеть браузера для байтов файла `<video src>` (сессия 09b; в продукте — `fetch` фона). */
+  readonly fetchRange: RangeFetch;
 }
 
 /** Что и куда передаём. */
@@ -130,6 +138,8 @@ export function startHandoffSession(
   let socket: SessionSocket | undefined;
   let framePort: FramePort | undefined;
   let translator: DocumentTranslator | undefined;
+  // Загрузчик диапазонов поколения-файла (сессия 09b); у MSE его нет.
+  let fileFeed: RangeFetcher | undefined;
   // Чем кончится передача, если страница подтвердит снятие тени (запоминается при `end_handoff`).
   let pendingEnd: HandoffSessionEnd | undefined;
   // Плеер ответил `attached` на наш `attach`.
@@ -150,6 +160,8 @@ export function startHandoffSession(
     beginTimer.cancel();
     endTimer.cancel();
     silenceWatch.stop();
+    // Конец сеанса: текущий запрос файла обрывается, ни рамки после конца.
+    disposeFileFeed();
     if (framePort !== undefined) disconnectQuietly(framePort);
     releaseDemand();
     // Если старт не успел завершиться, исход объясняет, почему.
@@ -313,6 +325,9 @@ export function startHandoffSession(
         // это внутреннее дело экстеншена. Вне `active` сторож не слушает, пульс ничего не меняет.
         silenceWatch.notePulse();
         return;
+      case "file_source":
+        startFileSource(event.url);
+        return;
       default:
         forwardStreamEvent(event);
     }
@@ -353,16 +368,46 @@ export function startHandoffSession(
     if ((phase !== "beginning" && phase !== "active") || translator === undefined || socket === undefined) return;
     const translated = translator.translate(event);
     if (!translated.ok) {
-      // Поток страницы битый: честно закрываем сеанс (плеер закрыл бы 4003) и снимаем тень.
-      socket.close(SESSION_CLOSE_CODES.protocol_violation);
-      if (phase === "active") {
-        endHandoff(END_WITHOUT_PLAYER, { kind: "page_stream_problem", problem: translated.problem });
-      } else {
-        failStart({ kind: "failed", reason: `page_stream_problem:${translated.problem}` });
-      }
+      rejectPageStream(translated.problem);
+      return;
+    }
+    // Новое поколение MSE после поколения-файла (находка 12 ревью 09b): загрузчик прошлого файла
+    // больше не нужен — его текущий запрос обрывается, а не докачивает ненужный файл.
+    if (translated.items.some(startsGeneration)) disposeFileFeed();
+    for (const item of translated.items) socket.enqueue(item);
+  }
+
+  /** Загрузчик диапазонов поколения-файла больше не нужен (новое поколение или конец сеанса). */
+  function disposeFileFeed(): void {
+    fileFeed?.dispose();
+    fileFeed = undefined;
+  }
+
+  /** Поток страницы битый: честно закрываем сеанс (плеер закрыл бы 4003) и снимаем тень. */
+  function rejectPageStream(problem: PageStreamProblem): void {
+    socket?.close(SESSION_CLOSE_CODES.protocol_violation);
+    if (phase === "active") {
+      endHandoff(END_WITHOUT_PLAYER, { kind: "page_stream_problem", problem });
+    } else {
+      failStart({ kind: "failed", reason: `page_stream_problem:${problem}` });
+    }
+  }
+
+  /**
+   * Страница передаёт файл `<video src>`: новое поколение-файл, байты по запросам плеера качает
+   * загрузчик диапазонов. Адрес остаётся в фоне — плееру уходит только номер поколения.
+   */
+  function startFileSource(url: string): void {
+    if ((phase !== "beginning" && phase !== "active") || translator === undefined || socket === undefined) return;
+    const translated = translator.translateFileSource();
+    if (!translated.ok) {
+      rejectPageStream(translated.problem);
       return;
     }
     for (const item of translated.items) socket.enqueue(item);
+    // Новый файл в том же сеансе: прежний загрузчик больше не нужен (его запросы — прошлого поколения).
+    disposeFileFeed();
+    fileFeed = createRangeFetcher({ url, fetch: dependencies.fetchRange, sink: socket, scheduler: dependencies.scheduler });
   }
 
   // ---------------------------------------------------------------- плеер → страница
@@ -379,6 +424,11 @@ export function startHandoffSession(
           { kind: "end_handoff", position: action.position, resume: action.resume },
           action.cause === "returned_to_page" ? { kind: "returned_to_page" } : { kind: "stream_rejected" },
         );
+        return;
+      case "fetch_range":
+        // Байты файла просят только в поколении-файле. Без файла запрос не наш (плеер ошибся
+        // сам): его чтение честно истечёт у плеера, сеанс страницы это не ломает.
+        fileFeed?.request(action.request);
         return;
       case "attached":
       case "buffer_intake":

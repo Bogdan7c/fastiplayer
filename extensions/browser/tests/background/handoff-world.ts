@@ -3,15 +3,19 @@
 import assert from "node:assert/strict";
 import type { FrameInjectionResult } from "../../src/background/handoff/frame-survey.ts";
 import type { HandoffSessionEnd } from "../../src/background/handoff/handoff-session.ts";
+import type { RangeFetch } from "../../src/background/handoff/range-fetcher.ts";
 import { createTabHandoffs } from "../../src/background/handoff/tab-handoffs.ts";
 import type { HandOffTabOutcome, PageEvent, VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import { createFakeClock, createFakeDoor, flushPromises, recordFramePorts, recordSockets } from "./support.ts";
 
 export const TAB = 12;
 export const MP4 = 'video/mp4; codecs="avc1.42c00a"';
-export const PLAYING_VIDEO: VideoCandidate = { document: "doc-7f3a", element: 4, has_live_media: true, playing: true, visible_area_px: 200_000 };
+export const PLAYING_VIDEO: VideoCandidate = { document: "doc-7f3a", element: 4, media: { kind: "media_source" }, playing: true, visible_area_px: 200_000 };
 
-export function setup(frames: readonly FrameInjectionResult[] = [{ frameId: 0, result: [PLAYING_VIDEO] }]) {
+/** Сеть фона по умолчанию: ни один сценарий без файла её звать не должен. */
+const NO_NETWORK: RangeFetch = () => Promise.reject(new Error("test: unexpected background fetch"));
+
+export function setup(frames: readonly FrameInjectionResult[] = [{ frameId: 0, result: [PLAYING_VIDEO] }], fetchRange: RangeFetch = NO_NETWORK) {
   const clock = createFakeClock();
   const door = createFakeDoor();
   const sockets = recordSockets();
@@ -35,6 +39,7 @@ export function setup(frames: readonly FrameInjectionResult[] = [{ frameId: 0, r
       return Promise.resolve(tabAlive);
     },
     sessionKeyFor: (tabId, attempt) => `t${tabId}-${attempt}-test`,
+    fetchRange,
     onSessionEnded: (_tabId, end) => void ended.push(end),
   });
   return {

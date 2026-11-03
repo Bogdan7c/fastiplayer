@@ -35,6 +35,19 @@ export interface DomReaders {
   isPaused(element: object): boolean;
   isEnded(element: object): boolean;
   currentTimeSeconds(element: object): number;
+  /** Выбранный источник настоящего элемента (`currentSrc`; "" — не выбран). */
+  currentSrcOf(element: object): string;
+  /** `srcObject` настоящего элемента (`null` — не задан или браузер его не знает). */
+  srcObjectOf(element: object): unknown;
+  /** Объект — MediaStream этого окна (камера, захват экрана, WebRTC). */
+  isMediaStream(candidate: unknown): boolean;
+  /** Объект — `Blob`/`File` этого окна. */
+  isBlob(candidate: unknown): boolean;
+  /**
+   * Атрибут `type` того дочернего `<source>`, чей адрес совпадает с `url` (`null` — такого
+   * `<source>` нет или у него нет `type`). По нему видно, что выбран HLS без «.m3u8» в адресе.
+   */
+  sourceTypeFor(element: object, url: string): string | null;
 }
 
 /** Окно с конструкторами DOM (в тестах — фейк). */
@@ -46,6 +59,10 @@ export interface DomWindow {
   readonly Element: { readonly prototype: object };
   readonly HTMLMediaElement: { readonly prototype: object };
   readonly HTMLVideoElement: { readonly prototype: object };
+  /** Нет в старых/фейковых окнах — тогда тип `<source>` не читается. */
+  readonly HTMLSourceElement?: { readonly prototype: object };
+  readonly MediaStream?: { readonly prototype: object };
+  readonly Blob?: { readonly prototype: object };
   readonly innerWidth: number;
   readonly innerHeight: number;
 }
@@ -69,6 +86,27 @@ function findGetter(prototype: object, name: string): (target: unknown) => unkno
     throw new TypeError(`no getter ${name}`);
   };
 }
+
+/** Геттер, которого у браузера (или фейка) может не быть: `undefined` вместо бросающей заглушки. */
+function findOptionalGetter(prototype: object | undefined, name: string): ((target: unknown) => unknown) | undefined {
+  let current: object | null = prototype ?? null;
+  while (current !== null) {
+    const getter = Object.getOwnPropertyDescriptor(current, name)?.get;
+    if (getter !== undefined) return (target) => Reflect.apply(getter, target, []);
+    current = Object.getPrototypeOf(current) as object | null;
+  }
+  return undefined;
+}
+
+/** `prototype` в цепочке прототипов `candidate` (как `instanceof`, но без подменяемых глобалов). */
+function hasPrototypeOf(prototype: object | undefined): (candidate: unknown) => boolean {
+  const isPrototypeOf = Object.prototype.isPrototypeOf;
+  return (candidate) =>
+    prototype !== undefined && typeof candidate === "object" && candidate !== null && Reflect.apply(isPrototypeOf, prototype, [candidate]) === true;
+}
+
+/** Имя элемента `<source>` (`localName` у HTML-элементов — строчными). */
+const SOURCE_ELEMENT_NAME = "source";
 
 /** Найти метод по цепочке прототипов. */
 function findMethod(prototype: object, name: string): (target: unknown, ...args: unknown[]) => unknown {
@@ -109,6 +147,13 @@ export function captureDomReaders(win: DomWindow): DomReaders {
   const paused = findGetter(mediaPrototype, "paused");
   const ended = findGetter(mediaPrototype, "ended");
   const currentTime = findGetter(mediaPrototype, "currentTime");
+  const srcObject = findOptionalGetter(mediaPrototype, "srcObject");
+  const children = findOptionalGetter(win.Element.prototype, "children");
+  const localName = findOptionalGetter(win.Element.prototype, "localName");
+  const getAttribute = findMethod(win.Element.prototype, "getAttribute");
+  const sourceSrc = findOptionalGetter(win.HTMLSourceElement?.prototype, "src");
+  const isMediaStream = hasPrototypeOf(win.MediaStream?.prototype);
+  const isBlob = hasPrototypeOf(win.Blob?.prototype);
   const documentObject = win.document;
 
   return {
@@ -141,6 +186,22 @@ export function captureDomReaders(win: DomWindow): DomReaders {
     currentTimeSeconds: (element) => {
       const seconds = currentTime(element);
       return typeof seconds === "number" ? seconds : Number.NaN;
+    },
+    currentSrcOf: (element) => {
+      const url = currentSrc(element);
+      return typeof url === "string" ? url : "";
+    },
+    srcObjectOf: (element) => (srcObject === undefined ? null : (srcObject(element) ?? null)),
+    isMediaStream,
+    isBlob,
+    sourceTypeFor: (element, url) => {
+      if (children === undefined || localName === undefined || sourceSrc === undefined) return null;
+      for (const child of toElementArray(children(element))) {
+        if (localName(child) !== SOURCE_ELEMENT_NAME || sourceSrc(child) !== url) continue;
+        const type = getAttribute(child, "type");
+        return typeof type === "string" ? type : null;
+      }
+      return null;
     },
   };
 }

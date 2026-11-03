@@ -93,7 +93,7 @@ describe("переводчик событий страницы", () => {
     const result = translator.translate(bytes("ms-1", 0, payload));
     assert.ok(result.ok);
     const frames = result.items.filter((item) => item.kind === "frame");
-    assert.deepEqual(frames.map((frame) => frame.header.sequence), [0n, 1n, 2n]);
+    assert.deepEqual(frames.map((frame) => (frame.header.kind === "source_buffer_bytes" ? frame.header.sequence : undefined)), [0n, 1n, 2n]);
     assert.deepEqual(frames.map((frame) => frame.payload.length), [MAX_DATA_FRAME_PAYLOAD_BYTES, MAX_DATA_FRAME_PAYLOAD_BYTES, 5]);
     const joined = new Uint8Array(payload.length);
     let offset = 0;

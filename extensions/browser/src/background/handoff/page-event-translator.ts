@@ -14,16 +14,16 @@
 import type { PageEvent } from "../../shared/handoff-contract.ts";
 import {
   splitAppendPayload,
+  type DataFrameHeader,
   type PageSessionMessage,
-  type SourceBufferBytesHeader,
   type StreamGeneration,
 } from "../../protocol/index.ts";
 import type { DocumentNumbering, StreamNumbering } from "./stream-numbering.ts";
 
-/** Что уходит в сеанс: текстовое сообщение или двоичная рамка байтов SourceBuffer. */
+/** Что уходит в сеанс: текстовое сообщение или двоичная рамка (байты SourceBuffer — вид 1, байты файла — вид 2). */
 export type OutgoingItem =
   | { readonly kind: "message"; readonly message: PageSessionMessage }
-  | { readonly kind: "frame"; readonly header: SourceBufferBytesHeader; readonly payload: Uint8Array };
+  | { readonly kind: "frame"; readonly header: DataFrameHeader; readonly payload: Uint8Array };
 
 /** Почему поток страницы нельзя честно переслать плееру. */
 export type PageStreamProblem =
@@ -38,11 +38,28 @@ export type TranslationResult =
   | { readonly ok: true; readonly items: readonly OutgoingItem[] }
   | { readonly ok: false; readonly problem: PageStreamProblem };
 
-/** События потока (начало и конец передачи разбирает владелец сеанса, не переводчик). */
-export type StreamPageEvent = Exclude<PageEvent, { kind: "handoff_began" } | { kind: "handoff_ended" } | { kind: "shadow_alive" }>;
+/**
+ * События потока (начало и конец передачи разбирает владелец сеанса, не переводчик). Файл
+ * (`file_source`) тоже разбирает владелец: ему, кроме сообщений, нужен номер поколения и адрес
+ * для загрузчика диапазонов (`translateFileSource`).
+ */
+export type StreamPageEvent = Exclude<
+  PageEvent,
+  { kind: "handoff_began" } | { kind: "handoff_ended" } | { kind: "shadow_alive" } | { kind: "file_source" }
+>;
+
+/** Перевод `file_source`: сообщения поколения-файла и его номер (для загрузчика диапазонов). */
+export type FileSourceTranslation =
+  | { readonly ok: true; readonly generation: StreamGeneration; readonly items: readonly OutgoingItem[] }
+  | { readonly ok: false; readonly problem: PageStreamProblem };
 
 export interface DocumentTranslator {
   translate(event: StreamPageEvent): TranslationResult;
+  /**
+   * Страница передаёт файл `<video src>` (сессия 09b): новое поколение, сразу
+   * `generation_started{N}` и `file_source_added{N}` — байты плеер запросит сам (`fetch_range`).
+   */
+  translateFileSource(): FileSourceTranslation;
 }
 
 const success = (items: readonly OutgoingItem[]): TranslationResult => ({ ok: true, items });
@@ -122,6 +139,16 @@ export function createDocumentTranslator(numbering: StreamNumbering): DocumentTr
   }
 
   return {
+    translateFileSource() {
+      const lookup = document.startFileGeneration();
+      if (lookup.kind === "exhausted") return { ok: false, problem: "generation_numbers_exhausted" };
+      const { generation } = lookup;
+      return {
+        ok: true,
+        generation,
+        items: [message({ type: "generation_started", generation }), message({ type: "file_source_added", generation })],
+      };
+    },
     translate(event) {
       switch (event.kind) {
         case "mse":

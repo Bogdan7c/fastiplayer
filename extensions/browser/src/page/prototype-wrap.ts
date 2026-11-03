@@ -74,6 +74,28 @@ export function wrapSetter(
   return true;
 }
 
+/**
+ * Обернуть геттер свойства-аксессора (сессия 09b: `MediaSource.prototype.handle` в воркере).
+ * Наблюдатель получает `this` и значение, которое вернул оригинал; исключение оригинала уходит
+ * странице как было. Имя геттера «get <name>», как у оригинала; сеттер (если есть) не трогаем.
+ */
+export function wrapGetter(owner: object, name: string, reportOddity: OddityReporter, onRead: (target: unknown, value: unknown) => void): boolean {
+  const descriptor = Object.getOwnPropertyDescriptor(owner, name);
+  const originalGet = descriptor?.get;
+  if (descriptor === undefined || originalGet === undefined) return false;
+  const holder = {
+    get [name]() {
+      const value: unknown = Reflect.apply(originalGet, this, []);
+      observeSafely(reportOddity, name, () => onRead(this, value));
+      return value;
+    },
+  };
+  const wrappedGet = Object.getOwnPropertyDescriptor(holder, name)?.get;
+  if (wrappedGet === undefined) return false;
+  Object.defineProperty(owner, name, { ...descriptor, get: wrappedGet });
+  return true;
+}
+
 /** Объект ли это (цель вызова или результат), а не примитив. */
 export function isObject(candidate: unknown): candidate is object {
   return (typeof candidate === "object" || typeof candidate === "function") && candidate !== null;

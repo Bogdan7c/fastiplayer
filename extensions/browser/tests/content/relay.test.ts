@@ -244,7 +244,7 @@ describe("кандидаты видео", () => {
     const { relay, toPage } = setupRelay();
     const answer = relay.describeVideoCandidates();
     assert.deepEqual(toPage, [{ kind: "describe_candidates", request_id: 1 }]);
-    const candidates = [{ document: "d0c", element: 1, has_live_media: true, playing: true, visible_area_px: 100 }];
+    const candidates = [{ document: "d0c", element: 1, media: { kind: "media_source" }, playing: true, visible_area_px: 100 }];
     relay.handlePageMessage({ kind: "candidates", request_id: 99, candidates: [] }); // чужой номер — мимо
     relay.handlePageMessage({ kind: "candidates", request_id: 1, candidates });
     assert.deepEqual(await answer, candidates);

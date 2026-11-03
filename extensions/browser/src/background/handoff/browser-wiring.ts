@@ -55,6 +55,9 @@ export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler): Tab
     connectFrame,
     executeInAllFrames,
     tabExists: (tabId) => browserApi.tabs.get(tabId).then(() => true, () => false),
+    // Сеть фона для байтов `<video src>` (сессия 09b): права на сайты снимают CORS, куки сайта идут
+    // с запросом. Глобальный `fetch` зовётся без `this` — иначе «Illegal invocation».
+    fetchRange: (url, init) => fetch(url, init),
     describeTab: (tabId) =>
       browserApi.tabs.get(tabId).then(
         (tab) => ({ title: tab.title, url: tab.url }),
