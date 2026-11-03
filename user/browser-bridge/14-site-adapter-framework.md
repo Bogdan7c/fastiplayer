@@ -45,3 +45,7 @@
 - Memories: `mem:browser-bridge/core` (раздел «Адаптеры»), `mem:app-egui/web-audio-versions-menu`.
 
 Memories: `mem:app-egui/web-audio-versions-menu`, `mem:subtitles/audio-tracks-memory-s07`.
+
+## Поправки по итогам 09d (3.11.2026, решение 184)
+
+- Узкий контракт «рекламные органы плеера сайта» из 09d (`matches`, `readAdState`, `pressSkip`) и протокол `ad_state` / `skip_ad` уже есть. Контракт адаптера 14 включает его как одну из способностей, не дублируя. Читатели YouTube и IMA переезжают в общую раскладку адаптеров без смены протокола.

@@ -56,3 +56,7 @@
 - Memories: `mem:browser-bridge/core`, `mem:window-placement/core`.
 
 Memories: `mem:window-placement/core`, `mem:browser-bridge/core`.
+
+## Поправки по итогам 09d (3.11.2026, решение 184)
+
+- «Наклейка» лежит поверх кнопки пропуска рекламы страницы. Плашка 09d «Ad 1 of 2 · Skip ›» рисуется в нашем окне и в режиме 3. При обрезке окна краем страницы или экрана плашка остаётся в видимой части.

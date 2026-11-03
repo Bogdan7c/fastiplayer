@@ -35,3 +35,7 @@
 - Memories: `mem:browser-bridge/core`, `mem:app-egui/global-hotkeys-volume-input-b3`.
 
 Memories: `mem:app-egui/global-hotkeys-volume-input-b3`, `mem:player-core/command-delivery-reserve-ux17`.
+
+## Поправки по итогам 09d (3.11.2026, решение 184)
+
+- Хоткей пропуска рекламы из 09d работает и при фокусе на странице (решение 6), в зоне хоткеев по решению 58.
