@@ -24,8 +24,14 @@ pub(crate) const HAND_OFF_EXTENSION_PAGE: &str = "options.html";
 pub enum HandOffOutcome {
     /// Фон начал передачу выбранного видео.
     Started,
-    /// Во вкладке нет видео с живым `MediaSource`.
+    /// Во вкладке нет видео, которое можно передать.
     NoVideo,
+    /// Видео есть, но в форме, которую экстеншен пока честно не передаёт (сессия 09b:
+    /// нативный HLS — решение 185, blob/data/MediaStream). Сеанс с плеером не открывается.
+    NotSupportedYet {
+        /// Форма видео (`native_hls`, `blob_file`, …).
+        form: String,
+    },
     /// Связь с плеером не поднялась или плеер отказал.
     PlayerUnavailable {
         /// Текст причины для журнала.
@@ -129,7 +135,9 @@ pub(crate) fn parse_robot_output(
             // serde не запрещает лишние поля у вариантов без данных: проверяем форму сами.
             let expected_keys = match outcome {
                 HandOffOutcome::Started | HandOffOutcome::NoVideo => 1,
-                HandOffOutcome::PlayerUnavailable { .. } | HandOffOutcome::Failed { .. } => 2,
+                HandOffOutcome::PlayerUnavailable { .. }
+                | HandOffOutcome::Failed { .. }
+                | HandOffOutcome::NotSupportedYet { .. } => 2,
             };
             if reply.as_object().map_or(0, serde_json::Map::len) != expected_keys {
                 return Err(HandOffError::BadReply {
@@ -174,6 +182,12 @@ mod tests {
                 reason: "boom".into()
             })
         );
+        assert_eq!(
+            parse(r#"{"robot":"reply","reply":{"kind":"not_supported_yet","form":"native_hls"}}"#),
+            Ok(HandOffOutcome::NotSupportedYet {
+                form: "native_hls".into()
+            })
+        );
     }
 
     #[test]
@@ -183,6 +197,8 @@ mod tests {
             r#"{"kind":"failed"}"#,
             r#"{"kind":"started","extra":1}"#,
             r#"{"kind":"failed","reason":7}"#,
+            r#"{"kind":"not_supported_yet"}"#,
+            r#"{"kind":"not_supported_yet","form":"native_hls","extra":1}"#,
             r#"{}"#,
             r#""started""#,
         ] {

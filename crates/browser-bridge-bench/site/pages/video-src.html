@@ -10,14 +10,18 @@
 <h1>video-src</h1>
 
 <script type="module">
-import { runScenario, UnsupportedError } from '../lib/bench-report.js';
-import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
-import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
-import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying, waitFor } from '../lib/bench-checks.js';
+import { loadCatalog } from '../lib/bench-player.js';
+import { mountVideo, observeHandoff } from '../lib/scenario-kit.js';
 
+// Обычный `<video src>` (файл без MediaSource). В режиме передачи (сессия 09b) после своих
+// проверок страница уходит под тень: байты файла качает фон экстеншена по `fetch_range` плеера,
+// а свой <video> страницы файл больше не качает (это видит сервер стенда, см. capture).
 await runScenario('video-src', async (ctx) => {
   const catalog = await loadCatalog();
-  const asset = catalog.assets['progressive-h264-aac'];
+  // 60 с: после перемоток и возврата в player-commands должно оставаться что играть.
+  const asset = catalog.assets['progressive-long-h264-aac'];
   // Серверу нужен Range: именно так браузер качает обычный <video src>.
   const probe = await fetch(`/media/${asset.url}`, { headers: { range: 'bytes=0-99' } });
   ctx.check('server-range-206', probe.status === 206 && probe.headers.get('content-range') !== null,
@@ -26,6 +30,16 @@ await runScenario('video-src', async (ctx) => {
   video.src = `/media/${asset.url}`;
   await video.play().catch(async () => { video.muted = true; await video.play(); });
   await checkPlaying(ctx, video, 'playing');
+  if (ctx.params.handoff) {
+    await observeHandoff(ctx, { video, player: null }, {}, {
+      durationS: asset.duration_s,
+      // Под тенью `buffered` файла — весь файл (решение 187): «буфер растёт» ему нечего доказывать,
+      // а после возврата это уже буфер заново загружаемого настоящего элемента (Chromium его
+      // наполняет постепенно). Что байты идут, доказывает журнал сервера (fetch_range у цели).
+      skipFinishChecks: ['page-buffer-keeps-filling'],
+    });
+    return;
+  }
   video.currentTime = 8;
   const seeked = await waitFor(() => video.currentTime >= 8 && !video.seeking, 4000);
   ctx.check('seek-completed', seeked, `currentTime=${video.currentTime.toFixed(2)}`);

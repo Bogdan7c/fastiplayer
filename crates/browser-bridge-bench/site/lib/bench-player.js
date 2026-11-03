@@ -4,6 +4,7 @@
 //   const catalog = await loadCatalog();
 //   const player = new BenchPlayer(video, catalog, { bufferAheadS, mediaBase, credentials,
 //                                                    stallSeconds, hangAt, worker, log });
+//   worker: true | 'module' — MSE в модульном Dedicated Worker, 'classic' — в классическом (Twitch);
 //   await player.start({ refs: standardRefs(catalog, 'h264-aac'), positionS: 0 });
 //   await player.seek(20);                       // abort/remove + запросы с нового места
 //   player.switchTrack({assetId, trackId});      // ABR: init другой дорожки в тот же SourceBuffer
@@ -87,7 +88,14 @@ export class BenchPlayer {
     this.credentials = options.credentials ?? 'same-origin';
     this.stallSeconds = options.stallSeconds ?? null;
     this.hangAt = options.hangAt ?? null;
-    this.useWorker = options.worker ?? false;
+    this.useWorker = Boolean(options.worker ?? false);
+    /** Вид воркера: классический (как Twitch) или модульный. */
+    this.workerType = options.worker === 'classic' ? 'classic' : 'module';
+    /** Handle от воркера, ещё не привязанные к элементу (по одному на поколение). */
+    this.pendingHandles = [];
+    this.handleWaiters = [];
+    /** Blob-адрес классического воркера (держится, пока жив воркер, как у IVS). */
+    this.workerBlobUrl = null;
     this.logLine = options.log ?? (() => {});
     this.generations = 0;
     this.mediaSources = [];
@@ -136,7 +144,13 @@ export class BenchPlayer {
     releaseOldSource = RELEASE_OLD_SOURCE.SRC,
     firstRequestDelayMs = 0,
   } = {}) {
-    if (this.useWorker) throw new Error('newGeneration is not supported in worker mode');
+    if (this.useWorker) {
+      // Воркер сам останавливает старый движок и создаёт новый MediaSource; сюда — его handle.
+      this.refs = refs;
+      await this.#attachInWorker(positionS, { releaseOldSource });
+      if (autoplay) await this.play();
+      return;
+    }
     await this.#detachEngine();
     this.hangAt = null; // «зависание» — одноразовый сбой первого поколения
     this.refs = refs;
@@ -165,7 +179,12 @@ export class BenchPlayer {
    */
   followPlayerSeeks() {
     this.video.addEventListener('seeking', () => {
-      if (this.pageSeeking || this.useWorker || !this.engine) return;
+      if (this.pageSeeking) return;
+      if (this.useWorker) {
+        this.worker?.postMessage({ type: 'seek', positionS: this.video.currentTime });
+        return;
+      }
+      if (!this.engine) return;
       this.engine.seek(this.video.currentTime)
         .catch((error) => this.logLine(`follow seek failed: ${error}`));
     });
@@ -202,6 +221,8 @@ export class BenchPlayer {
     await this.#detachEngine();
     this.worker?.terminate();
     this.worker = null;
+    if (this.workerBlobUrl) URL.revokeObjectURL(this.workerBlobUrl);
+    this.workerBlobUrl = null;
   }
 
   // ---- внутренности -------------------------------------------------------------------
@@ -274,25 +295,22 @@ export class BenchPlayer {
     });
   }
 
-  /** MSE в Dedicated Worker: воркер владеет MediaSource, на элемент уходит MediaSourceHandle. */
-  async #attachInWorker(positionS) {
+  /**
+   * MSE в Dedicated Worker: воркер владеет MediaSource, на элемент уходит MediaSourceHandle.
+   * Первый вызов создаёт воркер (модульный или классический) и шлёт `init`; следующие —
+   * `new_generation` (новый MediaSource в том же воркере, старый источник снимается как велено).
+   */
+  async #attachInWorker(positionS, { releaseOldSource = RELEASE_OLD_SOURCE.SRC } = {}) {
     if (!MediaSource.canConstructInDedicatedWorker) {
       throw new Error('MediaSource in Dedicated Worker is not available');
     }
-    this.worker = new Worker(new URL('./bench-worker.js', import.meta.url), { type: 'module' });
-    const handlePromise = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('worker handle timeout')), OPEN_TIMEOUT_MS);
-      this.worker.addEventListener('message', (event) => {
-        const message = event.data;
-        if (message.type === 'handle') { clearTimeout(timer); resolve(message.handle); }
-        if (message.type === 'progress') this.workerSegments = message.segments;
-        if (message.type === 'info') this.workerInfo = message;
-        if (message.type === 'log') this.logLine(`worker: ${message.line}`);
-      });
-      this.worker.addEventListener('error', (event) => reject(new Error(`worker error: ${event.message}`)));
-    });
+    const firstGeneration = this.worker === null;
+    if (firstGeneration) this.#createWorker();
+    const handlePromise = this.#nextHandle();
     this.worker.postMessage({
-      type: 'init',
+      type: firstGeneration ? 'init' : 'new_generation',
+      // Классическому воркеру — абсолютный адрес плеера (относительный там разрешился бы от blob-адреса).
+      coreUrl: new URL('./bench-worker-core.js', import.meta.url).href,
       tracks: this.refs.map((ref) => resolveRef(this.catalog, ref)),
       durationS: this.#durationS(),
       mediaBase: this.mediaBase,
@@ -300,13 +318,74 @@ export class BenchPlayer {
       bufferAheadS: this.bufferAheadS,
       positionS,
     });
-    this.video.srcObject = await handlePromise;
+    const handle = await handlePromise;
+    if (!firstGeneration) this.#releaseOldSource(releaseOldSource);
+    this.video.srcObject = handle;
     this.generations += 1;
-    this.clockTimer = setInterval(() => {
-      this.worker?.postMessage({ type: 'clock', ...this.#clock() });
-    }, WORKER_CLOCK_PERIOD_MS);
-    this.worker.postMessage({ type: 'clock', ...this.#clock() });
+    this.logLine(`worker generation ${this.generations} attached at ${positionS.toFixed(2)} s`);
+    this.onGeneration(this.generations);
+    if (firstGeneration) {
+      this.clockTimer = setInterval(() => {
+        this.worker?.postMessage({ type: 'clock', ...this.#clock() });
+      }, WORKER_CLOCK_PERIOD_MS);
+      this.worker.postMessage({ type: 'clock', ...this.#clock() });
+    }
     await delay(0);
+  }
+
+  /**
+   * Воркер создаётся из blob-адреса страницы — так делают настоящие MSE-плееры в воркере
+   * (решение 192: экстеншен оборачивает только такие воркеры):
+   *  - классический, как Twitch (IVS): blob с `importScripts('<абсолютный адрес>')`, blob-адрес
+   *    страница держит, пока жив воркер;
+   *  - модульный, как встроенные воркеры Vite / worker-loader: blob с `import '<абсолютный адрес>'`,
+   *    а blob-адрес отпускается СРАЗУ после конструктора (`try { new Worker } finally { revoke }`).
+   *    Без отсрочки revoke в экстеншене такой воркер не загрузился бы.
+   */
+  #createWorker() {
+    const isClassic = this.workerType === 'classic';
+    const scriptUrl = isClassic
+      ? new URL('./bench-worker-classic.js', import.meta.url).href
+      : new URL('./bench-worker.js', import.meta.url).href;
+    const loaderText = isClassic ? `importScripts(${JSON.stringify(scriptUrl)});\n` : `import ${JSON.stringify(scriptUrl)};\n`;
+    const blobUrl = URL.createObjectURL(new Blob([loaderText], { type: 'text/javascript' }));
+    if (isClassic) {
+      this.worker = new Worker(blobUrl);
+      this.workerBlobUrl = blobUrl;
+    } else {
+      try {
+        this.worker = new Worker(blobUrl, { type: 'module' });
+      } finally {
+        URL.revokeObjectURL(blobUrl);
+      }
+    }
+    this.worker.addEventListener('message', (event) => {
+      const message = event.data;
+      if (message.type === 'handle') this.#deliverHandle(message.handle);
+      if (message.type === 'progress') this.workerSegments = message.segments;
+      if (message.type === 'info') this.workerInfo = message;
+      if (message.type === 'log') this.logLine(`worker: ${message.line}`);
+    });
+    this.worker.addEventListener('error', (event) => this.logLine(`worker error: ${event.message}`));
+  }
+
+  #deliverHandle(handle) {
+    const waiter = this.handleWaiters.shift();
+    if (waiter) waiter(handle);
+    else this.pendingHandles.push(handle);
+  }
+
+  /** Следующий handle от воркера (или ошибка по сроку). */
+  #nextHandle() {
+    if (this.pendingHandles.length > 0) return Promise.resolve(this.pendingHandles.shift());
+    return new Promise((resolve, reject) => {
+      const waiter = (handle) => { clearTimeout(timer); resolve(handle); };
+      const timer = setTimeout(() => {
+        this.handleWaiters = this.handleWaiters.filter((candidate) => candidate !== waiter);
+        reject(new Error('worker handle timeout'));
+      }, OPEN_TIMEOUT_MS);
+      this.handleWaiters.push(waiter);
+    });
   }
 
   #watchdogTick() {

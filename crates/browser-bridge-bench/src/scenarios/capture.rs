@@ -11,10 +11,16 @@
 
 use std::time::{Duration, Instant};
 
+pub(super) mod file_evidence;
+mod judge;
+mod refusals;
+
+use judge::{CaptureEvidence, HookEvidence, browser_does_not_decode, judge_capture};
+
 use super::context::{ScenarioError, Stand};
 use super::evidence::{
-    FORBIDDEN_PLAYER_LINES, SESSION_GRANTED_TIMEOUT, format_browser_log, host_failures,
-    page_failures, unexpected_player_lines, wait_for_session_granted,
+    FORBIDDEN_PLAYER_LINES, SESSION_GRANTED_TIMEOUT, format_browser_log, page_failures,
+    wait_for_session_granted,
 };
 use super::handoff_run::{ACK_TIMEOUT, ExtensionMode, HandoffRun, PageReadiness};
 use super::outcome::{StepResult, Verdict};
@@ -22,7 +28,7 @@ use super::page_catalog::PAGE_SCENARIOS;
 use super::page_filter::PageFilter;
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::BenchEnvironment;
-use crate::observe::{FrameEvidence, FrameGrowth, HostLogEvidence, read_host_evidence};
+use crate::observe::read_host_evidence;
 use crate::site::{PageReport, PageStatus, SiteError};
 
 /// Сколько кадров должен показать плеер: 2 с видео при 25 к/с — «играет», а не «открылся».
@@ -34,16 +40,6 @@ pub(super) const FRAMES_TIMEOUT: Duration = Duration::from_secs(60);
 const MIN_FRAMES_GAINED_AFTER_HOOK: u64 = 60;
 /// Сколько ждать сводки после действия страницы: сводка-точка отсчёта и ещё одна.
 const HOOK_FRAMES_TIMEOUT: Duration = Duration::from_secs(45);
-/// Самое короткое окно «под тенью», на котором счётчик браузера что-то доказывает, с.
-const MIN_SHADOW_WINDOW_S: f64 = 6.0;
-/// Потолок настоящих кадров браузера под тенью, кадров в секунду. В 00c браузер под тенью
-/// декодировал 0–116 кадров за 60 с (до ~2 к/с из-за перестановки кадров), обычное
-/// воспроизведение роликов стенда — 25 к/с. 5 к/с с запасом над худшим замеренным и в пять
-/// раз ниже обычного воспроизведения.
-const MAX_REAL_FRAMES_PER_SECOND: f64 = 5.0;
-/// Запас кадров на момент перехода: команда вернула `started` чуть раньше, чем тень
-/// полностью заняла элемент, и пара кадров браузера успевает проскочить.
-const HANDOVER_SLACK_FRAMES: f64 = 10.0;
 
 /// Страница, которую проверяет `capture`, и её действие под тенью (если есть).
 #[derive(Debug, Clone, Copy)]
@@ -130,6 +126,27 @@ pub(super) const CAPTURE_PAGES: &[CapturePage] = &[
         id: "cdn-guard",
         hook: None,
     },
+    // 09b: MSE в модульном Dedicated Worker (Chromium; Firefox честно `unsupported`), под тенью —
+    // новый MediaSource в воркере (`srcObject = null`, новый handle) → новое поколение в плеере.
+    CapturePage {
+        id: "mse-worker",
+        hook: Some("swap-generation"),
+    },
+    // 09b: то же в классическом воркере, как у Twitch.
+    CapturePage {
+        id: "mse-worker-classic",
+        hook: None,
+    },
+    // 09b: `<video src>` — фон качает файл по `fetch_range`, источник элемента снят.
+    CapturePage {
+        id: "video-src",
+        hook: None,
+    },
+    // 09b: тот же файл за входом на CDN — фон несёт куку сайта.
+    CapturePage {
+        id: "video-src-cdn",
+        hook: None,
+    },
 ];
 
 /// Все MSE-страницы одного браузера, каждая в свежем окружении (свой плеер и журналы).
@@ -147,12 +164,23 @@ pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) 
             .filter(|page| filter.admits(page.id))
             .map(|page| run_page(stand, browser, "capture", *page)),
     );
+    // 09b: формы, которые экстеншен честно отказывается передавать (видео остаётся у браузера).
+    results.extend(
+        refusals::REFUSAL_PAGES
+            .iter()
+            .filter(|page| filter.admits(page.id))
+            .map(|page| refusals::run_refusal(stand, browser, *page)),
+    );
     results
 }
 
-/// Идентификаторы страниц `capture` (контрольные страницы входят в тот же список).
+/// Идентификаторы страниц `capture` (контрольные страницы и честные отказы входят в тот же список).
 pub(super) fn capture_page_ids() -> Vec<&'static str> {
-    CAPTURE_PAGES.iter().map(|page| page.id).collect()
+    CAPTURE_PAGES
+        .iter()
+        .map(|page| page.id)
+        .chain(refusals::REFUSAL_PAGES.iter().map(|page| page.id))
+        .collect()
 }
 
 /// Сколько секунд контрольный прогон даёт браузеру играть самому, пока идёт «окно».
@@ -302,6 +330,8 @@ fn drive(
         run.browser.shutdown()?;
         return Ok(Verdict::fail(format!("{message}\n{log}")));
     }
+    // Для `<video src>`: с этого мига файл должен качать только фон (сервер это видит).
+    let handed_off_at = Instant::now();
     run.tell_page("handed-off");
 
     // Сначала пропуск от НАШЕГО посредника: без него «кадры есть» ничего бы не доказывало.
@@ -317,6 +347,14 @@ fn drive(
 
     let page_report = run.finish_page();
     let page_log = run.take_page_log();
+    let file = file_evidence::file_page(page.id).map(|file_page| {
+        let requests =
+            file_evidence::sort_requests(file_page, &stand.site.media_requests(), handed_off_at);
+        (
+            file_evidence::file_failures(file_page, &requests),
+            file_evidence::file_summary(&requests),
+        )
+    });
     let player_log = &mut run.player_log;
     let forbidden = player_log.snapshot_forbidden(FORBIDDEN_PLAYER_LINES)?;
     // Журнал посредника лежит в stderr браузера: читаем после мягкого закрытия.
@@ -330,6 +368,7 @@ fn drive(
         page_report,
         forbidden_player_lines: forbidden,
         page_log: format_browser_log(&page_log),
+        file,
     }))
 }
 
@@ -352,30 +391,6 @@ fn run_hook(run: &mut HandoffRun<'_>, name: &str) -> HookEvidence {
         name: name.to_owned(),
         growth,
     }
-}
-
-/// Результат действия страницы под тенью.
-struct HookEvidence {
-    name: String,
-    /// Рост показанных кадров плеера между двумя сводками после действия.
-    growth: Result<FrameGrowth, String>,
-}
-
-/// Всё, что собрал прогон, без привязки к браузеру и файлам: вход чистого вердикта.
-struct CaptureEvidence {
-    page_id: &'static str,
-    /// Сводка показанных кадров или причина, почему её нет.
-    frames: Result<FrameEvidence, String>,
-    /// Действие под тенью, если у страницы оно есть.
-    hook: Option<HookEvidence>,
-    /// Отметки посредника.
-    host: HostLogEvidence,
-    /// Отчёт страницы или ошибка ожидания.
-    page_report: Result<PageReport, SiteError>,
-    /// Запрещённые строки журнала плеера (с шумом).
-    forbidden_player_lines: Vec<String>,
-    /// Хвост журнала страницы (прикладывается при провале).
-    page_log: String,
 }
 
 /// Страница отчиталась до передачи: `unsupported` честен только там, где таблица его разрешает.
@@ -407,293 +422,12 @@ pub(super) fn judge_early_report(
     }
 }
 
-/// Сколько настоящих кадров браузера допустимо под тенью за окно `window_s` секунд.
-fn max_real_frames(window_s: f64) -> f64 {
-    window_s * MAX_REAL_FRAMES_PER_SECOND + HANDOVER_SLACK_FRAMES
-}
-
-/// Проверки «браузер не декодирует» по метрикам страницы.
-fn browser_does_not_decode(report: &PageReport) -> Vec<String> {
-    let metric = |name: &str| report.metrics.get(name).copied();
-    let (Some(available), Some(window_s), Some(real_frames)) = (
-        metric("real_probe_available"),
-        metric("shadow_window_s"),
-        metric("real_frames_in_window"),
-    ) else {
-        return vec!["the page report has no real-frame metrics".to_owned()];
-    };
-    if available < 1.0 {
-        return vec!["the page could not read the real frame counter".to_owned()];
-    }
-    if window_s < MIN_SHADOW_WINDOW_S {
-        return vec![format!(
-            "the shadow window was {window_s:.1} s, too short to judge the browser decoder (need {MIN_SHADOW_WINDOW_S} s)"
-        )];
-    }
-    let allowed = max_real_frames(window_s);
-    if real_frames > allowed {
-        return vec![format!(
-            "the browser decoded {real_frames} frames in {window_s:.1} s under the shadow (allowed {allowed:.0}): it still plays by itself"
-        )];
-    }
-    Vec::new()
-}
-
-/// Чистое решение «страница дошла до кадра в рендере без декодирования браузером».
-fn judge_capture(evidence: &CaptureEvidence) -> Verdict {
-    let mut failures: Vec<String> = Vec::new();
-    match &evidence.frames {
-        Ok(found) if found.position_regressions > 0 => failures.push(format!(
-            "playback position went backwards {} time(s): {}",
-            found.position_regressions, found.summary_line
-        )),
-        Ok(_) => {}
-        Err(message) => failures.push(message.clone()),
-    }
-    failures.extend(host_failures(&evidence.host));
-    if let Some(hook) = &evidence.hook
-        && let Err(message) = &hook.growth
-    {
-        failures.push(format!("after '{}': {message}", hook.name));
-    }
-    failures.extend(page_failures(&evidence.page_report, evidence.page_id));
-    if let Ok(report) = &evidence.page_report {
-        failures.extend(browser_does_not_decode(report));
-    }
-    failures.extend(
-        unexpected_player_lines(&evidence.forbidden_player_lines)
-            .map(|line| format!("forbidden player line: {line}")),
-    );
-
-    let presented = evidence
-        .frames
-        .as_ref()
-        .map_or(0, |found| found.presented_frames);
-    let gained = evidence
-        .hook
-        .as_ref()
-        .and_then(|hook| hook.growth.as_ref().ok())
-        .map(FrameGrowth::frames_gained);
-    let real_frames = evidence
-        .page_report
-        .as_ref()
-        .ok()
-        .and_then(|report| report.metrics.get("real_frames_in_window").copied());
-    let summary = format!(
-        "presented_frames={presented} frames_gained_after_hook={gained:?} browser_real_frames={real_frames:?}; host: caller_accepted={} hello_accepted={} session_granted={}",
-        evidence.host.caller_accepted, evidence.host.hello_accepted, evidence.host.session_granted,
-    );
-    // При провале журнал страницы — главная улика.
-    let summary = if failures.is_empty() {
-        summary
-    } else {
-        format!("{summary}\n{}", evidence.page_log)
-    };
-    Verdict::from_failures(&failures, summary)
-}
-
 #[cfg(test)]
 mod tests {
+    use super::judge::tests::report_with;
     use super::*;
     use crate::scenarios::outcome::Outcome;
-    use crate::site::{ReportCheck, RunId};
-
-    fn report_with(metrics: &[(&str, f64)]) -> PageReport {
-        PageReport {
-            run: RunId::new("r-1").expect("run id"),
-            scenario: "mse-fmp4".into(),
-            status: PageStatus::Pass,
-            checks: Vec::new(),
-            user_agent: String::new(),
-            elapsed_ms: 0,
-            metrics: metrics
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), *value))
-                .collect(),
-        }
-    }
-
-    fn healthy_metrics() -> Vec<(&'static str, f64)> {
-        vec![
-            ("real_probe_available", 1.0),
-            ("shadow_window_s", 12.0),
-            ("real_frames_in_window", 8.0),
-        ]
-    }
-
-    fn full_host() -> HostLogEvidence {
-        HostLogEvidence {
-            caller_accepted: true,
-            hello_accepted: true,
-            session_granted: true,
-            session_grants: 1,
-        }
-    }
-
-    fn healthy_evidence() -> CaptureEvidence {
-        CaptureEvidence {
-            page_id: "mse-fmp4",
-            frames: Ok(FrameEvidence {
-                presented_frames: 240,
-                position_regressions: 0,
-                summary_line: "summary".into(),
-            }),
-            hook: None,
-            host: full_host(),
-            page_report: Ok(report_with(&healthy_metrics())),
-            forbidden_player_lines: Vec::new(),
-            page_log: "page log".into(),
-        }
-    }
-
-    fn growth(before: u64, after: u64) -> FrameGrowth {
-        let evidence = |frames| FrameEvidence {
-            presented_frames: frames,
-            position_regressions: 0,
-            summary_line: String::new(),
-        };
-        FrameGrowth {
-            before: evidence(before),
-            after: evidence(after),
-        }
-    }
-
-    #[test]
-    fn healthy_capture_passes_and_reports_the_numbers() {
-        let verdict = judge_capture(&healthy_evidence());
-        assert_eq!(verdict.outcome, Outcome::Pass);
-        assert!(verdict.detail.contains("presented_frames=240"));
-        assert!(verdict.detail.contains("browser_real_frames=Some(8.0)"));
-    }
-
-    #[test]
-    fn a_browser_that_keeps_decoding_under_the_shadow_fails() {
-        let mut evidence = healthy_evidence();
-        evidence.page_report = Ok(report_with(&[
-            ("real_probe_available", 1.0),
-            ("shadow_window_s", 12.0),
-            ("real_frames_in_window", 290.0),
-        ]));
-        let verdict = judge_capture(&evidence);
-        assert_eq!(verdict.outcome, Outcome::Fail);
-        assert!(verdict.detail.contains("still plays by itself"));
-    }
-
-    #[test]
-    fn the_decode_threshold_is_exact_at_the_edge() {
-        let window_s = 10.0;
-        let edge = max_real_frames(window_s);
-        let metrics = |frames: f64| {
-            report_with(&[
-                ("real_probe_available", 1.0),
-                ("shadow_window_s", window_s),
-                ("real_frames_in_window", frames),
-            ])
-        };
-        assert!(browser_does_not_decode(&metrics(edge)).is_empty());
-        assert_eq!(browser_does_not_decode(&metrics(edge + 1.0)).len(), 1);
-    }
-
-    #[test]
-    fn missing_metrics_unavailable_probe_and_short_window_are_failures_not_passes() {
-        assert_eq!(browser_does_not_decode(&report_with(&[])).len(), 1);
-        let unavailable = report_with(&[
-            ("real_probe_available", 0.0),
-            ("shadow_window_s", 12.0),
-            ("real_frames_in_window", 0.0),
-        ]);
-        assert!(browser_does_not_decode(&unavailable)[0].contains("could not read"));
-        let short = report_with(&[
-            ("real_probe_available", 1.0),
-            ("shadow_window_s", 2.0),
-            ("real_frames_in_window", 0.0),
-        ]);
-        assert!(browser_does_not_decode(&short)[0].contains("too short"));
-    }
-
-    #[test]
-    fn no_frames_in_the_player_fails_with_the_reason() {
-        let mut evidence = healthy_evidence();
-        evidence.frames = Err("player did not present frames: timeout".into());
-        let verdict = judge_capture(&evidence);
-        assert_eq!(verdict.outcome, Outcome::Fail);
-        assert!(verdict.detail.contains("did not present frames"));
-        assert!(
-            verdict.detail.contains("page log"),
-            "the failure carries the page log"
-        );
-    }
-
-    #[test]
-    fn position_regressions_fail() {
-        let mut evidence = healthy_evidence();
-        evidence.frames = Ok(FrameEvidence {
-            presented_frames: 240,
-            position_regressions: 2,
-            summary_line: "summary".into(),
-        });
-        let verdict = judge_capture(&evidence);
-        assert_eq!(verdict.outcome, Outcome::Fail);
-        assert!(verdict.detail.contains("went backwards 2 time(s)"));
-    }
-
-    #[test]
-    fn missing_host_marks_fail() {
-        let mut evidence = healthy_evidence();
-        evidence.host = HostLogEvidence::default();
-        let verdict = judge_capture(&evidence);
-        assert_eq!(verdict.outcome, Outcome::Fail);
-        assert!(verdict.detail.contains("host did not grant the session"));
-    }
-
-    #[test]
-    fn a_failed_page_report_fails_even_when_the_player_shows_frames() {
-        let mut evidence = healthy_evidence();
-        let mut report = report_with(&healthy_metrics());
-        report.status = PageStatus::Fail;
-        report.checks = vec![ReportCheck {
-            name: "page-clock-advances".into(),
-            ok: false,
-            detail: "currentTime 3 -> 3".into(),
-        }];
-        evidence.page_report = Ok(report);
-        let verdict = judge_capture(&evidence);
-        assert_eq!(verdict.outcome, Outcome::Fail);
-        assert!(
-            verdict
-                .detail
-                .contains("page-clock-advances (currentTime 3 -> 3)")
-        );
-    }
-
-    #[test]
-    fn hook_needs_the_player_frames_to_keep_growing() {
-        let mut evidence = healthy_evidence();
-        evidence.hook = Some(HookEvidence {
-            name: "switch-quality".into(),
-            growth: Ok(growth(300, 560)),
-        });
-        assert_eq!(judge_capture(&evidence).outcome, Outcome::Pass);
-        evidence.hook = Some(HookEvidence {
-            name: "switch-quality".into(),
-            growth: Err("player frames did not keep growing".into()),
-        });
-        let verdict = judge_capture(&evidence);
-        assert_eq!(verdict.outcome, Outcome::Fail);
-        assert!(verdict.detail.contains("after 'switch-quality'"));
-    }
-
-    #[test]
-    fn forbidden_player_lines_fail_but_the_known_portal_noise_does_not() {
-        let mut evidence = healthy_evidence();
-        evidence.forbidden_player_lines =
-            vec!["T ERROR XDG Settings Portal did not return response in time".into()];
-        assert_eq!(judge_capture(&evidence).outcome, Outcome::Pass);
-        evidence
-            .forbidden_player_lines
-            .push("T ERROR decoder exploded".into());
-        assert_eq!(judge_capture(&evidence).outcome, Outcome::Fail);
-    }
+    use crate::site::PageStatus;
 
     #[test]
     fn early_unsupported_is_honest_only_where_the_table_allows_it() {
@@ -750,6 +484,6 @@ mod tests {
             );
             assert!(seen.insert(page.id), "{} listed twice", page.id);
         }
-        assert_eq!(CAPTURE_PAGES.len(), 14);
+        assert_eq!(CAPTURE_PAGES.len(), 18);
     }
 }

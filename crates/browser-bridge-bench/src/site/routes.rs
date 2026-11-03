@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use crate::media::MediaCatalog;
 use crate::media::safe_path::{join_inside, resolve_existing_file};
 
-use super::cdn_guard::{CdnGuard, CdnVerdict, login_cookie_header};
+use super::cdn_guard::{CdnGuard, CdnVerdict, RefererRule, login_cookie_header};
 use super::http::{Request, Response};
 use super::reports::{BrowserLogLine, PageReport, ReportStore};
+use super::request_log::RequestLog;
 use super::run_id::RunId;
 use super::static_files::serve_file;
 
@@ -17,6 +18,8 @@ pub(super) struct SharedState {
     pub media: MediaCatalog,
     pub reports: ReportStore,
     pub cdn: CdnGuard,
+    /// Запросы медиа с заголовками (сессия 09b: кто качает `<video src>`).
+    pub requests: RequestLog,
 }
 
 /// Всё, что нужно обработчику запроса: общее состояние и origin именно ЭТОГО слушателя
@@ -38,8 +41,15 @@ fn preflight_response() -> Response {
         .with_header("Access-Control-Max-Age", "600")
 }
 
-/// Главная точка: выбирает обработчик по методу и пути.
+/// Главная точка: ответ на запрос; запросы медиа записываются в журнал вместе со статусом.
 pub(super) fn route(context: &RouteContext, request: &Request) -> Response {
+    let response = route_request(context, request);
+    context.shared.requests.record(request, &response);
+    response
+}
+
+/// Выбирает обработчик по методу и пути.
+fn route_request(context: &RouteContext, request: &Request) -> Response {
     if request.method == "OPTIONS" {
         return preflight_response();
     }
@@ -76,7 +86,14 @@ pub(super) fn route(context: &RouteContext, request: &Request) -> Response {
     }
     if let Some(relative) = path.strip_prefix("/cdn/media/") {
         return if is_read {
-            serve_cdn_media(context, request, relative)
+            serve_cdn_media(context, request, relative, RefererRule::OwnOrigin)
+        } else {
+            method_not_allowed()
+        };
+    }
+    if let Some(relative) = path.strip_prefix("/cdn/session-media/") {
+        return if is_read {
+            serve_cdn_media(context, request, relative, RefererRule::NotChecked)
         } else {
             method_not_allowed()
         };
@@ -121,11 +138,17 @@ fn cdn_login() -> Response {
     Response::new(204).with_header("Set-Cookie", login_cookie_header())
 }
 
-fn serve_cdn_media(context: &RouteContext, request: &Request, relative: &str) -> Response {
+fn serve_cdn_media(
+    context: &RouteContext,
+    request: &Request,
+    relative: &str,
+    referer_rule: RefererRule,
+) -> Response {
     let verdict = context.shared.cdn.check(
         request.header("cookie"),
         request.header("referer"),
         &context.own_origin,
+        referer_rule,
     );
     match verdict {
         CdnVerdict::Allow => serve_under(

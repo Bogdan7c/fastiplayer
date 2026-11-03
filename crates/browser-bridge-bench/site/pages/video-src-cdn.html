@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>video-src-cdn</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>video-src-cdn</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying } from '../lib/bench-checks.js';
+import { loadCatalog } from '../lib/bench-player.js';
+import { mountVideo, observeHandoff } from '../lib/scenario-kit.js';
+
+// `<video src>` за входом на CDN (сессия 09b): сторож `/cdn/session-media/` отдаёт файл только с
+// кукой входа. Под тенью файл качает фон экстеншена — с куками сайта (credentials: include);
+// какие заголовки он шлёт в каждом браузере, печатает отчёт capture (журнал сервера).
+// Referer сторож здесь не проверяет: фон его не шлёт (замер 09b), это вопрос владельцу —
+// путь `/cdn/media/` с проверкой Referer передачу файла не пускает.
+await runScenario('video-src-cdn', async (ctx) => {
+  const login = await fetch('/cdn/login', { credentials: 'same-origin' });
+  ctx.check('login-204', login.status === 204, `status=${login.status}`);
+  const catalog = await loadCatalog();
+  const asset = catalog.assets['progressive-long-h264-aac'];
+  // Контроль без куки: сервер обязан отказать (иначе защита CDN ничего не проверяет).
+  const denied = await fetch(`/cdn/session-media/${asset.url}`, { credentials: 'omit', headers: { range: 'bytes=0-99' } });
+  ctx.check('no-cookie-is-403', denied.status === 403, `credentials=omit status=${denied.status}`);
+  const video = mountVideo();
+  video.src = `/cdn/session-media/${asset.url}`;
+  await video.play().catch(async () => { video.muted = true; await video.play(); });
+  await checkPlaying(ctx, video, 'playing-from-cdn');
+  if (ctx.params.handoff) await observeHandoff(ctx, { video, player: null }, {}, {
+      durationS: asset.duration_s,
+      // Под тенью `buffered` файла — весь файл (решение 187): «буфер растёт» ему нечего доказывать,
+      // а после возврата это уже буфер заново загружаемого настоящего элемента (Chromium его
+      // наполняет постепенно). Что байты идут, доказывает журнал сервера (fetch_range у цели).
+      skipFinishChecks: ['page-buffer-keeps-filling'],
+    });
+});
+</script>
+</body>
+</html>

@@ -41,10 +41,16 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("mse-muxed"),
     // MSE в Dedicated Worker (MediaSourceHandle) есть только в Chromium.
     page_unsupported_in("mse-worker", &[BrowserKind::Firefox]),
+    // 09b: классический воркер, как у Twitch (`new Worker(url)` без type).
+    page_unsupported_in("mse-worker-classic", &[BrowserKind::Firefox]),
     page("mse-abr"),
     page("mse-stall-reload"),
     page("mse-generation-swap"),
     page("video-src"),
+    // 09b: `<video src>` за входом на CDN — фон качает файл с куками сайта.
+    page("video-src-cdn"),
+    // 09b: m3u8 прямо в `src` вопреки отказу canPlayType; Firefox на Linux HLS сам не играет.
+    page_unsupported_in("m3u8-in-src", &[BrowserKind::Firefox]),
     // Нативного HLS в <video> у Firefox на Linux нет.
     page_unsupported_in("native-hls", &[BrowserKind::Firefox]),
     page("shadow-dom"),
@@ -57,6 +63,8 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("series"),
     page("spa-navigation"),
     page("pip"),
+    // Сессия 09b: плеер сайта спрашивает кодеки AV1 → VP9 → H.264; выбор проверяет сценарий `codecs`.
+    page("codec-choice"),
     // Д-1: другие способы снять старый источник перед новым MediaSource (сессия 09a2).
     page("mse-generation-swap-srcobject-null"),
     page("mse-generation-swap-reload"),

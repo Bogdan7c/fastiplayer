@@ -136,6 +136,12 @@ pub trait BrowserUnderTest {
         stand_tab: &TabHandle,
         page_url_prefix: &str,
     ) -> Result<HandOffOutcome, BrowserError>;
+    /// Выполняет в служебной странице экстеншена (страница настроек) асинхронную функцию
+    /// `async (api) => string` и возвращает её строку. `api` — `chrome`/`browser` страницы
+    /// экстеншена. Пока страница грузится и API нет, попытки повторяются до таймаута.
+    /// Нужна сценарию кодеков: записать настройку в `storage.local` и прочитать регистрацию
+    /// динамического скрипта — то, что делает сам экстеншен, а не страница сайта.
+    fn run_in_extension_page(&mut self, async_function: &str) -> Result<String, BrowserError>;
     /// Мягко закрывает браузер, ждёт выход, добивает остатки группы.
     fn shutdown(self: Box<Self>) -> Result<BrowserExit, BrowserError>;
 }

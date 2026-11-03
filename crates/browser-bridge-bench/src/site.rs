@@ -13,6 +13,7 @@ mod cdn_guard;
 mod error;
 mod http;
 mod reports;
+mod request_log;
 mod routes;
 mod run_id;
 mod server;
@@ -21,6 +22,7 @@ mod static_files;
 pub use cdn_guard::CdnRejections;
 pub use error::SiteError;
 pub use reports::{BrowserLogLine, LogSource, PageReport, PageStatus, ReportCheck};
+pub use request_log::{MediaRequest, MediaRequester, ServedSpan};
 pub use run_id::RunId;
 
 use std::net::{Ipv4Addr, TcpListener};
@@ -71,6 +73,7 @@ impl StandSite {
             media: config.media,
             reports: reports::ReportStore::default(),
             cdn: cdn_guard::CdnGuard::default(),
+            requests: request_log::RequestLog::default(),
         });
         let main_listener = start_listener(main_socket, &shared, &main_origin)?;
         let other_listener = start_listener(other_socket, &shared, &other_origin)?;
@@ -121,6 +124,11 @@ impl StandSite {
     /// Сколько запросов `/cdn/media/…` отклонено и по какой причине.
     pub fn cdn_rejections(&self) -> CdnRejections {
         self.shared.cdn.rejections()
+    }
+
+    /// Запросы медиа (`/media/…`, `/cdn/media/…`) по порядку прихода, с заголовками.
+    pub fn media_requests(&self) -> Vec<MediaRequest> {
+        self.shared.requests.snapshot()
     }
 
     /// Сколько запросов `/cdn/media/…` обслужено.

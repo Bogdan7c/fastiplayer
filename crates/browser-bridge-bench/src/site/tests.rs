@@ -399,6 +399,52 @@ fn cdn_requires_cookie_and_own_referer() {
     );
 }
 
+/// `/cdn/session-media/…` (сессия 09b) проверяет только куку входа: Referer не нужен, без куки — 403.
+/// Каждый запрос медиа попадает в журнал сервера с заголовками и статусом.
+#[test]
+fn cdn_session_media_needs_only_the_cookie_and_every_media_request_is_logged() {
+    let fixture = start_fixture();
+    let origin = fixture.site.main_origin();
+    let path = "/cdn/session-media/progressive/clip.mp4";
+    assert_eq!(
+        send(&origin, "GET", path, &[("Range", "bytes=0-3")], &[]).status,
+        403,
+        "no cookie"
+    );
+    let allowed = send(
+        &origin,
+        "GET",
+        path,
+        &[("Cookie", "bench_cdn=1"), ("Range", "bytes=0-3")],
+        &[],
+    );
+    assert_eq!(
+        (allowed.status, allowed.body.as_slice()),
+        (206, &media_bytes()[..4])
+    );
+    // Не медиа — в журнал не попадает (что бы ни ответил сервер).
+    let _ = get(&origin, "/site/pages/cdn-guard.html");
+
+    let logged = fixture.site.media_requests();
+    assert_eq!(
+        logged.len(),
+        2,
+        "only media requests are logged: {logged:#?}"
+    );
+    assert_eq!(logged[0].status, 403);
+    assert_eq!(logged[1].status, 206);
+    assert!(logged[1].has_cookie("bench_cdn"));
+    assert!(!logged[0].has_cookie("bench_cdn"));
+    assert_eq!(logged[1].range.as_deref(), Some("bytes=0-3"));
+    assert_eq!(logged[1].referer, None);
+    let span = logged[1].served_span().expect("206 has a Content-Range");
+    assert_eq!(
+        (span.first, span.end, span.total),
+        (0, 4, media_bytes().len() as u64)
+    );
+    assert_eq!(logged[0].served_span(), None);
+}
+
 #[test]
 fn posted_report_is_returned_by_wait_report_and_cors_preflight_is_answered() {
     let fixture = start_fixture();

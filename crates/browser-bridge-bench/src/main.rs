@@ -69,11 +69,12 @@ fn run(invocation: Invocation) -> ExitCode {
                     results.extend(scenarios::run_page_ends(&stand, browser, &pages));
                 }
                 Command::PlayerCommands => {
-                    results.push(scenarios::run_player_commands(&stand, browser));
+                    results.extend(scenarios::run_player_commands(&stand, browser));
                 }
                 Command::ExtensionStatus => {
                     results.push(scenarios::run_extension_status(&stand, browser));
                 }
+                Command::Codecs => results.extend(scenarios::run_codecs(&stand, browser)),
                 Command::All => {}
             }
         }
@@ -102,6 +103,7 @@ fn plan(command: Command, pages: &PageFilter) -> Vec<Command> {
             Command::PageEnds,
             Command::PlayerCommands,
             Command::ExtensionStatus,
+            Command::Codecs,
         ],
         Command::All => vec![Command::Pages, Command::Capture, Command::PageEnds],
         single => vec![single],
@@ -121,7 +123,8 @@ mod tests {
                 Command::Capture,
                 Command::PageEnds,
                 Command::PlayerCommands,
-                Command::ExtensionStatus
+                Command::ExtensionStatus,
+                Command::Codecs
             ]
         );
         assert_eq!(

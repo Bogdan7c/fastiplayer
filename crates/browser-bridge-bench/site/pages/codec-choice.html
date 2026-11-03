@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>codec-choice</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>codec-choice</h1>
+
+<script type="module">
+// Мини-плеер «как YouTube»: спрашивает у браузера про AV1, потом VP9, потом H.264 и играет
+// ПЕРВЫЙ поддержанный (сессия 09b, решения 43 и 64). Что именно выбрано — поле chosen_codec в
+// проверке 'chosen-codec'; все ответы браузера (isTypeSupported, canPlayType, mediaCapabilities,
+// HLS) — в проверке 'answers' строкой `ключ=значение;…`. Выбор проверяет сценарий `codecs`
+// (экстеншен с политикой кодеков); в чистом браузере страница просто выбирает AV1 и играет.
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying } from '../lib/bench-checks.js';
+import { loadCatalog } from '../lib/bench-player.js';
+import { startAsset } from '../lib/scenario-kit.js';
+
+/** Порядок вопросов плеера: от самого «жадного» кодека к самому скромному. */
+const CANDIDATES = [
+  { family: 'av1', assetId: 'av1-aac' },
+  { family: 'vp9', assetId: 'vp9-opus' },
+  { family: 'h264', assetId: 'h264-aac' },
+];
+/** Плейлист HLS: по решению 64 с экстеншеном браузер обязан ответить «нет». */
+const HLS_MIME = 'application/vnd.apple.mpegurl';
+/** Сколько ждём отчёт вложенного фрейма, мс (меньше бюджета страницы). */
+const FRAME_REPORT_WAIT_MS = 15000;
+
+/** MIME видеодорожки ассета (как его назвал бы плеер сайта). */
+function videoMimeOf(catalog, assetId) {
+  return catalog.assets[assetId].tracks.find((track) => track.kind === 'video').mime;
+}
+
+/** Ответ mediaCapabilities.decodingInfo одной строкой: supported или причина отказа. */
+async function decodingSupported(mime) {
+  try {
+    const info = await navigator.mediaCapabilities.decodingInfo({
+      type: 'media-source',
+      video: { contentType: mime, width: 1280, height: 720, bitrate: 1000000, framerate: 30 },
+    });
+    return String(info.supported);
+  } catch (error) {
+    return `error:${error?.name ?? 'Error'}`;
+  }
+}
+
+/** Все ответы браузера про кодеки одной строкой и выбор плеера. */
+async function askBrowser(catalog) {
+  const probe = document.createElement('video');
+  const parts = [];
+  let chosen = null;
+  for (const candidate of CANDIDATES) {
+    const mime = videoMimeOf(catalog, candidate.assetId);
+    const supported = MediaSource.isTypeSupported(mime);
+    parts.push(`is_type_supported_${candidate.family}=${supported}`);
+    parts.push(`can_play_type_${candidate.family}=${probe.canPlayType(mime) || 'empty'}`);
+    parts.push(`media_capabilities_${candidate.family}=${await decodingSupported(mime)}`);
+    if (supported && chosen === null) chosen = candidate;
+  }
+  parts.push(`hls_can_play_type=${probe.canPlayType(HLS_MIME) || 'empty'}`);
+  parts.push(`hls_is_type_supported=${MediaSource.isTypeSupported(HLS_MIME)}`);
+  return { chosen, answers: parts.join(';') };
+}
+
+/** Вложенный cross-origin фрейм спрашивает то же самое и сообщает родителю. */
+function askCrossOriginFrame(ctx) {
+  const { otherOrigin, run, reportOrigin } = ctx.params;
+  const frameOrigin = new URL(otherOrigin).origin;
+  const report = new Promise((resolve) => {
+    window.addEventListener('message', (event) => {
+      if (event.origin === frameOrigin && event.data?.benchInnerReport) resolve(event.data.benchInnerReport);
+    });
+  });
+  const frame = document.createElement('iframe');
+  const query = new URLSearchParams({ run, report_origin: reportOrigin, child: '1' });
+  frame.src = `${otherOrigin}/site/pages/codec-choice.html?${query}`;
+  frame.width = 320;
+  frame.height = 60;
+  document.body.append(frame);
+  const timeout = new Promise((resolve) => setTimeout(() => resolve(null), FRAME_REPORT_WAIT_MS));
+  return Promise.race([report, timeout]);
+}
+
+const isChildFrame = new URLSearchParams(location.search).get('child') === '1';
+
+await runScenario('codec-choice', async (ctx) => {
+  const catalog = await loadCatalog();
+  const { chosen, answers } = await askBrowser(catalog);
+  ctx.check('answers', true, answers);
+  ctx.check('chosen-codec', chosen !== null, `chosen_codec=${chosen?.family ?? 'none'}`);
+  if (chosen === null) return;
+  if (isChildFrame) return; // фрейм лишь отвечает на вопросы; играет родитель
+
+  if (ctx.params.otherOrigin) {
+    const inner = await askCrossOriginFrame(ctx);
+    const innerChoice = inner?.checks.find((entry) => entry.name === 'chosen-codec')?.detail ?? 'no report';
+    ctx.check('frame-same-choice', innerChoice === `chosen_codec=${chosen.family}`, `frame: ${innerChoice}`);
+    ctx.check('frame-answers', Boolean(inner), inner?.checks.find((entry) => entry.name === 'answers')?.detail ?? 'no report');
+  }
+  // Выбранное играет по-настоящему (доходит до кадров), а не только «поддержано».
+  const session = await startAsset(ctx, chosen.assetId);
+  await checkPlaying(ctx, session.video, 'playing');
+  await session.player.destroy();
+}, { reportToParent: isChildFrame });
+</script>
+</body>
+</html>

@@ -43,16 +43,21 @@ fn capture_page_ids_lists_every_capture_page_including_the_new_variants() {
     }
 }
 
-/// Текст страницы вместе с общей библиотекой смены поколения (хук объявлен там).
+/// Общие тела страниц, в которых объявлены хуки (смена поколения, MSE в воркере — 09b).
+const PAGE_BODY_LIBS: &[&str] = &["generation-swap-page.js", "worker-page.js"];
+
+/// Текст страницы вместе с общими телами страниц, которые она подключает (хук объявлен там).
 fn page_source_with_libs(id: &str) -> String {
     let site = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("site");
     let mut source = std::fs::read_to_string(site.join("pages").join(format!("{id}.html")))
         .unwrap_or_else(|error| panic!("page {id}: {error}"));
-    if source.contains("generation-swap-page.js") {
-        source.push_str(
-            &std::fs::read_to_string(site.join("lib/generation-swap-page.js"))
-                .expect("generation swap lib"),
-        );
+    for lib in PAGE_BODY_LIBS {
+        if source.contains(lib) {
+            source.push_str(
+                &std::fs::read_to_string(site.join("lib").join(lib))
+                    .unwrap_or_else(|error| panic!("page body lib {lib}: {error}")),
+            );
+        }
     }
     source
 }

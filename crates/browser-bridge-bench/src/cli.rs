@@ -17,6 +17,7 @@ pub enum Command {
     PageEnds,
     PlayerCommands,
     ExtensionStatus,
+    Codecs,
     All,
 }
 
@@ -83,7 +84,9 @@ Commands:
                     file / main thread frozen): the player must say so, in time, and close
   player-commands   pause / play / seek / close from the player window reach the page
   extension-status  the real extension (extensions/browser/dist) says \"Connected to Fastiplayer\"
-  all               pages, capture, page-ends, player-commands and extension-status (smoke is a
+  codecs            the site player asks AV1, then VP9, then H.264: the extension answers for
+                    the player (setting x player label, HLS always refused) and the pick plays
+  all               pages, capture, page-ends, player-commands, extension-status and codecs (smoke is a
                     subset of capture), one after another; with --page only the page steps run
 
 Options:
@@ -227,6 +230,7 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
         "page-ends" => Ok(Command::PageEnds),
         "player-commands" => Ok(Command::PlayerCommands),
         "extension-status" => Ok(Command::ExtensionStatus),
+        "codecs" => Ok(Command::Codecs),
         "all" => Ok(Command::All),
         other => Err(UsageError(format!("unknown command '{other}'"))),
     }

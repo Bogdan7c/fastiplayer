@@ -262,6 +262,48 @@ impl Firefox {
         }
     }
 
+    /// Выполняет `async (api) => string` в открытой странице экстеншена; пока страница грузится
+    /// (скрипт падает), повторяет попытку до таймаута.
+    fn run_function_in_page(&mut self, async_function: &str) -> Result<String, BrowserError> {
+        self.marionette.command(
+            "WebDriver:SetTimeouts",
+            json!({ "script": HAND_OFF_SCRIPT_TIMEOUT_MS }),
+        )?;
+        let script = format!(
+            "const done = arguments[arguments.length - 1];\n\
+             const raw = window.wrappedJSObject || window;\n\
+             const api = raw.browser || raw.chrome;\n\
+             ({async_function})(api).then(done, (error) => done('ERROR: ' + String(error)));"
+        );
+        let deadline = Instant::now() + EXTENSION_PAGE_TIMEOUT;
+        loop {
+            let attempt = self
+                .marionette
+                .command(
+                    "WebDriver:ExecuteAsyncScript",
+                    json!({ "script": script, "args": [] }),
+                )
+                .and_then(|reply| {
+                    reply
+                        .get("value")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .ok_or_else(|| {
+                            BrowserError::protocol(
+                                "Marionette",
+                                format!("ExecuteAsyncScript reply: {reply}"),
+                            )
+                        })
+                });
+            match attempt {
+                Err(BrowserError::CommandFailed { .. }) if Instant::now() < deadline => {
+                    std::thread::sleep(POLL_STEP);
+                }
+                other => return other,
+            }
+        }
+    }
+
     fn body_text(&mut self) -> Result<String, BrowserError> {
         let reply = self.marionette.command(
             "WebDriver:ExecuteScript",
@@ -332,6 +374,17 @@ impl BrowserUnderTest for Firefox {
         closed?;
         returned?;
         Ok(outcome)
+    }
+
+    fn run_in_extension_page(&mut self, async_function: &str) -> Result<String, BrowserError> {
+        let url = format!("moz-extension://{EXTENSION_UUID}/{HAND_OFF_EXTENSION_PAGE}");
+        let handle = self.open(&url)?;
+        let result = self.run_function_in_page(async_function);
+        // Служебную страницу закрываем в любом случае.
+        let closed = self.close_tab(TabHandle::new(handle));
+        let result = result?;
+        closed?;
+        Ok(result)
     }
 
     fn shutdown(mut self: Box<Self>) -> Result<BrowserExit, BrowserError> {

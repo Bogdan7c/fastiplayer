@@ -15,6 +15,18 @@ pub struct CdnRejections {
     pub foreign_referer: u64,
 }
 
+/// Проверять ли `Referer`.
+///
+/// - `OwnOrigin` — `/cdn/media/…`: кука И свой Referer (как хотлинк-защита настоящих CDN);
+/// - `NotChecked` — `/cdn/session-media/…` (сессия 09b): только кука входа. Фон экстеншена
+///   качает `<video src>` с куками сайта, но без Referer (замер 09b: ни Chromium, ни Firefox
+///   его не шлют), поэтому «кука доходит» проверяется отдельно от «Referer не доходит».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RefererRule {
+    OwnOrigin,
+    NotChecked,
+}
+
 /// Решение сторожа по одному запросу.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CdnVerdict {
@@ -40,10 +52,11 @@ impl CdnGuard {
         cookie_header: Option<&str>,
         referer: Option<&str>,
         own_origin: &str,
+        referer_rule: RefererRule,
     ) -> CdnVerdict {
         let verdict = if !has_cdn_cookie(cookie_header) {
             CdnVerdict::MissingCookie
-        } else if !referer_is_from(referer, own_origin) {
+        } else if referer_rule == RefererRule::OwnOrigin && !referer_is_from(referer, own_origin) {
             CdnVerdict::ForeignReferer
         } else {
             CdnVerdict::Allow

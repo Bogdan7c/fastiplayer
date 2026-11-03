@@ -10,27 +10,10 @@
 <h1>mse-worker</h1>
 
 <script type="module">
-import { runScenario, UnsupportedError } from '../lib/bench-report.js';
-import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
-import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
-import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+// MSE в МОДУЛЬНОМ Dedicated Worker; со сменой поколения в воркере (обычный режим и под тенью).
+import { runWorkerPage } from '../lib/worker-page.js';
 
-await runScenario('mse-worker', async (ctx) => {
-  if (!('canConstructInDedicatedWorker' in MediaSource) || !MediaSource.canConstructInDedicatedWorker) {
-    throw new UnsupportedError(`MediaSource.canConstructInDedicatedWorker=${MediaSource.canConstructInDedicatedWorker}`);
-  }
-  const catalog = await loadCatalog();
-  const refs = standardRefs(catalog, 'h264-aac');
-  const video = mountVideo();
-  const player = new BenchPlayer(video, catalog, { worker: true, log: (line) => ctx.log(line) });
-  await player.start({ refs });
-  await checkPlaying(ctx, video, 'playing');
-  const info = player.workerInfo;
-  ctx.check('media-source-lives-in-worker', info?.inWorker === true && video.srcObject !== null,
-    `inWorker=${info?.inWorker}, srcObject=${video.srcObject?.constructor?.name}`);
-  ctx.check('worker-fetched-segments', player.segmentRequestCount > 0, `segment requests (worker)=${player.segmentRequestCount}`);
-  await player.destroy();
-});
+await runWorkerPage('mse-worker', { worker: 'module', generationSwap: true });
 </script>
 </body>
 </html>

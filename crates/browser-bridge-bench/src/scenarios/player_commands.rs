@@ -10,10 +10,21 @@
 //!      страница сама играет с позиции T, на которой закрыли окно.
 //!
 //! Каждый шаг подтверждает страница (`ack`), и только потом идёт следующий.
+//!
+//! Тот же порядок проходит файл `<video src>` (`video-src`, сессия 09b), с одним отличием в
+//! шаге 3б. У файла под тенью `buffered` — весь файл (решение 187), поэтому «за конец буфера
+//! страницы» у него нет; есть «за то, что плеер уже скачал». Плеер запускается с самым малым
+//! окном предзагрузки (профиль `SmallFileWindow`), перемотка уходит за скачанные фоном байты, и
+//! доказательство — новый `fetch_range` у цели в журнале сервера, рост кадров и часы страницы
+//! у цели. Там же видно, что `<video>` страницы под тенью файл не качал, а после закрытия окна
+//! снова грузит свой файл.
 
 use std::time::{Duration, Instant};
 
 use super::capture::MIN_PRESENTED_FRAMES;
+use super::capture::file_evidence::{
+    FilePage, SeekBeyondFetched, commands_file_evidence, fetch_front, file_page, seek_fetch_check,
+};
 use super::context::{ScenarioError, Stand};
 use super::evidence::{
     FORBIDDEN_PLAYER_LINES, SESSION_GRANTED_TIMEOUT, format_browser_log, host_failures,
@@ -23,12 +34,13 @@ use super::handoff_run::{ACK_TIMEOUT, ExtensionMode, HandoffRun, PageReadiness};
 use super::outcome::{StepResult, Verdict};
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::BenchEnvironment;
+use crate::environment::PlayerConfigProfile;
 use crate::observe::{FrameEvidence, FrameGrowth, HostLogEvidence, read_host_evidence};
 use crate::player_control::PlayerControl;
-use crate::site::{PageReport, SiteError};
+use crate::site::{PageReport, SiteError, StandSite};
 
-/// Страница, на которой проверяются команды плеера.
-const COMMANDS_PAGE: &str = "mse-fmp4";
+/// Страницы, на которых проверяются команды плеера: MSE и файл `<video src>` (09b).
+const COMMANDS_PAGES: &[&str] = &["mse-fmp4", "video-src"];
 /// Сколько ждать, пока окно плеера опубликует управление по MPRIS.
 const CONTROLLABLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Сколько ждать первые кадры плеера до команд.
@@ -61,16 +73,28 @@ const RETURN_REWIND_MICROS: i64 = 12_000_000;
 /// Микросекунд в секунде (страница получает секунды).
 const MICROS_PER_SECOND: f64 = 1_000_000.0;
 
-pub(super) fn run(stand: &Stand, browser: BrowserKind) -> StepResult {
-    let started = Instant::now();
-    let verdict = stand.with_environment(|environment| drive(stand, environment, browser));
-    StepResult::new(
-        "player-commands",
-        browser,
-        COMMANDS_PAGE,
-        verdict,
-        started.elapsed(),
-    )
+pub(super) fn run(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
+    COMMANDS_PAGES
+        .iter()
+        .map(|page| {
+            let started = Instant::now();
+            let body = |environment: &BenchEnvironment| drive(stand, environment, browser, page);
+            // Файл — с самым малым окном предзагрузки: плеер не может взять его целиком, и
+            // перемотка за скачанное обязана дойти до сети (`fetch_range` у цели).
+            let verdict = if file_page(page).is_some() {
+                stand.with_environment_for_player_config(PlayerConfigProfile::SmallFileWindow, body)
+            } else {
+                stand.with_environment(body)
+            };
+            StepResult::new(
+                "player-commands",
+                browser,
+                *page,
+                verdict,
+                started.elapsed(),
+            )
+        })
+        .collect()
 }
 
 /// Результат одного шага сценария.
@@ -83,12 +107,14 @@ fn drive(
     stand: &Stand,
     environment: &BenchEnvironment,
     browser_kind: BrowserKind,
+    page_id: &'static str,
 ) -> Result<Verdict, ScenarioError> {
+    let file = file_page(page_id);
     let mut run = HandoffRun::open(
         stand,
         environment,
         browser_kind,
-        COMMANDS_PAGE,
+        page_id,
         "commands",
         ExtensionMode::Real,
     )?;
@@ -115,10 +141,14 @@ fn drive(
             return Ok(Verdict::fail(format!("hand_off_tab: {other:?}\n{log}")));
         }
     }
+    let handed_off_at = Instant::now();
     run.tell_page("handed-off");
 
     let mut steps: Vec<StepEvidence> = Vec::new();
     let mut seek_growth: Result<FrameGrowth, String> = Err("the seek step did not run".to_owned());
+    // Когда закрыли окно плеера (`None` — до возврата не дошли).
+    let mut returned_at: Option<Instant> = None;
+    let mut file_seek: Option<String> = None;
     let granted = wait_for_session_granted(&run.stderr_log, SESSION_GRANTED_TIMEOUT)?;
     steps.push(StepEvidence {
         name: "session-granted",
@@ -126,22 +156,62 @@ fn drive(
     });
     if steps.iter().all(|step| step.result.is_ok()) {
         let control = PlayerControl::on_bus(environment.bus_address()?);
-        run_commands(&mut run, &control, &mut steps, &mut seek_growth);
+        let marks = StepMarks {
+            seek_growth: &mut seek_growth,
+            returned_at: &mut returned_at,
+            file_seek: &mut file_seek,
+        };
+        let file_context = file.map(|page| FileContext {
+            page,
+            site: &stand.site,
+            handed_off_at,
+        });
+        run_commands(&mut run, &control, &mut steps, marks, file_context);
     }
 
     let page_report = run.finish_page();
     let page_log = run.take_page_log();
+    let file = file.map(|file_page| {
+        let (failures, summary) = commands_file_evidence(
+            file_page,
+            &stand.site.media_requests(),
+            handed_off_at,
+            returned_at,
+        );
+        let seek = file_seek
+            .as_deref()
+            .unwrap_or("the seek beyond the fetched bytes did not run");
+        (failures, format!("{summary}; {seek}"))
+    });
     let forbidden = run.player_log.snapshot_forbidden(FORBIDDEN_PLAYER_LINES)?;
     let exit = run.browser.shutdown()?;
     let host = read_host_evidence(&exit.stderr_log)?;
     Ok(judge_commands(&CommandsEvidence {
+        page_id,
         steps,
         seek_growth,
         host,
         page_report,
         forbidden_player_lines: forbidden,
         page_log: format_browser_log(&page_log),
+        file,
     }))
+}
+
+/// Файл `<video src>`: где смотреть журнал сервера и с какого мига файл качает фон.
+#[derive(Clone, Copy)]
+struct FileContext<'site> {
+    page: FilePage,
+    site: &'site StandSite,
+    handed_off_at: Instant,
+}
+
+/// Отметки шагов, которые нужны вердикту после прогона.
+struct StepMarks<'marks> {
+    seek_growth: &'marks mut Result<FrameGrowth, String>,
+    returned_at: &'marks mut Option<Instant>,
+    /// Улики перемотки файла за скачанное (байты до и запрос у цели).
+    file_seek: &'marks mut Option<String>,
 }
 
 /// Шаги управления; останавливается на первом проваленном (следующие не имели бы смысла).
@@ -149,7 +219,8 @@ fn run_commands(
     run: &mut HandoffRun<'_>,
     control: &PlayerControl,
     steps: &mut Vec<StepEvidence>,
-    seek_growth: &mut Result<FrameGrowth, String>,
+    marks: StepMarks<'_>,
+    file: Option<FileContext<'_>>,
 ) {
     let mut record = |name: &'static str, result: Result<(), String>| -> bool {
         let ok = result.is_ok();
@@ -187,17 +258,31 @@ fn run_commands(
     if !record("play-reaches-page", played) {
         return;
     }
+    // 3. Файл: перемотка ЗА край окна предзагрузки плеера — первой, пока плеер у начала ролика:
+    //    вперёд от курсора плеер держит ~12 с (окно 1 МиБ ≈ 4 с плюс очередь демуксера), и в
+    //    ролике после других перемоток для неё могло не остаться места. Фон обязан
+    //    запросить диапазон у цели по `fetch_range` плеера.
+    if let Some(file) = file {
+        let beyond_fetched = seek_beyond_fetched(run, control, file, marks.seek_growth)
+            .map(|facts| *marks.file_seek = Some(facts));
+        if !record("seek-beyond-fetched-reaches-network", beyond_fetched) {
+            return;
+        }
+    }
     // 3. Перемотка плеером В буфер страницы (данные уже скачаны: запросов может не быть).
-    let into_buffer = seek_into_buffer(run, control);
+    let into_buffer = seek_into_buffer(run, control).map(|_| ());
     if !record("seek-reaches-page", into_buffer) {
         return;
     }
-    // 4. Перемотка плеером ЗА конец буфера: страница обязана докачать сегмент у цели.
-    let beyond_buffer = seek_beyond_buffer(run, control, seek_growth);
-    if !record("seek-beyond-buffer-reaches-page", beyond_buffer) {
-        return;
+    // 4. MSE: перемотка ЗА конец буфера страницы — страница обязана докачать сегмент у цели.
+    if file.is_none() {
+        let beyond_buffer = seek_beyond_buffer(run, control, marks.seek_growth);
+        if !record("seek-beyond-buffer-reaches-page", beyond_buffer) {
+            return;
+        }
     }
     // 5. Закрытие окна плеера → возврат к странице.
+    *marks.returned_at = Some(Instant::now());
     let returned = close_window_and_check_return(run, control);
     record("return-to-page", returned);
 }
@@ -254,7 +339,10 @@ fn wait_frames_beyond(
 }
 
 /// Перемотка в уже скачанное место: часы страницы у цели, плеер показывает кадры дальше.
-fn seek_into_buffer(run: &mut HandoffRun<'_>, control: &PlayerControl) -> Result<(), String> {
+fn seek_into_buffer(
+    run: &mut HandoffRun<'_>,
+    control: &PlayerControl,
+) -> Result<FrameGrowth, String> {
     let baseline = pause_and_take_frame_baseline(run, control)?;
     let before = control
         .position_micros()
@@ -269,7 +357,7 @@ fn seek_into_buffer(run: &mut HandoffRun<'_>, control: &PlayerControl) -> Result
     // секунды, и позиция успела бы уйти от цели.
     wait_position_advance(control, before + offset)?;
     tell_and_wait(run, &format!("expect-seek:{target_s:.2}"))?;
-    wait_frames_beyond(run, baseline).map(|_| ())
+    wait_frames_beyond(run, baseline)
 }
 
 /// Перемотка вперёд ЗА конец буфера страницы. Цель выбирается по тому, что страница сама
@@ -303,6 +391,64 @@ fn seek_beyond_buffer(
     advanced?;
     page_agrees?;
     seek_growth.clone().map(|_| ())
+}
+
+/// Перемотка файла ЗА байты, которые фон уже получил. Цель — от того, докуда скачано (переведено
+/// во время по размеру и длительности файла), а не от `buffered` страницы (у файла под тенью это
+/// весь файл, решение 187). Доказательства: новый запрос фона у цели (журнал сервера), часы
+/// страницы у цели, кадры плеера растут после перемотки. Возвращает улики числами.
+fn seek_beyond_fetched(
+    run: &mut HandoffRun<'_>,
+    control: &PlayerControl,
+    file: FileContext<'_>,
+    seek_growth: &mut Result<FrameGrowth, String>,
+) -> Result<String, String> {
+    // На паузе окно предзагрузки доходит до предела и стоит: «скачано» не уплывает.
+    let baseline = pause_and_take_frame_baseline(run, control)?;
+    tell_and_wait(run, "report-buffer")?;
+    let report = run.wait_page_log_line("buffer-report", ACK_TIMEOUT)?;
+    let (_, duration_s) = parse_buffer_report(&report)
+        .ok_or_else(|| format!("cannot read the page buffer report: {report:?}"))?;
+    let now = Instant::now();
+    // Край окна предзагрузки плеера: дальше него байтов у плеера нет.
+    let (fetched_end, total) = fetch_front(
+        file.page,
+        &file.site.media_requests(),
+        file.handed_off_at,
+        now,
+    )
+    .ok_or("the background has not fetched any bytes of the file yet")?;
+    let fetched_s = fetched_end as f64 / total as f64 * duration_s;
+    let target_s = beyond_buffer_target(fetched_s, duration_s).ok_or_else(|| {
+        format!("no room to seek beyond the prefetch window (front at ~{fetched_s:.1} s of {duration_s} s)")
+    })?;
+    let before = control
+        .position_micros()
+        .map_err(|error| format!("Position: {error}"))?;
+    let target_micros = (target_s * MICROS_PER_SECOND) as i64;
+    let seek_at = Instant::now();
+    control
+        .seek_by(target_micros - before)
+        .map_err(|error| format!("Seek: {error}"))?;
+    control.play().map_err(|error| format!("Play: {error}"))?;
+    let advanced = wait_position_advance(control, target_micros);
+    let page_agrees = tell_and_wait(run, &format!("expect-seek:{target_s:.2}"));
+    *seek_growth = wait_frames_beyond(run, baseline);
+    let fetched = seek_fetch_check(
+        file.page,
+        &file.site.media_requests(),
+        SeekBeyondFetched {
+            seek_at,
+            fetched_end,
+            total,
+            target_s,
+            duration_s,
+        },
+    );
+    advanced?;
+    page_agrees?;
+    let facts = fetched?;
+    seek_growth.clone().map(|_| facts)
 }
 
 /// Разбирает строку страницы `... buffer-report end=<с> duration=<с>`.
@@ -373,12 +519,15 @@ fn close_window_and_check_return(
 
 /// Всё, что собрал сценарий, для чистого вердикта.
 struct CommandsEvidence {
+    page_id: &'static str,
     steps: Vec<StepEvidence>,
     seek_growth: Result<FrameGrowth, String>,
     host: HostLogEvidence,
     page_report: Result<PageReport, SiteError>,
     forbidden_player_lines: Vec<String>,
     page_log: String,
+    /// `<video src>`: провалы и сводка запросов файла со стороны сервера (`None` — не файл).
+    file: Option<(Vec<String>, String)>,
 }
 
 /// Чистое решение: все шаги прошли, страница согласна с плеером, плеер играл после перемотки.
@@ -390,15 +539,18 @@ fn judge_commands(evidence: &CommandsEvidence) -> Verdict {
         }
     }
     // Рост кадров после перемотки нужен, только если сам шаг перемотки дошёл до конца.
-    let seek_step_ran = evidence
-        .steps
-        .iter()
-        .any(|step| step.name == "seek-beyond-buffer-reaches-page");
+    let seek_step_ran = evidence.steps.iter().any(|step| {
+        step.name == "seek-beyond-buffer-reaches-page"
+            || step.name == "seek-beyond-fetched-reaches-network"
+    });
     if seek_step_ran && let Err(message) = &evidence.seek_growth {
         failures.push(message.clone());
     }
     failures.extend(host_failures(&evidence.host));
-    failures.extend(page_failures(&evidence.page_report, COMMANDS_PAGE));
+    failures.extend(page_failures(&evidence.page_report, evidence.page_id));
+    if let Some((file_failures, _)) = &evidence.file {
+        failures.extend(file_failures.iter().cloned());
+    }
     failures.extend(
         unexpected_player_lines(&evidence.forbidden_player_lines)
             .map(|line| format!("forbidden player line: {line}")),
@@ -418,6 +570,10 @@ fn judge_commands(evidence: &CommandsEvidence) -> Verdict {
         "steps done: {}; frames gained after seek: {gained:?}",
         done.join(", ")
     );
+    let summary = match &evidence.file {
+        Some((_, file_summary)) => format!("{summary}; {file_summary}"),
+        None => summary,
+    };
     let summary = if failures.is_empty() {
         summary
     } else {
@@ -468,7 +624,7 @@ mod tests {
     fn passing_report() -> PageReport {
         PageReport {
             run: RunId::new("r-1").expect("run id"),
-            scenario: COMMANDS_PAGE.into(),
+            scenario: "mse-fmp4".into(),
             status: PageStatus::Pass,
             checks: Vec::new(),
             user_agent: String::new(),
@@ -479,6 +635,7 @@ mod tests {
 
     fn healthy() -> CommandsEvidence {
         CommandsEvidence {
+            page_id: "mse-fmp4",
             steps: all_steps_ok(),
             seek_growth: Ok(growth()),
             host: HostLogEvidence {
@@ -490,6 +647,7 @@ mod tests {
             page_report: Ok(passing_report()),
             forbidden_player_lines: Vec::new(),
             page_log: "page log".into(),
+            file: None,
         }
     }
 

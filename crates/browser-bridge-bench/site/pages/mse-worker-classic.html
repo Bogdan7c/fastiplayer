@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mse-worker-classic</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>mse-worker-classic</h1>
+
+<script type="module">
+// MSE в КЛАССИЧЕСКОМ Dedicated Worker (`new Worker(url)` без type), как у Twitch (00c).
+import { runWorkerPage } from '../lib/worker-page.js';
+
+await runWorkerPage('mse-worker-classic', { worker: 'classic', generationSwap: false });
+</script>
+</body>
+</html>

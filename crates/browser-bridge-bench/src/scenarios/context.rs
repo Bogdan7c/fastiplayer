@@ -97,12 +97,17 @@ impl Stand {
         Ok(Self { settings, site })
     }
 
-    /// Создаёт изолированное окружение прогона (экран, шина, временный HOME).
-    pub(crate) fn create_environment(&self) -> Result<BenchEnvironment, ScenarioError> {
+    /// Создаёт изолированное окружение прогона (экран, шина, временный HOME) с заданным
+    /// профилем настроек плеера. Сценарий, которому важно, как плеер настроен (метка «дешёвых»
+    /// кодеков при GLES2), не зависит от `--player-config`.
+    pub(crate) fn create_environment_with_player_config(
+        &self,
+        player_config: PlayerConfigProfile,
+    ) -> Result<BenchEnvironment, ScenarioError> {
         let mut environment = BenchEnvironment::create(EnvironmentOptions {
             display: self.settings.display,
             player_bin_dir: self.settings.player_bin_dir.clone(),
-            player_config: self.settings.player_config,
+            player_config,
             player_rust_log: PLAYER_RUST_LOG.to_owned(),
             work_root: self.settings.work_root.clone(),
         })?;
@@ -146,7 +151,19 @@ impl Stand {
     where
         F: FnOnce(&BenchEnvironment) -> Result<Verdict, ScenarioError>,
     {
-        let mut environment = match self.create_environment() {
+        self.with_environment_for_player_config(self.settings.player_config, body)
+    }
+
+    /// [`Self::with_environment`] с заданным профилем настроек плеера.
+    pub(crate) fn with_environment_for_player_config<F>(
+        &self,
+        player_config: PlayerConfigProfile,
+        body: F,
+    ) -> Verdict
+    where
+        F: FnOnce(&BenchEnvironment) -> Result<Verdict, ScenarioError>,
+    {
+        let mut environment = match self.create_environment_with_player_config(player_config) {
             Ok(environment) => environment,
             Err(error) => return Verdict::fail(error.to_string()),
         };

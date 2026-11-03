@@ -164,6 +164,32 @@ impl Chromium {
         }
     }
 
+    /// Выполняет `async (api) => string` в открытой странице экстеншена; пока страница грузится
+    /// (выражение падает), повторяет попытку до таймаута.
+    fn run_function_in(
+        &self,
+        target: &Value,
+        async_function: &str,
+    ) -> Result<String, BrowserError> {
+        let socket_url = target
+            .get("webSocketDebuggerUrl")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                BrowserError::protocol("DevTools", format!("no socket url: {target}"))
+            })?;
+        let mut connection = CdpConnection::connect(socket_url)?;
+        let expression = format!("({async_function})(globalThis.chrome)");
+        let deadline = Instant::now() + EXTENSION_PAGE_TIMEOUT;
+        loop {
+            match connection.evaluate_string_promise(&expression, HAND_OFF_REPLY_WAIT) {
+                Err(BrowserError::CommandFailed { .. }) if Instant::now() < deadline => {
+                    std::thread::sleep(POLL_STEP);
+                }
+                other => return other,
+            }
+        }
+    }
+
     fn close_target(&self, target_id: &str) -> Result<(), BrowserError> {
         http_request(self.port, "GET", &format!("/json/close/{target_id}")).map(|_| ())
     }
@@ -252,6 +278,20 @@ impl BrowserUnderTest for Chromium {
         closed?;
         activated?;
         Ok(outcome)
+    }
+
+    fn run_in_extension_page(&mut self, async_function: &str) -> Result<String, BrowserError> {
+        let url = format!(
+            "chrome-extension://{CHROMIUM_DEVELOPMENT_EXTENSION_ID}/{HAND_OFF_EXTENSION_PAGE}"
+        );
+        let target = self.new_target(&url)?;
+        let id = target_id(&target)?;
+        let result = self.run_function_in(&target, async_function);
+        // Служебную страницу закрываем в любом случае.
+        let closed = self.close_target(&id);
+        let result = result?;
+        closed?;
+        Ok(result)
     }
 
     fn shutdown(mut self: Box<Self>) -> Result<BrowserExit, BrowserError> {

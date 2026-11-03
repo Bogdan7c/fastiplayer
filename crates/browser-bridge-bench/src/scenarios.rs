@@ -11,6 +11,8 @@
 mod capture;
 #[cfg(test)]
 mod capture_pages_contract;
+mod codec_cases;
+mod codecs;
 mod context;
 mod evidence;
 mod extension_status;
@@ -58,11 +60,17 @@ pub fn capture_page_ids() -> Vec<&'static str> {
 }
 
 /// Команды плеера (пауза, play, перемотка, закрытие окна) доходят до страницы под тенью.
-pub fn run_player_commands(stand: &Stand, browser: BrowserKind) -> StepResult {
+pub fn run_player_commands(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
     player_commands::run(stand, browser)
 }
 
 /// Попап настоящего экстеншена показывает «Connected to Fastiplayer».
 pub fn run_extension_status(stand: &Stand, browser: BrowserKind) -> StepResult {
     extension_status::run(stand, browser)
+}
+
+/// Плеер сайта спрашивает кодеки AV1 → VP9 → H.264; экстеншен (политика кодеков, HLS) отвечает
+/// за плеер по настройке и метке плеера, выбранное играет.
+pub fn run_codecs(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
+    codecs::run(stand, browser)
 }

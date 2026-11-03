@@ -182,6 +182,17 @@ ffmpeg "${GLOBAL_FLAGS[@]}" -f lavfi -i "$(video_filter_graph 640x360 12 36)" \
   -threads 1 "${X264_GOP[@]}" -c:a aac -b:a 96k -ac 2 -movflags +faststart "$OUT_DIR/progressive/h264-aac.mp4"
 register_asset progressive-h264-aac file progressive/h264-aac.mp4 video/mp4 12.0
 
+# 60 с, 720p, 2 Мбит/с: передача `<video src>` (сессия 09b). Даже с самым малым окном предзагрузки
+# (профиль SmallFileWindow: 1 МиБ ≈ 4 с этого ролика) плеер держит впереди курсора ~12 с (окно плюс
+# очередь демуксера), а к перемотке он уже на ~12-й секунде. Перемотке за край окна нужно место
+# до конца ролика, а после неё — ещё перемотка и возврат (шаги требуют ~20 с игры): 30 с не хватало.
+echo "generate.sh: progressive-long-h264-aac (faststart MP4, 60 s, 720p)"
+ffmpeg "${GLOBAL_FLAGS[@]}" -f lavfi -i "$(video_filter_graph 1280x720 60 48 'FILE ')" \
+  -f lavfi -i "sine=frequency=523:sample_rate=48000:duration=60" \
+  "${BITEXACT_FLAGS[@]}" -c:v libx264 -profile:v high -level 3.1 -pix_fmt yuv420p -preset veryfast -b:v 2000k \
+  -threads 1 "${X264_GOP[@]}" -c:a aac -b:a 96k -ac 2 -movflags +faststart "$OUT_DIR/progressive/h264-aac-long.mp4"
+register_asset progressive-long-h264-aac file progressive/h264-aac-long.mp4 video/mp4 60.0
+
 echo "generate.sh: ad-preroll (5 s, red picture with AD label)"
 AD_TEXT=""
 if [ "$HAVE_DRAWTEXT" = 1 ]; then

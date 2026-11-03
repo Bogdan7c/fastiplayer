@@ -142,6 +142,7 @@ fn generates_real_media_and_segments_decode() {
         "dub-a",
         "dub-b",
         "progressive-h264-aac",
+        "progressive-long-h264-aac",
         "ad-preroll",
         "hls-h264-aac",
         "clearkey-h264",
