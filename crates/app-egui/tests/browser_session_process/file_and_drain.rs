@@ -14,6 +14,7 @@ use browser_bridge_protocol::{
     ByteOffset, PageSessionMessage, RangeBytesHeader, RangeRequestId, encode_message,
 };
 
+use super::generation_clock_and_drain_seek::clock_ticks;
 use super::*;
 
 /// Фикстура файла: progressive MP4, оглавление в конце, 4 с, 100 кадров, H.264 + AAC.
@@ -269,6 +270,134 @@ fn file_generation_starts_at_the_page_position(mode: VideoMode) {
     let summary = bus.wait_for_log_line("Browser playback summary kind=final");
     // Показано примерно то, что после позиции страницы (2 с из 4 — 50 кадров); с нуля
     // было бы все 100. Запас — кадры до перемотки при первом показе.
+    let presented = log_number(&summary, "presented_frames");
+    assert!(
+        (40..=65).contains(&presented),
+        "expected about half of {FILE_FRAMES} frames: {summary}"
+    );
+    bus.wait_for_log_line("Browser session process finished");
+}
+
+/// Предел тишины сторожа тени в фоне (`SHADOW_SILENCE_LIMIT_MS`, решение 180).
+const SHADOW_SILENCE_LIMIT: Duration = Duration::from_secs(10);
+/// Столько «медленный сервер» держит первый ответ: дольше предела тишины.
+const SLOW_SERVER_HOLD: Duration = Duration::from_secs(11);
+/// Самая большая дыра между сообщениями плеера, пока файл открывается. Тик часов — 250 мс,
+/// пульс тени — раз в секунду; запас — на занятую параллельными тестами машину.
+const LONGEST_SILENCE_WHILE_OPENING: Duration = Duration::from_secs(3);
+/// Насколько часы могут отставать от позиции страницы: шаг назад до 250 мс тень не видит.
+const CLOCK_JITTER_TOLERANCE_US: u64 = 250_000;
+
+/// Читает сообщения плеера в течение `period`; замолчавший плеер — провал теста: у
+/// настоящей страницы на этом умер бы пульс тени.
+fn read_until_period_ends_without_silence(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    period: Duration,
+) -> Vec<PlayerSessionMessage> {
+    if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
+        stream
+            .set_read_timeout(Some(LONGEST_SILENCE_WHILE_OPENING))
+            .expect("read timeout is set");
+    }
+    let deadline = Instant::now() + period;
+    let mut messages = Vec::new();
+    while Instant::now() < deadline {
+        match socket.read() {
+            Ok(Message::Text(text)) => {
+                messages.push(decode_message(text.as_bytes()).expect("player session message"));
+            }
+            Ok(_) => {}
+            Err(error) => panic!(
+                "the player went silent for {LONGEST_SILENCE_WHILE_OPENING:?} while the file \
+                 was opening; heard so far: {messages:?}; {error}"
+            ),
+        }
+    }
+    if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
+        stream
+            .set_read_timeout(Some(WAIT))
+            .expect("read timeout is set");
+    }
+    messages
+}
+
+/// Живая находка 09b2: медленный CDN отдавал байты по 1–3 с на запрос, файл открывался
+/// дольше 10 с, плеер всё это время молчал, пульс тени не бился, и фон кончал здоровую
+/// передачу кодом 4003. Здесь первый ответ страницы задержан дольше предела тишины:
+/// страница слышит «жду» В СВОЕЙ позиции (тень стоит на ней без удержания, тик «0»
+/// отмотал бы её и потерял T0), а когда байты приходят, файл играет до кадров.
+#[test]
+fn a_file_slower_than_the_silence_limit_keeps_the_page_clock_and_then_plays() {
+    a_slow_file_keeps_the_page_clock_and_then_plays(VideoMode::Headless);
+}
+
+/// То же в окне: у окна свой цикл и свой плеер, но часы ему обязаны те же.
+#[test]
+fn a_file_slower_than_the_silence_limit_keeps_the_page_clock_and_then_plays_in_a_window() {
+    a_slow_file_keeps_the_page_clock_and_then_plays(VideoMode::Window);
+}
+
+fn a_slow_file_keeps_the_page_clock_and_then_plays(mode: VideoMode) {
+    assert!(SLOW_SERVER_HOLD > SHADOW_SILENCE_LIMIT);
+    let Some(process) = SessionProcessUnderTest::start("slow-file-clock", mode) else {
+        return;
+    };
+    let bus = &process.bus;
+    let mut socket = process.open_attached_session();
+    // Порядок настоящей страницы (шаги 2–4 `handoff-controller`), файл передан посреди
+    // просмотра.
+    let page_seek = format!(
+        r#"{{"type":"seek_started","target_us":{FILE_PAGE_POSITION_US},"cause":{{"kind":"page_seek"}}}}"#
+    );
+    for text in [
+        r#"{"type":"generation_started","generation":1}"#,
+        r#"{"type":"file_source_added","generation":1}"#,
+        page_seek.as_str(),
+        r#"{"type":"page_playback","request":{"kind":"play"}}"#,
+    ] {
+        socket.send(Message::text(text)).expect("message is sent");
+    }
+
+    let while_held = read_until_period_ends_without_silence(&mut socket, SLOW_SERVER_HOLD);
+
+    let clocks_while_held = clock_ticks(&while_held);
+    assert!(
+        clocks_while_held.len() >= 20,
+        "too few clocks for the shadow's pulse: {clocks_while_held:?}"
+    );
+    assert!(
+        clocks_while_held
+            .iter()
+            .all(|clock| *clock == (FILE_PAGE_POSITION_US, ClockState::Waiting)),
+        "the opening file must keep the page waiting at its own position: {clocks_while_held:?}"
+    );
+
+    // Сервер ожил: ответы на всё, что накопилось, дальше — как обычно.
+    let mut page = FilePage::new();
+    for message in &while_held {
+        page.answer(&mut socket, message);
+    }
+    assert!(!page.requests.is_empty(), "the player asked for no bytes");
+    let after_hold = page.serve_until_ended(&mut socket);
+
+    // Весь путь — открытие, установка, показ, перемотка — страница не видит отката от
+    // своей позиции: T0 не потерян.
+    let clocks_after_hold = clock_ticks(&after_hold);
+    assert!(
+        clocks_after_hold
+            .iter()
+            .all(|(position, _)| position + CLOCK_JITTER_TOLERANCE_US >= FILE_PAGE_POSITION_US),
+        "a clock pulled the page back from its position: {clocks_after_hold:?}"
+    );
+    assert!(
+        clocks_after_hold
+            .iter()
+            .any(|(_, state)| *state == ClockState::Playing),
+        "the file never played: {clocks_after_hold:?}"
+    );
+
+    send_tab_gone_and_expect_close(&mut socket);
+    let summary = bus.wait_for_log_line("Browser playback summary kind=final");
     let presented = log_number(&summary, "presented_frames");
     assert!(
         (40..=65).contains(&presented),

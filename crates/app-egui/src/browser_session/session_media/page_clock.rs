@@ -19,7 +19,27 @@
 //!    источника и ждёт данных; тень по такому тику понимает, что плеер признал новый
 //!    источник);
 //! 3. плеер показывает загруженное поколение — его собственные часы;
-//! 4. загруженное поколение ещё ставится — «0 / жду» ([`PlaybackObservation::while_media_installs`]).
+//! 4. загруженное поколение ещё ставится — «жду» там, куда страница его ждёт: в цели,
+//!    если она названа, иначе в нуле ([`PlaybackObservation::while_media_installs`]).
+//!
+//! **Пока в плеере нет ни одного поколения сеанса (сессия 09b2).** Пульс тени (решение
+//! 180) бьётся только на тиках часов, а фон кончает передачу после 10 с тишины. Раньше
+//! часы начинались с первой загрузки, и медленный сервер убивал здоровую передачу
+//! кодом 4003: файл открывался больше 10 с, байты шли, а тень молчала. Теперь часы идут
+//! с момента, когда странице есть что сказать ([`SessionMedia::tell_page_while_nothing_is_loaded`]):
+//! - старт назван — «жду» в названном месте;
+//! - старт не назван, но страница в этом сеансе уже говорила, где стоит (новый источник
+//!   сменил ждущее поколение), — «0 / жду»;
+//! - страница ещё не говорила, где стоит, — молчим.
+//!
+//! **Почему не «0 / жду» с самого начала.** Первая перемотка `page_seek{T0}` сеанса — это
+//! настоящая позиция элемента, и тень при передаче стоит на T0 БЕЗ удержания (hold): она
+//! приняла бы тик «0» как правду. Страница увидела бы откат к нулю, а конец передачи
+//! вернул бы элемент в 0 вместо T0. Первый тик уходит сразу (`ClockCadence`), поэтому он
+//! легко успел бы влезть между `generation_started` и `page_seek{T0}`, хотя страница шлёт
+//! их подряд. Страница шлёт `page_seek{T0}` всегда (шаг 3 договора `handoff-controller`),
+//! так что ожидание ограничено. По той же причине правило 4 говорит цель, а не ноль:
+//! иначе файл с T0 проваливался бы в ноль на время установки.
 //!
 //! Перемотка самой страницы до открытия нового поколения (обычная смена качества,
 //! цель страницы) правилом 2 НЕ накрывается намеренно: элемент уже на позиции страницы,
@@ -32,7 +52,7 @@
 //! `DrainContent::Opening` — то же «новое ещё не показано».
 
 use std::borrow::Cow;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::SessionMedia;
 use super::generation_placement::clock_while_generation_awaits;
@@ -45,8 +65,21 @@ use crate::browser_session::playback::PlaybackObservation;
 pub(super) enum LoadedMediaShown {
     /// Плеер показывает медиа загруженного поколения.
     Shown,
-    /// Плеер ещё ставит загруженное поколение: наблюдение про прежнее медиа.
-    StillInstalling,
+    /// Наблюдение ещё не про место, где страница ждёт поколение (внутри — где ждёт): плеер
+    /// ставит медиа, или показал его и только что получил перемотку к цели.
+    StillInstalling(GenerationStart),
+}
+
+/// Назвала ли страница в этом сеансе, где стоит её элемент.
+///
+/// Первая перемотка сеанса — `page_seek{T0}` договора передачи. До неё плеер не знает
+/// позицию страницы, и любые часы могли бы сдвинуть тень с T0 (описание модуля).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PageStartWord {
+    /// Ещё не называла.
+    NotSaid,
+    /// Назвала (цель могла смениться и потеряться со сменой поколения, но слово сказано).
+    Said,
 }
 
 /// Источник часов странице на этот проход (правило — в описании модуля).
@@ -58,7 +91,7 @@ pub(super) enum PageClockSource {
     NewSourceAwaitingData,
     /// Часы показанного поколения как есть.
     ShownGeneration,
-    /// Загруженное поколение ещё ставится: «0 / жду».
+    /// Загруженное поколение без цели ещё ставится: «0 / жду».
     InstallingGeneration,
 }
 
@@ -77,7 +110,12 @@ impl PageClockSource {
         }
         match loaded {
             LoadedMediaShown::Shown => Self::ShownGeneration,
-            LoadedMediaShown::StillInstalling => Self::InstallingGeneration,
+            LoadedMediaShown::StillInstalling(GenerationStart::PageSeekedTo(target)) => {
+                Self::AwaitingDataAtTarget(target)
+            }
+            LoadedMediaShown::StillInstalling(GenerationStart::FirstCommonData) => {
+                Self::InstallingGeneration
+            }
         }
     }
 
@@ -120,6 +158,49 @@ impl SessionMedia {
             NewSourceStance::NoneOrTargeted
         }
     }
+
+    /// Часы, пока в плеере нет ни одного поколения сеанса: `None` — сказать нечего (нет
+    /// ждущего поколения, или страница ещё не назвала, где стоит).
+    ///
+    /// Ждущее поколение — всегда текущего сеанса (`on_session_opened` сбрасывает его, чужие
+    /// уведомления отсекаются), поэтому часы чужого сеанса отсюда не уйдут.
+    fn clock_source_while_nothing_is_loaded(&self) -> Option<PageClockSource> {
+        let pending = self.pending.as_ref()?;
+        match (pending.placement.named_start(), self.page_start_word) {
+            (GenerationStart::PageSeekedTo(target), _) => {
+                Some(PageClockSource::AwaitingDataAtTarget(target))
+            }
+            (GenerationStart::FirstCommonData, PageStartWord::Said) => {
+                Some(PageClockSource::NewSourceAwaitingData)
+            }
+            (GenerationStart::FirstCommonData, PageStartWord::NotSaid) => None,
+        }
+    }
+
+    /// Тик часов, пока плееру нечего показать: держит пульс тени, пока поколение
+    /// открывается (решение 180). Наблюдение плеера здесь про чужое: `page_view_of`
+    /// подменяет позицию и состояние, странице уходят только скорость и «жду».
+    /// Ритм и номера — те же, что у всех часов (`PageOutbound::tick_clock`).
+    pub(super) fn tell_page_while_nothing_is_loaded(
+        &mut self,
+        observation: &PlaybackObservation,
+        now: Instant,
+    ) {
+        // Страницы нет (доигрываем) — говорить некому.
+        if self.drain.is_some() {
+            return;
+        }
+        if let Some(clock_source) = self.clock_source_while_nothing_is_loaded() {
+            self.outbound
+                .tick_clock(&clock_source.page_view_of(observation), now);
+        }
+    }
+
+    /// Идут ли часы странице: есть загруженное поколение или открывающемуся есть что
+    /// сказать. Владелец срока следующего пробуждения — `next_wake_at`.
+    pub(super) fn page_clock_runs(&self) -> bool {
+        self.loaded.is_some() || self.clock_source_while_nothing_is_loaded().is_some()
+    }
 }
 
 #[cfg(test)]
@@ -133,6 +214,8 @@ mod tests {
     fn the_rules_apply_in_order() {
         use LoadedMediaShown::{Shown, StillInstalling};
         use NewSourceStance::{AwaitingDataWithoutTarget, NoneOrTargeted};
+        let without_target = StillInstalling(GenerationStart::FirstCommonData);
+        let at_target = StillInstalling(GenerationStart::PageSeekedTo(TARGET));
         assert_eq!(
             PageClockSource::choose(Some(TARGET), AwaitingDataWithoutTarget, Shown),
             PageClockSource::AwaitingDataAtTarget(TARGET)
@@ -146,8 +229,13 @@ mod tests {
             PageClockSource::ShownGeneration
         );
         assert_eq!(
-            PageClockSource::choose(None, NoneOrTargeted, StillInstalling),
+            PageClockSource::choose(None, NoneOrTargeted, without_target),
             PageClockSource::InstallingGeneration
+        );
+        // Ставящееся поколение с целью: страница ждёт его там, а не в нуле.
+        assert_eq!(
+            PageClockSource::choose(None, NoneOrTargeted, at_target),
+            PageClockSource::AwaitingDataAtTarget(TARGET)
         );
     }
 }

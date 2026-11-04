@@ -116,7 +116,7 @@ fn read_player_messages_for(
 }
 
 /// Часы из сообщений: (позиция, состояние).
-fn clock_ticks(messages: &[PlayerSessionMessage]) -> Vec<(u64, ClockState)> {
+pub(super) fn clock_ticks(messages: &[PlayerSessionMessage]) -> Vec<(u64, ClockState)> {
     messages
         .iter()
         .filter_map(|message| match message {
@@ -126,6 +126,57 @@ fn clock_ticks(messages: &[PlayerSessionMessage]) -> Vec<(u64, ClockState)> {
             _ => None,
         })
         .collect()
+}
+
+/// Сколько первое поколение MSE ждёт байтов страницы.
+const SLOW_FIRST_GENERATION_DELAY: Duration = Duration::from_secs(2);
+/// Где стоит элемент страницы при передаче.
+const SLOW_GENERATION_PAGE_POSITION_US: u64 = 1_000_000;
+
+/// Сессия 09b2: та же тишина, что у медленного файла, бьёт и по MSE. Поколение объявлено,
+/// страница назвала позицию, байты задерживаются: страница слышит «жду» в своей позиции,
+/// а когда данные приходят, поколение стартует оттуда и играет.
+#[test]
+fn a_first_generation_slow_to_load_keeps_the_page_clock_and_then_plays() {
+    let Some(process) = SessionProcessUnderTest::start("slow-mse-clock", VideoMode::Headless)
+    else {
+        return;
+    };
+    let mut socket = process.open_attached_session();
+    let page_seek = format!(
+        r#"{{"type":"seek_started","target_us":{SLOW_GENERATION_PAGE_POSITION_US},"cause":{{"kind":"page_seek"}}}}"#
+    );
+    let mut announcement: Vec<Message> = ["001.json", "002.json", "003.json", "004.json"]
+        .into_iter()
+        .map(recorded_message)
+        .collect();
+    announcement.push(Message::text(page_seek));
+    send_all(&mut socket, announcement);
+
+    let while_waiting = clock_ticks(&read_player_messages_for(
+        &mut socket,
+        SLOW_FIRST_GENERATION_DELAY,
+    ));
+    assert!(
+        while_waiting.len() >= 3,
+        "too few clocks for the shadow's pulse: {while_waiting:?}"
+    );
+    assert!(
+        while_waiting
+            .iter()
+            .all(|clock| *clock == (SLOW_GENERATION_PAGE_POSITION_US, ClockState::Waiting)),
+        "the opening generation must keep the page waiting at its position: {while_waiting:?}"
+    );
+
+    let audio = split_fmp4("audio-6s.mp4");
+    let video = split_fmp4("video-64-6s.mp4");
+    let mut page = PageSourceBuffers::new(1);
+    let mut stream = vec![page.frame(0, &audio.init), page.frame(1, &video.init)];
+    stream.extend(audio.fragments.iter().map(|part| page.frame(0, part)));
+    stream.extend(video.fragments.iter().map(|part| page.frame(1, part)));
+    send_all(&mut socket, stream);
+
+    wait_until_playing_past(&mut socket, SLOW_GENERATION_PAGE_POSITION_US + 500_000);
 }
 
 #[test]

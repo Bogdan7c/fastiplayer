@@ -734,6 +734,7 @@ mod generation_start;
 mod generation_switch;
 mod live_click_real_player;
 mod live_scrub_real_player;
+mod opening_clock;
 mod viewer_click_claim;
 mod viewer_transport;
 mod viewer_transport_real_player;

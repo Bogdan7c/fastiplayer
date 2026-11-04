@@ -22,7 +22,9 @@
 //!   страницы только когда наблюдение показывает медиа загрузки этого поколения
 //!   ([`PlaybackObservation::shows`]); пока поколение «ставится», монитор позиции не
 //!   получает (источник считает от начала первого поданного сегмента), а часы
-//!   говорят `waiting` в позиции 0 ([`PlaybackObservation::while_media_installs`]);
+//!   говорят `waiting` там, где страница ждёт поколение (цель или 0, [`page_clock`]);
+//! - часами открывающегося поколения: пока в плеере нет ни одного поколения сеанса,
+//!   странице всё равно идёт «жду», иначе умер бы пульс тени (решение 180, [`page_clock`]);
 //! - намерением страницы «играть/пауза» (автозапуск — играть) и её скоростью:
 //!   загрузка начинается так, как хочет страница ([`LoadStart`]); после перемотки
 //!   плеер приводится к «играть/пауза» (перемотка после `Ended` в плеере кончается
@@ -65,8 +67,8 @@ use self::ending::ActiveDrain;
 use self::generation_feed::{FeedReport, LoadedFeed, OpenStep, PendingFeed, in_issue_order};
 use self::generation_placement::{GenerationPlacement, PageAvailability};
 use self::generation_rejection::ViewerAwareness;
-use self::generation_start::AfterLoad;
-use self::page_clock::{LoadedMediaShown, PageClockSource};
+use self::generation_start::{AfterLoad, GenerationStart};
+use self::page_clock::{LoadedMediaShown, PageClockSource, PageStartWord};
 use super::intake_notice::{GenerationHandoff, IntakeNotice, PageIntent};
 use super::outbound::{PENDING_RETRY_INTERVAL, PageOutbound, RangeQueueOutcome};
 use super::playback::{
@@ -136,12 +138,24 @@ struct LoadedGeneration {
     /// отданные во время установки, достаются прежнему медиа (перемотка страницы
     /// после загрузки, но до показа; старт файла с позиции страницы).
     seek_when_shown: Option<Duration>,
+    /// С какого места поколение передано плееру: там страница ждёт его, пока оно
+    /// ставится (часы установки, см. `page_clock`).
+    start: GenerationStart,
 }
 
 impl LoadedGeneration {
     /// Наблюдение описывает медиа этого поколения (плеер его уже поставил).
     fn is_shown_by(&self, observation: &PlaybackObservation) -> bool {
         observation.shows(self.load_ticket)
+    }
+
+    /// Где страница ждёт поколение, пока плеер его ставит: перемотка, отложенная до
+    /// показа, новее места, с которого поколение передано плееру.
+    const fn start_awaited_by_page(&self) -> GenerationStart {
+        match self.seek_when_shown {
+            Some(target) => GenerationStart::PageSeekedTo(target),
+            None => self.start,
+        }
     }
 }
 
@@ -184,6 +198,9 @@ pub(crate) struct SessionMedia {
     placement_policy: GenerationPlacementPolicy,
     /// Отказ перемотки зрителя, о котором окно ещё не сказало (09a2, Д-5).
     viewer_seek_notice: ViewerSeekNotice,
+    /// Назвала ли страница в этом сеансе, где она стоит (без этого первому поколению
+    /// часов не шлём, см. `page_clock`).
+    page_start_word: PageStartWord,
 }
 
 impl SessionMedia {
@@ -211,6 +228,7 @@ impl SessionMedia {
             rejection_notice: GenerationRejectionNotice::Nothing,
             placement_policy: GenerationPlacementPolicy::recommended(),
             viewer_seek_notice: ViewerSeekNotice::Nothing,
+            page_start_word: PageStartWord::NotSaid,
         }
     }
 
@@ -230,6 +248,7 @@ impl SessionMedia {
         self.drain = None;
         self.page_wants_play = true;
         self.page_rate = PlayerPlaybackRate::NORMAL;
+        self.page_start_word = PageStartWord::NotSaid;
         self.viewer_will.forget();
         self.outbound.reset_for_new_session();
         if self.loaded.take().is_some() {
@@ -376,6 +395,7 @@ impl SessionMedia {
             // Источник уже знает о перемотке (переходник сообщил ему в порядке кадров),
             // поэтому просьбы «перемотай страницу» к этой цели не будет.
             PageIntent::FollowPageSeek(target) => {
+                self.page_start_word = PageStartWord::Said;
                 self.follow_page_seek(Duration::from_micros(target.as_micros()));
             }
             // play/pause/скорость страницы проходят правило эха воли зрителя.
@@ -520,6 +540,7 @@ impl SessionMedia {
                 AfterLoad::Nothing => None,
                 AfterLoad::SeekTo(target) => Some(target),
             },
+            start: pending.placement.named_start(),
         });
     }
 
@@ -570,11 +591,18 @@ impl SessionMedia {
         let awaited_target = self.awaited_generation_target();
         let new_source = self.new_source_stance();
         let Some(loaded) = self.loaded.as_mut() else {
+            // В плеере пока ничего нет, но страница уже ждёт: ей нужны часы (решение 180).
+            self.tell_page_while_nothing_is_loaded(observation, now);
             return;
         };
         // Позиция прежнего медиа не принадлежит ставящемуся поколению: монитор по ней
         // выбросил бы полку и посчитал запас не от того места.
         let media_installed = loaded.is_shown_by(observation);
+        let loaded_shown = if media_installed {
+            LoadedMediaShown::Shown
+        } else {
+            LoadedMediaShown::StillInstalling(loaded.start_awaited_by_page())
+        };
         let report = loaded
             .feed
             .report(media_installed.then_some(observation.position));
@@ -596,10 +624,13 @@ impl SessionMedia {
             _ => None,
         };
 
-        if reconcile_now {
-            let seek_when_shown = self.seek_after_show_with_viewer_click(seek_when_shown, now);
-            self.reconcile_with_page(observation, seek_when_shown);
-        }
+        let seek_after_show = if reconcile_now {
+            let seek_after_show = self.seek_after_show_with_viewer_click(seek_when_shown, now);
+            self.reconcile_with_page(observation, seek_after_show);
+            seek_after_show
+        } else {
+            None
+        };
         if let Some(fault) = fault {
             self.report_fault(generation, &fault);
         }
@@ -626,11 +657,11 @@ impl SessionMedia {
         }
         // Часы — только того источника, где сейчас стоит элемент страницы (Д-4,
         // правила — `page_clock`): чужая позиция или чужой `ended` сбили бы страницу.
-        let loaded_shown = if media_installed {
-            LoadedMediaShown::Shown
-        } else {
-            LoadedMediaShown::StillInstalling
-        };
+        // Перемотка после показа отдана только что: наблюдение этого прохода ещё про начало
+        // медиа, а страница ждёт на цели. Тик «0» отмотал бы её назад.
+        let loaded_shown = seek_after_show.map_or(loaded_shown, |target| {
+            LoadedMediaShown::StillInstalling(GenerationStart::PageSeekedTo(target))
+        });
         let clock_source = PageClockSource::choose(awaited_target, new_source, loaded_shown);
         self.outbound
             .tick_clock(&clock_source.page_view_of(observation), now);
@@ -643,18 +674,16 @@ impl SessionMedia {
     /// просыпается не реже тика часов (`CLOCK_INTERVAL` — 250 мс, много чаще
     /// сводки), а без поколения плееру нечего сводить — счётчики стоят, и будить
     /// цикл ради одинаковых строк незачем (без поколения и без повторов — `None`,
-    /// цикл спит до пробуждения, холостого кручения нет).
+    /// цикл спит до пробуждения, холостого кручения нет). Открывающемуся поколению
+    /// срок часов нужен отдельно: подсказка повтора открытия может быть реже тика.
     fn next_wake_at(&self, now: Instant) -> Option<Instant> {
         let open_retry = self
             .pending
             .as_ref()
             .map(|pending| pending.retry_at.unwrap_or(now));
         // Часы идут странице; пока доигрываем, её нет, и цикл будит `playback_drain`.
-        let clock = self
-            .loaded
-            .as_ref()
-            .filter(|_| self.drain.is_none())
-            .map(|_| self.outbound.next_clock_at().unwrap_or(now));
+        let clock = (self.drain.is_none() && self.page_clock_runs())
+            .then(|| self.outbound.next_clock_at().unwrap_or(now));
         let outbound_retry = self
             .outbound
             .has_pending()
