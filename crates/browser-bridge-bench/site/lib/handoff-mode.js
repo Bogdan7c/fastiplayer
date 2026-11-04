@@ -347,13 +347,17 @@ async function expectReturn(context, state, positionS) {
   const nearT = () => Math.abs(video.currentTime - positionS) <= POSITION_TOLERANCE_S;
   const settled = await waitFor(() => video.paused && nearT(), RETURN_WAIT_MS);
   // Пауза держится: тень не «доигрывает» сама (проверяем реальный счётчик и часы).
-  const framesAtPause = probe.framesOf(video);
   const timeAtPause = video.currentTime;
+  // Первое окно — на декод перемотки: после возврата файла Chromium на паузе разово декодирует
+  // кадры до T (замер 09b2: 0 -> 18, дальше счётчик стоит, позиция не меняется). Настоящая игра
+  // видна во втором окне: счётчик растёт дальше, а часы едут.
+  await sleep(FROZEN_OBSERVE_MS);
+  const framesAfterSeekDecode = probe.framesOf(video);
   await sleep(FROZEN_OBSERVE_MS);
   const stayed = video.paused && Math.abs(video.currentTime - timeAtPause) < 0.3
-    && probe.framesOf(video) - framesAtPause <= 3;
+    && probe.framesOf(video) - framesAfterSeekDecode <= 3;
   context.check('returned-paused-at-position', settled && stayed,
-    `closed at ${positionS.toFixed(2)} s, page paused=${video.paused} at ${video.currentTime.toFixed(2)} s, real frames during hold ${probe.framesOf(video) - framesAtPause}`);
+    `closed at ${positionS.toFixed(2)} s, page paused=${video.paused} at ${video.currentTime.toFixed(2)} s, real frames during hold ${probe.framesOf(video) - framesAfterSeekDecode}`);
   // Страница сама продолжает, как человек.
   const startTime = video.currentTime;
   const framesBefore = probe.framesOf(video);
