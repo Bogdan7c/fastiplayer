@@ -18,8 +18,8 @@ use crate::container::PushedContainer;
 use crate::error::PushedStreamError;
 use crate::feed::EpisodeKey;
 use crate::framing::{
-    ContainerFramer, DecodeOrder, FramedUnit, FramingError, FramingLimits, SegmentTiming,
-    SegmentTimingContext, SegmentTimingError, TrackSpans,
+    ContainerFramer, DecodeOrder, FramedUnit, FramingError, FramingLimits, SegmentRandomAccess,
+    SegmentTiming, SegmentTimingContext, SegmentTimingError, TrackSpans,
 };
 use crate::intake::ChargedSegment;
 pub(crate) use crate::mailbox::{LaneMailbox, MailboxTake};
@@ -244,13 +244,21 @@ impl LaneIntake {
             ),
             None => None,
         };
-        let (timing, tracks, decode_order) = measured.map_or(
+        let (timing, tracks, decode_order, random_access) = measured.map_or(
             (
                 SegmentTiming::Untimed,
                 TrackSpans::default(),
                 DecodeOrder::FollowsPresentation,
+                SegmentRandomAccess::Unrecorded,
             ),
-            |measured| (measured.timing, measured.tracks, measured.decode_order),
+            |measured| {
+                (
+                    measured.timing,
+                    measured.tracks,
+                    measured.decode_order,
+                    measured.random_access,
+                )
+            },
         );
         let key = EpisodeKey::new(
             self.container,
@@ -268,12 +276,16 @@ impl LaneIntake {
                 let decode = decode_order
                     .shifted_timing(self.offset, timing, &tracks)
                     .ok_or_else(out_of_range)?;
+                let random_access = random_access
+                    .shifted_by(self.offset)
+                    .ok_or_else(out_of_range)?;
                 self.buffer.accept_timed(
                     self.lane,
                     TimedSegment {
                         timing,
                         tracks,
                         decode,
+                        random_access,
                         media,
                         key,
                     },

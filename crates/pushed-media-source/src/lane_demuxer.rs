@@ -243,21 +243,25 @@ impl LaneDemuxer {
         {
             return Ok(None);
         }
+        // Шов сравнивает время ДЕКОДИРОВАНИЯ — ось подачи полки (`crate::episode_seam`).
+        // Без него (WebM) декодирование идёт в порядке показа.
+        let dts = packet.dts.and_then(|dts| episode_offset.apply(dts));
+        let decode_time = dts.unwrap_or(pts);
         if self
             .seam
-            .admit(public_id, packet.kind, pts, packet.keyframe)
+            .admit(public_id, packet.kind, decode_time, packet.keyframe)
             == SeamDecision::Drop
         {
             return Ok(None);
         }
-        self.seam.note_emitted(public_id, pts);
+        self.seam.note_emitted(public_id, decode_time);
         packet.track_pts = shift_track(packet.track_pts);
         packet.track_dts = shift_track(packet.track_dts);
         packet.track_id = public_id;
         packet.pts = pts;
         // DTS до нуля при неотрицательном PTS бывает у первых кадров с B-кадрами;
         // без DTS декодер опирается на порядок пакетов.
-        packet.dts = packet.dts.and_then(|dts| episode_offset.apply(dts));
+        packet.dts = dts;
         Ok(Some(packet))
     }
 

@@ -21,10 +21,12 @@ use std::collections::BTreeMap;
 
 use crate::framing::read_box_header;
 
-use super::byte_cursor::{ByteCursor, FullBoxHeader};
+use super::byte_cursor::ByteCursor;
+use super::iso_bmff_run::RunWalker;
+use super::random_access::{RandomAccessScan, SampleFlags, TrackAccess};
 use super::{
-    DecodeOrder, LaneContent, MediaTime, MediaTimeSpan, SegmentTimingError, TimingStructure,
-    TrackMedia, TrackSlot, TrackSlotAssigner, TrackSpans,
+    DecodeOrder, LaneContent, MediaTime, MediaTimeSpan, SegmentRandomAccess, SegmentTimingError,
+    TimingStructure, TrackMedia, TrackSlot, TrackSlotAssigner, TrackSpans,
 };
 
 /// `tfhd`: есть 64-битный `base_data_offset`.
@@ -33,22 +35,14 @@ const TFHD_BASE_DATA_OFFSET: u32 = 0x00_0001;
 const TFHD_SAMPLE_DESCRIPTION_INDEX: u32 = 0x00_0002;
 /// `tfhd`: есть `default_sample_duration`.
 const TFHD_DEFAULT_SAMPLE_DURATION: u32 = 0x00_0008;
+/// `tfhd`: есть `default_sample_size`.
+const TFHD_DEFAULT_SAMPLE_SIZE: u32 = 0x00_0010;
+/// `tfhd`: есть `default_sample_flags`.
+const TFHD_DEFAULT_SAMPLE_FLAGS: u32 = 0x00_0020;
 
-/// `trun`: есть `data_offset`.
-const TRUN_DATA_OFFSET: u32 = 0x00_0001;
-/// `trun`: есть `first_sample_flags`.
-const TRUN_FIRST_SAMPLE_FLAGS: u32 = 0x00_0004;
-/// `trun`: у каждого кадра своя длительность.
-const TRUN_SAMPLE_DURATION: u32 = 0x00_0100;
-/// `trun`: у каждого кадра свой размер.
-const TRUN_SAMPLE_SIZE: u32 = 0x00_0200;
-/// `trun`: у каждого кадра свои флаги.
-const TRUN_SAMPLE_FLAGS: u32 = 0x00_0400;
-/// `trun`: у каждого кадра своё смещение композиции.
-const TRUN_SAMPLE_COMPOSITION_OFFSET: u32 = 0x00_0800;
+/// Байтов `default_sample_size` + `default_sample_flags` в конце `trex`.
+const TREX_SIZE_AND_FLAGS_BYTES: usize = 8;
 
-/// Байтов в одном поле записи кадра `trun` (все поля 32-битные).
-const TRUN_FIELD_BYTES: usize = 4;
 /// Байтов временных полей версии 0 (`creation_time` + `modification_time`).
 const VERSION_0_TIMES_BYTES: usize = 8;
 /// Байтов временных полей версии 1.
@@ -61,6 +55,10 @@ struct IsoTrackTiming {
     timescale: u32,
     /// Длительность кадра по умолчанию из `trex`, если `trex` для дорожки есть.
     extends_default_sample_duration: Option<u32>,
+    /// Флаги кадра по умолчанию из `trex`, если они записаны.
+    extends_default_sample_flags: Option<SampleFlags>,
+    /// Тип дорожки: у не-видео каждый кадр — точка произвольного доступа.
+    media: TrackMedia,
     /// Место дорожки в полосе (тип и порядковый номер среди дорожек того же типа).
     slot: TrackSlot,
 }
@@ -101,6 +99,8 @@ impl IsoBmffTimingContext {
                     let timing = IsoTrackTiming {
                         timescale,
                         extends_default_sample_duration: None,
+                        extends_default_sample_flags: None,
+                        media,
                         slot: slots.next(media),
                     };
                     if tracks.insert(track_id, timing).is_some() {
@@ -114,13 +114,15 @@ impl IsoBmffTimingContext {
             }
         }
         // `trex` может стоять и до `trak`, поэтому значения раскладываются после обхода.
-        for (track_id, default_duration) in extends_defaults {
-            let track = tracks
-                .get_mut(&track_id)
-                .ok_or(SegmentTimingError::UnknownTrack {
-                    track: u64::from(track_id),
-                })?;
-            track.extends_default_sample_duration = Some(default_duration);
+        for extends in extends_defaults {
+            let track =
+                tracks
+                    .get_mut(&extends.track_id)
+                    .ok_or(SegmentTimingError::UnknownTrack {
+                        track: u64::from(extends.track_id),
+                    })?;
+            track.extends_default_sample_duration = Some(extends.default_sample_duration);
+            track.extends_default_sample_flags = extends.default_sample_flags;
         }
         if tracks.is_empty() {
             return Err(SegmentTimingError::Missing {
@@ -138,12 +140,12 @@ impl IsoBmffTimingContext {
         self.content
     }
 
-    /// Отрезок времени показа медиасегмента `moof` + `mdat`, отрезки его дорожек и
-    /// время декодирования (`tfdt` + длительности кадров).
+    /// Отрезок времени показа медиасегмента `moof` + `mdat`, отрезки его дорожек,
+    /// время декодирования (`tfdt` + длительности кадров) и точки произвольного доступа.
     pub(super) fn segment_spans(
         &self,
         segment: &[u8],
-    ) -> Result<(MediaTimeSpan, TrackSpans, DecodeOrder), SegmentTimingError> {
+    ) -> Result<IsoSegmentSpans, SegmentTimingError> {
         let movie_fragment = first_child(segment, *b"moof", TimingStructure::IsoMediaSegment)?
             .ok_or(SegmentTimingError::Missing {
                 structure: TimingStructure::IsoMovieFragment,
@@ -154,6 +156,8 @@ impl IsoBmffTimingContext {
         // Время декодирования — отдельно от показа: у B-кадров они расходятся.
         let mut decode_span: Option<MediaTimeSpan> = None;
         let mut decode_tracks = TrackSpans::default();
+        // Точки доступа: `None` — кадров ещё не было.
+        let mut random_access: Option<SegmentRandomAccess> = None;
         // Если ни в одной дорожке нет кадров — пустой отрезок в самом раннем `tfdt`.
         let mut earliest_empty_start: Option<MediaTime> = None;
         for child in box_children(movie_fragment, TimingStructure::IsoMovieFragment) {
@@ -166,7 +170,10 @@ impl IsoBmffTimingContext {
                 TrackFragmentSpan::Samples {
                     presentation,
                     decode,
+                    points,
                 } => {
+                    random_access =
+                        Some(random_access.map_or(points, |known| known.merged_with(points)));
                     segment_span =
                         Some(segment_span.map_or(presentation, |known| known.union(presentation)));
                     track_spans.include(slot, presentation);
@@ -191,7 +198,12 @@ impl IsoBmffTimingContext {
                 tracks: decode_tracks,
             }
         });
-        Ok((span, track_spans, decode_order))
+        Ok(IsoSegmentSpans {
+            span,
+            tracks: track_spans,
+            decode_order,
+            random_access: random_access.unwrap_or(SegmentRandomAccess::Unrecorded),
+        })
     }
 
     /// Отрезок одного `traf` и место его дорожки в полосе.
@@ -232,11 +244,16 @@ impl IsoBmffTimingContext {
             .default_sample_duration
             .or(track.extends_default_sample_duration)
             .unwrap_or(0);
-        let mut runs = RunWalker {
-            next_decode_time: i128::from(base_decode_time),
+        let mut runs = RunWalker::new(
+            i128::from(base_decode_time),
             default_sample_duration,
-            extent: PresentationExtent::default(),
-        };
+            RandomAccessScan::new(TrackAccess::of_track(
+                track.media,
+                header
+                    .default_sample_flags
+                    .or(track.extends_default_sample_flags),
+            )),
+        );
         for child in box_children(track_fragment, TimingStructure::IsoTrackFragment) {
             let child = child?;
             if &child.box_type == b"trun" {
@@ -245,7 +262,7 @@ impl IsoBmffTimingContext {
         }
 
         let timescale = u64::from(track.timescale);
-        let fragment_span = match runs.extent.bounds {
+        let fragment_span = match runs.presentation_bounds() {
             Some((earliest, latest_end)) => {
                 let start = MediaTime::from_ticks(earliest, timescale)?;
                 let end = MediaTime::from_ticks(latest_end, timescale)?;
@@ -254,12 +271,15 @@ impl IsoBmffTimingContext {
                 // Кадры декодируются подряд от `tfdt` до конца последнего из них.
                 let decode = MediaTimeSpan::new(
                     MediaTime::from_ticks(i128::from(base_decode_time), timescale)?,
-                    MediaTime::from_ticks(runs.next_decode_time, timescale)?,
+                    MediaTime::from_ticks(runs.decode_end(), timescale)?,
                 )
                 .ok_or(SegmentTimingError::TimeOutOfRange)?;
                 TrackFragmentSpan::Samples {
                     presentation,
                     decode,
+                    points: runs
+                        .random_access()
+                        .finish(|ticks| MediaTime::from_ticks(ticks, timescale))?,
                 }
             }
             None => MediaTime::from_ticks(i128::from(base_decode_time), timescale)
@@ -267,6 +287,19 @@ impl IsoBmffTimingContext {
         };
         Ok((track.slot, fragment_span))
     }
+}
+
+/// Что сказал о себе один медиасегмент fMP4.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct IsoSegmentSpans {
+    /// Время показа всех дорожек.
+    pub(super) span: MediaTimeSpan,
+    /// Время показа каждой дорожки.
+    pub(super) tracks: TrackSpans,
+    /// Время декодирования.
+    pub(super) decode_order: DecodeOrder,
+    /// Точки произвольного доступа.
+    pub(super) random_access: SegmentRandomAccess,
 }
 
 /// Итог одного `traf`.
@@ -278,6 +311,8 @@ enum TrackFragmentSpan {
         presentation: MediaTimeSpan,
         /// От `tfdt` до конца декодирования последнего кадра.
         decode: MediaTimeSpan,
+        /// Точки произвольного доступа дорожки.
+        points: SegmentRandomAccess,
     },
     /// Кадров нет: только время начала из `tfdt`.
     NoSamples(MediaTime),
@@ -290,10 +325,12 @@ struct TrackFragmentHeader {
     track_id: u32,
     /// Своя длительность кадра по умолчанию, если указана.
     default_sample_duration: Option<u32>,
+    /// Свои флаги кадра по умолчанию, если указаны.
+    default_sample_flags: Option<SampleFlags>,
 }
 
 impl TrackFragmentHeader {
-    /// Читает `tfhd`; поля после длительности по умолчанию времени не касаются.
+    /// Читает `tfhd`.
     fn parse(body: &[u8]) -> Result<Self, SegmentTimingError> {
         let mut cursor = ByteCursor::new(body, TimingStructure::IsoTrackFragmentHeader);
         let header = cursor.read_full_box_header()?;
@@ -309,202 +346,20 @@ impl TrackFragmentHeader {
         } else {
             None
         };
+        if header.has_flag(TFHD_DEFAULT_SAMPLE_SIZE) {
+            cursor.skip(4)?; // default_sample_size: u32
+        }
+        let default_sample_flags = if header.has_flag(TFHD_DEFAULT_SAMPLE_FLAGS) {
+            Some(SampleFlags::new(cursor.read_u32()?))
+        } else {
+            None
+        };
         Ok(Self {
             track_id,
             default_sample_duration,
+            default_sample_flags,
         })
     }
-}
-
-/// Самое раннее начало и самый поздний конец показа кадров, в тиках дорожки.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct PresentationExtent {
-    /// `(min начала, max конца)`; `None` — кадров ещё не было.
-    bounds: Option<(i128, i128)>,
-}
-
-impl PresentationExtent {
-    /// Учитывает один кадр (или группу кадров подряд) `[start, end)`.
-    fn include(&mut self, start: i128, end: i128) {
-        self.bounds = Some(match self.bounds {
-            Some((earliest, latest_end)) => (earliest.min(start), latest_end.max(end)),
-            None => (start, end),
-        });
-    }
-}
-
-/// Проход по `trun` одного `traf`: время декодирования течёт от `tfdt` через все `trun`.
-#[derive(Debug)]
-struct RunWalker {
-    /// Время декодирования следующего кадра, тики.
-    next_decode_time: i128,
-    /// Длительность кадра, когда `trun` её не пишет.
-    default_sample_duration: u32,
-    /// Накопленный отрезок показа.
-    extent: PresentationExtent,
-}
-
-impl RunWalker {
-    /// Учитывает кадры одного `trun`.
-    fn walk_run(&mut self, body: &[u8]) -> Result<(), SegmentTimingError> {
-        let mut cursor = ByteCursor::new(body, TimingStructure::IsoTrackRun);
-        let header = cursor.read_full_box_header()?;
-        if header.version > 1 {
-            return Err(SegmentTimingError::UnsupportedVersion {
-                structure: TimingStructure::IsoTrackRun,
-                version: header.version,
-            });
-        }
-        let sample_count = cursor.read_u32()?;
-        if header.has_flag(TRUN_DATA_OFFSET) {
-            cursor.skip(4)?; // data_offset: i32
-        }
-        if header.has_flag(TRUN_FIRST_SAMPLE_FLAGS) {
-            cursor.skip(4)?; // first_sample_flags: u32
-        }
-        let layout = SampleEntryLayout::from_header(header);
-        if sample_count == 0 {
-            return Ok(());
-        }
-        if layout.entry_bytes() == 0 {
-            return self.include_uniform_samples(sample_count);
-        }
-        ensure_entries_fit(sample_count, layout.entry_bytes(), cursor.remaining_len())?;
-        for _ in 0..sample_count {
-            self.include_listed_sample(&mut cursor, layout)?;
-        }
-        Ok(())
-    }
-
-    /// Кадры без записей: все одной длительности по умолчанию, без смещения
-    /// композиции. Считается одной формулой — объявленное число кадров ничего
-    /// не стоит странице, и перебирать его поштучно было бы уязвимостью.
-    fn include_uniform_samples(&mut self, sample_count: u32) -> Result<(), SegmentTimingError> {
-        // u32 × u32 помещается в i128, но проверка — по общему правилу разборщика:
-        // каждая операция над числами страницы проверяется.
-        let total_duration = i128::from(sample_count)
-            .checked_mul(i128::from(self.default_sample_duration))
-            .ok_or(SegmentTimingError::TimeOutOfRange)?;
-        let start = self.next_decode_time;
-        let end = checked_ticks_add(start, total_duration)?;
-        self.extent.include(start, end);
-        self.next_decode_time = end;
-        Ok(())
-    }
-
-    /// Один кадр из записей `trun`.
-    fn include_listed_sample(
-        &mut self,
-        cursor: &mut ByteCursor<'_>,
-        layout: SampleEntryLayout,
-    ) -> Result<(), SegmentTimingError> {
-        let duration = if layout.has_duration {
-            cursor.read_u32()?
-        } else {
-            self.default_sample_duration
-        };
-        if layout.has_size {
-            cursor.skip(TRUN_FIELD_BYTES)?;
-        }
-        if layout.has_flags {
-            cursor.skip(TRUN_FIELD_BYTES)?;
-        }
-        let composition_offset = match layout.composition_offset {
-            CompositionOffsetField::Absent => 0,
-            CompositionOffsetField::Unsigned => i128::from(cursor.read_u32()?),
-            CompositionOffsetField::Signed => i128::from(cursor.read_i32()?),
-        };
-        let decode_time = self.next_decode_time;
-        let presentation_start = checked_ticks_add(decode_time, composition_offset)?;
-        let presentation_end = checked_ticks_add(presentation_start, i128::from(duration))?;
-        self.extent.include(presentation_start, presentation_end);
-        self.next_decode_time = checked_ticks_add(decode_time, i128::from(duration))?;
-        Ok(())
-    }
-}
-
-/// Как записано смещение композиции кадра.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CompositionOffsetField {
-    /// Поля нет: время показа = время декодирования.
-    Absent,
-    /// `trun` версии 0: беззнаковое.
-    Unsigned,
-    /// `trun` версии 1: со знаком.
-    Signed,
-}
-
-/// Какие поля есть в записи кадра `trun`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SampleEntryLayout {
-    /// Своя длительность.
-    has_duration: bool,
-    /// Размер (времени не касается, пропускается).
-    has_size: bool,
-    /// Флаги (времени не касаются, пропускаются).
-    has_flags: bool,
-    /// Смещение композиции.
-    composition_offset: CompositionOffsetField,
-}
-
-impl SampleEntryLayout {
-    /// Состав записи по флагам и версии `trun`.
-    fn from_header(header: FullBoxHeader) -> Self {
-        let composition_offset = match (
-            header.has_flag(TRUN_SAMPLE_COMPOSITION_OFFSET),
-            header.version,
-        ) {
-            (false, _) => CompositionOffsetField::Absent,
-            (true, 0) => CompositionOffsetField::Unsigned,
-            (true, _) => CompositionOffsetField::Signed,
-        };
-        Self {
-            has_duration: header.has_flag(TRUN_SAMPLE_DURATION),
-            has_size: header.has_flag(TRUN_SAMPLE_SIZE),
-            has_flags: header.has_flag(TRUN_SAMPLE_FLAGS),
-            composition_offset,
-        }
-    }
-
-    /// Байтов в одной записи кадра.
-    fn entry_bytes(self) -> usize {
-        let present_fields = [
-            self.has_duration,
-            self.has_size,
-            self.has_flags,
-            self.composition_offset != CompositionOffsetField::Absent,
-        ]
-        .into_iter()
-        .filter(|present| *present)
-        .count();
-        present_fields * TRUN_FIELD_BYTES
-    }
-}
-
-/// Проверяет ДО перебора, что объявленные записи кадров помещаются в тело `trun`.
-fn ensure_entries_fit(
-    sample_count: u32,
-    entry_bytes: usize,
-    available_bytes: usize,
-) -> Result<(), SegmentTimingError> {
-    let fits = usize::try_from(sample_count)
-        .ok()
-        .and_then(|count| count.checked_mul(entry_bytes))
-        .is_some_and(|required| required <= available_bytes);
-    if fits {
-        Ok(())
-    } else {
-        Err(SegmentTimingError::SampleCountExceedsBox {
-            sample_count,
-            available_bytes,
-        })
-    }
-}
-
-/// Сложение тиков с проверкой переполнения.
-fn checked_ticks_add(left: i128, right: i128) -> Result<i128, SegmentTimingError> {
-    left.checked_add(right)
-        .ok_or(SegmentTimingError::TimeOutOfRange)
 }
 
 /// `trak`: номер дорожки из `tkhd` и шкала из `mdia/mdhd`.
@@ -594,10 +449,21 @@ fn read_after_versioned_times(
     cursor.read_u32()
 }
 
-/// `mvex`: длительности по умолчанию из всех `trex`.
+/// Значения по умолчанию одного `trex`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TrackExtendsDefaults {
+    /// Номер дорожки.
+    track_id: u32,
+    /// Длительность кадра.
+    default_sample_duration: u32,
+    /// Флаги кадра; `None` — бокс обрезан раньше них.
+    default_sample_flags: Option<SampleFlags>,
+}
+
+/// `mvex`: значения по умолчанию из всех `trex`.
 fn collect_track_extends(
     movie_extends: &[u8],
-    extends_defaults: &mut Vec<(u32, u32)>,
+    extends_defaults: &mut Vec<TrackExtendsDefaults>,
 ) -> Result<(), SegmentTimingError> {
     for child in box_children(movie_extends, TimingStructure::IsoMovie) {
         let child = child?;
@@ -609,12 +475,27 @@ fn collect_track_extends(
         let track_id = cursor.read_u32()?;
         cursor.skip(4)?; // default_sample_description_index: u32
         let default_sample_duration = cursor.read_u32()?;
-        if extends_defaults.iter().any(|(known, _)| *known == track_id) {
+        // Времени флаги не касаются: `trex`, обрезанный раньше них, по-прежнему годится
+        // для времени, просто точки доступа сегментов остаются неизвестными.
+        let default_sample_flags = (cursor.remaining_len() >= TREX_SIZE_AND_FLAGS_BYTES)
+            .then(|| {
+                cursor.skip(4)?; // default_sample_size: u32
+                cursor.read_u32().map(SampleFlags::new)
+            })
+            .transpose()?;
+        if extends_defaults
+            .iter()
+            .any(|known| known.track_id == track_id)
+        {
             return Err(SegmentTimingError::Duplicate {
                 structure: TimingStructure::IsoTrackExtends,
             });
         }
-        extends_defaults.push((track_id, default_sample_duration));
+        extends_defaults.push(TrackExtendsDefaults {
+            track_id,
+            default_sample_duration,
+            default_sample_flags,
+        });
     }
     Ok(())
 }

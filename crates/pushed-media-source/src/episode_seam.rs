@@ -8,7 +8,17 @@
 //!
 //! Поэтому демуксер полосы помнит, докуда дошли дорожки ([`EpisodeSeam::note_emitted`]),
 //! и после смены эпизода БЕЗ перемотки ([`EpisodeSeam::arm`]) отсекает пакеты не
-//! позже этой границы («пол»):
+//! позже этой границы («пол»).
+//!
+//! Граница — время ДЕКОДИРОВАНИЯ, как у подачи полки (`shelf`): «повтор» — то, что уже
+//! ушло в декодер, а не то, что показывается раньше уже выданного кадра. По времени
+//! показа новая группа кадров, продолжающая декодирование, выглядела бы повтором: на
+//! смене качества Twitch (30 → 60 к/с) последний показ старой группы — 2,034 с, а ключевой
+//! кадр новой показывается в 2,029 с, хотя декодируется строго после старой (1,996 с
+//! после 1,967 с). Такой ключевой кадр выбрасывался, а с ним вся группа — на 2 с стояла
+//! картинка. Без времени декодирования (WebM) оба времени совпадают.
+//!
+//! Правила пола:
 //! - звук (и прочее, кроме видео) — каждый пакет сам по себе точка входа: пакет
 //!   с временем после пола проходит, и пол снимается;
 //! - видео — кадры после ключевого зависят от него: пол снимается только
@@ -35,19 +45,19 @@ pub(crate) enum SeamDecision {
 /// Пол и память выданного времени по дорожкам полосы (публичные ID).
 #[derive(Debug, Default)]
 pub(crate) struct EpisodeSeam {
-    /// Самое позднее выданное время показа по дорожкам.
+    /// Самое позднее выданное время декодирования по дорожкам.
     last_emitted: BTreeMap<TrackId, Duration>,
     /// Действующие полы: пакеты не позже пола выбрасываются.
     floors: BTreeMap<TrackId, Duration>,
 }
 
 impl EpisodeSeam {
-    /// Пакет выдан плееру.
-    pub(crate) fn note_emitted(&mut self, track: TrackId, pts: Duration) {
+    /// Пакет с временем декодирования `decode_time` выдан плееру.
+    pub(crate) fn note_emitted(&mut self, track: TrackId, decode_time: Duration) {
         self.last_emitted
             .entry(track)
-            .and_modify(|latest| *latest = (*latest).max(pts))
-            .or_insert(pts);
+            .and_modify(|latest| *latest = (*latest).max(decode_time))
+            .or_insert(decode_time);
     }
 
     /// Начался следующий эпизод без перемотки: пол = выданное до сих пор.
@@ -66,13 +76,13 @@ impl EpisodeSeam {
         &mut self,
         track: TrackId,
         kind: TrackKind,
-        pts: Duration,
+        decode_time: Duration,
         keyframe: PacketKeyframe,
     ) -> SeamDecision {
         let Some(floor) = self.floors.get(&track).copied() else {
             return SeamDecision::Keep;
         };
-        let after_floor = pts > floor;
+        let after_floor = decode_time > floor;
         let opens = match kind {
             TrackKind::Video => after_floor && keyframe == PacketKeyframe::Keyframe,
             _ => after_floor,

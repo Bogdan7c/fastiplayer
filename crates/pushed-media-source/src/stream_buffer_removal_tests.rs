@@ -153,12 +153,17 @@ fn page_removal_ahead_partial_or_of_an_unknown_lane_releases_nothing() {
         writer.note_page_removed(LANE, removal(ms(400), PageRemovedRangeEnd::EndOfTimeline)),
     );
     assert_eq!((ahead.released_segments, ahead.kept_not_played), (0, 2));
-    // Частично: 100–300 мс задевает 0–200 и 200–400, но ни один не целиком.
+    // 100–300 мс: начало 0–200 у страницы осталось; у 200–400 ключевой кадр стёрт, и MSE
+    // стёр фрагмент до конца, но плеер его ещё не доиграл.
     let partial =
         applied(writer.note_page_removed(LANE, removal(ms(100), PageRemovedRangeEnd::At(ms(300)))));
     assert_eq!(
-        (partial.released_segments, partial.kept_partially_removed),
-        (0, 2)
+        (
+            partial.released_segments,
+            partial.kept_partially_removed,
+            partial.kept_not_played
+        ),
+        (0, 1, 1)
     );
     assert_eq!(monitor.held_segment_bytes(), held, "nothing was released");
     // Неизвестная полоса — нарушение порядка, как у других вызовов полосы; и это
@@ -171,6 +176,53 @@ fn page_removal_ahead_partial_or_of_an_unknown_lane_releases_nothing() {
     assert_eq!(
         writer.failure(),
         Some(PushedStreamError::UnknownLane { lane: unknown })
+    );
+}
+
+#[test]
+fn a_seek_never_lands_on_what_the_page_erased_ahead_of_the_player() {
+    let (_media, mut writer, mut demuxer) = played_stream(ms(300));
+    let monitor = writer.monitor();
+    let held = monitor.held_segment_bytes();
+    // Впереди позиции страница стёрла 400–800 мс: плеер мог бы доиграть их без перемотки…
+    let ahead = applied(
+        writer.note_page_removed(LANE, removal(ms(400), PageRemovedRangeEnd::EndOfTimeline)),
+    );
+    assert_eq!(ahead.kept_not_played, 2);
+    assert_eq!(
+        monitor.held_segment_bytes(),
+        held,
+        "still kept for the player"
+    );
+    // …но перемотка туда идёт к странице: у неё этих байтов больше нет.
+    demuxer.seek(ms(500)).expect("seek");
+    assert_eq!(
+        monitor.take_page_seek_request(),
+        Some(PageSeekRequest { target: ms(500) })
+    );
+    assert!(
+        monitor.held_segment_bytes() < held,
+        "the seek released what the page erased"
+    );
+    // Нестёртое по-прежнему на полке.
+    demuxer.seek(ms(100)).expect("seek");
+    assert_eq!(monitor.take_page_seek_request(), None);
+}
+
+#[test]
+fn page_removal_while_the_player_awaits_its_target_releases_at_once() {
+    let (media, mut writer, mut demuxer) = played_stream(ms(300));
+    // Плеер ушёл на цель, которой нет на полке: новой перемотки, снимающей стёртое, не будет.
+    demuxer.seek(ms(5_000)).expect("seek");
+    let report =
+        applied(writer.note_page_removed(LANE, removal(ms(0), PageRemovedRangeEnd::EndOfTimeline)));
+    assert_eq!(
+        (report.released_segments, report.kept_not_played),
+        (media.fragments.len(), 0)
+    );
+    assert_eq!(
+        wait_for_held_bytes(&writer, media.init.len()),
+        media.init.len()
     );
 }
 

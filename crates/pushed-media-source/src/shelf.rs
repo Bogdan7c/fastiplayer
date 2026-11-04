@@ -32,7 +32,9 @@ use std::time::Duration;
 
 use crate::buffer_window::BufferWindow;
 use crate::feed::{EpisodeContinuity, EpisodeKey, FeedCursor};
-use crate::framing::{DecodeTiming, MediaTime, MediaTimeSpan, SegmentEnd, TimedSpan, TrackSpans};
+use crate::framing::{
+    DecodeTiming, MediaTime, MediaTimeSpan, SegmentEnd, SegmentRandomAccess, TimedSpan, TrackSpans,
+};
 use crate::intake::ChargedSegment;
 
 #[path = "shelf_forgotten.rs"]
@@ -149,6 +151,16 @@ enum Arrival {
     SinceLastSeek,
 }
 
+/// Есть ли время сегмента в буфере страницы (модуль `removal`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PageCopy {
+    /// Страница его держит и повторно не пришлёт.
+    Held,
+    /// Страница его стёрла, а полка пока держит ради плеера: он ещё не доиграл это
+    /// время. Первая же перемотка такой сегмент снимает.
+    Erased,
+}
+
 /// Сегмент на полке.
 #[derive(Debug)]
 pub(crate) struct ShelfEntry {
@@ -158,6 +170,10 @@ pub(crate) struct ShelfEntry {
     tracks: TrackSpans,
     /// Время декодирования: порядок подачи и продолжение поданного.
     decode: DecodeTiming,
+    /// Точки произвольного доступа: докуда стирает `remove()` страницы.
+    random_access: SegmentRandomAccess,
+    /// Держит ли это время страница.
+    page_copy: PageCopy,
     /// Байты (общие с трубой эпизода).
     media: ChargedSegment,
     /// С каким init, контейнером и смещением его играть.
@@ -181,11 +197,20 @@ impl ShelfEntry {
             timing,
             tracks,
             decode,
+            random_access: SegmentRandomAccess::Unrecorded,
+            page_copy: PageCopy::Held,
             media,
             key,
             delivery: Delivery::Waiting,
             arrival: Arrival::SinceLastSeek,
         }
+    }
+
+    /// Тот же сегмент с известными точками произвольного доступа.
+    #[must_use]
+    pub(crate) const fn with_random_access(mut self, random_access: SegmentRandomAccess) -> Self {
+        self.random_access = random_access;
+        self
     }
 
     /// Сколько байтов держит сегмент (столько отпустит учёт, если копия последняя).
@@ -654,3 +679,7 @@ mod tests;
 #[cfg(test)]
 #[path = "shelf_decode_order_tests.rs"]
 mod decode_order_tests;
+
+#[cfg(test)]
+#[path = "shelf_removal_tests.rs"]
+mod removal_tests;

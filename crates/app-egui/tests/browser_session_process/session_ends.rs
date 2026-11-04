@@ -83,7 +83,7 @@ pub(super) fn wait_until_playing_past(
     last_clock_us(&messages).expect("a clock")
 }
 
-fn last_clock_us(messages: &[PlayerSessionMessage]) -> Option<u64> {
+pub(super) fn last_clock_us(messages: &[PlayerSessionMessage]) -> Option<u64> {
     messages.iter().rev().find_map(|message| match message {
         PlayerSessionMessage::Clock { position_us, .. } => Some(position_us.as_micros()),
         _ => None,

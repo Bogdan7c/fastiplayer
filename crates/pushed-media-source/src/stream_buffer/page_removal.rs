@@ -5,6 +5,7 @@
 //! страница стёрла кусок и тут же прислала его заново, повтор ляжет на уже
 //! освобождённое место, а не накроет старую копию.
 
+use super::seek::LaneSeekState;
 use super::{LaneTimeline, StreamBuffer};
 use crate::error::PushedStreamError;
 use crate::lane::LaneId;
@@ -12,8 +13,8 @@ use crate::page_removal::{PageRemovalOutcome, PageRemovedRange};
 use crate::shelf::{PlayedSoFar, ShelfRemoval};
 
 impl StreamBuffer {
-    /// Страница стёрла у себя `range` полосы `lane`: с полки уходят только
-    /// сыгранные сегменты, целиком лежащие в диапазоне.
+    /// Страница стёрла у себя `range` полосы `lane`: с полки уходят только сыгранные
+    /// сегменты, которых у страницы больше нет; остальное стёртое ждёт перемотки.
     pub(crate) fn note_page_removed(
         &self,
         lane: LaneId,
@@ -28,10 +29,14 @@ impl StreamBuffer {
                 // MPEG-TS: полки нет, сегменты живут только в трубе.
                 return Ok(PageRemovalOutcome::UntimedLane);
             }
-            // Без позиции плеера ещё ничего не сыграно — и ничего не отпускается.
-            let played = position.map_or(PlayedSoFar::Nothing, |position| {
-                buffered.played_so_far(position)
-            });
+            let played = match buffered.seek {
+                // Плеер уже ушёл: новой перемотки, снимающей стёртое, не будет.
+                LaneSeekState::AwaitingTarget { .. } => PlayedSoFar::PlayerLeft,
+                // Без позиции плеера ещё ничего не сыграно — и ничего не отпускается.
+                LaneSeekState::Following => position.map_or(PlayedSoFar::Nothing, |position| {
+                    buffered.played_so_far(position)
+                }),
+            };
             let released = buffered.shelf.release_removed_by_page(
                 ShelfRemoval::from_page(range),
                 played,

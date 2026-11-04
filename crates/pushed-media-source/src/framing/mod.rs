@@ -22,8 +22,8 @@ pub(crate) use ebml::{EbmlElementSize, read_element_header};
 pub(crate) use iso_bmff::read_box_header;
 pub use timing::SegmentTimingError;
 pub(crate) use timing::{
-    DecodeOrder, DecodeTiming, LaneContent, MediaTime, MediaTimeSpan, SegmentEnd, SegmentTiming,
-    SegmentTimingContext, TimedSpan, TrackSpans,
+    DecodeOrder, DecodeTiming, LaneContent, MediaTime, MediaTimeSpan, SegmentEnd,
+    SegmentRandomAccess, SegmentTiming, SegmentTimingContext, TimedSpan, TrackSpans,
 };
 #[cfg(test)]
 pub(crate) use timing::{TrackMedia, TrackSlotAssigner};

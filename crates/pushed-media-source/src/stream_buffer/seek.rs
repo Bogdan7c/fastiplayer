@@ -57,7 +57,7 @@ use crate::framing::{MediaTime, MediaTimeSpan};
 use crate::lane::LaneId;
 use crate::mailbox::{FeedBacklog, StaleEpisodes};
 use crate::page_seek::{PageSeekDecision, PageSeekNeed, PageSeekRequest};
-use crate::shelf::{IncomingMedia, LateJoinCandidates, LateJoinWindow, ShelfRules};
+use crate::shelf::{IncomingMedia, LateJoinCandidates, LateJoinWindow, ShelfEntry, ShelfRules};
 
 /// Как полоса подаёт сегменты.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +136,13 @@ impl StreamBuffer {
         {
             return Err(StreamSeekError::UntimedLane { lane: *lane });
         }
+        // Плеер уходит с места: стёртое страницей, что полка держала ради него, больше
+        // никому не нужно, и садиться на него нельзя (`shelf::removal`).
+        let erased: Vec<ShelfEntry> = state
+            .timed_lanes_mut()
+            .flat_map(|lane| lane.shelf.take_erased_by_page())
+            .collect();
+        drop(erased);
         let need = if state
             .lanes
             .keys()

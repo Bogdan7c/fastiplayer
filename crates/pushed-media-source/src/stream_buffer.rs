@@ -39,7 +39,9 @@ use crate::container::PushedContainer;
 use crate::episode::EpisodeFactory;
 use crate::error::PushedStreamError;
 use crate::feed::{EpisodeContinuity, EpisodeKey, FeedAdmission, LaneFeed};
-use crate::framing::{DecodeTiming, LaneContent, MediaTime, TimedSpan, TrackSpans};
+use crate::framing::{
+    DecodeTiming, LaneContent, MediaTime, SegmentRandomAccess, TimedSpan, TrackSpans,
+};
 use crate::intake::{ChargedSegment, IntakeLedger};
 use crate::lane::{LaneId, LaneMailbox};
 use crate::live_timeline::LiveTimelineFeed;
@@ -180,6 +182,8 @@ pub(crate) struct TimedSegment {
     pub(crate) tracks: TrackSpans,
     /// Время декодирования после смещения полосы: порядок подачи демуксеру.
     pub(crate) decode: DecodeTiming,
+    /// Точки произвольного доступа после смещения полосы.
+    pub(crate) random_access: SegmentRandomAccess,
     /// Байты (ещё не зачтённые).
     pub(crate) media: Bytes,
     /// С чем его играть.
@@ -339,13 +343,16 @@ impl StreamBuffer {
         );
         drop(replaced);
         let media = self.charge_locked(&mut state, segment.media)?;
-        state.lane_mut(lane)?.shelf.insert(ShelfEntry::waiting(
-            segment.timing,
-            segment.tracks,
-            segment.decode,
-            media,
-            segment.key,
-        ));
+        state.lane_mut(lane)?.shelf.insert(
+            ShelfEntry::waiting(
+                segment.timing,
+                segment.tracks,
+                segment.decode,
+                media,
+                segment.key,
+            )
+            .with_random_access(segment.random_access),
+        );
         // Полосы после перемотки ждут сегмент с целью (сегмент этой полосы может
         // открыть позднее вступление другой); иначе — подача по курсору. Заодно
         // догоняются полосы, у которых подача стояла на полном ящике.

@@ -54,6 +54,11 @@ pub(super) struct SplitMedia {
 /// на каждую `moof` вместе со следующими за ней коробками.
 pub(super) fn split_fmp4(name: &str) -> SplitMedia {
     let bytes = std::fs::read(Path::new(FIXTURES).join("media").join(name)).expect("media");
+    split_fmp4_bytes(&bytes)
+}
+
+/// То же для уже прочитанного файла.
+pub(super) fn split_fmp4_bytes(bytes: &[u8]) -> SplitMedia {
     let mut offset = 0;
     let mut init_end = None;
     let mut fragment_starts = Vec::new();

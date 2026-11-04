@@ -33,7 +33,9 @@
 mod byte_cursor;
 mod decode_order;
 mod iso_bmff;
+mod iso_bmff_run;
 mod matroska;
+mod random_access;
 mod track_spans;
 
 #[cfg(test)]
@@ -53,6 +55,7 @@ use crate::time::TimestampOffset;
 pub(crate) use self::decode_order::{DecodeOrder, DecodeTiming};
 use self::iso_bmff::IsoBmffTimingContext;
 use self::matroska::MatroskaTimingContext;
+pub(crate) use self::random_access::SegmentRandomAccess;
 pub(crate) use self::track_spans::{TrackSlot, TrackSlotAssigner, TrackSpans};
 
 /// Микросекунд в секунде: общая единица времени разборщика.
@@ -519,15 +522,12 @@ impl SegmentTimingContext {
         segment: &[u8],
     ) -> Result<MeasuredSegment, SegmentTimingError> {
         match self {
-            Self::IsoBmff(context) => {
-                context
-                    .segment_spans(segment)
-                    .map(|(span, tracks, decode_order)| MeasuredSegment {
-                        timing: SegmentTiming::Timed(TimedSpan::exact(span)),
-                        tracks,
-                        decode_order,
-                    })
-            }
+            Self::IsoBmff(context) => context.segment_spans(segment).map(|spans| MeasuredSegment {
+                timing: SegmentTiming::Timed(TimedSpan::exact(spans.span)),
+                tracks: spans.tracks,
+                decode_order: spans.decode_order,
+                random_access: spans.random_access,
+            }),
             // Блоки WebM лежат в порядке декодирования, а времени декодирования
             // в контейнере нет: порядок подачи кластеров — порядок показа.
             Self::Matroska(context) => {
@@ -537,12 +537,14 @@ impl SegmentTimingContext {
                         timing: SegmentTiming::Timed(timing),
                         tracks,
                         decode_order: DecodeOrder::FollowsPresentation,
+                        random_access: SegmentRandomAccess::Unrecorded,
                     })
             }
             Self::Untimed => Ok(MeasuredSegment {
                 timing: SegmentTiming::Untimed,
                 tracks: TrackSpans::default(),
                 decode_order: DecodeOrder::FollowsPresentation,
+                random_access: SegmentRandomAccess::Unrecorded,
             }),
         }
     }
@@ -559,4 +561,7 @@ pub(crate) struct MeasuredSegment {
     /// Время декодирования, если контейнер его записывает: по нему полка подаёт
     /// сегменты демуксеру (модуль `decode_order`).
     pub(crate) decode_order: DecodeOrder,
+    /// Точки произвольного доступа: докуда на самом деле стирает `remove()` страницы
+    /// (модуль `random_access`).
+    pub(crate) random_access: SegmentRandomAccess,
 }

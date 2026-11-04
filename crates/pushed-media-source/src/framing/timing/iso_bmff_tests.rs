@@ -5,6 +5,7 @@ use crate::container::PushedContainer;
 use crate::error::PushedStreamError;
 use crate::framing::FramingError;
 use crate::lane::LaneId;
+use crate::test_fixtures::split_mp4;
 use crate::time::TimestampOffset;
 
 use super::test_support::{
@@ -12,8 +13,8 @@ use super::test_support::{
     timed, track_fragment, track_run,
 };
 use super::{
-    DecodeOrder, MediaTime, MediaTimeSpan, SegmentTiming, SegmentTimingContext, SegmentTimingError,
-    TimingStructure,
+    DecodeOrder, MediaTime, MediaTimeSpan, SegmentRandomAccess, SegmentTiming,
+    SegmentTimingContext, SegmentTimingError, TimingStructure,
 };
 
 /// H.264 64×64, 25 к/с, 4 фрагмента по 5 кадров, шкала 12800, длительность из `tfhd`.
@@ -445,5 +446,96 @@ fn span_rejects_reversed_bounds_and_offset_overflow() {
     assert_eq!(
         span.shifted_by(TimestampOffset::from_micros(-100)),
         MediaTimeSpan::new(MediaTime::from_micros(-110), MediaTime::from_micros(-90))
+    );
+}
+
+/// H.264 с B-кадрами: 40 кадров по одному на фрагмент, группа из 8 кадров.
+const VIDEO_H264_BFRAMES_PER_FRAME: &[u8] =
+    include_bytes!("../../../fixtures/video-h264-64-bframes-per-frame.mp4");
+/// Флаги кадра fMP4: зависимый, как `first_sample_flags` Twitch.
+const DEPENDENT_SAMPLE_FLAGS: u32 = 0x0141_0000;
+/// Флаги кадра fMP4: ключевой.
+const SYNC_SAMPLE_FLAGS: u32 = 0x0240_0000;
+/// `trun`: есть флаги у каждого кадра.
+const RUN_HAS_SAMPLE_FLAGS: u32 = 0x400;
+/// `trun`: есть `first_sample_flags`.
+const RUN_HAS_FIRST_SAMPLE_FLAGS: u32 = 0x4;
+
+#[test]
+fn random_access_points_come_from_the_flags_of_each_sample() {
+    let context = synthetic_context(&[VIDEO_TRACK]);
+    let random_access = |run: Vec<u8>| {
+        let segment = iso_media_segment(&[track_fragment(1, Some(512), 2_560, &[run])]);
+        context
+            .measure_media_segment(&segment)
+            .expect("timed")
+            .random_access
+    };
+    // Два кадра по 512 тиков с 2560: ключевой только второй, 3072 тика — 0,24 с.
+    let second_is_sync = track_run(
+        0,
+        RUN_HAS_SAMPLE_FLAGS,
+        2,
+        &[DEPENDENT_SAMPLE_FLAGS, SYNC_SAMPLE_FLAGS],
+    );
+    assert_eq!(
+        random_access(second_is_sync),
+        SegmentRandomAccess::LatestPoint(MediaTime::from_micros(240_000))
+    );
+    // Все зависимые: точек нет.
+    let all_dependent = track_run(
+        0,
+        RUN_HAS_SAMPLE_FLAGS,
+        2,
+        &[DEPENDENT_SAMPLE_FLAGS, DEPENDENT_SAMPLE_FLAGS],
+    );
+    assert_eq!(random_access(all_dependent), SegmentRandomAccess::NoPoints);
+    // Флаги только у первого, остальные берут значение `trex` (нули — ключевой кадр).
+    let first_only = track_run(0, RUN_HAS_FIRST_SAMPLE_FLAGS, 2, &[DEPENDENT_SAMPLE_FLAGS]);
+    assert_eq!(
+        random_access(first_only),
+        SegmentRandomAccess::LatestPoint(MediaTime::from_micros(240_000))
+    );
+}
+
+#[test]
+fn a_track_without_default_flags_leaves_its_random_access_unrecorded() {
+    let context = synthetic_context(&[SyntheticIsoTrack {
+        extends_default_duration: None,
+        ..VIDEO_TRACK
+    }]);
+    // Флаги только у первого кадра, значений по умолчанию нет: про второй ничего не известно.
+    let run = track_run(0, RUN_HAS_FIRST_SAMPLE_FLAGS, 2, &[SYNC_SAMPLE_FLAGS]);
+    let segment = iso_media_segment(&[track_fragment(1, Some(512), 2_560, &[run])]);
+    assert_eq!(
+        context
+            .measure_media_segment(&segment)
+            .expect("timed")
+            .random_access,
+        SegmentRandomAccess::Unrecorded
+    );
+}
+
+#[test]
+fn a_recorded_stream_reports_its_keyframes_as_random_access_points() {
+    let clip = split_mp4(VIDEO_H264_BFRAMES_PER_FRAME);
+    let context =
+        SegmentTimingContext::from_initialization(PushedContainer::FragmentedMp4, &clip.init)
+            .expect("init");
+    let random_access = |index: usize| {
+        context
+            .measure_media_segment(&clip.fragments[index])
+            .expect("timed")
+            .random_access
+    };
+    // Группы по 8 кадров: ключевой показывается в 80 мс, следующий — в 400 мс.
+    assert_eq!(
+        random_access(0),
+        SegmentRandomAccess::LatestPoint(MediaTime::from_micros(80_000))
+    );
+    assert_eq!(random_access(1), SegmentRandomAccess::NoPoints);
+    assert_eq!(
+        random_access(8),
+        SegmentRandomAccess::LatestPoint(MediaTime::from_micros(400_000))
     );
 }
