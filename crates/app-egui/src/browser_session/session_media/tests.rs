@@ -732,6 +732,7 @@ mod generation_placement;
 mod generation_rejection;
 mod generation_start;
 mod generation_switch;
+mod handoff_start;
 mod live_click_real_player;
 mod live_scrub_real_player;
 mod opening_clock;

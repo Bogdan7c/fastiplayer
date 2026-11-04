@@ -60,7 +60,7 @@ use browser_bridge_protocol::{
     PlaybackRate as PagePlaybackRate, SessionCloseReason, StreamGeneration,
 };
 use browser_bridge_session::SessionRef;
-use player_core::{PlaybackRate as PlayerPlaybackRate, PreparedMedia};
+use player_core::{PlaybackRate as PlayerPlaybackRate, PreparedInitialPosition, PreparedMedia};
 use tracing::{debug, error, info, warn};
 
 use self::ending::ActiveDrain;
@@ -141,6 +141,10 @@ struct LoadedGeneration {
     /// С какого места поколение передано плееру: там страница ждёт его, пока оно
     /// ставится (часы установки, см. `page_clock`).
     start: GenerationStart,
+    /// Где плеер поставит медиа при загрузке (`None` — там, где лежат байты: эфир, поток
+    /// без длительности, файл). Отличается от `start`: эфир с названным стартом на эту
+    /// позицию не ставится.
+    positioned_at: Option<Duration>,
 }
 
 impl LoadedGeneration {
@@ -156,6 +160,22 @@ impl LoadedGeneration {
             Some(target) => GenerationStart::PageSeekedTo(target),
             None => self.start,
         }
+    }
+
+    /// Перемотка страницы ровно повторяет место, куда плеер и так ставит поколение: ни
+    /// отдельной перемотки, ни отложенной раньше другой цели не нужно (последняя
+    /// побеждает). Так приходит итоговое T0 передачи, названное ещё в начале повтора
+    /// (шаг 3 договора `handoff-controller`): лишняя перемотка выбросила бы только что
+    /// показанный кадр и заново декодировала бы то же место.
+    ///
+    /// Совпадение точное: даже близкая цель — настоящая перемотка страницы. И только пока
+    /// поколение ставится: потом позиция уже ушла, и та же цель — перемотка назад.
+    fn absorb_page_seek_to_start(&mut self, target: Duration) -> bool {
+        let repeats_start = !self.page_state_reconciled && self.positioned_at == Some(target);
+        if repeats_start {
+            self.seek_when_shown = None;
+        }
+        repeats_start
     }
 }
 
@@ -510,6 +530,13 @@ impl SessionMedia {
         } else {
             LoadStart::Paused
         };
+        // Загрузка забирает `prepared`: где оно стоит, запоминаем до неё.
+        let positioned_at = match prepared.prepared_initial_position() {
+            PreparedInitialPosition::PositionedAt {
+                target_position, ..
+            } => Some(target_position.as_duration()),
+            PreparedInitialPosition::Beginning => None,
+        };
         let load_ticket = match self.playback.load(prepared, start) {
             Ok(load_ticket) => load_ticket,
             Err(load_error) => {
@@ -541,6 +568,7 @@ impl SessionMedia {
                 AfterLoad::SeekTo(target) => Some(target),
             },
             start: pending.placement.named_start(),
+            positioned_at,
         });
     }
 

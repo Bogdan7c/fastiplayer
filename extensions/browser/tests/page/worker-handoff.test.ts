@@ -1,5 +1,5 @@
 // Передача видео, чей MediaSource живёт в выделенном воркере (сессия 09b, пакет C): кандидат,
-// `begin_handoff` → повтор журнала ИЗ воркера → `page_seek` после повтора → тень → живой поток с
+// `begin_handoff` → повтор журнала ИЗ воркера (T0 сразу за объявлением поколения) → итоговый `page_seek` → тень → живой поток с
 // ключами «w1/ms-N»; конец передачи глушит воркер; новый MediaSource воркера на том же элементе —
 // новое поколение; честные отказы. Хук в воркере настоящий, связь — настоящие MessagePort Node.
 
@@ -91,28 +91,34 @@ async function beginHandoff(isolated: IsolatedSide): Promise<void> {
   isolated.send({ kind: "begin_handoff", request_id: 2, document: candidate.document, element: candidate.element });
 }
 
-test("begin_handoff: worker journal replay first, then page_seek and the shadow, then live worker bytes — keys w1/ms-N", async () => {
+test("begin_handoff: T0 right after the worker declares the generation, then its replay, page_seek and the shadow, then live worker bytes — keys w1/ms-N", async () => {
   const world = await workerPlayingPage();
   const isolated = handshake(world.page);
   try {
     await beginHandoff(isolated);
     await until(() => world.shadow.started.length === 1, "the shadow");
-    assert.deepEqual(kinds(isolated.received), ["handoff_began", "mse:source_buffer_added:w1/ms-1", "bytes:w1/ms-1", "page_seek", "page_playback"]);
+    assert.deepEqual(kinds(isolated.received), ["handoff_began", "mse:source_buffer_added:w1/ms-1", "page_seek", "bytes:w1/ms-1", "page_seek", "page_playback"]);
     assert.equal(world.shadow.started[0]?.source, "media_source", "the real element keeps its handle under the shadow");
-    assert.deepEqual(isolated.received[3], { kind: "page_seek", target_us: 250_000 });
-    const replayed = isolated.received[2] as Extract<PageEvent, { kind: "bytes" }>;
+    assert.deepEqual(isolated.received[2], { kind: "page_seek", target_us: 250_000 });
+    assert.deepEqual(isolated.received[4], { kind: "page_seek", target_us: 250_000 });
+    const replayed = isolated.received[3] as Extract<PageEvent, { kind: "bytes" }>;
     assert.deepEqual([...replayed.bytes], [...VIDEO_MP4.bytes()]);
 
     const live = VIDEO_MP4.bytes().slice(0, 100);
     world.sourceBuffer.appendBuffer(live);
-    await isolated.waitFor(6);
-    const liveEvent = isolated.received[5] as Extract<PageEvent, { kind: "bytes" }>;
+    await isolated.waitFor(7);
+    const liveEvent = isolated.received[6] as Extract<PageEvent, { kind: "bytes" }>;
     assert.equal(liveEvent.media_source, "w1/ms-1");
     assert.deepEqual([...liveEvent.bytes], [...live]);
     // Кусок из воркера уходит изолированному миру тем же буфером (transfer), без второй копии.
     const lastBytes = world.page.postedToPorts.filter(({ message }) => (message as PageEvent).kind === "bytes").at(-1);
     assert.ok(lastBytes !== undefined);
     assert.deepEqual(lastBytes.transfer, [(lastBytes.message as Extract<PageEvent, { kind: "bytes" }>).bytes.buffer]);
+
+    // Живое событие MSE идёт после тени: T0 уже назван, второй раз плеер его не услышит.
+    world.sourceBuffer.abort();
+    await until(() => isolated.received.length === 8, "the live MSE event");
+    assert.deepEqual(kinds(isolated.received.slice(7)), ["mse:source_buffer_aborted:w1/ms-1"]);
     assertAcceptedByIsolatedWorld(isolated.received);
   } finally {
     isolated.close();

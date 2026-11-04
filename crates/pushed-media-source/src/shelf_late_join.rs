@@ -80,7 +80,7 @@ impl LaneShelf {
         let first_after_target = self
             .entries
             .iter()
-            .position(|entry| entry.span().start() > window.target)?;
+            .position(|entry| entry.page_holds() && entry.span().start() > window.target)?;
         let data_earlier_inside_window = self.entries[..first_after_target]
             .iter()
             .any(|entry| entry.span().end() > window.covered.start());

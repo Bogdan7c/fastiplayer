@@ -167,17 +167,19 @@ test("describe_candidates: keys, live media, playing and visible area, including
   });
 });
 
-test("begin_handoff: began → replay of memory → page_seek(T0) → page_playback(play) → shadow, bytes exact and transferred", async () => {
+test("begin_handoff: began → T0 right after the generation is declared → replay → page_seek(T0) → play → shadow, bytes exact and transferred", async () => {
   const harness = startHarness();
   const { page, shadow } = harness;
   const { video, download } = playingPage(harness);
   await withChannel(harness, async (isolated) => {
     await describeAndBegin(isolated);
-    await isolated.waitFor(9);
+    await isolated.waitFor(10);
     await isolated.settle();
     assert.deepEqual(kinds(isolated.received), [
       "handoff_began",
       "mse:source_buffer_added",
+      // Плеер узнаёт T0 раньше любого байта истории: на ней он не имеет права начать.
+      "page_seek",
       "mse:duration_changed",
       "mse:source_buffer_added",
       "bytes",
@@ -187,8 +189,9 @@ test("begin_handoff: began → replay of memory → page_seek(T0) → page_playb
       "page_playback",
     ]);
     assert.deepEqual(isolated.received[0], { kind: "handoff_began", request_id: 2, outcome: "started" });
-    assert.deepEqual(isolated.received[7], { kind: "page_seek", target_us: 250_000 });
-    assert.deepEqual(isolated.received[8], { kind: "page_playback", request: { kind: "play" } });
+    assert.deepEqual(isolated.received[2], { kind: "page_seek", target_us: 250_000 });
+    assert.deepEqual(isolated.received[8], { kind: "page_seek", target_us: 250_000 });
+    assert.deepEqual(isolated.received[9], { kind: "page_playback", request: { kind: "play" } });
     assert.equal(shadow.started.length, 1);
     assert.equal(shadow.started[0]?.element, video, "the real element went into the shadow");
     // Тень получила точное знание реестра: адрес MediaSource — да, blob обычного файла — нет.
@@ -225,7 +228,7 @@ test("live stream: only the handed element's media sources, including a new one 
 
   await withChannel(harness, async (isolated) => {
     await describeAndBegin(isolated);
-    await isolated.waitFor(9);
+    await isolated.waitFor(10);
     await isolated.settle();
     isolated.received.length = 0;
 
@@ -263,7 +266,7 @@ test("shadow commands reach the shadow; the shadow's own handoff_ended stops the
   const { videoBuffer } = playingPage(harness);
   await withChannel(harness, async (isolated) => {
     await describeAndBegin(isolated);
-    await isolated.waitFor(9);
+    await isolated.waitFor(10);
     isolated.send({ kind: "shadow", command: { kind: "seek", seek_id: 4, target_us: 300_000 } });
     isolated.send({ kind: "shadow", command: { kind: "clock", position_us: 10, state: "playing", rate: 1000 } });
     await isolated.settle();
@@ -306,7 +309,7 @@ test("begin_handoff outcomes: unknown element, element without live media, shado
   failing.shadow.failToStart = new Error("shadow broke");
   await withChannel(failing, async (isolated) => {
     await describeAndBegin(isolated);
-    await isolated.waitFor(10);
+    await isolated.waitFor(11);
     assert.deepEqual(isolated.received.at(-1), { kind: "handoff_ended", cause: "returned" });
     assert.equal(failing.bridge.controller.isHandingOff, false);
   });
@@ -342,13 +345,13 @@ test("a second handoff after return replays the memory again (journal is kept du
   const { videoBuffer } = playingPage(harness);
   await withChannel(harness, async (isolated) => {
     await describeAndBegin(isolated);
-    await isolated.waitFor(9);
+    await isolated.waitFor(10);
     videoBuffer.appendBuffer(VIDEO_MP4.bytes().slice(733, 5714)); // во время передачи
     isolated.send({ kind: "end_handoff", position: { kind: "shadow_position" }, resume: { kind: "as_shadow" } });
-    await isolated.waitFor(11);
+    await isolated.waitFor(12);
     isolated.received.length = 0;
     isolated.send({ kind: "begin_handoff", request_id: 3, document: harness.bridge.documentTag, element: 1 });
-    await isolated.waitFor(10);
+    await isolated.waitFor(11);
     await isolated.settle();
     const videoBytes = isolated.received.filter((message) => message.kind === "bytes" && message.source_buffer === 0);
     assert.equal(
@@ -379,7 +382,7 @@ test("a chunk larger than one bytes event is sent as consecutive exact parts (�
   sourceBuffer.appendBuffer(big);
   await withChannel(harness, async (isolated) => {
     await describeAndBegin(isolated);
-    await isolated.waitFor(6);
+    await isolated.waitFor(7);
     await isolated.settle();
     const parts = isolated.received.filter((message) => message.kind === "bytes").map((message) => (message.kind === "bytes" ? message.bytes : new Uint8Array()));
     assert.deepEqual(parts.map((part) => part.length), [733, MAX_PAGE_BYTES_EVENT_BYTES, big.length - MAX_PAGE_BYTES_EVENT_BYTES]);
@@ -425,7 +428,7 @@ test("a failed send in the live stream ends the handoff honestly instead of leav
   const isolated = handshake(page);
   try {
     await describeAndBegin(isolated);
-    await isolated.waitFor(9);
+    await isolated.waitFor(10);
     page.portFailure.error = new Error("DataCloneError: out of memory");
     videoBuffer.appendBuffer(VIDEO_MP4.bytes().slice(733, 5714));
     assert.deepEqual(shadow.ended, [{ position: { kind: "shadow_position" }, resume: { kind: "as_shadow" } }], "the shadow was taken off");
@@ -447,7 +450,7 @@ test("a shadow event that cannot be sent ends the handoff honestly and leaves a 
   const isolated = handshake(page);
   try {
     await describeAndBegin(isolated);
-    await isolated.waitFor(9);
+    await isolated.waitFor(10);
     page.portFailure.error = new Error("DataCloneError: out of memory");
     // Тень не должна получить исключение обратно: передача кончается у контроллера.
     shadow.started[0]?.emit({ kind: "page_seek", target_us: 5_000_000 });
@@ -471,7 +474,7 @@ test("handoff_ended that cannot be sent: no exception into the shadow, a trace, 
   const isolated = handshake(page);
   try {
     await describeAndBegin(isolated);
-    await isolated.waitFor(9);
+    await isolated.waitFor(10);
     page.portFailure.error = new Error("port is broken");
     shadow.started[0]?.emit({ kind: "handoff_ended", cause: "element_released" });
     assert.equal(bridge.controller.isHandingOff, false);
@@ -497,7 +500,7 @@ test("real shadow, YouTube order on the handed element: the new MediaSource flow
   const { video } = playingPage(harness);
   await withChannel(harness, async (isolated) => {
     await describeAndBegin(isolated);
-    await isolated.waitFor(9);
+    await isolated.waitFor(10);
     await isolated.settle();
     isolated.received.length = 0;
 
@@ -533,9 +536,9 @@ test("real shadow: a pulse send that throws ends the handoff, returns the elemen
   const isolated = handshake(page);
   try {
     await describeAndBegin(isolated);
-    await isolated.waitFor(9);
-    clockTick(isolated, 250_000);
     await isolated.waitFor(10);
+    clockTick(isolated, 250_000);
+    await isolated.waitFor(11);
     assert.deepEqual(isolated.received.at(-1), { kind: "shadow_alive" });
     assert.equal(video.muted, false, "the page sees its own muted state");
 

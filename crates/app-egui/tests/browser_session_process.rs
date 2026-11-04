@@ -847,3 +847,7 @@ mod replay_recording;
 // всё, перематывается на 0 и кладёт новую шкалу; плеер идёт за страницей без `SeekTargetExpired`.
 #[path = "browser_session_process/live_page_restart.rs"]
 mod live_page_restart;
+
+// Передача, когда страница уже стёрла начало: старт с её позиции, а не с истории журнала.
+#[path = "browser_session_process/handoff_start.rs"]
+mod handoff_start;

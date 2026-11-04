@@ -195,12 +195,13 @@ fn erased_but_unplayed_stays_for_the_player_until_the_next_seek() {
     // Плеер на 100 мс: всё после него ещё нужно ему, но страницы этого больше нет.
     let report = shelf.remove(0, 1_000, PlayedSoFar::Until(at(100)));
     assert_eq!((report.released_segments, report.kept_not_played), (2, 6));
+    // Плеер доигрывает их с полки, но перемотка туда уже не сядет: снимет их первым шагом.
     assert_eq!(shelf.starts_ms(), [80, 120, 160, 200, 240, 280]);
     assert!(
-        shelf
+        !shelf
             .shelf
             .holds(at(200), &rules(), IncomingMedia::MayArrive),
-        "still playable until the player leaves"
+        "the seek question answers like the seek"
     );
 
     let erased = shelf.shelf.take_erased_by_page();
@@ -212,12 +213,6 @@ fn erased_but_unplayed_stays_for_the_player_until_the_next_seek() {
         shelf.ledger.held_bytes(),
         held - 8 * 8,
         "the bytes are free"
-    );
-    assert!(
-        !shelf
-            .shelf
-            .holds(at(200), &rules(), IncomingMedia::MayArrive),
-        "a seek there must ask the page"
     );
 }
 

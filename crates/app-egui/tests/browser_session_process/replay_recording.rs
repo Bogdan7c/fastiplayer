@@ -19,6 +19,7 @@
 //! `FASTIPLAYER_REPLAY_WINDOW=1` — окно на частном виртуальном дисплее (настоящий путь показа:
 //! аппаратный декодер и рендер), `FASTIPLAYER_REPLAY_CONFIG=<config.toml>` — настройки показа
 //! живого плеера. Без них кадры считает безоконный путь с программным декодером.
+//! `FASTIPLAYER_REPLAY_LOG=<файл>` — весь журнал процесса в файл (вне репозитория).
 
 use super::*;
 
@@ -491,6 +492,9 @@ fn replay_real_recording_in_the_real_process() {
         Duration::from_millis(tail_ms),
         &process,
     );
+    if let Some(log_path) = std::env::var_os("FASTIPLAYER_REPLAY_LOG") {
+        std::fs::write(&log_path, lines.join("\n")).expect("the replay log is written");
+    }
     // Сводки и отказы плеера (их текст — коды ошибок и времена, без данных страницы):
     // по ним видно, пошёл ли плеер за страницей (находка 09b2: `SeekTargetExpired`).
     for line in lines.iter().filter(|line| {

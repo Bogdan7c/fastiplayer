@@ -204,6 +204,14 @@ impl SessionMedia {
             self.repeat_viewer_click(click);
             return;
         }
+        if self
+            .loaded
+            .as_mut()
+            .is_some_and(|loaded| loaded.absorb_page_seek_to_start(target))
+        {
+            debug!("Page seek repeats the place the generation is being installed at");
+            return;
+        }
         // Плеер ещё ставит поколение — перемотка ждёт показа (последняя побеждает).
         if self.seek_loaded_generation(target) == LoadedSeek::NothingLoaded {
             debug!("Page seek before the stream opened; the player starts where the bytes start");

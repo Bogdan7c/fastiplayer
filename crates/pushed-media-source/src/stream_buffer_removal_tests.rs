@@ -15,6 +15,7 @@ use crate::buffer_window::{BufferIntake, BufferWindow};
 use crate::container::PushedContainer;
 use crate::error::PushedStreamError;
 use crate::lane::LaneId;
+use crate::monitor::ShelfSeekOutlook;
 use crate::page_removal::{
     PageRemovalOutcome, PageRemovalReport, PageRemovedRange, PageRemovedRangeEnd,
 };
@@ -70,6 +71,22 @@ fn read_packets(demuxer: &mut PushedStreamDemuxer, count: usize) {
         match demuxer.next_event().expect("readable") {
             DemuxReadEvent::Packet(_) => read += 1,
             DemuxReadEvent::EndOfStream => panic!("unexpected end after {read} packets"),
+            DemuxReadEvent::TemporarilyUnavailable(hint) => thread::sleep(hint.retry_after()),
+            _ => {}
+        }
+    }
+}
+
+/// Время показа первого пакета после перемотки; не дождался — тест падает.
+fn first_packet_time(demuxer: &mut PushedStreamDemuxer) -> Duration {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        assert!(Instant::now() < deadline, "no packet arrived");
+        match demuxer.next_event().expect("readable") {
+            DemuxReadEvent::Packet(packet) => {
+                return packet.pts;
+            }
+            DemuxReadEvent::EndOfStream => panic!("the stream ended without a packet"),
             DemuxReadEvent::TemporarilyUnavailable(hint) => thread::sleep(hint.retry_after()),
             _ => {}
         }
@@ -207,6 +224,48 @@ fn a_seek_never_lands_on_what_the_page_erased_ahead_of_the_player() {
     // Нестёртое по-прежнему на полке.
     demuxer.seek(ms(100)).expect("seek");
     assert_eq!(monitor.take_page_seek_request(), None);
+}
+
+/// Передача: журнал страницы повторяет всю её историю, вместе со стёртым. Посреди такого
+/// повтора полка держит стёртое ради плеера, но для старта и для перемотки его нет.
+#[test]
+fn replayed_history_erased_by_the_page_is_neither_a_start_nor_a_landing() {
+    let media = split_mp4(VIDEO_H264_64);
+    let (mut writer, mut opener) = stream(policy());
+    writer.append(LANE, &media.init).expect("init");
+    for fragment in &media.fragments {
+        writer.append(LANE, fragment).expect("fragment");
+    }
+    let mut demuxer = open(&mut opener);
+    let monitor = writer.monitor();
+    assert_eq!(monitor.earliest_common_start(), Some(ms(0)));
+    // Страница ещё до передачи стёрла первые 400 мс и держит только 400–800 мс.
+    let report =
+        applied(writer.note_page_removed(LANE, removal(ms(0), PageRemovedRangeEnd::At(ms(400)))));
+    assert_eq!(report.kept_not_played, 2, "nothing played them yet");
+
+    assert_eq!(
+        monitor.earliest_common_start(),
+        Some(ms(400)),
+        "the data of the page starts after what it erased"
+    );
+    assert_eq!(
+        monitor.seek_outlook(ms(100)),
+        ShelfSeekOutlook::AsksPage,
+        "the question answers like the seek: the erased time is not a landing"
+    );
+    assert_eq!(monitor.seek_outlook(ms(500)), ShelfSeekOutlook::FromShelf);
+    assert!(!monitor.holds_downloaded(ms(100)));
+
+    // Старт с того, что страница держит, не трогает её: просьбы вернуться к стёртому нет.
+    let start = monitor.earliest_common_start().expect("start");
+    demuxer.seek(start).expect("seek");
+    assert_eq!(monitor.take_page_seek_request(), None);
+    assert_eq!(
+        first_packet_time(&mut demuxer),
+        ms(400),
+        "the stream plays from what the page holds"
+    );
 }
 
 #[test]

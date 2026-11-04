@@ -39,6 +39,8 @@ use crate::intake::ChargedSegment;
 
 #[path = "shelf_forgotten.rs"]
 mod forgotten;
+#[path = "shelf_landing.rs"]
+mod landing;
 #[path = "shelf_late_join.rs"]
 mod late_join;
 #[path = "shelf_removal.rs"]
@@ -235,6 +237,11 @@ impl ShelfEntry {
         reach_of(self.timing, rules)
     }
 
+    /// Держит ли это время страница (не стёрто, модуль `removal`).
+    fn page_holds(&self) -> bool {
+        self.page_copy == PageCopy::Held
+    }
+
     /// Начало на оси подачи (декодирования): в этом порядке сегменты идут демуксеру.
     fn decode_start(&self) -> MediaTime {
         self.decode.timing().span().start()
@@ -409,13 +416,19 @@ impl LaneShelf {
     ///
     /// 1. Сегмент, внутри которого лежит цель (начало ≤ цель < конец; у открытого
     ///    конца — до досягаемости, но не дальше начала следующего сегмента), — его
-    ///    начало и есть точка безопасного старта не позже цели.
+    ///    начало и есть точка безопасного старта не позже цели. Если декодирование
+    ///    с него начать нельзя, старт отступает к точке доступа
+    ///    ([`Self::decodable_landing`]).
     /// 2. Цель попала в маленькую дыру (не больше наибольшей дыры) перед
     ///    сегментом — этот сегмент: плеер перешагивает такие дыры.
     /// 3. Вход окончен, а цель — за концом полки (перемотка на длительность или в
     ///    последний кадр, конец которого не записан) — последний сегмент: плеер
     ///    доиграет его и получит конец потока, а не будет вечно ждать байтов,
     ///    которых страница не пришлёт.
+    ///
+    /// Стёртое страницей сюда не входит: настоящая перемотка снимает его первым же
+    /// шагом ([`Self::take_erased_by_page`]), а вопрос «сядет ли с полки» обязан
+    /// ответить так же, как перемотка (решение 196).
     ///
     /// `None` — цели на полке нет.
     fn restart_index(
@@ -426,13 +439,18 @@ impl LaneShelf {
     ) -> Option<usize> {
         let containing = (0..self.entries.len()).rev().find(|&index| {
             let entry = &self.entries[index];
-            entry.span().start() <= target && target < self.containment_end(index, rules)
+            entry.page_holds()
+                && entry.span().start() <= target
+                && target < self.containment_end(index, rules)
         });
         containing
+            .map(|index| self.decodable_landing(index, rules))
             .or_else(|| {
                 let latest_start = later(target, rules.max_contiguous_gap_micros);
                 self.entries.iter().position(|entry| {
-                    entry.span().start() > target && entry.span().start() <= latest_start
+                    entry.page_holds()
+                        && entry.span().start() > target
+                        && entry.span().start() <= latest_start
                 })
             })
             .or_else(|| self.final_landing_index(target, incoming))
@@ -461,7 +479,7 @@ impl LaneShelf {
         if incoming != IncomingMedia::Ended {
             return None;
         }
-        let last = self.entries.len().checked_sub(1)?;
+        let last = self.entries.iter().rposition(ShelfEntry::page_holds)?;
         (target >= self.entries[last].span().start()).then_some(last)
     }
 
@@ -577,10 +595,17 @@ impl LaneShelf {
         std::mem::take(&mut self.entries)
     }
 
-    /// Начало самого раннего сегмента на полке (`None` — полка пуста).
-    pub(crate) fn earliest_start(&self) -> Option<MediaTime> {
-        // Сегменты лежат по возрастанию начала: первый и есть самый ранний.
-        self.entries.first().map(|entry| entry.span().start())
+    /// Начало самого раннего сегмента, который страница ещё держит (`None` — таких нет).
+    ///
+    /// Стёртое страницей не считается началом данных: при передаче журнал повторяет всю
+    /// её историю вместе со стёртым, и поколение, поставленное на такое «начало», сняло бы
+    /// его первой же перемоткой и попросило бы страницу вернуться туда (решение 196).
+    pub(crate) fn earliest_held_start(&self) -> Option<MediaTime> {
+        // Сегменты лежат по возрастанию начала: первый подходящий и есть самый ранний.
+        self.entries
+            .iter()
+            .find(|entry| entry.page_holds())
+            .map(|entry| entry.span().start())
     }
 
     /// Конец непрерывного куска полки, покрывающего `position`.
@@ -603,10 +628,31 @@ impl LaneShelf {
         position: MediaTime,
         rules: &ShelfRules,
     ) -> Option<MediaTimeSpan> {
+        self.run_around(position, rules, self.entries.iter())
+    }
+
+    /// То же, но только по тому, что страница держит: сколько полосы переживёт перемотку,
+    /// которая снимет стёртое (`take_erased_by_page`). Опора позднего вступления (правило 5).
+    pub(crate) fn held_run(
+        &self,
+        position: MediaTime,
+        rules: &ShelfRules,
+    ) -> Option<MediaTimeSpan> {
+        let held = self.entries.iter().filter(|entry| entry.page_holds());
+        self.run_around(position, rules, held)
+    }
+
+    /// Непрерывный кусок `entries` (по возрастанию начала), покрывающий `position`.
+    fn run_around<'shelf>(
+        &self,
+        position: MediaTime,
+        rules: &ShelfRules,
+        entries: impl Iterator<Item = &'shelf ShelfEntry>,
+    ) -> Option<MediaTimeSpan> {
         let gap = rules.max_contiguous_gap_micros;
         let covers = |run: &CoveredRun| earlier(run.start, gap) <= position && position < run.end;
         let mut run: Option<CoveredRun> = None;
-        for entry in &self.entries {
+        for entry in entries {
             let (start, end, reach) =
                 (entry.span().start(), entry.span().end(), entry.reach(rules));
             run = match run {
@@ -680,6 +726,9 @@ mod tests;
 #[path = "shelf_decode_order_tests.rs"]
 mod decode_order_tests;
 
+#[cfg(test)]
+#[path = "shelf_landing_tests.rs"]
+mod landing_tests;
 #[cfg(test)]
 #[path = "shelf_removal_tests.rs"]
 mod removal_tests;

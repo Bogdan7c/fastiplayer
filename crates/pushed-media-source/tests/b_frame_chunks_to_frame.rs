@@ -26,11 +26,13 @@ mod support;
 
 use std::time::Duration;
 
-use player_core::PlaybackState;
-use pushed_media_source::{LaneId, PushedContainer, PushedSourcePolicy, pushed_stream};
+use player_core::{PlaybackState, PreparedMedia};
+use pushed_media_source::{
+    LaneId, PushedContainer, PushedDuration, PushedSourcePolicy, pushed_stream,
+};
 use support::media::{FragmentedMp4, own_fixture};
 use support::packet_order::{PacketLoggingDemuxer, ReadVideoPacket, VideoPacketLog};
-use support::playback::{PlaybackReport, open, play};
+use support::playback::{PlaybackReport, open, play, play_controlled};
 
 /// Фикстура: H.264 Main, пирамида B-кадров, один кадр на фрагмент.
 const FIXTURE: &str = "video-h264-64-bframes-per-frame.mp4";
@@ -136,4 +138,73 @@ fn single_frame_fragments_appended_one_by_one_play_every_frame() {
     let playback = play_in_appends_of(1);
     assert_decode_order(&playback.packets);
     assert_every_frame_presented_in_order(&playback.report);
+}
+
+/// Перемотка в середину группы кадров у однокадровых фрагментов: сегмент с целью — зависимый
+/// кадр, подача с него не дала бы ни одного кадра до следующего ключевого. Цель лежит в
+/// ПОСЛЕДНЕЙ группе ролика: следующего ключевого нет вовсе, как у начала записи Twitch, где
+/// группа длиннее всего скачанного, и плеер стоял без единого кадра вечно. Кадры обязаны пойти
+/// от самой цели: посадка отступает к ключевому кадру, а кадры до цели плеер прячет.
+#[test]
+fn a_seek_inside_a_group_of_pictures_shows_the_target_frame() {
+    let clip = FragmentedMp4::split(&own_fixture(FIXTURE));
+    let policy = PushedSourcePolicy::recommended().expect("policy");
+    let (mut writer, mut opener) = pushed_stream(policy).expect("stream");
+    writer
+        .add_lane(VIDEO, PushedContainer::FragmentedMp4)
+        .expect("video lane");
+    // Перемотка требует известной длительности.
+    writer.set_duration(PushedDuration::Finite(
+        FRAME * u32::try_from(FRAMES_IN_CLIP + 2).expect("small"),
+    ));
+    writer
+        .append(VIDEO, &clip.initialization)
+        .expect("initialization");
+    for fragment in &clip.fragments {
+        writer.append(VIDEO, fragment).expect("fragment");
+    }
+    writer.end_of_stream().expect("end of stream");
+
+    // Группы по 8 кадров: последняя начинается с 33-го кадра, цель — через два кадра после него.
+    let target = Duration::from_millis(1_500);
+    let mut seeked = false;
+    let prepared = PreparedMedia::from_external_label(
+        "pushed media seek inside a group of pictures",
+        Box::new(open(&mut opener)),
+    );
+    let monitor = writer.monitor();
+    let report = play_controlled(prepared, |control| {
+        let position = control.observation().position;
+        monitor.note_playback_position(position);
+        if !seeked && position >= FRAME * 3 {
+            seeked = true;
+            control.seek(target);
+        }
+    });
+
+    assert!(seeked, "the clip played long enough to seek");
+    assert!(
+        report.errors.is_empty(),
+        "player errors: {:?}",
+        report.errors
+    );
+    assert_eq!(report.final_state, PlaybackState::Ended);
+    let (seek_tick, _) = report.seeks[0];
+    let after_seek: Vec<Duration> = report
+        .frames
+        .iter()
+        .filter(|frame| frame.tick > seek_tick)
+        .map(|frame| frame.pts)
+        .collect();
+    let first = *after_seek.first().expect("frames after the seek");
+    assert!(
+        first.abs_diff(target) <= FRAME,
+        "first frame after the seek at {first:?}, target {target:?}: {after_seek:?}"
+    );
+    assert!(
+        after_seek
+            .windows(2)
+            .all(|pair| pair[1] > pair[0] && pair[1] - pair[0] <= FRAME),
+        "frames after the seek go one by one: {after_seek:?}"
+    );
 }

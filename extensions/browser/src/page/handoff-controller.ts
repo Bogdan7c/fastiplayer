@@ -7,8 +7,15 @@
 //     - MSE выделенного воркера (09b-C) — тот же повтор, но его шлёт хук воркера по личному каналу:
 //       шаги 3–5 ждут его конца (`replayed`), срок — у реестра воркеров; не дождались — честный конец;
 //     - файл `<video src>` (09b) — `file_source{url}`: байты по запросам плеера качает фон;
-//  3. `page_seek{T0}` — настоящая позиция элемента (решение 111: перемотка во время открытия
-//     поколения = его старт);
+//     - у обоих видов MSE `page_seek{T0}` идёт сразу за первым событием повтора: фон ставит перед
+//       этим событием `generation_started`, так что T0 — первое, что плеер знает о поколении.
+//       Журнал хранит историю страницы целиком, вместе со стёртым: дождись плеер конца повтора,
+//       он успел бы поставить поколение на начало истории и попросить страницу туда перемотаться,
+//       хотя страница стоит совсем в другом месте (живая проверка 09b2, запись Twitch);
+//  3. `page_seek{T0}` ещё раз (решение 111: перемотка во время открытия поколения = его старт).
+//     Повтор главного потока синхронный, и это тот же T0; повтор воркера долгий, и элемент мог
+//     уйти вперёд. Поколение эфира плеер на T0 при загрузке не ставит и идёт за этой перемоткой
+//     после показа;
 //  4. `page_playback{play}`, если элемент играл;
 //  5. `startShadow(...)` — элемент уходит в тень (у файла — с снятым источником, решение 186);
 //  6. дальше — живой поток событий и байтов MediaSource этого элемента (и новых MediaSource, которые
@@ -26,6 +33,7 @@
 // Байты: журнал держит виды без копий; копия делается только в момент отправки (`stream-sender.ts`).
 // Куски воркера уже приходят плотной копией с transfer и уходят дальше тем же буфером.
 
+import type { MediaTimeMicros } from "../protocol/time.ts";
 import type { DocumentTag, ElementKey, HandoffEndPosition, HandoffEndResume, PageEvent, ShadowCommand } from "../shared/handoff-contract.ts";
 import type { BinaryIntrinsics } from "./binary-view.ts";
 import type { DomReaders } from "./dom-readers.ts";
@@ -62,6 +70,8 @@ interface ActiveHandoff {
   /** Ключи MediaSource (главного потока и «w<N>/ms-K» воркеров), чьи события и байты идут живым потоком. */
   readonly liveMediaSources: Set<string>;
   session: ShadowSessionHandle | null;
+  /** T0, уже названный плееру в начале повтора (шаг 2); `null` — ещё не назван. */
+  announcedStartUs: MediaTimeMicros | null;
 }
 
 /** Зачем открывается поток MediaSource воркера. */
@@ -163,7 +173,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     port.send({ kind: "handoff_began", request_id: requestId, outcome: "started" });
     this.#tap((tap) => tap.handoffBegan(element));
     const liveMediaSources = new Set<string>(source.kind === "media_source" ? [source.record.key] : []);
-    const active: ActiveHandoff = { element, liveMediaSources, session: null };
+    const active: ActiveHandoff = { element, liveMediaSources, session: null, announcedStartUs: null };
     this.#active = active;
     if (source.kind === "worker_media_source") {
       // Повтор журнала идёт из воркера асинхронно: шаги 3–5 — по его концу.
@@ -171,7 +181,9 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
       return;
     }
     try {
-      this.#startShadow(active, this.#openStream(port, source));
+      const shadowSource = this.#openStream(active, port, source);
+      // Повтор главного потока синхронный: элемент стоит там же, T0 — ровно названный.
+      this.#startShadow(active, shadowSource, active.announcedStartUs ?? this.#startPositionOf(element));
     } catch {
       this.#failToStart(active);
     }
@@ -182,19 +194,36 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
    * элемента читается здесь, ДО тени: тень покажет странице уже время плеера. Бросает — решает
    * вызывающий (`#failToStart`).
    */
-  #startShadow(active: ActiveHandoff, shadowSource: ShadowSourceKind): void {
+  #startShadow(active: ActiveHandoff, shadowSource: ShadowSourceKind, startPositionUs: MediaTimeMicros): void {
     const port = this.#port;
     if (port === null) throw new Error("page port is gone");
     const { dom, registry } = this.#environment;
     const { element } = active;
-    const startPosition = positionMicros(dom.currentTimeSeconds(element)) ?? 0;
     const wasPlaying = !dom.isPaused(element) && !dom.isEnded(element);
-    port.send({ kind: "page_seek", target_us: startPosition });
+    // Дальше живой поток: его события T0 уже не называют, даже если повтор был пустым.
+    active.announcedStartUs = startPositionUs;
+    port.send({ kind: "page_seek", target_us: startPositionUs });
     if (wasPlaying) port.send({ kind: "page_playback", request: { kind: "play" } });
     active.session = this.#environment.startShadow(element as HTMLMediaElement, (event) => this.#emitFromShadow(active, event), {
       isMediaSourceObjectUrl: (url) => registry.isMediaSourceObjectUrl(url),
       source: shadowSource,
     });
+  }
+
+  /** Настоящая позиция элемента (T0), мкс. Бросает — решает вызывающий. */
+  #startPositionOf(element: Element): MediaTimeMicros {
+    return positionMicros(this.#environment.dom.currentTimeSeconds(element)) ?? 0;
+  }
+
+  /**
+   * Шаг 2: как только первое событие повтора объявило поколение, назвать плееру T0, ещё до байтов
+   * (почему — в описании шагов наверху). Байты журнала событием не считаются: без объявленного
+   * SourceBuffer фон их отвергнет, а `page_seek` без поколения плееру сказать не о чем.
+   */
+  #announceStartOnGeneration(active: ActiveHandoff, streamed: ReplayItem | StreamMessage): void {
+    if (active.announcedStartUs !== null || streamed.kind !== "mse") return;
+    active.announcedStartUs = this.#startPositionOf(active.element);
+    this.#port?.send({ kind: "page_seek", target_us: active.announcedStartUs });
   }
 
   /**
@@ -226,6 +255,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
         if (this.#active !== active) return;
         try {
           this.#port?.send(message, transfer);
+          if (role === "handoff_source") this.#announceStartOnGeneration(active, message);
         } catch {
           this.#failLiveStream();
         }
@@ -233,7 +263,8 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
       replayed: () => {
         if (this.#active !== active || role !== "handoff_source") return;
         try {
-          this.#startShadow(active, "media_source");
+          // Воркер повторяет журнал асинхронно, и элемент мог уйти вперёд: T0 читается заново.
+          this.#startShadow(active, "media_source", this.#startPositionOf(active.element));
         } catch {
           this.#failToStart(active);
         }
@@ -258,14 +289,17 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
   }
 
   /**
-   * Открыть поток источника до `page_seek` (договор с фоном): MSE — повтор «памяти без копий»,
+   * Открыть поток источника до итогового `page_seek` (договор с фоном): MSE — повтор «памяти без копий»,
    * файл — `file_source{url}` (поколение-файл; адрес дальше фона не уходит). Возвращает, в каком
    * виде ставить тень.
    */
-  #openStream(port: PagePort, source: Extract<ElementSource, { kind: "media_source" | "file" }>): ShadowSourceKind {
+  #openStream(active: ActiveHandoff, port: PagePort, source: Extract<ElementSource, { kind: "media_source" | "file" }>): ShadowSourceKind {
     switch (source.kind) {
       case "media_source":
-        for (const item of source.record.journal.replay()) this.#sendItem(source.record.key, item, "replay");
+        for (const item of source.record.journal.replay()) {
+          this.#sendItem(source.record.key, item, "replay");
+          this.#announceStartOnGeneration(active, item);
+        }
         this.#tap((tap) => tap.replayFinished());
         return "media_source";
       case "file":

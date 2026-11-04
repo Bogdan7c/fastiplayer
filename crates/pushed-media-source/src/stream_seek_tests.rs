@@ -254,7 +254,7 @@ fn seek_targets_within_the_page_seek_tolerance_are_the_same_seek() {
 }
 
 #[test]
-fn video_waits_for_a_keyframe_after_a_seek_into_a_fragment_without_one() {
+fn a_seek_into_a_fragment_without_a_keyframe_starts_from_the_keyframe_before_it() {
     let media = split_mp4(VIDEO_H264_64_MIDGOP);
     assert_eq!(media.fragments.len(), 4);
     let (mut writer, mut opener) = video_stream();
@@ -263,8 +263,28 @@ fn video_waits_for_a_keyframe_after_a_seek_into_a_fragment_without_one() {
     let mut demuxer = open(&mut opener);
     assert_eq!(read_packets(&mut demuxer, 2), [0, 40]);
 
-    // Цель во фрагменте 1 (200–400 мс), а он начинается не с ключевого кадра:
-    // без ключевого декодер показал бы мусор, поэтому первый пакет — ключевой.
+    // Цель во фрагменте 1 (200–400 мс), а он начинается не с ключевого кадра. Ключевой
+    // лежит на полке раньше: подача начинается с него, иначе кадр цели не декодировать.
+    let seek = demuxer.seek(ms(280)).expect("seek");
+    assert_eq!(seek.actual_position, MediaTime::ZERO);
+    let packets = read_to_end(&mut demuxer);
+    assert_eq!(packets.first(), Some(&(0, true)), "{packets:?}");
+    assert_eq!(times(&packets), frames_from(0));
+}
+
+#[test]
+fn without_the_keyframe_on_the_shelf_video_waits_for_the_next_one() {
+    let media = split_mp4(VIDEO_H264_64_MIDGOP);
+    let (mut writer, mut opener) = video_stream();
+    writer.append(VIDEO, &media.init).expect("init");
+    // Начала группы на полке нет: фрагмент 1 (200–400 мс) пришёл без своего ключевого кадра.
+    for fragment in &media.fragments[1..] {
+        writer.append(VIDEO, fragment).expect("fragment");
+    }
+    writer.end_of_stream().expect("end");
+    let mut demuxer = open(&mut opener);
+
+    // Без ключевого декодер показал бы мусор, поэтому первый пакет — следующий ключевой.
     demuxer.seek(ms(280)).expect("seek");
     let packets = read_to_end(&mut demuxer);
     assert_eq!(packets.first(), Some(&(400, true)), "{packets:?}");

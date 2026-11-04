@@ -393,7 +393,8 @@ fn late_join_window(
         .lanes
         .iter()
         .filter(|(other, buffered)| **other != lane && buffered.timeline == LaneTimeline::Timed)
-        .filter_map(|(_, buffered)| buffered.shelf.covered_run(target, rules))
+        // Опора — только то, что переживёт перемотку: стёртое страницей она снимет.
+        .filter_map(|(_, buffered)| buffered.shelf.held_run(target, rules))
         .reduce(|common, run| {
             // Пересечение кусков опор (каждый покрывает цель, так что оно не пусто
             // по смыслу; пустое — значит общего времени нет, `new` откажет).
