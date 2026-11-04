@@ -18,6 +18,7 @@ import type { MseTracker } from "../mse-tracker.ts";
 import type { OddityReporter } from "../prototype-wrap.ts";
 import type { WorkerChannel, WorkerChannelExtension } from "../worker-capture/index.ts";
 import { installElementRecording, type ElementRecordingScope } from "./element-recording.ts";
+import { installMediaSessionRecording, type MediaSessionRecordingScope } from "./media-session-recording.ts";
 import { encodeRecordingParts, DEFAULT_STORE_CEILING_BYTES, type RecordedBrowser, type RecordingManifest } from "./format.ts";
 import type { FileDownloader } from "./file-download.ts";
 import { HandoffRecording } from "./handoff-recording.ts";
@@ -33,7 +34,7 @@ export const RECORDER_EXPORT_EVENT = "fastiplayer-stream-recorder-export";
 const WORKER_FLUSH_TIMEOUT_MS = 1500;
 
 /** Окно, против которого собирается запись (в тестах — фейк). */
-export interface PageRecordingWindow extends MseRecordingScope, ElementRecordingScope, BinaryWindow, MediaSourceWindow {
+export interface PageRecordingWindow extends MseRecordingScope, ElementRecordingScope, MediaSessionRecordingScope, BinaryWindow, MediaSourceWindow {
   readonly performance: { now(): number; readonly timeOrigin: number };
   readonly JSON: { stringify(value: unknown): string; parse(text: string): unknown };
   readonly setTimeout: (callback: () => void, delayMs: number) => unknown;
@@ -107,6 +108,7 @@ export class PageRecording {
       reportOddity,
     });
     installElementRecording(this.#win, this.recorder, reportOddity);
+    installMediaSessionRecording(this.#win, this.recorder, reportOddity);
     this.#installDebugSurface();
   }
 
