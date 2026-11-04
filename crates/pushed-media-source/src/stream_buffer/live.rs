@@ -20,6 +20,11 @@ impl StreamBuffer {
 
     /// Публикует состояние эфира, если поток открыт как эфир.
     pub(super) fn publish_live_timeline(&self, state: &mut BufferState) {
+        // Поток не эфир (шкалу никто не открыл) — публиковать некуда и считать вид
+        // незачем: он обходит полки, а зовётся на каждый принятый сегмент.
+        if state.live_timeline.is_none() {
+            return;
+        }
         let view = self.live_view(state);
         let Some(feed) = state.live_timeline.as_mut() else {
             return;

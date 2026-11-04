@@ -851,3 +851,8 @@ mod live_page_restart;
 // Передача, когда страница уже стёрла начало: старт с её позиции, а не с истории журнала.
 #[path = "browser_session_process/handoff_start.rs"]
 mod handoff_start;
+
+// Сессия 09b2: всплеск журнала страницы из десятков тысяч однокадровых фрагментов на
+// скорости провода — передача состоялась (полка линейна, очередь с противодавлением).
+#[path = "browser_session_process/journal_burst.rs"]
+mod journal_burst;

@@ -12,6 +12,7 @@
     reason = "integration-тест: падение с понятным сообщением и есть результат"
 )]
 
+mod backpressure;
 mod close_order;
 mod farewell;
 mod lifecycle_events;

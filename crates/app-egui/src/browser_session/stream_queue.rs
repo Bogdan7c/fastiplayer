@@ -19,11 +19,21 @@
 //!   держит не больше одного запроса ≤ 16 МиБ), а страница-враг закроет свой сеанс.
 //!   Сверку рамок с выданными запросами делает источник файла, не очередь.
 //!
+//! # Противодавление (сессия 09b2)
+//!
+//! Над отметками «придержать» ([`QueueLimits::hold_above_items`] /
+//! [`QueueLimits::hold_above_payload_bytes`]) очередь отвечает потоку соединения «места
+//! нет» ([`SessionByteSink::wait_for_room`]), и тот не читает сокет, пока поток приёма
+//! не заберёт очередь: всплеск журнала страницы ждёт в буферах TCP, а не растёт здесь
+//! (подробно — модуль `room`).
+//!
 //! # Переполнение (решение владельца, сессия 03b)
 //!
 //! Очередь не отказывает серверу (`EventSinkFull` = дыра в последовательности MSE).
 //! Если очередь упёрлась в [`QueueLimits`] — страница не слушает «полон» или наш
-//! разбор встал, — экземпляр сеанса закрывается кодом 4003 (`ProtocolViolation`).
+//! разбор встал (очередь придерживается без забора дольше
+//! [`QueueLimits::hold_without_progress_limit`]), — экземпляр сеанса закрывается
+//! кодом 4003 (`ProtocolViolation`).
 //! Потолок байтов считает и сообщения страницы, не только байты SourceBuffer
 //! (см. [`SessionInput::charged_bytes`]): иначе поток крупных сообщений (меню
 //! вариантов до ~80 КиБ) при вставшем разборе рос бы до потолка элементов —
@@ -35,6 +45,7 @@
 
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use browser_bridge_protocol::limits::MAX_JSON_MESSAGE_BYTES;
 use browser_bridge_protocol::{
@@ -42,13 +53,17 @@ use browser_bridge_protocol::{
     StreamGeneration, encode_message,
 };
 use browser_bridge_session::{
-    ChunkSource, EventSinkFull, SessionByteSink, SessionChunk, SessionEventSink, SessionInstance,
-    SessionLifecycleEvent, SessionRef,
+    ChunkSource, EventSinkFull, IntakeRoom, SessionByteSink, SessionChunk, SessionEventSink,
+    SessionInstance, SessionLifecycleEvent, SessionRef,
 };
 use tracing::{debug, warn};
 
 use super::inbox::BrowserSessionInbox;
 use super::intake_notice::IntakeNotice;
+
+mod room;
+
+use room::Hold;
 
 /// Сколько байтов груза может ждать в очереди. Политика, а не настройка: это
 /// предохранитель от зависшего разбора, а не окно буфера (окно — в источнике).
@@ -61,6 +76,19 @@ pub(crate) const MAX_QUEUED_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
 /// больше минуты самой частой нарезки, какую мы видели (Twitch, ~30 рамок/с).
 pub(crate) const MAX_QUEUED_ITEMS: usize = 4096;
 
+/// Отметка «придержать» по элементам — половина потолка: вторая половина — запас на
+/// то, что поток соединения узнаёт о ней только перед следующим чтением, и на данные
+/// мимо противодавления (модуль `room`).
+pub(crate) const HOLD_ABOVE_ITEMS: usize = MAX_QUEUED_ITEMS / 2;
+
+/// Отметка «придержать» по байтам — половина потолка (та же причина).
+pub(crate) const HOLD_ABOVE_PAYLOAD_BYTES: usize = MAX_QUEUED_PAYLOAD_BYTES / 2;
+
+/// Сколько очередь может придерживаться без единого забора, прежде чем это
+/// переполнение (решение 98: разбор встал). Поток приёма забирает очередь целиком
+/// за миллисекунды; 10 с без забора — не медленный разбор, а вставший.
+pub(crate) const HOLD_WITHOUT_PROGRESS_LIMIT: Duration = Duration::from_secs(10);
+
 /// Пределы очереди.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct QueueLimits {
@@ -68,6 +96,12 @@ pub(crate) struct QueueLimits {
     pub(crate) max_payload_bytes: usize,
     /// Потолок элементов в очереди.
     pub(crate) max_items: usize,
+    /// Отметка «придержать» по байтам (модуль `room`).
+    pub(crate) hold_above_payload_bytes: usize,
+    /// Отметка «придержать» по элементам.
+    pub(crate) hold_above_items: usize,
+    /// Предел удержания без забора — дальше переполнение.
+    pub(crate) hold_without_progress_limit: Duration,
 }
 
 impl Default for QueueLimits {
@@ -75,6 +109,9 @@ impl Default for QueueLimits {
         Self {
             max_payload_bytes: MAX_QUEUED_PAYLOAD_BYTES,
             max_items: MAX_QUEUED_ITEMS,
+            hold_above_payload_bytes: HOLD_ABOVE_PAYLOAD_BYTES,
+            hold_above_items: HOLD_ABOVE_ITEMS,
+            hold_without_progress_limit: HOLD_WITHOUT_PROGRESS_LIMIT,
         }
     }
 }
@@ -181,6 +218,8 @@ pub(crate) struct QueueCounters {
     pub(crate) dropped_after_shutdown: u64,
     /// Сколько раз очередь просила закрыть сеанс из-за переполнения.
     pub(crate) overflow_closes: u64,
+    /// Из них — удержаний без забора дольше предела (разбор встал, модуль `room`).
+    pub(crate) holds_without_progress: u64,
 }
 
 /// Что получил забирающий поток.
@@ -206,6 +245,8 @@ struct QueueState {
     counters: QueueCounters,
     /// Очередь остановлена.
     shut_down: bool,
+    /// Поток соединения придерживается с этого момента (модуль `room`).
+    hold: Option<Hold>,
 }
 
 /// Итог постановки элемента данных.
@@ -226,6 +267,8 @@ pub(crate) struct OrderedSessionQueue {
     state: Mutex<QueueState>,
     /// Будит забирающий поток.
     ready: Condvar,
+    /// Будит поток соединения, придержанный за отсутствием места (модуль `room`).
+    drained: Condvar,
     /// Ящик главного цикла: события жизни и просьбы закрыть сеанс.
     inbox: Arc<BrowserSessionInbox>,
 }
@@ -237,6 +280,7 @@ impl OrderedSessionQueue {
             limits,
             state: Mutex::new(QueueState::default()),
             ready: Condvar::new(),
+            drained: Condvar::new(),
             inbox,
         }
     }
@@ -251,9 +295,12 @@ impl OrderedSessionQueue {
             }
             if !state.items.is_empty() {
                 state.payload_bytes = 0;
-                return QueueTake::Batch(
-                    state.items.drain(..).map(|queued| queued.input).collect(),
-                );
+                state.hold = None;
+                let batch = state.items.drain(..).map(|queued| queued.input).collect();
+                drop(state);
+                // Место есть: придержанный поток соединения может читать дальше.
+                self.drained.notify_all();
+                return QueueTake::Batch(batch);
             }
             state = self
                 .ready
@@ -270,8 +317,10 @@ impl OrderedSessionQueue {
             state.shut_down = true;
             state.items.clear();
             state.payload_bytes = 0;
+            state.hold = None;
         }
         self.ready.notify_all();
+        self.drained.notify_all();
     }
 
     /// Пуста ли очередь (тестам: поток приёма уже забрал пачку).
@@ -424,6 +473,10 @@ impl SessionByteSink for OrderedSessionQueue {
                 },
             )),
         }
+    }
+
+    fn wait_for_room(&self, session: &SessionRef, patience: Duration) -> IntakeRoom {
+        Self::wait_for_room(self, session, patience)
     }
 
     fn session_ended(&self, session: &SessionRef) {

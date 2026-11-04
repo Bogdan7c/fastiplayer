@@ -127,5 +127,8 @@ impl LaneShelf {
         for entry in &mut self.entries {
             entry.arrival = Arrival::BeforeLastSeek;
         }
+        // Курсор подачи переставлен: отсеянные относительно старого курсора сегменты
+        // снова в счёте (`feed_index`).
+        self.candidates.rebuild(self.entries.iter());
     }
 }

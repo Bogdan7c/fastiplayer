@@ -53,9 +53,9 @@ pub use server::{
     ServerStartError, SessionControl,
 };
 pub use sink::{
-    ChunkSource, CountingByteSink, CountingSnapshot, EventSinkFull, RangeChunk, SessionByteSink,
-    SessionChunk, SessionEndReason, SessionEventSink, SessionLifecycleEvent, SourceBufferChunk,
-    StreamCounters,
+    ChunkSource, CountingByteSink, CountingSnapshot, EventSinkFull, IntakeRoom, RangeChunk,
+    SessionByteSink, SessionChunk, SessionEndReason, SessionEventSink, SessionLifecycleEvent,
+    SourceBufferChunk, StreamCounters,
 };
 pub use token::{OsRandomTokenSource, SessionTokenSource, TokenSourceError};
 pub use wire_tap::SessionWireTap;

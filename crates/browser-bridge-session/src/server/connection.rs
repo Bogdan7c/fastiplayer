@@ -43,7 +43,7 @@ use super::farewell::FarewellSlot;
 use super::shared::{CloseRequest, ConnectionHandle, DeliveryGate, Shared};
 use crate::policy::BrowserSessionPolicy;
 use crate::registry::{ConnectionId, SessionRef};
-use crate::sink::{ChunkSource, RangeChunk, SessionChunk, SourceBufferChunk};
+use crate::sink::{ChunkSource, IntakeRoom, RangeChunk, SessionChunk, SourceBufferChunk};
 
 /// Наибольшее сообщение WebSocket: двоичная рамка протокола (заголовок + груз).
 /// JSON короче (128 КиБ) и дополнительно проверяется при разборе.
@@ -280,6 +280,19 @@ impl Link<'_> {
             if self.flush_outgoing().is_err() {
                 self.shared.connection_lost(self.id);
                 return;
+            }
+            // Противодавление (сессия 09b2): у приёмника нет места — сокет не читаем,
+            // байты страницы ждут в буферах TCP, и браузер придерживает отправку сам.
+            // Ждём не дольше шага опроса: просьбы закрыть и исходящие обслуживаются
+            // в каждом витке. Сеанс кончился — читать надо (там кадр закрытия).
+            if !self.session_is_over()
+                && self
+                    .shared
+                    .byte_sink
+                    .wait_for_room(session, self.shared.policy.connection_poll_interval)
+                    == IntakeRoom::Exhausted
+            {
+                continue;
             }
             let flow = match self.socket.read() {
                 Ok(Message::Text(text)) => {

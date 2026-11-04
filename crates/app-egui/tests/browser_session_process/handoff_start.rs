@@ -113,7 +113,10 @@ fn replayed_history(position: PositionOnTheWire) -> Vec<Message> {
 
 /// Всё одной пачкой, как журнал страницы: стирание приходит раньше, чем поток успевает
 /// открыться (живой повтор: 24 мс на всю историю).
-fn send_burst(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, messages: Vec<Message>) {
+pub(super) fn send_burst(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    messages: Vec<Message>,
+) {
     for message in messages {
         socket.write(message).expect("the message is queued");
     }
@@ -121,7 +124,7 @@ fn send_burst(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, messages: Vec<M
 }
 
 /// Часы «играю» по порядку прихода.
-fn playing_positions(messages: &[PlayerSessionMessage]) -> Vec<u64> {
+pub(super) fn playing_positions(messages: &[PlayerSessionMessage]) -> Vec<u64> {
     messages
         .iter()
         .filter_map(|message| match message {

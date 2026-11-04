@@ -185,6 +185,7 @@ impl LaneShelf {
                 report.released_segments += 1;
                 report.released_bytes += entry.media.len();
                 self.forgotten.note(span);
+                self.candidates.remove(&entry);
                 released.push(entry);
             }
         }
@@ -202,6 +203,7 @@ impl LaneShelf {
         self.entries = kept;
         for entry in &erased {
             self.forgotten.note(entry.span());
+            self.candidates.remove(entry);
         }
         erased
     }

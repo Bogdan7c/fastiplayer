@@ -29,7 +29,7 @@ impl StreamBuffer {
         let mut state = self.lock();
         let awaits = state
             .lanes
-            .get(&lane)
+            .get_mut(&lane)
             .is_some_and(|buffered| buffered.awaits_data(&rules));
         if awaits {
             let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
@@ -45,7 +45,8 @@ impl StreamBuffer {
 
 impl BufferedLane {
     /// Нечего больше подать плееру: ждёт цель перемотки или подала всё подряд лежащее.
-    fn awaits_data(&self, rules: &ShelfRules) -> bool {
+    /// (`&mut`: выбор следующего чистит указатель подачи полки.)
+    fn awaits_data(&mut self, rules: &ShelfRules) -> bool {
         matches!(self.seek, LaneSeekState::AwaitingTarget { .. })
             || self.shelf.next_to_feed(self.feed.cursor(), rules).is_none()
     }

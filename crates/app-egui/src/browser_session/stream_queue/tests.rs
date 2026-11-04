@@ -142,6 +142,7 @@ fn item_overflow_closes_the_instance_once_drops_its_input_and_keeps_others() {
     let (queue, inbox) = queue_with(QueueLimits {
         max_payload_bytes: 1024,
         max_items: 3,
+        ..QueueLimits::default()
     });
     let other = session("other", 1);
     let flooding = session("flood", 2);
@@ -186,6 +187,7 @@ fn byte_overflow_closes_the_instance_and_memory_stays_bounded() {
     let (queue, inbox) = queue_with(QueueLimits {
         max_payload_bytes: 10,
         max_items: 100,
+        ..QueueLimits::default()
     });
     let page = session("a", 1);
     accept_bytes(&queue, &page, 0, &[1; 6]);
@@ -226,6 +228,7 @@ fn lifecycle_events_reach_the_inbox_even_when_the_queue_is_full() {
     let (queue, inbox) = queue_with(QueueLimits {
         max_payload_bytes: 1024,
         max_items: 1,
+        ..QueueLimits::default()
     });
     let page = session("a", 1);
     accept_bytes(&queue, &page, 0, b"x");
@@ -351,6 +354,7 @@ fn range_frames_are_charged_against_the_payload_ceiling() {
     let (queue, inbox) = queue_with(QueueLimits {
         max_payload_bytes: 10,
         max_items: 100,
+        ..QueueLimits::default()
     });
     let page = session("K1", 1);
 
@@ -410,6 +414,7 @@ fn page_messages_count_against_the_byte_limit_and_memory_stays_bounded() {
     let (queue, inbox) = queue_with(QueueLimits {
         max_payload_bytes: LIMIT,
         max_items: 100_000,
+        ..QueueLimits::default()
     });
     let page = session("a", 1);
     let message_bytes = encode_message(&large_message()).expect("encodes").len();

@@ -108,6 +108,11 @@ impl TrackSpans {
         !self.spans.is_empty()
     }
 
+    /// Отрезки всех дорожек с кадрами (порядок — по месту дорожки).
+    pub(crate) fn spans(&self) -> impl Iterator<Item = MediaTimeSpan> + '_ {
+        self.spans.iter().map(|(_, span)| *span)
+    }
+
     /// То же после `timestampOffset` полосы; `None` — переполнение i64.
     pub(crate) fn shifted_by(&self, offset: TimestampOffset) -> Option<Self> {
         let spans = self
