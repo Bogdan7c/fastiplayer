@@ -138,6 +138,27 @@ pub(super) fn playing_positions(messages: &[PlayerSessionMessage]) -> Vec<u64> {
         .collect()
 }
 
+/// Позиции всех часов по порядку прихода, в каком бы состоянии плеер ни был: тень верит
+/// любому тику, а не только «играю».
+pub(super) fn clock_positions(messages: &[PlayerSessionMessage]) -> Vec<u64> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            PlayerSessionMessage::Clock { position_us, .. } => Some(position_us.as_micros()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// С того тика, где страница услышала T0, часы не возвращаются назад: команда перемотки в
+/// очереди плеера и посадка на цель не показывают ей старое место.
+fn clocks_after_reaching_the_position(clocks: &[u64]) -> &[u64] {
+    let first_at_position = clocks
+        .iter()
+        .position(|clock| *clock + FRAME_US >= PAGE_POSITION_US);
+    first_at_position.map_or(&[], |first| &clocks[first..])
+}
+
 fn handoff_plays_from_the_page_position(mode: VideoMode, position: PositionOnTheWire) {
     // Тесты идут параллельно: имя различает их каталоги.
     let name = match position {
@@ -170,14 +191,19 @@ fn handoff_plays_from_the_page_position(mode: VideoMode, position: PositionOnThe
             .any(|clock| (PAGE_POSITION_US..PAGE_POSITION_US + START_WINDOW_US).contains(clock)),
         "the player went through the page position: {playing:?}"
     );
-    if position == PositionOnTheWire::BeforeHistory {
-        assert!(
-            playing
-                .iter()
-                .all(|clock| *clock + FRAME_US >= PAGE_POSITION_US),
-            "the player showed the history before the page position: {playing:?}"
-        );
-    }
+    let clocks = clock_positions(&messages);
+    // Плеер знал T0 до истории: ни одного тика раньше T0, в любом состоянии. T0 после загрузки:
+    // история до него законна (страница её не слышит, тень ещё не поставлена), но с T0 назад нет.
+    let heard_at_the_position = match position {
+        PositionOnTheWire::BeforeHistory => clocks.as_slice(),
+        PositionOnTheWire::AfterLoad => clocks_after_reaching_the_position(&clocks),
+    };
+    assert!(
+        heard_at_the_position
+            .iter()
+            .all(|clock| *clock + FRAME_US >= PAGE_POSITION_US),
+        "the page heard a position before its own: {clocks:?}"
+    );
 
     send_tab_gone_and_expect_close(&mut socket);
     let summary = process

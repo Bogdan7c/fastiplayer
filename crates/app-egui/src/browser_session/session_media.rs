@@ -46,6 +46,8 @@
 //! - транспортом зрителя окна (04a, [`viewer_transport`]): действие человека ведёт
 //!   плеер и страницу, воля зрителя становится волей страницы, эхо страницы не дёргает
 //!   плеер второй раз.
+//! - долгом перед страницей за отданную плееру перемотку ([`seek_handover`]): от команды до
+//!   ответа плеера часы говорят её цель.
 //!
 //! Ограничение (записано в отчёте 03b): длительность и «можно ли перематывать»
 //! плеер запоминает при сборке `PreparedMedia`, то есть в момент готовности потока.
@@ -69,10 +71,11 @@ use self::generation_placement::{GenerationPlacement, PageAvailability};
 use self::generation_rejection::ViewerAwareness;
 use self::generation_start::{AfterLoad, GenerationStart};
 use self::page_clock::{LoadedMediaShown, PageClockSource, PageStartWord};
+use self::seek_handover::UnansweredSeek;
 use super::intake_notice::{GenerationHandoff, IntakeNotice, PageIntent};
 use super::outbound::{PENDING_RETRY_INTERVAL, PageOutbound, RangeQueueOutcome};
 use super::playback::{
-    BrowserPlaybackCommandError, LoadStart, MediaLoadTicket, PlaybackObservation,
+    BrowserPlaybackCommandError, LoadStart, MediaLoadTicket, PlaybackObservation, PlayerSeekAnswers,
 };
 use super::rejection::FailureResponse;
 use super::rejection_notice::GenerationRejectionNotice;
@@ -89,6 +92,7 @@ mod install_reconcile;
 mod page_clock;
 mod scrub_range;
 mod seams;
+mod seek_handover;
 mod viewer_click_claim;
 mod viewer_seek_notice;
 mod viewer_transport;
@@ -145,6 +149,8 @@ struct LoadedGeneration {
     /// без длительности, файл). Отличается от `start`: эфир с названным стартом на эту
     /// позицию не ставится.
     positioned_at: Option<Duration>,
+    /// Перемотка этого поколения, отданная плееру, на которую он ещё не ответил.
+    unanswered_seek: Option<UnansweredSeek>,
 }
 
 impl LoadedGeneration {
@@ -221,6 +227,9 @@ pub(crate) struct SessionMedia {
     /// Назвала ли страница в этом сеансе, где она стоит (без этого первому поколению
     /// часов не шлём, см. `page_clock`).
     page_start_word: PageStartWord,
+    /// Ответы плеера на перемотки, виденные последним наблюдением: от них считается ответ
+    /// на следующую отданную перемотку ([`seek_handover`]).
+    seek_answers_seen: PlayerSeekAnswers,
 }
 
 impl SessionMedia {
@@ -249,6 +258,7 @@ impl SessionMedia {
             placement_policy: GenerationPlacementPolicy::recommended(),
             viewer_seek_notice: ViewerSeekNotice::Nothing,
             page_start_word: PageStartWord::NotSaid,
+            seek_answers_seen: PlayerSeekAnswers::default(),
         }
     }
 
@@ -569,6 +579,7 @@ impl SessionMedia {
             },
             start: pending.placement.named_start(),
             positioned_at,
+            unanswered_seek: None,
         });
     }
 
@@ -616,6 +627,7 @@ impl SessionMedia {
     // ---- ответы странице ---------------------------------------------------------
 
     fn report_to_page(&mut self, observation: &PlaybackObservation, now: Instant) {
+        self.seek_answers_seen = observation.seek_answers;
         let awaited_target = self.awaited_generation_target();
         let new_source = self.new_source_stance();
         let Some(loaded) = self.loaded.as_mut() else {
@@ -623,6 +635,7 @@ impl SessionMedia {
             self.tell_page_while_nothing_is_loaded(observation, now);
             return;
         };
+        loaded.settle_unanswered_seek(observation.seek_answers, now);
         // Позиция прежнего медиа не принадлежит ставящемуся поколению: монитор по ней
         // выбросил бы полку и посчитал запас не от того места.
         let media_installed = loaded.is_shown_by(observation);
@@ -652,13 +665,10 @@ impl SessionMedia {
             _ => None,
         };
 
-        let seek_after_show = if reconcile_now {
+        if reconcile_now {
             let seek_after_show = self.seek_after_show_with_viewer_click(seek_when_shown, now);
             self.reconcile_with_page(observation, seek_after_show);
-            seek_after_show
-        } else {
-            None
-        };
+        }
         if let Some(fault) = fault {
             self.report_fault(generation, &fault);
         }
@@ -685,11 +695,13 @@ impl SessionMedia {
         }
         // Часы — только того источника, где сейчас стоит элемент страницы (Д-4,
         // правила — `page_clock`): чужая позиция или чужой `ended` сбили бы страницу.
-        // Перемотка после показа отдана только что: наблюдение этого прохода ещё про начало
-        // медиа, а страница ждёт на цели. Тик «0» отмотал бы её назад.
-        let loaded_shown = seek_after_show.map_or(loaded_shown, |target| {
-            LoadedMediaShown::StillInstalling(GenerationStart::PageSeekedTo(target))
-        });
+        // Перемотка без ответа плеера: наблюдение ещё про старое место, а страница уже на
+        // цели. Тик старого места (у свежей установки — «0») отмотал бы её назад.
+        let unanswered_seek = self
+            .loaded
+            .as_ref()
+            .and_then(LoadedGeneration::unanswered_seek_target);
+        let loaded_shown = unanswered_seek.map_or(loaded_shown, LoadedMediaShown::SeekNotAnswered);
         let clock_source = PageClockSource::choose(awaited_target, new_source, loaded_shown);
         self.outbound
             .tick_clock(&clock_source.page_view_of(observation), now);

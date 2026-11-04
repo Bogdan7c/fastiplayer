@@ -200,9 +200,11 @@ impl WindowPlaybackDriver {
                 evicted = tapped.evicted,
                 "Browser window missed player events; the tap overflowed"
             );
+            self.ledger.note_player_events_lost();
         }
         for correlated in &tapped.events {
             self.journal.note_player_event(&correlated.event);
+            self.ledger.note_seek_answer_in(&correlated.event);
             if let PlayerEvent::RecoverableError(error) | PlayerEvent::FatalError(error) =
                 &correlated.event
             {

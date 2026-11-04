@@ -154,6 +154,16 @@ pub(crate) const fn clock_state_for(state: PlaybackState) -> ClockState {
     }
 }
 
+/// Состояние для часов по наблюдению: посадка перемотки — всегда «жду», даже если ядро
+/// дошло до конца потока раньше коммита и числится в `Draining`
+/// ([`PlaybackObservation::landing_target`]): кадр цели ещё не показан, играть нечему.
+pub(crate) const fn page_clock_state(observation: &PlaybackObservation) -> ClockState {
+    match observation.landing_target() {
+        Some(_) => ClockState::Waiting,
+        None => clock_state_for(observation.state),
+    }
+}
+
 /// Позиция плеера → время протокола (целые мкс, не больше 2⁵³ − 1).
 pub(crate) fn clock_position(position: Duration) -> MediaTime {
     let micros = u64::try_from(position.as_micros())
@@ -359,7 +369,7 @@ impl PageOutbound {
         let message = PlayerSessionMessage::Clock {
             seq: ClockSequence(self.next_clock_sequence),
             position_us: clock_position(observation.page_clock_position()),
-            state: clock_state_for(observation.state),
+            state: page_clock_state(observation),
             rate: clock_rate(observation.rate),
         };
         self.next_clock_sequence = self.next_clock_sequence.wrapping_add(1);

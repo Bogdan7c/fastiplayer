@@ -1,7 +1,7 @@
 //! Медиа-часть цикла с подделками плеера, страницы и закрытия сеанса; потоки
 //! источника — настоящие (`pushed-media-source`) на файлах фикстур протокола.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -23,6 +23,7 @@ use crate::browser_session::outbound::PageSender;
 use crate::browser_session::playback::{
     BrowserPlaybackFault, FaultAnnouncement, LoadFault, MediaLoadTicketIssuer,
 };
+use crate::browser_session::window::WindowCommandRefusal;
 
 /// Потолок ожидания открытия настоящего потока.
 const WAIT: Duration = Duration::from_secs(20);
@@ -65,6 +66,20 @@ struct FakePlayback {
     kept_media: Rc<RefCell<Vec<PreparedMedia>>>,
     /// Что медиа-часть сказала о скачанном последним (живой скраб окна).
     offered_range: Rc<RefCell<crate::downloaded_range::DownloadedRange>>,
+    /// Как подделка отвечает на перемотки (обычно сразу, как быстрый плеер).
+    seek_answers: Rc<Cell<FakeSeekAnswers>>,
+}
+
+/// Как плеер-подделка отвечает на команду перемотки.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum FakeSeekAnswers {
+    /// Ответ виден уже следующему наблюдению.
+    #[default]
+    AtOnce,
+    /// Команда лежит в очереди потока плеера: ответа нет, пока тест его не даст.
+    Withheld,
+    /// Очередь плеера отказала: команда не дошла.
+    CommandRefused,
 }
 
 impl FakePlayback {
@@ -81,12 +96,14 @@ impl FakePlayback {
                 fault: None,
                 shown_load: None,
                 seek_target: None,
+                seek_answers: PlayerSeekAnswers::default(),
             })),
             tickets: Rc::default(),
             loaded_tickets: Rc::default(),
             loaded_media: Rc::default(),
             kept_media: Rc::default(),
             offered_range: Rc::default(),
+            seek_answers: Rc::default(),
         }
     }
 
@@ -110,6 +127,11 @@ impl FakePlayback {
 
     fn take_calls(&self) -> Vec<PlayerCall> {
         std::mem::take(&mut *self.calls.borrow_mut())
+    }
+
+    /// Плеер обработал команду перемотки: следующее наблюдение это покажет.
+    fn answer_seek(&self) {
+        self.observation.borrow_mut().seek_answers.note_answer();
     }
 
     fn record(&self, call: PlayerCall) -> Result<(), BrowserPlaybackCommandError> {
@@ -150,6 +172,15 @@ impl MediaPlayback for FakePlayback {
     }
 
     fn seek(&mut self, target: Duration) -> Result<(), BrowserPlaybackCommandError> {
+        match self.seek_answers.get() {
+            FakeSeekAnswers::AtOnce => self.answer_seek(),
+            FakeSeekAnswers::Withheld => {}
+            FakeSeekAnswers::CommandRefused => {
+                return Err(BrowserPlaybackCommandError::Window(
+                    WindowCommandRefusal::QueueFull,
+                ));
+            }
+        }
         self.record(PlayerCall::Seek(target))
     }
 
@@ -736,6 +767,7 @@ mod handoff_start;
 mod live_click_real_player;
 mod live_scrub_real_player;
 mod opening_clock;
+mod seek_handover;
 mod viewer_click_claim;
 mod viewer_transport;
 mod viewer_transport_real_player;

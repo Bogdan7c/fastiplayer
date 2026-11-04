@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use player_core::{
     CorrelatedPlayerEvent, MediaInstanceId, PlaybackRate, PlaybackState, PlayerError,
-    PlayerErrorKind, SeekMode, SeekTarget,
+    PlayerErrorKind, SeekMode, SeekRequest, SeekTarget,
 };
 
 use super::super::remote::WindowRemote;
@@ -43,6 +43,8 @@ struct ScriptedPlayer {
     presented: u64,
     /// Что водитель передал о скачанном последним.
     downloaded_range: crate::downloaded_range::DownloadedRange,
+    /// Сколько событий подслушка потеряла с прошлого забора.
+    evicted: u64,
 }
 
 impl WindowPlayer for ScriptedPlayer {
@@ -90,7 +92,7 @@ impl WindowPlayer for ScriptedPlayer {
     fn take_player_events(&mut self) -> TappedPlayerEvents {
         TappedPlayerEvents {
             events: std::mem::take(&mut self.events),
-            evicted: 0,
+            evicted: std::mem::take(&mut self.evicted),
         }
     }
 
@@ -284,6 +286,27 @@ fn a_late_install_of_a_superseded_load_is_not_attributed_to_the_newer_one() {
     });
     let observation = harness.pass();
     assert_eq!(observation.fault_of(newer), None);
+}
+
+/// Окно видит ответы на перемотки так же, как безоконный плеер: сеанс ждёт ответ на столе.
+#[test]
+fn seek_answers_of_the_window_player_reach_the_observation() {
+    let mut harness = Harness::new();
+    let idle = harness.pass().seek_answers;
+
+    harness.player.events.push(CorrelatedPlayerEvent {
+        media_instance_id: Some(instance(5)),
+        event: PlayerEvent::SeekRequested(SeekRequest::accurate(Duration::from_secs(1))),
+    });
+    let accepted = harness.pass().seek_answers;
+    assert_ne!(accepted, idle);
+
+    harness.player.evicted = 3;
+    assert_ne!(
+        harness.pass().seek_answers,
+        accepted,
+        "the answer may be lost"
+    );
 }
 
 #[test]

@@ -18,8 +18,11 @@
 //!    показанного загруженного поколения (элемент страницы стоит в нуле нового
 //!    источника и ждёт данных; тень по такому тику понимает, что плеер признал новый
 //!    источник);
-//! 3. плеер показывает загруженное поколение — его собственные часы;
-//! 4. загруженное поколение ещё ставится — «жду» там, куда страница его ждёт: в цели,
+//! 3. плеер ещё не ответил на отданную ему перемотку ([`super::seek_handover`]) — «жду» в
+//!    её цели: снимок плеера ещё про старое место;
+//! 4. плеер показывает загруженное поколение — его собственные часы (пока он садится на
+//!    цель, часы уже говорят цель: [`PlaybackObservation::page_clock_position`]);
+//! 5. загруженное поколение ещё ставится — «жду» там, куда страница его ждёт: в цели,
 //!    если она названа, иначе в нуле ([`PlaybackObservation::while_media_installs`]).
 //!
 //! **Пока в плеере нет ни одного поколения сеанса (сессия 09b2).** Пульс тени (решение
@@ -38,7 +41,7 @@
 //! вернул бы элемент в 0 вместо T0. Первый тик уходит сразу (`ClockCadence`), поэтому он
 //! легко успел бы влезть между `generation_started` и `page_seek{T0}`, хотя страница шлёт
 //! их подряд. Страница шлёт `page_seek{T0}` всегда (шаг 3 договора `handoff-controller`),
-//! так что ожидание ограничено. По той же причине правило 4 говорит цель, а не ноль:
+//! так что ожидание ограничено. По той же причине правило 5 говорит цель, а не ноль:
 //! иначе файл с T0 проваливался бы в ноль на время установки.
 //!
 //! Перемотка самой страницы до открытия нового поколения (обычная смена качества,
@@ -66,8 +69,11 @@ pub(super) enum LoadedMediaShown {
     /// Плеер показывает медиа загруженного поколения.
     Shown,
     /// Наблюдение ещё не про место, где страница ждёт поколение (внутри — где ждёт): плеер
-    /// ставит медиа, или показал его и только что получил перемотку к цели.
+    /// ставит медиа.
     StillInstalling(GenerationStart),
+    /// Плеер показывает медиа, но ещё не ответил на отданную ему перемотку к этой цели:
+    /// наблюдение про старое место, а страница уже на цели.
+    SeekNotAnswered(Duration),
 }
 
 /// Назвала ли страница в этом сеансе, где стоит её элемент.
@@ -110,9 +116,8 @@ impl PageClockSource {
         }
         match loaded {
             LoadedMediaShown::Shown => Self::ShownGeneration,
-            LoadedMediaShown::StillInstalling(GenerationStart::PageSeekedTo(target)) => {
-                Self::AwaitingDataAtTarget(target)
-            }
+            LoadedMediaShown::StillInstalling(GenerationStart::PageSeekedTo(target))
+            | LoadedMediaShown::SeekNotAnswered(target) => Self::AwaitingDataAtTarget(target),
             LoadedMediaShown::StillInstalling(GenerationStart::FirstCommonData) => {
                 Self::InstallingGeneration
             }
@@ -212,7 +217,7 @@ mod tests {
     /// Порядок правил: цель главнее нового источника, новый источник главнее показанного.
     #[test]
     fn the_rules_apply_in_order() {
-        use LoadedMediaShown::{Shown, StillInstalling};
+        use LoadedMediaShown::{SeekNotAnswered, Shown, StillInstalling};
         use NewSourceStance::{AwaitingDataWithoutTarget, NoneOrTargeted};
         let without_target = StillInstalling(GenerationStart::FirstCommonData);
         let at_target = StillInstalling(GenerationStart::PageSeekedTo(TARGET));
@@ -235,6 +240,11 @@ mod tests {
         // Ставящееся поколение с целью: страница ждёт его там, а не в нуле.
         assert_eq!(
             PageClockSource::choose(None, NoneOrTargeted, at_target),
+            PageClockSource::AwaitingDataAtTarget(TARGET)
+        );
+        // Показанное поколение с перемоткой без ответа: страница уже на цели.
+        assert_eq!(
+            PageClockSource::choose(None, NoneOrTargeted, SeekNotAnswered(TARGET)),
             PageClockSource::AwaitingDataAtTarget(TARGET)
         );
     }

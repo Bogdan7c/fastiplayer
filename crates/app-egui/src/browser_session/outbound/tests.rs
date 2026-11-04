@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
+use crate::browser_session::playback::PlayerSeekAnswers;
 
 /// Страница-подделка: запоминает поставленные сообщения, на попытку может
 /// ответить заранее заданным отказом.
@@ -47,6 +48,7 @@ fn observation(position: Duration, state: PlaybackState, rate: f32) -> PlaybackO
         fault: None,
         shown_load: None,
         seek_target: None,
+        seek_answers: PlayerSeekAnswers::default(),
     }
 }
 
@@ -158,6 +160,33 @@ fn clock_waits_at_the_seek_target_while_the_player_seeks() {
     assert_eq!(
         page.take_sent(),
         vec![clock(2, 9_016_000_000, ClockState::Paused, 1000)]
+    );
+}
+
+/// Запись живой проверки 09b2: передача за 3 с до конца ролика. Демуксер дошёл до конца раньше
+/// коммита перемотки, ядро в `Draining`, позиция — начало только что поставленного медиа, цель
+/// на месте. Часы говорили «играю, 0» — и тень бросала T0.
+#[test]
+fn clock_waits_at_the_target_while_a_seek_lands_in_the_end_of_stream_drain() {
+    let (mut outbound, page) = outbound();
+    let start = Instant::now();
+    let target = Duration::from_secs(597);
+    let landing = PlaybackObservation {
+        seek_target: Some(target),
+        ..observation(Duration::ZERO, PlaybackState::Draining, 1.0)
+    };
+    outbound.tick_clock(&landing, start);
+    assert_eq!(
+        page.take_sent(),
+        vec![clock(0, 597_000_000, ClockState::Waiting, 1000)]
+    );
+
+    // Коммит: цели нет, тот же `Draining` — снова честный хвост ролика.
+    let tail = observation(target, PlaybackState::Draining, 1.0);
+    outbound.tick_clock(&tail, start + CLOCK_INTERVAL);
+    assert_eq!(
+        page.take_sent(),
+        vec![clock(1, 597_000_000, ClockState::Playing, 1000)]
     );
 }
 

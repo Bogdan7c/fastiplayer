@@ -25,11 +25,12 @@
 
 use std::collections::VecDeque;
 
-use player_core::{MediaInstanceId, PlaybackState, PlayerErrorKind, PlayerSnapshot};
+use player_core::{MediaInstanceId, PlaybackState, PlayerErrorKind, PlayerEvent, PlayerSnapshot};
 
 use super::media_identity::ShownMediaTracker;
 use super::{
     BrowserPlaybackFault, FaultAnnouncement, LoadFault, MediaLoadTicket, PlaybackObservation,
+    PlayerSeekAnswers,
 };
 
 /// Учёт загрузок одного плеера.
@@ -43,6 +44,8 @@ pub(crate) struct LoadLedger {
     shown_media: ShownMediaTracker,
     /// Экземпляры, сообщившие «видео не по силам» раньше итога своей установки.
     unclaimed_video_errors: UnclaimedVideoErrors,
+    /// Сколько команд перемотки плеер обработал (см. [`PlayerSeekAnswers`]).
+    seek_answers: PlayerSeekAnswers,
 }
 
 /// Чем для учёта оказалась отменённая установка.
@@ -192,6 +195,29 @@ impl LoadLedger {
         }
     }
 
+    /// Событие плеера как ответ на команду перемотки: принятая даёт `SeekRequested`,
+    /// отвергнутая — ошибку, третьего исхода у команды нет (`PlayerSession::seek`,
+    /// `dispatch_player_command`).
+    ///
+    /// Ошибка считается любая: ошибка не про перемотку лишь раньше времени снимет ожидание
+    /// ответа, а неучтённая ошибка перемотки оставила бы часы страницы на цели.
+    pub(crate) fn note_seek_answer_in(&mut self, event: &PlayerEvent) {
+        if matches!(
+            event,
+            PlayerEvent::SeekRequested(_)
+                | PlayerEvent::RecoverableError(_)
+                | PlayerEvent::FatalError(_)
+        ) {
+            self.seek_answers.note_answer();
+        }
+    }
+
+    /// События плеера потеряны (подслушка окна переполнилась): среди них мог быть ответ на
+    /// перемотку, а ждать потерянный ответ некому.
+    pub(crate) fn note_player_events_lost(&mut self) {
+        self.seek_answers.note_answer();
+    }
+
     /// Наблюдение для медиа-части по снимку плеера.
     pub(crate) fn observation(&self, snapshot: &PlayerSnapshot) -> PlaybackObservation {
         PlaybackObservation {
@@ -207,6 +233,7 @@ impl LoadLedger {
                 .timeline
                 .target_position
                 .map(|target| target.as_duration()),
+            seek_answers: self.seek_answers,
         }
     }
 

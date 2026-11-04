@@ -23,7 +23,7 @@ use super::generation_switch_clicks::{
     PageSourceBuffers, SplitMedia, is_ended, page_seek, page_seek_targets, recorded_message,
     split_fmp4,
 };
-use super::handoff_start::{playing_positions, send_burst};
+use super::handoff_start::{clock_positions, playing_positions, send_burst};
 use super::*;
 
 /// Длина ролика, мкс: 15 000 кадров видео по 40 мс.
@@ -366,9 +366,16 @@ fn a_journal_of_tens_of_thousands_of_one_frame_fragments_hands_off_at_wire_speed
             .any(|clock| (PAGE_POSITION_US..PAGE_POSITION_US + START_WINDOW_US).contains(clock)),
         "the player went through the page position: {playing:?}"
     );
-    // Не проверяется: «ни одного тика часов до T0». Под нагрузкой (параллельный прогон
-    // набора) плеер один раз отдаёт странице «играю, 0» между установкой поколения с
-    // позицией T0 и исполнением её перемотки — отдельная находка, не причина переполнения.
+    // Ни одного тика до T0: T0 за 3 с до конца, демуксер доходит до конца потока раньше
+    // коммита перемотки, и плеер садится на цель в `Draining`. Тень верит любому тику и
+    // прыгнула бы в 0.
+    let clocks = clock_positions(&messages);
+    assert!(
+        clocks
+            .iter()
+            .all(|clock| *clock + FRAME_US >= PAGE_POSITION_US),
+        "the page heard a position before its own: {clocks:?}"
+    );
 
     send_tab_gone_and_expect_close(&mut socket);
     // Сеанс не закрывался как нарушение протокола и очередь не переполнялась.

@@ -12,6 +12,7 @@ use pushed_media_source::{
 };
 
 use super::*;
+use crate::browser_session::playback::PlayerSeekAnswers;
 
 /// Срок ожидания данных у цели в тестах (короткий, чтобы считать от `now`).
 const DATA_WAIT: Duration = Duration::from_secs(10);
@@ -344,6 +345,7 @@ fn the_page_clock_waits_at_the_target_while_the_generation_waits() {
         fault: None,
         shown_load: None,
         seek_target: None,
+        seek_answers: PlayerSeekAnswers::default(),
     };
     let clock = clock_while_generation_awaits(&playing_old_video, OFF_SHELF);
     assert_eq!(clock.position, OFF_SHELF);

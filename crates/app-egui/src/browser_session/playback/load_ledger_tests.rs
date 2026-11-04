@@ -3,7 +3,12 @@
 
 use std::num::NonZeroU64;
 
-use player_core::{MediaInstanceId, PlaybackState, PlayerErrorKind, PlayerSnapshot};
+use std::time::Duration;
+
+use player_core::{
+    MediaInstanceId, PlaybackState, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSnapshot,
+    SeekRequest,
+};
 
 use super::*;
 use crate::browser_session::playback::MediaLoadTicketIssuer;
@@ -26,6 +31,47 @@ fn fault_of(ledger: &LoadLedger, ticket: MediaLoadTicket) -> Option<BrowserPlayb
         .observation(&PlayerSnapshot::default())
         .fault_of(ticket)
         .cloned()
+}
+
+/// Что наблюдение покажет об ответах плеера на перемотки.
+fn seek_answers(ledger: &LoadLedger) -> PlayerSeekAnswers {
+    ledger.observation(&PlayerSnapshot::default()).seek_answers
+}
+
+/// Ответ на перемотку — и принятие, и отказ: иначе медиа-часть ждала бы отвергнутую вечно.
+#[test]
+fn accepted_and_refused_seeks_are_answers_and_nothing_else_is() {
+    let refusal = || PlayerError::new(PlayerErrorKind::SeekUnavailable, "seek");
+    let answers = [
+        PlayerEvent::SeekRequested(SeekRequest::accurate(Duration::from_secs(1))),
+        PlayerEvent::RecoverableError(refusal()),
+        PlayerEvent::FatalError(refusal()),
+    ];
+    let mut ledger = LoadLedger::default();
+    for answer in &answers {
+        let before = seek_answers(&ledger);
+        ledger.note_seek_answer_in(answer);
+        assert_ne!(seek_answers(&ledger), before, "{answer:?}");
+    }
+
+    let before = seek_answers(&ledger);
+    ledger.note_seek_answer_in(&PlayerEvent::PositionChanged(Duration::from_secs(1)));
+    assert_eq!(seek_answers(&ledger), before);
+}
+
+/// Потерянные события могли нести ответ: ждать его больше нельзя. Учёт отказов это не трогает.
+#[test]
+fn lost_player_events_count_as_an_answer_without_touching_the_faults() {
+    let mut tickets = MediaLoadTicketIssuer::default();
+    let mut ledger = LoadLedger::default();
+    let load = tickets.issue();
+    ledger.begin_load(load);
+    let before = seek_answers(&ledger);
+
+    ledger.note_player_events_lost();
+
+    assert_ne!(seek_answers(&ledger), before);
+    assert_eq!(fault_of(&ledger, load), None);
 }
 
 #[test]

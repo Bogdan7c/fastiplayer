@@ -154,6 +154,25 @@ pub(crate) struct LoadFault {
     pub(crate) announcement: FaultAnnouncement,
 }
 
+/// Сколько раз плеер ответил на команду перемотки (накопительно за жизнь плеера).
+///
+/// Команда уходит в очередь потока плеера, и снимок ещё какое-то время описывает мир до
+/// неё. Снимок не говорит, дошла ли команда: перемотка могла начаться и кончиться между двумя
+/// проходами цикла. Поэтому ответ считается по событиям плеера: `SeekRequested` (принята) или
+/// ошибка (отвергнута). Плеер публикует снимок раньше событий своего хода
+/// (`publish_session_outputs`), а цикл читает события раньше снимка: увидев ответ, он видит и
+/// снимок не старше него. Сравнивать значения можно только внутри одного плеера; смысл имеет
+/// только «изменилось ли» ([`crate::browser_session::session_media`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct PlayerSeekAnswers(u64);
+
+impl PlayerSeekAnswers {
+    /// Плеер ответил ещё на одну команду (или мог ответить, но событие потеряно).
+    pub(crate) const fn note_answer(&mut self) {
+        self.0 = self.0.wrapping_add(1);
+    }
+}
+
 /// Что главный цикл узнал за один [`BrowserPlayback::pump`].
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PlaybackObservation {
@@ -181,6 +200,8 @@ pub(crate) struct PlaybackObservation {
     /// плеера до коммита перемотки — ещё старое место; часы странице показывают цель
     /// ([`PlaybackObservation::page_clock_position`]).
     pub(crate) seek_target: Option<Duration>,
+    /// Сколько команд перемотки плеер уже обработал (см. [`PlayerSeekAnswers`]).
+    pub(crate) seek_answers: PlayerSeekAnswers,
 }
 
 impl PlaybackObservation {
@@ -227,12 +248,38 @@ impl PlaybackObservation {
             fault: self.fault.clone(),
             shown_load: None,
             seek_target: None,
+            seek_answers: self.seek_answers,
+        }
+    }
+
+    /// Цель перемотки, на которую плеер садится прямо сейчас (`None` — посадки нет).
+    ///
+    /// Перемотка живёт не только в состоянии `Seeking`. Если данные цели кончаются вместе с
+    /// потоком (передача за 3 с до конца, `end_of_stream` уже пришёл), демуксер доходит до
+    /// конца ещё до коммита перемотки, и ядро переводит плеер в `Draining`
+    /// (`enter_eof_drain`), не закрывая перемотку. Снимок тогда: `Draining`, позиция старого
+    /// места (у свежей установки — 0), цель на месте. Поэтому перечень состояний полный, без
+    /// `_`: новое состояние плеера заставит решить, бывает ли в нём посадка.
+    /// Состояния покоя цель не читают: посадки в них нет.
+    pub(crate) const fn landing_target(&self) -> Option<Duration> {
+        match self.state {
+            PlaybackState::Seeking
+            | PlaybackState::Scrubbing
+            | PlaybackState::Buffering
+            | PlaybackState::Playing
+            | PlaybackState::Draining => self.seek_target,
+            PlaybackState::Idle
+            | PlaybackState::Opening
+            | PlaybackState::Paused
+            | PlaybackState::Ended
+            | PlaybackState::Stopped
+            | PlaybackState::Failed => None,
         }
     }
 
     /// Какую позицию сказать странице в часах (пакет F 04d, решение 150).
     ///
-    /// Пока плеер исполняет перемотку (`Seeking`/`Scrubbing` — часы говорят `waiting`),
+    /// Пока плеер исполняет перемотку ([`Self::landing_target`], часы говорят `waiting`),
     /// позиция — ЦЕЛЬ перемотки, как `currentTime` у элемента HTML: он встаёт на новое
     /// место сразу, а `seeking` и `waiting` говорят, что данных там ещё нет. Позиция
     /// плеера в это время — старое место (ядро меняет её только на коммите); увидев её,
@@ -240,10 +287,7 @@ impl PlaybackObservation {
     /// браузерного режима теперь ждёт страницу сколько угодно, так что «старое место в
     /// часах» висело бы всё ожидание. В остальных состояниях — позиция плеера.
     pub(crate) fn page_clock_position(&self) -> Duration {
-        match (self.state, self.seek_target) {
-            (PlaybackState::Seeking | PlaybackState::Scrubbing, Some(target)) => target,
-            _ => self.position,
-        }
+        self.landing_target().unwrap_or(self.position)
     }
 }
 
@@ -502,6 +546,7 @@ impl BrowserPlayback {
     fn handle_player_event(&mut self, correlated: &CorrelatedPlayerEvent) {
         let event = &correlated.event;
         self.journal.note_player_event(event);
+        self.ledger.note_seek_answer_in(event);
         match event {
             PlayerEvent::VideoBackendSelectionRequested(request)
                 if !request.decodable_by_active_backend =>

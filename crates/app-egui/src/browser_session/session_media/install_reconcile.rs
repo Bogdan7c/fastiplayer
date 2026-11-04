@@ -32,7 +32,7 @@ impl SessionMedia {
         if let Some(target) = seek_when_shown {
             // Как перемотка страницы после показа: «играть/пауза» — следом (перемотка
             // после `Ended` кончается паузой).
-            self.command("seek after install", |playback| playback.seek(target));
+            self.hand_seek_to_player("seek after install", target);
             self.apply_page_play_state();
             return;
         }

@@ -59,6 +59,55 @@ fn the_replaced_tab_gets_return_to_page_at_the_clock_position_on_pause() {
     assert!(harness.page.take_sent().is_empty());
 }
 
+/// Прощание посреди посадки на цель: снимок ещё про начало медиа, страница уже на цели. Прощание
+/// «вернись на 0» увело бы зрителя с его места (то же окно, что и у часов, 09b2).
+#[test]
+fn a_farewell_during_a_landing_returns_the_page_to_the_target() {
+    let (mut harness, current, _writer) = loaded_harness();
+    let target = Duration::from_secs(597);
+    let ticket = harness.player.load_ticket(0);
+    harness
+        .player
+        .show_load(ticket, Duration::ZERO, PlaybackState::Draining);
+    harness.player.observation.borrow_mut().seek_target = Some(target);
+    harness.media.drive(Instant::now());
+
+    harness.media.bid_farewell_to_replaced(&current);
+
+    assert_eq!(
+        *harness.closer.farewells.borrow(),
+        vec![FarewellCall::ToReplaced(
+            current.clone(),
+            return_paused_at(target)
+        )]
+    );
+}
+
+/// То же, пока команда перемотки лежит в очереди плеера: цели в наблюдении ещё нет.
+#[test]
+fn a_farewell_before_the_player_answers_a_seek_returns_the_page_to_its_target() {
+    let (mut harness, current, _writer) = loaded_harness();
+    let target = Duration::from_secs(40);
+    show_playing_at(&mut harness, Duration::from_secs(2));
+    harness.player.seek_answers.set(FakeSeekAnswers::Withheld);
+    let seek = intent(
+        &current,
+        PageIntent::FollowPageSeek(MediaTime::from_micros(40_000_000).expect("time")),
+    );
+    harness.media.on_intake(vec![seek], None);
+    harness.media.drive(Instant::now());
+
+    harness.media.bid_farewell_to_replaced(&current);
+
+    assert_eq!(
+        *harness.closer.farewells.borrow(),
+        vec![FarewellCall::ToReplaced(
+            current.clone(),
+            return_paused_at(target)
+        )]
+    );
+}
+
 /// Позиция берётся до того, как открытие нового сеанса поставит видео на паузу и
 /// забудет поколение: после открытия прощаться уже нечем.
 #[test]

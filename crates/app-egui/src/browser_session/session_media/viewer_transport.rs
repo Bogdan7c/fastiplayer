@@ -259,7 +259,7 @@ impl SessionMedia {
             loaded.seek_when_shown = Some(target);
             return LoadedSeek::DeferredUntilShown;
         }
-        self.command("seek", |playback| playback.seek(target));
+        self.hand_seek_to_player("seek", target);
         self.apply_page_play_state();
         LoadedSeek::Commanded
     }
