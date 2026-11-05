@@ -68,3 +68,15 @@ Memories: `mem:browser-bridge/core`.
 - Попап показывает новый исход передачи `not_supported_yet{form}`, например `native_hls`. Видео остаётся в браузере, текст честный: «This video can't be handed to Fastiplayer yet».
 - На странице настроек экстеншена уже есть выбор «Video codec for sites»: Auto / Prefer VP9 (no AV1) / Always H.264 / Off (решения 43, 189). Доводка вида — на финальной полировке интерфейса.
 - Живая проверка M1 добавляет формы 09b: Twitch live и запись (воркер, Chromium), клип как `<video src>`, YouTube с «Always H.264».
+
+## Поправки по итогам 09c (5.11.2026, решения 198–202)
+
+- **Попап читает модель вкладки только через её методы** (`src/background/tab-model/tab-model.ts`):
+  - `videosFoundIn(tabId)` — список найденного с вердиктом для каждого видео, он же список решения 8;
+  - `mainVideoOf(tabId)` — что отдаст передача;
+  - `isAdOn(tabId)` — метка «ad?», её же ждёт читатель рекламы 09d;
+  - `lastRefusalOf(tabId)` — почему передача не состоялась.
+
+  Модель наполняет опрос по клику (решение 198), поэтому попап сам просит опрос, когда его открыли.
+- **Вопрос про локальный адрес** (решение 199). Настройка «спрашивать» даёт исход `local_address_needs_consent{host}`. Попап спрашивает: «This page wants the player to download from `<host>` on your network. Allow?» После «да» — та же команда с `consented_local_host: <host>`. Если страница успела сменить адрес, фон снова вернёт `local_address_needs_consent` с новым хостом: согласие работает только на тот хост, который увидел человек.
+- **Исходы, которые попап показывает текстом:** `protected` (видео с DRM остаётся в браузере), `ad_playing` (только до 09c2, там реклама уже играет у нас), `local_address_refused`, `not_supported_yet{form}`.
