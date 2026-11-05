@@ -453,18 +453,12 @@ impl StreamSegment for MoovSegment {
 
     fn all_tracks_ended(&self) -> bool {
         // The end of a fragmented MP4 can only be detected by an EOF.
-        if self.moov.is_fragmented() {
-            return false;
-        }
-
-        // If a track does not end in this segment, then this cannot be the last segment.
-        for trak in &self.moov.traks {
-            if trak.mdia.minf.stbl.stts.total_duration < trak.mdia.mdhd.duration {
-                return false;
-            }
-        }
-
-        true
+        //
+        // Fastiplayer: без `mvex` продолжения быть не может, и `moof` такой файл отвергает сам.
+        // Upstream сравнивал ещё `stts` с `mdhd`: у рекламных роликов длительность в заголовке
+        // бывает чуть больше суммы сэмплов, и перемотка уходила искать следующие сегменты до конца
+        // файла, теряя текущий `mdat` (следующий пакет: `isomp4: no atom pending read`).
+        !self.moov.is_fragmented()
     }
 
     fn sample_timing(&self, track_num: usize, sample_num: u32) -> Result<Option<SampleTiming>> {
