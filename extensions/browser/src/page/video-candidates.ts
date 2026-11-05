@@ -6,7 +6,8 @@
 // SourceBuffer и который не `closed` (то есть ещё подключён к элементу).
 
 import type { CandidateMedia, DocumentTag, VideoCandidate } from "../shared/handoff-contract.ts";
-import { MAX_VIDEO_CANDIDATES_PER_DOCUMENT } from "../shared/page-message-validation.ts";
+import { MAX_SOURCE_MIME_TYPES, MAX_VIDEO_CANDIDATES_PER_DOCUMENT } from "../shared/page-message-validation.ts";
+import { finiteDurationSeconds, frameDimensionPx, hostOfHttpUrl } from "./candidate-facts.ts";
 import type { DomReaders, ViewportRect } from "./dom-readers.ts";
 import type { ElementRegistry } from "./element-registry.ts";
 import { candidateMediaOf, elementSourceOf, type ElementSource } from "./element-source.ts";
@@ -30,6 +31,11 @@ export function visibleAreaPx(rect: ViewportRect, viewport: { readonly width: nu
   return Math.round(visibleWidth * visibleHeight);
 }
 
+/** Что описанию кандидатов нужно знать о DRM (владелец метки — `DrmMarks`). */
+export interface ProtectionReader {
+  isProtected(element: object): boolean;
+}
+
 export class VideoCandidates {
   readonly #registry: ElementRegistry;
   readonly #tracker: MseTracker;
@@ -37,6 +43,7 @@ export class VideoCandidates {
   readonly #mediaSources: MediaSourceReaders;
   readonly #reportOddity: OddityReporter;
   readonly #workerMediaSources: WorkerMediaSources;
+  readonly #protection: ProtectionReader;
   /** Метка этого документа (одна на всю его жизнь). */
   readonly documentTag: DocumentTag;
 
@@ -48,6 +55,7 @@ export class VideoCandidates {
     documentTag: DocumentTag,
     reportOddity: OddityReporter,
     workerMediaSources: WorkerMediaSources,
+    protection: ProtectionReader,
   ) {
     this.documentTag = documentTag;
     this.#registry = registry;
@@ -56,6 +64,7 @@ export class VideoCandidates {
     this.#mediaSources = mediaSources;
     this.#reportOddity = reportOddity;
     this.#workerMediaSources = workerMediaSources;
+    this.#protection = protection;
   }
 
   /**
@@ -78,20 +87,49 @@ export class VideoCandidates {
 
   #describeAll(): VideoCandidate[] {
     const candidates: VideoCandidate[] = [];
+    // Одна проба скрытости на весь опрос: общие предки видео читаются один раз (visibility-probe.ts).
+    const isHidden = this.#dom.createVisibilityProbe();
+    const frameHost = this.#dom.documentHostName();
     for (const element of this.#registry.findVideoElements()) {
       try {
-        candidates.push({
-          document: this.documentTag,
-          element: this.#registry.keyOf(element),
-          media: candidateMediaOf(this.sourceOf(element)),
-          playing: !this.#dom.isPaused(element) && !this.#dom.isEnded(element),
-          visible_area_px: visibleAreaPx(this.#dom.rectOf(element), this.#dom.viewportSize()),
-        });
+        candidates.push(this.#describeElement(element, isHidden, frameHost));
       } catch {
         this.#reportOddity("could not describe a video element");
       }
     }
     return candidates;
+  }
+
+  /** Все факты одного элемента; любое чтение может бросить — ловит `#describeAll`. */
+  #describeElement(element: Element, isHidden: (element: object) => boolean, frameHost: string): VideoCandidate {
+    const source = this.sourceOf(element);
+    const frameSize = this.#dom.videoSizeOf(element);
+    return {
+      document: this.documentTag,
+      element: this.#registry.keyOf(element),
+      media: candidateMediaOf(source),
+      playing: !this.#dom.isPaused(element) && !this.#dom.isEnded(element),
+      visible_area_px: this.#visibleAreaOf(element, isHidden),
+      duration_s: finiteDurationSeconds(this.#dom.durationSecondsOf(element)),
+      muted: this.#dom.isSilent(element),
+      loop: this.#dom.isLooping(element),
+      video_width_px: frameDimensionPx(frameSize.width),
+      video_height_px: frameDimensionPx(frameSize.height),
+      drm: this.#protection.isProtected(element),
+      frame_host: frameHost,
+      file_host: source.kind === "file" ? hostOfHttpUrl(source.url) : null,
+      source_mime_types: source.kind === "media_source" ? this.#tracker.sourceMimeTypesOf(source.record).slice(0, MAX_SOURCE_MIME_TYPES) : [],
+    };
+  }
+
+  /**
+   * Видимая площадь: пересечение с окном, 0 для скрытого (`display:none`, `visibility:hidden`,
+   * `opacity:0` у элемента или предка — решение 68). Стили читаем только у тех, кто попал в окно:
+   * за экраном площадь и так 0, а чтение стилей — самое дорогое в опросе.
+   */
+  #visibleAreaOf(element: Element, isHidden: (element: object) => boolean): number {
+    const area = visibleAreaPx(this.#dom.rectOf(element), this.#dom.viewportSize());
+    return area > 0 && isHidden(element) ? 0 : area;
   }
 
   /** Форма источника элемента (чтения могут бросить — ловит вызывающий). */

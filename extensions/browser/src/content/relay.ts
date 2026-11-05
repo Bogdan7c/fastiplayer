@@ -9,16 +9,27 @@
 // - страховкой тени: если порт фона пропал посреди передачи, MAIN-мир получает `end_handoff`
 //   «остаться на позиции тени, играть как тень» — страница не остаётся навсегда в тени без плеера;
 // - маршрутом событий: каждое событие страницы уходит порту СВОЕЙ передачи (по номеру запроса
-//   `begin_handoff`), события старой передачи в сеанс новой не попадают.
+//   `begin_handoff`), события старой передачи в сеанс новой не попадают;
+// - бюджетом событий передачи (page-event-budget.ts, решение 200): при превышении пересылка
+//   останавливается сразу, а фон узнаёт об этом своим донесением `page_flood`, которое страница
+//   подделать не может: оно рождается здесь, а не приходит из MAIN-мира;
+// - тем, что документ говорит о себе сам: имя хоста и происхождение читаются здесь, в изолированном
+//   мире, а не берутся на веру из MAIN-мира. От них зависят проверка адреса (решение 199) и Referer
+//   (решение 202), поэтому поддельное значение страницы до фона не доходит.
 // Сам ничего не решает о сеансе: нумерация поколений, очередь и плеер — в фоне.
 
-import type {
-  DescribeCandidatesQuery,
-  PageCommand,
-  PageEvent,
-  VideoCandidate,
+import {
+  PAGE_FLOOD_NOTICE_KIND,
+  type DescribeCandidatesQuery,
+  type PageCommand,
+  type PageEvent,
+  type PageEventBudgetKind,
+  type PageFloodNotice,
+  type VideoCandidate,
 } from "../shared/handoff-contract.ts";
 import { parseCandidatesReply, parsePageEvent } from "../shared/page-message-validation.ts";
+import type { MillisecondClock } from "../shared/token-bucket.ts";
+import { createPageEventBudget, type PageEventBudget, type PageEventBudgetParameters } from "./page-event-budget.ts";
 
 /**
  * Сколько ждём ответ MAIN-мира на `describe_candidates`. MAIN-мир отвечает синхронно из своего
@@ -52,6 +63,8 @@ export interface RelayCounters {
   readonly undeliverablePageEvents: number;
   /** Команды фона неизвестного вида. */
   readonly rejectedBackgroundMessages: number;
+  /** События, отброшенные после превышения бюджета: до фона они не дошли. */
+  readonly droppedFloodEvents: number;
 }
 
 export interface ContentRelay {
@@ -70,6 +83,20 @@ export interface RelayDependencies {
   readonly timers: RelayTimers;
   /** Одна строка диагностики за всю жизнь документа (первый мусор): без спама. */
   readonly debugOnce: (message: string) => void;
+  /** Часы для бюджета событий передачи. */
+  readonly now: MillisecondClock;
+  /** Что документ знает о себе сам, прочитанное в ЭТОМ мире (страница подменить не может). */
+  readonly ownDocument: () => OwnDocumentAddress;
+  /** Свои лимиты бюджета (тесты); по умолчанию боевые. */
+  readonly budgetLimits?: Omit<PageEventBudgetParameters, "now">;
+}
+
+/** Адрес документа глазами изолированного мира. */
+export interface OwnDocumentAddress {
+  /** `location.hostname`; "" — нет. */
+  readonly hostname: string;
+  /** `location.origin`; `null` — непрозрачное происхождение. */
+  readonly origin: string | null;
 }
 
 /**
@@ -81,6 +108,10 @@ export interface RelayDependencies {
 interface StreamOwner {
   readonly requestId: number;
   port: BackgroundPort | undefined;
+  /** Бюджет именно этой передачи: следующая начинает с полного. */
+  readonly budget: PageEventBudget;
+  /** Бюджет кончился: пересылка остановлена, проходит только `handoff_ended`. */
+  flooded: boolean;
 }
 
 /** Снять тень без плеера: остаться на позиции тени, играть/стоять как тень. */
@@ -107,10 +138,82 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
   let rejectedPageMessages = 0;
   let undeliverablePageEvents = 0;
   let rejectedBackgroundMessages = 0;
+  let droppedFloodEvents = 0;
 
   function rejectPageMessage(): void {
     rejectedPageMessages += 1;
     if (rejectedPageMessages === 1) dependencies.debugOnce("fastiplayer bridge: page channel message rejected");
+    chargeMalformedMessage();
+  }
+
+  // ---------------------------------------------------------------- бюджет передачи
+
+  /** Передача, чей поток ещё можно пересылать; бюджет считается только для неё. */
+  function liveStreamOwner(): StreamOwner | undefined {
+    return streamOwner?.port !== undefined && streamOwner.port === backgroundPort ? streamOwner : undefined;
+  }
+
+  /** Мусор во время передачи тратит её бюджет: тысячи кривых сообщений в секунду — это тоже флуд. */
+  function chargeMalformedMessage(): void {
+    const owner = liveStreamOwner();
+    if (owner === undefined || owner.flooded) return;
+    if (owner.budget.admit("malformed") === "exceeded") reportFlood(owner, "malformed");
+  }
+
+  /**
+   * Бюджет кончился: сперва пересылка стоит (`flooded`), потом донесение фону. Конец сеанса и снятие
+   * тени решает фон. Если донесение не ушло (порт мёртв), тень снимет `onDisconnect` порта; если
+   * фон завис, он сам заметит тишину пульса: `shadow_alive` тоже больше не проходит.
+   */
+  function reportFlood(owner: StreamOwner, overBudget: PageEventBudgetKind): void {
+    owner.flooded = true;
+    const notice: PageFloodNotice = { kind: PAGE_FLOOD_NOTICE_KIND, over_budget: overBudget };
+    try {
+      owner.port?.postMessage(notice);
+    } catch {
+      undeliverablePageEvents += 1;
+    }
+  }
+
+  /** Вид бюджета; `undefined` — событие бюджет не считает (`bytes`: у них потолок очереди). */
+  function budgetKindOf(event: PageEvent): PageEventBudgetKind | undefined {
+    switch (event.kind) {
+      case "mse":
+      case "page_seek":
+      case "player_seek_applied":
+      case "page_playback":
+      case "file_source":
+      case "shadow_alive":
+        return event.kind;
+      default:
+        return undefined;
+    }
+  }
+
+  /** Событие потока: сначала бюджет, потом доставка. После флуда не проходит ничего, и байты тоже. */
+  function forwardStreamEvent(event: PageEvent): void {
+    const owner = liveStreamOwner();
+    if (owner === undefined) {
+      deliver(undefined, event);
+      return;
+    }
+    if (owner.flooded) {
+      droppedFloodEvents += 1;
+      return;
+    }
+    const budgetKind = budgetKindOf(event);
+    if (budgetKind !== undefined && owner.budget.admit(budgetKind) === "exceeded") {
+      droppedFloodEvents += 1;
+      reportFlood(owner, budgetKind);
+      return;
+    }
+    deliver(owner.port, withOwnDocumentFacts(event));
+  }
+
+  /** Заменить то, что страница сказала о своём документе, на прочитанное в этом мире. */
+  function withOwnDocumentFacts(event: PageEvent): PageEvent {
+    if (event.kind !== "file_source" || event.referrer_origin === null) return event;
+    return { ...event, referrer_origin: dependencies.ownDocument().origin };
   }
 
   // ---------------------------------------------------------------- MAIN → фон
@@ -118,7 +221,8 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
   function handlePageMessage(message: unknown): void {
     const reply = parseCandidatesReply(message);
     if (reply !== undefined) {
-      settleQuery(reply.request_id, reply.candidates);
+      // Ответ на незаданный вопрос — опоздание, но страница может сыпать ими так же, как мусором.
+      if (!settleQuery(reply.request_id, reply.candidates)) chargeMalformedMessage();
       return;
     }
     const event = parsePageEvent(message);
@@ -146,7 +250,12 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
         pendingBegins.delete(event.request_id);
         const ownerIsAlive = owner !== undefined && owner === backgroundPort;
         if (event.outcome === "started") {
-          streamOwner = { requestId: event.request_id, port: ownerIsAlive ? owner : undefined };
+          streamOwner = {
+            requestId: event.request_id,
+            port: ownerIsAlive ? owner : undefined,
+            budget: createPageEventBudget({ now: dependencies.now, ...dependencies.budgetLimits }),
+            flooded: false,
+          };
           // Хозяин пропал, пока MAIN-мир начинал: тень без плеера сразу снимаем.
           if (!ownerIsAlive) sendToPage(END_HANDOFF_WITHOUT_PLAYER);
         }
@@ -160,7 +269,7 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
         return;
       }
       default:
-        deliver(streamOwner?.port, event);
+        forwardStreamEvent(event);
     }
   }
 
@@ -219,26 +328,32 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
     const requestId = nextRequestId;
     nextRequestId = nextRequestId >= MAX_REQUEST_ID ? 1 : nextRequestId + 1;
     return new Promise((resolve) => {
-      const timer = timers.setTimeout(() => settleQuery(requestId, []), DESCRIBE_CANDIDATES_TIMEOUT_MS);
+      const timer = timers.setTimeout(() => void settleQuery(requestId, []), DESCRIBE_CANDIDATES_TIMEOUT_MS);
       pendingQueries.set(requestId, { resolve, timer });
       sendToPage({ kind: "describe_candidates", request_id: requestId });
     });
   }
 
-  function settleQuery(requestId: number, candidates: readonly VideoCandidate[]): void {
+  /** Кандидат с именем хоста, прочитанным здесь: от него зависит проверка адреса файла (решение 199). */
+  function withOwnHostName(candidate: VideoCandidate): VideoCandidate {
+    return { ...candidate, frame_host: dependencies.ownDocument().hostname };
+  }
+
+  /** Отдать ответ ждущему; `false` — ответ на незаданный или просроченный запрос (не мусор формы). */
+  function settleQuery(requestId: number, candidates: readonly VideoCandidate[]): boolean {
     const pending = pendingQueries.get(requestId);
-    // Ответ на неизвестный/просроченный запрос — не мусор формы, просто опоздание: молча забываем.
-    if (pending === undefined) return;
+    if (pending === undefined) return false;
     pendingQueries.delete(requestId);
     timers.clearTimeout(pending.timer);
-    pending.resolve(candidates);
+    pending.resolve(candidates.map(withOwnHostName));
+    return true;
   }
 
   return {
     handlePageMessage,
     acceptBackgroundPort,
     describeVideoCandidates,
-    counters: () => ({ rejectedPageMessages, undeliverablePageEvents, rejectedBackgroundMessages }),
+    counters: () => ({ rejectedPageMessages, undeliverablePageEvents, rejectedBackgroundMessages, droppedFloodEvents }),
   };
 }
 

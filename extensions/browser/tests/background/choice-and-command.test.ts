@@ -8,15 +8,16 @@ import { translatePlayerMessage } from "../../src/background/handoff/player-mess
 import { chooseVideo } from "../../src/background/handoff/video-choice.ts";
 import type { HandOffTabOutcome, VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import { VIDEO_CANDIDATES_FUNCTION_NAME } from "../../src/shared/video-candidates-probe.ts";
-import { flushPromises } from "./support.ts";
+import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
+import { createFakeClock, flushPromises } from "./support.ts";
 
 function video(element: number, overrides: Partial<VideoCandidate> = {}): VideoCandidate {
-  return { document: "doc-top", element, media: { kind: "media_source" }, playing: false, visible_area_px: 1000, ...overrides };
+  return { document: "doc-top", element, media: { kind: "media_source", in_worker: false }, playing: false, visible_area_px: 1000, ...DEFAULT_CANDIDATE_FACTS, ...overrides };
 }
 
 /** Итог «передать этот элемент». */
 function handOff(frameId: number, document: string, element: number) {
-  return { kind: "hand_off", video: { frameId, document, element } };
+  return { kind: "hand_off", video: { frameId, document, element, frameHost: DEFAULT_CANDIDATE_FACTS.frame_host, fileHost: DEFAULT_CANDIDATE_FACTS.file_host } };
 }
 
 describe("выбор видео", () => {
@@ -53,18 +54,29 @@ describe("выбор видео", () => {
     assert.deepEqual(choice, handOff(0, "doc-top", 2));
   });
 
-  it("оба играют — MSE выше файла, даже меньший", () => {
-    const choice = chooseVideo([
-      { frameId: 0, candidates: [video(1, { media: { kind: "file" }, playing: true, visible_area_px: 900_000 }), video(2, { playing: true, visible_area_px: 10 })] },
-    ]);
-    assert.deepEqual(choice, handOff(0, "doc-top", 2));
-  });
-
-  it("никто не играет — MSE выше файла, даже меньший", () => {
+  it("никто не играет — большой файл выше мелкого MSE: площадь важнее формы (решение 8)", () => {
     const choice = chooseVideo([
       { frameId: 0, candidates: [video(1, { media: { kind: "file" }, visible_area_px: 900_000 }), video(2, { visible_area_px: 10 })] },
     ]);
-    assert.deepEqual(choice, handOff(0, "doc-top", 2));
+    assert.deepEqual(choice, handOff(0, "doc-top", 1));
+  });
+
+  it("играют оба: беззвучный тизер MSE 300×170 без цикла не обгоняет большой фильм-файл", () => {
+    const teaser = video(1, { playing: true, muted: true, loop: false, visible_area_px: 300 * 170 });
+    const film = video(2, { playing: true, media: { kind: "file" }, visible_area_px: 1280 * 720, duration_s: 5400 });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [teaser, film] }]), handOff(0, "doc-top", 2));
+  });
+
+  it("при равной площади длиннее побеждает, даже если он файл", () => {
+    const shorter = video(1, { playing: true, duration_s: 60 });
+    const longer = video(2, { playing: true, media: { kind: "file" }, duration_s: 5400 });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [shorter, longer] }]), handOff(0, "doc-top", 2));
+  });
+
+  it("площадь и длительность равны — форма разрешает равенство: MSE выше файла", () => {
+    const file = video(1, { playing: true, media: { kind: "file" }, duration_s: 5400 });
+    const mse = video(2, { playing: true, duration_s: 5400 });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [file, mse] }]), handOff(0, "doc-top", 2));
   });
 
   it("MSE не играет и не виден — ярус пуст, решает файл", () => {
@@ -108,6 +120,85 @@ describe("выбор видео", () => {
   });
 });
 
+describe("выбор видео: реклама, мусор, DRM, скрытые игроки (09c)", () => {
+  const AD_FILE = { media: { kind: "file" } as const, file_host: "securepubads.g.doubleclick.net", duration_s: 15 };
+
+  it("играющая реклама-файл не побеждает фильм на паузе (преролл Tortuga/Ashdi)", () => {
+    const choice = chooseVideo([
+      { frameId: 0, candidates: [video(1, { visible_area_px: 400_000 }), video(2, { ...AD_FILE, playing: true, visible_area_px: 400_000 })] },
+    ]);
+    assert.deepEqual(choice, handOff(0, "doc-top", 1));
+  });
+
+  it("реклама из iframe рекламного домена не побеждает фильм, даже если у неё MSE", () => {
+    const choice = chooseVideo([
+      { frameId: 0, candidates: [video(1, { media: { kind: "file" }, visible_area_px: 400_000 })] },
+      { frameId: 3, candidates: [video(2, { document: "doc-ima", playing: true, frame_host: "imasdk.googleapis.com" })] },
+    ]);
+    assert.deepEqual(choice, handOff(0, "doc-top", 1));
+  });
+
+  it("скрытый играющий не побеждает видимый на паузе (Ashdi, решение 68)", () => {
+    const choice = chooseVideo([
+      { frameId: 0, candidates: [video(1, { playing: true, visible_area_px: 0 }), video(2, { visible_area_px: 300_000 })] },
+    ]);
+    assert.deepEqual(choice, handOff(0, "doc-top", 2));
+  });
+
+  it("если видимых нет, скрытый играющий всё же выбирается", () => {
+    const choice = chooseVideo([{ frameId: 0, candidates: [video(1, { visible_area_px: 0 }), video(2, { playing: true, visible_area_px: 0 })] }]);
+    assert.deepEqual(choice, handOff(0, "doc-top", 2));
+  });
+
+  it("играющий и видимый побеждает видимый на паузе", () => {
+    const choice = chooseVideo([{ frameId: 0, candidates: [video(1, { visible_area_px: 900_000 }), video(2, { playing: true, visible_area_px: 1000 })] }]);
+    assert.deepEqual(choice, handOff(0, "doc-top", 2));
+  });
+
+  it("беззвучный баннер-автоплей и превью по наведению не главные (banner-autoplay)", () => {
+    const choice = chooseVideo([
+      {
+        frameId: 0,
+        candidates: [
+          video(1, { playing: true, muted: true, loop: true, visible_area_px: 300 * 250, duration_s: 12 }),
+          video(2, { playing: true, muted: true, visible_area_px: 120 * 68, duration_s: null }),
+          video(3, { visible_area_px: 640_000 }),
+        ],
+      },
+    ]);
+    assert.deepEqual(choice, handOff(0, "doc-top", 3));
+  });
+
+  it("при равной площади выигрывает более длинный ролик, неизвестная длительность — последней", () => {
+    const longer = chooseVideo([{ frameId: 0, candidates: [video(1, { duration_s: 600 }), video(2, { duration_s: 5400 }), video(3, { duration_s: null })] }]);
+    assert.deepEqual(longer, handOff(0, "doc-top", 2));
+    const unknownLast = chooseVideo([{ frameId: 0, candidates: [video(1, { duration_s: null }), video(2, { duration_s: 90 })] }]);
+    assert.deepEqual(unknownLast, handOff(0, "doc-top", 2));
+  });
+
+  it("DRM-видео: единственное играющее — исход protected, а не передача", () => {
+    const choice = chooseVideo([{ frameId: 0, candidates: [video(1, { drm: true, playing: true })] }]);
+    assert.deepEqual(choice, { kind: "protected" });
+  });
+
+  it("DRM-видео не мешает передать другое обычное видео страницы", () => {
+    const choice = chooseVideo([{ frameId: 0, candidates: [video(1, { drm: true, playing: true, visible_area_px: 900_000 }), video(2, { visible_area_px: 100 })] }]);
+    assert.deepEqual(choice, handOff(0, "doc-top", 2));
+  });
+
+  it("только играющая реклама, фильма нет — ad_playing; стоящая реклама — nothing", () => {
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [video(1, { ...AD_FILE, playing: true })] }]), { kind: "ad_playing" });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [video(1, { ...AD_FILE, playing: false })] }]), { kind: "nothing" });
+  });
+
+  it("порядок отказов без главного: DRM, потом реклама, потом неподдержанная форма", () => {
+    const unsupported = video(3, { media: { kind: "unsupported", form: "native_hls" }, playing: true });
+    const ad = video(2, { ...AD_FILE, playing: true });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [unsupported, ad, video(1, { drm: true, playing: true })] }]), { kind: "protected" });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [unsupported, ad] }]), { kind: "ad_playing" });
+  });
+});
+
 describe("опрос фреймов", () => {
   it("внедряемая функция зовёт функцию изолированного глобала и возвращает её результат", async () => {
     const candidates = [video(1)];
@@ -145,7 +236,8 @@ describe("опрос фреймов", () => {
         { frameId: 4 },
       ]);
     };
-    assert.deepEqual(await surveyTabVideos(5, execute), [{ frameId: 0, candidates: [video(1)] }]);
+    const survey = await surveyTabVideos(5, execute, createFakeClock().scheduler);
+    assert.deepEqual(survey, { kind: "surveyed", frames: [{ frameId: 0, candidates: [video(1)] }], truncated: false });
   });
 });
 

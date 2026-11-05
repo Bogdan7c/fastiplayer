@@ -1,0 +1,42 @@
+// Правила отсева рекламы и мусора среди видео вкладки (сессия 09c, решения 66, 84).
+//
+// ТОЛЬКО ДАННЫЕ: пороги и списки живут здесь, а не числами внутри классификатора. Знание о
+// конкретном сайте (класс или id рекламного элемента) сюда НЕ попадает — оно для адаптеров сайтов.
+
+/** Набор правил для `classifyVideo`. */
+export interface VideoFilterRules {
+  /**
+   * Рекламные домены. Хост совпадает, если он равен записи или является её поддоменом
+   * (`a.doubleclick.net` подходит к `doubleclick.net`). Только общеизвестные рекламные сети и
+   * рекламные SDK видеоплееров — список короткий намеренно.
+   */
+  readonly adHostSuffixes: readonly string[];
+  /**
+   * Ролик короче этого (секунды) считается не фильмом: баннер, превью по наведению, реакция.
+   * Короткое видео, которое сейчас играет и со звуком, всё же остаётся кандидатом (это может быть
+   * настоящий короткий ролик, который смотрит человек).
+   */
+  readonly shortClipSeconds: number;
+  /**
+   * Видимая площадь (CSS-пиксели) меньше этого у беззвучного видео — значок или превью-плитка, а
+   * не плеер. 160x90 — самая мелкая плитка превью на лентах.
+   */
+  readonly smallAreaPx: number;
+}
+
+/** Правила по умолчанию. */
+export const VIDEO_FILTER_RULES: VideoFilterRules = {
+  adHostSuffixes: [
+    "imasdk.googleapis.com", // Google IMA SDK: рекламные iframe видеоплееров
+    "doubleclick.net",
+    "2mdn.net", // Google: файлы роликов рекламной сети
+    "googlesyndication.com",
+    "googleadservices.com",
+    "adservice.google.com",
+    "adnxs.com", // Xandr (AppNexus)
+    "adsrvr.org", // The Trade Desk
+    "moatads.com",
+  ],
+  shortClipSeconds: 30,
+  smallAreaPx: 160 * 90,
+};

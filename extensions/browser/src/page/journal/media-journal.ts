@@ -13,13 +13,17 @@
 //    сегмента, следующие куски того же SourceBuffer до первой границы тоже бесполезны и
 //    отпускаются, а повтор начнётся с границы (подмассив куска);
 //  - формат, который сканер не понимает, или сбой разбора → журнал «неполный»: всё свёрнуто в
-//    снимок, байты отпущены, дальше записи не копятся. Повтор такого журнала — только снимок.
+//    снимок, байты отпущены, дальше записи не копятся. Повтор такого журнала — только снимок;
+//  - потолок числа записей `MAX_JOURNAL_ENTRIES`: память считает буферы, а не записи, и без него
+//    события без байтов (сеттер `timestampOffset` в цикле) копились бы вечно, а у повтора не было
+//    бы верхней границы (на неё опирается запас бюджета событий, content/page-event-budget.ts).
 //
 // Повтор (`replay`) = снимок (source_buffer_added, duration_changed, timestamp_offset_changed,
 // init-байты) + оставшиеся записи по порядку. Журнал ведётся всегда, в том числе во время и после
 // передачи: повторная передача после возврата должна работать.
 
 import type { LocalMediaSourceKey, LocalMseEvent } from "../../shared/handoff-contract.ts";
+import { MAX_JOURNAL_ENTRIES } from "../../shared/page-message-validation.ts";
 import type { MediaDuration } from "../../protocol/time.ts";
 import type { RetainedMemory } from "./retained-memory.ts";
 import { SourceBufferTrack } from "./source-buffer-track.ts";
@@ -107,6 +111,7 @@ export class MediaJournal {
       return;
     }
     this.#entries.push({ kind: "mse", order: this.#environment.nextOrder(), event });
+    this.#evictBeyondEntryCeiling();
     if (event.kind === "source_buffer_added" && !this.#tracks.get(event.source_buffer)?.isScannable) {
       this.markIncomplete();
     }
@@ -150,6 +155,12 @@ export class MediaJournal {
       dead: false,
     });
     this.#environment.memory.retain(view);
+    this.#evictBeyondEntryCeiling();
+  }
+
+  /** Запись сверх потолка числа записей выкидывается так же, как при потолке памяти: старое — первым. */
+  #evictBeyondEntryCeiling(): void {
+    if (this.#entries.length - this.#head > MAX_JOURNAL_ENTRIES) this.evictOldest();
   }
 
   /** Порядковый номер самой старой живой записи (`null` — записей нет). */

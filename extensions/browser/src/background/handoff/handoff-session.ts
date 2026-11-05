@@ -15,11 +15,13 @@
 // страницы сначала дописывается плееру:
 // - `handoff_ended{element_released}` — страница забрала видео → код 4009 (решение 179);
 // - `handoff_ended{returned}` без нашего `end_handoff` — сбой внутри страницы → 4003 (Д-6);
-// - тень молчит дольше предела пульса → снять «как тень» и 4003 (решение 180, Д-2).
+// - тень молчит дольше предела пульса → снять «как тень» и 4003 (решение 180, Д-2);
+// - страница превысила бюджет событий (донесение изолированного мира `page_flood`, решение 200) или
+//   назвала адрес файла, который правило запрещает (решение 199) → снять «как тень» и 4003.
 // Конец сообщается владельцу ровно один раз (`onFinished`), нужда связи освобождается ровно один раз.
 
-import type { HandOffTabOutcome, PageCommand, PageEvent } from "../../shared/handoff-contract.ts";
-import { parsePageEvent } from "../../shared/page-message-validation.ts";
+import type { HandOffTabOutcome, HandoffEndCause, HandoffStartOutcome, PageCommand, PageEvent, PageEventBudgetKind } from "../../shared/handoff-contract.ts";
+import { parsePageEvent, parsePageFloodNotice } from "../../shared/page-message-validation.ts";
 import {
   SESSION_CLOSE_CODES,
   type PageIdentity,
@@ -30,6 +32,10 @@ import type { OpenSessionOutcome, OpenSessionRequest } from "../host-link/open-s
 import type { Scheduler } from "../host-link/native-port.ts";
 import { createTimerSlot } from "../host-link/timer-slot.ts";
 import { HANDOFF_BEGIN_REPLY_TIMEOUT_MS, HANDOFF_END_REPLY_TIMEOUT_MS } from "./constants.ts";
+import type { FileReferrer } from "../../shared/referrer-policy.ts";
+import { ruleAllowsFileUrl, type FileAddressRule } from "./file-address-guard.ts";
+import type { FileReferrerRules } from "./file-referrer-rule.ts";
+import type { LocalAddressBlock } from "./local-address-block-rules.ts";
 import type { FrameConnector, FramePort } from "./frame-port.ts";
 import { createDocumentTranslator, type DocumentTranslator, type OutgoingItem, type PageStreamProblem, type StreamPageEvent } from "./page-event-translator.ts";
 import { translatePlayerMessage } from "./player-message-translator.ts";
@@ -65,6 +71,10 @@ export interface HandoffSessionDependencies {
   readonly tabExists: (tabId: number) => Promise<boolean>;
   /** Сеть браузера для байтов файла `<video src>` (сессия 09b; в продукте — `fetch` фона). */
   readonly fetchRange: RangeFetch;
+  /** Referer закачки файла (решение 202): правило браузера на время одного запроса. */
+  readonly fileReferrer: FileReferrerRules;
+  /** Сетевой заслон локальных адресов (решение 199): разрешение сеанса на время одного запроса. */
+  readonly localAddressBlock: LocalAddressBlock;
 }
 
 /** Что и куда передаём. */
@@ -78,6 +88,8 @@ export interface HandoffTarget {
   readonly page: PageIdentity;
   /** Номер запроса `begin_handoff` (уникален в фоне). */
   readonly beginRequestId: number;
+  /** Правило адреса файла (решение 199): `file_source` и перенаправления проверяются им же. */
+  readonly fileAddressRule: FileAddressRule;
 }
 
 /** Чем закончилась передача (для владельца и тестов; журнала в продукте нет). */
@@ -90,6 +102,10 @@ export type HandoffSessionEnd =
   | { readonly kind: "page_side_failure" }
   /** Тень замолчала дольше предела пульса (4003, решение 180). */
   | { readonly kind: "shadow_silent" }
+  /** Страница превысила бюджет событий или счётчик копий байтов (4003, решение 200); вид — только для журнала. */
+  | { readonly kind: "page_flood"; readonly overBudget: PageEventBudgetKind | "forwarded_bytes" }
+  /** Страница назвала адрес файла, который правило запрещает (4003, решение 199). */
+  | { readonly kind: "local_address_refused" }
   | { readonly kind: "returned_to_page" }
   | { readonly kind: "stream_rejected" }
   | { readonly kind: "player_ended"; readonly cause: SocketEndCause }
@@ -227,11 +243,19 @@ export function startHandoffSession(
    * video returned to the page».
    */
   function endForSilentShadow(): void {
+    endForPageFault({ kind: "shadow_silent" });
+  }
+
+  /**
+   * Вина страницы, ждать её согласия незачем: странице — снять тень «как тень» (если порт мёртв, его
+   * закрытие в `finish` снимет тень в изолированном мире само), плееру — всё, что уже в очереди, и 4003.
+   */
+  function endForPageFault(end: HandoffSessionEnd): void {
     if (phase !== "active") return;
     // Результат отправки здесь намеренно не важен: сеанс кончается в любом случае, а путь «порт
-    // мёртв» (Д-7) лишь подменил бы честную причину «тень молчит» на «ушли со страницы».
+    // мёртв» (Д-7) лишь подменил бы честную причину конца на «ушли со страницы».
     tryPostToPage(END_WITHOUT_PLAYER);
-    endOnPageSide("protocol_violation", { kind: "shadow_silent" });
+    endOnPageSide("protocol_violation", end);
   }
 
   /**
@@ -312,7 +336,12 @@ export function startHandoffSession(
     if (port !== framePort || phase === "finished") return;
     // Изолированный мир уже проверил форму; повторяем дёшево — фон не доверяет чужим процессам вслепую.
     const event = parsePageEvent(message);
-    if (event === undefined) return;
+    if (event === undefined) {
+      // Единственное, что приходит сюда не из MAIN-мира: своё донесение изолированного мира.
+      const flood = parsePageFloodNotice(message);
+      if (flood !== undefined) endForPageFault({ kind: "page_flood", overBudget: flood.over_budget });
+      return;
+    }
     switch (event.kind) {
       case "handoff_began":
         handleHandoffBegan(event);
@@ -326,7 +355,7 @@ export function startHandoffSession(
         silenceWatch.notePulse();
         return;
       case "file_source":
-        startFileSource(event.url);
+        startFileSource(event.url, event.referrer_origin === null ? null : { origin: event.referrer_origin, policy: event.referrer_policy });
         return;
       default:
         forwardStreamEvent(event);
@@ -339,7 +368,9 @@ export function startHandoffSession(
     if (event.outcome !== "started") {
       // Элемент исчез, потерял MediaSource или фрейм уже показывает другой документ (метка не та):
       // видео для передачи нет, а для выданного сеанса страница ушла.
-      abandonGrantedSession({ kind: "no_video" }, "navigated_away");
+      // Защищённый элемент (DRM появился между опросом и командой, 09c) — отдельный исход: видео
+      // остаётся играть в браузере. Сеанс выдан, поэтому закрывается через `tab_gone`, как и остальные.
+      abandonGrantedSession(outcomeOfRefusedBegin(event.outcome), "navigated_away");
       return;
     }
     phase = "active";
@@ -347,7 +378,12 @@ export function startHandoffSession(
     resolveOutcome({ kind: "started" });
   }
 
-  function handleHandoffEnded(cause: "returned" | "element_released"): void {
+  /** Исход команды по отказу страницы начать тень. */
+  function outcomeOfRefusedBegin(refused: Exclude<HandoffStartOutcome, "started">): HandOffTabOutcome {
+    return refused === "protected" ? { kind: "protected" } : { kind: "no_video" };
+  }
+
+  function handleHandoffEnded(cause: HandoffEndCause): void {
     if (phase === "ending") {
       completeEnding();
       return;
@@ -357,6 +393,11 @@ export function startHandoffSession(
       // Страница честно забрала видео (не-MSE источник, пустой источник дольше допуска, элемент
       // убран), вкладка на месте — решение 179: «The page took the video back», без доигрывания.
       endOnPageSide("page_took_video_back", { kind: "page_took_video_back" });
+      return;
+    }
+    if (cause === "page_flood") {
+      // Счётчик копий в MAIN-мире или воркере отказал (решение 200): та же вина страницы, что и бюджет событий.
+      endOnPageSide("protocol_violation", { kind: "page_flood", overBudget: "forwarded_bytes" });
       return;
     }
     // `returned`, о котором мы не просили: тень снял сбой внутри страницы (отправка куска, старт
@@ -397,8 +438,13 @@ export function startHandoffSession(
    * Страница передаёт файл `<video src>`: новое поколение-файл, байты по запросам плеера качает
    * загрузчик диапазонов. Адрес остаётся в фоне — плееру уходит только номер поколения.
    */
-  function startFileSource(url: string): void {
+  function startFileSource(url: string, referrer: FileReferrer | null): void {
     if ((phase !== "beginning" && phase !== "active") || translator === undefined || socket === undefined) return;
+    // Проверка при выборе видео шла по словам кандидата, а адрес называет страница сейчас: сверяем.
+    if (!ruleAllowsFileUrl(target.fileAddressRule, url)) {
+      refuseFileAddress();
+      return;
+    }
     const translated = translator.translateFileSource();
     if (!translated.ok) {
       rejectPageStream(translated.problem);
@@ -407,7 +453,24 @@ export function startHandoffSession(
     for (const item of translated.items) socket.enqueue(item);
     // Новый файл в том же сеансе: прежний загрузчик больше не нужен (его запросы — прошлого поколения).
     disposeFileFeed();
-    fileFeed = createRangeFetcher({ url, fetch: dependencies.fetchRange, sink: socket, scheduler: dependencies.scheduler });
+    // Сначала разрешение заслона локальных адресов (сам запрос), снаружи него — Referer.
+    const network = dependencies.localAddressBlock.around(dependencies.fetchRange, target.fileAddressRule);
+    fileFeed = createRangeFetcher({
+      url,
+      fetch: referrer === null ? network : dependencies.fileReferrer.around(network, referrer),
+      allowsAddress: (finalUrl) => ruleAllowsFileUrl(target.fileAddressRule, finalUrl),
+      sink: socket,
+      scheduler: dependencies.scheduler,
+    });
+  }
+
+  /** Страница назвала запрещённый адрес файла: сеанс кончается, ни одного запроса туда не ушло. */
+  function refuseFileAddress(): void {
+    if (phase === "active") {
+      endForPageFault({ kind: "local_address_refused" });
+    } else {
+      failStart({ kind: "local_address_refused" }, SESSION_CLOSE_CODES.protocol_violation);
+    }
   }
 
   // ---------------------------------------------------------------- плеер → страница

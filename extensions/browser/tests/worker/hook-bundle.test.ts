@@ -32,6 +32,7 @@ function runClassicWorker(policy: CodecPolicy, siteScript: (scope: ReturnType<ty
     // Есть в любом воркере; модули протокола в бандле снимают их на старте.
     TextEncoder,
     TextDecoder,
+    performance,
     console: { debug: (line: string) => debugLines.push(line) },
     importScripts: (url: string) => {
       imported.push(url);

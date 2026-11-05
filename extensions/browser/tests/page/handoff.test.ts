@@ -9,6 +9,7 @@ import { test } from "node:test";
 import type { PageEvent } from "../../src/shared/handoff-contract.ts";
 import { HANDSHAKE_MARKER_FIELD } from "../../src/shared/page-channel-handshake.ts";
 import { MAX_PAGE_BYTES_EVENT_BYTES, MAX_VIDEO_CANDIDATES_PER_DOCUMENT, parseCandidatesReply, parsePageEvent } from "../../src/shared/page-message-validation.ts";
+import { PAGE_FACTS_OF_UNKNOWN_DURATION_VIDEO } from "./support/page-candidate-facts.ts";
 import { handshake, startHarness, startRealShadowHarness, type BridgeHarness, type IsolatedSide } from "./support/bridge-harness.ts";
 import { AUDIO_MP4, VIDEO_MP4, concat } from "./support/media-samples.ts";
 
@@ -145,9 +146,9 @@ test("describe_candidates: keys, live media, playing and visible area, including
       kind: "candidates",
       request_id: 5,
       candidates: [
-        { document: harness.bridge.documentTag, element: 1, media: { kind: "media_source" }, playing: true, visible_area_px: 640 * 360 },
-        { document: harness.bridge.documentTag, element: 2, media: { kind: "none" }, playing: false, visible_area_px: 100 * 100 },
-        { document: harness.bridge.documentTag, element: 3, media: { kind: "none" }, playing: false, visible_area_px: 50 * 50 },
+        { ...PAGE_FACTS_OF_UNKNOWN_DURATION_VIDEO, document: harness.bridge.documentTag, element: 1, media: { kind: "media_source", in_worker: false }, playing: true, visible_area_px: 640 * 360, source_mime_types: [VIDEO_MIME, AUDIO_MIME] },
+        { ...PAGE_FACTS_OF_UNKNOWN_DURATION_VIDEO, document: harness.bridge.documentTag, element: 2, media: { kind: "none" }, playing: false, visible_area_px: 100 * 100 },
+        { ...PAGE_FACTS_OF_UNKNOWN_DURATION_VIDEO, document: harness.bridge.documentTag, element: 3, media: { kind: "none" }, playing: false, visible_area_px: 50 * 50 },
       ],
     });
     // Ключи стабильны: повторный запрос даёт те же номера.
@@ -410,7 +411,15 @@ test("more videos than the isolated world accepts: the reply is capped, the live
     const reply = isolated.received[0];
     assert.ok(reply?.kind === "candidates");
     assert.equal(reply.candidates.length, MAX_VIDEO_CANDIDATES_PER_DOCUMENT);
-    assert.deepEqual(reply.candidates[0], { document: harness.bridge.documentTag, element: harness.bridge.registry.keyOf(video as unknown as Element), media: { kind: "media_source" }, playing: true, visible_area_px: 640 * 360 });
+    assert.deepEqual(reply.candidates[0], {
+      ...PAGE_FACTS_OF_UNKNOWN_DURATION_VIDEO,
+      document: harness.bridge.documentTag,
+      element: harness.bridge.registry.keyOf(video as unknown as Element),
+      media: { kind: "media_source", in_worker: false },
+      playing: true,
+      visible_area_px: 640 * 360,
+      source_mime_types: [VIDEO_MIME, AUDIO_MIME],
+    });
   });
 });
 

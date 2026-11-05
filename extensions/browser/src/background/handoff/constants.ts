@@ -1,6 +1,6 @@
 // Тайминги и пределы передачи вкладки (сессия 09a). Каждая константа — с обоснованием.
 
-import { MAX_PAGE_BYTES_EVENT_BYTES } from "../../shared/page-message-validation.ts";
+import { MAX_FORWARDED_APPEND_BYTES, MAX_PAGE_BYTES_EVENT_BYTES } from "../../shared/page-message-validation.ts";
 
 /**
  * Сколько ждём `attached` после отправки `attach`. Плеер сам закрывает сеанс 4007, если `attach`
@@ -46,4 +46,8 @@ export const MAX_SESSION_QUEUE_BYTES = 128 * 1024 * 1024;
 // Очередь обязана вмещать хотя бы одно самое крупное событие страницы.
 if (MAX_SESSION_QUEUE_BYTES < MAX_PAGE_BYTES_EVENT_BYTES) {
   throw new Error("MAX_SESSION_QUEUE_BYTES must hold at least one page bytes event");
+}
+// Кусок, который MAIN-мир согласен копировать, обязан помещаться в очередь: иначе копия бесполезна.
+if (MAX_SESSION_QUEUE_BYTES < MAX_FORWARDED_APPEND_BYTES) {
+  throw new Error("MAX_SESSION_QUEUE_BYTES must hold the largest forwarded append");
 }

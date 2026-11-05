@@ -52,6 +52,8 @@ export interface WorkerStreamHandlers {
   replayed(): void;
   /** Поток не открыть или он оборвался (воркер не ответил в срок, MediaSource ушёл, сбой). */
   unavailable(): void;
+  /** Счётчик копий воркера отказал: страница льёт байты сверх предела (решение 200). */
+  flooded(): void;
 }
 
 /** Кто узнаёт о новых живых MediaSource воркеров (контроллер передачи). */
@@ -182,7 +184,7 @@ export class WorkerMediaSources implements WorkerChannelListener {
     this.#listener?.onWorkerMediaSourceStarted(this.#refOf(channel, localKey));
   }
 
-  onStreamReport(channel: WorkerChannel, report: Extract<WorkerReport, { kind: "stream_item" | "stream_replayed" | "stream_unavailable" }>): void {
+  onStreamReport(channel: WorkerChannel, report: Extract<WorkerReport, { kind: "stream_item" | "stream_replayed" | "stream_unavailable" | "stream_flooded" }>): void {
     const entry = this.#streams.get(report.stream);
     // Чужой или уже закрытый поток (запоздавшие куски прошлой передачи) — молча мимо: так и задумано.
     if (entry === undefined || entry.channel !== channel) return;
@@ -195,6 +197,10 @@ export class WorkerMediaSources implements WorkerChannelListener {
       case "stream_unavailable":
         this.#dropStream(report.stream);
         entry.handlers.unavailable();
+        return;
+      case "stream_flooded":
+        this.#dropStream(report.stream);
+        entry.handlers.flooded();
         return;
       case "stream_item":
         this.#deliver(report.stream, entry, report.item);

@@ -81,6 +81,7 @@ function recordingHandlers() {
       },
       replayed: () => events.push("replayed"),
       unavailable: () => events.push("unavailable"),
+      flooded: () => events.push("flooded"),
     },
   };
 }
@@ -111,6 +112,17 @@ test("stream: open_stream with a fresh id, namespaced items, replayed cancels th
   assert.equal(delivered.media_source, "w1/ms-1");
   assert.deepEqual([...delivered.bytes], [1, 2, 3]);
   assert.equal(world.timers[0]?.cancelled, true, "the replay deadline is gone");
+});
+
+test("stream_flooded reaches the handler as a flood, not as a lost stream, and closes the stream", async () => {
+  const world = startRegistry();
+  const mediaSource = await liveMediaSource(world);
+  const recorded = recordingHandlers();
+  world.registry.openStream(mediaSource, recorded.handlers);
+  world.worker.report({ kind: "stream_flooded", stream: 1 });
+  world.worker.report({ kind: "stream_replayed", stream: 1 });
+  await settle();
+  assert.deepEqual(recorded.events, ["flooded"], "a report after the flood finds no stream");
 });
 
 test("no replay in time: unavailable once; a late replayed or item of that stream is ignored", async () => {

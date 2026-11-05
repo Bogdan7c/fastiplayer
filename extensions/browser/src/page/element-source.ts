@@ -114,8 +114,9 @@ function workerHandleSource(resolution: WorkerHandleResolution | null): ElementS
 export function candidateMediaOf(source: ElementSource): CandidateMedia {
   switch (source.kind) {
     case "media_source":
+      return { kind: "media_source", in_worker: false };
     case "worker_media_source":
-      return { kind: "media_source" };
+      return { kind: "media_source", in_worker: true };
     case "file":
       return { kind: "file" };
     case "unsupported":

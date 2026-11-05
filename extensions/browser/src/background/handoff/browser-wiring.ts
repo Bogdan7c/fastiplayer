@@ -3,12 +3,17 @@
 
 import { browserApi } from "../../shared/browser-api.ts";
 import { HANDOFF_PORT_NAME, type PageCommand } from "../../shared/handoff-contract.ts";
+import { readLocalAddressSetting } from "../../shared/local-address-setting.ts";
 import type { Scheduler } from "../host-link/native-port.ts";
 import type { FramePort } from "./frame-port.ts";
 import type { ExecuteInAllFrames } from "./frame-survey.ts";
+import { createFileReferrerRules } from "./file-referrer-rule.ts";
 import { createHandOffCommandListener } from "./hand-off-command.ts";
 import type { SessionDoor } from "./handoff-session.ts";
+import { createLocalAddressBlock, localAddressBlockRules } from "./local-address-block-rules.ts";
+import { createSessionRules, type SessionRulesApi } from "./session-rules.ts";
 import type { SessionWebSocket } from "./session-socket.ts";
+import type { TabModel } from "../tab-model/tab-model.ts";
 import { createTabHandoffs, type TabHandoffs } from "./tab-handoffs.ts";
 
 /** Случайных байт в метке жизни фона (6 байт = 8 символов base64url). */
@@ -45,19 +50,47 @@ function connectFrame(tabId: number, frameId: number): FramePort {
   };
 }
 
+/**
+ * Сессионные правила браузера. Форма наших правил уже проверена типами модуля, браузер хочет свои
+ * перечисления; в Firefox и Chrome это те же строки. API нет — вызов бросит, модуль это переживает.
+ */
+const sessionRulesApi: SessionRulesApi = {
+  updateSessionRules: (options) =>
+    browserApi.declarativeNetRequest.updateSessionRules(options as unknown as chrome.declarativeNetRequest.UpdateRuleOptions),
+  getSessionRules: () => browserApi.declarativeNetRequest.getSessionRules(),
+};
+
 /** Включает команду «отдать вкладку N» и слежение за закрытием вкладок. */
-export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler): TabHandoffs {
+export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabModel: TabModel): TabHandoffs {
   const nonce = createBackgroundNonce();
+  // Хост адреса страниц экстеншена: инициатор его запросов. В Firefox это внутренний UUID, а не `runtime.id`.
+  const extensionHost = new URL(browserApi.runtime.getURL("")).hostname;
+  // Создаётся на каждом старте фона: снимает остатки прошлой жизни service worker и ставит заслон.
+  const sessionRules = createSessionRules({
+    api: sessionRulesApi,
+    scheduler,
+    permanentRules: localAddressBlockRules(extensionHost),
+    reportFailureOnce: (error) => console.warn("[fastiplayer] a network rule failed, the Referer or the local address block may be missing:", error),
+  });
   const handoffs = createTabHandoffs({
     door,
     scheduler,
     createWebSocket: (url) => new WebSocket(url) as unknown as SessionWebSocket,
     connectFrame,
     executeInAllFrames,
+    tabModel,
     tabExists: (tabId) => browserApi.tabs.get(tabId).then(() => true, () => false),
     // Сеть фона для байтов `<video src>` (сессия 09b): права на сайты снимают CORS, куки сайта идут
     // с запросом. Глобальный `fetch` зовётся без `this` — иначе «Illegal invocation».
     fetchRange: (url, init) => fetch(url, init),
+    fileReferrer: createFileReferrerRules(sessionRules),
+    localAddressBlock: createLocalAddressBlock(sessionRules, extensionHost),
+    readLocalAddressSetting: () => readLocalAddressSetting({ get: (keys) => browserApi.storage.local.get([...keys]), set: (items) => browserApi.storage.local.set(items) }),
+    reportSettingFailure: (error) => console.warn("[fastiplayer] could not read the local address setting, blocking:", error),
+    // Причина флуда — только в журнал разработчика, модель вкладки хранит закрытый вид.
+    onSessionEnded: (_tabId, end) => {
+      if (end.kind === "page_flood") console.debug(`[fastiplayer] page exceeded the event budget: ${end.overBudget}`);
+    },
     describeTab: (tabId) =>
       browserApi.tabs.get(tabId).then(
         (tab) => ({ title: tab.title, url: tab.url }),
@@ -68,9 +101,13 @@ export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler): Tab
   browserApi.runtime.onMessage.addListener(
     createHandOffCommandListener(
       { extensionId: browserApi.runtime.id, extensionBaseUrl: browserApi.runtime.getURL("") },
-      (tabId) => handoffs.handOffTab(tabId),
+      (tabId, consent) => handoffs.handOffTab(tabId, consent),
     ),
   );
-  browserApi.tabs.onRemoved.addListener((tabId) => handoffs.tabRemoved(tabId));
+  browserApi.tabs.onRemoved.addListener((tabId) => {
+    handoffs.tabRemoved(tabId);
+    // Снимок закрытой вкладки стираем; `forgetTab` не бросает (сбой хранилища гасится в модели).
+    void tabModel.forgetTab(tabId);
+  });
   return handoffs;
 }

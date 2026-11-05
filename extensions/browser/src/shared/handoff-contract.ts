@@ -24,6 +24,7 @@
 import type { MediaDuration, MediaTimeMicros, MediaTimeOffsetMicros, PlaybackRatePermille } from "../protocol/time.ts";
 import type { ClockState, ResumeState } from "../protocol/session/player.ts";
 import type { PagePlaybackRequest, RemovalEnd } from "../protocol/session/page.ts";
+import type { ReferrerPolicyName } from "./referrer-policy.ts";
 
 /** Имя порта участка 2: его открывает фон к выбранному фрейму (`tabs.connect`). */
 export const HANDOFF_PORT_NAME = "fastiplayer-handoff";
@@ -78,7 +79,11 @@ export type UnsupportedMediaForm = "native_hls" | "blob_file" | "data_url" | "me
  * - `none` — источника нет (или MediaSource ещё без SourceBuffer).
  */
 export type CandidateMedia =
-  | { readonly kind: "media_source" }
+  /**
+   * `in_worker` — MediaSource живёт в выделенном воркере (форма `worker_media_source`), а не в
+   * главном потоке. Для выбора видео это то же MSE; признак нужен модели вкладки и попапу.
+   */
+  | { readonly kind: "media_source"; readonly in_worker: boolean }
   | { readonly kind: "file" }
   | { readonly kind: "unsupported"; readonly form: UnsupportedMediaForm }
   | { readonly kind: "none" };
@@ -91,8 +96,34 @@ export interface VideoCandidate {
   readonly media: CandidateMedia;
   /** Настоящий элемент играет (не на паузе и не кончился). */
   readonly playing: boolean;
-  /** Видимая площадь элемента в CSS-пикселях (0 — не виден). */
+  /**
+   * Видимая площадь элемента в CSS-пикселях. 0 — не виден: за окном, нулевого размера или скрыт
+   * (`display:none`, `visibility:hidden`, `opacity:0` у самого элемента или любого предка,
+   * решение 68).
+   */
   readonly visible_area_px: number;
+  /** Длительность настоящего элемента, секунды; `null` — неизвестна, бесконечна (эфир) или NaN. */
+  readonly duration_s: number | null;
+  /** Настоящий элемент без звука: `muted` ИЛИ громкость 0. */
+  readonly muted: boolean;
+  /** У настоящего элемента включён `loop`. */
+  readonly loop: boolean;
+  /** `videoWidth` настоящего элемента (0 — размер кадра ещё неизвестен). */
+  readonly video_width_px: number;
+  /** `videoHeight` настоящего элемента (0 — размер кадра ещё неизвестен). */
+  readonly video_height_px: number;
+  /**
+   * Элемент под DRM (инвариант 4, решение 65): у него есть ключи (`mediaKeys !== null`), на нём
+   * было событие `encrypted` или страница успешно вызвала `setMediaKeys` с ключами. Один опрос
+   * `requestMediaKeySystemAccess` признаком не считается.
+   */
+  readonly drm: boolean;
+  /** Имя хоста документа, в котором лежит элемент (`location.hostname`; "" — нет). */
+  readonly frame_host: string;
+  /** Имя хоста адреса файла для `media.kind === "file"`, иначе `null`. */
+  readonly file_host: string | null;
+  /** MIME всех отслеживаемых SourceBuffer-ов элемента (не больше `MAX_SOURCE_MIME_TYPES`); пусто — неизвестно. */
+  readonly source_mime_types: readonly string[];
 }
 
 /** Только участок 1: изолированный мир просит MAIN-мир описать видео документа. */
@@ -156,7 +187,12 @@ export type HandoffStartOutcome =
    * У элемента к моменту команды нет того, что мы передаём: ни живого MediaSource, ни файла по
    * http(s) (источник успели снять или сменить на неподдержанную форму между опросом и командой).
    */
-  | "no_media";
+  | "no_media"
+  /**
+   * Элемент под DRM (09c, инвариант 4): передачу не начинаем, тень не встаёт, видео остаётся
+   * играть в браузере. Фон показывает исход `protected`.
+   */
+  | "protected";
 
 /** Почему тень снята по инициативе страницы, а не плеера. */
 export type HandoffEndCause =
@@ -168,7 +204,12 @@ export type HandoffEndCause =
    * документа дольше допуска. Пустой источник сам по себе — пауза решения, а не конец (Д-1):
    * перед новым MediaSource сайты (YouTube) сначала снимают старый (`srcObject = null`).
    */
-  | "element_released";
+  | "element_released"
+  /**
+   * Счётчик копий (page/forward-byte-meter.ts, решение 200) отказал: страница льёт байты сверх
+   * предела. Тень снята нами, но это вина страницы, и причина `page_flood` доходит до модели вкладки.
+   */
+  | "page_flood";
 
 export type PageEvent =
   | { readonly kind: "handoff_began"; readonly request_id: number; readonly outcome: HandoffStartOutcome }
@@ -197,8 +238,14 @@ export type PageEvent =
    * `page_seek`. Адрес — абсолютный http(s) выбранного источника настоящего элемента (`currentSrc`).
    * Он остаётся ВНУТРИ экстеншена: фон качает по нему диапазоны для `fetch_range`, а плееру уходит
    * только `file_source_added{generation}` — протокол адресов не несёт.
+   *
+   * `referrer_origin` — сайт-источник документа для заголовка Referer закачки (решение 202): только
+   * происхождение, без пути страницы; `null` — Referer не нужен (политика `no-referrer` или непрозрачное
+   * происхождение документа). `referrer_policy` — политика, которую видно из MAIN-мира (атрибут элемента,
+   * иначе `<meta name=referrer>`): фон считает по ней Referer на каждый адрес, в том числе конечный после
+   * перенаправления. Заголовок ответа `Referrer-Policy` страница не видит (известное ограничение).
    */
-  | { readonly kind: "file_source"; readonly url: string }
+  | { readonly kind: "file_source"; readonly url: string; readonly referrer_origin: string | null; readonly referrer_policy: ReferrerPolicyName }
   /**
    * Пульс «тень жива» (решение владельца 180, Д-2). Шлёт сама тень — владелец знания «элемент
    * под тенью» — не чаще раза в `SHADOW_PULSE_INTERVAL_MS`, на тиках часов плеера (не таймером:
@@ -222,6 +269,30 @@ export const SHADOW_PULSE_INTERVAL_MS = 1_000;
  * потеря видна зрителю за секунды, а не никогда.
  */
 export const SHADOW_SILENCE_LIMIT_MS = 10_000;
+
+// ---------------------------------------------------------------------------------------------
+// Изолированный мир → фон: своё донесение пограничника, из MAIN-мира его подделать нельзя.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Вид события, который считает бюджет страницы (content/page-event-budget.ts, решение 200).
+ * `malformed` — сообщения не договорной формы: страница, сыплющая мусором, тратит тот же бюджет.
+ * Байты бюджет не считает: их держит потолок очереди сеанса.
+ */
+export type PageEventBudgetKind = "mse" | "page_seek" | "player_seek_applied" | "page_playback" | "file_source" | "shadow_alive" | "malformed";
+
+/** Вид донесения «страница превысила бюджет»: он НЕ входит в `PageEvent`. */
+export const PAGE_FLOOD_NOTICE_KIND = "page_flood";
+
+/**
+ * Страница превысила бюджет событий (решение 200). Шлёт ТОЛЬКО изолированный мир по порту участка 2.
+ * MAIN-мир подделать его не может: всё, что он шлёт, проходит `parsePageEvent`, а там этого вида нет.
+ * `over_budget` — только для отладочного журнала.
+ */
+export interface PageFloodNotice {
+  readonly kind: typeof PAGE_FLOOD_NOTICE_KIND;
+  readonly over_budget: PageEventBudgetKind;
+}
 
 // ---------------------------------------------------------------------------------------------
 // Фон → изолированный мир → MAIN.
@@ -273,6 +344,13 @@ export const HAND_OFF_TAB_KIND = "hand_off_tab";
 export interface HandOffTabRequest {
   readonly kind: typeof HAND_OFF_TAB_KIND;
   readonly tab_id: number;
+  /**
+   * Хост, на который человек согласился (решение 199): значение `host` из исхода
+   * `local_address_needs_consent`. Ставит только страница самого экстеншена (попап 10) после вопроса
+   * «спрашивать»; без поля действует настройка. Согласие на хост, а не вообще: пока человек думал,
+   * страница могла сменить файл. Другой хост получит новый вопрос, а не молчаливое разрешение.
+   */
+  readonly consented_local_host?: string;
 }
 
 export type HandOffTabOutcome =
@@ -284,6 +362,14 @@ export type HandOffTabOutcome =
    * оно остаётся играть в браузере, сеанс с плеером даже не открывается.
    */
   | { readonly kind: "not_supported_yet"; readonly form: UnsupportedMediaForm }
+  /** Лучшее видео вкладки под DRM (инвариант 4): не трогаем, оно играет в браузере. */
+  | { readonly kind: "protected" }
+  /** Играет только отдельный рекламный ролик, фильма ещё нет (до сессии 09c2). */
+  | { readonly kind: "ad_playing" }
+  /** Файл с локального адреса, настройка «блокировать» (решение 199). */
+  | { readonly kind: "local_address_refused" }
+  /** Файл с локального адреса, настройка «спрашивать»: попап 10 спросит человека про `host`. */
+  | { readonly kind: "local_address_needs_consent"; readonly host: string }
   /** Связь с плеером не поднялась или плеер отказал (`reason` — для журнала и попапа 10). */
   | { readonly kind: "player_unavailable"; readonly reason: string }
   /** Внутренняя ошибка экстеншена (`reason` — для журнала). */

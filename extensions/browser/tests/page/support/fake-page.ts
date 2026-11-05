@@ -29,8 +29,46 @@ export const FAKE_PAGE_URL = "https://site.example/watch";
 /** `HTMLMediaElement.networkState` по стандарту. */
 const NETWORK_STATE = { EMPTY: 0, IDLE: 1, LOADING: 2, NO_SOURCE: 3 } as const;
 
-export function createFakePage() {
+/** Настройки фейковой страницы. */
+export interface FakePageOptions {
+  /** У движка есть `Element.prototype.checkVisibility` (современный путь пробы видимости). */
+  readonly nativeCheckVisibility?: boolean;
+  /** Происхождение документа (`location.origin`); по умолчанию его нет. */
+  readonly origin?: string;
+}
+
+/** Стиль элемента в фейке: что вернёт `getComputedStyle` (чего нет — значения по умолчанию CSS). */
+export interface FakeStyle {
+  display?: string;
+  opacity?: string;
+  visibility?: string;
+}
+
+/** Значения свойств по умолчанию, когда тест их не задал. */
+const DEFAULT_STYLE: Required<FakeStyle> = { display: "block", opacity: "1", visibility: "visible" };
+
+export function createFakePage(pageOptions: FakePageOptions = {}) {
   let urlCounter = 0;
+  /** Сколько раз прочитан вычисленный стиль (проверка «опрос не квадратичен»). */
+  const styleReads = { count: 0 };
+  /** Слушатели фазы захвата: фейк не умеет всплытие, поэтому «путь события» повторяет по ним сам. */
+  const captureListeners: { node: object; type: string; listener: unknown }[] = [];
+
+  class FakeEventTarget extends EventTarget {
+    override addEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions): void {
+      const capture = typeof options === "boolean" ? options : options?.capture === true;
+      if (capture) captureListeners.push({ node: this, type, listener });
+      super.addEventListener(type, listener, options);
+    }
+    // Тень берёт оригиналы методов прямо с `EventTarget.prototype`: у класса-обёртки они должны быть
+    // собственными, а не унаследованными.
+    override removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions): void {
+      super.removeEventListener(type, listener, options);
+    }
+    override dispatchEvent(event: Event): boolean {
+      return super.dispatchEvent(event);
+    }
+  }
   /** `performance.now` страницы — под управлением теста (тень работает на тиках, не на таймерах). */
   const clock = {
     nowMs: 1_000,
@@ -138,8 +176,13 @@ export function createFakePage() {
     }
   }
 
-  class FakeNode extends EventTarget {
+  class FakeNode extends FakeEventTarget {
     connected = true;
+    /** Родитель в дереве (плоский фейк: задаёт тест, чтобы проверять предков). */
+    testParent: FakeNode | null = null;
+    get parentNode(): FakeNode | null {
+      return this.testParent;
+    }
     get isConnected(): boolean {
       return this.connected;
     }
@@ -161,11 +204,19 @@ export function createFakePage() {
     }
   }
 
-  class FakeShadowRoot extends FakeDocumentFragment {}
+  class FakeShadowRoot extends FakeDocumentFragment {
+    /** Хозяин shadow root (ставит `attachShadow`). */
+    testHost: FakeNode | null = null;
+    get host(): FakeNode | null {
+      return this.testHost;
+    }
+  }
 
   class FakeElement extends FakeNode {
     readonly localName: string;
     rect = { left: 0, top: 0, right: 0, bottom: 0 };
+    /** Стиль элемента (то, что отдаст `getComputedStyle`). */
+    testStyle: FakeStyle = {};
     #shadowRoot: FakeShadowRoot | null = null;
     #shadowMode: "open" | "closed" = "open";
 
@@ -179,9 +230,13 @@ export function createFakePage() {
     attachShadow(init: { mode: "open" | "closed" }): FakeShadowRoot {
       if (this.#shadowRoot !== null) throw new FakeDomException("NotSupportedError");
       this.#shadowRoot = new FakeShadowRoot();
+      this.#shadowRoot.testHost = this;
+      this.#shadowRoot.testParent = null;
       this.#shadowMode = init.mode;
       return this.#shadowRoot;
     }
+    /** Что последним спросили у `checkVisibility` (путь «браузерная проба»). */
+    lastCheckVisibilityOptions: unknown = null;
     getBoundingClientRect(): { left: number; top: number; right: number; bottom: number } {
       return { ...this.rect };
     }
@@ -284,8 +339,67 @@ export function createFakePage() {
     get networkState(): number {
       return this.#networkState;
     }
+    /** Тестовая длительность настоящего элемента (`NaN` — метаданных нет). */
+    testDuration = Number.NaN;
     get duration(): number {
-      return Number.NaN;
+      return this.testDuration;
+    }
+    #loop = false;
+    get loop(): boolean {
+      return this.#loop;
+    }
+    set loop(value: boolean) {
+      this.#loop = Boolean(value);
+    }
+    /** Ключи, которые элемент держит (`null` — нет). */
+    #mediaKeys: object | null = null;
+    get mediaKeys(): object | null {
+      return this.#mediaKeys;
+    }
+    /** Следующий `setMediaKeys` отклонит промис этой ошибкой. */
+    testRejectNextSetMediaKeys: Error | null = null;
+    /** Следующий `setMediaKeys` бросит синхронно (как при неверном аргументе). */
+    testThrowNextSetMediaKeys: Error | null = null;
+    /** Сколько раз браузерный `setMediaKeys` реально вызван (обёртка не должна терять вызовы). */
+    setMediaKeysCalls = 0;
+    /** Промис, который браузерный `setMediaKeys` отдал последним (страница обязана получить именно его). */
+    lastSetMediaKeysPromise: Promise<void> | null = null;
+    setMediaKeys(keys: object | null): Promise<void> {
+      this.setMediaKeysCalls += 1;
+      const outcome = this.#settleMediaKeys(keys);
+      this.lastSetMediaKeysPromise = outcome;
+      return outcome;
+    }
+    #settleMediaKeys(keys: object | null): Promise<void> {
+      if (this.testThrowNextSetMediaKeys !== null) {
+        const failure = this.testThrowNextSetMediaKeys;
+        this.testThrowNextSetMediaKeys = null;
+        throw failure;
+      }
+      if (this.testRejectNextSetMediaKeys !== null) {
+        const failure = this.testRejectNextSetMediaKeys;
+        this.testRejectNextSetMediaKeys = null;
+        return Promise.reject(failure);
+      }
+      this.#mediaKeys = keys;
+      return Promise.resolve();
+    }
+    /** Shadow root, в дереве которого лежит элемент (`null` — в основном документе). */
+    testContainer: FakeShadowRoot | null = null;
+    /**
+     * Фейк не умеет всплытие, поэтому путь НЕ composed события `encrypted` повторяется вручную: после
+     * обычной отправки его слышат слушатели фазы захвата окна (элемент в документе) или своего
+     * shadow root (элемент в его дереве) — ровно как в браузере.
+     */
+    override dispatchEvent(event: Event): boolean {
+      const delivered = super.dispatchEvent(event);
+      if (event.type !== "encrypted") return delivered;
+      const pathNode: object = this.testContainer ?? windowTarget;
+      for (const entry of [...captureListeners]) {
+        if (entry.node !== pathNode || entry.type !== event.type) continue;
+        if (typeof entry.listener === "function") entry.listener.call(entry.node, event);
+      }
+      return delivered;
     }
     play(): Promise<void> {
       this.#paused = false;
@@ -323,6 +437,24 @@ export function createFakePage() {
     }
     get videoWidth(): number {
       return this.#width;
+    }
+    get videoHeight(): number {
+      return 360;
+    }
+  }
+
+  /** Вычисленный стиль: читает `testStyle` элемента и считает чтения. */
+  class FakeCssStyle {
+    readonly #element: FakeElement;
+    constructor(element: FakeElement) {
+      // Как в браузере: стиль есть только у элемента, на документе `getComputedStyle` бросает.
+      if (!(element instanceof FakeElement)) throw new TypeError("not an element");
+      this.#element = element;
+    }
+    getPropertyValue(property: string): string {
+      styleReads.count += 1;
+      const style = this.#element.testStyle;
+      return (style[property as keyof FakeStyle] ?? DEFAULT_STYLE[property as keyof FakeStyle]) as string;
     }
   }
 
@@ -365,7 +497,7 @@ export function createFakePage() {
     start: MessagePort.prototype.start,
   };
 
-  const windowTarget = new EventTarget();
+  const windowTarget = new FakeEventTarget();
   const fakeDocument = new FakeDocument();
 
   const win = Object.assign(windowTarget, {
@@ -381,7 +513,11 @@ export function createFakePage() {
     HTMLVideoElement: FakeVideoElement,
     innerWidth: 1280,
     innerHeight: 720,
-    EventTarget,
+    location: { hostname: "site.example", ...(pageOptions.origin === undefined ? {} : { origin: pageOptions.origin }) },
+    ShadowRoot: FakeShadowRoot,
+    getComputedStyle: (element: FakeElement) => new FakeCssStyle(element),
+    CSSStyleDeclaration: FakeCssStyle,
+    EventTarget: FakeEventTarget,
     Event,
     Promise,
     DOMException,
@@ -400,8 +536,34 @@ export function createFakePage() {
     crypto: globalThis.crypto,
   });
 
+  if (pageOptions.nativeCheckVisibility === true) {
+    // Браузер сам обходит предков: любой `display:none` / `opacity:0` в цепочке и `visibility` самого
+    // элемента (так определяют спецификация и Chromium) — без чтений вычисленного стиля скриптом.
+    Object.defineProperty(FakeElement.prototype, "checkVisibility", {
+      configurable: true,
+      value(this: FakeElement, options: unknown): boolean {
+        this.lastCheckVisibilityOptions = options;
+        let node: FakeNode | null = this;
+        while (node !== null) {
+          if (node instanceof FakeElement) {
+            if ((node.testStyle.display ?? "block") === "none") return false;
+            if (Number.parseFloat(node.testStyle.opacity ?? "1") === 0) return false;
+          }
+          node = node.testParent instanceof FakeShadowRoot ? node.testParent.testHost : node.testParent;
+        }
+        const visibility = this.testStyle.visibility ?? "visible";
+        return visibility !== "hidden" && visibility !== "collapse";
+      },
+    });
+  }
+
   return {
     win: win as unknown as PageBridgeWindow & EventTarget,
+    styleReads,
+    captureListeners,
+    /** Доверенное событие «от браузера» (`isTrusted: true`). */
+    browserEvent: trustedEvent,
+    FakeShadowRoot,
     document: fakeDocument,
     postedToPorts,
     portFailure,
@@ -418,6 +580,21 @@ export function createFakePage() {
     addVideo(): InstanceType<typeof FakeVideoElement> {
       const video = new FakeVideoElement();
       fakeDocument.children.push(video);
+      return video;
+    },
+    /** Новый `<meta>` в документе, после всего, что там уже есть. */
+    addMeta(name: string, content: string): void {
+      const meta = new FakeElement("meta");
+      meta.setAttribute("name", name);
+      meta.setAttribute("content", content);
+      fakeDocument.children.push(meta);
+    },
+    /** Новый `<video>` внутри shadow root (его дерево — отдельный путь событий). */
+    addVideoInShadowRoot(root: InstanceType<typeof FakeShadowRoot>): InstanceType<typeof FakeVideoElement> {
+      const video = new FakeVideoElement();
+      video.testContainer = root;
+      video.testParent = root;
+      root.children.push(video);
       return video;
     },
     /**

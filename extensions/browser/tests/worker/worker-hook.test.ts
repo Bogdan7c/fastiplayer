@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { refuse, TRANSPARENT_POLICY, type CodecPolicy } from "../../src/shared/codec-policy.ts";
+import { MAX_FORWARDED_APPEND_BYTES } from "../../src/shared/page-message-validation.ts";
 import { parseWorkerReport, WORKER_CHANNEL_HANDSHAKE, WORKER_CHANNEL_MARKER_FIELD, type WorkerReport } from "../../src/shared/worker-channel-contract.ts";
 import { installWorkerHook } from "../../src/worker/worker-hook.ts";
 import { VIDEO_MP4 } from "../page/support/media-samples.ts";
@@ -73,6 +74,26 @@ function startMediaSource(fake: FakeWorkerScope) {
   const sourceBuffer = mediaSource.addSourceBuffer(VIDEO_MIME);
   return { mediaSource, handle, sourceBuffer };
 }
+
+test("a giant append reports stream_flooded, not stream_unavailable, and the stream is closed", async () => {
+  const { fake } = installHook();
+  const main = connect(fake);
+  try {
+    const { sourceBuffer } = startMediaSource(fake);
+    main.send({ kind: "open_stream", stream: 1, media_source: "ms-1" });
+    await main.waitFor((reports) => reports.some((report) => report.kind === "stream_replayed"));
+    sourceBuffer.appendBuffer(new Uint8Array(MAX_FORWARDED_APPEND_BYTES + 1));
+    await main.waitFor((reports) => reports.at(-1)?.kind === "stream_flooded");
+    assert.deepEqual(main.reports.at(-1), { kind: "stream_flooded", stream: 1 });
+    assert.equal(parseWorkerReport({ kind: "stream_flooded", stream: 1 }, (value): value is Uint8Array => value instanceof Uint8Array)?.kind, "stream_flooded");
+    const before = main.reports.length;
+    sourceBuffer.appendBuffer(VIDEO_MP4.bytes().slice(0, 32));
+    await main.settle();
+    assert.equal(main.reports.length, before, "no live items after the flood");
+  } finally {
+    main.close();
+  }
+});
 
 test("handshake: the first message with the marker and one port is taken and hidden from the site", async () => {
   const { fake } = installHook();

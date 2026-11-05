@@ -29,16 +29,24 @@
 //   сообщения: текущий `fetch` обрывается. Итог брошенного запроса плееру не нужен: его поколение
 //   устарело, и такие сообщения его сторож поколений выбрасывает.
 //
-// Известное ограничение безопасности (находка 11 ревью 09b; разбор атак — сессия 09c). Адрес
-// файла выбирает СТРАНИЦА (`<video src>`), а качает его ФОН — с куками пользователя
-// (`credentials: "include"`) и с правами экстеншена на сайты: без CORS и без вопроса браузера о
-// доступе к локальной сети (Local Network Access). Враждебная страница может так заставить фон
-// сходить по адресу, куда сама дотянуться не может: на другой сайт с куками пользователя, в
-// локальную сеть или на `localhost` (роутер, принтер, панель разработчика). Байты уходят только
-// плееру (не странице), а запросы — только GET с `Range`, но сам факт запроса и его побочные
-// эффекты (GET с действием на старом оборудовании, чтение по таймингу) остаются. Поведение пока
-// не меняется: ограничения адреса (схема, частные сети, совпадение с сайтом вкладки, вопрос
-// пользователю) решает 09c.
+// Безопасность адреса (находка 11 ревью 09b, решение 199). Адрес файла выбирает СТРАНИЦА
+// (`<video src>`), а качает его ФОН — с куками пользователя (`credentials: "include"`) и с правами
+// экстеншена на сайты: без CORS и без вопроса браузера о доступе к локальной сети (Local Network
+// Access). Поэтому адрес проверяется до загрузчика, правилом file-address-guard.ts: при выборе видео
+// и при `file_source`. Сам перенаправленный запрос на локальный адрес закрывает браузер, правилом
+// local-address-block-rules.ts: для загрузчика это обычный сбой сети, `network_error`. Здесь остаётся
+// вторая линия: проверка адреса ПОСЛЕ перенаправлений (`response.url`), если заслон не встал. Такой
+// ответ тоже кончается честным `network_error`: ни байта плееру и больше ни одного запроса загрузчика.
+// Что остаётся:
+// - домен, чей DNS ведёт на домашний адрес (DNS rebinding), заранее не поймать (решение 199);
+// - чужой публичный сайт с куками пользователя остаётся доступен: «только файлы со своего сайта»
+//   отклонено, сломались бы сайты с отдельным CDN (решение 199).
+//
+// Перенаправления и адрес запроса. После первого перенаправления следующие запросы идут сразу на
+// конечный адрес: так правило Referer (file-referrer-rule.ts) ставится на тот адрес, куда запрос и
+// уходит. Первый запрос к конечному адресу мог получить отказ из-за Referer, тогда его повтор плеером
+// уже идёт на конечный адрес с правилом. Если конечный адрес устарел (подписанная ссылка истекла),
+// отказ возвращает загрузчик к адресу страницы, и следующий запрос проходит перенаправление заново.
 
 import { MAX_DATA_FRAME_PAYLOAD_BYTES, type RangeFetchFailure, type RangeFetchOutcome, type ResourceSize } from "../../protocol/index.ts";
 import type { Scheduler } from "../host-link/native-port.ts";
@@ -61,6 +69,8 @@ export interface RangeRequest {
 
 /** Ответ `fetch` — та часть `Response`, которой мы пользуемся (в тестах — настоящий `Response`). */
 export interface RangeFetchResponse {
+  /** Конечный адрес после перенаправлений; "" — неизвестен (`Response` без сети). */
+  readonly url: string;
   readonly status: number;
   readonly headers: ResponseHeaders;
   readonly body: ReadableStream<Uint8Array> | null;
@@ -88,6 +98,8 @@ export interface RangeFeedSink {
 export interface RangeFetcherParameters {
   readonly url: string;
   readonly fetch: RangeFetch;
+  /** Можно ли ходить на конечный адрес после перенаправления (file-address-guard.ts). */
+  readonly allowsAddress: (url: string) => boolean;
   readonly sink: RangeFeedSink;
   readonly scheduler: Scheduler;
 }
@@ -140,6 +152,10 @@ export function createRangeFetcher(parameters: RangeFetcherParameters): RangeFet
   let identity: ResourceIdentity | undefined;
   // Вид размера из первого `completed`: дальше он не меняется.
   let firstSizeReport: ResourceSize | undefined;
+  // Куда идёт следующий запрос: конечный адрес последнего перенаправления (см. шапку файла).
+  let requestUrl = url;
+  // Перенаправление увело на запрещённый адрес: больше ни одного запроса.
+  let addressRefused = false;
 
   function finish(request: RangeRequest, outcome: RangeFetchOutcome): void {
     if (disposed) return;
@@ -215,6 +231,17 @@ export function createRangeFetcher(parameters: RangeFetcherParameters): RangeFet
     }
   }
 
+  /** Учесть конечный адрес ответа. `false` — он запрещён: тело не читаем, запросов больше нет. */
+  function followRedirect(askedUrl: string, finalUrl: string): boolean {
+    if (finalUrl === "" || finalUrl === askedUrl) return true;
+    if (!parameters.allowsAddress(finalUrl)) {
+      addressRefused = true;
+      return false;
+    }
+    requestUrl = finalUrl;
+    return true;
+  }
+
   /** Отработать один запрос плеера до его итога (`undefined` — загрузку оборвали). */
   async function serve(request: RangeRequest, signal: AbortSignal): Promise<RangeFetchOutcome | undefined> {
     const requestEnd = request.offset + request.length;
@@ -226,11 +253,12 @@ export function createRangeFetcher(parameters: RangeFetcherParameters): RangeFet
       // Размер известен и мы у конца: короткое чтение у конца файла честно; запрос целиком за
       // концом — `out_of_range` (сеть не нужна).
       if (size !== undefined && position >= size) return delivered > 0 ? completed(size) : failed("out_of_range");
-      if (subrequest >= MAX_SUBREQUESTS_PER_RANGE) return failed("network_error");
+      if (subrequest >= MAX_SUBREQUESTS_PER_RANGE || addressRefused) return failed("network_error");
 
+      const askedUrl = requestUrl;
       let response: RangeFetchResponse;
       try {
-        response = await parameters.fetch(url, {
+        response = await parameters.fetch(askedUrl, {
           headers: { Range: `bytes=${position}-${requestEnd - 1}` },
           credentials: "include",
           // Без кэша браузера: частичные ответы из кэша смешивали бы версии файла.
@@ -246,6 +274,11 @@ export function createRangeFetcher(parameters: RangeFetcherParameters): RangeFet
         return undefined;
       }
 
+      if (!followRedirect(askedUrl, response.url)) {
+        cancelBody(response);
+        return failed("network_error");
+      }
+
       const plan = planRangeResponse(response.status, response.headers, position);
       if (plan.kind === "out_of_range") {
         cancelBody(response);
@@ -254,6 +287,8 @@ export function createRangeFetcher(parameters: RangeFetcherParameters): RangeFet
       }
       if (plan.kind === "failed") {
         cancelBody(response);
+        // Отказал конечный адрес, а не адрес страницы: возможно, ссылка истекла, начнём сначала.
+        if (askedUrl !== url && response.url === askedUrl) requestUrl = url;
         return failed(plan.failure);
       }
       const responseIdentity = identityOf(response.headers, plan.totalSize);

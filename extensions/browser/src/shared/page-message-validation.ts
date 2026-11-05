@@ -7,16 +7,20 @@
 // Тот же разбор фон повторяет над тем, что пришло из изолированного мира (защита в глубину):
 // это дёшево, байты при этом не копируются.
 
-import type {
-  CandidateMedia,
-  CandidatesReply,
-  HandoffEndCause,
-  HandoffStartOutcome,
-  LocalMseEvent,
-  PageEvent,
-  UnsupportedMediaForm,
-  VideoCandidate,
+import {
+  PAGE_FLOOD_NOTICE_KIND,
+  type CandidateMedia,
+  type CandidatesReply,
+  type HandoffEndCause,
+  type HandoffStartOutcome,
+  type LocalMseEvent,
+  type PageEvent,
+  type PageEventBudgetKind,
+  type PageFloodNotice,
+  type UnsupportedMediaForm,
+  type VideoCandidate,
 } from "./handoff-contract.ts";
+import { REFERRER_POLICIES, type ReferrerPolicyName } from "./referrer-policy.ts";
 import {
   MAX_JSON_SAFE_INTEGER,
   MAX_MIME_TYPE_BYTES,
@@ -45,6 +49,27 @@ export const MAX_PAGE_BYTES_EVENT_BYTES = 32 * 1024 * 1024;
  * странице заставить фон перебирать миллионы записей.
  */
 export const MAX_VIDEO_CANDIDATES_PER_DOCUMENT = 256;
+
+/**
+ * Сколько MIME-типов SourceBuffer-ов элемента кандидат может нести. Равно лимиту SourceBuffer
+ * одного поколения протокола: больше отслеживаемых буферов у элемента быть не может.
+ */
+export const MAX_SOURCE_MIME_TYPES = MAX_SOURCE_BUFFERS_PER_GENERATION;
+
+/**
+ * Наибольшая длина имени хоста (DNS: 253 символа). Хосты нужны фону только для сверки со списком
+ * рекламных доменов и показа в попапе, длинная строка — мусор страницы.
+ */
+export const MAX_HOST_NAME_LENGTH = 253;
+
+/** Имя хоста: печатный ASCII без пробела (punycode, IPv4, IPv6 в скобках); см. `isHostName`. */
+const HOST_NAME_PATTERN = /^[\x21-\x7e]+$/;
+
+/**
+ * Предел размера кадра в пикселях. Самые большие реальные кадры — 16K (15360 x 8640); запас в разы
+ * нужен только затем, чтобы кривое число страницы не прошло как «размер».
+ */
+const MAX_VIDEO_DIMENSION_PX = 100_000;
 
 /** Наибольший номер вида u32 (номера запросов, `seek_id`). */
 const MAX_U32 = 0xffff_ffff;
@@ -75,10 +100,29 @@ const PRINTABLE_ASCII_PATTERN = /^[\x20-\x7e]+$/;
  */
 export const MAX_FILE_SOURCE_URL_LENGTH = 16 * 1024;
 
+/** Наибольшая длина `referrer_origin`: схема, порт и имя хоста (не длиннее `MAX_HOST_NAME_LENGTH`). */
+export const MAX_REFERRER_ORIGIN_LENGTH = 300;
+
+/**
+ * Сколько записей держит журнал одного MediaSource (и значит, сколько несёт его повтор). Журнал считает
+ * память буферов, а не записей: без этого потолка страница копила бы записи вечно (сеттер
+ * `timestampOffset` в цикле не держит ни байта), и повтор при передаче не имел бы верхней границы.
+ * Замер записей живых сайтов: кусок 7,5–13 КБ, то есть 64 МиБ журнала — около 8 900 записей; семикратный
+ * запас покрывает и мелкие куски. Упёрлись — выкидывается самая старая запись, как при потолке памяти.
+ */
+export const MAX_JOURNAL_ENTRIES = 65_536;
+
+/**
+ * Самый большой кусок одного `appendBuffer`, который MAIN-мир вообще возьмётся копировать в сеанс.
+ * Равен потолку очереди сеанса: кусок больше него фон всё равно не принял бы, а копия — это память
+ * вкладки, потраченная впустую ДО того, как фон что-либо заметит. Живые сайты: не больше 0,74 МиБ.
+ */
+export const MAX_FORWARDED_APPEND_BYTES = 128 * 1024 * 1024;
+
 /** Схемы адреса файла, который фон умеет качать с `Range`. */
 const FILE_SOURCE_PROTOCOLS: readonly string[] = ["http:", "https:"];
 
-const HANDOFF_START_OUTCOMES: readonly HandoffStartOutcome[] = ["started", "element_not_found", "no_media"];
+const HANDOFF_START_OUTCOMES: readonly HandoffStartOutcome[] = ["started", "element_not_found", "no_media", "protected"];
 const UNSUPPORTED_MEDIA_FORMS: readonly UnsupportedMediaForm[] = [
   "native_hls",
   "blob_file",
@@ -87,7 +131,7 @@ const UNSUPPORTED_MEDIA_FORMS: readonly UnsupportedMediaForm[] = [
   "other_scheme",
   "untracked_worker_media_source",
 ];
-const HANDOFF_END_CAUSES: readonly HandoffEndCause[] = ["returned", "element_released"];
+const HANDOFF_END_CAUSES: readonly HandoffEndCause[] = ["returned", "element_released", "page_flood"];
 
 type PlainRecord = Readonly<Record<string, unknown>>;
 
@@ -159,6 +203,23 @@ export function isFileSourceUrl(value: unknown): value is string {
     return false;
   }
   return FILE_SOURCE_PROTOCOLS.includes(parsed.protocol) && parsed.username === "" && parsed.password === "" && parsed.href === value;
+}
+
+/** Сайт-источник для Referer: ровно происхождение http(s), без пути, запроса и учётных данных. */
+export function isReferrerOrigin(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > MAX_REFERRER_ORIGIN_LENGTH) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  return FILE_SOURCE_PROTOCOLS.includes(parsed.protocol) && parsed.origin === value;
+}
+
+/** Имя хоста по правилу `HOST_NAME_PATTERN`, 1…MAX_HOST_NAME_LENGTH символов. */
+export function isHostName(value: unknown): value is string {
+  return typeof value === "string" && value.length <= MAX_HOST_NAME_LENGTH && HOST_NAME_PATTERN.test(value);
 }
 
 function isOneOf<T extends string>(value: unknown, allowed: readonly T[]): value is T {
@@ -312,7 +373,12 @@ export function parsePageEvent(value: unknown): PageEvent | undefined {
     }
     case "file_source": {
       const url = value["url"];
-      return hasExactKeys(value, ["kind", "url"]) && isFileSourceUrl(url) ? { kind: "file_source", url } : undefined;
+      const referrerOrigin = value["referrer_origin"];
+      const referrerPolicy = value["referrer_policy"];
+      const referrerIsValid = (referrerOrigin === null || isReferrerOrigin(referrerOrigin)) && isOneOf(referrerPolicy, REFERRER_POLICIES);
+      return hasExactKeys(value, ["kind", "url", "referrer_origin", "referrer_policy"]) && isFileSourceUrl(url) && referrerIsValid
+        ? { kind: "file_source", url, referrer_origin: referrerOrigin, referrer_policy: referrerPolicy as ReferrerPolicyName }
+        : undefined;
     }
     case "shadow_alive":
       return hasExactKeys(value, ["kind"]) ? { kind: "shadow_alive" } : undefined;
@@ -325,6 +391,31 @@ export function parsePageEvent(value: unknown): PageEvent | undefined {
   }
 }
 
+// ------------------------------------------------------------------ донесения изолированного мира
+
+const PAGE_EVENT_BUDGET_KINDS: readonly PageEventBudgetKind[] = [
+  "mse",
+  "page_seek",
+  "player_seek_applied",
+  "page_playback",
+  "file_source",
+  "shadow_alive",
+  "malformed",
+];
+
+/**
+ * Разбор донесения «страница превысила бюджет» — только для ФОНА, на порту участка 2. Изолированный мир
+ * этим разбором сообщения MAIN-мира не проверяет: для него существует только `parsePageEvent`, а там
+ * такого вида нет, поэтому страница подделать донесение не может.
+ */
+export function parsePageFloodNotice(value: unknown): PageFloodNotice | undefined {
+  if (!isPlainRecord(value) || value["kind"] !== PAGE_FLOOD_NOTICE_KIND) return undefined;
+  const overBudget = value["over_budget"];
+  return hasExactKeys(value, ["kind", "over_budget"]) && isOneOf(overBudget, PAGE_EVENT_BUDGET_KINDS)
+    ? { kind: PAGE_FLOOD_NOTICE_KIND, over_budget: overBudget }
+    : undefined;
+}
+
 // ------------------------------------------------------------------ кандидаты видео
 
 /** Метка документа по правилу выше. */
@@ -335,8 +426,10 @@ export function isDocumentTag(value: unknown): value is string {
 function parseCandidateMedia(value: unknown): CandidateMedia | undefined {
   if (!isPlainRecord(value)) return undefined;
   switch (value["kind"]) {
-    case "media_source":
-      return hasExactKeys(value, ["kind"]) ? { kind: "media_source" } : undefined;
+    case "media_source": {
+      const inWorker = value["in_worker"];
+      return hasExactKeys(value, ["kind", "in_worker"]) && typeof inWorker === "boolean" ? { kind: "media_source", in_worker: inWorker } : undefined;
+    }
     case "file":
       return hasExactKeys(value, ["kind"]) ? { kind: "file" } : undefined;
     case "none":
@@ -350,18 +443,80 @@ function parseCandidateMedia(value: unknown): CandidateMedia | undefined {
   }
 }
 
+/** Все поля кандидата — ровно этот набор (лишнее или недостающее поле — отказ). */
+const VIDEO_CANDIDATE_KEYS: readonly string[] = [
+  "document",
+  "element",
+  "media",
+  "playing",
+  "visible_area_px",
+  "duration_s",
+  "muted",
+  "loop",
+  "video_width_px",
+  "video_height_px",
+  "drm",
+  "frame_host",
+  "file_host",
+  "source_mime_types",
+];
+
+/** Длительность: `null` или конечное неотрицательное число секунд. */
+function isOptionalDuration(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value) && value >= 0);
+}
+
+/** Список MIME SourceBuffer-ов: не длиннее MAX_SOURCE_MIME_TYPES, каждый проходит правило протокола. */
+function parseSourceMimeTypes(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length > MAX_SOURCE_MIME_TYPES) return undefined;
+  const mimeTypes: string[] = [];
+  for (const item of value as unknown[]) {
+    if (!isProtocolMimeType(item)) return undefined;
+    mimeTypes.push(item);
+  }
+  return mimeTypes;
+}
+
 function parseVideoCandidate(value: unknown): VideoCandidate | undefined {
-  const keys = ["document", "element", "media", "playing", "visible_area_px"];
-  if (!isPlainRecord(value) || !hasExactKeys(value, keys)) return undefined;
+  if (!isPlainRecord(value) || !hasExactKeys(value, VIDEO_CANDIDATE_KEYS)) return undefined;
   const document = value["document"];
   const element = value["element"];
   const media = parseCandidateMedia(value["media"]);
   const playing = value["playing"];
   const visibleArea = value["visible_area_px"];
+  const durationSeconds = value["duration_s"];
+  const { muted, loop, drm } = { muted: value["muted"], loop: value["loop"], drm: value["drm"] };
+  const widthPx = value["video_width_px"];
+  const heightPx = value["video_height_px"];
+  const frameHost = value["frame_host"];
+  const fileHost = value["file_host"];
+  const sourceMimeTypes = parseSourceMimeTypes(value["source_mime_types"]);
   const validArea = typeof visibleArea === "number" && Number.isFinite(visibleArea) && visibleArea >= 0;
   if (!isDocumentTag(document) || !isMediaTime(element)) return undefined;
   if (media === undefined || typeof playing !== "boolean" || !validArea) return undefined;
-  return { document, element, media, playing, visible_area_px: visibleArea };
+  if (!isOptionalDuration(durationSeconds) || typeof muted !== "boolean" || typeof loop !== "boolean" || typeof drm !== "boolean") return undefined;
+  if (!isIntegerInRange(widthPx, 0, MAX_VIDEO_DIMENSION_PX) || !isIntegerInRange(heightPx, 0, MAX_VIDEO_DIMENSION_PX)) return undefined;
+  // Хост документа может быть пустым ("" — нет), хост файла — только у файла и не пустой.
+  if (frameHost !== "" && !isHostName(frameHost)) return undefined;
+  if (typeof frameHost !== "string") return undefined;
+  if (fileHost !== null && (!isHostName(fileHost) || media.kind !== "file")) return undefined;
+  if (sourceMimeTypes === undefined) return undefined;
+  return {
+    document,
+    element,
+    media,
+    playing,
+    visible_area_px: visibleArea,
+    duration_s: durationSeconds,
+    muted,
+    loop,
+    video_width_px: widthPx,
+    video_height_px: heightPx,
+    drm,
+    frame_host: frameHost,
+    file_host: fileHost,
+    source_mime_types: sourceMimeTypes,
+  };
 }
 
 /** Разбор списка кандидатов (не длиннее предела документа); один кривой элемент — отказ всего списка. */

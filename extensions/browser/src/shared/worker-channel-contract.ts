@@ -79,7 +79,9 @@ export type WorkerReport =
   /** Повтор журнала потока окончен; дальше идут только живые элементы. */
   | { readonly kind: "stream_replayed"; readonly stream: WorkerStreamId }
   /** Поток не открыть: MediaSource неизвестен, собран или закрыт, отправка сорвалась. */
-  | { readonly kind: "stream_unavailable"; readonly stream: WorkerStreamId };
+  | { readonly kind: "stream_unavailable"; readonly stream: WorkerStreamId }
+  /** Счётчик копий воркера отказал (решение 200): страница льёт байты сверх предела, поток закрыт. */
+  | { readonly kind: "stream_flooded"; readonly stream: WorkerStreamId };
 
 type PlainRecord = Readonly<Record<string, unknown>>;
 
@@ -205,6 +207,10 @@ export function parseWorkerReport(value: unknown, isOwnBytes: OwnBytesCheck): Wo
     case "stream_unavailable": {
       const stream = streamOfStreamReport(value);
       return stream === undefined ? undefined : { kind: "stream_unavailable", stream };
+    }
+    case "stream_flooded": {
+      const stream = streamOfStreamReport(value);
+      return stream === undefined ? undefined : { kind: "stream_flooded", stream };
     }
     default:
       return undefined;

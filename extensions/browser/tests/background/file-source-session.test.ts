@@ -9,13 +9,14 @@ import type { RangeFetch, RangeFetchInit } from "../../src/background/handoff/ra
 import { decodeDataFrame, SESSION_CLOSE_CODES } from "../../src/protocol/index.ts";
 import type { VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import { FIXTURES_ROOT } from "../protocol/fixtures-support.ts";
+import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 import { setup, startHandoff, TAB } from "./handoff-world.ts";
 import { flushPromises } from "./support.ts";
 
 const FILE_URL = "https://cdn.example/movie.mp4?sig=abc";
 /** Размер файла записанного потока (005.json). */
 const FIXTURE_FILE_SIZE = 48_211_005;
-const PLAYING_FILE: VideoCandidate = { document: "doc-7f3a", element: 4, media: { kind: "file" }, playing: true, visible_area_px: 200_000 };
+const PLAYING_FILE: VideoCandidate = { document: "doc-7f3a", element: 4, media: { kind: "file" }, playing: true, visible_area_px: 200_000, ...DEFAULT_CANDIDATE_FACTS, file_host: "cdn.example" };
 
 function fixtureText(name: string): string {
   return readFileSync(join(FIXTURES_ROOT, "streams", "file-source-generation", name), "utf8").trim();
@@ -54,7 +55,7 @@ describe("файл <video src> через фон", () => {
     const world = setup([{ frameId: 0, result: [PLAYING_FILE] }], server.fetch);
     assert.deepEqual(await startHandoff(world), { kind: "started" });
     const port = world.framePorts.last();
-    port.deliver({ kind: "file_source", url: FILE_URL });
+    port.deliver({ kind: "file_source", url: FILE_URL, referrer_origin: null, referrer_policy: "no-referrer" });
     port.deliver({ kind: "page_seek", target_us: 0 });
     const socket = world.sockets.last();
     const texts = socket.sent.filter((payload): payload is string => typeof payload === "string");
@@ -68,7 +69,7 @@ describe("файл <video src> через фон", () => {
     const server = recordingServer();
     const world = setup([{ frameId: 0, result: [PLAYING_FILE] }], server.fetch);
     await startHandoff(world);
-    world.framePorts.last().deliver({ kind: "file_source", url: FILE_URL });
+    world.framePorts.last().deliver({ kind: "file_source", url: FILE_URL, referrer_origin: null, referrer_policy: "no-referrer" });
     const socket = world.sockets.last();
     socket.receive({ type: "fetch_range", request_id: 1, offset: 0, length: 4 });
     await settle();
@@ -100,7 +101,7 @@ describe("файл <video src> через фон", () => {
     const world = setup([{ frameId: 0, result: [PLAYING_FILE] }], server.fetch);
     await startHandoff(world);
     const port = world.framePorts.last();
-    port.deliver({ kind: "file_source", url: FILE_URL });
+    port.deliver({ kind: "file_source", url: FILE_URL, referrer_origin: null, referrer_policy: "no-referrer" });
     const socket = world.sockets.last();
     socket.receive({ type: "fetch_range", request_id: 1, offset: 0, length: 4 });
     await settle();
@@ -118,7 +119,7 @@ describe("файл <video src> через фон", () => {
     const world = setup([{ frameId: 0, result: [PLAYING_FILE] }], server.fetch);
     await startHandoff(world);
     const port = world.framePorts.last();
-    port.deliver({ kind: "file_source", url: FILE_URL });
+    port.deliver({ kind: "file_source", url: FILE_URL, referrer_origin: null, referrer_policy: "no-referrer" });
     const socket = world.sockets.last();
     socket.receive({ type: "fetch_range", request_id: 1, offset: 0, length: 4 });
     await settle();
@@ -140,7 +141,7 @@ describe("файл <video src> через фон", () => {
   });
 
   it("неподдержанная форма — not_supported_yet с формой, плеер даже не зовётся", async () => {
-    const world = setup([{ frameId: 0, result: [{ ...PLAYING_FILE, media: { kind: "unsupported", form: "native_hls" } }] }]);
+    const world = setup([{ frameId: 0, result: [{ ...PLAYING_FILE, media: { kind: "unsupported", form: "native_hls" }, file_host: null }] }]);
     assert.deepEqual(await world.handoffs.handOffTab(TAB), { kind: "not_supported_yet", form: "native_hls" });
     assert.equal(world.sockets.sockets.length, 0);
     assert.equal(world.door.demandHeld(), 0);

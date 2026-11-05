@@ -84,7 +84,7 @@ describe("отладочная сборка --stream-recorder", () => {
       setInterval: () => 0,
       console: { debug: () => undefined },
     });
-    const context = vm.createContext({ self: fake.scope, TextEncoder, TextDecoder, console: { debug: () => undefined }, importScripts: () => undefined });
+    const context = vm.createContext({ self: fake.scope, TextEncoder, TextDecoder, performance, console: { debug: () => undefined }, importScripts: () => undefined });
     vm.runInContext(classicWorkerScript({ source: hookSource, configLiteral: encodeWorkerHookConfig({ codecPolicy: TRANSPARENT_POLICY }) }, JSON.stringify("https://site.example/w.js")), context);
 
     const channel = new MessageChannel();

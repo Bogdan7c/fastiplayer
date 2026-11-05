@@ -9,6 +9,9 @@ import { VIDEO_CANDIDATES_FUNCTION_NAME } from "../shared/video-candidates-probe
 import { openPageChannel, type PageChannelPort } from "./page-channel.ts";
 import { createContentRelay, type ContentRelay } from "./relay.ts";
 
+/** Сериализация непрозрачного происхождения (`about:blank`, `data:`). */
+const OPAQUE_ORIGIN = "null";
+
 let debugReported = false;
 
 // Пограничник создаётся до канала (канал сразу передаёт ему сообщения), отправка — через ссылку.
@@ -25,6 +28,12 @@ const relay: ContentRelay = createContentRelay({
     debugReported = true;
     console.debug(message);
   },
+  now: () => performance.now(),
+  // Читается в изолированном мире: страница не может подменить то, что документ говорит о себе.
+  ownDocument: () => ({
+    hostname: location.hostname,
+    origin: location.origin === OPAQUE_ORIGIN ? null : location.origin,
+  }),
 });
 
 const channel = openPageChannel(

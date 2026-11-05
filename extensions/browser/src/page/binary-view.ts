@@ -22,6 +22,7 @@ export interface BinaryIntrinsics {
   readonly dataViewByteOffset: (target: unknown) => number;
   readonly dataViewByteLength: (target: unknown) => number;
   readonly typedArraySlice: (target: Uint8Array) => Uint8Array;
+  readonly typedArraySubarray: (target: Uint8Array, begin: number, end: number) => Uint8Array;
 }
 
 /** Окно с нужными для байтов конструкторами (в тестах — объект с глобалами Node). */
@@ -49,6 +50,7 @@ export function captureBinaryIntrinsics(win: BinaryWindow): BinaryIntrinsics {
   // %TypedArray%.prototype — общий прототип всех типизированных массивов.
   const typedArrayPrototype = Object.getPrototypeOf(win.Uint8Array.prototype) as object;
   const slice = Object.getOwnPropertyDescriptor(typedArrayPrototype, "slice")?.value as (this: Uint8Array) => Uint8Array;
+  const subarray = Object.getOwnPropertyDescriptor(typedArrayPrototype, "subarray")?.value as (this: Uint8Array, begin: number, end: number) => Uint8Array;
   return {
     Uint8Array: win.Uint8Array,
     arrayBufferByteLength: captureGetter<number>(win.ArrayBuffer.prototype, "byteLength"),
@@ -59,6 +61,7 @@ export function captureBinaryIntrinsics(win: BinaryWindow): BinaryIntrinsics {
     dataViewByteOffset: captureGetter<number>(win.DataView.prototype, "byteOffset"),
     dataViewByteLength: captureGetter<number>(win.DataView.prototype, "byteLength"),
     typedArraySlice: (target) => Reflect.apply(slice, target, []) as Uint8Array,
+    typedArraySubarray: (target, begin, end) => Reflect.apply(subarray, target, [begin, end]) as Uint8Array,
   };
 }
 

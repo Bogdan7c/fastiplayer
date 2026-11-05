@@ -34,11 +34,13 @@
 // Куски воркера уже приходят плотной копией с transfer и уходят дальше тем же буфером.
 
 import type { MediaTimeMicros } from "../protocol/time.ts";
-import type { DocumentTag, ElementKey, HandoffEndPosition, HandoffEndResume, PageEvent, ShadowCommand } from "../shared/handoff-contract.ts";
+import type { DocumentTag, ElementKey, HandoffEndCause, HandoffEndPosition, HandoffEndResume, PageEvent, ShadowCommand } from "../shared/handoff-contract.ts";
+import { effectiveReferrerPolicy } from "../shared/referrer-policy.ts";
 import type { BinaryIntrinsics } from "./binary-view.ts";
 import type { DomReaders } from "./dom-readers.ts";
 import type { ElementRegistry } from "./element-registry.ts";
 import type { ElementSource } from "./element-source.ts";
+import type { ForwardByteMeter } from "./forward-byte-meter.ts";
 import type { ShadowSessionHandle, ShadowSourceKind, ShadowStarter } from "./handoff-seam.ts";
 import { notifyTap, type HandoffTap, type StreamOrigin } from "./handoff-tap.ts";
 import type { ReplayItem } from "./journal/media-journal.ts";
@@ -47,8 +49,8 @@ import { positionMicros } from "./mse-values.ts";
 import type { IncomingPageMessage } from "./page-command-guard.ts";
 import type { PagePort } from "./page-channel.ts";
 import type { OddityReporter } from "./prototype-wrap.ts";
-import { sendStreamItem, type StreamMessage } from "./stream-sender.ts";
-import type { VideoCandidates } from "./video-candidates.ts";
+import { sendStreamItem, StreamBytesRefused, type StreamMessage } from "./stream-sender.ts";
+import type { ProtectionReader, VideoCandidates } from "./video-candidates.ts";
 import type { WorkerMediaSourceListener, WorkerMediaSourceRef, WorkerMediaSources } from "./worker-capture/index.ts";
 
 /** Что нужно контроллеру снаружи. */
@@ -57,9 +59,13 @@ export interface HandoffControllerEnvironment {
   readonly candidates: VideoCandidates;
   readonly dom: DomReaders;
   readonly binary: BinaryIntrinsics;
+  /** Предел копий в сеанс (решение 200): один на документ, повтор и живой поток считаются вместе. */
+  readonly meter: ForwardByteMeter;
   readonly startShadow: ShadowStarter;
   readonly workerMediaSources: WorkerMediaSources;
   readonly reportOddity: OddityReporter;
+  /** Метки DRM (владелец — `DrmMarks`): защищённый элемент не передаётся ни при каких условиях. */
+  readonly protection: ProtectionReader;
   /** Подслушивание шагов передачи (только отладочная сборка записи потока); без него — ничего. */
   readonly tap?: HandoffTap;
 }
@@ -72,6 +78,11 @@ interface ActiveHandoff {
   session: ShadowSessionHandle | null;
   /** T0, уже названный плееру в начале повтора (шаг 2); `null` — ещё не назван. */
   announcedStartUs: MediaTimeMicros | null;
+  /**
+   * Счётчик копий отказал (решение 200). Тень снимаем мы, и она сама скажет `returned`, поэтому причину
+   * конца помнит контроллер: иначе флуд выглядел бы для фона обычным сбоем на стороне страницы.
+   */
+  flooded: boolean;
 }
 
 /** Зачем открывается поток MediaSource воркера. */
@@ -119,6 +130,17 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     }
   }
 
+  /**
+   * Элемент стал защищённым (`setMediaKeys` с ключами или `encrypted`). Если это переданный
+   * элемент, передача честно кончается: тень снимается на её же позиции, страница играет сама.
+   * Фон узнаёт из `handoff_ended` и закрывает сеанс по обычному пути.
+   */
+  onElementProtected(element: object): void {
+    const active = this.#active;
+    if (active === null || active.element !== element) return;
+    this.#endHandoff({ kind: "shadow_position" }, { kind: "as_shadow" });
+  }
+
   onMediaSourceStarted(record: MediaSourceRecord): void {
     const active = this.#active;
     if (active === null || record.objectUrl === null) return;
@@ -134,7 +156,8 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     if (active === null || !active.liveMediaSources.has(record.key)) return;
     try {
       this.#sendItem(record.key, item, "live");
-    } catch {
+    } catch (error) {
+      this.#noteIfFlooded(active, error);
       this.#failLiveStream();
     }
   }
@@ -163,6 +186,11 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
       port.send({ kind: "handoff_began", request_id: requestId, outcome: "element_not_found" });
       return;
     }
+    // DRM (инвариант 4): отказ ДО открытия потока и тени — страница остаётся со своим элементом.
+    if (this.#environment.protection.isProtected(element)) {
+      port.send({ kind: "handoff_began", request_id: requestId, outcome: "protected" });
+      return;
+    }
     const source = this.#sourceOf(element);
     if (source.kind === "unsupported" || source.kind === "none") {
       // Источник сняли или сменили на неподдержанную форму между опросом фона и командой.
@@ -173,7 +201,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     port.send({ kind: "handoff_began", request_id: requestId, outcome: "started" });
     this.#tap((tap) => tap.handoffBegan(element));
     const liveMediaSources = new Set<string>(source.kind === "media_source" ? [source.record.key] : []);
-    const active: ActiveHandoff = { element, liveMediaSources, session: null, announcedStartUs: null };
+    const active: ActiveHandoff = { element, liveMediaSources, session: null, announcedStartUs: null, flooded: false };
     this.#active = active;
     if (source.kind === "worker_media_source") {
       // Повтор журнала идёт из воркера асинхронно: шаги 3–5 — по его концу.
@@ -184,7 +212,8 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
       const shadowSource = this.#openStream(active, port, source);
       // Повтор главного потока синхронный: элемент стоит там же, T0 — ровно названный.
       this.#startShadow(active, shadowSource, active.announcedStartUs ?? this.#startPositionOf(element));
-    } catch {
+    } catch (error) {
+      this.#noteIfFlooded(active, error);
       this.#failToStart(active);
     }
   }
@@ -224,6 +253,16 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     if (active.announcedStartUs !== null || streamed.kind !== "mse") return;
     active.announcedStartUs = this.#startPositionOf(active.element);
     this.#port?.send({ kind: "page_seek", target_us: active.announcedStartUs });
+  }
+
+  /** Отправка упала из-за счётчика копий: запомнить, что конец передачи — флуд страницы. */
+  #noteIfFlooded(active: ActiveHandoff, error: unknown): void {
+    if (error instanceof StreamBytesRefused) active.flooded = true;
+  }
+
+  /** Причина конца для фона: флуд важнее того, что сказала тень при снятии. */
+  #endCauseOf(active: ActiveHandoff, reported: HandoffEndCause): HandoffEndCause {
+    return active.flooded ? "page_flood" : reported;
   }
 
   /**
@@ -275,6 +314,12 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
         this.#environment.reportOddity("worker media source stream is unavailable");
         this.#endHandoff({ kind: "shadow_position" }, { kind: "as_shadow" });
       },
+      flooded: () => {
+        if (this.#active !== active) return;
+        active.flooded = true;
+        this.#environment.reportOddity("worker stream exceeded the forwarded bytes limit");
+        this.#endHandoff({ kind: "shadow_position" }, { kind: "as_shadow" });
+      },
     });
   }
 
@@ -303,9 +348,20 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
         this.#tap((tap) => tap.replayFinished());
         return "media_source";
       case "file":
-        port.send({ kind: "file_source", url: source.url });
+        port.send(this.#fileSourceEvent(active.element, source.url));
         return "file";
     }
+  }
+
+  /**
+   * Событие файла с тем, что нужно фону для Referer закачки (решение 202): сайт-источник и политика,
+   * которую видно из MAIN-мира. Referer не нужен при `no-referrer` и у непрозрачного происхождения.
+   */
+  #fileSourceEvent(element: Element, url: string): Extract<PageEvent, { kind: "file_source" }> {
+    const { dom } = this.#environment;
+    const policy = effectiveReferrerPolicy(dom.referrerPolicyOf(element), dom.metaReferrerContents());
+    const origin = policy === "no-referrer" ? null : dom.documentOrigin();
+    return { kind: "file_source", url, referrer_origin: origin, referrer_policy: origin === null ? "no-referrer" : policy };
   }
 
   #applyShadowCommand(command: ShadowCommand): void {
@@ -346,24 +402,26 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
   #emitFromShadow(active: ActiveHandoff, event: PageEvent): void {
     if (this.#active !== active) return;
     const endsHandoff = event.kind === "handoff_ended";
-    if (event.kind === "handoff_ended") this.#tap((tap) => tap.handoffEnded(event.cause));
+    const outgoing: PageEvent = event.kind === "handoff_ended" ? { kind: "handoff_ended", cause: this.#endCauseOf(active, event.cause) } : event;
+    if (outgoing.kind === "handoff_ended") this.#tap((tap) => tap.handoffEnded(outgoing.cause));
     // До отправки: тень после `handoff_ended` не шлёт ничего, и её запоздавшие события не наши.
     if (endsHandoff) this.#release();
     try {
-      this.#port?.send(event);
+      this.#port?.send(outgoing);
     } catch {
       this.#environment.reportOddity(`shadow event ${event.kind} could not be sent`);
       if (!endsHandoff) this.#endHandoff({ kind: "shadow_position" }, { kind: "as_shadow" });
     }
   }
 
-  /** Закрыть передачу от своего имени: `handoff_ended{returned}`, живой поток остановлен. */
+  /** Закрыть передачу от своего имени: `handoff_ended`, живой поток остановлен. */
   #finishActive(active: ActiveHandoff): void {
     if (this.#active !== active) return;
+    const cause = this.#endCauseOf(active, "returned");
     this.#release();
-    this.#tap((tap) => tap.handoffEnded("returned"));
+    this.#tap((tap) => tap.handoffEnded(cause));
     try {
-      this.#port?.send({ kind: "handoff_ended", cause: "returned" });
+      this.#port?.send({ kind: "handoff_ended", cause });
     } catch {
       // Порт сломан — сообщить некому; фон узнает об обрыве по разрыву связи с изолированным миром.
       this.#environment.reportOddity("could not report the end of a handoff");
@@ -379,7 +437,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
   #sendItem(mediaSourceKey: string, item: ReplayItem, origin: StreamOrigin): void {
     const port = this.#port;
     if (port === null) return;
-    sendStreamItem(this.#environment.binary, mediaSourceKey, item, (message: StreamMessage, transfer) => {
+    sendStreamItem(this.#environment, mediaSourceKey, item, (message: StreamMessage, transfer) => {
       // Подписчик видит кусок ДО отправки: `send` передаёт буфер (transfer) и обнуляет его. Если
       // отправка сорвётся, передача кончится (`#failLiveStream`), так что запись «ушло» не врёт надолго.
       if (message.kind === "bytes") {

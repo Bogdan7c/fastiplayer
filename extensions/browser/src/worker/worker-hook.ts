@@ -26,6 +26,7 @@ import { listenForWorkerChannel } from "./channel-handshake.ts";
 import { installHandleTransferTracking, type HandleTransferScope } from "./handle-transfers.ts";
 import { WorkerReportLink } from "./report-link.ts";
 import { WorkerStreamController } from "./worker-stream-controller.ts";
+import { createForwardByteMeter } from "../page/forward-byte-meter.ts";
 
 /** Глобал выделенного воркера, против которого ставится хук (в тестах — фейк). */
 export interface WorkerHookScope extends MseWindow, MediaSourceWindow, BinaryWindow, ChannelWindow, Omit<CodecAnswerWindow, "MediaSource">, HandleTransferScope {}
@@ -124,6 +125,7 @@ export function installWorkerHook(
   controller = new WorkerStreamController({
     link,
     binary,
+    meter: createForwardByteMeter(),
     readyStateOf: (mediaSource) => mediaSources.readyStateOf(mediaSource),
     onSourceClose: (mediaSource, listener) => channel.addListener(mediaSource, "sourceclose", listener, false),
     reportOddity,

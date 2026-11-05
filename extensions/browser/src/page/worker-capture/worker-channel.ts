@@ -30,7 +30,7 @@ export interface WorkerChannelListener {
   /** У MediaSource воркера появился первый SourceBuffer. */
   onMediaSourceStarted(channel: WorkerChannel, localKey: LocalMediaSourceKey): void;
   /** Донесение о потоке (элемент, конец повтора, отказ). */
-  onStreamReport(channel: WorkerChannel, report: Extract<WorkerReport, { kind: "stream_item" | "stream_replayed" | "stream_unavailable" }>): void;
+  onStreamReport(channel: WorkerChannel, report: Extract<WorkerReport, { kind: "stream_item" | "stream_replayed" | "stream_unavailable" | "stream_flooded" }>): void;
 }
 
 /**
@@ -172,6 +172,7 @@ export class WorkerChannel {
       case "stream_item":
       case "stream_replayed":
       case "stream_unavailable":
+      case "stream_flooded":
         listener.onStreamReport(this, report);
         return;
     }

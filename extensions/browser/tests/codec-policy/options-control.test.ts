@@ -2,7 +2,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { mountCodecSettingControl } from "../../src/options/codec-setting-control.ts";
+import { mountLocalAddressSettingControl } from "../../src/options/local-address-setting-control.ts";
 import { CODEC_SETTING_KEY, type KeyValueStore } from "../../src/shared/codec-storage.ts";
+import { LOCAL_ADDRESS_SETTING_KEY, readLocalAddressSetting } from "../../src/shared/local-address-setting.ts";
 
 /** Минимальный элемент: ровно то, что трогает контрол. */
 class FakeElement {
@@ -97,6 +99,49 @@ describe("контрол «Video codec for sites»", () => {
       other.listeners.get("change")?.();
       await new Promise((resolve) => setImmediate(resolve));
       assert.equal(values.has(CODEC_SETTING_KEY), false);
+    });
+  });
+});
+
+describe("контрол «Local network videos from internet pages»", () => {
+  it("показывает Block и Ask; выбранное из хранилища, мусор и пустота — Block", async () => {
+    await withFakeDocument(async () => {
+      for (const [stored, expected] of [[undefined, "block"], ["ask", "ask"], ["junk", "block"]] as const) {
+        const container = new FakeElement("div");
+        await mountLocalAddressSettingControl(container as never, memoryStore(stored === undefined ? {} : { [LOCAL_ADDRESS_SETTING_KEY]: stored }).store);
+        const select = container.find("local-address-setting");
+        assert.ok(select !== undefined);
+        assert.equal(select.value, expected);
+        assert.deepEqual(select.children.map((option) => option.textContent), ["Block", "Ask"]);
+      }
+    });
+  });
+
+  it("смена выбора пишется в хранилище и читается фоном; чужое значение не пишется", async () => {
+    await withFakeDocument(async () => {
+      const { store, values } = memoryStore({});
+      const container = new FakeElement("div");
+      await mountLocalAddressSettingControl(container as never, store);
+      const select = container.find("local-address-setting");
+      assert.ok(select !== undefined);
+      select.value = "ask";
+      select.listeners.get("change")?.();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(await readLocalAddressSetting(store), "ask");
+      assert.equal(container.find("local-address-setting-status")?.textContent, "Saved.");
+      select.value = "junk";
+      select.listeners.get("change")?.();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(values.get(LOCAL_ADDRESS_SETTING_KEY), "ask");
+    });
+  });
+
+  it("сбой чтения виден текстом, выбор остаётся", async () => {
+    await withFakeDocument(async () => {
+      const container = new FakeElement("div");
+      const broken: KeyValueStore = { get: () => Promise.reject(new Error("no storage")), set: () => Promise.resolve() };
+      await mountLocalAddressSettingControl(container as never, broken);
+      assert.match(container.find("local-address-setting-status")?.textContent ?? "", /Could not read the setting: Error: no storage/);
     });
   });
 });

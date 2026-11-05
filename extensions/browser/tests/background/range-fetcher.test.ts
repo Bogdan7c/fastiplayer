@@ -105,10 +105,10 @@ function recordingSink() {
   return { items, state, sink: { enqueue: (item: OutgoingItem) => void items.push(item), queuedBytes: () => state.queuedBytes } };
 }
 
-function setupFetcher(fetch: RangeFetch) {
+function setupFetcher(fetch: RangeFetch, allowsAddress: (url: string) => boolean = () => true) {
   const clock = createFakeClock();
   const recorded = recordingSink();
-  const fetcher: RangeFetcher = createRangeFetcher({ url: URL_OF_FILE, fetch, sink: recorded.sink, scheduler: clock.scheduler });
+  const fetcher: RangeFetcher = createRangeFetcher({ url: URL_OF_FILE, fetch, allowsAddress, sink: recorded.sink, scheduler: clock.scheduler });
   return { clock, fetcher, ...recorded };
 }
 
@@ -470,5 +470,88 @@ describe("загрузчик диапазонов: очередь, вытесн�
     await settle();
     assertContiguous(world.items, 1, 0, file);
     assert.deepEqual(finishes(world.items), [{ request_id: 1, outcome: completedKnown(1000) }]);
+  });
+});
+
+describe("перенаправления (решения 199 и 202)", () => {
+  const FINAL_URL = "https://edge.example/final.mp4";
+
+  /** «Сервер», который с адреса страницы уводит на `finalUrl`; `status` — ответ по адресу запроса. */
+  function redirectingServer(finalUrl: string, statusOf: (askedUrl: string, call: number) => number = () => 206) {
+    const asked: string[] = [];
+    const fetch: RangeFetch = (askedUrl, init) => {
+      asked.push(askedUrl);
+      const range = /bytes=(\d+)-(\d+)/.exec(init.headers["Range"] ?? "");
+      const first = Number(range?.[1] ?? 0);
+      const last = Number(range?.[2] ?? 0);
+      const status = statusOf(askedUrl, asked.length);
+      const response = new Response(status === 206 ? fileOf(last - first + 1) : null, { status, headers: status === 206 ? { "content-range": `bytes ${first}-${last}/1000` } : {} });
+      Object.defineProperty(response, "url", { value: finalUrl });
+      return Promise.resolve(response);
+    };
+    return { fetch, asked };
+  }
+
+  it("запрещённый конечный адрес: тело не читается, итог network_error, больше запросов нет", async () => {
+    const server = redirectingServer("http://192.168.1.1/admin");
+    const checked: string[] = [];
+    const { fetcher, items } = setupFetcher(server.fetch, (url) => {
+      checked.push(url);
+      return false;
+    });
+    fetcher.request({ request_id: 1, offset: 0, length: 10 });
+    await flushPromises();
+    fetcher.request({ request_id: 2, offset: 0, length: 10 });
+    await flushPromises();
+    assert.deepEqual(checked, ["http://192.168.1.1/admin"]);
+    assert.equal(framesOf(items, 1).length, 0, "ни байта с локального адреса");
+    assert.deepEqual(finishes(items).map((entry) => entry.outcome), [
+      { kind: "failed", failure: "network_error" },
+      { kind: "failed", failure: "network_error" },
+    ]);
+    assert.equal(server.asked.length, 1, "повтор плеера в сеть не идёт");
+  });
+
+  it("разрешённое перенаправление: байты отдаются, следующий запрос сразу на конечный адрес", async () => {
+    const server = redirectingServer(FINAL_URL);
+    const { fetcher, items } = setupFetcher(server.fetch);
+    fetcher.request({ request_id: 1, offset: 0, length: 10 });
+    await flushPromises();
+    fetcher.request({ request_id: 2, offset: 10, length: 10 });
+    await flushPromises();
+    assert.deepEqual(server.asked, [URL_OF_FILE, FINAL_URL]);
+    assert.equal(framesOf(items, 2).length, 1);
+  });
+
+  it("конечный адрес проверяется только когда он другой: тот же адрес проверки не требует", async () => {
+    const server = redirectingServer(URL_OF_FILE);
+    const { fetcher, items } = setupFetcher(server.fetch, () => assert.fail("адрес не менялся"));
+    fetcher.request({ request_id: 1, offset: 0, length: 10 });
+    await flushPromises();
+    assert.equal(framesOf(items, 1).length, 1);
+  });
+
+  it("отказ на конечном адресе из-за Referer: повтор идёт на конечный адрес, со своим правилом", async () => {
+    const server = redirectingServer(FINAL_URL, (_url, call) => (call === 1 ? 403 : 206));
+    const { fetcher, items } = setupFetcher(server.fetch);
+    fetcher.request({ request_id: 1, offset: 0, length: 10 });
+    await flushPromises();
+    fetcher.request({ request_id: 2, offset: 0, length: 10 });
+    await flushPromises();
+    assert.deepEqual(server.asked, [URL_OF_FILE, FINAL_URL]);
+    assert.equal(framesOf(items, 2).length, 1);
+  });
+
+  it("конечный адрес устарел (подписанная ссылка истекла): загрузчик возвращается к адресу страницы", async () => {
+    const server = redirectingServer(FINAL_URL, (_url, call) => (call === 2 ? 403 : 206));
+    const { fetcher, items } = setupFetcher(server.fetch);
+    fetcher.request({ request_id: 1, offset: 0, length: 10 });
+    await flushPromises();
+    fetcher.request({ request_id: 2, offset: 10, length: 10 });
+    await flushPromises();
+    fetcher.request({ request_id: 3, offset: 10, length: 10 });
+    await flushPromises();
+    assert.deepEqual(server.asked, [URL_OF_FILE, FINAL_URL, URL_OF_FILE]);
+    assert.equal(framesOf(items, 3).length, 1);
   });
 });

@@ -5,6 +5,8 @@
 // Нам же нужно состояние НАСТОЯЩЕГО элемента — его дают только геттеры, снятые до всех подмен.
 // Все чтения — через `Reflect.apply`.
 
+import { captureVisibilityReaders, type VisibilityProbe, type VisibilityWindow } from "./visibility-probe.ts";
+
 /** Прямоугольник элемента в CSS-пикселях окна. */
 export interface ViewportRect {
   readonly left: number;
@@ -48,10 +50,30 @@ export interface DomReaders {
    * `<source>` нет или у него нет `type`). По нему видно, что выбран HLS без «.m3u8» в адресе.
    */
   sourceTypeFor(element: object, url: string): string | null;
+  /** `duration` настоящего элемента, секунды (`NaN` — метаданных нет, `Infinity` — эфир). */
+  durationSecondsOf(element: object): number;
+  /** Настоящий элемент без звука: `muted` ИЛИ громкость 0. */
+  isSilent(element: object): boolean;
+  /** `loop` настоящего элемента. */
+  isLooping(element: object): boolean;
+  /** `videoWidth` и `videoHeight` настоящего элемента (0 — размер кадра ещё неизвестен). */
+  videoSizeOf(element: object): { readonly width: number; readonly height: number };
+  /** У элемента есть ключи (`mediaKeys !== null`); `false` и там, где геттера нет (не защищённый контекст). */
+  hasMediaKeys(element: object): boolean;
+  /** Имя хоста документа (`location.hostname`; "" — нет). */
+  documentHostName(): string;
+  /** Происхождение документа, снятое на старте; `null` — непрозрачное или неизвестно. */
+  documentOrigin(): string | null;
+  /** Атрибут `referrerpolicy` элемента как есть; `null` — атрибута нет. */
+  referrerPolicyOf(element: object): string | null;
+  /** Значения `content` у `<meta name=referrer>` в порядке документа: последнее годное и действует. */
+  metaReferrerContents(): readonly string[];
+  /** Новая проба скрытости на один опрос документа (кэш предков живёт ровно столько). */
+  createVisibilityProbe(): VisibilityProbe;
 }
 
 /** Окно с конструкторами DOM (в тестах — фейк). */
-export interface DomWindow {
+export interface DomWindow extends VisibilityWindow {
   readonly document: object;
   readonly Document: { readonly prototype: object };
   readonly DocumentFragment: { readonly prototype: object };
@@ -65,6 +87,8 @@ export interface DomWindow {
   readonly Blob?: { readonly prototype: object };
   readonly innerWidth: number;
   readonly innerHeight: number;
+  /** Адрес документа; нет — имя хоста пустое, а происхождение неизвестно. */
+  readonly location?: { readonly hostname: string; readonly origin?: string };
 }
 
 /**
@@ -73,6 +97,15 @@ export interface DomWindow {
  * делается только по команде фона (выбор видео), а не постоянно.
  */
 const ALL_ELEMENTS_SELECTOR = "*";
+
+/** Селектор `<meta>`: имя сверяется уже оригинальным `getAttribute`, без учёта регистра. */
+const META_SELECTOR = "meta";
+
+/** Значение `name` у `<meta>`, задающего политику Referer документа. */
+const REFERRER_META_NAME = "referrer";
+
+/** Сериализация непрозрачного происхождения (`about:blank`, `data:`). */
+const OPAQUE_ORIGIN = "null";
 
 /** Найти аксессор по цепочке прототипов (геттер может жить у предка). */
 function findGetter(prototype: object, name: string): (target: unknown) => unknown {
@@ -141,6 +174,7 @@ export function captureDomReaders(win: DomWindow): DomReaders {
   const boundingRect = findMethod(win.Element.prototype, "getBoundingClientRect");
   // `videoWidth` есть только у HTMLVideoElement: геттер бросит на любом другом объекте.
   const videoWidth = findGetter(win.HTMLVideoElement.prototype, "videoWidth");
+  const videoHeight = findGetter(win.HTMLVideoElement.prototype, "videoHeight");
   const mediaPrototype = win.HTMLMediaElement.prototype;
   const src = findGetter(mediaPrototype, "src");
   const currentSrc = findGetter(mediaPrototype, "currentSrc");
@@ -148,6 +182,13 @@ export function captureDomReaders(win: DomWindow): DomReaders {
   const ended = findGetter(mediaPrototype, "ended");
   const currentTime = findGetter(mediaPrototype, "currentTime");
   const srcObject = findOptionalGetter(mediaPrototype, "srcObject");
+  const duration = findGetter(mediaPrototype, "duration");
+  const muted = findGetter(mediaPrototype, "muted");
+  const volume = findGetter(mediaPrototype, "volume");
+  const loop = findGetter(mediaPrototype, "loop");
+  // Нет в небезопасном контексте (http): там ключей быть не может.
+  const mediaKeys = findOptionalGetter(mediaPrototype, "mediaKeys");
+  const visibility = captureVisibilityReaders(win);
   const children = findOptionalGetter(win.Element.prototype, "children");
   const localName = findOptionalGetter(win.Element.prototype, "localName");
   const getAttribute = findMethod(win.Element.prototype, "getAttribute");
@@ -155,6 +196,9 @@ export function captureDomReaders(win: DomWindow): DomReaders {
   const isMediaStream = hasPrototypeOf(win.MediaStream?.prototype);
   const isBlob = hasPrototypeOf(win.Blob?.prototype);
   const documentObject = win.document;
+  // Происхождение документа за его жизнь не меняется; снимаем здесь, до скриптов страницы.
+  const capturedOrigin = win.location?.origin;
+  const documentOrigin = typeof capturedOrigin === "string" && capturedOrigin !== OPAQUE_ORIGIN ? capturedOrigin : null;
 
   return {
     elementsInDocument: () => toElementArray(documentQuery(documentObject, ALL_ELEMENTS_SELECTOR)),
@@ -194,6 +238,37 @@ export function captureDomReaders(win: DomWindow): DomReaders {
     srcObjectOf: (element) => (srcObject === undefined ? null : (srcObject(element) ?? null)),
     isMediaStream,
     isBlob,
+    durationSecondsOf: (element) => {
+      const seconds = duration(element);
+      return typeof seconds === "number" ? seconds : Number.NaN;
+    },
+    isSilent: (element) => muted(element) === true || volume(element) === 0,
+    isLooping: (element) => loop(element) === true,
+    videoSizeOf: (element) => {
+      const width = videoWidth(element);
+      const height = videoHeight(element);
+      return { width: typeof width === "number" ? width : 0, height: typeof height === "number" ? height : 0 };
+    },
+    hasMediaKeys: (element) => mediaKeys !== undefined && mediaKeys(element) != null,
+    documentHostName: () => {
+      const host = win.location?.hostname;
+      return typeof host === "string" ? host : "";
+    },
+    documentOrigin: () => documentOrigin,
+    referrerPolicyOf: (element) => {
+      const policy = getAttribute(element, "referrerpolicy");
+      return typeof policy === "string" ? policy : null;
+    },
+    metaReferrerContents: () => {
+      const contents: string[] = [];
+      for (const meta of toElementArray(documentQuery(documentObject, META_SELECTOR))) {
+        const name = getAttribute(meta, "name");
+        const content = getAttribute(meta, "content");
+        if (typeof name === "string" && name.toLowerCase() === REFERRER_META_NAME && typeof content === "string") contents.push(content);
+      }
+      return contents;
+    },
+    createVisibilityProbe: () => visibility.createProbe(),
     sourceTypeFor: (element, url) => {
       if (children === undefined || localName === undefined || sourceSrc === undefined) return null;
       for (const child of toElementArray(children(element))) {

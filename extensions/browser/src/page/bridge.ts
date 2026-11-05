@@ -14,6 +14,9 @@
 
 import { captureBinaryIntrinsics, type BinaryWindow } from "./binary-view.ts";
 import { captureDomReaders, type DomWindow } from "./dom-readers.ts";
+import { createForwardByteMeter } from "./forward-byte-meter.ts";
+import { DrmMarks, type DrmWindow } from "./drm-marks.ts";
+import { ProtectedMediaRelease } from "./protected-media-release.ts";
 import { captureRandomFill, createDocumentTag, type RandomWindow } from "./document-tag.ts";
 import { ElementRegistry, type RegistryWindow } from "./element-registry.ts";
 import { HandoffController } from "./handoff-controller.ts";
@@ -29,7 +32,7 @@ import { VideoCandidates } from "./video-candidates.ts";
 import { installWorkerCapture, type WorkerCaptureWindow, type WorkerChannelExtension, type WorkerHookSource, type WorkerMediaSources } from "./worker-capture/index.ts";
 
 /** Окно, против которого работает MAIN-мир. */
-export interface PageBridgeWindow extends MseWindow, DomWindow, RegistryWindow, ChannelWindow, BinaryWindow, RandomWindow, WorkerCaptureWindow {
+export interface PageBridgeWindow extends MseWindow, DomWindow, RegistryWindow, ChannelWindow, BinaryWindow, RandomWindow, WorkerCaptureWindow, DrmWindow {
   /** Конструктор `Event` нужен встрече канала участка 1 (`RendezvousWindow`). */
   readonly Event: RendezvousWindow["Event"];
 }
@@ -57,6 +60,8 @@ export interface PageBridge {
   readonly controller: HandoffController;
   readonly registry: ElementRegistry;
   readonly workerMediaSources: WorkerMediaSources;
+  /** Метки DRM (только для тестов). */
+  readonly drmMarks: DrmMarks;
   /** Обёртка `Worker` стоит (Chromium с хуком воркера). */
   readonly workersWrapped: boolean;
   readonly documentTag: string;
@@ -88,19 +93,29 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
     ...(dependencies.workerChannelExtension === undefined ? {} : { channelExtension: dependencies.workerChannelExtension }),
   });
   const workerMediaSources = workerCapture.registry;
-  const candidates = new VideoCandidates(registry, tracker, dom, mediaSources, documentTag, reportOddity, workerMediaSources);
+  // Метки DRM — на document_start, как и остальные хуки (инвариант 4): иначе `setMediaKeys`, который
+  // страница вызвала раньше нас, остался бы незамеченным.
+  const drmMarks = new DrmMarks(win, dom, reportOddity);
+  const candidates = new VideoCandidates(registry, tracker, dom, mediaSources, documentTag, reportOddity, workerMediaSources, drmMarks);
   const controller = new HandoffController({
     registry,
     candidates,
     dom,
     binary,
+    meter: createForwardByteMeter(),
     startShadow: dependencies.startShadow,
     workerMediaSources,
     reportOddity,
+    protection: drmMarks,
     ...(dependencies.handoffTap === undefined ? {} : { tap: dependencies.handoffTap }),
   });
-  tracker.setListener(controller);
+  // Защищённый MediaSource отпускает журнал (память), а передаваемый элемент при DRM отдаётся странице.
+  const protectedRelease = new ProtectedMediaRelease(drmMarks, dom, candidates, reportOddity);
+  tracker.setListener(protectedRelease.wrapListener(controller));
   workerMediaSources.setListener(controller);
+  drmMarks.onProtected((element) => protectedRelease.releaseForElement(element));
+  drmMarks.onProtected((element) => controller.onElementProtected(element));
+  drmMarks.install(win);
 
   const hooked = win.MediaSource !== undefined && installMseHook(win, { observer: tracker, binary, reportOddity });
   if (hooked) registry.installHooks(win, reportOddity);
@@ -115,5 +130,5 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
     },
     reportOddity,
   );
-  return { hooked, tracker, controller, registry, workerMediaSources, workersWrapped: workerCapture.wrapped, documentTag };
+  return { hooked, tracker, controller, registry, workerMediaSources, drmMarks, workersWrapped: workerCapture.wrapped, documentTag };
 }

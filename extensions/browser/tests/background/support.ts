@@ -275,5 +275,5 @@ export function createFakeDoor(): FakeDoor {
 
 /** Дать отработать уже разрешённым промисам (микрозадачам). */
 export async function flushPromises(): Promise<void> {
-  for (let round = 0; round < 10; round += 1) await Promise.resolve();
+  for (let round = 0; round < 30; round += 1) await Promise.resolve();
 }

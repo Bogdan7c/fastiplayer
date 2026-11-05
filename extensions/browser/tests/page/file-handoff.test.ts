@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 import { classifyMediaUrl } from "../../src/page/element-source.ts";
 import type { PageEvent } from "../../src/shared/handoff-contract.ts";
 import { MAX_FILE_SOURCE_URL_LENGTH, parseCandidatesReply, parsePageEvent } from "../../src/shared/page-message-validation.ts";
+import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 import { handshake, startHarness, type BridgeHarness, type IsolatedSide } from "./support/bridge-harness.ts";
 import { createFakePage } from "./support/fake-page.ts";
 
@@ -97,7 +98,7 @@ describe("кандидаты и начало передачи файла", () =>
       await isolated.waitFor(4);
       assert.deepEqual(isolated.received, [
         { kind: "handoff_began", request_id: 2, outcome: "started" },
-        { kind: "file_source", url: FILE_URL },
+        { kind: "file_source", url: FILE_URL, referrer_origin: null, referrer_policy: "no-referrer" },
         { kind: "page_seek", target_us: 12_500_000 },
         { kind: "page_playback", request: { kind: "play" } },
       ] satisfies PageEvent[]);
@@ -133,22 +134,22 @@ describe("кандидаты и начало передачи файла", () =>
 
 describe("проверка формы file_source изолированным миром", () => {
   it("принимает абсолютный http(s) без логина; отвергает прочее", () => {
-    assert.deepEqual(parsePageEvent({ kind: "file_source", url: FILE_URL }), { kind: "file_source", url: FILE_URL });
+    assert.deepEqual(parsePageEvent({ kind: "file_source", url: FILE_URL, referrer_origin: null, referrer_policy: "no-referrer" }), { kind: "file_source", url: FILE_URL, referrer_origin: null, referrer_policy: "no-referrer" });
     const rejected: unknown[] = [
-      { kind: "file_source", url: "ftp://cdn.example/a.mp4" },
-      { kind: "file_source", url: "blob:https://site.example/1" },
-      { kind: "file_source", url: "/relative.mp4" },
-      { kind: "file_source", url: "https://user:pw@cdn.example/a.mp4" },
-      { kind: "file_source", url: "https://cdn.example/a b.mp4" },
-      { kind: "file_source", url: `https://cdn.example/${"a".repeat(MAX_FILE_SOURCE_URL_LENGTH)}` },
-      { kind: "file_source", url: 7 },
-      { kind: "file_source", url: FILE_URL, extra: 1 },
+      { kind: "file_source", url: "ftp://cdn.example/a.mp4", referrer_origin: null, referrer_policy: "no-referrer" },
+      { kind: "file_source", url: "blob:https://site.example/1", referrer_origin: null, referrer_policy: "no-referrer" },
+      { kind: "file_source", url: "/relative.mp4", referrer_origin: null, referrer_policy: "no-referrer" },
+      { kind: "file_source", url: "https://user:pw@cdn.example/a.mp4", referrer_origin: null, referrer_policy: "no-referrer" },
+      { kind: "file_source", url: "https://cdn.example/a b.mp4", referrer_origin: null, referrer_policy: "no-referrer" },
+      { kind: "file_source", url: `https://cdn.example/${"a".repeat(MAX_FILE_SOURCE_URL_LENGTH)}`, referrer_origin: null, referrer_policy: "no-referrer" },
+      { kind: "file_source", url: 7, referrer_origin: null, referrer_policy: "no-referrer" },
+      { kind: "file_source", url: FILE_URL, referrer_origin: null, referrer_policy: "no-referrer", extra: 1 },
     ];
     for (const message of rejected) assert.equal(parsePageEvent(message), undefined, JSON.stringify(message).slice(0, 80));
   });
 
   it("кандидат: форма источника строго по договору", () => {
-    const base = { document: "doc1", element: 1, playing: false, visible_area_px: 0 };
+    const base = { ...DEFAULT_CANDIDATE_FACTS, document: "doc1", element: 1, playing: false, visible_area_px: 0 };
     const accepted = parseCandidatesReply({ kind: "candidates", request_id: 1, candidates: [{ ...base, media: { kind: "unsupported", form: "data_url" } }] });
     assert.deepEqual(accepted?.candidates[0]?.media, { kind: "unsupported", form: "data_url" });
     for (const media of [{ kind: "unsupported", form: "flash" }, { kind: "file", url: FILE_URL }, { kind: "unsupported" }, "file", true]) {

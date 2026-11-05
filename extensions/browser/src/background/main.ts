@@ -7,6 +7,7 @@ import { createHostLink } from "./host-link/host-link.ts";
 import { createChromeNativePortFactory, createRealScheduler } from "./host-link/native-port.ts";
 import type { BridgeStatusProvider } from "./status-provider.ts";
 import { startCodecPolicy } from "./codec-policy/browser-wiring.ts";
+import { installTabModel } from "./tab-model/browser-wiring.ts";
 import { installTabHandoffs } from "./handoff/browser-wiring.ts";
 import { NATIVE_HOST_NAME } from "../shared/host-name.ts";
 
@@ -43,4 +44,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
 // Команда «отдать вкладку N» (решение 175) от страниц экстеншена; сеанс держит открытый WebSocket,
 // а он продлевает жизнь service worker (Chrome 116+). Состояние сеанса в 09a — в памяти фона.
-installTabHandoffs(hostLink, scheduler);
+// Модель вкладки (решение 198): снимки найденных видео в storage.session; попап 10 и реклама 09d
+// будут читать её через intent-методы.
+const tabModel = installTabModel(scheduler);
+installTabHandoffs(hostLink, scheduler, tabModel);

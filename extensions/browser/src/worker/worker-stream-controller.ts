@@ -14,16 +14,18 @@
 //    копий», решение 176), затем `stream_replayed`, затем живые элементы — всё синхронно, без
 //    пропусков и вклиниваний (одна задача воркера);
 //  - пока поток не открыт, в порт не уходит ни одного байта видео;
-//  - сбой отправки потока закрывает его честно (`stream_unavailable`), а не оставляет дыру.
+//  - сбой отправки потока закрывает его честно (`stream_unavailable`, а отказ счётчика копий —
+//    `stream_flooded`), а не оставляет дыру.
 
 import type { LocalMediaSourceKey } from "../shared/handoff-contract.ts";
 import type { WorkerCommand, WorkerStreamId } from "../shared/worker-channel-contract.ts";
 import type { BinaryIntrinsics } from "../page/binary-view.ts";
+import type { ForwardByteMeter } from "../page/forward-byte-meter.ts";
 import type { ReplayItem } from "../page/journal/media-journal.ts";
 import type { MediaSourceRecord, MseListener } from "../page/mse-tracker.ts";
 import type { OddityReporter } from "../page/prototype-wrap.ts";
 import { notifyTap, type ChunkTap, type StreamOrigin } from "../page/handoff-tap.ts";
-import { sendStreamItem } from "../page/stream-sender.ts";
+import { sendStreamItem, StreamBytesRefused } from "../page/stream-sender.ts";
 import type { HandleTransferObserver } from "./handle-transfers.ts";
 import type { ReportSink } from "./report-link.ts";
 
@@ -31,6 +33,8 @@ import type { ReportSink } from "./report-link.ts";
 export interface WorkerStreamEnvironment {
   readonly link: ReportSink;
   readonly binary: BinaryIntrinsics;
+  /** Предел копий в сеанс (решение 200): у воркера свой, он копирует в своём потоке. */
+  readonly meter: ForwardByteMeter;
   /** `readyState` MediaSource оригинальным геттером (`null` — прочитать не вышло). */
   readonly readyStateOf: (mediaSource: object) => string | null;
   /** Подписаться на `sourceclose` MediaSource оригинальным `addEventListener`. */
@@ -127,7 +131,7 @@ export class WorkerStreamController implements MseListener, HandleTransferObserv
   #sendOrClose(stream: WorkerStreamId, key: LocalMediaSourceKey, items: readonly ReplayItem[], origin: StreamOrigin): boolean {
     try {
       for (const item of items) {
-        sendStreamItem(this.#environment.binary, key, item, (message, transfer) => {
+        sendStreamItem(this.#environment, key, item, (message, transfer) => {
           // Подписчик видит кусок ДО отправки: transfer обнуляет буфер (см. handoff-tap.ts).
           const { tap } = this.#environment;
           if (message.kind === "bytes" && tap !== undefined) {
@@ -138,10 +142,11 @@ export class WorkerStreamController implements MseListener, HandleTransferObserv
         });
       }
       return true;
-    } catch {
+    } catch (error) {
       this.#environment.reportOddity("worker stream send failed");
       this.#streams.delete(key);
-      this.#report({ kind: "stream_unavailable", stream });
+      // Флуд — вина страницы, а не сбой: MAIN-мир должен знать разницу, чтобы причина дошла до модели вкладки.
+      this.#report({ kind: error instanceof StreamBytesRefused ? "stream_flooded" : "stream_unavailable", stream });
       return false;
     }
   }

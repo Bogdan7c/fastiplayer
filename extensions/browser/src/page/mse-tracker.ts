@@ -89,6 +89,8 @@ export class MseTracker implements MseObserver {
   readonly #sourceBuffers = new WeakMap<object, SourceBufferRecord>();
   /** Длительность, выставленная до первого SourceBuffer. */
   readonly #pendingDurations = new WeakMap<object, MediaDuration>();
+  /** Текущие MIME отслеживаемых SourceBuffer-ов MediaSource по индексам (после `changeType` — новые). */
+  readonly #mimeTypes = new WeakMap<MediaSourceRecord, string[]>();
   /** Последняя пересказанная длительность MediaSource (чтобы заметить смену внутри endOfStream). */
   readonly #lastDurations = new WeakMap<MediaSourceRecord, MediaDuration>();
   #lastKeyNumber = 0;
@@ -118,6 +120,11 @@ export class MseTracker implements MseObserver {
     return this.#sourceBufferCounts.get(record) ?? 0;
   }
 
+  /** Текущие MIME отслеживаемых SourceBuffer-ов MediaSource (по порядку `addSourceBuffer`). */
+  sourceMimeTypesOf(record: MediaSourceRecord): readonly string[] {
+    return this.#mimeTypes.get(record) ?? [];
+  }
+
   sourceBufferAdded(mediaSource: object, sourceBuffer: object, mimeArgument: unknown): void {
     const mimeType = asWebIdlString(mimeArgument);
     const record = this.#mediaSources.get(mediaSource) ?? this.#startMediaSource(mediaSource);
@@ -132,6 +139,7 @@ export class MseTracker implements MseObserver {
     }
     this.#sourceBufferCounts.set(record, index + 1);
     this.#sourceBuffers.set(sourceBuffer, { mediaSource: record, index });
+    this.#mimeTypes.set(record, [...this.sourceMimeTypesOf(record), mimeType]);
     this.#emitEvent(record, { kind: "source_buffer_added", media_source: record.key, source_buffer: index, mime_type: mimeType });
     const pendingDuration = this.#pendingDurations.get(mediaSource);
     if (index === 0 && pendingDuration !== undefined) {
@@ -158,6 +166,10 @@ export class MseTracker implements MseObserver {
       this.#environment.reportOddity("changeType mime type is not representable in the protocol");
       return;
     }
+    this.#mimeTypes.set(
+      tracked.mediaSource,
+      this.sourceMimeTypesOf(tracked.mediaSource).map((known, index) => (index === tracked.index ? mimeType : known)),
+    );
     this.#emitEvent(tracked.mediaSource, {
       kind: "source_buffer_type_changed",
       media_source: tracked.mediaSource.key,

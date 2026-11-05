@@ -9,7 +9,7 @@ import { afterEach, test } from "node:test";
 import type { WorkerHookSource } from "../../src/page/worker-capture/index.ts";
 import { TRANSPARENT_POLICY } from "../../src/shared/codec-policy.ts";
 import type { CandidatesReply, PageEvent } from "../../src/shared/handoff-contract.ts";
-import { parseCandidatesReply, parsePageEvent } from "../../src/shared/page-message-validation.ts";
+import { MAX_FORWARDED_APPEND_BYTES, parseCandidatesReply, parsePageEvent } from "../../src/shared/page-message-validation.ts";
 import { handshake, startHarness, type IsolatedSide } from "./support/bridge-harness.ts";
 import { createFakePage } from "./support/fake-page.ts";
 import { addWorkerSupport, closeWorkerChannels, type RunningWorker } from "./support/fake-worker-pair.ts";
@@ -86,7 +86,7 @@ async function beginHandoff(isolated: IsolatedSide): Promise<void> {
   const reply = isolated.received[0] as CandidatesReply;
   const candidate = reply.candidates[0];
   assert.ok(candidate !== undefined);
-  assert.deepEqual(candidate.media, { kind: "media_source" }, "a worker media source is offered like any MSE");
+  assert.deepEqual(candidate.media, { kind: "media_source", in_worker: true }, "a worker media source is offered like MSE and marked as living in a worker");
   isolated.received.length = 0;
   isolated.send({ kind: "begin_handoff", request_id: 2, document: candidate.document, element: candidate.element });
 }
@@ -190,7 +190,7 @@ test("candidates: an untracked handle is an honest 'not supported yet', a handle
     const reply = isolated.received[0] as CandidatesReply;
     assert.deepEqual(
       reply.candidates.map((candidate) => candidate.media),
-      [{ kind: "media_source" }, { kind: "unsupported", form: "untracked_worker_media_source" }, { kind: "none" }],
+      [{ kind: "media_source", in_worker: true }, { kind: "unsupported", form: "untracked_worker_media_source" }, { kind: "none" }],
     );
     assertAcceptedByIsolatedWorld(isolated.received);
   } finally {
@@ -240,6 +240,23 @@ test("a worker stream that cannot be opened ends the hand-off honestly; the page
     assert.deepEqual(isolated.received[1], { kind: "handoff_ended", cause: "returned" });
     assert.equal(world.shadow.started.length, 0, "no shadow without the replay");
     assert.ok(world.debugLines.some((line) => line.includes("worker stream could not be requested")));
+  } finally {
+    isolated.close();
+  }
+});
+
+test("a giant segment in the worker ends the hand-off honestly and is not copied; the site's own append is untouched", async () => {
+  const world = await workerPlayingPage();
+  const isolated = handshake(world.page);
+  try {
+    await beginHandoff(isolated);
+    await until(() => world.shadow.started.length === 1, "the shadow");
+    await isolated.settle();
+    isolated.received.length = 0;
+    world.sourceBuffer.appendBuffer(new Uint8Array(MAX_FORWARDED_APPEND_BYTES + 1));
+    await until(() => isolated.received.some((message) => (message as PageEvent).kind === "handoff_ended"), "the honest end of the hand-off");
+    assert.equal(isolated.received.some((message) => (message as PageEvent).kind === "bytes"), false, "no copy reached the page channel");
+    assert.deepEqual(isolated.received.at(-1), { kind: "handoff_ended", cause: "page_flood" }, "the background learns it was a flood");
   } finally {
     isolated.close();
   }
