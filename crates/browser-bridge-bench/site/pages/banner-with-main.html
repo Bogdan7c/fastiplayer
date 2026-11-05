@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>banner-with-main</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>banner-with-main</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep } from '../lib/bench-checks.js';
+import { loadCatalog } from '../lib/bench-player.js';
+import { mountVideo, observeHandoff } from '../lib/scenario-kit.js';
+
+// 09c: ГЛАВНОЕ видео стоит на паузе, а рядом играют беззвучный баннер и превью по наведению
+// (как лента с плиткой-превью или баннером над плеером). Экстеншен обязан отдать плееру главное
+// видео и НЕ трогать баннер с превью. Страница сама записывает, какой элемент оказался под тенью:
+//   - главное видео после команды `resume-main` играет под тенью: часы идут, а настоящий
+//     счётчик кадров браузера по нему почти не растёт (кадры показывает плеер);
+//   - баннер и превью по-прежнему декодирует браузер: их настоящий счётчик растёт.
+// Главное — длинный файл (60 с): так он заведомо длиннее порога «короткий ролик» (30 с).
+
+/** Сколько секунд главное видео играет под тенью, пока страница считает кадры, мс. */
+const OBSERVE_AFTER_RESUME_MS = 3000;
+/** Баннер/превью (25 к/с) обязаны дать хотя бы столько настоящих кадров за окно (~75 ожидается). */
+const MIN_DECOY_REAL_FRAMES = 30;
+/** Главное под тенью: браузер почти не декодирует (запас на момент перехода). */
+const MAX_MAIN_REAL_FRAMES = 15;
+/** Сколько ждём хода часов главного видео после `play()`, мс. */
+const MAIN_CLOCK_WAIT_MS = 10000;
+
+await runScenario('banner-with-main', async (ctx) => {
+  const catalog = await loadCatalog();
+  const mainAsset = catalog.assets['progressive-long-h264-aac'];
+  const decoySource = `/media/${catalog.assets['progressive-h264-aac'].url}`;
+
+  // Главное видео: большой элемент, сыграло и стоит на паузе.
+  const main = mountVideo(document.body, 'main');
+  main.src = `/media/${mainAsset.url}`;
+  await main.play().catch(async () => { main.muted = true; await main.play(); });
+  await checkPlaying(ctx, main, 'main-playing');
+  main.pause();
+  ctx.check('main-paused', main.paused, `paused=${main.paused}, duration=${main.duration.toFixed(1)}`);
+
+  // Баннер: беззвучный, зациклен, маленький.
+  const banner = document.createElement('video');
+  Object.assign(banner, { muted: true, autoplay: true, loop: true, playsInline: true, width: 160, height: 90, src: decoySource });
+  banner.id = 'banner';
+  document.body.append(banner);
+  await checkPlaying(ctx, banner, 'banner-playing');
+  // Превью по наведению.
+  const preview = document.createElement('video');
+  Object.assign(preview, { muted: true, loop: true, playsInline: true, width: 160, height: 90 });
+  preview.id = 'preview';
+  document.body.append(preview);
+  preview.addEventListener('mouseenter', () => { preview.src = decoySource; preview.play(); });
+  preview.dispatchEvent(new MouseEvent('mouseenter'));
+  await checkPlaying(ctx, preview, 'preview-playing-on-hover');
+
+  /** Действие по команде робота: зритель нажал play на главном видео (оно под тенью). */
+  const resumeMain = async (hookCtx) => {
+    const probe = hookCtx.realFrames;
+    const before = { banner: probe.framesOf(banner), preview: probe.framesOf(preview), main: probe.framesOf(main) };
+    const clockBefore = main.currentTime;
+    await main.play().catch(async () => { main.muted = true; await main.play(); });
+    const advanced = await waitFor(() => main.currentTime >= clockBefore + 1, MAIN_CLOCK_WAIT_MS);
+    await sleep(OBSERVE_AFTER_RESUME_MS);
+    const gained = {
+      banner: probe.framesOf(banner) - before.banner,
+      preview: probe.framesOf(preview) - before.preview,
+      main: probe.framesOf(main) - before.main,
+    };
+    hookCtx.metric('banner_real_frames', gained.banner);
+    hookCtx.metric('preview_real_frames', gained.preview);
+    hookCtx.metric('main_real_frames_after_resume', gained.main);
+    hookCtx.check('main-plays-under-shadow', advanced, `main clock ${clockBefore.toFixed(2)} -> ${main.currentTime.toFixed(2)}`);
+    hookCtx.check('main-not-decoded-by-the-browser', gained.main <= MAX_MAIN_REAL_FRAMES,
+      `real frames of the main video while it plays under the shadow: ${gained.main} (limit ${MAX_MAIN_REAL_FRAMES})`);
+    hookCtx.check('banner-still-decoded-by-the-browser', gained.banner >= MIN_DECOY_REAL_FRAMES && !banner.paused,
+      `banner real frames ${gained.banner} (need ${MIN_DECOY_REAL_FRAMES}), paused=${banner.paused}`);
+    hookCtx.check('preview-still-decoded-by-the-browser', gained.preview >= MIN_DECOY_REAL_FRAMES && !preview.paused,
+      `preview real frames ${gained.preview} (need ${MIN_DECOY_REAL_FRAMES}), paused=${preview.paused}`);
+  };
+
+  if (ctx.params.handoff) {
+    await observeHandoff(ctx, { video: main, player: null }, { 'resume-main': resumeMain }, {
+      durationS: mainAsset.duration_s,
+      // Под тенью `buffered` файла — весь файл (решение 187), как у video-src.
+      skipFinishChecks: ['page-buffer-keeps-filling'],
+    });
+  }
+});
+</script>
+</body>
+</html>

@@ -217,7 +217,7 @@ fn drive(
 
 /// Передача состоялась: пропуск от посредника, кадры в плеере, окно управляемо.
 /// Внешний `Result` — ошибка стенда, внутренний — звено цепи не сработало.
-fn start_of_session(
+pub(super) fn start_of_session(
     run: &mut HandoffRun<'_>,
     control: &PlayerControl,
 ) -> Result<Result<(), String>, ScenarioError> {

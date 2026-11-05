@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>attack-garbage</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>attack-garbage</h1>
+
+<script type="module">
+import { runAttackPage, settleSourceBuffer } from '../lib/attack-page.js';
+
+// Атака 09c: после валидного начала (init + сегменты) страница кладёт в SourceBuffer случайные
+// байты вместо fMP4. Мусор ломает только этот сеанс: сеанс закрывается с причиной, экстеншен и
+// плеер живы (следующую страницу проверяет сценарий `attacks`).
+
+/** Сколько мусорных «сегментов». */
+const GARBAGE_APPENDS = 20;
+/** Размер одного (предел `crypto.getRandomValues` — 64 КиБ). */
+const GARBAGE_BYTES = 64 * 1024;
+
+await runAttackPage('attack-garbage', async ({ ctx, sourceBuffer }) => {
+  if (!sourceBuffer) throw new Error('no SourceBuffer to attack');
+  let appended = 0;
+  for (let index = 0; index < GARBAGE_APPENDS; index += 1) {
+    const noise = new Uint8Array(GARBAGE_BYTES);
+    crypto.getRandomValues(noise);
+    try {
+      sourceBuffer.appendBuffer(noise);
+      appended += 1;
+    } catch (error) {
+      ctx.log(`garbage append ${index} threw ${error?.name}`);
+      break;
+    }
+    await settleSourceBuffer(sourceBuffer);
+  }
+  ctx.metric('garbage_appends', appended);
+});
+</script>
+</body>
+</html>

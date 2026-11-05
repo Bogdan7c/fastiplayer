@@ -51,6 +51,12 @@ pub(in crate::scenarios) const FILE_PAGES: &[FilePage] = &[
         file_path: "/cdn/session-media/progressive/h264-aac-long.mp4",
         required_cookie: Some("bench_cdn"),
     },
+    // 09c, решение 202: путь `/cdn/media/` требует ещё и Referer своего сайта.
+    FilePage {
+        id: "video-src-referer",
+        file_path: "/cdn/media/progressive/h264-aac-long.mp4",
+        required_cookie: Some("bench_cdn"),
+    },
 ];
 
 /// Страница `<video src>`, если это она.
@@ -64,6 +70,9 @@ pub(in crate::scenarios) struct FileRequests {
     pub element_before: Vec<MediaRequest>,
     pub element_under_shadow: Vec<MediaRequest>,
     pub background: Vec<MediaRequest>,
+    /// Собственные запросы страницы с меткой (`x-bench-page-fetch`) уже после передачи: проба
+    /// того, что правило Referer фона не течёт на запросы вкладки (`referer_evidence`).
+    pub page_fetches: Vec<MediaRequest>,
 }
 
 /// Разложить журнал сервера: `handed_off_at` — когда фон ответил `started`.
@@ -84,6 +93,9 @@ pub(in crate::scenarios) fn sort_requests(
                 if request.at >= handed_off_at + IN_FLIGHT_GRACE {
                     sorted.element_under_shadow.push(request.clone());
                 }
+            }
+            (MediaRequester::Script, false) if request.page_fetch_marker.is_some() => {
+                sorted.page_fetches.push(request.clone());
             }
             (MediaRequester::Script, false) => sorted.background.push(request.clone()),
             // Скриптовый запрос до передачи — проверка самой страницы (`server-range-206`).
@@ -303,6 +315,7 @@ mod tests {
             sec_fetch_site: None,
             sec_fetch_mode: None,
             sec_fetch_dest: Some(dest.to_owned()),
+            page_fetch_marker: None,
             content_range: None,
         }
     }

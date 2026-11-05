@@ -13,7 +13,7 @@
 import { runScenario, UnsupportedError } from '../lib/bench-report.js';
 import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
 import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
-import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount, observeHandoff } from '../lib/scenario-kit.js';
 
 function base64Url(hex) {
   const bytes = Uint8Array.from(hex.match(/../g).map((pair) => parseInt(pair, 16)));
@@ -60,6 +60,9 @@ await runScenario('drm-clearkey', async (ctx) => {
   const countUsable = () => sessions.reduce((count, s) => count + [...s.keyStatuses.values()].filter((v) => v === 'usable').length, 0);
   await waitFor(() => countUsable() > 0, 5000);
   ctx.check('key-status-usable', countUsable() > 0, `usable keys=${countUsable()}, sessions=${sessions.length}`);
+  // 09c, инвариант 4: ролик под DRM экстеншен не трогает. Робот просит передачу и получает
+  // отказ `protected`; дальше страница отчитывается, что браузер продолжал играть сам.
+  if (ctx.params.handoff) await observeHandoff(ctx, { video, player, refs, catalog });
   await player.destroy();
 });
 </script>

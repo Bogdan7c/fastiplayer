@@ -10,10 +10,12 @@
 <nav id="nav"></nav>
 <script type="module">
 import { runScenario } from '../lib/bench-report.js';
-import { checkPlaying } from '../lib/bench-checks.js';
+import { checkPlaying, waitFor } from '../lib/bench-checks.js';
 import { BenchPlayer, loadCatalog, standardRefs } from '../lib/bench-player.js';
-import { mountVideo, requireMimeSupport } from '../lib/scenario-kit.js';
+import { mountVideo, requireMimeSupport, observeHandoff } from '../lib/scenario-kit.js';
 
+/** Сколько ждём хода часов второго ролика под тенью, мс. */
+const SPA_CLOCK_WAIT_MS = 10000;
 /** «Ролики» одностраничника: параметр v → ассет каталога. */
 const CLIPS = { 1: 'h264-aac', 2: 'vp9-opus' };
 
@@ -48,6 +50,22 @@ await runScenario('spa-navigation', async (ctx) => {
 
   await showClip('1');
   await checkPlaying(ctx, video, 'clip-1-playing');
+  if (ctx.params.handoff) {
+    // 09c: ролик 1 отдан плееру; переход на ролик 2 без перезагрузки страницы (pushState) создаёт
+    // новый MediaSource на том же элементе ПОД ТЕНЬЮ — плеер обязан показать новое поколение.
+    await observeHandoff(ctx, { video, player }, {
+      'navigate-spa': async (hookCtx) => {
+        nav.querySelectorAll('a')[1].click();
+        const advanced = await waitFor(() => player.generations === 2 && video.currentTime > 1, SPA_CLOCK_WAIT_MS);
+        hookCtx.check('spa-url-changed-without-reload', location.search.includes('v=2') && window.__spaMarker === marker,
+          `search=${location.search}, markerKept=${window.__spaMarker === marker}`);
+        hookCtx.check('spa-new-media-source-under-shadow', advanced,
+          `generations=${player.generations}, currentTime=${video.currentTime.toFixed(2)}`);
+      },
+    }, { expectedExtraGenerations: 1 });
+    await player.destroy();
+    return;
+  }
   nav.querySelectorAll('a')[1].click();
   ctx.check('url-changed-without-reload', location.search.includes('v=2') && window.__spaMarker === marker && performance.getEntriesByType('navigation').length === 1,
     `search=${location.search}, markerKept=${window.__spaMarker === marker}`);

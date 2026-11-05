@@ -13,7 +13,7 @@
 import { runScenario, UnsupportedError } from '../lib/bench-report.js';
 import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
 import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
-import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount, observeHandoff } from '../lib/scenario-kit.js';
 
 await runScenario('banner-autoplay', async (ctx) => {
   const catalog = await loadCatalog();
@@ -35,6 +35,16 @@ await runScenario('banner-autoplay', async (ctx) => {
   preview.dispatchEvent(new MouseEvent('mouseenter'));
   await checkPlaying(ctx, preview, 'preview-playing-on-hover');
   ctx.check('preview-muted', preview.muted === true, `muted=${preview.muted}`);
+  // 09c: на странице ТОЛЬКО баннер и превью — главного видео нет. Робот просит передачу и
+  // получает `no_video`; баннер при этом продолжает играть силами браузера.
+  if (ctx.params.handoff) {
+    await observeHandoff(ctx, { video: banner, player: null }, {}, {
+      durationS: catalog.assets['progressive-h264-aac'].duration_s,
+      // Баннер зациклен: за окно наблюдения он может дойти до конца и начаться заново, тогда
+      // «часы ушли вперёд» неверно. Что браузер декодирует сам, доказывает счётчик кадров.
+      skipFinishChecks: ['page-clock-advances'],
+    });
+  }
 });
 </script>
 </body>

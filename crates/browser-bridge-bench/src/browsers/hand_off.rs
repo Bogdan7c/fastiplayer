@@ -32,6 +32,20 @@ pub enum HandOffOutcome {
         /// Форма видео (`native_hls`, `blob_file`, …).
         form: String,
     },
+    /// Лучшее видео вкладки защищено DRM: экстеншен его не трогает, сеанс не открывается
+    /// (09c, инвариант 4 — защищённое остаётся у браузера).
+    Protected,
+    /// Сейчас играет только отдельный рекламный ролик, фильма ещё нет (09c; до 09c2 передача
+    /// с переездом на фильм не делается).
+    AdPlaying,
+    /// Файл лежит на локальном адресе, а страница из интернета; настройка «блокировать»
+    /// (решение 199) — фон ничего не качает.
+    LocalAddressRefused,
+    /// То же, но настройка «спрашивать»: нужно согласие человека, вопрос рисует попап 10.
+    LocalAddressNeedsConsent {
+        /// Имя хоста файла, о котором спросят человека.
+        host: String,
+    },
     /// Связь с плеером не поднялась или плеер отказал.
     PlayerUnavailable {
         /// Текст причины для журнала.
@@ -42,6 +56,45 @@ pub enum HandOffOutcome {
         /// Текст причины для журнала.
         reason: String,
     },
+}
+
+/// Согласие человека на файл с локального адреса (решение 199): поле `consented_local_host`
+/// сообщения `hand_off_tab`, фон принимает его только от страниц самого экстеншена.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LocalAddressConsent {
+    /// Согласия нет: работает настройка «блокировать / спрашивать».
+    #[default]
+    NotGiven,
+    /// Человек разрешил этот хост: значение `host` из исхода «нужно согласие».
+    ForHost(&'static str),
+}
+
+/// Необязательные поля сообщения `hand_off_tab`; по умолчанию робот шлёт ровно то же, что
+/// кнопка попапа без согласий.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HandOffOptions {
+    /// Согласие на локальный адрес.
+    pub local_address: LocalAddressConsent,
+}
+
+impl HandOffOptions {
+    /// Человек согласился на этот локальный хост.
+    #[must_use]
+    pub fn with_consent_for_host(host: &'static str) -> Self {
+        Self {
+            local_address: LocalAddressConsent::ForHost(host),
+        }
+    }
+
+    /// Дополнительные поля сообщения (объект JSON; пустой, если ничего не добавлено).
+    pub(crate) fn extra_message_fields(self) -> Value {
+        match self.local_address {
+            LocalAddressConsent::NotGiven => serde_json::json!({}),
+            LocalAddressConsent::ForHost(host) => {
+                serde_json::json!({ "consented_local_host": host })
+            }
+        }
+    }
 }
 
 /// Почему робот не получил исход от фона.
@@ -77,19 +130,19 @@ pub enum HandOffError {
     ScriptFailed(String),
 }
 
-/// Скрипт робота как функция `(api, urlPrefix) => Promise<string>`: возвращает JSON-строку
+/// Скрипт робота как функция `(api, urlPrefix, extraFields) => Promise<string>`: возвращает JSON-строку
 /// вида `{"robot":"reply","reply":…}` | `{"robot":"no_tab","urls":[…]}` |
 /// `{"robot":"no_reply","error":"…"}` | `{"robot":"not_ready"}`.
 ///
 /// `api` — `chrome` или `browser`; скрипт не знает, какой браузер, и ничего не ждёт
 /// сверх одного `sendMessage`.
-pub(crate) const ROBOT_FUNCTION: &str = r#"async (api, urlPrefix) => {
+pub(crate) const ROBOT_FUNCTION: &str = r#"async (api, urlPrefix, extraFields) => {
   if (!api || !api.tabs || !api.runtime) return JSON.stringify({ robot: "not_ready" });
   const tabs = await api.tabs.query({});
   const target = tabs.find((tab) => typeof tab.url === "string" && tab.url.startsWith(urlPrefix));
   if (!target) return JSON.stringify({ robot: "no_tab", urls: tabs.map((tab) => String(tab.url)) });
   try {
-    const reply = await api.runtime.sendMessage({ kind: "hand_off_tab", tab_id: target.id });
+    const reply = await api.runtime.sendMessage({ kind: "hand_off_tab", tab_id: target.id, ...(extraFields || {}) });
     if (reply === undefined || reply === null) {
       return JSON.stringify({ robot: "no_reply", error: "the background answered with nothing" });
     }
@@ -134,10 +187,15 @@ pub(crate) fn parse_robot_output(
                 })?;
             // serde не запрещает лишние поля у вариантов без данных: проверяем форму сами.
             let expected_keys = match outcome {
-                HandOffOutcome::Started | HandOffOutcome::NoVideo => 1,
+                HandOffOutcome::Started
+                | HandOffOutcome::NoVideo
+                | HandOffOutcome::Protected
+                | HandOffOutcome::AdPlaying
+                | HandOffOutcome::LocalAddressRefused => 1,
                 HandOffOutcome::PlayerUnavailable { .. }
                 | HandOffOutcome::Failed { .. }
-                | HandOffOutcome::NotSupportedYet { .. } => 2,
+                | HandOffOutcome::NotSupportedYet { .. }
+                | HandOffOutcome::LocalAddressNeedsConsent { .. } => 2,
             };
             if reply.as_object().map_or(0, serde_json::Map::len) != expected_keys {
                 return Err(HandOffError::BadReply {
@@ -188,6 +246,43 @@ mod tests {
                 form: "native_hls".into()
             })
         );
+        for (kind, expected) in [
+            ("protected", HandOffOutcome::Protected),
+            ("ad_playing", HandOffOutcome::AdPlaying),
+            ("local_address_refused", HandOffOutcome::LocalAddressRefused),
+        ] {
+            assert_eq!(
+                parse(&format!(
+                    r#"{{"robot":"reply","reply":{{"kind":"{kind}"}}}}"#
+                )),
+                Ok(expected)
+            );
+        }
+        assert_eq!(
+            parse(
+                r#"{"robot":"reply","reply":{"kind":"local_address_needs_consent","host":"127.0.0.1"}}"#
+            ),
+            Ok(HandOffOutcome::LocalAddressNeedsConsent {
+                host: "127.0.0.1".into()
+            })
+        );
+    }
+
+    #[test]
+    fn consent_goes_into_the_message_only_when_given() {
+        assert_eq!(
+            HandOffOptions::default().extra_message_fields(),
+            serde_json::json!({})
+        );
+        assert_eq!(
+            HandOffOptions::with_consent_for_host("127.0.0.1").extra_message_fields(),
+            serde_json::json!({ "consented_local_host": "127.0.0.1" })
+        );
+    }
+
+    #[test]
+    fn robot_script_forwards_the_extra_fields_into_the_message() {
+        assert!(ROBOT_FUNCTION.contains("...(extraFields || {})"));
     }
 
     #[test]
@@ -199,6 +294,11 @@ mod tests {
             r#"{"kind":"failed","reason":7}"#,
             r#"{"kind":"not_supported_yet"}"#,
             r#"{"kind":"not_supported_yet","form":"native_hls","extra":1}"#,
+            r#"{"kind":"protected","extra":1}"#,
+            r#"{"kind":"ad_playing","extra":1}"#,
+            r#"{"kind":"local_address_refused","extra":1}"#,
+            r#"{"kind":"local_address_needs_consent"}"#,
+            r#"{"kind":"local_address_needs_consent","host":"h","extra":1}"#,
             r#"{}"#,
             r#""started""#,
         ] {

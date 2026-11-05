@@ -10,8 +10,10 @@ use std::time::{Duration, Instant};
 
 use super::context::{ScenarioError, Stand};
 use super::pages::page_url;
+use super::run_tweaks::RunTweaks;
 use crate::browsers::{
-    BrowserError, BrowserKind, BrowserUnderTest, ExtensionSource, HandOffOutcome, TabHandle,
+    BrowserError, BrowserKind, BrowserUnderTest, ExtensionSource, HandOffOptions, HandOffOutcome,
+    TabHandle,
 };
 use crate::environment::BenchEnvironment;
 use crate::observe::PlayerLog;
@@ -29,7 +31,37 @@ pub(super) const FINAL_REPORT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Метка в журнале страницы: страница сыграла свои проверки и ждёт команд робота.
 const READY_MARKER: &str = "handoff-ready";
 /// Параметр адреса: страница стенда работает под командой робота.
-const HANDOFF_MODE_QUERY: &str = "&mode=handoff";
+pub(super) const HANDOFF_MODE_QUERY: &str = "&mode=handoff";
+
+/// Адрес страницы стенда под заданным адресом сервера (`report_origin` остаётся настоящим
+/// `127.0.0.1`: отчёты и журнал страницы идут на сервер стенда, а не на «публичное» имя).
+fn page_url_under(stand: &Stand, page_origin: &str, page_id: &str, run: &RunId) -> String {
+    page_url_with_report_origin(
+        page_origin,
+        &stand.site.main_origin(),
+        &stand.site.other_origin(),
+        page_id,
+        run,
+    )
+}
+
+/// Чистая часть [`page_url_under`]: страница под `page_origin`, отчёты на `report_origin`.
+fn page_url_with_report_origin(
+    page_origin: &str,
+    report_origin: &str,
+    other_origin: &str,
+    page_id: &str,
+    run: &RunId,
+) -> String {
+    let url = page_url(page_origin, other_origin, page_id, run);
+    if page_origin == report_origin {
+        return url;
+    }
+    url.replace(
+        &format!("report_origin={page_origin}"),
+        &format!("report_origin={report_origin}"),
+    )
+}
 
 /// Каталог сборки настоящего экстеншена для браузера.
 pub(super) fn real_extension_dir(stand: &Stand, browser: BrowserKind) -> PathBuf {
@@ -70,6 +102,8 @@ pub(super) struct HandoffRun<'a> {
     tab: TabHandle,
     pub(super) run: RunId,
     page_id: &'static str,
+    /// Адрес сервера стенда, под которым открыта страница (имя хоста может быть «публичным»).
+    page_origin: String,
     pub(super) player_log: PlayerLog,
     pub(super) stderr_log: PathBuf,
 }
@@ -106,6 +140,31 @@ impl<'a> HandoffRun<'a> {
         extension: ExtensionMode,
         query_suffix: &str,
     ) -> Result<Self, ScenarioError> {
+        Self::open_tweaked(
+            stand,
+            environment,
+            browser_kind,
+            page_id,
+            run_prefix,
+            extension,
+            query_suffix,
+            &RunTweaks::default(),
+        )
+    }
+
+    /// То же с отклонениями прогона (порядок установки экстеншенов, блокировщик, имя хоста
+    /// страницы): матрица блокировщиков, защита локального адреса.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn open_tweaked(
+        stand: &'a Stand,
+        environment: &BenchEnvironment,
+        browser_kind: BrowserKind,
+        page_id: &'static str,
+        run_prefix: &str,
+        extension: ExtensionMode,
+        query_suffix: &str,
+        tweaks: &RunTweaks,
+    ) -> Result<Self, ScenarioError> {
         let extensions = match extension {
             ExtensionMode::Real => {
                 let dist = real_extension_dir(stand, browser_kind);
@@ -120,14 +179,11 @@ impl<'a> HandoffRun<'a> {
         };
         // Журнал открываем до старта: плеера ещё нет, его разбудит посредник.
         let player_log = PlayerLog::open(environment.player_log());
-        let mut browser = stand.launch_browser(browser_kind, environment, extensions)?;
+        let mut browser =
+            stand.launch_browser_tweaked(browser_kind, environment, extensions, tweaks)?;
         let run = RunId::new_unique(run_prefix);
-        let mut url = page_url(
-            &stand.site.main_origin(),
-            &stand.site.other_origin(),
-            page_id,
-            &run,
-        );
+        let page_origin = tweaks.page_origin(&stand.site.main_origin());
+        let mut url = page_url_under(stand, &page_origin, page_id, &run);
         url.push_str(query_suffix);
         let tab = browser.open_tab(&url)?;
         Ok(Self {
@@ -136,6 +192,7 @@ impl<'a> HandoffRun<'a> {
             tab,
             run,
             page_id,
+            page_origin,
             player_log,
             stderr_log: browser_kind.stderr_log_path(environment.work_dir()),
         })
@@ -170,12 +227,39 @@ impl<'a> HandoffRun<'a> {
 
     /// «Отдать вкладку»: служебная страница экстеншена шлёт фону `hand_off_tab`.
     pub(super) fn hand_off(&mut self) -> Result<HandOffOutcome, BrowserError> {
-        let prefix = format!(
-            "{}/site/pages/{}.html",
-            self.stand.site.main_origin(),
-            self.page_id
-        );
-        self.browser.hand_off_tab(&self.tab, &prefix)
+        self.hand_off_with_options(HandOffOptions::default())
+    }
+
+    /// То же с согласием человека в сообщении (`consented_local_host`).
+    pub(super) fn hand_off_with_options(
+        &mut self,
+        options: HandOffOptions,
+    ) -> Result<HandOffOutcome, BrowserError> {
+        let prefix = format!("{}/site/pages/{}.html", self.page_origin, self.page_id);
+        self.browser
+            .hand_off_tab_with_options(&self.tab, &prefix, options)
+    }
+
+    /// Открывает в ТОМ ЖЕ браузере следующую страницу стенда (новая вкладка, новый прогон
+    /// страницы) и делает её текущей: дальше `wait_page_ready`, `hand_off`, `tell_page` и
+    /// `finish_page` работают с ней. Журнал плеера и браузера остаются прежними, поэтому
+    /// сценарий видит, что плеер и посредник пережили предыдущую страницу.
+    /// Старую вкладку закрываем ПОСЛЕ открытия новой: закрытие последней вкладки Firefox
+    /// закрыло бы весь браузер.
+    pub(super) fn open_next_page(
+        &mut self,
+        page_id: &'static str,
+        run_prefix: &str,
+    ) -> Result<(), ScenarioError> {
+        let run = RunId::new_unique(run_prefix);
+        let mut url = page_url_under(self.stand, &self.page_origin, page_id, &run);
+        url.push_str(HANDOFF_MODE_QUERY);
+        let next_tab = self.browser.open_tab(&url)?;
+        let previous_tab = std::mem::replace(&mut self.tab, next_tab);
+        self.run = run;
+        self.page_id = page_id;
+        self.browser.close_tab(previous_tab)?;
+        Ok(())
     }
 
     /// Команда странице (она заберёт её опросом).
@@ -218,5 +302,35 @@ impl<'a> HandoffRun<'a> {
     /// Строки журнала страницы за прогон (расходуются).
     pub(super) fn take_page_log(&self) -> Vec<crate::site::BrowserLogLine> {
         self.stand.site.take_logs(&self.run)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_public_page_still_reports_to_the_real_stand_origin() {
+        let run = RunId::new("r-1").expect("run id");
+        let url = page_url_with_report_origin(
+            "http://public.bench.example:7",
+            "http://127.0.0.1:7",
+            "http://localhost:8",
+            "video-src-local",
+            &run,
+        );
+        assert_eq!(
+            url,
+            "http://public.bench.example:7/site/pages/video-src-local.html?run=r-1&report_origin=http://127.0.0.1:7&other_origin=http://localhost:8"
+        );
+        // Обычная страница: ничего не подменяется.
+        let plain = page_url_with_report_origin(
+            "http://127.0.0.1:7",
+            "http://127.0.0.1:7",
+            "http://localhost:8",
+            "mse-fmp4",
+            &run,
+        );
+        assert!(plain.contains("report_origin=http://127.0.0.1:7"));
     }
 }

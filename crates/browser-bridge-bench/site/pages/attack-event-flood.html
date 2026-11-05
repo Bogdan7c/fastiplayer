@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>attack-event-flood</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>attack-event-flood</h1>
+
+<script type="module">
+import { runAttackPage } from '../lib/attack-page.js';
+import { sleep } from '../lib/bench-checks.js';
+
+// Атака 09c: тысячи в секунду вызовов, которые экстеншен обязан пересказывать плееру:
+// `timestampOffset`, `remove`, `abort`, запись `currentTime`, `pause`/`play`. Пачками по
+// `OPERATIONS_PER_BATCH` с паузой в один тик, чтобы страница оставалась живой и поток шёл.
+
+/** Сколько секунд длится шквал, мс. */
+const FLOOD_DURATION_MS = 4000;
+/** Вызовов за одну пачку (пачка идёт без пауз, между пачками — один тик). */
+const OPERATIONS_PER_BATCH = 250;
+/** Сколько видов вызовов в кругу (см. `performOperation`). */
+const OPERATION_KINDS = 6;
+
+/** Один вызов; ошибки (операция в неудачный момент) — часть шквала, а не повод остановиться. */
+function performOperation(kind, sourceBuffer, video, step) {
+  try {
+    if (kind === 0) sourceBuffer.timestampOffset = (step % 7) * 0.001;
+    else if (kind === 1) sourceBuffer.remove(0, 0.001);
+    else if (kind === 2) sourceBuffer.abort();
+    else if (kind === 3) video.currentTime = video.currentTime;
+    else if (kind === 4) video.pause();
+    else video.play().catch(() => {});
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+await runAttackPage('attack-event-flood', async ({ ctx, session, sourceBuffer }) => {
+  if (!sourceBuffer) throw new Error('no SourceBuffer to attack');
+  const { video } = session;
+  const startedAt = performance.now();
+  let attempted = 0;
+  let accepted = 0;
+  while (performance.now() - startedAt < FLOOD_DURATION_MS) {
+    for (let index = 0; index < OPERATIONS_PER_BATCH; index += 1) {
+      if (performOperation((attempted + index) % OPERATION_KINDS, sourceBuffer, video, attempted + index)) accepted += 1;
+    }
+    attempted += OPERATIONS_PER_BATCH;
+    await sleep(0);
+  }
+  const seconds = (performance.now() - startedAt) / 1000;
+  ctx.metric('flood_operations', attempted);
+  ctx.metric('flood_accepted_operations', accepted);
+  ctx.metric('flood_operations_per_s', attempted / seconds);
+});
+</script>
+</body>
+</html>

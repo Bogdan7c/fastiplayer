@@ -52,9 +52,16 @@ pub(crate) fn config_for(profile: PlayerConfigProfile) -> Option<AppConfig> {
             config.network.prefetch_initial_chunk_kb = SMALL_WINDOW_INITIAL_CHUNK_KB;
             Some(config)
         }
+        PlayerConfigProfile::ShortNetworkRetry => {
+            let mut config = AppConfig::default();
+            config.network.reconnect_wait_ms = SHORT_NETWORK_RETRY_MS;
+            Some(config)
+        }
     }
 }
 
+/// Бюджет повторов сети профиля `ShortNetworkRetry`, мс: пара попыток, и честный отказ.
+const SHORT_NETWORK_RETRY_MS: u64 = 3_000;
 /// Окно предзагрузки профиля `SmallFileWindow`, МиБ (минимум `network.read_ahead_mb`).
 const SMALL_WINDOW_READ_AHEAD_MB: u64 = 1;
 /// Кусок предзагрузки профиля `SmallFileWindow`, МиБ (минимум `network.prefetch_chunk_mb`).

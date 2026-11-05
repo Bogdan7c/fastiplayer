@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>video-src-referer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>video-src-referer</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying } from '../lib/bench-checks.js';
+import { loadCatalog } from '../lib/bench-player.js';
+import { mountVideo, observeHandoff } from '../lib/scenario-kit.js';
+
+// `<video src>` на `/cdn/media/` (09c, решение 202): сторож CDN отдаёт файл только с кукой входа
+// И с Referer своего сайта (хотлинк-защита настоящих CDN). Сам `<video>` страницы его получает от
+// браузера. Фон экстеншена качает файл как `fetch`: чтобы сторож его пустил, фон ставит Referer
+// страницы правилом `declarativeNetRequest` ТОЛЬКО на свой запрос (`tabIds: [-1]`).
+// Что доказывает сценарий `capture` по журналу сервера: запрос фона несёт Referer = адрес
+// страницы и куку; запросы самого элемента страницы не меняются.
+// Утечку правила на запросы страницы ловит хук `own-fetch-without-referer`: страница под тенью
+// просит тот же адрес, явно отказавшись от Referer (`referrerPolicy: no-referrer`). Если правило
+// фона течёт на запросы вкладки, сервер получит Referer и пропустит запрос (206); честный ответ
+// сторожа — 403 «чужой Referer». Второй запрос страницы с обычным Referer обязан пройти (206).
+
+/** Заголовок-метка собственных запросов страницы: сервер стенда записывает его в журнал. */
+const PAGE_FETCH_MARKER_HEADER = 'x-bench-page-fetch';
+
+await runScenario('video-src-referer', async (ctx) => {
+  const login = await fetch('/cdn/login', { credentials: 'same-origin' });
+  ctx.check('login-204', login.status === 204, `status=${login.status}`);
+  const catalog = await loadCatalog();
+  const asset = catalog.assets['progressive-long-h264-aac'];
+  const fileUrl = `/cdn/media/${asset.url}`;
+  // Контроль защиты: без Referer сторож обязан отказать, иначе проверка Referer ничего не значит.
+  const denied = await fetch(fileUrl, { credentials: 'include', referrerPolicy: 'no-referrer', headers: { range: 'bytes=0-99' } });
+  ctx.check('no-referer-is-403', denied.status === 403, `referrerPolicy=no-referrer status=${denied.status}`);
+  const video = mountVideo();
+  video.src = fileUrl;
+  await video.play().catch(async () => { video.muted = true; await video.play(); });
+  await checkPlaying(ctx, video, 'playing-from-cdn-with-referer');
+
+  /** Запрос страницы к тому же адресу; метка говорит серверу, чей он и что ждали. */
+  const ownFetch = (marker, referrerPolicy) => fetch(fileUrl, {
+    credentials: 'include',
+    cache: 'no-store',
+    referrerPolicy,
+    headers: { range: 'bytes=0-99', [PAGE_FETCH_MARKER_HEADER]: marker },
+  });
+  const hooks = {
+    'own-fetch-without-referer': async (hookCtx) => {
+      const bare = await ownFetch('no-referer', 'no-referrer');
+      hookCtx.check('own-request-keeps-no-referer', bare.status === 403,
+        `the page's request without a Referer got ${bare.status} (403 = the extension rule did not leak onto the tab)`);
+      const normal = await ownFetch('with-referer', 'strict-origin-when-cross-origin');
+      hookCtx.check('own-request-keeps-its-normal-referer', normal.status === 206,
+        `the page's ordinary request got ${normal.status} (206 = the page's own Referer is unchanged)`);
+    },
+  };
+  if (ctx.params.handoff) {
+    await observeHandoff(ctx, { video, player: null }, hooks, {
+      durationS: asset.duration_s,
+      // Под тенью `buffered` файла — весь файл (решение 187), как у video-src.
+      skipFinishChecks: ['page-buffer-keeps-filling'],
+    });
+  }
+});
+</script>
+</body>
+</html>

@@ -63,6 +63,19 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("series"),
     page("spa-navigation"),
     page("pip"),
+    // 09c: главное видео на паузе, рядом играют баннер и превью (сценарий `capture`).
+    page("banner-with-main"),
+    // 09c, решение 202: `<video src>` на `/cdn/media/` (кука И Referer своего сайта).
+    page("video-src-referer"),
+    // 09c, решение 199: файл на локальном адресе под «публичным» именем (сценарий `local-address`).
+    page("video-src-local"),
+    // 09c: приманка блокировщика (сценарий `blocker-matrix`).
+    page("blocker-bait"),
+    // 09c: вредные страницы (сценарий `attacks`).
+    page("attack-giant-segments"),
+    page("attack-event-flood"),
+    page("attack-garbage"),
+    page_unsupported_in("attack-worker-flood", &[BrowserKind::Firefox]),
     // Сессия 09b: плеер сайта спрашивает кодеки AV1 → VP9 → H.264; выбор проверяет сценарий `codecs`.
     page("codec-choice"),
     // Д-1: другие способы снять старый источник перед новым MediaSource (сессия 09a2).

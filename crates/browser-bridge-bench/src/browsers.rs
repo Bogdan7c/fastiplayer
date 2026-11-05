@@ -17,7 +17,7 @@ mod support;
 use std::path::{Path, PathBuf};
 
 pub use error::BrowserError;
-pub use hand_off::{HandOffError, HandOffOutcome};
+pub use hand_off::{HandOffError, HandOffOptions, HandOffOutcome, LocalAddressConsent};
 
 use crate::environment::BenchEnvironment;
 
@@ -47,7 +47,7 @@ impl BrowserKind {
 }
 
 /// Откуда взять дополнительный экстеншен.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtensionSource {
     /// Распакованный каталог (Chromium `--load-extension`, Firefox временная установка).
     UnpackedDir(PathBuf),
@@ -62,6 +62,9 @@ pub struct LaunchOptions {
     pub extensions: Vec<ExtensionSource>,
     /// Разрешить автовоспроизведение без жеста пользователя.
     pub autoplay_without_gesture: bool,
+    /// Имена хостов, которые браузер обязан разрешать в `127.0.0.1`: так «публичный» сайт
+    /// (`public.bench.example`, рекламный домен) живёт на сервере стенда. Пусто — ничего.
+    pub loopback_host_aliases: Vec<String>,
 }
 
 /// Вкладка (цель DevTools у Chromium, окно-вкладка у Firefox).
@@ -131,11 +134,20 @@ pub trait BrowserUnderTest {
     /// вкладку, чей адрес начинается с `page_url_prefix`, шлёт фону `hand_off_tab` и разбирает
     /// исход. `stand_tab` — вкладка стенда: после закрытия служебной страницы она снова
     /// становится активной (неактивную вкладку браузер притормаживает).
+    fn hand_off_tab_with_options(
+        &mut self,
+        stand_tab: &TabHandle,
+        page_url_prefix: &str,
+        options: HandOffOptions,
+    ) -> Result<HandOffOutcome, BrowserError>;
+    /// То же без согласий человека: ровно то, что шлёт кнопка попапа.
     fn hand_off_tab(
         &mut self,
         stand_tab: &TabHandle,
         page_url_prefix: &str,
-    ) -> Result<HandOffOutcome, BrowserError>;
+    ) -> Result<HandOffOutcome, BrowserError> {
+        self.hand_off_tab_with_options(stand_tab, page_url_prefix, HandOffOptions::default())
+    }
     /// Выполняет в служебной странице экстеншена (страница настроек) асинхронную функцию
     /// `async (api) => string` и возвращает её строку. `api` — `chrome`/`browser` страницы
     /// экстеншена. Пока страница грузится и API нет, попытки повторяются до таймаута.

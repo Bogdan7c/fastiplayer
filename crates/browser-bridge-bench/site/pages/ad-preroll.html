@@ -13,25 +13,54 @@
 import { runScenario, UnsupportedError } from '../lib/bench-report.js';
 import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
 import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
-import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount, observeHandoff } from '../lib/scenario-kit.js';
+import { waitForRobotCommand } from '../lib/handoff-mode.js';
+
+// Реклама отдельным элементом, потом фильм в другом элементе (09c, решение 201).
+// Обычный режим: реклама играет до конца, элемент удаляется, фильм стартует.
+// Режим передачи (две фазы под командами робота):
+//   1. Реклама играет по кругу, а адрес её файла — рекламный домен (`AD_HOST` ведёт на сервер
+//      стенда). Страница пишет `ad-ready`; робот просит передачу и обязан получить `ad_playing`
+//      (фильма ещё нет). Потом робот шлёт `start-film`.
+//   2. Рекламу удаляем, фильм стартует в другом элементе, дальше обычная фаза передачи
+//      (`handoff-ready`): робот отдаёт фильм плееру.
+// Имя `AD_HOST` дублирует `AD_HOST` в `src/scenarios/capture/ad_preroll.rs` (тест их сверяет).
+
+/** Рекламный домен для файла ролика (суффикс `doubleclick.net` есть в правилах экстеншена). */
+const AD_HOST = 'ad.doubleclick.net';
+
+/** Адрес файла рекламы: в режиме передачи — под рекламным доменом, иначе обычный. */
+function adFileUrl(ctx, adAsset) {
+  if (!ctx.params.handoff) return `/media/${adAsset.url}`;
+  const { port } = new URL(ctx.params.reportOrigin);
+  return `http://${AD_HOST}:${port}/media/${adAsset.url}`;
+}
 
 await runScenario('ad-preroll', async (ctx) => {
   const catalog = await loadCatalog();
   const adAsset = catalog.assets['ad-preroll'];
   const ad = mountVideo(document.body, 'ad');
-  ad.src = `/media/${adAsset.url}`;
+  ad.src = adFileUrl(ctx, adAsset);
+  // В режиме передачи реклама не должна закончиться раньше, чем робот ответит: играет по кругу.
+  ad.loop = ctx.params.handoff;
   await ad.play().catch(async () => { ad.muted = true; await ad.play(); });
   await checkPlaying(ctx, ad, 'ad-playing');
-  const ended = await waitFor(() => ad.ended, 8000);
-  ctx.check('ad-ended', ended, `ad currentTime=${ad.currentTime.toFixed(2)} of ${adAsset.duration_s} s`);
+  if (ctx.params.handoff) {
+    ctx.log('ad-ready');
+    await waitForRobotCommand(ctx, 'start-film');
+  } else {
+    const ended = await waitFor(() => ad.ended, 8000);
+    ctx.check('ad-ended', ended, `ad currentTime=${ad.currentTime.toFixed(2)} of ${adAsset.duration_s} s`);
+  }
   ad.remove();
   ctx.check('ad-element-removed', document.getElementById('ad') === null && document.querySelectorAll('video').length === 0,
     `videos in document=${document.querySelectorAll('video').length}`);
   // Основной плеер стартует в ДРУГОМ элементе.
   const main = mountVideo(document.body, 'main');
-  const { player } = await startAsset(ctx, 'h264-aac', { video: main });
+  const session = await startAsset(ctx, 'h264-aac', { video: main });
   await checkPlaying(ctx, main, 'main-playing');
-  await player.destroy();
+  if (ctx.params.handoff) await observeHandoff(ctx, session);
+  await session.player.destroy();
 });
 </script>
 </body>

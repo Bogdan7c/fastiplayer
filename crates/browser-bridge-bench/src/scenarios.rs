@@ -8,6 +8,8 @@
 //! Любая ошибка стенда внутри сценария превращается в `Fail` с текстом ошибки, поэтому
 //! сбой одного браузера не прерывает прогон остальных.
 
+mod attacks;
+mod blocker_matrix;
 mod capture;
 #[cfg(test)]
 mod capture_pages_contract;
@@ -25,7 +27,9 @@ mod page_filter;
 mod pages;
 mod player_commands;
 mod replay;
+mod run_tweaks;
 
+pub use attacks::attack_page_ids;
 pub use context::{BrowserExecutables, RunSettings, ScenarioError, Stand};
 pub use outcome::{Outcome, StepResult};
 pub use page_catalog::{PAGE_SCENARIOS, PageScenario};
@@ -55,6 +59,22 @@ pub fn run_capture(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> 
 /// честно, быстро и правильно показать конец.
 pub fn run_page_ends(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> Vec<StepResult> {
     page_ends::run_all(stand, browser, filter)
+}
+
+/// Вредные страницы (гигантские сегменты, шквал событий, мусор, шквал сообщений воркера): после
+/// каждой в том же браузере чистая страница обязана сыграть (все или выбранные `--page`).
+pub fn run_attacks(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> Vec<StepResult> {
+    attacks::run_all(stand, browser, filter)
+}
+
+/// Защита локального адреса (решение 199): блокировать, спрашивать, разрешить по согласию.
+pub fn run_local_address(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
+    capture::run_local_address(stand, browser)
+}
+
+/// Матрица блокировщика рекламы: страницы × (без / блокировщик первым / наш экстеншен первым).
+pub fn run_blocker_matrix(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
+    blocker_matrix::run(stand, browser)
 }
 
 /// Идентификаторы страниц `capture` (для проверки `--page` в командной строке).

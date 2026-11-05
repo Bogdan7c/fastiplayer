@@ -280,6 +280,34 @@ impl PlayerLog {
         }
     }
 
+    /// Ждёт среди ещё не потреблённых строк ПЕРВУЮ, содержащую любую из `needles`; возвращает её.
+    /// Нужна, когда честных концов несколько и неизвестно, какой выберет продукт.
+    pub fn wait_for_any_line(
+        &mut self,
+        needles: &[&str],
+        timeout: Duration,
+    ) -> Result<String, ObserveError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            self.refresh()?;
+            while self.cursor < self.lines.len() {
+                let line = self.lines[self.cursor].clone();
+                self.cursor += 1;
+                if needles.iter().any(|needle| line.contains(needle)) {
+                    return Ok(line);
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(ObserveError::Timeout {
+                    what: format!("log line containing any of {needles:?}"),
+                    waited: timeout,
+                    last_seen: None,
+                });
+            }
+            std::thread::sleep(POLL_STEP);
+        }
+    }
+
     /// Ждёт среди ещё не потреблённых строк сообщение о конце сеанса и возвращает его поля.
     /// Строка с маркером, но без полей — это уже не «не дождались», а сломанный формат журнала.
     pub fn wait_for_end_notice(&mut self, timeout: Duration) -> Result<EndNotice, ObserveError> {

@@ -14,7 +14,8 @@ use serde_json::Value;
 
 use super::devtools::{CdpConnection, http_json, http_request};
 use super::hand_off::{
-    HAND_OFF_EXTENSION_PAGE, HandOffError, HandOffOutcome, ROBOT_FUNCTION, parse_robot_output,
+    HAND_OFF_EXTENSION_PAGE, HandOffError, HandOffOptions, HandOffOutcome, ROBOT_FUNCTION,
+    parse_robot_output,
 };
 use super::support::{
     EXTENSION_PAGE_TIMEOUT, GRACEFUL_EXIT_WAIT, GROUP_GONE_WAIT, POLL_STEP, TERMINATE_GRACE,
@@ -75,6 +76,10 @@ pub(crate) fn command_line(
     if virtual_display {
         arguments.push("--ozone-platform=wayland".into());
     }
+    if !options.loopback_host_aliases.is_empty() {
+        // «Публичные» имена стенда ведут на этот же ПК: `MAP имя 127.0.0.1`, правила через запятую.
+        arguments.push(host_resolver_rules(&options.loopback_host_aliases).into());
+    }
     if !unpacked.is_empty() {
         // `--load-extension` принимает список через запятую.
         let list = unpacked
@@ -86,6 +91,15 @@ pub(crate) fn command_line(
     }
     arguments.push("about:blank".into());
     Ok(arguments)
+}
+
+/// Аргумент `--host-resolver-rules`: каждое имя разрешается в `127.0.0.1`.
+fn host_resolver_rules(aliases: &[String]) -> String {
+    let rules: Vec<String> = aliases
+        .iter()
+        .map(|alias| format!("MAP {alias} 127.0.0.1"))
+        .collect();
+    format!("--host-resolver-rules={}", rules.join(","))
 }
 
 /// Запускает Chromium и ждёт порт отладки.
@@ -136,6 +150,7 @@ impl Chromium {
         &self,
         target: &Value,
         page_url_prefix: &str,
+        options: HandOffOptions,
     ) -> Result<HandOffOutcome, BrowserError> {
         let socket_url = target
             .get("webSocketDebuggerUrl")
@@ -145,7 +160,9 @@ impl Chromium {
             })?;
         let mut connection = CdpConnection::connect(socket_url)?;
         let prefix_literal = Value::String(page_url_prefix.to_owned()).to_string();
-        let expression = format!("({ROBOT_FUNCTION})(globalThis.chrome, {prefix_literal})");
+        let extra_fields = options.extra_message_fields();
+        let expression =
+            format!("({ROBOT_FUNCTION})(globalThis.chrome, {prefix_literal}, {extra_fields})");
         let deadline = Instant::now() + EXTENSION_PAGE_TIMEOUT;
         loop {
             let attempt = connection
@@ -255,17 +272,18 @@ impl BrowserUnderTest for Chromium {
         Ok(text)
     }
 
-    fn hand_off_tab(
+    fn hand_off_tab_with_options(
         &mut self,
         stand_tab: &TabHandle,
         page_url_prefix: &str,
+        options: HandOffOptions,
     ) -> Result<HandOffOutcome, BrowserError> {
         let url = format!(
             "chrome-extension://{CHROMIUM_DEVELOPMENT_EXTENSION_ID}/{HAND_OFF_EXTENSION_PAGE}"
         );
         let target = self.new_target(&url)?;
         let id = target_id(&target)?;
-        let outcome = self.run_robot_in(&target, page_url_prefix);
+        let outcome = self.run_robot_in(&target, page_url_prefix, options);
         // Служебную страницу закрываем в любом случае и возвращаем вкладке стенда фокус.
         let closed = self.close_target(&id);
         let activated = http_request(
@@ -353,6 +371,7 @@ mod tests {
                 ExtensionSource::UnpackedDir("/ext/b".into()),
             ],
             autoplay_without_gesture: true,
+            loopback_host_aliases: Vec::new(),
         };
         let arguments = arguments_as_text(&options, true);
         assert!(arguments.contains(&"--load-extension=/ext/a,/ext/b".to_owned()));
@@ -360,6 +379,25 @@ mod tests {
         assert!(arguments.contains(&"--ozone-platform=wayland".to_owned()));
         assert!(arguments.contains(&"--remote-debugging-port=0".to_owned()));
         assert!(!arguments.iter().any(|a| a.starts_with("--user-data-dir")));
+    }
+
+    #[test]
+    fn loopback_aliases_become_one_host_resolver_rules_argument() {
+        let options = LaunchOptions {
+            loopback_host_aliases: vec!["public.bench.example".into(), "ad.example".into()],
+            ..LaunchOptions::default()
+        };
+        let arguments = arguments_as_text(&options, false);
+        assert!(arguments.contains(
+            &"--host-resolver-rules=MAP public.bench.example 127.0.0.1,MAP ad.example 127.0.0.1"
+                .to_owned()
+        ));
+        // Без псевдонимов правила не появляются.
+        assert!(
+            !arguments_as_text(&LaunchOptions::default(), false)
+                .iter()
+                .any(|a| a.starts_with("--host-resolver-rules"))
+        );
     }
 
     #[test]
@@ -375,6 +413,7 @@ mod tests {
         let options = LaunchOptions {
             extensions: vec![ExtensionSource::PackedFile("/ext/adblock.zip".into())],
             autoplay_without_gesture: false,
+            loopback_host_aliases: Vec::new(),
         };
         let error = command_line(&options, false).expect_err("packed files are unsupported");
         assert!(matches!(error, BrowserError::UnsupportedExtension(_)));

@@ -399,6 +399,24 @@ fn cdn_requires_cookie_and_own_referer() {
     );
 }
 
+/// `/cdn/redirect-local/…`: публичный адрес ведёт 302 на файл под настоящим адресом сервера, и шаг
+/// перенаправления виден в журнале (сценарий `local-address`).
+#[test]
+fn redirect_local_answers_302_to_the_main_origin_and_is_logged() {
+    let fixture = start_fixture();
+    let origin = fixture.site.main_origin();
+    let response = get(&origin, "/cdn/redirect-local/progressive/clip.mp4");
+    assert_eq!(response.status, 302);
+    assert_eq!(
+        response.headers.get("location").map(String::as_str),
+        Some(format!("{origin}/media/progressive/clip.mp4").as_str())
+    );
+    let logged = fixture.site.media_requests();
+    assert_eq!(logged.len(), 1);
+    assert_eq!(logged[0].path, "/cdn/redirect-local/progressive/clip.mp4");
+    assert_eq!(logged[0].status, 302);
+}
+
 /// `/cdn/session-media/…` (сессия 09b) проверяет только куку входа: Referer не нужен, без куки — 403.
 /// Каждый запрос медиа попадает в журнал сервера с заголовками и статусом.
 #[test]

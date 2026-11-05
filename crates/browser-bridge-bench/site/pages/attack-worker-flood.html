@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>attack-worker-flood</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>attack-worker-flood</h1>
+
+<script type="module">
+import { runAttackPage } from '../lib/attack-page.js';
+import { sleep } from '../lib/bench-checks.js';
+
+// Атака 09c (только Chromium: MSE в Dedicated Worker): тысячи сообщений в секунду между страницей
+// и воркером, который держит MediaSource. Идёт в обе стороны: страница сыплет `noise` воркеру, а
+// воркер по команде `flood` сыплет `noise` странице. Экстеншен оборачивает такой воркер
+// (решение 192), поэтому шквал проходит через его обёртку. Страница докладывает СТОИМОСТЬ шквала:
+// сколько сообщений прошло и насколько главный поток страницы подвисал (`flood_main_thread_worst_gap_ms`).
+
+/** Длительность шквала, мс. */
+const FLOOD_DURATION_MS = 4000;
+/** Сообщений в пачке (и от страницы, и от воркера). */
+const MESSAGES_PER_BATCH = 250;
+/** Период пробы живости главного потока, мс. */
+const LIVENESS_TICK_MS = 50;
+
+await runAttackPage('attack-worker-flood', async ({ ctx, session }) => {
+  const { worker } = session.player;
+  // Позиция часов страницы до шквала: продукт обязан поглотить шквал, не остановив их.
+  const clockBeforeS = session.video.currentTime;
+  if (!worker) throw new Error('the player has no worker to flood');
+  let received = 0;
+  worker.addEventListener('message', (event) => { if (event.data?.type === 'noise') received += 1; });
+  // Живость главного потока: самый длинный провал между тиками таймера.
+  let worstGapMs = 0;
+  let lastTick = performance.now();
+  const liveness = setInterval(() => {
+    const now = performance.now();
+    worstGapMs = Math.max(worstGapMs, now - lastTick - LIVENESS_TICK_MS);
+    lastTick = now;
+  }, LIVENESS_TICK_MS);
+  worker.postMessage({ type: 'flood', durationMs: FLOOD_DURATION_MS, batch: MESSAGES_PER_BATCH });
+  const startedAt = performance.now();
+  let sent = 0;
+  while (performance.now() - startedAt < FLOOD_DURATION_MS) {
+    for (let index = 0; index < MESSAGES_PER_BATCH; index += 1) {
+      worker.postMessage({ type: 'noise', seq: sent });
+      sent += 1;
+    }
+    await sleep(1);
+  }
+  clearInterval(liveness);
+  const seconds = (performance.now() - startedAt) / 1000;
+  ctx.metric('flood_messages_sent_to_worker', sent);
+  ctx.metric('flood_messages_received_from_worker', received);
+  ctx.metric('flood_messages_per_s', (sent + received) / seconds);
+  ctx.metric('flood_main_thread_worst_gap_ms', Math.max(0, worstGapMs));
+  // Часы страницы за время шквала (сценарий требует > 0: сеанс жив, а не завис).
+  ctx.metric('flood_clock_advance_s', session.video.currentTime - clockBeforeS);
+}, { worker: 'module' });
+</script>
+</body>
+</html>

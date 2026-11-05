@@ -5,14 +5,18 @@
 //   page -> worker: init {tracks, durationS, mediaBase, credentials, bufferAheadS, positionS},
 //                   new_generation {то же, что init} — новый MediaSource вместо старого (реклама,
 //                   следующая серия), clock {currentTime, paused}, seek {positionS},
-//                   unload — «выгрузка» эфира, как у Twitch на паузе (буфер удалён, подкачка стоит)
+//                   unload — «выгрузка» эфира, как у Twitch на паузе (буфер удалён, подкачка стоит),
+//                   noise {seq} — пустое сообщение (атака `attack-worker-flood`, воркер его игнорирует),
+//                   flood {durationMs, batch} — воркер сам сыплет `noise` странице (атака)
 //   worker -> page: handle (transfer) — по одному на поколение, info {inWorker},
-//                   progress {segments} (все поколения), log {line}
+//                   progress {segments} (все поколения), log {line}, noise {seq} (только при flood)
 
 import { MseEngine } from './mse-engine.js';
 
 /** Период отправки счётчика запросов странице, мс. */
 const PROGRESS_PERIOD_MS = 250;
+/** Пауза между пачками сообщений при атаке `flood`, мс (даёт воркеру обработать входящие). */
+const FLOOD_BATCH_PAUSE_MS = 1;
 
 /**
  * Создаёт плеер воркера над глобалом `scope`. Возвращает обработчик сообщений страницы — его
@@ -27,6 +31,23 @@ export function createWorkerPlayer(scope) {
   let generationChain = Promise.resolve();
 
   const postLog = (line) => scope.postMessage({ type: 'log', line });
+
+  /**
+   * Атака «шквал сообщений»: пачками по `batch` штук шлёт странице `noise` в течение
+   * `durationMs`, потом докладывает итог в журнал. Воркер при этом продолжает играть.
+   */
+  async function floodThePage({ durationMs, batch }) {
+    const deadline = performance.now() + durationMs;
+    let sent = 0;
+    while (performance.now() < deadline) {
+      for (let index = 0; index < batch; index += 1) {
+        scope.postMessage({ type: 'noise', seq: sent });
+        sent += 1;
+      }
+      await new Promise((resolve) => setTimeout(resolve, FLOOD_BATCH_PAUSE_MS));
+    }
+    postLog(`flood finished: ${sent} noise messages sent to the page`);
+  }
 
   /** Новое поколение: остановить старый движок, создать MediaSource, отдать handle странице. */
   async function startGeneration(message) {
@@ -80,6 +101,9 @@ export function createWorkerPlayer(scope) {
         .catch((error) => postLog(`unload failed: ${error}`));
     } else if (message.type === 'seek') {
       engine?.seek(message.positionS).catch((error) => postLog(`seek failed: ${error}`));
+    } else if (message.type === 'flood') {
+      floodThePage(message).catch((error) => postLog(`flood failed: ${error}`));
     }
+    // `noise` от страницы — намеренный мусор атаки: воркер его читает и выбрасывает.
   };
 }

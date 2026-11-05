@@ -50,7 +50,7 @@ fn max_real_frames(window_s: f64) -> f64 {
 }
 
 /// Проверки «браузер не декодирует» по метрикам страницы.
-pub(super) fn browser_does_not_decode(report: &PageReport) -> Vec<String> {
+pub(in crate::scenarios) fn browser_does_not_decode(report: &PageReport) -> Vec<String> {
     let metric = |name: &str| report.metrics.get(name).copied();
     let (Some(available), Some(window_s), Some(real_frames)) = (
         metric("real_probe_available"),

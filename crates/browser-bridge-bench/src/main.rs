@@ -1,4 +1,4 @@
-//! Точка входа стенда: `browser-bridge-bench [ОПЦИИ] <pages|smoke|capture|page-ends|player-commands|extension-status|all>`.
+//! Точка входа стенда: `browser-bridge-bench [ОПЦИИ] <pages|smoke|capture|page-ends|player-commands|extension-status|codecs|attacks|local-address|blocker-matrix|all>`.
 //!
 //! Здесь только ввод-вывод и код выхода: сценарии (`scenarios`) возвращают типизированные
 //! результаты, таблицу печатает `report`, аргументы разбирает `cli`.
@@ -91,6 +91,15 @@ fn run(invocation: Invocation) -> ExitCode {
                     results.push(scenarios::run_extension_status(&stand, browser));
                 }
                 Command::Codecs => results.extend(scenarios::run_codecs(&stand, browser)),
+                Command::Attacks => {
+                    results.extend(scenarios::run_attacks(&stand, browser, &pages));
+                }
+                Command::LocalAddress => {
+                    results.extend(scenarios::run_local_address(&stand, browser));
+                }
+                Command::BlockerMatrix => {
+                    results.extend(scenarios::run_blocker_matrix(&stand, browser));
+                }
                 Command::Replay => {
                     if let Some(options) = &replay {
                         results.push(scenarios::run_replay(&stand, browser, options));
@@ -126,8 +135,15 @@ fn plan(command: Command, pages: &PageFilter) -> Vec<Command> {
             Command::PlayerCommands,
             Command::ExtensionStatus,
             Command::Codecs,
+            Command::Attacks,
+            Command::LocalAddress,
         ],
-        Command::All => vec![Command::Pages, Command::Capture, Command::PageEnds],
+        Command::All => vec![
+            Command::Pages,
+            Command::Capture,
+            Command::PageEnds,
+            Command::Attacks,
+        ],
         single => vec![single],
     }
 }
@@ -146,9 +162,13 @@ mod tests {
                 Command::PageEnds,
                 Command::PlayerCommands,
                 Command::ExtensionStatus,
-                Command::Codecs
+                Command::Codecs,
+                Command::Attacks,
+                Command::LocalAddress
             ]
         );
+        // Матрица блокировщиков качает файлы из сети: в `all` её нет.
+        assert!(!plan(Command::All, &PageFilter::all()).contains(&Command::BlockerMatrix));
         assert_eq!(
             plan(Command::Smoke, &PageFilter::all()),
             vec![Command::Smoke]
@@ -160,7 +180,12 @@ mod tests {
         let one_page = PageFilter::only(["page-freeze".to_owned()]);
         assert_eq!(
             plan(Command::All, &one_page),
-            vec![Command::Pages, Command::Capture, Command::PageEnds]
+            vec![
+                Command::Pages,
+                Command::Capture,
+                Command::PageEnds,
+                Command::Attacks
+            ]
         );
     }
 }

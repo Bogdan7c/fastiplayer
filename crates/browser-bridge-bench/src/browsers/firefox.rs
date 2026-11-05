@@ -14,7 +14,8 @@ use browser_bridge_protocol::extension_identity::FIREFOX_EXTENSION_ID;
 use serde_json::{Value, json};
 
 use super::hand_off::{
-    HAND_OFF_EXTENSION_PAGE, HandOffError, HandOffOutcome, ROBOT_FUNCTION, parse_robot_output,
+    HAND_OFF_EXTENSION_PAGE, HandOffError, HandOffOptions, HandOffOutcome, ROBOT_FUNCTION,
+    parse_robot_output,
 };
 use super::marionette::Marionette;
 use super::support::{
@@ -73,7 +74,11 @@ fn free_local_port() -> Result<u16, BrowserError> {
 }
 
 /// Текст `user.js` профиля (чистая функция: её проверяют тесты).
-pub(crate) fn user_js(marionette_port: u16, autoplay_without_gesture: bool) -> String {
+pub(crate) fn user_js(
+    marionette_port: u16,
+    autoplay_without_gesture: bool,
+    loopback_host_aliases: &[String],
+) -> String {
     let uuid_map = json!({ FIREFOX_EXTENSION_ID: EXTENSION_UUID }).to_string();
     // Значение pref — строка JS; JSON-строка является корректным литералом JS.
     let uuid_pref = Value::String(uuid_map).to_string();
@@ -104,6 +109,13 @@ pub(crate) fn user_js(marionette_port: u16, autoplay_without_gesture: bool) -> S
         "user_pref(\"devtools.console.stdout.content\", true);".to_owned(),
         NO_AUDIO_DEVICE_PREF.to_owned(),
     ];
+    if !loopback_host_aliases.is_empty() {
+        // Эти имена Firefox разрешает в localhost без DNS (аналог `--host-resolver-rules` у Chromium).
+        lines.push(format!(
+            "user_pref(\"network.dns.localDomains\", {});",
+            Value::String(loopback_host_aliases.join(","))
+        ));
+    }
     if autoplay_without_gesture {
         // 0 = разрешить автовоспроизведение со звуком без жеста.
         lines.push("user_pref(\"media.autoplay.default\", 0);".to_owned());
@@ -144,7 +156,11 @@ pub(crate) fn launch(
     let marionette_port = free_local_port()?;
     std::fs::write(
         profile.join("user.js"),
-        user_js(marionette_port, options.autoplay_without_gesture),
+        user_js(
+            marionette_port,
+            options.autoplay_without_gesture,
+            &options.loopback_host_aliases,
+        ),
     )
     .map_err(|source| BrowserError::io("write user.js", source))?;
 
@@ -237,7 +253,11 @@ impl Firefox {
     /// Выполняет скрипт робота в странице экстеншена (контекст content). API экстеншена в
     /// такой странице лежит на самом окне; песочница Marionette видит его через
     /// `wrappedJSObject`. Пока страница грузится, повторяем попытку.
-    fn run_robot(&mut self, page_url_prefix: &str) -> Result<HandOffOutcome, BrowserError> {
+    fn run_robot(
+        &mut self,
+        page_url_prefix: &str,
+        options: HandOffOptions,
+    ) -> Result<HandOffOutcome, BrowserError> {
         self.marionette.command(
             "WebDriver:SetTimeouts",
             json!({ "script": HAND_OFF_SCRIPT_TIMEOUT_MS }),
@@ -246,7 +266,7 @@ impl Firefox {
             "const done = arguments[arguments.length - 1];\n\
              const raw = window.wrappedJSObject || window;\n\
              const api = raw.browser || raw.chrome;\n\
-             ({ROBOT_FUNCTION})(api, arguments[0]).then(done, (error) => done(JSON.stringify({{ robot: \"no_reply\", error: String(error) }})));"
+             ({ROBOT_FUNCTION})(api, arguments[0], arguments[1]).then(done, (error) => done(JSON.stringify({{ robot: \"no_reply\", error: String(error) }})));"
         );
         let deadline = Instant::now() + EXTENSION_PAGE_TIMEOUT;
         loop {
@@ -254,7 +274,7 @@ impl Firefox {
                 .marionette
                 .command(
                     "WebDriver:ExecuteAsyncScript",
-                    json!({ "script": script, "args": [page_url_prefix] }),
+                    json!({ "script": script, "args": [page_url_prefix, options.extra_message_fields()] }),
                 )
                 .and_then(|reply| {
                     reply
@@ -377,14 +397,15 @@ impl BrowserUnderTest for Firefox {
         Ok(text)
     }
 
-    fn hand_off_tab(
+    fn hand_off_tab_with_options(
         &mut self,
         stand_tab: &TabHandle,
         page_url_prefix: &str,
+        options: HandOffOptions,
     ) -> Result<HandOffOutcome, BrowserError> {
         let url = format!("moz-extension://{EXTENSION_UUID}/{HAND_OFF_EXTENSION_PAGE}");
         let handle = self.open(&url)?;
-        let outcome = self.run_robot(page_url_prefix);
+        let outcome = self.run_robot(page_url_prefix, options);
         // Служебную страницу закрываем в любом случае; затем возвращаемся на вкладку стенда
         // (close_tab выбрал «первую оставшуюся», а нужна именно вкладка стенда).
         let closed = self.close_tab(TabHandle::new(handle));
@@ -437,7 +458,7 @@ mod tests {
 
     #[test]
     fn user_js_pins_the_extension_uuid_and_marionette_port() {
-        let text = user_js(4242, true);
+        let text = user_js(4242, true, &[]);
         assert!(text.contains("user_pref(\"marionette.port\", 4242);"));
         // Значение pref — JSON-строка с экранированными кавычками: проверяем её целиком.
         let expected_map = format!(
@@ -452,7 +473,7 @@ mod tests {
         // Без этой строки Firefox сам выбирает звук хозяина (ALSA → PipeWire) и изредка
         // навсегда вешает весь свой звук — см. `NO_AUDIO_DEVICE_PREF`.
         for autoplay_without_gesture in [true, false] {
-            let text = user_js(1, autoplay_without_gesture);
+            let text = user_js(1, autoplay_without_gesture, &[]);
             assert!(
                 text.lines()
                     .any(|line| line == "user_pref(\"media.cubeb.force_null_context\", true);"),
@@ -462,7 +483,23 @@ mod tests {
     }
 
     #[test]
+    fn user_js_resolves_loopback_aliases_only_when_asked() {
+        assert!(!user_js(1, true, &[]).contains("network.dns.localDomains"));
+        let text = user_js(
+            1,
+            true,
+            &["public.bench.example".into(), "ad.example".into()],
+        );
+        assert!(
+            text.contains(
+                "user_pref(\"network.dns.localDomains\", \"public.bench.example,ad.example\");"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn user_js_keeps_autoplay_blocking_when_not_asked() {
-        assert!(!user_js(1, false).contains("media.autoplay"));
+        assert!(!user_js(1, false, &[]).contains("media.autoplay"));
     }
 }

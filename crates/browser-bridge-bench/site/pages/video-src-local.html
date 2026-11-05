@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>video-src-local</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>video-src-local</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying } from '../lib/bench-checks.js';
+import { loadCatalog } from '../lib/bench-player.js';
+import { mountVideo, observeHandoff } from '../lib/scenario-kit.js';
+
+// Защита локального адреса (09c, решение 199). Сценарий `local-address` открывает эту страницу под
+// «публичным» именем (`public.bench.example`, оно ведёт на сервер стенда), а файл лежит на
+// `127.0.0.1` (`report_origin` страницы — настоящий адрес сервера стенда). Для экстеншена это
+// страница из интернета, которая просит скачать файл с локального адреса: фон этого не делает
+// без согласия человека. Сама страница играет файл силами браузера (он ходит на 127.0.0.1 сам).
+//
+// `file_route=redirect-local`: адрес файла публичный (то же имя, что у страницы), а сервер отвечает 302
+// на 127.0.0.1. Проверка адреса такого файла не видит, запрос на локальный адрес закрывает заслон фона.
+
+await runScenario('video-src-local', async (ctx) => {
+  const catalog = await loadCatalog();
+  const asset = catalog.assets['progressive-long-h264-aac'];
+  const video = mountVideo();
+  // Файл на адресе сервера стенда (а не относительный адрес под «публичным» именем).
+  const redirected = ctx.params.raw.get('file_route') === 'redirect-local';
+  video.src = redirected ? `${location.origin}/cdn/redirect-local/${asset.url}` : `${ctx.params.reportOrigin}/media/${asset.url}`;
+  await video.play().catch(async () => { video.muted = true; await video.play(); });
+  await checkPlaying(ctx, video, 'playing');
+  ctx.log(`page host=${location.hostname}, file=${video.currentSrc}`);
+  if (ctx.params.handoff) {
+    await observeHandoff(ctx, { video, player: null }, {}, {
+      durationS: asset.duration_s,
+      skipFinishChecks: ['page-buffer-keeps-filling'],
+    });
+  }
+});
+</script>
+</body>
+</html>

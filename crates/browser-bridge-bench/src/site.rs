@@ -22,7 +22,7 @@ mod static_files;
 pub use cdn_guard::CdnRejections;
 pub use error::SiteError;
 pub use reports::{BrowserLogLine, LogSource, PageReport, PageStatus, ReportCheck};
-pub use request_log::{MediaRequest, MediaRequester, ServedSpan};
+pub use request_log::{MediaRequest, MediaRequester, PAGE_FETCH_MARKER_HEADER, ServedSpan};
 pub use run_id::RunId;
 
 use std::net::{Ipv4Addr, TcpListener};

@@ -100,6 +100,13 @@ fn route_request(context: &RouteContext, request: &Request) -> Response {
             method_not_allowed()
         };
     }
+    if let Some(relative) = path.strip_prefix(REDIRECT_TO_MAIN_ORIGIN_PREFIX) {
+        return if is_read {
+            redirect_to_main_origin(context, relative)
+        } else {
+            method_not_allowed()
+        };
+    }
     if path == "/bench/recording" {
         return if is_read {
             with_cors(serve_recording(&context.shared, range))
@@ -122,6 +129,20 @@ fn route_request(context: &RouteContext, request: &Request) -> Response {
         (_, "/bench/report" | "/bench/log") => method_not_allowed(),
         _ => Response::text(404, "not found"),
     }
+}
+
+/// Путь, который отвечает 302 на тот же файл под настоящим адресом сервера стенда
+/// (`http://127.0.0.1:<порт>/media/…`). Сценарий `local-address`: «публичный» файл ведёт на локальный
+/// адрес. Лежит под `/cdn/`, поэтому шаг перенаправления попадает в журнал запросов.
+const REDIRECT_TO_MAIN_ORIGIN_PREFIX: &str = "/cdn/redirect-local/";
+
+fn redirect_to_main_origin(context: &RouteContext, relative: &str) -> Response {
+    Response::new(302)
+        .with_header(
+            "Location",
+            format!("{}/media/{relative}", context.own_origin),
+        )
+        .with_header("Access-Control-Allow-Origin", "*")
 }
 
 fn method_not_allowed() -> Response {

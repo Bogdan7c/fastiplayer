@@ -11,24 +11,34 @@
 
 use std::time::{Duration, Instant};
 
+mod ad_preroll;
+mod decoys;
 pub(super) mod file_evidence;
 mod judge;
+mod local_address;
+mod referer_evidence;
 mod refusals;
 
-use judge::{CaptureEvidence, HookEvidence, browser_does_not_decode, judge_capture};
+pub(super) use ad_preroll::AD_HOST;
+pub(super) use decoys::AD_FILE_PATH;
+pub(super) use judge::browser_does_not_decode;
+use judge::{CaptureEvidence, HookEvidence, judge_capture};
 
 use super::context::{ScenarioError, Stand};
 use super::evidence::{
     FORBIDDEN_PLAYER_LINES, SESSION_GRANTED_TIMEOUT, format_browser_log, page_failures,
     wait_for_session_granted,
 };
-use super::handoff_run::{ACK_TIMEOUT, ExtensionMode, HandoffRun, PageReadiness};
+use super::handoff_run::{
+    ACK_TIMEOUT, ExtensionMode, HANDOFF_MODE_QUERY, HandoffRun, PageReadiness,
+};
 use super::outcome::{StepResult, Verdict};
 use super::page_catalog::PAGE_SCENARIOS;
 use super::page_filter::PageFilter;
+use super::run_tweaks::RunTweaks;
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::BenchEnvironment;
-use crate::observe::read_host_evidence;
+use crate::observe::{FrameGrowth, read_host_evidence};
 use crate::site::{PageReport, PageStatus, SiteError};
 
 /// Сколько кадров должен показать плеер: 2 с видео при 25 к/с — «играет», а не «открылся».
@@ -41,6 +51,16 @@ const MIN_FRAMES_GAINED_AFTER_HOOK: u64 = 60;
 /// Сколько ждать сводки после действия страницы: сводка-точка отсчёта и ещё одна.
 const HOOK_FRAMES_TIMEOUT: Duration = Duration::from_secs(45);
 
+/// Когда робот посылает действие страницы относительно ожидания кадров плеера.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HookTiming {
+    /// Обычно: сначала кадры плеера, потом действие и рост кадров после него.
+    AfterFrames,
+    /// Сразу после передачи, до ожидания кадров: страница стоит на паузе (главное видео
+    /// `banner-with-main`), и кадров не будет, пока зритель не нажмёт play (действие страницы).
+    BeforeFrames,
+}
+
 /// Страница, которую проверяет `capture`, и её действие под тенью (если есть).
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CapturePage {
@@ -48,105 +68,85 @@ pub(super) struct CapturePage {
     pub(super) id: &'static str,
     /// Имя действия страницы по команде робота (`hook:<имя>`), см. `site/pages`.
     pub(super) hook: Option<&'static str>,
+    /// Когда посылать действие.
+    pub(super) hook_timing: HookTiming,
+}
+
+/// Страница без действия под тенью.
+pub(super) const fn plain_page(id: &'static str) -> CapturePage {
+    CapturePage {
+        id,
+        hook: None,
+        hook_timing: HookTiming::AfterFrames,
+    }
+}
+
+/// Страница с действием под тенью: кадры, потом действие и рост кадров после него.
+const fn page_with_hook(id: &'static str, hook: &'static str) -> CapturePage {
+    CapturePage {
+        id,
+        hook: Some(hook),
+        hook_timing: HookTiming::AfterFrames,
+    }
+}
+
+/// Страница, которая стоит на паузе до действия: действие идёт ДО ожидания кадров.
+const fn page_resumed_by_hook(id: &'static str, hook: &'static str) -> CapturePage {
+    CapturePage {
+        id,
+        hook: Some(hook),
+        hook_timing: HookTiming::BeforeFrames,
+    }
 }
 
 /// Страница дымка: самая простая MSE-страница, без действий под тенью.
-pub(super) const SMOKE_PAGE: CapturePage = CapturePage {
-    id: "mse-fmp4",
-    hook: None,
-};
+pub(super) const SMOKE_PAGE: CapturePage = plain_page("mse-fmp4");
 /// ABR: смена качества в тот же SourceBuffer под тенью, играет дальше.
-const ABR_PAGE: CapturePage = CapturePage {
-    id: "mse-abr",
-    hook: Some("switch-quality"),
-};
+const ABR_PAGE: CapturePage = page_with_hook("mse-abr", "switch-quality");
 /// Реклама → фильм: новый MediaSource на том же элементе уже под тенью.
-const GENERATION_SWAP_PAGE: CapturePage = CapturePage {
-    id: "mse-generation-swap",
-    hook: Some("swap-generation"),
-};
+const GENERATION_SWAP_PAGE: CapturePage = page_with_hook("mse-generation-swap", "swap-generation");
 
 /// MSE-страницы, которые должны дойти до кадра в рендере плеера (список задания 09a).
 pub(super) const CAPTURE_PAGES: &[CapturePage] = &[
     SMOKE_PAGE,
-    CapturePage {
-        id: "mse-webm",
-        hook: None,
-    },
-    CapturePage {
-        id: "mse-av1",
-        hook: None,
-    },
-    CapturePage {
-        id: "mse-muxed",
-        hook: None,
-    },
+    plain_page("mse-webm"),
+    plain_page("mse-av1"),
+    plain_page("mse-muxed"),
     // ABR: смена качества в тот же SourceBuffer под тенью, играет дальше.
-    CapturePage {
-        id: "mse-abr",
-        hook: Some("switch-quality"),
-    },
-    CapturePage {
-        id: "mse-stall-reload",
-        hook: None,
-    },
+    page_with_hook("mse-abr", "switch-quality"),
+    plain_page("mse-stall-reload"),
     // Реклама → фильм: новый MediaSource на том же элементе уже под тенью.
-    CapturePage {
-        id: "mse-generation-swap",
-        hook: Some("swap-generation"),
-    },
+    page_with_hook("mse-generation-swap", "swap-generation"),
     // Д-1: тот же обмен, но старый источник снят иначе (так делает YouTube перед рекламой).
-    CapturePage {
-        id: "mse-generation-swap-srcobject-null",
-        hook: Some("swap-generation"),
-    },
-    CapturePage {
-        id: "mse-generation-swap-reload",
-        hook: Some("swap-generation"),
-    },
+    page_with_hook("mse-generation-swap-srcobject-null", "swap-generation"),
+    page_with_hook("mse-generation-swap-reload", "swap-generation"),
     // Д-4: данные нового поколения приходят через 5 с; пока их нет, часы стоят у начала.
-    CapturePage {
-        id: "mse-generation-swap-delayed",
-        hook: Some("swap-generation"),
-    },
+    page_with_hook("mse-generation-swap-delayed", "swap-generation"),
     // Д-9: страница кэшировала геттер currentTime и play ДО передачи и зовёт их под тенью.
-    CapturePage {
-        id: "cached-descriptors",
-        hook: Some("call-cached-api"),
-    },
-    CapturePage {
-        id: "shadow-dom",
-        hook: None,
-    },
-    CapturePage {
-        id: "iframe-cross-origin",
-        hook: None,
-    },
-    CapturePage {
-        id: "cdn-guard",
-        hook: None,
-    },
+    page_with_hook("cached-descriptors", "call-cached-api"),
+    plain_page("shadow-dom"),
+    plain_page("iframe-cross-origin"),
+    plain_page("cdn-guard"),
     // 09b: MSE в модульном Dedicated Worker (Chromium; Firefox честно `unsupported`), под тенью —
     // новый MediaSource в воркере (`srcObject = null`, новый handle) → новое поколение в плеере.
-    CapturePage {
-        id: "mse-worker",
-        hook: Some("swap-generation"),
-    },
+    page_with_hook("mse-worker", "swap-generation"),
     // 09b: то же в классическом воркере, как у Twitch.
-    CapturePage {
-        id: "mse-worker-classic",
-        hook: None,
-    },
+    plain_page("mse-worker-classic"),
     // 09b: `<video src>` — фон качает файл по `fetch_range`, источник элемента снят.
-    CapturePage {
-        id: "video-src",
-        hook: None,
-    },
+    plain_page("video-src"),
     // 09b: тот же файл за входом на CDN — фон несёт куку сайта.
-    CapturePage {
-        id: "video-src-cdn",
-        hook: None,
-    },
+    plain_page("video-src-cdn"),
+    // 09c, решение 202: файл на `/cdn/media/` требует ещё и Referer страницы; фон ставит его
+    // правилом только на свой запрос, запросы вкладки не меняются (проба утечки — действие).
+    page_with_hook("video-src-referer", "own-fetch-without-referer"),
+    // 09c: опрос ключевых систем DRM защитой не считается — видео передаётся и доходит до кадра.
+    plain_page("drm-probe"),
+    // 09c: серия и одностраничник — НОВЫЕ поколения под тенью доходят до кадра в плеере.
+    page_with_hook("series", "next-episode"),
+    page_with_hook("spa-navigation", "navigate-spa"),
+    // 09c: главное видео на паузе, рядом играют баннер и превью. Главное уходит в плеер (зритель
+    // жмёт play — действие), баннер и превью остаются у браузера (по журналу сервера и счётчикам).
+    page_resumed_by_hook("banner-with-main", "resume-main"),
 ];
 
 /// Все MSE-страницы одного браузера, каждая в свежем окружении (свой плеер и журналы).
@@ -164,14 +164,23 @@ pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) 
             .filter(|page| filter.admits(page.id))
             .map(|page| run_page(stand, browser, "capture", *page)),
     );
-    // 09b: формы, которые экстеншен честно отказывается передавать (видео остаётся у браузера).
+    // 09b/09c: видео, которое экстеншен честно отказывается передавать (остаётся у браузера).
     results.extend(
         refusals::REFUSAL_PAGES
             .iter()
             .filter(|page| filter.admits(page.id))
             .map(|page| refusals::run_refusal(stand, browser, *page)),
     );
+    // 09c: реклама отдельным элементом (две фазы под командами робота), свой сценарий.
+    if filter.admits(ad_preroll::AD_PREROLL_PAGE) {
+        results.push(ad_preroll::run(stand, browser));
+    }
     results
+}
+
+/// Защита локального адреса (решение 199): три случая в свежих окружениях одного браузера.
+pub(super) fn run_local_address(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
+    local_address::run_all(stand, browser)
 }
 
 /// Идентификаторы страниц `capture` (контрольные страницы и честные отказы входят в тот же список).
@@ -180,6 +189,7 @@ pub(super) fn capture_page_ids() -> Vec<&'static str> {
         .iter()
         .map(|page| page.id)
         .chain(refusals::REFUSAL_PAGES.iter().map(|page| page.id))
+        .chain(std::iter::once(ad_preroll::AD_PREROLL_PAGE))
         .collect()
 }
 
@@ -283,9 +293,30 @@ pub(super) fn run_page(
     command: &'static str,
     page: CapturePage,
 ) -> StepResult {
+    run_page_tweaked(
+        stand,
+        browser,
+        command,
+        page,
+        &RunTweaks::default(),
+        page.id.to_owned(),
+    )
+}
+
+/// Та же страница с отклонениями прогона (порядок установки, блокировщик): матрица
+/// блокировщиков. `subject` — подпись строки таблицы (страница и конфигурация).
+pub(super) fn run_page_tweaked(
+    stand: &Stand,
+    browser: BrowserKind,
+    command: &'static str,
+    page: CapturePage,
+    tweaks: &RunTweaks,
+    subject: String,
+) -> StepResult {
     let started = Instant::now();
-    let verdict = stand.with_environment(|environment| drive(stand, environment, browser, page));
-    StepResult::new(command, browser, page.id, verdict, started.elapsed())
+    let verdict = stand
+        .with_environment(|environment| drive(stand, environment, browser, page, tweaks, started));
+    StepResult::new(command, browser, subject, verdict, started.elapsed())
 }
 
 fn drive(
@@ -293,14 +324,18 @@ fn drive(
     environment: &BenchEnvironment,
     browser_kind: BrowserKind,
     page: CapturePage,
+    tweaks: &RunTweaks,
+    run_started_at: Instant,
 ) -> Result<Verdict, ScenarioError> {
-    let mut run = HandoffRun::open(
+    let mut run = HandoffRun::open_tweaked(
         stand,
         environment,
         browser_kind,
         page.id,
         page.id,
         ExtensionMode::Real,
+        HANDOFF_MODE_QUERY,
+        tweaks,
     )?;
     match run.wait_page_ready() {
         PageReadiness::Ready => {}
@@ -333,6 +368,12 @@ fn drive(
     // Для `<video src>`: с этого мига файл должен качать только фон (сервер это видит).
     let handed_off_at = Instant::now();
     run.tell_page("handed-off");
+    // Страница на паузе (главное видео `banner-with-main`): зритель «нажимает play» сразу,
+    // иначе кадров в плеере не будет и ждать их бессмысленно.
+    let early_hook = page
+        .hook
+        .filter(|_| page.hook_timing == HookTiming::BeforeFrames)
+        .map(|name| send_hook_and_wait_ack(&run, name));
 
     // Сначала пропуск от НАШЕГО посредника: без него «кадры есть» ничего бы не доказывало.
     let session = wait_for_session_granted(&run.stderr_log, SESSION_GRANTED_TIMEOUT)?;
@@ -343,18 +384,14 @@ fn drive(
             .map_err(|error| format!("player did not present frames: {error}")),
         Err(message) => Err(format!("{message}; frames were not awaited")),
     };
-    let hook = page.hook.map(|name| run_hook(&mut run, name));
+    let hook = page.hook.map(|name| match early_hook {
+        Some(acknowledged) => growth_after_early_hook(&mut run, name, acknowledged),
+        None => run_hook(&mut run, name),
+    });
 
     let page_report = run.finish_page();
     let page_log = run.take_page_log();
-    let file = file_evidence::file_page(page.id).map(|file_page| {
-        let requests =
-            file_evidence::sort_requests(file_page, &stand.site.media_requests(), handed_off_at);
-        (
-            file_evidence::file_failures(file_page, &requests),
-            file_evidence::file_summary(&requests),
-        )
-    });
+    let file = server_evidence(stand, page.id, run_started_at, handed_off_at);
     let player_log = &mut run.player_log;
     let forbidden = player_log.snapshot_forbidden(FORBIDDEN_PLAYER_LINES)?;
     // Журнал посредника лежит в stderr браузера: читаем после мягкого закрытия.
@@ -372,20 +409,75 @@ fn drive(
     }))
 }
 
+/// Улики со стороны сервера для страниц, где они есть: файл `<video src>` (кто и с чем его
+/// качал), Referer на `/cdn/media/`, приманка рядом с главным видео. `None` — у страницы их нет.
+/// В счёт идут только запросы этого прогона (журнал сервера общий на весь запуск стенда).
+fn server_evidence(
+    stand: &Stand,
+    page_id: &str,
+    run_started_at: Instant,
+    handed_off_at: Instant,
+) -> Option<(Vec<String>, String)> {
+    let mut requests = stand.site.media_requests();
+    requests.retain(|request| request.at >= run_started_at);
+    if let Some(file_page) = file_evidence::file_page(page_id) {
+        let sorted = file_evidence::sort_requests(file_page, &requests, handed_off_at);
+        let mut failures = file_evidence::file_failures(file_page, &sorted);
+        if referer_evidence::is_referer_page(page_id) {
+            failures.extend(referer_evidence::referer_failures(
+                &sorted,
+                &stand.site.main_origin(),
+            ));
+        }
+        return Some((failures, file_evidence::file_summary(&sorted)));
+    }
+    decoys::decoy_page(page_id).map(|decoy| {
+        decoys::decoy_not_fetched_by_background(decoy.file_path, &requests, handed_off_at)
+    })
+}
+
+/// Посылает действие страницы и ждёт подтверждение (кадры плеера здесь не ждём).
+fn send_hook_and_wait_ack(run: &HandoffRun<'_>, name: &str) -> Result<(), String> {
+    let command = format!("hook:{name}");
+    run.tell_page(&command);
+    run.wait_ack(&command, ACK_TIMEOUT)
+        .map_err(|message| format!("hook was not acknowledged: {message}"))
+}
+
+/// Ждёт, пока кадры плеера вырастут между двумя сводками (после действия страницы).
+fn wait_growth_after_hook(run: &mut HandoffRun<'_>) -> Result<FrameGrowth, String> {
+    run.player_log
+        .wait_for_frame_growth(MIN_FRAMES_GAINED_AFTER_HOOK, HOOK_FRAMES_TIMEOUT)
+        .map_err(|error| format!("player frames did not keep growing after the hook: {error}"))
+}
+
 /// Действие страницы под тенью: команда, подтверждение и рост кадров плеера после него.
 fn run_hook(run: &mut HandoffRun<'_>, name: &str) -> HookEvidence {
-    let command = format!("hook:{name}");
     // Точка отсчёта кадров — сводки ПОСЛЕ этого места журнала (старые уже учтены).
     let skipped = run.player_log.skip_history();
-    run.tell_page(&command);
-    let acknowledged = run.wait_ack(&command, ACK_TIMEOUT);
-    let growth = match (skipped, &acknowledged) {
+    let acknowledged = send_hook_and_wait_ack(run, name);
+    let growth = match (skipped, acknowledged) {
         (Err(error), _) => Err(format!("cannot read the player log: {error}")),
-        (Ok(()), Err(message)) => Err(format!("hook was not acknowledged: {message}")),
-        (Ok(()), Ok(())) => run
-            .player_log
-            .wait_for_frame_growth(MIN_FRAMES_GAINED_AFTER_HOOK, HOOK_FRAMES_TIMEOUT)
-            .map_err(|error| format!("player frames did not keep growing after the hook: {error}")),
+        (Ok(()), Err(message)) => Err(message),
+        (Ok(()), Ok(())) => wait_growth_after_hook(run),
+    };
+    HookEvidence {
+        name: name.to_owned(),
+        growth,
+    }
+}
+
+/// Действие было послано ДО кадров (`HookTiming::BeforeFrames`): здесь, когда кадры уже дошли,
+/// остаётся проверить, что они растут и дальше.
+fn growth_after_early_hook(
+    run: &mut HandoffRun<'_>,
+    name: &str,
+    acknowledged: Result<(), String>,
+) -> HookEvidence {
+    let growth = match (run.player_log.skip_history(), acknowledged) {
+        (Err(error), _) => Err(format!("cannot read the player log: {error}")),
+        (Ok(()), Err(message)) => Err(message),
+        (Ok(()), Ok(())) => wait_growth_after_hook(run),
     };
     HookEvidence {
         name: name.to_owned(),
@@ -484,6 +576,6 @@ mod tests {
             );
             assert!(seen.insert(page.id), "{} listed twice", page.id);
         }
-        assert_eq!(CAPTURE_PAGES.len(), 18);
+        assert_eq!(CAPTURE_PAGES.len(), 23);
     }
 }

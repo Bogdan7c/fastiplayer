@@ -48,6 +48,7 @@ fn popup_text_of_real_extension(
                 repo.join("extensions/browser/dist").join(dist_name),
             )],
             autoplay_without_gesture: true,
+            loopback_host_aliases: Vec::new(),
         },
     )?;
     let text =

@@ -75,11 +75,17 @@ export async function createRealFrameProbe() {
   };
 }
 
+/**
+ * Сколько команд робота страница уже получила. Одно значение на всю страницу (страница = один
+ * прогон): страница, у которой несколько фаз (`ad-preroll`: сначала реклама, потом фильм), создаёт
+ * несколько каналов, и каждый обязан продолжить с того места, где остановился прошлый.
+ */
+const commandCursor = { received: 0 };
+
 /** Опрос команд робота; `next()` отдаёт команды по одной в порядке отправки. */
 class CommandChannel {
   constructor(context) {
     this.context = context;
-    this.received = 0;
     this.queue = [];
   }
 
@@ -88,10 +94,10 @@ class CommandChannel {
       if (this.queue.length > 0) return this.queue.shift();
       const { run, reportOrigin } = this.context.params;
       try {
-        const response = await fetch(`${reportOrigin}/bench/commands/${run}/${this.received}`);
+        const response = await fetch(`${reportOrigin}/bench/commands/${run}/${commandCursor.received}`);
         if (response.ok) {
           const fresh = await response.json();
-          this.received += fresh.length;
+          commandCursor.received += fresh.length;
           this.queue.push(...fresh);
         }
       } catch (error) {
@@ -99,6 +105,20 @@ class CommandChannel {
       }
       if (this.queue.length === 0) await sleep(COMMAND_POLL_MS);
     }
+  }
+}
+
+/**
+ * Ждёт одну именную команду робота (остальные подтверждает и пропускает). Для фаз страницы до
+ * основной фазы передачи: страница сказала «готова» своей меткой и ждёт, пока робот сделает
+ * свою проверку и скажет идти дальше.
+ */
+export async function waitForRobotCommand(context, wantedCommand) {
+  const commands = new CommandChannel(context);
+  for (;;) {
+    const command = await commands.next();
+    context.log(`ack ${command}`);
+    if (command === wantedCommand) return;
   }
 }
 
@@ -161,13 +181,18 @@ function snapshot({ video, player, probe }) {
  * Фаза передачи: вызывается страницей ПОСЛЕ её собственных проверок «играет».
  * `hooks` — действия страницы по команде робота (`hook:<имя>`): смена качества, смена поколения.
  * `expectedExtraGenerations` — сколько новых MediaSource страница сама сделает за окно (хуки).
+ *   Число либо функция `() => число`, вызываемая в конце окна: так страница объявляет и переходы,
+ *   которые происходят САМИ по её собственной логике (автопереход серии по `ended`), не ослабляя
+ *   проверку: каждый лишний MediaSource обязан быть объяснён страницей.
+ * `readyMarker` — метка в журнале, по которой робот узнаёт «страница готова» (по умолчанию
+ * `handoff-ready`; страница с двумя фазами называет вторую иначе, если первая уже писала эту).
  * `skipFinishChecks` — имена итоговых проверок, которые у этой страницы теряют смысл: она сама
  * забирает у плеера видео (снимает источник, ставит файл) или замораживает свой главный поток,
  * и «часы идут под тенью» там нечему доказывать. Пропуск явный и поимённый; метрики остаются.
  */
 export async function runHandoffPhase(context, {
   video, player = null, hooks = {}, durationS = null, expectedExtraGenerations = 0,
-  skipFinishChecks = [],
+  skipFinishChecks = [], readyMarker = 'handoff-ready',
 }) {
   const probe = context.realFrames;
   const commands = new CommandChannel(context);
@@ -185,7 +210,7 @@ export async function runHandoffPhase(context, {
   const realFramesNow = probe.available ? probe.framesOf(video) : 0;
   context.check('real-frame-probe', probe.available && realFramesNow > 0,
     probe.available ? `the clean counter reads ${realFramesNow} frames while the browser plays` : probe.reason);
-  context.log('handoff-ready');
+  context.log(readyMarker);
   try {
     for (;;) {
       const command = await commands.next();
@@ -250,8 +275,10 @@ function finishPhase(context, state, mark, samples, { durationS, expectedExtraGe
     `bufferedEnd ${mark.bufferedEnd.toFixed(2)} -> ${now.bufferedEnd.toFixed(2)}`);
   check('page-sees-playback-not-pause', !now.paused || now.ended || state.returned === true,
     `paused=${now.paused} ended=${now.ended}`);
-  check('no-unexpected-media-source-reload', extraGenerations === expectedExtraGenerations,
-    `generations ${mark.generations} -> ${now.generations}, expected +${expectedExtraGenerations}`);
+  const expectedGenerations = typeof expectedExtraGenerations === 'function'
+    ? expectedExtraGenerations() : expectedExtraGenerations;
+  check('no-unexpected-media-source-reload', extraGenerations === expectedGenerations,
+    `generations ${mark.generations} -> ${now.generations}, expected +${expectedGenerations}`);
 }
 
 /** Команда робота, реагирующая на действие плеера или действие самой страницы. */

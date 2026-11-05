@@ -14,7 +14,7 @@
 import { runScenario, UnsupportedError } from '../lib/bench-report.js';
 import { checkPlaying, waitFor } from '../lib/bench-checks.js';
 import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
-import { requireMimeSupport } from '../lib/scenario-kit.js';
+import { requireMimeSupport, observeHandoff } from '../lib/scenario-kit.js';
 
 /** Серии «сериала»: разные ассеты, чтобы смена серии была заметной сменой потока. */
 const EPISODES = [
@@ -22,6 +22,8 @@ const EPISODES = [
   { title: 'Episode 2', assetId: 'muxed-h264-aac' },
   { title: 'Episode 3', assetId: 'vp9-opus' },
 ];
+/** Сколько ждём хода часов новой серии под тенью, мс. */
+const NEW_EPISODE_CLOCK_WAIT_MS = 10000;
 /** За сколько секунд до конца серии перематываем, чтобы дождаться ended. */
 const SECONDS_BEFORE_END = 3;
 
@@ -53,9 +55,15 @@ await runScenario('series', async (ctx) => {
     // autoplay: после ended элемент на паузе, но серия должна идти сама.
     await player.newGeneration({ refs, positionS, autoplay: true });
   }
-  // Автопереход по ended — как в настоящих сериальных плеерах.
+  // Автопереход по ended — как в настоящих сериальных плеерах. Считаем их: под тенью серия может
+  // дойти до конца внутри окна замера, и тогда новый MediaSource — честное поведение страницы
+  // (живой прогон 09c: поколения 1 -> 3), а не лишняя перезагрузка.
+  let autoAdvances = 0;
   video.addEventListener('ended', () => {
-    if (state.episode + 1 < EPISODES.length) openEpisode(state.episode + 1);
+    if (state.episode + 1 < EPISODES.length) {
+      autoAdvances += 1;
+      openEpisode(state.episode + 1);
+    }
   });
 
   const episodes = document.getElementById('episodes');
@@ -82,6 +90,23 @@ await runScenario('series', async (ctx) => {
   await checkPlaying(ctx, video, 'episode-1-playing');
   const enLoaded = await waitFor(() => (subtitles[0].track.cues?.length ?? 0) > 0, 4000);
   ctx.check('subtitle-en-cues', enLoaded, `cues=${subtitles[0].track.cues?.length ?? 0}`);
+  if (ctx.params.handoff) {
+    // 09c: серия 1 отдана плееру; следующая серия (другой поток, новый MediaSource на том же
+    // элементе) стартует уже ПОД ТЕНЬЮ и обязана дойти до кадра в плеере.
+    await observeHandoff(ctx, { video, player, refs: currentRefs(), catalog }, {
+      'next-episode': async (hookCtx) => {
+        await openEpisode(1);
+        const advanced = await waitFor(() => video.currentTime > 1, NEW_EPISODE_CLOCK_WAIT_MS);
+        hookCtx.check('next-episode-new-media-source-under-shadow', player.generations === 2 && state.episode === 1,
+          `generations=${player.generations}, episode index=${state.episode}`);
+        hookCtx.check('next-episode-clock-runs', advanced, `currentTime=${video.currentTime.toFixed(2)}`);
+      },
+    // Ожидаем: один переход от хука + столько, сколько страница сама сделала по `ended`.
+    // Любой другой лишний MediaSource всё ещё провалит `no-unexpected-media-source-reload`.
+    }, { expectedExtraGenerations: () => 1 + autoAdvances });
+    await player.destroy();
+    return;
+  }
   // 2. Подгружаемый по кнопке второй .vtt.
   loadUk.click();
   const ukLoaded = await waitFor(() => (subtitles[1]?.track.cues?.length ?? 0) > 0, 4000);

@@ -6,7 +6,7 @@ use browser_bridge_bench::browsers::BrowserKind;
 use browser_bridge_bench::environment::{DisplayTarget, PlayerConfigProfile};
 use browser_bridge_bench::scenarios::{
     BrowserExecutables, DEFAULT_MIN_FRAMES, PAGE_SCENARIOS, PageFilter, ReplayOptions, RunSettings,
-    capture_page_ids, end_page_ids, player_command_page_ids,
+    attack_page_ids, capture_page_ids, end_page_ids, player_command_page_ids,
 };
 
 /// Что запускать.
@@ -19,6 +19,9 @@ pub enum Command {
     PlayerCommands,
     ExtensionStatus,
     Codecs,
+    Attacks,
+    LocalAddress,
+    BlockerMatrix,
     Replay,
     GenerateRecording,
     All,
@@ -59,7 +62,12 @@ impl Command {
     fn takes_page_filter(self) -> bool {
         matches!(
             self,
-            Self::Pages | Self::Capture | Self::PageEnds | Self::PlayerCommands | Self::All
+            Self::Pages
+                | Self::Capture
+                | Self::PageEnds
+                | Self::PlayerCommands
+                | Self::Attacks
+                | Self::All
         )
     }
 
@@ -72,6 +80,7 @@ impl Command {
             Self::Capture => filter.matches_any_of(capture_page_ids()),
             Self::PageEnds => filter.matches_any_of(end_page_ids()),
             Self::PlayerCommands => filter.matches_any_of(player_command_page_ids()),
+            Self::Attacks => filter.matches_any_of(attack_page_ids()),
             // `all` всегда начинается с `pages`, где есть любая известная страница.
             Self::All => filter.matches_any_of(pages()),
             _ => filter.selects_everything(),
@@ -103,14 +112,23 @@ Commands:
   extension-status  the real extension (extensions/browser/dist) says \"Connected to Fastiplayer\"
   codecs            the site player asks AV1, then VP9, then H.264: the extension answers for
                     the player (setting x player label, HLS always refused) and the pick plays
+  attacks           hostile pages (giant segments, event flood, garbage instead of fMP4,
+                    worker message flood): the player must end the session honestly, and a
+                    CLEAN page in the SAME browser must then hand off and play
+  local-address     a file on a local address under a public-looking page name: refused by
+                    default, asks for consent with the 'ask' setting, plays after consent
+  blocker-matrix    pages x (no blocker / blocker installed first / ours first) with uBlock
+                    Origin (Lite); fetch the blockers first with
+                    scripts/browser-bridge-bench-fetch-blockers.sh; not part of 'all'
   replay            replay a page-stream recording (--recording FILE.fprec) on the stand page
                     replay-recording with real MSE calls at the original pace, hand the tab
                     off at the recorded 'handoff_began' moment, print the player summaries
                     (presented_frames, position_ms, state) and judge them (--min-frames)
   generate-recording  write a synthetic recording (--output FILE.fprec [--asset ID]) from a
                     stand fMP4 asset: add_source_buffer, paced appends, handoff_began
-  all               pages, capture, page-ends, player-commands, extension-status and codecs (smoke is a
-                    subset of capture), one after another; with --page only the page steps run
+  all               pages, capture, page-ends, player-commands, extension-status, codecs, attacks and
+                    local-address (smoke is a subset of capture), one after another; with --page
+                    only the page steps run
 
 Options:
   --browser <chromium|firefox|both>   browsers to test (default: both)
@@ -119,7 +137,7 @@ Options:
   --extra-extension <PATH>            extra extension (unpacked dir, .xpi or .zip) in every
                                       browser launch; repeatable (ad blocker mechanism)
   --page <ID>                         only this page (pages, capture, page-ends,
-                                      player-commands, all);
+                                      player-commands, attacks, all);
                                       repeatable; ids are the names in site/pages
   --recording <FILE>                  replay: the .fprec file to replay
   --min-frames <N>                    replay: presented frames the player must reach (default: 50)
@@ -323,6 +341,9 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
         "player-commands" => Ok(Command::PlayerCommands),
         "extension-status" => Ok(Command::ExtensionStatus),
         "codecs" => Ok(Command::Codecs),
+        "attacks" => Ok(Command::Attacks),
+        "local-address" => Ok(Command::LocalAddress),
+        "blocker-matrix" => Ok(Command::BlockerMatrix),
         "replay" => Ok(Command::Replay),
         "generate-recording" => Ok(Command::GenerateRecording),
         "all" => Ok(Command::All),
@@ -493,6 +514,28 @@ mod tests {
         let all = invocation(&["all", "--page", "page-freeze"]);
         assert_eq!(all.command, Command::All);
         assert_eq!(all.pages.ids(), ["page-freeze"]);
+    }
+
+    #[test]
+    fn the_09c_commands_are_recognised_and_only_attacks_take_pages() {
+        assert_eq!(invocation(&["attacks"]).command, Command::Attacks);
+        assert_eq!(
+            invocation(&["local-address"]).command,
+            Command::LocalAddress
+        );
+        assert_eq!(
+            invocation(&["blocker-matrix"]).command,
+            Command::BlockerMatrix
+        );
+        let one = invocation(&["attacks", "--page", "attack-garbage"]);
+        assert_eq!(one.pages.ids(), ["attack-garbage"]);
+        for words in [
+            &["local-address", "--page", "video-src-local"][..],
+            &["blocker-matrix", "--page", "mse-fmp4"][..],
+            &["attacks", "--page", "mse-fmp4"][..],
+        ] {
+            assert!(parse_words(words).is_err(), "{words:?} must be rejected");
+        }
     }
 
     #[test]

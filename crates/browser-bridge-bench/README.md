@@ -31,7 +31,11 @@ scripts/browser-bridge-bench.sh all
 | `extension-status` | **Настоящий** экстеншен из `extensions/browser/dist/<браузер>`; открывает его попап | Собранный экстеншен 07 видит плеер: попап пишет «Connected to Fastiplayer» |
 | `replay` | страница `replay-recording` + запись потока страницы `*.fprec` (`--recording`, `--min-frames`) | Файл разобран (магия, длина, поля), страница повторяет события настоящими вызовами MSE в исходном темпе (главный поток; `worker-*` — в blob-воркере, только Chromium, в Firefox честное unsupported), в записанный `handoff_began` робот отдаёт вкладку плееру, плеер показывает ≥ `--min-frames` кадров; печатаются сводки плеера (`presented_frames`, `position_ms`, `state`) |
 | `generate-recording` | синтетическая запись из fMP4-ассета стенда (`--output`, `--asset`) | Файл читается обратно разборщиком; даёт `replay` вход без записи с настоящего сайта |
-| `all` | `pages`, `capture`, `page-ends`, `player-commands`, `extension-status` по очереди (`smoke` входит в `capture`); с `--page` — только шаги со страницами | — |
+| `codecs` | Страница `codec-choice` спрашивает кодеки AV1 → VP9 → H.264 при разных настройках экстеншена и метках плеера | Экстеншен отвечает за плеер по настройке и метке, HLS отвергается всегда, выбранный ролик играет |
+| `attacks` | (09c) Вредные страницы `attack-giant-segments`, `attack-event-flood`, `attack-garbage`, `attack-worker-flood` (Chromium) под тенью, потом в ТОМ ЖЕ браузере чистая `mse-fmp4` | Атака кончается честно (сообщение плеера `stream_error`; для мусора ещё допустим отказ поколения `playback_failed`; шквал сообщений воркера обязан быть ПОГЛОЩЁН: конца нет, кадры идут, часы идут, провал главного потока в границе `landing.rs`; гигантские сегменты обязаны долететь: `giant_bytes_accepted` > 0), окно закрыто, страница-атака отчиталась `pass`; потом чистая страница: `started`, **новый** пропуск посредника, кадры нового окна, браузер её не декодирует, паники нет |
+| `local-address` | (09c) Файл на `127.0.0.1` под страницей с «публичным» именем `public.bench.example`: настройка по умолчанию, `ask`, согласие на этот хост и на другой, согласие при `block`, публичный файл с 302 на `127.0.0.1` | Решение 199: `local_address_refused` / `local_address_needs_consent{host}` / `started` с кадрами; в отказах сеанса нет, фон файл не качал, браузер играет сам. Перенаправление: журнал сервера не видит фона на локальном файле, плеер честно отказывается от поколения |
+| `blocker-matrix` | (09c) Страницы `mse-fmp4`, `mse-worker-classic`, `video-src`, `codec-choice` × (без блокировщика / блокировщик первым / наш экстеншен первым) с uBlock Origin Lite (Chromium) или uBlock Origin (Firefox). **Не входит в `all`** | Каждая клетка доходит до кадра в плеере по приговору `capture`. Блокировщики качает `scripts/browser-bridge-bench-fetch-blockers.sh` |
+| `all` | `pages`, `capture`, `page-ends`, `player-commands`, `extension-status`, `codecs`, `attacks`, `local-address` по очереди (`smoke` входит в `capture`; `blocker-matrix` — отдельно); с `--page` — только шаги со страницами (`pages`, `capture`, `page-ends`, `attacks`) | — |
 
 Браузеры по умолчанию: Chromium и Firefox (`--browser chromium|firefox|both`). Chrome из
 Flatpak проверяется руками на вехах (`scripts/browser-bridge-live-check/run-chrome-flatpak.sh`).
@@ -79,6 +83,36 @@ scripts/browser-bridge-bench.sh pages --page source-withdrawn --page source-to-f
 Опции мини-плеера для своих страниц (`site/lib/bench-player.js`):
 `newGeneration({ releaseOldSource: 'src' | 'srcObject-null' | 'remove-attr-load',
 firstRequestDelayMs })`; `autoplay` вычисляется до снятия старого источника.
+
+### Страницы сессии 09c (модель вкладки, DRM, реклама, атаки)
+
+`capture` (хук — действие страницы по команде робота):
+
+| Страница | Что ждём |
+|---|---|
+| `drm-probe` | Опрос ключевых систем DRM (`requestMediaKeySystemAccess`) защитой НЕ считается: видео передаётся и доходит до кадра |
+| `series` (хук `next-episode`), `spa-navigation` (хук `navigate-spa`) | Новое поколение под тенью (следующая серия, переход `pushState`) доходит до кадра: кадры плеера растут и после хука |
+| `banner-with-main` (хук `resume-main`, посылается ДО ожидания кадров) | Главное видео (60-секундный файл) стоит на паузе, рядом играют беззвучный зацикленный баннер и превью по наведению. Главное уходит в плеер (кадры + браузер его не декодирует), а баннер и превью остаются у браузера: страница сама пишет метрики `banner_real_frames`, `preview_real_frames`, `main_real_frames_after_resume`, а сервер подтверждает, что файл приманки фон не качал |
+| `video-src-referer` (хук `own-fetch-without-referer`) | Файл на `/cdn/media/` (кука И свой Referer). Запросы фона несут Referer страницы и куку (журнал сервера); запросы самого `<video>` не изменились; хук — проба утечки правила: страница просит тот же адрес с `referrerPolicy: no-referrer` (честно 403) и с обычным Referer (206), запросы помечены `x-bench-page-fetch` |
+
+Отказы (`capture`, строка `refusals`): `drm-clearkey` → `protected`, `banner-autoplay` (только баннер и превью) → `no_video`; в обоих сеанса нет, браузер продолжает декодировать сам. `ad-preroll` — свой сценарий в `capture`:
+
+- фаза 1: играет ТОЛЬКО реклама (по кругу, файл на рекламном домене `ad.doubleclick.net`, который браузер стенда разрешает в `127.0.0.1`); передача → `ad_playing`, сеанса нет, по журналу сервера фон рекламный файл не качал;
+- фаза 2 (команда `start-film`): реклама убрана, фильм в другом элементе; передача → `started`, кадры, браузер не декодирует.
+- **Это ожидание верно до сессии 09c2 (решение 201): там передача во время рекламы переезжает на фильм сама, и проверка фазы 1 меняется.**
+
+Атаки (`attacks`): общее тело — `site/lib/attack-page.js` (честный старт, хук `attack`, итоговые проверки живой тени отключены поимённо, страница сама не бросает ошибок). Размер гигантских сегментов (`GIANT_SEGMENT_BYTES`) заведомо больше лимитов решения 200: если лимиты поднимут, поднять и константу. Атака на воркер сыплет `noise` в обе стороны и пишет метрики стоимости (`flood_messages_per_s`, `flood_main_thread_worst_gap_ms`).
+
+Защита локального адреса (`local-address`): страница `video-src-local` открывается под именем `public.bench.example`. Имя браузер разрешает в `127.0.0.1`: Chromium — `--host-resolver-rules="MAP … 127.0.0.1"`, Firefox — pref `network.dns.localDomains` (оба способа проверены на пустом сервере). Настройка пишется в `storage.local` под ключом `localAddressSetting` (`block|ask`, константа `LOCAL_ADDRESS_SETTING_KEY` в `capture/local_address.rs` — сверять с экстеншеном), согласие человека — поле `consented_local_host` (хост, про который спрашивали) в сообщении робота. Случай с перенаправлением берёт файл с `file_route=redirect-local` (сервер отвечает 302 с `/cdn/redirect-local/…` на `/media/…` под `127.0.0.1`) и идёт на профиле `ShortNetworkRetry`: бюджет повторов плеера 3 с вместо минуты.
+
+Матрица блокировщиков (`blocker-matrix`):
+
+```bash
+scripts/browser-bridge-bench-fetch-blockers.sh      # один раз: качает и сверяет SHA-256
+scripts/browser-bridge-bench.sh blocker-matrix --browser chromium
+```
+
+Версии и хеши прибиты в скрипте (официальные релизы GitHub: `uBlockOrigin/uBOL-home` для Chromium, `gorhill/uBlock` для Firefox); файлы лежат в `target/browser-bridge-bench/blockers/<имя>/` и в репозиторий не попадают. Нет файлов — шаг падает с этой командой. Порядок установки задаёт `RunTweaks` (`src/scenarios/run_tweaks.rs`): `ExtrasFirst` ставит блокировщик первым. Стенд НЕ доказывает, что блокировщик реально блокирует рекламу, — только что передача с ним доходит до кадра.
 
 ### Как стенд «отдаёт вкладку» и почему страница не командует сама
 
@@ -154,9 +188,10 @@ scripts/browser-bridge-bench.sh pages --browser firefox --extra-extension /пу�
 ```
 
 Флаг можно повторять. Дополнительный экстеншен ставится в КАЖДЫЙ запуск браузера рядом с
-настоящим экстеншеном (в сценариях передачи). Chromium принимает только распакованные каталоги, Firefox — и каталоги, и
-`.xpi`/`.zip` (временная установка). Это только механизм; матрица «какие блокировщики и
-страницы проверять» — сессия 09.
+настоящим экстеншеном (в сценариях передачи), после него. Порядок «блокировщик первым» и готовый
+набор страниц даёт `blocker-matrix` (он берёт блокировщики из `target/browser-bridge-bench/blockers/`
+и игнорирует этот флаг). Chromium принимает только распакованные каталоги, Firefox — и каталоги, и
+`.xpi`/`.zip` (временная установка). Матрица «какие блокировщики и страницы проверять» — `blocker-matrix`.
 
 ## Известные ограничения
 

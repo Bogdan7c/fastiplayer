@@ -20,6 +20,9 @@ use super::http::{Request, Response};
 /// Сколько записей держит журнал; старые вытесняются (запросы одной страницы — единицы сотен).
 const MAX_LOGGED_REQUESTS: usize = 4096;
 
+/// Заголовок-метка собственных запросов страницы стенда (имя дублирует `video-src-referer.html`).
+pub const PAGE_FETCH_MARKER_HEADER: &str = "x-bench-page-fetch";
+
 /// Префиксы путей, запросы к которым записываются (`/cdn/` — оба пути сторожа CDN).
 const LOGGED_PATH_PREFIXES: [&str; 2] = ["/media/", "/cdn/"];
 
@@ -40,6 +43,10 @@ pub struct MediaRequest {
     pub sec_fetch_site: Option<String>,
     pub sec_fetch_mode: Option<String>,
     pub sec_fetch_dest: Option<String>,
+    /// Значение заголовка-метки `x-bench-page-fetch`: так страница стенда помечает СВОИ
+    /// запросы к файлу (проба утечки правила Referer, `video-src-referer`), чтобы они не
+    /// спутались с запросами фона экстеншена. `None` — метки нет.
+    pub page_fetch_marker: Option<String>,
     /// `Content-Range` ответа (`bytes a-b/total`; `None` — ответ не 206).
     pub content_range: Option<String>,
 }
@@ -149,6 +156,7 @@ impl RequestLog {
             sec_fetch_site: header("sec-fetch-site"),
             sec_fetch_mode: header("sec-fetch-mode"),
             sec_fetch_dest: header("sec-fetch-dest"),
+            page_fetch_marker: header(PAGE_FETCH_MARKER_HEADER),
         };
         // Отравленный замок значит, что поток сервера упал посреди записи: журнал — улика, а не
         // источник истины, поэтому продолжаем с тем, что есть.

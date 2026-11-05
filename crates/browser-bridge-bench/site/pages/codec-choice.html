@@ -18,7 +18,7 @@
 import { runScenario } from '../lib/bench-report.js';
 import { checkPlaying } from '../lib/bench-checks.js';
 import { loadCatalog } from '../lib/bench-player.js';
-import { startAsset } from '../lib/scenario-kit.js';
+import { startAsset, observeHandoff } from '../lib/scenario-kit.js';
 
 /** Порядок вопросов плеера: от самого «жадного» кодека к самому скромному. */
 const CANDIDATES = [
@@ -105,6 +105,8 @@ await runScenario('codec-choice', async (ctx) => {
   // Выбранное играет по-настоящему (доходит до кадров), а не только «поддержано».
   const session = await startAsset(ctx, chosen.assetId);
   await checkPlaying(ctx, session.video, 'playing');
+  // 09c, матрица блокировщиков: выбранное по ответам экстеншена доходит до кадра в плеере.
+  if (ctx.params.handoff) await observeHandoff(ctx, session);
   await session.player.destroy();
 }, { reportToParent: isChildFrame });
 </script>

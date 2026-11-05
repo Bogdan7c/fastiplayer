@@ -13,7 +13,7 @@
 import { runScenario, UnsupportedError } from '../lib/bench-report.js';
 import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
 import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
-import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
+import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount, observeHandoff } from '../lib/scenario-kit.js';
 
 /** Системы, которые «злые» плееры опрашивают до старта (мы НЕ играем DRM). */
 const KEY_SYSTEMS = ['com.widevine.alpha', 'com.microsoft.playready', 'com.apple.fps.1_0', 'org.w3.clearkey'];
@@ -31,8 +31,12 @@ await runScenario('drm-probe', async (ctx) => {
   const outcomes = [];
   for (const keySystem of KEY_SYSTEMS) outcomes.push(`${keySystem}=${await probe(keySystem)}`);
   ctx.check('probe-settled', !outcomes.some((o) => o.endsWith('timeout')), outcomes.join('; '));
-  const { video, player } = await startAsset(ctx, 'h264-aac');
+  const session = await startAsset(ctx, 'h264-aac');
+  const { video, player } = session;
   await checkPlaying(ctx, video, 'playing-after-probe');
+  // 09c: опрос ключевых систем DRM признаком защиты НЕ считается (инвариант 4): видео без ключей
+  // передаётся плееру как обычное и доходит до кадра.
+  if (ctx.params.handoff) await observeHandoff(ctx, session);
   await player.destroy();
 });
 </script>

@@ -1,6 +1,10 @@
-//! Честные отказы `capture` (сессия 09b): страница играет видео в форме, которую экстеншен пока
-//! не передаёт (решение 185: m3u8 прямо в `src`). Ожидается не кадр в плеере, а наоборот:
-//! - фон отвечает `not_supported_yet{form}` и сеанс с плеером даже не открывается;
+//! Честные отказы `capture`: страница играет видео, которое экстеншен не передаёт, и ожидается
+//! не кадр в плеере, а наоборот:
+//! - сессия 09b: форма, которую экстеншен пока не умеет (решение 185: m3u8 прямо в `src`) —
+//!   `not_supported_yet{form}`;
+//! - сессия 09c: видео под DRM (`drm-clearkey`) — `protected` (инвариант 4); на странице только
+//!   баннер и превью (`banner-autoplay`) — `no_video`;
+//! - в любом случае сеанс с плеером даже не открывается;
 //! - видео остаётся у браузера: страница играет сама, настоящий счётчик кадров растёт.
 //!
 //! Если браузер сам такую форму не играет (Firefox на Linux и HLS), страница честно
@@ -18,24 +22,61 @@ use crate::environment::BenchEnvironment;
 use crate::observe::{HostLogEvidence, read_host_evidence};
 use crate::site::{PageReport, SiteError};
 
-/// Страница с формой, которую экстеншен честно отказывается передавать.
+/// Какой отказ ждём от фона.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::scenarios) enum ExpectedRefusal {
+    /// `not_supported_yet{form}` (09b).
+    NotSupportedYet { form: &'static str },
+    /// `protected`: лучшее видео под DRM (09c).
+    Protected,
+    /// `no_video`: передавать нечего, баннеры и превью не в счёт (09c).
+    NoVideo,
+}
+
+impl ExpectedRefusal {
+    /// Совпадает ли исход фона с ожидаемым отказом.
+    fn matches(self, outcome: &HandOffOutcome) -> bool {
+        match (self, outcome) {
+            (Self::NotSupportedYet { form }, HandOffOutcome::NotSupportedYet { form: actual }) => {
+                form == actual
+            }
+            (Self::Protected, HandOffOutcome::Protected) => true,
+            (Self::NoVideo, HandOffOutcome::NoVideo) => true,
+            _ => false,
+        }
+    }
+}
+
+/// Страница, которую экстеншен честно отказывается передавать.
 #[derive(Debug, Clone, Copy)]
 pub(in crate::scenarios) struct RefusalPage {
     /// Идентификатор страницы стенда.
     pub id: &'static str,
-    /// Какую форму назовёт фон в `not_supported_yet`.
-    pub form: &'static str,
+    /// Какой отказ ждём.
+    pub expected: ExpectedRefusal,
 }
 
 /// Страницы честного отказа.
-pub(in crate::scenarios) const REFUSAL_PAGES: &[RefusalPage] = &[RefusalPage {
-    id: "m3u8-in-src",
-    form: "native_hls",
-}];
+pub(in crate::scenarios) const REFUSAL_PAGES: &[RefusalPage] = &[
+    RefusalPage {
+        id: "m3u8-in-src",
+        expected: ExpectedRefusal::NotSupportedYet { form: "native_hls" },
+    },
+    // DRM (ClearKey): ключи и `encrypted` на элементе; браузер играет сам, сеанса нет.
+    RefusalPage {
+        id: "drm-clearkey",
+        expected: ExpectedRefusal::Protected,
+    },
+    // Только баннер и превью по наведению: главного видео на странице нет.
+    RefusalPage {
+        id: "banner-autoplay",
+        expected: ExpectedRefusal::NoVideo,
+    },
+];
 
 /// Сколько страница играет сама после отказа, прежде чем отчитаться (ролик HLS стенда — 12 с,
 /// до готовности страница уже сыграла около двух; 5 с оставляют запас до конца ролика).
-const REFUSAL_WINDOW: Duration = Duration::from_secs(5);
+pub(in crate::scenarios) const REFUSAL_WINDOW: Duration = Duration::from_secs(5);
 /// Сколько настоящих кадров в секунду должен насчитать браузер, который играет сам
 /// (ролики стенда — 25 к/с; как у контроля линейки `capture`).
 const MIN_REAL_FRAMES_PER_SECOND: f64 = 12.0;
@@ -96,6 +137,39 @@ fn drive(
     }))
 }
 
+/// Метрики страницы: длина окна наблюдения, с, и сколько настоящих кадров браузер насчитал за него.
+pub(in crate::scenarios) fn browser_real_frame_metrics(
+    report: &Result<PageReport, SiteError>,
+) -> (Option<f64>, Option<f64>) {
+    let metric = |name: &str| {
+        report
+            .as_ref()
+            .ok()
+            .and_then(|report| report.metrics.get(name).copied())
+    };
+    (metric("shadow_window_s"), metric("real_frames_in_window"))
+}
+
+/// После отказа видео осталось у страницы: настоящий счётчик насчитал обычное воспроизведение.
+pub(in crate::scenarios) fn browser_keeps_playing_failures(
+    window_s: Option<f64>,
+    real_frames: Option<f64>,
+) -> Vec<String> {
+    match (window_s, real_frames) {
+        (Some(window_s), Some(real_frames)) => {
+            let needed = window_s * MIN_REAL_FRAMES_PER_SECOND;
+            if real_frames < needed {
+                vec![format!(
+                    "after the refusal the browser decoded only {real_frames} frames in {window_s:.1} s (need {needed:.0}): the video did not stay with the page"
+                )]
+            } else {
+                Vec::new()
+            }
+        }
+        _ => vec!["the page report has no real-frame metrics".to_owned()],
+    }
+}
+
 /// Вход чистого вердикта.
 struct RefusalEvidence {
     page: RefusalPage,
@@ -108,36 +182,19 @@ struct RefusalEvidence {
 fn judge_refusal(evidence: &RefusalEvidence) -> Verdict {
     let mut failures = Vec::new();
     match &evidence.outcome {
-        Ok(HandOffOutcome::NotSupportedYet { form }) if form == evidence.page.form => {}
+        Ok(outcome) if evidence.page.expected.matches(outcome) => {}
         Ok(other) => failures.push(format!(
-            "hand_off_tab outcome {other:?}, expected not_supported_yet{{form: {}}}",
-            evidence.page.form
+            "hand_off_tab outcome {other:?}, expected {:?}",
+            evidence.page.expected
         )),
         Err(error) => failures.push(format!("hand_off_tab: {error}")),
     }
     if evidence.host.session_granted {
-        failures.push("the player granted a session for a form the extension refuses".to_owned());
+        failures.push("the player granted a session for a video the extension refuses".to_owned());
     }
     failures.extend(page_failures(&evidence.report, evidence.page.id));
-    let metric = |name: &str| {
-        evidence
-            .report
-            .as_ref()
-            .ok()
-            .and_then(|report| report.metrics.get(name).copied())
-    };
-    let (window_s, real_frames) = (metric("shadow_window_s"), metric("real_frames_in_window"));
-    match (window_s, real_frames) {
-        (Some(window_s), Some(real_frames)) => {
-            let needed = window_s * MIN_REAL_FRAMES_PER_SECOND;
-            if real_frames < needed {
-                failures.push(format!(
-                    "after the refusal the browser decoded only {real_frames} frames in {window_s:.1} s (need {needed:.0}): the video did not stay with the page"
-                ));
-            }
-        }
-        _ => failures.push("the page report has no real-frame metrics".to_owned()),
-    }
+    let (window_s, real_frames) = browser_real_frame_metrics(&evidence.report);
+    failures.extend(browser_keeps_playing_failures(window_s, real_frames));
     let summary = format!(
         "outcome={:?}; browser_real_frames={real_frames:?} in {window_s:?} s; session_granted={}",
         evidence.outcome, evidence.host.session_granted
@@ -174,8 +231,17 @@ mod tests {
     }
 
     fn evidence(outcome: HandOffOutcome, granted: bool, real_frames: f64) -> RefusalEvidence {
+        evidence_for(REFUSAL_PAGES[0], outcome, granted, real_frames)
+    }
+
+    fn evidence_for(
+        page: RefusalPage,
+        outcome: HandOffOutcome,
+        granted: bool,
+        real_frames: f64,
+    ) -> RefusalEvidence {
         RefusalEvidence {
-            page: REFUSAL_PAGES[0],
+            page,
             outcome: Ok(outcome),
             host: HostLogEvidence {
                 caller_accepted: true,
@@ -183,7 +249,10 @@ mod tests {
                 session_granted: granted,
                 session_grants: u32::from(granted),
             },
-            report: Ok(report(real_frames)),
+            report: Ok(PageReport {
+                scenario: page.id.into(),
+                ..report(real_frames)
+            }),
             page_log: String::new(),
         }
     }
@@ -233,5 +302,47 @@ mod tests {
                 "{outcome:?} granted={granted} frames={frames}"
             );
         }
+    }
+
+    fn page(id: &str) -> RefusalPage {
+        *REFUSAL_PAGES
+            .iter()
+            .find(|page| page.id == id)
+            .expect("a known refusal page")
+    }
+
+    #[test]
+    fn drm_must_be_refused_as_protected_and_banners_as_no_video() {
+        for (id, honest) in [
+            ("drm-clearkey", HandOffOutcome::Protected),
+            ("banner-autoplay", HandOffOutcome::NoVideo),
+        ] {
+            let ok = judge_refusal(&evidence_for(page(id), honest.clone(), false, 120.0));
+            assert_eq!(ok.outcome, Outcome::Pass, "{id}: {}", ok.detail);
+            // Тот же исход у чужой страницы, сеанс, замёрзший браузер и «началась передача» — провалы.
+            for (outcome, granted, frames) in [
+                (HandOffOutcome::Started, true, 120.0),
+                (HandOffOutcome::Started, false, 120.0),
+                (honest.clone(), true, 120.0),
+                (honest.clone(), false, 2.0),
+                (HandOffOutcome::AdPlaying, false, 120.0),
+            ] {
+                let verdict =
+                    judge_refusal(&evidence_for(page(id), outcome.clone(), granted, frames));
+                assert_eq!(
+                    verdict.outcome,
+                    Outcome::Fail,
+                    "{id}: {outcome:?} granted={granted} frames={frames}"
+                );
+            }
+        }
+        // Баннер — не DRM: исход `protected` у баннера не тот, что нужен.
+        let swapped = judge_refusal(&evidence_for(
+            page("banner-autoplay"),
+            HandOffOutcome::Protected,
+            false,
+            120.0,
+        ));
+        assert_eq!(swapped.outcome, Outcome::Fail);
     }
 }

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>attack-giant-segments</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>attack-giant-segments</h1>
+
+<script type="module">
+import { runAttackPage, settleSourceBuffer } from '../lib/attack-page.js';
+
+// Атака 09c: после честного старта страница кладёт в SourceBuffer гигантские «сегменты». Лимиты
+// продукта: 128 МиБ на один кусок и 256 МиБ/с суммарно (`src/page/forward-byte-meter.ts`).
+// Браузер сам отвергает слишком большой буфер (квота: Chromium и Firefox режут по-разному;
+// 192 МиБ в живом прогоне не прошли вообще, и атака «не дошла»). Поэтому размер подбирается
+// лесенкой: берём первый размер, который браузер ПРИНЯЛ. Первые ступени выше лимита куска,
+// последняя ниже (100 МиБ), но кусками подряд превышает лимит скорости. Нули выделяются лениво,
+// страница почти не занимает памяти, пока их не копируют.
+
+/** Лесенка размеров куска, МиБ: от самых больших к тем, что точно пролезают в квоту браузера. */
+const SEGMENT_LADDER_MIB = [160, 140, 130, 100];
+/** Сколько кусков подряд кладём с ожиданием `updateend`. */
+const GIANT_SEGMENT_COUNT = 3;
+/** Сколько раз подряд делаем `appendBuffer` + `abort()` без ожидания очереди (обходит очередь). */
+const ABORT_LOOP_COUNT = 6;
+const MIB = 1024 * 1024;
+
+await runAttackPage('attack-giant-segments', async ({ ctx, sourceBuffer }) => {
+  if (!sourceBuffer) throw new Error('no SourceBuffer to attack');
+  let acceptedBytes = 0;
+  let acceptedAppends = 0;
+  let rejectedByBrowser = 0;
+
+  /** Один append: true, если браузер принял (не бросил исключение). */
+  const tryAppend = (piece) => {
+    try {
+      sourceBuffer.appendBuffer(piece);
+      acceptedBytes += piece.byteLength;
+      acceptedAppends += 1;
+      return true;
+    } catch (error) {
+      rejectedByBrowser += 1;
+      ctx.log(`giant append of ${piece.byteLength / MIB} MiB threw ${error?.name}`);
+      return false;
+    }
+  };
+
+  // 1. Подбираем размер, который браузер принимает.
+  let piece = null;
+  for (const mib of SEGMENT_LADDER_MIB) {
+    const candidate = new Uint8Array(mib * MIB);
+    if (tryAppend(candidate)) { piece = candidate; break; }
+  }
+  ctx.metric('giant_segment_bytes', piece ? piece.byteLength : 0);
+  if (piece) {
+    await settleSourceBuffer(sourceBuffer);
+    // 2. Ещё куски подряд с ожиданием очереди.
+    for (let index = 1; index < GIANT_SEGMENT_COUNT; index += 1) {
+      if (!tryAppend(piece)) break;
+      await settleSourceBuffer(sourceBuffer);
+    }
+    // 3. Цикл append + abort без ожидания: так очередь не сдерживает поток.
+    for (let index = 0; index < ABORT_LOOP_COUNT; index += 1) {
+      if (!tryAppend(piece)) break;
+      try { sourceBuffer.abort(); } catch (error) { ctx.log(`abort threw ${error?.name}`); break; }
+    }
+  }
+  ctx.metric('giant_segments_appended', acceptedAppends);
+  ctx.metric('giant_bytes_accepted', acceptedBytes);
+  ctx.metric('giant_appends_rejected_by_browser', rejectedByBrowser);
+});
+</script>
+</body>
+</html>

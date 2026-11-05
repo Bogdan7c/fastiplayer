@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>blocker-bait</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}</style>
+</head>
+<body>
+<h1>blocker-bait</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { loadCatalog } from '../lib/bench-player.js';
+
+// Приманка блокировщика (09c): доказывает, что блокировщик в этом браузере правда работает.
+// Без неё клетки матрицы «с блокировщиком» прошли бы и с молча не вставшим блокировщиком.
+// Адрес под рекламным доменом ведёт на сервер стенда. Что случилось с запросом, знает только сервер:
+// блокировщик может не отрезать запрос, а подменить ответ пустышкой (`redirect=nooptext` у uBO на
+// запросах скриптов), и страница увидит «успех». Поэтому страница только считает попытки, а стенд
+// сверяет их с журналом сервера. Имя `AD_HOST` дублирует `AD_HOST` в `src/scenarios/capture/ad_preroll.rs`.
+
+const AD_HOST = 'ad.doubleclick.net';
+/** Сколько раз спросить: блокировщику нужно время поднять правила, первые запросы могут пройти. */
+const ATTEMPTS = 8;
+/** Пауза между попытками, мс. */
+const ATTEMPT_PAUSE_MS = 500;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Один запрос приманки. Отказ браузера — обычный исход, тело ответа не нужно. */
+async function requestBait(url) {
+  const abort = new AbortController();
+  try {
+    await fetch(url, { mode: 'no-cors', cache: 'no-store', signal: abort.signal });
+    abort.abort();
+  } catch (error) {
+    return error?.name ?? 'error';
+  }
+  return 'answered';
+}
+
+await runScenario('blocker-bait', async (ctx) => {
+  // Без робота (`pages`) рекламного имени в браузере нет: проверять нечего.
+  if (!ctx.params.handoff) return;
+  const catalog = await loadCatalog();
+  const { port } = new URL(ctx.params.reportOrigin);
+  const url = `http://${AD_HOST}:${port}/media/${catalog.assets['ad-preroll'].url}`;
+  for (let attempt = 0; attempt < ATTEMPTS; attempt += 1) {
+    if (attempt > 0) await sleep(ATTEMPT_PAUSE_MS);
+    ctx.log(`bait attempt ${attempt}: ${await requestBait(url)}`);
+  }
+  ctx.metric('bait_attempts', ATTEMPTS);
+});
+</script>
+</body>
+</html>

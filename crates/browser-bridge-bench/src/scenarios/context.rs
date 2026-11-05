@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use super::outcome::Verdict;
+use super::run_tweaks::RunTweaks;
 use crate::browsers::{
     BrowserError, BrowserKind, BrowserUnderTest, ExtensionSource, LaunchOptions, launch,
     launch_with_executable,
@@ -124,17 +125,29 @@ impl Stand {
         environment: &BenchEnvironment,
         scenario_extensions: Vec<ExtensionSource>,
     ) -> Result<Box<dyn BrowserUnderTest>, ScenarioError> {
-        let mut extensions = scenario_extensions;
-        extensions.extend(self.settings.extra_extensions.iter().map(|path| {
-            if path.is_dir() {
-                ExtensionSource::UnpackedDir(path.clone())
-            } else {
-                ExtensionSource::PackedFile(path.clone())
-            }
-        }));
+        self.launch_browser_tweaked(
+            kind,
+            environment,
+            scenario_extensions,
+            &RunTweaks::default(),
+        )
+    }
+
+    /// То же с отклонениями прогона: порядок установки, свои дополнительные экстеншены,
+    /// имена хостов, живущие на сервере стенда.
+    pub(super) fn launch_browser_tweaked(
+        &self,
+        kind: BrowserKind,
+        environment: &BenchEnvironment,
+        scenario_extensions: Vec<ExtensionSource>,
+        tweaks: &RunTweaks,
+    ) -> Result<Box<dyn BrowserUnderTest>, ScenarioError> {
+        let extensions =
+            tweaks.arrange_extensions(scenario_extensions, &self.settings.extra_extensions);
         let options = LaunchOptions {
             extensions,
             autoplay_without_gesture: true,
+            loopback_host_aliases: tweaks.loopback_host_aliases.clone(),
         };
         let browser = match self.settings.browser_executables.for_kind(kind) {
             Some(executable) => launch_with_executable(kind, environment, options, executable)?,
