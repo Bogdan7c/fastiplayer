@@ -10,9 +10,13 @@
 // оборачивает наше переопределение и видит вызовы всех элементов, а переданный обслуживает тень.
 // Цена — заметность: `toString` переопределений не «[native code]» (принято владельцем).
 
+import type { PlayWatcher } from "../handoff-seam.ts";
 import type { ShadowSourceView } from "./file-source-mode.ts";
 import { applyOriginal, SealedWeakMap } from "./intrinsics.ts";
 import type { ElementOriginals } from "./originals.ts";
+
+/** Ответ тени: «я снялась, обслужи вызов как у обычного элемента». */
+export const SERVE_AS_PLAIN_ELEMENT = Symbol("serve as plain element");
 
 /**
  * Что тень отвечает странице за переданный элемент. Сеттеры и методы получают «сырые»
@@ -31,7 +35,11 @@ export interface ShadowBehavior {
   setMuted(value: unknown): void;
   volume(): number;
   setVolume(value: unknown): void;
-  play(): Promise<void>;
+  /**
+   * `play()` страницы. `SERVE_AS_PLAIN_ELEMENT` — тень только что снялась сама (страница уже сменила
+   * источник), вызов обслуживается как у обычного элемента.
+   */
+  play(): Promise<void> | typeof SERVE_AS_PLAIN_ELEMENT;
   pause(): void;
   /** `load()` страницы: оригинал, затем тень повторяет «алгоритм загрузки». */
   load(): void;
@@ -57,7 +65,9 @@ export type SourceProperty = "src" | "srcObject";
 export interface ShadowRegistry {
   attach(element: HTMLMediaElement, behavior: ShadowBehavior): void;
   detach(element: HTMLMediaElement): void;
-  isShadowed(element: HTMLMediaElement): boolean;
+  isShadowed(element: object): boolean;
+  /** Наблюдатель за `play()` элементов не в тени (сторож следующего видео, сессия 09c2). */
+  watchPlayCalls(watcher: PlayWatcher): void;
 }
 
 /**
@@ -134,23 +144,48 @@ export function installShadowOverrides(originals: ElementOriginals): ShadowRegis
 
   const shadows = new SealedWeakMap<object, ShadowBehavior>();
   const lookup = (receiver: unknown): ShadowBehavior | undefined => shadows.get(receiver);
+  let playWatcher: PlayWatcher | undefined;
+  // Обычный элемент: пока наблюдателя нет, `play()` строго прозрачен (решение 181).
+  const plainCall: PlainMethodCall = (name, receiver, callBrowser) => {
+    if (name !== PLAY_METHOD || playWatcher === undefined) return callBrowser();
+    const answer = playWatcher(receiver as object, callBrowser);
+    switch (answer.kind) {
+      case "answered":
+        return answer.promise;
+      case "now_shadowed": {
+        const behavior = lookup(receiver);
+        return behavior === undefined ? callBrowser() : behavior.play();
+      }
+      case "not_mine":
+        return callBrowser();
+    }
+  };
   for (const override of MEDIA_ACCESSORS) overrideAccessor(originals.mediaPrototype, override, lookup);
-  for (const override of MEDIA_METHODS) overrideMethod(originals.mediaPrototype, override, lookup);
+  for (const override of MEDIA_METHODS) overrideMethod(originals.mediaPrototype, override, lookup, plainCall);
   if (originals.videoPrototype !== undefined) {
     for (const override of VIDEO_ACCESSORS) overrideAccessor(originals.videoPrototype, override, lookup);
-    for (const override of VIDEO_METHODS) overrideMethod(originals.videoPrototype, override, lookup);
+    for (const override of VIDEO_METHODS) overrideMethod(originals.videoPrototype, override, lookup, plainCall);
   }
 
   const registry: ShadowRegistry = {
     attach: (element, behavior) => shadows.set(element, behavior),
     detach: (element) => shadows.delete(element),
     isShadowed: (element) => shadows.get(element) !== undefined,
+    watchPlayCalls: (watcher) => {
+      playWatcher = watcher;
+    },
   };
   installedRegistries.set(originals, registry);
   return registry;
 }
 
 type ShadowLookup = (receiver: unknown) => ShadowBehavior | undefined;
+
+/** Имя метода, за которым следит сторож следующего видео. */
+const PLAY_METHOD = "play";
+
+/** Вызов метода у элемента не в тени: `callBrowser` — то, что стояло на прототипе. */
+type PlainMethodCall = (name: string, receiver: unknown, callBrowser: () => unknown) => unknown;
 
 function overrideAccessor(prototype: object, override: AccessorOverride, lookup: ShadowLookup): void {
   const current = Object.getOwnPropertyDescriptor(prototype, override.name);
@@ -191,7 +226,7 @@ function overrideAccessor(prototype: object, override: AccessorOverride, lookup:
   Object.defineProperty(prototype, override.name, descriptor);
 }
 
-function overrideMethod(prototype: object, override: MethodOverride, lookup: ShadowLookup): void {
+function overrideMethod(prototype: object, override: MethodOverride, lookup: ShadowLookup, plainCall: PlainMethodCall): void {
   const current = Object.getOwnPropertyDescriptor(prototype, override.name);
   if (typeof current?.value !== "function" || current.configurable !== true) return;
   const passthrough = current.value as (...args: unknown[]) => unknown;
@@ -199,7 +234,11 @@ function overrideMethod(prototype: object, override: MethodOverride, lookup: Sha
   const replacement = {
     [override.name](this: unknown, ...args: unknown[]): unknown {
       const behavior = lookup(this);
-      return behavior === undefined ? applyOriginal(passthrough, this, args) : invoke(behavior, args);
+      if (behavior !== undefined) {
+        const answer = invoke(behavior, args);
+        if (answer !== SERVE_AS_PLAIN_ELEMENT) return answer;
+      }
+      return plainCall(override.name, this, () => applyOriginal(passthrough, this, args));
     },
   };
   const replacementFunction = replacement[override.name];

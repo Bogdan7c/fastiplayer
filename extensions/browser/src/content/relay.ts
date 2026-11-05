@@ -13,14 +13,21 @@
 // - бюджетом событий передачи (page-event-budget.ts, решение 200): при превышении пересылка
 //   останавливается сразу, а фон узнаёт об этом своим донесением `page_flood`, которое страница
 //   подделать не может: оно рождается здесь, а не приходит из MAIN-мира;
+// - сторожем следующего видео (сессия 09c2): фон взводит его всем фреймам вкладки, а донесение «видео
+//   задержано» проходит к фону только пока взвод не истёк и только в пределах своего лимита. Иначе
+//   страница могла бы будить фон сама, а решение 198 это запрещает. Нет ответа фона — видео отпускается;
 // - тем, что документ говорит о себе сам: имя хоста и происхождение читаются здесь, в изолированном
 //   мире, а не берутся на веру из MAIN-мира. От них зависят проверка адреса (решение 199) и Referer
 //   (решение 202), поэтому поддельное значение страницы до фона не доходит.
 // Сам ничего не решает о сеансе: нумерация поколений, очередь и плеер — в фоне.
 
 import {
+  HELD_VIDEO_REPORT_KIND,
   PAGE_FLOOD_NOTICE_KIND,
   type DescribeCandidatesQuery,
+  type HeldVideoReply,
+  type HeldVideoReport,
+  type NextVideoCommand,
   type PageCommand,
   type PageEvent,
   type PageEventBudgetKind,
@@ -28,7 +35,7 @@ import {
   type VideoCandidate,
 } from "../shared/handoff-contract.ts";
 import { parseCandidatesReply, parsePageEvent } from "../shared/page-message-validation.ts";
-import type { MillisecondClock } from "../shared/token-bucket.ts";
+import { createTokenBucket, type MillisecondClock } from "../shared/token-bucket.ts";
 import { createPageEventBudget, type PageEventBudget, type PageEventBudgetParameters } from "./page-event-budget.ts";
 
 /**
@@ -37,6 +44,18 @@ import { createPageEventBudget, type PageEventBudget, type PageEventBudgetParame
  * страницу; фрейм без нашего MAIN-скрипта (не успел встать) честно даёт пустой список.
  */
 export const DESCRIBE_CANDIDATES_TIMEOUT_MS = 1_000;
+
+/**
+ * Сколько ждём ответ фона о задержанном видео. Обычно это миллисекунды; без ответа страница не должна
+ * остаться с молчащим видео, поэтому оно отпускается. 2 с покрывают пробуждение service worker.
+ */
+export const HELD_VIDEO_REPLY_TIMEOUT_MS = 2_000;
+
+/**
+ * Лимит донесений о задержанных видео в секунду. Живая страница запускает одно видео за раз; 16 — с
+ * запасом, а страница, которая молотит `play()` сотнями, дальше этого порога фон не тревожит.
+ */
+export const HELD_VIDEO_REPORTS_PER_SECOND = 16;
 
 /** Наибольший номер запроса (u32 по договору); после него счёт идёт с 1. */
 const MAX_REQUEST_ID = 0xffff_ffff;
@@ -72,6 +91,8 @@ export interface ContentRelay {
   handlePageMessage(message: unknown): void;
   /** Фон открыл порт участка 2 к этому фрейму. */
   acceptBackgroundPort(port: BackgroundPort): void;
+  /** Фон просит взвести сторож следующего видео. */
+  armNextVideo(leaseMs: number): void;
   /** Описание видео документа от MAIN-мира; таймаут или пустой фрейм — пустой список. */
   describeVideoCandidates(): Promise<readonly VideoCandidate[]>;
   counters(): RelayCounters;
@@ -79,7 +100,9 @@ export interface ContentRelay {
 
 export interface RelayDependencies {
   /** Отправка MAIN-миру по личному порту участка 1. */
-  readonly sendToPage: (message: PageCommand | DescribeCandidatesQuery) => void;
+  readonly sendToPage: (message: PageCommand | NextVideoCommand | DescribeCandidatesQuery) => void;
+  /** Донесение фону о задержанном видео; его ответ решает судьбу видео. */
+  readonly reportHeldVideo: (report: HeldVideoReport) => Promise<HeldVideoReply>;
   readonly timers: RelayTimers;
   /** Одна строка диагностики за всю жизнь документа (первый мусор): без спама. */
   readonly debugOnce: (message: string) => void;
@@ -139,6 +162,9 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
   let undeliverablePageEvents = 0;
   let rejectedBackgroundMessages = 0;
   let droppedFloodEvents = 0;
+  // Взвод сторожа следующего видео: пока он не истёк, задержанные видео доходят до фона.
+  let armedUntilMs = Number.NEGATIVE_INFINITY;
+  const heldReports = createTokenBucket(HELD_VIDEO_REPORTS_PER_SECOND, dependencies.now);
 
   function rejectPageMessage(): void {
     rejectedPageMessages += 1;
@@ -268,6 +294,9 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
         deliver(owner, event);
         return;
       }
+      case "next_video_held":
+        reportHeldVideo(event);
+        return;
       default:
         forwardStreamEvent(event);
     }
@@ -284,6 +313,43 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
       // Порт уже мёртв: его onDisconnect придёт следом и снимет тень; событие отдать некому.
       undeliverablePageEvents += 1;
     }
+  }
+
+  // ---------------------------------------------------------------- сторож следующего видео
+
+  function armNextVideo(leaseMs: number): void {
+    armedUntilMs = dependencies.now() + leaseMs;
+    sendToPage({ kind: "arm_next_video", lease_ms: leaseMs });
+  }
+
+  /**
+   * Сторож задержал видео. Вне взвода или сверх лимита донесение до фона не идёт: это страница, а не наш
+   * сторож, или страница молотит `play()`. Видео отпускается, и она сама получает то, что просила.
+   */
+  function reportHeldVideo(event: Extract<PageEvent, { kind: "next_video_held" }>): void {
+    const release = (): void => sendToPage({ kind: "release_held_video", element: event.element });
+    if (dependencies.now() >= armedUntilMs || !heldReports.take(1)) {
+      release();
+      return;
+    }
+    let settled = false;
+    // Только явное «берём» оставляет видео под тенью: фон мог не ответить вовсе (`undefined`).
+    const settle = (reply: HeldVideoReply | undefined): void => {
+      if (settled) return;
+      settled = true;
+      timers.clearTimeout(timer);
+      if (reply !== "adopt") {
+        release();
+        return;
+      }
+      // Фон взял видео, но мог умереть до `begin_handoff`. Забранное видео этой командой не отпустить:
+      // для него она ничего не значит, поэтому страховка ставится всегда.
+      timers.setTimeout(release, HELD_VIDEO_REPLY_TIMEOUT_MS);
+    };
+    const timer = timers.setTimeout(() => settle("release"), HELD_VIDEO_REPLY_TIMEOUT_MS);
+    dependencies
+      .reportHeldVideo({ kind: HELD_VIDEO_REPORT_KIND, element: event.element, candidates: event.candidates.map(withOwnHostName) })
+      .then(settle, () => settle("release"));
   }
 
   // ---------------------------------------------------------------- фон → MAIN
@@ -352,6 +418,7 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
   return {
     handlePageMessage,
     acceptBackgroundPort,
+    armNextVideo,
     describeVideoCandidates,
     counters: () => ({ rejectedPageMessages, undeliverablePageEvents, rejectedBackgroundMessages, droppedFloodEvents }),
   };

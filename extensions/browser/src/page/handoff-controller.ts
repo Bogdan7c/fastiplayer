@@ -43,6 +43,7 @@ import type { ElementRegistry } from "./element-registry.ts";
 import type { ElementSource } from "./element-source.ts";
 import type { ForwardByteMeter } from "./forward-byte-meter.ts";
 import type { ShadowSessionHandle, ShadowSourceKind, ShadowStarter } from "./handoff-seam.ts";
+import type { HeldVideo } from "./next-video-guard.ts";
 import { notifyTap, type HandoffTap, type StreamOrigin } from "./handoff-tap.ts";
 import type { ReplayItem } from "./journal/media-journal.ts";
 import type { MediaSourceRecord, MseListener } from "./mse-tracker.ts";
@@ -67,8 +68,19 @@ export interface HandoffControllerEnvironment {
   readonly reportOddity: OddityReporter;
   /** Метки DRM (владелец — `DrmMarks`): защищённый элемент не передаётся ни при каких условиях. */
   readonly protection: ProtectionReader;
+  /** Сторож следующего видео (сессия 09c2): взвод, задержанные элементы, отказ фона. */
+  readonly nextVideo: NextVideoHolds;
   /** Подслушивание шагов передачи (только отладочная сборка записи потока); без него — ничего. */
   readonly tap?: HandoffTap;
+}
+
+/** Что контроллеру нужно от сторожа следующего видео. */
+export interface NextVideoHolds {
+  arm(leaseMs: number): void;
+  /** Забрать задержанное видео для передачи (`null` — такого нет). */
+  take(element: object): HeldVideo | null;
+  release(key: ElementKey): void;
+  releaseElement(element: object): void;
 }
 
 /** Идущая передача одного элемента. */
@@ -77,6 +89,8 @@ interface ActiveHandoff {
   /** Ключи MediaSource (главного потока и «w<N>/ms-K» воркеров), чьи события и байты идут живым потоком. */
   readonly liveMediaSources: Set<string>;
   session: ShadowSessionHandle | null;
+  /** Тень уже стоит: сторож поставил её раньше первого кадра (сессия 09c2). */
+  readonly held: HeldVideo | null;
   /** T0, уже названный плееру в начале повтора (шаг 2); `null` — ещё не назван. */
   announcedStartUs: MediaTimeMicros | null;
   /**
@@ -107,6 +121,11 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     this.#port = port;
   }
 
+  /** Отправка фону от имени сторожа следующего видео; порта ещё нет — некому. */
+  sendToBackground(event: PageEvent): void {
+    this.#port?.send(event);
+  }
+
   /** Есть ли идущая передача (для тестов и диагностики). */
   get isHandingOff(): boolean {
     return this.#active !== null;
@@ -127,6 +146,12 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
         return;
       case "end_handoff":
         this.#endHandoff(message.position, message.resume);
+        return;
+      case "arm_next_video":
+        this.#environment.nextVideo.arm(message.lease_ms);
+        return;
+      case "release_held_video":
+        this.#environment.nextVideo.release(message.element);
         return;
     }
   }
@@ -189,12 +214,14 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     }
     // DRM (инвариант 4): отказ ДО открытия потока и тени — страница остаётся со своим элементом.
     if (this.#environment.protection.isProtected(element)) {
+      this.#environment.nextVideo.releaseElement(element);
       port.send({ kind: "handoff_began", request_id: requestId, outcome: "protected" });
       return;
     }
     const source = this.#sourceOf(element);
     if (source.kind === "unsupported" || source.kind === "none") {
       // Источник сняли или сменили на неподдержанную форму между опросом фона и командой.
+      this.#environment.nextVideo.releaseElement(element);
       port.send({ kind: "handoff_began", request_id: requestId, outcome: "no_media" });
       return;
     }
@@ -202,7 +229,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     port.send({ kind: "handoff_began", request_id: requestId, outcome: "started" });
     this.#tap((tap) => tap.handoffBegan(element));
     const liveMediaSources = new Set<string>(source.kind === "media_source" ? [source.record.key] : []);
-    const active: ActiveHandoff = { element, liveMediaSources, session: null, announcedStartUs: null, flooded: false };
+    const active: ActiveHandoff = { element, liveMediaSources, session: null, held: this.#environment.nextVideo.take(element), announcedStartUs: null, flooded: false };
     this.#active = active;
     if (source.kind === "worker_media_source") {
       // Повтор журнала идёт из воркера асинхронно: шаги 3–5 — по его концу.
@@ -229,12 +256,20 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     if (port === null) throw new Error("page port is gone");
     const { dom, registry } = this.#environment;
     const { element } = active;
-    const wasPlaying = !dom.isPaused(element) && !dom.isEnded(element);
+    // У задержанного видео настоящий элемент уже стоит: правду знает его тень.
+    const wasPlaying = active.held === null ? !dom.isPaused(element) && !dom.isEnded(element) : active.held.session.pageSawPlaying();
     // Дальше живой поток: его события T0 уже не называют, даже если повтор был пустым.
     active.announcedStartUs = startPositionUs;
     port.send({ kind: "page_seek", target_us: startPositionUs });
     port.send({ kind: "page_playback", request: { kind: wasPlaying ? "play" : "pause" } });
-    active.session = this.#environment.startShadow(element as HTMLMediaElement, (event) => this.#emitFromShadow(active, event), {
+    const emit = (event: PageEvent): void => this.#emitFromShadow(active, event);
+    if (active.held !== null) {
+      active.held.connect(emit);
+      active.held.session.commitHold();
+      active.session = active.held.session;
+      return;
+    }
+    active.session = this.#environment.startShadow(element as HTMLMediaElement, emit, {
       isMediaSourceObjectUrl: (url) => registry.isMediaSourceObjectUrl(url),
       source: shadowSource,
     });
@@ -379,7 +414,8 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     const active = this.#active;
     if (active === null) return;
     try {
-      active.session?.end(position, resume);
+      // Задержанная тень стоит и до `#startShadow`: иначе её снять было бы некому.
+      (active.session ?? active.held?.session)?.end(position, resume);
     } catch {
       this.#environment.reportOddity("shadow failed to end");
     }
@@ -418,6 +454,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
   /** Закрыть передачу от своего имени: `handoff_ended`, живой поток остановлен. */
   #finishActive(active: ActiveHandoff): void {
     if (this.#active !== active) return;
+    this.#releaseUnstartedHold(active);
     const cause = this.#endCauseOf(active, "returned");
     this.#release();
     this.#tap((tap) => tap.handoffEnded(cause));
@@ -426,6 +463,19 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     } catch {
       // Порт сломан — сообщить некому; фон узнает об обрыве по разрыву связи с изолированным миром.
       this.#environment.reportOddity("could not report the end of a handoff");
+    }
+  }
+
+  /**
+   * Старт сорвался, а тень сторожа уже стоит: элемент молчит на паузе и сам не заиграет. Вернуть его
+   * странице так, как она его видела; её `handoff_ended` никуда не идёт, тень ещё не подключена.
+   */
+  #releaseUnstartedHold(active: ActiveHandoff): void {
+    if (active.session !== null || active.held === null) return;
+    try {
+      active.held.session.end({ kind: "shadow_position" }, { kind: "as_shadow" });
+    } catch {
+      this.#environment.reportOddity("could not release a held video after a failed start");
     }
   }
 

@@ -9,15 +9,16 @@ import type {
   DescribeCandidatesQuery,
   HandoffEndPosition,
   HandoffEndResume,
+  NextVideoCommand,
   PageCommand,
   ShadowCommand,
 } from "../shared/handoff-contract.ts";
 import { MAX_JSON_SAFE_INTEGER, MAX_PLAYBACK_RATE_PERMILLE, MIN_PLAYBACK_RATE_PERMILLE } from "../protocol/limits.ts";
 import type { ClockState, ResumeState } from "../protocol/session/player.ts";
-import { isDocumentTag } from "../shared/page-message-validation.ts";
+import { isDocumentTag, MAX_NEXT_VIDEO_LEASE_MS } from "../shared/page-message-validation.ts";
 
 /** Что MAIN-мир принимает по порту. */
-export type IncomingPageMessage = DescribeCandidatesQuery | PageCommand;
+export type IncomingPageMessage = DescribeCandidatesQuery | PageCommand | NextVideoCommand;
 
 /** Наибольший u32 (номера запросов и перемоток в протоколе — u32). */
 const MAX_U32 = 0xffff_ffff;
@@ -140,6 +141,16 @@ export function parseIncomingPageMessage(candidate: unknown): IncomingPageMessag
       const resume = parseEndResume(fields["resume"]);
       if (position === null || resume === null) return null;
       return { kind: "end_handoff", position, resume };
+    }
+    case "arm_next_video": {
+      const fields = exactObject(candidate, ["kind", "lease_ms"]);
+      if (fields === null || !isIntegerInRange(fields["lease_ms"], 1, MAX_NEXT_VIDEO_LEASE_MS)) return null;
+      return { kind: "arm_next_video", lease_ms: fields["lease_ms"] };
+    }
+    case "release_held_video": {
+      const fields = exactObject(candidate, ["kind", "element"]);
+      if (fields === null || !isIntegerInRange(fields["element"], 1, MAX_JSON_SAFE_INTEGER)) return null;
+      return { kind: "release_held_video", element: fields["element"] };
     }
     default:
       return null;

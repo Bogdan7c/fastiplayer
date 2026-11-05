@@ -157,11 +157,11 @@ describe("засыпание фона и хранилище", () => {
     const store = createMemoryTabModelStore();
     const before = modelOver(store);
     await before.recordSurvey(7, AD_PREROLL);
-    await before.noteHandoffRefused(7, { kind: "ad_playing" });
+    await before.noteHandoffRefused(7, { kind: "no_video" });
     const afterRestart = modelOver(store);
     assert.deepEqual(await afterRestart.mainVideoOf(7), { frame_id: 0, document: "doc-top", element: 1 });
     assert.equal(await afterRestart.isAdOn(7, { frame_id: 0, document: "doc-top", element: 2 }), true);
-    assert.deepEqual(await afterRestart.lastRefusalOf(7), { kind: "ad_playing" });
+    assert.deepEqual(await afterRestart.lastRefusalOf(7), { kind: "no_video" });
   });
 
   it("forgetTab стирает снимок и в памяти, и в хранилище", async () => {
@@ -247,12 +247,12 @@ describe("запись живёт только у открытых вкладо�
     const store = createMemoryTabModelStore();
     const model = modelOver(store);
     await model.recordSurvey(7, AD_PREROLL);
-    await model.noteHandoffRefused(7, { kind: "ad_playing" });
+    await model.noteHandoffRefused(7, { kind: "no_video" });
     await model.moveTab(7, 9);
     assert.deepEqual(await store.keys(), ["tabModel:9"]);
     const reborn = modelOver(store);
     assert.deepEqual(await reborn.mainVideoOf(9), { frame_id: 0, document: "doc-top", element: 1 });
-    assert.deepEqual(await reborn.lastRefusalOf(9), { kind: "ad_playing" });
+    assert.deepEqual(await reborn.lastRefusalOf(9), { kind: "no_video" });
     await model.noteHandoffRefused(7, { kind: "failed" });
     assert.deepEqual(await store.keys(), ["tabModel:9"], "старый номер не воскрес");
   });

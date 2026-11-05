@@ -219,6 +219,7 @@ describe("потолок записей журнала", () => {
     let listener: (message: unknown) => void = () => {};
     const relay = createContentRelay({
       sendToPage: () => {},
+      reportHeldVideo: () => Promise.resolve("release"),
       timers: { setTimeout: () => undefined, clearTimeout: () => {} },
       debugOnce: () => {},
       now: () => 0,

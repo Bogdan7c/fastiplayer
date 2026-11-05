@@ -63,7 +63,9 @@ export function setup(
   const sockets = recordSockets();
   const framePorts = recordFramePorts();
   const ended: HandoffSessionEnd[] = [];
+  const armings: { readonly tabId: number; readonly leaseMs: number }[] = [];
   let tabAlive = true;
+  let tabUrl = "https://www.example.com/watch?v=1";
   let surveyCount = 0;
   let tabExistsQuestions = 0;
   const storeFailures: unknown[] = [];
@@ -82,11 +84,12 @@ export function setup(
     scheduler: clock.scheduler,
     createWebSocket: sockets.create,
     connectFrame: framePorts.connect,
+    armNextVideo: (tabId, leaseMs) => void armings.push({ tabId, leaseMs }),
     executeInAllFrames: () => {
       surveyCount += 1;
       return Promise.resolve(frames);
     },
-    describeTab: () => Promise.resolve({ title: "Серія 3\nОзвучка", url: "https://www.example.com/watch?v=1" }),
+    describeTab: () => Promise.resolve(tabAlive ? { title: "Серія 3\nОзвучка", url: tabUrl } : undefined),
     tabExists: () => {
       tabExistsQuestions += 1;
       return Promise.resolve(tabAlive);
@@ -105,6 +108,7 @@ export function setup(
     sockets,
     framePorts,
     ended,
+    armings,
     sessionRules,
     settingFailures,
     handoffs,
@@ -114,6 +118,7 @@ export function setup(
     surveys: () => surveyCount,
     tabExistsQuestions: () => tabExistsQuestions,
     closeTab: () => void (tabAlive = false),
+    navigateTab: (url: string) => void (tabUrl = url),
   };
 }
 

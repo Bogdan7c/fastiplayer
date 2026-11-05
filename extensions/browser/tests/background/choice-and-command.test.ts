@@ -2,12 +2,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { describeFrameVideos, surveyTabVideos, type ExecuteInAllFrames } from "../../src/background/handoff/frame-survey.ts";
-import { createHandOffCommandListener, isOwnExtensionPage } from "../../src/background/handoff/hand-off-command.ts";
+import { createHandOffCommandListener, createHeldVideoListener, isOwnExtensionPage, type FrameSender } from "../../src/background/handoff/hand-off-command.ts";
 import { pageIdentityOf, siteDomainOf, UNKNOWN_SITE_DOMAIN } from "../../src/background/handoff/page-identity.ts";
 import { translatePlayerMessage } from "../../src/background/handoff/player-message-translator.ts";
-import { chooseVideo, classifySurvey } from "../../src/background/handoff/video-choice.ts";
+import { chooseMainVideo, chooseVideo, classifySurvey } from "../../src/background/handoff/video-choice.ts";
 import { VIDEO_FILTER_RULES } from "../../src/background/tab-model/video-filter-rules.ts";
-import type { HandOffTabOutcome, VideoCandidate } from "../../src/shared/handoff-contract.ts";
+import { HELD_VIDEO_REPORT_KIND, type HandOffTabOutcome, type VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import { VIDEO_CANDIDATES_FUNCTION_NAME } from "../../src/shared/video-candidates-probe.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 import { createFakeClock, flushPromises } from "./support.ts";
@@ -18,7 +18,12 @@ function video(element: number, overrides: Partial<VideoCandidate> = {}): VideoC
 
 /** Итог «передать этот элемент». */
 function handOff(frameId: number, document: string, element: number) {
-  return { kind: "hand_off", video: { frameId, document, element, frameHost: DEFAULT_CANDIDATE_FACTS.frame_host, fileHost: DEFAULT_CANDIDATE_FACTS.file_host } };
+  return { kind: "hand_off", video: { frameId, document, element, frameHost: DEFAULT_CANDIDATE_FACTS.frame_host, fileHost: DEFAULT_CANDIDATE_FACTS.file_host, role: "film", mayBeAd: false } };
+}
+
+/** Сеанс начинается на рекламе (решение 201): рекламный файл короткий, поэтому и `mayBeAd`. */
+function handedAd(frameId: number, element: number, fileHost: string) {
+  return { kind: "hand_off", video: { frameId, document: "doc-top", element, frameHost: DEFAULT_CANDIDATE_FACTS.frame_host, fileHost, role: "ad", mayBeAd: true } };
 }
 
 describe("выбор видео", () => {
@@ -124,19 +129,34 @@ describe("выбор видео", () => {
 describe("выбор видео: реклама, мусор, DRM, скрытые игроки (09c)", () => {
   const AD_FILE = { media: { kind: "file" } as const, file_host: "securepubads.g.doubleclick.net", duration_s: 15 };
 
-  it("играющая реклама-файл не побеждает фильм на паузе (преролл Tortuga/Ashdi)", () => {
-    const choice = chooseVideo([
-      { frameId: 0, candidates: [video(1, { visible_area_px: 400_000 }), video(2, { ...AD_FILE, playing: true, visible_area_px: 400_000 })] },
-    ]);
-    assert.deepEqual(choice, handOff(0, "doc-top", 1));
+  it("реклама на месте плеера уходит первой, но главным видео вкладки остаётся фильм (решение 201)", () => {
+    const frames = [{ frameId: 0, candidates: [video(1, { visible_area_px: 400_000 }), video(2, { ...AD_FILE, playing: true, visible_area_px: 400_000 })] }];
+    assert.deepEqual(chooseVideo(frames), handedAd(0, 2, AD_FILE.file_host));
+    assert.deepEqual(chooseMainVideo(frames), handOff(0, "doc-top", 1));
   });
 
-  it("реклама из iframe рекламного домена не побеждает фильм, даже если у неё MSE", () => {
-    const choice = chooseVideo([
+  it("реклама из iframe рекламного домена уходит первой и в другом фрейме, даже при MSE", () => {
+    const frames = [
       { frameId: 0, candidates: [video(1, { media: { kind: "file" }, visible_area_px: 400_000 })] },
-      { frameId: 3, candidates: [video(2, { document: "doc-ima", playing: true, frame_host: "imasdk.googleapis.com" })] },
-    ]);
-    assert.deepEqual(choice, handOff(0, "doc-top", 1));
+      { frameId: 3, candidates: [video(2, { document: "doc-ima", playing: true, frame_host: "imasdk.googleapis.com", visible_area_px: 400_000 })] },
+    ];
+    const choice = chooseVideo(frames);
+    assert.equal(choice.kind === "hand_off" ? choice.video.frameId : null, 3);
+    assert.equal(choice.kind === "hand_off" ? choice.video.role : null, "ad");
+  });
+
+  it("играющий фильм важнее рекламы рядом: это не преролл", () => {
+    const frames = [{ frameId: 0, candidates: [video(1, { playing: true, visible_area_px: 400_000 }), video(2, { ...AD_FILE, playing: true, visible_area_px: 400_000 })] }];
+    assert.deepEqual(chooseVideo(frames), handOff(0, "doc-top", 1));
+  });
+
+  it("одинокий беззвучный рекламный ролик на странице без плеера — баннер, передавать нечего", () => {
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [video(1, { ...AD_FILE, playing: true, muted: true, visible_area_px: 90_000 })] }]), { kind: "nothing" });
+  });
+
+  it("беззвучный рекламный баннер меньше половины фильма не считается рекламой на месте плеера", () => {
+    const banner = video(2, { ...AD_FILE, playing: true, muted: true, visible_area_px: 90_000 });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [video(1, { visible_area_px: 400_000 }), banner] }]), handOff(0, "doc-top", 1));
   });
 
   it("скрытый играющий не побеждает видимый на паузе (Ashdi, решение 68)", () => {
@@ -187,16 +207,16 @@ describe("выбор видео: реклама, мусор, DRM, скрытые
     assert.deepEqual(choice, handOff(0, "doc-top", 2));
   });
 
-  it("только играющая реклама, фильма нет — ad_playing; стоящая реклама — nothing", () => {
-    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [video(1, { ...AD_FILE, playing: true })] }]), { kind: "ad_playing" });
+  it("только играющая реклама, фильма нет — передача рекламы (решение 201); стоящая реклама — nothing", () => {
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [video(1, { ...AD_FILE, playing: true })] }]), handedAd(0, 1, AD_FILE.file_host));
     assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [video(1, { ...AD_FILE, playing: false })] }]), { kind: "nothing" });
   });
 
-  it("порядок отказов без главного: DRM, потом реклама, потом неподдержанная форма", () => {
+  it("при играющем защищённом видео реклама рядом не передаётся, неподдержанная форма не мешает рекламе", () => {
     const unsupported = video(3, { media: { kind: "unsupported", form: "native_hls" }, playing: true });
     const ad = video(2, { ...AD_FILE, playing: true });
     assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [unsupported, ad, video(1, { drm: true, playing: true })] }]), { kind: "protected" });
-    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [unsupported, ad] }]), { kind: "ad_playing" });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [unsupported, ad] }]), handedAd(0, 2, AD_FILE.file_host));
   });
 });
 
@@ -205,23 +225,25 @@ describe("выбор видео: преролл с неизвестного до
   const PLAYER_AREA = 296_000;
   const UNKNOWN_AD_HOST = "video.unknown-ad-cdn.example";
   /** Итог «файл не реклама, передаётся он». */
-  const keptFile = { kind: "hand_off", video: { frameId: 0, document: "doc-top", element: 2, frameHost: DEFAULT_CANDIDATE_FACTS.frame_host, fileHost: UNKNOWN_AD_HOST } };
+  const keptFile = { kind: "hand_off", video: { frameId: 0, document: "doc-top", element: 2, frameHost: DEFAULT_CANDIDATE_FACTS.frame_host, fileHost: UNKNOWN_AD_HOST, role: "film", mayBeAd: true } };
+  /** Итог «реклама на месте плеера»: сеанс начинается на ней. */
+  const keptAd = { kind: "hand_off", video: { ...keptFile.video, role: "ad", mayBeAd: true } };
   const preroll = (element: number, overrides: Partial<VideoCandidate> = {}) =>
     video(element, { media: { kind: "file" }, file_host: UNKNOWN_AD_HOST, playing: true, visible_area_px: PLAYER_AREA, duration_s: 24, ...overrides });
   const waitingFilm = (element: number, overrides: Partial<VideoCandidate> = {}) => video(element, { visible_area_px: PLAYER_AREA, duration_s: 6381, ...overrides });
   const emptySlot = (element: number, overrides: Partial<VideoCandidate> = {}) => video(element, { media: { kind: "none" }, visible_area_px: PLAYER_AREA, duration_s: null, ...overrides });
 
-  it("Ashdi: играет реклама-файл, рядом ждёт загруженный фильм — уходит фильм, а не реклама", () => {
-    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), preroll(2)] }]), handOff(0, "doc-top", 1));
+  it("Ashdi: играет реклама-файл, рядом ждёт загруженный фильм — сеанс начинается на рекламе (решение 201)", () => {
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), preroll(2)] }]), keptAd);
   });
 
-  it("Tortuga: играет реклама-файл, рядом пустой элемент той же площади — честный ad_playing", () => {
-    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [emptySlot(1), preroll(2)] }]), { kind: "ad_playing" });
+  it("Tortuga: играет реклама-файл, рядом пустой элемент той же площади — тоже передаётся реклама", () => {
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [emptySlot(1), preroll(2)] }]), keptAd);
   });
 
-  it("незапущенный адрес плейлиста той же площади — тоже пустой плеер: ad_playing", () => {
+  it("незапущенный адрес плейлиста той же площади — тоже пустой плеер: передаётся реклама", () => {
     const playlistSlot = emptySlot(1, { media: { kind: "unsupported", form: "native_hls" } });
-    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [playlistSlot, preroll(2)] }]), { kind: "ad_playing" });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [playlistSlot, preroll(2)] }]), keptAd);
   });
 
   it("играющий нативный HLS рядом с файлом — не пустой плеер, рекламы по соседству не видно", () => {
@@ -230,27 +252,27 @@ describe("выбор видео: преролл с неизвестного до
   });
 
   it("MediaSource без длительности тоже ждёт фильм", () => {
-    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1, { duration_s: null }), preroll(2)] }]), handOff(0, "doc-top", 1));
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1, { duration_s: null }), preroll(2)] }]), keptAd);
   });
 
-  it("беззвучный преролл — всё равно реклама, а не баннер: исход ad_playing, а не «видео нет»", () => {
-    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [emptySlot(1), preroll(2, { muted: true })] }]), { kind: "ad_playing" });
+  it("беззвучный преролл на месте плеера — всё равно реклама, а не баннер: передаётся", () => {
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [emptySlot(1), preroll(2, { muted: true })] }]), keptAd);
   });
 
   it("длинный файл рядом с ожидающим MSE остаётся видео (порог преролла, решение 8)", () => {
     const longFile = preroll(2, { duration_s: 181 });
-    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), longFile] }]), keptFile);
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), longFile] }]), { kind: "hand_off", video: { ...keptFile.video, mayBeAd: false } });
   });
 
   it("ролик ровно на пороге ещё преролл, порог берётся из правил, а не из кода", () => {
     const atLimit = preroll(2, { duration_s: 180 });
-    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), atLimit] }]), handOff(0, "doc-top", 1));
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), atLimit] }]), keptAd);
     const strict = { ...VIDEO_FILTER_RULES, prerollMaxSeconds: 20 };
-    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), preroll(2)] }], strict), keptFile);
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), preroll(2)] }], strict), { kind: "hand_off", video: { ...keptFile.video, mayBeAd: false } });
   });
 
   it("файл с неизвестной длительностью не считается прероллом: рано судить", () => {
-    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), preroll(2, { duration_s: null })] }]), keptFile);
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), preroll(2, { duration_s: null })] }]), { kind: "hand_off", video: { ...keptFile.video, mayBeAd: false } });
   });
 
   it("сосед MSE короче играющего файла — не фильм, файл остаётся видео", () => {
@@ -440,5 +462,38 @@ describe("страница для open_session и сообщения плеер�
       request: { request_id: 1, offset: 0, length: 10 },
     });
     assert.deepEqual(translatePlayerMessage({ type: "stream_rejected", generation: 1, reason: "unsupported_codec" }, undefined), { kind: "ignore" });
+  });
+});
+
+describe("донесение сторожа следующего видео (сессия 09c2)", () => {
+  const candidate = video(4, { playing: true, visible_area_px: 1_000 });
+  const report = { kind: HELD_VIDEO_REPORT_KIND, element: 4, candidates: [candidate] };
+  const contentSender = { id: "ext", tab: { id: 12 }, frameId: 3 };
+
+  function listen() {
+    const calls: [number, number][] = [];
+    const replies: string[] = [];
+    const listener = createHeldVideoListener("ext", (tabId, frameId) => {
+      calls.push([tabId, frameId]);
+      return "adopt";
+    });
+    return { calls, replies, send: (message: unknown, sender: FrameSender) => listener(message, sender, (reply) => void replies.push(reply)) };
+  }
+
+  it("вкладку и фрейм называет браузер; фон отвечает синхронно", () => {
+    const heard = listen();
+    assert.equal(heard.send(report, contentSender), false);
+    assert.deepEqual(heard.calls, [[12, 3]]);
+    assert.deepEqual(heard.replies, ["adopt"]);
+  });
+
+  it("чужой экстеншен, служебная страница без вкладки и мусор не проходят", () => {
+    const heard = listen();
+    heard.send(report, { ...contentSender, id: "other" });
+    heard.send(report, { id: "ext" });
+    heard.send({ ...report, extra: 1 }, contentSender);
+    heard.send({ ...report, candidates: [{ forged: true }] }, contentSender);
+    assert.deepEqual(heard.calls, []);
+    assert.deepEqual(heard.replies, []);
   });
 });

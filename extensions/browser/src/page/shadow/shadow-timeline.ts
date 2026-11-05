@@ -355,6 +355,24 @@ export class ShadowTimeline {
     return rateChanged;
   }
 
+  /**
+   * Тень поставлена на другой элемент, а плеер ещё показывает прошлое поколение: его часы несут чужую
+   * позицию и чужой `ended` (сессия 09c2). Держать свою позицию, пока он не признает новый источник.
+   * В отличие от `resetForNewSource`, страница ничего не сбрасывала: пауза и скорость остаются.
+   */
+  awaitPlayerOnNewSource(nowMs: number): void {
+    const targetUs = this.positionUs(nowMs);
+    this.#reanchor(nowMs);
+    this.#hold = {
+      kind: "source_reset",
+      targetUs,
+      landsAtEnd: false,
+      unconfirmedTicksLeft: MAX_UNCONFIRMED_TICKS,
+      startedAtMs: nowMs,
+      playerAcknowledgedNewSource: false,
+    };
+  }
+
   // -------------------------------------------------------------------------------------------
   // Внутреннее.
   // -------------------------------------------------------------------------------------------

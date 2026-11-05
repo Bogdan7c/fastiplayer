@@ -4,7 +4,7 @@
 import { HANDSHAKE_MESSAGE } from "../../../src/shared/page-channel-handshake.ts";
 import type { CandidatesReply, PageCommand, PageEvent, DescribeCandidatesQuery } from "../../../src/shared/handoff-contract.ts";
 import { startPageBridge, type PageBridge } from "../../../src/page/bridge.ts";
-import { captureShadowEnvironment, shadowStarterFor, type ShadowWindow } from "../../../src/page/shadow-assembly.ts";
+import { captureShadowEnvironment, heldShadowStarterFor, playWatchSeamFor, shadowStarterFor, type ShadowWindow } from "../../../src/page/shadow-assembly.ts";
 import { createFakePage, FakeShadow, type FakePage } from "./fake-page.ts";
 import type { WorkerHookSource } from "../../../src/page/worker-capture/index.ts";
 
@@ -15,12 +15,20 @@ export interface BridgeHarness {
   readonly debugLines: string[];
 }
 
+/** Сторож следующего видео без настоящей тени: в этих тестах его никто не взводит. */
+export const INACTIVE_NEXT_VIDEO_GUARD = {
+  startHeldShadow: heldShadowStarterFor(null),
+  playWatch: playWatchSeamFor(null),
+  now: () => 0,
+};
+
 export function startHarness(options: { memoryBudgetBytes?: number; page?: FakePage; workerHook?: WorkerHookSource } = {}): BridgeHarness {
   const page = options.page ?? createFakePage();
   const shadow = new FakeShadow();
   const debugLines: string[] = [];
   const bridge = startPageBridge(page.win, {
     startShadow: shadow.starter,
+    ...INACTIVE_NEXT_VIDEO_GUARD,
     debugSink: (line) => debugLines.push(line),
     ...(options.memoryBudgetBytes === undefined ? {} : { memoryBudgetBytes: options.memoryBudgetBytes }),
     ...(options.workerHook === undefined ? {} : { workerHook: options.workerHook }),
@@ -42,6 +50,9 @@ export function startRealShadowHarness(): RealShadowHarness {
   if (shadowEnvironment === null) throw new Error("the fake page cannot host the real shadow");
   const bridge = startPageBridge(page.win, {
     startShadow: shadowStarterFor(shadowEnvironment),
+    startHeldShadow: heldShadowStarterFor(shadowEnvironment),
+    playWatch: playWatchSeamFor(shadowEnvironment),
+    now: shadowEnvironment.now,
     debugSink: (line) => debugLines.push(line),
   });
   return { page, bridge, debugLines };

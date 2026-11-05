@@ -18,5 +18,6 @@
 // handoff_ended{element_released}.
 
 export { captureElementOriginals, type ElementOriginals } from "./originals.ts";
-export { startShadow, type ShadowEnvironment, type ShadowSession } from "./shadow-session.ts";
+export type { ShadowEnvironment } from "./shadow-session.ts";
+export { startHeldShadow, startShadow, type HeldShadowSession, type ShadowSession } from "./shadow-start.ts";
 export { installShadowOverrides } from "./prototype-overrides.ts";

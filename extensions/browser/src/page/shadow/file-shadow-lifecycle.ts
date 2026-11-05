@@ -101,6 +101,11 @@ export class FileShadowLifecycle {
     this.#host = host;
   }
 
+  /** Страница уже сменила атрибут `src`, хотя `emptied` ещё в пути (file-source-mode.ts). */
+  get pageRewroteSource(): boolean {
+    return this.#mode.pageRewroteSourceAttribute();
+  }
+
   /** Снимок файла — то, что видит страница. */
   get view(): FileSourceMode {
     return this.#mode;

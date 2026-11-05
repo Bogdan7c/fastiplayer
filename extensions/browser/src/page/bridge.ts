@@ -20,7 +20,8 @@ import { ProtectedMediaRelease } from "./protected-media-release.ts";
 import { captureRandomFill, createDocumentTag, type RandomWindow } from "./document-tag.ts";
 import { ElementRegistry, type RegistryWindow } from "./element-registry.ts";
 import { HandoffController } from "./handoff-controller.ts";
-import type { ShadowStarter } from "./handoff-seam.ts";
+import { NextVideoGuard } from "./next-video-guard.ts";
+import type { HeldShadowStarter, PlayWatchSeam, ShadowStarter } from "./handoff-seam.ts";
 import type { HandoffTap } from "./handoff-tap.ts";
 import { DocumentMemoryBudget, DOCUMENT_MEMORY_BUDGET_BYTES } from "./journal/memory-budget.ts";
 import { captureMediaSourceReaders } from "./media-source-readers.ts";
@@ -41,6 +42,11 @@ export interface PageBridgeWindow extends MseWindow, DomWindow, RegistryWindow, 
 export interface PageBridgeDependencies {
   /** Шов с тенью (собирает `main.ts`). */
   readonly startShadow: ShadowStarter;
+  /** Сторож следующего видео (сессия 09c2): тень на задержанном видео и шов с прототипами. */
+  readonly startHeldShadow: HeldShadowStarter;
+  readonly playWatch: PlayWatchSeam;
+  /** Монотонные часы окна, снятые на document_start, мс. */
+  readonly now: () => number;
   /** Отладочная запись (оригинальный `console.debug`). */
   readonly debugSink: DebugSink;
   /** Потолок памяти журнала на документ (по умолчанию — `DOCUMENT_MEMORY_BUDGET_BYTES`). */
@@ -97,7 +103,19 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
   // страница вызвала раньше нас, остался бы незамеченным.
   const drmMarks = new DrmMarks(win, dom, reportOddity);
   const candidates = new VideoCandidates(registry, tracker, dom, mediaSources, documentTag, reportOddity, workerMediaSources, drmMarks);
-  const controller = new HandoffController({
+  const nextVideo = new NextVideoGuard({
+    dom,
+    registry,
+    candidates,
+    startHeldShadow: dependencies.startHeldShadow,
+    seam: dependencies.playWatch,
+    isProtected: (element) => drmMarks.isProtected(element),
+    send: (event) => controller.sendToBackground(event),
+    now: dependencies.now,
+    reportOddity,
+    documentEvents: win,
+  });
+  const controller: HandoffController = new HandoffController({
     registry,
     candidates,
     dom,
@@ -107,6 +125,7 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
     workerMediaSources,
     reportOddity,
     protection: drmMarks,
+    nextVideo,
     ...(dependencies.handoffTap === undefined ? {} : { tap: dependencies.handoffTap }),
   });
   // Защищённый MediaSource отпускает журнал (память), а передаваемый элемент при DRM отдаётся странице.

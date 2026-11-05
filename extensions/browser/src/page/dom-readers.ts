@@ -37,6 +37,8 @@ export interface DomReaders {
   isPaused(element: object): boolean;
   isEnded(element: object): boolean;
   currentTimeSeconds(element: object): number;
+  /** `readyState` настоящего элемента (0 — метаданных ещё нет). */
+  readyStateOf(element: object): number;
   /** Выбранный источник настоящего элемента (`currentSrc`; "" — не выбран). */
   currentSrcOf(element: object): string;
   /** `srcObject` настоящего элемента (`null` — не задан или браузер его не знает). */
@@ -180,6 +182,7 @@ export function captureDomReaders(win: DomWindow): DomReaders {
   const currentSrc = findGetter(mediaPrototype, "currentSrc");
   const paused = findGetter(mediaPrototype, "paused");
   const ended = findGetter(mediaPrototype, "ended");
+  const readyState = findGetter(mediaPrototype, "readyState");
   const currentTime = findGetter(mediaPrototype, "currentTime");
   const srcObject = findOptionalGetter(mediaPrototype, "srcObject");
   const duration = findGetter(mediaPrototype, "duration");
@@ -227,6 +230,7 @@ export function captureDomReaders(win: DomWindow): DomReaders {
     },
     isPaused: (element) => paused(element) === true,
     isEnded: (element) => ended(element) === true,
+    readyStateOf: (element) => Number(readyState(element)),
     currentTimeSeconds: (element) => {
       const seconds = currentTime(element);
       return typeof seconds === "number" ? seconds : Number.NaN;

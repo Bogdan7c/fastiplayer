@@ -11,12 +11,13 @@
 // ролик (длительность неизвестна — последняя), затем форма (живой MediaSource выше файла по http(s)),
 // затем фрейм и порядок в документе. Форма только разрешает равенство: иначе беззвучный тизер на MSE
 // обгонял бы большой фильм-файл.
-// Реклама отдельным файлом, играющая при стоящем фильме, в пул не входит и фильм не обгоняет: в
-// плеер уходит ждущий фильм, а реклама доигрывает в браузере (форма Ashdi).
+// Реклама на месте плеера, пока фильм стоит, уходит в плеер первой (решение 201): сеанс начинается на
+// ней и потом переезжает на фильм (`video-relocation.ts`). Беззвучный баннер рядом с фильмом рекламой
+// на месте плеера не считается: баннер не всегда зациклен, поэтому у беззвучного решает ещё и площадь.
 //
-// Если главного нет, исход по оставшимся: видимый или играющий под DRM → `protected`; играющая
-// реклама → `ad_playing`; видимая или играющая неподдержанная форма → `not_supported_yet` с формой
-// (решение 185); иначе `nothing`. DRM-видео не мешает передать другой `main` на той же странице.
+// Если главного нет, исход по оставшимся: видимый или играющий под DRM → `protected`; видимая или
+// играющая неподдержанная форма → `not_supported_yet` с формой (решение 185); иначе `nothing`.
+// DRM-видео не мешает передать другой `main` на той же странице.
 
 import type { CandidateMedia, DocumentTag, ElementKey, UnsupportedMediaForm, VideoCandidate } from "../../shared/handoff-contract.ts";
 import { VIDEO_FILTER_RULES, type VideoFilterRules } from "../tab-model/video-filter-rules.ts";
@@ -40,15 +41,23 @@ export interface ChosenVideo {
   /** Хост документа с элементом и хост файла (`null` — не файл): для проверки адреса (решение 199). */
   readonly frameHost: string;
   readonly fileHost: string | null;
+  /** Что сейчас на экране: реклама или фильм. Признак уходит сеансу и переживает переезд (решение 204). */
+  readonly role: VideoRole;
+  /**
+   * Короткий файл с вердиктом «фильм» ещё может оказаться рекламой: преролл в своём фрейме на незнакомом
+   * домене соседей не имеет. Сторож взводится заранее, а переезд откроется, только когда ролик кончится.
+   */
+  readonly mayBeAd: boolean;
 }
+
+/** Что на экране плеера. */
+export type VideoRole = "ad" | "film";
 
 /** Итог выбора. */
 export type VideoChoice =
   | { readonly kind: "hand_off"; readonly video: ChosenVideo }
   /** Главного нет, лучшее видео вкладки под DRM: не трогаем. */
   | { readonly kind: "protected" }
-  /** Главного нет, играет только отдельный рекламный ролик (фильма ещё нет, до 09c2). */
-  | { readonly kind: "ad_playing" }
   /** Передать нечего, но видео есть в неподдержанной форме. */
   | { readonly kind: "not_supported_yet"; readonly form: UnsupportedMediaForm }
   | { readonly kind: "nothing" };
@@ -96,22 +105,58 @@ export function classifySurvey(frames: readonly FrameCandidates[], rules: VideoF
 /** Выбор по правилу. Детерминирован и не зависит от порядка ответов фреймов. */
 export function chooseVideo(frames: readonly FrameCandidates[], rules: VideoFilterRules = VIDEO_FILTER_RULES): VideoChoice {
   const classified = classifySurvey(frames, rules);
-  const mains = classified.filter((entry) => entry.verdict === "main");
-  const handable = mains.filter((entry) => HANDOFF_FORMS.includes(entry.candidate.media.kind));
+  const ad = adInPlayerPlace(classified, handableMains(classified));
+  return ad === undefined ? chooseMainVideo(frames, rules) : { kind: "hand_off", video: chosenVideoOf(ad, rules) };
+}
+
+/** Передаваемые видео с вердиктом «главное». */
+function handableMains(classified: readonly ClassifiedVideo[]): ClassifiedVideo[] {
+  return classified.filter((entry) => entry.verdict === "main" && HANDOFF_FORMS.includes(entry.candidate.media.kind));
+}
+
+/**
+ * Главное видео вкладки: то, ради чего человек пришёл, даже пока на месте плеера идёт реклама. Его
+ * показывает модель вкладки (попап 10), а `chooseVideo` отвечает на другой вопрос: что передать сейчас.
+ */
+export function chooseMainVideo(frames: readonly FrameCandidates[], rules: VideoFilterRules = VIDEO_FILTER_RULES): VideoChoice {
+  const classified = classifySurvey(frames, rules);
+  const handable = handableMains(classified);
   for (const pass of PLAYBACK_PASSES) {
     const best = bestOf(handable.filter((entry) => admits(pass, entry.candidate)));
-    if (best !== undefined) {
-      const { document, element, frame_host: frameHost, file_host: fileHost } = best.candidate;
-      return { kind: "hand_off", video: { frameId: best.frameId, document, element, frameHost, fileHost } };
-    }
+    if (best !== undefined) return { kind: "hand_off", video: chosenVideoOf(best, rules) };
   }
   return choiceWithoutMain(classified);
 }
 
-/** Главного видео нет: какой честный отказ дать по остальным (порядок: DRM, реклама, неподдержанное). */
+/** Выбранное видео из записи опроса. Единственное место, где собирается `ChosenVideo`. */
+export function chosenVideoOf(entry: ClassifiedVideo, rules: VideoFilterRules = VIDEO_FILTER_RULES): ChosenVideo {
+  const { document, element, frame_host: frameHost, file_host: fileHost, duration_s: durationSeconds } = entry.candidate;
+  const isShortFile = entry.candidate.media.kind === "file" && durationSeconds !== null && durationSeconds <= rules.prerollMaxSeconds;
+  return { frameId: entry.frameId, document, element, frameHost, fileHost, role: entry.verdict === "ad" ? "ad" : "film", mayBeAd: isShortFile };
+}
+
+/**
+ * Реклама на месте плеера: играет, видна, не зациклена, передаваемой формы, а фильм не играет. Со звуком
+ * это точно не баннер. Беззвучная (автозапуск без звука) должна занимать хотя бы половину площади плеера:
+ * одинокий беззвучный рекламный ролик на странице без плеера — баннер, передавать его незачем.
+ */
+function adInPlayerPlace(classified: readonly ClassifiedVideo[], handable: readonly ClassifiedVideo[]): ClassifiedVideo | undefined {
+  if (handable.some((entry) => entry.candidate.playing && entry.candidate.visible_area_px > 0)) return undefined;
+  // Играет защищённое видео: это оно на месте плеера, а реклама рядом ему не преролл.
+  if (classified.some((entry) => entry.verdict === "protected" && entry.candidate.playing)) return undefined;
+  // Площадь плеера: фильм или пустой элемент, ждущий его. Реклама сама себе плеером не считается.
+  const playerArea = Math.max(0, ...classified.filter((entry) => entry.verdict !== "ad").map((entry) => entry.candidate.visible_area_px));
+  const inPlace = classified.filter(({ verdict, candidate }) => {
+    if (verdict !== "ad" || !candidate.playing || candidate.loop || candidate.visible_area_px === 0) return false;
+    if (!HANDOFF_FORMS.includes(candidate.media.kind)) return false;
+    return !candidate.muted || (playerArea > 0 && candidate.visible_area_px >= playerArea / 2);
+  });
+  return bestOf(inPlace);
+}
+
+/** Главного видео нет: какой честный отказ дать по остальным (порядок: DRM, неподдержанное). */
 function choiceWithoutMain(classified: readonly ClassifiedVideo[]): VideoChoice {
   if (mostNoticeable(classified.filter((entry) => entry.verdict === "protected")) !== undefined) return { kind: "protected" };
-  if (classified.some((entry) => entry.verdict === "ad" && entry.candidate.playing)) return { kind: "ad_playing" };
   const unsupported = mostNoticeable(classified.filter((entry) => entry.verdict === "unsupported"));
   if (unsupported !== undefined && unsupported.candidate.media.kind === "unsupported") {
     return { kind: "not_supported_yet", form: unsupported.candidate.media.form };

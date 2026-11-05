@@ -301,6 +301,8 @@ export function createFakeMediaDom() {
      * этот канал теряет — как у Firefox.
      */
     #documentChannelUrl: string | null = null;
+    /** Настоящие обещания `play()`, ждущие данных: их отвергает `pause()`. */
+    readonly #playsAwaitingData: ((reason: unknown) => void)[] = [];
     readonly frameCallbacks = new Map<number, unknown>();
     nextFrameHandle = 1;
 
@@ -422,10 +424,13 @@ export function createFakeMediaDom() {
         this.fireTrusted("play");
         this.fireTrusted("playing");
       }
+      // Метаданных нет: как у браузера, обещание ждёт данных, а `pause()` отвергнет его.
+      if (this.real.readyState === 0) return new Promise((_resolve, reject) => void this.#playsAwaitingData.push(reject));
       return Promise.resolve();
     }
     pause(): void {
       this.realCalls.push({ kind: "pause" });
+      for (const reject of this.#playsAwaitingData.splice(0)) reject(new DOMException("The play() request was interrupted.", "AbortError"));
       if (this.real.paused) return;
       this.real.paused = true;
       this.fireTrusted("timeupdate");

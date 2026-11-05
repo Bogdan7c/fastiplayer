@@ -7,6 +7,8 @@ import {
   MAX_VIDEO_CANDIDATES_PER_DOCUMENT,
   parseCandidatesReply,
   parsePageEvent,
+  MAX_NEXT_VIDEO_LEASE_MS,
+  parseArmNextVideoRequest,
 } from "../../src/shared/page-message-validation.ts";
 
 const MP4 = 'video/mp4; codecs="avc1.42c00a"';
@@ -249,5 +251,24 @@ describe("referrer_origin в file_source (решение 202)", () => {
   it("причина конца page_flood — часть договора, незнакомая причина — мусор", () => {
     assert.deepEqual(parsePageEvent({ kind: "handoff_ended", cause: "page_flood" }), { kind: "handoff_ended", cause: "page_flood" });
     assert.equal(parsePageEvent({ kind: "handoff_ended", cause: "flood" }), undefined);
+  });
+});
+
+describe("сообщения сторожа следующего видео (сессия 09c2)", () => {
+  const candidate = { ...DEFAULT_CANDIDATE_FACTS, document: "doc-a", element: 4, media: { kind: "none" }, playing: true, visible_area_px: 1 };
+
+  it("`next_video_held`: строгая форма, кандидаты проверяются как при опросе", () => {
+    assert.ok(parsePageEvent({ kind: "next_video_held", element: 4, candidates: [candidate] }) !== undefined);
+    assert.equal(parsePageEvent({ kind: "next_video_held", element: 4, candidates: [candidate], extra: 1 }), undefined);
+    assert.equal(parsePageEvent({ kind: "next_video_held", element: -1, candidates: [candidate] }), undefined);
+    assert.equal(parsePageEvent({ kind: "next_video_held", element: 4, candidates: [{ forged: true }] }), undefined);
+  });
+
+  it("взвод: только целые миллисекунды в пределах договора", () => {
+    assert.deepEqual(parseArmNextVideoRequest({ kind: "arm_next_video", lease_ms: 3_000 }), { kind: "arm_next_video", lease_ms: 3_000 });
+    assert.equal(parseArmNextVideoRequest({ kind: "arm_next_video", lease_ms: 0 }), undefined);
+    assert.equal(parseArmNextVideoRequest({ kind: "arm_next_video", lease_ms: MAX_NEXT_VIDEO_LEASE_MS + 1 }), undefined);
+    assert.equal(parseArmNextVideoRequest({ kind: "arm_next_video", lease_ms: 1.5 }), undefined);
+    assert.equal(parseArmNextVideoRequest({ kind: "other", lease_ms: 1 }), undefined);
   });
 });

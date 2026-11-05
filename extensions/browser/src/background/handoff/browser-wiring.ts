@@ -2,13 +2,13 @@
 // Вся логика — в модулях этой папки; здесь только переходники к браузеру.
 
 import { browserApi } from "../../shared/browser-api.ts";
-import { HANDOFF_PORT_NAME, type PageCommand } from "../../shared/handoff-contract.ts";
+import { ARM_NEXT_VIDEO_KIND, HANDOFF_PORT_NAME, type ArmNextVideoRequest, type PageCommand } from "../../shared/handoff-contract.ts";
 import { readLocalAddressSetting } from "../../shared/local-address-setting.ts";
 import type { Scheduler } from "../host-link/native-port.ts";
 import type { FramePort } from "./frame-port.ts";
 import type { ExecuteInAllFrames } from "./frame-survey.ts";
 import { createFileReferrerRules } from "./file-referrer-rule.ts";
-import { createHandOffCommandListener } from "./hand-off-command.ts";
+import { createHandOffCommandListener, createHeldVideoListener } from "./hand-off-command.ts";
 import type { SessionDoor } from "./handoff-session.ts";
 import { createLocalAddressBlock, localAddressBlockRules } from "./local-address-block-rules.ts";
 import { createSessionRules, type SessionRulesApi } from "./session-rules.ts";
@@ -51,6 +51,15 @@ function connectFrame(tabId: number, frameId: number): FramePort {
 }
 
 /**
+ * Взвести сторож следующего видео: без `frameId` сообщение получают все фреймы вкладки. Фрейма без
+ * нашего скрипта или закрытой вкладки достаточно для отказа промиса: следующее продление попробует снова.
+ */
+function armNextVideo(tabId: number, leaseMs: number): void {
+  const request: ArmNextVideoRequest = { kind: ARM_NEXT_VIDEO_KIND, lease_ms: leaseMs };
+  browserApi.tabs.sendMessage(tabId, request).catch(() => {});
+}
+
+/**
  * Сессионные правила браузера. Форма наших правил уже проверена типами модуля, браузер хочет свои
  * перечисления; в Firefox и Chrome это те же строки. API нет — вызов бросит, модуль это переживает.
  */
@@ -77,6 +86,7 @@ export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabM
     scheduler,
     createWebSocket: (url) => new WebSocket(url) as unknown as SessionWebSocket,
     connectFrame,
+    armNextVideo,
     executeInAllFrames,
     tabModel,
     tabExists: (tabId) => browserApi.tabs.get(tabId).then(() => true, () => false),
@@ -103,6 +113,9 @@ export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabM
       { extensionId: browserApi.runtime.id, extensionBaseUrl: browserApi.runtime.getURL("") },
       (tabId, consent) => handoffs.handOffTab(tabId, consent),
     ),
+  );
+  browserApi.runtime.onMessage.addListener(
+    createHeldVideoListener(browserApi.runtime.id, (tabId, frameId, report) => handoffs.heldVideo(tabId, frameId, report)),
   );
   browserApi.tabs.onRemoved.addListener((tabId) => {
     handoffs.tabRemoved(tabId);

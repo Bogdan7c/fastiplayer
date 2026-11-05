@@ -5,7 +5,7 @@
 // только через методы модели (tab-model.ts), а не напрямую.
 
 import type { CandidateMedia, DocumentTag, ElementKey, UnsupportedMediaForm, VideoCandidate } from "../../shared/handoff-contract.ts";
-import { chooseVideo, classifySurvey, type ClassifiedVideo, type FrameCandidates } from "../handoff/video-choice.ts";
+import { chooseMainVideo, classifySurvey, type ClassifiedVideo, type FrameCandidates } from "../handoff/video-choice.ts";
 import type { VideoVerdict } from "./video-verdict.ts";
 
 /**
@@ -36,7 +36,6 @@ export type TabRefusal =
   | { readonly kind: "no_video" }
   | { readonly kind: "not_supported_yet"; readonly form: UnsupportedMediaForm }
   | { readonly kind: "protected" }
-  | { readonly kind: "ad_playing" }
   | { readonly kind: "local_address_refused" }
   | { readonly kind: "local_address_needs_consent"; readonly host: string }
   | { readonly kind: "player_unavailable" }
@@ -51,7 +50,6 @@ const REFUSAL_KINDS: readonly TabRefusal["kind"][] = [
   "no_video",
   "not_supported_yet",
   "protected",
-  "ad_playing",
   "local_address_refused",
   "local_address_needs_consent",
   "player_unavailable",
@@ -112,7 +110,7 @@ function rankForTail(records: readonly TabVideoRecord[], main: VideoRef | null):
 /** Снимок из свежего опроса. Отказ сбрасывается: он относился к прошлой попытке. */
 export function buildSnapshot(tabId: number, frames: readonly FrameCandidates[], surveyedAtMs: number): TabSnapshot {
   const records = classifySurvey(frames).map(toRecord);
-  const choice = chooseVideo(frames);
+  const choice = chooseMainVideo(frames);
   const main: VideoRef | null =
     choice.kind === "hand_off" ? { frame_id: choice.video.frameId, document: choice.video.document, element: choice.video.element } : null;
   const kept = rankForTail(records, main).slice(0, MAX_TAB_VIDEO_RECORDS);

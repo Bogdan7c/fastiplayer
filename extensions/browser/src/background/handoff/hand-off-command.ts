@@ -10,8 +10,8 @@
 // вкладке (её открывает робот стенда; страница настроек тоже открывается во вкладке), остаётся
 // страницей экстеншена — её адрес начинается с адреса экстеншена.
 
-import { HAND_OFF_TAB_KIND, type HandOffTabOutcome, type HandOffTabRequest } from "../../shared/handoff-contract.ts";
-import { isHostName } from "../../shared/page-message-validation.ts";
+import { HAND_OFF_TAB_KIND, type HandOffTabOutcome, type HandOffTabRequest, type HeldVideoReply, type HeldVideoReport } from "../../shared/handoff-contract.ts";
+import { isHostName, parseHeldVideoReport } from "../../shared/page-message-validation.ts";
 import { NO_LOCAL_ADDRESS_CONSENT, type LocalAddressConsent } from "./file-address-guard.ts";
 
 /** Отправитель сообщения (runtime.MessageSender) в той мере, в какой он нужен проверке. */
@@ -59,6 +59,30 @@ export function parseHandOffTabRequest(message: unknown): HandOffTabRequest | un
   if (!valid) return undefined;
   const request = { kind: HAND_OFF_TAB_KIND, tab_id: tabId as number } as const;
   return hasConsent ? { ...request, consented_local_host: consentedHost as string } : request;
+}
+
+/** Отправитель донесения из контент-скрипта: вкладку и фрейм называет браузер, а не страница. */
+export interface FrameSender extends CommandSender {
+  readonly tab?: { readonly id?: number | undefined } | undefined;
+  readonly frameId?: number | undefined;
+}
+
+/**
+ * Слушатель донесений сторожа следующего видео. Принимаем только свой контент-скрипт. Страница сайта
+ * `runtime`-сообщений слать не может, а её данные в донесении проверяются заново.
+ */
+export function createHeldVideoListener(
+  extensionId: string,
+  onHeld: (tabId: number, frameId: number, report: HeldVideoReport) => HeldVideoReply,
+): (message: unknown, sender: FrameSender, sendResponse: (reply: HeldVideoReply) => void) => boolean {
+  return (message, sender, sendResponse) => {
+    const tabId = sender.tab?.id;
+    if (sender.id !== extensionId || tabId === undefined || sender.frameId === undefined) return false;
+    const report = parseHeldVideoReport(message);
+    if (report === undefined) return false;
+    sendResponse(onHeld(tabId, sender.frameId, report));
+    return false;
+  };
 }
 
 /** Слушатель runtime.onMessage: true — ответ придёт асинхронно (sendResponse позже). */

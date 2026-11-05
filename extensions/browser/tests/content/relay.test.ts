@@ -1,10 +1,11 @@
 // Изолированный мир: рукопожатие с MAIN-миром, пограничник (отказ мусору), пересылка в обе стороны,
 // выбор кандидатов с таймаутом, страховка тени при пропаже фона.
+import type { HeldVideoReply, HeldVideoReport } from "../../src/shared/handoff-contract.ts";
 import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
 import { describe, it } from "node:test";
 import { adoptPageValue, openPageChannel, type PageChannelPort } from "../../src/content/page-channel.ts";
-import { createContentRelay, DESCRIBE_CANDIDATES_TIMEOUT_MS, exactBytes, type BackgroundPort } from "../../src/content/relay.ts";
+import { createContentRelay, DESCRIBE_CANDIDATES_TIMEOUT_MS, exactBytes, HELD_VIDEO_REPLY_TIMEOUT_MS, HELD_VIDEO_REPORTS_PER_SECOND, type BackgroundPort } from "../../src/content/relay.ts";
 import { JOURNAL_REPLAY_EVENT_CREDIT, PAGE_EVENT_LIMITS_PER_SECOND, type PageEventBudgetParameters } from "../../src/content/page-event-budget.ts";
 import type { PageCommand } from "../../src/shared/handoff-contract.ts";
 import { HANDSHAKE_MARKER_FIELD, HANDSHAKE_VERSION, PAGE_CHANNEL_READY_EVENT } from "../../src/shared/page-channel-handshake.ts";
@@ -42,15 +43,21 @@ function setupRelay(budgetLimits?: Omit<PageEventBudgetParameters, "now">) {
   const clock = createFakeClock();
   const toPage: unknown[] = [];
   const debugLines: string[] = [];
+  const heldReports: HeldVideoReport[] = [];
+  let heldReply: () => Promise<HeldVideoReply> = () => Promise.resolve("adopt");
   const relay = createContentRelay({
     sendToPage: (message) => void toPage.push(message),
+    reportHeldVideo: (report) => {
+      heldReports.push(report);
+      return heldReply();
+    },
     timers: { setTimeout: (callback, delayMs) => clock.scheduler.setTimeout(callback, delayMs), clearTimeout: (handle) => clock.scheduler.clearTimeout(handle) },
     debugOnce: (line) => void debugLines.push(line),
     now: () => clock.scheduler.now(),
     ownDocument: () => ownDocument,
     ...(budgetLimits === undefined ? {} : { budgetLimits }),
   });
-  return { clock, relay, toPage, debugLines };
+  return { clock, relay, toPage, debugLines, heldReports, answerHeldWith: (answer: () => Promise<HeldVideoReply>) => void (heldReply = answer) };
 }
 
 /** Фон начал передачу `requestId`, MAIN-мир ответил «начал». */
@@ -426,5 +433,100 @@ describe("документ говорит о себе сам", () => {
     assert.deepEqual(port.received.at(-1), { kind: "file_source", url, referrer_origin: ownDocument.origin, referrer_policy: "strict-origin-when-cross-origin" });
     relay.handlePageMessage({ kind: "file_source", url, referrer_origin: null, referrer_policy: "no-referrer" });
     assert.deepEqual(port.received.at(-1), { kind: "file_source", url, referrer_origin: null, referrer_policy: "no-referrer" });
+  });
+});
+
+describe("сторож следующего видео: граница с фоном (сессия 09c2)", () => {
+  const heldEvent = { kind: "next_video_held", element: 4, candidates: [{ ...DEFAULT_CANDIDATE_FACTS, document: "doc-a", element: 4, media: { kind: "none" }, playing: true, visible_area_px: 1, frame_host: "forged.example" }] };
+  const release = { kind: "release_held_video", element: 4 };
+
+  it("взвод доходит до MAIN-мира; донесение идёт к фону с хостом, прочитанным здесь, а не страницей", async () => {
+    const { relay, toPage, heldReports } = setupRelay();
+    relay.armNextVideo(3_000);
+    assert.deepEqual(toPage, [{ kind: "arm_next_video", lease_ms: 3_000 }]);
+    relay.handlePageMessage(heldEvent);
+    await Promise.resolve();
+    assert.equal(heldReports.length, 1);
+    assert.equal(heldReports[0]?.candidates[0]?.frame_host, ownDocument.hostname);
+  });
+
+  it("без взвода страница не может разбудить фон: донесения нет, видео отпускается", () => {
+    const { relay, toPage, heldReports } = setupRelay();
+    relay.handlePageMessage(heldEvent);
+    assert.deepEqual(heldReports, []);
+    assert.deepEqual(toPage, [release]);
+  });
+
+  it("срок взвода вышел: то же самое", () => {
+    const { relay, clock, toPage, heldReports } = setupRelay();
+    relay.armNextVideo(3_000);
+    clock.advance(3_000);
+    toPage.length = 0;
+    relay.handlePageMessage(heldEvent);
+    assert.deepEqual(heldReports, []);
+    assert.deepEqual(toPage, [release]);
+  });
+
+  it("страница молотит `play()`: сверх лимита фон не тревожится", () => {
+    const { relay, heldReports } = setupRelay();
+    relay.armNextVideo(3_000);
+    for (let attempt = 0; attempt < HELD_VIDEO_REPORTS_PER_SECOND * 3; attempt += 1) relay.handlePageMessage(heldEvent);
+    assert.equal(heldReports.length, HELD_VIDEO_REPORTS_PER_SECOND);
+  });
+
+  it("фон сказал «берём» — видео остаётся под тенью; «нет» — отпускается", async () => {
+    const adopted = setupRelay();
+    adopted.relay.armNextVideo(3_000);
+    adopted.toPage.length = 0;
+    adopted.relay.handlePageMessage(heldEvent);
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(adopted.toPage, []);
+    const refused = setupRelay();
+    refused.answerHeldWith(() => Promise.resolve("release"));
+    refused.relay.armNextVideo(3_000);
+    refused.toPage.length = 0;
+    refused.relay.handlePageMessage(heldEvent);
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(refused.toPage, [release]);
+  });
+
+  it("ответа нет совсем (`undefined`): видео отпускается, а «берём» без `begin_handoff` страхуется сроком", async () => {
+    const noReply = setupRelay();
+    noReply.answerHeldWith(() => Promise.resolve(undefined as unknown as HeldVideoReply));
+    noReply.relay.armNextVideo(3_000);
+    noReply.toPage.length = 0;
+    noReply.relay.handlePageMessage(heldEvent);
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(noReply.toPage, [release]);
+    const adopted = setupRelay();
+    adopted.relay.armNextVideo(3_000);
+    adopted.toPage.length = 0;
+    adopted.relay.handlePageMessage(heldEvent);
+    await Promise.resolve();
+    await Promise.resolve();
+    adopted.clock.advance(HELD_VIDEO_REPLY_TIMEOUT_MS);
+    assert.deepEqual(adopted.toPage, [release], "если фон всё же начал передачу, команда для забранного видео ничего не значит");
+  });
+
+  it("фон молчит или недоступен: страница не остаётся с молчащим видео", async () => {
+    const silent = setupRelay();
+    silent.answerHeldWith(() => new Promise(() => {}));
+    silent.relay.armNextVideo(3_000);
+    silent.toPage.length = 0;
+    silent.relay.handlePageMessage(heldEvent);
+    assert.deepEqual(silent.toPage, []);
+    silent.clock.advance(HELD_VIDEO_REPLY_TIMEOUT_MS);
+    assert.deepEqual(silent.toPage, [release]);
+    const failed = setupRelay();
+    failed.answerHeldWith(() => Promise.reject(new Error("no receiver")));
+    failed.relay.armNextVideo(3_000);
+    failed.toPage.length = 0;
+    failed.relay.handlePageMessage(heldEvent);
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(failed.toPage, [release]);
   });
 });

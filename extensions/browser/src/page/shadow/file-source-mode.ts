@@ -80,6 +80,8 @@ interface FileSnapshot {
   readonly videoHeight: number;
   readonly currentSrc: string;
   readonly declaration: FileSourceDeclaration;
+  /** Атрибут `src` в момент снимка: его смена страницей видна сразу, без ожидания `emptied`. */
+  readonly sourceAttribute: string | null;
   readonly ranges: () => TimeRangesShape;
   readonly ownEmptiedPending: number;
 }
@@ -92,6 +94,7 @@ export class FileSourceMode implements ShadowSourceView {
   readonly #videoHeight: number;
   readonly #currentSrc: string;
   readonly #declaration: FileSourceDeclaration;
+  readonly #sourceAttribute: string | null;
   readonly #ranges: () => TimeRangesShape;
   /** На настоящем элементе стоит наш пустой MediaStream. */
   #ownsRealSource = false;
@@ -109,6 +112,7 @@ export class FileSourceMode implements ShadowSourceView {
       videoHeight: video.videoHeight === undefined ? 0 : Number(readOriginal(video.videoHeight, element)),
       currentSrc: media.currentSrc === undefined ? "" : String(readOriginal(media.currentSrc, element)),
       declaration: hasSourceDeclaredInMarkup(element, originals) ? "markup" : "outside_markup",
+      sourceAttribute: sourceAttributeOf(element, originals),
       ranges: captureWholeFileRanges(element, originals, durationSeconds),
       ownEmptiedPending: 0,
     });
@@ -128,6 +132,7 @@ export class FileSourceMode implements ShadowSourceView {
       videoHeight: previous.#videoHeight,
       currentSrc: previous.#currentSrc,
       declaration: previous.#declaration,
+      sourceAttribute: previous.#sourceAttribute,
       ranges: previous.#ranges,
       ownEmptiedPending: previous.#ownEmptiedPending,
     });
@@ -141,6 +146,7 @@ export class FileSourceMode implements ShadowSourceView {
     this.#videoHeight = snapshot.videoHeight;
     this.#currentSrc = snapshot.currentSrc;
     this.#declaration = snapshot.declaration;
+    this.#sourceAttribute = snapshot.sourceAttribute;
     this.#ranges = snapshot.ranges;
     this.#ownEmptiedPending = snapshot.ownEmptiedPending;
   }
@@ -206,6 +212,15 @@ export class FileSourceMode implements ShadowSourceView {
     this.#ownsRealSource = false;
   }
 
+  /**
+   * Страница уже переписала атрибут `src`. `setAttribute` идёт мимо наших переопределений, а `emptied`
+   * придёт только следующей задачей: Tortuga в цепочке рекламы зовёт `setAttribute` и `play()` подряд,
+   * и без этой проверки `play()` достался бы старому ролику (сессия 09c2).
+   */
+  pageRewroteSourceAttribute(): boolean {
+    return sourceAttributeOf(this.#element, this.#originals) !== this.#sourceAttribute;
+  }
+
   /** Разобрать доверенное `emptied` настоящего элемента. */
   classifyEmptied(): EmptiedOrigin {
     if (this.#ownEmptiedPending === 0) return "page_source_change";
@@ -259,4 +274,11 @@ export class FileSourceMode implements ShadowSourceView {
     if (willFireEmptied) this.#ownEmptiedPending += 1;
     callOriginal(this.#originals.media.pause, this.#element);
   }
+}
+
+/** Атрибут `src` оригинальным `getAttribute`; без него (не бывает в живых браузерах) — `null`. */
+function sourceAttributeOf(element: HTMLMediaElement, originals: ElementOriginals): string | null {
+  if (originals.getAttribute === undefined) return null;
+  const attribute = callOriginal(originals.getAttribute, element, ["src"]);
+  return typeof attribute === "string" ? attribute : null;
 }

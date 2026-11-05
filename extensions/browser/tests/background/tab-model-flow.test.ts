@@ -25,21 +25,22 @@ describe("отказы без сеанса: плеер не будится", () 
     assert.equal((await world.tabModel.videosFoundIn(TAB))[0]?.verdict, "protected");
   });
 
-  it("играет только рекламный ролик — ad_playing без сеанса, видно через isAdOn", async () => {
+  it("играет только рекламный ролик — сеанс открывается на нём, модель видит рекламу (решение 201)", async () => {
     const ad = video(1, { media: { kind: "file" }, file_host: "x.doubleclick.net" });
     const world = setup([{ frameId: 0, result: [ad] }]);
-    assert.deepEqual(await world.handoffs.handOffTab(TAB), { kind: "ad_playing" });
-    assert.equal(world.door.requests.length, 0);
-    assert.deepEqual(await world.tabModel.lastRefusalOf(TAB), { kind: "ad_playing" });
+    void world.handoffs.handOffTab(TAB);
+    await flushPromises();
+    assert.equal(world.door.requests.length, 1, "плеер разбужен");
     assert.equal(await world.tabModel.isAdOn(TAB, { frame_id: 0, document: ad.document, element: 1 }), true);
   });
 
-  it("преролл с неизвестного домена рядом с пустым плеером — ad_playing без сеанса (Tortuga)", async () => {
+  it("преролл с неизвестного домена рядом с пустым плеером — сеанс на рекламе, главного видео ещё нет (Tortuga)", async () => {
     const preroll = video(2, { media: { kind: "file" }, file_host: "video.unknown-ad-cdn.example", duration_s: 30 });
     const emptySlot = video(1, { media: { kind: "none" }, playing: false, duration_s: null });
     const world = setup([{ frameId: 0, result: [emptySlot, preroll] }]);
-    assert.deepEqual(await world.handoffs.handOffTab(TAB), { kind: "ad_playing" });
-    assert.equal(world.door.requests.length, 0, "плеер не разбужен рекламой");
+    void world.handoffs.handOffTab(TAB);
+    await flushPromises();
+    assert.equal(world.door.requests.length, 1, "плеер разбужен");
     assert.equal(await world.tabModel.isAdOn(TAB, { frame_id: 0, document: preroll.document, element: 2 }), true);
     assert.equal(await world.tabModel.mainVideoOf(TAB), null);
   });

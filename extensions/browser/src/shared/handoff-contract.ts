@@ -255,7 +255,13 @@ export type PageEvent =
    */
   | { readonly kind: "shadow_alive" }
   /** Тень снята (после этого MAIN-мир больше ничего не шлёт по этой передаче). */
-  | { readonly kind: "handoff_ended"; readonly cause: HandoffEndCause };
+  | { readonly kind: "handoff_ended"; readonly cause: HandoffEndCause }
+  /**
+   * Сторож следующего видео (сессия 09c2) поставил тень на видео, которое страница запустила, пока
+   * сторож взведён. Фон ещё ничего не решил: `candidates` — все видео документа, включая задержанное
+   * `element`. Событие проходит только пока сторож взведён, поэтому страница не может будить фон сама.
+   */
+  | { readonly kind: "next_video_held"; readonly element: ElementKey; readonly candidates: readonly VideoCandidate[] };
 
 /**
  * Как часто тень подаёт пульс. Часы плеера приходят раз в ~250 мс и идут и на паузе (09a),
@@ -333,6 +339,43 @@ export type PageCommand =
   | { readonly kind: "shadow"; readonly command: ShadowCommand }
   | { readonly kind: "end_handoff"; readonly position: HandoffEndPosition; readonly resume: HandoffEndResume };
 
+/**
+ * Команды сторожа следующего видео. Их рождает изолированный мир: фон зовёт его широковещательным
+ * `tabs.sendMessage`, а не портом сеанса, поэтому в `PageCommand` их нет.
+ * - `arm_next_video` — взвести сторож на `lease_ms`. Срок вместо команды «снять»: фон может умереть в
+ *   любой момент, а страница не должна остаться со взведённым сторожем навсегда;
+ * - `release_held_video` — отпустить задержанное видео: фон сказал «не берём» или не ответил вовремя.
+ */
+export type NextVideoCommand =
+  | { readonly kind: "arm_next_video"; readonly lease_ms: number }
+  | { readonly kind: "release_held_video"; readonly element: ElementKey };
+
+// ---------------------------------------------------------------------------------------------
+// Переезд сеанса на следующее видео (сессия 09c2, решения 201, 204): фон ⇄ изолированный мир.
+// ---------------------------------------------------------------------------------------------
+
+/** Вид сообщения фона всем фреймам вкладки: «взведи сторож». */
+export const ARM_NEXT_VIDEO_KIND = "arm_next_video";
+
+/** Широковещательная просьба фона; приходит в изолированный мир каждого фрейма вкладки. */
+export interface ArmNextVideoRequest {
+  readonly kind: typeof ARM_NEXT_VIDEO_KIND;
+  readonly lease_ms: number;
+}
+
+/** Вид донесения изолированного мира фону о задержанном видео. */
+export const HELD_VIDEO_REPORT_KIND = "held_video_report";
+
+/** Донесение фону: `runtime.sendMessage`, вкладку и фрейм фон берёт из отправителя, а не из сообщения. */
+export interface HeldVideoReport {
+  readonly kind: typeof HELD_VIDEO_REPORT_KIND;
+  readonly element: ElementKey;
+  readonly candidates: readonly VideoCandidate[];
+}
+
+/** Ответ фона: `adopt` — сеанс переезжает, следом придёт `begin_handoff`; `release` — отпустить. */
+export type HeldVideoReply = "adopt" | "release";
+
 // ---------------------------------------------------------------------------------------------
 // Внутренняя команда «отдать вкладку N» (решение 175). Шлют только страницы самого экстеншена
 // (сейчас — робот стенда со служебной страницы, в 10 — кнопка попапа). Фон проверяет, что
@@ -364,8 +407,6 @@ export type HandOffTabOutcome =
   | { readonly kind: "not_supported_yet"; readonly form: UnsupportedMediaForm }
   /** Лучшее видео вкладки под DRM (инвариант 4): не трогаем, оно играет в браузере. */
   | { readonly kind: "protected" }
-  /** Играет только отдельный рекламный ролик, фильма ещё нет (до сессии 09c2). */
-  | { readonly kind: "ad_playing" }
   /** Файл с локального адреса, настройка «блокировать» (решение 199). */
   | { readonly kind: "local_address_refused" }
   /** Файл с локального адреса, настройка «спрашивать»: попап 10 спросит человека про `host`. */

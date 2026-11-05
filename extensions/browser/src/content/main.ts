@@ -4,7 +4,8 @@
 // До передачи скрипт ничего не шлёт фону и не будит его: порт участка 2 открывает сам фон
 // (tabs.connect) в момент «отдать вкладку», а описание видео фон запрашивает через executeScript.
 import { browserApi } from "../shared/browser-api.ts";
-import { HANDOFF_PORT_NAME } from "../shared/handoff-contract.ts";
+import { HANDOFF_PORT_NAME, type HeldVideoReply } from "../shared/handoff-contract.ts";
+import { parseArmNextVideoRequest } from "../shared/page-message-validation.ts";
 import { VIDEO_CANDIDATES_FUNCTION_NAME } from "../shared/video-candidates-probe.ts";
 import { openPageChannel, type PageChannelPort } from "./page-channel.ts";
 import { createContentRelay, type ContentRelay } from "./relay.ts";
@@ -18,6 +19,7 @@ let debugReported = false;
 let sendToPageWorld: (message: unknown) => void = () => {};
 const relay: ContentRelay = createContentRelay({
   sendToPage: (message) => sendToPageWorld(message),
+  reportHeldVideo: (report) => browserApi.runtime.sendMessage(report) as Promise<HeldVideoReply>,
   timers: {
     setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
     clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
@@ -56,6 +58,13 @@ browserApi.runtime.onConnect.addListener((port) => {
   const senderId = port.sender?.id;
   if (port.name !== HANDOFF_PORT_NAME || (senderId !== undefined && senderId !== browserApi.runtime.id)) return;
   relay.acceptBackgroundPort(port);
+});
+
+// Взвод сторожа следующего видео: фон зовёт все фреймы вкладки сразу. Только наш фон: у него нет `tab`.
+browserApi.runtime.onMessage.addListener((message: unknown, sender) => {
+  if (sender.id !== browserApi.runtime.id || sender.tab !== undefined) return;
+  const request = parseArmNextVideoRequest(message);
+  if (request !== undefined) relay.armNextVideo(request.lease_ms);
 });
 
 // Функция для executeScript фона живёт в глобале ИЗОЛИРОВАННОГО мира: странице она не видна.

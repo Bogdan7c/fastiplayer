@@ -9,10 +9,11 @@
 //     до передачи, иначе обходила бы тень (читала настоящее время, будила настоящий элемент);
 //  3. поставить стража mediaSession (иначе потом не восстановить обработчики страницы).
 
-import type { ShadowStarter } from "./handoff-seam.ts";
+import type { HeldShadowStarter, PlayWatchSeam, ShadowStarter } from "./handoff-seam.ts";
 import { installMediaSessionGuard } from "./media-session-guard.ts";
 import type { TimeoutScheduler } from "./shadow/file-return.ts";
-import { captureElementOriginals, installShadowOverrides, startShadow, type ShadowEnvironment } from "./shadow/index.ts";
+import { callOriginal } from "./shadow/originals.ts";
+import { captureElementOriginals, installShadowOverrides, startHeldShadow, startShadow, type ShadowEnvironment } from "./shadow/index.ts";
 
 /** Окружение тени без ответа реестра: его подставляет контроллер при каждом запуске тени. */
 export type ShadowEnvironmentBase = Omit<ShadowEnvironment, "isMediaSourceObjectUrl">;
@@ -59,5 +60,42 @@ export function shadowStarterFor(environment: ShadowEnvironmentBase | null): Sha
   return (element, emit, options) => {
     if (environment === null) throw new Error("shadow environment is unavailable in this document");
     return startShadow(element, emit, { ...environment, isMediaSourceObjectUrl: options.isMediaSourceObjectUrl }, options.source);
+  };
+}
+
+/** Шов сторожа: тень на задержанном видео (или честный отказ, если окружения нет). */
+export function heldShadowStarterFor(environment: ShadowEnvironmentBase | null): HeldShadowStarter {
+  return (element, emit, options) => {
+    if (environment === null) throw new Error("shadow environment is unavailable in this document");
+    return startHeldShadow(element, emit, { ...environment, isMediaSourceObjectUrl: options.isMediaSourceObjectUrl }, options.source);
+  };
+}
+
+/** События настоящего элемента, по которым видно, что он уже хочет играть. */
+const WANTS_TO_PLAY_EVENT_TYPES = ["play", "loadedmetadata"] as const;
+
+/**
+ * Шов сторожа следующего видео с прототипами и событиями. Без окружения тени сторож работать не может:
+ * шов остаётся пустым, `play()` прозрачен, а передача откажет сама.
+ */
+export function playWatchSeamFor(environment: ShadowEnvironmentBase | null): PlayWatchSeam {
+  if (environment === null) {
+    return { watchPlayCalls: () => {}, isShadowed: () => false, onRealMediaEvent: () => {}, PagePromise: Promise };
+  }
+  const { originals } = environment;
+  const registry = installShadowOverrides(originals);
+  return {
+    watchPlayCalls: (watcher) => registry.watchPlayCalls(watcher),
+    isShadowed: (element) => registry.isShadowed(element),
+    PagePromise: originals.PromiseConstructor as PromiseConstructor,
+    onRealMediaEvent: (target, listener) => {
+      const onEvent = (event: Event): void => {
+        // Синтетические события ничего не значат: их рассылает и сама тень. `isTrusted` страница не подделает.
+        if (!event.isTrusted) return;
+        const element = callOriginal(originals.events.eventTarget, event);
+        if (typeof element === "object" && element !== null) listener(element);
+      };
+      for (const type of WANTS_TO_PLAY_EVENT_TYPES) callOriginal(originals.events.addEventListener, target, [type, onEvent, true]);
+    },
   };
 }

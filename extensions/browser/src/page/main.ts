@@ -7,7 +7,7 @@
 import { startPageBridge } from "./bridge.ts";
 import { installCodecPolicy } from "./codec-policy/index.ts";
 import { createOddityReporter, type DebugSink } from "./oddity-reporter.ts";
-import { captureShadowEnvironment, shadowStarterFor } from "./shadow-assembly.ts";
+import { captureShadowEnvironment, heldShadowStarterFor, playWatchSeamFor, shadowStarterFor } from "./shadow-assembly.ts";
 import { createPageRecording } from "./recorder-seam.ts";
 
 /**
@@ -28,6 +28,9 @@ function main(win: Window & typeof globalThis, debugSink: DebugSink): void {
   const recording = createPageRecording(win, createOddityReporter(debugSink));
   const bridge = startPageBridge(win, {
     startShadow: shadowStarterFor(shadowEnvironment),
+    startHeldShadow: heldShadowStarterFor(shadowEnvironment),
+    playWatch: playWatchSeamFor(shadowEnvironment),
+    now: shadowEnvironment?.now ?? (() => Number.NEGATIVE_INFINITY),
     debugSink,
     ...(recording === null ? {} : { handoffTap: recording.tap, workerChannelExtension: recording.channelExtension }),
     // Пустой текст — сборка без хука (Firefox): обёртка `Worker` не ставится вовсе.

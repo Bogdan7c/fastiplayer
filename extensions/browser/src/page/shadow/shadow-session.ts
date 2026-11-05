@@ -16,9 +16,9 @@ import type { HandoffEndCause, HandoffEndPosition, HandoffEndResume, PageEvent, 
 import { MAX_PLAYBACK_RATE_PERMILLE, MIN_PLAYBACK_RATE_PERMILLE } from "../../protocol/limits.ts";
 import type { MediaTimeMicros, PlaybackRatePermille } from "../../protocol/time.ts";
 import type { MediaKeyAction, MediaSessionGuard } from "../media-session-guard.ts";
-import type { ShadowSourceKind } from "../handoff-seam.ts";
+import type { PendingPlay, ShadowSourceKind } from "../handoff-seam.ts";
 import type { TimeoutScheduler } from "./file-return.ts";
-import { FileShadowLifecycle, interruptFileReturn, type FileShadowHost, type ReturnPlan } from "./file-shadow-lifecycle.ts";
+import { FileShadowLifecycle, type FileShadowHost, type ReturnPlan } from "./file-shadow-lifecycle.ts";
 import { PageMutedState } from "./page-muted.ts";
 import { FileSourceMode, type ShadowSourceView } from "./file-source-mode.ts";
 import { type GateDecision, installEventGate, PLAYBACK_EVENT_TYPES, READINESS_EVENT_TYPES, SOURCE_RESET_EVENT_TYPE } from "./event-gate.ts";
@@ -26,7 +26,7 @@ import { EventDispatchQueue } from "./event-dispatch-queue.ts";
 import { type FrameCallback, type FrameCountBaseline, readRealFrameQuality, ShadowFrameCallbacks, shadowTotalFrames } from "./frame-stats.ts";
 import { shadowProblemReporter } from "./once-reporter.ts";
 import { callOriginal, type ElementOriginals, readOriginal, writeOriginal } from "./originals.ts";
-import { installShadowOverrides, type ShadowBehavior, type ShadowRegistry, type SourceProperty } from "./prototype-overrides.ts";
+import { SERVE_AS_PLAIN_ELEMENT, type ShadowBehavior, type ShadowRegistry, type SourceProperty } from "./prototype-overrides.ts";
 import { DetachedElementWatch } from "./detached-element-watch.ts";
 import { EmptySourceWatch } from "./empty-source-watch.ts";
 import { RealElementFollower } from "./real-element-follower.ts";
@@ -34,6 +34,9 @@ import { ShadowPulse } from "./shadow-pulse.ts";
 import { ShadowTimeline, READY_STATE, type ReadyStateValue, type TimelineSignal } from "./shadow-timeline.ts";
 import { classifyElementSource, type MediaSourceObjectUrlCheck, type SourceVerdict } from "./source-reset-policy.ts";
 import { deliverViewerMediaKey, type ViewerMediaKeyPorts } from "./viewer-media-key.ts";
+
+/** Когда снимать файл с настоящего элемента: сразу или когда фон взял задержанное видео. */
+export type FileStopMoment = "stop_file_now" | "keep_file_until_commit";
 
 /** Окружение тени (шов A1↔A2): всё внешнее подаётся снаружи, чтобы тесты шли на фейках. */
 export interface ShadowEnvironment {
@@ -52,13 +55,6 @@ export interface ShadowEnvironment {
   readonly isMediaSourceObjectUrl: MediaSourceObjectUrlCheck;
   /** Таймер окна — только страховка возврата файла (`FILE_RETURN_TIMEOUT_MS`). */
   readonly scheduleTimeout: TimeoutScheduler;
-}
-
-/** Управление тенью для MAIN-мира. */
-export interface ShadowSession {
-  apply(command: ShadowCommand): void;
-  /** Снять тень по команде `end_handoff`; шлёт `handoff_ended{returned}`. Повтор — ничего. */
-  end(position: HandoffEndPosition, resume: HandoffEndResume): void;
 }
 
 const MICROS_PER_SECOND = 1_000_000;
@@ -88,34 +84,7 @@ const PLAY_INTERRUPTED_MESSAGE = "The play() request was interrupted.";
  */
 type LoadAlgorithmEffect = "element_reset" | "element_was_empty";
 
-/** Ожидающее обещание `play()` страницы. */
-interface PendingPlay {
-  readonly resolve: () => void;
-  readonly reject: (reason: unknown) => void;
-}
-
-/**
- * Ставит элемент в тень. `emit` — события наружу (page_seek, player_seek_applied, page_playback,
- * handoff_ended). `source` — что передаётся: MSE или файл `<video src>` (handoff-seam.ts).
- */
-export function startShadow(
-  element: HTMLMediaElement,
-  emit: (event: PageEvent) => void,
-  env: ShadowEnvironment,
-  source: ShadowSourceKind,
-): ShadowSession {
-  const registry = installShadowOverrides(env.originals);
-  // Прежняя тень файла ещё возвращает элемент (находка 6 ревью 09b): закончить её возврат сейчас.
-  const interruptedFile = interruptFileReturn(element);
-  if (registry.isShadowed(element)) throw new Error("shadow: element is already shadowed");
-  const controller = new ShadowController(element, emit, env, registry, source, interruptedFile);
-  return {
-    apply: (command) => controller.apply(command),
-    end: (position, resume) => controller.end(position, resume),
-  };
-}
-
-class ShadowController implements ShadowBehavior {
+export class ShadowController implements ShadowBehavior {
   readonly #element: HTMLMediaElement;
   readonly #emitOutward: (event: PageEvent) => void;
   readonly #env: ShadowEnvironment;
@@ -142,6 +111,8 @@ class ShadowController implements ShadowBehavior {
   /** Наша перестановка настоящего элемента ещё не «устоялась»: его `canplay*` — не для страницы. */
   #realRepositionInFlight = false;
   #active = true;
+  /** Эта тень приостановила mediaSession страницы, ей и возвращать. */
+  #suspendedMediaSession = false;
 
   constructor(
     element: HTMLMediaElement,
@@ -151,6 +122,7 @@ class ShadowController implements ShadowBehavior {
     source: ShadowSourceKind,
     /** Снимок файла прежней тени, чей возврат прервала эта передача (`null` — не было). */
     interruptedFile: FileSourceMode | null,
+    fileStop: FileStopMoment,
   ) {
     this.#element = element;
     this.#emitOutward = emit;
@@ -215,9 +187,33 @@ class ShadowController implements ShadowBehavior {
       if (!realPaused) callOriginal(media.pause, element);
       this.#muted.muteRealElement();
     });
-    this.#attempt("start: suspend mediaSession", () => env.mediaSession.suspend());
-    // Решение 186: файл снимается, когда шлагбаум уже гасит события этой записи.
+    // Задержанное видео пока ничьё: mediaSession и файл тронем, только когда фон его возьмёт.
+    if (fileStop === "stop_file_now") this.#takeOverFromBrowser();
+  }
+
+  /** Страж mediaSession и снятие файла. Решение 186: шлагбаум уже гасит события этой записи. */
+  #takeOverFromBrowser(): void {
+    this.#suspendedMediaSession = true;
+    this.#attempt("start: suspend mediaSession", () => this.#env.mediaSession.suspend());
     this.#file?.start();
+  }
+
+  /**
+   * Фон взял задержанное видео. Файл снимается только сейчас, а часы плеера ещё несут старое поколение
+   * (конец рекламы): тень держит свою позицию, пока плеер не признает новый источник.
+   */
+  commitHold(): void {
+    this.#takeOverFromBrowser();
+    this.#timeline.awaitPlayerOnNewSource(this.#env.now());
+  }
+
+  pageSawPlaying(): boolean {
+    return !this.#timeline.paused;
+  }
+
+  /** Обещания `play()`, выданные страницей до тени: теперь их исполняет модель часов. */
+  takeOverPendingPlays(plays: readonly PendingPlay[]): void {
+    this.#pendingPlays.push(...plays);
   }
 
   // -------------------------------------------------------------------------------------------
@@ -348,7 +344,13 @@ class ShadowController implements ShadowBehavior {
     if (Number(readOriginal(media.volume, this.#element)) !== before) this.#queue.enqueueEvent("volumechange");
   }
 
-  play(): Promise<void> {
+  play(): Promise<void> | typeof SERVE_AS_PLAIN_ELEMENT {
+    if (this.#file?.pageRewroteSource === true) {
+      // Страница уже поставила другой файл, а тень об этом ещё не знает: ответ старого ролика был бы
+      // ложью (и перемоткой закончившейся рекламы на начало у плеера).
+      this.#attempt("page rewrote the file source", () => this.#releaseToPage());
+      return SERVE_AS_PLAIN_ELEMENT;
+    }
     const PagePromise = this.#originals.PromiseConstructor;
     let pending: PendingPlay | undefined;
     const promise = new PagePromise<void>((resolve, reject) => {
@@ -704,7 +706,8 @@ class ShadowController implements ShadowBehavior {
   }
 
   #finish(cause: HandoffEndCause): void {
-    this.#attempt("restore mediaSession", () => this.#env.mediaSession.restore());
+    // Отпущенное задержанное видео mediaSession не трогало: рядом могла стоять живая тень рекламы.
+    if (this.#suspendedMediaSession) this.#attempt("restore mediaSession", () => this.#env.mediaSession.restore());
     this.#emit({ kind: "handoff_ended", cause });
   }
 

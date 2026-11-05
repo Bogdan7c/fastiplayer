@@ -6,7 +6,7 @@
 // уже идёт или стартует, получает исход ТОЙ ЖЕ передачи (кнопку попапа можно нажать дважды);
 // после конца передачи вкладку можно отдать снова — с новым ключом сеанса.
 
-import type { HandOffTabOutcome } from "../../shared/handoff-contract.ts";
+import type { HandOffTabOutcome, HeldVideoReply, HeldVideoReport } from "../../shared/handoff-contract.ts";
 import type { TabModel } from "../tab-model/tab-model.ts";
 import type { TabRefusal } from "../tab-model/tab-snapshot.ts";
 import type { LocalAddressSetting } from "../../shared/local-address-setting.ts";
@@ -21,18 +21,10 @@ import { chooseVideo, type ChosenVideo, type VideoChoice } from "./video-choice.
 /** Наибольший номер запроса `begin_handoff` (u32 договора); после него счёт идёт с 1. */
 const MAX_BEGIN_REQUEST_ID = 0xffff_ffff;
 
-/** Что фон знает о вкладке для подписи окна. */
-export interface TabDescription {
-  readonly title?: string | undefined;
-  readonly url?: string | undefined;
-}
-
 export interface TabHandoffsDependencies extends HandoffSessionDependencies {
   readonly executeInAllFrames: ExecuteInAllFrames;
   /** Модель вкладки: сюда пишутся итог каждого опроса и каждый отказ. Её сбой передачу не ломает. */
   readonly tabModel: TabModel;
-  /** `tabs.get`: заголовок и адрес; `undefined` — вкладки нет. */
-  readonly describeTab: (tabId: number) => Promise<TabDescription | undefined>;
   /** Ключ сеанса для передачи этой вкладки (base64url, ≤ 64 байт). */
   readonly sessionKeyFor: (tabId: number, attempt: number) => string;
   /** Настройка адреса файла (решение 199). Читается на каждую команду: человек мог её сменить. */
@@ -48,6 +40,10 @@ export interface TabHandoffs {
   handOffTab(tabId: number, consent?: LocalAddressConsent): Promise<HandOffTabOutcome>;
   /** `tabs.onRemoved`. */
   tabRemoved(tabId: number): void;
+  /** Сторож задержал видео во фрейме вкладки. Нет сеанса — видео отпускается. */
+  heldVideo(tabId: number, frameId: number, report: HeldVideoReport): HeldVideoReply;
+  /** На экране плеера реклама; сеанса нет — `false` (решение 204, сессия 09d). */
+  isAdOnScreen(tabId: number): boolean;
   /** Вкладки, у которых передача стартует или идёт. */
   activeTabIds(): number[];
 }
@@ -93,8 +89,6 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
         return { kind: "not_supported_yet", form: choice.form };
       case "protected":
         return { kind: "protected" };
-      case "ad_playing":
-        return { kind: "ad_playing" };
     }
   }
 
@@ -135,6 +129,7 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     const session = startHandoffSession(
       {
         tabId,
+        tabUrl: tab.url,
         frameId: chosen.frameId,
         document: chosen.document,
         element: chosen.element,
@@ -142,6 +137,8 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
         page: pageIdentityOf(tab),
         beginRequestId: takeBeginRequestId(),
         fileAddressRule,
+        video: chosen,
+        nextBeginRequestId: takeBeginRequestId,
       },
       dependencies,
       (end) => {
@@ -210,6 +207,8 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
       entry.removed = true;
       entry.session?.notifyTabRemoved();
     },
+    heldVideo: (tabId, frameId, report) => entries.get(tabId)?.session?.heldVideo(frameId, report) ?? "release",
+    isAdOnScreen: (tabId) => entries.get(tabId)?.session?.adOnScreen() ?? false,
     activeTabIds: () => [...entries.keys()],
   };
 }

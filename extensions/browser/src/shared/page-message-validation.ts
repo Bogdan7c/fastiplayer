@@ -8,11 +8,15 @@
 // это дёшево, байты при этом не копируются.
 
 import {
+  ARM_NEXT_VIDEO_KIND,
+  HELD_VIDEO_REPORT_KIND,
   PAGE_FLOOD_NOTICE_KIND,
+  type ArmNextVideoRequest,
   type CandidateMedia,
   type CandidatesReply,
   type HandoffEndCause,
   type HandoffStartOutcome,
+  type HeldVideoReport,
   type LocalMseEvent,
   type PageEvent,
   type PageEventBudgetKind,
@@ -73,6 +77,9 @@ const MAX_VIDEO_DIMENSION_PX = 100_000;
 
 /** Наибольший номер вида u32 (номера запросов, `seek_id`). */
 const MAX_U32 = 0xffff_ffff;
+
+/** Наибольший срок взвода сторожа следующего видео: фон продлевает его каждую секунду. */
+export const MAX_NEXT_VIDEO_LEASE_MS = 60_000;
 
 /**
  * Локальный ключ MediaSource: «ms-» и номер без ведущих нулей; у MediaSource выделенного воркера
@@ -386,9 +393,36 @@ export function parsePageEvent(value: unknown): PageEvent | undefined {
       const cause = value["cause"];
       return hasExactKeys(value, ["kind", "cause"]) && isOneOf(cause, HANDOFF_END_CAUSES) ? { kind: "handoff_ended", cause } : undefined;
     }
+    case "next_video_held": {
+      const element = value["element"];
+      const candidates = parseVideoCandidates(value["candidates"]);
+      return hasExactKeys(value, ["kind", "element", "candidates"]) && isMediaTime(element) && candidates !== undefined
+        ? { kind: "next_video_held", element, candidates }
+        : undefined;
+    }
     default:
       return undefined;
   }
+}
+
+/**
+ * Разбор донесения о задержанном видео для ФОНА (сессия 09c2). Донесение рождает изолированный мир,
+ * но кандидаты пришли со страницы: форма проверяется заново, как у всего, что идёт в фон.
+ */
+export function parseHeldVideoReport(value: unknown): HeldVideoReport | undefined {
+  if (!isPlainRecord(value) || value["kind"] !== HELD_VIDEO_REPORT_KIND) return undefined;
+  const element = value["element"];
+  const candidates = parseVideoCandidates(value["candidates"]);
+  if (!hasExactKeys(value, ["kind", "element", "candidates"]) || !isMediaTime(element) || candidates === undefined) return undefined;
+  return { kind: HELD_VIDEO_REPORT_KIND, element, candidates };
+}
+
+/** Просьба фона взвести сторож; срок — целые миллисекунды не больше предела договора. */
+export function parseArmNextVideoRequest(value: unknown): ArmNextVideoRequest | undefined {
+  if (!isPlainRecord(value) || value["kind"] !== ARM_NEXT_VIDEO_KIND) return undefined;
+  const leaseMs = value["lease_ms"];
+  if (!hasExactKeys(value, ["kind", "lease_ms"]) || !isIntegerInRange(leaseMs, 1, MAX_NEXT_VIDEO_LEASE_MS)) return undefined;
+  return { kind: ARM_NEXT_VIDEO_KIND, lease_ms: leaseMs };
 }
 
 // ------------------------------------------------------------------ донесения изолированного мира

@@ -3,6 +3,7 @@
 // и куски, ушедшие плееру, совпадают с тем, что дошло до изолированного мира; выгрузка даёт файл
 // формата `.fprec`; сводка и событие выгрузки работают.
 
+import { INACTIVE_NEXT_VIDEO_GUARD } from "../page/support/bridge-harness.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
@@ -63,6 +64,7 @@ function startRecordedBridge() {
   });
   const bridge = startPageBridge(page.win, {
     startShadow: shadowStarterFor(shadowEnvironment),
+    ...INACTIVE_NEXT_VIDEO_GUARD,
     debugSink: (line) => oddities.push(line),
     handoffTap: recording.tap,
     workerChannelExtension: recording.channelExtension,

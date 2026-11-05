@@ -6,6 +6,12 @@
 
 import type { HandoffEndPosition, HandoffEndResume, PageEvent, ShadowCommand } from "../shared/handoff-contract.ts";
 
+/** Отложенное обещание `play()`, отданное странице; его исполнит тень. */
+export interface PendingPlay {
+  readonly resolve: () => void;
+  readonly reject: (reason: unknown) => void;
+}
+
 /** Запущенная тень одного элемента (подмножество `ShadowSession` из `./shadow/index.ts`). */
 export interface ShadowSessionHandle {
   apply(command: ShadowCommand): void;
@@ -38,3 +44,45 @@ export interface ShadowStartOptions {
 
 /** Поставить элемент в тень. `emit` — события страницы (page_seek, page_playback, handoff_ended, …). */
 export type ShadowStarter = (element: HTMLMediaElement, emit: (event: PageEvent) => void, options: ShadowStartOptions) => ShadowSessionHandle;
+
+/**
+ * Тень, поставленная сторожем следующего видео ДО решения фона (сессия 09c2). Настоящий элемент уже
+ * стоит и молчит, а файл ещё не снят: если фон откажет, элемент просто заиграет дальше, без перезагрузки.
+ */
+export interface HeldShadowHandle extends ShadowSessionHandle {
+  /** Фон взял видео: снять файл с настоящего элемента и ждать часы нового источника. */
+  commitHold(): void;
+  /** Страница видит видео играющим. */
+  pageSawPlaying(): boolean;
+  /** Забрать обещания `play()`, которые страница получила до тени. */
+  takeOverPendingPlays(plays: readonly PendingPlay[]): void;
+}
+
+/** Поставить тень на задержанное видео. */
+export type HeldShadowStarter = (element: HTMLMediaElement, emit: (event: PageEvent) => void, options: ShadowStartOptions) => HeldShadowHandle;
+
+/**
+ * Что сторож отвечает на `play()` элемента не в тени:
+ * - `not_mine` — обычный вызов браузера;
+ * - `now_shadowed` — на элемент только что встала тень, отвечает она;
+ * - `answered` — сторож сам позвал настоящий `play()` и отдаёт странице своё обещание.
+ */
+export type PlayWatchAnswer = { readonly kind: "not_mine" } | { readonly kind: "now_shadowed" } | { readonly kind: "answered"; readonly promise: unknown };
+
+/** Наблюдатель за `play()` страницы. Ошибка наблюдателя не должна долететь до страницы. */
+export type PlayWatcher = (element: object, realPlay: () => unknown) => PlayWatchAnswer;
+
+/** Шов сторожа с переопределениями прототипов и событиями настоящих элементов. */
+export interface PlayWatchSeam {
+  /** Ставится один раз; до этого `play()` строго прозрачен. */
+  watchPlayCalls(watcher: PlayWatcher): void;
+  /** Стоит ли тень на элементе. */
+  isShadowed(element: object): boolean;
+  /**
+   * Доверенные `play` и `loadedmetadata` настоящих элементов (захватом на `target`): окно видит всё,
+   * кроме теневого DOM, поэтому `play()` такого элемента подписывает и его самого.
+   */
+  onRealMediaEvent(target: object, listener: (element: object) => void): void;
+  /** `Promise` мира страницы: страница получает обещание своего мира. */
+  readonly PagePromise: PromiseConstructor;
+}
