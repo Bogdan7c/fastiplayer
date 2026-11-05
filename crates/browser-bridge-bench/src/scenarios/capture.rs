@@ -39,6 +39,7 @@ use super::run_tweaks::RunTweaks;
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::BenchEnvironment;
 use crate::observe::{FrameGrowth, read_host_evidence};
+use crate::player_control::PlayerControl;
 use crate::site::{PageReport, PageStatus, SiteError};
 
 /// Сколько кадров должен показать плеер: 2 с видео при 25 к/с — «играет», а не «открылся».
@@ -51,6 +52,13 @@ const MIN_FRAMES_GAINED_AFTER_HOOK: u64 = 60;
 /// Сколько ждать сводки после действия страницы: сводка-точка отсчёта и ещё одна.
 const HOOK_FRAMES_TIMEOUT: Duration = Duration::from_secs(45);
 
+/// Сколько дать плееру устояться после открытия, прежде чем мерить паузу.
+const PAUSED_START_SETTLE: Duration = Duration::from_secs(2);
+/// Сколько плеер обязан простоять на паузе: дольше сторожа тишины сеанса (10 с).
+const PAUSED_HOLD: Duration = Duration::from_secs(12);
+/// Сколько позиция может уйти за удержание: запас на округление, но не на игру.
+const PAUSED_DRIFT_LIMIT_US: i64 = 100_000;
+
 /// Когда робот посылает действие страницы относительно ожидания кадров плеера.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum HookTiming {
@@ -58,6 +66,7 @@ pub(super) enum HookTiming {
     AfterFrames,
     /// Сразу после передачи, до ожидания кадров: страница стоит на паузе (главное видео
     /// `banner-with-main`), и кадров не будет, пока зритель не нажмёт play (действие страницы).
+    /// Робот сначала проверяет, что плеер действительно стоит.
     BeforeFrames,
 }
 
@@ -379,7 +388,9 @@ fn drive(
     let early_hook = page
         .hook
         .filter(|_| page.hook_timing == HookTiming::BeforeFrames)
-        .map(|name| send_hook_and_wait_ack(&run, name));
+        .map(|name| {
+            hold_player_paused(environment).and_then(|()| send_hook_and_wait_ack(&run, name))
+        });
 
     // Сначала пропуск от НАШЕГО посредника: без него «кадры есть» ничего бы не доказывало.
     let session = wait_for_session_granted(&run.stderr_log, SESSION_GRANTED_TIMEOUT)?;
@@ -440,6 +451,41 @@ fn server_evidence(
     decoys::decoy_page(page_id).map(|decoy| {
         decoys::decoy_not_fetched_by_background(decoy.file_path, &requests, handed_off_at)
     })
+}
+
+/// Страница стояла на паузе, значит, и плеер обязан стоять, пока она не запустит видео. Держим
+/// паузу дольше сторожа тишины (10 с): реклама рядом с фильмом идёт десятки секунд, и сеанс обязан
+/// это пережить. Позицию читаем по MPRIS: сводки кадров выходят редко и на паузе молчат.
+fn hold_player_paused(environment: &BenchEnvironment) -> Result<(), String> {
+    let bus_address = environment
+        .bus_address()
+        .map_err(|error| format!("no player bus: {error}"))?;
+    let control = PlayerControl::on_bus(bus_address);
+    control
+        .wait_until_controllable(SESSION_GRANTED_TIMEOUT)
+        .map_err(|error| format!("the player never became controllable: {error}"))?;
+    std::thread::sleep(PAUSED_START_SETTLE);
+    let position_at = |moment: &str| {
+        control
+            .position_micros()
+            .map_err(|error| format!("cannot read the player position {moment}: {error}"))
+    };
+    let before = position_at("before the hold")?;
+    std::thread::sleep(PAUSED_HOLD);
+    let after = position_at("after the hold")?;
+    judge_paused_hold(before, after)
+}
+
+/// Чистый приговор удержанию паузы.
+fn judge_paused_hold(before_us: i64, after_us: i64) -> Result<(), String> {
+    let drift_us = (after_us - before_us).abs();
+    if drift_us <= PAUSED_DRIFT_LIMIT_US {
+        Ok(())
+    } else {
+        Err(format!(
+            "the page was paused but the player moved {before_us} -> {after_us} us"
+        ))
+    }
 }
 
 /// Посылает действие страницы и ждёт подтверждение (кадры плеера здесь не ждём).
@@ -526,6 +572,29 @@ mod tests {
     use super::*;
     use crate::scenarios::outcome::Outcome;
     use crate::site::PageStatus;
+
+    #[test]
+    fn a_player_that_stands_still_passes_the_paused_hold() {
+        assert_eq!(judge_paused_hold(5_000_000, 5_000_000), Ok(()));
+        assert_eq!(
+            judge_paused_hold(5_000_000, 5_000_000 + PAUSED_DRIFT_LIMIT_US),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_player_that_plays_over_the_paused_page_fails_the_hold() {
+        let verdict = judge_paused_hold(5_000_000, 5_000_000 + PAUSED_DRIFT_LIMIT_US + 1);
+        assert!(verdict.is_err_and(|message| message.contains("the player moved")));
+        // Назад — тоже движение: стоящий плеер позицию не меняет.
+        assert!(judge_paused_hold(5_000_000, 1_000_000).is_err());
+    }
+
+    #[test]
+    fn the_hold_outlives_the_session_silence_watchdog() {
+        const SILENCE_WATCHDOG: Duration = Duration::from_secs(10);
+        assert!(PAUSED_HOLD > SILENCE_WATCHDOG);
+    }
 
     #[test]
     fn early_unsupported_is_honest_only_where_the_table_allows_it() {
