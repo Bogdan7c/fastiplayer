@@ -1,0 +1,20 @@
+# Сессия 10e: веха M1
+
+Добавлена 5 ноября 2026 при разделении сессии 10 (решение 213).
+
+> Выполни сессию 10e плана `user/browser-bridge/`: веха M1 — живая проверка всех входов режима 1 в Google Chrome из Flatpak и Firefox на KDE Wayland, на стенде и эталонных сайтах. Сначала прочитай `user/browser-bridge/README.md`, `10-mode1-entry-points.md`, `results/10b.md`, `results/10c.md`, `results/10d.md`, `results/04.md`, `results/06.md`.
+
+## Что сделать
+
+- Основная машина, KDE Wayland. Google Chrome из Flatpak (`scripts/browser-bridge-live-check/run-chrome-flatpak.sh`, решение 172) и Firefox из пакета.
+- Эталонные сайты из 00, все входы. Таблица «сайт × браузер × вход → играет / нет → причина». Каждое «нет»: исправлено, записано как ограничение с причиной или стало пунктом адаптера (15).
+- Формы 09b: Twitch live и запись (воркер, Chromium), клип как `<video src>`, YouTube с «Always H.264».
+- Реклама YouTube: плашка «Ad 1 of 2», отсчёт, подсказка «Skip on the page», после пропуска фильм продолжается у нас (решение 208).
+- Ashdi и Tortuga: «Skip ›» из окна.
+- Сайты с логином — в профиле владельца (решение 32), в отчёте без личных данных.
+- Владелец пробует сам, его вердикт идёт в отчёт.
+
+## Критерий выхода
+
+- `results/10.md`: автотесты зелёные, таблица M1, вердикт владельца.
+- Memories: `mem:browser-bridge/core`.
