@@ -7,6 +7,7 @@ import { browserApi } from "../shared/browser-api.ts";
 import { HANDOFF_PORT_NAME, type HeldVideoReply } from "../shared/handoff-contract.ts";
 import { parseArmNextVideoRequest } from "../shared/page-message-validation.ts";
 import { VIDEO_CANDIDATES_FUNCTION_NAME } from "../shared/video-candidates-probe.ts";
+import { installAdWatch } from "./ad-watch-entry.ts";
 import { openPageChannel, type PageChannelPort } from "./page-channel.ts";
 import { createContentRelay, type ContentRelay } from "./relay.ts";
 
@@ -66,6 +67,9 @@ browserApi.runtime.onMessage.addListener((message: unknown, sender) => {
   const request = parseArmNextVideoRequest(message);
   if (request !== undefined) relay.armNextVideo(request.lease_ms);
 });
+
+// Наблюдение за рекламой (сессия 09d): спит, пока фон не возьмёт его в аренду.
+installAdWatch();
 
 // Функция для executeScript фона живёт в глобале ИЗОЛИРОВАННОГО мира: странице она не видна.
 Object.defineProperty(globalThis, VIDEO_CANDIDATES_FUNCTION_NAME, {

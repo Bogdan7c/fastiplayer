@@ -99,6 +99,8 @@ export type {
   SessionIntent,
 } from "./control.ts";
 
+export type { AdPod, AdSkip, PageAdState } from "./session/ad-state.ts";
+export { MAX_ADS_IN_POD, MAX_AD_COUNTDOWN_SECONDS } from "./session/ad-state.ts";
 export type {
   PagePlaybackRequest,
   PageSessionMessage,

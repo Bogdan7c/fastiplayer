@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import type { FrameInjectionResult } from "../../src/background/handoff/frame-survey.ts";
 import type { HandoffSessionEnd } from "../../src/background/handoff/handoff-session.ts";
 import { NO_LOCAL_ADDRESS_CONSENT, type LocalAddressConsent } from "../../src/background/handoff/file-address-guard.ts";
+import type { AdMirrorBrowser } from "../../src/background/handoff/ad-skip-mirror.ts";
+import type { PressSkipOutcome } from "../../src/shared/ad-watch-contract.ts";
 import { createFileReferrerRules } from "../../src/background/handoff/file-referrer-rule.ts";
 import { createLocalAddressBlock, localAddressBlockRules } from "../../src/background/handoff/local-address-block-rules.ts";
 import { createSessionRules, FIRST_REQUEST_RULE_ID, type SessionRule, type SessionRulesApi } from "../../src/background/handoff/session-rules.ts";
@@ -44,6 +46,27 @@ export function createFakeSessionRules(initialRuleIds: readonly number[] = []) {
   return { api, rules, added, requestRuleCount, addedRequestRules };
 }
 
+/** Фейк браузерной стороны дублёра кнопки пропуска (09d): журнал аренд, нажатий и выводов вперёд. */
+export function createFakeAdMirrorBrowser() {
+  const armings: { readonly tabId: number; readonly leaseMs: number }[] = [];
+  const pressed: { readonly tabId: number; readonly frameId: number }[] = [];
+  const revealed: number[] = [];
+  const notes: string[] = [];
+  const behavior: { pressOutcome: PressSkipOutcome; revealFails: boolean } = { pressOutcome: "pressed", revealFails: false };
+  const browser: AdMirrorBrowser = {
+    armAdWatch: (tabId, leaseMs) => void armings.push({ tabId, leaseMs }),
+    pressSkipInFrame: (tabId, frameId) => {
+      pressed.push({ tabId, frameId });
+      return Promise.resolve(behavior.pressOutcome);
+    },
+    revealPage: (tabId) => {
+      revealed.push(tabId);
+      return behavior.revealFails ? Promise.reject(new Error("no window")) : Promise.resolve();
+    },
+  };
+  return { browser, armings, pressed, revealed, notes, behavior };
+}
+
 /** Хост страниц экстеншена в тестах (инициатор его запросов). */
 export const EXTENSION_HOST = "extension-id";
 
@@ -63,6 +86,7 @@ export function setup(
   const sockets = recordSockets();
   const framePorts = recordFramePorts();
   const ended: HandoffSessionEnd[] = [];
+  const adMirrorFake = createFakeAdMirrorBrowser();
   const armings: { readonly tabId: number; readonly leaseMs: number }[] = [];
   let tabAlive = true;
   let tabUrl = "https://www.example.com/watch?v=1";
@@ -85,6 +109,8 @@ export function setup(
     createWebSocket: sockets.create,
     connectFrame: framePorts.connect,
     armNextVideo: (tabId, leaseMs) => void armings.push({ tabId, leaseMs }),
+    adMirrorBrowser: adMirrorFake.browser,
+    noteForDeveloper: (message) => void adMirrorFake.notes.push(message),
     executeInAllFrames: () => {
       surveyCount += 1;
       return Promise.resolve(frames);
@@ -109,6 +135,7 @@ export function setup(
     framePorts,
     ended,
     armings,
+    adMirror: adMirrorFake,
     sessionRules,
     settingFailures,
     handoffs,

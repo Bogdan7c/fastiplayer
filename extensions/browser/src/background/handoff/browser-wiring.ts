@@ -3,12 +3,17 @@
 
 import { browserApi } from "../../shared/browser-api.ts";
 import { ARM_NEXT_VIDEO_KIND, HANDOFF_PORT_NAME, type ArmNextVideoRequest, type PageCommand } from "../../shared/handoff-contract.ts";
+import { ARM_AD_WATCH_KIND, PRESS_AD_SKIP_KIND, type ArmAdWatchRequest, type PressAdSkipRequest } from "../../shared/ad-watch-contract.ts";
+import { parsePressSkipOutcome } from "../../shared/ad-watch-validation.ts";
 import { readLocalAddressSetting } from "../../shared/local-address-setting.ts";
 import type { Scheduler } from "../host-link/native-port.ts";
 import type { FramePort } from "./frame-port.ts";
 import type { ExecuteInAllFrames } from "./frame-survey.ts";
 import { createFileReferrerRules } from "./file-referrer-rule.ts";
 import { createHandOffCommandListener, createHeldVideoListener } from "./hand-off-command.ts";
+import { createAdWatchReportListener } from "./ad-watch-listener.ts";
+import type { AdMirrorBrowser } from "./ad-skip-mirror.ts";
+import { createPageReveal } from "./page-reveal.ts";
 import type { SessionDoor } from "./handoff-session.ts";
 import { createLocalAddressBlock, localAddressBlockRules } from "./local-address-block-rules.ts";
 import { createSessionRules, type SessionRulesApi } from "./session-rules.ts";
@@ -60,6 +65,29 @@ function armNextVideo(tabId: number, leaseMs: number): void {
 }
 
 /**
+ * Браузерная сторона дублёра кнопки пропуска (09d). Аренда уходит всем фреймам вкладки; нажатие — одному
+ * фрейму (`frameId`); вывод вперёд — `tabs.update` и `windows.update` без новых прав манифеста.
+ */
+const adMirrorBrowser: AdMirrorBrowser = {
+  armAdWatch(tabId, leaseMs) {
+    const request: ArmAdWatchRequest = { kind: ARM_AD_WATCH_KIND, lease_ms: leaseMs };
+    // Фрейма без нашего скрипта или закрытой вкладки достаточно для отказа: следующее продление попробует снова.
+    browserApi.tabs.sendMessage(tabId, request).catch(() => {});
+  },
+  async pressSkipInFrame(tabId, frameId) {
+    const request: PressAdSkipRequest = { kind: PRESS_AD_SKIP_KIND };
+    const reply: unknown = await browserApi.tabs.sendMessage(tabId, request, { frameId });
+    const outcome = parsePressSkipOutcome(reply);
+    if (outcome === undefined) throw new Error("the frame gave an unknown answer to press_ad_skip");
+    return outcome;
+  },
+  revealPage: createPageReveal({
+    activateTab: (tabId) => browserApi.tabs.update(tabId, { active: true }).then((tab) => (tab === undefined ? undefined : { windowId: tab.windowId })),
+    focusWindow: (windowId) => browserApi.windows.update(windowId, { focused: true }).then(() => undefined),
+  }),
+};
+
+/**
  * Сессионные правила браузера. Форма наших правил уже проверена типами модуля, браузер хочет свои
  * перечисления; в Firefox и Chrome это те же строки. API нет — вызов бросит, модуль это переживает.
  */
@@ -87,6 +115,8 @@ export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabM
     createWebSocket: (url) => new WebSocket(url) as unknown as SessionWebSocket,
     connectFrame,
     armNextVideo,
+    adMirrorBrowser,
+    noteForDeveloper: (message) => console.debug(`[fastiplayer] ${message}`),
     executeInAllFrames,
     tabModel,
     tabExists: (tabId) => browserApi.tabs.get(tabId).then(() => true, () => false),
@@ -116,6 +146,9 @@ export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabM
   );
   browserApi.runtime.onMessage.addListener(
     createHeldVideoListener(browserApi.runtime.id, (tabId, frameId, report) => handoffs.heldVideo(tabId, frameId, report)),
+  );
+  browserApi.runtime.onMessage.addListener(
+    createAdWatchReportListener(browserApi.runtime.id, (tabId, frameId, ad) => handoffs.adWatchReport(tabId, frameId, ad)),
   );
   browserApi.tabs.onRemoved.addListener((tabId) => {
     handoffs.tabRemoved(tabId);

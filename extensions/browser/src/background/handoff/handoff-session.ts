@@ -34,7 +34,6 @@ import type {
   HeldVideoReport,
   PageCommand,
   PageEvent,
-  PageEventBudgetKind,
 } from "../../shared/handoff-contract.ts";
 import { parsePageEvent, parsePageFloodNotice } from "../../shared/page-message-validation.ts";
 import {
@@ -53,6 +52,10 @@ import type { FileReferrerRules } from "./file-referrer-rule.ts";
 import type { LocalAddressBlock } from "./local-address-block-rules.ts";
 import type { FrameConnector, FramePort } from "./frame-port.ts";
 import { createDocumentTranslator, type DocumentTranslator, type OutgoingItem, type PageStreamProblem, type StreamPageEvent } from "./page-event-translator.ts";
+import { createSessionAdMirror, type AdMirrorBrowser } from "./ad-skip-mirror.ts";
+import type { HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
+
+export type { HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
 import { translatePlayerMessage } from "./player-message-translator.ts";
 import {
   NORMAL_CLOSE_CODE,
@@ -99,6 +102,10 @@ export interface HandoffSessionDependencies {
   readonly localAddressBlock: LocalAddressBlock;
   /** Взвести сторож следующего видео всем фреймам вкладки (сессия 09c2). */
   readonly armNextVideo: (tabId: number, leaseMs: number) => void;
+  /** Браузерная сторона дублёра кнопки пропуска рекламы: аренда наблюдения, нажатие, вывод вкладки (09d). */
+  readonly adMirrorBrowser: AdMirrorBrowser;
+  /** Отметка в журнал разработчика (устаревшая команда плеера, сбой вывода вкладки). */
+  readonly noteForDeveloper: (message: string) => void;
 }
 
 /** Что фон знает о вкладке: подпись окна и адрес документа. */
@@ -126,36 +133,6 @@ export interface HandoffTarget {
   readonly video: Pick<ChosenVideo, "role" | "mayBeAd">;
   /** Новый номер запроса `begin_handoff` для переезда. */
   readonly nextBeginRequestId: () => number;
-}
-
-/** Чем закончилась передача (для владельца и тестов; журнала в продукте нет). */
-export type HandoffSessionEnd =
-  | { readonly kind: "start_failed"; readonly outcome: HandOffTabOutcome }
-  | { readonly kind: "page_gone"; readonly reason: TabGoneReason }
-  /** Страница сама забрала видео, вкладка на месте (`handoff_ended{element_released}`, 4009). */
-  | { readonly kind: "page_took_video_back" }
-  /** Страница сняла тень сама без нашей просьбы — сбой внутри страницы (4003, Д-6). */
-  | { readonly kind: "page_side_failure" }
-  /** Тень замолчала дольше предела пульса (4003, решение 180). */
-  | { readonly kind: "shadow_silent" }
-  /** Страница превысила бюджет событий или счётчик копий байтов (4003, решение 200); вид — только для журнала. */
-  | { readonly kind: "page_flood"; readonly overBudget: PageEventBudgetKind | "forwarded_bytes" }
-  /** Страница назвала адрес файла, который правило запрещает (4003, решение 199). */
-  | { readonly kind: "local_address_refused" }
-  | { readonly kind: "returned_to_page" }
-  | { readonly kind: "stream_rejected" }
-  | { readonly kind: "player_ended"; readonly cause: SocketEndCause }
-  | { readonly kind: "page_stream_problem"; readonly problem: PageStreamProblem };
-
-export interface HandoffSession {
-  /** Исход старта: `started` или причина отказа. Всегда завершается. */
-  readonly outcome: Promise<HandOffTabOutcome>;
-  /** Браузер сообщил, что вкладка закрыта (`tabs.onRemoved`). */
-  notifyTabRemoved(): void;
-  /** Сторож задержал видео в этом фрейме: переехать на него или отпустить. */
-  heldVideo(frameId: number, report: HeldVideoReport): HeldVideoReply;
-  /** На экране плеера реклама (решение 204; сессия 09d читает только это). */
-  adOnScreen(): boolean;
 }
 
 /**
@@ -205,6 +182,15 @@ export function startHandoffSession(
     armFrames: (leaseMs) => dependencies.armNextVideo(target.tabId, leaseMs),
     onWaitExpired: () => endForNoNextVideo(),
   });
+  // Дублёр кнопки пропуска рекламы (09d): аренда наблюдения во фреймах, сводка `ad_state`, команды плеера.
+  const adMirror = createSessionAdMirror({
+    tabId: target.tabId,
+    scheduler: dependencies.scheduler,
+    browser: dependencies.adMirrorBrowser,
+    sessionSaysAdOnScreen: () => relocation.adOnScreen(),
+    sendAdState: (ad) => socket?.enqueue({ kind: "message", message: { type: "ad_state", ad } }),
+    note: dependencies.noteForDeveloper,
+  });
   const releaseDemand = dependencies.door.acquireDemand(DEMAND_REASON);
   let phase: SessionPhase = "opening";
   let place: SessionPlace = { frameId: target.frameId, beginRequestId: target.beginRequestId, fileAddressRule: target.fileAddressRule };
@@ -239,6 +225,7 @@ export function startHandoffSession(
     endTimer.cancel();
     silenceWatch.stop();
     relocation.stop();
+    adMirror.stop();
     // Конец сеанса: текущий запрос файла обрывается, ни рамки после конца.
     disposeFileFeed();
     if (framePort !== undefined) disconnectQuietly(framePort);
@@ -513,6 +500,7 @@ export function startHandoffSession(
     phase = "active";
     silenceWatch.start();
     relocation.videoStarted(incomingVideo);
+    adMirror.videoStarted();
     resolveOutcome({ kind: "started" });
   }
 
@@ -648,6 +636,12 @@ export function startHandoffSession(
         }
         return;
       }
+      case "skip_ad":
+        adMirror.skipAd();
+        return;
+      case "reveal_page":
+        adMirror.revealPage();
+        return;
       case "fetch_range":
         // Байты файла просят только в поколении-файле. Без файла запрос не наш (плеер ошибся
         // сам): его чтение честно истечёт у плеера, сеанс страницы это не ломает.
@@ -791,5 +785,5 @@ export function startHandoffSession(
   }
 
   openPlayerSession().catch((error: unknown) => failStart({ kind: "failed", reason: `open_session_threw:${String(error)}` }));
-  return { outcome, notifyTabRemoved, heldVideo, adOnScreen: () => relocation.adOnScreen() };
+  return { outcome, notifyTabRemoved, heldVideo, adOnScreen: () => relocation.adOnScreen(), adWatchReport: adMirror.acceptFrameReport };
 }

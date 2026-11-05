@@ -7,6 +7,7 @@
 // после конца передачи вкладку можно отдать снова — с новым ключом сеанса.
 
 import type { HandOffTabOutcome, HeldVideoReply, HeldVideoReport } from "../../shared/handoff-contract.ts";
+import type { PageAdState } from "../../protocol/index.ts";
 import type { TabModel } from "../tab-model/tab-model.ts";
 import type { TabRefusal } from "../tab-model/tab-snapshot.ts";
 import type { LocalAddressSetting } from "../../shared/local-address-setting.ts";
@@ -44,6 +45,8 @@ export interface TabHandoffs {
   heldVideo(tabId: number, frameId: number, report: HeldVideoReport): HeldVideoReply;
   /** На экране плеера реклама; сеанса нет — `false` (решение 204, сессия 09d). */
   isAdOnScreen(tabId: number): boolean;
+  /** Донесение фрейма о рекламе (09d). Нет сеанса у вкладки — игнорируется: страница вне передачи молчит. */
+  adWatchReport(tabId: number, frameId: number, ad: PageAdState): void;
   /** Вкладки, у которых передача стартует или идёт. */
   activeTabIds(): number[];
 }
@@ -209,6 +212,7 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     },
     heldVideo: (tabId, frameId, report) => entries.get(tabId)?.session?.heldVideo(frameId, report) ?? "release",
     isAdOnScreen: (tabId) => entries.get(tabId)?.session?.adOnScreen() ?? false,
+    adWatchReport: (tabId, frameId, ad) => entries.get(tabId)?.session?.adWatchReport(frameId, ad),
     activeTabIds: () => [...entries.keys()],
   };
 }

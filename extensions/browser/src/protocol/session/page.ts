@@ -27,6 +27,7 @@ import {
   mediaTimeOffsetCodec,
   playbackRateCodec,
 } from "../time.ts";
+import { type PageAdState, pageAdStateCodec, validatePageAdState } from "./ad-state.ts";
 import { type VariantMenu, variantMenuCodec, validateVariantMenu } from "./variants.ts";
 
 /** Конец удаляемого промежутка буфера. */
@@ -100,6 +101,7 @@ export type PageSessionMessage =
   | { readonly type: "duration_changed"; readonly generation: StreamGeneration; readonly duration: MediaDuration }
   | { readonly type: "end_of_stream"; readonly generation: StreamGeneration }
   | { readonly type: "page_playback"; readonly request: PagePlaybackRequest }
+  | { readonly type: "ad_state"; readonly ad: PageAdState }
   | { readonly type: "variant_menu_changed"; readonly menu: VariantMenu }
   | { readonly type: "range_fetch_finished"; readonly request_id: number; readonly outcome: RangeFetchOutcome }
   | { readonly type: "tab_gone"; readonly reason: TabGoneReason };
@@ -164,6 +166,7 @@ export const pageSessionCodec: TaggedUnionCodec<PageSessionMessage> = taggedUnio
   end_of_stream: { generation: streamGenerationCodec },
   page_playback: { request: pagePlaybackRequestCodec },
   variant_menu_changed: { menu: variantMenuCodec },
+  ad_state: { ad: pageAdStateCodec },
   range_fetch_finished: { request_id: rangeRequestIdCodec, outcome: rangeFetchOutcomeCodec },
   tab_gone: { reason: stringEnum<TabGoneReason>(["closed", "navigated_away", "browser_closing"]) },
 });
@@ -175,6 +178,9 @@ export function validatePageSession(message: PageSessionMessage): void {
   }
   if (message.type === "variant_menu_changed") {
     validateVariantMenu(message.menu);
+  }
+  if (message.type === "ad_state") {
+    validatePageAdState(message.ad);
   }
 }
 
