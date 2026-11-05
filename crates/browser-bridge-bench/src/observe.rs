@@ -9,6 +9,6 @@ mod summary_digest;
 pub use error::ObserveError;
 pub use host_evidence::{HostLogEvidence, parse_host_evidence, read_host_evidence};
 pub use player_log::{
-    EndNotice, FrameEvidence, FrameGrowth, PlayerLog, parse_end_notice, parse_summary,
+    EndNotice, FrameEvidence, FrameGrowth, PlayerLog, parse_end_notice, parse_loads, parse_summary,
 };
 pub use summary_digest::SummaryDigest;

@@ -1,7 +1,7 @@
 //! `page-ends`: страница сама заканчивает передачу — и плеер обязан честно, быстро и
 //! правильно это показать (сессия 09a2, решения 179 и 180).
 //!
-//! Три страницы, три честных конца:
+//! Страницы и честные концы:
 //!  * `source-withdrawn` (Д-3): страница сняла источник и ничего не поставила. Тень ждёт
 //!    допуск на пустой источник (5 с) и кончает сеанс кодом 4009 → плеер: «The page took the
 //!    video back»;
@@ -10,7 +10,11 @@
 //!  * `page-freeze` (Д-2): главный поток страницы замёрз на 15 с, пульс «тень жива» пропал.
 //!    Через ~10 с тишины экстеншен закрывает связь кодом 4003 → плеер: «Stream error».
 //!
-//! Что общего у всех трёх: сообщение в журнале окна нужное и вовремя, окно плеера закрылось,
+//! Четвёртая (09c2, решение 204): `ad-no-film`. Реклама кончилась, страница убрала элемент и больше
+//! ничего не ставит. Плеер ждёт следующее видео 15 с и кончает сеанс тем же честным концом, что
+//! и `source-withdrawn`.
+//!
+//! Что общего у всех четырёх: сообщение в журнале окна нужное и вовремя, окно плеера закрылось,
 //! доигрывания не было (`Playback drain finished` в журнале нет), страница отчиталась `pass`.
 //! Приговор [`judge_page_end`] чистый: на вход только собранные улики.
 
@@ -41,6 +45,8 @@ const NOTICE_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTROLLABLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Сколько окно плеера может показывать сообщение до закрытия.
 const WINDOW_GONE_TIMEOUT: Duration = Duration::from_secs(20);
+/// Сколько ждать метку страницы (реклама 10 с, передача посреди неё, запас на медленную машину).
+const MARKER_TIMEOUT: Duration = Duration::from_secs(45);
 /// Строка журнала плеера, которой при честном конце БЫТЬ НЕ ДОЛЖНО: доигрывание буфера.
 const DRAIN_FINISHED_MARKER: &str = "Playback drain finished";
 
@@ -80,6 +86,16 @@ impl NoticeWindow {
     }
 }
 
+/// От какого момента отсчитываются сроки сообщения.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NoticeClock {
+    /// От команды робота странице (страница сама ничего не делает до неё).
+    FromCommand,
+    /// От метки в журнале страницы: страница сама решает, когда «видео ушло» (конец рекламы),
+    /// и пишет метку в ту же задачу. Команда странице тогда только подтверждает выполненное.
+    FromPageMarker(&'static str),
+}
+
 /// Страница сценария и то, что должно из неё получиться.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct EndPage {
@@ -91,6 +107,8 @@ pub(super) struct EndPage {
     pub(super) expected: ExpectedEnd,
     /// В какие сроки.
     pub(super) window: NoticeWindow,
+    /// От какого момента сроки.
+    pub(super) clock: NoticeClock,
 }
 
 /// Страницы сценария. Сроки — по решениям 179/180 с запасом на опрос команд (250 мс), пульс
@@ -105,6 +123,7 @@ pub(super) const END_PAGES: &[EndPage] = &[
             earliest: EMPTY_SOURCE_GRACE.saturating_sub(Duration::from_secs(1)),
             latest: EMPTY_SOURCE_GRACE.saturating_add(Duration::from_secs(7)),
         },
+        clock: NoticeClock::FromCommand,
     },
     // Не-MSE источник: сразу, строго раньше допуска на пустой источник.
     EndPage {
@@ -115,6 +134,7 @@ pub(super) const END_PAGES: &[EndPage] = &[
             earliest: Duration::ZERO,
             latest: EMPTY_SOURCE_GRACE.saturating_sub(Duration::from_millis(500)),
         },
+        clock: NoticeClock::FromCommand,
     },
     // Тишина пульса 10 с (последний пульс мог быть за ≤ 1 с до заморозки) + опрос команд.
     EndPage {
@@ -125,6 +145,19 @@ pub(super) const END_PAGES: &[EndPage] = &[
             earliest: Duration::from_secs(8),
             latest: Duration::from_secs(15),
         },
+        clock: NoticeClock::FromCommand,
+    },
+    // Реклама кончилась и убрана, следующего видео нет: плеер ждёт 15 с (`NEXT_VIDEO_WAIT_MS`).
+    // Срок от метки страницы `ad-removed`, она пишется в той же задаче, что и `ended`.
+    EndPage {
+        id: "ad-no-film",
+        hook: "ad-no-film",
+        expected: PAGE_TOOK_VIDEO_BACK,
+        window: NoticeWindow {
+            earliest: Duration::from_secs(14),
+            latest: Duration::from_secs(18),
+        },
+        clock: NoticeClock::FromPageMarker("ad-removed"),
     },
 ];
 
@@ -187,11 +220,15 @@ fn drive(
     }
     run.tell_page("handed-off");
 
+    // Страница, которая сама решает, когда видео «ушло» (конец рекламы), отсчёт сроков начинает
+    // с метки в своём журнале. Ловим её ДО ожидания кадров: сводки плеера приходят раз в 10 с,
+    // и к их приходу метка уже давно в журнале, а «сейчас» было бы поздним началом отсчёта.
+    let clock_start = clock_start_of(&run, &page);
     // Сначала доказываем, что передача состоялась: без неё «конец сеанса» ничего не значит.
     let control = PlayerControl::on_bus(environment.bus_address()?);
-    let observation = match start_of_session(&mut run, &control)? {
-        Ok(()) => provoke_end(&mut run, &control, page),
-        Err(message) => EndObservation::not_reached(&message),
+    let observation = match (start_of_session(&mut run, &control)?, clock_start) {
+        (Ok(()), Ok(started)) => provoke_end(&mut run, &control, page, started),
+        (Err(message), _) | (Ok(()), Err(message)) => EndObservation::not_reached(&message),
     };
 
     let page_report = run.finish_page();
@@ -213,6 +250,18 @@ fn drive(
             page_log: format_browser_log(&page_log),
         },
     ))
+}
+
+/// Момент, от которого считаются сроки: для страницы с меткой — миг, когда робот увидел метку.
+/// `None` — отсчёт от команды (его выберет `provoke_end`).
+fn clock_start_of(run: &HandoffRun<'_>, page: &EndPage) -> Result<Option<Instant>, String> {
+    match page.clock {
+        NoticeClock::FromCommand => Ok(None),
+        NoticeClock::FromPageMarker(marker) => run
+            .wait_page_log_line(marker, MARKER_TIMEOUT)
+            .map(|_| Some(Instant::now()))
+            .map_err(|message| format!("the page never wrote '{marker}': {message}")),
+    }
 }
 
 /// Передача состоялась: пропуск от посредника, кадры в плеере, окно управляемо.
@@ -259,13 +308,18 @@ impl EndObservation {
 }
 
 /// Команда странице → ждём сообщение плеера → ждём, пока окно уйдёт → ждём подтверждение.
-fn provoke_end(run: &mut HandoffRun<'_>, control: &PlayerControl, page: EndPage) -> EndObservation {
+fn provoke_end(
+    run: &mut HandoffRun<'_>,
+    control: &PlayerControl,
+    page: EndPage,
+    clock_started_at: Option<Instant>,
+) -> EndObservation {
     let command = format!("hook:{}", page.hook);
     // Строки журнала до команды (в том числе сообщения прошлых окон) в счёт не идут.
     if let Err(error) = run.player_log.skip_history() {
         return EndObservation::not_reached(&format!("cannot read the player log: {error}"));
     }
-    let started = Instant::now();
+    let started = clock_started_at.unwrap_or_else(Instant::now);
     run.tell_page(&command);
     let notice = run
         .player_log
@@ -517,6 +571,36 @@ mod tests {
     }
 
     #[test]
+    fn the_ad_without_a_film_must_wait_the_full_fifteen_seconds_from_the_page_marker() {
+        let ad = page("ad-no-film");
+        // Срок отсчитывается от метки страницы, и страница обязана её писать.
+        let NoticeClock::FromPageMarker(marker) = ad.clock else {
+            panic!("ad-no-film counts from a page marker");
+        };
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("site/pages/ad-no-film.html"),
+        )
+        .expect("the page");
+        assert!(source.contains(&format!("ctx.log('{marker}')")));
+        // Раньше 14 с продукт не дождался следующего видео, позже 18 с — не уложился.
+        for (seconds, verdict_word) in [(10, "too early"), (30, "too late")] {
+            let mut evidence = healthy(&ad);
+            evidence.observation.notice = Ok((
+                notice("page_took_video_back", "page_took_video_back", "none"),
+                Duration::from_secs(seconds),
+            ));
+            let verdict = judge_page_end(&ad, &evidence);
+            assert_eq!(verdict.outcome, Outcome::Fail, "{seconds} s");
+            assert!(verdict.detail.contains(verdict_word), "{}", verdict.detail);
+        }
+        // Доигрывание после конца рекламы без фильма — тоже провал.
+        let mut drained = healthy(&ad);
+        drained.drain_lines =
+            vec!["INFO Playback drain finished class=page_took_video_back".into()];
+        assert_eq!(judge_page_end(&ad, &drained).outcome, Outcome::Fail);
+    }
+
+    #[test]
     fn a_file_source_must_end_faster_than_the_empty_source_grace() {
         let file = page("source-to-file");
         assert!(file.window.latest < EMPTY_SOURCE_GRACE);
@@ -628,7 +712,12 @@ mod tests {
         }
         assert_eq!(
             end_page_ids(),
-            ["source-withdrawn", "source-to-file", "page-freeze"]
+            [
+                "source-withdrawn",
+                "source-to-file",
+                "page-freeze",
+                "ad-no-film"
+            ]
         );
     }
 }

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ad-film-frames</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>ad-film-frames</h1>
+
+<script type="module">
+import { loadCatalog } from '../lib/bench-player.js';
+import { runAdHopScenario, startFilmNow } from '../lib/ad-hop-kit.js';
+
+// Реклама в iframe ДРУГОГО origin (как `iframe-cross-origin`), фильм в родительском документе.
+// По `ended` во фрейме страница удаляет рекламный iframe из DOM и в той же задаче запускает фильм.
+// Это переезд между фреймами: новый порт, другой документ, тот же сеанс.
+
+/** Сколько ждём сообщение «реклама пошла» от фрейма, мс. */
+const FRAME_PLAYING_WAIT_MS = 30000;
+
+await runAdHopScenario('ad-film-frames', async (ctx, recorder) => {
+  const { otherOrigin, run, handoff, mode, reportOrigin } = ctx.params;
+  if (!otherOrigin) throw new Error('other_origin parameter is required');
+  const frameOrigin = new URL(otherOrigin).origin;
+  ctx.check('origins-differ', frameOrigin !== location.origin, `main=${location.origin}, ad frame=${frameOrigin}`);
+  const catalog = await loadCatalog();
+  let filmSession = null;
+  const frame = document.createElement('iframe');
+  const waiting = new Map();
+  const arrived = (kind) => new Promise((resolve) => waiting.set(kind, resolve));
+  const playing = arrived('playing');
+  window.addEventListener('message', (event) => {
+    const message = event.data?.adFrame;
+    if (event.origin !== frameOrigin || !message) return;
+    if (message.kind === 'ended') {
+      // Страница убирает рекламный фрейм из документа и сразу запускает фильм.
+      recorder.noteExternalAdEnded('ad', message.realFrames);
+      frame.remove();
+      ctx.log('ad-removed');
+      filmSession = recorder.guard(startFilmNow(ctx, recorder, catalog));
+    } else {
+      waiting.get(message.kind)?.(message);
+    }
+  });
+  const query = new URLSearchParams({ run, report_origin: reportOrigin });
+  if (handoff) query.set('mode', mode);
+  frame.src = `${otherOrigin}/site/pages/ad-frame-inner.html?${query}`;
+  frame.width = 520;
+  frame.height = 320;
+  document.body.append(frame);
+  recorder.onHandedOff(() => frame.contentWindow?.postMessage({ adFrame: 'handed-off' }, frameOrigin));
+  const started = await Promise.race([playing, new Promise((resolve) => setTimeout(() => resolve(null), FRAME_PLAYING_WAIT_MS))]);
+  ctx.check('ad-playing-in-frame', Boolean(started?.ok), started ? started.detail : `no message from the ad frame in ${FRAME_PLAYING_WAIT_MS} ms`);
+  ctx.check('ad-frame-has-real-counter', !handoff || Boolean(started?.probeAvailable), 'the ad frame reads the clean frame counter');
+  return {
+    expectedAdEnded: ['ad'],
+    expectFilm: true,
+    cleanup: async () => {
+      ctx.check('ad-frame-removed', !frame.isConnected, `ad frame in document: ${frame.isConnected}`);
+      await (await filmSession)?.player.destroy();
+    },
+  };
+});
+</script>
+</body>
+</html>

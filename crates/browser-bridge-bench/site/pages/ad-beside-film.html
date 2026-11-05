@@ -4,27 +4,24 @@
 <meta charset="utf-8">
 <title>ad-beside-film</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;width:640px;height:360px;display:block}</style>
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
 </head>
 <body>
 <h1>ad-beside-film</h1>
 
 <script type="module">
-import { runScenario } from '../lib/bench-report.js';
-import { checkPlaying, waitFor } from '../lib/bench-checks.js';
+import { checkPlaying } from '../lib/bench-checks.js';
 import { loadCatalog } from '../lib/bench-player.js';
-import { mountVideo, startAsset, observeHandoff } from '../lib/scenario-kit.js';
+import { mountVideo, startAsset } from '../lib/scenario-kit.js';
+import { runAdHopScenario, mediaUrl, playAd, removeAdLikeLiveSite } from '../lib/ad-hop-kit.js';
 
-// Живая форма Ashdi (находка живой проверки 09c): фильм УЖЕ загружен в MediaSource и стоит у начала,
-// а поверх него играет рекламный файл с обычного домена, которого нет в списке рекламных. Страница
-// ждёт конца рекламы и только потом запускает фильм.
-// Экстеншен обязан отдать плееру фильм и не трогать рекламу: она доигрывает в браузере. Действие
-// `ad-over` — конец рекламы: страница убирает ролик и запускает фильм, он идёт под тенью.
+// Живая форма Ashdi (находка живой проверки 09c): фильм УЖЕ загружен в MediaSource и стоит у начала
+// на паузе, а поверх него играет рекламный файл с обычного домена, которого нет в списке рекламных.
+// По `ended` рекламы страница убирает ролик и в той же задаче зовёт `film.play()`.
+// С 09c2 передача посреди рекламы разрешена: сеанс начинается на рекламе, по её концу уезжает на
+// фильм в том же окне (фильм уже стоит в другом элементе той же страницы).
 
-/** Сколько ждём хода часов фильма после конца рекламы, мс. */
-const FILM_CLOCK_WAIT_MS = 10000;
-
-await runScenario('ad-beside-film', async (ctx) => {
+await runAdHopScenario('ad-beside-film', async (ctx, recorder) => {
   const catalog = await loadCatalog();
   const film = mountVideo(document.body, 'film');
   const session = await startAsset(ctx, 'h264-aac', { video: film });
@@ -32,28 +29,23 @@ await runScenario('ad-beside-film', async (ctx) => {
   film.pause();
   film.currentTime = 0;
   ctx.check('film-waits', film.paused, `paused=${film.paused}`);
+  session.player.followPlayerSeeks();
 
-  // Реклама: файл с домена страницы, без цикла (цикл — признак баннера, а не рекламы).
   const ad = mountVideo(document.body, 'ad');
-  ad.src = `/media/${catalog.assets['ad-preroll'].url}`;
-  const replayAd = () => { ad.currentTime = 0; ad.play().catch(() => {}); };
-  ad.addEventListener('ended', replayAd);
-  await ad.play().catch(async () => { ad.muted = true; await ad.play(); });
-  await checkPlaying(ctx, ad, 'ad-playing');
+  recorder.trackAd(ad, 'ad');
+  ad.addEventListener('ended', () => {
+    removeAdLikeLiveSite(ad);
+    ctx.log('ad-removed');
+    recorder.guard(recorder.playFilm(film));
+  });
+  ad.src = mediaUrl(catalog, 'ad-preroll');
+  await playAd(ctx, ad);
   ctx.check('ad-duration-known', Number.isFinite(ad.duration), `ad duration=${ad.duration}`);
-
-  /** Конец рекламы по команде робота: ролик убран, фильм запущен страницей. */
-  const adOver = async (hookCtx) => {
-    ad.removeEventListener('ended', replayAd);
-    ad.remove();
-    const clockBefore = film.currentTime;
-    await film.play().catch(async () => { film.muted = true; await film.play(); });
-    const advanced = await waitFor(() => film.currentTime >= clockBefore + 1, FILM_CLOCK_WAIT_MS);
-    hookCtx.check('film-plays-under-shadow', advanced, `film clock ${clockBefore.toFixed(2)} -> ${film.currentTime.toFixed(2)}`);
+  return {
+    expectedAdEnded: ['ad'],
+    expectFilm: true,
+    cleanup: () => session.player.destroy(),
   };
-
-  if (ctx.params.handoff) await observeHandoff(ctx, session, { 'ad-over': adOver });
-  await session.player.destroy();
 });
 </script>
 </body>

@@ -193,16 +193,26 @@ ffmpeg "${GLOBAL_FLAGS[@]}" -f lavfi -i "$(video_filter_graph 1280x720 60 48 'FI
   -threads 1 "${X264_GOP[@]}" -c:a aac -b:a 96k -ac 2 -movflags +faststart "$OUT_DIR/progressive/h264-aac-long.mp4"
 register_asset progressive-long-h264-aac file progressive/h264-aac-long.mp4 video/mp4 60.0
 
-echo "generate.sh: ad-preroll (5 s, red picture with AD label)"
-AD_TEXT=""
-if [ "$HAVE_DRAWTEXT" = 1 ]; then
-  AD_TEXT=",drawtext=fontfile='${FONT_FILE}':text='AD  %{pts\\:hms}':fontsize=80:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2"
-fi
-ffmpeg "${GLOBAL_FLAGS[@]}" -f lavfi -i "color=c=0xcc2200:size=640x360:rate=${FRAME_RATE}:duration=5${AD_TEXT}" \
-  -f lavfi -i "sine=frequency=1000:sample_rate=48000:duration=5" \
-  "${BITEXACT_FLAGS[@]}" -c:v libx264 -profile:v high -level 3.0 -pix_fmt yuv420p -preset veryfast -b:v 300k \
-  -threads 1 "${X264_GOP[@]}" -c:a aac -b:a 64k -ac 2 -movflags +faststart "$OUT_DIR/progressive/ad.mp4"
-register_asset ad-preroll file progressive/ad.mp4 video/mp4 5.0
+# Реклама: ролики БЕЗ цикла, как живая реклама. Длина 10 и 8 с (сессия 09c2): передача робота должна
+# попасть ПОСРЕДИ ролика (страница готова через ~3 с, сеанс плеера открывается ещё несколько секунд),
+# а конец рекламы под тенью должен успеть наступить за окно прогона. Второй ролик (другой цвет и тон)
+# нужен цепочке реклам: страница обязана отличать «кончился первый ролик» от «кончился второй».
+# make_ad_clip: $1 имя файла, $2 цвет, $3 подпись, $4 частота тона, $5 длительность (с), $6 id ассета.
+make_ad_clip() {
+  local file_name="$1" color="$2" label="$3" tone_hz="$4" seconds="$5" asset_id="$6"
+  echo "generate.sh: ${asset_id} (${seconds} s, ${label} picture)"
+  local ad_text=""
+  if [ "$HAVE_DRAWTEXT" = 1 ]; then
+    ad_text=",drawtext=fontfile='${FONT_FILE}':text='${label}  %{pts\\:hms}':fontsize=80:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2"
+  fi
+  ffmpeg "${GLOBAL_FLAGS[@]}" -f lavfi -i "color=c=${color}:size=640x360:rate=${FRAME_RATE}:duration=${seconds}${ad_text}" \
+    -f lavfi -i "sine=frequency=${tone_hz}:sample_rate=48000:duration=${seconds}" \
+    "${BITEXACT_FLAGS[@]}" -c:v libx264 -profile:v high -level 3.0 -pix_fmt yuv420p -preset veryfast -b:v 300k \
+    -threads 1 "${X264_GOP[@]}" -c:a aac -b:a 64k -ac 2 -movflags +faststart "$OUT_DIR/progressive/${file_name}"
+  register_asset "$asset_id" file "progressive/${file_name}" video/mp4 "${seconds}.0"
+}
+make_ad_clip ad.mp4 0xcc2200 "AD" 1000 10 ad-preroll
+make_ad_clip ad2.mp4 0x2244cc "AD 2" 700 8 ad-second
 
 echo "generate.sh: hls-h264-aac (MPEG-TS segments, 12 s)"
 mkdir -p "$OUT_DIR/hls"

@@ -10,25 +10,21 @@
 <h1>ad-preroll</h1>
 
 <script type="module">
-import { runScenario, UnsupportedError } from '../lib/bench-report.js';
-import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
-import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
-import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount, observeHandoff } from '../lib/scenario-kit.js';
-import { waitForRobotCommand } from '../lib/handoff-mode.js';
+import { loadCatalog } from '../lib/bench-player.js';
+import { mountVideo } from '../lib/scenario-kit.js';
+import { runAdHopScenario, mediaUrl, playAd, removeAdLikeLiveSite, startFilmNow } from '../lib/ad-hop-kit.js';
 
-// Реклама отдельным элементом, потом фильм в другом элементе (09c, решение 201).
-// Обычный режим: реклама играет до конца, элемент удаляется, фильм стартует.
-// Режим передачи (две фазы под командами робота):
-//   1. Реклама играет по кругу, а адрес её файла — рекламный домен (`AD_HOST` ведёт на сервер
-//      стенда). Страница пишет `ad-ready`; робот просит передачу и обязан получить `ad_playing`
-//      (фильма ещё нет). Потом робот шлёт `start-film`.
-//   2. Рекламу удаляем, фильм стартует в другом элементе, дальше обычная фаза передачи
-//      (`handoff-ready`): робот отдаёт фильм плееру.
-// Имя `AD_HOST` дублирует `AD_HOST` в `src/scenarios/capture/ad_preroll.rs` (тест их сверяет).
+// Реклама отдельным элементом, потом фильм в другом элементе (09c, решение 201; с 09c2 передача
+// во время рекламы разрешена и сеанс переезжает на фильм сам).
+// Ход страницы как у живого сайта: реклама играет БЕЗ цикла; по её `ended` страница делает
+// `src=""; load(); remove()` и В ТОЙ ЖЕ ЗАДАЧЕ создаёт элемент фильма и зовёт `play()`.
+// Робот передаёт вкладку посреди рекламы (метка `handoff-ready`), дальше судья стенда смотрит,
+// что фильм дошёл до плеера в том же окне (`src/scenarios/capture/ad_hop`).
+// Адрес файла рекламы — рекламный домен: `AD_HOST` ведёт на сервер стенда. Имя дублирует `AD_HOST`
+// в `src/scenarios/capture/ad_hop.rs` (тест их сверяет).
 //
-// Вариант `&ad=unlisted` — живая форма Tortuga (находка живой проверки 09c): домен файла НЕ рекламный
-// по списку, цикла нет, а рядом стоит пустой `<video>` той же площади: плеер снял с него источник на
-// время рекламы. Распознать рекламу можно только по устройству страницы.
+// Вариант `&ad=unlisted` — живая форма Tortuga: домен файла НЕ рекламный по списку, а рядом стоит
+// пустой `<video>` той же площади (плеер сайта снял с него источник на время рекламы).
 
 /** Рекламный домен для файла ролика (суффикс `doubleclick.net` есть в правилах экстеншена). */
 const AD_HOST = 'ad.doubleclick.net';
@@ -42,45 +38,37 @@ function stackInPlayerBox(video) {
 }
 
 /** Адрес файла рекламы: в режиме передачи — под рекламным доменом, иначе обычный. */
-function adFileUrl(ctx, adAsset) {
-  if (!ctx.params.handoff || UNLISTED_AD) return `/media/${adAsset.url}`;
+function adFileUrl(ctx, catalog) {
+  if (!ctx.params.handoff || UNLISTED_AD) return mediaUrl(catalog, 'ad-preroll');
   const { port } = new URL(ctx.params.reportOrigin);
-  return `http://${AD_HOST}:${port}/media/${adAsset.url}`;
+  return `http://${AD_HOST}:${port}${mediaUrl(catalog, 'ad-preroll')}`;
 }
 
-await runScenario('ad-preroll', async (ctx) => {
+await runAdHopScenario('ad-preroll', async (ctx, recorder) => {
   const catalog = await loadCatalog();
-  const adAsset = catalog.assets['ad-preroll'];
-  // Пустой плеер под рекламой: тот же бокс, источника нет.
   const emptySlot = UNLISTED_AD ? mountVideo(document.body, 'empty-slot') : null;
   const ad = mountVideo(document.body, 'ad');
   if (UNLISTED_AD) [emptySlot, ad].forEach(stackInPlayerBox);
-  ad.src = adFileUrl(ctx, adAsset);
-  // В режиме передачи реклама не должна закончиться раньше, чем робот ответит: играет по кругу.
-  // Вариант без домена из списка запускает ролик заново сам: `loop` — признак баннера, а не рекламы.
-  const replayAd = () => { ad.currentTime = 0; ad.play().catch(() => {}); };
-  if (UNLISTED_AD) ad.addEventListener('ended', replayAd);
-  ad.loop = ctx.params.handoff && !UNLISTED_AD;
-  await ad.play().catch(async () => { ad.muted = true; await ad.play(); });
-  await checkPlaying(ctx, ad, 'ad-playing');
-  if (ctx.params.handoff) {
-    ctx.log('ad-ready');
-    await waitForRobotCommand(ctx, 'start-film');
-  } else {
-    const ended = await waitFor(() => ad.ended, 8000);
-    ctx.check('ad-ended', ended, `ad currentTime=${ad.currentTime.toFixed(2)} of ${adAsset.duration_s} s`);
-  }
-  ad.removeEventListener('ended', replayAd);
-  ad.remove();
-  emptySlot?.remove();
-  ctx.check('ad-element-removed', document.getElementById('ad') === null && document.querySelectorAll('video').length === 0,
-    `videos in document=${document.querySelectorAll('video').length}`);
-  // Основной плеер стартует в ДРУГОМ элементе.
-  const main = mountVideo(document.body, 'main');
-  const session = await startAsset(ctx, 'h264-aac', { video: main });
-  await checkPlaying(ctx, main, 'main-playing');
-  if (ctx.params.handoff) await observeHandoff(ctx, session);
-  await session.player.destroy();
+  recorder.trackAd(ad, 'ad');
+  let filmSession = null;
+  ad.addEventListener('ended', () => {
+    removeAdLikeLiveSite(ad);
+    emptySlot?.remove();
+    ctx.log('ad-removed');
+    // Фильм в той же задаче, что и снятие рекламы.
+    filmSession = recorder.guard(startFilmNow(ctx, recorder, catalog));
+  });
+  ad.src = adFileUrl(ctx, catalog);
+  await playAd(ctx, ad);
+  return {
+    expectedAdEnded: ['ad'],
+    expectFilm: true,
+    cleanup: async () => {
+      ctx.check('ad-element-removed', document.getElementById('ad') === null,
+        `ad element in document: ${document.getElementById('ad') !== null}`);
+      await (await filmSession)?.player.destroy();
+    },
+  };
 });
 </script>
 </body>

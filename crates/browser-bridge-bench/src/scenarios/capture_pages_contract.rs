@@ -2,7 +2,7 @@
 //! действия страницы (`hook:<имя>`) действительно объявлено в её исходнике. Без этого робот
 //! послал бы команду, которую страница не знает, и стенд упал бы только на живом прогоне.
 
-use super::capture::{CAPTURE_PAGES, capture_page_ids};
+use super::capture::{AD_HOP_PAGES, CAPTURE_PAGES, capture_page_ids};
 use super::page_catalog::PAGE_SCENARIOS;
 
 /// Страницы `capture` — известные страницы каталога, а имя действия есть в самой странице
@@ -27,6 +27,26 @@ fn capture_pages_exist_in_the_catalog_and_declare_their_hooks() {
     }
 }
 
+/// Страницы «реклама → фильм» (09c2) известны каталогу, а их действие объявлено в странице.
+#[test]
+fn ad_hop_pages_are_capture_pages_with_declared_hooks() {
+    let ids = capture_page_ids();
+    for page in AD_HOP_PAGES {
+        assert!(
+            ids.contains(&page.page_id),
+            "{} is missing from capture",
+            page.page_id
+        );
+        if let Some(hook) = page.hook {
+            assert!(
+                page_source_with_libs(page.page_id).contains(&format!("'{hook}'")),
+                "page {} does not declare the hook '{hook}'",
+                page.page_id
+            );
+        }
+    }
+}
+
 #[test]
 fn capture_page_ids_lists_every_capture_page_including_the_new_variants() {
     let ids = capture_page_ids();
@@ -35,6 +55,8 @@ fn capture_page_ids_lists_every_capture_page_including_the_new_variants() {
         "mse-generation-swap-reload",
         "mse-generation-swap-delayed",
         "cached-descriptors",
+        "ad-beside-film",
+        "ad-chain",
     ] {
         assert!(
             ids.contains(&expected),

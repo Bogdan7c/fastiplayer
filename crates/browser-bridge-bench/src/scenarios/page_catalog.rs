@@ -59,6 +59,14 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("ad-preroll"),
     // 09c, живая проверка: форма Ashdi — реклама с домена не из списка поверх ждущего фильма.
     page("ad-beside-film"),
+    // 09c2, решения 201 и 204: реклама → фильм в одном окне (сценарий `capture`, судья `ad_hop`).
+    page("ad-film-frames"),
+    page("ad-film-same-element"),
+    page("ad-chain"),
+    page("ad-skipped-midway"),
+    page("ad-then-banner"),
+    // 09c2: реклама кончилась, фильма нет — честный конец через 15 с (сценарий `page-ends`).
+    page("ad-no-film"),
     page("banner-autoplay"),
     page("drm-probe"),
     page("drm-clearkey"),
@@ -157,7 +165,7 @@ mod tests {
         }
         // Страницы без самостоятельного прогона в `pages`: `iframe-inner` вложена в другие,
         // `replay-recording` запускается только командой `replay` (ей нужен файл записи).
-        const HELPER_PAGES: &[&str] = &["iframe-inner", "replay-recording"];
+        const HELPER_PAGES: &[&str] = &["iframe-inner", "ad-frame-inner", "replay-recording"];
         for file_id in &on_disk {
             assert!(
                 HELPER_PAGES.contains(&file_id.as_str())

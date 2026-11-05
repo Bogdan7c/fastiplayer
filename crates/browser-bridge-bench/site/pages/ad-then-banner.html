@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ad-then-banner</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>ad-then-banner</h1>
+
+<script type="module">
+import { sleep } from '../lib/bench-checks.js';
+import { loadCatalog } from '../lib/bench-player.js';
+import { mountVideo } from '../lib/scenario-kit.js';
+import { runAdHopScenario, mediaUrl, playAd, removeAdLikeLiveSite, startFilmNow } from '../lib/ad-hop-kit.js';
+
+// Реклама кончилась, рядом заиграл беззвучный `loop`-баннер, а фильм стартует через 2 с. В плеер
+// обязан попасть фильм (не баннер); баннер остаётся в браузере и продолжает декодироваться.
+
+/** Через сколько после конца рекламы стартует фильм, мс. */
+const FILM_DELAY_MS = 2000;
+
+await runAdHopScenario('ad-then-banner', async (ctx, recorder) => {
+  const catalog = await loadCatalog();
+  const ad = mountVideo(document.body, 'ad');
+  recorder.trackAd(ad, 'ad');
+  let filmSession = null;
+  ad.addEventListener('ended', async () => {
+    removeAdLikeLiveSite(ad);
+    ctx.log('ad-removed');
+    // Баннер: беззвучный, зациклен, маленький.
+    const banner = document.createElement('video');
+    Object.assign(banner, { muted: true, autoplay: true, loop: true, playsInline: true, width: 160, height: 90, src: mediaUrl(catalog, 'progressive-h264-aac') });
+    banner.id = 'banner';
+    document.body.append(banner);
+    recorder.watchBanner(banner);
+    await sleep(FILM_DELAY_MS);
+    filmSession = recorder.guard(startFilmNow(ctx, recorder, catalog));
+  });
+  ad.src = mediaUrl(catalog, 'ad-preroll');
+  await playAd(ctx, ad);
+  return {
+    expectedAdEnded: ['ad'],
+    expectFilm: true,
+    cleanup: async () => { await (await filmSession)?.player.destroy(); },
+  };
+});
+</script>
+</body>
+</html>

@@ -83,7 +83,7 @@ export async function createRealFrameProbe() {
 const commandCursor = { received: 0 };
 
 /** Опрос команд робота; `next()` отдаёт команды по одной в порядке отправки. */
-class CommandChannel {
+export class CommandChannel {
   constructor(context) {
     this.context = context;
     this.queue = [];

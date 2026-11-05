@@ -144,6 +144,7 @@ fn generates_real_media_and_segments_decode() {
         "progressive-h264-aac",
         "progressive-long-h264-aac",
         "ad-preroll",
+        "ad-second",
         "hls-h264-aac",
         "clearkey-h264",
         "subtitles-en",

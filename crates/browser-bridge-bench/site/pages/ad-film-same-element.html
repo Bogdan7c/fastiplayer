@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ad-film-same-element</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>ad-film-same-element</h1>
+
+<script type="module">
+import { loadCatalog, BenchPlayer } from '../lib/bench-player.js';
+import { mountVideo } from '../lib/scenario-kit.js';
+import { runAdHopScenario, mediaUrl, playAd, startFilmNow } from '../lib/ad-hop-kit.js';
+
+// Реклама и фильм в ОДНОМ `<video>`: `video.src = ad.mp4`, по `ended` новый источник и `play()`.
+// По умолчанию новый источник — blob MediaSource (MSE-плеер сайта), с `&film=file` — обычный
+// файл (`<video src>`). Элемент тот же, поэтому настоящий счётчик кадров считается заново с
+// момента смены источника, а лишний `ended` у этого элемента после старта фильма — ошибка.
+
+/** Фильм обычным файлом (60 с, чтобы за окно прогона он не кончился). */
+const FILM_AS_FILE = new URLSearchParams(location.search).get('film') === 'file';
+
+await runAdHopScenario('ad-film-same-element', async (ctx, recorder) => {
+  const catalog = await loadCatalog();
+  const video = mountVideo(document.body, 'video');
+  const player = new BenchPlayer(video, catalog, { log: (line) => ctx.log(line) });
+  let filmSession = null;
+  recorder.trackAd(video, 'ad');
+  video.addEventListener('ended', () => {
+    if (video === recorder.film) return;
+    ctx.log('ad-ended-same-element');
+    if (FILM_AS_FILE) {
+      video.src = mediaUrl(catalog, 'progressive-long-h264-aac');
+      recorder.beginFilm(video);
+      filmSession = recorder.guard(recorder.playFilm(video));
+    } else {
+      filmSession = recorder.guard(startFilmNow(ctx, recorder, catalog, { video, player }));
+    }
+  });
+  video.src = mediaUrl(catalog, 'ad-preroll');
+  await playAd(ctx, video);
+  return {
+    expectedAdEnded: ['ad'],
+    expectFilm: true,
+    cleanup: async () => {
+      await filmSession;
+      await player.destroy();
+    },
+  };
+});
+</script>
+</body>
+</html>

@@ -102,6 +102,15 @@ pub fn parse_summary(line: &str) -> Option<FrameEvidence> {
     })
 }
 
+/// Сколько раз плеер загружал источник за сеанс (`loads=N` сводки). Сводка накопительная, поэтому
+/// для сеанса важен максимум по всем сводкам. `None` — строка не сводка или поля `loads` в ней нет.
+pub fn parse_loads(line: &str) -> Option<u64> {
+    if !line.contains(SUMMARY_MARKER) {
+        return None;
+    }
+    number_field(line, "loads")
+}
+
 /// Достаёт `name=<слово>` (до пробела) из строки журнала; левая граница — как у чисел.
 pub(super) fn word_field(line: &str, name: &str) -> Option<String> {
     let pattern = format!("{name}=");
@@ -340,6 +349,13 @@ impl PlayerLog {
             .collect())
     }
 
+    /// Наибольшее `loads=` среди всех сводок воспроизведения за ВСЁ время (курсор ожидания не
+    /// трогает). `None` — сводок с этим полем ещё не было.
+    pub fn snapshot_max_loads(&mut self) -> Result<Option<u64>, ObserveError> {
+        self.refresh()?;
+        Ok(self.lines.iter().filter_map(|line| parse_loads(line)).max())
+    }
+
     /// Дочитывает файл до конца и возвращает запрещённые строки за ВСЁ время.
     pub fn snapshot_forbidden(&mut self, needles: &[&str]) -> Result<Vec<String>, ObserveError> {
         self.refresh()?;
@@ -435,6 +451,56 @@ mod tests {
         assert_eq!(evidence.presented_frames, 247);
         assert_eq!(evidence.position_regressions, 2);
         assert_eq!(evidence.summary_line, PERIODIC);
+    }
+
+    #[test]
+    fn loads_are_read_from_summaries_only_and_exactly() {
+        assert_eq!(parse_loads(PERIODIC), Some(1));
+        assert_eq!(
+            parse_loads(&PERIODIC.replace("loads=1", "loads=4")),
+            Some(4)
+        );
+        // Не сводка: поле `loads` в чужой строке ничего не значит.
+        assert_eq!(parse_loads("INFO something loads=9"), None);
+        // Сводка без поля.
+        assert_eq!(
+            parse_loads("INFO Browser playback summary kind=final presented_frames=1"),
+            None
+        );
+        // Чужое имя с тем же хвостом.
+        assert_eq!(
+            parse_loads("INFO Browser playback summary kind=final preloads=7"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_session_max_of_loads_survives_a_later_smaller_value() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("player.log");
+        append(&path, "INFO noise loads=99\n");
+        append(
+            &path,
+            &format!("{}\n", PERIODIC.replace("loads=1", "loads=2")),
+        );
+        append(
+            &path,
+            &format!("{}\n", PERIODIC.replace("loads=1", "loads=5")),
+        );
+        append(
+            &path,
+            &format!("{}\n", PERIODIC.replace("loads=1", "loads=3")),
+        );
+        let mut log = PlayerLog::open(&path);
+        assert_eq!(log.snapshot_max_loads().expect("readable"), Some(5));
+        let empty = dir.path().join("empty.log");
+        append(&empty, "INFO nothing here\n");
+        assert_eq!(
+            PlayerLog::open(&empty)
+                .snapshot_max_loads()
+                .expect("readable"),
+            None
+        );
     }
 
     #[test]

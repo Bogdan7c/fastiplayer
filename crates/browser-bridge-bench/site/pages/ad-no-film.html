@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ad-no-film</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>ad-no-film</h1>
+
+<script type="module">
+import { loadCatalog } from '../lib/bench-player.js';
+import { mountVideo } from '../lib/scenario-kit.js';
+import { runAdHopScenario, mediaUrl, playAd, removeAdLikeLiveSite } from '../lib/ad-hop-kit.js';
+
+// Реклама кончилась, страница убрала элемент и больше ничего не ставит. Плеер ждёт следующее видео
+// 15 с и честно кончает сеанс: «The page took the video back» (проверяет сценарий `page-ends`, срок
+// отсчитывается от метки `ad-removed`, она пишется в той же задаче, что и `ended`).
+// Действие `ad-no-film` только дожидается, пока реклама будет убрана, и отвечает роботу.
+
+/** Сколько действие ждёт конца рекламы, мс (реклама 10 с, передача посреди неё). */
+const REMOVAL_WAIT_MS = 45000;
+
+await runAdHopScenario('ad-no-film', async (ctx, recorder) => {
+  const catalog = await loadCatalog();
+  const ad = mountVideo(document.body, 'ad');
+  recorder.trackAd(ad, 'ad');
+  let removed = false;
+  ad.addEventListener('ended', () => {
+    removeAdLikeLiveSite(ad);
+    removed = true;
+    ctx.log('ad-removed');
+    recorder.announceFlowDone();
+  });
+  ad.src = mediaUrl(catalog, 'ad-preroll');
+  await playAd(ctx, ad);
+  const waitForRemoval = async () => {
+    const deadline = performance.now() + REMOVAL_WAIT_MS;
+    while (!removed && performance.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+    ctx.check('ad-removed-by-the-page', removed, `ad element removed: ${removed}`);
+  };
+  return {
+    expectedAdEnded: ['ad'],
+    expectFilm: false,
+    hooks: { 'ad-no-film': waitForRemoval },
+  };
+});
+</script>
+</body>
+</html>

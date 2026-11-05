@@ -11,7 +11,7 @@
 
 use std::time::{Duration, Instant};
 
-mod ad_preroll;
+mod ad_hop;
 mod decoys;
 pub(super) mod file_evidence;
 mod judge;
@@ -19,7 +19,9 @@ mod local_address;
 mod referer_evidence;
 mod refusals;
 
-pub(super) use ad_preroll::AD_HOST;
+#[cfg(test)]
+pub(super) use ad_hop::AD_HOP_PAGES;
+pub(super) use ad_hop::AD_HOST;
 pub(super) use decoys::AD_FILE_PATH;
 pub(super) use judge::browser_does_not_decode;
 use judge::{CaptureEvidence, HookEvidence, judge_capture};
@@ -156,9 +158,6 @@ pub(super) const CAPTURE_PAGES: &[CapturePage] = &[
     // 09c: главное видео на паузе, рядом играют баннер и превью. Главное уходит в плеер (зритель
     // жмёт play — действие), баннер и превью остаются у браузера (по журналу сервера и счётчикам).
     page_resumed_by_hook("banner-with-main", "resume-main"),
-    // 09c, живая проверка, форма Ashdi: реклама с домена не из списка играет поверх загруженного
-    // фильма. В плеер уходит фильм, он стоит до конца рекламы (действие), реклама остаётся браузеру.
-    page_resumed_by_hook("ad-beside-film", "ad-over"),
 ];
 
 /// Все MSE-страницы одного браузера, каждая в свежем окружении (свой плеер и журналы).
@@ -183,13 +182,14 @@ pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) 
             .filter(|page| filter.admits(page.id))
             .map(|page| refusals::run_refusal(stand, browser, *page)),
     );
-    // 09c: реклама отдельным элементом (две фазы под командами робота), свой сценарий.
-    // Оба варианта живут на одной странице, поэтому `--page ad-preroll` запускает оба.
-    if filter.admits(ad_preroll::AD_PREROLL_PAGE) {
-        for variant in ad_preroll::VARIANTS {
-            results.push(ad_preroll::run(stand, browser, *variant));
-        }
-    }
+    // 09c2: реклама → фильм в одном окне (отдельный элемент, фрейм, тот же элемент, цепочка,
+    // пропуск, баннер). Варианты одной страницы идут вместе: `--page ad-preroll` запускает оба.
+    results.extend(
+        ad_hop::AD_HOP_PAGES
+            .iter()
+            .filter(|page| filter.admits(page.page_id))
+            .map(|page| ad_hop::run(stand, browser, *page)),
+    );
     results
 }
 
@@ -204,7 +204,7 @@ pub(super) fn capture_page_ids() -> Vec<&'static str> {
         .iter()
         .map(|page| page.id)
         .chain(refusals::REFUSAL_PAGES.iter().map(|page| page.id))
-        .chain(std::iter::once(ad_preroll::AD_PREROLL_PAGE))
+        .chain(ad_hop::page_ids())
         .collect()
 }
 
@@ -651,6 +651,6 @@ mod tests {
             );
             assert!(seen.insert(page.id), "{} listed twice", page.id);
         }
-        assert_eq!(CAPTURE_PAGES.len(), 24);
+        assert_eq!(CAPTURE_PAGES.len(), 23);
     }
 }

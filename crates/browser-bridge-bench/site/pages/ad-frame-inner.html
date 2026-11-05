@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ad-frame-inner</title>
+<style>body{font:14px system-ui,sans-serif;margin:8px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<!-- Рекламный фрейм для ad-film-frames: грузится с ЧУЖОГО origin, играет ролик и сообщает родителю. -->
+<script type="module">
+import { totalFrames, waitFor } from '../lib/bench-checks.js';
+import { loadCatalog } from '../lib/bench-player.js';
+import { mountVideo } from '../lib/scenario-kit.js';
+import { createRealFrameProbe, HANDOFF_MODE } from '../lib/handoff-mode.js';
+import { ElementFrameTally, mediaUrl } from '../lib/ad-hop-kit.js';
+
+// Сообщения родителю: `playing` (ролик пошёл), `ended` (с настоящими кадрами браузера за время под
+// тенью). Родитель шлёт `handed-off`: после передачи счёт настоящих кадров начинается заново.
+/** Период сэмплера настоящих кадров, мс. */
+const SAMPLE_PERIOD_MS = 250;
+/** Сколько ждём «ролик пошёл», мс. */
+const PLAYING_WAIT_MS = 8000;
+
+const search = new URLSearchParams(location.search);
+const handoff = search.get('mode') === HANDOFF_MODE;
+const post = (message) => window.parent.postMessage({ adFrame: message }, '*');
+
+const catalog = await loadCatalog();
+const probe = handoff ? await createRealFrameProbe() : null;
+const ad = mountVideo(document.body, 'ad');
+ad.src = mediaUrl(catalog, 'ad-preroll');
+const tally = probe?.available ? new ElementFrameTally(probe, ad) : null;
+if (tally) setInterval(() => tally.sample(), SAMPLE_PERIOD_MS);
+window.addEventListener('message', (event) => {
+  if (event.source === window.parent && event.data?.adFrame === 'handed-off') tally?.restart();
+});
+let endedCount = 0;
+ad.addEventListener('ended', () => {
+  endedCount += 1;
+  tally?.sample();
+  post({ kind: 'ended', count: endedCount, realFrames: tally?.total ?? 0 });
+});
+await ad.play().catch(async () => { ad.muted = true; await ad.play(); });
+const framesBefore = totalFrames(ad);
+const timeBefore = ad.currentTime;
+const advanced = await waitFor(() => totalFrames(ad) >= framesBefore + 10 && ad.currentTime >= timeBefore + 1, PLAYING_WAIT_MS);
+post({ kind: 'playing', ok: advanced && !ad.paused, detail: `frames ${framesBefore} -> ${totalFrames(ad)}, currentTime ${timeBefore.toFixed(2)} -> ${ad.currentTime.toFixed(2)}, paused=${ad.paused}`, probeAvailable: Boolean(tally) });
+</script>
+</body>
+</html>

@@ -325,7 +325,6 @@ mod tests {
                 (HandOffOutcome::Started, false, 120.0),
                 (honest.clone(), true, 120.0),
                 (honest.clone(), false, 2.0),
-                (HandOffOutcome::AdPlaying, false, 120.0),
             ] {
                 let verdict =
                     judge_refusal(&evidence_for(page(id), outcome.clone(), granted, frames));

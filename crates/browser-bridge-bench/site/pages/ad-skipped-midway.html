@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ad-skipped-midway</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>ad-skipped-midway</h1>
+
+<script type="module">
+import { loadCatalog } from '../lib/bench-player.js';
+import { mountVideo } from '../lib/scenario-kit.js';
+import { runAdHopScenario, mediaUrl, playAd, removeAdLikeLiveSite, startFilmNow } from '../lib/ad-hop-kit.js';
+
+// Зритель нажал «пропустить рекламу»: страница обрывает ролик ПОСРЕДИ (`src=""; load(); remove()`) и
+// запускает фильм. Действие `skip-ad` ждёт команду робота: он посылает её, когда сеанс уже идёт и
+// реклама ещё далеко от конца. Конца у рекламы не будет вовсе (`ended` ноль раз), хвоста рекламы в
+// плеере быть не должно: фильм доходит до кадра в том же окне.
+
+/** Реклама обязана быть оборвана не раньше этой секунды и не ближе этого запаса до конца, с. */
+const MIN_CUT_POSITION_S = 1;
+const END_MARGIN_S = 1.5;
+/** Через сколько страница без робота сама «нажимает пропустить», мс. */
+const PLAIN_SKIP_AFTER_MS = 3000;
+
+await runAdHopScenario('ad-skipped-midway', async (ctx, recorder) => {
+  const catalog = await loadCatalog();
+  const ad = mountVideo(document.body, 'ad');
+  recorder.trackAd(ad, 'ad');
+  let filmSession = null;
+  ad.src = mediaUrl(catalog, 'ad-preroll');
+  await playAd(ctx, ad);
+  const skipAd = async () => {
+    const position = ad.currentTime;
+    ctx.check('ad-cut-midway', !ad.ended && position >= MIN_CUT_POSITION_S && position <= ad.duration - END_MARGIN_S,
+      `cut at ${position.toFixed(2)} s of ${ad.duration.toFixed(2)} s, ended=${ad.ended}`);
+    removeAdLikeLiveSite(ad);
+    ctx.log('ad-removed');
+    filmSession = recorder.guard(startFilmNow(ctx, recorder, catalog));
+    await filmSession;
+  };
+  // Без робота (`pages`) зритель «нажимает пропустить» сам через несколько секунд.
+  if (!ctx.params.handoff) setTimeout(() => recorder.guard(skipAd()), PLAIN_SKIP_AFTER_MS);
+  return {
+    expectedAdEnded: [],
+    expectFilm: true,
+    hooks: { 'skip-ad': skipAd },
+    cleanup: async () => { await (await filmSession)?.player.destroy(); },
+  };
+});
+</script>
+</body>
+</html>

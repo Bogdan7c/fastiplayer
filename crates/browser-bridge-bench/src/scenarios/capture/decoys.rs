@@ -22,17 +22,10 @@ pub(in crate::scenarios) struct DecoyPage {
 }
 
 /// Страницы с приманкой рядом с главным видео.
-pub(in crate::scenarios) const DECOY_PAGES: &[DecoyPage] = &[
-    DecoyPage {
-        id: "banner-with-main",
-        file_path: "/media/progressive/h264-aac.mp4",
-    },
-    // Живая форма Ashdi: реклама с домена не из списка играет поверх ждущего фильма.
-    DecoyPage {
-        id: "ad-beside-film",
-        file_path: AD_FILE_PATH,
-    },
-];
+pub(in crate::scenarios) const DECOY_PAGES: &[DecoyPage] = &[DecoyPage {
+    id: "banner-with-main",
+    file_path: "/media/progressive/h264-aac.mp4",
+}];
 
 /// Страница с приманкой, если это она.
 pub(in crate::scenarios) fn decoy_page(page_id: &str) -> Option<DecoyPage> {
@@ -67,6 +60,42 @@ pub(in crate::scenarios) fn decoy_not_fetched_by_background(
         sorted.background.len()
     );
     (failures, summary)
+}
+
+/// Сколько раз файл просили элемент страницы и фон экстеншена (для страниц «реклама → фильм»,
+/// где файл рекламы ОБЯЗАН уйти в плеер, а баннер рядом — остаться у браузера).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::scenarios) struct FetchCounts {
+    /// Путь файла на сервере стенда.
+    pub(in crate::scenarios) path: String,
+    /// Запросы медиаэлемента страницы в любое время прогона.
+    pub(in crate::scenarios) element_requests: usize,
+    /// Скриптовые запросы (фон экстеншена) после передачи.
+    pub(in crate::scenarios) background_requests: usize,
+}
+
+/// Кто и сколько раз качал `file_path` в этом прогоне (`handed_off_at` — граница «до/после передачи»).
+pub(in crate::scenarios) fn count_fetches(
+    file_path: &str,
+    requests: &[MediaRequest],
+    handed_off_at: Instant,
+) -> FetchCounts {
+    let mut counts = FetchCounts {
+        path: file_path.to_owned(),
+        element_requests: 0,
+        background_requests: 0,
+    };
+    for request in requests.iter().filter(|request| request.path == file_path) {
+        match requester_of_decoy(request) {
+            MediaRequester::MediaElement => counts.element_requests += 1,
+            MediaRequester::Script if request.at >= handed_off_at => {
+                counts.background_requests += 1;
+            }
+            // Скриптовый запрос до передачи — дело самой страницы.
+            MediaRequester::Script => {}
+        }
+    }
+    counts
 }
 
 /// Запросы к файлу приманки, разложенные по «кто» и «когда».
@@ -238,6 +267,26 @@ mod tests {
     }
 
     #[test]
+    fn fetches_are_split_by_requester_and_by_the_hand_off_moment() {
+        let handed = Instant::now();
+        let log = [
+            request(handed - Duration::from_secs(2), "video"),
+            request(handed + Duration::from_secs(1), "video"),
+            request(handed + Duration::from_secs(1), "empty"),
+            // Скриптовый запрос ДО передачи — дело страницы, ни в одну графу не идёт.
+            request(handed - Duration::from_secs(1), "empty"),
+            MediaRequest {
+                path: "/media/other.mp4".to_owned(),
+                ..request(handed + Duration::from_secs(1), "empty")
+            },
+        ];
+        let counts = count_fetches(AD_FILE_PATH, &log, handed);
+        assert_eq!(counts.element_requests, 2, "{counts:?}");
+        assert_eq!(counts.background_requests, 1, "{counts:?}");
+        assert_eq!(counts.path, AD_FILE_PATH);
+    }
+
+    #[test]
     fn a_blind_ruler_fails_instead_of_passing_silently() {
         let handed = Instant::now();
         let (failures, _) = decoy_not_fetched_by_background(AD_FILE_PATH, &[], handed);
@@ -251,10 +300,8 @@ mod tests {
             decoy_page("banner-with-main").map(|page| page.file_path),
             Some("/media/progressive/h264-aac.mp4")
         );
-        assert_eq!(
-            decoy_page("ad-beside-film").map(|page| page.file_path),
-            Some(AD_FILE_PATH)
-        );
+        // С 09c2 реклама рядом с фильмом уезжает в плеер, это уже не приманка (судья `ad_hop`).
+        assert!(decoy_page("ad-beside-film").is_none());
         assert!(decoy_page("mse-fmp4").is_none());
     }
 
@@ -266,7 +313,7 @@ mod tests {
         )
         .expect("the media generator script");
         assert!(
-            script.contains("register_asset ad-preroll file progressive/ad.mp4"),
+            script.contains("make_ad_clip ad.mp4 "),
             "the ad file moved: update AD_FILE_PATH"
         );
         assert_eq!(AD_FILE_PATH, "/media/progressive/ad.mp4");

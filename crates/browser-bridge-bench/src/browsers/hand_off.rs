@@ -35,9 +35,6 @@ pub enum HandOffOutcome {
     /// Лучшее видео вкладки защищено DRM: экстеншен его не трогает, сеанс не открывается
     /// (09c, инвариант 4 — защищённое остаётся у браузера).
     Protected,
-    /// Сейчас играет только отдельный рекламный ролик, фильма ещё нет (09c; до 09c2 передача
-    /// с переездом на фильм не делается).
-    AdPlaying,
     /// Файл лежит на локальном адресе, а страница из интернета; настройка «блокировать»
     /// (решение 199) — фон ничего не качает.
     LocalAddressRefused,
@@ -190,7 +187,6 @@ pub(crate) fn parse_robot_output(
                 HandOffOutcome::Started
                 | HandOffOutcome::NoVideo
                 | HandOffOutcome::Protected
-                | HandOffOutcome::AdPlaying
                 | HandOffOutcome::LocalAddressRefused => 1,
                 HandOffOutcome::PlayerUnavailable { .. }
                 | HandOffOutcome::Failed { .. }
@@ -248,7 +244,6 @@ mod tests {
         );
         for (kind, expected) in [
             ("protected", HandOffOutcome::Protected),
-            ("ad_playing", HandOffOutcome::AdPlaying),
             ("local_address_refused", HandOffOutcome::LocalAddressRefused),
         ] {
             assert_eq!(
@@ -289,6 +284,8 @@ mod tests {
     fn unknown_kind_missing_reason_and_extra_fields_are_refused() {
         for reply in [
             r#"{"kind":"started_maybe"}"#,
+            // С 09c2 исхода `ad_playing` нет: реклама передаётся как обычное видео.
+            r#"{"kind":"ad_playing"}"#,
             r#"{"kind":"failed"}"#,
             r#"{"kind":"started","extra":1}"#,
             r#"{"kind":"failed","reason":7}"#,
