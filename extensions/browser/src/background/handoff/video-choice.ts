@@ -11,7 +11,8 @@
 // ролик (длительность неизвестна — последняя), затем форма (живой MediaSource выше файла по http(s)),
 // затем фрейм и порядок в документе. Форма только разрешает равенство: иначе беззвучный тизер на MSE
 // обгонял бы большой фильм-файл.
-// Реклама отдельным файлом, играющая при стоящем фильме, в пул не входит и фильм не обгоняет.
+// Реклама отдельным файлом, играющая при стоящем фильме, в пул не входит и фильм не обгоняет: в
+// плеер уходит ждущий фильм, а реклама доигрывает в браузере (форма Ashdi).
 //
 // Если главного нет, исход по оставшимся: видимый или играющий под DRM → `protected`; играющая
 // реклама → `ad_playing`; видимая или играющая неподдержанная форма → `not_supported_yet` с формой
@@ -83,7 +84,10 @@ export function classifySurvey(frames: readonly FrameCandidates[], rules: VideoF
   const classified: ClassifiedVideo[] = [];
   for (const frame of [...frames].sort((left, right) => left.frameId - right.frameId)) {
     for (const candidate of frame.candidates) {
-      classified.push({ frameId: frame.frameId, candidate, verdict: classifyVideo(candidate, rules) });
+      // Соседи — только свой документ: преролл и ждущий его фильм живут в одном плеере. Старый
+      // документ того же фрейма чужой, даже если ещё не успел исчезнуть из опроса.
+      const neighbours = frame.candidates.filter((other) => other !== candidate && other.document === candidate.document);
+      classified.push({ frameId: frame.frameId, candidate, verdict: classifyVideo(candidate, rules, neighbours) });
     }
   }
   return classified;

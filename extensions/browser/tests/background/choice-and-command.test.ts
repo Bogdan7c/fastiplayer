@@ -5,7 +5,8 @@ import { describeFrameVideos, surveyTabVideos, type ExecuteInAllFrames } from ".
 import { createHandOffCommandListener, isOwnExtensionPage } from "../../src/background/handoff/hand-off-command.ts";
 import { pageIdentityOf, siteDomainOf, UNKNOWN_SITE_DOMAIN } from "../../src/background/handoff/page-identity.ts";
 import { translatePlayerMessage } from "../../src/background/handoff/player-message-translator.ts";
-import { chooseVideo } from "../../src/background/handoff/video-choice.ts";
+import { chooseVideo, classifySurvey } from "../../src/background/handoff/video-choice.ts";
+import { VIDEO_FILTER_RULES } from "../../src/background/tab-model/video-filter-rules.ts";
 import type { HandOffTabOutcome, VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import { VIDEO_CANDIDATES_FUNCTION_NAME } from "../../src/shared/video-candidates-probe.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
@@ -196,6 +197,119 @@ describe("выбор видео: реклама, мусор, DRM, скрытые
     const ad = video(2, { ...AD_FILE, playing: true });
     assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [unsupported, ad, video(1, { drm: true, playing: true })] }]), { kind: "protected" });
     assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [unsupported, ad] }]), { kind: "ad_playing" });
+  });
+});
+
+describe("выбор видео: преролл с неизвестного домена (живые формы Ashdi и Tortuga)", () => {
+  // Числа и домен взяты из живой проверки: домена нет в списке, опознать его можно только по странице.
+  const PLAYER_AREA = 296_000;
+  const UNKNOWN_AD_HOST = "video.unknown-ad-cdn.example";
+  /** Итог «файл не реклама, передаётся он». */
+  const keptFile = { kind: "hand_off", video: { frameId: 0, document: "doc-top", element: 2, frameHost: DEFAULT_CANDIDATE_FACTS.frame_host, fileHost: UNKNOWN_AD_HOST } };
+  const preroll = (element: number, overrides: Partial<VideoCandidate> = {}) =>
+    video(element, { media: { kind: "file" }, file_host: UNKNOWN_AD_HOST, playing: true, visible_area_px: PLAYER_AREA, duration_s: 24, ...overrides });
+  const waitingFilm = (element: number, overrides: Partial<VideoCandidate> = {}) => video(element, { visible_area_px: PLAYER_AREA, duration_s: 6381, ...overrides });
+  const emptySlot = (element: number, overrides: Partial<VideoCandidate> = {}) => video(element, { media: { kind: "none" }, visible_area_px: PLAYER_AREA, duration_s: null, ...overrides });
+
+  it("Ashdi: играет реклама-файл, рядом ждёт загруженный фильм — уходит фильм, а не реклама", () => {
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), preroll(2)] }]), handOff(0, "doc-top", 1));
+  });
+
+  it("Tortuga: играет реклама-файл, рядом пустой элемент той же площади — честный ad_playing", () => {
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [emptySlot(1), preroll(2)] }]), { kind: "ad_playing" });
+  });
+
+  it("MediaSource без длительности тоже ждёт фильм", () => {
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1, { duration_s: null }), preroll(2)] }]), handOff(0, "doc-top", 1));
+  });
+
+  it("беззвучный преролл — всё равно реклама, а не баннер: исход ad_playing, а не «видео нет»", () => {
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [emptySlot(1), preroll(2, { muted: true })] }]), { kind: "ad_playing" });
+  });
+
+  it("длинный файл рядом с ожидающим MSE остаётся видео (порог преролла, решение 8)", () => {
+    const longFile = preroll(2, { duration_s: 181 });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), longFile] }]), keptFile);
+  });
+
+  it("ролик ровно на пороге ещё преролл, порог берётся из правил, а не из кода", () => {
+    const atLimit = preroll(2, { duration_s: 180 });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), atLimit] }]), handOff(0, "doc-top", 1));
+    const strict = { ...VIDEO_FILTER_RULES, prerollMaxSeconds: 20 };
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), preroll(2)] }], strict), keptFile);
+  });
+
+  it("файл с неизвестной длительностью не считается прероллом: рано судить", () => {
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), preroll(2, { duration_s: null })] }]), keptFile);
+  });
+
+  it("сосед MSE короче играющего файла — не фильм, файл остаётся видео", () => {
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1, { duration_s: 10 }), preroll(2)] }]), keptFile);
+  });
+
+  it("сосед тоже играет — он ничего не ждёт", () => {
+    const choice = chooseVideo([{ frameId: 0, candidates: [waitingFilm(1, { playing: true }), preroll(2, { visible_area_px: PLAYER_AREA + 1 })] }]);
+    assert.deepEqual(choice, keptFile);
+  });
+
+  it("пустой элемент другой площади — чужая плитка ленты, файл остаётся видео", () => {
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [emptySlot(1, { visible_area_px: PLAYER_AREA - 1 }), preroll(2)] }]), keptFile);
+  });
+
+  it("скрытые нулевой площади не считаются одним плеером", () => {
+    const choice = chooseVideo([{ frameId: 0, candidates: [emptySlot(1, { visible_area_px: 0 }), preroll(2, { visible_area_px: 0 })] }]);
+    assert.deepEqual(choice, keptFile);
+  });
+
+  it("зацикленный файл — не реклама: это баннер, рядом с плиткой той же площади", () => {
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [emptySlot(1), preroll(2, { loop: true })] }]), keptFile);
+  });
+
+  it("файл на паузе рядом с фильмом — не преролл: реклама сейчас не идёт", () => {
+    const classified = classifySurvey([{ frameId: 0, candidates: [waitingFilm(1), preroll(2, { playing: false, duration_s: 60 })] }]);
+    assert.deepEqual(classified.map((entry) => entry.verdict), ["main", "main"]);
+  });
+
+  it("сосед из другого документа того же фрейма не считается: старый документ ещё в опросе", () => {
+    const choice = chooseVideo([{ frameId: 0, candidates: [waitingFilm(1, { document: "doc-old" }), preroll(2)] }]);
+    assert.deepEqual(choice, keptFile);
+  });
+
+  it("сосед из другого фрейма не считается: фильм и преролл живут в одном плеере", () => {
+    const choice = chooseVideo([
+      { frameId: 0, candidates: [preroll(2)] },
+      { frameId: 7, candidates: [emptySlot(1, { document: "doc-iframe" })] },
+    ]);
+    assert.deepEqual(choice, keptFile);
+  });
+
+  it("MSE-реклама поверх MSE-фильма правилом не трогается: прероллы бывают только файлом", () => {
+    const choice = chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), video(2, { playing: true, visible_area_px: PLAYER_AREA, duration_s: 24 })] }]);
+    assert.deepEqual(choice, handOff(0, "doc-top", 2));
+  });
+});
+
+describe("выбор видео: адрес плейлиста в `src` до старта (живая форма Ashdi)", () => {
+  const playlist = { media: { kind: "unsupported", form: "native_hls" } as const };
+
+  it("до нажатия play это не «не поддерживается», а «видео ещё нет»", () => {
+    const choice = chooseVideo([{ frameId: 0, candidates: [video(1, { ...playlist, duration_s: null })] }]);
+    assert.deepEqual(choice, { kind: "nothing" });
+  });
+
+  it("играющий нативный HLS — честный not_supported_yet", () => {
+    const choice = chooseVideo([{ frameId: 0, candidates: [video(1, { ...playlist, playing: true, duration_s: null })] }]);
+    assert.deepEqual(choice, { kind: "not_supported_yet", form: "native_hls" });
+  });
+
+  it("нативный HLS на паузе с известной длительностью — тоже not_supported_yet: видео уже есть", () => {
+    const choice = chooseVideo([{ frameId: 0, candidates: [video(1, { ...playlist, duration_s: 60 })] }]);
+    assert.deepEqual(choice, { kind: "not_supported_yet", form: "native_hls" });
+  });
+
+  it("другие неподдержанные формы до старта остаются неподдержанными", () => {
+    const choice = chooseVideo([{ frameId: 0, candidates: [video(1, { media: { kind: "unsupported", form: "media_stream" }, duration_s: null })] }]);
+    assert.deepEqual(choice, { kind: "not_supported_yet", form: "media_stream" });
   });
 });
 

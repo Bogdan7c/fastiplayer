@@ -8,11 +8,11 @@ import { VIDEO_FILTER_RULES, type VideoFilterRules } from "./video-filter-rules.
 /**
  * Вердикт о видео:
  * - `main` — кандидат в главное видео;
- * - `ad` — отдельный рекламный ролик (домен файла или документа рекламный);
+ * - `ad` — отдельный рекламный ролик: рекламный домен или преролл рядом с ожидающим фильмом;
  * - `junk` — баннер, превью по наведению, короткий ролик;
  * - `protected` — под DRM, не трогаем (инвариант 4);
  * - `unsupported` — форма источника, которую мы не умеем передавать (not supported yet);
- * - `empty` — источника нет.
+ * - `empty` — источника нет (или страница только положила адрес и видео ещё не запускала).
  */
 export type VideoVerdict = "main" | "ad" | "junk" | "protected" | "unsupported" | "empty";
 
@@ -30,12 +30,57 @@ function isSilentDecoration(candidate: VideoCandidate, rules: VideoFilterRules):
   return candidate.loop || candidate.visible_area_px < rules.smallAreaPx || isShort;
 }
 
-/** Классификация одного кандидата. Порядок проверок — часть правила, менять осознанно. */
-export function classifyVideo(candidate: VideoCandidate, rules: VideoFilterRules = VIDEO_FILTER_RULES): VideoVerdict {
+/**
+ * Адрес плейлиста лежит в `src`, а видео ещё никто не запускал: ни длительности, ни игры. Это не
+ * «формат не поддержан», а «ещё не началось»: Ashdi держит `.m3u8` в `src` только до нажатия play,
+ * потом уходит на MediaSource. Настоящий нативный HLS играет или хотя бы знает длительность.
+ */
+function isUnstartedPlaylistAddress(candidate: VideoCandidate): boolean {
+  const { media, playing, duration_s: durationSeconds } = candidate;
+  return media.kind === "unsupported" && media.form === "native_hls" && !playing && durationSeconds === null;
+}
+
+/**
+ * Сосед по документу ждёт фильм, пока `clip` играет поверх него:
+ * - стоящий MediaSource длиннее ролика (Ashdi: фильм уже загружен и ждёт конца рекламы);
+ *   длительность MediaSource бывает ещё неизвестна — это тоже ожидание;
+ * - стоящий пустой `<video>` той же площади (Tortuga: плеер снял источник на время рекламы). Без
+ *   равной площади это мог бы быть другой элемент ленты, поэтому площадь обязательна.
+ */
+function waitsForFilm(neighbour: VideoCandidate, clip: VideoCandidate, clipSeconds: number): boolean {
+  if (neighbour.playing) return false;
+  if (neighbour.media.kind === "media_source") return (neighbour.duration_s ?? Infinity) > clipSeconds;
+  return neighbour.media.kind === "none" && neighbour.visible_area_px > 0 && neighbour.visible_area_px === clip.visible_area_px;
+}
+
+/**
+ * Преролл с неизвестного домена: играет незацикленный файл, короткий для фильма, а рядом ждёт фильм.
+ * Список доменов такие ролики не ловит: сайты крутят рекламу через местные сети, домены которых
+ * меняются. Устройство страницы от домена не зависит. Цикл исключён: так играют баннеры и плитки,
+ * а не реклама, которую надо досмотреть. Ошибка правила стоит недорого: видео остаётся в браузере.
+ */
+function isPrerollBesideFilm(candidate: VideoCandidate, neighbours: readonly VideoCandidate[], rules: VideoFilterRules): boolean {
+  const { media, playing, loop, duration_s: clipSeconds } = candidate;
+  if (media.kind !== "file" || !playing || loop) return false;
+  if (clipSeconds === null || clipSeconds > rules.prerollMaxSeconds) return false;
+  return neighbours.some((neighbour) => waitsForFilm(neighbour, candidate, clipSeconds));
+}
+
+/**
+ * Классификация одного кандидата. Порядок проверок — часть правила, менять осознанно.
+ * `neighbours` — другие видео того же документа: преролл виден только рядом с ожидающим фильмом.
+ */
+export function classifyVideo(
+  candidate: VideoCandidate,
+  rules: VideoFilterRules = VIDEO_FILTER_RULES,
+  neighbours: readonly VideoCandidate[] = [],
+): VideoVerdict {
   if (candidate.drm) return "protected";
-  if (candidate.media.kind === "none") return "empty";
+  if (candidate.media.kind === "none" || isUnstartedPlaylistAddress(candidate)) return "empty";
   if (candidate.media.kind === "unsupported") return "unsupported";
   if (isAdHost(candidate.file_host, rules) || isAdHost(candidate.frame_host, rules)) return "ad";
+  // До проверки на беззвучие: преролл на странице без звука всё равно реклама, а не баннер.
+  if (isPrerollBesideFilm(candidate, neighbours, rules)) return "ad";
   if (isSilentDecoration(candidate, rules)) return "junk";
   // Известно, что ролик короткий, и он стоит: не фильм (играющий короткий со звуком оставляем).
   if (candidate.duration_s !== null && candidate.duration_s < rules.shortClipSeconds && !candidate.playing) return "junk";

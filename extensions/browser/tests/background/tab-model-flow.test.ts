@@ -34,6 +34,16 @@ describe("отказы без сеанса: плеер не будится", () 
     assert.equal(await world.tabModel.isAdOn(TAB, { frame_id: 0, document: ad.document, element: 1 }), true);
   });
 
+  it("преролл с неизвестного домена рядом с пустым плеером — ad_playing без сеанса (Tortuga)", async () => {
+    const preroll = video(2, { media: { kind: "file" }, file_host: "video.unknown-ad-cdn.example", duration_s: 30 });
+    const emptySlot = video(1, { media: { kind: "none" }, playing: false, duration_s: null });
+    const world = setup([{ frameId: 0, result: [emptySlot, preroll] }]);
+    assert.deepEqual(await world.handoffs.handOffTab(TAB), { kind: "ad_playing" });
+    assert.equal(world.door.requests.length, 0, "плеер не разбужен рекламой");
+    assert.equal(await world.tabModel.isAdOn(TAB, { frame_id: 0, document: preroll.document, element: 2 }), true);
+    assert.equal(await world.tabModel.mainVideoOf(TAB), null);
+  });
+
   it("not_supported_yet и no_video тоже записываются как закрытые причины", async () => {
     const hls = setup([{ frameId: 0, result: [video(1, { media: { kind: "unsupported", form: "native_hls" } })] }]);
     assert.deepEqual(await hls.handoffs.handOffTab(TAB), { kind: "not_supported_yet", form: "native_hls" });
