@@ -64,6 +64,8 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("ad-film-same-element"),
     page("ad-chain"),
     page("ad-skipped-midway"),
+    // 09d, решения 184, 204: органы рекламы в форме PlayerJS, плашка и пропуск из окна плеера.
+    page("ad-skip"),
     page("ad-then-banner"),
     // 09c2: реклама кончилась, фильма нет — честный конец через 15 с (сценарий `page-ends`).
     page("ad-no-film"),

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ad-skip</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}
+h1{font-size:16px}
+#stage{position:relative;width:640px;min-height:360px;background:#000}
+video{background:#000;max-width:100%}
+pjsdiv{display:block}
+#pod{position:absolute;left:8px;top:8px;color:#fff}
+#skip{position:absolute;left:8px;bottom:8px;color:#fff;padding:4px}
+</style>
+</head>
+<body>
+<h1>ad-skip</h1>
+<div id="stage">
+  <pjsdiv id="pod-box" style="position:absolute;left:0;top:0"><pjsdiv id="pod"></pjsdiv></pjsdiv>
+  <pjsdiv id="skip-box" style="position:absolute;left:0;bottom:0"><pjsdiv id="skip"></pjsdiv></pjsdiv>
+</div>
+
+<script type="module">
+import { loadCatalog } from '../lib/bench-player.js';
+import { mountVideo } from '../lib/scenario-kit.js';
+import { runAdHopScenario, mediaUrl, playAd, removeAdLikeLiveSite, startFilmNow } from '../lib/ad-hop-kit.js';
+
+// Органы рекламы в форме PlayerJS (Ashdi, Tortuga; 09d, решения 184, 204): листья `<pjsdiv>` без
+// классов, только текст. Отсчёт считает страница по времени элемента: под тенью это часы плеера.
+// Варианты адреса:
+//   `ads=2`          — две рекламы подряд, каждая новым элементом;
+//   `skip=never`     — пропуска нет, только счётчик (непропускаемая реклама);
+//   `skip=trusted`   — кнопка верит только настоящей мыши: клик из кода отвергается, как на YouTube.
+
+/** С какой секунды рекламы страница разрешает пропуск. */
+const SKIP_ALLOWED_AFTER_S = 3;
+
+await runAdHopScenario('ad-skip', async (ctx, recorder) => {
+  const catalog = await loadCatalog();
+  const query = new URLSearchParams(location.search);
+  const totalAds = Number(query.get('ads') ?? '1');
+  const skipRule = query.get('skip') ?? 'allowed';
+  const pod = document.getElementById('pod');
+  const skip = document.getElementById('skip');
+  const stage = document.getElementById('stage');
+  let filmSession = null;
+  let current = null;
+
+  const clearOrgans = () => {
+    pod.textContent = '';
+    skip.textContent = '';
+    skip.style.cursor = 'default';
+  };
+
+  /** Рисует органы по времени ролика: страница сама решает, когда кнопка появится. */
+  const drawOrgans = (ad, index) => {
+    if (current !== ad) return;
+    pod.textContent = `Реклама ${index}/${totalAds}`;
+    if (skipRule === 'never') return;
+    const left = Math.ceil(SKIP_ALLOWED_AFTER_S - ad.currentTime);
+    skip.textContent = left > 0 ? `Пропустити через ${left}` : 'Пропустити';
+    skip.style.cursor = left > 0 ? 'default' : 'pointer';
+  };
+
+  const startAd = async (index) => {
+    const ad = mountVideo(stage, `ad${index}`);
+    current = ad;
+    recorder.trackAd(ad, `ad${index}`);
+    const endAd = () => {
+      if (current !== ad) return;
+      current = null;
+      clearOrgans();
+      removeAdLikeLiveSite(ad);
+      if (index < totalAds) {
+        recorder.guard(startAd(index + 1));
+      } else {
+        ctx.log('ad-removed');
+        filmSession = recorder.guard(startFilmNow(ctx, recorder, catalog));
+      }
+    };
+    ad.addEventListener('timeupdate', () => drawOrgans(ad, index));
+    ad.addEventListener('ended', endAd);
+    ad.src = mediaUrl(catalog, index === 1 ? 'ad-preroll' : 'ad-second');
+    drawOrgans(ad, index);
+    skip.onclick = (event) => {
+      if (skip.textContent !== 'Пропустити') return;
+      if (skipRule === 'trusted' && !event.isTrusted) {
+        ctx.log('skip-click-refused');
+        return;
+      }
+      ctx.log(`skip-pressed ad${index}`);
+      endAd();
+    };
+    if (index === 1) {
+      await playAd(ctx, ad);
+    } else {
+      // Следующий ролик блока ждёт тень под сторожем (09c2): кадры браузера и часы тут не мерило, как в
+      // `ad-chain`. Отказ `play()` не страшен: он покажется журналом, а судья смотрит на сеанс плеера.
+      ad.play().catch((error) => ctx.log(`ad${index} play() rejected: ${error?.name}`));
+    }
+  };
+
+  await startAd(1);
+  // Робот жмёт пропуск только там, где страница его принимает; иначе реклама доигрывает сама.
+  const skippedByRobot = ctx.params.handoff && skipRule === 'allowed';
+  return {
+    expectedAdEnded: skippedByRobot ? [] : Array.from({ length: totalAds }, (_, index) => `ad${index + 1}`),
+    expectFilm: true,
+    cleanup: async () => { await (await filmSession)?.player.destroy(); },
+  };
+});
+</script>
+</body>
+</html>

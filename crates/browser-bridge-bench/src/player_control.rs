@@ -108,6 +108,11 @@ impl PlayerControl {
             .map(|_| ())
     }
 
+    /// `Next`: в окне браузерного режима при рекламе — действие кнопки плашки (09d).
+    pub fn next(&self) -> Result<(), PlayerControlError> {
+        self.call(PLAYER_INTERFACE, "Next", &[]).map(|_| ())
+    }
+
     /// Текущая позиция воспроизведения, микросекунды (`Position`).
     pub fn position_micros(&self) -> Result<i64, PlayerControlError> {
         let output = self.property(PLAYER_INTERFACE, "Position")?;

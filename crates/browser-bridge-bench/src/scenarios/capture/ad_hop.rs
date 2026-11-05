@@ -8,6 +8,7 @@
 //! роликов, пропуск рекламы посреди ролика, баннер рядом с фильмом. Приговор общий и чистый:
 //! [`judge::judge_ad_hop`]. Страница без фильма (`ad-no-film`) идёт другим сценарием, `page-ends`.
 
+mod ad_mirror;
 mod judge;
 
 use std::time::{Duration, Instant};
@@ -25,6 +26,7 @@ use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::BenchEnvironment;
 use crate::observe::{FrameGrowth, read_host_evidence};
 use crate::player_control::PlayerControl;
+use ad_mirror::{AdMirrorScript, follow_the_ad_mirror};
 use judge::{AdHopEvidence, AdHopExpectation, MIN_FILM_FRAMES_AFTER_START, judge_ad_hop};
 
 /// Рекламный домен файла ролика: правила экстеншена считают его рекламным по суффиксу
@@ -68,6 +70,8 @@ pub(in crate::scenarios) struct AdHopPage {
     uses_listed_ad_host: bool,
     /// Действие страницы по команде робота (`hook:<имя>`), если оно нужно.
     pub(in crate::scenarios) hook: Option<&'static str>,
+    /// Что робот делает с плашкой рекламы в окне плеера (09d), если страница её показывает.
+    ad_mirror: Option<AdMirrorScript>,
     /// Что обязана показать страница.
     pub(in crate::scenarios::capture) expectation: AdHopExpectation,
 }
@@ -84,6 +88,7 @@ const fn single_ad(
         query_suffix,
         uses_listed_ad_host: false,
         hook: None,
+        ad_mirror: None,
         expectation: AdHopExpectation {
             ads_ended: 1,
             min_loads: 2,
@@ -97,6 +102,14 @@ const fn single_ad(
 const fn expecting(page: AdHopPage, expectation: AdHopExpectation) -> AdHopPage {
     AdHopPage {
         expectation,
+        ..page
+    }
+}
+
+/// Страница, где робот ведёт плашку рекламы по сценарию.
+const fn mirrored(page: AdHopPage, script: AdMirrorScript) -> AdHopPage {
+    AdHopPage {
+        ad_mirror: Some(script),
         ..page
     }
 }
@@ -173,6 +186,29 @@ pub(in crate::scenarios) const AD_HOP_PAGES: &[AdHopPage] = &[
             background_files: &[AD_FILE_PATH],
             banner_file: None,
         },
+    ),
+    // 09d: две рекламы подряд пропущены из окна плеера, настоящая кнопка страницы нажата.
+    expecting(
+        mirrored(
+            single_ad("ad-skip", "ad-skip", "&mode=handoff&ads=2"),
+            AdMirrorScript::SkipEachAd { ads: 2 },
+        ),
+        AdHopExpectation {
+            ads_ended: 0,
+            min_loads: 3,
+            background_files: &[AD_FILE_PATH, SECOND_AD_FILE_PATH],
+            banner_file: None,
+        },
+    ),
+    // 09d: непропускаемая реклама: плашка со счётчиком, кнопки нет, реклама доигрывает.
+    mirrored(
+        single_ad("ad-skip-never", "ad-skip", "&mode=handoff&skip=never"),
+        AdMirrorScript::SkipNeverOffered,
+    ),
+    // 09d: кнопка страницы отвергает клик из кода: реклама доигрывает, сеанс цел.
+    mirrored(
+        single_ad("ad-skip-trusted", "ad-skip", "&mode=handoff&skip=trusted"),
+        AdMirrorScript::PageRefusesOurClick,
     ),
     // Рядом с фильмом заиграл баннер: фильм в плеере, баннер у браузера.
     expecting(
@@ -254,7 +290,7 @@ fn drive(
     let handed_off_at = Instant::now();
     let film_growth = if matches!(hand_off, Ok(HandOffOutcome::Started)) {
         run.tell_page("handed-off");
-        follow_the_hop(&mut run, environment, page.hook)?
+        follow_the_hop(&mut run, environment, &page)?
     } else {
         Err("not awaited: the ad was not handed off".to_owned())
     };
@@ -309,13 +345,18 @@ fn fetch_counts(
 fn follow_the_hop(
     run: &mut HandoffRun<'_>,
     environment: &BenchEnvironment,
-    hook: Option<&'static str>,
+    page: &AdHopPage,
 ) -> Result<Result<FrameGrowth, String>, ScenarioError> {
     if let Err(message) = wait_for_session_granted(&run.stderr_log, SESSION_GRANTED_TIMEOUT)? {
         return Ok(Err(format!("{message}; the film was not awaited")));
     }
-    if let Some(name) = hook
+    if let Some(name) = page.hook
         && let Err(message) = skip_the_ad(run, environment, name)
+    {
+        return Ok(Err(message));
+    }
+    if let Some(script) = page.ad_mirror
+        && let Err(message) = follow_the_ad_mirror(run, environment, script)
     {
         return Ok(Err(message));
     }
@@ -423,6 +464,7 @@ mod tests {
                 "ad-film-same-element",
                 "ad-chain",
                 "ad-skipped-midway",
+                "ad-skip",
                 "ad-then-banner",
             ]
         );
