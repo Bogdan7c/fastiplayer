@@ -10,6 +10,11 @@
 //!   принял бы такой конец за обрыв (проверено разведкой 03a);
 //! - кластер «неизвестного размера» (живые потоки) получает известный размер,
 //!   когда его конец найден: демуксер всегда видит обычные кластеры.
+//!
+//! Списки элементов уровня `Segment` и детей кластера ЗАКРЫТЫ, как в разборщике MSE
+//! Chromium (`WebMStreamParser::ParseInfoAndTracks`, `kClusterIds`; Firefox мягче, но
+//! настоящие сборщики WebM других элементов не пишут): всё остальное — мусор вместо WebM. Иначе случайные байты читались бы как элемент с длинным телом,
+//! сканер «пропускал» бы его, ни разу не пожаловавшись, и поток молча ждал бы вечно.
 
 use bytes::{Buf, Bytes, BytesMut};
 
@@ -36,6 +41,22 @@ const OTHER_SEGMENT_LEVEL_IDS: [u32; 5] = [
     0x1043_A770, // Chapters
     0x1941_A469, // Attachments
 ];
+/// `Void` — заполнитель, законен в любом месте документа.
+const VOID_ID: u32 = 0xEC;
+/// `CRC-32` — контрольная сумма родителя, законна в любом месте документа.
+const CRC32_ID: u32 = 0xBF;
+/// Законные дети кластера (Matroska, RFC 9559). Кроме `EncryptedBlock`, устаревшего, это
+/// список Chromium; он же различает «конец кластера неизвестного размера» и мусор.
+const CLUSTER_CHILD_IDS: [u32; 9] = [
+    0xE7,   // Timestamp
+    0xA3,   // SimpleBlock
+    0xA0,   // BlockGroup
+    0xA7,   // Position
+    0xAB,   // PrevSize
+    0x5854, // SilentTracks
+    0xAF,   // EncryptedBlock
+    VOID_ID, CRC32_ID,
+];
 /// Длина заголовка `Segment`/`Cluster`, который пишет сканер: 4 байта ID + 8 байтов размера.
 const REWRITTEN_HEADER_BYTES: usize = 12;
 
@@ -45,6 +66,13 @@ fn starts_segment_level_element(id: u32) -> bool {
         id,
         EBML_HEADER_ID | SEGMENT_ID | CLUSTER_ID | INFO_ID | TRACKS_ID
     ) || OTHER_SEGMENT_LEVEL_IDS.contains(&id)
+}
+
+/// Служебный ли это элемент уровня `Segment`: законен, но сканеру не нужен.
+///
+/// `Info` и `Tracks` здесь тоже есть: после выданного init они служебные.
+fn is_service_element(id: u32) -> bool {
+    matches!(id, INFO_ID | TRACKS_ID | VOID_ID | CRC32_ID) || OTHER_SEGMENT_LEVEL_IDS.contains(&id)
 }
 
 /// Где сейчас сканер.
@@ -247,9 +275,19 @@ impl MatroskaFramer {
             };
             return Ok(Step::Continue);
         }
+        if header.id == SEGMENT_ID {
+            // Лишний заголовок `Segment`: тела у него нет, его дети идут дальше потоком.
+            self.input.advance(header.header_len);
+            self.state = MatroskaState::InitializationBody {
+                ebml_header,
+                kept_elements,
+                has_tracks,
+            };
+            return Ok(Step::Continue);
+        }
         let total_len = known_total_len(header)?;
         if !matches!(header.id, INFO_ID | TRACKS_ID) {
-            self.skip_remaining = total_len;
+            self.start_skipping_service_element(header.id, total_len)?;
             self.state = MatroskaState::InitializationBody {
                 ebml_header,
                 kept_elements,
@@ -307,8 +345,13 @@ impl MatroskaFramer {
                 };
                 Ok(Step::Continue)
             }
-            (_, Some(total_len)) => {
-                self.skip_remaining = total_len;
+            (SEGMENT_ID, _) => {
+                // Как Chromium: только заголовок. Пропуск «тела» проглотил бы весь поток.
+                self.input.advance(header.header_len);
+                Ok(Step::Continue)
+            }
+            (id, Some(total_len)) => {
+                self.start_skipping_service_element(id, total_len)?;
                 Ok(Step::Continue)
             }
             (id, None) => Err(FramingError::UnknownSizeNotAllowed { id }),
@@ -327,6 +370,9 @@ impl MatroskaFramer {
             self.state = MatroskaState::Clusters;
             return Ok(Step::Continue);
         }
+        if !CLUSTER_CHILD_IDS.contains(&header.id) {
+            return Err(FramingError::UnexpectedEbmlElement { id: header.id });
+        }
         let total_len = known_total_len(header)?;
         let accumulated = (REWRITTEN_HEADER_BYTES + body.len()) as u64;
         ensure_within_limit(
@@ -341,6 +387,26 @@ impl MatroskaFramer {
         body.extend_from_slice(&child);
         self.state = MatroskaState::UnknownSizeCluster { body };
         Ok(Step::Continue)
+    }
+
+    /// Начинает пропуск служебного элемента; другой элемент здесь — мусор вместо WebM.
+    fn start_skipping_service_element(
+        &mut self,
+        id: u32,
+        total_len: u64,
+    ) -> Result<(), FramingError> {
+        if !is_service_element(id) {
+            return Err(FramingError::UnexpectedEbmlElement { id });
+        }
+        // В памяти такой элемент не копится, но и ждать его конца вечно нельзя: страница
+        // объявляет 3 ГиБ `Void`, капает байты, а плеер считает это прогрессом и стоит.
+        ensure_within_limit(
+            SegmentKind::ServiceElement,
+            total_len,
+            self.limits.max_media_bytes,
+        )?;
+        self.skip_remaining = total_len;
+        Ok(())
     }
 
     /// Пропускает уже пришедшие байты ненужного элемента. `false` — пропуск не окончен.

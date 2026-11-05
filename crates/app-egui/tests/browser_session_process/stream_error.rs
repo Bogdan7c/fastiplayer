@@ -50,7 +50,7 @@ fn split_fragmented_mp4(bytes: &[u8]) -> Vec<Vec<u8>> {
 }
 
 /// Кадр данных: кусок `piece` полосы `source_buffer` с порядковым номером `sequence`.
-fn data_frame(source_buffer: u16, sequence: u64, piece: &[u8]) -> Message {
+pub(super) fn data_frame(source_buffer: u16, sequence: u64, piece: &[u8]) -> Message {
     let header = DataFrameHeader::SourceBufferBytes(SourceBufferBytesHeader {
         generation: StreamGeneration::FIRST,
         source_buffer: SourceBufferIndex::new(source_buffer).expect("source buffer"),
@@ -60,7 +60,7 @@ fn data_frame(source_buffer: u16, sequence: u64, piece: &[u8]) -> Message {
 }
 
 /// Все куски полосы кадрами с номерами по порядку (нумерация подряд — страница не врёт).
-fn lane_frames(source_buffer: u16, media: &str) -> Vec<Message> {
+pub(super) fn lane_frames(source_buffer: u16, media: &str) -> Vec<Message> {
     let bytes = std::fs::read(Path::new(FIXTURES).join("media").join(media)).expect("media");
     split_fragmented_mp4(&bytes)
         .iter()

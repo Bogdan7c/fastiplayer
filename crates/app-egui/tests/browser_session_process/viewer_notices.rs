@@ -15,10 +15,10 @@
 use super::*;
 
 /// Строка журнала окна, когда оно показывает зрителю отказ поколения.
-const REJECTION_NOTICE_LINE: &str = "Browser window shows the stream rejection notice";
+pub(super) const REJECTION_NOTICE_LINE: &str = "Browser window shows the stream rejection notice";
 
 /// Длина ролика фикстуры (`video.mp4` / `audio.mp4`), мкс.
-const FIXTURE_CLIP_US: u64 = 400_000;
+pub(super) const FIXTURE_CLIP_US: u64 = 400_000;
 
 /// Звук фикстуры, у которого в описании образца `mp4a` заменён на `xxxx`: кодек, которого
 /// плеер не знает (байты и MIME при этом честные).
@@ -32,13 +32,13 @@ fn audio_with_unknown_codec() -> Vec<u8> {
     file
 }
 
-fn fixture(name: &str) -> Vec<u8> {
+pub(super) fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(Path::new(FIXTURES).join("media").join(name)).expect("fixture media")
 }
 
 /// Поколение `number`: объявленная длина, видео (полоса 0) и звук (полоса 1) одним куском,
 /// при `sealed` — конец потока.
-fn generation_messages(
+pub(super) fn generation_messages(
     number: u32,
     declared_duration_us: u64,
     video: Vec<u8>,

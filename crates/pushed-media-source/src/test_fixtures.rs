@@ -49,3 +49,19 @@ pub(crate) const AUDIO_AAC: &[u8] = include_bytes!("../fixtures/audio-aac.mp4");
 /// AAC моно 48 кГц, 4 с (синус): init + 10 фрагментов по 19 AAC-кадров
 /// (19 × 1024 sample = 405,33 мс) — звук фрагмента N начинается в N × 405,33 мс.
 pub(crate) const AUDIO_AAC_4S: &[u8] = include_bytes!("../fixtures/audio-aac-4s.mp4");
+
+/// Детерминированный «случайный» мусор (xorshift64): как случайные байты страницы,
+/// только прогон повторяем.
+pub(crate) fn pseudo_random_bytes(seed: u64, len: usize) -> Vec<u8> {
+    // Ноль — неподвижная точка xorshift; `| 1` её исключает.
+    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut bytes = Vec::with_capacity(len + 8);
+    while bytes.len() < len {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        bytes.extend_from_slice(&state.to_le_bytes());
+    }
+    bytes.truncate(len);
+    bytes
+}

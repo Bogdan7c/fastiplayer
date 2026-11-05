@@ -4,6 +4,11 @@
 //! Init-сегмент — `ftyp` (необязателен) + `moov`. Медиасегмент — `moof` + `mdat`.
 //! Служебные боксы между ними (`styp`, `sidx`, `emsg`, `prft`, `free` …) демуксеру
 //! не нужны и выбрасываются, не попадая в память целиком.
+//!
+//! Список типов верхнего уровня ЗАКРЫТ, как в разборщиках MSE обоих браузеров: всё
+//! остальное — не «незнакомый бокс», а мусор вместо fMP4. Иначе случайный заголовок
+//! читался бы как бокс длиной до 4 ГиБ, сканер «пропускал» бы его, ни разу не
+//! пожаловавшись, и поток молча ждал бы данных вечно.
 
 use bytes::{Buf, Bytes, BytesMut};
 
@@ -17,6 +22,17 @@ const LARGE_HEADER_BYTES: usize = 16;
 const LARGE_SIZE_MARKER: u32 = 1;
 /// Значение 32-битного размера, означающее «до конца файла».
 const UNTIL_END_OF_FILE_MARKER: u32 = 0;
+
+/// Служебные боксы верхнего уровня: законны, демуксеру не нужны.
+///
+/// Это объединение закрытых списков двух браузеров: Chromium
+/// (`BoxReader::IsValidTopLevelBox`) и Firefox (`AtomParser::validBoxes`, у него один
+/// лишний `pssh`). Поток с другим типом браузеры отвергают сами, поэтому отказ здесь не
+/// ломает настоящие сайты: страница такой поток и в браузере сыграть не может.
+const SERVICE_BOX_TYPES: [&[u8; 4]; 14] = [
+    b"pdin", b"bloc", b"mfra", b"free", b"skip", b"meta", b"meco", b"styp", b"sidx", b"ssix",
+    b"prft", b"uuid", b"emsg", b"pssh",
+];
 
 /// Заголовок одного бокса.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,19 +87,20 @@ enum TopLevelRole {
     FragmentHeader,
     /// `mdat`: данные фрагмента.
     MediaData,
-    /// Всё остальное: демуксеру не нужно.
+    /// Служебный бокс: законен, но демуксеру не нужен.
     Ignored,
 }
 
 impl TopLevelRole {
-    /// Роль по типу бокса.
-    fn of(box_type: [u8; 4]) -> Self {
+    /// Роль по типу бокса; `None` — такому боксу на верхнем уровне потока не место.
+    fn of(box_type: [u8; 4]) -> Option<Self> {
         match &box_type {
-            b"ftyp" => Self::FileType,
-            b"moov" => Self::Movie,
-            b"moof" => Self::FragmentHeader,
-            b"mdat" => Self::MediaData,
-            _ => Self::Ignored,
+            b"ftyp" => Some(Self::FileType),
+            b"moov" => Some(Self::Movie),
+            b"moof" => Some(Self::FragmentHeader),
+            b"mdat" => Some(Self::MediaData),
+            service if SERVICE_BOX_TYPES.contains(&service) => Some(Self::Ignored),
+            _ => None,
         }
     }
 }
@@ -129,12 +146,15 @@ impl IsoBmffFramer {
             let Some(header) = read_box_header(&self.input)? else {
                 return Ok(());
             };
-            let role = TopLevelRole::of(header.box_type);
+            let role =
+                TopLevelRole::of(header.box_type).ok_or(FramingError::UnrecognizedTopLevelBox {
+                    box_type: header.box_type,
+                })?;
+            self.ensure_segment_fits(role, header.total_len)?;
             if role == TopLevelRole::Ignored {
                 self.skip_box(header.total_len);
                 continue;
             }
-            self.ensure_segment_fits(role, header.total_len)?;
             let Some(whole_box) = self.take_whole_box(header.total_len) else {
                 return Ok(());
             };
@@ -205,7 +225,14 @@ impl IsoBmffFramer {
                 box_len.saturating_add(pending_len(&self.pending_fragment_header)),
                 self.limits.max_media_bytes,
             ),
-            TopLevelRole::Ignored => Ok(()),
+            // В памяти такой бокс не копится, но и ждать его конца вечно нельзя: страница
+            // объявляет 3 ГиБ `free`, капает настоящие байты, а плеер считает это
+            // прогрессом и стоит. Настоящие служебные боксы меньше любого сегмента.
+            TopLevelRole::Ignored => ensure_within_limit(
+                SegmentKind::ServiceElement,
+                box_len,
+                self.limits.max_media_bytes,
+            ),
         }
     }
 

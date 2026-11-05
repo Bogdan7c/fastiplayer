@@ -57,6 +57,8 @@ pub enum SegmentKind {
     Initialization,
     /// Медиасегмент.
     Media,
+    /// Служебный бокс или элемент, который сканер пропускает (`free`, `Void` …).
+    ServiceElement,
 }
 
 /// Байты не складываются в сегменты объявленного контейнера.
@@ -81,6 +83,12 @@ pub enum FramingError {
         /// Предел.
         limit: usize,
     },
+    /// На верхнем уровне потока — бокс, которого там не бывает: это мусор вместо fMP4.
+    #[error("the MP4 box type {box_type:02X?} cannot appear at the top level of a stream")]
+    UnrecognizedTopLevelBox {
+        /// Прочитанный тип (случайные байты могут не быть текстом).
+        box_type: [u8; 4],
+    },
     /// `mdat` без предшествующего `moof`.
     #[error("an MP4 media data box arrived without a fragment header")]
     MediaDataWithoutFragmentHeader,
@@ -99,6 +107,12 @@ pub enum FramingError {
     /// Элемент с неизвестным размером там, где он недопустим.
     #[error("the WebM element 0x{id:X} has an unknown size where it is not allowed")]
     UnknownSizeNotAllowed {
+        /// ID элемента.
+        id: u32,
+    },
+    /// Элемент, которого в этом месте WebM не бывает: это мусор вместо WebM.
+    #[error("the WebM element 0x{id:X} cannot appear here")]
+    UnexpectedEbmlElement {
         /// ID элемента.
         id: u32,
     },

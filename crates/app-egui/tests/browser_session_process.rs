@@ -805,6 +805,10 @@ mod home_stays_clean;
 #[path = "browser_session_process/stream_error.rs"]
 mod stream_error;
 
+// Мусор вместо контейнера кончается честным отказом поколения (09c, инвариант 1).
+#[path = "browser_session_process/garbage_stream.rs"]
+mod garbage_stream;
+
 // Досмотр кончается на конце первой кончившейся дорожки (04d, решение 133): звук и
 // позиция встают с короткой картинкой после `tab_gone`.
 #[path = "browser_session_process/drain_cut.rs"]
