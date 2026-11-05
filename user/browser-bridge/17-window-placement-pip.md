@@ -111,3 +111,7 @@
 - Memories: новая `mem:window-placement/core`, `mem:browser-bridge/core`, `mem:dependency-patches/core` (если трогали winit).
 
 Memories: `mem:app-egui/instance-forwarding-ux13`, `mem:app-egui/fullscreen-chrome-autohide-ux14`, `mem:dependency-patches/core`.
+
+## Поправка по итогам 09d (5.11.2026, решение 208)
+
+- **Вернуть кнопку «вывести браузер вперёд».** На KDE Wayland `tabs.update` и `windows.update` окно браузера не поднимают. Здесь появится управление окнами: вывести браузер вперёд, когда сайт показал кнопку пропуска (`ad_state.skip = on_page`), и вернуть плеер после рекламы. Команда `reveal_page` из 09d удалена, её нужно будет добавить заново. Причину отказа Wayland доказать первым делом.
