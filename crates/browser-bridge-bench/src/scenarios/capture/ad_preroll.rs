@@ -5,6 +5,9 @@
 //!   2. робот шлёт `start-film`; фильм играет в другом элементе; передача → `started`, кадры в
 //!      плеере, браузер фильм не декодирует (общий приговор `capture`).
 //!
+//! Вариант `ad-preroll-unlisted` — живая форма Tortuga: домена ролика нет в списке рекламных, рядом
+//! стоит пустой `<video>` той же площади. Рекламу видно только по устройству страницы.
+//!
 //! ВАЖНО: ожидание фазы 1 (`ad_playing`, без переезда) верно ТОЛЬКО ДО сессии 09c2 (решение 201).
 //! В 09c2 передача во время рекламы переезжает на фильм сама, и эта проверка там меняется.
 
@@ -28,6 +31,31 @@ use crate::site::{PageReport, SiteError};
 
 /// Идентификатор страницы.
 pub(in crate::scenarios) const AD_PREROLL_PAGE: &str = "ad-preroll";
+/// Вариант сценария: как страница показывает рекламу.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::scenarios) struct AdPrerollVariant {
+    /// Имя шага в отчёте и в фильтре `--page`.
+    pub(in crate::scenarios) step_id: &'static str,
+    /// Что добавить к адресу страницы.
+    query_suffix: &'static str,
+    /// Нужен ли рекламный домен из списка экстеншена (ведёт на сервер стенда).
+    uses_listed_ad_host: bool,
+}
+
+/// Варианты сценария: реклама с домена из списка и живая форма Tortuga.
+pub(in crate::scenarios) const VARIANTS: &[AdPrerollVariant] = &[
+    AdPrerollVariant {
+        step_id: AD_PREROLL_PAGE,
+        query_suffix: "&mode=handoff",
+        uses_listed_ad_host: true,
+    },
+    AdPrerollVariant {
+        step_id: "ad-preroll-unlisted",
+        query_suffix: "&mode=handoff&ad=unlisted",
+        uses_listed_ad_host: false,
+    },
+];
+
 /// Рекламный домен файла ролика: правила экстеншена считают его рекламным по суффиксу
 /// `doubleclick.net`. Имя дублирует `AD_HOST` в `site/pages/ad-preroll.html` (тест их сверяет).
 pub(in crate::scenarios) const AD_HOST: &str = "ad.doubleclick.net";
@@ -46,13 +74,18 @@ fn session_grants(run_stderr: &std::path::Path) -> Result<u32, ScenarioError> {
     Ok(read_host_evidence(run_stderr)?.session_grants)
 }
 
-pub(in crate::scenarios) fn run(stand: &Stand, browser: BrowserKind) -> StepResult {
+pub(in crate::scenarios) fn run(
+    stand: &Stand,
+    browser: BrowserKind,
+    variant: AdPrerollVariant,
+) -> StepResult {
     let started = Instant::now();
-    let verdict = stand.with_environment(|environment| drive(stand, environment, browser, started));
+    let verdict =
+        stand.with_environment(|environment| drive(stand, environment, browser, variant, started));
     StepResult::new(
         "capture",
         browser,
-        AD_PREROLL_PAGE,
+        variant.step_id,
         verdict,
         started.elapsed(),
     )
@@ -62,10 +95,15 @@ fn drive(
     stand: &Stand,
     environment: &BenchEnvironment,
     browser_kind: BrowserKind,
+    variant: AdPrerollVariant,
     run_started_at: Instant,
 ) -> Result<Verdict, ScenarioError> {
     let tweaks = RunTweaks {
-        loopback_host_aliases: vec![AD_HOST.to_owned()],
+        loopback_host_aliases: if variant.uses_listed_ad_host {
+            vec![AD_HOST.to_owned()]
+        } else {
+            Vec::new()
+        },
         ..RunTweaks::default()
     };
     let mut run = HandoffRun::open_tweaked(
@@ -73,9 +111,9 @@ fn drive(
         environment,
         browser_kind,
         AD_PREROLL_PAGE,
-        AD_PREROLL_PAGE,
+        variant.step_id,
         ExtensionMode::Real,
-        "&mode=handoff",
+        variant.query_suffix,
         &tweaks,
     )?;
     match run.wait_page_marker(AD_READY_MARKER, AD_READY_TIMEOUT) {

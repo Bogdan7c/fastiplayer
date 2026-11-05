@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ad-beside-film</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;width:640px;height:360px;display:block}</style>
+</head>
+<body>
+<h1>ad-beside-film</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying, waitFor } from '../lib/bench-checks.js';
+import { loadCatalog } from '../lib/bench-player.js';
+import { mountVideo, startAsset, observeHandoff } from '../lib/scenario-kit.js';
+
+// Живая форма Ashdi (находка живой проверки 09c): фильм УЖЕ загружен в MediaSource и стоит у начала,
+// а поверх него играет рекламный файл с обычного домена, которого нет в списке рекламных. Страница
+// ждёт конца рекламы и только потом запускает фильм.
+// Экстеншен обязан отдать плееру фильм и не трогать рекламу: она доигрывает в браузере. Действие
+// `ad-over` — конец рекламы: страница убирает ролик и запускает фильм, он идёт под тенью.
+
+/** Сколько ждём хода часов фильма после конца рекламы, мс. */
+const FILM_CLOCK_WAIT_MS = 10000;
+
+await runScenario('ad-beside-film', async (ctx) => {
+  const catalog = await loadCatalog();
+  const film = mountVideo(document.body, 'film');
+  const session = await startAsset(ctx, 'h264-aac', { video: film });
+  await checkPlaying(ctx, film, 'film-loaded');
+  film.pause();
+  film.currentTime = 0;
+  ctx.check('film-waits', film.paused, `paused=${film.paused}`);
+
+  // Реклама: файл с домена страницы, без цикла (цикл — признак баннера, а не рекламы).
+  const ad = mountVideo(document.body, 'ad');
+  ad.src = `/media/${catalog.assets['ad-preroll'].url}`;
+  const replayAd = () => { ad.currentTime = 0; ad.play().catch(() => {}); };
+  ad.addEventListener('ended', replayAd);
+  await ad.play().catch(async () => { ad.muted = true; await ad.play(); });
+  await checkPlaying(ctx, ad, 'ad-playing');
+  ctx.check('ad-duration-known', Number.isFinite(ad.duration), `ad duration=${ad.duration}`);
+
+  /** Конец рекламы по команде робота: ролик убран, фильм запущен страницей. */
+  const adOver = async (hookCtx) => {
+    ad.removeEventListener('ended', replayAd);
+    ad.remove();
+    const clockBefore = film.currentTime;
+    await film.play().catch(async () => { film.muted = true; await film.play(); });
+    const advanced = await waitFor(() => film.currentTime >= clockBefore + 1, FILM_CLOCK_WAIT_MS);
+    hookCtx.check('film-plays-under-shadow', advanced, `film clock ${clockBefore.toFixed(2)} -> ${film.currentTime.toFixed(2)}`);
+  };
+
+  if (ctx.params.handoff) await observeHandoff(ctx, session, { 'ad-over': adOver });
+  await session.player.destroy();
+});
+</script>
+</body>
+</html>

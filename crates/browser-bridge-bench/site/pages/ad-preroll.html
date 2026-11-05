@@ -25,13 +25,25 @@ import { waitForRobotCommand } from '../lib/handoff-mode.js';
 //   2. Рекламу удаляем, фильм стартует в другом элементе, дальше обычная фаза передачи
 //      (`handoff-ready`): робот отдаёт фильм плееру.
 // Имя `AD_HOST` дублирует `AD_HOST` в `src/scenarios/capture/ad_preroll.rs` (тест их сверяет).
+//
+// Вариант `&ad=unlisted` — живая форма Tortuga (находка живой проверки 09c): домен файла НЕ рекламный
+// по списку, цикла нет, а рядом стоит пустой `<video>` той же площади: плеер снял с него источник на
+// время рекламы. Распознать рекламу можно только по устройству страницы.
 
 /** Рекламный домен для файла ролика (суффикс `doubleclick.net` есть в правилах экстеншена). */
 const AD_HOST = 'ad.doubleclick.net';
 
+/** Реклама с домена не из списка рядом с пустым плеером (форма Tortuga). */
+const UNLISTED_AD = new URLSearchParams(location.search).get('ad') === 'unlisted';
+
+/** Элементы плеера лежат друг на друге в одном боксе, как на живом сайте. */
+function stackInPlayerBox(video) {
+  Object.assign(video.style, { position: 'absolute', top: '60px', left: '16px', width: '640px', height: '360px' });
+}
+
 /** Адрес файла рекламы: в режиме передачи — под рекламным доменом, иначе обычный. */
 function adFileUrl(ctx, adAsset) {
-  if (!ctx.params.handoff) return `/media/${adAsset.url}`;
+  if (!ctx.params.handoff || UNLISTED_AD) return `/media/${adAsset.url}`;
   const { port } = new URL(ctx.params.reportOrigin);
   return `http://${AD_HOST}:${port}/media/${adAsset.url}`;
 }
@@ -39,10 +51,16 @@ function adFileUrl(ctx, adAsset) {
 await runScenario('ad-preroll', async (ctx) => {
   const catalog = await loadCatalog();
   const adAsset = catalog.assets['ad-preroll'];
+  // Пустой плеер под рекламой: тот же бокс, источника нет.
+  const emptySlot = UNLISTED_AD ? mountVideo(document.body, 'empty-slot') : null;
   const ad = mountVideo(document.body, 'ad');
+  if (UNLISTED_AD) [emptySlot, ad].forEach(stackInPlayerBox);
   ad.src = adFileUrl(ctx, adAsset);
   // В режиме передачи реклама не должна закончиться раньше, чем робот ответит: играет по кругу.
-  ad.loop = ctx.params.handoff;
+  // Вариант без домена из списка запускает ролик заново сам: `loop` — признак баннера, а не рекламы.
+  const replayAd = () => { ad.currentTime = 0; ad.play().catch(() => {}); };
+  if (UNLISTED_AD) ad.addEventListener('ended', replayAd);
+  ad.loop = ctx.params.handoff && !UNLISTED_AD;
   await ad.play().catch(async () => { ad.muted = true; await ad.play(); });
   await checkPlaying(ctx, ad, 'ad-playing');
   if (ctx.params.handoff) {
@@ -52,7 +70,9 @@ await runScenario('ad-preroll', async (ctx) => {
     const ended = await waitFor(() => ad.ended, 8000);
     ctx.check('ad-ended', ended, `ad currentTime=${ad.currentTime.toFixed(2)} of ${adAsset.duration_s} s`);
   }
+  ad.removeEventListener('ended', replayAd);
   ad.remove();
+  emptySlot?.remove();
   ctx.check('ad-element-removed', document.getElementById('ad') === null && document.querySelectorAll('video').length === 0,
     `videos in document=${document.querySelectorAll('video').length}`);
   // Основной плеер стартует в ДРУГОМ элементе.

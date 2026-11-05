@@ -147,6 +147,9 @@ pub(super) const CAPTURE_PAGES: &[CapturePage] = &[
     // 09c: главное видео на паузе, рядом играют баннер и превью. Главное уходит в плеер (зритель
     // жмёт play — действие), баннер и превью остаются у браузера (по журналу сервера и счётчикам).
     page_resumed_by_hook("banner-with-main", "resume-main"),
+    // 09c, живая проверка, форма Ashdi: реклама с домена не из списка играет поверх загруженного
+    // фильма. В плеер уходит фильм, он стоит до конца рекламы (действие), реклама остаётся браузеру.
+    page_resumed_by_hook("ad-beside-film", "ad-over"),
 ];
 
 /// Все MSE-страницы одного браузера, каждая в свежем окружении (свой плеер и журналы).
@@ -172,8 +175,11 @@ pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) 
             .map(|page| refusals::run_refusal(stand, browser, *page)),
     );
     // 09c: реклама отдельным элементом (две фазы под командами робота), свой сценарий.
+    // Оба варианта живут на одной странице, поэтому `--page ad-preroll` запускает оба.
     if filter.admits(ad_preroll::AD_PREROLL_PAGE) {
-        results.push(ad_preroll::run(stand, browser));
+        for variant in ad_preroll::VARIANTS {
+            results.push(ad_preroll::run(stand, browser, *variant));
+        }
     }
     results
 }
@@ -576,6 +582,6 @@ mod tests {
             );
             assert!(seen.insert(page.id), "{} listed twice", page.id);
         }
-        assert_eq!(CAPTURE_PAGES.len(), 23);
+        assert_eq!(CAPTURE_PAGES.len(), 24);
     }
 }

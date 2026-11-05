@@ -57,6 +57,8 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("iframe-cross-origin"),
     page("cdn-guard"),
     page("ad-preroll"),
+    // 09c, живая проверка: форма Ashdi — реклама с домена не из списка поверх ждущего фильма.
+    page("ad-beside-film"),
     page("banner-autoplay"),
     page("drm-probe"),
     page("drm-clearkey"),

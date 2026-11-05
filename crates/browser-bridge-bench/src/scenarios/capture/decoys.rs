@@ -22,10 +22,17 @@ pub(in crate::scenarios) struct DecoyPage {
 }
 
 /// Страницы с приманкой рядом с главным видео.
-pub(in crate::scenarios) const DECOY_PAGES: &[DecoyPage] = &[DecoyPage {
-    id: "banner-with-main",
-    file_path: "/media/progressive/h264-aac.mp4",
-}];
+pub(in crate::scenarios) const DECOY_PAGES: &[DecoyPage] = &[
+    DecoyPage {
+        id: "banner-with-main",
+        file_path: "/media/progressive/h264-aac.mp4",
+    },
+    // Живая форма Ashdi: реклама с домена не из списка играет поверх ждущего фильма.
+    DecoyPage {
+        id: "ad-beside-film",
+        file_path: AD_FILE_PATH,
+    },
+];
 
 /// Страница с приманкой, если это она.
 pub(in crate::scenarios) fn decoy_page(page_id: &str) -> Option<DecoyPage> {
@@ -243,6 +250,10 @@ mod tests {
         assert_eq!(
             decoy_page("banner-with-main").map(|page| page.file_path),
             Some("/media/progressive/h264-aac.mp4")
+        );
+        assert_eq!(
+            decoy_page("ad-beside-film").map(|page| page.file_path),
+            Some(AD_FILE_PATH)
         );
         assert!(decoy_page("mse-fmp4").is_none());
     }
