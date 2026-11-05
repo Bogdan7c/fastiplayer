@@ -16,7 +16,8 @@
 //     Повтор главного потока синхронный, и это тот же T0; повтор воркера долгий, и элемент мог
 //     уйти вперёд. Поколение эфира плеер на T0 при загрузке не ставит и идёт за этой перемоткой
 //     после показа;
-//  4. `page_playback{play}`, если элемент играл;
+//  4. `page_playback`: играл элемент или стоял. Плеер без этого слова считает, что страница хочет
+//     играть, и видео на паузе запускалось бы само (на Ashdi — поверх рекламы в браузере);
 //  5. `startShadow(...)` — элемент уходит в тень (у файла — с снятым источником, решение 186);
 //  6. дальше — живой поток событий и байтов MediaSource этого элемента (и новых MediaSource, которые
 //     страница подключит к нему же: «src элемента = blob-адрес MediaSource при его первом
@@ -219,7 +220,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
   }
 
   /**
-   * Шаги 3–5: `page_seek{T0}`, `page_playback{play}` (если играл), тень. Состояние настоящего
+   * Шаги 3–5: `page_seek{T0}`, `page_playback` (играл или стоял), тень. Состояние настоящего
    * элемента читается здесь, ДО тени: тень покажет странице уже время плеера. Бросает — решает
    * вызывающий (`#failToStart`).
    */
@@ -232,7 +233,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     // Дальше живой поток: его события T0 уже не называют, даже если повтор был пустым.
     active.announcedStartUs = startPositionUs;
     port.send({ kind: "page_seek", target_us: startPositionUs });
-    if (wasPlaying) port.send({ kind: "page_playback", request: { kind: "play" } });
+    port.send({ kind: "page_playback", request: { kind: wasPlaying ? "play" : "pause" } });
     active.session = this.#environment.startShadow(element as HTMLMediaElement, (event) => this.#emitFromShadow(active, event), {
       isMediaSourceObjectUrl: (url) => registry.isMediaSourceObjectUrl(url),
       source: shadowSource,

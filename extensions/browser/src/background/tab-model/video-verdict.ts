@@ -44,13 +44,15 @@ function isUnstartedPlaylistAddress(candidate: VideoCandidate): boolean {
  * Сосед по документу ждёт фильм, пока `clip` играет поверх него:
  * - стоящий MediaSource длиннее ролика (Ashdi: фильм уже загружен и ждёт конца рекламы);
  *   длительность MediaSource бывает ещё неизвестна — это тоже ожидание;
- * - стоящий пустой `<video>` той же площади (Tortuga: плеер снял источник на время рекламы). Без
- *   равной площади это мог бы быть другой элемент ленты, поэтому площадь обязательна.
+ * - стоящий незапущенный `<video>` той же площади: пустой (Tortuga снял источник на время рекламы)
+ *   или с адресом плейлиста (Tortuga на странице с двумя плеерами). Без равной площади это мог бы
+ *   быть другой элемент ленты, поэтому площадь обязательна.
  */
 function waitsForFilm(neighbour: VideoCandidate, clip: VideoCandidate, clipSeconds: number): boolean {
   if (neighbour.playing) return false;
   if (neighbour.media.kind === "media_source") return (neighbour.duration_s ?? Infinity) > clipSeconds;
-  return neighbour.media.kind === "none" && neighbour.visible_area_px > 0 && neighbour.visible_area_px === clip.visible_area_px;
+  const unstarted = neighbour.media.kind === "none" || isUnstartedPlaylistAddress(neighbour);
+  return unstarted && neighbour.visible_area_px > 0 && neighbour.visible_area_px === clip.visible_area_px;
 }
 
 /**

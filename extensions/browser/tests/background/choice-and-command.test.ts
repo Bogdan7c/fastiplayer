@@ -219,6 +219,16 @@ describe("выбор видео: преролл с неизвестного до
     assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [emptySlot(1), preroll(2)] }]), { kind: "ad_playing" });
   });
 
+  it("незапущенный адрес плейлиста той же площади — тоже пустой плеер: ad_playing", () => {
+    const playlistSlot = emptySlot(1, { media: { kind: "unsupported", form: "native_hls" } });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [playlistSlot, preroll(2)] }]), { kind: "ad_playing" });
+  });
+
+  it("играющий нативный HLS рядом с файлом — не пустой плеер, рекламы по соседству не видно", () => {
+    const playingPlaylist = emptySlot(1, { media: { kind: "unsupported", form: "native_hls" }, playing: true });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [playingPlaylist, preroll(2)] }]), keptFile);
+  });
+
   it("MediaSource без длительности тоже ждёт фильм", () => {
     assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1, { duration_s: null }), preroll(2)] }]), handOff(0, "doc-top", 1));
   });

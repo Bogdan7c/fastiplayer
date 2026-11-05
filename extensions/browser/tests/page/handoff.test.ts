@@ -168,6 +168,20 @@ test("describe_candidates: keys, live media, playing and visible area, including
   });
 });
 
+test("begin_handoff: страница на паузе говорит плееру «пауза», иначе он запустит видео сам", async () => {
+  const harness = startHarness();
+  const { video } = playingPage(harness);
+  video.testSetState({ paused: true, currentTime: 0.25 });
+  await withChannel(harness, async (isolated) => {
+    await describeAndBegin(isolated);
+    await isolated.waitFor(10);
+    await isolated.settle();
+    const playback = isolated.received.filter((event) => event.kind === "page_playback");
+    assert.deepEqual(playback, [{ kind: "page_playback", request: { kind: "pause" } }]);
+    assert.equal(harness.shadow.started.length, 1, "тень стоит и на паузе");
+  });
+});
+
 test("begin_handoff: began → T0 right after the generation is declared → replay → page_seek(T0) → play → shadow, bytes exact and transferred", async () => {
   const harness = startHarness();
   const { page, shadow } = harness;
