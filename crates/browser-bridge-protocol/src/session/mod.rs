@@ -27,10 +27,15 @@
 //! Обычное 1000 от страницы и кадр без кода ничего не объясняют: плеер кончает сеанс
 //! молча.
 
+pub mod ad_state;
 pub mod page;
 pub mod player;
 pub mod variants;
 
+pub use ad_state::{
+    AdCountdownSeconds, AdPod, AdPodNumber, AdSkip, MAX_AD_COUNTDOWN_SECONDS, MAX_ADS_IN_POD,
+    PageAdState,
+};
 pub use page::{
     PagePlaybackRequest, PageSessionMessage, RangeFetchFailure, RangeFetchOutcome, RemovalEnd,
     ResourceSize, SeekCause, StreamScope, TabGoneReason,

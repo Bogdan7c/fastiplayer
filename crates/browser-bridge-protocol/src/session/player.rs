@@ -144,6 +144,10 @@ pub enum PlayerSessionMessage {
     },
     /// Следующая серия через адаптер.
     NextEpisode {},
+    /// Зритель нажал «Skip»: нажать настоящую кнопку пропуска на странице (решение 184).
+    SkipAd {},
+    /// Зритель нажал «Go to page»: вывести вкладку и окно браузера вперёд (решение 207).
+    RevealPage {},
     /// Дай байты файла `<video src>` (качает background экстеншена).
     FetchRange {
         /// Номер запроса.
@@ -174,6 +178,8 @@ impl ProtocolMessage for PlayerSessionMessage {
         "return_to_page",
         "select_variant",
         "next_episode",
+        "skip_ad",
+        "reveal_page",
         "fetch_range",
         "stream_rejected",
     ];

@@ -383,6 +383,41 @@
       }
     },
     {
+      "file": "session/valid/page-ad-state-none.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-ad-state-unknown-organs.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-ad-state-countdown.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-ad-state-available.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-ad-state-on-page.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
       "file": "session/valid/page-range-fetch-completed.json",
       "schema": "page_session",
       "expect": {
@@ -492,6 +527,38 @@
       }
     },
     {
+      "file": "session/invalid/page-ad-index-zero.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-ad-count-above-limit.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-ad-index-above-count.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-ad-countdown-above-limit.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
       "file": "session/valid/player-attached.json",
       "schema": "player_session",
       "expect": {
@@ -563,6 +630,20 @@
     },
     {
       "file": "session/valid/player-next-episode.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-skip-ad.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-reveal-page.json",
       "schema": "player_session",
       "expect": {
         "result": "ok"
@@ -911,6 +992,22 @@
     },
     {
       "file": "session/invalid/page-shape-page-playback-request-as-array.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-ad-state-as-array.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-ad-skip-kind-as-index.json",
       "schema": "page_session",
       "expect": {
         "result": "error",

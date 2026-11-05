@@ -441,6 +441,43 @@ def write_page_session(manifest: Manifest) -> None:
         ),
         ("page-playback-pause", page_message("page_playback", request={"kind": "pause"})),
         ("variant-menu-changed", page_message("variant_menu_changed", menu=menu)),
+        ("ad-state-none", page_message("ad_state", ad={"kind": "none"})),
+        (
+            "ad-state-unknown-organs",
+            page_message(
+                "ad_state",
+                ad={"kind": "showing", "pod": {"kind": "unknown"}, "skip": {"kind": "unavailable"}},
+            ),
+        ),
+        (
+            "ad-state-countdown",
+            page_message(
+                "ad_state",
+                ad={
+                    "kind": "showing",
+                    "pod": {"kind": "known", "index": 1, "count": 2},
+                    "skip": {"kind": "countdown", "seconds": 5},
+                },
+            ),
+        ),
+        (
+            "ad-state-available",
+            page_message(
+                "ad_state",
+                ad={
+                    "kind": "showing",
+                    "pod": {"kind": "known", "index": 2, "count": 2},
+                    "skip": {"kind": "available"},
+                },
+            ),
+        ),
+        (
+            "ad-state-on-page",
+            page_message(
+                "ad_state",
+                ad={"kind": "showing", "pod": {"kind": "unknown"}, "skip": {"kind": "on_page"}},
+            ),
+        ),
         (
             "range-fetch-completed",
             page_message(
@@ -559,6 +596,33 @@ def write_page_session(manifest: Manifest) -> None:
         compact_json(page_message("page_playback", request={"kind": "set_rate", "rate": 16_001})),
         "number_out_of_range",
     )
+    no_skip = {"kind": "unavailable"}
+    for name, pod in [
+        ("ad-index-zero", {"kind": "known", "index": 0, "count": 2}),
+        ("ad-count-above-limit", {"kind": "known", "index": 1, "count": 65}),
+        ("ad-index-above-count", {"kind": "known", "index": 3, "count": 2}),
+    ]:
+        manifest.invalid(
+            f"{invalid}{name}.json",
+            schema,
+            compact_json(page_message("ad_state", ad={"kind": "showing", "pod": pod, "skip": no_skip})),
+            "number_out_of_range",
+        )
+    manifest.invalid(
+        f"{invalid}ad-countdown-above-limit.json",
+        schema,
+        compact_json(
+            page_message(
+                "ad_state",
+                ad={
+                    "kind": "showing",
+                    "pod": {"kind": "unknown"},
+                    "skip": {"kind": "countdown", "seconds": 3601},
+                },
+            )
+        ),
+        "number_out_of_range",
+    )
 
 
 def write_player_session(manifest: Manifest) -> None:
@@ -582,6 +646,8 @@ def write_player_session(manifest: Manifest) -> None:
         ("return-to-page", {"type": "return_to_page", "position_us": 1_029_000_000, "resume": "paused"}),
         ("select-variant", {"type": "select_variant", "kind": "audio", "variant_id": "voice-2"}),
         ("next-episode", {"type": "next_episode"}),
+        ("skip-ad", {"type": "skip_ad"}),
+        ("reveal-page", {"type": "reveal_page"}),
         ("fetch-range", {"type": "fetch_range", "request_id": 7, "offset": 0, "length": 1_048_576}),
         ("stream-rejected", {"type": "stream_rejected", "generation": 1, "reason": "protected_content"}),
         (
@@ -719,6 +785,8 @@ def write_shape_strictness(manifest: Manifest) -> None:
         ("seek-cause-kind-as-index", page_message("seek_started", target_us=0, cause={"kind": 1})),
         ("duration-kind-as-index", page_message("duration_changed", generation=1, duration={"kind": 2})),
         ("page-playback-request-as-array", page_message("page_playback", request=["pause"])),
+        ("ad-state-as-array", page_message("ad_state", ad=["none"])),
+        ("ad-skip-kind-as-index", page_message("ad_state", ad={"kind": "showing", "pod": {"kind": "unknown"}, "skip": {"kind": 2}})),
         ("tab-gone-reason-as-index", page_message("tab_gone", reason=0)),
         ("tab-gone-reason-as-map", page_message("tab_gone", reason={"closed": None})),
         # Незнакомый ключ в той же внешней форме — тоже ошибка формы, а не «незнакомое значение»:

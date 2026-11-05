@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::codec::ProtocolMessage;
 use crate::error::ValueViolation;
+use crate::session::ad_state::PageAdState;
 use crate::session::variants::VariantMenu;
 use crate::stream::{RangeRequestId, SeekId, SourceBufferIndex, StreamGeneration};
 use crate::strict_shape::{strict_label, strict_object};
@@ -267,6 +268,11 @@ pub enum PageSessionMessage {
         /// Меню целиком.
         menu: VariantMenu,
     },
+    /// Что с рекламой на странице изменилось (решения 184, 206).
+    AdState {
+        /// Новое состояние целиком.
+        ad: PageAdState,
+    },
     /// Запрос байтов `<video src>` закончен.
     RangeFetchFinished {
         /// Номер запроса из `fetch_range`.
@@ -289,6 +295,7 @@ impl PageSessionMessage {
             Self::Attach { .. }
             | Self::PagePlayback { .. }
             | Self::VariantMenuChanged { .. }
+            | Self::AdState { .. }
             | Self::RangeFetchFinished { .. }
             | Self::TabGone { .. }
             | Self::SeekStarted { .. } => StreamScope::Unbound,
@@ -339,6 +346,7 @@ impl ProtocolMessage for PageSessionMessage {
         "end_of_stream",
         "page_playback",
         "variant_menu_changed",
+        "ad_state",
         "range_fetch_finished",
         "tab_gone",
     ];
@@ -351,6 +359,7 @@ impl ProtocolMessage for PageSessionMessage {
                 ..
             } if time_us <= start_us => Err(ValueViolation::EmptyRange),
             Self::VariantMenuChanged { menu } => menu.validate(),
+            Self::AdState { ad } => ad.validate(),
             _ => Ok(()),
         }
     }
