@@ -209,6 +209,8 @@ impl AppState {
         // Текст шапки берём до замыкания кадра: оно заимствует `self` изменяемо.
         let window_chrome_title = self.window_chrome_title().into_owned();
         let live_scrub_enabled = self.live_scrub_gesture_enabled();
+        // Плашка рекламы (09d): копия до замыкания кадра, оно заимствует `self` изменяемо.
+        let ad_plate = self.ad_plate().copied();
         let full_output = self.egui_ctx.run_ui(egui_input, |ui| {
             video_viewport_rect = ui.max_rect();
 
@@ -368,6 +370,7 @@ impl AppState {
                 view_profile.idle_center_hint(),
                 &notifications_frame,
                 &mut notification_output,
+                ad_plate.as_ref(),
                 playlist_models.import_preview,
                 playlist_models.confirmation,
                 &mut playlist_ui_output,

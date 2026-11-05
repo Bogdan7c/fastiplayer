@@ -193,6 +193,10 @@ impl BrowserSessionInbox {
                                 delivery.superseded_page_seeks += 1;
                             }
                         }
+                        OverflowRule::ReplacePendingAdState => {
+                            // Прежнее слово о рекламе устарело: нужно только последнее.
+                            remove_last_ad_state_of(&mut state.intake_notices, notice.session());
+                        }
                     }
                 }
                 state.intake_notices.push(notice);
@@ -306,6 +310,17 @@ fn remove_last_page_seek_of(notices: &mut Vec<IntakeNotice>, session: &SessionRe
     // Порядок остальных уведомлений сохраняется: новая перемотка ляжет в конец.
     let _superseded = notices.remove(index);
     true
+}
+
+/// Убирает последнее неисполненное состояние рекламы сеанса `session` (только при
+/// полном ящике).
+fn remove_last_ad_state_of(notices: &mut Vec<IntakeNotice>, session: &SessionRef) {
+    if let Some(index) = notices
+        .iter()
+        .rposition(|queued| queued.is_ad_state_of(session))
+    {
+        let _superseded = notices.remove(index);
+    }
 }
 
 /// Пробуждение безоконного цикла: флаг под замком и условная переменная.

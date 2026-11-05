@@ -24,6 +24,7 @@ impl AppState {
         idle_center_hint: &str,
         notifications: &super::NotificationsFrame,
         notification_output: &mut crate::ui::notifications::NotificationUiOutput,
+        ad_plate: Option<&crate::ad_plate::AdPlate>,
         playlist_import_preview: Option<&crate::playlist_runtime::PlaylistImportPreview>,
         playlist_confirmation: Option<&crate::playlist_runtime::PendingPlaylistConfirmation>,
         playlist_output: &mut crate::ui::playlist::PlaylistUiOutput,
@@ -49,7 +50,19 @@ impl AppState {
                         ui.heading(idle_center_hint);
                     });
                 }
-                let toast_area_rect = ui.max_rect();
+                let center_rect = ui.max_rect();
+                // Плашка рекламы (09d) стоит у нижнего края: toast-ы поднимаются над ней.
+                let toast_area_rect = if let Some(plate) = ad_plate {
+                    crate::ui::notifications::render_ad_plate(
+                        ui,
+                        center_rect,
+                        plate,
+                        notification_output,
+                    );
+                    crate::ui::notifications::area_above_plate(center_rect)
+                } else {
+                    center_rect
+                };
                 crate::ui::notifications::render_toast_stack(
                     ui,
                     toast_area_rect,

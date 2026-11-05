@@ -242,6 +242,8 @@ impl BrowserWindowApp {
             // Клик за скачанное во время досмотра отклонён (09a2, Д-5): бегунок остался у
             // позиции — зрителю короткое «почему».
             show_viewer_seek_notice(instance, step.viewer_seek_notice);
+            // Реклама на странице (09d): плашка поверх видео, перемотка и скорость заперты.
+            instance.apply_ad_plate(step.ad_plate);
         }
         if let Some(instance) = self.instance.as_mut() {
             {

@@ -49,6 +49,7 @@ use tracing::debug;
 use super::SessionMedia;
 use super::generation_placement::PendingAim;
 use super::viewer_click_claim::ViewerClickClaim;
+use crate::ad_plate::AdPlateAction;
 use crate::browser_session::outbound::clock_rate;
 use crate::viewer_transport::ViewerTransportIntent;
 
@@ -206,6 +207,10 @@ impl SessionMedia {
                 }
             }
             ViewerTransportIntent::SetRate(rate) => {
+                // Решение 206: пока реклама на экране, скорость зрителя не меняется.
+                if self.refuse_viewer_rate_during_ad() {
+                    return;
+                }
                 self.page_rate = rate;
                 let page_rate = clock_rate(rate);
                 self.viewer_will.note_rate(page_rate, now);
@@ -214,7 +219,18 @@ impl SessionMedia {
                     self.outbound.request_page_rate(page_rate);
                 }
             }
-            ViewerTransportIntent::Seek(target) => self.viewer_seek(target, page_listens),
+            ViewerTransportIntent::Seek(target) => {
+                // Решение 206: пока реклама на экране, перемотка зрителя не исполняется.
+                if !self.refuse_viewer_seek_during_ad() {
+                    self.viewer_seek(target, page_listens);
+                }
+            }
+            ViewerTransportIntent::SkipAd => {
+                self.viewer_ad_action(AdPlateAction::Skip, now, page_listens);
+            }
+            ViewerTransportIntent::RevealPage => {
+                self.viewer_ad_action(AdPlateAction::GoToPage, now, page_listens);
+            }
         }
     }
 

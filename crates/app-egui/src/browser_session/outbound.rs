@@ -430,6 +430,18 @@ impl PageOutbound {
         self.queue_event_replacing_same_kind(PlayerSessionMessage::SetRate { rate });
     }
 
+    /// Зритель нажал «Skip ›» на плашке рекламы: странице `skip_ad` (надёжно; повтор
+    /// неотправленного заменяется). Защиту от двойного клика держит владелец состояния
+    /// рекламы, не очередь.
+    pub(crate) fn request_skip_ad(&mut self) {
+        self.queue_event_replacing_same_kind(PlayerSessionMessage::SkipAd {});
+    }
+
+    /// Зритель нажал «Go to page»: странице `reveal_page` (вывести вкладку и окно).
+    pub(crate) fn request_reveal_page(&mut self) {
+        self.queue_event_replacing_same_kind(PlayerSessionMessage::RevealPage {});
+    }
+
     /// Плеер не будет играть поколение: `stream_rejected` один раз на поколение.
     ///
     /// Возвращает `false`, если отказ для этого поколения уже был.
@@ -599,6 +611,8 @@ const fn message_kind(message: &PlayerSessionMessage) -> &'static str {
         PlayerSessionMessage::NextEpisode {} => "next_episode",
         PlayerSessionMessage::FetchRange { .. } => "fetch_range",
         PlayerSessionMessage::StreamRejected { .. } => "stream_rejected",
+        PlayerSessionMessage::SkipAd {} => "skip_ad",
+        PlayerSessionMessage::RevealPage {} => "reveal_page",
     }
 }
 

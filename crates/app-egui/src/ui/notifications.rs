@@ -11,6 +11,10 @@ use std::time::Duration;
 
 use animation_core::Easing;
 
+mod ad_plate;
+
+pub(crate) use self::ad_plate::{area_above_plate, render_ad_plate};
+use crate::ad_plate::AdPlateAction;
 use crate::state::{
     CenterNotice, NotificationId, NotificationsFrame, RetryOffer, ToastKind, ToastView,
 };
@@ -62,6 +66,8 @@ pub(crate) enum NotificationAction {
     BrowserOfferSetUp(NotificationId),
     /// Нажата «Not now» у предложения подключить браузеры.
     BrowserOfferNotNow(NotificationId),
+    /// Нажата кнопка плашки рекламы («Skip ›» или «Go to page», 09d).
+    AdPlate(AdPlateAction),
 }
 
 /// Действия, собранные за кадр; применяются владельцем после egui pass-а.

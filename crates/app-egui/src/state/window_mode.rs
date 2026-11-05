@@ -21,7 +21,9 @@ use std::time::Duration;
 
 use player_core::{PlaybackState, PlayerCommand, PlayerWorkerSendError};
 
+use self::ad_gate::{AdTransportGate, GateVerdict};
 use super::AppState;
+use crate::ad_plate::{AdActionProgress, AdPlate, AdPlateAction};
 use crate::downloaded_range::DownloadedRange;
 use crate::page_label::PageLabel;
 use crate::ui::player_controls::TransportControlAction;
@@ -29,6 +31,8 @@ use crate::viewer_transport::{
     TransportRoute, ViewerTransportIntent, ViewerTransportOutbox, viewer_intent_for_command,
 };
 use crate::window_view_profile::WindowViewProfile;
+
+mod ad_gate;
 
 /// Название приложения в шапке окна, когда страницы-источника нет.
 const APP_CHROME_TITLE: &str = "Fastiplayer";
@@ -42,6 +46,8 @@ pub(crate) struct WindowMode {
     downloaded_range: DownloadedRange,
     /// Страница-источник (только окно браузерного режима; только в памяти, 04c).
     page: Option<PageLabel>,
+    /// Плашка рекламы и запрет перемотки со скоростью, пока она на экране (09d).
+    ad_gate: AdTransportGate,
 }
 
 impl WindowMode {
@@ -58,6 +64,50 @@ impl WindowMode {
             transport: TransportRoute::PageLed(ViewerTransportOutbox::default()),
             downloaded_range: DownloadedRange::Unknown,
             page: None,
+            ad_gate: AdTransportGate::default(),
+        }
+    }
+
+    /// Слово о рекламе от того, кто ведёт транспорт; обычное окно его не берёт.
+    /// `true` — плашка изменилась.
+    fn note_ad_plate(&mut self, plate: Option<AdPlate>) -> bool {
+        self.is_page_led() && self.ad_gate.note_plate(plate)
+    }
+
+    /// Намерение зрителя по кнопке плашки; `false` — в этом окне плашке не к кому идти.
+    fn request_ad_action(&mut self, action: AdPlateAction) -> bool {
+        let TransportRoute::PageLed(outbox) = &mut self.transport else {
+            return false;
+        };
+        outbox.push(match action {
+            AdPlateAction::Skip => ViewerTransportIntent::SkipAd,
+            AdPlateAction::GoToPage => ViewerTransportIntent::RevealPage,
+        });
+        true
+    }
+
+    /// Плашка предлагает кнопку, и она свободна (команда за ней ещё не ушла).
+    fn ad_offer_is_free(&self) -> bool {
+        self.ad_gate.plate().is_some_and(|plate| {
+            plate.offered_action().is_some() && plate.progress == AdActionProgress::Idle
+        })
+    }
+
+    /// Нажатие «следующего»: то же, что клик по кнопке плашки, если она предложена.
+    fn activate_ad_offer(&mut self) -> AdOfferActivation {
+        let Some(plate) = self.ad_gate.plate().copied() else {
+            return AdOfferActivation::NothingOffered;
+        };
+        match (plate.offered_action(), plate.progress) {
+            (Some(action), AdActionProgress::Idle) => {
+                if self.request_ad_action(action) {
+                    AdOfferActivation::Requested
+                } else {
+                    AdOfferActivation::NothingOffered
+                }
+            }
+            (Some(_), AdActionProgress::InFlight) => AdOfferActivation::AlreadyInFlight,
+            (None, _) => AdOfferActivation::NothingOffered,
         }
     }
 
@@ -104,6 +154,10 @@ impl WindowMode {
         let TransportRoute::PageLed(outbox) = &mut self.transport else {
             return CommandRoute::ToPlayer(command);
         };
+        // Решение 206: пока реклама на экране, перемотка и скорость зрителя не идут никуда.
+        if self.ad_gate.judge(&command) == GateVerdict::Refused {
+            return CommandRoute::RefusedDuringAd;
+        }
         match viewer_intent_for_command(&command, state, position) {
             Some(intent) => {
                 outbox.push(intent);
@@ -121,6 +175,19 @@ enum CommandRoute {
     ToPlayer(PlayerCommand),
     /// Намерением зрителя в ящик медиа-части сеанса.
     ToSession,
+    /// Отклонена: на экране реклама (перемотка и скорость, решение 206).
+    RefusedDuringAd,
+}
+
+/// Что вышло с «следующим» зрителя, когда плашка рекламы может предлагать кнопку.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AdOfferActivation {
+    /// Намерение «пропустить» или «вывести страницу» ушло в ящик.
+    Requested,
+    /// Предыдущее нажатие ещё в пути: второе не отправлено.
+    AlreadyInFlight,
+    /// Плашка ничего не предлагает (рекламы нет, отсчёт, обычное окно).
+    NothingOffered,
 }
 
 /// Что стало с действием транспорта очереди в окне, где транспорт ведёт страница.
@@ -165,7 +232,7 @@ impl AppState {
         );
         match route {
             CommandRoute::ToPlayer(command) => self.player_worker.try_send_command(command),
-            CommandRoute::ToSession => Ok(()),
+            CommandRoute::ToSession | CommandRoute::RefusedDuringAd => Ok(()),
         }
     }
 
@@ -185,6 +252,13 @@ impl AppState {
                 }
                 PageLedTransportAction::SentToSession
             }
+            // «Следующее» в этом окне — кнопка плашки рекламы, если плашка её предлагает
+            // (хоткей N и медиаклавиша «следующая»); очереди здесь нет.
+            TransportControlAction::Next
+                if self.activate_ad_offer() == AdOfferActivation::Requested =>
+            {
+                PageLedTransportAction::SentToSession
+            }
             TransportControlAction::Previous
             | TransportControlAction::Next
             | TransportControlAction::SetShuffleEnabled { .. }
@@ -197,6 +271,37 @@ impl AppState {
                 PageLedTransportAction::NoQueueInThisWindow
             }
         }
+    }
+
+    /// Слово медиа-части о рекламе (каждый проход окна): плашка рисуется, перемотка и
+    /// скорость запираются. `true` — плашка изменилась, окну нужен кадр. Обычному окну
+    /// плашка не нужна: сведение игнорируется.
+    pub(crate) fn note_ad_plate(&mut self, plate: Option<AdPlate>) -> bool {
+        self.window_mode.note_ad_plate(plate)
+    }
+
+    /// Плашка рекламы для рисования (`None` — рекламы нет).
+    pub(crate) fn ad_plate(&self) -> Option<&AdPlate> {
+        self.window_mode.ad_gate.plate()
+    }
+
+    /// Зритель нажал кнопку плашки: намерение уходит медиа-части, а та решает, уйдёт ли
+    /// команда странице (защита от повторного клика — у неё).
+    pub(super) fn request_ad_action(&mut self, action: AdPlateAction) {
+        if !self.window_mode.request_ad_action(action) {
+            tracing::debug!(?action, "Ad plate action ignored: not a page-led window");
+        }
+    }
+
+    /// Плашка предлагает кнопку, и она свободна: «Next» её нажмёт (MPRIS `CanGoNext`).
+    pub(crate) fn ad_offer_is_free(&self) -> bool {
+        self.window_mode.ad_offer_is_free()
+    }
+
+    /// «Следующее» зрителя (хоткей N, медиаклавиша, MPRIS Next): если плашка предлагает
+    /// кнопку и она не занята, делает то же, что клик по ней.
+    pub(crate) fn activate_ad_offer(&mut self) -> AdOfferActivation {
+        self.window_mode.activate_ad_offer()
     }
 
     /// Медиа-часть сеанса сообщила, что скачано у показанного медиа (каждый проход
@@ -235,6 +340,9 @@ impl AppState {
 }
 
 #[cfg(test)]
+mod ad_tests;
+
+#[cfg(test)]
 mod tests {
     use player_core::{PlaybackRate, SeekRequest};
 
@@ -259,7 +367,9 @@ mod tests {
     fn routed_to_player(route: CommandRoute) -> PlayerCommand {
         match route {
             CommandRoute::ToPlayer(command) => command,
-            CommandRoute::ToSession => panic!("expected the command to reach the player"),
+            CommandRoute::ToSession | CommandRoute::RefusedDuringAd => {
+                panic!("expected the command to reach the player")
+            }
         }
     }
 

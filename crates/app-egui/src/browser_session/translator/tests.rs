@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use browser_bridge_protocol::session::page::{RemovalEnd, TabGoneReason};
+use browser_bridge_protocol::session::{AdPod, AdSkip, PageAdState};
 use browser_bridge_protocol::{
     AppendSequence, DataFrameHeader, MediaTimeOffset, MimeType, PlaybackRate, SeekId, SessionKey,
     decode_data_frame, decode_message,
@@ -271,6 +272,7 @@ enum Seen {
     Reject(u64, u32, StreamRejection),
     Close(u64, SessionCloseReason),
     Sealed(u64),
+    AdState(u64, PageAdState),
 }
 
 fn seen(notices: &[IntakeNotice]) -> Vec<Seen> {
@@ -301,8 +303,17 @@ fn seen(notices: &[IntakeNotice]) -> Vec<Seen> {
                 Seen::Close(session.instance.0, *reason)
             }
             IntakeNotice::InstanceSealed { session } => Seen::Sealed(session.instance.0),
+            IntakeNotice::AdState { session, state } => Seen::AdState(session.instance.0, *state),
         })
         .collect()
+}
+
+/// Реклама, которую пропустить может только человек на странице.
+fn ad_on_page() -> PageAdState {
+    PageAdState::Showing {
+        pod: AdPod::Unknown {},
+        skip: AdSkip::OnPage {},
+    }
 }
 
 // ---- подделка: каждое сообщение → свой вызов --------------------------------
@@ -419,6 +430,7 @@ fn seeks_and_page_playback_become_notices_and_removals_reach_the_source() {
                     request: PagePlaybackRequest::SetRate { rate },
                 },
             ),
+            message(1, PageSessionMessage::AdState { ad: ad_on_page() }),
             message(
                 1,
                 PageSessionMessage::SourceBufferRemoved {
@@ -445,6 +457,7 @@ fn seeks_and_page_playback_become_notices_and_removals_reach_the_source() {
             Seen::SeekAcknowledged(1, SeekId(7), 42_000_000),
             Seen::Intent(1, PageIntent::Pause),
             Seen::Intent(1, PageIntent::SetRate(rate)),
+            Seen::AdState(1, ad_on_page()),
         ]
     );
     // Источник узнал о перемотке страницей и о её `remove()` (решение 31.10.2026

@@ -752,6 +752,7 @@ fn without_a_session_the_media_part_does_not_ask_to_wake() {
     assert!(harness.page.take_sent().is_empty());
 }
 
+mod ad_presence;
 mod downloaded_range;
 mod drain;
 mod drain_seek_refusal;

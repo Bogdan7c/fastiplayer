@@ -209,6 +209,11 @@ impl AppState {
                     self.answer_browser_offer(id, OfferAnswer::SetUp);
                     self.mark_pending_worker_redraw();
                 }
+                NotificationAction::AdPlate(action) => {
+                    // Не уведомление, а кнопка плашки рекламы: намерение зрителя в ящик.
+                    self.request_ad_action(action);
+                    self.mark_pending_worker_redraw();
+                }
                 NotificationAction::BrowserOfferNotNow(id) => {
                     self.notifications.dismiss(id);
                     self.answer_browser_offer(id, OfferAnswer::NotNow);

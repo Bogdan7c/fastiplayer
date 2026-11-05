@@ -51,6 +51,8 @@ impl SessionMedia {
     pub(crate) fn on_session_ended(&mut self, session: &SessionRef, reason: SessionEndReason) {
         if self.is_current(session) {
             self.outbound.forget_pending_of_ended_session();
+            // Страницы нет — рекламы на её экране тоже: плашку снимаем вместе с вкладкой.
+            self.ad.clear();
             self.drain = Some(ActiveDrain {
                 watch: DrainWatch::begin(self.drain_policy),
                 ended_because: reason,

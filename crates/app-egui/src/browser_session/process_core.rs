@@ -49,6 +49,7 @@ use super::stream_queue::{OrderedSessionQueue, QueueLimits};
 use super::translator::ProtocolTranslator;
 use super::translator::file_port::PushedFileFactory;
 use super::translator::stream_port::PushedStreamFactory;
+use crate::ad_plate::AdPlate;
 use crate::settings_runtime::BrowserBufferWindowOwner;
 use crate::viewer_transport::ViewerTransportIntent;
 
@@ -76,6 +77,9 @@ pub(super) struct CoreStep {
     /// Перемотка зрителя за скачанное во время досмотра отклонена (09a2, Д-5): окно
     /// показывает короткое сообщение. Безоконный процесс его не читает.
     pub(super) viewer_seek_notice: ViewerSeekNotice,
+    /// Плашка рекламы на этот шаг (09d): окно рисует её поверх видео и закрывает
+    /// перемотку со скоростью; безоконный процесс её не читает.
+    pub(super) ad_plate: Option<AdPlate>,
 }
 
 /// Открывался ли за шаг сеанс.
@@ -249,6 +253,7 @@ impl BrowserSessionCore {
             generation_rejection: self.media.take_generation_rejection_notice(),
             generation_wait: self.media.generation_wait(),
             viewer_seek_notice: self.media.take_viewer_seek_notice(),
+            ad_plate: self.media.ad_plate(now),
         }
     }
 

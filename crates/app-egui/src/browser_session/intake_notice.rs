@@ -12,6 +12,7 @@
 
 use std::fmt;
 
+use browser_bridge_protocol::session::PageAdState;
 use browser_bridge_protocol::session::player::StreamRejection;
 use browser_bridge_protocol::{
     MediaTime, PlaybackRate, SeekId, SessionCloseReason, StreamGeneration,
@@ -111,6 +112,13 @@ pub(crate) enum IntakeNotice {
         /// Чего хочет страница.
         intent: PageIntent,
     },
+    /// Страница сообщила, что сейчас с рекламой (`ad_state`, 09d): числа и метки, текста нет.
+    AdState {
+        /// Сеанс.
+        session: SessionRef,
+        /// Последнее слово страницы.
+        state: PageAdState,
+    },
     /// Страница начала перемотку, о которой просил плеер (`seek_started{player_seek}`).
     PlayerSeekAcknowledged {
         /// Сеанс.
@@ -157,6 +165,7 @@ impl IntakeNotice {
             Self::NewGeneration(handoff) => &handoff.session,
             Self::BytesAppended { session }
             | Self::PageIntent { session, .. }
+            | Self::AdState { session, .. }
             | Self::PlayerSeekAcknowledged { session, .. }
             | Self::InstanceSealed { session }
             | Self::Reject { session, .. }
@@ -178,6 +187,9 @@ impl IntakeNotice {
     ///   новая перемотка заменяет прежнюю неисполненную перемотку того же сеанса (цель
     ///   новее делает старую ненужной) — сверх ёмкости ящика её копий не больше одной
     ///   на сеанс;
+    /// - состояние рекламы — терять НЕЛЬЗЯ (потерянное «рекламы нет» оставило бы плашку
+    ///   навсегда), но важно только последнее: при переполнении новое слово вытесняет
+    ///   прежнее неисполненное того же сеанса, поэтому страница не раздует ящик;
     /// - новый поток, отказ, закрытие — единичные события, без них сеанс зависнет.
     pub(crate) const fn overflow_rule(&self) -> OverflowRule {
         match self {
@@ -185,6 +197,7 @@ impl IntakeNotice {
                 intent: PageIntent::FollowPageSeek(_),
                 ..
             } => OverflowRule::ReplacePendingPageSeek,
+            Self::AdState { .. } => OverflowRule::ReplacePendingAdState,
             Self::PageIntent { .. } | Self::PlayerSeekAcknowledged { .. } => {
                 OverflowRule::Droppable
             }
@@ -208,6 +221,13 @@ impl IntakeNotice {
     }
 }
 
+impl IntakeNotice {
+    /// Это состояние рекламы сеанса `session`.
+    pub(crate) fn is_ad_state_of(&self, session: &SessionRef) -> bool {
+        matches!(self, Self::AdState { session: notice_session, .. } if notice_session == session)
+    }
+}
+
 /// Как уведомление ложится в переполненный ящик ([`IntakeNotice::overflow_rule`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OverflowRule {
@@ -217,4 +237,6 @@ pub(crate) enum OverflowRule {
     Droppable,
     /// Ложится, вытесняя прежнюю неисполненную перемотку страницей того же сеанса.
     ReplacePendingPageSeek,
+    /// Ложится, вытесняя прежнее неисполненное состояние рекламы того же сеанса.
+    ReplacePendingAdState,
 }

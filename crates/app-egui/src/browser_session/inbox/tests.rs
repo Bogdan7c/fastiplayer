@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use browser_bridge_protocol::SessionCloseReason;
 use browser_bridge_protocol::decode_message;
+use browser_bridge_protocol::session::{AdPod, AdSkip, PageAdState};
 use browser_bridge_session::SessionEndReason;
 use desktop_integration::{BrowserEntryCaller, BrowserEntryReply, BrowserEntryRequest};
 
@@ -392,4 +393,47 @@ fn notices_after_close_are_dropped_and_reported_without_waking() {
     assert_eq!(wake.0.load(Ordering::SeqCst), woken_before);
     // Закрытие выбросило и то, что лежало до него.
     assert!(inbox.take_batch().is_empty());
+}
+
+fn ad_state_notice(text: &str, state: PageAdState) -> IntakeNotice {
+    IntakeNotice::AdState {
+        session: session(text),
+        state,
+    }
+}
+
+/// Состояние рекламы терять нельзя (потерянное «рекламы нет» оставило бы плашку навсегда),
+/// но важно только последнее: при полном ящике новое слово вытесняет прежнее того же
+/// сеанса, чужой сеанс не трогается, а остальные уведомления остаются.
+#[test]
+fn a_full_notice_queue_keeps_only_the_latest_ad_state_of_each_session() {
+    let (inbox, _wake) = inbox_with(InboxCapacity {
+        intake_notices: 1,
+        ..InboxCapacity::default()
+    });
+    let available = PageAdState::Showing {
+        pod: AdPod::Unknown {},
+        skip: AdSkip::Available {},
+    };
+    inbox.post_intake_notices([
+        close_notice("a"),
+        ad_state_notice("b", available),
+        ad_state_notice("a", available),
+        ad_state_notice("a", PageAdState::None {}),
+    ]);
+
+    assert_eq!(
+        inbox
+            .take_batch()
+            .intake_notices
+            .iter()
+            .map(describe)
+            .collect::<Vec<_>>(),
+        vec![
+            describe(&close_notice("a")),
+            describe(&ad_state_notice("b", available)),
+            describe(&ad_state_notice("a", PageAdState::None {})),
+        ],
+        "the stale word of session a is gone, the final `none` is delivered"
+    );
 }

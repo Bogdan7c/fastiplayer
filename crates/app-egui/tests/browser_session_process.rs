@@ -792,6 +792,11 @@ mod window_geometry;
 #[path = "browser_session_process/page_and_mpris.rs"]
 mod page_and_mpris;
 
+// Сессия 09d: плашка рекламы — `ad_state` от страницы, MPRIS Next жмёт кнопку плашки
+// (`skip_ad` / `reveal_page` на проводе), перемотка в рекламе закрыта.
+#[path = "browser_session_process/ad_plate.rs"]
+mod ad_plate;
+
 // Ожидание и отказ видны зрителю (04b, решение 129): отказ поколения странице и окну,
 // следующее поколение играет; перемотка ждёт живую страницу без `SeekTimeout` (150).
 #[path = "browser_session_process/viewer_notices.rs"]

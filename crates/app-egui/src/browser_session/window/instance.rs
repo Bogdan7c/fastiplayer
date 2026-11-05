@@ -35,6 +35,7 @@ use super::driver::WindowPlaybackDriver;
 use super::end_notice::CenterStatusChange;
 use super::geometry::{apply_remembered_fullscreen, browser_window_attributes, observe_window};
 use super::player_port::AppStateWindowPlayer;
+use crate::ad_plate::AdPlate;
 use crate::app_shell::{ReadOnlyRendererStartupMarker, ShellKeyOutcome, handle_shell_key_event};
 use crate::app_wake::{AppWakeOwner, AppWakePort, AppWakeProxy};
 use crate::frame_prepare::{render_frame, with_lifecycle_settings_adapter};
@@ -359,10 +360,24 @@ impl BrowserWindowInstance {
         self.window.request_redraw();
     }
 
+    /// Плашка рекламы от медиа-части (каждый проход): рисуется и запирает перемотку со
+    /// скоростью; кадр нужен, только если плашка изменилась (09d).
+    pub(super) fn apply_ad_plate(&mut self, plate: Option<AdPlate>) {
+        if self.app_state.note_ad_plate(plate) {
+            self.app_state.note_visible_mutation_for_redraw();
+            self.window.request_redraw();
+        }
+    }
+
     /// Снимок транспорта окна для MPRIS (см. `desktop_transport`).
     pub(super) fn transport_observation(&mut self) -> TransportObservation {
         let snapshot = self.app_state.refresh_player_snapshot();
         let timeline = &snapshot.timeline;
+        let transport_locked_by_ad = self
+            .app_state
+            .ad_plate()
+            .is_some_and(|plate| plate.locks_transport);
+        let ad_offer_available = self.app_state.ad_offer_is_free();
         TransportObservation {
             playback_state: snapshot.playback_state,
             position: timeline.current_position,
@@ -370,8 +385,10 @@ impl BrowserWindowInstance {
             duration: (timeline.mode != media_core::TimelineMode::Live)
                 .then_some(timeline.duration)
                 .flatten(),
-            seekable: timeline.seekable,
+            // Пока на экране реклама, перемотка зрителю закрыта (решение 206).
+            seekable: timeline.seekable && !transport_locked_by_ad,
             volume: snapshot.volume,
+            ad_offer_available,
         }
     }
 
@@ -744,5 +761,10 @@ impl DesktopWindowPort for BrowserWindowInstance {
         self.app_state
             .send_transport_command(command)
             .map_err(|error| error.to_string())
+    }
+
+    fn activate_ad_offer(&mut self) {
+        let outcome = self.app_state.activate_ad_offer();
+        debug!(?outcome, "MPRIS Next while an ad plate may offer a button");
     }
 }

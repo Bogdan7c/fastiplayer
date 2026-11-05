@@ -392,6 +392,10 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
                     intent: page_intent(request),
                 });
             }
+            PageSessionMessage::AdState { ad } => {
+                // Только числа и метки (инвариант 1); решает и рисует главный цикл.
+                out.push(IntakeNotice::AdState { session, state: ad });
+            }
             PageSessionMessage::FileSourceAdded { generation } => {
                 self.start_file_generation(&session, generation, out);
             }

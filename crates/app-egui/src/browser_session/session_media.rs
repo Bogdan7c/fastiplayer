@@ -65,6 +65,7 @@ use browser_bridge_session::SessionRef;
 use player_core::{PlaybackRate as PlayerPlaybackRate, PreparedInitialPosition, PreparedMedia};
 use tracing::{debug, error, info, warn};
 
+use self::ad_presence::AdPresence;
 use self::ending::ActiveDrain;
 use self::generation_feed::{FeedReport, LoadedFeed, OpenStep, PendingFeed, in_issue_order};
 use self::generation_placement::{GenerationPlacement, PageAvailability};
@@ -81,6 +82,8 @@ use super::rejection::FailureResponse;
 use super::rejection_notice::GenerationRejectionNotice;
 use pushed_media_source::RangeRequest;
 
+mod ad_actions;
+mod ad_presence;
 mod drain;
 mod ending;
 mod farewell;
@@ -230,6 +233,8 @@ pub(crate) struct SessionMedia {
     /// Ответы плеера на перемотки, виденные последним наблюдением: от них считается ответ
     /// на следующую отданную перемотку ([`seek_handover`]).
     seek_answers_seen: PlayerSeekAnswers,
+    /// Реклама на странице: плашка и защита от повторного клика (09d); только в памяти.
+    ad: AdPresence,
 }
 
 impl SessionMedia {
@@ -259,6 +264,7 @@ impl SessionMedia {
             viewer_seek_notice: ViewerSeekNotice::Nothing,
             page_start_word: PageStartWord::NotSaid,
             seek_answers_seen: PlayerSeekAnswers::default(),
+            ad: AdPresence::default(),
         }
     }
 
@@ -280,6 +286,8 @@ impl SessionMedia {
         self.page_rate = PlayerPlaybackRate::NORMAL;
         self.page_start_word = PageStartWord::NotSaid;
         self.viewer_will.forget();
+        // Реклама прежней страницы к новой не относится.
+        self.ad.clear();
         self.outbound.reset_for_new_session();
         if self.loaded.take().is_some() {
             self.command("pause for a new session", |playback| playback.pause());
@@ -354,6 +362,7 @@ impl SessionMedia {
             IntakeNotice::BytesAppended { .. } => self.bytes_arrived = true,
             IntakeNotice::InstanceSealed { session } => self.sealed_instance = Some(session),
             IntakeNotice::PageIntent { intent, .. } => self.follow_page(intent),
+            IntakeNotice::AdState { state, .. } => self.apply_ad_state(state),
             IntakeNotice::PlayerSeekAcknowledged {
                 seek_id, target, ..
             } => {
@@ -728,7 +737,11 @@ impl SessionMedia {
             .outbound
             .has_pending()
             .then(|| now + PENDING_RETRY_INTERVAL);
-        [open_retry, clock, outbound_retry]
+        // Кнопка плашки оживает по сроку и без событий страницы.
+        let ad_button = self.ad.in_flight_expires_at(now);
+        // Запрет перемотки снимается по сроку и без слова страницы (предохранитель 206).
+        let ad_lock = self.ad.transport_lock_expires_at(now);
+        [open_retry, clock, outbound_retry, ad_button, ad_lock]
             .into_iter()
             .flatten()
             .min()

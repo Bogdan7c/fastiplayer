@@ -9,6 +9,7 @@
 //! - запуск `AppShell`;
 //! - показ фатальной ошибки запуска и код выхода (`fatal_startup`).
 
+mod ad_plate;
 mod app_instance;
 mod app_shell;
 mod app_wake;

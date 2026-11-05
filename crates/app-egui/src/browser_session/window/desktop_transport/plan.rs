@@ -53,6 +53,10 @@ pub(crate) struct TransportObservation {
     pub(crate) seekable: bool,
     /// Громкость плеера, 0..=1.
     pub(crate) volume: f32,
+    /// Плашка рекламы предлагает кнопку (`Skip` или `Go to page`) и она свободна:
+    /// «Next» медиа-виджета делает то же, что клик по ней (09d). Иначе «Next» окну
+    /// нечего делать, и `CanGoNext` ложно.
+    pub(crate) ad_offer_available: bool,
 }
 
 /// Почему команда с шины не дошла до окна.
@@ -73,6 +77,9 @@ pub(super) enum IgnoredReason {
 pub(super) enum PlannedAction {
     /// Исполнить так же, как кнопку окна: через `AppState::send_transport_command`.
     Player(PlayerCommand),
+    /// «Next» при плашке рекламы с кнопкой: то же, что клик по кнопке плашки
+    /// (`AppState::activate_ad_offer`).
+    ActivateAdOffer,
     /// Не исполнять.
     Ignored(IgnoredReason),
 }
@@ -94,6 +101,12 @@ pub(super) fn plan_command(
 ) -> PlannedAction {
     use DesktopTransportAction as Action;
     match &command.action {
+        // Пока плашка рекламы предлагает кнопку, «Next» нажимает её (робот стенда жмёт
+        // пропуск именно так); команда виджета, видевшего прошлое видео окна, не исполняется.
+        Action::Next if observation.ad_offer_available => match fenced_page(command, page) {
+            Ok(_) => PlannedAction::ActivateAdOffer,
+            Err(reason) => PlannedAction::Ignored(reason),
+        },
         Action::Next | Action::Previous | Action::SetLoopStatus(_) | Action::SetShuffle(_) => {
             PlannedAction::Ignored(IgnoredReason::NoQueueInThisWindow)
         }
@@ -207,7 +220,8 @@ pub(super) fn build_view(
     view.control_revision = Some(page.control_revision());
     view.playback_status = playback_status(observation.playback_state);
     view.capabilities = DesktopCapabilities {
-        can_go_next: false,
+        // «Next» жив, только пока плашка рекламы предлагает кнопку (иначе очереди нет).
+        can_go_next: observation.ad_offer_available,
         can_go_previous: false,
         can_play: true,
         can_pause: true,
@@ -269,6 +283,7 @@ mod tests {
             duration: Some(MediaDuration::from_duration(Duration::from_secs(100))),
             seekable: true,
             volume: 0.5,
+            ad_offer_available: false,
         }
     }
 

@@ -52,6 +52,8 @@ pub(crate) trait DesktopWindowPort {
     fn observe_transport(&mut self) -> TransportObservation;
     /// Исполнить команду так же, как кнопку окна.
     fn send_transport_command(&mut self, command: PlayerCommand) -> Result<(), String>;
+    /// Исполнить «Next» при плашке рекламы: то же, что клик по её кнопке.
+    fn activate_ad_offer(&mut self);
 }
 
 /// Что рабочий стол попросил у окна за проход (кроме транспорта).
@@ -201,6 +203,7 @@ impl WindowDesktopTransport {
                     warn!(%error, "The browser window did not accept an MPRIS command");
                 }
             }
+            PlannedAction::ActivateAdOffer => window.activate_ad_offer(),
             PlannedAction::Ignored(reason) => {
                 debug!(
                     ?reason,
@@ -289,6 +292,7 @@ mod tests {
         commands: Vec<PlayerCommand>,
         observations: usize,
         reject_commands: bool,
+        ad_offer_activations: usize,
     }
 
     impl DesktopWindowPort for FakeWindow {
@@ -304,6 +308,10 @@ mod tests {
             self.commands.push(command);
             Ok(())
         }
+
+        fn activate_ad_offer(&mut self) {
+            self.ad_offer_activations += 1;
+        }
     }
 
     fn observation(state: PlaybackState, position_secs: u64) -> TransportObservation {
@@ -313,6 +321,7 @@ mod tests {
             duration: None,
             seekable: false,
             volume: 1.0,
+            ad_offer_available: false,
         }
     }
 

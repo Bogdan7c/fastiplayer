@@ -746,3 +746,28 @@ fn viewer_commands_do_not_replace_other_kinds_of_pending_events() {
     outbound.flush(Instant::now());
     assert_eq!(page.take_sent().len(), 4);
 }
+
+/// Кнопки плашки рекламы (09d): команды надёжные — переживают переподключение страницы,
+/// неотправленный повтор той же команды заменяется (место — вид), а скип и «вывести
+/// страницу» друг друга не вытесняют.
+#[test]
+fn ad_commands_wait_for_a_reconnecting_page_one_per_kind() {
+    let (mut outbound, page) = outbound();
+    let start = Instant::now();
+    outbound.request_skip_ad();
+    outbound.request_skip_ad();
+    outbound.request_reveal_page();
+    page.refuse_next(SendToPageError::NoAttachedSession);
+    outbound.flush(start);
+    assert!(page.take_sent().is_empty());
+    assert_eq!(outbound.pending_events.len(), 2, "one per kind");
+
+    outbound.flush(start + PENDING_RETRY_INTERVAL);
+    assert_eq!(
+        page.take_sent(),
+        vec![
+            PlayerSessionMessage::SkipAd {},
+            PlayerSessionMessage::RevealPage {},
+        ]
+    );
+}

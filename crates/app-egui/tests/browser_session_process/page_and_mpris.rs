@@ -14,11 +14,11 @@ use super::session_ends::{
 };
 use super::*;
 
-const MPRIS_BROWSER_NAME: &str = "org.mpris.MediaPlayer2.fastiplayer.browser";
+pub(super) const MPRIS_BROWSER_NAME: &str = "org.mpris.MediaPlayer2.fastiplayer.browser";
 const MPRIS_STANDARD_NAME: &str = "org.mpris.MediaPlayer2.fastiplayer";
-const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
-const MPRIS_PLAYER: &str = "org.mpris.MediaPlayer2.Player";
-const MPRIS_ROOT: &str = "org.mpris.MediaPlayer2";
+pub(super) const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
+pub(super) const MPRIS_PLAYER: &str = "org.mpris.MediaPlayer2.Player";
+pub(super) const MPRIS_ROOT: &str = "org.mpris.MediaPlayer2";
 
 /// Данные страницы, которых не должно быть в журнале.
 const PAGE_TITLE: &str = "Cats unique-title-x";
@@ -34,7 +34,7 @@ fn open_session_of_the_page() -> String {
 }
 
 /// Вызов `busctl` на частной шине; `Ok(stdout)` или текст ошибки.
-fn busctl(bus: &PrivateBusWithBrowserSession, args: &[&str]) -> Result<String, String> {
+pub(super) fn busctl(bus: &PrivateBusWithBrowserSession, args: &[&str]) -> Result<String, String> {
     let output = Command::new("busctl")
         .arg(format!("--address={}", bus.address))
         .arg("--no-pager")
@@ -49,7 +49,7 @@ fn busctl(bus: &PrivateBusWithBrowserSession, args: &[&str]) -> Result<String, S
 }
 
 /// Метод интерфейса MPRIS окна.
-fn call_browser(bus: &PrivateBusWithBrowserSession, interface: &str, method: &str) {
+pub(super) fn call_browser(bus: &PrivateBusWithBrowserSession, interface: &str, method: &str) {
     busctl(
         bus,
         &["call", MPRIS_BROWSER_NAME, MPRIS_PATH, interface, method],
@@ -58,7 +58,11 @@ fn call_browser(bus: &PrivateBusWithBrowserSession, interface: &str, method: &st
 }
 
 /// Свойство (`busctl get-property` печатает «тип значение»).
-fn browser_property(bus: &PrivateBusWithBrowserSession, interface: &str, name: &str) -> String {
+pub(super) fn browser_property(
+    bus: &PrivateBusWithBrowserSession,
+    interface: &str,
+    name: &str,
+) -> String {
     busctl(
         bus,
         &[
@@ -75,7 +79,7 @@ fn browser_property(bus: &PrivateBusWithBrowserSession, interface: &str, name: &
 }
 
 /// Ждёт, пока MPRIS окна опубликует управляемый вид (кнопки появляются вместе со страницей).
-fn wait_until_controllable(bus: &PrivateBusWithBrowserSession) {
+pub(super) fn wait_until_controllable(bus: &PrivateBusWithBrowserSession) {
     let deadline = Instant::now() + WAIT;
     loop {
         let ready = busctl(
