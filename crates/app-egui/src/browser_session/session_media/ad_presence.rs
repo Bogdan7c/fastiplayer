@@ -5,7 +5,7 @@
 //!
 //! ```text
 //!  ad_state ──► on_page_state ──► plate(now) ──► окно рисует «Ad 1 of 2 · Skip ›»
-//!  клик / N / MPRIS Next ──► begin_action(действие, now) ──► Send ─► skip_ad / reveal_page
+//!  клик / N / MPRIS Next ──► begin_action(действие, now) ──► Send ─► skip_ad
 //!                                                         └► AlreadyInFlight / NotOffered
 //! ```
 //!
@@ -193,7 +193,7 @@ const fn offer_of(skip: AdSkip) -> AdSkipOffer {
             seconds: seconds.get(),
         },
         AdSkip::Available {} => AdSkipOffer::Skip,
-        AdSkip::OnPage {} => AdSkipOffer::GoToPage,
+        AdSkip::OnPage {} => AdSkipOffer::OnPage,
     }
 }
 
@@ -201,8 +201,7 @@ const fn offer_of(skip: AdSkip) -> AdSkipOffer {
 const fn action_of(skip: AdSkip) -> Option<AdPlateAction> {
     match skip {
         AdSkip::Available {} => Some(AdPlateAction::Skip),
-        AdSkip::OnPage {} => Some(AdPlateAction::GoToPage),
-        AdSkip::Unavailable {} | AdSkip::Countdown { .. } => None,
+        AdSkip::Unavailable {} | AdSkip::Countdown { .. } | AdSkip::OnPage {} => None,
     }
 }
 
@@ -304,7 +303,7 @@ mod tests {
             Some(AdPlate {
                 locks_transport: true,
                 pod: AdPodLabel::Unknown,
-                offer: AdSkipOffer::GoToPage,
+                offer: AdSkipOffer::OnPage,
                 progress: AdActionProgress::Idle,
             })
         );
@@ -361,9 +360,9 @@ mod tests {
     fn a_page_that_never_reacts_frees_the_button_after_the_timeout() {
         let now = Instant::now();
         let mut presence = AdPresence::default();
-        presence.on_page_state(showing(1, 1, AdSkip::OnPage {}), Instant::now());
+        presence.on_page_state(showing(1, 1, AdSkip::Available {}), Instant::now());
         assert_eq!(
-            presence.begin_action(AdPlateAction::GoToPage, now),
+            presence.begin_action(AdPlateAction::Skip, now),
             AdActionDecision::Send
         );
         assert_eq!(
@@ -372,7 +371,7 @@ mod tests {
         );
         let almost = now + ACTION_IN_FLIGHT_TIMEOUT - Duration::from_millis(1);
         assert_eq!(
-            presence.begin_action(AdPlateAction::GoToPage, almost),
+            presence.begin_action(AdPlateAction::Skip, almost),
             AdActionDecision::AlreadyInFlight
         );
         let expired = now + ACTION_IN_FLIGHT_TIMEOUT;
@@ -381,7 +380,7 @@ mod tests {
             Some(AdActionProgress::Idle)
         );
         assert_eq!(
-            presence.begin_action(AdPlateAction::GoToPage, expired),
+            presence.begin_action(AdPlateAction::Skip, expired),
             AdActionDecision::Send
         );
     }

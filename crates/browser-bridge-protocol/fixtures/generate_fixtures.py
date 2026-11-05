@@ -647,7 +647,6 @@ def write_player_session(manifest: Manifest) -> None:
         ("select-variant", {"type": "select_variant", "kind": "audio", "variant_id": "voice-2"}),
         ("next-episode", {"type": "next_episode"}),
         ("skip-ad", {"type": "skip_ad"}),
-        ("reveal-page", {"type": "reveal_page"}),
         ("fetch-range", {"type": "fetch_range", "request_id": 7, "offset": 0, "length": 1_048_576}),
         ("stream-rejected", {"type": "stream_rejected", "generation": 1, "reason": "protected_content"}),
         (

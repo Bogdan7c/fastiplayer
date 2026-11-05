@@ -1,5 +1,5 @@
 //! Реклама на странице в медиа-части (сессия 09d): плашка, команды `skip_ad` /
-//! `reveal_page`, защита от двойного клика и запрет перемотки со скоростью (решение 206).
+//! защита от двойного клика и запрет перемотки со скоростью (решение 206).
 //!
 //! Плеер и страница подделаны: видна каждая команда плееру и каждое сообщение странице.
 
@@ -150,26 +150,16 @@ fn a_page_that_never_reacts_gets_the_command_again_after_the_timeout() {
 }
 
 #[test]
-fn go_to_page_sends_reveal_page_and_only_when_the_page_wants_a_human() {
+fn on_page_sends_nothing_to_the_page_whatever_the_viewer_asks() {
     let (mut harness, current, _writer) = loaded_harness();
     let now = Instant::now();
-    // Кнопка «Skip» у сайта, который верит только мыши, не наша: reveal не предложен.
-    state(&mut harness, &current, showing(AdSkip::Available {}));
-    commands_to_page(&mut harness);
-    viewer(&mut harness, ViewerTransportIntent::RevealPage, now);
-    assert!(commands_to_page(&mut harness).is_empty());
-
     state(&mut harness, &current, showing(AdSkip::OnPage {}));
+    commands_to_page(&mut harness);
+    // Кнопку на странице нажимает только человек (решение 208): «Skip» плеера не уходит.
     viewer(&mut harness, ViewerTransportIntent::SkipAd, now);
     assert!(
         commands_to_page(&mut harness).is_empty(),
         "skip is not offered on_page"
-    );
-    viewer(&mut harness, ViewerTransportIntent::RevealPage, now);
-    viewer(&mut harness, ViewerTransportIntent::RevealPage, now);
-    assert_eq!(
-        commands_to_page(&mut harness),
-        vec![PlayerSessionMessage::RevealPage {}]
     );
 }
 
@@ -181,7 +171,6 @@ fn no_command_goes_to_the_page_during_a_countdown_or_without_an_ad() {
     viewer(&mut harness, ViewerTransportIntent::SkipAd, now);
     state(&mut harness, &current, showing(countdown(4)));
     viewer(&mut harness, ViewerTransportIntent::SkipAd, now);
-    viewer(&mut harness, ViewerTransportIntent::RevealPage, now);
     assert!(commands_to_page(&mut harness).is_empty());
 }
 

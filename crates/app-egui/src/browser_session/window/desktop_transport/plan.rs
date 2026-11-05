@@ -53,7 +53,7 @@ pub(crate) struct TransportObservation {
     pub(crate) seekable: bool,
     /// Громкость плеера, 0..=1.
     pub(crate) volume: f32,
-    /// Плашка рекламы предлагает кнопку (`Skip` или `Go to page`) и она свободна:
+    /// Плашка рекламы предлагает кнопку (`Skip`) и она свободна:
     /// «Next» медиа-виджета делает то же, что клик по ней (09d). Иначе «Next» окну
     /// нечего делать, и `CanGoNext` ложно.
     pub(crate) ad_offer_available: bool,

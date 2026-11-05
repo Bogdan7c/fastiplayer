@@ -36,8 +36,6 @@ pub(crate) enum ViewerTransportIntent {
     SetRate(PlaybackRate),
     /// Нажать кнопку пропуска рекламы на странице (плашка «Skip ›», 09d).
     SkipAd,
-    /// Вывести вкладку и окно браузера вперёд (плашка «Go to page», 09d).
-    RevealPage,
 }
 
 /// Сколько намерений держит ящик между проходами цикла окна.

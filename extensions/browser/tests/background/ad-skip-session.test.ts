@@ -1,5 +1,5 @@
 // Дублёр кнопки пропуска на уровне сеанса (09d): аренда наблюдения, ad_state на проводе, команды плеера
-// skip_ad и reveal_page. Фон целиком на фейковых часах, плеере, порте и браузере.
+// skip_ad. Фон целиком на фейковых часах, плеере, порте и браузере.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
@@ -12,7 +12,6 @@ import {
 } from "../../src/background/handoff/ad-skip-mirror.ts";
 import { createAdWatchReportListener } from "../../src/background/handoff/ad-watch-listener.ts";
 import { AD_REPORT_SILENCE_MS } from "../../src/background/handoff/ad-on-screen.ts";
-import { createPageReveal } from "../../src/background/handoff/page-reveal.ts";
 import { translatePlayerMessage } from "../../src/background/handoff/player-message-translator.ts";
 import type { PageAdState, PageSessionMessage } from "../../src/protocol/index.ts";
 import { AD_WATCH_REPORT_KIND } from "../../src/shared/ad-watch-contract.ts";
@@ -206,96 +205,20 @@ describe("skip_ad", () => {
     world.sockets.last().open();
     world.sockets.last().receive({ type: "attached" });
     world.sockets.last().receive({ type: "skip_ad" });
-    world.sockets.last().receive({ type: "reveal_page" });
     await flushPromises();
     assert.deepEqual(world.adMirror.pressed, []);
-    assert.deepEqual(world.adMirror.revealed, []);
   });
 });
 
-describe("reveal_page", () => {
-  it("выводит вкладку сеанса вперёд", async () => {
+describe("кнопка на странице (on_page)", () => {
+  it("skip_ad на неё не нажимает: нажать может только человек, в журнале отметка", async () => {
     const world = setup();
     await startHandoff(world);
     world.handoffs.adWatchReport(TAB, 1, ON_PAGE);
-    world.sockets.last().receive({ type: "reveal_page" });
+    world.sockets.last().receive({ type: "skip_ad" });
     await flushPromises();
-    assert.deepEqual(world.adMirror.revealed, [TAB]);
-  });
-
-  it("сбой браузера — в журнал, не молча, а сеанс живёт и продолжает принимать рекламу", async () => {
-    const world = setup();
-    await startHandoff(world);
-    world.handoffs.adWatchReport(TAB, 1, ON_PAGE);
-    world.adMirror.behavior.revealFails = true;
-    world.sockets.last().receive({ type: "reveal_page" });
-    await flushPromises();
-    assert.equal(world.adMirror.notes.length, 1);
-    assert.match(world.adMirror.notes[0] ?? "", /reveal_page failed/u);
-    assert.deepEqual(world.ended, []);
-    world.clock.advance(AD_STATE_MIN_GAP_MS);
-    world.handoffs.adWatchReport(TAB, 1, AVAILABLE);
-    assert.deepEqual(adStates(world), [ON_PAGE, AVAILABLE]);
-  });
-
-  it("устаревшая команда браузер не поднимает: реклама кончилась, фильм не закрыть окном браузера", async () => {
-    const world = setup();
-    await startHandoff(world);
-    world.handoffs.adWatchReport(TAB, 1, ON_PAGE);
-    world.handoffs.adWatchReport(TAB, 1, NONE);
-    world.sockets.last().receive({ type: "reveal_page" });
-    await flushPromises();
-    assert.deepEqual(world.adMirror.revealed, []);
-    assert.match(world.adMirror.notes[0] ?? "", /reveal_page ignored/u);
-  });
-
-  it("кнопка Skip браузер не поднимает: страница предлагает наш клик, а не свой", async () => {
-    const world = setup();
-    await startHandoff(world);
-    world.handoffs.adWatchReport(TAB, 1, AVAILABLE);
-    world.sockets.last().receive({ type: "reveal_page" });
-    await flushPromises();
-    assert.deepEqual(world.adMirror.revealed, []);
-  });
-
-  it("работает и между роликами (окно держит последний кадр)", async () => {
-    const world = setup([{ frameId: 0, result: [FILM_VIDEO, AD_VIDEO] }]);
-    await startHandoff(world);
-    world.handoffs.adWatchReport(TAB, 0, ON_PAGE);
-    world.framePorts.last().deliver({ kind: "handoff_ended", cause: "element_released" });
-    world.sockets.last().receive({ type: "reveal_page" });
-    await flushPromises();
-    assert.deepEqual(world.adMirror.revealed, [TAB]);
-  });
-});
-
-describe("page-reveal: вкладка, потом окно", () => {
-  it("сначала tabs.update(active), потом windows.update(focused) именно окна этой вкладки", async () => {
-    const calls: string[] = [];
-    const reveal = createPageReveal({
-      activateTab: async (tabId) => {
-        calls.push(`tab:${tabId}`);
-        return { windowId: 77 };
-      },
-      focusWindow: async (windowId) => void calls.push(`window:${windowId}`),
-    });
-    await reveal(12);
-    assert.deepEqual(calls, ["tab:12", "window:77"]);
-  });
-
-  it("вкладки нет — ошибка, окно не трогаем", async () => {
-    const calls: string[] = [];
-    const reveal = createPageReveal({
-      activateTab: async () => undefined,
-      focusWindow: async (windowId) => void calls.push(`window:${windowId}`),
-    });
-    await assert.rejects(reveal(12), /tab is gone/u);
-    assert.deepEqual(calls, []);
-  });
-
-  it("сбой окна пробрасывается вызывающему, чтобы тот записал его в журнал", async () => {
-    const reveal = createPageReveal({ activateTab: async () => ({ windowId: 1 }), focusWindow: () => Promise.reject(new Error("window closed")) });
-    await assert.rejects(reveal(12), /window closed/u);
+    assert.deepEqual(world.adMirror.pressed, []);
+    assert.match(world.adMirror.notes[0] ?? "", /skip_ad ignored/u);
   });
 });
 
@@ -326,9 +249,8 @@ describe("приёмник донесений фреймов", () => {
 });
 
 describe("переводчик сообщений плеера", () => {
-  it("skip_ad и reveal_page — свои действия, а не «игнорировать»", () => {
+  it("skip_ad — своё действие, а не «игнорировать»", () => {
     assert.deepEqual(translatePlayerMessage({ type: "skip_ad" }, undefined), { kind: "skip_ad" });
-    assert.deepEqual(translatePlayerMessage({ type: "reveal_page" }, undefined), { kind: "reveal_page" });
   });
 });
 
@@ -345,7 +267,6 @@ describe("дублёр сам по себе", () => {
   const idleBrowser: AdMirrorBrowser = {
     armAdWatch() {},
     pressSkipInFrame: () => Promise.resolve("pressed"),
-    revealPage: () => Promise.resolve(),
   };
 
   it("страница, мигающая числами, даёт не больше одного ad_state в паузу, и последнее слово доходит", () => {

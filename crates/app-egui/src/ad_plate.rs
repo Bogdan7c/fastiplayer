@@ -11,7 +11,7 @@
 //! страницы, числа и метки — полями `ключ=значение`).
 
 /// «Реклама появилась или изменилась»: поля `ad_index`, `ad_count` (0 — неизвестно),
-/// `skip` (`none` / `countdown` / `skip` / `go_to_page`), `countdown_seconds`.
+/// `skip` (`none` / `countdown` / `skip` / `on_page`), `countdown_seconds`.
 pub(crate) const AD_PLATE_SHOWN_LINE: &str = "Ad plate shown";
 
 /// «Реклама кончилась или сеанс/вкладка ушли»: плашки больше нет.
@@ -19,9 +19,6 @@ pub(crate) const AD_PLATE_CLEARED_LINE: &str = "Ad plate cleared";
 
 /// Странице ушёл `skip_ad` (зритель нажал «Skip ›», «N» или MPRIS Next).
 pub(crate) const AD_SKIP_SENT_LINE: &str = "Ad skip sent to the page";
-
-/// Странице ушёл `reveal_page` (зритель нажал «Go to page»).
-pub(crate) const AD_REVEAL_SENT_LINE: &str = "Ad reveal page sent to the page";
 
 /// Перемотка зрителя отклонена, пока на экране реклама (решение 206).
 pub(crate) const AD_SEEK_REFUSED_LINE: &str = "Viewer seek refused: an ad is on screen";
@@ -55,8 +52,9 @@ pub(crate) enum AdSkipOffer {
     },
     /// Кнопка «Skip ›»: наш клик на странице работает.
     Skip,
-    /// Кнопка «Go to page»: сайт верит только настоящей мыши (YouTube, решение 207).
-    GoToPage,
+    /// Сайт показал свою кнопку, но верит только настоящей мыши (YouTube, решения 207, 208):
+    /// плашка даёт подсказку без кнопки, нажимает человек на странице.
+    OnPage,
 }
 
 impl AdSkipOffer {
@@ -66,7 +64,7 @@ impl AdSkipOffer {
             Self::Nothing => "none",
             Self::Countdown { .. } => "countdown",
             Self::Skip => "skip",
-            Self::GoToPage => "go_to_page",
+            Self::OnPage => "on_page",
         }
     }
 }
@@ -76,8 +74,6 @@ impl AdSkipOffer {
 pub(crate) enum AdPlateAction {
     /// Нажать кнопку пропуска на странице (`skip_ad`).
     Skip,
-    /// Вывести вкладку и окно браузера вперёд (`reveal_page`).
-    GoToPage,
 }
 
 /// Ушла ли уже команда за кнопкой плашки (защита от повторного клика).
@@ -108,8 +104,7 @@ impl AdPlate {
     pub(crate) const fn offered_action(&self) -> Option<AdPlateAction> {
         match self.offer {
             AdSkipOffer::Skip => Some(AdPlateAction::Skip),
-            AdSkipOffer::GoToPage => Some(AdPlateAction::GoToPage),
-            AdSkipOffer::Nothing | AdSkipOffer::Countdown { .. } => None,
+            AdSkipOffer::Nothing | AdSkipOffer::Countdown { .. } | AdSkipOffer::OnPage => None,
         }
     }
 }

@@ -793,7 +793,7 @@ mod window_geometry;
 mod page_and_mpris;
 
 // Сессия 09d: плашка рекламы — `ad_state` от страницы, MPRIS Next жмёт кнопку плашки
-// (`skip_ad` / `reveal_page` на проводе), перемотка в рекламе закрыта.
+// (`skip_ad` на проводе), перемотка в рекламе закрыта.
 #[path = "browser_session_process/ad_plate.rs"]
 mod ad_plate;
 

@@ -19,8 +19,8 @@ use tracing::{debug, info};
 
 use super::SessionMedia;
 use crate::ad_plate::{
-    AD_RATE_REFUSED_LINE, AD_REVEAL_SENT_LINE, AD_SEEK_REFUSED_LINE, AD_SKIP_SENT_LINE,
-    AdActionDecision, AdPlate, AdPlateAction,
+    AD_RATE_REFUSED_LINE, AD_SEEK_REFUSED_LINE, AD_SKIP_SENT_LINE, AdActionDecision, AdPlate,
+    AdPlateAction,
 };
 
 impl SessionMedia {
@@ -58,10 +58,6 @@ impl SessionMedia {
                 AdPlateAction::Skip => {
                     info!("{AD_SKIP_SENT_LINE}");
                     self.outbound.request_skip_ad();
-                }
-                AdPlateAction::GoToPage => {
-                    info!("{AD_REVEAL_SENT_LINE}");
-                    self.outbound.request_reveal_page();
                 }
             },
             decision @ (AdActionDecision::AlreadyInFlight | AdActionDecision::NotOffered) => {

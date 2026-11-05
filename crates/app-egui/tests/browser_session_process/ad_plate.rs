@@ -5,7 +5,8 @@
 //! - `ad_state{showing, skip: available}` → строка журнала плашки с числами и видом
 //!   пропуска; MPRIS `Next` (так жмёт робот стенда) → ровно один `skip_ad` на проводе,
 //!   даже если нажать дважды; `ad_state{none}` → плашка снята (строка журнала);
-//! - `skip: on_page` → `Next` даёт `reveal_page`, а не `skip_ad`;
+//! - `skip: on_page` → строка журнала `skip=on_page`, `CanGoNext` false, `Next` ничего не
+//!   отправляет странице (кнопку нажимает человек на странице, решение 208);
 //! - пока реклама на экране, перемотка с шины не даёт `seek` на провод (и `CanGoNext`,
 //!   `CanSeek` честно говорят, что можно), а после `none` даёт.
 //!
@@ -23,7 +24,6 @@ use super::*;
 const PLATE_SHOWN_LINE: &str = "Ad plate shown";
 const PLATE_CLEARED_LINE: &str = "Ad plate cleared";
 const SKIP_SENT_LINE: &str = "Ad skip sent to the page";
-const REVEAL_SENT_LINE: &str = "Ad reveal page sent to the page";
 
 /// Сколько ждём, что сообщения НЕ придут (команда, которой быть не должно).
 const QUIET_PERIOD: Duration = Duration::from_millis(1_500);
@@ -146,11 +146,6 @@ fn mpris_next_presses_skip_once_and_the_plate_goes_away_with_the_ad() {
         1,
         "two presses, one command"
     );
-    assert_eq!(
-        count_of(&seen, &PlayerSessionMessage::RevealPage {}),
-        0,
-        "{seen:?}"
-    );
 
     // Страница ответила: рекламы нет — плашка снята, «Next» снова ничего не предлагает.
     socket.send(ad_state_none()).expect("ad_state is sent");
@@ -159,8 +154,8 @@ fn mpris_next_presses_skip_once_and_the_plate_goes_away_with_the_ad() {
 }
 
 #[test]
-fn mpris_next_on_a_human_only_page_reveals_the_page_instead_of_skipping() {
-    let Some((process, mut socket)) = playing_window("ad-reveal") else {
+fn a_human_only_page_offers_no_button_and_mpris_next_sends_nothing() {
+    let Some((process, mut socket)) = playing_window("ad-on-page") else {
         return;
     };
     let bus = &process.bus;
@@ -168,16 +163,12 @@ fn mpris_next_on_a_human_only_page_reveals_the_page_instead_of_skipping() {
         .send(ad_state_showing(1, 1, "on_page"))
         .expect("ad_state is sent");
     let shown = bus.wait_for_log_line(PLATE_SHOWN_LINE);
-    assert!(shown.contains("skip=go_to_page"), "{shown}");
-    wait_for_property(bus, "CanGoNext", "b true");
+    assert!(shown.contains("skip=on_page"), "{shown}");
+    // Плашка даёт подсказку без кнопки: «Next» нечего нажимать.
+    assert_eq!(browser_property(bus, MPRIS_PLAYER, "CanGoNext"), "b false");
 
     call_browser(bus, MPRIS_PLAYER, "Next");
-    bus.wait_for_log_line(REVEAL_SENT_LINE);
-    let mut seen = read_player_messages_until(&mut socket, "reveal_page", |message| {
-        matches!(message, PlayerSessionMessage::RevealPage {})
-    });
-    seen.extend(read_player_messages_for(&mut socket, QUIET_PERIOD));
-    assert_eq!(count_of(&seen, &PlayerSessionMessage::RevealPage {}), 1);
+    let seen = read_player_messages_for(&mut socket, QUIET_PERIOD);
     assert_eq!(
         count_of(&seen, &PlayerSessionMessage::SkipAd {}),
         0,
@@ -204,11 +195,6 @@ fn a_countdown_offers_no_button_and_next_sends_nothing() {
     let seen = read_player_messages_for(&mut socket, QUIET_PERIOD);
     assert_eq!(
         count_of(&seen, &PlayerSessionMessage::SkipAd {}),
-        0,
-        "{seen:?}"
-    );
-    assert_eq!(
-        count_of(&seen, &PlayerSessionMessage::RevealPage {}),
         0,
         "{seen:?}"
     );

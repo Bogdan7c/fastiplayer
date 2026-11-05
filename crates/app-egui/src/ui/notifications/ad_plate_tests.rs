@@ -118,7 +118,7 @@ fn the_countdown_plate_reads_ad_n_of_m_and_skip_in_seconds_and_has_no_button() {
     let shown = texts(&painted);
     assert!(shown.contains(&"Ad 1 of 2"), "{shown:?}");
     assert!(shown.contains(&"Skip in 5"), "{shown:?}");
-    assert!(!shown.contains(&SKIP_BUTTON_LABEL) && !shown.contains(&GO_TO_PAGE_BUTTON_LABEL));
+    assert!(!shown.contains(&SKIP_BUTTON_LABEL));
     // Клик по тексту плашки без кнопки ничего не делает.
     let actions = click(&egui_ctx, &plate, center_of(&painted, "Skip in 5"));
     assert!(actions.is_empty(), "{actions:?}");
@@ -171,23 +171,21 @@ fn clicking_skip_gives_the_skip_action() {
 }
 
 #[test]
-fn clicking_go_to_page_gives_the_reveal_action() {
+fn on_page_plate_shows_a_hint_without_a_button_and_a_click_gives_no_action() {
     let egui_ctx = egui::Context::default();
     let plate = plate(
         AdPodLabel::Unknown,
-        AdSkipOffer::GoToPage,
+        AdSkipOffer::OnPage,
         AdActionProgress::Idle,
     );
     let painted = settle(&egui_ctx, &plate);
-    let actions = click(
-        &egui_ctx,
-        &plate,
-        center_of(&painted, GO_TO_PAGE_BUTTON_LABEL),
-    );
-    assert_eq!(
-        actions,
-        [NotificationAction::AdPlate(AdPlateAction::GoToPage)]
-    );
+    let shown = texts(&painted);
+    assert_eq!(shown, ["Ad", "·", SKIP_ON_PAGE_HINT], "{shown:?}");
+    assert_eq!(SKIP_ON_PAGE_HINT, "Skip on the page");
+    assert!(!shown.contains(&SKIP_BUTTON_LABEL), "{shown:?}");
+    // Подсказка — текст: клик по ней ничего не отдаёт.
+    let actions = click(&egui_ctx, &plate, center_of(&painted, SKIP_ON_PAGE_HINT));
+    assert!(actions.is_empty(), "{actions:?}");
 }
 
 #[test]

@@ -643,13 +643,6 @@
       }
     },
     {
-      "file": "session/valid/player-reveal-page.json",
-      "schema": "player_session",
-      "expect": {
-        "result": "ok"
-      }
-    },
-    {
       "file": "session/valid/player-fetch-range.json",
       "schema": "player_session",
       "expect": {

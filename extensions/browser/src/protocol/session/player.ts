@@ -64,7 +64,6 @@ export type PlayerSessionMessage =
   | { readonly type: "select_variant"; readonly kind: VariantKind; readonly variant_id: string }
   | { readonly type: "next_episode" }
   | { readonly type: "skip_ad" }
-  | { readonly type: "reveal_page" }
   | {
       readonly type: "fetch_range";
       readonly request_id: number;
@@ -97,7 +96,6 @@ export const playerSessionCodec: TaggedUnionCodec<PlayerSessionMessage> = tagged
   select_variant: { kind: variantKindCodec, variant_id: variantIdCodec },
   next_episode: {},
   skip_ad: {},
-  reveal_page: {},
   fetch_range: { request_id: rangeRequestIdCodec, offset: byteOffsetCodec, length: rangeFetchLengthCodec },
   stream_rejected: {
     generation: streamGenerationCodec,

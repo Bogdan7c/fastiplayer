@@ -13,7 +13,6 @@ import { createFileReferrerRules } from "./file-referrer-rule.ts";
 import { createHandOffCommandListener, createHeldVideoListener } from "./hand-off-command.ts";
 import { createAdWatchReportListener } from "./ad-watch-listener.ts";
 import type { AdMirrorBrowser } from "./ad-skip-mirror.ts";
-import { createPageReveal } from "./page-reveal.ts";
 import type { SessionDoor } from "./handoff-session.ts";
 import { createLocalAddressBlock, localAddressBlockRules } from "./local-address-block-rules.ts";
 import { createSessionRules, type SessionRulesApi } from "./session-rules.ts";
@@ -81,10 +80,6 @@ const adMirrorBrowser: AdMirrorBrowser = {
     if (outcome === undefined) throw new Error("the frame gave an unknown answer to press_ad_skip");
     return outcome;
   },
-  revealPage: createPageReveal({
-    activateTab: (tabId) => browserApi.tabs.update(tabId, { active: true }).then((tab) => (tab === undefined ? undefined : { windowId: tab.windowId })),
-    focusWindow: (windowId) => browserApi.windows.update(windowId, { focused: true }).then(() => undefined),
-  }),
 };
 
 /**

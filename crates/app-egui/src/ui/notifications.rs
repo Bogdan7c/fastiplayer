@@ -66,7 +66,7 @@ pub(crate) enum NotificationAction {
     BrowserOfferSetUp(NotificationId),
     /// Нажата «Not now» у предложения подключить браузеры.
     BrowserOfferNotNow(NotificationId),
-    /// Нажата кнопка плашки рекламы («Skip ›» или «Go to page», 09d).
+    /// Нажата кнопка плашки рекламы («Skip ›», 09d).
     AdPlate(AdPlateAction),
 }
 

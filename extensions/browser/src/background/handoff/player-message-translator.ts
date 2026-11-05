@@ -23,8 +23,6 @@ export type PlayerAction =
   | { readonly kind: "fetch_range"; readonly request: RangeRequest }
   /** Плеер просит нажать кнопку пропуска рекламы (сессия 09d); решает сеанс: целевой фрейм знает только он. */
   | { readonly kind: "skip_ad" }
-  /** Плеер просит вывести вкладку и окно браузера вперёд (решение 207). */
-  | { readonly kind: "reveal_page" }
   /** Не относится к передаче (варианты — 14, следующая серия — 15) или к старому поколению — пропустить. */
   | { readonly kind: "ignore" };
 
@@ -69,8 +67,6 @@ export function translatePlayerMessage(message: PlayerSessionMessage, latestGene
       return { kind: "fetch_range", request: { request_id: message.request_id, offset: message.offset, length: message.length } };
     case "skip_ad":
       return { kind: "skip_ad" };
-    case "reveal_page":
-      return { kind: "reveal_page" };
     case "select_variant":
     case "next_episode":
       // Меню вариантов — 14, следующая серия — 15: пока их не бывает.

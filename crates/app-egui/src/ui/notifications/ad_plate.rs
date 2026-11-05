@@ -4,8 +4,8 @@
 //! управления, как на сайтах) и возвращает клик как [`NotificationAction::AdPlate`].
 //! Видна и когда панели спрятаны в фуллскрине: рисуется в центральной области, а не в
 //! панелях. Ничего не решает и не хранит: «Ad 1 of 2 · Skip in 5», кнопки «Skip ›» и
-//! «Go to page» и защита от повторного клика (кнопка занята, пока команда в пути) идут
-//! от владельца состояния. Все подписи — наши, текста страницы здесь нет (инвариант 1).
+//! подсказка «Skip on the page» (текст без кнопки, решение 208) и защита от повторного клика
+//! (кнопка занята, пока команда в пути) идут от владельца состояния. Все подписи — наши, текста страницы здесь нет (инвариант 1).
 //!
 //! Читаемость на ярком видео: плашка стоит на тёмной полупрозрачной подложке с белым
 //! текстом. Визуальная полировка — на финальной доводке интерфейса.
@@ -16,8 +16,9 @@ use crate::ad_plate::{AdActionProgress, AdPlate, AdPlateAction, AdPodLabel, AdSk
 /// Подпись кнопки пропуска.
 pub(crate) const SKIP_BUTTON_LABEL: &str = "Skip ›";
 
-/// Подпись кнопки «вывести страницу вперёд».
-pub(crate) const GO_TO_PAGE_BUTTON_LABEL: &str = "Go to page";
+/// Подсказка, когда кнопку пропуска нажмёт только человек на странице сайта (решение 208).
+/// Это текст, а не кнопка: удобную кнопку вернёт сессия 17.
+pub(crate) const SKIP_ON_PAGE_HINT: &str = "Skip on the page";
 
 /// Подпись без счётчика, когда сайт номер рекламы не показывает.
 pub(crate) const AD_LABEL: &str = "Ad";
@@ -110,10 +111,10 @@ fn render_plate_contents(ui: &mut egui::Ui, plate: &AdPlate) -> Option<AdPlateAc
             ui.label(egui::RichText::new(PLATE_SEPARATOR).color(text_color));
             action_button(ui, SKIP_BUTTON_LABEL, plate.progress).then_some(AdPlateAction::Skip)
         }
-        AdSkipOffer::GoToPage => {
+        AdSkipOffer::OnPage => {
             ui.label(egui::RichText::new(PLATE_SEPARATOR).color(text_color));
-            action_button(ui, GO_TO_PAGE_BUTTON_LABEL, plate.progress)
-                .then_some(AdPlateAction::GoToPage)
+            ui.label(egui::RichText::new(SKIP_ON_PAGE_HINT).color(text_color));
+            None
         }
     }
 }

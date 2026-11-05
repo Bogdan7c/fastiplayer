@@ -639,9 +639,6 @@ export function startHandoffSession(
       case "skip_ad":
         adMirror.skipAd();
         return;
-      case "reveal_page":
-        adMirror.revealPage();
-        return;
       case "fetch_range":
         // Байты файла просят только в поколении-файле. Без файла запрос не наш (плеер ошибся
         // сам): его чтение честно истечёт у плеера, сеанс страницы это не ломает.

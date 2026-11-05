@@ -81,7 +81,6 @@ impl WindowMode {
         };
         outbox.push(match action {
             AdPlateAction::Skip => ViewerTransportIntent::SkipAd,
-            AdPlateAction::GoToPage => ViewerTransportIntent::RevealPage,
         });
         true
     }

@@ -222,8 +222,10 @@ fn next_presses_the_offered_button_and_only_when_it_is_free() {
     mode.note_ad_plate(Some(plate(AdSkipOffer::Skip, AdActionProgress::Idle)));
     assert!(mode.ad_offer_is_free());
     assert_eq!(mode.activate_ad_offer(), AdOfferActivation::Requested);
-    mode.note_ad_plate(Some(plate(AdSkipOffer::GoToPage, AdActionProgress::Idle)));
-    assert_eq!(mode.activate_ad_offer(), AdOfferActivation::Requested);
+    // Подсказка «Skip on the page» кнопки не имеет: N ничего не просит у страницы.
+    mode.note_ad_plate(Some(plate(AdSkipOffer::OnPage, AdActionProgress::Idle)));
+    assert!(!mode.ad_offer_is_free());
+    assert_eq!(mode.activate_ad_offer(), AdOfferActivation::NothingOffered);
 
     mode.note_ad_plate(Some(plate(AdSkipOffer::Skip, AdActionProgress::InFlight)));
     assert!(!mode.ad_offer_is_free());
@@ -231,10 +233,7 @@ fn next_presses_the_offered_button_and_only_when_it_is_free() {
 
     assert_eq!(
         taken_intents(&mut mode),
-        [
-            ViewerTransportIntent::SkipAd,
-            ViewerTransportIntent::RevealPage,
-        ],
+        [ViewerTransportIntent::SkipAd],
         "the busy button sent nothing"
     );
 }

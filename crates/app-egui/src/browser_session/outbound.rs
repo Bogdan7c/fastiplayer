@@ -437,11 +437,6 @@ impl PageOutbound {
         self.queue_event_replacing_same_kind(PlayerSessionMessage::SkipAd {});
     }
 
-    /// Зритель нажал «Go to page»: странице `reveal_page` (вывести вкладку и окно).
-    pub(crate) fn request_reveal_page(&mut self) {
-        self.queue_event_replacing_same_kind(PlayerSessionMessage::RevealPage {});
-    }
-
     /// Плеер не будет играть поколение: `stream_rejected` один раз на поколение.
     ///
     /// Возвращает `false`, если отказ для этого поколения уже был.
@@ -612,7 +607,6 @@ const fn message_kind(message: &PlayerSessionMessage) -> &'static str {
         PlayerSessionMessage::FetchRange { .. } => "fetch_range",
         PlayerSessionMessage::StreamRejected { .. } => "stream_rejected",
         PlayerSessionMessage::SkipAd {} => "skip_ad",
-        PlayerSessionMessage::RevealPage {} => "reveal_page",
     }
 }
 

@@ -1,5 +1,5 @@
 // Дублёр кнопки пропуска рекламы на стороне сеанса (сессия 09d): склеивает сводку `ad-on-screen.ts`,
-// аренду наблюдения во фреймах и команды плеера `skip_ad` / `reveal_page`.
+// аренду наблюдения во фреймах и команду плеера `skip_ad`.
 //
 // Что принадлежит сеансу, а что нет: фон не читает страницу сам. Читают фреймы (изолированный мир),
 // а фон держит аренду, собирает донесения и отвечает на команды плеера. Пока передача не началась
@@ -8,7 +8,7 @@
 // Правила команд:
 // - `skip_ad` идёт во фрейм, который сказал `available`, и больше никуда: чужие кнопки не трогаем.
 //   Кнопки уже нет (команда устарела) — это не ошибка, а отметка в журнале;
-// - `reveal_page` выводит вкладку и окно вперёд; сбой — в журнал, сеанс живёт.
+// - кнопка со словом `on_page` — «нажимает человек на странице»: команды на неё нет (решение 208).
 
 import type { PageAdState } from "../../protocol/index.ts";
 import type { PressSkipOutcome } from "../../shared/ad-watch-contract.ts";
@@ -35,8 +35,6 @@ export interface AdMirrorBrowser {
   armAdWatch(tabId: number, leaseMs: number): void;
   /** Попросить один фрейм нажать кнопку пропуска; отказ доставки — исключение. */
   pressSkipInFrame(tabId: number, frameId: number): Promise<PressSkipOutcome>;
-  /** Вывести вкладку и окно вперёд; сбой — исключение. */
-  revealPage(tabId: number): Promise<void>;
 }
 
 export interface SessionAdMirrorDependencies {
@@ -58,8 +56,6 @@ export interface SessionAdMirror {
   acceptFrameReport(frameId: number, ad: PageAdState): void;
   /** Плеер просит нажать кнопку пропуска. */
   skipAd(): void;
-  /** Плеер просит вывести страницу вперёд. */
-  revealPage(): void;
   /** Сеанс кончился: аренда не продлевается, донесения не принимаются. */
   stop(): void;
 }
@@ -128,16 +124,6 @@ export function createSessionAdMirror(dependencies: SessionAdMirrorDependencies)
         },
         (error: unknown) => dependencies.note(`skip_ad could not reach the frame: ${String(error)}`),
       );
-    },
-    revealPage() {
-      if (!running) return;
-      // Команда могла опоздать: реклама кончилась, и браузер не должен выскочить поверх фильма.
-      const ad = summary.current();
-      if (ad.kind !== "showing" || ad.skip.kind !== "on_page") {
-        dependencies.note("reveal_page ignored: the page no longer offers its skip button");
-        return;
-      }
-      browser.revealPage(tabId).catch((error: unknown) => dependencies.note(`reveal_page failed: ${String(error)}`));
     },
     stop() {
       running = false;

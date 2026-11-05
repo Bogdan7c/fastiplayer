@@ -31,14 +31,13 @@ use browser_bridge_bench::player_control::PlayerControl;
 const INTERESTING_LINES: &[&str] = &[
     "Ad plate",
     "Ad skip",
-    "Ad reveal",
     "refused: an ad",
     "Browser session end notice",
     "stream_rejected",
     "ERROR",
 ];
-/// Подстрока журнала: плашка предлагает кнопку.
-const OFFERS: &[&str] = &["skip=skip", "skip=go_to_page"];
+/// Подстрока журнала: плашка предлагает нашу кнопку «Skip» (подсказку `on_page` робот не жмёт).
+const SKIP_OFFER: &str = "skip=skip";
 /// Как часто просим передачу, пока видео нет.
 const HAND_OFF_RETRY: Duration = Duration::from_secs(1);
 /// Сколько даём странице прогрева.
@@ -209,7 +208,7 @@ fn run(arguments: &Arguments) -> Result<(), String> {
                 println!("{line}");
             }
             if line.contains("Ad plate") {
-                offer_waiting = OFFERS.iter().any(|needle| line.contains(needle));
+                offer_waiting = line.contains(SKIP_OFFER);
             }
         }
         if offer_waiting && arguments.press == Press::Robot {

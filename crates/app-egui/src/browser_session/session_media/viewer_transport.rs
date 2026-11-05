@@ -228,9 +228,6 @@ impl SessionMedia {
             ViewerTransportIntent::SkipAd => {
                 self.viewer_ad_action(AdPlateAction::Skip, now, page_listens);
             }
-            ViewerTransportIntent::RevealPage => {
-                self.viewer_ad_action(AdPlateAction::GoToPage, now, page_listens);
-            }
         }
     }
 

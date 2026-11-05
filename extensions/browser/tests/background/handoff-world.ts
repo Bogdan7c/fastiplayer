@@ -50,21 +50,16 @@ export function createFakeSessionRules(initialRuleIds: readonly number[] = []) {
 export function createFakeAdMirrorBrowser() {
   const armings: { readonly tabId: number; readonly leaseMs: number }[] = [];
   const pressed: { readonly tabId: number; readonly frameId: number }[] = [];
-  const revealed: number[] = [];
   const notes: string[] = [];
-  const behavior: { pressOutcome: PressSkipOutcome; revealFails: boolean } = { pressOutcome: "pressed", revealFails: false };
+  const behavior: { pressOutcome: PressSkipOutcome } = { pressOutcome: "pressed" };
   const browser: AdMirrorBrowser = {
     armAdWatch: (tabId, leaseMs) => void armings.push({ tabId, leaseMs }),
     pressSkipInFrame: (tabId, frameId) => {
       pressed.push({ tabId, frameId });
       return Promise.resolve(behavior.pressOutcome);
     },
-    revealPage: (tabId) => {
-      revealed.push(tabId);
-      return behavior.revealFails ? Promise.reject(new Error("no window")) : Promise.resolve();
-    },
   };
-  return { browser, armings, pressed, revealed, notes, behavior };
+  return { browser, armings, pressed, notes, behavior };
 }
 
 /** Хост страниц экстеншена в тестах (инициатор его запросов). */
