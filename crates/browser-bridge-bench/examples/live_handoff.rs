@@ -24,6 +24,11 @@
 //! последняя. `--autoplay browser-default` запускает браузер с его обычными настройками автозапуска
 //! (по умолчанию автозапуск разрешён, как на стенде).
 //!
+//! Поздний вход (10d): `--extension-arrives late-install` запускает браузер без экстеншена и ставит
+//! его после паузы `--wait`, при уже открытой вкладке. `--update-from <каталог>` ставит экстеншен до
+//! страницы и после той же паузы обновляет его сборкой из каталога (там версия должна быть новее).
+//! Значок и кнопку нажимает настоящая мышь снаружи (`--hand-off person`).
+//!
 //! Экстеншен должен быть собран (`npm run build` в `extensions/browser`), плеер берётся из
 //! `target/release`. Адреса и журнал остаются только в выводе: в отчёты их не копировать.
 
@@ -90,6 +95,16 @@ enum Press {
     Robot,
 }
 
+/// Когда экстеншен появляется в браузере.
+enum ExtensionArrival {
+    /// При запуске браузера, как в обычном прогоне.
+    AtStart,
+    /// После паузы `--wait`, при уже открытой вкладке.
+    LateInstall,
+    /// Стоит до страницы, после паузы обновляется сборкой из этого каталога.
+    LateUpdate(PathBuf),
+}
+
 struct Arguments {
     browser: BrowserKind,
     display: DisplayTarget,
@@ -103,6 +118,7 @@ struct Arguments {
     press: Press,
     /// Разрешить автозапуск без жеста, как на стенде (`false` — обычные настройки браузера).
     autoplay_without_gesture: bool,
+    extension_arrival: ExtensionArrival,
 }
 
 fn parse_arguments() -> Result<Arguments, String> {
@@ -116,6 +132,7 @@ fn parse_arguments() -> Result<Arguments, String> {
     let mut seconds = 60;
     let mut wait_seconds = 0;
     let mut press = Press::Nobody;
+    let mut extension_arrival = ExtensionArrival::AtStart;
     let mut arguments = std::env::args().skip(1);
     while let Some(name) = arguments.next() {
         let value = arguments
@@ -134,6 +151,13 @@ fn parse_arguments() -> Result<Arguments, String> {
             ("--stand-page", _) => stand_pages.push(value),
             ("--autoplay", "allowed") => autoplay_without_gesture = true,
             ("--autoplay", "browser-default") => autoplay_without_gesture = false,
+            ("--extension-arrives", "at-start") => extension_arrival = ExtensionArrival::AtStart,
+            ("--extension-arrives", "late-install") => {
+                extension_arrival = ExtensionArrival::LateInstall;
+            }
+            ("--update-from", _) => {
+                extension_arrival = ExtensionArrival::LateUpdate(PathBuf::from(value));
+            }
             ("--warm-up-url", _) => warm_up_url = Some(value),
             ("--seconds", _) => {
                 seconds = value
@@ -159,6 +183,7 @@ fn parse_arguments() -> Result<Arguments, String> {
         wait_seconds,
         press,
         autoplay_without_gesture,
+        extension_arrival,
     })
 }
 
@@ -255,22 +280,33 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         BrowserKind::Chromium => "chrome",
         BrowserKind::Firefox => "firefox",
     };
+    let built_extension = ExtensionSource::UnpackedDir(
+        // `FASTIPLAYER_LIVE_EXTENSION_DIST`: другая сборка экстеншена, для сравнения.
+        std::env::var_os("FASTIPLAYER_LIVE_EXTENSION_DIST")
+            .map_or_else(|| repository.join("extensions/browser/dist"), PathBuf::from)
+            .join(flavour),
+    );
+    let arrives_at_start = matches!(arguments.extension_arrival, ExtensionArrival::AtStart);
     let mut browser = launch(
         arguments.browser,
         &environment,
         LaunchOptions {
-            extensions: vec![ExtensionSource::UnpackedDir(
-                // `FASTIPLAYER_LIVE_EXTENSION_DIST`: другая сборка экстеншена, для сравнения.
-                std::env::var_os("FASTIPLAYER_LIVE_EXTENSION_DIST")
-                    .map_or_else(|| repository.join("extensions/browser/dist"), PathBuf::from)
-                    .join(flavour),
-            )],
+            extensions: if arrives_at_start {
+                vec![built_extension.clone()]
+            } else {
+                Vec::new()
+            },
             autoplay_without_gesture: arguments.autoplay_without_gesture,
             loopback_host_aliases: Vec::new(),
-            runtime_extension_install: false,
+            runtime_extension_install: !arrives_at_start,
         },
     )
     .map_err(|error| error.to_string())?;
+    if matches!(arguments.extension_arrival, ExtensionArrival::LateUpdate(_)) {
+        browser
+            .install_extension_at_runtime(&built_extension)
+            .map_err(|error| error.to_string())?;
+    }
     // Свежий профиль на первом же адресе рекламы почти не видит: сайту нужен предыдущий заход.
     if let Some(warm_up_url) = &arguments.warm_up_url {
         browser
@@ -287,6 +323,19 @@ fn run(arguments: &Arguments) -> Result<(), String> {
     let (tab, url) = opened.ok_or("nothing to open")?;
     // Пауза до передачи: реклама в начале ролика должна успеть начаться.
     sleep(Duration::from_secs(arguments.wait_seconds));
+    let late_extension = match &arguments.extension_arrival {
+        ExtensionArrival::AtStart => None,
+        ExtensionArrival::LateInstall => Some(built_extension),
+        ExtensionArrival::LateUpdate(directory) => {
+            Some(ExtensionSource::UnpackedDir(directory.clone()))
+        }
+    };
+    if let Some(extension) = &late_extension {
+        browser
+            .install_extension_at_runtime(extension)
+            .map_err(|error| error.to_string())?;
+        println!("extension arrived while the tab is open");
+    }
 
     let deadline = Instant::now() + Duration::from_secs(arguments.seconds);
     let started = match arguments.hand_off {

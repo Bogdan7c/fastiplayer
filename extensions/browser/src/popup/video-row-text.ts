@@ -11,7 +11,7 @@ export interface VideoRowView {
   readonly title: string;
   /** «1920×1080 · 1:23:45»; пусто, если ни размер, ни длительность неизвестны. */
   readonly details: string;
-  /** Метки: `ad?`, `DRM`, `not supported yet`, `in player`. */
+  /** Метки: `ad?`, `DRM`, `not supported yet`, `reload needed`, `in player`. */
   readonly labels: readonly string[];
   /** Строку можно выбрать. DRM, неподдержанная форма и видео, которое уже в плеере, — нельзя. */
   readonly selectable: boolean;
@@ -42,11 +42,20 @@ function sameVideo(left: VideoRef, right: VideoRef): boolean {
   return left.frame_id === right.frame_id && left.document === right.document && left.element === right.element;
 }
 
+/**
+ * Метка видео, которое сейчас передать нельзя. Поток, начавшийся до нашего скрипта, поддержан: его лечит
+ * перезагрузка, и «not supported yet» спорило бы с кнопкой «Reload and open» над списком (живая проверка 10d).
+ */
+function unsupportedLabelOf(record: TabVideoRecord): string {
+  const startedBeforeScript = record.media.kind === "unsupported" && record.media.form === "started_before_script";
+  return startedBeforeScript ? "reload needed" : "not supported yet";
+}
+
 function labelsOf(record: TabVideoRecord, inPlayer: boolean): string[] {
   const labels: string[] = [];
   if (record.verdict === "ad") labels.push("ad?");
   if (record.verdict === "protected") labels.push("DRM");
-  if (record.verdict === "unsupported") labels.push("not supported yet");
+  if (record.verdict === "unsupported") labels.push(unsupportedLabelOf(record));
   if (inPlayer) labels.push("in player");
   return labels;
 }

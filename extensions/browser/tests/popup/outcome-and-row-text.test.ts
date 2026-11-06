@@ -142,6 +142,11 @@ describe("строки списка видео", () => {
     assert.equal(unknown.details, "");
   });
 
+  it("поток, начавшийся до скрипта, просит перезагрузку, а не говорит «not supported yet»", () => {
+    const late = describeVideoRow(record({ element: 1, verdict: "unsupported", media: { kind: "unsupported", form: "started_before_script" } }), "t", null);
+    assert.deepEqual([late.labels, late.selectable], [["reload needed"], false]);
+  });
+
   it("метки и выбираемость: ad?, DRM, not supported yet, in player; DRM, неподдержанное и видео в плеере — не кнопки", () => {
     const ad = describeVideoRow(record({ element: 1, verdict: "ad" }), "t", null);
     assert.deepEqual([ad.labels, ad.selectable], [["ad?"], true]);
