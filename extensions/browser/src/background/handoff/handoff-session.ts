@@ -53,7 +53,7 @@ import type { LocalAddressBlock } from "./local-address-block-rules.ts";
 import type { FrameConnector, FramePort } from "./frame-port.ts";
 import { createDocumentTranslator, type DocumentTranslator, type OutgoingItem, type PageStreamProblem, type StreamPageEvent } from "./page-event-translator.ts";
 import { createSessionAdMirror, type AdMirrorBrowser } from "./ad-skip-mirror.ts";
-import type { HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
+import type { AfterPreviousSession, HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
 
 export type { HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
 import { translatePlayerMessage } from "./player-message-translator.ts";
@@ -70,6 +70,7 @@ import { judgeHeldVideo } from "./held-video-choice.ts";
 import { createShadowSilenceWatch } from "./shadow-silence-watch.ts";
 import { createStreamNumbering, type StreamNumbering } from "./stream-numbering.ts";
 import type { ChosenVideo } from "./video-choice.ts";
+import type { VideoRef } from "../../shared/handoff-contract.ts";
 import { createVideoRelocation } from "./video-relocation.ts";
 import { describeRefusal, describeSocketEnd } from "./session-outcome-words.ts";
 import { disconnectQuietly, END_WITHOUT_PLAYER, LEAVE_PREVIOUS_VIDEO } from "./session-page-commands.ts";
@@ -133,6 +134,8 @@ export interface HandoffTarget {
   readonly video: Pick<ChosenVideo, "role" | "mayBeAd">;
   /** Новый номер запроса `begin_handoff` для переезда. */
   readonly nextBeginRequestId: () => number;
+  /** Замена видео на той же вкладке (решение 215): когда начинать страницу; см. `AfterPreviousSession`. */
+  readonly afterPreviousSession?: AfterPreviousSession;
 }
 
 /**
@@ -196,6 +199,9 @@ export function startHandoffSession(
   let place: SessionPlace = { frameId: target.frameId, beginRequestId: target.beginRequestId, fileAddressRule: target.fileAddressRule };
   // Видео, на которое идёт тень сейчас: его признаки войдут в силу с `handoff_began{started}`.
   let incomingVideo: Pick<ChosenVideo, "role" | "mayBeAd"> = target.video;
+  // Элемент, на который идёт тень, и элемент в плеере (`null` — между видео).
+  let incomingRef: VideoRef = { frame_id: target.frameId, document: target.document, element: target.element };
+  let shownRef: VideoRef | null = null;
   let tabRemoved = false;
   let socket: SessionSocket | undefined;
   let framePort: FramePort | undefined;
@@ -357,7 +363,10 @@ export function startHandoffSession(
       finish({ kind: "start_failed", outcome: abandoned.outcome });
       return;
     }
-    beginOnPage();
+    const previousSessionEnded = target.afterPreviousSession;
+    if (previousSessionEnded === undefined) return beginOnPage();
+    // Замена: ждём конец старого сеанса; `beginOnPage` сам проверяет фазу, если сеанс успел кончиться.
+    void previousSessionEnded().then(beginOnPage);
   }
 
   /** Открыть порт к фрейму и начать с ним новый документ. Бросает, если браузер не даёт порт. */
@@ -393,6 +402,7 @@ export function startHandoffSession(
    */
   function waitForNextVideo(): void {
     phase = "between_videos";
+    shownRef = null;
     silenceWatch.stop();
     beginTimer.cancel();
     relocation.videoLeft();
@@ -423,7 +433,9 @@ export function startHandoffSession(
     if (phase === "active") tryPostToPage(LEAVE_PREVIOUS_VIDEO);
     silenceWatch.stop();
     phase = "moving";
+    shownRef = null;
     incomingVideo = video;
+    incomingRef = { frame_id: video.frameId, document: video.document, element: video.element };
     place = { frameId: video.frameId, beginRequestId: target.nextBeginRequestId(), fileAddressRule };
     beginTimer.start(HANDOFF_BEGIN_REPLY_TIMEOUT_MS, () => {
       // Страница ответит позже, а её ответ фаза уже не примет: тень не должна остаться без хозяина.
@@ -444,7 +456,6 @@ export function startHandoffSession(
       waitForNextVideo();
     }
   }
-
 
   // ---------------------------------------------------------------- страница → плеер
 
@@ -498,6 +509,7 @@ export function startHandoffSession(
       return;
     }
     phase = "active";
+    shownRef = incomingRef;
     silenceWatch.start();
     relocation.videoStarted(incomingVideo);
     adMirror.videoStarted();
@@ -782,5 +794,5 @@ export function startHandoffSession(
   }
 
   openPlayerSession().catch((error: unknown) => failStart({ kind: "failed", reason: `open_session_threw:${String(error)}` }));
-  return { outcome, notifyTabRemoved, heldVideo, adOnScreen: () => relocation.adOnScreen(), adWatchReport: adMirror.acceptFrameReport };
+  return { outcome, notifyTabRemoved, heldVideo, adOnScreen: () => relocation.adOnScreen(), videoInPlayer: () => (phase === "active" ? shownRef : null), adWatchReport: adMirror.acceptFrameReport };
 }

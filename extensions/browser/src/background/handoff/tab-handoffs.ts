@@ -1,23 +1,34 @@
 // Команда «отдать вкладку N» (решение 175): опрос фреймов → запись в модель вкладки → выбор видео
 // (с отсевом рекламы, мусора и DRM) → проверка адреса файла (решение 199) → сеанс. Каждый отказ
-// записывается в модель вкладки (09c).
+// записывается в модель вкладки (09c). Рядом — «опроси вкладку N» (10b): тот же опрос без передачи.
 //
-// Владеет таблицей «вкладка → её передача». Повторная команда для вкладки, у которой передача
-// уже идёт или стартует, получает исход ТОЙ ЖЕ передачи (кнопку попапа можно нажать дважды);
+// Владеет таблицей «вкладка → её передача». Повторная команда без выбранного видео для вкладки, у которой
+// передача уже идёт или стартует, получает исход ТОЙ ЖЕ передачи (кнопку попапа можно нажать дважды);
 // после конца передачи вкладку можно отдать снова — с новым ключом сеанса.
+//
+// Замена видео на той же вкладке (10b, решение 215): команда с выбранным видео при живом сеансе.
+// 1. тот же элемент, что уже в плеере, — сразу `started`, ничего не трогаем;
+// 2. опрос, выбор и проверка адреса идут при ещё нетронутом старом сеансе; любой отказ его не касается;
+// 3. новый сеанс открывается с новым ключом (плеер заменяет окно, старому сокету шлёт `return_to_page`),
+//    а страница нового сеанса получает `begin_handoff` только после конца старого (`AfterPreviousSession`).
+// Старая запись на время замены уходит из `entries` в `replaced`: закрытие вкладки доходит и до неё,
+// конец старого сеанса не теряется, а удаление старой записи не стирает новую. Если новый сеанс не
+// состоялся, а старый ещё жив, старая запись возвращается на место.
 
-import type { HandOffTabOutcome, HeldVideoReply, HeldVideoReport } from "../../shared/handoff-contract.ts";
+import type { HandOffTabOutcome, HeldVideoReply, HeldVideoReport, VideoRef } from "../../shared/handoff-contract.ts";
+import type { SurveyTabReply, TabPlayerPresence } from "../../shared/survey-contract.ts";
 import type { PageAdState } from "../../protocol/index.ts";
 import type { TabModel } from "../tab-model/tab-model.ts";
-import type { TabRefusal } from "../tab-model/tab-snapshot.ts";
+import { sameRef, type TabRefusal } from "../tab-model/tab-snapshot.ts";
 import type { LocalAddressSetting } from "../../shared/local-address-setting.ts";
 import { DEFAULT_LOCAL_ADDRESS_SETTING } from "../../shared/local-address-setting.ts";
 import { decideFileAddress, NO_LOCAL_ADDRESS_CONSENT, type FileAddressRule, type LocalAddressConsent } from "./file-address-guard.ts";
 import { surveyTabVideos, type ExecuteInAllFrames } from "./frame-survey.ts";
 import { refusalOf, refusalOfSessionEnd } from "./handoff-refusal.ts";
+import { HANDOFF_END_REPLY_TIMEOUT_MS } from "./constants.ts";
 import { startHandoffSession, type HandoffSession, type HandoffSessionDependencies, type HandoffSessionEnd } from "./handoff-session.ts";
 import { pageIdentityOf } from "./page-identity.ts";
-import { chooseVideo, type ChosenVideo, type VideoChoice } from "./video-choice.ts";
+import { chooseRequestedVideo, chooseVideo, type ChosenVideo, type RequestedVideoChoice } from "./video-choice.ts";
 
 /** Наибольший номер запроса `begin_handoff` (u32 договора); после него счёт идёт с 1. */
 const MAX_BEGIN_REQUEST_ID = 0xffff_ffff;
@@ -37,8 +48,13 @@ export interface TabHandoffsDependencies extends HandoffSessionDependencies {
 }
 
 export interface TabHandoffs {
-  /** `consent` — согласие человека на локальный хост; ставит только страница экстеншена, без него — нет. */
-  handOffTab(tabId: number, consent?: LocalAddressConsent): Promise<HandOffTabOutcome>;
+  /**
+   * `consent` — согласие человека на локальный хост; ставит только страница экстеншена, без него — нет.
+   * `video` — выбор человека из списка попапа; без него отдаётся главное видео вкладки.
+   */
+  handOffTab(tabId: number, consent?: LocalAddressConsent, video?: VideoRef): Promise<HandOffTabOutcome>;
+  /** Опрос вкладки без передачи: плеер не будится, модель вкладки обновляется (10b). Не бросает. */
+  surveyTab(tabId: number): Promise<SurveyTabReply>;
   /** `tabs.onRemoved`. */
   tabRemoved(tabId: number): void;
   /** Сторож задержал видео во фрейме вкладки. Нет сеанса — видео отпускается. */
@@ -52,14 +68,33 @@ export interface TabHandoffs {
 }
 
 interface TabEntry {
+  readonly tabId: number;
   /** Исход передачи; повторная команда получает его же. */
   outcome: Promise<HandOffTabOutcome>;
   session: HandoffSession | undefined;
+  /** Исход `started` получен: «сеанс есть» для опроса вкладки считается только с этого момента. */
+  started: boolean;
   removed: boolean;
+  /** Сеанс этой записи кончился. Разрешается один раз; у записи без сеанса не разрешается никогда. */
+  readonly ended: Promise<void>;
+  markEnded(): void;
+}
+
+/** Подготовка передачи: выбранное видео и правило адреса либо отказ (он уже записан в модель). */
+type PreparedHandoff =
+  | { readonly kind: "ready"; readonly video: ChosenVideo; readonly fileAddressRule: FileAddressRule }
+  | { readonly kind: "refused"; readonly outcome: HandOffTabOutcome };
+
+function createEntry(tabId: number): TabEntry {
+  let markEnded: () => void = () => {};
+  const ended = new Promise<void>((resolve) => (markEnded = resolve));
+  return { tabId, outcome: Promise.resolve({ kind: "no_video" }), session: undefined, started: false, removed: false, ended, markEnded };
 }
 
 export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHandoffs {
   const entries = new Map<number, TabEntry>();
+  // Записи, чей сеанс заменён новым той же вкладки, но ещё не кончился (см. шапку файла).
+  const replaced = new Set<TabEntry>();
   let nextBeginRequestId = 1;
   let attempt = 0;
 
@@ -82,10 +117,12 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
   }
 
   /** Исход для выбора без видео на передачу; `undefined` — видео выбрано. */
-  function refusalOutcomeOf(choice: VideoChoice): HandOffTabOutcome | undefined {
+  function refusalOutcomeOf(choice: RequestedVideoChoice): HandOffTabOutcome | undefined {
     switch (choice.kind) {
       case "hand_off":
         return undefined;
+      case "gone":
+        return { kind: "video_gone" };
       case "nothing":
         return { kind: "no_video" };
       case "not_supported_yet":
@@ -125,7 +162,13 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
   }
 
   /** Шаг «открыть сеанс плееру и странице» для выбранного видео. */
-  async function openSessionFor(tabId: number, entry: TabEntry, chosen: ChosenVideo, fileAddressRule: FileAddressRule): Promise<HandOffTabOutcome> {
+  async function openSessionFor(
+    tabId: number,
+    entry: TabEntry,
+    chosen: ChosenVideo,
+    fileAddressRule: FileAddressRule,
+    replacing: TabEntry | undefined,
+  ): Promise<HandOffTabOutcome> {
     const tab = await dependencies.describeTab(tabId);
     if (tab === undefined || entry.removed) return { kind: "failed", reason: "tab_closed" };
     attempt += 1;
@@ -142,10 +185,13 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
         fileAddressRule,
         video: chosen,
         nextBeginRequestId: takeBeginRequestId,
+        ...(replacing === undefined ? {} : { afterPreviousSession: () => waitForSessionEnd(replacing) }),
       },
       dependencies,
       (end) => {
         if (entries.get(tabId) === entry) entries.delete(tabId);
+        replaced.delete(entry);
+        entry.markEnded();
         // Сеанс кончился по вине страницы: причина — в модель, попап покажет её честно.
         const refusal = refusalOfSessionEnd(end);
         if (refusal !== undefined && !entry.removed) void dependencies.tabModel.noteHandoffRefused(tabId, refusal);
@@ -154,39 +200,68 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     );
     entry.session = session;
     const outcome = await session.outcome;
+    if (outcome.kind === "started") {
+      entry.started = true;
+      return outcome;
+    }
     // Сеанс не состоялся (плеер отказал, элемент стал защищённым или пропал): причина — в модель.
-    return outcome.kind === "started" ? outcome : refuse(tabId, entry, outcome);
+    return refuse(tabId, entry, outcome);
   }
 
-  async function startForTab(tabId: number, entry: TabEntry, consent: LocalAddressConsent): Promise<HandOffTabOutcome> {
+  /**
+   * Ждать конец прежнего сеанса вкладки, но не дольше предела снятия тени. Не отклоняется: зависший
+   * старый сеанс нового не держит (он кончится сам по своим таймерам).
+   */
+  function waitForSessionEnd(previous: TabEntry): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = dependencies.scheduler.setTimeout(resolve, HANDOFF_END_REPLY_TIMEOUT_MS);
+      void previous.ended.then(() => {
+        dependencies.scheduler.clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  /**
+   * Всё, что решается ДО сеанса: опрос, запись в модель, выбор (главное видео или выбор человека),
+   * проверка адреса. Сеансов не трогает: отказ здесь оставляет всё как было. `entry` — запись, чьё
+   * закрытие вкладки обрывает подготовку (при замене это ещё старая запись).
+   */
+  async function prepareHandoff(tabId: number, entry: TabEntry, consent: LocalAddressConsent, requested: VideoRef | undefined): Promise<PreparedHandoff> {
+    const refused = async (outcome: HandOffTabOutcome, refusal?: TabRefusal): Promise<PreparedHandoff> => ({
+      kind: "refused",
+      outcome: await (refusal === undefined ? refuse(tabId, entry, outcome) : refuse(tabId, entry, outcome, refusal)),
+    });
     const survey = await surveyTabVideos(tabId, dependencies.executeInAllFrames, dependencies.scheduler);
-    if (entry.removed) return { kind: "failed", reason: "tab_closed" };
+    if (entry.removed) return { kind: "refused", outcome: { kind: "failed", reason: "tab_closed" } };
     if (survey.kind === "not_scriptable") {
       // Служебная страница браузера, магазин расширений, закрытая вкладка: внедрение запрещено.
       const outcome: HandOffTabOutcome = { kind: "failed", reason: `tab_not_scriptable:${survey.error}` };
       // Вкладки уже нет: `tabs.onRemoved` мог сработать в прошлой жизни фона, и запись осталась бы навсегда.
-      return (await dependencies.tabExists(tabId)) ? refuse(tabId, entry, outcome, { kind: "tab_not_scriptable" }) : outcome;
+      return (await dependencies.tabExists(tabId)) ? refused(outcome, { kind: "tab_not_scriptable" }) : { kind: "refused", outcome };
     }
-    if (survey.kind === "timed_out") {
-      return refuse(tabId, entry, { kind: "failed", reason: "survey_timed_out" }, { kind: "survey_timed_out" });
-    }
+    if (survey.kind === "timed_out") return refused({ kind: "failed", reason: "survey_timed_out" }, { kind: "survey_timed_out" });
     await dependencies.tabModel.recordSurvey(tabId, survey.frames);
-    const choice = chooseVideo(survey.frames);
-    // Нет видео, неподдержанная форма, DRM или одна реклама: честный отказ БЕЗ сеанса — плеер не
-    // будится, видео остаётся играть в браузере.
+    const choice = requested === undefined ? chooseVideo(survey.frames) : chooseRequestedVideo(survey.frames, requested);
+    // Нет видео, неподдержанная форма, DRM, одна реклама или устаревшая ссылка: честный отказ БЕЗ сеанса —
+    // плеер не будится, видео остаётся играть в браузере.
     const refusalOutcome = refusalOutcomeOf(choice);
-    if (refusalOutcome !== undefined) return refuse(tabId, entry, refusalOutcome);
-    if (choice.kind !== "hand_off") return refuse(tabId, entry, { kind: "no_video" });
+    if (refusalOutcome !== undefined) return refused(refusalOutcome);
+    if (choice.kind !== "hand_off") return refused({ kind: "no_video" });
     const addressCheck = await fileAddressRuleFor(choice.video, consent);
-    if ("kind" in addressCheck) return refuse(tabId, entry, addressCheck);
-    return openSessionFor(tabId, entry, choice.video, addressCheck);
+    if ("kind" in addressCheck) return refused(addressCheck);
+    return { kind: "ready", video: choice.video, fileAddressRule: addressCheck };
   }
 
-  function handOffTab(tabId: number, consent: LocalAddressConsent = NO_LOCAL_ADDRESS_CONSENT): Promise<HandOffTabOutcome> {
-    const existing = entries.get(tabId);
-    if (existing !== undefined) return existing.outcome;
-    const entry: TabEntry = { outcome: Promise.resolve({ kind: "no_video" }), session: undefined, removed: false };
-    const outcome = startForTab(tabId, entry, consent).then(
+  async function startForTab(tabId: number, entry: TabEntry, consent: LocalAddressConsent, requested: VideoRef | undefined): Promise<HandOffTabOutcome> {
+    const prepared = await prepareHandoff(tabId, entry, consent, requested);
+    if (prepared.kind === "refused") return prepared.outcome;
+    return openSessionFor(tabId, entry, prepared.video, prepared.fileAddressRule, undefined);
+  }
+
+  /** Записать запись в таблицу и связать с ней исход передачи. Исход не отклоняется. */
+  function register(tabId: number, entry: TabEntry, run: () => Promise<HandOffTabOutcome>): Promise<HandOffTabOutcome> {
+    const outcome = run().then(
       (result) => {
         // Без сеанса (видео нет, вкладка недоступна) запись больше не нужна.
         if (entry.session === undefined && entries.get(tabId) === entry) entries.delete(tabId);
@@ -202,14 +277,92 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     return outcome;
   }
 
-  return {
-    handOffTab,
-    tabRemoved(tabId) {
-      const entry = entries.get(tabId);
-      if (entry === undefined) return;
+  /** Видео, которое сеанс записи держит в плеере, — именно это? */
+  function isInPlayer(entry: TabEntry, video: VideoRef): boolean {
+    const shown = entry.session?.videoInPlayer() ?? null;
+    return shown !== null && sameRef(shown, video);
+  }
+
+  /**
+   * Команда с выбранным видео, когда у вкладки уже есть запись. Передача ещё стартует — сначала ждём её
+   * исход (решать можно только по настоящему положению дел), потом либо `started` (то же видео), либо замена.
+   */
+  async function handOffRequestedVideo(tabId: number, existing: TabEntry, consent: LocalAddressConsent, video: VideoRef): Promise<HandOffTabOutcome> {
+    const startOutcome = await existing.outcome;
+    // Пока ждали, сеанс кончился или заменён: решаем заново по новому положению дел.
+    if (entries.get(tabId) !== existing) return handOffTab(tabId, consent, video);
+    // Запись жива, но передача не состоялась (сеанс ещё закрывается): исход той же передачи.
+    if (!existing.started) return startOutcome;
+    if (isInPlayer(existing, video)) return { kind: "started" };
+    return replaceSession(tabId, existing, consent, video);
+  }
+
+  /** Замена видео на той же вкладке (шапка файла, решение 215). */
+  async function replaceSession(tabId: number, previous: TabEntry, consent: LocalAddressConsent, video: VideoRef): Promise<HandOffTabOutcome> {
+    const prepared = await prepareHandoff(tabId, previous, consent, video);
+    if (prepared.kind === "refused") return prepared.outcome;
+    if (previous.removed) return { kind: "failed", reason: "tab_closed" };
+    // Пока готовились, сеанс кончился или его заменила другая команда: решаем заново.
+    if (entries.get(tabId) !== previous) return handOffTab(tabId, consent, video);
+    // Сеанс сам переехал на выбранное видео (реклама кончилась), пока готовились.
+    if (isInPlayer(previous, video)) return { kind: "started" };
+    const entry = createEntry(tabId);
+    replaced.add(previous);
+    const outcome = await register(tabId, entry, () => openSessionFor(tabId, entry, prepared.video, prepared.fileAddressRule, previous));
+    if (outcome.kind !== "started") giveBackPreviousEntry(tabId, entry, previous);
+    return outcome;
+  }
+
+  /** Новый сеанс не состоялся: если старый ещё жив, он снова текущий (его реклама и сторож — снова его). */
+  function giveBackPreviousEntry(tabId: number, failed: TabEntry, previous: TabEntry): void {
+    if (!replaced.delete(previous)) return;
+    const current = entries.get(tabId);
+    if (current === undefined || current === failed) entries.set(tabId, previous);
+  }
+
+  /** Состояние вкладки с плеером для ответа на опрос. */
+  function presenceOf(tabId: number): TabPlayerPresence {
+    const entry = entries.get(tabId);
+    if (entry === undefined || !entry.started || entry.session === undefined) return { kind: "no_session" };
+    return { kind: "in_player", video: entry.session.videoInPlayer() };
+  }
+
+  async function surveyTab(tabId: number): Promise<SurveyTabReply> {
+    try {
+      const survey = await surveyTabVideos(tabId, dependencies.executeInAllFrames, dependencies.scheduler);
+      if (survey.kind === "not_scriptable") return { kind: "unavailable", reason: "tab_not_scriptable" };
+      if (survey.kind === "timed_out") return { kind: "unavailable", reason: "survey_timed_out" };
+      await dependencies.tabModel.recordSurvey(tabId, survey.frames);
+      const [videos, main] = await Promise.all([dependencies.tabModel.videosFoundIn(tabId), dependencies.tabModel.mainVideoOf(tabId)]);
+      return { kind: "surveyed", videos, main, in_player: presenceOf(tabId) };
+    } catch {
+      return { kind: "unavailable", reason: "survey_failed" };
+    }
+  }
+
+  function handOffTab(tabId: number, consent: LocalAddressConsent = NO_LOCAL_ADDRESS_CONSENT, video?: VideoRef): Promise<HandOffTabOutcome> {
+    const existing = entries.get(tabId);
+    if (existing === undefined) {
+      const entry = createEntry(tabId);
+      return register(tabId, entry, () => startForTab(tabId, entry, consent, video));
+    }
+    // Без выбранного видео — исход той же передачи (кнопку можно нажать дважды).
+    return video === undefined ? existing.outcome : handOffRequestedVideo(tabId, existing, consent, video);
+  }
+
+  /** Закрытие вкладки доходит и до текущей записи, и до заменённых, чей сеанс ещё не кончился. */
+  function tabRemoved(tabId: number): void {
+    const affected = [entries.get(tabId), ...replaced].filter((entry): entry is TabEntry => entry !== undefined && entry.tabId === tabId);
+    for (const entry of affected) {
       entry.removed = true;
       entry.session?.notifyTabRemoved();
-    },
+    }
+  }
+
+  return {
+    handOffTab,
+    surveyTab,
+    tabRemoved,
     heldVideo: (tabId, frameId, report) => entries.get(tabId)?.session?.heldVideo(frameId, report) ?? "release",
     isAdOnScreen: (tabId) => entries.get(tabId)?.session?.adOnScreen() ?? false,
     adWatchReport: (tabId, frameId, ad) => entries.get(tabId)?.session?.adWatchReport(frameId, ad),

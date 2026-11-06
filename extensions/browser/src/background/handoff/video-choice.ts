@@ -19,7 +19,7 @@
 // играющая неподдержанная форма → `not_supported_yet` с формой (решение 185); иначе `nothing`.
 // DRM-видео не мешает передать другой `main` на той же странице.
 
-import type { CandidateMedia, DocumentTag, ElementKey, UnsupportedMediaForm, VideoCandidate } from "../../shared/handoff-contract.ts";
+import type { CandidateMedia, DocumentTag, ElementKey, UnsupportedMediaForm, VideoCandidate, VideoRef } from "../../shared/handoff-contract.ts";
 import { VIDEO_FILTER_RULES, type VideoFilterRules } from "../tab-model/video-filter-rules.ts";
 import { classifyVideo, type VideoVerdict } from "../tab-model/video-verdict.ts";
 
@@ -126,6 +126,37 @@ export function chooseMainVideo(frames: readonly FrameCandidates[], rules: Video
     if (best !== undefined) return { kind: "hand_off", video: chosenVideoOf(best, rules) };
   }
   return choiceWithoutMain(classified);
+}
+
+/** Итог выбора по ссылке человека: обычный итог или «такого видео в свежем опросе нет». */
+export type RequestedVideoChoice = VideoChoice | { readonly kind: "gone" };
+
+/**
+ * Выбор по ссылке из списка попапа (сессия 10b). Это не «выбери за человека», а проверка его выбора по
+ * СВЕЖЕМУ опросу: подмены другим видео нет.
+ * - ссылки нет в опросе → `gone`;
+ * - DRM → `protected`, неподдержанная форма → `not_supported_yet`, пустой элемент → `nothing`;
+ * - `main`, `ad`, `junk` передаются. Выбор человека главнее вердикта: фильм, ошибочно принятый за рекламу,
+ *   иначе получил бы плашку рекламы и запрет перемотки, поэтому роль всегда `film`. `mayBeAd` считается как
+ *   обычно: короткий файл всё равно может оказаться роликом, и сторож взведётся.
+ */
+export function chooseRequestedVideo(frames: readonly FrameCandidates[], ref: VideoRef, rules: VideoFilterRules = VIDEO_FILTER_RULES): RequestedVideoChoice {
+  const entry = classifySurvey(frames, rules).find(
+    (known) => known.frameId === ref.frame_id && known.candidate.document === ref.document && known.candidate.element === ref.element,
+  );
+  if (entry === undefined) return { kind: "gone" };
+  switch (entry.verdict) {
+    case "protected":
+      return { kind: "protected" };
+    case "unsupported":
+      return entry.candidate.media.kind === "unsupported" ? { kind: "not_supported_yet", form: entry.candidate.media.form } : { kind: "nothing" };
+    case "empty":
+      return { kind: "nothing" };
+    case "main":
+    case "ad":
+    case "junk":
+      return { kind: "hand_off", video: { ...chosenVideoOf(entry, rules), role: "film" } };
+  }
 }
 
 /** Выбранное видео из записи опроса. Единственное место, где собирается `ChosenVideo`. */

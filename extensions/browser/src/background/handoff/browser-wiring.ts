@@ -11,6 +11,7 @@ import type { FramePort } from "./frame-port.ts";
 import type { ExecuteInAllFrames } from "./frame-survey.ts";
 import { createFileReferrerRules } from "./file-referrer-rule.ts";
 import { createHandOffCommandListener, createHeldVideoListener } from "./hand-off-command.ts";
+import { createSurveyTabCommandListener } from "./survey-command.ts";
 import { createAdWatchReportListener } from "./ad-watch-listener.ts";
 import type { AdMirrorBrowser } from "./ad-skip-mirror.ts";
 import type { SessionDoor } from "./handoff-session.ts";
@@ -136,7 +137,13 @@ export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabM
   browserApi.runtime.onMessage.addListener(
     createHandOffCommandListener(
       { extensionId: browserApi.runtime.id, extensionBaseUrl: browserApi.runtime.getURL("") },
-      (tabId, consent) => handoffs.handOffTab(tabId, consent),
+      (tabId, consent, video) => handoffs.handOffTab(tabId, consent, video),
+    ),
+  );
+  browserApi.runtime.onMessage.addListener(
+    createSurveyTabCommandListener(
+      { extensionId: browserApi.runtime.id, extensionBaseUrl: browserApi.runtime.getURL("") },
+      (tabId) => handoffs.surveyTab(tabId),
     ),
   );
   browserApi.runtime.onMessage.addListener(

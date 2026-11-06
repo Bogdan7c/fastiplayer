@@ -10,8 +10,8 @@
 // вкладке (её открывает робот стенда; страница настроек тоже открывается во вкладке), остаётся
 // страницей экстеншена — её адрес начинается с адреса экстеншена.
 
-import { HAND_OFF_TAB_KIND, type HandOffTabOutcome, type HandOffTabRequest, type HeldVideoReply, type HeldVideoReport } from "../../shared/handoff-contract.ts";
-import { isHostName, parseHeldVideoReport } from "../../shared/page-message-validation.ts";
+import { HAND_OFF_TAB_KIND, type HandOffTabOutcome, type HandOffTabRequest, type HeldVideoReply, type HeldVideoReport, type VideoRef } from "../../shared/handoff-contract.ts";
+import { isDocumentTag, isHostName, parseHeldVideoReport } from "../../shared/page-message-validation.ts";
 import { NO_LOCAL_ADDRESS_CONSENT, type LocalAddressConsent } from "./file-address-guard.ts";
 
 /** Отправитель сообщения (runtime.MessageSender) в той мере, в какой он нужен проверке. */
@@ -37,28 +37,48 @@ export function isOwnExtensionPage(sender: CommandSender, identity: ExtensionIde
   );
 }
 
+/** Целое неотрицательное число (номера фрейма, вкладки и элемента). */
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** Строгая ссылка на видео: ровно `frame_id`, `document` (метка документа) и `element`. */
+export function parseVideoRef(value: unknown): VideoRef | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const valid =
+    Object.keys(record).length === 3 &&
+    isNonNegativeSafeInteger(record["frame_id"]) &&
+    isDocumentTag(record["document"]) &&
+    isNonNegativeSafeInteger(record["element"]);
+  return valid ? { frame_id: record["frame_id"] as number, document: record["document"] as string, element: record["element"] as number } : undefined;
+}
+
 /**
- * Строгая форма команды: `kind`, целый неотрицательный `tab_id` и необязательное
- * `consented_local_host` — имя хоста. Любое другое поле или значение — не наша команда.
+ * Строгая форма команды: `kind`, целый неотрицательный `tab_id`, необязательное `consented_local_host`
+ * (имя хоста) и необязательное `video` (ссылка на видео). Любое другое поле или значение — не наша команда.
  */
 export function parseHandOffTabRequest(message: unknown): HandOffTabRequest | undefined {
   if (typeof message !== "object" || message === null || Array.isArray(message)) return undefined;
   const record = message as Record<string, unknown>;
-  const keys = Object.keys(record);
-  const tabId = record["tab_id"];
-  const consentedHost = record["consented_local_host"];
   const hasConsent = Object.hasOwn(record, "consented_local_host");
+  const hasVideo = Object.hasOwn(record, "video");
+  const consentedHost = record["consented_local_host"];
+  const video = hasVideo ? parseVideoRef(record["video"]) : undefined;
   const valid =
     record["kind"] === HAND_OFF_TAB_KIND &&
-    keys.length === (hasConsent ? 3 : 2) &&
+    Object.keys(record).length === 2 + (hasConsent ? 1 : 0) + (hasVideo ? 1 : 0) &&
     (!hasConsent || isHostName(consentedHost)) &&
+    (!hasVideo || video !== undefined) &&
     Object.hasOwn(record, "tab_id") &&
-    typeof tabId === "number" &&
-    Number.isSafeInteger(tabId) &&
-    tabId >= 0;
+    isNonNegativeSafeInteger(record["tab_id"]);
   if (!valid) return undefined;
-  const request = { kind: HAND_OFF_TAB_KIND, tab_id: tabId as number } as const;
-  return hasConsent ? { ...request, consented_local_host: consentedHost as string } : request;
+  return {
+    kind: HAND_OFF_TAB_KIND,
+    tab_id: record["tab_id"] as number,
+    ...(hasConsent ? { consented_local_host: consentedHost as string } : {}),
+    ...(video !== undefined ? { video } : {}),
+  };
 }
 
 /** Отправитель донесения из контент-скрипта: вкладку и фрейм называет браузер, а не страница. */
@@ -94,7 +114,7 @@ export type RuntimeMessageListener = (
 
 export function createHandOffCommandListener(
   identity: ExtensionIdentityForSenders,
-  handOffTab: (tabId: number, consent: LocalAddressConsent) => Promise<HandOffTabOutcome>,
+  handOffTab: (tabId: number, consent: LocalAddressConsent, video: VideoRef | undefined) => Promise<HandOffTabOutcome>,
 ): RuntimeMessageListener {
   return (message, sender, sendResponse) => {
     // Чужие сообщения (и наша команда от не-страницы экстеншена) не наши: не отвечаем, не держим канал.
@@ -103,7 +123,7 @@ export function createHandOffCommandListener(
     if (request === undefined) return false;
     const consent: LocalAddressConsent =
       request.consented_local_host === undefined ? NO_LOCAL_ADDRESS_CONSENT : { kind: "given_for", host: request.consented_local_host };
-    handOffTab(request.tab_id, consent).then(sendResponse, (error: unknown) =>
+    handOffTab(request.tab_id, consent, request.video).then(sendResponse, (error: unknown) =>
       sendResponse({ kind: "failed", reason: `internal:${String(error)}` }),
     );
     return true;

@@ -24,7 +24,11 @@ export const SURVEY_TIMEOUT_MS = 5_000;
  */
 export const MAX_SURVEY_CANDIDATES_TOTAL = 512;
 
-/** Результат внедрения в один фрейм (InjectionResult). */
+/**
+ * Результат внедрения в один фрейм (InjectionResult). Firefox не отклоняет внедрение в свои
+ * страницы (`about:preferences`), а кладёт в массив `undefined` вместо такого фрейма: живая
+ * проверка 10b. Поэтому элемент ответа бывает пустым.
+ */
 export interface FrameInjectionResult {
   readonly frameId: number;
   readonly result?: unknown;
@@ -35,7 +39,7 @@ export type ExecuteInAllFrames = (
   tabId: number,
   func: (functionName: string) => unknown,
   args: [string],
-) => Promise<readonly FrameInjectionResult[]>;
+) => Promise<readonly (FrameInjectionResult | undefined)[]>;
 
 /**
  * Внедряемая функция. Браузер сериализует её текст, поэтому она самодостаточна: никаких
@@ -60,13 +64,20 @@ export type TabSurvey =
   | { readonly kind: "timed_out" };
 
 /** Ответы фреймов, прошедшие проверку формы (кривой ответ — «видео нет»). */
-function parseFrames(results: readonly FrameInjectionResult[]): FrameCandidates[] {
+function parseFrames(results: readonly (FrameInjectionResult | undefined)[]): FrameCandidates[] {
   const frames: FrameCandidates[] = [];
   for (const injection of results) {
+    // Фрейм, куда внедриться нельзя: видео в нём нам недоступно, остальные фреймы вкладки это не портит.
+    if (injection === undefined) continue;
     const candidates = parseVideoCandidates(injection.result);
     if (candidates !== undefined && candidates.length > 0) frames.push({ frameId: injection.frameId, candidates });
   }
   return frames;
+}
+
+/** Браузер ответил, но ни один фрейм внедрение не принял: вкладка закрыта для экстеншена. */
+function noFrameAccepted(results: readonly (FrameInjectionResult | undefined)[]): boolean {
+  return results.length > 0 && results.every((injection) => injection === undefined);
 }
 
 /**
@@ -97,6 +108,7 @@ export function capCandidates(frames: readonly FrameCandidates[], limit: number)
 export async function surveyTabVideos(tabId: number, execute: ExecuteInAllFrames, scheduler: Scheduler): Promise<TabSurvey> {
   const injection = execute(tabId, describeFrameVideos, [VIDEO_CANDIDATES_FUNCTION_NAME]).then(
     (results): TabSurvey => {
+      if (noFrameAccepted(results)) return { kind: "not_scriptable", error: "no frame accepted the injection" };
       const capped = capCandidates(parseFrames(results), MAX_SURVEY_CANDIDATES_TOTAL);
       return { kind: "surveyed", frames: capped.frames, truncated: capped.truncated };
     },

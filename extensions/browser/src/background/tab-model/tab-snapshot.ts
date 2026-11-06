@@ -4,7 +4,7 @@
 // он целиком кладётся в `storage.session` и читается попапом (сессия 10) и читателем рекламы (09d)
 // только через методы модели (tab-model.ts), а не напрямую.
 
-import type { CandidateMedia, DocumentTag, ElementKey, UnsupportedMediaForm, VideoCandidate } from "../../shared/handoff-contract.ts";
+import type { CandidateMedia, UnsupportedMediaForm, VideoCandidate, VideoRef } from "../../shared/handoff-contract.ts";
 import { chooseMainVideo, classifySurvey, type ClassifiedVideo, type FrameCandidates } from "../handoff/video-choice.ts";
 import type { VideoVerdict } from "./video-verdict.ts";
 
@@ -14,12 +14,8 @@ import type { VideoVerdict } from "./video-verdict.ts";
  */
 export const MAX_TAB_VIDEO_RECORDS = 64;
 
-/** Ссылка на видео вкладки: фрейм, метка документа и ключ элемента (как в `begin_handoff`). */
-export interface VideoRef {
-  readonly frame_id: number;
-  readonly document: DocumentTag;
-  readonly element: ElementKey;
-}
+// Ссылка на видео вкладки определена в общем договоре (её читают и попап, и фон).
+export type { VideoRef } from "../../shared/handoff-contract.ts";
 
 /** Запись о видео: все факты кандидата + фрейм + вердикт классификатора. */
 export interface TabVideoRecord extends VideoCandidate {
@@ -43,6 +39,8 @@ export type TabRefusal =
   | { readonly kind: "page_flood" }
   | { readonly kind: "tab_not_scriptable" }
   | { readonly kind: "survey_timed_out" }
+  /** Человек выбрал видео, которого в свежем опросе уже нет (сессия 10b). */
+  | { readonly kind: "video_gone" }
   | { readonly kind: "failed" };
 
 /** Все значения `TabRefusal["kind"]` — для разбора из хранилища. */
@@ -56,6 +54,7 @@ const REFUSAL_KINDS: readonly TabRefusal["kind"][] = [
   "page_flood",
   "tab_not_scriptable",
   "survey_timed_out",
+  "video_gone",
   "failed",
 ];
 

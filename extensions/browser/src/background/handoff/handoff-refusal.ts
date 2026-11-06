@@ -12,6 +12,7 @@ export function refusalOf(outcome: HandOffTabOutcome): TabRefusal | undefined {
     case "started":
       return undefined;
     case "no_video":
+    case "video_gone":
     case "protected":
     case "local_address_refused":
     case "player_unavailable":

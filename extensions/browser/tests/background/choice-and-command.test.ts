@@ -385,6 +385,24 @@ describe("опрос фреймов", () => {
     const survey = await surveyTabVideos(5, execute, createFakeClock().scheduler);
     assert.deepEqual(survey, { kind: "surveyed", frames: [{ frameId: 0, candidates: [video(1)] }], truncated: false });
   });
+
+  it("Firefox вернул пустой элемент вместо фрейма: остальные фреймы вкладки опрошены", async () => {
+    const execute: ExecuteInAllFrames = () => Promise.resolve([{ frameId: 0, result: [video(1)] }, undefined]);
+    const survey = await surveyTabVideos(5, execute, createFakeClock().scheduler);
+    assert.deepEqual(survey, { kind: "surveyed", frames: [{ frameId: 0, candidates: [video(1)] }], truncated: false });
+  });
+
+  it("ни один фрейм не принял внедрение (страница Firefox): вкладка закрыта, а не сбой", async () => {
+    const execute: ExecuteInAllFrames = () => Promise.resolve([undefined]);
+    const survey = await surveyTabVideos(5, execute, createFakeClock().scheduler);
+    assert.equal(survey.kind, "not_scriptable");
+  });
+
+  it("пустой ответ браузера без фреймов — вкладка без видео, а не закрытая", async () => {
+    const execute: ExecuteInAllFrames = () => Promise.resolve([]);
+    const survey = await surveyTabVideos(5, execute, createFakeClock().scheduler);
+    assert.deepEqual(survey, { kind: "surveyed", frames: [], truncated: false });
+  });
 });
 
 describe("команда «отдать вкладку N»", () => {

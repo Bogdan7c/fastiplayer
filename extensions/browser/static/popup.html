@@ -4,13 +4,27 @@
   <meta charset="utf-8">
   <title>Fastiplayer Bridge</title>
   <style>
-    body { font: 14px system-ui, sans-serif; width: 320px; margin: 12px; }
+    body { font: 14px system-ui, sans-serif; width: 340px; margin: 12px; }
     h1 { font-size: 16px; margin: 0 0 8px; }
+    h2 { font-size: 14px; margin: 0 0 6px; }
     p { margin: 6px 0; }
+    section { margin: 0 0 12px; }
+    ul { list-style: none; margin: 0; padding: 0; }
+    li { margin: 0 0 4px; }
+    .video-row, .video-row-static { display: block; width: 100%; box-sizing: border-box; padding: 6px 8px; text-align: left; font: inherit; border: 1px solid #8884; border-radius: 4px; background: transparent; color: inherit; }
+    .video-row { cursor: pointer; }
+    .video-row:hover:enabled { background: #8882; }
+    .video-row-static { opacity: 0.7; }
+    .video-title { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .video-details, .video-label { font-size: 12px; margin-right: 8px; }
+    .video-label { font-weight: 600; }
+    .consent button { margin-right: 8px; font: inherit; }
   </style>
 </head>
 <body>
+  <div id="flow-root"></div>
   <div id="status-root"></div>
+  <div id="settings-root"></div>
   <script src="popup.js"></script>
 </body>
 </html>

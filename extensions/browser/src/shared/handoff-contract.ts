@@ -384,9 +384,25 @@ export type HeldVideoReply = "adopt" | "release";
 
 export const HAND_OFF_TAB_KIND = "hand_off_tab";
 
+/**
+ * Ссылка на видео вкладки: фрейм, метка документа и ключ элемента (как в `begin_handoff`). Её выдаёт
+ * опрос вкладки (`survey_tab`), человек выбирает по ней строку в попапе, а `hand_off_tab` сверяет её
+ * со СВЕЖИМ опросом: ссылка устарела — исход `video_gone`, подмены другим видео нет.
+ */
+export interface VideoRef {
+  readonly frame_id: number;
+  readonly document: DocumentTag;
+  readonly element: ElementKey;
+}
+
 export interface HandOffTabRequest {
   readonly kind: typeof HAND_OFF_TAB_KIND;
   readonly tab_id: number;
+  /**
+   * Видео, которое человек выбрал в списке попапа (сессия 10b). Без поля фон сам берёт главное видео
+   * вкладки. С полем и живым сеансом вкладки — замена видео в том же окне (решение 215).
+   */
+  readonly video?: VideoRef;
   /**
    * Хост, на который человек согласился (решение 199): значение `host` из исхода
    * `local_address_needs_consent`. Ставит только страница самого экстеншена (попап 10) после вопроса
@@ -407,6 +423,11 @@ export type HandOffTabOutcome =
   | { readonly kind: "not_supported_yet"; readonly form: UnsupportedMediaForm }
   /** Лучшее видео вкладки под DRM (инвариант 4): не трогаем, оно играет в браузере. */
   | { readonly kind: "protected" }
+  /**
+   * Выбранного человеком видео (`video` в команде) нет в свежем опросе: страница успела его убрать или
+   * перейти на другой документ. Другое видео вместо него НЕ отдаётся; попап обновляет список.
+   */
+  | { readonly kind: "video_gone" }
   /** Файл с локального адреса, настройка «блокировать» (решение 199). */
   | { readonly kind: "local_address_refused" }
   /** Файл с локального адреса, настройка «спрашивать»: попап 10 спросит человека про `host`. */

@@ -1,4 +1,7 @@
 {
+  "action": {
+    "default_area": "navbar"
+  },
   "background": {
     "scripts": ["background.js"]
   },

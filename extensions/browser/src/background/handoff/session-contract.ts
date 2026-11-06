@@ -1,7 +1,7 @@
 // Договор сеанса передачи (сессия 09d вынесла его из `handoff-session.ts`, который упёрся в предел размера):
 // чем кончается сеанс и что владелец сеанса может у него спросить. Только типы, поведения здесь нет.
 
-import type { HandOffTabOutcome, HeldVideoReply, HeldVideoReport, PageEventBudgetKind } from "../../shared/handoff-contract.ts";
+import type { HandOffTabOutcome, HeldVideoReply, HeldVideoReport, PageEventBudgetKind, VideoRef } from "../../shared/handoff-contract.ts";
 import type { PageAdState, TabGoneReason } from "../../protocol/index.ts";
 import type { PageStreamProblem } from "./page-event-translator.ts";
 import type { SocketEndCause } from "./session-socket.ts";
@@ -25,6 +25,16 @@ export type HandoffSessionEnd =
   | { readonly kind: "player_ended"; readonly cause: SocketEndCause }
   | { readonly kind: "page_stream_problem"; readonly problem: PageStreamProblem };
 
+/**
+ * Шаг замены видео на той же вкладке (решение 215): у вкладки уже есть сеанс, и плеер, приняв новый,
+ * закроет старый. Страница нового сеанса получает `begin_handoff` ТОЛЬКО после конца старого: иначе
+ * контроллер страницы (`#beginHandoff`) закрыл бы живую старую передачу «как тень», и прежнее видео
+ * заиграло бы вместо паузы на той же секунде. Сеанс вызывает шаг, когда плеер принял новый сеанс
+ * (`attached`). Промис не отклоняется и ограничен по времени самим владельцем (не дольше
+ * `HANDOFF_END_REPLY_TIMEOUT_MS`): зависший старый сеанс нового не держит.
+ */
+export type AfterPreviousSession = () => Promise<void>;
+
 export interface HandoffSession {
   /** Исход старта: `started` или причина отказа. Всегда завершается. */
   readonly outcome: Promise<HandOffTabOutcome>;
@@ -34,6 +44,11 @@ export interface HandoffSession {
   heldVideo(frameId: number, report: HeldVideoReport): HeldVideoReply;
   /** На экране плеера реклама (решение 204; сессия 09d читает только это). */
   adOnScreen(): boolean;
+  /**
+   * Элемент, на котором сеанс стоит сейчас (с учётом переезда 09c2); `null` — сеанс между видео, тень не
+   * стоит ни на одном элементе. Нужен попапу (10b): видео вкладки уже в плеере или нет.
+   */
+  videoInPlayer(): VideoRef | null;
   /** Донесение фрейма о рекламе (сессия 09d); строгая форма проверена приёмником, вкладка — владельцем. */
   adWatchReport(frameId: number, ad: PageAdState): void;
 }

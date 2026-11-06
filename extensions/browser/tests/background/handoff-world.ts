@@ -83,6 +83,10 @@ export function setup(
   const ended: HandoffSessionEnd[] = [];
   const adMirrorFake = createFakeAdMirrorBrowser();
   const armings: { readonly tabId: number; readonly leaseMs: number }[] = [];
+  // Ответ фреймов на опрос; сценарий может его сменить (страница убрала видео, поставила другое).
+  let currentFrames = frames;
+  // Опрос фреймов отклоняется (служебная страница браузера: внедрение запрещено).
+  let surveyError: Error | undefined;
   let tabAlive = true;
   let tabUrl = "https://www.example.com/watch?v=1";
   let surveyCount = 0;
@@ -108,7 +112,7 @@ export function setup(
     noteForDeveloper: (message) => void adMirrorFake.notes.push(message),
     executeInAllFrames: () => {
       surveyCount += 1;
-      return Promise.resolve(frames);
+      return surveyError === undefined ? Promise.resolve(currentFrames) : Promise.reject(surveyError);
     },
     describeTab: () => Promise.resolve(tabAlive ? { title: "Серія 3\nОзвучка", url: tabUrl } : undefined),
     tabExists: () => {
@@ -139,6 +143,8 @@ export function setup(
     storeFailures,
     surveys: () => surveyCount,
     tabExistsQuestions: () => tabExistsQuestions,
+    setFrames: (next: readonly FrameInjectionResult[]) => void (currentFrames = next),
+    forbidSurveys: (error: Error) => void (surveyError = error),
     closeTab: () => void (tabAlive = false),
     navigateTab: (url: string) => void (tabUrl = url),
   };
