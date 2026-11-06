@@ -11,6 +11,15 @@
 //!   --browser firefox --display virtual --url <адрес> --seconds 90 --press auto
 //! ```
 //!
+//! С `--hand-off person` робот ничего не передаёт: браузер просто открыт, значок нажимает человек
+//! (или настоящая мышь снаружи), а помощник печатает журнал плеера. С `--stand-page <страница>`
+//! вместо живого сайта открывается страница стенда, сервер стенда живёт весь прогон:
+//!
+//! ```text
+//! cargo run --release -p browser-bridge-bench --example live_handoff -- \
+//!   --display real --hand-off person --stand-page banner-with-main --seconds 300
+//! ```
+//!
 //! Экстеншен должен быть собран (`npm run build` в `extensions/browser`), плеер берётся из
 //! `target/release`. Адреса и журнал остаются только в выводе: в отчёты их не копировать.
 
@@ -20,12 +29,15 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use browser_bridge_bench::browsers::{
-    BrowserKind, ExtensionSource, HandOffOutcome, LaunchOptions, launch,
+    BrowserKind, BrowserUnderTest, ExtensionSource, HandOffOutcome, LaunchOptions, TabHandle,
+    launch,
 };
 use browser_bridge_bench::environment::{
     BenchEnvironment, DesktopSetup, DisplayTarget, EnvironmentOptions, PlayerConfigProfile,
 };
+use browser_bridge_bench::media::ensure_media;
 use browser_bridge_bench::player_control::PlayerControl;
+use browser_bridge_bench::site::{StandSite, StandSiteConfig};
 
 /// Строки журнала плеера, которые интересны человеку.
 const INTERESTING_LINES: &[&str] = &[
@@ -45,6 +57,26 @@ const WARM_UP: Duration = Duration::from_secs(5);
 /// Шаг чтения журнала.
 const LOG_POLL: Duration = Duration::from_millis(200);
 
+/// Параметр адреса: страница стенда ждёт команд и не завершается сама.
+const STAND_HANDOFF_QUERY: &str = "&mode=handoff";
+
+/// Что открыть в браузере.
+enum Target {
+    /// Живой сайт.
+    Url(String),
+    /// Страница стенда по её имени в `site/pages`.
+    StandPage(String),
+}
+
+/// Кто отдаёт видео в плеер.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HandOff {
+    /// Робот раз в секунду зовёт команду передачи.
+    Robot,
+    /// Человек жмёт значок экстеншена, робот только показывает журнал.
+    Person,
+}
+
 /// Кто жмёт кнопку плашки.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Press {
@@ -57,7 +89,8 @@ enum Press {
 struct Arguments {
     browser: BrowserKind,
     display: DisplayTarget,
-    url: String,
+    target: Target,
+    hand_off: HandOff,
     /// Что открыть перед видео, чтобы сайт завёл свежему профилю куки.
     warm_up_url: Option<String>,
     seconds: u64,
@@ -69,7 +102,8 @@ struct Arguments {
 fn parse_arguments() -> Result<Arguments, String> {
     let mut browser = BrowserKind::Firefox;
     let mut display = DisplayTarget::Virtual;
-    let mut url = None;
+    let mut target = None;
+    let mut hand_off = HandOff::Robot;
     let mut warm_up_url = None;
     let mut seconds = 60;
     let mut wait_seconds = 0;
@@ -86,7 +120,10 @@ fn parse_arguments() -> Result<Arguments, String> {
             ("--display", "real") => display = DisplayTarget::Real,
             ("--press", "auto") => press = Press::Robot,
             ("--press", "none") => press = Press::Nobody,
-            ("--url", _) => url = Some(value),
+            ("--hand-off", "robot") => hand_off = HandOff::Robot,
+            ("--hand-off", "person") => hand_off = HandOff::Person,
+            ("--url", _) => target = Some(Target::Url(value)),
+            ("--stand-page", _) => target = Some(Target::StandPage(value)),
             ("--warm-up-url", _) => warm_up_url = Some(value),
             ("--seconds", _) => {
                 seconds = value
@@ -102,7 +139,8 @@ fn parse_arguments() -> Result<Arguments, String> {
     Ok(Arguments {
         browser,
         display,
-        url: url.ok_or("--url is required")?,
+        target: target.ok_or("--url or --stand-page is required")?,
+        hand_off,
         warm_up_url,
         seconds,
         wait_seconds,
@@ -129,8 +167,56 @@ fn read_new_lines(path: &Path, offset: &mut usize) -> Vec<String> {
     lines
 }
 
+/// Поднимает сервер стенда: он должен жить, пока открыта страница.
+fn start_stand_site(repository: &Path) -> Result<StandSite, String> {
+    let media = ensure_media(&repository.join("target/browser-bridge-bench/media"))
+        .map_err(|error| error.to_string())?;
+    StandSite::start(StandSiteConfig {
+        site_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("site"),
+        media,
+    })
+    .map_err(|error| error.to_string())
+}
+
+/// Адрес страницы стенда в режиме передачи.
+fn stand_page_url(site: &StandSite, page: &str) -> String {
+    let main_origin = site.main_origin();
+    let other_origin = site.other_origin();
+    format!(
+        "{main_origin}/site/pages/{page}.html?run=live-{page}&report_origin={main_origin}&other_origin={other_origin}{STAND_HANDOFF_QUERY}"
+    )
+}
+
+/// Зовёт передачу, пока она не состоится или не выйдет время. Возвращает, состоялась ли она.
+fn hand_off_by_robot(
+    browser: &mut dyn BrowserUnderTest,
+    tab: &TabHandle,
+    url: &str,
+    deadline: Instant,
+) -> bool {
+    while Instant::now() < deadline {
+        match browser.hand_off_tab(tab, url) {
+            Ok(HandOffOutcome::Started) => return true,
+            Ok(other) => println!("hand-off: {other:?}"),
+            Err(error) => println!("hand-off failed: {error}"),
+        }
+        sleep(HAND_OFF_RETRY);
+    }
+    false
+}
+
 fn run(arguments: &Arguments) -> Result<(), String> {
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // Сервер стенда держим до конца функции, иначе страница потеряет файлы.
+    let stand_site = match &arguments.target {
+        Target::StandPage(_) => Some(start_stand_site(&repository)?),
+        Target::Url(_) => None,
+    };
+    let url = match (&arguments.target, &stand_site) {
+        (Target::Url(url), _) => url.clone(),
+        (Target::StandPage(page), Some(site)) => stand_page_url(site, page),
+        (Target::StandPage(_), None) => return Err("the stand site did not start".to_owned()),
+    };
     let environment = BenchEnvironment::create(EnvironmentOptions {
         display: arguments.display,
         player_bin_dir: repository.join("target/release"),
@@ -174,24 +260,15 @@ fn run(arguments: &Arguments) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         sleep(WARM_UP);
     }
-    let tab = browser
-        .open_tab(&arguments.url)
-        .map_err(|error| error.to_string())?;
+    let tab = browser.open_tab(&url).map_err(|error| error.to_string())?;
     // Пауза до передачи: реклама в начале ролика должна успеть начаться.
     sleep(Duration::from_secs(arguments.wait_seconds));
 
     let deadline = Instant::now() + Duration::from_secs(arguments.seconds);
-    let mut started = false;
-    while !started && Instant::now() < deadline {
-        match browser.hand_off_tab(&tab, &arguments.url) {
-            Ok(HandOffOutcome::Started) => started = true,
-            Ok(other) => println!("hand-off: {other:?}"),
-            Err(error) => println!("hand-off failed: {error}"),
-        }
-        if !started {
-            sleep(HAND_OFF_RETRY);
-        }
-    }
+    let started = match arguments.hand_off {
+        HandOff::Robot => hand_off_by_robot(browser.as_mut(), &tab, &url, deadline),
+        HandOff::Person => true,
+    };
     println!("hand-off started: {started}");
 
     let control = PlayerControl::on_bus(
