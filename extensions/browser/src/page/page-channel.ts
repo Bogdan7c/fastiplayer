@@ -21,7 +21,8 @@ import {
   PAGE_CHANNEL_READY_EVENT,
 } from "../shared/page-channel-handshake.ts";
 import type { CandidatesReply, PageEvent } from "../shared/handoff-contract.ts";
-import { parseIncomingPageMessage, type IncomingPageMessage } from "./page-command-guard.ts";
+import type { PointerReply } from "../shared/entry-contract.ts";
+import { parseChannelMessage, type ChannelMessage } from "./page-command-guard.ts";
 import type { OddityReporter } from "./prototype-wrap.ts";
 
 /** Окно с событиями и портами (в тестах — фейк поверх EventTarget/MessagePort Node). */
@@ -45,7 +46,7 @@ export interface ChannelOriginals {
 }
 
 /** Что уходит по порту из MAIN-мира. */
-export type OutgoingPageMessage = PageEvent | CandidatesReply;
+export type OutgoingPageMessage = PageEvent | CandidatesReply | PointerReply;
 
 /** Личный порт MAIN-мира после рукопожатия. */
 export interface PagePort {
@@ -133,7 +134,7 @@ export interface PageChannelHandlers {
   /** Порт установлен (один раз за жизнь документа). */
   onConnected(port: PagePort): void;
   /** Пришло сообщение правильной формы. */
-  onMessage(message: IncomingPageMessage): void;
+  onMessage(message: ChannelMessage): void;
 }
 
 /**
@@ -149,7 +150,7 @@ export function listenForPageChannel(
 ): void {
   const onPortMessage = (event: unknown): void => {
     try {
-      const message = parseIncomingPageMessage(originals.eventData(event));
+      const message = parseChannelMessage(originals.eventData(event));
       if (message !== null) handlers.onMessage(message);
     } catch {
       reportOddity("page channel message handling failed");

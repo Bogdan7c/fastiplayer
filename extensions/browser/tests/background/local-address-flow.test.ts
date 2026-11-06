@@ -58,7 +58,7 @@ describe("проверка адреса при выборе видео", () => {
 
   it("«спрашивать» с согласием: сеанс открывается", async () => {
     const world = worldWith(LOCAL_FILE_VIDEO, { localAddressSetting: "ask" });
-    assert.deepEqual(await startHandoff(world, CONSENT_FOR_FILE), { kind: "started" });
+    assert.deepEqual(await startHandoff(world, CONSENT_FOR_FILE), { kind: "started", player_window: "new" });
   });
 
   it("человек согласился на один хост, а страница сменила файл: сеанса нет, новый вопрос про новый хост", async () => {
@@ -83,12 +83,12 @@ describe("проверка адреса при выборе видео", () => {
 
   it("локальная страница (Jellyfin, NAS) работает как обычно", async () => {
     const world = worldWith({ ...LOCAL_FILE_VIDEO, frame_host: "nas.local" });
-    assert.deepEqual(await startHandoff(world), { kind: "started" });
+    assert.deepEqual(await startHandoff(world), { kind: "started", player_window: "new" });
   });
 
   it("публичный файл и MSE проверку проходят при «блокировать»", async () => {
-    assert.deepEqual(await startHandoff(worldWith(PUBLIC_FILE_VIDEO)), { kind: "started" });
-    assert.deepEqual(await startHandoff(setup()), { kind: "started" });
+    assert.deepEqual(await startHandoff(worldWith(PUBLIC_FILE_VIDEO)), { kind: "started", player_window: "new" });
+    assert.deepEqual(await startHandoff(setup()), { kind: "started", player_window: "new" });
   });
 
   it("настройка не читается: действует «блокировать», сбой виден, передача не падает", async () => {

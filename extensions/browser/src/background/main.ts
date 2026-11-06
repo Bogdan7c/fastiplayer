@@ -9,6 +9,7 @@ import type { BridgeStatusProvider } from "./status-provider.ts";
 import { startCodecPolicy } from "./codec-policy/browser-wiring.ts";
 import { installTabModel } from "./tab-model/browser-wiring.ts";
 import { installTabHandoffs } from "./handoff/browser-wiring.ts";
+import { installEntries } from "./entries/browser-wiring.ts";
 import { NATIVE_HOST_NAME } from "../shared/host-name.ts";
 
 // Связь с посредником: единственный владелец порта native messaging (src/background/host-link).
@@ -47,4 +48,8 @@ chrome.runtime.onConnect.addListener((port) => {
 // Модель вкладки (решение 198): снимки найденных видео в storage.session; попап 10 и реклама 09d
 // будут читать её через intent-методы.
 const tabModel = installTabModel(scheduler);
-installTabHandoffs(hostLink, scheduler, tabModel);
+const tabHandoffs = installTabHandoffs(hostLink, scheduler, tabModel);
+
+// Входы режима 1 (10c): контекстное меню, вход по ссылке, кнопка поверх видео. Все они сводятся к команде
+// передачи вкладки `tabHandoffs`; слушатели ставятся здесь же, синхронно, чтобы браузер будил фон по ним.
+installEntries(tabHandoffs, scheduler);

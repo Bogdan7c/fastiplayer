@@ -80,7 +80,7 @@ describe("донесение о флуде в фоне", () => {
     await startHandoff(world);
     world.framePorts.last().deliver(FLOOD_NOTICE);
     await flushPromises();
-    assert.deepEqual(await startHandoff(world), { kind: "started" });
+    assert.deepEqual(await startHandoff(world), { kind: "started", player_window: "new" });
     assert.equal(world.door.requests.length, 2);
     assert.deepEqual(world.handoffs.activeTabIds(), [TAB]);
   });
@@ -98,7 +98,7 @@ describe("донесение о флуде в фоне", () => {
     const otherBegin = world.framePorts.last().posted[0];
     assert.ok(otherBegin?.kind === "begin_handoff");
     world.framePorts.last().deliver({ kind: "handoff_began", request_id: otherBegin.request_id, outcome: "started" });
-    assert.deepEqual(await otherTab, { kind: "started" });
+    assert.deepEqual(await otherTab, { kind: "started", player_window: "new" });
     firstPort.deliver(FLOOD_NOTICE);
     assert.equal(firstSocket.closedWithCode, SESSION_CLOSE_CODES.protocol_violation);
     assert.equal(otherSocket.closedWithCode, undefined);

@@ -16,6 +16,8 @@ import type {
 import { MAX_JSON_SAFE_INTEGER, MAX_PLAYBACK_RATE_PERMILLE, MIN_PLAYBACK_RATE_PERMILLE } from "../protocol/limits.ts";
 import type { ClockState, ResumeState } from "../protocol/session/player.ts";
 import { isDocumentTag, MAX_NEXT_VIDEO_LEASE_MS } from "../shared/page-message-validation.ts";
+import type { PointerQuery } from "../shared/entry-contract.ts";
+import { parsePointerQuery } from "../shared/entry-validation.ts";
 
 /** Что MAIN-мир принимает по порту. */
 export type IncomingPageMessage = DescribeCandidatesQuery | PageCommand | NextVideoCommand;
@@ -155,4 +157,19 @@ export function parseIncomingPageMessage(candidate: unknown): IncomingPageMessag
     default:
       return null;
   }
+}
+
+/** Всё, что MAIN-мир принимает по порту: команды контроллера передачи и вопросы про указатель (10c). */
+export type ChannelMessage = IncomingPageMessage | PointerQuery;
+
+/**
+ * Разобрать сообщение порта целиком. Вопросы про указатель (`describe_right_clicked`, `video_at_point`)
+ * идут мимо контроллера передачи: на них отвечает `PointerVideo`. `null` — не по форме (игнорируется).
+ */
+export function parseChannelMessage(candidate: unknown): ChannelMessage | null {
+  return parsePointerQuery(candidate) ?? parseIncomingPageMessage(candidate);
+}
+
+export function isPointerQuery(message: ChannelMessage): message is PointerQuery {
+  return message.kind === "describe_right_clicked" || message.kind === "video_at_point";
 }

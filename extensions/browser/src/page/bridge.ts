@@ -13,7 +13,7 @@
 // Глобалов не создаётся: всё живёт в замыканиях.
 
 import { captureBinaryIntrinsics, type BinaryWindow } from "./binary-view.ts";
-import { captureDomReaders, type DomWindow } from "./dom-readers.ts";
+import { captureDomReaders, type DomReaders, type DomWindow } from "./dom-readers.ts";
 import { createForwardByteMeter } from "./forward-byte-meter.ts";
 import { DrmMarks, type DrmWindow } from "./drm-marks.ts";
 import { ProtectedMediaRelease } from "./protected-media-release.ts";
@@ -28,14 +28,18 @@ import { captureMediaSourceReaders } from "./media-source-readers.ts";
 import { installMseHook, type MseWindow } from "./mse-hook.ts";
 import { MseTracker } from "./mse-tracker.ts";
 import { createOddityReporter, type DebugSink } from "./oddity-reporter.ts";
-import { captureChannelOriginals, captureRendezvousOriginals, listenForPageChannel, type ChannelWindow, type RendezvousWindow } from "./page-channel.ts";
+import { captureChannelOriginals, captureRendezvousOriginals, listenForPageChannel, type ChannelOriginals, type ChannelWindow, type PagePort, type RendezvousWindow } from "./page-channel.ts";
 import { VideoCandidates } from "./video-candidates.ts";
+import { isPointerQuery } from "./page-command-guard.ts";
+import { capturePointerReaders, PointerVideo } from "./pointer-video.ts";
 import { installWorkerCapture, type WorkerCaptureWindow, type WorkerChannelExtension, type WorkerHookSource, type WorkerMediaSources } from "./worker-capture/index.ts";
 
 /** Окно, против которого работает MAIN-мир. */
 export interface PageBridgeWindow extends MseWindow, DomWindow, RegistryWindow, ChannelWindow, BinaryWindow, RandomWindow, WorkerCaptureWindow, DrmWindow {
   /** Конструктор `Event` нужен встрече канала участка 1 (`RendezvousWindow`). */
   readonly Event: RendezvousWindow["Event"];
+  /** Нужны для «видео под указателем» (10c); нет чего-то из них — вход по указателю не включается. */
+  readonly MouseEvent?: { readonly prototype: object };
 }
 
 /** Внешние зависимости сборки. */
@@ -68,6 +72,8 @@ export interface PageBridge {
   readonly workerMediaSources: WorkerMediaSources;
   /** Метки DRM (только для тестов). */
   readonly drmMarks: DrmMarks;
+  /** «Видео под указателем» (10c); `null` — окружение не даёт оригиналов, вход по указателю выключен. */
+  readonly pointerVideo: PointerVideo | null;
   /** Обёртка `Worker` стоит (Chromium с хуком воркера). */
   readonly workersWrapped: boolean;
   readonly documentTag: string;
@@ -139,15 +145,66 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
   const hooked = win.MediaSource !== undefined && installMseHook(win, { observer: tracker, binary, reportOddity });
   if (hooked) registry.installHooks(win, reportOddity);
 
+  const pointerVideo = installPointerVideo(win, channel, {
+    documentTag,
+    registry,
+    dom,
+    isInPlayer: (element) => controller.isHandingOffElement(element),
+  });
+  let pagePort: PagePort | null = null;
   listenForPageChannel(
     win,
     channel,
     rendezvous,
     {
-      onConnected: (port) => controller.connect(port),
-      onMessage: (message) => controller.handle(message),
+      onConnected: (port) => {
+        pagePort = port;
+        controller.connect(port);
+      },
+      onMessage: (message) => {
+        if (!isPointerQuery(message)) {
+          controller.handle(message);
+          return;
+        }
+        // Вопросы про указатель отвечает PointerVideo; нет окружения — честное «под указателем ничего нет».
+        if (message.kind === "describe_right_clicked") {
+          pagePort?.send({ kind: "right_clicked", request_id: message.request_id, video: pointerVideo?.describeRightClicked() ?? null });
+        } else {
+          pagePort?.send({ kind: "video_at_point_result", request_id: message.request_id, video: pointerVideo?.videoAtPoint(message.x, message.y) ?? null });
+        }
+      },
     },
     reportOddity,
   );
-  return { hooked, tracker, controller, registry, workerMediaSources, drmMarks, workersWrapped: workerCapture.wrapped, documentTag };
+  return { hooked, tracker, controller, registry, workerMediaSources, drmMarks, pointerVideo, workersWrapped: workerCapture.wrapped, documentTag };
+}
+
+/** Что нужно сборке «видео под указателем» от остального моста. */
+interface PointerVideoParts {
+  readonly documentTag: string;
+  readonly registry: ElementRegistry;
+  readonly dom: DomReaders;
+  readonly isInPlayer: (element: Element) => boolean;
+}
+
+/**
+ * Собрать «видео под указателем» и поставить слушатель `contextmenu` на window в захвате (синхронно, на
+ * document_start). Окружение без нужных оригиналов (старый браузер, фейк теста) — `null`, мост работает без входа.
+ */
+function installPointerVideo(win: PageBridgeWindow, channel: ChannelOriginals, parts: PointerVideoParts): PointerVideo | null {
+  const readers = capturePointerReaders(win);
+  if (readers === null) return null;
+  const pointerVideo = new PointerVideo({
+    documentTag: parts.documentTag,
+    events: readers.events,
+    tree: readers.tree,
+    videoElements: () => parts.registry.findVideoElements(),
+    keyOf: (element) => parts.registry.keyOf(element),
+    isVideoElement: (candidate) => parts.dom.isVideoElement(candidate),
+    isConnected: (node) => parts.dom.isConnected(node),
+    rectOf: (element) => parts.dom.rectOf(element),
+    isInPlayer: parts.isInPlayer,
+  });
+  channel.addListener(win, "contextmenu", (event) => pointerVideo.noteContextMenu(event), true);
+  return pointerVideo;
 }

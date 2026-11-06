@@ -4,14 +4,16 @@ import { describe, it } from "node:test";
 import type { TabVideoRecord } from "../../src/background/tab-model/tab-snapshot.ts";
 import type { HandOffTabOutcome, UnsupportedMediaForm } from "../../src/shared/handoff-contract.ts";
 import type { SurveyUnavailableReason } from "../../src/shared/survey-contract.ts";
-import { describeConsentQuestion, describeOutcome, describeUnavailable, describeUnsupportedForm } from "../../src/popup/outcome-text.ts";
+import { describeConsentQuestion, describeOutcome, describeUnavailable } from "../../src/popup/outcome-text.ts";
+import { describeUnsupportedForm } from "../../src/shared/outcome-words.ts";
 import { describeVideoList, describeVideoRow, formatDuration, formatFrameSize } from "../../src/popup/video-row-text.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 
 const ALL_FORMS: readonly UnsupportedMediaForm[] = ["native_hls", "blob_file", "data_url", "media_stream", "other_scheme", "untracked_worker_media_source"];
 
 const ALL_OUTCOMES: readonly HandOffTabOutcome[] = [
-  { kind: "started" },
+  { kind: "started", player_window: "new" },
+  { kind: "started", player_window: "already_open" },
   { kind: "no_video" },
   { kind: "not_supported_yet", form: "native_hls" },
   { kind: "protected" },
@@ -32,6 +34,15 @@ describe("тексты исходов", () => {
     const ids = ALL_OUTCOMES.map((outcome) => describeOutcome(outcome).id);
     assert.equal(new Set(ids).size, ALL_OUTCOMES.length, "имена случаев не повторяются");
     for (const outcome of ALL_OUTCOMES) assert.notEqual(describeOutcome(outcome).headline, "", outcome.kind);
+  });
+
+  it("started: новое окно — «Playing»; окно уже открыто — совет переключиться (решение 216)", () => {
+    assert.deepEqual(describeOutcome({ kind: "started", player_window: "new" }), { id: "in_player", headline: "Playing in Fastiplayer", details: ["Switch to it to watch."] });
+    assert.deepEqual(describeOutcome({ kind: "started", player_window: "already_open" }), {
+      id: "switch_to_player",
+      headline: "Now playing in the Fastiplayer window",
+      details: ["Switch to it to watch."],
+    });
   });
 
   it("no_video подсказывает нажать play и повторить", () => {

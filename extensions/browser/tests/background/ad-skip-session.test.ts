@@ -50,7 +50,7 @@ describe("аренда наблюдения во фреймах", () => {
     const begin = world.framePorts.last().posted[0];
     assert.ok(begin?.kind === "begin_handoff");
     world.framePorts.last().deliver({ kind: "handoff_began", request_id: begin.request_id, outcome: "started" });
-    assert.deepEqual(await outcome, { kind: "started" });
+    assert.deepEqual(await outcome, { kind: "started", player_window: "new" });
   });
 
   it("с началом тени аренда уходит сразу и продлевается раз в секунду, пока сеанс жив", async () => {

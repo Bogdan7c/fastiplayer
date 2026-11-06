@@ -60,15 +60,53 @@ describe("попап: открытие", () => {
     await popup.flow.start();
     assert.deepEqual(popup.calls, []);
     assert.equal(popup.closed(), 0);
+    assert.equal(popup.last().notice.id, "in_player");
     assert.equal(popup.last().notice.headline, "Playing in Fastiplayer");
+    assert.deepEqual(popup.last().notice.details, ["Switch to it to watch."], "окно может быть за браузером (решение 216)");
     assert.deepEqual(popup.last().rows.map((row) => [row.ref.element, row.selectable, row.labels]), [[1, false, ["in player"]], [2, true, []]]);
     assert.deepEqual(popup.surveyCalls, [7], "опрошена активная вкладка");
   });
 
   it("сеанса нет: шлёт hand_off_tab главного видео вкладки, started закрывает попап", async () => {
-    const popup = setupPopup({ outcomes: [{ kind: "started" }] });
+    const popup = setupPopup({ outcomes: [{ kind: "started", player_window: "new" }] });
     await popup.flow.start();
     assert.deepEqual(popup.calls, [{ tabId: 7 }]);
+    assert.equal(popup.closed(), 1);
+  });
+
+  it("окно плеера уже открыто (другая вкладка): попап остаётся и просит переключиться на окно", async () => {
+    const popup = setupPopup({ outcomes: [{ kind: "started", player_window: "already_open" }] });
+    await popup.flow.start();
+    assert.equal(popup.closed(), 0, "попап не закрылся: зритель остался бы на странице и не понял, что видео сменилось");
+    assert.equal(popup.last().notice.id, "switch_to_player");
+    assert.equal(popup.last().notice.headline, "Now playing in the Fastiplayer window");
+    assert.deepEqual(popup.last().notice.details, ["Switch to it to watch."]);
+    assert.equal(popup.last().busy, false);
+  });
+
+  it("замена другого видео той же вкладки при открытом окне: попап остаётся, список обновляется свежим опросом", async () => {
+    const popup = setupPopup({
+      surveys: [surveyed([1, 2], { kind: "in_player", video: ref(1) }), surveyed([1, 2], { kind: "in_player", video: ref(2) })],
+      outcomes: [{ kind: "started", player_window: "already_open" }],
+    });
+    await popup.flow.start();
+    await popup.flow.chooseVideo(ref(2));
+    assert.equal(popup.closed(), 0);
+    assert.equal(popup.last().notice.id, "switch_to_player");
+    assert.deepEqual(popup.surveyCalls, [7, 7], "после замены список запрошен заново");
+    assert.deepEqual(popup.last().rows.map((row) => [row.ref.element, row.selectable]), [[1, true], [2, false]], "в плеере теперь второе видео");
+  });
+
+  it("сбой свежего опроса не прячет совет переключиться на окно", async () => {
+    const popup = setupPopup({ surveys: [surveyed([1, 2]), { kind: "unavailable", reason: "survey_failed" }], outcomes: [{ kind: "started", player_window: "already_open" }] });
+    await popup.flow.start();
+    assert.equal(popup.last().notice.id, "switch_to_player");
+    assert.equal(popup.closed(), 0);
+  });
+
+  it("новое окно плеера закрывает попап, как раньше", async () => {
+    const popup = setupPopup({ outcomes: [{ kind: "started", player_window: "new" }] });
+    await popup.flow.start();
     assert.equal(popup.closed(), 1);
   });
 
@@ -112,7 +150,7 @@ describe("попап: открытие", () => {
 
 describe("попап: выбор строки", () => {
   it("клик по строке шлёт hand_off_tab с этим видео; started закрывает попап (в том числе при замене)", async () => {
-    const popup = setupPopup({ surveys: [surveyed([1, 2], { kind: "in_player", video: ref(1) })], outcomes: [{ kind: "started" }] });
+    const popup = setupPopup({ surveys: [surveyed([1, 2], { kind: "in_player", video: ref(1) })], outcomes: [{ kind: "started", player_window: "new" }] });
     await popup.flow.start();
     await popup.flow.chooseVideo(ref(2));
     assert.deepEqual(popup.calls, [{ tabId: 7, video: ref(2) }]);
@@ -133,7 +171,7 @@ describe("попап: выбор строки", () => {
   });
 
   it("пока команда идёт, повторные клики игнорируются", async () => {
-    const popup = setupPopup({ outcomes: [{ kind: "no_video" }, { kind: "started" }] });
+    const popup = setupPopup({ outcomes: [{ kind: "no_video" }, { kind: "started", player_window: "new" }] });
     await popup.flow.start();
     const first = popup.flow.chooseVideo(ref(2));
     const second = popup.flow.chooseVideo(ref(1));
@@ -144,7 +182,7 @@ describe("попап: выбор строки", () => {
 
 describe("попап: согласие на локальный адрес", () => {
   it("Allow повторяет команду с тем же video и согласием на хост", async () => {
-    const popup = setupPopup({ outcomes: [{ kind: "no_video" }, { kind: "local_address_needs_consent", host: "nas.local" }, { kind: "started" }] });
+    const popup = setupPopup({ outcomes: [{ kind: "no_video" }, { kind: "local_address_needs_consent", host: "nas.local" }, { kind: "started", player_window: "new" }] });
     await popup.flow.start();
     await popup.flow.chooseVideo(ref(2));
     assert.equal(popup.last().question?.text, "This page wants the player to download from nas.local on your network. Allow?");
@@ -155,7 +193,7 @@ describe("попап: согласие на локальный адрес", () =
   });
 
   it("вопрос на главное видео: повтор без video, но с согласием", async () => {
-    const popup = setupPopup({ outcomes: [{ kind: "local_address_needs_consent", host: "nas.local" }, { kind: "started" }] });
+    const popup = setupPopup({ outcomes: [{ kind: "local_address_needs_consent", host: "nas.local" }, { kind: "started", player_window: "new" }] });
     await popup.flow.start();
     await popup.flow.allowLocalAddress();
     assert.deepEqual(popup.calls, [{ tabId: 7 }, { tabId: 7, consentedLocalHost: "nas.local" }]);

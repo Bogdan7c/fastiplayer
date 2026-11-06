@@ -6,7 +6,7 @@ import type { FramePort } from "../../src/background/handoff/frame-port.ts";
 import type { SessionDoor } from "../../src/background/handoff/handoff-session.ts";
 import type { SessionWebSocket } from "../../src/background/handoff/session-socket.ts";
 import type { PageCommand } from "../../src/shared/handoff-contract.ts";
-import { decodeDataFrame, decodePageSession, type PageSessionMessage } from "../../src/protocol/index.ts";
+import { decodeDataFrame, decodePageSession, type GrantOutcome, type PageSessionMessage } from "../../src/protocol/index.ts";
 
 // ------------------------------------------------------------------ время
 
@@ -239,10 +239,11 @@ export interface FakeDoor extends SessionDoor {
   nextOutcome: (request: OpenSessionRequest) => OpenSessionOutcome;
 }
 
-export function grantFor(request: OpenSessionRequest): OpenSessionOutcome {
+/** Выдача сеанса плеером; `outcome` — что плеер сделал с окном (по умолчанию открыл новое). */
+export function grantFor(request: OpenSessionRequest, outcome: GrantOutcome = "started"): OpenSessionOutcome {
   return {
     kind: "granted",
-    grant: { type: "session_granted", request_id: 1, session_key: request.session_key, port: TEST_PORT, token: TEST_TOKEN, outcome: "started" },
+    grant: { type: "session_granted", request_id: 1, session_key: request.session_key, port: TEST_PORT, token: TEST_TOKEN, outcome },
   };
 }
 
@@ -251,7 +252,7 @@ export function createFakeDoor(): FakeDoor {
   let acquired = 0;
   const door: FakeDoor = {
     requests: [],
-    nextOutcome: grantFor,
+    nextOutcome: (request) => grantFor(request),
     openSession(request) {
       door.requests.push(request);
       return Promise.resolve(door.nextOutcome(request));

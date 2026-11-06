@@ -1,6 +1,7 @@
 // Машинные слова исходов сеанса: отказ `open_session` и конец сокета в строках `reason` для попапа 10.
 
-import type { HandOffTabOutcome } from "../../shared/handoff-contract.ts";
+import type { GrantOutcome } from "../../protocol/index.ts";
+import type { HandOffTabOutcome, PlayerWindow } from "../../shared/handoff-contract.ts";
 import type { OpenSessionOutcome } from "../host-link/open-session-requests.ts";
 import type { SocketEndCause } from "./session-socket.ts";
 
@@ -18,6 +19,11 @@ export function describeRefusal(outcome: Exclude<OpenSessionOutcome, { kind: "gr
     case "invalid_request":
       return { kind: "failed", reason: `invalid_open_session:${outcome.error.kind}` };
   }
+}
+
+/** Ответ плеера на `open_session` -> окно плеера для зрителя (решение 216): только `started` — новое окно. */
+export function playerWindowOf(grantOutcome: GrantOutcome): PlayerWindow {
+  return grantOutcome === "started" ? "new" : "already_open";
 }
 
 export function describeSocketEnd(cause: SocketEndCause): string {

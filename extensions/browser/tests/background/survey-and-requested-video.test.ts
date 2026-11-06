@@ -34,7 +34,7 @@ async function completeStart(world: ReturnType<typeof setup>, outcome: Promise<H
   const begin = port.posted[0];
   assert.ok(begin?.kind === "begin_handoff");
   port.deliver({ kind: "handoff_began", request_id: begin.request_id, outcome: "started" });
-  assert.deepEqual(await outcome, { kind: "started" });
+  assert.deepEqual(await outcome, { kind: "started", player_window: "new" });
   return begin;
 }
 
@@ -109,7 +109,7 @@ describe("команды попапа: кто и в какой форме мож
     const asked: { tabId: number; video: VideoRef | undefined; consent: string }[] = [];
     const listener = createHandOffCommandListener(IDENTITY, (tabId, consent, requested) => {
       asked.push({ tabId, video: requested, consent: consent.kind === "given_for" ? consent.host : "none" });
-      return Promise.resolve<HandOffTabOutcome>({ kind: "started" });
+      return Promise.resolve<HandOffTabOutcome>({ kind: "started", player_window: "new" });
     });
     return { listener, asked };
   }
@@ -127,7 +127,7 @@ describe("команды попапа: кто и в какой форме мож
     const message = { kind: "hand_off_tab", tab_id: 5, video: refOf(2, "doc-b", 3), consented_local_host: "nas.local" };
     assert.equal(handOff.listener(message, POPUP, (outcome) => void outcomes.push(outcome)), true);
     await flushPromises();
-    assert.deepEqual(outcomes, [{ kind: "started" }]);
+    assert.deepEqual(outcomes, [{ kind: "started", player_window: "new" }]);
     assert.deepEqual(handOff.asked, [{ tabId: 5, video: refOf(2, "doc-b", 3), consent: "nas.local" }]);
   });
 

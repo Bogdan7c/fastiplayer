@@ -34,14 +34,11 @@ import type {
   HeldVideoReport,
   PageCommand,
   PageEvent,
+  PlayerWindow,
+  VideoRef,
 } from "../../shared/handoff-contract.ts";
 import { parsePageEvent, parsePageFloodNotice } from "../../shared/page-message-validation.ts";
-import {
-  SESSION_CLOSE_CODES,
-  type PageIdentity,
-  type PlayerSessionMessage,
-  type TabGoneReason,
-} from "../../protocol/index.ts";
+import { SESSION_CLOSE_CODES, type PageIdentity, type PlayerSessionMessage, type TabGoneReason } from "../../protocol/index.ts";
 import type { OpenSessionOutcome, OpenSessionRequest } from "../host-link/open-session-requests.ts";
 import type { Scheduler } from "../host-link/native-port.ts";
 import { createTimerSlot } from "../host-link/timer-slot.ts";
@@ -70,9 +67,8 @@ import { judgeHeldVideo } from "./held-video-choice.ts";
 import { createShadowSilenceWatch } from "./shadow-silence-watch.ts";
 import { createStreamNumbering, type StreamNumbering } from "./stream-numbering.ts";
 import type { ChosenVideo } from "./video-choice.ts";
-import type { VideoRef } from "../../shared/handoff-contract.ts";
 import { createVideoRelocation } from "./video-relocation.ts";
-import { describeRefusal, describeSocketEnd } from "./session-outcome-words.ts";
+import { describeRefusal, describeSocketEnd, playerWindowOf } from "./session-outcome-words.ts";
 import { disconnectQuietly, END_WITHOUT_PLAYER, LEAVE_PREVIOUS_VIDEO } from "./session-page-commands.ts";
 
 /** Элемент очереди открывает новое поколение (`generation_started`). */
@@ -203,6 +199,8 @@ export function startHandoffSession(
   let incomingRef: VideoRef = { frame_id: target.frameId, document: target.document, element: target.element };
   let shownRef: VideoRef | null = null;
   let tabRemoved = false;
+  // Окно плеера из ответа на `open_session` (решение 216).
+  let playerWindow: PlayerWindow = "new";
   let socket: SessionSocket | undefined;
   let framePort: FramePort | undefined;
   // Фрейм живого порта.
@@ -344,6 +342,7 @@ export function startHandoffSession(
       failStart(describeRefusal(granted));
       return;
     }
+    playerWindow = playerWindowOf(granted.grant.outcome);
     socket = openSessionSocket({
       port: granted.grant.port,
       sessionKey: target.sessionKey,
@@ -513,7 +512,7 @@ export function startHandoffSession(
     silenceWatch.start();
     relocation.videoStarted(incomingVideo);
     adMirror.videoStarted();
-    resolveOutcome({ kind: "started" });
+    resolveOutcome({ kind: "started", player_window: playerWindow });
   }
 
   /** Исход команды по отказу страницы начать тень. */

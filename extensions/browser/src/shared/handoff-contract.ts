@@ -412,8 +412,15 @@ export interface HandOffTabRequest {
   readonly consented_local_host?: string;
 }
 
+/**
+ * Окно плеера при удаче (решение 216): `new` — плеер открыл новое окно и забрал фокус; `already_open` — окно
+ * уже было (то же видео или замена), оно остаётся за браузером, и зрителю надо сказать «переключись на него».
+ * Источник — ответ плеера на `open_session` (`started` -> new; `reused_existing`, `replaced_previous` -> already_open).
+ */
+export type PlayerWindow = "new" | "already_open";
+
 export type HandOffTabOutcome =
-  | { readonly kind: "started" }
+  | { readonly kind: "started"; readonly player_window: PlayerWindow }
   /** Во вкладке нет видео, которое можно передать (ни живого MediaSource, ни файла). */
   | { readonly kind: "no_video" }
   /**

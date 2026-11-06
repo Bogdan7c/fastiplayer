@@ -65,7 +65,24 @@ export interface TabHandoffs {
   adWatchReport(tabId: number, frameId: number, ad: PageAdState): void;
   /** Вкладки, у которых передача стартует или идёт. */
   activeTabIds(): number[];
+  /**
+   * Подписаться на конец сеанса вкладки (входы 10c: вкладка по ссылке закрывается концом сеанса). Слушатель зовётся
+   * после `onSessionEnded` зависимостей. Замена видео на той же вкладке тоже кончает старый сеанс: слушатель
+   * сам смотрит `activeTabIds()` (вкладка в списке — сеанс продолжается). Сбой слушателя соседей не ломает.
+   */
+  onSessionEnded(listener: SessionEndedListener): void;
+  /**
+   * Подписаться на старт сеанса вкладки (плеер принял, страница начала тень). Нужен тем, кому надо знать
+   * «передача на этой вкладке удалась», не зная, откуда её начали (попап, меню, кнопка).
+   */
+  onSessionStarted(listener: SessionStartedListener): void;
 }
+
+/** Слушатель старта сеанса вкладки. */
+export type SessionStartedListener = (tabId: number) => void;
+
+/** Слушатель конца сеанса вкладки. */
+export type SessionEndedListener = (tabId: number, end: HandoffSessionEnd) => void;
 
 interface TabEntry {
   readonly tabId: number;
@@ -79,6 +96,9 @@ interface TabEntry {
   readonly ended: Promise<void>;
   markEnded(): void;
 }
+
+/** Видео уже в окне плеера (то же видео, повторная команда): новое окно не открывалось (решение 216). */
+const STARTED_IN_OPEN_WINDOW: HandOffTabOutcome = { kind: "started", player_window: "already_open" };
 
 /** Подготовка передачи: выбранное видео и правило адреса либо отказ (он уже записан в модель). */
 type PreparedHandoff =
@@ -95,6 +115,8 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
   const entries = new Map<number, TabEntry>();
   // Записи, чей сеанс заменён новым той же вкладки, но ещё не кончился (см. шапку файла).
   const replaced = new Set<TabEntry>();
+  const sessionEndedListeners: SessionEndedListener[] = [];
+  const sessionStartedListeners: SessionStartedListener[] = [];
   let nextBeginRequestId = 1;
   let attempt = 0;
 
@@ -161,6 +183,17 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     }
   }
 
+  /** Сообщить подписчикам; исключение одного не отменяет остальных и конца сеанса. */
+  function notifySessionEnded(tabId: number, end: HandoffSessionEnd): void {
+    for (const listener of sessionEndedListeners) {
+      try {
+        listener(tabId, end);
+      } catch (error) {
+        dependencies.noteForDeveloper(`a session-ended listener threw: ${String(error)}`);
+      }
+    }
+  }
+
   /** Шаг «открыть сеанс плееру и странице» для выбранного видео. */
   async function openSessionFor(
     tabId: number,
@@ -196,12 +229,20 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
         const refusal = refusalOfSessionEnd(end);
         if (refusal !== undefined && !entry.removed) void dependencies.tabModel.noteHandoffRefused(tabId, refusal);
         dependencies.onSessionEnded?.(tabId, end);
+        notifySessionEnded(tabId, end);
       },
     );
     entry.session = session;
     const outcome = await session.outcome;
     if (outcome.kind === "started") {
       entry.started = true;
+      for (const listener of sessionStartedListeners) {
+        try {
+          listener(tabId);
+        } catch (error) {
+          dependencies.noteForDeveloper(`a session-started listener threw: ${String(error)}`);
+        }
+      }
       return outcome;
     }
     // Сеанс не состоялся (плеер отказал, элемент стал защищённым или пропал): причина — в модель.
@@ -293,7 +334,7 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     if (entries.get(tabId) !== existing) return handOffTab(tabId, consent, video);
     // Запись жива, но передача не состоялась (сеанс ещё закрывается): исход той же передачи.
     if (!existing.started) return startOutcome;
-    if (isInPlayer(existing, video)) return { kind: "started" };
+    if (isInPlayer(existing, video)) return STARTED_IN_OPEN_WINDOW;
     return replaceSession(tabId, existing, consent, video);
   }
 
@@ -305,7 +346,7 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     // Пока готовились, сеанс кончился или его заменила другая команда: решаем заново.
     if (entries.get(tabId) !== previous) return handOffTab(tabId, consent, video);
     // Сеанс сам переехал на выбранное видео (реклама кончилась), пока готовились.
-    if (isInPlayer(previous, video)) return { kind: "started" };
+    if (isInPlayer(previous, video)) return STARTED_IN_OPEN_WINDOW;
     const entry = createEntry(tabId);
     replaced.add(previous);
     const outcome = await register(tabId, entry, () => openSessionFor(tabId, entry, prepared.video, prepared.fileAddressRule, previous));
@@ -346,8 +387,10 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
       const entry = createEntry(tabId);
       return register(tabId, entry, () => startForTab(tabId, entry, consent, video));
     }
-    // Без выбранного видео — исход той же передачи (кнопку можно нажать дважды).
-    return video === undefined ? existing.outcome : handOffRequestedVideo(tabId, existing, consent, video);
+    if (video !== undefined) return handOffRequestedVideo(tabId, existing, consent, video);
+    // Без выбранного видео: передача уже идёт — окно плеера открыто (решение 216); ещё стартует — исход той же
+    // передачи (кнопку можно нажать дважды).
+    return existing.started ? Promise.resolve(STARTED_IN_OPEN_WINDOW) : existing.outcome;
   }
 
   /** Закрытие вкладки доходит и до текущей записи, и до заменённых, чей сеанс ещё не кончился. */
@@ -367,5 +410,7 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     isAdOnScreen: (tabId) => entries.get(tabId)?.session?.adOnScreen() ?? false,
     adWatchReport: (tabId, frameId, ad) => entries.get(tabId)?.session?.adWatchReport(frameId, ad),
     activeTabIds: () => [...entries.keys()],
+    onSessionEnded: (listener) => void sessionEndedListeners.push(listener),
+    onSessionStarted: (listener) => void sessionStartedListeners.push(listener),
   };
 }

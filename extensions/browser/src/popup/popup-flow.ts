@@ -123,8 +123,8 @@ export function createPopupFlow(dependencies: PopupFlowDependencies): PopupFlow 
     } catch {
       outcome = { kind: "failed", reason: "no_answer_from_background" };
     }
-    if (outcome.kind === "started") {
-      // Передачу держит фон; попап не нужен. Модель не перерисовываем: окно закрывается.
+    if (outcome.kind === "started" && outcome.player_window === "new") {
+      // Новое окно плеера забрало фокус; передачу держит фон, попап не нужен. Модель не перерисовываем: окно закрывается.
       dependencies.closePopup();
       return;
     }
@@ -133,6 +133,12 @@ export function createPopupFlow(dependencies: PopupFlowDependencies): PopupFlow 
     if (outcome.kind === "local_address_needs_consent") pendingConsent = { host: outcome.host, video: request.video };
     // Выбранного видео уже нет: список устарел, берём свежий (опрос заодно сбросит старый отказ).
     if (outcome.kind === "video_gone" && tab !== undefined) acceptSurvey(await survey(tab.id));
+    // Окно плеера уже было открыто и видео в нём сменилось: в списке теперь другая строка «in player».
+    // Совет «переключись на окно» не должен пропасть, если опрос не удался: заменяем только сам список.
+    if (outcome.kind === "started" && tab !== undefined) {
+      const fresh = await survey(tab.id);
+      if (fresh.kind === "surveyed") surveyed = fresh;
+    }
     publish();
   }
 

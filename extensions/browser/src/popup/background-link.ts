@@ -23,7 +23,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Ответ на `hand_off_tab` — известный вид исхода. Поля вида фон гарантирует сам (он наш). */
 export function isHandOffTabOutcome(value: unknown): value is HandOffTabOutcome {
-  return isRecord(value) && OUTCOME_KINDS.some((kind) => kind === value["kind"]);
+  if (!isRecord(value) || !OUTCOME_KINDS.some((kind) => kind === value["kind"])) return false;
+  // Без окна плеера (старый фон?) попап не знает, закрываться или нет: такой ответ считаем кривым.
+  return value["kind"] !== "started" || value["player_window"] === "new" || value["player_window"] === "already_open";
 }
 
 /** Ответ на `survey_tab` — известный вид ответа. */

@@ -2,7 +2,8 @@
 // Смысл текстов обязателен: человек должен понять, что делать дальше (нажать play, сменить настройку,
 // выбрать другое видео), а не прочитать код ошибки.
 
-import type { HandOffTabOutcome, UnsupportedMediaForm } from "../shared/handoff-contract.ts";
+import type { HandOffTabOutcome } from "../shared/handoff-contract.ts";
+import { describeUnsupportedForm, SWITCH_TO_PLAYER_DETAIL, SWITCH_TO_PLAYER_HEADLINE, SWITCH_TO_PLAYER_ID } from "../shared/outcome-words.ts";
 import type { SurveyUnavailableReason } from "../shared/survey-contract.ts";
 
 /**
@@ -24,22 +25,14 @@ export interface ConsentQuestionView {
   readonly denyLabel: string;
 }
 
-/** Форма видео человеческим словом. Запись по ключам: новая форма без слова не соберётся. */
-const FORM_WORDS: Readonly<Record<UnsupportedMediaForm, string>> = {
-  native_hls: "a stream (HLS) that the browser plays by itself",
-  blob_file: "a file that exists only in the memory of the page",
-  data_url: "a video embedded right into the page address",
-  media_stream: "a live stream (camera, screen or call), not a file",
-  other_scheme: "a video from an address that is not a regular web address",
-  untracked_worker_media_source: "a video that the page plays in a way the extension cannot follow",
+/** Видео вкладки в плеере. Деталь та же, что в `switch_to_player` (решение 216): окно может быть за браузером. */
+export const PLAYING_NOTICE: NoticeView = { id: "in_player", headline: "Playing in Fastiplayer", details: [SWITCH_TO_PLAYER_DETAIL] };
+/** Окно плеера уже открыто (решение 216): попап остаётся и просит переключиться на него. */
+export const SWITCH_TO_PLAYER_NOTICE: NoticeView = {
+  id: SWITCH_TO_PLAYER_ID,
+  headline: SWITCH_TO_PLAYER_HEADLINE,
+  details: [SWITCH_TO_PLAYER_DETAIL],
 };
-
-/** Слово для формы видео (для текста «not supported yet»). */
-export function describeUnsupportedForm(form: UnsupportedMediaForm): string {
-  return FORM_WORDS[form];
-}
-
-export const PLAYING_NOTICE: NoticeView = { id: "in_player", headline: "Playing in Fastiplayer", details: [] };
 export const LOADING_NOTICE: NoticeView = { id: "loading", headline: "Looking for video on this page…", details: [] };
 export const NO_ACTIVE_TAB_NOTICE: NoticeView = {
   id: "no_active_tab",
@@ -56,7 +49,7 @@ export const DECLINED_NOTICE: NoticeView = {
 export function describeOutcome(outcome: HandOffTabOutcome): NoticeView {
   switch (outcome.kind) {
     case "started":
-      return PLAYING_NOTICE;
+      return outcome.player_window === "already_open" ? SWITCH_TO_PLAYER_NOTICE : PLAYING_NOTICE;
     case "no_video":
       return {
         id: "no_video",

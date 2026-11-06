@@ -53,7 +53,7 @@ describe("файл <video src> через фон", () => {
   it("file_source → generation_started + file_source_added байт в байт как записанный поток; адрес плееру не уходит", async () => {
     const server = recordingServer();
     const world = setup([{ frameId: 0, result: [PLAYING_FILE] }], server.fetch);
-    assert.deepEqual(await startHandoff(world), { kind: "started" });
+    assert.deepEqual(await startHandoff(world), { kind: "started", player_window: "new" });
     const port = world.framePorts.last();
     port.deliver({ kind: "file_source", url: FILE_URL, referrer_origin: null, referrer_policy: "no-referrer" });
     port.deliver({ kind: "page_seek", target_us: 0 });

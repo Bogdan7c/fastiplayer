@@ -2,6 +2,7 @@
 // режимы и переключатели придут в сессиях 10/12.
 import { browserApi } from "../shared/browser-api.ts";
 import { mountCodecSettingControl } from "./codec-setting-control.ts";
+import { mountEntrySettingControl } from "./entry-setting-control.ts";
 import { mountLocalAddressSettingControl } from "./local-address-setting-control.ts";
 
 const container = document.getElementById("options-content");
@@ -12,3 +13,4 @@ const localStore = {
 };
 void mountCodecSettingControl(container, localStore);
 void mountLocalAddressSettingControl(container, localStore);
+void mountEntrySettingControl(container, localStore);

@@ -8,7 +8,7 @@ import { NORMAL_CLOSE_CODE } from "../../src/background/handoff/session-socket.t
 import type { PageCommand } from "../../src/shared/handoff-contract.ts";
 import { SESSION_CLOSE_CODES } from "../../src/protocol/index.ts";
 import { deliverStream, MP4, PLAYING_VIDEO, setup, startHandoff, TAB } from "./handoff-world.ts";
-import { flushPromises, TEST_TOKEN } from "./support.ts";
+import { flushPromises, grantFor, TEST_TOKEN } from "./support.ts";
 
 describe("передача вкладки: старт", () => {
   it("сначала плеер, потом страница: open_session → attach → begin_handoff → started", async () => {
@@ -31,8 +31,49 @@ describe("передача вкладки: старт", () => {
     assert.equal(port.frameId, 0);
     assert.deepEqual(port.posted, [{ kind: "begin_handoff", request_id: 1, document: "doc-7f3a", element: 4 }]);
     port.deliver({ kind: "handoff_began", request_id: 1, outcome: "started" });
-    assert.deepEqual(await outcome, { kind: "started" });
+    assert.deepEqual(await outcome, { kind: "started", player_window: "new" });
     assert.equal(world.door.demandHeld(), 1, "нужда связи держится всё время сеанса");
+  });
+
+  it("плеер открыл новое окно -> new; плеер вернул уже живой сеанс (reused_existing) -> already_open (решение 216)", async () => {
+    const reused = setup();
+    reused.door.nextOutcome = (request) => grantFor(request, "reused_existing");
+    assert.deepEqual(await startHandoff(reused), { kind: "started", player_window: "already_open" });
+    const fresh = setup();
+    assert.deepEqual(await startHandoff(fresh), { kind: "started", player_window: "new" });
+  });
+
+  it("видео другой вкладки при открытом окне плеера: плеер заменил окно (replaced_previous) -> already_open", async () => {
+    const world = setup();
+    world.door.nextOutcome = (request) => grantFor(request, "replaced_previous");
+    assert.deepEqual(await startHandoff(world), { kind: "started", player_window: "already_open" });
+  });
+
+  it("повторная команда после старта отвечает already_open: окно уже открыто", async () => {
+    const world = setup();
+    assert.deepEqual(await startHandoff(world), { kind: "started", player_window: "new" });
+    assert.deepEqual(await world.handoffs.handOffTab(TAB), { kind: "started", player_window: "already_open" });
+  });
+
+  it("onSessionStarted: слушатель зовётся ровно при удаче, не при отказе; его сбой передачу не ломает", async () => {
+    const started = setup();
+    const heard: number[] = [];
+    started.handoffs.onSessionStarted(() => {
+      throw new Error("listener broke");
+    });
+    started.handoffs.onSessionStarted((tabId) => void heard.push(tabId));
+    assert.deepEqual(await startHandoff(started), { kind: "started", player_window: "new" });
+    assert.deepEqual(heard, [TAB]);
+
+    const refused = setup();
+    const refusedHeard: number[] = [];
+    refused.handoffs.onSessionStarted((tabId) => void refusedHeard.push(tabId));
+    refused.door.nextOutcome = () => ({
+      kind: "refused",
+      refusal: { type: "refused", in_reply_to: { kind: "open_session", request_id: 1 }, reason: { kind: "player_not_responding" } },
+    });
+    assert.equal((await refused.handoffs.handOffTab(TAB)).kind, "player_unavailable");
+    assert.deepEqual(refusedHeard, []);
   });
 
   it("отказ плеера не трогает страницу и отдаёт причину", async () => {
@@ -160,13 +201,13 @@ describe("передача вкладки: старт", () => {
     const world = setup();
     const first = startHandoff(world);
     const again = world.handoffs.handOffTab(TAB);
-    assert.deepEqual(await first, { kind: "started" });
-    assert.deepEqual(await again, { kind: "started" });
+    assert.deepEqual(await first, { kind: "started", player_window: "new" });
+    assert.deepEqual(await again, { kind: "started", player_window: "new" });
     assert.equal(world.surveys(), 1, "второй опрос не делался");
     assert.equal(world.sockets.sockets.length, 1);
     world.framePorts.last().deliver({ kind: "handoff_ended", cause: "element_released" });
     assert.deepEqual(world.handoffs.activeTabIds(), []);
-    assert.deepEqual(await startHandoff(world), { kind: "started" });
+    assert.deepEqual(await startHandoff(world), { kind: "started", player_window: "new" });
     assert.equal(world.door.requests[1]?.session_key, `t${TAB}-2-test`);
   });
 });

@@ -126,6 +126,11 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     this.#port?.send(event);
   }
 
+  /** Этот элемент сейчас под тенью (его видео играет в плеере). Нужен кнопке поверх видео (10c). */
+  isHandingOffElement(element: Element): boolean {
+    return this.#active?.element === element;
+  }
+
   /** Есть ли идущая передача (для тестов и диагностики). */
   get isHandingOff(): boolean {
     return this.#active !== null;

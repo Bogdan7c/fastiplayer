@@ -82,7 +82,7 @@ describe("отказы без сеанса: плеер не будится", () 
 describe("успешная передача и модель", () => {
   it("опрос записан, отказа нет, передача стартует; методы модели не трогают состояние передачи", async () => {
     const world = setup();
-    assert.deepEqual(await startHandoff(world), { kind: "started" });
+    assert.deepEqual(await startHandoff(world), { kind: "started", player_window: "new" });
     assert.deepEqual(await world.tabModel.mainVideoOf(TAB), { frame_id: 0, document: PLAYING_VIDEO.document, element: PLAYING_VIDEO.element });
     assert.equal(await world.tabModel.lastRefusalOf(TAB), null);
     const socketsBefore = world.sockets.sockets.length;
@@ -103,7 +103,7 @@ describe("успешная передача и модель", () => {
       keys: () => Promise.reject(new Error("quota")),
     };
     const world = setup(undefined, undefined, broken);
-    assert.deepEqual(await startHandoff(world), { kind: "started" });
+    assert.deepEqual(await startHandoff(world), { kind: "started", player_window: "new" });
     assert.equal(world.storeFailures.length, 1);
   });
 });
@@ -169,7 +169,7 @@ describe("ограниченный опрос фреймов", () => {
       result: Array.from({ length: 256 }, (_unused, element) => video(element + 1, { document: `doc-${index}`, playing: false, visible_area_px: 1 })),
     }));
     const world = setup([{ frameId: 0, result: [PLAYING_VIDEO] }, ...hostile]);
-    assert.deepEqual(await startHandoff(world), { kind: "started" });
+    assert.deepEqual(await startHandoff(world), { kind: "started", player_window: "new" });
     assert.equal(world.framePorts.last().frameId, 0);
     const kept = await world.tabModel.videosFoundIn(TAB);
     assert.ok(kept.length <= 64);

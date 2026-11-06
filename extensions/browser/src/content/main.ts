@@ -6,8 +6,10 @@
 import { browserApi } from "../shared/browser-api.ts";
 import { HANDOFF_PORT_NAME, type HeldVideoReply } from "../shared/handoff-contract.ts";
 import { parseArmNextVideoRequest } from "../shared/page-message-validation.ts";
+import { RIGHT_CLICKED_VIDEO_FUNCTION_NAME } from "../shared/entry-contract.ts";
 import { VIDEO_CANDIDATES_FUNCTION_NAME } from "../shared/video-candidates-probe.ts";
 import { installAdWatch } from "./ad-watch-entry.ts";
+import { installPageUi } from "./page-ui/page-ui-entry.ts";
 import { openPageChannel, type PageChannelPort } from "./page-channel.ts";
 import { createContentRelay, type ContentRelay } from "./relay.ts";
 
@@ -78,3 +80,16 @@ Object.defineProperty(globalThis, VIDEO_CANDIDATES_FUNCTION_NAME, {
   enumerable: false,
   writable: false,
 });
+
+// Видео под последним настоящим правым кликом (10c): фон зовёт её через executeScript в нужном фрейме.
+// Глобал изолированного мира, как и функция выше: странице не виден.
+Object.defineProperty(globalThis, RIGHT_CLICKED_VIDEO_FUNCTION_NAME, {
+  value: () => relay.rightClickedVideo(),
+  configurable: false,
+  enumerable: false,
+  writable: false,
+});
+
+// Плашка с итогом входа и кнопка поверх видео (10c). Кнопка спит, пока настройка выключена; фону не пишет,
+// пока человек не нажал её.
+installPageUi((x, y) => relay.videoAtPoint(x, y));

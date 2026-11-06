@@ -34,6 +34,8 @@ import {
   type PageFloodNotice,
   type VideoCandidate,
 } from "../shared/handoff-contract.ts";
+import type { PointerQuery, PointerReply, RightClickedVideo, VideoAtPoint } from "../shared/entry-contract.ts";
+import { parseRightClickedReply, parseVideoAtPointReply } from "../shared/entry-validation.ts";
 import { parseCandidatesReply, parsePageEvent } from "../shared/page-message-validation.ts";
 import { createTokenBucket, type MillisecondClock } from "../shared/token-bucket.ts";
 import { createPageEventBudget, type PageEventBudget, type PageEventBudgetParameters } from "./page-event-budget.ts";
@@ -44,6 +46,12 @@ import { createPageEventBudget, type PageEventBudget, type PageEventBudgetParame
  * страницу; фрейм без нашего MAIN-скрипта (не успел встать) честно даёт пустой список.
  */
 export const DESCRIBE_CANDIDATES_TIMEOUT_MS = 1_000;
+
+/**
+ * Сколько ждём ответ MAIN-мира на вопрос про указатель (`describe_right_clicked`, `video_at_point`, 10c).
+ * Ответ приходит синхронно из обработчика MAIN; без него (фрейм без нашего MAIN-скрипта) честно «видео нет».
+ */
+export const POINTER_QUERY_TIMEOUT_MS = 1_000;
 
 /**
  * Сколько ждём ответ фона о задержанном видео. Обычно это миллисекунды; без ответа страница не должна
@@ -95,12 +103,19 @@ export interface ContentRelay {
   armNextVideo(leaseMs: number): void;
   /** Описание видео документа от MAIN-мира; таймаут или пустой фрейм — пустой список. */
   describeVideoCandidates(): Promise<readonly VideoCandidate[]>;
+  /** Видео под последним настоящим правым кликом; таймаут и «ничего» — `null` (10c). */
+  rightClickedVideo(): Promise<RightClickedVideo | null>;
+  /**
+   * Видео под точкой вьюпорта этого фрейма; таймаут и «ничего» — `null` (10c). Готово для кнопки поверх
+   * видео: `in_player` вычисляет контроллер передачи в MAIN, пограничник форму проверяет.
+   */
+  videoAtPoint(x: number, y: number): Promise<VideoAtPoint | null>;
   counters(): RelayCounters;
 }
 
 export interface RelayDependencies {
   /** Отправка MAIN-миру по личному порту участка 1. */
-  readonly sendToPage: (message: PageCommand | NextVideoCommand | DescribeCandidatesQuery) => void;
+  readonly sendToPage: (message: PageCommand | NextVideoCommand | DescribeCandidatesQuery | PointerQuery) => void;
   /** Донесение фону о задержанном видео; его ответ решает судьбу видео. */
   readonly reportHeldVideo: (report: HeldVideoReport) => Promise<HeldVideoReply>;
   readonly timers: RelayTimers;
@@ -149,9 +164,17 @@ interface PendingQuery {
   readonly timer: unknown;
 }
 
+/** Вопрос про указатель, на который MAIN-мир ещё не ответил. `expects` — какой ответ его закрывает. */
+interface PendingPointerQuery {
+  readonly expects: PointerReply["kind"];
+  readonly resolve: (video: RightClickedVideo | VideoAtPoint | null) => void;
+  readonly timer: unknown;
+}
+
 export function createContentRelay(dependencies: RelayDependencies): ContentRelay {
   const { sendToPage, timers } = dependencies;
   const pendingQueries = new Map<number, PendingQuery>();
+  const pendingPointerQueries = new Map<number, PendingPointerQuery>();
   let backgroundPort: BackgroundPort | undefined;
   // Начатые фоном передачи, на которые MAIN-мир ещё не ответил: номер запроса → порт-хозяин
   // (`undefined` — хозяин пропал до ответа: если тень всё же встанет, её сразу снимаем).
@@ -245,6 +268,12 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
   // ---------------------------------------------------------------- MAIN → фон
 
   function handlePageMessage(message: unknown): void {
+    const pointerReply = parseRightClickedReply(message) ?? parseVideoAtPointReply(message);
+    if (pointerReply !== undefined) {
+      // Как и с кандидатами: ответ на незаданный вопрос — подделка или опоздание, тратит бюджет передачи.
+      if (!settlePointerQuery(pointerReply)) chargeMalformedMessage();
+      return;
+    }
     const reply = parseCandidatesReply(message);
     if (reply !== undefined) {
       // Ответ на незаданный вопрос — опоздание, но страница может сыпать ими так же, как мусором.
@@ -391,14 +420,56 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
   // ---------------------------------------------------------------- кандидаты видео
 
   function describeVideoCandidates(): Promise<readonly VideoCandidate[]> {
-    const requestId = nextRequestId;
-    nextRequestId = nextRequestId >= MAX_REQUEST_ID ? 1 : nextRequestId + 1;
+    const requestId = takeRequestId();
     return new Promise((resolve) => {
       const timer = timers.setTimeout(() => void settleQuery(requestId, []), DESCRIBE_CANDIDATES_TIMEOUT_MS);
       pendingQueries.set(requestId, { resolve, timer });
       sendToPage({ kind: "describe_candidates", request_id: requestId });
     });
   }
+
+  // ---------------------------------------------------------------- указатель (10c)
+
+  function takeRequestId(): number {
+    const requestId = nextRequestId;
+    nextRequestId = nextRequestId >= MAX_REQUEST_ID ? 1 : nextRequestId + 1;
+    return requestId;
+  }
+
+  /** Задать MAIN-миру вопрос про указатель; ответ закрывает его, молчание за срок — `null`. */
+  function askPointer<Video extends RightClickedVideo | VideoAtPoint>(
+    expects: PointerReply["kind"],
+    buildQuery: (requestId: number) => PointerQuery,
+  ): Promise<Video | null> {
+    const requestId = takeRequestId();
+    return new Promise((resolve) => {
+      const timer = timers.setTimeout(() => void settlePointerAnswer(requestId, null), POINTER_QUERY_TIMEOUT_MS);
+      pendingPointerQueries.set(requestId, { expects, resolve: (video) => resolve(video as Video | null), timer });
+      sendToPage(buildQuery(requestId));
+    });
+  }
+
+  function settlePointerAnswer(requestId: number, video: RightClickedVideo | VideoAtPoint | null): void {
+    const pending = pendingPointerQueries.get(requestId);
+    if (pending === undefined) return;
+    pendingPointerQueries.delete(requestId);
+    timers.clearTimeout(pending.timer);
+    pending.resolve(video);
+  }
+
+  /** `false` — ответ на незаданный вопрос или на вопрос другого вида. */
+  function settlePointerQuery(reply: PointerReply): boolean {
+    const pending = pendingPointerQueries.get(reply.request_id);
+    if (pending === undefined || pending.expects !== reply.kind) return false;
+    settlePointerAnswer(reply.request_id, reply.video);
+    return true;
+  }
+
+  const rightClickedVideo = (): Promise<RightClickedVideo | null> =>
+    askPointer("right_clicked", (requestId) => ({ kind: "describe_right_clicked", request_id: requestId }));
+
+  const videoAtPoint = (x: number, y: number): Promise<VideoAtPoint | null> =>
+    askPointer("video_at_point_result", (requestId) => ({ kind: "video_at_point", request_id: requestId, x, y }));
 
   /** Кандидат с именем хоста, прочитанным здесь: от него зависит проверка адреса файла (решение 199). */
   function withOwnHostName(candidate: VideoCandidate): VideoCandidate {
@@ -420,6 +491,8 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
     acceptBackgroundPort,
     armNextVideo,
     describeVideoCandidates,
+    rightClickedVideo,
+    videoAtPoint,
     counters: () => ({ rejectedPageMessages, undeliverablePageEvents, rejectedBackgroundMessages, droppedFloodEvents }),
   };
 }

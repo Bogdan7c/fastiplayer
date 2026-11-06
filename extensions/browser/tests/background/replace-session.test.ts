@@ -6,7 +6,7 @@ import { routeStatusPort, type StatusPortLike } from "../../src/background/statu
 import type { BridgeStatusProvider } from "../../src/background/status-provider.ts";
 import type { PageCommand, VideoCandidate, VideoRef } from "../../src/shared/handoff-contract.ts";
 import { PLAYING_VIDEO, setup, startHandoff, TAB, type World } from "./handoff-world.ts";
-import { flushPromises } from "./support.ts";
+import { flushPromises, grantFor } from "./support.ts";
 
 function video(element: number, overrides: Partial<VideoCandidate> = {}): VideoCandidate {
   return { ...PLAYING_VIDEO, element, ...overrides };
@@ -22,7 +22,7 @@ const TWO_VIDEOS = [{ frameId: 0, result: [video(1), video(2, { playing: false, 
 /** Сеанс A запущен и играет; возвращает его сокет и порт (потом их перекроет новый сеанс). */
 async function startOnA(world: World) {
   const outcome = await startHandoff(world);
-  assert.deepEqual(outcome, { kind: "started" });
+  assert.deepEqual(outcome, { kind: "started", player_window: "new" });
   return { socket: world.sockets.last(), port: world.framePorts.last() };
 }
 
@@ -57,6 +57,8 @@ describe("замена видео на той же вкладке (решени�
   it("порядок: плеер принял новый сеанс → старый сеанс кончился → только потом begin_handoff нового", async () => {
     const world = setup(TWO_VIDEOS);
     const old = await startOnA(world);
+    // Плеер заменяет своё открытое окно: так он отвечает на второй open_session (решение 216).
+    world.door.nextOutcome = (request) => grantFor(request, "replaced_previous");
     const replacement = world.handoffs.handOffTab(TAB, undefined, REF_B);
     const newSocket = await attachReplacement(world);
     assert.equal(world.door.requests.length, 2);
@@ -78,7 +80,7 @@ describe("замена видео на той же вкладке (решени�
     assert.equal(begin.element, 2, "новый сеанс начинается на выбранном видео");
 
     world.framePorts.last().deliver({ kind: "handoff_began", request_id: begin.request_id, outcome: "started" });
-    assert.deepEqual(await replacement, { kind: "started" });
+    assert.deepEqual(await replacement, { kind: "started", player_window: "already_open" }, "окно плеера уже было: попап не закрываем");
     assert.notEqual(newSocket, old.socket);
     // Удаление старой записи не стёрло новую: вкладка по-прежнему со своим сеансом, в плеере B.
     assert.deepEqual(world.handoffs.activeTabIds(), [TAB]);
@@ -102,7 +104,7 @@ describe("замена видео на той же вкладке (решени�
   it("то же видео, что уже в плеере, — сразу started, ничего не трогаем", async () => {
     const world = setup(TWO_VIDEOS);
     const old = await startOnA(world);
-    assert.deepEqual(await world.handoffs.handOffTab(TAB, undefined, REF_A), { kind: "started" });
+    assert.deepEqual(await world.handoffs.handOffTab(TAB, undefined, REF_A), { kind: "started", player_window: "already_open" });
     assert.equal(world.door.requests.length, 1, "новый сеанс не открывался");
     assertOldSessionUntouched(world, old);
   });
@@ -110,7 +112,7 @@ describe("замена видео на той же вкладке (решени�
   it("без video при живом сеансе — исход той же передачи, как раньше", async () => {
     const world = setup(TWO_VIDEOS);
     const old = await startOnA(world);
-    assert.deepEqual(await world.handoffs.handOffTab(TAB), { kind: "started" });
+    assert.deepEqual(await world.handoffs.handOffTab(TAB), { kind: "started", player_window: "already_open" });
     assert.equal(world.door.requests.length, 1);
     assertOldSessionUntouched(world, old);
   });
@@ -182,8 +184,8 @@ describe("замена видео на той же вкладке (решени�
     const begin = world.framePorts.last().posted[0];
     assert.ok(begin?.kind === "begin_handoff");
     world.framePorts.last().deliver({ kind: "handoff_began", request_id: begin.request_id, outcome: "started" });
-    assert.deepEqual(await first, { kind: "started" });
-    assert.deepEqual(await again, { kind: "started" });
+    assert.deepEqual(await first, { kind: "started", player_window: "new" });
+    assert.deepEqual(await again, { kind: "started", player_window: "already_open" });
     assert.equal(world.door.requests.length, 1);
   });
 
@@ -197,7 +199,7 @@ describe("замена видео на той же вкладке (решени�
     const begin = world.framePorts.last().posted[0];
     assert.ok(begin?.kind === "begin_handoff");
     world.framePorts.last().deliver({ kind: "handoff_began", request_id: begin.request_id, outcome: "started" });
-    assert.deepEqual(await first, { kind: "started" });
+    assert.deepEqual(await first, { kind: "started", player_window: "new" });
     await flushPromises();
     assert.equal(world.door.requests.length, 2, "после старта первого сеанса открылся второй");
   });
@@ -233,7 +235,7 @@ describe("передача идёт, попап закрылся", () => {
     const begin = world.framePorts.last().posted[0];
     assert.ok(begin?.kind === "begin_handoff");
     world.framePorts.last().deliver({ kind: "handoff_began", request_id: begin.request_id, outcome: "started" });
-    assert.deepEqual(await outcome, { kind: "started" }, "закрытие попапа передачу не отменило");
+    assert.deepEqual(await outcome, { kind: "started", player_window: "new" }, "закрытие попапа передачу не отменило");
     assert.equal(world.sockets.last().closedWithCode, undefined, "сокет сеанса открыт");
     assert.equal(world.framePorts.last().disconnectedByBackground, false);
     assert.deepEqual(world.handoffs.activeTabIds(), [TAB]);

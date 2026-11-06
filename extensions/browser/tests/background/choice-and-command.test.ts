@@ -421,7 +421,7 @@ describe("команда «отдать вкладку N»", () => {
     const asked: number[] = [];
     const listener = createHandOffCommandListener(identity, (tabId) => {
       asked.push(tabId);
-      return Promise.resolve({ kind: "started" });
+      return Promise.resolve({ kind: "started", player_window: "new" });
     });
     const responses: HandOffTabOutcome[] = [];
     const keepsChannel = listener({ kind: "hand_off_tab", tab_id: 31 }, { id: "ourid", url: "chrome-extension://ourid/bench.html" }, (response) =>
@@ -430,14 +430,14 @@ describe("команда «отдать вкладку N»", () => {
     assert.equal(keepsChannel, true);
     await flushPromises();
     assert.deepEqual(asked, [31]);
-    assert.deepEqual(responses, [{ kind: "started" }]);
+    assert.deepEqual(responses, [{ kind: "started", player_window: "new" }]);
   });
 
   it("от контент-скрипта (адрес сайта) и кривые команды не исполняются", () => {
     const asked: number[] = [];
     const listener = createHandOffCommandListener(identity, (tabId) => {
       asked.push(tabId);
-      return Promise.resolve({ kind: "started" });
+      return Promise.resolve({ kind: "started", player_window: "new" });
     });
     const ignore = () => assert.fail("ответа быть не должно");
     assert.equal(listener({ kind: "hand_off_tab", tab_id: 1 }, { id: "ourid", url: "https://www.youtube.com/watch" }, ignore), false);
