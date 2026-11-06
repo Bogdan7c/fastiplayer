@@ -23,7 +23,7 @@ use browser_bridge_bench::browsers::{
     BrowserKind, ExtensionSource, HandOffOutcome, LaunchOptions, launch,
 };
 use browser_bridge_bench::environment::{
-    BenchEnvironment, DisplayTarget, EnvironmentOptions, PlayerConfigProfile,
+    BenchEnvironment, DesktopSetup, DisplayTarget, EnvironmentOptions, PlayerConfigProfile,
 };
 use browser_bridge_bench::player_control::PlayerControl;
 
@@ -142,6 +142,7 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         },
         player_rust_log: "info".to_owned(),
         work_root: std::env::temp_dir(),
+        desktop: DesktopSetup::default(),
     })
     .map_err(|error| error.to_string())?;
     environment

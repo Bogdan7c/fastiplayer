@@ -19,29 +19,29 @@ const MAX_REAL_FRAMES_PER_SECOND: f64 = 5.0;
 const HANDOVER_SLACK_FRAMES: f64 = 10.0;
 
 /// Результат действия страницы под тенью.
-pub(super) struct HookEvidence {
-    pub(super) name: String,
+pub(in crate::scenarios) struct HookEvidence {
+    pub(in crate::scenarios) name: String,
     /// Рост показанных кадров плеера между двумя сводками после действия.
-    pub(super) growth: Result<FrameGrowth, String>,
+    pub(in crate::scenarios) growth: Result<FrameGrowth, String>,
 }
 
 /// Всё, что собрал прогон, без привязки к браузеру и файлам: вход чистого вердикта.
-pub(super) struct CaptureEvidence {
-    pub(super) page_id: &'static str,
+pub(in crate::scenarios) struct CaptureEvidence {
+    pub(in crate::scenarios) page_id: &'static str,
     /// Сводка показанных кадров или причина, почему её нет.
-    pub(super) frames: Result<FrameEvidence, String>,
+    pub(in crate::scenarios) frames: Result<FrameEvidence, String>,
     /// Действие под тенью, если у страницы оно есть.
-    pub(super) hook: Option<HookEvidence>,
+    pub(in crate::scenarios) hook: Option<HookEvidence>,
     /// Отметки посредника.
-    pub(super) host: HostLogEvidence,
+    pub(in crate::scenarios) host: HostLogEvidence,
     /// Отчёт страницы или ошибка ожидания.
-    pub(super) page_report: Result<PageReport, SiteError>,
+    pub(in crate::scenarios) page_report: Result<PageReport, SiteError>,
     /// Запрещённые строки журнала плеера (с шумом).
-    pub(super) forbidden_player_lines: Vec<String>,
+    pub(in crate::scenarios) forbidden_player_lines: Vec<String>,
     /// Хвост журнала страницы (прикладывается при провале).
-    pub(super) page_log: String,
+    pub(in crate::scenarios) page_log: String,
     /// `<video src>`: провалы и сводка запросов файла со стороны сервера (`None` — не файл).
-    pub(super) file: Option<(Vec<String>, String)>,
+    pub(in crate::scenarios) file: Option<(Vec<String>, String)>,
 }
 
 /// Сколько настоящих кадров браузера допустимо под тенью за окно `window_s` секунд.
@@ -77,7 +77,7 @@ pub(in crate::scenarios) fn browser_does_not_decode(report: &PageReport) -> Vec<
 }
 
 /// Чистое решение «страница дошла до кадра в рендере без декодирования браузером».
-pub(super) fn judge_capture(evidence: &CaptureEvidence) -> Verdict {
+pub(in crate::scenarios) fn judge_capture(evidence: &CaptureEvidence) -> Verdict {
     let mut failures: Vec<String> = Vec::new();
     match &evidence.frames {
         Ok(found) if found.position_regressions > 0 => failures.push(format!(

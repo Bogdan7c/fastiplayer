@@ -41,6 +41,9 @@ libc.workspace = true
 tempfile = "3"
 # Типизированные ошибки стенда.
 thiserror.workspace = true
+# Настоящая мышь и клавиатура невидимого экрана: клиент Wayland и протокол KDE `fake_input`.
+wayland-client.workspace = true
+wayland-protocols-plasma.workspace = true
 # Клиент WebSocket для Chrome DevTools Protocol (без tokio).
 tungstenite.workspace = true
 

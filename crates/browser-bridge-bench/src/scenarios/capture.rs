@@ -12,19 +12,20 @@
 use std::time::{Duration, Instant};
 
 mod ad_hop;
-mod decoys;
+pub(super) mod decoys;
 pub(super) mod file_evidence;
 mod judge;
-mod local_address;
+pub(super) mod local_address;
 mod referer_evidence;
-mod refusals;
+pub(super) mod refusals;
 
 #[cfg(test)]
 pub(super) use ad_hop::AD_HOP_PAGES;
 pub(super) use ad_hop::AD_HOST;
 pub(super) use decoys::AD_FILE_PATH;
+use judge::HookEvidence;
 pub(super) use judge::browser_does_not_decode;
-use judge::{CaptureEvidence, HookEvidence, judge_capture};
+pub(super) use judge::{CaptureEvidence, judge_capture};
 
 use super::context::{ScenarioError, Stand};
 use super::evidence::{
@@ -429,7 +430,7 @@ fn drive(
 /// Улики со стороны сервера для страниц, где они есть: файл `<video src>` (кто и с чем его
 /// качал), Referer на `/cdn/media/`, приманка рядом с главным видео. `None` — у страницы их нет.
 /// В счёт идут только запросы этого прогона (журнал сервера общий на весь запуск стенда).
-fn server_evidence(
+pub(super) fn server_evidence(
     stand: &Stand,
     page_id: &str,
     run_started_at: Instant,

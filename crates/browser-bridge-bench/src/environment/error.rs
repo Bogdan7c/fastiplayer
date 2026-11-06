@@ -50,6 +50,13 @@ pub enum EnvironmentError {
     /// Режим `Real` без `WAYLAND_DISPLAY` в окружении процесса.
     #[error("DisplayTarget::Real needs WAYLAND_DISPLAY in the environment")]
     NoRealDisplay,
+    /// Настоящий ввод разрешён на `Real`: он пустил бы синтетические клики на экран владельца.
+    #[error("DesktopInputPolicy::Allowed is only valid with DisplayTarget::Virtual")]
+    DesktopInputOnRealDisplay,
+    /// Ввод или снимок запрошены, а окружение создано с `DesktopInputPolicy::Forbidden`
+    /// (или это не невидимый экран): у kwin нет права отдавать их стенду.
+    #[error("desktop input and screenshots are not enabled in this environment")]
+    DesktopInputNotEnabled,
     /// Писатель настроек плеера отказал (невалидный или недоступный для записи файл).
     #[error("cannot write the player config {path}: {message}")]
     PlayerConfig {

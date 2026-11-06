@@ -262,6 +262,12 @@ impl<'a> HandoffRun<'a> {
         Ok(())
     }
 
+    /// Делает вкладку страницы стенда активной: попап экстеншена работает с активной вкладкой,
+    /// а служебные страницы (настройки) её сбивают.
+    pub(super) fn activate_page_tab(&mut self) -> Result<(), BrowserError> {
+        self.browser.activate_tab(&self.tab)
+    }
+
     /// Команда странице (она заберёт её опросом).
     pub(super) fn tell_page(&self, command: &str) {
         self.stand.site.send_command(&self.run, command);

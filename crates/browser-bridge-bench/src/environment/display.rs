@@ -8,13 +8,14 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use super::error::EnvironmentError;
+use super::options::{DesktopInputPolicy, DesktopSetup};
 use super::process::ManagedProcess;
 
 /// Имя сокета Wayland невидимого экрана (внутри каталога выполнения).
 pub(crate) const WAYLAND_SOCKET_NAME: &str = "wl-fpbench";
-/// Размер экрана: как у владельца на ноутбуке, влезает любое тестовое видео.
-const VIRTUAL_SCREEN_WIDTH: &str = "1280";
-const VIRTUAL_SCREEN_HEIGHT: &str = "720";
+/// Имя переменной kwin, снимающей проверки прав у клиентов (`fake_input`, снимок экрана).
+const NO_PERMISSION_CHECKS_VARIABLE: &str = "KWIN_WAYLAND_NO_PERMISSION_CHECKS";
+const NO_PERMISSION_CHECKS_ENABLED: &str = "1";
 /// Сколько ждать сокет kwin (запуск обычно занимает секунду).
 const SOCKET_WAIT: Duration = Duration::from_secs(15);
 
@@ -26,9 +27,13 @@ pub(crate) struct VirtualDisplay {
 
 impl VirtualDisplay {
     /// Поднимает экран. `runtime_dir` — короткий приватный каталог (0700) для сокетов.
-    pub(crate) fn start(runtime_dir: &Path, run_dir: &Path) -> Result<Self, EnvironmentError> {
+    pub(crate) fn start(
+        runtime_dir: &Path,
+        run_dir: &Path,
+        setup: DesktopSetup,
+    ) -> Result<Self, EnvironmentError> {
         // kwin нужна сессионная шина, но НЕ та, где живёт плеер: у него свой чистый мир.
-        let bus_address = format!("unix:path={}", runtime_dir.join("kwin-bus").display());
+        let bus_address = Self::bus_address(runtime_dir);
         let bus_config = run_dir.join("kwin-bus.conf");
         std::fs::write(&bus_config, kwin_bus_config(&bus_address)).map_err(|source| {
             EnvironmentError::Io {
@@ -52,7 +57,7 @@ impl VirtualDisplay {
             })?;
         wait_for_bus_address(&mut bus, &bus_config)?;
 
-        let kwin_home = run_dir.join("kwin-home");
+        let kwin_home = Self::home_dir(run_dir);
         let log_path = run_dir.join("kwin.log");
         let log = File::create(&log_path).map_err(|source| EnvironmentError::Io {
             action: "create kwin log",
@@ -77,11 +82,20 @@ impl VirtualDisplay {
             .env("XDG_STATE_HOME", kwin_home.join("state"))
             .env("DBUS_SESSION_BUS_ADDRESS", &bus_address)
             .args(["--virtual", "--no-lockscreen"])
-            .args(["--width", VIRTUAL_SCREEN_WIDTH])
-            .args(["--height", VIRTUAL_SCREEN_HEIGHT])
+            .args(["--width", &setup.screen.width.to_string()])
+            .args(["--height", &setup.screen.height.to_string()])
             .arg(format!("--socket={WAYLAND_SOCKET_NAME}"))
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_for_stderr));
+        if setup.input == DesktopInputPolicy::Allowed {
+            // Только ЭТОМУ kwin (окружение очищено выше, переменная не наследуется от
+            // сеанса владельца): без неё он не отдаёт стенду `fake_input` и снимки экрана.
+            kwin_command.env(NO_PERMISSION_CHECKS_VARIABLE, NO_PERMISSION_CHECKS_ENABLED);
+            // `print()` скриптов KWin (отчёты робота об окнах) попадает в журнал только так.
+            // QT_FORCE_STDERR_LOGGING: без неё Qt не пишет отладочные сообщения в stderr, и журнал пуст.
+            kwin_command.env("QT_LOGGING_RULES", "kwin_scripting.debug=true");
+            kwin_command.env("QT_FORCE_STDERR_LOGGING", "1");
+        }
         std::fs::create_dir_all(&kwin_home).map_err(|source| EnvironmentError::Io {
             action: "create kwin home",
             path: kwin_home.clone(),
@@ -97,6 +111,16 @@ impl VirtualDisplay {
             _kwin: kwin,
             _bus: bus,
         })
+    }
+
+    /// Адрес собственной шины kwin (на ней его интерфейсы: скрипты, снимки экрана).
+    pub(crate) fn bus_address(runtime_dir: &Path) -> String {
+        format!("unix:path={}", runtime_dir.join("kwin-bus").display())
+    }
+
+    /// Каталог HOME kwin: туда же прячем конфигурацию клиентов вроде `spectacle`.
+    pub(crate) fn home_dir(run_dir: &Path) -> PathBuf {
+        run_dir.join("kwin-home")
     }
 
     /// Переменные для всего, что рисует на этом экране (только Wayland, без X11).

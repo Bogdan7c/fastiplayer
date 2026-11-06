@@ -17,13 +17,15 @@ use super::hand_off::{
     HAND_OFF_EXTENSION_PAGE, HandOffError, HandOffOptions, HandOffOutcome, ROBOT_FUNCTION,
     parse_robot_output,
 };
+use super::popup_probe::PROBE_FUNCTION;
 use super::support::{
     EXTENSION_PAGE_TIMEOUT, GRACEFUL_EXIT_WAIT, GROUP_GONE_WAIT, POLL_STEP, TERMINATE_GRACE,
     settle_page_text, spawn_browser, wait_until,
 };
+use super::toolbar_pin;
 use super::{
     BrowserError, BrowserExit, BrowserKind, BrowserUnderTest, ExtensionPage, ExtensionSource,
-    LaunchOptions, TabHandle,
+    LaunchOptions, PopupSnapshot, TabHandle,
 };
 use crate::environment::BenchEnvironment;
 use crate::environment::process::ManagedProcess;
@@ -33,6 +35,10 @@ const DEVTOOLS_PORT_WAIT: Duration = Duration::from_secs(40);
 /// Сколько ждать ответ фона на `hand_off_tab`: он сначала поднимает связь с плеером
 /// (будит его через посредника), и только потом отвечает.
 const HAND_OFF_REPLY_WAIT: Duration = Duration::from_secs(60);
+/// Страница попапа экстеншена.
+const POPUP_PAGE: &str = "popup.html";
+/// Сколько ждать ответ зонда в странице попапа.
+const POPUP_PROBE_WAIT: Duration = Duration::from_secs(10);
 /// Имя файла с портом отладки в каталоге профиля.
 const ACTIVE_PORT_FILE: &str = "DevToolsActivePort";
 
@@ -47,6 +53,7 @@ pub(crate) struct Chromium {
 pub(crate) fn command_line(
     options: &LaunchOptions,
     virtual_display: bool,
+    desktop_input: bool,
 ) -> Result<Vec<OsString>, BrowserError> {
     let mut unpacked = Vec::new();
     for source in &options.extensions {
@@ -75,6 +82,10 @@ pub(crate) fn command_line(
     }
     if virtual_display {
         arguments.push("--ozone-platform=wayland".into());
+    }
+    if desktop_input {
+        // Всплывашка перевода («страница на английском») двигает панель и перехватывает клик.
+        arguments.push("--disable-features=Translate".into());
     }
     if !options.loopback_host_aliases.is_empty() {
         // «Публичные» имена стенда ведут на этот же ПК: `MAP имя 127.0.0.1`, правила через запятую.
@@ -110,11 +121,16 @@ pub(crate) fn launch(
 ) -> Result<Chromium, BrowserError> {
     let virtual_display =
         environment.display_target() == crate::environment::DisplayTarget::Virtual;
-    let arguments = command_line(options, virtual_display)?;
+    let desktop_input = environment.desktop_endpoint().is_ok();
+    let arguments = command_line(options, virtual_display, desktop_input)?;
     let profile = environment.xdg_config_home().join("chromium");
     // Файл от прошлого запуска в этом же профиле обманул бы ожидание порта.
     let port_file = profile.join(ACTIVE_PORT_FILE);
     let _stale_port_file = std::fs::remove_file(&port_file);
+    // Мышиным сценариям значок нужен на панели: закрепляем его в профиле стенда до запуска.
+    if desktop_input {
+        toolbar_pin::pin_extension(&profile, CHROMIUM_DEVELOPMENT_EXTENSION_ID)?;
+    }
     let stderr_log = BrowserKind::Chromium.stderr_log_path(environment.work_dir());
     let process = spawn_browser(
         executable,
@@ -272,6 +288,71 @@ impl BrowserUnderTest for Chromium {
         Ok(text)
     }
 
+    fn activate_tab(&mut self, tab: &TabHandle) -> Result<(), BrowserError> {
+        http_request(
+            self.port,
+            "GET",
+            &format!("/json/activate/{}", tab.as_str()),
+        )
+        .map(|_| ())
+    }
+
+    fn tab_title(&mut self, tab: &TabHandle) -> Result<String, BrowserError> {
+        let targets = http_json(self.port, "GET", "/json/list")?;
+        targets
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|target| target.get("id").and_then(Value::as_str) == Some(tab.as_str()))
+            .and_then(|target| target.get("title").and_then(Value::as_str))
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                BrowserError::protocol(
+                    "DevTools",
+                    format!("no target {} in /json/list", tab.as_str()),
+                )
+            })
+    }
+
+    fn popup_snapshot(&mut self) -> Result<Option<PopupSnapshot>, BrowserError> {
+        let popup_prefix =
+            format!("chrome-extension://{CHROMIUM_DEVELOPMENT_EXTENSION_ID}/{POPUP_PAGE}");
+        let targets = http_json(self.port, "GET", "/json/list")?;
+        let Some(socket_url) = targets
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|target| {
+                target
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .is_some_and(|url| url.starts_with(&popup_prefix))
+            })
+            .and_then(|target| target.get("webSocketDebuggerUrl").and_then(Value::as_str))
+        else {
+            return Ok(None);
+        };
+        let mut connection = CdpConnection::connect(socket_url)?;
+        let raw = connection
+            .evaluate_string_promise(&format!("({PROBE_FUNCTION})(document)"), POPUP_PROBE_WAIT)?;
+        Ok(Some(PopupSnapshot::parse(&raw).map_err(|error| {
+            BrowserError::protocol("DevTools", format!("popup probe answer {raw:?}: {error}"))
+        })?))
+    }
+
+    fn open_popup_url(&mut self) -> Result<Option<String>, BrowserError> {
+        let popup_prefix =
+            format!("chrome-extension://{CHROMIUM_DEVELOPMENT_EXTENSION_ID}/{POPUP_PAGE}");
+        let targets = http_json(self.port, "GET", "/json/list")?;
+        Ok(targets
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|target| target.get("url").and_then(Value::as_str))
+            .find(|url| url.starts_with(&popup_prefix))
+            .map(str::to_owned))
+    }
+
     fn hand_off_tab_with_options(
         &mut self,
         stand_tab: &TabHandle,
@@ -356,7 +437,7 @@ mod tests {
     }
 
     fn arguments_as_text(options: &LaunchOptions, virtual_display: bool) -> Vec<String> {
-        command_line(options, virtual_display)
+        command_line(options, virtual_display, false)
             .expect("valid options")
             .into_iter()
             .map(|argument| argument.to_string_lossy().into_owned())
@@ -415,7 +496,7 @@ mod tests {
             autoplay_without_gesture: false,
             loopback_host_aliases: Vec::new(),
         };
-        let error = command_line(&options, false).expect_err("packed files are unsupported");
+        let error = command_line(&options, false, false).expect_err("packed files are unsupported");
         assert!(matches!(error, BrowserError::UnsupportedExtension(_)));
     }
 }

@@ -18,13 +18,14 @@ use super::hand_off::{
     parse_robot_output,
 };
 use super::marionette::Marionette;
+use super::popup_probe::PROBE_FUNCTION;
 use super::support::{
     EXTENSION_PAGE_TIMEOUT, GRACEFUL_EXIT_WAIT, GROUP_GONE_WAIT, POLL_STEP, TERMINATE_GRACE,
     settle_page_text, spawn_browser,
 };
 use super::{
     BrowserError, BrowserExit, BrowserKind, BrowserUnderTest, ExtensionPage, ExtensionSource,
-    LaunchOptions, TabHandle,
+    LaunchOptions, PopupSnapshot, TabHandle,
 };
 use crate::environment::process::ManagedProcess;
 use crate::environment::{BenchEnvironment, DisplayTarget};
@@ -143,6 +144,34 @@ Services.console.registerListener(listener);
 window.benchHostStderrListener = listener;
 return true;
 "#;
+
+/// Скрипт chrome-контекста: адрес страницы в браузерном элементе попапа WebExtension
+/// (пусто, если попапа нет). Элемент создаёт сам Firefox и метит классом `webextension-popup-browser`.
+const POPUP_URL_SCRIPT: &str = r#"
+const popup = document.querySelector("browser.webextension-popup-browser");
+return popup && popup.currentURI ? popup.currentURI.spec : "";
+"#;
+
+/// Сколько ждать ответ кадрового скрипта попапа, мс.
+const POPUP_PROBE_TIMEOUT_MS: u64 = 10_000;
+
+/// Скрипт chrome-контекста: доставляет зонд в процесс попапа кадровым скриптом и ждёт ответ
+/// сообщением. Пустая строка — попапа нет. Зонд исполняется над `content.document` попапа.
+fn popup_snapshot_script() -> String {
+    format!(
+        r#"const done = arguments[arguments.length - 1];
+const popup = document.querySelector("browser.webextension-popup-browser");
+if (!popup) {{ done(""); return; }}
+const manager = popup.messageManager;
+const name = "bench:popup-snapshot";
+const listener = (message) => {{ manager.removeMessageListener(name, listener); done(message.data); }};
+manager.addMessageListener(name, listener);
+const frameScript = "sendAsyncMessage('" + name + "', (" + {probe} + ")(content.document))";
+manager.loadFrameScript("data:," + encodeURIComponent(frameScript), false);
+"#,
+        probe = serde_json::Value::String(PROBE_FUNCTION.to_owned())
+    )
+}
 
 /// Запускает Firefox, подключает Marionette и ставит расширения как временные.
 pub(crate) fn launch(
@@ -395,6 +424,68 @@ impl BrowserUnderTest for Firefox {
         let text = text?;
         closed?;
         Ok(text)
+    }
+
+    fn activate_tab(&mut self, tab: &TabHandle) -> Result<(), BrowserError> {
+        // `SwitchToWindow` по умолчанию выбирает вкладку и делает её видимой.
+        self.switch_to(tab.as_str())
+    }
+
+    fn tab_title(&mut self, tab: &TabHandle) -> Result<String, BrowserError> {
+        self.switch_to(tab.as_str())?;
+        let reply = self.marionette.command("WebDriver:GetTitle", json!({}))?;
+        reply
+            .get("value")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| BrowserError::protocol("Marionette", format!("GetTitle reply: {reply}")))
+    }
+
+    fn popup_snapshot(&mut self) -> Result<Option<PopupSnapshot>, BrowserError> {
+        self.marionette
+            .command("Marionette:SetContext", json!({ "value": "chrome" }))?;
+        self.marionette.command(
+            "WebDriver:SetTimeouts",
+            json!({ "script": POPUP_PROBE_TIMEOUT_MS }),
+        )?;
+        let script = popup_snapshot_script();
+        let reply = self.marionette.command(
+            "WebDriver:ExecuteAsyncScript",
+            json!({ "script": script, "args": [] }),
+        );
+        let restored = self
+            .marionette
+            .command("Marionette:SetContext", json!({ "value": "content" }));
+        let reply = reply?;
+        restored?;
+        let raw = reply.get("value").and_then(Value::as_str).unwrap_or("");
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        PopupSnapshot::parse(raw).map(Some).map_err(|error| {
+            BrowserError::protocol("Marionette", format!("popup probe answer {raw:?}: {error}"))
+        })
+    }
+
+    fn open_popup_url(&mut self) -> Result<Option<String>, BrowserError> {
+        // Попап Firefox — панель окна браузера с браузерным элементом внутри: видим его
+        // только из chrome-контекста. Контекст возвращаем в любом случае.
+        self.marionette
+            .command("Marionette:SetContext", json!({ "value": "chrome" }))?;
+        let reply = self.marionette.command(
+            "WebDriver:ExecuteScript",
+            json!({ "script": POPUP_URL_SCRIPT, "args": [] }),
+        );
+        let restored = self
+            .marionette
+            .command("Marionette:SetContext", json!({ "value": "content" }));
+        let reply = reply?;
+        restored?;
+        Ok(reply
+            .get("value")
+            .and_then(Value::as_str)
+            .filter(|url| !url.is_empty())
+            .map(str::to_owned))
     }
 
     fn hand_off_tab_with_options(

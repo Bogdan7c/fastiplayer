@@ -343,6 +343,8 @@ BROWSER_BRIDGE_BENCH_ALLOWED_DEPENDENCIES = frozenset(
         "tempfile",
         "thiserror",
         "tungstenite",
+        "wayland-client",
+        "wayland-protocols-plasma",
     }
 )
 

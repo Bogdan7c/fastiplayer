@@ -15,7 +15,7 @@ use browser_bridge_bench::browsers::{
     BrowserKind, ExtensionPage, ExtensionSource, LaunchOptions, launch,
 };
 use browser_bridge_bench::environment::{
-    BenchEnvironment, DisplayTarget, EnvironmentOptions, PlayerConfigProfile,
+    BenchEnvironment, DesktopSetup, DisplayTarget, EnvironmentOptions, PlayerConfigProfile,
 };
 use browser_bridge_bench::observe::read_host_evidence;
 
@@ -37,6 +37,7 @@ fn popup_text_of_real_extension(
         player_config: PlayerConfigProfile::Gles2Vaapi,
         player_rust_log: "info".to_owned(),
         work_root: repo.join("target/browser-bridge-bench/work"),
+        desktop: DesktopSetup::default(),
     })?;
     environment.connect_browser(kind)?;
 

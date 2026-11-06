@@ -16,6 +16,7 @@ mod capture_pages_contract;
 mod codec_cases;
 mod codecs;
 mod context;
+mod entries;
 mod evidence;
 mod extension_status;
 mod handoff_run;
@@ -70,6 +71,17 @@ pub fn run_attacks(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> 
 /// Защита локального адреса (решение 199): блокировать, спрашивать, разрешить по согласию.
 pub fn run_local_address(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
     capture::run_local_address(stand, browser)
+}
+
+/// Матрица «вход × страница» на настоящей мыши и клавиатуре (10b): значок на панели, Tab и Enter
+/// в попапе. Каждая строка доказана по журналам плеера, посредника и сервера.
+pub fn run_entries(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> Vec<StepResult> {
+    entries::run_all(stand, browser, filter)
+}
+
+/// Идентификаторы страниц `entries` (для проверки `--page` в командной строке).
+pub fn entries_page_ids() -> Vec<&'static str> {
+    entries::entries_page_ids()
 }
 
 /// Матрица блокировщика рекламы: страницы × (без / блокировщик первым / наш экстеншен первым).

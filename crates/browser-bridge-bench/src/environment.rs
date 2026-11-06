@@ -10,6 +10,7 @@
 
 mod bus;
 mod display;
+pub mod endpoint;
 pub mod error;
 mod install;
 pub mod options;
@@ -23,8 +24,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::browsers::BrowserKind;
 
+pub use endpoint::DesktopEndpoint;
 pub use error::EnvironmentError;
-pub use options::{DisplayTarget, EnvironmentOptions, PlayerConfigProfile};
+pub use options::{
+    DesktopInputPolicy, DesktopSetup, DisplayTarget, EnvironmentOptions, PlayerConfigProfile,
+    ScreenSize,
+};
 pub use process::install_interrupt_cleanup;
 
 use bus::{BusSpec, PrivateBus};
@@ -71,6 +76,12 @@ pub struct BenchEnvironment {
 impl BenchEnvironment {
     /// Создаёт каталоги, пишет `config.toml` профиля, поднимает экран и шину.
     pub fn create(options: EnvironmentOptions) -> Result<Self, EnvironmentError> {
+        // Настоящий ввод на экране владельца недопустим ни при каких условиях: ошибка, не пропуск.
+        if options.display == DisplayTarget::Real
+            && options.desktop.input == DesktopInputPolicy::Allowed
+        {
+            return Err(EnvironmentError::DesktopInputOnRealDisplay);
+        }
         // Real рисует на экране процесса: без WAYLAND_DISPLAY рисовать некуда.
         if options.display == DisplayTarget::Real && std::env::var_os("WAYLAND_DISPLAY").is_none() {
             return Err(EnvironmentError::NoRealDisplay);
@@ -102,6 +113,7 @@ impl BenchEnvironment {
             environment.display = Some(VirtualDisplay::start(
                 &environment.runtime_dir,
                 &environment.run_dir,
+                environment.options.desktop,
             )?);
         }
         environment.bus = Some(environment.start_bus()?);
@@ -144,6 +156,21 @@ impl BenchEnvironment {
     /// Выбранный экран.
     pub fn display_target(&self) -> DisplayTarget {
         self.options.display
+    }
+
+    /// Адреса невидимого экрана для ввода и снимков. Ошибка, если экран не невидимый или
+    /// окружение создано без права на ввод ([`DesktopInputPolicy::Allowed`]).
+    pub fn desktop_endpoint(&self) -> Result<DesktopEndpoint, EnvironmentError> {
+        let allowed = self.options.display == DisplayTarget::Virtual
+            && self.options.desktop.input == DesktopInputPolicy::Allowed;
+        if !allowed || self.display.is_none() {
+            return Err(EnvironmentError::DesktopInputNotEnabled);
+        }
+        Ok(DesktopEndpoint::new(
+            &self.runtime_dir,
+            &self.run_dir,
+            self.options.desktop.screen,
+        ))
     }
 
     /// Журнал плеера (stderr шины, а с ним и активированного ею плеера).
@@ -322,4 +349,36 @@ fn runtime_dir(run_dir: &Path) -> Result<(PathBuf, bool), EnvironmentError> {
         },
     )?;
     Ok((path, separate))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn real_display_never_gets_synthetic_input() {
+        // Ошибка окружения, а не тихий пропуск: проверяется ДО любых побочных эффектов.
+        let error = BenchEnvironment::create(EnvironmentOptions {
+            display: DisplayTarget::Real,
+            player_bin_dir: PathBuf::from("/nonexistent"),
+            player_config: PlayerConfigProfile::Clean,
+            player_rust_log: "info".to_owned(),
+            work_root: PathBuf::from("/nonexistent"),
+            desktop: DesktopSetup::pointer_stand(),
+        })
+        .err()
+        .expect("Real + Allowed must be refused");
+        assert!(
+            matches!(error, EnvironmentError::DesktopInputOnRealDisplay),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn default_setup_keeps_the_old_screen_and_forbids_input() {
+        let setup = DesktopSetup::default();
+        assert_eq!(setup.screen, ScreenSize::STANDARD);
+        assert_eq!((setup.screen.width, setup.screen.height), (1280, 720));
+        assert_eq!(setup.input, DesktopInputPolicy::Forbidden);
+    }
 }

@@ -33,6 +33,69 @@ pub enum PlayerConfigProfile {
     ShortNetworkRetry,
 }
 
+/// Размер невидимого экрана в пикселях (масштаб экрана всегда 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenSize {
+    /// Ширина, пикселей.
+    pub width: u32,
+    /// Высота, пикселей.
+    pub height: u32,
+}
+
+impl ScreenSize {
+    /// Прежний размер всех сценариев: как у владельца на ноутбуке, влезает любое тестовое видео.
+    pub const STANDARD: Self = Self {
+        width: 1280,
+        height: 720,
+    };
+    /// Экран мышиных сценариев. На 1280x720 родное контекстное меню Chromium не влезает и
+    /// прокручивается, а попап экстеншена и окно плеера рядом с браузером тесны. 1920x1200
+    /// (16:10) вмещает и меню, и попап, и два окна; кадр снимка при этом остаётся небольшим.
+    pub const POINTER_STAND: Self = Self {
+        width: 1920,
+        height: 1200,
+    };
+}
+
+/// Пускать ли в невидимый экран «настоящую мышь и клавиатуру» (протокол `fake_input`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopInputPolicy {
+    /// Нельзя: kwin работает с обычными проверками прав. Так идут все старые сценарии.
+    Forbidden,
+    /// Можно: нашему kwin ставится `KWIN_WAYLAND_NO_PERMISSION_CHECKS=1` (без неё kwin не
+    /// отдаёт `fake_input` и снимок экрана чужим клиентам). Допустимо только на `Virtual`:
+    /// на `Real` создание окружения падает ошибкой, а не молча пропускает ввод.
+    Allowed,
+}
+
+/// Устройство невидимого экрана: размер и право на ввод. По умолчанию — как раньше.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DesktopSetup {
+    /// Размер экрана.
+    pub screen: ScreenSize,
+    /// Право на настоящий ввод и снимки.
+    pub input: DesktopInputPolicy,
+}
+
+impl Default for DesktopSetup {
+    fn default() -> Self {
+        Self {
+            screen: ScreenSize::STANDARD,
+            input: DesktopInputPolicy::Forbidden,
+        }
+    }
+}
+
+impl DesktopSetup {
+    /// Экран для мышиных сценариев: большой, с правом на ввод и снимки.
+    pub fn pointer_stand() -> Self {
+        Self {
+            screen: ScreenSize::POINTER_STAND,
+            input: DesktopInputPolicy::Allowed,
+        }
+    }
+}
+
 /// Исходные данные для [`crate::environment::BenchEnvironment::create`].
 #[derive(Debug, Clone)]
 pub struct EnvironmentOptions {
@@ -46,4 +109,6 @@ pub struct EnvironmentOptions {
     pub player_rust_log: String,
     /// Каталог, внутри которого стенд заводит СВОЙ подкаталог прогона.
     pub work_root: PathBuf,
+    /// Размер невидимого экрана и право на настоящий ввод (на `Real` не действует размер).
+    pub desktop: DesktopSetup,
 }

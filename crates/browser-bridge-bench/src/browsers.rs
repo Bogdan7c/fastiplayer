@@ -12,12 +12,15 @@ mod error;
 mod firefox;
 mod hand_off;
 mod marionette;
+mod popup_probe;
 mod support;
+mod toolbar_pin;
 
 use std::path::{Path, PathBuf};
 
 pub use error::BrowserError;
 pub use hand_off::{HandOffError, HandOffOptions, HandOffOutcome, LocalAddressConsent};
+pub use popup_probe::{FocusedElement, PopupSnapshot};
 
 use crate::environment::BenchEnvironment;
 
@@ -126,6 +129,8 @@ pub trait BrowserUnderTest {
     fn kind(&self) -> BrowserKind;
     /// Открывает адрес в новой вкладке (не ждёт полной загрузки ресурсов).
     fn open_tab(&mut self, url: &str) -> Result<TabHandle, BrowserError>;
+    /// Делает вкладку активной (видимой) в окне браузера: попап работает с АКТИВНОЙ вкладкой.
+    fn activate_tab(&mut self, tab: &TabHandle) -> Result<(), BrowserError>;
     /// Закрывает вкладку.
     fn close_tab(&mut self, tab: TabHandle) -> Result<(), BrowserError>;
     /// Открывает страницу нашего экстеншена и возвращает её видимый текст.
@@ -154,6 +159,15 @@ pub trait BrowserUnderTest {
     /// Нужна сценарию кодеков: записать настройку в `storage.local` и прочитать регистрацию
     /// динамического скрипта — то, что делает сам экстеншен, а не страница сайта.
     fn run_in_extension_page(&mut self, async_function: &str) -> Result<String, BrowserError>;
+    /// Заголовок вкладки: независимая от снимка улика того, что в страницу дошли клик и клавиши
+    /// (тестовая страница пишет их в `document.title`).
+    fn tab_title(&mut self, tab: &TabHandle) -> Result<String, BrowserError>;
+    /// Адрес открытого попапа нашего экстеншена, если он сейчас показан на панели браузера.
+    /// Независимая от снимка улика «клик по значку открыл попап»: Chromium отвечает целью
+    /// DevTools `chrome-extension://…/popup.html`, Firefox читает chrome-контекст Marionette.
+    fn open_popup_url(&mut self) -> Result<Option<String>, BrowserError>;
+    /// Снимок открытого попапа (случай `data-notice`, строки, фокус); `None`, если попапа нет.
+    fn popup_snapshot(&mut self) -> Result<Option<PopupSnapshot>, BrowserError>;
     /// Мягко закрывает браузер, ждёт выход, добивает остатки группы.
     fn shutdown(self: Box<Self>) -> Result<BrowserExit, BrowserError>;
 }

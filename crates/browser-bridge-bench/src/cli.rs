@@ -6,7 +6,7 @@ use browser_bridge_bench::browsers::BrowserKind;
 use browser_bridge_bench::environment::{DisplayTarget, PlayerConfigProfile};
 use browser_bridge_bench::scenarios::{
     BrowserExecutables, DEFAULT_MIN_FRAMES, PAGE_SCENARIOS, PageFilter, ReplayOptions, RunSettings,
-    attack_page_ids, capture_page_ids, end_page_ids, player_command_page_ids,
+    attack_page_ids, capture_page_ids, end_page_ids, entries_page_ids, player_command_page_ids,
 };
 
 /// Что запускать.
@@ -21,6 +21,7 @@ pub enum Command {
     Codecs,
     Attacks,
     LocalAddress,
+    Entries,
     BlockerMatrix,
     Replay,
     GenerateRecording,
@@ -67,6 +68,7 @@ impl Command {
                 | Self::PageEnds
                 | Self::PlayerCommands
                 | Self::Attacks
+                | Self::Entries
                 | Self::All
         )
     }
@@ -81,6 +83,7 @@ impl Command {
             Self::PageEnds => filter.matches_any_of(end_page_ids()),
             Self::PlayerCommands => filter.matches_any_of(player_command_page_ids()),
             Self::Attacks => filter.matches_any_of(attack_page_ids()),
+            Self::Entries => filter.matches_any_of(entries_page_ids()),
             // `all` всегда начинается с `pages`, где есть любая известная страница.
             Self::All => filter.matches_any_of(pages()),
             _ => filter.selects_everything(),
@@ -117,6 +120,9 @@ Commands:
                     CLEAN page in the SAME browser must then hand off and play
   local-address     a file on a local address under a public-looking page name: refused by
                     default, asks for consent with the 'ask' setting, plays after consent
+  entries           REAL mouse and keyboard in an invisible kwin: click the extension button on
+                    the browser toolbar, Tab / Enter in the popup; entry x page matrix, each
+                    row proven by player / host / server logs (needs spectacle and ffmpeg)
   blocker-matrix    pages x (no blocker / blocker installed first / ours first) with uBlock
                     Origin (Lite); fetch the blockers first with
                     scripts/browser-bridge-bench-fetch-blockers.sh; not part of 'all'
@@ -126,8 +132,8 @@ Commands:
                     (presented_frames, position_ms, state) and judge them (--min-frames)
   generate-recording  write a synthetic recording (--output FILE.fprec [--asset ID]) from a
                     stand fMP4 asset: add_source_buffer, paced appends, handoff_began
-  all               pages, capture, page-ends, player-commands, extension-status, codecs, attacks and
-                    local-address (smoke is a subset of capture), one after another; with --page
+  all               pages, capture, page-ends, player-commands, extension-status, codecs, attacks,
+                    local-address and entries (smoke is a subset of capture), one after another; with --page
                     only the page steps run
 
 Options:
@@ -343,6 +349,7 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
         "codecs" => Ok(Command::Codecs),
         "attacks" => Ok(Command::Attacks),
         "local-address" => Ok(Command::LocalAddress),
+        "entries" => Ok(Command::Entries),
         "blocker-matrix" => Ok(Command::BlockerMatrix),
         "replay" => Ok(Command::Replay),
         "generate-recording" => Ok(Command::GenerateRecording),

@@ -10,7 +10,8 @@ use crate::browsers::{
     launch_with_executable,
 };
 use crate::environment::{
-    BenchEnvironment, DisplayTarget, EnvironmentError, EnvironmentOptions, PlayerConfigProfile,
+    BenchEnvironment, DesktopSetup, DisplayTarget, EnvironmentError, EnvironmentOptions,
+    PlayerConfigProfile,
 };
 use crate::media::{MediaError, ensure_media};
 use crate::observe::ObserveError;
@@ -32,6 +33,12 @@ pub enum ScenarioError {
     Browser(#[from] BrowserError),
     #[error("log: {0}")]
     Observe(#[from] ObserveError),
+    #[error("desktop input: {0}")]
+    Input(#[from] crate::desktop_input::InputError),
+    #[error("screen: {0}")]
+    Screen(#[from] crate::screen_capture::ScreenError),
+    #[error("compositor windows: {0}")]
+    Windows(#[from] crate::compositor_windows::WindowError),
     #[error("player control: {0}")]
     PlayerControl(#[from] crate::player_control::PlayerControlError),
     /// Не собран настоящий экстеншен: стенд не собирает его сам.
@@ -99,11 +106,13 @@ impl Stand {
     }
 
     /// Создаёт изолированное окружение прогона (экран, шина, временный HOME) с заданным
-    /// профилем настроек плеера. Сценарий, которому важно, как плеер настроен (метка «дешёвых»
-    /// кодеков при GLES2), не зависит от `--player-config`.
-    pub(crate) fn create_environment_with_player_config(
+    /// профилем настроек плеера и устройством экрана. Сценарий, которому важно, как плеер настроен
+    /// (метка «дешёвых» кодеков при GLES2), не зависит от `--player-config`; мышиным сценариям
+    /// нужен большой экран и право на настоящий ввод ([`DesktopSetup::pointer_stand`]).
+    pub(crate) fn create_environment_with_desktop(
         &self,
         player_config: PlayerConfigProfile,
+        desktop: DesktopSetup,
     ) -> Result<BenchEnvironment, ScenarioError> {
         let environment = BenchEnvironment::create(EnvironmentOptions {
             display: self.settings.display,
@@ -111,6 +120,7 @@ impl Stand {
             player_config,
             player_rust_log: PLAYER_RUST_LOG.to_owned(),
             work_root: self.settings.work_root.clone(),
+            desktop,
         })?;
         if self.settings.keep_work {
             environment.keep_work_dir();
@@ -176,7 +186,20 @@ impl Stand {
     where
         F: FnOnce(&BenchEnvironment) -> Result<Verdict, ScenarioError>,
     {
-        let environment = match self.create_environment_with_player_config(player_config) {
+        self.with_environment_on_desktop(player_config, DesktopSetup::default(), body)
+    }
+
+    /// [`Self::with_environment`] с настройками плеера и устройством экрана по выбору сценария.
+    pub(crate) fn with_environment_on_desktop<F>(
+        &self,
+        player_config: PlayerConfigProfile,
+        desktop: DesktopSetup,
+        body: F,
+    ) -> Verdict
+    where
+        F: FnOnce(&BenchEnvironment) -> Result<Verdict, ScenarioError>,
+    {
+        let environment = match self.create_environment_with_desktop(player_config, desktop) {
             Ok(environment) => environment,
             Err(error) => return Verdict::fail(error.to_string()),
         };

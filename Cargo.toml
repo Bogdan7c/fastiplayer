@@ -200,6 +200,10 @@ egui-wgpu = "0.36"
 glow = "0.17"
 khronos-egl = { version = "6", features = ["dynamic"] }
 raw-window-handle = "0.6"
+# Клиент Wayland и протокол `fake_input` KDE для настоящей мыши в тестовом стенде (browser-bridge-bench):
+# версии совпадают с уже стоящими в Cargo.lock (их тянет winit), новых загрузок нет.
+wayland-client = "0.31"
+wayland-protocols-plasma = { version = "0.3", features = ["client"] }
 wayland-sys = { version = "0.31", features = ["client", "dlopen", "egl"] }
 # Художник egui на GLES2 (сессия 04): только типы мешей/текстур egui (epaint уже в дереве через
 # egui) и безопасный взгляд на вершины как на байты (bytemuck уже в дереве через egui-wgpu).

@@ -43,6 +43,8 @@ const POSITION_TOLERANCE_S = 3;
 const RETURN_WAIT_MS = 15000;
 /** Сколько кадров браузер должен декодировать сам после возврата: «снова играет сам». */
 const RETURN_MIN_REAL_FRAMES = 10;
+/** Видео ушло в плеер: браузер почти не декодирует (запас на момент перехода). */
+const FOLLOWED_MAX_REAL_FRAMES = 3;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -315,7 +317,12 @@ async function runCommand(context, state, hooks, command) {
   } else if (name === 'expect-seek') {
     await expectPlayerSeek(context, state, Number(argument));
   } else if (name === 'expect-returned') {
-    await expectReturn(context, state, Number(argument));
+    await expectReturnedPaused(context, state, Number(argument));
+    await expectPagePlaysItself(context, state);
+  } else if (name === 'expect-returned-paused') {
+    await expectReturnedPaused(context, state, Number(argument));
+  } else if (name === 'expect-follows-into-player') {
+    await expectFollowsIntoPlayer(context, state);
   } else {
     context.check(`command-${name}`, false, `unknown command '${command}'`);
   }
@@ -368,7 +375,7 @@ async function expectSeekBeyondBuffer(context, state, targetS) {
  * НА ПАУЗЕ в позиции ≈T (так её оставил плеер); затем страница САМА зовёт `play()`, как
  * человек, и браузер снова декодирует, а часы идут от ≈T.
  */
-async function expectReturn(context, state, positionS) {
+async function expectReturnedPaused(context, state, positionS) {
   const { video, probe } = state;
   state.returned = true;
   const nearT = () => Math.abs(video.currentTime - positionS) <= POSITION_TOLERANCE_S;
@@ -385,7 +392,11 @@ async function expectReturn(context, state, positionS) {
     && probe.framesOf(video) - framesAfterSeekDecode <= 3;
   context.check('returned-paused-at-position', settled && stayed,
     `closed at ${positionS.toFixed(2)} s, page paused=${video.paused} at ${video.currentTime.toFixed(2)} s, real frames during hold ${probe.framesOf(video) - framesAfterSeekDecode}`);
-  // Страница сама продолжает, как человек.
+}
+
+/** Страница сама продолжает, как человек: плеера больше нет, браузер снова декодирует, часы идут. */
+async function expectPagePlaysItself(context, state) {
+  const { video, probe } = state;
   const startTime = video.currentTime;
   const framesBefore = probe.framesOf(video);
   try {
@@ -399,4 +410,27 @@ async function expectReturn(context, state, positionS) {
   const advanced = await waitFor(() => video.currentTime >= startTime + 0.5, RETURN_WAIT_MS);
   context.check('page-plays-by-itself-from-position', decoding && advanced && !video.paused,
     `real frames ${framesBefore} -> ${probe.framesOf(video)}, currentTime ${startTime.toFixed(2)} -> ${video.currentTime.toFixed(2)}, paused=${video.paused}`);
+}
+
+/**
+ * Страница сама запускает видео, пока окно плеера живо и прошлое видео в нём доиграло (выбор другого
+ * видео, решение 215). Сеанс переезжает обратно на это видео (решение 201): часы идут, браузер не
+ * декодирует. Сравнение с `expectPagePlaysItself` здесь неверно: там плеера уже нет.
+ */
+async function expectFollowsIntoPlayer(context, state) {
+  const { video, probe } = state;
+  const startTime = video.currentTime;
+  try {
+    await video.play();
+  } catch {
+    video.muted = true;
+    await video.play();
+  }
+  const advanced = await waitFor(() => video.currentTime >= startTime + 1, RETURN_WAIT_MS);
+  // Счётчик читаем только после хода часов: переезд обнуляет его вместе с источником.
+  const framesAtStart = probe.framesOf(video);
+  await sleep(FROZEN_OBSERVE_MS);
+  const gained = probe.framesOf(video) - framesAtStart;
+  context.check('page-play-follows-into-player', advanced && !video.paused && gained <= FOLLOWED_MAX_REAL_FRAMES,
+    `currentTime ${startTime.toFixed(2)} -> ${video.currentTime.toFixed(2)}, paused=${video.paused}, real frames while it plays ${gained} (limit ${FOLLOWED_MAX_REAL_FRAMES})`);
 }

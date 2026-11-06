@@ -40,9 +40,9 @@ use crate::observe::{HostLogEvidence, read_host_evidence};
 use crate::site::{MediaRequest, MediaRequester, PageReport, SiteError};
 
 /// Страница стенда: `<video src>` на локальном адресе.
-const LOCAL_PAGE: &str = "video-src-local";
+pub(in crate::scenarios) const LOCAL_PAGE: &str = "video-src-local";
 /// Файл страницы на сервере стенда (тот же ролик, что у `video-src`) и ожидания от его запросов.
-const LOCAL_FILE_PAGE: FilePage = FilePage {
+pub(in crate::scenarios) const LOCAL_FILE_PAGE: FilePage = FilePage {
     id: LOCAL_PAGE,
     file_path: "/media/progressive/h264-aac-long.mp4",
     required_cookie: None,
@@ -62,7 +62,7 @@ const REDIRECT_END_TIMEOUT: Duration = Duration::from_secs(20);
 /// Что страница добавляет к адресу, чтобы взять файл с перенаправлением.
 const REDIRECT_QUERY: &str = "&mode=handoff&file_route=redirect-local";
 /// Обычный запрос режима передачи.
-const DIRECT_QUERY: &str = "&mode=handoff";
+pub(in crate::scenarios) const DIRECT_QUERY: &str = "&mode=handoff";
 /// Ключ настройки в `storage.local` экстеншена (значения `block` | `ask`, по умолчанию `block`).
 /// Зеркало ключа в `extensions/browser/src/shared/` — сверить с экстеншеном при первом живом прогоне.
 const LOCAL_ADDRESS_SETTING_KEY: &str = "localAddressSetting";
@@ -159,7 +159,7 @@ fn player_config_for(case: LocalAddressCase, standard: PlayerConfigProfile) -> P
 }
 
 /// Скрипт страницы настроек: записать значение настройки в `storage.local`.
-fn write_setting_function(value: &str) -> String {
+pub(in crate::scenarios) fn write_setting_function(value: &str) -> String {
     format!(
         "async (api) => {{ await api.storage.local.set({{ {LOCAL_ADDRESS_SETTING_KEY}: {value:?} }}); return 'saved'; }}"
     )
@@ -268,7 +268,7 @@ fn drive(
 }
 
 /// Запросы к файлу страницы за этот прогон.
-fn sorted_file_requests(
+pub(in crate::scenarios) fn sorted_file_requests(
     stand: &Stand,
     run_started_at: Instant,
     handed_off_at: Instant,
