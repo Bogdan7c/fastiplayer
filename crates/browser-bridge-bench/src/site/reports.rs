@@ -181,6 +181,21 @@ impl ReportStore {
             .unwrap_or_default()
     }
 
+    /// Строки журнала с `needle` в порядке прихода; журнал не расходуется.
+    pub(super) fn lines_containing(&self, run: &RunId, needle: &str) -> Vec<String> {
+        self.lock()
+            .logs
+            .get(run)
+            .map(|lines| {
+                lines
+                    .iter()
+                    .filter(|entry| entry.line.contains(needle))
+                    .map(|entry| entry.line.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Забирает (и удаляет) накопленный журнал прогона в порядке прихода.
     pub(super) fn take_logs(&self, run: &RunId) -> Vec<BrowserLogLine> {
         self.lock().logs.remove(run).unwrap_or_default()

@@ -112,6 +112,12 @@ impl StandSite {
         self.shared.reports.wait_log_line(run, needle, timeout)
     }
 
+    /// Все строки журнала страницы с `needle` по порядку прихода (журнал не расходуется).
+    /// Нужен, когда важна именно НОВАЯ строка: робот считает строки до действия и ждёт рост числа.
+    pub fn log_lines_containing(&self, run: &RunId, needle: &str) -> Vec<String> {
+        self.shared.reports.lines_containing(run, needle)
+    }
+
     /// Отправляет странице команду; страница заберёт её при очередном опросе.
     pub fn send_command(&self, run: &RunId, command: &str) {
         self.shared.reports.push_command(run, command);

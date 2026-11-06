@@ -13,6 +13,7 @@
 import { runScenario, UnsupportedError } from '../lib/bench-report.js';
 import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
 import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
+import { installEntryProbe } from '../lib/entry-probe.js';
 import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount } from '../lib/scenario-kit.js';
 
 /** Сколько родитель ждёт отчёт iframe в режиме передачи, мс (меньше бюджета страницы). */
@@ -35,6 +36,8 @@ await runScenario('iframe-cross-origin', async (ctx) => {
   frame.width = 520;
   frame.height = 320;
   document.body.append(frame);
+  // Родитель сообщает роботу, где рамка на экране (сам ролик внутри чужого origin).
+  if (handoff) installEntryProbe(ctx);
   // В режиме передачи iframe ждёт команд робота, поэтому отчёт приходит намного позже.
   const innerWaitMs = handoff ? HANDOFF_INNER_WAIT_MS : 18000;
   const timeout = new Promise((resolve) => setTimeout(() => resolve(null), innerWaitMs));

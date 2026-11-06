@@ -184,11 +184,12 @@ pub(crate) fn parse_robot_output(
                 })?;
             // serde не запрещает лишние поля у вариантов без данных: проверяем форму сами.
             let expected_keys = match outcome {
-                HandOffOutcome::Started
-                | HandOffOutcome::NoVideo
+                HandOffOutcome::NoVideo
                 | HandOffOutcome::Protected
                 | HandOffOutcome::LocalAddressRefused => 1,
-                HandOffOutcome::PlayerUnavailable { .. }
+                // `started` обязан сказать, новое ли окно (решение 216): старая форма без поля — ошибка.
+                HandOffOutcome::Started
+                | HandOffOutcome::PlayerUnavailable { .. }
                 | HandOffOutcome::Failed { .. }
                 | HandOffOutcome::NotSupportedYet { .. }
                 | HandOffOutcome::LocalAddressNeedsConsent { .. } => 2,
@@ -199,9 +200,25 @@ pub(crate) fn parse_robot_output(
                     raw: text,
                 });
             }
+            if matches!(outcome, HandOffOutcome::Started) && !names_player_window(&reply) {
+                return Err(HandOffError::BadReply {
+                    problem: "started without a known player_window".to_owned(),
+                    raw: text,
+                });
+            }
             Ok(outcome)
         }
     }
+}
+
+/// `started` называет окно плеера одним из двух значений договора экстеншена.
+fn names_player_window(reply: &serde_json::Value) -> bool {
+    matches!(
+        reply
+            .get("player_window")
+            .and_then(serde_json::Value::as_str),
+        Some("new" | "already_open")
+    )
 }
 
 #[cfg(test)]
@@ -217,7 +234,7 @@ mod tests {
     #[test]
     fn every_contract_outcome_is_recognised() {
         assert_eq!(
-            parse(r#"{"robot":"reply","reply":{"kind":"started"}}"#),
+            parse(r#"{"robot":"reply","reply":{"kind":"started","player_window":"new"}}"#),
             Ok(HandOffOutcome::Started)
         );
         assert_eq!(
@@ -287,7 +304,10 @@ mod tests {
             // С 09c2 исхода `ad_playing` нет: реклама передаётся как обычное видео.
             r#"{"kind":"ad_playing"}"#,
             r#"{"kind":"failed"}"#,
+            r#"{"kind":"started"}"#,
             r#"{"kind":"started","extra":1}"#,
+            r#"{"kind":"started","player_window":"maybe"}"#,
+            r#"{"kind":"started","player_window":"new","extra":1}"#,
             r#"{"kind":"failed","reason":7}"#,
             r#"{"kind":"not_supported_yet"}"#,
             r#"{"kind":"not_supported_yet","form":"native_hls","extra":1}"#,

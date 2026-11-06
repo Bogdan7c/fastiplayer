@@ -7,6 +7,7 @@
 
 mod frame;
 mod icon_search;
+mod icon_settling;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -17,6 +18,8 @@ pub use frame::{Frame, RgbaImage};
 pub use icon_search::{
     DEFAULT_MAX_MEAN_DIFFERENCE, IconMatch, IconTemplate, SearchBand, find_icon,
 };
+
+use icon_settling::{IconSettling, SettleStep};
 
 use crate::browsers::BrowserKind;
 use crate::desktop_input::Point;
@@ -168,29 +171,33 @@ impl<'env> ScreenCapture<'env> {
         Frame::decode_png(&path, screen.width, screen.height)
     }
 
-    /// Ищет значок экстеншена на панели. Не нашёл или нашёл два места — ошибка с путём к
-    /// сохранённому снимку (каталог прогона при этом не удаляется).
-    pub fn find_extension_icon(&self) -> Result<IconMatch, ScreenError> {
+    /// Ищет значок экстеншена на УЖЕ снятом кадре в полосе `band` (например, строка в открытом
+    /// контекстном меню: у пунктов экстеншена браузер рисует его значок). Снимок не делает и не
+    /// сохраняет: вызывающий решает, что делать с ошибкой `IconNotFound` (для «пункта нет» это ответ).
+    pub fn find_icon_in_frame(
+        &self,
+        frame: &Frame,
+        band: SearchBand,
+    ) -> Result<IconMatch, ScreenError> {
+        find_icon(frame, &self.templates, band, DEFAULT_MAX_MEAN_DIFFERENCE)
+    }
+
+    /// Один снимок и поиск значка на панели. Ошибка поиска несёт путь снимка; решение, хранить ли
+    /// каталог прогона, остаётся за вызывающим: неоднозначность бывает мимолётной.
+    fn read_extension_icon(&self) -> Result<IconMatch, ScreenError> {
         let path = self.take_screenshot("find-icon")?;
         let screen = self.endpoint.screen();
         let frame = Frame::decode_png(&path, screen.width, screen.height)?;
-        match find_icon(
+        find_icon(
             &frame,
             &self.templates,
             TOOLBAR_BAND,
             DEFAULT_MAX_MEAN_DIFFERENCE,
-        ) {
-            Ok(found) => Ok(found),
-            Err(error) => {
-                self.environment.keep_work_dir();
-                Err(error.with_screenshot(path))
-            }
-        }
+        )
+        .map_err(|error| error.with_screenshot(path))
     }
 }
 
-/// Сколько раз подряд значок обязан стоять на одном месте, чтобы по нему кликать.
-const SETTLED_READINGS: usize = 2;
 /// Сколько попыток дать панели устояться (она сдвигается, пока исчезают всплывашки и кнопки адресной строки).
 const SETTLE_ATTEMPTS: usize = 12;
 /// Пауза между снимками при ожидании устоявшейся панели.
@@ -198,27 +205,23 @@ const SETTLE_PAUSE: Duration = Duration::from_millis(500);
 
 impl ScreenCapture<'_> {
     /// Ищет значок, пока он не окажется на ОДНОМ месте в двух снимках подряд. Панель браузера
-    /// двигается (всплывашка перевода, кнопки адресной строки), и клик по месту из устаревшего
-    /// снимка попал бы в соседний элемент. Ошибка поиска возвращается сразу, без повторов.
+    /// двигается (всплывашка перевода, кнопки адресной строки, закрывающаяся вкладка экстеншена),
+    /// и клик по месту из устаревшего снимка попал бы в соседний элемент. Правило — в
+    /// [`IconSettling`]. При ошибке каталог прогона остаётся для разбора вместе со снимком.
     pub fn find_settled_extension_icon(&self) -> Result<IconMatch, ScreenError> {
-        let mut previous: Option<IconMatch> = None;
-        let mut agreeing = 1;
+        let mut settling = IconSettling::default();
         for _ in 0..SETTLE_ATTEMPTS {
-            let found = self.find_extension_icon()?;
-            if previous.is_some_and(|before| before.top_left == found.top_left) {
-                agreeing += 1;
-            } else {
-                agreeing = 1;
+            match settling.observe(self.read_extension_icon()) {
+                SettleStep::Settled(found) => return Ok(found),
+                SettleStep::KeepWatching => std::thread::sleep(SETTLE_PAUSE),
+                SettleStep::Failed(error) => {
+                    self.environment.keep_work_dir();
+                    return Err(error);
+                }
             }
-            if agreeing >= SETTLED_READINGS {
-                return Ok(found);
-            }
-            previous = Some(found);
-            std::thread::sleep(SETTLE_PAUSE);
         }
-        Err(ScreenError::IconNotSettled {
-            last: previous.map(|found| found.top_left),
-        })
+        self.environment.keep_work_dir();
+        Err(settling.give_up())
     }
 }
 

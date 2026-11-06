@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>link-source</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;display:block}</style>
+</head>
+<body>
+<h1>link-source</h1>
+
+<p><a id="autoplay" href="#">A page that plays a video by itself</a></p>
+<p><a id="novideo" href="link-empty.html">A page without any video</a></p>
+<p><a id="manual" href="#">A page where I press play myself</a></p>
+<p><a id="withdrawn" href="#">A page that takes its video back</a></p>
+<script type="module">
+import { runScenario, pageParams } from '../lib/bench-report.js';
+import { holdForRobot } from '../lib/entry-page-kit.js';
+import { registerEntryTarget } from '../lib/entry-probe.js';
+
+// 10c: страница со ссылками для правого клика. Цели открываются вкладкой входа; страницы с видео
+// получают своё имя прогона `<run>-t` (робот читает их журнал отдельно) и режим передачи.
+await runScenario('link-source', async (ctx) => {
+  const { run, reportOrigin, otherOrigin } = ctx.params;
+  const targetQuery = new URLSearchParams({ run: `${run}-t`, report_origin: reportOrigin, other_origin: otherOrigin ?? '', mode: 'handoff' });
+  document.getElementById('autoplay').href = `video-src.html?${targetQuery}`;
+  document.getElementById('manual').href = `link-manual-play.html?${targetQuery}`;
+  document.getElementById('withdrawn').href = `source-withdrawn.html?${targetQuery}`;
+  for (const name of ['autoplay', 'novideo', 'withdrawn', 'manual']) {
+    registerEntryTarget(`link:${name}`, () => document.getElementById(name));
+  }
+  await holdForRobot(ctx);
+});
+</script>
+</body>
+</html>

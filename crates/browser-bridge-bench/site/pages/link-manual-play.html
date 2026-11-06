@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>link-manual-play</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;display:block}button{font:16px system-ui;padding:10px 24px;margin:12px 0}</style>
+</head>
+<body>
+<h1>link-manual-play</h1>
+<button id="play" type="button">Play</button>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { progressiveUrl, holdForRobot } from '../lib/entry-page-kit.js';
+import { registerEntryTarget } from '../lib/entry-probe.js';
+
+// 10c, решение 217: страница БЕЗ автозапуска. Видео стоит, пока человек не нажмёт кнопку Play на
+// странице; вход по ссылке ждёт, а после нажатия отдаёт видео плееру. Страница открывается ссылкой
+// из `link-source` (режим передачи и имя прогона `<прогон>-t` задаёт ссылка).
+await runScenario('link-manual-play', async (ctx) => {
+  const video = document.createElement('video');
+  video.id = 'film';
+  video.controls = true;
+  video.playsInline = true;
+  video.width = 360;
+  video.src = await progressiveUrl('progressive-long-h264-aac');
+  document.body.append(video);
+  document.getElementById('play').addEventListener('click', () => {
+    ctx.log('play-button-clicked');
+    video.play().catch(() => { video.muted = true; return video.play(); });
+  });
+  registerEntryTarget('play', () => document.getElementById('play'));
+  await holdForRobot(ctx);
+});
+</script>
+</body>
+</html>

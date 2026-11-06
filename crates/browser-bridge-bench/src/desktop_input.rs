@@ -22,6 +22,8 @@ use crate::environment::DesktopEndpoint;
 
 /// Код кнопки мыши BTN_LEFT из `linux/input-event-codes.h`.
 const BTN_LEFT: u32 = 0x110;
+/// Код правой кнопки мыши (BTN_RIGHT): открывает контекстное меню.
+const BTN_RIGHT: u32 = 0x111;
 /// Коды клавиш из `linux/input-event-codes.h`.
 const KEY_ESC: u32 = 1;
 const KEY_TAB: u32 = 15;
@@ -124,11 +126,21 @@ impl Mouse<'_> {
 
     /// Подводит курсор и кликает левой кнопкой: наведение, пауза, нажатие, пауза, отпускание.
     pub fn click_at(&self, point: Point) -> Result<(), InputError> {
+        self.press_button_at(point, BTN_LEFT)
+    }
+
+    /// Подводит курсор и кликает ПРАВОЙ кнопкой: открывает контекстное меню браузера.
+    pub fn right_click_at(&self, point: Point) -> Result<(), InputError> {
+        self.press_button_at(point, BTN_RIGHT)
+    }
+
+    /// Общая последовательность клика любой кнопкой (`button_code` — код evdev).
+    fn press_button_at(&self, point: Point, button_code: u32) -> Result<(), InputError> {
         self.move_to(point)?;
         sleep(HOVER_SETTLE);
-        self.link.button(BTN_LEFT, ButtonState::Pressed)?;
+        self.link.button(button_code, ButtonState::Pressed)?;
         sleep(PRESS_HOLD);
-        self.link.button(BTN_LEFT, ButtonState::Released)?;
+        self.link.button(button_code, ButtonState::Released)?;
         sleep(AFTER_ACTION_SETTLE);
         Ok(())
     }
@@ -179,6 +191,13 @@ mod tests {
         assert_eq!(Key::Space.evdev_code(), 57);
         assert_eq!(Key::ArrowDown.evdev_code(), 108);
         assert_eq!(Key::ArrowUp.evdev_code(), 103);
+    }
+
+    #[test]
+    fn mouse_button_codes_match_linux_input_header() {
+        // BTN_LEFT = 0x110, BTN_RIGHT = 0x111: перепутанные коды открыли бы не то меню.
+        assert_eq!(BTN_LEFT, 0x110);
+        assert_eq!(BTN_RIGHT, 0x111);
     }
 
     #[test]

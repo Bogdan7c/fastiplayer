@@ -15,6 +15,7 @@
 // единственный канал страницы к стенду.
 
 import { totalFrames, waitFor } from './bench-checks.js';
+import { installEntryProbe } from './entry-probe.js';
 
 /** Режим страницы из адреса. */
 export const HANDOFF_MODE = 'handoff';
@@ -212,6 +213,8 @@ export async function runHandoffPhase(context, {
   const realFramesNow = probe.available ? probe.framesOf(video) : 0;
   context.check('real-frame-probe', probe.available && realFramesNow > 0,
     probe.available ? `the clean counter reads ${realFramesNow} frames while the browser plays` : probe.reason);
+  // Зонд входов: робот узнаёт, где элементы страницы на экране (см. entry-probe.js).
+  installEntryProbe(context);
   context.log(readyMarker);
   try {
     for (;;) {

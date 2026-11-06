@@ -12,6 +12,7 @@ use super::super::handoff_run::{ExtensionMode, HANDOFF_MODE_QUERY, HandoffRun, P
 use super::super::outcome::Verdict;
 use super::super::run_tweaks::RunTweaks;
 use super::Entry;
+use super::menu_entry::ClickSpot;
 use super::robot::{Robot, wait_for_popup_closed};
 use crate::browsers::BrowserKind;
 use crate::environment::BenchEnvironment;
@@ -100,8 +101,23 @@ pub(super) const DEFAULT_QUERY: &str = HANDOFF_MODE_QUERY;
 
 impl ReadyRun<'_, '_> {
     /// Человек входит через `entry`: настоящая рука, никакого `hand_off_tab` от стенда.
-    pub(super) fn enter(&self, entry: Entry) -> Result<(), ScenarioError> {
-        entry.activate(&self.robot)
+    pub(super) fn enter(&mut self, entry: Entry) -> Result<(), ScenarioError> {
+        self.enter_at(entry, ClickSpot::VIDEO)
+    }
+
+    /// То же, но рука целится в `spot` (для входов, которым нужна точка на странице).
+    pub(super) fn enter_at(&mut self, entry: Entry, spot: ClickSpot) -> Result<(), ScenarioError> {
+        entry.activate(self, spot)
+    }
+
+    /// Итог входа после передачи: у кнопки панели попап закрывается сам, у остальных входов
+    /// страница показывает плашку «Opened in Fastiplayer». Возвращает причину провала или `None`.
+    pub(super) fn wait_entry_started(&mut self, entry: Entry) -> Option<String> {
+        if entry.opens_popup() {
+            return self.wait_popup_closed();
+        }
+        self.wait_for_banner("opened", super::menu_entry::BANNER_TIMEOUT)
+            .err()
     }
 
     /// Вход через `entry` и ожидание, что попап закроется сам (передача началась).
@@ -122,6 +138,20 @@ impl ReadyRun<'_, '_> {
                 Err(message) => Err(format!("{message}; frames were not awaited")),
             },
         )
+    }
+}
+
+/// Повторяет `probe` (раз в 300 мс), пока не вернёт `Some` или не истечёт `timeout`.
+pub(super) fn poll_until<T>(timeout: Duration, mut probe: impl FnMut() -> Option<T>) -> Option<T> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(found) = probe() {
+            return Some(found);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(300));
     }
 }
 

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>link-empty</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}</style>
+</head>
+<body>
+<h1>link-empty</h1>
+<!-- 10c: страница по ссылке без видео вовсе (отчётов не шлёт). Вход по ссылке должен честно сказать, что видео не началось. -->
+<p>Nothing to play here.</p>
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+
+// Отчёт нужен только команде `pages`; при открытии по ссылке входа он уходит в «ручной» прогон.
+await runScenario('link-empty', async (ctx) => {
+  ctx.check('page-has-no-video', document.querySelector('video') === null, 'no <video> element');
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>menu-taken-contextmenu</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;display:block}</style>
+</head>
+<body>
+<h1>menu-taken-contextmenu</h1>
+
+<div id="around" style="width:360px;padding:70px;border:2px solid #888;background:#eef"></div>
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { playFileVideo, holdForRobot } from '../lib/entry-page-kit.js';
+import { registerEntryTarget } from '../lib/entry-probe.js';
+
+// 10c: сайт забирает правый клик на видео (как YouTube: свои меню) и отменяет родное меню. Вокруг
+// видео, в рамке, правый клик родной. Пункт на странице обязан отдать плееру главное видео.
+await runScenario('menu-taken-contextmenu', async (ctx) => {
+  const around = document.getElementById('around');
+  const video = await playFileVideo(ctx, { assetId: 'progressive-long-h264-aac', id: 'main', parent: around });
+  video.addEventListener('contextmenu', (event) => { event.preventDefault(); });
+  registerEntryTarget('video', () => video);
+  registerEntryTarget('around', () => around);
+  await holdForRobot(ctx);
+});
+</script>
+</body>
+</html>

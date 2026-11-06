@@ -13,6 +13,7 @@ use super::Entry;
 use super::common::{
     DEFAULT_QUERY, EarlyUnsupported, Opened, ReadyRun, open_ready, with_extra_failures,
 };
+use super::menu_entry::ClickSpot;
 use crate::browsers::BrowserKind;
 use crate::environment::BenchEnvironment;
 use crate::observe::{FrameEvidence, read_host_evidence};
@@ -37,6 +38,26 @@ const START_POSITION_POLL: Duration = Duration::from_millis(50);
 /// Сколько ждём рост кадров после перемотки.
 const REWIND_FRAMES_TIMEOUT: Duration = Duration::from_secs(45);
 
+/// Куда целится рука на странице с видео: во фрейм у страницы с iframe, иначе в `<video>`.
+pub(super) fn spot_of_video(page_id: &str) -> ClickSpot {
+    if page_id == "iframe-cross-origin" {
+        ClickSpot::center_of("iframe")
+    } else {
+        ClickSpot::VIDEO
+    }
+}
+
+/// Подготовка к входу: входам без попапа нужна служебная страница экстеншена для чтения слоя страницы.
+pub(super) fn prepare_entry(
+    ready: &mut ReadyRun<'_, '_>,
+    entry: Entry,
+) -> Result<(), ScenarioError> {
+    if !entry.opens_popup() {
+        ready.run.open_service_page()?;
+    }
+    Ok(())
+}
+
 /// Вход на странице с видео в самом начале.
 pub(super) fn run_start(
     stand: &Stand,
@@ -60,9 +81,10 @@ pub(super) fn run_start(
     };
     // Момент «до входа»: фон может скачать окно файла за доли секунды после `started`, раньше,
     // чем стенд заметит закрытие попапа.
+    prepare_entry(&mut ready, entry)?;
     let handed_off_at = Instant::now();
-    ready.enter(entry)?;
-    let popup_problem = ready.wait_popup_closed();
+    ready.enter_at(entry, spot_of_video(page.id))?;
+    let popup_problem = ready.wait_entry_started(entry);
     ready.run.tell_page("handed-off");
     let frames = ready.wait_frames()?;
     finish(

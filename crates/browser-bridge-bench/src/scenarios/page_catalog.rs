@@ -70,6 +70,13 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     // 09c2: реклама кончилась, фильма нет — честный конец через 15 с (сценарий `page-ends`).
     page("ad-no-film"),
     page("banner-autoplay"),
+    // 10c: входы правым кликом и по ссылке (сценарий `entries`, строки меню и ссылки).
+    page("menu-two-videos"),
+    page("menu-taken-contextmenu"),
+    page("menu-site-layer"),
+    page("link-source"),
+    page("link-empty"),
+    page("link-manual-play"),
     page("drm-probe"),
     page("drm-clearkey"),
     page("series"),

@@ -268,6 +268,61 @@ impl<'a> HandoffRun<'a> {
         self.browser.activate_tab(&self.tab)
     }
 
+    /// Открывает служебную страницу экстеншена фоновой вкладкой (активной остаётся вкладка стенда):
+    /// через неё робот читает вкладки и слой экстеншена, ничего не переключая.
+    pub(super) fn open_service_page(&mut self) -> Result<(), BrowserError> {
+        self.browser.open_service_page(&self.tab)
+    }
+
+    /// Адрес страницы стенда без строки запроса: по нему служебная страница находит вкладку.
+    pub(super) fn page_url_prefix(&self) -> String {
+        format!("{}/site/pages/{}.html", self.page_origin, self.page_id)
+    }
+
+    /// Адрес другой страницы стенда на том же сервере (без строки запроса).
+    pub(super) fn sibling_page_prefix(&self, page_id: &str) -> String {
+        format!("{}/site/pages/{page_id}.html", self.page_origin)
+    }
+
+    /// Открывает ещё одну страницу стенда НОВОЙ вкладкой и делает её текущей, не закрывая прежнюю
+    /// (в отличие от `open_next_page`): сеанс прежней вкладки живёт. Новая вкладка становится активной.
+    pub(super) fn open_additional_page(
+        &mut self,
+        page_id: &'static str,
+        run_prefix: &str,
+    ) -> Result<(), ScenarioError> {
+        let run = RunId::new_unique(run_prefix);
+        let mut url = page_url_under(self.stand, &self.page_origin, page_id, &run);
+        url.push_str(HANDOFF_MODE_QUERY);
+        self.tab = self.browser.open_tab(&url)?;
+        self.run = run;
+        self.page_id = page_id;
+        Ok(())
+    }
+
+    /// Строки журнала страницы с `needle` (журнал не расходуется).
+    pub(super) fn page_log_lines(&self, needle: &str) -> Vec<String> {
+        self.stand.site.log_lines_containing(&self.run, needle)
+    }
+
+    /// Строки журнала ДРУГОГО прогона страницы (например, страницы по ссылке: `<прогон>-t`) с `needle`.
+    pub(super) fn log_lines_of(&self, run: &RunId, needle: &str) -> Vec<String> {
+        self.stand.site.log_lines_containing(run, needle)
+    }
+
+    /// Ждёт строку журнала другого прогона страницы (`needle`).
+    pub(super) fn wait_page_log_line_of(
+        &self,
+        run: &RunId,
+        needle: &str,
+        timeout: Duration,
+    ) -> Result<String, String> {
+        self.stand
+            .site
+            .wait_log_line(run, needle, timeout)
+            .map_err(|error| error.to_string())
+    }
+
     /// Команда странице (она заберёт её опросом).
     pub(super) fn tell_page(&self, command: &str) {
         self.stand.site.send_command(&self.run, command);

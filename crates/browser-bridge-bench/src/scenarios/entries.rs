@@ -17,10 +17,22 @@
 //!   браузера (`tab_not_scriptable`);
 //! - `consent_rows` — вопрос про локальный адрес: Tab и Enter на Allow / Don't allow.
 
+mod already_open_rows;
 mod choice_row;
 mod common;
 mod consent_rows;
+mod disabled_rows;
+mod entry_evidence;
+mod extension_probe;
+mod link_rows;
+mod menu_entry;
+mod menu_matrix;
+mod native_menu;
+mod overlay_rows;
+mod page_geometry;
+mod pick_rows;
 mod refusal_rows;
+mod report_rows;
 mod robot;
 mod start_rows;
 
@@ -32,30 +44,52 @@ use super::outcome::StepResult;
 use super::page_filter::PageFilter;
 use crate::browsers::BrowserKind;
 use crate::environment::{DesktopSetup, PlayerConfigProfile};
-use robot::Robot;
 
 /// Чем человек входит в мост.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Entry {
-    /// Кнопка экстеншена на панели браузера (этот вход есть в 10b).
+    /// Кнопка экстеншена на панели браузера (10b).
     ToolbarButton,
+    /// Правый клик по `<video>` и пункт родного меню «Play in Fastiplayer» (10c).
+    VideoMenu,
+    /// Правый клик по странице вокруг видео и пункт «Play video from this page…» (10c).
+    PageMenu,
+    /// Правый клик по ссылке и пункт «Play link in Fastiplayer» (10c).
+    LinkMenu,
+    /// Кнопка поверх видео при наведении (10c).
+    OverlayButton,
 }
 
 impl Entry {
-    /// Все входы матрицы.
+    /// Входы общей матрицы `ROWS` (остальные входы имеют свои строки в `menu_matrix`).
     const ALL: &'static [Entry] = &[Entry::ToolbarButton];
 
     /// Короткое имя для строки таблицы.
     fn name(self) -> &'static str {
         match self {
             Self::ToolbarButton => "toolbar-button",
+            Self::VideoMenu => "video-menu",
+            Self::PageMenu => "page-menu",
+            Self::LinkMenu => "link-menu",
+            Self::OverlayButton => "overlay-button",
         }
     }
 
+    /// После входа открыт попап значка (иначе итог человеку показывает плашка на странице).
+    fn opens_popup(self) -> bool {
+        matches!(self, Self::ToolbarButton)
+    }
+
     /// Совершает вход настоящей рукой: после него попап (или другое меню входа) открыт.
-    fn activate(self, robot: &Robot<'_>) -> Result<(), ScenarioError> {
+    fn activate(
+        self,
+        ready: &mut common::ReadyRun<'_, '_>,
+        spot: menu_entry::ClickSpot,
+    ) -> Result<(), ScenarioError> {
         match self {
-            Self::ToolbarButton => robot.click_toolbar_button(),
+            Self::ToolbarButton => ready.robot.click_toolbar_button(),
+            Self::VideoMenu | Self::PageMenu | Self::LinkMenu => ready.pick_from_native_menu(spot),
+            Self::OverlayButton => ready.press_overlay_button(spot),
         }
     }
 }
@@ -84,6 +118,10 @@ struct Row {
     page_id: &'static str,
     kind: RowKind,
 }
+
+/// Переменная окружения для отладки: прогонять только строки, в подписи которых есть этот текст
+/// (`BRIDGE_BENCH_ENTRY_ROW=video-menu`). Без неё идут все строки, отобранные `--page`.
+const SUBJECT_FILTER_VARIABLE: &str = "BRIDGE_BENCH_ENTRY_ROW";
 
 /// Условное имя строки «страница самого браузера» (её нет среди страниц стенда).
 const BROWSER_PAGE_ID: &str = "browser-page";
@@ -143,15 +181,36 @@ pub(super) fn entries_page_ids() -> Vec<&'static str> {
             ids.push(row.page_id);
         }
     }
+    for row in menu_matrix::MENU_ROWS {
+        if !ids.contains(&row.page_id) {
+            ids.push(row.page_id);
+        }
+    }
     ids
 }
 
 /// Прогон матрицы одного браузера: каждая строка в свежем окружении (свой kwin, плеер, журналы).
 pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> Vec<StepResult> {
     let mut results = Vec::new();
+    let subject_filter = std::env::var(SUBJECT_FILTER_VARIABLE).ok();
+    let wanted = |subject: &str| {
+        subject_filter
+            .as_deref()
+            .is_none_or(|part| subject.contains(part))
+    };
     for &entry in Entry::ALL {
         for row in ROWS.iter().filter(|row| admitted(row, filter)) {
-            results.push(run_row(stand, browser, entry, *row));
+            if wanted(&subject(entry, row)) {
+                results.push(run_row(stand, browser, entry, *row));
+            }
+        }
+    }
+    for row in menu_matrix::MENU_ROWS
+        .iter()
+        .filter(|row| filter.admits(row.page_id))
+    {
+        if wanted(&menu_matrix::subject(row)) {
+            results.push(run_menu_row(stand, browser, *row));
         }
     }
     results
@@ -176,6 +235,23 @@ fn subject(entry: Entry, row: &Row) -> String {
         RowKind::BrowserPage => "tab-not-scriptable",
     };
     format!("{} x {} [{rule}]", entry.name(), row.page_id)
+}
+
+/// Строка матрицы входов 10c в свежем окружении.
+fn run_menu_row(stand: &Stand, browser: BrowserKind, row: menu_matrix::MenuRow) -> StepResult {
+    let started = Instant::now();
+    let verdict = stand.with_environment_on_desktop(
+        PlayerConfigProfile::Clean,
+        DesktopSetup::pointer_stand(),
+        |environment| menu_matrix::run(stand, environment, browser, row),
+    );
+    StepResult::new(
+        "entries",
+        browser,
+        menu_matrix::subject(&row),
+        verdict,
+        started.elapsed(),
+    )
 }
 
 fn run_row(stand: &Stand, browser: BrowserKind, entry: Entry, row: Row) -> StepResult {

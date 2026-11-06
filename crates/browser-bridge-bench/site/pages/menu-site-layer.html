@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>menu-site-layer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;display:block}</style>
+</head>
+<body>
+<h1>menu-site-layer</h1>
+
+<div id="stack" style="position:relative;width:360px"></div>
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { playFileVideo, holdForRobot } from '../lib/entry-page-kit.js';
+import { registerEntryTarget } from '../lib/entry-probe.js';
+
+// 10c: слой сайта над видео (как прозрачная панель кликов плеера сайта): правый клик приходит на слой,
+// а не на <video>, родное меню даёт пункт страницы. Видео под курсором (второе, короткое) важнее
+// главного (первого, длинного): судья читает журнал сервера.
+await runScenario('menu-site-layer', async (ctx) => {
+  const stack = document.getElementById('stack');
+  await playFileVideo(ctx, { assetId: 'progressive-long-h264-aac', id: 'first', parent: stack });
+  stack.append(Object.assign(document.createElement('div'), { style: 'height:24px' }));
+  const second = await playFileVideo(ctx, { assetId: 'progressive-h264-aac', id: 'second', parent: stack });
+  // Короткий ролик (12 с) стоит на паузе в начале: иначе к клику он доиграл бы до конца.
+  second.pause();
+  second.currentTime = 0;
+  const layer = document.createElement('div');
+  layer.id = 'site-layer';
+  const box = second.getBoundingClientRect();
+  const origin = stack.getBoundingClientRect();
+  layer.style.cssText = `position:absolute;left:${box.left - origin.left}px;top:${box.top - origin.top}px;width:${box.width}px;height:${box.height}px;background:rgba(255,255,255,0.01);z-index:5`;
+  stack.append(layer);
+  registerEntryTarget('layer', () => layer);
+  // Зритель нажимает play на видео, которое стоит на паузе (оно уже в плеере: play идёт в плеер).
+  await holdForRobot(ctx, { 'resume-paused': async () => { await second.play().catch(() => { second.muted = true; return second.play(); }); } });
+});
+</script>
+</body>
+</html>

@@ -118,7 +118,16 @@ pub(super) fn run(
 
     // 4. Улики замены: попап закрылся, главное вернулось на страницу, кадры идут от баннера.
     if banner_row.is_some() {
-        failures.extend(ready.wait_popup_closed());
+        // Решение 216: окно плеера уже было, поэтому попап НЕ закрывается, а говорит «переключись
+        // на окно плеера»; само окно при этом не поднимается (активным остаётся браузер).
+        failures.extend(expect_popup_stays_with_switch_notice(&mut ready));
+        match ready.robot.active_window_class() {
+            Ok(class_after) if class_after == player_on_top => failures.push(format!(
+                "the player window took the focus after the choice ({class_after}); the popup must ask the viewer to switch"
+            )),
+            Ok(_) => {}
+            Err(error) => failures.push(format!("cannot read the active window after the choice: {error}")),
+        }
         // Сначала кадры: баннер короткий и доиграет, пока страница подтверждает возврат главного.
         failures.extend(frames_after_replacement(&mut ready, before_replacement));
         match position_before_choice {
@@ -177,6 +186,38 @@ pub(super) fn run(
     } else {
         Verdict::fail(format!("{}\n{summary}\n{page_log}", failures.join("; ")))
     })
+}
+
+/// Случай попапа после выбора другого видео при открытом окне плеера (решение 216).
+const SWITCH_TO_PLAYER_NOTICE: &str = "switch_to_player";
+/// Сколько ждём, пока попап покажет новый случай.
+const SWITCH_NOTICE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Шаг опроса попапа.
+const NOTICE_POLL: Duration = Duration::from_millis(250);
+
+/// Попап обязан остаться открытым и показать `switch_to_player` (до выбора он показывал `in_player`,
+/// поэтому ждём именно смену случая).
+fn expect_popup_stays_with_switch_notice(ready: &mut ReadyRun<'_, '_>) -> Option<String> {
+    let deadline = Instant::now() + SWITCH_NOTICE_TIMEOUT;
+    let mut last;
+    loop {
+        match ready.run.browser.popup_snapshot() {
+            Ok(Some(snapshot)) if snapshot.notice.as_deref() == Some(SWITCH_TO_PLAYER_NOTICE) => {
+                return None;
+            }
+            Ok(Some(snapshot)) => last = format!("popup notice {:?}", snapshot.notice),
+            Ok(None) => {
+                return Some("the popup closed after the choice; with the player window already open it must stay and say 'switch to the player'".to_owned());
+            }
+            Err(error) => last = format!("popup probe: {error}"),
+        }
+        if Instant::now() >= deadline {
+            return Some(format!(
+                "the popup never showed '{SWITCH_TO_PLAYER_NOTICE}' ({last})"
+            ));
+        }
+        std::thread::sleep(NOTICE_POLL);
+    }
 }
 
 /// Последняя сводка плеера до замены: сколько кадров показано и сколько раз плеер загружал видео.

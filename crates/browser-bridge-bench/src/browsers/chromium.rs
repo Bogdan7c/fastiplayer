@@ -47,6 +47,8 @@ pub(crate) struct Chromium {
     process: ManagedProcess,
     port: u16,
     stderr_log: PathBuf,
+    /// Цель DevTools служебной страницы экстеншена (фоновая вкладка), если она открыта.
+    service_target: Option<Value>,
 }
 
 /// Аргументы командной строки (отдельная чистая функция: её проверяют тесты).
@@ -147,6 +149,7 @@ pub(crate) fn launch(
         process,
         port,
         stderr_log,
+        service_target: None,
     })
 }
 
@@ -377,6 +380,24 @@ impl BrowserUnderTest for Chromium {
         closed?;
         activated?;
         Ok(outcome)
+    }
+
+    fn open_service_page(&mut self, keep_active: &TabHandle) -> Result<(), BrowserError> {
+        let url = format!(
+            "chrome-extension://{CHROMIUM_DEVELOPMENT_EXTENSION_ID}/{HAND_OFF_EXTENSION_PAGE}"
+        );
+        let target = self.new_target(&url)?;
+        // Новая вкладка стала активной: возвращаем активность вкладке стенда.
+        self.activate_tab(keep_active)?;
+        self.service_target = Some(target);
+        Ok(())
+    }
+
+    fn run_in_service_page(&mut self, async_function: &str) -> Result<String, BrowserError> {
+        let target = self.service_target.clone().ok_or_else(|| {
+            BrowserError::protocol("DevTools", "the service page is not open".to_owned())
+        })?;
+        self.run_function_in(&target, async_function)
     }
 
     fn run_in_extension_page(&mut self, async_function: &str) -> Result<String, BrowserError> {

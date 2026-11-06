@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 use super::super::context::{ScenarioError, Stand};
 use crate::browsers::{BrowserKind, BrowserUnderTest, PopupSnapshot};
 use crate::compositor_windows::CompositorWindows;
-use crate::desktop_input::{DesktopInput, Key};
+use crate::desktop_input::{DesktopInput, Key, Point};
 use crate::environment::BenchEnvironment;
-use crate::screen_capture::ScreenCapture;
+use crate::screen_capture::{Frame, IconMatch, ScreenCapture, ScreenError, SearchBand};
 
 /// Шаг опроса попапа.
 const POPUP_POLL: Duration = Duration::from_millis(200);
@@ -65,6 +65,38 @@ impl<'env> Robot<'env> {
         // Снимок сразу после клика: при провале он показывает, открыл ли клик попап.
         let _ = self.screen.take_screenshot("after-click");
         Ok(())
+    }
+
+    /// Настоящее движение мыши в точку экрана (без клика).
+    pub(super) fn move_pointer(&self, point: Point) -> Result<(), ScenarioError> {
+        self.input.mouse().move_to(point)?;
+        Ok(())
+    }
+
+    /// Настоящий левый клик в точку экрана.
+    pub(super) fn click_screen(&self, point: Point) -> Result<(), ScenarioError> {
+        self.input.mouse().click_at(point)?;
+        Ok(())
+    }
+
+    /// Настоящий правый клик в точку экрана.
+    pub(super) fn right_click_screen(&self, point: Point) -> Result<(), ScenarioError> {
+        self.input.mouse().right_click_at(point)?;
+        Ok(())
+    }
+
+    /// Снимок экрана, разобранный в кадр (путь снимка остаётся в каталоге прогона).
+    pub(super) fn capture_frame(&self, label: &str) -> Result<Frame, ScenarioError> {
+        Ok(self.screen.capture_frame(label)?)
+    }
+
+    /// Ищет значок экстеншена на готовом кадре в полосе `band`.
+    pub(super) fn find_icon_in_frame(
+        &self,
+        frame: &Frame,
+        band: SearchBand,
+    ) -> Result<IconMatch, ScreenError> {
+        self.screen.find_icon_in_frame(frame, band)
     }
 
     /// Нажимает клавишу (настоящее событие клавиатуры композитора).

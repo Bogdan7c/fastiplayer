@@ -44,6 +44,8 @@ pub(crate) struct Firefox {
     process: ManagedProcess,
     marionette: Marionette,
     stderr_log: PathBuf,
+    /// Ручка служебной страницы экстеншена (фоновая вкладка), если она открыта.
+    service_handle: Option<String>,
 }
 
 /// Звук Firefox в стенде: «звукового устройства нет», явно и одинаково на любой машине.
@@ -237,6 +239,7 @@ pub(crate) fn launch(
         process,
         marionette,
         stderr_log,
+        service_handle: None,
     })
 }
 
@@ -505,6 +508,27 @@ impl BrowserUnderTest for Firefox {
         closed?;
         returned?;
         Ok(outcome)
+    }
+
+    fn open_service_page(&mut self, keep_active: &TabHandle) -> Result<(), BrowserError> {
+        let url = format!("moz-extension://{EXTENSION_UUID}/{HAND_OFF_EXTENSION_PAGE}");
+        let handle = self.open(&url)?;
+        // Новая вкладка стала активной: возвращаем активность вкладке стенда.
+        self.switch_to(keep_active.as_str())?;
+        self.service_handle = Some(handle);
+        Ok(())
+    }
+
+    fn run_in_service_page(&mut self, async_function: &str) -> Result<String, BrowserError> {
+        let handle = self.service_handle.clone().ok_or_else(|| {
+            BrowserError::protocol("Marionette", "the service page is not open".to_owned())
+        })?;
+        // `focus: false`: сделать вкладку текущей для команд, не выбирая её в окне браузера.
+        self.marionette.command(
+            "WebDriver:SwitchToWindow",
+            json!({ "handle": handle, "focus": false }),
+        )?;
+        self.run_function_in_page(async_function)
     }
 
     fn run_in_extension_page(&mut self, async_function: &str) -> Result<String, BrowserError> {

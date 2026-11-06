@@ -41,6 +41,10 @@ pub enum ScenarioError {
     Windows(#[from] crate::compositor_windows::WindowError),
     #[error("player control: {0}")]
     PlayerControl(#[from] crate::player_control::PlayerControlError),
+    /// Вход (меню, кнопка поверх видео) не удалось совершить настоящей рукой: страница не
+    /// сообщила цель, меню не открылось, пункта нет там, где он обязан быть.
+    #[error("entry: {0}")]
+    EntryNotActivated(String),
     /// Не собран настоящий экстеншен: стенд не собирает его сам.
     #[error(
         "the real extension build is missing at {path}: run `npm run build` in extensions/browser"

@@ -13,6 +13,7 @@
 import { runScenario, UnsupportedError } from '../lib/bench-report.js';
 import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
 import { BenchPlayer, loadCatalog, standardRefs, refsWithDub } from '../lib/bench-player.js';
+import { registerEntryTarget } from '../lib/entry-probe.js';
 import { mountVideo, startAsset, playAssetScenario, requireMimeSupport, sourceBufferCount, observeHandoff } from '../lib/scenario-kit.js';
 
 await runScenario('shadow-dom', async (ctx) => {
@@ -32,6 +33,8 @@ await runScenario('shadow-dom', async (ctx) => {
   document.body.append(card);
   ctx.check('video-hidden-from-light-dom', document.querySelector('video') === null && card.video.getRootNode() instanceof ShadowRoot,
     `document.querySelector('video')=${document.querySelector('video')}, rootNode=${card.video.getRootNode().constructor.name}`);
+  // Робот кликает по <video> внутри закрытого shadow: страница сама называет цель правого клика.
+  registerEntryTarget('video', () => card.video);
   const session = await startAsset(ctx, 'h264-aac', { video: card.video });
   const { player } = session;
   await checkPlaying(ctx, card.video, 'playing-inside-shadow');

@@ -159,6 +159,14 @@ pub trait BrowserUnderTest {
     /// Нужна сценарию кодеков: записать настройку в `storage.local` и прочитать регистрацию
     /// динамического скрипта — то, что делает сам экстеншен, а не страница сайта.
     fn run_in_extension_page(&mut self, async_function: &str) -> Result<String, BrowserError>;
+    /// Открывает служебную страницу экстеншена ФОНОВОЙ вкладкой и держит её открытой: активной
+    /// остаётся `keep_active`. Нужна стенду, чтобы читать вкладки браузера и слой экстеншена на
+    /// странице, не меняя активную вкладку (`run_in_extension_page` открывает и закрывает вкладку,
+    /// а её закрытие активирует соседнюю).
+    fn open_service_page(&mut self, keep_active: &TabHandle) -> Result<(), BrowserError>;
+    /// Выполняет `async (api) => string` в странице из [`BrowserUnderTest::open_service_page`],
+    /// не делая её активной. Без открытой страницы — ошибка.
+    fn run_in_service_page(&mut self, async_function: &str) -> Result<String, BrowserError>;
     /// Заголовок вкладки: независимая от снимка улика того, что в страницу дошли клик и клавиши
     /// (тестовая страница пишет их в `document.title`).
     fn tab_title(&mut self, tab: &TabHandle) -> Result<String, BrowserError>;

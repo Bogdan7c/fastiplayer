@@ -134,7 +134,7 @@ fn real_mouse_and_keyboard_drive_the_browser(kind: BrowserKind) -> TestResult {
     // 1. Значок появляется, когда браузер дорисует панель и загрузит экстеншен.
     let deadline = Instant::now() + ICON_WAIT;
     let icon = loop {
-        match screen.find_extension_icon() {
+        match screen.find_settled_extension_icon() {
             Ok(found) => break found,
             Err(ScreenError::IconNotFound { .. }) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_secs(1));
@@ -192,7 +192,7 @@ fn real_mouse_and_keyboard_drive_the_browser(kind: BrowserKind) -> TestResult {
     )?;
     windows.bring_browser_forward(kind)?;
     assert!(windows.active_window_class()?.contains(browser_class));
-    let icon = screen.find_extension_icon()?;
+    let icon = screen.find_settled_extension_icon()?;
     input.mouse().click_at(icon.center())?;
     wait_for("the popup after the player was on top", POPUP_WAIT, || {
         browser.open_popup_url().ok().flatten()
