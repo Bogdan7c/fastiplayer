@@ -20,6 +20,10 @@
 //!   --display real --hand-off person --stand-page banner-with-main --seconds 300
 //! ```
 //!
+//! `--stand-page` можно повторить: каждая страница откроется своей вкладкой, активной останется
+//! последняя. `--autoplay browser-default` запускает браузер с его обычными настройками автозапуска
+//! (по умолчанию автозапуск разрешён, как на стенде).
+//!
 //! Экстеншен должен быть собран (`npm run build` в `extensions/browser`), плеер берётся из
 //! `target/release`. Адреса и журнал остаются только в выводе: в отчёты их не копировать.
 
@@ -64,8 +68,8 @@ const STAND_HANDOFF_QUERY: &str = "&mode=handoff";
 enum Target {
     /// Живой сайт.
     Url(String),
-    /// Страница стенда по её имени в `site/pages`.
-    StandPage(String),
+    /// Страницы стенда по их именам в `site/pages`, каждая в своей вкладке.
+    StandPages(Vec<String>),
 }
 
 /// Кто отдаёт видео в плеер.
@@ -97,12 +101,16 @@ struct Arguments {
     /// Сколько ждать между открытием страницы и первой передачей.
     wait_seconds: u64,
     press: Press,
+    /// Разрешить автозапуск без жеста, как на стенде (`false` — обычные настройки браузера).
+    autoplay_without_gesture: bool,
 }
 
 fn parse_arguments() -> Result<Arguments, String> {
     let mut browser = BrowserKind::Firefox;
     let mut display = DisplayTarget::Virtual;
     let mut target = None;
+    let mut stand_pages = Vec::new();
+    let mut autoplay_without_gesture = true;
     let mut hand_off = HandOff::Robot;
     let mut warm_up_url = None;
     let mut seconds = 60;
@@ -123,7 +131,9 @@ fn parse_arguments() -> Result<Arguments, String> {
             ("--hand-off", "robot") => hand_off = HandOff::Robot,
             ("--hand-off", "person") => hand_off = HandOff::Person,
             ("--url", _) => target = Some(Target::Url(value)),
-            ("--stand-page", _) => target = Some(Target::StandPage(value)),
+            ("--stand-page", _) => stand_pages.push(value),
+            ("--autoplay", "allowed") => autoplay_without_gesture = true,
+            ("--autoplay", "browser-default") => autoplay_without_gesture = false,
             ("--warm-up-url", _) => warm_up_url = Some(value),
             ("--seconds", _) => {
                 seconds = value
@@ -136,6 +146,9 @@ fn parse_arguments() -> Result<Arguments, String> {
             _ => return Err(format!("unknown argument {name} {value}")),
         }
     }
+    if !stand_pages.is_empty() {
+        target = Some(Target::StandPages(stand_pages));
+    }
     Ok(Arguments {
         browser,
         display,
@@ -145,6 +158,7 @@ fn parse_arguments() -> Result<Arguments, String> {
         seconds,
         wait_seconds,
         press,
+        autoplay_without_gesture,
     })
 }
 
@@ -209,13 +223,16 @@ fn run(arguments: &Arguments) -> Result<(), String> {
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     // Сервер стенда держим до конца функции, иначе страница потеряет файлы.
     let stand_site = match &arguments.target {
-        Target::StandPage(_) => Some(start_stand_site(&repository)?),
+        Target::StandPages(_) => Some(start_stand_site(&repository)?),
         Target::Url(_) => None,
     };
-    let url = match (&arguments.target, &stand_site) {
-        (Target::Url(url), _) => url.clone(),
-        (Target::StandPage(page), Some(site)) => stand_page_url(site, page),
-        (Target::StandPage(_), None) => return Err("the stand site did not start".to_owned()),
+    let urls: Vec<String> = match (&arguments.target, &stand_site) {
+        (Target::Url(url), _) => vec![url.clone()],
+        (Target::StandPages(pages), Some(site)) => pages
+            .iter()
+            .map(|page| stand_page_url(site, page))
+            .collect(),
+        (Target::StandPages(_), None) => return Err("the stand site did not start".to_owned()),
     };
     let environment = BenchEnvironment::create(EnvironmentOptions {
         display: arguments.display,
@@ -248,7 +265,7 @@ fn run(arguments: &Arguments) -> Result<(), String> {
                     .map_or_else(|| repository.join("extensions/browser/dist"), PathBuf::from)
                     .join(flavour),
             )],
-            autoplay_without_gesture: true,
+            autoplay_without_gesture: arguments.autoplay_without_gesture,
             loopback_host_aliases: Vec::new(),
         },
     )
@@ -260,13 +277,19 @@ fn run(arguments: &Arguments) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         sleep(WARM_UP);
     }
-    let tab = browser.open_tab(&url).map_err(|error| error.to_string())?;
+    // Передачу робот зовёт на последней вкладке: она и остаётся активной.
+    let mut opened = None;
+    for url in &urls {
+        let tab = browser.open_tab(url).map_err(|error| error.to_string())?;
+        opened = Some((tab, url));
+    }
+    let (tab, url) = opened.ok_or("nothing to open")?;
     // Пауза до передачи: реклама в начале ролика должна успеть начаться.
     sleep(Duration::from_secs(arguments.wait_seconds));
 
     let deadline = Instant::now() + Duration::from_secs(arguments.seconds);
     let started = match arguments.hand_off {
-        HandOff::Robot => hand_off_by_robot(browser.as_mut(), &tab, &url, deadline),
+        HandOff::Robot => hand_off_by_robot(browser.as_mut(), &tab, url, deadline),
         HandOff::Person => true,
     };
     println!("hand-off started: {started}");
