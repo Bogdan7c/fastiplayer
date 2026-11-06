@@ -50,6 +50,7 @@ fn popup_text_of_real_extension(
             )],
             autoplay_without_gesture: true,
             loopback_host_aliases: Vec::new(),
+            runtime_extension_install: false,
         },
     )?;
     let text =

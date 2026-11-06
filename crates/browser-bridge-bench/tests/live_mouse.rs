@@ -123,6 +123,7 @@ fn real_mouse_and_keyboard_drive_the_browser(kind: BrowserKind) -> TestResult {
             )],
             autoplay_without_gesture: true,
             loopback_host_aliases: Vec::new(),
+            runtime_extension_install: false,
         },
     )?;
     let input = DesktopInput::connect(&environment.desktop_endpoint()?)?;

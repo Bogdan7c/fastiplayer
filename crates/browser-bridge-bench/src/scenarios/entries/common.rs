@@ -60,13 +60,38 @@ pub(super) fn open_ready<'a, 'env>(
     query: &str,
     early_unsupported: EarlyUnsupported,
 ) -> Result<Opened<'a, 'env>, ScenarioError> {
+    open_ready_with(
+        stand,
+        environment,
+        browser,
+        page_id,
+        ExtensionMode::Real,
+        tweaks,
+        query,
+        early_unsupported,
+    )
+}
+
+/// То же, но с выбором, ставится ли экстеншен при запуске (`Real`) или позже самой строкой
+/// (`InstalledLater`, 10d).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn open_ready_with<'a, 'env>(
+    stand: &'a Stand,
+    environment: &'env BenchEnvironment,
+    browser: BrowserKind,
+    page_id: &'static str,
+    extension: ExtensionMode,
+    tweaks: &RunTweaks,
+    query: &str,
+    early_unsupported: EarlyUnsupported,
+) -> Result<Opened<'a, 'env>, ScenarioError> {
     let run = HandoffRun::open_tweaked(
         stand,
         environment,
         browser,
         page_id,
         page_id,
-        ExtensionMode::Real,
+        extension,
         query,
         tweaks,
     )?;

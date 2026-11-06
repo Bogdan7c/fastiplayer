@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>late-ad-then-film</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;display:block;margin-bottom:8px}</style>
+</head>
+<body>
+<h1>late-ad-then-film</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { playFileVideo, mountMseVideo, holdForRobot } from '../lib/entry-page-kit.js';
+import { installEntryProbe } from '../lib/entry-probe.js';
+
+// 10d: КАЖДАЯ загрузка страницы начинается с короткой рекламы (свой элемент `ad`, ролик другой
+// длины, обычным файлом), и только потом в другом элементе `film` стартует фильм потоком MSE. Перезагрузка вкладки вернёт
+// рекламу, и экстеншен не должен отдать плееру ни рекламу, ни фильм с начала: запомненная секунда
+// фильма применяется к фильму. Зонд входов (и пульс страницы) включаем с первой секунды, чтобы
+// робот видел рекламу после перезагрузки: общая готовность наступает только когда фильм уже играет.
+await runScenario('late-ad-then-film', async (ctx) => {
+  if (ctx.params.handoff) installEntryProbe(ctx);
+  const ad = await playFileVideo(ctx, { assetId: 'ad-second', id: 'ad' });
+  await new Promise((resolve) => ad.addEventListener('ended', resolve, { once: true }));
+  ctx.log('ad-ended');
+  await mountMseVideo(ctx, { id: 'film' });
+  await holdForRobot(ctx);
+});
+</script>
+</body>
+</html>

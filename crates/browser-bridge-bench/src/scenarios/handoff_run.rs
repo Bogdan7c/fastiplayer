@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use super::context::{ScenarioError, Stand};
 use super::pages::page_url;
-use super::run_tweaks::RunTweaks;
+use super::run_tweaks::{RunTweaks, RuntimeInstall};
 use crate::browsers::{
     BrowserError, BrowserKind, BrowserUnderTest, ExtensionSource, HandOffOptions, HandOffOutcome,
     TabHandle,
@@ -83,6 +83,10 @@ pub(super) enum ExtensionMode {
     Real,
     /// Никакого: контрольный прогон «браузер играет сам» (проверка самой линейки).
     ControlWithoutExtension,
+    /// Экстеншена при запуске нет, его ставит сама строка позже (10d: вкладка открыта раньше).
+    /// Посредник в профиле уже лежит: установщик отрабатывает до запуска, как у `Real`.
+    /// `RunTweaks::runtime_install` обязан быть задан: иначе браузер не примет позднюю установку.
+    InstalledLater,
 }
 
 /// Чем кончилось ожидание готовности страницы.
@@ -175,12 +179,21 @@ impl<'a> HandoffRun<'a> {
                 environment.connect_browser(browser_kind)?;
                 vec![ExtensionSource::UnpackedDir(dist)]
             }
+            ExtensionMode::InstalledLater => {
+                environment.connect_browser(browser_kind)?;
+                Vec::new()
+            }
             ExtensionMode::ControlWithoutExtension => Vec::new(),
         };
         // Журнал открываем до старта: плеера ещё нет, его разбудит посредник.
         let player_log = PlayerLog::open(environment.player_log());
         let mut browser =
             stand.launch_browser_tweaked(browser_kind, environment, extensions, tweaks)?;
+        // Строка «обновление»: установка уже стоит ДО страницы, обновят её позже.
+        if let RuntimeInstall::BeforeThePage(directory) = &tweaks.runtime_install {
+            browser
+                .install_extension_at_runtime(&ExtensionSource::UnpackedDir(directory.clone()))?;
+        }
         let run = RunId::new_unique(run_prefix);
         let page_origin = tweaks.page_origin(&stand.site.main_origin());
         let mut url = page_url_under(stand, &page_origin, page_id, &run);

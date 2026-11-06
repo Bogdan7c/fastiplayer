@@ -224,16 +224,8 @@ pub(crate) fn launch(
     )?;
     forward_host_stderr(&mut marionette)?;
     for source in &options.extensions {
-        let path = match source {
-            ExtensionSource::UnpackedDir(path) | ExtensionSource::PackedFile(path) => path,
-        };
-        let absolute = std::fs::canonicalize(path).map_err(|error| {
-            BrowserError::io(format!("resolve extension path {}", path.display()), error)
-        })?;
-        marionette.command(
-            "Addon:Install",
-            json!({ "path": absolute.to_string_lossy(), "temporary": true }),
-        )?;
+        let (ExtensionSource::UnpackedDir(path) | ExtensionSource::PackedFile(path)) = source;
+        install_temporary(&mut marionette, path)?;
     }
     Ok(Firefox {
         process,
@@ -241,6 +233,19 @@ pub(crate) fn launch(
         stderr_log,
         service_handle: None,
     })
+}
+
+/// Временная установка экстеншена. Повтор по тому же id после правки файлов Firefox принимает
+/// как обновление (10d); так же её можно делать и при открытых вкладках.
+fn install_temporary(marionette: &mut Marionette, path: &Path) -> Result<(), BrowserError> {
+    let absolute = std::fs::canonicalize(path).map_err(|error| {
+        BrowserError::io(format!("resolve extension path {}", path.display()), error)
+    })?;
+    marionette.command(
+        "Addon:Install",
+        json!({ "path": absolute.to_string_lossy(), "temporary": true }),
+    )?;
+    Ok(())
 }
 
 /// Ставит слушатель консоли в chrome-контексте и возвращает контекст «content».
@@ -540,6 +545,14 @@ impl BrowserUnderTest for Firefox {
         let result = result?;
         closed?;
         Ok(result)
+    }
+
+    fn install_extension_at_runtime(
+        &mut self,
+        source: &ExtensionSource,
+    ) -> Result<(), BrowserError> {
+        let (ExtensionSource::UnpackedDir(path) | ExtensionSource::PackedFile(path)) = source;
+        install_temporary(&mut self.marionette, path)
     }
 
     fn shutdown(mut self: Box<Self>) -> Result<BrowserExit, BrowserError> {

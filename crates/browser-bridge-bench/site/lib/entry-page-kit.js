@@ -1,6 +1,7 @@
 // Общие куски страниц входов 10c (правый клик, ссылка): играет файлы, зонд для робота, ожидание конца.
 
-import { loadCatalog } from './bench-player.js';
+import { BenchPlayer, loadCatalog, standardRefs } from './bench-player.js';
+import { mountVideo, requireMimeSupport } from './scenario-kit.js';
 import { checkPlaying } from './bench-checks.js';
 import { installEntryProbe } from './entry-probe.js';
 import { CommandChannel } from './handoff-mode.js';
@@ -26,6 +27,26 @@ export async function playFileVideo(ctx, { assetId, id, parent = document.body, 
   await video.play().catch(async () => { video.muted = true; await video.play(); });
   await checkPlaying(ctx, video, `${id}-playing`);
   return video;
+}
+
+/**
+ * Видео потоком MSE (мини-плеер стенда), как у большинства живых сайтов: адрес `blob:`, а не файл.
+ * Строки позднего входа (10d) берут именно его: Firefox вставляет наш скрипт в уже открытую вкладку
+ * позже начала потока, и перезагрузка нужна только для потока, а файл он отдаёт и так.
+ * `autoplay: false` оставляет видео стоять, пока человек не нажмёт кнопку страницы.
+ * `prepare(video)` вызывается ДО запуска потока: слушатели, которые не должны опоздать к первой перемотке.
+ */
+export async function mountMseVideo(ctx, { id, assetId = 'h264-aac', autoplay = true, parent = document.body, width = 360, prepare = null }) {
+  const catalog = await loadCatalog();
+  const refs = standardRefs(catalog, assetId);
+  requireMimeSupport(catalog, refs);
+  const video = mountVideo(parent, id);
+  video.width = width;
+  prepare?.(video);
+  const player = new BenchPlayer(video, catalog, { log: (line) => ctx.log(line) });
+  await player.start({ refs, autoplay });
+  if (autoplay) await checkPlaying(ctx, video, `${id}-playing`);
+  return { video, player };
 }
 
 /**

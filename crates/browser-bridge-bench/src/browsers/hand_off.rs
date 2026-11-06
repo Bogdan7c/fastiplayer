@@ -17,6 +17,19 @@ use serde_json::Value;
 /// фону сама (в отличие от попапа, который сразу открывает порт статуса).
 pub(crate) const HAND_OFF_EXTENSION_PAGE: &str = "options.html";
 
+/// Почему видео вкладки не передать без перезагрузки (зеркало `ReloadReason` из
+/// `handoff-contract.ts`, сессия 10d).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReloadReason {
+    /// На странице нет живого скрипта экстеншена.
+    ScriptMissing,
+    /// Скрипт ответил, но его версия не совпадает с версией фона.
+    ScriptOutdated,
+    /// Скрипт вставлен в открытую вкладку, но поток начался раньше него (Firefox).
+    StreamStartedBeforeScript,
+}
+
 /// Исход команды `hand_off_tab` (зеркало `HandOffTabOutcome` из
 /// `extensions/browser/src/shared/handoff-contract.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -35,6 +48,12 @@ pub enum HandOffOutcome {
     /// Лучшее видео вкладки защищено DRM: экстеншен его не трогает, сеанс не открывается
     /// (09c, инвариант 4 — защищённое остаётся у браузера).
     Protected,
+    /// Вкладка открыта раньше нашего скрипта (10d): попап предлагает «Reload and open», сама
+    /// передача страницу не перезагружает.
+    ReloadNeeded {
+        /// Почему без перезагрузки нельзя.
+        reason: ReloadReason,
+    },
     /// Файл лежит на локальном адресе, а страница из интернета; настройка «блокировать»
     /// (решение 199) — фон ничего не качает.
     LocalAddressRefused,
@@ -192,6 +211,7 @@ pub(crate) fn parse_robot_output(
                 | HandOffOutcome::PlayerUnavailable { .. }
                 | HandOffOutcome::Failed { .. }
                 | HandOffOutcome::NotSupportedYet { .. }
+                | HandOffOutcome::ReloadNeeded { .. }
                 | HandOffOutcome::LocalAddressNeedsConsent { .. } => 2,
             };
             if reply.as_object().map_or(0, serde_json::Map::len) != expected_keys {
@@ -259,6 +279,21 @@ mod tests {
                 form: "native_hls".into()
             })
         );
+        for (reason, expected) in [
+            ("script_missing", ReloadReason::ScriptMissing),
+            ("script_outdated", ReloadReason::ScriptOutdated),
+            (
+                "stream_started_before_script",
+                ReloadReason::StreamStartedBeforeScript,
+            ),
+        ] {
+            assert_eq!(
+                parse(&format!(
+                    r#"{{"robot":"reply","reply":{{"kind":"reload_needed","reason":"{reason}"}}}}"#
+                )),
+                Ok(HandOffOutcome::ReloadNeeded { reason: expected })
+            );
+        }
         for (kind, expected) in [
             ("protected", HandOffOutcome::Protected),
             ("local_address_refused", HandOffOutcome::LocalAddressRefused),
@@ -314,6 +349,9 @@ mod tests {
             r#"{"kind":"protected","extra":1}"#,
             r#"{"kind":"ad_playing","extra":1}"#,
             r#"{"kind":"local_address_refused","extra":1}"#,
+            r#"{"kind":"reload_needed"}"#,
+            r#"{"kind":"reload_needed","reason":"because"}"#,
+            r#"{"kind":"reload_needed","reason":"script_missing","extra":1}"#,
             r#"{"kind":"local_address_needs_consent"}"#,
             r#"{"kind":"local_address_needs_consent","host":"h","extra":1}"#,
             r#"{}"#,

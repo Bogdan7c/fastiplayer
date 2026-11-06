@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>late-site-refuses-seek</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;display:block}</style>
+</head>
+<body>
+<h1>late-site-refuses-seek</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { mountMseVideo, holdForRobot } from '../lib/entry-page-kit.js';
+
+/** Позиция, ближе которой к началу перемотка не считается чужой, с. */
+const START_EPSILON_S = 0.5;
+
+// 10d: сайт, чей плеер возвращает ролик в начало при ЛЮБОЙ перемотке (подсчёт просмотров, защита от
+// «прыжков»). Экстеншен после перезагрузки ставит странице запомненную секунду, сайт её отбрасывает:
+// видео должно уйти в плеер с места, откуда начал сайт, и сказать об этом плашкой.
+await runScenario('late-site-refuses-seek', async (ctx) => {
+  // Слушатель ставится ДО запуска потока: экстеншен перематывает страницу сразу, как видео заиграло.
+  // Свой старт с нуля перемоткой не считается.
+  const refuseSeeks = (film) => film.addEventListener('seeking', () => {
+    if (film.currentTime > START_EPSILON_S) {
+      ctx.log(`site-refused-seek to=${film.currentTime.toFixed(2)}`);
+      film.currentTime = 0;
+    }
+  });
+  await mountMseVideo(ctx, { id: 'film', prepare: refuseSeeks });
+  await holdForRobot(ctx);
+});
+</script>
+</body>
+</html>

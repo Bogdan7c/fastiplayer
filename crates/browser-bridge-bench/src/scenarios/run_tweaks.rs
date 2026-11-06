@@ -31,9 +31,31 @@ pub(super) enum ExtraExtensions {
     Explicit(Vec<PathBuf>),
 }
 
+/// Как экстеншен попадает в браузер уже после его запуска (10d, поздний вход).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) enum RuntimeInstall {
+    /// Обычный прогон: экстеншен ставится при запуске, поздней установки нет.
+    #[default]
+    NotUsed,
+    /// Браузер принимает установку после запуска; её делает сама строка, когда ей нужно.
+    ByTheRow,
+    /// Экстеншен из этого каталога ставится сразу после запуска, ДО открытия страницы (строка
+    /// «обновление»: установка уже стоит, потом её обновляют).
+    BeforeThePage(PathBuf),
+}
+
+impl RuntimeInstall {
+    /// Нужен ли браузеру режим, в котором принимается установка после запуска.
+    pub(super) fn browser_must_allow_it(&self) -> bool {
+        !matches!(self, Self::NotUsed)
+    }
+}
+
 /// Отклонения прогона от обычного.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct RunTweaks {
+    /// Установка экстеншена после запуска браузера.
+    pub runtime_install: RuntimeInstall,
     /// Порядок установки.
     pub order: InstallOrder,
     /// Откуда дополнительные экстеншены.
@@ -131,6 +153,14 @@ mod tests {
             tweaks.arrange_extensions(real(), &["/from-flag.xpi".into()]),
             real()
         );
+    }
+
+    #[test]
+    fn only_a_runtime_install_asks_the_browser_for_the_late_install_mode() {
+        assert!(!RuntimeInstall::NotUsed.browser_must_allow_it());
+        assert!(RuntimeInstall::ByTheRow.browser_must_allow_it());
+        assert!(RuntimeInstall::BeforeThePage("/copy".into()).browser_must_allow_it());
+        assert!(!RunTweaks::default().runtime_install.browser_must_allow_it());
     }
 
     #[test]

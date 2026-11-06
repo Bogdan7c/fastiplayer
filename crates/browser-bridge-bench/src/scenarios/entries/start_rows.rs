@@ -169,7 +169,7 @@ pub(super) fn run_late_start(
 /// Первая позиция плеера. Окно начинает отвечать по MPRIS раньше, чем публикует `Position`: полный
 /// прогон 10b прочитал ноль при журнале `target_ms=10287`. Ждём первое ненулевое значение; плеер,
 /// который и правда стартовал с нуля, покажет доли секунды и не пройдёт нижнюю границу.
-fn read_start_position(control: &PlayerControl) -> Result<i64, PlayerControlError> {
+pub(super) fn read_start_position(control: &PlayerControl) -> Result<i64, PlayerControlError> {
     control.wait_until_controllable(SESSION_GRANTED_TIMEOUT)?;
     let deadline = Instant::now() + START_POSITION_TIMEOUT;
     loop {
@@ -244,7 +244,7 @@ fn check_stream_start_is_kept(
 
 /// Общий хвост: отчёт страницы, улики сервера и журналов, вердикт `judge_capture` плюс провалы строки.
 #[allow(clippy::too_many_arguments)]
-fn finish(
+pub(super) fn finish(
     stand: &Stand,
     mut ready: ReadyRun<'_, '_>,
     frames: &Result<FrameEvidence, String>,

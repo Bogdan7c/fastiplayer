@@ -267,6 +267,7 @@ fn run(arguments: &Arguments) -> Result<(), String> {
             )],
             autoplay_without_gesture: arguments.autoplay_without_gesture,
             loopback_host_aliases: Vec::new(),
+            runtime_extension_install: false,
         },
     )
     .map_err(|error| error.to_string())?;

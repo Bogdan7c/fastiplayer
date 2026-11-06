@@ -77,6 +77,11 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("link-source"),
     page("link-empty"),
     page("link-manual-play"),
+    // 10d: поздний вход — вкладка открыта раньше экстеншена (сценарий `entries`, строки `late-*`).
+    page("late-typed-text"),
+    page("late-manual-play"),
+    page("late-site-refuses-seek"),
+    page("late-ad-then-film"),
     page("drm-probe"),
     page("drm-clearkey"),
     page("series"),

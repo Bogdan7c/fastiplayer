@@ -62,11 +62,32 @@ function describeElement(element) {
   return `${element.tagName.toLowerCase()}${element.id ? `#${element.id}` : ''}`;
 }
 
+/** Период пульса страницы (`origin_beat=1`), мс. */
+const ORIGIN_BEAT_PERIOD_MS = 500;
+
+/**
+ * Пульс страницы для строк позднего входа (10d): раз в полсекунды страница пишет момент своего
+ * рождения (`performance.timeOrigin`) и позицию каждого `<video>`. Робот по нему видит три вещи:
+ * страницу НЕ перезагружали (момент рождения не менялся), страницу перезагрузили (появился другой),
+ * и с какой секунды ролика это случилось (последняя позиция перед сменой).
+ * Формат: `entry-probe origin <timeOrigin> videos=<имя>:<секунды>:<пауза 0|1>;...`
+ * Включается параметром адреса `origin_beat=1`: остальным строкам пульс не нужен.
+ */
+function startOriginBeat(context) {
+  const describeVideos = () => [...document.querySelectorAll('video')]
+    .map((video, index) => `${video.id || index}:${video.currentTime.toFixed(2)}:${video.paused ? 1 : 0}`)
+    .join(';');
+  const beat = () => context.log(`entry-probe origin ${performance.timeOrigin} videos=${describeVideos()}`);
+  beat();
+  setInterval(beat, ORIGIN_BEAT_PERIOD_MS);
+}
+
 /** Ставит слушатели один раз на страницу. */
 export function installEntryProbe(context) {
   if (installed) return;
   installed = true;
   const frame = window === window.top ? 'top' : 'inner';
+  if (frame === 'top' && context.params.raw.get('origin_beat') === '1') startOriginBeat(context);
   window.addEventListener('mousemove', (event) => {
     context.log(`entry-probe pointer ${frame} client=${event.clientX},${event.clientY} inner=${window.innerWidth}x${window.innerHeight} scroll=${document.documentElement.scrollWidth}x${document.documentElement.scrollHeight} rects=${describeRects()}`);
   }, { capture: true, passive: true });

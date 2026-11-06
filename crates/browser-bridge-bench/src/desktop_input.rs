@@ -58,6 +58,30 @@ impl Point {
     }
 }
 
+/// Латинская буква на клавиатуре (10d: человек печатает текст в поле страницы).
+/// Создаётся только из `a..=z`, поэтому код клавиши всегда существует.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Letter {
+    /// Код клавиши Linux (evdev).
+    evdev_code: u32,
+}
+
+impl Letter {
+    /// Коды клавиш `KEY_A..KEY_Z` НЕ идут по алфавиту (раскладка QWERTY), поэтому таблица.
+    const EVDEV_CODES: [u32; 26] = [
+        30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, // a..m
+        49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45, 21, 44, // n..z
+    ];
+
+    /// Клавиша буквы; `None` для всего, что не строчная латинская буква.
+    pub fn new(character: char) -> Option<Self> {
+        let index = (character as u32).checked_sub('a' as u32)?;
+        Self::EVDEV_CODES
+            .get(usize::try_from(index).ok()?)
+            .map(|&evdev_code| Self { evdev_code })
+    }
+}
+
 /// Клавиша, которую умеет нажимать робот.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
@@ -73,9 +97,18 @@ pub enum Key {
     ArrowUp,
     /// Стрелка вниз.
     ArrowDown,
+    /// Латинская буква (без Shift: строчная).
+    Letter(Letter),
 }
 
 impl Key {
+    /// Клавиши, которыми набирается слово из строчных латинских букв; любой другой символ — `None`.
+    pub fn typing(word: &str) -> Option<Vec<Key>> {
+        word.chars()
+            .map(|character| Letter::new(character).map(Key::Letter))
+            .collect()
+    }
+
     /// Код клавиши Linux (evdev).
     fn evdev_code(self) -> u32 {
         match self {
@@ -85,6 +118,7 @@ impl Key {
             Self::Space => KEY_SPACE,
             Self::ArrowUp => KEY_UP,
             Self::ArrowDown => KEY_DOWN,
+            Self::Letter(letter) => letter.evdev_code,
         }
     }
 }
@@ -191,6 +225,24 @@ mod tests {
         assert_eq!(Key::Space.evdev_code(), 57);
         assert_eq!(Key::ArrowDown.evdev_code(), 108);
         assert_eq!(Key::ArrowUp.evdev_code(), 103);
+    }
+
+    #[test]
+    fn letters_map_to_their_qwerty_evdev_codes_and_nothing_else_is_a_letter() {
+        // KEY_H=35, KEY_E=18, KEY_L=38, KEY_O=24, KEY_Q=16, KEY_Z=44, KEY_A=30, KEY_M=50.
+        let codes: Vec<u32> = Key::typing("hello")
+            .expect("letters")
+            .into_iter()
+            .map(Key::evdev_code)
+            .collect();
+        assert_eq!(codes, vec![35, 18, 38, 38, 24]);
+        for (character, code) in [('a', 30), ('m', 50), ('q', 16), ('z', 44)] {
+            let letter = Letter::new(character).expect("a letter");
+            assert_eq!(Key::Letter(letter).evdev_code(), code);
+        }
+        assert!(Key::typing("Hello").is_none(), "capitals need Shift");
+        assert!(Key::typing("a b").is_none());
+        assert!(Letter::new('{').is_none());
     }
 
     #[test]

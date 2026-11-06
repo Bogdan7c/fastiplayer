@@ -93,6 +93,10 @@ pub(crate) fn command_line(
         // «Публичные» имена стенда ведут на этот же ПК: `MAP имя 127.0.0.1`, правила через запятую.
         arguments.push(host_resolver_rules(&options.loopback_host_aliases).into());
     }
+    if options.runtime_extension_install {
+        // Без этого флага `Extensions.loadUnpacked` по CDP отказывает (10d: поздняя установка).
+        arguments.push("--enable-unsafe-extension-debugging".into());
+    }
     if !unpacked.is_empty() {
         // `--load-extension` принимает список через запятую.
         let list = unpacked
@@ -414,6 +418,47 @@ impl BrowserUnderTest for Chromium {
         Ok(result)
     }
 
+    fn install_extension_at_runtime(
+        &mut self,
+        source: &ExtensionSource,
+    ) -> Result<(), BrowserError> {
+        let ExtensionSource::UnpackedDir(directory) = source else {
+            return Err(BrowserError::UnsupportedExtension(
+                "Chromium installs at runtime only unpacked extension directories".to_owned(),
+            ));
+        };
+        let absolute = std::fs::canonicalize(directory).map_err(|error| {
+            BrowserError::io(
+                format!("resolve extension path {}", directory.display()),
+                error,
+            )
+        })?;
+        let version = http_json(self.port, "GET", "/json/version")?;
+        let socket_url = version
+            .get("webSocketDebuggerUrl")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                BrowserError::protocol("DevTools", format!("no browser socket url: {version}"))
+            })?;
+        let mut connection = CdpConnection::connect(socket_url)?;
+        let reply = connection.call(
+            "Extensions.loadUnpacked",
+            serde_json::json!({ "path": absolute.to_string_lossy() }),
+        )?;
+        // Идентификатор берётся из `key` манифеста: другой id означал бы, что значок на панели,
+        // посредник и всё остальное стенда смотрят на чужой экстеншен.
+        let loaded_id = reply.get("id").and_then(Value::as_str);
+        if loaded_id != Some(CHROMIUM_DEVELOPMENT_EXTENSION_ID) {
+            return Err(BrowserError::protocol(
+                "DevTools",
+                format!(
+                    "Extensions.loadUnpacked gave id {loaded_id:?}, expected {CHROMIUM_DEVELOPMENT_EXTENSION_ID}"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     fn shutdown(mut self: Box<Self>) -> Result<BrowserExit, BrowserError> {
         // Просим браузер закрыться сам: `Browser.close` на браузерной цели.
         let asked = http_json(self.port, "GET", "/json/version")
@@ -474,6 +519,7 @@ mod tests {
             ],
             autoplay_without_gesture: true,
             loopback_host_aliases: Vec::new(),
+            runtime_extension_install: false,
         };
         let arguments = arguments_as_text(&options, true);
         assert!(arguments.contains(&"--load-extension=/ext/a,/ext/b".to_owned()));
@@ -503,6 +549,22 @@ mod tests {
     }
 
     #[test]
+    fn the_late_install_mode_adds_the_extension_debugging_flag_only_when_asked() {
+        let late = LaunchOptions {
+            runtime_extension_install: true,
+            ..LaunchOptions::default()
+        };
+        assert!(
+            arguments_as_text(&late, false)
+                .contains(&"--enable-unsafe-extension-debugging".to_owned())
+        );
+        assert!(
+            !arguments_as_text(&LaunchOptions::default(), false)
+                .contains(&"--enable-unsafe-extension-debugging".to_owned())
+        );
+    }
+
+    #[test]
     fn command_line_without_options_is_minimal() {
         let arguments = arguments_as_text(&LaunchOptions::default(), false);
         assert!(!arguments.iter().any(|a| a.starts_with("--load-extension")));
@@ -516,6 +578,7 @@ mod tests {
             extensions: vec![ExtensionSource::PackedFile("/ext/adblock.zip".into())],
             autoplay_without_gesture: false,
             loopback_host_aliases: Vec::new(),
+            runtime_extension_install: false,
         };
         let error = command_line(&options, false, false).expect_err("packed files are unsupported");
         assert!(matches!(error, BrowserError::UnsupportedExtension(_)));

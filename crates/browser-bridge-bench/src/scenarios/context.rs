@@ -162,6 +162,7 @@ impl Stand {
             extensions,
             autoplay_without_gesture: true,
             loopback_host_aliases: tweaks.loopback_host_aliases.clone(),
+            runtime_extension_install: tweaks.runtime_install.browser_must_allow_it(),
         };
         let browser = match self.settings.browser_executables.for_kind(kind) {
             Some(executable) => launch_with_executable(kind, environment, options, executable)?,

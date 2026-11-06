@@ -15,7 +15,8 @@
 //! - `choice_row` — выбор другого видео в попапе (`banner-with-main`);
 //! - `refusal_rows` — отказы текстом (`no_video`, `protected`, `not_supported_yet`) и страница
 //!   браузера (`tab_not_scriptable`);
-//! - `consent_rows` — вопрос про локальный адрес: Tab и Enter на Allow / Don't allow.
+//! - `consent_rows` — вопрос про локальный адрес: Tab и Enter на Allow / Don't allow;
+//! - `late_rows` — поздний вход (10d): вкладка открыта раньше экстеншена, кнопка «Reload and open».
 
 mod already_open_rows;
 mod choice_row;
@@ -24,6 +25,7 @@ mod consent_rows;
 mod disabled_rows;
 mod entry_evidence;
 mod extension_probe;
+mod late_rows;
 mod link_rows;
 mod menu_entry;
 mod menu_matrix;
@@ -109,6 +111,8 @@ enum RowKind {
     Consent(consent_rows::Decision),
     /// Страница самого браузера: вкладку нельзя читать.
     BrowserPage,
+    /// Поздний вход (10d): вкладка открыта раньше экстеншена.
+    Late(late_rows::LateRow),
 }
 
 /// Строка матрицы: страница (для `--page`) и правило.
@@ -157,7 +161,21 @@ const ROWS: &[Row] = &[
         page_id: BROWSER_PAGE_ID,
         kind: RowKind::BrowserPage,
     },
+    late(late_rows::LateRow::LateInstall),
+    late(late_rows::LateRow::LateUpdate),
+    late(late_rows::LateRow::TypedText),
+    late(late_rows::LateRow::PressPlay),
+    late(late_rows::LateRow::SiteRefusesSecond),
+    late(late_rows::LateRow::AdThenFilm),
 ];
+
+/// Строка позднего входа; страницу ей назначает сама строка.
+const fn late(row: late_rows::LateRow) -> Row {
+    Row {
+        page_id: row.page_id(),
+        kind: RowKind::Late(row),
+    }
+}
 
 const fn start(page_id: &'static str) -> Row {
     Row {
@@ -233,6 +251,7 @@ fn subject(entry: Entry, row: &Row) -> String {
         RowKind::Refusal(refusal) => refusal.name(),
         RowKind::Consent(decision) => decision.name(),
         RowKind::BrowserPage => "tab-not-scriptable",
+        RowKind::Late(late) => late.name(),
     };
     format!("{} x {} [{rule}]", entry.name(), row.page_id)
 }
@@ -278,6 +297,7 @@ fn run_row(stand: &Stand, browser: BrowserKind, entry: Entry, row: Row) -> StepR
             RowKind::BrowserPage => {
                 refusal_rows::run_browser_page(stand, environment, browser, entry)
             }
+            RowKind::Late(late) => late_rows::run(stand, environment, browser, late),
         },
     );
     StepResult::new(
@@ -334,6 +354,17 @@ mod tests {
                 "duplicate subject for {}",
                 row.page_id
             );
+        }
+    }
+
+    #[test]
+    fn the_matrix_runs_every_late_row_exactly_once() {
+        for late in late_rows::LateRow::ALL {
+            let count = ROWS
+                .iter()
+                .filter(|row| matches!(row.kind, RowKind::Late(found) if found == *late))
+                .count();
+            assert_eq!(count, 1, "{late:?}");
         }
     }
 

@@ -253,6 +253,7 @@ mod tests {
             selectable_rows: Vec::new(),
             static_rows: Vec::new(),
             has_consent_question: question,
+            has_reload_button: false,
             focused: None,
         }
     }

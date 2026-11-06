@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>late-typed-text</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;display:block;margin-top:12px}input{font:16px system-ui;padding:8px;width:320px}</style>
+</head>
+<body>
+<h1>late-typed-text</h1>
+<label>Your note: <input id="note" type="text" autocomplete="off"></label>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { mountMseVideo, holdForRobot } from '../lib/entry-page-kit.js';
+import { registerEntryTarget } from '../lib/entry-probe.js';
+
+// 10d: страница с введённым человеком текстом и играющим видео. Экстеншен ставят ПОЗЖЕ, человек
+// открывает попап, видит «Reload and open» и НЕ нажимает: страница обязана остаться той же
+// (момент рождения не изменился, текст в поле на месте). Состояние страницы робот читает командой
+// `hook:report-state`: страница сама пишет в журнал, что у неё сейчас в поле и когда она родилась.
+await runScenario('late-typed-text', async (ctx) => {
+  await mountMseVideo(ctx, { id: 'film' });
+  const note = document.getElementById('note');
+  registerEntryTarget('note', () => note);
+  await holdForRobot(ctx, {
+    'report-state': () => ctx.log(`late-state origin=${performance.timeOrigin} value=${note.value}`),
+  });
+});
+</script>
+</body>
+</html>

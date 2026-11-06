@@ -423,6 +423,7 @@ mod tests {
             selectable_rows: Vec::new(),
             static_rows: rows(&["main"]),
             has_consent_question: false,
+            has_reload_button: false,
             focused: None,
         };
         let mut failures = Vec::new();

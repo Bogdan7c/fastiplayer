@@ -44,8 +44,16 @@ pub(super) fn wait_for_session_granted(
     }
 }
 
-/// Хвост журнала страницы для сообщения о провале.
-pub(super) fn format_browser_log(lines: &[BrowserLogLine]) -> String {
+/// Пульс страницы строк позднего входа (`entry-probe origin`): две строки в секунду вытеснили бы из
+/// хвоста всё, ради чего его печатают, поэтому в отчёт о провале он не попадает.
+const HEARTBEAT_MARK: &str = "entry-probe origin ";
+
+/// Хвост журнала страницы для сообщения о провале (без пульса страницы).
+pub(super) fn format_browser_log(all_lines: &[BrowserLogLine]) -> String {
+    let lines: Vec<&BrowserLogLine> = all_lines
+        .iter()
+        .filter(|entry| !entry.line.contains(HEARTBEAT_MARK))
+        .collect();
     let skipped = lines.len().saturating_sub(FAILURE_LOG_TAIL);
     let mut text = format!(
         "page log ({} lines, last {}):",
@@ -201,6 +209,22 @@ mod tests {
         let text = format_browser_log(&lines);
         assert!(text.contains(&format!("({} lines, last {FAILURE_LOG_TAIL})", lines.len())));
         assert!(!text.contains("line 0\n") && text.contains("line 5"));
+    }
+
+    #[test]
+    fn the_page_heartbeat_does_not_crowd_the_failure_tail() {
+        let line = |text: &str| BrowserLogLine {
+            source: LogSource::Page,
+            run: RunId::new("r-1").expect("run id"),
+            line: text.to_owned(),
+        };
+        let text = format_browser_log(&[
+            line("p: entry-probe origin 1.0 videos=v:1.00:0"),
+            line("p: site-refused-seek to=12.00"),
+        ]);
+        assert!(text.contains("(1 lines, last 1)"), "{text}");
+        assert!(text.contains("site-refused-seek"));
+        assert!(!text.contains("videos=v"));
     }
 
     #[test]

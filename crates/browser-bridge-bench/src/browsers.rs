@@ -19,7 +19,9 @@ mod toolbar_pin;
 use std::path::{Path, PathBuf};
 
 pub use error::BrowserError;
-pub use hand_off::{HandOffError, HandOffOptions, HandOffOutcome, LocalAddressConsent};
+pub use hand_off::{
+    HandOffError, HandOffOptions, HandOffOutcome, LocalAddressConsent, ReloadReason,
+};
 pub use popup_probe::{FocusedElement, PopupSnapshot};
 
 use crate::environment::BenchEnvironment;
@@ -68,6 +70,10 @@ pub struct LaunchOptions {
     /// Имена хостов, которые браузер обязан разрешать в `127.0.0.1`: так «публичный» сайт
     /// (`public.bench.example`, рекламный домен) живёт на сервере стенда. Пусто — ничего.
     pub loopback_host_aliases: Vec<String>,
+    /// Браузер обязан принимать экстеншен уже ПОСЛЕ запуска (10d, поздний вход): Chromium
+    /// получает флаг отладки расширений, без которого `Extensions.loadUnpacked` по CDP отказывает.
+    /// Firefox ставит временные экстеншены в любой момент и флага не требует.
+    pub runtime_extension_install: bool,
 }
 
 /// Вкладка (цель DevTools у Chromium, окно-вкладка у Firefox).
@@ -176,6 +182,13 @@ pub trait BrowserUnderTest {
     fn open_popup_url(&mut self) -> Result<Option<String>, BrowserError>;
     /// Снимок открытого попапа (случай `data-notice`, строки, фокус); `None`, если попапа нет.
     fn popup_snapshot(&mut self) -> Result<Option<PopupSnapshot>, BrowserError>;
+    /// Ставит экстеншен в УЖЕ запущенный браузер (10d: вкладка открыта раньше экстеншена). Тот же
+    /// вызов по тому же каталогу после правки файлов браузер принимает как ОБНОВЛЕНИЕ (тот же id).
+    /// Нужен `LaunchOptions::runtime_extension_install`.
+    fn install_extension_at_runtime(
+        &mut self,
+        source: &ExtensionSource,
+    ) -> Result<(), BrowserError>;
     /// Мягко закрывает браузер, ждёт выход, добивает остатки группы.
     fn shutdown(self: Box<Self>) -> Result<BrowserExit, BrowserError>;
 }
