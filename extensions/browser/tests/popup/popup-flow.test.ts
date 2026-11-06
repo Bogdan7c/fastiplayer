@@ -28,12 +28,13 @@ function surveyed(elements: readonly number[], inPlayer: TabPlayerPresence = { k
 }
 
 /** Фейковый мир попапа: очереди ответов фона и журнал того, что попап сделал. */
-function setupPopup(options: { tab?: ActiveTab | undefined; surveys?: SurveyTabReply[]; outcomes?: (HandOffTabOutcome | Error)[] }) {
+function setupPopup(options: { tab?: ActiveTab | undefined; surveys?: SurveyTabReply[]; outcomes?: (HandOffTabOutcome | Error)[]; lateEntryRunning?: boolean | Error; reloadFails?: boolean }) {
   const surveys = [...(options.surveys ?? [surveyed([1, 2])])];
   const outcomes = [...(options.outcomes ?? [])];
   const calls: HandOffRequest[] = [];
   const surveyCalls: number[] = [];
   const models: PopupModel[] = [];
+  const reloads: number[] = [];
   let closed = 0;
   const flow = createPopupFlow({
     findActiveTab: () => Promise.resolve("tab" in options ? options.tab : { id: 7, title: "Movie night" }),
@@ -48,10 +49,15 @@ function setupPopup(options: { tab?: ActiveTab | undefined; surveys?: SurveyTabR
       if (next === undefined || next instanceof Error) return Promise.reject(next ?? new Error("no outcome"));
       return Promise.resolve(next);
     },
+    isLateEntryRunning: () => (options.lateEntryRunning instanceof Error ? Promise.reject(options.lateEntryRunning) : Promise.resolve(options.lateEntryRunning ?? false)),
+    reloadAndOpen: (tabId) => {
+      reloads.push(tabId);
+      return options.reloadFails === true ? Promise.reject(new Error("no answer")) : Promise.resolve();
+    },
     closePopup: () => void (closed += 1),
     render: (model) => void models.push(model),
   });
-  return { flow, calls, surveyCalls, models, closed: () => closed, last: () => models.at(-1) as PopupModel };
+  return { flow, calls, surveyCalls, models, reloads, closed: () => closed, last: () => models.at(-1) as PopupModel };
 }
 
 describe("попап: открытие", () => {
@@ -209,5 +215,66 @@ describe("попап: согласие на локальный адрес", () =
     assert.equal(popup.closed(), 0);
     await popup.flow.allowLocalAddress();
     assert.equal(popup.calls.length, 1, "согласие после отказа ничего не шлёт");
+  });
+});
+
+describe("попап: Reload and open (сессия 10d)", () => {
+  const RELOAD: HandOffTabOutcome = { kind: "reload_needed", reason: "script_missing" };
+
+  it("вкладка старше скрипта: показывает кнопку и причину, сам ничего не перезагружает", async () => {
+    const popup = setupPopup({ surveys: [{ kind: "surveyed", videos: [], main: null, in_player: { kind: "no_session" } }], outcomes: [RELOAD] });
+    await popup.flow.start();
+    assert.equal(popup.last().notice.id, "reload_needed");
+    assert.equal(popup.last().reloadLabel, "Reload and open");
+    assert.ok(popup.last().notice.details.some((detail) => detail.includes("installed or updated")), "человеку объяснена причина");
+    assert.deepEqual(popup.reloads, [], "без нажатия кнопки перезагрузки нет (решение 210)");
+    assert.equal(popup.closed(), 0, "попап остаётся с кнопкой");
+  });
+
+  it("нажатие: команда фону на эту вкладку, попап закрывается", async () => {
+    const popup = setupPopup({ outcomes: [RELOAD] });
+    await popup.flow.start();
+    await popup.flow.reloadAndOpen();
+    assert.deepEqual(popup.reloads, [7]);
+    assert.equal(popup.closed(), 1);
+  });
+
+  it("фон не ответил: попап остаётся с сообщением о сбое, кнопка пропадает из обещаний", async () => {
+    const popup = setupPopup({ outcomes: [RELOAD], reloadFails: true });
+    await popup.flow.start();
+    await popup.flow.reloadAndOpen();
+    assert.equal(popup.closed(), 0);
+    assert.equal(popup.last().notice.id, "failed");
+    assert.equal(popup.last().busy, false, "можно нажать ещё раз");
+  });
+
+  it("кнопки не предлагали: команда ничего не перезагружает", async () => {
+    const popup = setupPopup({ outcomes: [{ kind: "no_video" }] });
+    await popup.flow.start();
+    assert.equal(popup.last().reloadLabel, null);
+    await popup.flow.reloadAndOpen();
+    assert.deepEqual(popup.reloads, []);
+  });
+
+  it("другой исход после повторной передачи убирает кнопку", async () => {
+    const popup = setupPopup({ outcomes: [RELOAD, { kind: "protected" }] });
+    await popup.flow.start();
+    assert.equal(popup.last().reloadLabel, "Reload and open");
+    await popup.flow.chooseVideo(ref(2));
+    assert.equal(popup.last().reloadLabel, null);
+  });
+
+  it("попап открыли, пока фон ведёт вкладку: не опрашивает и не передаёт, иначе опередит постановку на секунду", async () => {
+    const popup = setupPopup({ lateEntryRunning: true });
+    await popup.flow.start();
+    assert.equal(popup.last().notice.id, "late_entry_running");
+    assert.deepEqual(popup.calls, []);
+    assert.deepEqual(popup.surveyCalls, []);
+  });
+
+  it("вопрос к фону о ходе работы не прошёл: попап работает как обычно", async () => {
+    const popup = setupPopup({ lateEntryRunning: new Error("no answer"), outcomes: [{ kind: "started", player_window: "new" }] });
+    await popup.flow.start();
+    assert.deepEqual(popup.calls, [{ tabId: 7 }]);
   });
 });

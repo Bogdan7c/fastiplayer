@@ -115,7 +115,7 @@ function isShortLine(value: unknown, maxLength: number): value is string {
 function parseReport(value: unknown): EntryReport | undefined {
   if (!isPlainRecord(value) || !hasExactKeys(value, ["id", "tone", "headline", "details"])) return undefined;
   const { id, tone, headline, details } = value;
-  if (!isShortLine(id, MAX_REPORT_ID_LENGTH) || (tone !== "success" && tone !== "refusal") || !isShortLine(headline, MAX_REPORT_LINE_LENGTH)) return undefined;
+  if (!isShortLine(id, MAX_REPORT_ID_LENGTH) || (tone !== "success" && tone !== "refusal" && tone !== "hint") || !isShortLine(headline, MAX_REPORT_LINE_LENGTH)) return undefined;
   if (!Array.isArray(details) || details.length > MAX_REPORT_DETAILS) return undefined;
   if (!details.every((line): line is string => isShortLine(line, MAX_REPORT_LINE_LENGTH))) return undefined;
   return { id, tone, headline, details: [...details] };

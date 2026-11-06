@@ -9,9 +9,10 @@ import { describeUnsupportedForm } from "../../src/shared/outcome-words.ts";
 import { describeVideoList, describeVideoRow, formatDuration, formatFrameSize } from "../../src/popup/video-row-text.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 
-const ALL_FORMS: readonly UnsupportedMediaForm[] = ["native_hls", "blob_file", "data_url", "media_stream", "other_scheme", "untracked_worker_media_source"];
+const ALL_FORMS: readonly UnsupportedMediaForm[] = ["native_hls", "blob_file", "data_url", "media_stream", "other_scheme", "untracked_worker_media_source", "started_before_script"];
 
 const ALL_OUTCOMES: readonly HandOffTabOutcome[] = [
+  { kind: "reload_needed", reason: "script_missing" },
   { kind: "started", player_window: "new" },
   { kind: "started", player_window: "already_open" },
   { kind: "no_video" },

@@ -12,6 +12,9 @@ import type { Scheduler } from "../host-link/native-port.ts";
 import type { TabHandoffs } from "../handoff/tab-handoffs.ts";
 import { createEntryMenus, isEntrySettingsChange, routeMenuClick, type MenusApi } from "./entry-menus.ts";
 import { createEntryReporter, type EntryBadge, type EntryBanner } from "./entry-reporter.ts";
+import { createLateEntryCommandListener } from "./late-entry-command.ts";
+import { createLateEntry, type LateTabsApi } from "./late-entry.ts";
+import { createLateVideoReader, LATE_POSITION_TOLERANCE_S, visitFrameVideos, type ExecuteVideoVisit } from "./late-video-reader.ts";
 import { createLinkEntry, type LinkTabsApi } from "./link-entry.ts";
 import { createMenuEntry, type AskRightClickedVideo } from "./menu-entry.ts";
 import { createOverlayEntryListener } from "./overlay-entry.ts";
@@ -96,6 +99,22 @@ const linkTabs: LinkTabsApi = {
   closeTab: (tabId) => browserApi.tabs.remove(tabId),
 };
 
+const lateTabs: LateTabsApi = {
+  reload: (tabId) => browserApi.tabs.reload(tabId),
+  // Адрес вкладки доступен по праву на сайты, отдельное право `tabs` не нужно.
+  originOf: async (tabId) => {
+    try {
+      const { url } = await browserApi.tabs.get(tabId);
+      return url === undefined ? undefined : new URL(url).origin;
+    } catch {
+      return undefined;
+    }
+  },
+};
+
+const executeVideoVisit: ExecuteVideoVisit = (tabId, target) =>
+  browserApi.scripting.executeScript({ target: { tabId, allFrames: true }, func: visitFrameVideos, args: [target, LATE_POSITION_TOLERANCE_S] });
+
 /** Поставить входы 10c. Вызывается один раз на верхнем уровне фона, после `installTabHandoffs`. */
 export function installEntries(handoffs: TabHandoffs, scheduler: Scheduler): void {
   const reporter = createEntryReporter({ banner, badge, note });
@@ -113,6 +132,18 @@ export function installEntries(handoffs: TabHandoffs, scheduler: Scheduler): voi
     reporter,
     note,
   });
+
+  const lateEntry = createLateEntry({
+    tabs: lateTabs,
+    videos: createLateVideoReader(executeVideoVisit),
+    handoffs: { surveyTab: (tabId) => handoffs.surveyTab(tabId), handOffTab: (tabId) => handoffs.handOffTab(tabId) },
+    scheduler,
+    reporter,
+    note,
+  });
+  browserApi.runtime.onMessage.addListener(
+    createLateEntryCommandListener({ extensionId: browserApi.runtime.id, extensionBaseUrl: browserApi.runtime.getURL("") }, lateEntry),
+  );
 
   // Сбой чтения настроек не молчит и не отключает вход: значения по умолчанию, причина в журнал.
   const readSettings = () => readEntrySettingsOrDefaults(storeOfBrowser, note);

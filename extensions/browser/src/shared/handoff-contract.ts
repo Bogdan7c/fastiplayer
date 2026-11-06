@@ -67,9 +67,29 @@ export type DocumentTag = string;
  * - `other_scheme` — адрес не http(s) (например `file:`, `filesystem:`), фон его не качает;
  * - `untracked_worker_media_source` — `srcObject` = MediaSourceHandle, но его MediaSource живёт в
  *   воркере, куда наш хук не попал: обёртку не пустил CSP (`worker-src` без `blob:`) или Trusted
- *   Types, handle пришёл из вложенного воркера или через чужой MessagePort (сессия 09b).
+ *   Types, handle пришёл из вложенного воркера или через чужой MessagePort (сессия 09b);
+ * - `started_before_script` — blob-адрес, созданный раньше нашего хука: Firefox вставляет скрипт в уже
+ *   открытую вкладку поздно (сессия 10d), начало потока упущено. Лечится только перезагрузкой вкладки.
  */
-export type UnsupportedMediaForm = "native_hls" | "blob_file" | "data_url" | "media_stream" | "other_scheme" | "untracked_worker_media_source";
+export type UnsupportedMediaForm =
+  | "native_hls"
+  | "blob_file"
+  | "data_url"
+  | "media_stream"
+  | "other_scheme"
+  | "untracked_worker_media_source"
+  | "started_before_script";
+
+/**
+ * Почему видео вкладки не передать без перезагрузки (сессия 10d, решение 210). Вкладка открыта раньше,
+ * чем встал наш скрипт, а разведка показала, что Chrome и Firefox ведут себя по-разному:
+ * - `script_missing` — на странице нет живого скрипта. Chrome: и после установки, и после обновления,
+ *   потому что новый фон не видит изолированный мир старого скрипта;
+ * - `script_outdated` — скрипт ответил, но его версия не совпадает с версией фона (страховка: живые
+ *   браузеры такого не показали, но разговор разных версий запрещён тем же правилом, что в протоколе);
+ * - `stream_started_before_script` — Firefox сам вставил скрипт, но поток начался раньше него.
+ */
+export type ReloadReason = "script_missing" | "script_outdated" | "stream_started_before_script";
 
 /**
  * Что сейчас играет элемент — с точки зрения «можно ли его передать» (сессия 09b).
@@ -430,6 +450,11 @@ export type HandOffTabOutcome =
   | { readonly kind: "not_supported_yet"; readonly form: UnsupportedMediaForm }
   /** Лучшее видео вкладки под DRM (инвариант 4): не трогаем, оно играет в браузере. */
   | { readonly kind: "protected" }
+  /**
+   * Вкладка открыта раньше, чем встал наш скрипт (сессия 10d). Попап предлагает «Reload and open»;
+   * сама передача страницу не перезагружает никогда: человек мог что-то вводить (решение 210).
+   */
+  | { readonly kind: "reload_needed"; readonly reason: ReloadReason }
   /**
    * Выбранного человеком видео (`video` в команде) нет в свежем опросе: страница успела его убрать или
    * перейти на другой документ. Другое видео вместо него НЕ отдаётся; попап обновляет список.

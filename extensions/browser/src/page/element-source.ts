@@ -22,6 +22,7 @@ import type { CandidateMedia, UnsupportedMediaForm } from "../shared/handoff-con
 import { MAX_FILE_SOURCE_URL_LENGTH } from "../shared/page-message-validation.ts";
 import type { DomReaders } from "./dom-readers.ts";
 import type { MediaSourceRecord } from "./mse-tracker.ts";
+import type { ScriptArrival } from "./script-arrival.ts";
 import type { WorkerHandleResolution, WorkerMediaSourceRef } from "./worker-capture/index.ts";
 
 /** Источник элемента, с тем, что нужно ветке передачи. */
@@ -43,6 +44,8 @@ export interface ElementSourceReaders {
   readonly isMediaSourceObjectUrl: (url: string) => boolean;
   /** Что стоит за объектом `srcObject` (`null` — это не `MediaSourceHandle`), реестр воркеров. */
   readonly resolveWorkerHandle: (candidate: unknown) => WorkerHandleResolution | null;
+  /** Когда встал наш скрипт: от этого зависит, как понимать незнакомый blob-адрес (сессия 10d). */
+  readonly scriptArrival: ScriptArrival;
 }
 
 /** MIME-типы HLS, которыми сайты помечают `<source type>` (без параметров, строчными). */
@@ -68,7 +71,7 @@ export function elementSourceOf(element: Element, readers: ElementSourceReaders)
   }
   const url = readers.dom.currentSrcOf(element);
   if (url === "") return { kind: "none" };
-  return classifyMediaUrl(url, readers.dom.sourceTypeFor(element, url), readers.isMediaSourceObjectUrl);
+  return classifyMediaUrl(url, readers.dom.sourceTypeFor(element, url), readers.isMediaSourceObjectUrl, readers.scriptArrival);
 }
 
 /**
@@ -79,11 +82,15 @@ export function classifyMediaUrl(
   url: string,
   sourceType: string | null,
   isMediaSourceObjectUrl: (url: string) => boolean,
+  scriptArrival: ScriptArrival = "at_document_start",
 ): ElementSource {
   const scheme = schemeOf(url);
   if (scheme === BLOB_SCHEME) {
     // Blob-адрес MediaSource, который ещё не живой (нет SourceBuffer) или уже `closed`: пока нечего.
-    return isMediaSourceObjectUrl(url) ? { kind: "none" } : { kind: "unsupported", form: "blob_file" };
+    if (isMediaSourceObjectUrl(url)) return { kind: "none" };
+    // Незнакомый blob при позднем скрипте: это почти наверняка MediaSource, созданный до хука. Отличить его от
+    // обычного Blob нельзя, поэтому честно просим перезагрузку: после неё обычный Blob получит свой отказ.
+    return { kind: "unsupported", form: scriptArrival === "after_page_started" ? "started_before_script" : "blob_file" };
   }
   if (scheme === DATA_SCHEME) return { kind: "unsupported", form: "data_url" };
   if (scheme === undefined || !HTTP_SCHEMES.includes(scheme)) return { kind: "unsupported", form: "other_scheme" };

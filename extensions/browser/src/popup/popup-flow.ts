@@ -1,5 +1,5 @@
 // Шаги попапа без DOM (решение 209): активная вкладка -> опрос -> (передача главного видео | список) ->
-// выбор строки -> согласие на локальный адрес. Все зависимости приходят снаружи, поэтому весь сценарий
+// выбор строки -> согласие на локальный адрес или «Reload and open» (10d). Все зависимости приходят снаружи, поэтому весь сценарий
 // проверяется в node:test без браузера. Закрытие попапа ничего не отменяет: передачу держит фон.
 
 import type { HandOffTabOutcome, VideoRef } from "../shared/handoff-contract.ts";
@@ -9,9 +9,11 @@ import {
   describeConsentQuestion,
   describeOutcome,
   describeUnavailable,
+  LATE_ENTRY_RUNNING_NOTICE,
   LOADING_NOTICE,
   NO_ACTIVE_TAB_NOTICE,
   PLAYING_NOTICE,
+  RELOAD_AND_OPEN_LABEL,
   type ConsentQuestionView,
   type NoticeView,
 } from "./outcome-text.ts";
@@ -40,6 +42,10 @@ export interface PopupFlowDependencies {
   surveyTab(tabId: number): Promise<SurveyTabReply>;
   /** Команда `hand_off_tab`. Отклонение считается исходом `failed`. */
   handOffTab(request: HandOffRequest): Promise<HandOffTabOutcome>;
+  /** Фон сейчас ведёт «Reload and open» этой вкладки. Отклонение считается «нет». */
+  isLateEntryRunning(tabId: number): Promise<boolean>;
+  /** Команда `reload_and_open`: фон перезагружает вкладку и дальше работает сам. Отклоняется, если фон не ответил. */
+  reloadAndOpen(tabId: number): Promise<void>;
   /** `window.close()`: передача началась, попап своё дело сделал. */
   closePopup(): void;
   /** Показать модель. Вызывается после каждого шага. */
@@ -51,6 +57,8 @@ export interface PopupModel {
   readonly notice: NoticeView;
   /** Вопрос про локальный адрес; кнопки Allow / Don't allow. */
   readonly question: ConsentQuestionView | null;
+  /** Подпись кнопки «Reload and open»; `null` — кнопки нет. */
+  readonly reloadLabel: string | null;
   /** Найденные видео (пусто, пока опроса нет или страница закрыта для экстеншена). */
   readonly rows: readonly VideoRowView[];
   /** Идёт команда фону: нажатия игнорируются. */
@@ -74,6 +82,8 @@ export interface PopupFlow {
   allowLocalAddress(): Promise<void>;
   /** «Don't allow»: видео остаётся в браузере. */
   declineLocalAddress(): void;
+  /** «Reload and open»: единственный путь к перезагрузке вкладки (решение 210). */
+  reloadAndOpen(): Promise<void>;
 }
 
 export function createPopupFlow(dependencies: PopupFlowDependencies): PopupFlow {
@@ -81,11 +91,18 @@ export function createPopupFlow(dependencies: PopupFlowDependencies): PopupFlow 
   let surveyed: Surveyed | undefined;
   let notice: NoticeView = LOADING_NOTICE;
   let pendingConsent: PendingConsent | undefined;
+  let reloadOffered = false;
   let busy = false;
 
   function publish(): void {
     const rows = surveyed === undefined ? [] : describeVideoList(surveyed.videos, tab?.title ?? "", inPlayerVideo(surveyed));
-    dependencies.render({ notice, question: pendingConsent === undefined ? null : describeConsentQuestion(pendingConsent.host), rows, busy });
+    dependencies.render({
+      notice,
+      question: pendingConsent === undefined ? null : describeConsentQuestion(pendingConsent.host),
+      reloadLabel: reloadOffered ? RELOAD_AND_OPEN_LABEL : null,
+      rows,
+      busy,
+    });
   }
 
   function inPlayerVideo(survey: Surveyed): VideoRef | null {
@@ -116,6 +133,7 @@ export function createPopupFlow(dependencies: PopupFlowDependencies): PopupFlow 
   async function handOff(request: HandOffRequest): Promise<void> {
     busy = true;
     pendingConsent = undefined;
+    reloadOffered = false;
     publish();
     let outcome: HandOffTabOutcome;
     try {
@@ -131,6 +149,7 @@ export function createPopupFlow(dependencies: PopupFlowDependencies): PopupFlow 
     busy = false;
     notice = describeOutcome(outcome);
     if (outcome.kind === "local_address_needs_consent") pendingConsent = { host: outcome.host, video: request.video };
+    reloadOffered = outcome.kind === "reload_needed";
     // Выбранного видео уже нет: список устарел, берём свежий (опрос заодно сбросит старый отказ).
     if (outcome.kind === "video_gone" && tab !== undefined) acceptSurvey(await survey(tab.id));
     // Окно плеера уже было открыто и видео в нём сменилось: в списке теперь другая строка «in player».
@@ -142,6 +161,14 @@ export function createPopupFlow(dependencies: PopupFlowDependencies): PopupFlow 
     publish();
   }
 
+  async function lateEntryRunning(tabId: number): Promise<boolean> {
+    try {
+      return await dependencies.isLateEntryRunning(tabId);
+    } catch {
+      return false;
+    }
+  }
+
   async function start(): Promise<void> {
     publish();
     try {
@@ -151,6 +178,12 @@ export function createPopupFlow(dependencies: PopupFlowDependencies): PopupFlow 
     }
     if (tab === undefined) {
       notice = NO_ACTIVE_TAB_NOTICE;
+      publish();
+      return;
+    }
+    // Фон уже ведёт эту вкладку после «Reload and open». Передача отсюда опередила бы постановку на секунду.
+    if (await lateEntryRunning(tab.id)) {
+      notice = LATE_ENTRY_RUNNING_NOTICE;
       publish();
       return;
     }
@@ -187,5 +220,21 @@ export function createPopupFlow(dependencies: PopupFlowDependencies): PopupFlow 
     publish();
   }
 
-  return { start, chooseVideo, allowLocalAddress, declineLocalAddress };
+  async function reloadAndOpen(): Promise<void> {
+    if (busy || tab === undefined || !reloadOffered) return;
+    busy = true;
+    publish();
+    try {
+      await dependencies.reloadAndOpen(tab.id);
+    } catch {
+      busy = false;
+      notice = describeOutcome({ kind: "failed", reason: "no_answer_from_background" });
+      publish();
+      return;
+    }
+    // Дальше всё ведёт фон, итог скажет плашка на странице: клик по play закрыл бы попап в любом случае.
+    dependencies.closePopup();
+  }
+
+  return { start, chooseVideo, allowLocalAddress, declineLocalAddress, reloadAndOpen };
 }

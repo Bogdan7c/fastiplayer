@@ -10,6 +10,8 @@ import type { HandoffSessionEnd } from "./handoff-session.ts";
 export function refusalOf(outcome: HandOffTabOutcome): TabRefusal | undefined {
   switch (outcome.kind) {
     case "started":
+    // Не отказ, а предложение: попап показывает кнопку сразу, модели вкладки помнить нечего.
+    case "reload_needed":
       return undefined;
     case "no_video":
     case "video_gone":

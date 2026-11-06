@@ -88,7 +88,8 @@ export const OVERLAY_BUTTON_PRESSED_KIND = "overlay_button_pressed";
 export interface EntryReport {
   /** Стабильное имя случая (как `NoticeView.id`): стенд и тесты читают его, не разбирая текст. */
   readonly id: string;
-  readonly tone: "success" | "refusal";
+  /** `hint` — подсказка следующего шага: не отказ, значка «!» нет, держится дольше всех. */
+  readonly tone: "success" | "refusal" | "hint";
   readonly headline: string;
   readonly details: readonly string[];
 }

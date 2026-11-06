@@ -70,6 +70,8 @@ const flow = createPopupFlow({
   findActiveTab: link.findActiveTab,
   surveyTab: link.surveyTab,
   handOffTab: link.handOffTab,
+  isLateEntryRunning: link.isLateEntryRunning,
+  reloadAndOpen: link.reloadAndOpen,
   closePopup: () => window.close(),
   render: (model) => renderPopup(flowRoot, model, flow),
 });

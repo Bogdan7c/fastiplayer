@@ -7,7 +7,7 @@ import { browserApi } from "../shared/browser-api.ts";
 import { HANDOFF_PORT_NAME, type HeldVideoReply } from "../shared/handoff-contract.ts";
 import { parseArmNextVideoRequest } from "../shared/page-message-validation.ts";
 import { RIGHT_CLICKED_VIDEO_FUNCTION_NAME } from "../shared/entry-contract.ts";
-import { VIDEO_CANDIDATES_FUNCTION_NAME } from "../shared/video-candidates-probe.ts";
+import { VIDEO_CANDIDATES_FUNCTION_NAME, type ScriptedFrameAnswer } from "../shared/video-candidates-probe.ts";
 import { installAdWatch } from "./ad-watch-entry.ts";
 import { installPageUi } from "./page-ui/page-ui-entry.ts";
 import { openPageChannel, type PageChannelPort } from "./page-channel.ts";
@@ -15,6 +15,9 @@ import { createContentRelay, type ContentRelay } from "./relay.ts";
 
 /** Сериализация непрозрачного происхождения (`about:blank`, `data:`). */
 const OPAQUE_ORIGIN = "null";
+
+/** Версия этого скрипта: читается один раз на старте, пока экстеншен точно жив. */
+const SCRIPT_VERSION = browserApi.runtime.getManifest().version;
 
 let debugReported = false;
 
@@ -75,7 +78,7 @@ installAdWatch();
 
 // Функция для executeScript фона живёт в глобале ИЗОЛИРОВАННОГО мира: странице она не видна.
 Object.defineProperty(globalThis, VIDEO_CANDIDATES_FUNCTION_NAME, {
-  value: () => relay.describeVideoCandidates(),
+  value: async (): Promise<ScriptedFrameAnswer> => ({ script_version: SCRIPT_VERSION, candidates: await relay.describeVideoCandidates() }),
   configurable: false,
   enumerable: false,
   writable: false,

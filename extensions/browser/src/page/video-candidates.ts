@@ -14,6 +14,7 @@ import { candidateMediaOf, elementSourceOf, type ElementSource } from "./element
 import type { MediaSourceReaders } from "./media-source-readers.ts";
 import type { MediaSourceRecord, MseTracker } from "./mse-tracker.ts";
 import type { OddityReporter } from "./prototype-wrap.ts";
+import type { ScriptArrival } from "./script-arrival.ts";
 import type { WorkerMediaSources } from "./worker-capture/index.ts";
 
 /**
@@ -44,6 +45,7 @@ export class VideoCandidates {
   readonly #reportOddity: OddityReporter;
   readonly #workerMediaSources: WorkerMediaSources;
   readonly #protection: ProtectionReader;
+  readonly #scriptArrival: ScriptArrival;
   /** Метка этого документа (одна на всю его жизнь). */
   readonly documentTag: DocumentTag;
 
@@ -56,6 +58,7 @@ export class VideoCandidates {
     reportOddity: OddityReporter,
     workerMediaSources: WorkerMediaSources,
     protection: ProtectionReader,
+    scriptArrival: ScriptArrival,
   ) {
     this.documentTag = documentTag;
     this.#registry = registry;
@@ -65,6 +68,7 @@ export class VideoCandidates {
     this.#reportOddity = reportOddity;
     this.#workerMediaSources = workerMediaSources;
     this.#protection = protection;
+    this.#scriptArrival = scriptArrival;
   }
 
   /**
@@ -139,6 +143,7 @@ export class VideoCandidates {
       liveMediaSourceOf: (candidate) => this.liveMediaSourceOf(candidate),
       isMediaSourceObjectUrl: (url) => this.#registry.isMediaSourceObjectUrl(url),
       resolveWorkerHandle: (candidate) => this.#workerMediaSources.resolveHandle(candidate),
+      scriptArrival: this.#scriptArrival,
     });
   }
 

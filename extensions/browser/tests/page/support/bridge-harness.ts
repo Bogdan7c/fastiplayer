@@ -6,6 +6,7 @@ import type { CandidatesReply, PageCommand, PageEvent, DescribeCandidatesQuery }
 import { startPageBridge, type PageBridge } from "../../../src/page/bridge.ts";
 import { captureShadowEnvironment, heldShadowStarterFor, playWatchSeamFor, shadowStarterFor, type ShadowWindow } from "../../../src/page/shadow-assembly.ts";
 import { createFakePage, FakeShadow, type FakePage } from "./fake-page.ts";
+import type { ScriptArrival } from "../../../src/page/script-arrival.ts";
 import type { WorkerHookSource } from "../../../src/page/worker-capture/index.ts";
 
 export interface BridgeHarness {
@@ -22,7 +23,7 @@ export const INACTIVE_NEXT_VIDEO_GUARD = {
   now: () => 0,
 };
 
-export function startHarness(options: { memoryBudgetBytes?: number; page?: FakePage; workerHook?: WorkerHookSource } = {}): BridgeHarness {
+export function startHarness(options: { memoryBudgetBytes?: number; page?: FakePage; workerHook?: WorkerHookSource; scriptArrival?: ScriptArrival } = {}): BridgeHarness {
   const page = options.page ?? createFakePage();
   const shadow = new FakeShadow();
   const debugLines: string[] = [];
@@ -30,6 +31,7 @@ export function startHarness(options: { memoryBudgetBytes?: number; page?: FakeP
     startShadow: shadow.starter,
     ...INACTIVE_NEXT_VIDEO_GUARD,
     debugSink: (line) => debugLines.push(line),
+    scriptArrival: options.scriptArrival ?? "at_document_start",
     ...(options.memoryBudgetBytes === undefined ? {} : { memoryBudgetBytes: options.memoryBudgetBytes }),
     ...(options.workerHook === undefined ? {} : { workerHook: options.workerHook }),
   });
@@ -54,6 +56,7 @@ export function startRealShadowHarness(): RealShadowHarness {
     playWatch: playWatchSeamFor(shadowEnvironment),
     now: shadowEnvironment.now,
     debugSink: (line) => debugLines.push(line),
+    scriptArrival: "at_document_start",
   });
   return { page, bridge, debugLines };
 }

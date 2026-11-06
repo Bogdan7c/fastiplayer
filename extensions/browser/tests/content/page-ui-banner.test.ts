@@ -66,6 +66,15 @@ describe("плашка: жизнь", () => {
     assert.equal(refusal.ui.probe().banner, null);
   });
 
+  it("подсказка держится дольше отказа: человеку надо найти кнопку play", async () => {
+    const hint = await setupPageUi();
+    deliver(hint, { id: "late_press_play", tone: "hint", headline: "Press play on the page", details: [] });
+    await hint.advance(BANNER_AUTO_HIDE_MS.refusal);
+    assert.equal(hint.ui.probe().banner, "late_press_play");
+    await hint.advance(BANNER_AUTO_HIDE_MS.hint - BANNER_AUTO_HIDE_MS.refusal);
+    assert.equal(hint.ui.probe().banner, null);
+  });
+
   it("новая плашка заменяет старую, а таймер старой не гасит новую раньше её срока", async () => {
     const harness = await setupPageUi();
     deliver(harness, NO_VIDEO); // таймер 8 с от t=0

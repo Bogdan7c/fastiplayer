@@ -3,6 +3,7 @@
 
 import { HAND_OFF_TAB_KIND, type HandOffTabOutcome } from "../shared/handoff-contract.ts";
 import { SURVEY_TAB_KIND, type SurveyTabReply } from "../shared/survey-contract.ts";
+import { LATE_ENTRY_STATE_KIND, RELOAD_AND_OPEN_KIND, type LateEntryStateReply } from "../shared/late-entry-contract.ts";
 import type { ActiveTab, HandOffRequest } from "./popup-flow.ts";
 
 const OUTCOME_KINDS: readonly HandOffTabOutcome["kind"][] = [
@@ -10,6 +11,7 @@ const OUTCOME_KINDS: readonly HandOffTabOutcome["kind"][] = [
   "no_video",
   "not_supported_yet",
   "protected",
+  "reload_needed",
   "video_gone",
   "local_address_refused",
   "local_address_needs_consent",
@@ -33,10 +35,24 @@ export function isSurveyTabReply(value: unknown): value is SurveyTabReply {
   return isRecord(value) && (value["kind"] === "surveyed" || value["kind"] === "unavailable");
 }
 
+/** Ответ на команды позднего входа. */
+export function isLateEntryStateReply(value: unknown): value is LateEntryStateReply {
+  return isRecord(value) && typeof value["running"] === "boolean";
+}
+
+/** Команда позднего входа; ответ проверен по форме, как и у остальных команд. */
+async function askLateEntry(kind: typeof LATE_ENTRY_STATE_KIND | typeof RELOAD_AND_OPEN_KIND, tabId: number): Promise<boolean> {
+  const reply: unknown = await chrome.runtime.sendMessage({ kind, tab_id: tabId });
+  if (!isLateEntryStateReply(reply)) throw new Error(`the background gave no valid answer to ${kind}`);
+  return reply.running;
+}
+
 export interface BackgroundLink {
   findActiveTab(): Promise<ActiveTab | undefined>;
   surveyTab(tabId: number): Promise<SurveyTabReply>;
   handOffTab(request: HandOffRequest): Promise<HandOffTabOutcome>;
+  isLateEntryRunning(tabId: number): Promise<boolean>;
+  reloadAndOpen(tabId: number): Promise<void>;
 }
 
 export function createBackgroundLink(): BackgroundLink {
@@ -63,5 +79,7 @@ export function createBackgroundLink(): BackgroundLink {
       if (!isHandOffTabOutcome(outcome)) throw new Error("the background gave no valid answer to hand_off_tab");
       return outcome;
     },
+    isLateEntryRunning: (tabId) => askLateEntry(LATE_ENTRY_STATE_KIND, tabId),
+    reloadAndOpen: async (tabId) => void (await askLateEntry(RELOAD_AND_OPEN_KIND, tabId)),
   };
 }

@@ -1,7 +1,7 @@
 // Выбор видео (пункт 9 09a), опрос фреймов и приём команды «отдать вкладку N» (решение 175).
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { describeFrameVideos, surveyTabVideos, type ExecuteInAllFrames } from "../../src/background/handoff/frame-survey.ts";
+import { describeFrameVideos, surveyTabVideos, type ExecuteInAllFrames, type FrameInjectionResult } from "../../src/background/handoff/frame-survey.ts";
 import { createHandOffCommandListener, createHeldVideoListener, isOwnExtensionPage, type FrameSender } from "../../src/background/handoff/hand-off-command.ts";
 import { pageIdentityOf, siteDomainOf, UNKNOWN_SITE_DOMAIN } from "../../src/background/handoff/page-identity.ts";
 import { translatePlayerMessage } from "../../src/background/handoff/player-message-translator.ts";
@@ -345,17 +345,37 @@ describe("выбор видео: адрес плейлиста в `src` до с�
   });
 });
 
+/** Версия фона в этих тестах и ответ фрейма с нашим скриптом этой версии. */
+const SCRIPT_VERSION = "1.2.3";
+const scripted = (candidates: unknown): unknown => ({ script_version: SCRIPT_VERSION, candidates });
+const survey = (execute: ExecuteInAllFrames) => surveyTabVideos(5, execute, createFakeClock().scheduler, SCRIPT_VERSION);
+
+/** Подменить `location` внедряемой функции: в Node его нет. */
+function withLocation<Result>(protocol: string, body: () => Result): Result {
+  const global = globalThis as Record<string, unknown>;
+  global["location"] = { protocol };
+  try {
+    return body();
+  } finally {
+    delete global["location"];
+  }
+}
+
 describe("опрос фреймов", () => {
   it("внедряемая функция зовёт функцию изолированного глобала и возвращает её результат", async () => {
-    const candidates = [video(1)];
+    const answer = scripted([video(1)]);
     const global = globalThis as Record<string, unknown>;
-    global[VIDEO_CANDIDATES_FUNCTION_NAME] = () => Promise.resolve(candidates);
+    global[VIDEO_CANDIDATES_FUNCTION_NAME] = () => Promise.resolve(answer);
     try {
-      assert.deepEqual(await describeFrameVideos(VIDEO_CANDIDATES_FUNCTION_NAME), candidates);
+      assert.deepEqual(await describeFrameVideos(VIDEO_CANDIDATES_FUNCTION_NAME), answer);
     } finally {
       delete global[VIDEO_CANDIDATES_FUNCTION_NAME];
     }
-    assert.equal(describeFrameVideos(VIDEO_CANDIDATES_FUNCTION_NAME), null, "фрейм без нашего скрипта — null");
+  });
+
+  it("фрейм без нашего скрипта говорит об этом явно: на веб-странице и на служебном документе по-разному", () => {
+    assert.deepEqual(withLocation("https:", () => describeFrameVideos(VIDEO_CANDIDATES_FUNCTION_NAME)), { script_absent: true, on_web_page: true });
+    assert.deepEqual(withLocation("about:", () => describeFrameVideos(VIDEO_CANDIDATES_FUNCTION_NAME)), { script_absent: true, on_web_page: false });
   });
 
   it("внедряемая функция самодостаточна: её текст работает без замыканий модуля", () => {
@@ -364,6 +384,7 @@ describe("опрос фреймов", () => {
     global["probeName"] = () => "ok";
     try {
       assert.equal(rebuilt("probeName"), "ok");
+      assert.deepEqual(withLocation("http:", () => rebuilt("noSuchProbe")), { script_absent: true, on_web_page: true });
     } finally {
       delete global["probeName"];
     }
@@ -375,33 +396,68 @@ describe("опрос фреймов", () => {
       assert.equal(func, describeFrameVideos);
       assert.deepEqual(args, [VIDEO_CANDIDATES_FUNCTION_NAME]);
       return Promise.resolve([
-        { frameId: 0, result: [video(1)] },
+        { frameId: 0, result: scripted([video(1)]) },
         { frameId: 1, result: null },
-        { frameId: 2, result: [{ ...video(2), extra: true }] },
-        { frameId: 3, result: [] },
+        { frameId: 2, result: scripted([{ ...video(2), extra: true }]) },
+        { frameId: 3, result: scripted([]) },
         { frameId: 4 },
       ]);
     };
-    const survey = await surveyTabVideos(5, execute, createFakeClock().scheduler);
-    assert.deepEqual(survey, { kind: "surveyed", frames: [{ frameId: 0, candidates: [video(1)] }], truncated: false });
+    assert.deepEqual(await survey(execute), { kind: "surveyed", frames: [{ frameId: 0, candidates: [video(1)] }], truncated: false, scriptGap: null });
   });
 
   it("Firefox вернул пустой элемент вместо фрейма: остальные фреймы вкладки опрошены", async () => {
-    const execute: ExecuteInAllFrames = () => Promise.resolve([{ frameId: 0, result: [video(1)] }, undefined]);
-    const survey = await surveyTabVideos(5, execute, createFakeClock().scheduler);
-    assert.deepEqual(survey, { kind: "surveyed", frames: [{ frameId: 0, candidates: [video(1)] }], truncated: false });
+    const execute: ExecuteInAllFrames = () => Promise.resolve([{ frameId: 0, result: scripted([video(1)]) }, undefined]);
+    assert.deepEqual(await survey(execute), { kind: "surveyed", frames: [{ frameId: 0, candidates: [video(1)] }], truncated: false, scriptGap: null });
   });
 
   it("ни один фрейм не принял внедрение (страница Firefox): вкладка закрыта, а не сбой", async () => {
     const execute: ExecuteInAllFrames = () => Promise.resolve([undefined]);
-    const survey = await surveyTabVideos(5, execute, createFakeClock().scheduler);
-    assert.equal(survey.kind, "not_scriptable");
+    assert.equal((await survey(execute)).kind, "not_scriptable");
   });
 
   it("пустой ответ браузера без фреймов — вкладка без видео, а не закрытая", async () => {
     const execute: ExecuteInAllFrames = () => Promise.resolve([]);
-    const survey = await surveyTabVideos(5, execute, createFakeClock().scheduler);
-    assert.deepEqual(survey, { kind: "surveyed", frames: [], truncated: false });
+    assert.deepEqual(await survey(execute), { kind: "surveyed", frames: [], truncated: false, scriptGap: null });
+  });
+});
+
+describe("опрос: вкладка старше скрипта (сессия 10d)", () => {
+  const gapOf = async (results: readonly FrameInjectionResult[]) => {
+    const reply = await survey(() => Promise.resolve(results));
+    assert.equal(reply.kind, "surveyed");
+    return reply.kind === "surveyed" ? reply : undefined;
+  };
+  const SCRIPTLESS_WEB = { script_absent: true, on_web_page: true };
+  const SCRIPTLESS_BLANK = { script_absent: true, on_web_page: false };
+
+  it("скрипта нет в верхнем фрейме веб-страницы — script_missing", async () => {
+    assert.equal((await gapOf([{ frameId: 0, result: SCRIPTLESS_WEB }]))?.scriptGap, "script_missing");
+  });
+
+  it("скрипт есть, видео нет — это не «вкладка старше скрипта»", async () => {
+    assert.equal((await gapOf([{ frameId: 0, result: scripted([]) }]))?.scriptGap, null);
+  });
+
+  it("верхний фрейм со скриптом: подфрейм без скрипта просто ещё грузится", async () => {
+    const reply = await gapOf([{ frameId: 0, result: scripted([]) }, { frameId: 9, result: SCRIPTLESS_WEB }]);
+    assert.equal(reply?.scriptGap, null);
+  });
+
+  it("пустой about:blank наверху: перезагрузка не поможет, случая нет", async () => {
+    assert.equal((await gapOf([{ frameId: 0, result: SCRIPTLESS_BLANK }]))?.scriptGap, null);
+  });
+
+  it("свежий подфрейм старой вкладки отдаёт видео, а разрыв скрипта остаётся виден", async () => {
+    const reply = await gapOf([{ frameId: 0, result: SCRIPTLESS_WEB }, { frameId: 3, result: scripted([video(1)]) }]);
+    assert.equal(reply?.scriptGap, "script_missing");
+    assert.deepEqual(reply?.frames, [{ frameId: 3, candidates: [video(1)] }]);
+  });
+
+  it("другая версия скрипта: его список не принимается, причина script_outdated", async () => {
+    const reply = await gapOf([{ frameId: 0, result: { script_version: "1.2.2", candidates: [video(1)] } }]);
+    assert.equal(reply?.scriptGap, "script_outdated");
+    assert.deepEqual(reply?.frames, [], "со старым скриптом не разговариваем: его видео не передаются");
   });
 });
 

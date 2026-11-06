@@ -9,6 +9,7 @@ import { installCodecPolicy } from "./codec-policy/index.ts";
 import { createOddityReporter, type DebugSink } from "./oddity-reporter.ts";
 import { captureShadowEnvironment, heldShadowStarterFor, playWatchSeamFor, shadowStarterFor } from "./shadow-assembly.ts";
 import { createPageRecording } from "./recorder-seam.ts";
+import { scriptArrivalOf } from "./script-arrival.ts";
 
 /**
  * Текст бандла хука выделенного воркера (`src/worker/main.ts`). Подставляет сборка
@@ -18,6 +19,8 @@ import { createPageRecording } from "./recorder-seam.ts";
 declare const __FASTIPLAYER_WORKER_HOOK_SOURCE__: string;
 
 function main(win: Window & typeof globalThis, debugSink: DebugSink): void {
+  // Самым первым: дальше страница и наши же обёртки уже могут что-то поменять.
+  const scriptArrival = scriptArrivalOf(win.document.readyState, win.location.href);
   // Ответы про кодеки (решения 43/64) — самыми первыми: страничный плеер спрашивает их с первой строки.
   // `codecPolicy.policy.current()` — синхронное чтение действующей политики: обёртка `Worker`
   // запекает её в хук каждого нового воркера.
@@ -32,6 +35,7 @@ function main(win: Window & typeof globalThis, debugSink: DebugSink): void {
     playWatch: playWatchSeamFor(shadowEnvironment),
     now: shadowEnvironment?.now ?? (() => Number.NEGATIVE_INFINITY),
     debugSink,
+    scriptArrival,
     ...(recording === null ? {} : { handoffTap: recording.tap, workerChannelExtension: recording.channelExtension }),
     // Пустой текст — сборка без хука (Firefox): обёртка `Worker` не ставится вовсе.
     ...(__FASTIPLAYER_WORKER_HOOK_SOURCE__.length > 0

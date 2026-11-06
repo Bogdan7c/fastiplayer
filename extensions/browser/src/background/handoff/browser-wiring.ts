@@ -132,6 +132,7 @@ export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabM
         (tab) => ({ title: tab.title, url: tab.url }),
         () => undefined,
       ),
+    extensionVersion: browserApi.runtime.getManifest().version,
     sessionKeyFor: (tabId, attempt) => `t${tabId}-${attempt}-${nonce}`,
   });
   browserApi.runtime.onMessage.addListener(

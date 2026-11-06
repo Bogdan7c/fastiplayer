@@ -3,7 +3,7 @@
 // выбрать другое видео), а не прочитать код ошибки.
 
 import type { HandOffTabOutcome } from "../shared/handoff-contract.ts";
-import { describeUnsupportedForm, SWITCH_TO_PLAYER_DETAIL, SWITCH_TO_PLAYER_HEADLINE, SWITCH_TO_PLAYER_ID } from "../shared/outcome-words.ts";
+import { describeReloadReason, describeUnsupportedForm, RELOAD_NEEDED_HEADLINE, RELOAD_NEEDED_ID, SWITCH_TO_PLAYER_DETAIL, SWITCH_TO_PLAYER_HEADLINE, SWITCH_TO_PLAYER_ID } from "../shared/outcome-words.ts";
 import type { SurveyUnavailableReason } from "../shared/survey-contract.ts";
 
 /**
@@ -33,6 +33,16 @@ export const SWITCH_TO_PLAYER_NOTICE: NoticeView = {
   headline: SWITCH_TO_PLAYER_HEADLINE,
   details: [SWITCH_TO_PLAYER_DETAIL],
 };
+/** Подпись кнопки решения 210 и обещание, которое кнопка выполняет. */
+export const RELOAD_AND_OPEN_LABEL = "Reload and open";
+const RELOAD_KEEPS_POSITION_DETAIL = "The page reloads and the video opens in Fastiplayer from the same second, if the site allows it.";
+
+/** Попап открыли, пока фон ведёт «Reload and open» этой вкладки: мешать ему передачей нельзя. */
+export const LATE_ENTRY_RUNNING_NOTICE: NoticeView = {
+  id: "late_entry_running",
+  headline: "Waiting for the video on this page",
+  details: ["It will open in Fastiplayer when it starts. If nothing happens, press play on the page."],
+};
 export const LOADING_NOTICE: NoticeView = { id: "loading", headline: "Looking for video on this page…", details: [] };
 export const NO_ACTIVE_TAB_NOTICE: NoticeView = {
   id: "no_active_tab",
@@ -56,6 +66,8 @@ export function describeOutcome(outcome: HandOffTabOutcome): NoticeView {
         headline: "No video to hand over yet",
         details: ["Press play on the page, then click the button again."],
       };
+    case "reload_needed":
+      return { id: RELOAD_NEEDED_ID, headline: RELOAD_NEEDED_HEADLINE, details: [describeReloadReason(outcome.reason), RELOAD_KEEPS_POSITION_DETAIL] };
     case "protected":
       return {
         id: "protected",

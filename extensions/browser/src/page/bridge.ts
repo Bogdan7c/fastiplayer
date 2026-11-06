@@ -12,6 +12,7 @@
 // рукопожатие не досталось странице, а на вопросы фона был ответ («живого видео нет»).
 // Глобалов не создаётся: всё живёт в замыканиях.
 
+import type { ScriptArrival } from "./script-arrival.ts";
 import { captureBinaryIntrinsics, type BinaryWindow } from "./binary-view.ts";
 import { captureDomReaders, type DomReaders, type DomWindow } from "./dom-readers.ts";
 import { createForwardByteMeter } from "./forward-byte-meter.ts";
@@ -57,6 +58,8 @@ export interface PageBridgeDependencies {
   readonly memoryBudgetBytes?: number;
   /** Хук выделенного воркера (бандл и политика кодеков); без него обёртка `Worker` не ставится. */
   readonly workerHook?: WorkerHookSource;
+  /** Встал ли скрипт до страницы или браузер вставил его в уже открытую вкладку (сессия 10d). */
+  readonly scriptArrival: ScriptArrival;
   /** Подслушивание шагов передачи (только отладочная сборка записи потока страницы). */
   readonly handoffTap?: HandoffTap;
   /** Расширение каналов воркеров (только отладочная сборка записи потока страницы). */
@@ -108,7 +111,7 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
   // Метки DRM — на document_start, как и остальные хуки (инвариант 4): иначе `setMediaKeys`, который
   // страница вызвала раньше нас, остался бы незамеченным.
   const drmMarks = new DrmMarks(win, dom, reportOddity);
-  const candidates = new VideoCandidates(registry, tracker, dom, mediaSources, documentTag, reportOddity, workerMediaSources, drmMarks);
+  const candidates = new VideoCandidates(registry, tracker, dom, mediaSources, documentTag, reportOddity, workerMediaSources, drmMarks, dependencies.scriptArrival);
   const nextVideo = new NextVideoGuard({
     dom,
     registry,

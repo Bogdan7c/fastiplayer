@@ -137,6 +137,7 @@ const UNSUPPORTED_MEDIA_FORMS: readonly UnsupportedMediaForm[] = [
   "media_stream",
   "other_scheme",
   "untracked_worker_media_source",
+  "started_before_script",
 ];
 const HANDOFF_END_CAUSES: readonly HandoffEndCause[] = ["returned", "element_released", "page_flood"];
 

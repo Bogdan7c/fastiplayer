@@ -66,6 +66,7 @@ function startRecordedBridge() {
     startShadow: shadowStarterFor(shadowEnvironment),
     ...INACTIVE_NEXT_VIDEO_GUARD,
     debugSink: (line) => oddities.push(line),
+    scriptArrival: "at_document_start",
     handoffTap: recording.tap,
     workerChannelExtension: recording.channelExtension,
   });

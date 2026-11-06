@@ -117,8 +117,10 @@ function endsNormallyFromPlayerSide(end: HandoffSessionEnd): boolean {
 }
 
 /** Отказы передачи, которые проходят сами (страница грузится, опрос не успел): ждём дальше до срока. */
-function isTemporaryRefusal(outcome: HandOffTabOutcome): boolean {
+export function isTemporaryRefusal(outcome: HandOffTabOutcome): boolean {
   if (outcome.kind === "no_video" || outcome.kind === "video_gone") return true;
+  // Страница только грузится, скрипт вот-вот встанет: на свежей вкладке это ещё не «вкладка старше скрипта».
+  if (outcome.kind === "reload_needed") return true;
   return outcome.kind === "failed" && (outcome.reason === "survey_timed_out" || outcome.reason.startsWith("tab_not_scriptable"));
 }
 

@@ -70,6 +70,14 @@ export interface WorldOptions {
   readonly localAddressSetting?: LocalAddressSetting | Promise<LocalAddressSetting>;
 }
 
+/** Версия экстеншена в этом мире. */
+export const WORLD_EXTENSION_VERSION = "1.2.3";
+
+/** Массив кандидатов в описании фрейма — ответ нашего скрипта этой же версии; другой ответ идёт как есть. */
+function scriptedFrameResult(frame: FrameInjectionResult): FrameInjectionResult {
+  return Array.isArray(frame.result) ? { ...frame, result: { script_version: WORLD_EXTENSION_VERSION, candidates: frame.result } } : frame;
+}
+
 export function setup(
   frames: readonly FrameInjectionResult[] | Promise<readonly FrameInjectionResult[]> = [{ frameId: 0, result: [PLAYING_VIDEO] }],
   fetchRange: RangeFetch = NO_NETWORK,
@@ -112,8 +120,9 @@ export function setup(
     noteForDeveloper: (message) => void adMirrorFake.notes.push(message),
     executeInAllFrames: () => {
       surveyCount += 1;
-      return surveyError === undefined ? Promise.resolve(currentFrames) : Promise.reject(surveyError);
+      return surveyError === undefined ? Promise.resolve(currentFrames).then((frames) => frames.map(scriptedFrameResult)) : Promise.reject(surveyError);
     },
+    extensionVersion: WORLD_EXTENSION_VERSION,
     describeTab: () => Promise.resolve(tabAlive ? { title: "Серія 3\nОзвучка", url: tabUrl } : undefined),
     tabExists: () => {
       tabExistsQuestions += 1;

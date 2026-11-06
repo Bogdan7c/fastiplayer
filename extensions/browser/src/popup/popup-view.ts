@@ -2,7 +2,7 @@
 // имена хостов) в innerHTML не попадают. Логики здесь нет — её ведёт `popup-flow.ts`.
 //
 // Порядок элементов задаёт порядок фокуса по Tab (контракт стенда): сначала кнопки вопроса (Allow первым),
-// затем строки выбираемых видео сверху вниз, затем ссылки. Строка, которую выбрать нельзя (в плеере, DRM,
+// затем кнопка «Reload and open», затем строки выбираемых видео сверху вниз, затем ссылки. Строка, которую выбрать нельзя (в плеере, DRM,
 // not supported yet), — не кнопка и в обход Tab не попадает.
 
 import type { PopupFlow, PopupModel } from "./popup-flow.ts";
@@ -39,6 +39,18 @@ function renderQuestion(model: PopupModel, flow: PopupFlow): HTMLElement | undef
   deny.disabled = model.busy;
   deny.addEventListener("click", () => flow.declineLocalAddress());
   block.append(allow, deny);
+  return block;
+}
+
+function renderReload(model: PopupModel, flow: PopupFlow): HTMLElement | undefined {
+  if (model.reloadLabel === null) return undefined;
+  const block = document.createElement("section");
+  block.className = "reload";
+  const button = textElement("button", model.reloadLabel, "reload-and-open");
+  button.type = "button";
+  button.disabled = model.busy;
+  button.addEventListener("click", () => void flow.reloadAndOpen());
+  block.append(button);
   return block;
 }
 
@@ -82,6 +94,6 @@ function renderList(model: PopupModel, flow: PopupFlow): HTMLElement | undefined
 
 /** Нарисовать модель в корень; прежнее содержимое заменяется целиком. */
 export function renderPopup(root: HTMLElement, model: PopupModel, flow: PopupFlow): void {
-  const children = [renderNotice(model), renderQuestion(model, flow), renderList(model, flow)];
+  const children = [renderNotice(model), renderQuestion(model, flow), renderReload(model, flow), renderList(model, flow)];
   root.replaceChildren(...children.filter((child): child is HTMLElement => child !== undefined));
 }

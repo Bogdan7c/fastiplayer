@@ -7,7 +7,7 @@ import { describeOutcome } from "../../src/popup/outcome-text.ts";
 import type { EntryReport } from "../../src/shared/entry-contract.ts";
 import type { HandOffTabOutcome, UnsupportedMediaForm } from "../../src/shared/handoff-contract.ts";
 
-const FORMS: readonly UnsupportedMediaForm[] = ["native_hls", "blob_file", "data_url", "media_stream", "other_scheme", "untracked_worker_media_source"];
+const FORMS: readonly UnsupportedMediaForm[] = ["native_hls", "blob_file", "data_url", "media_stream", "other_scheme", "untracked_worker_media_source", "started_before_script"];
 
 /** Каждый вид исхода команды передачи (и обе формы удачи) плюс два исхода, которых у команды нет. */
 const ALL_RESULTS: readonly EntryResult[] = [
@@ -23,6 +23,11 @@ const ALL_RESULTS: readonly EntryResult[] = [
   { kind: "outcome", outcome: { kind: "failed", reason: "tab_not_scriptable:no frame accepted the injection" } },
   { kind: "link_no_video_started" },
   { kind: "link_not_opened" },
+  { kind: "outcome", outcome: { kind: "reload_needed", reason: "script_missing" } },
+  { kind: "late_press_play" },
+  { kind: "late_no_video_started" },
+  { kind: "late_reload_failed" },
+  { kind: "late_started_from_site_position" },
 ];
 
 const textOf = (result: EntryResult): string => {
@@ -37,11 +42,23 @@ describe("тексты плашки", () => {
     assert.equal(new Set(reports.map((report) => report.id)).size, ALL_RESULTS.length, "имена случаев не повторяются");
   });
 
-  it("удача — success, всё остальное — refusal", () => {
-    assert.deepEqual(
-      ALL_RESULTS.map((result) => describeEntryResult(result).tone),
-      ["success", "success", ...Array.from({ length: ALL_RESULTS.length - 2 }, () => "refusal")],
-    );
+  it("удача — success, подсказка — hint, всё остальное — refusal", () => {
+    const expectedTone = (result: EntryResult): EntryReport["tone"] => {
+      if (result.kind === "late_press_play") return "hint";
+      if (result.kind === "late_started_from_site_position") return "success";
+      return result.kind === "outcome" && result.outcome.kind === "started" ? "success" : "refusal";
+    };
+    assert.deepEqual(ALL_RESULTS.map((result) => describeEntryResult(result).tone), ALL_RESULTS.map(expectedTone));
+  });
+
+  it("плашка про перезагрузку называет кнопку на панели: сама она страницу не перезагружает", () => {
+    const text = textOf({ kind: "outcome", outcome: { kind: "reload_needed", reason: "stream_started_before_script" } });
+    assert.match(text, /started before Fastiplayer Bridge was ready/);
+    assert.match(text, /toolbar/);
+  });
+
+  it("сайт не дал встать на секунду: человек узнаёт об этом", () => {
+    assert.match(textOf({ kind: "late_started_from_site_position" }), /may not continue from the same second/);
   });
 
   it("started: новое окно — «Opened in Fastiplayer»; окно уже открыто — тот же совет, что в попапе (решение 216)", () => {

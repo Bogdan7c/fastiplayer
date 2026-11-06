@@ -15,7 +15,7 @@
 // конец старого сеанса не теряется, а удаление старой записи не стирает новую. Если новый сеанс не
 // состоялся, а старый ещё жив, старая запись возвращается на место.
 
-import type { HandOffTabOutcome, HeldVideoReply, HeldVideoReport, VideoRef } from "../../shared/handoff-contract.ts";
+import type { ReloadReason, HandOffTabOutcome, HeldVideoReply, HeldVideoReport, VideoRef } from "../../shared/handoff-contract.ts";
 import type { SurveyTabReply, TabPlayerPresence } from "../../shared/survey-contract.ts";
 import type { PageAdState } from "../../protocol/index.ts";
 import type { TabModel } from "../tab-model/tab-model.ts";
@@ -37,6 +37,8 @@ export interface TabHandoffsDependencies extends HandoffSessionDependencies {
   readonly executeInAllFrames: ExecuteInAllFrames;
   /** Модель вкладки: сюда пишутся итог каждого опроса и каждый отказ. Её сбой передачу не ломает. */
   readonly tabModel: TabModel;
+  /** Версия экстеншена: с ней сверяется скрипт страницы при опросе (сессия 10d). */
+  readonly extensionVersion: string;
   /** Ключ сеанса для передачи этой вкладки (base64url, ≤ 64 байт). */
   readonly sessionKeyFor: (tabId: number, attempt: number) => string;
   /** Настройка адреса файла (решение 199). Читается на каждую команду: человек мог её сменить. */
@@ -136,6 +138,15 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     // Закрытой вкладке снимок не пишем: `forgetTab` его уже стёр.
     if (refusal !== undefined && !entry.removed) await dependencies.tabModel.noteHandoffRefused(tabId, refusal);
     return outcome;
+  }
+
+  /**
+   * Вкладка старше скрипта, и поэтому передать нечего (сессия 10d). Если в свежем подфрейме нашлось
+   * передаваемое видео, перезагрузка не нужна; `undefined` — это обычный случай.
+   */
+  function reloadOutcomeOf(choice: RequestedVideoChoice, scriptGap: ReloadReason | null): HandOffTabOutcome | undefined {
+    if (choice.kind === "not_supported_yet" && choice.form === "started_before_script") return { kind: "reload_needed", reason: "stream_started_before_script" };
+    return choice.kind === "nothing" && scriptGap !== null ? { kind: "reload_needed", reason: scriptGap } : undefined;
   }
 
   /** Исход для выбора без видео на передачу; `undefined` — видео выбрано. */
@@ -273,7 +284,7 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
       kind: "refused",
       outcome: await (refusal === undefined ? refuse(tabId, entry, outcome) : refuse(tabId, entry, outcome, refusal)),
     });
-    const survey = await surveyTabVideos(tabId, dependencies.executeInAllFrames, dependencies.scheduler);
+    const survey = await surveyTabVideos(tabId, dependencies.executeInAllFrames, dependencies.scheduler, dependencies.extensionVersion);
     if (entry.removed) return { kind: "refused", outcome: { kind: "failed", reason: "tab_closed" } };
     if (survey.kind === "not_scriptable") {
       // Служебная страница браузера, магазин расширений, закрытая вкладка: внедрение запрещено.
@@ -286,7 +297,7 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     const choice = requested === undefined ? chooseVideo(survey.frames) : chooseRequestedVideo(survey.frames, requested);
     // Нет видео, неподдержанная форма, DRM, одна реклама или устаревшая ссылка: честный отказ БЕЗ сеанса —
     // плеер не будится, видео остаётся играть в браузере.
-    const refusalOutcome = refusalOutcomeOf(choice);
+    const refusalOutcome = reloadOutcomeOf(choice, survey.scriptGap) ?? refusalOutcomeOf(choice);
     if (refusalOutcome !== undefined) return refused(refusalOutcome);
     if (choice.kind !== "hand_off") return refused({ kind: "no_video" });
     const addressCheck = await fileAddressRuleFor(choice.video, consent);
@@ -370,7 +381,7 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
 
   async function surveyTab(tabId: number): Promise<SurveyTabReply> {
     try {
-      const survey = await surveyTabVideos(tabId, dependencies.executeInAllFrames, dependencies.scheduler);
+      const survey = await surveyTabVideos(tabId, dependencies.executeInAllFrames, dependencies.scheduler, dependencies.extensionVersion);
       if (survey.kind === "not_scriptable") return { kind: "unavailable", reason: "tab_not_scriptable" };
       if (survey.kind === "timed_out") return { kind: "unavailable", reason: "survey_timed_out" };
       await dependencies.tabModel.recordSurvey(tabId, survey.frames);

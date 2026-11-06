@@ -8,6 +8,7 @@ import type { UiLayer } from "./ui-layer.ts";
 const TONE_COLORS: Readonly<Record<EntryReport["tone"], { readonly background: string; readonly accent: string }>> = {
   success: { background: "#12301f", accent: "#3ecf7a" },
   refusal: { background: "#3a1a14", accent: "#ff8a5c" },
+  hint: { background: "#14283a", accent: "#6db3f2" },
 };
 
 const CLOSE_LABEL = "Close";
