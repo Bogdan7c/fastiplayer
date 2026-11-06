@@ -11,7 +11,7 @@ use video_backend_api::{
 };
 use video_core::{
     DecodePacket, DecodeSendError, FrameResourceHandle, HostUploadResourceSnapshotStatus,
-    VideoDecoderActivityWaitOutcome, VideoDecoderDiagnosticEvent,
+    VideoDecodePace, VideoDecoderActivityWaitOutcome, VideoDecoderDiagnosticEvent,
     VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState, VideoPrerollOutputFloor,
     VideoPrerollOutputFloorClear, VideoPrerollOutputFloorResult, VideoStreamConfigRejection,
     VideoStreamConfigResult, VideoStreamDecodeConfig,
@@ -157,6 +157,12 @@ fn decoder_wrapper_forwards_every_trait_method_with_distinct_answers() {
     assert_eq!(
         decoder.clear_preroll_output_floor(VideoPrerollOutputFloorClear::MatchingGeneration(1)),
         VideoPrerollOutputFloorResult::Cleared
+    );
+    // Дефолт трейта молча ничего не делает, поэтому проверяем, что такт дошёл до декодера.
+    decoder.set_decode_pace(VideoDecodePace::Free);
+    assert_eq!(
+        harness.inner_log.decode_paces(),
+        vec![VideoDecodePace::Free]
     );
     assert_eq!(
         decoder.begin_end_of_stream_drain(41),

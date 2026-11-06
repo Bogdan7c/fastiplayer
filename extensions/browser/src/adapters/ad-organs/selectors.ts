@@ -31,7 +31,7 @@ export const IMA_ORGANS = {
  */
 export const PLAYERJS_ORGANS = {
   rootSelector: "pjsdiv",
-  /** «Реклама 1/2»: слово, потом «номер/размер блока». */
+  /** «Реклама 1/2»: слово, потом «номер/размер блока». Tortuga пишет только слово. */
   counterWords: ["реклама", "реклами", "ad", "ads", "advertisement"],
   /** «Пропустити через 15»: отсчёт до кнопки. */
   countdownPhrases: ["пропустити через", "пропустить через", "skip in", "skip ad in"],

@@ -2,7 +2,8 @@
 // `<pjsdiv>`. Берём только листья, которые показаны и лежат внутри вьюпорта: у плеера есть невидимые
 // листья меню за экраном (y = −2000: «Субтитри», «Швидкість»), их считать нельзя.
 //
-// Что значит «идёт реклама»: виден лист-счётчик («Реклама 1/2») или лист-отсчёт («Пропустити через 15»).
+// Что значит «идёт реклама»: виден лист-счётчик («Реклама 1/2» или просто «Реклама», как у Tortuga)
+// или лист-отсчёт («Пропустити через 15»).
 // Одно слово «Пропустити» без них рекламой не считается: оно может оказаться чем угодно на экране фильма.
 // `click()` по листу принимается (факт разведки), значит кнопка — `available`.
 
@@ -16,7 +17,8 @@ function alternation(words: readonly string[]): string {
   return words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|");
 }
 
-const COUNTER_PATTERN = new RegExp(`^(?:${alternation(PLAYERJS_ORGANS.counterWords)})\\s*(\\d+)\\s*/\\s*(\\d+)$`, "u");
+// Номер необязателен: Tortuga пишет одно слово. Лист должен совпасть целиком, «Вимкнути рекламу» сюда не попадёт.
+const COUNTER_PATTERN = new RegExp(`^(?:${alternation(PLAYERJS_ORGANS.counterWords)})(?:\\s*(\\d+)\\s*/\\s*(\\d+))?$`, "u");
 const COUNTDOWN_PATTERN = new RegExp(
   `^(?:${alternation(PLAYERJS_ORGANS.countdownPhrases)})\\s*(\\d+)\\s*(?:${alternation(PLAYERJS_ORGANS.countdownUnits)})?\\.?$`,
   "u",

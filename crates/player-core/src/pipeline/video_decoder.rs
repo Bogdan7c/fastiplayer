@@ -18,8 +18,22 @@ impl PlaybackPipeline {
             .as_ref()
             .map_or("No video backend", |decoder| decoder.backend_name());
         self.video_decoder_thread = decoder_thread;
+        self.apply_video_decode_pace();
         self.require_video_decoder_keyframe();
         self.reset_video_decode_in_flight();
+    }
+
+    /// Запоминает просьбу о такте и сразу передаёт её текущему decoder-у.
+    pub(crate) fn set_video_decode_pace(&mut self, pace: video_core::VideoDecodePace) {
+        self.video_decode_pace = pace;
+        self.apply_video_decode_pace();
+    }
+
+    /// Новый decoder стартует с тактом по умолчанию, поэтому просьба повторяется при замене.
+    fn apply_video_decode_pace(&self) {
+        if let Some(decoder_thread) = self.video_decoder_thread.as_ref() {
+            decoder_thread.set_decode_pace(self.video_decode_pace);
+        }
     }
 
     /// Сохраняет запущенный video backend без раскрытия backend-specific init в session.
@@ -49,6 +63,7 @@ impl PlaybackPipeline {
         self.cancel_video_backlog_recovery_scan_for_decoder_replacement();
         self.video_backend = decoder_thread.backend_name();
         let previous_decoder = self.video_decoder_thread.replace(decoder_thread);
+        self.apply_video_decode_pace();
         self.require_video_decoder_keyframe();
         self.reset_video_decode_in_flight();
         previous_decoder

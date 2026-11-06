@@ -141,6 +141,20 @@ describe("PlayerJS", () => {
     assert.deepEqual(state, showing({ kind: "known", index: 1, count: 2 }, { kind: "available" }));
   });
 
+  it("Tortuga: слово «Реклама» без номера — отсчёт кончился, кнопка доступна и нажимается", () => {
+    const page = playerJsPage([{ text: "Реклама" }, { text: "Пропустити" }]);
+    assert.deepEqual(read(page).readAdState(), showing({ kind: "unknown" }, { kind: "available" }));
+    assert.equal(read(page).pressSkip(), "pressed");
+    assert.equal(page.leaves[1]?.clicks, 1);
+  });
+
+  it("одна фраза со словом реклама внутри счётчиком не считается", () => {
+    const page = playerJsPage([{ text: "Вимкнути рекламу" }, { text: "Пропустити" }]);
+    assert.deepEqual(read(page).readAdState(), { kind: "none" });
+    assert.equal(read(page).pressSkip(), "no_button");
+    assert.equal(page.leaves[1]?.clicks, 0);
+  });
+
   it("листья меню за экраном не считаются, даже если их текст похож на кнопку", () => {
     const page = playerJsPage([{ text: "Реклама 1/2" }, { text: "Пропустити", rect: OFFSCREEN_RECT }, { text: "Субтитри", rect: OFFSCREEN_RECT }]);
     assert.deepEqual(read(page).readAdState(), showing({ kind: "known", index: 1, count: 2 }, UNAVAILABLE));

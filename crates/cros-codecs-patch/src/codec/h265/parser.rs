@@ -4315,6 +4315,7 @@ mod tests {
             },
             size: data.len(),
             offset: 0,
+            consumed: data.len(),
             data: Cow::Owned(data),
         }
     }

@@ -61,6 +61,8 @@ impl PlayerSession {
 
         let previous_playback_rate = self.snapshot.playback_rate;
         self.snapshot.playback_rate = playback_rate;
+        self.pipeline
+            .set_video_decode_pace(video_decode_pace_for(playback_rate));
         self.reconcile_video_backlog_recovery_after_rate_change(playback_rate);
         self.publish_clock_sample(current_media_position);
 
@@ -104,6 +106,8 @@ impl PlayerSession {
 
         let previous_playback_rate = self.snapshot.playback_rate;
         self.snapshot.playback_rate = playback_rate;
+        self.pipeline
+            .set_video_decode_pace(video_decode_pace_for(playback_rate));
         self.reconcile_video_backlog_recovery_after_rate_change(playback_rate);
         log_committed_playback_rate(
             previous_playback_rate,
@@ -185,6 +189,18 @@ impl PlayerSession {
     /// Возвращает новое media к поддерживаемому начальному состоянию `1.0x`.
     pub(super) fn reset_playback_rate_for_media_load(&mut self) {
         self.snapshot.playback_rate = PlaybackRate::NORMAL;
+        self.pipeline
+            .set_video_decode_pace(video_decode_pace_for(PlaybackRate::NORMAL));
+    }
+}
+
+/// На ускорении кадры нужны быстрее проходов показа, и такт стал бы потолком скорости.
+/// На 1x и медленнее такт остаётся: он защищает показ на слабом GPU (решение 78).
+fn video_decode_pace_for(playback_rate: PlaybackRate) -> video_core::VideoDecodePace {
+    if playback_rate.is_faster_than_normal() {
+        video_core::VideoDecodePace::Free
+    } else {
+        video_core::VideoDecodePace::FollowPresent
     }
 }
 

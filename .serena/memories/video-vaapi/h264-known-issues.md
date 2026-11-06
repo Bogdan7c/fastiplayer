@@ -2,6 +2,9 @@
 
 Разборы и планы: `user/h264_playback_perf_findings.md`, `user/h264_seek_bug_diagnosis.md`, `user/h264_seek_perf_implementation_plan.md`.
 
+## Нули вокруг NAL-блока: fixed 2026-11-06
+- Сколько байт съел `decode()`, говорит `Nalu::consumed`, а не `offset + size`: те не считают нули рядом с NAL-блоком, и на последнем блоке оставался хвост без стартового кода. Симптом: `parse error, skipping packet ... No NAL found` на ключевых кадрах, звук идёт, картинка стоит. Пример: клипы Twitch, где второй PPS в `avcC` кончается нулём. Правка общая для H.264 и H.265. Тесты `codec/h264/nalu.rs`, запускаются из каталога `crates/cros-codecs-patch` (крейт не входит в workspace).
+
 ## Seek correctness: fixed / validated
 - Старый баг stale DPB tail после seek-flush закрыт: seek 6s -> 30s в ручной release-проверке коммитится около demux `actual_ms`, не около pre-seek position.
 - Первый post-seek presented frame не является stale H.264 DPB tail. `video-vaapi` seek-flush использует discard policy для tail events/decoder-owned ready frames; EOF/DPB drain остается отдельным intent и tail frames сохраняет.

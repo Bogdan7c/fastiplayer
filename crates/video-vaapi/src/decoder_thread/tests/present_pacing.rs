@@ -5,7 +5,7 @@
 
 use std::thread;
 
-use video_core::PresentPassSignal;
+use video_core::{PresentPassSignal, VideoDecodePace};
 
 use super::super::present_pacing::{
     DecodedFramesAhead, PRESENT_PACING_MIN_DECODED_FRAMES_AHEAD, PacingPermitSource,
@@ -89,6 +89,60 @@ fn comfortable_lead_allows_one_submission_per_present_pass() {
 }
 
 /// При малом запасе декодер догоняет без ожидания, а старый сигнал не переносится в такт.
+/// На ускорении декодер не ждёт показа даже с большим запасом: иначе скорость упрётся в
+/// проходы показа (60 fps на 3x шли ~2x, замер вехи M1).
+#[test]
+fn free_pace_admits_every_packet_with_comfortable_lead_and_no_pulse() {
+    let (_signal, mut pacing) = paced_after_first_submission();
+    pacing.pace_request().set(VideoDecodePace::Free);
+
+    for _ in 0..5 {
+        assert_eq!(
+            pacing.admission_for_next_packet(COMFORTABLE_LEAD),
+            PacketAdmission::Admit
+        );
+        pacing.note_packet_submitted();
+    }
+
+    assert_eq!(pacing.counters().free_pace_admits, 5);
+    assert_eq!(pacing.counters().low_lead_admits, 0);
+}
+
+/// Возврат к 1x включает такт снова, и показ времён свободного режима разрешением не считается.
+#[test]
+fn back_to_present_pacing_waits_again_and_ignores_stale_pulse() {
+    let (signal, mut pacing) = paced_after_first_submission();
+    let pace_request = pacing.pace_request();
+    pace_request.set(VideoDecodePace::Free);
+    signal.notify_present_pass_submitted();
+    assert_eq!(
+        pacing.admission_for_next_packet(COMFORTABLE_LEAD),
+        PacketAdmission::Admit
+    );
+    pacing.note_packet_submitted();
+
+    pace_request.set(VideoDecodePace::FollowPresent);
+
+    assert_eq!(
+        pacing.admission_for_next_packet(COMFORTABLE_LEAD),
+        PacketAdmission::AwaitPresentPulse
+    );
+    assert_eq!(pacing.counters().free_pace_admits, 1);
+}
+
+/// Без подписки просьба ничего не меняет и не считается: такта и так нет.
+#[test]
+fn free_pace_on_unpaced_decoder_changes_nothing() {
+    let mut pacing = PresentPacing::unpaced();
+    pacing.pace_request().set(VideoDecodePace::Free);
+
+    assert_eq!(
+        pacing.admission_for_next_packet(COMFORTABLE_LEAD),
+        PacketAdmission::Admit
+    );
+    assert_eq!(pacing.counters().free_pace_admits, 0);
+}
+
 #[test]
 fn low_lead_admits_without_waiting_and_discards_stale_pulse() {
     let (signal, mut pacing) = paced_after_first_submission();

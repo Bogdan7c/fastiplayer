@@ -1073,6 +1073,9 @@ pub(super) fn install_ready_audio_runtime(
 /// Shared fake decoder для seek/tick тестов без production decoder и renderer resources.
 #[derive(Clone)]
 pub(super) struct SharedFakeVideoDecoderThread {
+    /// Просьбы о такте показа в порядке прихода.
+    pub(super) decode_paces: Arc<Mutex<Vec<video_core::VideoDecodePace>>>,
+
     /// Очередь decoded frames, которые fake decoder отдаёт через `try_recv_frame`.
     pub(super) decoded_frames: Arc<Mutex<VecDeque<video_core::DecodedFrame>>>,
 
@@ -1152,6 +1155,7 @@ impl SharedFakeVideoDecoderThread {
     /// Создаёт fake decoder с пустыми output/release очередями.
     pub(super) fn new() -> Self {
         Self {
+            decode_paces: Arc::new(Mutex::new(Vec::new())),
             decoded_frames: Arc::new(Mutex::new(VecDeque::new())),
             send_results: Arc::new(Mutex::new(VecDeque::new())),
             sent_packets: Arc::new(Mutex::new(Vec::new())),
@@ -1392,6 +1396,10 @@ impl SharedFakeVideoDecoderThread {
 
 impl video_core::VideoDecoderThreadHandle for SharedFakeVideoDecoderThread {
     type ResourceProvider = PresentFrameResourceProviderHandle;
+
+    fn set_decode_pace(&self, pace: video_core::VideoDecodePace) {
+        self.decode_paces.lock().unwrap().push(pace);
+    }
 
     fn backend_name(&self) -> &'static str {
         "Shared fake decoder"

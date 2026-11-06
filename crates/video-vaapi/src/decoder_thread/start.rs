@@ -1,6 +1,6 @@
 //! Способы запуска decoder thread: без такта показа и с ним (gles2-renderer 12a.2).
 
-use video_core::PresentPassSubscription;
+use video_core::{PresentPassSubscription, VideoDecodePace};
 
 use super::present_pacing::PresentPacing;
 use super::{VideoDecodeThread, VideoDecodeThreadConfig};
@@ -20,5 +20,10 @@ impl VideoDecodeThread {
         present_pass: PresentPassSubscription,
     ) -> anyhow::Result<Self> {
         Self::spawn(config, PresentPacing::paced(present_pass))
+    }
+
+    /// Передаёт decoder thread-у просьбу плеера о такте показа. Никогда не блокирует.
+    pub fn set_decode_pace(&self, pace: VideoDecodePace) {
+        self.decode_pace_request.set(pace);
     }
 }

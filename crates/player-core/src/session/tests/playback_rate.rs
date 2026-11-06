@@ -366,3 +366,115 @@ fn new_media_load_resets_playback_rate_to_one_x() {
 
     assert_eq!(session.snapshot().playback_rate, PlaybackRate::NORMAL);
 }
+
+/// Сессия с запущенным воспроизведением и fake decoder-ом, который запоминает просьбы о такте.
+fn playing_session_with_recording_decoder() -> (PlayerSession, SharedFakeVideoDecoderThread) {
+    let mut session = PlayerSession::new();
+    let decoder = SharedFakeVideoDecoderThread::new();
+    session.pipeline.set_video_decoder_thread(decoder.clone());
+    session.set_playback_state(PlaybackState::Playing);
+    decoder.decode_paces.lock().unwrap().clear();
+    (session, decoder)
+}
+
+#[test]
+fn faster_than_normal_rate_frees_decoder_from_present_pacing() {
+    let (mut session, decoder) = playing_session_with_recording_decoder();
+
+    assert_rate_command_applied(
+        session.dispatch_command(PlayerCommand::SetPlaybackRate(playback_rate(3.0))),
+    );
+
+    assert_eq!(
+        *decoder.decode_paces.lock().unwrap(),
+        vec![video_core::VideoDecodePace::Free]
+    );
+}
+
+#[test]
+fn normal_and_slower_rates_keep_decoder_on_present_pacing() {
+    let (mut session, decoder) = playing_session_with_recording_decoder();
+
+    for multiplier in [2.0, 1.0, 0.5] {
+        assert_rate_command_applied(
+            session.dispatch_command(PlayerCommand::SetPlaybackRate(playback_rate(multiplier))),
+        );
+    }
+
+    assert_eq!(
+        *decoder.decode_paces.lock().unwrap(),
+        vec![
+            video_core::VideoDecodePace::Free,
+            video_core::VideoDecodePace::FollowPresent,
+            video_core::VideoDecodePace::FollowPresent,
+        ]
+    );
+}
+
+#[test]
+fn paused_rate_change_reaches_decoder_too() {
+    let mut session = PlayerSession::new();
+    let decoder = SharedFakeVideoDecoderThread::new();
+    session.pipeline.set_video_decoder_thread(decoder.clone());
+    session.set_playback_state(PlaybackState::Paused);
+    decoder.decode_paces.lock().unwrap().clear();
+
+    assert_rate_command_applied(
+        session.dispatch_command(PlayerCommand::SetPlaybackRate(playback_rate(2.0))),
+    );
+
+    assert_eq!(
+        *decoder.decode_paces.lock().unwrap(),
+        vec![video_core::VideoDecodePace::Free]
+    );
+}
+
+#[test]
+fn replaced_decoder_inherits_the_requested_pace() {
+    let (mut session, _first_decoder) = playing_session_with_recording_decoder();
+    assert_rate_command_applied(
+        session.dispatch_command(PlayerCommand::SetPlaybackRate(playback_rate(2.0))),
+    );
+
+    let replacement = SharedFakeVideoDecoderThread::new();
+    session
+        .pipeline
+        .set_video_decoder_thread(replacement.clone());
+
+    assert_eq!(
+        *replacement.decode_paces.lock().unwrap(),
+        vec![video_core::VideoDecodePace::Free]
+    );
+}
+
+#[test]
+fn rejected_rate_change_does_not_touch_decoder_pace() {
+    let (mut session, decoder) = playing_session_with_recording_decoder();
+    session.set_playback_state(PlaybackState::Stopped);
+
+    let outcome = session
+        .dispatch_command(PlayerCommand::SetPlaybackRate(playback_rate(2.0)))
+        .expect("rate command must not be fatal");
+
+    assert_ne!(outcome, PlayerCommandOutcome::Applied);
+    assert!(decoder.decode_paces.lock().unwrap().is_empty());
+}
+
+#[test]
+fn new_media_returns_decoder_to_present_pacing() {
+    let (mut session, _decoder) = playing_session_with_recording_decoder();
+    assert_rate_command_applied(
+        session.dispatch_command(PlayerCommand::SetPlaybackRate(playback_rate(2.0))),
+    );
+
+    session.reset_playback_rate_for_media_load();
+    let next_media_decoder = SharedFakeVideoDecoderThread::new();
+    session
+        .pipeline
+        .set_video_decoder_thread(next_media_decoder.clone());
+
+    assert_eq!(
+        *next_media_decoder.decode_paces.lock().unwrap(),
+        vec![video_core::VideoDecodePace::FollowPresent]
+    );
+}

@@ -364,6 +364,10 @@ impl VideoDecoderThreadHandle for VaapiVideoDecoderThreadHandle {
         VideoDecodeThread::clear_stream(&self.decoder_thread)
     }
 
+    fn set_decode_pace(&self, pace: video_core::VideoDecodePace) {
+        VideoDecodeThread::set_decode_pace(&self.decoder_thread, pace);
+    }
+
     fn set_preroll_output_floor(
         &self,
         floor: video_core::VideoPrerollOutputFloor,

@@ -12,6 +12,11 @@
 //! получается «показ → декод», и следующий показ приходит к свободному GPU. Временная сборка
 //! на T410: 0 опозданий за 20 с на 1080p30, CPU не выше.
 //!
+//! Правило работает только пока плеер просит держаться показа ([`VideoDecodePace`]). На
+//! ускорении кадры нужны быстрее проходов показа: одна подача на проход ограничила бы
+//! декод числом проходов и 60 fps на 3x шли бы ~2x, а звук голодал бы за полной очередью
+//! видео (замер вехи M1, браузерный мост). Поэтому там плеер просит `Free`.
+//!
 //! Чего правило НЕ делает:
 //! - без подписки (рендер wgpu не даёт сигнала) поведение прежнее — ни одного ожидания;
 //! - при малом запасе (старт, seek, декодер отстаёт) декодер не ждёт: догоняет как раньше;
@@ -20,10 +25,12 @@
 //! - если сигнала нет дольше [`PRESENT_PULSE_WAIT_LIMIT`] (окно скрыто, рендер ничего не
 //!   показывает), пакет подаётся без него — декод не может застрять из-за рендера.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, TryRecvError, select_biased};
-use video_core::PresentPassSubscription;
+use video_core::{PresentPassSubscription, VideoDecodePace};
 
 use super::control::ThreadControlMsg;
 
@@ -42,6 +49,28 @@ pub(super) const PRESENT_PACING_MIN_DECODED_FRAMES_AHEAD: usize = 4;
 /// живом показе предел не срабатывал; при остановленном показе декод идёт хотя бы 10
 /// пакетов/с, а запас при этом тает и такт выключается сам.
 pub(super) const PRESENT_PULSE_WAIT_LIMIT: Duration = Duration::from_millis(100);
+
+/// Просьба плеера о такте: пишет поток плеера, читает decoder thread перед подачей пакета.
+///
+/// Атомик, а не control message: настройка не должна ждать места в очереди управления
+/// и проигрывать сообщение при её заполнении. Старое значение безвредно на один пакет.
+#[derive(Clone, Debug, Default)]
+pub(super) struct DecodePaceRequest {
+    free: Arc<AtomicBool>,
+}
+
+impl DecodePaceRequest {
+    /// Запоминает просьбу плеера.
+    pub(super) fn set(&self, pace: VideoDecodePace) {
+        self.free
+            .store(pace == VideoDecodePace::Free, Ordering::Relaxed);
+    }
+
+    /// Просил ли плеер идти без такта.
+    fn is_free(&self) -> bool {
+        self.free.load(Ordering::Relaxed)
+    }
+}
 
 /// Сколько декодированных кадров декодер держит впереди показа.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -85,6 +114,8 @@ pub(super) enum PresentPulseWake {
 pub(super) struct PresentPacingCounters {
     /// Решения «без такта» из-за малого запаса.
     pub(super) low_lead_admits: u64,
+    /// Подачи без такта по просьбе плеера (ускоренное воспроизведение).
+    pub(super) free_pace_admits: u64,
     /// Решения «можно», когда сигнал показа уже лежал к моменту решения.
     pub(super) ready_pulse_admits: u64,
     /// Ожидания, завершённые сигналом показа.
@@ -96,6 +127,7 @@ pub(super) struct PresentPacingCounters {
 /// Состояние такта одного decoder thread-а.
 pub(super) struct PresentPacing {
     mode: PacingMode,
+    pace_request: DecodePaceRequest,
     counters: PresentPacingCounters,
 }
 
@@ -124,6 +156,7 @@ impl PresentPacing {
     pub(super) fn unpaced() -> Self {
         Self {
             mode: PacingMode::Unpaced,
+            pace_request: DecodePaceRequest::default(),
             counters: PresentPacingCounters::default(),
         }
     }
@@ -135,8 +168,14 @@ impl PresentPacing {
                 subscription,
                 permit: SubmitPermit::Granted,
             },
+            pace_request: DecodePaceRequest::default(),
             counters: PresentPacingCounters::default(),
         }
+    }
+
+    /// Ручка, через которую поток плеера просит идти с тактом или без него.
+    pub(super) fn pace_request(&self) -> DecodePaceRequest {
+        self.pace_request.clone()
     }
 
     /// Решает, можно ли вынуть следующий пакет прямо сейчас. Никогда не блокирует.
@@ -151,12 +190,18 @@ impl PresentPacing {
         else {
             return PacketAdmission::Admit;
         };
-        if frames_ahead < DecodedFramesAhead(PRESENT_PACING_MIN_DECODED_FRAMES_AHEAD) {
-            // Запаса нет — догоняем без такта. Старый сигнал выбрасываем: иначе, набрав запас,
-            // декодер подал бы пакет по давнему показу, то есть в случайной фазе.
+        let free_pace = self.pace_request.is_free();
+        if free_pace || frames_ahead < DecodedFramesAhead(PRESENT_PACING_MIN_DECODED_FRAMES_AHEAD) {
+            // Запаса нет или плеер просит идти свободно — подаём без такта. Старый сигнал
+            // выбрасываем: иначе, вернувшись к такту, декодер подал бы пакет по давнему
+            // показу, то есть в случайной фазе.
             let pulse = subscription.pulse_receiver().try_recv();
             *permit = SubmitPermit::Granted;
-            self.counters.low_lead_admits += 1;
+            if free_pace {
+                self.counters.free_pace_admits += 1;
+            } else {
+                self.counters.low_lead_admits += 1;
+            }
             if pulse == Err(TryRecvError::Disconnected) {
                 self.mode = PacingMode::Unpaced;
             }
@@ -288,6 +333,7 @@ pub(super) fn log_present_pacing_summary(present_pacing: &PresentPacing) {
     }
     tracing::debug!(
         low_lead_admits = counters.low_lead_admits,
+        free_pace_admits = counters.free_pace_admits,
         ready_pulse_admits = counters.ready_pulse_admits,
         present_pulse_waits = counters.present_pulse_waits,
         wait_limit_reached = counters.wait_limit_reached,

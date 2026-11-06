@@ -366,6 +366,7 @@ fn decoder_thread_for_control_tests(
     let (_activity_notifier, activity_subscription) = VideoDecoderActivityNotifier::new();
 
     VideoDecodeThread {
+        decode_pace_request: Default::default(),
         packet_tx,
         control_tx,
         control_pressure,

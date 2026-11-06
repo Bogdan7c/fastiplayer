@@ -68,6 +68,10 @@ impl VideoDecoderThreadHandle for Gles2ReleaseVideoDecoderThreadHandle {
         self.inner.clear_preroll_output_floor(clear)
     }
 
+    fn set_decode_pace(&self, pace: video_core::VideoDecodePace) {
+        self.inner.set_decode_pace(pace);
+    }
+
     fn begin_end_of_stream_drain(&self, generation: u64) -> VideoDecoderEndOfStreamDrainResult {
         self.inner.begin_end_of_stream_drain(generation)
     }

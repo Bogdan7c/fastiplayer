@@ -596,6 +596,9 @@ pub(crate) struct PlaybackPipeline {
     /// Video decoder thread: backend decode в отдельном потоке за узким session contract.
     video_decoder_thread: Option<Box<PlayerVideoDecoderThreadHandle>>,
 
+    /// Просьба к decoder-у о такте: переживает замену decoder-а внутри одного media.
+    video_decode_pace: video_core::VideoDecodePace,
+
     /// Требует ли decoder следующий video packet быть keyframe-ом.
     ///
     /// Stateless hardware decode после flush теряет reference frames. Если сразу
@@ -760,6 +763,7 @@ impl Default for PlaybackPipeline {
             audio_track_id: None,
             pending_audio_packets: PendingAudioPacketQueue::default(),
             video_decoder_thread: None,
+            video_decode_pace: video_core::VideoDecodePace::default(),
             video_decoder_needs_keyframe: true,
             video_decode_in_flight_packets: 0,
             video_decoder_output_frontier: VideoDecoderOutputFrontier::default(),

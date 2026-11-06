@@ -15,7 +15,7 @@ use video_backend_api::{
 use video_core::{
     DecodePacket, DecodeSendError, DecodeThreadError, DecodedFrame, DecoderResourceSnapshot,
     FrameResourceHandle, HostUploadResourceSnapshot, HostUploadResourceSnapshotStatus,
-    VideoDecoderActivityNotifier, VideoDecoderActivitySnapshot,
+    VideoDecodePace, VideoDecoderActivityNotifier, VideoDecoderActivitySnapshot,
     VideoDecoderControlChannelPressureSnapshot, VideoDecoderDiagnosticEvent,
     VideoDecoderDropReason, VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState,
     VideoDecoderThreadHandle, VideoPrerollOutputFloor, VideoPrerollOutputFloorClear,
@@ -158,6 +158,8 @@ pub(crate) struct InnerProviderLog {
     calls: Mutex<Vec<&'static str>>,
     /// Методы декодера (`VideoDecoderThreadHandle`), дошедшие до внутреннего декодера.
     decoder_calls: Mutex<Vec<&'static str>>,
+    /// Такты, дошедшие до внутреннего декодера: важно само значение, а не только факт вызова.
+    decode_paces: Mutex<Vec<VideoDecodePace>>,
 }
 
 impl InnerProviderLog {
@@ -184,6 +186,11 @@ impl InnerProviderLog {
     /// Имена вызванных методов внутреннего декодера.
     pub(crate) fn called_decoder_methods(&self) -> Vec<&'static str> {
         self.decoder_calls.lock().expect("journal").clone()
+    }
+
+    /// Такты декодера, дошедшие до внутреннего декодера, в порядке вызова.
+    pub(crate) fn decode_paces(&self) -> Vec<VideoDecodePace> {
+        self.decode_paces.lock().expect("journal").clone()
     }
 
     fn record_decoder_call(&self, method: &'static str) {
@@ -357,6 +364,11 @@ impl VideoDecoderThreadHandle for FakeDecoder {
     ) -> VideoPrerollOutputFloorResult {
         self.log.record_decoder_call("clear_preroll_output_floor");
         VideoPrerollOutputFloorResult::Cleared
+    }
+
+    fn set_decode_pace(&self, pace: VideoDecodePace) {
+        self.log.record_decoder_call("set_decode_pace");
+        self.log.decode_paces.lock().expect("journal").push(pace);
     }
 
     fn begin_end_of_stream_drain(&self, generation: u64) -> VideoDecoderEndOfStreamDrainResult {

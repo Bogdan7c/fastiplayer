@@ -1185,7 +1185,7 @@ where
             self.decoding_state = DecodingState::Decoding;
         }
 
-        let nalu_len = nalu.offset + nalu.size;
+        let nalu_len = nalu.consumed;
 
         match &mut self.decoding_state {
             // Process parameter sets, but skip input until we get information

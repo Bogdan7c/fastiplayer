@@ -52,7 +52,7 @@ use control::{
     wait_for_end_of_stream_drain_ack, wait_for_flush_ack, wait_for_preroll_output_floor_ack,
 };
 pub(crate) use present_pacing::DecodedFramesAhead;
-use present_pacing::PresentPacing;
+use present_pacing::{DecodePaceRequest, PresentPacing};
 pub use resource_provider::{
     VideoFrameResourceDescriptorLookup, VideoFrameResourceIdentityLookup,
     VideoFrameResourceLockDiagnostics, VideoFrameResourceLookup, VideoFrameResourceProvider,
@@ -104,6 +104,8 @@ pub struct VideoDecodeThread {
     stream_config: Arc<Mutex<Option<video_core::VideoStreamDecodeConfig>>>,
     end_of_stream_drain_state: Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
     config: VideoDecodeThreadConfig,
+    /// Просьба плеера о такте показа; читает decoder thread (`present_pacing`).
+    decode_pace_request: DecodePaceRequest,
     backend_name: &'static str,
     /// Счётчики пула выходных VA surfaces; пишет decoder thread, читают диагностика/тесты.
     output_surface_pool_counters: Arc<crate::output_surface_pool::OutputSurfacePoolCounters>,
@@ -120,6 +122,7 @@ impl VideoDecodeThread {
     /// Запускает decoder thread с лимитами `config` и тактом показа `present_pacing` (`start.rs`).
     fn spawn(config: VideoDecodeThreadConfig, pacing: PresentPacing) -> anyhow::Result<Self> {
         let config = config.normalized();
+        let decode_pace_request = pacing.pace_request();
         let resource_pool = Arc::new(Mutex::new(
             crate::resource_pool::FrameResourcePool::new_with_import_target(
                 config.zero_copy_surface_pool_slots,
@@ -231,6 +234,7 @@ impl VideoDecodeThread {
             stream_config: Arc::new(Mutex::new(None)),
             end_of_stream_drain_state,
             config,
+            decode_pace_request,
             // Thread обслуживает разные codec adapters; конкретный codec появляется
             // только после configure_stream и отдельно отражается в diagnostics.
             backend_name: "VA-API",

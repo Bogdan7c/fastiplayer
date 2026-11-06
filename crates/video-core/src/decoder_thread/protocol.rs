@@ -6,6 +6,20 @@ use codec_core::{
 use media_core::{TrackId, TrackTimestamp};
 use video_frame_contract::{VideoFrameContract, VideoFramePixelLayout};
 
+/// Как decoder подаёт работу относительно показа кадров.
+///
+/// Намерение плеера, а не устройство backend-а: скорость воспроизведения и причины
+/// выбора decoder не знает. Backend без такта показа это значение просто игнорирует.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VideoDecodePace {
+    /// Держаться показа: при хорошем запасе не занимать GPU раньше прохода рендера.
+    #[default]
+    FollowPresent,
+
+    /// Идти без оглядки на показ: кадры нужны быстрее, чем рендер делает проходы.
+    Free,
+}
+
 /// Codec-specific framing, которое decoder backend не должен угадывать из bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VideoStreamPacketization {

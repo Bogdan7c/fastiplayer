@@ -18,7 +18,7 @@ pub use present_pass::{
     PresentPassNotifyOutcome, PresentPassSignal, PresentPassSignalPoisoned, PresentPassSubscription,
 };
 pub use protocol::{
-    DecodeBackpressureReason, DecodePacket, DecodeSendError, DecodeThreadError,
+    DecodeBackpressureReason, DecodePacket, DecodeSendError, DecodeThreadError, VideoDecodePace,
     VideoDecoderControlBackpressureReason, VideoDecoderEndOfStreamDrainResult,
     VideoDecoderEndOfStreamDrainState, VideoPrerollOutputFloor, VideoPrerollOutputFloorClear,
     VideoPrerollOutputFloorResult, VideoStreamConfigRejection, VideoStreamConfigResult,
@@ -65,6 +65,11 @@ pub trait VideoDecoderThreadHandle: Send + Sync {
     ) -> VideoPrerollOutputFloorResult {
         VideoPrerollOutputFloorResult::Unchanged
     }
+
+    /// Сообщает, держаться ли decoder-у показа. Не блокирует и не меняет очереди и generation.
+    ///
+    /// По умолчанию no-op: у backend-а без такта показа настройке не к чему применяться.
+    fn set_decode_pace(&self, _pace: VideoDecodePace) {}
 
     /// Запускает explicit EOF/DPB drain отдельно от seek `flush`.
     ///
