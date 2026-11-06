@@ -275,7 +275,7 @@ fn audio_hole_above_the_gap_threshold_is_held_not_padded() {
         "only the tone is written",
     );
     assert_near(
-        report.mid_stream_audio_silence,
+        report.mid_stream_audio_silence_real_time,
         hole_of(missing_fragments),
         AUDIO_LENGTH_TOLERANCE,
         "the output stays silent for the hole while video plays on",

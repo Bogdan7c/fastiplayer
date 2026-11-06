@@ -54,8 +54,10 @@ struct DeviceState {
 struct SilenceSlice {
     /// Кадров записано к началу отрезка.
     written_frames_before: u64,
-    /// Длительность тишины.
+    /// Длительность тишины по часам «карты».
     silent_for: Duration,
+    /// Та же тишина по настоящим часам: шаг бывает длиннее, чем карте разрешено пройти.
+    real_silent_for: Duration,
 }
 
 /// Ручка теста к симулятору.
@@ -75,6 +77,15 @@ impl SimulatedAudioDevice {
 
     /// Проходит виртуальное время: играющая «карта» проигрывает записанное.
     pub fn advance(&self, elapsed: Duration) {
+        self.advance_for_real_time(elapsed, elapsed);
+    }
+
+    /// То же, но шаг настоящего времени длиной `real_elapsed` даёт карте пройти только `elapsed`.
+    ///
+    /// Часы видео при этом идут настоящие, поэтому длину дыры сравнивают с
+    /// [`Self::mid_stream_silence_real_time`]: по часам карты тишина выходит короче дыры на
+    /// столько, на сколько шаги длиннее разрешённого.
+    pub fn advance_for_real_time(&self, elapsed: Duration, real_elapsed: Duration) {
         let mut state = self.lock();
         let Some((sample_rate, _)) = state.format else {
             return;
@@ -87,6 +98,7 @@ impl SimulatedAudioDevice {
             state.silences.push(SilenceSlice {
                 written_frames_before,
                 silent_for: elapsed,
+                real_silent_for: real_elapsed,
             });
             return;
         }
@@ -98,14 +110,16 @@ impl SimulatedAudioDevice {
         state.played_frames_total += played;
         let starved_frames = frames - played;
         if starved_frames > 0 {
+            let silent_for = Duration::from_nanos(
+                u64::try_from(u128::from(starved_frames) * 1_000_000_000 / u128::from(sample_rate))
+                    .unwrap_or(u64::MAX),
+            );
+            // Голодная доля шага по настоящим часам та же, что и по часам карты.
+            let real_silent_for = real_elapsed.mul_f64(starved_frames as f64 / frames as f64);
             state.silences.push(SilenceSlice {
                 written_frames_before,
-                silent_for: Duration::from_nanos(
-                    u64::try_from(
-                        u128::from(starved_frames) * 1_000_000_000 / u128::from(sample_rate),
-                    )
-                    .unwrap_or(u64::MAX),
-                ),
+                silent_for,
+                real_silent_for,
             });
         }
     }
@@ -119,6 +133,17 @@ impl SimulatedAudioDevice {
             .iter()
             .filter(|silence| silence.written_frames_before < state.written_frames_total)
             .map(|silence| silence.silent_for)
+            .sum()
+    }
+
+    /// Та же тишина посреди звука, но по настоящим часам, см. [`Self::advance_for_real_time`].
+    pub fn mid_stream_silence_real_time(&self) -> Duration {
+        let state = self.lock();
+        state
+            .silences
+            .iter()
+            .filter(|silence| silence.written_frames_before < state.written_frames_total)
+            .map(|silence| silence.real_silent_for)
             .sum()
     }
 
@@ -358,6 +383,30 @@ mod tests {
         output
             .write_samples(&vec![0.5; frames], AudioOutputWriteIntent::DirectDecodedPcm)
             .expect("запись");
+    }
+
+    /// Длинный шаг: карта прошла 5 мс из 20, половину её пути занял звук, половину тишина.
+    /// Настоящая тишина — половина настоящего шага, а не те же 2,5 мс.
+    #[test]
+    fn real_time_silence_keeps_the_part_of_a_long_step_the_card_did_not_walk() {
+        let device = SimulatedAudioDevice::default();
+        let mut output = open_output(&device);
+        output.play().unwrap();
+        write(output.as_mut(), 500);
+        device.advance(Duration::from_millis(497));
+        device.advance_for_real_time(Duration::from_millis(6), Duration::from_millis(20));
+        write(output.as_mut(), 1);
+
+        let card_silence = device.mid_stream_silence();
+        let real_silence = device.mid_stream_silence_real_time();
+        assert!(
+            card_silence.abs_diff(Duration::from_millis(3)) < Duration::from_micros(100),
+            "по часам карты: {card_silence:?}"
+        );
+        assert!(
+            real_silence.abs_diff(Duration::from_millis(10)) < Duration::from_micros(100),
+            "по настоящим часам: {real_silence:?}"
+        );
     }
 
     #[test]

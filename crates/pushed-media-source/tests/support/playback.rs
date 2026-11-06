@@ -81,6 +81,10 @@ pub struct PlaybackReport {
     pub waiting_ticks: usize,
     /// Тишина посреди звука (пауза выхода или пустой буфер до последнего сэмпла).
     pub mid_stream_audio_silence: Duration,
+    /// Та же тишина по настоящим часам: только её можно сравнивать с длиной дыры, которую
+    /// отсчитывают часы видео. Часы «карты» отстают на каждом шаге длиннее
+    /// [`AUDIO_ADVANCE_PER_TICK_CAP`].
+    pub mid_stream_audio_silence_real_time: Duration,
     /// Записанный звук, выброшенный вместе с уничтоженным выходом.
     pub discarded_audio: Duration,
     /// Номер PCM-кадра (frame, не sample) в `audio_samples`, с которого начался
@@ -322,7 +326,7 @@ pub fn play_controlled_with_config(
         let now = Instant::now();
         let tick_gap = now.duration_since(previous_tick);
         max_tick_gap = max_tick_gap.max(tick_gap);
-        device.advance(tick_gap.min(AUDIO_ADVANCE_PER_TICK_CAP));
+        device.advance_for_real_time(tick_gap.min(AUDIO_ADVANCE_PER_TICK_CAP), tick_gap);
         previous_tick = now;
         let result = session.tick(PlayerTickContext::with_config(now, tick_config));
         presented_count += result.video_frames_presented;
@@ -390,6 +394,7 @@ pub fn play_controlled_with_config(
         state_trace,
         waiting_ticks,
         mid_stream_audio_silence: device.mid_stream_silence(),
+        mid_stream_audio_silence_real_time: device.mid_stream_silence_real_time(),
         discarded_audio: device.discarded_audio(),
         audio_frames_at_seek_clears: device.written_frames_at_seek_clears(),
         dropped_frames,
