@@ -17,6 +17,7 @@ mod close_order;
 mod farewell;
 mod lifecycle_events;
 mod protocol_errors;
+mod protocol_versions;
 mod stream_replay;
 mod support;
 mod wire_order;

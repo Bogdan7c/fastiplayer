@@ -10,9 +10,21 @@
 //!    означает ошибку отправителя, а не «новую фичу», и ничего не теряется молча
 //!    (инвариант 5).
 //! 4. Разные `major` — понятный отказ «обновите» с указанием, кого обновлять.
+//! 5. Каждое сообщение знает, в какой версии оно появилось
+//!    (`PageSessionMessage::introduced_in`, `PlayerSessionMessage::introduced_in`).
+//!    Сообщение новее общей версии — нарушение отправителя: получатель его не
+//!    исполняет (на стороне плеера это проверяет `crate::stream_gate::StreamGate`),
+//!    а отправитель до отправки сверяет [`ProtocolVersion::includes`].
 //!
 //! Форма самого `Hello` и отказа по версии не меняется никогда, даже между
 //! `major`: иначе стороны не смогут договориться о том, что они разные.
+//!
+//! История `minor` внутри `major` 1:
+//! - **1.0** (сессии 01–10e) — MSE, файл `<video src>` (`file_source_added`,
+//!   `fetch_range`), реклама, часы и команды;
+//! - **1.1** (сессия 10a1, решение 228) — нативный HLS по номеркам ресурсов:
+//!   `hls_source_added`, `fetch_resource`, `resource_fetch_finished`. При общей
+//!   1.0 их не шлёт ни одна сторона, и HLS-поколение не начинается.
 
 use crate::strict_shape::{strict_label, strict_object};
 use serde::{Deserialize, Serialize};
@@ -32,8 +44,26 @@ pub struct ProtocolVersion {
     pub minor: u16,
 }
 
+impl ProtocolVersion {
+    /// Первая версия (сессия 01): MSE, файл `<video src>`, часы, команды, реклама.
+    pub const V1_0: Self = Self { major: 1, minor: 0 };
+
+    /// Нативный HLS по номеркам ресурсов (сессия 10a1, решение 228).
+    pub const V1_1: Self = Self { major: 1, minor: 1 };
+
+    /// Входит ли в эту версию (обычно — общую версию сеанса) то, что появилось
+    /// в версии `introduced_in`.
+    ///
+    /// Тот же `major` и не меньшая `minor`: `minor` только добавляет (правило 1).
+    /// Другой `major` не входит никогда — с ним стороны не договорились бы вовсе.
+    #[must_use]
+    pub const fn includes(self, introduced_in: Self) -> bool {
+        self.major == introduced_in.major && self.minor >= introduced_in.minor
+    }
+}
+
 /// Версия протокола, которую реализует этот crate.
-pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 0 };
+pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_1;
 
 /// Кто из участников моста.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -97,6 +127,23 @@ mod tests {
             negotiate_protocol_version(version(1, 0), version(1, 7)),
             Ok(version(1, 0))
         );
+    }
+
+    #[test]
+    fn a_version_includes_only_its_own_and_older_minors_of_the_same_major() {
+        assert!(ProtocolVersion::V1_1.includes(ProtocolVersion::V1_0));
+        assert!(ProtocolVersion::V1_1.includes(ProtocolVersion::V1_1));
+        assert!(!ProtocolVersion::V1_0.includes(ProtocolVersion::V1_1));
+        // Другой major не входит ни в какую сторону, даже с меньшей minor.
+        assert!(!version(2, 5).includes(ProtocolVersion::V1_0));
+        assert!(!ProtocolVersion::V1_1.includes(version(2, 0)));
+    }
+
+    #[test]
+    fn this_crate_speaks_protocol_1_1() {
+        // Сессия 10a1: HLS по номеркам. Число закреплено — его же зеркалит экстеншен
+        // (`CURRENT_PROTOCOL_VERSION` в `version.ts`).
+        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 1));
     }
 
     #[test]

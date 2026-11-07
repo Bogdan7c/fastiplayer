@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 use std::time::Instant;
 
+use browser_bridge_protocol::CURRENT_PROTOCOL_VERSION;
 use browser_bridge_protocol::{
     AppendSequence, DataFrameHeader, PageSessionMessage, SessionCloseReason,
     SourceBufferBytesHeader, SourceBufferIndex, StreamGeneration, decode_message,
@@ -183,7 +184,11 @@ fn page_messages_and_bytes_reach_one_queue_in_wire_order_from_one_thread() {
     .unwrap();
     let opened = server
         .control()
-        .open_session(&open_request("ordered"), Instant::now())
+        .open_session(
+            &open_request("ordered"),
+            CURRENT_PROTOCOL_VERSION,
+            Instant::now(),
+        )
         .unwrap();
     let mut socket = attach(server.port().get(), "ordered", &opened.token);
 

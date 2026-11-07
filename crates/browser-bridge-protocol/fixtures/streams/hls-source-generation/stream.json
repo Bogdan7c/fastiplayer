@@ -1,0 +1,83 @@
+{
+  "steps": [
+    {
+      "text": "001.json"
+    },
+    {
+      "text": "002.json"
+    },
+    {
+      "binary": "003.bin"
+    },
+    {
+      "binary": "004.bin"
+    },
+    {
+      "text": "005.json"
+    },
+    {
+      "binary": "006.bin"
+    },
+    {
+      "binary": "007.bin"
+    },
+    {
+      "binary": "008.bin"
+    },
+    {
+      "text": "009.json"
+    },
+    {
+      "binary": "010.bin"
+    },
+    {
+      "text": "011.json"
+    },
+    {
+      "text": "012.json"
+    },
+    {
+      "text": "013.json"
+    },
+    {
+      "text": "014.json"
+    }
+  ],
+  "expect": {
+    "admitted": [],
+    "dropped_frames": 0,
+    "dropped_messages": 0,
+    "resource_bodies": [
+      {
+        "request_id": 1,
+        "source": "streams/hls-source-generation/root.m3u8",
+        "ranges": [
+          [
+            0,
+            237
+          ]
+        ]
+      },
+      {
+        "request_id": 2,
+        "source": "media/video.mp4",
+        "ranges": [
+          [
+            0,
+            733
+          ]
+        ]
+      },
+      {
+        "request_id": 3,
+        "source": "media/video.mp4",
+        "ranges": [
+          [
+            733,
+            10093
+          ]
+        ]
+      }
+    ]
+  }
+}

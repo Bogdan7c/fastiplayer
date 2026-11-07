@@ -1,0 +1,9 @@
+#EXTM3U
+#EXT-X-VERSION:7
+#EXT-X-TARGETDURATION:1
+#EXT-X-PLAYLIST-TYPE:VOD
+#EXT-X-MAP:URI="https://resource.fastiplayer-bridge.invalid/1"
+#EXTINF:0.4,
+#EXT-X-BYTERANGE:9360@733
+https://resource.fastiplayer-bridge.invalid/2
+#EXT-X-ENDLIST

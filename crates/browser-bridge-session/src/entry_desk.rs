@@ -160,7 +160,8 @@ impl fmt::Debug for EntryOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RememberedCaller {
     caller: EntryCaller,
-    /// Договорённая версия — пригодится, когда minor начнут расти (1.1+).
+    /// Договорённая версия: с ней открываются сеансы этого звонящего (её получит
+    /// соединение сеанса и сторож поколений).
     agreed_protocol: ProtocolVersion,
 }
 
@@ -237,10 +238,11 @@ impl EntryDesk {
         let target = ReplyTarget::OpenSession {
             request_id: request.request_id,
         };
-        if !self.is_remembered(caller) {
+        // Без `hello` общей версии нет — значит, и сеанса нет: угадывать версию нельзя.
+        let Some(agreed_protocol) = self.agreed_protocol_of(caller) else {
             return refuse(target, RefusalReason::HelloRequired {});
-        }
-        match self.control.open_session(&request, now) {
+        };
+        match self.control.open_session(&request, agreed_protocol, now) {
             Ok(opened) => {
                 let grant = SessionGrant {
                     request_id: request.request_id,
@@ -271,8 +273,13 @@ impl EntryDesk {
         }
     }
 
-    fn is_remembered(&self, caller: &EntryCaller) -> bool {
-        self.remembered.iter().any(|known| &known.caller == caller)
+    /// Общая версия звонящего из его последнего `hello`; `None` — `hello` не было
+    /// (или звонящего уже забыли).
+    fn agreed_protocol_of(&self, caller: &EntryCaller) -> Option<ProtocolVersion> {
+        self.remembered
+            .iter()
+            .find(|known| &known.caller == caller)
+            .map(|known| known.agreed_protocol)
     }
 
     fn forget(&mut self, caller: &EntryCaller) {

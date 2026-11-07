@@ -20,6 +20,11 @@
 //!   без участия входа; посредник и D-Bus могут исчезнуть;
 //! - **6 (поколения)**: байты старого поколения выбрасывает `StreamGate` и
 //!   считает; нарушение порядка закрывает сеанс.
+//! - **5 (версии, решение 86)**: общая версия из `hello` идёт `EntryDesk` →
+//!   `SessionControl::open_session` → `SessionRegistry` → соединение после
+//!   `attach`; сторож соединения создаётся с этой версией и закрывает сеанс
+//!   кодом 4003 на сообщении новее неё (при 1.0 — HLS протокола 1.1), а
+//!   `SessionLifecycleEvent::Attached` сообщает версию приложению.
 //! - **порядок данных**: сообщения страницы и байты одного соединения приёмники
 //!   получают из одного потока, без перекрытия вызовов, в порядке кадров на
 //!   проводе (по обоим трейтам вместе); события жизни и `session_ended` — из
@@ -46,7 +51,7 @@ pub use lifecycle::{
     ExitCause, LifecycleVerdict, PlaybackDrainOutcome, ProcessLifecycle, ends_with_playback_drain,
 };
 pub use policy::BrowserSessionPolicy;
-pub use registry::{ConnectionId, SessionInstance, SessionRef};
+pub use registry::{AttachedSession, ConnectionId, SessionInstance, SessionRef};
 pub use server::{
     ActiveFarewellOutcome, BrowserSessionServer, CloseOutcome, FarewellError, OpenSessionError,
     OpenedSession, ReplacedFarewellOutcome, SendToPageError, ServerShutdownReport,

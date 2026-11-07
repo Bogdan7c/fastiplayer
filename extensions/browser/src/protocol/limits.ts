@@ -52,6 +52,18 @@ export const MAX_SOFTWARE_VERSION_BYTES = 32;
 export const MAX_RANGE_FETCH_BYTES = 16 * 1024 * 1024;
 
 /**
+ * Наибольший ресурс HLS за один `fetch_resource` (протокол 1.1), байт. Тело длиннее
+ * `max_bytes` запроса фон не отдаёт, а отвечает `too_large`.
+ */
+export const MAX_RESOURCE_FETCH_BYTES = 128 * 1024 * 1024;
+
+/**
+ * Сколько незавершённых `fetch_resource` плеер держит одновременно (протокол 1.1).
+ * На лишний запрос фон вправе ответить `refused`.
+ */
+export const MAX_CONCURRENT_RESOURCE_FETCHES = 8;
+
+/**
  * Наибольшее целое, которое JavaScript хранит точно (2^53 − 1).
  * Все целые JSON протокола не больше этого числа.
  */

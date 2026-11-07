@@ -7,7 +7,8 @@
 //!
 //! Записанные потоки (`fixtures/streams/`) проигрываются через сторожа
 //! поколений, и принятые байты каждого SourceBuffer сверяются с исходным
-//! медиафайлом.
+//! медиафайлом; тела ответов рамками вида 2 (ресурсы HLS, протокол 1.1) — с
+//! исходным файлом тела.
 
 #![allow(
     clippy::unwrap_used,
@@ -25,8 +26,9 @@ use browser_bridge_protocol::session::StreamRejection;
 use browser_bridge_protocol::{
     BridgeSoftware, CURRENT_PROTOCOL_VERSION, DataFrame, DataFrameHeader, ExtensionControlMessage,
     GateDecision, IncompatibleVersion, MessageErrorKind, PageSessionMessage, PeerCapabilities,
-    PlayerControlMessage, PlayerSessionMessage, ProtocolMessage, StreamGate, decode_data_frame,
-    decode_message, encode_data_frame, encode_message, negotiate_protocol_version,
+    PlayerControlMessage, PlayerSessionMessage, ProtocolMessage, ProtocolVersion,
+    ResourceFetchOutcome, StreamGate, StreamViolation, decode_data_frame, decode_message,
+    encode_data_frame, encode_message, negotiate_protocol_version, parse_resource_address,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -337,6 +339,16 @@ struct StreamExpectation {
     admitted: Vec<AdmittedBytes>,
     dropped_frames: usize,
     dropped_messages: usize,
+    resource_bodies: Vec<ResourceBody>,
+}
+
+/// Тело ответа рамками вида 2: склейка диапазонов файла `source` (путь от корня фикстур).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResourceBody {
+    request_id: u32,
+    source: String,
+    ranges: Vec<[usize; 2]>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -352,10 +364,48 @@ struct AdmittedBytes {
 #[derive(Debug, Default)]
 struct ReplayOutcome {
     admitted: BTreeMap<(u32, u16), Vec<u8>>,
+    /// Тела ответов рамками вида 2 по номеру запроса.
+    resource_bodies: BTreeMap<u32, Vec<u8>>,
+    /// Запросы, чей итог `completed` пришёл (размер уже сверен с телом).
+    completed_requests: BTreeSet<u32>,
     dropped_frames: usize,
     dropped_messages: usize,
     /// Позиция часов, которую ждала последняя пауза записи.
     last_awaited_clock_us: Option<u64>,
+}
+
+/// Читает один шаг-сообщение записи (и проверяет, что он канонический).
+fn recorded_message(directory: &Path, file: &str) -> PageSessionMessage {
+    let bytes = std::fs::read(directory.join(file)).unwrap();
+    let message: PageSessionMessage = decode_message(&bytes).unwrap();
+    // Шаги потока тоже канонические: обратно байт в байт.
+    assert_eq!(
+        encode_message(&message).unwrap().as_bytes(),
+        bytes,
+        "{file}"
+    );
+    message
+}
+
+/// Итог запроса ресурса: `completed` обязан назвать ровно длину полученного тела.
+fn note_resource_result(message: &PageSessionMessage, outcome: &mut ReplayOutcome) {
+    if let PageSessionMessage::ResourceFetchFinished {
+        request_id,
+        outcome: ResourceFetchOutcome::Completed { size_bytes },
+    } = message
+    {
+        let received = outcome
+            .resource_bodies
+            .get(&request_id.0)
+            .map_or(0, Vec::len);
+        assert_eq!(
+            u64::try_from(received).unwrap(),
+            size_bytes.as_bytes(),
+            "запрос {}: размер в итоге не равен полученному телу",
+            request_id.0
+        );
+        outcome.completed_requests.insert(request_id.0);
+    }
 }
 
 fn replay(directory: &Path, steps: &[StreamStep]) -> ReplayOutcome {
@@ -364,23 +414,32 @@ fn replay(directory: &Path, steps: &[StreamStep]) -> ReplayOutcome {
     for step in steps {
         match step {
             StreamStep::Text(file) => {
-                let bytes = std::fs::read(directory.join(file)).unwrap();
-                let message: PageSessionMessage = decode_message(&bytes).unwrap();
-                // Шаги потока тоже канонические: обратно байт в байт.
-                assert_eq!(
-                    encode_message(&message).unwrap().as_bytes(),
-                    bytes,
-                    "{file}"
-                );
+                let message = recorded_message(directory, file);
                 if gate.apply_message(&message).unwrap() == GateDecision::DropStale {
                     outcome.dropped_messages += 1;
                 }
+                note_resource_result(&message, &mut outcome);
             }
             StreamStep::Binary(file) => {
                 let bytes = std::fs::read(directory.join(file)).unwrap();
                 let frame = decode_data_frame(&bytes).unwrap();
-                let DataFrameHeader::SourceBufferBytes(header) = frame.header else {
-                    panic!("{file}: в записанных потоках только байты SourceBuffer");
+                let header = match frame.header {
+                    DataFrameHeader::SourceBufferBytes(header) => header,
+                    // Тело ответа: смещение — внутри тела, рамки одного запроса подряд с 0
+                    // (сторож рамки вида 2 не проверяет — номер запроса сверяет плеер).
+                    DataFrameHeader::RangeBytes(header) => {
+                        let body = outcome
+                            .resource_bodies
+                            .entry(header.request_id.0)
+                            .or_default();
+                        assert_eq!(
+                            u64::try_from(body.len()).unwrap(),
+                            header.offset.as_bytes(),
+                            "{file}: смещение не продолжает тело ответа"
+                        );
+                        body.extend_from_slice(frame.payload);
+                        continue;
+                    }
                 };
                 match gate.admit_source_buffer_bytes(&header).unwrap() {
                     GateDecision::Accept => outcome
@@ -408,7 +467,7 @@ fn replay(directory: &Path, steps: &[StreamStep]) -> ReplayOutcome {
 #[test]
 fn recorded_streams_reassemble_source_buffer_bytes_exactly_and_drop_only_stale_ones() {
     let manifest = load_manifest();
-    assert_eq!(manifest.streams.len(), 5);
+    assert_eq!(manifest.streams.len(), 6);
     for name in &manifest.streams {
         let directory = fixtures_root().join("streams").join(name);
         let recorded: RecordedStream =
@@ -445,7 +504,98 @@ fn recorded_streams_reassemble_source_buffer_bytes_exactly_and_drop_only_stale_o
             outcome.dropped_messages, recorded.expect.dropped_messages,
             "{name}: сообщения"
         );
+        check_resource_bodies(name, &recorded.expect.resource_bodies, &outcome);
     }
+}
+
+/// Тела ответов рамками вида 2 равны склейке диапазонов своего файла, и у каждого
+/// тела был итог `completed`.
+fn check_resource_bodies(name: &str, expected: &[ResourceBody], outcome: &ReplayOutcome) {
+    let expected_ids: BTreeSet<u32> = expected.iter().map(|body| body.request_id).collect();
+    assert_eq!(
+        outcome
+            .resource_bodies
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>(),
+        expected_ids,
+        "{name}: набор запросов с телом"
+    );
+    assert_eq!(
+        outcome.completed_requests, expected_ids,
+        "{name}: итоги completed"
+    );
+    for body in expected {
+        let source = std::fs::read(fixtures_root().join(&body.source)).unwrap();
+        let bytes: Vec<u8> = body
+            .ranges
+            .iter()
+            .flat_map(|[start, end]| source[*start..*end].iter().copied())
+            .collect();
+        assert!(
+            outcome.resource_bodies[&body.request_id] == bytes,
+            "{name}: тело запроса {} не совпало с {}",
+            body.request_id,
+            body.source
+        );
+    }
+}
+
+/// HLS-поток записан на протоколе 1.1: сеанс, договорившийся о 1.0, закрывается на
+/// первом же `hls_source_added` (инвариант 5), а не принимает его молча.
+#[test]
+fn hls_stream_is_a_violation_for_a_session_that_agreed_on_protocol_1_0() {
+    let directory = fixtures_root().join("streams/hls-source-generation");
+    let recorded: RecordedStream =
+        serde_json::from_str(&std::fs::read_to_string(directory.join("stream.json")).unwrap())
+            .unwrap();
+    let mut gate = StreamGate::for_agreed_version(ProtocolVersion::V1_0);
+    let mut first_violation = None;
+    for step in &recorded.steps {
+        let StreamStep::Text(file) = step else {
+            continue;
+        };
+        let message = recorded_message(&directory, file);
+        if let Err(violation) = gate.apply_message(&message) {
+            first_violation = Some((message, violation));
+            break;
+        }
+    }
+    let Some((message, violation)) = first_violation else {
+        panic!("на 1.0 HLS-поток обязан дать нарушение");
+    };
+    assert!(
+        matches!(message, PageSessionMessage::HlsSourceAdded { .. }),
+        "{message:?}"
+    );
+    assert_eq!(
+        violation,
+        StreamViolation::MessageNotInAgreedVersion {
+            agreed: ProtocolVersion::V1_0,
+            introduced_in: ProtocolVersion::V1_1,
+        }
+    );
+}
+
+/// Корневой плейлист HLS-потока уже переписан фоном: каждый адрес — заглушка номерка.
+#[test]
+fn recorded_hls_playlist_names_resources_only_by_stub_addresses() {
+    let playlist =
+        std::fs::read_to_string(fixtures_root().join("streams/hls-source-generation/root.m3u8"))
+            .unwrap();
+    let mut addresses = Vec::new();
+    for line in playlist.lines().filter(|line| !line.is_empty()) {
+        if let Some((_, tail)) = line.split_once("URI=\"") {
+            addresses.push(tail.split('"').next().unwrap().to_owned());
+        } else if !line.starts_with('#') {
+            addresses.push(line.to_owned());
+        }
+    }
+    let handles: Vec<u32> = addresses
+        .iter()
+        .map(|address| parse_resource_address(address).unwrap().0)
+        .collect();
+    assert_eq!(handles, [1, 2]);
 }
 
 /// Причина `playback_failed` (решение 128): фикстура разбирается ровно в этот

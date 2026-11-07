@@ -6,7 +6,10 @@
 // 3. порядковые номера рамок каждого SourceBuffer идут 0, 1, 2... без пропусков;
 // 4. склейка груза рамок по каждому SourceBuffer равна склейке указанных диапазонов
 //    медиафайла (то есть через TS-разбор рамок байты доезжают без потерь и искажений);
-// 5. число «устаревших» рамок и сообщений совпадает с ожиданием.
+// 5. число «устаревших» рамок и сообщений совпадает с ожиданием;
+// 6. тела ответов рамками вида 2 (ресурсы HLS, протокол 1.1): смещения одного запроса
+//    идут подряд с 0 (смещение - внутри ТЕЛА, а не в файле на сервере), склейка равна
+//    диапазонам исходного файла, а `completed` называет ровно длину тела.
 //
 // Сторож поколений (StreamGate) - дело приёмника (плеера), в TypeScript его нет.
 // Для пункта 4-5 тест применяет его единственное простое правило сам: всё, что
@@ -39,6 +42,12 @@ interface RecordedStream {
     }[];
     readonly dropped_frames: number;
     readonly dropped_messages: number;
+    readonly resource_bodies: readonly {
+      readonly request_id: number;
+      /** Путь от корня фикстур. */
+      readonly source: string;
+      readonly ranges: readonly (readonly [number, number])[];
+    }[];
   };
 }
 
@@ -55,6 +64,15 @@ interface ReplayOutcome {
   messageCount: number;
   frameCount: number;
   awaitedClocks: number[];
+  /** Тела ответов рамками вида 2 по номеру запроса. */
+  readonly resourceBodies: Map<number, Uint8Array[]>;
+  /** Запросы, чей итог `completed` пришёл (длина уже сверена с телом). */
+  readonly completedRequests: number[];
+}
+
+/** Длина уже полученного тела запроса. */
+function receivedLength(outcome: ReplayOutcome, requestId: number): number {
+  return (outcome.resourceBodies.get(requestId) ?? []).reduce((sum, part) => sum + part.length, 0);
 }
 
 function replay(directory: string, steps: readonly StreamStep[]): ReplayOutcome {
@@ -66,6 +84,8 @@ function replay(directory: string, steps: readonly StreamStep[]): ReplayOutcome 
     messageCount: 0,
     frameCount: 0,
     awaitedClocks: [],
+    resourceBodies: new Map(),
+    completedRequests: [],
   };
   let newestGeneration = 0;
   for (const step of steps) {
@@ -83,17 +103,26 @@ function replay(directory: string, steps: readonly StreamStep[]): ReplayOutcome 
       } else if (decoded.value.type === "generation_started") {
         newestGeneration = decoded.value.generation;
       }
+      const finished = decoded.value;
+      if (finished.type === "resource_fetch_finished" && finished.outcome.kind === "completed") {
+        assert.equal(finished.outcome.size_bytes, receivedLength(outcome, finished.request_id), `${step.text}: размер не равен телу`);
+        outcome.completedRequests.push(finished.request_id);
+      }
     } else if ("binary" in step) {
       const bytes = readFixtureBytes(join("streams", directory, step.binary));
       const decoded = decodeDataFrame(bytes);
       assert.ok(decoded.ok, `${step.binary}: ${decoded.ok ? "" : decoded.error.kind}`);
       const { header, payload } = decoded.value;
-      assert.equal(header.kind, "source_buffer_bytes", `${step.binary}: в потоках только байты SourceBuffer`);
-      if (header.kind !== "source_buffer_bytes") continue;
       const rewritten = encodeDataFrame(header, payload);
       assert.ok(rewritten.ok);
       assert.deepEqual(rewritten.value, bytes, `${step.binary}: рамка обратно не байт в байт`);
       outcome.frameCount += 1;
+      if (header.kind === "range_bytes") {
+        // Тело ответа: смещение продолжает уже полученное тело этого запроса.
+        assert.equal(header.offset, receivedLength(outcome, header.request_id), `${step.binary}: смещение не продолжает тело`);
+        outcome.resourceBodies.set(header.request_id, [...(outcome.resourceBodies.get(header.request_id) ?? []), payload]);
+        continue;
+      }
       if (header.generation < newestGeneration) {
         outcome.droppedFrames += 1;
         continue;
@@ -134,6 +163,16 @@ for (const streamName of loadManifest().streams) {
     }
     assert.equal(outcome.droppedFrames, recorded.expect.dropped_frames, "устаревшие рамки");
     assert.equal(outcome.droppedMessages, recorded.expect.dropped_messages, "устаревшие сообщения");
+
+    const expectedRequests = recorded.expect.resource_bodies.map((body) => body.request_id).sort();
+    assert.deepEqual([...outcome.resourceBodies.keys()].sort(), expectedRequests, "запросы с телом");
+    assert.deepEqual([...outcome.completedRequests].sort(), expectedRequests, "итоги completed");
+    for (const body of recorded.expect.resource_bodies) {
+      const source = readFixtureBytes(body.source);
+      const expectedBytes = concatBytes(body.ranges.map(([start, end]) => source.subarray(start, end)));
+      const actualBytes = concatBytes(outcome.resourceBodies.get(body.request_id) ?? []);
+      assert.ok(Buffer.compare(actualBytes, expectedBytes) === 0, `запрос ${body.request_id}: тело не совпало с ${body.source}`);
+    }
   });
 }
 

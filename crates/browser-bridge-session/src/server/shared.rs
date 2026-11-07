@@ -24,8 +24,8 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use browser_bridge_protocol::{
-    LoopbackPort, OpenSessionRequest, PlayerSessionMessage, SessionCloseReason, SessionKey,
-    SessionToken, encode_message,
+    LoopbackPort, OpenSessionRequest, PlayerSessionMessage, ProtocolVersion, SessionCloseReason,
+    SessionKey, SessionToken, encode_message,
 };
 
 use super::control::{
@@ -36,7 +36,7 @@ use super::farewell::{CorridorClaim, FarewellCorridors, FarewellSlot};
 use super::report::ServerShutdownReport;
 use crate::policy::BrowserSessionPolicy;
 use crate::registry::{
-    AttachRejection, ConnectionId, RegistryTimings, SessionRef, SessionRegistry,
+    AttachRejection, AttachedSession, ConnectionId, RegistryTimings, SessionRef, SessionRegistry,
 };
 use crate::sink::{SessionByteSink, SessionEndReason, SessionEventSink, SessionLifecycleEvent};
 use crate::token::SessionTokenSource;
@@ -310,13 +310,14 @@ impl Shared {
 
     // ---- события потока соединения ---------------------------------------
 
-    /// Проверка `attach`; успех привязывает соединение и публикует `Attached`.
+    /// Проверка `attach`; успех привязывает соединение и публикует `Attached`
+    /// с общей версией протокола сеанса.
     pub(super) fn attach(
         &self,
         connection: ConnectionId,
         session: &SessionKey,
         presented: &SessionToken,
-    ) -> Result<SessionRef, AttachRejection> {
+    ) -> Result<AttachedSession, AttachRejection> {
         let mut state = self.lock_state();
         let attached = state.registry.attach(session, presented, connection)?;
         if let Some(slot) = state.connections.get_mut(&connection) {
@@ -325,7 +326,8 @@ impl Shared {
         tracing::info!(session = session.as_str(), "browser session attached");
         self.events
             .publish_lifecycle(SessionLifecycleEvent::Attached {
-                session: attached.clone(),
+                session: attached.session.clone(),
+                agreed_protocol: attached.agreed_protocol,
             });
         Ok(attached)
     }
@@ -415,6 +417,7 @@ impl Shared {
     pub(super) fn open_session(
         &self,
         request: &OpenSessionRequest,
+        agreed_protocol: ProtocolVersion,
         now: Instant,
     ) -> Result<OpenedSession, OpenSessionError> {
         let mut guard = self.lock_state();
@@ -424,7 +427,12 @@ impl Shared {
         }
         let grant = state
             .registry
-            .open(&request.session_key, now, &mut *state.tokens)
+            .open(
+                &request.session_key,
+                agreed_protocol,
+                now,
+                &mut *state.tokens,
+            )
             .map_err(OpenSessionError::TokenSource)?;
         let replaced = match grant.replaced {
             Some(replaced) => {

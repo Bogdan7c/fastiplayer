@@ -13,7 +13,7 @@ import {
 } from "./control.ts";
 import { type MessageInput, type MessageKind, decodeMessage, encodeMessage } from "./message-codec.ts";
 import { type PageSessionMessage, pageSessionCodec, validatePageSession } from "./session/page.ts";
-import { type PlayerSessionMessage, playerSessionCodec } from "./session/player.ts";
+import { type PlayerSessionMessage, playerSessionCodec, validatePlayerSession } from "./session/player.ts";
 
 const EXTENSION_CONTROL: MessageKind<ExtensionControlMessage> = {
   codec: extensionControlCodec,
@@ -21,11 +21,7 @@ const EXTENSION_CONTROL: MessageKind<ExtensionControlMessage> = {
 };
 const PLAYER_CONTROL: MessageKind<PlayerControlMessage> = { codec: playerControlCodec, validate: validatePlayerControl };
 const PAGE_SESSION: MessageKind<PageSessionMessage> = { codec: pageSessionCodec, validate: validatePageSession };
-// Все правила сообщений плеера выражены типами полей, проверок между полями нет.
-const PLAYER_SESSION: MessageKind<PlayerSessionMessage> = {
-  codec: playerSessionCodec,
-  validate: () => undefined,
-};
+const PLAYER_SESSION: MessageKind<PlayerSessionMessage> = { codec: playerSessionCodec, validate: validatePlayerSession };
 
 /** Разбирает сообщение экстеншена на участке «вход» (экстеншен -> посредник -> плеер). */
 export function decodeExtensionControl(input: MessageInput): DecodeResult<ExtensionControlMessage> {
@@ -124,9 +120,19 @@ export type { SessionCloseReason } from "./session/close-reason.ts";
 
 export type { MediaDuration, ByteCount, MediaTimeMicros, MediaTimeOffsetMicros, PlaybackRatePermille } from "./time.ts";
 export { NORMAL_PLAYBACK_RATE_PERMILLE } from "./time.ts";
-export type { SourceBufferIndex, StreamGeneration } from "./stream.ts";
+export type { ResourceHandle, SourceBufferIndex, StreamGeneration } from "./stream.ts";
 
-export { CURRENT_PROTOCOL_VERSION, negotiateProtocolVersion } from "./version.ts";
+export type { ResourceByteRange, ResourceFetchFailure, ResourceFetchOutcome } from "./resource.ts";
+export { RESOURCE_ADDRESS_HOST, formatResourceAddress, parseResourceAddress } from "./resource-address.ts";
+export { pageSessionIntroducedIn, playerSessionIntroducedIn } from "./session/introduced-in.ts";
+
+export {
+  CURRENT_PROTOCOL_VERSION,
+  PROTOCOL_VERSION_1_0,
+  PROTOCOL_VERSION_1_1,
+  negotiateProtocolVersion,
+  versionIncludes,
+} from "./version.ts";
 export type { BridgeSoftware, ProtocolVersion, VersionNegotiation } from "./version.ts";
 
 export { capabilitiesToTokens, cheapCodecToken, featureToken, parseCapabilityTokens } from "./capability.ts";

@@ -427,3 +427,5 @@ fn media_source_generation_rules_are_unchanged() {
         Ok(GateDecision::Accept)
     );
 }
+
+mod hls;

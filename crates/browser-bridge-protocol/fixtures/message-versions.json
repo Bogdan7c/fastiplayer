@@ -1,0 +1,38 @@
+{
+  "page_session": {
+    "attach": "1.0",
+    "generation_started": "1.0",
+    "file_source_added": "1.0",
+    "source_buffer_added": "1.0",
+    "source_buffer_type_changed": "1.0",
+    "timestamp_offset_changed": "1.0",
+    "source_buffer_removed": "1.0",
+    "source_buffer_aborted": "1.0",
+    "seek_started": "1.0",
+    "duration_changed": "1.0",
+    "end_of_stream": "1.0",
+    "page_playback": "1.0",
+    "variant_menu_changed": "1.0",
+    "ad_state": "1.0",
+    "range_fetch_finished": "1.0",
+    "tab_gone": "1.0",
+    "hls_source_added": "1.1",
+    "resource_fetch_finished": "1.1"
+  },
+  "player_session": {
+    "attached": "1.0",
+    "clock": "1.0",
+    "buffer_state": "1.0",
+    "play": "1.0",
+    "pause": "1.0",
+    "seek": "1.0",
+    "set_rate": "1.0",
+    "return_to_page": "1.0",
+    "select_variant": "1.0",
+    "next_episode": "1.0",
+    "skip_ad": "1.0",
+    "fetch_range": "1.0",
+    "stream_rejected": "1.0",
+    "fetch_resource": "1.1"
+  }
+}

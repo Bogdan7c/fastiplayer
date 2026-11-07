@@ -31,8 +31,8 @@ use std::time::Instant;
 
 use browser_bridge_protocol::limits::{DATA_FRAME_HEADER_BYTES, MAX_DATA_FRAME_PAYLOAD_BYTES};
 use browser_bridge_protocol::{
-    DataFrameHeader, GateDecision, PageSessionMessage, PlayerSessionMessage, SessionCloseReason,
-    StreamGate, decode_data_frame, decode_message, encode_message,
+    DataFrameHeader, GateDecision, PageSessionMessage, PlayerSessionMessage, ProtocolVersion,
+    SessionCloseReason, StreamGate, decode_data_frame, decode_message, encode_message,
 };
 use tungstenite::error::ProtocolError;
 use tungstenite::protocol::frame::coding::CloseCode;
@@ -42,7 +42,7 @@ use tungstenite::{HandshakeError, Message, WebSocket, accept_with_config};
 use super::farewell::FarewellSlot;
 use super::shared::{CloseRequest, ConnectionHandle, DeliveryGate, Shared};
 use crate::policy::BrowserSessionPolicy;
-use crate::registry::{ConnectionId, SessionRef};
+use crate::registry::{AttachedSession, ConnectionId, SessionRef};
 use crate::sink::{ChunkSource, IntakeRoom, RangeChunk, SessionChunk, SourceBufferChunk};
 
 /// Наибольшее сообщение WebSocket: двоичная рамка протокола (заголовок + груз).
@@ -88,10 +88,10 @@ fn serve(shared: &Arc<Shared>, stream: TcpStream, handle: ConnectionHandle) {
         attached: None,
         socket,
     };
-    if let Some(session) = link.await_attach(accepted_at) {
+    if let Some(attached) = link.await_attach(accepted_at) {
         // С этого момента отвод провода (если стоит) видит соединение.
-        link.attached = Some(session.clone());
-        link.serve_attached(&session);
+        link.attached = Some(attached.session.clone());
+        link.serve_attached(&attached.session, attached.agreed_protocol);
         link.notify_wire_tap_closed();
     }
 }
@@ -199,7 +199,7 @@ impl Link<'_> {
     // ---- до attach -------------------------------------------------------
 
     /// Ждёт первое сообщение — `attach` — в пределах срока. `Some` — подключены.
-    fn await_attach(&mut self, accepted_at: Instant) -> Option<SessionRef> {
+    fn await_attach(&mut self, accepted_at: Instant) -> Option<AttachedSession> {
         let deadline = accepted_at + self.shared.policy.attach_timeout;
         loop {
             if let Some(reason) = self.close.requested() {
@@ -235,7 +235,7 @@ impl Link<'_> {
     }
 
     /// Проверяет первое сообщение; при успехе отвечает `attached`.
-    fn verify_attach(&mut self, bytes: &[u8]) -> Option<SessionRef> {
+    fn verify_attach(&mut self, bytes: &[u8]) -> Option<AttachedSession> {
         let (session, token) = match decode_message::<PageSessionMessage>(bytes) {
             Ok(PageSessionMessage::Attach { session_key, token }) => (session_key, token),
             Ok(_) | Err(_) => {
@@ -269,8 +269,12 @@ impl Link<'_> {
     // ---- после attach ----------------------------------------------------
 
     /// Основной цикл подключённого соединения.
-    fn serve_attached(&mut self, session: &SessionRef) {
-        let mut gate = StreamGate::new();
+    ///
+    /// `agreed_protocol` — общая версия сеанса из `hello` открывшего: сторож
+    /// поколений не пропускает сообщений новее неё (при 1.0 — `hls_source_added`,
+    /// `resource_fetch_finished`), и такое сообщение закрывает сеанс кодом 4003.
+    fn serve_attached(&mut self, session: &SessionRef, agreed_protocol: ProtocolVersion) {
+        let mut gate = StreamGate::for_agreed_version(agreed_protocol);
         loop {
             if let Some(reason) = self.close.requested() {
                 // Сеанс уже закончил тот, кто попросил (замена, выход, команда плеера).

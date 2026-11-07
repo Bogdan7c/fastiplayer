@@ -3,6 +3,11 @@
 // Правило «договорились - значит строго»: версия - пара major.minor; общая версия -
 // тот же major и меньшая из двух minor; разные major - отказ «обновите» с
 // указанием, кого обновлять. Форма `hello` и отказа по версии не меняется никогда.
+//
+// Minor только добавляет. Каждое сообщение знает, в какой версии появилось
+// (`session/introduced-in.ts`): сторона не шлёт того, чего нет в общей версии сеанса.
+// 1.0 - MSE, файл, часы, команды, реклама; 1.1 (сессия 10a1, решение 228) - нативный
+// HLS по номеркам: `hls_source_added`, `fetch_resource`, `resource_fetch_finished`.
 
 import { plainInteger } from "./numbers.ts";
 import { type Codec, stringEnum, struct } from "./schema.ts";
@@ -13,8 +18,22 @@ export interface ProtocolVersion {
   readonly minor: number;
 }
 
+/** Первая версия (сессия 01): MSE, файл `<video src>`, часы, команды, реклама. */
+export const PROTOCOL_VERSION_1_0: ProtocolVersion = Object.freeze({ major: 1, minor: 0 });
+
+/** Нативный HLS по номеркам ресурсов (сессия 10a1, решение 228). */
+export const PROTOCOL_VERSION_1_1: ProtocolVersion = Object.freeze({ major: 1, minor: 1 });
+
 /** Версия протокола, которую реализует этот экстеншен. */
-export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = Object.freeze({ major: 1, minor: 0 });
+export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_1;
+
+/**
+ * Входит ли в версию `agreed` (обычно - общую версию сеанса) то, что появилось в
+ * `introducedIn`: тот же major и не меньшая minor. Зеркало `ProtocolVersion::includes`.
+ */
+export function versionIncludes(agreed: ProtocolVersion, introducedIn: ProtocolVersion): boolean {
+  return agreed.major === introducedIn.major && agreed.minor >= introducedIn.minor;
+}
 
 /** Какую из сторон моста нужно обновить. */
 export type BridgeSoftware = "extension" | "player";

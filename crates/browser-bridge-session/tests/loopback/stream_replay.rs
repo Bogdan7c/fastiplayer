@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use browser_bridge_protocol::CURRENT_PROTOCOL_VERSION;
 use browser_bridge_protocol::SessionCloseReason;
 use browser_bridge_session::{BrowserSessionServer, SessionLifecycleEvent};
 use browser_bridge_session::{CountingByteSink, SessionByteSink, SessionEndReason};
@@ -150,7 +151,11 @@ fn session_keeps_receiving_bytes_after_the_entry_side_is_gone() {
     let token = {
         let control = env.control.clone();
         let opened = control
-            .open_session(&crate::support::open_request("alive"), Instant::now())
+            .open_session(
+                &crate::support::open_request("alive"),
+                CURRENT_PROTOCOL_VERSION,
+                Instant::now(),
+            )
             .unwrap();
         drop(control);
         opened.token
@@ -204,7 +209,11 @@ fn counting_sink_stub_counts_the_same_replay_per_source_buffer() {
     .unwrap();
     let opened = server
         .control()
-        .open_session(&crate::support::open_request("count"), Instant::now())
+        .open_session(
+            &crate::support::open_request("count"),
+            CURRENT_PROTOCOL_VERSION,
+            Instant::now(),
+        )
         .unwrap();
     let mut socket = attach(server.port().get(), "count", &opened.token);
     for step in &recorded.steps {

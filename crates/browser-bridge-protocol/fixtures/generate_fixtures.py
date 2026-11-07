@@ -13,7 +13,8 @@
     crates/browser-bridge-protocol/fixtures/generate_fixtures.py
 
 Нужны только медиа из fixtures/media/ (их делает media/generate.sh). Скрипт
-стирает и пересоздаёт control/, session/, data/, streams/ и manifest.json.
+стирает и пересоздаёт control/, session/, data/, streams/, manifest.json,
+resource-addresses.json и message-versions.json.
 """
 
 from __future__ import annotations
@@ -35,6 +36,11 @@ FIXTURE_TOKEN = "Zml4dHVyZS10b2tlbi1icmlkZ2UtMDEtcHJvdG9jb2w"
 SOURCE_BUFFER_BYTES_KIND = 1
 RANGE_BYTES_KIND = 2
 MAX_JSON_SAFE_INTEGER = (1 << 53) - 1
+# Лимиты протокола 1.1 (crate::limits): ресурс HLS за один запрос.
+MAX_RESOURCE_FETCH_BYTES = 128 * 1024 * 1024
+U32_MAX = 0xFFFF_FFFF
+# Адрес-заглушка номерка ресурса HLS (crate::resource_address), независимо от Rust.
+RESOURCE_ADDRESS_PREFIX = "https://resource.fastiplayer-bridge.invalid/"
 
 VIDEO_MIME = 'video/mp4; codecs="avc1.42c00a"'
 AUDIO_MIME = 'audio/mp4; codecs="mp4a.40.2"'
@@ -373,6 +379,72 @@ def page_message(message_type: str, **fields: Any) -> dict[str, Any]:
     return {"type": message_type, **fields}
 
 
+def resource_finished(request_id: int, outcome: dict[str, Any]) -> dict[str, Any]:
+    return page_message("resource_fetch_finished", request_id=request_id, outcome=outcome)
+
+
+def resource_failed(request_id: int, failure: dict[str, Any]) -> dict[str, Any]:
+    return resource_finished(request_id, {"kind": "failed", "failure": failure})
+
+
+def resource_fetch_finished_cases() -> list[tuple[str, dict[str, Any]]]:
+    """Верные итоги запроса ресурса HLS (протокол 1.1): каждый вид итога и края."""
+    return [
+        ("resource-fetch-completed", resource_finished(10, {"kind": "completed", "size_bytes": 1834})),
+        ("resource-fetch-completed-empty-body", resource_finished(11, {"kind": "completed", "size_bytes": 0})),
+        (
+            "resource-fetch-completed-max-body",
+            resource_finished(12, {"kind": "completed", "size_bytes": MAX_RESOURCE_FETCH_BYTES}),
+        ),
+        ("resource-fetch-network-error", resource_failed(13, {"kind": "network_error"})),
+        ("resource-fetch-http-404", resource_failed(14, {"kind": "http_error", "status": 404})),
+        ("resource-fetch-http-100", resource_failed(15, {"kind": "http_error", "status": 100})),
+        ("resource-fetch-http-599", resource_failed(16, {"kind": "http_error", "status": 599})),
+        ("resource-fetch-refused", resource_failed(17, {"kind": "refused"})),
+        ("resource-fetch-too-large", resource_failed(18, {"kind": "too_large"})),
+    ]
+
+
+def write_invalid_hls_page_messages(manifest: Manifest) -> None:
+    """Неверные `hls_source_added` и `resource_fetch_finished` (протокол 1.1)."""
+    schema = "page_session"
+    invalid = "session/invalid/page-"
+    for name, message, kind in [
+        ("hls-source-added-missing-root", page_message("hls_source_added", generation=1), "missing_field"),
+        (
+            "hls-source-added-unknown-field",
+            page_message("hls_source_added", generation=1, root=0, url="https://example.com/a.m3u8"),
+            "unknown_field",
+        ),
+        ("hls-source-added-generation-zero", page_message("hls_source_added", generation=0, root=0), "number_out_of_range"),
+        ("hls-source-added-root-negative", page_message("hls_source_added", generation=1, root=-1), "number_out_of_range"),
+        (
+            "hls-source-added-root-beyond-u32",
+            page_message("hls_source_added", generation=1, root=U32_MAX + 1),
+            "number_out_of_range",
+        ),
+        ("resource-fetch-http-99", resource_failed(7, {"kind": "http_error", "status": 99}), "number_out_of_range"),
+        ("resource-fetch-http-600", resource_failed(7, {"kind": "http_error", "status": 600}), "number_out_of_range"),
+        ("resource-fetch-http-without-status", resource_failed(7, {"kind": "http_error"}), "missing_field"),
+        ("resource-fetch-refused-with-status", resource_failed(7, {"kind": "refused", "status": 403}), "unknown_field"),
+        ("resource-fetch-unknown-failure", resource_failed(7, {"kind": "timeout"}), "unknown_value"),
+        ("resource-fetch-unknown-outcome", resource_finished(7, {"kind": "partial", "size_bytes": 10}), "unknown_value"),
+        (
+            "resource-fetch-body-above-limit",
+            resource_finished(7, {"kind": "completed", "size_bytes": MAX_RESOURCE_FETCH_BYTES + 1}),
+            "number_out_of_range",
+        ),
+        (
+            # Размер ресурса — у `range_fetch_finished`; у ресурса HLS только размер тела.
+            "resource-fetch-completed-with-resource-size",
+            resource_finished(7, {"kind": "completed", "size_bytes": 10, "resource_size": {"kind": "unknown"}}),
+            "unknown_field",
+        ),
+        ("resource-fetch-missing-outcome", page_message("resource_fetch_finished", request_id=7), "missing_field"),
+    ]:
+        manifest.invalid(f"{invalid}{name}.json", schema, compact_json(message), kind)
+
+
 def write_page_session(manifest: Manifest) -> None:
     schema = "page_session"
     valid = "session/valid/page-"
@@ -387,6 +459,8 @@ def write_page_session(manifest: Manifest) -> None:
         ("attach", page_message("attach", session_key="tab-12-video-3", token=FIXTURE_TOKEN)),
         ("generation-started", page_message("generation_started", generation=1)),
         ("file-source-added", page_message("file_source_added", generation=1)),
+        ("hls-source-added", page_message("hls_source_added", generation=1, root=0)),
+        ("hls-source-added-max-root", page_message("hls_source_added", generation=2, root=U32_MAX)),
         (
             "source-buffer-added",
             page_message("source_buffer_added", generation=1, source_buffer=0, mime_type=VIDEO_MIME),
@@ -491,8 +565,10 @@ def write_page_session(manifest: Manifest) -> None:
             page_message("range_fetch_finished", request_id=8, outcome={"kind": "failed", "failure": "http_error"}),
         ),
         ("tab-gone", page_message("tab_gone", reason="navigated_away")),
+        *resource_fetch_finished_cases(),
     ]:
         manifest.valid(f"{valid}{name}.json", schema, message)
+    write_invalid_hls_page_messages(manifest)
 
     invalid = "session/invalid/page-"
     manifest.invalid(
@@ -648,6 +724,25 @@ def write_player_session(manifest: Manifest) -> None:
         ("next-episode", {"type": "next_episode"}),
         ("skip-ad", {"type": "skip_ad"}),
         ("fetch-range", {"type": "fetch_range", "request_id": 7, "offset": 0, "length": 1_048_576}),
+        ("fetch-resource-whole", fetch_resource(request_id=10, resource=0)),
+        (
+            "fetch-resource-slice",
+            fetch_resource(
+                request_id=11,
+                resource=2,
+                byte_range={"kind": "slice", "offset": 733, "length": 65_536},
+                max_bytes=65_536,
+            ),
+        ),
+        (
+            "fetch-resource-max-fields",
+            fetch_resource(
+                request_id=U32_MAX,
+                resource=U32_MAX,
+                byte_range={"kind": "slice", "offset": MAX_JSON_SAFE_INTEGER, "length": MAX_RESOURCE_FETCH_BYTES},
+                max_bytes=MAX_RESOURCE_FETCH_BYTES,
+            ),
+        ),
         ("stream-rejected", {"type": "stream_rejected", "generation": 1, "reason": "protected_content"}),
         (
             "stream-rejected-file-unavailable",
@@ -682,6 +777,66 @@ def write_player_session(manifest: Manifest) -> None:
         compact_json({"type": "clock", "seq": 1, "position_us": 0, "state": "rewinding", "rate": 1000}),
         "unknown_value",
     )
+    write_invalid_fetch_resource(manifest)
+
+
+def fetch_resource(**overrides: Any) -> dict[str, Any]:
+    """`fetch_resource` (протокол 1.1) в каноническом порядке полей."""
+    message: dict[str, Any] = {
+        "type": "fetch_resource",
+        "request_id": 10,
+        "resource": 0,
+        "byte_range": {"kind": "whole"},
+        "max_bytes": 16 * 1024 * 1024,
+    }
+    message.update(overrides)
+    return message
+
+
+def write_invalid_fetch_resource(manifest: Manifest) -> None:
+    """Неверные `fetch_resource`: пределы, форма `byte_range`, лишние и недостающие поля.
+
+    `byte_range` — не необязательное поле, а метка `whole` / `slice`: его отсутствие —
+    `missing_field`, а `null` — значение не того типа (`wrong_value_type`).
+    """
+    schema = "player_session"
+    invalid = "session/invalid/player-fetch-resource-"
+    whole = fetch_resource()
+    without_range = {key: value for key, value in whole.items() if key != "byte_range"}
+    without_limit = {key: value for key, value in whole.items() if key != "max_bytes"}
+    slice_of = lambda **fields: {"kind": "slice", "offset": 0, "length": 1024, **fields}  # noqa: E731
+    for name, message, kind in [
+        ("max-bytes-zero", fetch_resource(max_bytes=0), "number_out_of_range"),
+        ("max-bytes-above-limit", fetch_resource(max_bytes=MAX_RESOURCE_FETCH_BYTES + 1), "number_out_of_range"),
+        ("slice-length-zero", fetch_resource(byte_range=slice_of(length=0)), "number_out_of_range"),
+        (
+            "slice-length-above-limit",
+            fetch_resource(byte_range=slice_of(length=MAX_RESOURCE_FETCH_BYTES + 1)),
+            "number_out_of_range",
+        ),
+        (
+            # Кусок длиннее потолка ответа — запрос сам себе противоречит (проверка между полями).
+            "slice-longer-than-max-bytes",
+            fetch_resource(byte_range=slice_of(length=2048), max_bytes=1024),
+            "number_out_of_range",
+        ),
+        (
+            "slice-offset-beyond-js-safe-integer",
+            fetch_resource(byte_range=slice_of(offset=MAX_JSON_SAFE_INTEGER + 1)),
+            "number_out_of_range",
+        ),
+        ("resource-negative", fetch_resource(resource=-1), "number_out_of_range"),
+        ("resource-beyond-u32", fetch_resource(resource=U32_MAX + 1), "number_out_of_range"),
+        ("request-id-beyond-u32", fetch_resource(request_id=U32_MAX + 1), "number_out_of_range"),
+        ("byte-range-missing", without_range, "missing_field"),
+        ("max-bytes-missing", without_limit, "missing_field"),
+        ("byte-range-null", fetch_resource(byte_range=None), "wrong_value_type"),
+        ("byte-range-unknown-kind", fetch_resource(byte_range={"kind": "suffix", "length": 10}), "unknown_value"),
+        ("byte-range-whole-with-field", fetch_resource(byte_range={"kind": "whole", "length": 10}), "unknown_field"),
+        ("slice-without-length", fetch_resource(byte_range={"kind": "slice", "offset": 0}), "missing_field"),
+        ("unknown-field", {**whole, "url": "https://example.com/a.m3u8"}, "unknown_field"),
+    ]:
+        manifest.invalid(f"{invalid}{name}.json", schema, compact_json(message), kind)
 
 
 def write_shape_strictness(manifest: Manifest) -> None:
@@ -818,6 +973,12 @@ def write_shape_strictness(manifest: Manifest) -> None:
                 outcome={"kind": "completed", "resource_size": ["known", 1_048_576]},
             ),
         ),
+        ("resource-fetch-outcome-as-array", resource_finished(7, ["completed", 10])),
+        ("resource-fetch-outcome-kind-as-index", resource_finished(7, {"kind": 0, "size_bytes": 10})),
+        # Причина ресурса — объект с меткой (у неё бывает `status`), а не строка, как у `range_fetch_finished`.
+        ("resource-fetch-failure-as-label", resource_finished(7, {"kind": "failed", "failure": "refused"})),
+        ("resource-fetch-failure-kind-as-index", resource_failed(7, {"kind": 1, "status": 404})),
+        ("resource-fetch-status-as-text", resource_failed(7, {"kind": "http_error", "status": "404"})),
     ]:
         manifest.invalid(f"{page}{name}.json", page_schema, compact_json(message), wrong)
 
@@ -837,6 +998,9 @@ def write_shape_strictness(manifest: Manifest) -> None:
             "stream-rejected-reason-as-map",
             {"type": "stream_rejected", "generation": 1, "reason": {"unsupported_codec": None}},
         ),
+        ("fetch-resource-byte-range-as-array", fetch_resource(byte_range=["slice", 0, 10])),
+        ("fetch-resource-byte-range-as-label", fetch_resource(byte_range="whole")),
+        ("fetch-resource-byte-range-kind-as-index", fetch_resource(byte_range={"kind": 1, "offset": 0, "length": 10})),
     ]:
         manifest.invalid(f"{player}{name}.json", player_schema, compact_json(message), wrong)
 
@@ -864,6 +1028,12 @@ def write_data_frames(manifest: Manifest) -> None:
             "sequence": str(0xFFFF_FFFF_FFFF_FFFF),
             "payload_len": 1,
         },
+    )
+    valid_frame(
+        # Тело ресурса HLS (протокол 1.1): та же рамка вида 2, смещение — внутри тела с 0.
+        "range-bytes-resource-body-start",
+        range_frame(10, 0, b"#EXTM3U\n"),
+        {"kind": "range_bytes", "request_id": 10, "offset": 0, "payload_len": 8},
     )
     valid_frame(
         "range-bytes-max-offset",
@@ -921,6 +1091,19 @@ class StreamWriter:
         (self.directory / file_name).write_bytes(source_buffer_frame(generation, source_buffer, sequence, payload))
         self.steps.append({"binary": file_name})
 
+    def range_bytes(self, request_id: int, offset: int, payload: bytes) -> None:
+        """Рамка вида 2: кусок тела ответа на `fetch_range` / `fetch_resource`."""
+        file_name = self._next_file(".bin")
+        self.directory.mkdir(parents=True, exist_ok=True)
+        (self.directory / file_name).write_bytes(range_frame(request_id, offset, payload))
+        self.steps.append({"binary": file_name})
+
+    def side_file(self, name: str, content: bytes) -> str:
+        """Файл рядом с записью, не шаг (например, тело ресурса для ожидания); путь от корня фикстур."""
+        self.directory.mkdir(parents=True, exist_ok=True)
+        (self.directory / name).write_bytes(content)
+        return f"streams/{self.name}/{name}"
+
     def await_clock(self, position_us: int) -> None:
         """Пауза записи: страница ждала, пока часы плеера дойдут до `position_us`.
 
@@ -931,6 +1114,8 @@ class StreamWriter:
         self.steps.append({"await_clock_us": position_us})
 
     def finish(self, manifest: Manifest, expect: dict[str, Any]) -> None:
+        # Тела ответов рамками вида 2 есть только у потоков с запросами; у остальных — пусто.
+        expect = {**expect, "resource_bodies": expect.get("resource_bodies", [])}
         (self.directory / "stream.json").write_bytes(
             json.dumps({"steps": self.steps, "expect": expect}, ensure_ascii=False, indent=2).encode() + b"\n"
         )
@@ -1085,6 +1270,181 @@ def write_streams(manifest: Manifest) -> None:
     stream.finish(manifest, {"admitted": [], "dropped_frames": 0, "dropped_messages": 0})
 
     write_quality_switch_stream(manifest)
+    write_hls_stream(manifest, video)
+
+
+def resource_address(handle: int) -> str:
+    """Адрес-заглушка номерка — своя реализация договора, не через Rust."""
+    return f"{RESOURCE_ADDRESS_PREFIX}{handle}"
+
+
+def write_hls_stream(manifest: Manifest, video: bytes) -> None:
+    """6. Нативный HLS (протокол 1.1, решение 228): поколение без SourceBuffer.
+
+    Страница объявляет HLS-поколение с корневым плейлистом №0 и отвечает на запросы
+    ресурсов плеера (`fetch_resource` в поток не записан — это слова плеера):
+    тело каждого ответа — рамки вида 2 со смещениями ВНУТРИ тела с 0, затем итог.
+    Плейлист уже переписан фоном: вместо адресов — адреса-заглушки номерков.
+    Запрос 3 — кусок файла (`EXT-X-BYTERANGE`): тело всё равно считается с 0.
+    """
+    playlist = "\n".join(
+        [
+            "#EXTM3U",
+            "#EXT-X-VERSION:7",
+            "#EXT-X-TARGETDURATION:1",
+            "#EXT-X-PLAYLIST-TYPE:VOD",
+            f'#EXT-X-MAP:URI="{resource_address(1)}"',
+            "#EXTINF:0.4,",
+            f"#EXT-X-BYTERANGE:{len(video) - 733}@733",
+            resource_address(2),
+            "#EXT-X-ENDLIST",
+            "",
+        ]
+    ).encode()
+    init_end = 733  # граница moov/moof у video.mp4 (как в потоке 1)
+    stream = StreamWriter("hls-source-generation")
+    playlist_source = stream.side_file("root.m3u8", playlist)
+    stream.text(page_message("generation_started", generation=1))
+    stream.text(page_message("hls_source_added", generation=1, root=0))
+    # Запрос 1 — корневой плейлист, разрезан посреди строки.
+    stream.range_bytes(1, 0, playlist[:40])
+    stream.range_bytes(1, 40, playlist[40:])
+    stream.text(resource_finished(1, {"kind": "completed", "size_bytes": len(playlist)}))
+    # Запросы 2 (init) и 3 (сегмент) идут параллельно: рамки перемежаются.
+    segment = video[init_end:]
+    stream.range_bytes(2, 0, video[:500])
+    stream.range_bytes(3, 0, segment[:2000])
+    stream.range_bytes(2, 500, video[500:init_end])
+    stream.text(resource_finished(2, {"kind": "completed", "size_bytes": init_end}))
+    stream.range_bytes(3, 2000, segment[2000:])
+    stream.text(resource_finished(3, {"kind": "completed", "size_bytes": len(segment)}))
+    # Запрос 4 — плейлист, которого у сервера нет: честный отказ без тела.
+    stream.text(resource_failed(4, {"kind": "http_error", "status": 404}))
+    stream.text(page_message("seek_started", target_us=200_000, cause={"kind": "page_seek"}))
+    stream.text(page_message("tab_gone", reason="closed"))
+    stream.finish(
+        manifest,
+        {
+            "admitted": [],
+            "dropped_frames": 0,
+            "dropped_messages": 0,
+            "resource_bodies": [
+                {"request_id": 1, "source": playlist_source, "ranges": [[0, len(playlist)]]},
+                {"request_id": 2, "source": "media/video.mp4", "ranges": [[0, init_end]]},
+                {"request_id": 3, "source": "media/video.mp4", "ranges": [[init_end, len(video)]]},
+            ],
+        },
+    )
+
+
+def write_resource_addresses() -> None:
+    """Договор адреса-заглушки (crate::resource_address): верные и неверные адреса."""
+    valid = [
+        {"address": resource_address(handle), "handle": handle} for handle in [0, 1, 7, 42, 1_000_000, U32_MAX]
+    ]
+    invalid = [
+        "",
+        RESOURCE_ADDRESS_PREFIX,
+        RESOURCE_ADDRESS_PREFIX + "007",
+        RESOURCE_ADDRESS_PREFIX + "00",
+        RESOURCE_ADDRESS_PREFIX + "+7",
+        RESOURCE_ADDRESS_PREFIX + "-7",
+        RESOURCE_ADDRESS_PREFIX + " 7",
+        RESOURCE_ADDRESS_PREFIX + "7 ",
+        RESOURCE_ADDRESS_PREFIX + "7.0",
+        RESOURCE_ADDRESS_PREFIX + "1e3",
+        RESOURCE_ADDRESS_PREFIX + "0x10",
+        RESOURCE_ADDRESS_PREFIX + "%37",
+        RESOURCE_ADDRESS_PREFIX + "٣",
+        RESOURCE_ADDRESS_PREFIX + str(U32_MAX + 1),
+        RESOURCE_ADDRESS_PREFIX + "99999999999999999999",
+        RESOURCE_ADDRESS_PREFIX + "7/",
+        RESOURCE_ADDRESS_PREFIX + "7/8",
+        RESOURCE_ADDRESS_PREFIX + "7?",
+        RESOURCE_ADDRESS_PREFIX + "7?token=1",
+        RESOURCE_ADDRESS_PREFIX + "7#",
+        RESOURCE_ADDRESS_PREFIX + "7#frag",
+        RESOURCE_ADDRESS_PREFIX + "seg7.ts",
+        "https://resource.fastiplayer-bridge.invalid:443/7",
+        "https://resource.fastiplayer-bridge.invalid./7",
+        "https://user@resource.fastiplayer-bridge.invalid/7",
+        "https://user:pass@resource.fastiplayer-bridge.invalid/7",
+        "https://RESOURCE.FASTIPLAYER-BRIDGE.INVALID/7",
+        "HTTPS://resource.fastiplayer-bridge.invalid/7",
+        "http://resource.fastiplayer-bridge.invalid/7",
+        "wss://resource.fastiplayer-bridge.invalid/7",
+        "//resource.fastiplayer-bridge.invalid/7",
+        "resource.fastiplayer-bridge.invalid/7",
+        "https://evil.example/https://resource.fastiplayer-bridge.invalid/7",
+        "https://resource.fastiplayer-bridge.invalid.evil.example/7",
+        "https://sub.resource.fastiplayer-bridge.invalid/7",
+        "https://resource.fastiplayer-bridge.invalid//7",
+        "https://resource.fastiplayer-bridge.invalid/./7",
+        " https://resource.fastiplayer-bridge.invalid/7",
+        "https://resource.fastiplayer-bridge.invalid/7\n",
+        "https://example.com/7",
+    ]
+    (FIXTURES_ROOT / "resource-addresses.json").write_bytes(
+        json.dumps({"valid": valid, "invalid": invalid}, ensure_ascii=False, indent=2).encode() + b"\n"
+    )
+
+
+# В какой версии протокола появилось каждое сообщение сеанса (crate::version, правило 5).
+# Сообщение новее общей версии сеанса получатель отвергает, отправитель не шлёт.
+MESSAGE_VERSIONS: dict[str, dict[str, str]] = {
+    "page_session": {
+        **{
+            name: "1.0"
+            for name in [
+                "attach",
+                "generation_started",
+                "file_source_added",
+                "source_buffer_added",
+                "source_buffer_type_changed",
+                "timestamp_offset_changed",
+                "source_buffer_removed",
+                "source_buffer_aborted",
+                "seek_started",
+                "duration_changed",
+                "end_of_stream",
+                "page_playback",
+                "variant_menu_changed",
+                "ad_state",
+                "range_fetch_finished",
+                "tab_gone",
+            ]
+        },
+        "hls_source_added": "1.1",
+        "resource_fetch_finished": "1.1",
+    },
+    "player_session": {
+        **{
+            name: "1.0"
+            for name in [
+                "attached",
+                "clock",
+                "buffer_state",
+                "play",
+                "pause",
+                "seek",
+                "set_rate",
+                "return_to_page",
+                "select_variant",
+                "next_episode",
+                "skip_ad",
+                "fetch_range",
+                "stream_rejected",
+            ]
+        },
+        "fetch_resource": "1.1",
+    },
+}
+
+
+def write_message_versions() -> None:
+    (FIXTURES_ROOT / "message-versions.json").write_bytes(
+        json.dumps(MESSAGE_VERSIONS, ensure_ascii=False, indent=2).encode() + b"\n"
+    )
 
 
 def write_quality_switch_stream(manifest: Manifest) -> None:
@@ -1170,6 +1530,8 @@ def main() -> None:
     write_data_frames(manifest)
     write_shape_strictness(manifest)
     write_streams(manifest)
+    write_resource_addresses()
+    write_message_versions()
     (FIXTURES_ROOT / "manifest.json").write_bytes(
         json.dumps({"cases": manifest.cases, "streams": manifest.streams}, ensure_ascii=False, indent=2).encode()
         + b"\n"

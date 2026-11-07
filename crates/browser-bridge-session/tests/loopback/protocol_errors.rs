@@ -2,6 +2,7 @@
 
 use std::time::{Duration, Instant};
 
+use browser_bridge_protocol::CURRENT_PROTOCOL_VERSION;
 use browser_bridge_protocol::{
     AppendSequence, DataFrameHeader, SessionCloseReason, SessionToken, SourceBufferBytesHeader,
     SourceBufferIndex, StreamGeneration, encode_data_frame,
@@ -266,7 +267,11 @@ fn shutdown_is_idempotent_through_drop_and_refuses_new_work_afterwards() {
     let control = env.control.clone();
     let port = env.port();
     drop(env);
-    let refused = control.open_session(&crate::support::open_request("late"), Instant::now());
+    let refused = control.open_session(
+        &crate::support::open_request("late"),
+        CURRENT_PROTOCOL_VERSION,
+        Instant::now(),
+    );
     assert!(matches!(
         refused,
         Err(browser_bridge_session::OpenSessionError::ShuttingDown)

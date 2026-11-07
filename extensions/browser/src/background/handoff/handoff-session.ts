@@ -650,6 +650,9 @@ export function startHandoffSession(
       case "skip_ad":
         adMirror.skipAd();
         return;
+      case "reply": // ответ плееру без страницы и сети (10a1: отказ на `fetch_resource`)
+        socket?.enqueue({ kind: "message", message: action.message });
+        return;
       case "fetch_range":
         // Байты файла просят только в поколении-файле. Без файла запрос не наш (плеер ошибся
         // сам): его чтение честно истечёт у плеера, сеанс страницы это не ломает.

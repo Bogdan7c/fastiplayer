@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use browser_bridge_protocol::{
     GrantOutcome, LoopbackPort, MessageErrorKind, OpenSessionRequest, PlayerSessionMessage,
-    SessionCloseReason, SessionToken,
+    ProtocolVersion, SessionCloseReason, SessionToken,
 };
 
 use super::shared::Shared;
@@ -129,14 +129,22 @@ impl SessionControl {
 
     /// Открывает (или повторяет, или заменяет) сеанс. `now` — время для сроков.
     ///
+    /// `agreed_protocol` — общая версия протокола, о которой открывающий
+    /// договорился в `hello` (`negotiate_protocol_version`). Её получит соединение
+    /// сеанса: сторож поколений пропускает только сообщения этой версии, а событие
+    /// `SessionLifecycleEvent::Attached` сообщает её приложению. Значения «по
+    /// умолчанию» нет намеренно: без `hello` версия не известна, и «стойка входа»
+    /// в таком случае сеанс не открывает (`hello_required`).
+    ///
     /// # Errors
     /// Сервер выключается или не выдался пропуск; состояние сеансов не меняется.
     pub fn open_session(
         &self,
         request: &OpenSessionRequest,
+        agreed_protocol: ProtocolVersion,
         now: Instant,
     ) -> Result<OpenedSession, OpenSessionError> {
-        self.shared.open_session(request, now)
+        self.shared.open_session(request, agreed_protocol, now)
     }
 
     /// Ставит сообщение плеера в очередь подключённого сеанса.

@@ -5,11 +5,14 @@
 // в правильные дорожки), и сообщает события страницы.
 
 import { ProtocolFailure } from "../errors.ts";
+import { type ResourceFetchOutcome, resourceFetchOutcomeCodec } from "../resource.ts";
 import { type Codec, stringEnum, taggedUnion, type TaggedUnionCodec } from "../schema.ts";
 import {
+  type ResourceHandle,
   type SourceBufferIndex,
   type StreamGeneration,
   rangeRequestIdCodec,
+  resourceHandleCodec,
   seekIdCodec,
   sourceBufferIndexCodec,
   streamGenerationCodec,
@@ -67,6 +70,8 @@ export type PageSessionMessage =
   | { readonly type: "attach"; readonly session_key: string; readonly token: string }
   | { readonly type: "generation_started"; readonly generation: StreamGeneration }
   | { readonly type: "file_source_added"; readonly generation: StreamGeneration }
+  /** Протокол 1.1: поколение - нативный HLS, корневой плейлист - номерок `root`. */
+  | { readonly type: "hls_source_added"; readonly generation: StreamGeneration; readonly root: ResourceHandle }
   | {
       readonly type: "source_buffer_added";
       readonly generation: StreamGeneration;
@@ -104,6 +109,8 @@ export type PageSessionMessage =
   | { readonly type: "ad_state"; readonly ad: PageAdState }
   | { readonly type: "variant_menu_changed"; readonly menu: VariantMenu }
   | { readonly type: "range_fetch_finished"; readonly request_id: number; readonly outcome: RangeFetchOutcome }
+  /** Протокол 1.1: запрос ресурса HLS закончен (тело уже ушло рамками вида 2). */
+  | { readonly type: "resource_fetch_finished"; readonly request_id: number; readonly outcome: ResourceFetchOutcome }
   | { readonly type: "tab_gone"; readonly reason: TabGoneReason };
 
 const removalEndCodec: Codec<RemovalEnd> = taggedUnion<RemovalEnd, "kind">("kind", {
@@ -139,6 +146,7 @@ export const pageSessionCodec: TaggedUnionCodec<PageSessionMessage> = taggedUnio
   attach: { session_key: sessionKeyCodec, token: sessionTokenCodec },
   generation_started: { generation: streamGenerationCodec },
   file_source_added: { generation: streamGenerationCodec },
+  hls_source_added: { generation: streamGenerationCodec, root: resourceHandleCodec },
   source_buffer_added: {
     generation: streamGenerationCodec,
     source_buffer: sourceBufferIndexCodec,
@@ -168,6 +176,7 @@ export const pageSessionCodec: TaggedUnionCodec<PageSessionMessage> = taggedUnio
   variant_menu_changed: { menu: variantMenuCodec },
   ad_state: { ad: pageAdStateCodec },
   range_fetch_finished: { request_id: rangeRequestIdCodec, outcome: rangeFetchOutcomeCodec },
+  resource_fetch_finished: { request_id: rangeRequestIdCodec, outcome: resourceFetchOutcomeCodec },
   tab_gone: { reason: stringEnum<TabGoneReason>(["closed", "navigated_away", "browser_closing"]) },
 });
 

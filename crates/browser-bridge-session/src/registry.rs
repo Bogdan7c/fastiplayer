@@ -15,13 +15,18 @@
 //! - пропуск одноразовый: успешный `attach` его гасит, повторный `attach` с ним — 4004;
 //! - сверка пропуска только через `SessionToken::matches` (постоянное время);
 //! - отвергнутый `attach` НЕ меняет состояние (чужой запрос не должен портить сеанс);
-//! - ошибка источника пропусков не меняет состояние (замена не происходит наполовину).
+//! - ошибка источника пропусков не меняет состояние (замена не происходит наполовину);
+//! - у сеанса есть общая версия протокола из `hello` того, кто его открыл: её
+//!   получает каждое подключение (`attach`), и сторож поколений соединения пропускает
+//!   только сообщения этой версии. Повтор `open_session` с тем же ключом берёт версию
+//!   последнего открытия (экстеншен мог обновиться и заново сказать `hello`); уже
+//!   подключённое соединение живёт с версией своего `attach`.
 
 use std::time::{Duration, Instant};
 
 use browser_bridge_protocol::{
-    GrantOutcome, OpenSessionDecision, SessionCloseReason, SessionKey, SessionToken,
-    decide_open_session,
+    GrantOutcome, OpenSessionDecision, ProtocolVersion, SessionCloseReason, SessionKey,
+    SessionToken, decide_open_session,
 };
 
 use crate::policy::BrowserSessionPolicy;
@@ -89,6 +94,16 @@ pub struct RegistryGrant {
     pub replaced: Option<ReplacedSession>,
 }
 
+/// Успешно подключённый сеанс: кто он и на какой версии протокола говорит.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachedSession {
+    /// Сеанс (ключ и экземпляр).
+    pub session: SessionRef,
+    /// Общая версия протокола сеанса (из `hello` открывшего): по ней соединение
+    /// создаёт сторожа поколений, а приложение решает, что можно слать странице.
+    pub agreed_protocol: ProtocolVersion,
+}
+
 /// Закрытый по просьбе плеера сеанс.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EndedSession {
@@ -139,6 +154,8 @@ struct ActiveSession {
     instance: SessionInstance,
     /// Пропуск, с которым ещё можно подключиться; `None` — погашен.
     token: Option<SessionToken>,
+    /// Общая версия протокола последнего `open_session` этого сеанса.
+    agreed_protocol: ProtocolVersion,
     phase: Phase,
 }
 
@@ -202,11 +219,15 @@ impl SessionRegistry {
 
     /// Обрабатывает `open_session` по правилу `decide_open_session`.
     ///
+    /// `agreed_protocol` — общая версия протокола, о которой договорился открывающий
+    /// в `hello` (её знает «стойка входа»).
+    ///
     /// # Errors
     /// Источник пропусков отказал; состояние реестра не изменилось.
     pub fn open(
         &mut self,
         requested: &SessionKey,
+        agreed_protocol: ProtocolVersion,
         now: Instant,
         tokens: &mut dyn SessionTokenSource,
     ) -> Result<RegistryGrant, TokenSourceError> {
@@ -215,7 +236,7 @@ impl SessionRegistry {
         match decision {
             OpenSessionDecision::StartNew => {
                 let token = tokens.next_token()?;
-                let session = self.awaiting_session(requested, &token, now);
+                let session = self.awaiting_session(requested, &token, agreed_protocol, now);
                 let instance = session.instance;
                 self.active = Some(session);
                 Ok(RegistryGrant {
@@ -235,7 +256,7 @@ impl SessionRegistry {
                         instance: old.instance,
                     },
                 });
-                let session = self.awaiting_session(requested, &token, now);
+                let session = self.awaiting_session(requested, &token, agreed_protocol, now);
                 let instance = session.instance;
                 self.active = Some(session);
                 Ok(RegistryGrant {
@@ -245,13 +266,16 @@ impl SessionRegistry {
                     replaced,
                 })
             }
-            OpenSessionDecision::ReuseActive => self.reuse_active(now, tokens, outcome),
+            OpenSessionDecision::ReuseActive => {
+                self.reuse_active(agreed_protocol, now, tokens, outcome)
+            }
         }
     }
 
     /// Повторный `open_session` с ключом активного сеанса (идемпотентность).
     fn reuse_active(
         &mut self,
+        agreed_protocol: ProtocolVersion,
         now: Instant,
         tokens: &mut dyn SessionTokenSource,
         outcome: GrantOutcome,
@@ -286,6 +310,9 @@ impl SessionRegistry {
                 fresh
             }
         };
+        // Версию меняем только после выдачи пропуска: при отказе источника сеанс
+        // остаётся как был. Подключение по новому пропуску получит эту версию.
+        session.agreed_protocol = agreed_protocol;
         Ok(RegistryGrant {
             instance: session.instance,
             token,
@@ -299,6 +326,7 @@ impl SessionRegistry {
         &mut self,
         key: &SessionKey,
         token: &SessionToken,
+        agreed_protocol: ProtocolVersion,
         now: Instant,
     ) -> ActiveSession {
         let instance = SessionInstance(self.next_instance);
@@ -308,6 +336,7 @@ impl SessionRegistry {
             key: key.clone(),
             instance,
             token: Some(token.clone()),
+            agreed_protocol,
             phase: Phase::AwaitingAttach {
                 deadline: now + self.timings.first_attach_deadline,
             },
@@ -324,7 +353,7 @@ impl SessionRegistry {
         key: &SessionKey,
         presented: &SessionToken,
         connection: ConnectionId,
-    ) -> Result<SessionRef, AttachRejection> {
+    ) -> Result<AttachedSession, AttachRejection> {
         let session = match self.active.as_mut() {
             Some(session) if &session.key == key => session,
             _ => return Err(AttachRejection::UnknownSession),
@@ -341,7 +370,10 @@ impl SessionRegistry {
         }
         session.token = None;
         session.phase = Phase::Attached { connection };
-        Ok(session.session_ref())
+        Ok(AttachedSession {
+            session: session.session_ref(),
+            agreed_protocol: session.agreed_protocol,
+        })
     }
 
     /// Подключённое соединение оборвалось без кадра закрытия: начинается грейс.

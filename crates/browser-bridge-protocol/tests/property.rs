@@ -28,7 +28,7 @@ use browser_bridge_protocol::control::{
 };
 use browser_bridge_protocol::limits::{
     MAX_DATA_FRAME_PAYLOAD_BYTES, MAX_JSON_SAFE_INTEGER, MAX_PLAYBACK_RATE_PERMILLE,
-    MAX_RANGE_FETCH_BYTES, MIN_PLAYBACK_RATE_PERMILLE,
+    MAX_RANGE_FETCH_BYTES, MAX_RESOURCE_FETCH_BYTES, MIN_PLAYBACK_RATE_PERMILLE,
 };
 use browser_bridge_protocol::session::{
     BufferIntake, ClockSequence, ClockState, PagePlaybackRequest, RangeFetchFailure,
@@ -37,12 +37,14 @@ use browser_bridge_protocol::session::{
 };
 use browser_bridge_protocol::{
     AppendSequence, BridgeSoftware, ByteOffset, CapabilityToken, DataFrameHeader,
-    ExtensionControlMessage, GateDecision, MediaDuration, MediaTime, MediaTimeOffset,
-    MessageErrorKind, MimeType, PageSessionMessage, PageTitle, PlaybackRate, PlayerControlMessage,
-    PlayerSessionMessage, ProtocolMessage, ProtocolVersion, RangeBytesHeader, RangeFetchLength,
-    RangeRequestId, SeekId, SessionKey, SessionToken, SiteDomain, SoftwareVersion,
-    SourceBufferBytesHeader, SourceBufferIndex, StreamGate, StreamGeneration, VariantId,
-    VariantLabel, decode_data_frame, decode_message, encode_data_frame, encode_message,
+    ExtensionControlMessage, GateDecision, HttpStatusCode, MediaDuration, MediaTime,
+    MediaTimeOffset, MessageErrorKind, MimeType, PageSessionMessage, PageTitle, PlaybackRate,
+    PlayerControlMessage, PlayerSessionMessage, ProtocolMessage, ProtocolVersion, RangeBytesHeader,
+    RangeFetchLength, RangeRequestId, ResourceBodySize, ResourceByteRange, ResourceFetchFailure,
+    ResourceFetchLength, ResourceFetchOutcome, ResourceHandle, SeekId, SessionKey, SessionToken,
+    SiteDomain, SoftwareVersion, SourceBufferBytesHeader, SourceBufferIndex, StreamGate,
+    StreamGeneration, VariantId, VariantLabel, decode_data_frame, decode_message,
+    encode_data_frame, encode_message,
 };
 
 /// Детерминированный генератор xorshift64*.
@@ -222,10 +224,53 @@ fn variant_menu(generator: &mut Generator) -> VariantMenu {
     }
 }
 
+/// Итог запроса ресурса HLS (протокол 1.1): любой вид, края включительно.
+fn resource_fetch_outcome(generator: &mut Generator) -> ResourceFetchOutcome {
+    match generator.below(5) {
+        0 => ResourceFetchOutcome::Completed {
+            size_bytes: ResourceBodySize::new(generator.below(MAX_RESOURCE_FETCH_BYTES + 1))
+                .unwrap(),
+        },
+        1 => ResourceFetchOutcome::Failed {
+            failure: ResourceFetchFailure::HttpError {
+                status: HttpStatusCode::new(generator.between(100, 599) as u16).unwrap(),
+            },
+        },
+        2 => ResourceFetchOutcome::Failed {
+            failure: ResourceFetchFailure::NetworkError {},
+        },
+        3 => ResourceFetchOutcome::Failed {
+            failure: ResourceFetchFailure::Refused {},
+        },
+        _ => ResourceFetchOutcome::Failed {
+            failure: ResourceFetchFailure::TooLarge {},
+        },
+    }
+}
+
+/// Запрос ресурса HLS: кусок всегда не длиннее потолка ответа (иначе — нарушение).
+fn fetch_resource(generator: &mut Generator) -> PlayerSessionMessage {
+    let max_bytes = generator.between(1, MAX_RESOURCE_FETCH_BYTES);
+    let byte_range = if generator.coin() {
+        ResourceByteRange::Whole {}
+    } else {
+        ResourceByteRange::Slice {
+            offset: ByteOffset::new(generator.below(MAX_JSON_SAFE_INTEGER + 1)).unwrap(),
+            length: ResourceFetchLength::new(generator.between(1, max_bytes)).unwrap(),
+        }
+    };
+    PlayerSessionMessage::FetchResource {
+        request_id: RangeRequestId(generator.next_u64() as u32),
+        resource: ResourceHandle(generator.next_u64() as u32),
+        byte_range,
+        max_bytes: ResourceFetchLength::new(max_bytes).unwrap(),
+    }
+}
+
 fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
     let generation = generation(generator);
     let source_buffer = source_buffer(generator);
-    match generator.below(14) {
+    match generator.below(16) {
         0 => PageSessionMessage::Attach {
             session_key: session_key(generator),
             token: session_token(generator),
@@ -320,6 +365,14 @@ fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
                 }
             },
         },
+        13 => PageSessionMessage::HlsSourceAdded {
+            generation,
+            root: ResourceHandle(generator.next_u64() as u32),
+        },
+        14 => PageSessionMessage::ResourceFetchFinished {
+            request_id: RangeRequestId(generator.next_u64() as u32),
+            outcome: resource_fetch_outcome(generator),
+        },
         _ => PageSessionMessage::TabGone {
             reason: *generator.pick(&[
                 TabGoneReason::Closed,
@@ -331,7 +384,7 @@ fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
 }
 
 fn random_player_message(generator: &mut Generator) -> PlayerSessionMessage {
-    match generator.below(12) {
+    match generator.below(13) {
         0 => PlayerSessionMessage::Attached {},
         1 => PlayerSessionMessage::Clock {
             seq: ClockSequence(generator.next_u64() as u32),
@@ -372,6 +425,7 @@ fn random_player_message(generator: &mut Generator) -> PlayerSessionMessage {
             offset: ByteOffset::new(generator.below(MAX_JSON_SAFE_INTEGER + 1)).unwrap(),
             length: RangeFetchLength::new(generator.between(1, MAX_RANGE_FETCH_BYTES)).unwrap(),
         },
+        11 => fetch_resource(generator),
         _ => PlayerSessionMessage::StreamRejected {
             generation: generation(generator),
             reason: *generator.pick(&[

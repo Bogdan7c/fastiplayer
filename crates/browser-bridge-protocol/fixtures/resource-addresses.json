@@ -1,0 +1,70 @@
+{
+  "valid": [
+    {
+      "address": "https://resource.fastiplayer-bridge.invalid/0",
+      "handle": 0
+    },
+    {
+      "address": "https://resource.fastiplayer-bridge.invalid/1",
+      "handle": 1
+    },
+    {
+      "address": "https://resource.fastiplayer-bridge.invalid/7",
+      "handle": 7
+    },
+    {
+      "address": "https://resource.fastiplayer-bridge.invalid/42",
+      "handle": 42
+    },
+    {
+      "address": "https://resource.fastiplayer-bridge.invalid/1000000",
+      "handle": 1000000
+    },
+    {
+      "address": "https://resource.fastiplayer-bridge.invalid/4294967295",
+      "handle": 4294967295
+    }
+  ],
+  "invalid": [
+    "",
+    "https://resource.fastiplayer-bridge.invalid/",
+    "https://resource.fastiplayer-bridge.invalid/007",
+    "https://resource.fastiplayer-bridge.invalid/00",
+    "https://resource.fastiplayer-bridge.invalid/+7",
+    "https://resource.fastiplayer-bridge.invalid/-7",
+    "https://resource.fastiplayer-bridge.invalid/ 7",
+    "https://resource.fastiplayer-bridge.invalid/7 ",
+    "https://resource.fastiplayer-bridge.invalid/7.0",
+    "https://resource.fastiplayer-bridge.invalid/1e3",
+    "https://resource.fastiplayer-bridge.invalid/0x10",
+    "https://resource.fastiplayer-bridge.invalid/%37",
+    "https://resource.fastiplayer-bridge.invalid/٣",
+    "https://resource.fastiplayer-bridge.invalid/4294967296",
+    "https://resource.fastiplayer-bridge.invalid/99999999999999999999",
+    "https://resource.fastiplayer-bridge.invalid/7/",
+    "https://resource.fastiplayer-bridge.invalid/7/8",
+    "https://resource.fastiplayer-bridge.invalid/7?",
+    "https://resource.fastiplayer-bridge.invalid/7?token=1",
+    "https://resource.fastiplayer-bridge.invalid/7#",
+    "https://resource.fastiplayer-bridge.invalid/7#frag",
+    "https://resource.fastiplayer-bridge.invalid/seg7.ts",
+    "https://resource.fastiplayer-bridge.invalid:443/7",
+    "https://resource.fastiplayer-bridge.invalid./7",
+    "https://user@resource.fastiplayer-bridge.invalid/7",
+    "https://user:pass@resource.fastiplayer-bridge.invalid/7",
+    "https://RESOURCE.FASTIPLAYER-BRIDGE.INVALID/7",
+    "HTTPS://resource.fastiplayer-bridge.invalid/7",
+    "http://resource.fastiplayer-bridge.invalid/7",
+    "wss://resource.fastiplayer-bridge.invalid/7",
+    "//resource.fastiplayer-bridge.invalid/7",
+    "resource.fastiplayer-bridge.invalid/7",
+    "https://evil.example/https://resource.fastiplayer-bridge.invalid/7",
+    "https://resource.fastiplayer-bridge.invalid.evil.example/7",
+    "https://sub.resource.fastiplayer-bridge.invalid/7",
+    "https://resource.fastiplayer-bridge.invalid//7",
+    "https://resource.fastiplayer-bridge.invalid/./7",
+    " https://resource.fastiplayer-bridge.invalid/7",
+    "https://resource.fastiplayer-bridge.invalid/7\n",
+    "https://example.com/7"
+  ]
+}

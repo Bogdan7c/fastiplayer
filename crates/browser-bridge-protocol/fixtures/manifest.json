@@ -292,6 +292,20 @@
       }
     },
     {
+      "file": "session/valid/page-hls-source-added.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-hls-source-added-max-root.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
       "file": "session/valid/page-source-buffer-added.json",
       "schema": "page_session",
       "expect": {
@@ -436,6 +450,181 @@
       "schema": "page_session",
       "expect": {
         "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-resource-fetch-completed.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-resource-fetch-completed-empty-body.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-resource-fetch-completed-max-body.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-resource-fetch-network-error.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-resource-fetch-http-404.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-resource-fetch-http-100.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-resource-fetch-http-599.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-resource-fetch-refused.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-resource-fetch-too-large.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/invalid/page-hls-source-added-missing-root.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-hls-source-added-unknown-field.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-hls-source-added-generation-zero.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-hls-source-added-root-negative.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-hls-source-added-root-beyond-u32.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-resource-fetch-http-99.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-resource-fetch-http-600.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-resource-fetch-http-without-status.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-resource-fetch-refused-with-status.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-resource-fetch-unknown-failure.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-resource-fetch-unknown-outcome.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-resource-fetch-body-above-limit.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-resource-fetch-completed-with-resource-size.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-resource-fetch-missing-outcome.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
       }
     },
     {
@@ -650,6 +839,27 @@
       }
     },
     {
+      "file": "session/valid/player-fetch-resource-whole.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-fetch-resource-slice.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-fetch-resource-max-fields.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
       "file": "session/valid/player-stream-rejected.json",
       "schema": "player_session",
       "expect": {
@@ -703,6 +913,134 @@
       }
     },
     {
+      "file": "session/invalid/player-fetch-resource-max-bytes-zero.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/player-fetch-resource-max-bytes-above-limit.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/player-fetch-resource-slice-length-zero.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/player-fetch-resource-slice-length-above-limit.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/player-fetch-resource-slice-longer-than-max-bytes.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/player-fetch-resource-slice-offset-beyond-js-safe-integer.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/player-fetch-resource-resource-negative.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/player-fetch-resource-resource-beyond-u32.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/player-fetch-resource-request-id-beyond-u32.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/player-fetch-resource-byte-range-missing.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
+      }
+    },
+    {
+      "file": "session/invalid/player-fetch-resource-max-bytes-missing.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
+      }
+    },
+    {
+      "file": "session/invalid/player-fetch-resource-byte-range-null.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/player-fetch-resource-byte-range-unknown-kind.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/player-fetch-resource-byte-range-whole-with-field.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
+      "file": "session/invalid/player-fetch-resource-slice-without-length.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
+      }
+    },
+    {
+      "file": "session/invalid/player-fetch-resource-unknown-field.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
       "file": "data/valid/source-buffer-first-frame.bin",
       "schema": "data_frame",
       "expect": {
@@ -727,6 +1065,19 @@
           "source_buffer": 7,
           "sequence": "18446744073709551615",
           "payload_len": 1
+        }
+      }
+    },
+    {
+      "file": "data/valid/range-bytes-resource-body-start.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "ok",
+        "frame": {
+          "kind": "range_bytes",
+          "request_id": 10,
+          "offset": 0,
+          "payload_len": 8
         }
       }
     },
@@ -1072,6 +1423,46 @@
       }
     },
     {
+      "file": "session/invalid/page-shape-resource-fetch-outcome-as-array.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-resource-fetch-outcome-kind-as-index.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-resource-fetch-failure-as-label.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-resource-fetch-failure-kind-as-index.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-resource-fetch-status-as-text.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
       "file": "session/invalid/player-shape-clock-state-as-index.json",
       "schema": "player_session",
       "expect": {
@@ -1118,6 +1509,30 @@
         "result": "error",
         "kind": "wrong_value_type"
       }
+    },
+    {
+      "file": "session/invalid/player-shape-fetch-resource-byte-range-as-array.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/player-shape-fetch-resource-byte-range-as-label.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/player-shape-fetch-resource-byte-range-kind-as-index.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
     }
   ],
   "streams": [
@@ -1125,6 +1540,7 @@
     "generation-switch-drops-stale",
     "muxed-av-single-source-buffer",
     "file-source-generation",
-    "quality-switch-new-media-source"
+    "quality-switch-new-media-source",
+    "hls-source-generation"
   ]
 }

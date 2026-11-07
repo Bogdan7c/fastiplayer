@@ -3,11 +3,15 @@
 // Часы ведёт плеер: экстеншен получает позицию, паузу, скорость, «жду данных» и
 // «конец» и сам генерирует события муляжа видеоэлемента.
 
+import { ProtocolFailure } from "../errors.ts";
+import { type ResourceByteRange, resourceByteRangeCodec, resourceFetchLengthCodec } from "../resource.ts";
 import { type Codec, stringEnum, taggedUnion, type TaggedUnionCodec } from "../schema.ts";
 import {
+  type ResourceHandle,
   type StreamGeneration,
   clockSequenceCodec,
   rangeRequestIdCodec,
+  resourceHandleCodec,
   seekIdCodec,
   streamGenerationCodec,
 } from "../stream.ts";
@@ -70,6 +74,18 @@ export type PlayerSessionMessage =
       readonly offset: ByteCount;
       readonly length: ByteCount;
     }
+  /**
+   * Протокол 1.1: дай ресурс HLS по номерку. Номер запроса - из того же счётчика,
+   * что у `fetch_range`; ответ - рамки вида 2 со смещениями внутри тела с 0 и
+   * `resource_fetch_finished`.
+   */
+  | {
+      readonly type: "fetch_resource";
+      readonly request_id: number;
+      readonly resource: ResourceHandle;
+      readonly byte_range: ResourceByteRange;
+      readonly max_bytes: ByteCount;
+    }
   | { readonly type: "stream_rejected"; readonly generation: StreamGeneration; readonly reason: StreamRejection };
 
 const clockStateCodec: Codec<ClockState> = stringEnum<ClockState>(["playing", "paused", "waiting", "ended"]);
@@ -97,6 +113,12 @@ export const playerSessionCodec: TaggedUnionCodec<PlayerSessionMessage> = tagged
   next_episode: {},
   skip_ad: {},
   fetch_range: { request_id: rangeRequestIdCodec, offset: byteOffsetCodec, length: rangeFetchLengthCodec },
+  fetch_resource: {
+    request_id: rangeRequestIdCodec,
+    resource: resourceHandleCodec,
+    byte_range: resourceByteRangeCodec,
+    max_bytes: resourceFetchLengthCodec,
+  },
   stream_rejected: {
     generation: streamGenerationCodec,
     reason: stringEnum<StreamRejection>([
@@ -108,3 +130,13 @@ export const playerSessionCodec: TaggedUnionCodec<PlayerSessionMessage> = tagged
     ]),
   },
 });
+
+/**
+ * Проверки между полями. `fetch_resource`: кусок длиннее потолка ответа - запрос сам
+ * себе противоречит (`number_out_of_range` у `max_bytes`, вид как в Rust).
+ */
+export function validatePlayerSession(message: PlayerSessionMessage): void {
+  if (message.type === "fetch_resource" && message.byte_range.kind === "slice" && message.byte_range.length > message.max_bytes) {
+    throw new ProtocolFailure("number_out_of_range").prependPath("max_bytes");
+  }
+}

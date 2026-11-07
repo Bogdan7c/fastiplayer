@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use browser_bridge_protocol::CURRENT_PROTOCOL_VERSION;
 use browser_bridge_protocol::{SessionCloseReason, StreamGeneration};
 use browser_bridge_session::{
     BrowserSessionServer, ChunkSource, IntakeRoom, SessionByteSink, SessionChunk, SessionRef,
@@ -94,7 +95,11 @@ fn attached_with_holding_sink() -> (
     .unwrap();
     let opened = server
         .control()
-        .open_session(&open_request("held"), Instant::now())
+        .open_session(
+            &open_request("held"),
+            CURRENT_PROTOCOL_VERSION,
+            Instant::now(),
+        )
         .unwrap();
     let socket = attach(server.port().get(), "held", &opened.token);
     (server, sink, socket)

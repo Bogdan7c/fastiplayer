@@ -5,6 +5,7 @@ use std::net::TcpStream;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use browser_bridge_protocol::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};
 use browser_bridge_protocol::{
     ExtensionControlMessage, OpenSessionRequest, PageSessionMessage, SessionKey, SessionToken,
     decode_message,
@@ -197,10 +198,15 @@ impl Env {
         }
     }
 
-    /// Открывает сеанс как «стойка входа».
+    /// Открывает сеанс как «стойка входа» после `hello` на версии этого crate.
     pub fn open(&self, key: &str) -> OpenedSession {
+        self.open_agreed(key, CURRENT_PROTOCOL_VERSION)
+    }
+
+    /// Открывает сеанс как «стойка входа» после `hello`, договорившегося о `agreed`.
+    pub fn open_agreed(&self, key: &str, agreed: ProtocolVersion) -> OpenedSession {
         self.control
-            .open_session(&open_request(key), Instant::now())
+            .open_session(&open_request(key), agreed, Instant::now())
             .unwrap()
     }
 

@@ -3,6 +3,7 @@
 use std::net::Shutdown;
 use std::time::{Duration, Instant};
 
+use browser_bridge_protocol::CURRENT_PROTOCOL_VERSION;
 use browser_bridge_protocol::SessionCloseReason;
 use browser_bridge_session::{BrowserSessionPolicy, SessionEndReason, SessionLifecycleEvent};
 use tungstenite::protocol::CloseFrame;
@@ -30,6 +31,7 @@ fn attach_publishes_an_attached_event() {
         event
             == &SessionLifecycleEvent::Attached {
                 session: crate::support::session("a", 1),
+                agreed_protocol: CURRENT_PROTOCOL_VERSION,
             }
     });
 }
@@ -238,6 +240,7 @@ fn reopening_a_key_after_grace_expiry_is_a_new_instance_and_old_end_does_not_mat
         event
             == &SessionLifecycleEvent::Attached {
                 session: crate::support::session("a", 2),
+                agreed_protocol: CURRENT_PROTOCOL_VERSION,
             }
     });
     // Событие конца старого экземпляра не равно событию конца нового.
@@ -325,6 +328,7 @@ fn closing_a_stale_instance_after_replacement_leaves_the_new_session_open() {
         event
             == &SessionLifecycleEvent::Attached {
                 session: crate::support::session("b", new.instance.0),
+                agreed_protocol: CURRENT_PROTOCOL_VERSION,
             }
     });
     // Опоздавшая просьба закрыть старый экземпляр нового не трогает.

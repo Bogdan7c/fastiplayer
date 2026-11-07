@@ -26,6 +26,9 @@
 //!
 //! Политика совместимости — «договорились — значит строго» (решение 86,
 //! `crate::version`). Общие фикстуры для Rust и TypeScript — в `fixtures/`.
+//!
+//! Версия 1.1 (решение 228) добавила нативный HLS по номеркам ресурсов:
+//! `crate::resource`, `crate::resource_address`.
 
 pub mod capability;
 pub mod codec;
@@ -35,6 +38,8 @@ pub mod error;
 pub mod extension_identity;
 pub mod limits;
 pub mod open_session;
+pub mod resource;
+pub mod resource_address;
 pub mod session;
 pub mod stream;
 pub mod stream_gate;
@@ -56,6 +61,13 @@ pub use data_frame::{
 };
 pub use error::{MessageError, MessageErrorKind, ValueViolation};
 pub use open_session::{OpenSessionDecision, decide_open_session};
+pub use resource::{
+    HttpStatusCode, ResourceBodySize, ResourceByteRange, ResourceFetchFailure, ResourceFetchLength,
+    ResourceFetchOutcome, ResourceHandle,
+};
+pub use resource_address::{
+    RESOURCE_ADDRESS_HOST, format_resource_address, parse_resource_address,
+};
 pub use session::{PageSessionMessage, PlayerSessionMessage, SessionCloseReason};
 pub use stream::{AppendSequence, RangeRequestId, SeekId, SourceBufferIndex, StreamGeneration};
 pub use stream_gate::{GateDecision, StreamGate, StreamViolation};

@@ -22,6 +22,7 @@
   "expect": {
     "admitted": [],
     "dropped_frames": 0,
-    "dropped_messages": 0
+    "dropped_messages": 0,
+    "resource_bodies": []
   }
 }

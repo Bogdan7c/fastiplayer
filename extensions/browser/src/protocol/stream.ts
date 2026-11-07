@@ -24,8 +24,17 @@ export const sourceBufferIndexCodec: Codec<SourceBufferIndex> = safeInteger({
 /** Номер перемотки по команде плеера (`seek_id`), u32. */
 export const seekIdCodec: Codec<number> = plainInteger("u32");
 
-/** Номер запроса байтов файла (`fetch_range`), u32. */
+/**
+ * Номер запроса байтов (`fetch_range` и `fetch_resource`), u32. Пространство номеров
+ * у двух запросов общее: плеер ведёт один счётчик на сеанс.
+ */
 export const rangeRequestIdCodec: Codec<number> = plainInteger("u32");
+
+/** Номерок ресурса HLS (протокол 1.1), весь диапазон u32. */
+export type ResourceHandle = number;
+
+/** Номерок ресурса HLS: его выдал фон, переписывая плейлист. */
+export const resourceHandleCodec: Codec<ResourceHandle> = plainInteger("u32");
 
 /** Номер запроса на участке «вход», u32. */
 export const controlRequestIdCodec: Codec<number> = plainInteger("u32");

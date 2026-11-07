@@ -2,7 +2,7 @@
 // Чистая функция: решения о сокете, очереди и тени принимает владелец сеанса по её ответу.
 
 import type { HandoffEndPosition, HandoffEndResume, ShadowCommand } from "../../shared/handoff-contract.ts";
-import type { BufferIntake, PlayerSessionMessage, StreamGeneration } from "../../protocol/index.ts";
+import type { BufferIntake, PageSessionMessage, PlayerSessionMessage, StreamGeneration } from "../../protocol/index.ts";
 import type { RangeRequest } from "./range-fetcher.ts";
 
 export type PlayerAction =
@@ -23,6 +23,8 @@ export type PlayerAction =
   | { readonly kind: "fetch_range"; readonly request: RangeRequest }
   /** Плеер просит нажать кнопку пропуска рекламы (сессия 09d); решает сеанс: целевой фрейм знает только он. */
   | { readonly kind: "skip_ad" }
+  /** Ответить плееру сразу, без страницы и сети (10a1: честный отказ на `fetch_resource`). */
+  | { readonly kind: "reply"; readonly message: PageSessionMessage }
   /** Не относится к передаче (варианты — 14, следующая серия — 15) или к старому поколению — пропустить. */
   | { readonly kind: "ignore" };
 
@@ -67,6 +69,13 @@ export function translatePlayerMessage(message: PlayerSessionMessage, latestGene
       return { kind: "fetch_range", request: { request_id: message.request_id, offset: message.offset, length: message.length } };
     case "skip_ad":
       return { kind: "skip_ad" };
+    case "fetch_resource":
+      // Ресурсы HLS по номеркам фон качать ещё не умеет (это 10a2), а молчать нельзя: плеер ждал бы
+      // ответа до своего тайм-аута. Номерков фон не выдавал, поэтому честный ответ - «отказ».
+      return {
+        kind: "reply",
+        message: { type: "resource_fetch_finished", request_id: message.request_id, outcome: { kind: "failed", failure: { kind: "refused" } } },
+      };
     case "select_variant":
     case "next_episode":
       // Меню вариантов — 14, следующая серия — 15: пока их не бывает.

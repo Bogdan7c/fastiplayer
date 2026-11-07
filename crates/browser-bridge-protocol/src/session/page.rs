@@ -8,12 +8,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::codec::ProtocolMessage;
 use crate::error::ValueViolation;
+use crate::resource::{ResourceFetchOutcome, ResourceHandle};
 use crate::session::ad_state::PageAdState;
 use crate::session::variants::VariantMenu;
 use crate::stream::{RangeRequestId, SeekId, SourceBufferIndex, StreamGeneration};
 use crate::strict_shape::{strict_label, strict_object};
 use crate::text::{MimeType, SessionKey, SessionToken};
 use crate::time::{ByteOffset, MediaDuration, MediaTime, MediaTimeOffset, PlaybackRate};
+use crate::version::ProtocolVersion;
 
 // Строгая форма JSON (`crate::strict_shape`): объекты и перечисления с меткой —
 // только объектом, метки — только строкой; чужая форма — `wrong_value_type`.
@@ -191,6 +193,18 @@ pub enum PageSessionMessage {
         /// Поколение, чьё содержимое — файл.
         generation: StreamGeneration,
     },
+    /// В этом поколении у элемента нативный HLS (`<video src=…m3u8>`), протокол 1.1.
+    ///
+    /// HLS ведёт плеер: каждый ресурс он сам попросит командой `fetch_resource`,
+    /// начиная с корневого плейлиста `root`. Адресов здесь нет: фон экстеншена
+    /// заменил их номерками (решение 228). Взаимоисключимо с `source_buffer_added`
+    /// и `file_source_added` в том же поколении (правила — в `crate::stream_gate`).
+    HlsSourceAdded {
+        /// Поколение, чьё содержимое — HLS.
+        generation: StreamGeneration,
+        /// Номерок корневого плейлиста (мастер или сразу media-плейлист).
+        root: ResourceHandle,
+    },
     /// `addSourceBuffer(mime)`.
     SourceBufferAdded {
         /// Поколение.
@@ -280,6 +294,14 @@ pub enum PageSessionMessage {
         /// Итог.
         outcome: RangeFetchOutcome,
     },
+    /// Запрос ресурса HLS закончен (протокол 1.1): все байты тела уже ушли
+    /// рамками вида 2 с этим `request_id` (или запрос не выполнен).
+    ResourceFetchFinished {
+        /// Номер запроса из `fetch_resource`.
+        request_id: RangeRequestId,
+        /// Итог.
+        outcome: ResourceFetchOutcome,
+    },
     /// Вкладка больше не источник: плеер доигрывает скачанное (решение 42).
     TabGone {
         /// Почему.
@@ -297,10 +319,12 @@ impl PageSessionMessage {
             | Self::VariantMenuChanged { .. }
             | Self::AdState { .. }
             | Self::RangeFetchFinished { .. }
+            | Self::ResourceFetchFinished { .. }
             | Self::TabGone { .. }
             | Self::SeekStarted { .. } => StreamScope::Unbound,
             Self::GenerationStarted { generation }
             | Self::FileSourceAdded { generation }
+            | Self::HlsSourceAdded { generation, .. }
             | Self::DurationChanged { generation, .. }
             | Self::EndOfStream { generation } => StreamScope::Generation(*generation),
             Self::SourceBufferAdded {
@@ -329,6 +353,35 @@ impl PageSessionMessage {
             } => StreamScope::SourceBuffer(*generation, *source_buffer),
         }
     }
+
+    /// В какой версии протокола появилось сообщение (`crate::version`, правило 5).
+    ///
+    /// Сообщение новее общей версии сеанса страница слать не вправе; плеер такое
+    /// отвергает (`crate::stream_gate::StreamGate`).
+    #[must_use]
+    pub const fn introduced_in(&self) -> ProtocolVersion {
+        match self {
+            Self::HlsSourceAdded { .. } | Self::ResourceFetchFinished { .. } => {
+                ProtocolVersion::V1_1
+            }
+            Self::Attach { .. }
+            | Self::GenerationStarted { .. }
+            | Self::FileSourceAdded { .. }
+            | Self::SourceBufferAdded { .. }
+            | Self::SourceBufferTypeChanged { .. }
+            | Self::TimestampOffsetChanged { .. }
+            | Self::SourceBufferRemoved { .. }
+            | Self::SourceBufferAborted { .. }
+            | Self::SeekStarted { .. }
+            | Self::DurationChanged { .. }
+            | Self::EndOfStream { .. }
+            | Self::PagePlayback { .. }
+            | Self::VariantMenuChanged { .. }
+            | Self::AdState { .. }
+            | Self::RangeFetchFinished { .. }
+            | Self::TabGone { .. } => ProtocolVersion::V1_0,
+        }
+    }
 }
 
 impl ProtocolMessage for PageSessionMessage {
@@ -336,6 +389,7 @@ impl ProtocolMessage for PageSessionMessage {
         "attach",
         "generation_started",
         "file_source_added",
+        "hls_source_added",
         "source_buffer_added",
         "source_buffer_type_changed",
         "timestamp_offset_changed",
@@ -348,6 +402,7 @@ impl ProtocolMessage for PageSessionMessage {
         "variant_menu_changed",
         "ad_state",
         "range_fetch_finished",
+        "resource_fetch_finished",
         "tab_gone",
     ];
 

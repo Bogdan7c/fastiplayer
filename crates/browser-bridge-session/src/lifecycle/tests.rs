@@ -65,7 +65,10 @@ fn connection_loss_and_attach_do_not_exit() {
     let start = Instant::now();
     let mut lifecycle = ProcessLifecycle::new(start, IDLE);
     lifecycle.on_session_opened(&key("a"));
-    lifecycle.on_lifecycle_event(&SessionLifecycleEvent::Attached { session: key("a") });
+    lifecycle.on_lifecycle_event(&SessionLifecycleEvent::Attached {
+        session: key("a"),
+        agreed_protocol: browser_bridge_protocol::CURRENT_PROTOCOL_VERSION,
+    });
     lifecycle.on_lifecycle_event(&SessionLifecycleEvent::ConnectionLost { session: key("a") });
     assert_eq!(
         lifecycle.verdict(start),

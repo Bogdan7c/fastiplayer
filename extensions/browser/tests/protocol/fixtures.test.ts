@@ -23,6 +23,8 @@ import {
   type DecodeResult,
   type EncodeResult,
 } from "../../src/protocol/index.ts";
+import { pageSessionCodec } from "../../src/protocol/session/page.ts";
+import { playerSessionCodec } from "../../src/protocol/session/player.ts";
 import { type FixtureCase, loadManifest, readFixtureBytes } from "./fixtures-support.ts";
 
 interface JsonSchemaOps {
@@ -97,7 +99,7 @@ const manifest = loadManifest();
 
 test("манифест содержит ожидаемый набор случаев", () => {
   assert.ok(manifest.cases.length >= 97, `случаев: ${manifest.cases.length}`);
-  assert.equal(manifest.streams.length, 5);
+  assert.equal(manifest.streams.length, 6);
 });
 
 // Один подтест на фикстуру: при падении видно, какая именно.
@@ -135,8 +137,11 @@ test("у каждой схемы валидные фикстуры покрыв�
   for (const [schema, expected] of Object.entries(expectedTypes)) {
     assert.deepEqual([...new Set(coveredTypes(schema))], [...expected], schema);
   }
-  assert.equal(new Set(coveredTypes("page_session")).size, 16);
-  assert.equal(new Set(coveredTypes("player_session")).size, 13);
+  // Сверка с полным списком типов кодека: фикстура на каждый тип и ни одного лишнего.
+  assert.deepEqual([...new Set(coveredTypes("page_session"))].sort(), [...pageSessionCodec.knownTags].sort());
+  assert.deepEqual([...new Set(coveredTypes("player_session"))].sort(), [...playerSessionCodec.knownTags].sort());
+  assert.equal(new Set(coveredTypes("page_session")).size, 18);
+  assert.equal(new Set(coveredTypes("player_session")).size, 14);
 });
 
 // ---------------------------------------------------------------- предел размера (каждая сторона собирает сама)

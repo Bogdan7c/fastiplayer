@@ -50,8 +50,8 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use browser_bridge_protocol::{
-    AppendSequence, PageSessionMessage, RangeRequestId, SessionCloseReason, SourceBufferIndex,
-    StreamGeneration,
+    AppendSequence, PageSessionMessage, ProtocolVersion, RangeRequestId, SessionCloseReason,
+    SourceBufferIndex, StreamGeneration,
 };
 
 use crate::registry::SessionRef;
@@ -193,6 +193,10 @@ pub enum SessionLifecycleEvent {
     Attached {
         /// Сеанс (ключ и экземпляр).
         session: SessionRef,
+        /// Общая версия протокола этого подключения (из `hello` открывшего сеанс).
+        /// По ней приложение решает, что можно слать странице: при 1.0 —
+        /// никаких `fetch_resource` (`PlayerSessionMessage::introduced_in`).
+        agreed_protocol: ProtocolVersion,
     },
     /// Подключённое соединение оборвалось без кадра закрытия: начался срок
     /// ожидания возврата (`reconnect_grace`).

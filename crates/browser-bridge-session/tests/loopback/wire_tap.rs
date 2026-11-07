@@ -4,6 +4,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use browser_bridge_protocol::CURRENT_PROTOCOL_VERSION;
 use browser_bridge_session::SessionWireTap;
 use browser_bridge_session::{BrowserSessionServer, SessionByteSink, SessionEventSink, SessionRef};
 
@@ -68,7 +69,11 @@ fn tap_sees_raw_wire_including_stale_frames_that_the_gate_drops() {
     .unwrap();
     let opened = server
         .control()
-        .open_session(&open_request("tapped"), Instant::now())
+        .open_session(
+            &open_request("tapped"),
+            CURRENT_PROTOCOL_VERSION,
+            Instant::now(),
+        )
         .unwrap();
     let mut socket = attach(server.port().get(), "tapped", &opened.token);
 

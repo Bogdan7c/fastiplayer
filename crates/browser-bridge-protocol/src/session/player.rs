@@ -9,11 +9,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::codec::ProtocolMessage;
 use crate::error::ValueViolation;
+use crate::resource::{ResourceByteRange, ResourceFetchLength, ResourceHandle};
 use crate::session::variants::VariantKind;
 use crate::stream::{RangeRequestId, SeekId, StreamGeneration};
 use crate::strict_shape::{strict_label, strict_object};
 use crate::text::VariantId;
 use crate::time::{ByteOffset, MediaTime, PlaybackRate, RangeFetchLength};
+use crate::version::ProtocolVersion;
 
 // Строгая форма JSON (`crate::strict_shape`): объекты и перечисления с меткой —
 // только объектом, метки — только строкой; чужая форма — `wrong_value_type`.
@@ -155,6 +157,22 @@ pub enum PlayerSessionMessage {
         /// Сколько байт.
         length: RangeFetchLength,
     },
+    /// Дай ресурс HLS по номерку (протокол 1.1, решение 228; качает фон экстеншена).
+    ///
+    /// Номер запроса — из того же счётчика, что у `fetch_range`. Плеер держит не
+    /// больше [`crate::limits::MAX_CONCURRENT_RESOURCE_FETCHES`] незавершённых
+    /// запросов ресурсов. Ответ — рамки вида 2 со смещениями внутри тела с 0 и
+    /// `resource_fetch_finished`.
+    FetchResource {
+        /// Номер запроса.
+        request_id: RangeRequestId,
+        /// Номерок ресурса из переписанного плейлиста (или `root` поколения).
+        resource: ResourceHandle,
+        /// Весь ресурс или кусок.
+        byte_range: ResourceByteRange,
+        /// Потолок тела ответа: длиннее — `too_large`.
+        max_bytes: ResourceFetchLength,
+    },
     /// Плеер не будет играть это поколение — экстеншен возвращает видео странице.
     StreamRejected {
         /// Поколение.
@@ -178,11 +196,47 @@ impl ProtocolMessage for PlayerSessionMessage {
         "next_episode",
         "skip_ad",
         "fetch_range",
+        "fetch_resource",
         "stream_rejected",
     ];
 
     fn validate(&self) -> Result<(), ValueViolation> {
-        // Все правила этих сообщений выражены типами полей.
-        Ok(())
+        match self {
+            // Кусок длиннее потолка ответа — запрос сам себе противоречит: такой
+            // ответ фон не смог бы отдать ни при каком сервере.
+            Self::FetchResource {
+                byte_range: ResourceByteRange::Slice { length, .. },
+                max_bytes,
+                ..
+            } if length > max_bytes => Err(ValueViolation::NumberOutOfRange),
+            // Остальные правила выражены типами полей.
+            _ => Ok(()),
+        }
+    }
+}
+
+impl PlayerSessionMessage {
+    /// В какой версии протокола появилось сообщение (`crate::version`, правило 5).
+    ///
+    /// Плеер сверяет это с общей версией сеанса ДО отправки: при общей 1.0
+    /// `fetch_resource` не уходит никогда.
+    #[must_use]
+    pub const fn introduced_in(&self) -> ProtocolVersion {
+        match self {
+            Self::FetchResource { .. } => ProtocolVersion::V1_1,
+            Self::Attached {}
+            | Self::Clock { .. }
+            | Self::BufferState { .. }
+            | Self::Play {}
+            | Self::Pause {}
+            | Self::Seek { .. }
+            | Self::SetRate { .. }
+            | Self::ReturnToPage { .. }
+            | Self::SelectVariant { .. }
+            | Self::NextEpisode {}
+            | Self::SkipAd {}
+            | Self::FetchRange { .. }
+            | Self::StreamRejected { .. } => ProtocolVersion::V1_0,
+        }
     }
 }

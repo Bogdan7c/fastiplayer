@@ -18,13 +18,22 @@ import {
   negotiateProtocolVersion,
   parseCapabilityTokens,
   type ProtocolVersion,
+  versionIncludes,
 } from "../../src/protocol/index.ts";
 import { FIXTURES_ROOT, readFixtureBytes } from "./fixtures-support.ts";
 
 const version = (major: number, minor: number): ProtocolVersion => ({ major, minor });
 
-test("текущая версия протокола - 1.0", () => {
-  assert.deepEqual(CURRENT_PROTOCOL_VERSION, { major: 1, minor: 0 });
+test("текущая версия протокола - 1.1 (нативный HLS по номеркам, сессия 10a1)", () => {
+  assert.deepEqual(CURRENT_PROTOCOL_VERSION, { major: 1, minor: 1 });
+});
+
+test("версия включает только свои и более старые minor того же major", () => {
+  assert.equal(versionIncludes(version(1, 1), version(1, 0)), true);
+  assert.equal(versionIncludes(version(1, 1), version(1, 1)), true);
+  assert.equal(versionIncludes(version(1, 0), version(1, 1)), false);
+  assert.equal(versionIncludes(version(2, 5), version(1, 0)), false);
+  assert.equal(versionIncludes(version(1, 1), version(2, 0)), false);
 });
 
 test("один major: общая версия - меньшая minor, при любых ролях", () => {
