@@ -337,3 +337,10 @@ YouTube (видео, микс, live, Shorts, субтитры, дорожки), 
 
 ## Связи
 Пересылка второго запуска и D-Bus `org.freedesktop.Application`: `mem:app-egui/instance-forwarding-ux13`. Демуксеры fMP4/WebM: `mem:symphonia-demux/iso-bmff-fmp4-s28a-2026-07-22`, `mem:symphonia-demux/matroska-webm-s28b-2026-07-22`. Швы под Windows — как у рендера (`mem:gles2-renderer/render-shell-contract`).
+
+
+## Нативный HLS (10a, начата 2026-11-07, решения 228–230)
+- Путь: плеер ведёт HLS готовым движком `web-media-hls` (варианты, live, перемотка, TS/fMP4, AES-128). Фон экстеншена качает каждый ресурс по номерку (`fetch_resource{request_id, resource, byte_range?, max_bytes}` → рамки вида 2 + `resource_fetch_finished`), до передачи переписывает в плейлистах все адреса на адреса-заглушки `https://resource.fastiplayer-bridge.invalid/<N>`; плеер настоящих адресов не видит, фон качает только по своим номеркам. Протокол 1.1, при общей 1.0 — прежнее «not supported yet».
+- Шов: вся сеть HLS-движка идёт через `web-media-adaptive::AdaptiveHttpContext` (конкретный `HttpSourceSession`, вызовы в `fetch/execution.rs`); 10a1 ставит туда трейт транспорта отдельным коммитом. Вход native HLS — `media-source-open/src/native_startup/hls.rs`.
+- `pushed-media-source` уже принимает `video/mp2t`, но TS там без полки и перемотки — поэтому отклонён путь «экстеншен ведёт HLS».
+- Нарезка: 10a1 (розетка, протокол 1.1 Rust+TS, `GenerationSource::Hls`, VOD+live до кадра без браузера) → 10a2 (стойка номерков, переписчик, тень live, стенд Chromium; итог `results/10a.md`).
