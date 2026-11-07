@@ -13,6 +13,10 @@ use crate::{MediaInstanceId, PreparedMediaTimelineMode};
 
 use super::PlayerSession;
 
+pub(super) mod expired_seek_recovery;
+
+use expired_seek_recovery::ExpiredLiveSeekContinuation;
+
 /// Wait-set descriptor не переносит payload и остаётся fenced port generation-ом.
 #[derive(Debug, Clone)]
 pub(crate) struct DynamicTimelineWaitSource {
@@ -143,6 +147,16 @@ impl PlayerSession {
     /// запускало бы seek на каждом MPD update. Решение применяется один раз на
     /// явном Play и проходит через обычный seek lifecycle с flush/generation.
     pub(super) fn expired_live_resume_target(&self) -> Option<MediaTime> {
+        let availability_range = self.live_availability_range()?;
+        let current_position = MediaTime::from_duration(self.current_source_position);
+        if availability_range.contains(current_position) {
+            return None;
+        }
+        self.live_recovery_seek_target()
+    }
+
+    /// Authoritative availability (manifest window) installed live media текущего instance.
+    fn live_availability_range(&self) -> Option<TimelineRange> {
         if self.snapshot.timeline.mode != TimelineMode::Live {
             return None;
         }
@@ -150,15 +164,7 @@ impl PlayerSession {
         if self.snapshot.media_instance_id != Some(binding.media_instance_id) {
             return None;
         }
-        let availability_range = binding.availability_range?;
-        let current_position = MediaTime::from_duration(self.current_source_position);
-        if availability_range.contains(current_position) {
-            return None;
-        }
-        self.snapshot
-            .timeline
-            .live_edge
-            .map(|live_edge| availability_range.clamp(live_edge))
+        binding.availability_range
     }
 
     /// Готовит observe→arm часть worker wait protocol.
@@ -386,6 +392,16 @@ impl PlayerSession {
         }
 
         let prepared_seek_pending = self.prepared_demux_seek.receipt_pending();
+        // Решение о продолжении — до очистки: она забирает intent ждущего receipt seek-а.
+        let continuation = match (
+            self.prepared_demux_seek.pending_timeline_target(),
+            self.prepared_demux_seek.pending_resume_intent(),
+        ) {
+            (Some((_, target_retention)), Some(resume_intent)) => {
+                self.expired_live_seek_continuation(target_retention, resume_intent)
+            }
+            _ => ExpiredLiveSeekContinuation::StopAtExpiry,
+        };
         self.expire_pending_exact_timeline_seek(available_range);
         self.prepared_demux_seek.supersede_pending();
         let error = crate::PlayerError::new(
@@ -395,6 +411,9 @@ impl PlayerSession {
         self.fail_pending_seek_receipts(error.clone());
         if prepared_seek_pending {
             self.fail_started_demux_seek(error);
+            // Мягкий отказ (решение 233): прежнее место уже сброшено под цель, поэтому
+            // playback продолжается у безопасного края с прежним Playing/Paused.
+            self.continue_after_expired_live_seek(continuation);
             return;
         }
 

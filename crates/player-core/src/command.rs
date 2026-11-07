@@ -252,6 +252,16 @@ pub enum ScrubCommitOutcome {
         /// Typed причина отказа от visible preview.
         reason: VisibleScrubPreviewUnavailableReason,
     },
+
+    /// Последней цели жеста уже нет в окне эфира: commit не запускался.
+    ///
+    /// Это мягкий отказ команды (решение владельца 233), а не поломка плеера: жест закрыт,
+    /// воспроизведение вернулось в состояние до жеста, зритель получил recoverable-ошибку
+    /// `SeekTargetExpired`/`SeekUnavailable` (временное уведомление).
+    LatestTargetUnavailable {
+        /// Почему цель недоступна.
+        reason: SeekTargetUnavailableReason,
+    },
 }
 
 /// Выбор качества потока для локального файла или сетевого сервиса.
@@ -293,6 +303,33 @@ pub enum PlayerCommandReject {
     PlaybackRateAudioTempoUnavailable {
         /// Typed причина, по которой старый rate был сохранён без мутации session.
         reason: PlaybackRateAudioTempoRejectReason,
+    },
+
+    /// Цели перемотки (seek/scrub) нет в эфире: команда отклонена ДО любых изменений
+    /// session — воспроизведение продолжается с прежнего места в прежнем состоянии.
+    ///
+    /// Решение владельца 233: перемотка эфира в место, которого в окне уже нет, — мягкий
+    /// отказ, а не фатальная ошибка. Зритель узнаёт о нём из `PlayerEvent::RecoverableError`
+    /// (временное уведомление), состояние `Failed` не наступает.
+    SeekTargetUnavailable {
+        /// Почему цель недоступна.
+        reason: SeekTargetUnavailableReason,
+    },
+}
+
+/// Почему цель перемотки эфира недоступна (typed причина мягкого отказа команды).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeekTargetUnavailableReason {
+    /// Эфир сейчас без DVR-окна: перематывать некуда.
+    LiveWindowUnavailable,
+
+    /// Цель вне и применённого, и последнего опубликованного окна эфира.
+    OutsideLiveWindow {
+        /// Абсолютная цель после разрешения relative request-а.
+        requested_position: MediaTime,
+
+        /// Окно эфира, с которым сверялась цель.
+        available_range: TimelineRange,
     },
 }
 

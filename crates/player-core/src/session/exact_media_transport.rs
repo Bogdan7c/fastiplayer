@@ -8,6 +8,7 @@ use crate::{
 };
 
 use super::PlayerSession;
+use super::seek_admission::{SeekCommandAdmission, unavailable_seek_target_error};
 
 impl PlayerSession {
     /// Проверяет instance и выполняет составное действие одним worker-owner turn-ом.
@@ -149,10 +150,14 @@ impl PlayerSession {
                 "Exact seek-to-zero is not possible: media pipeline is not open",
             ));
         }
-        self.start_seek_with_resume_intent(
+        // Ноль вне окна эфира — мягкий отказ: зритель уже получил уведомление, а app —
+        // typed failure этого exact transport-а с тем же видом ошибки.
+        if let SeekCommandAdmission::Refused(reason) = self.start_seek_with_resume_intent(
             SeekRequest::absolute(std::time::Duration::ZERO.into()),
             resume_intent,
-        )?;
+        )? {
+            return Err(unavailable_seek_target_error(reason));
+        }
         if self.seek_runtime.seek_landing_active() || self.snapshot.timeline.seeking {
             return Ok(());
         }

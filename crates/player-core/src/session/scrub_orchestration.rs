@@ -14,11 +14,12 @@ use tracing::{debug, warn};
 use crate::seek_state::{PlaybackResumeIntent, SeekLandingRoute, VisibleScrubPreview};
 use crate::{
     PlaybackState, PlayerError, PlayerErrorKind, PlayerResult, ScrubCommitOutcome,
-    ScrubCommitPolicy, SeekMode, SeekRequest, VisibleScrubPreviewUnavailableReason,
+    ScrubCommitPolicy, SeekMode, SeekRequest, SeekTargetUnavailableReason,
+    VisibleScrubPreviewUnavailableReason,
 };
 
 use super::PlayerSession;
-use super::seek_admission::SeekTimelineAdmission;
+use super::seek_admission::{SeekCommandAdmission, SeekTimelineAdmission};
 
 /// Максимальный шаг вперёд, при котором live scrub продолжает текущий decode-проход
 /// вместо нового cold seek на keyframe-before.
@@ -119,10 +120,14 @@ impl PlayerSession {
     }
 
     /// Запоминает последнюю цель scrub без изменения текущей playback позиции.
-    pub(super) fn update_scrub(&mut self, request: SeekRequest) -> PlayerResult<()> {
+    ///
+    /// Цель вне эфира мягко отклоняется: жест продолжается с прежней последней целью.
+    pub(super) fn update_scrub(
+        &mut self,
+        request: SeekRequest,
+    ) -> PlayerResult<SeekCommandAdmission> {
         self.ensure_not_shutdown()?;
-        self.store_simple_scrub_request(request, None)?;
-        Ok(())
+        Ok(self.store_simple_scrub_request(request, None))
     }
 
     /// Сохраняет preview request и запускает live reused-decoder route для timeline drag.
@@ -130,20 +135,29 @@ impl PlayerSession {
         &mut self,
         request: SeekRequest,
         live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
-    ) -> PlayerResult<()> {
+    ) -> PlayerResult<SeekCommandAdmission> {
         self.ensure_not_shutdown()?;
-        let target_position = self.resolve_seek_target(request)?;
+        // Мягкий отказ (цели нет в эфире) — до любых изменений жеста и landing-а.
+        let target_position = match self.resolve_seek_target(request) {
+            Ok(target_position) => target_position,
+            Err(reason) => return Ok(self.refuse_unavailable_seek_target(reason)),
+        };
         let confirmed_playback_state = self
             .seek_runtime
             .simple_scrub_confirmed_playback_state()
             .unwrap_or_else(|| self.playback_state_for_new_simple_scrub());
         let resume_intent = PlaybackResumeIntent::from_playback_state(confirmed_playback_state);
-        self.store_simple_scrub_request(request, live_scrub_diagnostics)?;
+        // Цель уже разрешена выше тем же состоянием, поэтому здесь отказа быть не может.
+        if let SeekCommandAdmission::Refused(reason) =
+            self.store_simple_scrub_request(request, live_scrub_diagnostics)
+        {
+            return Ok(SeekCommandAdmission::Refused(reason));
+        }
         let live_scrub_diagnostics =
             live_scrub_diagnostics.or_else(|| self.seek_runtime.simple_scrub_live_diagnostics());
 
         if !self.pipeline.has_demuxer() || !self.pipeline.has_selected_video_track() {
-            return Ok(());
+            return Ok(SeekCommandAdmission::Admitted);
         }
 
         self.start_reused_decoder_scrub_landing_transaction(ReusedDecoderScrubLandingRequest {
@@ -156,15 +170,19 @@ impl PlayerSession {
             config: self.frame_server_config,
             finish_policy: FinishScrubPolicy::CommitVisiblePreview,
         })?;
-        Ok(())
+        Ok(SeekCommandAdmission::Admitted)
     }
 
+    /// Запоминает цель жеста; цель вне эфира — мягкий отказ без изменения жеста.
     fn store_simple_scrub_request(
         &mut self,
         request: SeekRequest,
         live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
-    ) -> PlayerResult<()> {
-        let target_position = self.resolve_seek_target(request)?;
+    ) -> SeekCommandAdmission {
+        let target_position = match self.resolve_seek_target(request) {
+            Ok(target_position) => target_position,
+            Err(reason) => return self.refuse_unavailable_seek_target(reason),
+        };
         let confirmed_playback_state = self.playback_state_for_new_simple_scrub();
         self.enter_simple_scrub_public_state();
         self.seek_runtime.store_simple_scrub_request(
@@ -177,7 +195,7 @@ impl PlayerSession {
         if !self.snapshot.timeline.seeking {
             self.snapshot.timeline.stale_frame = false;
         }
-        Ok(())
+        SeekCommandAdmission::Admitted
     }
 
     /// Проверяет stable visible-preview DTO против текущего player-owned route/frame state.
@@ -261,7 +279,7 @@ impl PlayerSession {
         target: MediaTime,
         resume_intent: PlaybackResumeIntent,
         live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
-    ) -> PlayerResult<()> {
+    ) -> PlayerResult<SeekCommandAdmission> {
         // Previewed progressive seek не является authoritative final anchor для demuxer-а,
         // который умеет отдельно подтвердить one-shot seek worker receipt-ом. В таком media
         // даже exact same target обязан пройти новый receipted route: иначе EndScrub просто
@@ -285,11 +303,33 @@ impl PlayerSession {
             self.seek_runtime.request_live_scrub_commit(Instant::now());
             self.snapshot.timeline.scrubbing = true;
             self.set_timeline_target_from_source(target);
-            return Ok(());
+            return Ok(SeekCommandAdmission::Admitted);
         }
 
         self.finish_simple_scrub_without_seek(None, SimpleScrubExitMode::RestoreStateOnly);
         self.start_one_shot_seek_landing_from_request(request, resume_intent)
+    }
+
+    /// Закрывает отпущенный жест, чья цель вне эфира: commit не запускается.
+    ///
+    /// Мягкий отказ (решение владельца 233): preview-landing жеста (если ещё идёт)
+    /// отменяется как устаревший, жест закрывается, playback возвращается в состояние,
+    /// подтверждённое до жеста (играл — играет, стоял — стоит). Recoverable-ошибку уже
+    /// опубликовал вызывающий через `refuse_unavailable_seek_target`.
+    fn finish_scrub_with_unavailable_target(
+        &mut self,
+        confirmed_playback_state: PlaybackState,
+        reason: SeekTargetUnavailableReason,
+    ) -> ScrubCommitOutcome {
+        if self.seek_runtime.seek_landing_active() {
+            self.cancel_active_seek_landing_for_external_command(CancelScrubReason::StaleContext);
+        }
+        self.invalidate_in_flight_scrub_outputs_after_exit("end scrub target unavailable");
+        self.finish_simple_scrub_without_seek(
+            Some(confirmed_playback_state),
+            SimpleScrubExitMode::ResumeConfirmedPlayback,
+        );
+        ScrubCommitOutcome::LatestTargetUnavailable { reason }
     }
 
     /// Завершает scrub gesture по выбранной public commit policy.
@@ -326,17 +366,30 @@ impl PlayerSession {
             });
         };
 
-        let latest_target = self.resolve_seek_target(latest_request)?;
+        let latest_target = match self.resolve_seek_target(latest_request) {
+            Ok(latest_target) => latest_target,
+            Err(reason) => {
+                // Итог команды — typed outcome жеста, а не `PlayerCommandOutcome::Rejected`.
+                self.announce_unavailable_seek_target(reason);
+                return Ok(
+                    self.finish_scrub_with_unavailable_target(confirmed_playback_state, reason)
+                );
+            }
+        };
         let resume_intent = PlaybackResumeIntent::from_playback_state(confirmed_playback_state);
 
         match policy {
             ScrubCommitPolicy::CommitLatestTarget => {
-                self.start_resolved_scrub_commit(
+                if let SeekCommandAdmission::Refused(reason) = self.start_resolved_scrub_commit(
                     latest_request,
                     latest_target,
                     resume_intent,
                     live_scrub_diagnostics,
-                )?;
+                )? {
+                    return Ok(
+                        self.finish_scrub_with_unavailable_target(confirmed_playback_state, reason)
+                    );
+                }
                 debug!(
                     kind = "seek",
                     target_ms = latest_target.as_duration().as_millis(),
@@ -351,12 +404,19 @@ impl PlayerSession {
                     Ok(visible_preview) => {
                         let visible_request =
                             SeekRequest::absolute(visible_preview.timing.media_time);
-                        self.start_resolved_scrub_commit(
-                            visible_request,
-                            visible_preview.timing.media_time,
-                            resume_intent,
-                            live_scrub_diagnostics,
-                        )?;
+                        if let SeekCommandAdmission::Refused(reason) = self
+                            .start_resolved_scrub_commit(
+                                visible_request,
+                                visible_preview.timing.media_time,
+                                resume_intent,
+                                live_scrub_diagnostics,
+                            )?
+                        {
+                            return Ok(self.finish_scrub_with_unavailable_target(
+                                confirmed_playback_state,
+                                reason,
+                            ));
+                        }
                         debug!(
                             kind = "seek",
                             visible_media_time_ms =
@@ -372,12 +432,19 @@ impl PlayerSession {
                         })
                     }
                     Err(reason) => {
-                        self.start_resolved_scrub_commit(
-                            latest_request,
-                            latest_target,
-                            resume_intent,
-                            live_scrub_diagnostics,
-                        )?;
+                        if let SeekCommandAdmission::Refused(target_reason) = self
+                            .start_resolved_scrub_commit(
+                                latest_request,
+                                latest_target,
+                                resume_intent,
+                                live_scrub_diagnostics,
+                            )?
+                        {
+                            return Ok(self.finish_scrub_with_unavailable_target(
+                                confirmed_playback_state,
+                                target_reason,
+                            ));
+                        }
                         debug!(
                             kind = "seek",
                             target_ms = latest_target.as_duration().as_millis(),

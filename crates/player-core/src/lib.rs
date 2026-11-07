@@ -46,7 +46,8 @@ pub use codec_core::VideoDecodeRequirement;
 pub use command::{
     MediaOpenRequest, MediaSource, PlaybackRateAudioTempoRejectReason, PlayerCommand,
     PlayerCommandOutcome, PlayerCommandReject, QualityId, QualitySelection, ScrubCommitOutcome,
-    ScrubCommitPolicy, SeekMode, SeekRequest, SeekTarget, VisibleScrubPreviewUnavailableReason,
+    ScrubCommitPolicy, SeekMode, SeekRequest, SeekTarget, SeekTargetUnavailableReason,
+    VisibleScrubPreviewUnavailableReason,
 };
 #[cfg(test)]
 pub(crate) use decoder_boundary::DecodeBackpressureReason;

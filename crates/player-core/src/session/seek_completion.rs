@@ -400,6 +400,12 @@ impl PlayerSession {
         seek_commit: SeekCommitState,
         available_range: Option<TimelineRange>,
     ) {
+        // Решение о продолжении — до очистки: она закрывает restore-состояние и receipts,
+        // по которым видно, чья это перемотка.
+        let continuation = self.expired_live_seek_continuation(
+            seek_commit.target_retention,
+            seek_commit.resume_intent,
+        );
         if let Err(error) = self.clear_active_seek_decoder_output_floor("dynamic seek expiry") {
             self.mark_fatal_error(error);
             return;
@@ -431,5 +437,8 @@ impl PlayerSession {
         );
         self.fail_pending_seek_receipts(error.clone());
         self.record_recoverable_error(error);
+        // Мягкий отказ (решение 233): прежнее место уже сброшено под цель, поэтому
+        // playback продолжается у безопасного края с прежним Playing/Paused.
+        self.continue_after_expired_live_seek(continuation);
     }
 }

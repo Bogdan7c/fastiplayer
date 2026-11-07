@@ -12,6 +12,7 @@ use super::PlayerSession;
 use super::scrub_command_correlation::{
     CorrelatedPlayerCommand, SCRUB_COMMAND_SCHEMA_VERSION, ScrubCommandCorrelation,
 };
+use super::seek_admission::SeekCommandAdmission;
 
 impl PlayerSession {
     /// Применяет команду к state machine через существующие intent boundaries.
@@ -28,13 +29,26 @@ impl PlayerSession {
             PlayerCommand::Play => self.play(),
             PlayerCommand::Pause => self.pause(),
             PlayerCommand::TogglePlayback => self.toggle_playback(),
-            PlayerCommand::Seek(request) => self.seek(request),
+            // Перемотка: цель вне эфира — мягкий отказ `Rejected`, не ошибка (решение 233).
+            PlayerCommand::Seek(request) => {
+                return self
+                    .seek_command(request)
+                    .map(SeekCommandAdmission::into_command_outcome);
+            }
             PlayerCommand::BeginScrub { live_scrub } => self.begin_scrub(live_scrub),
-            PlayerCommand::UpdateScrub(request) => self.update_scrub(request),
+            PlayerCommand::UpdateScrub(request) => {
+                return self
+                    .update_scrub(request)
+                    .map(SeekCommandAdmission::into_command_outcome);
+            }
             PlayerCommand::PreviewScrub {
                 request,
                 live_scrub,
-            } => self.preview_scrub(request, live_scrub),
+            } => {
+                return self
+                    .preview_scrub(request, live_scrub)
+                    .map(SeekCommandAdmission::into_command_outcome);
+            }
             PlayerCommand::EndScrub { policy, live_scrub } => {
                 return self
                     .end_scrub(policy, live_scrub)

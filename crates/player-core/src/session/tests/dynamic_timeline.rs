@@ -557,7 +557,8 @@ fn seek_into_a_window_published_before_the_command_is_admitted() {
 }
 
 /// Цель вне и применённого, и последнего опубликованного окна — по-прежнему
-/// `SeekTargetExpired` (обычный эфир HLS/DASH не меняется).
+/// `SeekTargetExpired` (обычный эфир HLS/DASH не меняется), но мягким отказом команды
+/// (решение владельца 233), а не ошибкой: плеер не уходит в `Failed`.
 #[test]
 fn seek_outside_both_applied_and_latest_windows_is_still_expired() {
     let (prepared_media, publisher) = live_media(12, dvr_state(53, 57));
@@ -567,11 +568,25 @@ fn seek_outside_both_applied_and_latest_windows_is_still_expired() {
         .publish(DynamicMediaTimelineEpoch::new(2), dvr_state(54, 58))
         .expect("sliding publication");
 
-    let error = session
+    let outcome = session
         .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
             MediaTime::from_secs(10),
         )))
-        .expect_err("the target is outside every window");
-    assert_eq!(error.kind, PlayerErrorKind::SeekTargetExpired);
+        .expect("the target is outside every window: a refusal, not an error");
+    assert!(matches!(
+        outcome,
+        crate::PlayerCommandOutcome::Rejected(crate::PlayerCommandReject::SeekTargetUnavailable {
+            reason: crate::SeekTargetUnavailableReason::OutsideLiveWindow { .. },
+        })
+    ));
+    assert_eq!(
+        session
+            .snapshot()
+            .last_error
+            .as_ref()
+            .map(|error| &error.kind),
+        Some(&PlayerErrorKind::SeekTargetExpired)
+    );
+    assert_ne!(session.playback_state(), PlaybackState::Failed);
     assert_eq!(session.snapshot().timeline.target_position, None);
 }

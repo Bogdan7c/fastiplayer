@@ -21,6 +21,7 @@ mod audio_refill_wakeup;
 mod command_loss;
 mod commands;
 mod event_streams;
+mod live_seek_refusal;
 mod media_install;
 mod presentation_wake;
 #[path = "tests/queued_intent.rs"]

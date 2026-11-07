@@ -30,7 +30,9 @@ use super::scrub_orchestration::{
     ReusedDecoderScrubLandingRequest, initial_scrub_generation_before_target,
 };
 use super::scrub_preview_policy::generic_landing_start_failure_is_user_visible;
-use super::seek_admission::SeekTimelineAdmission;
+use super::seek_admission::{
+    SeekCommandAdmission, SeekTimelineAdmission, unavailable_seek_target_error,
+};
 
 mod error_mapping;
 mod live_scrub_forward_extension;
@@ -124,7 +126,29 @@ impl PlayerSession {
             })
     }
 
+    /// Внутренний seek owner-а (смена дорожки, постер паузы, замена backend-а, exact seek).
+    ///
+    /// Сохраняет прежний контракт для внутренних вызывающих: цель вне эфира — `Err` без
+    /// уведомления зрителю (вызывающий сам решает, что делать). Пользовательская команда
+    /// идёт через [`Self::seek_command`] — там это мягкий отказ с уведомлением.
     pub(super) fn seek(&mut self, request: SeekRequest) -> PlayerResult<()> {
+        self.ensure_not_shutdown()?;
+        if let Err(reason) = self.resolve_seek_target(request) {
+            return Err(unavailable_seek_target_error(reason));
+        }
+        match self.seek_command(request)? {
+            SeekCommandAdmission::Admitted => Ok(()),
+            // Цель только что разрешена тем же состоянием; ветка — страховка контракта.
+            SeekCommandAdmission::Refused(reason) => Err(unavailable_seek_target_error(reason)),
+        }
+    }
+
+    /// Пользовательская команда `Seek`: цель вне эфира — мягкий отказ (решение владельца
+    /// 233), иначе обычный seek lifecycle.
+    pub(super) fn seek_command(
+        &mut self,
+        request: SeekRequest,
+    ) -> PlayerResult<SeekCommandAdmission> {
         self.ensure_not_shutdown()?;
         // Учитывает и seek, ждущий worker receipt: Play/Pause до receipt-а меняют его
         // intent, и новый seek поверх обязан его унаследовать.
@@ -160,13 +184,27 @@ impl PlayerSession {
     }
 
     /// Общая command/recovery граница перед единым one-shot seek lifecycle.
+    ///
+    /// Цель проверяется ДО подготовки нового landing-а: подготовка отменяет идущий seek,
+    /// его receipts и scrub-жест, а мягкий отказ (цели нет в эфире, решение владельца 233)
+    /// не должен менять ничего, кроме публикации recoverable-ошибки.
     pub(super) fn start_seek_with_resume_intent(
         &mut self,
         request: SeekRequest,
         resume_intent: PlaybackResumeIntent,
-    ) -> PlayerResult<()> {
+    ) -> PlayerResult<SeekCommandAdmission> {
+        let target_position = match self.resolve_seek_target(request) {
+            Ok(target_position) => target_position,
+            Err(reason) => return Ok(self.refuse_unavailable_seek_target(reason)),
+        };
         self.prepare_seek_landing_for_timeline_command();
-        self.start_one_shot_seek_landing_from_request(request, resume_intent)
+        self.start_one_shot_seek_landing(
+            request,
+            target_position,
+            resume_intent,
+            SeekTimelineAdmission::PublicSeekableRange,
+        )?;
+        Ok(SeekCommandAdmission::Admitted)
     }
 
     /// Инвалидирует старые command receipts до запуска нового landing-а.
@@ -190,14 +228,18 @@ impl PlayerSession {
         &mut self,
         request: SeekRequest,
         resume_intent: PlaybackResumeIntent,
-    ) -> PlayerResult<()> {
-        let target_position = self.resolve_seek_target(request)?;
+    ) -> PlayerResult<SeekCommandAdmission> {
+        let target_position = match self.resolve_seek_target(request) {
+            Ok(target_position) => target_position,
+            Err(reason) => return Ok(self.refuse_unavailable_seek_target(reason)),
+        };
         self.start_one_shot_seek_landing(
             request,
             target_position,
             resume_intent,
             SeekTimelineAdmission::PublicSeekableRange,
-        )
+        )?;
+        Ok(SeekCommandAdmission::Admitted)
     }
 
     /// Запускает общий audio/video landing для уже проверенной media-позиции.

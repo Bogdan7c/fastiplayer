@@ -656,3 +656,36 @@ fn a_seek_timeout_of_the_player_becomes_a_transient_toast() {
         "Seeking timed out; try again"
     );
 }
+
+/// Перемотка эфира за окно (решение владельца 233): мягкий отказ ядра приходит
+/// recoverable-ошибкой `SeekTargetExpired` — зритель видит временный тост с подсказкой,
+/// а не ошибку в центре; воспроизведение (`Playing` в снимке) не считается упавшим.
+#[test]
+fn an_expired_live_seek_becomes_a_transient_toast_while_playback_goes_on() {
+    let now = Instant::now();
+    let mut center = NotificationCenter::default();
+    center.record_player_event(
+        &PlayerEvent::RecoverableError(PlayerError::new(
+            PlayerErrorKind::SeekTargetExpired,
+            "Live seek target 5000 ms is outside latest DVR range",
+        )),
+        now,
+    );
+    center.observe_player_snapshot(&PlayerSnapshot {
+        playback_state: PlaybackState::Playing,
+        last_error: Some(PlayerError::new(
+            PlayerErrorKind::SeekTargetExpired,
+            "Live seek target 5000 ms is outside latest DVR range",
+        )),
+        ..Default::default()
+    });
+
+    let frame = center.frame(OpenProgress::Idle, UiMotion::Standard, now);
+    assert_eq!(frame.center, None, "a refused live seek is not a failure");
+    assert_eq!(frame.toasts.len(), 1, "{:?}", frame.toasts);
+    assert_eq!(frame.toasts[0].kind, ToastKind::Transient);
+    assert_eq!(
+        frame.toasts[0].message.as_ref(),
+        "This part of the live stream is no longer available; seek closer to the live edge"
+    );
+}

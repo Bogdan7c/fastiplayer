@@ -2,9 +2,7 @@ use std::time::{Duration, Instant};
 
 use media_core::{MediaDuration, MediaTime};
 
-use crate::{
-    MediaPlaybackWindow, PlaybackState, PlayerError, PlayerErrorKind, PlayerResult, SeekRequest,
-};
+use crate::{MediaPlaybackWindow, PlaybackState, SeekRequest, SeekTargetUnavailableReason};
 
 use super::PlayerSession;
 
@@ -216,7 +214,14 @@ impl PlayerSession {
     }
 
     /// Разрешает seek target в абсолютную media-позицию без изменения runtime seek policy.
-    pub(super) fn resolve_seek_target(&self, request: SeekRequest) -> PlayerResult<MediaTime> {
+    ///
+    /// В эфире цель не прижимается к окну: цель вне окна (или эфир без DVR) — typed причина
+    /// мягкого отказа команды (решение владельца 233). Что с ней делать, решает вызывающий
+    /// через [`Self::refuse_unavailable_seek_target`]; здесь session не меняется.
+    pub(super) fn resolve_seek_target(
+        &self,
+        request: SeekRequest,
+    ) -> Result<MediaTime, SeekTargetUnavailableReason> {
         let relative_target = request
             .target
             .resolve(self.snapshot.timeline.current_position);
@@ -224,21 +229,12 @@ impl PlayerSession {
         if self.snapshot.timeline.mode == media_core::TimelineMode::Live {
             let range = self
                 .live_seek_admission_range(relative_target)
-                .ok_or_else(|| {
-                    PlayerError::new(
-                        PlayerErrorKind::SeekUnavailable,
-                        "Live source does not currently expose a DVR window",
-                    )
-                })?;
+                .ok_or(SeekTargetUnavailableReason::LiveWindowUnavailable)?;
             if !range.contains(relative_target) {
-                return Err(PlayerError::new(
-                    PlayerErrorKind::SeekTargetExpired,
-                    format!(
-                        "Live seek target {} ms is outside latest DVR range {:?}",
-                        relative_target.as_duration().as_millis(),
-                        range
-                    ),
-                ));
+                return Err(SeekTargetUnavailableReason::OutsideLiveWindow {
+                    requested_position: relative_target,
+                    available_range: range,
+                });
             }
             return Ok(relative_target);
         }
