@@ -19,6 +19,10 @@ SEGMENT_SECONDS=2
 # Фиксированный ключ ClearKey: тестовый, не секрет (лежит и в каталоге, и на странице).
 CLEARKEY_KID_HEX="0123456789abcdef0123456789abcdef"
 CLEARKEY_KEY_HEX="00112233445566778899aabbccddeeff"
+# Фиксированный ключ AES-128 для HLS-шифрования сегментов (METHOD=AES-128): тестовый, не секрет.
+# Отдельная константа, чтобы смена ключа ClearKey не ломала HLS и наоборот.
+HLS_AES_KEY_HEX="a1b2c3d4e5f60718293a4b5c6d7e8f90"
+HLS_AES_IV_HEX="000102030405060708090a0b0c0d0e0f"
 
 fail() { echo "generate.sh: $*" >&2; exit 1; }
 
@@ -226,6 +230,51 @@ ffmpeg "${GLOBAL_FLAGS[@]}" -f lavfi -i "$(video_filter_graph 640x360 12 36 'HLS
 # При var_stream_map ffmpeg подставляет номер потока в имя плейлиста — проверяем, что master на месте.
 [ -f "$OUT_DIR/hls/master.m3u8" ] || fail "hls master playlist was not produced"
 register_asset hls-h264-aac hls hls/master.m3u8 "" 12.0
+
+# --- HLS VOD (сессия 10a2): ABR на fMP4, шифрование AES-128, длинный ролик для команд плеера ---
+# Во всех плейлистах URI относительные: адрес корня плейлиста определяет, откуда качаются остальные.
+# Общий кодер: H.264 + AAC, GOP = 2 с, сегмент = 2 с (границы сегментов обоих качеств совпадают).
+HLS_VIDEO_CODEC=(-c:v libx264 -profile:v high -level 3.0 -pix_fmt yuv420p -preset veryfast -threads 1 "${X264_GOP[@]}")
+HLS_AUDIO_CODEC=(-c:a aac -b:a 96k -ac 2)
+
+echo "generate.sh: hls-fmp4-abr (fMP4 segments, two video variants 360p/180p + audio, 12 s)"
+mkdir -p "$OUT_DIR/hls-fmp4-abr"
+ffmpeg "${GLOBAL_FLAGS[@]}" -f lavfi -i "$(video_filter_graph 640x360 12 36 'ABR ')" \
+  -f lavfi -i "$(video_filter_graph 320x180 12 18 'ABR ')" \
+  -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=12" \
+  "${BITEXACT_FLAGS[@]}" -map 0:v -map 1:v -map 2:a -map 2:a \
+  -c:v:0 libx264 -b:v:0 500k -c:v:1 libx264 -b:v:1 200k \
+  -profile:v high -level 3.0 -pix_fmt yuv420p -preset veryfast -threads 1 "${X264_GOP[@]}" "${HLS_AUDIO_CODEC[@]}" \
+  -f hls -hls_time "$SEGMENT_SECONDS" -hls_playlist_type vod -hls_flags independent_segments \
+  -hls_segment_type fmp4 -hls_fmp4_init_filename "init-%v.mp4" \
+  -var_stream_map "v:0,a:0 v:1,a:1" -master_pl_name master.m3u8 \
+  -hls_segment_filename "$OUT_DIR/hls-fmp4-abr/seg-%v-%05d.m4s" "$OUT_DIR/hls-fmp4-abr/stream-%v.m3u8"
+register_asset hls-fmp4-abr hls hls-fmp4-abr/master.m3u8 "" 12.0
+
+echo "generate.sh: hls-ts-aes128 (MPEG-TS segments encrypted with AES-128, 12 s)"
+mkdir -p "$OUT_DIR/hls-ts-aes128"
+# Файл с ключом: 16 сырых байт рядом с плейлистами (ключ отдаётся тем же сервером, как и сегменты).
+python3 -c 'import sys; sys.stdout.buffer.write(bytes.fromhex(sys.argv[1]))' "$HLS_AES_KEY_HEX" > "$OUT_DIR/hls-ts-aes128/key.bin"
+# keyinfo ffmpeg: строка 1 — URI ключа в плейлисте, 2 — путь к файлу ключа на диске, 3 — IV.
+HLS_KEY_INFO="$OUT_DIR/.hls-keyinfo.txt"
+printf '%s\n%s\n%s\n' "key.bin" "$OUT_DIR/hls-ts-aes128/key.bin" "$HLS_AES_IV_HEX" > "$HLS_KEY_INFO"
+ffmpeg "${GLOBAL_FLAGS[@]}" -f lavfi -i "$(video_filter_graph 640x360 12 36 'AES ')" \
+  -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=12" \
+  "${BITEXACT_FLAGS[@]}" -map 0:v -map 1:a "${HLS_VIDEO_CODEC[@]}" -b:v 500k "${HLS_AUDIO_CODEC[@]}" \
+  -f hls -hls_time "$SEGMENT_SECONDS" -hls_playlist_type vod -hls_flags independent_segments \
+  -hls_key_info_file "$HLS_KEY_INFO" \
+  -hls_segment_filename "$OUT_DIR/hls-ts-aes128/seg-%05d.ts" "$OUT_DIR/hls-ts-aes128/stream.m3u8"
+rm -f "$HLS_KEY_INFO"
+register_asset hls-ts-aes128 hls hls-ts-aes128/stream.m3u8 "" 12.0
+
+echo "generate.sh: hls-ts-long (MPEG-TS segments, one variant, 40 s: room for pause/seek steps)"
+mkdir -p "$OUT_DIR/hls-ts-long"
+ffmpeg "${GLOBAL_FLAGS[@]}" -f lavfi -i "$(video_filter_graph 640x360 40 36 'LONG ')" \
+  -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=40" \
+  "${BITEXACT_FLAGS[@]}" -map 0:v -map 1:a "${HLS_VIDEO_CODEC[@]}" -b:v 400k "${HLS_AUDIO_CODEC[@]}" \
+  -f hls -hls_time "$SEGMENT_SECONDS" -hls_playlist_type vod -hls_flags independent_segments \
+  -hls_segment_filename "$OUT_DIR/hls-ts-long/seg-%05d.ts" "$OUT_DIR/hls-ts-long/stream.m3u8"
+register_asset hls-ts-long hls hls-ts-long/stream.m3u8 "" 40.0
 
 echo "generate.sh: subtitles (WebVTT)"
 mkdir -p "$OUT_DIR/subtitles"
@@ -455,6 +504,63 @@ def build_track(asset, row):
     return track
 
 
+def playlist_uris(playlist_text):
+    """URI-строки плейлиста (не комментарии) плюс URI из тегов EXT-X-KEY / EXT-X-MAP."""
+    uris = []
+    for line_text in playlist_text.splitlines():
+        line_text = line_text.strip()
+        if not line_text:
+            continue
+        if line_text.startswith("#"):
+            if line_text.startswith(("#EXT-X-KEY", "#EXT-X-MAP")) and 'URI="' in line_text:
+                uris.append(line_text.split('URI="', 1)[1].split('"', 1)[0])
+        else:
+            uris.append(line_text)
+    return uris
+
+
+def validate_hls_asset(asset_id, master_url):
+    """Раскладка HLS-ролика: все URI относительные, файлы на месте, особенности по ролику."""
+    asset_dir = os.path.dirname(os.path.join(out_dir, master_url))
+    playlist_text = open(os.path.join(out_dir, master_url)).read()
+    if not playlist_text.startswith("#EXTM3U"):
+        die(asset_id + ": playlist does not start with #EXTM3U")
+    if "#EXT-X-STREAM-INF" in playlist_text:
+        media_playlists = [u for u in playlist_uris(playlist_text)]
+    else:
+        media_playlists = [os.path.basename(master_url)]
+    expected_variants = 2 if asset_id == "hls-fmp4-abr" else (1 if "#EXT-X-STREAM-INF" in playlist_text else 0)
+    if playlist_text.count("#EXT-X-STREAM-INF") != expected_variants:
+        die("%s: expected %d variants, got %d" % (asset_id, expected_variants, playlist_text.count("#EXT-X-STREAM-INF")))
+    for playlist_name in media_playlists:
+        if "://" in playlist_name or playlist_name.startswith("/"):
+            die("%s: playlist URI must be relative: %s" % (asset_id, playlist_name))
+        playlist_path = os.path.join(asset_dir, playlist_name)
+        if not os.path.isfile(playlist_path):
+            die("%s: references missing playlist %s" % (asset_id, playlist_name))
+        media_text = open(playlist_path).read()
+        if "#EXT-X-PLAYLIST-TYPE:VOD" not in media_text or "#EXT-X-ENDLIST" not in media_text:
+            die("%s/%s is not a VOD playlist" % (asset_id, playlist_name))
+        segment_uris = playlist_uris(media_text)
+        segments = [u for u in segment_uris if u.endswith((".ts", ".m4s"))]
+        if len(segments) < 5:
+            die("%s/%s has too few segments: %d" % (asset_id, playlist_name, len(segments)))
+        for uri in segment_uris:
+            if "://" in uri or uri.startswith("/"):
+                die("%s/%s: URI must be relative: %s" % (asset_id, playlist_name, uri))
+            if not os.path.isfile(os.path.join(asset_dir, uri)):
+                die("%s/%s references missing file %s" % (asset_id, playlist_name, uri))
+        if asset_id == "hls-fmp4-abr" and "#EXT-X-MAP:" not in media_text:
+            die("%s/%s has no EXT-X-MAP (fMP4 init)" % (asset_id, playlist_name))
+        if asset_id == "hls-ts-aes128":
+            if "#EXT-X-KEY:METHOD=AES-128" not in media_text or 'URI="key.bin"' not in media_text:
+                die("%s/%s has no AES-128 key line" % (asset_id, playlist_name))
+            if os.path.getsize(os.path.join(asset_dir, "key.bin")) != 16:
+                die(asset_id + ": key.bin must be 16 bytes")
+        elif "#EXT-X-KEY" in media_text:
+            die("%s/%s must not be encrypted" % (asset_id, playlist_name))
+
+
 durations = {"h264-aac": 30.0, "dub-a": 30.0, "dub-b": 30.0, "vp9-opus": 20.0, "av1-aac": 12.0,
              "muxed-h264-aac": 20.0, "clearkey-h264": 6.0}
 track_rows = [line.rstrip("\n").split("\t") for line in open(os.path.join(out_dir, ".tracks.tsv"))]
@@ -489,12 +595,7 @@ for line in open(os.path.join(out_dir, ".assets.tsv")):
         entry.update({"mime": mime, "duration_s": float(duration)})
     elif kind == "hls":
         entry["duration_s"] = float(duration)
-        playlist = open(os.path.join(out_dir, url)).read()
-        if "#EXT-X-STREAM-INF" not in playlist:
-            die("hls master playlist has no variants")
-        for line_text in playlist.splitlines():
-            if line_text and not line_text.startswith("#") and not os.path.isfile(os.path.join(out_dir, "hls", line_text)):
-                die("hls master references missing playlist " + line_text)
+        validate_hls_asset(asset_id, url)
     else:
         entry["mime"] = mime
     assets[asset_id] = entry

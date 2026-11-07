@@ -56,8 +56,8 @@ impl RefusalRow {
         notice: "not_supported_yet",
         early_unsupported: EarlyUnsupported::Always,
     };
-    /// m3u8 прямо в `src`.
-    pub(super) const M3U8_IN_SRC: Self = Self {
+    /// `blob:`-файл в `src`: форма, которую экстеншен пока честно не передаёт (`blob_file`).
+    pub(super) const BLOB_FILE: Self = Self {
         name: "refusal not_supported_yet",
         notice: "not_supported_yet",
         early_unsupported: EarlyUnsupported::OnlyWhereTheTableAllows,

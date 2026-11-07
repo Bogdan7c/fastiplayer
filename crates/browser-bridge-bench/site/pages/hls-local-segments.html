@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hls-local-segments</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>hls-local-segments</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { playNativeHlsAsset } from '../lib/native-hls-page.js';
+
+// Защита локального адреса для HLS (10a2, решение 199 на каждый ресурс). Сценарий `local-address`
+// открывает страницу под «публичным» именем (`public.bench.example`). Корневой плейлист публичный
+// (`/cdn/hls-local-segments/…` на том же имени), первые сегменты тоже публичные (иначе Chromium под
+// публичным именем не начинает играть), а остальные сервер стенда на лету переадресует на
+// `http://127.0.0.1:<порт>/media-local-target/…`. Фон экстеншена эти сегменты качать не вправе:
+// проверка адреса идёт на каждый ресурс.
+await runScenario('hls-local-segments', (ctx) => playNativeHlsAsset(ctx, 'hls-ts-long', {
+  playlistAddress: (asset) => `${location.origin}/cdn/hls-local-segments/${asset.url}`,
+  handoffOptions: { skipFinishChecks: ['page-buffer-keeps-filling'] },
+}));
+</script>
+</body>
+</html>

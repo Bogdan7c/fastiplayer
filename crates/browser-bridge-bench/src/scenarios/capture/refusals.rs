@@ -1,7 +1,8 @@
 //! Честные отказы `capture`: страница играет видео, которое экстеншен не передаёт, и ожидается
 //! не кадр в плеере, а наоборот:
-//! - сессия 09b: форма, которую экстеншен пока не умеет (решение 185: m3u8 прямо в `src`) —
-//!   `not_supported_yet{form}`;
+//! - сессия 09b: форма, которую экстеншен пока не умеет — `not_supported_yet{form}`. С 10a2 это
+//!   `blob:`-файл в `src` (`blob_file`): m3u8 прямо в `src` теперь передаётся как родной HLS и
+//!   проверяется в `capture` судьёй `hls_evidence`;
 //! - сессия 09c: видео под DRM (`drm-clearkey`) — `protected` (инвариант 4); на странице только
 //!   баннер и превью (`banner-autoplay`) — `no_video`;
 //! - в любом случае сеанс с плеером даже не открывается;
@@ -59,8 +60,8 @@ pub(in crate::scenarios) struct RefusalPage {
 /// Страницы честного отказа.
 pub(in crate::scenarios) const REFUSAL_PAGES: &[RefusalPage] = &[
     RefusalPage {
-        id: "m3u8-in-src",
-        expected: ExpectedRefusal::NotSupportedYet { form: "native_hls" },
+        id: "blob-file",
+        expected: ExpectedRefusal::NotSupportedYet { form: "blob_file" },
     },
     // DRM (ClearKey): ключи и `encrypted` на элементе; браузер играет сам, сеанса нет.
     RefusalPage {
@@ -74,8 +75,8 @@ pub(in crate::scenarios) const REFUSAL_PAGES: &[RefusalPage] = &[
     },
 ];
 
-/// Сколько страница играет сама после отказа, прежде чем отчитаться (ролик HLS стенда — 12 с,
-/// до готовности страница уже сыграла около двух; 5 с оставляют запас до конца ролика).
+/// Сколько страница играет сама после отказа, прежде чем отчитаться (ролики отказов стенда —
+/// 12 с и дольше, до готовности страница уже сыграла около двух; 5 с оставляют запас до конца).
 pub(in crate::scenarios) const REFUSAL_WINDOW: Duration = Duration::from_secs(5);
 /// Сколько настоящих кадров в секунду должен насчитать браузер, который играет сам
 /// (ролики стенда — 25 к/с; как у контроля линейки `capture`).
@@ -216,7 +217,7 @@ mod tests {
     fn report(real_frames: f64) -> PageReport {
         PageReport {
             run: RunId::new("r-1").expect("run id"),
-            scenario: "m3u8-in-src".into(),
+            scenario: "blob-file".into(),
             status: PageStatus::Pass,
             checks: Vec::new(),
             user_agent: String::new(),
@@ -231,7 +232,7 @@ mod tests {
     }
 
     fn evidence(outcome: HandOffOutcome, granted: bool, real_frames: f64) -> RefusalEvidence {
-        evidence_for(REFUSAL_PAGES[0], outcome, granted, real_frames)
+        evidence_for(page("blob-file"), outcome, granted, real_frames)
     }
 
     fn evidence_for(
@@ -261,7 +262,7 @@ mod tests {
     fn honest_refusal_and_the_browser_keeps_playing_passes() {
         let verdict = judge_refusal(&evidence(
             HandOffOutcome::NotSupportedYet {
-                form: "native_hls".into(),
+                form: "blob_file".into(),
             },
             false,
             120.0,
@@ -275,21 +276,21 @@ mod tests {
             (HandOffOutcome::Started, true, 120.0),
             (
                 HandOffOutcome::NotSupportedYet {
-                    form: "blob_file".into(),
+                    form: "native_hls".into(),
                 },
                 false,
                 120.0,
             ),
             (
                 HandOffOutcome::NotSupportedYet {
-                    form: "native_hls".into(),
+                    form: "blob_file".into(),
                 },
                 true,
                 120.0,
             ),
             (
                 HandOffOutcome::NotSupportedYet {
-                    form: "native_hls".into(),
+                    form: "blob_file".into(),
                 },
                 false,
                 3.0,

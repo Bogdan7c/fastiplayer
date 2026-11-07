@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>blob-file</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>blob-file</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying } from '../lib/bench-checks.js';
+import { loadCatalog } from '../lib/bench-player.js';
+import { mountVideo, observeHandoff } from '../lib/scenario-kit.js';
+
+// Файл, собранный страницей в обычный Blob, и `blob:`-адрес в `src` (так делают загрузчики «из файла
+// на диске»). Экстеншен такую форму пока честно не передаёт: «отдать вкладку» → not_supported_yet
+// {blob_file}, а видео остаётся у браузера (страница играет сама — это и проверяет capture).
+// С сессии 10a2 это пример отказа вместо m3u8-in-src (его теперь передают как родной HLS).
+await runScenario('blob-file', async (ctx) => {
+  const catalog = await loadCatalog();
+  const asset = catalog.assets['progressive-long-h264-aac'];
+  const response = await fetch(`/media/${asset.url}`);
+  ctx.check('blob-source-fetched', response.ok, `status=${response.status}`);
+  const blob = await response.blob();
+  const video = mountVideo();
+  video.src = URL.createObjectURL(blob);
+  ctx.check('src-is-a-blob-url', video.src.startsWith('blob:'), video.src);
+  await video.play().catch(async () => { video.muted = true; await video.play(); });
+  await checkPlaying(ctx, video, 'plays-blob-file');
+  if (ctx.params.handoff) await observeHandoff(ctx, { video, player: null }, {}, { durationS: asset.duration_s });
+});
+</script>
+</body>
+</html>

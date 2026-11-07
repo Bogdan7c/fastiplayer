@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hls-aes128</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>hls-aes128</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { playNativeHlsAsset } from '../lib/native-hls-page.js';
+
+// HLS VOD (сессия 10a2): сегменты MPEG-TS зашифрованы AES-128, ключ (key.bin) лежит рядом с плейлистом.
+await runScenario('hls-aes128', (ctx) => playNativeHlsAsset(ctx, 'hls-ts-aes128'));
+</script>
+</body>
+</html>

@@ -14,8 +14,10 @@ use std::time::{Duration, Instant};
 mod ad_hop;
 pub(super) mod decoys;
 pub(super) mod file_evidence;
+pub(super) mod hls_evidence;
 mod judge;
 pub(super) mod local_address;
+mod local_address_hls;
 mod referer_evidence;
 pub(super) mod refusals;
 
@@ -146,6 +148,11 @@ pub(super) const CAPTURE_PAGES: &[CapturePage] = &[
     plain_page("mse-worker-classic"),
     // 09b: `<video src>` — фон качает файл по `fetch_range`, источник элемента снят.
     plain_page("video-src"),
+    // 10a2: родной HLS VOD — плейлисты, сегменты и ключ качает фон по дескрипторам, элемент молчит
+    // (судья `hls_evidence`): MPEG-TS, fMP4 с двумя качествами, MPEG-TS под AES-128.
+    plain_page("m3u8-in-src"),
+    plain_page("hls-fmp4-abr"),
+    plain_page("hls-aes128"),
     // 09b: тот же файл за входом на CDN — фон несёт куку сайта.
     plain_page("video-src-cdn"),
     // 09c, решение 202: файл на `/cdn/media/` требует ещё и Referer страницы; фон ставит его
@@ -194,9 +201,12 @@ pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) 
     results
 }
 
-/// Защита локального адреса (решение 199): три случая в свежих окружениях одного браузера.
+/// Защита локального адреса (решение 199): случаи файла и один случай HLS (сегменты на локальном
+/// адресе) в свежих окружениях одного браузера.
 pub(super) fn run_local_address(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
-    local_address::run_all(stand, browser)
+    let mut results = local_address::run_all(stand, browser);
+    results.push(local_address_hls::run(stand, browser));
+    results
 }
 
 /// Идентификаторы страниц `capture` (контрольные страницы и честные отказы входят в тот же список).
@@ -428,7 +438,7 @@ fn drive(
 }
 
 /// Улики со стороны сервера для страниц, где они есть: файл `<video src>` (кто и с чем его
-/// качал), Referer на `/cdn/media/`, приманка рядом с главным видео. `None` — у страницы их нет.
+/// качал), каталог родного HLS (элемент молчит, фон качает плейлисты, сегменты, ключ), Referer на `/cdn/media/`, приманка рядом с главным видео. `None` — у страницы их нет.
 /// В счёт идут только запросы этого прогона (журнал сервера общий на весь запуск стенда).
 pub(super) fn server_evidence(
     stand: &Stand,
@@ -448,6 +458,13 @@ pub(super) fn server_evidence(
             ));
         }
         return Some((failures, file_evidence::file_summary(&sorted)));
+    }
+    if let Some(hls_page) = hls_evidence::hls_page(page_id) {
+        let sorted = hls_evidence::sort_requests(hls_page, &requests, handed_off_at);
+        return Some((
+            hls_evidence::hls_failures(hls_page, &sorted),
+            hls_evidence::hls_summary(hls_page, &sorted),
+        ));
     }
     decoys::decoy_page(page_id).map(|decoy| {
         decoys::decoy_not_fetched_by_background(decoy.file_path, &requests, handed_off_at)
@@ -652,6 +669,6 @@ mod tests {
             );
             assert!(seen.insert(page.id), "{} listed twice", page.id);
         }
-        assert_eq!(CAPTURE_PAGES.len(), 23);
+        assert_eq!(CAPTURE_PAGES.len(), 26);
     }
 }

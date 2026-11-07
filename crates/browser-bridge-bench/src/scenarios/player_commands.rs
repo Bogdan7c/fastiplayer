@@ -24,10 +24,14 @@
 
 use std::time::{Duration, Instant};
 
-use super::capture::MIN_PRESENTED_FRAMES;
+mod hls_steps;
+
+use self::hls_steps::HlsContext;
 use super::capture::file_evidence::{
     FilePage, SeekBeyondFetched, commands_file_evidence, fetch_front, file_page, seek_fetch_check,
 };
+use super::capture::hls_evidence::hls_page;
+use super::capture::{MIN_PRESENTED_FRAMES, judge_early_report};
 use super::context::{ScenarioError, Stand};
 use super::evidence::{
     FORBIDDEN_PLAYER_LINES, SESSION_GRANTED_TIMEOUT, format_browser_log, host_failures,
@@ -44,8 +48,9 @@ use crate::observe::{FrameEvidence, FrameGrowth, HostLogEvidence, read_host_evid
 use crate::player_control::PlayerControl;
 use crate::site::{PageReport, SiteError, StandSite};
 
-/// Страницы, на которых проверяются команды плеера: MSE и файл `<video src>` (09b).
-const COMMANDS_PAGES: &[&str] = &["mse-fmp4", "video-src"];
+/// Страницы, на которых проверяются команды плеера: MSE, файл `<video src>` (09b) и родной HLS VOD
+/// (10a2, длинный ролик: запас на паузу, перемотку вперёд и возврат).
+const COMMANDS_PAGES: &[&str] = &["mse-fmp4", "video-src", "hls-vod-long"];
 /// Сколько ждать, пока окно плеера опубликует управление по MPRIS.
 pub(super) const CONTROLLABLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Сколько ждать первые кадры плеера до команд.
@@ -94,9 +99,9 @@ pub(super) fn run(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> V
         .map(|page| {
             let started = Instant::now();
             let body = |environment: &BenchEnvironment| drive(stand, environment, browser, page);
-            // Файл — с самым малым окном предзагрузки: плеер не может взять его целиком, и
-            // перемотка за скачанное обязана дойти до сети (`fetch_range` у цели).
-            let verdict = if file_page(page).is_some() {
+            // Файл и HLS — с самым малым окном предзагрузки: плеер не может взять всё впрок, и
+            // перемотка за скачанное обязана дойти до сети (`fetch_range` / новый сегмент у цели).
+            let verdict = if file_page(page).is_some() || hls_page(page).is_some() {
                 stand.with_environment_for_player_config(PlayerConfigProfile::SmallFileWindow, body)
             } else {
                 stand.with_environment(body)
@@ -127,6 +132,7 @@ fn drive(
     page_id: &'static str,
 ) -> Result<Verdict, ScenarioError> {
     let file = file_page(page_id);
+    let hls = hls_page(page_id);
     let mut run = HandoffRun::open(
         stand,
         environment,
@@ -139,10 +145,9 @@ fn drive(
         PageReadiness::Ready => {}
         PageReadiness::ReportedEarly(report) => {
             run.browser.shutdown()?;
-            return Ok(Verdict::fail(format!(
-                "the page reported {:?} before the hand-off",
-                report.status
-            )));
+            // Тот же судья, что у capture: `unsupported` честен там, где его разрешает таблица страниц
+            // (нативный HLS в Firefox на Linux), остальное — провал.
+            return Ok(judge_early_report(page_id, browser_kind, &report));
         }
         PageReadiness::TimedOut => {
             let log = format_browser_log(&run.take_page_log());
@@ -166,6 +171,7 @@ fn drive(
     // Когда закрыли окно плеера (`None` — до возврата не дошли).
     let mut returned_at: Option<Instant> = None;
     let mut file_seek: Option<String> = None;
+    let hls_context = hls.map(|page| HlsContext::new(page, &stand.site, handed_off_at));
     let granted = wait_for_session_granted(&run.stderr_log, SESSION_GRANTED_TIMEOUT)?;
     steps.push(StepEvidence {
         name: "session-granted",
@@ -183,7 +189,16 @@ fn drive(
             site: &stand.site,
             handed_off_at,
         });
-        run_commands(&mut run, &control, &mut steps, marks, file_context);
+        run_commands(
+            &mut run,
+            &control,
+            &mut steps,
+            marks,
+            ScenarioSources {
+                file: file_context,
+                hls: hls_context,
+            },
+        );
     }
 
     let page_report = run.finish_page();
@@ -199,6 +214,10 @@ fn drive(
             .as_deref()
             .unwrap_or("the seek beyond the fetched bytes did not run");
         (failures, format!("{summary}; {seek}"))
+    });
+    let file = file.or_else(|| {
+        hls_context
+            .map(|context| hls_steps::server_evidence(context, returned_at, file_seek.as_deref()))
     });
     let forbidden = run.player_log.snapshot_forbidden(FORBIDDEN_PLAYER_LINES)?;
     let exit = run.browser.shutdown()?;
@@ -223,6 +242,13 @@ struct FileContext<'site> {
     handed_off_at: Instant,
 }
 
+/// Откуда сценарий берёт журнал сервера, если у страницы он нужен (файл или HLS; у MSE — ничего).
+#[derive(Clone, Copy)]
+struct ScenarioSources<'site> {
+    file: Option<FileContext<'site>>,
+    hls: Option<HlsContext<'site>>,
+}
+
 /// Отметки шагов, которые нужны вердикту после прогона.
 struct StepMarks<'marks> {
     seek_growth: &'marks mut Result<FrameGrowth, String>,
@@ -237,8 +263,9 @@ fn run_commands(
     control: &PlayerControl,
     steps: &mut Vec<StepEvidence>,
     marks: StepMarks<'_>,
-    file: Option<FileContext<'_>>,
+    sources: ScenarioSources<'_>,
 ) {
+    let ScenarioSources { file, hls } = sources;
     let mut record = |name: &'static str, result: Result<(), String>| -> bool {
         let ok = result.is_ok();
         steps.push(StepEvidence { name, result });
@@ -286,13 +313,22 @@ fn run_commands(
             return;
         }
     }
+    // 3. HLS: перемотка вперёд ЗА сегменты, которых фон ещё не скачал, — новый сегмент у цели.
+    if let Some(hls) = hls {
+        let beyond_fetched =
+            hls_steps::seek_beyond_fetched_segments(run, control, hls, marks.seek_growth)
+                .map(|facts| *marks.file_seek = Some(facts));
+        if !record("seek-beyond-fetched-reaches-network", beyond_fetched) {
+            return;
+        }
+    }
     // 3. Перемотка плеером В буфер страницы (данные уже скачаны: запросов может не быть).
     let into_buffer = seek_into_buffer(run, control).map(|_| ());
     if !record("seek-reaches-page", into_buffer) {
         return;
     }
     // 4. MSE: перемотка ЗА конец буфера страницы — страница обязана докачать сегмент у цели.
-    if file.is_none() {
+    if file.is_none() && hls.is_none() {
         let beyond_buffer = seek_beyond_buffer(run, control, marks.seek_growth);
         if !record("seek-beyond-buffer-reaches-page", beyond_buffer) {
             return;

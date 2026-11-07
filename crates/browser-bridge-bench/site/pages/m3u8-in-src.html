@@ -10,35 +10,13 @@
 <h1>m3u8-in-src</h1>
 
 <script type="module">
-import { runScenario, UnsupportedError } from '../lib/bench-report.js';
-import { checkPlaying } from '../lib/bench-checks.js';
-import { loadCatalog } from '../lib/bench-player.js';
-import { mountVideo, observeHandoff } from '../lib/scenario-kit.js';
+import { runScenario } from '../lib/bench-report.js';
+import { playNativeHlsAsset } from '../lib/native-hls-page.js';
 
-// m3u8 прямо в `src` ВОПРЕКИ ответу canPlayType (сессия 09b, решение 185): экстеншен отвечает
-// странице «HLS не умею», но сайт всё равно кладёт плейлист в src, и Chromium играет HLS сам.
-// Экстеншен такую форму пока честно не передаёт: «отдать вкладку» → not_supported_yet{native_hls},
-// а видео остаётся у браузера (страница играет сама — это и проверяет capture).
-// Firefox на Linux HLS сам не играет — тогда честное unsupported.
-await runScenario('m3u8-in-src', async (ctx) => {
-  const catalog = await loadCatalog();
-  const asset = catalog.assets['hls-h264-aac'];
-  const answer = document.createElement('video').canPlayType('application/vnd.apple.mpegurl');
-  const video = mountVideo();
-  video.src = `/media/${asset.url}`;
-  try {
-    await video.play().catch(async (error) => {
-      if (error?.name !== 'NotAllowedError') throw error;
-      video.muted = true;
-      await video.play();
-    });
-  } catch (error) {
-    throw new UnsupportedError(`the browser cannot play HLS natively (${error?.name}); canPlayType answered '${answer}'`);
-  }
-  ctx.log(`canPlayType(application/vnd.apple.mpegurl) answered '${answer}', the page put the playlist into src anyway`);
-  await checkPlaying(ctx, video, 'plays-native-hls');
-  if (ctx.params.handoff) await observeHandoff(ctx, { video, player: null }, {}, { durationS: asset.duration_s });
-});
+// m3u8 (MPEG-TS, одно качество) прямо в `src` ВОПРЕКИ ответу canPlayType (сессия 09b, решение 185).
+// С сессии 10a2 экстеншен такую форму передаёт плееру (родной HLS VOD): capture проверяет и
+// кадры у плеера, и что элемент под тенью ничего не качает, а фон качает плейлист и сегменты.
+await runScenario('m3u8-in-src', (ctx) => playNativeHlsAsset(ctx, 'hls-h264-aac'));
 </script>
 </body>
 </html>

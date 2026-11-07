@@ -24,7 +24,7 @@ const MAX_LOGGED_REQUESTS: usize = 4096;
 pub const PAGE_FETCH_MARKER_HEADER: &str = "x-bench-page-fetch";
 
 /// Префиксы путей, запросы к которым записываются (`/cdn/` — оба пути сторожа CDN).
-const LOGGED_PATH_PREFIXES: [&str; 2] = ["/media/", "/cdn/"];
+const LOGGED_PATH_PREFIXES: [&str; 3] = ["/media/", "/cdn/", "/media-local-target/"];
 
 /// Один запрос медиа, как его увидел сервер.
 #[derive(Debug, Clone, PartialEq, Eq)]

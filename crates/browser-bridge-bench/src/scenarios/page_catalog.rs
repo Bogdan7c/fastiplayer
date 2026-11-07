@@ -51,6 +51,15 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("video-src-cdn"),
     // 09b: m3u8 прямо в `src` вопреки отказу canPlayType; Firefox на Linux HLS сам не играет.
     page_unsupported_in("m3u8-in-src", &[BrowserKind::Firefox]),
+    // 10a2: `blob:`-файл в src — пример формы, которую экстеншен ещё честно не передаёт (`blob_file`).
+    page("blob-file"),
+    // 10a2: родной HLS VOD — fMP4 с двумя качествами, шифрование AES-128, длинный ролик для
+    // команд плеера. Все три играет только Chromium (Firefox на Linux HLS сам не умеет).
+    page_unsupported_in("hls-fmp4-abr", &[BrowserKind::Firefox]),
+    page_unsupported_in("hls-aes128", &[BrowserKind::Firefox]),
+    page_unsupported_in("hls-vod-long", &[BrowserKind::Firefox]),
+    // 10a2: плейлист публичный, сегменты в нём абсолютные на 127.0.0.1 (сценарий `local-address`).
+    page_unsupported_in("hls-local-segments", &[BrowserKind::Firefox]),
     // Нативного HLS в <video> у Firefox на Linux нет.
     page_unsupported_in("native-hls", &[BrowserKind::Firefox]),
     page("shadow-dom"),

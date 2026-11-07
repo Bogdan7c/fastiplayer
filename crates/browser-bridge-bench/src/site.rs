@@ -7,10 +7,12 @@
 //!
 //! Кто чем владеет: `reports` — отчёты и журнал, `cdn_guard` — куки/Referer и счётчики,
 //! `static_files` — Content-Type и Range, `routes` — таблица маршрутов, `server` — сокеты и
-//! потоки, `http` — разбор и запись HTTP. Снаружи используется только [`StandSite`].
+//! потоки, `http` — разбор и запись HTTP, `hls_local_segments` — HLS-плейлист с сегментами на
+//! локальном адресе (сценарий `local-address`). Снаружи используется только [`StandSite`].
 
 mod cdn_guard;
 mod error;
+mod hls_local_segments;
 mod http;
 mod reports;
 mod request_log;

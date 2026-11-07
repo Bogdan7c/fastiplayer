@@ -6,6 +6,7 @@ use crate::media::MediaCatalog;
 use crate::media::safe_path::{join_inside, resolve_existing_file};
 
 use super::cdn_guard::{CdnGuard, CdnVerdict, RefererRule, login_cookie_header};
+use super::hls_local_segments;
 use super::http::{Request, Response};
 use super::reports::{BrowserLogLine, PageReport, ReportStore};
 use super::request_log::RequestLog;
@@ -79,6 +80,15 @@ fn route_request(context: &RouteContext, request: &Request) -> Response {
             method_not_allowed()
         };
     }
+    // Те же файлы, что под `/media/`, но под другим префиксом: журнал отличает «локальные» сегменты
+    // сценария `local-address` от публичных (см. `hls_local_segments`).
+    if let Some(relative) = path.strip_prefix(hls_local_segments::LOCAL_TARGET_PREFIX) {
+        return if is_read {
+            with_cors(serve_under(&context.shared.media.root, relative, range))
+        } else {
+            method_not_allowed()
+        };
+    }
     if path == "/cdn/login" {
         return if is_read {
             cdn_login()
@@ -103,6 +113,13 @@ fn route_request(context: &RouteContext, request: &Request) -> Response {
     if let Some(relative) = path.strip_prefix(REDIRECT_TO_MAIN_ORIGIN_PREFIX) {
         return if is_read {
             redirect_to_main_origin(context, relative)
+        } else {
+            method_not_allowed()
+        };
+    }
+    if let Some(relative) = path.strip_prefix(hls_local_segments::ROUTE_PREFIX) {
+        return if is_read {
+            hls_local_segments::serve(context, relative)
         } else {
             method_not_allowed()
         };

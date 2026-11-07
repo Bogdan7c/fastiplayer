@@ -148,7 +148,10 @@ const ROWS: &[Row] = &[
     refusal("banner-autoplay", refusal_rows::RefusalRow::NO_VIDEO),
     refusal("drm-clearkey", refusal_rows::RefusalRow::PROTECTED),
     refusal("native-hls", refusal_rows::RefusalRow::NATIVE_HLS),
-    refusal("m3u8-in-src", refusal_rows::RefusalRow::M3U8_IN_SRC),
+    // 10a2: m3u8 прямо в `src` больше не отказ, а обычный вход (родной HLS VOD уходит в плеер);
+    // отказом `not_supported_yet` теперь служит `blob:`-файл.
+    start("m3u8-in-src"),
+    refusal("blob-file", refusal_rows::RefusalRow::BLOB_FILE),
     Row {
         page_id: "video-src-local",
         kind: RowKind::Consent(consent_rows::Decision::Allow),
@@ -338,6 +341,7 @@ mod tests {
             "drm-clearkey",
             "native-hls",
             "m3u8-in-src",
+            "blob-file",
             "video-src-local",
         ] {
             assert!(ids.contains(&required), "{required} is missing from ROWS");
