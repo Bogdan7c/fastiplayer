@@ -22,8 +22,12 @@ use crate::{
     SourceValidators,
 };
 
+mod external_transport;
 mod streaming_body;
 
+pub use external_transport::{
+    HttpExternalFailureContext, HttpExternalTransportFailure, HttpStatusCode,
+};
 pub use streaming_body::{HttpBoundedStreamingBody, HttpBoundedStreamingFetchHop};
 
 /// Optional exact byte range для одного bounded resource request-а.

@@ -56,7 +56,8 @@ pub use http::{HttpHeader, HttpRangeSource, HttpRangeSourceConfig};
 pub use http_bounded::{
     HttpBoundedByteRange, HttpBoundedFetchHop, HttpBoundedFetchKind, HttpBoundedFetchRequest,
     HttpBoundedResponse, HttpBoundedStreamingBody, HttpBoundedStreamingFetchHop,
-    HttpRangeResponseMetadata,
+    HttpExternalFailureContext, HttpExternalTransportFailure, HttpRangeResponseMetadata,
+    HttpStatusCode,
 };
 pub use http_cookie::{ScopedHttpCookieJar, ScopedHttpCookieJarError};
 pub use http_cookie_seed::{HttpCookieSeed, HttpCookieSeedBuilder, HttpCookieSeedError};

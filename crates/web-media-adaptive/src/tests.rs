@@ -37,6 +37,7 @@ use super::*;
 mod auxiliary_resources;
 mod blocking_resource_fetch;
 mod completed_resource_cache;
+mod external_transport;
 mod live_manifest_refresh;
 mod manifest_cancellation;
 mod ordered_segment_read_ahead;

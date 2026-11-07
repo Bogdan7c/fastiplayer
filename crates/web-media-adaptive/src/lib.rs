@@ -16,6 +16,7 @@ mod restartable_read_interruption;
 mod segment;
 mod streaming_resource;
 mod timeline;
+mod transport;
 
 pub use adapter::{
     ActivatableBlockingOrderedSegmentAdapter, BlockingOrderedSegmentAdapter,
@@ -46,6 +47,10 @@ pub use segment::{
 pub use streaming_resource::AdaptiveStreamingResource;
 pub use timeline::{
     AdaptivePresentation, ComponentClockMetadata, DvrWindow, DvrWindowError, LiveEdge,
+};
+pub use transport::{
+    AdaptiveBufferedHop, AdaptiveResourceTransport, AdaptiveStreamingBody, AdaptiveStreamingHop,
+    AdaptiveTransportFuture,
 };
 
 #[cfg(test)]

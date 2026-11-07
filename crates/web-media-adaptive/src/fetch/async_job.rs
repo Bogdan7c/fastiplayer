@@ -4,13 +4,14 @@
 //! но оставляет task lifecycle manifest executor-у: drop future должен сразу
 //! уничтожать in-flight reqwest request superseded generation.
 
-use source_core::{HttpBoundedFetchHop, HttpBoundedFetchRequest};
+use source_core::HttpBoundedFetchRequest;
 use web_media_transport_api::RedirectHopCount;
 
 use super::{
     AdaptiveHttpContext, AdaptiveResourceSecretForwarding, AdaptiveTransportError, FetchJob,
     FetchSuccess, request_material,
 };
+use crate::transport::AdaptiveBufferedHop;
 
 /// Выполняет один adaptive job с manual redirect policy как abortable future.
 pub(crate) async fn fetch_with_redirects_async(
@@ -50,8 +51,8 @@ pub(crate) async fn fetch_with_redirects_async(
             ),
         };
         let hop = match context
-            .session
-            .fetch_bounded_single_hop_abortable(request, &context.cancellation)
+            .transport
+            .fetch_buffered_hop_abortable(request, &context.cancellation)
             .await
         {
             Ok(hop) => hop,
@@ -61,7 +62,7 @@ pub(crate) async fn fetch_with_redirects_async(
             }
         };
         match hop {
-            HttpBoundedFetchHop::Complete(response) => {
+            AdaptiveBufferedHop::Complete(response) => {
                 let range_metadata = response.range_metadata().cloned();
                 return Ok(FetchSuccess {
                     final_target: target,
@@ -69,14 +70,13 @@ pub(crate) async fn fetch_with_redirects_async(
                     range_metadata,
                 });
             }
-            HttpBoundedFetchHop::Redirect(redirect) => {
-                let authorization = context.redirects.authorize_redirect(
-                    &target,
-                    redirect.target(),
-                    completed_hops,
-                )?;
+            AdaptiveBufferedHop::Redirect { next_target } => {
+                let authorization =
+                    context
+                        .redirects
+                        .authorize_redirect(&target, &next_target, completed_hops)?;
                 forward_secrets &= authorization.permits_secret_scope_check();
-                target = redirect.target().clone();
+                target = next_target;
                 completed_hops = RedirectHopCount::new(completed_hops.value().saturating_add(1));
             }
         }

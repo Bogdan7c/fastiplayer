@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 
 use media_core::DemuxSeekCancellationToken;
 use source_core::{
-    CancellationToken, HttpBoundedByteRange, HttpBoundedFetchHop, HttpBoundedFetchKind,
-    HttpBoundedFetchRequest, HttpBoundedStreamingBody, HttpBoundedStreamingFetchHop, HttpHeader,
-    HttpRangeResponseMetadata, HttpRequestTarget, HttpResourceDiagnostics, HttpResourcePurpose,
+    CancellationToken, HttpBoundedByteRange, HttpBoundedFetchKind, HttpBoundedFetchRequest,
+    HttpHeader, HttpRangeResponseMetadata, HttpRequestTarget, HttpResourceDiagnostics,
+    HttpResourcePurpose,
 };
 use web_media_transport_api::{
     EndpointExpiryResourceKind, RedirectHopCount, SecretRequestContext, SecretRequestPurpose,
@@ -21,6 +21,7 @@ use super::{
     AdaptiveHttpContext, AdaptiveResourcePurpose, AdaptiveResourceQueryApplication,
     AdaptiveResourceSecretForwarding, AdaptiveTransportError,
 };
+use crate::transport::{AdaptiveBufferedHop, AdaptiveStreamingBody, AdaptiveStreamingHop};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FetchPurpose {
@@ -106,8 +107,8 @@ pub(crate) struct FetchSuccess {
 pub(super) struct StreamingFetchSuccess {
     /// Effective target последнего разрешённого hop-а.
     pub(super) final_target: HttpRequestTarget,
-    /// Открытый bounded response cursor.
-    pub(super) body: HttpBoundedStreamingBody,
+    /// Открытый bounded response cursor выбранного транспорта.
+    pub(super) body: Box<dyn AdaptiveStreamingBody>,
 }
 
 #[derive(Debug)]
@@ -245,8 +246,8 @@ pub(super) fn fetch_with_redirects(
         }
         .with_resource_diagnostics(resource_diagnostics);
         let hop = match context
-            .session
-            .fetch_bounded_single_hop(request, &context.cancellation)
+            .transport
+            .fetch_buffered_hop_blocking(request, &context.cancellation)
         {
             Ok(hop) => hop,
             Err(source_error) => {
@@ -255,7 +256,7 @@ pub(super) fn fetch_with_redirects(
             }
         };
         match hop {
-            HttpBoundedFetchHop::Complete(response) => {
+            AdaptiveBufferedHop::Complete(response) => {
                 let range_metadata = response.range_metadata().cloned();
                 return Ok(FetchSuccess {
                     final_target: target,
@@ -263,14 +264,13 @@ pub(super) fn fetch_with_redirects(
                     range_metadata,
                 });
             }
-            HttpBoundedFetchHop::Redirect(redirect) => {
-                let authorization = context.redirects.authorize_redirect(
-                    &target,
-                    redirect.target(),
-                    completed_hops,
-                )?;
+            AdaptiveBufferedHop::Redirect { next_target } => {
+                let authorization =
+                    context
+                        .redirects
+                        .authorize_redirect(&target, &next_target, completed_hops)?;
                 forward_secrets &= authorization.permits_secret_scope_check();
-                target = redirect.target().clone();
+                target = next_target;
                 completed_hops = RedirectHopCount::new(completed_hops.value().saturating_add(1));
             }
         }
@@ -317,8 +317,8 @@ pub(super) async fn open_stream_with_redirects(
         }
         .with_resource_diagnostics(resource_diagnostics);
         let hop = context
-            .session
-            .open_bounded_single_hop_stream(request, &context.cancellation)
+            .transport
+            .open_streaming_hop(request, &context.cancellation)
             .await;
         let hop = match hop {
             Ok(hop) => hop,
@@ -328,20 +328,19 @@ pub(super) async fn open_stream_with_redirects(
             }
         };
         match hop {
-            HttpBoundedStreamingFetchHop::Body(body) => {
+            AdaptiveStreamingHop::Body(body) => {
                 return Ok(StreamingFetchSuccess {
                     final_target: target,
                     body,
                 });
             }
-            HttpBoundedStreamingFetchHop::Redirect(redirect) => {
-                let authorization = context.redirects.authorize_redirect(
-                    &target,
-                    redirect.target(),
-                    completed_hops,
-                )?;
+            AdaptiveStreamingHop::Redirect { next_target } => {
+                let authorization =
+                    context
+                        .redirects
+                        .authorize_redirect(&target, &next_target, completed_hops)?;
                 forward_secrets &= authorization.permits_secret_scope_check();
-                target = redirect.target().clone();
+                target = next_target;
                 completed_hops = RedirectHopCount::new(completed_hops.value().saturating_add(1));
             }
         }

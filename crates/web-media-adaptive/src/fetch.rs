@@ -19,6 +19,7 @@ use web_media_transport_api::{
 
 mod async_job;
 mod auxiliary;
+mod construction;
 mod execution;
 
 pub(crate) use async_job::fetch_with_redirects_async;
@@ -36,12 +37,15 @@ use crate::restartable_read_interruption::AdaptiveRestartableReadAttempt;
 use crate::streaming_resource::{
     AdaptiveRestartableReadAttemptBinding, AdaptiveStreamingResource, NetworkStreamingResourceOpen,
 };
+use crate::transport::AdaptiveResourceTransport;
+use crate::transport::http_session::HttpSessionResourceTransport;
 use crate::{AdaptiveRetryPolicy, AdaptiveTransportLimits};
 
 /// Immutable shared request policy одного adaptive component generation lineage.
 #[derive(Clone)]
 pub struct AdaptiveHttpContext {
-    pub(crate) session: HttpSourceSession,
+    /// Единственная «розетка» сети: обычный HTTP либо внешний транспорт (мост).
+    pub(crate) transport: Arc<dyn AdaptiveResourceTransport>,
     pub(crate) secrets: SecretRequestContext,
     pub(crate) redirects: web_media_transport_api::RedirectPolicy,
     pub(crate) cancellation: CancellationToken,
@@ -81,23 +85,13 @@ impl AdaptiveHttpContext {
         )
         .map_err(map_cookie_jar_error)?;
         let session = HttpSourceSession::new_with_cookie_jar(source_config, Arc::new(cookie_jar))?;
-        let completed_cache_budget =
-            usize::try_from(source_config.memory_cache_bytes()).unwrap_or(usize::MAX);
-        Ok(Self {
-            session,
-            secrets: request.secrets().clone(),
-            redirects: request.redirects(),
-            cancellation: request.cancellation().clone(),
-            initial_generation: request.source_generation(),
-            component: request.component().clone(),
-            endpoint_expiry_observer: request.endpoint_expiry_observer().cloned(),
-            expected_presentation: request.presentation(),
+        Ok(Self::assemble(
+            &request,
+            Arc::new(HttpSessionResourceTransport::new(session)),
+            source_config,
             limits,
             retry,
-            completed_resource_cache: Arc::new(Mutex::new(CompletedResourceCache::new(
-                completed_cache_budget,
-            ))),
-        })
+        ))
     }
 
     /// Возвращает shared cooperative cancellation owner-а.
@@ -464,7 +458,7 @@ impl fmt::Debug for AdaptiveHttpContext {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("AdaptiveHttpContext")
-            .field("session", &self.session)
+            .field("transport", &self.transport)
             .field("secrets", &self.secrets)
             .field("redirects", &self.redirects)
             .field("initial_generation", &self.initial_generation)

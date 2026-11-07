@@ -7,9 +7,9 @@ use std::sync::Arc;
 use bytes::Bytes;
 use media_core::DemuxSeekCancellationToken;
 use source_core::{
-    CancellationToken, CurrentThreadAsyncExecutor, HttpBoundedStreamingBody,
-    HttpRangeResponseMetadata, HttpRequestAttemptId, HttpRequestTarget, HttpResourceCorrelationId,
-    HttpResourceDiagnostics, InterruptibleAsyncExecution, SourceError,
+    CancellationToken, CurrentThreadAsyncExecutor, HttpRangeResponseMetadata, HttpRequestAttemptId,
+    HttpRequestTarget, HttpResourceCorrelationId, HttpResourceDiagnostics,
+    InterruptibleAsyncExecution, SourceError,
 };
 use web_media_transport_api::SourceGeneration;
 
@@ -24,6 +24,7 @@ use crate::restartable_read_interruption::{
     AdaptiveRestartableReadAttempt, AdaptiveRestartableReadCompletion,
     AdaptiveRestartableReadGuard, AdaptiveRestartableReadStart,
 };
+use crate::transport::AdaptiveStreamingBody;
 
 /// Explicit attachment сохраняет legacy streaming open без мутного `Option`.
 #[derive(Clone)]
@@ -62,7 +63,8 @@ enum AdaptiveStreamingResourceBody {
 /// Большой runtime/body state boxed только для network path-а, не для cached chunks.
 struct NetworkStreamingResourceBody {
     executor: CurrentThreadAsyncExecutor,
-    body: HttpBoundedStreamingBody,
+    /// Тело выбранного транспорта (обычный HTTP либо внешний).
+    body: Box<dyn AdaptiveStreamingBody>,
 }
 
 /// Internal read outcome не смешивает restartable unwind с source cancellation/failure.
@@ -150,7 +152,7 @@ async fn wait_for_cancellation_or_restartable_read(
 
 impl AdaptiveStreamingResourceBody {
     /// Возвращает число bytes, уже отданных текущему consumer-у.
-    const fn received_body_bytes(&self) -> usize {
+    fn received_body_bytes(&self) -> usize {
         match self {
             Self::Network(network) => network.body.received_body_bytes(),
             Self::CompletedReplay {
@@ -331,7 +333,8 @@ pub struct AdaptiveStreamingResource {
     restartable_read_interrupted: bool,
     /// Secret-free identity связывает network attempt либо cache replay с logical resource-ом.
     resource_diagnostics: HttpResourceDiagnostics,
-    /// Physical id сохраняется после EOF; у cache replay его принципиально нет.
+    /// Physical id сохраняется после EOF; у cache replay его принципиально нет,
+    /// у внешнего транспорта — только если он сам ведёт идентификатор запроса.
     network_request_attempt_id: Option<HttpRequestAttemptId>,
 }
 
@@ -344,7 +347,7 @@ pub(crate) struct NetworkStreamingResourceOpen {
     pub(crate) restartable_read_attempt: AdaptiveRestartableReadAttemptBinding,
     pub(crate) final_target: HttpRequestTarget,
     pub(crate) executor: CurrentThreadAsyncExecutor,
-    pub(crate) body: HttpBoundedStreamingBody,
+    pub(crate) body: Box<dyn AdaptiveStreamingBody>,
     pub(crate) resource_diagnostics: HttpResourceDiagnostics,
     pub(crate) cache_key: Option<CompletedResourceCacheKey>,
     pub(crate) cache_budget_bytes: usize,
@@ -377,7 +380,7 @@ impl AdaptiveStreamingResource {
             body_completed: false,
             restartable_read_interrupted: false,
             resource_diagnostics: open.resource_diagnostics,
-            network_request_attempt_id: Some(network_request_attempt_id),
+            network_request_attempt_id,
         }
     }
 
@@ -515,7 +518,7 @@ impl AdaptiveStreamingResource {
 
     /// Возвращает transport-accounted bytes без хранения полного body.
     #[must_use]
-    pub const fn received_body_bytes(&self) -> usize {
+    pub fn received_body_bytes(&self) -> usize {
         self.body.received_body_bytes()
     }
 
