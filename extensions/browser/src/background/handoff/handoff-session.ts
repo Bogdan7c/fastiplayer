@@ -38,21 +38,20 @@ import type {
   VideoRef,
 } from "../../shared/handoff-contract.ts";
 import { parsePageEvent, parsePageFloodNotice } from "../../shared/page-message-validation.ts";
-import { SESSION_CLOSE_CODES, type PageIdentity, type PlayerSessionMessage, type TabGoneReason } from "../../protocol/index.ts";
-import type { OpenSessionOutcome, OpenSessionRequest } from "../host-link/open-session-requests.ts";
-import type { Scheduler } from "../host-link/native-port.ts";
+import { SESSION_CLOSE_CODES, type PlayerSessionMessage, type TabGoneReason } from "../../protocol/index.ts";
+import type { OpenSessionRequest } from "../host-link/open-session-requests.ts";
 import { createTimerSlot } from "../host-link/timer-slot.ts";
 import { HANDOFF_BEGIN_REPLY_TIMEOUT_MS, HANDOFF_END_REPLY_TIMEOUT_MS } from "./constants.ts";
 import type { FileReferrer } from "../../shared/referrer-policy.ts";
 import { ruleAllowsFileUrl, type FileAddressRule } from "./file-address-guard.ts";
-import type { FileReferrerRules } from "./file-referrer-rule.ts";
-import type { LocalAddressBlock } from "./local-address-block-rules.ts";
-import type { FrameConnector, FramePort } from "./frame-port.ts";
+import type { FramePort } from "./frame-port.ts";
 import { createDocumentTranslator, type DocumentTranslator, type OutgoingItem, type PageStreamProblem, type StreamPageEvent } from "./page-event-translator.ts";
-import { createSessionAdMirror, type AdMirrorBrowser } from "./ad-skip-mirror.ts";
-import type { AfterPreviousSession, HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
+import { createSessionAdMirror } from "./ad-skip-mirror.ts";
+import type { HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
 
 export type { HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
+export type { HandoffSessionDependencies, HandoffTarget, SessionDoor, TabDescription } from "./handoff-session-dependencies.ts";
+import type { HandoffSessionDependencies, HandoffTarget } from "./handoff-session-dependencies.ts";
 import { translatePlayerMessage } from "./player-message-translator.ts";
 import {
   NORMAL_CLOSE_CODE,
@@ -60,9 +59,8 @@ import {
   type QueueDeliveringCloseReason,
   type SessionSocket,
   type SocketEndCause,
-  type WebSocketFactory,
 } from "./session-socket.ts";
-import { createRangeFetcher, type RangeFetch, type RangeFetcher } from "./range-fetcher.ts";
+import { createRangeFetcher, type RangeFetcher } from "./range-fetcher.ts";
 import { judgeHeldVideo } from "./held-video-choice.ts";
 import { createShadowSilenceWatch } from "./shadow-silence-watch.ts";
 import { createStreamNumbering, type StreamNumbering } from "./stream-numbering.ts";
@@ -74,64 +72,6 @@ import { disconnectQuietly, END_WITHOUT_PLAYER, LEAVE_PREVIOUS_VIDEO } from "./s
 /** Элемент очереди открывает новое поколение (`generation_started`). */
 function startsGeneration(item: OutgoingItem): boolean {
   return item.kind === "message" && item.message.type === "generation_started";
-}
-
-/** Что сеансу нужно от связи с посредником (HostLink). */
-export interface SessionDoor {
-  openSession(request: OpenSessionRequest): Promise<OpenSessionOutcome>;
-  acquireDemand(reason: string): () => void;
-}
-
-export interface HandoffSessionDependencies {
-  readonly door: SessionDoor;
-  readonly createWebSocket: WebSocketFactory;
-  readonly scheduler: Scheduler;
-  readonly connectFrame: FrameConnector;
-  /** Жива ли вкладка (отличить «закрыли вкладку» от «ушли со страницы»). */
-  readonly tabExists: (tabId: number) => Promise<boolean>;
-  /** `tabs.get`: заголовок и адрес; `undefined` — вкладки нет. */
-  readonly describeTab: (tabId: number) => Promise<TabDescription | undefined>;
-  /** Сеть браузера для байтов файла `<video src>` (сессия 09b; в продукте — `fetch` фона). */
-  readonly fetchRange: RangeFetch;
-  /** Referer закачки файла (решение 202): правило браузера на время одного запроса. */
-  readonly fileReferrer: FileReferrerRules;
-  /** Сетевой заслон локальных адресов (решение 199): разрешение сеанса на время одного запроса. */
-  readonly localAddressBlock: LocalAddressBlock;
-  /** Взвести сторож следующего видео всем фреймам вкладки (сессия 09c2). */
-  readonly armNextVideo: (tabId: number, leaseMs: number) => void;
-  /** Браузерная сторона дублёра кнопки пропуска рекламы: аренда наблюдения, нажатие, вывод вкладки (09d). */
-  readonly adMirrorBrowser: AdMirrorBrowser;
-  /** Отметка в журнал разработчика (устаревшая команда плеера, сбой вывода вкладки). */
-  readonly noteForDeveloper: (message: string) => void;
-}
-
-/** Что фон знает о вкладке: подпись окна и адрес документа. */
-export interface TabDescription {
-  readonly title?: string | undefined;
-  readonly url?: string | undefined;
-}
-
-/** Что и куда передаём. */
-export interface HandoffTarget {
-  readonly tabId: number;
-  /** Адрес вкладки при старте: его смена значит, что человек ушёл со страницы. */
-  readonly tabUrl: string | undefined;
-  readonly frameId: number;
-  /** Метка документа, из которого выбран элемент (договор: `begin_handoff.document`). */
-  readonly document: string;
-  readonly element: number;
-  readonly sessionKey: string;
-  readonly page: PageIdentity;
-  /** Номер запроса `begin_handoff` (уникален в фоне). */
-  readonly beginRequestId: number;
-  /** Правило адреса файла (решение 199): `file_source` и перенаправления проверяются им же. */
-  readonly fileAddressRule: FileAddressRule;
-  /** Что передаётся: реклама или фильм, и может ли «фильм» оказаться рекламой (сессия 09c2). */
-  readonly video: Pick<ChosenVideo, "role" | "mayBeAd">;
-  /** Новый номер запроса `begin_handoff` для переезда. */
-  readonly nextBeginRequestId: () => number;
-  /** Замена видео на той же вкладке (решение 215): когда начинать страницу; см. `AfterPreviousSession`. */
-  readonly afterPreviousSession?: AfterPreviousSession;
 }
 
 /**

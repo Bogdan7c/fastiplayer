@@ -1,0 +1,75 @@
+// Что сеанс передачи получает снаружи: связь с посредником, сеть, правила браузера, описание цели.
+//
+// Вынесено из `handoff-session.ts` без изменения поведения (сессия 10a2): сам сеанс упёрся в предел
+// 800 строк, а эти договоры читают и владелец сеансов (`tab-handoffs.ts`), и сборка фона, и тесты.
+
+import type { PageIdentity } from "../../protocol/index.ts";
+import type { OpenSessionOutcome, OpenSessionRequest } from "../host-link/open-session-requests.ts";
+import type { Scheduler } from "../host-link/native-port.ts";
+import type { AdMirrorBrowser } from "./ad-skip-mirror.ts";
+import type { FileAddressRule } from "./file-address-guard.ts";
+import type { FileReferrerRules } from "./file-referrer-rule.ts";
+import type { FrameConnector } from "./frame-port.ts";
+import type { LocalAddressBlock } from "./local-address-block-rules.ts";
+import type { RangeFetch } from "./range-fetcher.ts";
+import type { AfterPreviousSession } from "./session-contract.ts";
+import type { WebSocketFactory } from "./session-socket.ts";
+import type { ChosenVideo } from "./video-choice.ts";
+
+/** Что сеансу нужно от связи с посредником (HostLink). */
+export interface SessionDoor {
+  openSession(request: OpenSessionRequest): Promise<OpenSessionOutcome>;
+  acquireDemand(reason: string): () => void;
+}
+
+export interface HandoffSessionDependencies {
+  readonly door: SessionDoor;
+  readonly createWebSocket: WebSocketFactory;
+  readonly scheduler: Scheduler;
+  readonly connectFrame: FrameConnector;
+  /** Жива ли вкладка (отличить «закрыли вкладку» от «ушли со страницы»). */
+  readonly tabExists: (tabId: number) => Promise<boolean>;
+  /** `tabs.get`: заголовок и адрес; `undefined` — вкладки нет. */
+  readonly describeTab: (tabId: number) => Promise<TabDescription | undefined>;
+  /** Сеть браузера для байтов файла `<video src>` (сессия 09b; в продукте — `fetch` фона). */
+  readonly fetchRange: RangeFetch;
+  /** Referer закачки файла (решение 202): правило браузера на время одного запроса. */
+  readonly fileReferrer: FileReferrerRules;
+  /** Сетевой заслон локальных адресов (решение 199): разрешение сеанса на время одного запроса. */
+  readonly localAddressBlock: LocalAddressBlock;
+  /** Взвести сторож следующего видео всем фреймам вкладки (сессия 09c2). */
+  readonly armNextVideo: (tabId: number, leaseMs: number) => void;
+  /** Браузерная сторона дублёра кнопки пропуска рекламы: аренда наблюдения, нажатие, вывод вкладки (09d). */
+  readonly adMirrorBrowser: AdMirrorBrowser;
+  /** Отметка в журнал разработчика (устаревшая команда плеера, сбой вывода вкладки). */
+  readonly noteForDeveloper: (message: string) => void;
+}
+
+/** Что фон знает о вкладке: подпись окна и адрес документа. */
+export interface TabDescription {
+  readonly title?: string | undefined;
+  readonly url?: string | undefined;
+}
+
+/** Что и куда передаём. */
+export interface HandoffTarget {
+  readonly tabId: number;
+  /** Адрес вкладки при старте: его смена значит, что человек ушёл со страницы. */
+  readonly tabUrl: string | undefined;
+  readonly frameId: number;
+  /** Метка документа, из которого выбран элемент (договор: `begin_handoff.document`). */
+  readonly document: string;
+  readonly element: number;
+  readonly sessionKey: string;
+  readonly page: PageIdentity;
+  /** Номер запроса `begin_handoff` (уникален в фоне). */
+  readonly beginRequestId: number;
+  /** Правило адреса файла (решение 199): `file_source` и перенаправления проверяются им же. */
+  readonly fileAddressRule: FileAddressRule;
+  /** Что передаётся: реклама или фильм, и может ли «фильм» оказаться рекламой (сессия 09c2). */
+  readonly video: Pick<ChosenVideo, "role" | "mayBeAd">;
+  /** Новый номер запроса `begin_handoff` для переезда. */
+  readonly nextBeginRequestId: () => number;
+  /** Замена видео на той же вкладке (решение 215): когда начинать страницу; см. `AfterPreviousSession`. */
+  readonly afterPreviousSession?: AfterPreviousSession;
+}
