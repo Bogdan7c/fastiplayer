@@ -42,6 +42,10 @@
 //! — каждый диапазон просим у внешней стороны ([`pushed_file`]), для плеера это
 //! обычный файл с перемоткой, как progressive HTTP.
 //!
+//! Очередь запросов ресурсов (сессия 10a1): движок вроде нативного HLS просит
+//! ресурсы по номеркам внешней стороны ([`resource_fetch_queue`]), тела приходят
+//! кусками по номеру запроса — тот же счётчик номеров сеанса, что у файла.
+//!
 //! Страница — враг: размеры сегментов ограничены, шифрование отвергается, любая
 //! ошибка — ошибка одного потока, а не процесса.
 
@@ -67,6 +71,7 @@ mod producer_wait;
 mod protection;
 mod random_access;
 mod range_file;
+mod resource_fetch;
 mod shelf;
 mod stream;
 mod stream_buffer;
@@ -95,6 +100,14 @@ pub use range_file::{
     PushedFileRequests, PushedFileWriter, RangeBytesVerdict, RangeFailure, RangeIdStanding,
     RangeOutcome, RangeRequest, RangeRequestId, RangeRequestIds, RangeRequestNotifier,
     RangeRetryPolicy, ResourceSizeReport, UnsupportedFileLayout, pushed_file,
+};
+pub use resource_fetch::{
+    ExternalResourceHandle, ResourceByteRange, ResourceByteRangeOverflow, ResourceExtent,
+    ResourceFailureCounts, ResourceFetch, ResourceFetchClient, ResourceFetchError,
+    ResourceFetchFailure, ResourceFetchFailureClass, ResourceFetchOutcome, ResourceFetchPolicy,
+    ResourceFetchPolicyError, ResourceFetchRequests, ResourceFetchSpec, ResourceFetchStats,
+    ResourceFetchViolation, ResourceFetchWriter, ResourceFrameVerdict, ResourceRequest,
+    ResourceRequestClaim, ResourceSealCut, resource_fetch_queue,
 };
 pub use stream::{
     EndOfStreamReport, OpenProgress, OpenedPushedStream, PushedStreamDemuxer, PushedStreamOpener,
