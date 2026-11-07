@@ -139,3 +139,33 @@ fn the_desk_keeps_the_latest_downloaded_range_until_the_window_closes() {
         "a closed window keeps nothing"
     );
 }
+
+/// Возможности плеера окна доходят до медиа-части через стол: до подъёма окна —
+/// «ещё неизвестно» (HLS-открыватель ждёт), после — ровно то, что назвало окно.
+#[test]
+fn the_window_names_its_decode_capabilities_through_the_desk() {
+    use crate::browser_session::hls_bridge::capabilities::{
+        BrowserDecodeCapabilities, DecodeCapabilitiesAnswer, DecodeCapabilitiesSource,
+    };
+    use crate::browser_session::playback::video_output::software_only_capabilities;
+
+    let desk = PlaybackDesk::new();
+    let remote = WindowRemote::new(desk.clone());
+    assert!(matches!(
+        remote.decode_capabilities(),
+        DecodeCapabilitiesAnswer::NotYetKnown
+    ));
+
+    let system = software_only_capabilities(render_core::RenderCapabilities::wgpu_nv12(None));
+    let audio = audio::AudioDecodeCapabilityProvider::audio_decode_capability_snapshot(
+        &audio::ProductionAudioDecoderFactory::default(),
+    );
+    desk.publish_decode_capabilities(BrowserDecodeCapabilities {
+        system: system.clone(),
+        audio,
+    });
+    let DecodeCapabilitiesAnswer::Known(known) = remote.decode_capabilities() else {
+        panic!("the window named its capabilities");
+    };
+    assert_eq!(known.system, system);
+}

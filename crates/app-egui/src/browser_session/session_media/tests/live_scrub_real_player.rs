@@ -66,6 +66,15 @@ struct SharedPlayback {
     offered: Rc<RefCell<DownloadedRange>>,
 }
 
+/// Этой подделке HLS-поколения не нужны: возможностей плеера она не знает.
+impl crate::browser_session::hls_bridge::capabilities::DecodeCapabilitiesSource for SharedPlayback {
+    fn decode_capabilities(
+        &self,
+    ) -> crate::browser_session::hls_bridge::capabilities::DecodeCapabilitiesAnswer {
+        crate::browser_session::hls_bridge::capabilities::DecodeCapabilitiesAnswer::NotYetKnown
+    }
+}
+
 impl MediaPlayback for SharedPlayback {
     fn load(
         &mut self,

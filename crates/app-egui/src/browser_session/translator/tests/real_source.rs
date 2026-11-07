@@ -48,6 +48,7 @@ fn real_translator() -> ProtocolTranslator<PushedStreamFactory> {
     ProtocolTranslator::new(
         PushedStreamFactory::new(policy),
         super::super::file_port::unused_file_factory(),
+        crate::browser_session::hls_bridge::factory::unused_hls_factory(),
     )
 }
 

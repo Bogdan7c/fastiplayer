@@ -31,7 +31,9 @@
 //!   каждый). Граница — [`MAX_PENDING_RANGE_REQUESTS`], и она недостижима при честной
 //!   работе (доказательство у константы). Если всё же достигнута, запрос НЕ теряется
 //!   молча: [`PageOutbound::request_range`] отказывает явно
-//!   ([`RangeQueueOutcome::QueueFull`]), а владелец закрывает сеанс;
+//!   ([`RangeQueueOutcome::QueueFull`]), а владелец закрывает сеанс; `fetch_resource`
+//!   (ресурс HLS по номерку, протокол 1.1) — так же, и только странице 1.1
+//!   ([`resource_requests`]);
 //! - сеанс закончился или начался новый — отложенное забывается
 //!   ([`PageOutbound::forget_pending_of_ended_session`],
 //!   [`PageOutbound::reset_for_new_session`]); сервер выключается — сообщение
@@ -58,7 +60,12 @@ use player_core::{PlaybackRate as PlayerPlaybackRate, PlaybackState};
 use pushed_media_source::{BufferIntake, BufferStatus, PageSeekRequest, RangeRequest};
 use tracing::{debug, error};
 
+use self::resource_requests::{PageProtocol, ResourceRequestCounters};
 use super::playback::PlaybackObservation;
+
+mod resource_requests;
+
+pub(crate) use self::resource_requests::{ResourceQueueOutcome, ResourceRequestPermission};
 
 /// Шаг часов: 4 тика в секунду (протокол, решение 85; `results/00c.md`, п. 4).
 /// Чаще — лишняя нагрузка на канал и страницу, реже — муляж элемента заметно
@@ -319,6 +326,10 @@ pub(crate) struct PageOutbound {
     last_rejected: Option<StreamGeneration>,
     /// Счётчики запросов байтов.
     range_counters: RangeRequestCounters,
+    /// Общая версия протокола страницы текущего сеанса (`fetch_resource` — с 1.1).
+    page_protocol: PageProtocol,
+    /// Счётчики просьб ресурсов HLS.
+    resource_counters: ResourceRequestCounters,
 }
 
 impl PageOutbound {
@@ -334,6 +345,8 @@ impl PageOutbound {
             pending_events: VecDeque::new(),
             last_rejected: None,
             range_counters: RangeRequestCounters::default(),
+            page_protocol: PageProtocol::NotAttachedYet,
+            resource_counters: ResourceRequestCounters::default(),
         }
     }
 
@@ -359,6 +372,8 @@ impl PageOutbound {
         self.pending_buffer = None;
         self.pending_events.clear();
         self.last_rejected = None;
+        // Версию новой страницы скажет её `Attached`.
+        self.page_protocol = PageProtocol::NotAttachedYet;
     }
 
     /// Тик часов, если пора: уходит сразу, при полной очереди — выбрасывается.
@@ -519,6 +534,7 @@ impl PageOutbound {
                         && delivery == Delivery::Sent
                     {
                         self.count_sent_range_request(&sent);
+                        self.count_sent_resource_request(&sent);
                     }
                 }
             }
@@ -605,6 +621,7 @@ const fn message_kind(message: &PlayerSessionMessage) -> &'static str {
         PlayerSessionMessage::SelectVariant { .. } => "select_variant",
         PlayerSessionMessage::NextEpisode {} => "next_episode",
         PlayerSessionMessage::FetchRange { .. } => "fetch_range",
+        PlayerSessionMessage::FetchResource { .. } => "fetch_resource",
         PlayerSessionMessage::StreamRejected { .. } => "stream_rejected",
         PlayerSessionMessage::SkipAd {} => "skip_ad",
     }

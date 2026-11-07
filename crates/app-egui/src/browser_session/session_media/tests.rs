@@ -140,6 +140,15 @@ impl FakePlayback {
     }
 }
 
+/// Этой подделке HLS-поколения не нужны: возможностей плеера она не знает.
+impl crate::browser_session::hls_bridge::capabilities::DecodeCapabilitiesSource for FakePlayback {
+    fn decode_capabilities(
+        &self,
+    ) -> crate::browser_session::hls_bridge::capabilities::DecodeCapabilitiesAnswer {
+        crate::browser_session::hls_bridge::capabilities::DecodeCapabilitiesAnswer::NotYetKnown
+    }
+}
+
 impl MediaPlayback for FakePlayback {
     fn load(
         &mut self,
@@ -765,6 +774,7 @@ mod generation_rejection;
 mod generation_start;
 mod generation_switch;
 mod handoff_start;
+mod hls_requests;
 mod live_click_real_player;
 mod live_scrub_real_player;
 mod opening_clock;

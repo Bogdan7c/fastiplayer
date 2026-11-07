@@ -1,13 +1,14 @@
-//! Откуда медиа-часть берёт содержимое поколения: «сегменты» или «файл» (03c).
+//! Откуда медиа-часть берёт содержимое поколения: «сегменты», «файл» (03c) или «HLS»
+//! (10a1).
 //!
-//! Поколение страницы бывает двух видов, и главному циклу медиа они нужны по-разному:
+//! Поколение страницы бывает трёх видов, и главному циклу медиа они нужны по-разному:
 //!
-//! | | сегменты MSE | файл `<video src>` |
-//! |---|---|---|
-//! | открытие | `poll_open` потока | `poll_open` файла (первый вызов ставит запрос) |
-//! | `PreparedMedia` | демуксер потока (+ живая шкала) | открытый блокирующий демуксер → фоновый поток с перемоткой |
-//! | пока играет | монитор: запас, «полон», просьбы перемотки страницы | запросы байтов `fetch_range` странице |
-//! | `buffer_state` странице | да | нет (страница ничего не качает сама) |
+//! | | сегменты MSE | файл `<video src>` | HLS по номеркам |
+//! |---|---|---|---|
+//! | открытие | `poll_open` потока | `poll_open` файла (первый вызов ставит запрос) | `poll_open` открывателя native HLS (свой поток; ждёт возможностей плеера) |
+//! | `PreparedMedia` | демуксер потока (+ живая шкала) | открытый блокирующий демуксер → фоновый поток с перемоткой | демуксер native HLS (порт перемотки, живая шкала у эфира) |
+//! | пока играет | монитор: запас, «полон», просьбы перемотки страницы | запросы байтов `fetch_range` странице | запросы ресурсов `fetch_resource` странице |
+//! | `buffer_state` странице | да | нет (страница ничего не качает сама) | нет (то же) |
 //!
 //! Различие выражено типами [`PendingFeed`] (ещё открывается) и [`LoadedFeed`] (в
 //! плеере), а не флагами: `SessionMedia` спрашивает у них «открылось?», «какие запросы
@@ -24,7 +25,7 @@ use player_core::{PreparedInitialPositionError, PreparedMedia, PreparedMediaTime
 use pushed_media_source::{
     BufferStatus, FileOpenProgress, FileSeekability, OpenProgress, OpenedPushedFile,
     OpenedPushedStream, PageSeekRequest, PushedFileOpener, PushedFileRequests, PushedStreamMonitor,
-    PushedStreamOpener, RangeRequest,
+    PushedStreamOpener, RangeRequest, ResourceFetchRequests, ResourceRequest,
 };
 use tracing::error;
 use web_media_transport_api::TransportSeekability;
@@ -37,6 +38,10 @@ use super::generation_start::{
     AfterLoad, GenerationStart, is_positionable, position_segments_demuxer,
 };
 use super::scrub_range::{SegmentsTimeline, segments_downloaded_range};
+use crate::browser_session::hls_bridge::capabilities::DecodeCapabilitiesSource;
+use crate::browser_session::hls_bridge::opener::{
+    HlsGenerationOpener, HlsOpenProgress, HlsPresentation,
+};
 use crate::browser_session::intake_notice::GenerationSource;
 use crate::browser_session::rejection::{
     FailureResponse, response_to_file_failure, response_to_stream_failure,
@@ -72,6 +77,13 @@ pub(super) enum PendingFeed {
         /// Окно предзагрузки для фонового демуксера файла.
         prefetch: PrefetchConfig,
     },
+    /// HLS по номеркам.
+    Hls {
+        /// Открыватель native HLS.
+        opener: HlsGenerationOpener,
+        /// Очередь запросов ресурсов (переходит к загруженному поколению).
+        requests: ResourceFetchRequests,
+    },
 }
 
 /// Содержимое поколения, загруженного в плеер.
@@ -87,6 +99,12 @@ pub(super) enum LoadedFeed {
     File {
         /// Очередь запросов байтов.
         requests: PushedFileRequests,
+    },
+    /// HLS: запросы ресурсов, которые движок продолжает выдавать (сегменты, live-корень,
+    /// перемотка).
+    Hls {
+        /// Очередь запросов ресурсов.
+        requests: ResourceFetchRequests,
     },
 }
 
@@ -132,19 +150,31 @@ impl PendingFeed {
                 requests,
                 prefetch,
             },
+            GenerationSource::Hls { opener, requests } => Self::Hls { opener, requests },
         }
     }
 
-    /// Это файл `<video src>`.
+    /// Это ещё поток сегментов (его может заменить файл или HLS того же поколения).
+    pub(super) const fn is_segments(&self) -> bool {
+        matches!(self, Self::Segments { .. })
+    }
+
+    /// Это файл `<video src>` (тестам медиа-части).
+    #[cfg(test)]
     pub(super) const fn is_file(&self) -> bool {
         matches!(self, Self::File { .. })
     }
 
-    /// Монитор буфера, если это сегменты (у файла монитора нет).
+    /// Это HLS по номеркам.
+    pub(super) const fn is_hls(&self) -> bool {
+        matches!(self, Self::Hls { .. })
+    }
+
+    /// Монитор буфера, если это сегменты (у файла и HLS монитора нет).
     pub(super) const fn segments_monitor(&self) -> Option<&PushedStreamMonitor> {
         match self {
             Self::Segments { monitor, .. } => Some(monitor),
-            Self::File { .. } => None,
+            Self::File { .. } | Self::Hls { .. } => None,
         }
     }
 
@@ -155,7 +185,7 @@ impl PendingFeed {
             Self::Segments {
                 opened: Some(_), ..
             } => PendingOpenState::HeldByGate,
-            Self::File { .. } => PendingOpenState::NotSegments,
+            Self::File { .. } | Self::Hls { .. } => PendingOpenState::NotSegments,
         }
     }
 
@@ -163,13 +193,15 @@ impl PendingFeed {
     ///
     /// `placement` решает, когда открытое поколение-сегменты отдать плееру и с какого
     /// места (ворота 04d: с целью — только когда полка её держит); `page` — жива ли
-    /// страница, которая может прислать байты у цели. Файл ворот не имеет: его старт
-    /// с цели — перемотка после показа.
+    /// страница, которая может прислать байты у цели. Файл и HLS ворот не имеют: их
+    /// старт с цели — перемотка после показа. `capabilities` нужны только HLS: по ним
+    /// движок выбирает вариант (окно называет их, когда поднимется).
     pub(super) fn poll_open(
         &mut self,
         placement: &mut GenerationPlacement,
         now: Instant,
         page: PageAvailability,
+        capabilities: &dyn DecodeCapabilitiesSource,
     ) -> OpenStep {
         match self {
             Self::Segments {
@@ -261,6 +293,28 @@ impl PendingFeed {
                     response: response_to_file_failure(&open_error),
                 },
             },
+            Self::Hls { opener, requests } => match opener.poll_open(capabilities) {
+                HlsOpenProgress::Pending => OpenStep::Waiting(FILE_OPEN_POLL_INTERVAL),
+                HlsOpenProgress::Ready(opened) => {
+                    let after_load = match opened.presentation {
+                        // Ролик читается с начала; позиция страницы — перемотка после показа.
+                        HlsPresentation::OnDemand => placement.named_start().after_file_load(),
+                        // Эфир встаёт у живого края, как у плеера страницы.
+                        HlsPresentation::Live => AfterLoad::Nothing,
+                    };
+                    OpenStep::Ready {
+                        prepared: Box::new(opened.prepared),
+                        feed: LoadedFeed::Hls {
+                            requests: requests.clone(),
+                        },
+                        after_load,
+                    }
+                }
+                HlsOpenProgress::Failed(rejection) => OpenStep::Failed {
+                    class: rejection.class,
+                    response: FailureResponse::RejectGeneration(rejection.reason),
+                },
+            },
         }
     }
 
@@ -269,8 +323,16 @@ impl PendingFeed {
     /// Звать после каждого `poll_open`: первый вызов у файла выдаёт первый запрос.
     pub(super) fn take_range_requests(&self) -> Vec<RangeRequest> {
         match self {
-            Self::Segments { .. } => Vec::new(),
+            Self::Segments { .. } | Self::Hls { .. } => Vec::new(),
             Self::File { requests, .. } => requests.take_requests(),
+        }
+    }
+
+    /// Запросы ресурсов HLS, которые надо отправить странице (у других видов их нет).
+    pub(super) fn take_resource_requests(&self) -> Vec<ResourceRequest> {
+        match self {
+            Self::Hls { requests, .. } => requests.take_requests(),
+            Self::Segments { .. } | Self::File { .. } => Vec::new(),
         }
     }
 }
@@ -280,19 +342,29 @@ impl LoadedFeed {
     /// повтор после сбоя). У сегментов их нет.
     pub(super) fn take_range_requests(&self) -> Vec<RangeRequest> {
         match self {
-            Self::Segments { .. } => Vec::new(),
+            Self::Segments { .. } | Self::Hls { .. } => Vec::new(),
             Self::File { requests } => requests.take_requests(),
         }
     }
 
-    /// Что скачано у поколения — для живого скраба окна. У файла — неизвестно: полки
-    /// нет, байты идут по запросам странице.
+    /// Запросы ресурсов HLS (сегменты, обновление live-корня, перемотка); у других
+    /// видов их нет.
+    pub(super) fn take_resource_requests(&self) -> Vec<ResourceRequest> {
+        match self {
+            Self::Hls { requests } => requests.take_requests(),
+            Self::Segments { .. } | Self::File { .. } => Vec::new(),
+        }
+    }
+
+    /// Что скачано у поколения — для живого скраба окна. У файла и HLS — неизвестно:
+    /// полки нет, байты идут по запросам странице (что из сегментов HLS уже лежит у
+    /// движка, он наружу не говорит, а «известно» без правды хуже «неизвестно»).
     pub(super) fn downloaded_range(&self) -> DownloadedRange {
         match self {
             Self::Segments {
                 downloaded_range, ..
             } => downloaded_range.clone(),
-            Self::File { .. } => DownloadedRange::Unknown,
+            Self::File { .. } | Self::Hls { .. } => DownloadedRange::Unknown,
         }
     }
 
@@ -313,6 +385,7 @@ impl LoadedFeed {
                 }
             }
             Self::File { .. } => FeedReport::File,
+            Self::Hls { .. } => FeedReport::Hls,
         }
     }
 }
@@ -328,6 +401,8 @@ pub(super) enum FeedReport {
     },
     /// Файл: странице ничего про буфер не говорим.
     File,
+    /// HLS: то же — страница качает только то, что просит плеер.
+    Hls,
 }
 
 /// Запросы байтов в порядке выдачи (по сквозному номеру сеанса).

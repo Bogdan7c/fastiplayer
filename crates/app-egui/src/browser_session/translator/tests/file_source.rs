@@ -20,7 +20,7 @@ use crate::browser_session::stream_queue::OwnedRangeChunk;
 
 /// Вызов писателя файла, как его увидел источник.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum FileCallRecord {
+pub(super) enum FileCallRecord {
     Bytes(u32, u64, Vec<u8>),
     Finish(u32, RangeOutcome),
     Seal,
@@ -28,7 +28,7 @@ enum FileCallRecord {
 
 /// Общая запись вызовов и заданные ответы подделки.
 #[derive(Clone, Default)]
-struct FileScript {
+pub(super) struct FileScript {
     calls: Arc<Mutex<Vec<FileCallRecord>>>,
     /// Ответы на рамки по очереди; пусто — `Accepted`.
     bytes_answers: Arc<Mutex<VecDeque<Result<RangeBytesVerdict, PushedFileError>>>>,
@@ -39,7 +39,7 @@ struct FileScript {
 }
 
 impl FileScript {
-    fn calls(&self) -> Vec<FileCallRecord> {
+    pub(super) fn calls(&self) -> Vec<FileCallRecord> {
         self.calls.lock().expect("calls").clone()
     }
 
@@ -111,7 +111,7 @@ impl FileWriterPort for FakeFileWriter {
     }
 }
 
-struct FakeFileFactory(FileScript);
+pub(super) struct FakeFileFactory(pub(super) FileScript);
 
 impl FileFactory for FakeFileFactory {
     fn start_file(&mut self, ids: RangeRequestIds) -> StartedFile {
@@ -146,13 +146,17 @@ fn file_translator() -> (ProtocolTranslator<FakeFactory>, CallLog, FileScript) {
     let log = factory.log.clone();
     let script = FileScript::default();
     (
-        ProtocolTranslator::new(factory, Box::new(FakeFileFactory(script.clone()))),
+        ProtocolTranslator::new(
+            factory,
+            Box::new(FakeFileFactory(script.clone())),
+            crate::browser_session::hls_bridge::factory::unused_hls_factory(),
+        ),
         log,
         script,
     )
 }
 
-fn file_source_added(instance: u64, number: u32) -> SessionInput {
+pub(super) fn file_source_added(instance: u64, number: u32) -> SessionInput {
     message(
         instance,
         PageSessionMessage::FileSourceAdded {
@@ -437,6 +441,7 @@ fn every_file_of_a_session_shares_the_request_numbering() {
     let mut translator = ProtocolTranslator::new(
         FakeFactory::default(),
         Box::new(RecordingFactory(ids_seen.clone())),
+        crate::browser_session::hls_bridge::factory::unused_hls_factory(),
     );
 
     run(

@@ -63,6 +63,7 @@ mod codec_label;
 mod debug_recording;
 mod drain_override;
 mod held_bytes_override;
+mod hls_bridge;
 mod inbox;
 mod intake_notice;
 mod journal;
@@ -148,6 +149,9 @@ enum BrowserSessionStartFailure {
     /// Настройки файла `<video src>` из `[network]` не собрались.
     #[error("the browser file source settings are not valid: {0}")]
     FileSource(#[from] FileSourceSettingsError),
+    /// Политика очереди ресурсов HLS из `[network]` не собралась (нулевой срок чтения).
+    #[error("the browser HLS resource settings are not valid: {0}")]
+    HlsResources(#[from] pushed_media_source::ResourceFetchPolicyError),
     /// Плеер не поднялся.
     #[error("the browser session player did not start: {0}")]
     Playback(#[from] BrowserPlaybackStartError),

@@ -62,6 +62,7 @@ use self::metered_audio::{AudioMeter, BrowserAudioOutputChoice};
 use self::video_output::{
     BrowserVideoOutput, VideoBackendStart, VideoBackendStartError, VideoBackendStartRequest,
 };
+use super::hls_bridge::capabilities::{BrowserDecodeCapabilities, DecodeCapabilitiesAnswer};
 use super::inbox::BrowserSessionWake;
 use super::journal::{
     BROWSER_PLAYBACK_SUMMARY_INTERVAL, JournalNotice, PlaybackJournal, PlaybackSummary,
@@ -350,6 +351,9 @@ pub(crate) struct BrowserPlayback {
     pending_install: Option<PendingInstall>,
     /// Выдача квитанций загрузок.
     load_tickets: MediaLoadTicketIssuer,
+    /// Что плеер умеет декодировать и показывать: те же возможности, что ушли его
+    /// рабочему потоку (по ним HLS-поколение выбирает вариант).
+    decode_capabilities: BrowserDecodeCapabilities,
 }
 
 /// Загрузка, ждущая итога установки.
@@ -371,11 +375,16 @@ impl BrowserPlayback {
     ) -> Result<Self, BrowserPlaybackStartError> {
         let (audio_output_factory, audio_meter) =
             audio.build_metered_factory(settings.audio_output_device_id());
+        let audio_decoders = audio::ProductionAudioDecoderFactory::default();
+        let decode_capabilities = BrowserDecodeCapabilities {
+            system: video_output.capabilities(),
+            audio: audio::AudioDecodeCapabilityProvider::audio_decode_capability_snapshot(
+                &audio_decoders,
+            ),
+        };
         let worker_config =
             PlayerWorkerConfig::from_app_config(settings.app_config(), automatic_surface_pool())
-                .with_audio_decoder_factory(Arc::new(
-                    audio::ProductionAudioDecoderFactory::default(),
-                ))
+                .with_audio_decoder_factory(Arc::new(audio_decoders))
                 .with_audio_output_factory(audio_output_factory)
                 .with_audio_tempo_processor_factory(Arc::new(
                     audio_signalsmith::SignalsmithTempoProcessorFactory,
@@ -383,7 +392,7 @@ impl BrowserPlayback {
                 .with_presentation_wake(Arc::new(PresentationWakeBridge { wake }));
         let worker = PlayerWorker::spawn(worker_config)?;
         worker
-            .set_system_capabilities(video_output.capabilities())
+            .set_system_capabilities(decode_capabilities.system.clone())
             .map_err(BrowserPlaybackStartError::Capabilities)?;
         match video_output.start_backend(VideoBackendStartRequest::Startup)? {
             VideoBackendStart::Started(backend) => worker
@@ -405,7 +414,13 @@ impl BrowserPlayback {
             ledger: LoadLedger::default(),
             pending_install: None,
             load_tickets: MediaLoadTicketIssuer::default(),
+            decode_capabilities,
         })
+    }
+
+    /// Что плеер умеет декодировать и показывать (безоконный знает это с самого старта).
+    pub(crate) fn decode_capabilities(&self) -> DecodeCapabilitiesAnswer {
+        DecodeCapabilitiesAnswer::Known(Box::new(self.decode_capabilities.clone()))
     }
 
     /// Загружает новое медиа (новое поколение потока): играет сразу или встаёт на

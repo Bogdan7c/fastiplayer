@@ -140,6 +140,7 @@ fn page_messages_are_bounded_but_lifecycle_events_are_never_dropped() {
     for _ in 0..100 {
         inbox.publish_lifecycle(SessionLifecycleEvent::Attached {
             session: key.clone(),
+            agreed_protocol: browser_bridge_protocol::CURRENT_PROTOCOL_VERSION,
         });
     }
     inbox.publish_lifecycle(SessionLifecycleEvent::Ended {

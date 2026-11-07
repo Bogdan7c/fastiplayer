@@ -190,7 +190,11 @@ fn fake_translator() -> (ProtocolTranslator<FakeFactory>, CallLog, AsyncFailure)
     let log = factory.log.clone();
     let failure = factory.failure.clone();
     (
-        ProtocolTranslator::new(factory, file_port::unused_file_factory()),
+        ProtocolTranslator::new(
+            factory,
+            file_port::unused_file_factory(),
+            crate::browser_session::hls_bridge::factory::unused_hls_factory(),
+        ),
         log,
         failure,
     )
@@ -749,6 +753,7 @@ fn the_end_of_an_instance_is_announced_after_its_data_notices() {
 }
 
 mod file_source;
+mod hls_source;
 mod log_privacy;
 mod page_removal;
 mod real_source;

@@ -28,7 +28,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use browser_bridge_protocol::GrantOutcome;
+use browser_bridge_protocol::{GrantOutcome, ProtocolVersion};
 use browser_bridge_session::{
     BrowserSessionPolicy, EntryCaller, EntryDesk, EntryEvent, ExitCause, LifecycleVerdict,
     ProcessLifecycle, SessionEndReason, SessionLifecycleEvent, SessionRef,
@@ -61,6 +61,9 @@ pub(super) trait SessionMediaPort {
     /// в том числе при замене вкладки и повторе). Медиа-части подпись не нужна, поэтому
     /// по умолчанию её никто не берёт; оконный наблюдатель ядра её сохраняет.
     fn on_page_identified(&mut self, _page: OpenedPage) {}
+    /// Страница подключилась к сеансу (в том числе снова) с этой общей версией
+    /// протокола: по ней медиа-часть решает, что можно слать (`fetch_resource` — с 1.1).
+    fn on_session_attached(&mut self, session: &SessionRef, agreed_protocol: ProtocolVersion);
     /// Экземпляр сеанса закончился (сервер сообщил `Ended` с причиной).
     fn on_session_ended(&mut self, session: &SessionRef, reason: SessionEndReason);
     /// Уведомления потока приёма за проход и слитое «легли новые байты».
@@ -79,6 +82,10 @@ impl SessionMediaPort for SessionMedia {
 
     fn on_session_opened(&mut self, session: &SessionRef) {
         Self::on_session_opened(self, session);
+    }
+
+    fn on_session_attached(&mut self, session: &SessionRef, agreed_protocol: ProtocolVersion) {
+        Self::on_session_attached(self, session, agreed_protocol);
     }
 
     fn on_session_ended(&mut self, session: &SessionRef, reason: SessionEndReason) {
@@ -211,8 +218,15 @@ impl BrowserSessionRuntime {
         for event in &batch.lifecycle_events {
             log_lifecycle_event(event);
             self.lifecycle.on_lifecycle_event(event);
-            if let SessionLifecycleEvent::Ended { session, reason } = event {
-                media.on_session_ended(session, *reason);
+            match event {
+                SessionLifecycleEvent::Attached {
+                    session,
+                    agreed_protocol,
+                } => media.on_session_attached(session, *agreed_protocol),
+                SessionLifecycleEvent::Ended { session, reason } => {
+                    media.on_session_ended(session, *reason);
+                }
+                SessionLifecycleEvent::ConnectionLost { .. } => {}
             }
         }
         // С 03b сообщения страницы идут через единую очередь в поток приёма; сюда

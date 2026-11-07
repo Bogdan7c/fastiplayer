@@ -165,6 +165,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 name = "app-egui"
 version = "0.2.0"
 dependencies = [
+ "aes",
  "animation-core",
  "anyhow",
  "atomic-file-store",
@@ -178,6 +179,7 @@ dependencies = [
  "browser-bridge-session",
  "bytes",
  "capability-core",
+ "cbc",
  "codec-core",
  "dash-mpd-core",
  "demux-api",
@@ -2970,11 +2972,14 @@ name = "media-source-open"
 version = "0.2.0"
 dependencies = [
  "ac3-elementary-demux",
+ "aes",
  "anyhow",
  "audio",
  "audio-core",
  "bounded-xml-reader",
+ "bytes",
  "capability-core",
+ "cbc",
  "codec-core",
  "dash-mpd-core",
  "demux-api",

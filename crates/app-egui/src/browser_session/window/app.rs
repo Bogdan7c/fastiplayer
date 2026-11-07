@@ -316,6 +316,9 @@ impl BrowserWindowApp {
         match created {
             Ok(mut instance) => {
                 self.driver.attach_window();
+                // Плеер окна назвал свои возможности: HLS-поколения выбирают по ним вариант.
+                self.desk
+                    .publish_decode_capabilities(instance.decode_capabilities());
                 // MPRIS появляется вместе с окном (страницу ему назовут в этом же проходе).
                 let observation = instance.transport_observation();
                 self.desktop = Some(WindowDesktopTransport::start(

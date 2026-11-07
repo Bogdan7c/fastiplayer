@@ -22,3 +22,6 @@
 - Тесты: `src/http_reconnect/tests.rs`, `src/http/tests/reconnect.rs` (loopback), `src/http/tests.rs::interrupted_range_response_resumes_from_first_missing_byte`. Сквозные — `media-source-open/src/direct_progressive_open/network_drop_tests.rs`. Полная картина — `mem:media-services/progressive-http-s22-2026-07-22` (UX16).
 
 Related: `mem:media-services/manifest-supersede-cancellation-aud020-2026-08-24`, `mem:media-services/core`, `mem:testing/coverage`.
+
+## Внешний транспорт HTTP-запроса (10a1, 2026-11-07)
+- `http_bounded/external_transport.rs`: аксессоры `HttpBoundedFetchRequest` для чужого транспорта, `HttpExternalFailureContext::failure(HttpExternalTransportFailure::…)`, `HttpBoundedResponse::from_external_body`, `pub use reqwest::StatusCode as HttpStatusCode`. Потребитель — розетка `web-media-adaptive::AdaptiveResourceTransport` (`mem:media-services/adaptive-transport-s31-2026-07-23`).

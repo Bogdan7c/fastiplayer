@@ -38,6 +38,7 @@ use super::player_port::AppStateWindowPlayer;
 use crate::ad_plate::AdPlate;
 use crate::app_shell::{ReadOnlyRendererStartupMarker, ShellKeyOutcome, handle_shell_key_event};
 use crate::app_wake::{AppWakeOwner, AppWakePort, AppWakeProxy};
+use crate::browser_session::hls_bridge::capabilities::BrowserDecodeCapabilities;
 use crate::frame_prepare::{render_frame, with_lifecycle_settings_adapter};
 use crate::instance_forwarding::window_activation::raise_window;
 use crate::playlist_runtime::PlaylistRuntime;
@@ -135,6 +136,8 @@ pub(super) struct BrowserWindowInstance {
     player_timeline_wake_port: AppWakePort,
     local_file_open_wake_port: AppWakePort,
     subtitle_wake_port: AppWakePort,
+    /// Возможности плеера окна (снимок при создании) — для выбора варианта HLS.
+    decode_capabilities: BrowserDecodeCapabilities,
 }
 
 impl BrowserWindowInstance {
@@ -236,6 +239,10 @@ impl BrowserWindowInstance {
 
         let system_capabilities = probe_system_capabilities(renderer.capabilities().clone());
         info!("{}", system_capabilities.summary_text());
+        let decode_capabilities = BrowserDecodeCapabilities {
+            system: system_capabilities.clone(),
+            audio: app_state.audio_decode_capability_snapshot(),
+        };
         settings_runtime.set_hardware_decode_availability(
             HardwareDecodeAvailability::from_system_capabilities(&system_capabilities),
         );
@@ -254,6 +261,7 @@ impl BrowserWindowInstance {
             player_timeline_wake_port: ports.player_timeline,
             local_file_open_wake_port: ports.local_file_open,
             subtitle_wake_port: ports.subtitles,
+            decode_capabilities,
         };
         instance.bind_queue_and_audio_level()?;
         info!(
@@ -507,6 +515,11 @@ impl BrowserWindowInstance {
         );
         self.note_scheduled_cause(action);
         action
+    }
+
+    /// Что умеет плеер окна: возможности рендера и декодеров при создании окна.
+    pub(super) fn decode_capabilities(&self) -> BrowserDecodeCapabilities {
+        self.decode_capabilities.clone()
     }
 
     /// Окно для применения решения планировщика.

@@ -17,7 +17,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use browser_bridge_protocol::SessionCloseReason;
+use browser_bridge_protocol::{ProtocolVersion, SessionCloseReason};
 use browser_bridge_session::{
     BrowserSessionPolicy, BrowserSessionServer, EntryDesk, ExitCause, LifecycleVerdict,
     OsRandomTokenSource, SessionControl, SessionEndReason, SessionRef,
@@ -30,6 +30,7 @@ use tracing::{debug, info};
 
 use super::BrowserSessionStartFailure;
 use super::buffer_policy::{LiveBufferWindow, source_window};
+use super::hls_bridge::factory::BridgeHlsFactory;
 use super::inbox::{BrowserSessionInbox, BrowserSessionWake, InboxCapacity};
 use super::intake_notice::IntakeNotice;
 use super::normal_player_pause::SystemNormalPlayerPause;
@@ -161,8 +162,13 @@ impl BrowserSessionCore {
                 // Запрос байтов будит главный цикл сразу, а не по тику часов.
                 Box::new(PushedFileFactory::new(
                     file_policy,
-                    Arc::new(RangeRequestWake::new(wake)),
+                    Arc::new(RangeRequestWake::new(wake.clone())),
                 )),
+                // Запрос ресурса HLS — так же; политика очереди — договор 1.1 и `[network]`.
+                Box::new(BridgeHlsFactory::new(
+                    settings.app_config(),
+                    Arc::new(RangeRequestWake::new(wake)),
+                )?),
             ),
         )
         .map_err(BrowserSessionStartFailure::IntakeThread)?;
@@ -379,6 +385,10 @@ impl SessionMediaPort for SessionOpenObserver<'_> {
 
     fn on_page_identified(&mut self, page: OpenedPage) {
         self.page = Some(page);
+    }
+
+    fn on_session_attached(&mut self, session: &SessionRef, agreed_protocol: ProtocolVersion) {
+        self.media.on_session_attached(session, agreed_protocol);
     }
 
     fn on_session_ended(&mut self, session: &SessionRef, reason: SessionEndReason) {

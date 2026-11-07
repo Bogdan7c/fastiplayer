@@ -30,6 +30,9 @@ use std::time::{Duration, Instant};
 
 use player_core::{PlaybackRate, PlayerSnapshot, PreparedMedia};
 
+use super::super::hls_bridge::capabilities::{
+    BrowserDecodeCapabilities, DecodeCapabilitiesAnswer, DecodeCapabilitiesSource,
+};
 use super::super::playback::load_ledger::LoadLedger;
 use super::super::playback::{
     BrowserPlaybackCommandError, LoadStart, MediaLoadTicket, MediaLoadTicketIssuer,
@@ -99,6 +102,8 @@ struct DeskState {
     observation: PlaybackObservation,
     /// Что скачано у показанного медиа (последнее слово медиа-части, не очередь).
     downloaded_range: DownloadedRange,
+    /// Что умеет плеер окна (его называет окно, когда поднимется; до того — неизвестно).
+    decode_capabilities: DecodeCapabilitiesAnswer,
     window_closed: bool,
 }
 
@@ -116,6 +121,7 @@ impl PlaybackDesk {
                 commands: VecDeque::new(),
                 observation: LoadLedger::default().observation(&PlayerSnapshot::default()),
                 downloaded_range: DownloadedRange::Unknown,
+                decode_capabilities: DecodeCapabilitiesAnswer::NotYetKnown,
                 window_closed: false,
             })),
         }
@@ -173,6 +179,17 @@ impl PlaybackDesk {
         self.state.borrow().downloaded_range.clone()
     }
 
+    /// Окно поднялось и называет возможности своего плеера (для выбора варианта HLS).
+    pub(super) fn publish_decode_capabilities(&self, capabilities: BrowserDecodeCapabilities) {
+        self.state.borrow_mut().decode_capabilities =
+            DecodeCapabilitiesAnswer::Known(Box::new(capabilities));
+    }
+
+    /// Возможности плеера окна, если окно их уже назвало.
+    fn decode_capabilities(&self) -> DecodeCapabilitiesAnswer {
+        self.state.borrow().decode_capabilities.clone()
+    }
+
     /// Окно публикует свежее наблюдение.
     pub(super) fn publish(&self, observation: PlaybackObservation) {
         self.state.borrow_mut().observation = observation;
@@ -205,6 +222,12 @@ impl WindowRemote {
             desk,
             tickets: MediaLoadTicketIssuer::default(),
         }
+    }
+}
+
+impl DecodeCapabilitiesSource for WindowRemote {
+    fn decode_capabilities(&self) -> DecodeCapabilitiesAnswer {
+        self.desk.decode_capabilities()
     }
 }
 

@@ -237,16 +237,15 @@ fn lifecycle_events_reach_the_inbox_even_when_the_queue_is_full() {
         session: page.clone(),
         reason: SessionEndReason::ClosedByPlayer(SessionCloseReason::ProtocolViolation),
     };
-    queue.publish_lifecycle(SessionLifecycleEvent::Attached {
+    let attached = SessionLifecycleEvent::Attached {
         session: page.clone(),
-    });
+        agreed_protocol: browser_bridge_protocol::CURRENT_PROTOCOL_VERSION,
+    };
+    queue.publish_lifecycle(attached.clone());
     queue.publish_lifecycle(ended.clone());
 
     let batch = inbox.take_batch();
-    assert_eq!(
-        batch.lifecycle_events,
-        vec![SessionLifecycleEvent::Attached { session: page }, ended]
-    );
+    assert_eq!(batch.lifecycle_events, vec![attached, ended]);
 }
 
 #[test]

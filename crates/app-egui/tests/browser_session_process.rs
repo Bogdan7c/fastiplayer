@@ -865,3 +865,15 @@ mod handoff_start;
 // скорости провода — передача состоялась (полка линейна, очередь с противодавлением).
 #[path = "browser_session_process/journal_burst.rs"]
 mod journal_burst;
+
+/// Поддельная страница протокола 1.1 для HLS-поколения (10a1).
+#[path = "browser_session_process/hls_page.rs"]
+mod hls_page;
+
+/// HLS-поколение до кадров в рендере (10a1).
+#[path = "browser_session_process/hls_generation.rs"]
+mod hls_generation;
+
+/// HLS-поколение: мастер, AES, перемотка, live, безопасность, отказы, версии (10a1).
+#[path = "browser_session_process/hls_generation_edges.rs"]
+mod hls_generation_edges;

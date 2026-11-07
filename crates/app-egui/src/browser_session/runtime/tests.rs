@@ -65,6 +65,8 @@ struct RecordingMedia {
     /// Какие страницы названы медиа-части (по порядку открытий).
     pages: Vec<OpenedPage>,
     ended: Vec<SessionRef>,
+    /// Подключения страницы с общей версией протокола (по порядку событий).
+    attached: Vec<(SessionRef, ProtocolVersion)>,
     /// Что цикл сообщил медиа-части об открытии сеансов — по порядку (прощание
     /// заменённому обязано прийти раньше открытия нового).
     opening_calls: Vec<OpeningCall>,
@@ -99,6 +101,10 @@ impl SessionMediaPort for RecordingMedia {
 
     fn on_page_identified(&mut self, page: OpenedPage) {
         self.pages.push(page);
+    }
+
+    fn on_session_attached(&mut self, session: &SessionRef, agreed_protocol: ProtocolVersion) {
+        self.attached.push((session.clone(), agreed_protocol));
     }
 
     fn on_session_ended(&mut self, session: &SessionRef, _reason: SessionEndReason) {
@@ -275,7 +281,8 @@ fn hello_then_open_session_grants_this_servers_port_and_pauses_the_normal_player
 
     let accepted = harness.call(HELLO);
     assert!(
-        matches!(accepted, PlayerControlMessage::HelloAccepted(ref hello) if hello.agreed_protocol == browser_bridge_protocol::CURRENT_PROTOCOL_VERSION),
+        // Экстеншен говорит 1.0 (`HELLO`), плеер — 1.1: общая версия — меньшая.
+        matches!(accepted, PlayerControlMessage::HelloAccepted(ref hello) if hello.agreed_protocol == browser_bridge_protocol::ProtocolVersion::V1_0),
         "{accepted:?}"
     );
     assert_eq!(
@@ -657,3 +664,34 @@ fn the_loop_wakes_for_the_media_part_when_its_deadline_is_the_earliest() {
 }
 
 mod viewer_end;
+
+/// `hello` экстеншена протокола 1.1.
+const HELLO_1_1: &str = r#"{"type":"hello","protocol":{"major":1,"minor":1},"software_version":"0.1.0","capabilities":[]}"#;
+
+/// Общая версия подключения доходит до медиа-части с `Attached` — по ней она решает,
+/// можно ли слать странице `fetch_resource` (только с 1.1). Без проброса медиа-часть
+/// никогда не узнала бы, что страница говорит на 1.1, и HLS не попросил бы ни ресурса.
+#[test]
+fn the_agreed_protocol_of_the_attach_reaches_the_media_part() {
+    for (hello, expected) in [
+        (HELLO, ProtocolVersion::V1_0),
+        (HELLO_1_1, ProtocolVersion::V1_1),
+    ] {
+        let mut harness = Harness::start(BrowserSessionPolicy::default());
+        assert!(matches!(
+            harness.call(hello),
+            PlayerControlMessage::HelloAccepted(_)
+        ));
+        let grant = harness.open(1, "tab-1-video-1");
+        let _socket = attach(&grant);
+        harness.step_until(|harness| !harness.media.attached.is_empty());
+
+        let opened = harness
+            .media
+            .opened
+            .first()
+            .cloned()
+            .expect("opened session");
+        assert_eq!(harness.media.attached, vec![(opened, expected)]);
+    }
+}

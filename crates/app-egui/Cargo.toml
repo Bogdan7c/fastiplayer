@@ -120,6 +120,9 @@ subtitle-sidecar.workspace = true
 
 [dev-dependencies]
 base64 = "0.22"
+# Шифрование сегментов AES-128 в сквозном тесте HLS-поколения моста (10a1).
+aes.workspace = true
+cbc.workspace = true
 # Клиент WebSocket в сквозном тесте процесса браузерного режима (вместо экстеншена).
 tungstenite.workspace = true
 # Чтение манифестов записанных потоков фикстур протокола в том же тесте.

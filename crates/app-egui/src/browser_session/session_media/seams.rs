@@ -10,6 +10,9 @@ use browser_bridge_session::{
 };
 use player_core::{PlaybackRate as PlayerPlaybackRate, PreparedMedia};
 
+use crate::browser_session::hls_bridge::capabilities::{
+    DecodeCapabilitiesAnswer, DecodeCapabilitiesSource,
+};
 use crate::browser_session::playback::{
     BrowserPlayback, BrowserPlaybackCommandError, LoadStart, MediaLoadTicket, PlaybackObservation,
 };
@@ -17,7 +20,10 @@ use crate::downloaded_range::DownloadedRange;
 
 /// Плеер так, как его видит медиа-часть. Настоящие — безоконный [`BrowserPlayback`]
 /// (тесты) и «пульт» окна браузерного режима (`window::remote::WindowRemote`, 04a).
-pub(crate) trait MediaPlayback {
+///
+/// Плеер же говорит, что он умеет декодировать и показывать
+/// ([`DecodeCapabilitiesSource`]): по этому HLS-поколение выбирает вариант (10a1).
+pub(crate) trait MediaPlayback: DecodeCapabilitiesSource {
     /// Загрузить новое медиа: играть сразу или встать на паузу — по `start`.
     /// Квитанция связывает загрузку с наблюдениями, когда плеер её установит.
     ///
@@ -55,6 +61,12 @@ pub(crate) trait MediaPlayback {
     fn pump(&mut self, now: Instant) -> PlaybackObservation;
     /// Итоговая строка журнала и остановка плеера.
     fn finish(self: Box<Self>);
+}
+
+impl DecodeCapabilitiesSource for BrowserPlayback {
+    fn decode_capabilities(&self) -> DecodeCapabilitiesAnswer {
+        Self::decode_capabilities(self)
+    }
 }
 
 impl MediaPlayback for BrowserPlayback {

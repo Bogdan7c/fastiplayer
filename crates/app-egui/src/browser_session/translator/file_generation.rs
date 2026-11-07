@@ -62,6 +62,12 @@ impl SessionFiles {
     pub(super) const fn new(ids: RangeRequestIds) -> Self {
         Self { ids }
     }
+
+    /// Выдаватель номеров сеанса для нового владельца номеров (HLS-поколение): номера
+    /// файлов и ресурсов сквозные, поэтому `standing_of` знает их все.
+    pub(super) fn session_ids(&self) -> RangeRequestIds {
+        self.ids.clone()
+    }
 }
 
 /// Номер запроса провода → номер источника.
@@ -132,7 +138,7 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             }) => match current {
                 Some(state) if state.number == generation => match state.stream {
                     GenerationStream::Live(_) => FileStart::Allowed,
-                    GenerationStream::File(_) => FileStart::Violation,
+                    GenerationStream::File(_) | GenerationStream::Hls(_) => FileStart::Violation,
                     GenerationStream::Rejected => FileStart::Rejected,
                 },
                 Some(state) if generation < state.number => FileStart::Stale,
@@ -326,6 +332,10 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
                     "The stream could not be finished"
                 ),
             },
+            // Очередь ресурсов HLS запечатывается и при замене поколения: ресурсы старого
+            // поколения странице больше не нужны, а его скачанное доигрывается
+            // (обёртка печати демуксера, `hls_bridge::sealed_end`).
+            GenerationStream::Hls(writer) => writer.seal(),
             GenerationStream::Rejected => {}
         }
     }
@@ -356,7 +366,7 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
                 ..
             }) => FileCall::GenerationRejected,
             Some(GenerationState {
-                stream: GenerationStream::Live(_),
+                stream: GenerationStream::Live(_) | GenerationStream::Hls(_),
                 ..
             })
             | None => FileCall::NoFile,
@@ -364,7 +374,7 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
     }
 
     /// Выдавался ли сеансу номер `id`. Нет экземпляра — отвечать некому, считаем выданным.
-    fn standing_of(&self, id: RangeRequestId) -> RangeIdStanding {
+    pub(super) fn standing_of(&self, id: RangeRequestId) -> RangeIdStanding {
         self.instance
             .as_ref()
             .map_or(RangeIdStanding::Issued, |active| {
@@ -392,7 +402,7 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
 
     /// Рамка файла или итог запроса с номером, которого сеанс не выдавал: выдумка
     /// страницы — сеанс закрывается кодом 4003.
-    fn invented_range_id(&mut self, session: &SessionRef, out: &mut Vec<IntakeNotice>) {
+    pub(super) fn invented_range_id(&mut self, session: &SessionRef, out: &mut Vec<IntakeNotice>) {
         warn!("A range frame or result carries a request number that was never issued");
         self.request_close(session, SessionCloseReason::ProtocolViolation, out);
     }

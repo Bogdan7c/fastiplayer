@@ -21,7 +21,10 @@ use browser_bridge_session::SessionRef;
 use media_prefetch::PrefetchConfig;
 use pushed_media_source::{
     PushedFileOpener, PushedFileRequests, PushedStreamMonitor, PushedStreamOpener,
+    ResourceFetchRequests,
 };
+
+use super::hls_bridge::opener::HlsGenerationOpener;
 
 /// Откуда плеер возьмёт содержимое поколения.
 ///
@@ -47,12 +50,37 @@ pub(crate) enum GenerationSource {
         /// Окно предзагрузки файла (из его политики, то есть из `[network]`).
         prefetch: PrefetchConfig,
     },
+    /// Нативный HLS по номеркам (протокол 1.1, 10a1): плеер ведёт HLS сам и просит
+    /// каждый ресурс у страницы; монитора буфера нет, зато есть очередь `fetch_resource`.
+    Hls {
+        /// Открыватель native HLS поколения (свой поток, результат почтовым ящиком).
+        opener: HlsGenerationOpener,
+        /// Запросы ресурсов, которые главный цикл отправляет странице.
+        requests: ResourceFetchRequests,
+    },
 }
 
 impl GenerationSource {
-    /// Это файл `<video src>` (а не сегменты MSE).
+    /// Содержимое объявлено отдельным сообщением страницы (`file_source_added`,
+    /// `hls_source_added`) вслед за `generation_started` и заменяет ждущий поток
+    /// сегментов того же поколения (его `generation_started` создаёт сразу).
+    pub(crate) const fn replaces_announced_segments(&self) -> bool {
+        matches!(self, Self::File { .. } | Self::Hls { .. })
+    }
+
+    /// Это файл `<video src>` (тестам переводчика).
+    #[cfg(test)]
     pub(crate) const fn is_file(&self) -> bool {
         matches!(self, Self::File { .. })
+    }
+
+    /// Вид содержимого словом (для журнала и `Debug`).
+    pub(crate) const fn kind_label(&self) -> &'static str {
+        match self {
+            Self::Segments { .. } => "segments",
+            Self::File { .. } => "file",
+            Self::Hls { .. } => "hls",
+        }
     }
 }
 
@@ -74,7 +102,7 @@ impl fmt::Debug for GenerationHandoff {
             .debug_struct("GenerationHandoff")
             .field("session", &self.session)
             .field("generation", &self.generation)
-            .field("is_file", &self.source.is_file())
+            .field("source", &self.source.kind_label())
             .finish_non_exhaustive()
     }
 }

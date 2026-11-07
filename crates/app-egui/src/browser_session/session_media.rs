@@ -93,6 +93,7 @@ mod generation_rejection;
 mod generation_start;
 mod install_reconcile;
 mod page_clock;
+mod resource_requests;
 mod scrub_range;
 mod seams;
 mod seek_handover;
@@ -321,6 +322,7 @@ impl SessionMedia {
         // Доигрываем: страницы нет, ей ничего не шлём (ни запросов байтов, ни часов).
         if self.drain.is_none() {
             self.send_range_requests();
+            self.send_resource_requests();
             self.outbound.flush(now);
         }
         self.last_observation = Some(observation);
@@ -338,6 +340,7 @@ impl SessionMedia {
             range_requests_unencodable = ranges.unencodable,
             "Browser file range requests"
         );
+        self.log_resource_request_totals();
         self.playback.finish();
     }
 
@@ -389,16 +392,16 @@ impl SessionMedia {
             .into_iter()
             .chain(self.loaded.as_ref().map(|loaded| loaded.generation))
             .max();
-        // Файл заменяет ждущий поток сегментов ТОГО ЖЕ поколения: `generation_started`
-        // сразу создаёт поток сегментов (MSE-сообщения вроде `duration_changed` могут
-        // прийти до первого SourceBuffer), а `file_source_added` приходит следом и
-        // делает поколение файлом. Загруженное поколение так не заменяется: до плеера
+        // Файл или HLS заменяет ждущий поток сегментов ТОГО ЖЕ поколения:
+        // `generation_started` сразу создаёт поток сегментов (MSE-сообщения вроде
+        // `duration_changed` могут прийти до первого SourceBuffer), а `file_source_added`
+        // / `hls_source_added` приходит следом и задаёт вид поколения. Загруженное поколение так не заменяется: до плеера
         // поток сегментов доходит только с SourceBuffer, а сторож поколений протокола
         // (`FileSourceAfterSourceBuffer`) закрывает сеанс на `file_source_added` после
         // него — до приёмников (сквозной тест `a_file_announced_after_a_source_buffer_is_closed_by_the_gate`).
-        let upgrades_pending_to_file = handoff.source.is_file()
+        let upgrades_pending_to_file = handoff.source.replaces_announced_segments()
             && self.pending.as_ref().is_some_and(|pending| {
-                pending.generation == handoff.generation && !pending.feed.is_file()
+                pending.generation == handoff.generation && pending.feed.is_segments()
             });
         if !upgrades_pending_to_file
             && newest_known.is_some_and(|newest| handoff.generation <= newest)
@@ -490,7 +493,10 @@ impl SessionMedia {
         if !due {
             return;
         }
-        match pending.feed.poll_open(&mut pending.placement, now, page) {
+        match pending
+            .feed
+            .poll_open(&mut pending.placement, now, page, self.playback.as_ref())
+        {
             OpenStep::Waiting(retry_after) => {
                 pending.retry_at = Some(now + retry_after);
             }

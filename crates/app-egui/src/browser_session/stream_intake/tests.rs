@@ -47,6 +47,7 @@ fn real_translator() -> ProtocolTranslator<PushedStreamFactory> {
     ProtocolTranslator::new(
         PushedStreamFactory::new(PushedSourcePolicy::recommended().expect("policy")),
         unused_file_factory(),
+        crate::browser_session::hls_bridge::factory::unused_hls_factory(),
     )
 }
 
@@ -153,7 +154,11 @@ fn a_stuck_intake_thread_is_detached_instead_of_hanging_the_shutdown() {
     let intake = StreamIntake::start(
         Arc::clone(&rig.queue),
         Arc::clone(&rig.inbox),
-        ProtocolTranslator::new(StuckFactory { release: released }, unused_file_factory()),
+        ProtocolTranslator::new(
+            StuckFactory { release: released },
+            unused_file_factory(),
+            crate::browser_session::hls_bridge::factory::unused_hls_factory(),
+        ),
     )
     .expect("intake thread");
     rig.queue
@@ -219,6 +224,7 @@ fn a_panic_while_translating_closes_that_session_and_the_thread_keeps_working() 
         ProtocolTranslator::new(
             PanickingOnceFactory { panicked: false },
             unused_file_factory(),
+            crate::browser_session::hls_bridge::factory::unused_hls_factory(),
         ),
     )
     .expect("intake thread");

@@ -17,10 +17,11 @@
 //!   (`stream_rejected`) не больше одного раза на поколение, после него вход этого
 //!   поколения выбрасывается со счётом; нарушение порядка — просьба закрыть сеанс
 //!   кодом 4003, после неё весь вход экземпляра выбрасывается до его конца;
-//! - поколение бывает «сегменты MSE» (`source_buffer_added`) или «файл `<video src>`»
-//!   (`file_source_added`, логика — [`file_generation`]); рамки байтов вида 2 идут
-//!   писателю текущего файла, сверку с выданными запросами делает источник;
-//! - конец экземпляра запечатывает текущий поток: файл — `seal`, MSE — «скачивание
+//! - поколение бывает «сегменты MSE» (`source_buffer_added`), «файл `<video src>`»
+//!   (`file_source_added`, логика — [`file_generation`]) или «HLS по номеркам»
+//!   (`hls_source_added`, [`hls_generation`]); рамки байтов вида 2 идут очереди
+//!   ресурсов HLS, если номер её (`claim_of`), иначе писателю текущего файла;
+//! - конец экземпляра запечатывает текущий поток: файл и HLS — `seal`, MSE — «скачивание
 //!   оборвано» (`end_download_cut_short`): принятое доигрывается даже у страницы, не
 //!   успевшей сама закончить поток, но только до конца самой короткой дорожки
 //!   (решение 133); честный `endOfStream` страницы — по-прежнему `end_of_stream`.
@@ -45,7 +46,11 @@ use super::rejection::{
 };
 use super::stream_queue::{OwnedChunk, SessionInput};
 
+mod counters;
 mod file_generation;
+mod hls_generation;
+
+pub(crate) use self::counters::TranslatorCounters;
 
 use self::file_generation::SealOccasion;
 pub(crate) mod file_port;
@@ -53,37 +58,7 @@ pub(crate) mod stream_port;
 
 use self::file_port::{FileFactory, FileWriterPort};
 use self::stream_port::{StreamFactory, StreamWriterPort};
-
-/// Счётчики переходника (для журнала и тестов).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TranslatorCounters {
-    /// Вход старого экземпляра или старого поколения.
-    pub(crate) stale_inputs: u64,
-    /// Вход поколения, от которого уже отказались.
-    pub(crate) rejected_generation_inputs: u64,
-    /// Вход экземпляра, который уже просили закрыть.
-    pub(crate) closing_instance_inputs: u64,
-    /// Сообщения, которые переходник не исполняет (меню вариантов).
-    pub(crate) ignored_messages: u64,
-    /// `tab_gone` страницы: переходник его только отмечает — сеанс закрывает сервер
-    /// (4002), а доигрывание полученного ведёт главный цикл.
-    pub(crate) tab_gone_messages: u64,
-    /// Рамки файла `<video src>`, принятые источником.
-    pub(crate) range_frames_accepted: u64,
-    /// Байты в принятых рамках файла.
-    pub(crate) range_bytes_accepted: u64,
-    /// Рамки файла, не нужные больше: запрос отменён перемоткой или заменён повтором,
-    /// рамка прежнего файла (источник отбросил их молча) либо пришла, когда файла нет,
-    /// но номера в этом сеансе уже выдавались.
-    pub(crate) range_frames_stale: u64,
-    /// Рамки файла, отвергнутые без нарушения: поколение уже отвергнуто либо файл
-    /// запечатан (сеанс кончился).
-    pub(crate) range_frames_rejected: u64,
-    /// Куски, выброшенные источником: плеер уже закрыл поток.
-    pub(crate) discarded_after_consumer_closed: u64,
-    /// Разбор входа упал с паникой (дефект): экземпляр закрыт.
-    pub(crate) internal_failures: u64,
-}
+use super::hls_bridge::factory::{HlsFactory, HlsWriterPort};
 
 /// Поток одного поколения.
 enum GenerationStream {
@@ -91,6 +66,8 @@ enum GenerationStream {
     Live(Box<dyn StreamWriterPort>),
     /// Файл `<video src>` жив: рамки байтов и итоги запросов идут его писателю.
     File(Box<dyn FileWriterPort>),
+    /// HLS по номеркам жив: «свои» рамки и итоги идут очереди ресурсов (10a1).
+    Hls(Box<dyn HlsWriterPort>),
     /// От поколения отказались: вход выбрасывается.
     Rejected,
 }
@@ -138,6 +115,8 @@ pub(crate) struct ProtocolTranslator<F: StreamFactory> {
     factory: F,
     /// Откуда брать файлы `<video src>`.
     file_factory: Box<dyn FileFactory>,
+    /// Откуда брать HLS-поколения (очередь ресурсов + открыватель).
+    hls_factory: Box<dyn HlsFactory>,
     /// Активный экземпляр.
     instance: Option<InstanceState>,
     /// Счётчики.
@@ -160,10 +139,15 @@ enum GenerationRoute<'state> {
 
 impl<F: StreamFactory> ProtocolTranslator<F> {
     /// Переходник без активного сеанса.
-    pub(crate) fn new(factory: F, file_factory: Box<dyn FileFactory>) -> Self {
+    pub(crate) fn new(
+        factory: F,
+        file_factory: Box<dyn FileFactory>,
+        hls_factory: Box<dyn HlsFactory>,
+    ) -> Self {
         Self {
             factory,
             file_factory,
+            hls_factory,
             instance: None,
             counters: TranslatorCounters::default(),
         }
@@ -190,7 +174,7 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             }
             SessionInput::RangeBytes(session, chunk) => {
                 if self.admit_instance(&session) {
-                    self.apply_range_bytes(&session, &chunk, out);
+                    self.apply_data_frame(&session, &chunk, out);
                 }
             }
         }
@@ -403,6 +387,13 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
                 request_id,
                 outcome,
             } => self.finish_range_request(&session, request_id, outcome, out),
+            PageSessionMessage::HlsSourceAdded { generation, root } => {
+                self.start_hls_generation(&session, generation, root, out);
+            }
+            PageSessionMessage::ResourceFetchFinished {
+                request_id,
+                outcome,
+            } => self.finish_resource_request(&session, request_id, outcome, out),
             PageSessionMessage::TabGone { reason } => {
                 // Сеанс закрывает сервер (4002) СРАЗУ после этого сообщения: за ним в
                 // очередь придёт `Ended`, и он запечатает поток. Здесь tab_gone только
@@ -540,7 +531,7 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
                 ..
             }) => GenerationRoute::Rejected,
             Some(GenerationState {
-                stream: GenerationStream::File(_),
+                stream: GenerationStream::File(_) | GenerationStream::Hls(_),
                 ..
             }) => GenerationRoute::NotSegments,
             Some(GenerationState {
