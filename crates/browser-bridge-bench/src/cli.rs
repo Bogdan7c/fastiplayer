@@ -21,6 +21,7 @@ pub enum Command {
     Codecs,
     Attacks,
     LocalAddress,
+    HlsLive,
     Entries,
     BlockerMatrix,
     Replay,
@@ -120,6 +121,10 @@ Commands:
                     CLEAN page in the SAME browser must then hand off and play
   local-address     a file on a local address under a public-looking page name: refused by
                     default, asks for consent with the 'ask' setting, plays after consent
+  hls-live          native HLS LIVE (sliding window, no ENDLIST) under the shadow: the page
+                    sees duration = Infinity and a moving seekable window, the player keeps up
+                    with the live edge, after closing the player window the element is back
+                    at the live edge
   entries           REAL mouse and keyboard in an invisible kwin: click the extension button on
                     the browser toolbar, Tab / Enter in the popup; entry x page matrix, each
                     row proven by player / host / server logs (needs spectacle and ffmpeg)
@@ -133,7 +138,7 @@ Commands:
   generate-recording  write a synthetic recording (--output FILE.fprec [--asset ID]) from a
                     stand fMP4 asset: add_source_buffer, paced appends, handoff_began
   all               pages, capture, page-ends, player-commands, extension-status, codecs, attacks,
-                    local-address and entries (smoke is a subset of capture), one after another; with --page
+                    local-address, hls-live and entries (smoke is a subset of capture), one after another; with --page
                     only the page steps run
 
 Options:
@@ -349,6 +354,7 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
         "codecs" => Ok(Command::Codecs),
         "attacks" => Ok(Command::Attacks),
         "local-address" => Ok(Command::LocalAddress),
+        "hls-live" => Ok(Command::HlsLive),
         "entries" => Ok(Command::Entries),
         "blocker-matrix" => Ok(Command::BlockerMatrix),
         "replay" => Ok(Command::Replay),
@@ -543,6 +549,12 @@ mod tests {
         ] {
             assert!(parse_words(words).is_err(), "{words:?} must be rejected");
         }
+    }
+
+    #[test]
+    fn hls_live_is_a_command_of_its_own_without_a_page_filter() {
+        assert_eq!(invocation(&["hls-live"]).command, Command::HlsLive);
+        assert!(parse_words(&["hls-live", "--page", "hls-live"]).is_err());
     }
 
     #[test]

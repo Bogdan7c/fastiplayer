@@ -20,6 +20,9 @@ const HLS_MIME = 'application/vnd.apple.mpegurl';
  * @param assetId идентификатор HLS-ролика в каталоге
  * @param options.playlistAddress функция «ассет -> адрес плейлиста» (по умолчанию `/media/<url>`)
  * @param options.handoffOptions добавки к `runHandoffPhase` (например, пропуск проверок)
+ * @param options.hooks действия страницы по команде робота `hook:<имя>` (10a3: проверки эфира)
+ * @param options.afterPlaying `async (video) => …`: собственные проверки страницы после «играет»,
+ *   до фазы передачи (10a3: эфир, `duration = Infinity`, ход `seekable`)
  */
 export async function playNativeHlsAsset(context, assetId, options = {}) {
   const catalog = await loadCatalog();
@@ -39,8 +42,9 @@ export async function playNativeHlsAsset(context, assetId, options = {}) {
   }
   context.log(`canPlayType(${HLS_MIME}) answered '${answer}', the page put the playlist into src anyway`);
   await checkPlaying(context, video, 'plays-native-hls');
+  if (options.afterPlaying) await options.afterPlaying(video);
   if (context.params.handoff) {
-    await observeHandoff(context, { video, player: null }, {}, {
+    await observeHandoff(context, { video, player: null }, options.hooks ?? {}, {
       durationS: asset.duration_s,
       ...(options.handoffOptions ?? {}),
     });

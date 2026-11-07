@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hls-live</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>hls-live</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { playNativeHlsLive } from '../lib/hls-live-page.js';
+
+// HLS LIVE (сессия 10a3): скользящее окно из сегментов hls-ts-live, без ENDLIST (маршрут /cdn/hls-live/).
+await runScenario('hls-live', (ctx) => playNativeHlsLive(ctx));
+</script>
+</body>
+</html>

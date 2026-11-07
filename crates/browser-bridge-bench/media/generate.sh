@@ -276,6 +276,15 @@ ffmpeg "${GLOBAL_FLAGS[@]}" -f lavfi -i "$(video_filter_graph 640x360 40 36 'LON
   -hls_segment_filename "$OUT_DIR/hls-ts-long/seg-%05d.ts" "$OUT_DIR/hls-ts-long/stream.m3u8"
 register_asset hls-ts-long hls hls-ts-long/stream.m3u8 "" 40.0
 
+echo "generate.sh: hls-ts-live (MPEG-TS, 120 s, 320x180: source of the sliding-window live route /cdn/hls-live/)"
+mkdir -p "$OUT_DIR/hls-ts-live"
+ffmpeg "${GLOBAL_FLAGS[@]}" -f lavfi -i "$(video_filter_graph 320x180 120 24 'LIVE ')" \
+  -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=120" \
+  "${BITEXACT_FLAGS[@]}" -map 0:v -map 1:a "${HLS_VIDEO_CODEC[@]}" -b:v 150k "${HLS_AUDIO_CODEC[@]}" \
+  -f hls -hls_time "$SEGMENT_SECONDS" -hls_playlist_type vod -hls_flags independent_segments \
+  -hls_segment_filename "$OUT_DIR/hls-ts-live/seg-%05d.ts" "$OUT_DIR/hls-ts-live/stream.m3u8"
+register_asset hls-ts-live hls hls-ts-live/stream.m3u8 "" 120.0
+
 echo "generate.sh: subtitles (WebVTT)"
 mkdir -p "$OUT_DIR/subtitles"
 cat > "$OUT_DIR/subtitles/en.vtt" <<'VTT'

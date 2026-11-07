@@ -8,10 +8,12 @@
 //! Кто чем владеет: `reports` — отчёты и журнал, `cdn_guard` — куки/Referer и счётчики,
 //! `static_files` — Content-Type и Range, `routes` — таблица маршрутов, `server` — сокеты и
 //! потоки, `http` — разбор и запись HTTP, `hls_local_segments` — HLS-плейлист с сегментами на
-//! локальном адресе (сценарий `local-address`). Снаружи используется только [`StandSite`].
+//! локальном адресе (сценарий `local-address`), `hls_live` — «живой эфир» HLS из VOD-ролика по часам.
+//! Снаружи используется только [`StandSite`].
 
 mod cdn_guard;
 mod error;
+mod hls_live;
 mod hls_local_segments;
 mod http;
 mod reports;
@@ -23,6 +25,11 @@ mod static_files;
 
 pub use cdn_guard::CdnRejections;
 pub use error::SiteError;
+pub use hls_live::{
+    INITIAL_WINDOW_SEGMENTS as HLS_LIVE_INITIAL_WINDOW_SEGMENTS,
+    PLAYLIST_NAME as HLS_LIVE_PLAYLIST_NAME, ROUTE_PREFIX as HLS_LIVE_ROUTE_PREFIX,
+    WINDOW_SEGMENTS as HLS_LIVE_WINDOW_SEGMENTS,
+};
 pub use reports::{BrowserLogLine, LogSource, PageReport, PageStatus, ReportCheck};
 pub use request_log::{MediaRequest, MediaRequester, PAGE_FETCH_MARKER_HEADER, ServedSpan};
 pub use run_id::RunId;
@@ -77,6 +84,7 @@ impl StandSite {
             cdn: cdn_guard::CdnGuard::default(),
             requests: request_log::RequestLog::default(),
             recording: std::sync::Mutex::new(None),
+            hls_live: hls_live::LiveClocks::default(),
         });
         let main_listener = start_listener(main_socket, &shared, &main_origin)?;
         let other_listener = start_listener(other_socket, &shared, &other_origin)?;

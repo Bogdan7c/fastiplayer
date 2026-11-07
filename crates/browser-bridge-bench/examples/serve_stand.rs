@@ -31,6 +31,7 @@ const SCENARIOS: &[&str] = &[
     "hls-fmp4-abr",
     "hls-aes128",
     "hls-vod-long",
+    "hls-live",
     "shadow-dom",
     "iframe-cross-origin",
     "cdn-guard",

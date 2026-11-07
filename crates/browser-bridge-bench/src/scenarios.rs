@@ -20,6 +20,7 @@ mod entries;
 mod evidence;
 mod extension_status;
 mod handoff_run;
+mod hls_live;
 mod live_unload;
 mod outcome;
 mod page_catalog;
@@ -107,6 +108,12 @@ pub fn run_player_commands(
 /// Идентификаторы страниц `player-commands` (для проверки `--page` в командной строке).
 pub fn player_command_page_ids() -> Vec<&'static str> {
     player_commands::page_ids()
+}
+
+/// Родной HLS LIVE под тенью (10a3): эфир идёт, страница видит `duration = Infinity` и едущее окно
+/// `seekable`, после закрытия окна плеера элемент стоит у края эфира.
+pub fn run_hls_live(stand: &Stand, browser: BrowserKind) -> StepResult {
+    hls_live::run(stand, browser)
 }
 
 /// Попап настоящего экстеншена показывает «Connected to Fastiplayer».
