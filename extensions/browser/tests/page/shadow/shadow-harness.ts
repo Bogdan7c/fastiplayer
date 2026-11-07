@@ -73,6 +73,8 @@ export interface ShadowHarness {
   start(video: FakeVideo): ShadowSession;
   /** Тень файла `<video src>` (сессия 09b). */
   startFile(video: FakeVideo): ShadowSession;
+  /** Тень эфира нативного HLS (сессия 10a3). */
+  startLive(video: FakeVideo): ShadowSession;
   /** Тик часов плеера. */
   tick(session: ShadowSession, positionSeconds: number, state: "playing" | "paused" | "waiting" | "ended", ratePermille?: number): void;
 }
@@ -125,6 +127,7 @@ export function createShadowHarness(options: ShadowHarnessOptions = {}): ShadowH
     timers,
     start: (video) => startWith(video, "media_source"),
     startFile: (video) => startWith(video, "file"),
+    startLive: (video) => startWith(video, "live_hls"),
     tick(session, positionSeconds, state, ratePermille = 1000) {
       const command: ShadowCommand = { kind: "clock", position_us: Math.round(positionSeconds * 1_000_000), state, rate: ratePermille };
       session.apply(command);

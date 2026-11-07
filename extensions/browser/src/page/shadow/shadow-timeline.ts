@@ -134,6 +134,31 @@ export interface TimelineInit {
 /** Конечная длительность ролика в мкс или `undefined` (неизвестна, эфир). */
 export type DurationReader = () => MediaTimeMicros | undefined;
 
+/**
+ * Куда страница может перемотаться (намерение источника, а не «если эфир» внутри модели):
+ * - `whole_timeline` — вся шкала `[0, длительность]` (MSE, файл, запись HLS — как было до 10a3);
+ * - `range` — окно `[startUs, endUs]` во времени страницы (эфир с DVR: окно `live_window`, 10a3);
+ * - `not_seekable` — перематывать некуда (эфир без DVR или окно ещё неизвестно). Как у браузера при пустом
+ *   `seekable` (HTML, алгоритм seek: «если промежутков нет — `seeking = false` и выйти»): ни `seeking`, ни
+ *   `page_seek`, позиция не меняется.
+ */
+export type PageSeekRange =
+  | { readonly kind: "whole_timeline" }
+  | { readonly kind: "range"; readonly startUs: MediaTimeMicros; readonly endUs: MediaTimeMicros }
+  | { readonly kind: "not_seekable" };
+
+/** Где сейчас можно перематываться странице; спрашивается на каждой перемотке (окно эфира едет). */
+export type PageSeekRangeReader = () => PageSeekRange;
+
+const WHOLE_TIMELINE: PageSeekRange = { kind: "whole_timeline" };
+
+/** Итог перемотки страницы. */
+export type PageSeekOutcome =
+  /** Перемотка началась: `targetUs` — итоговая цель во времени страницы (уже прижатая к окну). */
+  | { readonly kind: "seeking"; readonly targetUs: MediaTimeMicros }
+  /** Перематывать некуда: ничего не изменилось, плееру говорить нечего. */
+  | { readonly kind: "not_seekable" };
+
 export type TimelineSignalSink = (signal: TimelineSignal) => void;
 
 /** Итог `play()` для контроллера: что сообщить плееру. */
@@ -146,6 +171,7 @@ export interface PlayResult {
 
 export class ShadowTimeline {
   readonly #readDurationUs: DurationReader;
+  readonly #readPageSeekRange: PageSeekRangeReader;
   readonly #signal: TimelineSignalSink;
   #pagePaused: boolean;
   #ended = false;
@@ -165,8 +191,12 @@ export class ShadowTimeline {
   #playedUs = 0;
   #lastTimeupdateAtMs = Number.NEGATIVE_INFINITY;
 
-  constructor(init: TimelineInit, readDurationUs: DurationReader, signal: TimelineSignalSink) {
+  /**
+   * @param readPageSeekRange где странице можно перематываться (по умолчанию — вся шкала, как до 10a3).
+   */
+  constructor(init: TimelineInit, readDurationUs: DurationReader, signal: TimelineSignalSink, readPageSeekRange: PageSeekRangeReader = () => WHOLE_TIMELINE) {
     this.#readDurationUs = readDurationUs;
+    this.#readPageSeekRange = readPageSeekRange;
     this.#signal = signal;
     this.#pagePaused = init.paused;
     this.#pageRate = init.pageRate;
@@ -256,12 +286,11 @@ export class ShadowTimeline {
   play(origin: "page" | "player", nowMs: number): PlayResult {
     let restartedAtUs: MediaTimeMicros | undefined;
     if (this.#ended) {
-      if (origin === "page") {
-        // Стандарт: `play()` после конца ролика сначала перематывает на начало.
-        restartedAtUs = this.seek("page_seek", 0, nowMs);
-      } else {
-        this.#ended = false;
-      }
+      // Стандарт: `play()` страницы после конца ролика сначала перематывает на начало (у эфира —
+      // на начало окна; перематывать некуда — просто играть дальше, как команда плеера).
+      const restart = origin === "page" ? this.pageSeek(0, nowMs) : undefined;
+      if (restart?.kind === "seeking") restartedAtUs = restart.targetUs;
+      else this.#ended = false;
     }
     if (!this.#pagePaused) {
       // Уже играет: обещание исполнится сразу, если данных хватает, иначе — с `playing`.
@@ -306,24 +335,30 @@ export class ShadowTimeline {
   }
 
   /**
-   * Перемотка плеером или страницей. Цель ограничена длительностью; перемотка на/за конец
-   * завершится состоянием `ended`. Возвращает итоговую цель (её видит страница).
+   * Перемотка плеером. Цель ограничена только шкалой `[0, длительность]`, не окном перемотки страницы:
+   * плеер — правда о своём потоке. Перемотка на/за конец завершится состоянием `ended`. Возвращает итоговую
+   * цель (её видит страница).
    */
-  seek(kind: "player_seek" | "page_seek", targetUs: MediaTimeMicros, nowMs: number): MediaTimeMicros {
-    const clampedUs = this.#clampToTimeline(targetUs);
-    const durationUs = this.#readDurationUs();
-    this.#startHold(
-      {
-        kind,
-        targetUs: clampedUs,
-        landsAtEnd: durationUs !== undefined && clampedUs >= durationUs,
-        unconfirmedTicksLeft: MAX_UNCONFIRMED_TICKS,
-        startedAtMs: nowMs,
-        playerAcknowledgedNewSource: false,
-      },
-      nowMs,
-    );
-    return clampedUs;
+  playerSeek(targetUs: MediaTimeMicros, nowMs: number): MediaTimeMicros {
+    return this.#startSeekHold("player_seek", this.#clampToTimeline(targetUs), nowMs);
+  }
+
+  /**
+   * Перемотка страницей. Цель прижимается к окну перемотки источника (`PageSeekRange`), как это делает
+   * браузер с `seekable`; окна нет — перемотки нет (`not_seekable`).
+   */
+  pageSeek(targetUs: MediaTimeMicros, nowMs: number): PageSeekOutcome {
+    const range = this.#readPageSeekRange();
+    switch (range.kind) {
+      case "not_seekable":
+        return { kind: "not_seekable" };
+      case "whole_timeline":
+        return { kind: "seeking", targetUs: this.#startSeekHold("page_seek", this.#clampToTimeline(targetUs), nowMs) };
+      case "range": {
+        const insideWindowUs = Math.max(range.startUs, Math.min(targetUs, range.endUs));
+        return { kind: "seeking", targetUs: this.#startSeekHold("page_seek", this.#clampToTimeline(insideWindowUs), nowMs) };
+      }
+    }
   }
 
   /**
@@ -376,6 +411,23 @@ export class ShadowTimeline {
   // -------------------------------------------------------------------------------------------
   // Внутреннее.
   // -------------------------------------------------------------------------------------------
+
+  /** Удержание позиции на уже прижатой цели перемотки. */
+  #startSeekHold(kind: "player_seek" | "page_seek", clampedUs: MediaTimeMicros, nowMs: number): MediaTimeMicros {
+    const durationUs = this.#readDurationUs();
+    this.#startHold(
+      {
+        kind,
+        targetUs: clampedUs,
+        landsAtEnd: durationUs !== undefined && clampedUs >= durationUs,
+        unconfirmedTicksLeft: MAX_UNCONFIRMED_TICKS,
+        startedAtMs: nowMs,
+        playerAcknowledgedNewSource: false,
+      },
+      nowMs,
+    );
+    return clampedUs;
+  }
 
   #advancing(): boolean {
     return this.#clockState === "playing" && !this.#pagePaused && !this.#ended && this.#hold === undefined;

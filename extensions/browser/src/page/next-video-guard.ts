@@ -27,6 +27,7 @@
 
 import type { ElementKey, PageEvent, VideoCandidate } from "../shared/handoff-contract.ts";
 import type { DomReaders } from "./dom-readers.ts";
+import { hlsStreamOfDuration, shadowSourceOfHls } from "./hls-stream-kind.ts";
 import type { ElementRegistry } from "./element-registry.ts";
 import type { ElementSource } from "./element-source.ts";
 import type { HeldShadowHandle, HeldShadowStarter, PendingPlay, PlayWatchAnswer, PlayWatchSeam, ShadowSourceKind } from "./handoff-seam.ts";
@@ -202,9 +203,13 @@ export class NextVideoGuard {
     const source: ElementSource = this.#environment.candidates.sourceOf(element as Element);
     switch (source.kind) {
       case "file":
-      case "hls":
-        // Запись HLS под тенью — как файл (решения 186/187).
         return "file";
+      case "hls": {
+        // Запись HLS под тенью — как файл (решения 186/187), эфир — своя тень (10a3). Правило одно с
+        // контроллером передачи (hls-stream-kind.ts); метаданные уже есть (сторож ждёт HAVE_METADATA).
+        const stream = hlsStreamOfDuration(this.#environment.dom.durationSecondsOf(element));
+        return stream === null ? null : shadowSourceOfHls(stream);
+      }
       case "media_source":
       case "worker_media_source":
         return "media_source";

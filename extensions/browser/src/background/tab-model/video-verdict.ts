@@ -41,20 +41,23 @@ function isUnstartedPlaylistAddress(candidate: VideoCandidate): boolean {
 }
 
 /**
- * Играющий HLS без известной длительности — живой эфир (длительность Infinity попадает в `null`).
- * Эфир в этой сессии не передаётся (решение 231), честно остаётся формой `native_hls`.
+ * HLS без известной длительности — живой эфир (длительность Infinity попадает в `null`). Среди передаваемых
+ * (`main`/`ad`) это всегда играющий эфир: стоящий без длительности — `empty` (см. выше).
+ *
+ * С 10a3 (решение 232) эфир — обычный кандидат: вердикт не знает плеера, а «может ли плеер сеанса играть
+ * эфир» решает сеанс по договорённой версии протокола (handoff/hls-player-support.ts). Старому плееру
+ * сеанс даёт прежний честный `not_supported_yet{native_hls}`.
  */
-function isLiveHls(candidate: VideoCandidate): boolean {
+export function isLiveHlsCandidate(candidate: VideoCandidate): boolean {
   return candidate.media.kind === "hls" && candidate.duration_s === null;
 }
 
 /**
- * Неподдержанная форма кандидата для отказа `not_supported_yet`: у `unsupported` — своя, у живого HLS —
- * `native_hls`. `null` — кандидат не неподдержанный.
+ * Неподдержанная форма кандидата для отказа `not_supported_yet`: у `unsupported` — своя.
+ * `null` — кандидат не неподдержанный.
  */
 export function unsupportedFormOf(candidate: VideoCandidate): UnsupportedMediaForm | null {
-  if (candidate.media.kind === "unsupported") return candidate.media.form;
-  return isLiveHls(candidate) ? "native_hls" : null;
+  return candidate.media.kind === "unsupported" ? candidate.media.form : null;
 }
 
 /**
@@ -97,7 +100,7 @@ export function classifyVideo(
 ): VideoVerdict {
   if (candidate.drm) return "protected";
   if (candidate.media.kind === "none" || isUnstartedPlaylistAddress(candidate)) return "empty";
-  if (candidate.media.kind === "unsupported" || isLiveHls(candidate)) return "unsupported";
+  if (candidate.media.kind === "unsupported") return "unsupported";
   if (isAdHost(candidate.file_host, rules) || isAdHost(candidate.frame_host, rules)) return "ad";
   // До проверки на беззвучие: преролл на странице без звука всё равно реклама, а не баннер.
   if (isPrerollBesideFilm(candidate, neighbours, rules)) return "ad";

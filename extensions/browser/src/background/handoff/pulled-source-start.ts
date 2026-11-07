@@ -7,16 +7,15 @@
 // запускается, только если перевод удался (поколение открыто).
 
 import type { ResourceHandle } from "../../protocol/index.ts";
+import type { HlsStreamKind } from "../../shared/handoff-contract.ts";
 import type { FileReferrer } from "../../shared/referrer-policy.ts";
 import type { DocumentTranslator, OutgoingItem, PageStreamProblem } from "./page-event-translator.ts";
 import type { PulledSourceStart, SessionSourceFeeds } from "./session-source-feeds.ts";
 
-/** Источник, названный страницей. */
-export interface PulledSourceEvent {
-  readonly form: "file" | "hls";
-  readonly url: string;
-  readonly referrer: FileReferrer | null;
-}
+/** Источник, названный страницей: файл или плейлист HLS (у HLS ещё вид потока — запись или эфир, 10a3). */
+export type PulledSourceEvent =
+  | { readonly form: "file"; readonly url: string; readonly referrer: FileReferrer | null }
+  | { readonly form: "hls"; readonly url: string; readonly referrer: FileReferrer | null; readonly stream: HlsStreamKind };
 
 /** Referer закачки по донесению страницы (решение 202): `null` - заголовок не ставим. */
 export function referrerOf(event: { readonly referrer_origin: string | null; readonly referrer_policy: FileReferrer["policy"] }): FileReferrer | null {

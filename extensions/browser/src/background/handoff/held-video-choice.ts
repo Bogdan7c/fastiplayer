@@ -3,13 +3,15 @@
 // Второго правила о том, что такое фильм, реклама и мусор, здесь нет: вердикт даёт тот же `classifyVideo`
 // через `classifySurvey`, что и при первой передаче. Здесь только то, что отличает переезд от передачи:
 // - видео должно быть видно. Скрытый зеркальный плеер (решение 68) играет сам, сеанс на него не уходит;
-// - запись нативного HLS (10a2) переезжает как файл, но только к плееру, который знает протокол 1.1; старому
-//   плееру сеанс её не покажет, и видео остаётся у страницы;
+// - нативный HLS переезжает как файл, но только к плееру, который его знает (hls-player-support.ts): запись —
+//   с протокола 1.1 (10a2), эфир — с 1.2 (10a3); старому плееру сеанс его не покажет, и видео остаётся у страницы;
 // - спросить человека посреди ролика некому, поэтому адрес, требующий согласия, считается отказом.
 
 import type { HeldVideoReport } from "../../shared/handoff-contract.ts";
 import { decideFileAddress, NO_LOCAL_ADDRESS_CONSENT, type FileAddressRule, type LocalAddressConsent } from "./file-address-guard.ts";
+import { playerCanPlayHls, type PlayerAbilities } from "./hls-player-support.ts";
 import { chosenVideoOf, classifySurvey, type ChosenVideo } from "./video-choice.ts";
+import { isLiveHlsCandidate } from "../tab-model/video-verdict.ts";
 
 /** Итог решения. */
 export type HeldVideoDecision =
@@ -18,12 +20,6 @@ export type HeldVideoDecision =
   | { readonly kind: "release" };
 
 const RELEASE: HeldVideoDecision = { kind: "release" };
-
-/** Что умеет плеер этого сеанса (по договорённой версии протокола): от этого зависит, какие видео ему можно отдать. */
-export interface PlayerAbilities {
-  /** Плеер понимает `hls_source_added` и `fetch_resource` (протокол 1.1). */
-  readonly nativeHls: boolean;
-}
 
 /** Согласие человека, данное при первой передаче, действует только на хост, про который спрашивали. */
 function consentOf(rule: FileAddressRule): LocalAddressConsent {
@@ -42,7 +38,7 @@ export function judgeHeldVideo(frameId: number, report: HeldVideoReport, rule: F
   if ((verdict !== "main" && verdict !== "ad") || candidate.visible_area_px === 0) return RELEASE;
   const kind = candidate.media.kind;
   if (kind !== "media_source" && kind !== "file" && kind !== "hls") return RELEASE;
-  if (kind === "hls" && !player.nativeHls) return RELEASE;
+  if (kind === "hls" && !playerCanPlayHls(player, isLiveHlsCandidate(candidate) ? "live" : "vod")) return RELEASE;
   const video = chosenVideoOf(entry);
   // Согласие человека дано странице, а не вкладке: чужой фрейм им не пользуется.
   const fileAddressRule: FileAddressRule = {

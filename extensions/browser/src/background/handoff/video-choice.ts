@@ -193,7 +193,7 @@ function choiceWithoutMain(classified: readonly ClassifiedVideo[]): VideoChoice 
   return unsupported === undefined ? { kind: "nothing" } : unsupportedChoiceOf(unsupported);
 }
 
-/** Отказ по неподдержанному видео: его форма (у живого HLS — `native_hls`); формы нет — «нечего передавать». */
+/** Отказ по неподдержанному видео: его форма; формы нет — «нечего передавать». */
 function unsupportedChoiceOf(entry: ClassifiedVideo): VideoChoice {
   const form = unsupportedFormOf(entry.candidate);
   return form === null ? { kind: "nothing" } : { kind: "not_supported_yet", form };

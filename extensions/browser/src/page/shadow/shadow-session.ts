@@ -11,6 +11,7 @@
 //   снятие и возврат источника); контроллер зовёт её одной строкой в своих точках.
 // - Play/pause зрителя (решение 194, «как медиаклавиша») — правило `viewer-media-key.ts`:
 //   обработчик Media Session страницы, если он есть, иначе прежняя доставка элементу.
+// - Время источника (10a3) — `ShadowTimeSource`: переводит всё от плеера и к нему (у эфира HLS — со сдвигом).
 
 import type { HandoffEndCause, HandoffEndPosition, HandoffEndResume, PageEvent, ShadowCommand } from "../../shared/handoff-contract.ts";
 import { MAX_PLAYBACK_RATE_PERMILLE, MIN_PLAYBACK_RATE_PERMILLE } from "../../protocol/limits.ts";
@@ -31,6 +32,9 @@ import { DetachedElementWatch } from "./detached-element-watch.ts";
 import { EmptySourceWatch } from "./empty-source-watch.ts";
 import { RealElementFollower } from "./real-element-follower.ts";
 import { ShadowPulse } from "./shadow-pulse.ts";
+import { createLiveHlsTimeSource } from "./live/index.ts";
+import { applyPlayerSeek, pageSeekEventFor, PLAYER_TIME_IS_PAGE_TIME, resumesPlayingOnReturn } from "./shadow-time-source.ts";
+import type { ReturnPosition, ShadowTimeSource } from "./shadow-time-source.ts";
 import { ShadowTimeline, READY_STATE, type ReadyStateValue, type TimelineSignal } from "./shadow-timeline.ts";
 import { classifyElementSource, type MediaSourceObjectUrlCheck, type SourceVerdict } from "./source-reset-policy.ts";
 import { deliverViewerMediaKey, type ViewerMediaKeyPorts } from "./viewer-media-key.ts";
@@ -101,8 +105,10 @@ export class ShadowController implements ShadowBehavior {
   readonly #emptySourceWatch = new EmptySourceWatch();
   readonly #pulse = new ShadowPulse();
   readonly #disposeGate: () => void;
-  /** Тень файла (`null` — тень MSE): снимок файла, снятый источник и возврат. */
+  /** Тень файла (`null` — тень MSE): снимок файла, снятый источник и возврат. У эфира HLS — тоже она. */
   readonly #file: FileShadowLifecycle | null;
+  /** Время источника: перевод между временем плеера и страницы, окно перемотки, позиция возврата. */
+  readonly #timeSource: ShadowTimeSource;
   #pendingPlays: PendingPlay[] = [];
   /** `muted`, как его видит страница; настоящий элемент на время тени заглушен (page-muted.ts). */
   readonly #muted: PageMutedState;
@@ -131,10 +137,13 @@ export class ShadowController implements ShadowBehavior {
     this.#registry = registry;
     this.#queue = new EventDispatchQueue(element, env.originals);
     // Снимок файла — до любых наших действий с элементом (пауза, шлагбаум, снятие источника).
-    this.#file = source === "file" ? new FileShadowLifecycle(this.#fileSnapshot(interruptedFile), this.#fileHost()) : null;
+    this.#file = source === "media_source" ? null : new FileShadowLifecycle(this.#fileSnapshot(interruptedFile), this.#fileHost());
 
     const media = this.#originals.media;
     const nowMs = env.now();
+    // Секунда страницы в момент передачи (P0): с неё начинает модель тени, от неё считается сдвиг эфира.
+    const handoffPositionUs = secondsToMicros(Number(readOriginal(media.currentTime, element)));
+    this.#timeSource = this.#timeSourceFor(source, handoffPositionUs);
     const realPaused = readOriginal(media.paused, element) === true;
     const realReadyState = Number(readOriginal(media.readyState, element));
     this.#muted = new PageMutedState(element, env.originals);
@@ -143,7 +152,7 @@ export class ShadowController implements ShadowBehavior {
     this.#qualityPrototype = baselineQuality.prototype;
     this.#timeline = new ShadowTimeline(
       {
-        positionUs: secondsToMicros(Number(readOriginal(media.currentTime, element))),
+        positionUs: handoffPositionUs,
         paused: realPaused,
         pageRate: Number(readOriginal(media.playbackRate, element)),
         // Тень хранит только 1/2/4: «будущих данных» без «достаточно» у неё не бывает.
@@ -152,6 +161,7 @@ export class ShadowController implements ShadowBehavior {
       },
       () => this.#durationUs(),
       (signal) => this.#onTimelineSignal(signal),
+      () => this.#timeSource.pageSeekRange(),
     );
     this.#follower = new RealElementFollower(
       {
@@ -230,7 +240,7 @@ export class ShadowController implements ShadowBehavior {
             this.#releaseToPage();
             return;
           }
-          this.#timeline.onClock(command, nowMs);
+          this.#timeline.onClock(this.#timeSource.pageTickOf(command), nowMs);
           this.#follower.onClockTick(nowMs);
           // Пульс — последним: если отправка оборвёт передачу, после него тень уже ничего не делает.
           if (this.#pulse.onClockTick(nowMs)) this.#emit({ kind: "shadow_alive" });
@@ -243,11 +253,12 @@ export class ShadowController implements ShadowBehavior {
         case "set_rate":
           this.#timeline.setRateFromPlayer(command.rate, nowMs);
           return;
-        case "seek": {
-          const targetUs = this.#timeline.seek("player_seek", command.target_us, nowMs);
-          this.#emit({ kind: "player_seek_applied", seek_id: command.seek_id, target_us: targetUs });
+        case "seek":
+          this.#emit(applyPlayerSeek(this.#timeSource, this.#timeline, command, nowMs));
           return;
-        }
+        case "live_window":
+          this.#timeSource.acceptLiveWindow(command);
+          return;
       }
     });
   }
@@ -255,15 +266,16 @@ export class ShadowController implements ShadowBehavior {
   end(position: HandoffEndPosition, resume: HandoffEndResume): void {
     if (!this.#active) return;
     const nowMs = this.#env.now();
-    const targetUs = position.kind === "at" ? position.position_us : this.#timeline.positionUs(nowMs);
+    const returnTo = this.#timeSource.returnPositionFor(position, this.#timeline.positionUs(nowMs));
     const pageSawPlaying = !this.#timeline.paused;
-    const resumePlaying = resume.kind === "exactly" ? resume.resume === "playing" : pageSawPlaying;
+    // Эфир HLS — всегда с игрой (решение 234, см. `resumesPlayingOnReturn`).
+    const resumePlaying = resumesPlayingOnReturn(returnTo, resume.kind === "exactly" ? resume.resume === "playing" : pageSawPlaying);
     if (this.#file !== null) {
-      this.#file.end({ targetUs, resumePlaying, pageSawPlaying });
+      this.#file.end({ position: returnTo, resumePlaying, pageSawPlaying });
       return;
     }
     this.#detach();
-    this.#attempt("end: restore real element", () => this.#returnRealElement(targetUs, resumePlaying, pageSawPlaying));
+    this.#attempt("end: restore real element", () => this.#returnRealElement(returnTo, resumePlaying, pageSawPlaying));
     this.#finish("returned");
   }
 
@@ -359,7 +371,7 @@ export class ShadowController implements ShadowBehavior {
     if (pending !== undefined) this.#pendingPlays.push(pending);
     this.#attempt("page play", () => {
       const result = this.#timeline.play("page", this.#env.now());
-      if (result.restartedAtUs !== undefined) this.#emit({ kind: "page_seek", target_us: result.restartedAtUs });
+      if (result.restartedAtUs !== undefined) this.#emitPageSeek(result.restartedAtUs);
       if (result.unpaused) this.#emit({ kind: "page_playback", request: { kind: "play" } });
     });
     return promise;
@@ -432,7 +444,7 @@ export class ShadowController implements ShadowBehavior {
   }
 
   sourceView(): ShadowSourceView | null {
-    return this.#file?.view ?? null;
+    return this.#timeSource.sourceView(this.#file?.view ?? null);
   }
 
   // -------------------------------------------------------------------------------------------
@@ -458,9 +470,16 @@ export class ShadowController implements ShadowBehavior {
 
   #pageSeek(seconds: number): void {
     this.#attempt("page seek", () => {
-      const targetUs = this.#timeline.seek("page_seek", secondsToMicros(seconds), this.#env.now());
-      this.#emit({ kind: "page_seek", target_us: targetUs });
+      // Перематывать некуда (эфир без окна) — как у браузера с пустым `seekable`: ничего не происходит.
+      const outcome = this.#timeline.pageSeek(secondsToMicros(seconds), this.#env.now());
+      if (outcome.kind === "seeking") this.#emitPageSeek(outcome.targetUs);
     });
+  }
+
+  /** `page_seek` плееру — цель во времени плеера (shadow-time-source.ts). */
+  #emitPageSeek(pageTargetUs: MediaTimeMicros): void {
+    const event = pageSeekEventFor(this.#timeSource, pageTargetUs);
+    if (event !== undefined) this.#emit(event);
   }
 
   /** Сигналы модели → DOM-события и исходы обещаний (в одном порядке, одной микрозадачей). */
@@ -628,7 +647,7 @@ export class ShadowController implements ShadowBehavior {
       releaseToPage: () => this.#releaseToPage(),
       detach: () => this.#detach(),
       reportReturned: () => this.#finish("returned"),
-      returnRealElement: (plan: ReturnPlan) => this.#returnRealElement(plan.targetUs, plan.resumePlaying, plan.pageSawPlaying),
+      returnRealElement: (plan: ReturnPlan) => this.#returnRealElement(plan.position, plan.resumePlaying, plan.pageSawPlaying),
       handOverWithoutPosition: () => {
         this.#settlePendingPlays("reject");
         this.#handOverFrameCallbacks();
@@ -650,8 +669,8 @@ export class ShadowController implements ShadowBehavior {
     this.#attempt("detach: restore muted", () => this.#muted.restoreToPage());
   }
 
-  /** Возврат: громкость, скорость, позиция, игра/пауза настоящего элемента. */
-  #returnRealElement(targetUs: MediaTimeMicros, resumePlaying: boolean, pageSawPlaying: boolean): void {
+  /** Возврат: громкость, скорость, позиция (у эфира — где браузер вошёл в эфир сам), игра/пауза. */
+  #returnRealElement(position: ReturnPosition, resumePlaying: boolean, pageSawPlaying: boolean): void {
     const media = this.#originals.media;
     const element = this.#element;
     // `muted` страницы уже вернул `#detach` (он всегда раньше возврата позиции).
@@ -659,8 +678,8 @@ export class ShadowController implements ShadowBehavior {
       writeOriginal(media.playbackRate, element, this.#timeline.pageRate);
     }
     const realUs = secondsToMicros(Number(readOriginal(media.currentTime, element)));
-    if (Math.abs(realUs - targetUs) > SAME_POSITION_TOLERANCE_US) {
-      writeOriginal(media.currentTime, element, targetUs / MICROS_PER_SECOND);
+    if (position.kind === "at" && Math.abs(realUs - position.targetUs) > SAME_POSITION_TOLERANCE_US) {
+      writeOriginal(media.currentTime, element, position.targetUs / MICROS_PER_SECOND);
     }
     this.#handOverFrameCallbacks();
     if (resumePlaying) {
@@ -680,6 +699,9 @@ export class ShadowController implements ShadowBehavior {
   #resumeRealPlayback(pageSawPlaying: boolean): void {
     const waiting = this.#pendingPlays;
     this.#pendingPlays = [];
+    // Эфир уже пошёл вместе с перезагрузкой (решение 234), его `play` погасил шлагбаум возврата: странице,
+    // видевшей паузу, событие нужно своё. `playing` придёт настоящим — после `loadedmetadata` шлагбаума нет.
+    if (!pageSawPlaying && readOriginal(this.#originals.media.paused, this.#element) === false) this.#queue.enqueueEvent("play");
     const realPlay = callOriginal(this.#originals.media.play, this.#element) as Promise<void> | undefined;
     if (realPlay === undefined || typeof realPlay.then !== "function") {
       for (const pending of waiting) pending.resolve();
@@ -718,6 +740,12 @@ export class ShadowController implements ShadowBehavior {
 
   #totalFrames(nowMs: number): number {
     return shadowTotalFrames(this.#frameBaseline, this.#timeline.playedUs(nowMs));
+  }
+
+  /** Время источника по виду передачи: эфир HLS — со сдвигом к P0, остальные — время плеера как есть. */
+  #timeSourceFor(source: ShadowSourceKind, handoffPositionUs: MediaTimeMicros): ShadowTimeSource {
+    if (source !== "live_hls") return PLAYER_TIME_IS_PAGE_TIME;
+    return createLiveHlsTimeSource(handoffPositionUs, { originals: this.#originals, pagePositionUs: () => this.#timeline.positionUs(this.#env.now()) });
   }
 
   #durationUs(): MediaTimeMicros | undefined {

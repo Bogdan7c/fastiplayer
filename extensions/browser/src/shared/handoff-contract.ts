@@ -23,6 +23,7 @@
 
 import type { MediaDuration, MediaTimeMicros, MediaTimeOffsetMicros, PlaybackRatePermille } from "../protocol/time.ts";
 import type { ClockState, ResumeState } from "../protocol/session/player.ts";
+import type { LiveSeekable } from "../protocol/session/live-window.ts";
 import type { PagePlaybackRequest, RemovalEnd } from "../protocol/session/page.ts";
 import type { ReferrerPolicyName } from "./referrer-policy.ts";
 
@@ -234,6 +235,13 @@ export type HandoffEndCause =
    */
   | "page_flood";
 
+/**
+ * Вид нативного HLS по элементу в момент передачи (10a3):
+ * - `vod` — запись: `duration` конечна (`#EXT-X-ENDLIST`);
+ * - `live` — эфир: `duration === Infinity` (плейлист без конца, MDN `HTMLMediaElement.duration`).
+ */
+export type HlsStreamKind = "vod" | "live";
+
 export type PageEvent =
   | { readonly kind: "handoff_began"; readonly request_id: number; readonly outcome: HandoffStartOutcome }
   | { readonly kind: "mse"; readonly event: LocalMseEvent }
@@ -270,11 +278,21 @@ export type PageEvent =
    */
   | { readonly kind: "file_source"; readonly url: string; readonly referrer_origin: string | null; readonly referrer_policy: ReferrerPolicyName }
   /**
-   * Передаётся плейлист нативного HLS (запись, VOD; сессия 10a2): по месту и форме тот же, что `file_source`
+   * Передаётся плейлист нативного HLS (сессия 10a2): по месту и форме тот же, что `file_source`
    * (адрес `.m3u8` выбранного источника, происхождение и политика Referer по решению 202), но фон открывает
    * не поколение-файл, а поколение HLS: плейлист и сегменты качает он сам.
+   *
+   * `stream` (10a3, решение 232) — запись или эфир, как его видит элемент в момент передачи
+   * (`duration` конечна или `Infinity`). Фон по нему решает, может ли плеер сеанса такое играть:
+   * эфир — только плеер, договорившийся на протокол 1.2 (`live_window`).
    */
-  | { readonly kind: "hls_source"; readonly url: string; readonly referrer_origin: string | null; readonly referrer_policy: ReferrerPolicyName }
+  | {
+      readonly kind: "hls_source";
+      readonly url: string;
+      readonly referrer_origin: string | null;
+      readonly referrer_policy: ReferrerPolicyName;
+      readonly stream: HlsStreamKind;
+    }
   /**
    * Пульс «тень жива» (решение владельца 180, Д-2). Шлёт сама тень — владелец знания «элемент
    * под тенью» — не чаще раза в `SHADOW_PULSE_INTERVAL_MS`, на тиках часов плеера (не таймером:
@@ -344,7 +362,13 @@ export type ShadowCommand =
   | { readonly kind: "play" }
   | { readonly kind: "pause" }
   | { readonly kind: "set_rate"; readonly rate: PlaybackRatePermille }
-  | { readonly kind: "seek"; readonly seek_id: number; readonly target_us: MediaTimeMicros };
+  | { readonly kind: "seek"; readonly seek_id: number; readonly target_us: MediaTimeMicros }
+  /**
+   * Окно эфира live HLS (протокол 1.2, 10a3, решение 232): край и окно перемотки ВО ВРЕМЕНИ ПЛЕЕРА
+   * (как `clock.position_us`). Поколение сверил фон: сюда доходит окно только последнего поколения
+   * сеанса. Перевод во время страницы — дело тени (`shadow/live/`). `start_us <= end_us <= edge_us`.
+   */
+  | { readonly kind: "live_window"; readonly edge_us: MediaTimeMicros; readonly seekable: LiveSeekable };
 
 /** Куда поставить настоящий элемент при снятии тени. */
 export type HandoffEndPosition =

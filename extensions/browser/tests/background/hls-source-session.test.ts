@@ -81,7 +81,7 @@ function hlsWorld(fetch: RangeFetch): World {
 }
 
 function deliverHls(world: World, url: string = ROOT_URL): void {
-  world.framePorts.last().deliver({ kind: "hls_source", url, referrer_origin: null, referrer_policy: "no-referrer" });
+  world.framePorts.last().deliver({ kind: "hls_source", url, referrer_origin: null, referrer_policy: "no-referrer", stream: "vod" });
 }
 
 function requestWhole(socket: FakeWebSocket, requestId: number, resource: number): void {

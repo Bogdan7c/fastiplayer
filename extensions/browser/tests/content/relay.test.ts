@@ -441,10 +441,10 @@ describe("документ говорит о себе сам", () => {
     relay.acceptBackgroundPort(port);
     beginStarted(relay, port, 1);
     const url = "https://cdn.example/vod/master.m3u8";
-    relay.handlePageMessage({ kind: "hls_source", url, referrer_origin: "https://bank.example", referrer_policy: "origin" });
-    assert.deepEqual(port.received.at(-1), { kind: "hls_source", url, referrer_origin: ownDocument.origin, referrer_policy: "origin" });
-    relay.handlePageMessage({ kind: "hls_source", url, referrer_origin: null, referrer_policy: "no-referrer" });
-    assert.deepEqual(port.received.at(-1), { kind: "hls_source", url, referrer_origin: null, referrer_policy: "no-referrer" });
+    relay.handlePageMessage({ kind: "hls_source", url, referrer_origin: "https://bank.example", referrer_policy: "origin", stream: "live" });
+    assert.deepEqual(port.received.at(-1), { kind: "hls_source", url, referrer_origin: ownDocument.origin, referrer_policy: "origin", stream: "live" });
+    relay.handlePageMessage({ kind: "hls_source", url, referrer_origin: null, referrer_policy: "no-referrer", stream: "vod" });
+    assert.deepEqual(port.received.at(-1), { kind: "hls_source", url, referrer_origin: null, referrer_policy: "no-referrer", stream: "vod" });
   });
 });
 

@@ -329,9 +329,9 @@ describe("выбор видео: адрес плейлиста в `src` до с�
     assert.deepEqual(choice, { kind: "nothing" });
   });
 
-  it("играющий нативный HLS — честный not_supported_yet", () => {
+  it("играющий нативный HLS без длительности — эфир: с 10a3 передаётся (версию плеера проверяет сеанс)", () => {
     const choice = chooseVideo([{ frameId: 0, candidates: [video(1, { ...playlist, playing: true, duration_s: null })] }]);
-    assert.deepEqual(choice, { kind: "not_supported_yet", form: "native_hls" });
+    assert.deepEqual(choice, handOff(0, "doc-top", 1));
   });
 
   it("нативный HLS на паузе с известной длительностью — запись: передаётся как видео", () => {

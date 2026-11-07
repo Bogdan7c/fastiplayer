@@ -41,8 +41,6 @@ import { parsePageEvent, parsePageFloodNotice } from "../../shared/page-message-
 import {
   PROTOCOL_VERSION_1_0,
   SESSION_CLOSE_CODES,
-  pageSessionIntroducedIn,
-  versionIncludes,
   type PlayerSessionMessage,
   type ProtocolVersion,
   type TabGoneReason,
@@ -52,6 +50,7 @@ import { createTimerSlot } from "../host-link/timer-slot.ts";
 import { HANDOFF_BEGIN_REPLY_TIMEOUT_MS, HANDOFF_END_REPLY_TIMEOUT_MS } from "./constants.ts";
 import { ruleAllowsFileUrl, type FileAddressRule } from "./file-address-guard.ts";
 import type { FramePort } from "./frame-port.ts";
+import { playerAbilitiesOf, playerCanPlayHls } from "./hls-player-support.ts";
 import { createDocumentTranslator, type DocumentTranslator, type OutgoingItem, type PageStreamProblem, type StreamPageEvent } from "./page-event-translator.ts";
 import { createSessionAdMirror } from "./ad-skip-mirror.ts";
 import type { HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
@@ -373,7 +372,7 @@ export function startHandoffSession(
 
   function heldVideo(frameId: number, report: HeldVideoReport): HeldVideoReply {
     if ((phase !== "active" && phase !== "between_videos") || !relocation.adoptionOpen()) return "release";
-    const decision = judgeHeldVideo(frameId, report, place.fileAddressRule, { nativeHls: playerKnowsNativeHls() });
+    const decision = judgeHeldVideo(frameId, report, place.fileAddressRule, playerAbilitiesOf(agreedProtocol));
     if (decision.kind === "release") return "release";
     moveToVideo(decision.video, decision.fileAddressRule);
     return "adopt";
@@ -441,7 +440,7 @@ export function startHandoffSession(
         startSourceFromPage({ form: "file", url: event.url, referrer: referrerOf(event) });
         return;
       case "hls_source":
-        startSourceFromPage({ form: "hls", url: event.url, referrer: referrerOf(event) });
+        startSourceFromPage({ form: "hls", url: event.url, referrer: referrerOf(event), stream: event.stream });
         return;
       case "next_video_held":
         // Донесение сторожа идёт мимо порта, через пограничника: по порту его не бывает.
@@ -550,7 +549,8 @@ export function startHandoffSession(
       refuseFileAddress();
       return;
     }
-    if (source.form === "hls" && !playerKnowsNativeHls()) {
+    // Запись HLS — плееру 1.1, эфир — плееру 1.2 (hls-player-support.ts).
+    if (source.form === "hls" && !playerCanPlayHls(playerAbilitiesOf(agreedProtocol), source.stream)) {
       refuseSourceOldPlayerCannotPlay();
       return;
     }
@@ -569,12 +569,7 @@ export function startHandoffSession(
     }
   }
 
-  /** Знает ли плеер сеанса нативный HLS: договорённая версия включает `hls_source_added`. */
-  function playerKnowsNativeHls(): boolean {
-    return versionIncludes(agreedProtocol, pageSessionIntroducedIn("hls_source_added"));
-  }
-
-  /** Плеер договорился на версию без HLS: честный отказ, ни одного сообщения 1.1 ему не ушло. */
+  /** Плеер договорился на версию без этого вида HLS: честный отказ, ни одного сообщения новее его версии не ушло. */
   function refuseSourceOldPlayerCannotPlay(): void {
     if (phase === "beginning") {
       failStart({ kind: "not_supported_yet", form: "native_hls" }, SESSION_CLOSE_CODES.protocol_violation);

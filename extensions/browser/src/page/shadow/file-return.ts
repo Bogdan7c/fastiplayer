@@ -18,10 +18,16 @@
 // `play()` возврата или страницы), и её события страница уже видит — как у любого элемента с
 // `preload="none"`; скрыть их нечем, тень к тому мигу снята.
 //
+// Эфир HLS (10a3, решение 232) возвращается не на T: позиция `where_browser_joins_live` значит «ничего не
+// писать» — после перезагрузки `src` нативный элемент сам встаёт в эфир (Chromium 156: на начало текущего
+// окна плейлиста, `currentTime` от нуля его новой шкалы; разведка пакета D). Возврат кончается на
+// `loadedmetadata` (у эфира Chromium шлёт его уже с readyState 4), а при отложенной загрузке — сразу.
+//
 // Предел времени — таймер окна. Таймеры скрытой вкладки Chromium будит раз в минуту, поэтому
 // таймер здесь только страховка: обычный путь идёт по событиям элемента, а они не тормозятся.
 
 import { type ElementOriginals, readOriginal, writeOriginal } from "./originals.ts";
+import type { ReturnPosition } from "./shadow-time-source.ts";
 
 /**
  * Сколько ждём, пока настоящий элемент заново загрузит файл и встанет на T. Метаданные файла с
@@ -45,9 +51,9 @@ const NETWORK_IDLE = 1;
 
 /** Чем кончился возврат. */
 export type FileReturnEnd =
-  /** Элемент загрузил файл и стоит на T. */
+  /** Элемент загрузил файл и стоит на T (эфир — там, где браузер вошёл в эфир). */
   | "restored"
-  /** Браузер отложил загрузку (`preload="none"`): T — позиция начала воспроизведения элемента. */
+  /** Браузер отложил загрузку (`preload="none"`): T — позиция начала воспроизведения элемента (у эфира — ничего). */
   | "start_position_set"
   /** Файл не загрузился (`error`): страница сама увидит ошибку элемента. */
   | "load_failed"
@@ -60,7 +66,8 @@ export type TimeoutScheduler = (callback: () => void, delayMs: number) => () => 
 export interface FileReturnParameters {
   readonly element: HTMLMediaElement;
   readonly originals: ElementOriginals;
-  readonly targetUs: number;
+  /** Куда встать после загрузки. */
+  readonly position: ReturnPosition;
   readonly scheduleTimeout: TimeoutScheduler;
   readonly onFinished: (end: FileReturnEnd) => void;
 }
@@ -113,7 +120,13 @@ export class FileReturn {
   }
 
   #placeAtTarget(): void {
-    const { element, originals, targetUs } = this.#parameters;
+    const { element, originals, position } = this.#parameters;
+    // Эфир: браузер уже сам встал в эфир, T не пишется (см. шапку).
+    if (position.kind === "where_browser_joins_live") {
+      this.#finish("restored");
+      return;
+    }
+    const targetUs = position.targetUs;
     const realUs = Number(readOriginal(originals.media.currentTime, element)) * MICROS_PER_SECOND;
     if (Math.abs(realUs - targetUs) <= SAME_POSITION_TOLERANCE_US) {
       this.#finish("restored");
@@ -133,8 +146,8 @@ export class FileReturn {
 
   /** До метаданных запись `currentTime` — позиция начала воспроизведения (без перемотки и событий). */
   #placeBeforeMetadata(): void {
-    const { element, originals, targetUs } = this.#parameters;
-    writeOriginal(originals.media.currentTime, element, targetUs / MICROS_PER_SECOND);
+    const { element, originals, position } = this.#parameters;
+    if (position.kind === "at") writeOriginal(originals.media.currentTime, element, position.targetUs / MICROS_PER_SECOND);
     this.#finish("start_position_set");
   }
 

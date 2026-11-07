@@ -80,5 +80,11 @@ export function translatePlayerMessage(message: PlayerSessionMessage, latestGene
     case "next_episode":
       // Меню вариантов — 14, следующая серия — 15: пока их не бывает.
       return { kind: "ignore" };
+    case "live_window":
+      // Окно эфира (протокол 1.2, 10a3): поколение сверяется ЗДЕСЬ, у владельца нумерации. Тень поколений
+      // не знает (она во времени страницы), поэтому окно чужого или прошлого поколения (хвост рекламы,
+      // запоздавшее окно после смены источника) до неё не доходит и не сдвигает `seekable` страницы.
+      if (message.generation !== latestGeneration) return { kind: "ignore" };
+      return { kind: "shadow", command: { kind: "live_window", edge_us: message.edge_us, seekable: message.seekable } };
   }
 }

@@ -6,13 +6,15 @@ import { parseCandidatesReply, parsePageEvent, MAX_FILE_SOURCE_URL_LENGTH } from
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 
 const PLAYLIST = "https://cdn.example/vod/master.m3u8?token=a1";
-const valid = { kind: "hls_source", url: PLAYLIST, referrer_origin: null, referrer_policy: "no-referrer" };
+const valid = { kind: "hls_source", url: PLAYLIST, referrer_origin: null, referrer_policy: "no-referrer", stream: "vod" };
 
 describe("проверка hls_source изолированным миром", () => {
   it("принимает ту же форму, что file_source, и сохраняет вид события", () => {
     assert.deepEqual(parsePageEvent(valid), valid);
     const withOrigin = { ...valid, referrer_origin: "https://site.example", referrer_policy: "origin" };
     assert.deepEqual(parsePageEvent(withOrigin), withOrigin);
+    const live = { ...valid, stream: "live" };
+    assert.deepEqual(parsePageEvent(live), live, "эфир (10a3) — та же форма с видом live");
   });
 
   it("отвергает лишние и недостающие ключи, плохие адреса и политики", () => {
@@ -27,6 +29,9 @@ describe("проверка hls_source изолированным миром", ()
       { ...valid, url: 7 },
       { ...valid, referrer_origin: "https://site.example/path" },
       { ...valid, referrer_policy: "leak-everything" },
+      { kind: "hls_source", url: PLAYLIST, referrer_origin: null, referrer_policy: "no-referrer" },
+      { ...valid, stream: "dvr" },
+      { ...valid, stream: null },
     ];
     for (const message of rejected) assert.equal(parsePageEvent(message), undefined, JSON.stringify(message).slice(0, 90));
   });

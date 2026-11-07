@@ -12,14 +12,15 @@
 //   чужое `emptied`) — страница забрала видео: наш поток снимается, её источник работает,
 //   тень уходит с `element_released` (как не-MSE источник у тени MSE, 09a2);
 // - возврат: источник возвращается, тень остаётся видимой странице, пока элемент заново не
-//   загрузит файл и не встанет на T (`FileReturn`), и только потом снимается;
+//   загрузит файл и не встанет на T (`FileReturn`), и только потом снимается; эфир HLS (10a3) той же
+//   дорогой перезагружает `src`, но T не пишет: элемент встаёт в эфир сам и играет с первой задачи
+//   (решение 234: `play()` вместе с возвратом источника);
 // - смена источника страницей ПОСРЕДИ возврата (через переопределения или мимо них — чужое
 //   `emptied`) бросает возврат: ни позиции T, ни `play()` на новом видео страницы (находка 5);
 // - новая передача того же элемента посреди возврата (`interruptFileReturn`) сначала заканчивает
 //   возврат прежней тени — элемент на T, без игры, — и отдаёт новой тени снимок файла (находка 6).
 // `muted` страницы на любом выходе возвращает `detach` контроллера (page-muted.ts).
 
-import type { MediaTimeMicros } from "../../protocol/time.ts";
 import type { GateDecision } from "./event-gate.ts";
 import { SOURCE_RESET_EVENT_TYPE } from "./event-gate.ts";
 import { FileReturn, type FileReturnEnd, type TimeoutScheduler } from "./file-return.ts";
@@ -27,18 +28,20 @@ import type { FileSourceMode } from "./file-source-mode.ts";
 import { shadowProblemReporter } from "./once-reporter.ts";
 import { callOriginal, type ElementOriginals, writeOriginal } from "./originals.ts";
 import type { SourceProperty } from "./prototype-overrides.ts";
+import type { ReturnPosition } from "./shadow-time-source.ts";
 
 /** Страница пишет источник элемента. */
 export type PageSourceWrite =
   | { readonly kind: "load" }
   | { readonly kind: "set"; readonly property: SourceProperty; readonly value: unknown };
 
-/** Куда и как вернуть элемент странице. */
 /** Микросекунд в секунде (позиция T плана — в мкс, `currentTime` — в секундах). */
 const MICROS_PER_SECOND = 1_000_000;
 
+/** Куда и как вернуть элемент странице. */
 export interface ReturnPlan {
-  readonly targetUs: MediaTimeMicros;
+  /** T (MSE, файл, запись HLS) или «где браузер сам войдёт в эфир» (эфир HLS, 10a3). */
+  readonly position: ReturnPosition;
   readonly resumePlaying: boolean;
   readonly pageSawPlaying: boolean;
 }
@@ -197,15 +200,30 @@ export class FileShadowLifecycle {
       this.#fileReturn = new FileReturn({
         element: host.element,
         originals: host.originals,
-        targetUs: plan.targetUs,
+        position: plan.position,
         scheduleTimeout: host.scheduleTimeout,
         onFinished: (end) => this.#complete(end),
       });
+      // Эфир HLS: `play()` — в той же задаче, что и возврат источника, как у сайта «src + play()» (решение 234).
+      // Загруженный на паузе эфир встроенный HLS Chromium 156 потом не запускает (см. `resumesPlayingOnReturn`).
+      if (plan.position.kind === "where_browser_joins_live" && plan.resumePlaying) host.attempt("live return: play with the reload", () => this.#playWithReload());
     } else {
       // Источник не снимался (запасной путь) — элемент и так с файлом: возврат как у MSE, сразу.
       this.#complete("restored");
     }
     host.reportReturned();
+  }
+
+  /**
+   * Настоящий `play()` вместе с перезагрузкой эфира. Его исход странице отдаёт `play()` конца возврата
+   * (`returnRealElement`): отказ здесь только пишется в журнал, а не глотается молча.
+   */
+  #playWithReload(): void {
+    const { element, originals } = this.#host;
+    const started = callOriginal(originals.media.play, element) as Promise<void> | undefined;
+    if (started !== undefined && typeof started.then === "function") {
+      started.then(undefined, (problem: unknown) => shadowProblemReporter.report("live return: play() with the reload rejected", problem));
+    }
   }
 
   /**
@@ -227,10 +245,11 @@ export class FileShadowLifecycle {
       case "superseded":
         // Новая тень сейчас встанет на этот элемент и прочтёт его позицию: она должна быть T (до
         // метаданных — позиция начала воспроизведения). Играть незачем: новая тень всё равно
-        // ставит элемент на паузу, а играть будет плеер.
-        host.attempt("superseded: place the real element at T", () =>
-          writeOriginal(host.originals.media.currentTime, host.element, plan.targetUs / MICROS_PER_SECOND),
-        );
+        // ставит элемент на паузу, а играть будет плеер. У эфира T не пишется: где элемент — там и P0.
+        host.attempt("superseded: place the real element at T", () => {
+          const position = plan.position;
+          if (position.kind === "at") writeOriginal(host.originals.media.currentTime, host.element, position.targetUs / MICROS_PER_SECOND);
+        });
         host.handOverWithoutPosition();
         return;
       case "restored":

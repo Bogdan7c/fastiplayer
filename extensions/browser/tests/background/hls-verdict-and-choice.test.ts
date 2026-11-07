@@ -1,5 +1,6 @@
 // Нативный HLS как передаваемая форма (сессия 10a2, пакет P2): вердикт и выбор видео для записи (VOD)
-// и для живого эфира (длительность Infinity, который в 10a2 по решению 231 не передаётся).
+// и для живого эфира (длительность Infinity). С 10a3 (решение 232) эфир — обычный кандидат: может ли плеер
+// его играть, решает сеанс по версии протокола (hls-live-session.test.ts).
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { chooseMainVideo, chooseRequestedVideo, chooseVideo } from "../../src/background/handoff/video-choice.ts";
@@ -25,10 +26,17 @@ describe("вердикт нативного HLS", () => {
     assert.equal(classifyVideo(hlsVideo(1)), "main");
   });
 
-  it("играющий эфир (длительности нет) — неподдержанная форма native_hls", () => {
+  it("играющий эфир (длительности нет) — главное видео, формы отказа у него нет (10a3)", () => {
     const live = hlsVideo(1, { duration_s: null });
-    assert.equal(classifyVideo(live), "unsupported");
-    assert.equal(unsupportedFormOf(live), "native_hls");
+    assert.equal(classifyVideo(live), "main");
+    assert.equal(unsupportedFormOf(live), null);
+  });
+
+  it("эфир не реклама по длительности: без длительности не преролл и не короткий ролик даже рядом с ждущим фильмом", () => {
+    const live = hlsVideo(1, { duration_s: null, file_host: AD_HOST });
+    const waitingFilm = hlsVideo(2, { media: { kind: "media_source", in_worker: false }, playing: false, duration_s: 6381, file_host: null });
+    assert.equal(classifyVideo(live, undefined, [waitingFilm]), "main");
+    assert.equal(classifyVideo(hlsVideo(3, { duration_s: null, muted: true })), "main", "беззвучный эфир без цикла — не украшение");
   });
 
   it("у записи и у файла формы отказа нет", () => {
@@ -74,13 +82,14 @@ describe("выбор видео: нативный HLS", () => {
     }
   });
 
-  it("живой эфир — not_supported_yet{native_hls}, а не «нечего передавать»", () => {
+  it("живой эфир передаётся ролью film и без признака «может быть рекламой» (у эфира нет длительности)", () => {
     const live = hlsVideo(1, { duration_s: null });
-    assert.deepEqual(chooseVideo(survey(live)), { kind: "not_supported_yet", form: "native_hls" });
-    assert.deepEqual(chooseMainVideo(survey(live)), { kind: "not_supported_yet", form: "native_hls" });
+    const expected = { kind: "hand_off", video: { frameId: 0, document: "doc-top", element: 1, frameHost: "site.example", fileHost: "cdn.example", role: "film", mayBeAd: false } };
+    assert.deepEqual(chooseVideo(survey(live)), expected);
+    assert.deepEqual(chooseMainVideo(survey(live)), expected);
   });
 
-  it("запись рядом с эфиром: передаётся запись", () => {
+  it("запись рядом с эфиром той же площади: передаётся запись (неизвестная длительность — последняя)", () => {
     const choice = chooseVideo(survey(hlsVideo(1, { duration_s: null }), hlsVideo(2)));
     assert.equal(choice.kind === "hand_off" && choice.video.element, 2);
   });
@@ -89,12 +98,12 @@ describe("выбор видео: нативный HLS", () => {
     assert.deepEqual(chooseVideo(survey(hlsVideo(1, { playing: false, duration_s: null }))), { kind: "nothing" });
   });
 
-  it("выбор человека: запись передаётся ролью film, эфир даёт not_supported_yet{native_hls}", () => {
+  it("выбор человека: запись и эфир передаются ролью film, незапущенный плейлист — «нечего передавать»", () => {
     const ref = { frame_id: 0, document: "doc-top", element: 1 };
     const vod = chooseRequestedVideo(survey(hlsVideo(1)), ref);
     assert.equal(vod.kind === "hand_off" && vod.video.role, "film");
     const live = chooseRequestedVideo(survey(hlsVideo(1, { duration_s: null })), ref);
-    assert.deepEqual(live, { kind: "not_supported_yet", form: "native_hls" });
+    assert.equal(live.kind === "hand_off" && live.video.role, "film");
     const unstarted = chooseRequestedVideo(survey(hlsVideo(1, { playing: false, duration_s: null })), ref);
     assert.deepEqual(unstarted, { kind: "nothing" });
   });

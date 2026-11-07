@@ -17,6 +17,7 @@ import {
   type HandoffEndCause,
   type HandoffStartOutcome,
   type HeldVideoReport,
+  type HlsStreamKind,
   type LocalMseEvent,
   type PageEvent,
   type PageEventBudgetKind,
@@ -140,6 +141,7 @@ const UNSUPPORTED_MEDIA_FORMS: readonly UnsupportedMediaForm[] = [
   "started_before_script",
 ];
 const HANDOFF_END_CAUSES: readonly HandoffEndCause[] = ["returned", "element_released", "page_flood"];
+const HLS_STREAM_KINDS: readonly HlsStreamKind[] = ["vod", "live"];
 
 type PlainRecord = Readonly<Record<string, unknown>>;
 
@@ -223,6 +225,12 @@ export function isReferrerOrigin(value: unknown): value is string {
     return false;
   }
   return FILE_SOURCE_PROTOCOLS.includes(parsed.protocol) && parsed.origin === value;
+}
+
+/** Факты Referer источника (решение 202): сайт-источник или `null` и известная политика. */
+function referrerFactsOf(origin: unknown, policy: unknown): { readonly origin: string | null; readonly policy: ReferrerPolicyName } | undefined {
+  if (origin !== null && !isReferrerOrigin(origin)) return undefined;
+  return isOneOf(policy, REFERRER_POLICIES) ? { origin, policy } : undefined;
 }
 
 /** Имя хоста по правилу `HOST_NAME_PATTERN`, 1…MAX_HOST_NAME_LENGTH символов. */
@@ -379,15 +387,22 @@ export function parsePageEvent(value: unknown): PageEvent | undefined {
       const request = parsePlaybackRequest(value["request"]);
       return hasExactKeys(value, ["kind", "request"]) && request !== undefined ? { kind: "page_playback", request } : undefined;
     }
-    case "file_source":
-    case "hls_source": {
-      // `hls_source` (10a2) — та же форма и те же проверки, что у `file_source`: адрес http(s) и факты Referer.
+    case "file_source": {
       const url = value["url"];
-      const referrerOrigin = value["referrer_origin"];
-      const referrerPolicy = value["referrer_policy"];
-      const referrerIsValid = (referrerOrigin === null || isReferrerOrigin(referrerOrigin)) && isOneOf(referrerPolicy, REFERRER_POLICIES);
-      return hasExactKeys(value, ["kind", "url", "referrer_origin", "referrer_policy"]) && isFileSourceUrl(url) && referrerIsValid
-        ? { kind: value["kind"], url, referrer_origin: referrerOrigin, referrer_policy: referrerPolicy as ReferrerPolicyName }
+      const referrer = referrerFactsOf(value["referrer_origin"], value["referrer_policy"]);
+      return hasExactKeys(value, ["kind", "url", "referrer_origin", "referrer_policy"]) && isFileSourceUrl(url) && referrer !== undefined
+        ? { kind: "file_source", url, referrer_origin: referrer.origin, referrer_policy: referrer.policy }
+        : undefined;
+    }
+    case "hls_source": {
+      // `hls_source` (10a2) — те же проверки, что у `file_source` (адрес http(s) и факты Referer), плюс вид
+      // потока (10a3): запись или эфир, иначе фон не знает, может ли плеер сеанса его играть.
+      const url = value["url"];
+      const referrer = referrerFactsOf(value["referrer_origin"], value["referrer_policy"]);
+      const stream = value["stream"];
+      const shapeIsValid = hasExactKeys(value, ["kind", "url", "referrer_origin", "referrer_policy", "stream"]) && isOneOf(stream, HLS_STREAM_KINDS);
+      return shapeIsValid && isFileSourceUrl(url) && referrer !== undefined
+        ? { kind: "hls_source", url, referrer_origin: referrer.origin, referrer_policy: referrer.policy, stream }
         : undefined;
     }
     case "shadow_alive":

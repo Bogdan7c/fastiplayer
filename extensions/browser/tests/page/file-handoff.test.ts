@@ -155,7 +155,7 @@ describe("начало передачи записи HLS (сессия 10a2)", (
       await isolated.waitFor(4);
       assert.deepEqual(isolated.received.slice(-4), [
         { kind: "handoff_began", request_id: 2, outcome: "started" },
-        { kind: "hls_source", url: PLAYLIST_URL, referrer_origin: null, referrer_policy: "no-referrer" },
+        { kind: "hls_source", url: PLAYLIST_URL, referrer_origin: null, referrer_policy: "no-referrer", stream: "vod" },
         { kind: "page_seek", target_us: 42_000_000 },
         { kind: "page_playback", request: { kind: "play" } },
       ] satisfies PageEvent[]);
@@ -169,7 +169,33 @@ describe("начало передачи записи HLS (сессия 10a2)", (
     }
   });
 
-  it("между опросом и командой запись стала эфиром (Infinity): no_media, тень не ставится, hls_source не уходит", async () => {
+  it("эфир (duration Infinity, 10a3): hls_source{stream: live}, затем T0 и play; тень — вид «эфир»", async () => {
+    const harness = startHarness();
+    const video = harness.page.addVideo();
+    video.src = PLAYLIST_URL;
+    video.testDuration = Number.POSITIVE_INFINITY;
+    video.testSetState({ paused: false, currentTime: 7.5 });
+    const isolated = handshake(harness.page);
+    try {
+      const [candidate] = await describeCandidates(isolated);
+      assert.equal(candidate?.duration_s, null, "у эфира длительности нет");
+      isolated.send({ kind: "begin_handoff", request_id: 4, document: candidate!.document, element: candidate!.element });
+      await isolated.waitFor(4);
+      assert.deepEqual(isolated.received.slice(-4), [
+        { kind: "handoff_began", request_id: 4, outcome: "started" },
+        { kind: "hls_source", url: PLAYLIST_URL, referrer_origin: null, referrer_policy: "no-referrer", stream: "live" },
+        { kind: "page_seek", target_us: 7_500_000 },
+        { kind: "page_playback", request: { kind: "play" } },
+      ] satisfies PageEvent[]);
+      assert.equal(harness.shadow.started[0]?.source, "live_hls");
+      await isolated.settle();
+      assertAcceptedByIsolatedWorld(harness);
+    } finally {
+      isolated.close();
+    }
+  });
+
+  it("между опросом и командой метаданные пропали (NaN): no_media, тень не ставится, hls_source не уходит", async () => {
     const harness = startHarness();
     const video = harness.page.addVideo();
     video.src = PLAYLIST_URL;
@@ -177,7 +203,7 @@ describe("начало передачи записи HLS (сессия 10a2)", (
     const isolated = handshake(harness.page);
     try {
       const [candidate] = await describeCandidates(isolated);
-      video.testDuration = Number.POSITIVE_INFINITY;
+      video.testDuration = Number.NaN;
       isolated.send({ kind: "begin_handoff", request_id: 3, document: candidate!.document, element: candidate!.element });
       await isolated.waitFor(1);
       await isolated.settle();

@@ -15,6 +15,7 @@ import type {
 } from "../shared/handoff-contract.ts";
 import { MAX_JSON_SAFE_INTEGER, MAX_PLAYBACK_RATE_PERMILLE, MIN_PLAYBACK_RATE_PERMILLE } from "../protocol/limits.ts";
 import type { ClockState, ResumeState } from "../protocol/session/player.ts";
+import type { LiveSeekable } from "../protocol/session/live-window.ts";
 import { isDocumentTag, MAX_NEXT_VIDEO_LEASE_MS } from "../shared/page-message-validation.ts";
 import type { PointerQuery } from "../shared/entry-contract.ts";
 import { parsePointerQuery } from "../shared/entry-validation.ts";
@@ -82,6 +83,29 @@ function parseShadowCommand(candidate: unknown): ShadowCommand | null {
       const { seek_id: seekId, target_us: target } = fields;
       if (!isU32(seekId) || !isMediaTime(target)) return null;
       return { kind: "seek", seek_id: seekId, target_us: target };
+    }
+    case "live_window": {
+      const fields = exactObject(candidate, ["kind", "edge_us", "seekable"]);
+      if (fields === null || !isMediaTime(fields["edge_us"])) return null;
+      const seekable = parseLiveSeekable(fields["seekable"], fields["edge_us"]);
+      return seekable === null ? null : { kind: "live_window", edge_us: fields["edge_us"], seekable };
+    }
+    default:
+      return null;
+  }
+}
+
+/** Окно эфира (протокол 1.2): договор `start_us <= end_us <= edge_us`, как при разборе протокола. */
+function parseLiveSeekable(candidate: unknown, edgeUs: number): LiveSeekable | null {
+  switch (kindOf(candidate)) {
+    case "none":
+      return exactObject(candidate, ["kind"]) === null ? null : { kind: "none" };
+    case "range": {
+      const fields = exactObject(candidate, ["kind", "start_us", "end_us"]);
+      if (fields === null) return null;
+      const { start_us: start, end_us: end } = fields;
+      if (!isMediaTime(start) || !isMediaTime(end) || start > end || end > edgeUs) return null;
+      return { kind: "range", start_us: start, end_us: end };
     }
     default:
       return null;

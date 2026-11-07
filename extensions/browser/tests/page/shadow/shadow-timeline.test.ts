@@ -7,12 +7,13 @@ import {
   READY_STATE,
   SOURCE_RESET_GIVE_UP_MS,
   ShadowTimeline,
+  type PageSeekRange,
   type TimelineSignal,
 } from "../../../src/page/shadow/shadow-timeline.ts";
 
 const SECOND_US = 1_000_000;
 
-function createTimeline(options: { paused?: boolean; positionUs?: number; durationUs?: number | undefined } = {}) {
+function createTimeline(options: { paused?: boolean; positionUs?: number; durationUs?: number | undefined; pageSeekRange?: () => PageSeekRange } = {}) {
   const signals: TimelineSignal[] = [];
   const durationUs = "durationUs" in options ? options.durationUs : 100 * SECOND_US;
   const timeline = new ShadowTimeline(
@@ -25,6 +26,7 @@ function createTimeline(options: { paused?: boolean; positionUs?: number; durati
     },
     () => durationUs,
     (signal) => void signals.push(signal),
+    options.pageSeekRange,
   );
   const eventTypes = () => signals.filter((signal) => signal.kind === "event").map((signal) => (signal as { type: string }).type);
   return { timeline, signals, eventTypes, clear: () => void (signals.length = 0) };
@@ -121,7 +123,7 @@ describe("модель тени: перемотка", () => {
     const { timeline, eventTypes, clear } = createTimeline();
     timeline.onClock(clock(10 * SECOND_US, "playing"), 0);
     clear();
-    const target = timeline.seek("player_seek", 50 * SECOND_US, 100);
+    const target = timeline.playerSeek(50 * SECOND_US, 100);
     assert.equal(target, 50 * SECOND_US);
     assert.equal(timeline.positionUs(5_000), 50 * SECOND_US);
     assert.equal(timeline.seeking, true);
@@ -138,7 +140,7 @@ describe("модель тени: перемотка", () => {
   it("перемотка за конец: цель = длительность и после подтверждения — ended", () => {
     const { timeline, eventTypes, clear } = createTimeline();
     timeline.onClock(clock(10 * SECOND_US, "playing"), 0);
-    const target = timeline.seek("player_seek", 500 * SECOND_US, 100);
+    const target = timeline.playerSeek(500 * SECOND_US, 100);
     assert.equal(target, 100 * SECOND_US);
     clear();
     timeline.onClock(clock(100 * SECOND_US, "ended"), 300);
@@ -150,15 +152,15 @@ describe("модель тени: перемотка", () => {
 
   it("перемотка ограничена нулём снизу и не ограничена сверху без длительности", () => {
     const { timeline } = createTimeline({ durationUs: undefined });
-    assert.equal(timeline.seek("page_seek", -5 * SECOND_US, 0), 0);
-    assert.equal(timeline.seek("page_seek", 5_000 * SECOND_US, 0), 5_000 * SECOND_US);
+    assert.deepEqual(timeline.pageSeek(-5 * SECOND_US, 0), { kind: "seeking", targetUs: 0 });
+    assert.deepEqual(timeline.pageSeek(5_000 * SECOND_US, 0), { kind: "seeking", targetUs: 5_000 * SECOND_US });
     assert.equal(timeline.ended, false);
   });
 
   it("перемотка страницей: старые тики не отматывают позицию, близкий тик подтверждает", () => {
     const { timeline, eventTypes, clear } = createTimeline();
     timeline.onClock(clock(10 * SECOND_US, "playing"), 0);
-    timeline.seek("page_seek", 60 * SECOND_US, 100);
+    timeline.pageSeek(60 * SECOND_US, 100);
     clear();
     // Тик, отправленный плеером до того, как он узнал о перемотке.
     timeline.onClock(clock(10 * SECOND_US + 250_000, "playing"), 250);
@@ -172,7 +174,7 @@ describe("модель тени: перемотка", () => {
 
   it("перемотка страницей, которую плеер поставил не туда: принимается после MAX_UNCONFIRMED_TICKS тиков", () => {
     const { timeline } = createTimeline();
-    timeline.seek("page_seek", 60 * SECOND_US, 0);
+    timeline.pageSeek(60 * SECOND_US, 0);
     for (let tick = 1; tick <= MAX_UNCONFIRMED_TICKS; tick += 1) {
       timeline.onClock(clock(30 * SECOND_US, "playing"), tick * 250);
       assert.equal(timeline.seeking, true, `тик ${tick}`);
@@ -253,5 +255,48 @@ describe("модель тени: новый источник (Д-4)", () => {
     assert.ok(!eventTypes().includes("ended"));
     timeline.onClock(clock(OLD_GENERATION_US, "paused"), SOURCE_RESET_GIVE_UP_MS + 500);
     assert.equal(timeline.positionUs(SOURCE_RESET_GIVE_UP_MS + 500), OLD_GENERATION_US);
+  });
+});
+
+describe("модель тени: окно перемотки страницы (10a3)", () => {
+  const window: PageSeekRange = { kind: "range", startUs: 20 * SECOND_US, endUs: 40 * SECOND_US };
+
+  it("цель страницы прижимается к окну источника; внутри окна — как есть", () => {
+    const { timeline } = createTimeline({ durationUs: undefined, pageSeekRange: () => window });
+    assert.deepEqual(timeline.pageSeek(30 * SECOND_US, 0), { kind: "seeking", targetUs: 30 * SECOND_US });
+    assert.deepEqual(timeline.pageSeek(90 * SECOND_US, 0), { kind: "seeking", targetUs: 40 * SECOND_US });
+    assert.deepEqual(timeline.pageSeek(1 * SECOND_US, 0), { kind: "seeking", targetUs: 20 * SECOND_US });
+    assert.equal(timeline.positionUs(0), 20 * SECOND_US);
+  });
+
+  it("перемотка плеера окну страницы не подчиняется: плеер — правда о своём потоке", () => {
+    const { timeline } = createTimeline({ durationUs: undefined, pageSeekRange: () => window });
+    assert.equal(timeline.playerSeek(55 * SECOND_US, 0), 55 * SECOND_US);
+  });
+
+  it("перематывать некуда: ни события, ни удержания, позиция на месте", () => {
+    const { timeline, eventTypes, clear } = createTimeline({ durationUs: undefined, pageSeekRange: () => ({ kind: "not_seekable" }) });
+    timeline.onClock(clock(10 * SECOND_US, "playing"), 0);
+    clear();
+    assert.deepEqual(timeline.pageSeek(30 * SECOND_US, 0), { kind: "not_seekable" });
+    assert.equal(timeline.seeking, false);
+    assert.equal(timeline.positionUs(0), 10 * SECOND_US);
+    assert.deepEqual(eventTypes(), []);
+  });
+
+  it("play() страницы после конца эфира без окна: перемотки на начало нет, конец снят, играет дальше", () => {
+    const { timeline } = createTimeline({ durationUs: undefined, pageSeekRange: () => ({ kind: "not_seekable" }) });
+    timeline.onClock(clock(10 * SECOND_US, "ended"), 0);
+    assert.equal(timeline.ended, true);
+    const result = timeline.play("page", 100);
+    assert.equal(result.restartedAtUs, undefined);
+    assert.equal(timeline.ended, false);
+    assert.equal(timeline.paused, false);
+  });
+
+  it("play() страницы после конца эфира с окном: перемотка на начало окна", () => {
+    const { timeline } = createTimeline({ durationUs: undefined, pageSeekRange: () => window });
+    timeline.onClock(clock(35 * SECOND_US, "ended"), 0);
+    assert.equal(timeline.play("page", 100).restartedAtUs, 20 * SECOND_US);
   });
 });

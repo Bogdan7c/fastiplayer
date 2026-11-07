@@ -12,7 +12,7 @@ import { MP4, setup, startHandoff, TAB, type World } from "./handoff-world.ts";
 import { flushPromises } from "./support.ts";
 
 const AREA = 296_000;
-const WITH_NATIVE_HLS = { nativeHls: true } as const;
+const WITH_NATIVE_HLS = { nativeHls: true, hlsLive: false } as const;
 
 /** Реклама: файл с неизвестного домена, рядом ждёт фильм (форма Ashdi и Tortuga). */
 const AD: VideoCandidate = {

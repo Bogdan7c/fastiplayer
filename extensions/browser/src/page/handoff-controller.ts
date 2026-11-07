@@ -35,7 +35,16 @@
 // Куски воркера уже приходят плотной копией с transfer и уходят дальше тем же буфером.
 
 import type { MediaTimeMicros } from "../protocol/time.ts";
-import type { DocumentTag, ElementKey, HandoffEndCause, HandoffEndPosition, HandoffEndResume, PageEvent, ShadowCommand } from "../shared/handoff-contract.ts";
+import type {
+  DocumentTag,
+  ElementKey,
+  HandoffEndCause,
+  HandoffEndPosition,
+  HandoffEndResume,
+  HlsStreamKind,
+  PageEvent,
+  ShadowCommand,
+} from "../shared/handoff-contract.ts";
 import type { ReferrerPolicyName } from "../shared/referrer-policy.ts";
 import { effectiveReferrerPolicy } from "../shared/referrer-policy.ts";
 import type { BinaryIntrinsics } from "./binary-view.ts";
@@ -44,6 +53,7 @@ import type { ElementRegistry } from "./element-registry.ts";
 import type { ElementSource } from "./element-source.ts";
 import type { ForwardByteMeter } from "./forward-byte-meter.ts";
 import type { ShadowSessionHandle, ShadowSourceKind, ShadowStarter } from "./handoff-seam.ts";
+import { hlsStreamOfDuration, shadowSourceOfHls } from "./hls-stream-kind.ts";
 import type { HeldVideo } from "./next-video-guard.ts";
 import { notifyTap, type HandoffTap, type StreamOrigin } from "./handoff-tap.ts";
 import type { ReplayItem } from "./journal/media-journal.ts";
@@ -232,10 +242,11 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
       return;
     }
 
-    if (source.kind === "hls" && !Number.isFinite(dom.durationSecondsOf(element))) {
-      // Живой эфир (длительность Infinity) или метаданные пропали: эфир в 10a2 не передаётся (решение 231). Фон
-      // такое видео и не выбирает, это страховка на гонку «выбрали запись, а элемент уже стал эфиром». Ответ
-      // `no_media` фон понимает как «передавать нечего» (исход `no_video`), страница остаётся с настоящим элементом.
+    // Нативный HLS: запись или эфир — по `duration` элемента сейчас (10a3). Метаданных нет (NaN) — плейлист
+    // ещё не загружен или пропал: передавать нечего (`no_media` фон понимает как исход `no_video`), страница
+    // остаётся с настоящим элементом. Может ли плеер сеанса играть эфир, решает фон по версии протокола.
+    const hlsStream = source.kind === "hls" ? hlsStreamOfDuration(dom.durationSecondsOf(element)) : null;
+    if (source.kind === "hls" && hlsStream === null) {
       this.#environment.nextVideo.releaseElement(element);
       port.send({ kind: "handoff_began", request_id: requestId, outcome: "no_media" });
       return;
@@ -252,7 +263,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
       return;
     }
     try {
-      const shadowSource = this.#openStream(active, port, source);
+      const shadowSource = this.#openStream(active, port, source, hlsStream ?? "vod");
       // Повтор главного потока синхронный: элемент стоит там же, T0 — ровно названный.
       this.#startShadow(active, shadowSource, active.announcedStartUs ?? this.#startPositionOf(element));
     } catch (error) {
@@ -389,7 +400,13 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
    * файл — `file_source{url}` (поколение-файл; адрес дальше фона не уходит). Возвращает, в каком
    * виде ставить тень.
    */
-  #openStream(active: ActiveHandoff, port: PagePort, source: Extract<ElementSource, { kind: "media_source" | "file" | "hls" }>): ShadowSourceKind {
+  #openStream(
+    active: ActiveHandoff,
+    port: PagePort,
+    source: Extract<ElementSource, { kind: "media_source" | "file" | "hls" }>,
+    /** Вид HLS (у MSE и файла не читается). */
+    hlsStream: HlsStreamKind,
+  ): ShadowSourceKind {
     switch (source.kind) {
       case "media_source":
         for (const item of source.record.journal.replay()) {
@@ -402,10 +419,11 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
         port.send(this.#fileSourceEvent(active.element, source.url));
         return "file";
       case "hls":
+        port.send(this.#hlsSourceEvent(active.element, source.url, hlsStream));
         // Запись HLS под тенью ведёт себя как файл (решения 186/187): настоящая закачка гасится `srcObject`,
-        // буфер и seekable — весь [0, duration], возврат перезагружает `src` на T. Отличается только событие.
-        port.send(this.#hlsSourceEvent(active.element, source.url));
-        return "file";
+        // буфер и seekable — весь [0, duration], возврат перезагружает `src` на T. Эфир (10a3) — своя тень:
+        // длительность Infinity, окно перемотки по `live_window`, время со сдвигом, возврат — на край эфира.
+        return shadowSourceOfHls(hlsStream);
     }
   }
 
@@ -417,9 +435,9 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     return { kind: "file_source", url, ...this.#referrerFactsOf(element) };
   }
 
-  /** Событие плейлиста HLS (10a2): те же факты Referer, что у файла. */
-  #hlsSourceEvent(element: Element, url: string): Extract<PageEvent, { kind: "hls_source" }> {
-    return { kind: "hls_source", url, ...this.#referrerFactsOf(element) };
+  /** Событие плейлиста HLS (10a2): те же факты Referer, что у файла, и вид потока (10a3). */
+  #hlsSourceEvent(element: Element, url: string, stream: HlsStreamKind): Extract<PageEvent, { kind: "hls_source" }> {
+    return { kind: "hls_source", url, ...this.#referrerFactsOf(element), stream };
   }
 
   /** Факты для Referer закачки (решение 202): общие для файла и плейлиста. */
@@ -535,3 +553,4 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     if (tap !== undefined) notifyTap(this.#environment.reportOddity, () => notify(tap));
   }
 }
+

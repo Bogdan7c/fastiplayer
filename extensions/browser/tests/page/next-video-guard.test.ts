@@ -44,6 +44,7 @@ function setupGuard() {
     isPaused: (element: object) => (element as FakeVideo).real.paused,
     isEnded: () => false,
     readyStateOf: (element: object) => (element as FakeVideo).real.readyState,
+    durationSecondsOf: (element: object) => (element as FakeVideo).real.duration,
     isLooping: (element: object) => (element as unknown as { loop?: boolean }).loop === true,
     currentSrcOf: (element: object) => String((element as FakeVideo).real.src),
   } as unknown as DomReaders;
@@ -201,6 +202,36 @@ describe("запись HLS под сторожем (10a2)", () => {
     assert.ok(held?.kind === "next_video_held");
     assert.equal(held.element, keyOf(playlist));
     await promise;
+  });
+});
+
+describe("эфир HLS под сторожем (10a3)", () => {
+  it("эфир (duration Infinity) держится тенью эфира, а не тенью записи: страница видит идущую закачку эфира", async () => {
+    const { guard, sent, addVideo, sources } = setupGuard();
+    const live = addVideo((video) => {
+      video.real.duration = Number.POSITIVE_INFINITY;
+    });
+    sources.set(live, { kind: "hls", url: "https://live.example/channel/index.m3u8" });
+    guard.arm(LEASE_MS);
+    const promise = pagePlay(live);
+    assert.equal(browserPlays(live), 0);
+    assert.equal(sent.at(-1)?.kind, "next_video_held");
+    const pageView = live as unknown as { duration: number; networkState: number };
+    assert.equal(pageView.duration, Number.POSITIVE_INFINITY);
+    assert.equal(pageView.networkState, 2, "вид эфира (у тени записи — NETWORK_IDLE «загружено»)");
+    await promise;
+  });
+
+  it("плейлист без метаданных (NaN) сторож не задерживает: передавать нечего", async () => {
+    const { guard, sent, addVideo, sources } = setupGuard();
+    const playlist = addVideo((video) => {
+      video.real.duration = Number.NaN;
+    });
+    sources.set(playlist, { kind: "hls", url: "https://cdn.example/vod/master.m3u8" });
+    guard.arm(LEASE_MS);
+    await pagePlay(playlist);
+    assert.equal(browserPlays(playlist), 1, "обычный play() браузера");
+    assert.deepEqual(sent, []);
   });
 });
 
