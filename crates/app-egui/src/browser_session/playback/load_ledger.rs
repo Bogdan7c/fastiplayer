@@ -27,6 +27,7 @@ use std::collections::VecDeque;
 
 use player_core::{MediaInstanceId, PlaybackState, PlayerErrorKind, PlayerEvent, PlayerSnapshot};
 
+use super::live_window::LiveWindowObservation;
 use super::media_identity::ShownMediaTracker;
 use super::{
     BrowserPlaybackFault, FaultAnnouncement, LoadFault, MediaLoadTicket, PlaybackObservation,
@@ -234,6 +235,7 @@ impl LoadLedger {
                 .target_position
                 .map(|target| target.as_duration()),
             seek_answers: self.seek_answers,
+            live_window: LiveWindowObservation::from_timeline(&snapshot.timeline),
         }
     }
 

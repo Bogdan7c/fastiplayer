@@ -24,6 +24,8 @@ impl SessionMedia {
     pub(crate) fn on_session_attached(&mut self, session: &SessionRef, version: ProtocolVersion) {
         if self.is_current(session) {
             self.outbound.note_agreed_protocol(version);
+            // Окно эфира — заново: прежнее соединение могло его потерять (`live_hls`).
+            self.outbound.forget_live_window_on_attach();
         } else {
             debug!("Attach of a session instance that is no longer current ignored");
         }

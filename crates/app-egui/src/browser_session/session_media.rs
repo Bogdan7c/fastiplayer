@@ -92,6 +92,7 @@ mod generation_placement;
 mod generation_rejection;
 mod generation_start;
 mod install_reconcile;
+mod live_hls;
 mod page_clock;
 mod resource_requests;
 mod scrub_range;
@@ -716,10 +717,13 @@ impl SessionMedia {
             .loaded
             .as_ref()
             .and_then(LoadedGeneration::unanswered_seek_target);
+        // Окно эфира — по часам без долга перемотки: она того же поколения (`live_hls`).
+        let live_window_clock = PageClockSource::choose(awaited_target, new_source, loaded_shown);
         let loaded_shown = unanswered_seek.map_or(loaded_shown, LoadedMediaShown::SeekNotAnswered);
         let clock_source = PageClockSource::choose(awaited_target, new_source, loaded_shown);
         self.outbound
             .tick_clock(&clock_source.page_view_of(observation), now);
+        self.report_live_window(generation, live_window_clock, observation, now);
     }
 
     /// Когда проснуться без внешнего повода.

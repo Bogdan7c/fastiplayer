@@ -48,6 +48,7 @@ use tracing::{debug, info};
 use super::SessionMedia;
 use super::generation_feed::LoadedFeed;
 use super::generation_placement::PendingAim;
+use super::live_hls::PageSeekInLiveTime;
 use super::viewer_transport::{LoadedSeek, VIEWER_WILL_CONFIRMATION_WINDOW};
 
 /// Состояние претензии клика зрителя.
@@ -202,6 +203,11 @@ impl SessionMedia {
         {
             // Поколение уже показано: повтор сразу, за страницей на её место не идём.
             self.repeat_viewer_click(click);
+            return;
+        }
+        // Эфир, окна которого страница ещё не получила: её цель — не время плеера
+        // (`live_hls`).
+        if self.page_seek_in_live_time() == PageSeekInLiveTime::DropBeforeLiveWindowTold {
             return;
         }
         if self

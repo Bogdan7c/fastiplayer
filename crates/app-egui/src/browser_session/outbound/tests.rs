@@ -3,6 +3,7 @@ use std::rc::Rc;
 
 use super::*;
 use crate::browser_session::playback::PlayerSeekAnswers;
+use crate::browser_session::playback::live_window::LiveWindowObservation;
 
 /// Страница-подделка: запоминает поставленные сообщения, на попытку может
 /// ответить заранее заданным отказом.
@@ -49,6 +50,7 @@ fn observation(position: Duration, state: PlaybackState, rate: f32) -> PlaybackO
         shown_load: None,
         seek_target: None,
         seek_answers: PlayerSeekAnswers::default(),
+        live_window: LiveWindowObservation::NotLive,
     }
 }
 

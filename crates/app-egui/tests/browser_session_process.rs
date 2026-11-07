@@ -877,3 +877,7 @@ mod hls_generation;
 /// HLS-поколение: мастер, AES, перемотка, live, безопасность, отказы, версии (10a1).
 #[path = "browser_session_process/hls_generation_edges.rs"]
 mod hls_generation_edges;
+
+/// Окно эфира live HLS странице 1.2 и перемотка внутри окна (10a3).
+#[path = "browser_session_process/hls_live_window.rs"]
+mod hls_live_window;

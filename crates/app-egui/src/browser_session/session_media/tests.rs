@@ -20,6 +20,7 @@ use pushed_media_source::{
 use super::*;
 use crate::browser_session::intake_notice::GenerationSource;
 use crate::browser_session::outbound::PageSender;
+use crate::browser_session::playback::live_window::LiveWindowObservation;
 use crate::browser_session::playback::{
     BrowserPlaybackFault, FaultAnnouncement, LoadFault, MediaLoadTicketIssuer,
 };
@@ -97,6 +98,7 @@ impl FakePlayback {
                 shown_load: None,
                 seek_target: None,
                 seek_answers: PlayerSeekAnswers::default(),
+                live_window: LiveWindowObservation::NotLive,
             })),
             tickets: Rc::default(),
             loaded_tickets: Rc::default(),
@@ -776,6 +778,7 @@ mod generation_switch;
 mod handoff_start;
 mod hls_requests;
 mod live_click_real_player;
+mod live_hls;
 mod live_scrub_real_player;
 mod opening_clock;
 mod seek_handover;

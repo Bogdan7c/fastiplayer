@@ -34,6 +34,8 @@
 //!   ([`RangeQueueOutcome::QueueFull`]), а владелец закрывает сеанс; `fetch_resource`
 //!   (ресурс HLS по номерку, протокол 1.1) — так же, и только странице 1.1
 //!   ([`resource_requests`]);
+//! - `live_window` (окно эфира live HLS, протокол 1.2) — единичное событие со своим
+//!   местом и пределом частоты на поколение, только странице 1.2 ([`live_window`]);
 //! - сеанс закончился или начался новый — отложенное забывается
 //!   ([`PageOutbound::forget_pending_of_ended_session`],
 //!   [`PageOutbound::reset_for_new_session`]); сервер выключается — сообщение
@@ -60,11 +62,14 @@ use player_core::{PlaybackRate as PlayerPlaybackRate, PlaybackState};
 use pushed_media_source::{BufferIntake, BufferStatus, PageSeekRequest, RangeRequest};
 use tracing::{debug, error};
 
+use self::live_window::LiveWindowCadence;
 use self::resource_requests::{PageProtocol, ResourceRequestCounters};
 use super::playback::PlaybackObservation;
 
+mod live_window;
 mod resource_requests;
 
+pub(crate) use self::live_window::LiveWindowTold;
 pub(crate) use self::resource_requests::{ResourceQueueOutcome, ResourceRequestPermission};
 
 /// Шаг часов: 4 тика в секунду (протокол, решение 85; `results/00c.md`, п. 4).
@@ -330,6 +335,8 @@ pub(crate) struct PageOutbound {
     page_protocol: PageProtocol,
     /// Счётчики просьб ресурсов HLS.
     resource_counters: ResourceRequestCounters,
+    /// Что уже сказано странице про окно эфира (предел частоты на поколение).
+    live_window: LiveWindowCadence,
 }
 
 impl PageOutbound {
@@ -347,6 +354,7 @@ impl PageOutbound {
             range_counters: RangeRequestCounters::default(),
             page_protocol: PageProtocol::NotAttachedYet,
             resource_counters: ResourceRequestCounters::default(),
+            live_window: LiveWindowCadence::default(),
         }
     }
 
@@ -374,6 +382,8 @@ impl PageOutbound {
         self.last_rejected = None;
         // Версию новой страницы скажет её `Attached`.
         self.page_protocol = PageProtocol::NotAttachedYet;
+        // Окна новой странице ещё не говорили: первое уйдёт сразу.
+        self.live_window = LiveWindowCadence::default();
     }
 
     /// Тик часов, если пора: уходит сразу, при полной очереди — выбрасывается.
@@ -535,6 +545,7 @@ impl PageOutbound {
                     {
                         self.count_sent_range_request(&sent);
                         self.count_sent_resource_request(&sent);
+                        self.note_sent_live_window(&sent);
                     }
                 }
             }
@@ -622,6 +633,7 @@ const fn message_kind(message: &PlayerSessionMessage) -> &'static str {
         PlayerSessionMessage::NextEpisode {} => "next_episode",
         PlayerSessionMessage::FetchRange { .. } => "fetch_range",
         PlayerSessionMessage::FetchResource { .. } => "fetch_resource",
+        PlayerSessionMessage::LiveWindow { .. } => "live_window",
         PlayerSessionMessage::StreamRejected { .. } => "stream_rejected",
         PlayerSessionMessage::SkipAd {} => "skip_ad",
     }

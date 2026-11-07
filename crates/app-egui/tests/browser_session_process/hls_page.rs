@@ -7,6 +7,7 @@
 //! полученный запрос записывается: тест проверяет, ЧТО плеер просил (только номерки).
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use base64::Engine;
 use browser_bridge_protocol::{
@@ -25,6 +26,9 @@ const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 /// `hello` экстеншена протокола 1.1.
 pub(super) const HELLO_1_1: &str = r#"{"type":"hello","protocol":{"major":1,"minor":1},"software_version":"0.1.0","capabilities":[]}"#;
+
+/// `hello` экстеншена протокола 1.2 (HLS live, `live_window` — сессия 10a3).
+pub(super) const HELLO_1_2: &str = r#"{"type":"hello","protocol":{"major":1,"minor":2},"software_version":"0.1.0","capabilities":[]}"#;
 
 /// Каталог HLS-фикстур приложения (base64, сегменты по 1 с, 16×16, 10 к/с).
 const HLS_FIXTURES: &str = concat!(
@@ -125,6 +129,8 @@ pub(super) enum PageResource {
     Body(Vec<u8>),
     /// N-й запрос получает N-й снимок, после последнего — последний (live-корень).
     Snapshots(Vec<Vec<u8>>),
+    /// Тело строится в момент запроса (live-корень, окно которого идёт по часам).
+    Generated(Rc<dyn Fn() -> Vec<u8>>),
     /// Фон отказался качать.
     Refused,
     /// Сервер ответил HTTP-ошибкой.
@@ -270,6 +276,7 @@ impl HlsPage {
                 *turn += 1;
                 snapshot
             }
+            Some(PageResource::Generated(generate)) => generate(),
             Some(PageResource::Refused) => {
                 return finish(
                     socket,

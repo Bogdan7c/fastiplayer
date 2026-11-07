@@ -105,6 +105,8 @@ pub(super) enum LoadedFeed {
     Hls {
         /// Очередь запросов ресурсов.
         requests: ResourceFetchRequests,
+        /// Ролик или эфир (у эфира — своя шкала плеера, `live_window` странице).
+        presentation: HlsPresentation,
     },
 }
 
@@ -299,13 +301,17 @@ impl PendingFeed {
                     let after_load = match opened.presentation {
                         // Ролик читается с начала; позиция страницы — перемотка после показа.
                         HlsPresentation::OnDemand => placement.named_start().after_file_load(),
-                        // Эфир встаёт у живого края, как у плеера страницы.
+                        // Эфир встаёт у живого края, как у плеера страницы. Цель,
+                        // которую страница назвала ждущему поколению, — в её времени
+                        // (live ли оно, известно только сейчас, после плейлиста), и
+                        // не исполняется (`live_hls`, правило 2).
                         HlsPresentation::Live => AfterLoad::Nothing,
                     };
                     OpenStep::Ready {
                         prepared: Box::new(opened.prepared),
                         feed: LoadedFeed::Hls {
                             requests: requests.clone(),
+                            presentation: opened.presentation,
                         },
                         after_load,
                     }
@@ -351,9 +357,22 @@ impl LoadedFeed {
     /// видов их нет.
     pub(super) fn take_resource_requests(&self) -> Vec<ResourceRequest> {
         match self {
-            Self::Hls { requests } => requests.take_requests(),
+            Self::Hls { requests, .. } => requests.take_requests(),
             Self::Segments { .. } | Self::File { .. } => Vec::new(),
         }
+    }
+
+    /// Эфир HLS по номеркам (10a3): у него своя шкала плеера, которую страница знает
+    /// только из `live_window` и часов показанного поколения. Эфир MSE (сегменты) сюда
+    /// не входит: его окно страница видит сама в своих `SourceBuffer`.
+    pub(super) const fn is_native_hls_live(&self) -> bool {
+        matches!(
+            self,
+            Self::Hls {
+                presentation: HlsPresentation::Live,
+                ..
+            }
+        )
     }
 
     /// Что скачано у поколения — для живого скраба окна. У файла и HLS — неизвестно:

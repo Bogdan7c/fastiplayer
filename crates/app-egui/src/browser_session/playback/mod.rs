@@ -37,6 +37,7 @@
 //! если их экземпляр медиа (`MediaInstanceId`) — установленный экземпляр ТЕКУЩЕЙ
 //! загрузки. Отказ прежнего медиа новой загрузке не достаётся никогда.
 
+pub(crate) mod live_window;
 pub(crate) mod load_ledger;
 mod media_identity;
 pub(crate) mod metered_audio;
@@ -56,6 +57,7 @@ use player_core::{
 };
 use tracing::{debug, warn};
 
+use self::live_window::LiveWindowObservation;
 use self::load_ledger::{CancelledInstall, LoadLedger};
 pub(crate) use self::media_identity::{MediaLoadTicket, MediaLoadTicketIssuer};
 use self::metered_audio::{AudioMeter, BrowserAudioOutputChoice};
@@ -203,6 +205,9 @@ pub(crate) struct PlaybackObservation {
     pub(crate) seek_target: Option<Duration>,
     /// Сколько команд перемотки плеер уже обработал (см. [`PlayerSeekAnswers`]).
     pub(crate) seek_answers: PlayerSeekAnswers,
+    /// Окно эфира медиа из снимка (то же время, что позиция; см. [`LiveWindowObservation`]).
+    /// Принадлежит загрузке [`Self::shown_load`], как позиция и состояние.
+    pub(crate) live_window: LiveWindowObservation,
 }
 
 impl PlaybackObservation {
@@ -250,6 +255,8 @@ impl PlaybackObservation {
             shown_load: None,
             seek_target: None,
             seek_answers: self.seek_answers,
+            // Окно прежнего медиа новому не принадлежит.
+            live_window: LiveWindowObservation::NotLive,
         }
     }
 
