@@ -12,7 +12,7 @@
 //     сопоставленный ни с одним обёрнутым воркером → `untracked_worker_media_source`; прочее
 //     (MediaSource главного потока без SourceBuffer) — «пока нечего передавать»;
 //  3. выбранный адрес `currentSrc` (он учитывает и дочерние `<source>`): http(s) → файл,
-//     m3u8 → нативный HLS (решение 185), blob обычного Blob → `blob_file`, `data:` → `data_url`,
+//     m3u8 → нативный HLS (решение 185; с 10a2 — форма `hls`, живой поток отсеивает фон), blob обычного Blob → `blob_file`, `data:` → `data_url`,
 //     прочие схемы → `other_scheme`;
 //  4. иначе — источника нет.
 // Адрес читается ОРИГИНАЛЬНЫМИ геттерами (страница могла подменить свойства), разбирается без
@@ -32,6 +32,11 @@ export type ElementSource =
   | { readonly kind: "worker_media_source"; readonly mediaSource: WorkerMediaSourceRef }
   /** Абсолютный http(s)-адрес файла (уже проверенной длины). */
   | { readonly kind: "file"; readonly url: string }
+  /**
+   * Плейлист нативного HLS: абсолютный http(s)-адрес `.m3u8` (той же проверенной длины, что и файл).
+   * Живой он или запись (VOD), по адресу не видно — это решает длительность элемента (сессия 10a2).
+   */
+  | { readonly kind: "hls"; readonly url: string }
   | { readonly kind: "unsupported"; readonly form: UnsupportedMediaForm }
   | { readonly kind: "none" };
 
@@ -94,11 +99,10 @@ export function classifyMediaUrl(
   }
   if (scheme === DATA_SCHEME) return { kind: "unsupported", form: "data_url" };
   if (scheme === undefined || !HTTP_SCHEMES.includes(scheme)) return { kind: "unsupported", form: "other_scheme" };
-  if (isHlsPlaylist(url, sourceType)) return { kind: "unsupported", form: "native_hls" };
   // Адрес длиннее предела договора изолированный мир отверг бы, и передача встала бы без файла.
-  // Такой адрес — уже не «файл, который можно отдать»: честно считаем его неподдержанным.
+  // Такой адрес (файл или плейлист) — уже не «то, что можно отдать»: честно считаем его неподдержанным.
   if (url.length > MAX_FILE_SOURCE_URL_LENGTH) return { kind: "unsupported", form: "other_scheme" };
-  return { kind: "file", url };
+  return isHlsPlaylist(url, sourceType) ? { kind: "hls", url } : { kind: "file", url };
 }
 
 /** Форма `srcObject`-handle по ответу реестра воркеров (`null` — не handle: «пока нечего»). */
@@ -126,6 +130,8 @@ export function candidateMediaOf(source: ElementSource): CandidateMedia {
       return { kind: "media_source", in_worker: true };
     case "file":
       return { kind: "file" };
+    case "hls":
+      return { kind: "hls" };
     case "unsupported":
       return { kind: "unsupported", form: source.form };
     case "none":

@@ -292,7 +292,7 @@ describe("кандидаты видео", () => {
 
 const MSE_EVENT = { kind: "mse", event: { kind: "timestamp_offset_changed", media_source: "ms-1", source_buffer: 0, offset_us: 0 } };
 const TINY_LIMITS = {
-  limitsPerSecond: { mse: 3, page_seek: 2, page_playback: 2, player_seek_applied: 2, file_source: 1, shadow_alive: 2, malformed: 2 },
+  limitsPerSecond: { mse: 3, page_seek: 2, page_playback: 2, player_seek_applied: 2, file_source: 1, hls_source: 1, shadow_alive: 2, malformed: 2 },
   replayEventCredit: 0,
 };
 const FLOOD_NOTICE = (overBudget: string) => ({ kind: "page_flood", over_budget: overBudget });
@@ -433,6 +433,18 @@ describe("документ говорит о себе сам", () => {
     assert.deepEqual(port.received.at(-1), { kind: "file_source", url, referrer_origin: ownDocument.origin, referrer_policy: "strict-origin-when-cross-origin" });
     relay.handlePageMessage({ kind: "file_source", url, referrer_origin: null, referrer_policy: "no-referrer" });
     assert.deepEqual(port.received.at(-1), { kind: "file_source", url, referrer_origin: null, referrer_policy: "no-referrer" });
+  });
+
+  it("hls_source (10a2): происхождение тоже подменяется своим, null остаётся null, событие доходит до фона", () => {
+    const { relay } = setupRelay();
+    const port = new FakeBackgroundPort();
+    relay.acceptBackgroundPort(port);
+    beginStarted(relay, port, 1);
+    const url = "https://cdn.example/vod/master.m3u8";
+    relay.handlePageMessage({ kind: "hls_source", url, referrer_origin: "https://bank.example", referrer_policy: "origin" });
+    assert.deepEqual(port.received.at(-1), { kind: "hls_source", url, referrer_origin: ownDocument.origin, referrer_policy: "origin" });
+    relay.handlePageMessage({ kind: "hls_source", url, referrer_origin: null, referrer_policy: "no-referrer" });
+    assert.deepEqual(port.received.at(-1), { kind: "hls_source", url, referrer_origin: null, referrer_policy: "no-referrer" });
   });
 });
 

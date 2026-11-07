@@ -1,12 +1,11 @@
-// Протокол 1.1 в экстеншене сессии 10a1: ресурсы HLS по номеркам фон ещё не качает (это 10a2),
-// поэтому на каждый `fetch_resource` плеера честно отвечает `resource_fetch_finished{failed: refused}`:
-// сразу, без сети и без страницы, не обрывая сеанс.
+// `fetch_resource` вне поколения HLS (сессия 10a2): ресурсов тут нет, и плеер держит слот каждого запроса,
+// пока не получит ответ. Поэтому фон отвечает `resource_fetch_finished{failed: refused}` сразу, без сети и
+// без страницы, не обрывая сеанс. Сам HLS - в hls-source-session.test.ts.
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { RangeFetch } from "../../src/background/handoff/range-fetcher.ts";
 import { translatePlayerMessage } from "../../src/background/handoff/player-message-translator.ts";
-import { decodePageSession } from "../../src/protocol/index.ts";
 import type { VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 import { setup, startHandoff, TAB } from "./handoff-world.ts";
@@ -29,18 +28,16 @@ async function settle(): Promise<void> {
   for (let round = 0; round < 20; round += 1) await flushPromises();
 }
 
-describe("fetch_resource в 10a1: честный отказ", () => {
-  it("переводчик отвечает отказом с тем же номером запроса, и ответ проходит строгий разбор", () => {
+describe("fetch_resource вне поколения HLS: честный отказ", () => {
+  it("переводчик передаёт запрос ресурса сеансу как есть, с тем же номером запроса", () => {
     const action = translatePlayerMessage(
       { type: "fetch_resource", request_id: 7, resource: 3, byte_range: { kind: "whole" }, max_bytes: 1024 },
       1,
     );
     assert.deepEqual(action, {
-      kind: "reply",
-      message: { type: "resource_fetch_finished", request_id: 7, outcome: { kind: "failed", failure: { kind: "refused" } } },
+      kind: "fetch_resource",
+      request: { request_id: 7, resource: 3, byte_range: { kind: "whole" }, max_bytes: 1024 },
     });
-    assert.ok(action.kind === "reply");
-    assert.equal(decodePageSession(JSON.stringify(action.message)).ok, true);
   });
 
   it("MSE-сеанс: плееру уходит отказ байт в байт, сеть не тронута, сеанс жив", async () => {

@@ -189,6 +189,21 @@ describe("тень раньше первого кадра", () => {
   });
 });
 
+describe("запись HLS под сторожем (10a2)", () => {
+  it("плейлист записи держится тенью «файл», как файл: настоящий `play()` не звался, фон получил next_video_held", async () => {
+    const { guard, sent, addVideo, sources, keyOf } = setupGuard();
+    const playlist = addVideo();
+    sources.set(playlist, { kind: "hls", url: "https://cdn.example/vod/master.m3u8" });
+    guard.arm(LEASE_MS);
+    const promise = pagePlay(playlist);
+    assert.equal(browserPlays(playlist), 0, "браузер запись не запускал");
+    const held = sent.at(-1);
+    assert.ok(held?.kind === "next_video_held");
+    assert.equal(held.element, keyOf(playlist));
+    await promise;
+  });
+});
+
 describe("решение фона", () => {
   it("отказ: файл с элемента не снимался, он заиграл сам и обещание исполнилось", async () => {
     const { guard, addVideo, keyOf } = setupGuard();

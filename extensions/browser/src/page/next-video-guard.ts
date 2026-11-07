@@ -202,6 +202,8 @@ export class NextVideoGuard {
     const source: ElementSource = this.#environment.candidates.sourceOf(element as Element);
     switch (source.kind) {
       case "file":
+      case "hls":
+        // Запись HLS под тенью — как файл (решения 186/187).
         return "file";
       case "media_source":
       case "worker_media_source":

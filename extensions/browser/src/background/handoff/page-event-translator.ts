@@ -16,6 +16,7 @@ import {
   splitAppendPayload,
   type DataFrameHeader,
   type PageSessionMessage,
+  type ResourceHandle,
   type StreamGeneration,
 } from "../../protocol/index.ts";
 import type { DocumentNumbering, StreamNumbering } from "./stream-numbering.ts";
@@ -32,7 +33,9 @@ export type PageStreamProblem =
   /** Повторный `source_buffer_added` того же SourceBuffer поколения. */
   | "source_buffer_announced_twice"
   /** Номера поколений u32 исчерпаны. */
-  | "generation_numbers_exhausted";
+  | "generation_numbers_exhausted"
+  /** Номерки ресурсов HLS сеанса исчерпаны (u32; практически недостижимо). */
+  | "resource_handles_exhausted";
 
 export type TranslationResult =
   | { readonly ok: true; readonly items: readonly OutgoingItem[] }
@@ -45,13 +48,16 @@ export type TranslationResult =
  */
 export type StreamPageEvent = Exclude<
   PageEvent,
-  { kind: "handoff_began" } | { kind: "handoff_ended" } | { kind: "shadow_alive" } | { kind: "file_source" } | { kind: "next_video_held" }
+  { kind: "handoff_began" } | { kind: "handoff_ended" } | { kind: "shadow_alive" } | { kind: "file_source" } | { kind: "hls_source" } | { kind: "next_video_held" }
 >;
 
 /** Перевод `file_source`: сообщения поколения-файла и его номер (для загрузчика диапазонов). */
 export type FileSourceTranslation =
   | { readonly ok: true; readonly generation: StreamGeneration; readonly items: readonly OutgoingItem[] }
   | { readonly ok: false; readonly problem: PageStreamProblem };
+
+/** Перевод `hls_source`: то же, что у файла (номер поколения и сообщения); номерок корня уже выдан фоном. */
+export type HlsSourceTranslation = FileSourceTranslation;
 
 export interface DocumentTranslator {
   translate(event: StreamPageEvent): TranslationResult;
@@ -60,6 +66,12 @@ export interface DocumentTranslator {
    * `generation_started{N}` и `file_source_added{N}` — байты плеер запросит сам (`fetch_range`).
    */
   translateFileSource(): FileSourceTranslation;
+  /**
+   * Страница передаёт нативный HLS (сессия 10a2): новое поколение, сразу `generation_started{N}` и
+   * `hls_source_added{N, root}`. `root` - номерок корневого плейлиста, выданный стойкой фона; сам адрес
+   * плееру не уходит. Нумерация поколений общая с файлом и MSE.
+   */
+  translateHlsSource(root: ResourceHandle): HlsSourceTranslation;
 }
 
 const success = (items: readonly OutgoingItem[]): TranslationResult => ({ ok: true, items });
@@ -147,6 +159,16 @@ export function createDocumentTranslator(numbering: StreamNumbering): DocumentTr
         ok: true,
         generation,
         items: [message({ type: "generation_started", generation }), message({ type: "file_source_added", generation })],
+      };
+    },
+    translateHlsSource(root) {
+      const lookup = document.startFileGeneration();
+      if (lookup.kind === "exhausted") return { ok: false, problem: "generation_numbers_exhausted" };
+      const { generation } = lookup;
+      return {
+        ok: true,
+        generation,
+        items: [message({ type: "generation_started", generation }), message({ type: "hls_source_added", generation, root })],
       };
     },
     translate(event) {

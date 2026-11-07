@@ -141,10 +141,10 @@ export function createWorld(extraDeps: Partial<Pick<HostLinkDeps, "onPlayerCheap
 
 // ---- готовые ответы посредника/плеера
 
-export function helloAccepted(playerVersion = "0.9.0"): unknown {
+export function helloAccepted(playerVersion = "0.9.0", agreedProtocol = { major: 1, minor: 0 }): unknown {
   return {
     type: "hello_accepted",
-    agreed_protocol: { major: 1, minor: 0 },
+    agreed_protocol: agreedProtocol,
     player: { protocol: { major: 1, minor: 0 }, software_version: playerVersion, capabilities: [] },
   };
 }

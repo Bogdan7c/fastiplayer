@@ -36,6 +36,7 @@
 
 import type { MediaTimeMicros } from "../protocol/time.ts";
 import type { DocumentTag, ElementKey, HandoffEndCause, HandoffEndPosition, HandoffEndResume, PageEvent, ShadowCommand } from "../shared/handoff-contract.ts";
+import type { ReferrerPolicyName } from "../shared/referrer-policy.ts";
 import { effectiveReferrerPolicy } from "../shared/referrer-policy.ts";
 import type { BinaryIntrinsics } from "./binary-view.ts";
 import type { DomReaders } from "./dom-readers.ts";
@@ -231,6 +232,15 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
       return;
     }
 
+    if (source.kind === "hls" && !Number.isFinite(dom.durationSecondsOf(element))) {
+      // Живой эфир (длительность Infinity) или метаданные пропали: эфир в 10a2 не передаётся (решение 231). Фон
+      // такое видео и не выбирает, это страховка на гонку «выбрали запись, а элемент уже стал эфиром». Ответ
+      // `no_media` фон понимает как «передавать нечего» (исход `no_video`), страница остаётся с настоящим элементом.
+      this.#environment.nextVideo.releaseElement(element);
+      port.send({ kind: "handoff_began", request_id: requestId, outcome: "no_media" });
+      return;
+    }
+
     port.send({ kind: "handoff_began", request_id: requestId, outcome: "started" });
     this.#tap((tap) => tap.handoffBegan(element));
     const liveMediaSources = new Set<string>(source.kind === "media_source" ? [source.record.key] : []);
@@ -379,7 +389,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
    * файл — `file_source{url}` (поколение-файл; адрес дальше фона не уходит). Возвращает, в каком
    * виде ставить тень.
    */
-  #openStream(active: ActiveHandoff, port: PagePort, source: Extract<ElementSource, { kind: "media_source" | "file" }>): ShadowSourceKind {
+  #openStream(active: ActiveHandoff, port: PagePort, source: Extract<ElementSource, { kind: "media_source" | "file" | "hls" }>): ShadowSourceKind {
     switch (source.kind) {
       case "media_source":
         for (const item of source.record.journal.replay()) {
@@ -391,6 +401,11 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
       case "file":
         port.send(this.#fileSourceEvent(active.element, source.url));
         return "file";
+      case "hls":
+        // Запись HLS под тенью ведёт себя как файл (решения 186/187): настоящая закачка гасится `srcObject`,
+        // буфер и seekable — весь [0, duration], возврат перезагружает `src` на T. Отличается только событие.
+        port.send(this.#hlsSourceEvent(active.element, source.url));
+        return "file";
     }
   }
 
@@ -399,10 +414,20 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
    * которую видно из MAIN-мира. Referer не нужен при `no-referrer` и у непрозрачного происхождения.
    */
   #fileSourceEvent(element: Element, url: string): Extract<PageEvent, { kind: "file_source" }> {
+    return { kind: "file_source", url, ...this.#referrerFactsOf(element) };
+  }
+
+  /** Событие плейлиста HLS (10a2): те же факты Referer, что у файла. */
+  #hlsSourceEvent(element: Element, url: string): Extract<PageEvent, { kind: "hls_source" }> {
+    return { kind: "hls_source", url, ...this.#referrerFactsOf(element) };
+  }
+
+  /** Факты для Referer закачки (решение 202): общие для файла и плейлиста. */
+  #referrerFactsOf(element: Element): { readonly referrer_origin: string | null; readonly referrer_policy: ReferrerPolicyName } {
     const { dom } = this.#environment;
     const policy = effectiveReferrerPolicy(dom.referrerPolicyOf(element), dom.metaReferrerContents());
     const origin = policy === "no-referrer" ? null : dom.documentOrigin();
-    return { kind: "file_source", url, referrer_origin: origin, referrer_policy: origin === null ? "no-referrer" : policy };
+    return { referrer_origin: origin, referrer_policy: origin === null ? "no-referrer" : policy };
   }
 
   #applyShadowCommand(command: ShadowCommand): void {

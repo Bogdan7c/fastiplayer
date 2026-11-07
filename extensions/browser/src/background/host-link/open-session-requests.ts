@@ -1,7 +1,7 @@
 // Таблица ожидающих запросов `open_session`: сопоставление ответов по request_id, таймауты, явные отказы.
 // Владеет только таблицей и таймерами запросов; порт и статус — у host-link.ts.
 import type { BridgeStatus } from "../../shared/bridge-status.ts";
-import type { ExtensionOpenSession, PlayerRefused, PlayerSessionGranted, ProtocolError } from "../../protocol/index.ts";
+import type { ExtensionOpenSession, PlayerRefused, PlayerSessionGranted, ProtocolError, ProtocolVersion } from "../../protocol/index.ts";
 import { OPEN_SESSION_REPLY_TIMEOUT_MS } from "./constants.ts";
 import type { Scheduler } from "./native-port.ts";
 import { createTimerSlot, type TimerSlot } from "./timer-slot.ts";
@@ -11,7 +11,8 @@ export type OpenSessionRequest = Omit<ExtensionOpenSession, "type" | "request_id
 
 // Чем закончился запрос. Явно различаем причины, чтобы сессия 10 могла реагировать по-разному.
 export type OpenSessionOutcome =
-  | { readonly kind: "granted"; readonly grant: PlayerSessionGranted }
+  // `agreedProtocol` - версия из `hello_accepted` соединения, по которому выдан сеанс: сеанс не шлёт сообщений новее неё.
+  | { readonly kind: "granted"; readonly grant: PlayerSessionGranted; readonly agreedProtocol: ProtocolVersion }
   | { readonly kind: "refused"; readonly refusal: PlayerRefused } // ответ плеера/посредника
   | { readonly kind: "no_reply" } // порт упал, таймаут или мусор после отправки
   | { readonly kind: "not_connected"; readonly status: BridgeStatus } // до отправки связь не поднялась

@@ -132,4 +132,19 @@ describe("значение и фильтр правила", () => {
     assert.equal(exactUrlFilter("https://cdn.example/a.mp4#t=10"), "|https://cdn.example/a.mp4|");
     assert.equal(exactUrlFilter("https://cdn.example/a.mp4?x=1"), "|https://cdn.example/a.mp4?x=1|");
   });
+
+  it("адрес с символами шаблона (* или ^) качается без правила: чужие закачки фона Referer не получат", async () => {
+    const browser = createFakeSessionRules();
+    const { rules } = setupRules(browser.api);
+    const requested: string[] = [];
+    const network = rules.around((url) => {
+      requested.push(url);
+      return Promise.resolve(RESPONSE);
+    }, { origin: SITE_ORIGIN, policy: "unsafe-url" });
+    await network("https://cdn.example/seg*.ts", INIT);
+    await network("https://cdn.example/a^b.ts", INIT);
+    assert.deepEqual(requested, ["https://cdn.example/seg*.ts", "https://cdn.example/a^b.ts"], "закачка всё равно идёт");
+    assert.equal(browser.added.length, 0, "ни одного правила с шаблоном");
+    assert.equal(exactUrlFilter("https://cdn.example/seg*.ts"), undefined);
+  });
 });

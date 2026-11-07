@@ -13,10 +13,12 @@ import type { BridgeStatus } from "../../shared/bridge-status.ts";
 import type { BridgeStatusProvider } from "../status-provider.ts";
 import {
   CURRENT_PROTOCOL_VERSION,
+  PROTOCOL_VERSION_1_0,
   decodePlayerControl,
   encodeExtensionControl,
   type PlayerControlMessage,
   type PlayerRefused,
+  type ProtocolVersion,
 } from "../../protocol/index.ts";
 import { HELLO_REPLY_TIMEOUT_MS, HOST_STARTUP_WINDOW_MS, PORT_IDLE_CLOSE_MS, RETRY_DELAYS_MS } from "./constants.ts";
 import type { NativePort, NativePortFactory, Scheduler } from "./native-port.ts";
@@ -57,6 +59,8 @@ interface Connection {
   port: NativePort | undefined; // undefined только внутри connect()
   readonly openedAtMs: number;
   receivedAnyMessage: boolean;
+  // Версия, о которой договорились в hello_accepted этого соединения; до него - неизвестна.
+  agreedProtocol: ProtocolVersion | undefined;
 }
 
 export function createHostLink(deps: HostLinkDeps): HostLink {
@@ -87,7 +91,7 @@ export function createHostLink(deps: HostLinkDeps): HostLink {
   // Открывает порт. false — соединения нет: отказ уже обработан (failLink / handleDisconnect).
   function openConnection(): boolean {
     // Запись создаётся ДО connect(): браузер может закрыть порт синхронно, и разрыв должен найти запись.
-    const record: Connection = { id: nextConnectionId++, port: undefined, openedAtMs: scheduler.now(), receivedAnyMessage: false };
+    const record: Connection = { id: nextConnectionId++, port: undefined, openedAtMs: scheduler.now(), receivedAnyMessage: false, agreedProtocol: undefined };
     connection = record;
     try {
       const port = portFactory.connect(deps.hostName, {
@@ -247,7 +251,10 @@ export function createHostLink(deps: HostLinkDeps): HostLink {
           if (phase === "handshaking") failLink({ state: "player_unavailable", reason: "no_reply" });
           return;
         }
-        requests.settle(message.request_id, { kind: "granted", grant: message });
+        // Сеанс выдают только после hello_accepted этого же соединения; если версии нет, считаем
+        // самую раннюю (1.0): сообщения новее неё сеанс тогда не отправит - безопасная сторона.
+        const agreedProtocol = connection?.agreedProtocol ?? PROTOCOL_VERSION_1_0;
+        requests.settle(message.request_id, { kind: "granted", grant: message, agreedProtocol });
         return;
       }
       case "refused":
@@ -264,6 +271,9 @@ export function createHostLink(deps: HostLinkDeps): HostLink {
     replyTimer.cancel();
     retryIndex = 0; // успех сбрасывает паузы
     phase = "ready";
+    if (connection !== undefined) {
+      connection.agreedProtocol = { major: message.agreed_protocol.major, minor: message.agreed_protocol.minor };
+    }
     statusHub.publish({
       state: "connected",
       playerVersion: message.player.software_version,

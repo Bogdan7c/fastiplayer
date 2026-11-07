@@ -59,7 +59,8 @@ export type DocumentTag = string;
  * Форма видео, которую экстеншен пока честно не передаёт (сессия 09b). Видео остаётся в браузере,
  * попап (сессия 10) говорит «not supported yet» с этой формой.
  * - `native_hls` — m3u8 прямо в `src`/`<source>`: браузер играет HLS сам (Chromium 156 умеет).
- *   Своя сессия после вехи M1 (решение 185);
+ *   С 10a2 запись (VOD) передаётся формой `hls`; здесь остаётся ЖИВОЙ эфир (длительность Infinity,
+ *   решение 231) и старый плеер протокола 1.0 (решение 185);
  * - `blob_file` — blob-адрес обычного `Blob`/`File` (не MediaSource): байты живут только в
  *   памяти страницы, фону их не скачать;
  * - `data_url` — видео целиком в адресе `data:`;
@@ -105,6 +106,8 @@ export type CandidateMedia =
    */
   | { readonly kind: "media_source"; readonly in_worker: boolean }
   | { readonly kind: "file" }
+  /** Плейлист нативного HLS (сессия 10a2). Запись или эфир — по `duration_s` кандидата. */
+  | { readonly kind: "hls" }
   | { readonly kind: "unsupported"; readonly form: UnsupportedMediaForm }
   | { readonly kind: "none" };
 
@@ -140,7 +143,7 @@ export interface VideoCandidate {
   readonly drm: boolean;
   /** Имя хоста документа, в котором лежит элемент (`location.hostname`; "" — нет). */
   readonly frame_host: string;
-  /** Имя хоста адреса файла для `media.kind === "file"`, иначе `null`. */
+  /** Имя хоста адреса медиа для `media.kind === "file"` и `"hls"`, иначе `null`. */
   readonly file_host: string | null;
   /** MIME всех отслеживаемых SourceBuffer-ов элемента (не больше `MAX_SOURCE_MIME_TYPES`); пусто — неизвестно. */
   readonly source_mime_types: readonly string[];
@@ -267,6 +270,12 @@ export type PageEvent =
    */
   | { readonly kind: "file_source"; readonly url: string; readonly referrer_origin: string | null; readonly referrer_policy: ReferrerPolicyName }
   /**
+   * Передаётся плейлист нативного HLS (запись, VOD; сессия 10a2): по месту и форме тот же, что `file_source`
+   * (адрес `.m3u8` выбранного источника, происхождение и политика Referer по решению 202), но фон открывает
+   * не поколение-файл, а поколение HLS: плейлист и сегменты качает он сам.
+   */
+  | { readonly kind: "hls_source"; readonly url: string; readonly referrer_origin: string | null; readonly referrer_policy: ReferrerPolicyName }
+  /**
    * Пульс «тень жива» (решение владельца 180, Д-2). Шлёт сама тень — владелец знания «элемент
    * под тенью» — не чаще раза в `SHADOW_PULSE_INTERVAL_MS`, на тиках часов плеера (не таймером:
    * таймеры скрытой вкладки Chromium будит раз в минуту). Фон, не слышавший пульса дольше
@@ -305,7 +314,7 @@ export const SHADOW_SILENCE_LIMIT_MS = 10_000;
  * `malformed` — сообщения не договорной формы: страница, сыплющая мусором, тратит тот же бюджет.
  * Байты бюджет не считает: их держит потолок очереди сеанса.
  */
-export type PageEventBudgetKind = "mse" | "page_seek" | "player_seek_applied" | "page_playback" | "file_source" | "shadow_alive" | "malformed";
+export type PageEventBudgetKind = "mse" | "page_seek" | "player_seek_applied" | "page_playback" | "file_source" | "hls_source" | "shadow_alive" | "malformed";
 
 /** Вид донесения «страница превысила бюджет»: он НЕ входит в `PageEvent`. */
 export const PAGE_FLOOD_NOTICE_KIND = "page_flood";

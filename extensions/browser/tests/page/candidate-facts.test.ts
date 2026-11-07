@@ -91,10 +91,18 @@ describe("hosts and MIME types", () => {
   it("file_host is null for a media source and for a form that is not a file", async () => {
     const harness = startHarness();
     playingMseVideo(harness);
-    const hls = harness.page.addVideo();
-    hls.src = "https://cdn.example/live.m3u8";
+    const camera = harness.page.addVideo();
+    camera.src = "blob:https://site.example/1";
     const candidates = await surveyCandidates(harness);
     assert.deepEqual(candidates.map((item) => item.file_host), [null, null]);
+  });
+
+  it("file_host is the media host for a native HLS playlist too (local-address and ad-host checks)", async () => {
+    const harness = startHarness();
+    const hls = harness.page.addVideo();
+    hls.src = "https://cdn.example/vod/master.m3u8";
+    const candidates = await surveyCandidates(harness);
+    assert.deepEqual(candidates.map((item) => [item.media.kind, item.file_host]), [["hls", "cdn.example"]]);
   });
 
   it("MIME types follow changeType and never exceed the contract limit", async () => {

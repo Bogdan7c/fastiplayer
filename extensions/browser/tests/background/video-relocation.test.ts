@@ -12,6 +12,7 @@ import { MP4, setup, startHandoff, TAB, type World } from "./handoff-world.ts";
 import { flushPromises } from "./support.ts";
 
 const AREA = 296_000;
+const WITH_NATIVE_HLS = { nativeHls: true } as const;
 
 /** Реклама: файл с неизвестного домена, рядом ждёт фильм (форма Ashdi и Tortuga). */
 const AD: VideoCandidate = {
@@ -332,8 +333,8 @@ describe("что не переезжает", () => {
   it("согласие на локальный адрес, данное странице, чужому фрейму не достаётся", () => {
     const consented = { pageHost: "site.example", setting: "ask", consentedHost: "192.168.1.5" } as const;
     const local: VideoCandidate = { ...AD, frame_host: "ads.example", file_host: "192.168.1.5", duration_s: 600 };
-    assert.deepEqual(judgeHeldVideo(9, report(AD.element, [local]), consented), { kind: "release" });
-    const samePage = judgeHeldVideo(9, report(AD.element, [{ ...local, frame_host: "site.example" }]), consented);
+    assert.deepEqual(judgeHeldVideo(9, report(AD.element, [local]), consented, WITH_NATIVE_HLS), { kind: "release" });
+    const samePage = judgeHeldVideo(9, report(AD.element, [{ ...local, frame_host: "site.example" }]), consented, WITH_NATIVE_HLS);
     assert.equal(samePage.kind, "adopt", "та же страница пользуется своим согласием");
   });
 

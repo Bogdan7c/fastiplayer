@@ -242,12 +242,12 @@ describe("выбор видео: преролл с неизвестного до
   });
 
   it("незапущенный адрес плейлиста той же площади — тоже пустой плеер: передаётся реклама", () => {
-    const playlistSlot = emptySlot(1, { media: { kind: "unsupported", form: "native_hls" } });
+    const playlistSlot = emptySlot(1, { media: { kind: "hls" } });
     assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [playlistSlot, preroll(2)] }]), keptAd);
   });
 
   it("играющий нативный HLS рядом с файлом — не пустой плеер, рекламы по соседству не видно", () => {
-    const playingPlaylist = emptySlot(1, { media: { kind: "unsupported", form: "native_hls" }, playing: true });
+    const playingPlaylist = emptySlot(1, { media: { kind: "hls" }, playing: true, duration_s: null });
     assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [playingPlaylist, preroll(2)] }]), keptFile);
   });
 
@@ -322,7 +322,7 @@ describe("выбор видео: преролл с неизвестного до
 });
 
 describe("выбор видео: адрес плейлиста в `src` до старта (живая форма Ashdi)", () => {
-  const playlist = { media: { kind: "unsupported", form: "native_hls" } as const };
+  const playlist = { media: { kind: "hls" } as const };
 
   it("до нажатия play это не «не поддерживается», а «видео ещё нет»", () => {
     const choice = chooseVideo([{ frameId: 0, candidates: [video(1, { ...playlist, duration_s: null })] }]);
@@ -334,9 +334,9 @@ describe("выбор видео: адрес плейлиста в `src` до с�
     assert.deepEqual(choice, { kind: "not_supported_yet", form: "native_hls" });
   });
 
-  it("нативный HLS на паузе с известной длительностью — тоже not_supported_yet: видео уже есть", () => {
+  it("нативный HLS на паузе с известной длительностью — запись: передаётся как видео", () => {
     const choice = chooseVideo([{ frameId: 0, candidates: [video(1, { ...playlist, duration_s: 60 })] }]);
-    assert.deepEqual(choice, { kind: "not_supported_yet", form: "native_hls" });
+    assert.equal(choice.kind, "hand_off");
   });
 
   it("другие неподдержанные формы до старта остаются неподдержанными", () => {

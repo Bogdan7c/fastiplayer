@@ -21,7 +21,7 @@
 
 import type { CandidateMedia, DocumentTag, ElementKey, UnsupportedMediaForm, VideoCandidate, VideoRef } from "../../shared/handoff-contract.ts";
 import { VIDEO_FILTER_RULES, type VideoFilterRules } from "../tab-model/video-filter-rules.ts";
-import { classifyVideo, type VideoVerdict } from "../tab-model/video-verdict.ts";
+import { classifyVideo, unsupportedFormOf, type VideoVerdict } from "../tab-model/video-verdict.ts";
 
 /** Кандидаты одного фрейма вкладки. */
 export interface FrameCandidates {
@@ -70,7 +70,7 @@ export interface ClassifiedVideo {
 }
 
 /** Передаваемые формы в порядке предпочтения при равенстве площади и длительности. */
-const HANDOFF_FORMS: readonly CandidateMedia["kind"][] = ["media_source", "file"];
+const HANDOFF_FORMS: readonly CandidateMedia["kind"][] = ["media_source", "file", "hls"];
 
 /** Проходы выбора (см. шапку файла). */
 type PlaybackPass = "playing_visible" | "visible" | "playing_hidden";
@@ -149,7 +149,7 @@ export function chooseRequestedVideo(frames: readonly FrameCandidates[], ref: Vi
     case "protected":
       return { kind: "protected" };
     case "unsupported":
-      return entry.candidate.media.kind === "unsupported" ? { kind: "not_supported_yet", form: entry.candidate.media.form } : { kind: "nothing" };
+      return unsupportedChoiceOf(entry);
     case "empty":
       return { kind: "nothing" };
     case "main":
@@ -162,7 +162,8 @@ export function chooseRequestedVideo(frames: readonly FrameCandidates[], ref: Vi
 /** Выбранное видео из записи опроса. Единственное место, где собирается `ChosenVideo`. */
 export function chosenVideoOf(entry: ClassifiedVideo, rules: VideoFilterRules = VIDEO_FILTER_RULES): ChosenVideo {
   const { document, element, frame_host: frameHost, file_host: fileHost, duration_s: durationSeconds } = entry.candidate;
-  const isShortFile = entry.candidate.media.kind === "file" && durationSeconds !== null && durationSeconds <= rules.prerollMaxSeconds;
+  // Короткий HLS-ролик (запись) подозрителен так же, как короткий файл.
+  const isShortFile = (entry.candidate.media.kind === "file" || entry.candidate.media.kind === "hls") && durationSeconds !== null && durationSeconds <= rules.prerollMaxSeconds;
   return { frameId: entry.frameId, document, element, frameHost, fileHost, role: entry.verdict === "ad" ? "ad" : "film", mayBeAd: isShortFile };
 }
 
@@ -189,10 +190,13 @@ function adInPlayerPlace(classified: readonly ClassifiedVideo[], handable: reado
 function choiceWithoutMain(classified: readonly ClassifiedVideo[]): VideoChoice {
   if (mostNoticeable(classified.filter((entry) => entry.verdict === "protected")) !== undefined) return { kind: "protected" };
   const unsupported = mostNoticeable(classified.filter((entry) => entry.verdict === "unsupported"));
-  if (unsupported !== undefined && unsupported.candidate.media.kind === "unsupported") {
-    return { kind: "not_supported_yet", form: unsupported.candidate.media.form };
-  }
-  return { kind: "nothing" };
+  return unsupported === undefined ? { kind: "nothing" } : unsupportedChoiceOf(unsupported);
+}
+
+/** Отказ по неподдержанному видео: его форма (у живого HLS — `native_hls`); формы нет — «нечего передавать». */
+function unsupportedChoiceOf(entry: ClassifiedVideo): VideoChoice {
+  const form = unsupportedFormOf(entry.candidate);
+  return form === null ? { kind: "nothing" } : { kind: "not_supported_yet", form };
 }
 
 /** Сравнение внутри прохода: площадь, затем длительность (неизвестная — последняя), затем форма. */

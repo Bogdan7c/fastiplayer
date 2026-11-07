@@ -1,7 +1,7 @@
 // Договор сеанса передачи (сессия 09d вынесла его из `handoff-session.ts`, который упёрся в предел размера):
 // чем кончается сеанс и что владелец сеанса может у него спросить. Только типы, поведения здесь нет.
 
-import type { HandOffTabOutcome, HeldVideoReply, HeldVideoReport, PageEventBudgetKind, VideoRef } from "../../shared/handoff-contract.ts";
+import type { HandOffTabOutcome, HeldVideoReply, HeldVideoReport, PageEventBudgetKind, UnsupportedMediaForm, VideoRef } from "../../shared/handoff-contract.ts";
 import type { PageAdState, TabGoneReason } from "../../protocol/index.ts";
 import type { PageStreamProblem } from "./page-event-translator.ts";
 import type { SocketEndCause } from "./session-socket.ts";
@@ -20,6 +20,8 @@ export type HandoffSessionEnd =
   | { readonly kind: "page_flood"; readonly overBudget: PageEventBudgetKind | "forwarded_bytes" }
   /** Страница назвала адрес файла, который правило запрещает (4003, решение 199). */
   | { readonly kind: "local_address_refused" }
+  /** Договорённая версия протокола не знает такого источника (HLS при протоколе 1.0): видео остаётся у страницы. */
+  | { readonly kind: "source_needs_newer_player"; readonly form: UnsupportedMediaForm }
   | { readonly kind: "returned_to_page" }
   | { readonly kind: "stream_rejected" }
   | { readonly kind: "player_ended"; readonly cause: SocketEndCause }

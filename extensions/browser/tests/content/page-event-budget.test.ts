@@ -10,7 +10,7 @@ const SMALL_LIMITS: Readonly<Record<PageEventBudgetKind, number>> = {
   page_seek: 2,
   page_playback: 2,
   player_seek_applied: 2,
-  file_source: 1,
+  file_source: 1, hls_source: 1,
   shadow_alive: 2,
   malformed: 3,
 };

@@ -38,11 +38,18 @@ import type {
   VideoRef,
 } from "../../shared/handoff-contract.ts";
 import { parsePageEvent, parsePageFloodNotice } from "../../shared/page-message-validation.ts";
-import { SESSION_CLOSE_CODES, type PlayerSessionMessage, type TabGoneReason } from "../../protocol/index.ts";
+import {
+  PROTOCOL_VERSION_1_0,
+  SESSION_CLOSE_CODES,
+  pageSessionIntroducedIn,
+  versionIncludes,
+  type PlayerSessionMessage,
+  type ProtocolVersion,
+  type TabGoneReason,
+} from "../../protocol/index.ts";
 import type { OpenSessionRequest } from "../host-link/open-session-requests.ts";
 import { createTimerSlot } from "../host-link/timer-slot.ts";
 import { HANDOFF_BEGIN_REPLY_TIMEOUT_MS, HANDOFF_END_REPLY_TIMEOUT_MS } from "./constants.ts";
-import type { FileReferrer } from "../../shared/referrer-policy.ts";
 import { ruleAllowsFileUrl, type FileAddressRule } from "./file-address-guard.ts";
 import type { FramePort } from "./frame-port.ts";
 import { createDocumentTranslator, type DocumentTranslator, type OutgoingItem, type PageStreamProblem, type StreamPageEvent } from "./page-event-translator.ts";
@@ -60,7 +67,8 @@ import {
   type SessionSocket,
   type SocketEndCause,
 } from "./session-socket.ts";
-import { createRangeFetcher, type RangeFetcher } from "./range-fetcher.ts";
+import { referrerOf, startPulledSource, type PulledSourceEvent } from "./pulled-source-start.ts";
+import { createSessionSourceFeeds } from "./session-source-feeds.ts";
 import { judgeHeldVideo } from "./held-video-choice.ts";
 import { createShadowSilenceWatch } from "./shadow-silence-watch.ts";
 import { createStreamNumbering, type StreamNumbering } from "./stream-numbering.ts";
@@ -146,8 +154,16 @@ export function startHandoffSession(
   // Фрейм живого порта.
   let portFrameId = target.frameId;
   let translator: DocumentTranslator | undefined;
-  // Загрузчик диапазонов поколения-файла (сессия 09b); у MSE его нет.
-  let fileFeed: RangeFetcher | undefined;
+  // Загрузчики источников, которые фон качает сам: файл (09b) и нативный HLS (10a2); у MSE их нет.
+  const feeds = createSessionSourceFeeds({
+    fetch: dependencies.fetchRange,
+    fileReferrer: dependencies.fileReferrer,
+    localAddressBlock: dependencies.localAddressBlock,
+    scheduler: dependencies.scheduler,
+  });
+  // Версия протокола, о которой договорились с плеером (из выдачи сеанса): новее неё сообщений не шлём.
+  // До выдачи неизвестна; самая ранняя версия - безопасная сторона.
+  let agreedProtocol: ProtocolVersion = PROTOCOL_VERSION_1_0;
   // Чем кончится передача, если страница подтвердит снятие тени (запоминается при `end_handoff`).
   let pendingEnd: HandoffSessionEnd | undefined;
   // Плеер ответил `attached` на наш `attach`.
@@ -170,8 +186,8 @@ export function startHandoffSession(
     silenceWatch.stop();
     relocation.stop();
     adMirror.stop();
-    // Конец сеанса: текущий запрос файла обрывается, ни рамки после конца.
-    disposeFileFeed();
+    // Конец сеанса: текущие загрузки источников обрываются, ни рамки после конца.
+    feeds.dispose();
     if (framePort !== undefined) disconnectQuietly(framePort);
     releaseDemand();
     // Если старт не успел завершиться, исход объясняет, почему.
@@ -283,6 +299,7 @@ export function startHandoffSession(
       return;
     }
     playerWindow = playerWindowOf(granted.grant.outcome);
+    agreedProtocol = granted.agreedProtocol;
     socket = openSessionSocket({
       port: granted.grant.port,
       sessionKey: target.sessionKey,
@@ -356,7 +373,7 @@ export function startHandoffSession(
 
   function heldVideo(frameId: number, report: HeldVideoReport): HeldVideoReply {
     if ((phase !== "active" && phase !== "between_videos") || !relocation.adoptionOpen()) return "release";
-    const decision = judgeHeldVideo(frameId, report, place.fileAddressRule);
+    const decision = judgeHeldVideo(frameId, report, place.fileAddressRule, { nativeHls: playerKnowsNativeHls() });
     if (decision.kind === "release") return "release";
     moveToVideo(decision.video, decision.fileAddressRule);
     return "adopt";
@@ -421,7 +438,10 @@ export function startHandoffSession(
         silenceWatch.notePulse();
         return;
       case "file_source":
-        startFileSource(event.url, event.referrer_origin === null ? null : { origin: event.referrer_origin, policy: event.referrer_policy });
+        startSourceFromPage({ form: "file", url: event.url, referrer: referrerOf(event) });
+        return;
+      case "hls_source":
+        startSourceFromPage({ form: "hls", url: event.url, referrer: referrerOf(event) });
         return;
       case "next_video_held":
         // Донесение сторожа идёт мимо порта, через пограничника: по порту его не бывает.
@@ -494,21 +514,15 @@ export function startHandoffSession(
       rejectPageStream(translated.problem);
       return;
     }
-    // Новое поколение MSE после поколения-файла (находка 12 ревью 09b): загрузчик прошлого файла
-    // больше не нужен — его текущий запрос обрывается, а не докачивает ненужный файл.
-    if (translated.items.some(startsGeneration)) disposeFileFeed();
+    // Новое поколение MSE после файла или HLS (находка 12 ревью 09b): загрузчик прошлого источника
+    // больше не нужен — его текущие запросы обрываются, а не докачивают ненужное.
+    if (translated.items.some(startsGeneration)) feeds.endGeneration();
     for (const item of translated.items) socket.enqueue(item);
   }
 
   /** Поток страницы идёт в плеер: тень стоит, встаёт или сеанс как раз переезжает. */
   function acceptsStream(): boolean {
     return phase === "beginning" || phase === "active" || phase === "between_videos" || phase === "moving";
-  }
-
-  /** Загрузчик диапазонов поколения-файла больше не нужен (новое поколение или конец сеанса). */
-  function disposeFileFeed(): void {
-    fileFeed?.dispose();
-    fileFeed = undefined;
   }
 
   /** Поток страницы битый: честно закрываем сеанс (плеер закрыл бы 4003) и снимаем тень. */
@@ -525,34 +539,48 @@ export function startHandoffSession(
   }
 
   /**
-   * Страница передаёт файл `<video src>`: новое поколение-файл, байты по запросам плеера качает
-   * загрузчик диапазонов. Адрес остаётся в фоне — плееру уходит только номер поколения.
+   * Страница передаёт источник, который качает фон: файл `<video src>` (09b) или нативный HLS (10a2).
+   * Новое поколение, байты по запросам плеера отдают загрузчики (session-source-feeds.ts). Адрес остаётся
+   * в фоне: плееру уходит номер поколения (у HLS - ещё и номерок корня).
    */
-  function startFileSource(url: string, referrer: FileReferrer | null): void {
+  function startSourceFromPage(source: PulledSourceEvent): void {
     if (!acceptsStream() || translator === undefined || socket === undefined) return;
     // Проверка при выборе видео шла по словам кандидата, а адрес называет страница сейчас: сверяем.
-    if (!ruleAllowsFileUrl(place.fileAddressRule, url)) {
+    if (!ruleAllowsFileUrl(place.fileAddressRule, source.url)) {
       refuseFileAddress();
       return;
     }
-    const translated = translator.translateFileSource();
-    if (!translated.ok) {
-      rejectPageStream(translated.problem);
+    if (source.form === "hls" && !playerKnowsNativeHls()) {
+      refuseSourceOldPlayerCannotPlay();
       return;
     }
-    for (const item of translated.items) socket.enqueue(item);
-    // Новый файл в том же сеансе: прежний загрузчик больше не нужен (его запросы — прошлого поколения).
-    disposeFileFeed();
-    // Сначала разрешение заслона локальных адресов (сам запрос), снаружи него — Referer.
-    const fileAddressRule = place.fileAddressRule;
-    const network = dependencies.localAddressBlock.around(dependencies.fetchRange, fileAddressRule);
-    fileFeed = createRangeFetcher({
-      url,
-      fetch: referrer === null ? network : dependencies.fileReferrer.around(network, referrer),
-      allowsAddress: (finalUrl) => ruleAllowsFileUrl(fileAddressRule, finalUrl),
-      sink: socket,
-      scheduler: dependencies.scheduler,
-    });
+    const start = { url: source.url, referrer: source.referrer, rule: place.fileAddressRule, sink: socket };
+    const started = startPulledSource(feeds, translator, source, start);
+    switch (started.kind) {
+      case "started":
+        for (const item of started.items) socket.enqueue(item);
+        return;
+      case "address_refused":
+        refuseFileAddress();
+        return;
+      case "stream_problem":
+        rejectPageStream(started.problem);
+        return;
+    }
+  }
+
+  /** Знает ли плеер сеанса нативный HLS: договорённая версия включает `hls_source_added`. */
+  function playerKnowsNativeHls(): boolean {
+    return versionIncludes(agreedProtocol, pageSessionIntroducedIn("hls_source_added"));
+  }
+
+  /** Плеер договорился на версию без HLS: честный отказ, ни одного сообщения 1.1 ему не ушло. */
+  function refuseSourceOldPlayerCannotPlay(): void {
+    if (phase === "beginning") {
+      failStart({ kind: "not_supported_yet", form: "native_hls" }, SESSION_CLOSE_CODES.protocol_violation);
+    } else {
+      endForPageFault({ kind: "source_needs_newer_player", form: "native_hls" });
+    }
   }
 
   /** Страница назвала запрещённый адрес файла: сеанс кончается, ни одного запроса туда не ушло. */
@@ -590,13 +618,14 @@ export function startHandoffSession(
       case "skip_ad":
         adMirror.skipAd();
         return;
-      case "reply": // ответ плееру без страницы и сети (10a1: отказ на `fetch_resource`)
-        socket?.enqueue({ kind: "message", message: action.message });
+      case "fetch_resource":
+        // Ресурсы HLS просят только в поколении HLS; в другом поколении фид сам ответит `refused`.
+        if (socket !== undefined) feeds.requestResource(action.request, socket);
         return;
       case "fetch_range":
         // Байты файла просят только в поколении-файле. Без файла запрос не наш (плеер ошибся
         // сам): его чтение честно истечёт у плеера, сеанс страницы это не ломает.
-        fileFeed?.request(action.request);
+        feeds.requestRange(action.request);
         return;
       case "attached":
       case "buffer_intake":

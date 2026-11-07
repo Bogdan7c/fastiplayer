@@ -16,13 +16,18 @@ describe("форма источника по выбранному адресу",
   it("http(s) — файл; m3u8 по пути или по типу `<source>` — нативный HLS (решение 185)", () => {
     assert.deepEqual(classifyMediaUrl(FILE_URL, null, notMediaSource), { kind: "file", url: FILE_URL });
     assert.deepEqual(classifyMediaUrl("HTTP://cdn.example/a.webm", "video/webm", notMediaSource), { kind: "file", url: "HTTP://cdn.example/a.webm" });
-    assert.deepEqual(classifyMediaUrl("https://cdn.example/live/Master.M3U8?x=1#t", null, notMediaSource), { kind: "unsupported", form: "native_hls" });
+    assert.deepEqual(classifyMediaUrl("https://cdn.example/live/Master.M3U8?x=1#t", null, notMediaSource), { kind: "hls", url: "https://cdn.example/live/Master.M3U8?x=1#t" });
     assert.deepEqual(
       classifyMediaUrl("https://cdn.example/play?id=7", "application/vnd.apple.mpegURL; codecs=avc1", notMediaSource),
-      { kind: "unsupported", form: "native_hls" },
+      { kind: "hls", url: "https://cdn.example/play?id=7" },
       "HLS без «.m3u8» в адресе узнаётся по типу выбранного <source>",
     );
     assert.deepEqual(classifyMediaUrl("https://cdn.example/m3u8.mp4", null, notMediaSource), { kind: "file", url: "https://cdn.example/m3u8.mp4" });
+  });
+
+  it("длинный адрес плейлиста, как и длинный адрес файла, — other_scheme (изолированный мир его отверг бы)", () => {
+    const longPlaylist = `https://cdn.example/${"a".repeat(MAX_FILE_SOURCE_URL_LENGTH)}.m3u8`;
+    assert.deepEqual(classifyMediaUrl(longPlaylist, null, notMediaSource), { kind: "unsupported", form: "other_scheme" });
   });
 
   it("blob обычного Blob, data: и чужие схемы — неподдержанные формы; blob MediaSource — пока нечего", () => {
@@ -76,7 +81,7 @@ describe("кандидаты и начало передачи файла", () =>
       const candidates = await describeCandidates(isolated);
       assert.deepEqual(
         candidates.map((candidate) => candidate.media),
-        [{ kind: "file" }, { kind: "unsupported", form: "native_hls" }, { kind: "unsupported", form: "media_stream" }, { kind: "none" }],
+        [{ kind: "file" }, { kind: "hls" }, { kind: "unsupported", form: "media_stream" }, { kind: "none" }],
       );
       await isolated.settle();
       assertAcceptedByIsolatedWorld(harness);
@@ -122,6 +127,58 @@ describe("кандидаты и начало передачи файла", () =>
       assert.ok(candidate !== undefined);
       video.src = "https://cdn.example/hls/master.m3u8";
       isolated.send({ kind: "begin_handoff", request_id: 3, document: candidate.document, element: candidate.element });
+      await isolated.waitFor(1);
+      await isolated.settle();
+      assert.deepEqual(isolated.received, [{ kind: "handoff_began", request_id: 3, outcome: "no_media" }]);
+      assert.equal(harness.shadow.started.length, 0);
+    } finally {
+      isolated.close();
+    }
+  });
+});
+
+describe("начало передачи записи HLS (сессия 10a2)", () => {
+  const PLAYLIST_URL = "https://cdn.example/vod/master.m3u8";
+
+  it("begin_handoff записи: started → hls_source{url, referrer} → page_seek{T0} → play, тень — в виде «файл»", async () => {
+    const harness = startHarness();
+    const video = harness.page.addVideo();
+    video.src = PLAYLIST_URL;
+    video.testDuration = 600;
+    video.testSetState({ paused: false, currentTime: 42 });
+    const isolated = handshake(harness.page);
+    try {
+      const [candidate] = await describeCandidates(isolated);
+      assert.deepEqual(candidate?.media, { kind: "hls" });
+      assert.equal(candidate?.duration_s, 600);
+      isolated.send({ kind: "begin_handoff", request_id: 2, document: candidate!.document, element: candidate!.element });
+      await isolated.waitFor(4);
+      assert.deepEqual(isolated.received.slice(-4), [
+        { kind: "handoff_began", request_id: 2, outcome: "started" },
+        { kind: "hls_source", url: PLAYLIST_URL, referrer_origin: null, referrer_policy: "no-referrer" },
+        { kind: "page_seek", target_us: 42_000_000 },
+        { kind: "page_playback", request: { kind: "play" } },
+      ] satisfies PageEvent[]);
+      assert.equal(harness.shadow.started.length, 1);
+      assert.equal(harness.shadow.started[0]?.source, "file", "VOD HLS под тенью ведёт себя как файл (решения 186/187)");
+      assert.equal(harness.shadow.started[0]?.element, video);
+      await isolated.settle();
+      assertAcceptedByIsolatedWorld(harness);
+    } finally {
+      isolated.close();
+    }
+  });
+
+  it("между опросом и командой запись стала эфиром (Infinity): no_media, тень не ставится, hls_source не уходит", async () => {
+    const harness = startHarness();
+    const video = harness.page.addVideo();
+    video.src = PLAYLIST_URL;
+    video.testDuration = 600;
+    const isolated = handshake(harness.page);
+    try {
+      const [candidate] = await describeCandidates(isolated);
+      video.testDuration = Number.POSITIVE_INFINITY;
+      isolated.send({ kind: "begin_handoff", request_id: 3, document: candidate!.document, element: candidate!.element });
       await isolated.waitFor(1);
       await isolated.settle();
       assert.deepEqual(isolated.received, [{ kind: "handoff_began", request_id: 3, outcome: "no_media" }]);

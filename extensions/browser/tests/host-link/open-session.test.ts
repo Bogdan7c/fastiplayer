@@ -38,6 +38,41 @@ describe("openSession", () => {
     assert.equal(world.liveTimerCount(), 0);
   });
 
+  it("выдача несёт версию протокола, о которой договорились в hello этого соединения", async () => {
+    const world = createWorld();
+    const outcome = world.link.openSession(sampleRequest("key-a"));
+    const port = lastPort(world);
+    port.reply(helloAccepted("0.9.0", { major: 1, minor: 1 }));
+    port.reply(sessionGranted(1, "key-a"));
+    const result = await outcome;
+    assert.ok(result.kind === "granted");
+    assert.deepEqual(result.agreedProtocol, { major: 1, minor: 1 });
+  });
+
+  it("старый плеер договорился на 1.0: выдача несёт 1.0, а не версию экстеншена", async () => {
+    const world = createWorld();
+    const outcome = world.link.openSession(sampleRequest("key-a"));
+    const port = lastPort(world);
+    port.reply(helloAccepted("0.9.0", { major: 1, minor: 0 }));
+    port.reply(sessionGranted(1, "key-a"));
+    const result = await outcome;
+    assert.ok(result.kind === "granted");
+    assert.deepEqual(result.agreedProtocol, { major: 1, minor: 0 });
+  });
+
+  it("hello_required: версия берётся из повторного hello, не из первого", async () => {
+    const world = createWorld();
+    const outcome = world.link.openSession(sampleRequest("key-a"));
+    const port = lastPort(world);
+    port.reply(helloAccepted("0.9.0", { major: 1, minor: 0 }));
+    port.reply(refusedOpenSession(1, "hello_required"));
+    port.reply(helloAccepted("0.9.0", { major: 1, minor: 1 }));
+    port.reply(sessionGranted(1, "key-a"));
+    const result = await outcome;
+    assert.ok(result.kind === "granted");
+    assert.deepEqual(result.agreedProtocol, { major: 1, minor: 1 });
+  });
+
   it("hello_required: сами повторяем hello и тот же open_session один раз -> grant", async () => {
     const world = createWorld();
     const outcome = world.link.openSession(sampleRequest("key-a"));

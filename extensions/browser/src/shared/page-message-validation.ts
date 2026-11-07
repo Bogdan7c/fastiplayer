@@ -379,13 +379,15 @@ export function parsePageEvent(value: unknown): PageEvent | undefined {
       const request = parsePlaybackRequest(value["request"]);
       return hasExactKeys(value, ["kind", "request"]) && request !== undefined ? { kind: "page_playback", request } : undefined;
     }
-    case "file_source": {
+    case "file_source":
+    case "hls_source": {
+      // `hls_source` (10a2) — та же форма и те же проверки, что у `file_source`: адрес http(s) и факты Referer.
       const url = value["url"];
       const referrerOrigin = value["referrer_origin"];
       const referrerPolicy = value["referrer_policy"];
       const referrerIsValid = (referrerOrigin === null || isReferrerOrigin(referrerOrigin)) && isOneOf(referrerPolicy, REFERRER_POLICIES);
       return hasExactKeys(value, ["kind", "url", "referrer_origin", "referrer_policy"]) && isFileSourceUrl(url) && referrerIsValid
-        ? { kind: "file_source", url, referrer_origin: referrerOrigin, referrer_policy: referrerPolicy as ReferrerPolicyName }
+        ? { kind: value["kind"], url, referrer_origin: referrerOrigin, referrer_policy: referrerPolicy as ReferrerPolicyName }
         : undefined;
     }
     case "shadow_alive":
@@ -434,6 +436,7 @@ const PAGE_EVENT_BUDGET_KINDS: readonly PageEventBudgetKind[] = [
   "player_seek_applied",
   "page_playback",
   "file_source",
+  "hls_source",
   "shadow_alive",
   "malformed",
 ];
@@ -467,6 +470,8 @@ function parseCandidateMedia(value: unknown): CandidateMedia | undefined {
     }
     case "file":
       return hasExactKeys(value, ["kind"]) ? { kind: "file" } : undefined;
+    case "hls":
+      return hasExactKeys(value, ["kind"]) ? { kind: "hls" } : undefined;
     case "none":
       return hasExactKeys(value, ["kind"]) ? { kind: "none" } : undefined;
     case "unsupported": {
@@ -531,10 +536,10 @@ function parseVideoCandidate(value: unknown): VideoCandidate | undefined {
   if (media === undefined || typeof playing !== "boolean" || !validArea) return undefined;
   if (!isOptionalDuration(durationSeconds) || typeof muted !== "boolean" || typeof loop !== "boolean" || typeof drm !== "boolean") return undefined;
   if (!isIntegerInRange(widthPx, 0, MAX_VIDEO_DIMENSION_PX) || !isIntegerInRange(heightPx, 0, MAX_VIDEO_DIMENSION_PX)) return undefined;
-  // Хост документа может быть пустым ("" — нет), хост файла — только у файла и не пустой.
+  // Хост документа может быть пустым ("" — нет), хост адреса медиа — только у файла и HLS и не пустой.
   if (frameHost !== "" && !isHostName(frameHost)) return undefined;
   if (typeof frameHost !== "string") return undefined;
-  if (fileHost !== null && (!isHostName(fileHost) || media.kind !== "file")) return undefined;
+  if (fileHost !== null && (!isHostName(fileHost) || (media.kind !== "file" && media.kind !== "hls"))) return undefined;
   if (sourceMimeTypes === undefined) return undefined;
   return {
     document,

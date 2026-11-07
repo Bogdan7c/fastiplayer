@@ -26,7 +26,7 @@ import { createTokenBucket, type MillisecondClock, type TokenBucket } from "../s
  * - `page_seek`: 2/с в записях; страница, которая тащит ползунок по кадрам экрана, даст до 144/с.
  * - `page_playback`: 5/с в записях (старт плеера).
  * - `player_seek_applied`: ответ на перемотку плеера, плеер шлёт их не чаще своих перемоток.
- * - `file_source` и `shadow_alive`: раз на передачу и раз в секунду по договору.
+ * - `file_source`, `hls_source` и `shadow_alive`: раз на передачу и раз в секунду по договору.
  * - `malformed`: в записях 0. Лимит не нулевой только для того, чтобы случайный сбой формы не рвал
  *   передачу; сотни в секунду — уже не случайность.
  */
@@ -36,6 +36,7 @@ export const PAGE_EVENT_LIMITS_PER_SECOND: Readonly<Record<PageEventBudgetKind, 
   page_playback: 256,
   player_seek_applied: 256,
   file_source: 16,
+  hls_source: 16,
   shadow_alive: 16,
   malformed: 256,
 };

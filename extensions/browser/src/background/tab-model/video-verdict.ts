@@ -2,7 +2,7 @@
 // Единственное место, где решается «фильм это, реклама или мусор»: выбор главного видео
 // (handoff/video-choice.ts) и модель вкладки используют ровно эту функцию — второго правила нет.
 
-import type { VideoCandidate } from "../../shared/handoff-contract.ts";
+import type { UnsupportedMediaForm, VideoCandidate } from "../../shared/handoff-contract.ts";
 import { VIDEO_FILTER_RULES, type VideoFilterRules } from "./video-filter-rules.ts";
 
 /**
@@ -37,7 +37,24 @@ function isSilentDecoration(candidate: VideoCandidate, rules: VideoFilterRules):
  */
 function isUnstartedPlaylistAddress(candidate: VideoCandidate): boolean {
   const { media, playing, duration_s: durationSeconds } = candidate;
-  return media.kind === "unsupported" && media.form === "native_hls" && !playing && durationSeconds === null;
+  return media.kind === "hls" && !playing && durationSeconds === null;
+}
+
+/**
+ * Играющий HLS без известной длительности — живой эфир (длительность Infinity попадает в `null`).
+ * Эфир в этой сессии не передаётся (решение 231), честно остаётся формой `native_hls`.
+ */
+function isLiveHls(candidate: VideoCandidate): boolean {
+  return candidate.media.kind === "hls" && candidate.duration_s === null;
+}
+
+/**
+ * Неподдержанная форма кандидата для отказа `not_supported_yet`: у `unsupported` — своя, у живого HLS —
+ * `native_hls`. `null` — кандидат не неподдержанный.
+ */
+export function unsupportedFormOf(candidate: VideoCandidate): UnsupportedMediaForm | null {
+  if (candidate.media.kind === "unsupported") return candidate.media.form;
+  return isLiveHls(candidate) ? "native_hls" : null;
 }
 
 /**
@@ -64,7 +81,7 @@ function waitsForFilm(neighbour: VideoCandidate, clip: VideoCandidate, clipSecon
  */
 function isPrerollBesideFilm(candidate: VideoCandidate, neighbours: readonly VideoCandidate[], rules: VideoFilterRules): boolean {
   const { media, playing, loop, duration_s: clipSeconds } = candidate;
-  if (media.kind !== "file" || !playing || loop) return false;
+  if ((media.kind !== "file" && media.kind !== "hls") || !playing || loop) return false;
   if (clipSeconds === null || clipSeconds > rules.prerollMaxSeconds) return false;
   return neighbours.some((neighbour) => waitsForFilm(neighbour, candidate, clipSeconds));
 }
@@ -80,7 +97,7 @@ export function classifyVideo(
 ): VideoVerdict {
   if (candidate.drm) return "protected";
   if (candidate.media.kind === "none" || isUnstartedPlaylistAddress(candidate)) return "empty";
-  if (candidate.media.kind === "unsupported") return "unsupported";
+  if (candidate.media.kind === "unsupported" || isLiveHls(candidate)) return "unsupported";
   if (isAdHost(candidate.file_host, rules) || isAdHost(candidate.frame_host, rules)) return "ad";
   // До проверки на беззвучие: преролл на странице без звука всё равно реклама, а не баннер.
   if (isPrerollBesideFilm(candidate, neighbours, rules)) return "ad";

@@ -3,8 +3,12 @@
 // Инварианты:
 // - первым уходит `attach`; пока не пришёл `attached`, больше ничего не уходит — всё ждёт в очереди;
 // - порядок сообщений и рамок — ровно порядок постановки (порядок страницы), очередь FIFO;
-// - `buffer_state{full}` придерживает рамки; из-за FIFO всё, что стоит за рамкой, тоже ждёт до
-//   `accepting` (иначе сообщение о новом поколении обогнало бы байты старого);
+// - `buffer_state{full}` придерживает рамки MSE (вид 1, байты SourceBuffer); из-за FIFO всё, что
+//   стоит за такой рамкой, тоже ждёт до `accepting` (иначе сообщение о новом поколении обогнало бы
+//   байты старого);
+// - рамки вида 2 (байты файла и ресурсов HLS) «полон» не держит: их плеер запросил сам, а для
+//   поколений-файлов и HLS он `buffer_state` не шлёт вовсе. Иначе «полон», оставшийся от прошлого
+//   MSE-поколения (реклама), навсегда держал бы байты следующего файла или HLS (сессия 10a2);
 // - выше SOCKET_HIGH_WATER_BYTES в буфере сокета новые элементы не отдаём (обратное давление);
 // - потолок очереди MAX_SESSION_QUEUE_BYTES: переполнение = страница не слушает «полон», сеанс
 //   честно закрывается (молча выбросить кусок нельзя — у плеера была бы дыра);
@@ -112,7 +116,8 @@ export interface SessionSocket {
 
 interface QueuedEntry {
   readonly payload: string | Uint8Array<ArrayBuffer>;
-  readonly isFrame: boolean;
+  /** Рамка MSE (вид 1): её придерживает `buffer_state{full}`. Сообщения и рамки вида 2 — нет. */
+  readonly heldWhileIntakeFull: boolean;
   readonly sizeBytes: number;
 }
 
@@ -228,7 +233,7 @@ export function openSessionSocket(parameters: SessionSocketParameters): SessionS
   function pump(): void {
     while (phase === "attached" && queue.length > 0 && socket.readyState === WEB_SOCKET_OPEN) {
       const head = queue[0]!;
-      if (head.isFrame && intakeIsFull) return; // отпустит buffer_state{accepting}
+      if (head.heldWhileIntakeFull && intakeIsFull) return; // отпустит buffer_state{accepting}
       if (socket.bufferedAmount > SOCKET_HIGH_WATER_BYTES) {
         if (!drainTimer.isActive()) drainTimer.start(SOCKET_DRAIN_POLL_MS, pump);
         return;
@@ -243,12 +248,16 @@ export function openSessionSocket(parameters: SessionSocketParameters): SessionS
     if (item.kind === "message") {
       const encoded = encodePageSession(item.message);
       return encoded.ok
-        ? { payload: encoded.value, isFrame: false, sizeBytes: encoded.value.length }
+        ? { payload: encoded.value, heldWhileIntakeFull: false, sizeBytes: encoded.value.length }
         : `${item.message.type}: ${encoded.error.kind}`;
     }
     const frame = encodeDataFrame(item.header, item.payload);
     return frame.ok
-      ? { payload: frame.value as Uint8Array<ArrayBuffer>, isFrame: true, sizeBytes: frame.value.byteLength }
+      ? {
+          payload: frame.value as Uint8Array<ArrayBuffer>,
+          heldWhileIntakeFull: item.header.kind === "source_buffer_bytes",
+          sizeBytes: frame.value.byteLength,
+        }
       : `frame: ${frame.error.kind}`;
   }
 

@@ -232,6 +232,7 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
       case "player_seek_applied":
       case "page_playback":
       case "file_source":
+      case "hls_source":
       case "shadow_alive":
         return event.kind;
       default:
@@ -261,7 +262,8 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
 
   /** Заменить то, что страница сказала о своём документе, на прочитанное в этом мире. */
   function withOwnDocumentFacts(event: PageEvent): PageEvent {
-    if (event.kind !== "file_source" || event.referrer_origin === null) return event;
+    // `hls_source` несёт те же факты Referer, что `file_source`: происхождение документа берём своё, не страницы.
+    if ((event.kind !== "file_source" && event.kind !== "hls_source") || event.referrer_origin === null) return event;
     return { ...event, referrer_origin: dependencies.ownDocument().origin };
   }
 

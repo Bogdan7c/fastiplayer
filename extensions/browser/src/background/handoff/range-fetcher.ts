@@ -80,7 +80,11 @@ export interface RangeFetchResponse {
 export interface RangeFetchInit {
   readonly headers: Readonly<Record<string, string>>;
   readonly credentials: "include";
-  readonly cache: "no-store";
+  /**
+   * `no-store` - файл `<video src>` и плейлисты HLS (частичные ответы из кэша смешивали бы версии);
+   * `default` - сегменты, init и ключи HLS (кэш браузера помогает перемотке назад).
+   */
+  readonly cache: "no-store" | "default";
   readonly redirect: "follow";
   readonly signal: AbortSignal;
 }

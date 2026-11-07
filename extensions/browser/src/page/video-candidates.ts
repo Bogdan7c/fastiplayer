@@ -22,7 +22,7 @@ import type { WorkerMediaSources } from "./worker-capture/index.ts";
  * отдадут (как у выбора фона: MSE, затем файл; неподдержанные — чтобы фон мог честно сказать
  * «not supported yet»).
  */
-const MEDIA_RANK: Readonly<Record<CandidateMedia["kind"], number>> = { media_source: 0, file: 1, unsupported: 2, none: 3 };
+const MEDIA_RANK: Readonly<Record<CandidateMedia["kind"], number>> = { media_source: 0, file: 1, hls: 1, unsupported: 2, none: 3 };
 
 /** Видимая площадь: пересечение прямоугольника элемента с окном, в CSS-пикселях (целое). */
 export function visibleAreaPx(rect: ViewportRect, viewport: { readonly width: number; readonly height: number }): number {
@@ -121,7 +121,8 @@ export class VideoCandidates {
       video_height_px: frameDimensionPx(frameSize.height),
       drm: this.#protection.isProtected(element),
       frame_host: frameHost,
-      file_host: source.kind === "file" ? hostOfHttpUrl(source.url) : null,
+      // `file_host` — хост адреса медиа и для файла, и для плейлиста HLS: по нему идут проверки локального адреса и рекламного хоста.
+      file_host: source.kind === "file" || source.kind === "hls" ? hostOfHttpUrl(source.url) : null,
       source_mime_types: source.kind === "media_source" ? this.#tracker.sourceMimeTypesOf(source.record).slice(0, MAX_SOURCE_MIME_TYPES) : [],
     };
   }

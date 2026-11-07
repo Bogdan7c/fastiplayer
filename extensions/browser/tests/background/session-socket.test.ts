@@ -120,6 +120,32 @@ describe("сокет сеанса: «полон» и обратное давле
     assert.deepEqual(socket.wireSummary(), ["attach", "source_buffer_added", "seek_started", "frame 1/0#0", "generation_started"]);
   });
 
+  it("«полон», оставшийся от MSE-поколения, не держит байты файла и HLS (рамки вида 2) и их итоги", () => {
+    const { socket, session, attach } = setup();
+    attach();
+    // Реклама на MSE оставила плеер «полным», потом страница перешла на файл или HLS. Для таких
+    // поколений плеер `buffer_state` не шлёт: держи мы рамки вида 2, байты не ушли бы никогда.
+    socket.receive({ type: "buffer_state", generation: 1, ahead_us: 90_000_000, intake: "full" });
+    session.enqueue({ kind: "message", message: { type: "generation_started", generation: 2 } });
+    session.enqueue({ kind: "frame", header: { kind: "range_bytes", request_id: 7, offset: 0 }, payload: new Uint8Array([9, 9]) });
+    session.enqueue({
+      kind: "message",
+      message: { type: "resource_fetch_finished", request_id: 7, outcome: { kind: "completed", size_bytes: 2 } },
+    });
+    assert.deepEqual(socket.wireSummary(), ["attach", "generation_started", "range 7@0+2", "resource_fetch_finished"]);
+  });
+
+  it("за придержанной рамкой MSE ждут и рамки вида 2: порядок страницы сохраняется", () => {
+    const { socket, session, attach } = setup();
+    attach();
+    socket.receive({ type: "buffer_state", generation: 1, ahead_us: 90_000_000, intake: "full" });
+    session.enqueue(frameItem(0n));
+    session.enqueue({ kind: "frame", header: { kind: "range_bytes", request_id: 3, offset: 0 }, payload: new Uint8Array([1]) });
+    assert.deepEqual(socket.wireSummary(), ["attach"]);
+    socket.receive({ type: "buffer_state", generation: 1, ahead_us: 10_000_000, intake: "accepting" });
+    assert.deepEqual(socket.wireSummary(), ["attach", "frame 1/0#0", "range 3@0+1"]);
+  });
+
   it("выше порога bufferedAmount не шлёт, а ждёт, пока буфер сокета не уйдёт", () => {
     const { socket, session, attach, clock } = setup();
     attach();

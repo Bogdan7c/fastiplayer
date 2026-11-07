@@ -38,6 +38,8 @@ export function refusalOfSessionEnd(end: HandoffSessionEnd): TabRefusal | undefi
       return { kind: "page_flood" };
     case "local_address_refused":
       return { kind: "local_address_refused" };
+    case "source_needs_newer_player":
+      return { kind: "not_supported_yet", form: end.form };
     case "player_ended":
       // Переполнение очереди — страница не слушает «полон» (гигантские сегменты), тот же флуд.
       return end.cause.kind === "queue_overflow" ? { kind: "page_flood" } : undefined;
