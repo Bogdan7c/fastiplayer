@@ -743,6 +743,18 @@ def write_player_session(manifest: Manifest) -> None:
                 max_bytes=MAX_RESOURCE_FETCH_BYTES,
             ),
         ),
+        ("live-window-range", live_window()),
+        ("live-window-none", live_window(seekable={"kind": "none"})),
+        # Края договора включительно: окно в одну точку ровно на краю эфира.
+        ("live-window-point-at-edge", live_window(edge_us=61_000_000, seekable=window_range(61_000_000, 61_000_000))),
+        (
+            "live-window-max-fields",
+            live_window(
+                generation=U32_MAX,
+                edge_us=MAX_JSON_SAFE_INTEGER,
+                seekable=window_range(0, MAX_JSON_SAFE_INTEGER),
+            ),
+        ),
         ("stream-rejected", {"type": "stream_rejected", "generation": 1, "reason": "protected_content"}),
         (
             "stream-rejected-file-unavailable",
@@ -778,6 +790,66 @@ def write_player_session(manifest: Manifest) -> None:
         "unknown_value",
     )
     write_invalid_fetch_resource(manifest)
+    write_invalid_live_window(manifest)
+
+
+def window_range(start_us: int, end_us: int) -> dict[str, Any]:
+    """Окно перемотки эфира `{"kind":"range",...}` (протокол 1.2)."""
+    return {"kind": "range", "start_us": start_us, "end_us": end_us}
+
+
+def live_window(**overrides: Any) -> dict[str, Any]:
+    """`live_window` (протокол 1.2, решение 232) в каноническом порядке полей."""
+    message: dict[str, Any] = {
+        "type": "live_window",
+        "generation": 3,
+        "edge_us": 61_000_000,
+        "seekable": window_range(40_000_000, 60_500_000),
+    }
+    message.update(overrides)
+    return message
+
+
+def write_invalid_live_window(manifest: Manifest) -> None:
+    """Неверные `live_window`: инварианты `start ≤ end ≤ edge`, числа, форма `seekable`.
+
+    Вывернутое окно (начало позже конца) — `empty_range`, как у вывернутого
+    промежутка `source_buffer_removed`; конец дальше края — `number_out_of_range`.
+    `seekable` — не необязательное поле, а метка `none` / `range`.
+    """
+    schema = "player_session"
+    invalid = "session/invalid/player-live-window-"
+    whole = live_window()
+    without_seekable = {key: value for key, value in whole.items() if key != "seekable"}
+    without_edge = {key: value for key, value in whole.items() if key != "edge_us"}
+    for name, message, kind in [
+        ("start-after-end", live_window(seekable=window_range(50_000_001, 50_000_000)), "empty_range"),
+        ("end-beyond-edge", live_window(edge_us=60_000_000, seekable=window_range(40_000_000, 60_000_001)), "number_out_of_range"),
+        ("edge-negative", live_window(edge_us=-1, seekable={"kind": "none"}), "number_out_of_range"),
+        ("start-negative", live_window(seekable=window_range(-1, 60_500_000)), "number_out_of_range"),
+        ("edge-fractional", live_window(edge_us=61_000_000.5), "wrong_value_type"),
+        ("end-fractional", live_window(seekable=window_range(40_000_000, 60_500_000.5)), "wrong_value_type"),
+        (
+            "edge-beyond-js-safe-integer",
+            live_window(edge_us=MAX_JSON_SAFE_INTEGER + 1, seekable={"kind": "none"}),
+            "number_out_of_range",
+        ),
+        (
+            "end-beyond-js-safe-integer",
+            live_window(edge_us=MAX_JSON_SAFE_INTEGER, seekable=window_range(0, MAX_JSON_SAFE_INTEGER + 1)),
+            "number_out_of_range",
+        ),
+        ("generation-beyond-u32", live_window(generation=U32_MAX + 1), "number_out_of_range"),
+        ("seekable-missing", without_seekable, "missing_field"),
+        ("edge-missing", without_edge, "missing_field"),
+        ("seekable-null", live_window(seekable=None), "wrong_value_type"),
+        ("seekable-unknown-kind", live_window(seekable={"kind": "dvr", "start_us": 0, "end_us": 1}), "unknown_value"),
+        ("seekable-none-with-field", live_window(seekable={"kind": "none", "start_us": 0}), "unknown_field"),
+        ("seekable-range-without-end", live_window(seekable={"kind": "range", "start_us": 0}), "missing_field"),
+        ("seekable-range-unknown-field", live_window(seekable={**window_range(0, 1), "duration_us": 1}), "unknown_field"),
+        ("unknown-field", {**whole, "duration_us": 0}, "unknown_field"),
+    ]:
+        manifest.invalid(f"{invalid}{name}.json", schema, compact_json(message), kind)
 
 
 def fetch_resource(**overrides: Any) -> dict[str, Any]:
@@ -1001,6 +1073,9 @@ def write_shape_strictness(manifest: Manifest) -> None:
         ("fetch-resource-byte-range-as-array", fetch_resource(byte_range=["slice", 0, 10])),
         ("fetch-resource-byte-range-as-label", fetch_resource(byte_range="whole")),
         ("fetch-resource-byte-range-kind-as-index", fetch_resource(byte_range={"kind": 1, "offset": 0, "length": 10})),
+        ("live-window-seekable-as-array", live_window(seekable=["range", 0, 10])),
+        ("live-window-seekable-as-label", live_window(seekable="none")),
+        ("live-window-seekable-kind-as-index", live_window(seekable={"kind": 1, "start_us": 0, "end_us": 10})),
     ]:
         manifest.invalid(f"{player}{name}.json", player_schema, compact_json(message), wrong)
 
@@ -1437,6 +1512,7 @@ MESSAGE_VERSIONS: dict[str, dict[str, str]] = {
             ]
         },
         "fetch_resource": "1.1",
+        "live_window": "1.2",
     },
 }
 

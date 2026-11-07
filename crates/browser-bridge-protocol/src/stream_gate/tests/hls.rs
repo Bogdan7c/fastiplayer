@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::resource::{ResourceFetchFailure, ResourceFetchOutcome, ResourceHandle};
-use crate::version::ProtocolVersion;
+use crate::version::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};
 
 fn hls_added(number: u32) -> PageSessionMessage {
     PageSessionMessage::HlsSourceAdded {
@@ -248,5 +248,5 @@ fn a_1_1_session_accepts_hls_and_resource_results() {
         Ok(GateDecision::Accept)
     );
     // Сторож по умолчанию говорит на версии crate.
-    assert_eq!(StreamGate::new().agreed_version(), ProtocolVersion::V1_1);
+    assert_eq!(StreamGate::new().agreed_version(), CURRENT_PROTOCOL_VERSION);
 }

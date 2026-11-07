@@ -68,7 +68,7 @@ pub use resource::{
 pub use resource_address::{
     RESOURCE_ADDRESS_HOST, format_resource_address, parse_resource_address,
 };
-pub use session::{PageSessionMessage, PlayerSessionMessage, SessionCloseReason};
+pub use session::{LiveSeekable, PageSessionMessage, PlayerSessionMessage, SessionCloseReason};
 pub use stream::{AppendSequence, RangeRequestId, SeekId, SourceBufferIndex, StreamGeneration};
 pub use stream_gate::{GateDecision, StreamGate, StreamViolation};
 pub use text::{

@@ -37,7 +37,7 @@ use browser_bridge_protocol::session::{
 };
 use browser_bridge_protocol::{
     AppendSequence, BridgeSoftware, ByteOffset, CapabilityToken, DataFrameHeader,
-    ExtensionControlMessage, GateDecision, HttpStatusCode, MediaDuration, MediaTime,
+    ExtensionControlMessage, GateDecision, HttpStatusCode, LiveSeekable, MediaDuration, MediaTime,
     MediaTimeOffset, MessageErrorKind, MimeType, PageSessionMessage, PageTitle, PlaybackRate,
     PlayerControlMessage, PlayerSessionMessage, ProtocolMessage, ProtocolVersion, RangeBytesHeader,
     RangeFetchLength, RangeRequestId, ResourceBodySize, ResourceByteRange, ResourceFetchFailure,
@@ -267,6 +267,25 @@ fn fetch_resource(generator: &mut Generator) -> PlayerSessionMessage {
     }
 }
 
+/// Окно эфира (протокол 1.2): всегда `start ≤ end ≤ edge` (иначе — нарушение).
+fn live_window(generator: &mut Generator) -> PlayerSessionMessage {
+    let edge_us = generator.below(MAX_JSON_SAFE_INTEGER + 1);
+    let end_us = generator.below(edge_us + 1);
+    let seekable = if generator.coin() {
+        LiveSeekable::None {}
+    } else {
+        LiveSeekable::Range {
+            start_us: MediaTime::from_micros(generator.below(end_us + 1)).unwrap(),
+            end_us: MediaTime::from_micros(end_us).unwrap(),
+        }
+    };
+    PlayerSessionMessage::LiveWindow {
+        generation: generation(generator),
+        edge_us: MediaTime::from_micros(edge_us).unwrap(),
+        seekable,
+    }
+}
+
 fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
     let generation = generation(generator);
     let source_buffer = source_buffer(generator);
@@ -384,7 +403,7 @@ fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
 }
 
 fn random_player_message(generator: &mut Generator) -> PlayerSessionMessage {
-    match generator.below(13) {
+    match generator.below(14) {
         0 => PlayerSessionMessage::Attached {},
         1 => PlayerSessionMessage::Clock {
             seq: ClockSequence(generator.next_u64() as u32),
@@ -426,6 +445,7 @@ fn random_player_message(generator: &mut Generator) -> PlayerSessionMessage {
             length: RangeFetchLength::new(generator.between(1, MAX_RANGE_FETCH_BYTES)).unwrap(),
         },
         11 => fetch_resource(generator),
+        12 => live_window(generator),
         _ => PlayerSessionMessage::StreamRejected {
             generation: generation(generator),
             reason: *generator.pick(&[

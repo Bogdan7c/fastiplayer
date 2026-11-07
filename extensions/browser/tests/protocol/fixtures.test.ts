@@ -141,7 +141,7 @@ test("у каждой схемы валидные фикстуры покрыв�
   assert.deepEqual([...new Set(coveredTypes("page_session"))].sort(), [...pageSessionCodec.knownTags].sort());
   assert.deepEqual([...new Set(coveredTypes("player_session"))].sort(), [...playerSessionCodec.knownTags].sort());
   assert.equal(new Set(coveredTypes("page_session")).size, 18);
-  assert.equal(new Set(coveredTypes("player_session")).size, 14);
+  assert.equal(new Set(coveredTypes("player_session")).size, 15);
 });
 
 // ---------------------------------------------------------------- предел размера (каждая сторона собирает сама)

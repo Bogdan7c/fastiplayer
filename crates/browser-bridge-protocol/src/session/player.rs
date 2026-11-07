@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::codec::ProtocolMessage;
 use crate::error::ValueViolation;
 use crate::resource::{ResourceByteRange, ResourceFetchLength, ResourceHandle};
+use crate::session::live_window::LiveSeekable;
 use crate::session::variants::VariantKind;
 use crate::stream::{RangeRequestId, SeekId, StreamGeneration};
 use crate::strict_shape::{strict_label, strict_object};
@@ -173,6 +174,21 @@ pub enum PlayerSessionMessage {
         /// Потолок тела ответа: длиннее — `too_large`.
         max_bytes: ResourceFetchLength,
     },
+    /// Окно эфира live HLS (протокол 1.2, решение 232): край и честное окно перемотки.
+    ///
+    /// Всё во времени плеера (как `clock.position_us`). Инвариант
+    /// `start_us ≤ end_us ≤ edge_us` проверяет [`LiveSeekable::check_within_edge`]
+    /// при разборе и при записи. Плеер шлёт окно только собеседнику с общей версией
+    /// не ниже 1.2, только для live-поколения и при изменении окна — не чаще
+    /// [`crate::limits::MIN_LIVE_WINDOW_INTERVAL_MS`].
+    LiveWindow {
+        /// Поколение, к которому относится окно (как у `buffer_state`).
+        generation: StreamGeneration,
+        /// Край эфира: самое новое время, которое есть у плеера.
+        edge_us: MediaTime,
+        /// Куда можно перемотать.
+        seekable: LiveSeekable,
+    },
     /// Плеер не будет играть это поколение — экстеншен возвращает видео странице.
     StreamRejected {
         /// Поколение.
@@ -197,6 +213,7 @@ impl ProtocolMessage for PlayerSessionMessage {
         "skip_ad",
         "fetch_range",
         "fetch_resource",
+        "live_window",
         "stream_rejected",
     ];
 
@@ -209,6 +226,10 @@ impl ProtocolMessage for PlayerSessionMessage {
                 max_bytes,
                 ..
             } if length > max_bytes => Err(ValueViolation::NumberOutOfRange),
+            // Окно эфира: начало не позже конца, конец не дальше края.
+            Self::LiveWindow {
+                edge_us, seekable, ..
+            } => seekable.check_within_edge(*edge_us),
             // Остальные правила выражены типами полей.
             _ => Ok(()),
         }
@@ -219,10 +240,11 @@ impl PlayerSessionMessage {
     /// В какой версии протокола появилось сообщение (`crate::version`, правило 5).
     ///
     /// Плеер сверяет это с общей версией сеанса ДО отправки: при общей 1.0
-    /// `fetch_resource` не уходит никогда.
+    /// `fetch_resource` не уходит никогда, а при общей 1.1 — `live_window`.
     #[must_use]
     pub const fn introduced_in(&self) -> ProtocolVersion {
         match self {
+            Self::LiveWindow { .. } => ProtocolVersion::V1_2,
             Self::FetchResource { .. } => ProtocolVersion::V1_1,
             Self::Attached {}
             | Self::Clock { .. }

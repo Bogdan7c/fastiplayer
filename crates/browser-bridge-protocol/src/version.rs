@@ -25,6 +25,10 @@
 //! - **1.1** (сессия 10a1, решение 228) — нативный HLS по номеркам ресурсов:
 //!   `hls_source_added`, `fetch_resource`, `resource_fetch_finished`. При общей
 //!   1.0 их не шлёт ни одна сторона, и HLS-поколение не начинается.
+//! - **1.2** (сессия 10a3, решение 232) — HLS live: `live_window` (плеер →
+//!   страница, честное окно перемотки эфира). VOD HLS по-прежнему хватает 1.1;
+//!   при общей 1.1 плеер не шлёт `live_window`, а экстеншен оставляет для live
+//!   HLS честный отказ «not supported yet».
 
 use crate::strict_shape::{strict_label, strict_object};
 use serde::{Deserialize, Serialize};
@@ -51,6 +55,9 @@ impl ProtocolVersion {
     /// Нативный HLS по номеркам ресурсов (сессия 10a1, решение 228).
     pub const V1_1: Self = Self { major: 1, minor: 1 };
 
+    /// HLS live: окно эфира `live_window` (сессия 10a3, решение 232).
+    pub const V1_2: Self = Self { major: 1, minor: 2 };
+
     /// Входит ли в эту версию (обычно — общую версию сеанса) то, что появилось
     /// в версии `introduced_in`.
     ///
@@ -63,7 +70,7 @@ impl ProtocolVersion {
 }
 
 /// Версия протокола, которую реализует этот crate.
-pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_1;
+pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_2;
 
 /// Кто из участников моста.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -134,16 +141,34 @@ mod tests {
         assert!(ProtocolVersion::V1_1.includes(ProtocolVersion::V1_0));
         assert!(ProtocolVersion::V1_1.includes(ProtocolVersion::V1_1));
         assert!(!ProtocolVersion::V1_0.includes(ProtocolVersion::V1_1));
+        assert!(ProtocolVersion::V1_2.includes(ProtocolVersion::V1_1));
+        assert!(ProtocolVersion::V1_2.includes(ProtocolVersion::V1_0));
+        assert!(!ProtocolVersion::V1_1.includes(ProtocolVersion::V1_2));
         // Другой major не входит ни в какую сторону, даже с меньшей minor.
         assert!(!version(2, 5).includes(ProtocolVersion::V1_0));
         assert!(!ProtocolVersion::V1_1.includes(version(2, 0)));
     }
 
     #[test]
-    fn this_crate_speaks_protocol_1_1() {
-        // Сессия 10a1: HLS по номеркам. Число закреплено — его же зеркалит экстеншен
+    fn this_crate_speaks_protocol_1_2() {
+        // Сессия 10a3: HLS live. Число закреплено — его же зеркалит экстеншен
         // (`CURRENT_PROTOCOL_VERSION` в `version.ts`).
-        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 1));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 2));
+    }
+
+    #[test]
+    fn a_1_2_player_agrees_on_the_older_minor_of_a_1_1_or_1_0_extension() {
+        // Новый плеер со старым экстеншеном говорит на языке старого (правило 3).
+        for older in [ProtocolVersion::V1_1, ProtocolVersion::V1_0] {
+            assert_eq!(
+                negotiate_protocol_version(ProtocolVersion::V1_2, older),
+                Ok(older)
+            );
+            assert_eq!(
+                negotiate_protocol_version(older, ProtocolVersion::V1_2),
+                Ok(older)
+            );
+        }
     }
 
     #[test]

@@ -33,6 +33,7 @@
     "skip_ad": "1.0",
     "fetch_range": "1.0",
     "stream_rejected": "1.0",
-    "fetch_resource": "1.1"
+    "fetch_resource": "1.1",
+    "live_window": "1.2"
   }
 }

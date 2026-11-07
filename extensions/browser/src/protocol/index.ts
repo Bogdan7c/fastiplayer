@@ -114,6 +114,7 @@ export type {
   ResumeState,
   StreamRejection,
 } from "./session/player.ts";
+export type { LiveSeekable } from "./session/live-window.ts";
 export type { VariantKind, VariantMenu, VariantOption, VariantSelection } from "./session/variants.ts";
 export { SESSION_CLOSE_CODES, closeCodeOf, closeReasonFromCode } from "./session/close-reason.ts";
 export type { SessionCloseReason } from "./session/close-reason.ts";
@@ -130,6 +131,7 @@ export {
   CURRENT_PROTOCOL_VERSION,
   PROTOCOL_VERSION_1_0,
   PROTOCOL_VERSION_1_1,
+  PROTOCOL_VERSION_1_2,
   negotiateProtocolVersion,
   versionIncludes,
 } from "./version.ts";

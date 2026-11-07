@@ -16,7 +16,7 @@
 | `data/` | Двоичные рамки сеанса WebSocket (`.bin`) |
 | `streams/<имя>/` | Записанный поток: `stream.json` (шаги по порядку + ожидание) и файлы шагов |
 | `media/` | Крошечные синтетические медиа (fMP4 H.264, fMP4 AAC, WebM VP9+Opus) и `generate.sh` |
-| `message-versions.json` | В какой версии протокола появилось каждое сообщение сеанса (протокол 1.1) |
+| `message-versions.json` | В какой версии протокола появилось каждое сообщение сеанса (с протокола 1.1) |
 | `resource-addresses.json` | Верные и неверные адреса-заглушки номерков ресурсов HLS (протокол 1.1) |
 | `generate_fixtures.py` | Генератор всего, кроме `media/`; независимая от Rust реализация формата |
 
@@ -59,7 +59,7 @@
 
 ## HLS (протокол 1.1, сессия 10a1, решение 228)
 
-Версия протокола — **1.1**. Новое в 1.1 — только три сообщения (`message-versions.json`):
+Новое в 1.1 — только три сообщения (`message-versions.json`):
 - страница → плеер `hls_source_added{generation, root}` — поколение `generation` — нативный HLS, корневой плейлист — номерок `root` (`u32`, весь диапазон);
 - плеер → страница `fetch_resource{request_id, resource, byte_range, max_bytes}` — дай ресурс по номерку. `byte_range` — метка, а не необязательное поле: `{"kind":"whole"}` (весь ресурс) или `{"kind":"slice","offset":N,"length":M}` (`EXT-X-BYTERANGE`). Поле обязательно: его отсутствие — `missing_field`, `null` — `wrong_value_type`. `length` и `max_bytes` — 1…128 МиБ (`MAX_RESOURCE_FETCH_BYTES`), `offset` ≤ 2⁵³ − 1, кусок длиннее `max_bytes` — `number_out_of_range`;
 - страница → плеер `resource_fetch_finished{request_id, outcome}`: `{"kind":"completed","size_bytes":N}` (0…128 МиБ) или `{"kind":"failed","failure":{...}}`, где `failure` — объект с меткой: `network_error`, `http_error{status}` (100…599, иначе `number_out_of_range`), `refused`, `too_large`.
@@ -74,11 +74,25 @@
 
 **Адрес-заглушка номерка.** В тексте плейлиста фон пишет каждый адрес (варианты, сегменты, `EXT-X-MAP`, ключи) как `https://resource.fastiplayer-bridge.invalid/<N>` (`<N>` — номерок десятичным числом). Разбор строгий, без нормализации: ровно схема `https` в нижнем регистре, ровно этот хост, без порта, имени пользователя, `?` и `#`, путь — `/` и номерок без ведущих нулей (кроме `0`), без `%`-кодирования, знака, пробелов и не-ASCII цифр, не больше `u32`. Всё остальное транспорт плеера отвергает у себя и в протокол не шлёт. Список верных и неверных адресов — `resource-addresses.json`; корневой плейлист потока `streams/hls-source-generation/root.m3u8` уже переписан так.
 
+## HLS live (протокол 1.2, сессия 10a3, решение 232)
+
+Версия протокола — **1.2**. Новое в 1.2 — ровно одно сообщение плеер → страница (`message-versions.json`):
+
+`live_window{generation, edge_us, seekable}` — окно эфира live HLS: край эфира и честное окно перемотки плеера. Все моменты — во времени плеера (то же, что `clock.position_us`), целые микросекунды ≤ 2⁵³ − 1. `seekable` — метка, а не необязательное поле: `{"kind":"none"}` (эфир без DVR, перемотки нет) или `{"kind":"range","start_us":S,"end_us":E}`. Поле обязательно: отсутствие — `missing_field`, `null` — `wrong_value_type`, незнакомая метка — `unknown_value`.
+
+**Инварианты** `start_us ≤ end_us ≤ edge_us` (края включительно, окно в одну точку допустимо). Вывернутое окно (`start_us > end_us`) — `empty_range`, как у вывернутого промежутка `source_buffer_removed`; конец дальше края — `number_out_of_range`. Обе стороны проверяют это и при разборе, и при записи.
+
+**Версия.** Плеер шлёт `live_window` только собеседнику, у которого общая версия включает 1.2, и только для live-поколения HLS. При общей 1.1 его нет, а экстеншен оставляет для live HLS честный отказ «not supported yet». VOD HLS по-прежнему хватает 1.1.
+
+**Частота.** Не чаще раза в `MIN_LIVE_WINDOW_INTERVAL_MS` (1000 мс) на поколение: частые изменения плеер сводит подряд, последнее окно не теряет, первое окно нового поколения шлёт сразу. Экстеншен частоту не проверяет.
+
+Фикстуры — `session/valid/player-live-window-*`, `session/invalid/player-live-window-*` и `session/invalid/player-shape-live-window-*`.
+
 ## Строгость формы (сессия 07)
 
 У каждого значения ровно одна форма JSON — та, что пишет отправитель. Знакомые данные в чужой форме отвергаются видом `wrong_value_type` (значение не того типа), где бы они ни стояли — в корне или в любом вложенном объекте:
 - структура (`protocol`, `page`, `hints`, `menu`, вариант меню, `player` в `hello_accepted`) — только объект; массив полей по порядку (`"protocol":[1,0]`) — `wrong_value_type`;
-- перечисление с меткой (`kind` у `duration`, `position`, `end`, `cause`, `request`, `outcome`, `resource_size`, `in_reply_to`, `reason`, а в 1.1 — `byte_range` и `failure` у `resource_fetch_finished`) — только объект, а метка — только строка. Массив (`"end":["at",5]`) и метка числом (`"kind":0`, `"kind":7`) — `wrong_value_type`; номер вне числа вариантов — тоже `wrong_value_type`, а не `number_out_of_range`;
+- перечисление с меткой (`kind` у `duration`, `position`, `end`, `cause`, `request`, `outcome`, `resource_size`, `in_reply_to`, `reason`, а в 1.1 — `byte_range` и `failure` у `resource_fetch_finished`, в 1.2 — `seekable` у `live_window`) — только объект, а метка — только строка. Массив (`"end":["at",5]`) и метка числом (`"kind":0`, `"kind":7`) — `wrong_value_type`; номер вне числа вариантов — тоже `wrong_value_type`, а не `number_out_of_range`;
 - перечисление-метка (`intent`, `outcome`, `update`, `error`, `state`, `intake`, `resume`, `reason`, `selection`, `failure`, `kind` меню и `select_variant`) — только строка; число (`"state":0`) и внешняя форма serde (`{"closed":null}`) — `wrong_value_type`.
 
 Сначала проверяется форма, потом содержимое: незнакомая метка-строка по-прежнему `unknown_value`, лишнее/повторное/недостающее поле внутри вложенного объекта — `unknown_field`/`duplicate_field`/`missing_field`. Случаи — файлы `control/invalid/shape-*`, `session/invalid/page-shape-*` и `session/invalid/player-shape-*`. В Rust это обеспечивает `src/strict_shape.rs`: производный разбор serde сам по себе принимает все три чужие формы.

@@ -24,8 +24,8 @@ import { FIXTURES_ROOT, readFixtureBytes } from "./fixtures-support.ts";
 
 const version = (major: number, minor: number): ProtocolVersion => ({ major, minor });
 
-test("текущая версия протокола - 1.1 (нативный HLS по номеркам, сессия 10a1)", () => {
-  assert.deepEqual(CURRENT_PROTOCOL_VERSION, { major: 1, minor: 1 });
+test("текущая версия протокола - 1.2 (HLS live, сессия 10a3)", () => {
+  assert.deepEqual(CURRENT_PROTOCOL_VERSION, { major: 1, minor: 2 });
 });
 
 test("версия включает только свои и более старые minor того же major", () => {

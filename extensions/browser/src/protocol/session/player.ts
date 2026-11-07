@@ -25,6 +25,7 @@ import {
   playbackRateCodec,
   rangeFetchLengthCodec,
 } from "../time.ts";
+import { type LiveSeekable, checkLiveWindowWithinEdge, liveSeekableCodec } from "./live-window.ts";
 import { type VariantKind, variantKindCodec } from "./variants.ts";
 
 /** Состояние часов плеера. */
@@ -86,6 +87,16 @@ export type PlayerSessionMessage =
       readonly byte_range: ResourceByteRange;
       readonly max_bytes: ByteCount;
     }
+  /**
+   * Протокол 1.2 (решение 232): окно эфира live HLS - край и честное окно перемотки,
+   * всё во времени плеера (как `clock.position_us`). `start_us <= end_us <= edge_us`.
+   */
+  | {
+      readonly type: "live_window";
+      readonly generation: StreamGeneration;
+      readonly edge_us: MediaTimeMicros;
+      readonly seekable: LiveSeekable;
+    }
   | { readonly type: "stream_rejected"; readonly generation: StreamGeneration; readonly reason: StreamRejection };
 
 const clockStateCodec: Codec<ClockState> = stringEnum<ClockState>(["playing", "paused", "waiting", "ended"]);
@@ -119,6 +130,11 @@ export const playerSessionCodec: TaggedUnionCodec<PlayerSessionMessage> = tagged
     byte_range: resourceByteRangeCodec,
     max_bytes: resourceFetchLengthCodec,
   },
+  live_window: {
+    generation: streamGenerationCodec,
+    edge_us: mediaTimeCodec,
+    seekable: liveSeekableCodec,
+  },
   stream_rejected: {
     generation: streamGenerationCodec,
     reason: stringEnum<StreamRejection>([
@@ -132,11 +148,16 @@ export const playerSessionCodec: TaggedUnionCodec<PlayerSessionMessage> = tagged
 });
 
 /**
- * Проверки между полями. `fetch_resource`: кусок длиннее потолка ответа - запрос сам
- * себе противоречит (`number_out_of_range` у `max_bytes`, вид как в Rust).
+ * Проверки между полями (виды ошибок - как в Rust):
+ * - `fetch_resource`: кусок длиннее потолка ответа - запрос сам себе противоречит
+ *   (`number_out_of_range` у `max_bytes`);
+ * - `live_window`: начало окна не позже конца, конец не дальше края (`checkLiveWindowWithinEdge`).
  */
 export function validatePlayerSession(message: PlayerSessionMessage): void {
   if (message.type === "fetch_resource" && message.byte_range.kind === "slice" && message.byte_range.length > message.max_bytes) {
     throw new ProtocolFailure("number_out_of_range").prependPath("max_bytes");
+  }
+  if (message.type === "live_window") {
+    checkLiveWindowWithinEdge(message.edge_us, message.seekable);
   }
 }

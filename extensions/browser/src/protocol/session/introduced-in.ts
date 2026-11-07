@@ -5,7 +5,7 @@
 // Таблицы полные по типам (`Record` по объединению `type`): новое сообщение без версии не
 // соберётся. Сверка с Rust - общая фикстура fixtures/message-versions.json.
 
-import { PROTOCOL_VERSION_1_0, PROTOCOL_VERSION_1_1, type ProtocolVersion } from "../version.ts";
+import { PROTOCOL_VERSION_1_0, PROTOCOL_VERSION_1_1, PROTOCOL_VERSION_1_2, type ProtocolVersion } from "../version.ts";
 import type { PageSessionMessage } from "./page.ts";
 import type { PlayerSessionMessage } from "./player.ts";
 
@@ -44,6 +44,7 @@ const PLAYER_SESSION_INTRODUCED_IN: Readonly<Record<PlayerSessionMessage["type"]
   skip_ad: PROTOCOL_VERSION_1_0,
   fetch_range: PROTOCOL_VERSION_1_0,
   fetch_resource: PROTOCOL_VERSION_1_1,
+  live_window: PROTOCOL_VERSION_1_2,
   stream_rejected: PROTOCOL_VERSION_1_0,
 };
 

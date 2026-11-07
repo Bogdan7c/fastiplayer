@@ -7,7 +7,9 @@
 // Minor только добавляет. Каждое сообщение знает, в какой версии появилось
 // (`session/introduced-in.ts`): сторона не шлёт того, чего нет в общей версии сеанса.
 // 1.0 - MSE, файл, часы, команды, реклама; 1.1 (сессия 10a1, решение 228) - нативный
-// HLS по номеркам: `hls_source_added`, `fetch_resource`, `resource_fetch_finished`.
+// HLS по номеркам: `hls_source_added`, `fetch_resource`, `resource_fetch_finished`;
+// 1.2 (сессия 10a3, решение 232) - HLS live: `live_window` (окно эфира от плеера).
+// VOD HLS по-прежнему хватает 1.1.
 
 import { plainInteger } from "./numbers.ts";
 import { type Codec, stringEnum, struct } from "./schema.ts";
@@ -24,8 +26,11 @@ export const PROTOCOL_VERSION_1_0: ProtocolVersion = Object.freeze({ major: 1, m
 /** Нативный HLS по номеркам ресурсов (сессия 10a1, решение 228). */
 export const PROTOCOL_VERSION_1_1: ProtocolVersion = Object.freeze({ major: 1, minor: 1 });
 
+/** HLS live: окно эфира `live_window` (сессия 10a3, решение 232). */
+export const PROTOCOL_VERSION_1_2: ProtocolVersion = Object.freeze({ major: 1, minor: 2 });
+
 /** Версия протокола, которую реализует этот экстеншен. */
-export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_1;
+export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_2;
 
 /**
  * Входит ли в версию `agreed` (обычно - общую версию сеанса) то, что появилось в
