@@ -102,6 +102,7 @@ pub(super) fn try_prepare(
             .audio_decode_capability_snapshot(),
         start,
         cancellation: CancellationToken::new(),
+        network_route: super::NativeHlsNetworkRoute::PublicHttp,
     });
     NativeHlsAdmissionPort::prepare(&mut port)
 }

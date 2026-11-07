@@ -344,6 +344,7 @@ pub(super) fn prepare_native(
         audio_capabilities: settings.audio_capabilities,
         start,
         cancellation: CancellationToken::new(),
+        network_route: media_source_open::native_startup::hls::NativeHlsNetworkRoute::PublicHttp,
     });
     match NativeHlsAdmissionPort::prepare(&mut port)
         .expect("Native HLS admission must be completed.")

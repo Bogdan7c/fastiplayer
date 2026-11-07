@@ -202,6 +202,7 @@ fn prepare(
         audio_capabilities,
         start: HlsVodStartIntent::Beginning,
         cancellation: CancellationToken::new(),
+        network_route: super::NativeHlsNetworkRoute::PublicHttp,
     });
     NativeHlsAdmissionPort::prepare(&mut port)
 }

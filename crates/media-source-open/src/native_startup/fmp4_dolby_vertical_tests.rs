@@ -343,6 +343,7 @@ fn hls_fmp4_eac3_reaches_production_audio_decoder() {
             .audio_decode_capability_snapshot(),
         start: HlsVodStartIntent::Beginning,
         cancellation: CancellationToken::new(),
+        network_route: super::hls::NativeHlsNetworkRoute::PublicHttp,
     });
     let NativeHlsAttempt::Prepared(mut prepared) =
         NativeHlsAdmissionPort::prepare(&mut port).expect("native HLS fMP4 E-AC-3 preparation")

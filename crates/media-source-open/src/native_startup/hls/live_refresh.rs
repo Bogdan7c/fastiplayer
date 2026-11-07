@@ -11,6 +11,8 @@ pub(super) struct NativeHlsEndpointRefreshPort {
     parent: ExactSelectionIdentity,
     source: NativeHlsUrl,
     network_config: NetworkConfig,
+    /// Корень перекачивается через ту же «розетку», что и первичное открытие.
+    network_route: NativeHlsNetworkRoute,
     cancellation: CancellationToken,
 }
 
@@ -19,12 +21,14 @@ impl NativeHlsEndpointRefreshPort {
         parent: ExactSelectionIdentity,
         source: NativeHlsUrl,
         network_config: NetworkConfig,
+        network_route: NativeHlsNetworkRoute,
         cancellation: CancellationToken,
     ) -> Self {
         Self {
             parent,
             source,
             network_config,
+            network_route,
             cancellation,
         }
     }
@@ -55,9 +59,13 @@ impl HlsEndpointRefreshPort for NativeHlsEndpointRefreshPort {
             self.cancellation.clone(),
         )
         .map_err(|_| HlsEndpointRefreshError::AttemptsExhausted)?;
-        let http =
-            native_adaptive_http_context(transport_request, &self.network_config, adaptive_limits)
-                .map_err(|_| HlsEndpointRefreshError::AttemptsExhausted)?;
+        let http = native_adaptive_http_context(
+            &self.network_route,
+            transport_request,
+            &self.network_config,
+            adaptive_limits,
+        )
+        .map_err(|_| HlsEndpointRefreshError::AttemptsExhausted)?;
         let top_fetch = NativeTopManifestFetchIntent::new(self.source.target().clone());
         let fetched_top = http
             .fetch_resource_blocking(

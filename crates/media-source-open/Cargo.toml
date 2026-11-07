@@ -76,6 +76,13 @@ video-frame-contract.workspace = true
 serde_json = "1.0"
 # Проверка, что probe плейлиста не пишет ERROR-записи `log` (их пишет Symphonia).
 log.workspace = true
+# Поддельный внешний транспорт native HLS в памяти (`native_startup/hls/external_route_*`):
+# потоковое тело «розетки» отдаёт куски как `bytes::Bytes`.
+bytes.workspace = true
+# Тот же проверенный RustCrypto-стек, что у `web-media-hls`: тест шифрует сегмент
+# AES-128-CBC, чтобы доказать, что ключ качается через внешний маршрут и сегмент играет.
+aes.workspace = true
+cbc.workspace = true
 # Hermetic HLS-фикстуры (`tests/stream_subtitle_hls.rs`, общий `support` из web-media-hls
 # подключён через `#[path]`): сборка fMP4-сегментов.
 symphonia-format-isomp4.workspace = true

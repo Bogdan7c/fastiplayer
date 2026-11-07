@@ -6,6 +6,11 @@ mod live_refresh;
 #[path = "hls/vod_catalog.rs"]
 mod catalog_runtime;
 
+#[path = "hls/network_route.rs"]
+mod network_route;
+
+pub use network_route::{ExternalHlsTransport, NativeHlsNetworkRoute, VodEndpointRecoveryMode};
+
 use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::Duration;
@@ -159,7 +164,8 @@ pub struct PreparedNativeHlsMedia {
 pub enum PreparedNativeHlsLifecycle {
     Vod {
         initial_position: PreparedInitialPosition,
-        endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+        /// Восстановление адреса ведёт приложение либо его нет (внешний маршрут).
+        endpoint_recovery: VodEndpointRecoveryMode,
     },
     Live {
         timeline_port: DynamicMediaTimelinePort,
@@ -196,7 +202,7 @@ impl PreparedNativeHlsLifecycle {
                     initial_position: Some(initial_position),
                     ..crate::prepared_web_media::PreparedWebMediaAttachments::default()
                 },
-                vod_endpoint_recovery: Some(endpoint_recovery),
+                vod_endpoint_recovery: endpoint_recovery.into_app_attachment(),
             },
             Self::Live { timeline_port } => PreparedNativeHlsWebAttachments {
                 presentation,
@@ -258,6 +264,8 @@ pub struct NativeHlsPreparationRequest<'a> {
     pub audio_capabilities: audio_core::AudioDecodeCapabilitySnapshot,
     pub start: HlsVodStartIntent,
     pub cancellation: CancellationToken,
+    /// Через какую сеть идут все ресурсы открытия (обычный плеер — `PublicHttp`).
+    pub network_route: NativeHlsNetworkRoute,
 }
 
 /// Production port не создаёт thread: caller уже выполняется на media-open/startup worker-е.
@@ -319,25 +327,30 @@ fn native_transport_request(
 }
 
 /// Собирает единую native HLS HTTP policy для initial open и stable-root endpoint refresh.
+///
+/// Маршрут выбирает только «розетку» (обычный HTTP или внешний транспорт); повторы и
+/// лимиты одинаковы для обоих маршрутов.
 fn native_adaptive_http_context(
+    network_route: &NativeHlsNetworkRoute,
     transport_request: TransportOpenRequest,
     network_config: &NetworkConfig,
     adaptive_limits: AdaptiveTransportLimits,
 ) -> Result<AdaptiveHttpContext> {
     let source_config = SourceRuntimeConfig::from_network_config(network_config)
         .context("native HLS source config")?;
-    AdaptiveHttpContext::new(
-        transport_request,
-        &source_config,
-        adaptive_limits,
-        AdaptiveRetryPolicy::new(
-            const { NonZeroU8::new(3).expect("native HLS retry attempts") },
-            Duration::from_millis(100),
-            Duration::from_secs(2),
-            crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
-        )?,
-    )
-    .map_err(anyhow::Error::new)
+    network_route
+        .open_adaptive_http_context(
+            transport_request,
+            &source_config,
+            adaptive_limits,
+            AdaptiveRetryPolicy::new(
+                const { NonZeroU8::new(3).expect("native HLS retry attempts") },
+                Duration::from_millis(100),
+                Duration::from_secs(2),
+                crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
+            )?,
+        )
+        .map_err(anyhow::Error::new)
 }
 
 /// Строит пустой по данным, но корректно scoped HTTP context для public HLS.
@@ -383,6 +396,18 @@ mod audio_versions_vertical_tests;
 #[cfg(test)]
 #[path = "hls/audio_versions_timeline_vertical_tests.rs"]
 mod audio_versions_timeline_vertical_tests;
+
+#[cfg(test)]
+#[path = "hls/external_route_test_transport.rs"]
+mod external_route_test_transport;
+
+#[cfg(test)]
+#[path = "hls/external_route_vertical_tests.rs"]
+mod external_route_vertical_tests;
+
+#[cfg(test)]
+#[path = "hls/external_route_failure_live_tests.rs"]
+mod external_route_failure_live_tests;
 
 #[cfg(test)]
 mod tests {

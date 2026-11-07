@@ -210,6 +210,7 @@ fn resolve_native_hls_startup_media(
         audio_capabilities,
         start,
         cancellation: cancellation.clone(),
+        network_route: media_source_open::native_startup::hls::NativeHlsNetworkRoute::PublicHttp,
     });
     match NativeHlsAdmissionPort::prepare(&mut port)? {
         NativeHlsAttempt::Prepared(prepared) => Ok(PreparedStartupMedia::NativeHls {

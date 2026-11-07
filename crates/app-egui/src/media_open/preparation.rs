@@ -142,6 +142,7 @@ pub(super) fn prepare_source(
                             audio_capabilities,
                             start: web_media_hls::HlsVodStartIntent::Beginning,
                             cancellation: cancellation.source_token(),
+                            network_route: media_source_open::native_startup::hls::NativeHlsNetworkRoute::PublicHttp,
                         },
                     );
                 let attempt =

@@ -29,6 +29,7 @@ pub(super) fn prepare_native_hls_attempt(
         request.cancellation.clone(),
     )?;
     let admission_http = native_adaptive_http_context(
+        &request.network_route,
         admission_transport_request,
         request.network_config,
         adaptive_limits,
@@ -98,7 +99,9 @@ pub(super) fn prepare_native_hls_attempt(
             .context("native HLS selected child presentation detection failed")?
         }
     };
-    let vod_endpoint_recovery = crate::web_media_vod_recovery::VodEndpointRecoveryAttachment::new();
+    // Маршрут решает, ведёт ли приложение восстановление адреса VOD: у внешнего
+    // маршрута ведущего нет, и наблюдатель истечения не подключается вовсе.
+    let vod_endpoint_recovery = request.network_route.vod_endpoint_recovery_mode();
     let transport_request = native_transport_request(
         &snapshot_identity.parent,
         request.source,
@@ -111,12 +114,16 @@ pub(super) fn prepare_native_hls_attempt(
     )?;
     let transport_request = match presentation {
         web_media_hls::HlsCatalogPresentation::Vod => {
-            transport_request.with_endpoint_expiry_observer(vod_endpoint_recovery.observer())
+            vod_endpoint_recovery.attach_expiry_observer(transport_request)
         }
         web_media_hls::HlsCatalogPresentation::Live => transport_request,
     };
-    let http =
-        native_adaptive_http_context(transport_request, request.network_config, adaptive_limits)?;
+    let http = native_adaptive_http_context(
+        &request.network_route,
+        transport_request,
+        request.network_config,
+        adaptive_limits,
+    )?;
 
     let demux_registry =
         native_hls_demux_registry(request.demux_config, adaptive_limits.maximum_segment_bytes)?;
@@ -161,6 +168,7 @@ pub(super) fn prepare_native_hls_attempt(
                 parent: snapshot_identity.parent.clone(),
                 source: request.source,
                 network_config: request.network_config,
+                network_route: &request.network_route,
                 cancellation: request.cancellation.clone(),
                 vod_endpoint_recovery,
             })?;
@@ -198,6 +206,7 @@ pub(super) fn prepare_native_hls_attempt(
                 parent: snapshot_identity.parent.clone(),
                 source: request.source,
                 network_config: request.network_config,
+                network_route: &request.network_route,
                 cancellation: request.cancellation.clone(),
                 vod_endpoint_recovery,
             })?;
@@ -240,15 +249,17 @@ struct NativeHlsRuntimeRequest<'a> {
     parent: ExactSelectionIdentity,
     source: &'a NativeHlsUrl,
     network_config: &'a NetworkConfig,
+    /// Та же «розетка» для live-обновления корня, что и у первичного открытия.
+    network_route: &'a NativeHlsNetworkRoute,
     cancellation: CancellationToken,
-    vod_endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+    vod_endpoint_recovery: VodEndpointRecoveryMode,
 }
 
 /// Prepared runtime сохраняет взаимоисключающие VOD recovery и live timeline attachments.
 enum PreparedNativeHlsRuntime {
     Vod {
         prepared: crate::web_media_hls_open::PreparedNativeHlsVod,
-        endpoint_recovery: crate::web_media_vod_recovery::VodEndpointRecoveryAttachment,
+        endpoint_recovery: VodEndpointRecoveryMode,
     },
     Live(crate::web_media_hls_open::PreparedNativeHlsLive),
 }
@@ -267,21 +278,29 @@ impl PreparedNativeHlsRuntime {
                 prepared,
                 endpoint_recovery,
             } => {
-                endpoint_recovery.arm_after_candidate_finalization();
                 let crate::web_media_hls_open::PreparedNativeHlsVod {
                     demuxer,
                     seek_port,
                     initial_position,
                     stream_subtitles,
                 } = prepared;
-                let demuxer = endpoint_recovery.wrap_demuxer(demuxer);
-                #[expect(
-                    clippy::expect_used,
-                    reason = "инвариант: native HLS VOD всегда публикует receipted seek port"
-                )]
-                let seek_port = endpoint_recovery
-                    .wrap_seek_port(Some(seek_port))
-                    .expect("Native HLS VOD always publishes receipted seek port");
+                let (demuxer, seek_port) = match &endpoint_recovery {
+                    VodEndpointRecoveryMode::AppDriven(attachment) => {
+                        attachment.arm_after_candidate_finalization();
+                        let demuxer = attachment.wrap_demuxer(demuxer);
+                        #[expect(
+                            clippy::expect_used,
+                            reason = "инвариант: native HLS VOD всегда публикует receipted seek port"
+                        )]
+                        let seek_port = attachment
+                            .wrap_seek_port(Some(seek_port))
+                            .expect("Native HLS VOD always publishes receipted seek port");
+                        (demuxer, seek_port)
+                    }
+                    // Без восстановления ворота не нужны: ошибка ресурса доходит до
+                    // плеера как есть, а не превращается в бесконечное ожидание.
+                    VodEndpointRecoveryMode::NotAvailable => (demuxer, seek_port),
+                };
                 (
                     demuxer,
                     seek_port,
@@ -336,6 +355,7 @@ fn prepare_native_hls_runtime(
                 request.parent,
                 request.source.clone(),
                 request.network_config.clone(),
+                request.network_route.clone(),
                 request.cancellation,
             ));
             let live_request = web_media_hls::HlsLiveOpenRequest {
