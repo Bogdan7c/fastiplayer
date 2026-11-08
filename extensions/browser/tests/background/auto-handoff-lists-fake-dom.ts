@@ -8,6 +8,9 @@ import type { KeyValueStore } from "../../src/shared/codec-storage.ts";
 export class FakeElement {
   id = "";
   value = "";
+  checked = false;
+  min = "";
+  max = "";
   type = "";
   className = "";
   placeholder = "";

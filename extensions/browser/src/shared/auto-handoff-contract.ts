@@ -6,7 +6,7 @@
 // 3. MAIN-мир → фон: обычное донесение `next_video_held` с `trigger: "viewer_play"` (handoff-contract.ts).
 //
 // Правил сайтов, стоп-листа и порога длины MAIN-мир не знает: он только честно говорит «человек сам запустил
-// видео (со звуком, если фильтр звука включён)», а судит фон. Поэтому страница не может ни включить режим 2 сама, ни узнать правила.
+// видео», а судит фон (фильтры звука и цикла охрана знает только как общие включатели, без списков сайтов). Поэтому страница не может ни включить режим 2 сама, ни узнать правила.
 
 import type { ElementKey } from "./handoff-contract.ts";
 
@@ -17,20 +17,32 @@ import type { ElementKey } from "./handoff-contract.ts";
 /**
  * Охрана режима 2 в этом документе:
  * - `on` — настройка включена хотя бы для какого-то сайта: сторож задерживает видео, которое человек сам
- *   запустил со звуком, и спрашивает фон;
- * - `on_including_muted` — то же, но фильтр звука снят (решение 260): задерживается и видео без звука,
- *   если его запустил человек;
+ *   запустил, и спрашивает фон;
  * - `off` — режим выключен: сторож строго прозрачен для `play()` вне взвода фона, фону не уходит ничего.
+ */
+export type AutoHandoffWatchState = "on" | "off";
+
+/** Что охрана делает с таким видео сама: `skip` — пропускает мимо (фильтр включён везде), `hold` — задерживает и спрашивает фон. */
+export type WatchFilterAction = "skip" | "hold";
+
+export const AUTO_HANDOFF_WATCH_STATES: readonly AutoHandoffWatchState[] = ["on", "off"];
+export const WATCH_FILTER_ACTIONS: readonly WatchFilterAction[] = ["skip", "hold"];
+
+/**
+ * Охрана целиком (решения 260–261): состояние и что делать с видео без звука и с зацикленным видео.
  * Изолированный мир шлёт это на старте документа и при каждом изменении настройки.
  */
-export type AutoHandoffWatchState = "on" | "on_including_muted" | "off";
-
-/** Все состояния охраны (для проверки команды на границе миров). */
-export const AUTO_HANDOFF_WATCH_STATES: readonly AutoHandoffWatchState[] = ["on", "on_including_muted", "off"];
-
-export interface AutoHandoffWatchCommand {
-  readonly kind: "auto_handoff_watch";
+export interface AutoHandoffWatch {
   readonly state: AutoHandoffWatchState;
+  readonly muted: WatchFilterAction;
+  readonly looped: WatchFilterAction;
+}
+
+/** Охрана выключена (значение до первой команды и при выключенном режиме). */
+export const AUTO_HANDOFF_WATCH_OFF: AutoHandoffWatch = { state: "off", muted: "skip", looped: "skip" };
+
+export interface AutoHandoffWatchCommand extends AutoHandoffWatch {
+  readonly kind: "auto_handoff_watch";
 }
 
 /**

@@ -1,4 +1,5 @@
 // Тексты отказов правок настройки для страницы настроек (английский, пользовательский текст).
+import { MAX_AUTO_HANDOFF_MIN_DURATION_S } from "../shared/auto-handoff-settings.ts";
 import type { SettingsEditRejection } from "../shared/auto-handoff-settings-edits.ts";
 
 /** Текст статуса для отказа правки; `entry` — то, что ввёл человек (для «Not a site address»). */
@@ -11,5 +12,9 @@ export function describeEditRejection(reason: SettingsEditRejection, entry: stri
       return "The stop list is full. Remove an entry first.";
     case "too_many_site_rules":
       return "Too many site rules. Remove some first.";
+    case "filter_sites_full":
+      return "This filter's site list is full. Remove a site first.";
+    case "bad_duration":
+      return `Enter a whole number of seconds from 0 to ${MAX_AUTO_HANDOFF_MIN_DURATION_S}.`;
   }
 }

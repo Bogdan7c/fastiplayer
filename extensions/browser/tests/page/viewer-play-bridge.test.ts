@@ -10,6 +10,7 @@ import { AUDIO_MP4, VIDEO_MP4 } from "./support/media-samples.ts";
 const VIDEO_MIME = 'video/mp4; codecs="avc1.42E01E"';
 const AUDIO_MIME = 'audio/mp4; codecs="mp4a.40.2"';
 import { handshake, startRealShadowHarness } from "./support/bridge-harness.ts";
+import { AUTO_HANDOFF_WATCH_OFF, WATCH_ON } from "../support/auto-handoff-watch-fixtures.ts";
 
 /** Страница с MSE-видео на паузе, у которого уже есть метаданные: кадр ещё не показан. */
 function pausedFilmPage() {
@@ -31,7 +32,7 @@ test("кредит клика + охрана по порту: `play()` стра�
   const { page, video } = pausedFilmPage();
   const isolated = handshake(page);
   try {
-    isolated.send({ kind: "auto_handoff_watch", state: "on" });
+    isolated.send({ kind: "auto_handoff_watch", ...WATCH_ON });
     isolated.send({ kind: "grant_play_credit", lease_ms: 30_000 });
     await isolated.settle();
     const promise = (video as unknown as { play(): Promise<void> }).play();
@@ -67,9 +68,9 @@ test("охрана, включённая и снятая командой: по�
   const { page, video } = pausedFilmPage();
   const isolated = handshake(page);
   try {
-    isolated.send({ kind: "auto_handoff_watch", state: "on" });
+    isolated.send({ kind: "auto_handoff_watch", ...WATCH_ON });
     isolated.send({ kind: "grant_play_credit", lease_ms: 30_000 });
-    isolated.send({ kind: "auto_handoff_watch", state: "off" });
+    isolated.send({ kind: "auto_handoff_watch", ...AUTO_HANDOFF_WATCH_OFF });
     await isolated.settle();
     await (video as unknown as { play(): Promise<void> }).play();
     await isolated.settle();
@@ -80,11 +81,13 @@ test("охрана, включённая и снятая командой: по�
 });
 
 test("MAIN-мир разбирает команды режима 2 строго: лишние поля и числа вне диапазона — мусор", () => {
-  assert.deepEqual(parseChannelMessage({ kind: "auto_handoff_watch", state: "on" }), { kind: "auto_handoff_watch", state: "on" });
+  assert.deepEqual(parseChannelMessage({ kind: "auto_handoff_watch", ...WATCH_ON }), { kind: "auto_handoff_watch", ...WATCH_ON });
+  assert.equal(parseChannelMessage({ kind: "auto_handoff_watch", state: "on" }), null, "без фильтров — не команда");
+  assert.equal(parseChannelMessage({ kind: "auto_handoff_watch", ...WATCH_ON, muted: "maybe" }), null);
   assert.deepEqual(parseChannelMessage({ kind: "grant_play_credit", lease_ms: 1_000 }), { kind: "grant_play_credit", lease_ms: 1_000 });
-  assert.equal(parseChannelMessage({ kind: "auto_handoff_watch", state: "maybe" }), null);
-  assert.equal(parseChannelMessage({ kind: "auto_handoff_watch", state: "on", extra: 1 }), null);
+  assert.equal(parseChannelMessage({ kind: "auto_handoff_watch", ...WATCH_ON, state: "maybe" }), null);
+  assert.equal(parseChannelMessage({ kind: "auto_handoff_watch", ...WATCH_ON, extra: 1 }), null);
   assert.equal(parseChannelMessage({ kind: "grant_play_credit", lease_ms: 0 }), null);
   assert.equal(parseChannelMessage({ kind: "grant_play_credit", lease_ms: 600_001 }), null);
-  assert.equal(parseIncomingPageMessage({ kind: "auto_handoff_watch", state: "on" }), null, "контроллеру передачи эти команды не принадлежат");
+  assert.equal(parseIncomingPageMessage({ kind: "auto_handoff_watch", ...WATCH_ON }), null, "контроллеру передачи эти команды не принадлежат");
 });

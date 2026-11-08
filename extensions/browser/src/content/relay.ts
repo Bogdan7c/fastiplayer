@@ -25,7 +25,7 @@
 //   здесь — только точка, где ответ на донесение уходит туда.
 // Сам ничего не решает о сеансе: нумерация поколений, очередь и плеер — в фоне.
 
-import type { AutoHandoffPageCommand, AutoHandoffWatchState } from "../shared/auto-handoff-contract.ts";
+import { AUTO_HANDOFF_WATCH_OFF, type AutoHandoffPageCommand, type AutoHandoffWatch } from "../shared/auto-handoff-contract.ts";
 import {
   HELD_VIDEO_REPORT_KIND,
   NEW_SESSION_ADOPT_INSURANCE_MS,
@@ -126,7 +126,7 @@ export interface ContentRelay {
    * Режим 2 (12a): охрана включена/выключена. Запоминается здесь (донесения `viewer_play` проходят только при
    * `on`) и уходит MAIN-миру. Фону не уходит ничего: он молчит до настоящего запуска зрителя (решение 198).
    */
-  setAutoHandoffWatch(state: AutoHandoffWatchState): void;
+  setAutoHandoffWatch(watch: AutoHandoffWatch): void;
   /** Фон выдал «кредит клика» на `leaseMs` (решение 247): MAIN-мир считает запуск со звуком запуском зрителя. */
   grantPlayCredit(leaseMs: number): void;
   /** Фон просит отпустить задержанное видео (сеанс режима 2 не состоялся): MAIN-мир снимает тень. */
@@ -237,7 +237,7 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
   // Взвод сторожа следующего видео: пока он не истёк, задержанные видео доходят до фона.
   let armedUntilMs = Number.NEGATIVE_INFINITY;
   // Что изолированный мир в последний раз сказал MAIN-миру про охрану режима 2; до первой команды — `off`.
-  let autoHandoffWatch: AutoHandoffWatchState = "off";
+  let autoHandoffWatch: AutoHandoffWatch = AUTO_HANDOFF_WATCH_OFF;
   const heldReports = createTokenBucket(HELD_VIDEO_REPORTS_PER_SECOND, dependencies.now);
   const viewerOffer = createViewerOfferRelay({
     sendToPage,
@@ -426,9 +426,9 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
     sendToPage(pageReturn === undefined ? { kind: "arm_next_video", lease_ms: leaseMs } : { kind: "arm_next_video", lease_ms: leaseMs, page_return: pageReturn });
   }
 
-  function setAutoHandoffWatch(state: AutoHandoffWatchState): void {
-    autoHandoffWatch = state;
-    sendToPage({ kind: "auto_handoff_watch", state });
+  function setAutoHandoffWatch(watch: AutoHandoffWatch): void {
+    autoHandoffWatch = watch;
+    sendToPage({ kind: "auto_handoff_watch", ...watch });
   }
 
   function grantPlayCredit(leaseMs: number): void {
@@ -444,7 +444,7 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
    * пока мы сами включили охрану (`on`). Иначе это страница, а не наш сторож. Лимит частоты общий.
    */
   function mayReportHeldVideo(trigger: HeldVideoTrigger): boolean {
-    const triggerIsAllowed = trigger === "viewer_play" ? autoHandoffWatch !== "off" : dependencies.now() < armedUntilMs;
+    const triggerIsAllowed = trigger === "viewer_play" ? autoHandoffWatch.state === "on" : dependencies.now() < armedUntilMs;
     return triggerIsAllowed && heldReports.take(1);
   }
 

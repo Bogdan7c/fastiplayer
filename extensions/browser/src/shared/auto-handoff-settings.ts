@@ -2,13 +2,18 @@
 // Общая для фона (судит по правилам), изолированного мира (включает охрану на странице) и страницы настроек
 // (запись). Устроена как `entry-settings.ts`: хранилищу не доверяем слепо, битое поле читается значением
 // по умолчанию и не сбрасывает остальные.
-import type { AutoHandoffWatchState } from "./auto-handoff-contract.ts";
+import { AUTO_HANDOFF_WATCH_OFF, type AutoHandoffWatch } from "./auto-handoff-contract.ts";
 import type { KeyValueStore } from "./codec-storage.ts";
+import { siteKeyOfHost } from "./site-key.ts";
+import { DEFAULT_VIDEO_FILTER_SETTINGS, parseVideoFilterSettings, type VideoFilterSettings } from "./video-filter-settings.ts";
+
+// Ключ сайта живёт в своём модуле; здесь — для прежних читателей.
+export { siteKeyOfHost };
 
 /**
  * Правило сайта:
- * - `always` — нажал play, и видео уходит в плеер (по фильтрам: жест, звук, длина; звук и длину можно
- *   выключить, решение 260);
+ * - `always` — нажал play, и видео уходит в плеер (жест обязателен; фильтры звука, длины и цикла — по
+ *   настройке `video_filters`, решения 260–261);
  * - `never` — на этом сайте режим 2 не срабатывает никогда;
  * - `ask` — видео замирает, а поверх него предложение «Play in Fastiplayer / Play here» (сессия 12b).
  */
@@ -22,18 +27,16 @@ export type UnknownSiteRule = (typeof UNKNOWN_SITE_RULES)[number];
 export interface AutoHandoffSettings {
   /** Режим 2 включён для всех сайтов (кроме стоп-листа и `never`). По умолчанию выключен (решение 9). */
   readonly enabled: boolean;
-  /** Порог длины ролика, секунды (решение 10): короче — не передаём, длина неизвестна — передаём (решение 50). */
+  /**
+   * Порог фильтра длины, секунды (решение 10): короче — не передаём, длина неизвестна — передаём (решение 50).
+   * Действует там, где действует фильтр `video_filters.duration`.
+   */
   readonly min_duration_s: number;
   /**
-   * Фильтр длины включён (решение 260): `false` — порог не действует, ролик любой длины уходит в плеер
-   * (сам порог хранится, чтобы включение вернуло его как было).
+   * Фильтры видео «без звука», «короче порога», «зацикленное» (решения 260–261): по умолчанию выключены,
+   * у каждого — свой список сайтов, где он действует всё равно. См. `video-filter-settings.ts`.
    */
-  readonly require_min_duration: boolean;
-  /**
-   * Фильтр звука включён (решение 260): `false` — видео без звука, которое человек сам запустил, тоже уходит
-   * в плеер. Жест человека нужен по-прежнему: само по себе беззвучное автовоспроизведение ленты не считается.
-   */
-  readonly require_sound: boolean;
+  readonly video_filters: VideoFilterSettings;
   /** Что делать на сайте без своего правила, когда режим включён. */
   readonly unknown_site_rule: UnknownSiteRule;
   /** Свои правила сайтов: ключ — `siteKeyOfHost` (хост без `www.`, строчными). */
@@ -61,14 +64,13 @@ export const MAX_OWN_STOP_LIST_ENTRIES = 500;
 export const MAX_STOP_LIST_ENTRY_LENGTH = 300;
 
 /**
- * По умолчанию: режим выключен (решение 9), порог 60 с, оба фильтра (длина и звук) включены,
+ * По умолчанию: режим выключен (решение 9), порог 60 с, фильтры видео выключены (решение 261),
  * на новом сайте — сразу передаём (решение 251).
  */
 export const DEFAULT_AUTO_HANDOFF_SETTINGS: AutoHandoffSettings = {
   enabled: false,
   min_duration_s: DEFAULT_AUTO_HANDOFF_MIN_DURATION_S,
-  require_min_duration: true,
-  require_sound: true,
+  video_filters: DEFAULT_VIDEO_FILTER_SETTINGS,
   unknown_site_rule: "always",
   site_rules: {},
   own_stop_list: [],
@@ -76,20 +78,6 @@ export const DEFAULT_AUTO_HANDOFF_SETTINGS: AutoHandoffSettings = {
 
 /** Ключ настройки в `storage.local`. */
 export const AUTO_HANDOFF_SETTINGS_KEY = "autoHandoffSettings";
-
-/** Хост — только буквы, цифры, дефис и точки (IDN хранится в punycode, как его отдаёт `URL`). */
-const HOST_PATTERN = /^[a-z0-9-]+(\.[a-z0-9-]+)*$/;
-
-/**
- * Ключ сайта для правил: хост строчными, без завершающей точки и без ведущего `www.`. `null` — это не хост
- * (пусто, пробелы, порт, путь): такой ключ не записывается и не совпадает ни с чем.
- */
-export function siteKeyOfHost(host: string): string | null {
-  let normalized = host.trim().toLowerCase();
-  if (normalized.endsWith(".")) normalized = normalized.slice(0, -1);
-  if (normalized.startsWith("www.")) normalized = normalized.slice("www.".length);
-  return normalized.length > 0 && HOST_PATTERN.test(normalized) ? normalized : null;
-}
 
 /**
  * Привести запись стоп-листа к виду `host` или `host/путь` (путь без завершающего `/`). Схема `https://`
@@ -109,11 +97,6 @@ export function normalizeStopListEntry(raw: string): string | null {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Флаг: не булево (нет поля, мусор) — значение по умолчанию. */
-function parseFlag(value: unknown, fallback: boolean): boolean {
-  return typeof value === "boolean" ? value : fallback;
 }
 
 function parseMinDuration(value: unknown): number {
@@ -158,11 +141,10 @@ export function parseAutoHandoffSettings(stored: unknown): AutoHandoffSettings {
   if (!isPlainRecord(stored)) return DEFAULT_AUTO_HANDOFF_SETTINGS;
   const unknownSiteRule = stored["unknown_site_rule"];
   return {
-    enabled: parseFlag(stored["enabled"], DEFAULT_AUTO_HANDOFF_SETTINGS.enabled),
+    enabled: typeof stored["enabled"] === "boolean" ? stored["enabled"] : DEFAULT_AUTO_HANDOFF_SETTINGS.enabled,
     min_duration_s: parseMinDuration(stored["min_duration_s"]),
-    // Настройка, записанная до решения 260, этих полей не знает: фильтры остаются включёнными, как были.
-    require_min_duration: parseFlag(stored["require_min_duration"], DEFAULT_AUTO_HANDOFF_SETTINGS.require_min_duration),
-    require_sound: parseFlag(stored["require_sound"], DEFAULT_AUTO_HANDOFF_SETTINGS.require_sound),
+    // Настройка, записанная до решения 261, поля не знает: фильтры выключены (новое значение по умолчанию).
+    video_filters: parseVideoFilterSettings(stored["video_filters"]),
     unknown_site_rule: UNKNOWN_SITE_RULES.includes(unknownSiteRule as UnknownSiteRule)
       ? (unknownSiteRule as UnknownSiteRule)
       : DEFAULT_AUTO_HANDOFF_SETTINGS.unknown_site_rule,
@@ -208,11 +190,18 @@ export function wantsAutoHandoffWatch(settings: AutoHandoffSettings): boolean {
 }
 
 /**
- * Что сказать охране страницы: выключена, включена только для видео со звуком (`on`) или включена и для
- * видео без звука (`on_including_muted`, фильтр звука снят, решение 260). Странице уходит только это —
- * правила сайтов и порог длины она не узнаёт.
+ * Что сказать охране страницы: выключена или включена, и что она пропускает мимо сама.
+ *
+ * Странице уходят только общие включатели фильтров звука и цикла. Списки сайтов не уходят: изолированный
+ * мир не знает адреса вкладки (фрейм может быть чужим плеером), а странице правила знать незачем. Список
+ * только добавляет фильтр там, где он выключен, поэтому при выключенном общем фильтре охрана задерживает
+ * видео, а фон по адресу вкладки отпускает его, если сайт в списке.
  */
-export function autoHandoffWatchStateOf(settings: AutoHandoffSettings): AutoHandoffWatchState {
-  if (!wantsAutoHandoffWatch(settings)) return "off";
-  return settings.require_sound ? "on" : "on_including_muted";
+export function autoHandoffWatchOf(settings: AutoHandoffSettings): AutoHandoffWatch {
+  if (!wantsAutoHandoffWatch(settings)) return AUTO_HANDOFF_WATCH_OFF;
+  return {
+    state: "on",
+    muted: settings.video_filters.sound.enabled ? "skip" : "hold",
+    looped: settings.video_filters.loop.enabled ? "skip" : "hold",
+  };
 }

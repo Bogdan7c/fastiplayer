@@ -205,7 +205,7 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
         }
         // Охрана и кредит клика режима 2 (12a): дело сторожа, контроллеру передачи они не нужны.
         if (isAutoHandoffPageCommand(message)) {
-          if (message.kind === "auto_handoff_watch") nextVideo.setViewerPlayWatch(message.state);
+          if (message.kind === "auto_handoff_watch") nextVideo.setViewerPlayWatch({ state: message.state, muted: message.muted, looped: message.looped });
           else nextVideo.grantViewerPlayCredit(message.lease_ms);
           return;
         }

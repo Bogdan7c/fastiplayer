@@ -12,7 +12,8 @@
 //!    (`presented_frames`), заглушка «Return», браузер почти не декодирует (как судит `capture`);
 //!  * `muted-autoplay` — беззвучный баннер, который заиграл сам: передачи нет, баннер играет у браузера;
 //!  * `hover-preview` — превью по наведению мыши (беззвучное, без клика): передачи нет;
-//!  * `short-clip` — ролик 30 с со звуком по клику (короче порога): передачи нет;
+//!  * `short-clip` — ролик 30 с со звуком по клику (короче порога, фильтры включены): передачи нет;
+//!  * `short-clip-default-filters` — тот же ролик при фильтрах по умолчанию (все выключены, решение 261): передача;
 //!  * `preroll-to-film` — реклама перед фильмом по клику: передача уже на рекламе, потом сеанс
 //!    переезжает на фильм в том же окне;
 //!  * `site-rule-never` и `own-stop-list` — правило сайта «никогда» и сайт в своём стоп-листе: передачи нет;
@@ -155,6 +156,14 @@ const ROWS: &[Row] = &[
         SettingsPreset::On,
         Gesture::ClickPlay,
         Expected::StaysInBrowser,
+    ),
+    // Тот же ролик при фильтрах по умолчанию (решение 261: все выключены) уходит в плеер.
+    click_row(
+        "short-clip-default-filters",
+        CLIP_PAGE,
+        SettingsPreset::OnDefaultFilters,
+        Gesture::ClickPlay,
+        Expected::HandedOff { endless: false },
     ),
     flow_row(PREROLL_PAGE, AutoRow::PrerollToFilm),
     click_row(
@@ -303,6 +312,7 @@ mod tests {
             "muted-autoplay",
             "hover-preview",
             "short-clip",
+            "short-clip-default-filters",
             "preroll-to-film",
             "site-rule-never",
             "own-stop-list",

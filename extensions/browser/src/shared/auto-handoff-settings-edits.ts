@@ -1,5 +1,5 @@
-// Правки настройки режима 2 «автозапуск» (сессия 12b, решения 254–258): поставить или снять правило сайта,
-// добавить или убрать запись своего стоп-листа.
+// Правки настройки режима 2 «автозапуск» (сессия 12b, решения 254–261): поставить или снять правило сайта,
+// добавить или убрать запись своего стоп-листа, включить фильтр видео и править его список сайтов.
 //
 // Чистые функции «настройка + намерение → новая настройка или честный отказ», без хранилища и браузера.
 // Ими пользуются все, кто пишет настройку: фон (выбор человека на предложении «Ask»), попап (правило текущего
@@ -10,6 +10,7 @@
 // (`writeAutoHandoffSettings`). Правка, которая ничего не меняет, возвращает `unchanged`: писать не нужно.
 
 import {
+  MAX_AUTO_HANDOFF_MIN_DURATION_S,
   MAX_OWN_STOP_LIST_ENTRIES,
   MAX_SITE_RULES,
   normalizeStopListEntry,
@@ -17,6 +18,7 @@ import {
   type AutoHandoffSettings,
   type SiteRule,
 } from "./auto-handoff-settings.ts";
+import { MAX_VIDEO_FILTER_SITES, normalizeVideoFilterSite, type VideoFilterName, type VideoFilterSetting } from "./video-filter-settings.ts";
 
 /**
  * Что человек выбрал для сайта: одно из правил или `default` — «своего правила нет», сайт живёт по общей
@@ -33,7 +35,11 @@ export type SettingsEditRejection =
   /** Запись стоп-листа не разобрать (`normalizeStopListEntry` вернул `null`). */
   | "bad_stop_list_entry"
   /** Свой стоп-лист уже полон (`MAX_OWN_STOP_LIST_ENTRIES`). */
-  | "stop_list_full";
+  | "stop_list_full"
+  /** Список сайтов фильтра видео уже полон (`MAX_VIDEO_FILTER_SITES`). */
+  | "filter_sites_full"
+  /** Порог длины не целое число секунд от 0 до `MAX_AUTO_HANDOFF_MIN_DURATION_S`. */
+  | "bad_duration";
 
 /** Итог правки. `changed` несёт новую настройку; `unchanged` — писать нечего; `rejected` — причина. */
 export type SettingsEdit =
@@ -82,4 +88,44 @@ export function withOwnStopListEntryRemoved(settings: AutoHandoffSettings, rawEn
   const entry = normalizeStopListEntry(rawEntry);
   if (entry === null || !settings.own_stop_list.includes(entry)) return UNCHANGED;
   return changed({ ...settings, own_stop_list: settings.own_stop_list.filter((existing) => existing !== entry) });
+}
+
+/** Заменить один фильтр видео, остальные — как есть. */
+function withFilter(settings: AutoHandoffSettings, name: VideoFilterName, filter: VideoFilterSetting): AutoHandoffSettings {
+  return { ...settings, video_filters: { ...settings.video_filters, [name]: filter } };
+}
+
+/** Включить или выключить фильтр видео на всех сайтах; список сайтов фильтра не трогается. */
+export function withVideoFilterEnabled(settings: AutoHandoffSettings, name: VideoFilterName, enabled: boolean): SettingsEdit {
+  const filter = settings.video_filters[name];
+  if (filter.enabled === enabled) return UNCHANGED;
+  return changed(withFilter(settings, name, { ...filter, enabled }));
+}
+
+/**
+ * Добавить сайт в список фильтра видео (там фильтр действует, даже когда выключен). Можно вставить адрес
+ * страницы целиком: схема, путь и `www.` отбрасываются. Такой сайт уже есть — `unchanged`.
+ */
+export function withVideoFilterSiteAdded(settings: AutoHandoffSettings, name: VideoFilterName, rawSite: string): SettingsEdit {
+  const site = normalizeVideoFilterSite(rawSite);
+  if (site === null) return reject("bad_site");
+  const filter = settings.video_filters[name];
+  if (filter.sites.includes(site)) return UNCHANGED;
+  if (filter.sites.length >= MAX_VIDEO_FILTER_SITES) return reject("filter_sites_full");
+  return changed(withFilter(settings, name, { ...filter, sites: [...filter.sites, site] }));
+}
+
+/** Убрать сайт из списка фильтра видео. Нет такого — `unchanged`. */
+export function withVideoFilterSiteRemoved(settings: AutoHandoffSettings, name: VideoFilterName, rawSite: string): SettingsEdit {
+  const site = normalizeVideoFilterSite(rawSite);
+  const filter = settings.video_filters[name];
+  if (site === null || !filter.sites.includes(site)) return UNCHANGED;
+  return changed(withFilter(settings, name, { ...filter, sites: filter.sites.filter((existing) => existing !== site) }));
+}
+
+/** Поставить порог фильтра длины, секунды: целое от 0 до предела, иначе отказ `bad_duration`. */
+export function withMinDuration(settings: AutoHandoffSettings, seconds: number): SettingsEdit {
+  if (!Number.isInteger(seconds) || seconds < 0 || seconds > MAX_AUTO_HANDOFF_MIN_DURATION_S) return reject("bad_duration");
+  if (settings.min_duration_s === seconds) return UNCHANGED;
+  return changed({ ...settings, min_duration_s: seconds });
 }

@@ -4,12 +4,20 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { watchAutoHandoffSettings } from "../../src/content/auto-handoff-watch.ts";
 import { AUTO_HANDOFF_SETTINGS_KEY, DEFAULT_AUTO_HANDOFF_SETTINGS, type AutoHandoffSettings } from "../../src/shared/auto-handoff-settings.ts";
-import type { AutoHandoffWatchState } from "../../src/shared/auto-handoff-contract.ts";
+import type { AutoHandoffWatch } from "../../src/shared/auto-handoff-contract.ts";
+
+function labelOf(watch: AutoHandoffWatch): string {
+  return watch.state === "off" ? "off" : `on muted=${watch.muted} looped=${watch.looped}`;
+}
+
+/** Охрана включена при фильтрах по умолчанию (все выключены, решение 261): задерживает всё, судит фон. */
+const ON = "on muted=hold looped=hold";
 
 type ChangeListener = (changes: Readonly<Record<string, { readonly newValue?: unknown }>>) => void;
 
 function setup(read: () => Promise<AutoHandoffSettings>) {
-  const applied: AutoHandoffWatchState[] = [];
+  /** Что ушло MAIN-миру, словами: `off` или `on muted=… looped=…`. */
+  const applied: string[] = [];
   const notes: string[] = [];
   let changeListener: ChangeListener = () => {};
   let stopped = false;
@@ -19,7 +27,7 @@ function setup(read: () => Promise<AutoHandoffSettings>) {
       changeListener = listener;
       return () => void (stopped = true);
     },
-    applyWatch: (state) => void applied.push(state),
+    applyWatch: (watch) => void applied.push(labelOf(watch)),
     note: (message) => void notes.push(message),
   });
   return { applied, notes, rawChange: (changes: Parameters<ChangeListener>[0]) => changeListener(changes), change: (newValue: unknown) => changeListener({ [AUTO_HANDOFF_SETTINGS_KEY]: { newValue } }), isStopped: () => stopped };
@@ -38,18 +46,19 @@ describe("слежение за настройкой режима 2", () => {
   it("включена при старте — `on`; сайт с правилом `always` при выключенном режиме тоже включает охрану", async () => {
     const enabledStart = setup(() => Promise.resolve(enabled));
     await settled();
-    assert.deepEqual(enabledStart.applied, ["on"]);
+    assert.deepEqual(enabledStart.applied, [ON]);
     const perSite = setup(() => Promise.resolve({ ...DEFAULT_AUTO_HANDOFF_SETTINGS, site_rules: { "tube.example": "always" } }));
     await settled();
-    assert.deepEqual(perSite.applied, ["on"]);
+    assert.deepEqual(perSite.applied, [ON]);
   });
 
-  it("фильтр звука снят (решение 260): охрана `on_including_muted`, снова включён — `on`", async () => {
-    const { applied, change } = setup(() => Promise.resolve({ ...enabled, require_sound: false }));
+  it("общие включатели фильтров звука и цикла доходят до охраны; списки сайтов — нет (их судит фон)", async () => {
+    const filters = DEFAULT_AUTO_HANDOFF_SETTINGS.video_filters;
+    const { applied, change } = setup(() => Promise.resolve({ ...enabled, video_filters: { ...filters, sound: { enabled: true, sites: [] } } }));
     await settled();
-    change({ ...enabled });
-    change({ ...DEFAULT_AUTO_HANDOFF_SETTINGS, require_sound: false });
-    assert.deepEqual(applied, ["on_including_muted", "on", "off"]);
+    change({ ...enabled, video_filters: { ...filters, loop: { enabled: true, sites: [] } } });
+    change({ ...enabled, video_filters: { ...filters, sound: { enabled: false, sites: ["a.example"] }, duration: { enabled: true, sites: [] } } });
+    assert.deepEqual(applied, ["on muted=skip looped=hold", "on muted=hold looped=skip", ON]);
   });
 
   it("человек переключил настройку: охрана меняется на лету", async () => {
@@ -57,7 +66,7 @@ describe("слежение за настройкой режима 2", () => {
     await settled();
     change({ ...enabled });
     change({ ...DEFAULT_AUTO_HANDOFF_SETTINGS });
-    assert.deepEqual(applied, ["off", "on", "off"]);
+    assert.deepEqual(applied, ["off", ON, "off"]);
   });
 
   it("изменение пришло раньше ответа чтения: старый ответ выбрасывается", async () => {
@@ -66,14 +75,14 @@ describe("слежение за настройкой режима 2", () => {
     change({ ...enabled });
     answerRead(DEFAULT_AUTO_HANDOFF_SETTINGS);
     await settled();
-    assert.deepEqual(applied, ["on"]);
+    assert.deepEqual(applied, [ON]);
   });
 
   it("чужой ключ хранилища охрану не трогает", async () => {
     const { applied, rawChange } = setup(() => Promise.resolve(enabled));
     await settled();
     rawChange({ someOtherSetting: { newValue: false } });
-    assert.deepEqual(applied, ["on"]);
+    assert.deepEqual(applied, [ON]);
   });
 
   it("чтение не удалось — охрана остаётся выключенной (ничего не применено), след для разработчика оставлен", async () => {

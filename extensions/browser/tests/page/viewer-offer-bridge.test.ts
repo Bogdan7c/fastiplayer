@@ -6,6 +6,7 @@ import { viewerOfferEventNameOf, WATCH_HANDED_OFF_VIDEO_KIND } from "../../src/s
 import type { PageEvent } from "../../src/shared/handoff-contract.ts";
 import { AUDIO_MP4, VIDEO_MP4 } from "./support/media-samples.ts";
 import { handshake, startRealShadowHarness } from "./support/bridge-harness.ts";
+import { WATCH_ON } from "../support/auto-handoff-watch-fixtures.ts";
 
 const VIDEO_MIME = 'video/mp4; codecs="avc1.42E01E"';
 const AUDIO_MIME = 'audio/mp4; codecs="mp4a.40.2"';
@@ -30,7 +31,7 @@ async function offeredFilmPage() {
   });
   const isolated = handshake(harness.page);
   isolated.send({ kind: WATCH_HANDED_OFF_VIDEO_KIND, event_name: EVENT_NAME });
-  isolated.send({ kind: "auto_handoff_watch", state: "on" });
+  isolated.send({ kind: "auto_handoff_watch", ...WATCH_ON });
   isolated.send({ kind: "grant_play_credit", lease_ms: 30_000 });
   await isolated.settle();
   const play = (video as unknown as { play(): Promise<void> }).play();

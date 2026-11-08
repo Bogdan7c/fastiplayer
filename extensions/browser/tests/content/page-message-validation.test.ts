@@ -294,10 +294,14 @@ describe("сообщения сторожа следующего видео (с�
   });
 
   it("режим 2: команды по личному порту — строгая форма, срок кредита в пределах договора", () => {
-    assert.deepEqual(parseAutoHandoffWatchCommand({ kind: "auto_handoff_watch", state: "off" }), { kind: "auto_handoff_watch", state: "off" });
-    assert.deepEqual(parseAutoHandoffWatchCommand({ kind: "auto_handoff_watch", state: "on_including_muted" }), { kind: "auto_handoff_watch", state: "on_including_muted" });
-    assert.equal(parseAutoHandoffWatchCommand({ kind: "auto_handoff_watch", state: "ON" }), undefined);
-    assert.equal(parseAutoHandoffWatchCommand({ kind: "auto_handoff_watch", state: "on", extra: 1 }), undefined);
+    const full = { kind: "auto_handoff_watch", state: "on", muted: "hold", looped: "skip" } as const;
+    assert.deepEqual(parseAutoHandoffWatchCommand(full), full);
+    assert.deepEqual(parseAutoHandoffWatchCommand({ ...full, state: "off" }), { ...full, state: "off" });
+    assert.equal(parseAutoHandoffWatchCommand({ ...full, state: "ON" }), undefined);
+    assert.equal(parseAutoHandoffWatchCommand({ ...full, muted: "maybe" }), undefined);
+    assert.equal(parseAutoHandoffWatchCommand({ ...full, looped: true }), undefined);
+    assert.equal(parseAutoHandoffWatchCommand({ ...full, extra: 1 }), undefined);
+    assert.equal(parseAutoHandoffWatchCommand({ kind: "auto_handoff_watch", state: "on" }), undefined, "без фильтров — не команда");
     assert.equal(parseAutoHandoffWatchCommand({ kind: "auto_handoff_watch" }), undefined);
     for (const parse of [parseGrantPlayCreditCommand, parseGrantPlayCreditRequest]) {
       const kind = "grant_play_credit";

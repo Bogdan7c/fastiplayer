@@ -54,7 +54,7 @@
 // - запись сначала честно перематывается на секунду плеера (настоящий `currentTime`, до тени), тень встаёт
 //   на `seeked`: плеер сайта видит обычную перемотку и сам качает данные с этой секунды.
 
-import type { AutoHandoffWatchState } from "../shared/auto-handoff-contract.ts";
+import type { AutoHandoffWatch } from "../shared/auto-handoff-contract.ts";
 import type { ElementKey, HeldVideoTrigger, PageEvent, PageReturnTarget, VideoCandidate } from "../shared/handoff-contract.ts";
 import type { ElementAudibility, ViewerPlayVerdict, ViewerPlayWatch } from "./auto-handoff/viewer-play-watch.ts";
 import type { DomReaders } from "./dom-readers.ts";
@@ -170,9 +170,9 @@ export class NextVideoGuard {
   }
 
   /** Изолированный мир сообщил: охрана режима 2 включена/выключена. Включение ставит слушатель документа. */
-  setViewerPlayWatch(state: AutoHandoffWatchState): void {
-    this.#environment.viewerPlay.setWatch(state);
-    if (state !== "off") this.#listenOnDocument();
+  setViewerPlayWatch(watch: AutoHandoffWatch): void {
+    this.#environment.viewerPlay.setWatch(watch);
+    if (watch.state === "on") this.#listenOnDocument();
   }
 
   /** Фон выдал «кредит клика»: пока он действует, запуск видео со звуком считается запуском человека. */
@@ -286,6 +286,15 @@ export class NextVideoGuard {
     if (dom.readyStateOf(element) >= HAVE_METADATA) return this.#hold(element, "as_real_element", "viewer_play") ? { kind: "now_shadowed" } : NOT_MINE;
     this.#listenOnElement(element);
     return { kind: "answered", promise: this.#playAwaitingMetadata(element, realPlay) };
+  }
+
+  /**
+   * Зацикленное видео (баннер, превью) сторож не трогает. Исключение — режим 2 при выключенном общем фильтре
+   * цикла (решение 261): человек сам запустил ролик ленты, а включён ли фильтр на этом сайте, решит фон.
+   */
+  #loopKeepsAway(element: object, trigger: HeldVideoTrigger): boolean {
+    if (!this.#environment.dom.isLooping(element)) return false;
+    return trigger !== "viewer_play" || this.#environment.viewerPlay.skipsLooped();
   }
 
   #audibilityOf(element: object): ElementAudibility {
@@ -472,9 +481,9 @@ export class NextVideoGuard {
    */
   #hold(element: object, initialPlayback: HeldShadowPlayback, trigger: HeldVideoTrigger): boolean {
     const environment = this.#environment;
-    const { dom, seam, registry } = environment;
+    const { seam, registry } = environment;
     if (seam.isShadowed(element) || this.#held.has(element) || this.#held.size >= MAX_HELD_VIDEOS) return false;
-    if (environment.isProtected(element) || dom.isLooping(element)) return false;
+    if (environment.isProtected(element) || this.#loopKeepsAway(element, trigger)) return false;
     const kind = this.#kindOf(element);
     if (kind === null) return false;
     const video = element as HTMLMediaElement;

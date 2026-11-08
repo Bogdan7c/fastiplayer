@@ -4,7 +4,9 @@ import { describe, it } from "node:test";
 import { MAX_PLAY_CREDIT_LEASE_MS } from "../../src/shared/auto-handoff-contract.ts";
 import { AD_PROBE_LEASE_MS, AD_PROBE_WINDOW_MS, createAdProbe } from "../../src/background/auto-handoff/ad-probe.ts";
 import type { SitePolicy } from "../../src/background/auto-handoff/site-policy.ts";
-import { PLAY_CREDIT_GRACE_MS, candidatesAsFiltersSee, decideViewerPlay, playCreditLeaseMs, type AdProbeVerdict, type VideoFilters, type ViewerPlayDecision } from "../../src/background/auto-handoff/viewer-play-decision.ts";
+import { PLAY_CREDIT_GRACE_MS, decideViewerPlay, playCreditLeaseMs, type AdProbeVerdict, type ViewerPlayDecision } from "../../src/background/auto-handoff/viewer-play-decision.ts";
+import { candidatesAsFiltersSee, videoFiltersFor, type VideoFilters } from "../../src/background/auto-handoff/video-filters.ts";
+import { DEFAULT_AUTO_HANDOFF_SETTINGS } from "../../src/shared/auto-handoff-settings.ts";
 import { classifySurvey, type ClassifiedVideo } from "../../src/background/handoff/video-choice.ts";
 import type { VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import type { PageAdState } from "../../src/protocol/index.ts";
@@ -22,8 +24,8 @@ function held(overrides: Partial<VideoCandidate> = {}, neighbours: readonly Vide
 }
 
 const HAND: SitePolicy = { kind: "hand_off" };
-/** Фильтры по умолчанию: порог 60 с, оба фильтра включены. */
-const FILTERS: VideoFilters = { minDurationS: 60, requireMinDuration: true, requireSound: true };
+/** Все фильтры действуют, порог 60 с (поведение 12a: на этом построена таблица правил ниже). */
+const FILTERS: VideoFilters = { minDurationS: 60, skipShort: true, skipMuted: true, skipLooped: true };
 const decide = (video: ClassifiedVideo | undefined, adProbe: AdProbeVerdict = "not_probed", policy: SitePolicy = HAND, minDurationS = 60): ViewerPlayDecision =>
   decideViewerPlay({ policy, held: video, filters: { ...FILTERS, minDurationS }, adProbe });
 /**
@@ -101,33 +103,59 @@ describe("решение по задержанному видео", () => {
   });
 
   it("фильтр звука снят (решение 260): видео без звука судится как звучащее", () => {
-    assert.deepEqual(decideWith({ muted: true }, { requireSound: false }), { kind: "hand_off", reason: "long_enough" });
-    // Беззвучный цикл и мелкая плитка, запущенные человеком, — тоже не «украшение».
-    assert.deepEqual(decideWith({ muted: true, loop: true }, { requireSound: false }), { kind: "hand_off", reason: "long_enough" });
+    assert.deepEqual(decideWith({ muted: true }, { skipMuted: false }), { kind: "hand_off", reason: "long_enough" });
+    // Беззвучный цикл, запущенный человеком, — не «украшение» для классификатора.
+    assert.deepEqual(decideWith({ muted: true, loop: true }, { skipMuted: false, skipLooped: false }), { kind: "hand_off", reason: "long_enough" });
+    // А фильтр цикла, если действует, такой ролик отпускает своим правилом.
+    assert.deepEqual(decideWith({ muted: true, loop: true }, { skipMuted: false }), { kind: "release", reason: "looped" });
     // Остальные правила стоят: короткий беззвучный ролик идёт веткой рекламы, невидимый — отпускается.
-    assert.deepEqual(decideWith({ ...SHORT_FILE, muted: true }, { requireSound: false }), { kind: "probe_ads_first" });
-    assert.deepEqual(decideWith({ muted: true, visible_area_px: 0 }, { requireSound: false }), { kind: "release", reason: "hidden" });
+    assert.deepEqual(decideWith({ ...SHORT_FILE, muted: true }, { skipMuted: false }), { kind: "probe_ads_first" });
+    assert.deepEqual(decideWith({ muted: true, visible_area_px: 0 }, { skipMuted: false }), { kind: "release", reason: "hidden" });
   });
 
   it("фильтр звука включён: тот же беззвучный ролик отсеивается (классификатором или правилом звука)", () => {
     assert.deepEqual(decideWith({ muted: true }, {}), { kind: "release", reason: "muted" });
-    assert.deepEqual(decideWith({ ...SHORT_FILE, muted: true }, { requireMinDuration: false }), { kind: "release", reason: "not_a_film" });
+    assert.deepEqual(decideWith({ ...SHORT_FILE, muted: true }, { skipShort: false }), { kind: "release", reason: "not_a_film" });
   });
 
   it("фильтр длины снят (решение 260): короткий ролик уходит сразу, без пробы рекламы и кредита", () => {
-    assert.deepEqual(decideWith(SHORT_FILE, { requireMinDuration: false }), { kind: "hand_off", reason: "length_filter_off" });
-    assert.deepEqual(decideWith({ ...SHORT_FILE, duration_s: 1 }, { requireMinDuration: false, minDurationS: 3_600 }), { kind: "hand_off", reason: "length_filter_off" });
+    assert.deepEqual(decideWith(SHORT_FILE, { skipShort: false }), { kind: "hand_off", reason: "length_filter_off" });
+    assert.deepEqual(decideWith({ ...SHORT_FILE, duration_s: 1 }, { skipShort: false, minDurationS: 3_600 }), { kind: "hand_off", reason: "length_filter_off" });
     // Длина неизвестна (эфир) — по-прежнему своя причина.
-    assert.deepEqual(decideWith({ duration_s: null }, { requireMinDuration: false }), { kind: "hand_off", reason: "duration_unknown" });
+    assert.deepEqual(decideWith({ duration_s: null }, { skipShort: false }), { kind: "hand_off", reason: "duration_unknown" });
   });
 
   it("оба фильтра сняты: короткий беззвучный ролик уходит в плеер; на сайте ask — вопрос", () => {
     const clip = { ...SHORT_FILE, muted: true };
-    const off = { requireMinDuration: false, requireSound: false };
+    const off = { skipShort: false, skipMuted: false };
     assert.deepEqual(decideWith(clip, off), { kind: "hand_off", reason: "length_filter_off" });
     assert.deepEqual(decideWith(clip, off, "not_probed", { kind: "ask" }), { kind: "ask_viewer", reason: "length_filter_off" });
     // DRM и прочий «не фильм» фильтры не отменяют.
     assert.deepEqual(decideWith({ ...clip, drm: true }, off), { kind: "release", reason: "not_a_film" });
+  });
+
+  it("фильтр цикла (решение 261): действует — зацикленное со звуком отпускается; не действует — уходит", () => {
+    assert.deepEqual(decideWith({ loop: true }, {}), { kind: "release", reason: "looped" });
+    assert.deepEqual(decideWith({ loop: true }, { skipLooped: false }), { kind: "hand_off", reason: "long_enough" });
+    // Беззвучный короткий цикл ленты при выключенных фильтрах — в плеер.
+    assert.deepEqual(decideWith({ ...SHORT_FILE, loop: true, muted: true }, { skipLooped: false, skipMuted: false, skipShort: false }), { kind: "hand_off", reason: "length_filter_off" });
+  });
+
+  it("videoFiltersFor: по умолчанию не действует ни один; включённый — везде; список — на сайте и поддоменах", () => {
+    const none = videoFiltersFor(DEFAULT_AUTO_HANDOFF_SETTINGS, "https://tube.example/watch");
+    assert.deepEqual(none, { skipMuted: false, skipLooped: false, skipShort: false, minDurationS: 60 });
+    const settings = {
+      ...DEFAULT_AUTO_HANDOFF_SETTINGS,
+      min_duration_s: 90,
+      video_filters: {
+        sound: { enabled: true, sites: [] },
+        duration: { enabled: false, sites: ["feed.example"] },
+        loop: { enabled: false, sites: ["other.example"] },
+      },
+    };
+    assert.deepEqual(videoFiltersFor(settings, "https://www.m.feed.example/reel/1"), { skipMuted: true, skipLooped: false, skipShort: true, minDurationS: 90 });
+    assert.deepEqual(videoFiltersFor(settings, "https://notfeed.example/"), { skipMuted: true, skipLooped: false, skipShort: false, minDurationS: 90 }, "похожее имя — не поддомен");
+    assert.deepEqual(videoFiltersFor(settings, ""), { skipMuted: true, skipLooped: false, skipShort: false, minDurationS: 90 }, "адрес неизвестен — только общие включатели");
   });
 
   it("candidatesAsFiltersSee: фильтр звука включён — те же объекты; снят — меняется только задержанный кандидат", () => {
@@ -135,7 +163,7 @@ describe("решение по задержанному видео", () => {
     const neighbour = { ...FILM, element: 9, muted: true };
     const list = [heldOne, neighbour];
     assert.equal(candidatesAsFiltersSee(list, heldOne.element, FILTERS), list);
-    const seen = candidatesAsFiltersSee(list, heldOne.element, { ...FILTERS, requireSound: false });
+    const seen = candidatesAsFiltersSee(list, heldOne.element, { ...FILTERS, skipMuted: false });
     assert.equal(seen[0]?.muted, false);
     assert.equal(seen[1], neighbour, "сосед не тронут");
     assert.equal(heldOne.muted, true, "донесение не изменено");

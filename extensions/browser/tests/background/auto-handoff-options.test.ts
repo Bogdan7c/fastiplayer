@@ -1,8 +1,8 @@
 // Страница настроек: раздел «Auto play» (12a) читает и пишет только свои поля общей настройки.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { mountAutoHandoffSettingControl, parseMinDurationInput } from "../../src/options/auto-handoff-setting-control.ts";
-import { AUTO_HANDOFF_SETTINGS_KEY, DEFAULT_AUTO_HANDOFF_SETTINGS, MAX_AUTO_HANDOFF_MIN_DURATION_S, type AutoHandoffSettings } from "../../src/shared/auto-handoff-settings.ts";
+import { mountAutoHandoffSettingControl } from "../../src/options/auto-handoff-setting-control.ts";
+import { AUTO_HANDOFF_SETTINGS_KEY, DEFAULT_AUTO_HANDOFF_SETTINGS, type AutoHandoffSettings } from "../../src/shared/auto-handoff-settings.ts";
 import type { KeyValueStore } from "../../src/shared/codec-storage.ts";
 import { flushPromises } from "./support.ts";
 
@@ -11,7 +11,6 @@ class FakeElement {
   id = "";
   value = "";
   checked = false;
-  disabled = false;
   type = "";
   min = "";
   max = "";
@@ -69,8 +68,7 @@ function memoryStore(initial: Record<string, unknown> = {}): { store: KeyValueSt
 const RICH: AutoHandoffSettings = {
   enabled: false,
   min_duration_s: 90,
-  require_min_duration: true,
-  require_sound: true,
+  video_filters: { ...DEFAULT_AUTO_HANDOFF_SETTINGS.video_filters, sound: { enabled: true, sites: ["c.example"] } },
   unknown_site_rule: "ask",
   site_rules: { "a.example": "never" },
   own_stop_list: ["b.example/shorts"],
@@ -84,14 +82,10 @@ async function mount(initial: Record<string, unknown>) {
 }
 
 describe("раздел «Auto play»", () => {
-  it("без настройки показывает значения по умолчанию: выключено, 60 секунд, Play in Fastiplayer", async () => {
+  it("без настройки показывает значения по умолчанию: выключено, Play in Fastiplayer", async () => {
     await withFakeDocument(async () => {
       const { container } = await mount({});
       assert.equal(container.find("auto-handoff-enabled").checked, false);
-      assert.equal(container.find("auto-handoff-min-duration").value, "60");
-      assert.equal(container.find("auto-handoff-length-filter").checked, true, "фильтр длины по умолчанию включён");
-      assert.equal(container.find("auto-handoff-min-duration").disabled, false);
-      assert.equal(container.find("auto-handoff-sound-filter").checked, true, "фильтр звука по умолчанию включён");
       assert.equal(container.find("auto-handoff-unknown-site-rule").value, "always");
       assert.deepEqual(container.find("auto-handoff-unknown-site-rule").children.map((option) => option.textContent), ["Play in Fastiplayer", "Ask first"]);
     });
@@ -101,12 +95,11 @@ describe("раздел «Auto play»", () => {
     await withFakeDocument(async () => {
       const { container } = await mount({ [AUTO_HANDOFF_SETTINGS_KEY]: { ...RICH, enabled: true } });
       assert.equal(container.find("auto-handoff-enabled").checked, true);
-      assert.equal(container.find("auto-handoff-min-duration").value, "90");
       assert.equal(container.find("auto-handoff-unknown-site-rule").value, "ask");
     });
   });
 
-  it("каждый переключатель пишет только своё поле; свои правила сайтов и стоп-лист не теряются", async () => {
+  it("каждый переключатель пишет только своё поле; правила сайтов, стоп-лист и фильтры видео не теряются", async () => {
     await withFakeDocument(async () => {
       const { container, values } = await mount({ [AUTO_HANDOFF_SETTINGS_KEY]: RICH });
       container.find("auto-handoff-enabled").checked = true;
@@ -114,50 +107,11 @@ describe("раздел «Auto play»", () => {
       await flushPromises();
       assert.deepEqual(values.get(AUTO_HANDOFF_SETTINGS_KEY), { ...RICH, enabled: true });
 
-      container.find("auto-handoff-min-duration").value = "120";
-      container.find("auto-handoff-min-duration").fire("change");
-      await flushPromises();
-      assert.deepEqual(values.get(AUTO_HANDOFF_SETTINGS_KEY), { ...RICH, enabled: true, min_duration_s: 120 });
-
       container.find("auto-handoff-unknown-site-rule").value = "always";
       container.find("auto-handoff-unknown-site-rule").fire("change");
       await flushPromises();
-      assert.deepEqual(values.get(AUTO_HANDOFF_SETTINGS_KEY), { ...RICH, enabled: true, min_duration_s: 120, unknown_site_rule: "always" });
+      assert.deepEqual(values.get(AUTO_HANDOFF_SETTINGS_KEY), { ...RICH, enabled: true, unknown_site_rule: "always" });
       assert.equal(container.find("auto-handoff-status").textContent, "Saved.");
-    });
-  });
-
-  it("фильтры длины и звука (решение 260): галочка пишет только своё поле, порог хранится и гаснет", async () => {
-    await withFakeDocument(async () => {
-      const { container, values } = await mount({ [AUTO_HANDOFF_SETTINGS_KEY]: RICH });
-      const lengthBox = container.find("auto-handoff-length-filter");
-      lengthBox.checked = false;
-      lengthBox.fire("change");
-      await flushPromises();
-      assert.deepEqual(values.get(AUTO_HANDOFF_SETTINGS_KEY), { ...RICH, require_min_duration: false }, "порог 90 с остался в настройке");
-      assert.equal(container.find("auto-handoff-min-duration").disabled, true, "поле порога гаснет, пока фильтр снят");
-
-      const soundBox = container.find("auto-handoff-sound-filter");
-      soundBox.checked = false;
-      soundBox.fire("change");
-      await flushPromises();
-      assert.deepEqual(values.get(AUTO_HANDOFF_SETTINGS_KEY), { ...RICH, require_min_duration: false, require_sound: false });
-
-      lengthBox.checked = true;
-      lengthBox.fire("change");
-      await flushPromises();
-      assert.deepEqual(values.get(AUTO_HANDOFF_SETTINGS_KEY), { ...RICH, require_sound: false }, "включение вернуло прежний порог");
-      assert.equal(container.find("auto-handoff-min-duration").disabled, false);
-    });
-  });
-
-  it("сохранённые снятые фильтры показываются снятыми, поле порога погашено", async () => {
-    await withFakeDocument(async () => {
-      const { container } = await mount({ [AUTO_HANDOFF_SETTINGS_KEY]: { ...RICH, require_min_duration: false, require_sound: false } });
-      assert.equal(container.find("auto-handoff-length-filter").checked, false);
-      assert.equal(container.find("auto-handoff-min-duration").disabled, true);
-      assert.equal(container.find("auto-handoff-min-duration").value, "90");
-      assert.equal(container.find("auto-handoff-sound-filter").checked, false);
     });
   });
 
@@ -173,20 +127,6 @@ describe("раздел «Auto play»", () => {
     });
   });
 
-  it("неверный порог не пишется, поле возвращается к хранимому, человек видит подсказку", async () => {
-    await withFakeDocument(async () => {
-      const { container, values } = await mount({ [AUTO_HANDOFF_SETTINGS_KEY]: RICH });
-      for (const bad of ["", "abc", "-5", "1.5", "99999", String(MAX_AUTO_HANDOFF_MIN_DURATION_S + 1)]) {
-        container.find("auto-handoff-min-duration").value = bad;
-        container.find("auto-handoff-min-duration").fire("change");
-        await flushPromises();
-        assert.deepEqual(values.get(AUTO_HANDOFF_SETTINGS_KEY), RICH, bad);
-        assert.equal(container.find("auto-handoff-min-duration").value, "90", bad);
-        assert.match(container.find("auto-handoff-status").textContent, /whole number of seconds/);
-      }
-    });
-  });
-
   it("сбой записи показывается текстом, а не глотается", async () => {
     await withFakeDocument(async () => {
       const container = new FakeElement("div");
@@ -197,13 +137,5 @@ describe("раздел «Auto play»", () => {
       await flushPromises();
       assert.match(container.find("auto-handoff-status").textContent, /Could not save: .*quota/);
     });
-  });
-
-  it("parseMinDurationInput: границы", () => {
-    assert.equal(parseMinDurationInput("0"), 0);
-    assert.equal(parseMinDurationInput(" 3600 "), 3600);
-    assert.equal(parseMinDurationInput("3601"), undefined);
-    assert.equal(parseMinDurationInput("1e3"), undefined);
-    assert.deepEqual(DEFAULT_AUTO_HANDOFF_SETTINGS.min_duration_s, 60);
   });
 });

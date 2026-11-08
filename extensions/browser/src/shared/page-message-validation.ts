@@ -10,6 +10,7 @@
 import {
   AUTO_HANDOFF_WATCH_STATES,
   GRANT_PLAY_CREDIT_KIND,
+  WATCH_FILTER_ACTIONS,
   MAX_PLAY_CREDIT_LEASE_MS,
   RELEASE_HELD_VIDEO_REQUEST_KIND,
   type AutoHandoffWatchCommand,
@@ -472,9 +473,10 @@ function isPlayCreditLeaseMs(value: unknown): value is number {
 
 /** Команда «охрана включена/выключена» по личному порту (изолированный мир → MAIN-мир). */
 export function parseAutoHandoffWatchCommand(value: unknown): AutoHandoffWatchCommand | undefined {
-  if (!isPlainRecord(value) || value["kind"] !== "auto_handoff_watch" || !hasExactKeys(value, ["kind", "state"])) return undefined;
-  const state = value["state"];
-  return isOneOf(state, AUTO_HANDOFF_WATCH_STATES) ? { kind: "auto_handoff_watch", state } : undefined;
+  if (!isPlainRecord(value) || value["kind"] !== "auto_handoff_watch" || !hasExactKeys(value, ["kind", "state", "muted", "looped"])) return undefined;
+  const { state, muted, looped } = value;
+  if (!isOneOf(state, AUTO_HANDOFF_WATCH_STATES) || !isOneOf(muted, WATCH_FILTER_ACTIONS) || !isOneOf(looped, WATCH_FILTER_ACTIONS)) return undefined;
+  return { kind: "auto_handoff_watch", state, muted, looped };
 }
 
 /** Команда «выдай кредит клика» по личному порту (изолированный мир → MAIN-мир). */

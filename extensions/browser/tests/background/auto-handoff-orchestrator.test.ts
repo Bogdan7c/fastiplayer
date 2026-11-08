@@ -9,6 +9,7 @@ import { PLAY_CREDIT_GRACE_MS } from "../../src/background/auto-handoff/viewer-p
 import type { EntryResult } from "../../src/background/entries/entry-report-text.ts";
 import { createHeldVideoListener, type FrameSender } from "../../src/background/handoff/hand-off-command.ts";
 import { DEFAULT_AUTO_HANDOFF_SETTINGS, type AutoHandoffSettings } from "../../src/shared/auto-handoff-settings.ts";
+import type { VideoFilterSettings } from "../../src/shared/video-filter-settings.ts";
 import { HELD_VIDEO_REPORT_KIND, type HandOffTabOutcome, type HeldVideoReply, type HeldVideoReport, type HeldVideoTrigger, type VideoCandidate, type VideoRef } from "../../src/shared/handoff-contract.ts";
 import { VIEWER_OFFER_CHOICE_KIND, type ViewerOfferChoice, type ViewerOfferChoiceMessage } from "../../src/shared/viewer-offer-contract.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
@@ -18,7 +19,15 @@ const TAB = 12;
 const FRAME = 3;
 const FILM: VideoCandidate = { document: "doc-7f3a", element: 4, media: { kind: "media_source", in_worker: false }, playing: true, visible_area_px: 200_000, ...DEFAULT_CANDIDATE_FACTS };
 const SHORT_CLIP: VideoCandidate = { ...FILM, media: { kind: "file" }, duration_s: 20, file_host: "site.example" };
-const ON: AutoHandoffSettings = { ...DEFAULT_AUTO_HANDOFF_SETTINGS, enabled: true };
+/** Все фильтры видео включены везде: так режим 2 вёл себя в 12a, на этом построены старые ряды ниже. */
+const ALL_FILTERS_ON: VideoFilterSettings = {
+  sound: { enabled: true, sites: [] },
+  duration: { enabled: true, sites: [] },
+  loop: { enabled: true, sites: [] },
+};
+const ON: AutoHandoffSettings = { ...DEFAULT_AUTO_HANDOFF_SETTINGS, enabled: true, video_filters: ALL_FILTERS_ON };
+/** Режим включён, фильтры как по умолчанию — все выключены (решение 261). */
+const ON_DEFAULT_FILTERS: AutoHandoffSettings = { ...DEFAULT_AUTO_HANDOFF_SETTINGS, enabled: true };
 
 const report = (candidate: VideoCandidate, trigger: HeldVideoTrigger = "viewer_play"): HeldVideoReport => ({ kind: HELD_VIDEO_REPORT_KIND, element: candidate.element, candidates: [candidate], trigger });
 const ref = (candidate: VideoCandidate): VideoRef => ({ frame_id: FRAME, document: candidate.document, element: candidate.element });
@@ -121,8 +130,8 @@ describe("режим 2: передача по нажатию play", () => {
     assert.deepEqual(world.credits, []);
   });
 
-  it("оба фильтра сняты (решение 260): короткий беззвучный зацикленный ролик уходит в плеер без пробы рекламы", async () => {
-    const world = createWorld({ settings: { ...ON, require_sound: false, require_min_duration: false } });
+  it("фильтры по умолчанию (решение 261, все выключены): короткий беззвучный зацикленный ролик уходит в плеер без пробы", async () => {
+    const world = createWorld({ settings: ON_DEFAULT_FILTERS });
     // 20 с, без звука, цикл: при включённых фильтрах общий классификатор назвал бы его «беззвучным украшением».
     const reel: VideoCandidate = { ...SHORT_CLIP, muted: true, loop: true };
     assert.equal(await world.autoHandoff.heldVideo(TAB, FRAME, report(reel)), "adopt_new_session");
@@ -132,13 +141,32 @@ describe("режим 2: передача по нажатию play", () => {
   });
 
   it("снят только фильтр звука: беззвучный длинный фильм уходит, беззвучный короткий ролик идёт веткой рекламы", async () => {
-    const world = createWorld({ settings: { ...ON, require_sound: false } });
+    const soundOff: AutoHandoffSettings = { ...ON, video_filters: { ...ALL_FILTERS_ON, sound: { enabled: false, sites: [] } } };
+    const world = createWorld({ settings: soundOff });
     assert.equal(await world.autoHandoff.heldVideo(TAB, FRAME, report({ ...FILM, muted: true })), "adopt_new_session");
-    const short = createWorld({ settings: { ...ON, require_sound: false } });
+    const short = createWorld({ settings: soundOff });
     assert.equal(await short.autoHandoff.heldVideo(TAB, FRAME, report({ ...SHORT_CLIP, muted: true })), "release");
     assert.deepEqual(short.probes, [TAB], "короткий ролик — проба рекламы, как со звуком");
     assert.equal(short.credits.length, 1, "рекламы нет: кредит клика, как со звуком");
     assert.deepEqual(short.handOffCalls, []);
+  });
+
+  it("список сайтов фильтра (решение 261): фильтр выключен везде, но сайт вкладки в списке — там он действует", async () => {
+    const listed: AutoHandoffSettings = {
+      ...ON_DEFAULT_FILTERS,
+      video_filters: { ...ON_DEFAULT_FILTERS.video_filters, sound: { enabled: false, sites: ["site.example"] }, loop: { enabled: false, sites: ["site.example"] } },
+    };
+    // Вкладка подделки — https://site.example/watch: беззвучное и зацикленное отпускаются.
+    for (const video of [{ ...FILM, muted: true }, { ...FILM, loop: true }]) {
+      const world = createWorld({ settings: listed });
+      assert.equal(await world.autoHandoff.heldVideo(TAB, FRAME, report(video)), "release", JSON.stringify(video));
+      assert.deepEqual(world.handOffCalls, []);
+    }
+    // На другом сайте те же видео уходят: список действует только на свои сайты.
+    for (const video of [{ ...FILM, muted: true }, { ...FILM, loop: true }]) {
+      const world = createWorld({ settings: listed, url: "https://other.example/v" });
+      assert.equal(await world.autoHandoff.heldVideo(TAB, FRAME, report(video)), "adopt_new_session", JSON.stringify(video));
+    }
   });
 
   it("передача отказала (protected): фрейму уходит просьба отпустить именно это видео, человеку — тишина", async () => {

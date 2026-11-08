@@ -7,6 +7,7 @@ import { NEW_SESSION_ADOPT_INSURANCE_MS, type HeldVideoReport } from "../../src/
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 import { createFakeClock } from "../background/support.ts";
 import type { ViewerOfferChoiceMessage } from "../../src/shared/viewer-offer-contract.ts";
+import { AUTO_HANDOFF_WATCH_OFF, WATCH_ON, WATCH_ON_UNFILTERED } from "../support/auto-handoff-watch-fixtures.ts";
 
 const viewerHeld = {
   kind: "next_video_held",
@@ -57,10 +58,10 @@ async function settleMicrotasks(): Promise<void> {
 describe("охрана режима 2: слово изолированного мира MAIN-миру", () => {
   it("`setAutoHandoffWatch` доходит до MAIN-мира, `grantPlayCredit` и `releaseHeldVideo` тоже", () => {
     const { relay, toPage } = setupRelay();
-    relay.setAutoHandoffWatch("on");
+    relay.setAutoHandoffWatch(WATCH_ON);
     relay.grantPlayCredit(30_000);
     relay.releaseHeldVideo(4);
-    assert.deepEqual(toPage, [{ kind: "auto_handoff_watch", state: "on" }, { kind: "grant_play_credit", lease_ms: 30_000 }, release]);
+    assert.deepEqual(toPage, [{ kind: "auto_handoff_watch", ...WATCH_ON }, { kind: "grant_play_credit", lease_ms: 30_000 }, release]);
   });
 });
 
@@ -74,8 +75,8 @@ describe("донесение viewer_play", () => {
 
   it("охрана была включена, а потом выключена: донесение снова не проходит", () => {
     const { relay, toPage, reports } = setupRelay();
-    relay.setAutoHandoffWatch("on");
-    relay.setAutoHandoffWatch("off");
+    relay.setAutoHandoffWatch(WATCH_ON);
+    relay.setAutoHandoffWatch(AUTO_HANDOFF_WATCH_OFF);
     toPage.length = 0;
     relay.handlePageMessage(viewerHeld);
     assert.deepEqual(reports, []);
@@ -84,7 +85,7 @@ describe("донесение viewer_play", () => {
 
   it("охрана включена: донесение уходит фону с `viewer_play` и хостом, прочитанным здесь; взвод фона не нужен", async () => {
     const { relay, toPage, reports } = setupRelay();
-    relay.setAutoHandoffWatch("on");
+    relay.setAutoHandoffWatch(WATCH_ON);
     toPage.length = 0;
     relay.handlePageMessage(viewerHeld);
     await settleMicrotasks();
@@ -94,10 +95,10 @@ describe("донесение viewer_play", () => {
     assert.deepEqual(toPage, [], "ответ `adopt`: видео остаётся под тенью");
   });
 
-  it("охрана с беззвучными (`on_including_muted`, решение 260) тоже пропускает донесение `viewer_play` фону", async () => {
+  it("охрана, задерживающая и беззвучные (общий фильтр звука выключен, решения 260–261), тоже пропускает донесение `viewer_play` фону", async () => {
     const { relay, toPage, reports } = setupRelay();
-    relay.setAutoHandoffWatch("on_including_muted");
-    assert.deepEqual(toPage, [{ kind: "auto_handoff_watch", state: "on_including_muted" }], "MAIN-мир узнал, что звук не обязателен");
+    relay.setAutoHandoffWatch(WATCH_ON_UNFILTERED);
+    assert.deepEqual(toPage, [{ kind: "auto_handoff_watch", ...WATCH_ON_UNFILTERED }], "MAIN-мир узнал, что беззвучные задерживаются");
     toPage.length = 0;
     relay.handlePageMessage(viewerHeld);
     await settleMicrotasks();
@@ -107,7 +108,7 @@ describe("донесение viewer_play", () => {
 
   it("охрана на `viewer_play` не открывает путь событиям `next_video` без взвода", () => {
     const { relay, toPage, reports } = setupRelay();
-    relay.setAutoHandoffWatch("on");
+    relay.setAutoHandoffWatch(WATCH_ON);
     toPage.length = 0;
     relay.handlePageMessage({ ...viewerHeld, trigger: "next_video" });
     assert.deepEqual(reports, []);
@@ -116,7 +117,7 @@ describe("донесение viewer_play", () => {
 
   it("событие без поля `trigger` — мусор: ни донесения, ни отпускания по этому пути", () => {
     const { relay, reports, toPage } = setupRelay();
-    relay.setAutoHandoffWatch("on");
+    relay.setAutoHandoffWatch(WATCH_ON);
     toPage.length = 0;
     const { trigger: _dropped, ...withoutTrigger } = viewerHeld;
     relay.handlePageMessage(withoutTrigger);
@@ -126,7 +127,7 @@ describe("донесение viewer_play", () => {
 
   it("лимит частоты общий: страница не может молотить фон и через viewer_play", () => {
     const { relay, reports } = setupRelay();
-    relay.setAutoHandoffWatch("on");
+    relay.setAutoHandoffWatch(WATCH_ON);
     for (let attempt = 0; attempt < 100; attempt += 1) relay.handlePageMessage(viewerHeld);
     assert.equal(reports.length, 16);
   });
@@ -137,7 +138,7 @@ describe("ответ фона на viewer_play", () => {
     for (const answer of ["release", "keep_it", 42, undefined, null]) {
       const { relay, toPage, answerWith } = setupRelay();
       answerWith(() => Promise.resolve(answer));
-      relay.setAutoHandoffWatch("on");
+      relay.setAutoHandoffWatch(WATCH_ON);
       toPage.length = 0;
       relay.handlePageMessage(viewerHeld);
       await settleMicrotasks();
@@ -147,7 +148,7 @@ describe("ответ фона на viewer_play", () => {
 
   it("`adopt`: страховка 2 с — если `begin_handoff` не пришёл, видео отпускается", async () => {
     const { relay, toPage, clock } = setupRelay();
-    relay.setAutoHandoffWatch("on");
+    relay.setAutoHandoffWatch(WATCH_ON);
     toPage.length = 0;
     relay.handlePageMessage(viewerHeld);
     await settleMicrotasks();
@@ -160,7 +161,7 @@ describe("ответ фона на viewer_play", () => {
   it("`adopt_new_session`: видео ждёт долгую страховку, а не 2 с", async () => {
     const { relay, toPage, clock, answerWith } = setupRelay();
     answerWith(() => Promise.resolve("adopt_new_session"));
-    relay.setAutoHandoffWatch("on");
+    relay.setAutoHandoffWatch(WATCH_ON);
     toPage.length = 0;
     relay.handlePageMessage(viewerHeld);
     await settleMicrotasks();
@@ -174,7 +175,7 @@ describe("ответ фона на viewer_play", () => {
     const slow = setupRelay();
     let answer: (value: unknown) => void = () => {};
     slow.answerWith(() => new Promise((resolve) => void (answer = resolve)));
-    slow.relay.setAutoHandoffWatch("on");
+    slow.relay.setAutoHandoffWatch(WATCH_ON);
     slow.toPage.length = 0;
     slow.relay.handlePageMessage(viewerHeld);
     slow.clock.advance(HELD_VIDEO_REPLY_TIMEOUT_MS + 500);
@@ -185,7 +186,7 @@ describe("ответ фона на viewer_play", () => {
 
     const silent = setupRelay();
     silent.answerWith(() => new Promise(() => {}));
-    silent.relay.setAutoHandoffWatch("on");
+    silent.relay.setAutoHandoffWatch(WATCH_ON);
     silent.toPage.length = 0;
     silent.relay.handlePageMessage(viewerHeld);
     silent.clock.advance(VIEWER_PLAY_REPLY_TIMEOUT_MS);
@@ -207,7 +208,7 @@ describe("предложение «Ask» (12b)", () => {
   /** Охрана включена, донесение ушло, фон ответил «спроси». */
   async function askedRelay() {
     const world = setupRelay();
-    world.relay.setAutoHandoffWatch("on");
+    world.relay.setAutoHandoffWatch(WATCH_ON);
     world.answerWith(() => Promise.resolve("ask_viewer"));
     world.toPage.length = 0;
     world.relay.handlePageMessage(viewerHeld);

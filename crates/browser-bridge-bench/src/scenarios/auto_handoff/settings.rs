@@ -40,11 +40,29 @@ impl SiteRule {
     }
 }
 
+/// Фильтры видео в настройке (решения 260–261): звук, длина, цикл.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BenchVideoFilters {
+    /// Все три фильтра включены на всех сайтах — поведение 12a, на нём построены строки «осталось у браузера».
+    AllOnEverySite,
+    /// Все выключены, списков нет — значение по умолчанию экстеншена (решение 261).
+    AllOff,
+}
+
+impl BenchVideoFilters {
+    fn to_stored_value(self) -> Value {
+        let enabled = matches!(self, Self::AllOnEverySite);
+        let filter = json!({ "enabled": enabled, "sites": [] });
+        json!({ "sound": filter, "duration": filter, "loop": filter })
+    }
+}
+
 /// Что стенд записывает в настройку режима 2.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct AutoHandoffSetup {
     enabled: bool,
     min_duration_s: u32,
+    video_filters: BenchVideoFilters,
     /// Правило для сайта без своей записи.
     unknown_site_rule: SiteRule,
     /// Правила сайтов: ключ — хост без `www.`.
@@ -59,6 +77,7 @@ impl AutoHandoffSetup {
         Self {
             enabled: true,
             min_duration_s: BENCH_MIN_DURATION_S,
+            video_filters: BenchVideoFilters::AllOnEverySite,
             // Сайт без своего правила: сразу передавать (решение 251: по умолчанию «always»).
             unknown_site_rule: SiteRule::Always,
             site_rules: Vec::new(),
@@ -70,6 +89,12 @@ impl AutoHandoffSetup {
     /// и при выключенном режиме).
     pub(super) fn switched_off(mut self) -> Self {
         self.enabled = false;
+        self
+    }
+
+    /// То же, но фильтры видео как по умолчанию у экстеншена: все выключены (решение 261).
+    pub(super) fn with_default_video_filters(mut self) -> Self {
+        self.video_filters = BenchVideoFilters::AllOff;
         self
     }
 
@@ -102,6 +127,7 @@ impl AutoHandoffSetup {
         json!({
             "enabled": self.enabled,
             "min_duration_s": self.min_duration_s,
+            "video_filters": self.video_filters.to_stored_value(),
             "unknown_site_rule": self.unknown_site_rule.as_stored(),
             "site_rules": site_rules,
             "own_stop_list": self.own_stop_list,
@@ -125,8 +151,10 @@ impl AutoHandoffSetup {
 pub(super) enum SettingsPreset {
     /// Ничего не писать: режим выключен, как у нового пользователя (решение 9).
     UntouchedDefault,
-    /// Режим включён для всех сайтов.
+    /// Режим включён для всех сайтов, фильтры видео включены везде (поведение 12a).
     On,
+    /// Режим включён, фильтры видео как по умолчанию — выключены (решение 261).
+    OnDefaultFilters,
     /// Режим включён, но у сайта стенда правило «никогда».
     SiteRuleNever,
     /// Режим включён, но сайт стенда в своём стоп-листе.
@@ -144,6 +172,7 @@ impl SettingsPreset {
         match self {
             Self::UntouchedDefault => None,
             Self::On => Some(on),
+            Self::OnDefaultFilters => Some(on.with_default_video_filters()),
             Self::SiteRuleNever => Some(on.with_site_rule(site_key, SiteRule::Never)),
             Self::OwnStopList => Some(on.with_own_stop_entry(site_key)),
             Self::SiteRuleAsk => Some(on.switched_off().with_site_rule(site_key, SiteRule::Ask)),
@@ -242,6 +271,30 @@ mod tests {
         assert!(script.contains("storage.local.set({ autoHandoffSettings: {"));
         assert!(script.contains("storage.local.get(\"autoHandoffSettings\")"));
         assert!(script.contains("\"enabled\":true"));
+    }
+
+    #[test]
+    fn the_bench_filters_are_written_on_everywhere_and_the_default_preset_turns_them_off() {
+        let on = AutoHandoffSetup::enabled_for_every_site().to_stored_value();
+        for name in ["sound", "duration", "loop"] {
+            assert_eq!(
+                on["video_filters"][name],
+                json!({ "enabled": true, "sites": [] }),
+                "{name}"
+            );
+        }
+        let default_filters = SettingsPreset::OnDefaultFilters
+            .setup("127.0.0.1")
+            .expect("written")
+            .to_stored_value();
+        assert_eq!(default_filters["enabled"], json!(true));
+        for name in ["sound", "duration", "loop"] {
+            assert_eq!(
+                default_filters["video_filters"][name],
+                json!({ "enabled": false, "sites": [] }),
+                "{name}"
+            );
+        }
     }
 
     #[test]

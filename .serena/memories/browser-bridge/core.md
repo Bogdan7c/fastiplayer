@@ -384,11 +384,15 @@ YouTube (видео, микс, live, Shorts, субтитры, дорожки), 
 - ЛОВУШКА Firefox: `PictureInPictureChild` на mousedown ищет видео под курсором `nodesFromRect(..., onlyVisible, порог visibility-threshold = 1.0)` — перекрытием считает только НЕПРОЗРАЧНОЕ. Наш слой поверх видео обязан иметь сплошной фон, иначе клик в зоне кнопки «Картинка в картинке» (правый край видео) уходит Firefox (стенд 12b: «Never» не нажимался). Касается и будущих контролов режима 3.
 - Попап: `src/popup/site-rule-row{,-model}.ts` (`section.site-rule > select.site-rule-choice` default|always|never|ask, «Default (off/always/ask first)», заметки про стоп-листы). Настройки: `src/options/auto-handoff-lists-control.ts` (`#auto-handoff-stop-entry/-add`, `ul#auto-handoff-own-stop-list`, `ul#auto-handoff-site-rules`, `details#auto-handoff-built-in-stop-list` только чтение — решение 258; своё `always` сильнее встроенного стоп-листа).
 - Решение 259 (владелец, во время M2): группа «Social feeds» (вкл. `youtube.com/shorts`) УДАЛЕНА из встроенного стоп-листа (`stop-list.ts`); остались звонки и банки/платежи. Соцсети судятся как любой сайт (фильтры звука и длины).
-- Решение 260: фильтры звука и длины выключаются. Поля настройки `require_sound` и `require_min_duration`, по умолчанию true; старая настройка без них читается как true.
-  - Охрана: `AutoHandoffWatchState` = `on` | `on_including_muted` | `off`; его вычисляет `autoHandoffWatchStateOf`. Где проверка охраны: `!== "off"`.
-  - Фон: `VideoFilters` / `videoFiltersOf`. Через них `mutedRule` и `durationRule` (причина `length_filter_off`).
-  - Ловушка: общий `classifyVideo` сам списывает беззвучное (короткое < 30 с, `loop`, мелкое) в junk. Поэтому `candidatesAsFiltersSee` при снятом звуке судит задержанный кандидат как `muted: false`; сам классификатор не трогать.
-  - Охрана страницы не берёт `loop`-видео вообще (не тронуто).
+- Решения 260–261: фильтры видео режима 2 — звук, длина, цикл (`shared/video-filter-settings.ts`).
+  - Настройка: `video_filters.{sound,duration,loop} = {enabled, sites}`. По умолчанию всё выключено; порог — прежний `min_duration_s`.
+  - Сайт из списка = ключ хоста вкладки, действует на поддомены (`videoFilterAppliesOn`).
+  - `siteKeyOfHost` переехал в `shared/site-key.ts` (реэкспорт из settings), чтобы не было круга импорта.
+  - Фон: `background/auto-handoff/video-filters.ts` — `videoFiltersFor(settings, tabUrl)` → `{skipMuted, skipLooped, skipShort, minDurationS}`. Правила `mutedRule`/`loopRule`/`durationRule` (`length_filter_off`).
+  - Охрана: `AutoHandoffWatch {state, muted: skip|hold, looped: skip|hold}` из `autoHandoffWatchOf`, по проводу с точными ключами. Списки не уходят: охрана задерживает, фон отпускает. Цикл для `viewer_play` проверяется в `#loopKeepsAway`; для `next_video` цикл по-прежнему не берётся.
+  - Ловушка: общий `classifyVideo` сам списывает беззвучное (короткое < 30 с, `loop`, мелкое) в junk. Поэтому `candidatesAsFiltersSee` там, где фильтр звука не действует, судит задержанный кандидат как `muted: false`; сам классификатор не трогать.
+  - Страница настроек: раздел `options/video-filters-control.ts` (порог переехал туда из «Auto play»). Правки: `withVideoFilterEnabled`, `withVideoFilterSiteAdded`/`Removed`, `withMinDuration`.
+  - Стенд пишет фильтры включёнными везде (`BenchVideoFilters::AllOnEverySite`, поведение 12a). Ряд `short-clip-default-filters` проверяет значение по умолчанию.
 - Стенд: строки `ask-offer-shown`, `ask-play-here`, `ask-play-in-fastiplayer`, `ask-always`, `ask-never` в команде `auto-handoff` (`auto_handoff/rows_offer.rs`, `offer_judge.rs`, `entries/viewer_offer_probe.rs`; пресеты `SiteRuleAsk`, `UnknownSiteAsk`), клик — центр кнопки настоящей мышью.
 
 ## Связи

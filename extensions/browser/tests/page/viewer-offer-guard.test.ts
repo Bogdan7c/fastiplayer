@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { flushMicrotasks, type FakeVideo } from "./shadow/fake-media-dom.ts";
 import { browserPlays, FILE_URL, LEASE_MS, pagePlay, setupGuard } from "./support/next-video-guard-setup.ts";
+import { WATCH_ON } from "../support/auto-handoff-watch-fixtures.ts";
 
 /** Что видит страница: модель тени (переопределённый `paused`). */
 const pageSeesPaused = (video: FakeVideo): boolean => (video as unknown as { paused: boolean }).paused;
@@ -12,7 +13,7 @@ const pageSeesPaused = (video: FakeVideo): boolean => (video as unknown as { pau
 /** Охрана включена, свежий клик; фильм-файл задержан запуском зрителя и висит под предложением. */
 async function offeredFilm(options: { readonly collectOddities?: boolean } = {}) {
   const page = setupGuard(options);
-  page.guard.setViewerPlayWatch("on");
+  page.guard.setViewerPlayWatch(WATCH_ON);
   page.activation.transient = true;
   const film = page.addVideo((video) => {
     video.real.src = FILE_URL;
@@ -99,7 +100,7 @@ describe("предложение «Ask» в MAIN-мире", () => {
 
   it("изолированный мир о предложении не узнал: держать без панели нельзя — видео играет здесь, странность записана", async () => {
     const page = setupGuard({ collectOddities: true });
-    page.guard.setViewerPlayWatch("on");
+    page.guard.setViewerPlayWatch(WATCH_ON);
     page.activation.transient = true;
     page.viewerOffer.accepts = false;
     const film = page.addVideo((video) => {

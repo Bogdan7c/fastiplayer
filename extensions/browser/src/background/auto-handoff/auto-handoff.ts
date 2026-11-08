@@ -33,7 +33,8 @@ import { classifySurvey, type ClassifiedVideo } from "../handoff/video-choice.ts
 import type { AdProbe } from "./ad-probe.ts";
 import { noticeOfAutoHandoffOutcome } from "./outcome-notice.ts";
 import { sitePolicyOf, type SitePolicy } from "./site-policy.ts";
-import { candidatesAsFiltersSee, decideViewerPlay, videoFiltersOf, type AdProbeVerdict, type VideoFilters, type ViewerPlayDecision } from "./viewer-play-decision.ts";
+import { decideViewerPlay, type AdProbeVerdict, type ViewerPlayDecision } from "./viewer-play-decision.ts";
+import { candidatesAsFiltersSee, videoFiltersFor, type VideoFilters } from "./video-filters.ts";
 import { createViewerOffers } from "./viewer-offers.ts";
 
 export interface AutoHandoffDependencies {
@@ -81,15 +82,15 @@ export function createAutoHandoff(dependencies: AutoHandoffDependencies): AutoHa
     }
   }
 
-  async function policyOf(tabId: number, settings: AutoHandoffSettings): Promise<SitePolicy> {
-    const tab = await dependencies.describeTab(tabId);
-    return sitePolicyOf(tab?.url ?? "", settings);
+  /** Адрес вкладки (`""` — неизвестен: политика пропустит сайт, списки фильтров не сработают). */
+  async function tabUrlOf(tabId: number): Promise<string> {
+    return (await dependencies.describeTab(tabId))?.url ?? "";
   }
 
   /**
    * Задержанное видео среди кандидатов донесения, с вердиктом общего классификатора. Кандидаты сначала
-   * проходят через фильтры видео (`candidatesAsFiltersSee`): снятый фильтр звука не даёт классификатору
-   * списать беззвучное видео в мусор.
+   * проходят через фильтры видео (`candidatesAsFiltersSee`): где фильтр звука не действует, классификатор
+   * не спишет беззвучное видео в мусор.
    */
   function heldVideoOf(frameId: number, report: HeldVideoReport, filters: VideoFilters): ClassifiedVideo | undefined {
     const candidates = candidatesAsFiltersSee(report.candidates, report.element, filters);
@@ -135,8 +136,9 @@ export function createAutoHandoff(dependencies: AutoHandoffDependencies): AutoHa
   /** Заход `viewer_play`, который живой сеанс вкладки (если он есть) не взял. Вкладка уже в `decisionsInFlight`. */
   async function judgeViewerPlay(tabId: number, frameId: number, report: HeldVideoReport): Promise<HeldVideoReply> {
     const settings = await currentSettings();
-    const policy = await policyOf(tabId, settings);
-    const filters = videoFiltersOf(settings);
+    const tabUrl = await tabUrlOf(tabId);
+    const policy = sitePolicyOf(tabUrl, settings);
+    const filters = videoFiltersFor(settings, tabUrl);
     const held = heldVideoOf(frameId, report, filters);
     const decision = await decide(policy, held, filters, tabId);
     switch (decision.kind) {

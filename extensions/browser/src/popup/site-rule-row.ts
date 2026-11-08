@@ -30,6 +30,8 @@ export function describeRuleRejection(reason: SettingsEditRejection): string {
     case "bad_site":
     case "bad_stop_list_entry":
     case "stop_list_full":
+    case "filter_sites_full":
+    case "bad_duration":
       return "This site address cannot be saved.";
   }
 }

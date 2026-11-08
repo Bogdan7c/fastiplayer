@@ -1,5 +1,5 @@
 // Охрана режима 2 «автозапуск» (сессия 12a, решения 246–254): «видео запустил САМ человек, и со звуком»
-// (звук можно не требовать — фильтр звука выключается в настройках, решение 260).
+// (звук и «не цикл» — фильтры видео; охрана знает только их общие включатели, решения 260–261).
 //
 // Владеет политикой "кто считается зрителем" и больше ничем: включена ли охрана, кредит клика, метки
 // `play()` и метки «передача этого элемента кончилась». Правил сайтов, стоп-листа и порога длины здесь нет
@@ -18,7 +18,7 @@
 // - `judgeLoadedMetadata` — метаданные пришли; годится, только если недавно был засчитанный `play()`.
 // `seeked` зрителя ничего не начинает вовсе: этого судьи нет.
 
-import type { AutoHandoffWatchState } from "../../shared/auto-handoff-contract.ts";
+import { AUTO_HANDOFF_WATCH_OFF, type AutoHandoffWatch } from "../../shared/auto-handoff-contract.ts";
 import { MAX_PLAY_CREDIT_LEASE_MS } from "../../shared/auto-handoff-contract.ts";
 import type { ViewerActivationReader } from "./viewer-activation.ts";
 
@@ -42,8 +42,8 @@ export type ViewerPlayVerdict =
 
 /** Простые факты момента запуска: на них судья не обращается ни к часам, ни к браузеру. */
 export interface ViewerPlayFacts {
-  /** Состояние охраны: выключена, только со звуком (`on`) или и без звука (`on_including_muted`). */
-  readonly watch: AutoHandoffWatchState;
+  /** Охрана: включена ли и пропускает ли сама видео без звука. */
+  readonly watch: AutoHandoffWatch;
   /** Браузерная временная активация жива. */
   readonly transientActivation: boolean;
   /** Кредит клика от фона действует. */
@@ -60,9 +60,10 @@ export interface ViewerPlayFacts {
  * первыми; кредит НЕ отменяет метку возврата (возвращённому видео нужен свежий ввод после метки).
  */
 export function judgeViewerPlay(facts: ViewerPlayFacts): ViewerPlayVerdict {
-  if (facts.watch === "off") return "watch_off";
-  // Фильтр звука снят (решение 260) — беззвучное видео судится дальше, как звучащее: жест всё равно нужен.
-  if (facts.audibility === "silent" && facts.watch !== "on_including_muted") return "muted";
+  if (facts.watch.state === "off") return "watch_off";
+  // Общий фильтр звука выключен (решения 260–261) — беззвучное видео судится дальше: жест всё равно нужен,
+  // а включён ли фильтр на этом сайте по списку, решит фон.
+  if (facts.audibility === "silent" && facts.watch.muted === "skip") return "muted";
   if (facts.handedBackAtMs !== null && facts.lastTrustedInputAtMs <= facts.handedBackAtMs) return "handed_back_without_new_input";
   if (!facts.transientActivation && !facts.creditActive) return "no_viewer_gesture";
   return "viewer_started";
@@ -80,7 +81,7 @@ export class ViewerPlayWatch {
   readonly #creditedPlayCalls = new WeakMap<object, number>();
   /** Время конца последней передачи элемента. */
   readonly #handedBack = new WeakMap<object, number>();
-  #watchState: AutoHandoffWatchState = "off";
+  #watch: AutoHandoffWatch = AUTO_HANDOFF_WATCH_OFF;
   #creditUntilMs = Number.NEGATIVE_INFINITY;
 
   constructor(environment: ViewerPlayWatchEnvironment) {
@@ -88,13 +89,17 @@ export class ViewerPlayWatch {
   }
 
   /** Изолированный мир сообщил: охрана включена или выключена. Выключена по умолчанию (решение 9). */
-  setWatch(state: AutoHandoffWatchState): void {
-    this.#watchState = state;
+  setWatch(watch: AutoHandoffWatch): void {
+    this.#watch = watch;
   }
 
-  /** Охрана включена (со звуком или без — неважно). */
   isWatchOn(): boolean {
-    return this.#watchState !== "off";
+    return this.#watch.state === "on";
+  }
+
+  /** Зацикленное видео охрана пропускает мимо сама (общий фильтр цикла включён). */
+  skipsLooped(): boolean {
+    return this.#watch.looped === "skip";
   }
 
   /** Фон выдал «кредит клика» на срок; новый кредит заменяет старый (цепочка реклам продлевает его). */
@@ -137,7 +142,7 @@ export class ViewerPlayWatch {
     // Передача кончилась после засчитанного `play()`: тот запуск принадлежал уже закрытой передаче.
     if (handedBackAtMs !== null && handedBackAtMs >= markedAtMs) return "handed_back_without_new_input";
     const verdict = judgeViewerPlay({
-      watch: this.#watchState,
+      watch: this.#watch,
       // Жест доказан в момент `play()` — метка и есть его след.
       transientActivation: true,
       creditActive: false,
@@ -151,7 +156,7 @@ export class ViewerPlayWatch {
 
   #judgeNow(element: object, audibility: ElementAudibility): ViewerPlayVerdict {
     return judgeViewerPlay({
-      watch: this.#watchState,
+      watch: this.#watch,
       transientActivation: this.#environment.activation.hasTransientActivation(),
       creditActive: this.hasActiveCredit(),
       handedBackAtMs: this.#handedBack.get(element) ?? null,

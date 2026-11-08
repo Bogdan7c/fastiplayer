@@ -15,9 +15,10 @@ import {
   readAutoHandoffSettingsOrDefaults,
   siteKeyOfHost,
   wantsAutoHandoffWatch,
-  autoHandoffWatchStateOf,
+  autoHandoffWatchOf,
   writeAutoHandoffSettings,
 } from "../src/shared/auto-handoff-settings.ts";
+import { DEFAULT_VIDEO_FILTER_SETTINGS, MAX_VIDEO_FILTER_SITES, videoFilterAppliesOn } from "../src/shared/video-filter-settings.ts";
 
 function memoryStore(initial: Record<string, unknown> = {}): { store: KeyValueStore; values: Map<string, unknown> } {
   const values = new Map(Object.entries(initial));
@@ -38,8 +39,7 @@ describe("разбор настройки режима 2", () => {
     assert.deepEqual(DEFAULT_AUTO_HANDOFF_SETTINGS, {
       enabled: false,
       min_duration_s: 60,
-      require_min_duration: true,
-      require_sound: true,
+      video_filters: DEFAULT_VIDEO_FILTER_SETTINGS,
       unknown_site_rule: "always",
       site_rules: {},
       own_stop_list: [],
@@ -51,16 +51,32 @@ describe("разбор настройки режима 2", () => {
     assert.deepEqual(parsed, { ...DEFAULT_AUTO_HANDOFF_SETTINGS, enabled: true });
   });
 
-  it("фильтры длины и звука (решение 260): старая настройка без полей — оба включены; мусор — включён", () => {
-    const old = parseAutoHandoffSettings({ enabled: true, min_duration_s: 90 });
-    assert.equal(old.require_min_duration, true);
-    assert.equal(old.require_sound, true);
-    const off = parseAutoHandoffSettings({ require_min_duration: false, require_sound: false });
-    assert.equal(off.require_min_duration, false);
-    assert.equal(off.require_sound, false);
-    const garbage = parseAutoHandoffSettings({ require_min_duration: "no", require_sound: 0 });
-    assert.equal(garbage.require_min_duration, true);
-    assert.equal(garbage.require_sound, true);
+  it("фильтры видео (решение 261): старая настройка без поля — все выключены; битый фильтр — выключен, соседи живы", () => {
+    assert.deepEqual(parseAutoHandoffSettings({ enabled: true, min_duration_s: 90 }).video_filters, DEFAULT_VIDEO_FILTER_SETTINGS);
+    const parsed = parseAutoHandoffSettings({
+      video_filters: {
+        sound: { enabled: true, sites: ["https://WWW.A.example/path", "a.example", 7, "bad site", "b.example"] },
+        duration: "мусор",
+        loop: { enabled: "да", sites: "x" },
+      },
+    });
+    assert.deepEqual(parsed.video_filters.sound, { enabled: true, sites: ["a.example", "b.example"] });
+    assert.deepEqual(parsed.video_filters.duration, { enabled: false, sites: [] });
+    assert.deepEqual(parsed.video_filters.loop, { enabled: false, sites: [] });
+  });
+
+  it("список сайтов фильтра: не больше предела", () => {
+    const sites = Array.from({ length: MAX_VIDEO_FILTER_SITES + 5 }, (_, index) => `s${index}.example`);
+    assert.equal(parseAutoHandoffSettings({ video_filters: { loop: { enabled: false, sites } } }).video_filters.loop.sites.length, MAX_VIDEO_FILTER_SITES);
+  });
+
+  it("videoFilterAppliesOn: включён — везде; выключен — только сайт из списка и его поддомены", () => {
+    const listed = { enabled: false, sites: ["feed.example"] };
+    assert.equal(videoFilterAppliesOn(listed, "feed.example"), true);
+    assert.equal(videoFilterAppliesOn(listed, "m.feed.example"), true);
+    assert.equal(videoFilterAppliesOn(listed, "notfeed.example"), false);
+    assert.equal(videoFilterAppliesOn(listed, undefined), false);
+    assert.equal(videoFilterAppliesOn({ enabled: true, sites: [] }, undefined), true);
   });
 
   it("порог: целое от 0 до предела; дробь, минус, NaN и сверх предела — по умолчанию", () => {
@@ -135,12 +151,16 @@ describe("чтение, запись и включение охраны", () => 
     assert.equal(wantsAutoHandoffWatch({ ...base, site_rules: { "b.com": "never" } }), false);
   });
 
-  it("autoHandoffWatchStateOf: выключено — off; фильтр звука включён — on; снят — on_including_muted", () => {
+  it("autoHandoffWatchOf: выключено — off; включено — общие включатели звука и цикла, списки не уходят", () => {
     const base = DEFAULT_AUTO_HANDOFF_SETTINGS;
-    assert.equal(autoHandoffWatchStateOf(base), "off");
-    assert.equal(autoHandoffWatchStateOf({ ...base, require_sound: false }), "off", "снятый фильтр сам охрану не включает");
-    assert.equal(autoHandoffWatchStateOf({ ...base, enabled: true }), "on");
-    assert.equal(autoHandoffWatchStateOf({ ...base, enabled: true, require_sound: false }), "on_including_muted");
-    assert.equal(autoHandoffWatchStateOf({ ...base, require_sound: false, site_rules: { "a.com": "ask" } }), "on_including_muted");
+    const filters = base.video_filters;
+    assert.deepEqual(autoHandoffWatchOf(base), { state: "off", muted: "skip", looped: "skip" });
+    assert.deepEqual(autoHandoffWatchOf({ ...base, enabled: true }), { state: "on", muted: "hold", looped: "hold" });
+    assert.deepEqual(autoHandoffWatchOf({ ...base, enabled: true, video_filters: { ...filters, sound: { enabled: true, sites: [] } } }), { state: "on", muted: "skip", looped: "hold" });
+    assert.deepEqual(
+      autoHandoffWatchOf({ ...base, site_rules: { "a.com": "ask" }, video_filters: { ...filters, loop: { enabled: true, sites: [] }, sound: { enabled: false, sites: ["a.com"] } } }),
+      { state: "on", muted: "hold", looped: "skip" },
+      "сайт в списке звука не включает пропуск на странице: судит фон",
+    );
   });
 });

@@ -8,12 +8,14 @@
 // 1. политика сайта пропустила                         -> release;
 // 2. видео нет в донесении                             -> release;
 // 3. вердикт не фильм и не реклама                     -> release (DRM, неподдержанная форма, пусто, мусор);
-// 4. без звука                                         -> release (страница — враг: «человек запустил со звуком» мы
-//                                                         проверяем и здесь, а не верим сторожу на слово);
-//                                                         фильтр звука выключен (решение 260) — правило молчит;
+// Фильтры звука, цикла и длины действуют не всегда: только там, где их включил человек — везде или по
+// списку сайтов (решения 260–261, `video-filters.ts`). Где фильтр не действует, его правило молчит.
+// 4. без звука (фильтр звука)                          -> release (страница — враг: звук мы проверяем и здесь,
+//                                                         а не верим сторожу на слово);
+// 4a. зацикленное (фильтр цикла)                       -> release;
 // 5. не видно (площадь 0)                              -> release;
 // 6. длительность неизвестна (эфир, MediaSource)       -> hand_off сразу (решение 50);
-// 7. фильтр длины выключен (решение 260)               -> hand_off (короткий ролик тоже; реклама — тоже, её
+// 7. фильтр длины не действует                         -> hand_off (короткий ролик тоже; реклама — тоже, её
 //                                                         увезёт переезд сеанса 09c2, как в правиле 8);
 // 7a. не короче порога                                 -> hand_off;
 // 8. короче порога и вердикт `ad`                      -> hand_off (реклама играет в нашем плеере, переезд сеанса 09c2
@@ -29,45 +31,14 @@
 
 import type { ClassifiedVideo } from "../handoff/video-choice.ts";
 import { MAX_PLAY_CREDIT_LEASE_MS } from "../../shared/auto-handoff-contract.ts";
-import type { AutoHandoffSettings } from "../../shared/auto-handoff-settings.ts";
-import type { ElementKey, VideoCandidate } from "../../shared/handoff-contract.ts";
 import type { SitePolicy } from "./site-policy.ts";
+import type { VideoFilters } from "./video-filters.ts";
 
 /**
  * Запас к сроку кредита сверх длины ролика, мс: сайту нужно время, чтобы после рекламы поднять фильм
  * (загрузка плеера, обмен с рекламной сетью). Десять секунд владелец одобрил как разумный запас.
  */
 export const PLAY_CREDIT_GRACE_MS = 10_000;
-
-/** Фильтры видео, которые человек может выключить в настройках (решение 260). */
-export interface VideoFilters {
-  /** Порог длины, секунды; действует, только пока `requireMinDuration`. */
-  readonly minDurationS: number;
-  /** Фильтр длины включён: ролик короче порога не уходит сразу, а идёт веткой рекламы. */
-  readonly requireMinDuration: boolean;
-  /** Фильтр звука включён: видео без звука отпускается. */
-  readonly requireSound: boolean;
-}
-
-/** Фильтры видео из общей настройки режима 2. */
-export function videoFiltersOf(settings: AutoHandoffSettings): VideoFilters {
-  return { minDurationS: settings.min_duration_s, requireMinDuration: settings.require_min_duration, requireSound: settings.require_sound };
-}
-
-/**
- * Кандидаты донесения такими, какими их должен увидеть общий классификатор при этих фильтрах.
- *
- * Общий классификатор (`classifyVideo`) сам считает беззвучное видео мусором, если оно зацикленное, мелкое
- * или короче 30 с («беззвучное украшение»), — это правило нужно кнопке и передаче вкладки, его не трогаем.
- * Но в режиме 2 задержанное видео запустил сам человек: при снятом фильтре звука (решение 260) беззвучие
- * не должно его отсеивать — ни здесь, ни в `mutedRule`. Поэтому ровно задержанный кандидат судится как
- * звучащий; соседи остаются как есть (они влияют на вердикт, например, преролла рядом с фильмом).
- * Фильтр звука включён — кандидаты возвращаются без изменений.
- */
-export function candidatesAsFiltersSee(candidates: readonly VideoCandidate[], heldElement: ElementKey, filters: VideoFilters): readonly VideoCandidate[] {
-  if (filters.requireSound) return candidates;
-  return candidates.map((candidate) => (candidate.element === heldElement && candidate.muted ? { ...candidate, muted: false } : candidate));
-}
 
 /** Итог пробы рекламы на вкладке; `not_probed` — пробу ещё не запускали (первый заход решения). */
 export type AdProbeVerdict = "ad_on_screen" | "no_ad" | "not_probed";
@@ -76,13 +47,13 @@ export interface ViewerPlayInput {
   readonly policy: SitePolicy;
   /** Задержанное видео после классификации; `undefined` — его нет среди кандидатов донесения. */
   readonly held: ClassifiedVideo | undefined;
-  /** Фильтры видео из настройки: порог длины и требование звука (оба выключаются, решение 260). */
+  /** Фильтры видео, действующие на сайте вкладки (`videoFiltersFor`). */
   readonly filters: VideoFilters;
   readonly adProbe: AdProbeVerdict;
 }
 
 /** Почему видео отпущено без передачи. */
-export type ReleaseReason = "site_skipped" | "no_held_video" | "not_a_film" | "muted" | "hidden";
+export type ReleaseReason = "site_skipped" | "no_held_video" | "not_a_film" | "muted" | "looped" | "hidden";
 
 /** Почему видео передаётся. */
 export type HandOffReason = "duration_unknown" | "length_filter_off" | "long_enough" | "known_ad" | "ad_on_screen";
@@ -109,14 +80,15 @@ export function playCreditLeaseMs(clipDurationS: number): number {
 }
 
 const verdictRule: Rule = (_input, held) => (held.verdict === "main" || held.verdict === "ad" ? undefined : release("not_a_film"));
-const mutedRule: Rule = (input, held) => (input.filters.requireSound && held.candidate.muted ? release("muted") : undefined);
+const mutedRule: Rule = (input, held) => (input.filters.skipMuted && held.candidate.muted ? release("muted") : undefined);
+const loopRule: Rule = (input, held) => (input.filters.skipLooped && held.candidate.loop ? release("looped") : undefined);
 const hiddenRule: Rule = (_input, held) => (held.candidate.visible_area_px === 0 ? release("hidden") : undefined);
 
 /** Правила длины: неизвестная и достаточная длина передаются, короткий ролик идёт по ветке рекламы. */
 const durationRule: Rule = (input, held) => {
   const durationS = held.candidate.duration_s;
   if (durationS === null) return handOff("duration_unknown");
-  if (!input.filters.requireMinDuration) return handOff("length_filter_off");
+  if (!input.filters.skipShort) return handOff("length_filter_off");
   if (durationS >= input.filters.minDurationS) return handOff("long_enough");
   if (held.verdict === "ad") return handOff("known_ad");
   switch (input.adProbe) {
@@ -130,7 +102,7 @@ const durationRule: Rule = (input, held) => {
 };
 
 /** Правила, зависящие от видео, в порядке проверки (политика сайта и отсутствие видео — выше, в `decideViewerPlay`). */
-const VIDEO_RULES: readonly Rule[] = [verdictRule, mutedRule, hiddenRule, durationRule];
+const VIDEO_RULES: readonly Rule[] = [verdictRule, mutedRule, loopRule, hiddenRule, durationRule];
 
 export function decideViewerPlay(input: ViewerPlayInput): ViewerPlayDecision {
   if (input.policy.kind === "skip") return release("site_skipped");

@@ -1,8 +1,18 @@
-// Чистые правки настройки автозапуска: правила сайтов и свой стоп-лист.
+// Чистые правки настройки автозапуска: правила сайтов, свой стоп-лист, фильтры видео (решения 260–261).
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { DEFAULT_AUTO_HANDOFF_SETTINGS, MAX_OWN_STOP_LIST_ENTRIES, MAX_SITE_RULES, type AutoHandoffSettings } from "../src/shared/auto-handoff-settings.ts";
-import { withOwnStopListEntryAdded, withOwnStopListEntryRemoved, withSiteRuleChoice } from "../src/shared/auto-handoff-settings-edits.ts";
+import {
+  withMinDuration,
+  withOwnStopListEntryAdded,
+  withOwnStopListEntryRemoved,
+  withSiteRuleChoice,
+  withVideoFilterEnabled,
+  withVideoFilterSiteAdded,
+  withVideoFilterSiteRemoved,
+  type SettingsEdit,
+} from "../src/shared/auto-handoff-settings-edits.ts";
+import { MAX_VIDEO_FILTER_SITES } from "../src/shared/video-filter-settings.ts";
 
 const BASE: AutoHandoffSettings = { ...DEFAULT_AUTO_HANDOFF_SETTINGS, site_rules: { "a.example": "never" }, own_stop_list: ["b.example/shorts"] };
 
@@ -73,6 +83,53 @@ describe("свой стоп-лист", () => {
     const before = structuredClone(BASE);
     withOwnStopListEntryAdded(BASE, "c.example");
     withOwnStopListEntryRemoved(BASE, "b.example/shorts");
+    assert.deepEqual(BASE, before);
+  });
+});
+
+/** Настройка из итога `changed` (иначе тест падает). */
+function changedSettings(edit: SettingsEdit): AutoHandoffSettings {
+  assert.equal(edit.kind, "changed");
+  return (edit as { readonly settings: AutoHandoffSettings }).settings;
+}
+
+describe("правки фильтров видео", () => {
+  it("включатель: меняет только свой фильтр; то же значение — unchanged", () => {
+    const next = changedSettings(withVideoFilterEnabled(BASE, "loop", true));
+    assert.deepEqual(next.video_filters.loop, { enabled: true, sites: [] });
+    assert.deepEqual(next.video_filters.sound, BASE.video_filters.sound);
+    assert.deepEqual(next.site_rules, BASE.site_rules);
+    assert.deepEqual(withVideoFilterEnabled(BASE, "loop", false), { kind: "unchanged" });
+  });
+
+  it("сайт: адрес целиком приводится к ключу; повтор — unchanged; не адрес — bad_site", () => {
+    const next = changedSettings(withVideoFilterSiteAdded(BASE, "sound", " HTTPS://www.Feed.example/reel/1 "));
+    assert.deepEqual(next.video_filters.sound, { enabled: false, sites: ["feed.example"] });
+    assert.deepEqual(withVideoFilterSiteAdded(next, "sound", "feed.example"), { kind: "unchanged" });
+    for (const bad of ["", "a b", "https://", "exa_mple.com"]) assert.deepEqual(withVideoFilterSiteAdded(BASE, "sound", bad), { kind: "rejected", reason: "bad_site" }, bad);
+  });
+
+  it("сайт: полный список — filter_sites_full; удаление — только свой сайт, нет такого — unchanged", () => {
+    const sites = Array.from({ length: MAX_VIDEO_FILTER_SITES }, (_, index) => `s${index}.example`);
+    const full: AutoHandoffSettings = { ...BASE, video_filters: { ...BASE.video_filters, duration: { enabled: true, sites } } };
+    assert.deepEqual(withVideoFilterSiteAdded(full, "duration", "new.example"), { kind: "rejected", reason: "filter_sites_full" });
+    const removed = changedSettings(withVideoFilterSiteRemoved(full, "duration", "www.s0.example"));
+    assert.equal(removed.video_filters.duration.sites.includes("s0.example"), false);
+    assert.equal(removed.video_filters.duration.enabled, true, "включатель не тронут");
+    assert.deepEqual(withVideoFilterSiteRemoved(BASE, "duration", "none.example"), { kind: "unchanged" });
+  });
+
+  it("порог: целое в пределах пишется; дробь, минус и сверх предела — bad_duration", () => {
+    assert.equal(changedSettings(withMinDuration(BASE, 0)).min_duration_s, 0);
+    assert.deepEqual(withMinDuration(BASE, BASE.min_duration_s), { kind: "unchanged" });
+    for (const bad of [-1, 1.5, Number.NaN, 3_601]) assert.deepEqual(withMinDuration(BASE, bad), { kind: "rejected", reason: "bad_duration" }, String(bad));
+  });
+
+  it("правки не меняют исходную настройку", () => {
+    const before = structuredClone(BASE);
+    withVideoFilterEnabled(BASE, "sound", true);
+    withVideoFilterSiteAdded(BASE, "sound", "a.example");
+    withMinDuration(BASE, 5);
     assert.deepEqual(BASE, before);
   });
 });
