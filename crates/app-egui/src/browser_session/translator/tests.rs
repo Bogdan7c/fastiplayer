@@ -18,6 +18,7 @@ use pushed_media_source::{
 
 use super::stream_port::{PushedStreamFactory, StartedStream};
 use super::*;
+use crate::browser_session::intake_notice::PageLinkChange;
 
 // ---- подделка источника: записывает вызовы писателя ------------------------
 
@@ -277,6 +278,7 @@ enum Seen {
     Close(u64, SessionCloseReason),
     Sealed(u64),
     AdState(u64, PageAdState),
+    PageLink(u64, PageLinkChange),
 }
 
 fn seen(notices: &[IntakeNotice]) -> Vec<Seen> {
@@ -308,6 +310,9 @@ fn seen(notices: &[IntakeNotice]) -> Vec<Seen> {
             }
             IntakeNotice::InstanceSealed { session } => Seen::Sealed(session.instance.0),
             IntakeNotice::AdState { session, state } => Seen::AdState(session.instance.0, *state),
+            IntakeNotice::PageLink { session, change } => {
+                Seen::PageLink(session.instance.0, *change)
+            }
         })
         .collect()
 }
@@ -755,5 +760,6 @@ fn the_end_of_an_instance_is_announced_after_its_data_notices() {
 mod file_source;
 mod hls_source;
 mod log_privacy;
+mod page_link;
 mod page_removal;
 mod real_source;

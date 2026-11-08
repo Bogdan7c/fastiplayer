@@ -37,7 +37,7 @@ use desktop_integration::BrowserEntryDelivery;
 use tracing::{debug, error, info};
 
 use super::inbox::{BrowserSessionInbox, InboxBatch};
-use super::intake_notice::IntakeNotice;
+use super::intake_notice::{IntakeNotice, PageLinkChange};
 use super::normal_player_pause::NormalPlayerPause;
 use super::opened_page::{OpenedPage, PageArrival};
 use super::session_media::{DrainProgress, SessionMedia};
@@ -236,7 +236,32 @@ impl BrowserSessionRuntime {
         if received > 0 {
             debug!(received, "Page session messages received by the inbox");
         }
+        // Уход и возврат страницы при живой связи (сирота, 11b1) сервер концом сеанса не
+        // объявляет: машине выхода о них говорят уведомления потока приёма — в порядке
+        // кадров и в том же шаге, что и медиа-части.
+        self.follow_page_link_notices(&batch.intake_notices);
         media.on_intake(batch.intake_notices, batch.bytes_appended);
+    }
+
+    /// Страница ушла или вернулась, а связь держится: машина выхода «доигрывает» или снова
+    /// ведёт активный сеанс (`ProcessLifecycle::on_page_left` / `on_page_returned`).
+    fn follow_page_link_notices(&mut self, notices: &[IntakeNotice]) {
+        for notice in notices {
+            let IntakeNotice::PageLink { session, change } = notice else {
+                continue;
+            };
+            let outcome = match change {
+                PageLinkChange::Left(reason) => self.lifecycle.on_page_left(session, *reason),
+                PageLinkChange::Returned => self.lifecycle.on_page_returned(session),
+                // Отказ вернуть страницу машину не трогает: доигрывание уже идёт.
+                PageLinkChange::ReopenFailed(_) => continue,
+            };
+            info!(
+                ?change,
+                ?outcome,
+                "Process lifecycle followed the page link"
+            );
+        }
     }
 
     fn answer_entry_call(

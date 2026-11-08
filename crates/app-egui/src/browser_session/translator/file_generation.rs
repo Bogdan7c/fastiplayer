@@ -49,6 +49,9 @@ pub(super) enum SealOccasion {
     SessionEnded,
     /// Страница открыла новое поколение (`MediaSource`), прежнее заменено.
     ReplacedByNewGeneration,
+    /// Страница ушла, а связь держится («сирота», протокол 1.4): для потока это тот же
+    /// конец, что `SessionEnded`, — байтов больше не будет.
+    PageLeft,
 }
 
 /// Номера запросов файла одного экземпляра сеанса.
@@ -311,7 +314,7 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
         };
         match &mut state.stream {
             GenerationStream::File(writer) => match occasion {
-                SealOccasion::SessionEnded => writer.seal(),
+                SealOccasion::SessionEnded | SealOccasion::PageLeft => writer.seal(),
                 // Заменённый файл запечатывает его `Drop` (как до 04d): обрыв полосы
                 // нужен только сегментам, у файла «скачанное» и так кончается там, где
                 // кончились полученные байты.

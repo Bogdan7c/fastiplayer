@@ -24,7 +24,12 @@
 //! - любое нарушение (битый кадр, вторая `attach`, пропуск номера) — 4003;
 //! - `tab_gone` — после сторожа (версия причины: `page_player_failed` только с 1.3)
 //!   сообщение уходит приёмнику, сеанс кончается концом `SessionEndReason::TabGone`
-//!   с причиной страницы, соединение закрывается кодом 4002.
+//!   с причиной страницы, соединение закрывается кодом 4002;
+//! - `page_left` (протокол 1.4, «сирота», решения 240–241) — сеанс НЕ кончается и
+//!   соединение не закрывается: сообщение, как любое принятое, уходит приёмнику, а что
+//!   страница вправе слать, пока её нет (`page_returned`, `page_reopen_failed`,
+//!   `tab_gone`), решает сторож потока. Плеер тем временем шлёт по этой связи часы и
+//!   может попросить `reopen_page`.
 
 use std::io::Read;
 use std::net::TcpStream;
@@ -407,12 +412,24 @@ impl Link<'_> {
                     }
                 }
             }
-            // Рамки `<video src>` сторож не охватывает: передаём как есть (см. RangeChunk).
-            DataFrameHeader::RangeBytes(header) => ChunkSource::Range(RangeChunk {
-                request_id: header.request_id,
-                offset: header.offset.as_bytes(),
-                payload: frame.payload,
-            }),
+            // Порядок и поколения рамок `<video src>` сторож не охватывает (см. RangeChunk);
+            // он проверяет только, что страница на месте: в «сироте» (1.4, страница ушла)
+            // байтов нет никаких.
+            DataFrameHeader::RangeBytes(header) => match gate.admit_range_bytes() {
+                Ok(GateDecision::Accept) => ChunkSource::Range(RangeChunk {
+                    request_id: header.request_id,
+                    offset: header.offset.as_bytes(),
+                    payload: frame.payload,
+                }),
+                Ok(GateDecision::DropStale) => {
+                    self.shared.count_stale_frame();
+                    return Flow::Continue;
+                }
+                Err(violation) => {
+                    tracing::warn!(%violation, "browser session stream violation");
+                    return self.violate();
+                }
+            },
         };
         // Через калитку: если сеанс закончился между проверкой и выдачей, байты
         // не уйдут приёмнику после его `session_ended`.

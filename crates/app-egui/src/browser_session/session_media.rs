@@ -72,9 +72,10 @@ use self::generation_placement::{GenerationPlacement, PageAvailability};
 use self::generation_rejection::ViewerAwareness;
 use self::generation_start::{AfterLoad, GenerationStart};
 use self::page_clock::{LoadedMediaShown, PageClockSource, PageStartWord};
+use self::page_reopen::PageReopen;
 use self::seek_handover::UnansweredSeek;
 use super::intake_notice::{GenerationHandoff, IntakeNotice, PageIntent};
-use super::outbound::{PENDING_RETRY_INTERVAL, PageOutbound, RangeQueueOutcome};
+use super::outbound::{PageOutbound, RangeQueueOutcome};
 use super::playback::{
     BrowserPlaybackCommandError, LoadStart, MediaLoadTicket, PlaybackObservation, PlayerSeekAnswers,
 };
@@ -94,6 +95,7 @@ mod generation_start;
 mod install_reconcile;
 mod live_hls;
 mod page_clock;
+mod page_reopen;
 mod resource_requests;
 mod scrub_range;
 mod seams;
@@ -101,10 +103,12 @@ mod seek_handover;
 mod viewer_click_claim;
 mod viewer_seek_notice;
 mod viewer_transport;
+mod wake_schedule;
 
 pub(crate) use self::drain::{DrainEnd, DrainPolicy, DrainProgress, PausedDrain};
 pub(crate) use self::farewell::ViewerCloseStep;
 pub(crate) use self::generation_placement::{GenerationPlacementPolicy, GenerationWait};
+pub(crate) use self::page_reopen::{PageReopenNotice, PageReopenRefusal};
 pub(crate) use self::seams::{MediaPlayback, SessionCloser};
 pub(crate) use self::viewer_seek_notice::ViewerSeekNotice;
 use self::viewer_transport::{PlayWill, ViewerWill};
@@ -237,6 +241,8 @@ pub(crate) struct SessionMedia {
     seek_answers_seen: PlayerSeekAnswers,
     /// Реклама на странице: плашка и защита от повторного клика (09d); только в памяти.
     ad: AdPresence,
+    /// Возврат ушедшей страницы в тот же сеанс («сирота», 11b1, [`page_reopen`]).
+    page_reopen: PageReopen,
 }
 
 impl SessionMedia {
@@ -267,6 +273,7 @@ impl SessionMedia {
             page_start_word: PageStartWord::NotSaid,
             seek_answers_seen: PlayerSeekAnswers::default(),
             ad: AdPresence::default(),
+            page_reopen: PageReopen::default(),
         }
     }
 
@@ -288,8 +295,9 @@ impl SessionMedia {
         self.page_rate = PlayerPlaybackRate::NORMAL;
         self.page_start_word = PageStartWord::NotSaid;
         self.viewer_will.forget();
-        // Реклама прежней страницы к новой не относится.
+        // Реклама прежней страницы к новой не относится, возврат прежней — тоже.
         self.ad.clear();
+        self.page_reopen = PageReopen::default();
         self.outbound.reset_for_new_session();
         if self.loaded.take().is_some() {
             self.command("pause for a new session", |playback| playback.pause());
@@ -316,6 +324,7 @@ impl SessionMedia {
     /// повтор отложенных сообщений); `None` — ждать только пробуждений.
     pub(crate) fn drive(&mut self, now: Instant) -> Option<Instant> {
         self.viewer_will.expire(now);
+        self.expire_page_reopen(now);
         self.poll_pending(now);
         let observation = self.playback.pump(now);
         self.report_to_page(&observation, now);
@@ -324,6 +333,9 @@ impl SessionMedia {
         if self.drain.is_none() {
             self.send_range_requests();
             self.send_resource_requests();
+            self.outbound.flush(now);
+        } else if self.page_hears_clock() {
+            // Сирота (11b1): страницы нет, но связь держится — уходит просьба `reopen_page`.
             self.outbound.flush(now);
         }
         self.last_observation = Some(observation);
@@ -364,9 +376,10 @@ impl SessionMedia {
         match notice {
             IntakeNotice::NewGeneration(handoff) => self.adopt_generation(*handoff),
             IntakeNotice::BytesAppended { .. } => self.bytes_arrived = true,
-            IntakeNotice::InstanceSealed { session } => self.sealed_instance = Some(session),
+            IntakeNotice::InstanceSealed { session } => self.note_instance_sealed(session),
             IntakeNotice::PageIntent { intent, .. } => self.follow_page(intent),
             IntakeNotice::AdState { state, .. } => self.apply_ad_state(state),
+            IntakeNotice::PageLink { change, .. } => self.follow_page_link(change),
             IntakeNotice::PlayerSeekAcknowledged {
                 seek_id, target, ..
             } => {
@@ -689,15 +702,18 @@ impl SessionMedia {
             self.report_fault(generation, &fault);
         }
         // Страницы нет (доигрываем) — ей ничего не говорим; монитор позицию уже получил.
-        if self.drain.is_some() {
+        // Кроме часов сироте (11b1): они её пульс и секунда плеера для возврата страницы.
+        if !self.page_hears_clock() {
             return;
         }
+        let page_present = self.drain.is_none();
         // Буфер и просьбы перемотки есть только у сегментов; у файла страница ничего не
         // качает сама, и позицию никуда не репортим.
-        if let FeedReport::Segments {
-            seek_request,
-            buffer,
-        } = report
+        if page_present
+            && let FeedReport::Segments {
+                seek_request,
+                buffer,
+            } = report
         {
             if let Some(request) = seek_request {
                 let seek_id = self.outbound.request_page_seek(request);
@@ -723,38 +739,9 @@ impl SessionMedia {
         let clock_source = PageClockSource::choose(awaited_target, new_source, loaded_shown);
         self.outbound
             .tick_clock(&clock_source.page_view_of(observation), now);
-        self.report_live_window(generation, live_window_clock, observation, now);
-    }
-
-    /// Когда проснуться без внешнего повода.
-    ///
-    /// Сводка журнала плеера (раз в `BROWSER_PLAYBACK_SUMMARY_INTERVAL`) пишется во
-    /// время `pump`, отдельного срока у неё нет: пока поколение загружено, цикл
-    /// просыпается не реже тика часов (`CLOCK_INTERVAL` — 250 мс, много чаще
-    /// сводки), а без поколения плееру нечего сводить — счётчики стоят, и будить
-    /// цикл ради одинаковых строк незачем (без поколения и без повторов — `None`,
-    /// цикл спит до пробуждения, холостого кручения нет). Открывающемуся поколению
-    /// срок часов нужен отдельно: подсказка повтора открытия может быть реже тика.
-    fn next_wake_at(&self, now: Instant) -> Option<Instant> {
-        let open_retry = self
-            .pending
-            .as_ref()
-            .map(|pending| pending.retry_at.unwrap_or(now));
-        // Часы идут странице; пока доигрываем, её нет, и цикл будит `playback_drain`.
-        let clock = (self.drain.is_none() && self.page_clock_runs())
-            .then(|| self.outbound.next_clock_at().unwrap_or(now));
-        let outbound_retry = self
-            .outbound
-            .has_pending()
-            .then(|| now + PENDING_RETRY_INTERVAL);
-        // Кнопка плашки оживает по сроку и без событий страницы.
-        let ad_button = self.ad.in_flight_expires_at(now);
-        // Запрет перемотки снимается по сроку и без слова страницы (предохранитель 206).
-        let ad_lock = self.ad.transport_lock_expires_at(now);
-        [open_retry, clock, outbound_retry, ad_button, ad_lock]
-            .into_iter()
-            .flatten()
-            .min()
+        if page_present {
+            self.report_live_window(generation, live_window_clock, observation, now);
+        }
     }
 
     /// Команда плееру; недошедшая — в журнал (её не повторить: плеер встал).

@@ -12,8 +12,8 @@
 
 use std::fmt;
 
-use browser_bridge_protocol::session::PageAdState;
 use browser_bridge_protocol::session::player::StreamRejection;
+use browser_bridge_protocol::session::{PageAdState, PageReopenFailure, TabGoneReason};
 use browser_bridge_protocol::{
     MediaTime, PlaybackRate, SeekId, SessionCloseReason, StreamGeneration,
 };
@@ -25,6 +25,18 @@ use pushed_media_source::{
 };
 
 use super::hls_bridge::opener::HlsGenerationOpener;
+
+/// Что случилось со страницей сеанса, пока связь держится (протокол 1.4, «сирота»).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageLinkChange {
+    /// Страница ушла (`page_left`): поток запечатан, плеер досматривает скачанное, а
+    /// экстеншен может вернуть страницу по просьбе `reopen_page`.
+    Left(TabGoneReason),
+    /// Страница вернулась (`page_returned`): тот же сеанс продолжится новым поколением.
+    Returned,
+    /// Экстеншен не смог вернуть страницу (`page_reopen_failed`): запасной путь 04b.
+    ReopenFailed(PageReopenFailure),
+}
 
 /// Откуда плеер возьмёт содержимое поколения.
 ///
@@ -176,6 +188,16 @@ pub(crate) enum IntakeNotice {
         /// Сеанс.
         session: SessionRef,
     },
+    /// Страница сеанса ушла, вернулась или не вернулась, а связь с экстеншеном держится
+    /// («сирота», протокол 1.4, решения 240–241). Идёт в порядке кадров: `Left` — после
+    /// всех данных, принятых до ухода (поток к этому моменту запечатан), `Returned` —
+    /// раньше данных нового поколения.
+    PageLink {
+        /// Сеанс.
+        session: SessionRef,
+        /// Что случилось.
+        change: PageLinkChange,
+    },
     /// Сеанс надо закрыть этим кодом (`SessionControl::close_session` — только
     /// этот экземпляр, не тот, что успел его заменить).
     CloseSession {
@@ -196,6 +218,7 @@ impl IntakeNotice {
             | Self::AdState { session, .. }
             | Self::PlayerSeekAcknowledged { session, .. }
             | Self::InstanceSealed { session }
+            | Self::PageLink { session, .. }
             | Self::Reject { session, .. }
             | Self::CloseSession { session, .. } => session,
         }
@@ -232,6 +255,7 @@ impl IntakeNotice {
             Self::NewGeneration(_)
             | Self::BytesAppended { .. }
             | Self::InstanceSealed { .. }
+            | Self::PageLink { .. }
             | Self::Reject { .. }
             | Self::CloseSession { .. } => OverflowRule::Keep,
         }

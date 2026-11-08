@@ -40,7 +40,9 @@ use pushed_media_source::{
 };
 use tracing::{debug, error, info, warn};
 
-use super::intake_notice::{GenerationHandoff, GenerationSource, IntakeNotice, PageIntent};
+use super::intake_notice::{
+    GenerationHandoff, GenerationSource, IntakeNotice, PageIntent, PageLinkChange,
+};
 use super::rejection::{
     FailureResponse, response_to_stream_failure, response_to_unsupported_media_type,
 };
@@ -49,6 +51,7 @@ use super::stream_queue::{OwnedChunk, SessionInput};
 mod counters;
 mod file_generation;
 mod hls_generation;
+mod page_link;
 
 pub(crate) use self::counters::TranslatorCounters;
 
@@ -400,6 +403,13 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
                 // отмечается; доигрывание полученного ведёт главный цикл.
                 debug!(?reason, "tab_gone is handled by the session server");
                 self.counters.tab_gone_messages += 1;
+            }
+            PageSessionMessage::PageLeft { reason } => self.follow_page_left(&session, reason, out),
+            PageSessionMessage::PageReturned {} => {
+                Self::report_page_link_change(&session, PageLinkChange::Returned, out);
+            }
+            PageSessionMessage::PageReopenFailed { reason } => {
+                Self::report_page_link_change(&session, PageLinkChange::ReopenFailed(reason), out);
             }
             PageSessionMessage::VariantMenuChanged { .. } | PageSessionMessage::Attach { .. } => {
                 // Меню вариантов — следующие сессии; `attach` до приёмников не

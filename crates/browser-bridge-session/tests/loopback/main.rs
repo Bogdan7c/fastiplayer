@@ -16,6 +16,7 @@ mod backpressure;
 mod close_order;
 mod farewell;
 mod lifecycle_events;
+mod orphan_link;
 mod protocol_errors;
 mod protocol_versions;
 mod stream_replay;

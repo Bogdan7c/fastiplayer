@@ -475,3 +475,156 @@ fn early_end_newer_than_the_draining_one_is_remembered() {
         LifecycleVerdict::Exit(ExitCause::SessionEnded(reason))
     );
 }
+
+// ---- «сирота» (протокол 1.4, сессия 11b1): страница ушла, связь держится ----------
+
+#[test]
+fn page_left_of_the_active_session_drains_with_the_page_reason() {
+    let start = Instant::now();
+    let mut lifecycle = ProcessLifecycle::new(start, IDLE);
+    lifecycle.on_session_opened(&key("a"));
+    let outcome = lifecycle.on_page_left(&key("a"), TabGoneReason::Closed);
+    assert_eq!(outcome, PageLinkOutcome::Followed);
+    assert_eq!(
+        lifecycle.verdict(start),
+        LifecycleVerdict::AwaitPlaybackDrain
+    );
+    // Страница не вернулась — выход с той же причиной, что дал бы `tab_gone`.
+    assert_eq!(
+        lifecycle.on_playback_drained(),
+        PlaybackDrainOutcome::ExitDecided
+    );
+    assert_eq!(
+        lifecycle.verdict(start),
+        LifecycleVerdict::Exit(ExitCause::SessionEnded(SessionEndReason::TabGone {
+            reason: TabGoneReason::Closed
+        }))
+    );
+}
+
+#[test]
+fn page_returned_cancels_the_drain_and_the_session_runs_again() {
+    let start = Instant::now();
+    let mut lifecycle = ProcessLifecycle::new(start, IDLE);
+    lifecycle.on_session_opened(&key("a"));
+    lifecycle.on_page_left(&key("a"), TabGoneReason::NavigatedAway);
+    let outcome = lifecycle.on_page_returned(&key("a"));
+    assert_eq!(outcome, PageLinkOutcome::Followed);
+    assert_eq!(
+        lifecycle.verdict(start + Duration::from_secs(3600)),
+        LifecycleVerdict::KeepRunning { wake_at: None }
+    );
+    // «Доиграно» после возврата — не повод выходить: доигрывания больше нет.
+    assert_eq!(
+        lifecycle.on_playback_drained(),
+        PlaybackDrainOutcome::NotDraining
+    );
+    // Новый конец вернувшегося сеанса работает как обычно.
+    let reason = SessionEndReason::ClosedByPage { code: Some(1000) };
+    lifecycle.on_lifecycle_event(&ended("a", reason));
+    assert_eq!(
+        lifecycle.verdict(start),
+        LifecycleVerdict::Exit(ExitCause::SessionEnded(reason))
+    );
+}
+
+#[test]
+fn closing_the_orphan_link_does_not_stop_the_drain() {
+    let start = Instant::now();
+    let mut lifecycle = ProcessLifecycle::new(start, IDLE);
+    lifecycle.on_session_opened(&key("a"));
+    lifecycle.on_page_left(&key("a"), TabGoneReason::Closed);
+    // Экстеншен закрыл сироту (отказ вернуть страницу) кодом 4002.
+    lifecycle.on_lifecycle_event(&ended(
+        "a",
+        SessionEndReason::ClosedByPage { code: Some(4002) },
+    ));
+    assert_eq!(
+        lifecycle.verdict(start),
+        LifecycleVerdict::AwaitPlaybackDrain
+    );
+    // Причина выхода — уход страницы, а не код закрытия сироты.
+    lifecycle.on_playback_drained();
+    assert_eq!(
+        lifecycle.verdict(start),
+        LifecycleVerdict::Exit(ExitCause::SessionEnded(SessionEndReason::TabGone {
+            reason: TabGoneReason::Closed
+        }))
+    );
+}
+
+#[test]
+fn page_link_intents_of_other_instances_change_nothing() {
+    let start = Instant::now();
+    let mut lifecycle = ProcessLifecycle::new(start, IDLE);
+    // До открытия сеанса уходить нечему.
+    assert_eq!(
+        lifecycle.on_page_left(&key("a"), TabGoneReason::Closed),
+        PageLinkOutcome::NotFollowed
+    );
+    lifecycle.on_session_opened(&instance_of("a", 2));
+    // Уход старого экземпляра того же ключа и чужого ключа не трогает активный.
+    assert_eq!(
+        lifecycle.on_page_left(&instance_of("a", 1), TabGoneReason::Closed),
+        PageLinkOutcome::NotFollowed
+    );
+    assert_eq!(
+        lifecycle.on_page_left(&key("b"), TabGoneReason::Closed),
+        PageLinkOutcome::NotFollowed
+    );
+    // Возврат без ухода — тоже ничего.
+    assert_eq!(
+        lifecycle.on_page_returned(&instance_of("a", 2)),
+        PageLinkOutcome::NotFollowed
+    );
+    assert_eq!(
+        lifecycle.verdict(start),
+        LifecycleVerdict::KeepRunning { wake_at: None }
+    );
+    // Ушла страница активного — возврат чужого экземпляра доигрывание не отменяет.
+    lifecycle.on_page_left(&instance_of("a", 2), TabGoneReason::Closed);
+    assert_eq!(
+        lifecycle.on_page_returned(&instance_of("a", 1)),
+        PageLinkOutcome::NotFollowed
+    );
+    assert_eq!(
+        lifecycle.verdict(start),
+        LifecycleVerdict::AwaitPlaybackDrain
+    );
+}
+
+#[test]
+fn page_return_after_the_exit_decision_is_ignored() {
+    let start = Instant::now();
+    let mut lifecycle = ProcessLifecycle::new(start, IDLE);
+    lifecycle.on_session_opened(&key("a"));
+    lifecycle.on_page_left(&key("a"), TabGoneReason::Closed);
+    lifecycle.on_playback_drained();
+    assert_eq!(
+        lifecycle.on_page_returned(&key("a")),
+        PageLinkOutcome::NotFollowed
+    );
+    assert!(matches!(
+        lifecycle.verdict(start),
+        LifecycleVerdict::Exit(_)
+    ));
+}
+
+#[test]
+fn a_new_session_during_the_orphan_drain_replaces_it() {
+    let start = Instant::now();
+    let mut lifecycle = ProcessLifecycle::new(start, IDLE);
+    lifecycle.on_session_opened(&instance_of("a", 1));
+    lifecycle.on_page_left(&instance_of("a", 1), TabGoneReason::Closed);
+    // Человек отдал другое видео: новый экземпляр, сирота закроется кодом 4001.
+    lifecycle.on_session_opened(&instance_of("b", 2));
+    lifecycle.on_lifecycle_event(&ended_instance(
+        "a",
+        1,
+        SessionEndReason::ClosedByPlayer(SessionCloseReason::ReplacedByAnotherTab),
+    ));
+    assert_eq!(
+        lifecycle.verdict(start),
+        LifecycleVerdict::KeepRunning { wake_at: None }
+    );
+}

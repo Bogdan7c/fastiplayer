@@ -42,8 +42,8 @@ use super::runtime::{BrowserSessionRuntime, RuntimeFinish, SessionMediaPort};
 use super::session_config::BrowserSessionSettings;
 use super::session_end::SessionEndView;
 use super::session_media::{
-    DrainProgress, GenerationPlacementPolicy, GenerationWait, MediaPlayback, PausedDrain,
-    SessionMedia, ViewerCloseStep, ViewerSeekNotice,
+    DrainProgress, GenerationPlacementPolicy, GenerationWait, MediaPlayback, PageReopenNotice,
+    PausedDrain, SessionMedia, ViewerCloseStep, ViewerSeekNotice,
 };
 use super::stream_intake::StreamIntake;
 use super::stream_queue::{OrderedSessionQueue, QueueLimits};
@@ -78,6 +78,9 @@ pub(super) struct CoreStep {
     /// Перемотка зрителя за скачанное во время досмотра отклонена (09a2, Д-5): окно
     /// показывает короткое сообщение. Безоконный процесс его не читает.
     pub(super) viewer_seek_notice: ViewerSeekNotice,
+    /// Возврат ушедшей страницы за шаг (11b1): «открываем страницу» или «не вышло» —
+    /// окно показывает короткое сообщение. Безоконный процесс его не читает.
+    pub(super) page_reopen_notice: PageReopenNotice,
     /// Плашка рекламы на этот шаг (09d): окно рисует её поверх видео и закрывает
     /// перемотку со скоростью; безоконный процесс её не читает.
     pub(super) ad_plate: Option<AdPlate>,
@@ -259,6 +262,7 @@ impl BrowserSessionCore {
             generation_rejection: self.media.take_generation_rejection_notice(),
             generation_wait: self.media.generation_wait(),
             viewer_seek_notice: self.media.take_viewer_seek_notice(),
+            page_reopen_notice: self.media.take_page_reopen_notice(),
             ad_plate: self.media.ad_plate(now),
         }
     }

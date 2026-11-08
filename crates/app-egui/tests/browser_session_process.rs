@@ -881,3 +881,7 @@ mod hls_generation_edges;
 /// Окно эфира live HLS странице 1.2 и перемотка внутри окна (10a3).
 #[path = "browser_session_process/hls_live_window.rs"]
 mod hls_live_window;
+
+/// Возврат ушедшей страницы в тот же сеанс и окно (протокол 1.4, «сирота», 11b1).
+#[path = "browser_session_process/tab_return.rs"]
+mod tab_return;

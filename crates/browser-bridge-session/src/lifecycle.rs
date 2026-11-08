@@ -23,11 +23,25 @@
 //!   выхода: событие `Ended` старого ключа может прийти раньше, чем приложение
 //!   узнает об открытии нового, поэтому оно игнорируется и по ключу, и по причине;
 //! - решение об выходе необратимо: после него новый сеанс означает новый запуск.
+//!
+//! «Сирота» (протокол 1.4, сессия 11b1, решения 240–241): страница ушла, но связь с
+//! экстеншеном держится, и страницу можно вернуть в тот же сеанс. Сервер сеанс НЕ
+//! заканчивает, поэтому о такой смене машине говорит приложение (уведомления потока
+//! приёма идут в порядке кадров на проводе):
+//! - [`ProcessLifecycle::on_page_left`] — страница активного сеанса ушла: «доигрываем»,
+//!   как после `tab_gone` с той же причиной (выход — по «доиграно»);
+//! - [`ProcessLifecycle::on_page_returned`] — страница вернулась в этот же экземпляр:
+//!   снова «сеанс идёт». Это единственный путь назад из «доигрываем»; решение «выход»
+//!   по-прежнему необратимо.
+//!
+//! Позднее `Ended` того же экземпляра (сирота закрылась: отказ, браузер закрыт) в
+//! «доигрываем» игнорируется, как любой повторный конец, — доигрывание идёт дальше.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use browser_bridge_protocol::SessionCloseReason;
+use browser_bridge_protocol::session::TabGoneReason;
 
 use crate::registry::{SessionInstance, SessionRef};
 
@@ -89,6 +103,18 @@ pub enum PlaybackDrainOutcome {
     ExitDecided,
     /// Машина не доигрывала (сеанс активен, не открыт или выход уже решён): ничего не изменилось.
     NotDraining,
+}
+
+/// Итог намерения о странице сеанса ([`ProcessLifecycle::on_page_left`],
+/// [`ProcessLifecycle::on_page_returned`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageLinkOutcome {
+    /// Машина сменила состояние: «доигрываем» после ухода или «сеанс идёт» после возврата.
+    Followed,
+    /// Ничего не изменилось: это не тот экземпляр, который машина ведёт в нужном
+    /// состоянии (чужой или старый сеанс, уход не активного, возврат без ухода, выход уже
+    /// решён).
+    NotFollowed,
 }
 
 /// Что известно машине о сеансах.
@@ -179,6 +205,36 @@ impl ProcessLifecycle {
             }
             // Чужой/старый/повторный экземпляр или решение уже принято: игнорируем.
             Tracking::Active(_) | Tracking::Draining { .. } | Tracking::Finished(_) => {}
+        }
+    }
+
+    /// Страница активного сеанса ушла, но связь держится («сирота», протокол 1.4):
+    /// машина доигрывает так же, как после `tab_gone` с этой причиной — та же причина
+    /// станет причиной выхода, если страница не вернётся.
+    pub fn on_page_left(&mut self, session: &SessionRef, reason: TabGoneReason) -> PageLinkOutcome {
+        match &self.tracking {
+            Tracking::Active(active) if active == session => {
+                self.tracking = Tracking::Draining {
+                    session: session.clone(),
+                    reason: SessionEndReason::TabGone { reason },
+                };
+                PageLinkOutcome::Followed
+            }
+            _ => PageLinkOutcome::NotFollowed,
+        }
+    }
+
+    /// Страница вернулась в доигрываемый экземпляр (тот же сеанс, решение 241): доигрывание
+    /// отменяется, дальше всё как для активного сеанса — в том числе новый конец.
+    pub fn on_page_returned(&mut self, session: &SessionRef) -> PageLinkOutcome {
+        match &self.tracking {
+            Tracking::Draining {
+                session: draining, ..
+            } if draining == session => {
+                self.tracking = Tracking::Active(session.clone());
+                PageLinkOutcome::Followed
+            }
+            _ => PageLinkOutcome::NotFollowed,
         }
     }
 

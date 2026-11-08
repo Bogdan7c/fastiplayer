@@ -49,7 +49,11 @@ pub(super) fn exit_plan(view: SessionEndView, now: Instant) -> WindowExit {
         | SessionEndView::PageTookVideoBack => WindowExit::AfterNotice {
             close_at: now + END_NOTICE_PERIOD,
         },
-        SessionEndView::Silent | SessionEndView::WaitingForViewer(_) => WindowExit::Now,
+        // Возврат страницы держит доигрывание: машина выхода «выход» в это время не скажет;
+        // если всё же скажет (окно закрыто), ждать нечего.
+        SessionEndView::Silent
+        | SessionEndView::WaitingForViewer(_)
+        | SessionEndView::ReopeningPage => WindowExit::Now,
     }
 }
 

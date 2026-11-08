@@ -53,7 +53,7 @@ use super::super::rejection_notice::{
     GenerationRejectionNotice, rejection_log_label, rejection_viewer_message,
 };
 use super::super::runtime::{DRAIN_FALLBACK_WAKE, RuntimeFinish};
-use super::super::session_media::ViewerSeekNotice;
+use super::super::session_media::{PageReopenNotice, PageReopenRefusal, ViewerSeekNotice};
 use super::desktop_transport::WindowDesktopTransport;
 use super::driver::WindowPlaybackDriver;
 use super::end_notice::{ShownEndNotice, WindowExit, exit_plan};
@@ -65,6 +65,7 @@ use super::remote::PlaybackDesk;
 use crate::app_wake::{AppWakeEvent, AppWakeOwner, AppWakePort, AppWakeProxy};
 use crate::process_shutdown::ShutdownDeadline;
 use crate::settings_runtime::BrowserBufferWindowOwner;
+use browser_bridge_protocol::session::PageReopenFailure;
 
 /// Сколько ждать плеер, очередь и фоновые задачи окна при выходе.
 ///
@@ -242,6 +243,8 @@ impl BrowserWindowApp {
             // Клик за скачанное во время досмотра отклонён (09a2, Д-5): бегунок остался у
             // позиции — зрителю короткое «почему».
             show_viewer_seek_notice(instance, step.viewer_seek_notice);
+            // Возврат ушедшей страницы (11b1): «открываем» или «не вышло, почему».
+            show_page_reopen_notice(instance, step.page_reopen_notice);
             // Реклама на странице (09d): плашка поверх видео, перемотка и скорость заперты.
             instance.apply_ad_plate(step.ad_plate);
         }
@@ -519,6 +522,48 @@ fn show_viewer_seek_notice(instance: &mut BrowserWindowInstance, notice: ViewerS
         return;
     };
     info!("Browser window tells the viewer: only the downloaded part can be played");
+    instance.notify_viewer(message);
+}
+
+/// Текст о возврате страницы: короткий английский тост без данных страницы (11b1). После
+/// отказа досмотр идёт как в 04b, и его конец окно назовёт само («Source tab closed»).
+const fn page_reopen_message(notice: PageReopenNotice) -> Option<&'static str> {
+    match notice {
+        PageReopenNotice::Nothing => None,
+        PageReopenNotice::Reopening => Some("Reopening the page…"),
+        PageReopenNotice::Refused(refusal) => Some(match refusal {
+            PageReopenRefusal::Extension(PageReopenFailure::NoBrowserWindow) => {
+                "Couldn't reopen the page: no browser window is open"
+            }
+            PageReopenRefusal::Extension(PageReopenFailure::PageDidNotLoad) => {
+                "Couldn't reopen the page: it didn't load"
+            }
+            PageReopenRefusal::Extension(PageReopenFailure::NotTheSameVideo) => {
+                "Couldn't reopen the page: it shows a different video"
+            }
+            PageReopenRefusal::Extension(PageReopenFailure::VideoDidNotStart) => {
+                "Couldn't reopen the page: its video didn't start"
+            }
+            PageReopenRefusal::LinkLost => {
+                "Couldn't reopen the page: lost connection to the browser"
+            }
+            PageReopenRefusal::NoAnswer => "Couldn't reopen the page: the browser didn't answer",
+            PageReopenRefusal::NotSent => "Couldn't reopen the page",
+        }),
+    }
+}
+
+/// Показывает зрителю, что стало с просьбой вернуть страницу (если за шаг что-то стало), и
+/// пишет одну строку журнала с меткой — её читают сквозные тесты.
+fn show_page_reopen_notice(instance: &mut BrowserWindowInstance, notice: PageReopenNotice) {
+    let Some(message) = page_reopen_message(notice) else {
+        return;
+    };
+    let class = match notice {
+        PageReopenNotice::Refused(refusal) => refusal.log_label(),
+        PageReopenNotice::Reopening | PageReopenNotice::Nothing => "reopening",
+    };
+    info!(%class, "Browser window tells the viewer about the page reopen");
     instance.notify_viewer(message);
 }
 

@@ -94,6 +94,10 @@ pub(crate) enum SessionEndView {
     Silent,
     /// Окно на паузе ждёт человека; скачанное можно досмотреть.
     WaitingForViewer(DrainCause),
+    /// Скачанное кончилось, а экстеншен ещё возвращает страницу по просьбе зрителя
+    /// («сирота», протокол 1.4, решение 240): окно не закрывается, пока не придёт
+    /// страница или отказ.
+    ReopeningPage,
     /// Доигрывание кончилось: сообщение и закрытие окна.
     Finished(DrainFinish),
     /// Связь оборвана по ошибке потока (код 4003, решение 132): видео возвращено странице
@@ -172,6 +176,7 @@ const PAGE_PLAYER_STOPPED_STALLED: &str = "The page's player stopped — playbac
 const PAGE_PLAYER_STOPPED_FAILED: &str = "The page's player stopped — playback failed";
 const PAGE_PLAYER_STOPPED_WAITING: &str =
     "The page's player stopped — you can still watch what was downloaded";
+const REOPENING_PAGE: &str = "Reopening the page…";
 const STREAM_ERROR: &str = "Stream error — video returned to the page";
 const PAGE_TOOK_VIDEO_BACK: &str = "The page took the video back";
 const BROWSER_LOST: &str = "Lost connection to the browser";
@@ -190,6 +195,7 @@ impl SessionEndView {
                 Some(PAGE_PLAYER_STOPPED_WAITING)
             }
             Self::WaitingForViewer(DrainCause::BrowserConnectionLost) => Some(BROWSER_LOST_WAITING),
+            Self::ReopeningPage => Some(REOPENING_PAGE),
             Self::Finished(finish) => Some(finished_message(finish)),
             // Сбой с любой стороны зритель видит одинаково: видео снова у страницы.
             Self::StreamError | Self::PageStreamError => Some(STREAM_ERROR),
@@ -208,6 +214,11 @@ impl SessionEndView {
             Self::WaitingForViewer(cause) => SessionEndLogLabels {
                 notice: "waiting_for_viewer",
                 cause: cause.log_label(),
+                end: "none",
+            },
+            Self::ReopeningPage => SessionEndLogLabels {
+                notice: "reopening_page",
+                cause: "page_left",
                 end: "none",
             },
             Self::Finished(finish) => SessionEndLogLabels {
@@ -238,7 +249,7 @@ impl SessionEndView {
 /// Метки журнала одного сообщения (без данных страницы).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SessionEndLogLabels {
-    /// `silent` / `waiting_for_viewer` / `finished` / `stream_error` /
+    /// `silent` / `waiting_for_viewer` / `reopening_page` / `finished` / `stream_error` /
     /// `page_took_video_back`.
     pub(crate) notice: &'static str,
     /// Метка [`DrainCause`], сторона сбоя потока (`protocol_violation` — плеер,

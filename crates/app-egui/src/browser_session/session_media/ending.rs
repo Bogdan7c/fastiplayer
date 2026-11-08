@@ -16,12 +16,14 @@
 use std::time::Instant;
 
 use browser_bridge_session::{SessionEndReason, SessionRef};
+use tracing::debug;
 
 use super::SessionMedia;
 use super::drain::{
     DrainContent, DrainEnd, DrainPolicy, DrainProgress, DrainSnapshot, DrainWatch, IntakeStance,
     PageStance,
 };
+use super::page_reopen::PageReopenHold;
 use crate::browser_session::session_end::{DrainCause, DrainFinish, SessionEndView};
 
 /// Доигрывание закончившегося сеанса.
@@ -32,6 +34,9 @@ pub(super) struct ActiveDrain {
     ended_because: SessionEndReason,
     /// Последний ответ на «доиграно?» (`None` — цикл ещё не спрашивал).
     last_progress: Option<DrainProgress>,
+    /// Досмотр кончился бы, но его держит просьба вернуть страницу (11b1,
+    /// [`super::page_reopen`]): окно говорит «Reopening the page…».
+    held_for_page_reopen: bool,
 }
 
 impl SessionMedia {
@@ -48,17 +53,35 @@ impl SessionMedia {
     /// Конец чужого (уже заменённого) экземпляра ничего не трогает. Причина конца
     /// запоминается для сообщения окна; ждёт ли процесс доигрывания, решает машина
     /// выхода (`ProcessLifecycle`), а не медиа-часть.
+    ///
+    /// Если текущий экземпляр уже досматривается, это закрылась связь «сироты» (протокол
+    /// 1.4: страница ушла раньше, `page_left`): досмотр идёт дальше с причиной ухода
+    /// страницы. Что вернуть страницу больше некому, медиа-часть решает не здесь, а по
+    /// `InstanceSealed` ([`Self::note_instance_sealed`]): это событие сервера обгоняет
+    /// данные, и последнее слово экстеншена (`page_reopen_failed` с причиной) ещё в пути.
     pub(crate) fn on_session_ended(&mut self, session: &SessionRef, reason: SessionEndReason) {
-        if self.is_current(session) {
-            self.outbound.forget_pending_of_ended_session();
-            // Страницы нет — рекламы на её экране тоже: плашку снимаем вместе с вкладкой.
-            self.ad.clear();
-            self.drain = Some(ActiveDrain {
-                watch: DrainWatch::begin(self.drain_policy),
-                ended_because: reason,
-                last_progress: None,
-            });
+        if !self.is_current(session) {
+            return;
         }
+        if self.is_draining() {
+            debug!("The orphan link closed; its last messages are still on the way");
+            return;
+        }
+        self.begin_drain(reason);
+    }
+
+    /// Страницы больше нет (сеанс кончился или страница ушла, оставив связь): отложенное
+    /// ей забывается, всё полученное досматривается.
+    pub(super) fn begin_drain(&mut self, reason: SessionEndReason) {
+        self.outbound.forget_pending_of_ended_session();
+        // Страницы нет — рекламы на её экране тоже: плашку снимаем вместе с вкладкой.
+        self.ad.clear();
+        self.drain = Some(ActiveDrain {
+            watch: DrainWatch::begin(self.drain_policy),
+            ended_because: reason,
+            last_progress: None,
+            held_for_page_reopen: false,
+        });
     }
 
     /// Доиграно ли полученное после конца сеанса (зовёт главный цикл, пока машина
@@ -82,14 +105,23 @@ impl SessionMedia {
                 PageStance::WantsPause
             },
         };
-        match self.drain.as_mut() {
-            Some(active) => {
-                let progress = active.watch.evaluate(snapshot, now);
-                active.last_progress = Some(progress);
-                progress
-            }
-            None => DrainProgress::Drained(DrainEnd::NothingToPlay),
+        let Some(raw) = self
+            .drain
+            .as_mut()
+            .map(|active| active.watch.evaluate(snapshot, now))
+        else {
+            return DrainProgress::Drained(DrainEnd::NothingToPlay);
+        };
+        // Пока экстеншен возвращает страницу, конец скачанного окно не закрывает.
+        let (progress, held) = match self.hold_drain_for_page_reopen(raw, now) {
+            PageReopenHold::Held(progress) => (progress, true),
+            PageReopenHold::NotHeld(progress) => (progress, false),
+        };
+        if let Some(active) = self.drain.as_mut() {
+            active.last_progress = Some(progress);
+            active.held_for_page_reopen = held;
         }
+        progress
     }
 
     /// Что окно должно сказать о конце сеанса сейчас (по последнему ответу «доиграно?»).
@@ -106,6 +138,9 @@ impl SessionMedia {
             return SessionEndView::of_undrained_end(active.ended_because)
                 .unwrap_or(SessionEndView::Silent);
         };
+        if active.held_for_page_reopen {
+            return SessionEndView::ReopeningPage;
+        }
         match active.last_progress {
             Some(DrainProgress::AwaitingViewer) => SessionEndView::WaitingForViewer(cause),
             Some(DrainProgress::Drained(end)) => {
