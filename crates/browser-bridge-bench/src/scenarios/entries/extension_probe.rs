@@ -15,9 +15,9 @@ const SERVICE_PAGE_MARK: &str = "options.html";
 
 /// Вкладка браузера, как её видит экстеншен.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct TabInfo {
-    pub(super) url: String,
-    pub(super) active: bool,
+pub(in crate::scenarios) struct TabInfo {
+    pub(in crate::scenarios) url: String,
+    pub(in crate::scenarios) active: bool,
 }
 
 /// Прямоугольник кнопки поверх видео в координатах окна страницы.
@@ -117,7 +117,9 @@ fn browser_problem(what: &str, error: BrowserError) -> String {
 }
 
 /// Вкладки браузера (порядок экстеншена).
-pub(super) fn read_tabs(browser: &mut dyn BrowserUnderTest) -> Result<Vec<TabInfo>, String> {
+pub(in crate::scenarios) fn read_tabs(
+    browser: &mut dyn BrowserUnderTest,
+) -> Result<Vec<TabInfo>, String> {
     let text = browser
         .run_in_service_page(&tabs_function())
         .map_err(|error| browser_problem("reading the tabs", error))?;

@@ -29,6 +29,10 @@
 //! страницы и после той же паузы обновляет его сборкой из каталога (там версия должна быть новее).
 //! Значок и кнопку нажимает настоящая мышь снаружи (`--hand-off person`).
 //!
+//! Возврат вкладки (11b2): `--tab-return-after <с>` — через столько секунд после передачи помощник ставит
+//! окно плеера на паузу (MPRIS), закрывает вкладку страницы, ждёт и жмёт play в окне: экстеншен должен
+//! открыть страницу заново, и тот же сеанс продолжится в том же окне. Журнал сироты и возврата печатается.
+//!
 //! Экстеншен должен быть собран (`npm run build` в `extensions/browser`), плеер берётся из
 //! `target/release`. Адреса и журнал остаются только в выводе: в отчёты их не копировать.
 
@@ -58,7 +62,16 @@ const INTERESTING_LINES: &[&str] = &[
     "ERROR",
     "ClosedBy",
     "Browser session ended",
+    // Возврат вкладки (11b2): уход страницы, просьба, итог, слова окна.
+    "followed the page link",
+    "bring the page back",
+    "The page came back",
+    "could not be brought back",
+    "about the page reopen",
 ];
+/// Сколько окно стоит на паузе до закрытия вкладки и сколько сирота ждёт до play (`--tab-return-after`).
+const TAB_RETURN_PAUSE: Duration = Duration::from_secs(1);
+const TAB_RETURN_ORPHAN_WAIT: Duration = Duration::from_secs(3);
 /// Подстрока журнала: плашка предлагает нашу кнопку «Skip» (подсказку `on_page` робот не жмёт).
 const SKIP_OFFER: &str = "skip=skip";
 /// Как часто просим передачу, пока видео нет.
@@ -121,6 +134,8 @@ struct Arguments {
     /// Разрешить автозапуск без жеста, как на стенде (`false` — обычные настройки браузера).
     autoplay_without_gesture: bool,
     extension_arrival: ExtensionArrival,
+    /// Через сколько секунд после передачи закрыть вкладку и попросить её назад (`None` — не просить).
+    tab_return_after: Option<Duration>,
 }
 
 fn parse_arguments() -> Result<Arguments, String> {
@@ -135,6 +150,7 @@ fn parse_arguments() -> Result<Arguments, String> {
     let mut wait_seconds = 0;
     let mut press = Press::Nobody;
     let mut extension_arrival = ExtensionArrival::AtStart;
+    let mut tab_return_after = None;
     let mut arguments = std::env::args().skip(1);
     while let Some(name) = arguments.next() {
         let value = arguments
@@ -166,6 +182,12 @@ fn parse_arguments() -> Result<Arguments, String> {
                     .parse()
                     .map_err(|error| format!("--seconds: {error}"))?;
             }
+            ("--tab-return-after", _) => {
+                let after: u64 = value
+                    .parse()
+                    .map_err(|error| format!("--tab-return-after: {error}"))?;
+                tab_return_after = Some(Duration::from_secs(after));
+            }
             ("--wait", _) => {
                 wait_seconds = value.parse().map_err(|error| format!("--wait: {error}"))?;
             }
@@ -186,6 +208,7 @@ fn parse_arguments() -> Result<Arguments, String> {
         press,
         autoplay_without_gesture,
         extension_arrival,
+        tab_return_after,
     })
 }
 
@@ -354,7 +377,15 @@ fn run(arguments: &Arguments) -> Result<(), String> {
     let verbose = std::env::var_os("FASTIPLAYER_LIVE_ALL_LINES").is_some();
     let mut offset = 0;
     let mut offer_waiting = false;
+    let tab_return_at = arguments
+        .tab_return_after
+        .map(|after| Instant::now() + after);
+    let mut tab_closed = false;
     while started && Instant::now() < deadline {
+        if !tab_closed && tab_return_at.is_some_and(|at| Instant::now() >= at) {
+            tab_closed = true;
+            close_tab_and_ask_back(browser.as_mut(), &tab, &control);
+        }
         for line in read_new_lines(environment.player_log(), &mut offset) {
             // `FASTIPLAYER_LIVE_ALL_LINES=1`: весь журнал плеера, для разбора.
             if verbose || INTERESTING_LINES.iter().any(|needle| line.contains(needle)) {
@@ -375,6 +406,32 @@ fn run(arguments: &Arguments) -> Result<(), String> {
     }
     browser.shutdown().map_err(|error| error.to_string())?;
     Ok(())
+}
+
+/// Возврат вкладки (11b2): пауза в окне, вкладку закрыли, сирота подождала, play в окне. Сбои печатаются:
+/// это помощник человека, итог он видит в журнале плеера.
+fn close_tab_and_ask_back(
+    browser: &mut dyn BrowserUnderTest,
+    tab: &TabHandle,
+    control: &PlayerControl,
+) {
+    if let Err(error) = control.pause() {
+        println!("tab return: pause failed: {error}");
+    }
+    sleep(TAB_RETURN_PAUSE);
+    // Служебная вкладка — до закрытия: Firefox, закрыв последнюю вкладку, закрыл бы весь браузер.
+    if let Err(error) = browser.open_service_page(tab) {
+        println!("tab return: the service page did not open: {error}");
+    }
+    match browser.close_tab(tab.clone()) {
+        Ok(()) => println!("tab return: the page tab is closed"),
+        Err(error) => println!("tab return: closing the tab failed: {error}"),
+    }
+    sleep(TAB_RETURN_ORPHAN_WAIT);
+    match control.play() {
+        Ok(()) => println!("tab return: play pressed in the player window"),
+        Err(error) => println!("tab return: play failed: {error}"),
+    }
 }
 
 fn main() {

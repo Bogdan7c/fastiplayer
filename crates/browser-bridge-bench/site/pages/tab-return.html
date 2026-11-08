@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tab-return</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>tab-return</h1>
+<div id="stage"></div>
+<script type="module">
+// Страница сценария `tab-return` (сессия 11b2, решения 240–241): вкладку с переданным видео закрывают,
+// а экстеншен по просьбе плеера открывает ЭТОТ ЖЕ адрес заново. Поэтому страница грузится дважды с одним
+// `?run=`, и второй документ ведёт себя как обычный сайт после перезагрузки: сам начинает играть с нуля.
+//
+// Какой документ второй, страница узнаёт у стенда: робот уже говорил этому прогону `handed-off`
+// (`GET /bench/commands/<run>/0` не пуст). Канал команд страница больше не читает: второй документ
+// иначе проиграл бы старые команды робота заново.
+//
+// Параметры адреса:
+//   source=mse|file   чем играет фильм: MSE (свой плеер страницы) или файл `<video src>`;
+//   second=same|other|idle  что делает второй документ: тот же фильм, ДРУГОЙ ролик (сайт-одностраничник),
+//                     или ничего не запускает (сайт ждёт клика).
+// Журнал (POST /bench/log, судит Rust):
+//   `tab-return: load doc=<id> second_load=<bool>` — документ загрузился;
+//   `tab-return: handoff-ready` — первый документ играет (робот может отдавать вкладку);
+//   `tab-return: state doc=<id> second_load=<bool> ct=<с> paused=<bool> real_frames=<n> probe=<bool>` — раз в
+//   секунду; `real_frames` — настоящие кадры браузера мимо тени (свежий about:blank-iframe).
+import { pageParams, runScenario } from '../lib/bench-report.js';
+import { loadCatalog, BenchPlayer, standardRefs } from '../lib/bench-player.js';
+import { mountVideo } from '../lib/scenario-kit.js';
+import { createRealFrameProbe } from '../lib/handoff-mode.js';
+import { checkPlaying, waitFor } from '../lib/bench-checks.js';
+
+/** Фильм MSE (30 с) и фильм-файл (60 с): длины разные, чтобы сверка длины проверялась на обоих. */
+const MSE_FILM_ASSET = 'h264-aac';
+const FILE_FILM_ASSET = 'progressive-long-h264-aac';
+/** «Другой ролик» второго документа: файл 12 с — ни по длине, ни по форме не фильм. */
+const OTHER_VIDEO_ASSET = 'progressive-h264-aac';
+/** Шаг строки состояния, мс. */
+const STATE_PERIOD_MS = 1000;
+/** Сколько ждём, что первый документ заиграл, мс. */
+const FIRST_PLAY_WAIT_MS = 15000;
+/** «Играет»: часы ушли хотя бы на столько, с. */
+const PLAYING_ADVANCE_S = 0.5;
+
+const params = pageParams();
+const documentId = Math.random().toString(36).slice(2, 10);
+
+function log(line) {
+  console.log(`[tab-return] ${line}`);
+  return fetch(`${params.reportOrigin}/bench/log`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'page', run: params.run, line: `tab-return: ${line}` }),
+    keepalive: true,
+  }).catch((error) => console.error('tab-return: log failed', error));
+}
+
+/** Второй ли это документ прогона: робот уже отдавал вкладку (команда `handed-off` у стенда). */
+async function isSecondLoad() {
+  try {
+    const response = await fetch(`${params.reportOrigin}/bench/commands/${params.run}/0`);
+    if (!response.ok) return false;
+    const commands = await response.json();
+    return Array.isArray(commands) && commands.includes('handed-off');
+  } catch (error) {
+    log(`command probe failed: ${error}`);
+    return false;
+  }
+}
+
+/** Файл `<video src>`: как обычный сайт, `play()` сразу после адреса. */
+function startFile(video, catalog, assetId, wantsPlay) {
+  const asset = catalog.assets[assetId];
+  video.src = `/media/${asset.url}`;
+  if (wantsPlay) video.play().catch((error) => log(`file play() rejected: ${error?.name}`));
+}
+
+/** MSE: свой плеер страницы; чужую перемотку элемента он подхватывает и качает с нового места. */
+async function startMse(video, catalog, assetId, wantsPlay) {
+  const player = new BenchPlayer(video, catalog, { log: (line) => log(`player ${line}`) });
+  player.followPlayerSeeks();
+  await player.start({ refs: standardRefs(catalog, assetId), autoplay: wantsPlay });
+}
+
+// Без робота (команда `pages`) страница доказывает только одно: оба фильма играют силами браузера.
+if (!params.handoff) {
+  await runScenario('tab-return', async (ctx) => {
+    const catalog = await loadCatalog();
+    const mseVideo = mountVideo(document.getElementById('stage'), 'mse');
+    await startMse(mseVideo, catalog, MSE_FILM_ASSET, true);
+    await checkPlaying(ctx, mseVideo, 'mse-film-plays');
+    const fileVideo = mountVideo(document.getElementById('stage'), 'file');
+    startFile(fileVideo, catalog, FILE_FILM_ASSET, true);
+    await checkPlaying(ctx, fileVideo, 'file-film-plays');
+  });
+} else {
+  await runReturnPage();
+}
+
+/** Режим передачи: первый документ отдаёт фильм, второй — вернувшаяся страница (см. шапку). */
+async function runReturnPage() {
+  const secondLoad = await isSecondLoad();
+  const variant = secondLoad ? (params.raw.get('second') ?? 'same') : 'same';
+  const source = params.raw.get('source') ?? 'mse';
+  log(`load doc=${documentId} second_load=${secondLoad} variant=${variant} source=${source}`);
+
+  const catalog = await loadCatalog();
+  const video = mountVideo(document.getElementById('stage'));
+  const probe = await createRealFrameProbe();
+  setInterval(() => {
+    const frames = probe.available ? probe.framesOf(video) : 0;
+    log(`state doc=${documentId} second_load=${secondLoad} ct=${video.currentTime.toFixed(2)} paused=${video.paused} real_frames=${frames} probe=${probe.available}`);
+  }, STATE_PERIOD_MS);
+
+  const wantsPlay = variant !== 'idle';
+  const filmAsset = source === 'file' ? FILE_FILM_ASSET : MSE_FILM_ASSET;
+  const assetId = variant === 'other' ? OTHER_VIDEO_ASSET : filmAsset;
+  const isFile = variant === 'other' || source === 'file';
+  // Второй документ обещание `play()` может получить только от тени: старт не ждём, отчёт идёт сам.
+  const starting = isFile ? Promise.resolve(startFile(video, catalog, assetId, wantsPlay)) : startMse(video, catalog, assetId, wantsPlay);
+  starting.catch((error) => log(`start failed: ${error}`));
+  if (!secondLoad) {
+    const startedAt = video.currentTime;
+    const playing = await waitFor(() => !video.paused && video.currentTime >= startedAt + PLAYING_ADVANCE_S, FIRST_PLAY_WAIT_MS);
+    log(playing ? 'handoff-ready' : 'first document did not start playing');
+  }
+}
+</script>
+</body>
+</html>

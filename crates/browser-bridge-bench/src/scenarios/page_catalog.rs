@@ -132,6 +132,8 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("return-kit"),
     page("return-offset"),
     page("return-baked-ad"),
+    // 11b2, решения 240–241: возврат закрытой вкладки (сценарий `tab-return`): страница грузится дважды.
+    page("tab-return"),
     page("live-unload"),
     page("live-unload-new-ms"),
     page_unsupported_in("live-unload-worker", &[BrowserKind::Firefox]),

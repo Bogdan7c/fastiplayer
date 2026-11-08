@@ -27,6 +27,8 @@ pub(super) use ad_hop::AD_HOST;
 pub(super) use decoys::AD_FILE_PATH;
 use judge::HookEvidence;
 pub(super) use judge::browser_does_not_decode;
+/// Тот же потолок «браузер под тенью почти не декодирует» судит и вернувшуюся вкладку (`tab-return`, 11b2).
+pub(super) use judge::max_real_frames;
 pub(super) use judge::{CaptureEvidence, judge_capture};
 
 use super::context::{ScenarioError, Stand};

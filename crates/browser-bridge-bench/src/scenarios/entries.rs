@@ -24,7 +24,8 @@ mod common;
 mod consent_rows;
 mod disabled_rows;
 mod entry_evidence;
-mod extension_probe;
+/// Зонды экстеншена (вкладки, слой страницы); вкладки читает и `tab-return` (11b2).
+pub(in crate::scenarios) mod extension_probe;
 mod late_rows;
 mod link_rows;
 mod menu_entry;

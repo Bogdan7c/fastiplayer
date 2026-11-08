@@ -306,6 +306,12 @@ impl<'a> HandoffRun<'a> {
         self.browser.open_service_page(&self.tab)
     }
 
+    /// Закрывает вкладку страницы прогона, как зритель (11b2: возврат закрытой вкладки). Служебная
+    /// страница должна быть уже открыта: Firefox, закрыв последнюю вкладку, закрыл бы весь браузер.
+    pub(super) fn close_page_tab(&mut self) -> Result<(), BrowserError> {
+        self.browser.close_tab(self.tab.clone())
+    }
+
     /// Адрес страницы стенда без строки запроса: по нему служебная страница находит вкладку.
     pub(super) fn page_url_prefix(&self) -> String {
         format!("{}/site/pages/{}.html", self.page_origin, self.page_id)

@@ -31,6 +31,7 @@ mod pages;
 mod player_commands;
 mod replay;
 mod run_tweaks;
+mod tab_return;
 
 pub use attacks::attack_page_ids;
 pub use context::{BrowserExecutables, RunSettings, ScenarioError, Stand};
@@ -124,6 +125,17 @@ pub fn run_page_return(
 /// Идентификаторы страниц `page-return` (для проверки `--page` в командной строке).
 pub fn page_return_page_ids() -> Vec<&'static str> {
     page_return::page_ids()
+}
+
+/// Возврат закрытой вкладки в тот же сеанс (11b2, решения 240–241): страница уходит, play в окне
+/// открывает её заново (все строки или страница из `--page`).
+pub fn run_tab_return(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> Vec<StepResult> {
+    tab_return::run_all(stand, browser, filter)
+}
+
+/// Идентификаторы страниц `tab-return` (для проверки `--page` в командной строке).
+pub fn tab_return_page_ids() -> Vec<&'static str> {
+    tab_return::page_ids()
 }
 
 /// Родной HLS LIVE под тенью (10a3): эфир идёт, страница видит `duration = Infinity` и едущее окно

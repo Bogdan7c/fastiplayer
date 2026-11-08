@@ -7,7 +7,7 @@ use browser_bridge_bench::environment::{DisplayTarget, PlayerConfigProfile};
 use browser_bridge_bench::scenarios::{
     BrowserExecutables, DEFAULT_MIN_FRAMES, PAGE_SCENARIOS, PageFilter, ReplayOptions, RunSettings,
     attack_page_ids, capture_page_ids, end_page_ids, entries_page_ids, page_return_page_ids,
-    player_command_page_ids,
+    player_command_page_ids, tab_return_page_ids,
 };
 
 /// Что запускать.
@@ -25,6 +25,7 @@ pub enum Command {
     HlsLive,
     Entries,
     PageReturn,
+    TabReturn,
     BlockerMatrix,
     Replay,
     GenerateRecording,
@@ -73,6 +74,7 @@ impl Command {
                 | Self::Attacks
                 | Self::Entries
                 | Self::PageReturn
+                | Self::TabReturn
                 | Self::All
         )
     }
@@ -89,6 +91,7 @@ impl Command {
             Self::Attacks => filter.matches_any_of(attack_page_ids()),
             Self::Entries => filter.matches_any_of(entries_page_ids()),
             Self::PageReturn => filter.matches_any_of(page_return_page_ids()),
+            Self::TabReturn => filter.matches_any_of(tab_return_page_ids()),
             // `all` всегда начинается с `pages`, где есть любая известная страница.
             Self::All => filter.matches_any_of(pages()),
             _ => filter.selects_everything(),
@@ -138,6 +141,11 @@ Commands:
                     page; a second tab replaces the first; Return and close at once; the page player
                     works after Return; offset and baked-ad timelines; HLS live edge; a broken page
                     player ends with cause=page_player_failed; Return on a link-entry tab
+  tab-return        tab return (11b2), player driven over MPRIS: the source tab is closed while the window
+                    is paused, play in the window reopens the page in a new tab and the same session goes
+                    on from the same second (MSE and file), the reopened page under the shadow barely
+                    decodes; a page showing another video is refused and the window watches the rest;
+                    closing the window while the page reopens closes the reopened tab
   blocker-matrix    pages x (no blocker / blocker installed first / ours first) with uBlock
                     Origin (Lite); fetch the blockers first with
                     scripts/browser-bridge-bench-fetch-blockers.sh; not part of 'all'
@@ -148,7 +156,7 @@ Commands:
   generate-recording  write a synthetic recording (--output FILE.fprec [--asset ID]) from a
                     stand fMP4 asset: add_source_buffer, paced appends, handoff_began
   all               pages, capture, page-ends, player-commands, extension-status, codecs, attacks,
-                    local-address, hls-live, entries and page-return (smoke is a subset of capture), one after another; with --page
+                    local-address, hls-live, entries, page-return and tab-return (smoke is a subset of capture), one after another; with --page
                     only the page steps run
 
 Options:
@@ -158,7 +166,7 @@ Options:
   --extra-extension <PATH>            extra extension (unpacked dir, .xpi or .zip) in every
                                       browser launch; repeatable (ad blocker mechanism)
   --page <ID>                         only this page (pages, capture, page-ends,
-                                      player-commands, attacks, entries, page-return, all);
+                                      player-commands, attacks, entries, page-return, tab-return, all);
                                       repeatable; ids are the names in site/pages
   --recording <FILE>                  replay: the .fprec file to replay
   --min-frames <N>                    replay: presented frames the player must reach (default: 50)
@@ -367,6 +375,7 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
         "hls-live" => Ok(Command::HlsLive),
         "entries" => Ok(Command::Entries),
         "page-return" => Ok(Command::PageReturn),
+        "tab-return" => Ok(Command::TabReturn),
         "blocker-matrix" => Ok(Command::BlockerMatrix),
         "replay" => Ok(Command::Replay),
         "generate-recording" => Ok(Command::GenerateRecording),
@@ -566,6 +575,17 @@ mod tests {
     fn hls_live_is_a_command_of_its_own_without_a_page_filter() {
         assert_eq!(invocation(&["hls-live"]).command, Command::HlsLive);
         assert!(parse_words(&["hls-live", "--page", "hls-live"]).is_err());
+    }
+
+    #[test]
+    fn tab_return_is_a_command_with_its_own_page() {
+        assert_eq!(invocation(&["tab-return"]).command, Command::TabReturn);
+        assert!(
+            invocation(&["tab-return", "--page", "tab-return"])
+                .pages
+                .admits("tab-return")
+        );
+        assert!(parse_words(&["tab-return", "--page", "mse-webm"]).is_err());
     }
 
     #[test]

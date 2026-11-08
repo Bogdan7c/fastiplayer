@@ -45,7 +45,7 @@ pub(in crate::scenarios) struct CaptureEvidence {
 }
 
 /// Сколько настоящих кадров браузера допустимо под тенью за окно `window_s` секунд.
-pub(in crate::scenarios::capture) fn max_real_frames(window_s: f64) -> f64 {
+pub(in crate::scenarios) fn max_real_frames(window_s: f64) -> f64 {
     window_s * MAX_REAL_FRAMES_PER_SECOND + HANDOVER_SLACK_FRAMES
 }
 
