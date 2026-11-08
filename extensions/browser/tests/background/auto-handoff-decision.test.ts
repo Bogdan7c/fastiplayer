@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import { MAX_PLAY_CREDIT_LEASE_MS } from "../../src/shared/auto-handoff-contract.ts";
 import { AD_PROBE_LEASE_MS, AD_PROBE_WINDOW_MS, createAdProbe } from "../../src/background/auto-handoff/ad-probe.ts";
 import type { SitePolicy } from "../../src/background/auto-handoff/site-policy.ts";
-import { PLAY_CREDIT_GRACE_MS, decideViewerPlay, playCreditLeaseMs, type AdProbeVerdict, type ViewerPlayDecision } from "../../src/background/auto-handoff/viewer-play-decision.ts";
+import { PLAY_CREDIT_GRACE_MS, candidatesAsFiltersSee, decideViewerPlay, playCreditLeaseMs, type AdProbeVerdict, type VideoFilters, type ViewerPlayDecision } from "../../src/background/auto-handoff/viewer-play-decision.ts";
 import { classifySurvey, type ClassifiedVideo } from "../../src/background/handoff/video-choice.ts";
 import type { VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import type { PageAdState } from "../../src/protocol/index.ts";
@@ -22,8 +22,22 @@ function held(overrides: Partial<VideoCandidate> = {}, neighbours: readonly Vide
 }
 
 const HAND: SitePolicy = { kind: "hand_off" };
+/** Фильтры по умолчанию: порог 60 с, оба фильтра включены. */
+const FILTERS: VideoFilters = { minDurationS: 60, requireMinDuration: true, requireSound: true };
 const decide = (video: ClassifiedVideo | undefined, adProbe: AdProbeVerdict = "not_probed", policy: SitePolicy = HAND, minDurationS = 60): ViewerPlayDecision =>
-  decideViewerPlay({ policy, held: video, minDurationS, adProbe });
+  decideViewerPlay({ policy, held: video, filters: { ...FILTERS, minDurationS }, adProbe });
+/**
+ * Решение с выбранными фильтрами (решение 260) — тем же путём, что у фона: кандидат сначала проходит
+ * `candidatesAsFiltersSee`, потом общий классификатор, потом правила.
+ */
+function decideWith(overrides: Partial<VideoCandidate>, filterOverrides: Partial<VideoFilters>, adProbe: AdProbeVerdict = "not_probed", policy: SitePolicy = HAND): ViewerPlayDecision {
+  const filters = { ...FILTERS, ...filterOverrides };
+  const candidate = { ...FILM, ...overrides };
+  const [seen] = candidatesAsFiltersSee([candidate], candidate.element, filters);
+  assert.ok(seen !== undefined);
+  const video = classifySurvey([{ frameId: 0, candidates: [seen] }])[0];
+  return decideViewerPlay({ policy, held: video, filters, adProbe });
+}
 
 /** Короткий файл-ролик (20 с), не опознанный как реклама. */
 const SHORT_FILE: Partial<VideoCandidate> = { media: { kind: "file" }, duration_s: 20, file_host: "site.example" };
@@ -84,6 +98,47 @@ describe("решение по задержанному видео", () => {
     assert.deepEqual(decide(held(SHORT_FILE), "not_probed", ASK), { kind: "probe_ads_first" });
     assert.equal(decide(held(SHORT_FILE), "no_ad", ASK).kind, "release_with_credit");
     assert.deepEqual(decide(held(SHORT_FILE), "ad_on_screen", ASK), { kind: "ask_viewer", reason: "ad_on_screen" });
+  });
+
+  it("фильтр звука снят (решение 260): видео без звука судится как звучащее", () => {
+    assert.deepEqual(decideWith({ muted: true }, { requireSound: false }), { kind: "hand_off", reason: "long_enough" });
+    // Беззвучный цикл и мелкая плитка, запущенные человеком, — тоже не «украшение».
+    assert.deepEqual(decideWith({ muted: true, loop: true }, { requireSound: false }), { kind: "hand_off", reason: "long_enough" });
+    // Остальные правила стоят: короткий беззвучный ролик идёт веткой рекламы, невидимый — отпускается.
+    assert.deepEqual(decideWith({ ...SHORT_FILE, muted: true }, { requireSound: false }), { kind: "probe_ads_first" });
+    assert.deepEqual(decideWith({ muted: true, visible_area_px: 0 }, { requireSound: false }), { kind: "release", reason: "hidden" });
+  });
+
+  it("фильтр звука включён: тот же беззвучный ролик отсеивается (классификатором или правилом звука)", () => {
+    assert.deepEqual(decideWith({ muted: true }, {}), { kind: "release", reason: "muted" });
+    assert.deepEqual(decideWith({ ...SHORT_FILE, muted: true }, { requireMinDuration: false }), { kind: "release", reason: "not_a_film" });
+  });
+
+  it("фильтр длины снят (решение 260): короткий ролик уходит сразу, без пробы рекламы и кредита", () => {
+    assert.deepEqual(decideWith(SHORT_FILE, { requireMinDuration: false }), { kind: "hand_off", reason: "length_filter_off" });
+    assert.deepEqual(decideWith({ ...SHORT_FILE, duration_s: 1 }, { requireMinDuration: false, minDurationS: 3_600 }), { kind: "hand_off", reason: "length_filter_off" });
+    // Длина неизвестна (эфир) — по-прежнему своя причина.
+    assert.deepEqual(decideWith({ duration_s: null }, { requireMinDuration: false }), { kind: "hand_off", reason: "duration_unknown" });
+  });
+
+  it("оба фильтра сняты: короткий беззвучный ролик уходит в плеер; на сайте ask — вопрос", () => {
+    const clip = { ...SHORT_FILE, muted: true };
+    const off = { requireMinDuration: false, requireSound: false };
+    assert.deepEqual(decideWith(clip, off), { kind: "hand_off", reason: "length_filter_off" });
+    assert.deepEqual(decideWith(clip, off, "not_probed", { kind: "ask" }), { kind: "ask_viewer", reason: "length_filter_off" });
+    // DRM и прочий «не фильм» фильтры не отменяют.
+    assert.deepEqual(decideWith({ ...clip, drm: true }, off), { kind: "release", reason: "not_a_film" });
+  });
+
+  it("candidatesAsFiltersSee: фильтр звука включён — те же объекты; снят — меняется только задержанный кандидат", () => {
+    const heldOne = { ...FILM, muted: true };
+    const neighbour = { ...FILM, element: 9, muted: true };
+    const list = [heldOne, neighbour];
+    assert.equal(candidatesAsFiltersSee(list, heldOne.element, FILTERS), list);
+    const seen = candidatesAsFiltersSee(list, heldOne.element, { ...FILTERS, requireSound: false });
+    assert.equal(seen[0]?.muted, false);
+    assert.equal(seen[1], neighbour, "сосед не тронут");
+    assert.equal(heldOne.muted, true, "донесение не изменено");
   });
 
   it("срок кредита: длина ролика + 10 с запаса, но не больше предела договора", () => {

@@ -1,4 +1,5 @@
-// Охрана режима 2 «автозапуск» (сессия 12a, решения 246–254): «видео запустил САМ человек, и со звуком».
+// Охрана режима 2 «автозапуск» (сессия 12a, решения 246–254): «видео запустил САМ человек, и со звуком»
+// (звук можно не требовать — фильтр звука выключается в настройках, решение 260).
 //
 // Владеет политикой "кто считается зрителем" и больше ничем: включена ли охрана, кредит клика, метки
 // `play()` и метки «передача этого элемента кончилась». Правил сайтов, стоп-листа и порога длины здесь нет
@@ -41,7 +42,8 @@ export type ViewerPlayVerdict =
 
 /** Простые факты момента запуска: на них судья не обращается ни к часам, ни к браузеру. */
 export interface ViewerPlayFacts {
-  readonly watchOn: boolean;
+  /** Состояние охраны: выключена, только со звуком (`on`) или и без звука (`on_including_muted`). */
+  readonly watch: AutoHandoffWatchState;
   /** Браузерная временная активация жива. */
   readonly transientActivation: boolean;
   /** Кредит клика от фона действует. */
@@ -58,8 +60,9 @@ export interface ViewerPlayFacts {
  * первыми; кредит НЕ отменяет метку возврата (возвращённому видео нужен свежий ввод после метки).
  */
 export function judgeViewerPlay(facts: ViewerPlayFacts): ViewerPlayVerdict {
-  if (!facts.watchOn) return "watch_off";
-  if (facts.audibility === "silent") return "muted";
+  if (facts.watch === "off") return "watch_off";
+  // Фильтр звука снят (решение 260) — беззвучное видео судится дальше, как звучащее: жест всё равно нужен.
+  if (facts.audibility === "silent" && facts.watch !== "on_including_muted") return "muted";
   if (facts.handedBackAtMs !== null && facts.lastTrustedInputAtMs <= facts.handedBackAtMs) return "handed_back_without_new_input";
   if (!facts.transientActivation && !facts.creditActive) return "no_viewer_gesture";
   return "viewer_started";
@@ -89,8 +92,9 @@ export class ViewerPlayWatch {
     this.#watchState = state;
   }
 
+  /** Охрана включена (со звуком или без — неважно). */
   isWatchOn(): boolean {
-    return this.#watchState === "on";
+    return this.#watchState !== "off";
   }
 
   /** Фон выдал «кредит клика» на срок; новый кредит заменяет старый (цепочка реклам продлевает его). */
@@ -133,7 +137,7 @@ export class ViewerPlayWatch {
     // Передача кончилась после засчитанного `play()`: тот запуск принадлежал уже закрытой передаче.
     if (handedBackAtMs !== null && handedBackAtMs >= markedAtMs) return "handed_back_without_new_input";
     const verdict = judgeViewerPlay({
-      watchOn: this.isWatchOn(),
+      watch: this.#watchState,
       // Жест доказан в момент `play()` — метка и есть его след.
       transientActivation: true,
       creditActive: false,
@@ -147,7 +151,7 @@ export class ViewerPlayWatch {
 
   #judgeNow(element: object, audibility: ElementAudibility): ViewerPlayVerdict {
     return judgeViewerPlay({
-      watchOn: this.isWatchOn(),
+      watch: this.#watchState,
       transientActivation: this.#environment.activation.hasTransientActivation(),
       creditActive: this.hasActiveCredit(),
       handedBackAtMs: this.#handedBack.get(element) ?? null,

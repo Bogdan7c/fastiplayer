@@ -1,13 +1,13 @@
 // Следит за настройкой режима 2 «автозапуск» и говорит MAIN-миру, нужна ли охрана (сессия 12a, решение 198).
 //
 // Изолированный мир не знает адреса вкладки и правил сайтов (их знает только фон), поэтому решает грубо:
-// `wantsAutoHandoffWatch` — «хоть где-то режим включён». Точный вердикт для сайта выносит фон, когда страница
+// `autoHandoffWatchStateOf` — «хоть где-то режим включён» и «нужен ли звук» (фильтр звука, решение 260). Точный вердикт для сайта выносит фон, когда страница
 // донесёт о запуске зрителя. До этого фону не уходит ничего: страница и фон молчат.
 //
 // Порядок событий неочевиден (тот же случай, что в `overlay-setting-watch.ts`): чтение при старте
 // асинхронное, а `storage.onChanged` может прийти раньше его ответа. Тогда побеждает новое значение из события,
 // а запоздавший старый ответ чтения выбрасывается.
-import { autoHandoffSettingsFromChange, wantsAutoHandoffWatch, type AutoHandoffSettings } from "../shared/auto-handoff-settings.ts";
+import { autoHandoffSettingsFromChange, autoHandoffWatchStateOf, type AutoHandoffSettings } from "../shared/auto-handoff-settings.ts";
 import type { AutoHandoffWatchState } from "../shared/auto-handoff-contract.ts";
 
 export interface AutoHandoffWatchDependencies {
@@ -21,7 +21,7 @@ export interface AutoHandoffWatchDependencies {
 }
 
 function stateOf(settings: AutoHandoffSettings): AutoHandoffWatchState {
-  return wantsAutoHandoffWatch(settings) ? "on" : "off";
+  return autoHandoffWatchStateOf(settings);
 }
 
 /** Запустить слежение. Возвращает остановку (в продукте не зовётся: слежение живёт, пока жив документ). */

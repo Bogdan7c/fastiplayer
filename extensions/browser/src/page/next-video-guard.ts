@@ -172,7 +172,7 @@ export class NextVideoGuard {
   /** Изолированный мир сообщил: охрана режима 2 включена/выключена. Включение ставит слушатель документа. */
   setViewerPlayWatch(state: AutoHandoffWatchState): void {
     this.#environment.viewerPlay.setWatch(state);
-    if (state === "on") this.#listenOnDocument();
+    if (state !== "off") this.#listenOnDocument();
   }
 
   /** Фон выдал «кредит клика»: пока он действует, запуск видео со звуком считается запуском человека. */

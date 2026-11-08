@@ -121,6 +121,26 @@ describe("режим 2: передача по нажатию play", () => {
     assert.deepEqual(world.credits, []);
   });
 
+  it("оба фильтра сняты (решение 260): короткий беззвучный зацикленный ролик уходит в плеер без пробы рекламы", async () => {
+    const world = createWorld({ settings: { ...ON, require_sound: false, require_min_duration: false } });
+    // 20 с, без звука, цикл: при включённых фильтрах общий классификатор назвал бы его «беззвучным украшением».
+    const reel: VideoCandidate = { ...SHORT_CLIP, muted: true, loop: true };
+    assert.equal(await world.autoHandoff.heldVideo(TAB, FRAME, report(reel)), "adopt_new_session");
+    assert.deepEqual(world.handOffCalls, [{ tabId: TAB, consent: undefined, video: ref(reel) }]);
+    assert.deepEqual(world.probes, [], "проба рекламы не нужна: длина не проверяется");
+    assert.deepEqual(world.credits, []);
+  });
+
+  it("снят только фильтр звука: беззвучный длинный фильм уходит, беззвучный короткий ролик идёт веткой рекламы", async () => {
+    const world = createWorld({ settings: { ...ON, require_sound: false } });
+    assert.equal(await world.autoHandoff.heldVideo(TAB, FRAME, report({ ...FILM, muted: true })), "adopt_new_session");
+    const short = createWorld({ settings: { ...ON, require_sound: false } });
+    assert.equal(await short.autoHandoff.heldVideo(TAB, FRAME, report({ ...SHORT_CLIP, muted: true })), "release");
+    assert.deepEqual(short.probes, [TAB], "короткий ролик — проба рекламы, как со звуком");
+    assert.equal(short.credits.length, 1, "рекламы нет: кредит клика, как со звуком");
+    assert.deepEqual(short.handOffCalls, []);
+  });
+
   it("передача отказала (protected): фрейму уходит просьба отпустить именно это видео, человеку — тишина", async () => {
     const world = createWorld({ handOffOutcome: Promise.resolve({ kind: "protected" }) });
     assert.equal(await world.autoHandoff.heldVideo(TAB, FRAME, report(FILM)), "adopt_new_session");

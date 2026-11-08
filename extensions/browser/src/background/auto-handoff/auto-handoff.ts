@@ -33,7 +33,7 @@ import { classifySurvey, type ClassifiedVideo } from "../handoff/video-choice.ts
 import type { AdProbe } from "./ad-probe.ts";
 import { noticeOfAutoHandoffOutcome } from "./outcome-notice.ts";
 import { sitePolicyOf, type SitePolicy } from "./site-policy.ts";
-import { decideViewerPlay, type AdProbeVerdict, type ViewerPlayDecision } from "./viewer-play-decision.ts";
+import { candidatesAsFiltersSee, decideViewerPlay, videoFiltersOf, type AdProbeVerdict, type VideoFilters, type ViewerPlayDecision } from "./viewer-play-decision.ts";
 import { createViewerOffers } from "./viewer-offers.ts";
 
 export interface AutoHandoffDependencies {
@@ -86,17 +86,22 @@ export function createAutoHandoff(dependencies: AutoHandoffDependencies): AutoHa
     return sitePolicyOf(tab?.url ?? "", settings);
   }
 
-  /** Задержанное видео среди кандидатов донесения, с вердиктом общего классификатора. */
-  function heldVideoOf(frameId: number, report: HeldVideoReport): ClassifiedVideo | undefined {
-    return classifySurvey([{ frameId, candidates: report.candidates }]).find(({ candidate }) => candidate.element === report.element);
+  /**
+   * Задержанное видео среди кандидатов донесения, с вердиктом общего классификатора. Кандидаты сначала
+   * проходят через фильтры видео (`candidatesAsFiltersSee`): снятый фильтр звука не даёт классификатору
+   * списать беззвучное видео в мусор.
+   */
+  function heldVideoOf(frameId: number, report: HeldVideoReport, filters: VideoFilters): ClassifiedVideo | undefined {
+    const candidates = candidatesAsFiltersSee(report.candidates, report.element, filters);
+    return classifySurvey([{ frameId, candidates }]).find(({ candidate }) => candidate.element === report.element);
   }
 
   /** Решение; короткий ролик без опознанной рекламы идёт через пробу и второе решение. */
-  async function decide(policy: SitePolicy, held: ClassifiedVideo | undefined, minDurationS: number, tabId: number): Promise<ViewerPlayDecision> {
-    const first = decideViewerPlay({ policy, held, minDurationS, adProbe: "not_probed" });
+  async function decide(policy: SitePolicy, held: ClassifiedVideo | undefined, filters: VideoFilters, tabId: number): Promise<ViewerPlayDecision> {
+    const first = decideViewerPlay({ policy, held, filters, adProbe: "not_probed" });
     if (first.kind !== "probe_ads_first") return first;
     const adProbe: AdProbeVerdict = await dependencies.adProbe.probe(tabId);
-    return decideViewerPlay({ policy, held, minDurationS, adProbe });
+    return decideViewerPlay({ policy, held, filters, adProbe });
   }
 
   /** Начать обычную передачу и не ждать её: фрейм получит `begin_handoff` после запуска плеера. */
@@ -131,8 +136,9 @@ export function createAutoHandoff(dependencies: AutoHandoffDependencies): AutoHa
   async function judgeViewerPlay(tabId: number, frameId: number, report: HeldVideoReport): Promise<HeldVideoReply> {
     const settings = await currentSettings();
     const policy = await policyOf(tabId, settings);
-    const held = heldVideoOf(frameId, report);
-    const decision = await decide(policy, held, settings.min_duration_s, tabId);
+    const filters = videoFiltersOf(settings);
+    const held = heldVideoOf(frameId, report, filters);
+    const decision = await decide(policy, held, filters, tabId);
     switch (decision.kind) {
       case "hand_off": {
         if (held === undefined) return "release";

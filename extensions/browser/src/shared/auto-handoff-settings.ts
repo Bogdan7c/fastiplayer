@@ -2,11 +2,13 @@
 // Общая для фона (судит по правилам), изолированного мира (включает охрану на странице) и страницы настроек
 // (запись). Устроена как `entry-settings.ts`: хранилищу не доверяем слепо, битое поле читается значением
 // по умолчанию и не сбрасывает остальные.
+import type { AutoHandoffWatchState } from "./auto-handoff-contract.ts";
 import type { KeyValueStore } from "./codec-storage.ts";
 
 /**
  * Правило сайта:
- * - `always` — нажал play, и видео уходит в плеер (по фильтрам: жест, звук, длина);
+ * - `always` — нажал play, и видео уходит в плеер (по фильтрам: жест, звук, длина; звук и длину можно
+ *   выключить, решение 260);
  * - `never` — на этом сайте режим 2 не срабатывает никогда;
  * - `ask` — видео замирает, а поверх него предложение «Play in Fastiplayer / Play here» (сессия 12b).
  */
@@ -22,6 +24,16 @@ export interface AutoHandoffSettings {
   readonly enabled: boolean;
   /** Порог длины ролика, секунды (решение 10): короче — не передаём, длина неизвестна — передаём (решение 50). */
   readonly min_duration_s: number;
+  /**
+   * Фильтр длины включён (решение 260): `false` — порог не действует, ролик любой длины уходит в плеер
+   * (сам порог хранится, чтобы включение вернуло его как было).
+   */
+  readonly require_min_duration: boolean;
+  /**
+   * Фильтр звука включён (решение 260): `false` — видео без звука, которое человек сам запустил, тоже уходит
+   * в плеер. Жест человека нужен по-прежнему: само по себе беззвучное автовоспроизведение ленты не считается.
+   */
+  readonly require_sound: boolean;
   /** Что делать на сайте без своего правила, когда режим включён. */
   readonly unknown_site_rule: UnknownSiteRule;
   /** Свои правила сайтов: ключ — `siteKeyOfHost` (хост без `www.`, строчными). */
@@ -48,10 +60,15 @@ export const MAX_OWN_STOP_LIST_ENTRIES = 500;
 /** Предел длины одной записи (хост + путь), символов. Длиннее адресов в стоп-листе не бывает. */
 export const MAX_STOP_LIST_ENTRY_LENGTH = 300;
 
-/** По умолчанию: режим выключен (решение 9), порог 60 с, на новом сайте — сразу передаём (решение 251). */
+/**
+ * По умолчанию: режим выключен (решение 9), порог 60 с, оба фильтра (длина и звук) включены,
+ * на новом сайте — сразу передаём (решение 251).
+ */
 export const DEFAULT_AUTO_HANDOFF_SETTINGS: AutoHandoffSettings = {
   enabled: false,
   min_duration_s: DEFAULT_AUTO_HANDOFF_MIN_DURATION_S,
+  require_min_duration: true,
+  require_sound: true,
   unknown_site_rule: "always",
   site_rules: {},
   own_stop_list: [],
@@ -92,6 +109,11 @@ export function normalizeStopListEntry(raw: string): string | null {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Флаг: не булево (нет поля, мусор) — значение по умолчанию. */
+function parseFlag(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
 }
 
 function parseMinDuration(value: unknown): number {
@@ -136,8 +158,11 @@ export function parseAutoHandoffSettings(stored: unknown): AutoHandoffSettings {
   if (!isPlainRecord(stored)) return DEFAULT_AUTO_HANDOFF_SETTINGS;
   const unknownSiteRule = stored["unknown_site_rule"];
   return {
-    enabled: typeof stored["enabled"] === "boolean" ? stored["enabled"] : DEFAULT_AUTO_HANDOFF_SETTINGS.enabled,
+    enabled: parseFlag(stored["enabled"], DEFAULT_AUTO_HANDOFF_SETTINGS.enabled),
     min_duration_s: parseMinDuration(stored["min_duration_s"]),
+    // Настройка, записанная до решения 260, этих полей не знает: фильтры остаются включёнными, как были.
+    require_min_duration: parseFlag(stored["require_min_duration"], DEFAULT_AUTO_HANDOFF_SETTINGS.require_min_duration),
+    require_sound: parseFlag(stored["require_sound"], DEFAULT_AUTO_HANDOFF_SETTINGS.require_sound),
     unknown_site_rule: UNKNOWN_SITE_RULES.includes(unknownSiteRule as UnknownSiteRule)
       ? (unknownSiteRule as UnknownSiteRule)
       : DEFAULT_AUTO_HANDOFF_SETTINGS.unknown_site_rule,
@@ -180,4 +205,14 @@ export async function readAutoHandoffSettingsOrDefaults(store: KeyValueStore, no
  */
 export function wantsAutoHandoffWatch(settings: AutoHandoffSettings): boolean {
   return settings.enabled || Object.values(settings.site_rules).some((rule) => rule !== "never");
+}
+
+/**
+ * Что сказать охране страницы: выключена, включена только для видео со звуком (`on`) или включена и для
+ * видео без звука (`on_including_muted`, фильтр звука снят, решение 260). Странице уходит только это —
+ * правила сайтов и порог длины она не узнаёт.
+ */
+export function autoHandoffWatchStateOf(settings: AutoHandoffSettings): AutoHandoffWatchState {
+  if (!wantsAutoHandoffWatch(settings)) return "off";
+  return settings.require_sound ? "on" : "on_including_muted";
 }

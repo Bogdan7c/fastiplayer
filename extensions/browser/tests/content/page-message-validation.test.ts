@@ -295,6 +295,7 @@ describe("сообщения сторожа следующего видео (с�
 
   it("режим 2: команды по личному порту — строгая форма, срок кредита в пределах договора", () => {
     assert.deepEqual(parseAutoHandoffWatchCommand({ kind: "auto_handoff_watch", state: "off" }), { kind: "auto_handoff_watch", state: "off" });
+    assert.deepEqual(parseAutoHandoffWatchCommand({ kind: "auto_handoff_watch", state: "on_including_muted" }), { kind: "auto_handoff_watch", state: "on_including_muted" });
     assert.equal(parseAutoHandoffWatchCommand({ kind: "auto_handoff_watch", state: "ON" }), undefined);
     assert.equal(parseAutoHandoffWatchCommand({ kind: "auto_handoff_watch", state: "on", extra: 1 }), undefined);
     assert.equal(parseAutoHandoffWatchCommand({ kind: "auto_handoff_watch" }), undefined);

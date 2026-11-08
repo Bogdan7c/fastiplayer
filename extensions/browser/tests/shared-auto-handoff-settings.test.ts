@@ -15,6 +15,7 @@ import {
   readAutoHandoffSettingsOrDefaults,
   siteKeyOfHost,
   wantsAutoHandoffWatch,
+  autoHandoffWatchStateOf,
   writeAutoHandoffSettings,
 } from "../src/shared/auto-handoff-settings.ts";
 
@@ -34,12 +35,32 @@ function memoryStore(initial: Record<string, unknown> = {}): { store: KeyValueSt
 describe("разбор настройки режима 2", () => {
   it("не объект — значения по умолчанию: режим выключен, порог 60, новый сайт — always", () => {
     for (const garbage of [undefined, null, "x", 5, [], true]) assert.deepEqual(parseAutoHandoffSettings(garbage), DEFAULT_AUTO_HANDOFF_SETTINGS);
-    assert.deepEqual(DEFAULT_AUTO_HANDOFF_SETTINGS, { enabled: false, min_duration_s: 60, unknown_site_rule: "always", site_rules: {}, own_stop_list: [] });
+    assert.deepEqual(DEFAULT_AUTO_HANDOFF_SETTINGS, {
+      enabled: false,
+      min_duration_s: 60,
+      require_min_duration: true,
+      require_sound: true,
+      unknown_site_rule: "always",
+      site_rules: {},
+      own_stop_list: [],
+    });
   });
 
   it("битое поле сбрасывается само по себе и не трогает соседей", () => {
     const parsed = parseAutoHandoffSettings({ enabled: true, min_duration_s: "много", unknown_site_rule: "never", site_rules: [], own_stop_list: "x" });
     assert.deepEqual(parsed, { ...DEFAULT_AUTO_HANDOFF_SETTINGS, enabled: true });
+  });
+
+  it("фильтры длины и звука (решение 260): старая настройка без полей — оба включены; мусор — включён", () => {
+    const old = parseAutoHandoffSettings({ enabled: true, min_duration_s: 90 });
+    assert.equal(old.require_min_duration, true);
+    assert.equal(old.require_sound, true);
+    const off = parseAutoHandoffSettings({ require_min_duration: false, require_sound: false });
+    assert.equal(off.require_min_duration, false);
+    assert.equal(off.require_sound, false);
+    const garbage = parseAutoHandoffSettings({ require_min_duration: "no", require_sound: 0 });
+    assert.equal(garbage.require_min_duration, true);
+    assert.equal(garbage.require_sound, true);
   });
 
   it("порог: целое от 0 до предела; дробь, минус, NaN и сверх предела — по умолчанию", () => {
@@ -112,5 +133,14 @@ describe("чтение, запись и включение охраны", () => 
     assert.equal(wantsAutoHandoffWatch({ ...base, site_rules: { "a.com": "always" } }), true);
     assert.equal(wantsAutoHandoffWatch({ ...base, site_rules: { "a.com": "ask", "b.com": "never" } }), true);
     assert.equal(wantsAutoHandoffWatch({ ...base, site_rules: { "b.com": "never" } }), false);
+  });
+
+  it("autoHandoffWatchStateOf: выключено — off; фильтр звука включён — on; снят — on_including_muted", () => {
+    const base = DEFAULT_AUTO_HANDOFF_SETTINGS;
+    assert.equal(autoHandoffWatchStateOf(base), "off");
+    assert.equal(autoHandoffWatchStateOf({ ...base, require_sound: false }), "off", "снятый фильтр сам охрану не включает");
+    assert.equal(autoHandoffWatchStateOf({ ...base, enabled: true }), "on");
+    assert.equal(autoHandoffWatchStateOf({ ...base, enabled: true, require_sound: false }), "on_including_muted");
+    assert.equal(autoHandoffWatchStateOf({ ...base, require_sound: false, site_rules: { "a.com": "ask" } }), "on_including_muted");
   });
 });

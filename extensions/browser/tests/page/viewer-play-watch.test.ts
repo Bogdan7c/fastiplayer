@@ -66,6 +66,31 @@ describe("человек нажал play на видео со звуком", () 
     assert.deepEqual(sent, []);
   });
 
+  it("фильтр звука снят (`on_including_muted`, решение 260): беззвучное видео с жестом задерживается", async () => {
+    const { guard, activation, sent, addVideo } = setupGuard();
+    guard.setViewerPlayWatch("on_including_muted");
+    activation.transient = true;
+    const silent = addVideo((video) => {
+      video.real.muted = true;
+    });
+    const promise = pagePlay(silent);
+    assert.equal(browserPlays(silent), 0, "браузеру play() не ушёл: видео под тенью");
+    assert.equal(heldEvent(sent).trigger, "viewer_play");
+    await promise;
+  });
+
+  it("фильтр звука снят, но жеста нет: беззвучное автовоспроизведение ленты не задерживается", async () => {
+    const { guard, activation, sent, addVideo } = setupGuard();
+    guard.setViewerPlayWatch("on_including_muted");
+    activation.transient = false;
+    const silent = addVideo((video) => {
+      video.real.muted = true;
+    });
+    await pagePlay(silent);
+    assert.equal(browserPlays(silent), 1);
+    assert.deepEqual(sent, []);
+  });
+
   it("охрана выключена: `play()` строго прозрачен даже при свежем жесте", async () => {
     const { guard, activation, sent, addVideo } = setupGuard();
     guard.setViewerPlayWatch("off");
@@ -326,7 +351,7 @@ describe("взвод фона важнее охраны", () => {
 
 describe("судья вердиктов (чистая функция)", () => {
   const base: ViewerPlayFacts = {
-    watchOn: true,
+    watch: "on",
     transientActivation: true,
     creditActive: false,
     handedBackAtMs: null,
@@ -336,8 +361,11 @@ describe("судья вердиктов (чистая функция)", () => {
 
   it("каждое условие даёт свой названный отказ", () => {
     assert.equal(judgeViewerPlay(base), "viewer_started");
-    assert.equal(judgeViewerPlay({ ...base, watchOn: false }), "watch_off");
+    assert.equal(judgeViewerPlay({ ...base, watch: "off" }), "watch_off");
+    assert.equal(judgeViewerPlay({ ...base, watch: "off", audibility: "silent" }), "watch_off");
     assert.equal(judgeViewerPlay({ ...base, audibility: "silent" }), "muted");
+    assert.equal(judgeViewerPlay({ ...base, watch: "on_including_muted", audibility: "silent" }), "viewer_started", "фильтр звука снят");
+    assert.equal(judgeViewerPlay({ ...base, watch: "on_including_muted", audibility: "silent", transientActivation: false }), "no_viewer_gesture");
     assert.equal(judgeViewerPlay({ ...base, transientActivation: false }), "no_viewer_gesture");
     assert.equal(judgeViewerPlay({ ...base, transientActivation: false, creditActive: true }), "viewer_started");
     assert.equal(judgeViewerPlay({ ...base, handedBackAtMs: 500 }), "handed_back_without_new_input", "ввод ровно в момент конца не новый");

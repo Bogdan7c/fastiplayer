@@ -44,6 +44,14 @@ describe("слежение за настройкой режима 2", () => {
     assert.deepEqual(perSite.applied, ["on"]);
   });
 
+  it("фильтр звука снят (решение 260): охрана `on_including_muted`, снова включён — `on`", async () => {
+    const { applied, change } = setup(() => Promise.resolve({ ...enabled, require_sound: false }));
+    await settled();
+    change({ ...enabled });
+    change({ ...DEFAULT_AUTO_HANDOFF_SETTINGS, require_sound: false });
+    assert.deepEqual(applied, ["on_including_muted", "on", "off"]);
+  });
+
   it("человек переключил настройку: охрана меняется на лету", async () => {
     const { applied, change } = setup(() => Promise.resolve(DEFAULT_AUTO_HANDOFF_SETTINGS));
     await settled();

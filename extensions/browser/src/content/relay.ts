@@ -444,7 +444,7 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
    * пока мы сами включили охрану (`on`). Иначе это страница, а не наш сторож. Лимит частоты общий.
    */
   function mayReportHeldVideo(trigger: HeldVideoTrigger): boolean {
-    const triggerIsAllowed = trigger === "viewer_play" ? autoHandoffWatch === "on" : dependencies.now() < armedUntilMs;
+    const triggerIsAllowed = trigger === "viewer_play" ? autoHandoffWatch !== "off" : dependencies.now() < armedUntilMs;
     return triggerIsAllowed && heldReports.take(1);
   }
 

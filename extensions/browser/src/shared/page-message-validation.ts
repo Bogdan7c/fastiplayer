@@ -8,11 +8,11 @@
 // это дёшево, байты при этом не копируются.
 
 import {
+  AUTO_HANDOFF_WATCH_STATES,
   GRANT_PLAY_CREDIT_KIND,
   MAX_PLAY_CREDIT_LEASE_MS,
   RELEASE_HELD_VIDEO_REQUEST_KIND,
   type AutoHandoffWatchCommand,
-  type AutoHandoffWatchState,
   type GrantPlayCreditCommand,
   type GrantPlayCreditRequest,
   type ReleaseHeldVideoRequest,
@@ -464,8 +464,6 @@ export function parseHeldVideoReply(value: unknown): HeldVideoReply | undefined 
 }
 
 // ------------------------------------------------------------------ режим 2 «автозапуск» (сессия 12a)
-
-const AUTO_HANDOFF_WATCH_STATES: readonly AutoHandoffWatchState[] = ["on", "off"];
 
 /** Срок кредита клика: целые миллисекунды от 1 до предела договора. */
 function isPlayCreditLeaseMs(value: unknown): value is number {

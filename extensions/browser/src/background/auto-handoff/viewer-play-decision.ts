@@ -1,6 +1,7 @@
 // Решение режима 2 «автозапуск» (сессия 12a) по видео, которое человек сам запустил со звуком.
 // Чистая функция: на входе политика сайта, задержанное видео (уже классифицированное тем же
-// `classifySurvey`, что и при передаче вкладки), порог длины и итог пробы рекламы; на выходе — что делать.
+// `classifySurvey`, что и при передаче вкладки), фильтры видео (порог длины, звук) и итог пробы рекламы;
+// на выходе — что делать.
 // Каждое правило — отдельная маленькая функция в списке `RULES`: порядок списка — порядок проверок.
 //
 // Правила по порядку (первое сработавшее решает):
@@ -9,9 +10,12 @@
 // 3. вердикт не фильм и не реклама                     -> release (DRM, неподдержанная форма, пусто, мусор);
 // 4. без звука                                         -> release (страница — враг: «человек запустил со звуком» мы
 //                                                         проверяем и здесь, а не верим сторожу на слово);
+//                                                         фильтр звука выключен (решение 260) — правило молчит;
 // 5. не видно (площадь 0)                              -> release;
 // 6. длительность неизвестна (эфир, MediaSource)       -> hand_off сразу (решение 50);
-// 7. не короче порога                                  -> hand_off;
+// 7. фильтр длины выключен (решение 260)               -> hand_off (короткий ролик тоже; реклама — тоже, её
+//                                                         увезёт переезд сеанса 09c2, как в правиле 8);
+// 7a. не короче порога                                 -> hand_off;
 // 8. короче порога и вердикт `ad`                      -> hand_off (реклама играет в нашем плеере, переезд сеанса 09c2
 //                                                         сам перенесёт сеанс на фильм);
 // 9. короче порога, рекламу ещё не проверяли           -> probe_ads_first;
@@ -25,6 +29,8 @@
 
 import type { ClassifiedVideo } from "../handoff/video-choice.ts";
 import { MAX_PLAY_CREDIT_LEASE_MS } from "../../shared/auto-handoff-contract.ts";
+import type { AutoHandoffSettings } from "../../shared/auto-handoff-settings.ts";
+import type { ElementKey, VideoCandidate } from "../../shared/handoff-contract.ts";
 import type { SitePolicy } from "./site-policy.ts";
 
 /**
@@ -33,6 +39,36 @@ import type { SitePolicy } from "./site-policy.ts";
  */
 export const PLAY_CREDIT_GRACE_MS = 10_000;
 
+/** Фильтры видео, которые человек может выключить в настройках (решение 260). */
+export interface VideoFilters {
+  /** Порог длины, секунды; действует, только пока `requireMinDuration`. */
+  readonly minDurationS: number;
+  /** Фильтр длины включён: ролик короче порога не уходит сразу, а идёт веткой рекламы. */
+  readonly requireMinDuration: boolean;
+  /** Фильтр звука включён: видео без звука отпускается. */
+  readonly requireSound: boolean;
+}
+
+/** Фильтры видео из общей настройки режима 2. */
+export function videoFiltersOf(settings: AutoHandoffSettings): VideoFilters {
+  return { minDurationS: settings.min_duration_s, requireMinDuration: settings.require_min_duration, requireSound: settings.require_sound };
+}
+
+/**
+ * Кандидаты донесения такими, какими их должен увидеть общий классификатор при этих фильтрах.
+ *
+ * Общий классификатор (`classifyVideo`) сам считает беззвучное видео мусором, если оно зацикленное, мелкое
+ * или короче 30 с («беззвучное украшение»), — это правило нужно кнопке и передаче вкладки, его не трогаем.
+ * Но в режиме 2 задержанное видео запустил сам человек: при снятом фильтре звука (решение 260) беззвучие
+ * не должно его отсеивать — ни здесь, ни в `mutedRule`. Поэтому ровно задержанный кандидат судится как
+ * звучащий; соседи остаются как есть (они влияют на вердикт, например, преролла рядом с фильмом).
+ * Фильтр звука включён — кандидаты возвращаются без изменений.
+ */
+export function candidatesAsFiltersSee(candidates: readonly VideoCandidate[], heldElement: ElementKey, filters: VideoFilters): readonly VideoCandidate[] {
+  if (filters.requireSound) return candidates;
+  return candidates.map((candidate) => (candidate.element === heldElement && candidate.muted ? { ...candidate, muted: false } : candidate));
+}
+
 /** Итог пробы рекламы на вкладке; `not_probed` — пробу ещё не запускали (первый заход решения). */
 export type AdProbeVerdict = "ad_on_screen" | "no_ad" | "not_probed";
 
@@ -40,8 +76,8 @@ export interface ViewerPlayInput {
   readonly policy: SitePolicy;
   /** Задержанное видео после классификации; `undefined` — его нет среди кандидатов донесения. */
   readonly held: ClassifiedVideo | undefined;
-  /** Порог длины из настройки, секунды. */
-  readonly minDurationS: number;
+  /** Фильтры видео из настройки: порог длины и требование звука (оба выключаются, решение 260). */
+  readonly filters: VideoFilters;
   readonly adProbe: AdProbeVerdict;
 }
 
@@ -49,7 +85,7 @@ export interface ViewerPlayInput {
 export type ReleaseReason = "site_skipped" | "no_held_video" | "not_a_film" | "muted" | "hidden";
 
 /** Почему видео передаётся. */
-export type HandOffReason = "duration_unknown" | "long_enough" | "known_ad" | "ad_on_screen";
+export type HandOffReason = "duration_unknown" | "length_filter_off" | "long_enough" | "known_ad" | "ad_on_screen";
 
 export type ViewerPlayDecision =
   | { readonly kind: "hand_off"; readonly reason: HandOffReason }
@@ -73,14 +109,15 @@ export function playCreditLeaseMs(clipDurationS: number): number {
 }
 
 const verdictRule: Rule = (_input, held) => (held.verdict === "main" || held.verdict === "ad" ? undefined : release("not_a_film"));
-const mutedRule: Rule = (_input, held) => (held.candidate.muted ? release("muted") : undefined);
+const mutedRule: Rule = (input, held) => (input.filters.requireSound && held.candidate.muted ? release("muted") : undefined);
 const hiddenRule: Rule = (_input, held) => (held.candidate.visible_area_px === 0 ? release("hidden") : undefined);
 
 /** Правила длины: неизвестная и достаточная длина передаются, короткий ролик идёт по ветке рекламы. */
 const durationRule: Rule = (input, held) => {
   const durationS = held.candidate.duration_s;
   if (durationS === null) return handOff("duration_unknown");
-  if (durationS >= input.minDurationS) return handOff("long_enough");
+  if (!input.filters.requireMinDuration) return handOff("length_filter_off");
+  if (durationS >= input.filters.minDurationS) return handOff("long_enough");
   if (held.verdict === "ad") return handOff("known_ad");
   switch (input.adProbe) {
     case "not_probed":

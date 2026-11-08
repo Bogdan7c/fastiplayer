@@ -94,6 +94,17 @@ describe("донесение viewer_play", () => {
     assert.deepEqual(toPage, [], "ответ `adopt`: видео остаётся под тенью");
   });
 
+  it("охрана с беззвучными (`on_including_muted`, решение 260) тоже пропускает донесение `viewer_play` фону", async () => {
+    const { relay, toPage, reports } = setupRelay();
+    relay.setAutoHandoffWatch("on_including_muted");
+    assert.deepEqual(toPage, [{ kind: "auto_handoff_watch", state: "on_including_muted" }], "MAIN-мир узнал, что звук не обязателен");
+    toPage.length = 0;
+    relay.handlePageMessage(viewerHeld);
+    await settleMicrotasks();
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0]?.trigger, "viewer_play");
+  });
+
   it("охрана на `viewer_play` не открывает путь событиям `next_video` без взвода", () => {
     const { relay, toPage, reports } = setupRelay();
     relay.setAutoHandoffWatch("on");

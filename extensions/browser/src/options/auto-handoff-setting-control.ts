@@ -1,5 +1,6 @@
 // Настройки режима 2 «автозапуск» (сессия 12a): «Play videos in Fastiplayer when I press play».
-// Три поля общей настройки `autoHandoffSettings`: включатель, порог длины и правило для сайта без своего правила.
+// Поля общей настройки `autoHandoffSettings`: включатель, фильтр длины (галочка + порог), фильтр звука
+// (решение 260) и правило для сайта без своего правила.
 // Свои правила сайтов и свой стоп-лист живут в той же настройке, но редактируются на странице сессии 12b.
 //
 // Устроено как `entry-setting-control.ts`: изменение пишется сразу, без кнопки Save; перед записью настройка
@@ -33,6 +34,16 @@ export function withAutoHandoffEnabled(current: AutoHandoffSettings, enabled: bo
 /** Изменить ровно порог длины. */
 export function withAutoHandoffMinDuration(current: AutoHandoffSettings, minDurationS: number): AutoHandoffSettings {
   return { ...current, min_duration_s: minDurationS };
+}
+
+/** Изменить ровно «фильтр длины включён» (сам порог остаётся). */
+export function withAutoHandoffLengthFilter(current: AutoHandoffSettings, requireMinDuration: boolean): AutoHandoffSettings {
+  return { ...current, require_min_duration: requireMinDuration };
+}
+
+/** Изменить ровно «фильтр звука включён». */
+export function withAutoHandoffSoundFilter(current: AutoHandoffSettings, requireSound: boolean): AutoHandoffSettings {
+  return { ...current, require_sound: requireSound };
 }
 
 /** Изменить ровно правило для сайта без своего правила. */
@@ -77,12 +88,26 @@ export async function mountAutoHandoffSettingControl(container: HTMLElement, sto
   durationInput.min = "0";
   durationInput.max = String(MAX_AUTO_HANDOFF_MIN_DURATION_S);
   durationInput.value = String(DEFAULT_AUTO_HANDOFF_SETTINGS.min_duration_s);
+  // Галочка фильтра длины: снята — порог не действует, и поле порога гаснет (значение в нём хранится).
+  const lengthFilterBox = document.createElement("input");
+  lengthFilterBox.type = "checkbox";
+  lengthFilterBox.id = "auto-handoff-length-filter";
+  lengthFilterBox.checked = DEFAULT_AUTO_HANDOFF_SETTINGS.require_min_duration;
   const durationBefore = document.createElement("span");
-  durationBefore.textContent = "Only videos longer than ";
+  durationBefore.textContent = " Only videos longer than ";
   const durationAfter = document.createElement("span");
   durationAfter.textContent = " seconds";
   const durationRow = document.createElement("label");
-  durationRow.append(durationBefore, durationInput, durationAfter);
+  durationRow.append(lengthFilterBox, durationBefore, durationInput, durationAfter);
+
+  const soundFilterBox = document.createElement("input");
+  soundFilterBox.type = "checkbox";
+  soundFilterBox.id = "auto-handoff-sound-filter";
+  soundFilterBox.checked = DEFAULT_AUTO_HANDOFF_SETTINGS.require_sound;
+  const soundFilterText = document.createElement("span");
+  soundFilterText.textContent = " Only videos playing with sound";
+  const soundRow = document.createElement("label");
+  soundRow.append(soundFilterBox, soundFilterText);
 
   const ruleSelect = document.createElement("select");
   ruleSelect.id = "auto-handoff-unknown-site-rule";
@@ -98,13 +123,16 @@ export async function mountAutoHandoffSettingControl(container: HTMLElement, sto
   const ruleRow = document.createElement("label");
   ruleRow.append(ruleText, ruleSelect);
 
-  for (const row of [enabledRow, durationRow, ruleRow]) row.className = "setting-row";
-  container.append(heading, enabledRow, durationRow, ruleRow, status);
+  for (const row of [enabledRow, durationRow, soundRow, ruleRow]) row.className = "setting-row";
+  container.append(heading, enabledRow, durationRow, soundRow, ruleRow, status);
 
   /** Показать в полях то, что лежит в хранилище. */
   function showSettings(settings: AutoHandoffSettings): void {
     enabledBox.checked = settings.enabled;
     durationInput.value = String(settings.min_duration_s);
+    lengthFilterBox.checked = settings.require_min_duration;
+    durationInput.disabled = !settings.require_min_duration;
+    soundFilterBox.checked = settings.require_sound;
     ruleSelect.value = settings.unknown_site_rule;
   }
 
@@ -127,6 +155,17 @@ export async function mountAutoHandoffSettingControl(container: HTMLElement, sto
   enabledBox.addEventListener("change", () => {
     const enabled = enabledBox.checked;
     save((current) => withAutoHandoffEnabled(current, enabled));
+  });
+
+  lengthFilterBox.addEventListener("change", () => {
+    const requireMinDuration = lengthFilterBox.checked;
+    durationInput.disabled = !requireMinDuration;
+    save((current) => withAutoHandoffLengthFilter(current, requireMinDuration));
+  });
+
+  soundFilterBox.addEventListener("change", () => {
+    const requireSound = soundFilterBox.checked;
+    save((current) => withAutoHandoffSoundFilter(current, requireSound));
   });
 
   durationInput.addEventListener("change", () => {

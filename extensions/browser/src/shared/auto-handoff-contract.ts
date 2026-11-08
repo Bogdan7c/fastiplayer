@@ -6,7 +6,7 @@
 // 3. MAIN-мир → фон: обычное донесение `next_video_held` с `trigger: "viewer_play"` (handoff-contract.ts).
 //
 // Правил сайтов, стоп-листа и порога длины MAIN-мир не знает: он только честно говорит «человек сам запустил
-// видео со звуком», а судит фон. Поэтому страница не может ни включить режим 2 сама, ни узнать правила.
+// видео (со звуком, если фильтр звука включён)», а судит фон. Поэтому страница не может ни включить режим 2 сама, ни узнать правила.
 
 import type { ElementKey } from "./handoff-contract.ts";
 
@@ -18,10 +18,15 @@ import type { ElementKey } from "./handoff-contract.ts";
  * Охрана режима 2 в этом документе:
  * - `on` — настройка включена хотя бы для какого-то сайта: сторож задерживает видео, которое человек сам
  *   запустил со звуком, и спрашивает фон;
+ * - `on_including_muted` — то же, но фильтр звука снят (решение 260): задерживается и видео без звука,
+ *   если его запустил человек;
  * - `off` — режим выключен: сторож строго прозрачен для `play()` вне взвода фона, фону не уходит ничего.
  * Изолированный мир шлёт это на старте документа и при каждом изменении настройки.
  */
-export type AutoHandoffWatchState = "on" | "off";
+export type AutoHandoffWatchState = "on" | "on_including_muted" | "off";
+
+/** Все состояния охраны (для проверки команды на границе миров). */
+export const AUTO_HANDOFF_WATCH_STATES: readonly AutoHandoffWatchState[] = ["on", "on_including_muted", "off"];
 
 export interface AutoHandoffWatchCommand {
   readonly kind: "auto_handoff_watch";
