@@ -428,4 +428,51 @@ fn media_source_generation_rules_are_unchanged() {
     );
 }
 
+fn tab_gone(reason: TabGoneReason) -> PageSessionMessage {
+    PageSessionMessage::TabGone { reason }
+}
+
+#[test]
+fn page_player_failed_is_a_violation_below_1_3_and_the_older_reasons_are_not() {
+    // Решение 237: значение `page_player_failed` появилось в 1.3. Старый экстеншен (общая
+    // версия ниже) шлёт вместо него `navigated_away`; прислать новое — ошибка отправителя.
+    for older in [
+        ProtocolVersion::V1_0,
+        ProtocolVersion::V1_1,
+        ProtocolVersion::V1_2,
+    ] {
+        let mut gate = StreamGate::for_agreed_version(older);
+        assert_eq!(gate.apply_message(&started(1)), Ok(GateDecision::Accept));
+        let before = gate.clone();
+        assert_eq!(
+            gate.apply_message(&tab_gone(TabGoneReason::PagePlayerFailed)),
+            Err(StreamViolation::MessageNotInAgreedVersion {
+                agreed: older,
+                introduced_in: ProtocolVersion::V1_3,
+            }),
+            "{older:?}"
+        );
+        assert_eq!(gate, before, "отказ не меняет сторожа");
+        for reason in [
+            TabGoneReason::Closed,
+            TabGoneReason::NavigatedAway,
+            TabGoneReason::BrowserClosing,
+        ] {
+            assert_eq!(
+                gate.apply_message(&tab_gone(reason)),
+                Ok(GateDecision::Accept),
+                "{older:?} {reason:?}"
+            );
+        }
+    }
+    let mut gate = StreamGate::for_agreed_version(ProtocolVersion::V1_3);
+    assert_eq!(gate.apply_message(&started(1)), Ok(GateDecision::Accept));
+    let before = gate.clone();
+    assert_eq!(
+        gate.apply_message(&tab_gone(TabGoneReason::PagePlayerFailed)),
+        Ok(GateDecision::Accept)
+    );
+    assert_eq!(gate, before, "tab_gone не про поток: сторож не меняется");
+}
+
 mod hls;

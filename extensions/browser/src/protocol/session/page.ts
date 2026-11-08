@@ -62,8 +62,16 @@ export type RangeFetchOutcome =
   | { readonly kind: "completed"; readonly resource_size: ResourceSize }
   | { readonly kind: "failed"; readonly failure: RangeFetchFailure };
 
-/** Почему вкладка ушла. */
-export type TabGoneReason = "closed" | "navigated_away" | "browser_closing";
+/**
+ * Почему вкладка ушла. `page_player_failed` - вкладка на месте, но плеер сайта сломался
+ * (ошибка элемента не прошла, страница сняла источник после ошибки): для плеера это тот же
+ * конец «досмотреть скачанное», только со своими словами. Появилось в протоколе 1.3
+ * (решение 237): версию значения знает `tabGoneReasonIntroducedIn`.
+ */
+export type TabGoneReason = "closed" | "navigated_away" | "browser_closing" | "page_player_failed";
+
+/** Все причины ухода вкладки - один список для разбора и для таблицы версий. */
+export const TAB_GONE_REASONS: readonly TabGoneReason[] = ["closed", "navigated_away", "browser_closing", "page_player_failed"];
 
 /** Сообщения сеанса от страницы к плееру (поле `type` - имя в snake_case). */
 export type PageSessionMessage =
@@ -177,7 +185,7 @@ export const pageSessionCodec: TaggedUnionCodec<PageSessionMessage> = taggedUnio
   ad_state: { ad: pageAdStateCodec },
   range_fetch_finished: { request_id: rangeRequestIdCodec, outcome: rangeFetchOutcomeCodec },
   resource_fetch_finished: { request_id: rangeRequestIdCodec, outcome: resourceFetchOutcomeCodec },
-  tab_gone: { reason: stringEnum<TabGoneReason>(["closed", "navigated_away", "browser_closing"]) },
+  tab_gone: { reason: stringEnum<TabGoneReason>(TAB_GONE_REASONS) },
 });
 
 /** Проверки между полями: удаляемый промежуток непуст, меню корректно. */

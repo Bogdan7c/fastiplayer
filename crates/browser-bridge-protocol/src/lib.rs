@@ -28,7 +28,9 @@
 //! `crate::version`). Общие фикстуры для Rust и TypeScript — в `fixtures/`.
 //!
 //! Версия 1.1 (решение 228) добавила нативный HLS по номеркам ресурсов:
-//! `crate::resource`, `crate::resource_address`.
+//! `crate::resource`, `crate::resource_address`; 1.2 (решение 232) — окно эфира
+//! `live_window`; 1.3 (решение 237) — значение `tab_gone{page_player_failed}`.
+//! История версий — `crate::version`.
 
 pub mod capability;
 pub mod codec;

@@ -18,9 +18,10 @@
 //!   и HLS-поколении нет ничего MSE-шного (SourceBuffer, байты рамок вида 1,
 //!   `duration_changed`, `end_of_stream`): длительность и конец плеер знает
 //!   из самого файла или плейлиста;
-//! - сообщение новее общей версии сеанса (`PageSessionMessage::introduced_in`) —
-//!   нарушение: при общей 1.0 страница не вправе слать `hls_source_added` и
-//!   `resource_fetch_finished` (`crate::version`, правило 5);
+//! - сообщение новее общей версии сеанса (`PageSessionMessage::required_version` —
+//!   версия типа и его значений) — нарушение: при общей 1.0 страница не вправе слать
+//!   `hls_source_added` и `resource_fetch_finished`, при общей ниже 1.3 —
+//!   `tab_gone{page_player_failed}` (`crate::version`, правило 5);
 //! - SourceBuffer объявляют (`source_buffer_added`) до его байтов и только раз;
 //! - порядковые номера рамок SourceBuffer идут подряд с 0: пропуск значит
 //!   потерю куска, и склеивать байты дальше нельзя.
@@ -92,7 +93,8 @@ pub enum StreamViolation {
     MessageNotInAgreedVersion {
         /// Общая версия сеанса.
         agreed: ProtocolVersion,
-        /// В какой версии появилось сообщение.
+        /// С какой версии сообщение можно слать: версия его типа или, если новее, его
+        /// значения (`PageSessionMessage::required_version`).
         introduced_in: ProtocolVersion,
     },
     /// Порядковый номер рамки не тот, что ожидался: кусок потерян или повторён.
@@ -287,7 +289,8 @@ impl StreamGate {
     ) -> Result<GateDecision, StreamViolation> {
         // Версия — раньше всех правил потока: сообщения новее договора нет вовсе,
         // даже про устаревшее поколение (иначе нарушение пряталось бы за «устарело»).
-        let introduced_in = message.introduced_in();
+        // Сверяется версия сообщения со всеми значениями, а не только типа (1.3).
+        let introduced_in = message.required_version();
         if !self.agreed_version.includes(introduced_in) {
             return Err(StreamViolation::MessageNotInAgreedVersion {
                 agreed: self.agreed_version,

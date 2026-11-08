@@ -24,8 +24,8 @@ import { FIXTURES_ROOT, readFixtureBytes } from "./fixtures-support.ts";
 
 const version = (major: number, minor: number): ProtocolVersion => ({ major, minor });
 
-test("текущая версия протокола - 1.2 (HLS live, сессия 10a3)", () => {
-  assert.deepEqual(CURRENT_PROTOCOL_VERSION, { major: 1, minor: 2 });
+test("текущая версия протокола - 1.3 (tab_gone{page_player_failed}, сессия 11a)", () => {
+  assert.deepEqual(CURRENT_PROTOCOL_VERSION, { major: 1, minor: 3 });
 });
 
 test("версия включает только свои и более старые minor того же major", () => {
@@ -93,15 +93,20 @@ test("метки возможностей: запись и разбор обра
   assert.equal(decodeExtensionControl(hello).ok, true);
 });
 
-test("коды закрытия сеанса: уникальные 4000-4009, обратное соответствие, чужие коды неизвестны", () => {
+test("коды закрытия сеанса: уникальные 4000-4010, обратное соответствие, чужие коды неизвестны", () => {
   const codes = Object.values(SESSION_CLOSE_CODES);
   assert.equal(new Set(codes).size, codes.length);
+  // Заняты ровно 4000-4010 подряд, без дыр (решение 236 добавило 4010).
+  assert.deepEqual([...codes].sort((left, right) => left - right), Array.from({ length: 11 }, (_, index) => 4000 + index));
   for (const [reason, code] of Object.entries(SESSION_CLOSE_CODES)) {
     assert.ok(code >= 4000 && code <= 4999);
     assert.equal(closeReasonFromCode(code), reason);
   }
   assert.equal(closeCodeOf("protocol_violation"), 4003);
   assert.equal(closeCodeOf("replaced_by_another_tab"), 4001);
+  assert.equal(closeCodeOf("viewer_returned_to_page"), 4010);
+  assert.equal(closeReasonFromCode(4010), "viewer_returned_to_page");
+  assert.equal(closeReasonFromCode(4011), undefined);
   assert.equal(closeReasonFromCode(1006), undefined);
   assert.equal(closeReasonFromCode(4999), undefined);
 });

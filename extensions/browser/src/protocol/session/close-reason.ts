@@ -1,6 +1,6 @@
 // Причины закрытия WebSocket-сеанса и их коды. Зеркало SessionCloseReason (session/mod.rs).
 //
-// Закрывает соединение плеер (или экстеншен) прикладным кодом 4000-4999; по коду
+// Закрывает соединение плеер (или экстеншен) прикладным кодом 4000-4999 (заняты 4000-4010); по коду
 // экстеншен понимает, чинить ли связь, показывать ли сообщение или молча уйти.
 
 export type SessionCloseReason =
@@ -14,7 +14,13 @@ export type SessionCloseReason =
   | "attach_timeout"
   | "already_attached"
   /** Страница честно забрала видео, вкладка на месте (решение 179); закрывает экстеншен. */
-  | "page_took_video_back";
+  | "page_took_video_back"
+  /**
+   * Зритель нажал «Return» на заглушке страницы (сессия 11a, решение 236): видео играет на
+   * странице дальше, плеер молча закрывает окно. Закрывает экстеншен. Коды закрытия не
+   * версионируются: старый плеер видит чужой 4xxx и тоже молча закрывается, как на 1000.
+   */
+  | "viewer_returned_to_page";
 
 /** Код закрытия каждой причины (стабильные значения протокола 1.x). */
 export const SESSION_CLOSE_CODES: Readonly<Record<SessionCloseReason, number>> = {
@@ -28,6 +34,7 @@ export const SESSION_CLOSE_CODES: Readonly<Record<SessionCloseReason, number>> =
   attach_timeout: 4007,
   already_attached: 4008,
   page_took_video_back: 4009,
+  viewer_returned_to_page: 4010,
 };
 
 /** Код закрытия для причины. */

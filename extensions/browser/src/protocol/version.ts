@@ -10,6 +10,9 @@
 // HLS по номеркам: `hls_source_added`, `fetch_resource`, `resource_fetch_finished`;
 // 1.2 (сессия 10a3, решение 232) - HLS live: `live_window` (окно эфира от плеера).
 // VOD HLS по-прежнему хватает 1.1.
+// 1.3 (сессия 11a, решение 237) - новых сообщений нет, новое ЗНАЧЕНИЕ: причина
+// `tab_gone{page_player_failed}` (плеер сайта сломался во время передачи). Значение новее
+// общей версии сторона не шлёт: экстеншен со старым плеером говорит `navigated_away`.
 
 import { plainInteger } from "./numbers.ts";
 import { type Codec, stringEnum, struct } from "./schema.ts";
@@ -29,8 +32,11 @@ export const PROTOCOL_VERSION_1_1: ProtocolVersion = Object.freeze({ major: 1, m
 /** HLS live: окно эфира `live_window` (сессия 10a3, решение 232). */
 export const PROTOCOL_VERSION_1_2: ProtocolVersion = Object.freeze({ major: 1, minor: 2 });
 
+/** Причина `tab_gone{page_player_failed}` (сессия 11a, решение 237). */
+export const PROTOCOL_VERSION_1_3: ProtocolVersion = Object.freeze({ major: 1, minor: 3 });
+
 /** Версия протокола, которую реализует этот экстеншен. */
-export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_2;
+export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_3;
 
 /**
  * Входит ли в версию `agreed` (обычно - общую версию сеанса) то, что появилось в

@@ -14,7 +14,7 @@
 
 Нужны только медиа из fixtures/media/ (их делает media/generate.sh). Скрипт
 стирает и пересоздаёт control/, session/, data/, streams/, manifest.json,
-resource-addresses.json и message-versions.json.
+resource-addresses.json, message-versions.json и value-versions.json.
 """
 
 from __future__ import annotations
@@ -445,6 +445,25 @@ def write_invalid_hls_page_messages(manifest: Manifest) -> None:
         manifest.invalid(f"{invalid}{name}.json", schema, compact_json(message), kind)
 
 
+def write_invalid_tab_gone_reasons(manifest: Manifest) -> None:
+    """Неверные причины `tab_gone`: метка строгая, без нормализации (протокол 1.3).
+
+    `page_player_failed` — ровно так, в нижнем регистре: другой регистр, дефис вместо
+    подчёркивания и похожие слова — незнакомое значение, а не «почти та же причина».
+    Внешняя форма serde (`{"page_player_failed":null}`) — ошибка формы, её пишет
+    `write_shape_strictness` рядом с другими `tab-gone-reason-as-*`.
+    """
+    schema = "page_session"
+    invalid = "session/invalid/page-tab-gone-"
+    for name, reason in [
+        ("reason-unknown", "teleported"),
+        ("page-player-failed-upper-case", "Page_Player_Failed"),
+        ("page-player-failed-with-dashes", "page-player-failed"),
+        ("page-player-failed-with-spaces", " page_player_failed"),
+    ]:
+        manifest.invalid(f"{invalid}{name}.json", schema, compact_json(page_message("tab_gone", reason=reason)), "unknown_value")
+
+
 def write_page_session(manifest: Manifest) -> None:
     schema = "page_session"
     valid = "session/valid/page-"
@@ -565,10 +584,13 @@ def write_page_session(manifest: Manifest) -> None:
             page_message("range_fetch_finished", request_id=8, outcome={"kind": "failed", "failure": "http_error"}),
         ),
         ("tab-gone", page_message("tab_gone", reason="navigated_away")),
+        # Протокол 1.3 (решение 237): плеер сайта сломался во время передачи.
+        ("tab-gone-page-player-failed", page_message("tab_gone", reason="page_player_failed")),
         *resource_fetch_finished_cases(),
     ]:
         manifest.valid(f"{valid}{name}.json", schema, message)
     write_invalid_hls_page_messages(manifest)
+    write_invalid_tab_gone_reasons(manifest)
 
     invalid = "session/invalid/page-"
     manifest.invalid(
@@ -1018,6 +1040,8 @@ def write_shape_strictness(manifest: Manifest) -> None:
         # Незнакомый ключ в той же внешней форме — тоже ошибка формы, а не «незнакомое значение»:
         # форма проверяется раньше значения (иначе Rust и TS могли бы разойтись в виде причины).
         ("tab-gone-reason-unknown-key-as-map", page_message("tab_gone", reason={"teleported": None})),
+        # Новая причина 1.3 в той же чужой форме — тоже ошибка формы.
+        ("tab-gone-page-player-failed-as-map", page_message("tab_gone", reason={"page_player_failed": None})),
         ("menu-as-array", page_message("variant_menu_changed", menu=["audio", []])),
         (
             "menu-option-as-array",
@@ -1523,6 +1547,26 @@ def write_message_versions() -> None:
     )
 
 
+# В какой версии протокола появилось каждое ЗНАЧЕНИЕ старого сообщения, у которого
+# значения добавлялись (с протокола 1.3). Ключ — «сообщение.поле»; список значений полный:
+# новое значение без версии — ошибка, которую ловят тесты обеих сторон. Значение новее
+# общей версии сеанса получатель отвергает, отправитель не шлёт (решение 237).
+VALUE_VERSIONS: dict[str, dict[str, str]] = {
+    "tab_gone.reason": {
+        "closed": "1.0",
+        "navigated_away": "1.0",
+        "browser_closing": "1.0",
+        "page_player_failed": "1.3",
+    },
+}
+
+
+def write_value_versions() -> None:
+    (FIXTURES_ROOT / "value-versions.json").write_bytes(
+        json.dumps(VALUE_VERSIONS, ensure_ascii=False, indent=2).encode() + b"\n"
+    )
+
+
 def write_quality_switch_stream(manifest: Manifest) -> None:
     """5. Смена качества новым MediaSource три раза подряд (сессия 03e).
 
@@ -1608,6 +1652,7 @@ def main() -> None:
     write_streams(manifest)
     write_resource_addresses()
     write_message_versions()
+    write_value_versions()
     (FIXTURES_ROOT / "manifest.json").write_bytes(
         json.dumps({"cases": manifest.cases, "streams": manifest.streams}, ensure_ascii=False, indent=2).encode()
         + b"\n"

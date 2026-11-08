@@ -1,0 +1,8 @@
+{
+  "tab_gone.reason": {
+    "closed": "1.0",
+    "navigated_away": "1.0",
+    "browser_closing": "1.0",
+    "page_player_failed": "1.3"
+  }
+}

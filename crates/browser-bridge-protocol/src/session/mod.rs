@@ -15,14 +15,21 @@
 //!    [`SessionCloseReason`];
 //! 3. дальше обе стороны говорят свободно, пока одна не закроет соединение.
 //!
-//! Коды закрытия — [`SessionCloseReason`] (4000–4009). Почти все — слова плеера; страница
-//! (экстеншен) закрывает связь осмысленным кодом в двух случаях:
+//! Коды закрытия — [`SessionCloseReason`] (4000–4010). Почти все — слова плеера; страница
+//! (экстеншен) закрывает связь осмысленным кодом в трёх случаях:
 //! - 4003 `protocol_violation` — сбой на её стороне (поток битый, тень не встала);
 //!   плеер показывает «Stream error — video returned to the page» (решение 132);
 //! - 4009 `page_took_video_back` — страница честно забрала видео, вкладка на месте;
 //!   плеер не доигрывает и показывает «The page took the video back» (решение 179).
 //!   Код добавлен внутри 1.0, как `stream_rejected{playback_failed}` (решение 128):
 //!   экстеншен ещё нигде не опубликован.
+//! - 4010 `viewer_returned_to_page` — зритель нажал «Return» на заглушке страницы
+//!   (сессия 11a, решение 236): видео играет на странице дальше, плеер молча и сразу
+//!   закрывает окно — без доигрывания, сообщения и прощания, как на 1000.
+//!
+//! Коды закрытия не версионируются (4009 и 4010 добавлены без новой `minor`): плеер,
+//! не знающий кода, видит чужой 4xxx и кончает сеанс молча — для 4010 это и есть
+//! правильное поведение.
 //!
 //! Обычное 1000 от страницы и кадр без кода ничего не объясняют: плеер кончает сеанс
 //! молча.
@@ -79,11 +86,17 @@ pub enum SessionCloseReason {
     /// «The page took the video back» и закрытие окна. Добавлен внутри 1.0, как
     /// `stream_rejected{playback_failed}` (решение 128): экстеншен ещё нигде не опубликован.
     PageTookVideoBack,
+    /// Зритель нажал «Return» на заглушке страницы (сессия 11a, решение 236): тень снята на
+    /// своей позиции, видео страницы играет дальше. Закрывает экстеншен. Плеер закрывает окно
+    /// сразу и молча: без доигрывания (было бы два звука), без сообщения и без прощания
+    /// `return_to_page` (видео уже у страницы). Коды не версионируются: старый плеер видит
+    /// незнакомый 4xxx и тоже кончает сеанс молча.
+    ViewerReturnedToPage,
 }
 
 impl SessionCloseReason {
     /// Все причины — для обратного перевода кода.
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::PlayerClosed,
         Self::ReplacedByAnotherTab,
         Self::TabGone,
@@ -94,6 +107,7 @@ impl SessionCloseReason {
         Self::AttachTimeout,
         Self::AlreadyAttached,
         Self::PageTookVideoBack,
+        Self::ViewerReturnedToPage,
     ];
 
     /// Код закрытия WebSocket.
@@ -110,6 +124,7 @@ impl SessionCloseReason {
             Self::AttachTimeout => 4007,
             Self::AlreadyAttached => 4008,
             Self::PageTookVideoBack => 4009,
+            Self::ViewerReturnedToPage => 4010,
         }
     }
 
@@ -148,5 +163,18 @@ mod tests {
             SessionCloseReason::from_close_code(4009),
             Some(SessionCloseReason::PageTookVideoBack)
         );
+    }
+
+    #[test]
+    fn the_viewer_returning_to_the_page_is_4010_both_ways() {
+        // Решение 236 (сессия 11a): код закреплён числом — его же зеркалит экстеншен
+        // (`SESSION_CLOSE_CODES.viewer_returned_to_page` в `close-reason.ts`).
+        assert_eq!(SessionCloseReason::ViewerReturnedToPage.close_code(), 4010);
+        assert_eq!(
+            SessionCloseReason::from_close_code(4010),
+            Some(SessionCloseReason::ViewerReturnedToPage)
+        );
+        // Следующий код ещё ничей.
+        assert_eq!(SessionCloseReason::from_close_code(4011), None);
     }
 }

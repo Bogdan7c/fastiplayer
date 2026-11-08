@@ -15,6 +15,10 @@
 //!    Сообщение новее общей версии — нарушение отправителя: получатель его не
 //!    исполняет (на стороне плеера это проверяет `crate::stream_gate::StreamGate`),
 //!    а отправитель до отправки сверяет [`ProtocolVersion::includes`].
+//!    Новое ЗНАЧЕНИЕ старого сообщения тоже знает свою версию (с 1.3:
+//!    `TabGoneReason::introduced_in`). Сторож сверяет с общей версией
+//!    `PageSessionMessage::required_version` — самую новую из версий типа и его
+//!    значений: «договорились — значит строго» и для значений.
 //!
 //! Форма самого `Hello` и отказа по версии не меняется никогда, даже между
 //! `major`: иначе стороны не смогут договориться о том, что они разные.
@@ -29,6 +33,14 @@
 //!   страница, честное окно перемотки эфира). VOD HLS по-прежнему хватает 1.1;
 //!   при общей 1.1 плеер не шлёт `live_window`, а экстеншен оставляет для live
 //!   HLS честный отказ «not supported yet».
+//! - **1.3** (сессия 11a, решение 237) — новых сообщений нет, новое ЗНАЧЕНИЕ старого:
+//!   причина `tab_gone{reason: "page_player_failed"}` (плеер сайта сломался во время
+//!   передачи; плеер доигрывает скачанное своими словами). Версию значения знает
+//!   `TabGoneReason::introduced_in`, а сторож потока сверяет её с общей версией так
+//!   же, как версию типа (`PageSessionMessage::required_version`). При общей версии
+//!   ниже 1.3 экстеншен вместо неё шлёт `navigated_away`. Коды закрытия не
+//!   версионируются (4009 и 4010 добавлены так же): чужой 4xxx старый плеер
+//!   понимает как молчаливый конец.
 
 use crate::strict_shape::{strict_label, strict_object};
 use serde::{Deserialize, Serialize};
@@ -58,6 +70,9 @@ impl ProtocolVersion {
     /// HLS live: окно эфира `live_window` (сессия 10a3, решение 232).
     pub const V1_2: Self = Self { major: 1, minor: 2 };
 
+    /// Причина `tab_gone{page_player_failed}` (сессия 11a, решение 237).
+    pub const V1_3: Self = Self { major: 1, minor: 3 };
+
     /// Входит ли в эту версию (обычно — общую версию сеанса) то, что появилось
     /// в версии `introduced_in`.
     ///
@@ -70,7 +85,7 @@ impl ProtocolVersion {
 }
 
 /// Версия протокола, которую реализует этот crate.
-pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_2;
+pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_3;
 
 /// Кто из участников моста.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -144,28 +159,34 @@ mod tests {
         assert!(ProtocolVersion::V1_2.includes(ProtocolVersion::V1_1));
         assert!(ProtocolVersion::V1_2.includes(ProtocolVersion::V1_0));
         assert!(!ProtocolVersion::V1_1.includes(ProtocolVersion::V1_2));
+        assert!(ProtocolVersion::V1_3.includes(ProtocolVersion::V1_2));
+        assert!(!ProtocolVersion::V1_2.includes(ProtocolVersion::V1_3));
         // Другой major не входит ни в какую сторону, даже с меньшей minor.
         assert!(!version(2, 5).includes(ProtocolVersion::V1_0));
         assert!(!ProtocolVersion::V1_1.includes(version(2, 0)));
     }
 
     #[test]
-    fn this_crate_speaks_protocol_1_2() {
-        // Сессия 10a3: HLS live. Число закреплено — его же зеркалит экстеншен
-        // (`CURRENT_PROTOCOL_VERSION` в `version.ts`).
-        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 2));
+    fn this_crate_speaks_protocol_1_3() {
+        // Сессия 11a: причина `tab_gone{page_player_failed}`. Число закреплено — его же
+        // зеркалит экстеншен (`CURRENT_PROTOCOL_VERSION` в `version.ts`).
+        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 3));
     }
 
     #[test]
-    fn a_1_2_player_agrees_on_the_older_minor_of_a_1_1_or_1_0_extension() {
+    fn a_1_3_player_agrees_on_the_older_minor_of_an_older_extension() {
         // Новый плеер со старым экстеншеном говорит на языке старого (правило 3).
-        for older in [ProtocolVersion::V1_1, ProtocolVersion::V1_0] {
+        for older in [
+            ProtocolVersion::V1_2,
+            ProtocolVersion::V1_1,
+            ProtocolVersion::V1_0,
+        ] {
             assert_eq!(
-                negotiate_protocol_version(ProtocolVersion::V1_2, older),
+                negotiate_protocol_version(ProtocolVersion::V1_3, older),
                 Ok(older)
             );
             assert_eq!(
-                negotiate_protocol_version(older, ProtocolVersion::V1_2),
+                negotiate_protocol_version(older, ProtocolVersion::V1_3),
                 Ok(older)
             );
         }

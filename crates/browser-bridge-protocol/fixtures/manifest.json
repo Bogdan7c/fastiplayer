@@ -453,6 +453,13 @@
       }
     },
     {
+      "file": "session/valid/page-tab-gone-page-player-failed.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
       "file": "session/valid/page-resource-fetch-completed.json",
       "schema": "page_session",
       "expect": {
@@ -625,6 +632,38 @@
       "expect": {
         "result": "error",
         "kind": "missing_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-tab-gone-reason-unknown.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-tab-gone-page-player-failed-upper-case.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-tab-gone-page-player-failed-with-dashes.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-tab-gone-page-player-failed-with-spaces.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
       }
     },
     {
@@ -1540,6 +1579,14 @@
     },
     {
       "file": "session/invalid/page-shape-tab-gone-reason-unknown-key-as-map.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-tab-gone-page-player-failed-as-map.json",
       "schema": "page_session",
       "expect": {
         "result": "error",

@@ -397,6 +397,7 @@ fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
                 TabGoneReason::Closed,
                 TabGoneReason::NavigatedAway,
                 TabGoneReason::BrowserClosing,
+                TabGoneReason::PagePlayerFailed,
             ]),
         },
     }

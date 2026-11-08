@@ -5,8 +5,14 @@
 // Таблицы полные по типам (`Record` по объединению `type`): новое сообщение без версии не
 // соберётся. Сверка с Rust - общая фикстура fixtures/message-versions.json.
 
-import { PROTOCOL_VERSION_1_0, PROTOCOL_VERSION_1_1, PROTOCOL_VERSION_1_2, type ProtocolVersion } from "../version.ts";
-import type { PageSessionMessage } from "./page.ts";
+import {
+  PROTOCOL_VERSION_1_0,
+  PROTOCOL_VERSION_1_1,
+  PROTOCOL_VERSION_1_2,
+  PROTOCOL_VERSION_1_3,
+  type ProtocolVersion,
+} from "../version.ts";
+import type { PageSessionMessage, TabGoneReason } from "./page.ts";
 import type { PlayerSessionMessage } from "./player.ts";
 
 const PAGE_SESSION_INTRODUCED_IN: Readonly<Record<PageSessionMessage["type"], ProtocolVersion>> = {
@@ -56,4 +62,21 @@ export function pageSessionIntroducedIn(type: PageSessionMessage["type"]): Proto
 /** В какой версии появилось сообщение плеера с этим `type`. */
 export function playerSessionIntroducedIn(type: PlayerSessionMessage["type"]): ProtocolVersion {
   return PLAYER_SESSION_INTRODUCED_IN[type];
+}
+
+/**
+ * В какой версии появилась причина ухода вкладки. Таблицы версий выше знают только типы
+ * сообщений; новое ЗНАЧЕНИЕ старого сообщения (1.3: `page_player_failed`) версионируется
+ * здесь. Зеркало `TabGoneReason::introduced_in` (page.rs).
+ */
+const TAB_GONE_REASON_INTRODUCED_IN: Readonly<Record<TabGoneReason, ProtocolVersion>> = {
+  closed: PROTOCOL_VERSION_1_0,
+  navigated_away: PROTOCOL_VERSION_1_0,
+  browser_closing: PROTOCOL_VERSION_1_0,
+  page_player_failed: PROTOCOL_VERSION_1_3,
+};
+
+/** В какой версии появилась причина `tab_gone{reason}`. */
+export function tabGoneReasonIntroducedIn(reason: TabGoneReason): ProtocolVersion {
+  return TAB_GONE_REASON_INTRODUCED_IN[reason];
 }

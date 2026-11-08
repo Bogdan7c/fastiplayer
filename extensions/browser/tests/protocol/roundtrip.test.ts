@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  TAB_GONE_REASONS,
   decodeExtensionControl,
   decodePageSession,
   decodePlayerControl,
@@ -158,7 +159,7 @@ function pageSession(random: Random): PageSessionMessage {
       outcome: { kind: "completed", resource_size: random.int(2) === 0 ? { kind: "unknown" } : { kind: "known", size_bytes: random.safeInt() } },
     },
     { type: "range_fetch_finished", request_id: random.next(), outcome: { kind: "failed", failure: "http_error" } },
-    { type: "tab_gone", reason: random.pick(["closed", "navigated_away", "browser_closing"] as const) },
+    { type: "tab_gone", reason: random.pick(TAB_GONE_REASONS) },
   ]);
 }
 

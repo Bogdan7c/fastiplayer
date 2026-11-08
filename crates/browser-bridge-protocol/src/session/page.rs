@@ -148,6 +148,28 @@ pub enum TabGoneReason {
     NavigatedAway,
     /// Браузер закрывается.
     BrowserClosing,
+    /// Вкладка на месте, но плеер сайта сломался во время передачи (сессия 11a, решение 237):
+    /// страница больше не источник. Для плеера это тот же конец «досмотреть скачанное», что и
+    /// закрытая вкладка, только со своими словами. Появилось в протоколе 1.3
+    /// ([`TabGoneReason::introduced_in`]); при общей версии ниже экстеншен шлёт
+    /// [`Self::NavigatedAway`], а сторож плеера такое значение отвергает как нарушение.
+    PagePlayerFailed,
+}
+
+impl TabGoneReason {
+    /// В какой версии протокола появилась эта причина (`crate::version`, правило 5).
+    ///
+    /// Версии типов сообщений знают `PageSessionMessage::introduced_in` и общая таблица
+    /// `fixtures/message-versions.json`; новое ЗНАЧЕНИЕ старого сообщения версионируется здесь
+    /// (таблица значений — `fixtures/value-versions.json`). Зеркало — `tabGoneReasonIntroducedIn`
+    /// (`introduced-in.ts`).
+    #[must_use]
+    pub const fn introduced_in(self) -> ProtocolVersion {
+        match self {
+            Self::Closed | Self::NavigatedAway | Self::BrowserClosing => ProtocolVersion::V1_0,
+            Self::PagePlayerFailed => ProtocolVersion::V1_3,
+        }
+    }
 }
 
 /// К какому потоку относится сообщение — для сторожа поколений
@@ -354,10 +376,11 @@ impl PageSessionMessage {
         }
     }
 
-    /// В какой версии протокола появилось сообщение (`crate::version`, правило 5).
+    /// В какой версии протокола появился ТИП сообщения (`crate::version`, правило 5).
     ///
-    /// Сообщение новее общей версии сеанса страница слать не вправе; плеер такое
-    /// отвергает (`crate::stream_gate::StreamGate`).
+    /// Совпадает с общей таблицей `fixtures/message-versions.json`. Значения внутри типа
+    /// могут быть новее (1.3: `tab_gone{page_player_failed}`) — версию самого сообщения со
+    /// всеми значениями даёт [`Self::required_version`].
     #[must_use]
     pub const fn introduced_in(&self) -> ProtocolVersion {
         match self {
@@ -380,6 +403,21 @@ impl PageSessionMessage {
             | Self::AdState { .. }
             | Self::RangeFetchFinished { .. }
             | Self::TabGone { .. } => ProtocolVersion::V1_0,
+        }
+    }
+
+    /// Самая старая общая версия сеанса, при которой страница вправе прислать именно это
+    /// сообщение: самая новая из версий его типа ([`Self::introduced_in`]) и его значений.
+    ///
+    /// Сообщение, которого нет в общей версии, страница слать не вправе; плеер такое
+    /// отвергает (`crate::stream_gate::StreamGate`) — «договорились — значит строго» и для
+    /// значений (1.3: `tab_gone{page_player_failed}` при общей 1.2 — нарушение).
+    #[must_use]
+    pub const fn required_version(&self) -> ProtocolVersion {
+        match self {
+            // Тип `tab_gone` есть с 1.0, поэтому версия значения всегда не старше типа.
+            Self::TabGone { reason } => reason.introduced_in(),
+            other => other.introduced_in(),
         }
     }
 }

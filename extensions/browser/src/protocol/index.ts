@@ -107,6 +107,7 @@ export type {
   SeekCause,
   TabGoneReason,
 } from "./session/page.ts";
+export { TAB_GONE_REASONS } from "./session/page.ts";
 export type {
   BufferIntake,
   ClockState,
@@ -125,13 +126,14 @@ export type { ResourceHandle, SourceBufferIndex, StreamGeneration } from "./stre
 
 export type { ResourceByteRange, ResourceFetchFailure, ResourceFetchOutcome } from "./resource.ts";
 export { RESOURCE_ADDRESS_HOST, formatResourceAddress, parseResourceAddress } from "./resource-address.ts";
-export { pageSessionIntroducedIn, playerSessionIntroducedIn } from "./session/introduced-in.ts";
+export { pageSessionIntroducedIn, playerSessionIntroducedIn, tabGoneReasonIntroducedIn } from "./session/introduced-in.ts";
 
 export {
   CURRENT_PROTOCOL_VERSION,
   PROTOCOL_VERSION_1_0,
   PROTOCOL_VERSION_1_1,
   PROTOCOL_VERSION_1_2,
+  PROTOCOL_VERSION_1_3,
   negotiateProtocolVersion,
   versionIncludes,
 } from "./version.ts";
