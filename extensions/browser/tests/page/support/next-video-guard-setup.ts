@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { DomReaders } from "../../../src/page/dom-readers.ts";
 import type { ElementSource } from "../../../src/page/element-source.ts";
 import type { ElementRegistry } from "../../../src/page/element-registry.ts";
+import { ViewerPlayWatch } from "../../../src/page/auto-handoff/viewer-play-watch.ts";
 import { NextVideoGuard } from "../../../src/page/next-video-guard.ts";
 import { heldShadowStarterFor, playWatchSeamFor } from "../../../src/page/shadow-assembly.ts";
 import type { VideoCandidates } from "../../../src/page/video-candidates.ts";
@@ -13,6 +14,27 @@ import { createCountingGuard, createShadowHarness, type ShadowHarness } from "..
 
 export const FILE_URL = "https://cdn.example/ad.mp4";
 export const LEASE_MS = 3_000;
+
+/** Ввод человека под управлением теста: что сказал бы браузер и когда был последний доверенный ввод. */
+export interface FakeActivation {
+  transient: boolean;
+  lastInputAtMs: number;
+  hasTransientActivation(): boolean;
+  lastTrustedInputAtMs(): number;
+}
+
+export function createFakeActivation(): FakeActivation {
+  return {
+    transient: false,
+    lastInputAtMs: Number.NEGATIVE_INFINITY,
+    hasTransientActivation() {
+      return this.transient;
+    },
+    lastTrustedInputAtMs() {
+      return this.lastInputAtMs;
+    },
+  };
+}
 
 /** Страница и настоящая тень вокруг сторожа. */
 export function setupGuard() {
@@ -37,6 +59,7 @@ export function setupGuard() {
     readyStateOf: (element: object) => (element as FakeVideo).real.readyState,
     currentTimeSeconds: (element: object) => (element as FakeVideo).real.currentTime,
     durationSecondsOf: (element: object) => (element as FakeVideo).real.duration,
+    isSilent: (element: object) => (element as FakeVideo).real.muted === true,
     isLooping: (element: object) => (element as unknown as { loop?: boolean }).loop === true,
     currentSrcOf: (element: object) => String((element as FakeVideo).real.src),
   } as unknown as DomReaders;
@@ -49,8 +72,11 @@ export function setupGuard() {
       playing: !video.real.paused,
       visible_area_px: 400_000,
     }));
+  const activation = createFakeActivation();
+  const viewerPlay = new ViewerPlayWatch({ activation, now: () => harness.clock.nowMs });
   const guard = new NextVideoGuard({
     dom,
+    viewerPlay,
     registry: {
       findVideoElements: () => videos,
       keyOf,
@@ -75,7 +101,7 @@ export function setupGuard() {
     videos.push(video);
     return video;
   };
-  return { harness, guard, sent, addVideo, sources, protectedVideos, keyOf, mediaSessionCalls: mediaSession.calls };
+  return { harness, guard, sent, addVideo, sources, protectedVideos, keyOf, activation, viewerPlay, mediaSessionCalls: mediaSession.calls };
 }
 
 /** Страница зовёт `play()` как обычно: через прототип с нашими переопределениями. */

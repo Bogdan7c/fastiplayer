@@ -9,6 +9,7 @@
 //! сбой одного браузера не прерывает прогон остальных.
 
 mod attacks;
+mod auto_handoff;
 mod blocker_matrix;
 mod capture;
 #[cfg(test)]
@@ -136,6 +137,22 @@ pub fn run_tab_return(stand: &Stand, browser: BrowserKind, filter: &PageFilter) 
 /// Идентификаторы страниц `tab-return` (для проверки `--page` в командной строке).
 pub fn tab_return_page_ids() -> Vec<&'static str> {
     tab_return::page_ids()
+}
+
+/// Режим 2 «автозапуск» (12a): настоящий клик человека по Play уводит видео в плеер сам, без кнопки
+/// «Отдать»; фильтры (звук, длина, правила сайта) и цепочки (реклама → фильм, «Return», три вкладки)
+/// — настоящей мышью (все строки или строки выбранных `--page`).
+pub fn run_auto_handoff(
+    stand: &Stand,
+    browser: BrowserKind,
+    filter: &PageFilter,
+) -> Vec<StepResult> {
+    auto_handoff::run_all(stand, browser, filter)
+}
+
+/// Идентификаторы страниц `auto-handoff` (для проверки `--page` в командной строке).
+pub fn auto_handoff_page_ids() -> Vec<&'static str> {
+    auto_handoff::page_ids()
 }
 
 /// Родной HLS LIVE под тенью (10a3): эфир идёт, страница видит `duration = Infinity` и едущее окно

@@ -23,7 +23,16 @@
 // у сторожа нет: таймеры скрытой вкладки Chromium будит раз в минуту.
 //
 // Отпущенное видео не задерживается снова, пока не сменит источник или не станет видимым: иначе скрытый
-// зеркальный плеер (решение 68) ходил бы по кругу «задержан — отпущен» на каждый взвод.
+// зеркальный плеер (решение 68) ходил бы по кругу «задержан — отпущен» на каждый взвод. Память отказов
+// своя у каждой причины задержки (`HeldVideoTrigger`): отказ переезда («это не следующее видео сеанса») не
+// отменяет нового нажатия play человеком (режим 2). Иначе хвост взвода сеанса, задержавший вернувшееся после
+// «Return» видео, навсегда отнимал бы его у режима 2 (находка стенда 12a, строка `after-return`).
+//
+// Режим 2 «автозапуск» (сессия 12a): вне взвода фона сторож тоже задерживает видео, но только если охрана
+// включена настройкой, а запустил видео со звуком САМ человек (`ViewerPlayWatch`: свежий жест или кредит
+// клика). Механика та же (тень в вызове `play()`, на `loadedmetadata`, по доверенному `play`), донесение
+// фону несёт `trigger: "viewer_play"`. Охрана выключена — `play()` строго прозрачен, лишних слушателей нет.
+// Политика «кто зритель» лежит в `auto-handoff/viewer-play-watch.ts`, правил сайтов здесь нет.
 //
 // Взвод возврата страницы (сессия 11b2, решения 240–241): фон открыл ушедшую страницу заново и ждёт ТО
 // САМОЕ видео, что играет в окне плеера (`PageReturnTarget`). Отличия от переезда (шаги — page-return-step.ts):
@@ -34,7 +43,9 @@
 // - запись сначала честно перематывается на секунду плеера (настоящий `currentTime`, до тени), тень встаёт
 //   на `seeked`: плеер сайта видит обычную перемотку и сам качает данные с этой секунды.
 
-import type { ElementKey, PageEvent, PageReturnTarget, VideoCandidate } from "../shared/handoff-contract.ts";
+import type { AutoHandoffWatchState } from "../shared/auto-handoff-contract.ts";
+import type { ElementKey, HeldVideoTrigger, PageEvent, PageReturnTarget, VideoCandidate } from "../shared/handoff-contract.ts";
+import type { ElementAudibility, ViewerPlayVerdict, ViewerPlayWatch } from "./auto-handoff/viewer-play-watch.ts";
 import type { DomReaders } from "./dom-readers.ts";
 import { hlsStreamOfDuration, shadowSourceOfHls } from "./hls-stream-kind.ts";
 import type { ElementRegistry } from "./element-registry.ts";
@@ -46,6 +57,7 @@ import type {
   PendingPlay,
   PlayWatchAnswer,
   PlayWatchSeam,
+  RealMediaEventType,
   ShadowSourceKind,
 } from "./handoff-seam.ts";
 import { pageReturnStep } from "./page-return-step.ts";
@@ -68,6 +80,8 @@ export interface NextVideoGuardEnvironment {
   readonly candidates: VideoCandidates;
   readonly startHeldShadow: HeldShadowStarter;
   readonly seam: PlayWatchSeam;
+  /** Политика режима 2: охрана, кредит клика, метки возврата (12a). */
+  readonly viewerPlay: ViewerPlayWatch;
   /** Защищённый элемент сторож не трогает (инвариант 4). */
   readonly isProtected: (element: object) => boolean;
   /** Отправка фону через изолированный мир. */
@@ -89,6 +103,8 @@ export interface HeldVideo {
 /** Запись о задержанном видео. */
 interface HeldEntry extends HeldVideo {
   readonly key: ElementKey;
+  /** Почему задержали: отказ фона запоминается только для этой причины. */
+  readonly trigger: HeldVideoTrigger;
 }
 
 /** Ответ «не наше дело»: один объект на все вызовы. */
@@ -97,8 +113,8 @@ const NOT_MINE: PlayWatchAnswer = { kind: "not_mine" };
 export class NextVideoGuard {
   readonly #environment: NextVideoGuardEnvironment;
   readonly #held = new Map<object, HeldEntry>();
-  /** Отпущенные: чем было видео в момент отказа (см. шапку). */
-  readonly #declined = new WeakMap<object, string>();
+  /** Отпущенные по каждой причине задержки: чем было видео в момент отказа (см. шапку). */
+  readonly #declined: Readonly<Record<HeldVideoTrigger, WeakMap<object, string>>> = { next_video: new WeakMap(), viewer_play: new WeakMap() };
   /** Обещания, выданные странице до метаданных. */
   readonly #awaitingMetadata = new WeakMap<object, PendingPlay[]>();
   /** Элементы, на которых уже слушаем события напрямую (теневой DOM). */
@@ -128,11 +144,24 @@ export class NextVideoGuard {
   arm(leaseMs: number, pageReturn?: PageReturnTarget): void {
     this.#armedUntilMs = this.#environment.now() + leaseMs;
     this.#pageReturn = pageReturn;
-    if (!this.#documentListened) {
-      this.#documentListened = true;
-      this.#environment.seam.onRealMediaEvent(this.#environment.documentEvents, (element) => this.#considerRunningVideo(element));
-    }
+    this.#listenOnDocument();
     for (const element of this.#environment.registry.findVideoElements()) this.#considerRunningVideo(element);
+  }
+
+  /** Изолированный мир сообщил: охрана режима 2 включена/выключена. Включение ставит слушатель документа. */
+  setViewerPlayWatch(state: AutoHandoffWatchState): void {
+    this.#environment.viewerPlay.setWatch(state);
+    if (state === "on") this.#listenOnDocument();
+  }
+
+  /** Фон выдал «кредит клика»: пока он действует, запуск видео со звуком считается запуском человека. */
+  grantViewerPlayCredit(leaseMs: number): void {
+    this.#environment.viewerPlay.grantCredit(leaseMs);
+  }
+
+  /** Передача элемента кончилась (Return, окно закрыто, замена): повторный запуск засчитается после нового ввода. */
+  noteHandoffEnded(element: object): void {
+    this.#environment.viewerPlay.noteHandoffEnded(element);
   }
 
   /** Забрать задержанное видео для передачи (`null` — такого нет). */
@@ -154,12 +183,19 @@ export class NextVideoGuard {
     const entry = this.#held.get(element);
     if (entry === undefined) return;
     this.#held.delete(element);
-    this.#remember(element);
+    this.#remember(element, entry.trigger);
     try {
       entry.session.end({ kind: "shadow_position" }, { kind: "as_shadow" });
     } catch {
       this.#environment.reportOddity("could not release a held video");
     }
+  }
+
+  /** Доверенные события окна: один слушатель на документ, ставится при первом взводе или включении охраны. */
+  #listenOnDocument(): void {
+    if (this.#documentListened) return;
+    this.#documentListened = true;
+    this.#environment.seam.onRealMediaEvent(this.#environment.documentEvents, (element, eventType) => this.#considerRunningVideo(element, eventType));
   }
 
   #armed(): boolean {
@@ -173,10 +209,10 @@ export class NextVideoGuard {
       if (!this.#armed()) {
         // Взвод возврата кончился, а отложенный `play()` ещё лежит: отдать его браузеру, страница не зависнет.
         this.#releaseDeferredPlay(element);
-        return NOT_MINE;
+        return this.#interceptViewerPlay(element, realPlay);
       }
       if (this.#pageReturn !== undefined) return this.#interceptPlayForReturn(element, realPlay, this.#pageReturn);
-      if (this.#environment.dom.readyStateOf(element) >= HAVE_METADATA) return this.#hold(element, "as_real_element") ? { kind: "now_shadowed" } : NOT_MINE;
+      if (this.#environment.dom.readyStateOf(element) >= HAVE_METADATA) return this.#hold(element, "as_real_element", "next_video") ? { kind: "now_shadowed" } : NOT_MINE;
       // Источника может ещё не быть: Ashdi зовёт `play()` у пустого элемента, а `src` ставит следующей строкой.
       if (this.#environment.isProtected(element)) return NOT_MINE;
       this.#listenOnElement(element);
@@ -185,6 +221,24 @@ export class NextVideoGuard {
       this.#environment.reportOddity("next video guard failed on play()");
       return NOT_MINE;
     }
+  }
+
+  /**
+   * `play()` вне взвода фона (режим 2, 12a). Охрана выключена или запуск не от зрителя — `play()` прозрачен.
+   * Зритель запустил: метаданные есть — тень в этом же вызове; нет — настоящий `play()` проходит, а тень встанет
+   * на `loadedmetadata` (метка засчитанного `play()` живёт в `ViewerPlayWatch`).
+   */
+  #interceptViewerPlay(element: object, realPlay: () => unknown): PlayWatchAnswer {
+    const { viewerPlay, dom } = this.#environment;
+    if (!viewerPlay.isWatchOn() || this.#environment.isProtected(element)) return NOT_MINE;
+    if (viewerPlay.judgePlayCall(element, this.#audibilityOf(element)) !== "viewer_started") return NOT_MINE;
+    if (dom.readyStateOf(element) >= HAVE_METADATA) return this.#hold(element, "as_real_element", "viewer_play") ? { kind: "now_shadowed" } : NOT_MINE;
+    this.#listenOnElement(element);
+    return { kind: "answered", promise: this.#playAwaitingMetadata(element, realPlay) };
+  }
+
+  #audibilityOf(element: object): ElementAudibility {
+    return this.#environment.dom.isSilent(element) ? "silent" : "audible";
   }
 
   /** Настоящий `play()` проходит, странице — наше обещание: его заберёт тень (см. шапку). */
@@ -223,7 +277,7 @@ export class NextVideoGuard {
     if (this.#environment.isProtected(element)) return NOT_MINE;
     const step = this.#returnStepOf(element, target);
     if (step.kind === "not_this_video") return NOT_MINE;
-    if (step.kind === "hold") return this.#hold(element, "as_real_element") ? { kind: "now_shadowed" } : NOT_MINE;
+    if (step.kind === "hold") return this.#hold(element, "as_real_element", "next_video") ? { kind: "now_shadowed" } : NOT_MINE;
     this.#listenOnElement(element);
     const promise = this.#deferPlay(element, realPlay);
     this.#advanceReturn(element, target);
@@ -280,7 +334,7 @@ export class NextVideoGuard {
         seam.seekRealElement(element, step.seconds);
         return;
       case "hold":
-        this.#hold(element, pageAskedToPlay ? "page_asked_to_play" : "as_real_element");
+        this.#hold(element, pageAskedToPlay ? "page_asked_to_play" : "as_real_element", "next_video");
         return;
     }
   }
@@ -302,16 +356,17 @@ export class NextVideoGuard {
   #listenOnElement(element: object): void {
     if (this.#listenedElements.has(element)) return;
     this.#listenedElements.add(element);
-    this.#environment.seam.onRealMediaEvent(element, (target) => this.#considerRunningVideo(target));
+    this.#environment.seam.onRealMediaEvent(element, (target, eventType) => this.#considerRunningVideo(target, eventType));
   }
 
-  /** Элемент уже хочет играть (`play`, `loadedmetadata`, `seeked`, обход при взводе). */
-  #considerRunningVideo(element: object): void {
+  /** Элемент уже хочет играть (`play`, `loadedmetadata`, `seeked`; без вида события — обход при взводе). */
+  #considerRunningVideo(element: object, eventType?: RealMediaEventType): void {
     try {
       const { dom } = this.#environment;
       if (!dom.isVideoElement(element) || dom.isEnded(element)) return;
       if (!this.#armed()) {
         this.#releaseDeferredPlay(element);
+        if (eventType !== undefined) this.#considerViewerStartedVideo(element, eventType);
         return;
       }
       if (this.#pageReturn !== undefined) {
@@ -319,10 +374,24 @@ export class NextVideoGuard {
         return;
       }
       if (dom.isPaused(element) || dom.readyStateOf(element) < HAVE_METADATA) return;
-      this.#hold(element, "as_real_element");
+      this.#hold(element, "as_real_element", "next_video");
     } catch {
       this.#environment.reportOddity("next video guard failed on a media event");
     }
+  }
+
+  /**
+   * Режим 2: доверенное событие элемента вне взвода фона. `play` (родные кнопки, `autoplay`) судится по
+   * обстановке сейчас, `loadedmetadata` — по метке засчитанного `play()`; `seeked` зрителя ничего не начинает.
+   */
+  #considerViewerStartedVideo(element: object, eventType: RealMediaEventType): void {
+    const { viewerPlay, dom } = this.#environment;
+    if (eventType === "seeked" || !viewerPlay.isWatchOn() || this.#environment.isProtected(element)) return;
+    if (dom.isPaused(element) || dom.readyStateOf(element) < HAVE_METADATA) return;
+    const audibility = this.#audibilityOf(element);
+    const verdict: ViewerPlayVerdict =
+      eventType === "play" ? viewerPlay.judgeTrustedPlayEvent(element, audibility) : viewerPlay.judgeLoadedMetadata(element, audibility);
+    if (verdict === "viewer_started") this.#hold(element, "as_real_element", "viewer_play");
   }
 
   /** Форма источника для тени; `null` — передавать нечего. Чтения могут бросить. */
@@ -347,9 +416,10 @@ export class NextVideoGuard {
 
   /**
    * Поставить тень и спросить фон. `false` — видео задерживать нельзя. `initialPlayback` — с чего начинает
-   * модель тени: при возврате страницы страница уже просила играть, а настоящий элемент стоит.
+   * модель тени: при возврате страницы страница уже просила играть, а настоящий элемент стоит. `trigger` —
+   * почему задержали (уйдёт фону в донесении).
    */
-  #hold(element: object, initialPlayback: HeldShadowPlayback): boolean {
+  #hold(element: object, initialPlayback: HeldShadowPlayback, trigger: HeldVideoTrigger): boolean {
     const environment = this.#environment;
     const { dom, seam, registry } = environment;
     if (seam.isShadowed(element) || this.#held.has(element) || this.#held.size >= MAX_HELD_VIDEOS) return false;
@@ -357,7 +427,7 @@ export class NextVideoGuard {
     const kind = this.#kindOf(element);
     if (kind === null) return false;
     const video = element as HTMLMediaElement;
-    const declined = this.#declined.get(element);
+    const declined = this.#declined[trigger].get(element);
     if (declined !== undefined && declined === this.#fingerprintOf(video)) return false;
     const key = registry.keyOf(video);
     // Описание — до тени: она заглушит настоящий элемент, а фону нужно, как его видела страница.
@@ -373,6 +443,7 @@ export class NextVideoGuard {
     });
     const entry: HeldEntry = {
       key,
+      trigger,
       session,
       connect: (emit) => {
         forward = emit;
@@ -382,12 +453,12 @@ export class NextVideoGuard {
     // Отложенный `play()` больше не нужен: обещания страницы исполняет тень.
     this.#deferredRealPlays.delete(element);
     session.takeOverPendingPlays(this.#awaitingMetadata.get(element)?.splice(0) ?? []);
-    environment.send({ kind: "next_video_held", element: key, candidates });
+    environment.send({ kind: "next_video_held", element: key, candidates, trigger });
     return true;
   }
 
-  #remember(element: object): void {
-    this.#declined.set(element, this.#fingerprintOf(element));
+  #remember(element: object, trigger: HeldVideoTrigger): void {
+    this.#declined[trigger].set(element, this.#fingerprintOf(element));
   }
 
   /** Что должно измениться, чтобы отпущенное видео задержали снова: источник или видимость. */

@@ -1,6 +1,7 @@
 // Строгая форма сообщений MAIN-мира: договорные проходят без изменений, любое отклонение поля — отказ.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { MAX_PLAY_CREDIT_LEASE_MS } from "../../src/shared/auto-handoff-contract.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 import {
   MAX_PAGE_BYTES_EVENT_BYTES,
@@ -9,6 +10,12 @@ import {
   parsePageEvent,
   MAX_NEXT_VIDEO_LEASE_MS,
   parseArmNextVideoRequest,
+  parseAutoHandoffWatchCommand,
+  parseGrantPlayCreditCommand,
+  parseGrantPlayCreditRequest,
+  parseHeldVideoReply,
+  parseHeldVideoReport,
+  parseReleaseHeldVideoRequest,
 } from "../../src/shared/page-message-validation.ts";
 
 const MP4 = 'video/mp4; codecs="avc1.42c00a"';
@@ -258,10 +265,60 @@ describe("сообщения сторожа следующего видео (с�
   const candidate = { ...DEFAULT_CANDIDATE_FACTS, document: "doc-a", element: 4, media: { kind: "none" }, playing: true, visible_area_px: 1 };
 
   it("`next_video_held`: строгая форма, кандидаты проверяются как при опросе", () => {
-    assert.ok(parsePageEvent({ kind: "next_video_held", element: 4, candidates: [candidate] }) !== undefined);
-    assert.equal(parsePageEvent({ kind: "next_video_held", element: 4, candidates: [candidate], extra: 1 }), undefined);
-    assert.equal(parsePageEvent({ kind: "next_video_held", element: -1, candidates: [candidate] }), undefined);
-    assert.equal(parsePageEvent({ kind: "next_video_held", element: 4, candidates: [{ forged: true }] }), undefined);
+    const held = { kind: "next_video_held", element: 4, candidates: [candidate], trigger: "next_video" };
+    assert.ok(parsePageEvent(held) !== undefined);
+    assert.equal(parsePageEvent({ ...held, extra: 1 }), undefined);
+    assert.equal(parsePageEvent({ ...held, element: -1 }), undefined);
+    assert.equal(parsePageEvent({ ...held, candidates: [{ forged: true }] }), undefined);
+  });
+
+  it("`next_video_held` и донесение фону: `trigger` обязателен и только из договора (сессия 12a)", () => {
+    const held = { kind: "next_video_held", element: 4, candidates: [candidate] };
+    for (const trigger of ["next_video", "viewer_play"]) {
+      assert.deepEqual(parsePageEvent({ ...held, trigger }), { ...held, trigger });
+      const report = { kind: "held_video_report", element: 4, candidates: [candidate], trigger };
+      assert.deepEqual(parseHeldVideoReport(report), report);
+    }
+    assert.equal(parsePageEvent(held), undefined, "без trigger");
+    assert.equal(parsePageEvent({ ...held, trigger: "autoplay" }), undefined);
+    assert.equal(parsePageEvent({ ...held, trigger: 1 }), undefined);
+    const report = { kind: "held_video_report", element: 4, candidates: [candidate] };
+    assert.equal(parseHeldVideoReport(report), undefined, "без trigger");
+    assert.equal(parseHeldVideoReport({ ...report, trigger: "viewer_play", extra: true }), undefined);
+    assert.equal(parseHeldVideoReport({ ...report, trigger: "other" }), undefined);
+  });
+
+  it("ответ фона: ровно `adopt`, `adopt_new_session` или `release`", () => {
+    for (const reply of ["adopt", "adopt_new_session", "release"]) assert.equal(parseHeldVideoReply(reply), reply);
+    for (const garbage of ["Adopt", "", "adopt_new", undefined, null, 1, { reply: "adopt" }]) assert.equal(parseHeldVideoReply(garbage), undefined, String(garbage));
+  });
+
+  it("режим 2: команды по личному порту — строгая форма, срок кредита в пределах договора", () => {
+    assert.deepEqual(parseAutoHandoffWatchCommand({ kind: "auto_handoff_watch", state: "off" }), { kind: "auto_handoff_watch", state: "off" });
+    assert.equal(parseAutoHandoffWatchCommand({ kind: "auto_handoff_watch", state: "ON" }), undefined);
+    assert.equal(parseAutoHandoffWatchCommand({ kind: "auto_handoff_watch", state: "on", extra: 1 }), undefined);
+    assert.equal(parseAutoHandoffWatchCommand({ kind: "auto_handoff_watch" }), undefined);
+    for (const parse of [parseGrantPlayCreditCommand, parseGrantPlayCreditRequest]) {
+      const kind = "grant_play_credit";
+      assert.deepEqual(parse({ kind, lease_ms: 1 }), { kind, lease_ms: 1 });
+      assert.deepEqual(parse({ kind, lease_ms: MAX_PLAY_CREDIT_LEASE_MS }), { kind, lease_ms: MAX_PLAY_CREDIT_LEASE_MS });
+      assert.equal(parse({ kind, lease_ms: 0 }), undefined);
+      assert.equal(parse({ kind, lease_ms: MAX_PLAY_CREDIT_LEASE_MS + 1 }), undefined);
+      assert.equal(parse({ kind, lease_ms: 2.5 }), undefined);
+      assert.equal(parse({ kind, lease_ms: "100" }), undefined);
+      assert.equal(parse({ kind, lease_ms: 100, extra: 1 }), undefined);
+      assert.equal(parse({ kind: "other", lease_ms: 100 }), undefined);
+    }
+  });
+
+  it("режим 2: просьба фона «отпусти задержанное» — настоящий ключ элемента и ничего больше", () => {
+    const kind = "release_held_video_request";
+    assert.deepEqual(parseReleaseHeldVideoRequest({ kind, element: 4 }), { kind, element: 4 });
+    assert.equal(parseReleaseHeldVideoRequest({ kind, element: 0 }), undefined);
+    assert.equal(parseReleaseHeldVideoRequest({ kind, element: -3 }), undefined);
+    assert.equal(parseReleaseHeldVideoRequest({ kind, element: 1.5 }), undefined);
+    assert.equal(parseReleaseHeldVideoRequest({ kind, element: 4, extra: 1 }), undefined);
+    assert.equal(parseReleaseHeldVideoRequest({ kind: "release_held_video", element: 4 }), undefined);
   });
 
   it("взвод: только целые миллисекунды в пределах договора", () => {

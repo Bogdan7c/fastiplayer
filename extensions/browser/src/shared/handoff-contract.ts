@@ -314,8 +314,18 @@ export type PageEvent =
    * Сторож следующего видео (сессия 09c2) поставил тень на видео, которое страница запустила, пока
    * сторож взведён. Фон ещё ничего не решил: `candidates` — все видео документа, включая задержанное
    * `element`. Событие проходит только пока сторож взведён, поэтому страница не может будить фон сама.
+   * `trigger` — почему сторож задержал видео (см. `HeldVideoTrigger`).
    */
-  | { readonly kind: "next_video_held"; readonly element: ElementKey; readonly candidates: readonly VideoCandidate[] };
+  | { readonly kind: "next_video_held"; readonly element: ElementKey; readonly candidates: readonly VideoCandidate[]; readonly trigger: HeldVideoTrigger };
+
+/**
+ * Почему сторож задержал видео:
+ * - `next_video` — сторож взведён фоном на срок: переезд сеанса (09c2) или возврат страницы (11b2);
+ * - `viewer_play` — режим 2 (сессия 12a): охрана включена настройкой, а человек сам запустил видео со звуком
+ *   (свежий жест или «наследованный клик», решения 246–247). Решать, передавать ли, будет фон по правилам сайта.
+ */
+export const HELD_VIDEO_TRIGGERS = ["next_video", "viewer_play"] as const;
+export type HeldVideoTrigger = (typeof HELD_VIDEO_TRIGGERS)[number];
 
 /**
  * Как часто тень подаёт пульс. Часы плеера приходят раз в ~250 мс и идут и на паузе (09a),
@@ -467,10 +477,27 @@ export interface HeldVideoReport {
   readonly kind: typeof HELD_VIDEO_REPORT_KIND;
   readonly element: ElementKey;
   readonly candidates: readonly VideoCandidate[];
+  readonly trigger: HeldVideoTrigger;
 }
 
-/** Ответ фона: `adopt` — сеанс переезжает, следом придёт `begin_handoff`; `release` — отпустить. */
-export type HeldVideoReply = "adopt" | "release";
+/**
+ * Ответ фона:
+ * - `adopt` — сеанс переезжает, следом за миллисекунды придёт `begin_handoff`;
+ * - `adopt_new_session` — режим 2: фон открывает НОВЫЙ сеанс, `begin_handoff` придёт после запуска плеера
+ *   (до десятков секунд, см. `NEW_SESSION_ADOPT_INSURANCE_MS`). Не вышло — фон отпустит видео сам
+ *   (`release_held_video_request`), а страховка изолированного мира — если фон умер;
+ * - `release` — отпустить.
+ */
+export const HELD_VIDEO_REPLIES = ["adopt", "adopt_new_session", "release"] as const;
+export type HeldVideoReply = (typeof HELD_VIDEO_REPLIES)[number];
+
+/**
+ * Страховка изолированного мира после `adopt_new_session`: столько видео ждёт `begin_handoff`, потом
+ * отпускается само. Худший случай старта сеанса — сумма сроков фона: `hello` 8 с + `open_session` 12 с +
+ * `attached` 10 с + опрос фреймов 5 с ≈ 35 с; 45 с — с запасом. Обычный исход наступает раньше: фон
+ * отпускает видео сам, как только сеанс не состоялся. Сюда страховка доходит, только если фон умер.
+ */
+export const NEW_SESSION_ADOPT_INSURANCE_MS = 45_000;
 
 // ---------------------------------------------------------------------------------------------
 // Внутренняя команда «отдать вкладку N» (решение 175). Шлют только страницы самого экстеншена

@@ -19,6 +19,8 @@ import { createForwardByteMeter } from "./forward-byte-meter.ts";
 import { DrmMarks, type DrmWindow } from "./drm-marks.ts";
 import { ProtectedMediaRelease } from "./protected-media-release.ts";
 import { captureRandomFill, createDocumentTag, type RandomWindow } from "./document-tag.ts";
+import { installViewerActivation, type ActivationWindow } from "./auto-handoff/viewer-activation.ts";
+import { ViewerPlayWatch } from "./auto-handoff/viewer-play-watch.ts";
 import { ElementRegistry, type RegistryWindow } from "./element-registry.ts";
 import { HandoffController } from "./handoff-controller.ts";
 import { captureAnchorEventOriginals, HandedOffVideoAnchor } from "./handed-off-video-anchor.ts";
@@ -33,12 +35,21 @@ import { MseTracker } from "./mse-tracker.ts";
 import { createOddityReporter, type DebugSink } from "./oddity-reporter.ts";
 import { captureChannelOriginals, captureRendezvousOriginals, listenForPageChannel, type ChannelOriginals, type ChannelWindow, type PagePort, type RendezvousWindow } from "./page-channel.ts";
 import { VideoCandidates } from "./video-candidates.ts";
-import { isPointerQuery } from "./page-command-guard.ts";
+import { isAutoHandoffPageCommand, isPointerQuery } from "./page-command-guard.ts";
 import { capturePointerReaders, PointerVideo } from "./pointer-video.ts";
 import { installWorkerCapture, type WorkerCaptureWindow, type WorkerChannelExtension, type WorkerHookSource, type WorkerMediaSources } from "./worker-capture/index.ts";
 
 /** Окно, против которого работает MAIN-мир. */
-export interface PageBridgeWindow extends MseWindow, DomWindow, RegistryWindow, ChannelWindow, BinaryWindow, RandomWindow, WorkerCaptureWindow, DrmWindow {
+export interface PageBridgeWindow
+  extends MseWindow,
+    DomWindow,
+    RegistryWindow,
+    ChannelWindow,
+    BinaryWindow,
+    RandomWindow,
+    WorkerCaptureWindow,
+    DrmWindow,
+    ActivationWindow {
   /** Конструктор `Event` нужен встрече канала участка 1 (`RendezvousWindow`). */
   readonly Event: RendezvousWindow["Event"];
   /** Нужны для «видео под указателем» (10c); нет чего-то из них — вход по указателю не включается. */
@@ -116,8 +127,12 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
   // страница вызвала раньше нас, остался бы незамеченным.
   const drmMarks = new DrmMarks(win, dom, reportOddity);
   const candidates = new VideoCandidates(registry, tracker, dom, mediaSources, documentTag, reportOddity, workerMediaSources, drmMarks, dependencies.scriptArrival);
+  // Ввод человека для режима 2 (12a): слушатели встают на document_start, раньше скриптов страницы.
+  const viewerActivation = installViewerActivation(win, channel, dependencies.now, reportOddity);
+  const viewerPlay = new ViewerPlayWatch({ activation: viewerActivation, now: dependencies.now });
   const nextVideo = new NextVideoGuard({
     dom,
+    viewerPlay,
     registry,
     candidates,
     startHeldShadow: dependencies.startHeldShadow,
@@ -176,6 +191,12 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
         // Имя события якоря (11a): местное дело миров, контроллеру и фону не нужно.
         if (message.kind === "watch_handed_off_video") {
           anchor?.setEventName(message.event_name);
+          return;
+        }
+        // Охрана и кредит клика режима 2 (12a): дело сторожа, контроллеру передачи они не нужны.
+        if (isAutoHandoffPageCommand(message)) {
+          if (message.kind === "auto_handoff_watch") nextVideo.setViewerPlayWatch(message.state);
+          else nextVideo.grantViewerPlayCredit(message.lease_ms);
           return;
         }
         if (!isPointerQuery(message)) {

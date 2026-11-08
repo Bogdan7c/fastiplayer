@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>auto-unknown-duration</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;display:block}button{font:16px system-ui;padding:10px 24px;margin:12px 12px 12px 0}</style>
+</head>
+<body>
+<h1>auto-unknown-duration</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { waitFor } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs } from '../lib/bench-player.js';
+import { mountVideo, requireMimeSupport } from '../lib/scenario-kit.js';
+import { addPlayControls, logVideoEvents, playPlainWithoutRobot, serveAutoHandoff } from '../lib/auto-handoff-kit.js';
+
+// Режим 2 (12a): MSE-поток БЕЗ известной длины, как у живых плееров, которые не знают её заранее.
+// Длину ролика каталога страница объявляет бесконечной: `MediaSource.duration = Infinity`, поэтому у
+// `<video>` `duration === Infinity`. Короче порога такой ролик быть «не может», и после настоящего
+// клика экстеншен обязан передать его сразу.
+await runScenario('auto-unknown-duration', async (ctx) => {
+  const catalog = await loadCatalog();
+  const refs = standardRefs(catalog, 'h264-aac');
+  requireMimeSupport(catalog, refs);
+  // Копия каталога: у ассета длина бесконечна, движок страницы не ставит конечную.
+  catalog.assets['h264-aac'] = { ...catalog.assets['h264-aac'], duration_s: Infinity };
+  const video = mountVideo(document.body, 'unknown');
+  video.width = 360;
+  const player = new BenchPlayer(video, catalog, { log: (line) => ctx.log(line) });
+  await player.start({ refs, autoplay: false });
+  logVideoEvents(ctx, video);
+  const loaded = await waitFor(() => video.readyState >= 1, 15000);
+  ctx.check('stream-metadata-loaded', loaded, `readyState=${video.readyState}`);
+  ctx.check('duration-is-infinity', video.duration === Infinity, `duration=${String(video.duration)}`);
+  ctx.check('stream-has-sound-and-waits-for-the-click', !video.muted && video.paused, `muted=${video.muted} paused=${video.paused}`);
+  const { play } = addPlayControls(ctx, video);
+  if (!ctx.params.handoff) {
+    await playPlainWithoutRobot(ctx, video, play);
+    await player.destroy();
+    return;
+  }
+  await serveAutoHandoff(ctx, { video });
+  await player.destroy();
+});
+</script>
+</body>
+</html>

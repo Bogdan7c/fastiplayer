@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>auto-clip</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;display:block}button{font:16px system-ui;padding:10px 24px;margin:12px 12px 12px 0}</style>
+</head>
+<body>
+<h1>auto-clip</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { waitFor } from '../lib/bench-checks.js';
+import { mountMseVideo } from '../lib/entry-page-kit.js';
+import { addPlayControls, logVideoEvents, playPlainWithoutRobot, serveAutoHandoff } from '../lib/auto-handoff-kit.js';
+
+// Режим 2 (12a): короткий ролик (30 с, MSE) со звуком и кнопка Play. Он короче порога длины режима 2,
+// и это не реклама: после настоящего клика видео обязано остаться у браузера.
+await runScenario('auto-clip', async (ctx) => {
+  const { video } = await mountMseVideo(ctx, { id: 'clip', autoplay: false });
+  logVideoEvents(ctx, video);
+  const loaded = await waitFor(() => video.readyState >= 1, 15000);
+  ctx.check('clip-metadata-loaded', loaded, `readyState=${video.readyState}`);
+  ctx.check('clip-is-short-with-sound', video.duration > 29 && video.duration < 31 && !video.muted, `duration=${video.duration} muted=${video.muted}`);
+  ctx.check('clip-waits-for-the-click', video.paused, `paused=${video.paused}`);
+  const { play } = addPlayControls(ctx, video);
+  if (!ctx.params.handoff) return playPlainWithoutRobot(ctx, video, play);
+  await serveAutoHandoff(ctx, { video });
+});
+</script>
+</body>
+</html>

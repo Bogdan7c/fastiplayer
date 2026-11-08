@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>auto-film</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;display:block}button{font:16px system-ui;padding:10px 24px;margin:12px 12px 12px 0}</style>
+</head>
+<body>
+<h1>auto-film</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { waitFor } from '../lib/bench-checks.js';
+import { progressiveUrl } from '../lib/entry-page-kit.js';
+import { addPlayControls, logVideoEvents, playPlainWithoutRobot, serveAutoHandoff } from '../lib/auto-handoff-kit.js';
+
+/** Фильм длиннее порога режима 2 (в стенде 45 с, по умолчанию в продукте 60 с). */
+const FILM_MIN_DURATION_S = 59.5;
+
+// Режим 2 (12a): фильм 60 с со звуком (обычный MP4-файл) и кнопка Play. Видео НЕ играет само, пока
+// человек (робот настоящей мышью) не нажмёт Play: тогда экстеншен обязан увести его в плеер без «Отдать».
+await runScenario('auto-film', async (ctx) => {
+  const video = document.createElement('video');
+  video.id = 'film';
+  video.controls = true;
+  video.playsInline = true;
+  video.preload = 'auto';
+  video.width = 480;
+  video.src = await progressiveUrl('progressive-long-h264-aac');
+  document.body.append(video);
+  logVideoEvents(ctx, video);
+  const loaded = await waitFor(() => video.readyState >= 1, 15000);
+  ctx.check('film-metadata-loaded', loaded, `readyState=${video.readyState}`);
+  ctx.check('film-is-long-with-sound', video.duration >= FILM_MIN_DURATION_S && !video.muted, `duration=${video.duration} muted=${video.muted}`);
+  ctx.check('film-waits-for-the-click', video.paused, `paused=${video.paused}`);
+  const { play } = addPlayControls(ctx, video);
+  if (!ctx.params.handoff) return playPlainWithoutRobot(ctx, video, play);
+  await serveAutoHandoff(ctx, { video });
+});
+</script>
+</body>
+</html>

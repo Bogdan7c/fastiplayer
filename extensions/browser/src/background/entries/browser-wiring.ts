@@ -11,7 +11,7 @@ import { entrySettingsFromChange, readEntrySettingsOrDefaults } from "../../shar
 import type { Scheduler } from "../host-link/native-port.ts";
 import type { TabHandoffs } from "../handoff/tab-handoffs.ts";
 import { createEntryMenus, isEntrySettingsChange, routeMenuClick, type MenusApi } from "./entry-menus.ts";
-import { createEntryReporter, type EntryBadge, type EntryBanner } from "./entry-reporter.ts";
+import { createEntryReporter, type EntryBadge, type EntryBanner, type EntryReporter } from "./entry-reporter.ts";
 import { createLateEntryCommandListener } from "./late-entry-command.ts";
 import { createLateEntry, type LateTabsApi } from "./late-entry.ts";
 import { createLateVideoReader, LATE_POSITION_TOLERANCE_S, visitFrameVideos, type ExecuteVideoVisit } from "./late-video-reader.ts";
@@ -115,9 +115,13 @@ const lateTabs: LateTabsApi = {
 const executeVideoVisit: ExecuteVideoVisit = (tabId, target) =>
   browserApi.scripting.executeScript({ target: { tabId, allFrames: true }, func: visitFrameVideos, args: [target, LATE_POSITION_TOLERANCE_S] });
 
+/** Репортёр итога входа на настоящем браузере: плашка в верхнем фрейме и вкладочный «!». Им же пользуется режим 2 (12a). */
+export function createBrowserEntryReporter(): EntryReporter {
+  return createEntryReporter({ banner, badge, note });
+}
+
 /** Поставить входы 10c. Вызывается один раз на верхнем уровне фона, после `installTabHandoffs`. */
-export function installEntries(handoffs: TabHandoffs, scheduler: Scheduler): void {
-  const reporter = createEntryReporter({ banner, badge, note });
+export function installEntries(handoffs: TabHandoffs, scheduler: Scheduler, reporter: EntryReporter): void {
   const menus = createEntryMenus(menusApi, note);
   const menuEntry = createMenuEntry({
     askRightClickedVideo,

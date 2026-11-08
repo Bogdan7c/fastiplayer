@@ -29,7 +29,7 @@ const FILM: VideoCandidate = { ...DEFAULT_CANDIDATE_FACTS, document: "doc-ad", e
 /** Обычный фильм без рекламы: длинный MSE. */
 const PLAIN_FILM: VideoCandidate = { ...FILM, playing: true };
 
-const report = (element: number, candidates: readonly VideoCandidate[]): HeldVideoReport => ({ kind: HELD_VIDEO_REPORT_KIND, element, candidates });
+const report = (element: number, candidates: readonly VideoCandidate[]): HeldVideoReport => ({ kind: HELD_VIDEO_REPORT_KIND, element, candidates, trigger: "next_video" });
 /** Сторож задержал фильм: страница видит его играющим. */
 const heldFilm = (overrides: Partial<VideoCandidate> = {}): HeldVideoReport => report(FILM.element, [{ ...FILM, playing: true, ...overrides }]);
 

@@ -8,8 +8,20 @@
 // это дёшево, байты при этом не копируются.
 
 import {
+  GRANT_PLAY_CREDIT_KIND,
+  MAX_PLAY_CREDIT_LEASE_MS,
+  RELEASE_HELD_VIDEO_REQUEST_KIND,
+  type AutoHandoffWatchCommand,
+  type AutoHandoffWatchState,
+  type GrantPlayCreditCommand,
+  type GrantPlayCreditRequest,
+  type ReleaseHeldVideoRequest,
+} from "./auto-handoff-contract.ts";
+import {
   ARM_NEXT_VIDEO_KIND,
+  HELD_VIDEO_REPLIES,
   HELD_VIDEO_REPORT_KIND,
+  HELD_VIDEO_TRIGGERS,
   PAGE_FLOOD_NOTICE_KIND,
   VIEWER_RETURN_REQUEST_KIND,
   type ArmNextVideoRequest,
@@ -18,6 +30,7 @@ import {
   type CandidatesReply,
   type HandoffEndCause,
   type HandoffStartOutcome,
+  type HeldVideoReply,
   type HeldVideoReport,
   type HlsStreamKind,
   type LocalMseEvent,
@@ -417,8 +430,9 @@ export function parsePageEvent(value: unknown): PageEvent | undefined {
     case "next_video_held": {
       const element = value["element"];
       const candidates = parseVideoCandidates(value["candidates"]);
-      return hasExactKeys(value, ["kind", "element", "candidates"]) && isMediaTime(element) && candidates !== undefined
-        ? { kind: "next_video_held", element, candidates }
+      const trigger = value["trigger"];
+      return hasExactKeys(value, ["kind", "element", "candidates", "trigger"]) && isMediaTime(element) && candidates !== undefined && isOneOf(trigger, HELD_VIDEO_TRIGGERS)
+        ? { kind: "next_video_held", element, candidates, trigger }
         : undefined;
     }
     default:
@@ -434,8 +448,56 @@ export function parseHeldVideoReport(value: unknown): HeldVideoReport | undefine
   if (!isPlainRecord(value) || value["kind"] !== HELD_VIDEO_REPORT_KIND) return undefined;
   const element = value["element"];
   const candidates = parseVideoCandidates(value["candidates"]);
-  if (!hasExactKeys(value, ["kind", "element", "candidates"]) || !isMediaTime(element) || candidates === undefined) return undefined;
-  return { kind: HELD_VIDEO_REPORT_KIND, element, candidates };
+  const trigger = value["trigger"];
+  if (!hasExactKeys(value, ["kind", "element", "candidates", "trigger"]) || !isMediaTime(element) || candidates === undefined || !isOneOf(trigger, HELD_VIDEO_TRIGGERS)) {
+    return undefined;
+  }
+  return { kind: HELD_VIDEO_REPORT_KIND, element, candidates, trigger };
+}
+
+/**
+ * Разбор ответа фона на донесение о задержанном видео (изолированный мир не верит ответу на слово: фон мог
+ * быть другой версии). `undefined` — не один из договорных ответов; пограничник трактует это как `release`.
+ */
+export function parseHeldVideoReply(value: unknown): HeldVideoReply | undefined {
+  return isOneOf(value, HELD_VIDEO_REPLIES) ? value : undefined;
+}
+
+// ------------------------------------------------------------------ режим 2 «автозапуск» (сессия 12a)
+
+const AUTO_HANDOFF_WATCH_STATES: readonly AutoHandoffWatchState[] = ["on", "off"];
+
+/** Срок кредита клика: целые миллисекунды от 1 до предела договора. */
+function isPlayCreditLeaseMs(value: unknown): value is number {
+  return isIntegerInRange(value, 1, MAX_PLAY_CREDIT_LEASE_MS);
+}
+
+/** Команда «охрана включена/выключена» по личному порту (изолированный мир → MAIN-мир). */
+export function parseAutoHandoffWatchCommand(value: unknown): AutoHandoffWatchCommand | undefined {
+  if (!isPlainRecord(value) || value["kind"] !== "auto_handoff_watch" || !hasExactKeys(value, ["kind", "state"])) return undefined;
+  const state = value["state"];
+  return isOneOf(state, AUTO_HANDOFF_WATCH_STATES) ? { kind: "auto_handoff_watch", state } : undefined;
+}
+
+/** Команда «выдай кредит клика» по личному порту (изолированный мир → MAIN-мир). */
+export function parseGrantPlayCreditCommand(value: unknown): GrantPlayCreditCommand | undefined {
+  if (!isPlainRecord(value) || value["kind"] !== "grant_play_credit" || !hasExactKeys(value, ["kind", "lease_ms"])) return undefined;
+  const leaseMs = value["lease_ms"];
+  return isPlayCreditLeaseMs(leaseMs) ? { kind: "grant_play_credit", lease_ms: leaseMs } : undefined;
+}
+
+/** Просьба фона всем фреймам вкладки: «выдай кредит клика». */
+export function parseGrantPlayCreditRequest(value: unknown): GrantPlayCreditRequest | undefined {
+  if (!isPlainRecord(value) || value["kind"] !== GRANT_PLAY_CREDIT_KIND || !hasExactKeys(value, ["kind", "lease_ms"])) return undefined;
+  const leaseMs = value["lease_ms"];
+  return isPlayCreditLeaseMs(leaseMs) ? { kind: GRANT_PLAY_CREDIT_KIND, lease_ms: leaseMs } : undefined;
+}
+
+/** Просьба фона одному фрейму: «отпусти задержанное видео» (ключ элемента — как в донесении). */
+export function parseReleaseHeldVideoRequest(value: unknown): ReleaseHeldVideoRequest | undefined {
+  if (!isPlainRecord(value) || value["kind"] !== RELEASE_HELD_VIDEO_REQUEST_KIND || !hasExactKeys(value, ["kind", "element"])) return undefined;
+  const element = value["element"];
+  return isIntegerInRange(element, 1, MAX_JSON_SAFE_INTEGER) ? { kind: RELEASE_HELD_VIDEO_REQUEST_KIND, element } : undefined;
 }
 
 /**

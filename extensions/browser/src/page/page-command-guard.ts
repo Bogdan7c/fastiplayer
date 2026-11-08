@@ -16,7 +16,14 @@ import type {
 import { MAX_JSON_SAFE_INTEGER, MAX_PLAYBACK_RATE_PERMILLE, MIN_PLAYBACK_RATE_PERMILLE } from "../protocol/limits.ts";
 import type { ClockState, ResumeState } from "../protocol/session/player.ts";
 import type { LiveSeekable } from "../protocol/session/live-window.ts";
-import { isDocumentTag, MAX_NEXT_VIDEO_LEASE_MS, parsePageReturnTarget } from "../shared/page-message-validation.ts";
+import type { AutoHandoffPageCommand } from "../shared/auto-handoff-contract.ts";
+import {
+  isDocumentTag,
+  MAX_NEXT_VIDEO_LEASE_MS,
+  parseAutoHandoffWatchCommand,
+  parseGrantPlayCreditCommand,
+  parsePageReturnTarget,
+} from "../shared/page-message-validation.ts";
 import type { PointerQuery } from "../shared/entry-contract.ts";
 import { parsePointerQuery } from "../shared/entry-validation.ts";
 import { parseWatchHandedOffVideo, type WatchHandedOffVideoMessage } from "../shared/handed-off-video-contract.ts";
@@ -188,11 +195,17 @@ export function parseIncomingPageMessage(candidate: unknown): IncomingPageMessag
   }
 }
 
+/** Команда режима 2 (охрана, кредит клика): её принимает сторож, а не контроллер передачи. */
+export function isAutoHandoffPageCommand(message: ChannelMessage): message is AutoHandoffPageCommand {
+  return message.kind === "auto_handoff_watch" || message.kind === "grant_play_credit";
+}
+
 /**
- * Всё, что MAIN-мир принимает по порту: команды контроллера передачи, вопросы про указатель (10c) и имя
- * события якоря переданного видео (11a). Последние два — местные дела миров, фону они не уходят.
+ * Всё, что MAIN-мир принимает по порту: команды контроллера передачи, вопросы про указатель (10c), имя
+ * события якоря переданного видео (11a) и команды режима 2 (12a). Последние три — местные дела миров, фону
+ * они не уходят и до контроллера передачи не доходят.
  */
-export type ChannelMessage = IncomingPageMessage | PointerQuery | WatchHandedOffVideoMessage;
+export type ChannelMessage = IncomingPageMessage | PointerQuery | WatchHandedOffVideoMessage | AutoHandoffPageCommand;
 
 /**
  * Разобрать сообщение порта целиком. Вопросы про указатель (`describe_right_clicked`, `video_at_point`)
@@ -200,7 +213,13 @@ export type ChannelMessage = IncomingPageMessage | PointerQuery | WatchHandedOff
  * берёт якорь переданного видео. `null` — не по форме (игнорируется).
  */
 export function parseChannelMessage(candidate: unknown): ChannelMessage | null {
-  return parsePointerQuery(candidate) ?? parseWatchHandedOffVideo(candidate) ?? parseIncomingPageMessage(candidate);
+  return (
+    parsePointerQuery(candidate) ??
+    parseWatchHandedOffVideo(candidate) ??
+    parseAutoHandoffWatchCommand(candidate) ??
+    parseGrantPlayCreditCommand(candidate) ??
+    parseIncomingPageMessage(candidate)
+  );
 }
 
 export function isPointerQuery(message: ChannelMessage): message is PointerQuery {

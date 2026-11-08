@@ -6,8 +6,8 @@ use browser_bridge_bench::browsers::BrowserKind;
 use browser_bridge_bench::environment::{DisplayTarget, PlayerConfigProfile};
 use browser_bridge_bench::scenarios::{
     BrowserExecutables, DEFAULT_MIN_FRAMES, PAGE_SCENARIOS, PageFilter, ReplayOptions, RunSettings,
-    attack_page_ids, capture_page_ids, end_page_ids, entries_page_ids, page_return_page_ids,
-    player_command_page_ids, tab_return_page_ids,
+    attack_page_ids, auto_handoff_page_ids, capture_page_ids, end_page_ids, entries_page_ids,
+    page_return_page_ids, player_command_page_ids, tab_return_page_ids,
 };
 
 /// Что запускать.
@@ -26,6 +26,7 @@ pub enum Command {
     Entries,
     PageReturn,
     TabReturn,
+    AutoHandoff,
     BlockerMatrix,
     Replay,
     GenerateRecording,
@@ -75,6 +76,7 @@ impl Command {
                 | Self::Entries
                 | Self::PageReturn
                 | Self::TabReturn
+                | Self::AutoHandoff
                 | Self::All
         )
     }
@@ -92,6 +94,7 @@ impl Command {
             Self::Entries => filter.matches_any_of(entries_page_ids()),
             Self::PageReturn => filter.matches_any_of(page_return_page_ids()),
             Self::TabReturn => filter.matches_any_of(tab_return_page_ids()),
+            Self::AutoHandoff => filter.matches_any_of(auto_handoff_page_ids()),
             // `all` всегда начинается с `pages`, где есть любая известная страница.
             Self::All => filter.matches_any_of(pages()),
             _ => filter.selects_everything(),
@@ -146,6 +149,13 @@ Commands:
                     on from the same second (MSE and file), the reopened page under the shadow barely
                     decodes; a page showing another video is refused and the window watches the rest;
                     closing the window while the page reopens closes the reopened tab
+  auto-handoff      mode 2 \"auto handoff\" (12a), REAL mouse in an invisible kwin: with the mode on, a
+                    real click on Play of a film with sound hands it to the player by itself (frames
+                    in the player, the browser barely decodes); no hand-off with the mode off, for a
+                    muted autoplay banner, a hover preview, a 30 s clip, a site rule \"never\" or the
+                    own stop list (the page must really play in the browser); an ad before a film
+                    moves to the film; after Return no new hand-off until a new click; three tabs
+                    in a row play the last one; live HLS and a stream of unknown length at once
   blocker-matrix    pages x (no blocker / blocker installed first / ours first) with uBlock
                     Origin (Lite); fetch the blockers first with
                     scripts/browser-bridge-bench-fetch-blockers.sh; not part of 'all'
@@ -156,7 +166,7 @@ Commands:
   generate-recording  write a synthetic recording (--output FILE.fprec [--asset ID]) from a
                     stand fMP4 asset: add_source_buffer, paced appends, handoff_began
   all               pages, capture, page-ends, player-commands, extension-status, codecs, attacks,
-                    local-address, hls-live, entries, page-return and tab-return (smoke is a subset of capture), one after another; with --page
+                    local-address, hls-live, entries, page-return, tab-return and auto-handoff (smoke is a subset of capture), one after another; with --page
                     only the page steps run
 
 Options:
@@ -166,7 +176,7 @@ Options:
   --extra-extension <PATH>            extra extension (unpacked dir, .xpi or .zip) in every
                                       browser launch; repeatable (ad blocker mechanism)
   --page <ID>                         only this page (pages, capture, page-ends,
-                                      player-commands, attacks, entries, page-return, tab-return, all);
+                                      player-commands, attacks, entries, page-return, tab-return, auto-handoff, all);
                                       repeatable; ids are the names in site/pages
   --recording <FILE>                  replay: the .fprec file to replay
   --min-frames <N>                    replay: presented frames the player must reach (default: 50)
@@ -376,6 +386,7 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
         "entries" => Ok(Command::Entries),
         "page-return" => Ok(Command::PageReturn),
         "tab-return" => Ok(Command::TabReturn),
+        "auto-handoff" => Ok(Command::AutoHandoff),
         "blocker-matrix" => Ok(Command::BlockerMatrix),
         "replay" => Ok(Command::Replay),
         "generate-recording" => Ok(Command::GenerateRecording),
@@ -596,6 +607,16 @@ mod tests {
         assert!(!one.pages.admits("return-kit"));
         // Страница стенда, которой у команды нет, — ошибка, а не пустой «успешный» прогон.
         assert!(parse_words(&["page-return", "--page", "mse-webm"]).is_err());
+    }
+
+    #[test]
+    fn auto_handoff_is_a_command_with_its_own_pages() {
+        assert_eq!(invocation(&["auto-handoff"]).command, Command::AutoHandoff);
+        let one = invocation(&["auto-handoff", "--page", "auto-film"]);
+        assert!(one.pages.admits("auto-film"));
+        assert!(!one.pages.admits("auto-clip"));
+        // Страница, которой у команды нет, — ошибка, а не пустой «успешный» прогон.
+        assert!(parse_words(&["auto-handoff", "--page", "mse-webm"]).is_err());
     }
 
     #[test]

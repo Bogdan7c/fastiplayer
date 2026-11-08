@@ -10,9 +10,8 @@ import type { Scheduler } from "../host-link/native-port.ts";
 import type { FramePort } from "./frame-port.ts";
 import type { ExecuteInAllFrames } from "./frame-survey.ts";
 import { createFileReferrerRules } from "./file-referrer-rule.ts";
-import { createHandOffCommandListener, createHeldVideoListener } from "./hand-off-command.ts";
+import { createHandOffCommandListener } from "./hand-off-command.ts";
 import { createSurveyTabCommandListener } from "./survey-command.ts";
-import { createAdWatchReportListener } from "./ad-watch-listener.ts";
 import type { AdMirrorBrowser } from "./ad-skip-mirror.ts";
 import type { SessionDoor } from "./handoff-session.ts";
 import { createLocalAddressBlock, localAddressBlockRules } from "./local-address-block-rules.ts";
@@ -69,7 +68,7 @@ function armNextVideo(tabId: number, leaseMs: number): void {
  * Браузерная сторона дублёра кнопки пропуска (09d). Аренда уходит всем фреймам вкладки; нажатие — одному
  * фрейму (`frameId`); вывод вперёд — `tabs.update` и `windows.update` без новых прав манифеста.
  */
-const adMirrorBrowser: AdMirrorBrowser = {
+export const adMirrorBrowser: AdMirrorBrowser = {
   armAdWatch(tabId, leaseMs) {
     const request: ArmAdWatchRequest = { kind: ARM_AD_WATCH_KIND, lease_ms: leaseMs };
     // Фрейма без нашего скрипта или закрытой вкладки достаточно для отказа: следующее продление попробует снова.
@@ -149,12 +148,8 @@ export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabM
       (tabId) => handoffs.surveyTab(tabId),
     ),
   );
-  browserApi.runtime.onMessage.addListener(
-    createHeldVideoListener(browserApi.runtime.id, (tabId, frameId, report) => handoffs.heldVideo(tabId, frameId, report)),
-  );
-  browserApi.runtime.onMessage.addListener(
-    createAdWatchReportListener(browserApi.runtime.id, (tabId, frameId, ad) => handoffs.adWatchReport(tabId, frameId, ad)),
-  );
+  // Слушатели донесений сторожа и рекламы ставит режим 2 (auto-handoff/browser-wiring.ts): донесения идут через
+  // его маршрутизатор, а проба рекламы читает те же донесения у вкладок без сеанса.
   browserApi.tabs.onRemoved.addListener((tabId) => {
     handoffs.tabRemoved(tabId);
     // Снимок закрытой вкладки стираем; `forgetTab` не бросает (сбой хранилища гасится в модели).

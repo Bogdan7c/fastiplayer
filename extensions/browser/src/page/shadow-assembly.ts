@@ -9,7 +9,7 @@
 //     до передачи, иначе обходила бы тень (читала настоящее время, будила настоящий элемент);
 //  3. поставить стража mediaSession (иначе потом не восстановить обработчики страницы).
 
-import type { HeldShadowStarter, PlayWatchSeam, ShadowStarter } from "./handoff-seam.ts";
+import type { HeldShadowStarter, PlayWatchSeam, RealMediaEventType, ShadowStarter } from "./handoff-seam.ts";
 import { installMediaSessionGuard } from "./media-session-guard.ts";
 import type { TimeoutScheduler } from "./shadow/file-return.ts";
 import { callOriginal, readOriginal, writeOriginal } from "./shadow/originals.ts";
@@ -81,7 +81,7 @@ export function heldShadowStarterFor(environment: ShadowEnvironmentBase | null):
  * События настоящего элемента, по которым видно, что он уже хочет играть. `seeked` нужен взводу возврата
  * страницы (11b2): тень встаёт, когда страница честно перемоталась на секунду плеера.
  */
-const WANTS_TO_PLAY_EVENT_TYPES = ["play", "loadedmetadata", "seeked"] as const;
+const WANTS_TO_PLAY_EVENT_TYPES: readonly RealMediaEventType[] = ["play", "loadedmetadata", "seeked"];
 
 /**
  * Шов сторожа следующего видео с прототипами и событиями. Без окружения тени сторож работать не может:
@@ -107,13 +107,16 @@ export function playWatchSeamFor(environment: ShadowEnvironmentBase | null): Pla
     seekRealElement: (element, seconds) => writeOriginal(originals.media.currentTime, element, seconds),
     isSeekingReal: (element) => originals.media.seeking !== undefined && readOriginal(originals.media.seeking, element) === true,
     onRealMediaEvent: (target, listener) => {
-      const onEvent = (event: Event): void => {
-        // Синтетические события ничего не значат: их рассылает и сама тень. `isTrusted` страница не подделает.
-        if (!event.isTrusted) return;
-        const element = callOriginal(originals.events.eventTarget, event);
-        if (typeof element === "object" && element !== null) listener(element);
-      };
-      for (const type of WANTS_TO_PLAY_EVENT_TYPES) callOriginal(originals.events.addEventListener, target, [type, onEvent, true]);
+      for (const type of WANTS_TO_PLAY_EVENT_TYPES) {
+        const onEvent = (event: Event): void => {
+          // Синтетические события ничего не значат: их рассылает и сама тень. `isTrusted` страница не подделает.
+          if (!event.isTrusted) return;
+          const element = callOriginal(originals.events.eventTarget, event);
+          // Вид события известен по слушателю (а не читается из события): подмена `Event.type` страницей не влияет.
+          if (typeof element === "object" && element !== null) listener(element, type);
+        };
+        callOriginal(originals.events.addEventListener, target, [type, onEvent, true]);
+      }
     },
   };
 }

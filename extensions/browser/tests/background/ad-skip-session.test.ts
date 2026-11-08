@@ -120,7 +120,7 @@ describe("ad_state на проводе", () => {
     assert.deepEqual(adStates(world), [NO_ORGANS]);
     // Реклама кончилась, страница её убрала, сторож принёс фильм: сеанс переезжает.
     world.framePorts.last().deliver({ kind: "handoff_ended", cause: "element_released" });
-    const heldFilm = { kind: "held_video_report" as const, element: FILM_VIDEO.element, candidates: [{ ...FILM_VIDEO, playing: true }] };
+    const heldFilm = { kind: "held_video_report" as const, element: FILM_VIDEO.element, candidates: [{ ...FILM_VIDEO, playing: true }], trigger: "next_video" as const };
     assert.equal(world.handoffs.heldVideo(TAB, 0, heldFilm), "adopt");
     const begin = world.framePorts.last().posted.filter((command) => command.kind === "begin_handoff").at(-1);
     assert.ok(begin?.kind === "begin_handoff");

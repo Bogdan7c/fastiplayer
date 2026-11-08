@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>auto-hover-preview</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;display:block}</style>
+</head>
+<body>
+<h1>auto-hover-preview</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { waitFor } from '../lib/bench-checks.js';
+import { progressiveUrl } from '../lib/entry-page-kit.js';
+import { registerEntryTarget } from '../lib/entry-probe.js';
+import { logVideoEvents, serveAutoHandoff } from '../lib/auto-handoff-kit.js';
+
+// Режим 2 (12a): превью по наведению, как на видеохостингах: беззвучный ролик стоит на первом кадре и
+// запускается, когда мышь над ним (`mouseover`). Это не запуск человеком «со звуком»: передачи быть не
+// должно, а превью обязано играть силами браузера.
+await runScenario('auto-hover-preview', async (ctx) => {
+  const preview = document.createElement('video');
+  Object.assign(preview, { id: 'preview', muted: true, loop: true, playsInline: true, width: 320, height: 180 });
+  preview.src = await progressiveUrl('progressive-h264-aac');
+  document.body.append(preview);
+  logVideoEvents(ctx, preview);
+  registerEntryTarget('preview', () => preview);
+  let started = false;
+  preview.addEventListener('mouseover', () => {
+    if (started) return;
+    started = true;
+    ctx.log('preview-hover-started');
+    preview.play().catch((error) => ctx.log(`preview-play-rejected ${error?.name}`));
+  });
+  const loaded = await waitFor(() => preview.readyState >= 1, 15000);
+  ctx.check('preview-metadata-loaded', loaded, `readyState=${preview.readyState}`);
+  ctx.check('preview-is-muted-and-waits-for-the-mouse', preview.muted && preview.paused, `muted=${preview.muted} paused=${preview.paused}`);
+  if (!ctx.params.handoff) {
+    // Без робота мышь не двигается: событие наведения создаёт сама страница.
+    preview.dispatchEvent(new MouseEvent('mouseover'));
+    const playing = await waitFor(() => !preview.paused && preview.currentTime > 1, 8000);
+    ctx.check('preview-plays-on-hover', playing, `paused=${preview.paused} t=${preview.currentTime}`);
+    return;
+  }
+  await serveAutoHandoff(ctx, { video: preview });
+});
+</script>
+</body>
+</html>

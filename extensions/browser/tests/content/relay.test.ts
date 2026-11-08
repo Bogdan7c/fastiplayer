@@ -449,7 +449,7 @@ describe("документ говорит о себе сам", () => {
 });
 
 describe("сторож следующего видео: граница с фоном (сессия 09c2)", () => {
-  const heldEvent = { kind: "next_video_held", element: 4, candidates: [{ ...DEFAULT_CANDIDATE_FACTS, document: "doc-a", element: 4, media: { kind: "none" }, playing: true, visible_area_px: 1, frame_host: "forged.example" }] };
+  const heldEvent = { kind: "next_video_held", element: 4, candidates: [{ ...DEFAULT_CANDIDATE_FACTS, document: "doc-a", element: 4, media: { kind: "none" }, playing: true, visible_area_px: 1, frame_host: "forged.example" }], trigger: "next_video" };
   const release = { kind: "release_held_video", element: 4 };
 
   it("взвод доходит до MAIN-мира; донесение идёт к фону с хостом, прочитанным здесь, а не страницей", async () => {

@@ -86,6 +86,12 @@ impl PagePlace {
         self.0.client_rect("video").map(ClientBox::from)
     }
 
+    /// Прямоугольник цели зонда страницы по её имени (`play`, `pause`, `preview`, `video:<id>`)
+    /// на момент калибровки; `None`, если страница цель не назвала.
+    pub(in crate::scenarios) fn target_rect(&self, target: &str) -> Option<ClientBox> {
+        self.0.client_rect(target).map(ClientBox::from)
+    }
+
     /// Точка экрана внутри прямоугольника `area` (доли ширины и высоты, 0.5 — центр).
     pub(in crate::scenarios) fn screen_point_in(
         &self,
@@ -182,6 +188,11 @@ impl<'a> ReturnHand<'a, '_> {
     /// Калибровка по зонду страницы прогона `run`: браузер выводится вперёд, мышь проходит две точки.
     pub(in crate::scenarios) fn locate(&self, run: &RunId) -> Result<PagePlace, ScenarioError> {
         self.ready.locate_page_of(run).map(PagePlace)
+    }
+
+    /// Настоящее движение мыши в точку экрана (без клика): наведение на превью.
+    pub(in crate::scenarios) fn move_pointer(&self, point: Point) -> Result<(), ScenarioError> {
+        self.ready.robot.move_pointer(point)
     }
 
     /// Настоящий левый клик в точку экрана.

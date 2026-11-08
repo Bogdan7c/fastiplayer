@@ -23,12 +23,16 @@
 //   (решение 202), поэтому поддельное значение страницы до фона не доходит.
 // Сам ничего не решает о сеансе: нумерация поколений, очередь и плеер — в фоне.
 
+import type { AutoHandoffPageCommand, AutoHandoffWatchState } from "../shared/auto-handoff-contract.ts";
 import {
   HELD_VIDEO_REPORT_KIND,
+  NEW_SESSION_ADOPT_INSURANCE_MS,
+  type ElementKey,
   PAGE_FLOOD_NOTICE_KIND,
   VIEWER_RETURN_REQUEST_KIND,
   type DescribeCandidatesQuery,
   type HeldVideoReply,
+  type HeldVideoTrigger,
   type HeldVideoReport,
   type NextVideoCommand,
   type PageCommand,
@@ -41,7 +45,7 @@ import {
 } from "../shared/handoff-contract.ts";
 import type { PointerQuery, PointerReply, RightClickedVideo, VideoAtPoint } from "../shared/entry-contract.ts";
 import { parseRightClickedReply, parseVideoAtPointReply } from "../shared/entry-validation.ts";
-import { parseCandidatesReply, parsePageEvent } from "../shared/page-message-validation.ts";
+import { parseCandidatesReply, parseHeldVideoReply, parsePageEvent } from "../shared/page-message-validation.ts";
 import { createTokenBucket, type MillisecondClock } from "../shared/token-bucket.ts";
 import { createPageEventBudget, type PageEventBudget, type PageEventBudgetParameters } from "./page-event-budget.ts";
 
@@ -63,6 +67,13 @@ export const POINTER_QUERY_TIMEOUT_MS = 1_000;
  * остаться с молчащим видео, поэтому оно отпускается. 2 с покрывают пробуждение service worker.
  */
 export const HELD_VIDEO_REPLY_TIMEOUT_MS = 2_000;
+
+/**
+ * Сколько ждём ответ фона, когда видео задержано по запуску зрителя (режим 2, 12a). Фон решает асинхронно:
+ * будит service worker, читает настройки из storage, спрашивает адрес вкладки (`tabs.get`) и пробует рекламу
+ * (опрос около 0,6 с). 5 с покрывают это с запасом; дольше зритель смотрел бы на замершее видео.
+ */
+export const VIEWER_PLAY_REPLY_TIMEOUT_MS = 5_000;
 
 /**
  * Лимит донесений о задержанных видео в секунду. Живая страница запускает одно видео за раз; 16 — с
@@ -107,6 +118,15 @@ export interface ContentRelay {
   /** Фон просит взвести сторож следующего видео. */
   /** Взвести сторож; `pageReturn` — цель возврата страницы (11b2), без неё — обычный переезд (09c2). */
   armNextVideo(leaseMs: number, pageReturn?: PageReturnTarget): void;
+  /**
+   * Режим 2 (12a): охрана включена/выключена. Запоминается здесь (донесения `viewer_play` проходят только при
+   * `on`) и уходит MAIN-миру. Фону не уходит ничего: он молчит до настоящего запуска зрителя (решение 198).
+   */
+  setAutoHandoffWatch(state: AutoHandoffWatchState): void;
+  /** Фон выдал «кредит клика» на `leaseMs` (решение 247): MAIN-мир считает запуск со звуком запуском зрителя. */
+  grantPlayCredit(leaseMs: number): void;
+  /** Фон просит отпустить задержанное видео (сеанс режима 2 не состоялся): MAIN-мир снимает тень. */
+  releaseHeldVideo(element: ElementKey): void;
   /** Описание видео документа от MAIN-мира; таймаут или пустой фрейм — пустой список. */
   describeVideoCandidates(): Promise<readonly VideoCandidate[]>;
   /** Видео под последним настоящим правым кликом; таймаут и «ничего» — `null` (10c). */
@@ -134,7 +154,7 @@ export type ViewerReturnDelivery = "sent" | "no_handoff" | "port_failed";
 
 export interface RelayDependencies {
   /** Отправка MAIN-миру по личному порту участка 1. */
-  readonly sendToPage: (message: PageCommand | NextVideoCommand | DescribeCandidatesQuery | PointerQuery) => void;
+  readonly sendToPage: (message: PageCommand | NextVideoCommand | AutoHandoffPageCommand | DescribeCandidatesQuery | PointerQuery) => void;
   /** Донесение фону о задержанном видео; его ответ решает судьбу видео. */
   readonly reportHeldVideo: (report: HeldVideoReport) => Promise<HeldVideoReply>;
   readonly timers: RelayTimers;
@@ -206,6 +226,8 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
   let droppedFloodEvents = 0;
   // Взвод сторожа следующего видео: пока он не истёк, задержанные видео доходят до фона.
   let armedUntilMs = Number.NEGATIVE_INFINITY;
+  // Что изолированный мир в последний раз сказал MAIN-миру про охрану режима 2; до первой команды — `off`.
+  let autoHandoffWatch: AutoHandoffWatchState = "off";
   const heldReports = createTokenBucket(HELD_VIDEO_REPORTS_PER_SECOND, dependencies.now);
 
   function rejectPageMessage(): void {
@@ -388,34 +410,57 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
     sendToPage(pageReturn === undefined ? { kind: "arm_next_video", lease_ms: leaseMs } : { kind: "arm_next_video", lease_ms: leaseMs, page_return: pageReturn });
   }
 
+  function setAutoHandoffWatch(state: AutoHandoffWatchState): void {
+    autoHandoffWatch = state;
+    sendToPage({ kind: "auto_handoff_watch", state });
+  }
+
+  function grantPlayCredit(leaseMs: number): void {
+    sendToPage({ kind: "grant_play_credit", lease_ms: leaseMs });
+  }
+
+  function releaseHeldVideo(element: ElementKey): void {
+    sendToPage({ kind: "release_held_video", element });
+  }
+
   /**
-   * Сторож задержал видео. Вне взвода или сверх лимита донесение до фона не идёт: это страница, а не наш
+   * Можно ли донести о задержанном видео. `next_video` — только пока взвод фона жив; `viewer_play` — только
+   * пока мы сами включили охрану (`on`). Иначе это страница, а не наш сторож. Лимит частоты общий.
+   */
+  function mayReportHeldVideo(trigger: HeldVideoTrigger): boolean {
+    const triggerIsAllowed = trigger === "viewer_play" ? autoHandoffWatch === "on" : dependencies.now() < armedUntilMs;
+    return triggerIsAllowed && heldReports.take(1);
+  }
+
+  /**
+   * Сторож задержал видео. Вне разрешения или сверх лимита донесение до фона не идёт: это страница, а не наш
    * сторож, или страница молотит `play()`. Видео отпускается, и она сама получает то, что просила.
    */
   function reportHeldVideo(event: Extract<PageEvent, { kind: "next_video_held" }>): void {
-    const release = (): void => sendToPage({ kind: "release_held_video", element: event.element });
-    if (dependencies.now() >= armedUntilMs || !heldReports.take(1)) {
+    const release = (): void => releaseHeldVideo(event.element);
+    if (!mayReportHeldVideo(event.trigger)) {
       release();
       return;
     }
     let settled = false;
-    // Только явное «берём» оставляет видео под тенью: фон мог не ответить вовсе (`undefined`).
+    // Только явное «берём» оставляет видео под тенью; ответ не из договора (или его отсутствие) — отпустить.
     const settle = (reply: HeldVideoReply | undefined): void => {
       if (settled) return;
       settled = true;
       timers.clearTimeout(timer);
-      if (reply !== "adopt") {
+      if (reply === undefined || reply === "release") {
         release();
         return;
       }
       // Фон взял видео, но мог умереть до `begin_handoff`. Забранное видео этой командой не отпустить:
-      // для него она ничего не значит, поэтому страховка ставится всегда.
-      timers.setTimeout(release, HELD_VIDEO_REPLY_TIMEOUT_MS);
+      // для него она ничего не значит, поэтому страховка ставится всегда. Новый сеанс (режим 2) стартует долго.
+      timers.setTimeout(release, reply === "adopt_new_session" ? NEW_SESSION_ADOPT_INSURANCE_MS : HELD_VIDEO_REPLY_TIMEOUT_MS);
     };
-    const timer = timers.setTimeout(() => settle("release"), HELD_VIDEO_REPLY_TIMEOUT_MS);
+    const replyTimeoutMs = event.trigger === "viewer_play" ? VIEWER_PLAY_REPLY_TIMEOUT_MS : HELD_VIDEO_REPLY_TIMEOUT_MS;
+    const timer = timers.setTimeout(() => settle("release"), replyTimeoutMs);
     dependencies
-      .reportHeldVideo({ kind: HELD_VIDEO_REPORT_KIND, element: event.element, candidates: event.candidates.map(withOwnHostName) })
-      .then(settle, () => settle("release"));
+      .reportHeldVideo({ kind: HELD_VIDEO_REPORT_KIND, element: event.element, candidates: event.candidates.map(withOwnHostName), trigger: event.trigger })
+      .then((reply) => settle(parseHeldVideoReply(reply)), () => settle("release"));
   }
 
   // ---------------------------------------------------------------- фон → MAIN
@@ -527,6 +572,9 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
     handlePageMessage,
     acceptBackgroundPort,
     armNextVideo,
+    setAutoHandoffWatch,
+    grantPlayCredit,
+    releaseHeldVideo,
     describeVideoCandidates,
     rightClickedVideo,
     videoAtPoint,

@@ -143,7 +143,7 @@ describe("окно эфира: от плеера к тени", () => {
 });
 
 describe("эфир, задержанный сторожем (09c2)", () => {
-  const report = { kind: HELD_VIDEO_REPORT_KIND, element: PLAYING_LIVE.element, candidates: [PLAYING_LIVE] } as const;
+  const report = { kind: HELD_VIDEO_REPORT_KIND, element: PLAYING_LIVE.element, candidates: [PLAYING_LIVE], trigger: "next_video" } as const;
   const rule = { pageHost: "site.example", setting: "ask", consentedHost: null } as const;
 
   it("плееру 1.2 эфир переезжает, плееру 1.1 — отпускается странице", () => {

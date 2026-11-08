@@ -88,20 +88,39 @@ export interface FrameSender extends CommandSender {
 }
 
 /**
+ * Ответ фона на донесение сторожа: готовый сразу (переезд сеанса) или позже (режим 2 судит по настройкам,
+ * адресу вкладки и, возможно, пробе рекламы).
+ */
+export type HeldVideoAnswer = HeldVideoReply | Promise<HeldVideoReply>;
+
+/**
  * Слушатель донесений сторожа следующего видео. Принимаем только свой контент-скрипт. Страница сайта
  * `runtime`-сообщений слать не может, а её данные в донесении проверяются заново.
+ *
+ * Готовый ответ уходит сразу, канал не держим. Обещание ответа держит канал открытым (`true`): Chrome и
+ * Firefox оба дают позвать `sendResponse` позже. Сорвавшееся обещание — это `release` (видео отпускается,
+ * лучше лишний раз не передать, чем держать видео под тенью), причина уходит в `note`.
  */
 export function createHeldVideoListener(
   extensionId: string,
-  onHeld: (tabId: number, frameId: number, report: HeldVideoReport) => HeldVideoReply,
+  onHeld: (tabId: number, frameId: number, report: HeldVideoReport) => HeldVideoAnswer,
+  note: (message: string, error: unknown) => void = () => {},
 ): (message: unknown, sender: FrameSender, sendResponse: (reply: HeldVideoReply) => void) => boolean {
   return (message, sender, sendResponse) => {
     const tabId = sender.tab?.id;
     if (sender.id !== extensionId || tabId === undefined || sender.frameId === undefined) return false;
     const report = parseHeldVideoReport(message);
     if (report === undefined) return false;
-    sendResponse(onHeld(tabId, sender.frameId, report));
-    return false;
+    const answer = onHeld(tabId, sender.frameId, report);
+    if (typeof answer === "string") {
+      sendResponse(answer);
+      return false;
+    }
+    answer.then(sendResponse, (error: unknown) => {
+      note("the held video decision failed, releasing the video", error);
+      sendResponse("release");
+    });
+    return true;
   };
 }
 

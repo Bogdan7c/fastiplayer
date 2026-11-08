@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>auto-live</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;display:block}button{font:16px system-ui;padding:10px 24px;margin:12px 12px 12px 0}</style>
+</head>
+<body>
+<h1>auto-live</h1>
+
+<script type="module">
+import { runScenario, UnsupportedError } from '../lib/bench-report.js';
+import { checkPlaying, waitFor } from '../lib/bench-checks.js';
+import { mountVideo } from '../lib/scenario-kit.js';
+import { addPlayControls, logVideoEvents, serveAutoHandoff } from '../lib/auto-handoff-kit.js';
+
+/** Сколько ждём метаданных эфира, мс. */
+const NATIVE_HLS_LOAD_WAIT_MS = 15000;
+
+// Режим 2 (12a): нативный HLS LIVE (маршрут стенда `/cdn/hls-live/<прогон>/stream.m3u8`, как у
+// `hls-live`), но эфир НЕ стартует сам: ждёт настоящего клика по Play. Эфир — это `duration = Infinity`,
+// и экстеншен обязан передать его сразу, без порога длины. Firefox на Linux HLS сам не играет.
+//
+// Находка 12a (Chromium 156, нативный HLS): если живой эфир сначала загрузился на паузе, а `play()`
+// пришёл потом (через 0,1 с или через 3 с — всё равно), браузер перечитывает плейлист и падает с
+// `DEMUXER_ERROR_COULD_NOT_PARSE`, новых сегментов больше не просит. Тот же эфир с `play()` сразу
+// после `src` играет (как страница `hls-live`). Это особенность браузера, не стенда и не экстеншена:
+// в режиме 2 тень перехватывает `play()` раньше, и браузер эфир сам не играет. Поэтому без робота
+// (команда `pages`, проверка «эфир этой страницы играет в браузере») Play нажимается сразу.
+await runScenario('auto-live', async (ctx) => {
+  const video = mountVideo(document.body, 'live');
+  video.preload = 'metadata';
+  video.src = `/cdn/hls-live/${ctx.params.run}/stream.m3u8`;
+  logVideoEvents(ctx, video);
+  if (!ctx.params.handoff) {
+    const { play } = addPlayControls(ctx, video);
+    play.click();
+    await requireNativeHlsLoaded(video);
+    await checkPlaying(ctx, video, 'plays-after-the-page-clicks-play');
+    ctx.check('duration-is-infinity', video.duration === Infinity, `duration=${String(video.duration)}`);
+    return;
+  }
+  await requireNativeHlsLoaded(video);
+  ctx.check('duration-is-infinity', video.duration === Infinity, `duration=${String(video.duration)}`);
+  ctx.check('live-has-sound-and-waits-for-the-click', !video.muted && video.paused, `muted=${video.muted} paused=${video.paused}`);
+  addPlayControls(ctx, video);
+  await serveAutoHandoff(ctx, { video });
+});
+
+/**
+ * Браузер загрузил хотя бы метаданные эфира, иначе честное «не поддерживается» (Firefox на Linux
+ * нативный HLS не играет). Ошибка ПОСЛЕ загрузки метаданных — уже не «не умеет», а провал проверки.
+ */
+async function requireNativeHlsLoaded(video) {
+  const loaded = await waitFor(() => video.readyState >= 1 || video.error !== null, NATIVE_HLS_LOAD_WAIT_MS);
+  if (!loaded || video.readyState < 1) {
+    throw new UnsupportedError(`the browser cannot load native HLS (readyState=${video.readyState}, error=${video.error?.code})`);
+  }
+}
+</script>
+</body>
+</html>

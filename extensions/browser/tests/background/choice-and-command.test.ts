@@ -547,7 +547,7 @@ describe("страница для open_session и сообщения плеер�
 
 describe("донесение сторожа следующего видео (сессия 09c2)", () => {
   const candidate = video(4, { playing: true, visible_area_px: 1_000 });
-  const report = { kind: HELD_VIDEO_REPORT_KIND, element: 4, candidates: [candidate] };
+  const report = { kind: HELD_VIDEO_REPORT_KIND, element: 4, candidates: [candidate], trigger: "next_video" };
   const contentSender = { id: "ext", tab: { id: 12 }, frameId: 3 };
 
   function listen() {

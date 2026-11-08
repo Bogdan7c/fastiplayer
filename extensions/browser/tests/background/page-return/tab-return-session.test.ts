@@ -17,7 +17,7 @@ const FILM_DURATION_S = PLAYING_VIDEO.duration_s ?? 0;
 const RETURNED_FILM: VideoCandidate = { ...PLAYING_VIDEO, document: "doc-new", element: 9 };
 
 function heldReport(candidate: VideoCandidate): HeldVideoReport {
-  return { kind: HELD_VIDEO_REPORT_KIND, element: candidate.element, candidates: [candidate] };
+  return { kind: HELD_VIDEO_REPORT_KIND, element: candidate.element, candidates: [candidate], trigger: "next_video" };
 }
 
 function clock(socket: FakeWebSocket, seq: number, positionS: number): void {

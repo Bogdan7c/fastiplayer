@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>auto-preroll</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}button{font:16px system-ui;padding:10px 24px;margin:12px 12px 12px 0}</style>
+</head>
+<body>
+<h1>auto-preroll</h1>
+
+<script type="module">
+import { loadCatalog } from '../lib/bench-player.js';
+import { mountVideo } from '../lib/scenario-kit.js';
+import { installEntryProbe, registerEntryTarget } from '../lib/entry-probe.js';
+import { runAdHopScenario, mediaUrl, playAd, removeAdLikeLiveSite, startFilmNow } from '../lib/ad-hop-kit.js';
+
+// Режим 2 (12a), реклама перед фильмом по КЛИКУ: форма `ad-preroll&ad=unlisted` (живая форма Tortuga:
+// рядом с рекламой стоит пустой плеер фильма той же площади, ролик короткий), но реклама стартует не
+// сама, а по настоящему клику на Play. Человек нажал play на «фильме» — запустилась реклама, по её
+// `ended` страница СНИМАЕТ рекламу и запускает фильм без нового клика. Экстеншен обязан уйти в плеер
+// уже на рекламе (короткий ролик, который он узнал как рекламу) и переехать на фильм в том же окне.
+
+/** Элементы плеера лежат друг на друге в одном боксе, как на живом сайте. */
+function stackInPlayerBox(video) {
+  Object.assign(video.style, { position: 'absolute', top: '60px', left: '16px', width: '640px', height: '360px' });
+}
+
+await runAdHopScenario('auto-preroll', async (ctx, recorder) => {
+  const catalog = await loadCatalog();
+  const emptySlot = mountVideo(document.body, 'empty-slot');
+  const ad = mountVideo(document.body, 'ad');
+  [emptySlot, ad].forEach(stackInPlayerBox);
+  recorder.trackAd(ad, 'ad');
+  let filmSession = null;
+  ad.addEventListener('ended', () => {
+    removeAdLikeLiveSite(ad);
+    emptySlot.remove();
+    ctx.log('ad-removed');
+    // Фильм в той же задаче, что и снятие рекламы, и БЕЗ клика: так сайт подхватывает «кредит клика».
+    filmSession = recorder.guard(startFilmNow(ctx, recorder, catalog));
+  });
+  ad.src = mediaUrl(catalog, 'ad-preroll');
+  // Кнопка под боксом плеера (бокс вынут из потока, поэтому позиция задана явно).
+  const play = document.createElement('button');
+  play.id = 'play';
+  play.type = 'button';
+  play.textContent = 'Play';
+  Object.assign(play.style, { position: 'absolute', top: '440px', left: '16px' });
+  document.body.append(play);
+  play.addEventListener('click', () => {
+    ctx.log(`play-clicked active=${navigator.userActivation?.isActive ?? 'unknown'}`);
+    ad.play().then(() => ctx.log('play-resolved'), (error) => ctx.log(`play-rejected ${error?.name ?? 'Error'}`));
+  });
+  registerEntryTarget('play', () => play);
+  if (ctx.params.handoff) installEntryProbe(ctx);
+  else {
+    // Без робота (`pages`) страница нажимает Play сама, реклама играет, потом идёт фильм.
+    play.click();
+    await playAd(ctx, ad);
+  }
+  return {
+    expectedAdEnded: ['ad'],
+    expectFilm: true,
+    cleanup: async () => {
+      ctx.check('ad-element-removed', document.getElementById('ad') === null,
+        `ad element in document: ${document.getElementById('ad') !== null}`);
+      await (await filmSession)?.player.destroy();
+    },
+  };
+});
+</script>
+</body>
+</html>

@@ -102,6 +102,8 @@ export interface NextVideoHolds {
   take(element: object): HeldVideo | null;
   release(key: ElementKey): void;
   releaseElement(element: object): void;
+  /** Передача элемента кончилась (режим 2, 12a): повторный запуск того же элемента засчитается после нового ввода. */
+  noteHandoffEnded(element: object): void;
 }
 
 /** Идущая передача одного элемента. */
@@ -564,6 +566,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
   #release(): void {
     const released = this.#active;
     this.#active = null;
+    if (released !== null) this.#environment.nextVideo.noteHandoffEnded(released.element);
     released?.failureWatch?.stop();
     this.#environment.anchor?.handoffEnded();
     this.#environment.workerMediaSources.closeAllStreams();

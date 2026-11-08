@@ -369,7 +369,7 @@ describe("нативный HLS через фон: переезд на задер
     duration_s: 24,
   };
   const HLS_FILM: VideoCandidate = { ...DEFAULT_CANDIDATE_FACTS, document: "doc-ad", element: 1, media: { kind: "hls" }, playing: true, visible_area_px: 296_000, duration_s: 6381, file_host: REAL_HOST };
-  const HELD = { kind: HELD_VIDEO_REPORT_KIND, element: HLS_FILM.element, candidates: [HLS_FILM] } as const;
+  const HELD = { kind: HELD_VIDEO_REPORT_KIND, element: HLS_FILM.element, candidates: [HLS_FILM], trigger: "next_video" } as const;
 
   async function adThenHeldHls(agreed?: typeof PROTOCOL_VERSION_1_0): Promise<World> {
     const world = setup([{ frameId: 0, result: [{ ...HLS_FILM, playing: false }, AD] }], hlsServer().fetch);
