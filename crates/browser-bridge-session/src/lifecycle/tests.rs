@@ -1,4 +1,5 @@
 use super::*;
+use browser_bridge_protocol::session::TabGoneReason;
 
 fn key(text: &str) -> SessionRef {
     instance_of(text, 1)
@@ -178,7 +179,9 @@ fn ended_instance(text: &str, instance: u64, reason: SessionEndReason) -> Sessio
     }
 }
 
-const TAB_GONE: SessionEndReason = SessionEndReason::ClosedByPlayer(SessionCloseReason::TabGone);
+const TAB_GONE: SessionEndReason = SessionEndReason::TabGone {
+    reason: TabGoneReason::NavigatedAway,
+};
 const KEEP: LifecycleVerdict = LifecycleVerdict::KeepRunning { wake_at: None };
 
 /// Машина с активным сеансом `a` (экземпляр 1), у которого случился конец `reason`.
@@ -242,6 +245,11 @@ fn other_ends_exit_immediately_without_draining() {
         SessionEndReason::ClosedByPage {
             code: Some(SessionCloseReason::ProtocolViolation.close_code()),
         },
+        // Зритель нажал «Return» на заглушке (решение 236): видео играет на странице,
+        // окно закрывается сразу и молча.
+        SessionEndReason::ClosedByPage {
+            code: Some(SessionCloseReason::ViewerReturnedToPage.close_code()),
+        },
         SessionEndReason::FirstAttachDeadlineExpired,
     ] {
         let mut lifecycle = lifecycle_after_end(reason);
@@ -254,8 +262,46 @@ fn other_ends_exit_immediately_without_draining() {
 }
 
 #[test]
+fn every_tab_gone_reason_is_played_out_including_the_broken_page_player() {
+    // Решение 237: плеер сайта сломался — тот же конец «досмотреть скачанное», что и
+    // закрытая вкладка; причина страницы доходит до выхода без изменений.
+    let now = Instant::now();
+    for reason in [
+        TabGoneReason::Closed,
+        TabGoneReason::NavigatedAway,
+        TabGoneReason::BrowserClosing,
+        TabGoneReason::PagePlayerFailed,
+    ] {
+        let end = SessionEndReason::TabGone { reason };
+        assert!(ends_with_playback_drain(end), "{reason:?}");
+        let mut lifecycle = lifecycle_after_end(end);
+        assert_eq!(
+            lifecycle.verdict(now),
+            LifecycleVerdict::AwaitPlaybackDrain,
+            "{reason:?}"
+        );
+        assert_eq!(
+            lifecycle.on_playback_drained(),
+            PlaybackDrainOutcome::ExitDecided
+        );
+        assert_eq!(
+            lifecycle.verdict(now),
+            LifecycleVerdict::Exit(ExitCause::SessionEnded(end))
+        );
+    }
+}
+
+#[test]
 fn drain_rule_is_defined_in_one_place() {
     assert!(ends_with_playback_drain(TAB_GONE));
+    // Код 4002 без сообщения страницы — не `tab_gone`: плеер так связь не закрывает, а
+    // угадывать причину нельзя.
+    assert!(!ends_with_playback_drain(SessionEndReason::ClosedByPlayer(
+        SessionCloseReason::TabGone
+    )));
+    assert!(!ends_with_playback_drain(SessionEndReason::ClosedByPage {
+        code: Some(SessionCloseReason::ViewerReturnedToPage.close_code())
+    }));
     assert!(ends_with_playback_drain(
         SessionEndReason::ReconnectGraceExpired
     ));

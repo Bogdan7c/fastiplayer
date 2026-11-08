@@ -10,6 +10,11 @@
 //!   сбоя со стороны плеера, — «Stream error — video returned to the page», но с
 //!   причиной `page_stream_error`. Прощания тоже нет: сокет уже закрыт страницей.
 //!
+//! И один осмысленный код, о котором окно НЕ говорит:
+//! - **4010 `viewer_returned_to_page`** (сессия 11a, решение 236): зритель нажал «Return» на
+//!   заглушке страницы, видео играет на странице у него на глазах. Окно закрывается сразу и
+//!   молча — без доигрывания, без сообщения и без прощания `return_to_page`.
+//!
 //! Без окна процесс выходит сразу, без доигрывания (правило 103).
 //! Оконные варианты идут под частным `kwin_wayland --virtual` и печатают SKIPPED без него.
 
@@ -27,6 +32,20 @@ const NO_DRAIN_NO_FAREWELL: &[&str] = &[
     "Playback drain finished",
     "Session closed with a farewell to the page",
 ];
+
+/// Строки журнала, которых не должно быть, когда зритель сам вернул видео странице
+/// (решение 236): кроме доигрывания и прощания — любое сообщение о конце в окне.
+const SILENT_WINDOW_END: &[&str] = &[
+    "Playback drain finished",
+    "Session closed with a farewell to the page",
+    "Browser session end notice shown",
+    "Browser window shows the end notice before closing",
+];
+
+/// Сколько окно может идти к выходу после «Return» на заглушке. Доигрывание играло бы ещё
+/// ~5,5 с скачанного, а «сразу» с закрытием окна на занятой машине — около секунды: 4 с
+/// надёжно разделяют эти исходы (сообщение о конце ловят строки `SILENT_WINDOW_END`).
+const SILENT_WINDOW_EXIT_WITHIN: Duration = Duration::from_secs(4);
 
 /// Сколько без окна процесс может идти к выходу после закрытия связи страницей. Доигрывание
 /// играло бы ещё ~5,5 с скачанного (ролик 6 с, закрытие после 0,5 с), а «сразу» на
@@ -165,5 +184,36 @@ fn without_a_window_the_page_taking_the_video_back_ends_the_process_at_once() {
     assert!(
         exited_after < HEADLESS_EXIT_WITHIN,
         "the process played the download on for {exited_after:?} instead of exiting at once"
+    );
+}
+
+#[test]
+fn the_viewer_returning_to_the_page_closes_the_window_at_once_and_silently() {
+    let Some(process) = SessionProcessUnderTest::start("viewer-returned", VideoMode::Window) else {
+        return;
+    };
+    let bus = &process.bus;
+    let mut socket = process.open_attached_session();
+    send_all(&mut socket, six_seconds_downloaded());
+    wait_until_playing_past(&mut socket, 500_000);
+
+    let after_close = page_closes_the_link(&mut socket, SessionCloseReason::ViewerReturnedToPage);
+    let closed_at = Instant::now();
+    // Видео уже играет на странице: возвращать ей нечего.
+    assert_no_return_to_page(&after_close);
+
+    // Процесс узнал код страницы (4010), а не принял его за обрыв.
+    let ended = bus.wait_for_log_line_without("Browser session ended", SILENT_WINDOW_END);
+    let close_code = SessionCloseReason::ViewerReturnedToPage.close_code();
+    assert!(
+        ended.contains(&format!("ClosedByPage {{ code: Some({close_code}) }}")),
+        "{ended}"
+    );
+    // Штатный выход без единой строки о сообщении, доигрывании или прощании.
+    bus.wait_for_log_line_without("Browser session process finished", SILENT_WINDOW_END);
+    let exited_after = closed_at.elapsed();
+    assert!(
+        exited_after < SILENT_WINDOW_EXIT_WITHIN,
+        "the window lingered for {exited_after:?} after the viewer returned to the page"
     );
 }

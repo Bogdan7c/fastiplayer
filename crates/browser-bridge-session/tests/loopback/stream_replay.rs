@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use browser_bridge_protocol::CURRENT_PROTOCOL_VERSION;
 use browser_bridge_protocol::SessionCloseReason;
+use browser_bridge_protocol::session::TabGoneReason;
 use browser_bridge_session::{BrowserSessionServer, SessionLifecycleEvent};
 use browser_bridge_session::{CountingByteSink, SessionByteSink, SessionEndReason};
 
@@ -243,7 +244,9 @@ fn counting_sink_stub_counts_the_same_replay_per_source_buffer() {
     let ended = events.seen.get().lifecycle;
     assert!(ended.contains(&SessionLifecycleEvent::Ended {
         session: crate::support::session("count", 1),
-        reason: SessionEndReason::ClosedByPlayer(SessionCloseReason::TabGone),
+        reason: SessionEndReason::TabGone {
+            reason: TabGoneReason::Closed,
+        },
     }));
     server.shutdown();
 }

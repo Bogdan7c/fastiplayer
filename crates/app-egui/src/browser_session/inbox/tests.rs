@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use browser_bridge_protocol::SessionCloseReason;
 use browser_bridge_protocol::decode_message;
-use browser_bridge_protocol::session::{AdPod, AdSkip, PageAdState};
+use browser_bridge_protocol::session::{AdPod, AdSkip, PageAdState, TabGoneReason};
 use browser_bridge_session::SessionEndReason;
 use desktop_integration::{BrowserEntryCaller, BrowserEntryReply, BrowserEntryRequest};
 
@@ -145,7 +145,9 @@ fn page_messages_are_bounded_but_lifecycle_events_are_never_dropped() {
     }
     inbox.publish_lifecycle(SessionLifecycleEvent::Ended {
         session: key.clone(),
-        reason: SessionEndReason::ClosedByPlayer(SessionCloseReason::TabGone),
+        reason: SessionEndReason::TabGone {
+            reason: TabGoneReason::NavigatedAway,
+        },
     });
 
     let batch = inbox.take_batch();
@@ -161,7 +163,9 @@ fn page_messages_are_bounded_but_lifecycle_events_are_never_dropped() {
         batch.lifecycle_events.last(),
         Some(&SessionLifecycleEvent::Ended {
             session: key,
-            reason: SessionEndReason::ClosedByPlayer(SessionCloseReason::TabGone),
+            reason: SessionEndReason::TabGone {
+                reason: TabGoneReason::NavigatedAway,
+            },
         })
     );
 }

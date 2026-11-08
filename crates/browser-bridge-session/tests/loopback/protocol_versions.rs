@@ -4,7 +4,8 @@
 //! `open_session` → реестр запоминает версию → соединение после `attach` создаёт
 //! сторожа поколений с этой версией. При общей 1.0 сообщения протокола 1.1
 //! (`hls_source_added`, `resource_fetch_finished`) закрывают сеанс кодом 4003 и не
-//! доходят до приложения; при 1.1 — принимаются.
+//! доходят до приложения; при 1.1 — принимаются. Так же строго проверяется версия
+//! ЗНАЧЕНИЯ (1.3): `tab_gone{page_player_failed}` при общей ниже 1.3 — нарушение.
 
 use std::time::Instant;
 
@@ -300,4 +301,71 @@ fn a_newer_extension_minor_is_held_to_the_players_version() {
         delivered_types(&env),
         ["generation_started", "hls_source_added"]
     );
+}
+
+const TAB_GONE_PAGE_PLAYER_FAILED: &str = include_str!(
+    "../../../browser-bridge-protocol/fixtures/session/valid/page-tab-gone-page-player-failed.json"
+);
+
+/// Последний конец сеанса из событий жизни (`None` — сеанс не кончался).
+fn last_end_reason(env: &Env) -> Option<SessionEndReason> {
+    env.events
+        .seen
+        .get()
+        .lifecycle
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            SessionLifecycleEvent::Ended { reason, .. } => Some(*reason),
+            _ => None,
+        })
+}
+
+#[test]
+fn page_player_failed_below_1_3_closes_the_session_with_4003_not_as_a_tab_gone() {
+    // Решение 237: старый экстеншен (общая версия ниже 1.3) обязан сказать
+    // `navigated_away`; новое значение — ошибка отправителя, а не «вкладка ушла».
+    for older in [ProtocolVersion::V1_2, ProtocolVersion::V1_0] {
+        let env = Env::start();
+        let token = env.open_agreed("old-extension", older).token;
+        let mut socket = attach(env.port(), "old-extension", &token);
+        send_text(&mut socket, TAB_GONE_PAGE_PLAYER_FAILED.trim_end());
+        assert_eq!(
+            read_close_code(&mut socket),
+            SessionCloseReason::ProtocolViolation.close_code(),
+            "{older:?}"
+        );
+        wait_for_violation_end(&env);
+        assert_eq!(
+            last_end_reason(&env),
+            Some(SessionEndReason::ClosedByPlayer(
+                SessionCloseReason::ProtocolViolation
+            ))
+        );
+        // Само сообщение приложению не отдано: доигрывать по нему нечего.
+        assert!(delivered_types(&env).is_empty(), "{older:?}");
+    }
+}
+
+#[test]
+fn page_player_failed_on_1_3_ends_the_session_as_a_tab_gone_with_that_reason() {
+    let env = Env::start();
+    let token = env.open_agreed("page-player", ProtocolVersion::V1_3).token;
+    let mut socket = attach(env.port(), "page-player", &token);
+    send_text(&mut socket, TAB_GONE_PAGE_PLAYER_FAILED.trim_end());
+    assert_eq!(
+        read_close_code(&mut socket),
+        SessionCloseReason::TabGone.close_code()
+    );
+    env.wait_lifecycle("Ended(tab_gone)", |event| {
+        matches!(event, SessionLifecycleEvent::Ended { .. })
+    });
+    // Причина страницы дошла до приложения целиком: по ней окно выберет слова.
+    assert_eq!(
+        last_end_reason(&env),
+        Some(SessionEndReason::TabGone {
+            reason: browser_bridge_protocol::session::TabGoneReason::PagePlayerFailed,
+        })
+    );
+    assert_eq!(delivered_types(&env), ["other"], "tab_gone отдан приёмнику");
 }

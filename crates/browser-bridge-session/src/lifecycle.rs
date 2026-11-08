@@ -46,7 +46,8 @@ pub enum ExitCause {
 ///
 /// Единственное место правила (решение 42): доигрываем, когда у зрителя на экране
 /// уже есть полученное, а сеанс оборвался не по его воле:
-/// - `tab_gone` — вкладку закрыли или ушли, браузер закрывается;
+/// - `tab_gone` с любой причиной ([`SessionEndReason::TabGone`]) — вкладку закрыли или
+///   ушли, браузер закрывается, плеер сайта сломался (1.3, решение 237);
 /// - [`SessionEndReason::ReconnectGraceExpired`] — экстеншен пропал и не вернулся
 ///   (браузер упал).
 ///
@@ -54,13 +55,13 @@ pub enum ExitCause {
 /// завершение плеера, не пришедший `attach`) — выход сразу. В том числе честные концы
 /// страницы (сессия 09a2): «страница забрала видео» (4009, решение 179) — страница уже
 /// играет сама, доигрывание дало бы два звука; сбой на стороне страницы (её 4003) — видео
-/// возвращено странице.
+/// возвращено странице; зритель нажал «Return» на заглушке (4010, решение 236) — видео
+/// играет на странице, окно закрывается молча.
 #[must_use]
 pub const fn ends_with_playback_drain(reason: SessionEndReason) -> bool {
     matches!(
         reason,
-        SessionEndReason::ClosedByPlayer(SessionCloseReason::TabGone)
-            | SessionEndReason::ReconnectGraceExpired
+        SessionEndReason::TabGone { .. } | SessionEndReason::ReconnectGraceExpired
     )
 }
 

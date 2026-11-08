@@ -22,7 +22,9 @@
 //! - двоичная рамка → `decode_data_frame` → сторож потока → приёмник байт;
 //!   устаревшее поколение молча выбрасывается и считается;
 //! - любое нарушение (битый кадр, вторая `attach`, пропуск номера) — 4003;
-//! - `tab_gone` — сообщение уходит приёмнику, соединение закрывается кодом 4002.
+//! - `tab_gone` — после сторожа (версия причины: `page_player_failed` только с 1.3)
+//!   сообщение уходит приёмнику, сеанс кончается концом `SessionEndReason::TabGone`
+//!   с причиной страницы, соединение закрывается кодом 4002.
 
 use std::io::Read;
 use std::net::TcpStream;
@@ -30,6 +32,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use browser_bridge_protocol::limits::{DATA_FRAME_HEADER_BYTES, MAX_DATA_FRAME_PAYLOAD_BYTES};
+use browser_bridge_protocol::session::TabGoneReason;
 use browser_bridge_protocol::{
     DataFrameHeader, GateDecision, PageSessionMessage, PlayerSessionMessage, ProtocolVersion,
     SessionCloseReason, StreamGate, decode_data_frame, decode_message, encode_message,
@@ -346,17 +349,23 @@ impl Link<'_> {
                 return self.violate();
             }
         };
-        match &message {
-            // Вторая attach в уже подключённом соединении.
-            PageSessionMessage::Attach { .. } => return self.violate(),
-            PageSessionMessage::TabGone { .. } => return self.finish_tab_gone(session, message),
-            _ => {}
+        // Вторая attach в уже подключённом соединении.
+        if matches!(message, PageSessionMessage::Attach { .. }) {
+            return self.violate();
         }
+        // Сторож — и для `tab_gone`: причина новее общей версии (1.3 `page_player_failed`
+        // при общей 1.2) — нарушение, а не конец «вкладка ушла» (правило «договорились —
+        // значит строго»). Состояния потока `tab_gone` не меняет.
         match gate.apply_message(&message) {
-            Ok(GateDecision::Accept) => {
-                self.publish_page_message(session, message);
-                Flow::Continue
-            }
+            Ok(GateDecision::Accept) => match message {
+                PageSessionMessage::TabGone { reason } => {
+                    self.finish_tab_gone(session, message, reason)
+                }
+                accepted => {
+                    self.publish_page_message(session, accepted);
+                    Flow::Continue
+                }
+            },
             Ok(GateDecision::DropStale) => {
                 self.shared.count_stale_message();
                 Flow::Continue
@@ -426,11 +435,16 @@ impl Link<'_> {
         self.close.requested().is_some() || self.delivery.is_closed()
     }
 
-    /// `tab_gone`: сообщение приёмнику, затем закрытие кодом 4002.
-    fn finish_tab_gone(&mut self, session: &SessionRef, message: PageSessionMessage) -> Flow {
+    /// `tab_gone`: сообщение приёмнику, конец сеанса с причиной страницы, затем закрытие
+    /// кодом 4002.
+    fn finish_tab_gone(
+        &mut self,
+        session: &SessionRef,
+        message: PageSessionMessage,
+        reason: TabGoneReason,
+    ) -> Flow {
         self.publish_page_message(session, message);
-        self.shared
-            .session_closed_by_player(self.id, SessionCloseReason::TabGone);
+        self.shared.session_ended_by_tab_gone(self.id, reason);
         self.close_socket(SessionCloseReason::TabGone);
         Flow::Finished
     }

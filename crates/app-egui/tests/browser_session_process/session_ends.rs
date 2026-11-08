@@ -8,6 +8,9 @@
 //!   наших часов, затем 4000; процесс выходит штатно.
 //! - Вкладка ушла с 6 с скачанного (решение 42): окно доигрывает все 6 с, показывает
 //!   сообщение и закрывается не раньше срока сообщения.
+//! - Плеер сайта сломался (`tab_gone{page_player_failed}`, протокол 1.3, решение 237): тот же
+//!   конец, что у ушедшей вкладки, — окно доигрывает скачанное, но говорит своими словами
+//!   (причина журнала `page_player_failed`).
 //! - Вкладка ушла на паузе: окно живо дольше срока застоя и ждёт человека; закрытие
 //!   окна = «доиграно», процесс выходит. Без окна пауза по-прежнему = выход сразу
 //!   (`file_and_drain.rs`, `a_paused_page_makes_the_process_exit_at_once_when_the_tab_is_gone`).
@@ -16,7 +19,17 @@
 
 use browser_bridge_protocol::session::player::ResumeState;
 
+use super::hls_page::open_attached_session_speaking;
 use super::*;
+
+/// `hello` экстеншена протокола 1.3 (`tab_gone{page_player_failed}` — сессия 11a).
+const HELLO_1_3: &str = r#"{"type":"hello","protocol":{"major":1,"minor":3},"software_version":"0.1.0","capabilities":[]}"#;
+
+/// `tab_gone{page_player_failed}` — общая фикстура протокола 1.3.
+const TAB_GONE_PAGE_PLAYER_FAILED: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../browser-bridge-protocol/fixtures/session/valid/page-tab-gone-page-player-failed.json"
+));
 
 /// Вторая вкладка (другой ключ сеанса): её `open_session` заменяет первый сеанс.
 const OPEN_SESSION_FROM_ANOTHER_TAB: &str = r#"{"type":"open_session","request_id":2,"session_key":"tab-13-video-1","page":{"title":"Episode 4","domain":"example.org"},"intent":"window","hints":{"duration":{"kind":"unknown"},"position":{"kind":"unknown"}}}"#;
@@ -279,6 +292,56 @@ fn the_window_plays_what_was_downloaded_after_the_tab_left_then_says_so_and_clos
     assert!(
         log_number(&summary, "presented_frames") + 2 >= SIX_SECOND_VIDEO_FRAMES,
         "every downloaded frame is shown although the tab left: {summary}"
+    );
+    bus.wait_for_log_line("Browser window closed after the end notice");
+    bus.wait_for_log_line("Browser session process finished");
+    let shown_for = notice_at.elapsed();
+    assert!(
+        shown_for >= END_NOTICE_PERIOD_AT_LEAST,
+        "the window closed {shown_for:?} after the notice"
+    );
+}
+
+#[test]
+fn the_window_plays_what_was_downloaded_after_the_page_player_broke_then_says_so_and_closes() {
+    let Some(process) = SessionProcessUnderTest::start("page-player-failed", VideoMode::Window)
+    else {
+        return;
+    };
+    let bus = &process.bus;
+    let mut socket = open_attached_session_speaking(&process, HELLO_1_3);
+    send_all(&mut socket, six_seconds_downloaded());
+    let playing_at_us = wait_until_playing_past(&mut socket, 200_000);
+
+    socket
+        .send(Message::text(TAB_GONE_PAGE_PLAYER_FAILED.trim_end()))
+        .expect("tab_gone is sent");
+    assert_eq!(
+        read_close_code(&mut socket),
+        CloseCode::from(SessionCloseReason::TabGone.close_code())
+    );
+    let page_player_failed_at = Instant::now();
+
+    // Сервер донёс причину страницы до конца сеанса, а не голый код 4002.
+    let ended = bus.wait_for_log_line("Browser session ended");
+    assert!(
+        ended.contains("TabGone { reason: PagePlayerFailed }"),
+        "{ended}"
+    );
+    // Окно доиграло скачанное, как после ухода вкладки (решение 237).
+    bus.wait_for_log_line("Playback drain finished class=played_to_end");
+    let played_for = page_player_failed_at.elapsed();
+    let left_to_play = Duration::from_micros(6_000_000 - playing_at_us);
+    assert!(
+        played_for + Duration::from_secs(1) >= left_to_play,
+        "the window stopped after {played_for:?}, {left_to_play:?} were left to play"
+    );
+    // Своими словами: причина журнала — сломанный плеер сайта, а не закрытая вкладка.
+    let notice = bus.wait_for_log_line("Browser session end notice shown");
+    let notice_at = Instant::now();
+    assert!(
+        notice.contains("notice=finished cause=page_player_failed end=played_to_end"),
+        "{notice}"
     );
     bus.wait_for_log_line("Browser window closed after the end notice");
     bus.wait_for_log_line("Browser session process finished");

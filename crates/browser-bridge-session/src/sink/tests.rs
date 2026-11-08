@@ -127,6 +127,10 @@ fn the_page_names_a_reason_only_with_one_of_our_codes() {
     // Тот же код, но связь закрыл плеер, — это не слово страницы.
     for not_by_page in [
         SessionEndReason::ClosedByPlayer(SessionCloseReason::ProtocolViolation),
+        // `tab_gone` страница шлёт сообщением, а соединение закрываем мы.
+        SessionEndReason::TabGone {
+            reason: TabGoneReason::PagePlayerFailed,
+        },
         SessionEndReason::ReconnectGraceExpired,
         SessionEndReason::FirstAttachDeadlineExpired,
     ] {

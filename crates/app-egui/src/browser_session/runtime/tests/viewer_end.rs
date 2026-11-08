@@ -84,9 +84,7 @@ fn closing_the_window_during_the_drain_exits_with_the_end_of_the_session() {
 
     let verdict = harness.runtime.finish_drain_for_viewer(Instant::now());
 
-    let tab_gone = ExitCause::SessionEnded(SessionEndReason::ClosedByPlayer(
-        SessionCloseReason::TabGone,
-    ));
+    let tab_gone = ExitCause::SessionEnded(TAB_GONE_END);
     assert_eq!(verdict, LifecycleVerdict::Exit(tab_gone));
     let questions = harness.media.drain_questions;
     assert_eq!(

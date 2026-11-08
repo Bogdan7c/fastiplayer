@@ -1,7 +1,7 @@
 //! Конец сеанса глазами зрителя окна (мост, сессия 04b, решение 42).
 //!
-//! Вкладка ушла (или экстеншен пропал и не вернулся) — процесс доигрывает скачанное
-//! (03c). Окно должно сказать человеку, что происходит:
+//! Вкладка ушла (или плеер сайта сломался, или экстеншен пропал и не вернулся) — процесс
+//! доигрывает скачанное (03c, решение 237). Окно должно сказать человеку, что происходит:
 //! - пока доигрывание играет — ничего (смотрим видео);
 //! - окно на паузе ждёт человека — постоянное сообщение «вкладка закрыта, скачанное
 //!   можно досмотреть» ([`SessionEndView::WaitingForViewer`]);
@@ -14,12 +14,16 @@
 //! видео ([`SessionEndView::PageTookVideoBack`], код 4009, решение 179) и сбой на стороне
 //! страницы ([`SessionEndView::PageStreamError`], её код 4003).
 //!
+//! Молча и сразу окно закрывается, когда зритель сам вернул видео странице кнопкой «Return»
+//! на заглушке (код 4010, решение 236): ему нечего сообщать — видео играет у него на глазах.
+//!
 //! Здесь только чистые правила «что показать» и стабильные метки журнала; когда
 //! показывать и сколько держать — забота окна (`window::end_notice`), а состояние
 //! доигрывания — медиа-части (`session_media::ending`). Тексты — только английские
 //! (пользовательский текст UI), без домена и заголовка страницы (инвариант 7).
 
 use browser_bridge_protocol::SessionCloseReason;
+use browser_bridge_protocol::session::TabGoneReason;
 use browser_bridge_session::SessionEndReason;
 
 use super::session_media::DrainEnd;
@@ -29,6 +33,10 @@ use super::session_media::DrainEnd;
 pub(crate) enum DrainCause {
     /// Страница сказала `tab_gone`: вкладку закрыли, ушли со страницы, закрыли браузер.
     TabClosed,
+    /// Страница сказала `tab_gone{page_player_failed}` (протокол 1.3, решение 237): вкладка
+    /// на месте, но плеер сайта сломался во время передачи. Доигрывается так же, как
+    /// закрытая вкладка, только своими словами («The page's player stopped»).
+    PagePlayerFailed,
     /// Экстеншен пропал без `tab_gone` и не вернулся за срок возврата (браузер упал).
     BrowserConnectionLost,
 }
@@ -40,7 +48,7 @@ impl DrainCause {
     /// (закреплено тестом): сообщение показывается ровно тогда, когда процесс доигрывает.
     pub(crate) const fn of(reason: SessionEndReason) -> Option<Self> {
         match reason {
-            SessionEndReason::ClosedByPlayer(SessionCloseReason::TabGone) => Some(Self::TabClosed),
+            SessionEndReason::TabGone { reason } => Some(Self::of_tab_gone(reason)),
             SessionEndReason::ReconnectGraceExpired => Some(Self::BrowserConnectionLost),
             SessionEndReason::ClosedByPlayer(_)
             | SessionEndReason::ClosedByPage { .. }
@@ -48,10 +56,23 @@ impl DrainCause {
         }
     }
 
-    /// Стабильная метка для журнала.
+    /// Причина `tab_gone` страницы → слова окна. Исчерпывающе: новая причина протокола
+    /// без своего решения здесь не соберётся.
+    const fn of_tab_gone(reason: TabGoneReason) -> Self {
+        match reason {
+            // Для зрителя вкладки больше нет: закрыли её, ушли со страницы или закрыли браузер.
+            TabGoneReason::Closed
+            | TabGoneReason::NavigatedAway
+            | TabGoneReason::BrowserClosing => Self::TabClosed,
+            TabGoneReason::PagePlayerFailed => Self::PagePlayerFailed,
+        }
+    }
+
+    /// Стабильная метка для журнала (договор со стендом моста: не переименовывать).
     pub(crate) const fn log_label(self) -> &'static str {
         match self {
             Self::TabClosed => "tab_gone",
+            Self::PagePlayerFailed => "page_player_failed",
             Self::BrowserConnectionLost => "reconnect_grace_expired",
         }
     }
@@ -118,6 +139,9 @@ impl SessionEndView {
     ///   `reason_named_by_page`): экстеншен так завершает передачу, конец которой уже
     ///   решён и объяснён в другом месте (ответ на наш `end_handoff`, неудачный старт до
     ///   показа видео). Сбои страницы с 09a2 приходят кодом 4003, а не 1000;
+    /// - 4010 `viewer_returned_to_page` (решение 236): зритель сам нажал «Return» на
+    ///   заглушке, видео играет на странице у него на глазах. Окно закрывается сразу и молча,
+    ///   как на 1000: сообщать нечего, а лишняя надпись задержала бы закрытие;
     /// - прочие наши коды (4000, 4001, 4002…) — это слова ПЛЕЕРА; страница ими связь не
     ///   закрывает, а `tab_gone` приходит сообщением и закрывается плеером. Выдумывать
     ///   для них текст — значит гадать.
@@ -125,6 +149,7 @@ impl SessionEndView {
         match named {
             SessionCloseReason::PageTookVideoBack => Some(Self::PageTookVideoBack),
             SessionCloseReason::ProtocolViolation => Some(Self::PageStreamError),
+            SessionCloseReason::ViewerReturnedToPage => None,
             SessionCloseReason::PlayerClosed
             | SessionCloseReason::ReplacedByAnotherTab
             | SessionCloseReason::TabGone
@@ -142,6 +167,11 @@ const TAB_CLOSED: &str = "Source tab closed";
 const TAB_CLOSED_STALLED: &str = "Source tab closed — playback stalled";
 const TAB_CLOSED_FAILED: &str = "Source tab closed — playback failed";
 const TAB_CLOSED_WAITING: &str = "Source tab closed — you can still watch what was downloaded";
+const PAGE_PLAYER_STOPPED: &str = "The page's player stopped";
+const PAGE_PLAYER_STOPPED_STALLED: &str = "The page's player stopped — playback stalled";
+const PAGE_PLAYER_STOPPED_FAILED: &str = "The page's player stopped — playback failed";
+const PAGE_PLAYER_STOPPED_WAITING: &str =
+    "The page's player stopped — you can still watch what was downloaded";
 const STREAM_ERROR: &str = "Stream error — video returned to the page";
 const PAGE_TOOK_VIDEO_BACK: &str = "The page took the video back";
 const BROWSER_LOST: &str = "Lost connection to the browser";
@@ -156,6 +186,9 @@ impl SessionEndView {
         match self {
             Self::Silent => None,
             Self::WaitingForViewer(DrainCause::TabClosed) => Some(TAB_CLOSED_WAITING),
+            Self::WaitingForViewer(DrainCause::PagePlayerFailed) => {
+                Some(PAGE_PLAYER_STOPPED_WAITING)
+            }
             Self::WaitingForViewer(DrainCause::BrowserConnectionLost) => Some(BROWSER_LOST_WAITING),
             Self::Finished(finish) => Some(finished_message(finish)),
             // Сбой с любой стороны зритель видит одинаково: видео снова у страницы.
@@ -218,7 +251,8 @@ pub(crate) struct SessionEndLogLabels {
 /// Текст конца доигрывания: причина + короткий хвост, если видео не доиграло честно.
 ///
 /// «Нечего играть», «доиграно» и пауза (последняя — только у безоконного процесса,
-/// где окна нет) звучат одинаково: зрителю важно, что вкладки больше нет.
+/// где окна нет) звучат одинаково: зрителю важно, что вкладки (или плеера сайта) больше нет.
+/// Сломанный плеер сайта делит с закрытой вкладкой и это соответствие итогов (решение 237).
 const fn finished_message(finish: DrainFinish) -> &'static str {
     match (finish.cause, finish.end) {
         (DrainCause::TabClosed, DrainEnd::Stalled) => TAB_CLOSED_STALLED,
@@ -227,6 +261,12 @@ const fn finished_message(finish: DrainFinish) -> &'static str {
             DrainCause::TabClosed,
             DrainEnd::PlayedToEnd | DrainEnd::NothingToPlay | DrainEnd::PagePaused,
         ) => TAB_CLOSED,
+        (DrainCause::PagePlayerFailed, DrainEnd::Stalled) => PAGE_PLAYER_STOPPED_STALLED,
+        (DrainCause::PagePlayerFailed, DrainEnd::PlayerFault) => PAGE_PLAYER_STOPPED_FAILED,
+        (
+            DrainCause::PagePlayerFailed,
+            DrainEnd::PlayedToEnd | DrainEnd::NothingToPlay | DrainEnd::PagePaused,
+        ) => PAGE_PLAYER_STOPPED,
         (DrainCause::BrowserConnectionLost, DrainEnd::Stalled) => BROWSER_LOST_STALLED,
         (DrainCause::BrowserConnectionLost, DrainEnd::PlayerFault) => BROWSER_LOST_FAILED,
         (
@@ -255,10 +295,20 @@ mod tests {
             SessionCloseReason::AttachTimeout,
             SessionCloseReason::AlreadyAttached,
             SessionCloseReason::PageTookVideoBack,
+            SessionCloseReason::ViewerReturnedToPage,
         ]
         .into_iter()
         .map(SessionEndReason::ClosedByPlayer)
         .collect();
+        reasons.extend(
+            [
+                TabGoneReason::Closed,
+                TabGoneReason::NavigatedAway,
+                TabGoneReason::BrowserClosing,
+                TabGoneReason::PagePlayerFailed,
+            ]
+            .map(|reason| SessionEndReason::TabGone { reason }),
+        );
         reasons.extend([
             SessionEndReason::ClosedByPage { code: None },
             SessionEndReason::ClosedByPage { code: Some(1000) },
@@ -270,6 +320,9 @@ mod tests {
             },
             SessionEndReason::ClosedByPage {
                 code: Some(SessionCloseReason::PlayerClosed.close_code()),
+            },
+            SessionEndReason::ClosedByPage {
+                code: Some(SessionCloseReason::ViewerReturnedToPage.close_code()),
             },
             // Чужой прикладной код: не наш, ничего не значит.
             SessionEndReason::ClosedByPage { code: Some(4999) },
@@ -413,6 +466,122 @@ mod tests {
                 cause: "page_stream_error",
                 end: "none",
             }
+        );
+    }
+
+    /// Все итоги доигрывания (для сверки соответствия «итог → хвост текста»).
+    const EVERY_DRAIN_END: [DrainEnd; 5] = [
+        DrainEnd::NothingToPlay,
+        DrainEnd::PagePaused,
+        DrainEnd::PlayedToEnd,
+        DrainEnd::PlayerFault,
+        DrainEnd::Stalled,
+    ];
+
+    #[test]
+    fn every_tab_gone_drains_and_only_the_broken_page_player_has_its_own_cause() {
+        // Решение 237: причина страницы доходит до окна; закрытая вкладка, уход со страницы
+        // и закрытие браузера звучат по-старому.
+        let cause_of = |reason| DrainCause::of(SessionEndReason::TabGone { reason });
+        assert_eq!(
+            cause_of(TabGoneReason::PagePlayerFailed),
+            Some(DrainCause::PagePlayerFailed)
+        );
+        for reason in [
+            TabGoneReason::Closed,
+            TabGoneReason::NavigatedAway,
+            TabGoneReason::BrowserClosing,
+        ] {
+            assert_eq!(cause_of(reason), Some(DrainCause::TabClosed), "{reason:?}");
+        }
+        // Голый код 4002 без сообщения страницы — не `tab_gone`: плеер так не закрывает.
+        assert_eq!(
+            DrainCause::of(SessionEndReason::ClosedByPlayer(
+                SessionCloseReason::TabGone
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn the_broken_page_player_gets_its_own_words_with_the_tab_closed_endings() {
+        let finished = |cause, end| SessionEndView::Finished(DrainFinish { cause, end });
+        assert_eq!(
+            finished(DrainCause::PagePlayerFailed, DrainEnd::PlayedToEnd).center_message(),
+            Some("The page's player stopped")
+        );
+        assert_eq!(
+            finished(DrainCause::PagePlayerFailed, DrainEnd::Stalled).center_message(),
+            Some("The page's player stopped — playback stalled")
+        );
+        assert_eq!(
+            finished(DrainCause::PagePlayerFailed, DrainEnd::PlayerFault).center_message(),
+            Some("The page's player stopped — playback failed")
+        );
+        assert_eq!(
+            SessionEndView::WaitingForViewer(DrainCause::PagePlayerFailed).center_message(),
+            Some("The page's player stopped — you can still watch what was downloaded")
+        );
+        // Тот же хвост на каждый итог, что у закрытой вкладки (решение 237): меняется только
+        // начало фразы.
+        for end in EVERY_DRAIN_END {
+            let tab_closed = finished(DrainCause::TabClosed, end)
+                .center_message()
+                .expect("a finished drain speaks");
+            let page_player = finished(DrainCause::PagePlayerFailed, end)
+                .center_message()
+                .expect("a finished drain speaks");
+            assert_eq!(
+                page_player.strip_prefix("The page's player stopped"),
+                tab_closed.strip_prefix("Source tab closed"),
+                "{end:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_broken_page_player_is_logged_with_its_own_cause_label() {
+        assert_eq!(
+            SessionEndView::Finished(DrainFinish {
+                cause: DrainCause::PagePlayerFailed,
+                end: DrainEnd::Stalled,
+            })
+            .log_labels(),
+            SessionEndLogLabels {
+                notice: "finished",
+                cause: "page_player_failed",
+                end: "stalled",
+            }
+        );
+        assert_eq!(
+            SessionEndView::WaitingForViewer(DrainCause::PagePlayerFailed).log_labels(),
+            SessionEndLogLabels {
+                notice: "waiting_for_viewer",
+                cause: "page_player_failed",
+                end: "none",
+            }
+        );
+    }
+
+    #[test]
+    fn the_viewer_returning_to_the_page_ends_the_window_silently_without_a_drain() {
+        // Решение 236: зритель сам нажал «Return» — видео играет на странице у него на
+        // глазах. Ни доигрывания (было бы два звука), ни сообщения: окно закрывается сразу.
+        let reason = SessionEndReason::ClosedByPage {
+            code: Some(SessionCloseReason::ViewerReturnedToPage.close_code()),
+        };
+        assert_eq!(
+            reason.reason_named_by_page(),
+            Some(SessionCloseReason::ViewerReturnedToPage),
+            "код узнан, а не принят за чужой"
+        );
+        assert!(!ends_with_playback_drain(reason));
+        assert_eq!(DrainCause::of(reason), None);
+        assert_eq!(SessionEndView::of_undrained_end(reason), None);
+        // Тот же вид, что у обычного 1000 страницы.
+        assert_eq!(
+            SessionEndView::of_undrained_end(SessionEndReason::ClosedByPage { code: Some(1000) }),
+            None
         );
     }
 

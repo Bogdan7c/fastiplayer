@@ -219,6 +219,18 @@ fn tab_gone_is_forwarded_then_closed_with_4002() {
         )),
         "приёмник должен узнать причину ухода вкладки"
     );
+    // Конец сеанса несёт причину страницы, а не голый код 4002 (решение 237).
+    env.wait_lifecycle("Ended(tab_gone)", |event| {
+        matches!(
+            event,
+            browser_bridge_session::SessionLifecycleEvent::Ended {
+                reason: browser_bridge_session::SessionEndReason::TabGone {
+                    reason: browser_bridge_protocol::session::TabGoneReason::NavigatedAway,
+                },
+                ..
+            }
+        )
+    });
 }
 
 #[test]

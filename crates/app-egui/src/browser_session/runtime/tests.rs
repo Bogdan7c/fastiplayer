@@ -36,6 +36,10 @@ const TAB_GONE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../browser-bridge-protocol/fixtures/session/valid/page-tab-gone.json"
 ));
+/// Конец сеанса по фикстуре `TAB_GONE`: причина страницы доходит до выхода (решение 237).
+const TAB_GONE_END: SessionEndReason = SessionEndReason::TabGone {
+    reason: browser_bridge_protocol::session::TabGoneReason::NavigatedAway,
+};
 const PAGE_PLAYBACK_PAUSE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../browser-bridge-protocol/fixtures/session/valid/page-page-playback-pause.json"
@@ -392,9 +396,7 @@ fn process_exits_after_tab_gone_once_the_media_has_nothing_left_to_play() {
 
     assert_eq!(
         harness.run_until_exit(),
-        ExitCause::SessionEnded(SessionEndReason::ClosedByPlayer(
-            SessionCloseReason::TabGone
-        ))
+        ExitCause::SessionEnded(TAB_GONE_END)
     );
     // Страница видит честный код закрытия, а не обрыв.
     let close_code = loop {
@@ -434,9 +436,7 @@ fn tab_gone_keeps_the_process_alive_while_playing_and_exits_after_the_media_drai
     harness.media.drain_answer = Some(DrainProgress::Drained(DrainEnd::PlayedToEnd));
     assert_eq!(
         harness.run_until_exit(),
-        ExitCause::SessionEnded(SessionEndReason::ClosedByPlayer(
-            SessionCloseReason::TabGone
-        ))
+        ExitCause::SessionEnded(TAB_GONE_END)
     );
 }
 
@@ -550,9 +550,7 @@ fn page_message_before_tab_gone_still_ends_the_session_by_tab_gone() {
 
     assert_eq!(
         harness.run_until_exit(),
-        ExitCause::SessionEnded(SessionEndReason::ClosedByPlayer(
-            SessionCloseReason::TabGone
-        ))
+        ExitCause::SessionEnded(TAB_GONE_END)
     );
 }
 

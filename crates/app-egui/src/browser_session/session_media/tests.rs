@@ -230,8 +230,9 @@ impl PageSender for FakePage {
 }
 
 /// Конец сеанса, который доигрывается (вкладка ушла).
-const TAB_GONE_END: SessionEndReason =
-    SessionEndReason::ClosedByPlayer(SessionCloseReason::TabGone);
+const TAB_GONE_END: SessionEndReason = SessionEndReason::TabGone {
+    reason: browser_bridge_protocol::session::TabGoneReason::Closed,
+};
 
 /// Прощание, которое медиа-часть отдала закрытию-подделке.
 #[derive(Debug, Clone, PartialEq)]

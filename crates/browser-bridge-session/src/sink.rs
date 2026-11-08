@@ -49,6 +49,7 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
+use browser_bridge_protocol::session::TabGoneReason;
 use browser_bridge_protocol::{
     AppendSequence, PageSessionMessage, ProtocolVersion, RangeRequestId, SessionCloseReason,
     SourceBufferIndex, StreamGeneration,
@@ -154,8 +155,17 @@ pub struct EventSinkFull;
 /// Почему сеанс закончился.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionEndReason {
-    /// Мы закрыли соединение этим кодом (замена, нарушение, `tab_gone`, выход).
+    /// Мы закрыли соединение этим кодом (замена, нарушение, выход, окно закрыто).
+    /// Конец по `tab_gone` — не здесь, а [`Self::TabGone`]: у него есть причина страницы.
     ClosedByPlayer(SessionCloseReason),
+    /// Страница сказала `tab_gone` (решение 42), и мы закрыли соединение кодом 4002
+    /// ([`SessionCloseReason::TabGone`]). Отдельный вариант, чтобы причина страницы дошла до
+    /// приложения: «плеер сайта сломался» (1.3, решение 237) зритель слышит иначе, чем
+    /// «вкладку закрыли». Других путей к коду 4002 у плеера нет.
+    TabGone {
+        /// Почему вкладка больше не источник — ровно то, что прислала страница.
+        reason: TabGoneReason,
+    },
     /// Страница сама закрыла соединение кадром закрытия (с кодом или без).
     ClosedByPage {
         /// Код из кадра закрытия; `None` — кадр без кода (1005).
@@ -180,6 +190,7 @@ impl SessionEndReason {
             Self::ClosedByPage { code: Some(code) } => SessionCloseReason::from_close_code(code),
             Self::ClosedByPage { code: None }
             | Self::ClosedByPlayer(_)
+            | Self::TabGone { .. }
             | Self::ReconnectGraceExpired
             | Self::FirstAttachDeadlineExpired => None,
         }

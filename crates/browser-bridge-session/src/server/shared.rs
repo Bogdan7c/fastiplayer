@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
+use browser_bridge_protocol::session::TabGoneReason;
 use browser_bridge_protocol::{
     LoopbackPort, OpenSessionRequest, PlayerSessionMessage, ProtocolVersion, SessionCloseReason,
     SessionKey, SessionToken, encode_message,
@@ -354,15 +355,30 @@ impl Shared {
         }
     }
 
-    /// Мы закрываем соединение этого сеанса (нарушение, `tab_gone`): сеанс закончен.
+    /// Мы закрываем соединение этого сеанса (нарушение протокола): сеанс закончен.
     pub(super) fn session_closed_by_player(
         &self,
         connection: ConnectionId,
         reason: SessionCloseReason,
     ) {
+        self.end_session_of_connection(connection, SessionEndReason::ClosedByPlayer(reason));
+    }
+
+    /// Страница сказала `tab_gone` с этой причиной; соединение закроем кодом 4002. Сеанс
+    /// закончен, и приложение получит причину страницы (решение 237), а не голый код.
+    pub(super) fn session_ended_by_tab_gone(
+        &self,
+        connection: ConnectionId,
+        reason: TabGoneReason,
+    ) {
+        self.end_session_of_connection(connection, SessionEndReason::TabGone { reason });
+    }
+
+    /// Общий путь концов, замеченных потоком соединения: если сеанс соединения ещё жив
+    /// (его не закончили снаружи), закончить его с этой причиной.
+    fn end_session_of_connection(&self, connection: ConnectionId, reason: SessionEndReason) {
         let mut state = self.lock_state();
         if let Some(session) = state.registry.end_session_of(connection) {
-            let reason = SessionEndReason::ClosedByPlayer(reason);
             self.announce_end(&state, Some(connection), session, reason);
         }
     }
