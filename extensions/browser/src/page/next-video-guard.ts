@@ -34,6 +34,17 @@
 // фону несёт `trigger: "viewer_play"`. Охрана выключена — `play()` строго прозрачен, лишних слушателей нет.
 // Политика «кто зритель» лежит в `auto-handoff/viewer-play-watch.ts`, правил сайтов здесь нет.
 //
+// Предложение «Ask» (сессия 12b, решения 255–257): фон ответил «спроси», и изолированный мир просит держать
+// задержанное видео (`holdForViewerOffer`). Модель тени показывает странице паузу (плеер сайта спокойно стоит,
+// пока человек выбирает), а сигнал предложения говорит изолированному миру, над каким элементом рисовать панель.
+// Срока у такого удержания нет: выбор за человеком. Дальше три исхода, и каждый возвращает модели ту игру,
+// которую страница видела до предложения:
+// - «в плеер» — обычный `take` контроллера передачи (`begin_handoff`): плеер начинает с игры, как в 12a;
+// - «здесь» — обычное отпускание: видео играет в браузере и, как любое отпущенное, по этой причине больше не
+//   задерживается, пока не сменит источник или видимость (решение 257: «не спрашивать до новой страницы»);
+// - «снято» (на той же вкладке встало новое предложение) — тень снимается, видео остаётся на паузе, отказ
+//   не запоминается: новое нажатие play по нему — новый вопрос.
+//
 // Взвод возврата страницы (сессия 11b2, решения 240–241): фон открыл ушедшую страницу заново и ждёт ТО
 // САМОЕ видео, что играет в окне плеера (`PageReturnTarget`). Отличия от переезда (шаги — page-return-step.ts):
 // - настоящий `play()` не зовётся, пока видео не узнано: открытая фоном вкладка не имеет жеста зрителя, и
@@ -63,6 +74,7 @@ import type {
 import { pageReturnStep } from "./page-return-step.ts";
 import type { OddityReporter } from "./prototype-wrap.ts";
 import type { VideoCandidates } from "./video-candidates.ts";
+import type { ViewerOfferSignals } from "./viewer-offer-anchor.ts";
 
 /** `HTMLMediaElement.HAVE_METADATA`: длительность и размер кадра известны. */
 const HAVE_METADATA = 1;
@@ -84,6 +96,8 @@ export interface NextVideoGuardEnvironment {
   readonly viewerPlay: ViewerPlayWatch;
   /** Защищённый элемент сторож не трогает (инвариант 4). */
   readonly isProtected: (element: object) => boolean;
+  /** Сигнал «предложение «Ask» встало/ушло» для изолированного мира (12b). */
+  readonly viewerOffer: ViewerOfferSignals;
   /** Отправка фону через изолированный мир. */
   readonly send: (event: PageEvent) => void;
   /** Монотонные часы, мс. */
@@ -105,6 +119,13 @@ interface HeldEntry extends HeldVideo {
   readonly key: ElementKey;
   /** Почему задержали: отказ фона запоминается только для этой причины. */
   readonly trigger: HeldVideoTrigger;
+  /** Видео держится под предложением «Ask» (12b); `null` — обычное удержание до решения фона. */
+  offer: ViewerOfferHold | null;
+}
+
+/** Удержание под предложением: какую игру страница видела до него (её модель вернёт при любом исходе, кроме «снято»). */
+interface ViewerOfferHold {
+  readonly pageWasPlaying: boolean;
 }
 
 /** Ответ «не наше дело»: один объект на все вызовы. */
@@ -169,7 +190,35 @@ export class NextVideoGuard {
     const entry = this.#held.get(element);
     if (entry === undefined) return null;
     this.#held.delete(element);
+    // Человек выбрал «в плеер»: плеер начинает с той игры, что страница видела до предложения.
+    this.#finishOffer(entry);
     return entry;
+  }
+
+  /**
+   * Фон ответил «спроси» (12b): держать задержанное зрителем видео под предложением. Чужой ключ, видео не
+   * задержано зрителем или изолированный мир о предложении не узнал — отпустить: держать видео на паузе без
+   * панели нельзя, человеку нечем было бы его запустить.
+   */
+  holdForViewerOffer(key: ElementKey): void {
+    const element = this.#environment.registry.elementByKey(key);
+    const entry = element === null ? undefined : this.#held.get(element);
+    if (element === null || entry === undefined || entry.trigger !== "viewer_play" || entry.offer !== null) return;
+    // Одно предложение на документ: прежнее снимается (фон делает то же между фреймами вкладки).
+    for (const [otherElement, other] of this.#held) if (other.offer !== null && otherElement !== element) this.#withdrawEntry(otherElement, other);
+    entry.offer = { pageWasPlaying: entry.session.pageSawPlaying() };
+    entry.session.showHeldPagePlayback("pause");
+    if (!this.#environment.viewerOffer.offerStood(element)) {
+      this.#environment.reportOddity("viewer offer could not be shown, the video plays here");
+      this.releaseElement(element);
+    }
+  }
+
+  /** Фон снял предложение (на вкладке встало новое): тень снимается, видео стоит на паузе. Чужой ключ — ничего. */
+  withdrawViewerOffer(key: ElementKey): void {
+    const element = this.#environment.registry.elementByKey(key);
+    const entry = element === null ? undefined : this.#held.get(element);
+    if (element !== null && entry?.offer != null) this.#withdrawEntry(element, entry);
   }
 
   /** Фон отказал или не ответил: элемент играет дальше сам, тень снята. Чужой ключ — ничего. */
@@ -184,6 +233,8 @@ export class NextVideoGuard {
     if (entry === undefined) return;
     this.#held.delete(element);
     this.#remember(element, entry.trigger);
+    // «Play here»: страница снова видит игру, и снятая тень запускает настоящий элемент (`as_shadow`).
+    this.#finishOffer(entry);
     try {
       entry.session.end({ kind: "shadow_position" }, { kind: "as_shadow" });
     } catch {
@@ -434,7 +485,11 @@ export class NextVideoGuard {
     const candidates = withHeldPlaying(environment.candidates.describe(), key);
     let forward: (event: PageEvent) => void = (event) => {
       // До решения фона наружу не идёт ничего; тень могла сняться сама: страница сменила источник.
-      if (event.kind === "handoff_ended") this.#held.delete(element);
+      if (event.kind !== "handoff_ended") return;
+      const ended = this.#held.get(element);
+      this.#held.delete(element);
+      // Висело предложение — его панель уходит вместе с видео.
+      if (ended?.offer != null) environment.viewerOffer.offerEnded();
     };
     const session = environment.startHeldShadow(video, (event) => forward(event), {
       isMediaSourceObjectUrl: (url) => registry.isMediaSourceObjectUrl(url),
@@ -444,6 +499,7 @@ export class NextVideoGuard {
     const entry: HeldEntry = {
       key,
       trigger,
+      offer: null,
       session,
       connect: (emit) => {
         forward = emit;
@@ -455,6 +511,27 @@ export class NextVideoGuard {
     session.takeOverPendingPlays(this.#awaitingMetadata.get(element)?.splice(0) ?? []);
     environment.send({ kind: "next_video_held", element: key, candidates, trigger });
     return true;
+  }
+
+  /** Конец предложения выбором человека: модели — прежняя игра, изолированному миру — «ушло». Без предложения — ничего. */
+  #finishOffer(entry: HeldEntry): void {
+    const offer = entry.offer;
+    if (offer === null) return;
+    entry.offer = null;
+    if (offer.pageWasPlaying) entry.session.showHeldPagePlayback("play");
+    this.#environment.viewerOffer.offerEnded();
+  }
+
+  /** Снять предложение без выбора: тень уходит, видео остаётся на паузе, отказ не запоминается. */
+  #withdrawEntry(element: object, entry: HeldEntry): void {
+    this.#held.delete(element);
+    entry.offer = null;
+    this.#environment.viewerOffer.offerEnded();
+    try {
+      entry.session.end({ kind: "shadow_position" }, { kind: "exactly", resume: "paused" });
+    } catch {
+      this.#environment.reportOddity("could not withdraw a viewer offer");
+    }
   }
 
   #remember(element: object, trigger: HeldVideoTrigger): void {

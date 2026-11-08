@@ -4,6 +4,8 @@ import { ENTRY_SETTINGS_KEY, parseEntrySettings } from "../../../src/shared/entr
 import { createPageUi, type PageUi } from "../../../src/content/page-ui/page-ui.ts";
 import { createFakeClock, type FakeClock } from "../../background/support.ts";
 import type { ViewerReturnDelivery } from "../../../src/content/relay.ts";
+import type { ViewerOfferDelivery } from "../../../src/content/viewer-offer-relay.ts";
+import type { ViewerOfferChoice } from "../../../src/shared/viewer-offer-contract.ts";
 import { FakeGeometrySignals, FakePointer, FakeUiDocument, flushMicrotasks } from "./fake-ui-dom.ts";
 
 export const OWN_EXTENSION_ID = "fastiplayer-extension-id";
@@ -33,6 +35,10 @@ export interface PageUiHarness {
   readonly returnRequests: { count: number };
   /** Что ответит пограничник на следующую просьбу «Return». */
   returnDelivery: { next: ViewerReturnDelivery };
+  /** Что панель предложения «Ask» отдала пограничнику (12b). */
+  readonly offerChoices: ViewerOfferChoice[];
+  /** Что ответит пограничник на следующий выбор. */
+  offerDelivery: { next: ViewerOfferDelivery };
   /** Записать настройку так, как это делает страница настроек: хранилище + событие. */
   changeOverlaySetting(enabled: boolean): void;
   /** Прогнать часы вперёд и дать отработать промисам. */
@@ -58,6 +64,8 @@ export async function setupPageUi(options: PageUiHarnessOptions = {}): Promise<P
   const signals = new FakeGeometrySignals();
   const returnRequests = { count: 0 };
   const returnDelivery: { next: ViewerReturnDelivery } = { next: "sent" };
+  const offerChoices: ViewerOfferChoice[] = [];
+  const offerDelivery: { next: ViewerOfferDelivery } = { next: "hand_off" };
   let stored: unknown = options.overlayEnabled === undefined ? undefined : { overlay_button: options.overlayEnabled };
 
   const ui = createPageUi({
@@ -88,6 +96,10 @@ export async function setupPageUi(options: PageUiHarnessOptions = {}): Promise<P
       returnRequests.count += 1;
       return returnDelivery.next;
     },
+    answerViewerOffer: (choice) => {
+      offerChoices.push(choice);
+      return Promise.resolve(offerDelivery.next);
+    },
   });
   await flushMicrotasks();
 
@@ -103,6 +115,8 @@ export async function setupPageUi(options: PageUiHarnessOptions = {}): Promise<P
     signals,
     returnRequests,
     returnDelivery,
+    offerChoices,
+    offerDelivery,
     changeOverlaySetting(enabled) {
       stored = { overlay_button: enabled };
       for (const listener of [...storageListeners]) listener({ [ENTRY_SETTINGS_KEY]: { newValue: stored } });

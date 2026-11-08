@@ -486,9 +486,11 @@ export interface HeldVideoReport {
  * - `adopt_new_session` — режим 2: фон открывает НОВЫЙ сеанс, `begin_handoff` придёт после запуска плеера
  *   (до десятков секунд, см. `NEW_SESSION_ADOPT_INSURANCE_MS`). Не вышло — фон отпустит видео сам
  *   (`release_held_video_request`), а страховка изолированного мира — если фон умер;
- * - `release` — отпустить.
+ * - `release` — отпустить;
+ * - `ask_viewer` — режим 2 на сайте `ask` (сессия 12b): держать видео на паузе и спросить человека на
+ *   предложении поверх видео (viewer-offer-contract.ts). Срока у такого удержания нет: выбор за человеком.
  */
-export const HELD_VIDEO_REPLIES = ["adopt", "adopt_new_session", "release"] as const;
+export const HELD_VIDEO_REPLIES = ["adopt", "adopt_new_session", "release", "ask_viewer"] as const;
 export type HeldVideoReply = (typeof HELD_VIDEO_REPLIES)[number];
 
 /**

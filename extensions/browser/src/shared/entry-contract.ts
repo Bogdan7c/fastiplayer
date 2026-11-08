@@ -6,6 +6,7 @@
 //        участок 1: личный порт            участок 2: runtime.sendMessage / executeScript
 
 import type { DocumentTag, ElementKey } from "./handoff-contract.ts";
+import type { ViewerOfferChoice } from "./viewer-offer-contract.ts";
 
 /**
  * Глобал ИЗОЛИРОВАННОГО мира для `executeScript` фона: «видео под последним настоящим правым кликом».
@@ -115,6 +116,24 @@ export interface PageUiProbe {
   readonly overlay_button: PageUiRect | null;
   /** Заглушка поверх переданного видео (11a, решение 236). */
   readonly placeholder: PlaceholderProbe;
+  /** Предложение «Ask» поверх замершего видео (12b). */
+  readonly viewer_offer: ViewerOfferProbe;
+}
+
+/**
+ * Предложение «Ask» глазами стенда (12b): прямоугольники — в координатах вьюпорта своего фрейма, прочитаны с экрана.
+ * Стенд кликает по кнопкам настоящей мышью.
+ */
+export interface ViewerOfferProbe {
+  /** Изолированный мир знает предложение этого документа (MAIN сказал «встало» и ещё не «ушло»). */
+  readonly offered: boolean;
+  /** Выбор за это предложение уже ушёл. */
+  readonly answered: boolean;
+  /** Панель на экране с ненулевым размером. */
+  readonly visible: boolean;
+  readonly panel: PageUiRect | null;
+  /** Кнопки по выбору (`fastiplayer`, `here`, `always`, `never`); `null` — панели не видно. */
+  readonly buttons: Readonly<Record<ViewerOfferChoice, PageUiRect | null>> | null;
 }
 
 /**

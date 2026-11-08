@@ -10,6 +10,7 @@ import type { EntryResult } from "../../src/background/entries/entry-report-text
 import { createHeldVideoListener, type FrameSender } from "../../src/background/handoff/hand-off-command.ts";
 import { DEFAULT_AUTO_HANDOFF_SETTINGS, type AutoHandoffSettings } from "../../src/shared/auto-handoff-settings.ts";
 import { HELD_VIDEO_REPORT_KIND, type HandOffTabOutcome, type HeldVideoReply, type HeldVideoReport, type HeldVideoTrigger, type VideoCandidate, type VideoRef } from "../../src/shared/handoff-contract.ts";
+import { VIEWER_OFFER_CHOICE_KIND, type ViewerOfferChoice, type ViewerOfferChoiceMessage } from "../../src/shared/viewer-offer-contract.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 import { flushPromises } from "./support.ts";
 
@@ -30,6 +31,8 @@ interface WorldOptions {
   readonly handOffOutcome?: Promise<HandOffTabOutcome>;
   readonly activeTabs?: number[];
   readonly heldVideoReply?: HeldVideoReply;
+  /** Запись настройки отказывает (правило с предложения «Ask» не сохраняется). */
+  readonly writeFails?: boolean;
 }
 
 function createWorld(options: WorldOptions = {}) {
@@ -41,6 +44,9 @@ function createWorld(options: WorldOptions = {}) {
   const notes: string[] = [];
   const probes: number[] = [];
   const activeTabs = options.activeTabs ?? [];
+  const withdrawals: { tabId: number; frameId: number; element: number }[] = [];
+  /** Хранилище подделки: запись предложения «Ask» видна следующему чтению, как в настоящем `storage.local`. */
+  let stored: AutoHandoffSettings | "read_fails" = options.settings ?? ON;
   const dependencies: AutoHandoffDependencies = {
     handoffs: {
       heldVideo: (_tabId, _frameId, held) => {
@@ -53,16 +59,21 @@ function createWorld(options: WorldOptions = {}) {
       },
       activeTabIds: () => activeTabs,
     },
-    readSettings: () => (options.settings === "read_fails" ? Promise.reject(new Error("storage")) : Promise.resolve(options.settings ?? ON)),
+    readSettings: () => (stored === "read_fails" ? Promise.reject(new Error("storage")) : Promise.resolve(stored)),
+    writeSettings: async (settings) => {
+      if (options.writeFails === true) throw new Error("disk full");
+      stored = settings;
+    },
     describeTab: async () => ("url" in options ? { url: options.url } : { url: "https://site.example/watch" }),
     adProbe: { probe: async (tabId) => (probes.push(tabId), options.probeResult ?? "no_ad") },
     grantPlayCredit: (tabId, leaseMs) => void credits.push({ tabId, leaseMs }),
     releaseHeldVideo: (tabId, frameId, element) => void releases.push({ tabId, frameId, element }),
+    withdrawViewerOffer: (tabId, frameId, element) => void withdrawals.push({ tabId, frameId, element }),
     reporter: { report: async (tabId, result) => void reports.push({ tabId, result }) },
     note: (message) => void notes.push(message),
   };
   const autoHandoff: AutoHandoff = createAutoHandoff(dependencies);
-  return { autoHandoff, handOffCalls, heldVideoCalls, credits, releases, reports, notes, probes, activeTabs };
+  return { autoHandoff, handOffCalls, heldVideoCalls, credits, releases, reports, notes, probes, activeTabs, withdrawals, stored: () => stored };
 }
 
 describe("режим 2: передача по нажатию play", () => {
@@ -257,5 +268,110 @@ describe("что сказать человеку об исходе", () => {
       const notice = noticeOfAutoHandoffOutcome(row.outcome);
       assert.deepEqual(notice, row.speaks ? { kind: "outcome", outcome: row.outcome } : undefined, row.outcome.kind);
     }
+  });
+});
+
+describe("режим 2: предложение «Ask» (12b)", () => {
+  const ASK_SITE: AutoHandoffSettings = { ...DEFAULT_AUTO_HANDOFF_SETTINGS, site_rules: { "site.example": "ask" } };
+  const DOC = "0123456789abcdef0123456789abcdef";
+  const ASKED_FILM: VideoCandidate = { ...FILM, document: DOC };
+  const choiceOf = (choice: ViewerOfferChoice, candidate: VideoCandidate = ASKED_FILM): ViewerOfferChoiceMessage => ({
+    kind: VIEWER_OFFER_CHOICE_KIND,
+    document: candidate.document,
+    element: candidate.element,
+    choice,
+  });
+
+  /** Человек нажал play на сайте `ask`: ответ сторожу и висящее предложение. */
+  async function askedWorld(options: WorldOptions = {}) {
+    const world = createWorld({ settings: ASK_SITE, ...options });
+    assert.equal(await world.autoHandoff.heldVideo(TAB, FRAME, report(ASKED_FILM)), "ask_viewer");
+    return world;
+  }
+
+  it("сайт ask (даже при выключенном режиме): ответ ask_viewer, передачи и отпускания нет", async () => {
+    const world = await askedWorld();
+    await flushPromises();
+    assert.deepEqual(world.handOffCalls, []);
+    assert.deepEqual(world.releases, []);
+  });
+
+  it("новый сайт при unknown_site_rule ask — тоже вопрос; без звука вопроса нет", async () => {
+    const world = createWorld({ settings: { ...ON, unknown_site_rule: "ask" } });
+    assert.equal(await world.autoHandoff.heldVideo(TAB, FRAME, report(ASKED_FILM)), "ask_viewer");
+    assert.equal(await world.autoHandoff.heldVideo(TAB, FRAME, report({ ...ASKED_FILM, element: 9, muted: true })), "release");
+  });
+
+  it("«Play in Fastiplayer»: передача с точной ссылкой, правило не тронуто", async () => {
+    const world = await askedWorld();
+    assert.equal(await world.autoHandoff.viewerOfferChoice(TAB, FRAME, choiceOf("fastiplayer")), "hand_off");
+    assert.deepEqual(world.handOffCalls, [{ tabId: TAB, consent: undefined, video: ref(ASKED_FILM) }]);
+    assert.deepEqual(world.stored(), ASK_SITE);
+  });
+
+  it("«Play here»: отпустить, передачи нет, правило не тронуто", async () => {
+    const world = await askedWorld();
+    assert.equal(await world.autoHandoff.viewerOfferChoice(TAB, FRAME, choiceOf("here")), "play_here");
+    assert.deepEqual(world.handOffCalls, []);
+    assert.deepEqual(world.stored(), ASK_SITE);
+  });
+
+  it("«Always»: правило сайта always и сразу передача; «Never»: правило never и играть здесь", async () => {
+    const always = await askedWorld();
+    assert.equal(await always.autoHandoff.viewerOfferChoice(TAB, FRAME, choiceOf("always")), "hand_off");
+    assert.deepEqual((always.stored() as AutoHandoffSettings).site_rules, { "site.example": "always" });
+    assert.equal(always.handOffCalls.length, 1);
+
+    const never = await askedWorld();
+    assert.equal(await never.autoHandoff.viewerOfferChoice(TAB, FRAME, choiceOf("never")), "play_here");
+    assert.deepEqual((never.stored() as AutoHandoffSettings).site_rules, { "site.example": "never" });
+    assert.deepEqual(never.handOffCalls, []);
+  });
+
+  it("правило родителя меняется там, где записано; новый сайт без правила получает своё", async () => {
+    const parent = await askedWorld({ settings: { ...DEFAULT_AUTO_HANDOFF_SETTINGS, site_rules: { "example.com": "ask" } }, url: "https://www.video.example.com/w" });
+    await parent.autoHandoff.viewerOfferChoice(TAB, FRAME, choiceOf("never"));
+    assert.deepEqual((parent.stored() as AutoHandoffSettings).site_rules, { "example.com": "never" });
+
+    const fresh = await askedWorld({ settings: { ...ON, unknown_site_rule: "ask" }, url: "https://www.video.example.com/w" });
+    await fresh.autoHandoff.viewerOfferChoice(TAB, FRAME, choiceOf("always"));
+    assert.deepEqual((fresh.stored() as AutoHandoffSettings).site_rules, { "video.example.com": "always" });
+  });
+
+  it("сбой записи правила действие не отменяет, а пишет причину в журнал", async () => {
+    const world = await askedWorld({ writeFails: true });
+    assert.equal(await world.autoHandoff.viewerOfferChoice(TAB, FRAME, choiceOf("always")), "hand_off");
+    assert.equal(world.handOffCalls.length, 1);
+    assert.deepEqual(world.stored(), ASK_SITE);
+    assert.ok(world.notes.some((note) => note.includes("could not save")));
+  });
+
+  it("выбор не того видео или не того фрейма — no_offer: ничего не пишется и не передаётся", async () => {
+    const world = await askedWorld({ settings: { ...ON, unknown_site_rule: "ask" } });
+    assert.equal(await world.autoHandoff.viewerOfferChoice(TAB, FRAME, choiceOf("always", { ...ASKED_FILM, element: 77 })), "no_offer");
+    assert.equal(await world.autoHandoff.viewerOfferChoice(TAB, FRAME + 1, choiceOf("always")), "no_offer");
+    assert.deepEqual(world.handOffCalls, []);
+    assert.deepEqual((world.stored() as AutoHandoffSettings).site_rules, {});
+    // Само предложение от чужих выборов не пропало: настоящий выбор проходит.
+    assert.equal(await world.autoHandoff.viewerOfferChoice(TAB, FRAME, choiceOf("here")), "play_here");
+  });
+
+  it("после сна фона (памяти нет) выбор принимается, только пока сайт вкладки и правда ask", async () => {
+    const asleep = createWorld({ settings: ASK_SITE });
+    assert.equal(await asleep.autoHandoff.viewerOfferChoice(TAB, FRAME, choiceOf("fastiplayer")), "hand_off");
+    const notAsk = createWorld({ settings: ON });
+    assert.equal(await notAsk.autoHandoff.viewerOfferChoice(TAB, FRAME, choiceOf("always")), "no_offer");
+    assert.deepEqual((notAsk.stored() as AutoHandoffSettings).site_rules, {});
+    assert.deepEqual(notAsk.handOffCalls, []);
+  });
+
+  it("новое предложение на той же вкладке снимает прежнее: его видео остаётся на паузе, выбор по нему уже не принят", async () => {
+    const world = await askedWorld();
+    const second: VideoCandidate = { ...ASKED_FILM, element: 8 };
+    assert.equal(await world.autoHandoff.heldVideo(TAB, FRAME, report(second)), "ask_viewer");
+    assert.deepEqual(world.withdrawals, [{ tabId: TAB, frameId: FRAME, element: ASKED_FILM.element }]);
+    assert.equal(await world.autoHandoff.viewerOfferChoice(TAB, FRAME, choiceOf("fastiplayer")), "no_offer");
+    assert.equal(await world.autoHandoff.viewerOfferChoice(TAB, FRAME, choiceOf("fastiplayer", second)), "hand_off");
+    assert.deepEqual(world.handOffCalls, [{ tabId: TAB, consent: undefined, video: ref(second) }]);
   });
 });

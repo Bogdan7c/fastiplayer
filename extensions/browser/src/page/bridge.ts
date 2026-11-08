@@ -24,6 +24,7 @@ import { ViewerPlayWatch } from "./auto-handoff/viewer-play-watch.ts";
 import { ElementRegistry, type RegistryWindow } from "./element-registry.ts";
 import { HandoffController } from "./handoff-controller.ts";
 import { captureAnchorEventOriginals, HandedOffVideoAnchor } from "./handed-off-video-anchor.ts";
+import { ViewerOfferAnchor, type ViewerOfferSignals } from "./viewer-offer-anchor.ts";
 import { pagePlayerFailureWatchStarterFor } from "./page-player-failure-watch.ts";
 import { NextVideoGuard } from "./next-video-guard.ts";
 import type { HeldShadowStarter, PlayWatchSeam, ShadowStarter } from "./handoff-seam.ts";
@@ -35,7 +36,7 @@ import { MseTracker } from "./mse-tracker.ts";
 import { createOddityReporter, type DebugSink } from "./oddity-reporter.ts";
 import { captureChannelOriginals, captureRendezvousOriginals, listenForPageChannel, type ChannelOriginals, type ChannelWindow, type PagePort, type RendezvousWindow } from "./page-channel.ts";
 import { VideoCandidates } from "./video-candidates.ts";
-import { isAutoHandoffPageCommand, isPointerQuery } from "./page-command-guard.ts";
+import { isAutoHandoffPageCommand, isPointerQuery, isViewerOfferPageCommand } from "./page-command-guard.ts";
 import { capturePointerReaders, PointerVideo } from "./pointer-video.ts";
 import { installWorkerCapture, type WorkerCaptureWindow, type WorkerChannelExtension, type WorkerHookSource, type WorkerMediaSources } from "./worker-capture/index.ts";
 
@@ -130,6 +131,7 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
   // Ввод человека для режима 2 (12a): слушатели встают на document_start, раньше скриптов страницы.
   const viewerActivation = installViewerActivation(win, channel, dependencies.now, reportOddity);
   const viewerPlay = new ViewerPlayWatch({ activation: viewerActivation, now: dependencies.now });
+  const viewerOffer = createViewerOfferAnchor(win, dom, reportOddity);
   const nextVideo = new NextVideoGuard({
     dom,
     viewerPlay,
@@ -138,6 +140,7 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
     startHeldShadow: dependencies.startHeldShadow,
     seam: dependencies.playWatch,
     isProtected: (element) => drmMarks.isProtected(element),
+    viewerOffer: viewerOffer ?? NO_VIEWER_OFFER_SIGNALS,
     send: (event) => controller.sendToBackground(event),
     now: dependencies.now,
     reportOddity,
@@ -191,6 +194,13 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
         // Имя события якоря (11a): местное дело миров, контроллеру и фону не нужно.
         if (message.kind === "watch_handed_off_video") {
           anchor?.setEventName(message.event_name);
+          viewerOffer?.setEventName(message.event_name);
+          return;
+        }
+        // Предложение «Ask» (12b): держать или снять задержанное видео — дело сторожа.
+        if (isViewerOfferPageCommand(message)) {
+          if (message.kind === "hold_for_viewer_offer") nextVideo.holdForViewerOffer(message.element);
+          else nextVideo.withdrawViewerOffer(message.element);
           return;
         }
         // Охрана и кредит клика режима 2 (12a): дело сторожа, контроллеру передачи они не нужны.
@@ -214,6 +224,22 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
     reportOddity,
   );
   return { hooked, tracker, controller, registry, workerMediaSources, drmMarks, pointerVideo, anchor, workersWrapped: workerCapture.wrapped, documentTag };
+}
+
+/**
+ * Без оригиналов событий изолированный мир о предложении не узнает: сторож тогда сразу отпускает видео
+ * (играть здесь), а не держит его на паузе без панели.
+ */
+const NO_VIEWER_OFFER_SIGNALS: ViewerOfferSignals = { offerStood: () => false, offerEnded: () => {} };
+
+/** Сигнал предложения «Ask» на оригиналах, снятых сейчас; нет оригиналов — `null`. */
+function createViewerOfferAnchor(win: PageBridgeWindow, dom: DomReaders, reportOddity: (message: string) => void): ViewerOfferAnchor | null {
+  try {
+    return new ViewerOfferAnchor({ events: captureAnchorEventOriginals(win), ownWindow: win, isConnected: (element) => dom.isConnected(element), reportOddity });
+  } catch {
+    reportOddity("viewer offer anchor is unavailable");
+    return null;
+  }
 }
 
 /** Якорь переданного видео на оригиналах, снятых сейчас (document_start); нет оригиналов — `null`, заглушки нет. */

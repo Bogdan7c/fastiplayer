@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 
 use super::super::capture::{FRAMES_TIMEOUT, MIN_PRESENTED_FRAMES, judge_early_report};
 use super::super::context::{ScenarioError, Stand};
-use super::super::entries::return_hand::{HandOpened, PlaceholderView, ReturnHand, open_hand};
+use super::super::entries::return_hand::{
+    HandOpened, OfferChoice, PlaceholderView, ReturnHand, ViewerOfferView, open_hand,
+};
 use super::super::evidence::{
     FORBIDDEN_PLAYER_LINES, SESSION_GRANTED_TIMEOUT, format_browser_log, page_failures,
     unexpected_player_lines,
@@ -19,7 +21,7 @@ use super::facts::{
     PLAY_CLICKED_LINE, StateFacts, WindowFacts, parse_state, parse_window, state_needle,
     window_needle,
 };
-use super::settings::{SettingsPreset, site_key_of_origin, write_settings};
+use super::settings::{SettingsPreset, read_stored_settings, site_key_of_origin, write_settings};
 use crate::browsers::BrowserKind;
 use crate::desktop_input::Point;
 use crate::environment::BenchEnvironment;
@@ -38,6 +40,13 @@ const PLACEHOLDER_GONE_TIMEOUT: Duration = Duration::from_secs(10);
 const PLACEHOLDER_POLL: Duration = Duration::from_millis(250);
 /// Сколько ждём, пока окно плеера станет управляемым.
 const CONTROLLABLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Сколько ждём предложение «Ask» после клика по Play: фон спрашивает читателей, MAIN-мир держит
+/// видео, слой рисует панель и меряет кнопки.
+const OFFER_SHOWN_TIMEOUT: Duration = Duration::from_secs(15);
+/// Сколько ждём, что предложение ушло с экрана после выбора.
+const OFFER_GONE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Сколько ждём, пока выбор человека доедет до хранилища экстеншена.
+const STORED_SETTINGS_TIMEOUT: Duration = Duration::from_secs(5);
 /// Шаг опроса журнала страницы и посредника.
 const POLL_STEP: Duration = Duration::from_millis(150);
 /// Сколько ждём строку журнала страницы, которая могла прийти позже подтверждения своей команды
@@ -341,6 +350,88 @@ impl<'a> AutoSession<'a, '_> {
                 return Err(format!(
                     "the placeholder is still there {PLACEHOLDER_GONE_TIMEOUT:?} later: {last:?}"
                 ));
+            }
+            std::thread::sleep(PLACEHOLDER_POLL);
+        }
+    }
+
+    // --- предложение «Ask» -----------------------------------------------------------------------
+
+    /// Предложение «Ask» на вкладке `prefix` глазами зонда слоя экстеншена.
+    pub(super) fn viewer_offer(&mut self, prefix: &str) -> Result<ViewerOfferView, String> {
+        self.hand.viewer_offer_on(prefix)
+    }
+
+    /// Ждёт предложение целиком: панель на экране, все четыре кнопки на местах, выбора ещё не было.
+    pub(super) fn wait_offer_shown(&mut self, prefix: &str) -> Result<ViewerOfferView, String> {
+        let deadline = Instant::now() + OFFER_SHOWN_TIMEOUT;
+        loop {
+            let last = self.hand.viewer_offer_on(prefix);
+            if let Ok(view) = &last
+                && view.is_complete()
+                && !view.answered
+            {
+                return Ok(*view);
+            }
+            if Instant::now() >= deadline {
+                self.hand.screenshot("no-offer");
+                return Err(format!(
+                    "no offer with four buttons within {OFFER_SHOWN_TIMEOUT:?}; last probe: {last:?}"
+                ));
+            }
+            std::thread::sleep(PLACEHOLDER_POLL);
+        }
+    }
+
+    /// Ждёт, что панель предложения ушла с экрана (человек выбрал).
+    pub(super) fn wait_offer_gone(&mut self, prefix: &str) -> Result<(), String> {
+        let deadline = Instant::now() + OFFER_GONE_TIMEOUT;
+        loop {
+            let last = self.hand.viewer_offer_on(prefix);
+            if let Ok(view) = &last
+                && !view.visible
+            {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                // Снимок экрана: видно, что стоит поверх кнопки и куда пришёлся клик.
+                self.hand.screenshot("offer-not-gone");
+                return Err(format!(
+                    "the offer panel is still on screen {OFFER_GONE_TIMEOUT:?} after the choice: {last:?}"
+                ));
+            }
+            std::thread::sleep(PLACEHOLDER_POLL);
+        }
+    }
+
+    /// Настоящий клик по кнопке предложения: прямоугольник — свежий снимок зонда, экран — свежая калибровка.
+    pub(super) fn click_offer_button(
+        &mut self,
+        run: &RunId,
+        prefix: &str,
+        choice: OfferChoice,
+    ) -> Result<(), String> {
+        let view = self.hand.viewer_offer_on(prefix)?;
+        let button = view
+            .button(choice)
+            .ok_or_else(|| format!("the offer has no {choice:?} button: {view:?}"))?;
+        let place = self.hand.locate(run).map_err(|error| error.to_string())?;
+        // Центр кнопки, как целится человек. Firefox ловит свой значок «Картинка в картинке» над видео
+        // раньше страницы, поэтому клик в зону значка открывает PiP, а не нажимает кнопку панели.
+        self.click_point(place.screen_point_in(button, 0.5, 0.5))
+    }
+
+    /// Ждёт, пока настройка режима 2 в хранилище станет равна `expected` (запись выбора человека идёт
+    /// асинхронно); возвращает последнее прочитанное значение.
+    pub(super) fn settings_settle_to(
+        &mut self,
+        expected: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let deadline = Instant::now() + STORED_SETTINGS_TIMEOUT;
+        loop {
+            let stored = read_stored_settings(self.hand.run().browser.as_mut())?;
+            if &stored == expected || Instant::now() >= deadline {
+                return Ok(stored);
             }
             std::thread::sleep(PLACEHOLDER_POLL);
         }

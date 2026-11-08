@@ -60,7 +60,9 @@ export function createBackgroundLink(): BackgroundLink {
     async findActiveTab() {
       // Права на сайты (host_permissions) дают заголовок вкладки без права `tabs`; у страниц браузера он пуст.
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      return tab?.id === undefined ? undefined : { id: tab.id, title: tab.title ?? "" };
+      if (tab?.id === undefined) return undefined;
+      // Адрес отдаётся при правах на сайт; без них поле пусто, и строка правила сайта не показывается.
+      return { id: tab.id, title: tab.title ?? "", ...(tab.url === undefined || tab.url === "" ? {} : { url: tab.url }) };
     },
     async surveyTab(tabId) {
       const reply: unknown = await chrome.runtime.sendMessage({ kind: SURVEY_TAB_KIND, tab_id: tabId });

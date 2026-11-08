@@ -18,6 +18,10 @@
 // 10. короче порога, читатели органов видят рекламу    -> hand_off;
 // 11. короче порога, рекламы нет                       -> release_with_credit: ролик отпускаем, а фильм, который сайт
 //                                                         запустит сам после него, засчитается запуском человека.
+//
+// Политика сайта `ask` (сессия 12b, решения 255–257) правил видео не отменяет: сначала те же правила, и только
+// там, где видео ушло бы в плеер (`hand_off`), решение становится `ask_viewer` — видео замирает под тенью, а
+// человек выбирает на предложении поверх него. Отпускаемое (без звука, короткий ролик) не спрашивается вовсе.
 
 import type { ClassifiedVideo } from "../handoff/video-choice.ts";
 import { MAX_PLAY_CREDIT_LEASE_MS } from "../../shared/auto-handoff-contract.ts";
@@ -49,6 +53,8 @@ export type HandOffReason = "duration_unknown" | "long_enough" | "known_ad" | "a
 
 export type ViewerPlayDecision =
   | { readonly kind: "hand_off"; readonly reason: HandOffReason }
+  /** Видео ушло бы в плеер, но сайт помечен `ask`: держать видео и спросить человека. */
+  | { readonly kind: "ask_viewer"; readonly reason: HandOffReason }
   /** Ролик короче порога и не опознан как реклама: сначала проба органов рекламы на вкладке. */
   | { readonly kind: "probe_ads_first" }
   /** Ролик отпускается, а вкладка получает «кредит клика» на `lease_ms` для фильма, который сайт запустит сам. */
@@ -92,10 +98,21 @@ const VIDEO_RULES: readonly Rule[] = [verdictRule, mutedRule, hiddenRule, durati
 export function decideViewerPlay(input: ViewerPlayInput): ViewerPlayDecision {
   if (input.policy.kind === "skip") return release("site_skipped");
   if (input.held === undefined) return release("no_held_video");
+  const decision = decideByVideoRules(input, input.held);
+  return input.policy.kind === "ask" ? askInsteadOfHandOff(decision) : decision;
+}
+
+/** Правила видео по порядку; последнее отвечает всегда. */
+function decideByVideoRules(input: ViewerPlayInput, held: ClassifiedVideo): ViewerPlayDecision {
   for (const rule of VIDEO_RULES) {
-    const decision = rule(input, input.held);
+    const decision = rule(input, held);
     if (decision !== undefined) return decision;
   }
   // Последнее правило отвечает всегда; сюда не дойти.
   return release("not_a_film");
+}
+
+/** Сайт `ask`: «передать» становится «спросить», остальное (проба рекламы, отпускание) остаётся как есть. */
+function askInsteadOfHandOff(decision: ViewerPlayDecision): ViewerPlayDecision {
+  return decision.kind === "hand_off" ? { kind: "ask_viewer", reason: decision.reason } : decision;
 }

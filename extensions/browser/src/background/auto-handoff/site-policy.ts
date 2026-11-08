@@ -5,10 +5,10 @@
 // `POLICY_STEPS`: переставить правило — переставить строку.
 // 1. не http(s)                      -> пропустить (служебные страницы, файлы);
 // 2. свой стоп-лист человека         -> пропустить (слово человека сильнее его же правила сайта);
-// 3. своё правило сайта              -> always: передавать, never: пропустить, ask: пропустить (спросить — сессия 12b);
+// 3. своё правило сайта              -> always: передавать, never: пропустить, ask: спросить человека (12b);
 //    правило ищется от точного хоста вверх по родителям: правило для example.com действует на video.example.com;
 // 4. встроенный стоп-лист            -> пропустить (одобрен владельцем, но слабее своего правила `always`);
-// 5. режим включён                   -> `unknown_site_rule`: always — передавать, ask — пропустить (до 12b);
+// 5. режим включён                   -> `unknown_site_rule`: always — передавать, ask — спросить человека;
 // 6. режим выключен                  -> пропустить.
 
 import type { AutoHandoffSettings, SiteRule } from "../../shared/auto-handoff-settings.ts";
@@ -19,32 +19,50 @@ export type SitePolicySkipReason =
   | "not_web_page"
   | "own_stop_list"
   | "site_never"
-  /** Правило `ask`: спросить человека на заглушке умеет только сессия 12b; пока ведёт себя как «не сейчас». */
-  | "site_ask_pending_12b"
   | "built_in_stop_list"
   | "mode_off";
 
-export type SitePolicy = { readonly kind: "hand_off" } | { readonly kind: "skip"; readonly reason: SitePolicySkipReason };
+/**
+ * Решение по сайту:
+ * - `hand_off` — передавать (дальше судят фильтры видео);
+ * - `ask` — видео, которое прошло бы фильтры, не передаётся само: человека спрашивают на предложении поверх
+ *   видео (сессия 12b, решения 255–257);
+ * - `skip` — режим 2 на этом сайте молчит.
+ */
+export type SitePolicy = { readonly kind: "hand_off" } | { readonly kind: "ask" } | { readonly kind: "skip"; readonly reason: SitePolicySkipReason };
 
 const HAND_OFF: SitePolicy = { kind: "hand_off" };
+const ASK: SitePolicy = { kind: "ask" };
 const skip = (reason: SitePolicySkipReason): SitePolicy => ({ kind: "skip", reason });
 
 /** Шаг политики: решение или `undefined` («это не моё дело, дальше»). */
 type PolicyStep = (address: WebAddress, settings: AutoHandoffSettings) => SitePolicy | undefined;
 
+/** Найденное своё правило и ключ, на котором оно записано (точный хост или один из родителей). */
+export interface SiteRuleEntry {
+  readonly siteKey: string;
+  readonly rule: SiteRule;
+}
+
 /**
  * Своё правило сайта: от точного хоста вверх по родителям (`a.b.example.com` -> `b.example.com` -> `example.com`).
- * До голого домена верхнего уровня не поднимаемся: правило на `com` бессмысленно.
+ * До голого домена верхнего уровня не поднимаемся: правило на `com` бессмысленно. Ключ нужен попапу: правило,
+ * найденное у родителя, человек меняет там же, где оно записано.
  */
-export function siteRuleFor(siteKey: string, rules: Readonly<Record<string, SiteRule>>): SiteRule | undefined {
+export function siteRuleEntryFor(siteKey: string, rules: Readonly<Record<string, SiteRule>>): SiteRuleEntry | undefined {
   let candidate = siteKey;
   for (;;) {
     const rule = Object.hasOwn(rules, candidate) ? rules[candidate] : undefined;
-    if (rule !== undefined) return rule;
+    if (rule !== undefined) return { siteKey: candidate, rule };
     const dot = candidate.indexOf(".");
     if (dot < 0 || candidate.indexOf(".", dot + 1) < 0) return undefined;
     candidate = candidate.slice(dot + 1);
   }
+}
+
+/** Только само правило (см. `siteRuleEntryFor`). */
+export function siteRuleFor(siteKey: string, rules: Readonly<Record<string, SiteRule>>): SiteRule | undefined {
+  return siteRuleEntryFor(siteKey, rules)?.rule;
 }
 
 const ownStopListStep: PolicyStep = (address, settings) => (addressIsInStopList(address, settings.own_stop_list) ? skip("own_stop_list") : undefined);
@@ -56,7 +74,7 @@ const ownSiteRuleStep: PolicyStep = (address, settings) => {
     case "never":
       return skip("site_never");
     case "ask":
-      return skip("site_ask_pending_12b");
+      return ASK;
     case undefined:
       return undefined;
   }
@@ -66,7 +84,7 @@ const builtInStopListStep: PolicyStep = (address) => (addressIsInStopList(addres
 
 const generalModeStep: PolicyStep = (_address, settings) => {
   if (!settings.enabled) return skip("mode_off");
-  return settings.unknown_site_rule === "always" ? HAND_OFF : skip("site_ask_pending_12b");
+  return settings.unknown_site_rule === "always" ? HAND_OFF : ASK;
 };
 
 /** Порядок шагов; последний всегда отвечает. */

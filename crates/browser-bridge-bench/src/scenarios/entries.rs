@@ -39,6 +39,7 @@ mod report_rows;
 pub(super) mod return_hand;
 mod robot;
 mod start_rows;
+mod viewer_offer_probe;
 
 use std::time::Instant;
 

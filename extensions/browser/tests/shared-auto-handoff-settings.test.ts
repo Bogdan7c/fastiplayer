@@ -105,11 +105,12 @@ describe("чтение, запись и включение охраны", () => 
     assert.equal(notes.length, 1);
   });
 
-  it("wantsAutoHandoffWatch: включён или есть правило always; ask и never охраны не включают", () => {
+  it("wantsAutoHandoffWatch: включён или есть правило always/ask; одни never охраны не включают", () => {
     const base = DEFAULT_AUTO_HANDOFF_SETTINGS;
     assert.equal(wantsAutoHandoffWatch(base), false);
     assert.equal(wantsAutoHandoffWatch({ ...base, enabled: true }), true);
     assert.equal(wantsAutoHandoffWatch({ ...base, site_rules: { "a.com": "always" } }), true);
-    assert.equal(wantsAutoHandoffWatch({ ...base, site_rules: { "a.com": "ask", "b.com": "never" } }), false);
+    assert.equal(wantsAutoHandoffWatch({ ...base, site_rules: { "a.com": "ask", "b.com": "never" } }), true);
+    assert.equal(wantsAutoHandoffWatch({ ...base, site_rules: { "b.com": "never" } }), false);
   });
 });

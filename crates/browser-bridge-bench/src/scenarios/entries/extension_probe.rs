@@ -4,6 +4,7 @@
 
 use serde_json::Value;
 
+use super::viewer_offer_probe::{ViewerOfferState, parse_viewer_offer};
 use crate::browsers::{BrowserError, BrowserUnderTest};
 
 /// Имя глобала изолированного мира с зондом слоя страницы (`src/shared/entry-contract.ts`).
@@ -52,6 +53,8 @@ pub(super) struct PageUiState {
     pub(super) overlay_button: Option<ButtonRect>,
     /// Заглушка фрейма, где передача идёт (или любая показанная); без передачи — пустая.
     pub(super) placeholder: PlaceholderState,
+    /// Предложение «Ask» (12b); без предложения — пустое.
+    pub(super) viewer_offer: ViewerOfferState,
 }
 
 /// Настройки входов, которые робот ставит экстеншену.
@@ -189,12 +192,19 @@ pub(super) fn parse_page_ui(text: &str) -> Result<PageUiState, String> {
                 state.placeholder = parsed;
             }
         }
+        // Предложение «Ask» (12b): зонд старой сборки без поля — не ошибка; фрейм с предложением главнее.
+        if let Some(offer) = probe.get("viewer_offer").filter(|value| !value.is_null()) {
+            let parsed = parse_viewer_offer(offer)?;
+            if parsed.offered || parsed.visible {
+                state.viewer_offer = parsed;
+            }
+        }
     }
     Ok(state)
 }
 
 /// Прямоугольник зонда; `None` — поля нет или оно `null`, неполный прямоугольник — ошибка.
-fn parse_rect(field: Option<&Value>) -> Result<Option<ButtonRect>, String> {
+pub(super) fn parse_rect(field: Option<&Value>) -> Result<Option<ButtonRect>, String> {
     let Some(rect) = field.filter(|rect| !rect.is_null()) else {
         return Ok(None);
     };
@@ -331,6 +341,21 @@ mod tests {
         .expect("parses");
         assert_eq!(idle.placeholder, PlaceholderState::default());
         assert_eq!(idle.banner.as_deref(), Some("opened"));
+    }
+
+    #[test]
+    fn the_viewer_offer_comes_from_the_frame_that_shows_it() {
+        let state = parse_page_ui(
+            r#"{"frames":[{"banner":null,"overlay_button":null,"viewer_offer":{"offered":true,"answered":false,"visible":true,"panel":{"left":5,"top":6,"width":200,"height":90},"buttons":{"fastiplayer":{"left":1,"top":2,"width":9,"height":9},"here":null,"always":null,"never":null}}},{"banner":null,"overlay_button":null,"viewer_offer":{"offered":false,"answered":false,"visible":false,"panel":null,"buttons":null}}]}"#,
+        )
+        .expect("parses");
+        assert!(state.viewer_offer.offered && state.viewer_offer.visible);
+        assert_eq!(state.viewer_offer.panel.map(|rect| rect.width), Some(200.0));
+        assert!(state.viewer_offer.buttons.expect("buttons").here.is_none());
+        let idle =
+            parse_page_ui(r#"{"frames":[{"banner":null,"overlay_button":null}]}"#).expect("parses");
+        assert_eq!(idle.viewer_offer, ViewerOfferState::default());
+        assert!(parse_page_ui(r#"{"frames":[{"viewer_offer":{"offered":true}}]}"#).is_err());
     }
 
     #[test]

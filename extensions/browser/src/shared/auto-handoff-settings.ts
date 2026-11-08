@@ -8,7 +8,7 @@ import type { KeyValueStore } from "./codec-storage.ts";
  * Правило сайта:
  * - `always` — нажал play, и видео уходит в плеер (по фильтрам: жест, звук, длина);
  * - `never` — на этом сайте режим 2 не срабатывает никогда;
- * - `ask` — спросить на заглушке (предложение — сессия 12b; до неё ведёт себя как `never`).
+ * - `ask` — видео замирает, а поверх него предложение «Play in Fastiplayer / Play here» (сессия 12b).
  */
 export const SITE_RULES = ["always", "never", "ask"] as const;
 export type SiteRule = (typeof SITE_RULES)[number];
@@ -175,9 +175,9 @@ export async function readAutoHandoffSettingsOrDefaults(store: KeyValueStore, no
 
 /**
  * Нужна ли охрана на страницах вообще (изолированный мир решает это без фона и без адреса вкладки).
- * Режим включён — да. Выключен, но какой-то сайт помечен `always` — тоже да: какой это сайт, судит фон, он
- * один знает адрес вкладки. `ask` до сессии 12b охраны не включает: спросить пока нечем.
+ * Режим включён — да. Выключен, но какой-то сайт помечен `always` или `ask` — тоже да: своё правило сайта
+ * действует и при выключенном режиме, а какой это сайт, судит фон — он один знает адрес вкладки.
  */
 export function wantsAutoHandoffWatch(settings: AutoHandoffSettings): boolean {
-  return settings.enabled || Object.values(settings.site_rules).includes("always");
+  return settings.enabled || Object.values(settings.site_rules).some((rule) => rule !== "never");
 }

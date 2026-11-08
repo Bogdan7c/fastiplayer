@@ -36,8 +36,34 @@ export function createFakeActivation(): FakeActivation {
   };
 }
 
-/** Страница и настоящая тень вокруг сторожа. */
-export function setupGuard() {
+/** Сигнал предложения «Ask» под управлением теста: что встало, сколько раз ушло, принял ли изолированный мир. */
+export interface FakeViewerOfferSignals {
+  readonly stood: object[];
+  ended: number;
+  /** `false` — изолированный мир о предложении не узнал (имени нет, элемент вне документа). */
+  accepts: boolean;
+  offerStood(element: object): boolean;
+  offerEnded(): void;
+}
+
+function createFakeViewerOfferSignals(): FakeViewerOfferSignals {
+  return {
+    stood: [],
+    ended: 0,
+    accepts: true,
+    offerStood(element) {
+      if (!this.accepts) return false;
+      this.stood.push(element);
+      return true;
+    },
+    offerEnded() {
+      this.ended += 1;
+    },
+  };
+}
+
+/** Страница и настоящая тень вокруг сторожа. `collectOddities` — копить странности вместо провала теста. */
+export function setupGuard(options: { readonly collectOddities?: boolean } = {}) {
   const harness: ShadowHarness = createShadowHarness();
   const sent: PageEvent[] = [];
   const videos: FakeVideo[] = [];
@@ -73,6 +99,8 @@ export function setupGuard() {
       visible_area_px: 400_000,
     }));
   const activation = createFakeActivation();
+  const viewerOffer = createFakeViewerOfferSignals();
+  const oddities: string[] = [];
   const viewerPlay = new ViewerPlayWatch({ activation, now: () => harness.clock.nowMs });
   const guard = new NextVideoGuard({
     dom,
@@ -90,9 +118,10 @@ export function setupGuard() {
     startHeldShadow: heldShadowStarterFor(environment),
     seam: playWatchSeamFor(environment),
     isProtected: (element) => protectedVideos.has(element),
+    viewerOffer,
     send: (event) => void sent.push(event),
     now: () => harness.clock.nowMs,
-    reportOddity: (line) => assert.fail(`oddity: ${line}`),
+    reportOddity: (line) => (options.collectOddities === true ? void oddities.push(line) : assert.fail(`oddity: ${line}`)),
     documentEvents: harness.dom.window,
   });
   const addVideo = (configure: (video: FakeVideo) => void = () => {}): FakeVideo => {
@@ -101,7 +130,7 @@ export function setupGuard() {
     videos.push(video);
     return video;
   };
-  return { harness, guard, sent, addVideo, sources, protectedVideos, keyOf, activation, viewerPlay, mediaSessionCalls: mediaSession.calls };
+  return { harness, guard, sent, addVideo, sources, protectedVideos, keyOf, activation, viewerPlay, viewerOffer, oddities, mediaSessionCalls: mediaSession.calls };
 }
 
 /** Страница зовёт `play()` как обычно: через прототип с нашими переопределениями. */

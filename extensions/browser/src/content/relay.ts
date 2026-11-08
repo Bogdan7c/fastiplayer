@@ -20,7 +20,9 @@
 //   передачи и рождается здесь, а не в MAIN-мире, поэтому страница подделать её не может;
 // - тем, что документ говорит о себе сам: имя хоста и происхождение читаются здесь, в изолированном
 //   мире, а не берутся на веру из MAIN-мира. От них зависят проверка адреса (решение 199) и Referer
-//   (решение 202), поэтому поддельное значение страницы до фона не доходит.
+//   (решение 202), поэтому поддельное значение страницы до фона не доходит;
+// - предложением «Ask» (сессия 12b): ответ фона `ask_viewer` и выбор человека ведёт `viewer-offer-relay.ts`,
+//   здесь — только точка, где ответ на донесение уходит туда.
 // Сам ничего не решает о сеансе: нумерация поколений, очередь и плеер — в фоне.
 
 import type { AutoHandoffPageCommand, AutoHandoffWatchState } from "../shared/auto-handoff-contract.ts";
@@ -48,6 +50,8 @@ import { parseRightClickedReply, parseVideoAtPointReply } from "../shared/entry-
 import { parseCandidatesReply, parseHeldVideoReply, parsePageEvent } from "../shared/page-message-validation.ts";
 import { createTokenBucket, type MillisecondClock } from "../shared/token-bucket.ts";
 import { createPageEventBudget, type PageEventBudget, type PageEventBudgetParameters } from "./page-event-budget.ts";
+import type { ViewerOfferChoice, ViewerOfferChoiceMessage, ViewerOfferPageCommand } from "../shared/viewer-offer-contract.ts";
+import { createViewerOfferRelay, type ViewerOfferDelivery } from "./viewer-offer-relay.ts";
 
 /**
  * Сколько ждём ответ MAIN-мира на `describe_candidates`. MAIN-мир отвечает синхронно из своего
@@ -141,6 +145,10 @@ export interface ContentRelay {
    * настоящий клик человека — это проверяет заглушка (`isTrusted`).
    */
   requestViewerReturn(): ViewerReturnDelivery;
+  /** Человек нажал кнопку предложения «Ask» (12b). Звать только на настоящий клик — это проверяет панель. */
+  answerViewerOffer(choice: ViewerOfferChoice): Promise<ViewerOfferDelivery>;
+  /** Фон просит снять предложение с этого элемента (на вкладке встало новое). */
+  withdrawViewerOffer(element: ElementKey): void;
   counters(): RelayCounters;
 }
 
@@ -154,9 +162,11 @@ export type ViewerReturnDelivery = "sent" | "no_handoff" | "port_failed";
 
 export interface RelayDependencies {
   /** Отправка MAIN-миру по личному порту участка 1. */
-  readonly sendToPage: (message: PageCommand | NextVideoCommand | AutoHandoffPageCommand | DescribeCandidatesQuery | PointerQuery) => void;
+  readonly sendToPage: (message: PageCommand | NextVideoCommand | AutoHandoffPageCommand | ViewerOfferPageCommand | DescribeCandidatesQuery | PointerQuery) => void;
   /** Донесение фону о задержанном видео; его ответ решает судьбу видео. */
   readonly reportHeldVideo: (report: HeldVideoReport) => Promise<HeldVideoReply>;
+  /** Выбор человека на предложении «Ask» фону (12b); ответ проверяет `viewer-offer-relay.ts`. */
+  readonly sendViewerOfferChoice: (message: ViewerOfferChoiceMessage) => Promise<unknown>;
   readonly timers: RelayTimers;
   /** Одна строка диагностики за всю жизнь документа (первый мусор): без спама. */
   readonly debugOnce: (message: string) => void;
@@ -229,6 +239,12 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
   // Что изолированный мир в последний раз сказал MAIN-миру про охрану режима 2; до первой команды — `off`.
   let autoHandoffWatch: AutoHandoffWatchState = "off";
   const heldReports = createTokenBucket(HELD_VIDEO_REPORTS_PER_SECOND, dependencies.now);
+  const viewerOffer = createViewerOfferRelay({
+    sendToPage,
+    sendChoice: dependencies.sendViewerOfferChoice,
+    timers,
+    note: (message) => dependencies.debugOnce(`fastiplayer bridge: ${message}`),
+  });
 
   function rejectPageMessage(): void {
     rejectedPageMessages += 1;
@@ -452,6 +468,15 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
         release();
         return;
       }
+      // Сайт `ask` (12b): видео держится под предложением без срока — выбор за человеком (решение 256).
+      // Спросить можно только о запуске зрителя: другое задержанное видео сторож под предложение не возьмёт и
+      // осталось бы под тенью навсегда.
+      if (reply === "ask_viewer") {
+        const document = event.candidates.find((candidate) => candidate.element === event.element)?.document;
+        if (document === undefined || event.trigger !== "viewer_play") release();
+        else viewerOffer.offerStood(event.element, document);
+        return;
+      }
       // Фон взял видео, но мог умереть до `begin_handoff`. Забранное видео этой командой не отпустить:
       // для него она ничего не значит, поэтому страховка ставится всегда. Новый сеанс (режим 2) стартует долго.
       timers.setTimeout(release, reply === "adopt_new_session" ? NEW_SESSION_ADOPT_INSURANCE_MS : HELD_VIDEO_REPLY_TIMEOUT_MS);
@@ -579,6 +604,8 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
     rightClickedVideo,
     videoAtPoint,
     requestViewerReturn,
+    answerViewerOffer: (choice) => viewerOffer.answer(choice),
+    withdrawViewerOffer: (element) => viewerOffer.withdraw(element),
     counters: () => ({ rejectedPageMessages, undeliverablePageEvents, rejectedBackgroundMessages, droppedFloodEvents }),
   };
 }

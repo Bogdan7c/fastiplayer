@@ -220,6 +220,7 @@ describe("потолок записей журнала", () => {
     const relay = createContentRelay({
       sendToPage: () => {},
       reportHeldVideo: () => Promise.resolve("release"),
+      sendViewerOfferChoice: () => Promise.reject(new Error("the viewer offer is not used here")),
       timers: { setTimeout: () => undefined, clearTimeout: () => {} },
       debugOnce: () => {},
       now: () => 0,

@@ -224,6 +224,11 @@ export class ShadowController implements ShadowBehavior {
     return !this.#timeline.paused;
   }
 
+  /** Предложение «Ask» (12b): модель задержанной тени показывает странице паузу или игру, элемент не трогается. */
+  showHeldPagePlayback(action: MediaKeyAction): void {
+    this.#attempt(`held ${action}`, () => this.#showPlayerPlayState(action));
+  }
+
   /** Обещания `play()`, выданные страницей до тени: теперь их исполняет модель часов. */
   takeOverPendingPlays(plays: readonly PendingPlay[]): void {
     this.#pendingPlays.push(...plays);

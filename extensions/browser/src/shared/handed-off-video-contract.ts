@@ -66,3 +66,12 @@ export function parseWatchHandedOffVideo(candidate: unknown): WatchHandedOffVide
   const eventName = fields["event_name"];
   return isHandedOffVideoEventName(eventName) ? { kind: WATCH_HANDED_OFF_VIDEO_KIND, event_name: eventName } : null;
 }
+
+/**
+ * Имя события предложения «Ask» (сессия 12b): своё, но производное от тайного имени якоря. Отдельного сообщения
+ * по порту не нужно, а странице оно так же неизвестно: без тайной части его не построить. Канал отдельный от
+ * заглушки, чтобы конец одной передачи не снимал предложение над другим видео той же страницы.
+ */
+export function viewerOfferEventNameOf(anchorEventName: string): string {
+  return `${anchorEventName}-offer`;
+}

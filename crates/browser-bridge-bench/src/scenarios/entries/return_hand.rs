@@ -19,6 +19,7 @@ use super::link_rows::{check_tab_opened_and_active, tab_still_open, target_run};
 use super::menu_entry::ClickSpot;
 use super::page_geometry::{ClientRect, ScreenPlace};
 use super::start_rows::prepare_entry;
+use super::viewer_offer_probe::ViewerOfferState;
 use crate::browsers::BrowserKind;
 use crate::desktop_input::Point;
 use crate::environment::BenchEnvironment;
@@ -73,6 +74,77 @@ impl From<PlaceholderState> for PlaceholderView {
             visible: state.visible,
             panel: state.panel.map(ClientBox::from),
             return_button: state.return_button.map(ClientBox::from),
+        }
+    }
+}
+
+/// Что человек может нажать на предложении «Ask» (кнопки панели экстеншена, 12b).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::scenarios) enum OfferChoice {
+    /// «Play in Fastiplayer»: обычная передача, правило сайта не меняется.
+    Fastiplayer,
+    /// «Play here»: видео играет в браузере, правило сайта не меняется.
+    Here,
+    /// «Always for this site»: правило сайта «always» и передача.
+    Always,
+    /// «Never for this site»: правило сайта «never» и игра в браузере.
+    Never,
+}
+
+/// Предложение «Ask» глазами зонда экстеншена.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(in crate::scenarios) struct ViewerOfferView {
+    /// Изолированный мир знает предложение.
+    pub(in crate::scenarios) offered: bool,
+    /// Выбор за это предложение уже ушёл.
+    pub(in crate::scenarios) answered: bool,
+    /// Панель видна.
+    pub(in crate::scenarios) visible: bool,
+    pub(in crate::scenarios) panel: Option<ClientBox>,
+    fastiplayer: Option<ClientBox>,
+    here: Option<ClientBox>,
+    always: Option<ClientBox>,
+    never: Option<ClientBox>,
+}
+
+impl ViewerOfferView {
+    /// Прямоугольник кнопки выбора; `None` — кнопки не видно.
+    pub(in crate::scenarios) fn button(&self, choice: OfferChoice) -> Option<ClientBox> {
+        match choice {
+            OfferChoice::Fastiplayer => self.fastiplayer,
+            OfferChoice::Here => self.here,
+            OfferChoice::Always => self.always,
+            OfferChoice::Never => self.never,
+        }
+    }
+
+    /// Панель на экране и все четыре кнопки на местах.
+    pub(in crate::scenarios) fn is_complete(&self) -> bool {
+        self.offered
+            && self.visible
+            && [
+                OfferChoice::Fastiplayer,
+                OfferChoice::Here,
+                OfferChoice::Always,
+                OfferChoice::Never,
+            ]
+            .iter()
+            .all(|choice| self.button(*choice).is_some())
+    }
+}
+
+impl From<ViewerOfferState> for ViewerOfferView {
+    fn from(state: ViewerOfferState) -> Self {
+        let buttons = state.buttons.unwrap_or_default();
+        Self {
+            offered: state.offered,
+            answered: state.answered,
+            visible: state.visible,
+            panel: state.panel.map(ClientBox::from),
+            fastiplayer: buttons.fastiplayer.map(ClientBox::from),
+            here: buttons.here.map(ClientBox::from),
+            always: buttons.always.map(ClientBox::from),
+            never: buttons.never.map(ClientBox::from),
         }
     }
 }
@@ -183,6 +255,15 @@ impl<'a> ReturnHand<'a, '_> {
     ) -> Result<PlaceholderView, String> {
         read_page_ui(self.ready.run.browser.as_mut(), prefix)
             .map(|state| PlaceholderView::from(state.placeholder))
+    }
+
+    /// Предложение «Ask» на вкладке с адресом `prefix`.
+    pub(in crate::scenarios) fn viewer_offer_on(
+        &mut self,
+        prefix: &str,
+    ) -> Result<ViewerOfferView, String> {
+        read_page_ui(self.ready.run.browser.as_mut(), prefix)
+            .map(|state| ViewerOfferView::from(state.viewer_offer))
     }
 
     /// Калибровка по зонду страницы прогона `run`: браузер выводится вперёд, мышь проходит две точки.

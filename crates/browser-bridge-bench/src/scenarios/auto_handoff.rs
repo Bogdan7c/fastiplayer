@@ -19,7 +19,10 @@
 //!  * `after-return` — после «Return» (настоящий клик) страница играет сама, новой передачи нет;
 //!    настоящая пауза и новый клик по Play — передача снова;
 //!  * `three-tabs` — три вкладки подряд: играет последняя, две первые на паузе на своих секундах;
-//!  * `live-hls`, `unknown-duration` — эфир HLS и поток без длины (`duration = Infinity`): передача сразу.
+//!  * `live-hls`, `unknown-duration` — эфир HLS и поток без длины (`duration = Infinity`): передача сразу;
+//!  * `ask-*` (12b, модуль `rows_offer`) — предложение «Ask»: `ask-offer-shown` (висит без срока, видео стоит),
+//!    `ask-play-here`, `ask-play-in-fastiplayer`, `ask-always`, `ask-never` — настоящий клик по кнопке панели и
+//!    исход (браузер или плеер) вместе с правилом сайта в хранилище экстеншена.
 //!
 //! Каждая строка «нет передачи» обязана доказать и положительный факт — страница правда играла у
 //! браузера (настоящие кадры растут), настоящий клик дошёл до неё: иначе мёртвый стенд прошёл бы всё.
@@ -27,14 +30,17 @@
 
 mod facts;
 mod judge;
+mod offer_judge;
 mod rows_click;
 mod rows_flow;
+mod rows_offer;
 mod settings;
 mod steps;
 
 use std::time::Instant;
 
 use self::rows_click::{ClickRow, Expected, Gesture};
+use self::rows_offer::OfferRow;
 use self::settings::SettingsPreset;
 use super::context::{ScenarioError, Stand};
 use super::outcome::{StepResult, Verdict};
@@ -70,6 +76,8 @@ enum AutoRow {
     PrerollToFilm,
     AfterReturn,
     ThreeTabs,
+    /// Предложение «Ask» и выбор человека (12b).
+    Offer(OfferRow),
 }
 
 impl AutoRow {
@@ -80,6 +88,7 @@ impl AutoRow {
             Self::PrerollToFilm => "preroll-to-film",
             Self::AfterReturn => "after-return",
             Self::ThreeTabs => "three-tabs",
+            Self::Offer(row) => row.name(),
         }
     }
 }
@@ -178,6 +187,11 @@ const ROWS: &[Row] = &[
         Gesture::ClickPlay,
         Expected::HandedOff { endless: true },
     ),
+    flow_row(FILM_PAGE, AutoRow::Offer(OfferRow::Shown)),
+    flow_row(FILM_PAGE, AutoRow::Offer(OfferRow::PlayHere)),
+    flow_row(FILM_PAGE, AutoRow::Offer(OfferRow::PlayInFastiplayer)),
+    flow_row(FILM_PAGE, AutoRow::Offer(OfferRow::Always)),
+    flow_row(FILM_PAGE, AutoRow::Offer(OfferRow::Never)),
 ];
 
 /// Подпись строки таблицы: правило и страница.
@@ -240,6 +254,7 @@ fn drive(
         AutoRow::PrerollToFilm => rows_flow::run_preroll(stand, environment, browser),
         AutoRow::AfterReturn => rows_flow::run_after_return(stand, environment, browser),
         AutoRow::ThreeTabs => rows_flow::run_three_tabs(stand, environment, browser),
+        AutoRow::Offer(offer) => rows_offer::run_offer_row(stand, environment, browser, offer),
     }
 }
 
@@ -295,6 +310,11 @@ mod tests {
             "three-tabs",
             "live-hls",
             "unknown-duration",
+            "ask-offer-shown",
+            "ask-play-here",
+            "ask-play-in-fastiplayer",
+            "ask-always",
+            "ask-never",
         ] {
             assert!(names.contains(&wanted), "row {wanted} is missing");
         }

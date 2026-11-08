@@ -1,9 +1,11 @@
 // Попап: при открытии сам отдаёт видео активной вкладки (решение 209), показывает исход и список найденного,
 // а статус связи с плеером остаётся отдельной секцией. Открытый порт «bridge-status» — это и есть сигнал
 // «связь нужна»; закрытие попапа закрывает порт, но НЕ отменяет передачу: её держит фон.
+import { autoHandoffSettingsFromChange } from "../shared/auto-handoff-settings.ts";
 import { BRIDGE_STATUS_PORT_NAME, isStatusUpdateMessage } from "../shared/internal-messages.ts";
 import { createBackgroundLink } from "./background-link.ts";
 import { createPopupFlow } from "./popup-flow.ts";
+import { mountSiteRuleRow } from "./site-rule-row.ts";
 import { renderPopup } from "./popup-view.ts";
 import { describeStatus, HELP_URL, type PopupView } from "./status-text.ts";
 
@@ -50,6 +52,7 @@ function requireElement(id: string): HTMLElement {
 }
 
 const flowRoot = requireElement("flow-root");
+const siteRuleRoot = requireElement("site-rule-root");
 const statusRoot = requireElement("status-root");
 renderSettingsLink(requireElement("settings-root"));
 
@@ -76,3 +79,18 @@ const flow = createPopupFlow({
   render: (model) => renderPopup(flowRoot, model, flow),
 });
 void flow.start();
+
+// Правило автозапуска для сайта вкладки: отдельный корень после списка видео и до ссылок.
+void mountSiteRuleRow(siteRuleRoot, {
+  findActiveTabUrl: async () => (await link.findActiveTab())?.url,
+  store: {
+    get: (keys) => chrome.storage.local.get([...keys]),
+    set: (items) => chrome.storage.local.set(items),
+  },
+  onSettingsChanged: (listener) =>
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "local") return;
+      const settings = autoHandoffSettingsFromChange(changes);
+      if (settings !== undefined) listener(settings);
+    }),
+}).catch((error: unknown) => console.warn("popup: site rule row failed", error));

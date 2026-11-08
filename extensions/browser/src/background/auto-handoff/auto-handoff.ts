@@ -16,11 +16,15 @@
 //   4. `hand_off` -> ответ `adopt_new_session`, и без ожидания обычная передача `handOffTab` с точной ссылкой на
 //      видео; `begin_handoff` нового сеанса сам заберёт тень. Если передача не `started` — фрейму уходит
 //      просьба отпустить видео, а человек получает плашку по `noticeOfAutoHandoffOutcome`;
-//   5. `release_with_credit` -> всем фреймам вкладки «кредит клика», ответ `release`.
+//   5. `release_with_credit` -> всем фреймам вкладки «кредит клика», ответ `release`;
+//   6. `ask_viewer` (сайт `ask`, сессия 12b) -> ответ `ask_viewer`: видео замирает под тенью, на нём предложение.
+//      Вкладка сразу свободна для других решений; что делать с выбором человека, решает `viewer-offers.ts`, а
+//      передачу по выбору «в плеер» ведёт тот же `startHandoff`, что и у обычного решения.
 //
 // Всё, что касается браузера, приходит снаружи (`AutoHandoffDependencies`), поэтому модуль проверяется на подделках.
 
 import type { HeldVideoReply, HeldVideoReport, VideoRef } from "../../shared/handoff-contract.ts";
+import type { ViewerOfferAnswer, ViewerOfferChoiceMessage } from "../../shared/viewer-offer-contract.ts";
 import { DEFAULT_AUTO_HANDOFF_SETTINGS, type AutoHandoffSettings } from "../../shared/auto-handoff-settings.ts";
 import type { EntryResult } from "../entries/entry-report-text.ts";
 import type { HeldVideoAnswer } from "../handoff/hand-off-command.ts";
@@ -30,12 +34,15 @@ import type { AdProbe } from "./ad-probe.ts";
 import { noticeOfAutoHandoffOutcome } from "./outcome-notice.ts";
 import { sitePolicyOf, type SitePolicy } from "./site-policy.ts";
 import { decideViewerPlay, type AdProbeVerdict, type ViewerPlayDecision } from "./viewer-play-decision.ts";
+import { createViewerOffers } from "./viewer-offers.ts";
 
 export interface AutoHandoffDependencies {
   /** Шов передачи вкладки: только то, что нужно режиму 2. */
   readonly handoffs: Pick<TabHandoffs, "heldVideo" | "handOffTab" | "activeTabIds">;
   /** Свежая настройка из хранилища. Может отклониться: тогда режим считается выключенным. */
   readonly readSettings: () => Promise<AutoHandoffSettings>;
+  /** Записать настройку целиком (правило сайта с предложения «Ask»). Может отклониться. */
+  readonly writeSettings: (settings: AutoHandoffSettings) => Promise<void>;
   /** Адрес вкладки; `undefined` — вкладки уже нет или адрес не отдан. */
   readonly describeTab: (tabId: number) => Promise<{ readonly url?: string | undefined } | undefined>;
   readonly adProbe: Pick<AdProbe, "probe">;
@@ -43,6 +50,8 @@ export interface AutoHandoffDependencies {
   readonly grantPlayCredit: (tabId: number, leaseMs: number) => void;
   /** Просьба одному фрейму отпустить задержанное видео (передача не состоялась). */
   readonly releaseHeldVideo: (tabId: number, frameId: number, element: number) => void;
+  /** Просьба одному фрейму снять предложение «Ask» (видео остаётся на паузе). Сбой доставки не бросает. */
+  readonly withdrawViewerOffer: (tabId: number, frameId: number, element: number) => void;
   /** Плашка и значок вкладки. Не отклоняется. */
   readonly reporter: { report(tabId: number, result: EntryResult): Promise<void> };
   /** Отметка для разработчика о сбое, который не должен пропасть молча. */
@@ -52,6 +61,10 @@ export interface AutoHandoffDependencies {
 export interface AutoHandoff {
   /** Донесение сторожа; ответ готов сразу или придёт позже. Не отклоняется. */
   heldVideo(tabId: number, frameId: number, report: HeldVideoReport): HeldVideoAnswer;
+  /** Выбор человека на предложении «Ask» (сессия 12b). Не отклоняется. */
+  viewerOfferChoice(tabId: number, frameId: number, message: ViewerOfferChoiceMessage): Promise<ViewerOfferAnswer>;
+  /** Вкладка закрыта: забыть её предложение. */
+  tabRemoved(tabId: number): void;
 }
 
 export function createAutoHandoff(dependencies: AutoHandoffDependencies): AutoHandoff {
@@ -101,6 +114,19 @@ export function createAutoHandoff(dependencies: AutoHandoffDependencies): AutoHa
     });
   }
 
+  const viewerOffers = createViewerOffers({
+    readSettings: currentSettings,
+    writeSettings: dependencies.writeSettings,
+    describeTab: dependencies.describeTab,
+    // Выбор «в плеер» держит вкладку так же, как обычное решение: до исхода передачи (`startHandoff`).
+    startHandoff: (tabId, frameId, ref) => {
+      decisionsInFlight.add(tabId);
+      startHandoff(tabId, frameId, ref);
+    },
+    withdrawOffer: dependencies.withdrawViewerOffer,
+    note: dependencies.note,
+  });
+
   /** Заход `viewer_play`, который живой сеанс вкладки (если он есть) не взял. Вкладка уже в `decisionsInFlight`. */
   async function judgeViewerPlay(tabId: number, frameId: number, report: HeldVideoReport): Promise<HeldVideoReply> {
     const settings = await currentSettings();
@@ -115,6 +141,10 @@ export function createAutoHandoff(dependencies: AutoHandoffDependencies): AutoHa
         startHandoff(tabId, frameId, { frame_id: held.frameId, document: held.candidate.document, element: held.candidate.element });
         return "adopt_new_session";
       }
+      case "ask_viewer":
+        if (held === undefined) return "release";
+        viewerOffers.offerStood(tabId, { frame_id: held.frameId, document: held.candidate.document, element: held.candidate.element });
+        return "ask_viewer";
       case "release_with_credit":
         dependencies.grantPlayCredit(tabId, decision.lease_ms);
         return "release";
@@ -152,5 +182,7 @@ export function createAutoHandoff(dependencies: AutoHandoffDependencies): AutoHa
           return viewerPlay(tabId, frameId, report);
       }
     },
+    viewerOfferChoice: (tabId, frameId, message) => viewerOffers.choose(tabId, frameId, message),
+    tabRemoved: (tabId) => viewerOffers.forgetTab(tabId),
   };
 }

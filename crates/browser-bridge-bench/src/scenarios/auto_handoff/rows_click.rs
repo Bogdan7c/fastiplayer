@@ -21,6 +21,7 @@ use crate::environment::BenchEnvironment;
 use crate::scenarios::capture::browser_does_not_decode;
 use crate::scenarios::context::{ScenarioError, Stand};
 use crate::scenarios::outcome::Verdict;
+use crate::site::RunId;
 
 /// Сколько страница играет после клика, когда передачи быть НЕ должно. Тут обязан уложиться весь путь
 /// передачи, если бы экстеншен ошибся: клик → решение фона → пропуск посредника → запуск плеера (в
@@ -147,26 +148,37 @@ fn handed_off_steps(session: &mut AutoSession<'_, '_>, row: ClickRow, endless: b
     if session.record(gesture).is_none() {
         return;
     }
+    handed_off_after_gesture_steps(session, &run, &prefix, endless);
+}
+
+/// Хвост строки «передача» после жеста человека (клик по Play или выбор на предложении «Ask»): кадры в
+/// плеере, заглушка, браузер под тенью не декодирует.
+pub(super) fn handed_off_after_gesture_steps(
+    session: &mut AutoSession<'_, '_>,
+    run: &RunId,
+    prefix: &str,
+    endless: bool,
+) {
     let started = session.await_handoff(1);
     if session.record(started).is_none() {
         return;
     }
-    let shown = session.wait_placeholder_shown(&prefix);
+    let shown = session.wait_placeholder_shown(prefix);
     if let Some(view) = session.record(shown) {
         session
             .failures
             .extend(placeholder_failures("after the click", &view, true));
     }
-    let lines = session.play_click_lines(&run);
+    let lines = session.play_click_lines(run);
     session
         .failures
         .extend(click_reached_page_failures("the Play click", &lines));
-    let marked = session.mark_window(&run);
+    let marked = session.mark_window(run);
     if session.record(marked).is_none() {
         return;
     }
     std::thread::sleep(SHADOW_WINDOW);
-    let reported = session.report_window(&run);
+    let reported = session.report_window(run);
     if let Some(facts) = session.record(reported) {
         session.failures.extend(handed_off_failures(&facts));
         if endless {

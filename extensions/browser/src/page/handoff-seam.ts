@@ -69,6 +69,11 @@ export interface HeldShadowHandle extends ShadowSessionHandle {
   pageSawPlaying(): boolean;
   /** Забрать обещания `play()`, которые страница получила до тени. */
   takeOverPendingPlays(plays: readonly PendingPlay[]): void;
+  /**
+   * Предложение «Ask» (сессия 12b): модель тени показывает странице паузу (пока человек выбирает) или снова игру.
+   * Настоящий элемент не трогается — он и так стоит. Сбой гасится внутри тени (след — в её репортёре).
+   */
+  showHeldPagePlayback(action: "play" | "pause"): void;
 }
 
 /** Поставить тень на задержанное видео. */

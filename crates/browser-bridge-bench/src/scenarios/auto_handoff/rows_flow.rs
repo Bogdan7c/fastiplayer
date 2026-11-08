@@ -228,7 +228,10 @@ fn after_return_steps(session: &mut AutoSession<'_, '_>) {
 }
 
 /// Настоящий клик по Pause: страница подтверждает клик и стоит на паузе.
-fn pause_with_real_click(session: &mut AutoSession<'_, '_>, run: &RunId) -> Result<(), String> {
+pub(super) fn pause_with_real_click(
+    session: &mut AutoSession<'_, '_>,
+    run: &RunId,
+) -> Result<(), String> {
     session.click_target(run, "pause")?;
     std::thread::sleep(PAUSE_SETTLE);
     let deadline = std::time::Instant::now() + PAUSE_CLICK_WAIT;

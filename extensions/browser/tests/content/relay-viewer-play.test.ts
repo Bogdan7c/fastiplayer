@@ -6,6 +6,7 @@ import { createContentRelay, HELD_VIDEO_REPLY_TIMEOUT_MS, VIEWER_PLAY_REPLY_TIME
 import { NEW_SESSION_ADOPT_INSURANCE_MS, type HeldVideoReport } from "../../src/shared/handoff-contract.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 import { createFakeClock } from "../background/support.ts";
+import type { ViewerOfferChoiceMessage } from "../../src/shared/viewer-offer-contract.ts";
 
 const viewerHeld = {
   kind: "next_video_held",
@@ -20,18 +21,32 @@ function setupRelay() {
   const toPage: unknown[] = [];
   const reports: HeldVideoReport[] = [];
   let reply: () => Promise<unknown> = () => Promise.resolve("adopt");
+  const choices: ViewerOfferChoiceMessage[] = [];
+  let choiceReply: () => Promise<unknown> = () => Promise.resolve("hand_off");
   const relay = createContentRelay({
     sendToPage: (message) => void toPage.push(message),
     reportHeldVideo: (report) => {
       reports.push(report);
       return reply() as ReturnType<Parameters<typeof createContentRelay>[0]["reportHeldVideo"]>;
     },
+    sendViewerOfferChoice: (message) => {
+      choices.push(message);
+      return choiceReply();
+    },
     timers: { setTimeout: (callback, delayMs) => clock.scheduler.setTimeout(callback, delayMs), clearTimeout: (handle) => clock.scheduler.clearTimeout(handle) },
     debugOnce: () => {},
     now: () => clock.scheduler.now(),
     ownDocument: () => ({ hostname: "site.example", origin: "https://site.example" }),
   });
-  return { clock, relay, toPage, reports, answerWith: (answer: () => Promise<unknown>) => void (reply = answer) };
+  return {
+    clock,
+    relay,
+    toPage,
+    reports,
+    choices,
+    answerWith: (answer: () => Promise<unknown>) => void (reply = answer),
+    answerChoiceWith: (answer: () => Promise<unknown>) => void (choiceReply = answer),
+  };
 }
 
 /** Дать цепочке `then` отработать. */
@@ -174,5 +189,80 @@ describe("ответ фона на viewer_play", () => {
     relay.handlePageMessage({ ...viewerHeld, trigger: "next_video" });
     clock.advance(HELD_VIDEO_REPLY_TIMEOUT_MS);
     assert.deepEqual(toPage, [release]);
+  });
+});
+
+describe("предложение «Ask» (12b)", () => {
+  /** Охрана включена, донесение ушло, фон ответил «спроси». */
+  async function askedRelay() {
+    const world = setupRelay();
+    world.relay.setAutoHandoffWatch("on");
+    world.answerWith(() => Promise.resolve("ask_viewer"));
+    world.toPage.length = 0;
+    world.relay.handlePageMessage(viewerHeld);
+    await settleMicrotasks();
+    return world;
+  }
+
+  it("ответ ask_viewer: MAIN-миру «держи под предложением», страховочного отпускания нет вовсе", async () => {
+    const { toPage, clock } = await askedRelay();
+    assert.deepEqual(toPage, [{ kind: "hold_for_viewer_offer", element: 4 }]);
+    clock.advance(10 * NEW_SESSION_ADOPT_INSURANCE_MS);
+    assert.deepEqual(toPage, [{ kind: "hold_for_viewer_offer", element: 4 }], "решение 256: висит, пока человек не выберет");
+  });
+
+  it("выбор уходит фону с меткой документа и ключом из донесения; «в плеер» — ждём begin_handoff, страховка 45 с", async () => {
+    const { relay, toPage, choices, clock } = await askedRelay();
+    toPage.length = 0;
+    assert.equal(await relay.answerViewerOffer("always"), "hand_off");
+    assert.deepEqual(choices, [{ kind: "viewer_offer_choice", document: "doc-a", element: 4, choice: "always" }]);
+    assert.deepEqual(toPage, []);
+    clock.advance(NEW_SESSION_ADOPT_INSURANCE_MS);
+    assert.deepEqual(toPage, [release], "фон умер до begin_handoff — видео не остаётся под тенью");
+  });
+
+  it("«здесь», «фон не узнал», ответ не из договора и недоступный фон — видео отпускается и играет", async () => {
+    const answers: readonly { reply: () => Promise<unknown>; delivery: string }[] = [
+      { reply: () => Promise.resolve("play_here"), delivery: "played_here" },
+      { reply: () => Promise.resolve("no_offer"), delivery: "played_here" },
+      { reply: () => Promise.resolve("sure, whatever"), delivery: "played_here" },
+      { reply: () => Promise.reject(new Error("background asleep")), delivery: "send_failed" },
+    ];
+    for (const row of answers) {
+      const { relay, toPage, answerChoiceWith } = await askedRelay();
+      answerChoiceWith(row.reply);
+      toPage.length = 0;
+      assert.equal(await relay.answerViewerOffer("here"), row.delivery);
+      assert.deepEqual(toPage, [release], row.delivery);
+    }
+  });
+
+  it("«спроси» на донесение переезда (не от зрителя) — видео отпускается, а не висит под тенью без панели", async () => {
+    const { relay, toPage, answerWith } = setupRelay();
+    relay.armNextVideo(3_000);
+    answerWith(() => Promise.resolve("ask_viewer"));
+    toPage.length = 0;
+    relay.handlePageMessage({ ...viewerHeld, trigger: "next_video" });
+    await settleMicrotasks();
+    assert.deepEqual(toPage, [release]);
+  });
+
+  it("второй клик по тому же предложению ничего не шлёт; без предложения — no_offer", async () => {
+    const { relay, choices } = await askedRelay();
+    await relay.answerViewerOffer("here");
+    assert.equal(await relay.answerViewerOffer("fastiplayer"), "no_offer");
+    assert.equal(choices.length, 1);
+    const fresh = setupRelay();
+    assert.equal(await fresh.relay.answerViewerOffer("here"), "no_offer");
+    assert.deepEqual(fresh.choices, []);
+  });
+
+  it("фон снял предложение: MAIN-миру «сними», и выбор по снятому уже не уходит", async () => {
+    const { relay, toPage, choices } = await askedRelay();
+    toPage.length = 0;
+    relay.withdrawViewerOffer(4);
+    assert.deepEqual(toPage, [{ kind: "withdraw_viewer_offer", element: 4 }]);
+    assert.equal(await relay.answerViewerOffer("fastiplayer"), "no_offer");
+    assert.deepEqual(choices, []);
   });
 });

@@ -9,6 +9,9 @@ import type { OverlayButtonPressedMessage, VideoAtPoint } from "../../shared/ent
 import { readEntrySettings } from "../../shared/entry-settings.ts";
 import type { HandedOffVideoSink } from "../handed-off-video-listener.ts";
 import type { ViewerReturnDelivery } from "../relay.ts";
+import type { ViewerOfferChoice } from "../../shared/viewer-offer-contract.ts";
+import type { ViewerOfferDelivery } from "../viewer-offer-relay.ts";
+import type { ViewerOfferSink } from "./viewer-offer-controller.ts";
 import { createDocumentPointerSource } from "./document-pointer-source.ts";
 import { createBrowserGeometrySignals } from "./placeholder-geometry.ts";
 import { createPageUi } from "./page-ui.ts";
@@ -18,6 +21,13 @@ import { createRealUiDocument } from "./real-ui-document.ts";
 export interface PageUiRelayPorts {
   readonly videoAtPoint: (x: number, y: number) => Promise<VideoAtPoint | null>;
   readonly requestViewerReturn: () => ViewerReturnDelivery;
+  readonly answerViewerOffer: (choice: ViewerOfferChoice) => Promise<ViewerOfferDelivery>;
+}
+
+/** Куда якоря изолированного мира сообщают: о переданном видео (заглушка, 11a) и о замершем (предложение, 12b). */
+export interface PageUiSinks {
+  readonly handedOffVideo: HandedOffVideoSink;
+  readonly viewerOffer: ViewerOfferSink;
 }
 
 /** Отметка для разработчика (журнала в продукте нет). */
@@ -27,9 +37,9 @@ function noteForDeveloper(message: string, error: unknown): void {
 
 /**
  * Подключить слой страницы к этому документу; зовётся один раз при загрузке контент-скрипта. Возвращает,
- * куда якорь сообщает о переданном видео (заглушка, 11a).
+ * куда якоря сообщают о переданном и замершем видео.
  */
-export function installPageUi(relay: PageUiRelayPorts): HandedOffVideoSink {
+export function installPageUi(relay: PageUiRelayPorts): PageUiSinks {
   const { videoAtPoint } = relay;
   const pageUi = createPageUi({
     document: createRealUiDocument(document),
@@ -56,6 +66,7 @@ export function installPageUi(relay: PageUiRelayPorts): HandedOffVideoSink {
     note: noteForDeveloper,
     placeholderSignals: createBrowserGeometrySignals(window, noteForDeveloper),
     requestViewerReturn: relay.requestViewerReturn,
+    answerViewerOffer: relay.answerViewerOffer,
   });
   browserApi.runtime.onMessage.addListener((message: unknown, sender) => pageUi.onMessage(message, sender));
 
@@ -66,5 +77,5 @@ export function installPageUi(relay: PageUiRelayPorts): HandedOffVideoSink {
     enumerable: false,
     writable: false,
   });
-  return pageUi.handedOffVideo;
+  return { handedOffVideo: pageUi.handedOffVideo, viewerOffer: pageUi.viewerOffer };
 }

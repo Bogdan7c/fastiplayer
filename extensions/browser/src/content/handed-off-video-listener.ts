@@ -52,7 +52,7 @@ export interface HandedOffVideoListener {
 }
 
 /** Цель похожа на элемент страницы: есть прямоугольник и признак «в документе». */
-function isHandedOffVideoElement(candidate: unknown): candidate is HandedOffVideoElement {
+export function isHandedOffVideoElement(candidate: unknown): candidate is HandedOffVideoElement {
   if (typeof candidate !== "object" || candidate === null) return false;
   const element = candidate as { getBoundingClientRect?: unknown; isConnected?: unknown };
   return typeof element.getBoundingClientRect === "function" && typeof element.isConnected === "boolean";
@@ -62,7 +62,7 @@ function isHandedOffVideoElement(candidate: unknown): candidate is HandedOffVide
  * Настоящий элемент события. Внутри ОТКРЫТОГО теневого дерева `target` уже перенаправлен на хозяина, а
  * `composedPath()[0]` — сам элемент; закрытые деревья путь скрывает, тогда остаётся хозяин (ограничение договора).
  */
-function signalTargetOf(event: AnchorSignalEvent): unknown {
+export function signalTargetOf(event: AnchorSignalEvent): unknown {
   const path = typeof event.composedPath === "function" ? event.composedPath() : [];
   return path.length > 0 ? path[0] : event.target;
 }

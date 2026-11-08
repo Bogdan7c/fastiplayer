@@ -74,6 +74,18 @@ describe("решение по задержанному видео", () => {
     assert.deepEqual(decide(clip, "no_ad"), { kind: "release_with_credit", lease_ms: 20_000 + PLAY_CREDIT_GRACE_MS });
   });
 
+  it("сайт ask: то, что ушло бы в плеер, становится вопросом с той же причиной; отпускаемое не спрашивается", () => {
+    const ASK: SitePolicy = { kind: "ask" };
+    assert.deepEqual(decide(held({ duration_s: 600 }), "not_probed", ASK), { kind: "ask_viewer", reason: "long_enough" });
+    assert.deepEqual(decide(held({ duration_s: null }), "not_probed", ASK), { kind: "ask_viewer", reason: "duration_unknown" });
+    assert.deepEqual(decide(held({ ...SHORT_FILE, file_host: "doubleclick.net" }), "not_probed", ASK), { kind: "ask_viewer", reason: "known_ad" });
+    // Без звука и короткий ролик без рекламы — как на любом сайте: вопроса нет.
+    assert.deepEqual(decide(held({ muted: true }), "not_probed", ASK), { kind: "release", reason: "muted" });
+    assert.deepEqual(decide(held(SHORT_FILE), "not_probed", ASK), { kind: "probe_ads_first" });
+    assert.equal(decide(held(SHORT_FILE), "no_ad", ASK).kind, "release_with_credit");
+    assert.deepEqual(decide(held(SHORT_FILE), "ad_on_screen", ASK), { kind: "ask_viewer", reason: "ad_on_screen" });
+  });
+
   it("срок кредита: длина ролика + 10 с запаса, но не больше предела договора", () => {
     assert.equal(playCreditLeaseMs(20), 30_000);
     assert.equal(playCreditLeaseMs(20.2), 30_200);

@@ -51,6 +51,7 @@ function setupRelay(budgetLimits?: Omit<PageEventBudgetParameters, "now">) {
       heldReports.push(report);
       return heldReply();
     },
+    sendViewerOfferChoice: () => Promise.reject(new Error("the viewer offer is not used here")),
     timers: { setTimeout: (callback, delayMs) => clock.scheduler.setTimeout(callback, delayMs), clearTimeout: (handle) => clock.scheduler.clearTimeout(handle) },
     debugOnce: (line) => void debugLines.push(line),
     now: () => clock.scheduler.now(),

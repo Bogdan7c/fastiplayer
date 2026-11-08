@@ -19,6 +19,7 @@ export interface HeldShadowSession extends ShadowSession {
   commitHold(): void;
   pageSawPlaying(): boolean;
   takeOverPendingPlays(plays: readonly PendingPlay[]): void;
+  showHeldPagePlayback(action: "play" | "pause"): void;
 }
 
 /**
@@ -58,6 +59,7 @@ export function startHeldShadow(
     commitHold: () => controller.commitHold(),
     pageSawPlaying: () => controller.pageSawPlaying(),
     takeOverPendingPlays: (plays) => controller.takeOverPendingPlays(plays),
+    showHeldPagePlayback: (action) => controller.showHeldPagePlayback(action),
   };
 }
 

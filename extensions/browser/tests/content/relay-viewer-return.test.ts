@@ -33,6 +33,7 @@ function setupRelay() {
   const relay = createContentRelay({
     sendToPage: (message) => void toPage.push(message),
     reportHeldVideo: () => Promise.resolve("release"),
+    sendViewerOfferChoice: () => Promise.reject(new Error("the viewer offer is not used here")),
     timers: { setTimeout: (callback, delayMs) => clock.scheduler.setTimeout(callback, delayMs), clearTimeout: (handle) => clock.scheduler.clearTimeout(handle) },
     debugOnce: () => {},
     now: () => clock.scheduler.now(),

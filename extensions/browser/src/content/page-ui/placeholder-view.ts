@@ -15,14 +15,14 @@ export const RETURN_BUTTON_LABEL = "Return";
  * обязано прокручивать страницу. Слушатели захвата страницы на `window`/`document` браузер зовёт раньше нас —
  * их не остановить, но цель у них — наш хост, а не видео.
  */
-const SWALLOWED_EVENT_TYPES = ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "auxclick", "dblclick", "contextmenu", "touchstart", "touchend"] as const;
+export const SWALLOWED_EVENT_TYPES = ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "auxclick", "dblclick", "contextmenu", "touchstart", "touchend"] as const;
 
 /**
  * Панель — ниже плашки и кнопки «Play in Fastiplayer» в том же слое: если видео стоит в правом верхнем углу,
  * плашка итога входа должна оставаться видна поверх заглушки. Отрицательный z-index в контексте наложения
  * хоста кладёт панель под соседей по тени, но всё равно поверх страницы (хост в верхнем слое).
  */
-const PANEL_Z_INDEX = "-1";
+export const PANEL_Z_INDEX = "-1";
 
 /** Непрозрачный фон панели: под заглушкой стоит замерший кадр тени, показывать его рядом с окном плеера незачем. */
 const PANEL_BACKGROUND = "#111114";
@@ -189,7 +189,7 @@ export function createPlaceholderView(document: UiDocument, layer: UiLayer): Pla
 }
 
 /** Прямоугольник с экрана; скрытое (`display: none`) даёт нулевой — значит, не видно. */
-function visibleRectOf(element: UiElement | null): PageUiRect | null {
+export function visibleRectOf(element: UiElement | null): PageUiRect | null {
   if (element === null) return null;
   const rect = element.getBoundingClientRect();
   if (rect.width === 0 && rect.height === 0) return null;

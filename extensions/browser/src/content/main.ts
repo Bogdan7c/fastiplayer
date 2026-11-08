@@ -6,6 +6,7 @@
 import { browserApi } from "../shared/browser-api.ts";
 import { ARM_NEXT_VIDEO_ACCEPTED, HANDOFF_PORT_NAME, type HeldVideoReply } from "../shared/handoff-contract.ts";
 import { parseArmNextVideoRequest, parseGrantPlayCreditRequest, parseReleaseHeldVideoRequest } from "../shared/page-message-validation.ts";
+import { parseWithdrawViewerOfferRequest } from "../shared/viewer-offer-contract.ts";
 import { RIGHT_CLICKED_VIDEO_FUNCTION_NAME } from "../shared/entry-contract.ts";
 import { VIDEO_CANDIDATES_FUNCTION_NAME, type ScriptedFrameAnswer } from "../shared/video-candidates-probe.ts";
 import { installAdWatch } from "./ad-watch-entry.ts";
@@ -14,6 +15,7 @@ import { listenForHandedOffVideo } from "./handed-off-video-listener.ts";
 import { installPageUi } from "./page-ui/page-ui-entry.ts";
 import { openPageChannel, type PageChannelPort } from "./page-channel.ts";
 import { createContentRelay, type ContentRelay } from "./relay.ts";
+import { listenForViewerOffer } from "./viewer-offer-listener.ts";
 
 /** Сериализация непрозрачного происхождения (`about:blank`, `data:`). */
 const OPAQUE_ORIGIN = "null";
@@ -28,6 +30,8 @@ let sendToPageWorld: (message: unknown) => void = () => {};
 const relay: ContentRelay = createContentRelay({
   sendToPage: (message) => sendToPageWorld(message),
   reportHeldVideo: (report) => browserApi.runtime.sendMessage(report) as Promise<HeldVideoReply>,
+  // Выбор человека на предложении «Ask» (12b); ответ проверяет пограничник.
+  sendViewerOfferChoice: (message) => Promise.resolve(browserApi.runtime.sendMessage(message)),
   timers: {
     setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
     clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
@@ -86,7 +90,13 @@ browserApi.runtime.onMessage.addListener((message: unknown, sender, sendResponse
     return;
   }
   const releaseRequest = parseReleaseHeldVideoRequest(message);
-  if (releaseRequest !== undefined) relay.releaseHeldVideo(releaseRequest.element);
+  if (releaseRequest !== undefined) {
+    relay.releaseHeldVideo(releaseRequest.element);
+    return;
+  }
+  // Предложение «Ask» (12b): на вкладке встало новое — прежнее снимается, его видео стоит на паузе.
+  const withdrawRequest = parseWithdrawViewerOfferRequest(message);
+  if (withdrawRequest !== undefined) relay.withdrawViewerOffer(withdrawRequest.element);
 });
 
 // Охрана режима 2 (12a): читает настройку и говорит MAIN-миру «включена/выключена». Фону не пишет ничего.
@@ -114,19 +124,23 @@ Object.defineProperty(globalThis, RIGHT_CLICKED_VIDEO_FUNCTION_NAME, {
 
 // Плашка с итогом входа и кнопка поверх видео (10c). Кнопка спит, пока настройка выключена; фону не пишет,
 // пока человек не нажал её.
-const handedOffVideo = installPageUi({
+const pageUiSinks = installPageUi({
   videoAtPoint: (x, y) => relay.videoAtPoint(x, y),
   requestViewerReturn: () => relay.requestViewerReturn(),
+  answerViewerOffer: (choice) => relay.answerViewerOffer(choice),
 });
+const addAnchorCaptureListener = (eventName: string, listener: (event: Event) => void): void => window.addEventListener(eventName, listener, { capture: true });
 
 // Заглушка над переданным видео (11a, решение 236): слушатель якоря встаёт ДО того, как его имя уйдёт MAIN-миру
 // по личному порту (до встречи миров порт копит сообщение). Фону это имя не уходит никогда.
 const handedOffVideoListener = listenForHandedOffVideo(
   {
-    addCaptureListener: (eventName, listener) => window.addEventListener(eventName, listener, { capture: true }),
+    addCaptureListener: addAnchorCaptureListener,
     // Генератор ЭТОГО мира: страница подменить его не может.
     randomFill: (bytes) => void crypto.getRandomValues(bytes),
   },
-  handedOffVideo,
+  pageUiSinks.handedOffVideo,
 );
+// Панель предложения «Ask» (12b): своё событие, производное от того же тайного имени. Тоже ДО отправки имени.
+listenForViewerOffer(addAnchorCaptureListener, handedOffVideoListener.watchMessage.event_name, pageUiSinks.viewerOffer);
 channel.send(handedOffVideoListener.watchMessage);

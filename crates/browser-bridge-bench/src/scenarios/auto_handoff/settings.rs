@@ -19,17 +19,23 @@ pub(super) const SETTINGS_KEY: &str = "autoHandoffSettings";
 /// оставляет запас по обе стороны: фильм (60 с) длиннее, короткий ролик (30 с) короче.
 pub(super) const BENCH_MIN_DURATION_S: u32 = 45;
 
-/// Правило сайта (зеркало `SiteRule`; стенду нужно только «никогда»: «всегда» — это общий случай).
+/// Правило сайта (зеркало `SiteRule`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SiteRule {
+    /// На этом сайте видео сразу уходит в плеер (его же пишет «Always for this site» предложения).
+    Always,
     /// На этом сайте режим 2 не срабатывает никогда.
     Never,
+    /// На этом сайте человека спрашивают (предложение «Ask», 12b).
+    Ask,
 }
 
 impl SiteRule {
     fn as_stored(self) -> &'static str {
         match self {
+            Self::Always => "always",
             Self::Never => "never",
+            Self::Ask => "ask",
         }
     }
 }
@@ -39,6 +45,8 @@ impl SiteRule {
 pub(super) struct AutoHandoffSetup {
     enabled: bool,
     min_duration_s: u32,
+    /// Правило для сайта без своей записи.
+    unknown_site_rule: SiteRule,
     /// Правила сайтов: ключ — хост без `www.`.
     site_rules: Vec<(String, SiteRule)>,
     /// Свой стоп-лист: записи вида `host` или `host/путь`.
@@ -51,13 +59,29 @@ impl AutoHandoffSetup {
         Self {
             enabled: true,
             min_duration_s: BENCH_MIN_DURATION_S,
+            // Сайт без своего правила: сразу передавать (решение 251: по умолчанию «always»).
+            unknown_site_rule: SiteRule::Always,
             site_rules: Vec::new(),
             own_stop_list: Vec::new(),
         }
     }
 
-    /// То же плюс правило для сайта `site_key` (хост без `www.`).
+    /// Режим выключен (как у нового пользователя); правила сайтов при этом живут (правило «ask» работает
+    /// и при выключенном режиме).
+    pub(super) fn switched_off(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
+
+    /// То же плюс правило для сайта без своей записи.
+    pub(super) fn with_unknown_site_rule(mut self, rule: SiteRule) -> Self {
+        self.unknown_site_rule = rule;
+        self
+    }
+
+    /// То же плюс правило для сайта `site_key` (хост без `www.`); прежнее правило этого сайта заменяется.
     pub(super) fn with_site_rule(mut self, site_key: &str, rule: SiteRule) -> Self {
+        self.site_rules.retain(|(site, _)| site != site_key);
         self.site_rules.push((site_key.to_owned(), rule));
         self
     }
@@ -78,8 +102,7 @@ impl AutoHandoffSetup {
         json!({
             "enabled": self.enabled,
             "min_duration_s": self.min_duration_s,
-            // Сайт без своего правила: сразу передавать (решение 251: по умолчанию «always»).
-            "unknown_site_rule": "always",
+            "unknown_site_rule": self.unknown_site_rule.as_stored(),
             "site_rules": site_rules,
             "own_stop_list": self.own_stop_list,
         })
@@ -108,6 +131,10 @@ pub(super) enum SettingsPreset {
     SiteRuleNever,
     /// Режим включён, но сайт стенда в своём стоп-листе.
     OwnStopList,
+    /// Режим ВЫКЛЮЧЕН, но у сайта стенда правило «ask»: предложение должно появиться и так (12b).
+    SiteRuleAsk,
+    /// Режим включён, сайт новый, а правило для новых сайтов «ask» (12b).
+    UnknownSiteAsk,
 }
 
 impl SettingsPreset {
@@ -119,6 +146,8 @@ impl SettingsPreset {
             Self::On => Some(on),
             Self::SiteRuleNever => Some(on.with_site_rule(site_key, SiteRule::Never)),
             Self::OwnStopList => Some(on.with_own_stop_entry(site_key)),
+            Self::SiteRuleAsk => Some(on.switched_off().with_site_rule(site_key, SiteRule::Ask)),
+            Self::UnknownSiteAsk => Some(on.with_unknown_site_rule(SiteRule::Ask)),
         }
     }
 }
@@ -160,6 +189,25 @@ pub(super) fn write_settings(
         .run_in_service_page(&setup.write_script())
         .map_err(|error| format!("writing the mode 2 settings: {error}"))?;
     check_stored_reply(setup, &reply)
+}
+
+/// Скрипт служебной страницы: прочитать настройку режима 2 из хранилища (ответ — JSON записи или `null`).
+fn read_script() -> String {
+    format!(
+        "async (api) => {{ const stored = await api.storage.local.get({key:?}); \
+         return JSON.stringify(stored[{key:?}] ?? null); }}",
+        key = SETTINGS_KEY,
+    )
+}
+
+/// Читает настройку режима 2 из хранилища экстеншена так, как она лежит сейчас (ничего не пишет).
+/// Нужна открытая служебная страница экстеншена.
+pub(super) fn read_stored_settings(browser: &mut dyn BrowserUnderTest) -> Result<Value, String> {
+    let reply = browser
+        .run_in_service_page(&read_script())
+        .map_err(|error| format!("reading the mode 2 settings: {error}"))?;
+    serde_json::from_str(&reply)
+        .map_err(|error| format!("the settings reply is not JSON ({error}): {reply}"))
 }
 
 #[cfg(test)]
@@ -242,5 +290,40 @@ mod tests {
         assert!(problem.contains("expected"), "{problem}");
         assert!(check_stored_reply(&setup, "null").is_err());
         assert!(check_stored_reply(&setup, "not json").is_err());
+    }
+
+    #[test]
+    fn an_ask_rule_and_an_ask_default_land_in_their_own_fields() {
+        let rule = SettingsPreset::SiteRuleAsk
+            .setup("127.0.0.1")
+            .expect("written")
+            .to_stored_value();
+        // Правило «ask» работает и при выключенном режиме: его и проверяет строка.
+        assert_eq!(rule["enabled"], json!(false));
+        assert_eq!(rule["site_rules"], json!({ "127.0.0.1": "ask" }));
+        assert_eq!(rule["unknown_site_rule"], json!("always"));
+        let unknown = SettingsPreset::UnknownSiteAsk
+            .setup("127.0.0.1")
+            .expect("written")
+            .to_stored_value();
+        assert_eq!(unknown["enabled"], json!(true));
+        assert_eq!(unknown["unknown_site_rule"], json!("ask"));
+        assert_eq!(unknown["site_rules"], json!({}));
+    }
+
+    #[test]
+    fn a_new_rule_for_a_site_replaces_the_old_one() {
+        let value = AutoHandoffSetup::enabled_for_every_site()
+            .with_site_rule("127.0.0.1", SiteRule::Ask)
+            .with_site_rule("127.0.0.1", SiteRule::Always)
+            .to_stored_value();
+        assert_eq!(value["site_rules"], json!({ "127.0.0.1": "always" }));
+    }
+
+    #[test]
+    fn the_read_script_only_reads_the_extension_key() {
+        let script = read_script();
+        assert!(script.contains("storage.local.get(\"autoHandoffSettings\")"));
+        assert!(!script.contains(".set("));
     }
 }

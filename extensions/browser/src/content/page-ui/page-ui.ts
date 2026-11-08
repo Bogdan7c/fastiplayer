@@ -1,4 +1,5 @@
 // Сборка слоя страницы: общий слой + плашка + кнопка поверх видео + заглушка над переданным видео (11a) +
+// панель предложения «Ask» над замершим видео (12b) +
 // слежение за настройкой + зонд.
 // Все внешние миры (DOM, мышь, таймеры, хранилище, фон) приходят зависимостями: сборка проверяется в
 // node:test целиком, без браузера. Настоящие переходники — в `page-ui-entry.ts`.
@@ -15,6 +16,10 @@ import type { ViewerReturnDelivery } from "../relay.ts";
 import { createPlaceholderController } from "./placeholder-controller.ts";
 import type { PlaceholderGeometrySignals } from "./placeholder-geometry.ts";
 import { createPlaceholderView } from "./placeholder-view.ts";
+import type { ViewerOfferChoice } from "../../shared/viewer-offer-contract.ts";
+import type { ViewerOfferDelivery } from "../viewer-offer-relay.ts";
+import { createViewerOfferController, type ViewerOfferSink } from "./viewer-offer-controller.ts";
+import { createViewerOfferView } from "./viewer-offer-view.ts";
 import { watchOverlaySetting } from "./overlay-setting-watch.ts";
 import type { UiDocument } from "./ui-dom.ts";
 import { createUiLayer } from "./ui-layer.ts";
@@ -36,6 +41,8 @@ export interface PageUiDependencies {
   readonly placeholderSignals: PlaceholderGeometrySignals;
   /** Просьба «Return» с заглушки — фону через пограничника. */
   readonly requestViewerReturn: () => ViewerReturnDelivery;
+  /** Выбор на предложении «Ask» (12b) — фону через пограничника. */
+  readonly answerViewerOffer: (choice: ViewerOfferChoice) => Promise<ViewerOfferDelivery>;
 }
 
 export interface PageUi {
@@ -45,6 +52,8 @@ export interface PageUi {
   readonly probe: () => PageUiProbe;
   /** Куда якорь изолированного мира сообщает о переданном видео (заглушка). */
   readonly handedOffVideo: HandedOffVideoSink;
+  /** Куда сигнал предложения сообщает о замершем видео (панель «Ask», 12b). */
+  readonly viewerOffer: ViewerOfferSink;
 }
 
 export function createPageUi(dependencies: PageUiDependencies): PageUi {
@@ -67,6 +76,13 @@ export function createPageUi(dependencies: PageUiDependencies): PageUi {
     requestViewerReturn: dependencies.requestViewerReturn,
     note: dependencies.note,
   });
+  const viewerOffer = createViewerOfferController({
+    view: createViewerOfferView(dependencies.document, layer),
+    signals: dependencies.placeholderSignals,
+    timers: dependencies.timers,
+    answerViewerOffer: dependencies.answerViewerOffer,
+    note: dependencies.note,
+  });
   watchOverlaySetting({
     readSettings: dependencies.readSettings,
     onLocalStorageChanged: dependencies.onLocalStorageChanged,
@@ -75,7 +91,8 @@ export function createPageUi(dependencies: PageUiDependencies): PageUi {
   });
   return {
     onMessage: createBannerMessageListener({ ownExtensionId: dependencies.ownExtensionId, isTopFrame: dependencies.isTopFrame, banner }),
-    probe: () => ({ banner: banner.shownId(), overlay_button: button.measureButton(), placeholder: placeholder.probe() }),
+    probe: () => ({ banner: banner.shownId(), overlay_button: button.measureButton(), placeholder: placeholder.probe(), viewer_offer: viewerOffer.probe() }),
     handedOffVideo: placeholder,
+    viewerOffer,
   };
 }
