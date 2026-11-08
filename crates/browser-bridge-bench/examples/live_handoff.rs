@@ -33,6 +33,10 @@
 //! окно плеера на паузу (MPRIS), закрывает вкладку страницы, ждёт и жмёт play в окне: экстеншен должен
 //! открыть страницу заново, и тот же сеанс продолжится в том же окне. Журнал сироты и возврата печатается.
 //!
+//! Режим 2 «автозапуск» (12b): `--auto-play on` включает его для всех сайтов («Play in Fastiplayer»),
+//! `--auto-play ask-first` — включает со словом «Ask first» для нового сайта (на видео — предложение «Ask»).
+//! Настройка пишется в `storage.local` экстеншена сразу после запуска браузера, до первой страницы.
+//!
 //! Экстеншен должен быть собран (`npm run build` в `extensions/browser`), плеер берётся из
 //! `target/release`. Адреса и журнал остаются только в выводе: в отчёты их не копировать.
 
@@ -136,6 +140,32 @@ struct Arguments {
     extension_arrival: ExtensionArrival,
     /// Через сколько секунд после передачи закрыть вкладку и попросить её назад (`None` — не просить).
     tab_return_after: Option<Duration>,
+    /// Режим 2: `None` — настройка экстеншена по умолчанию (выключен).
+    auto_play: Option<AutoPlay>,
+}
+
+/// Как включить режим 2 «автозапуск» (12b) в свежем профиле.
+#[derive(Clone, Copy, Debug)]
+enum AutoPlay {
+    /// Включён, новый сайт — сразу в плеер (`unknown_site_rule: always`).
+    On,
+    /// Включён, новый сайт — предложение «Ask» на видео (`unknown_site_rule: ask`).
+    AskFirst,
+}
+
+impl AutoPlay {
+    /// Скрипт страницы экстеншена: записать настройку режима 2 целиком (форма `autoHandoffSettings`).
+    fn write_script(self) -> String {
+        let unknown_site_rule = match self {
+            Self::On => "always",
+            Self::AskFirst => "ask",
+        };
+        format!(
+            "async (api) => {{ await api.storage.local.set({{ autoHandoffSettings: {{ enabled: true, \
+             min_duration_s: 60, unknown_site_rule: {unknown_site_rule:?}, site_rules: {{}}, own_stop_list: [] }} }}); \
+             return \"written\"; }}"
+        )
+    }
 }
 
 fn parse_arguments() -> Result<Arguments, String> {
@@ -151,6 +181,7 @@ fn parse_arguments() -> Result<Arguments, String> {
     let mut press = Press::Nobody;
     let mut extension_arrival = ExtensionArrival::AtStart;
     let mut tab_return_after = None;
+    let mut auto_play = None;
     let mut arguments = std::env::args().skip(1);
     while let Some(name) = arguments.next() {
         let value = arguments
@@ -177,6 +208,8 @@ fn parse_arguments() -> Result<Arguments, String> {
                 extension_arrival = ExtensionArrival::LateUpdate(PathBuf::from(value));
             }
             ("--warm-up-url", _) => warm_up_url = Some(value),
+            ("--auto-play", "on") => auto_play = Some(AutoPlay::On),
+            ("--auto-play", "ask-first") => auto_play = Some(AutoPlay::AskFirst),
             ("--seconds", _) => {
                 seconds = value
                     .parse()
@@ -209,6 +242,7 @@ fn parse_arguments() -> Result<Arguments, String> {
         autoplay_without_gesture,
         extension_arrival,
         tab_return_after,
+        auto_play,
     })
 }
 
@@ -331,6 +365,16 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         browser
             .install_extension_at_runtime(&built_extension)
             .map_err(|error| error.to_string())?;
+    }
+    // Режим 2 (12b): настройка ложится до первой страницы; контент-скрипты прочтут её при загрузке.
+    if let Some(auto_play) = arguments.auto_play {
+        if !arrives_at_start {
+            return Err("--auto-play needs the extension at start".to_owned());
+        }
+        let reply = browser
+            .run_in_extension_page(&auto_play.write_script())
+            .map_err(|error| format!("--auto-play: {error}"))?;
+        println!("auto play {auto_play:?}: {reply}");
     }
     // Свежий профиль на первом же адресе рекламы почти не видит: сайту нужен предыдущий заход.
     if let Some(warm_up_url) = &arguments.warm_up_url {

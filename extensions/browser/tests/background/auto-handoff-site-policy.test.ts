@@ -36,8 +36,12 @@ describe("сопоставление адреса со стоп-листом", (
 
   it("встроенный список: все записи в нормальном виде, группы названы, главные сайты внутри", () => {
     for (const entry of builtInStopListEntries()) assert.equal(normalizeStopListEntry(entry), entry, entry);
-    assert.deepEqual(BUILT_IN_STOP_LIST_GROUPS.map((group) => group.id), ["calls", "social_feeds", "banks_and_payments"]);
-    for (const url of ["https://meet.google.com/abc", "https://www.reddit.com/r/x", "https://www.paypal.com/", "https://youtube.com/shorts/1"]) assert.equal(inList(url, builtInStopListEntries()), true, url);
+    assert.deepEqual(BUILT_IN_STOP_LIST_GROUPS.map((group) => group.id), ["calls", "banks_and_payments"]);
+    for (const url of ["https://meet.google.com/abc", "https://www.paypal.com/"]) assert.equal(inList(url, builtInStopListEntries()), true, url);
+    // Решение 259: соцсетей с лентой (и раздела YouTube Shorts) во встроенном списке нет.
+    for (const url of ["https://www.reddit.com/r/x", "https://www.instagram.com/reels/", "https://youtube.com/shorts/1", "https://www.facebook.com/watch"]) {
+      assert.equal(inList(url, builtInStopListEntries()), false, url);
+    }
     for (const url of ["https://www.youtube.com/watch?v=1", "https://example.org/", "https://google.com/"]) assert.equal(inList(url, builtInStopListEntries()), false, url);
   });
 });
@@ -72,7 +76,8 @@ describe("политика сайта", () => {
       { name: "своё ask работает и при выключенном режиме", url: "https://a.example/", settings: { ...DEFAULT_AUTO_HANDOFF_SETTINGS, site_rules: { "a.example": "ask" } }, expected: ASK },
       { name: "свой стоп-лист сильнее своего ask", url: "https://a.example/", settings: { ...ON, own_stop_list: ["a.example"], site_rules: { "a.example": "ask" } }, expected: skip("own_stop_list") },
       { name: "правило родителя действует на поддомен", url: "https://video.a.example/", settings: { ...ON, site_rules: { "a.example": "never" } }, expected: skip("site_never") },
-      { name: "своё always сильнее встроенного стоп-листа", url: "https://www.reddit.com/r/video", settings: { ...ON, site_rules: { "reddit.com": "always" } }, expected: HAND_OFF },
+      { name: "своё always сильнее встроенного стоп-листа", url: "https://meet.google.com/x", settings: { ...ON, site_rules: { "meet.google.com": "always" } }, expected: HAND_OFF },
+      { name: "соцсеть при включённом режиме — как любой сайт (решение 259)", url: "https://www.instagram.com/reels/abc", settings: ON, expected: HAND_OFF },
       { name: "своё always работает и при выключенном режиме", url: "https://a.example/", settings: { ...DEFAULT_AUTO_HANDOFF_SETTINGS, site_rules: { "a.example": "always" } }, expected: HAND_OFF },
       { name: "встроенный стоп-лист при включённом режиме", url: "https://meet.google.com/x", settings: ON, expected: skip("built_in_stop_list") },
       { name: "включён, правила нет, unknown always", url: "https://a.example/", settings: ON, expected: HAND_OFF },
